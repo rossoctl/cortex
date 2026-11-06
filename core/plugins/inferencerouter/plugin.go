@@ -481,66 +481,34 @@ func (pn *pinning) forgo() {
 }
 
 // serverFor is the server the request's session uses, "" for not routed, and the
-// session's pin.
-//
-// A session its agent already pinned uses its pin, "not routed" included, so routing
-// an agent later does not move the sessions it already has running; every request
-// renews the pin. Otherwise the session is decided by unpinned, and the pin comes
-// back pinNew for OnRequest to settle by where the request went (see the package
-// doc) — except when the pin is another agent's, which this request must neither
-// follow nor overwrite, or when the request decides nothing, and then it comes back
-// pinNone. Without a session to pin, whether
-// none, a synthetic one or no store, the agent's choice applies and nothing is
-// pinned: a synthetic session's history is many conversations', not this one's.
-//
-// Two first requests of one session racing can both miss and both store; they store
-// the same outcome unless a reload lands between them, which is the case the pin
-// cannot rule out and does not need to.
+// session's pin. It reads the pin store and renews the pin. decideServer makes the
+// decision.
 func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinning) {
 	agent := agentOf(pctx)
 	choice := p.agents[agent]
-	if pctx.SessionID == "" || synthetic(pctx.SessionID) {
-		return choice, pinning{state: pinNone}
+	unpinned := func() (string, string, bool) { return p.unpinned(pctx, agent, choice, captured) }
+	var store pins
+	if pctx.SessionID != "" && !synthetic(pctx.SessionID) {
+		if store = p.pinsFor(pctx); store == nil {
+			p.noStore.Do(func() {
+				slog.Warn("inference-router: this binary wires no process store, so sessions are not pinned: " +
+					"each request follows its agent's current server, and changing it moves running sessions")
+			})
+		}
 	}
-	store := p.pinsFor(pctx)
 	if store == nil {
-		p.noStore.Do(func() {
-			slog.Warn("inference-router: this binary wires no process store, so sessions are not pinned: " +
-				"each request follows its agent's current server, and changing it moves running sessions")
-		})
-		return choice, pinning{state: pinNone}
+		server, pn, _ := decideServer(agent, choice, false, "", false, pin{}, false, unpinned)
+		return server, pn
 	}
 	key := pinPrefix + pctx.SessionID
-	// A sessions: override is the user's explicit move: it beats the pin and every
-	// unpinned rule, and the pin follows it, so removing the entry later does not
-	// move the session back. pinMoved tells the record this request moved a session
-	// that already held a pin; pinNew is a session that held none.
-	if over, ok := p.overrideFor(pctx); ok {
-		state, from := pinNew, ""
-		if pn, had := store.load(key); had && pn.belongsTo(agent) {
-			switch {
-			case pn.server == over:
-				state = pinExisting
-				p.keepPin(pctx, store, key, pn)
-			case pn.server != over:
-				state, from = pinMoved, pn.server
-			}
-		}
-		return over, pinning{state: state, store: store, key: key, agent: agent, override: true, from: from}
+	over, overridden := p.overrideFor(pctx)
+	had, pinned := store.load(key)
+	server, pn, keep := decideServer(agent, choice, true, over, overridden, had, pinned, unpinned)
+	if keep {
+		p.keepPin(pctx, store, key, had)
 	}
-	if pn, ok := store.load(key); ok {
-		if !pn.belongsTo(agent) {
-			server, _, _ := p.unpinned(pctx, agent, choice, captured)
-			return server, pinning{state: pinNone}
-		}
-		p.keepPin(pctx, store, key, pn)
-		return pn.server, pinning{state: pinExisting}
-	}
-	server, turn, decides := p.unpinned(pctx, agent, choice, captured)
-	if !decides {
-		return server, pinning{state: pinNone, turn: turn}
-	}
-	return server, pinning{state: pinNew, store: store, key: key, agent: agent, turn: turn}
+	pn.store, pn.key, pn.agent = store, key, agent
+	return server, pn
 }
 
 // keepPin renews the session's pin and, with it, its reasoning record, which must

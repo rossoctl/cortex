@@ -44,3 +44,63 @@ func decideUnpinned(choice string, ext *pipeline.InferenceExtension, captured bo
 	}
 	return choice, "", true
 }
+
+// decideServer is the server for a request, "" for not routed, the session pin it
+// leaves, and whether the session's loaded pin, had, is kept (renewed). session is
+// whether the request has a session to pin: an id that is not synthetic, and a pin
+// store. over is the session's sessions: entry when overridden, and had the pin the
+// store holds for the session when pinned. unpinned is decideUnpinned for the
+// request, and is called only when no override applies and the agent holds no pin.
+// The returned pinning has no store, key or agent: the caller sets them.
+//
+// Without a session to pin, the agent's choice applies and nothing is pinned: a
+// synthetic session's history is many conversations', not this one's. Otherwise, in
+// order:
+//
+//  1. A sessions: override is the user's explicit move: it beats the pin and every
+//     unpinned rule, and the pin follows it, so removing the entry later does not
+//     move the session back. A session already pinned to the override keeps its pin
+//     (pinExisting). A session pinned elsewhere moves (pinMoved, from its old
+//     server). A session that held no pin of its agent's is pinNew.
+//  2. A session its agent already pinned uses its pin, "not routed" included, so
+//     routing an agent later does not move the sessions it already has running. Every
+//     request renews the pin. A pin to a server no longer configured is still the
+//     answer: OnRequest denies the request rather than move the conversation.
+//  3. A pin that is another agent's is neither followed nor overwritten: the request
+//     goes where unpinned says, and pins nothing.
+//  4. Otherwise unpinned decides, and the pin comes back pinNew for OnRequest to
+//     settle by where the request went (see the package doc), or pinNone when the
+//     request decides nothing.
+//
+// Two first requests of one session racing can both miss and both store. They store
+// the same outcome unless a reload lands between them, which is the case the pin
+// cannot rule out and does not need to.
+func decideServer(agent, choice string, session bool, over string, overridden bool, had pin, pinned bool,
+	unpinned func() (server, turn string, decides bool)) (server string, pn pinning, keep bool) {
+	if !session {
+		return choice, pinning{state: pinNone}, false
+	}
+	if overridden {
+		pn = pinning{state: pinNew, override: true}
+		if pinned && had.belongsTo(agent) {
+			if had.server == over {
+				pn.state, keep = pinExisting, true
+			} else {
+				pn.state, pn.from = pinMoved, had.server
+			}
+		}
+		return over, pn, keep
+	}
+	if pinned {
+		if !had.belongsTo(agent) {
+			server, _, _ := unpinned()
+			return server, pinning{state: pinNone}, false
+		}
+		return had.server, pinning{state: pinExisting}, true
+	}
+	server, turn, decides := unpinned()
+	if !decides {
+		return server, pinning{state: pinNone, turn: turn}, false
+	}
+	return server, pinning{state: pinNew, turn: turn}, false
+}
