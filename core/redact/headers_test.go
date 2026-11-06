@@ -64,3 +64,12 @@ func TestHeadersAndQuery_DropNamesWithACredentialWord(t *testing.T) {
 		t.Errorf("Query kept %q, want both: neither name has a credential word", got)
 	}
 }
+
+// The names docs/laptop-service.md gives as examples of the word rule.
+func TestCredentialName_DocumentedExamples(t *testing.T) {
+	for name, want := range map[string]bool{"Idempotency-Key": true, "Sec-WebSocket-Key": true, "accessToken": false} {
+		if got := CredentialName(name); got != want {
+			t.Errorf("CredentialName(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

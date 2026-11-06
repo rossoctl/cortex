@@ -910,8 +910,9 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	//
 	// The same wrapper keeps the body for the session archive's capture (#1494): every arm
 	// reads through it, so what it keeps is the body as it came off the wire, whatever arm
-	// relays it. Only when the request was captured, so a response never outlives its pair.
-	if capture != nil {
+	// relays it. Only when the request was captured, so a response never outlives its pair: the
+	// request row keeps its capture only for inference (recordCapturedRequest).
+	if capture != nil && pctx.Extensions.Inference != nil {
 		rc := &pipeline.ResponseCapture{Status: resp.StatusCode, Header: redact.Headers(resp.Header), Decoded: resp.Uncompressed}
 		pctx.ResponseCapture = rc
 		resp.Body = bodycount.WrapCapture(resp.Body, &pctx.ResponseBytes, &rc.Body, &rc.Truncated, &rc.Ended, pipeline.MaxResponseCapture)
@@ -2195,6 +2196,11 @@ func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Contex
 // it, c, which may be nil. The row carries c with the body as it goes upstream: pctx.Body,
 // when a plugin rewrote it.
 func (s *Server) recordCapturedRequest(tl *tunnelLog, pctx *pipeline.Context, sid string, c *pipeline.RequestCapture) {
+	// Only inference is kept: the capture redacts headers and the query, not the body, and the
+	// body of any other request, such as an OAuth token refresh, can be a credential.
+	if pctx.Extensions.Inference == nil {
+		c = nil
+	}
 	if c != nil && pctx.BodyMutated() {
 		cp := *c
 		cp.Forwarded = pctx.Body
