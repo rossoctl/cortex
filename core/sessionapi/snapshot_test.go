@@ -49,6 +49,10 @@ func TestWriteSessionView_MatchesTheBufferedEncoding(t *testing.T) {
 			ID: "s1", OldestSeq: 7,
 			Events: []pipeline.SessionEvent{{At: at, Seq: 9}},
 		}},
+		{"view and schemaVersion follow the events", &pipeline.SessionView{
+			ID: "s1", View: "summary", SchemaVersion: SchemaVersion,
+			Events: []pipeline.SessionEvent{{At: at}},
+		}},
 		{"an id needing escapes", &pipeline.SessionView{
 			ID:     `a/b "c" <d>&e` + "\né世",
 			Events: []pipeline.SessionEvent{{At: at}},

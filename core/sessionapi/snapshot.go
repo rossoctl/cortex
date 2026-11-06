@@ -140,6 +140,10 @@ func writeSessionViewProjected(
 		_, _ = bw.WriteString(`,"view":`)
 		_, _ = bw.Write(v)
 	}
+	if view.SchemaVersion != 0 { // omitempty
+		_, _ = bw.WriteString(`,"schemaVersion":`)
+		_, _ = bw.WriteString(strconv.Itoa(view.SchemaVersion))
+	}
 	_, _ = bw.WriteString("}\n") // Encode terminates every value with a newline.
 	return bw.Flush()
 }

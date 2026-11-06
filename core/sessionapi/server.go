@@ -33,6 +33,12 @@ import (
 // WithHeartbeatInterval.
 const defaultHeartbeatInterval = 30 * time.Second
 
+// SchemaVersion is the "schemaVersion" of each JSON response that carries events:
+// GET /v1/sessions/{id} and GET /v1/sessions/{id}/events/{seq}. Increase it when an
+// event field changes its meaning or is removed. Do not increase it when a field is
+// added. The SSE stream has no envelope, so its frames do not carry it.
+const SchemaVersion = 1
+
 // Server wraps an http.Server bound to a session store.
 //
 // inbound / outbound are holders (not raw pipelines) so a pipeline
@@ -503,6 +509,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		// see SessionView.View. Safe to set: ViewPage returns a freshly built view.
 		view.View = summaryView
 	}
+	view.SchemaVersion = SchemaVersion
 	w.Header().Set("Content-Type", "application/json")
 	// Streamed per event rather than Encoded whole: see writeSessionView for the heap
 	// this one response used to cost.
@@ -566,13 +573,13 @@ func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	var out any = event
+	out := eventResponse{SessionEvent: event}
 	if r.URL.Query().Get("raw") == "1" && s.archive != nil {
 		// The exact capture is on disk only: the store never holds raw bodies, so even a resident
 		// event's comes from the archive. An event with none — not captured, written before
 		// capture, or not flushed yet — is served without it.
 		if c, ok, err := s.archive.Capture(id, seq); ok {
-			out = eventWithRaw{event, rawOf(c)}
+			out.Raw = rawOf(c)
 		} else if err != nil {
 			slog.Debug("sessionapi: archive capture read failed", "error", err, "sessionID", id, "seq", seq)
 		}

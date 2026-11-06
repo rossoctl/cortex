@@ -302,6 +302,29 @@ curl -N http://localhost:9094/v1/events
 curl -N "http://localhost:9094/v1/events?session=$SID"
 ```
 
+## Schema version
+
+Each JSON response that carries events has one top-level `schemaVersion` field.
+The events in it do not carry one each. The value is now `1`
+(`SchemaVersion` in `core/sessionapi/server.go`). These responses carry it:
+
+- `GET /v1/sessions/{id}`, beside `id` and `events`.
+- `GET /v1/sessions/{id}/events/{seq}`. This response is the event object, so
+  the field is one more key in that object.
+
+The rule for the number:
+
+- It increases when an event field changes its meaning or is removed.
+- It does not increase when a field is added. A client ignores keys it does not
+  know.
+- A response with no `schemaVersion` comes from a proxy older than the field.
+  Read it as version 1.
+
+`/v1/events` frames do not carry it. Each frame is one bare event, with no
+envelope to hold the field. The golden file
+`core/pipeline/testdata/session-event.golden.json` holds an event with every
+field set, and a test fails when the event wire form changes.
+
 ## Event schema
 
 Every event on `/v1/sessions/{id}` and `/v1/events` carries:
