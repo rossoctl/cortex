@@ -131,3 +131,94 @@ func decideSettle(state, server string, redirectFailed, redirected, pathFailed b
 	}
 	return server, true
 }
+
+// chooseModelFor is the model a routed request with model requested is sent with,
+// and whether the session keeps it as its substitute for requested. kept is the
+// session's substitute for requested, "" for none. refused is whether the server
+// refused requested within refusedFor, and is called only when nothing is kept.
+// substitute is the server's substitute for the request, "" for none, and is called
+// only when the server refused requested. In order:
+//
+//  1. The session's substitute, so a conversation does not change model part-way.
+//  2. A substitute, kept for the session, when the server refused requested.
+//  3. requested.
+func chooseModelFor(requested, kept string, refused func() bool, substitute func() string) (model string, keep bool) {
+	if kept != "" {
+		return kept, false
+	}
+	if refused() {
+		if sub := substitute(); sub != "" {
+			return sub, true
+		}
+	}
+	return requested, false
+}
+
+// resendFacts are the facts decideResend reads about a refused attempt.
+type resendFacts struct {
+	status  int
+	refusal []byte // the server's answer
+	body    []byte // the request as it was sent
+	// model is the model the body names, "" when hasModel is false.
+	model    string
+	hasModel bool
+	// routed is whether the request's host is a server's.
+	routed bool
+	// parsed is whether the parser read the request as inference, and substituted
+	// whether it was sent with a model other than the agent's.
+	parsed, substituted  bool
+	redirected, switched bool
+	// limitResent is whether the request was resent for a limit already.
+	limitResent bool
+}
+
+// resendStep is what decideResend says to do with a refused attempt. reason is the
+// resend's reason: "" for no resend, "model" or "limit".
+type resendStep struct {
+	reason string
+	// sub is the model to resend with, for "model". "" means the server has no
+	// substitute: the refusal is learned, and the request is not resent.
+	sub string
+	// kind, n and stated are the limit to learn, for "limit".
+	kind   limitKind
+	n      int
+	stated bool
+}
+
+// decideResend is what a refused attempt f gets. substitute is the server's substitute
+// for the request, "" for none, and is called only for a model refusal that can be
+// resent. Each kind of resend is done once per request at most. In order:
+//
+//  1. A refusal of the model (refusesModel) is never read as a limit. It gets
+//     "model" when the request was redirected to a server, was parsed, names a model
+//     and was not sent with a substitute already. Otherwise it is not resent. A
+//     substitute that is the refused model is no substitute.
+//  2. A limit refusal (limitRefusal) gets "limit" when the request was switched, was
+//     not resent for a limit already, went to a server, names a model, and the limit
+//     is plausible. A refusal that states no number teaches a window 90% of the
+//     request's estimate, which is below what the server refused.
+//  3. Any other answer is not resent.
+func decideResend(f resendFacts, substitute func() string) resendStep {
+	if refusesModel(f.status, f.refusal, f.model) {
+		if !f.redirected || !f.routed || !f.parsed || f.substituted || !f.hasModel {
+			return resendStep{}
+		}
+		sub := substitute()
+		if sub == f.model {
+			sub = ""
+		}
+		return resendStep{reason: "model", sub: sub}
+	}
+	kind, n, ok := limitRefusal(f.status, f.refusal)
+	if !ok || !f.switched || f.limitResent || !f.routed || !f.hasModel {
+		return resendStep{}
+	}
+	stated := n > 0
+	if !stated {
+		n = estimate(f.body) * 9 / 10
+	}
+	if !plausible(kind, n, f.body) {
+		return resendStep{}
+	}
+	return resendStep{reason: "limit", kind: kind, n: n, stated: stated}
+}

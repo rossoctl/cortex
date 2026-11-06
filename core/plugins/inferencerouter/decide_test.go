@@ -1,6 +1,8 @@
 package inferencerouter
 
 import (
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -169,5 +171,114 @@ func TestDecideSettle(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestChooseModelFor pins each rule of chooseModelFor, in its order, and that refused
+// and substitute are called only when an earlier rule does not decide.
+func TestChooseModelFor(t *testing.T) {
+	const requested, kept, sub = "exo-free", "glm-4-6", "glm-5-3"
+	tests := []struct {
+		name    string
+		kept    string
+		refused bool
+		sub     string // what substitute returns
+
+		model                  string
+		keep                   bool
+		askedRefused, askedSub bool
+	}{
+		{name: "the session's substitute", kept: kept, refused: true, sub: sub, model: kept},
+		{name: "the session's substitute is the name", kept: requested, model: requested},
+		{name: "not refused", model: requested, askedRefused: true},
+		{name: "refused, no substitute", refused: true, model: requested, askedRefused: true, askedSub: true},
+		{name: "refused, the substitute is the name", refused: true, sub: requested, model: requested, keep: true, askedRefused: true, askedSub: true},
+		{name: "refused, a substitute", refused: true, sub: sub, model: sub, keep: true, askedRefused: true, askedSub: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			askedRefused, askedSub := false, false
+			model, keep := chooseModelFor(requested, tt.kept,
+				func() bool { askedRefused = true; return tt.refused },
+				func() string { askedSub = true; return tt.sub })
+			if model != tt.model || keep != tt.keep {
+				t.Errorf("chooseModelFor = (%q, %v), want (%q, %v)", model, keep, tt.model, tt.keep)
+			}
+			if askedRefused != tt.askedRefused || askedSub != tt.askedSub {
+				t.Errorf("refused called = %v, substitute called = %v, want %v, %v",
+					askedRefused, askedSub, tt.askedRefused, tt.askedSub)
+			}
+		})
+	}
+}
+
+// TestDecideResend pins decideResend over each fact that changes its answer: what the
+// server refused, the request's state, and each attempt already made. substitute must
+// be called only for a model refusal that can be resent.
+func TestDecideResend(t *testing.T) {
+	const model, sub = "exo-free", "glm-5-3"
+	small := []byte(`{"model":"exo-free","max_completion_tokens":256000,"messages":[{"role":"user","content":"hi"}]}`)
+	large := []byte(`{"model":"exo-free","max_completion_tokens":1000,"messages":[{"role":"user","content":"` + strings.Repeat(pad, 20) + `"}]}`)
+	ready := resendFacts{body: small, model: model, hasModel: true, routed: true, parsed: true, redirected: true, switched: true}
+	notFound := `{"error":{"message":"model 'exo-free' not found","type":"not_found_error"}}`
+	// A refusal of the model whose text also reads as a limit.
+	both := `{"error":{"message":"Invalid model name passed in model=exo-free; maximum context length is 2048 tokens"}}`
+	tooHigh := `{"error":{"message":"The maximum tokens you requested exceeds the model limit of 300000."}}`
+	none, noSub := resendStep{}, resendStep{reason: "model"}
+	toSub := resendStep{reason: "model", sub: sub}
+	capped := resendStep{reason: "limit", kind: limitOutput, n: 128000, stated: true}
+	tests := []struct {
+		name    string
+		status  int
+		refusal string
+		edit    func(*resendFacts)
+		sub     string // what substitute returns
+
+		want  resendStep
+		asked bool // substitute was called
+	}{
+		{name: "M7 model refused", status: http.StatusForbidden, refusal: refusal, sub: sub, want: toSub, asked: true},
+		{name: "M7 invalid model", status: http.StatusBadRequest, refusal: both, sub: sub, want: toSub, asked: true},
+		{name: "M7 local server's missing model", status: http.StatusNotFound, refusal: notFound, sub: sub, want: toSub, asked: true},
+		{name: "M6 no substitute", status: http.StatusForbidden, refusal: refusal, want: noSub, asked: true},
+		{name: "M6 the substitute is the model", status: http.StatusForbidden, refusal: refusal, sub: model, want: noSub, asked: true},
+		{name: "M1 not redirected", status: http.StatusForbidden, refusal: refusal, sub: sub, edit: func(f *resendFacts) { f.redirected = false }, want: none},
+		{name: "M2 not a server's host", status: http.StatusForbidden, refusal: refusal, sub: sub, edit: func(f *resendFacts) { f.routed = false }, want: none},
+		{name: "M3 not parsed", status: http.StatusForbidden, refusal: refusal, sub: sub, edit: func(f *resendFacts) { f.parsed = false }, want: none},
+		{name: "M4 sent with a substitute", status: http.StatusForbidden, refusal: refusal, sub: sub, edit: func(f *resendFacts) { f.substituted = true }, want: none},
+		{name: "M4 a refused substitute is no limit", status: http.StatusBadRequest, refusal: both, sub: sub, edit: func(f *resendFacts) { f.substituted = true; f.body = large }, want: none},
+		{name: "M5 no model", status: http.StatusForbidden, refusal: refusal, sub: sub, edit: func(f *resendFacts) { f.model, f.hasModel = "", false }, want: none},
+		{name: "another name not found", status: http.StatusNotFound, refusal: notFound, sub: sub, edit: func(f *resendFacts) { f.model = "other" }, want: none},
+		{name: "a bad key", status: http.StatusUnauthorized, refusal: `{"error":{"type":"token_not_found_in_db"}}`, sub: sub, want: none},
+		{name: "another 403", status: http.StatusForbidden, refusal: `{"error":{"type":"budget_exceeded"}}`, sub: sub, want: none},
+		{name: "a server error", status: http.StatusInternalServerError, refusal: refusal, sub: sub, want: none},
+		{name: "L8 output cap stated", status: http.StatusBadRequest, refusal: bedrockCap, want: capped},
+		{name: "L9 window not stated", status: http.StatusBadRequest, refusal: bedrockTooLong, edit: func(f *resendFacts) { f.body = large },
+			want: resendStep{reason: "limit", kind: limitWindow, n: estimate(large) * 9 / 10}},
+		{name: "L8 a model resend first", status: http.StatusBadRequest, refusal: bedrockCap, edit: func(f *resendFacts) { f.substituted = true }, want: capped},
+		{name: "L1 a limit at another status", status: http.StatusForbidden, refusal: bedrockCap, want: none},
+		{name: "L2 not switched", status: http.StatusBadRequest, refusal: bedrockCap, edit: func(f *resendFacts) { f.switched = false }, want: none},
+		{name: "L3 resent for a limit already", status: http.StatusBadRequest, refusal: bedrockCap, edit: func(f *resendFacts) { f.limitResent = true }, want: none},
+		{name: "L4 not a server's host", status: http.StatusBadRequest, refusal: bedrockCap, edit: func(f *resendFacts) { f.routed = false }, want: none},
+		{name: "L5 no model", status: http.StatusBadRequest, refusal: bedrockCap, edit: func(f *resendFacts) { f.model, f.hasModel = "", false }, want: none},
+		{name: "L6 implausible stated cap", status: http.StatusBadRequest, refusal: tooHigh, want: none},
+		{name: "L7 implausible window not stated", status: http.StatusBadRequest, refusal: bedrockTooLong, want: none},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := ready
+			if tt.edit != nil {
+				tt.edit(&f)
+			}
+			f.status, f.refusal = tt.status, []byte(tt.refusal)
+			asked := false
+			got := decideResend(f, func() string { asked = true; return tt.sub })
+			if got != tt.want {
+				t.Errorf("decideResend = %+v, want %+v", got, tt.want)
+			}
+			if asked != tt.asked {
+				t.Errorf("substitute called = %v, want %v", asked, tt.asked)
+			}
+		})
 	}
 }

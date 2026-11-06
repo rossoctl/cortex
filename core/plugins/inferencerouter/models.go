@@ -156,25 +156,24 @@ func substituteEntry(ext *pipeline.InferenceExtension, requested string) string 
 	return kindOf(ext) + " " + requested
 }
 
-// chooseModel decides the model a request routed to server is sent with, by the
-// order the package doc gives: the session's substitute for the name, else a
-// substitute when the server refused the name within refusedFor, else the name the
-// agent asked for. The decision is applied with SetRequestModel.
+// chooseModel sends a request routed to server with the model chooseModelFor
+// decides, by the order the package doc gives, and keeps a new substitute for the
+// session. The decision is applied with SetRequestModel.
 func (p *Router) chooseModel(pctx *pipeline.Context, server string) {
 	requested, ok := pctx.RequestModel()
 	if !ok {
 		return
 	}
-	sub := p.sessionSubstitute(pctx, server, requested)
-	if sub == "" && p.isRefused(pctx, server, requested) {
-		if sub = p.substitute(server, pctx.Extensions.Inference); sub != "" {
-			p.keepSubstitute(pctx, server, requested, sub)
-		}
+	model, keep := chooseModelFor(requested, p.sessionSubstitute(pctx, server, requested),
+		func() bool { return p.isRefused(pctx, server, requested) },
+		func() string { return p.substitute(server, pctx.Extensions.Inference) })
+	if keep {
+		p.keepSubstitute(pctx, server, requested, model)
 	}
-	if sub == "" || sub == requested {
+	if model == requested {
 		return
 	}
-	if err := pctx.SetRequestModel(sub); err != nil {
+	if err := pctx.SetRequestModel(model); err != nil {
 		slog.Warn("inference-router: could not give a request its substitute model; it goes with the model it asked for",
 			"server", server, "error", err)
 	}
@@ -183,46 +182,37 @@ func (p *Router) chooseModel(pctx *pipeline.Context, server string) {
 // Resend implements pipeline.Resender. A refusal of the model the agent asked for is
 // answered with the server's substitute, as resendForModel says; a refusal for a
 // limit teaches the router that limit for the model, and the request is fitted and
-// sent again. Each kind is answered at most once per request.
+// sent again. decideResend decides which, and each kind is answered at most once per
+// request.
 func (p *Router) Resend(_ context.Context, pctx *pipeline.Context, status int, body []byte) bool {
-	if model, _ := pctx.RequestModel(); refusesModel(status, body, model) {
-		return p.resendForModel(pctx)
-	}
-	if kind, n, ok := limitRefusal(status, body); ok {
-		return p.resendForLimit(pctx, kind, n)
+	ext := pctx.Extensions.Inference
+	server, routed := p.byHost[routerconfig.Key(pctx.Host)]
+	model, hasModel := pctx.RequestModel()
+	step := decideResend(resendFacts{
+		status: status, refusal: body, body: pctx.Body, model: model, hasModel: hasModel,
+		routed: routed, parsed: ext != nil, substituted: ext != nil && ext.RequestedModel != "",
+		redirected: pctx.Redirected(), switched: switched(pctx),
+		limitResent: slices.Contains(pctx.ResendReasons(), "limit"),
+	}, func() string { return p.substitute(server, ext) })
+	switch step.reason {
+	case "model":
+		return p.resendForModel(pctx, server, model, step.sub)
+	case "limit":
+		return p.resendForLimit(pctx, server, model, step)
 	}
 	return false
 }
 
-// resendForLimit learns a refusal's limit for the model a routed request was sent
-// with and fits the request to it. A refusal that states no number teaches a window
-// 90% of the request's estimate, which is below what the server refused.
-func (p *Router) resendForLimit(pctx *pipeline.Context, kind limitKind, n int) bool {
-	if !switched(pctx) || slices.Contains(pctx.ResendReasons(), "limit") {
-		return false
-	}
-	server, ok := p.byHost[routerconfig.Key(pctx.Host)]
-	if !ok {
-		return false
-	}
-	model, ok := pctx.RequestModel()
-	if !ok {
-		return false
-	}
-	stated := n > 0
-	if !stated {
-		n = estimate(pctx.Body) * 9 / 10
-	}
-	if !plausible(kind, n, pctx.Body) {
-		return false
-	}
-	p.saveLimits(pctx, server, model, p.loadLimits(pctx, server, model).learn(kind, n))
+// resendForLimit learns step's limit for model, the model a routed request was sent
+// to server with, and fits the request to it.
+func (p *Router) resendForLimit(pctx *pipeline.Context, server, model string, step resendStep) bool {
+	p.saveLimits(pctx, server, model, p.loadLimits(pctx, server, model).learn(step.kind, step.n))
 	which := "window"
-	if kind == limitOutput {
+	if step.kind == limitOutput {
 		which = "output"
 	}
 	details := map[string]string{"server": server, "model": model, "limit": which,
-		"value": strconv.Itoa(n), "stated": strconv.FormatBool(stated)}
+		"value": strconv.Itoa(step.n), "stated": strconv.FormatBool(step.stated)}
 	if !p.applyLimits(pctx, server, false) {
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionSkip, Reason: "limit_not_fitted", Details: details})
 		return false
@@ -232,32 +222,14 @@ func (p *Router) resendForLimit(pctx *pipeline.Context, kind limitKind, n int) b
 	return true
 }
 
-// resendForModel answers a model refusal. When the server a request was routed to
-// refused the model the agent asked for, the refusal is recorded for refusedFor, and
-// the request is sent again with the server's substitute, before the agent sees
-// anything. A request already sent with a substitute is never sent again, so a
-// refused substitute reaches the agent as the server answered it.
-func (p *Router) resendForModel(pctx *pipeline.Context) bool {
-	if !pctx.Redirected() {
-		return false
-	}
-	server, ok := p.byHost[routerconfig.Key(pctx.Host)]
-	ext := pctx.Extensions.Inference
-	if !ok || ext == nil || ext.RequestedModel != "" {
-		return false
-	}
-	requested, ok := pctx.RequestModel()
-	if !ok {
-		return false
-	}
+// resendForModel answers server's refusal of requested, the model the agent asked
+// for. The refusal is recorded for refusedFor, and the request is sent again with sub,
+// the server's substitute, before the agent sees anything. With no sub, or one the
+// request cannot take, the refusal reaches the agent as the server answered it.
+func (p *Router) resendForModel(pctx *pipeline.Context, server, requested, sub string) bool {
 	p.markRefused(pctx, server, requested)
 	details := map[string]string{"server": server, "model": requested}
-	sub := p.substitute(server, ext)
-	if sub == "" || sub == requested {
-		pctx.Record(pipeline.Invocation{Action: pipeline.ActionSkip, Reason: "no_substitute", Details: details})
-		return false
-	}
-	if err := pctx.SetRequestModel(sub); err != nil {
+	if sub == "" || pctx.SetRequestModel(sub) != nil {
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionSkip, Reason: "no_substitute", Details: details})
 		return false
 	}
