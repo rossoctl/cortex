@@ -28,7 +28,7 @@ agentop observe                         # in another terminal: watch it live
 ```
 
 Setup asks once before changing anything. If something looks wrong, `agentop doctor`
-names the fix. Can't reach rossoctl.dev? The same script is
+names the fix. To move to a newer release later, run `agentop update`. Can't reach rossoctl.dev? The same script is
 [in this repo](https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh).
 
 ## What you can do with it
