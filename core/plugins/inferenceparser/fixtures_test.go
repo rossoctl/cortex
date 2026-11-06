@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"net/http"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"testing"
@@ -102,6 +103,14 @@ func runFixture(t *testing.T, dir string, frames bool) []byte {
 	}
 
 	pctx.ResponseHeaders = http.Header{"Content-Type": []string{contentType}}
+	// An optional response.headers file holds the gateway headers that the parser reads.
+	if raw, err := os.ReadFile(filepath.Join(dir, "response.headers")); err == nil {
+		h, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(raw))).ReadMIMEHeader()
+		if err != nil {
+			t.Fatalf("response.headers: %v", err)
+		}
+		pctx.ResponseHeaders = http.Header(h)
+	}
 	switch {
 	case !frames:
 		pctx.ResponseBody = resp

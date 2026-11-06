@@ -1100,6 +1100,7 @@
       }
     }
   ],
+  "servedModel": "gateway/claude-opus-5-5",
   "toolResults": [
     {
       "toolUseId": "toolu_fixture_01",
