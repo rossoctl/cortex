@@ -604,6 +604,14 @@ func controlService(goos, action string, p servicePaths, progress io.Writer) err
 	if out, err := exec.Command("systemctl", args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
+	// A stop of a unit systemd had already given up on is a no-op for systemd, so
+	// the unit stays failed, only now disabled, and status read the deliberate stop
+	// as a crash and advised a restart. Clearing it leaves inactive and disabled,
+	// which status reports as stopped. After the stop, never before: nothing is
+	// left running for the start limit to protect.
+	if action == "stop" {
+		clearStartLimit()
+	}
 	return nil
 }
 
@@ -615,10 +623,11 @@ func controlService(goos, action string, p servicePaths, progress io.Writer) err
 // tells the user to run failed with "start of the service was attempted too often",
 // and so did `service start` and a reinstall.
 //
-// Only before a start someone asked for, never on systemd's own restarts, so the
-// limit still stops a crash loop by itself. reset-failed on a unit that is not
-// failed changes nothing; its error, for a unit systemd has not loaded, is not
-// ours to report.
+// Only around a start or stop someone asked for, never on systemd's own restarts,
+// so the limit still stops a crash loop by itself. controlService also calls it
+// after a stop, for the state that leaves; see there. reset-failed on a unit that
+// is not failed changes nothing; its error, for a unit systemd has not loaded, is
+// not ours to report.
 func clearStartLimit() {
 	_ = exec.Command("systemctl", "--user", "reset-failed", systemdUnit).Run() //nolint:errcheck
 }
@@ -637,8 +646,8 @@ type unitState struct {
 	// activating/auto-restart between a crash and its restart, failed/failed once
 	// the restarts run out.
 	active, sub string
-	// UnitFileState: enabled after `service start`, disabled after `service stop`,
-	// which is what tells our stop from someone else's `systemctl --user stop`.
+	// UnitFileState: enabled after `service start`; disabled after `service stop`,
+	// or for a unit file that was never enabled, which systemd cannot tell apart.
 	enabled string
 	// Result, as systemd words why the unit last stopped: success, exit-code,
 	// signal, start-limit-hit.

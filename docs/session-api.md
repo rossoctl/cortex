@@ -417,6 +417,18 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 - `inference.requestedModel` — present only when a plugin changed the model:
   the model the client asked for. `inference.model` is the model the request
   was sent for, which settlement prices.
+- `inference.thinkingType`, `inference.thinkingDisplay`, `inference.effort` —
+  what the request asked for: `thinking.type` and `thinking.display` (for
+  example `adaptive` and `summarized`), and the effort level from the field the
+  dialect uses (`output_config.effort`, `reasoning_effort` or
+  `reasoning.effort`). Absent when the request did not state them.
+- `inference.anthropicBeta` — the request's `anthropic-beta` header, every
+  value joined with a comma.
+- `inference.historyThinking`, `inference.responseThinking` — counts of the
+  thinking blocks the client sent back and the model returned: `blocks`,
+  `redacted`, `textBytes`, `signatureBytes`, `redactedBytes`. Absent when there
+  were none. A history block with `signatureBytes` and no `textBytes` came back
+  as an encrypted signature only.
 - `inference.servedModel` — on a response row, present only when the upstream
   named a model other than `inference.model`: the `x-litellm-model-name`
   response header (a LiteLLM gateway's deployment, for example

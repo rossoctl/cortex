@@ -425,7 +425,7 @@ func TestCapture_EmptyForwardedStaysEmpty(t *testing.T) {
 	}
 	w.close()
 	got, err := readCapture(filepath.Join(filepath.Dir(w.f.Name()), w.info().File), 1)
-	if err != nil || got == nil || got.Forwarded == nil {
+	if err != nil || got == nil || got.Forwarded == nil || len(got.Forwarded) != 0 {
 		t.Fatalf("got %+v, err %v, want an empty, non-nil forwarded body", got, err)
 	}
 }
@@ -542,5 +542,56 @@ func TestArchive_CaptureQueueHasAByteBudget(t *testing.T) {
 	tick(a)
 	if _, ok, _ := a.Capture("s", 6); !ok {
 		t.Error("a capture after the queue drained was dropped")
+	}
+}
+
+// An element with a content array is cut into its content blocks AND its other large fields:
+// a Responses reasoning item's encrypted_content and a Chat Completions message's tool_calls
+// are re-sent on every request as much as its content is.
+func TestCapture_ElementFieldsBesideContentAreBlocks(t *testing.T) {
+	enc, args := strings.Repeat("Z", 4096), strings.Repeat("a", 2048)
+	for name, body := range map[string][]byte{
+		"responses reasoning": []byte(`{"input":[{"type":"reasoning","encrypted_content":"` + enc +
+			`","content":[{"type":"reasoning_text","text":"` + strings.Repeat("r", 100) + `"}]}]}`),
+		"chat tool_calls": []byte(`{"messages":[{"role":"assistant","content":[{"type":"text","text":"` +
+			strings.Repeat("t", 100) + `"}],"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"` + args + `"}}]}]}`),
+	} {
+		sb, fresh := splitBody(body, map[string]struct{}{})
+		literal := 0
+		for i := 0; i < len(sb.P); i += 2 {
+			literal += len(sb.P[i])
+		}
+		if literal > 200 {
+			t.Errorf("%s: %d of %d bytes stay literal in the skeleton, want under 200", name, literal, len(body))
+		}
+		blocks := map[string]string{}
+		for _, s := range fresh {
+			blocks[s.h] = s.v
+		}
+		if got, err := sb.rebuild(blocks); err != nil || !bytes.Equal(got, body) {
+			t.Errorf("%s: rebuild err %v, equal %v", name, err, bytes.Equal(got, body))
+		}
+	}
+}
+
+// The byte path keeps every header key, as the string path does: one with an empty value list
+// and one with a nil list come back as they went in.
+func TestCapture_ByteHeadersKeepEmptyKeys(t *testing.T) {
+	c := &pipeline.RequestCapture{Original: []byte("{}"),
+		Header: http.Header{"X-Empty": {}, "X-Nil": nil, "X-Name": {"caf\xe9"}}}
+	w, err := createSegment(filepath.Join(t.TempDir(), "sess"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.appendCapture(pipeline.SessionEvent{Seq: 1}, c, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	w.close()
+	got, err := readCapture(filepath.Join(filepath.Dir(w.f.Name()), w.info().File), 1)
+	if err != nil || got == nil {
+		t.Fatalf("got %v, err %v", got, err)
+	}
+	if !reflect.DeepEqual(got.Header, c.Header) {
+		t.Fatalf("header %#v, want %#v", got.Header, c.Header)
 	}
 }

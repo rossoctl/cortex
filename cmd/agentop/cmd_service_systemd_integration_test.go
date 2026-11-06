@@ -551,6 +551,27 @@ func TestServiceLifecycle_RealSystemd(t *testing.T) {
 	code, out = status()
 	expect("status after recovering", code, out, 0, "Cortex is healthy according to")
 
+	// A stop of a unit systemd has given up on. systemd's own stop is a no-op on a
+	// failed unit, so before stop cleared it the unit stayed failed, only disabled,
+	// and status called the deliberate stop a crash and advised a restart.
+	if code, out := control("stop"); code != 0 {
+		t.Fatalf("stop before second crash loop: exit %d:\n%s", code, out)
+	}
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 3\n"), 0o700); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+	_, _ = control("start")
+	if !waitUntil(limitWait, func() bool { return unit().active == "failed" }) {
+		t.Fatalf("the second crash loop did not hit the start limit within %s; systemd says %+v", limitWait, unit())
+	}
+	code, out = control("stop")
+	expect("stop of a unit systemd gave up on", code, out, 0)
+	if s := unit(); s.active != "inactive" || s.enabled != "disabled" {
+		t.Errorf("after stopping a failed unit systemd says %+v, want inactive and disabled", s)
+	}
+	code, out = status()
+	expect("status after stopping a failed unit", code, out, 0, "Cortex is stopped, and stays stopped")
+
 	code, out = run("uninstall", func(o, e io.Writer) int { return serviceUninstall(p, true, o, e) })
 	expect("uninstall", code, out, 0, "Removed.")
 	code, out = status()

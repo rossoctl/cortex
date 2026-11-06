@@ -147,6 +147,24 @@ func TestSplit_HistoryToolCallArgumentsAreAReference(t *testing.T) {
 	}
 }
 
+// The thinking and effort fields are short scalars and counts: they ride in the event record
+// itself and come back intact.
+func TestSplitJoin_ThinkingFieldsRoundTrip(t *testing.T) {
+	e := pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{
+		ThinkingType: "adaptive", ThinkingDisplay: "summarized", Effort: "high",
+		AnthropicBeta:    "interleaved-thinking-2025-05-14",
+		HistoryThinking:  &pipeline.InferenceThinking{Blocks: 3, Redacted: 1, SignatureBytes: 2944, RedactedBytes: 5},
+		ResponseThinking: &pipeline.InferenceThinking{Blocks: 1, TextBytes: 7, SignatureBytes: 1300},
+	}}
+	got := throughLines(t, []pipeline.SessionEvent{e})
+	if w, g := onceThroughJSON(t, e), mustJSON(t, got[0]); w != g {
+		t.Fatalf("thinking fields differ after the round trip:\nwant %s\ngot  %s", w, g)
+	}
+	if got[0].Inference.HistoryThinking == nil || got[0].Inference.HistoryThinking.SignatureBytes != 2944 {
+		t.Fatalf("historyThinking = %+v, want the counts back", got[0].Inference.HistoryThinking)
+	}
+}
+
 // split runs on events the store also holds and serves; it must clone what it blanks.
 func TestSplit_NeverMutatesItsInput(t *testing.T) {
 	for _, e := range append(synthSession(2, 3, 2048), edgeEvents()...) {

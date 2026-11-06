@@ -622,7 +622,8 @@ exited 1. On macOS it still does.
 
 `service start`, `service restart` and `service install` clear systemd's record of the
 crashes first, so they can start a unit systemd had given up on without waiting out
-its five-minute window.
+its five-minute window. `service stop` clears it after, so stopping a unit systemd had
+given up on reads as stopped, not as a crash.
 
 If it says `config: … will not load`, an edit to `~/.cortex/config.yaml` broke it
 (`config: no config at …` means the file is gone). A proxy that was already running

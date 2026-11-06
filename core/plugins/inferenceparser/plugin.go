@@ -95,6 +95,7 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 	// because by here they have converged on a parsed extension whose system message is
 	// flattened the same way. See agentRole for the marker and what empty means.
 	ext.AgentRole = agentRole(ext.Messages)
+	ext.AnthropicBeta = anthropicBeta(pctx.Headers)
 
 	pctx.Extensions.Inference = ext
 
@@ -141,6 +142,7 @@ func parseOpenAIRequest(body []byte) *pipeline.InferenceExtension {
 		Stream:      req.Stream,
 		ToolChoice:  req.ToolChoice,
 		IsAction:    true,
+		Effort:      jsonString(req.ReasoningEffort),
 	}
 	for _, msg := range req.Messages {
 		ext.Messages = append(ext.Messages, pipeline.InferenceMessage{
@@ -313,6 +315,10 @@ type inferenceStreamState struct {
 	openAIByIndex   map[int]*toolCallState
 
 	responsesToolCalls []*responsesCallState
+
+	// thinking counts the Anthropic thinking blocks: opened on content_block_start, their
+	// bytes added by thinking_delta and signature_delta.
+	thinking pipeline.InferenceThinking
 }
 
 // foldOpenAIToolCallFragment folds one delta.tool_calls fragment into the call it
@@ -346,6 +352,9 @@ func (s *inferenceStreamState) finalize(ext *pipeline.InferenceExtension) {
 	ext.Completion = s.completion.String()
 	if s.hasUsage {
 		s.usage.Fill(ext)
+	}
+	if t := s.thinking; t.Blocks > 0 {
+		ext.ResponseThinking = &t
 	}
 	calls := make([]pipeline.InferenceToolCall, 0, len(s.toolCalls)+len(s.openAIToolCalls)+len(s.responsesToolCalls))
 	for _, tc := range s.toolCalls {
@@ -928,6 +937,8 @@ type inferenceRequest struct {
 	// Prompt is read only to tell a legacy completions request from a body that is not
 	// inference at all; see parseOpenAIRequest. It is not surfaced.
 	Prompt json.RawMessage `json:"prompt"`
+	// Raw for the reason anthropicRequest.Thinking is.
+	ReasoningEffort json.RawMessage `json:"reasoning_effort"`
 }
 
 // inferenceMessage accepts both OpenAI content shapes:
