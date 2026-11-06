@@ -23,6 +23,9 @@ var jsonMarshaler = reflect.TypeFor[json.Marshaler]()
 // A path uses "[]" for an array item and "{}" for a map value.
 // A kind is string, number, bool, object, array, map or any.
 // "any" is a value with no fixed shape: an interface, or a type with its own MarshalJSON.
+//
+// shortcut: the walker does not model []byte, ",string" tags, TextMarshaler, tagged embedded
+// structs or recursive types. None of them is in the extensions now. Extend it when one is added.
 func fieldLines() []string {
 	var lines []string
 	var walk func(path string, t reflect.Type)

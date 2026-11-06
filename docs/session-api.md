@@ -473,11 +473,13 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 - `inference.historyToolCalls` — the tool calls that earlier assistant turns
   made, as the client sent them back in this request: `id`, `name` and
   `arguments`. `inference.toolCalls` is a different list: the calls that the
-  model asks for in this response. No plugin reads `historyToolCalls`.
+  model asks for in this response. No compiled plugin reads
+  `historyToolCalls`.
 - `inference.temperature`, `inference.maxTokens`, `inference.topP`,
   `inference.stream` — the request's sampling settings and stream flag, as
   sent. `maxTokens` is `max_tokens`, or `max_output_tokens` on the Responses
-  API. Each is absent when the request did not state it.
+  API. Each is absent when the request did not state it. `stream` is also
+  absent when it is false.
 - `inference.tools`, `inference.toolChoice` — the tools that the request
   declared and its `tool_choice` value. Each tool has a `name`, a
   `description` and `parameters`, the JSON schema as the client sent it.
@@ -514,10 +516,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   mechanics. See
   [Classifying requests](plugin-reference.md#classifying-requests-as-actions-vs-protocol-mechanics).
 - `mcp.method`, `mcp.rpcId`, `mcp.params` — the JSON-RPC method, id and
-  params of an MCP request. A notification has no `rpcId`. A body-less
-  `DELETE` with an `Mcp-Session-Id` header has the method
-  `$transport/terminate`. A body-less `GET` on an MCP path has the method
-  `$transport/stream`.
+  params of an MCP request. A notification has no `rpcId`. The two methods
+  that follow occur only on a configured MCP path. A body-less `DELETE` with
+  an `Mcp-Session-Id` header has the method `$transport/terminate`. A
+  body-less `GET` has the method `$transport/stream`.
 - `mcp.result`, `mcp.error` — on a response row: the JSON-RPC `result`, or the
   `error` object with `code`, `message` and `data`.
 - `a2a.method`, `a2a.rpcId` — the JSON-RPC method and id of an A2A request.
@@ -531,8 +533,8 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 - `a2a.finalStatus`, `a2a.artifact`, `a2a.errorMessage` — on a response row:
   the final task state (for example `completed` or `failed`) and the artifact
   text. When the state is `failed`, `errorMessage` is the first text part of
-  the status message. In a stream, the parser joins the text of each artifact event, to
-  a maximum of 64 KiB.
+  the status message. In a stream, the parser joins the text of each
+  artifact event. The joined text has a maximum of 64 KiB.
 - `bytesUp`, `bytesDown` — **body** bytes, one direction per row: a request row
   carries `bytesUp`, the body as forwarded (so a rewrite is reflected); a
   response row carries `bytesDown`, the body as it came back from the

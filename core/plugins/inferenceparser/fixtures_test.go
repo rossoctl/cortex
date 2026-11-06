@@ -108,6 +108,8 @@ func checkFieldPaths(t *testing.T, prefix string, doc []byte) {
 
 // runFixture sends one case through OnRequest and then the response hooks.
 // With frames false it gives the whole body to OnResponse.
+// OnResponse is a defence-in-depth path, not the live path: RunResponse skips a StreamingResponder.
+// The live path for a JSON body is one OnResponseFrame call with last=true.
 // With frames true it gives an SSE body to OnResponseFrame one event at a time, the way a listener does.
 // It returns the inference extension as indented JSON.
 func runFixture(t *testing.T, dir string, frames bool) []byte {
@@ -127,6 +129,10 @@ func runFixture(t *testing.T, dir string, frames bool) []byte {
 	var respFile, contentType string
 	for name, ct := range responseTypes {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			// Map order is random, so a second response file would make the case flaky.
+			if respFile != "" {
+				t.Fatalf("more than one response file: %s and %s", respFile, name)
+			}
 			respFile, contentType = name, ct
 		}
 	}

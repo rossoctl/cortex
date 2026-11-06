@@ -9,13 +9,14 @@ Each case has these files:
 |---|---|
 | `request.headers` | The HTTP request line and the headers the parser reads. The test reads it with `http.ReadRequest` |
 | `request.json` | The request body, compact, as the client sent it |
-| `response.sse`, `response.json` or `response.html` | The response body. The extension sets the Content-Type: `text/event-stream`, `application/json` or `text/html` |
+| `response.sse`, `response.json` or `response.html` | The response body. The file name extension sets the Content-Type: `text/event-stream`, `application/json` or `text/html` |
 | `response.headers` | Optional. The response headers that the parser reads: `Content-Type` and `X-Litellm-Model-Name`. Without it, the test sets only the Content-Type from the body file's extension |
 | `expected.json` | The `pipeline.InferenceExtension` that the parser makes, as indented JSON |
 
 The test parses each case two times: with the whole response body (`OnResponse`), and
 frame by frame (`OnResponseFrame`, one call for each SSE event). The two results must be
-equal.
+equal. `OnResponse` is a defence-in-depth path, not the live path: `RunResponse` skips a
+`StreamingResponder`, and the live JSON path is one `last=true` frame.
 
 ## Capture and scrub procedure
 
@@ -51,7 +52,9 @@ keeps raw bytes, so only events after #1494 have them.
    ```
 
    Use `raw.request`, not `raw.forwarded`. The parser reads the body before a plugin
-   changes it.
+   changes it. A body that is not UTF-8 is in `raw.requestBase64` or
+   `raw.response.bodyBase64`. Decode it, for example:
+   `jq -r '.raw.requestBase64' /tmp/req.json | base64 -d`.
 
 4. Before the scrub, write down the facts of the live response event:
 
@@ -101,9 +104,10 @@ keeps raw bytes, so only events after #1494 have them.
    `X-Litellm-Model-Name: gateway/<model>`. Never keep the real value: it names the
    upstream provider.
 
-   Keep the full tool manifest in `main-stream-thinking-tool-use` only. In each other
-   case, cut `tools` to the tools that the history or the response calls, and one
-   `mcp__example__tool_N`.
+   Cut `tools` to the tools that the history or the response calls, and one
+   `mcp__example__tool_N`. The parser copies each tool's name, description and schema
+   with no other logic, so more tools add no coverage. `main-stream-thinking-tool-use`
+   also keeps `AskUserQuestion`, for a schema with nested arrays.
 
 9. Write the goldens, then read each one:
 
@@ -127,7 +131,7 @@ gateway, captured on 2026-11-06.
 
 | Case | What it covers | Cut |
 |---|---|---|
-| `claude-code/main-stream-thinking-tool-use` | Main loop, streamed. Adaptive thinking, one `Bash` call. The history has thinking, `tool_use`, `tool_result` and mid-conversation system messages. Full tool manifest. `response.headers` gives `servedModel` | No |
+| `claude-code/main-stream-thinking-tool-use` | Main loop, streamed. Adaptive thinking, one `Bash` call. The history has thinking, `tool_use`, `tool_result` and mid-conversation system messages. `AskUserQuestion` gives a schema with nested arrays. `response.headers` gives `servedModel` | Tools cut |
 | `claude-code/main-first-turn-parallel-tool-use` | First main-loop turn, streamed. Two parallel `Skill` calls | Tools cut |
 | `claude-code/main-nonstream-tool-use` | Main loop, NOT streamed (`stream: false`). JSON body with thinking, text and `tool_use` | 547 to 10 messages, tools cut |
 | `claude-code/main-stream-client-canceled` | Main loop. The client canceled the stream after the thinking block started: no `message_delta`, no stop reason | 394 to 9 messages, tools cut |
@@ -142,11 +146,9 @@ gateway, captured on 2026-11-06.
 The archive had no raw capture of these when the cases were made. Add them when a
 capture exists. Do not write one by hand and call it real.
 
-- OpenAI Chat Completions (`/v1/chat/completions`). Bob and OpenCode sessions exist, but
-  they are older than raw capture.
+- OpenAI Chat Completions (`/v1/chat/completions`). No raw capture existed.
 - OpenAI Responses (`/v1/responses`, Codex).
 - Agents other than Claude Code.
 - A request with an `image` or `document` block.
 - A JSON error body (4xx or 5xx). The only error with a capture is the HTML 502 above.
-- A non-Claude model on the Anthropic dialect (GLM, DeepSeek). Sessions exist, but they
-  are older than raw capture.
+- A non-Claude model on the Anthropic dialect (GLM, DeepSeek). No raw capture existed.
