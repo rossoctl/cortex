@@ -136,6 +136,13 @@ type divergentExpectation struct {
 	// no session event from this leg without a second place to keep in step.
 	pipelineRan bool
 
+	// noRow is true when the listener serves the request and records NO row
+	// for the phase under test. The other fields then pin the zero row that
+	// observation carries, and wireStatus pins that the listener did not
+	// refuse. Like pipelineRan, it is the sole declaration: assertDivergence
+	// derives the fixture's unrecordedBy from it.
+	noRow bool
+
 	// wireStatus is the transport's code. Compared ALWAYS, including the 0 that
 	// extproc reports on a success path for want of an HTTP transport of its
 	// own — an explicit 0 in a fixture says "this shape has no wire answer
@@ -196,6 +203,11 @@ func assertDivergence(t *testing.T, f fixture, wantPhase pipeline.SessionPhase, 
 		if e.why == "" {
 			t.Fatalf("assertDivergence: fixture %q listener %q has an empty why; an unexplained divergence is the problem this file exists to fix", f.name, l.name)
 		}
+		// Guard: a refused leg records no row already. noRow says something
+		// different — the listener served the request — so the two cannot mix.
+		if e.noRow && !e.pipelineRan {
+			t.Fatalf("assertDivergence: fixture %q listener %q sets noRow with pipelineRan false; a refusal already records no row, so declare only pipelineRan: false", f.name, l.name)
+		}
 		// Guard: errorCode without errorKind checks NOTHING. The empty-kind arm
 		// below asserts only that the event carried no error at all, so a row
 		// saying {errorCode: "200"} reads like a claim about the upstream's
@@ -228,11 +240,17 @@ func assertDivergence(t *testing.T, f fixture, wantPhase pipeline.SessionPhase, 
 	if f.refusedPreRunBy != nil {
 		t.Fatalf("assertDivergence: fixture %q sets refusedPreRunBy; assertDivergence derives it from the rows' pipelineRan, so declare it there only", f.name)
 	}
+	if f.unrecordedBy != nil {
+		t.Fatalf("assertDivergence: fixture %q sets unrecordedBy; assertDivergence derives it from the rows' noRow, so declare it there only", f.name)
+	}
 	refused := make(map[string]bool, len(listeners))
+	unrecorded := make(map[string]bool, len(listeners))
 	for _, l := range listeners {
 		refused[l.name] = !want[l.name].pipelineRan
+		unrecorded[l.name] = want[l.name].noRow
 	}
 	f.refusedPreRunBy = refused
+	f.unrecordedBy = unrecorded
 
 	type namedObs struct {
 		listener string
@@ -330,7 +348,7 @@ func divergentRows(listeners []listenerRun, want map[string]divergentExpectation
 // claim — both mean "no plugin payload" — and a fixture cannot manufacture a
 // fake divergence out of that distinction to get past the guard above.
 func sameRow(a, b divergentExpectation) bool {
-	if a.why != b.why || a.pipelineRan != b.pipelineRan || a.wireStatus != b.wireStatus ||
+	if a.why != b.why || a.pipelineRan != b.pipelineRan || a.noRow != b.noRow || a.wireStatus != b.wireStatus ||
 		a.eventStatusCode != b.eventStatusCode || a.errorKind != b.errorKind || a.errorCode != b.errorCode {
 		return false
 	}
@@ -807,6 +825,140 @@ func TestDivergence_OutboundResponseBodyCountWhenNoPluginReadsIt(t *testing.T) {
 			eventStatusCode: 200,
 			bytes:           &bytesSummary{Down: int64(len(`{"reply":"ok"}`))},
 			pluginEvents:    pricedEvents,
+		},
+	})
+}
+
+// THE RECORDING RULE. The listeners do not agree on which requests get a row,
+// and the fixtures below pin each difference. Keep today's behaviour: a change
+// to any of them is a decision, and docs/session-api.md states the rule too.
+//
+//	                               extproc          reverseproxy    forwardproxy
+//	request or response row        only when the    always          always
+//	                               row has content
+//	response-phase deny            no row           no row          denied row
+//
+// "Content" is extproc's gate in its four recorders. A row qualifies when it
+// carries a parser extension (A2A inbound, MCP or inference outbound), an
+// invocation, or a plugin payload. The gate is wider than "a parser matched":
+// any plugin that calls pctx.Record or publishes an event opens it.
+//
+// "Always" has the exceptions every listener shares: listener.skip_hosts
+// bypasses the pipeline and the recording. The forward proxy also forwards an
+// agent's polls of its own service without a row (process_test.go).
+
+// quietSpy is a plugin that runs on both phases and leaves nothing on the
+// context: no invocation, no payload, no parser extension.
+var quietSpy = []config.PluginEntry{spyEntry(spyPluginA, spyConfig{})}
+
+// TestDivergence_InboundRowWhenNothingToRecord: a request whose pipeline left
+// nothing on the context. The reverse proxy records the request row and the
+// response row. extproc records neither.
+//
+// extproc's code gives the reason: a row with no content is noise with no
+// attribution. Its gate began as "A2A present" and was widened only to keep
+// auth state and plugin payloads visible. The reverse proxy records every
+// request the pipeline saw (handleRequest), so an operator sees each call.
+//
+// Both phases, because extproc gates them in two recorders
+// (recordInboundSession, recordInboundResponseSession), and one of them can
+// change alone.
+func TestDivergence_InboundRowWhenNothingToRecord(t *testing.T) {
+	f := fixture{
+		direction:      pipeline.Inbound,
+		entries:        quietSpy,
+		method:         "GET",
+		path:           "/divergence/quiet",
+		upstreamStatus: 200,
+	}
+	extprocWhy := "the event gate in recordInboundSession and recordInboundResponseSession drops a row with no A2A, no invocation and no plugin payload"
+	proxyWhy := "handleRequest and modifyResponse record every request the pipeline saw, content or not"
+
+	f.name = "inbound-request-row-nothing-to-record"
+	assertDivergence(t, f, pipeline.SessionRequest, inboundListeners, map[string]divergentExpectation{
+		"extproc":      {why: extprocWhy, pipelineRan: true, noRow: true},
+		"reverseproxy": {why: proxyWhy, pipelineRan: true, wireStatus: 200},
+	})
+
+	f.name = "inbound-response-row-nothing-to-record"
+	assertDivergence(t, f, pipeline.SessionResponse, inboundListeners, map[string]divergentExpectation{
+		"extproc":      {why: extprocWhy, pipelineRan: true, noRow: true},
+		"reverseproxy": {why: proxyWhy, pipelineRan: true, wireStatus: 200, eventStatusCode: 200},
+	})
+}
+
+// TestDivergence_OutboundRowWhenNothingToRecord is the egress twin. The forward
+// proxy records every request it forwards. extproc's outbound gate is
+// recordOutboundSession and recordOutboundResponseSession, separate code from
+// the inbound gate, so it has its own fixture.
+//
+// The consequence is larger here than inbound. The forward proxy row shows
+// each host an agent called. An envoy-sidecar pod shows only the calls that a
+// parser or a plugin marked.
+func TestDivergence_OutboundRowWhenNothingToRecord(t *testing.T) {
+	f := fixture{
+		direction:      pipeline.Outbound,
+		entries:        quietSpy,
+		method:         "GET",
+		path:           "/divergence/quiet",
+		upstreamStatus: 200,
+	}
+	extprocWhy := "the event gate in recordOutboundSession and recordOutboundResponseSession drops a row with no MCP, no inference, no invocation and no plugin payload"
+	proxyWhy := "recordOutboundRequestEvent and recordOutboundResponseEvent record every forwarded request, content or not"
+
+	f.name = "outbound-request-row-nothing-to-record"
+	assertDivergence(t, f, pipeline.SessionRequest, outboundListeners, map[string]divergentExpectation{
+		"extproc":      {why: extprocWhy, pipelineRan: true, noRow: true},
+		"forwardproxy": {why: proxyWhy, pipelineRan: true, wireStatus: 200},
+	})
+
+	f.name = "outbound-response-row-nothing-to-record"
+	assertDivergence(t, f, pipeline.SessionResponse, outboundListeners, map[string]divergentExpectation{
+		"extproc":      {why: extprocWhy, pipelineRan: true, noRow: true},
+		"forwardproxy": {why: proxyWhy, pipelineRan: true, wireStatus: 200, eventStatusCode: 200},
+	})
+}
+
+// TestDivergence_OutboundResponseDeny: a plugin rejects the response. The
+// forward proxy records a denied row with the deny's invocation. extproc
+// records nothing for the deny.
+//
+// The forward proxy's rejectResponse records the row because the deny
+// replaced the upstream's answer, and without the row the deny leaves no
+// trace. extproc returns rejectFromAction from its response handlers and
+// records nothing, and Process's teardown skips a rejected response on
+// purpose, so that a deny does not show as an ordinary response.
+//
+// The reverse proxy agrees with extproc: its errorHandler writes the
+// rejection and records nothing. Both inbound legs agree, so that half is a
+// parity fixture, TestParity_InboundResponseDenyRecordsNoRow.
+func TestDivergence_OutboundResponseDeny(t *testing.T) {
+	f := fixture{
+		name:      "outbound-response-deny",
+		direction: pipeline.Outbound,
+		entries: []config.PluginEntry{spyEntry(spyPluginA, spyConfig{
+			DenyOnResponse: true,
+			DenyStatus:     403,
+			DenyReason:     "spy.response-blocked",
+		})},
+		method:         "GET",
+		path:           "/divergence/response-deny",
+		upstreamStatus: 200,
+	}
+	assertDivergence(t, f, pipeline.SessionDenied, outboundListeners, map[string]divergentExpectation{
+		"extproc": {
+			why:         "the response handlers return rejectFromAction and record nothing, and Process's teardown skips a rejected response",
+			pipelineRan: true,
+			noRow:       true,
+			wireStatus:  403, // the ImmediateResponse; Envoy relays it to the client
+		},
+		"forwardproxy": {
+			why:             "rejectResponse records a denied row with the response-phase invocations before it returns",
+			pipelineRan:     true,
+			wireStatus:      403,
+			eventStatusCode: 403,
+			errorKind:       "policy",
+			errorCode:       "spy.response-blocked",
 		},
 	})
 }

@@ -139,6 +139,31 @@ func TestParity_OutboundDenyOnRequest(t *testing.T) {
 	assertParity(t, f, pipeline.SessionDenied, outboundListeners)
 }
 
+// TestParity_InboundResponseDenyRecordsNoRow: a plugin rejects the response
+// on the inbound path. Neither extproc nor the reverse proxy records a denied
+// row. The reverse proxy's errorHandler writes the rejection and returns, and
+// extproc's response handlers return rejectFromAction. The forward proxy is
+// the one listener that records this deny, and
+// TestDivergence_OutboundResponseDeny pins that difference. This fixture pins
+// the inbound half, so that a change to either inbound leg is a decision.
+func TestParity_InboundResponseDenyRecordsNoRow(t *testing.T) {
+	f := fixture{
+		name:      "inbound-response-deny",
+		direction: pipeline.Inbound,
+		entries: []config.PluginEntry{spyEntry(spyPluginA, spyConfig{
+			DenyOnResponse: true,
+			DenyStatus:     403,
+			DenyReason:     "spy.response-blocked",
+		})},
+		method:             "GET",
+		path:               "/parity/response-deny",
+		upstreamStatus:     200,
+		unrecordedBy:       map[string]bool{"extproc": true, "reverseproxy": true},
+		expectedWireStatus: 403,
+	}
+	assertParity(t, f, pipeline.SessionDenied, inboundListeners)
+}
+
 // TestParity_ReadsBodyBufferedJSON: with ReadsBody set, both listeners
 // present the plugin with the same request and response body bytes,
 // despite extproc's two-phase handshake vs. the proxies' in-process
