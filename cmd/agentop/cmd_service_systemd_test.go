@@ -689,13 +689,16 @@ func TestControlService_Linux(t *testing.T) {
 	// the right action.
 	//
 	// start and restart clear systemd's start limit first, so they can bring back a
-	// unit that crash-looped into start-limit-hit. stop does not: it has no start to
-	// unblock.
+	// unit that crash-looped into start-limit-hit. stop clears it after instead: it
+	// has no start to unblock, but it must not leave a deliberate stop reading as a
+	// crash.
 	for _, tc := range []struct {
 		action string
 		want   []string
 	}{
-		{"stop", []string{"--user disable --now cortex.service"}},
+		// stop clears the failed state AFTER it, so a unit systemd had given up on
+		// ends inactive and disabled, which status reports as stopped, not crashed.
+		{"stop", []string{"--user disable --now cortex.service", "--user reset-failed cortex.service"}},
 		{"start", []string{"--user reset-failed cortex.service", "--user enable --now cortex.service"}},
 		{"restart", []string{"--user reset-failed cortex.service", "--user restart cortex.service"}},
 	} {
