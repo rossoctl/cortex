@@ -206,7 +206,7 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          - {os: darwin, arch: arm64, runner: macos-14, ffi: darwin-arm64}
+          - {os: darwin, arch: arm64, runner: macos-15, ffi: darwin-arm64}
           - {os: linux, arch: amd64, runner: ubuntu-latest, ffi: linux-amd64-musl}
           - {os: linux, arch: arm64, runner: ubuntu-24.04-arm, ffi: linux-arm64-musl}
     env:
