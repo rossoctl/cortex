@@ -29,14 +29,20 @@ type ResponseCapture struct {
 	Status int
 	// Header is the response's headers, without credentials.
 	Header http.Header
-	// Body is the body as it came off the wire, still in its Content-Encoding, up to
-	// MaxResponseCapture bytes.
+	// Body is the body as the proxy read it, up to MaxResponseCapture bytes: as it came off
+	// the wire, in its Content-Encoding, unless Decoded is set.
 	Body []byte
+	// Decoded is set when the proxy's transport decompressed the body: it asked for the
+	// encoding itself, to read the body for a plugin, so the wire bytes never reached the proxy.
+	Decoded bool
 	// Truncated is set when the body was longer than MaxResponseCapture.
 	Truncated bool
 	// Incomplete is set when the body did not arrive whole: the stream broke, or the client
 	// went away first.
 	Incomplete bool
+	// Ended is set by the listener when it read the body to its end. Not stored: it decides
+	// Incomplete.
+	Ended bool
 }
 
 // MaxResponseCapture is the most of a response body a capture keeps: the forward proxy's

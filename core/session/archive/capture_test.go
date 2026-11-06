@@ -3,6 +3,7 @@ package archive
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -602,7 +603,7 @@ func TestCapture_ResponseRoundTrips(t *testing.T) {
 	body := []byte("event: message_start\ndata: {\"type\":\"message_start\"}\n\n" + strings.Repeat("data: x\n\n", 50) + "\xff")
 	c := &pipeline.RequestCapture{Response: &pipeline.ResponseCapture{
 		Status: 200, Header: http.Header{"Content-Type": {"text/event-stream"}, "Content-Encoding": {"gzip"}},
-		Body: body, Truncated: true, Incomplete: true,
+		Body: body, Truncated: true, Incomplete: true, Decoded: true,
 	}}
 	w, err := createSegment(filepath.Join(t.TempDir(), "sess"), time.Now())
 	if err != nil {
@@ -613,18 +614,54 @@ func TestCapture_ResponseRoundTrips(t *testing.T) {
 	}
 	w.close()
 	path := filepath.Join(filepath.Dir(w.f.Name()), w.info().File)
+	var blocks int
 	for _, rec := range rawLines(t, path) {
 		if rec.K == kindBlock {
-			t.Fatal("a response body was split into blocks")
+			blocks++
 		}
+	}
+	if blocks != 1 {
+		t.Fatalf("%d block records, want the response body whole, as 1", blocks)
 	}
 	got, err := readCapture(path, 1)
 	if err != nil || got == nil || got.Response == nil {
 		t.Fatalf("got %+v, err %v", got, err)
 	}
 	r := got.Response
-	if r.Status != 200 || !bytes.Equal(r.Body, body) || !r.Truncated || !r.Incomplete ||
+	if r.Status != 200 || !bytes.Equal(r.Body, body) || !r.Truncated || !r.Incomplete || !r.Decoded ||
 		!reflect.DeepEqual(r.Header, c.Response.Header) || got.Original != nil {
 		t.Fatalf("response %+v, want what was written", r)
+	}
+}
+
+// An event read skips response bodies unread, as it skips blocks: Page, Event and the startup
+// usage replay read segments that hold them. Measured before this rule: 40 events with 270 KB
+// responses took 60 ms a read against 0.1 ms without them.
+func TestCapture_EventReadsSkipResponseBodies(t *testing.T) {
+	c := &pipeline.RequestCapture{Response: &pipeline.ResponseCapture{Status: 200, Body: []byte("a body")}}
+	w, err := createSegment(filepath.Join(t.TempDir(), "sess"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.appendCapture(pipeline.SessionEvent{Seq: 1, Phase: pipeline.SessionResponse}, c, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	w.close()
+	path := filepath.Join(filepath.Dir(w.f.Name()), w.info().File)
+	var bodies int
+	for _, rec := range rawLines(t, path) {
+		if rec.K == kindBlock {
+			bodies++
+		}
+		if rec.K == kindEvent && bytes.Contains(rec.F, []byte(base64.StdEncoding.EncodeToString(c.Response.Body))) {
+			t.Fatal("the response body is on the event line")
+		}
+	}
+	if bodies != 1 {
+		t.Fatalf("%d block records, want the body as 1", bodies)
+	}
+	got, err := readCapture(path, 1)
+	if err != nil || got == nil || string(got.Response.Body) != "a body" {
+		t.Fatalf("got %+v, err %v", got, err)
 	}
 }

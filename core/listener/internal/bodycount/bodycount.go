@@ -26,18 +26,19 @@ func Wrap(rc io.ReadCloser, n *int64) io.ReadCloser {
 }
 
 // WrapCapture is Wrap that also keeps the first max bytes read in *keep, for the session
-// archive's capture of the response, and sets *truncated once more than max arrived.
-func WrapCapture(rc io.ReadCloser, n *int64, keep *[]byte, truncated *bool, max int) io.ReadCloser {
-	return &countingBody{rc: rc, n: n, keep: keep, truncated: truncated, max: max}
+// archive's capture of the response, sets *truncated once more than max arrived, and sets *ended
+// when the body was read to its end.
+func WrapCapture(rc io.ReadCloser, n *int64, keep *[]byte, truncated, ended *bool, max int) io.ReadCloser {
+	return &countingBody{rc: rc, n: n, keep: keep, truncated: truncated, ended: ended, max: max}
 }
 
 type countingBody struct {
 	rc io.ReadCloser
 	n  *int64
 
-	keep      *[]byte
-	truncated *bool
-	max       int
+	keep             *[]byte
+	truncated, ended *bool
+	max              int
 }
 
 // Read counts what it hands back, including bytes returned alongside an error:
@@ -53,6 +54,9 @@ func (c *countingBody) Read(p []byte) (int, error) {
 			*c.truncated = true
 		}
 		*c.keep = append(*c.keep, p[:min(n, max(room, 0))]...)
+	}
+	if c.ended != nil && err == io.EOF {
+		*c.ended = true
 	}
 	return n, err
 }

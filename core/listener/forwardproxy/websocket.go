@@ -643,11 +643,14 @@ func (ws *wsSocket) clientMessage(payload []byte) (replace []byte, refuse bool) 
 	}
 	if !t.prewarm && ws.s.Sessions != nil {
 		pctx.OutboundSessionID = ws.sid
-		// The turn as the client sent it and as the origin gets it: the WebSocket messages,
-		// not the request bodies the pipeline was shown.
-		c := &pipeline.RequestCapture{Original: payload, Forwarded: replace, Header: redact.Headers(ws.r.Header), Query: redact.Query(ws.r.URL.RawQuery)}
+		var c *pipeline.RequestCapture
+		if ws.s.Sessions.TakesCaptures() {
+			// The turn as the client sent it and as the origin gets it: the WebSocket messages,
+			// not the request bodies the pipeline was shown.
+			c = &pipeline.RequestCapture{Original: payload, Forwarded: replace, Header: redact.Headers(ws.r.Header), Query: redact.Query(ws.r.URL.RawQuery)}
+			pctx.ResponseCapture = &pipeline.ResponseCapture{Status: http.StatusOK}
+		}
 		ws.s.Sessions.AppendCapture(ws.sid, ws.turnRequestEvent(pctx), c)
-		pctx.ResponseCapture = &pipeline.ResponseCapture{Status: http.StatusOK}
 	}
 	ws.turnMu.Lock()
 	ws.turns = append(ws.turns, t)
@@ -763,6 +766,11 @@ func (ws *wsSocket) endTurn(t *wsTurn, status int, fail *pipeline.EventError) {
 		t.pctx.StatusCode = status
 	}
 	t.p.RunResponseFrame(finalCtx, t.pctx, nil, true)
+	if rc := t.pctx.ResponseCapture; rc != nil {
+		// A turn is whole when the origin ended it, error event included; the row's status
+		// is the capture's.
+		rc.Status, rc.Ended = status, fail == nil || fail.Kind == "backend_error"
+	}
 	ws.s.recordOutboundResponseEvent(t.pctx, status, fail)
 	t.p.RunFinish(finalCtx, t.pctx, pipeline.OutcomeFromContext(t.pctx))
 }

@@ -56,3 +56,25 @@ func TestAppendPairCapture_CapturesTheSecond(t *testing.T) {
 		t.Fatalf("captures %v, want nil then the capture", takes.got)
 	}
 }
+
+// A listener copies bodies for capture only when some recorder takes them: an in-cluster sidecar
+// has no archive, and must not pay for a copy nobody keeps.
+func TestTakesCaptures(t *testing.T) {
+	store := New(5*time.Minute, 100, 0)
+	defer store.Close()
+	if store.TakesCaptures() {
+		t.Fatal("an empty store takes captures")
+	}
+	store.AddRecorder(&fakeRecorder{})
+	if store.TakesCaptures() {
+		t.Fatal("a plain recorder takes captures")
+	}
+	store.AddRecorder(&captureRecorder{})
+	if !store.TakesCaptures() {
+		t.Fatal("a capture recorder was not seen")
+	}
+	var nilStore *Store
+	if nilStore.TakesCaptures() {
+		t.Fatal("a nil store takes captures")
+	}
+}

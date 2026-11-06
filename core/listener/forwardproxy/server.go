@@ -580,6 +580,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// (#1494). Only a buffered body is captured: buffering one for capture alone would delay
 	// every request no plugin reads.
 	var capture *pipeline.RequestCapture
+	captures := s.Sessions.TakesCaptures()
 	if !skipped && s.OutboundPipeline.NeedsRequestBody() && r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 		body, err := io.ReadAll(r.Body)
@@ -594,8 +595,11 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		pctx.Body = body
 		slog.Debug("forward-proxy: buffered request body", "host", pipeline.SanitizeLogValue(r.Host), "bodyLen", len(body))
 		// Before any plugin runs, which is the only time the agent's own bytes and headers
-		// are still here: a rewrite replaces pctx.Body and keeps no copy.
-		capture = &pipeline.RequestCapture{Original: body, Header: redact.Headers(r.Header), Query: redact.Query(r.URL.RawQuery)}
+		// are still here: a rewrite replaces pctx.Body and keeps no copy. Only where something
+		// keeps captures: an in-cluster sidecar has no archive.
+		if captures {
+			capture = &pipeline.RequestCapture{Original: body, Header: redact.Headers(r.Header), Query: redact.Query(r.URL.RawQuery)}
+		}
 	}
 
 	// Establish the session identity ONCE, here, and keep it in a local: the
@@ -907,10 +911,10 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// The same wrapper keeps the body for the session archive's capture (#1494): every arm
 	// reads through it, so what it keeps is the body as it came off the wire, whatever arm
 	// relays it. Only when the request was captured, so a response never outlives its pair.
-	if capture != nil && s.Sessions != nil {
-		rc := &pipeline.ResponseCapture{Status: resp.StatusCode, Header: redact.Headers(resp.Header)}
+	if capture != nil {
+		rc := &pipeline.ResponseCapture{Status: resp.StatusCode, Header: redact.Headers(resp.Header), Decoded: resp.Uncompressed}
 		pctx.ResponseCapture = rc
-		resp.Body = bodycount.WrapCapture(resp.Body, &pctx.ResponseBytes, &rc.Body, &rc.Truncated, pipeline.MaxResponseCapture)
+		resp.Body = bodycount.WrapCapture(resp.Body, &pctx.ResponseBytes, &rc.Body, &rc.Truncated, &rc.Ended, pipeline.MaxResponseCapture)
 	} else {
 		resp.Body = bodycount.Wrap(resp.Body, &pctx.ResponseBytes)
 	}
@@ -2158,6 +2162,11 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 			// one OutcomeFromContext must read.
 			resent := pctx.Extensions.Inference
 			pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = resp.StatusCode, head, sent
+			if capture != nil {
+				// The refusal as far as it was read: the resend peeks at most ResendPeekLimit bytes.
+				pctx.ResponseCapture = &pipeline.ResponseCapture{Status: resp.StatusCode, Header: redact.Headers(resp.Header),
+					Body: head, Decoded: resp.Uncompressed, Ended: len(head) < pipeline.ResendPeekLimit}
+			}
 			s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 			pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = 0, nil, resent
 			pctx.RenewRequestID()
@@ -2457,7 +2466,8 @@ func (s *Server) rejectResponse(w http.ResponseWriter, pctx *pipeline.Context, a
 	if s.Sessions == nil || pctx.Extensions.Invocations == nil {
 		return
 	}
-	s.Sessions.Append(s.responseSessionID(pctx), sessionevent.DenyResponse(pctx, action, pipeline.Outbound))
+	// With the capture: what a plugin refused is still the origin's answer.
+	s.Sessions.AppendCapture(s.responseSessionID(pctx), sessionevent.DenyResponse(pctx, action, pipeline.Outbound), takeResponseCapture(pctx))
 }
 
 // responseSessionID is the bucket a response row files under: the session
@@ -2495,21 +2505,20 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	// Always record — see the request-phase comment. This is what surfaces
 	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
 	// + Error even with empty invocations.
-	s.Sessions.AppendCapture(sid, outboundResponseEvent(pctx, statusCode, fail), takeResponseCapture(pctx, fail))
+	s.Sessions.AppendCapture(sid, outboundResponseEvent(pctx, statusCode, fail), takeResponseCapture(pctx))
 }
 
 // takeResponseCapture is the capture of the response pctx's row records, nil when there is
-// none, and clears it so a resent request's next row does not carry it again. fail marks it
-// incomplete: a body the origin broke off, or one cut short by the proxy or the client. A
-// WebSocket turn the origin answered with an error event is the exception: that event is the
-// whole answer, and it arrived.
-func takeResponseCapture(pctx *pipeline.Context, fail *pipeline.EventError) *pipeline.RequestCapture {
+// none, and clears it so a resent request's next row does not carry it again. A body the proxy
+// did not read to its end is incomplete — the origin broke it off, or the proxy, a plugin or the
+// client cut it short — whatever the row's error says.
+func takeResponseCapture(pctx *pipeline.Context) *pipeline.RequestCapture {
 	rc := pctx.ResponseCapture
 	if rc == nil {
 		return nil
 	}
 	pctx.ResponseCapture = nil
-	rc.Incomplete = fail != nil && fail.Kind != "backend_error"
+	rc.Incomplete = !rc.Ended
 	return &pipeline.RequestCapture{Response: rc}
 }
 

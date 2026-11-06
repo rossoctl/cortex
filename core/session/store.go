@@ -371,6 +371,22 @@ type CaptureRecorder interface {
 	RecordCapture(sessionID string, e *pipeline.SessionEvent, c *pipeline.RequestCapture)
 }
 
+// TakesCaptures reports whether some recorder is a CaptureRecorder, so a listener can skip copying
+// bodies nobody keeps. False on a nil store.
+func (s *Store) TakesCaptures() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, r := range s.recorders {
+		if _, ok := r.(CaptureRecorder); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // AppendCapture is Append for a request event with its capture c, which only a
 // CaptureRecorder receives.
 func (s *Store) AppendCapture(sessionID string, event pipeline.SessionEvent, c *pipeline.RequestCapture) {

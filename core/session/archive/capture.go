@@ -40,20 +40,22 @@ type captureRec struct {
 	HX map[string][][]byte `json:"hx,omitempty"`
 	Q  string              `json:"q,omitempty"`
 	QX []byte              `json:"qx,omitempty"`
-	// R is the response, on a response event. Its body is one piece, not split into blocks: a
-	// response is not re-sent from one request to the next.
+	// R is the response, on a response event. Its body is one block record, whole: a response
+	// is not re-sent from one request to the next, so splitting it would save nothing. As a
+	// block it is skipped unread by an event read, as every block is.
 	R *responseRec `json:"r,omitempty"`
 }
 
-// responseRec is a ResponseCapture on disk. B is base64, so any body is exact; S is the hex
-// SHA-256 of B, checked on read.
+// responseRec is a ResponseCapture on disk. B is the key of the block holding the body, empty for
+// an empty body; S is the hex SHA-256 of the body, checked on read.
 type responseRec struct {
 	C  int         `json:"c"`
 	H  http.Header `json:"h,omitempty"`
-	B  []byte      `json:"b"`
+	B  string      `json:"b,omitempty"`
 	S  string      `json:"s"`
 	T  bool        `json:"t,omitempty"`
 	IC bool        `json:"ic,omitempty"`
+	D  bool        `json:"d,omitempty"`
 }
 
 // bodyRec is one body's skeleton. P alternates literal bytes and block references, starting and
@@ -177,8 +179,18 @@ func splitCapture(c *pipeline.RequestCapture, seen map[string]struct{}) (*captur
 	}
 	if r := c.Response; r != nil {
 		sum := sha256.Sum256(r.Body)
-		return &captureRec{R: &responseRec{C: r.Status, H: r.Header, B: r.Body, S: hex.EncodeToString(sum[:]),
-			T: r.Truncated, IC: r.Incomplete}}, nil
+		rec := &captureRec{R: &responseRec{C: r.Status, H: r.Header, S: hex.EncodeToString(sum[:]),
+			T: r.Truncated, IC: r.Incomplete, D: r.Decoded}}
+		var fresh []stringRec
+		if len(r.Body) > 0 {
+			v := string(r.Body)
+			rec.R.B = hashOf(v)
+			if _, ok := seen[rec.R.B]; !ok {
+				seen[rec.R.B] = struct{}{}
+				fresh = append(fresh, stringRec{h: rec.R.B, v: v})
+			}
+		}
+		return rec, fresh
 	}
 	o, fresh := splitBody(c.Original, seen)
 	f := &captureRec{O: o, H: c.Header, Q: c.Query}
@@ -239,20 +251,17 @@ func readCapture(path string, seq uint64) (*pipeline.RequestCapture, error) {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, fmt.Errorf("archive: capture record: %w", err)
 	}
-	if r := f.R; r != nil {
-		sum := sha256.Sum256(r.B)
-		if hex.EncodeToString(sum[:]) != r.S {
-			return nil, errors.New("archive: response body does not match the captured hash")
-		}
-		return &pipeline.RequestCapture{Response: &pipeline.ResponseCapture{Status: r.C, Header: r.H,
-			Body: r.B, Truncated: r.T, Incomplete: r.IC}}, nil
-	}
-	if f.O == nil {
-		return nil, errors.New("archive: capture record has no original body")
+	if f.O == nil && f.R == nil {
+		return nil, errors.New("archive: capture record has no body")
 	}
 	want := map[string]struct{}{}
-	for _, h := range f.O.refs() {
-		want[h] = struct{}{}
+	if f.R != nil && f.R.B != "" {
+		want[f.R.B] = struct{}{}
+	}
+	if f.O != nil {
+		for _, h := range f.O.refs() {
+			want[h] = struct{}{}
+		}
 	}
 	if f.W != nil {
 		for _, h := range f.W.refs() {
@@ -266,6 +275,15 @@ func readCapture(path string, seq uint64) (*pipeline.RequestCapture, error) {
 		}); err != nil {
 			return nil, err
 		}
+	}
+	if r := f.R; r != nil {
+		body := []byte(blocks[r.B])
+		sum := sha256.Sum256(body)
+		if hex.EncodeToString(sum[:]) != r.S {
+			return nil, errors.New("archive: response body does not match the captured hash")
+		}
+		return &pipeline.RequestCapture{Response: &pipeline.ResponseCapture{Status: r.C, Header: r.H,
+			Body: body, Truncated: r.T, Incomplete: r.IC, Decoded: r.D}}, nil
 	}
 	c := &pipeline.RequestCapture{Header: f.H, Query: f.Q}
 	if f.QX != nil {

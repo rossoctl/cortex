@@ -42,6 +42,8 @@ type wsOrigin struct {
 	creates []map[string]any
 	// sawExtensions is the Sec-WebSocket-Extensions offer the handshake reached it with.
 	sawExtensions string
+	// answer, when set, is the events the origin sends for turn n instead of turnEvents.
+	answer func(n int) []string
 }
 
 // wsHost is the name the origin is addressed by. It must be one of OpenAI's: the
@@ -132,7 +134,13 @@ func (o *wsOrigin) serve(conn net.Conn, br *bufio.Reader) {
 			continue
 		}
 		turn++
-		for _, ev := range turnEvents(turn) {
+		o.mu.Lock()
+		events := turnEvents
+		if o.answer != nil {
+			events = o.answer
+		}
+		o.mu.Unlock()
+		for _, ev := range events(turn) {
 			_, _ = conn.Write(wsframe.Encode(wsframe.OpText, []byte(ev), false))
 		}
 	}

@@ -2,10 +2,12 @@ package forwardproxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -35,7 +37,7 @@ func (c *captures) RecordCapture(_ string, e *pipeline.SessionEvent, rc *pipelin
 	if c.got == nil {
 		c.got, c.res = map[string]*pipeline.RequestCapture{}, map[string]*pipeline.ResponseCapture{}
 	}
-	if e.Phase == pipeline.SessionResponse {
+	if rc.Response != nil {
 		c.res[e.RequestID] = rc.Response
 		return
 	}
@@ -371,5 +373,163 @@ func TestCapture_WebSocketTurnResponse(t *testing.T) {
 		if r.Status != http.StatusOK || len(lines) < 2 || !strings.Contains(lines[len(lines)-1], `"response.completed"`) {
 			t.Fatalf("status %d, body %q: want the turn's messages ending in response.completed", r.Status, r.Body)
 		}
+	}
+}
+
+// rejecter refuses every response.
+type rejecter struct{}
+
+func (rejecter) Name() string { return "rejecter" }
+func (rejecter) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{ReadsBody: true}
+}
+func (rejecter) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (rejecter) OnResponse(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	// A real refusing plugin records its decision, which is what makes the deny row.
+	pctx.Record(pipeline.Invocation{Plugin: "rejecter", Action: pipeline.ActionDeny, Phase: pipeline.InvocationPhaseResponse})
+	return pipeline.Action{Type: pipeline.Reject, Violation: &pipeline.Violation{Code: "no", Reason: "no", Status: 403}}
+}
+
+// A response a plugin refused is still the origin's answer, and is captured as the origin sent it.
+func TestCapture_ARefusedResponseIsCaptured(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"answer":"the origin's"}`)
+	}))
+	defer backend.Close()
+	proxy, rec := proxyWithCaptures(t, rejecter{})
+	postThrough(t, proxy, backend.URL+"/v1/messages", `{}`, nil)
+	got := rec.responses()
+	if len(got) != 1 {
+		t.Fatalf("%d response captures, want 1", len(got))
+	}
+	for _, r := range got {
+		if string(r.Body) != `{"answer":"the origin's"}` || r.Incomplete {
+			t.Fatalf("body %q incomplete=%v, want the origin's whole answer", r.Body, r.Incomplete)
+		}
+	}
+}
+
+// A body the proxy stopped reading before its end is incomplete, whatever the row's error says.
+func TestCapture_AStreamEndedEarlyIsIncomplete(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "event: message_start\ndata: {}\n\n")
+		w.(http.Flusher).Flush()
+		for range 2000 {
+			io.WriteString(w, "data: "+strings.Repeat("x", 1000)+"\n\n")
+		}
+	}))
+	defer backend.Close()
+	proxy, rec := proxyWithCaptures(t, inferenceparser.NewInferenceParser())
+	req, _ := http.NewRequest(http.MethodPost, backend.URL+"/v1/messages", strings.NewReader(`{"model":"m","stream":true,"messages":[]}`))
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	resp.Body.Read(buf)
+	resp.Body.Close() // the client goes away mid-stream
+	for _, r := range rec.responses() {
+		if !r.Incomplete {
+			t.Fatalf("a stream read %d bytes of ~2 MB is not marked incomplete", len(r.Body))
+		}
+		return
+	}
+	t.Fatal("no response capture")
+}
+
+// A body the transport decoded is not the wire's: the capture says so, rather than keeping a
+// Content-Encoding header that no longer describes its bytes.
+func TestCapture_ADecodedBodySaysSo(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		io.WriteString(zw, anthropicSSEBody)
+		zw.Close()
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Write(buf.Bytes())
+	}))
+	defer backend.Close()
+	proxy, rec := proxyWithCaptures(t, inferenceparser.NewInferenceParser())
+	postThrough(t, proxy, backend.URL+"/v1/messages", `{"model":"m","stream":true,"messages":[]}`,
+		http.Header{"Accept-Encoding": {"gzip"}})
+	for _, r := range rec.responses() {
+		if string(r.Body) != anthropicSSEBody || !r.Decoded {
+			t.Fatalf("decoded=%v body %q, want the decoded stream, marked decoded", r.Decoded, r.Body)
+		}
+		return
+	}
+	t.Fatal("no response capture")
+}
+
+// A WebSocket turn's capture carries the status its row records.
+func TestCapture_WebSocketErrorTurnKeepsItsStatus(t *testing.T) {
+	h := newWSHarness(t, config.ResponsesWebSocketsParse)
+	h.origin.mu.Lock()
+	h.origin.answer = func(int) []string {
+		return []string{`{"type":"error","status":429,"error":{"type":"usage_limit_reached","code":"rate_limit_exceeded"}}`}
+	}
+	h.origin.mu.Unlock()
+	rec := &captures{}
+	h.store.AddRecorder(rec)
+	c := h.dial(t, nil)
+	c.send(responseCreate("hello"))
+	c.readUntil("error")
+	c.close()
+	h.events(t, codexSID, true)
+	for _, r := range rec.responses() {
+		if r.Status != http.StatusTooManyRequests {
+			t.Fatalf("status %d, want 429", r.Status)
+		}
+		return
+	}
+	t.Fatal("no response capture")
+}
+
+// A resent request is two exchanges, and each is captured whole: the refused attempt's request
+// and the refusal, then the resent request — with the body the plugin rewrote — and its answer.
+func TestCapture_ResendCapturesBothAttempts(t *testing.T) {
+	upstream := &modelServer{served: "glm-5-3"}
+	backend := httptest.NewServer(upstream)
+	defer backend.Close()
+	proxy, rec := proxyWithCaptures(t, &substituter{target: backend.URL, sub: "glm-5-3", resend: true})
+	postThrough(t, proxy, "http://agent-provider.example/v1/chat/completions",
+		`{"model":"exo-free","messages":[{"role":"user","content":"hi"}]}`, nil)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec.mu.Lock()
+		n, m := len(rec.got), len(rec.res)
+		rec.mu.Unlock()
+		if (n == 2 && m == 2) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.got) != 2 || len(rec.res) != 2 {
+		t.Fatalf("%d request and %d response captures, want 2 of each", len(rec.got), len(rec.res))
+	}
+	var statuses []int
+	for id, r := range rec.res {
+		if rec.got[id] == nil {
+			t.Fatalf("response capture %s pairs with no request capture", id)
+		}
+		statuses = append(statuses, r.Status)
+		if r.Status == http.StatusForbidden && !strings.Contains(string(r.Body), "team_model_access_denied") {
+			t.Errorf("the refusal's capture is %q, want the origin's refusal", r.Body)
+		}
+		if r.Status == http.StatusOK && !strings.Contains(string(rec.got[id].Forwarded), "glm-5-3") {
+			t.Errorf("the resent request's forwarded body is %q, want the substitute model", rec.got[id].Forwarded)
+		}
+	}
+	slices.Sort(statuses)
+	if !slices.Equal(statuses, []int{http.StatusOK, http.StatusForbidden}) {
+		t.Fatalf("response statuses %v, want a 403 then a 200", statuses)
 	}
 }
