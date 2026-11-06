@@ -1,0 +1,25 @@
+{
+  "model": "claude-sonnet-5",
+  "messages": [
+    {
+      "role": "system",
+      "content": "x-anthropic-billing-header: cc_version=2.1.295.000; cc_entrypoint=cli;\nsystem text 1\nsystem text 2",
+      "contentBytes": 212
+    },
+    {
+      "role": "user",
+      "content": "user text 1",
+      "contentBytes": 75
+    },
+    {
+      "role": "user",
+      "content": "user text 2\nuser text 3\nuser text 4\nuser text 5\nuser text 6\nuser text 7\nuser text 8\nuser text 9\nuser text 10\nuser text 11\nuser text 12\nuser text 13\nuser text 14\nuser text 15\nuser text 16\nuser text 17\nuser text 18\nuser text 19\nuser text 20\nuser text 21\nuser text 22\nuser text 23\nuser text 24\nuser text 25\nuser text 26\nuser text 27\nuser text 28\nuser text 29\nuser text 30",
+      "contentBytes": 1169
+    }
+  ],
+  "maxTokens": 64,
+  "thinkingType": "disabled",
+  "anthropicBeta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14",
+  "agentRole": "main",
+  "isAction": true
+}

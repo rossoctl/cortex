@@ -1,0 +1,2 @@
+Content-Type: text/event-stream; charset=utf-8
+X-Litellm-Model-Name: gateway/claude-opus-5-5
