@@ -57,17 +57,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
-	// Checked, and fixed, as set up: a background proxy as one, and Claude Code's
-	// routing only where Cortex routed it. A file enable's record names other than
-	// ~/.claude/settings.json, a project's, is checked on its own: setup's step
-	// writes only the default file, so its plan would read that file as unrouted,
-	// and its fix would route Claude Code globally.
-	env.opts.noService = backgroundOnly(env)
-	elsewhere := recordedSettings(env)
-	if elsewhere != "" && samePath(elsewhere, filepath.Join(env.home, settingsRel)) {
-		elsewhere = ""
-	}
-	env.opts.claudeCode = elsewhere == "" && claudeCodeRouted(env)
+	var elsewhere string
+	env.opts.claudeCode, env.opts.noService, elsewhere = installShape(env)
 	fix := "agentop setup"
 	if env.opts.claudeCode {
 		fix += " --claude-code" // so the re-run checks the routing too
@@ -160,6 +151,20 @@ func wouldChange(p stepPlan) string {
 		would += " · " + p.where
 	}
 	return would
+}
+
+// installShape is how Cortex is set up here, which doctor checks and fixes and
+// update keeps: a background proxy as one, and Claude Code's routing only where
+// Cortex routed it. A file enable's record names other than ~/.claude/settings.json,
+// a project's, is elsewhere and is checked on its own: setup's step writes only the
+// default file, so its plan would read that file as unrouted, and its fix would
+// route Claude Code globally.
+func installShape(env *setupEnv) (claudeCode, noService bool, elsewhere string) {
+	elsewhere = recordedSettings(env)
+	if elsewhere != "" && samePath(elsewhere, filepath.Join(env.home, settingsRel)) {
+		elsewhere = ""
+	}
+	return elsewhere == "" && claudeCodeRouted(env), backgroundOnly(env), elsewhere
 }
 
 // claudeCodeRouted reports whether Cortex routed Claude Code: enable's state

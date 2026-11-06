@@ -69,7 +69,7 @@ func displayVersionOf(version, revision string) string {
 // The deprecated "claude-code" alias still dispatches (its case stays in main)
 // but is intentionally omitted here: it is no longer advertised in the usage
 // block or the unknown-subcommand hint. Use "configure claude-code" instead.
-var dispatchableSubcommands = []string{"observe", "setup", "doctor", "uninstall", "service", "configure", "exec", "server", "script", "tools", "pipeline", "pricing", "cost", "experimental"}
+var dispatchableSubcommands = []string{"observe", "setup", "doctor", "uninstall", "update", "service", "configure", "exec", "server", "script", "tools", "pipeline", "pricing", "cost", "experimental"}
 
 // unknownSubcommandMessage is the error for an unrecognised first argument.
 func unknownSubcommandMessage(name string) string {
@@ -89,6 +89,7 @@ Usage:
   agentop setup                install or repair Cortex on this machine (--help)
   agentop doctor               check this machine's Cortex install (--help)
   agentop uninstall            remove Cortex from this machine (--help)
+  agentop update               install the newest Cortex release (--help)
   agentop service <action>     run Cortex as a service: install, uninstall,
                                status, stop, start, restart
   agentop configure <agent>    point a coding agent (claude-code, bob, codex,
@@ -167,6 +168,8 @@ func main() {
 			os.Exit(runDoctor(os.Args[2:], os.Stdout, os.Stderr))
 		case "uninstall":
 			os.Exit(runUninstall(os.Args[2:], os.Stdout, os.Stderr))
+		case "update":
+			os.Exit(runUpdate(os.Args[2:], os.Stdout, os.Stderr))
 		default:
 			fmt.Fprintln(os.Stderr, unknownSubcommandMessage(os.Args[1]))
 			os.Exit(2)
