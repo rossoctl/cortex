@@ -195,13 +195,13 @@ func readPIDFile(path string) int {
 	return n
 }
 
-// ourProxy is foreign_proxy_holder's rule, inverted: the holder is ours if the
+// ourProxy reports whether a port holder is ours. The holder is ours if the
 // pidfile names it, or its executable is the installed cortex, by path or after
 // resolving links (samePath). Or v0.7.0's authbridge-proxy, adoptablePID's rule:
 // it ran under the same label and pidfile, so an upgrade from it finds it on the
 // port. A --supervise child runs its parent's executable, so it matches too.
-// install.sh never needed this: it asks foreign_proxy_holder only after a failed
-// service install, and the install replaces that job.
+// install.sh has no copy of this rule. It hands the install to agentop setup. Its
+// --stop checks only whether the ports are free, not which process holds them.
 func ourProxy(binDir, pidFile string, pid int, exe string) bool {
 	if pf := readPIDFile(pidFile); pf > 0 && pf == pid {
 		return true

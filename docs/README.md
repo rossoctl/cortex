@@ -82,8 +82,11 @@ subsystem each one drives rather than in one file, so this table is the index.
 Two things no config file can answer, because the effective values come from the
 file *plus* compiled-in defaults: what rates are in effect (`agentop pricing --host
 <gateway>`) and what pipeline is running (`agentop pipeline get`, or `GET /v1/pipeline`).
-`GET /config` on the diagnostic listener reports the config **as written**, not as
-resolved.
+`GET /config` on the diagnostic listener reports the config in effect, not the file
+as written. That is the file after `${ENV_VAR}` expansion, with the proxy's defaults
+and the mode preset applied. On a local install it also shows the default script
+slot that `cortex` adds. It masks secret values. Plugin defaults do not show: each
+plugin sets them in its own `Configure`.
 
 ## In this directory
 
