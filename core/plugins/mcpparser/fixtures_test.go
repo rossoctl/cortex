@@ -24,12 +24,6 @@ var responseTypes = map[string]string{
 	"response.json": "application/json",
 }
 
-// divergent names the cases where the buffered and streamed results differ.
-// The test skips them and names the two results. A divergent case has no expected.json.
-var divergent = map[string]string{
-	"tools-call-sse-result-then-error": "buffered keeps only the first result event, streamed keeps the result and the later error",
-}
-
 // TestFixtures runs the parser over the hand-built cases in testdata/<case>.
 // testdata/README.md tells which spec the cases follow.
 // Each case is parsed twice: with the whole response body, and frame by frame.
@@ -41,16 +35,9 @@ func TestFixtures(t *testing.T) {
 	}
 	for _, head := range heads {
 		dir := filepath.Dir(head)
-		name := filepath.Base(dir)
-		t.Run(name, func(t *testing.T) {
+		t.Run(filepath.Base(dir), func(t *testing.T) {
 			buffered := runFixture(t, dir, false)
 			streamed := runFixture(t, dir, true)
-			if reason, ok := divergent[name]; ok {
-				if bytes.Equal(buffered, streamed) {
-					t.Fatalf("the results are now equal: remove %q from divergent", name)
-				}
-				t.Skipf("divergence: %s\nbuffered:\n%s\nstreamed:\n%s", reason, buffered, streamed)
-			}
 			if !bytes.Equal(buffered, streamed) {
 				t.Fatalf("buffered and streamed results differ\nbuffered:\n%s\nstreamed:\n%s", buffered, streamed)
 			}

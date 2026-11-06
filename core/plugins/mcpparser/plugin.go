@@ -326,52 +326,36 @@ func (p *MCPParser) OnResponse(_ context.Context, pctx *pipeline.Context) pipeli
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
-// maxStreamObserves caps the number of per-frame Observe rows a single
-// streaming response may emit. Long tools/call streams can produce
-// dozens of result envelopes; without a bound, every envelope appends
-// an Invocation row that lives on pctx.Extensions.Invocations for the
-// life of the request — both noisy in the session timeline and a
-// memory growth point. After the cap, additional frames update
-// pctx.Extensions.MCP (so the latest result is still observable
-// off-stream) but no Invocation row is appended; one final
-// "_truncated" Observe at last=true tells operators what happened.
-const maxStreamObserves = 50
-
 // OnResponseFrame is the streaming-aware response hook. Listeners
 // invoke it once per SSE frame (text/event-stream) and once with
 // last=true at end-of-stream. application/json responses arrive as
 // a single last=true frame — so the same code handles both shapes.
 //
-// Per-message recording: for MCP, each frame's payload is one
-// complete JSON-RPC response message. We parse + record per message
-// rather than waiting for end-of-stream, so a long-running tools/call
-// surfaces partial results in the session timeline as they arrive —
-// up to maxStreamObserves rows; beyond that the per-frame Observe is
-// suppressed and a single _truncated row is emitted at end-of-stream.
+// One response per request: JSON-RPC 2.0 gives a request one response,
+// with a result or an error, not both. The first frame that carries a
+// response wins, as in the buffered path (parseMCPResponse). The parser
+// ignores a later response frame, so Result and Err are never both set.
 func (p *MCPParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, frame []byte, last bool) pipeline.Action {
 	// Stay silent when the request side never participated.
 	if pctx.Extensions.MCP == nil {
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
-	state := getOrCreateMCPStreamState(pctx)
-
 	// End-of-stream call with no payload. If we never saw a frame with a
 	// result/error and the response body was empty, record the terminal
 	// invocation via recordEmptyResponse (matches the buffered path: an
 	// Observe for an expected notification ack, a Skip for an anomalous empty
 	// response to a request with an id) so agentop pairs request and response
-	// rows uniformly across shapes. If we observed too many frames, emit a
-	// single truncation row so operators see that records were dropped.
+	// rows uniformly across shapes.
 	if len(frame) == 0 {
-		if last {
-			if pctx.Extensions.MCP.Result == nil && pctx.Extensions.MCP.Err == nil && state.observed == 0 {
-				recordEmptyResponse(pctx)
-			}
-			if state.truncated {
-				pctx.Observe("matched_" + pctx.Extensions.MCP.Method + "_response_truncated")
-			}
+		if last && pctx.Extensions.MCP.Result == nil && pctx.Extensions.MCP.Err == nil {
+			recordEmptyResponse(pctx)
 		}
+		return pipeline.Action{Type: pipeline.Continue}
+	}
+	// The request has its response. A later response frame is not a second answer.
+	if pctx.Extensions.MCP.Result != nil || pctx.Extensions.MCP.Err != nil {
+		slog.Debug("mcp-parser: ignoring a later response frame", "method", pctx.Extensions.MCP.Method)
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
@@ -394,54 +378,9 @@ func (p *MCPParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
-	if state.observed >= maxStreamObserves {
-		// Past the cap: keep updating ext.MCP so the latest result is
-		// reflected, but don't append another Invocation row.
-		state.truncated = true
-		applyMCPResponseRPCNoObserve(pctx, rpc)
-		slog.Debug("mcp-parser: streaming frame (suppressed observe)", "method", pctx.Extensions.MCP.Method, "observed", state.observed)
-		return pipeline.Action{Type: pipeline.Continue}
-	}
-
 	applyMCPResponseRPC(pctx, rpc)
-	state.observed++
 	slog.Debug("mcp-parser: streaming frame", "method", pctx.Extensions.MCP.Method, "body", parsercommon.Truncate(string(frame), parsercommon.DebugBodyMax))
 	return pipeline.Action{Type: pipeline.Continue}
-}
-
-// mcpStreamState holds per-stream scratch on pctx.Extensions.Custom so
-// the per-frame Observe cap can be enforced across calls without
-// adding fields to the public MCPExtension shape.
-type mcpStreamState struct {
-	observed  int
-	truncated bool
-}
-
-const mcpStreamStateKey = "mcp-parser/stream-state"
-
-func getOrCreateMCPStreamState(pctx *pipeline.Context) *mcpStreamState {
-	if s := pipeline.GetState[mcpStreamState](pctx, mcpStreamStateKey); s != nil {
-		return s
-	}
-	s := &mcpStreamState{}
-	pipeline.SetState(pctx, mcpStreamStateKey, s)
-	return s
-}
-
-// applyMCPResponseRPCNoObserve mutates pctx.Extensions.MCP without
-// emitting an Observe row. Used past the per-stream Observe cap.
-func applyMCPResponseRPCNoObserve(pctx *pipeline.Context, rpc jsonRPCResponse) {
-	if rpc.Error != nil {
-		pctx.Extensions.MCP.Err = &pipeline.MCPError{
-			Code:    rpc.Error.Code,
-			Message: rpc.Error.Message,
-			Data:    rpc.Error.Data,
-		}
-		return
-	}
-	if rpc.Result != nil {
-		pctx.Extensions.MCP.Result = rpc.Result
-	}
 }
 
 // applyMCPResponseRPC mutates pctx.Extensions.MCP from a parsed

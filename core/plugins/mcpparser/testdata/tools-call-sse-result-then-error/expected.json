@@ -1,0 +1,20 @@
+{
+  "method": "tools/call",
+  "rpcId": 6,
+  "params": {
+    "arguments": {
+      "location": "Rome"
+    },
+    "name": "get_weather"
+  },
+  "result": {
+    "content": [
+      {
+        "text": "Clear, 25 C.",
+        "type": "text"
+      }
+    ],
+    "isError": false
+  },
+  "isAction": true
+}
