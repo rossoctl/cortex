@@ -197,9 +197,11 @@ func (p *A2AParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 	ext := pctx.Extensions.A2A
 
 	// Per-frame fold. message/stream events arrive one per frame;
-	// message/send arrives as a single last=true frame.
+	// message/send arrives as a single last=true frame. A buffered
+	// message/stream (a body-writing plugin is in the chain) arrives as
+	// one last=true frame that holds the whole SSE body.
 	if len(frame) > 0 {
-		foldResponse(frame, ext)
+		extractResponseSummary(frame, ext)
 		// Capture session id from any frame if the request didn't carry one.
 		if ext.SessionID == "" {
 			if sid := sessionIDFromJSON(frame); sid != "" {

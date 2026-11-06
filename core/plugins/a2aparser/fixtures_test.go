@@ -147,8 +147,9 @@ func runFixture(t *testing.T, dir string, frames bool) []byte {
 	pctx.ResponseHeaders = http.Header{"Content-Type": []string{contentType}}
 	switch {
 	case !frames:
+		// A buffered body comes from the listener as one last frame. Production never calls OnResponse.
 		pctx.ResponseBody = resp
-		p.OnResponse(ctx, pctx)
+		p.OnResponseFrame(ctx, pctx, resp, true)
 	case contentType == "text/event-stream":
 		for _, f := range sseFrames(resp) {
 			p.OnResponseFrame(ctx, pctx, f, false)
