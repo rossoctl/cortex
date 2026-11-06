@@ -38,7 +38,9 @@ affected = {}
 
 def drops_signed_thinking(version):
     """True for the LiteLLM versions that delete signed empty thinking blocks:
-    1.100.0 through 1.105.1, and 1.106.0 (pre-releases count as their release)."""
+    1.100.0 through 1.105.1, and 1.106.0. A pre-release counts as its release, so
+    a few dev builds at the edges are judged wrongly: 1.100.0-dev.1 is filled
+    without need, and 1.107.0-dev.1 and dev.2 are not filled."""
     m = re.match(r"v?(\d+)\.(\d+)\.(\d+)", version or "")
     if not m:
         return False

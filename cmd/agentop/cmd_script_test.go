@@ -541,3 +541,19 @@ func TestScript_AFailedUpdateRestoresTheEarlierFiles(t *testing.T) {
 		t.Errorf("state after a failed update = %s, want outdated", st.State)
 	}
 }
+
+// A slot that only reads responses goes ahead of an installed slot that rewrites
+// them: the pipeline refuses the other order, and Cortex would not start.
+func TestScript_InstallPutsAReaderBeforeAResponseRewriter(t *testing.T) {
+	cfg, _ := scriptEnv(t, closedAddr(t), closedAddr(t))
+	for _, name := range []string{"moca-sandbox", "thinking-fill"} {
+		if code, out, errOut := runScriptCmd(t, "install", name, "--config", cfg); code != 0 {
+			t.Fatalf("install %s: exit %d: %s%s", name, code, out, errOut)
+		}
+	}
+	text := readConfig(t, cfg)
+	fill, moca := strings.Index(text, "dir: thinking-fill"), strings.Index(text, "dir: moca-sandbox")
+	if fill < 0 || moca < 0 || fill > moca {
+		t.Errorf("thinking-fill is not ahead of moca-sandbox:\n%s", text)
+	}
+}

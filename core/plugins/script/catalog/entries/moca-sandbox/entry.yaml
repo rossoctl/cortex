@@ -1,2 +1,3 @@
 description: Keep Claude Code on moca's sandbox tools without a project settings file
 fail_closed: true
+rewrite_response: true

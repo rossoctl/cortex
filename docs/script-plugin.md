@@ -329,7 +329,8 @@ the thinking blocks the client sent back. Blocks with `signatureBytes` and no
    agentop script install thinking-fill
    ```
 
-   It adds this slot as the last outbound entry:
+   It adds this slot as the last outbound entry, or ahead of a slot that
+   rewrites responses, such as `moca-sandbox`:
 
    ```yaml
          - name: script
@@ -355,8 +356,8 @@ What it costs, and what it does not cover:
   provider intends. Most of it is served from the prompt cache.
 - **Only Anthropic Messages requests** (`/v1/messages`). LiteLLM's other
   endpoints are not changed.
-- **Not a fix.** Upgrade the gateway to LiteLLM 1.105.2 or later when you can,
-  then `agentop script remove thinking-fill`.
+- **Not a fix.** Upgrade the gateway to LiteLLM 1.105.2 or later, but not
+  1.106.0, when you can. Then `agentop script remove thinking-fill`.
 
 ### Adding a bundled script
 
@@ -367,7 +368,11 @@ the scripts, any `_`-prefixed helpers, and an `entry.yaml`:
 description: One line, shown by agentop script list
 fail_closed: false      # optional; the slot's setting
 timeout: 2s             # optional; the slot's setting
+rewrite_response: false # set it when a script declares @on.response(rewrite=True)
 ```
+
+`agentop script install` puts a slot that does not rewrite responses ahead of
+one that does. The pipeline refuses a response reader after a response writer.
 
 The folder's name is the slot's `dir`. A test in that package checks every
 entry, so adding one is adding the folder.

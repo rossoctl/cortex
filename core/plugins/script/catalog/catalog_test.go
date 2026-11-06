@@ -91,6 +91,7 @@ func TestCatalog_EveryScriptHandshakes(t *testing.T) {
 	}
 	for _, e := range entries {
 		dir := t.TempDir()
+		rewrites := false
 		for name, b := range e.Files {
 			if err := os.WriteFile(filepath.Join(dir, name), b, 0o700); err != nil {
 				t.Fatal(err)
@@ -120,16 +121,22 @@ func TestCatalog_EveryScriptHandshakes(t *testing.T) {
 				select {
 				case b := <-line:
 					var hs struct {
-						Cortex int      `json:"cortex"`
-						Hooks  []string `json:"hooks"`
+						Cortex          int      `json:"cortex"`
+						Hooks           []string `json:"hooks"`
+						RewriteResponse bool     `json:"rewrite_response"`
 					}
 					if err := json.Unmarshal(b, &hs); err != nil || hs.Cortex != 1 || len(hs.Hooks) == 0 {
 						t.Fatalf("handshake %q: %v", b, err)
 					}
+					rewrites = rewrites || hs.RewriteResponse
 				case <-time.After(10 * time.Second):
 					t.Fatal("no handshake within 10s")
 				}
 			})
+		}
+		// install orders slots by it, so it must say what the scripts declare.
+		if rewrites != e.RewriteResponse {
+			t.Errorf("%s: entry.yaml rewrite_response = %v, but its scripts declare %v", e.Name, e.RewriteResponse, rewrites)
 		}
 	}
 }

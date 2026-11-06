@@ -360,13 +360,41 @@ func slotChange(e catalog.CatalogEntry, remove bool) edit.ConfigChange {
 	return ch
 }
 
-func slotChanges(e catalog.CatalogEntry) []edit.ConfigChange {
-	out := []edit.ConfigChange{slotChange(e, false)}
+// slotChanges adds e's slot and its settings. A slot that does not rewrite
+// responses goes ahead of the first installed slot that does: the pipeline refuses
+// a response reader after a response writer, and every slot whose scripts have a
+// response hook is one.
+func slotChanges(e catalog.CatalogEntry, cfg *config.Config) []edit.ConfigChange {
+	add := slotChange(e, false)
+	if !e.RewriteResponse {
+		add.Before = firstRewritingSlot(cfg)
+	}
+	out := []edit.ConfigChange{add}
 	if e.Timeout != "" {
 		out = append(out, edit.ConfigChange{Chain: "outbound", Plugin: scriptPlugin, Match: map[string]string{"dir": e.Name},
 			Path: []string{"timeout"}, Value: edit.ScalarValue(e.Timeout)})
 	}
 	return out
+}
+
+// firstRewritingSlot is the Match of the first outbound slot of a catalog entry
+// that rewrites responses, or nil. A slot of the user's own scripts is not judged:
+// agentop cannot know what they declare.
+func firstRewritingSlot(cfg *config.Config) map[string]string {
+	entries, err := catalog.Catalog()
+	if err != nil {
+		return nil
+	}
+	for _, p := range cfg.Pipeline.Outbound.Plugins {
+		if p.Name != scriptPlugin {
+			continue
+		}
+		dir := entryDir(p)
+		if slices.ContainsFunc(entries, func(e catalog.CatalogEntry) bool { return e.Name == dir && e.RewriteResponse }) {
+			return map[string]string{"dir": dir}
+		}
+	}
+	return nil
 }
 
 // priorFiles is what dir held before writeFiles changed it, so a failed update can
@@ -604,7 +632,7 @@ func scriptInstall(args []string, stdout, stderr io.Writer) int {
 
 	addedSlot := false
 	if !hadSlot {
-		res, err := writePluginConfig(context.Background(), edit.ConfigWrite{Path: t.path, StatsURL: t.statsURL, Changes: slotChanges(e)})
+		res, err := writePluginConfig(context.Background(), edit.ConfigWrite{Path: t.path, StatsURL: t.statsURL, Changes: slotChanges(e, t.cfg)})
 		if err != nil {
 			undoFiles()
 			return fail("%v", err)
