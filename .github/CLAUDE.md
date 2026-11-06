@@ -57,7 +57,7 @@ enumerate combos.
 The one other variant is `cortex-cpex_<ver>_<os>_<arch>.tar.gz`: `cortex` built with
 cgo, the `cpex` tag and the `fullcpex` profile (`full` + `cpex`). It cannot
 cross-compile, so a separate `build-cpex` matrix job builds it natively for
-darwin/arm64 (`macos-14`, macOS 14.5 floor) and linux/amd64 and linux/arm64 (static
+darwin/arm64 (`macos-15`, macOS 14.5 floor) and linux/amd64 and linux/arm64 (static
 musl, in `golang:alpine` via `docker run`). There is no darwin/amd64 FFI. The
 executable inside is still `cortex`, and `cortex --version` prints
 `cortex (cpex) <ver>`. `install.sh --cpex` installs it.
