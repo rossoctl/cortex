@@ -32,7 +32,8 @@ cd core && GOWORK=off go test ./plugins/a2aparser/ -run Fixtures -count=1 -updat
 | `message-send` | `message/send` with no `contextId`. The JSON response is a completed Task, which gives `sessionId`, `artifact`, and `taskId` from the Task `id` | true |
 | `message-stream` | `message/stream` with `contextId` in the message. SSE: a Task, an `artifact-update`, and a final `status-update` | true |
 | `message-stream-no-final` | `message/stream`. SSE: a Task and a status-update that is not final, then the stream ends. `finalStatus` is the last state, `working` | true |
-| `message-stream-task-artifacts` | `message/stream`. SSE: a status-update that is not final, then a completed Task that carries `artifacts`. Both paths read the Task artifacts | true |
+| `message-stream-task-artifacts` | `message/stream`. SSE: a status-update that is not final, then a completed Task that carries `artifacts`. Both paths read the Task artifacts. A Task event replaces the joined `artifact-update` text with the last text part of the Task. The live path did this before these fixes too | true |
+| `message-send-message-result` | `message/send`. The JSON result is a Message (A2A v0.3.0 §7.1: `Task` \| `Message`). Its `taskId` and `contextId` give `taskId` and `sessionId`. The extension has no field for the Message text | true |
 | `tasks-get` | `tasks/get`. The JSON response is a completed Task. The Task `id` gives `taskId` | false |
 | `tasks-get-error` | `tasks/get` for an unknown task, JSON-RPC error response. `params.id` gives `taskId`. The extension has no field for a JSON-RPC error | false |
 | `message-send-task-not-found` | `message/send` for a task that the server does not know, JSON-RPC error response. `params.message.taskId` gives `taskId` | true |
