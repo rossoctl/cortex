@@ -45,8 +45,9 @@ var latestReleaseURL = "https://github.com/rossoctl/cortex/releases/latest"
 
 // updateScript fetches the installer and pipes it to sh, as the one-liner does, so
 // $0 is "sh" and install.sh re-runs the released copy of itself. Fetched first, not
-// piped: a failed curl would hand sh an empty script, and that exits 0.
-const updateScript = `script=$(curl -fsSL "$0") || exit 1; printf '%s\n' "$script" | sh -s -- "$@"`
+// piped: a failed curl would hand sh an empty script, and that exits 0. The trap is
+// install.sh's: dash waits out the installer, then dies of an INT it does not catch.
+const updateScript = `trap : INT TERM HUP; script=$(curl -fsSL "$0") || exit 1; printf '%s\n' "$script" | sh -s -- "$@"`
 
 func runUpdate(args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("update", stderr)
@@ -100,13 +101,11 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 // of the cpex one.
 func updateFlags(env *setupEnv, ref string, yes bool) []string {
 	var flags []string
-	// A project's settings file is not ~/.claude/settings.json, which is the only
-	// one setup's --claude-code writes.
-	elsewhere := recordedSettings(env)
-	if (elsewhere == "" || samePath(elsewhere, filepath.Join(env.home, settingsRel))) && claudeCodeRouted(env) {
+	claudeCode, noService, _ := installShape(env)
+	if claudeCode {
 		flags = append(flags, "--claude-code")
 	}
-	if backgroundOnly(env) {
+	if noService {
 		flags = append(flags, "--no-service")
 	}
 	if installedIsCpex(filepath.Join(env.binDir, "cortex")) {

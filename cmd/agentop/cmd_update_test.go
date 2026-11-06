@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -135,5 +138,34 @@ func TestUpdateRejectsAnArgument(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := runUpdate([]string{"now"}, &out, &errb); code != 2 || !strings.Contains(errb.String(), `unexpected argument "now"`) {
 		t.Errorf("exit %d, stderr %q", code, errb.String())
+	}
+}
+
+// Ctrl-C reaches both shells of updateScript. The installer catches it and rolls
+// back, and update must exit with its status. dash, sh on Debian, dies of an INT it
+// does not catch, so this runs the script under dash where dash is installed.
+func TestUpdateScriptExitsWithTheInstallersStatusOnInterrupt(t *testing.T) {
+	dash, err := exec.LookPath("dash")
+	if err != nil {
+		t.Skip("no dash")
+	}
+	installStub(t, "sh", "#!"+dash+"\nexec "+dash+" \"$@\"\n")
+	installStub(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"trap 'exit 3' INT\" 'echo ready' 'sleep 5 >/dev/null & wait'\n")
+	cmd := exec.Command("sh", "-c", updateScript, installerURL)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if line, _ := bufio.NewReader(out).ReadString('\n'); line != "ready\n" {
+		t.Fatalf("installer said %q", line)
+	}
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGINT)
+	_ = cmd.Wait()
+	if code := cmd.ProcessState.ExitCode(); code != 3 {
+		t.Errorf("exit %d, want the installer's 3", code)
 	}
 }
