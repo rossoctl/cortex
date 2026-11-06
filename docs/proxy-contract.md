@@ -57,8 +57,7 @@ fixture holds the keys that agentop reads:
 A test beside each handler checks that its real output has every fixture key, with
 the same JSON type. `cmd/agentop/wire_fixture_test.go` decodes the same files into
 agentop's types and refuses unknown keys. It then marshals each value again and
-requires the fixture back, so it also fails when agentop reads a key that the
-fixture does not hold. Thus a renamed JSON tag on either side fails a test.
+requires the fixture back. Thus a renamed JSON tag on either side fails a test.
 
 `/config` reports the config in effect, with secret values masked. After a
 `stats.address` reload it shows the new address, but the stats server stays on the
@@ -81,9 +80,7 @@ API and the stats server answer 403 to:
 
 - a request whose `Host` is not `localhost`, `127.0.0.1` or `::1`. This stops DNS
   rebinding.
-- a request with an `Origin` header. A browser sends one on a cross-origin request.
-  A browser can leave it out on a GET navigation, and that request passes the guard
-  when its Host is loopback.
+- a request with an `Origin` header.
 
 `httpx.LoopbackOnly` in `core/listener/httpx/loopback.go` implements the guard.
 `sessionapi.WithLoopbackOnly` and `observe.WithLoopbackOnly` apply it, from `main` in

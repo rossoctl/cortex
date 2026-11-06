@@ -13,8 +13,7 @@ import (
 
 // decodeWireFixture decodes a fixture that the proxy's own tests check against the
 // real handler. Unknown keys are an error, so a JSON tag renamed here fails. The
-// decoded value, marshalled again, must equal the fixture, so a key that agentop
-// reads and the fixture does not hold fails too.
+// decoded value, marshalled again, must equal the fixture.
 func decodeWireFixture(t *testing.T, path string, into any) {
 	t.Helper()
 	raw, err := os.ReadFile(path)
