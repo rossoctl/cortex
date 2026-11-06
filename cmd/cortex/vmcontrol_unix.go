@@ -22,6 +22,9 @@ func startVMControl(cfg controlConfig, fp *forwardproxy.Server) vmControlServer 
 	// own session headers do not decide, and charges each to the request cap.
 	// See AdoptBridgedRequest.
 	fp.AdoptBridgedRequest = vmcontrol.AdoptBridgedRequest
+	// A bridged tunnel holds its VM's conn slot as long as it is open. This
+	// applies to every bridged tunnel the proxy serves.
+	fp.BridgedIdleTimeout = vmcontrol.IdleTimeout
 	reg := vmcontrol.NewRegistry(fp, vmcontrol.NewJSONSink(os.Stdout), cfg.Limits)
 	srv, err := vmcontrol.NewServer(cfg.Socket, cfg.AllowedUIDs, reg)
 	if err != nil {

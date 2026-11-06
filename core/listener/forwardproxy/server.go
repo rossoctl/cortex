@@ -134,6 +134,11 @@ type Server struct {
 
 	TLSBridge *tlsbridge.Engine // nil = disabled; set by caller after NewServer
 
+	// BridgedIdleTimeout closes a TLS-bridged tunnel once it has been idle
+	// between decrypted requests this long. Zero keeps it open until either
+	// side closes.
+	BridgedIdleTimeout time.Duration
+
 	// SessionIDHeaders are the request headers consulted, in order, for a
 	// client-supplied session id to bucket events under. The first one
 	// present and usable wins; when none is, bucketing falls back to
@@ -1312,7 +1317,7 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	markBridged(tl)
 
 	// 3) Serve the decrypted conn through the UNCHANGED pipeline.
-	tlsbridge.ServeConn(tconn, s.bridgedHandler(authority, tl))
+	tlsbridge.ServeConnIdle(tconn, s.bridgedHandler(authority, tl), s.BridgedIdleTimeout)
 	// ServeConn returns once the connection has closed. A bridged tunnel's decrypted
 	// requests answer it and agentop folds the open into the first of them, so a close row
 	// there would render as an orphan response. With no recorded request at all there is

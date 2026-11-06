@@ -24,8 +24,9 @@ type Limits struct {
 	// summed across all of its VMs. Each plain request, each CONNECT and each
 	// request decrypted inside a bridged tunnel counts one. A request past it
 	// is answered 429 request_cap, goes no further, and its connection is
-	// closed. The count lives while any VM of the session is registered and
-	// starts again at zero after the last one unregisters.
+	// closed. The count lives while the session has a registered VM and for
+	// sessionIdle after its last one unregisters, so a VM registered again in
+	// that window continues it.
 	MaxRequestsPerSession int
 }
 
@@ -54,6 +55,14 @@ const (
 // between admissions. moca-egress coalesces per second instead.
 const capEventEvery = 64
 
+// sessionIdle is how long a session's request count outlives its last VM;
+// sweepEvery is how often Register looks for counts past it. Both are
+// moca-egress's.
+const (
+	sessionIdle = time.Hour
+	sweepEvery  = time.Minute
+)
+
 // Registry is the control channel's Handler: it binds each handed-over
 // listener to the forward proxy, one binding per VM, and tears bindings down
 // on Unregister. One forwardproxy.Server — one pipeline, one session store —
@@ -64,9 +73,12 @@ type Registry struct {
 	sink   AuditSink
 	limits Limits
 
-	mu       sync.Mutex
-	vms      map[string]*vmBinding
-	sessions map[string]*sessionRequests
+	now func() time.Time
+
+	mu        sync.Mutex
+	vms       map[string]*vmBinding
+	sessions  map[string]*sessionRequests
+	lastSweep time.Time
 }
 
 // NewRegistry returns a Registry serving every registered VM's traffic
@@ -80,7 +92,7 @@ func NewRegistry(fp *forwardproxy.Server, sink AuditSink, limits Limits) *Regist
 		limits.MaxRequestsPerSession = DefaultMaxRequestsPerSession
 	}
 	return &Registry{
-		fp: fp, sink: sink, limits: limits,
+		fp: fp, sink: sink, limits: limits, now: time.Now,
 		vms: map[string]*vmBinding{}, sessions: map[string]*sessionRequests{},
 	}
 }
@@ -148,8 +160,18 @@ func (r *Registry) Close() {
 	}
 }
 
-// acquire returns sid's request count for one more registered VM. Caller holds r.mu.
+// acquire returns sid's request count for one more registered VM, first
+// dropping the counts whose sessions have had no VM for sessionIdle. Caller
+// holds r.mu.
 func (r *Registry) acquire(sid string) *sessionRequests {
+	if now := r.now(); now.Sub(r.lastSweep) >= sweepEvery {
+		r.lastSweep = now
+		for id, s := range r.sessions {
+			if s.vms == 0 && now.Sub(s.idleSince) > sessionIdle {
+				delete(r.sessions, id)
+			}
+		}
+	}
 	s := r.sessions[sid]
 	if s == nil {
 		s = &sessionRequests{max: int64(r.limits.MaxRequestsPerSession)}
@@ -159,12 +181,12 @@ func (r *Registry) acquire(sid string) *sessionRequests {
 	return s
 }
 
-// release drops one registered VM's hold on sid's request count, and the
-// count with the last one. Caller holds r.mu.
+// release drops one registered VM's hold on sid's request count. With the
+// last one, the count starts its sessionIdle. Caller holds r.mu.
 func (r *Registry) release(sid string) {
 	if s := r.sessions[sid]; s != nil {
 		if s.vms--; s.vms == 0 {
-			delete(r.sessions, sid)
+			s.idleSince = r.now()
 		}
 	}
 }
@@ -173,7 +195,10 @@ func (r *Registry) release(sid string) {
 type sessionRequests struct {
 	max  int64
 	used atomic.Int64
-	vms  int // guarded by Registry.mu
+	// Guarded by Registry.mu: the session's registered VMs, and when the
+	// last of them left.
+	vms       int
+	idleSince time.Time
 }
 
 // charge counts one request and reports whether it is within the cap.
@@ -204,7 +229,7 @@ type trackedListener struct {
 // capRefusal is how one connection over the cap is turned away.
 type capRefusal struct {
 	answer    bool   // write the 429; otherwise close at once
-	report    bool   // emit an audit event
+	report    bool   // emit an audit event, after the 429
 	coalesced uint64 // earlier refusals that event stands for
 }
 
@@ -241,15 +266,18 @@ func (l *trackedListener) Accept() (net.Conn, error) {
 	}
 }
 
-// chargeCap decides how c, over the cap, is turned away. The first refusal
-// since the last admission is reported, and so is every capEventEvery-th
-// after it. An answer is tracked until answerCap ends it. Caller holds l.mu.
+// chargeCap decides how c, over the cap, is turned away. Only an answered
+// refusal reports, so the audit write rides an answer slot: the first answered
+// refusal since the last admission, and every one after capEventEvery
+// refusals. An answer is tracked until answerCap ends it. Caller holds l.mu.
 func (l *trackedListener) chargeCap(c net.Conn) capRefusal {
-	d := capRefusal{answer: len(l.answering) < maxCapAnswersPerVM}
-	if d.answer {
-		l.answering[c] = struct{}{}
-		l.answers.Add(1)
+	if len(l.answering) >= maxCapAnswersPerVM {
+		l.suppressed++
+		return capRefusal{}
 	}
+	l.answering[c] = struct{}{}
+	l.answers.Add(1)
+	d := capRefusal{answer: true}
 	if l.reported && l.suppressed < capEventEvery-1 {
 		l.suppressed++
 		return d
@@ -259,9 +287,10 @@ func (l *trackedListener) chargeCap(c net.Conn) capRefusal {
 	return d
 }
 
-// answerCap writes the conn_cap refusal naming vmID to c and closes it,
-// within capAnswerTimeout. It releases the answer slot chargeCap took.
-func (l *trackedListener) answerCap(c net.Conn, vmID string) {
+// answerCap writes the conn_cap refusal naming vmID to c, runs report if it is
+// set, and closes c. The write and drain take at most capAnswerTimeout. It
+// releases the answer slot chargeCap took.
+func (l *trackedListener) answerCap(c net.Conn, vmID string, report func()) {
 	defer l.answers.Done()
 	defer func() {
 		l.mu.Lock()
@@ -277,6 +306,9 @@ func (l *trackedListener) answerCap(c net.Conn, vmID string) {
 	_ = resp.Write(c)
 	if cw, ok := c.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()
+	}
+	if report != nil {
+		report()
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(c, capDrainBytes))
 	_ = c.Close()

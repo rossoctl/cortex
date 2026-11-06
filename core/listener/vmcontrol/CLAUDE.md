@@ -85,27 +85,30 @@ Linux / `LOCAL_PEERCRED` on darwin, fail-closed on other unixes).
   tunnels would otherwise exit the process and take every VM's egress with it.
   Each per-VM `http.Server` also carries bootstrap's `ReadHeaderTimeout`
   (10s) and a 60s `IdleTimeout`, so a guest cannot hold a conn slot by
-  dripping headers or parking idle keep-alives.
+  dripping headers or parking idle keep-alives. The forward proxy's
+  `BridgedIdleTimeout` gives bridged tunnels the same 60s, on h1 and h2.
 - **Caps** (`Limits`; names and defaults follow moca-egress, the mechanics are
   ours):
   - **Per-VM connections** are counted in `trackedListener`. One past the cap
     is answered `429 conn_cap: <vm>` at accept, before any byte is read, off
     the accept loop. At most 8 answers per VM are in flight; past that the
-    conn is closed unanswered, and Unregister closes those in flight. Audit is
-    one `conn_cap` event per 64 refusals (`coalesced` counts the rest), reset
-    by an admission. Refusals after a burst's last event go unreported until
-    the next refusal, and with Unregister, never. moca coalesces per second
-    instead; the suite checks only that an event arrives.
+    conn is closed unanswered, and Unregister closes those in flight. The
+    audit event is written by an answer goroutine after its 429, so a slow
+    sink holds answer slots and never the accept loop. One event stands for
+    up to 64 refusals (`coalesced` counts the rest, unanswered ones too), and
+    an admission resets it. Refusals after a burst's last event are reported
+    with the next one. moca emits from its accept path into an async sink and
+    coalesces per second; the suite checks only that an event arrives.
   - **Per-session requests** are one shared counter per sid, separate from
     the session-budget plugin, which counts inference calls. Every plain
     request, CONNECT and bridged (decrypted) request counts, the last through
     `AdoptBridgedRequest`, which can refuse. Past the cap: `429 request_cap:
     <host>` (a bridged refusal names the tunnel's host), `Connection: close`,
     nothing upstream. The refusal records no session-store row; its audit
-    event is the record. The counter is dropped when the session's last VM
-    unregisters, so a sid registered again starts at zero — a vmpool redial
-    re-registering a session's only VM included. moca keeps it until an hour
-    idle.
+    event is the record. The count lives while the session has a VM and for
+    an hour after its last one unregisters (moca's `sessionIdle`), so a
+    vmpool redial continues it. Register sweeps expired counts at most once a
+    minute; tests drive `Registry.now`.
 - Local test runs: the macOS seatbelt sandbox refuses `AF_UNIX` binds, so
   `server_test.go` skips there (CI's Linux runners run it); the registry and
   wire tests run everywhere, with the registry tests driving the real

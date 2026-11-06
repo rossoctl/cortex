@@ -125,42 +125,56 @@ func TestConnCapSlotFreesOnClose(t *testing.T) {
 }
 
 // A guest looping on a full VM gets at most maxCapAnswersPerVM answers in
-// flight, and a slot frees when its answer ends. Audit is one event per
-// capEventEvery refusals, each carrying how many it stands for, and the
-// first refusal after an admission is reported.
-func TestConnCapBoundsAnswersAndEvents(t *testing.T) {
+// flight, and a slot frees when its answer ends. Refusals closed unanswered
+// count into the next event.
+func TestConnCapBoundsAnswers(t *testing.T) {
+	l := newTrackedListener(newPipeListener(), 1, nil)
+	var answered []net.Conn
+	for i := 0; i < maxCapAnswersPerVM+2; i++ {
+		client, server := net.Pipe()
+		_ = client.Close() // so an answer ends at once
+		if l.chargeCap(server).answer {
+			answered = append(answered, server)
+		}
+	}
+	if len(answered) != maxCapAnswersPerVM {
+		t.Fatalf("answers in flight = %d, want %d", len(answered), maxCapAnswersPerVM)
+	}
+	for _, c := range answered {
+		l.answerCap(c, "vm-a", nil)
+	}
+	l.suppressed = capEventEvery - 1 // the next refusal reports
+	_, server := net.Pipe()
+	if d := l.chargeCap(server); !d.answer || !d.report || d.coalesced != capEventEvery-1 {
+		t.Errorf("refusal after the answers ended = %+v, want answered and reported", d)
+	}
+}
+
+// Audit is one event per capEventEvery answered refusals, each carrying how
+// many it stands for, and the first refusal after an admission is reported.
+func TestConnCapCoalescesEvents(t *testing.T) {
 	inner := newPipeListener()
 	var last capRefusal
 	l := newTrackedListener(inner, 1, func(c net.Conn, d capRefusal) { last = d; _ = c.Close() })
-	refuse := func() (net.Conn, net.Conn, capRefusal) {
+	refuse := func() capRefusal {
 		client, server := net.Pipe()
-		return client, server, l.chargeCap(server)
+		_ = client.Close()
+		d := l.chargeCap(server)
+		l.answerCap(server, "vm-a", nil)
+		return d
 	}
 
-	var answered []net.Conn
 	var reported int
 	var coalesced uint64
-	for i := 0; i < 2*capEventEvery+1; i++ {
-		client, server, d := refuse()
-		if d.answer {
-			_ = client.Close() // so the answer ends at once
-			answered = append(answered, server)
-		}
-		if d.report {
+	for i := 0; i < 2*capEventEvery+2; i++ {
+		if d := refuse(); d.report {
 			reported++
 			coalesced += d.coalesced
 		}
 	}
-	if len(answered) != maxCapAnswersPerVM {
-		t.Errorf("answers in flight = %d, want %d", len(answered), maxCapAnswersPerVM)
-	}
 	if reported != 3 || coalesced != 2*capEventEvery-2 {
 		t.Errorf("events = %d standing for %d more, want 3 standing for %d",
 			reported, coalesced, 2*capEventEvery-2)
-	}
-	l.answerCap(answered[0], "vm-a")
-	if _, _, d := refuse(); !d.answer {
-		t.Error("no answer after one ended, want its slot back")
 	}
 
 	inner.dial()
@@ -170,10 +184,70 @@ func TestConnCapBoundsAnswersAndEvents(t *testing.T) {
 	inner.dial()
 	inner.accepts <- nil
 	_, _ = l.Accept()
-	// The refusal suppressed before the admission had no event yet, so this
-	// one carries it.
+	// The last refusal before the admission had no event yet, so this one
+	// carries it.
 	if !last.report || last.coalesced != 1 {
 		t.Errorf("first refusal after an admission = %+v, want reported, carrying 1", last)
+	}
+}
+
+// answerCap writes the 429, runs report, closes the conn and frees its slot.
+func TestConnCapAnswerReportsAndCloses(t *testing.T) {
+	l := newTrackedListener(newPipeListener(), 0, nil)
+	client, pipe := net.Pipe()
+	server := &closeRecorder{Conn: pipe}
+	read := make(chan *http.Response, 1)
+	go func() {
+		// Read it whole, then close: the close is what ends answerCap's drain.
+		resp, err := http.ReadResponse(bufio.NewReader(client), nil)
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body = io.NopCloser(strings.NewReader(string(body)))
+		}
+		_ = client.Close()
+		read <- resp
+	}()
+	l.chargeCap(server)
+	var reported bool
+	l.answerCap(server, "vm-a", func() { reported = true })
+	wantRefusal(t, <-read, DecisionConnCap, "vm-a")
+	if !reported || !server.closed || len(l.answering) != 0 {
+		t.Errorf("reported=%v closed=%v in flight=%d, want true true 0", reported, server.closed, len(l.answering))
+	}
+}
+
+// A sink that blocks holds answer slots, never the accept loop: refusals past
+// the slots close unanswered.
+func TestConnCapBlockedSinkLeavesAcceptRunning(t *testing.T) {
+	inner := newPipeListener()
+	sink := &gatedSink{gate: make(chan struct{})}
+	b := newVMBinding(&forwardproxy.Server{}, sink, "vm-a", "sid-a", inner, 0, &sessionRequests{max: 1})
+	inner.accepts = make(chan net.Conn, maxCapAnswersPerVM+2)
+	var clients []net.Conn
+	for i := 0; i < maxCapAnswersPerVM+1; i++ {
+		clients = append(clients, inner.dial())
+	}
+	inner.accepts <- nil
+	if _, err := b.ln.Accept(); err == nil {
+		t.Fatal("Accept admitted a conn over a cap of 0")
+	}
+
+	// The first answer is reported, and its sink write blocks.
+	if resp, err := http.ReadResponse(bufio.NewReader(clients[0]), nil); err != nil {
+		t.Fatal(err)
+	} else {
+		wantRefusal(t, resp, DecisionConnCap, "vm-a")
+	}
+	if n, err := clients[maxCapAnswersPerVM].Read(make([]byte, 1)); n != 0 || err != io.EOF {
+		t.Errorf("refusal past the slots read %d, %v; want closed unanswered", n, err)
+	}
+	close(sink.gate)
+	for _, c := range clients {
+		_ = c.Close()
+	}
+	b.ln.closeAll()
+	if n := len(sink.events); n != 1 {
+		t.Errorf("conn_cap events = %d, want 1", n)
 	}
 }
 
@@ -185,7 +259,7 @@ func TestConnCapAnswersEndWithTheListener(t *testing.T) {
 	defer client.Close()
 	server := noDeadlineConn{pipe} // so only closeAll can end the answer
 	l.chargeCap(server)
-	go l.answerCap(server, "vm-a") // blocks writing: client never reads
+	go l.answerCap(server, "vm-a", nil) // blocks writing: client never reads
 	l.closeAll()
 	if n := len(l.answering); n != 0 {
 		t.Errorf("answers in flight after closeAll = %d, want 0", n)
@@ -266,9 +340,12 @@ func TestRequestCapCountsBridgedRequests(t *testing.T) {
 	}
 }
 
-// The count outlives any one VM of a session and ends with its last.
-func TestRequestCapLivesWithTheSessionsVMs(t *testing.T) {
+// The count is shared by the session's VMs, survives its last VM for
+// sessionIdle, and is dropped only after that.
+func TestRequestCapLivesWithTheSession(t *testing.T) {
 	reg, _ := newCappedStack(t, Limits{MaxRequestsPerSession: 1})
+	now := time.Unix(0, 0)
+	reg.now = func() time.Time { return now }
 	origin, _ := countingOrigin(t)
 	get := func(addr string) int {
 		resp := guestGet(t, guest(t, addr), origin.URL+"/", nil)
@@ -276,25 +353,48 @@ func TestRequestCapLivesWithTheSessionsVMs(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	vmA := registerTCPVM(t, reg, "vm-a", "sid-s")
-	if got := get(vmA); got != http.StatusOK {
+	if got := get(registerTCPVM(t, reg, "vm-a", "sid-s")); got != http.StatusOK {
 		t.Fatalf("first request: %d", got)
 	}
 	vmB := registerTCPVM(t, reg, "vm-b", "sid-s")
 	_ = reg.Unregister("vm-a")
-	vmC := registerTCPVM(t, reg, "vm-c", "sid-s")
-	for vm, addr := range map[string]string{"vm-b": vmB, "vm-c": vmC} {
-		if got := get(addr); got != http.StatusTooManyRequests {
-			t.Errorf("%s after vm-a left: %d, want 429 (the session still has a VM)", vm, got)
-		}
+	if got := get(vmB); got != http.StatusTooManyRequests {
+		t.Errorf("vm-b after vm-a left: %d, want 429", got)
 	}
 	_ = reg.Unregister("vm-b")
+
+	now = now.Add(sessionIdle)
+	if got := get(registerTCPVM(t, reg, "vm-c", "sid-s")); got != http.StatusTooManyRequests {
+		t.Errorf("re-registered within sessionIdle: %d, want 429", got)
+	}
 	_ = reg.Unregister("vm-c")
-	vmD := registerTCPVM(t, reg, "vm-d", "sid-s")
-	if got := get(vmD); got != http.StatusOK {
-		t.Errorf("vm-d after the session's last VM left: %d, want 200 (a fresh count)", got)
+
+	now = now.Add(sessionIdle + time.Second)
+	if got := get(registerTCPVM(t, reg, "vm-d", "sid-s")); got != http.StatusOK {
+		t.Errorf("re-registered past sessionIdle: %d, want 200", got)
+	}
+	// vm-d still holds the count, so no idle time drops it.
+	now = now.Add(2 * sessionIdle)
+	if got := get(registerTCPVM(t, reg, "vm-e", "sid-s")); got != http.StatusTooManyRequests {
+		t.Errorf("with vm-d registered: %d, want 429", got)
 	}
 }
+
+// closeRecorder records that it was closed.
+type closeRecorder struct {
+	net.Conn
+	closed bool
+}
+
+func (c *closeRecorder) Close() error { c.closed = true; return c.Conn.Close() }
+
+// gatedSink records events once gate is closed.
+type gatedSink struct {
+	gate   chan struct{}
+	events []Event
+}
+
+func (s *gatedSink) Emit(e Event) { <-s.gate; s.events = append(s.events, e) }
 
 // noDeadlineConn ignores deadlines.
 type noDeadlineConn struct{ net.Conn }

@@ -16,6 +16,11 @@ import (
 	"github.com/rossoctl/cortex/core/session"
 )
 
+// IdleTimeout is how long a VM's connection may sit idle between requests
+// before it is closed and its conn slot freed. The forward proxy's
+// BridgedIdleTimeout takes it too, for the tunnels it decrypts.
+const IdleTimeout = 60 * time.Second
+
 // vmBinding is one registered VM: its listener, the http.Server accepting on
 // it, and the state Unregister needs to abort it.
 type vmBinding struct {
@@ -40,28 +45,33 @@ func newVMBinding(fp *forwardproxy.Server, sink AuditSink, vmID, sid string, ln 
 		requests: requests,
 	}
 	b.ln = newTrackedListener(ln, maxConns, b.refuseConn)
-	// ReadHeaderTimeout matches bootstrap's (also gosec G112); IdleTimeout
-	// bounds the gap between keep-alive requests. Together they free the conn
-	// slot of a guest that drips headers or parks idle connections.
-	b.srv = &http.Server{Handler: b, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second}
+	// ReadHeaderTimeout matches bootstrap's (also gosec G112). Together with
+	// IdleTimeout it frees the conn slot of a guest that drips headers or parks
+	// idle connections.
+	b.srv = &http.Server{Handler: b, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: IdleTimeout}
 	return b
 }
 
-// refuseConn turns away a connection over the VM's conn cap, off the accept
-// loop so a guest that never reads cannot stall it.
+// refuseConn turns away a connection over the VM's conn cap. The answer and
+// its audit event run off the accept loop, so neither a guest that never
+// reads nor a slow sink stalls admission. A stalled sink holds answer slots
+// instead, and refusals past them close unanswered.
 func (b *vmBinding) refuseConn(c net.Conn, d capRefusal) {
-	if d.report {
-		b.sink.Emit(Event{
-			VMID: b.vmID, SID: b.sid,
-			Status: http.StatusTooManyRequests, Decision: DecisionConnCap,
-			Coalesced: d.coalesced,
-		})
-	}
 	if !d.answer {
 		_ = c.Close()
 		return
 	}
-	go b.ln.answerCap(c, b.vmID)
+	var report func()
+	if d.report {
+		report = func() {
+			b.sink.Emit(Event{
+				VMID: b.vmID, SID: b.sid,
+				Status: http.StatusTooManyRequests, Decision: DecisionConnCap,
+				Coalesced: d.coalesced,
+			})
+		}
+	}
+	go b.ln.answerCap(c, b.vmID, report)
 }
 
 // chargeRequest counts r, addressed to host, against the session's request

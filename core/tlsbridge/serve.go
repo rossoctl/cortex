@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"golang.org/x/net/http2"
 )
@@ -88,10 +89,15 @@ func (dummyAddr) String() string  { return "tls-bridge" }
 // ServeConn drives an already-terminated TLS conn through handler with HTTP
 // keep-alive, negotiating h2 when ALPN selected it. It blocks until the
 // connection is closed (like a tunnel), so callers can serve it synchronously.
-func ServeConn(tconn *tls.Conn, handler http.Handler) {
-	srv := &http.Server{Handler: handler}
+func ServeConn(tconn *tls.Conn, handler http.Handler) { ServeConnIdle(tconn, handler, 0) }
+
+// ServeConnIdle is ServeConn that closes the connection once it has been idle
+// between requests for idle. Zero keeps it open until either side closes.
+func ServeConnIdle(tconn *tls.Conn, handler http.Handler, idle time.Duration) {
+	srv := &http.Server{Handler: handler, IdleTimeout: idle}
 	if tconn.ConnectionState().NegotiatedProtocol == "h2" {
-		h2s := &http2.Server{}
+		// http2.Server.ServeConn reads its own IdleTimeout, not BaseConfig's.
+		h2s := &http2.Server{IdleTimeout: idle}
 		h2s.ServeConn(tconn, &http2.ServeConnOpts{Handler: handler, BaseConfig: srv})
 		return
 	}
