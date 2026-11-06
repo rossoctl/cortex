@@ -15,6 +15,7 @@ package settle
 import (
 	"log/slog"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -99,8 +100,8 @@ const (
 )
 
 // headerCost returns the cost the gateway reported and what kind of answer it was.
-func headerCost(pctx *pipeline.Context) (cost float64, state headerCostState) {
-	costStr := pctx.ResponseHeaders.Get(ResponseCostHeader)
+func headerCost(in Input) (cost float64, state headerCostState) {
+	costStr := in.ResponseHeaders.Get(ResponseCostHeader)
 	if costStr == "" {
 		// Anthropic /v1/messages (and newer LiteLLM) omit the bare header, so this fallback is
 		// what keeps Claude Code's shape from recording $0 for every request.
@@ -111,7 +112,7 @@ func headerCost(pctx *pipeline.Context) (cost float64, state headerCostState) {
 		// cannot see it, because it compares against the modelled figure rather than the
 		// discount headers. Pre-existing; closing it means subtracting those headers when
 		// non-zero, which needs a gateway configured that way to verify against.
-		costStr = pctx.ResponseHeaders.Get(ResponseCostOriginalHeader)
+		costStr = in.ResponseHeaders.Get(ResponseCostOriginalHeader)
 	}
 	if costStr == "" {
 		return 0, headerAbsent
@@ -123,7 +124,7 @@ func headerCost(pctx *pipeline.Context) (cost float64, state headerCostState) {
 	if c == 0 {
 		return 0, headerZero
 	}
-	if implausibleUnparsedCost(pctx, c) {
+	if implausibleUnparsedCost(in, c) {
 		return 0, headerImplausible
 	}
 	// UNREPRESENTABLE IS THE LAST QUESTION ASKED, and the order is the substance. MicrosFromUSD
@@ -188,21 +189,21 @@ func headerCost(pctx *pipeline.Context) (cost float64, state headerCostState) {
 // as event.RejectedImplausible on an unpriced record, so the coverage gap stays
 // nameable — that is the whole doctrine here: a wrong number wearing a right label is the
 // worst available outcome.
-func implausibleUnparsedCost(pctx *pipeline.Context, usd float64) bool {
-	if pctx.Extensions.Inference != nil {
+func implausibleUnparsedCost(in Input, usd float64) bool {
+	if in.Inference != nil {
 		return false
 	}
 	if pricing.PlausibleRequestCostUSD(usd) {
 		return false
 	}
-	warnImplausibleCost(pctx, usd)
+	warnImplausibleCost(in, usd)
 	return true
 }
 
 // implausibleWarnOnce keeps the operator-facing warning to ONE per process.
 //
 // Not once per host, which is the shape a reader will expect and which cannot be safely
-// built here: pctx.Host is caller-controlled, so a map keyed on it is an unbounded
+// built here: Input.Host is caller-controlled, so a map keyed on it is an unbounded
 // allocation driven by hostile input. Not unconditional either — the warning fires on a
 // path an attacker chooses and would be a log-flood amplifier.
 //
@@ -220,13 +221,13 @@ var implausibleWarnOnce sync.Once
 // warnImplausibleCost tells an operator enough to FIND THE HOST: host, path, the figure
 // that was refused, and the bound it exceeded. A warning saying only "implausible cost
 // rejected" would leave the one question that matters unanswerable.
-func warnImplausibleCost(pctx *pipeline.Context, usd float64) {
+func warnImplausibleCost(in Input, usd float64) {
 	slog.Debug("costing: refused an implausible cost header",
-		"host", pctx.Host, "path", pctx.Path, "reported_usd", usd,
+		"host", pipeline.SanitizeLogValue(in.Host), "path", pipeline.SanitizeLogValue(in.Path), "reported_usd", usd,
 		"max_plausible_usd", float64(pricing.MaxPlausibleRequestCostMicros)/1e6)
 	implausibleWarnOnce.Do(func() {
 		slog.Warn("costing: refused a cost header larger than any inference call could plausibly be; this endpoint was not parsed, so nothing corroborates the figure and it is recorded as an unpriced coverage gap rather than as spend. Further occurrences are logged at debug level only",
-			"host", pctx.Host, "path", pctx.Path, "reported_usd", usd,
+			"host", pipeline.SanitizeLogValue(in.Host), "path", pipeline.SanitizeLogValue(in.Path), "reported_usd", usd,
 			"max_plausible_usd", float64(pricing.MaxPlausibleRequestCostMicros)/1e6)
 	})
 }
@@ -234,8 +235,10 @@ func warnImplausibleCost(pctx *pipeline.Context, usd float64) {
 // IsEventStream reports whether the response is a text/event-stream (SSE) — the
 // streamed shape where LiteLLM reports cost 0 in the header, so usage-based
 // pricing is the intended fallback.
-func IsEventStream(pctx *pipeline.Context) bool {
-	ct := pctx.ResponseHeaders.Get("Content-Type")
+func IsEventStream(pctx *pipeline.Context) bool { return isEventStream(pctx.ResponseHeaders) }
+
+func isEventStream(h http.Header) bool {
+	ct := h.Get("Content-Type")
 	if i := strings.IndexByte(ct, ';'); i >= 0 {
 		ct = ct[:i]
 	}
@@ -248,12 +251,15 @@ func IsEventStream(pctx *pipeline.Context) bool {
 // False when the bare header is absent AND LiteLLM's own discount/margin layer is active:
 // the fallback figure is then pre-adjustment while the modelled figure is what the caller
 // pays, so any comparison measures the gateway's adjustment rather than the rate table.
-func Comparable(pctx *pipeline.Context) bool {
-	if pctx.ResponseHeaders.Get(ResponseCostHeader) != "" {
+func Comparable(pctx *pipeline.Context) bool { return ComparableInput(inputOf(pctx)) }
+
+// ComparableInput is Comparable on plain values.
+func ComparableInput(in Input) bool {
+	if in.ResponseHeaders.Get(ResponseCostHeader) != "" {
 		return true // the effective figure itself; nothing to reconcile
 	}
 	for _, h := range []string{DiscountAmountHeader, MarginAmountHeader} {
-		v := pctx.ResponseHeaders.Get(h)
+		v := in.ResponseHeaders.Get(h)
 		if v == "" {
 			continue
 		}
@@ -488,15 +494,34 @@ func headerOmitsCache(out Settled, header float64) bool {
 //
 // rates may be nil: a binary with no pricing wired reports unpriced rather than crashing.
 func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
-	var out Settled
 	if pctx == nil {
-		return out
+		return Settled{}
 	}
+	return SettleInput(inputOf(pctx), rates)
+}
 
-	cost, state := headerCost(pctx)
+// Input is what pricing reads from one request. It holds plain values, so a caller can
+// price a request with no plugin context, for example from an archived capture.
+type Input struct {
+	// Host selects the rate table. Host and Path are also in the implausible-cost log.
+	Host, Path string
+	// Inference is nil when no parser read the request.
+	Inference *pipeline.InferenceExtension
+	// ResponseHeaders hold the gateway cost headers and the Content-Type.
+	ResponseHeaders http.Header
+}
+
+func inputOf(pctx *pipeline.Context) Input {
+	return Input{Host: pctx.Host, Path: pctx.Path, Inference: pctx.Extensions.Inference, ResponseHeaders: pctx.ResponseHeaders}
+}
+
+// SettleInput is Settle on plain values.
+func SettleInput(in Input, rates pricing.Resolver) Settled {
+	var out Settled
+	cost, state := headerCost(in)
 	if state == headerPositive {
 		out.ReportedUSD, out.HasReported = cost, true
-	} else if state == headerZero && !IsEventStream(pctx) {
+	} else if state == headerZero && !isEventStream(in.ResponseHeaders) {
 		out.ReportedUSD, out.HasReported = 0, true
 	} else if state == headerImplausible {
 		// DISCLOSED and not charged. Deliberately not fed to ReportedUSD: the figure was
@@ -511,10 +536,10 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 
 	// Modelled alongside, always, so the pair is available for drift even when the
 	// gateway's figure wins.
-	usage := pricing.UsageFromInference(pctx.Extensions.Inference)
+	usage := pricing.UsageFromInference(in.Inference)
 	model := ""
-	if pctx.Extensions.Inference != nil {
-		model = pctx.Extensions.Inference.Model
+	if in.Inference != nil {
+		model = in.Inference.Model
 	}
 	// promptTotal is the request's own prompt size, and every figure below resolves its
 	// rates at it — the whole request and both halves alike. That is what makes the two
@@ -523,9 +548,9 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 	// miss another.
 	// The endpoint's unit covers a figure the gateway reported as much as a modelled one, so it
 	// is stamped whichever of the two wins below.
-	out.Currency = pricing.UnitOf(rates, pctx.Host, model)
+	out.Currency = pricing.UnitOf(rates, in.Host, model)
 	promptTotal := usage.PromptTotal()
-	micros, tiers, prov, ok, refusal := modelledCost(rates, pctx.Host, model, usage, promptTotal)
+	micros, tiers, prov, ok, refusal := modelledCost(rates, in.Host, model, usage, promptTotal)
 	if ok {
 		out.ModelledUSD, out.HasModelled, out.ModelledProv = float64(micros)/1e6, true, prov
 		// From the WHOLE request's pricing, under one resolved rate set, so the four
@@ -563,7 +588,7 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 	// which zeroes the offending tier, priced at $0.0005 on a record disclosing nothing.
 	if !pricing.PlausibleUsage(usage) {
 		out.UsageRefused = true
-		return withRefusal(out, cost, state, pctx, event.RejectedImplausibleUsage)
+		return withRefusal(out, cost, state, in, event.RejectedImplausibleUsage)
 	}
 
 	// The prompt half, for a request row. Output zeroed rather than subtracted, because
@@ -571,7 +596,7 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 	// presented as a whole one is worse than none.
 	promptOnly := usage
 	promptOnly.Output = 0
-	if micros, _, _, ok, _ := modelledCost(rates, pctx.Host, model, promptOnly, promptTotal); ok {
+	if micros, _, _, ok, _ := modelledCost(rates, in.Host, model, promptOnly, promptTotal); ok {
 		out.PromptUSD, out.HasPrompt = float64(micros)/1e6, true
 	}
 
@@ -579,7 +604,7 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 	// tiers instead of subtracting the prompt figure from the total.
 	outputOnly := usage
 	outputOnly.Input, outputOnly.CacheWrite, outputOnly.CacheRead = 0, 0, 0
-	if micros, _, _, ok, _ := modelledCost(rates, pctx.Host, model, outputOnly, promptTotal); ok {
+	if micros, _, _, ok, _ := modelledCost(rates, in.Host, model, outputOnly, promptTotal); ok {
 		out.OutputUSD, out.HasOutput = float64(micros)/1e6, true
 	}
 
@@ -628,7 +653,7 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 		out.TierUSD, out.HasTiers = [pricing.NumTiers]float64{}, false
 	}
 
-	streamedPlaceholder := state == headerZero && IsEventStream(pctx)
+	streamedPlaceholder := state == headerZero && isEventStream(in.ResponseHeaders)
 	out.DeclaredFree = state == headerZero && !streamedPlaceholder
 
 	// Asked here, where both figures and the tier split exist, and BEFORE the precedence
@@ -660,7 +685,7 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 	// here as SourceGatewayHeader too: the gateway stating it charged nothing is an
 	// exact total, and publishing a floor of zero would be a lower bound on nothing.
 	if out.HasModelled {
-		if reason := pricing.IncompleteReason(pctx.Extensions.Inference); reason != "" {
+		if reason := pricing.IncompleteReason(in.Inference); reason != "" {
 			out.ModelledIncomplete, out.ModelledIncompleteReason = true, reason
 			// The charged figure is qualified only when the modelled one IS the charged one.
 			// Gated on the source rather than on "the header was not positive" because
@@ -704,12 +729,12 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 // about what the call actually charged, so a gateway figure — or a declared-free zero — must
 // survive it. The disclosure is attached only when nothing else settled, because a set
 // RejectedReason reads as unpriced everywhere.
-func withRefusal(out Settled, cost float64, state headerCostState, pctx *pipeline.Context, reason string) Settled {
+func withRefusal(out Settled, cost float64, state headerCostState, in Input, reason string) Settled {
 	switch {
 	case state == headerPositive:
 		out.CostUSD, out.Source, out.Provenance, out.Priced =
 			cost, event.SourceGatewayHeader, pricing.ProvAuthoritative, true
-	case state == headerZero && !IsEventStream(pctx):
+	case state == headerZero && !isEventStream(in.ResponseHeaders):
 		out.DeclaredFree = true
 		out.CostUSD, out.Source, out.Provenance, out.Priced =
 			0, event.SourceGatewayHeader, pricing.ProvAuthoritative, true
