@@ -352,8 +352,8 @@ func modelFromBody(body []byte) string {
 // when neither is available; OnRequest treats that as "skip compaction" rather
 // than sharing one store key across unrelated callers.
 func sessionID(pctx *pipeline.Context) string {
-	if pctx.Session != nil && pctx.Session.ID != "" {
-		return pctx.Session.ID
+	if pctx.SessionID != "" {
+		return pctx.SessionID
 	}
 	if pctx.Identity != nil {
 		return pctx.Identity.Subject()

@@ -801,8 +801,10 @@ func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 	// this one. From the handshake's resolved session, as hydrateSession resolves one for
 	// an HTTPS request, so a turn has no view exactly when that request would have none.
 	var view *pipeline.SessionView
+	var sid string
 	if hs.Session != nil {
-		view = ws.s.sessionViewFor(hs.Session.ID)
+		sid = hs.Session.ID
+		view = ws.s.sessionViewFor(sid)
 	}
 	pctx := &pipeline.Context{
 		Direction:     pipeline.Outbound,
@@ -815,6 +817,7 @@ func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 		Shared:        ws.s.Shared,
 		StartedAt:     time.Now(),
 		Session:       view,
+		SessionID:     sid,
 		SessionSource: hs.SessionSource,
 		SessionHeader: hs.SessionHeader,
 		ChainSession:  hs.ChainSession,

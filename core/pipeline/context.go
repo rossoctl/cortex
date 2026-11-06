@@ -249,6 +249,12 @@ type Context struct {
 	//     is an observability and correlation key, not an authorization subject.
 	Session *SessionView
 
+	// SessionID is the id of the session the request is filed under. The listener
+	// sets it whenever it sets Session, to Session.ID. It is empty when there is no
+	// Session. A plugin that keys state on the session and reads no events reads
+	// this field: it costs nothing, and the same rules as Session.ID apply to it.
+	SessionID string
+
 	// SessionSource says how the listener resolved Session, so a plugin that
 	// keys security state on it can tell a session the request named from one
 	// the listener guessed. Empty when the listener does not record it; treat

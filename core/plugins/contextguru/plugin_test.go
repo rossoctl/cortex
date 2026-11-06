@@ -59,8 +59,9 @@ func inferencePctx(path string, body []byte) *pipeline.Context {
 	return &pipeline.Context{
 		Direction: pipeline.Outbound, Method: "POST", Scheme: "http",
 		Host: "ollama", Path: path, Headers: http.Header{},
-		Body:    body,
-		Session: &pipeline.SessionView{ID: "s1"},
+		Body:      body,
+		Session:   &pipeline.SessionView{ID: "s1"},
+		SessionID: "s1",
 	}
 }
 
@@ -156,7 +157,7 @@ func TestOnRequest_NoSession_Skips(t *testing.T) {
 	p := configured(t, collapseEngine)
 	body := chatBody(bigToolOutput())
 	pctx := inferencePctx("/v1/chat/completions", body)
-	pctx.Session = nil // and Identity is nil → sessionID == ""
+	pctx.Session, pctx.SessionID = nil, "" // and Identity is nil → sessionID == ""
 	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
 		t.Fatalf("expected Continue, got %v", act.Type)
 	}

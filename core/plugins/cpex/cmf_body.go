@@ -74,10 +74,7 @@ func trustedSessionID(pctx *pipeline.Context) string {
 	if id := pctx.ChainSession; session.IsConversation(id) {
 		return id
 	}
-	if pctx.Session == nil {
-		return ""
-	}
-	id := pctx.Session.ID
+	id := pctx.SessionID
 	if !session.IsConversation(id) {
 		return ""
 	}

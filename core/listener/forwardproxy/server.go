@@ -605,7 +605,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// Establish the session identity ONCE, here, and keep it in a local: the
 	// identity handed to plugins and the bucket events are recorded under must be
 	// the same answer, not two rules that happen to agree. Plugins key on
-	// pctx.Session.ID (sessionbudget's Redis counters, contextguru's compaction
+	// pctx.SessionID (sessionbudget's Redis counters, contextguru's compaction
 	// state, sparc), so resolving this from ActiveSession() alone attributed two
 	// concurrent coding-agent sessions to whichever spoke last.
 	//
@@ -2332,6 +2332,7 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHe
 	sid, source := at.PluginSession(trusted, s.activeSession)
 	if sid != "" {
 		pctx.Session = s.sessionViewFor(sid)
+		pctx.SessionID = sid
 		pctx.SessionSource = source
 		pctx.SessionHeader = at.Header
 	}

@@ -26,6 +26,8 @@ type identityProbePlugin struct {
 	sawEvents []int
 	sawSource []pipeline.SessionSource
 	sawHeader []string
+	// sawSessionID is pctx.SessionID, recorded for every request beside sawID.
+	sawSessionID []string
 }
 
 func (p *identityProbePlugin) Name() string { return "identity-probe" }
@@ -33,6 +35,7 @@ func (p *identityProbePlugin) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{}
 }
 func (p *identityProbePlugin) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	p.sawSessionID = append(p.sawSessionID, pctx.SessionID)
 	if pctx.Session == nil {
 		p.sawNil = append(p.sawNil, true)
 		p.sawID = append(p.sawID, "")
@@ -225,6 +228,23 @@ func TestPluginIdentity_NoSessionAtAllStaysNil(t *testing.T) {
 	}
 	if !probe.sawNil[0] {
 		t.Errorf("plugin saw session %q, want nil (no header, nothing active)", probe.sawID[0])
+	}
+}
+
+// pctx.SessionID is the view's id when the request has a view, and empty when it has none.
+func TestPluginIdentity_SessionIDIsTheViewID(t *testing.T) {
+	for _, sid := range []string{"511754a6-63e2-47df-bb22-706dc165c344", ""} {
+		store := session.New(5*time.Minute, 100, 0)
+		probe, client, backendURL := newProbedProxy(t, store)
+		get(t, client, backendURL, sid)
+		store.Close()
+		if len(probe.sawID) != 1 {
+			t.Fatalf("probe ran %d times, want 1", len(probe.sawID))
+		}
+		if probe.sawNil[0] != (sid == "") || probe.sawID[0] != sid || probe.sawSessionID[0] != sid {
+			t.Errorf("header %q: nil view %v, view id %q, SessionID %q; want SessionID and view id %q",
+				sid, probe.sawNil[0], probe.sawID[0], probe.sawSessionID[0], sid)
+		}
 	}
 }
 
