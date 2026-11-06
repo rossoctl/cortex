@@ -411,7 +411,7 @@ the body the agent sent, the body Cortex forwarded when a plugin rewrote it, the
 and the query. Other requests, such as an OAuth token refresh, keep their event only. Cortex
 removes a header or a query parameter when its name, split at `-` and `_`, has one of the
 words `key`, `apikey`, `token`, `auth`, `authorization`, `cookie`, `secret`, `signature`,
-`password`, `credential` or `credentials`, with case ignored. So `x-api-key`, Gemini's `key`,
+`password`, `credential` or `credentials`, with case ignored. So `x-api-key`,
 `Idempotency-Key` and `Sec-WebSocket-Key` are removed, and a camelCase name such as
 `accessToken` is kept. Cortex does not redact the body. Images,
 files the agent read and thinking blocks are kept too. Each part of a body that repeats from
