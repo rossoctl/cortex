@@ -51,17 +51,19 @@ type SegmentInfo struct {
 // end of a segment nobody will write again. That is what lets a compressed stream survive a
 // crash: there is no safe way to append after a torn zstd block, and this never has to.
 //
-// EACH SEGMENT IS SELF-CONTAINED. seen starts empty, so every string the segment refers to is
-// defined in it, and deleting one segment never breaks another.
+// EACH SEGMENT IS SELF-CONTAINED. seen and blocks start empty, so every string and block the
+// segment refers to is defined in it, and deleting one segment never breaks another.
 //
 // Not safe for concurrent use: one goroutine owns every writer.
 type segmentWriter struct {
-	f     *os.File
-	out   countingWriter
-	enc   *zstd.Encoder
-	seen  map[string]struct{}
-	inf   SegmentInfo
-	dirty bool
+	f    *os.File
+	out  countingWriter
+	enc  *zstd.Encoder
+	seen map[string]struct{}
+	// blocks is the segment's written capture blocks, apart from seen; see splitBody.
+	blocks map[string]struct{}
+	inf    SegmentInfo
+	dirty  bool
 }
 
 // countingWriter counts the compressed bytes the encoder has handed the file.
@@ -108,7 +110,7 @@ func createSegment(sessionDir string, opened time.Time) (*segmentWriter, error) 
 		os.Remove(f.Name())
 		return nil, err
 	}
-	w := &segmentWriter{f: f, seen: map[string]struct{}{}, inf: SegmentInfo{File: name}}
+	w := &segmentWriter{f: f, seen: map[string]struct{}{}, blocks: map[string]struct{}{}, inf: SegmentInfo{File: name}}
 	w.out.w = f
 	enc, err := zstd.NewWriter(&w.out,
 		zstd.WithWindowSize(zstdWindow),
@@ -126,15 +128,26 @@ func createSegment(sessionDir string, opened time.Time) (*segmentWriter, error) 
 
 // append writes e — first the strings it refers to that this segment has not defined, then the
 // event — and stamps now as the segment's last write. Nothing is durable until flush.
-//
-// ONE WRITE PER EVENT, so a string record and the event referring to it reach the stream
-// together. If the event cannot be encoded the strings are forgotten again: recording them as
-// defined without writing them would make every later reference to them dangle.
 func (w *segmentWriter) append(e pipeline.SessionEvent, now time.Time) error {
+	return w.appendCapture(e, nil, now)
+}
+
+// appendCapture is append for an event that carries its request's capture c, which may be nil:
+// the blocks of c this segment has not written go before the event too.
+//
+// ONE WRITE PER EVENT, so a string or block record and the event referring to it reach the
+// stream together. If the event cannot be encoded the strings and blocks are forgotten again:
+// recording them as defined without writing them would make every later reference to them
+// dangle.
+func (w *segmentWriter) appendCapture(e pipeline.SessionEvent, c *pipeline.RequestCapture, now time.Time) error {
 	stripped, r, fresh := split(e, w.seen)
+	f, blocks := splitCapture(c, w.blocks)
 	forget := func() {
 		for _, s := range fresh {
 			delete(w.seen, s.h)
+		}
+		for _, b := range blocks {
+			delete(w.blocks, b.h)
 		}
 	}
 	var buf []byte
@@ -146,7 +159,15 @@ func (w *segmentWriter) append(e pipeline.SessionEvent, now time.Time) error {
 		}
 		buf = append(buf, line...)
 	}
-	line, err := eventLine(stripped, r)
+	for _, b := range blocks {
+		line, err := blockLine(b)
+		if err != nil {
+			forget()
+			return err
+		}
+		buf = append(buf, line...)
+	}
+	line, err := eventLine(stripped, r, f)
 	if err != nil {
 		forget()
 		return err

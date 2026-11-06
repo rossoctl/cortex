@@ -32,7 +32,7 @@ func TestSegment_RotatesOnEventCount(t *testing.T) {
 				Inference: &pipeline.InferenceExtension{Model: "m", Messages: []pipeline.InferenceMessage{
 					{Role: "user", Content: fmt.Sprintf("event %d", i)},
 				}},
-			})
+			}, nil)
 		}
 	})
 	a.mu.Lock()

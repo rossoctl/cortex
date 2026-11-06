@@ -27,7 +27,7 @@ func throughLines(t *testing.T, evs []pipeline.SessionEvent) []pipeline.SessionE
 			}
 			lines = append(lines, b)
 		}
-		b, err := eventLine(stripped, r)
+		b, err := eventLine(stripped, r, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

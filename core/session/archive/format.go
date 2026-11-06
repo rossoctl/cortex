@@ -11,25 +11,31 @@ import (
 	"github.com/rossoctl/cortex/core/session"
 )
 
-// The two record kinds a segment line can carry. A reader skips any other kind, so a later
-// version can add one without breaking an older reader.
+// The record kinds a segment line can carry. A reader skips any other kind, so a later version
+// can add one without breaking an older reader. kindBlock is the newest: a block of a captured
+// request body, see capture.go.
 const (
 	kindString = "s"
 	kindEvent  = "e"
+	kindBlock  = "b"
 )
 
 // record is one line of a segment.
 //
-// A string record carries H and V: a string the segment defines once, under its hash. An event
-// record carries E, the event with its referenced fields blanked, and R, which of them were
-// referenced. One struct for both kinds so a reader decodes a line without knowing its kind
-// first.
+// A string record carries H and V: a string the segment defines once, under its hash. A block
+// record is the same for a block of a captured body, with X in place of V for a block that is
+// not valid UTF-8. An event record carries E, the event with its referenced fields blanked, R,
+// which of them were referenced, and F, the request's capture when it has one. One struct for
+// every kind so a reader decodes a line without knowing its kind first.
 type record struct {
 	K string                 `json:"k"`
 	H string                 `json:"h,omitempty"`
 	V string                 `json:"v,omitempty"`
+	X []byte                 `json:"x,omitempty"`
 	E *pipeline.SessionEvent `json:"e,omitempty"`
 	R *refs                  `json:"r,omitempty"`
+	// F stays undecoded until a capture is asked for: an event read has no use for it.
+	F json.RawMessage `json:"f,omitempty"`
 }
 
 // refs names, BY POSITION, which of an event's deduplicated strings were written as
@@ -232,13 +238,22 @@ func join(e *pipeline.SessionEvent, r *refs, table map[string]string) bool {
 	return true
 }
 
-// stringLine and eventLine are the two lines a segment writes, each with its trailing newline.
+// stringLine and eventLine are the lines a segment writes for an event, each with its trailing
+// newline; blockLine, in capture.go, is the third.
 func stringLine(s stringRec) ([]byte, error) {
 	return appendLine(record{K: kindString, H: s.h, V: s.v})
 }
 
-func eventLine(e pipeline.SessionEvent, r *refs) ([]byte, error) {
-	return appendLine(record{K: kindEvent, E: &e, R: r})
+func eventLine(e pipeline.SessionEvent, r *refs, f *captureRec) ([]byte, error) {
+	rec := record{K: kindEvent, E: &e, R: r}
+	if f != nil {
+		b, err := json.Marshal(f)
+		if err != nil {
+			return nil, err
+		}
+		rec.F = b
+	}
+	return appendLine(rec)
 }
 
 func appendLine(rec record) ([]byte, error) {
