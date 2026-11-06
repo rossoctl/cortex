@@ -3,6 +3,7 @@ package apiclient
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -148,3 +149,30 @@ func TestSnapshotEventLimit_ReachesTheServerCeiling(t *testing.T) {
 }
 
 func contains(hay, needle string) bool { return strings.Contains(hay, needle) }
+
+// The detail pane asks for the exact bytes too. A proxy that has them answers "raw" beside the
+// event; one that predates them ignores the parameter, and the event comes back without.
+func TestGetEventRaw(t *testing.T) {
+	var gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = io.WriteString(w, `{"seq":7,"at":"2026-11-05T00:00:00Z","direction":"outbound","phase":"request",`+
+			`"raw":{"request":"{\"model\":\"m\"}","requestHeaders":{"Anthropic-Beta":["x"]}}}`)
+	}))
+	defer ts.Close()
+	ev, raw, err := New(ts.URL).GetEventRaw(context.Background(), "s1", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery != "raw=1" || ev.Seq != 7 || raw == nil || raw.Request != `{"model":"m"}` || raw.RequestHeaders.Get("Anthropic-Beta") != "x" {
+		t.Fatalf("query %q, event %+v, raw %+v", gotQuery, ev, raw)
+	}
+
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(&pipeline.SessionEvent{Seq: 7})
+	}))
+	defer old.Close()
+	if ev, raw, err := New(old.URL).GetEventRaw(context.Background(), "s1", 7); err != nil || ev.Seq != 7 || raw != nil {
+		t.Fatalf("against an older proxy: event %+v raw %+v err %v, want the event and no raw", ev, raw, err)
+	}
+}

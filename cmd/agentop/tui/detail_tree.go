@@ -183,6 +183,10 @@ func foldDefaults(root *node) {
 			}
 		}
 	}
+	// The exact capture: large, and opened when it is the point.
+	if raw := root.child("raw"); raw != nil && raw.fold {
+		raw.defOpen = false
+	}
 	for _, p := range [][2]string{{"mcp", "params"}, {"mcp", "result"}, {"a2a", "parts"}} {
 		if c := root.child(p[0]).child(p[1]); c != nil && c.fold && c.size > clipBytes {
 			c.defOpen = false

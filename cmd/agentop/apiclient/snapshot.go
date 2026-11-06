@@ -64,6 +64,28 @@ func (c *Client) GetEvent(ctx context.Context, id string, seq uint64) (*pipeline
 	return &ev, nil
 }
 
+// GetEventRaw is GetEvent with the event's exact capture (#1494): the request as the agent sent
+// it and as it was forwarded, or the response as the origin sent it. raw is nil when the proxy
+// holds no capture for the event, and against a proxy that predates ?raw=1, which ignores it.
+func (c *Client) GetEventRaw(ctx context.Context, id string, seq uint64) (*pipeline.SessionEvent, *pipeline.RawCapture, error) {
+	path := fmt.Sprintf("/v1/sessions/%s/events/%d?raw=1", url.PathEscape(id), seq)
+	var body json.RawMessage
+	if err := c.getJSON(ctx, path, &body); err != nil {
+		return nil, nil, err
+	}
+	var ev pipeline.SessionEvent
+	if err := json.Unmarshal(body, &ev); err != nil {
+		return nil, nil, err
+	}
+	var withRaw struct {
+		Raw *pipeline.RawCapture `json:"raw"`
+	}
+	if err := json.Unmarshal(body, &withRaw); err != nil {
+		return nil, nil, err
+	}
+	return &ev, withRaw.Raw, nil
+}
+
 // decodeSessionView reads a session snapshot event by event, interning as it goes.
 //
 // WHY NOT Decode into a SessionView: json.Decoder only bounds its buffer between VALUES,

@@ -262,7 +262,7 @@ const indexBody = `Cortex / AuthBridge Session API
   DELETE /v1/sessions     clear every session, memory and disk (laptop only)
   GET /v1/sessions/{id}   recent events (?limit=N max 2000, ?before=<seq>,
                           ?view=summary drops message bodies, ~163x smaller)
-  GET /v1/sessions/{id}/events/{seq}  one event in full, payloads included
+  GET /v1/sessions/{id}/events/{seq}  one event in full (?raw=1: exact bytes)
   GET /v1/sessions/{id}/timeline      agents, tools and hosts as spans
   DELETE /v1/sessions/{id}
                           erase one session, memory and disk (laptop only)
@@ -566,7 +566,18 @@ func (s *Server) handleGetEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(event); err != nil {
+	var out any = event
+	if r.URL.Query().Get("raw") == "1" && s.archive != nil {
+		// The exact capture is on disk only: the store never holds raw bodies, so even a resident
+		// event's comes from the archive. An event with none — not captured, written before
+		// capture, or not flushed yet — is served without it.
+		if c, ok, err := s.archive.Capture(id, seq); ok {
+			out = eventWithRaw{event, rawOf(c)}
+		} else if err != nil {
+			slog.Debug("sessionapi: archive capture read failed", "error", err, "sessionID", id, "seq", seq)
+		}
+	}
+	if err := json.NewEncoder(w).Encode(out); err != nil {
 		slog.Debug("sessionapi: event encode failed", "error", err, "sessionID", id, "seq", seq)
 	}
 }

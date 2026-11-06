@@ -122,6 +122,26 @@ history, one evicted from memory is served instead of 404'd, and
 /v1/sessions/{id}/events/{seq}` falls back to the archive the same way, and
 answers 404 rather than a neighbour when neither holds that seq.
 
+**`?raw=1` adds the exact bytes** (#1494), under `raw`, when the archive holds a
+capture for the event. Only the archive holds them, so `raw` is absent without an
+archive, for an event that was not captured or predates capture, and for the
+second or so before the archive flushes a new event. A request event's `raw`:
+
+| Field | What it is |
+|---|---|
+| `request` | the body as the agent sent it |
+| `forwarded` | the body as Cortex sent it upstream; absent when no plugin rewrote it |
+| `requestHeaders` | the request headers, without credential headers |
+| `query` | the URL's raw query |
+
+A response event's `raw` has `response`: `{status, headers, body, decoded,
+truncated, incomplete}`. `body` is up to 10 MiB of the body as it came off the wire,
+in its `Content-Encoding`, unless `decoded` says the proxy decompressed it to read it
+for a plugin. `truncated` means it was longer, and `incomplete` means it was not read
+to its end: the stream broke off, or the proxy, a plugin or the client stopped it. A body that is not valid UTF-8 — every compressed body — is in
+`requestBase64`, `forwardedBase64` or `bodyBase64` instead. An unknown `raw`
+value is ignored, so an older proxy answers with the event alone.
+
 ## `GET /v1/sessions/{id}/timeline` — agents, tools and hosts on one time axis
 
 The session's history as spans, for agentop's Timeline pane. Computed from the

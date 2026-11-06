@@ -11,6 +11,7 @@ type detailEventLoadedMsg struct {
 	sessionID string
 	seq       uint64
 	event     *pipeline.SessionEvent
+	raw       *pipeline.RawCapture
 	err       error
 }
 
@@ -32,13 +33,16 @@ type detailEventLoadedMsg struct {
 // even after a successful fetch, and a presence check would refetch it on every
 // open and permanently tell the operator its bodies had not arrived.
 func (m *model) needsFullEvent(e *pipeline.SessionEvent) bool {
-	if !m.serverProjects || e == nil {
-		return false
-	}
-	if e.Inference == nil && e.A2A == nil && e.MCP == nil {
+	if !m.serverProjects || !hasBody(e) {
 		return false
 	}
 	return !m.fullFetched[eventSession(m.selectedSess, e)][e.Seq]
+}
+
+// hasBody reports that e carried a message body: a protocol extension. A CONNECT tunnel or a
+// bare denial has none, so it has nothing to fetch, projected or exact.
+func hasBody(e *pipeline.SessionEvent) bool {
+	return e != nil && (e.Inference != nil || e.A2A != nil || e.MCP != nil)
 }
 
 // markFullFetched records that this event's bodies have been retrieved.
@@ -69,11 +73,14 @@ func (m *model) markFullFetched(sessionID string, seq uint64) {
 //
 // Carries the session id and seq so the handler can drop a reply for a row the
 // operator has already navigated away from.
+//
+// It asks for the exact capture too (?raw=1), which only the proxy's archive holds, so it runs
+// on every open of a row that has a body, not only when the timeline is projected.
 func fetchDetailEventCmd(m *model, sessionID string, seq uint64) tea.Cmd {
 	ctx, client := m.ctx, m.client
 	return func() tea.Msg {
-		ev, err := client.GetEvent(ctx, sessionID, seq)
-		return detailEventLoadedMsg{sessionID: sessionID, seq: seq, event: ev, err: err}
+		ev, raw, err := client.GetEventRaw(ctx, sessionID, seq)
+		return detailEventLoadedMsg{sessionID: sessionID, seq: seq, event: ev, raw: raw, err: err}
 	}
 }
 
@@ -121,7 +128,7 @@ func (m *model) applyDetailEvent(msg detailEventLoadedMsg) {
 
 	// Re-render through showDetail so the tunnel/TLS headers, wrapping and scroll
 	// position are all rebuilt exactly as the first render built them.
-	m.detailRow.event = msg.event
+	m.detailRow.event, m.detailRow.raw = msg.event, msg.raw
 	m.showDetail(m.detailRow, false)
 }
 

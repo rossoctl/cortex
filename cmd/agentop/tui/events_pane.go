@@ -74,6 +74,8 @@ func newEventsTable() table.Model {
 type eventRow struct {
 	event  *pipeline.SessionEvent
 	tunnel *pipeline.SessionEvent
+	// raw is the event's exact capture, set on the row the detail pane fetched it for.
+	raw *pipeline.RawCapture
 }
 
 // invocations returns every plugin invocation the row's ACTION/PLUGIN cell and
