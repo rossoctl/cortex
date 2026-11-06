@@ -349,7 +349,6 @@ func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 	var event struct {
 		Result struct {
 			Kind   string `json:"kind"`
-			Final  bool   `json:"final"`
 			ID     string `json:"id"`
 			TaskID string `json:"taskId"`
 			Status struct {
@@ -378,8 +377,11 @@ func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 	}
 
 	switch event.Result.Kind {
-	case "status-update":
-		if event.Result.Final {
+	case "task", "status-update":
+		// The last status that the stream carried wins, final or not.
+		// OnResponseFrame gives the same result through extractSendResponse.
+		// A stream that ends with no final event keeps its last state.
+		if event.Result.Status.State != "" {
 			ext.FinalStatus = event.Result.Status.State
 			if event.Result.Status.State == "failed" {
 				for _, part := range event.Result.Status.Message.Parts {

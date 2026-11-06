@@ -531,8 +531,9 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `text` part, the `data` or `uri` of a `file` part, or the JSON text of a
   `data` part.
 - `a2a.finalStatus`, `a2a.artifact`, `a2a.errorMessage` — on a response row:
-  the final task state (for example `completed` or `failed`) and the artifact
-  text. When the state is `failed`, `errorMessage` is the first text part of
+  the last task state that the response carried (for example `completed` or
+  `failed`) and the artifact text. A stream that ends with no final status
+  event gives its last state, for example `working`. When the state is `failed`, `errorMessage` is the first text part of
   the status message. In a stream, the parser joins the text of each
   artifact event. The joined text has a maximum of 64 KiB.
 - `bytesUp`, `bytesDown` — **body** bytes, one direction per row: a request row
