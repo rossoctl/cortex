@@ -45,6 +45,20 @@ it, and `agentop pricing` takes `--stats-url`. The pipeline editor and `doctor` 
 | `GET /pricing/table` | The table (`describeBody`). With `?host=<gateway>`, the rates for that host (`effective`) | `cmd/agentop/cmd_pricing.go`. A 404 means a proxy older than the endpoint. `Registry.Handler` in `core/cost/pricing/handler.go` serves it |
 | `GET /tls-bridge/unread` | `tlsbridge.UnreadReport` (`programs`, `hosts`, `osTrustsCA`) | `fetchUnread` in `cmd/agentop/doctor_unread.go`. A non-200 or no route makes the check silent |
 
+**Fixtures.** Each endpoint above has a JSON fixture beside its handler. The
+fixture holds the keys that agentop reads:
+
+- `core/reloader/testdata/reload-status.json`
+- `core/observe/testdata/config.json`
+- `core/cost/pricing/testdata/pricing-table.json` and `pricing-effective.json`
+- `core/tlsbridge/testdata/unread.json`
+
+A test beside each handler checks that its real output has every fixture key, with
+the same JSON type. `cmd/agentop/wire_fixture_test.go` and
+`cmd/agentop/edit/wire_fixture_test.go` decode the same files and refuse unknown
+keys. Thus a renamed JSON tag on either side fails a test. When agentop reads a new
+key, add it to the fixture.
+
 `/config` reports the config in effect, with secret values masked. `GET /stats` and
 the `/` index also exist. agentop does not read them.
 
