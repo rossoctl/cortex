@@ -3,6 +3,7 @@ package redact
 import (
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -19,34 +20,31 @@ var SecretHeaders = map[string]bool{
 	"x-goog-api-key":      true,
 }
 
-// storedSecretHeaders are credentials Headers also drops, beyond SecretHeaders: the cpex
-// plugin's list. Not in SecretHeaders because a script may set these, and SecretHeaders is also
-// the set a script is refused.
-var storedSecretHeaders = map[string]bool{
-	"x-amz-security-token": true,
-	"x-auth-token":         true,
-	"x-authorization":      true,
-	"x-session-token":      true,
-	"x-secret-token":       true,
-	"x-csrf-token":         true,
-	"x-platform-secret":    true,
-	"x-authbridge-secret":  true,
-}
-
 // Headers is a copy of h without credential headers, for storing.
 func Headers(h http.Header) http.Header {
 	out := make(http.Header, len(h))
 	for k, vs := range h {
-		if lk := strings.ToLower(k); !SecretHeaders[lk] && !storedSecretHeaders[lk] {
+		if !CredentialName(k) {
 			out[k] = append([]string(nil), vs...)
 		}
 	}
 	return out
 }
 
-// secretParams are query parameters that carry credentials: some APIs take the key in the URL,
-// as Gemini's ?key= does.
-var secretParams = map[string]bool{"key": true, "api_key": true, "apikey": true, "access_token": true, "token": true}
+// credentialWords are the words of a name that make a header or a query parameter a credential.
+var credentialWords = []string{"key", "apikey", "token", "auth", "authorization", "cookie",
+	"secret", "signature", "password", "credential", "credentials"}
+
+// CredentialName reports whether name, split at "-" and "_" with case ignored, has one of
+// credentialWords. It covers every name in SecretHeaders.
+func CredentialName(name string) bool {
+	for _, w := range strings.FieldsFunc(strings.ToLower(name), func(r rune) bool { return r == '-' || r == '_' }) {
+		if slices.Contains(credentialWords, w) {
+			return true
+		}
+	}
+	return false
+}
 
 // Query is raw without credential parameters, for storing. The rest is kept as it was, in its
 // order and escaping, since a replay must send the same bytes. A query that does not parse is
@@ -58,7 +56,7 @@ func Query(raw string) string {
 	var kept []string
 	for _, p := range strings.Split(raw, "&") {
 		name, _, _ := strings.Cut(p, "=")
-		if n, err := url.QueryUnescape(name); err == nil && secretParams[strings.ToLower(n)] {
+		if n, err := url.QueryUnescape(name); err == nil && CredentialName(n) {
 			continue
 		}
 		kept = append(kept, p)

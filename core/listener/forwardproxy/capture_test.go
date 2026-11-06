@@ -198,3 +198,37 @@ func TestCapture_WebSocketTurn(t *testing.T) {
 		t.Errorf("headers = %v, want the handshake's without credentials", got[0].Header)
 	}
 }
+
+// A request a Resender sends again is captured again, under the new attempt's row: the agent's
+// bytes once more, and the body the second attempt carried.
+func TestCapture_AResentRequestCarriesItsOwnForwardedBody(t *testing.T) {
+	upstream := &modelServer{served: "glm-5-3"}
+	backend := httptest.NewServer(upstream)
+	defer backend.Close()
+	proxy, rec := proxyWithCaptures(t, &substituter{target: backend.URL, sub: "glm-5-3", resend: true})
+
+	sent := `{"model":"exo-free","messages":[]}`
+	postThrough(t, proxy, "http://agent-provider.example/v1/chat/completions", sent, nil)
+	got := rec.all()
+	if len(got) != 2 {
+		t.Fatalf("%d captures, want one per attempt", len(got))
+	}
+	var resent int
+	for _, c := range got {
+		if string(c.Original) != sent {
+			t.Errorf("original = %s, want the agent's body", c.Original)
+		}
+		switch {
+		case c.Forwarded == nil:
+		case strings.Contains(string(c.Forwarded), `"glm-5-3"`):
+			resent++
+		default:
+			t.Errorf("forwarded = %s, want nil or the resent body", c.Forwarded)
+		}
+	}
+	// The first attempt went as the agent sent it. A capture shared with the second attempt
+	// would show the second attempt's body on both rows.
+	if resent != 1 {
+		t.Errorf("%d captures carry the resent body, want 1", resent)
+	}
+}

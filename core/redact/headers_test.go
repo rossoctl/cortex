@@ -43,3 +43,24 @@ func TestHeaders_DropsCloudAndProxyCredentials(t *testing.T) {
 		}
 	}
 }
+
+// A credential is judged by the words of its name, split at "-" and "_", so a header or
+// parameter with a credential word needs no entry of its own.
+func TestHeadersAndQuery_DropNamesWithACredentialWord(t *testing.T) {
+	names := []string{"Ocp-Apim-Subscription-Key", "Private-Token", "X-Vault-Token", "X-Goog-Iam-Authorization-Token"}
+	for h := range SecretHeaders {
+		names = append(names, h)
+	}
+	for _, h := range names {
+		if out := Headers(http.Header{h: {"s"}}); len(out) != 0 {
+			t.Errorf("%s survived", h)
+		}
+	}
+	in := "X-Amz-Credential=c&X-Amz-Signature=s&X-Amz-Security-Token=t&subscription-key=k&X-Amz-Expires=60"
+	if got := Query(in); got != "X-Amz-Expires=60" {
+		t.Errorf("Query(%q) = %q, want X-Amz-Expires=60", in, got)
+	}
+	if got := Query("max_tokens=5&pageToken=p"); got != "max_tokens=5&pageToken=p" {
+		t.Errorf("Query kept %q, want both: neither name has a credential word", got)
+	}
+}
