@@ -1,0 +1,6 @@
+event: message_start
+data: {"type": "message_start", "message": {"model": "claude-opus-5-5", "id": "msg_fixture", "type": "message", "role": "assistant", "content": [], "container": null, "stop_reason": null, "stop_sequence": null, "stop_details": null, "usage": {"input_tokens": 27, "cache_creation_input_tokens": 2828, "cache_read_input_tokens": 286566, "cache_creation": {"ephemeral_5m_input_tokens": 2828, "ephemeral_1h_input_tokens": 0}, "output_tokens": 8, "service_tier": "standard"}}}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}
+

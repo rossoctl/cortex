@@ -1,0 +1,469 @@
+{
+  "model": "claude-opus-5-5",
+  "messages": [
+    {
+      "role": "system",
+      "content": "x-anthropic-billing-header: cc_version=2.1.295.000; cc_entrypoint=cli; cc_is_subagent=true;\nsystem text 4\nsystem text 5",
+      "contentBytes": 270
+    },
+    {
+      "role": "user",
+      "content": "user text 1\nuser text 2\nuser text 3",
+      "contentBytes": 112
+    },
+    {
+      "role": "system",
+      "content": "system text 1",
+      "contentBytes": 15
+    },
+    {
+      "role": "assistant",
+      "contentBytes": 109,
+      "toolCallNames": "Bash",
+      "toolUseIds": "toolu_fixture_01"
+    },
+    {
+      "role": "user",
+      "contentBytes": 105,
+      "toolUseIds": "toolu_fixture_01"
+    },
+    {
+      "role": "system",
+      "content": "system text 2",
+      "contentBytes": 15
+    },
+    {
+      "role": "assistant",
+      "contentBytes": 146,
+      "toolCallNames": "Bash",
+      "toolUseIds": "toolu_fixture_02"
+    },
+    {
+      "role": "user",
+      "content": "user text 4",
+      "contentBytes": 142,
+      "toolUseIds": "toolu_fixture_02"
+    },
+    {
+      "role": "system",
+      "content": "system text 3",
+      "contentBytes": 15
+    }
+  ],
+  "maxTokens": 128000,
+  "stream": true,
+  "tools": [
+    {
+      "name": "Bash",
+      "description": "Tool description.",
+      "parameters": {
+        "$schema": "https://json-schema.example.com/schema",
+        "type": "object",
+        "properties": {
+          "command": {
+            "description": "Parameter description.",
+            "type": "string"
+          },
+          "timeout": {
+            "description": "Parameter description.",
+            "type": "number"
+          },
+          "description": {
+            "description": "Parameter description.",
+            "type": "string"
+          },
+          "run_in_background": {
+            "description": "Parameter description.",
+            "type": "boolean"
+          },
+          "dangerouslyDisableSandbox": {
+            "description": "Parameter description.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "EnterWorktree",
+      "description": "Tool description.",
+      "parameters": {
+        "$schema": "https://json-schema.example.com/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Parameter description.",
+            "type": "string"
+          },
+          "path": {
+            "description": "Parameter description.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ExitWorktree",
+      "description": "Tool description.",
+      "parameters": {
+        "$schema": "https://json-schema.example.com/schema",
+        "type": "object",
+        "properties": {
+          "action": {
+            "description": "Parameter description.",
+            "type": "string",
+            "enum": [
+              "option_1",
+              "option_2"
+            ]
+          },
+          "discard_changes": {
+            "description": "Parameter description.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "LSP",
+      "description": "Tool description.",
+      "parameters": {
+        "$schema": "https://json-schema.example.com/schema",
+        "type": "object",
+        "properties": {
+          "operation": {
+            "description": "Parameter description.",
+            "type": "string",
+            "enum": [
+              "option_1",
+              "option_2",
+              "option_3",
+              "option_4",
+              "option_5",
+              "option_6",
+              "option_7",
+              "option_8",
+              "option_9"
+            ]
+          },
+          "filePath": {
+            "description": "Parameter description.",
+            "type": "string"
+          },
+          "line": {
+            "description": "Parameter description.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "character": {
+            "description": "Parameter description.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "query": {
+            "description": "Parameter description.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation",
+          "filePath",
+          "line",
+          "character"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "Read",
+      "description": "Tool description.",
+      "parameters": {
+        "$schema": "https://json-schema.example.com/schema",
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "description": "Parameter description.",
+            "type": "string"
+          },
+          "offset": {
+            "description": "Parameter description.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "limit": {
+            "description": "Parameter description.",
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "pages": {
+            "description": "Parameter description.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "SendMessage",
+      "description": "Tool description.",
+      "parameters": {
+        "$schema": "https://json-schema.example.com/schema",
+        "type": "object",
+        "properties": {
+          "to": {
+            "description": "Parameter description.",
+            "type": "string",
+            "allOf": [
+              {
+                "pattern": "value"
+              },
+              {
+                "pattern": "value"
+              }
+            ]
+          },
+          "summary": {
+            "description": "Parameter description.",
+            "type": "string",
+            "maxLength": 200
+          },
+          "message": {
+            "default": "value",
+            "description": "Parameter description.",
+            "type": "string"
+          },
+          "notify_when_idle": {
+            "description": "Parameter description.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "to",
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "Skill",
+      "description": "Tool description.",
+      "parameters": {
+        "$schema": "https://json-schema.example.com/schema",
+        "type": "object",
+        "properties": {
+          "skill": {
+            "description": "Parameter description.",
+            "type": "string"
+          },
+          "args": {
+            "description": "Parameter description.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "skill"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "TaskStop",
+      "description": "Tool description.",
+      "parameters": {
+        "$schema": "https://json-schema.example.com/schema",
+        "type": "object",
+        "properties": {
+          "task_id": {
+            "description": "Parameter description.",
+            "type": "string"
+          },
+          "shell_id": {
+            "description": "Parameter description.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "WebFetch",
+      "description": "Tool description.",
+      "parameters": {
+        "$schema": "https://json-schema.example.com/schema",
+        "type": "object",
+        "properties": {
+          "url": {
+            "description": "Parameter description.",
+            "type": "string",
+            "format": "uri"
+          },
+          "prompt": {
+            "description": "Parameter description.",
+            "type": "string"
+          },
+          "offset": {
+            "description": "Parameter description.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "url",
+          "prompt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "WebSearch",
+      "description": "Tool description.",
+      "parameters": {
+        "$schema": "https://json-schema.example.com/schema",
+        "type": "object",
+        "properties": {
+          "query": {
+            "description": "Parameter description.",
+            "type": "string",
+            "minLength": 2
+          },
+          "allowed_domains": {
+            "description": "Parameter description.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "blocked_domains": {
+            "description": "Parameter description.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "mcp__example__tool_1",
+      "description": "Tool description.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "num_results": {
+            "default": 1,
+            "description": "Parameter description.",
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Parameter description.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "mcp__example__tool_2",
+      "description": "Tool description.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "num_results": {
+            "default": 1,
+            "description": "Parameter description.",
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "query": {
+            "description": "Parameter description.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "SubagentHandback",
+      "description": "Tool description.",
+      "parameters": {
+        "$schema": "https://json-schema.example.com/schema",
+        "type": "object",
+        "properties": {
+          "message": {
+            "description": "Parameter description.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "toolResults": [
+    {
+      "toolUseId": "toolu_fixture_01",
+      "content": "tool result text 1"
+    },
+    {
+      "toolUseId": "toolu_fixture_02",
+      "content": "tool result text 2"
+    }
+  ],
+  "historyToolCalls": [
+    {
+      "id": "toolu_fixture_01",
+      "name": "Bash",
+      "arguments": "{\"command\":\"value\",\"description\":\"value\"}"
+    },
+    {
+      "id": "toolu_fixture_02",
+      "name": "Bash",
+      "arguments": "{\"command\":\"value\",\"description\":\"value\"}"
+    }
+  ],
+  "thinkingType": "adaptive",
+  "effort": "high",
+  "anthropicBeta": "claude-code-20250219,interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,effort-2025-11-24,fallback-credit-2026-06-01",
+  "agentRole": "subagent",
+  "streamedResponse": true,
+  "completion": "word word word ",
+  "finishReason": "end_turn",
+  "promptTokens": 29877,
+  "completionTokens": 14,
+  "totalTokens": 29891,
+  "inputTokens": 11093,
+  "cacheReadTokens": 18525,
+  "cacheWriteTokens": 259,
+  "outputTokens": 14,
+  "presentKinds": 31,
+  "isAction": true
+}
