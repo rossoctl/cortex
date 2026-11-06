@@ -87,8 +87,9 @@ uninstall: turn it off with `loginctl disable-linger` if you no longer want it.
 `agentop update` is how you upgrade. It runs the one-liner with the flags that keep the
 install as it is (`agentop update --help` lists them), and when the newest release is
 already installed it prints `Already at vX.` and downloads nothing. The one-liner is
-meant to be run repeatedly too. When nothing has changed it changes nothing. It still downloads the release, but `agentop setup` finds
-the staged binaries identical to the installed ones, asks nothing, and ends on one line,
+meant to be run repeatedly too. When nothing has changed it changes nothing. It still
+downloads the release, but `agentop setup` finds the staged binaries identical to the
+installed ones, asks nothing, and ends on one line,
 `cortex v0.9.0 is installed and healthy.`, leaving the running proxy alone rather than
 restarting it. When something has changed it lists what, and asks first. An upgrade keeps
 the previous binaries until the new Cortex answers its health check, and puts them back
@@ -143,9 +144,9 @@ entry: `gh attestation verify <tarball> --repo rossoctl/cortex`.
 
 The installer does not remember the choice. Re-running it without `--cpex` installs the
 default build again, and says so first; keep passing `--cpex` to stay on it.
-`agentop update` passes `--cpex` for you when the installed cortex is the cpex build. Against a
-release from before `--cpex` existed, the installer stops before staging anything and
-says that release has no cpex build.
+`agentop update` passes `--cpex` for you when the installed cortex is the cpex build.
+Against a release from before `--cpex` existed, the installer stops before staging
+anything and says that release has no cpex build.
 
 ## How traffic is grouped into sessions
 

@@ -96,17 +96,17 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// updateFlags are the installer flags that keep this install as it is, decided as
-// doctor decides its fix: without them the installer would unroute nothing but
-// put a service in place of a background proxy, the default cortex in place of
-// the cpex one, and a full setup in place of an install-only one, and would edit
-// a profile the install left alone.
+// updateFlags are the installer flags that keep this install as it is: without
+// them the installer would unroute nothing but put a service in place of a
+// background proxy, the default cortex in place of the cpex one, and a full setup
+// in place of an install-only one, and would edit a profile the install left alone.
 func updateFlags(env *setupEnv, ref string, yes bool) []string {
 	var flags []string
 	if !fileExists(env.configPath()) { // install-only writes no config
 		flags = append(flags, "--install-only")
 	}
 	// A default install leaves the bin dir on PATH or its marker in the profile.
+	// shortcut: a changed $SHELL reads as an opt-out, so setup prints the export line.
 	if !onPath(env.pathEnv, env.binDir) && !hasPathMarker(pathProfile(env.shell, env.home)) {
 		flags = append(flags, "--no-modify-path")
 	}
