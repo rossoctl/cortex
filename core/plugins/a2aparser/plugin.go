@@ -34,7 +34,7 @@ func (p *A2AParser) Capabilities() pipeline.PluginCapabilities {
 }
 
 func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
-	if ext := parseA2ARequest(pctx.Headers, pctx.Body); ext != nil {
+	if ext := parseA2ARequest(pctx.Path, pctx.Headers, pctx.Body); ext != nil {
 		pctx.Extensions.A2A = ext
 		pctx.Observe("matched_" + ext.Method)
 	}
@@ -43,7 +43,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 
 // parseA2ARequest parses one A2A request from plain values. It returns nil
 // when the parser does not claim the request.
-func parseA2ARequest(headers http.Header, rawBody []byte) *pipeline.A2AExtension {
+func parseA2ARequest(path string, headers http.Header, rawBody []byte) *pipeline.A2AExtension {
 	// Parse the bytes as sent after any zstd Content-Encoding, as
 	// inference-parser does, so a compressed call is claimed rather than
 	// passed through unparsed.
@@ -67,7 +67,8 @@ func parseA2ARequest(headers http.Header, rawBody []byte) *pipeline.A2AExtension
 	var rpc parsercommon.JSONRPCRequest
 	if isObject {
 		if err := json.Unmarshal(body, &rpc); err != nil {
-			slog.Debug("a2a-parser: invalid JSON-RPC", "error", err, "bodyLen", len(body))
+			slog.Debug("a2a-parser: invalid JSON-RPC", "error", err, "bodyLen", len(body),
+				"path", pipeline.SanitizeLogValue(path))
 			return nil
 		}
 	}
@@ -82,7 +83,7 @@ func parseA2ARequest(headers http.Header, rawBody []byte) *pipeline.A2AExtension
 	// it, agentop showed a phantom a2a-parser match on both MCP and inference
 	// traffic. mcp-parser has the mirror guard for its own namespace.
 	if !isObject || !isA2AMethod(rpc.Method) {
-		slog.Debug("a2a-parser: not an A2A-namespace method, skipping", "method", rpc.Method,
+		slog.Debug("a2a-parser: not an A2A-namespace method, skipping", "method", pipeline.SanitizeLogValue(rpc.Method), "path", pipeline.SanitizeLogValue(path),
 			"bodyLen", len(body))
 		return nil
 	}
@@ -137,7 +138,7 @@ func parseA2ARequest(headers http.Header, rawBody []byte) *pipeline.A2AExtension
 		ext.TaskID = rpc.StringParam("taskId")
 	}
 
-	slog.Info("a2a-parser", "method", rpc.Method)
+	slog.Info("a2a-parser", "method", pipeline.SanitizeLogValue(rpc.Method))
 	slog.Debug("a2a-parser: extracted",
 		"method", rpc.Method,
 		"sessionId", ext.SessionID,

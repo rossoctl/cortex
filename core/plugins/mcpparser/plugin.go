@@ -192,7 +192,7 @@ func parseMCPRequest(method, path string, headers http.Header, rawBody []byte, p
 				// the Mcp-Session-Id header is set by the MCP client
 				// SDK, not user input, so it's a precise distinguisher
 				// from a real "DELETE /api/users/42" action call.
-				slog.Info("mcp-parser: session terminate", "path", path)
+				slog.Info("mcp-parser: session terminate", "path", pipeline.SanitizeLogValue(path))
 				return &pipeline.MCPExtension{
 					Method: syntheticTransportTerminate,
 					// IsAction defaults to false — protocol mechanics.
@@ -206,7 +206,7 @@ func parseMCPRequest(method, path string, headers http.Header, rawBody []byte, p
 				// downstream see a "transport/stream" extension and skip
 				// it — same effect as the pre-classification behavior
 				// of letting body-less GETs through.
-				slog.Info("mcp-parser: transport stream", "path", path)
+				slog.Info("mcp-parser: transport stream", "path", pipeline.SanitizeLogValue(path))
 				return &pipeline.MCPExtension{
 					Method: syntheticTransportStream,
 					// IsAction defaults to false — protocol mechanics.
@@ -230,7 +230,7 @@ func parseMCPRequest(method, path string, headers http.Header, rawBody []byte, p
 	var rpc parsercommon.JSONRPCRequest
 	if isObject {
 		if err := json.Unmarshal(body, &rpc); err != nil {
-			slog.Debug("mcp-parser: body is not valid JSON-RPC", "error", err, "bodyLen", len(body), "path", path)
+			slog.Debug("mcp-parser: body is not valid JSON-RPC", "error", err, "bodyLen", len(body), "path", pipeline.SanitizeLogValue(path))
 			return nil
 		}
 	}
@@ -244,8 +244,8 @@ func parseMCPRequest(method, path string, headers http.Header, rawBody []byte, p
 	// phantom "mcp: {}" on every such event. a2a-parser has the mirror
 	// guard for its own namespace.
 	if !isObject || !isMCPMethod(rpc.Method) {
-		slog.Debug("mcp-parser: not an MCP-namespace method, skipping", "method", rpc.Method,
-			"bodyLen", len(body), "path", path)
+		slog.Debug("mcp-parser: not an MCP-namespace method, skipping", "method", pipeline.SanitizeLogValue(rpc.Method),
+			"bodyLen", len(body), "path", pipeline.SanitizeLogValue(path))
 		return nil
 	}
 
@@ -256,7 +256,7 @@ func parseMCPRequest(method, path string, headers http.Header, rawBody []byte, p
 		IsAction: isMCPAction(rpc.Method),
 	}
 
-	slog.Info("mcp-parser: request", "method", rpc.Method, "isAction", ext.IsAction)
+	slog.Info("mcp-parser: request", "method", pipeline.SanitizeLogValue(rpc.Method), "isAction", ext.IsAction)
 	slog.Debug("mcp-parser: payload", "method", rpc.Method, "body", parsercommon.Truncate(string(body), parsercommon.DebugBodyMax))
 	return ext
 }
