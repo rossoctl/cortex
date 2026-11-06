@@ -10,7 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rossoctl/cortex/core/attribution"
 	"github.com/rossoctl/cortex/core/listener/egressguard"
+	"github.com/rossoctl/cortex/core/listener/internal/sessionevent"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/tlsbridge"
@@ -117,7 +119,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	// CLIENT-ASSERTED id — not an identity: ActiveSession() at the moment the
 	// connection is gated is the answer, and resolving it again at recording time
 	// would reopen the same flip window the other paths were fixed for, reduced to
-	// ActiveSession@T0 versus ActiveSession@T1. resolvePluginSessionID with nil
+	// ActiveSession@T0 versus ActiveSession@T1. hydrateSession with nil
 	// headers is that same resolver with nothing to read a header from.
 	sessionID := s.hydrateSession(pctx, "", nil, nil)
 
@@ -284,7 +286,7 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
 	// plugin activity) are still visible. For a TLS-bridged call agentop folds
 	// this CONNECT event into the decrypted inner-request row.
-	return s.appendTunnelOpen(pctx, s.tunnelOpenEvent(pctx, reason))
+	return s.appendTunnelOpen(pctx, sessionevent.TunnelOpen(pctx, reason))
 }
 
 // appendTunnelOpen records an already-built open row ev under the session a tunnel's own
@@ -303,54 +305,11 @@ func (s *Server) appendTunnelOpen(pctx *pipeline.Context, ev pipeline.SessionEve
 	// client process's answer, and so does the connection itself: a session resolved from
 	// how the connection arrived is not a knob like affinity, so its pin is honored even
 	// with affinity and process attribution both off (#1569 review).
-	var sid string
+	var pinned string
 	if s.ClientAffinity || s.processesOn() || pctx.SessionSource == pipeline.SessionSourceConnection {
-		sid = pctx.OutboundSessionID
+		pinned = pctx.OutboundSessionID
 	}
-	if sid == "" {
-		sid = s.Sessions.ActiveSession()
-	}
-	if sid == "" {
-		sid = session.DefaultSessionID
-	}
-	return s.Sessions.AppendBucket(sid, ev)
-}
-
-// tunnelOpenEvent is a tunnel's open row, for recordTunnelOpened and for a bridged
-// tunnel's deferred open, which tunnelLog.deferOpen builds before any handler runs.
-func (s *Server) tunnelOpenEvent(pctx *pipeline.Context, reason pipeline.TunnelReason) pipeline.SessionEvent {
-	return pipeline.SessionEvent{
-		At:          time.Now(),
-		Direction:   pipeline.Outbound,
-		Phase:       pipeline.SessionRequest,
-		RequestID:   pctx.RequestID(),
-		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-		Plugins:     pipeline.SnapshotPlugins(pctx.Extensions.Custom),
-		Identity:    pipeline.SnapshotIdentity(pctx),
-		Host:        pctx.Host,
-		// Method is CONNECT — real on a proxied CONNECT, synthetic on a
-		// transparently redirected connection — and Path is empty: the bytes
-		// are opaque, so there is no request line to read one from. A blank
-		// path on this row is the accurate answer, not a gap.
-		HTTPMethod: pctx.Method,
-		HTTPPath:   pctx.Path,
-		// Explicit opaque-tunnel marker so agentop can fold this CONNECT into
-		// the decrypted inner request without inferring "tunnel" from shape.
-		Tunnel: true,
-		// Why the bytes stayed opaque. The caller knows; this function does
-		// not, which is why it is a parameter rather than something derived
-		// here from host shape.
-		TunnelReason: reason,
-		// The address the guard checked and the tunnel dialed — set only when
-		// the egress guard is on, else absent (SessionEvent.DialAddr). On the
-		// open row, which is where a reader pairs it with the Host the client
-		// named; the close row pairs by RequestID and needs no copy.
-		DialAddr:       pctx.DialedAddr,
-		Client:         pctx.ClientInfo(),
-		Subagent:       pctx.Subagent(),
-		ParentSubagent: pctx.ParentSubagent(),
-		Proc:           pctx.AttributedProc(),
-	}
+	return s.Sessions.AppendBucket(attribution.FiledSession(pinned, s.Sessions.ActiveSession), ev)
 }
 
 // recordTunnelClosed emits the SessionResponse row for a tunnel that ended, or that
@@ -375,27 +334,7 @@ func (s *Server) recordTunnelClosed(pctx *pipeline.Context, b *session.Bucket, r
 	if s.Sessions == nil {
 		return
 	}
-	s.Sessions.AppendTrailing(b, pipeline.SessionEvent{
-		At:             time.Now(),
-		Direction:      pipeline.Outbound,
-		Phase:          pipeline.SessionResponse,
-		RequestID:      pctx.RequestID(),
-		Identity:       pipeline.SnapshotIdentity(pctx),
-		Host:           pctx.Host,
-		HTTPMethod:     pctx.Method,
-		HTTPPath:       pctx.Path,
-		StatusCode:     statusCode,
-		Error:          fail,
-		Duration:       pipeline.DurationSince(pctx.StartedAt),
-		Tunnel:         true,
-		TunnelReason:   reason,
-		BytesUp:        up,
-		BytesDown:      down,
-		Client:         pctx.ClientInfo(),
-		Subagent:       pctx.Subagent(),
-		ParentSubagent: pctx.ParentSubagent(),
-		Proc:           pctx.AttributedProc(),
-	})
+	s.Sessions.AppendTrailing(b, sessionevent.TunnelClose(pctx, reason, statusCode, fail, up, down))
 }
 
 // tunnel bidirectionally copies between two connections, relaying each

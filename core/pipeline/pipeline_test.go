@@ -77,6 +77,33 @@ func TestPipelineRun_Sequential(t *testing.T) {
 	}
 }
 
+// TestPipelineRun_FillsSessionIDFromSession pins the backstop for a listener
+// outside this repo that sets only Session. A plugin that keys on SessionID
+// must see Session.ID. A SessionID that the listener set stays as it is.
+func TestPipelineRun_FillsSessionIDFromSession(t *testing.T) {
+	var seen string
+	pipe, err := New([]Plugin{&stubPlugin{
+		name: "reader",
+		onReq: func(_ context.Context, pctx *Context) Action {
+			seen = pctx.SessionID
+			return Action{Type: Continue}
+		},
+	}})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	pipe.Run(context.Background(), &Context{Session: &SessionView{ID: "from-session"}})
+	if seen != "from-session" {
+		t.Errorf("SessionID with only Session set = %q, want %q", seen, "from-session")
+	}
+
+	pipe.Run(context.Background(), &Context{Session: &SessionView{ID: "from-session"}, SessionID: "from-listener"})
+	if seen != "from-listener" {
+		t.Errorf("SessionID with both set = %q, want %q", seen, "from-listener")
+	}
+}
+
 func TestPipelineRun_Reject(t *testing.T) {
 	called := false
 	p1 := &stubPlugin{

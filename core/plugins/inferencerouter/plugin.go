@@ -499,7 +499,7 @@ func (pn *pinning) forgo() {
 func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinning) {
 	agent := agentOf(pctx)
 	choice := p.agents[agent]
-	if pctx.Session == nil || pctx.Session.ID == "" || synthetic(pctx.Session.ID) {
+	if pctx.SessionID == "" || synthetic(pctx.SessionID) {
 		return choice, pinning{state: pinNone}
 	}
 	store := p.pinsFor(pctx)
@@ -510,7 +510,7 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinni
 		})
 		return choice, pinning{state: pinNone}
 	}
-	key := pinPrefix + pctx.Session.ID
+	key := pinPrefix + pctx.SessionID
 	// A sessions: override is the user's explicit move: it beats the pin and every
 	// unpinned rule, and the pin follows it, so removing the entry later does not
 	// move the session back. pinMoved tells the record this request moved a session
@@ -555,10 +555,10 @@ func (p *Router) keepPin(pctx *pipeline.Context, store pins, key string, pn pin)
 // synthetic session is never overridden, whatever a hand-fed config says: its id
 // holds many conversations, not one to move.
 func (p *Router) overrideFor(pctx *pipeline.Context) (string, bool) {
-	if pctx.Session == nil || pctx.Session.ID == "" || synthetic(pctx.Session.ID) {
+	if pctx.SessionID == "" || synthetic(pctx.SessionID) {
 		return "", false
 	}
-	over, ok := p.sessions[pctx.Session.ID]
+	over, ok := p.sessions[pctx.SessionID]
 	return over, ok
 }
 
@@ -572,14 +572,14 @@ func (p *Router) overrideRoutes(pctx *pipeline.Context) bool {
 
 // pinnedToServer reports whether pctx's session holds its agent's pin to a server.
 func (p *Router) pinnedToServer(pctx *pipeline.Context) bool {
-	if pctx.Session == nil || pctx.Session.ID == "" || synthetic(pctx.Session.ID) {
+	if pctx.SessionID == "" || synthetic(pctx.SessionID) {
 		return false
 	}
 	store := p.pinsFor(pctx)
 	if store == nil {
 		return false
 	}
-	pn, ok := store.load(pinPrefix + pctx.Session.ID)
+	pn, ok := store.load(pinPrefix + pctx.SessionID)
 	return ok && pn.belongsTo(agentOf(pctx)) && pn.server != ""
 }
 
@@ -670,6 +670,10 @@ func turnOf(ext *pipeline.InferenceExtension) string {
 // it after the redirect; RequestedHost, where the client asked to go, is not where
 // the session is.
 func (p *Router) wentTo(view *pipeline.SessionView, agent string) (server string, ok bool) {
+	// The guard on SessionID does not prove a view: a hand-built Context can set the id alone.
+	if view == nil {
+		return "", false
+	}
 	events := view.Events
 	for i := len(events) - 1; i >= 0; i-- {
 		if server, ok := p.serverOf(&events[i], agent); ok {

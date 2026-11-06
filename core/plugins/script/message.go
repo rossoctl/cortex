@@ -48,8 +48,9 @@ func requestMessage(pctx *pipeline.Context) map[string]any {
 
 func sessionOf(pctx *pipeline.Context) map[string]any {
 	s := map[string]any{"request_id": pctx.RequestID()}
+	// Key on the view, not the id: a view with an empty id still sends "id": "".
 	if pctx.Session != nil {
-		s["id"] = pctx.Session.ID
+		s["id"] = pctx.SessionID
 	}
 	return s
 }

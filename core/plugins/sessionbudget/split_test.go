@@ -38,6 +38,7 @@ func makePctxSplit(sessionID string, input, cacheRead, cacheWrite, output, reaso
 		Direction: pipeline.Outbound,
 		Headers:   http.Header{},
 		Session:   &pipeline.SessionView{ID: sessionID},
+		SessionID: sessionID,
 		Extensions: pipeline.Extensions{
 			Inference: &pipeline.InferenceExtension{
 				TotalTokens:      total,

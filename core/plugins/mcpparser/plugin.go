@@ -184,7 +184,7 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 					Method: syntheticTransportTerminate,
 					// IsAction defaults to false — protocol mechanics.
 				}
-				slog.Info("mcp-parser: session terminate", "path", pctx.Path)
+				slog.Info("mcp-parser: session terminate", "path", pipeline.SanitizeLogValue(pctx.Path))
 				pctx.Observe("matched_" + syntheticTransportTerminate)
 				return pipeline.Action{Type: pipeline.Continue}
 
@@ -200,7 +200,7 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 					Method: syntheticTransportStream,
 					// IsAction defaults to false — protocol mechanics.
 				}
-				slog.Info("mcp-parser: transport stream", "path", pctx.Path)
+				slog.Info("mcp-parser: transport stream", "path", pipeline.SanitizeLogValue(pctx.Path))
 				pctx.Observe("matched_" + syntheticTransportStream)
 				return pipeline.Action{Type: pipeline.Continue}
 			}
@@ -223,7 +223,7 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	if isObject {
 		if err := json.Unmarshal(body, &rpc); err != nil {
 			slog.Debug("mcp-parser: body is not valid JSON-RPC", "error", err, "bodyLen", len(body),
-				"host", pctx.Host, "path", pctx.Path)
+				"host", pipeline.SanitizeLogValue(pctx.Host), "path", pipeline.SanitizeLogValue(pctx.Path))
 			return pipeline.Action{Type: pipeline.Continue}
 		}
 	}
@@ -238,7 +238,7 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// guard for its own namespace.
 	if !isObject || !isMCPMethod(rpc.Method) {
 		slog.Debug("mcp-parser: not an MCP-namespace method, skipping", "method", rpc.Method,
-			"bodyLen", len(body), "host", pctx.Host, "path", pctx.Path)
+			"bodyLen", len(body), "host", pipeline.SanitizeLogValue(pctx.Host), "path", pipeline.SanitizeLogValue(pctx.Path))
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 

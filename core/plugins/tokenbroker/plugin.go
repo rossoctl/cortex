@@ -275,7 +275,7 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	brokerURL := p.cfg.BrokerURL
 
 	slog.Info("token-broker: processing outbound request",
-		"server_url", serverURL,
+		"server_url", pipeline.SanitizeLogValue(serverURL),
 		"broker_url", brokerURL)
 
 	subjectToken := strings.TrimSpace(auth.ExtractBearer(authHeader))
@@ -285,7 +285,7 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	}
 
 	slog.Debug("token-broker: requesting token from broker",
-		"server_url", serverURL,
+		"server_url", pipeline.SanitizeLogValue(serverURL),
 		"broker_url", brokerURL,
 		"authorization_endpoint", authorizationEndpoint,
 		"token_endpoint", tokenEndpoint)
@@ -337,7 +337,7 @@ func (p *TokenBroker) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	pctx.Headers.Set("Authorization", "Bearer "+token)
 
 	slog.Info("token-broker: token acquired and added to request",
-		"server_url", serverURL,
+		"server_url", pipeline.SanitizeLogValue(serverURL),
 		"broker_url", brokerURL)
 
 	// Record successful token replacement
@@ -358,7 +358,7 @@ func (p *TokenBroker) OnResponse(ctx context.Context, pctx *pipeline.Context) pi
 	serverURL := scheme + "://" + pctx.Host
 
 	slog.Info("token-broker: received outbound response",
-		"server_url", serverURL,
+		"server_url", pipeline.SanitizeLogValue(serverURL),
 		"status_code", pctx.StatusCode,
 		"has_response_body", len(pctx.ResponseBody) > 0)
 	return pipeline.Action{Type: pipeline.Continue}

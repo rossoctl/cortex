@@ -647,6 +647,22 @@ emitted by a plugin, and neither is a verdict on the request.
   least one pipeline plugin appended an Invocation before rejecting. If you're
   debugging an unauthorized-access pattern, the default-session bucket
   (`GET /v1/sessions/default`) is where denial events aggregate.
+- **Which listener records a row.** The listeners do not record the same rows:
+  - The forward proxy and the reverse proxy record a request row and a
+    response row for every request that the pipeline sees. The forward proxy
+    does not record an agent's polls of its own service.
+  - The envoy-sidecar listener (ext_proc) records a row only when the row has
+    content: a parser result (`a2a`, `mcp` or `inference`), an invocation, or
+    a plugin payload. A request that no plugin marked leaves no row.
+  - When a plugin rejects a response, only the forward proxy records a
+    `phase: "denied"` row. ext_proc and the reverse proxy record no row for
+    that deny. The reverse proxy's missing row is a known gap, a sibling of
+    #1045 (see `errorHandler` in `core/listener/reverseproxy/server.go`).
+
+  `core/listener/parity` pins each difference
+  (`TestDivergence_*RowWhenNothingToRecord`,
+  `TestDivergence_OutboundResponseDeny`,
+  `TestParity_InboundResponseDenyRecordsNoRow`).
 - **Disabling:** set `session.enabled: false` to turn off the store (and
   implicitly the API). The session archive is separate — `session.archive.enabled: false`
   stops it without touching the in-memory store, and turning the store off
