@@ -10,6 +10,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -40,6 +41,7 @@ func TestFixtures(t *testing.T) {
 			if !bytes.Equal(buffered, streamed) {
 				t.Fatalf("buffered and streamed results differ\nbuffered:\n%s\nstreamed:\n%s", buffered, streamed)
 			}
+			checkFieldPaths(t, "inference", buffered)
 			golden := filepath.Join(dir, "expected.json")
 			if *update {
 				if err := os.WriteFile(golden, buffered, 0o644); err != nil {
@@ -56,6 +58,52 @@ func TestFixtures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// parsedRequestFields is the field list that core/pipeline's TestParsedRequestFields keeps.
+const parsedRequestFields = "../../pipeline/testdata/parsed-request.fields"
+
+// checkFieldPaths fails t when a key path of the JSON object doc is not in parsedRequestFields.
+// prefix is the event key of the extension, for example "inference".
+// The check does not go below a field of kind any. It reads the keys of a map field as "{}".
+func checkFieldPaths(t *testing.T, prefix string, doc []byte) {
+	t.Helper()
+	raw, err := os.ReadFile(parsedRequestFields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		path, kind, _ := strings.Cut(line, " ")
+		kinds[path] = kind
+	}
+	var v any
+	if err := json.Unmarshal(doc, &v); err != nil {
+		t.Fatal(err)
+	}
+	var walk func(path string, v any)
+	walk = func(path string, v any) {
+		switch v := v.(type) {
+		case map[string]any:
+			for k, child := range v {
+				p := path + "." + k
+				if kinds[path] == "map" {
+					p = path + "{}"
+				}
+				kind, ok := kinds[p]
+				if !ok {
+					t.Errorf("%s is not in %s", p, parsedRequestFields)
+				} else if kind != "any" {
+					walk(p, child)
+				}
+			}
+		case []any:
+			for _, child := range v {
+				walk(path+"[]", child)
+			}
+		}
+	}
+	walk(prefix, v)
 }
 
 // runFixture sends one case through OnRequest and then the response hooks.

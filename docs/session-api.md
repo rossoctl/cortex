@@ -457,6 +457,82 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   the upstream answered under the requested name, as Ollama does. For display
   only: pricing still follows `inference.model`. agentop's detail pane shows it
   on a `served:` line.
+- `inference.messages` — the conversation the request sent, in order. Each
+  item has a `role` and a `content`. An Anthropic request's top-level system
+  prompt is the first item, with role `system`. `content` keeps only the text
+  blocks. `contentBytes` is the wire size of the content value as the client
+  sent it, so a message with no text still shows its size. It is a byte count
+  of the raw JSON, not a token count.
+- `inference.messages[].toolCallNames`, `toolUseIds`, `toolUseId` — the tool
+  blocks of a message. `toolCallNames` names the tools that an assistant
+  message called, joined by `, ` in call order. `toolUseIds` gives the ids of
+  the message's tool calls or tool results, joined by `, ` in block order.
+  They key into `inference.historyToolCalls` and `inference.toolResults`.
+  Only a chat-completions `role: "tool"` message has a `toolUseId`: the id of
+  the call that the message answers.
+- `inference.historyToolCalls` — the tool calls that earlier assistant turns
+  made, as the client sent them back in this request: `id`, `name` and
+  `arguments`. `inference.toolCalls` is a different list: the calls that the
+  model asks for in this response. No plugin reads `historyToolCalls`.
+- `inference.temperature`, `inference.maxTokens`, `inference.topP`,
+  `inference.stream` — the request's sampling settings and stream flag, as
+  sent. `maxTokens` is `max_tokens`, or `max_output_tokens` on the Responses
+  API. Each is absent when the request did not state it.
+- `inference.tools`, `inference.toolChoice` — the tools that the request
+  declared and its `tool_choice` value. Each tool has a `name`, a
+  `description` and `parameters`, the JSON schema as the client sent it.
+- `inference.streamedResponse` — true when the response came as an SSE
+  stream. `inference.stream` is what the request asked for. The two can
+  differ: a gateway can answer a non-streaming request with a stream. Pricing
+  reads `streamedResponse` to know if a token count is final.
+- `inference.completion`, `inference.finishReason`, `inference.toolCalls` — on
+  a response row: the model's text, the provider's stop reason, and the tool
+  calls that the model asks for. Each tool call
+  has an `id`, a `name` and `arguments`, the raw JSON text from the model.
+- `inference.inputTokens`, `inference.cacheReadTokens`,
+  `inference.cacheWriteTokens`, `inference.outputTokens`,
+  `inference.reasoningTokens` — on a response row: the token counts that the
+  provider reported, by kind. `inputTokens` are the uncached prompt tokens.
+  `reasoningTokens` are a part of `outputTokens`.
+- `inference.presentKinds` — a bitmask of the token kinds that the provider
+  reported: input 1, cache read 2, cache write 4, output 8, reasoning 16. A
+  zero count with its bit set means that the provider reported zero. A zero
+  count without its bit means that the provider did not report that kind.
+- `inference.promptTokens`, `inference.completionTokens`,
+  `inference.totalTokens` — older totals that the parser calculates from the
+  split counts. `promptTokens` is input plus cache read plus cache write.
+  `completionTokens` is output. `totalTokens` is the provider's own total when
+  it sent one, else prompt plus output.
+- `inference.messageCount`, `inference.toolCount` — set only on a
+  `view=summary` copy, which removes `messages` and `tools`: how many items
+  each list had. Zero means "not stated". When the list is present, use its
+  length.
+- `inference.isAction`, `mcp.isAction`, `a2a.isAction` — the parser's
+  classification. It is true on every inference row. It is true on the MCP
+  methods `tools/call`, `prompts/get` and `resources/read`, and on the A2A
+  methods `message/send` and `message/stream`. It is absent on protocol
+  mechanics. See
+  [Classifying requests](plugin-reference.md#classifying-requests-as-actions-vs-protocol-mechanics).
+- `mcp.method`, `mcp.rpcId`, `mcp.params` — the JSON-RPC method, id and
+  params of an MCP request. A notification has no `rpcId`. A body-less
+  `DELETE` with an `Mcp-Session-Id` header has the method
+  `$transport/terminate`. A body-less `GET` on an MCP path has the method
+  `$transport/stream`.
+- `mcp.result`, `mcp.error` — on a response row: the JSON-RPC `result`, or the
+  `error` object with `code`, `message` and `data`.
+- `a2a.method`, `a2a.rpcId` — the JSON-RPC method and id of an A2A request.
+- `a2a.sessionId`, `a2a.taskId`, `a2a.messageId`, `a2a.role`, `a2a.parts` —
+  from the request's params. `sessionId` is `contextId`, else the older
+  `sessionId`, else `params.message.contextId`. When the request has none, the
+  response sets `sessionId` and `taskId`. `messageId`, `role` and `parts` come
+  from `params.message`. Each part has a `kind` and a `content`: the text of a
+  `text` part, the `data` or `uri` of a `file` part, or the JSON text of a
+  `data` part.
+- `a2a.finalStatus`, `a2a.artifact`, `a2a.errorMessage` — on a response row:
+  the final task state (for example `completed` or `failed`) and the artifact
+  text. When the state is `failed`, `errorMessage` is the first text part of
+  the status message. In a stream, the parser joins the text of each artifact event, to
+  a maximum of 64 KiB.
 - `bytesUp`, `bytesDown` — **body** bytes, one direction per row: a request row
   carries `bytesUp`, the body as forwarded (so a rewrite is reflected); a
   response row carries `bytesDown`, the body as it came back from the
