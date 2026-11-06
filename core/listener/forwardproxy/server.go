@@ -2163,7 +2163,7 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 			// one OutcomeFromContext must read.
 			resent := pctx.Extensions.Inference
 			pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = resp.StatusCode, head, sent
-			if capture != nil {
+			if capture != nil && pctx.Extensions.Inference != nil {
 				// The refusal as far as it was read: the resend peeks at most ResendPeekLimit bytes.
 				pctx.ResponseCapture = &pipeline.ResponseCapture{Status: resp.StatusCode, Header: redact.Headers(resp.Header),
 					Body: head, Decoded: resp.Uncompressed, Ended: peekErr == nil && len(head) < pipeline.ResendPeekLimit}

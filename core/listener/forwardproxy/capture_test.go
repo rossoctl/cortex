@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -620,6 +621,32 @@ func TestCapture_OnlyInferenceRequests(t *testing.T) {
 	if got := rec.responses(); len(got) != 1 {
 		t.Fatalf("%d response captures, want only the inference request's", len(got))
 	}
+}
+
+// A resent request no parser took for inference keeps no response capture either: the refused
+// attempt's answer is captured only when its request is.
+func TestCapture_AResentRequestThatIsNotInferenceKeepsNoResponse(t *testing.T) {
+	backend := httptest.NewServer(&modelServer{served: "glm-5-3"})
+	defer backend.Close()
+	proxy, rec := proxyWithCaptures(t, &redirectOnly{substituter{target: backend.URL, sub: "glm-5-3", resend: true}})
+	postThrough(t, proxy, "http://agent-provider.example/v1/messages/count_tokens", `{"model":"exo-free","messages":[]}`, nil)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.got) != 0 || len(rec.res) != 0 {
+		t.Fatalf("%d request and %d response captures, want none", len(rec.got), len(rec.res))
+	}
+}
+
+// redirectOnly is a substituter that leaves Extensions.Inference unset, as inferencerouter does
+// for a path no parser claims.
+type redirectOnly struct{ substituter }
+
+func (p *redirectOnly) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	u, _ := url.Parse(p.target)
+	if err := pctx.Redirect(u); err != nil {
+		panic(err)
+	}
+	return pipeline.Action{Type: pipeline.Continue}
 }
 
 // inferenceBody is a Messages request inference-parser takes for inference.
