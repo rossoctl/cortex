@@ -136,6 +136,8 @@ func TestRecordWebSocketClose_CarriesTheProcAndSubagent(t *testing.T) {
 		Host:      "chatgpt.com:443",
 		Path:      "/backend-api/codex/responses",
 		Headers:   h,
+		// An old handshake start. The close row must time the socket from the 101.
+		StartedAt: time.Now().Add(-time.Hour),
 	}
 	hs.SetAttribution("codex", "", "")
 	ws := &wsSocket{s: s, hs: hs, sid: "ws-sess", start: time.Now()}
@@ -158,5 +160,8 @@ func TestRecordWebSocketClose_CarriesTheProcAndSubagent(t *testing.T) {
 	if ev.Phase != pipeline.SessionResponse || !ev.Tunnel || ev.TunnelReason != pipeline.TunnelWebSocket ||
 		ev.StatusCode != http.StatusSwitchingProtocols || ev.BytesUp != 10 || ev.BytesDown != 20 {
 		t.Errorf("close row shape changed: %+v", ev)
+	}
+	if ev.Duration <= 0 || ev.Duration >= time.Minute {
+		t.Errorf("Duration = %v, want the time since the 101, not since the handshake", ev.Duration)
 	}
 }

@@ -240,8 +240,9 @@ type Context struct {
 	//     bucket instead would silently pool unrelated traffic under one key.
 	//   - Events may be empty while ID is set. A session's first request is
 	//     hydrated before its first event is recorded, so an empty view means
-	//     "this session, nothing recorded yet". Key on ID regardless; treating an
-	//     empty view as absent skips the first request of every session.
+	//     "this session, nothing recorded yet". Key on the ID regardless (read
+	//     SessionID); treating an empty view as absent skips the first request of
+	//     every session.
 	//   - ID may be CLIENT-ASSERTED. Listeners resolve it from a client-supplied
 	//     header where one is configured (see session.IDFromHeaders), falling
 	//     back to the most recently active session and then, for recording only,
@@ -249,10 +250,11 @@ type Context struct {
 	//     is an observability and correlation key, not an authorization subject.
 	Session *SessionView
 
-	// SessionID is the id of the session the request is filed under. The listener
-	// sets it whenever it sets Session, to Session.ID. It is empty when there is no
-	// Session. A plugin that keys state on the session and reads no events reads
-	// this field: it costs nothing, and the same rules as Session.ID apply to it.
+	// SessionID is Session.ID: the id of the session handed to plugins. It is
+	// empty when there is no Session. A listener that sets Session must also set
+	// SessionID. Pipeline.Run fills it from Session when it is empty. A plugin
+	// that keys state on the session and reads no events reads this field,
+	// because it needs no nil check. The same rules as Session.ID apply to it.
 	SessionID string
 
 	// SessionSource says how the listener resolved Session, so a plugin that

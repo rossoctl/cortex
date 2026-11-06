@@ -573,7 +573,8 @@ emitted by a plugin, and neither is a verdict on the request.
     a plugin payload. A request that no plugin marked leaves no row.
   - When a plugin rejects a response, only the forward proxy records a
     `phase: "denied"` row. ext_proc and the reverse proxy record no row for
-    that deny.
+    that deny. The reverse proxy's missing row is a known gap, a sibling of
+    #1045 (see `errorHandler` in `core/listener/reverseproxy/server.go`).
 
   `core/listener/parity` pins each difference
   (`TestDivergence_*RowWhenNothingToRecord`,

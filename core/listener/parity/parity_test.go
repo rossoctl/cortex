@@ -145,7 +145,9 @@ func TestParity_OutboundDenyOnRequest(t *testing.T) {
 // extproc's response handlers return rejectFromAction. The forward proxy is
 // the one listener that records this deny, and
 // TestDivergence_OutboundResponseDeny pins that difference. This fixture pins
-// the inbound half, so that a change to either inbound leg is a decision.
+// the inbound half, so that a change to either inbound leg is a decision. The
+// reverse proxy's missing row is a known gap, a sibling of #1045
+// (reverseproxy errorHandler says so).
 func TestParity_InboundResponseDenyRecordsNoRow(t *testing.T) {
 	f := fixture{
 		name:      "inbound-response-deny",

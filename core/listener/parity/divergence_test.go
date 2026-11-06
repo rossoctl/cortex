@@ -846,6 +846,9 @@ func TestDivergence_OutboundResponseBodyCountWhenNoPluginReadsIt(t *testing.T) {
 // "Always" has the exceptions every listener shares: listener.skip_hosts
 // bypasses the pipeline and the recording. The forward proxy also forwards an
 // agent's polls of its own service without a row (process_test.go).
+//
+// The reverse proxy's "no row" for a response-phase deny is a known gap, a
+// sibling of #1045 (reverseproxy errorHandler says so). It is not a rule.
 
 // quietSpy is a plugin that runs on both phases and leaves nothing on the
 // context: no invocation, no payload, no parser extension.

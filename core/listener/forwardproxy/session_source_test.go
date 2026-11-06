@@ -88,6 +88,9 @@ func TestTrustedSessionIDOverridesEveryOtherSource(t *testing.T) {
 	if pctx.Session == nil || pctx.Session.ID != "trusted-sid" {
 		t.Fatalf("pctx.Session = %+v, want trusted-sid", pctx.Session)
 	}
+	if pctx.SessionID != "trusted-sid" {
+		t.Errorf("pctx.SessionID = %q, want trusted-sid", pctx.SessionID)
+	}
 	if pctx.SessionSource != pipeline.SessionSourceConnection || pctx.SessionHeader != "" {
 		t.Errorf("source %q/%q, want connection with no header named", pctx.SessionSource, pctx.SessionHeader)
 	}
