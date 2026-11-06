@@ -28,6 +28,11 @@ type spyConfig struct {
 	EmitOnResponse bool      `json:"emit_on_response"`
 	ResponseEvent  *spyEvent `json:"response_event"`
 
+	// DenyOnResponse rejects at OnResponse with DenyStatus, DenyReason and
+	// DenyDetails, and records the deny first, as DenyOnRequest does. The
+	// response-deny fixtures in divergence_test.go use it.
+	DenyOnResponse bool `json:"deny_on_response"`
+
 	// EmitOnRequest publishes RequestEvent at OnRequest, BEFORE any deny.
 	// Without it a deny fixture's Plugins map is empty on every listener,
 	// so the PluginKeys comparison below comes down to empty-vs-empty and
@@ -246,7 +251,15 @@ func (s *spyPlugin) OnResponse(_ context.Context, pctx *pipeline.Context) pipeli
 	if s.cfg.EmitOnResponse && s.cfg.ResponseEvent != nil {
 		s.publish(pctx, pipeline.PluginEventSuffix, *s.cfg.ResponseEvent)
 	}
-	return pipeline.Action{Type: pipeline.Continue}
+	if !s.cfg.DenyOnResponse {
+		return pipeline.Action{Type: pipeline.Continue}
+	}
+	pctx.Record(pipeline.Invocation{
+		Action:  pipeline.ActionDeny,
+		Reason:  s.cfg.DenyReason,
+		Details: s.cfg.DenyDetails,
+	})
+	return pipeline.DenyStatus(s.cfg.DenyStatus, s.cfg.DenyReason, s.cfg.DenyReason)
 }
 
 // publish writes to pctx.Extensions.Custom under the spy's name plus the

@@ -8,14 +8,15 @@ import (
 	"time"
 )
 
-// Decision values recorded in Event.Decision. This slice uses the three
-// terminal decisions a VM listener's own wrapper emits; the full moca set
-// (destination_denied, conn_cap, credential_*, …) arrives with #1482, which
-// also fills the fields left empty here.
+// Decision values recorded in Event.Decision: the ones a VM listener's own
+// wrapper emits. The rest of moca's set (destination_denied, credential_*, …)
+// and the fields left empty here are not emitted yet.
 const (
-	DecisionTunnel  = "tunnel"
-	DecisionForward = "forward"
-	DecisionAborted = "aborted"
+	DecisionTunnel     = "tunnel"
+	DecisionForward    = "forward"
+	DecisionAborted    = "aborted"
+	DecisionConnCap    = "conn_cap"    // 429, the connection was never parsed
+	DecisionRequestCap = "request_cap" // 429, the request went no further
 )
 
 // viaName is the fixed value of Event.Via.

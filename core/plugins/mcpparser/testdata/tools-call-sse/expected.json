@@ -1,0 +1,20 @@
+{
+  "method": "tools/call",
+  "rpcId": 4,
+  "params": {
+    "arguments": {
+      "location": "Paris"
+    },
+    "name": "get_weather"
+  },
+  "result": {
+    "content": [
+      {
+        "text": "Rain, 14 C.",
+        "type": "text"
+      }
+    ],
+    "isError": false
+  },
+  "isAction": true
+}

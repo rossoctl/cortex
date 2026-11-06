@@ -509,7 +509,9 @@ func (s *Server) handleOutbound(stream extprocv3.ExternalProcessor_ProcessServer
 
 	if s.Sessions != nil {
 		if aid := s.Sessions.ActiveSession(); aid != "" {
-			pctx.Session = s.Sessions.View(aid)
+			if pctx.Session = s.Sessions.View(aid); pctx.Session != nil {
+				pctx.SessionID = aid
+			}
 		}
 	}
 
@@ -557,7 +559,9 @@ func (s *Server) handleOutboundBody(stream extprocv3.ExternalProcessor_ProcessSe
 
 	if s.Sessions != nil {
 		if aid := s.Sessions.ActiveSession(); aid != "" {
-			pctx.Session = s.Sessions.View(aid)
+			if pctx.Session = s.Sessions.View(aid); pctx.Session != nil {
+				pctx.SessionID = aid
+			}
 		}
 	}
 

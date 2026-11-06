@@ -76,6 +76,7 @@ func request(store pipeline.SharedStore, host, ua, session string) *pipeline.Con
 	}
 	if session != "" {
 		pctx.Session = &pipeline.SessionView{ID: session}
+		pctx.SessionID = session
 	}
 	pctx.Extensions.Inference = &pipeline.InferenceExtension{}
 	pctx.ResolveClient()
@@ -174,7 +175,7 @@ func TestRouter_IgnoresAContextTheListenerCannotRedirect(t *testing.T) {
 	p := build(t, routerConfig(`"claude-code": "glm"`))
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound, Method: http.MethodConnect, Scheme: "tcp", Host: eteHost + ":443",
-		Headers: http.Header{"User-Agent": {claudeUA}}, Shared: store, Session: &pipeline.SessionView{ID: "s1"},
+		Headers: http.Header{"User-Agent": {claudeUA}}, Shared: store, Session: &pipeline.SessionView{ID: "s1"}, SessionID: "s1",
 	}
 	run(t, p, pctx)
 

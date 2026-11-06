@@ -266,9 +266,9 @@ func (p *Router) applyLimits(pctx *pipeline.Context, server string, remember boo
 		return false
 	}
 	key := ""
-	if pctx.Shared != nil && pctx.Session != nil && pctx.Session.ID != "" && !synthetic(pctx.Session.ID) {
+	if pctx.Shared != nil && pctx.SessionID != "" && !synthetic(pctx.SessionID) {
 		if conv := conversationKey(pctx.Body); conv != "" {
-			key = cutPrefix + pctx.Session.ID + "/" + conv
+			key = cutPrefix + pctx.SessionID + "/" + conv
 		}
 	}
 	cut := 0

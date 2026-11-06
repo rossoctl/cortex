@@ -1,0 +1,13 @@
+{
+  "method": "tools/call",
+  "rpcId": 5,
+  "params": {
+    "arguments": {},
+    "name": "invalid_tool_name"
+  },
+  "error": {
+    "code": -32602,
+    "message": "Unknown tool: invalid_tool_name"
+  },
+  "isAction": true
+}

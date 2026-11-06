@@ -1,0 +1,12 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "id": "task-1",
+    "contextId": "ctx-1",
+    "status": {
+      "state": "completed"
+    },
+    "kind": "task"
+  }
+}

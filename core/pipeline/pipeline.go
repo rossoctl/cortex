@@ -174,6 +174,10 @@ func New(plugins []Plugin, opts ...Option) (*Pipeline, error) {
 // goroutine capturing pctx won't mis-attribute a late-arriving Record
 // to itself.
 func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
+	// A listener outside this repo can set only Session. Without SessionID, session-keyed plugins such as session-budget fail open.
+	if pctx.SessionID == "" && pctx.Session != nil {
+		pctx.SessionID = pctx.Session.ID
+	}
 	for i, plugin := range p.plugins {
 		policy := p.PolicyAt(i)
 		if policy == ErrorPolicyOff {

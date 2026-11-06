@@ -1,0 +1,5 @@
+event: message
+data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"log text 1"}}
+
+event: message
+data: {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"Rain, 14 C."}],"isError":false}}

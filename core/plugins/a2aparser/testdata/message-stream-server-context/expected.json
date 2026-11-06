@@ -1,0 +1,17 @@
+{
+  "method": "message/stream",
+  "rpcId": 9,
+  "sessionId": "ctx-9",
+  "messageId": "msg-9",
+  "taskId": "task-9",
+  "role": "user",
+  "parts": [
+    {
+      "kind": "text",
+      "content": "user text 9"
+    }
+  ],
+  "finalStatus": "completed",
+  "artifact": "agent text 9",
+  "isAction": true
+}

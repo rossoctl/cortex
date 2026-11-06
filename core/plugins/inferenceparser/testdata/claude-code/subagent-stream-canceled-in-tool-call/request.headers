@@ -1,0 +1,7 @@
+POST /v1/messages?beta=true HTTP/1.1
+Host: api.example.com
+Content-Type: application/json
+Anthropic-Beta: claude-code-20250219,interleaved-thinking-2025-05-14,mid-conversation-system-2026-04-07,effort-2025-11-24,fallback-credit-2026-06-01
+Anthropic-Version: 2023-06-01
+User-Agent: claude-cli/2.1.295 (external, cli)
+X-Claude-Code-Session-Id: 00000000-0000-4000-8000-000000000000

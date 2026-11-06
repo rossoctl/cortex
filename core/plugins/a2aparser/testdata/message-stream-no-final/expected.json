@@ -1,0 +1,16 @@
+{
+  "method": "message/stream",
+  "rpcId": 5,
+  "sessionId": "ctx-3",
+  "messageId": "msg-3",
+  "taskId": "task-3",
+  "role": "user",
+  "parts": [
+    {
+      "kind": "text",
+      "content": "user text 3"
+    }
+  ],
+  "finalStatus": "working",
+  "isAction": true
+}

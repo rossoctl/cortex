@@ -1,0 +1,48 @@
+# A2A parser cases, hand-built
+
+`TestFixtures` (`../fixtures_test.go`) runs every `<case>/` directory here through the
+parser hooks. It compares the result with `expected.json`.
+
+These cases are **hand-built**, not captured. The session archive keeps no raw A2A
+bodies. The shapes follow the A2A specification v0.3.0 (JSON-RPC transport).
+
+Each case has the files of `../../inferenceparser/testdata/README.md`, with these changes:
+
+- `request.json` is indented, not compact. A body with no bytes has no file, because
+  `check-json` rejects an empty `.json` file. With no response file, the response
+  Content-Type is `application/json`.
+- There is no `response.html`.
+- There is no `response.headers`.
+- `expected.json` is the `pipeline.A2AExtension`. `null` means that the parser does not
+  claim the request. The JSON omits `isAction` when it is false, so the byte
+  comparison checks `isAction` in every case.
+
+The test parses each case with the whole response body (one `OnResponseFrame` call with
+`last=true`, as a listener does) and frame by frame (`OnResponseFrame`). The two results
+must be equal.
+
+To write the goldens, then read each one:
+
+```sh
+cd core && GOWORK=off go test ./plugins/a2aparser/ -run Fixtures -count=1 -update
+```
+
+## Cases
+
+| Case | What it covers | isAction |
+|---|---|---|
+| `message-send` | `message/send` with no `contextId`. The JSON response is a completed Task, which gives `sessionId`, `artifact`, and `taskId` from the Task `id` | true |
+| `message-send-task-id-number` | `message/send`. The completed Task has a number `id`, not a string. The parser keeps `finalStatus` and `artifact`, and gives no `taskId` | true |
+| `message-stream` | `message/stream` with `contextId` in the message. SSE: a Task, an `artifact-update`, and a final `status-update` | true |
+| `message-stream-server-context` | `message/stream` with no `contextId` in the request. The server assigns `ctx-9` in the SSE events, which gives `sessionId` on both paths | true |
+| `message-stream-no-final` | `message/stream`. SSE: a Task and a status-update that is not final, then the stream ends. `finalStatus` is the last state, `working` | true |
+| `message-stream-task-artifacts` | `message/stream`. SSE: a status-update that is not final, then a completed Task that carries `artifacts`. Both paths read the Task artifacts. A Task event replaces the joined `artifact-update` text with the last text part of the Task. The live path did this before these fixes too | true |
+| `message-send-message-result` | `message/send`. The JSON result is a Message (A2A v0.3.0 §7.1: `Task` \| `Message`). Its `taskId` and `contextId` give `taskId` and `sessionId`. The extension has no field for the Message text | true |
+| `tasks-get` | `tasks/get`. The JSON response is a completed Task. The Task `id` gives `taskId` | false |
+| `tasks-get-error` | `tasks/get` for an unknown task, JSON-RPC error response. `params.id` gives `taskId`. The extension has no field for a JSON-RPC error | false |
+| `message-send-task-not-found` | `message/send` for a task that the server does not know, JSON-RPC error response. `params.message.taskId` gives `taskId` | true |
+| `push-config-set-unsupported` | `tasks/pushNotificationConfig/set`, error response. The older `params.taskId` location gives `taskId` | false |
+| `not-jsonrpc` | An inference body with no `method`. Not claimed | no extension |
+| `non-a2a-method` | The MCP method `tools/list`. Not claimed | no extension |
+
+Gap: `A2AExtension` has no field for a JSON-RPC error. An error response keeps only the request fields (`tasks-get-error`).

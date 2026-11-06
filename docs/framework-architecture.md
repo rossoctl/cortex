@@ -117,6 +117,7 @@ type Context struct {
     Agent    *AgentIdentity   // this workload's SPIFFE / Keycloak identity
     Identity Identity          // caller identity after an auth plugin runs (interface)
     Session  *SessionView      // read-only view of the session bucket
+    SessionID string           // Session.ID; empty when Session is nil
 
     // Response-phase fields (populated by listener before RunResponse)
     StatusCode      int
@@ -307,7 +308,7 @@ type A2AExtension struct {
     TaskID       string
     Role         string  // "user" | "agent"
     Parts        []A2APart
-    FinalStatus  string  // response: "completed" | "failed" | "canceled"
+    FinalStatus  string  // response: last task state, e.g. "completed" | "failed"
     Artifact     string  // response: assembled artifact text
     ErrorMessage string  // response: failure reason
     IsAction     bool    // parser's classification verdict; true for message/send + message/stream
@@ -664,7 +665,7 @@ type SessionEvent struct {
 - `response` — snapshot taken after the response pipeline completes, carrying response-phase invocations. Status, duration, and response parser output live here.
 - `denied` — terminal denial by a pipeline plugin (jwt-validation reject, token-exchange failure, guardrail block). Carries the request-phase invocations plus the Violation's structured `Error`.
 
-**Plugins do not touch `SessionEvent` directly.** The listener records events. Plugins append Invocations via `pctx.Record` / `Allow` / `Skip` / `Observe` / `Modify` / `DenyAndRecord`, populate extension slots (A2A / MCP / Inference) via assignment, and read `pctx.Session` (a `*SessionView`) when they want to correlate the current request with prior ones in the same conversation — e.g. a rate-limiter that counts a session's inference events.
+**Plugins do not touch `SessionEvent` directly.** The listener records events. Plugins append Invocations via `pctx.Record` / `Allow` / `Skip` / `Observe` / `Modify` / `DenyAndRecord`, populate extension slots (A2A / MCP / Inference) via assignment, and read `pctx.Session` (a `*SessionView`) when they want to correlate the current request with prior ones in the same conversation — e.g. a rate-limiter that counts a session's inference events. A plugin that only keys state on the session reads `pctx.SessionID`: the listener sets it whenever it sets `pctx.Session`, to the same id, and leaves it empty when there is no session.
 
 Wire format (`SessionEvent.MarshalJSON`) translates enums to strings and `Duration` to `DurationMs`. Round-trip stable — `json.Marshal(e) → json.Unmarshal → json.Marshal` is byte-identical. Tested at `pipeline/session_test.go:TestSessionEvent_JSONRoundTrip`.
 

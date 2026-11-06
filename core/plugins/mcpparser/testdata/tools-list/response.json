@@ -1,0 +1,15 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "get_weather",
+        "description": "Get the weather for a location.",
+        "inputSchema": {
+          "type": "object"
+        }
+      }
+    ]
+  }
+}

@@ -20,6 +20,8 @@ YAML follows when there is an operator to configure it):**
 | `MOCA_EGRESS_CONTROL_SOCK` | The control socket path. Unset/empty = the channel is **off**, and today's behavior is unchanged byte for byte. |
 | `MOCA_EGRESS_CONTROL_UIDS` | Comma-separated uids allowed to connect to the control socket (peer-credential gate). Required when the socket is set — a control socket that admits nobody is a misconfiguration, and one that admits everybody would be worse. |
 | `MOCA_TENANCY` | `unset`/`single` = this slice; `multi` = **boot failure** naming the variable (single-tenant only, MI1 S2). Checked only when the socket is set. |
+| `MOCA_EGRESS_MAX_CONNS_PER_VM` | Concurrent connections per VM (default 32). Positive integer; anything else is a boot failure naming the variable. |
+| `MOCA_EGRESS_MAX_REQUESTS_PER_SESSION` | Requests per session, summed across its VMs (default 10000). Same parsing. |
 
 **The control protocol** (`vmcontrol`): 4-byte big-endian length + protobuf,
 ≤64 KiB frames; `ControlRequest{Register{vm_id, sid, grant} | Unregister{vm_id}}`
@@ -69,8 +71,8 @@ Linux / `LOCAL_PEERCRED` on darwin, fail-closed on other unixes).
   duplicate.
 - **Audit seed** (#1477 scope; #1482 completes it): one terminal JSON line per
   request on stdout, in moca's `Event` shape (`vm_id`, `sid`, `host`,
-  `method`, `path`, `status`, `decision` of `tunnel`/`forward`/`aborted`,
-  `via: "moca-egress"`). `sub`, `dial_addr`, `credential`, byte counts and the
+  `method`, `path`, `status`, `decision` of `tunnel`/`forward`/`aborted`/
+  `conn_cap`/`request_cap`, `via: "moca-egress"`). `sub`, `dial_addr`, `credential`, byte counts and the
   journald/async seam are #1482's. A request that arrives inside the
   **aborted window** — after Unregister set the flag, before it closed the
   conns — is answered `503` with `Connection: close` and emits its own
@@ -82,8 +84,36 @@ Linux / `LOCAL_PEERCRED` on darwin, fail-closed on other unixes).
   `fatalf`: an `EMFILE` on a proxy holding a listener per VM plus their
   tunnels would otherwise exit the process and take every VM's egress with it.
   Each per-VM `http.Server` also carries bootstrap's `ReadHeaderTimeout`
-  (10s), so a guest cannot hold a goroutine and an fd open by dripping
-  headers; per-VM caps are #1485's.
+  (10s) and a 60s `IdleTimeout`, so a guest cannot hold a conn slot by
+  dripping headers or parking idle keep-alives. The forward proxy's
+  `BridgedIdleTimeout` gives bridged tunnels the same 60s between requests,
+  on h1 and h2, and on h1 for reading each request's headers, the first
+  included. An opaque CONNECT tunnel holds its slot until either side closes
+  it or Unregister does.
+- **Caps** (`Limits`; names and defaults follow moca-egress, the mechanics are
+  ours):
+  - **Per-VM connections** are counted in `trackedListener`. One past the cap
+    is answered `429 conn_cap: <vm>` at accept, before any byte is read, off
+    the accept loop. At most 8 answers per VM are in flight; past that the
+    conn is closed unanswered, and Unregister closes those in flight. The
+    audit event is written by an answer goroutine once its conn is closed, so
+    a slow sink holds answer slots and never the accept loop or Unregister; a
+    conn_cap line can follow Unregister. One event stands for up to 64
+    refusals (`coalesced`). While every answer slot is held, none reports,
+    so the next event carries more. An admission resets the count, and
+    refusals after a burst's last event are reported with the next one. moca
+    emits from its accept path into an async sink and coalesces per second;
+    the suite checks only that an event arrives.
+  - **Per-session requests** are one shared counter per sid, separate from
+    the session-budget plugin, which counts inference calls. Every plain
+    request, CONNECT and bridged (decrypted) request counts, the last through
+    `AdoptBridgedRequest`, which can refuse. Past the cap: `429 request_cap:
+    <host>` (a bridged refusal names the tunnel's host), `Connection: close`,
+    nothing upstream. The refusal records no session-store row; its audit
+    event is the record. The count lives while the session has a VM and for
+    an hour after its last one unregisters (moca's `sessionIdle`), so a
+    vmpool redial continues it. Register sweeps expired counts at most once a
+    minute; tests drive `Registry.now`.
 - Local test runs: the macOS seatbelt sandbox refuses `AF_UNIX` binds, so
   `server_test.go` skips there (CI's Linux runners run it); the registry and
   wire tests run everywhere, with the registry tests driving the real

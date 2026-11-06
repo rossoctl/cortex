@@ -111,10 +111,7 @@ func mcpRPCID(mcp *pipeline.MCPExtension) any {
 }
 
 func sessionID(pctx *pipeline.Context) string {
-	if pctx.Session != nil {
-		return pctx.Session.ID
-	}
-	return ""
+	return pctx.SessionID
 }
 
 func firstExplanation(verdict ReflectVerdict) string {

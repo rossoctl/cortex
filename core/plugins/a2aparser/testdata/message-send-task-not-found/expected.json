@@ -1,0 +1,15 @@
+{
+  "method": "message/send",
+  "rpcId": 6,
+  "sessionId": "ctx-4",
+  "messageId": "msg-4",
+  "taskId": "task-gone",
+  "role": "user",
+  "parts": [
+    {
+      "kind": "text",
+      "content": "user text 4"
+    }
+  ],
+  "isAction": true
+}

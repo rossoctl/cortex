@@ -98,8 +98,10 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	if ext.SessionID == "" {
 		ext.SessionID = rpc.StringParam("sessionId")
 	}
-	ext.TaskID = rpc.StringParam("taskId")
 	if msg := rpc.MapParam("message"); msg != nil {
+		if taskID, ok := msg["taskId"].(string); ok {
+			ext.TaskID = taskID
+		}
 		if ext.SessionID == "" {
 			if cid, ok := msg["contextId"].(string); ok {
 				ext.SessionID = cid
@@ -114,6 +116,15 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 		if rawParts, ok := msg["parts"].([]any); ok {
 			ext.Parts = parseA2AParts(rawParts)
 		}
+	}
+	// Spec v0.3.0 puts the task id in params.message.taskId (above) or,
+	// for a method with TaskIdParams, in params.id. Older clients send
+	// params.taskId, so it stays the last fallback.
+	if ext.TaskID == "" && taskIDParamIsID(rpc.Method) {
+		ext.TaskID = rpc.StringParam("id")
+	}
+	if ext.TaskID == "" {
+		ext.TaskID = rpc.StringParam("taskId")
 	}
 
 	pctx.Extensions.A2A = ext
@@ -186,18 +197,14 @@ func (p *A2AParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 	ext := pctx.Extensions.A2A
 
 	// Per-frame fold. message/stream events arrive one per frame;
-	// message/send arrives as a single last=true frame.
+	// message/send arrives as a single last=true frame. A buffered
+	// message/stream (a body-writing plugin is in the chain) arrives as
+	// one last=true frame that holds the whole SSE body.
 	if len(frame) > 0 {
-		// Try the message/send envelope first — message/stream events
-		// don't have the {result: {status: {state: "..."}}} top-level
-		// shape so extractSendResponse will return false and we fall
-		// through to the per-event extractor.
-		if !extractSendResponse(frame, ext) {
-			extractStreamEvent(frame, ext)
-		}
+		extractResponseSummary(frame, ext)
 		// Capture session id from any frame if the request didn't carry one.
 		if ext.SessionID == "" {
-			if sid := sessionIDFromJSON(frame); sid != "" {
+			if sid := extractSessionID(frame); sid != "" {
 				ext.SessionID = sid
 			}
 		}
@@ -257,12 +264,24 @@ func logA2AFinalized(ext *pipeline.A2AExtension) {
 // and error message. Supports both SSE streams (message/stream) and plain JSON-RPC
 // responses (message/send).
 func extractResponseSummary(body []byte, ext *pipeline.A2AExtension) {
-	// Try plain JSON-RPC first (message/send response)
-	if extractSendResponse(body, ext) {
+	// Plain JSON-RPC (message/send response)
+	if json.Valid(body) {
+		foldResponse(body, ext)
 		return
 	}
-	// SSE stream (message/stream): scan data: lines for status and artifact events
+	// SSE stream (message/stream): fold each data: line as one event
 	extractStreamResponse(body, ext)
+}
+
+// foldResponse folds one JSON-RPC response payload into ext: a whole
+// message/send body, or one message/stream event. Both response paths
+// call it, so they agree. A result with a task state (a Task or a
+// status-update) goes to extractSendResponse. The last state wins, final
+// or not. Other results go to extractStreamEvent.
+func foldResponse(data []byte, ext *pipeline.A2AExtension) {
+	if !extractSendResponse(data, ext) {
+		extractStreamEvent(data, ext)
+	}
 }
 
 // extractSendResponse handles message/send responses (single JSON-RPC result).
@@ -284,6 +303,9 @@ func extractSendResponse(body []byte, ext *pipeline.A2AExtension) bool {
 					Text string `json:"text"`
 				} `json:"parts"`
 			} `json:"artifacts"`
+			// any, not string: a non-string kind or id must not fail the whole decode.
+			Kind   any    `json:"kind"`
+			ID     any    `json:"id"`
 			TaskID string `json:"taskId"`
 		} `json:"result"`
 	}
@@ -292,8 +314,8 @@ func extractSendResponse(body []byte, ext *pipeline.A2AExtension) bool {
 	}
 
 	ext.FinalStatus = resp.Result.Status.State
-	if ext.TaskID == "" && resp.Result.TaskID != "" {
-		ext.TaskID = resp.Result.TaskID
+	if id := resultTaskID(resp.Result.Kind, resp.Result.ID, resp.Result.TaskID); ext.TaskID == "" && id != "" {
+		ext.TaskID = id
 	}
 
 	// Extract artifact text
@@ -318,8 +340,8 @@ func extractSendResponse(body []byte, ext *pipeline.A2AExtension) bool {
 }
 
 // extractStreamResponse handles message/stream SSE responses (the
-// buffered path). For each "data:" line it extracts a single event
-// and folds it into the extension via extractStreamEvent.
+// buffered path). For each "data:" line it folds a single event into
+// the extension via foldResponse, as OnResponseFrame does for a frame.
 //
 // parsercommon.NormalizeSSE first: a leading BOM or CR-only line endings are
 // wire-legal SSE, and a raw LF split reads such a body as one unparseable
@@ -334,30 +356,19 @@ func extractStreamResponse(body []byte, ext *pipeline.A2AExtension) {
 		if len(data) == 0 {
 			continue
 		}
-		extractStreamEvent(data, ext)
+		foldResponse(data, ext)
 	}
 }
 
-// extractStreamEvent folds one A2A message/stream event payload (the
-// JSON object after `data: `) into the extension's running response
-// state. Used by both the buffered path (extractStreamResponse loops
-// over data: lines) and the streaming path (OnResponseFrame already
-// has the parsed payload as a frame).
+// extractStreamEvent folds one A2A result that has no task state (an
+// artifact-update event or a Message) into the extension's running
+// response state. foldResponse calls it for both response paths.
 func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 	var event struct {
 		Result struct {
-			Kind   string `json:"kind"`
-			Final  bool   `json:"final"`
-			TaskID string `json:"taskId"`
-			Status struct {
-				State   string `json:"state"`
-				Message struct {
-					Parts []struct {
-						Kind string `json:"kind"`
-						Text string `json:"text"`
-					} `json:"parts"`
-				} `json:"message"`
-			} `json:"status"`
+			Kind     string `json:"kind"`
+			ID       any    `json:"id"` // any: a non-string id must not fail the whole decode
+			TaskID   string `json:"taskId"`
 			Artifact struct {
 				Parts []struct {
 					Kind string `json:"kind"`
@@ -370,23 +381,11 @@ func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 		return
 	}
 
-	if ext.TaskID == "" && event.Result.TaskID != "" {
-		ext.TaskID = event.Result.TaskID
+	if id := resultTaskID(event.Result.Kind, event.Result.ID, event.Result.TaskID); ext.TaskID == "" && id != "" {
+		ext.TaskID = id
 	}
 
 	switch event.Result.Kind {
-	case "status-update":
-		if event.Result.Final {
-			ext.FinalStatus = event.Result.Status.State
-			if event.Result.Status.State == "failed" {
-				for _, part := range event.Result.Status.Message.Parts {
-					if part.Kind == "text" && part.Text != "" {
-						ext.ErrorMessage = part.Text
-						break
-					}
-				}
-			}
-		}
 	case "artifact-update", "artifact":
 		for _, part := range event.Result.Artifact.Parts {
 			if part.Kind == "text" && part.Text != "" {
@@ -394,6 +393,31 @@ func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 			}
 		}
 	}
+}
+
+// taskIDParamIsID reports whether the params of an A2A method (spec v0.3.0)
+// are TaskIdParams or extend them, so params.id is the task id.
+// tasks/pushNotificationConfig/set is not in the list: its params carry taskId.
+func taskIDParamIsID(method string) bool {
+	switch method {
+	case "tasks/get", "tasks/cancel", "tasks/resubscribe",
+		"tasks/pushNotificationConfig/get", "tasks/pushNotificationConfig/list",
+		"tasks/pushNotificationConfig/delete":
+		return true
+	}
+	return false
+}
+
+// resultTaskID returns the task id of an A2A result (spec v0.3.0).
+// A Task (kind "task") carries its id in id. A Message and the two
+// task update events carry it in taskId. A kind or id that is not a
+// string gives no task id.
+func resultTaskID(kind, id any, taskID string) string {
+	if kind == "task" {
+		s, _ := id.(string)
+		return s
+	}
+	return taskID
 }
 
 // extractSessionID finds a contextId (preferred) or sessionId in the response.

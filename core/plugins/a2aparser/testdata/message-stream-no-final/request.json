@@ -1,0 +1,19 @@
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "message/stream",
+  "params": {
+    "message": {
+      "role": "user",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "user text 3"
+        }
+      ],
+      "messageId": "msg-3",
+      "contextId": "ctx-3",
+      "kind": "message"
+    }
+  }
+}
