@@ -201,10 +201,10 @@ func (p *Router) renewReasoning(pctx *pipeline.Context) {
 // reasoningKey is the store key for pctx's session's record, "" when it has none a
 // record could name: a synthetic session holds many conversations.
 func reasoningKey(pctx *pipeline.Context) string {
-	if pctx.Session == nil || pctx.Session.ID == "" || synthetic(pctx.Session.ID) {
+	if pctx.SessionID == "" || synthetic(pctx.SessionID) {
 		return ""
 	}
-	return reasoningPrefix + pctx.Session.ID
+	return reasoningPrefix + pctx.SessionID
 }
 
 func (p *Router) loadReasoning(pctx *pipeline.Context, key string) (reasoningRecord, bool) {

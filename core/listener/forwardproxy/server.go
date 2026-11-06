@@ -605,14 +605,14 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// Establish the session identity ONCE, here, and keep it in a local: the
 	// identity handed to plugins and the bucket events are recorded under must be
 	// the same answer, not two rules that happen to agree. Plugins key on
-	// pctx.Session.ID (sessionbudget's Redis counters, contextguru's compaction
+	// pctx.SessionID (sessionbudget's Redis counters, contextguru's compaction
 	// state, sparc), so resolving this from ActiveSession() alone attributed two
 	// concurrent coding-agent sessions to whichever spoke last.
 	//
 	// A local rather than pctx.OutboundSessionID, deliberately. That field is
 	// exported and the pipeline runs between here and every recording site, so a
 	// plugin could otherwise write it and silently re-file both the request and
-	// its paired response — which resolveOutboundSessionID's own contract forbids,
+	// its paired response — which recordingSessionID's own contract forbids,
 	// and which would fail invisibly. The listener's answer wins; the pin is
 	// assigned from this local after the pipeline has run.
 	// The store's absence gates the header/process resolution, not the trusted
@@ -1840,7 +1840,7 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	}
 	ev := outboundResponseEvent(pctx, http.StatusSwitchingProtocols, fail)
 	ev.BytesUp, ev.BytesDown = up, down
-	s.Sessions.Append(s.responseSessionID(pctx), ev)
+	s.Sessions.Append(attribution.FiledSession(pctx.OutboundSessionID, s.Sessions.ActiveSession), ev)
 }
 
 // recordSpliceFailure records the response row for a 101 whose relay broke after
@@ -1929,8 +1929,13 @@ func (s *Server) bridgedHandler(authority string, tl *tunnelLog) http.Handler {
 	})
 }
 
-// resolveOutboundSessionID picks the bucket an outbound event is recorded
-// under, in descending order of trustworthiness:
+// recordingSessionID turns the identity resolved at hydration into the bucket an
+// event is recorded under. resolved is the listener's own answer, carried in a
+// local so no plugin can rewrite it. It wins, and then the client is not resolved
+// again. "" means hydration found no identity (or ran on a path that has none),
+// and recording — unlike a plugin — must still file the event somewhere, so the
+// client is resolved and attribution.RecordSession applies, in descending order
+// of trustworthiness:
 //
 //  1. A session id the client put on the request (SessionIDHeaders). This is
 //     the only source that can tell two concurrent agent sessions apart:
@@ -1956,23 +1961,11 @@ func (s *Server) bridgedHandler(authority string, tl *tunnelLog) http.Handler {
 // Safe to call with s.Sessions == nil: ActiveSession() is skipped and the default
 // bucket is returned, so a future caller that forgets the nil check on Sessions
 // gets a usable answer rather than a panic.
-func (s *Server) resolveOutboundSessionID(clientHeaders http.Header, chain []attribution.Proc) string {
-	if sid := s.resolvePluginSessionID(clientHeaders, chain); sid != "" {
-		return sid
-	}
-	return session.DefaultSessionID
-}
-
-// recordingSessionID turns the identity resolved at hydration into the bucket an
-// event is recorded under. resolved is the listener's own answer, carried in a
-// local so no plugin can rewrite it; "" means hydration found no identity (or ran
-// on a path that has none), and recording — unlike a plugin — must still file the
-// event somewhere, so the full order including the default bucket applies.
 func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header, chain []attribution.Proc) string {
 	if resolved != "" {
 		return resolved
 	}
-	return s.resolveOutboundSessionID(clientHeaders, chain)
+	return s.attribute(clientHeaders, chain).RecordSession("", s.activeSession)
 }
 
 // trustedSessionOf is the listener's own answer to "which session is this request
@@ -2003,19 +1996,12 @@ func (s *Server) trustedSessionOf(r *http.Request) string {
 // control socket — the same reasoning hydrateSession's trusted branch gives, applied
 // to the paths that never get there (#1569 review).
 func (s *Server) attributeForRecording(pctx *pipeline.Context, trusted string, clientHeaders http.Header, chain []attribution.Proc) string {
-	if trusted != "" {
-		pctx.SetAttribution("", "", "")
-		return trusted
+	var at attribution.Attribution
+	if trusted == "" {
+		at = s.attribute(clientHeaders, chain)
 	}
-	at := s.attribute(clientHeaders, chain)
 	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
-	if sid := at.RecordID(); sid != "" {
-		return sid
-	}
-	if sid := s.Sessions.ActiveSession(); sid != "" {
-		return sid
-	}
-	return session.DefaultSessionID
+	return at.RecordSession(trusted, s.activeSession)
 }
 
 // recordOutboundRequestEvent records pctx's request row under sid. Its pair is
@@ -2258,18 +2244,32 @@ func (s *Server) appendCaptured(tl *tunnelLog, sid string, ev pipeline.SessionEv
 // With the client's process known, an empty answer means a process of no agent, and the
 // row goes to default like that process's requests.
 func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, chain []attribution.Proc) string {
-	if s.ClientAffinity && resolved == "" && chain == nil && s.Sessions != nil {
-		if sid := s.Sessions.ActiveSession(); sid != "" {
-			return sid
-		}
-		return session.DefaultSessionID
+	if s.ClientAffinity && resolved == "" && chain == nil {
+		return attribution.FiledSession("", s.activeSession)
 	}
 	return s.recordingSessionID(resolved, clientHeaders, chain)
 }
 
-// resolvePluginSessionID is resolveOutboundSessionID without the default-bucket
-// fallback: it returns "" when neither a client header nor an active session
-// names one, and is the identity handed to plugins.
+// hydrateSession resolves the plugin session for a request and, when there is one,
+// sets pctx.Session and how it was resolved. It returns the id for the caller's
+// local, which recording reads instead of pctx.
+// trusted is the connection's own answer (trustedSessionOf), resolved by the
+// caller — which also keeps the r.Header read at the CALL SITE rather than in
+// here. The headers arrive as a parameter for the same reason trusted does:
+// the caller resolves both once per request, so the pre-hydration refusal
+// paths (attributeForRecording and its call sites) share the caller's values
+// instead of re-deriving them. CodeQL note, so nobody re-litigates the
+// placement: moving the r.Header read inside this function made CodeQL's
+// diff-informed analysis report 28 pre-existing go/clear-text-logging and
+// go/log-injection alerts in untouched plugins (sessionbudget, contextguru,
+// inferencerouter) as new, every one sourced to the moved line. They are
+// false positives — a header id passes validHeaderSessionID before anything
+// logs it, and a session id is not a secret — and taking the read back out
+// did NOT clear them; they need dismissing on the PR (#1569 review).
+//
+// The plugin session is attribution.PluginSession: recordingSessionID's order
+// without the default-bucket fallback. It is "" when nothing names a session,
+// and for a process of no agent.
 //
 // The missing fallback is the point. Recording must file an event somewhere, so
 // "default" is the right last resort there. A plugin asking "which session is
@@ -2308,33 +2308,6 @@ func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, cha
 // With the client's process known (chain non-nil), a header claims the session for that
 // process as well as for its agent, and a request with no header is filed by process first;
 // client affinity and ActiveSession() answer only what it leaves open. See core/attribution.
-func (s *Server) resolvePluginSessionID(clientHeaders http.Header, chain []attribution.Proc) string {
-	sid, _ := s.resolvePluginSession(clientHeaders, chain)
-	return sid
-}
-
-// pluginSession is the session handed to plugins and how it was resolved.
-type pluginSession struct {
-	source pipeline.SessionSource
-	header string
-}
-
-// hydrateSession resolves the plugin session for a request and, when there is one,
-// sets pctx.Session and how it was resolved. It returns the id for the caller's
-// local, which recording reads instead of pctx.
-// trusted is the connection's own answer (trustedSessionOf), resolved by the
-// caller — which also keeps the r.Header read at the CALL SITE rather than in
-// here. The headers arrive as a parameter for the same reason trusted does:
-// the caller resolves both once per request, so the pre-hydration refusal
-// paths (attributeForRecording and its call sites) share the caller's values
-// instead of re-deriving them. CodeQL note, so nobody re-litigates the
-// placement: moving the r.Header read inside this function made CodeQL's
-// diff-informed analysis report 28 pre-existing go/clear-text-logging and
-// go/log-injection alerts in untouched plugins (sessionbudget, contextguru,
-// inferencerouter) as new, every one sourced to the moved line. They are
-// false positives — a header id passes validHeaderSessionID before anything
-// logs it, and a session id is not a secret — and taking the read back out
-// did NOT clear them; they need dismissing on the PR (#1569 review).
 func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHeaders http.Header, chain []attribution.Proc) string {
 	// The listener's own answer first, and it ends the search: a session
 	// resolved from how the connection arrived is not something the client has
@@ -2351,51 +2324,36 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHe
 	// attributeForRecording from filling a VM's row in with a host process
 	// that merely happens to own the control socket. The VM's identity is the
 	// session id itself, which the connection already settled.
-	if trusted != "" {
-		pctx.Session = s.sessionViewFor(trusted)
-		pctx.SessionSource = pipeline.SessionSourceConnection
-		pctx.SessionHeader = ""
-		pctx.SetAttribution("", "", "")
-		return trusted
+	var at attribution.Attribution
+	if trusted == "" {
+		at = s.attribute(clientHeaders, chain)
 	}
-	at := s.attribute(clientHeaders, chain)
 	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
-	sid, how := s.pluginSessionOf(at)
+	sid, source := at.PluginSession(trusted, s.activeSession)
 	if sid != "" {
 		pctx.Session = s.sessionViewFor(sid)
-		pctx.SessionSource = how.source
-		pctx.SessionHeader = how.header
+		pctx.SessionID = sid
+		pctx.SessionSource = source
+		pctx.SessionHeader = at.Header
 	}
-	if chain != nil && s.processesOn() {
+	if trusted == "" && chain != nil && s.processesOn() {
 		pctx.ChainSession = at.ChainSession
-		if pctx.ChainSession != "" && sid != pctx.ChainSession && how.source == pipeline.SessionSourceHeader {
-			if _, seen := s.chainOverrideLogged.LoadOrStore(how.header, struct{}{}); !seen {
+		if pctx.ChainSession != "" && sid != pctx.ChainSession && source == pipeline.SessionSourceHeader {
+			if _, seen := s.chainOverrideLogged.LoadOrStore(at.Header, struct{}{}); !seen {
 				slog.Info("forwardproxy: a process named a session other than its parent agent's; "+
-					"policy keyed on the process chain uses the parent's", "header", how.header)
+					"policy keyed on the process chain uses the parent's", "header", at.Header)
 			}
 		}
 	}
 	return sid
 }
 
-// resolvePluginSession is resolvePluginSessionID that also says how the id was
-// resolved.
-func (s *Server) resolvePluginSession(clientHeaders http.Header, chain []attribution.Proc) (string, pluginSession) {
-	return s.pluginSessionOf(s.attribute(clientHeaders, chain))
-}
-
-// pluginSessionOf is an attribution as plugins hear it: its plugin id, else — for no
-// identity at all — the store's ActiveSession(), the in-cluster answer.
-func (s *Server) pluginSessionOf(at attribution.Attribution) (string, pluginSession) {
-	if sid := at.PluginID(); sid != "" {
-		return sid, pluginSession{source: at.Source, header: at.Header}
+// activeSession is the store's ActiveSession(), "" without a store.
+func (s *Server) activeSession() string {
+	if s.Sessions == nil {
+		return ""
 	}
-	if at.Session == "" && at.Source != pipeline.SessionSourcePending && s.Sessions != nil {
-		if sid := s.Sessions.ActiveSession(); sid != "" {
-			return sid, pluginSession{source: pipeline.SessionSourceActive}
-		}
-	}
-	return "", pluginSession{}
+	return s.Sessions.ActiveSession()
 }
 
 // attribute is the attributor's answer for a request, or what an attributor with nothing
@@ -2473,20 +2431,7 @@ func (s *Server) rejectResponse(w http.ResponseWriter, pctx *pipeline.Context, a
 		return
 	}
 	// With the capture: what a plugin refused is still the origin's answer.
-	s.Sessions.AppendCapture(s.responseSessionID(pctx), sessionevent.DenyResponse(pctx, action, pipeline.Outbound), takeResponseCapture(pctx))
-}
-
-// responseSessionID is the bucket a response row files under: the session
-// pinned when the request row was recorded, else the active one, else the
-// default.
-func (s *Server) responseSessionID(pctx *pipeline.Context) string {
-	if sid := pctx.OutboundSessionID; sid != "" {
-		return sid
-	}
-	if sid := s.Sessions.ActiveSession(); sid != "" {
-		return sid
-	}
-	return session.DefaultSessionID
+	s.Sessions.AppendCapture(attribution.FiledSession(pctx.OutboundSessionID, s.Sessions.ActiveSession), sessionevent.DenyResponse(pctx, action, pipeline.Outbound), takeResponseCapture(pctx))
 }
 
 // recordOutboundResponseEvent emits the SessionResponse event for a
@@ -2507,7 +2452,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	// response lands in the same bucket. Fall back to ActiveSession() only
 	// when nothing was pinned (defensive — a response-only path), then to
 	// the default bucket. See Context.OutboundSessionID.
-	sid := s.responseSessionID(pctx)
+	sid := attribution.FiledSession(pctx.OutboundSessionID, s.Sessions.ActiveSession)
 	// Always record — see the request-phase comment. This is what surfaces
 	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
 	// + Error even with empty invocations.
@@ -3843,7 +3788,7 @@ func (t *tunnelLog) deferOpen() {
 	defer t.mu.Unlock()
 	if !t.opened {
 		t.deferred = true
-		t.openEv = t.s.tunnelOpenEvent(t.pctx, "")
+		t.openEv = sessionevent.TunnelOpen(t.pctx, "")
 	}
 }
 

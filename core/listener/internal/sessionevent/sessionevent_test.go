@@ -356,3 +356,65 @@ func TestRequestResponse_OmitWhatTheContextDoesNotCarry(t *testing.T) {
 		}
 	}
 }
+
+// TunnelOpen records every field of a tunnel's open row. The forward proxy built this
+// row by hand before the builder existed.
+func TestTunnelOpen_PopulatesEveryField(t *testing.T) {
+	pctx := richContext()
+	pctx.SetAttribution("100.200", "101.201", "X-Session")
+	pctx.DialedAddr = "203.0.113.7:443"
+
+	ev := TunnelOpen(pctx, pipeline.TunnelPassthroughHost)
+	if ev.At.IsZero() || ev.Direction != pipeline.Outbound || ev.Phase != pipeline.SessionRequest {
+		t.Errorf("At/Direction/Phase = %v/%v/%v", ev.At, ev.Direction, ev.Phase)
+	}
+	if ev.RequestID != pctx.RequestID() || ev.Host != pctx.Host || ev.HTTPMethod != "POST" || ev.HTTPPath != "/parity/deny" {
+		t.Errorf("RequestID/Host/Method/Path = %q/%q/%q/%q", ev.RequestID, ev.Host, ev.HTTPMethod, ev.HTTPPath)
+	}
+	if !ev.Tunnel || ev.TunnelReason != pipeline.TunnelPassthroughHost || ev.DialAddr != "203.0.113.7:443" {
+		t.Errorf("Tunnel/TunnelReason/DialAddr = %v/%q/%q", ev.Tunnel, ev.TunnelReason, ev.DialAddr)
+	}
+	if ev.Invocations == nil || ev.Plugins == nil || ev.Identity == nil || ev.Client == nil {
+		t.Errorf("Invocations/Plugins/Identity/Client not snapshotted: %+v", ev)
+	}
+	if ev.Subagent != "a1a2e36cb5946f31c" || ev.ParentSubagent != "a0974b0b8591dc76b" || ev.Proc != "100.200" {
+		t.Errorf("Subagent/ParentSubagent/Proc = %q/%q/%q", ev.Subagent, ev.ParentSubagent, ev.Proc)
+	}
+	// The open row has no outcome, and the request-only fields stay on Request.
+	if ev.StatusCode != 0 || ev.Error != nil || ev.Duration != 0 || ev.BytesUp != 0 || ev.BytesDown != 0 ||
+		ev.ClientProc != "" || ev.SessionHeader != "" || ev.TLS != nil || ev.RequestedHost != "" {
+		t.Errorf("open row carries fields it must not: %+v", ev)
+	}
+}
+
+// TunnelClose records every field of a tunnel's close row. The WebSocket close row once
+// dropped Proc, Subagent and ParentSubagent because it was built by hand.
+func TestTunnelClose_PopulatesEveryField(t *testing.T) {
+	pctx := richContext()
+	pctx.SetAttribution("100.200", "101.201", "X-Session")
+	pctx.DialedAddr = "203.0.113.7:443"
+	fail := &pipeline.EventError{Kind: "upstream_unreachable"}
+
+	ev := TunnelClose(pctx, pipeline.TunnelWebSocket, 502, fail, 10, 20)
+	if ev.At.IsZero() || ev.Direction != pipeline.Outbound || ev.Phase != pipeline.SessionResponse {
+		t.Errorf("At/Direction/Phase = %v/%v/%v", ev.At, ev.Direction, ev.Phase)
+	}
+	if ev.RequestID != pctx.RequestID() || ev.Host != pctx.Host || ev.HTTPMethod != "POST" || ev.HTTPPath != "/parity/deny" {
+		t.Errorf("RequestID/Host/Method/Path = %q/%q/%q/%q", ev.RequestID, ev.Host, ev.HTTPMethod, ev.HTTPPath)
+	}
+	if ev.StatusCode != 502 || ev.Error != fail || ev.Duration <= 0 || ev.BytesUp != 10 || ev.BytesDown != 20 {
+		t.Errorf("StatusCode/Error/Duration/BytesUp/BytesDown = %d/%+v/%v/%d/%d",
+			ev.StatusCode, ev.Error, ev.Duration, ev.BytesUp, ev.BytesDown)
+	}
+	if !ev.Tunnel || ev.TunnelReason != pipeline.TunnelWebSocket || ev.Identity == nil || ev.Client == nil {
+		t.Errorf("Tunnel/TunnelReason/Identity/Client = %v/%q/%+v/%+v", ev.Tunnel, ev.TunnelReason, ev.Identity, ev.Client)
+	}
+	if ev.Subagent != "a1a2e36cb5946f31c" || ev.ParentSubagent != "a0974b0b8591dc76b" || ev.Proc != "100.200" {
+		t.Errorf("Subagent/ParentSubagent/Proc = %q/%q/%q", ev.Subagent, ev.ParentSubagent, ev.Proc)
+	}
+	// Nothing runs on a tunnel's response, and the open row carries the dial address.
+	if ev.Invocations != nil || ev.Plugins != nil || ev.DialAddr != "" || ev.ClientProc != "" ||
+		ev.SessionHeader != "" || ev.TLS != nil || ev.RequestedHost != "" {
+		t.Errorf("close row carries fields it must not: %+v", ev)
+	}
+}

@@ -71,6 +71,7 @@ func request(p *SessionBudget, sessionID string) pipeline.Action {
 		Direction: pipeline.Outbound,
 		Headers:   http.Header{},
 		Session:   &pipeline.SessionView{ID: sessionID},
+		SessionID: sessionID,
 	}
 	return p.OnRequest(context.Background(), pctx)
 }

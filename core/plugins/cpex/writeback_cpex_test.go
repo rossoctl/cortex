@@ -133,6 +133,7 @@ func TestEngineResolvedSessionIgnoresCallerHeader(t *testing.T) {
 		pctx := toolCall(tool, http.Header{"X-Session-Id": {callerSID}})
 		pctx.Identity = claimsIdentity{sub: "alice"}
 		pctx.Session = &pipeline.SessionView{ID: "claude-1"}
+		pctx.SessionID = "claude-1"
 		pctx.SessionSource = src
 		pctx.SessionHeader = header
 		return pctx

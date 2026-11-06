@@ -223,6 +223,27 @@ func TestResponsesWebSocket_EachTurnSeesTheSessionSoFar(t *testing.T) {
 	}
 }
 
+// Each turn's pctx.SessionID is the id of the view it is given.
+func TestResponsesWebSocket_TurnSessionIDIsTheViewID(t *testing.T) {
+	seen := &sessionLenRecorder{}
+	h := newWSHarness(t, config.ResponsesWebSocketsParse, seen)
+	c := h.dial(t, nil)
+	c.send(responseCreate("one"))
+	c.readUntil("response.completed")
+	c.close()
+	h.events(t, codexSID, true)
+	seen.mu.Lock()
+	defer seen.mu.Unlock()
+	if n := len(seen.ids); n == 0 || seen.ids[n-1][0] != codexSID {
+		t.Fatalf("ids seen = %v; the last request is the turn, on %q", seen.ids, codexSID)
+	}
+	for i, p := range seen.ids {
+		if want := strings.TrimPrefix(p[0], "-"); p[1] != want {
+			t.Errorf("request %d: view id %q, SessionID %q; want SessionID %q", i, p[0], p[1], want)
+		}
+	}
+}
+
 // An origin's refusal is relayed whole: the handshake's deadline must not cut its body.
 func TestResponsesWebSocket_OriginRefusalBodyIsRelayedWhole(t *testing.T) {
 	h := newWSHarness(t, config.ResponsesWebSocketsParse)
@@ -272,6 +293,8 @@ func (redirector) OnResponse(context.Context, *pipeline.Context) pipeline.Action
 type sessionLenRecorder struct {
 	mu  sync.Mutex
 	got []int
+	// ids holds the view's id and pctx.SessionID at each request. A nil view gives "-".
+	ids [][2]string
 }
 
 func (*sessionLenRecorder) Name() string { return "session-len-recorder" }
@@ -281,11 +304,12 @@ func (*sessionLenRecorder) Capabilities() pipeline.PluginCapabilities {
 func (r *sessionLenRecorder) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	n := -1
+	n, id := -1, "-"
 	if pctx.Session != nil {
-		n = pctx.Session.Len()
+		n, id = pctx.Session.Len(), pctx.Session.ID
 	}
 	r.got = append(r.got, n)
+	r.ids = append(r.ids, [2]string{id, pctx.SessionID})
 	return pipeline.Action{Type: pipeline.Continue}
 }
 func (*sessionLenRecorder) OnResponse(context.Context, *pipeline.Context) pipeline.Action {

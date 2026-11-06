@@ -88,6 +88,9 @@ func TestTrustedSessionIDOverridesEveryOtherSource(t *testing.T) {
 	if pctx.Session == nil || pctx.Session.ID != "trusted-sid" {
 		t.Fatalf("pctx.Session = %+v, want trusted-sid", pctx.Session)
 	}
+	if pctx.SessionID != "trusted-sid" {
+		t.Errorf("pctx.SessionID = %q, want trusted-sid", pctx.SessionID)
+	}
 	if pctx.SessionSource != pipeline.SessionSourceConnection || pctx.SessionHeader != "" {
 		t.Errorf("source %q/%q, want connection with no header named", pctx.SessionSource, pctx.SessionHeader)
 	}
@@ -120,8 +123,8 @@ func TestSessionSourceProcessChain(t *testing.T) {
 	h := http.Header{"User-Agent": {procClaudeUA}}
 	h.Set(session.ClaudeCodeSessionHeader, "claude-1")
 	store.Append("claude-1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest})
-	if sid, how := s.resolvePluginSession(h, []attribution.Proc{agent}); sid != "claude-1" || how.source != pipeline.SessionSourceHeader {
-		t.Fatalf("agent: %q via %q, want claude-1 via header", sid, how.source)
+	if sid, src := s.attribute(h, []attribution.Proc{agent}).PluginSession("", s.activeSession); sid != "claude-1" || src != pipeline.SessionSourceHeader {
+		t.Fatalf("agent: %q via %q, want claude-1 via header", sid, src)
 	}
 	pctx := &pipeline.Context{}
 	if sid := s.hydrateSession(pctx, "", http.Header{}, []attribution.Proc{tool, agent}); sid != "claude-1" {

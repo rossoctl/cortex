@@ -73,7 +73,8 @@ func mcpPctx() *pipeline.Context {
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound, Method: "POST", Scheme: "http",
 		Host: "finance-mcp.team1.svc", Path: "/mcp", Headers: http.Header{},
-		Session: &pipeline.SessionView{ID: "s1", Events: []pipeline.SessionEvent{inferenceEvent()}},
+		Session:   &pipeline.SessionView{ID: "s1", Events: []pipeline.SessionEvent{inferenceEvent()}},
+		SessionID: "s1",
 	}
 	pctx.Extensions.MCP = &pipeline.MCPExtension{
 		Method: "tools/call", RPCID: "rpc-1", IsAction: true,

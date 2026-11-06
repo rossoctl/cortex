@@ -41,8 +41,8 @@ func TestResolveOutboundSessionID_HeaderWinsOverActiveSession(t *testing.T) {
 	// A request from the OTHER concurrent session must not be filed under A.
 	clientHeaders := http.Header{session.ClaudeCodeSessionHeader: []string{sidB}}
 
-	if got := s.resolveOutboundSessionID(clientHeaders, nil); got != sidB {
-		t.Fatalf("resolveOutboundSessionID() = %q, want %q (header must win over ActiveSession)", got, sidB)
+	if got := s.recordingSessionID("", clientHeaders, nil); got != sidB {
+		t.Fatalf("recordingSessionID() = %q, want %q (header must win over ActiveSession)", got, sidB)
 	}
 }
 
@@ -263,8 +263,8 @@ func TestResolveOutboundSessionID_RejectsControlCharacters(t *testing.T) {
 		"abc\x00def",    // NUL
 	} {
 		clientHeaders := http.Header{session.ClaudeCodeSessionHeader: []string{bad}}
-		if got := s.resolveOutboundSessionID(clientHeaders, nil); got != session.DefaultSessionID {
-			t.Errorf("resolveOutboundSessionID(%q) = %q, want %q (must refuse control characters)",
+		if got := s.recordingSessionID("", clientHeaders, nil); got != session.DefaultSessionID {
+			t.Errorf("recordingSessionID(%q) = %q, want %q (must refuse control characters)",
 				bad, got, session.DefaultSessionID)
 		}
 	}
@@ -282,8 +282,8 @@ func TestResolveOutboundSessionID_RejectsOverlongID(t *testing.T) {
 
 	overlong := strings.Repeat("a", session.MaxSessionIDLen+1)
 	clientHeaders := http.Header{session.ClaudeCodeSessionHeader: []string{overlong}}
-	if got := s.resolveOutboundSessionID(clientHeaders, nil); got != session.DefaultSessionID {
-		t.Fatalf("resolveOutboundSessionID(len %d) = %q, want %q",
+	if got := s.recordingSessionID("", clientHeaders, nil); got != session.DefaultSessionID {
+		t.Fatalf("recordingSessionID(len %d) = %q, want %q",
 			len(overlong), got, session.DefaultSessionID)
 	}
 }
@@ -305,16 +305,16 @@ func TestResolveOutboundSessionID_FallsBackWhenHeaderAbsent(t *testing.T) {
 	s := &Server{Sessions: store, SessionIDHeaders: []string{session.ClaudeCodeSessionHeader}}
 
 	clientHeaders := http.Header{}
-	if got := s.resolveOutboundSessionID(clientHeaders, nil); got != "conv-A" {
-		t.Fatalf("resolveOutboundSessionID() = %q, want %q (A2A correlation must survive)", got, "conv-A")
+	if got := s.recordingSessionID("", clientHeaders, nil); got != "conv-A" {
+		t.Fatalf("recordingSessionID() = %q, want %q (A2A correlation must survive)", got, "conv-A")
 	}
 
 	// With nothing active either, the default bucket still catches it.
 	empty := session.New(5*time.Minute, 100, 0)
 	defer empty.Close()
 	s2 := &Server{Sessions: empty, SessionIDHeaders: []string{session.ClaudeCodeSessionHeader}}
-	if got := s2.resolveOutboundSessionID(clientHeaders, nil); got != session.DefaultSessionID {
-		t.Fatalf("resolveOutboundSessionID() = %q, want %q", got, session.DefaultSessionID)
+	if got := s2.recordingSessionID("", clientHeaders, nil); got != session.DefaultSessionID {
+		t.Fatalf("recordingSessionID() = %q, want %q", got, session.DefaultSessionID)
 	}
 }
 
@@ -326,8 +326,8 @@ func TestResolveOutboundSessionID_DisabledByEmptyHeaderList(t *testing.T) {
 	s := &Server{Sessions: store, SessionIDHeaders: nil}
 
 	clientHeaders := http.Header{session.ClaudeCodeSessionHeader: []string{"some-session"}}
-	if got := s.resolveOutboundSessionID(clientHeaders, nil); got != session.DefaultSessionID {
-		t.Fatalf("resolveOutboundSessionID() = %q, want %q (header bucketing disabled)", got, session.DefaultSessionID)
+	if got := s.recordingSessionID("", clientHeaders, nil); got != session.DefaultSessionID {
+		t.Fatalf("recordingSessionID() = %q, want %q (header bucketing disabled)", got, session.DefaultSessionID)
 	}
 }
 
@@ -348,11 +348,11 @@ func TestResolveOutboundSessionID_InClusterDefaultKeepsTheA2ATurn(t *testing.T) 
 	clientHeaders := http.Header{session.SessionIDHeader: []string{"minted-by-the-agent"}}
 
 	cluster := &Server{Sessions: store, SessionIDHeaders: config.SessionConfig{}.SessionIDHeadersFor(false)}
-	if got := cluster.resolveOutboundSessionID(clientHeaders, nil); got != "conv-A" {
-		t.Errorf("in-cluster default: resolveOutboundSessionID() = %q, want the A2A turn %q", got, "conv-A")
+	if got := cluster.recordingSessionID("", clientHeaders, nil); got != "conv-A" {
+		t.Errorf("in-cluster default: recordingSessionID() = %q, want the A2A turn %q", got, "conv-A")
 	}
 	laptop := &Server{Sessions: store, SessionIDHeaders: config.SessionConfig{}.SessionIDHeadersFor(true)}
-	if got := laptop.resolveOutboundSessionID(clientHeaders, nil); got != "minted-by-the-agent" {
-		t.Errorf("laptop default: resolveOutboundSessionID() = %q, want the header's %q", got, "minted-by-the-agent")
+	if got := laptop.recordingSessionID("", clientHeaders, nil); got != "minted-by-the-agent" {
+		t.Errorf("laptop default: recordingSessionID() = %q, want the header's %q", got, "minted-by-the-agent")
 	}
 }

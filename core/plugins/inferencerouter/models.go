@@ -337,10 +337,10 @@ func (p *Router) markRefused(pctx *pipeline.Context, server, model string) {
 // there is no one session to keep them for: none, or one of the listener's synthetic
 // ones, which hold many conversations. They are the agent's, as a pin is.
 func substituteKey(pctx *pipeline.Context, server string) string {
-	if pctx.Session == nil || pctx.Session.ID == "" || synthetic(pctx.Session.ID) {
+	if pctx.SessionID == "" || synthetic(pctx.SessionID) {
 		return ""
 	}
-	return substitutePrefix + pctx.Session.ID + "/" + agentOf(pctx) + "/" + server
+	return substitutePrefix + pctx.SessionID + "/" + agentOf(pctx) + "/" + server
 }
 
 // substitutes is the session's substitutes kept at key.

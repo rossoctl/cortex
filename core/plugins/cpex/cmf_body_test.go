@@ -659,6 +659,7 @@ func TestCPEXSessionID(t *testing.T) {
 		return &pipeline.Context{
 			Headers:       http.Header{"X-Session-Id": {"caller-chosen"}},
 			Session:       &pipeline.SessionView{ID: id},
+			SessionID:     id,
 			SessionSource: src,
 			SessionHeader: header,
 		}
@@ -678,7 +679,7 @@ func TestCPEXSessionID(t *testing.T) {
 		{"header, present", &pipeline.Context{Headers: http.Header{"X-Session-Id": {"taint-demo-42"}}},
 			sessionSourceHeader, "taint-demo-42", false},
 		{"header ignores the resolved session",
-			&pipeline.Context{Headers: http.Header{}, Session: &pipeline.SessionView{ID: "s1"}, SessionSource: pipeline.SessionSourceProcess},
+			&pipeline.Context{Headers: http.Header{}, Session: &pipeline.SessionView{ID: "s1"}, SessionID: "s1", SessionSource: pipeline.SessionSourceProcess},
 			sessionSourceHeader, "", false},
 		{"resolved from the Claude Code header",
 			resolved("s1", pipeline.SessionSourceHeader, session.ClaudeCodeSessionHeader), sessionSourceResolved, "s1", true},
