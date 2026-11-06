@@ -8,8 +8,8 @@ import (
 	"github.com/rossoctl/cortex/core/internal/wirefixture"
 )
 
-// agentop decodes testdata/reload-status.json too (cmd/agentop/edit), so a renamed
-// key on either side fails a test.
+// agentop decodes testdata/reload-status.json too (into edit.ReloadStatus, in
+// cmd/agentop/wire_fixture_test.go), so a renamed key on either side fails a test.
 func TestStatusHandler_CoversTheWireFixture(t *testing.T) {
 	r := &Reloader{}
 	r.status.Store(&Status{})

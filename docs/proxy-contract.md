@@ -54,10 +54,10 @@ fixture holds the keys that agentop reads:
 - `core/tlsbridge/testdata/unread.json`
 
 A test beside each handler checks that its real output has every fixture key, with
-the same JSON type. `cmd/agentop/wire_fixture_test.go` and
-`cmd/agentop/edit/wire_fixture_test.go` decode the same files and refuse unknown
-keys. Thus a renamed JSON tag on either side fails a test. When agentop reads a new
-key, add it to the fixture.
+the same JSON type. `cmd/agentop/wire_fixture_test.go` decodes the same files into
+agentop's types and refuses unknown keys. It then marshals each value again and
+requires the fixture back, so it also fails when agentop reads a key that the
+fixture does not hold. Thus a renamed JSON tag on either side fails a test.
 
 `/config` reports the config in effect, with secret values masked. `GET /stats` and
 the `/` index also exist. agentop does not read them.
