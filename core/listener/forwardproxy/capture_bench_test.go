@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins/inferenceparser"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/session/archive"
 )
@@ -22,7 +23,7 @@ func BenchmarkCapture_RequestPath(b *testing.B) {
 	defer backend.Close()
 	for _, mode := range []string{"off", "on"} {
 		b.Run(mode, func(b *testing.B) {
-			p, err := pipeline.New([]pipeline.Plugin{&bodyRecorderPlugin{}})
+			p, err := pipeline.New([]pipeline.Plugin{inferenceparser.NewInferenceParser()})
 			if err != nil {
 				b.Fatal(err)
 			}

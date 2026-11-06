@@ -405,11 +405,15 @@ home directory. The directories are created `0700` and the files `0600`. The pro
 the archive holds in its startup log line, so `grep 'session archive' ~/.cortex/proxy.log`
 shows which state you are in.
 
-**It also keeps each request exactly as it was sent.** For every request whose body Cortex
-reads, the archive keeps the body the agent sent, the body Cortex forwarded when a plugin
-rewrote it, the request headers and the query. Credential headers (`authorization`,
-`x-api-key`, `cookie`, `x-amz-security-token` and the others) are removed first, and so are
-credential query parameters such as Gemini's `key`. Images,
+**It also keeps each inference request exactly as it was sent.** For a request that
+`inference-parser` reads as inference, and for each Responses WebSocket turn, the archive keeps
+the body the agent sent, the body Cortex forwarded when a plugin rewrote it, the request headers
+and the query. Other requests, such as an OAuth token refresh, keep their event only. Cortex
+removes a header or a query parameter when its name, split at `-` and `_`, has one of the
+words `key`, `apikey`, `token`, `auth`, `authorization`, `cookie`, `secret`, `signature`,
+`password`, `credential` or `credentials`, with case ignored. So `x-api-key`, Gemini's `key`,
+`Idempotency-Key` and `Sec-WebSocket-Key` are removed, and a camelCase name such as
+`accessToken` is kept. Cortex does not redact the body. Images,
 files the agent read and thinking blocks are kept too. Each part of a body that repeats from
 one request to the next is stored once per segment, so this costs about 8–20 KB per request
 in the measured sessions.

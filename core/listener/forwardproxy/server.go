@@ -2176,6 +2176,11 @@ func (s *Server) recordOutboundRequestEvent(tl *tunnelLog, pctx *pipeline.Contex
 // it, c, which may be nil. The row carries c with the body as it goes upstream: pctx.Body,
 // when a plugin rewrote it.
 func (s *Server) recordCapturedRequest(tl *tunnelLog, pctx *pipeline.Context, sid string, c *pipeline.RequestCapture) {
+	// Only inference is kept: the capture redacts headers and the query, not the body, and the
+	// body of any other request, such as an OAuth token refresh, can be a credential.
+	if pctx.Extensions.Inference == nil {
+		c = nil
+	}
 	if c != nil && pctx.BodyMutated() {
 		cp := *c
 		cp.Forwarded = pctx.Body

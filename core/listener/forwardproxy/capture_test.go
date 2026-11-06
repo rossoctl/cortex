@@ -12,6 +12,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins/inferenceparser"
 	"github.com/rossoctl/cortex/core/session"
 )
 
@@ -85,7 +86,7 @@ func TestCapture_RecordsOriginalForwardedHeadersAndQuery(t *testing.T) {
 		forwarded = readAllBody(r)
 	}))
 	defer backend.Close()
-	proxy, rec := proxyWithCaptures(t, &bodyMutatorPlugin{newBody: []byte(`{"rewritten":true}`)})
+	proxy, rec := proxyWithCaptures(t, inferenceparser.NewInferenceParser(), &bodyMutatorPlugin{newBody: []byte(`{"rewritten":true}`)})
 
 	orig := `{"model":"m","messages":[{"role":"user","content":"hi"}]}`
 	postThrough(t, proxy, backend.URL+"/v1/messages?beta=true&key=AIza-secret", orig, http.Header{
@@ -124,11 +125,11 @@ func TestCapture_RecordsOriginalForwardedHeadersAndQuery(t *testing.T) {
 func TestCapture_AnUnrewrittenBodyHasNoForwardedCopy(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer backend.Close()
-	proxy, rec := proxyWithCaptures(t, &bodyRecorderPlugin{})
+	proxy, rec := proxyWithCaptures(t, inferenceparser.NewInferenceParser())
 
-	postThrough(t, proxy, backend.URL+"/v1/messages", `{"a":1}`, nil)
+	postThrough(t, proxy, backend.URL+"/v1/messages", inferenceBody, nil)
 	got := rec.all()
-	if len(got) != 1 || string(got[0].Original) != `{"a":1}` || got[0].Forwarded != nil {
+	if len(got) != 1 || string(got[0].Original) != inferenceBody || got[0].Forwarded != nil {
 		t.Fatalf("captures %+v, want the original alone", got)
 	}
 }
@@ -138,9 +139,9 @@ func TestCapture_AnUnrewrittenBodyHasNoForwardedCopy(t *testing.T) {
 func TestCapture_HeadersAreTheAgents(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer backend.Close()
-	proxy, rec := proxyWithCaptures(t, &headerSetter{name: "X-Added", value: "by-plugin"}, &bodyRecorderPlugin{})
+	proxy, rec := proxyWithCaptures(t, &headerSetter{name: "X-Added", value: "by-plugin"}, inferenceparser.NewInferenceParser())
 
-	postThrough(t, proxy, backend.URL+"/v1/messages", `{"a":1}`, http.Header{"X-Agent": {"yes"}})
+	postThrough(t, proxy, backend.URL+"/v1/messages", inferenceBody, http.Header{"X-Agent": {"yes"}})
 	got := rec.all()
 	if len(got) != 1 || got[0].Header.Get("X-Agent") != "yes" || got[0].Header.Get("X-Added") != "" {
 		t.Fatalf("captured headers %v, want the agent's", got[0].Header)
@@ -232,3 +233,30 @@ func TestCapture_AResentRequestCarriesItsOwnForwardedBody(t *testing.T) {
 		t.Errorf("%d captures carry the resent body, want 1", resent)
 	}
 }
+
+// Only an inference request is captured. A buffered request no parser took for inference, such
+// as an OAuth token refresh, keeps its event and no capture: its body can hold credentials,
+// and the capture redacts headers and the query, never the body.
+func TestCapture_OnlyInferenceRequests(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer backend.Close()
+	proxy, rec := proxyWithCaptures(t, inferenceparser.NewInferenceParser())
+
+	postThrough(t, proxy, backend.URL+"/v1/oauth/token", "grant_type=refresh_token&refresh_token=rt-secret",
+		http.Header{"Content-Type": {"application/x-www-form-urlencoded"}})
+	postThrough(t, proxy, backend.URL+"/oauth/token", `{"code":"c-secret","code_verifier":"v-secret"}`,
+		http.Header{"Content-Type": {"application/json"}})
+	// The path of an inference endpoint is not enough: the body must parse as one.
+	postThrough(t, proxy, backend.URL+"/v1/messages", `{"client_secret":"s-secret"}`, nil)
+	if got := rec.all(); len(got) != 0 {
+		t.Fatalf("%d captures of requests that are not inference, want none: %+v", len(got), got)
+	}
+
+	postThrough(t, proxy, backend.URL+"/v1/messages", inferenceBody, nil)
+	if got := rec.all(); len(got) != 1 || string(got[0].Original) != inferenceBody {
+		t.Fatalf("captures %+v, want the inference request", got)
+	}
+}
+
+// inferenceBody is a Messages request inference-parser takes for inference.
+const inferenceBody = `{"model":"m","messages":[{"role":"user","content":"hi"}]}`
