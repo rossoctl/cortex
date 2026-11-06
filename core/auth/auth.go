@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/bypass"
+	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/jwtvalidation/validation"
 	"github.com/rossoctl/cortex/core/plugins/tokenexchange/cache"
 	"github.com/rossoctl/cortex/core/plugins/tokenexchange/exchange"
@@ -282,17 +283,19 @@ func (a *Auth) InboundAudiences() []string {
 // the per-host audience mode, where the audience is derived per request from the
 // destination host. Pass "" to use the configured default.
 func (a *Auth) HandleInbound(ctx context.Context, authHeader, path, audience string) *InboundResult {
+	// The path as this function logs it: the client chose it.
+	logPath := pipeline.SanitizeLogValue(path)
 	// 1. Bypass check
 	if a.bypass != nil && a.bypass.Match(path) {
 		a.IncInboundApprove(APPROVE_PASSTHROUGH)
-		a.log.Debug("bypass path matched", "path", path)
+		a.log.Debug("bypass path matched", "path", logPath)
 		return &InboundResult{Action: ActionAllow}
 	}
 
 	// 2. Extract bearer token
 	if authHeader == "" {
 		a.IncInboundDeny(DENY_NO_HEADER)
-		a.log.Debug("inbound denied: no Authorization header", "path", path)
+		a.log.Debug("inbound denied: no Authorization header", "path", logPath)
 		return &InboundResult{
 			Action:         ActionDeny,
 			DenyStatus:     http.StatusUnauthorized,
@@ -303,7 +306,7 @@ func (a *Auth) HandleInbound(ctx context.Context, authHeader, path, audience str
 	token := extractBearer(authHeader)
 	if token == "" {
 		a.IncInboundDeny(DENY_MALFORMED_HEADER)
-		a.log.Debug("inbound denied: malformed Authorization header", "path", path)
+		a.log.Debug("inbound denied: malformed Authorization header", "path", logPath)
 		return &InboundResult{
 			Action:         ActionDeny,
 			DenyStatus:     http.StatusUnauthorized,
@@ -339,7 +342,7 @@ func (a *Auth) HandleInbound(ctx context.Context, authHeader, path, audience str
 			DenyReasonCode: DENY_VALIDATOR_MISSING,
 		}
 	}
-	a.log.Debug("validating inbound JWT", "path", path, "expectedAudiences", audiences)
+	a.log.Debug("validating inbound JWT", "path", logPath, "expectedAudiences", audiences)
 	claims, err := a.verifier.Verify(ctx, token, audiences)
 	if err != nil {
 		// Log full error at Info; log detailed context at Debug.
@@ -351,7 +354,7 @@ func (a *Auth) HandleInbound(ctx context.Context, authHeader, path, audience str
 			expectedIssuer = id.Issuer
 		}
 		a.log.Debug("JWT validation details",
-			"path", path,
+			"path", logPath,
 			"expectedAudiences", audiences,
 			"expectedIssuer", expectedIssuer,
 			"error", err)
@@ -368,7 +371,7 @@ func (a *Auth) HandleInbound(ctx context.Context, authHeader, path, audience str
 	a.log.Info("inbound authorized",
 		"subject", claims.Subject, "clientID", claims.ClientID)
 	a.log.Debug("inbound authorized details",
-		"path", path,
+		"path", logPath,
 		"audience", claims.Audience,
 		"scopes", claims.Scopes)
 	return &InboundResult{Action: ActionAllow, Claims: claims}
@@ -376,6 +379,8 @@ func (a *Auth) HandleInbound(ctx context.Context, authHeader, path, audience str
 
 // HandleOutbound processes an outbound request, performing token exchange if needed.
 func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *OutboundResult {
+	// The host as this function logs it: the client chose it.
+	logHost := pipeline.SanitizeLogValue(host)
 	// 1. Resolve route
 	var resolved *routing.ResolvedRoute
 	if a.router != nil {
@@ -385,12 +390,12 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 	// 2. Passthrough
 	if resolved == nil {
 		a.IncOutboundApprove(OUTBOUND_NO_MATCHING_ROUTE)
-		a.log.Info("outbound passthrough", "host", host, "reason", "no matching route")
+		a.log.Info("outbound passthrough", "host", logHost, "reason", "no matching route")
 		return &OutboundResult{Action: ActionAllow}
 	}
 	if resolved.Passthrough {
 		a.IncOutboundApprove(OUTBOUND_PASSTHROUGH)
-		a.log.Info("outbound passthrough", "host", host, "reason", "route action")
+		a.log.Info("outbound passthrough", "host", logHost, "reason", "route action")
 		return &OutboundResult{Action: ActionAllow}
 	}
 
@@ -401,11 +406,11 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 	// If no audience from route and deriver is set, derive from host (per-host pattern)
 	if audience == "" && a.audienceDeriver != nil {
 		audience = a.audienceDeriver(host)
-		a.log.Debug("audience derived from host", "host", host, "audience", audience)
+		a.log.Debug("audience derived from host", "host", logHost, "audience", pipeline.SanitizeLogValue(audience))
 	}
 
 	a.log.Debug("outbound exchange requested",
-		"host", host, "audience", audience, "scopes", scopes,
+		"host", logHost, "audience", pipeline.SanitizeLogValue(audience), "scopes", scopes,
 		"hasSubjectToken", authHeader != "")
 
 	// 4. Extract bearer token
@@ -414,7 +419,7 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 	if subjectToken == "" {
 		// No token — apply no-token policy
 		a.log.Debug("no subject token, applying no-token policy",
-			"policy", a.noTokenPolicy, "host", host, "audience", audience)
+			"policy", a.noTokenPolicy, "host", logHost, "audience", pipeline.SanitizeLogValue(audience))
 		return a.handleNoToken(ctx, audience, scopes)
 	}
 
@@ -427,7 +432,7 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 	if audience == "" {
 		a.IncOutboundDeny(OUTBOUND_NO_AUDIENCE)
 		a.log.Warn("refusing outbound exchange with no audience",
-			"host", host, "scopes", scopes)
+			"host", logHost, "scopes", scopes)
 		return &OutboundResult{
 			Action:         ActionDeny,
 			DenyStatus:     http.StatusServiceUnavailable,
@@ -441,7 +446,7 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 	if a.cache != nil {
 		if cached, ok := a.cache.Get(subjectToken, audience, scopes, resolved.TokenEndpoint); ok {
 			a.IncOutboundReplaceToken(OUTBOUND_ACTION_CACHE_HIT)
-			a.log.Debug("outbound cache hit", "host", host, "audience", audience)
+			a.log.Debug("outbound cache hit", "host", logHost, "audience", pipeline.SanitizeLogValue(audience))
 			return &OutboundResult{
 				Action:          ActionReplaceToken,
 				Token:           cached,
@@ -457,7 +462,7 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 	if a.exchanger == nil {
 		a.IncOutboundApprove(OUTBOUND_NO_EXCHANGER)
 		a.log.Warn("exchanger not configured, passing through",
-			"host", host, "audience", audience)
+			"host", logHost, "audience", pipeline.SanitizeLogValue(audience))
 		return &OutboundResult{Action: ActionAllow}
 	}
 
@@ -472,10 +477,10 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 	})
 	if err != nil {
 		a.IncOutboundDeny(OUTBOUND_TOKEN_EXCHANGE_FAILED)
-		a.log.Info("token exchange failed", "host", host, "error", err)
+		a.log.Info("token exchange failed", "host", logHost, "error", err)
 		a.log.Debug("token exchange failure details",
-			"host", host,
-			"audience", audience,
+			"host", logHost,
+			"audience", pipeline.SanitizeLogValue(audience),
 			"scopes", scopes,
 			"tokenEndpoint", resolved.TokenEndpoint,
 			"error", err)
@@ -497,9 +502,9 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 	}
 
 	a.IncOutboundReplaceToken(OUTBOUND_ACTION_REPLACE_TOKEN)
-	a.log.Info("outbound token exchanged", "host", host, "audience", audience)
+	a.log.Info("outbound token exchanged", "host", logHost, "audience", pipeline.SanitizeLogValue(audience))
 	a.log.Debug("outbound exchange details",
-		"host", host, "audience", audience, "expiresIn", resp.ExpiresIn)
+		"host", logHost, "audience", pipeline.SanitizeLogValue(audience), "expiresIn", resp.ExpiresIn)
 	return &OutboundResult{
 		Action:          ActionReplaceToken,
 		Token:           resp.AccessToken,
@@ -520,7 +525,7 @@ func (a *Auth) handleNoToken(ctx context.Context, audience, scopes string) *Outb
 		if a.exchanger == nil {
 			a.IncOutboundDeny(OUTBOUND_CREDS_REQUESTED_NO_EXCHANGER)
 			a.log.Debug("no token, client_credentials requested but exchanger not configured",
-				"audience", audience)
+				"audience", pipeline.SanitizeLogValue(audience))
 			return &OutboundResult{
 				Action:         ActionDeny,
 				DenyStatus:     http.StatusServiceUnavailable,
@@ -544,13 +549,13 @@ func (a *Auth) handleNoToken(ctx context.Context, audience, scopes string) *Outb
 			}
 		}
 		a.log.Debug("no token, falling back to client_credentials",
-			"audience", audience, "scopes", scopes)
+			"audience", pipeline.SanitizeLogValue(audience), "scopes", scopes)
 		resp, err := a.exchanger.ClientCredentials(ctx, audience, scopes)
 		if err != nil {
 			a.IncOutboundDeny(OUTBOUND_CREDENTIALS_GRANT_FAILURE)
 			a.log.Info("client credentials grant failed", "error", err)
 			a.log.Debug("client credentials failure details",
-				"audience", audience, "scopes", scopes, "error", err)
+				"audience", pipeline.SanitizeLogValue(audience), "scopes", scopes, "error", err)
 			return &OutboundResult{
 				Action:         ActionDeny,
 				DenyStatus:     http.StatusServiceUnavailable,
@@ -564,7 +569,7 @@ func (a *Auth) handleNoToken(ctx context.Context, audience, scopes string) *Outb
 	default: // NoTokenDeny or unknown
 		a.IncOutboundDeny(OUTBOUND_NO_TOKEN)
 		a.log.Debug("no token, policy denies request",
-			"policy", a.noTokenPolicy, "audience", audience)
+			"policy", a.noTokenPolicy, "audience", pipeline.SanitizeLogValue(audience))
 		return &OutboundResult{
 			Action:         ActionDeny,
 			DenyStatus:     http.StatusUnauthorized,

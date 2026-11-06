@@ -57,7 +57,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	if isObject {
 		if err := json.Unmarshal(body, &rpc); err != nil {
 			slog.Debug("a2a-parser: invalid JSON-RPC", "error", err, "bodyLen", len(body),
-				"host", pctx.Host, "path", pctx.Path)
+				"host", pipeline.SanitizeLogValue(pctx.Host), "path", pipeline.SanitizeLogValue(pctx.Path))
 			return pipeline.Action{Type: pipeline.Continue}
 		}
 	}
@@ -73,7 +73,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// traffic. mcp-parser has the mirror guard for its own namespace.
 	if !isObject || !isA2AMethod(rpc.Method) {
 		slog.Debug("a2a-parser: not an A2A-namespace method, skipping", "method", rpc.Method,
-			"bodyLen", len(body), "host", pctx.Host, "path", pctx.Path)
+			"bodyLen", len(body), "host", pipeline.SanitizeLogValue(pctx.Host), "path", pipeline.SanitizeLogValue(pctx.Path))
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 

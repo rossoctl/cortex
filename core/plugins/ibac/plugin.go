@@ -526,7 +526,7 @@ func (p *IBAC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.A
 				},
 			})
 			slog.Warn("ibac: judge uncertain, failing closed",
-				"path", pctx.Path, "host", pctx.Host, "error", errPreview)
+				"path", pipeline.SanitizeLogValue(pctx.Path), "host", pipeline.SanitizeLogValue(pctx.Host), "error", errPreview)
 			return pipeline.DenyStatus(403, "ibac.judge_uncertain", errPreview)
 		}
 		pctx.Record(pipeline.Invocation{
@@ -539,7 +539,7 @@ func (p *IBAC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.A
 			},
 		})
 		slog.Warn("ibac: judge unavailable, failing closed",
-			"path", pctx.Path, "host", pctx.Host, "error", errPreview)
+			"path", pipeline.SanitizeLogValue(pctx.Path), "host", pipeline.SanitizeLogValue(pctx.Host), "error", errPreview)
 		return pipeline.DenyStatus(503, "ibac.judge_unavailable", errPreview)
 	}
 

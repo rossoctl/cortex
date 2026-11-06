@@ -250,7 +250,7 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	// compaction state across unrelated callers, so skip compaction entirely.
 	sid := sessionID(pctx)
 	if sid == "" {
-		slog.Debug("context-guru skipped request with no session identity", "path", pctx.Path)
+		slog.Debug("context-guru skipped request with no session identity", "path", pipeline.SanitizeLogValue(pctx.Path))
 		return cont
 	}
 	provider := providerFor(pctx.Path)
@@ -270,7 +270,7 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 			msg = "context-guru would rewrite request body (on_error: observe, not applied)"
 		}
 		slog.Info(msg,
-			"provider", provider, "path", pctx.Path, "session", sid,
+			"provider", provider, "path", pipeline.SanitizeLogValue(pctx.Path), "session", sid,
 			"bytesBefore", before, "bytesAfter", len(out), "pctSaved", pct(before, len(out)))
 	}
 	return cont

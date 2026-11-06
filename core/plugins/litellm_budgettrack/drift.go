@@ -163,7 +163,7 @@ func (p *BudgetTrack) checkDrift(pctx *pipeline.Context, settled settle.Settled)
 		direction = "under"
 	}
 	log.Warn("pricing: the rate table disagrees with what the gateway charged",
-		"endpoint", pctx.Host,
+		"endpoint", pipeline.SanitizeLogValue(pctx.Host),
 		"model", inf.Model,
 		"modelled_usd", fmt.Sprintf("%.6f", modelled),
 		"gateway_usd", fmt.Sprintf("%.6f", authoritative),
