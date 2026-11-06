@@ -528,10 +528,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `sessionId`, else `params.message.contextId`. `taskId` is
   `params.message.taskId`, else `params.id` for a `tasks/*` method with a task
   id param, else the older `params.taskId`. When the request has none, the
-  response sets `sessionId` and `taskId`. A Task result gives its `id`. `messageId`, `role` and `parts` come
-  from `params.message`. Each part has a `kind` and a `content`: the text of a
-  `text` part, the `data` or `uri` of a `file` part, or the JSON text of a
-  `data` part.
+  response sets `sessionId` and `taskId`. A Task result gives its `id`.
+  `messageId`, `role` and `parts` come from `params.message`. Each part has a
+  `kind` and a `content`: the text of a `text` part, the `data` or `uri` of a
+  `file` part, or the JSON text of a `data` part.
 - `a2a.finalStatus`, `a2a.artifact`, `a2a.errorMessage` — on a response row:
   the last task state that the response carried (for example `completed` or
   `failed`) and the artifact text. A stream that ends with no final status

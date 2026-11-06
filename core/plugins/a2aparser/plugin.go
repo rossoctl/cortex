@@ -303,8 +303,9 @@ func extractSendResponse(body []byte, ext *pipeline.A2AExtension) bool {
 					Text string `json:"text"`
 				} `json:"parts"`
 			} `json:"artifacts"`
-			Kind   string `json:"kind"`
-			ID     string `json:"id"`
+			// any, not string: a non-string kind or id must not fail the whole decode.
+			Kind   any    `json:"kind"`
+			ID     any    `json:"id"`
 			TaskID string `json:"taskId"`
 		} `json:"result"`
 	}
@@ -366,7 +367,7 @@ func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
 	var event struct {
 		Result struct {
 			Kind     string `json:"kind"`
-			ID       string `json:"id"`
+			ID       any    `json:"id"` // any: a non-string id must not fail the whole decode
 			TaskID   string `json:"taskId"`
 			Artifact struct {
 				Parts []struct {
@@ -409,10 +410,12 @@ func taskIDParamIsID(method string) bool {
 
 // resultTaskID returns the task id of an A2A result (spec v0.3.0).
 // A Task (kind "task") carries its id in id. A Message and the two
-// task update events carry it in taskId.
-func resultTaskID(kind, id, taskID string) string {
+// task update events carry it in taskId. A kind or id that is not a
+// string gives no task id.
+func resultTaskID(kind, id any, taskID string) string {
 	if kind == "task" {
-		return id
+		s, _ := id.(string)
+		return s
 	}
 	return taskID
 }

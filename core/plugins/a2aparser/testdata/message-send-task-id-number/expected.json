@@ -1,0 +1,16 @@
+{
+  "method": "message/send",
+  "rpcId": 8,
+  "sessionId": "ctx-8",
+  "messageId": "msg-8",
+  "role": "user",
+  "parts": [
+    {
+      "kind": "text",
+      "content": "user text 8"
+    }
+  ],
+  "finalStatus": "completed",
+  "artifact": "agent text 8",
+  "isAction": true
+}

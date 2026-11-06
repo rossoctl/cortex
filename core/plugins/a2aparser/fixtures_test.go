@@ -108,9 +108,8 @@ func checkFieldPaths(t *testing.T, prefix string, doc []byte) {
 }
 
 // runFixture sends one case through OnRequest and then the response hooks.
-// With frames false it gives the whole body to OnResponse.
-// OnResponse is a defence-in-depth path, not the live path: RunResponse skips a StreamingResponder.
-// The live path for a JSON body is one OnResponseFrame call with last=true.
+// With frames false it gives the whole body to OnResponseFrame in one call with last=true.
+// That is the buffered path of a listener. RunResponse skips OnResponse for a StreamingResponder.
 // With frames true it gives an SSE body to OnResponseFrame one event at a time, the way a listener does.
 // It returns the A2A extension as indented JSON. A request that the parser does not claim gives null.
 func runFixture(t *testing.T, dir string, frames bool) []byte {
@@ -147,7 +146,6 @@ func runFixture(t *testing.T, dir string, frames bool) []byte {
 	pctx.ResponseHeaders = http.Header{"Content-Type": []string{contentType}}
 	switch {
 	case !frames:
-		// A buffered body comes from the listener as one last frame. Production never calls OnResponse.
 		pctx.ResponseBody = resp
 		p.OnResponseFrame(ctx, pctx, resp, true)
 	case contentType == "text/event-stream":
