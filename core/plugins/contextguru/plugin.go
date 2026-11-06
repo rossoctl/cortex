@@ -270,8 +270,6 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 			msg = "context-guru would rewrite request body (on_error: observe, not applied)"
 		}
 		slog.Info(msg,
-			// The session id is an attribution key the operator needs, not a secret.
-			// codeql[go/clear-text-logging]
 			"provider", provider, "path", pipeline.SanitizeLogValue(pctx.Path), "session", sid,
 			"bytesBefore", before, "bytesAfter", len(out), "pctSaved", pct(before, len(out)))
 	}

@@ -340,7 +340,7 @@ func (c *cpexManager) boundToDestination(creds []rcpex.DelegatedCredential, host
 	for _, cr := range creds {
 		target := credentialTarget(cr.Target, cr.Audience)
 		if !c.opts.DelegatedCredentialHosts.allows(target, host) {
-			slog.Warn("cpex: delegated credential not bound to the destination", "target", target, "host", host)
+			slog.Warn("cpex: delegated credential not bound to the destination", "target", target, "host", pipeline.SanitizeLogValue(host))
 			return false
 		}
 	}

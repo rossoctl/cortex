@@ -695,7 +695,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		case config.ResponsesWebSocketsParse:
 			sid := s.recordingSessionID(sessionID, r.Header, chain)
 			if why := s.cannotCarryWebSocket(tl, s.OutboundPipeline.ForPctx(pctx)); why != "" {
-				slog.Debug("forward-proxy: declining a Responses WebSocket the proxy cannot carry", "host", r.Host, "reason", why)
+				slog.Debug("forward-proxy: declining a Responses WebSocket the proxy cannot carry", "host", pipeline.SanitizeLogValue(r.Host), "reason", why)
 				s.declineResponsesWebSocket(w, r, pctx, tl, sid, chain)
 				return
 			}
