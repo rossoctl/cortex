@@ -74,7 +74,7 @@ func TestGetSessionPage_ReadsTheViewEcho(t *testing.T) {
 }
 
 // The detail pane's half of the bargain: one event, payloads included.
-func TestGetEvent(t *testing.T) {
+func TestGetEventRaw_Payloads(t *testing.T) {
 	want := pipeline.SessionEvent{
 		Seq:  7,
 		Host: "api.example.com",
@@ -90,9 +90,9 @@ func TestGetEvent(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	got, err := New(ts.URL).GetEvent(context.Background(), "s1", 7)
+	got, _, err := New(ts.URL).GetEventRaw(context.Background(), "s1", 7)
 	if err != nil {
-		t.Fatalf("GetEvent: %v", err)
+		t.Fatalf("GetEventRaw: %v", err)
 	}
 	if gotPath != "/v1/sessions/s1/events/7" {
 		t.Errorf("path = %q", gotPath)
@@ -108,7 +108,7 @@ func TestGetEvent(t *testing.T) {
 // A session id with a slash or a space must not build a broken path, and a 404
 // has to arrive as an error rather than a zero event the detail pane would render
 // as an empty row.
-func TestGetEvent_Errors(t *testing.T) {
+func TestGetEventRaw_Errors(t *testing.T) {
 	t.Run("escapes the id", func(t *testing.T) {
 		var gotPath string
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -116,8 +116,8 @@ func TestGetEvent_Errors(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(&pipeline.SessionEvent{Seq: 1})
 		}))
 		defer ts.Close()
-		if _, err := New(ts.URL).GetEvent(context.Background(), "a/b c", 1); err != nil {
-			t.Fatalf("GetEvent: %v", err)
+		if _, _, err := New(ts.URL).GetEventRaw(context.Background(), "a/b c", 1); err != nil {
+			t.Fatalf("GetEventRaw: %v", err)
 		}
 		if gotPath != "/v1/sessions/a/b c/events/1" {
 			t.Logf("path = %q", gotPath)
@@ -130,7 +130,7 @@ func TestGetEvent_Errors(t *testing.T) {
 	t.Run("404 is an error", func(t *testing.T) {
 		ts := httptest.NewServer(http.NotFoundHandler())
 		defer ts.Close()
-		if _, err := New(ts.URL).GetEvent(context.Background(), "s1", 99); err == nil {
+		if _, _, err := New(ts.URL).GetEventRaw(context.Background(), "s1", 99); err == nil {
 			t.Error("want an error for a missing event")
 		}
 	})

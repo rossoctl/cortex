@@ -25,7 +25,7 @@ func (c *Client) GetSessionPage(ctx context.Context, id string, before uint64, l
 	// renders no message body, and carrying them made opening a session a
 	// multi-second wait — 99.5 MiB and 1.32s on the wire for one 500-event
 	// response, against roughly half a megabyte projected. The full event is
-	// fetched per row by GetEvent when the operator opens the detail pane.
+	// fetched per row by GetEventRaw when the operator opens the detail pane.
 	//
 	// An older proxy ignores the parameter and returns full events, so this stays
 	// correct against one, just as slow as before. view.View says which happened.
@@ -46,7 +46,10 @@ func (c *Client) GetSessionPage(ctx context.Context, id string, before uint64, l
 	return view, nil
 }
 
-// GetEvent fetches one event in full, payloads included.
+// GetEventRaw fetches one event in full, payloads included, with its exact capture (#1494): the
+// request as the agent sent it and as it was forwarded, or the response as the origin sent it.
+// raw is nil when the proxy holds no capture for the event, and against a proxy that predates
+// ?raw=1, which ignores it.
 //
 // The counterpart to view=summary: the timeline no longer carries message bodies, so
 // the detail pane fetches the row under the cursor. This is the one thing the
@@ -55,18 +58,6 @@ func (c *Client) GetSessionPage(ctx context.Context, id string, before uint64, l
 //
 // Not decoded through decodeSessionView's interning path: that exists to stop a
 // hundred-megabyte document being held whole, and this is one event.
-func (c *Client) GetEvent(ctx context.Context, id string, seq uint64) (*pipeline.SessionEvent, error) {
-	path := fmt.Sprintf("/v1/sessions/%s/events/%d", url.PathEscape(id), seq)
-	var ev pipeline.SessionEvent
-	if err := c.getJSON(ctx, path, &ev); err != nil {
-		return nil, err
-	}
-	return &ev, nil
-}
-
-// GetEventRaw is GetEvent with the event's exact capture (#1494): the request as the agent sent
-// it and as it was forwarded, or the response as the origin sent it. raw is nil when the proxy
-// holds no capture for the event, and against a proxy that predates ?raw=1, which ignores it.
 func (c *Client) GetEventRaw(ctx context.Context, id string, seq uint64) (*pipeline.SessionEvent, *pipeline.RawCapture, error) {
 	path := fmt.Sprintf("/v1/sessions/%s/events/%d?raw=1", url.PathEscape(id), seq)
 	var body json.RawMessage

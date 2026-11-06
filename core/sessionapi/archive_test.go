@@ -1,6 +1,7 @@
 package sessionapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -299,7 +300,11 @@ func TestHandleGetEvent_RawAddsTheCapture(t *testing.T) {
 	want := &pipeline.RequestCapture{Original: []byte(`{"model":"m"}`), Forwarded: []byte(`{"model":"n"}`),
 		Header: http.Header{"Anthropic-Beta": {"x"}}, Query: "beta=true"}
 	store.AppendCapture("s1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest}, want)
-	store.Append("s1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionResponse})
+	gz := []byte("\x1f\x8b\x08\x00\xff")
+	store.AppendCapture("s1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionResponse},
+		&pipeline.RequestCapture{Response: &pipeline.ResponseCapture{Status: 200,
+			Header: http.Header{"Content-Encoding": {"gzip"}}, Body: gz, Incomplete: true}})
+	store.Append("s1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest})
 	if err := a.Close(); err != nil { // flushes, so the capture is readable
 		t.Fatal(err)
 	}
@@ -323,7 +328,17 @@ func TestHandleGetEvent_RawAddsTheCapture(t *testing.T) {
 		got.Raw.RequestHeaders.Get("Anthropic-Beta") != "x" || got.Raw.Query != "beta=true" {
 		t.Fatalf("raw = %+v, want the capture", got.Raw)
 	}
-	for _, path := range []string{"/v1/sessions/s1/events/1", "/v1/sessions/s1/events/2?raw=1"} {
+	// A response whose body is not UTF-8, as every compressed body is, comes back as base64.
+	got.Raw = nil
+	code, body = getBody(t, ts.URL+"/v1/sessions/s1/events/2?raw=1")
+	if code != http.StatusOK || json.Unmarshal(body, &got) != nil || got.Raw == nil || got.Raw.Response == nil {
+		t.Fatalf("GET events/2?raw=1 = %d %s", code, body)
+	}
+	if r := got.Raw.Response; r.Status != 200 || r.Headers.Get("Content-Encoding") != "gzip" || r.Body != "" ||
+		!bytes.Equal(r.BodyBase64, gz) || !r.Incomplete || r.Truncated || r.Decoded || got.Raw.Request != "" {
+		t.Fatalf("raw = %+v, response %+v, want the gzip response as base64", got.Raw, r)
+	}
+	for _, path := range []string{"/v1/sessions/s1/events/1", "/v1/sessions/s1/events/3?raw=1"} {
 		code, body := getBody(t, ts.URL+path)
 		if code != http.StatusOK || strings.Contains(string(body), `"raw"`) {
 			t.Fatalf("GET %s = %d %s, want the event without raw", path, code, body)
