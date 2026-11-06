@@ -87,7 +87,8 @@ The binary is still `cortex`, run by the same service with the same
 `cortex --version` prints `cortex (cpex) <version>`, and `/v1/plugins` on the
 session API lists `cpex`. The install binds to loopback, so Cortex has process
 attribution there and `session_source: resolved` keeps a child process in its
-parent's session. Re-running the installer without `--cpex` switches back.
+parent's session. Re-running the installer without `--cpex` switches back, and
+`agentop update` keeps the cpex build.
 [The cpex build](laptop-service.md#the-cpex-build) covers verification and
 switching. To build it from a checkout instead, `make cortex-cpex` writes
 `bin/cortex-cpex/cortex`.

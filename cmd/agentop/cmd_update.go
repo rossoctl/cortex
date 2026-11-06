@@ -21,9 +21,10 @@ Usage:
   agentop update [--ref=REF] [--yes]
 
 Runs the same installer as the one-liner. The installer downloads and verifies
-the release, then gives it to agentop setup. Update keeps three things as they
-are now: Claude Code's routing, a proxy with no service (--no-service), and the
-cpex build of cortex.
+the release, then gives it to agentop setup. Update keeps these as they are
+now: Claude Code's routing, a proxy with no service (--no-service), the cpex
+build of cortex, an install with no config (--install-only), and a shell
+profile the install did not edit (--no-modify-path).
 
   --ref=REF   install REF instead of the newest stable release, e.g.
               --ref=v0.9.0-rc.3 for a release candidate, --ref=main
@@ -97,10 +98,18 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 
 // updateFlags are the installer flags that keep this install as it is, decided as
 // doctor decides its fix: without them the installer would unroute nothing but
-// put a service in place of a background proxy and the default cortex in place
-// of the cpex one.
+// put a service in place of a background proxy, the default cortex in place of
+// the cpex one, and a full setup in place of an install-only one, and would edit
+// a profile the install left alone.
 func updateFlags(env *setupEnv, ref string, yes bool) []string {
 	var flags []string
+	if !fileExists(env.configPath()) { // install-only writes no config
+		flags = append(flags, "--install-only")
+	}
+	// A default install leaves the bin dir on PATH or its marker in the profile.
+	if !onPath(env.pathEnv, env.binDir) && !hasPathMarker(pathProfile(env.shell, env.home)) {
+		flags = append(flags, "--no-modify-path")
+	}
 	claudeCode, noService, _ := installShape(env)
 	if claudeCode {
 		flags = append(flags, "--claude-code")

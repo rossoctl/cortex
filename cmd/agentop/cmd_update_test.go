@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -167,5 +168,40 @@ func TestUpdateScriptExitsWithTheInstallersStatusOnInterrupt(t *testing.T) {
 	_ = cmd.Wait()
 	if code := cmd.ProcessState.ExitCode(); code != 3 {
 		t.Errorf("exit %d, want the installer's 3", code)
+	}
+}
+
+// An install-only install has binaries and PATH but no config. A full setup would
+// write one and start a proxy.
+func TestUpdateKeepsAnInstallOnlyInstall(t *testing.T) {
+	newDoctorScene(t).installed(t, "--install-only")
+	env, err := newSetupEnv(setupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(updateFlags(env, "", false), " "); got != "--install-only" {
+		t.Errorf("flags %q, want --install-only", got)
+	}
+}
+
+// A default install puts the bin dir on PATH or its marker in the profile. With
+// neither, the install did not edit the profile, and update must not either.
+func TestUpdateKeepsTheProfileAsItIs(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t, "--no-modify-path")
+	env, err := newSetupEnv(setupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(updateFlags(env, "", false), " "); got != "--no-modify-path" {
+		t.Errorf("flags %q, want --no-modify-path", got)
+	}
+	// On PATH, there is nothing for setup to edit.
+	t.Setenv("PATH", filepath.Join(sc.home, ".local", "bin")+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	if env, err = newSetupEnv(setupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := updateFlags(env, "", false); len(got) != 0 {
+		t.Errorf("flags %q on PATH, want none", got)
 	}
 }
