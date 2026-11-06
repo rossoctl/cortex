@@ -104,3 +104,30 @@ func decideServer(agent, choice string, session bool, over string, overridden bo
 	}
 	return server, pinning{state: pinNew, turn: turn}, false
 }
+
+// decideSettle is what a routed request's outcome does to its session's pin: settle
+// it to to, the server the request went to or "" for where the client sent it, or,
+// when settle is false, forgo it. state is the pin's state from decideServer, and
+// settle and forgo change only a pinNew or pinMoved pin. redirectFailed is whether
+// Redirect failed, redirected whether it moved the request (false under on_error:
+// observe), and pathFailed whether SetRedirectPath failed. In order:
+//
+//  1. A request whose Redirect failed went nowhere, so it pins nothing: the next
+//     request decides again.
+//  2. A request that stayed where the client sent it settles there, so a session
+//     that started under observe stays put once enforce is on. A move an override
+//     would make is forgone: nothing moved, and the pin stands until the move,
+//     once enforce is on, replaces it.
+//  3. A request whose path SetRedirectPath refused went nowhere, as in rule 1.
+//  4. Otherwise the session settles on server.
+func decideSettle(state, server string, redirectFailed, redirected, pathFailed bool) (to string, settle bool) {
+	switch {
+	case redirectFailed:
+		return "", false
+	case !redirected:
+		return "", state != pinMoved
+	case pathFailed:
+		return "", false
+	}
+	return server, true
+}

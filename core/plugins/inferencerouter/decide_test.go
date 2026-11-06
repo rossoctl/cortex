@@ -136,3 +136,38 @@ func TestDecideServer(t *testing.T) {
 		})
 	}
 }
+
+// TestDecideSettle pins decideSettle over each outcome of the redirect, crossed with
+// each pin state. Only a pinMoved pin under observe gets another answer.
+func TestDecideSettle(t *testing.T) {
+	const server = "glm"
+	forgo, stay, routed := [2]any{"", false}, [2]any{"", true}, [2]any{server, true}
+	tests := []struct {
+		name                                   string
+		redirectFailed, redirected, pathFailed bool
+		want, wantMoved                        [2]any // (to, settle); wantMoved for pinMoved
+	}{
+		{name: "observed", want: stay, wantMoved: forgo},
+		{name: "observed, path not tried", pathFailed: true, want: stay, wantMoved: forgo},
+		{name: "routed", redirected: true, want: routed, wantMoved: routed},
+		{name: "path refused", redirected: true, pathFailed: true, want: forgo, wantMoved: forgo},
+		{name: "redirect failed", redirectFailed: true, want: forgo, wantMoved: forgo},
+		{name: "redirect failed, path not tried", redirectFailed: true, pathFailed: true, want: forgo, wantMoved: forgo},
+		{name: "redirect failed, redirected", redirectFailed: true, redirected: true, want: forgo, wantMoved: forgo},
+		{name: "redirect failed, redirected, path refused", redirectFailed: true, redirected: true, pathFailed: true, want: forgo, wantMoved: forgo},
+	}
+	for _, tt := range tests {
+		for _, state := range []string{pinNew, pinMoved, pinExisting, pinNone} {
+			t.Run(tt.name+"/"+state, func(t *testing.T) {
+				want := tt.want
+				if state == pinMoved {
+					want = tt.wantMoved
+				}
+				to, settle := decideSettle(state, server, tt.redirectFailed, tt.redirected, tt.pathFailed)
+				if got := [2]any{to, settle}; got != want {
+					t.Errorf("decideSettle = %v, want %v", got, want)
+				}
+			})
+		}
+	}
+}

@@ -125,6 +125,7 @@
 package inferencerouter
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -358,39 +359,34 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	// Redirected even when the Host header already names the server: the listener
 	// dials the redirect target, and without one it dials what the client chose,
 	// which on a bridged request is the CONNECT authority and not the Host header.
-	if err := pctx.Redirect(srv.target()); err != nil {
-		// The request went nowhere, so a first request pins nothing: pinning the server
-		// would hold the session to one it never reached, and the next request can
-		// decide again.
-		pin.forgo()
-		pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: "redirect_failed", Details: details()})
-		return pipeline.Deny(codeUnavailable, fmt.Sprintf("inference-router could not send this request to %q: %v", name, err))
-	}
+	redirectErr := pctx.Redirect(srv.target())
 	// Redirect returns nil under on_error: observe without moving anything. The
 	// server's key must then stay off the request, which still goes where the client
 	// sent it. Redirected is the signal that it moved, and it is this router's
 	// redirect: a pipeline admits one WritesDestination plugin.
-	if !pctx.Redirected() {
-		// The request stayed put, so that is what a first request pins: a session that
-		// started under observe stays put once enforce is on. A session an override
-		// would have moved keeps its pin instead: nothing moved — this is observe —
-		// and the pin is the state the move, once enforce is on, will replace.
-		if pin.state == pinMoved {
-			pin.forgo()
-		} else {
-			pin.settle("")
+	redirected := redirectErr == nil && pctx.Redirected()
+	var pathErr error
+	if redirected && captured != "" {
+		// The table's paths are absolute with no query, so this is refused only by a
+		// drift between the table and SetRedirectPath's rule.
+		pathErr = pctx.SetRedirectPath(captured)
+	}
+	// decideSettle says what the outcome does to the pin. Forgo comes before each
+	// record, because forgo changes the pin state that details shows.
+	to, settle := decideSettle(pin.state, name, redirectErr != nil, redirected, pathErr != nil)
+	if !settle {
+		pin.forgo()
+	}
+	if err := cmp.Or(redirectErr, pathErr); err != nil {
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: "redirect_failed", Details: details()})
+		return pipeline.Deny(codeUnavailable, fmt.Sprintf("inference-router could not send this request to %q: %v", name, err))
+	}
+	if !redirected {
+		if settle {
+			pin.settle(to)
 		}
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionObserve, Reason: "would_route", Details: details()})
 		return cont
-	}
-	if captured != "" {
-		// The table's paths are absolute with no query, so this is refused only by a
-		// drift between the table and SetRedirectPath's rule.
-		if err := pctx.SetRedirectPath(captured); err != nil {
-			pin.forgo()
-			pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: "redirect_failed", Details: details()})
-			return pipeline.Deny(codeUnavailable, fmt.Sprintf("inference-router could not send this request to %q: %v", name, err))
-		}
 	}
 	// The model is chosen only once the request has moved, so an observed router
 	// changes nothing.
@@ -398,7 +394,9 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	// Before applyLimits, so limits are fitted to the body as sent.
 	p.keepOwnReasoning(pctx, name, pin.moving(), pin.movedFrom(addressed))
 	p.applyLimits(pctx, name, true)
-	pin.settle(name)
+	if settle {
+		pin.settle(to)
+	}
 	if addressed != name {
 		dropProviderCredentials(pctx.Headers)
 	}
