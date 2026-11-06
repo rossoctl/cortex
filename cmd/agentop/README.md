@@ -1794,8 +1794,11 @@ section: `↵` on it opens it. In it:
 - On a response row, `response` has the status, the headers, the body (a compressed
   one as `[gzip body 12.0kB]`) and `truncated` or `incomplete` when either applies.
 
-A row the archive has no capture for has no `raw` section: an older proxy, a row
-written before capture, or one recorded in the last second.
+The capture comes with the detail fetch, once per row, and agentop keeps it. A row
+has no `raw` section when the archive has no capture for it: an older proxy, a row
+written before capture, or one recorded in the last second. A search does not open
+`raw`, because it repeats the whole conversation; open it with `↵` to search inside
+it. `y` writes the event without its capture.
 
 ## Editing the pipeline
 
