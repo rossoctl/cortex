@@ -3,14 +3,11 @@ package pipeline
 import (
 	"bytes"
 	"encoding/json"
-	"flag"
 	"os"
 	"reflect"
 	"testing"
 	"time"
 )
-
-var update = flag.Bool("update", false, "rewrite testdata/session-event.golden.json")
 
 // goldenEvent sets every field of SessionEvent and of the structs below it, so that
 // every key of the wire form is in the golden file. unsetFields checks this.
