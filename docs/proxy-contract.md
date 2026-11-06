@@ -22,9 +22,13 @@ does agentop setup (`cortexPorts` in `cmd/agentop/setup_probe.go`).
 | 47603 | `listener.transparent_proxy_addr` | Nothing on a local install. The built-in config pins the port, but `config.ListenerPlan` skips the transparent listener when the config is under `~/.cortex` |
 | 47604 | `listener.health_addr` | `/healthz` and `/readyz` (see below) |
 
-A port that another process holds stops the proxy before it opens any file. It exits
-with status 3 (`exitPortInUse` in `cmd/cortex/portconflict.go`), and the supervisor
-does not restart it at speed.
+A port that another process holds stops the proxy before the cost ledger and the
+session archive open (`reserveListeners`, called from `main` in `cmd/cortex/main.go`).
+The `--supervise` parent then retries, less often over time, and the proxy starts when
+the port is free (`restartPolicy` in `cmd/cortex/supervise.go`). The child tells the
+parent about a held port with exit status 3 (`exitPortInUse` in
+`cmd/cortex/portconflict.go`). That status is internal to `cmd/cortex`. Do not depend
+on it.
 
 ## Stats endpoints (`:47602`)
 
@@ -38,7 +42,7 @@ it, and `agentop pricing` takes `--stats-url`. The pipeline editor and `doctor` 
 |---|---|---|
 | `GET /reload/status` | `last_success`, `reloads_ok`, `reloads_failed`, `last_error` (shape: `Status` in `core/reloader/status.go`) | `edit.PollUntilReloaded` in `cmd/agentop/edit/status.go`. `localStatsUp` in `cmd/agentop/local_endpoint.go` requires a 2xx with a `reloads_ok` field |
 | `GET /config` | `listener.forward_proxy_addr`, `tls_bridge.mode`, `tls_bridge.ca_dir`. It ignores all other fields | `runningConfig` and `runningConfigFields` in `cmd/agentop/local_endpoint.go`, for `agentop exec` |
-| `GET /pricing/table` | The table (`describeBody`). With `?host=<gateway>`, the rates for that host (`effective`) | `cmd/agentop/cmd_pricing.go`. A 404 means a proxy older than the endpoint. Served by `Registry.Handler` in `core/cost/pricing/handler.go` |
+| `GET /pricing/table` | The table (`describeBody`). With `?host=<gateway>`, the rates for that host (`effective`) | `cmd/agentop/cmd_pricing.go`. A 404 means a proxy older than the endpoint. `Registry.Handler` in `core/cost/pricing/handler.go` serves it |
 | `GET /tls-bridge/unread` | `tlsbridge.UnreadReport` (`programs`, `hosts`, `osTrustsCA`) | `fetchUnread` in `cmd/agentop/doctor_unread.go`. A non-200 or no route makes the check silent |
 
 `/config` reports the config in effect, with secret values masked. `GET /stats` and
@@ -80,16 +84,18 @@ API. The contract has these parts:
    it over the config (`Apply` in `cmd/agentop/edit/local.go`). It reads its own clock
    just before the rename. That time is the apply time.
 3. **The debounce.** The reloader waits for 250 ms of quiet, then reloads once
-   (`watchLoop`). A file with the same SHA-256 as the active config changes nothing,
-   and `/reload/status` does not change (`reloadOnce`).
+   (`watchLoop`). The reloader hashes the file together with the fingerprint of the
+   script plugin folders (`Reloader.hash`, set by `reloader.WithExtraWatch` in
+   `cmd/cortex/main.go`). When the hash equals the active one, nothing changes, and
+   `/reload/status` does not change (`reloadOnce`).
 4. **Success.** The reloader sets `last_success` to the reload's start time, from the
    proxy's clock (`recordSuccess`). agentop reports success when `last_success` is after its
    apply time. The two clocks must agree, so the proxy and agentop must run on the
    same machine.
 5. **Refusal.** A failed reload increments `reloads_failed` and sets `last_error`
    (`recordFailure`). The active pipeline continues to serve. agentop takes the
-   counter's value at its first poll as the baseline, and reports a failure when the
-   counter goes above it.
+   counter's value at its first poll as the baseline. It reports a failure when the
+   counter is more than the baseline.
 6. **Timeout.** agentop waits up to 30 s for a local file (`LocalPollDeadline` in
    `cmd/agentop/edit/edit.go`). Five transport errors in a row end the wait early as
    "unreachable".
@@ -107,10 +113,24 @@ of these sections. They need a restart:
 - `memory.*`
 
 A change to `pipeline:` or `pricing:` reloads. The proxy swaps the pricing table after it
-accepts the reload (`applyPricing`, passed as `reloader.WithOnCommit` in
-`cmd/cortex/main.go`). A change to `stats.address` is not refused, but the stats
-listener binds once at startup (`config.ListenerPlan`). So the new address takes
-effect at the next restart.
+accepts the reload (`applyPricing`, which `main` in `cmd/cortex/main.go` gives to
+`reloader.WithOnCommit`).
+
+**Known gap: `stats.address`.** This is today's behaviour, not a contract item. Do not
+depend on it. `validateReloadable` does not compare `stats:`, so the reloader accepts
+an edit to `stats.address`. `/reload/status` reports success, and `/config` shows the
+new address. But the stats listener binds once at startup (`config.ListenerPlan`), so
+it stays on the old address until a restart. agentop reads `stats.address` from the
+file, and nothing answers at the new address:
+
+- The TUI pipeline editor finds no local target and does not edit
+  (`localEditTargets` in `cmd/agentop/local_endpoint.go`).
+- `agentop server` and `agentop script` write the file, but do not wait for a reload.
+  They say that no Cortex answered and that the change applies at the next start
+  (`serverTarget` in `cmd/agentop/cmd_server.go`, `WriteNotRunning` in
+  `cmd/agentop/edit/pluginwrite.go`). The running proxy still reloads the file.
+- `doctor` does not show the unread-programs check (`checkUnread` in
+  `cmd/agentop/doctor_unread.go`).
 
 ## Command line
 
@@ -119,7 +139,7 @@ forms:
 
 | Form | Used by | Contract |
 |---|---|---|
-| `cortex --version` | `agentop doctor`, `install.sh` | Prints one line: `cortex <version>`, or `cortex (cpex) <version>` for a cpex build (`versionLine` in `cmd/cortex/main.go`). agentop reads the last word of the first line as the version (`installedVersion` in `cmd/agentop/setup_step_binaries.go`). `doctor` reports a problem when it is not agentop's version (`checkBinaries`). agentop and `install.sh` look for ` (cpex) ` to find a cpex build (`installedIsCpex`) |
+| `cortex --version` | `agentop doctor`, `install.sh` | Prints one line: `cortex <version>`, or `cortex (cpex) <version>` for a cpex build (`versionLine` in `cmd/cortex/main.go`). agentop reads the last word of the first line as the version (`installedVersion` in `cmd/agentop/setup_step_binaries.go`). `doctor` reports a problem when it is not agentop's version (`checkBinaries`). A cpex build has ` (cpex) ` in this line. agentop (`installedIsCpex`) and `install.sh` find a cpex build by that text |
 | `cortex --local --write-config` | agentop setup (`cmd/agentop/setup_step_config.go`) | Writes `~/.cortex/config.yaml` and its directory if the file is absent, then exits 0. It does not change a file that exists (`writeBuiltinConfig` in `cmd/cortex/local.go`) |
 | `cortex --local --supervise` | agentop setup without a service (`cmd/agentop/setup_unsupervised.go`) | Runs the built-in config under the supervisor. agentop writes the pid to `~/.cortex/proxy.pid` and the output to `~/.cortex/proxy.log` |
 | `cortex --supervise --config <path>` | the launchd plist (`cmd/agentop/cmd_service_platform.go`) | The parent starts a child with the same arguments, without `--supervise`, and restarts it when it exits (`runSupervisor` in `cmd/cortex/supervise.go`) |
