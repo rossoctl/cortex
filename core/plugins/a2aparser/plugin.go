@@ -204,7 +204,7 @@ func (p *A2AParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 		extractResponseSummary(frame, ext)
 		// Capture session id from any frame if the request didn't carry one.
 		if ext.SessionID == "" {
-			if sid := sessionIDFromJSON(frame); sid != "" {
+			if sid := extractSessionID(frame); sid != "" {
 				ext.SessionID = sid
 			}
 		}
