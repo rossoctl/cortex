@@ -441,7 +441,7 @@ func (a *Archive) take(o op) {
 		if o.after > 0 {
 			a.begin(o.id, o.after)
 		}
-		a.write(o.id, &o.ev)
+		a.write(o.id, &o.ev, nil)
 	case opRename:
 		a.rename(o.id, o.to, o.after)
 	case opClear:
@@ -472,8 +472,9 @@ func (a *Archive) begin(id string, after uint64) {
 	a.publish(s)
 }
 
-// write appends one event to its session's open segment, opening one if needed.
-func (a *Archive) write(id string, e *pipeline.SessionEvent) {
+// write appends one event, with its request's capture c when it has one, to its session's open
+// segment, opening one if needed.
+func (a *Archive) write(id string, e *pipeline.SessionEvent, c *pipeline.RequestCapture) {
 	if a.paused.Load() {
 		a.dropped.Add(1)
 		return
@@ -500,7 +501,7 @@ func (a *Archive) write(id string, e *pipeline.SessionEvent) {
 		}
 		s.w = w
 	}
-	if err := s.w.append(*e, now); err != nil {
+	if err := s.w.appendCapture(*e, c, now); err != nil {
 		a.writeFailed(s, err)
 		return
 	}

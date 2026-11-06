@@ -14,6 +14,10 @@
 // references to string records earlier in the same segment. See format.go for the records,
 // segment.go and reader.go for the stream, and retention.go for what gets deleted.
 //
+// A request event can also carry its request exactly as it crossed the proxy: a lossless
+// capture, for replay. Its bodies are split at byte offsets into block records, each written
+// once per segment, and rebuilt byte for byte; see capture.go.
+//
 // Files rather than SQLite, on measured grounds: the engine changed the size by about 3%, a
 // pure-Go SQLite driver adds 4MB to every binary while zstd adds nothing (it is already
 // linked), and only a stream can compress across events.

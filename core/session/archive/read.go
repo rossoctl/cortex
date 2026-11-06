@@ -82,9 +82,51 @@ func (a *Archive) Page(id string, before uint64, limit int, fn func(*pipeline.Se
 // Event returns the archived event of id numbered seq. ok is false when the archive does not hold
 // it — never a neighbour in its place.
 func (a *Archive) Event(id string, seq uint64) (*pipeline.SessionEvent, bool, error) {
-	e, ok := a.entry(id)
+	path, ok := a.segmentOf(id, seq)
 	if !ok {
 		return nil, false, nil
+	}
+	var found *pipeline.SessionEvent
+	_, err := readSegment(path, func(ev *pipeline.SessionEvent) bool {
+		if ev.Seq == seq {
+			found = ev
+		}
+		return ev.Seq < seq
+	})
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil || found == nil {
+		return nil, false, err
+	}
+	found.SessionID = id
+	return found, true, nil
+}
+
+// Capture returns the request the archived event of id numbered seq captured, rebuilt byte for
+// byte and checked against its hash. ok is false when the archive does not hold the event or the
+// event has no capture: it is not a request, or it was written before lossless capture. err is
+// set when the capture is there but cannot be rebuilt exactly.
+func (a *Archive) Capture(id string, seq uint64) (*pipeline.RequestCapture, bool, error) {
+	path, ok := a.segmentOf(id, seq)
+	if !ok {
+		return nil, false, nil
+	}
+	c, err := readCapture(path, seq)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil || c == nil {
+		return nil, false, err
+	}
+	return c, true, nil
+}
+
+// segmentOf is the path of the segment of id whose range holds seq, newest first.
+func (a *Archive) segmentOf(id string, seq uint64) (string, bool) {
+	e, ok := a.entry(id)
+	if !ok {
+		return "", false
 	}
 	for i := len(e.segments) - 1; i >= 0; i-- {
 		seg := e.segments[i]
@@ -92,26 +134,9 @@ func (a *Archive) Event(id string, seq uint64) (*pipeline.SessionEvent, bool, er
 		if seq < seg.FirstSeq || (!open && seq > seg.LastSeq) {
 			continue
 		}
-		var found *pipeline.SessionEvent
-		_, err := readSegment(filepath.Join(e.dir, seg.File), func(ev *pipeline.SessionEvent) bool {
-			if ev.Seq == seq {
-				found = ev
-			}
-			return ev.Seq < seq
-		})
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, false, nil
-		}
-		if err != nil {
-			return nil, false, err
-		}
-		if found != nil {
-			found.SessionID = id
-			return found, true, nil
-		}
-		return nil, false, nil
+		return filepath.Join(e.dir, seg.File), true
 	}
-	return nil, false, nil
+	return "", false
 }
 
 // Summaries returns every archived session's summary, most recently updated first: the same

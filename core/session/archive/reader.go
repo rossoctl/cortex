@@ -28,6 +28,14 @@ const maxDecoderWindow = 8 << 20
 // err is for what is not a property of the data: the file could not be opened, or it declares
 // a window past maxDecoderWindow.
 func readSegment(path string, fn func(e *pipeline.SessionEvent) bool) (truncated bool, err error) {
+	return readRecords(path, nil, nil, func(e *pipeline.SessionEvent, _ *captureRec) bool { return fn(e) })
+}
+
+// readRecords is readSegment, handing fn each event's capture record too, nil when it has none.
+// It keeps the block records whose hash is in want in blocks; a nil want keeps none, so a read
+// that does not rebuild a body holds no blocks.
+func readRecords(path string, want map[string]struct{}, blocks map[string]string,
+	fn func(e *pipeline.SessionEvent, c *captureRec) bool) (truncated bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return false, err
@@ -59,11 +67,19 @@ func readSegment(path string, fn func(e *pipeline.SessionEvent) bool) (truncated
 			switch rec.K {
 			case kindString:
 				table[rec.H] = rec.V
+			case kindBlock:
+				if _, ok := want[rec.H]; ok {
+					if rec.X != nil {
+						blocks[rec.H] = string(rec.X)
+					} else {
+						blocks[rec.H] = rec.V
+					}
+				}
 			case kindEvent:
 				if rec.E == nil || !join(rec.E, rec.R, table) {
 					return true, nil
 				}
-				if !fn(rec.E) {
+				if !fn(rec.E, rec.F) {
 					return false, nil
 				}
 			}
