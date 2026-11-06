@@ -645,7 +645,7 @@ func (ws *wsSocket) clientMessage(payload []byte) (replace []byte, refuse bool) 
 		pctx.OutboundSessionID = ws.sid
 		// The turn as the client sent it and as the origin gets it: the WebSocket messages,
 		// not the request bodies the pipeline was shown.
-		c := &pipeline.RequestCapture{Original: payload, Forwarded: replace, Header: redact.Headers(ws.r.Header), Query: ws.r.URL.RawQuery}
+		c := &pipeline.RequestCapture{Original: payload, Forwarded: replace, Header: redact.Headers(ws.r.Header), Query: redact.Query(ws.r.URL.RawQuery)}
 		ws.s.Sessions.AppendCapture(ws.sid, ws.turnRequestEvent(pctx), c)
 	}
 	ws.turnMu.Lock()

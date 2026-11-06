@@ -408,7 +408,8 @@ shows which state you are in.
 **It also keeps each request exactly as it was sent.** For every request whose body Cortex
 reads, the archive keeps the body the agent sent, the body Cortex forwarded when a plugin
 rewrote it, the request headers and the query. Credential headers (`authorization`,
-`x-api-key`, `cookie` and the others a script plugin never sees) are removed first. Images,
+`x-api-key`, `cookie`, `x-amz-security-token` and the others) are removed first, and so are
+credential query parameters such as Gemini's `key`. Images,
 files the agent read and thinking blocks are kept too. Each part of a body that repeats from
 one request to the next is stored once per segment, so this costs about 8–20 KB per request
 in the measured sessions.

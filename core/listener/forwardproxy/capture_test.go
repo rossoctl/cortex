@@ -88,7 +88,7 @@ func TestCapture_RecordsOriginalForwardedHeadersAndQuery(t *testing.T) {
 	proxy, rec := proxyWithCaptures(t, &bodyMutatorPlugin{newBody: []byte(`{"rewritten":true}`)})
 
 	orig := `{"model":"m","messages":[{"role":"user","content":"hi"}]}`
-	postThrough(t, proxy, backend.URL+"/v1/messages?beta=true", orig, http.Header{
+	postThrough(t, proxy, backend.URL+"/v1/messages?beta=true&key=AIza-secret", orig, http.Header{
 		"Anthropic-Beta": {"a", "b"},
 		"Authorization":  {"Bearer secret"},
 		"X-Api-Key":      {"sk-secret"},
@@ -107,7 +107,7 @@ func TestCapture_RecordsOriginalForwardedHeadersAndQuery(t *testing.T) {
 		t.Errorf("forwarded = %q, want what the origin got (%q)", c.Forwarded, forwarded)
 	}
 	if c.Query != "beta=true" {
-		t.Errorf("query = %q, want beta=true", c.Query)
+		t.Errorf("query = %q, want beta=true without the key", c.Query)
 	}
 	if v := c.Header.Values("Anthropic-Beta"); len(v) != 2 {
 		t.Errorf("Anthropic-Beta = %v, want both values", v)

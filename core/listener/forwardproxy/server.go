@@ -595,7 +595,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		slog.Debug("forward-proxy: buffered request body", "host", pipeline.SanitizeLogValue(r.Host), "bodyLen", len(body))
 		// Before any plugin runs, which is the only time the agent's own bytes and headers
 		// are still here: a rewrite replaces pctx.Body and keeps no copy.
-		capture = &pipeline.RequestCapture{Original: body, Header: redact.Headers(r.Header), Query: r.URL.RawQuery}
+		capture = &pipeline.RequestCapture{Original: body, Header: redact.Headers(r.Header), Query: redact.Query(r.URL.RawQuery)}
 	}
 
 	// Establish the session identity ONCE, here, and keep it in a local: the
