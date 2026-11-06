@@ -340,7 +340,7 @@ func (c *cpexManager) boundToDestination(creds []rcpex.DelegatedCredential, host
 	for _, cr := range creds {
 		target := credentialTarget(cr.Target, cr.Audience)
 		if !c.opts.DelegatedCredentialHosts.allows(target, host) {
-			slog.Warn("cpex: delegated credential not bound to the destination", "target", target, "host", host)
+			slog.Warn("cpex: delegated credential not bound to the destination", "target", target, "host", pipeline.SanitizeLogValue(host))
 			return false
 		}
 	}
@@ -584,7 +584,7 @@ func applyBodyModFromCMF(pctx *pipeline.Context, msg *rcpex.Message, isResponse 
 		// Fail closed: a requested redaction we can't apply must not be
 		// dropped silently.
 		slog.Warn("cpex: body modification requested but no protocol extension present — failing closed",
-			"path", pctx.Path)
+			"path", pipeline.SanitizeLogValue(pctx.Path))
 		return false, fmt.Errorf("body modification requested but no protocol parser claimed this traffic")
 	}
 }

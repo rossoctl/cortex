@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // Client is an HTTP client for the Token Broker service.
@@ -59,7 +61,7 @@ func (c *Client) AcquireToken(ctx context.Context, tokenBrokerURL, token, server
 
 	slog.Debug("token-broker-client: received response from broker",
 		"status_code", resp.StatusCode,
-		"server_url", serverURL)
+		"server_url", pipeline.SanitizeLogValue(serverURL))
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10MB limit
 	if err != nil {

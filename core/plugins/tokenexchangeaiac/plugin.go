@@ -412,17 +412,17 @@ func (p *TokenExchangeAIAC) OnRequest(ctx context.Context, pctx *pipeline.Contex
 		return p.passUnknown(pctx, details, false)
 	case outcomeNotGranted:
 		slog.Info(PluginName+": audience exists but is not granted to this workload",
-			"host", pctx.Host, "audience", t.audience)
+			"host", pipeline.SanitizeLogValue(pctx.Host), "audience", t.audience)
 		return p.deny(pctx, details, reasonNotGranted, http.StatusForbidden,
 			"policy.forbidden", "this workload is not granted the destination's audience")
 	case outcomeTargetDisabled:
-		slog.Info(PluginName+": the destination's client is disabled", "host", pctx.Host, "audience", t.audience)
+		slog.Info(PluginName+": the destination's client is disabled", "host", pipeline.SanitizeLogValue(pctx.Host), "audience", t.audience)
 		return p.deny(pctx, details, reasonTargetDisabled, http.StatusForbidden,
 			"policy.forbidden", "the destination's client is disabled")
 	default:
 		// Logged, not returned: the error can name other audiences the
 		// caller holds, and the response body goes back to the workload.
-		slog.Warn(PluginName+": token exchange failed", "host", pctx.Host, "audience", t.audience, "error", err)
+		slog.Warn(PluginName+": token exchange failed", "host", pipeline.SanitizeLogValue(pctx.Host), "audience", t.audience, "error", err)
 		return p.deny(pctx, details, reasonExchangeFailed, http.StatusServiceUnavailable,
 			"upstream.token-exchange-failed", "token exchange failed")
 	}
@@ -456,11 +456,11 @@ func (p *TokenExchangeAIAC) judgeForeign(ctx context.Context, pctx *pipeline.Con
 		return p.passUnknown(pctx, details, false)
 	case err == nil, o == outcomeNotGranted, o == outcomeTargetDisabled:
 		slog.Warn(PluginName+": host in another namespace names a target; denied",
-			"host", pctx.Host, "audience", audience)
+			"host", pipeline.SanitizeLogValue(pctx.Host), "audience", audience)
 		return p.deny(pctx, details, reasonForeignNamespace, http.StatusForbidden,
 			"policy.forbidden", "the destination is in another namespace and shares a target's name")
 	default:
-		slog.Warn(PluginName+": token exchange failed", "host", pctx.Host, "audience", audience, "error", err)
+		slog.Warn(PluginName+": token exchange failed", "host", pipeline.SanitizeLogValue(pctx.Host), "audience", audience, "error", err)
 		return p.deny(pctx, details, reasonExchangeFailed, http.StatusServiceUnavailable,
 			"upstream.token-exchange-failed", "token exchange failed")
 	}
