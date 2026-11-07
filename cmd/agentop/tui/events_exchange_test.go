@@ -272,3 +272,58 @@ func TestSettings_PhaseEntryLoads(t *testing.T) {
 		t.Errorf("sortSelection = %q, %v, want chronological", col, ok)
 	}
 }
+
+// lostModel holds the given events with the clock at now.
+func lostModel(now time.Time, events ...pipeline.SessionEvent) *model {
+	m := sortTestModel(events)
+	m.now = func() time.Time { return now }
+	m.rebuildEventsTable()
+	return m
+}
+
+// The Timeline's rule (timeline.HostLostAfter): a request with no answer for more than 10
+// minutes, measured at the later of now and the session's newest event, is lost.
+func TestExchange_LostRequest(t *testing.T) {
+	req := httpExchange("l", "lost.test", t0, 200)[0]
+
+	m := lostModel(t0.Add(11*time.Minute), req)
+	if got := trimmedCell(t, m, 0, colStatus); got != "lost" {
+		t.Errorf("11 min: STATUS = %q, want lost", got)
+	}
+	m = lostModel(t0.Add(9*time.Minute), req)
+	if got := trimmedCell(t, m, 0, colStatus); got != "" {
+		t.Errorf("9 min: STATUS = %q, want blank: still on its way", got)
+	}
+	// The newest event decides too, when the clock is behind it (a shifted demo clock).
+	newer := httpExchange("n", "new.test", t0.Add(11*time.Minute), 200)
+	m = lostModel(t0, append([]pipeline.SessionEvent{req}, newer...)...)
+	if got := trimmedCell(t, m, 0, colStatus); got != "lost" {
+		t.Errorf("newest event 11 min later: STATUS = %q, want lost", got)
+	}
+}
+
+// A passthrough tunnel stays open for hours, and its open row carries no status. It is never
+// lost.
+func TestExchange_TunnelOpenIsNeverLost(t *testing.T) {
+	open := pipeline.SessionEvent{
+		At: t0, SessionID: "s", Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+		Tunnel: true, TunnelReason: "passthrough-host", Host: "api.test:443", RequestID: "t",
+	}
+	m := lostModel(t0.Add(6*time.Hour), open)
+	if got := trimmedCell(t, m, 0, colStatus); got != "" {
+		t.Errorf("STATUS = %q, want blank", got)
+	}
+}
+
+func TestExchange_LateResponseMergesIntoLostRow(t *testing.T) {
+	ex := httpExchange("l", "late.test", t0, 200)
+	m := lostModel(t0.Add(20*time.Minute), ex[0])
+	if got := trimmedCell(t, m, 0, colStatus); got != "lost" {
+		t.Fatalf("before: STATUS = %q, want lost", got)
+	}
+	m.events["s"] = ex
+	m.rebuildEventsTable()
+	if got := trimmedCell(t, m, 0, colStatus); got != "200" {
+		t.Errorf("after the response: STATUS = %q, want 200", got)
+	}
+}

@@ -66,6 +66,8 @@ type cellContext struct {
 	// action and plugin are that one rowAction result.
 	action string
 	plugin string
+	// lost is rowLost's answer for this row, decided once per rebuild against one instant.
+	lost bool
 	// width is the declared width of the column being filled, set per column in
 	// the row loop.
 	//
@@ -290,8 +292,13 @@ var eventColumns = []eventColumn{
 	// own 7 columns and of DURATION's 9 met between a status and its duration, which
 	// put the widest gap in the row between two values of the same exchange.
 	{id: colStatus, width: 7, defaultOn: true, keep: keepNormal, rightAlign: true,
-		desc:    "HTTP status of the response; blank while it is on its way",
-		cell:    func(c cellContext) string { return statusCell(*answer(c.row)) },
+		desc: "HTTP status of the response: blank while on its way, lost when none came",
+		cell: func(c cellContext) string {
+			if c.lost {
+				return "lost"
+			}
+			return statusCell(*answer(c.row))
+		},
 		sortKey: func(c cellContext) sortValue { return numKey(answer(c.row).StatusCode) }},
 	// The Duration itself. This is the column #865 is about ("the events with the
 	// longest duration"), and the one where sorting the rendered string is most

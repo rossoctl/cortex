@@ -13,6 +13,7 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/money"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session/timeline"
 )
 
 // eventKey pins a row to a specific event across rebuilds, so the
@@ -150,6 +151,7 @@ func (m *model) rebuildEventsTable() {
 	// then hides, which the loop used to skip. Each is evaluated once per row, which is
 	// what showing every row pays on every rebuild anyway, so hiding rows never makes a
 	// rebuild dearer than showing them.
+	ref := m.lostRef(events)
 	ctxs := make([]cellContext, len(eventRows))
 	for i, er := range eventRows {
 		// One invocations and one rowAction per row: hideInactive below reads invs,
@@ -160,7 +162,7 @@ func (m *model) rebuildEventsTable() {
 		action, plugin := rowAction(er, invs)
 		ctxs[i] = cellContext{
 			m: m, row: er, ids: ids,
-			invs: invs, action: action, plugin: plugin,
+			invs: invs, action: action, plugin: plugin, lost: rowLost(er, partner, i, ref),
 		}
 	}
 
@@ -683,6 +685,38 @@ func exchangeBytes(r eventRow) (up, down int64) {
 		return a.BytesUp, a.BytesDown
 	}
 	return r.event.BytesUp, r.resp.BytesDown
+}
+
+// lostRef is the instant the lost rule measures against: the later of now and the newest
+// event held. It is the ref Timeline.LoseUnanswered uses, so the two panes call the same
+// request lost. The newest event matters when the clock is behind the session's clock. The
+// README demo runs a shifted clock.
+func (m *model) lostRef(events []pipeline.SessionEvent) time.Time {
+	ref := m.clock()
+	for i := range events {
+		if events[i].At.After(ref) {
+			ref = events[i].At
+		}
+	}
+	return ref
+}
+
+// rowLost reports that row i is a request no answer will reach (#1681): no response, and
+// older than timeline.HostLostAfter at ref. On real traffic 52 such requests sat among
+// answered ones, and a blank STATUS would have said "on its way" forever.
+//
+// A tunnel open is never lost. It carries no status, and a passthrough tunnel stays open for
+// hours (6.4 measured), so age says nothing about it. A guessed pair's request is not lost
+// either: its response is on a row of its own.
+func rowLost(r eventRow, partner map[int]int, i int, ref time.Time) bool {
+	e := r.event
+	if r.resp != nil || e == nil || e.Phase != pipeline.SessionRequest || e.Tunnel {
+		return false
+	}
+	if _, ok := partner[i]; ok {
+		return false
+	}
+	return ref.Sub(e.At) > timeline.HostLostAfter
 }
 
 // isTunnelOpen reports whether e is a CONNECT / transparent-redirect
