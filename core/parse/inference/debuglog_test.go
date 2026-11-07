@@ -2,7 +2,6 @@ package inference
 
 import (
 	"bytes"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -17,7 +16,7 @@ import (
 // differ only in what the sanitizer does with them.
 func TestParseRequest_DebugOffDoesNotSanitizeMessages(t *testing.T) {
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(slog.DiscardHandler))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	if !model.HasControlRunes("\u0085") || model.HasControlRunes("é") {

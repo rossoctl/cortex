@@ -2,7 +2,6 @@ package inferenceparser
 
 import (
 	"bytes"
-	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -14,7 +13,7 @@ import (
 // inference.TestParseRequest_DebugOffDoesNotSanitizeMessages for the fixture runes.
 func TestLogInferenceFinalized_DebugOffDoesNotSanitizeCompletion(t *testing.T) {
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(slog.DiscardHandler))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	allocs := func(completion string) float64 {
