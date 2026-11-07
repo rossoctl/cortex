@@ -571,7 +571,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// (#1494). Only a buffered body is captured: buffering one for capture alone would delay
 	// every request no plugin reads.
 	var capture *pipeline.RequestCapture
-	captures := s.Sessions != nil && s.sink().TakesCaptures()
+	captures := s.Sessions.TakesCaptures()
 	if !skipped && s.OutboundPipeline.NeedsRequestBody() && r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 		body, err := io.ReadAll(r.Body)

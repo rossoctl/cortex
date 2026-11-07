@@ -333,9 +333,6 @@ func (s *Server) handleInboundBody(stream extprocv3.ExternalProcessor_ProcessSer
 	return withBodyMutation(resp, pctx), pctx
 }
 
-// sink is Sessions as the listener records through it. See sessionevent.SinkOf.
-func (s *Server) sink() sessionevent.Sink { return sessionevent.SinkOf(s.Sessions) }
-
 // inboundSessionID returns the bucket ID for an inbound event. Trusts the
 // client's stated contextId (pctx.Extensions.A2A.SessionID) as authoritative
 // and bootstraps to DefaultSessionID when empty. Does NOT fall back to
@@ -366,7 +363,7 @@ func (s *Server) recordInboundSession(pctx *pipeline.Context) {
 	if pctx.Extensions.A2A == nil && pctx.Extensions.Invocations == nil && ev.Plugins == nil {
 		return
 	}
-	s.sink().Append(inboundSessionID(pctx), ev)
+	s.Sessions.Append(inboundSessionID(pctx), ev)
 }
 
 // recordInboundReject emits a SessionDenied event for requests a pipeline
@@ -381,7 +378,7 @@ func (s *Server) recordInboundReject(pctx *pipeline.Context, action pipeline.Act
 	if s.Sessions == nil || pctx.Extensions.Invocations == nil {
 		return
 	}
-	s.sink().Append(inboundSessionID(pctx), sessionevent.Deny(pctx, action, pipeline.Inbound))
+	s.Sessions.Append(inboundSessionID(pctx), sessionevent.Deny(pctx, action, pipeline.Inbound))
 }
 
 // recordOutboundReject emits a SessionDenied event for outbound requests
@@ -404,11 +401,11 @@ func (s *Server) recordOutboundReject(pctx *pipeline.Context, action pipeline.Ac
 	if s.Sessions == nil || pctx.Extensions.Invocations == nil {
 		return
 	}
-	sid := s.sink().ActiveSession()
+	sid := s.Sessions.ActiveSession()
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}
-	s.sink().Append(sid, sessionevent.Deny(pctx, action, pipeline.Outbound))
+	s.Sessions.Append(sid, sessionevent.Deny(pctx, action, pipeline.Outbound))
 }
 
 // recordInboundResponseSession appends a Phase:SessionResponse event for the
@@ -430,7 +427,7 @@ func (s *Server) recordInboundResponseSession(pctx *pipeline.Context) {
 	if pctx.Extensions.A2A == nil && pctx.Extensions.Invocations == nil && ev.Plugins == nil {
 		return
 	}
-	s.sink().Append(inboundSessionID(pctx), ev)
+	s.Sessions.Append(inboundSessionID(pctx), ev)
 }
 
 // recordOutboundResponseSession appends a Phase:SessionResponse event for the
@@ -440,7 +437,7 @@ func (s *Server) recordOutboundResponseSession(pctx *pipeline.Context) {
 	if s.Sessions == nil {
 		return
 	}
-	sid := s.sink().ActiveSession()
+	sid := s.Sessions.ActiveSession()
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}
@@ -450,7 +447,7 @@ func (s *Server) recordOutboundResponseSession(pctx *pipeline.Context) {
 	// observability aren't dropped just because the response carried no
 	// MCP/Inference payload.
 	if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || ev.Plugins != nil {
-		s.sink().Append(sid, ev)
+		s.Sessions.Append(sid, ev)
 	}
 }
 
@@ -466,20 +463,20 @@ func (s *Server) rekeyInboundSession(pctx *pipeline.Context, direction string) {
 	if sid == "" || sid == session.DefaultSessionID {
 		return
 	}
-	s.sink().Rekey(session.DefaultSessionID, sid)
+	s.Sessions.Rekey(session.DefaultSessionID, sid)
 }
 
 func (s *Server) recordOutboundSession(pctx *pipeline.Context) {
 	if s.Sessions == nil {
 		return
 	}
-	sid := s.sink().ActiveSession()
+	sid := s.Sessions.ActiveSession()
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}
 	ev := sessionevent.Request(pctx, pipeline.Outbound)
 	if ev.MCP != nil || ev.Inference != nil || ev.Invocations != nil || ev.Plugins != nil {
-		s.sink().Append(sid, ev)
+		s.Sessions.Append(sid, ev)
 	}
 }
 
@@ -511,8 +508,8 @@ func (s *Server) handleOutbound(stream extprocv3.ExternalProcessor_ProcessServer
 	}
 
 	if s.Sessions != nil {
-		if aid := s.sink().ActiveSession(); aid != "" {
-			if pctx.Session = s.sink().View(aid); pctx.Session != nil {
+		if aid := s.Sessions.ActiveSession(); aid != "" {
+			if pctx.Session = s.Sessions.View(aid); pctx.Session != nil {
 				pctx.SessionID = aid
 			}
 		}
@@ -561,8 +558,8 @@ func (s *Server) handleOutboundBody(stream extprocv3.ExternalProcessor_ProcessSe
 	}
 
 	if s.Sessions != nil {
-		if aid := s.sink().ActiveSession(); aid != "" {
-			if pctx.Session = s.sink().View(aid); pctx.Session != nil {
+		if aid := s.Sessions.ActiveSession(); aid != "" {
+			if pctx.Session = s.Sessions.View(aid); pctx.Session != nil {
 				pctx.SessionID = aid
 			}
 		}

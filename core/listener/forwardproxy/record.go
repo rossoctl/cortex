@@ -69,7 +69,7 @@ func (s *Server) appendCaptured(tl *tunnelLog, sid string, ev pipeline.SessionEv
 	if tl != nil && tl.recordWith(sid, ev, c) {
 		return
 	}
-	s.sink().AppendCapture(sid, ev, c)
+	s.Sessions.AppendCapture(sid, ev, c)
 }
 
 // rejectResponse answers the client with a response-phase rejection and
@@ -82,7 +82,7 @@ func (s *Server) rejectResponse(w http.ResponseWriter, pctx *pipeline.Context, a
 		return
 	}
 	// With the capture: what a plugin refused is still the origin's answer.
-	s.sink().AppendCapture(attribution.FiledSession(pctx.OutboundSessionID, s.sink().ActiveSession), sessionevent.DenyResponse(pctx, action, pipeline.Outbound), takeResponseCapture(pctx))
+	s.Sessions.AppendCapture(attribution.FiledSession(pctx.OutboundSessionID, s.Sessions.ActiveSession), sessionevent.DenyResponse(pctx, action, pipeline.Outbound), takeResponseCapture(pctx))
 }
 
 // recordOutboundResponseEvent emits the SessionResponse event for a
@@ -103,11 +103,11 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	// response lands in the same bucket. Fall back to ActiveSession() only
 	// when nothing was pinned (defensive — a response-only path), then to
 	// the default bucket. See Context.OutboundSessionID.
-	sid := attribution.FiledSession(pctx.OutboundSessionID, s.sink().ActiveSession)
+	sid := attribution.FiledSession(pctx.OutboundSessionID, s.Sessions.ActiveSession)
 	// Always record — see the request-phase comment. This is what surfaces
 	// responses no plugin acted on (e.g. a generic 404), carrying StatusCode
 	// + Error even with empty invocations.
-	s.sink().AppendCapture(sid, outboundResponseEvent(pctx, statusCode, fail), takeResponseCapture(pctx))
+	s.Sessions.AppendCapture(sid, outboundResponseEvent(pctx, statusCode, fail), takeResponseCapture(pctx))
 }
 
 // takeResponseCapture is the capture of the response pctx's row records, nil when there is

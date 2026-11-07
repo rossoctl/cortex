@@ -412,7 +412,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Record every inbound request the pipeline saw, even with no plugin
 	// activity (skip_hosts is N/A inbound).
 	if s.Sessions != nil {
-		s.sink().Append(inboundSessionID(pctx), sessionevent.Request(pctx, pipeline.Inbound))
+		s.Sessions.Append(inboundSessionID(pctx), sessionevent.Request(pctx, pipeline.Inbound))
 	}
 
 	r = r.WithContext(context.WithValue(r.Context(), pctxKey{}, pctx))
@@ -569,7 +569,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	if s.Sessions != nil && pctx.Extensions.A2A != nil &&
 		pctx.Extensions.A2A.SessionID != "" &&
 		pctx.Extensions.A2A.SessionID != session.DefaultSessionID {
-		s.sink().Rekey(session.DefaultSessionID, pctx.Extensions.A2A.SessionID)
+		s.Sessions.Rekey(session.DefaultSessionID, pctx.Extensions.A2A.SessionID)
 	}
 
 	// Mirror forwardproxy's response-phase event so agentop pairs every
@@ -592,7 +592,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 			return
 		}
 		// Always pair every inbound request with a response row (carries StatusCode).
-		s.sink().Append(inboundSessionID(pctx), sessionevent.Response(pctx, pipeline.Inbound, resp.StatusCode, nil))
+		s.Sessions.Append(inboundSessionID(pctx), sessionevent.Response(pctx, pipeline.Inbound, resp.StatusCode, nil))
 	}
 	// A 101 is recorded here, not deferred: ReverseProxy never copies its body —
 	// it hands the connection to the upgraded protocol — so on a failed upgrade
@@ -690,7 +690,7 @@ func (s *Server) recordInboundReject(pctx *pipeline.Context, action pipeline.Act
 	// inboundSessionID helper, kept consistent so denial events land
 	// in the same bucket the accepted request would have.
 	sid := inboundSessionID(pctx)
-	s.sink().Append(sid, sessionevent.Deny(pctx, action, pipeline.Inbound))
+	s.Sessions.Append(sid, sessionevent.Deny(pctx, action, pipeline.Inbound))
 }
 
 // requestScheme derives the URL scheme for an incoming server-side
@@ -769,11 +769,11 @@ func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode i
 	// streaming A2A message/stream may discover the contextId mid-stream.
 	if pctx.Extensions.A2A != nil && pctx.Extensions.A2A.SessionID != "" &&
 		pctx.Extensions.A2A.SessionID != session.DefaultSessionID {
-		s.sink().Rekey(session.DefaultSessionID, pctx.Extensions.A2A.SessionID)
+		s.Sessions.Rekey(session.DefaultSessionID, pctx.Extensions.A2A.SessionID)
 	}
 	// The counts arrive on the closing frames, so onClose runs after the fold has
 	// finished and the Inference snapshot is the whole turn.
-	s.sink().Append(sid, sessionevent.Response(pctx, pipeline.Inbound, statusCode, fail))
+	s.Sessions.Append(sid, sessionevent.Response(pctx, pipeline.Inbound, statusCode, fail))
 }
 
 // recordOnEOFBody defers the response row of the fully-unbuffered relay to
@@ -933,9 +933,6 @@ func (b *streamingResponseBody) Close() error {
 	}
 	return b.upstream.Close()
 }
-
-// sink is Sessions as the listener records through it. See sessionevent.SinkOf.
-func (s *Server) sink() sessionevent.Sink { return sessionevent.SinkOf(s.Sessions) }
 
 // inboundSessionID returns the bucket ID for an inbound event. Mirrors
 // extproc's inboundSessionID: trusts the A2A-stated contextId when
