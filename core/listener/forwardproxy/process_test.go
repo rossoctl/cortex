@@ -870,7 +870,7 @@ func TestForwardProxy_StripsCortexAttributionHeaders(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, upstream.URL, nil)
 	req.Header.Set("User-Agent", procClaudeUA)
 	req.Header.Set(session.ClaudeCodeSessionHeader, "real")
-	// Every attribution header, each with a value Decode would accept.
+	// Every attribution header.
 	forged := map[string]string{
 		attribution.HeaderAgent:      "claude-code",
 		attribution.HeaderProc:       "1.1",
