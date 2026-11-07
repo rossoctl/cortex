@@ -35,13 +35,18 @@ func keyOf(e *pipeline.SessionEvent) eventKey {
 	return eventKey{at: e.At.UnixNano(), direction: e.Direction, phase: e.Phase, requestID: e.RequestID}
 }
 
+// findByKey is the row that holds the event with key k, by either half (#1681). A pin can
+// name a response: a response-only row is keyed by it, and the row merges with its request
+// when `o` loads the request.
 func findByKey(rows []eventRow, k eventKey) int {
-	for i, r := range rows {
-		if keyOf(r.event) == k {
-			return i
-		}
-	}
-	return -1
+	return slices.IndexFunc(rows, func(r eventRow) bool {
+		return rowHolds(r, func(e *pipeline.SessionEvent) bool { return keyOf(e) == k })
+	})
+}
+
+// rowHolds reports whether either half of row r satisfies match.
+func rowHolds(r eventRow, match func(*pipeline.SessionEvent) bool) bool {
+	return (r.event != nil && match(r.event)) || (r.resp != nil && match(r.resp))
 }
 
 // newEventsTable builds an empty events table. Uses the shared tableStyles like every other pane.

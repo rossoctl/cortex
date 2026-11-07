@@ -335,3 +335,64 @@ func TestExchange_LateResponseMergesIntoLostRow(t *testing.T) {
 		t.Errorf("after the response: STATUS = %q, want 200", got)
 	}
 }
+
+// A response whose request is not held is a row of its own, keyed by the response. When `o`
+// loads the request, the row merges and its first event becomes the request. The pin must
+// still find it, or the cursor falls back to row 0 — which is w's row here, so the fallback
+// cannot pass for the fix.
+func TestExchange_PinOnResponseFollowsTheMerge(t *testing.T) {
+	w := httpExchange("w", "w.test", t0.Add(-time.Second), 200)
+	x := httpExchange("x", "x.test", t0, 200)
+	y := httpExchange("y", "y.test", t0.Add(time.Second), 200)
+	m := newEventsPaneModel(append([]pipeline.SessionEvent{x[1]}, y...))
+	m.now = func() time.Time { return t0.Add(2 * time.Second) }
+	m.rebuildEventsTable()
+	setCursorVisible(&m.eventsTbl, 0)
+	m.selectedEventKey = keyOf(m.selectedEvent())
+
+	// `o` loaded the older page: w, and x's request.
+	m.events["s"] = append(append(w, x...), y...)
+	m.rebuildEventsTable()
+	if got := m.selectedEvent(); got == nil || got.Host != "x.test" {
+		t.Errorf("cursor on %v, want x's merged row", got)
+	}
+}
+
+// Enter on a tool in the Timeline names the response that called it.
+func TestExchange_RevealResponseSeqLandsOnItsRow(t *testing.T) {
+	a := httpExchange("a", "a.test", t0, 200)
+	b := httpExchange("b", "b.test", t0.Add(time.Second), 200)
+	a[0].Seq, a[1].Seq, b[0].Seq, b[1].Seq = 1, 2, 3, 4
+	m := newEventsPaneModel(append(a, b...))
+	m.revealSeq, m.revealSess = 2, "s"
+	if !m.revealPendingSeq() {
+		t.Fatal("the reveal of a response seq did not land")
+	}
+	if got := m.selectedEvent(); got.Host != "a.test" {
+		t.Errorf("cursor on %s, want a.test", got.Host)
+	}
+}
+
+// Review focus: under a sort, a response that lands re-ranks its row. The cursor stays on it.
+func TestExchange_SortedCursorStaysWhenResponseLands(t *testing.T) {
+	a := httpExchange("a", "a.test", t0, 200)
+	a[1].Duration = time.Second
+	b := httpExchange("b", "b.test", t0.Add(time.Millisecond), 200)
+	m := sortTestModel([]pipeline.SessionEvent{a[0], b[0], a[1]})
+	m.now = func() time.Time { return t0.Add(time.Minute) }
+	m.sortCol, m.sortDesc = colDuration, true
+	m.rebuildEventsTable()
+	i := slices.IndexFunc(m.visibleRows, func(r eventRow) bool { return r.event.Host == "b.test" })
+	setCursorVisible(&m.eventsTbl, i)
+	m.selectedEventKey = keyOf(m.selectedEvent())
+
+	b[1].Duration = 5 * time.Second
+	m.events["s"] = append(m.events["s"], b[1])
+	m.rebuildEventsTable()
+	if got := hostsInOrder(m); got[0] != "b.test" {
+		t.Errorf("rows = %v, want b first: 5s ranks above 1s", got)
+	}
+	if got := m.selectedEvent(); got.Host != "b.test" {
+		t.Errorf("cursor on %s, want it to follow b", got.Host)
+	}
+}
