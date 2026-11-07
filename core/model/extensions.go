@@ -18,7 +18,7 @@ import (
 // access patterns share the same map:
 //
 //   - Plugin-PRIVATE state (cross-phase continuity inside one plugin).
-//     Use the typed SetState / GetState generics. Key is plugin.Name().
+//     Use the typed generics pipeline.SetState / pipeline.GetState. Key is plugin.Name().
 //     Value is typically *T for a plugin-internal struct (may contain
 //     sync primitives, unexported fields, channels). Never flows to
 //     session events.

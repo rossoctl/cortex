@@ -288,7 +288,7 @@ The suffix is the opt-in marker — private state stays out of the session strea
 
 ### Built-in extension shapes
 
-All at `core/pipeline/extensions.go`:
+All at `core/model/extensions.go`:
 
 ```go
 type MCPExtension struct {

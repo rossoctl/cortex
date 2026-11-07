@@ -10,7 +10,7 @@ import (
 // cost packages can use them without the plugin engine. These aliases keep the old names.
 // They are aliases (=), not new types: a new type would drop the methods, MarshalJSON too.
 
-// client.go
+// client.go: see core/model for the docs.
 type EventClient = model.EventClient
 
 const UnknownClientLabel = model.UnknownClientLabel
@@ -33,7 +33,7 @@ func FoldAgentNames(agents map[string]string) map[string]string { return model.F
 func AgentSpellings(name string) []string                       { return model.AgentSpellings(name) }
 func AgentName(label string) string                             { return model.AgentName(label) }
 
-// capture.go
+// capture.go: see core/model for the docs.
 type (
 	RequestCapture  = model.RequestCapture
 	ResponseCapture = model.ResponseCapture
@@ -43,10 +43,10 @@ type (
 
 const MaxResponseCapture = model.MaxResponseCapture
 
-// tokens.go
+// tokens.go: see core/model for the docs.
 func PromptTokensOf(resp *InferenceExtension) int { return model.PromptTokensOf(resp) }
 
-// direction.go
+// direction.go: see core/model for the docs.
 type Direction = model.Direction
 
 const (
@@ -54,7 +54,7 @@ const (
 	Outbound = model.Outbound
 )
 
-// extensions.go
+// extensions.go: see core/model for the docs.
 type (
 	Extensions          = model.Extensions
 	MCPExtension        = model.MCPExtension
@@ -91,7 +91,7 @@ const (
 	InvocationPhaseResponse = model.InvocationPhaseResponse
 )
 
-// session.go
+// session.go: see core/model for the docs.
 type (
 	SessionPhase  = model.SessionPhase
 	SessionEvent  = model.SessionEvent
@@ -138,7 +138,7 @@ func NewEventTLS(state *tls.ConnectionState, peerSpiffeID string) *EventTLS {
 	return model.NewEventTLS(state, peerSpiffeID)
 }
 
-// promptcontext.go
+// promptcontext.go: see core/model for the docs.
 type (
 	PromptContextFold = model.PromptContextFold
 	PromptContext     = model.PromptContext

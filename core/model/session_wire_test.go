@@ -60,7 +60,7 @@ func TestSessionEventWire_HasEveryDomainField(t *testing.T) {
 // The count guard is necessary but not sufficient — it cannot see a field that IS
 // in sessionEventWire but was forgotten in MarshalJSON or UnmarshalJSON. That half
 // is covered by the per-field round-trip tests, of which
-// TestSessionEvent_ClientRoundTrips below is one.
+// TestSessionEvent_ClientRoundTrips in core/pipeline/session_test.go is one.
 func TestSessionEventWireCoversEveryField(t *testing.T) {
 	got := reflect.TypeOf(SessionEvent{}).NumField()
 	want := reflect.TypeOf(sessionEventWire{}).NumField()
