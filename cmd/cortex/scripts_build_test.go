@@ -18,10 +18,10 @@ import (
 // writer, so a script that only reads responses must not count as a request reader.
 func TestLocalChain_BuildsWithEachKindOfScript(t *testing.T) {
 	for name, handshake := range map[string]string{
-		"response reader": `{"cortex":1,"hooks":["response"]}`,
-		"response writer": `{"cortex":1,"hooks":["response"],"rewrite_response":true}`,
-		"request script":  `{"cortex":1,"hooks":["request"]}`,
-		"both hooks":      `{"cortex":1,"hooks":["request","response"]}`,
+		"response reader": `{"cortex":2,"hooks":["response"]}`,
+		"response writer": `{"cortex":2,"hooks":["response"],"rewrite_response":true}`,
+		"request script":  `{"cortex":2,"hooks":["request"]}`,
+		"both hooks":      `{"cortex":2,"hooks":["request","response"]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
@@ -64,8 +64,8 @@ func TestLocalChain_BuildsWithAResponseRewritingSlotAdded(t *testing.T) {
 	t.Setenv("SHELL", "")
 	root := filepath.Join(home, ".cortex", "plugins")
 	scripts := map[string]string{
-		filepath.Join(root, "watch"):                 `{"cortex":1,"hooks":["response"]}`,
-		filepath.Join(root, "moca-sandbox", "guard"): `{"cortex":1,"hooks":["request","response"],"enforce":true,"rewrite_response":true}`,
+		filepath.Join(root, "watch"):                 `{"cortex":2,"hooks":["response"]}`,
+		filepath.Join(root, "moca-sandbox", "guard"): `{"cortex":2,"hooks":["request","response"],"enforce":true,"rewrite_response":true}`,
 	}
 	for path, handshake := range scripts {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -104,8 +104,8 @@ func TestLocalChain_ADefaultSlotRewriterBeforeANamedReader(t *testing.T) {
 	t.Setenv("SHELL", "")
 	root := filepath.Join(home, ".cortex", "plugins")
 	scripts := map[string]string{
-		filepath.Join(root, "rewrite"):        `{"cortex":1,"hooks":["response"],"rewrite_response":true}`,
-		filepath.Join(root, "audit", "watch"): `{"cortex":1,"hooks":["response"]}`,
+		filepath.Join(root, "rewrite"):        `{"cortex":2,"hooks":["response"],"rewrite_response":true}`,
+		filepath.Join(root, "audit", "watch"): `{"cortex":2,"hooks":["response"]}`,
 	}
 	for path, handshake := range scripts {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
