@@ -31,6 +31,8 @@ func TestSessionArchiveConfig_Validate(t *testing.T) {
 		{SessionArchiveConfig{RetentionDays: -1}, "session.archive.retention_days"},
 		{SessionArchiveConfig{RetentionDays: 3651}, "session.archive.retention_days"},
 		{SessionArchiveConfig{MaxBytes: -1}, "session.archive.max_bytes"},
+		{SessionArchiveConfig{Dir: "/var/lib/cortex/sessions"}, ""},
+		{SessionArchiveConfig{Dir: "sessions"}, "session.archive.dir"},
 	} {
 		err := tc.cfg.Validate()
 		switch {
@@ -68,7 +70,7 @@ func TestValidate_RefusesTheArchiveWithoutSessions(t *testing.T) {
 
 func TestLoad_ReadsTheSessionArchiveBlock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	yaml := "mode: proxy-sidecar\nsession:\n  archive:\n    enabled: true\n    retention_days: 14\n    max_bytes: 1073741824\n"
+	yaml := "mode: proxy-sidecar\nsession:\n  archive:\n    enabled: true\n    retention_days: 14\n    max_bytes: 1073741824\n    dir: /var/lib/cortex/sessions\n"
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +79,8 @@ func TestLoad_ReadsTheSessionArchiveBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := cfg.Session.Archive
-	if a == nil || a.Enabled == nil || !*a.Enabled || a.RetentionDays != 14 || a.MaxBytes != 1<<30 {
+	if a == nil || a.Enabled == nil || !*a.Enabled || a.RetentionDays != 14 || a.MaxBytes != 1<<30 ||
+		a.Dir != "/var/lib/cortex/sessions" {
 		t.Fatalf("session.archive = %+v", a)
 	}
 }
