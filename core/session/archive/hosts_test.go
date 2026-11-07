@@ -194,3 +194,83 @@ func TestHosts_AnEntryReCreatedBeforeTheWriterCatchesUpSeesItsHistory(t *testing
 		t.Fatalf("after the writer caught up: %+v %v, want %+v", got, ok, want)
 	}
 }
+
+// A max_events trim drops the evidence from memory. The archive holds it, and the entry's table
+// still has it (plan §3.6 row 17).
+func TestHosts_ATrimmedRequestKeepsItsHost(t *testing.T) {
+	a := openTest(t, t.TempDir(), newClock())
+	defer a.Close()
+	st := session.New(0, 2, 0)
+	defer st.Close()
+	st.AddRecorder(a)
+	evs := hostEvents()
+	st.Append("s1", evs[0]) // seq 1, to glm
+	for range 3 {
+		st.Append("s1", evs[2])
+	}
+	settle(a)
+	if v := st.View("s1"); len(v.InferenceRequests()) != 0 {
+		t.Fatalf("fixture: the trim kept %d inference requests", len(v.InferenceRequests()))
+	}
+	want := model.InferenceHosts{{Agent: "claude-code", Host: "glm.example.com:8443", Last: 1}}
+	if got, ok := hostsOf(st, "s1"); !ok || !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the trim: %+v %v, want %+v", got, ok, want)
+	}
+}
+
+// A rename carries the table of the entry's own events: the history before the entry stays
+// under the old id with its table. Two paths fold the entry's segments again: the history is on
+// disk (the segments split), or retention pruned it (the directory moves whole).
+func TestHosts_ARenameCarriesOnlyTheEntrysTable(t *testing.T) {
+	from := session.DefaultSessionID
+	for _, prune := range []bool{false, true} {
+		root, clk := t.TempDir(), newClock()
+		evs := hostEvents()
+		a, st := restarted(t, root, clk, from, evs[:2]) // history: glm and opencode, seqs 1-2
+		clk.advance(29 * 24 * time.Hour)
+		st.Append(from, evs[3]) // the entry: ete, seq 3
+		settle(a)
+		if prune {
+			clk.advance(2 * 24 * time.Hour)
+			tick(a)
+		}
+		st.Rekey(from, "Y")
+		settle(a)
+		want := model.InferenceHosts{{Agent: "claude-code", Host: "ete.example.com", Last: 3}}
+		if got, ok := a.InferenceHosts("Y"); !ok || !reflect.DeepEqual(got, want) {
+			t.Errorf("prune %v: the archive's table for Y: %+v %v, want %+v", prune, got, ok, want)
+		}
+		if got, ok := hostsOf(st, "Y"); !ok || !reflect.DeepEqual(got, want) {
+			t.Errorf("prune %v: ViewFacts for Y: %+v %v, want %+v", prune, got, ok, want)
+		}
+		a.Close()
+		st.Close()
+	}
+}
+
+// When the archive cannot tell the entry's events from the history's (the writer marked no
+// start for the entry), and retention pruned the history's segments, the directory moves whole
+// with its fold. That fold holds the history's hosts, so the new id's table must be unknown.
+func TestHosts_ARenameWithNoMarkedStartIsUnknown(t *testing.T) {
+	from := session.DefaultSessionID
+	root, clk := t.TempDir(), newClock()
+	evs := hostEvents()
+	a, st := restarted(t, root, clk, from, evs[:2])
+	defer a.Close()
+	defer st.Close()
+	clk.advance(29 * 24 * time.Hour)
+	st.Append(from, evs[3])
+	settle(a)
+	clk.advance(2 * 24 * time.Hour)
+	tick(a)
+	// No start marked: what begin leaves when the disk is ahead of the entry's seed.
+	a.inWriter(func() { a.sessions[from].startAfter, a.sessions[from].before = 0, nil })
+	st.Rekey(from, "Y")
+	settle(a)
+	if got, ok := a.InferenceHosts("Y"); ok {
+		t.Fatalf("the archive's table for Y: %+v known, want unknown", got)
+	}
+	if got, ok := hostsOf(st, "Y"); ok {
+		t.Fatalf("ViewFacts for Y: %+v known, want unknown", got)
+	}
+}

@@ -759,7 +759,8 @@ func (s *Store) viewLocked(sessionID string) (*model.SessionView, *entry) {
 //     the entry's own. HostsKnown is the keeper's.
 //   - With an entry and no earlier history: the entry's own table. HostsKnown is true.
 //   - With no entry: the keeper's table over every event it holds under the id.
-//   - With no keeper: the entry's own table, or none. HostsKnown is true.
+//   - With no keeper: the entry's own table, or none. HostsKnown is false when a SeqSeeder
+//     holds history for the id.
 //
 // THE KEEPER IS READ NOW, NOT WHEN THE ENTRY WAS CREATED. The history's last events can still be
 // in the archive's queue when the entry is created (an eviction, then the next request), and a

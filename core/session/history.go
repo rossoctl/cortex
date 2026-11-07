@@ -47,15 +47,16 @@ type HostsKeeper interface {
 	InferenceHosts(sessionID string) (model.InferenceHosts, bool)
 }
 
-// keeperHostsLocked is the first HostsKeeper's answer for id, and (nil, true) when no recorder
-// is one. The answer is the keeper's own slice: clone it before a change. s.mu held.
+// keeperHostsLocked is the first HostsKeeper's answer for id. With no HostsKeeper it is nil, and
+// unknown when a SeqSeeder holds history for id: the history has hosts that no recorder keeps.
+// The answer is the keeper's own slice: clone it before a change. s.mu held.
 func (s *Store) keeperHostsLocked(id string) (model.InferenceHosts, bool) {
 	for _, r := range s.recorders {
 		if k, ok := r.(HostsKeeper); ok {
 			return k.InferenceHosts(id)
 		}
 	}
-	return nil, true
+	return nil, s.archivedSeqLocked(id) == 0
 }
 
 // EntryStarter is optionally implemented by a SeqSeeder. The store calls EntryStarted under its

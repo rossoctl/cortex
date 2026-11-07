@@ -703,6 +703,10 @@ func (a *Archive) renameEntry(s *sessionState, oldID, newID, newDir string, afte
 		if startAfter == after {
 			a.closeWriter(s)
 			s.meta.Summary, _ = foldSegments(s.dir, s.meta.Segments, oldID)
+		} else {
+			// The fold also holds the history's events, which stay under oldID. The new id must
+			// not take the history's hosts as its own.
+			s.meta.Summary.ForgetInferenceHosts()
 		}
 		return false
 	}

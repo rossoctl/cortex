@@ -260,6 +260,11 @@ func (f *SummaryFold) InferenceHosts() (model.InferenceHosts, bool) {
 	return slices.Clone(f.hosts), !f.hostsUnknown
 }
 
+// ForgetInferenceHosts marks the fold's InferenceHosts table unknown, for a fold that holds
+// events of more than one session entry: the archive moves such a fold to a new id when it
+// cannot tell the entry's events from the history's. Unknown is sticky, as after a decode.
+func (f *SummaryFold) ForgetInferenceHosts() { f.hosts, f.hostsUnknown = nil, true }
+
 // NewSummaryFold returns an empty fold.
 func NewSummaryFold() *SummaryFold { return &SummaryFold{titleRank: rankNone} }
 

@@ -114,6 +114,23 @@ func TestViewFacts_AnEntryAfterHistoryMergesTheKeepersTable(t *testing.T) {
 	}
 }
 
+// A recorder that keeps history (a SeqSeeder) but no table: the store cannot vouch for the
+// history's hosts, with an entry over that history or with no entry.
+func TestViewFacts_HistoryWithNoKeeperIsUnknown(t *testing.T) {
+	s := New(0, 0, 0)
+	defer s.Close()
+	a := newFakeArchive()
+	a.last["s1"] = 5
+	s.AddRecorder(a)
+	_, f := s.ViewFacts("s1")
+	wantHosts(t, "no entry", f, nil, false)
+	s.Append("s1", inferenceTo("ete.example.com", claudeUA)) // seq 6
+	_, f = s.ViewFacts("s1")
+	wantHosts(t, "entry", f, model.InferenceHosts{seen("claude-code", "ete.example.com", 6, 0)}, false)
+	_, f = s.ViewFacts("s2")
+	wantHosts(t, "an id with no history", f, nil, true)
+}
+
 // An entry with no history before it (the keeper's LastSeq is 0) does not take the keeper's
 // table, so the keeper's "unknown" cannot reach it.
 func TestViewFacts_AnEntryWithNoHistoryIsItsOwnTable(t *testing.T) {
@@ -128,9 +145,10 @@ func TestViewFacts_AnEntryWithNoHistoryIsItsOwnTable(t *testing.T) {
 	wantHosts(t, "entry", f, model.InferenceHosts{seen("claude-code", "ete.example.com", 1, 0)}, true)
 }
 
-// A rename moves the entry and not the history before it, which stays under the old id. So
-// the new id's table is the entry's own, and known; the old id's is the keeper's again.
-func TestViewFacts_RekeyClearsTheHistorysTable(t *testing.T) {
+// A rename moves the entry and not the history before it, which stays under the old id. ViewFacts
+// reads the keeper by the new id, so the new id's table is the entry's own, and known. The old
+// id's is the keeper's again.
+func TestViewFacts_ARenamedEntryDoesNotReadTheOldIDsHistory(t *testing.T) {
 	s := New(0, 0, 0)
 	defer s.Close()
 	k := newHostsArchive()
