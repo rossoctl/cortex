@@ -9,6 +9,7 @@ import (
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/sessionapi"
 )
 
 // showDetail loads the row's event into the detail viewport as colorized
@@ -433,16 +434,10 @@ func filterForDetail(data []byte, phase pipeline.SessionPhase) []byte {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return data
 	}
-	keep := inferenceReqKeys
-	mcpKeep := mcpReqKeys
-	if phase == pipeline.SessionResponse {
-		keep = inferenceRespKeys
-		mcpKeep = mcpRespKeys
-	}
-	a2aKeep := a2aReqKeys
-	if phase == pipeline.SessionResponse {
-		a2aKeep = a2aRespKeys
-	}
+	resp := phase == pipeline.SessionResponse
+	keep := sessionapi.DetailKeys("inference", resp)
+	mcpKeep := sessionapi.DetailKeys("mcp", resp)
+	a2aKeep := sessionapi.DetailKeys("a2a", resp)
 	if inf, ok := m["inference"].(map[string]any); ok {
 		restoreReportedZeroSplits(inf)
 		inf = filterFields(inf, keep)
@@ -483,43 +478,12 @@ func filterForDetail(data []byte, phase pipeline.SessionPhase) []byte {
 	return out
 }
 
-// Field classifications for phase-based filtering. Order is not significant —
-// ColorizeJSONBytes sorts keys alphabetically for stable display.
-var (
-	inferenceReqKeys = []string{
-		"model", "requestedModel", "messages", "temperature", "maxTokens", "topP",
-		"stream", "tools", "toolChoice", "toolResults", "historyToolCalls",
-	}
-	// reasoningTokens is a SUBSET of completionTokens, not a sibling: it is the share
-	// of the generated tokens the model spent reasoning, billed at the output rate.
-	// Adding the two double-counts every one of them.
-	//
-	// THIS PANE IS WHERE THE EXACT FIGURE LIVES. The events table shows one total per
-	// row and the spend drawer shows a proportion, so a reader who wants the number
-	// rather than the shape comes here — which is also why the key needs no
-	// abbreviating: there is room for the whole word, unlike a table column.
-	inferenceRespKeys = []string{
-		"model", "requestedModel", "completion", "finishReason", "promptTokens",
-		"completionTokens", "reasoningTokens", "totalTokens", "toolCalls",
-		"cacheWriteTokens", "cacheReadTokens",
-	}
-	mcpReqKeys  = []string{"method", "rpcId", "params"}
-	mcpRespKeys = []string{"method", "rpcId", "result", "error"}
-	// A2A: OnResponse captures the server-assigned contextId plus a summary
-	// of the final result (finalStatus / artifact / errorMessage / taskId).
-	// Drop the request-side message fields (messageId, role, parts) on
-	// response rows so the detail view reflects what the response phase
-	// actually contributed.
-	a2aReqKeys  = []string{"method", "rpcId", "sessionId", "messageId", "taskId", "role", "parts"}
-	a2aRespKeys = []string{"method", "rpcId", "sessionId", "taskId", "finalStatus", "artifact", "errorMessage"}
-)
-
 // restoreReportedZeroSplits puts back a split the provider MEASURED AND FOUND TO BE ZERO.
 //
 // InferenceExtension.ReasoningTokens is omitempty, so a provider that measured the split and
 // got none serialises identically to one that never measured at all — and filterFields keeps
 // only keys the map actually has, so both read as "no reasoning" in the pane that
-// inferenceRespKeys' own doc calls the place the exact figure lives. A measured zero is a
+// the response list of sessionapi.DetailKeys calls the place the exact figure lives. A measured zero is a
 // figure; absence is the lack of one. PresentKinds is the only thing that separates them,
 // and it travels in the same object.
 //
@@ -528,7 +492,7 @@ var (
 // JSON tests forbid. So the repair belongs here, at the surface that lost the distinction.
 //
 // NO PHASE GUARD. Reasoning is response-side, but what keeps it off a request row is
-// inferenceReqKeys not listing it — one allow-list deciding visibility, per this file's
+// the request list of sessionapi.DetailKeys not listing it — one allow-list deciding visibility, per this file's
 // existing rule about a second copy of a predicate. A phase check here would be a guard the
 // allow-list already makes unreachable, so nothing could prove it worked.
 //
