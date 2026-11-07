@@ -49,9 +49,9 @@ These were open on #1714:
 - **D4:** Cortex's processing code runs in Praxis as Rust filters, in our own binary built on the published `praxis-proxy` crates. It is not the Go pipeline linked into Praxis as a C library (#1437's work breakdown).
 - **D0:** the hairpin is built, but for processing and recording in Praxis, not for new checks.
 
-Still open:
-- D2: who owns prices long term. In this design Cortex settles at ingestion.
-- D5: the stop-loss date, and the owner of `praxis-proxy` version bumps. **This must be decided before delivery step 2.** **[D 4]**
+Also decided:
+- **D2:** in v1, Cortex prices each row at ingestion with its existing Go code. Later, Cortex's pricing logic is ported into a Rust filter in `cortex-gateway`, so that Praxis prices each request itself. The ledger stays in Cortex (D1). When Praxis Tokenomics is on par with it, we switch to Tokenomics and remove the port.
+- **D5:** no stop-loss date for the interim. The owner of `praxis-proxy` version bumps is decided later, as we go.
 
 ## Architecture
 
@@ -149,6 +149,7 @@ ALWAYS:  cortex_record ──NDJSON──► cortex /v1/ingest ─► store / ar
 
 - Cortex settles at ingestion: `settle.SettleInput(Input{Host, Path, Inference, ResponseHeaders: cost.headers}, rates)` and `SettleServedModel`. It writes the result to `plugins["cost"]` as `inference-parser` does today.
 - **Cortex does not trust a producer's cost record.** It removes `plugins["cost"]` and the legacy `plugins["litellm-budget-track"]` from each ingested event before it settles. This answers #1497's design question 2.
+- When the pricing port lands (D2), this rule changes: Cortex accepts the cost record of a gateway that has the token, and settles only rows without one.
 
 ### Joins with Cortex's own state
 
@@ -386,7 +387,7 @@ praxis:
 Each step is one PR and is useful when it merges. Nothing changes for a user until `praxis.enabled` is set. **[D 6]**
 
 1. **The Rust workspace and the inference parser:** `praxis/filters` with `cortex_parse` for inference, the parity gate, the schema drift test, and the path-scoped Rust CI job.
-2. **The gateway and ingestion together:** `cortex_record`, `cortex_attribution`, the emitter, the `cortex-gateway` binary, and `/v1/ingest` with its replay test. The endpoint lands with its producer. Needs D5.
+2. **The gateway and ingestion together:** `cortex_record`, `cortex_attribution`, the emitter, the `cortex-gateway` binary, and `/v1/ingest` with its replay test. The endpoint lands with its producer.
 3. **Supervision** (`cmd/cortex`): two siblings, the token file, `gateway.yaml`, the probe, no orphans, the port-conflict names.
 4. **The hop and the egress listener** (`core/listener/forwardproxy`): `hop.go`, the three branch points, the joins, `gateway_unavailable`, the config checks (startup and reload), and the end-to-end tests.
 5. **agentop and install:** the `praxis.enabled` contract field, the command refusals, `install.sh --praxis`, setup, update and uninstall.
@@ -430,8 +431,8 @@ This section is not built now. It records what the interim parts must allow.
 
 ## Open questions
 
-1. **D2:** pricing stays in Cortex at ingestion in this design. Does it stay there in the end state?
-2. **D5:** the stop-loss date for the interim, and the owner of `praxis-proxy` version bumps. Needed before delivery step 2.
+1. **Who bumps `praxis-proxy`** (D5): decided as we go. Until then, a failed weekly build has no named owner.
+2. **The pricing port** (D2): when to start it, and the test that shows Tokenomics is on par.
 3. **Rust CI and release cost:** the Praxis lock file has 609 crates, some with native code (`aws-lc-sys`, `openssl-sys`, `zstd-sys`). The W1 build took about 3 minutes on an M-series Mac, and `target/` was 1.3 GB. CI time on GitHub runners is not measured yet.
 4. **Interim memory:** in `praxis` mode the capture lives in `cortex-gateway` until it is sent, then in Cortex. Peak memory per in-flight request may be about twice that of direct mode. Not measured.
 
