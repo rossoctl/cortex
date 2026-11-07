@@ -33,12 +33,11 @@ func noteBodyModel(ext *pipeline.InferenceExtension, model string) {
 // settleServedModel decides ServedModel at the end of a response: the gateway
 // header when there is one, else what noteBodyModel kept, and nothing when the
 // result only repeats Model.
-func settleServedModel(pctx *pipeline.Context) {
-	ext := pctx.Extensions.Inference
+func settleServedModel(ext *pipeline.InferenceExtension, respHeaders http.Header) {
 	if ext == nil {
 		return
 	}
-	if v := pctx.ResponseHeaders.Get(servedModelHeader); v != "" {
+	if v := respHeaders.Get(servedModelHeader); v != "" {
 		ext.ServedModel = cleanServedModel(v)
 	}
 	if ext.ServedModel == ext.Model {

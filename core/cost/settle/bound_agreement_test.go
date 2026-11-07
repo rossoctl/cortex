@@ -102,7 +102,7 @@ func TestHeaderCost_PastTheMicrosBoundIsUnusable(t *testing.T) {
 		OutputTokens: 500,
 	}
 
-	cost, state := headerCost(pctx)
+	cost, state := headerCost(inputOf(pctx))
 	if state != headerUnusable {
 		t.Errorf("state = %d for %s, want headerUnusable (%d)", state, forged, headerUnusable)
 	}

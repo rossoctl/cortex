@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/rossoctl/cortex/core/bypass"
@@ -164,31 +165,40 @@ func isMCPMethod(method string) bool {
 }
 
 func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	if ext := parseMCPRequest(pctx.Method, pctx.Path, pctx.Headers, pctx.Body, p.paths); ext != nil {
+		pctx.Extensions.MCP = ext
+		pctx.Observe("matched_" + ext.Method)
+	}
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// parseMCPRequest parses one MCP request from plain values. It returns nil
+// when the parser does not claim the request. paths is the matcher of the
+// MCP endpoint paths for body-less requests. A nil paths matches no path.
+func parseMCPRequest(method, path string, headers http.Header, rawBody []byte, paths *bypass.Matcher) *pipeline.MCPExtension {
 	// Parse the bytes as sent after any zstd Content-Encoding, as
 	// inference-parser does, so a compressed call is claimed rather than
 	// passed through unparsed.
-	body := parsercommon.DecodeRequestBody(pctx.Headers, pctx.Body)
+	body := parsercommon.DecodeRequestBody(headers, rawBody)
 	// Body-less transport-layer detection. Scoped to the configured
 	// MCP-endpoint paths because there's no protocol payload to
 	// confirm; without the path narrow, every body-less GET in the
 	// cluster would risk being mis-classified as an MCP SSE channel.
 	if len(body) == 0 {
-		if p.paths != nil && p.paths.Match(pctx.Path) {
+		if paths != nil && paths.Match(path) {
 			switch {
-			case pctx.Method == "DELETE" && pctx.Headers.Get("Mcp-Session-Id") != "":
+			case method == "DELETE" && headers.Get("Mcp-Session-Id") != "":
 				// MCP Streamable HTTP session termination per spec —
 				// the Mcp-Session-Id header is set by the MCP client
 				// SDK, not user input, so it's a precise distinguisher
 				// from a real "DELETE /api/users/42" action call.
-				pctx.Extensions.MCP = &pipeline.MCPExtension{
+				slog.Info("mcp-parser: session terminate", "path", pipeline.SanitizeLogValue(path))
+				return &pipeline.MCPExtension{
 					Method: syntheticTransportTerminate,
 					// IsAction defaults to false — protocol mechanics.
 				}
-				slog.Info("mcp-parser: session terminate", "path", pipeline.SanitizeLogValue(pctx.Path))
-				pctx.Observe("matched_" + syntheticTransportTerminate)
-				return pipeline.Action{Type: pipeline.Continue}
 
-			case pctx.Method == "GET":
+			case method == "GET":
 				// MCP Streamable HTTP server-to-client SSE channel-open.
 				// Heuristic recognition: any body-less GET on a
 				// configured MCP path. If the request turns out not to
@@ -196,13 +206,11 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 				// downstream see a "transport/stream" extension and skip
 				// it — same effect as the pre-classification behavior
 				// of letting body-less GETs through.
-				pctx.Extensions.MCP = &pipeline.MCPExtension{
+				slog.Info("mcp-parser: transport stream", "path", pipeline.SanitizeLogValue(path))
+				return &pipeline.MCPExtension{
 					Method: syntheticTransportStream,
 					// IsAction defaults to false — protocol mechanics.
 				}
-				slog.Info("mcp-parser: transport stream", "path", pipeline.SanitizeLogValue(pctx.Path))
-				pctx.Observe("matched_" + syntheticTransportStream)
-				return pipeline.Action{Type: pipeline.Continue}
 			}
 		}
 		// Empty body, no MCP-shaped transport pattern matched. Don't
@@ -210,7 +218,7 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 		// Operators infer "mcp-parser exists in this pipeline" from
 		// config, not per-event rows.
 		slog.Debug("mcp-parser: no body, skipping")
-		return pipeline.Action{Type: pipeline.Continue}
+		return nil
 	}
 
 	// A top-level non-object body (array, string, number, null) is not
@@ -222,9 +230,8 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	var rpc parsercommon.JSONRPCRequest
 	if isObject {
 		if err := json.Unmarshal(body, &rpc); err != nil {
-			slog.Debug("mcp-parser: body is not valid JSON-RPC", "error", err, "bodyLen", len(body),
-				"host", pipeline.SanitizeLogValue(pctx.Host), "path", pipeline.SanitizeLogValue(pctx.Path))
-			return pipeline.Action{Type: pipeline.Continue}
+			slog.Debug("mcp-parser: body is not valid JSON-RPC", "error", err, "bodyLen", len(body), "path", pipeline.SanitizeLogValue(path))
+			return nil
 		}
 	}
 	// Claim only MCP-namespace methods. Both MCP and A2A ride JSON-RPC 2.0
@@ -237,23 +244,21 @@ func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// phantom "mcp: {}" on every such event. a2a-parser has the mirror
 	// guard for its own namespace.
 	if !isObject || !isMCPMethod(rpc.Method) {
-		slog.Debug("mcp-parser: not an MCP-namespace method, skipping", "method", rpc.Method,
-			"bodyLen", len(body), "host", pipeline.SanitizeLogValue(pctx.Host), "path", pipeline.SanitizeLogValue(pctx.Path))
-		return pipeline.Action{Type: pipeline.Continue}
+		slog.Debug("mcp-parser: not an MCP-namespace method, skipping", "method", pipeline.SanitizeLogValue(rpc.Method),
+			"bodyLen", len(body), "path", pipeline.SanitizeLogValue(path))
+		return nil
 	}
 
-	pctx.Extensions.MCP = &pipeline.MCPExtension{
+	ext := &pipeline.MCPExtension{
 		Method:   rpc.Method,
 		RPCID:    rpc.ID,
 		Params:   rpc.Params,
 		IsAction: isMCPAction(rpc.Method),
 	}
 
-	slog.Info("mcp-parser: request", "method", rpc.Method, "isAction", pctx.Extensions.MCP.IsAction)
+	slog.Info("mcp-parser: request", "method", pipeline.SanitizeLogValue(rpc.Method), "isAction", ext.IsAction)
 	slog.Debug("mcp-parser: payload", "method", rpc.Method, "body", parsercommon.Truncate(string(body), parsercommon.DebugBodyMax))
-
-	pctx.Observe("matched_" + rpc.Method)
-	return pipeline.Action{Type: pipeline.Continue}
+	return ext
 }
 
 // recordEmptyResponse records the terminal invocation for a response that
