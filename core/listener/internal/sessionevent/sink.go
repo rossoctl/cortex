@@ -20,3 +20,13 @@ type Sink interface {
 }
 
 var _ Sink = (*session.Store)(nil)
+
+// SinkOf is s as a Sink. Callers check their Sessions field for nil, as before. SinkOf
+// returns an untyped nil for a nil s, so a call through the Sink never reaches a typed-nil
+// *session.Store.
+func SinkOf(s *session.Store) Sink {
+	if s == nil {
+		return nil
+	}
+	return s
+}

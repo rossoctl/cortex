@@ -934,14 +934,8 @@ func (b *streamingResponseBody) Close() error {
 	return b.upstream.Close()
 }
 
-// sink is Sessions as the listener records through it, nil when sessions are off.
-// It returns an untyped nil for a nil store, so "sink() == nil" means what it says.
-func (s *Server) sink() sessionevent.Sink {
-	if s.Sessions == nil {
-		return nil
-	}
-	return s.Sessions
-}
+// sink is Sessions as the listener records through it. See sessionevent.SinkOf.
+func (s *Server) sink() sessionevent.Sink { return sessionevent.SinkOf(s.Sessions) }
 
 // inboundSessionID returns the bucket ID for an inbound event. Mirrors
 // extproc's inboundSessionID: trusts the A2A-stated contextId when
