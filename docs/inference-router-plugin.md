@@ -69,14 +69,58 @@ decides:
   routed agent:
   1. The session's history: the latest earlier inference request, other than a
      side request (3), that agent sent in the session to a server's host keeps
-     the session on that server, from then with that server's key. The history
-     is the session store's and, where the proxy keeps a session archive, up to
-     2000 of the archive's events from before the oldest the store holds. A
+     the session on that server, from then with that server's key. A
      request the router would capture, recorded where the agent sent it, was
      made while the router was not routing the agent — before it was routed, or
      under observe — so the session ran unrouted and is not routed now: routing
      an agent does not move a conversation already running on its provider. Any
      other request is no evidence.
+
+     **Where the history comes from.** The router reads the session's
+     `InferenceHosts` table, not the session's events. The session store and
+     the session archive keep this table. It has one row for each agent and
+     host, with the newest such request of that agent to that host. The
+     router maps each host to a server by the current config when it reads
+     the table.
+     - The table survives a restart: the archive keeps it in the session's
+       `session.json`.
+     - It has no event limit. A `session.max_events` trim does not remove a
+       row. When retention removes a segment, the rows stay. When retention
+       removes the session's last segment, the archive drops the session and
+       its table.
+
+     The router uses the table only when the request's session facts say
+     that the table is known (`HostsKnown`). Otherwise it scans the history
+     as before. That history is the store's events and, where the proxy
+     keeps a session archive, up to 2000 archived events before the oldest
+     the store holds. The table is unknown in these cases:
+     - No session store gave the table. The listener has no store, or sets
+       no facts, or sets facts with no table (a listener outside this repo
+       can). Or the request has no session view.
+     - The session's `session.json` is from before the table, or from another
+       version of the table's rule.
+     - The `session.json` has segments and no summary.
+     - The archive renamed the session and could not split the history from
+       the renamed events, or could not read one of the renamed segments.
+     - A recorder holds history for the session and keeps no table.
+
+     An unknown table stays unknown for the life of the session, also after
+     new events. This applies to a session from an old `session.json` and to
+     a rename that the archive could not split.
+
+     The table has evidence that the scan did not find. In each case below,
+     the scan found no evidence, and rules 2 to 4 decided. The router now
+     keeps the session on the server its agent last used:
+     - The newest evidence is more than 2000 archived events back.
+     - The archive read fails. The scan logged a WARN.
+     - Retention removed the segment with the evidence, and newer segments
+       remain.
+     - The store dropped the session's entry and then made a new one, and the
+       archive did not flush the evidence to disk yet.
+     - `session.max_events` is set, and the evidence is between the pinned
+       A2A intent and the oldest event in memory.
+     - `session.max_events` is set, a trim removed the evidence from memory,
+       and the archive is off or dropped the event.
   2. A request `inference-parser` did not read as inference — `count_tokens`,
      `/v1/models` — goes to its agent's current server and pins nothing.
   3. A Claude Code request's own turn: an opening turn, with no assistant reply

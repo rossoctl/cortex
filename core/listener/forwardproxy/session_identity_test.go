@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +33,9 @@ type identityProbePlugin struct {
 	// request.
 	sawIntent     []pipeline.SessionFact
 	sawViewIntent []*pipeline.SessionEvent
+	// sawHosts and sawHostsKnown are pctx.InferenceHosts(), for every request.
+	sawHosts      []pipeline.InferenceHosts
+	sawHostsKnown []bool
 }
 
 func (p *identityProbePlugin) Name() string { return "identity-probe" }
@@ -41,6 +45,8 @@ func (p *identityProbePlugin) Capabilities() pipeline.PluginCapabilities {
 func (p *identityProbePlugin) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
 	p.sawSessionID = append(p.sawSessionID, pctx.SessionID)
 	p.sawIntent = append(p.sawIntent, pctx.LastIntent())
+	hosts, known := pctx.InferenceHosts()
+	p.sawHosts, p.sawHostsKnown = append(p.sawHosts, hosts), append(p.sawHostsKnown, known)
 	if pctx.Session == nil {
 		p.sawViewIntent = append(p.sawViewIntent, nil)
 		p.sawNil = append(p.sawNil, true)
@@ -272,6 +278,52 @@ func TestPluginIdentity_HydratesSessionFacts(t *testing.T) {
 	get(t, client2, backendURL2, "")
 	if got := noSession.sawIntent[0]; got.State != pipeline.FactNoSession || !noSession.sawNil[0] {
 		t.Errorf("no session: LastIntent = %+v, Session nil = %v, want FactNoSession and nil", got, noSession.sawNil[0])
+	}
+}
+
+// hostsKeeper is a session archive that holds only InferenceHosts tables.
+type hostsKeeper map[string]pipeline.InferenceHosts
+
+func (hostsKeeper) Record(string, *pipeline.SessionEvent)                      {}
+func (k hostsKeeper) InferenceHosts(id string) (pipeline.InferenceHosts, bool) { return k[id], true }
+
+// TestPluginIdentity_HydratesTheHostsFact: a plugin gets the store's InferenceHosts table, which a
+// view cannot give. A session with an entry: the entry's table. A session with no entry: the
+// archive's table, which is the answer after a restart. No session: unknown.
+func TestPluginIdentity_HydratesTheHostsFact(t *testing.T) {
+	const sidA = "511754a6-63e2-47df-bb22-706dc165c344"
+	const sidB = "f4019b9f-3550-442f-9bc7-229809a3b486"
+	archived := pipeline.InferenceHosts{{Agent: "claude-code", Host: "glm.example.com:8443", Last: 7}}
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	store.AddRecorder(hostsKeeper{sidB: archived})
+	store.Append(sidA, pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+		Host: "ete.example.com", Client: pipeline.ParseUserAgent("claude-cli/2.1.0 (external, cli)"),
+		Inference: &pipeline.InferenceExtension{Model: "m"}})
+	probe, client, backendURL := newProbedProxy(t, store)
+
+	get(t, client, backendURL, sidA)
+	get(t, client, backendURL, sidB)
+	if len(probe.sawHosts) != 2 {
+		t.Fatalf("probe ran %d times, want 2", len(probe.sawHosts))
+	}
+	want := []pipeline.InferenceHosts{{{Agent: "claude-code", Host: "ete.example.com", Last: 1}}, archived}
+	for i, name := range []string{"an entry", "no entry"} {
+		if got := probe.sawHosts[i]; !probe.sawHostsKnown[i] || !reflect.DeepEqual(got, want[i]) {
+			t.Errorf("%s: InferenceHosts = %+v, %v; want %+v, true", name, got, probe.sawHostsKnown[i], want[i])
+		}
+	}
+
+	empty := session.New(5*time.Minute, 100, 0)
+	defer empty.Close()
+	empty.AddRecorder(hostsKeeper{"": archived})
+	noSession, client2, backendURL2 := newProbedProxy(t, empty)
+	get(t, client2, backendURL2, "")
+	if got, known := noSession.sawHosts[0], noSession.sawHostsKnown[0]; known || got != nil {
+		t.Errorf("no session: InferenceHosts = %+v, %v; want nil, false", got, known)
+	}
+	if got := noSession.sawIntent[0]; got.State != pipeline.FactNoSession {
+		t.Errorf("no session: LastIntent = %+v, want FactNoSession", got)
 	}
 }
 

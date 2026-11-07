@@ -149,6 +149,67 @@ func inferenceHostOf(e *model.SessionEvent) string {
 	return e.Host
 }
 
+// hostEvidence is what one event tells the session's InferenceHosts table. hostEvidenceOf
+// takes it from the event alone, in prepareAppend, above the store's lock: TurnOf scans the
+// event's messages.
+type hostEvidence struct {
+	ok       bool   // the event is evidence: an outbound inference request that is no aside turn
+	agent    string // model.AgentName(e.Client.Label()), as the router's serverOf compares it
+	unrouted bool   // CapturePath takes the request and it has no RequestedHost: the session ran unrouted
+}
+
+// hostEvidenceOf is the inference-router's serverOf without its config: the half of the rule
+// that does not need the router's servers. The router applies its servers when it reads the
+// table (model.InferenceHosts.LastServer), because a hot reload can change them.
+func hostEvidenceOf(e *model.SessionEvent) hostEvidence {
+	if !model.IsInferenceRequest(e) || TurnOf(e.Inference) == TurnAside {
+		return hostEvidence{}
+	}
+	_, captured := CapturePath(e.HTTPMethod, e.HTTPPath)
+	return hostEvidence{ok: true, agent: model.AgentName(e.Client.Label()), unrouted: captured && e.RequestedHost == ""}
+}
+
+// applyHost folds the evidence of the event with this host and seq into h, and returns h. It
+// changes h's elements in place. Every fold of an InferenceHosts table calls it, for
+// applyTitle's reason: a table in memory and a table in the archive must use one rule.
+func applyHost(h model.InferenceHosts, ev hostEvidence, host string, seq uint64) model.InferenceHosts {
+	if !ev.ok {
+		return h
+	}
+	for i := range h {
+		if h[i].Agent == ev.agent && h[i].Host == host {
+			h[i].Last = max(h[i].Last, seq)
+			if ev.unrouted {
+				h[i].LastUnrouted = max(h[i].LastUnrouted, seq)
+			}
+			return h
+		}
+	}
+	s := model.InferenceHostSeen{Agent: ev.agent, Host: host, Last: seq}
+	if ev.unrouted {
+		s.LastUnrouted = seq
+	}
+	return append(h, s)
+}
+
+// mergeHost folds the entry x into h by the highest seq of each field, and returns h. It changes
+// h's elements in place. Two tables of one session merge this way: each seq is one event, in one
+// table only, so the merge keeps each seq in one entry, as LastServer requires.
+func mergeHost(h model.InferenceHosts, x model.InferenceHostSeen) model.InferenceHosts {
+	for i := range h {
+		if h[i].Agent == x.Agent && h[i].Host == x.Host {
+			h[i].Last, h[i].LastUnrouted = max(h[i].Last, x.Last), max(h[i].LastUnrouted, x.LastUnrouted)
+			return h
+		}
+	}
+	return append(h, x)
+}
+
+// hostRuleVersion is the version of the InferenceHosts rule (hostEvidenceOf and applyHost) in a
+// persisted table. A table of another version decodes as unknown. Bump it when the rule changes:
+// TestHostRule_Golden fails until you do.
+const hostRuleVersion = 1
+
 // SummaryFold is ListSessions' per-session figures folded one event at a time and never shed:
 // the session archive's running summary for a session the store may no longer hold.
 //
@@ -187,7 +248,22 @@ type SummaryFold struct {
 	procs         map[string]ProcSpan
 	owner         string
 	lastRequestAt time.Time
+	// hosts is the session's InferenceHosts table, by the store's rule (applyHost). hostsUnknown
+	// is true when the fold resumed from history it has no table for.
+	hosts        model.InferenceHosts
+	hostsUnknown bool
 }
+
+// InferenceHosts is a copy of the fold's table, and false when the fold holds history it has no
+// table for.
+func (f *SummaryFold) InferenceHosts() (model.InferenceHosts, bool) {
+	return slices.Clone(f.hosts), !f.hostsUnknown
+}
+
+// ForgetInferenceHosts marks the fold's InferenceHosts table unknown, for a fold that holds
+// events of more than one session entry: the archive moves such a fold to a new id when it
+// cannot tell the entry's events from the history's. Unknown is sticky, as after a decode.
+func (f *SummaryFold) ForgetInferenceHosts() { f.hosts, f.hostsUnknown = nil, true }
 
 // NewSummaryFold returns an empty fold.
 func NewSummaryFold() *SummaryFold { return &SummaryFold{titleRank: rankNone} }
@@ -198,6 +274,7 @@ func (f *SummaryFold) Clone() *SummaryFold {
 	c.units = maps.Clone(f.units)
 	c.agents = slices.Clone(f.agents)
 	c.procs = maps.Clone(f.procs)
+	c.hosts = slices.Clone(f.hosts)
 	return &c
 }
 
@@ -229,6 +306,7 @@ func (f *SummaryFold) Add(sessionID string, e *model.SessionEvent) {
 	if e.Phase == model.SessionRequest && e.At.After(f.lastRequestAt) {
 		f.lastRequestAt = e.At
 	}
+	f.hosts = applyHost(f.hosts, p.host, e.Host, e.Seq)
 }
 
 // promptContext is the fold's CTX figure, nil when nothing can be said.
@@ -285,6 +363,26 @@ type foldJSON struct {
 	Procs         map[string]ProcSpan `json:"procs,omitempty"`
 	Owner         string              `json:"owner,omitempty"`
 	LastRequestAt time.Time           `json:"lastRequestAt,omitzero"`
+	// InferenceHosts is written only when the fold knows its table. Absent (a session.json from
+	// before it existed, or an unknown table), or of another hostRuleVersion, it decodes as unknown.
+	InferenceHosts *hostsDoc `json:"inferenceHosts,omitempty"`
+}
+
+// hostsDoc is SummaryFold's InferenceHosts table in session.json. V is the hostRuleVersion that
+// wrote it.
+type hostsDoc struct {
+	V     int                       `json:"v"`
+	Hosts []model.InferenceHostSeen `json:"hosts,omitempty"`
+}
+
+// UnmarshalJSON decodes a table of a shape it cannot read as one of no version: unknown, so the
+// session's other figures still load.
+func (d *hostsDoc) UnmarshalJSON(b []byte) error {
+	type plain hostsDoc
+	if err := json.Unmarshal(b, (*plain)(d)); err != nil {
+		*d = hostsDoc{}
+	}
+	return nil
 }
 
 // foldAgent is one sessionAgent in session.json.
@@ -319,6 +417,9 @@ func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 		Owner:            f.owner,
 		LastRequestAt:    f.lastRequestAt,
 	}
+	if !f.hostsUnknown {
+		j.InferenceHosts = &hostsDoc{V: hostRuleVersion, Hosts: f.hosts}
+	}
 	for _, a := range f.agents {
 		j.Agents = append(j.Agents, foldAgent{Name: a.name, Label: a.label, Unknown: !a.known})
 	}
@@ -344,9 +445,18 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		procs:           j.Procs,
 		owner:           model.CanonicalAgent(j.Owner),
 		lastRequestAt:   j.LastRequestAt,
+		hostsUnknown:    j.InferenceHosts == nil || j.InferenceHosts.V != hostRuleVersion,
 	}
 	if j.TitleRank != nil {
 		f.titleRank = *j.TitleRank
+	}
+	// Agent names in their canonical spelling, for the reason given for f.agents below. Two
+	// spellings of one agent become one entry.
+	if !f.hostsUnknown {
+		for _, x := range j.InferenceHosts.Hosts {
+			x.Agent = model.CanonicalAgent(x.Agent)
+			f.hosts = mergeHost(f.hosts, x)
+		}
 	}
 	// THE PERSISTED NAMES ARE FOLDED TO THEIR CANONICAL SPELLING HERE, at the one place a
 	// session.json's labels re-enter memory, because every reader of a restored fold reads

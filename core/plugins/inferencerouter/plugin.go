@@ -6,9 +6,9 @@
 // request addressed to a server's host is routed, and so is a routed agent's
 // inference request addressed anywhere else — its provider, Anthropic, OpenCode Zen,
 // Bob's gateway — which is captured: sent to the agent's server at the server's path
-// for its API format (see capturedPaths), by how the path the agent named ends.
-// Only a POST inference-parser read as inference is captured, since an agent's own
-// tools can POST to an API whose path happens to end the same way.
+// for its API format (see session.CapturePath), by how the path the agent named
+// ends. Only a POST inference-parser read as inference is captured, since an agent's
+// own tools can POST to an API whose path happens to end the same way.
 //
 // The choice is plugin config — servers by name, and agents by name to a server —
 // changed by editing it and letting the proxy hot-reload. Sessions are pinned in the
@@ -154,7 +154,7 @@ const (
 	// request renews it, so only a session idle this long forgets its server.
 	pinTTL = 30 * 24 * time.Hour
 
-	// historyLimit is how many of a session's archived events wentTo reads, newest
+	// historyLimit is how many of a session's archived events wentToView reads, newest
 	// first, before it stops looking: the archive is read from disk on the request
 	// path.
 	historyLimit = 2000
@@ -176,8 +176,8 @@ const (
 // The turn detail on a not-routed record, where the request's own turn decided an
 // unpinned Claude Code session.
 const (
-	turnContinuation = "continuation" // a conversation the router did not see begin
-	turnAside        = "aside"        // a one-shot or a subagent's request, which decides nothing
+	turnContinuation = session.TurnContinuation
+	turnAside        = session.TurnAside
 )
 
 // route is one configured server, ready to redirect to.
@@ -235,7 +235,8 @@ func New() *Router { return &Router{now: time.Now} }
 func (p *Router) SetStore(st storage.Store) { p.store = st }
 
 // SetHistory implements session.HistoryConsumer: the router reads a session's archived
-// events for where it went before this process (see wentTo).
+// events for where it went before this process, when the listener gives no table it can
+// vouch for (see wentTo).
 func (p *Router) SetHistory(h session.History) { p.history = h }
 
 func init() {
@@ -562,39 +563,30 @@ func (p *Router) pinnedToServer(pctx *pipeline.Context) bool {
 // agent holds no pin on, and whether the request decides the session's pin.
 func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string, captured bool) (server, turn string, decides bool) {
 	return decideUnpinned(choice, pctx.Extensions.Inference, captured, func() (string, bool) {
-		return p.wentTo(pctx.Session, agent)
+		return p.wentTo(pctx, agent)
 	})
 }
 
-// turnOf is a Claude Code request's place in its session's conversation, read from
-// inference-parser's parse: turnContinuation for the main conversation with earlier
-// assistant turns, turnAside for any other request, and "" for the main
-// conversation's opening turn or a request that states no role.
-//
-// The role is stated only by Claude Code's system prompt (see
-// pipeline.InferenceExtension.AgentRole), and only Claude Code is read this way:
-// another agent's earlier turns may have gone to another provider — OpenCode starts
-// on Zen and addresses a server later — so its turns say nothing about whether its
-// use of the servers began before this request. The main conversation carries its
-// tool manifest; the one-shots Claude Code interleaves with it, its title request,
-// auto mode's classifier and the permission monitor, carry none, and neither they
-// nor a subagent's requests say whether the session began now.
-func turnOf(ext *pipeline.InferenceExtension) string {
-	if ext == nil || ext.AgentRole == "" {
-		return ""
+// wentTo is the server the latest earlier inference request agent sent in the session
+// went to, by wentToView's rule. ok is false when there is no such request. When the
+// listener passed the store's InferenceHosts table and the store can vouch for it, the
+// table answers: it holds the evidence of every event the store and the archive kept,
+// trimmed and older ones too, and costs no archive read. Else wentToView scans the view
+// and the archive.
+func (p *Router) wentTo(pctx *pipeline.Context, agent string) (server string, ok bool) {
+	if hosts, known := pctx.InferenceHosts(); known {
+		return hosts.LastServer(agent, p.serverAt)
 	}
-	if ext.AgentRole != pipeline.AgentRoleMain || len(ext.Tools) == 0 {
-		return turnAside
-	}
-	for _, m := range ext.Messages {
-		if m.Role == "assistant" {
-			return turnContinuation
-		}
-	}
-	return ""
+	return p.wentToView(pctx.Session, agent)
 }
 
-// wentTo is the server the latest earlier inference request agent sent in the
+// serverAt is the server on host by the current config, as serverOf maps a row's Host.
+func (p *Router) serverAt(host string) (string, bool) {
+	server, ok := p.byHost[routerconfig.Key(host)]
+	return server, ok
+}
+
+// wentToView is the server the latest earlier inference request agent sent in the
 // session to a server's host went to; ok is false when there is no such request,
 // which is what makes a session new. The session's events in memory are read first,
 // then, where the process has a session archive, its archived events below the
@@ -603,7 +595,7 @@ func turnOf(ext *pipeline.InferenceExtension) string {
 //
 // Only an outbound request row a parser read as inference counts, and only one that
 // reached a server. A tunnel row, a count_tokens or a /v1/models request no parser
-// claimed, a side request (see turnOf), which decides nothing, and a denied request,
+// claimed, a side request (see session.TurnOf), which decides nothing, and a denied request,
 // which went nowhere, say nothing about where the conversation is; nor does a
 // request to any other host, which the router never routes (see the package doc).
 // Another agent's row says nothing about this agent's conversation, and following it
@@ -611,7 +603,7 @@ func turnOf(ext *pipeline.InferenceExtension) string {
 // bytes went, the server's host for a routed request, because the listener records
 // it after the redirect; RequestedHost, where the client asked to go, is not where
 // the session is.
-func (p *Router) wentTo(view *pipeline.SessionView, agent string) (server string, ok bool) {
+func (p *Router) wentToView(view *pipeline.SessionView, agent string) (server string, ok bool) {
 	// The guard on SessionID does not prove a view: a hand-built Context can set the id alone.
 	if view == nil {
 		return "", false
@@ -645,11 +637,11 @@ func (p *Router) wentTo(view *pipeline.SessionView, agent string) (server string
 	return "", false
 }
 
-// serverOf is the server e shows agent's session on, by the rule wentTo gives; ok is
+// serverOf is the server e shows agent's session on, by the rule wentToView gives; ok is
 // false when e is no evidence.
 func (p *Router) serverOf(e *pipeline.SessionEvent, agent string) (server string, ok bool) {
 	if e.Direction != pipeline.Outbound || e.Phase != pipeline.SessionRequest || e.Inference == nil ||
-		turnOf(e.Inference) == turnAside || pipeline.AgentName(e.Client.Label()) != agent {
+		session.TurnOf(e.Inference) == turnAside || pipeline.AgentName(e.Client.Label()) != agent {
 		return "", false
 	}
 	if server, ok = p.byHost[routerconfig.Key(e.Host)]; ok {
@@ -659,7 +651,7 @@ func (p *Router) serverOf(e *pipeline.SessionEvent, agent string) (server string
 	// server's host. One recorded where the agent sent it was made while the router
 	// was not routing the agent — before it was routed, or under observe — so the
 	// session ran unrouted, and moving it now would switch a running conversation.
-	if _, captured := capturePath(e.HTTPMethod, e.HTTPPath); captured && e.RequestedHost == "" {
+	if _, captured := session.CapturePath(e.HTTPMethod, e.HTTPPath); captured && e.RequestedHost == "" {
 		return "", true
 	}
 	return "", false

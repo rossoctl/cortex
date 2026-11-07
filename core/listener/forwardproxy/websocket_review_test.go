@@ -244,6 +244,25 @@ func TestResponsesWebSocket_TurnSessionIDIsTheViewID(t *testing.T) {
 	}
 }
 
+// Each turn gets the store's InferenceHosts table, which a view cannot give: the second turn sees
+// the row of the first.
+func TestResponsesWebSocket_EachTurnGetsTheHostsFact(t *testing.T) {
+	seen := &sessionLenRecorder{}
+	h := newWSHarness(t, config.ResponsesWebSocketsParse, seen)
+	c := h.dial(t, nil)
+	c.send(responseCreate("one"))
+	c.readUntil("response.completed")
+	c.send(responseCreate("two"))
+	c.readUntil("response.completed")
+	c.close()
+	h.events(t, codexSID, true)
+	seen.mu.Lock()
+	defer seen.mu.Unlock()
+	if n := len(seen.hosts); n < 2 || seen.hosts[n-1] != 1 {
+		t.Errorf("InferenceHosts rows seen = %v (-1: unknown); the second turn should see the first turn's row", seen.hosts)
+	}
+}
+
 // An origin's refusal is relayed whole: the handshake's deadline must not cut its body.
 func TestResponsesWebSocket_OriginRefusalBodyIsRelayedWhole(t *testing.T) {
 	h := newWSHarness(t, config.ResponsesWebSocketsParse)
@@ -295,6 +314,8 @@ type sessionLenRecorder struct {
 	got []int
 	// ids holds the view's id and pctx.SessionID at each request. A nil view gives "-".
 	ids [][2]string
+	// hosts is how many InferenceHosts rows pctx.InferenceHosts() gave at each request, -1 for unknown.
+	hosts []int
 }
 
 func (*sessionLenRecorder) Name() string { return "session-len-recorder" }
@@ -310,6 +331,12 @@ func (r *sessionLenRecorder) OnRequest(_ context.Context, pctx *pipeline.Context
 	}
 	r.got = append(r.got, n)
 	r.ids = append(r.ids, [2]string{id, pctx.SessionID})
+	h, known := pctx.InferenceHosts()
+	if !known {
+		r.hosts = append(r.hosts, -1)
+	} else {
+		r.hosts = append(r.hosts, len(h))
+	}
 	return pipeline.Action{Type: pipeline.Continue}
 }
 func (*sessionLenRecorder) OnResponse(context.Context, *pipeline.Context) pipeline.Action {

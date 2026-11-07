@@ -1274,9 +1274,12 @@ session facts. It does not read `pctx.Session.Events`.
   (`model.IsIntent`). ibac reads it.
 - `pctx.LastInference()` is the newest outbound inference request
   (`model.IsInferenceRequest`). sparc reads it in `mcp` mode.
+- `pctx.InferenceHosts()` is the session's `InferenceHosts` table and
+  `HostsKnown`. inference-router reads it. See
+  [The hosts fact](#the-hosts-fact).
 
-Each method returns a `pipeline.SessionFact`. Its `Event` is not nil only
-when its `State` is `FactPresent`.
+`LastIntent` and `LastInference` return a `pipeline.SessionFact`. Its
+`Event` is not nil only when its `State` is `FactPresent`.
 
 | State | Meaning |
 |---|---|
@@ -1314,9 +1317,57 @@ agree. When it returns a nil view, both facts are `FactNone`. A zero
 `SessionFacts` also reads as `FactNone`.
 
 - The forward proxy then gives plugins an empty view with the session id
-  (`sessionViewFor`), with `FactNone` facts.
+  (`sessionViewFor`), with `FactNone` facts. It keeps the table that
+  `ViewFacts` gave: with no entry, the archive's table.
 - ext_proc sets `pctx.Session` and the facts only with a view. With no view,
   the facts read `FactNoSession`.
+
+### The hosts fact
+
+`InferenceHosts` has one `InferenceHostSeen` row for each agent and host.
+The store and the archive fold the row from each outbound inference
+request that is not an aside turn (`session.TurnOf`):
+
+- `Agent` is `model.AgentName(e.Client.Label())`.
+- `Host` is `e.Host` as recorded: where the bytes went.
+- `Last` is the seq of the newest such request.
+- `LastUnrouted` is the seq of the newest one that `session.CapturePath`
+  takes and that has no `RequestedHost`.
+
+The table holds hosts, not server names, because a hot reload can change
+the servers. A reader maps each host to a server by its own config when it
+reads: `LastServer(agent, serverAt)` gives the newest evidence for `agent`
+by the reader's `serverAt` map.
+
+`HostsKnown` false means "do not use the table". The zero `SessionFacts`
+has `HostsKnown` false. So when a listener sets facts with no table,
+inference-router scans the session's history, as it does with no facts.
+
+`InferenceHosts` applies these rules, in order:
+
+1. `pctx.Session` is nil: `(nil, false)`, also when the listener set facts.
+2. The listener called `SetSessionFacts`: the table and `HostsKnown` that
+   it set.
+3. Else `(nil, false)`. A view cannot vouch for a table: it can be a
+   trimmed part of the session.
+
+`ViewFacts` gives a copy of the table. The archive is the store's
+`session.HostsKeeper`, and the store reads it when `ViewFacts` answers:
+
+- An entry numbered after earlier history: the keeper's table, merged with
+  the entry's own. `HostsKnown` is the keeper's.
+- An entry with no earlier history: the entry's own table. `HostsKnown` is
+  true.
+- No entry: the keeper's table over every event it holds under the id.
+- No keeper: the entry's own table, or none. `HostsKnown` is false when a
+  `SeqSeeder` holds history for the id.
+
+A `session.max_events` trim removes no row. The archive's table is
+unknown in these cases:
+
+- A `session.json` from before the table, or of another rule version.
+- A `session.json` with segments and no summary.
+- A rename that the archive cannot split.
 
 ## Registering a plugin
 

@@ -1,0 +1,37 @@
+{
+  "v": 1,
+  "hosts": [
+    {
+      "agent": "claude-code",
+      "host": "glm.example.com:8443",
+      "last": 1
+    },
+    {
+      "agent": "claude-code",
+      "host": "ete.example.com",
+      "last": 4
+    },
+    {
+      "agent": "opencode",
+      "host": "opencode.ai",
+      "last": 6,
+      "lastUnrouted": 5
+    },
+    {
+      "agent": "curl",
+      "host": "127.0.0.1:11434",
+      "last": 8,
+      "lastUnrouted": 7
+    },
+    {
+      "agent": "unknown",
+      "host": "ete.example.com",
+      "last": 12
+    },
+    {
+      "agent": "bob",
+      "host": "glm.example.com:8443",
+      "last": 13
+    }
+  ]
+}

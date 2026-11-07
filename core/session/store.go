@@ -7,6 +7,7 @@ package session
 
 import (
 	"log/slog"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -175,6 +176,11 @@ type entry struct {
 	// inferenceHost's class: a trim does not change them, and ViewFacts gives FactNone when the
 	// event left.
 	lastIntent, lastInference uint64
+
+	// hosts is the InferenceHosts table over this entry's events (applyHost). A LATEST-VALUE
+	// FOLD, in inferenceHost's class: a trim sheds nothing from it. ViewFacts adds the history's
+	// table from the HostsKeeper.
+	hosts model.InferenceHosts
 }
 
 // MaxSessionIDLen is the longest session ID the store keeps intact; longer ids
@@ -382,6 +388,8 @@ type appendPrep struct {
 	titleRank int
 	titleText string
 	agentName string
+	// host is the event's evidence for the session's InferenceHosts table; see hostEvidenceOf.
+	host hostEvidence
 	// capture is the event's request capture, for CaptureRecorders only; see AppendCapture.
 	capture *model.RequestCapture
 }
@@ -430,7 +438,8 @@ func prepareAppend(event *model.SessionEvent) appendPrep {
 	// Only the candidate's EXTRACTION is hoisted, which is the expensive half; the rank comparison
 	// and sanitizeTitle both stay under the lock, for the reason given at the fold site below.
 	titleRank, titleText := titleCandidate(event)
-	return appendPrep{money: money, titleRank: titleRank, titleText: titleText, agentName: event.Client.AffinityName()}
+	return appendPrep{money: money, titleRank: titleRank, titleText: titleText, agentName: event.Client.AffinityName(),
+		host: hostEvidenceOf(event)}
 }
 
 // appendLocked is append's critical section. s.mu must be held; prep is what
@@ -549,6 +558,9 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event model.SessionEve
 	if model.IsInferenceRequest(&event) {
 		sess.lastInference = event.Seq
 	}
+	// A loop over the session's 1 to 3 (agent, host) pairs. The message scan was done above the
+	// lock, in prepareAppend.
+	sess.hosts = applyHost(sess.hosts, prep.host, event.Host, event.Seq)
 	sess.procs = applyProcs(sess.procs, sessionID, &event)
 	sess.owner = applyOwner(sess.owner, sessionID, agentName, &event)
 	if event.Phase == model.SessionRequest && event.At.After(sess.lastRequestAt) {
@@ -741,15 +753,43 @@ func (s *Store) viewLocked(sessionID string) (*model.SessionView, *entry) {
 // ViewFacts is View and the session's facts, read under one lock, so the two agree. Each
 // present fact's Event points into the returned view, as SessionView.LastIntent does. When View
 // returns nil (no entry, or an expired one), the view is nil and both facts are FactNone.
+//
+// The InferenceHosts table is a copy:
+//   - With an entry numbered after earlier history: the HostsKeeper's table now, merged with
+//     the entry's own. HostsKnown is the keeper's.
+//   - With an entry and no earlier history: the entry's own table. HostsKnown is true.
+//   - With no entry: the keeper's table over every event it holds under the id.
+//   - With no keeper: the entry's own table, or none. HostsKnown is false when a SeqSeeder
+//     holds history for the id.
+//
+// THE KEEPER IS READ NOW, NOT WHEN THE ENTRY WAS CREATED. The history's last events can still be
+// in the archive's queue when the entry is created (an eviction, then the next request), and a
+// read now has them once the writer writes them. Prior is not used: it answers only after the
+// writer takes the entry's first event.
 func (s *Store) ViewFacts(sessionID string) (*model.SessionView, model.SessionFacts) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	v, sess := s.viewLocked(sessionID)
 	if v == nil {
-		return nil, model.SessionFacts{LastIntent: model.SessionFact{State: model.FactNone}, LastInference: model.SessionFact{State: model.FactNone}}
+		hosts, known := s.keeperHostsLocked(sessionID)
+		return nil, model.SessionFacts{LastIntent: model.SessionFact{State: model.FactNone}, LastInference: model.SessionFact{State: model.FactNone},
+			InferenceHosts: slices.Clone(hosts), HostsKnown: known}
 	}
-	return v, model.SessionFacts{LastIntent: factAt(v.Events, sess.lastIntent), LastInference: factAt(v.Events, sess.lastInference)}
+	// The keeper's table also holds the entry's events that it wrote. The merge takes the highest
+	// seq of each pair, and a seq is one event under the id, so nothing counts twice.
+	var hosts model.InferenceHosts
+	known := true
+	if sess.after > 0 {
+		var kept model.InferenceHosts
+		kept, known = s.keeperHostsLocked(sessionID)
+		hosts = slices.Clone(kept)
+	}
+	for _, x := range sess.hosts {
+		hosts = mergeHost(hosts, x)
+	}
+	return v, model.SessionFacts{LastIntent: factAt(v.Events, sess.lastIntent), LastInference: factAt(v.Events, sess.lastInference),
+		InferenceHosts: hosts, HostsKnown: known}
 }
 
 // factAt finds the event with this seq in events, which rise in seq. A seq of 0, or one that a
