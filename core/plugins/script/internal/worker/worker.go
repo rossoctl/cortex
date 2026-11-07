@@ -11,6 +11,11 @@
 //     an object with that id. Every other line is the script's own output — a
 //     print, a library's warning — and is returned with the reply as Logs, so
 //     stray output cannot corrupt the exchange.
+//   - A Call can hold parts of the message back. Their names are in the
+//     message's "more" list. Before it replies, the child can ask for one with
+//     {"id": N, "fetch": name}, and gets {"id": N, "fetch": name, "value": ...}
+//     on its stdin. So a script that never reads a large part costs nothing for
+//     it on either side of the pipe.
 //   - Calls are serialised: a script is a plain read-reply loop, and its state
 //     cannot race.
 //   - A script that takes longer than the call timeout to answer a message it was
@@ -29,14 +34,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 )
 
 // Protocol is the handshake version this package speaks.
-const Protocol = 1
+const Protocol = 2
 
 // Defaults for a Config that leaves them zero.
 const (
@@ -208,8 +215,9 @@ func (w *child) Handshake() Handshake {
 }
 
 // Call sends msg with a fresh "id" and returns the child's reply to it. msg must
-// marshal to a JSON object.
-func (w *Worker) Call(ctx context.Context, msg map[string]any) (Reply, error) {
+// marshal to a JSON object. more holds the parts the child gets only when it
+// fetches them; each is encoded at that time.
+func (w *Worker) Call(ctx context.Context, msg, more map[string]any) (Reply, error) {
 	queued, cancel := context.WithTimeout(ctx, w.callTimeout)
 	defer cancel()
 	if err := w.lock(queued); err != nil {
@@ -226,8 +234,12 @@ func (w *Worker) Call(ctx context.Context, msg map[string]any) (Reply, error) {
 	w.nextID++
 	id := w.nextID
 	msg["id"] = id
+	if len(more) > 0 {
+		msg["more"] = slices.Sorted(maps.Keys(more))
+	}
 	line, err := json.Marshal(msg)
 	delete(msg, "id")
+	delete(msg, "more")
 	if err != nil {
 		w.unlock()
 		return Reply{}, fmt.Errorf("worker: encode: %w", err)
@@ -236,12 +248,21 @@ func (w *Worker) Call(ctx context.Context, msg map[string]any) (Reply, error) {
 		reply Reply
 		err   error
 	}
+	// The goroutine outlives a caller that gives up, but more holds the caller's
+	// live request, which the plugins after this one go on to change. So a fetch
+	// that comes after Call has returned is answered with null.
+	var held sync.Mutex
+	answer := func(name string) ([]byte, error) {
+		held.Lock()
+		defer held.Unlock()
+		return json.Marshal(map[string]any{"id": id, "fetch": name, "value": more[name]})
+	}
 	ch := make(chan result, 1)
 	go func() {
 		defer w.unlock()
 		sctx, cancel := context.WithTimeout(context.Background(), w.callTimeout)
 		defer cancel()
-		reply, err := w.proc.call(sctx, append(line, '\n'), id)
+		reply, err := w.proc.call(sctx, append(line, '\n'), id, answer)
 		if err != nil {
 			w.fail(err)
 		} else {
@@ -253,6 +274,9 @@ func (w *Worker) Call(ctx context.Context, msg map[string]any) (Reply, error) {
 	case r := <-ch:
 		return r.reply, r.err
 	case <-ctx.Done():
+		held.Lock()
+		more = nil
+		held.Unlock()
 		return Reply{}, fmt.Errorf("worker: %s gave up waiting for a reply: %w", w.name, ctx.Err())
 	}
 }
@@ -409,11 +433,46 @@ func spawn(ctx context.Context, cfg Config, name string) (*process, Handshake, e
 	return p, hs, nil
 }
 
-func (p *process) call(ctx context.Context, line []byte, id uint64) (Reply, error) {
+// call sends line and returns the child's reply to it. answer encodes the
+// answer to a fetch of one part.
+func (p *process) call(ctx context.Context, line []byte, id uint64, answer func(name string) ([]byte, error)) (Reply, error) {
 	var reply Reply
-	// The write is bounded by ctx like the read: a script that is not reading fills
-	// the pipe, and a body larger than its buffer would otherwise block here for
-	// good. Killing the process is what ends a blocked write.
+	if err := p.write(ctx, line); err != nil {
+		return reply, err
+	}
+	for {
+		got, err := p.readLine(ctx)
+		if err != nil {
+			return reply, err
+		}
+		var head struct {
+			ID    *uint64 `json:"id"`
+			Fetch *string `json:"fetch"`
+		}
+		if json.Unmarshal(got, &head) != nil || head.ID == nil || *head.ID != id {
+			reply.Logs = appendLog(reply.Logs, got)
+			continue
+		}
+		if head.Fetch == nil {
+			reply.Line = got
+			return reply, nil
+		}
+		// A name the call does not hold gets null, which the SDK reads as absent.
+		frame, err := answer(*head.Fetch)
+		if err != nil {
+			return reply, fmt.Errorf("worker: encode %s: %w", *head.Fetch, err)
+		}
+		if err := p.write(ctx, append(frame, '\n')); err != nil {
+			return reply, err
+		}
+	}
+}
+
+// write sends line to the child. The write is bounded by ctx like the read: a
+// script that is not reading fills the pipe, and a body larger than its buffer
+// would otherwise block here for good. Killing the process is what ends a blocked
+// write.
+func (p *process) write(ctx context.Context, line []byte) error {
 	wrote := make(chan error, 1)
 	go func() {
 		_, err := p.stdin.Write(line)
@@ -422,26 +481,13 @@ func (p *process) call(ctx context.Context, line []byte, id uint64) (Reply, erro
 	select {
 	case err := <-wrote:
 		if err != nil {
-			return reply, fmt.Errorf("worker: write: %w", err)
+			return fmt.Errorf("worker: write: %w", err)
 		}
+		return nil
 	case <-ctx.Done():
 		p.killGroup()
 		<-wrote
-		return reply, fmt.Errorf("worker: script did not read its input in time: %w", ctx.Err())
-	}
-	for {
-		got, err := p.readLine(ctx)
-		if err != nil {
-			return reply, err
-		}
-		var head struct {
-			ID *uint64 `json:"id"`
-		}
-		if json.Unmarshal(got, &head) == nil && head.ID != nil && *head.ID == id {
-			reply.Line = got
-			return reply, nil
-		}
-		reply.Logs = appendLog(reply.Logs, got)
+		return fmt.Errorf("worker: script did not read its input in time: %w", ctx.Err())
 	}
 }
 

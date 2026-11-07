@@ -7,8 +7,8 @@ import (
 )
 
 // Kind IS the authority for the PresentKinds bit layout, and usage exports a copy of it
-// because nothing outside core/plugins can import this package. This is the one place both
-// sets are visible, so it is the only place the copy can be checked.
+// because nothing outside core can import this package. This test checks the copy against
+// Kind.
 //
 // WHY THE COPY EXISTS AT ALL. usage.Counts.PresentKinds carries these bits on the wire and in
 // the cost ledger, and its consumers — agentop's `cost` command, agentop's spend strip — live in

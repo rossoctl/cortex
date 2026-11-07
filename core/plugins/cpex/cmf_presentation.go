@@ -9,8 +9,8 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"github.com/rossoctl/cortex/core/internal/parsercommon"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/plugins/internal/parsercommon"
 )
 
 // Violation codes for requests the plugin refuses to present to CPEX.

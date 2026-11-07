@@ -154,7 +154,7 @@ func classifyBrokenStream(pctx *pipeline.Context, r *http.Request, resp *http.Re
 // isEventStream — and with the wrong header, this response would never reach
 // handleStreamingResponse at all, forcing the buffered path (and losing live delivery to
 // the client) regardless of what any plugin declares. inference-parser's own dispatch has
-// a second, independent content-sniff fallback (carriesSSEFraming) for the case where the
+// a second, independent content-sniff fallback (inference.CarriesSSEFraming) for the case where the
 // buffered path is still what runs — this is the other half, letting the response stream
 // live in the first place when the one plugin that cares (inference-parser) supports it.
 //

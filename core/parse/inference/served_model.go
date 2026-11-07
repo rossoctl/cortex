@@ -1,10 +1,10 @@
-package inferenceparser
+package inference
 
 import (
 	"net/http"
 	"strings"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // servedModelHeader is the header a LiteLLM gateway names its deployment's model in,
@@ -23,17 +23,17 @@ const maxServedModelLen = 256
 // header has named one. A provider API can answer with a dated version of the name
 // it was asked for; a gateway usually repeats the requested name, which servedModel
 // then drops as no news.
-func noteBodyModel(ext *pipeline.InferenceExtension, model string) {
+func noteBodyModel(ext *model.InferenceExtension, model string) {
 	if ext == nil || model == "" || ext.ServedModel != "" {
 		return
 	}
 	ext.ServedModel = cleanServedModel(model)
 }
 
-// settleServedModel decides ServedModel at the end of a response: the gateway
+// SettleServedModel decides ServedModel at the end of a response: the gateway
 // header when there is one, else what noteBodyModel kept, and nothing when the
 // result only repeats Model.
-func settleServedModel(ext *pipeline.InferenceExtension, respHeaders http.Header) {
+func SettleServedModel(ext *model.InferenceExtension, respHeaders http.Header) {
 	if ext == nil {
 		return
 	}
@@ -54,7 +54,7 @@ func anthropicBeta(h http.Header) string {
 // cleanServedModel makes an upstream-supplied name safe to store and print: control
 // runes replaced, length capped.
 func cleanServedModel(s string) string {
-	s = pipeline.SanitizeControlRunes(s)
+	s = model.SanitizeControlRunes(s)
 	if len(s) > maxServedModelLen {
 		s = strings.ToValidUTF8(s[:maxServedModelLen], "") // the cut may split a rune
 	}

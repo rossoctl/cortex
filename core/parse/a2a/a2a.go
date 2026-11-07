@@ -1,49 +1,22 @@
-package a2aparser
+// Package a2a parses A2A JSON-RPC 2.0 requests and responses from plain values.
+// It computes no cost and does not use the plugin engine (#1503).
+// The a2a-parser plugin is a thin wrapper over it.
+package a2a
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
 
-	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/plugins"
-	"github.com/rossoctl/cortex/core/plugins/internal/parsercommon"
+	"github.com/rossoctl/cortex/core/internal/parsercommon"
+	"github.com/rossoctl/cortex/core/model"
 )
 
-// A2AParser parses A2A JSON-RPC 2.0 request bodies and populates
-// pctx.Extensions.A2A with the parsed method, session ID, message parts,
-// and role for downstream policy plugins (e.g., guardrails).
-type A2AParser struct{}
-
-func NewA2AParser() *A2AParser { return &A2AParser{} }
-
-func init() {
-	plugins.RegisterPlugin("a2a-parser", func() pipeline.Plugin { return NewA2AParser() })
-}
-
-func (p *A2AParser) Name() string { return "a2a-parser" }
-
-func (p *A2AParser) Capabilities() pipeline.PluginCapabilities {
-	return pipeline.PluginCapabilities{
-		ReadsBody:   true,
-		Description: "Parses A2A messages into pctx.Extensions.A2A for downstream plugins.",
-	}
-}
-
-func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
-	if ext := parseA2ARequest(pctx.Path, pctx.Headers, pctx.Body); ext != nil {
-		pctx.Extensions.A2A = ext
-		pctx.Observe("matched_" + ext.Method)
-	}
-	return pipeline.Action{Type: pipeline.Continue}
-}
-
-// parseA2ARequest parses one A2A request from plain values. It returns nil
+// ParseRequest parses one A2A request from plain values. It returns nil
 // when the parser does not claim the request.
-func parseA2ARequest(path string, headers http.Header, rawBody []byte) *pipeline.A2AExtension {
+func ParseRequest(path string, headers http.Header, rawBody []byte) *model.A2AExtension {
 	// Parse the bytes as sent after any zstd Content-Encoding, as
 	// inference-parser does, so a compressed call is claimed rather than
 	// passed through unparsed.
@@ -68,7 +41,7 @@ func parseA2ARequest(path string, headers http.Header, rawBody []byte) *pipeline
 	if isObject {
 		if err := json.Unmarshal(body, &rpc); err != nil {
 			slog.Debug("a2a-parser: invalid JSON-RPC", "error", err, "bodyLen", len(body),
-				"path", pipeline.SanitizeLogValue(path))
+				"path", model.SanitizeLogValue(path))
 			return nil
 		}
 	}
@@ -83,12 +56,12 @@ func parseA2ARequest(path string, headers http.Header, rawBody []byte) *pipeline
 	// it, agentop showed a phantom a2a-parser match on both MCP and inference
 	// traffic. mcp-parser has the mirror guard for its own namespace.
 	if !isObject || !isA2AMethod(rpc.Method) {
-		slog.Debug("a2a-parser: not an A2A-namespace method, skipping", "method", pipeline.SanitizeLogValue(rpc.Method), "path", pipeline.SanitizeLogValue(path),
+		slog.Debug("a2a-parser: not an A2A-namespace method, skipping", "method", model.SanitizeLogValue(rpc.Method), "path", model.SanitizeLogValue(path),
 			"bodyLen", len(body))
 		return nil
 	}
 
-	ext := &pipeline.A2AExtension{
+	ext := &model.A2AExtension{
 		Method:   rpc.Method,
 		RPCID:    rpc.ID,
 		IsAction: isA2AAction(rpc.Method),
@@ -138,103 +111,37 @@ func parseA2ARequest(path string, headers http.Header, rawBody []byte) *pipeline
 		ext.TaskID = rpc.StringParam("taskId")
 	}
 
-	slog.Info("a2a-parser", "method", pipeline.SanitizeLogValue(rpc.Method))
+	slog.Info("a2a-parser", "method", model.SanitizeLogValue(rpc.Method))
 	slog.Debug("a2a-parser: extracted",
-		"method", rpc.Method,
-		"sessionId", ext.SessionID,
-		"role", ext.Role,
-		"messageId", ext.MessageID,
+		"method", model.SanitizeLogValue(rpc.Method),
+		"sessionId", model.SanitizeLogValue(ext.SessionID),
+		"role", model.SanitizeLogValue(ext.Role),
+		"messageId", model.SanitizeLogValue(ext.MessageID),
 		"parts", len(ext.Parts),
 	)
 	for i, part := range ext.Parts {
-		slog.Debug("a2a-parser: part", "index", i, "kind", part.Kind, "content", parsercommon.Truncate(part.Content, parsercommon.DebugBodyMax))
+		slog.Debug("a2a-parser: part", "index", i, "kind", model.SanitizeLogValue(part.Kind),
+			"content", model.SanitizeLogValue(parsercommon.Truncate(part.Content, parsercommon.DebugBodyMax)))
 	}
 	return ext
 }
 
-// OnResponse is the legacy buffered-path response hook. Because this
-// plugin implements StreamingResponder, pipeline.RunResponse skips it
-// and OnResponseFrame is the dispatch path under all listeners — this
-// method is unreachable from a normal listener. Kept for tests and
-// hypothetical pipelines that call OnResponse directly without going
-// through RunResponse, with a defensive guard against re-recording if
-// the streaming path has already populated state.
-func (p *A2AParser) OnResponse(_ context.Context, pctx *pipeline.Context) pipeline.Action {
-	if pctx.Extensions.A2A == nil {
-		return pipeline.Action{Type: pipeline.Continue}
-	}
-	ext := pctx.Extensions.A2A
-	// If OnResponseFrame already finalized (any response field set),
-	// don't re-record on the buffered path.
-	if ext.FinalStatus != "" || ext.Artifact != "" || ext.ErrorMessage != "" {
-		return pipeline.Action{Type: pipeline.Continue}
-	}
-	if len(pctx.ResponseBody) == 0 {
-		pctx.Skip("no_response_body")
-		return pipeline.Action{Type: pipeline.Continue}
-	}
-
-	// Capture the server-assigned contextId — but only when the request
-	// didn't already carry one. Overwriting would split the inbound
-	// request and response events into different session buckets.
+// ParseResponse folds one A2A response into ext: a whole message/send or
+// message/stream body, or one message/stream SSE frame. Call it once per
+// frame to fold a stream. It sets the final status, the artifact text, the
+// error message and the task id, and it keeps the server's contextId only
+// when ext has no session id yet: overwriting it would split the request and
+// response events into different session buckets.
+// The summary and the session-id capture write disjoint fields, so their order does not matter.
+func ParseResponse(body []byte, ext *model.A2AExtension) {
+	extractResponseSummary(body, ext)
 	if ext.SessionID == "" {
-		if sid := extractSessionID(pctx.ResponseBody); sid != "" {
+		if sid := extractSessionID(body); sid != "" {
 			ext.SessionID = sid
 		}
 	}
-
-	extractResponseSummary(pctx.ResponseBody, ext)
-	logA2AFinalized(ext)
-	pctx.Observe("matched_" + ext.Method + "_response")
-	return pipeline.Action{Type: pipeline.Continue}
 }
 
-// OnResponseFrame folds each message/stream SSE event into the
-// running A2A response state. Final-status and artifact text are
-// accumulated across frames; the public extension fields are
-// finalized on last=true so the session event sees a single
-// consistent snapshot.
-//
-// application/json (message/send) responses are delivered as a
-// single last=true frame carrying the full envelope — the same path
-// extracts the response summary from it.
-func (p *A2AParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, frame []byte, last bool) pipeline.Action {
-	if pctx.Extensions.A2A == nil {
-		return pipeline.Action{Type: pipeline.Continue}
-	}
-	ext := pctx.Extensions.A2A
-
-	// Per-frame fold. message/stream events arrive one per frame;
-	// message/send arrives as a single last=true frame. A buffered
-	// message/stream (a body-writing plugin is in the chain) arrives as
-	// one last=true frame that holds the whole SSE body.
-	if len(frame) > 0 {
-		extractResponseSummary(frame, ext)
-		// Capture session id from any frame if the request didn't carry one.
-		if ext.SessionID == "" {
-			if sid := extractSessionID(frame); sid != "" {
-				ext.SessionID = sid
-			}
-		}
-	}
-
-	if last {
-		// Empty stream and we never recorded anything on the request
-		// side — record a Skip so the response row is paired with the
-		// request row in agentop.
-		if ext.FinalStatus == "" && ext.Artifact == "" && ext.ErrorMessage == "" {
-			pctx.Skip("no_response_body")
-			return pipeline.Action{Type: pipeline.Continue}
-		}
-		logA2AFinalized(ext)
-		pctx.Observe("matched_" + ext.Method + "_response")
-	}
-	return pipeline.Action{Type: pipeline.Continue}
-}
-
-// logA2AFinalized emits the operator-facing debug log once a response
-// is finalized — shared by OnResponse and OnResponseFrame so the two
-// paths log identically.
 // maxArtifactBytes caps the accumulated A2A artifact text recorded
 // for observability. Long agent runs can stream many artifact-update
 // events; without a cap, ext.Artifact would grow unbounded across
@@ -259,19 +166,10 @@ func appendCapped(dst, s string) string {
 	return dst + s[:remaining] + truncMarker
 }
 
-func logA2AFinalized(ext *pipeline.A2AExtension) {
-	slog.Debug("a2a-parser: response parsed",
-		"sessionId", ext.SessionID,
-		"finalStatus", ext.FinalStatus,
-		"artifactLen", len(ext.Artifact),
-		"error", ext.ErrorMessage,
-	)
-}
-
 // extractResponseSummary parses the response body for final status, artifact text,
 // and error message. Supports both SSE streams (message/stream) and plain JSON-RPC
 // responses (message/send).
-func extractResponseSummary(body []byte, ext *pipeline.A2AExtension) {
+func extractResponseSummary(body []byte, ext *model.A2AExtension) {
 	// Plain JSON-RPC (message/send response)
 	if json.Valid(body) {
 		foldResponse(body, ext)
@@ -286,14 +184,14 @@ func extractResponseSummary(body []byte, ext *pipeline.A2AExtension) {
 // call it, so they agree. A result with a task state (a Task or a
 // status-update) goes to extractSendResponse. The last state wins, final
 // or not. Other results go to extractStreamEvent.
-func foldResponse(data []byte, ext *pipeline.A2AExtension) {
+func foldResponse(data []byte, ext *model.A2AExtension) {
 	if !extractSendResponse(data, ext) {
 		extractStreamEvent(data, ext)
 	}
 }
 
 // extractSendResponse handles message/send responses (single JSON-RPC result).
-func extractSendResponse(body []byte, ext *pipeline.A2AExtension) bool {
+func extractSendResponse(body []byte, ext *model.A2AExtension) bool {
 	var resp struct {
 		Result struct {
 			Status struct {
@@ -349,12 +247,12 @@ func extractSendResponse(body []byte, ext *pipeline.A2AExtension) bool {
 
 // extractStreamResponse handles message/stream SSE responses (the
 // buffered path). For each "data:" line it folds a single event into
-// the extension via foldResponse, as OnResponseFrame does for a frame.
+// the extension via foldResponse, as ParseResponse does for one frame.
 //
 // parsercommon.NormalizeSSE first: a leading BOM or CR-only line endings are
 // wire-legal SSE, and a raw LF split reads such a body as one unparseable
 // line — leaving the extension empty and the exchange unclassified (#1567).
-func extractStreamResponse(body []byte, ext *pipeline.A2AExtension) {
+func extractStreamResponse(body []byte, ext *model.A2AExtension) {
 	for _, line := range bytes.Split(parsercommon.NormalizeSSE(body), []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if !bytes.HasPrefix(line, []byte("data:")) {
@@ -371,7 +269,7 @@ func extractStreamResponse(body []byte, ext *pipeline.A2AExtension) {
 // extractStreamEvent folds one A2A result that has no task state (an
 // artifact-update event or a Message) into the extension's running
 // response state. foldResponse calls it for both response paths.
-func extractStreamEvent(data []byte, ext *pipeline.A2AExtension) {
+func extractStreamEvent(data []byte, ext *model.A2AExtension) {
 	var event struct {
 		Result struct {
 			Kind     string `json:"kind"`
@@ -465,8 +363,8 @@ func sessionIDFromJSON(data []byte) string {
 	return resp.Result.SessionID
 }
 
-func parseA2AParts(rawParts []any) []pipeline.A2APart {
-	parts := make([]pipeline.A2APart, 0, len(rawParts))
+func parseA2AParts(rawParts []any) []model.A2APart {
+	parts := make([]model.A2APart, 0, len(rawParts))
 	for _, raw := range rawParts {
 		partMap, ok := raw.(map[string]any)
 		if !ok {
@@ -493,7 +391,7 @@ func parseA2AParts(rawParts []any) []pipeline.A2APart {
 				}
 			}
 		}
-		parts = append(parts, pipeline.A2APart{Kind: kind, Content: content})
+		parts = append(parts, model.A2APart{Kind: kind, Content: content})
 	}
 	return parts
 }

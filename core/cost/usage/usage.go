@@ -291,13 +291,13 @@ type Counts struct {
 //
 // EXPORTED, AND HERE, because PresentKinds is where the layout is documented and this is the
 // package every consumer of it already imports. The authority is
-// core/plugins/internal/parsercommon.Kind, which cannot be imported from outside
-// core/plugins — so before these existed, every reader spelled the bits itself: agentop's
+// core/internal/parsercommon.Kind, which cannot be imported from outside
+// core — so before these existed, every reader spelled the bits itself: agentop's
 // `cost` command, agentop's spend strip, and this package's own tests as a bare `1 | 8`. Three
 // uncoordinated copies of a wire format, with nothing comparing them.
 //
-// TestKindBits_MatchTheParserThatProducesThem, which lives with parsercommon because that is
-// the one place both sets are visible, is what pins these to it.
+// TestKindBits_MatchTheParserThatProducesThem, which lives with parsercommon, is what pins
+// these to it.
 //
 // WIRE FORMAT: they are serialised in PresentKinds and stored in the cost ledger, so they
 // cannot be renumbered whatever any Go identifier is called.

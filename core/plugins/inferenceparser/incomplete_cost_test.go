@@ -28,7 +28,7 @@ func anthropicStreamCtx() *pipeline.Context {
 	pctx := &pipeline.Context{
 		Direction:       pipeline.Outbound,
 		Host:            "gw.internal",
-		Path:            anthropicMessagesPath,
+		Path:            "/v1/messages",
 		ResponseHeaders: h,
 		Extensions: pipeline.Extensions{Inference: &pipeline.InferenceExtension{
 			Model:  "claude-opus-5",
@@ -160,7 +160,7 @@ const openAICompleteSSE = openAITruncatedSSE +
 //
 // pricing.IncompleteReason asks whether the RESPONSE arrived as a stream, because a counted output
 // on a stream is a running total and on a whole body is final. Only the per-frame path answered:
-// StreamedResponse is set by getOrCreateStreamState, which a buffered dispatch never reaches — so
+// StreamedResponse is set by inference.Stream.Fold, which a buffered dispatch never reaches — so
 // the SAME BYTES were flagged as a floor when delivered frame by frame and published as an exact
 // figure when delivered whole. Both proxies buffer an event-stream response whenever a plugin in
 // the chain declares WritesResponseBody, so the unflagged path is the one a rewriting chain takes.

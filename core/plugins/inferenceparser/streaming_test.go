@@ -149,3 +149,25 @@ func TestInferenceParser_OnResponseFrame_StreamAssemblesToolCalls(t *testing.T) 
 		t.Errorf("FinishReason = %q, want tool_calls", ext.FinishReason)
 	}
 }
+
+// A stream of only empty mid-stream frames is still a stream. StreamedResponse must be
+// set, because pricing.IncompleteReason reads it to decide whether an output tally is
+// final. The mid-stream arm must call Stream.Fold for an empty frame too: a length guard
+// there leaves no stream state, and the terminal frame then reads as a buffered body.
+func TestInferenceParser_OnResponseFrame_EmptyFramesMarkStreamed(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{
+		Path: "/v1/chat/completions",
+		Extensions: pipeline.Extensions{
+			Inference: &pipeline.InferenceExtension{Model: "m"},
+		},
+	}
+	pctx.SetCurrentPlugin("inference-parser", pipeline.InvocationPhaseResponse)
+	p.OnResponseFrame(context.Background(), pctx, nil, false)
+	p.OnResponseFrame(context.Background(), pctx, []byte{}, false)
+	p.OnResponseFrame(context.Background(), pctx, nil, true)
+	pctx.ClearCurrentPlugin()
+	if !pctx.Extensions.Inference.StreamedResponse {
+		t.Error("StreamedResponse = false after only empty mid-stream frames, want true")
+	}
+}

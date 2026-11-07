@@ -197,6 +197,69 @@ func TestTaskNotificationIsAReturn(t *testing.T) {
 	}
 }
 
+// A subagent's tool that never got a result ends, lost, when the notification says the run
+// ended: a tool asked for beside the hand-back, or one running when the agent was stopped. Left
+// open, it drew to now, and a laptop closed overnight drew as 8.8 hours of tool time.
+func TestToolOfAnEndedSubagentIsLost(t *testing.T) {
+	for _, status := range []string{"completed", "killed"} {
+		var r rec
+		r.turn("", 0, 1, []pipeline.InferenceMessage{user("go")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "s1", Name: "Agent"})
+		r.turn("b2", 1, 1, []pipeline.InferenceMessage{user("p")}, nil, "tool_use",
+			pipeline.InferenceToolCall{ID: "edit", Name: "Edit"}, pipeline.InferenceToolCall{ID: "hb", Name: "SubagentHandback"})
+		r.turn("", 5, 1, []pipeline.InferenceMessage{user("go"),
+			user("<task-notification>\n<task-id>b2</task-id>\n<status>" + status + "</status>")}, nil, "end_turn")
+		if x := findTool(t, Build("s", r.events, time.Time{}), "edit"); !x.Lost || x.End == nil || !x.End.Equal(x.Start) {
+			t.Errorf("%s: edit = %+v, want lost at its start", status, x)
+		}
+	}
+}
+
+// A tool starts when the response that asked for it ends, but Claude Code runs the hand-back
+// while that response streams. So the notification can arrive before the tool's start.
+func TestToolOfASubagentEndedMidStreamIsLost(t *testing.T) {
+	var r rec
+	r.turn("", 0, 1, []pipeline.InferenceMessage{user("go")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "s1", Name: "Agent"})
+	r.turn("b2", 1, 4, []pipeline.InferenceMessage{user("p")}, nil, "tool_use",
+		pipeline.InferenceToolCall{ID: "edit", Name: "Edit"}, pipeline.InferenceToolCall{ID: "hb", Name: "SubagentHandback"})
+	r.turn("", 4, 1, []pipeline.InferenceMessage{user("go"),
+		user("<task-notification>\n<task-id>b2</task-id>\n<status>completed</status>")}, nil, "end_turn")
+	if x := findTool(t, Build("s", r.events, time.Time{}), "edit"); !x.Lost || x.End == nil || !x.End.Equal(x.Start) {
+		t.Errorf("edit = %+v, want lost at its start", x)
+	}
+}
+
+// Only the notification ends a run. An <agent-message> arrives while the agent works, and a
+// SendMessage resume starts a new run whose tools the earlier notification does not end.
+func TestToolOfARunningSubagentStaysOpen(t *testing.T) {
+	var r rec
+	r.turn("", 0, 1, []pipeline.InferenceMessage{user("go")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "s1", Name: "Agent"})
+	r.turn("b2", 1, 1, []pipeline.InferenceMessage{user("p")}, nil, "end_turn")
+	h := []pipeline.InferenceMessage{user("go"), user("<task-notification>\n<task-id>b2</task-id>\n<status>completed</status>")}
+	r.turn("", 5, 1, h, nil, "end_turn")
+	r.turn("b2", 10, 1, []pipeline.InferenceMessage{user("p"), user("more")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "test", Name: "Bash"})
+	r.turn("", 20, 1, append(h, user(`<agent-message from="b2"> still testing`)), nil, "end_turn")
+	if x := findTool(t, Build("s", r.events, time.Time{}), "test"); x.Lost || x.End != nil {
+		t.Errorf("test = %+v, want still in flight", x)
+	}
+}
+
+// The latest notification ends a run, not the first: a run that SendMessage resumed ends at its
+// own notification, and its tools without a result are lost there too.
+func TestToolOfAResumedSubagentIsLostAtItsEnd(t *testing.T) {
+	var r rec
+	r.turn("", 0, 1, []pipeline.InferenceMessage{user("go")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "s1", Name: "Agent"})
+	r.turn("b2", 1, 1, []pipeline.InferenceMessage{user("p")}, nil, "end_turn")
+	note := user("<task-notification>\n<task-id>b2</task-id>\n<status>completed</status>")
+	h := []pipeline.InferenceMessage{user("go"), note}
+	r.turn("", 5, 1, h, nil, "end_turn")
+	r.turn("b2", 10, 1, []pipeline.InferenceMessage{user("p"), user("more")}, nil, "tool_use",
+		pipeline.InferenceToolCall{ID: "edit", Name: "Edit"}, pipeline.InferenceToolCall{ID: "hb", Name: "SubagentHandback"})
+	r.turn("", 30, 1, append(h, note), nil, "end_turn")
+	if x := findTool(t, Build("s", r.events, time.Time{}), "edit"); !x.Lost || x.End == nil || !x.End.Equal(x.Start) {
+		t.Errorf("edit = %+v, want lost at its start", x)
+	}
+}
+
 // A fork's result names no agent id, so it links to its parent's earliest unmatched spawn
 // whose turn began before the fork's first request. Two forks from one turn take one each.
 func TestForksLinkToTheirOwnSpawnsInOrder(t *testing.T) {
