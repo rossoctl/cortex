@@ -4,6 +4,16 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	// A change in a guarded package must rebuild this test, so the test cache cannot hide a violation.
+	_ "github.com/rossoctl/cortex/core/attribution"
+	_ "github.com/rossoctl/cortex/core/cost/event"
+	_ "github.com/rossoctl/cortex/core/cost/ledger"
+	_ "github.com/rossoctl/cortex/core/cost/pricing"
+	_ "github.com/rossoctl/cortex/core/cost/usage"
+	_ "github.com/rossoctl/cortex/core/session"
+	_ "github.com/rossoctl/cortex/core/session/archive"
+	_ "github.com/rossoctl/cortex/core/session/timeline"
 )
 
 // These packages read and store Cortex events. They must build without the plugin engine
