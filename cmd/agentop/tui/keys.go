@@ -89,9 +89,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.serverNoticeKey(msg)
 	}
 
-	// Esc during a details search stops it and puts the cursor back. Esc again backs out.
-	if msg.String() == "esc" && m.pane == paneEvents && m.detailScanRunning() {
-		m.stopDetailScan()
+	// Esc while a details search runs drops its answer. Esc again backs out.
+	if msg.String() == "esc" && m.pane == paneEvents && m.detailSearching() {
+		m.cancelDetailSearch()
 		return nil
 	}
 

@@ -178,7 +178,7 @@ func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 		m.search[t] = m.searchInput.Value()
 		m.closeSearch()
 		if t == paneEvents && m.searchDetails {
-			return m.startDetailScan(true, true)
+			return m.sendDetailSearch(true, true)
 		}
 		return nil
 	case "esc":
@@ -215,7 +215,7 @@ func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 // details box on, it starts a details scan instead.
 func (m *model) searchStep(t paneID, forward bool) tea.Cmd {
 	if t == paneEvents && m.searchDetails && m.search[t] != "" {
-		return m.startDetailScan(forward, false)
+		return m.stepDetails(forward)
 	}
 	s := m.surface(t)
 	if s == nil {

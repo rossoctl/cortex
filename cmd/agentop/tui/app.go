@@ -634,17 +634,14 @@ type model struct {
 	// searchOrigin is where the target was when `/` was pressed: the place typing searches
 	// from, and the place Esc puts it back.
 	searchOrigin searchSpot
-	// searchDetails is the events pane's `details` box: with it on, Enter, n and N find the
-	// next row whose detail view shows the query. detailScan is that search, running or
-	// ended, and detailScanGen numbers each one, so a reply for an older one is dropped.
-	// detailChecked is what each checked event gave for detailCheckedQ: true for a match.
-	// See search_details.go.
-	searchDetails  bool
-	detailScan     *detailScan
-	detailScanGen  uint64
-	detailChecked  map[eventKey]bool
-	detailCheckedQ string
-	paused         bool
+	// searchDetails is the events pane's `details` box: with it on, Enter, n and N go to the
+	// rows whose detail view shows the query. detailSearch is that search, in flight or
+	// answered, and detailSearchGen numbers each one, so an answer for an older one is
+	// dropped. See search_details.go.
+	searchDetails   bool
+	detailSearch    *detailSearch
+	detailSearchGen uint64
+	paused          bool
 	// hideInactive toggles whether passthrough / skip-only messages are
 	// hidden from the events table. False (default) shows every message —
 	// the operator asked to see all network traffic, processed or not.
@@ -1977,11 +1974,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyDetailEvent(msg)
 		return m, nil
 
-	case detailScanFetchedMsg:
-		return m, m.applyDetailScanFetched(msg)
-
-	case detailScanNextMsg:
-		return m, m.applyDetailScanNext(msg)
+	case detailSearchMsg:
+		m.applyDetailSearch(msg)
+		return m, nil
 
 	case errMsg:
 		// Per-request failures (snapshot/pipeline) shouldn't flip the whole
