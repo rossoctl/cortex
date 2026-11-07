@@ -79,17 +79,6 @@ const maxRequestBodySize = 32 << 20 // 32 MiB
 // per-request memory ever matters more than the simplicity of one number.
 const maxBodySize = 10 << 20 // 10 MB
 
-// streamReadIdleTimeout caps how long the proxy waits for the next
-// byte off a streaming response body. The time.Duration is applied
-// per ReadFrame iteration (see streamingResponseBody). A wedged
-// upstream that goes silent for longer than this aborts the stream,
-// rather than hanging the agent indefinitely. Long enough to permit
-// slow tool work between SSE heartbeats; short enough to surface a
-// dead connection within a few minutes. Tools that need longer idle
-// gaps should emit SSE heartbeats — it's what comment lines in SSE
-// are for.
-const streamReadIdleTimeout = 5 * time.Minute
-
 // upstreamVerifyTimeout bounds the pre-forge HEAD reachability/cert probe in
 // bridgeServe. It applies to that probe only — never to the relay, which must
 // stay unbounded so streaming responses aren't cut off.

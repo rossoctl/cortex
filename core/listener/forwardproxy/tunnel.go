@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/rossoctl/cortex/core/attribution"
@@ -560,78 +559,6 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Bidirectional copy until either side closes.
 	sent, received := tunnel(clientConn, upstream)
 	tl.close(http.StatusOK, nil, sent, received)
-}
-
-// idleReader wraps r so each Read enforces an idle deadline. The
-// goroutine pattern (timer reset on every Read entry, cancelled on
-// every Read exit) is portable across any io.ReadCloser, unlike
-// SetReadDeadline which only applies to net.Conn — and for HTTPS
-// upstreams the proxy holds the *http.Response.Body, not the
-// underlying conn. On idle expiry the reader closes the body, which
-// causes the in-flight Read to return an error and unblocks the
-// caller. Subsequent Reads return the same close error.
-//
-// The wrapper does not buffer; bufio's reader inside sseframe.Reader
-// continues to do that. The deadline is per-Read, not per-frame, so
-// a long-running tool that emits one byte every minute (within the
-// idle window) keeps the stream alive. The streamReadIdleTimeout
-// constant captures the wall-clock budget.
-//
-// Race-with-success note: time.AfterFunc + timer.Stop() does NOT
-// wait for an already-fired callback. If the timer fires just as a
-// Read returns successfully, the close runs after the success and
-// would leave the next Read failing under a healthy upstream. The
-// closeOnce field makes the close idempotent and Close() also runs
-// it, so a stray late timer is harmless: the underlying body is
-// closed at most once, and a successful in-flight Read keeps its
-// data either way. The wider hazard — closing the body concurrently
-// with an active Read — is the documented unblock mechanism the
-// stdlib http transport relies on for forced disconnects.
-//
-// When the timer — not the upstream — is what closed the body, Read
-// surfaces errIdleCut instead of the bare closed-body error, so
-// classifyBrokenStream can record the cut as proxy_error rather than
-// blaming a healthy upstream (#1543: on the issue's own log, 68 of
-// 103 truncations were this cutoff killing MCP's standing GET).
-type idleReadCloser struct {
-	rc        io.ReadCloser
-	timeout   time.Duration
-	closeOnce sync.Once
-	cutFired  atomic.Bool
-}
-
-// errIdleCut is the read error idleReadCloser returns when its timer closed
-// the body. Matched with errors.Is; see classifyBrokenStream.
-var errIdleCut = errors.New("stream cut by the proxy's idle read cutoff")
-
-func idleReader(rc io.ReadCloser, timeout time.Duration) io.ReadCloser {
-	return &idleReadCloser{rc: rc, timeout: timeout}
-}
-
-func (i *idleReadCloser) Read(p []byte) (int, error) {
-	timer := time.AfterFunc(i.timeout, i.cut)
-	n, err := i.rc.Read(p)
-	timer.Stop()
-	if err != nil && i.cutFired.Load() {
-		return n, errIdleCut
-	}
-	return n, err
-}
-
-// cut is the timer's callback: mark that THIS close was the cutoff's, so a
-// concurrent or next Read reports the cut rather than an upstream break.
-func (i *idleReadCloser) cut() {
-	i.cutFired.Store(true)
-	i.closeIdempotent()
-}
-
-func (i *idleReadCloser) Close() error {
-	i.closeIdempotent()
-	return nil
-}
-
-func (i *idleReadCloser) closeIdempotent() {
-	i.closeOnce.Do(func() { _ = i.rc.Close() })
 }
 
 // enableKeepalive turns on TCP keepalive with a 30s probe interval on
