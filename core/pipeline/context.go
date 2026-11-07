@@ -583,6 +583,18 @@ func (c *Context) LastInference() SessionFact {
 	return factOf(nil)
 }
 
+// InferenceHosts is the InferenceHosts table of the request's session, and SessionFacts.HostsKnown:
+// false means "do not use the table". The rules, in order:
+//  1. Session is nil: (nil, false), also when the listener set facts.
+//  2. The listener called SetSessionFacts: the table and HostsKnown it set.
+//  3. Else (nil, false). A view cannot vouch for a table: it can be a trimmed part of the session.
+func (c *Context) InferenceHosts() (InferenceHosts, bool) {
+	if c.Session == nil || !c.factsSet {
+		return nil, false
+	}
+	return c.facts.InferenceHosts, c.facts.HostsKnown
+}
+
 // factOf is a fact from a view: FactPresent for an event, FactNone for nil.
 func factOf(e *SessionEvent) SessionFact {
 	if e == nil {

@@ -248,7 +248,9 @@ func (s *Server) touch(sid string, chain []attribution.Proc) {
 func affinityClient(clientHeaders http.Header) string { return attribution.AgentOf(clientHeaders) }
 
 // sessionViewFor returns the recorded view for sid and its facts, or an empty view carrying
-// just the id, with both facts FactNone, when nothing has been recorded under it yet.
+// just the id, with both facts FactNone, when nothing has been recorded under it yet. The
+// store's InferenceHosts table comes with the facts in both cases: with no entry it is the
+// archive's, which is a session's history after a restart.
 //
 // Hydration runs BEFORE the request event is appended, so on a session's first
 // request Store.View returns nil even though the id is known. Passing that nil
@@ -262,11 +264,14 @@ func affinityClient(clientHeaders http.Header) string { return attribution.Agent
 // not have the side effect of minting store entries for traffic that may still
 // be rejected before anything is recorded.
 func (s *Server) sessionViewFor(sid string) (*pipeline.SessionView, pipeline.SessionFacts) {
-	if s.Sessions != nil {
-		if v, f := s.Sessions.ViewFacts(sid); v != nil {
-			return v, f
-		}
-	}
 	none := pipeline.SessionFact{State: pipeline.FactNone}
-	return &pipeline.SessionView{ID: sid}, pipeline.SessionFacts{LastIntent: none, LastInference: none}
+	var v *pipeline.SessionView
+	f := pipeline.SessionFacts{LastIntent: none, LastInference: none}
+	if s.Sessions != nil {
+		v, f = s.Sessions.ViewFacts(sid) // with no entry: both facts FactNone, and the archive's table
+	}
+	if v == nil {
+		v = &pipeline.SessionView{ID: sid}
+	}
+	return v, f
 }

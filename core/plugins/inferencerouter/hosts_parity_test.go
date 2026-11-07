@@ -7,23 +7,22 @@ import (
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
 	"github.com/rossoctl/cortex/core/session"
 )
 
-// TestRouter_HostsAgreeWithWentTo holds the session's InferenceHosts table to wentTo. For random
+// TestRouter_HostsAgreeWithWentTo holds the session's InferenceHosts table to wentToView. For random
 // sessions with no archive, LastServer over the session's fold gives the same (server, ok) as
-// wentTo's scan of the view, for each agent.
+// wentToView's scan of the view, for each agent.
 //
 // The mutant rows change the table rule in one known way each. The test must find a session
-// where the mutant and wentTo disagree. If it does not, the random sessions are too weak to
+// where the mutant and wentToView disagree. If it does not, the random sessions are too weak to
 // hold the rule.
 func TestRouter_HostsAgreeWithWentTo(t *testing.T) {
 	r := New()
 	if err := r.Configure(json.RawMessage(routerConfig(`"claude-code": "glm", "opencode": "ete"`))); err != nil {
 		t.Fatal(err)
 	}
-	serverAt := func(h string) (string, bool) { s, ok := r.byHost[routerconfig.Key(h)]; return s, ok }
+	serverAt := r.serverAt
 
 	cases := []struct {
 		name   string
@@ -62,20 +61,20 @@ func TestRouter_HostsAgreeWithWentTo(t *testing.T) {
 					tc.table(table)
 				}
 				for _, agent := range []string{"claude-code", "opencode", "curl", ""} {
-					ws, wok := r.wentTo(&pipeline.SessionView{ID: "s", Events: evs}, agent)
+					ws, wok := r.wentToView(&pipeline.SessionView{ID: "s", Events: evs}, agent)
 					gs, gok := table.LastServer(agent, serverAt)
 					if ws == gs && wok == gok {
 						continue
 					}
 					if tc.agree {
-						t.Fatalf("trial %d agent %q: wentTo (%q, %v), table (%q, %v)\nevents %+v\ntable %+v",
+						t.Fatalf("trial %d agent %q: wentToView (%q, %v), table (%q, %v)\nevents %+v\ntable %+v",
 							trial, agent, ws, wok, gs, gok, evs, table)
 					}
 					disagreed = true
 				}
 			}
 			if !tc.agree && !disagreed {
-				t.Fatal("no session tells the mutant from wentTo")
+				t.Fatal("no session tells the mutant from wentToView")
 			}
 		})
 	}

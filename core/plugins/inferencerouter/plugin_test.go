@@ -574,10 +574,11 @@ func sent(host, ua string) pipeline.SessionEvent {
 }
 
 // recorded is the request row the forward proxy records for pctx once the pipeline
-// has run: where it went, and the parse it carried.
+// has run: where it went, where the client sent it, and the parse it carried.
 func recorded(pctx *pipeline.Context) pipeline.SessionEvent {
 	return pipeline.SessionEvent{
-		Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: pctx.Host,
+		Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: pctx.Host, RequestedHost: pctx.RequestedHost(),
+		HTTPMethod: pctx.Method, HTTPPath: pctx.Path,
 		Inference: pctx.Extensions.Inference, Client: pipeline.ParseUserAgent(pctx.Headers.Get("User-Agent")),
 	}
 }
