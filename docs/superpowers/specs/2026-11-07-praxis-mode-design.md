@@ -341,6 +341,18 @@ praxis:
 - **`agentop update` keeps praxis mode.** It detects it from the config, as it re-passes `--cpex` today (`cmd/agentop/cmd_update.go:120-122`). The supervisor refuses to start a gateway whose version differs from `cortex`.
 - `praxis.enabled` stays `false` by default until the parity gates pass and the live check (Section 5) is done.
 
+### A standalone binary
+
+The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl binaries, and on macOS they link only system libraries. `cortex-gateway` must ship the same way.
+
+- **OpenSSL is the trap.** Praxis does its TLS with OpenSSL: `praxis-proxy-tls` requires `rustls-openssl` and `openssl`. Upstream links the system OpenSSL dynamically on purpose, for FIPS (Praxis `Cargo.toml`: "never with the `vendored` feature"). A plain build is not portable. Measured on 2026-11-07: a stock macOS build links `/opt/homebrew/opt/openssl@4/lib/libssl.4.dylib`, so it does not start on a Mac without that package.
+- **Rule: `praxis/server` turns on OpenSSL's `vendored` feature.** Cargo features are additive, so no Praxis change is needed. Measured on macOS arm64 with Praxis v0.8.0: the binary then links only system libraries (Security, CoreFoundation, CoreServices, libiconv, libSystem). It started with no Homebrew library on the path and served a request through the hairpin. Size 25.6 MB (22.4 MB without vendoring). Cold build 6 m 39 s.
+- **Linux:** build on `rust:alpine` for the musl target, with static linking on. (Praxis's own image turns it off with `-crt-static`.) `cortex-cpex` already links its Rust FFI (`libcpex_ffi.a`) statically in `golang:alpine` in the same way. The other native code in the graph must also build statically: `aws-lc-sys` (through `jsonwebtoken`, needs cmake), `zstd-sys` and jemalloc. **Not tested yet. This is the first check of delivery step 6.**
+- **A release check** fails when a `cortex-gateway` build links OpenSSL dynamically (`otool -L` on macOS, `ldd` or `file` on Linux).
+- **New duty:** Cortex owns OpenSSL security updates for this binary. An OpenSSL CVE needs an `openssl-src` bump and a release. (Go's crypto comes with the Go toolchain.)
+- **No FIPS claim for this binary.** Praxis's FIPS story depends on the system OpenSSL. Cortex makes no FIPS claim today, so nothing changes for users. A future FIPS need would require a separate, dynamically linked build.
+- **Signing:** the same as the Go binaries. The release does not sign or notarize darwin binaries today.
+
 ## 5. Testing
 
 ### Direct mode stays the same
@@ -402,7 +414,7 @@ Each step is one PR and is useful when it merges. Nothing changes for a user unt
 3. **Supervision** (`cmd/cortex`): two siblings, the token file, `gateway.yaml`, the probe, no orphans, the port-conflict names.
 4. **The hop and the egress listener** (`core/listener/forwardproxy`): `hop.go`, the three branch points, the joins, `gateway_unavailable`, the config checks (startup and reload), and the end-to-end tests.
 5. **agentop and install:** the `praxis.enabled` contract field, the command refusals, `install.sh --praxis`, setup, update and uninstall.
-6. **Release:** the `cortex-gateway` release job and the weekly Praxis build.
+6. **Release:** the `cortex-gateway` release job (vendored OpenSSL, static musl, the dynamic-OpenSSL check) and the weekly Praxis build. The static Linux build is proved first.
 7. **The MCP and A2A parsers**, each behind its own parity gate.
 
 Then the live check, then a decision to change the default.
