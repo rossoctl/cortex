@@ -214,7 +214,7 @@ func TestHeaderCost_ImplausibleIsItsOwnState(t *testing.T) {
 			if tc.parsed {
 				pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-opus-5"}
 			}
-			cost, state := headerCost(pctx)
+			cost, state := headerCost(inputOf(pctx))
 			if state != tc.wantState {
 				t.Errorf("state = %d, want %d for header %q (parsed=%v)", state, tc.wantState, tc.header, tc.parsed)
 			}

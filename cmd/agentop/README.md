@@ -1994,6 +1994,10 @@ The poller terminates with one of:
   moment `last_success` moves, so this only bounds how long a *failed* reload
   takes to be declared.
 
+The proxy's half of this rule is in [`proxy-contract.md`](../../docs/proxy-contract.md#hot-reload).
+That page also lists the ports, endpoints and command lines that agentop uses in a
+local Cortex.
+
 ## Plugin dependencies
 
 Plugins declare dependencies in their `Capabilities()`:

@@ -27,7 +27,7 @@ func (serviceStep) name() string { return "started" }
 
 func (s serviceStep) plan(env *setupEnv) (stepPlan, *problem) {
 	p := stepPlan{label: "started"}
-	pidFile := filepath.Join(env.cortexDir, "proxy.pid")
+	pidFile := filepath.Join(env.cortexDir, proxyPIDFile)
 	h, prob := s.preflightPorts(env)
 	if prob != nil {
 		return p, prob
@@ -69,7 +69,7 @@ func (s serviceStep) plan(env *setupEnv) (stepPlan, *problem) {
 		return p, nil
 	}
 	if !env.configFresh {
-		if sp, err := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, "cortex")); err == nil {
+		if sp, err := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, proxyBinary)); err == nil {
 			// Accepted: an endpoint that hangs costs ~2.5s here (waitHealthy's 2s client
 			// timeout, then its pause), and one slower than 2s reads as not serving.
 			env.priorService = serviceInstalled(sp) && sp.healthURL != "" && serviceLoaded(env.goos) && waitHealthy(sp.healthURL, time.Second)
@@ -122,9 +122,9 @@ func (serviceStep) preflightPorts(env *setupEnv) (forwardHold, *problem) {
 		fix := []string{
 			"free it, then " + env.rerun() + "; the ports can be moved in " + env.tilde(env.configPath()) + " once Cortex is installed",
 		}
-		if _, serr := os.Stat(filepath.Join(env.binDir, "cortex")); serr == nil {
+		if _, serr := os.Stat(filepath.Join(env.binDir, proxyBinary)); serr == nil {
 			fix = []string{
-				"free it, or write the config first: " + env.shellPath(filepath.Join(env.binDir, "cortex")) + " --local --write-config",
+				"free it, or write the config first: " + env.shellPath(filepath.Join(env.binDir, proxyBinary)) + " --local --write-config",
 				"then change the ports in " + env.tilde(env.configPath()) + " and " + env.rerun(),
 			}
 		}
@@ -136,7 +136,7 @@ func (serviceStep) preflightPorts(env *setupEnv) (forwardHold, *problem) {
 	// loop, only the forward port was checked, so a taken session API or
 	// stats port sailed through preflight and failed at boot with setup
 	// calling the install ready (#1545).
-	pidFile := filepath.Join(env.cortexDir, "proxy.pid")
+	pidFile := filepath.Join(env.cortexDir, proxyPIDFile)
 	for _, l := range existingListeners(env) {
 		_, port, perr := net.SplitHostPort(l.Addr)
 		if perr != nil {
@@ -193,7 +193,7 @@ func existingListeners(env *setupEnv) []config.PlannedListener {
 // forwardListener is the existing config's forward proxy address and its port,
 // or 127.0.0.1:47600 when the config does not give one that parses.
 func forwardListener(env *setupEnv) (addr, port string) {
-	sp, err := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, "cortex"))
+	sp, err := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, proxyBinary))
 	if err == nil {
 		if _, p, serr := net.SplitHostPort(sp.forwardAddr); serr == nil && p != "" {
 			return sp.forwardAddr, p
@@ -261,7 +261,7 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 	if env.unsupervised {
 		return s.applyUnsupervised(env)
 	}
-	sp, err := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, "cortex"))
+	sp, err := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, proxyBinary))
 	if err != nil {
 		return "", undo{}, err
 	}
@@ -415,13 +415,13 @@ func stderrNotes(env *setupEnv, stderr string) string {
 }
 
 func (serviceStep) applyUnsupervised(env *setupEnv) (string, undo, error) {
-	bin := filepath.Join(env.binDir, "cortex")
-	pidFile := filepath.Join(env.cortexDir, "proxy.pid")
+	bin := filepath.Join(env.binDir, proxyBinary)
+	pidFile := filepath.Join(env.cortexDir, proxyPIDFile)
 	health := resolveHealthURL(env.configPath())
 	// start_unsupervised's order: v0.7.0's authbridge-proxy first, then ours. Either
 	// is stopped, and a rollback starts the binary it ran again; for authbridge-proxy
 	// that is after the cleanup step's undo has put it back.
-	prior := filepath.Join(env.binDir, "authbridge-proxy")
+	prior := filepath.Join(env.binDir, preRenameBinary)
 	old, running := preRenameProxyRunning(env.binDir, pidFile)
 	if !running {
 		prior = bin
@@ -526,7 +526,7 @@ func launchdBootout(label string) string {
 // rather than the binary that ran.
 func startByHand(env *setupEnv, bin string) string {
 	return "sh -c 'nohup " + env.tilde(bin) + " --local --supervise >> " + env.tilde(filepath.Join(env.cortexDir, "proxy.log")) +
-		" 2>&1 & echo $! > " + env.tilde(filepath.Join(env.cortexDir, "proxy.pid")) + "'"
+		" 2>&1 & echo $! > " + env.tilde(filepath.Join(env.cortexDir, proxyPIDFile)) + "'"
 }
 
 // logTailLines caps the proxy.log rows under a failed start.

@@ -235,8 +235,23 @@ const defaultCortexStatsURL = "http://localhost:47602/"
 // errNoRunningCortex means nothing answered at the stats URL.
 var errNoRunningCortex = errors.New("no Cortex is running on this machine")
 
+// runningConfigFields holds the only /config fields that agentop exec reads.
+// A decode into the full config.Config fails when a newer proxy changes the type
+// of any field. This struct ignores the fields it does not hold.
+type runningConfigFields struct {
+	Listener struct {
+		ForwardProxyAddr string `json:"forward_proxy_addr"`
+	} `json:"listener"`
+	// A pointer, so that a /config without tls_bridge gives a nil TLSBridge.
+	TLSBridge *struct {
+		Mode  string `json:"mode"`
+		CADir string `json:"ca_dir"`
+	} `json:"tls_bridge"`
+}
+
 // runningConfig returns the config of the Cortex actually running, fetched from
-// the stats server's /config endpoint under base.
+// the stats server's /config endpoint under base. Only the fields in
+// runningConfigFields are set. All other fields have their zero values.
 //
 // Read from the running process rather than from ~/.cortex/config.yaml on purpose.
 // `agentop exec` hands its child the addresses of a proxy that must be up for the
@@ -285,9 +300,13 @@ func runningConfig(base string) (*config.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", cfgURL, err)
 	}
-	var cfg config.Config
-	if uerr := json.Unmarshal(body, &cfg); uerr != nil {
+	var got runningConfigFields
+	if uerr := json.Unmarshal(body, &got); uerr != nil {
 		return nil, fmt.Errorf("%s did not return a Cortex config: %w", cfgURL, uerr)
+	}
+	cfg := config.Config{Listener: config.ListenerConfig{ForwardProxyAddr: got.Listener.ForwardProxyAddr}}
+	if got.TLSBridge != nil {
+		cfg.TLSBridge = &config.TLSBridgeConfig{Mode: got.TLSBridge.Mode, CADir: got.TLSBridge.CADir}
 	}
 	// /config redacts values whose keys end in secret/password/token/key/
 	// credential (and the "mappings" host→credential block), exempting the

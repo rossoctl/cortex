@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-var updateFields = flag.Bool("update", false, "rewrite testdata/parsed-request.fields from the extension types")
+var update = flag.Bool("update", false, "rewrite the golden files in testdata: parsed-request.fields and session-event.golden.json")
 
 // parsedRequestFields is the JSON field list of the three parser extensions.
 // agentop and the script SDK read this JSON from session events.
@@ -84,7 +84,7 @@ func walkStruct(path string, t reflect.Type, walk func(string, reflect.Type)) {
 // Run with -update to rewrite the file, and update docs/session-api.md in the same change.
 func TestParsedRequestFields(t *testing.T) {
 	got := strings.Join(fieldLines(), "\n") + "\n"
-	if *updateFields {
+	if *update {
 		if err := os.WriteFile(parsedRequestFields, []byte(got), 0o644); err != nil {
 			t.Fatal(err)
 		}

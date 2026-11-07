@@ -20,7 +20,7 @@ through DNS rebinding. The stats server applies the same check.
 |---|---|---|
 | `GET /` | text | One-line-per-endpoint index — answers "is this the session API, and on the right port?" |
 | `GET /v1/sessions` | `application/json` | List active sessions (see below) |
-| `GET /v1/sessions/{id}` | `application/json` | The session's most recent events; `?limit=N` and `?before=<seq>` page backward |
+| `GET /v1/sessions/{id}` | `application/json` | The session's most recent events; `?limit=N` and `?before=<seq>` page backward. `?view=summary` omits the large payloads |
 | `GET /v1/sessions/{id}/events/{seq}` | `application/json` | One event by its sequence number |
 | `GET /v1/sessions/{id}/timeline` | `application/json` | The session as spans: Claude Code agents, tool calls, subagent spawns and returns, and hosts (see below) |
 | `DELETE /v1/sessions` | `application/json` | Clear every session: the store, and the session archive where one runs. The cost ledger is kept |
@@ -114,6 +114,27 @@ encoded to over a gigabyte. The response is written one event at a time rather
 than encoded whole, so serving it costs the proxy heap proportional to one
 event — but a client that reads it all still pays for all of it. Page with
 `before` rather than raising `limit`.
+
+**`?view=summary` omits the large payloads.** agentop sends it on each session page fetch (the
+events table). It does not send it on `GET /v1/sessions/{id}/timeline`. The script SDK (`core/plugins/script/sdk/cortex.py`) sends it too. The
+proxy then removes these fields from each event in the response:
+
+- `inference`: `messages`, `tools`, `toolCalls`, `toolResults` and `historyToolCalls`.
+  It adds `messageCount` and `toolCount`, the lengths of `messages` and `tools`.
+  Each one is absent when it is zero.
+- `a2a`: `artifact`.
+- `mcp`: `params` and `result`.
+
+All other fields stay, which includes `inference.completion`, `a2a.parts` and
+`plugins`. The stored events do not change. The value must be exactly `summary`.
+With any other value, the proxy sends full events. `GET /v1/sessions/{id}/events/{seq}` always
+returns the full event. `/v1/events` streams full events.
+
+**The response echoes `"view": "summary"` when it applied the summary.** A proxy
+that does not know the parameter ignores it. It sends full events and no `view`
+field. So a client that asked for the summary reads `view` to know which it got.
+Do not infer it from missing bodies: a session with no inference traffic has no
+bodies to omit.
 
 **With a session archive, a page continues from disk** below the oldest event
 memory holds: a session resumed after a restart pages back through its whole
@@ -281,10 +302,39 @@ curl -N http://localhost:9094/v1/events
 curl -N "http://localhost:9094/v1/events?session=$SID"
 ```
 
+## Schema version
+
+Each JSON response that carries events has one top-level `schemaVersion` field.
+The events in it do not carry one each. The value is now `1`
+(`SchemaVersion` in `core/sessionapi/server.go`). These responses carry it:
+
+- `GET /v1/sessions/{id}`, beside `id` and `events`.
+- `GET /v1/sessions/{id}/events/{seq}`. This response is the event object, so
+  the field is one more key in that object.
+
+The rule for the number:
+
+- It increases when a field of the response or of an event changes its meaning or
+  is removed.
+- It does not increase when a field is added. A client ignores keys it does not
+  know.
+- A response with no `schemaVersion` comes from a proxy older than the field.
+  Read it as version 1.
+
+`/v1/events` frames do not carry it. Each frame is one bare event, with no
+envelope to hold the field. The golden file
+`core/pipeline/testdata/session-event.golden.json` holds an event with every
+field set, and a test fails when the event wire form changes.
+
 ## Event schema
 
 Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 
+- `sessionId` — the id of the session the store added the event to. The store
+  sets it on every event, which includes outbound MCP and inference events. Their
+  protocols have no session id of their own. `?session=` on `/v1/events` filters
+  on this field. A rekey writes the new id into every event the store holds for
+  that session.
 - `at`, `direction`, `phase` — when, which side, what stage. `phase` is one of
   `"request"`, `"response"`, or `"denied"` (terminal denial from a pipeline
   plugin — typically a jwt-validation failure).

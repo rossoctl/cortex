@@ -1,0 +1,9 @@
+{
+  "listener": {
+    "forward_proxy_addr": "127.0.0.1:47600"
+  },
+  "tls_bridge": {
+    "mode": "enabled",
+    "ca_dir": "/Users/alice/.cortex/ca"
+  }
+}

@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -188,6 +189,54 @@ func TestRenamesSyncFirst(t *testing.T) {
 		}
 	}
 	assertNoStaleEntries(t, "renamesWithoutSync", renamesWithoutSync, seen)
+}
+
+// ------------------------------------------------------------ proxy names
+
+// agentop finds, starts and stops the Cortex proxy by its binary name and its
+// pid file name. When each site spells the name itself, a rename changes some
+// sites and leaves others, and agentop then misses its own proxy. So agentop
+// keeps each name in one constant. This rule fails on an exact "cortex" or
+// "proxy.pid" string literal in agentop's other source files. A literal that
+// only contains the word, such as ".cortex" or "cortex.service", is not a match.
+var proxyNameLiterals = map[string]string{
+	"cmd/agentop/proxy_names.go:package-scope": "the constants that hold the names",
+}
+
+func TestAgentopProxyNamesUseConstants(t *testing.T) {
+	seen := map[string]bool{}
+	fset, files := parseAll(t)
+	for path, parsed := range files {
+		if !strings.HasPrefix(relPath(path), "cmd/agentop/") {
+			continue
+		}
+		for _, scope := range scopes(parsed) {
+			ast.Inspect(scope.node, func(n ast.Node) bool {
+				lit, ok := n.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					return true
+				}
+				value, err := strconv.Unquote(lit.Value)
+				if err != nil || (value != "cortex" && value != "proxy.pid") {
+					return true
+				}
+				key := fmt.Sprintf("%s:%s", relPath(path), scope.name)
+				if _, ok := proxyNameLiterals[key]; ok {
+					seen[key] = true
+					return true
+				}
+				t.Errorf(`%s spells %q itself
+
+  agentop keeps the proxy's binary name and pid file name in one constant each,
+  so a rename reaches every site. Use proxyBinary or proxyPIDFile
+  (cmd/agentop/proxy_names.go). If this literal names something else, add it to
+  proxyNameLiterals with the reason.`,
+					fset.Position(lit.Pos()), value)
+				return true
+			})
+		}
+	}
+	assertNoStaleEntries(t, "proxyNameLiterals", proxyNameLiterals, seen)
 }
 
 // ---------------------------------------------------------------- helpers

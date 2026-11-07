@@ -12,7 +12,7 @@ import (
 
 // staleBinaries are the pre-rename names: abctl is agentop now, and
 // authbridge-proxy is cortex.
-var staleBinaries = []string{"abctl", "authbridge-proxy"}
+var staleBinaries = []string{"abctl", preRenameBinary}
 
 // cleanupStep is install.sh's remove_stale. afterService admits authbridge-proxy,
 // which install.sh removes only once the service has moved to cortex.
@@ -23,7 +23,7 @@ func (cleanupStep) name() string { return "cleaned up" }
 func (c cleanupStep) candidates(env *setupEnv) []string {
 	var out []string
 	for _, old := range staleBinaries {
-		if old == "authbridge-proxy" && !c.afterService {
+		if old == preRenameBinary && !c.afterService {
 			continue
 		}
 		if isOurStaleBinary(filepath.Join(env.binDir, old), old) {
@@ -48,7 +48,7 @@ func (c cleanupStep) plan(env *setupEnv) (stepPlan, *problem) {
 // it moved something: a run that kept every binary changed nothing.
 func (c cleanupStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, error) {
 	prevExisted := dirExists(env.previousDir())
-	pidFile := filepath.Join(env.cortexDir, "proxy.pid")
+	pidFile := filepath.Join(env.cortexDir, proxyPIDFile)
 	var restores []func() error
 	u := undo{label: "pre-rename binaries", manual: "copy the files in " + env.tilde(env.previousDir()) + "/ back into " + env.tilde(env.binDir)}
 	var removed, keptForUnit, keptForPID []string
@@ -57,7 +57,7 @@ func (c cleanupStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, e
 			keptForUnit = append(keptForUnit, old)
 			continue
 		}
-		if old == "authbridge-proxy" && pidfileProcessUnnamed(pidFile) {
+		if old == preRenameBinary && pidfileProcessUnnamed(pidFile) {
 			keptForPID = append(keptForPID, old)
 			continue
 		}

@@ -832,8 +832,8 @@ func lastLineOf(stderr, stdout string) string {
 // there. The service paths and the proxy's pid are read now, from the config
 // --purge deletes.
 func planStopService(env *setupEnv) (removal, bool) {
-	pidFile := filepath.Join(env.cortexDir, "proxy.pid")
-	sp, spErr := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, "cortex"))
+	pidFile := filepath.Join(env.cortexDir, proxyPIDFile)
+	sp, spErr := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, proxyBinary))
 	installed := spErr == nil && serviceInstalled(sp)
 	pid, background := preRenameProxyRunning(env.binDir, pidFile)
 	if !background {

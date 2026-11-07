@@ -2,30 +2,35 @@ package sessionapi
 
 import (
 	"encoding/json"
+	"strconv"
 	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
-// eventWithRaw is an event with its exact capture beside it, the answer to ?raw=1: the event's own
-// fields, as GET without the parameter serves them, and "raw".
-type eventWithRaw struct {
+// eventResponse is the answer to GET /v1/sessions/{id}/events/{seq}: the event's own fields,
+// "schemaVersion", and, for ?raw=1 when a capture exists, its exact capture under "raw".
+type eventResponse struct {
 	*pipeline.SessionEvent
 	Raw *pipeline.RawCapture
 }
 
-func (e eventWithRaw) MarshalJSON() ([]byte, error) {
+func (e eventResponse) MarshalJSON() ([]byte, error) {
 	b, err := json.Marshal(e.SessionEvent)
 	if err != nil || len(b) < 2 {
 		return b, err
 	}
-	r, err := json.Marshal(e.Raw)
-	if err != nil {
-		return nil, err
-	}
-	// SessionEvent has its own MarshalJSON, so the key is spliced into its object rather than
+	// SessionEvent has its own MarshalJSON, so the keys are spliced into its object rather than
 	// declared beside it.
-	return append(append(append(b[:len(b)-1:len(b)-1], `,"raw":`...), r...), '}'), nil
+	b = append(b[:len(b)-1:len(b)-1], `,"schemaVersion":`+strconv.Itoa(SchemaVersion)...)
+	if e.Raw != nil {
+		r, err := json.Marshal(e.Raw)
+		if err != nil {
+			return nil, err
+		}
+		b = append(append(b, `,"raw":`...), r...)
+	}
+	return append(b, '}'), nil
 }
 
 func rawOf(c *pipeline.RequestCapture) *pipeline.RawCapture {

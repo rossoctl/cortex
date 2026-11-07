@@ -117,7 +117,7 @@ func updateFlags(env *setupEnv, ref string, yes bool) []string {
 	if noService {
 		flags = append(flags, "--no-service")
 	}
-	if installedIsCpex(filepath.Join(env.binDir, "cortex")) {
+	if installedIsCpex(filepath.Join(env.binDir, proxyBinary)) {
 		flags = append(flags, "--cpex")
 	}
 	if ref != "" {
@@ -137,7 +137,7 @@ func updateFlags(env *setupEnv, ref string, yes bool) []string {
 func currentRelease(env *setupEnv, ref string) string {
 	env.readVersions()
 	v := env.installedVersion
-	if v == "" || v != installedVersion(filepath.Join(env.binDir, "cortex")) {
+	if v == "" || v != installedVersion(filepath.Join(env.binDir, proxyBinary)) {
 		return ""
 	}
 	if ref == "" {

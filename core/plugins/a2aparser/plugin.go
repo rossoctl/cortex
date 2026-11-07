@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -33,10 +34,20 @@ func (p *A2AParser) Capabilities() pipeline.PluginCapabilities {
 }
 
 func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	if ext := parseA2ARequest(pctx.Path, pctx.Headers, pctx.Body); ext != nil {
+		pctx.Extensions.A2A = ext
+		pctx.Observe("matched_" + ext.Method)
+	}
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// parseA2ARequest parses one A2A request from plain values. It returns nil
+// when the parser does not claim the request.
+func parseA2ARequest(path string, headers http.Header, rawBody []byte) *pipeline.A2AExtension {
 	// Parse the bytes as sent after any zstd Content-Encoding, as
 	// inference-parser does, so a compressed call is claimed rather than
 	// passed through unparsed.
-	body := parsercommon.DecodeRequestBody(pctx.Headers, pctx.Body)
+	body := parsercommon.DecodeRequestBody(headers, rawBody)
 	// No Invocation recorded when the parser doesn't apply to this
 	// message (empty body, non-JSON-RPC body) — otherwise every
 	// unrelated HTTP call through the pipeline would show an "a2a-parser
@@ -44,7 +55,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// exists in this pipeline" from the pipeline config, not per-event.
 	if len(body) == 0 {
 		slog.Debug("a2a-parser: no body, skipping")
-		return pipeline.Action{Type: pipeline.Continue}
+		return nil
 	}
 
 	// A top-level non-object body (array, string, number, null) is not
@@ -57,8 +68,8 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	if isObject {
 		if err := json.Unmarshal(body, &rpc); err != nil {
 			slog.Debug("a2a-parser: invalid JSON-RPC", "error", err, "bodyLen", len(body),
-				"host", pipeline.SanitizeLogValue(pctx.Host), "path", pipeline.SanitizeLogValue(pctx.Path))
-			return pipeline.Action{Type: pipeline.Continue}
+				"path", pipeline.SanitizeLogValue(path))
+			return nil
 		}
 	}
 
@@ -72,9 +83,9 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// it, agentop showed a phantom a2a-parser match on both MCP and inference
 	// traffic. mcp-parser has the mirror guard for its own namespace.
 	if !isObject || !isA2AMethod(rpc.Method) {
-		slog.Debug("a2a-parser: not an A2A-namespace method, skipping", "method", rpc.Method,
-			"bodyLen", len(body), "host", pipeline.SanitizeLogValue(pctx.Host), "path", pipeline.SanitizeLogValue(pctx.Path))
-		return pipeline.Action{Type: pipeline.Continue}
+		slog.Debug("a2a-parser: not an A2A-namespace method, skipping", "method", pipeline.SanitizeLogValue(rpc.Method), "path", pipeline.SanitizeLogValue(path),
+			"bodyLen", len(body))
+		return nil
 	}
 
 	ext := &pipeline.A2AExtension{
@@ -127,9 +138,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 		ext.TaskID = rpc.StringParam("taskId")
 	}
 
-	pctx.Extensions.A2A = ext
-
-	slog.Info("a2a-parser", "method", rpc.Method)
+	slog.Info("a2a-parser", "method", pipeline.SanitizeLogValue(rpc.Method))
 	slog.Debug("a2a-parser: extracted",
 		"method", rpc.Method,
 		"sessionId", ext.SessionID,
@@ -140,8 +149,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	for i, part := range ext.Parts {
 		slog.Debug("a2a-parser: part", "index", i, "kind", part.Kind, "content", parsercommon.Truncate(part.Content, parsercommon.DebugBodyMax))
 	}
-	pctx.Observe("matched_" + rpc.Method)
-	return pipeline.Action{Type: pipeline.Continue}
+	return ext
 }
 
 // OnResponse is the legacy buffered-path response hook. Because this

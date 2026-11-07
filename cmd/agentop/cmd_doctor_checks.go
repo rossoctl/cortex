@@ -24,11 +24,11 @@ import (
 // service plan reads it as not started, and its fix would put a service in place
 // of the mode the user chose.
 func backgroundOnly(env *setupEnv) bool {
-	sp, err := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, "cortex"))
+	sp, err := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, proxyBinary))
 	if err != nil || serviceInstalled(sp) {
 		return false
 	}
-	return fileExists(filepath.Join(env.cortexDir, "proxy.pid"))
+	return fileExists(filepath.Join(env.cortexDir, proxyPIDFile))
 }
 
 // doctorRefine adds those checks to a step's done plan: a failed one makes the
@@ -71,7 +71,7 @@ func doctorRefine(env *setupEnv, s step, p stepPlan, prob *problem, fix string) 
 // checkBinaries asks agentop and cortex for their versions, which must agree, as
 // one install puts both there; and which agentop this shell runs.
 func checkBinaries(env *setupEnv) (bad, doubt *problem) {
-	cortex := filepath.Join(env.binDir, "cortex")
+	cortex := filepath.Join(env.binDir, proxyBinary)
 	a, c := env.installedVersion, installedVersion(cortex)
 	switch {
 	case a == "":

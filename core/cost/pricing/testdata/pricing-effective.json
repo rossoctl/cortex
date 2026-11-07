@@ -1,0 +1,23 @@
+{
+  "host": "gw.example",
+  "multiplier": 0.5,
+  "multiplierFrom": "configured",
+  "models": [
+    {
+      "model": "claude-opus-5",
+      "provenance": "configured",
+      "unpriced": true,
+      "free": true,
+      "unit": "credits",
+      "longContextAbove": 200000,
+      "aboveInputPerMillion": 5,
+      "aboveCacheWritePerMillion": 6.25,
+      "aboveCacheReadPerMillion": 0.5,
+      "aboveOutputPerMillion": 25,
+      "inputPerMillion": 2.5,
+      "cacheWritePerMillion": 3.125,
+      "cacheReadPerMillion": 0.25,
+      "outputPerMillion": 12.5
+    }
+  ]
+}

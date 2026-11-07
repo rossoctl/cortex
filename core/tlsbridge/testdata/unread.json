@@ -1,0 +1,25 @@
+{
+  "osTrustsCA": false,
+  "osTrustCheckedAt": "2026-11-06T10:00:00Z",
+  "programs": [
+    {
+      "program": "/opt/homebrew/bin/helm",
+      "agent": "/bin/claude",
+      "pid": 4242,
+      "reason": "os-trust-only",
+      "connections": 2,
+      "failures": 1,
+      "stopped": true,
+      "until": "2026-11-06T10:05:00Z",
+      "lastHost": "llm-d-incubation.github.io",
+      "lastSeen": "2026-11-06T10:00:00Z"
+    }
+  ],
+  "hosts": [
+    {
+      "host": "api.example.com",
+      "failures": 1,
+      "until": "2026-11-06T10:05:00Z"
+    }
+  ]
+}
