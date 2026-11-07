@@ -99,10 +99,13 @@ func loseHost(h *Host) {
 	h.End, h.Lost = &at, true
 }
 
-// hostLostAfter is how long an unanswered request may sit before it is called lost. Ten
+// HostLostAfter is how long an unanswered request may sit before it is called lost. Ten
 // minutes covers the longest real model calls (the slowest seen was under 22 minutes, and
 // those were the rare tail), while not drawing a dead stream as busy.
-const hostLostAfter = 10 * time.Minute
+//
+// Exported for agentop's events pane, which marks the same requests lost by the same rule,
+// so a request is never lost in one pane and in flight in the other (#1681).
+const HostLostAfter = 10 * time.Minute
 
 func kindOf(e *model.SessionEvent) Kind {
 	switch {
