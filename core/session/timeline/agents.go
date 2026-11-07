@@ -95,6 +95,7 @@ func buildAgents(t *Timeline, events []pipeline.SessionEvent) {
 	results := map[string]string{} // tool id → result text, for Agent calls only
 	agentTools := map[string]bool{}
 	seenReturn := map[string]bool{}
+	stopped := map[string]time.Time{} // agent → its latest <task-notification>: its run ended
 	var spawns []*spawn
 
 	for _, c := range calls {
@@ -157,6 +158,10 @@ func buildAgents(t *Timeline, events []pipeline.SessionEvent) {
 					}
 					seenReturn[key] = true
 					t.Returns = append(t.Returns, Return{Agent: from, Into: c.agent, At: c.req.At, Seq: c.req.Seq})
+					// Only a notification says the run ended: an <agent-message> can arrive mid-run.
+					if re == taskIDRe && c.req.At.After(stopped[from]) {
+						stopped[from] = c.req.At
+					}
 					// A background job ends at the first notification naming it.
 					if j, ok := jobs[from]; ok && t.Jobs[j].End == nil {
 						at := c.req.At
@@ -222,8 +227,9 @@ func buildAgents(t *Timeline, events []pipeline.SessionEvent) {
 			}
 			tool.End = &at
 			tool.Error = ends[tool.Agent][tool.ID].IsError
-		} else if tool.Name == "SubagentHandback" || lastTurn[tool.Agent].After(tool.Start) {
-			// The agent moved on without the result, or the tool ends the run by design.
+		} else if tool.Name == "SubagentHandback" || lastTurn[tool.Agent].After(tool.Start) || stopped[tool.Agent].After(tool.Start) {
+			// The agent moved on without the result, its run ended without it (a sibling of its
+			// hand-back, or a stopped agent), or the tool ends the run by design.
 			at := tool.Start
 			tool.End, tool.Lost = &at, true
 		}
