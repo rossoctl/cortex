@@ -2171,7 +2171,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.editState.applyTime = msg.ApplyTime
 		m.editState.phase = editPhaseWaiting
 		return m, withGen(m.editState.generation, edit.PollCmd(
-			m.ctx, m.editState.statusURL, msg.ApplyTime,
+			m.ctx, m.editState.statusURL, msg.ApplyTime, msg.BaselineFailed,
 			describeTarget(m.editState.store)))
 
 	case genPolledMsg:

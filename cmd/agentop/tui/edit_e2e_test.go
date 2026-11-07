@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -159,6 +160,68 @@ func TestEditFlow_HappyPath(t *testing.T) {
 	// The applied manifest should contain the new content.
 	if !strings.Contains(string(runner.applyManifest), "new_key: new_value") {
 		t.Fatalf("manifest missing new content:\n%s", runner.applyManifest)
+	}
+}
+
+// The editor reads reloads_failed before its apply and gives it to the poll. When
+// the proxy refuses the change before the first poll answers, that poll already
+// counts the refusal, and only the count from before the apply shows it as new.
+// Without that count, the poll waits out its deadline (here the 5s ctx).
+func TestEditFlow_ReportsARefusalThatLandsBeforeTheFirstPoll(t *testing.T) {
+	runner := &editFakeRunner{getResponse: []byte(editFixtureCMYAML)}
+	var applied atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		st := map[string]any{"last_success": time.Now().Add(-time.Hour).Format(time.RFC3339Nano), "reloads_failed": 4}
+		if applied.Load() {
+			st["reloads_failed"], st["last_error"] = 5, "refused before the first poll"
+		}
+		_ = json.NewEncoder(w).Encode(st)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	m := newPickerModel(ctx, nil, nil)
+	m.statusURL = srv.URL
+	m.editRunner = func(ctx context.Context, args ...string) ([]byte, error) {
+		out, err := runner.run(ctx, args...)
+		if len(args) > 0 && args[0] == "apply" {
+			applied.Store(true)
+		}
+		return out, err
+	}
+	m.selectedNamespace = "team1"
+	m.selectedPod = "email-agent"
+	m.pane = panePipeline
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	mm := updated.(*model)
+	fetchedMsg := cmd().(genFetchedMsg)
+	if fetchedMsg.Err != nil {
+		t.Fatalf("Fetch failed: %v", fetchedMsg.Err)
+	}
+	defer os.Remove(fetchedMsg.TempPath)
+	if err := os.WriteFile(fetchedMsg.TempPath, []byte("pipeline:\n  inbound:\n    - name: bogus\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ = mm.Update(fetchedMsg)
+	mm = updated.(*model)
+	updated, _ = mm.Update(editorExitedMsg{gen: mm.editState.generation, err: nil})
+	mm = updated.(*model)
+	updated, cmd = mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	mm = updated.(*model)
+	appliedMsg := cmd().(genAppliedMsg)
+	if appliedMsg.Err != nil {
+		t.Fatalf("apply failed: %v", appliedMsg.Err)
+	}
+	_, cmd = mm.Update(appliedMsg)
+	if cmd == nil {
+		t.Fatal("expected poll Cmd")
+	}
+
+	polled := cmd().(genPolledMsg)
+	if polled.Result.Status != edit.PollFailure || polled.Result.LastError != "refused before the first poll" {
+		t.Fatalf("poll = %+v, want the refusal", polled.Result)
 	}
 }
 

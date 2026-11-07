@@ -177,7 +177,7 @@ func (m *model) handleEditKey(msg tea.KeyMsg) tea.Cmd {
 				return nil
 			}
 			return withGen(m.editState.generation, edit.ApplyCmd(
-				m.ctx, m.editState.store, m.editState.fetched, payload))
+				m.ctx, m.editState.store, m.editState.statusURL, m.editState.fetched, payload))
 		case "n", "N", "esc":
 			m.editState = editState{phase: editPhaseDone}
 			return nil
