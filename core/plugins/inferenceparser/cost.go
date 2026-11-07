@@ -3,6 +3,7 @@ package inferenceparser
 import (
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/settle"
+	"github.com/rossoctl/cortex/core/parse/inference"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -69,7 +70,7 @@ func (p *InferenceParser) settleCost(pctx *pipeline.Context) {
 		return
 	}
 	// Every response path ends here exactly once, so the served model is decided here too.
-	settleServedModel(pctx.Extensions.Inference, pctx.ResponseHeaders)
+	inference.SettleServedModel(pctx.Extensions.Inference, pctx.ResponseHeaders)
 
 	settled := settle.Settle(pctx, p.rates)
 	// Stored even when nothing priced, so a consumer can tell "no figure" from "this pass

@@ -1,16 +1,16 @@
-package inferenceparser
+package inference
 
 import (
 	"fmt"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/internal/parsercommon"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // checkSplit surfaces every split field in one error message so a
 // mismatched counter is obvious.
-func checkSplit(t *testing.T, ext *pipeline.InferenceExtension, want pipeline.InferenceExtension) {
+func checkSplit(t *testing.T, ext *model.InferenceExtension, want model.InferenceExtension) {
 	t.Helper()
 	got := fmt.Sprintf("input=%d cache_read=%d cache_write=%d output=%d reasoning=%d prompt=%d completion=%d total=%d",
 		ext.InputTokens, ext.CacheReadTokens, ext.CacheWriteTokens, ext.OutputTokens, ext.ReasoningTokens,
@@ -25,7 +25,7 @@ func checkSplit(t *testing.T, ext *pipeline.InferenceExtension, want pipeline.In
 
 // Non-streaming Anthropic response with both cache_read and cache_write.
 func TestSplitTokens_AnthropicJSON(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "claude-opus-4-8"}
+	ext := &model.InferenceExtension{Model: "claude-opus-4-8"}
 	body := []byte(`{
 		"content": [{"type": "text", "text": "ok"}],
 		"stop_reason": "end_turn",
@@ -38,7 +38,7 @@ func TestSplitTokens_AnthropicJSON(t *testing.T) {
 	}`)
 	parseAnthropicJSON(body, ext)
 
-	checkSplit(t, ext, pipeline.InferenceExtension{
+	checkSplit(t, ext, model.InferenceExtension{
 		InputTokens:      50,
 		CacheReadTokens:  200,
 		CacheWriteTokens: 100,
@@ -52,13 +52,13 @@ func TestSplitTokens_AnthropicJSON(t *testing.T) {
 
 // Non-beta SSE: prompt counts on message_start, output on message_delta.
 func TestSplitTokens_AnthropicSSE_NonBeta(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "claude-opus-4-8"}
+	ext := &model.InferenceExtension{Model: "claude-opus-4-8"}
 	body := []byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":40,\"cache_creation_input_tokens\":10,\"cache_read_input_tokens\":30,\"output_tokens\":0}}}\n" +
 		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n" +
 		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":12}}\n")
 	parseAnthropicSSE(body, ext)
 
-	checkSplit(t, ext, pipeline.InferenceExtension{
+	checkSplit(t, ext, model.InferenceExtension{
 		InputTokens:      40,
 		CacheReadTokens:  30,
 		CacheWriteTokens: 10,
@@ -73,13 +73,13 @@ func TestSplitTokens_AnthropicSSE_NonBeta(t *testing.T) {
 // ?beta=true SSE: message_start carries only input_tokens; cache counts
 // arrive on message_delta. Exercises mergeAnthropicUsageMaxSeen.
 func TestSplitTokens_AnthropicSSE_Beta(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "claude-opus-4-8"}
+	ext := &model.InferenceExtension{Model: "claude-opus-4-8"}
 	body := []byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":0}}}\n" +
 		"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n" +
 		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":9,\"cache_creation_input_tokens\":1234,\"cache_read_input_tokens\":32529,\"output_tokens\":399}}\n")
 	parseAnthropicSSE(body, ext)
 
-	checkSplit(t, ext, pipeline.InferenceExtension{
+	checkSplit(t, ext, model.InferenceExtension{
 		InputTokens:      9,
 		CacheReadTokens:  32529,
 		CacheWriteTokens: 1234,
@@ -94,7 +94,7 @@ func TestSplitTokens_AnthropicSSE_Beta(t *testing.T) {
 // OpenAI JSON: inclusive-prompt normalization (Input = prompt - cached)
 // and reasoning pulled from completion_tokens_details.
 func TestSplitTokens_OpenAIJSON(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "gpt-4o"}
+	ext := &model.InferenceExtension{Model: "gpt-4o"}
 	body := []byte(`{
 		"choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
 		"usage": {
@@ -107,7 +107,7 @@ func TestSplitTokens_OpenAIJSON(t *testing.T) {
 	}`)
 	parseInferenceJSON(body, ext)
 
-	checkSplit(t, ext, pipeline.InferenceExtension{
+	checkSplit(t, ext, model.InferenceExtension{
 		InputTokens:      1300,
 		CacheReadTokens:  200,
 		CacheWriteTokens: 0,
@@ -122,7 +122,7 @@ func TestSplitTokens_OpenAIJSON(t *testing.T) {
 // Gateway reports only total_tokens (prompt/completion zero): the wire
 // total must be preserved rather than recomputed as 0 from the sub-fields.
 func TestSplitTokens_OpenAIJSON_PreservesReportedTotal(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "gpt-4o"}
+	ext := &model.InferenceExtension{Model: "gpt-4o"}
 	parseInferenceJSON([]byte(`{
 		"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
 		"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":950}
@@ -137,7 +137,7 @@ func TestSplitTokens_OpenAIJSON_PreservesReportedTotal(t *testing.T) {
 // must stay cleared. Contrast with PreservesReportedTotal, where the
 // keys are present with value 0 and the bits stay set.
 func TestPresentKinds_OpenAI_TotalOnly(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "gpt-4o"}
+	ext := &model.InferenceExtension{Model: "gpt-4o"}
 	parseInferenceJSON([]byte(`{
 		"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
 		"usage":{"total_tokens":950}
@@ -157,7 +157,7 @@ func TestPresentKinds_OpenAI_TotalOnly(t *testing.T) {
 // Malformed OpenAI response where cached_tokens > prompt_tokens must
 // clamp InputTokens to 0, not go negative.
 func TestSplitTokens_OpenAIJSON_ClampNegativeInput(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "gpt-4o"}
+	ext := &model.InferenceExtension{Model: "gpt-4o"}
 	body := []byte(`{
 		"choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
 		"usage": {
@@ -182,13 +182,13 @@ func TestSplitTokens_OpenAIJSON_ClampNegativeInput(t *testing.T) {
 // chunk and must map onto the neutral shape via the same normalization
 // as the JSON path.
 func TestSplitTokens_OpenAISSE(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "gpt-4o", Stream: true}
+	ext := &model.InferenceExtension{Model: "gpt-4o", Stream: true}
 	body := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n" +
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":800,\"completion_tokens\":150,\"total_tokens\":950,\"prompt_tokens_details\":{\"cached_tokens\":600},\"completion_tokens_details\":{\"reasoning_tokens\":25}}}\n" +
 		"data: [DONE]\n")
 	parseInferenceSSE(body, ext)
 
-	checkSplit(t, ext, pipeline.InferenceExtension{
+	checkSplit(t, ext, model.InferenceExtension{
 		InputTokens:      200,
 		CacheReadTokens:  600,
 		CacheWriteTokens: 0,
@@ -203,7 +203,7 @@ func TestSplitTokens_OpenAISSE(t *testing.T) {
 // OpenAI response without the optional _details blocks: only Input
 // and Output are on the wire, so no cache-read or reasoning bit is set.
 func TestPresentKinds_OpenAI_NoDetailsBlocks(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "llama3.1"}
+	ext := &model.InferenceExtension{Model: "llama3.1"}
 	parseInferenceJSON([]byte(`{
 		"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
 		"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}
@@ -218,7 +218,7 @@ func TestPresentKinds_OpenAI_NoDetailsBlocks(t *testing.T) {
 // _details blocks present but zero: bits set ("reported zero"), not
 // absent — the distinction from the previous test.
 func TestPresentKinds_OpenAI_WithDetailsBlocks(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "gpt-4o"}
+	ext := &model.InferenceExtension{Model: "gpt-4o"}
 	parseInferenceJSON([]byte(`{
 		"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
 		"usage":{
@@ -237,7 +237,7 @@ func TestPresentKinds_OpenAI_WithDetailsBlocks(t *testing.T) {
 // No usage block on the wire: PresentKinds must stay 0 so the
 // log renders -1 (not exposed) rather than 0 (reported zero).
 func TestPresentKinds_OpenAI_NoUsageBlock(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "gpt-4o"}
+	ext := &model.InferenceExtension{Model: "gpt-4o"}
 	parseInferenceJSON([]byte(`{
 		"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]
 	}`), ext)
@@ -250,7 +250,7 @@ func TestPresentKinds_OpenAI_NoUsageBlock(t *testing.T) {
 // Anthropic response: Input/CacheRead/CacheWrite/Output always
 // present (Messages API emits all four); Reasoning never present.
 func TestPresentKinds_Anthropic(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "claude-haiku-4-5"}
+	ext := &model.InferenceExtension{Model: "claude-haiku-4-5"}
 	parseAnthropicJSON([]byte(`{
 		"content":[{"type":"text","text":"ok"}],
 		"stop_reason":"end_turn",
@@ -269,7 +269,7 @@ func TestPresentKinds_Anthropic(t *testing.T) {
 // Anthropic non-streaming response WITHOUT the cache_* fields on the wire:
 // only Input and Output bits should be set.
 func TestPresentKinds_Anthropic_NoCacheFields(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "claude-haiku-4-5"}
+	ext := &model.InferenceExtension{Model: "claude-haiku-4-5"}
 	parseAnthropicJSON([]byte(`{
 		"content":[{"type":"text","text":"ok"}],
 		"stop_reason":"end_turn",
@@ -285,7 +285,7 @@ func TestPresentKinds_Anthropic_NoCacheFields(t *testing.T) {
 // Anthropic ?beta=true SSE interrupted after message_start: no cache fields
 // ever land on the wire, so their bits must stay cleared.
 func TestPresentKinds_AnthropicSSE_Beta_MessageStartOnly(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "claude-opus-4-8"}
+	ext := &model.InferenceExtension{Model: "claude-opus-4-8"}
 	body := []byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":0}}}\n")
 	parseAnthropicSSE(body, ext)
 
@@ -300,7 +300,7 @@ func TestPresentKinds_AnthropicSSE_Beta_MessageStartOnly(t *testing.T) {
 // therefore drop CacheRead — this pins that behavior against a future
 // refactor that turns usage merging back into a merge.
 func TestFoldOpenAIFrame_UsageIsCumulative(t *testing.T) {
-	ext := &pipeline.InferenceExtension{Model: "gpt-4o", Stream: true}
+	ext := &model.InferenceExtension{Model: "gpt-4o", Stream: true}
 	body := []byte("data: {\"choices\":[{\"delta\":{},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":800,\"completion_tokens\":100,\"total_tokens\":900,\"prompt_tokens_details\":{\"cached_tokens\":600}}}\n" +
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":800,\"completion_tokens\":150,\"total_tokens\":950}}\n" +
 		"data: [DONE]\n")

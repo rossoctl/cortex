@@ -730,7 +730,7 @@ func (m *model) spendHourAndDaySummary() spendSummary {
 // cache-write tokens in it, so adding zero is not an approximation, it is the right answer.
 //
 //   - The OpenAI-compatible path NEVER sets it, because OpenAI bills cache writes as ordinary
-//     input (inferenceparser.toNeutral says so). It reports Input = prompt_tokens − cached and
+//     input (core/parse/inference.inferenceUsage.toNeutral says so). It reports Input = prompt_tokens − cached and
 //     CacheRead = cached, so input + cacheRead already IS prompt_tokens exactly.
 //   - The Anthropic path sets it whenever cache_creation_input_tokens is on the wire, so an
 //     absent bit there means the response reported no cache creation.

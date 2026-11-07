@@ -431,7 +431,7 @@ func TestInferenceParser_BobPath_WithQueryString(t *testing.T) {
 }
 
 // Bob's responses must parse too. The response side branches on "is this
-// Anthropic", so an OpenAI-dialect path falls through to parseInferenceJSON — this
+// Anthropic", so an OpenAI-dialect path falls through to core/parse/inference.parseInferenceJSON — this
 // pins that, since a request-only path would give an operator a model name and no
 // token counts.
 func TestInferenceParser_BobPath_Response(t *testing.T) {

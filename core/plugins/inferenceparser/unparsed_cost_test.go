@@ -155,7 +155,7 @@ func TestUnparsedEndpoint_RecordsNoInvocationRow(t *testing.T) {
 // OnRequest is driven for real rather than hand-waved, so the test pins the actual
 // consequence of the ext == nil arm instead of a state a test author asserted was
 // equivalent to it. An empty body, a non-JSON body and a JSON body with no messages are
-// all covered, because they are three different arms of parseOpenAIRequest and the
+// all covered, because they are three different arms of core/parse/inference.parseOpenAIRequest and the
 // Anthropic parser has all three as well.
 func TestUnparseableBody_GatewayCostIsCharged(t *testing.T) {
 	bodies := map[string][]byte{
@@ -163,7 +163,7 @@ func TestUnparseableBody_GatewayCostIsCharged(t *testing.T) {
 		"not-json":    []byte("<html>502 Bad Gateway</html>"),
 		"no-messages": []byte(`{"model":"gpt-4o"}`),
 	}
-	for _, path := range []string{"/v1/chat/completions", anthropicMessagesPath} {
+	for _, path := range []string{"/v1/chat/completions", "/v1/messages"} {
 		for name, body := range bodies {
 			for _, site := range unparsedSites() {
 				t.Run(path+"/"+name+"/"+site.name, func(t *testing.T) {

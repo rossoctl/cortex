@@ -1,4 +1,4 @@
-package inferenceparser
+package inference
 
 // knownAnthropicEvents is the set of Anthropic stream event types
 // foldAnthropicFrame handles, including the ones it deliberately ignores

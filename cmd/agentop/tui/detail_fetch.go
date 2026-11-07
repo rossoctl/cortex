@@ -27,7 +27,7 @@ type detailEventLoadedMsg struct {
 // THE LAST CONDITION IS TRACKED, NOT INFERRED, and that is not fussiness. The
 // obvious alternative — "does it carry any field the projection drops?" — cannot
 // work for response events. Messages and Tools are populated on the REQUEST
-// extension only (inferenceparser/plugin.go), ToolCalls only when the model called
+// extension only (core/parse/inference), ToolCalls only when the model called
 // a tool, and Completion is KEPT by the projection because the events filter
 // searches it. So a plain text response has none of the dropped fields populated
 // even after a successful fetch, and a presence check would refetch it on every
