@@ -52,8 +52,9 @@ type detailSearch struct {
 	// hits is the held rows that either side matched, by event key.
 	hits map[eventKey]bool
 	// last is the newest seq the proxy read, and oldest the oldest seq agentop held, for each
-	// session id it was asked about. A held row outside them makes the answer stale: a new event,
-	// or a page that `o` loaded.
+	// session id it was asked about. A held row older than oldest (a page that `o` loaded) makes
+	// the answer stale. A row newer than last (a new event) makes a step that reaches it search
+	// again.
 	last, oldest map[string]uint64
 	// older counts the proxy's matches older than the rows agentop holds.
 	older int
@@ -194,8 +195,10 @@ func (m *model) stepDetailMatch(forward, inclusive bool) {
 }
 
 // stepDetails is n and N with the box on: nothing while a search runs, else the next match at
-// once, or a new search first when there is no answer for the query, the last one failed, or the
-// held rows reach past what the answer covered.
+// once, or a new search first when there is no answer for the query, the last one failed, a held
+// row is older than the answer covered, or the step reaches a row newer than it. A live session
+// gets new rows every few seconds, and a pass over a long one takes seconds, so a step that does
+// not reach the new rows does not wait for them.
 func (m *model) stepDetails(forward bool) tea.Cmd {
 	d := m.detailSearch
 	switch {
@@ -204,12 +207,23 @@ func (m *model) stepDetails(forward bool) tea.Cmd {
 	case d == nil || d.query != m.search[paneEvents] || d.state == searchFailed || m.detailSearchStale():
 		return m.sendDetailSearch(forward, false)
 	}
-	m.stepDetailMatch(forward, false)
+	fresh := m.detailNewRows()
+	stops := slices.Concat(m.detailMatchRows(), fresh)
+	slices.Sort(stops)
+	i, ok := nextMatch(stops, m.eventsTbl.Cursor(), forward, false)
+	if !ok {
+		return nil
+	}
+	if _, isNew := slices.BinarySearch(fresh, i); isNew {
+		return m.sendDetailSearch(forward, false)
+	}
+	eventsSurface{m}.reveal(i)
 	return nil
 }
 
 // detailSearchStale reports whether a held row is outside what the answer covered for its
-// session: newer than what the proxy read, or older than what agentop held when it asked.
+// session in a way a step cannot go around: a session it did not ask about, or a row older than
+// what agentop held when it asked.
 func (m *model) detailSearchStale() bool {
 	d := m.detailSearch
 	for _, r := range m.visibleRows {
@@ -217,12 +231,24 @@ func (m *model) detailSearchStale() bool {
 			continue
 		}
 		s := eventSession(m.selectedSess, r.event)
-		last, ok := d.last[s]
-		if !ok || r.event.Seq > last || r.event.Seq < d.oldest[s] {
+		if _, ok := d.last[s]; !ok || r.event.Seq < d.oldest[s] {
 			return true
 		}
 	}
 	return false
+}
+
+// detailNewRows is the visible rows newer than what the proxy read for their session, ascending:
+// the rows the answer has nothing to say about.
+func (m *model) detailNewRows() []int {
+	d := m.detailSearch
+	var out []int
+	for i, r := range m.visibleRows {
+		if r.event != nil && r.event.Seq > d.last[eventSession(m.selectedSess, r.event)] {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 func (m *model) detailSearching() bool {

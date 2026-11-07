@@ -289,7 +289,8 @@ func TestDetailSearch_AProxyWithoutTheRoute(t *testing.T) {
 	}
 }
 
-// An event newer than the answer's lastSeq makes n search again.
+// An event newer than the answer's lastSeq makes an n that reaches it search again. With one
+// match, n wraps past the new row.
 func TestDetailSearch_NewEventsSearchAgain(t *testing.T) {
 	f := &fakeSearch{answer: map[string][]uint64{"s": {2}}}
 	m := searchModel(t, 4, f)
@@ -307,6 +308,38 @@ func TestDetailSearch_NewEventsSearchAgain(t *testing.T) {
 	key(m, 'n')
 	if s, _ := f.counts(); s != 2 {
 		t.Errorf("searches %d, want 2 after a new event", s)
+	}
+}
+
+// A new event does not make every step wait for a pass: a step that lands on a known match
+// before the new row moves at once, and only a step that reaches the new row searches again.
+func TestDetailSearch_NewEventsSearchOnlyWhenReached(t *testing.T) {
+	f := &fakeSearch{answer: map[string][]uint64{"s": {2, 3}}}
+	m := searchModel(t, 4, f)
+	setCursorVisible(&m.eventsTbl, 0)
+	detailsQuery(m, "needle")
+	runAll(m, enter(m))
+	if c := m.eventsTbl.Cursor(); c != 1 {
+		t.Fatalf("Enter landed on %d, want 1 (seq 2)", c)
+	}
+	more := eventSeq(1, "new")
+	more[0].Seq = 5
+	m.events["s"] = append(m.events["s"], more...)
+	m.rebuildEventsTable()
+	key(m, 'n')
+	if c := m.eventsTbl.Cursor(); c != 2 {
+		t.Errorf("n landed on %d, want 2 (seq 3)", c)
+	}
+	if s, _ := f.counts(); s != 1 {
+		t.Errorf("searches %d, want 1: the step did not reach the new row", s)
+	}
+	f.set(func() { f.last["s"] = 5 })
+	key(m, 'n')
+	if s, _ := f.counts(); s != 2 {
+		t.Errorf("searches %d, want 2: the step reached the new row", s)
+	}
+	if c := m.eventsTbl.Cursor(); c != 1 {
+		t.Errorf("after the new answer n landed on %d, want 1 (wrapped to seq 2)", c)
 	}
 }
 
