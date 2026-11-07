@@ -65,6 +65,30 @@ func TestWritePluginConfig_ReportsAReloadTheProxyRefused(t *testing.T) {
 	}
 }
 
+// The proxy reloads 250ms after a write. When it refuses the write before
+// agentop's first poll returns, that first poll already counts the refusal. A
+// baseline read at that poll then hides the refusal, and agentop waits out its
+// whole deadline. The baseline must come from before the write.
+func TestWritePluginConfig_ReportsARefusalThatLandsBeforeTheFirstPoll(t *testing.T) {
+	path := writeFixtureContent(t, withRouter, 0o600)
+	srv := makeStatusServer(t, func() ReloadStatus {
+		if !strings.Contains(readFile(t, path), "claude-code: glm") {
+			return ReloadStatus{ReloadsFailed: 2}
+		}
+		return ReloadStatus{ReloadsFailed: 3, LastError: "refused before the first poll"}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	res, err := WritePluginConfig(ctx, ConfigWrite{Path: path, StatsURL: srv.URL, Changes: []ConfigChange{routeClaudeToGLM()}})
+	if err != nil {
+		t.Fatalf("WritePluginConfig: %v", err)
+	}
+	if res.Outcome != WriteReloadFailed || res.ReloadError != "refused before the first poll" {
+		t.Errorf("result = %+v, want WriteReloadFailed with the proxy's error", res)
+	}
+}
+
 func TestWritePluginConfig_WithNoProxyWritesAndSaysSo(t *testing.T) {
 	path := writeFixtureContent(t, withRouter, 0o600)
 	res, err := WritePluginConfig(context.Background(), ConfigWrite{Path: path, Changes: []ConfigChange{routeClaudeToGLM()}})

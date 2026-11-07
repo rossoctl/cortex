@@ -100,6 +100,7 @@ func WritePluginConfig(ctx context.Context, w ConfigWrite) (WriteResult, error) 
 	if err := store.CheckUnchanged(ctx, &FetchedPipeline{Original: orig}); err != nil {
 		return WriteResult{}, err
 	}
+	baseline := ReloadBaseline(ctx, w.StatsURL)
 	applyTime, err := store.Apply(ctx, updated)
 	if err != nil {
 		return WriteResult{}, err
@@ -110,7 +111,7 @@ func WritePluginConfig(ctx context.Context, w ConfigWrite) (WriteResult, error) 
 
 	pctx, cancel := context.WithTimeout(ctx, LocalPollDeadline)
 	defer cancel()
-	res := PollUntilReloaded(pctx, w.StatsURL, applyTime, store.Describe().UnreachableHint)
+	res := PollUntilReloaded(pctx, w.StatsURL, applyTime, baseline, store.Describe().UnreachableHint)
 	switch res.Status {
 	case PollSuccess:
 		return WriteResult{Outcome: WriteReloaded}, nil

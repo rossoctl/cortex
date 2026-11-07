@@ -43,6 +43,28 @@ type PollResult struct {
 // current value so we only react to NEW failures after our apply.
 const baselineFailedSentinel int64 = -1
 
+// ReloadBaseline returns reloads_failed from statusURL/reload/status. Read it
+// BEFORE the write and give it to PollUntilReloaded: the proxy reloads 250ms after
+// a write, so a count read after the write can already include the refusal of that
+// write. When the endpoint does not answer, or statusURL is empty, it returns the
+// sentinel, and PollUntilReloaded takes the baseline at its first poll.
+func ReloadBaseline(ctx context.Context, statusURL string) int64 {
+	req, err := http.NewRequestWithContext(ctx, "GET", statusURL+"/reload/status", nil)
+	if err != nil {
+		return baselineFailedSentinel
+	}
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		return baselineFailedSentinel
+	}
+	defer resp.Body.Close()
+	var rs ReloadStatus
+	if resp.StatusCode != 200 || json.NewDecoder(resp.Body).Decode(&rs) != nil {
+		return baselineFailedSentinel
+	}
+	return rs.ReloadsFailed
+}
+
 // The poll schedule. Vars, not consts, only so a test can shorten them: the
 // unreachable path below waits out the whole backoff, about 16s, before it gives up.
 var (
@@ -70,8 +92,9 @@ const defaultUnreachableHint = "is the endpoint still up?"
 
 // PollUntilReloaded watches statusURL/reload/status until either:
 //   - LastSuccess > applyTime → PollSuccess.
-//   - ReloadsFailed exceeds the value at first successful poll → PollFailure
-//     with LastError populated.
+//   - ReloadsFailed exceeds baselineFailed → PollFailure with LastError
+//     populated. baselineFailed comes from ReloadBaseline, read before the
+//     write; when that read failed, the value at the first successful poll.
 //   - ctx is done → PollTimeout. (Caller is expected to set a 120s timeout
 //     via context.WithTimeout.)
 //   - 5 consecutive transport errors → PollFailure with a synthesized
@@ -85,14 +108,13 @@ const defaultUnreachableHint = "is the endpoint still up?"
 // back to defaultUnreachableHint. It comes from the Store's Target, because
 // what to check differs by backend: a cluster edit rides a port-forward that
 // can drop, a local one talks straight to a proxy that can have exited.
-func PollUntilReloaded(ctx context.Context, statusURL string, applyTime time.Time, unreachableHint string) PollResult {
+func PollUntilReloaded(ctx context.Context, statusURL string, applyTime time.Time, baselineFailed int64, unreachableHint string) PollResult {
 	url := statusURL + "/reload/status"
 	client := &http.Client{Timeout: 2 * time.Second}
 	if unreachableHint == "" {
 		unreachableHint = defaultUnreachableHint
 	}
 
-	baselineFailed := baselineFailedSentinel
 	consecErrors := 0
 	wait := pollInterval
 
