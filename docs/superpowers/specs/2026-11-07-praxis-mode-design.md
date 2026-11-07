@@ -7,6 +7,8 @@ Background: #1437 (assessment, closed), #1491 (hairpin spec and W1 spike results
 
 Revision marks: **[R n]** = from the no-regressions review, **[D n]** = from the development-speed review, **[T n]** = from the throwaway review.
 
+Second revision (2026-11-07): phase D added (Section 8). The end state is Cortex as a Praxis distribution, in the shape of praxis-ai: one Rust binary, with no Go service and no `/v1/attribute`.
+
 ## Problem
 
 The end state of #1714 is one network proxy on the laptop: Praxis. Cortex then is not a proxy. It keeps the attribution logic, the session store and archive, the ledger, and the session API that agentop uses.
@@ -35,7 +37,7 @@ We want an interim state now that:
 
 - Any other plugin in `praxis` mode: inference-router (`agentop server`), tool-prune, script, context-guru, ibac, sparc, opa, jwt-validation, static-inject and cpex are off. Each one is a later port.
 - Praxis checks (guardrails, limits). This design moves the processing, not the policy.
-- The end-state attribution service and Praxis-only CONNECT. Both are specified here (Section 2, Section 7) but built only when praxis#1447, #1479 and #782 land.
+- Phase D (Cortex as a Praxis distribution) and Praxis-only CONNECT. Both are specified here (Sections 7 and 8) but not built in v1.
 - WebSockets through Praxis. In `praxis` mode, Codex's Responses WebSocket is declined, so Codex uses HTTPS through Praxis (Section 4). **[R 4] [T F4]**
 - Showing Praxis metrics in agentop.
 - The MOCA VM control channel (`trustedSessionOf`) and mesh mTLS. `praxis.enabled` is refused with `mtls` set. **[R 5]**
@@ -44,8 +46,8 @@ We want an interim state now that:
 ## Decisions this design takes
 
 These were open on #1714:
-- **D1:** the session store, archive, agentop and the ledger stay in Cortex. Praxis feeds them.
-- **D3:** attribution stays Go logic in Cortex. In the end state Praxis calls it as a local service.
+- **D1:** the session store, archive and ledger stay in the Go Cortex in v1, and Praxis feeds them. In phase D they move into the binary (Section 8). agentop stays a Go client and does not change.
+- **D3:** attribution stays Go logic in Cortex in v1. In phase D it moves into the binary together with the store, because the store's events feed its state (Section 8). There is no attribution service at any phase.
 - **D4:** Cortex's processing code runs in Praxis as Rust filters, in our own binary built on the published `praxis-proxy` crates. It is not the Go pipeline linked into Praxis as a C library (#1437's work breakdown).
 - **D0:** the hairpin is built, but for processing and recording in Praxis, not for new checks.
 
@@ -73,25 +75,34 @@ agent ─► cortex :47600 (forward proxy)   CONNECT, TLS bridge, attribution (i
 PHASE B (#1714: praxis#1479 + #1480 released)
 agent ─► cortex :47600 ─► hop sends absolute form ─► cortex-gateway ─► origin   (egress listener removed)
 
-END STATE (#1714 phase C: #782, #1447, U7)
-agent ─► cortex-gateway :47600           CONNECT, decryption, client port
-           │                             cortex_attribution calls cortex /v1/attribute
-           ▼
-         origin
+PHASE D (no upstream trigger; Section 8)
+agent ─► cortex :47600 (front door only) ─► hop + X-Cortex-Client ─► cortex binary ─► …
+           CONNECT, TLS bridge                cortex_attribution (Rust, own lookup)
+                                              cortex_record ─► store (SQLite, in process)
+                                              session API :47601 ─► agentop
 
-ALWAYS:  cortex_record ──NDJSON──► cortex /v1/ingest ─► store / archive / usage / ledger
-                                                         ─► session API :47601 ─► agentop
+END STATE (phase C after phase D: #782, #1447)
+agent ─► cortex :47600  — one Rust binary on Praxis, like praxis-ai —  ─► origin
+           Praxis core: CONNECT, decryption, dial
+           Cortex filters: attribution, parse, record, pricing
+           Cortex store + session API :47601 ─► agentop
+
+V1 AND PHASE B:  cortex_record ──NDJSON──► Go cortex /v1/ingest ─► store / archive / usage / ledger
+                                                                   ─► session API :47601 ─► agentop
 ```
 
 **Survives into the end state:**
-- the filter crate (parsers, row builder, emitter, attribution filter).
-- the ingestion endpoint and the line format.
-- the attribution code and its JSON type, used in a header now and as the `/v1/attribute` answer later **[T F6]**.
+- the filter crate (parsers, row builder, attribution filter).
+- the line format, which becomes the store's record type in phase D.
+- the attribution JSON type **[T F6]**, which becomes the Rust filter's own type in phase D.
+- the session API contract (`docs/session-api.md`, the golden fixtures, `schemaVersion`). agentop sees no change at any phase.
 - the supervisor layout (two siblings) and `gateway.yaml` in the `forward_proxy` listener shape **[T F1, F3]**.
 - packaging: the `cortex-gateway` binary, the release job and the version pin.
 
 **Throwaway:**
 - the egress listener and `X-Cortex-Dest` (at phase B).
+- the ingestion transport (`POST /v1/ingest`, the emitter's HTTP stream) and the `X-Cortex-Attribution` header (at phase D). Their types survive.
+- the supervisor's second child and the token (at phase C, when one binary is left).
 - the hop, at phase C. At phase B it only changes to absolute form. **[T F7]**
 - the readiness probe and `gateway_unavailable` (at phase C).
 - the Cortex forward proxy, the TLS bridge and Cortex's own tunnel rows (at phase C). These exist today, so they cost nothing new.
@@ -149,7 +160,7 @@ ALWAYS:  cortex_record ──NDJSON──► cortex /v1/ingest ─► store / ar
 
 - Cortex settles at ingestion: `settle.SettleInput(Input{Host, Path, Inference, ResponseHeaders: cost.headers}, rates)` and `SettleServedModel`. It writes the result to `plugins["cost"]` as `inference-parser` does today.
 - **Cortex does not trust a producer's cost record.** It removes `plugins["cost"]` and the legacy `plugins["litellm-budget-track"]` from each ingested event before it settles. This answers #1497's design question 2.
-- When the pricing port lands (D2), this rule changes: Cortex accepts the cost record of a gateway that has the token, and settles only rows without one.
+- When the pricing port lands (D2), this rule changes. Cortex then accepts the cost record of a gateway that has the token. It settles only rows without one.
 
 ### Joins with Cortex's own state
 
@@ -176,8 +187,8 @@ Two cases need Cortex state that Praxis does not have. Both are keyed by `reques
   - the seven fields of `core/attribution/wire.go` (agent, proc, client proc, session, source, session header, chain session).
   - `recordSession`, the bucket a row is filed under (`Attribution.RecordSession`) **[R 12]**.
 - **Interim transport:** the forward proxy puts it in one header, `X-Cortex-Attribution: <base64url JSON>`, next to the hop token.
-- **End-state transport:** the body of the answer from `POST /v1/attribute` (Section 7).
-- `cortex_attribution` has one decoder and one validator. Only the transport changes at phase C.
+- **Phase D:** the type becomes the Rust filter's own. The filter fills it from its own lookup and store, and the header goes away (Section 8).
+- `cortex_attribution` has one decoder and one validator in v1. In phase D, the decoder goes and the validator stays.
 
 ### Interim: Cortex resolves, the header carries the result
 
@@ -396,6 +407,8 @@ Each step is one PR and is useful when it merges. Nothing changes for a user unt
 
 Then the live check, then a decision to change the default.
 
+After v1: phase B when praxis#1479 and #1480 ship, then phase D (Section 8) when praxis mode is stable, then phase C.
+
 ## 7. End state: what changes when upstream lands
 
 This section is not built now. It records what the interim parts must allow.
@@ -405,18 +418,54 @@ This section is not built now. It records what the interim parts must allow.
 - The hop sends absolute-form requests over HTTP/1 (Section 4). The egress listener, `X-Cortex-Dest` and the catch-all router entry go away.
 - **Needed upstream first:** a CA and verify option for forward-proxy origination. #1480 uses the system roots only, so users of `upstream_ca_bundle` or `upstream_insecure` would break. **[T F3]**
 
-### Phase C (#782, #1447 and the event export U7)
+### Phase C (#782 and #1447, after phase D)
 
-- `cortex-gateway` takes `:47600`. Cortex keeps `:47601` and adds `POST /v1/attribute`, with the same token and guards as `/v1/ingest`.
-- **`/v1/attribute` answers per connection, not only per request.** **[T F5]** Today Cortex makes more decisions at CONNECT time than attribution. So the answer is `attribution.Wire` plus:
+- **Phase C comes after phase D.** If upstream lands first, phase C waits for phase D. Then no attribution service is ever built.
+- The binary takes `:47600`. The Go front door, the supervisor's second child and the token go away. One process is left.
+- `cortex_attribution` reads the client address from the connection (praxis#1447) instead of `X-Cortex-Client`.
+- **The CONNECT-time decisions move into Rust filters too.** **[T F5]** Today the Go front door makes them:
   - the self-traffic decision (`attribution.SelfTraffic`).
   - the passthrough decision (the per-program skip set, `tlsbridge/program.go`).
   - the client-trust prediction and the unread report (`clienttrust.go`, `unread.go`).
-- The process-chain part is cached per downstream connection, as `attribution.Memo` does today. The request part runs per request.
+- The process-chain lookup is cached per downstream connection, as `attribution.Memo` does today. The request part runs per request.
 - `cortex_record` adds CONNECT rows. #1479 runs `on_request` for the CONNECT and the end-of-stream body hook with the tunnel byte counts. It does not expose the close reason or the dial address, so `tunnelReason` and `dialAddr` stay empty until it does. HTTP/2 CONNECT gets 501. **[T F8]**
 - Rules that move from Cortex into `cortex_attribution`: self-traffic, `skip_hosts`, and the misdirected-Host check. The egress allow list maps to `allow_destinations`, which refuses IP literals, while Cortex accepts `[2001:db8::1]:443`. **[T F9]**
-- The ingestion line adds `pair` and `rekey`.
-- `gateway_unavailable`, the probe and the hop go away. A failed `/v1/attribute` call becomes the new failure to record.
+- The store's record type adds `pair` and `rekey` (in process, no wire format).
+- `gateway_unavailable`, the probe and the hop go away.
+
+## 8. Phase D: Cortex as a Praxis distribution
+
+### Goal
+
+Cortex ends in the shape of praxis-ai today: **one Rust binary built on the Praxis crates**. It has its own filters, its own store, and its own APIs served by filters. No Go service. agentop stays a Go client and does not change.
+
+| Today (Go) | After phase D |
+|---|---|
+| attribution and peerproc (about 1.3k lines) | `cortex_attribution` with its own process lookup (Rust) |
+| session store, archive and timeline (about 5k lines) | a Cortex store crate on SQLite, in the pattern of praxis-ai's `store`, `store-lifecycle` and `store-backends` |
+| cost and the ledger (about 6.2k lines) | a Rust pricing filter (D2), and Praxis Tokenomics when it is on par |
+| session API (about 1.2k lines) | filters on `:47601` that serve the same API |
+| `POST /v1/ingest` and the emitter's HTTP stream | `cortex_record` writes the same record type to the store in process |
+
+Line counts are non-test, non-comment Go lines on `main` @ `92604f4c`. The forward proxy and the TLS bridge (about 8k lines) are not ported: phase C replaces them with Praxis core.
+
+### Trigger and order
+
+- **Phase D has no upstream trigger.** It starts when praxis mode is the default and stable.
+- **It comes before phase C.** Attribution keeps state that the store's events feed: `Attributor` is a store `Recorder`, `Clearer`, `Deleter`, `Evicter` and `Rekeyer` (`core/attribution/attribution.go:214-262`). So attribution and the store move together. If attribution moved first, it would need a new interface to the Go store, and that interface would be throwaway.
+- **The client address in the interim.** `Attributor.Lookup` takes only the client and server socket addresses (`core/attribution/lookup.go:23`), so any process on the host can ask it. In phase D the Go front door passes them in a token-protected header, `X-Cortex-Client: <client addr> <server addr>`. The binary runs the lookup itself. In phase C the address comes from the connection (praxis#1447), and the header goes away.
+
+### What stays the same
+
+- **The session API contract** (`docs/session-api.md`, the golden fixtures, `schemaVersion`) is the boundary. The phase D test is the same agentop session against both stores, with the same `/v1/sessions`, `/v1/events`, `/v1/usage` and timeline answers.
+- The Go tests of the store, the archive, the timeline, pricing and the session API become parity cases for the Rust port. The #1503 fixtures do the same for the parsers.
+- **Serving SSE from a filter:** `GET /v1/events` is a long-lived stream. Praxis has `StreamingTerminalResponse`, a pull-based body for a filter's own streaming answer (`crates/filter/src/actions.rs:53`). Read in the code. Not tested with a long-lived stream.
+
+### What phase D must decide
+
+1. **Existing archives.** The Go segment format moves to SQLite. Options: a one-time importer, or keep only the retention window (30 days by default) and import nothing.
+2. **The store crates.** praxis-ai's store crates are `publish = false`, so Cortex follows their pattern and does not depend on them.
+3. **The plugins.** Each remaining plugin (inference-router, tool-prune, script and the rest) is ported as a Rust filter or retired. Each is its own decision.
 
 ## Upstream asks (add to #1714)
 
@@ -434,7 +483,8 @@ This section is not built now. It records what the interim parts must allow.
 1. **Who bumps `praxis-proxy`** (D5): decided as we go. Until then, a failed weekly build has no named owner.
 2. **The pricing port** (D2): when to start it, and the test that shows Tokenomics is on par.
 3. **Rust CI and release cost:** the Praxis lock file has 609 crates, some with native code (`aws-lc-sys`, `openssl-sys`, `zstd-sys`). The W1 build took about 3 minutes on an M-series Mac, and `target/` was 1.3 GB. CI time on GitHub runners is not measured yet.
-4. **Interim memory:** in `praxis` mode the capture lives in `cortex-gateway` until it is sent, then in Cortex. Peak memory per in-flight request may be about twice that of direct mode. Not measured.
+4. **Phase D archive migration:** an importer, or the retention window only (Section 8).
+5. **Interim memory:** in `praxis` mode the capture lives in `cortex-gateway` until it is sent, then in Cortex. Peak memory per in-flight request may be about twice that of direct mode. Not measured.
 
 ## References
 
