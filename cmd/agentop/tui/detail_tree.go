@@ -33,23 +33,27 @@ const (
 	kindString
 	kindObject
 	kindArray
-	kindGroup // the messages before this turn's, under one head
+	kindGroup    // the messages before this turn's, under one head
+	kindSection  // one half of an exchange on the detail page (#1681): a title, header lines, the event
+	kindSections // the detail page's root: its sections, one after another
 )
 
 // node is one JSON value. path names it for the fold state: "inference.messages[3].content".
 type node struct {
-	kind    nodeKind
-	path    string
-	key     string
-	hasKey  bool
-	plain   string // a scalar's or a string's text, unstyled: what a search matches
-	text    string // a scalar's text, styled
-	kids    []*node
-	count   int // elements or keys in the JSON value (a group changes len(kids), not this)
-	size    int // the value's JSON length in bytes, near enough to label it
-	fold    bool
-	defOpen bool
-	label   string // a closed head's text, when it is not the count and the size
+	kind        nodeKind
+	path        string
+	key         string
+	hasKey      bool
+	plain       string // a scalar's or a string's text, unstyled: what a search matches
+	text        string // a scalar's text, styled
+	kids        []*node
+	count       int // elements or keys in the JSON value (a group changes len(kids), not this)
+	size        int // the value's JSON length in bytes, near enough to label it
+	fold        bool
+	defOpen     bool
+	label       string   // a closed head's text, when it is not the count and the size
+	heads       []string // a section's header lines, drawn under its title
+	noQueryOpen bool     // a search never opens this fold: the raw capture
 }
 
 // foldState is what decides which folds render open. open holds the reader's own choices.
@@ -89,6 +93,45 @@ func treeFromJSON(data []byte) (*node, error) {
 	root := buildTree(v, "", "", false)
 	foldDefaults(root)
 	return root, nil
+}
+
+// sectionTree builds one half of the detail page (#1681). path is "request" or "response",
+// and it prefixes every node's path, so the halves' folds and the cursor's path never meet.
+// heads are the half's header lines (TLS, timing, …), drawn under the title. With data nil
+// the half is missing, and the section shows note instead of a tree.
+func sectionTree(path, title string, heads []string, data []byte, note string) (*node, error) {
+	s := &node{kind: kindSection, path: path, fold: true, defOpen: true, label: title, heads: heads}
+	if data == nil {
+		s.heads = append(s.heads, note)
+	} else {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.UseNumber()
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			return nil, err
+		}
+		ev := buildTree(v, path, "", false)
+		ev.fold = false // the section folds; the event's object does not fold a second time
+		foldDefaults(ev)
+		s.kids = []*node{ev}
+	}
+	// A search for a header's text must find it in a closed section too.
+	s.plain = strings.Join(s.heads, "\n")
+	return s, nil
+}
+
+// sectionsRoot is the root renderTree draws for a detail page: the sections in order.
+func sectionsRoot(secs ...*node) *node {
+	return &node{kind: kindSections, kids: secs}
+}
+
+// sectionOf names the section a tree path belongs to. Every path in the response section
+// starts with "response"; everything else — the request's paths, and "" — is the request's.
+func sectionOf(path string) string {
+	if path == "response" || strings.HasPrefix(path, "response.") || strings.HasPrefix(path, "response[") {
+		return "response"
+	}
+	return "request"
 }
 
 func buildTree(v any, path, key string, hasKey bool) *node {
@@ -183,9 +226,15 @@ func foldDefaults(root *node) {
 			}
 		}
 	}
-	// The exact capture: large, and opened when it is the point.
+	// The exact capture: large, and opened when it is the point. A search does not open it
+	// either: see isOpen.
 	if raw := root.child("raw"); raw != nil && raw.fold {
-		raw.defOpen = false
+		raw.defOpen, raw.noQueryOpen = false, true
+	}
+	// Every plugin's invocation, skips included, was half of a short request (#1681). The
+	// section title names the plugins that acted, so the full list starts closed.
+	if inv := root.child("invocations"); inv != nil && inv.fold {
+		inv.defOpen = false
 	}
 	for _, p := range [][2]string{{"mcp", "params"}, {"mcp", "result"}, {"a2a", "parts"}} {
 		if c := root.child(p[0]).child(p[1]); c != nil && c.fold && c.size > clipBytes {
@@ -300,10 +349,10 @@ func (r *renderer) isOpen(n *node) bool {
 	if c, ok := r.fs.open[n.path]; ok && (c.open || r.fs.query == "" || c.query == r.fs.query || !r.hasMatch(n)) {
 		return c.open
 	}
-	// Not the raw capture: it holds a second copy of the conversation and up to 10 MiB of
+	// Not the raw capture (noQueryOpen): it holds a second copy of the conversation and up to 10 MiB of
 	// response, so nearly every query matches in it, and drawing it took over a second a
 	// keystroke. It opens when the reader opens it.
-	if r.fs.query != "" && n.path != "raw" && r.hasMatch(n) {
+	if r.fs.query != "" && !n.noQueryOpen && r.hasMatch(n) {
 		return true
 	}
 	return n.defOpen
@@ -363,6 +412,30 @@ func (r *renderer) value(n *node, indent int, more bool) {
 		if open {
 			for i, k := range n.kids {
 				r.value(k, indent+1, i < len(n.kids)-1)
+			}
+		}
+	case kindSections:
+		for _, k := range n.kids {
+			r.value(k, 0, false)
+		}
+	case kindSection:
+		open := r.isOpen(n)
+		marker := "▸ "
+		if open {
+			marker = "▾ "
+		}
+		if r.fs.all {
+			marker = ""
+		}
+		r.emit(styleJSONPunct.Render(marker)+styleTitle.Render(n.label), n, true, open)
+		if open {
+			for _, h := range n.heads {
+				for _, l := range strings.Split(h, "\n") {
+					r.emit("  "+l, n, false, false)
+				}
+			}
+			for _, k := range n.kids {
+				r.value(k, 0, false)
 			}
 		}
 	default:

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -475,6 +476,31 @@ func filterForDetail(data []byte, phase pipeline.SessionPhase) []byte {
 	out, err := json.Marshal(m)
 	if err != nil {
 		return data
+	}
+	return out
+}
+
+// sharedWithRequest are the response fields that repeat the request's on almost every
+// exchange: about 10 rows of every RESPONSE section on real traffic (#1681).
+var sharedWithRequest = []string{"client", "direction", "host", "httpMethod", "httpPath", "requestId", "sessionId"}
+
+// dropShared leaves out of resp each sharedWithRequest field whose value equals req's. A field
+// that differs stays — a redirected response's host is news. at always stays: it is the
+// response's own time. Both inputs are filterForDetail's output, so equal values are equal
+// bytes. Any decode failure returns resp as it was.
+func dropShared(resp, req []byte) []byte {
+	var a, b map[string]json.RawMessage
+	if json.Unmarshal(resp, &a) != nil || json.Unmarshal(req, &b) != nil {
+		return resp
+	}
+	for _, k := range sharedWithRequest {
+		if v, ok := a[k]; ok && bytes.Equal(v, b[k]) {
+			delete(a, k)
+		}
+	}
+	out, err := json.Marshal(a)
+	if err != nil {
+		return resp
 	}
 	return out
 }
