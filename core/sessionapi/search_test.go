@@ -167,6 +167,30 @@ func TestSearch_ArchiveCapture(t *testing.T) {
 	}
 }
 
+// A capture's text is not shared between events, so the pass keeps no result for it. A kept
+// result holds the block it came from in memory until the segment ends.
+func TestSearch_KeepsNothingForCaptureText(t *testing.T) {
+	a, err := archive.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	store.AddRecorder(a)
+	store.AppendCapture("s1", req(&pipeline.InferenceExtension{Model: "m"}), bodyCapture("NEEDLE-RAW"))
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m := newMatcher("needle-raw")
+	seqs, _, _, err := m.find(context.Background(), a, "s1")
+	if err != nil || !slices.Equal(seqs, []uint64{1}) {
+		t.Fatalf("seqs %v err %v, want [1]", seqs, err)
+	}
+	if len(m.seen) != 0 {
+		t.Errorf("%d results kept for capture text, want none", len(m.seen))
+	}
+}
+
 // Memory and the archive both hold the event: it is in the answer one time.
 func TestSearch_EachSeqOneTime(t *testing.T) {
 	ev := req(&pipeline.InferenceExtension{Model: "m",
@@ -229,8 +253,9 @@ func TestSearch_MatcherForgetsAtASegment(t *testing.T) {
 	long := strings.Repeat("y", 100)
 	m.text(long)
 	m.schema(`{"type":"object","properties":{"` + long + `":{}}}`)
+	m.key(long)
 	m.forget()
-	if len(m.seen) != 0 || len(m.json) != 0 {
-		t.Errorf("after forget: %d texts and %d schemas kept, want none", len(m.seen), len(m.json))
+	if len(m.seen) != 0 || len(m.json) != 0 || len(m.keys) != 0 {
+		t.Errorf("after forget: %d texts, %d schemas and %d keys kept, want none", len(m.seen), len(m.json), len(m.keys))
 	}
 }

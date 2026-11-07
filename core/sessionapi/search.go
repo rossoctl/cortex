@@ -1,6 +1,7 @@
 package sessionapi
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -53,7 +54,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.archive != nil {
-		disk, diskLast, ok, err := s.archive.Find(ctx, id, m.event, m.forget, m.text)
+		disk, diskLast, ok, err := m.find(ctx, s.archive, id)
 		if ctx.Err() != nil {
 			return
 		}
@@ -104,16 +105,21 @@ func newMatcher(q string) *matcher {
 		seen: map[strKey]bool{}, json: map[strKey]bool{}, keys: map[string]bool{}}
 }
 
-// text reports whether s holds the query, folded as agentop's find.Contains folds: rune by rune,
+// fold reports whether s holds the query, folded as agentop's find.Contains folds: rune by rune,
 // with unicode.ToLower.
+func (m *matcher) fold(s string) bool {
+	return strings.Contains(strings.Map(unicode.ToLower, s), m.q)
+}
+
+// text is fold, with one result kept for each long string, for the strings that events share.
 func (m *matcher) text(s string) bool {
 	if len(s) < session.InternMinLen {
-		return strings.Contains(strings.Map(unicode.ToLower, s), m.q)
+		return m.fold(s)
 	}
 	k := strKey{unsafe.StringData(s), len(s)}
 	r, ok := m.seen[k]
 	if !ok {
-		r = strings.Contains(strings.Map(unicode.ToLower, s), m.q)
+		r = m.fold(s)
 		m.seen[k] = r
 	}
 	return r
@@ -123,6 +129,14 @@ func (m *matcher) text(s string) bool {
 func (m *matcher) forget() {
 	clear(m.seen)
 	clear(m.json)
+	clear(m.keys)
+}
+
+// find is the archive's pass over id. A capture's text is not shared between events (Find keeps
+// one result for each block), so it is checked with fold: a kept result would hold each block
+// in memory to the segment's end, which doubled the pass's peak heap.
+func (m *matcher) find(ctx context.Context, a *archive.Archive, id string) ([]uint64, uint64, bool, error) {
+	return a.Find(ctx, id, m.event, m.forget, m.fold)
 }
 
 // key reports whether a key name holds the query. The same few names repeat in every event.

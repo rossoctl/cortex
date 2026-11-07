@@ -281,9 +281,10 @@ curl -s 'localhost:9094/v1/sessions/<id>/search?q=retry%20budget'
   plain-text `404`, which is how a client tells the two apart. An archive read that fails is
   `500`: an answer without part of the history could say "no match" where there is one.
 - **Cost:** one pass. A long string that many events share is checked one time. On a 10,767-event
-  laptop session, the pass took about 4 s, with a peak heap of 268 MB (180 MB with `GOGC=25`).
+  laptop session, the pass took about 4 s, with a peak heap of 149 MB (95 MB with `GOGC=25`).
   One plain read of the same archive peaks at about 130 MB. The pass keeps a result for each long
-  string of one segment, and drops it at the next segment. The pass stops when the client closes
+  string that the events of one segment share, and drops it at the next segment. It keeps none
+  for a capture's text, which no two events share. The pass stops when the client closes
   the connection, and agentop closes it when its search is dropped.
 
 ## `DELETE /v1/sessions`
