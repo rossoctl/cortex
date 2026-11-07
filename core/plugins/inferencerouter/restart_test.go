@@ -321,3 +321,17 @@ func TestRouter_TheTableIsMappedByTheServersOfTheCurrentConfig(t *testing.T) {
 		t.Errorf("pin = %q, want zai, the server on the table's host now", pin)
 	}
 }
+
+// §3.6 row 1: a context with a session id and no view has no session to vouch for, so a known
+// table that the listener set is not evidence. The request stays where it is.
+func TestRouter_ATableWithNoSessionViewIsNoEvidence(t *testing.T) {
+	pins := newStore(t)
+	pctx := continuation(pins, "s1")
+	pctx.Session = nil
+	pctx.SetSessionFacts(pipeline.SessionFacts{InferenceHosts: pipeline.InferenceHosts{{Agent: "claude-code", Host: glmHost, Last: 1}},
+		HostsKnown: true})
+	run(t, build(t, claudeCodeOnGLM), pctx)
+	if got := outcomeOf(t, pctx, pins); got != stayedPut {
+		t.Errorf("%+v, want %+v", got, stayedPut)
+	}
+}
