@@ -14,6 +14,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
+	"github.com/rossoctl/cortex/core/session"
 	"github.com/tidwall/gjson"
 )
 
@@ -68,38 +69,15 @@ var modelNotFound = []struct {
 	{"The model %s does not exist.", []int{http.StatusNotFound}},
 }
 
-// capturedPaths are the paths a captured request is sent to, by how the path the
-// agent named ends: the API format, whoever the agent and whatever its provider.
-var capturedPaths = []struct{ suffix, path string }{
-	{"/chat/completions", "/v1/chat/completions"},
-	{"/v1/messages", "/v1/messages"},
-	{"/responses", "/v1/responses"},
-}
-
-// capturePath is the server path an inference request addressed to a host that is no
-// server is sent to, and whether the router captures it at all: a POST, with a path
-// ending in one of capturedPaths. The parse is checked by the caller; see capture.
-func capturePath(method, path string) (string, bool) {
-	if method != http.MethodPost {
-		return "", false
-	}
-	for _, c := range capturedPaths {
-		if strings.HasSuffix(path, c.suffix) {
-			return c.path, true
-		}
-	}
-	return "", false
-}
-
 // capture is the server path for pctx when it is a request the router captures: an
 // inference request — the parser's word, not the path's, since an agent's own tools
-// can POST to any API whose path happens to end the same way — that capturePath
-// takes. ok is false for anything else.
+// can POST to any API whose path happens to end the same way — that
+// session.CapturePath takes. ok is false for anything else.
 func capture(pctx *pipeline.Context) (path string, ok bool) {
 	if pctx.Extensions.Inference == nil {
 		return "", false
 	}
-	return capturePath(pctx.Method, pctx.Path)
+	return session.CapturePath(pctx.Method, pctx.Path)
 }
 
 // catalogs is each server's model list, by server name, as last fetched.
