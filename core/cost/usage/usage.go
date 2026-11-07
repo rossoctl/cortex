@@ -296,8 +296,8 @@ type Counts struct {
 // `cost` command, agentop's spend strip, and this package's own tests as a bare `1 | 8`. Three
 // uncoordinated copies of a wire format, with nothing comparing them.
 //
-// TestKindBits_MatchTheParserThatProducesThem, which lives with parsercommon because that is
-// the one place both sets are visible, is what pins these to it.
+// TestKindBits_MatchTheParserThatProducesThem, which lives with parsercommon, is what pins
+// these to it.
 //
 // WIRE FORMAT: they are serialised in PresentKinds and stored in the cost ledger, so they
 // cannot be renumbered whatever any Go identifier is called.

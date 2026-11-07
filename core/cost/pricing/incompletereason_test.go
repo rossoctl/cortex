@@ -12,7 +12,8 @@ import (
 // Mirrored rather than imported because parsercommon lived under plugins/internal and was
 // unreachable from here when this was written — the same constraint that made
 // pipeline.InferenceExtension.PresentKinds a plain uint8 with its layout written into the doc
-// comment. They live in this file because the only readers are the assertions below, which pin
+// comment. parsercommon is in core/internal now, so this file can import it, but the mirror
+// stays. They live in this file because the only readers are the assertions below, which pin
 // what the mask CANNOT discriminate: nothing in the package reads it.
 const (
 	presentInput  uint8 = 1 << 0 // parsercommon.KindInput

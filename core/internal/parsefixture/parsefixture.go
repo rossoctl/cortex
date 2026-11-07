@@ -21,6 +21,7 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
+// A test package that imports parsefixture must not define its own -update flag: two definitions panic at init.
 var update = flag.Bool("update", false, "rewrite expected.json in each case directory from the parser output")
 
 // responseTypes maps a response file to the Content-Type the upstream sent with it.
