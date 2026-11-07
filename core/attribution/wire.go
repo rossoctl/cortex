@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
@@ -57,9 +59,14 @@ func Encode(h http.Header, a Attribution) {
 // Decode reads an Attribution that a trusted hop set on h. ok is false when h carries none,
 // or carries one that is malformed — a source Resolve does not return, a session id the store
 // would refuse, a process that is not "<pid>.<start>", a control rune — and then the caller
-// resolves the request itself. Call it only for a hop the deployment trusts.
+// resolves the request itself. Call it only for a hop the deployment trusts. An empty
+// Attribution{} cannot travel: Encode sets no header for it, and Decode reads that as none.
 func Decode(h http.Header) (Attribution, bool) {
-	if h.Get(HeaderSource) == "" && h.Get(HeaderSession) == "" && h.Get(HeaderProc) == "" {
+	present := false
+	for _, k := range wireHeaders {
+		present = present || h.Get(k) != ""
+	}
+	if !present {
 		return Attribution{}, false
 	}
 	a := Attribution{
@@ -88,24 +95,28 @@ func Decode(h http.Header) (Attribution, bool) {
 		}
 	}
 	for _, s := range []string{a.Agent, a.Header, a.Session, a.ChainSession} {
-		if strings.ContainsFunc(s, isControl) {
+		// The rule session.validHeaderSessionID applies: valid UTF-8, no C0, DEL or C1 rune.
+		if !utf8.ValidString(s) || strings.ContainsFunc(s, unicode.IsControl) {
 			return Attribution{}, false
 		}
 	}
 	return a, true
 }
 
-func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
-
-// validProc reports whether p is Proc.Key's form: a pid, a dot, a start time.
+// validProc reports whether p is exactly what Proc.Key writes: a pid, a dot, a start time,
+// neither negative. A decoded Proc is a bucket key, so "01.2" must not pass as "1.2".
 func validProc(p string) bool {
-	pid, start, ok := strings.Cut(p, ".")
+	pidS, startS, ok := strings.Cut(p, ".")
 	if !ok {
 		return false
 	}
-	if _, err := strconv.ParseInt(pid, 10, 32); err != nil {
+	pid, err := strconv.ParseInt(pidS, 10, 32)
+	if err != nil || pid < 0 {
 		return false
 	}
-	_, err := strconv.ParseInt(start, 10, 64)
-	return err == nil
+	start, err := strconv.ParseInt(startS, 10, 64)
+	if err != nil || start < 0 {
+		return false
+	}
+	return Proc{PID: int32(pid), Start: start}.Key() == p
 }
