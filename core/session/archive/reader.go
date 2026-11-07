@@ -40,6 +40,13 @@ func readSegment(path string, fn func(e *model.SessionEvent) bool) (truncated bo
 // and does not even decode them: a read that does not rebuild a body holds no blocks.
 func readRecords(path string, want map[string]struct{}, blocks map[string]string,
 	fn func(e *model.SessionEvent, c json.RawMessage) bool) (truncated bool, err error) {
+	return readRecordsWith(path, want, blocks, nil, fn)
+}
+
+// readRecordsWith is readRecords that also hands onBlock each block record, in file order, when
+// onBlock is not nil.
+func readRecordsWith(path string, want map[string]struct{}, blocks map[string]string, onBlock func(rec *record),
+	fn func(e *model.SessionEvent, c json.RawMessage) bool) (truncated bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return false, err
@@ -66,7 +73,7 @@ func readRecords(path string, want map[string]struct{}, blocks map[string]string
 			}
 			// The writer's json.Marshal puts the kind first, so a block nobody wants is skipped
 			// before it is decoded. A block written any other way is decoded and dropped below.
-			if want == nil && bytes.HasPrefix(line, blockPrefix) {
+			if want == nil && onBlock == nil && bytes.HasPrefix(line, blockPrefix) {
 				continue
 			}
 			var rec record
@@ -77,6 +84,9 @@ func readRecords(path string, want map[string]struct{}, blocks map[string]string
 			case kindString:
 				table[rec.H] = rec.V
 			case kindBlock:
+				if onBlock != nil {
+					onBlock(&rec)
+				}
 				if _, ok := want[rec.H]; ok {
 					if rec.X != nil {
 						blocks[rec.H] = string(rec.X)

@@ -327,6 +327,7 @@ var paneKeys = map[paneID]keyGroup{
 			{"↑↓ / jk", "navigate"},
 			{"↵ / → / l", "event detail"},
 			{"s", "toggle passthru/skip rows"},
+			{"/ then tab", "search each row's details: ↵, n and N find the next match"},
 			{"c", "column picker (checkboxes + descriptions)"},
 			{"c then s", "sort by a column: desc → asc → chronological"},
 			{"o", "load the page before the oldest event shown"},

@@ -341,15 +341,16 @@ func TestSummarizeEvent_IsOrdersOfMagnitudeSmaller(t *testing.T) {
 // The half that was missed the first time, and silently: the events table has a
 // FILTER, and it searches fields the projection had been dropping. `plugin:foo`
 // matched nothing because it is a lookup into Plugins, and `/some completion text`
-// stopped matching because eventHaystack reads Inference.Completion and
-// A2A.Parts[].Content.
+// stopped matching because the filter read Inference.Completion and
+// A2A.Parts[].Content. agentop's details search reads them now, with detailHas on the
+// summary rows it holds.
 //
 // Worse than losing a feature, it was INCONSISTENT: SSE-streamed events are not
 // projected, so the same query matched newly arrived rows and missed everything a
 // snapshot had replaced.
 //
-// Each field below is named by agentop's eventHaystack / matchEventRow
-// (cmd/agentop/tui/events_pane.go). Keeping them costs 299x → 163x, which is 1.12 MiB
+// Each field below is read by agentop's detailHas on a summary row
+// (cmd/agentop/tui/search_details.go). Keeping them costs 299x → 163x, which is 1.12 MiB
 // against 0.61 for a 1000-event session — both instant.
 func TestSummarizeEvent_KeepsEverythingTheFilterSearches(t *testing.T) {
 	full := fullEvent()
@@ -359,7 +360,7 @@ func TestSummarizeEvent_KeepsEverythingTheFilterSearches(t *testing.T) {
 	if _, ok := got.Plugins["cost"]; !ok {
 		t.Error("Plugins was dropped — the plugin:<name> filter is a lookup into it")
 	}
-	// Free-text: eventHaystack appends both of these.
+	// Free-text: agentop's detailHas reads both of these on the summary row.
 	if got.Inference.Completion != full.Inference.Completion {
 		t.Error("Inference.Completion was dropped — the / filter searches it")
 	}
@@ -436,10 +437,11 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 			if got := g.typ.NumField(); got != g.want {
 				t.Errorf("%s has %d fields, this guard was written against %d.\n"+
 					"A field was added or removed. Decide which it is:\n"+
-					"  TIMELINE data — rendered in the events table, or searched by agentop's\n"+
-					"    eventHaystack/matchEventRow — then it MUST survive summarizeEvent, and\n"+
-					"    belongs in one of the assertions above.\n"+
-					"  DETAIL data — read only by the detail pane — then drop it in summarizeEvent.\n"+
+					"  TIMELINE data — rendered in the events table — then it MUST survive\n"+
+					"    summarizeEvent, and belongs in one of the assertions above.\n"+
+					"  DETAIL data — read only by the detail pane — then drop it in summarizeEvent,\n"+
+					"    and add it to the search route's matcher (search.go), or the details\n"+
+					"    search stops seeing it.\n"+
 					"Then update this count.", g.name, got, g.want)
 			}
 		})

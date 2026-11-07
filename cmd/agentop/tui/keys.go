@@ -89,6 +89,12 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return m.serverNoticeKey(msg)
 	}
 
+	// Esc while a details search runs drops its answer. Esc again backs out.
+	if msg.String() == "esc" && m.pane == paneEvents && m.detailSearching() {
+		m.cancelDetailSearch()
+		return nil
+	}
+
 	// `/`, n and N search the pane, on every pane. Above the pickers, which handle their own
 	// keys and return. Not over the column picker or an edit, which own their keys.
 	if m.editState.phase == editPhaseDone && !(m.colPicker && m.pane == paneEvents) {
@@ -98,8 +104,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		case "n", "N":
 			if m.surface(m.pane) != nil {
-				m.searchStep(m.pane, msg.String() == "n")
-				return nil
+				return m.searchStep(m.pane, msg.String() == "n")
 			}
 		}
 	}
@@ -707,6 +712,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				// typed for that session's events, and re-entering it keeps them.
 				delete(m.search, paneEvents)
 				delete(m.search, paneDetail)
+				m.resetDetailSearch()
 			}
 			m.selectedSess = id
 			m.pane = paneEvents
@@ -739,12 +745,19 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// Render from the summary immediately, then fill the message bodies in
 			// when they arrive — the timeline no longer carries them. See
 			// fetchDetailEventCmd for why this is not a blocking spinner.
+			// A details match opens on its highlight: the detail search gets the same query.
+			if q := m.search[paneEvents]; m.searchDetails && q != "" && m.search[paneDetail] != q {
+				m.clearFoldQueries()
+				m.search[paneDetail] = q
+			}
 			er.raw, _ = m.heldRaw(er.event)
 			m.showDetail(er, true)
 			m.pane = paneDetail
 			if m.needsFullEvent(er.event) && m.client != nil {
 				return fetchDetailEventCmd(m, eventSession(m.selectedSess, er.event), er.event.Seq)
 			}
+			m.openRawMatch()
+			m.revealDetailMatch()
 			return nil
 		case panePipeline:
 			p := m.selectedPlugin()
@@ -1194,6 +1207,9 @@ func (m *model) setStickyFlash(s string) {
 // enough to fit on a single row at 80 cols.
 func (m *model) helpView() string {
 	if m.searching {
+		if m.searchPane == paneEvents {
+			return "type to search · [tab] details · [enter] done · [esc] cancel"
+		}
 		return "type to search · [enter] done · [esc] cancel"
 	}
 	switch m.pane {

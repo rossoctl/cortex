@@ -9,6 +9,7 @@ import (
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/sessionapi"
 )
 
 // showDetail loads the row's event into the detail viewport as colorized
@@ -37,34 +38,9 @@ import (
 // event arrived over TLS (SessionEvent.TLS non-nil), a small TLS header
 // block is prepended too. Both absent for plaintext, non-bridged events.
 func (m *model) showDetail(r eventRow, resetScroll bool) {
-	e := r.event
 	m.detailRow = r
-	m.detailEvent = e
-	// The header blocks first, each followed by a blank line, in the order they have always
-	// had: TLS, what plugins rewrote, then the folded tunnel. Lines like the JSON below them,
-	// so a search reads them too.
-	m.detailHead = nil
-	m.detailTree = nil
-	if data, err := json.Marshal(e); err != nil {
-		m.detailHead = []string{"error marshaling event: " + err.Error()}
-	} else {
-		var tunnel string
-		if r.tunnel != nil {
-			tunnel = tunnelHeader(r.tunnel)
-		}
-		for _, h := range []string{tlsHeader(e.TLS), rewriteHeader(e), servedHeader(e), timingHeader(e), tunnel} {
-			if h != "" {
-				m.detailHead = append(m.detailHead, strings.Split(h, "\n")...)
-				m.detailHead = append(m.detailHead, "")
-			}
-		}
-		filtered := withRaw(filterForDetail(data, e.Phase), r.raw)
-		if root, err := treeFromJSON(filtered); err == nil {
-			m.detailTree = root
-		} else {
-			m.detailHead = append(m.detailHead, ColorizeJSONBytes(filtered))
-		}
-	}
+	m.detailEvent = r.event
+	m.detailHead, m.detailTree = detailContent(r)
 	if resetScroll {
 		// A new event: the folds the reader opened were for the last one.
 		m.detailFolds = nil
@@ -83,6 +59,35 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 	// offset is already in range. Same three lines as syncHelpViewport.
 	m.detailVp.SetYOffset(m.detailVp.YOffset)
 	m.scrollToDetailCursor()
+}
+
+// detailContent is what the detail pane draws for r: the header blocks, each followed by a
+// blank line, and the event's JSON as a tree. When the JSON does not build a tree, it is one
+// more header, colorized. showDetail draws this and detailHas searches it, so a details search
+// matches exactly what opening the row shows.
+func detailContent(r eventRow) (head []string, root *node) {
+	e := r.event
+	data, err := json.Marshal(e)
+	if err != nil {
+		return []string{"error marshaling event: " + err.Error()}, nil
+	}
+	// The header blocks first, in the order they have always had: TLS, what plugins rewrote,
+	// then the folded tunnel. Lines like the JSON below them, so a search reads them too.
+	var tunnel string
+	if r.tunnel != nil {
+		tunnel = tunnelHeader(r.tunnel)
+	}
+	for _, h := range []string{tlsHeader(e.TLS), rewriteHeader(e), servedHeader(e), timingHeader(e), tunnel} {
+		if h != "" {
+			head = append(head, strings.Split(h, "\n")...)
+			head = append(head, "")
+		}
+	}
+	filtered := withRaw(filterForDetail(data, e.Phase), r.raw)
+	if root, err := treeFromJSON(filtered); err == nil {
+		return head, root
+	}
+	return append(head, ColorizeJSONBytes(filtered)), nil
 }
 
 // renderDetail draws the event detail pane from the tree showDetail built, with the folds the
@@ -187,6 +192,45 @@ func (m *model) toggleDetailFold() {
 	m.detailCursorPath, m.detailCursorOff = l.path, 0
 	m.renderDetail()
 	m.moveDetailCursor(m.cursorLineFor(l.path, 0))
+}
+
+// openRawMatch opens the capture when the details search's query matches in it and nowhere the
+// pane draws: a query does not open the capture by itself (isOpen). A fold the reader chose holds.
+func (m *model) openRawMatch() {
+	q := m.searchQuery(paneDetail)
+	if !m.searchDetails || q == "" || q != m.searchQuery(paneEvents) || len(m.detailDoc.matches) > 0 || m.detailTree == nil {
+		return
+	}
+	if _, chosen := m.detailFolds["raw"]; chosen {
+		return
+	}
+	r := renderer{fs: foldState{query: q}, memo: map[*node]bool{}}
+	for _, n := range m.detailTree.kids {
+		if n.path == "raw" && r.hasMatch(n) {
+			if m.detailFolds == nil {
+				m.detailFolds = map[string]foldChoice{}
+			}
+			m.detailFolds["raw"] = foldChoice{open: true, query: q}
+			m.renderDetail()
+			return
+		}
+	}
+}
+
+// revealDetailMatch puts the cursor on the first match of the details search's query while the
+// reader has not moved it from the top: on a long event the match is often below the first
+// screen. It runs when the row opens, and again when its full event arrives.
+func (m *model) revealDetailMatch() {
+	q := m.searchQuery(paneDetail)
+	if !m.searchDetails || q == "" || q != m.searchQuery(paneEvents) ||
+		m.detailCursorPath != "" || m.detailCursorOff != 0 || m.detailVp.YOffset != 0 {
+		return
+	}
+	if s := m.surface(paneDetail); s != nil {
+		if rows := s.matchLines(); len(rows) > 0 {
+			s.reveal(rows[0])
+		}
+	}
 }
 
 // clearFoldQueries is a changed search on the event detail pane: a fold the reader closed
@@ -429,16 +473,10 @@ func filterForDetail(data []byte, phase pipeline.SessionPhase) []byte {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return data
 	}
-	keep := inferenceReqKeys
-	mcpKeep := mcpReqKeys
-	if phase == pipeline.SessionResponse {
-		keep = inferenceRespKeys
-		mcpKeep = mcpRespKeys
-	}
-	a2aKeep := a2aReqKeys
-	if phase == pipeline.SessionResponse {
-		a2aKeep = a2aRespKeys
-	}
+	resp := phase == pipeline.SessionResponse
+	keep := sessionapi.DetailKeys("inference", resp)
+	mcpKeep := sessionapi.DetailKeys("mcp", resp)
+	a2aKeep := sessionapi.DetailKeys("a2a", resp)
 	if inf, ok := m["inference"].(map[string]any); ok {
 		restoreReportedZeroSplits(inf)
 		inf = filterFields(inf, keep)
@@ -479,43 +517,12 @@ func filterForDetail(data []byte, phase pipeline.SessionPhase) []byte {
 	return out
 }
 
-// Field classifications for phase-based filtering. Order is not significant —
-// ColorizeJSONBytes sorts keys alphabetically for stable display.
-var (
-	inferenceReqKeys = []string{
-		"model", "requestedModel", "messages", "temperature", "maxTokens", "topP",
-		"stream", "tools", "toolChoice", "toolResults", "historyToolCalls",
-	}
-	// reasoningTokens is a SUBSET of completionTokens, not a sibling: it is the share
-	// of the generated tokens the model spent reasoning, billed at the output rate.
-	// Adding the two double-counts every one of them.
-	//
-	// THIS PANE IS WHERE THE EXACT FIGURE LIVES. The events table shows one total per
-	// row and the spend drawer shows a proportion, so a reader who wants the number
-	// rather than the shape comes here — which is also why the key needs no
-	// abbreviating: there is room for the whole word, unlike a table column.
-	inferenceRespKeys = []string{
-		"model", "requestedModel", "completion", "finishReason", "promptTokens",
-		"completionTokens", "reasoningTokens", "totalTokens", "toolCalls",
-		"cacheWriteTokens", "cacheReadTokens",
-	}
-	mcpReqKeys  = []string{"method", "rpcId", "params"}
-	mcpRespKeys = []string{"method", "rpcId", "result", "error"}
-	// A2A: OnResponse captures the server-assigned contextId plus a summary
-	// of the final result (finalStatus / artifact / errorMessage / taskId).
-	// Drop the request-side message fields (messageId, role, parts) on
-	// response rows so the detail view reflects what the response phase
-	// actually contributed.
-	a2aReqKeys  = []string{"method", "rpcId", "sessionId", "messageId", "taskId", "role", "parts"}
-	a2aRespKeys = []string{"method", "rpcId", "sessionId", "taskId", "finalStatus", "artifact", "errorMessage"}
-)
-
 // restoreReportedZeroSplits puts back a split the provider MEASURED AND FOUND TO BE ZERO.
 //
 // InferenceExtension.ReasoningTokens is omitempty, so a provider that measured the split and
 // got none serialises identically to one that never measured at all — and filterFields keeps
 // only keys the map actually has, so both read as "no reasoning" in the pane that
-// inferenceRespKeys' own doc calls the place the exact figure lives. A measured zero is a
+// the response list of sessionapi.DetailKeys calls the place the exact figure lives. A measured zero is a
 // figure; absence is the lack of one. PresentKinds is the only thing that separates them,
 // and it travels in the same object.
 //
@@ -524,7 +531,7 @@ var (
 // JSON tests forbid. So the repair belongs here, at the surface that lost the distinction.
 //
 // NO PHASE GUARD. Reasoning is response-side, but what keeps it off a request row is
-// inferenceReqKeys not listing it — one allow-list deciding visibility, per this file's
+// the request list of sessionapi.DetailKeys not listing it — one allow-list deciding visibility, per this file's
 // existing rule about a second copy of a predicate. A phase check here would be a guard the
 // allow-list already makes unreachable, so nothing could prove it worked.
 //

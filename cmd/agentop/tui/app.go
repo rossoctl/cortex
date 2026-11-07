@@ -634,7 +634,14 @@ type model struct {
 	// searchOrigin is where the target was when `/` was pressed: the place typing searches
 	// from, and the place Esc puts it back.
 	searchOrigin searchSpot
-	paused       bool
+	// searchDetails is the events pane's `details` box: with it on, Enter, n and N go to the
+	// rows whose detail view shows the query. detailSearch is that search, in flight or
+	// answered, and detailSearchGen numbers each one, so an answer for an older one is
+	// dropped. See search_details.go.
+	searchDetails   bool
+	detailSearch    *detailSearch
+	detailSearchGen uint64
+	paused          bool
 	// hideInactive toggles whether passthrough / skip-only messages are
 	// hidden from the events table. False (default) shows every message —
 	// the operator asked to see all network traffic, processed or not.
@@ -1153,6 +1160,7 @@ func (m *model) backToPodsPane() {
 			delete(m.search, t)
 		}
 	}
+	m.resetDetailSearch()
 	m.searching = false
 	m.searchInput.SetValue("")
 	// The prompt's line comes off the height budget while it is open, so dropping the flag
@@ -1360,6 +1368,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	before := m.pane
 	next, cmd := m.update(msg)
 	if m.pane != before {
+		if before == paneEvents && m.detailSearching() {
+			m.cancelDetailSearch() // an answer that already landed stays, for n on the way back
+		}
 		cmd = tea.Batch(tea.ClearScreen, cmd)
 	}
 	return next, cmd
@@ -1964,6 +1975,10 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case detailEventLoadedMsg:
 		m.applyDetailEvent(msg)
+		return m, nil
+
+	case detailSearchMsg:
+		m.applyDetailSearch(msg)
 		return m, nil
 
 	case errMsg:
@@ -2668,7 +2683,7 @@ func (m *model) paneView() string {
 	}
 	header := styleTitle.Render(title)
 	if m.searching && m.searchPane != targetHelp {
-		body = m.searchInput.View() + "\n" + body
+		body = m.searchPromptView() + "\n" + body
 	}
 	// A row slice rather than a fixed JoinVertical, so the strip's row can be absent
 	// without needing a second call site. It sits directly under the title because that
