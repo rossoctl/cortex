@@ -8,47 +8,13 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/rossoctl/cortex/core/attribution"
-	"github.com/rossoctl/cortex/core/peerproc"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/tlsbridge"
 )
 
-// maxHints is how many processes known to have named a session a lookup looks at first.
-// On Linux each costs a scan of that process's open files.
-const maxHints = 8
-
 type connProcKey struct{}
-
-// connProc is one client connection's process chain. It is looked up on the connection's
-// first request — while the client is certainly connected, since a process that has exited
-// cannot be looked up — and reused by every later request on it, including those a bridged
-// CONNECT decrypts.
-type connProc struct {
-	once  sync.Once
-	chain []attribution.Proc
-
-	// mu guards listeners: which process listens behind each loopback destination this
-	// connection's requests went to, for selfTraffic.
-	mu        sync.Mutex
-	listeners map[netip.AddrPort]listenerSeen
-}
-
-// listenerSeen is one cached ListenerOwner answer.
-type listenerSeen struct {
-	proc  peerproc.Proc
-	found bool
-	at    time.Time
-}
-
-// listenerTTL is how long a connection trusts a cached listener answer. Short, because a
-// service can restart; whether the listener is an agent's is re-asked on every request,
-// since a service that is not the client's child becomes one only when it first names a
-// session.
-const listenerTTL = 30 * time.Second
 
 // ConnContext is the forward proxy's http.Server ConnContext. It gives each client
 // connection an empty slot for its process chain and nothing else: it runs on the accept
@@ -57,12 +23,12 @@ func (s *Server) ConnContext(ctx context.Context, _ net.Conn) context.Context {
 	if s.Processes == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, connProcKey{}, &connProc{})
+	return context.WithValue(ctx, connProcKey{}, &attribution.Memo{})
 }
 
-func connProcOf(ctx context.Context) *connProc {
-	cp, _ := ctx.Value(connProcKey{}).(*connProc)
-	return cp
+func connProcOf(ctx context.Context) *attribution.Memo {
+	m, _ := ctx.Value(connProcKey{}).(*attribution.Memo)
+	return m
 }
 
 // processesOn reports whether header-less requests are filed by client process. Like
@@ -78,12 +44,11 @@ func (s *Server) clientChain(r *http.Request) []attribution.Proc {
 	if !s.processesOn() {
 		return nil
 	}
-	cp := connProcOf(r.Context())
-	if cp == nil {
+	m := connProcOf(r.Context())
+	if m == nil {
 		return nil
 	}
-	cp.once.Do(func() { cp.chain = s.lookupChain(r) })
-	return cp.chain
+	return s.memoChain(r, m)
 }
 
 // bridgeProgram names the program behind r's connection for the TLS bridge's
@@ -98,119 +63,41 @@ func (s *Server) bridgeProgram(r *http.Request) (tlsbridge.Program, bool) {
 	if s.Processes == nil || s.Sessions == nil || s.TLSBridge == nil || s.TLSBridge.Programs == nil {
 		return tlsbridge.Program{}, false
 	}
-	cp := connProcOf(r.Context())
-	if cp == nil {
+	m := connProcOf(r.Context())
+	if m == nil {
 		return tlsbridge.Program{}, false
 	}
-	cp.once.Do(func() { cp.chain = s.lookupChain(r) })
-	if len(cp.chain) == 0 || cp.chain[0].Exe == "" {
-		return tlsbridge.Program{}, false
-	}
-	p := tlsbridge.Program{Exe: cp.chain[0].Exe, PID: cp.chain[0].PID, Start: cp.chain[0].Start}
-	for _, proc := range cp.chain {
-		if s.attributor().IsAgentProcess(proc) {
-			p.Agent = proc.Exe
-			break
-		}
-	}
-	return p, true
+	return s.attributor().Program(s.memoChain(r, m))
 }
 
-func (s *Server) lookupChain(r *http.Request) []attribution.Proc {
-	client, err := netip.ParseAddrPort(r.RemoteAddr)
-	if err != nil {
-		return nil
-	}
-	local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
-	if !ok {
-		return nil
-	}
-	server, err := netip.ParseAddrPort(local.String())
-	if err != nil {
-		return nil
-	}
-	chain, err := s.attributor().Lookup(s.Processes, client, server)
+// memoChain is the process chain behind r's connection, looked up once per connection
+// through m. It logs a failed lookup once, at DEBUG.
+func (s *Server) memoChain(r *http.Request, m *attribution.Memo) []attribution.Proc {
+	key, _ := attribution.ConnKeyOf(r)
+	chain, err := s.attributor().Chain(s.Processes, key, m)
 	if err != nil {
 		slog.Debug("forward-proxy: client process not found, filing as without process attribution",
 			"client", r.RemoteAddr, "error", err)
-		return nil
 	}
 	return chain
 }
 
 // selfTraffic reports whether r is an agent talking to its own service on this host: a
 // plain-HTTP request to a loopback listener held by an agent's own process (see
-// agentsOwnService) running the same executable as the client. OpenCode's TUI polling its
-// background service is the case it exists for: about 1.3 requests a second of the agent's
-// own UI, sent nowhere. Comparing executables alone would hide a node-based agent's calls to
+// attribution's SelfTraffic) running the same executable as the client. OpenCode's TUI
+// polling its background service is the case it exists for: about 1.3 requests a second
+// of the agent's own UI, sent nowhere. Comparing executables alone would hide a node-based agent's calls to
 // any local node server, which is why the listener must be an agent's.
 func (s *Server) selfTraffic(r *http.Request, chain []attribution.Proc) bool {
-	if len(chain) == 0 || chain[0].Exe == "" {
+	m := connProcOf(r.Context())
+	if m == nil {
 		return false
 	}
-	cp := connProcOf(r.Context())
-	if cp == nil {
-		return false
-	}
-	// Every listener the request could reach must qualify: "localhost" names both
-	// loopbacks, and which one the dial takes is not known yet.
-	var svc netip.AddrPort
-	var pid int32
-	found := false
-	for _, dest := range loopbackDests(r) {
-		l, ok := s.listenerBehind(cp, dest)
-		if !ok {
-			continue
-		}
-		if l.Exe != chain[0].Exe || !s.agentsOwnService(r, chain[0], l) {
-			return false
-		}
-		svc, pid, found = dest, l.PID, true
-	}
-	if found {
+	svc, pid, ok := s.attributor().SelfTraffic(s.Processes, m, chain, loopbackDests(r), r.Header)
+	if ok {
 		s.noteSelfTraffic(chain[0].Exe, svc, pid)
 	}
-	return found
-}
-
-// agentsOwnService reports whether l, a listener running the client's executable, is an
-// agent's own process: one that has named a session through its own header, which an MCP or
-// model server never does, or the direct child of a client that says it is a coding agent.
-//
-// The child half needs no history, and that is what it is for. Claims live in memory, so
-// after a proxy restart a service that has not been asked to do anything yet has named
-// nothing — and an idle OpenCode window's polling was recorded, a few rows a second, into
-// its TUI's pending bucket until the next prompt. OpenCode starts its service as the TUI's
-// child. The agent's User-Agent is required because a test suite starting a server of its
-// own interpreter is the same shape, and that is the agent's work; a child cannot start
-// before its parent, so a listener that does is another process's, under a reused pid.
-func (s *Server) agentsOwnService(r *http.Request, client attribution.Proc, l peerproc.Proc) bool {
-	if l.PPID == client.PID && l.Start.UnixNano() >= client.Start && affinityClient(r.Header) != "" {
-		return true
-	}
-	return s.attributor().IsAgentProcess(attribution.Proc{PID: l.PID, Start: l.Start.UnixNano()})
-}
-
-// listenerBehind is which process listens at dest, asked of the kernel at most once per
-// listenerTTL on each connection. A miss is cached the same way: nothing listening, or a
-// listener the lookup cannot name, is trusted for as long as a hit.
-func (s *Server) listenerBehind(cp *connProc, dest netip.AddrPort) (peerproc.Proc, bool) {
-	now := time.Now()
-	cp.mu.Lock()
-	seen, ok := cp.listeners[dest]
-	cp.mu.Unlock()
-	if ok && now.Sub(seen.at) < listenerTTL {
-		return seen.proc, seen.found
-	}
-	p, err := s.Processes.ListenerOwner(dest, s.attributor().ProcessHints(maxHints)...)
-	seen = listenerSeen{proc: p, found: err == nil, at: now}
-	cp.mu.Lock()
-	if cp.listeners == nil {
-		cp.listeners = make(map[netip.AddrPort]listenerSeen, 1)
-	}
-	cp.listeners[dest] = seen
-	cp.mu.Unlock()
-	return seen.proc, seen.found
+	return ok
 }
 
 // loopbackDests is where r goes when that is this host: its address when the URL names a
