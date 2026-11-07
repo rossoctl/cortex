@@ -221,3 +221,16 @@ func TestSearch_StopsWhenTheRequestEnds(t *testing.T) {
 		t.Errorf("body %q, want nothing after the request ended", w.Body.String())
 	}
 }
+
+// The memo is for strings one segment shares. forget drops it, so the next segment does not
+// keep the last one's strings in memory.
+func TestSearch_MatcherForgetsAtASegment(t *testing.T) {
+	m := newMatcher("x")
+	long := strings.Repeat("y", 100)
+	m.text(long)
+	m.schema(`{"type":"object","properties":{"` + long + `":{}}}`)
+	m.forget()
+	if len(m.seen) != 0 || len(m.json) != 0 {
+		t.Errorf("after forget: %d texts and %d schemas kept, want none", len(m.seen), len(m.json))
+	}
+}

@@ -59,7 +59,7 @@ func findArchive(t *testing.T, caps ...*pipeline.RequestCapture) *Archive {
 func TestFind_ABlockMatchesEveryEventThatUsesIt(t *testing.T) {
 	first := longText("find the NEEDLE-RAW")
 	a := findArchive(t, reqCapture(first), reqCapture(first, longText("next turn")), reqCapture(longText("other")))
-	seqs, last, ok, err := a.Find(context.Background(), "s", noEvent, foldText("needle-raw"))
+	seqs, last, ok, err := a.Find(context.Background(), "s", noEvent, nil, foldText("needle-raw"))
 	if err != nil || !ok {
 		t.Fatalf("ok %v, err %v", ok, err)
 	}
@@ -80,7 +80,7 @@ func TestFind_SkipsWhatTheDetailShowsAsALabel(t *testing.T) {
 		Body: []byte("data: " + longText("the NEEDLEB64 reply"))}}
 	a := findArchive(t, imgCap, binResp, textResp)
 
-	seqs, _, _, err := a.Find(context.Background(), "s", noEvent, foldText("needleb64"))
+	seqs, _, _, err := a.Find(context.Background(), "s", noEvent, nil, foldText("needleb64"))
 	if err != nil || !slices.Equal(seqs, []uint64{3}) {
 		t.Errorf("seqs %v err %v, want only the text response [3]", seqs, err)
 	}
@@ -93,7 +93,7 @@ func TestFind_HeadersQueryAndStatus(t *testing.T) {
 	for q, want := range map[string][]uint64{
 		"trace-hdr": {1}, "x-trace": {1}, "beta=true": {1}, "418": {2}, "teapot-hdr": {2},
 	} {
-		if seqs, _, _, _ := a.Find(context.Background(), "s", noEvent, foldText(q)); !slices.Equal(seqs, want) {
+		if seqs, _, _, _ := a.Find(context.Background(), "s", noEvent, nil, foldText(q)); !slices.Equal(seqs, want) {
 			t.Errorf("%q: seqs %v, want %v", q, seqs, want)
 		}
 	}
@@ -103,7 +103,7 @@ func TestFind_HeadersQueryAndStatus(t *testing.T) {
 func TestFind_EventPredicate(t *testing.T) {
 	a := findArchive(t, nil, nil, nil)
 	seqs, _, _, _ := a.Find(context.Background(), "s",
-		func(e *pipeline.SessionEvent) bool { return e.Seq == 2 }, foldText("absent"))
+		func(e *pipeline.SessionEvent) bool { return e.Seq == 2 }, nil, foldText("absent"))
 	if !slices.Equal(seqs, []uint64{2}) {
 		t.Errorf("seqs %v, want [2]", seqs)
 	}
@@ -111,7 +111,7 @@ func TestFind_EventPredicate(t *testing.T) {
 
 func TestFind_UnknownSession(t *testing.T) {
 	a := findArchive(t, nil)
-	if _, _, ok, err := a.Find(context.Background(), "other", noEvent, foldText("x")); ok || err != nil {
+	if _, _, ok, err := a.Find(context.Background(), "other", noEvent, nil, foldText("x")); ok || err != nil {
 		t.Errorf("ok %v err %v, want false and nil", ok, err)
 	}
 }
@@ -120,7 +120,7 @@ func TestFind_StopsWhenTheContextEnds(t *testing.T) {
 	a := findArchive(t, reqCapture(longText("NEEDLE")), reqCapture(longText("NEEDLE")))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	seqs, _, _, err := a.Find(ctx, "s", noEvent, foldText("needle"))
+	seqs, _, _, err := a.Find(ctx, "s", noEvent, nil, foldText("needle"))
 	if err == nil || len(seqs) != 0 {
 		t.Errorf("seqs %v err %v, want none and the context's error", seqs, err)
 	}
@@ -136,8 +136,31 @@ func TestFind_ReadsTheOpenSegment(t *testing.T) {
 			reqCapture(longText("open NEEDLE")))
 		a.tick()
 	})
-	seqs, _, ok, err := a.Find(context.Background(), "s", noEvent, foldText("needle"))
+	seqs, _, ok, err := a.Find(context.Background(), "s", noEvent, nil, foldText("needle"))
 	if err != nil || !ok || !slices.Equal(seqs, []uint64{1}) {
 		t.Errorf("seqs %v ok %v err %v, want [1]", seqs, ok, err)
+	}
+}
+
+// Claude Code returns a read image inside a tool_result, and every later request sends it again.
+// The image is nested in the block, and the detail view labels it at any depth.
+func TestFind_SkipsANestedImage(t *testing.T) {
+	nested := `{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"image",` +
+		`"source":{"type":"base64","media_type":"image/png","data":"` + strings.Repeat("NEEDLEB64", 20) + `"}}]}]}`
+	a := findArchive(t, &pipeline.RequestCapture{Original: []byte(`{"model":"m","messages":[` + nested + `]}`)})
+	if seqs, _, _, _ := a.Find(context.Background(), "s", noEvent, nil, foldText("needleb64")); len(seqs) != 0 {
+		t.Errorf("seqs %v, want none: the base64 is inside an image the view shows as a label", seqs)
+	}
+	if seqs, _, _, _ := a.Find(context.Background(), "s", noEvent, nil, foldText("t1")); !slices.Equal(seqs, []uint64{1}) {
+		t.Errorf("seqs %v, want [1]: the tool_result's own fields still match", seqs)
+	}
+}
+
+// segment runs before each segment is read, so a caller can drop what it keeps for each string.
+func TestFind_CallsSegmentForEachSegment(t *testing.T) {
+	a := findArchive(t, reqCapture(longText("x")))
+	n := 0
+	if _, _, _, err := a.Find(context.Background(), "s", noEvent, func() { n++ }, foldText("x")); err != nil || n != 1 {
+		t.Errorf("segment ran %d times, err %v, want 1 time for the one segment", n, err)
 	}
 }

@@ -28,14 +28,21 @@ import (
 // block, and a block stored as bytes (a body that is not UTF-8). Their text is base64 or binary,
 // which the operator never sees.
 //
+// segment, when not nil, runs before each segment is read. A segment's strings are not shared
+// with the next segment, so a caller that keeps a result for each string drops it there, and the
+// memory of one segment is not held for the rest of the search.
+//
 // Like Page, it runs on the caller's goroutine. It stops, with ctx's error, when ctx ends.
 func (a *Archive) Find(ctx context.Context, id string, event func(*model.SessionEvent) bool,
-	text func(string) bool) (seqs []uint64, last uint64, ok bool, err error) {
+	segment func(), text func(string) bool) (seqs []uint64, last uint64, ok bool, err error) {
 	e, ok := a.entry(id)
 	if !ok || len(e.segments) == 0 {
 		return nil, 0, false, nil
 	}
 	for _, seg := range e.segments {
+		if segment != nil {
+			segment()
+		}
 		hit := map[string]bool{}
 		_, rerr := readRecordsWith(filepath.Join(e.dir, seg.File), nil, nil, func(rec *record) {
 			hit[rec.H] = rec.X == nil && !mediaBlock(rec.V) && MatchJSON(rec.V, text)
@@ -62,7 +69,8 @@ func (a *Archive) Find(ctx context.Context, id string, event func(*model.Session
 	return seqs, last, true, nil
 }
 
-// mediaBlock reports whether v is an image or a document content block.
+// mediaBlock reports whether v is an image or a document content block. The detail view shows one
+// as a label, at any depth: Claude Code returns a read image inside a tool_result.
 func mediaBlock(v string) bool {
 	t := gjson.Get(v, "type").Str
 	return (t == "image" || t == "document") && gjson.Get(v, "source").IsObject()
@@ -80,6 +88,8 @@ func MatchJSON(v string, text func(string) bool) bool {
 
 func jsonMatches(r gjson.Result, text func(string) bool) bool {
 	switch {
+	case r.IsObject() && mediaBlock(r.Raw):
+		return false
 	case r.IsObject() || r.IsArray():
 		found, obj := false, r.IsObject()
 		r.ForEach(func(k, v gjson.Result) bool {

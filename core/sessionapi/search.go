@@ -53,7 +53,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.archive != nil {
-		disk, diskLast, ok, err := s.archive.Find(ctx, id, m.event, m.text)
+		disk, diskLast, ok, err := s.archive.Find(ctx, id, m.event, m.forget, m.text)
 		if ctx.Err() != nil {
 			return
 		}
@@ -85,8 +85,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 // matcher is one search: q folded, and what each long string gave. The store and the archive
 // reader share one copy of a long string between the events that repeat it, so the matcher folds
 // each copy one time, keyed by its address and length. A string is not hashed for the key,
-// because hashing it costs as much as the check. A key holds its string in memory until the
-// search ends.
+// because hashing it costs as much as the check. A key holds its string in memory, so the archive
+// pass calls forget at each segment: one segment does not share its strings with the next.
 type matcher struct {
 	q    string
 	seen map[strKey]bool
@@ -117,6 +117,12 @@ func (m *matcher) text(s string) bool {
 		m.seen[k] = r
 	}
 	return r
+}
+
+// forget drops what the matcher kept for each string, at the start of an archive segment.
+func (m *matcher) forget() {
+	clear(m.seen)
+	clear(m.json)
 }
 
 // key reports whether a key name holds the query. The same few names repeat in every event.
