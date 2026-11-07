@@ -138,7 +138,9 @@ func PollUntilReloaded(ctx context.Context, statusURL string, applyTime time.Tim
 			if decodeErr == nil {
 				consecErrors = 0
 				wait = pollInterval
-				if baselineFailed == baselineFailedSentinel {
+				// No baseline yet: take it at this first poll. A count below the
+				// baseline means the proxy restarted: compare to its new count.
+				if baselineFailed == baselineFailedSentinel || rs.ReloadsFailed < baselineFailed {
 					baselineFailed = rs.ReloadsFailed
 				}
 				if rs.LastSuccess.After(applyTime) {

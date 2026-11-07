@@ -586,6 +586,13 @@ func scriptInstall(args []string, stdout, stderr io.Writer) int {
 		return fail("%v", err)
 	}
 	dir := filepath.Join(t.root, e.Name)
+	hadSlot := hasSlot(t.cfg, e.Name)
+	// Read before the checks below: this GET can take 2s, so keep it out of the
+	// window between the checks and the write. Only the hadSlot poll reads it.
+	var baseline int64
+	if hadSlot {
+		baseline = edit.ReloadBaseline(context.Background(), t.statsURL)
+	}
 	state := stateOf(t, e)
 	switch state {
 	case stateInstalled:
@@ -611,13 +618,8 @@ func scriptInstall(args []string, stdout, stderr io.Writer) int {
 	if extra := unrecorded(dir, old); len(extra) > 0 {
 		return fail("%s holds files install did not write (%s); move them out first", homeTilde(dir), strings.Join(extra, ", "))
 	}
-	hadSlot := hasSlot(t.cfg, e.Name)
 
 	prior := snapshot(dir, old)
-	var baseline int64 // only the hadSlot poll below reads it
-	if hadSlot {
-		baseline = edit.ReloadBaseline(context.Background(), t.statsURL)
-	}
 	wrote := time.Now()
 	if err := writeFiles(dir, e, old); err != nil {
 		prior.restore(dir, e)

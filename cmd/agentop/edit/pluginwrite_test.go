@@ -205,10 +205,10 @@ func TestWritePluginConfig_OnRefusedReloadRestoresOriginalAndReportsRolledBack(t
 	var calls atomic.Int32
 	srv := makeStatusServer(t, func() ReloadStatus {
 		if calls.Add(1) == 1 {
-			// First poll: ReloadsFailed=2 becomes the baseline
+			// The read before the write: ReloadsFailed=2 becomes the baseline
 			return ReloadStatus{ReloadsFailed: 2}
 		}
-		// Second poll: ReloadsFailed increments to 3, triggering failure
+		// First poll: ReloadsFailed increments to 3, triggering failure
 		return ReloadStatus{ReloadsFailed: 3, LastError: `configure "inference-router": servers: at least one server is required`}
 	})
 
@@ -237,13 +237,13 @@ func TestWritePluginConfig_AfterRollbackWritingSameChangeIsNotUnchanged(t *testi
 	srv := makeStatusServer(t, func() ReloadStatus {
 		c := calls.Add(1)
 		if c == 1 {
-			// First poll of first write: ReloadsFailed=2 becomes baseline
+			// The read before the first write: ReloadsFailed=2 becomes baseline
 			return ReloadStatus{ReloadsFailed: 2}
 		} else if c == 2 {
-			// Second poll of first write: ReloadsFailed=3, triggers failure
+			// First poll of first write: ReloadsFailed=3, triggers failure
 			return ReloadStatus{ReloadsFailed: 3, LastError: "test refusal"}
 		} else if c == 3 {
-			// First poll of second write: ReloadsFailed=3 becomes new baseline
+			// The read before the second write: ReloadsFailed=3 becomes new baseline
 			return ReloadStatus{ReloadsFailed: 3}
 		}
 		// Subsequent polls: accept the reload
@@ -305,9 +305,9 @@ func TestWritePluginConfig_OnTimeoutLeavesNewBytes(t *testing.T) {
 	}
 }
 
-// refuseOnSecondPoll is a /reload/status that takes its baseline on the first
-// poll and reports a refused reload on the second, after running during — the
-// moment a person's own edit or a failing disk would land.
+// refuseOnSecondPoll is a /reload/status that gives the baseline on the read
+// before the write and reports a refused reload on the first poll, after running
+// during — the moment a person's own edit or a failing disk would land.
 func refuseOnSecondPoll(t *testing.T, during func()) string {
 	t.Helper()
 	var calls atomic.Int32

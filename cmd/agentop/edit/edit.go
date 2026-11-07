@@ -136,12 +136,14 @@ type AppliedMsg struct {
 // re-read happens off the Update loop, next to the write it guards.
 func ApplyCmd(ctx context.Context, store Store, statusURL string, orig *FetchedPipeline, payload []byte) tea.Cmd {
 	return func() tea.Msg {
+		// Read before the conflict check: this GET can take 2s, so keep it out of
+		// the window between the check and the write.
+		baseline := ReloadBaseline(ctx, statusURL)
 		if cc, ok := store.(ConflictChecker); ok && orig != nil {
 			if err := cc.CheckUnchanged(ctx, orig); err != nil {
 				return AppliedMsg{Err: err}
 			}
 		}
-		baseline := ReloadBaseline(ctx, statusURL)
 		at, err := store.Apply(ctx, payload)
 		return AppliedMsg{ApplyTime: at, BaselineFailed: baseline, Err: err}
 	}

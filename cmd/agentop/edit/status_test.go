@@ -144,3 +144,22 @@ func TestApplyCmd_ReadsTheBaselineBeforeTheWrite(t *testing.T) {
 		t.Errorf("ReloadBaseline with no status URL = %d, want the sentinel", got)
 	}
 }
+
+// A proxy that restarts after the baseline read starts its count again at 0, below
+// the baseline. The poll then lowers the baseline to that count, so a refusal on
+// the restarted proxy is still seen, as with a baseline read at the first poll.
+func TestPollUntilReloaded_SeesARefusalAfterTheProxyRestarted(t *testing.T) {
+	var calls atomic.Int32
+	srv := makeStatusServer(t, func() ReloadStatus {
+		if calls.Add(1) == 1 {
+			return ReloadStatus{ReloadsFailed: 0}
+		}
+		return ReloadStatus{ReloadsFailed: 1, LastError: "refused after a restart"}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	res := PollUntilReloaded(ctx, srv.URL, time.Now(), 3, "")
+	if res.Status != PollFailure || res.LastError != "refused after a restart" {
+		t.Fatalf("result = %+v, want the refusal", res)
+	}
+}

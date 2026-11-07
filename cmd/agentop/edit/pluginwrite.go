@@ -96,11 +96,13 @@ func WritePluginConfig(ctx context.Context, w ConfigWrite) (WriteResult, error) 
 		return WriteResult{}, fmt.Errorf("not writing %s: %w", w.Path, err)
 	}
 
+	// Read before the conflict check: this GET can take 2s, so keep it out of the
+	// window between the check and the write.
+	baseline := ReloadBaseline(ctx, w.StatsURL)
 	store := FileStore{Path: w.Path}
 	if err := store.CheckUnchanged(ctx, &FetchedPipeline{Original: orig}); err != nil {
 		return WriteResult{}, err
 	}
-	baseline := ReloadBaseline(ctx, w.StatsURL)
 	applyTime, err := store.Apply(ctx, updated)
 	if err != nil {
 		return WriteResult{}, err
