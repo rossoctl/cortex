@@ -544,7 +544,7 @@ func (c *Context) ResolveClient() {
 }
 
 // SetSessionFacts is for listeners: pass what session.Store.ViewFacts returned. A zero
-// SessionFacts reads as FactNoSession.
+// SessionFacts reads as FactNone.
 func (c *Context) SetSessionFacts(f SessionFacts) {
 	c.facts, c.factsSet = f, true
 }

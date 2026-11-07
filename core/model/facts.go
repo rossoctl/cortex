@@ -1,18 +1,20 @@
 package model
 
 // FactState tells if a session fact is present and, if it is not, if the request has a session.
+// The zero value is FactNone. FactNoSession comes only from Context.Session being nil, so no
+// stored or zero SessionFacts reads as "no session".
 type FactState uint8
 
 const (
-	// FactNoSession: the request has no session. Context.Session is nil.
-	FactNoSession FactState = iota
 	// FactNone: the request has a session, and the store has no event of this kind for it.
 	// The reasons are:
 	//   - the store has no entry for the session yet, or it dropped the entry (max_sessions,
 	//     ttl, Delete, Clear, a restart);
 	//   - no event of this kind was appended to the session;
 	//   - a session.max_events trim removed the event.
-	FactNone
+	FactNone FactState = iota
+	// FactNoSession: the request has no session. Context.Session is nil.
+	FactNoSession
 	// FactPresent: Event is set.
 	FactPresent
 )

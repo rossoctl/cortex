@@ -57,8 +57,8 @@ type (
 )
 
 const (
-	FactNoSession = model.FactNoSession
 	FactNone      = model.FactNone
+	FactNoSession = model.FactNoSession
 	FactPresent   = model.FactPresent
 )
 

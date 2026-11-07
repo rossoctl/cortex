@@ -41,6 +41,17 @@ func TestContext_SessionFacts(t *testing.T) {
 		}
 	})
 
+	t.Run("2: zero facts set, with a session", func(t *testing.T) {
+		c := &Context{Session: &SessionView{ID: "s", Events: []SessionEvent{intentEv, inferEv}}}
+		c.SetSessionFacts(SessionFacts{})
+		if got := c.LastIntent(); got != (SessionFact{State: FactNone}) {
+			t.Errorf("LastIntent = %+v, want FactNone", got)
+		}
+		if got := c.LastInference(); got != (SessionFact{State: FactNone}) {
+			t.Errorf("LastInference = %+v, want FactNone", got)
+		}
+	})
+
 	t.Run("3: derived from the view", func(t *testing.T) {
 		c := &Context{Session: &SessionView{ID: "s", Events: []SessionEvent{intentEv, inferEv, other}}}
 		if got := c.LastIntent(); got.State != FactPresent || got.Event != &c.Session.Events[0] {
