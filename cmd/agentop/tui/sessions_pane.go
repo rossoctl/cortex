@@ -557,7 +557,7 @@ func (m *model) sessionTitle(id string) string {
 	// of it can push real text past the cut. capTitleRunes trims both ends of its input before
 	// measuring, and trims again after cutting to drop whitespace the cut newly exposed.
 	//
-	// clipTitle (core/observe/claude/harvest.go) trims after its own cut and is safe doing so for a
+	// clipTitle (core/observe/claude/scrub.go) trims after its own cut and is safe doing so for a
 	// reason that does not transfer: normalizeTitle has already collapsed every whitespace run ahead
 	// of it, so it never sees a leading run long enough to matter. Neither string here has been
 	// through that — which is the same precondition the cluster walk below exists because this side
