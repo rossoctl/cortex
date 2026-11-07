@@ -80,8 +80,9 @@ func TestHosts_SameAnswerAcrossARestart(t *testing.T) {
 func metaPath(root, id string) string { return filepath.Join(root, dataDirName, dirName(id), metaFile) }
 
 // A session.json the fold did not write a table of this rule into holds history with no table:
-// a file from before the table, one of another rule version, and one with no summary at all.
-// Each is unknown, before the store's entry exists and after. Unchanged, the file is known.
+// a file from before the table, one of another rule version or shape, and one with no summary at
+// all. Each session loads, and its table is unknown, before the store's entry exists and after.
+// Unchanged, the file is known.
 func TestHosts_ASessionJSONWithNoTableIsUnknown(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -93,6 +94,13 @@ func TestHosts_ASessionJSONWithNoTableIsUnknown(t *testing.T) {
 		{"another rule version", func(doc map[string]any) {
 			doc["summary"].(map[string]any)["inferenceHosts"].(map[string]any)["v"] = 99
 		}, false},
+		{"hosts reshaped", func(doc map[string]any) {
+			doc["summary"].(map[string]any)["inferenceHosts"] = map[string]any{"v": 2, "hosts": map[string]any{"claude-code": "h"}}
+		}, false},
+		{"a string last", func(doc map[string]any) {
+			doc["summary"].(map[string]any)["inferenceHosts"] = map[string]any{"v": 1, "hosts": []any{map[string]any{"agent": "claude-code", "host": "h", "last": "2"}}}
+		}, false},
+		{"not an object", func(doc map[string]any) { doc["summary"].(map[string]any)["inferenceHosts"] = "garbage" }, false},
 		{"no summary", func(doc map[string]any) { delete(doc, "summary") }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -124,6 +132,9 @@ func TestHosts_ASessionJSONWithNoTableIsUnknown(t *testing.T) {
 			st = session.New(0, 0, 0)
 			defer st.Close()
 			st.AddRecorder(a)
+			if a.LastSeq("s1") == 0 {
+				t.Fatal("the archive did not load the session")
+			}
 			if _, ok := hostsOf(st, "s1"); ok != tc.known {
 				t.Fatalf("no entry: known %v, want %v", ok, tc.known)
 			}

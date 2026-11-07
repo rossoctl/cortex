@@ -375,6 +375,16 @@ type hostsDoc struct {
 	Hosts []model.InferenceHostSeen `json:"hosts,omitempty"`
 }
 
+// UnmarshalJSON decodes a table of a shape it cannot read as one of no version: unknown, so the
+// session's other figures still load.
+func (d *hostsDoc) UnmarshalJSON(b []byte) error {
+	type plain hostsDoc
+	if err := json.Unmarshal(b, (*plain)(d)); err != nil {
+		*d = hostsDoc{}
+	}
+	return nil
+}
+
 // foldAgent is one sessionAgent in session.json.
 //
 // UNRECOGNISED IS THE ENCODED STATE, not recognised: a document written before #1214 holds only

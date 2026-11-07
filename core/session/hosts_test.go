@@ -207,17 +207,25 @@ func roundTrip(t *testing.T, f *SummaryFold) *SummaryFold {
 	return out
 }
 
-// A session.json with no table, or with a table of another rule version, holds history the
-// fold has no table for. Unknown is sticky: later Adds keep it, and it persists as absent.
+// A session.json with no table, with a table of another rule version, or with a table of another
+// shape, holds history the fold has no table for. The fold's other figures still decode.
+// Unknown is sticky: later Adds keep it, and it persists as absent.
 func TestSummaryFold_HostsOfALegacyOrOtherVersionDocAreUnknown(t *testing.T) {
 	for name, doc := range map[string]string{
 		"no table":        `{"eventCount":3}`,
 		"a later version": `{"eventCount":3,"inferenceHosts":{"v":2,"hosts":[{"agent":"claude-code","host":"h","last":1}]}}`,
 		"no version":      `{"eventCount":3,"inferenceHosts":{"hosts":[{"agent":"claude-code","host":"h","last":1}]}}`,
+		"hosts reshaped":  `{"eventCount":3,"inferenceHosts":{"v":2,"hosts":{"claude-code":{"host":"h","last":1}}}}`,
+		"a string last":   `{"eventCount":3,"inferenceHosts":{"v":1,"hosts":[{"agent":"claude-code","host":"h","last":"1"}]}}`,
+		"a string v":      `{"eventCount":3,"inferenceHosts":{"v":"1"}}`,
+		"not an object":   `{"eventCount":3,"inferenceHosts":"garbage"}`,
 	} {
 		f := NewSummaryFold()
 		if err := json.Unmarshal([]byte(doc), f); err != nil {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", name, err)
+		}
+		if n := f.Summary("s1").EventCount; n != 3 {
+			t.Errorf("%s: eventCount %d, want 3", name, n)
 		}
 		if h, known := f.InferenceHosts(); known || h != nil {
 			t.Errorf("%s: hosts %+v known %v, want unknown", name, h, known)
