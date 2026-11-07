@@ -757,6 +757,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				return fetchDetailEventCmd(m, eventSession(m.selectedSess, er.event), er.event.Seq)
 			}
 			m.openRawMatch()
+			m.revealDetailMatch()
 			return nil
 		case panePipeline:
 			p := m.selectedPlugin()

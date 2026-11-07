@@ -150,6 +150,9 @@ func runDetailSearch(ctx context.Context, c *apiclient.Client, gen uint64, sel s
 		msg.last[s] = res.LastSeq
 	}
 	for _, r := range rows {
+		if ctx.Err() != nil {
+			return msg // dropped: its answer is not used, and a row with a capture is slow to check
+		}
 		msg.hits[keyOf(r.event)] = found[eventSession(sel, r.event)][r.event.Seq] || detailHas(r, q)
 	}
 	return msg

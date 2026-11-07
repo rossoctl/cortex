@@ -164,11 +164,12 @@ func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
 	case "tab":
 		// The events pane's details box. Tab types nothing, so the prompt can take it. With the
-		// box on, typing does not move the cursor, so it goes back to where `/` was pressed.
+		// box on, typing does not move the cursor, so it goes back to where `/` was pressed. With
+		// it off, the cursor goes to the table's match, as typing puts it.
 		if t == paneEvents {
 			m.searchDetails = !m.searchDetails
 			if s := m.surface(t); s != nil {
-				s.restore(m.searchOrigin)
+				m.followQuery(s)
 			}
 		}
 		return nil
@@ -202,16 +203,22 @@ func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 	if t == paneEvents && m.searchDetails {
 		return cmd // the details search runs on Enter, not on each key
 	}
-	if m.searchInput.Value() != "" {
+	m.followQuery(s)
+	return cmd
+}
+
+// followQuery puts the cursor on the first match of the prompt's query, or back where `/` was
+// pressed when there is none. With the events pane's details box on, the query does not move it.
+func (m *model) followQuery(s searchSurface) {
+	if m.searchInput.Value() != "" && !(m.searchPane == paneEvents && m.searchDetails) {
 		// Counted from where `/` was pressed even when following: what streamed in since is
 		// after it, and is searched first.
 		if i, ok := nextMatch(s.matchLines(), s.lineOf(m.searchOrigin), true, true); ok {
 			s.reveal(i)
-			return cmd
+			return
 		}
 	}
 	s.restore(m.searchOrigin)
-	return cmd
 }
 
 // searchStep is n (forward) and N on target t: the next match past where it is, wrapping.

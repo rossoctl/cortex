@@ -1800,7 +1800,8 @@ has no `raw` section when the archive has no capture for it: an older proxy, a r
 written before capture, or one recorded in the last second. A search does not open
 `raw`, because it repeats the whole conversation; open it with `↵` to search inside
 it. A row opened from a details search that matches only in the capture opens with
-`raw` open. `y` writes the event without its capture.
+`raw` open. A row opened from a details search shows its first match, also when the
+match arrives with the fetch. `y` writes the event without its capture.
 
 ## Editing the pipeline
 

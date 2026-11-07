@@ -217,6 +217,22 @@ func (m *model) openRawMatch() {
 	}
 }
 
+// revealDetailMatch puts the cursor on the first match of the details search's query while the
+// reader has not moved it from the top: on a long event the match is often below the first
+// screen. It runs when the row opens, and again when its full event arrives.
+func (m *model) revealDetailMatch() {
+	q := m.searchQuery(paneDetail)
+	if !m.searchDetails || q == "" || q != m.searchQuery(paneEvents) ||
+		m.detailCursorPath != "" || m.detailCursorOff != 0 || m.detailVp.YOffset != 0 {
+		return
+	}
+	if s := m.surface(paneDetail); s != nil {
+		if rows := s.matchLines(); len(rows) > 0 {
+			s.reveal(rows[0])
+		}
+	}
+}
+
 // clearFoldQueries is a changed search on the event detail pane: a fold the reader closed
 // under the old one is closed as if under no search, so a later search opens it when it holds
 // a match.

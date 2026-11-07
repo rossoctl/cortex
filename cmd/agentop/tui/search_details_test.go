@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -214,6 +215,22 @@ func TestDetailSearch_TabTogglesTheBoxOnlyOnEvents(t *testing.T) {
 	}
 	if v := stripANSI(m.searchPromptView()); strings.Contains(v, "details") {
 		t.Errorf("prompt = %q, want no box off the events pane", v)
+	}
+}
+
+// Tab off in the prompt moves the cursor to the table's match, as typing does. Tab on puts it
+// back where `/` was pressed.
+func TestDetailSearch_TabOffFollowsTheTableMatch(t *testing.T) {
+	m := searchModel(t, 5, &fakeSearch{})
+	origin := m.eventsTbl.Cursor()
+	detailsQuery(m, "e3")
+	press(m, tea.KeyTab)
+	if e := m.selectedEvent(); e == nil || e.Host != "e3" {
+		t.Errorf("box off: cursor on %+v, want the row of host e3", e)
+	}
+	press(m, tea.KeyTab)
+	if c := m.eventsTbl.Cursor(); c != origin {
+		t.Errorf("box on: cursor on %d, want %d, where `/` was pressed", c, origin)
 	}
 }
 
@@ -630,6 +647,43 @@ func TestDetailSearch_AMatchOnlyInTheCaptureOpensIt(t *testing.T) {
 		if _, open := m.detailFolds["raw"]; open || len(m.detailDoc.matches) == 0 {
 			t.Errorf("raw fold %v, matches %d: want the capture closed, on the host's match", open, len(m.detailDoc.matches))
 		}
+	})
+}
+
+// A details match far below the first screen is in view when the row opens: when the capture
+// is held, and when it arrives after the row opens.
+func TestDetailSearch_OpeningARowShowsADeepMatch(t *testing.T) {
+	var keys []string
+	for i := range 120 {
+		keys = append(keys, fmt.Sprintf(`"k%03d":"v"`, i))
+	}
+	raw := &pipeline.RawCapture{Request: `{` + strings.Join(keys, ",") + `,"system":"DEEP-NEEDLE"}`}
+	inView := func(t *testing.T, m *model) {
+		t.Helper()
+		rows := m.detailDoc.matches
+		if len(rows) == 0 {
+			t.Fatalf("no match drawn, status %q", m.searchStatus(paneDetail))
+		}
+		if off, h := m.detailVp.YOffset, m.detailVp.Height; rows[0] < off || rows[0] >= off+h {
+			t.Errorf("match on row %d, view shows rows %d to %d", rows[0], off, off+h-1)
+		}
+	}
+	t.Run("held", func(t *testing.T) {
+		m := searchModel(t, 4, &fakeSearch{})
+		m.markFullFetched("s", 3, raw)
+		detailsQuery(m, "deep-needle")
+		runAll(m, enter(m))
+		press(m, tea.KeyEnter)
+		inView(t, m)
+	})
+	t.Run("fetched", func(t *testing.T) {
+		m := searchModel(t, 4, &fakeSearch{answer: map[string][]uint64{"s": {3}}})
+		detailsQuery(m, "deep-needle")
+		runAll(m, enter(m))
+		press(m, tea.KeyEnter)
+		full := m.events["s"][2]
+		m.applyDetailEvent(detailEventLoadedMsg{sessionID: "s", seq: 3, event: &full, raw: raw})
+		inView(t, m)
 	})
 }
 
