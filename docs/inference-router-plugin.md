@@ -101,8 +101,12 @@ decides:
        version of the table's rule.
      - The `session.json` has segments and no summary.
      - The archive renamed the session and could not split the history from
-       the renamed events.
+       the renamed events, or could not read one of the renamed segments.
      - A recorder holds history for the session and keeps no table.
+
+     An unknown table stays unknown for the life of the session, also after
+     new events. This applies to a session from an old `session.json` and to
+     a rename that the archive could not split.
 
      The table has evidence that the scan did not find. In each case below,
      the scan found no evidence, and rules 2 to 4 decided. The router now

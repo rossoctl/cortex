@@ -98,12 +98,9 @@ func readMeta(dir string) (*sessionMeta, error) {
 	}
 	if m.Summary == nil {
 		m.Summary = session.NewSummaryFold()
-		// A file with segments and no summary holds history with no table. A summary with no
-		// table decodes as unknown, so decode an empty one.
+		// A file with segments and no summary holds history with no table.
 		if len(m.Segments) > 0 {
-			if err := m.Summary.UnmarshalJSON([]byte(`{}`)); err != nil {
-				return nil, err
-			}
+			m.Summary.ForgetInferenceHosts()
 		}
 	}
 	return &m, nil

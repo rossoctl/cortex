@@ -787,6 +787,8 @@ func foldSegments(dir string, segs []SegmentInfo, id string) (*session.SummaryFo
 			return true
 		}); err != nil {
 			slog.Warn("session archive: could not read a renamed segment back for its summary", "file", seg.File, "error", err)
+			// The fold lacks this segment's evidence, so it cannot vouch for a table.
+			f.ForgetInferenceHosts()
 		}
 	}
 	return f, first

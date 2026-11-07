@@ -588,6 +588,8 @@ func (c *Context) LastInference() SessionFact {
 //  1. Session is nil: (nil, false), also when the listener set facts.
 //  2. The listener called SetSessionFacts: the table and HostsKnown it set.
 //  3. Else (nil, false). A view cannot vouch for a table: it can be a trimmed part of the session.
+//
+// Do not change the returned slice: every plugin of the request gets the same one.
 func (c *Context) InferenceHosts() (InferenceHosts, bool) {
 	if c.Session == nil || !c.factsSet {
 		return nil, false

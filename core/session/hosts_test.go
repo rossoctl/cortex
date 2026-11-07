@@ -331,6 +331,8 @@ func TestHostRule_Golden(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got, want) {
-		t.Fatalf("the host rule changed: bump hostRuleVersion, then write this to %s:\n%s", path, got)
+		// Printed with the NEXT version, so a paste of it passes only after the bump.
+		next, _ := json.MarshalIndent(hostsDoc{V: hostRuleVersion + 1, Hosts: h}, "", "  ")
+		t.Fatalf("the host rule changed: bump hostRuleVersion to %d, then write this to %s:\n%s", hostRuleVersion+1, path, next)
 	}
 }

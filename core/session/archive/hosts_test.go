@@ -274,3 +274,33 @@ func TestHosts_ARenameWithNoMarkedStartIsUnknown(t *testing.T) {
 		t.Fatalf("ViewFacts for Y: %+v known, want unknown", got)
 	}
 }
+
+// A rename folds the entry's segments again. When one of them cannot be read, the fold lacks
+// that segment's evidence, so the new id's table must be unknown.
+func TestHosts_ARenameThatCannotReadASegmentIsUnknown(t *testing.T) {
+	from := session.DefaultSessionID
+	root, clk := t.TempDir(), newClock()
+	evs := hostEvents()
+	a, st := restarted(t, root, clk, from, evs[:2]) // history: seqs 1-2
+	defer a.Close()
+	defer st.Close()
+	st.Append(from, evs[3]) // the entry: ete, seq 3
+	settle(a)
+	clk.advance(61 * time.Minute)
+	tick(a) // closes the entry's idle segment
+	a.inWriter(func() {
+		s := a.sessions[from]
+		for _, seg := range s.meta.Segments {
+			if seg.FirstSeq > 2 {
+				if err := os.Remove(filepath.Join(s.dir, seg.File)); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+	})
+	st.Rekey(from, "Y")
+	settle(a)
+	if got, ok := a.InferenceHosts("Y"); ok {
+		t.Fatalf("the archive's table for Y: %+v known, want unknown", got)
+	}
+}
