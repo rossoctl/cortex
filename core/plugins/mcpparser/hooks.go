@@ -172,7 +172,8 @@ func (p *MCPParser) OnResponse(_ context.Context, pctx *pipeline.Context) pipeli
 	}
 
 	recordResponse(pctx)
-	slog.Debug("mcp-parser: response detail", "method", pctx.Extensions.MCP.Method, "body", parsercommon.Truncate(string(pctx.ResponseBody), parsercommon.DebugBodyMax))
+	slog.Debug("mcp-parser: response detail", "method", pipeline.SanitizeLogValue(pctx.Extensions.MCP.Method),
+		"body", pipeline.SanitizeLogValue(parsercommon.Truncate(string(pctx.ResponseBody), parsercommon.DebugBodyMax)))
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
@@ -205,7 +206,7 @@ func (p *MCPParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 	}
 	// The request has its response. A later response frame is not a second answer.
 	if pctx.Extensions.MCP.Result != nil || pctx.Extensions.MCP.Err != nil {
-		slog.Debug("mcp-parser: ignoring a later response frame", "method", pctx.Extensions.MCP.Method)
+		slog.Debug("mcp-parser: ignoring a later response frame", "method", pipeline.SanitizeLogValue(pctx.Extensions.MCP.Method))
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
@@ -223,12 +224,13 @@ func (p *MCPParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 		// The end-of-stream last=true call records a Skip if no envelope was
 		// ever seen, so the response row still pairs with its request.
 		slog.Debug("mcp-parser: response frame carried no JSON-RPC result/error",
-			"frameLen", len(frame), "frame", parsercommon.Truncate(string(frame), parsercommon.DebugBodyMax))
+			"frameLen", len(frame), "frame", pipeline.SanitizeLogValue(parsercommon.Truncate(string(frame), parsercommon.DebugBodyMax)))
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
 	recordResponse(pctx)
-	slog.Debug("mcp-parser: streaming frame", "method", pctx.Extensions.MCP.Method, "body", parsercommon.Truncate(string(frame), parsercommon.DebugBodyMax))
+	slog.Debug("mcp-parser: streaming frame", "method", pipeline.SanitizeLogValue(pctx.Extensions.MCP.Method),
+		"body", pipeline.SanitizeLogValue(parsercommon.Truncate(string(frame), parsercommon.DebugBodyMax)))
 	return pipeline.Action{Type: pipeline.Continue}
 }
 

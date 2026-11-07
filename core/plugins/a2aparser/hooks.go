@@ -107,9 +107,9 @@ func (p *A2AParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 // paths log identically.
 func logA2AFinalized(ext *pipeline.A2AExtension) {
 	slog.Debug("a2a-parser: response parsed",
-		"sessionId", ext.SessionID,
-		"finalStatus", ext.FinalStatus,
+		"sessionId", pipeline.SanitizeLogValue(ext.SessionID),
+		"finalStatus", pipeline.SanitizeLogValue(ext.FinalStatus),
 		"artifactLen", len(ext.Artifact),
-		"error", ext.ErrorMessage,
+		"error", pipeline.SanitizeLogValue(ext.ErrorMessage),
 	)
 }

@@ -247,7 +247,7 @@ func extractSendResponse(body []byte, ext *model.A2AExtension) bool {
 
 // extractStreamResponse handles message/stream SSE responses (the
 // buffered path). For each "data:" line it folds a single event into
-// the extension via foldResponse, as OnResponseFrame does for a frame.
+// the extension via foldResponse, as ParseResponse does for one frame.
 //
 // parsercommon.NormalizeSSE first: a leading BOM or CR-only line endings are
 // wire-legal SSE, and a raw LF split reads such a body as one unparseable
