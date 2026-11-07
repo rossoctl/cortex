@@ -300,6 +300,14 @@ func TestExchange_LostRequest(t *testing.T) {
 	if got := trimmedCell(t, m, 0, colStatus); got != "lost" {
 		t.Errorf("newest event 11 min later: STATUS = %q, want lost", got)
 	}
+	// The Timeline judges outbound requests only. An inbound call can run for longer than 10
+	// minutes while the agent works on it.
+	in := req
+	in.Direction = pipeline.Inbound
+	m = lostModel(t0.Add(11*time.Minute), in)
+	if got := trimmedCell(t, m, 0, colStatus); got != "" {
+		t.Errorf("inbound, 11 min: STATUS = %q, want blank", got)
+	}
 }
 
 // A passthrough tunnel stays open for hours, and its open row carries no status. It is never
