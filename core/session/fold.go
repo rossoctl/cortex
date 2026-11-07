@@ -192,6 +192,24 @@ func applyHost(h model.InferenceHosts, ev hostEvidence, host string, seq uint64)
 	return append(h, s)
 }
 
+// mergeHost folds the entry x into h by the highest seq of each field, and returns h. It changes
+// h's elements in place. Two tables of one session merge this way: each seq is one event, in one
+// table only, so the merge keeps each seq in one entry, as LastServer requires.
+func mergeHost(h model.InferenceHosts, x model.InferenceHostSeen) model.InferenceHosts {
+	for i := range h {
+		if h[i].Agent == x.Agent && h[i].Host == x.Host {
+			h[i].Last, h[i].LastUnrouted = max(h[i].Last, x.Last), max(h[i].LastUnrouted, x.LastUnrouted)
+			return h
+		}
+	}
+	return append(h, x)
+}
+
+// hostRuleVersion is the version of the InferenceHosts rule (hostEvidenceOf and applyHost) in a
+// persisted table. A table of another version decodes as unknown. Bump it when the rule changes:
+// TestHostRule_Golden fails until you do.
+const hostRuleVersion = 1
+
 // SummaryFold is ListSessions' per-session figures folded one event at a time and never shed:
 // the session archive's running summary for a session the store may no longer hold.
 //
@@ -236,9 +254,10 @@ type SummaryFold struct {
 	hostsUnknown bool
 }
 
-// InferenceHosts is the fold's table, and false when the fold holds history it has no table for.
+// InferenceHosts is a copy of the fold's table, and false when the fold holds history it has no
+// table for.
 func (f *SummaryFold) InferenceHosts() (model.InferenceHosts, bool) {
-	return f.hosts, !f.hostsUnknown
+	return slices.Clone(f.hosts), !f.hostsUnknown
 }
 
 // NewSummaryFold returns an empty fold.
@@ -339,6 +358,16 @@ type foldJSON struct {
 	Procs         map[string]ProcSpan `json:"procs,omitempty"`
 	Owner         string              `json:"owner,omitempty"`
 	LastRequestAt time.Time           `json:"lastRequestAt,omitzero"`
+	// InferenceHosts is written only when the fold knows its table. Absent (a session.json from
+	// before it existed, or an unknown table), or of another hostRuleVersion, it decodes as unknown.
+	InferenceHosts *hostsDoc `json:"inferenceHosts,omitempty"`
+}
+
+// hostsDoc is SummaryFold's InferenceHosts table in session.json. V is the hostRuleVersion that
+// wrote it.
+type hostsDoc struct {
+	V     int                       `json:"v"`
+	Hosts []model.InferenceHostSeen `json:"hosts,omitempty"`
 }
 
 // foldAgent is one sessionAgent in session.json.
@@ -373,6 +402,9 @@ func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 		Owner:            f.owner,
 		LastRequestAt:    f.lastRequestAt,
 	}
+	if !f.hostsUnknown {
+		j.InferenceHosts = &hostsDoc{V: hostRuleVersion, Hosts: f.hosts}
+	}
 	for _, a := range f.agents {
 		j.Agents = append(j.Agents, foldAgent{Name: a.name, Label: a.label, Unknown: !a.known})
 	}
@@ -398,11 +430,18 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		procs:           j.Procs,
 		owner:           model.CanonicalAgent(j.Owner),
 		lastRequestAt:   j.LastRequestAt,
-		// session.json keeps no InferenceHosts table, so the history it folds has none.
-		hostsUnknown: true,
+		hostsUnknown:    j.InferenceHosts == nil || j.InferenceHosts.V != hostRuleVersion,
 	}
 	if j.TitleRank != nil {
 		f.titleRank = *j.TitleRank
+	}
+	// Agent names in their canonical spelling, for the reason given for f.agents below. Two
+	// spellings of one agent become one entry.
+	if !f.hostsUnknown {
+		for _, x := range j.InferenceHosts.Hosts {
+			x.Agent = model.CanonicalAgent(x.Agent)
+			f.hosts = mergeHost(f.hosts, x)
+		}
 	}
 	// THE PERSISTED NAMES ARE FOLDED TO THEIR CANONICAL SPELLING HERE, at the one place a
 	// session.json's labels re-enter memory, because every reader of a restored fold reads

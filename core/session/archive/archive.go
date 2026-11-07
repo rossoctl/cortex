@@ -961,6 +961,22 @@ type indexEntry struct {
 	// as a live fold.
 	startAfter uint64
 	before     *session.SummaryFold
+	// hosts and hostsKnown are the summary fold's InferenceHosts table.
+	hosts      model.InferenceHosts
+	hostsKnown bool
+}
+
+// InferenceHosts implements session.HostsKeeper: a copy of the table the writer published for
+// id, over every event it wrote. A memory lookup under idxMu, the leaf lock Prior takes under the
+// store's lock.
+func (a *Archive) InferenceHosts(id string) (model.InferenceHosts, bool) {
+	a.idxMu.RLock()
+	e := a.index[id]
+	a.idxMu.RUnlock()
+	if e == nil {
+		return nil, true
+	}
+	return slices.Clone(e.hosts), e.hostsKnown
 }
 
 // publish replaces s's entry in the reader index. Writer goroutine only.
@@ -973,6 +989,7 @@ func (a *Archive) publish(s *sessionState) {
 	e.summary = s.meta.Summary.Summary(s.meta.ID)
 	e.summary.CreatedAt, e.summary.UpdatedAt = s.meta.CreatedAt, s.meta.UpdatedAt
 	e.startAfter, e.before = s.startAfter, s.before
+	e.hosts, e.hostsKnown = s.meta.Summary.InferenceHosts() // a copy
 	a.idxMu.Lock()
 	a.index[s.meta.ID] = e
 	a.idxMu.Unlock()

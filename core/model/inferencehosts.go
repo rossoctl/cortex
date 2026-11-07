@@ -14,6 +14,7 @@ type InferenceHosts []InferenceHostSeen
 // LastServer is serverOf's answer over the table: the newest evidence for agent.
 // serverAt is the reader's host→server map. A routed host counts at Last.
 // Any other host counts at LastUnrouted, and answers ("", true).
+// Each seq must be in one entry only, as one event has one agent and one host: on a tie the first entry wins.
 func (h InferenceHosts) LastServer(agent string, serverAt func(host string) (string, bool)) (string, bool) {
 	var best uint64
 	var server string

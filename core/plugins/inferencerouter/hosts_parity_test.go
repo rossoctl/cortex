@@ -11,14 +11,14 @@ import (
 	"github.com/rossoctl/cortex/core/session"
 )
 
-// TestHostsAgreeWithWentTo holds the session's InferenceHosts table to wentTo. For random
+// TestRouter_HostsAgreeWithWentTo holds the session's InferenceHosts table to wentTo. For random
 // sessions with no archive, LastServer over the session's fold gives the same (server, ok) as
 // wentTo's scan of the view, for each agent.
 //
 // The mutant rows change the table rule in one known way each. The test must find a session
 // where the mutant and wentTo disagree. If it does not, the random sessions are too weak to
 // hold the rule.
-func TestHostsAgreeWithWentTo(t *testing.T) {
+func TestRouter_HostsAgreeWithWentTo(t *testing.T) {
 	r := New()
 	if err := r.Configure(json.RawMessage(routerConfig(`"claude-code": "glm", "opencode": "ete"`))); err != nil {
 		t.Fatal(err)
@@ -33,6 +33,7 @@ func TestHostsAgreeWithWentTo(t *testing.T) {
 	}{
 		{name: "the rule", agree: true},
 		{name: "mutant: aside turns are evidence", folded: withoutAsides},
+		{name: "mutant: the table is keyed by AffinityName", folded: byAffinityName},
 		{name: "mutant: LastUnrouted is ignored", table: func(h pipeline.InferenceHosts) {
 			for i := range h {
 				h[i].LastUnrouted = 0
@@ -120,6 +121,17 @@ func randomSession(rnd *rand.Rand) []pipeline.SessionEvent {
 		evs = append(evs, e)
 	}
 	return evs
+}
+
+// byAffinityName is evs with each client named by its AffinityName alone, so that the fold keys
+// the table by AffinityName and not by AgentName(Label()).
+func byAffinityName(evs []pipeline.SessionEvent) []pipeline.SessionEvent {
+	out := make([]pipeline.SessionEvent, len(evs))
+	for i, e := range evs {
+		e.Client = &pipeline.EventClient{Name: e.Client.AffinityName()}
+		out[i] = e
+	}
+	return out
 }
 
 // withoutAsides is evs with each aside turn's role removed, so that session.TurnOf no longer

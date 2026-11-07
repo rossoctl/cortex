@@ -35,6 +35,30 @@ func (s *Store) archivedSeqLocked(id string) uint64 {
 	return last
 }
 
+// HostsKeeper is optionally implemented by a Recorder that keeps a session's history for longer
+// than the store does — the session archive. The store asks it for a session's InferenceHosts
+// table when it creates an entry numbered after earlier history, and when ViewFacts finds no
+// entry.
+//
+// It is called under the store's lock, like LastSeq: it must be a memory lookup, and must not
+// block or call back into the store.
+type HostsKeeper interface {
+	// InferenceHosts is the table over every event the keeper wrote under sessionID. ok is false
+	// when it holds history that it has no table for. An id it does not hold gives (nil, true).
+	InferenceHosts(sessionID string) (model.InferenceHosts, bool)
+}
+
+// keeperHostsLocked is the first HostsKeeper's answer for id, and (nil, true) when no recorder
+// is one. The answer is the keeper's own slice: clone it before a change. s.mu held.
+func (s *Store) keeperHostsLocked(id string) (model.InferenceHosts, bool) {
+	for _, r := range s.recorders {
+		if k, ok := r.(HostsKeeper); ok {
+			return k.InferenceHosts(id)
+		}
+	}
+	return nil, true
+}
+
 // EntryStarter is optionally implemented by a SeqSeeder. The store calls EntryStarted under its
 // write lock each time it creates an entry for sessionID, with the seq it numbers that entry's
 // events after. A rename of the entry carries the events numbered after it; those at or below
