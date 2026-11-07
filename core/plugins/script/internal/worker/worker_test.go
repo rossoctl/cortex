@@ -91,9 +91,12 @@ func fakeWorker(mode string) {
 			}
 		case "stale-id":
 			send(map[string]any{"id": -1, "stale": true})
-		case "fetch", "fetch-deaf":
+		case "fetch", "fetch-deaf", "fetch-late":
 			// Asks for every held-back part and for one the call does not hold, then
 			// replies with what it got.
+			if mode == "fetch-late" {
+				time.Sleep(300 * time.Millisecond)
+			}
 			fetched := map[string]any{}
 			names, _ := msg["more"].([]any)
 			for _, n := range append(names, "absent") {
@@ -885,6 +888,38 @@ func TestWorker_FetchesWhatTheCallHoldsBack(t *testing.T) {
 	}
 	if _, ok := msg["more"]; ok {
 		t.Error("Call left more in the caller's message")
+	}
+}
+
+// encodeCount counts how often it is encoded.
+type encodeCount struct{ n *atomic.Int32 }
+
+func (c encodeCount) MarshalJSON() ([]byte, error) {
+	c.n.Add(1)
+	return []byte(`"part"`), nil
+}
+
+// A held-back part is the caller's live request, which the plugins after this one
+// change once the caller stops waiting. So a fetch that comes after Call has
+// returned gets null, and the part is never encoded.
+func TestWorker_FetchAfterTheCallerGaveUpGetsNull(t *testing.T) {
+	w := New(fake(t, "fetch-late")) // fetches 300ms after each message
+	t.Cleanup(w.Stop)
+	if _, err := w.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var encoded atomic.Int32
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := w.Call(ctx, map[string]any{}, map[string]any{"body": encodeCount{&encoded}}); err == nil {
+		t.Fatal("a call whose caller gave up succeeded")
+	}
+	// This call waits for the child to reply to the first, so the late fetch is done.
+	if _, err := w.Call(context.Background(), map[string]any{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := encoded.Load(); n != 0 {
+		t.Errorf("the part was encoded %d times after its caller gave up", n)
 	}
 }
 

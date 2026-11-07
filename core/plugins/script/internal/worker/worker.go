@@ -38,6 +38,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 )
 
@@ -247,12 +248,21 @@ func (w *Worker) Call(ctx context.Context, msg, more map[string]any) (Reply, err
 		reply Reply
 		err   error
 	}
+	// The goroutine outlives a caller that gives up, but more holds the caller's
+	// live request, which the plugins after this one go on to change. So a fetch
+	// that comes after Call has returned is answered with null.
+	var held sync.Mutex
+	answer := func(name string) ([]byte, error) {
+		held.Lock()
+		defer held.Unlock()
+		return json.Marshal(map[string]any{"id": id, "fetch": name, "value": more[name]})
+	}
 	ch := make(chan result, 1)
 	go func() {
 		defer w.unlock()
 		sctx, cancel := context.WithTimeout(context.Background(), w.callTimeout)
 		defer cancel()
-		reply, err := w.proc.call(sctx, append(line, '\n'), id, more)
+		reply, err := w.proc.call(sctx, append(line, '\n'), id, answer)
 		if err != nil {
 			w.fail(err)
 		} else {
@@ -264,6 +274,9 @@ func (w *Worker) Call(ctx context.Context, msg, more map[string]any) (Reply, err
 	case r := <-ch:
 		return r.reply, r.err
 	case <-ctx.Done():
+		held.Lock()
+		more = nil
+		held.Unlock()
 		return Reply{}, fmt.Errorf("worker: %s gave up waiting for a reply: %w", w.name, ctx.Err())
 	}
 }
@@ -420,7 +433,9 @@ func spawn(ctx context.Context, cfg Config, name string) (*process, Handshake, e
 	return p, hs, nil
 }
 
-func (p *process) call(ctx context.Context, line []byte, id uint64, more map[string]any) (Reply, error) {
+// call sends line and returns the child's reply to it. answer encodes the
+// answer to a fetch of one part.
+func (p *process) call(ctx context.Context, line []byte, id uint64, answer func(name string) ([]byte, error)) (Reply, error) {
 	var reply Reply
 	if err := p.write(ctx, line); err != nil {
 		return reply, err
@@ -443,11 +458,11 @@ func (p *process) call(ctx context.Context, line []byte, id uint64, more map[str
 			return reply, nil
 		}
 		// A name the call does not hold gets null, which the SDK reads as absent.
-		answer, err := json.Marshal(map[string]any{"id": id, "fetch": *head.Fetch, "value": more[*head.Fetch]})
+		frame, err := answer(*head.Fetch)
 		if err != nil {
 			return reply, fmt.Errorf("worker: encode %s: %w", *head.Fetch, err)
 		}
-		if err := p.write(ctx, append(answer, '\n')); err != nil {
+		if err := p.write(ctx, append(frame, '\n')); err != nil {
 			return reply, err
 		}
 	}
