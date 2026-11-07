@@ -1906,8 +1906,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ev := apiclient.StreamEvent(msg)
 		m.handleStreamEvent(ev)
 		// Re-pump the same channel for the next message. A single apiclient
-		// goroutine fills the channel for the duration of ctx.
-		return m, streamPump(m.streamCh)
+		// goroutine fills the channel for the duration of ctx. A response for the
+		// exchange open in the detail pane fills it (#1681).
+		return m, tea.Batch(streamPump(m.streamCh), m.fillDetailResponse(ev.Event))
 
 	case spendLoadedMsg:
 		m.applySpendLoaded(msg)

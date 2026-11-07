@@ -114,6 +114,29 @@ func (m *model) fetchDetailHalves(r eventRow) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// fillDetailResponse puts a response that just streamed in into the open detail of the
+// request it answers (#1681), and fetches its bodies. The events table does not rebuild while
+// the detail is open, so without this the page would say "waiting for response…" until the
+// reader left it. showDetail keeps the reader's folds, cursor and scroll.
+func (m *model) fillDetailResponse(e *pipeline.SessionEvent) tea.Cmd {
+	r := m.detailRow
+	req, resp, _, _ := detailHalves(r)
+	if m.pane != paneDetail || e == nil || req == nil || resp != nil ||
+		req.Phase != pipeline.SessionRequest || e.Phase != pipeline.SessionResponse ||
+		e.RequestID == "" || e.RequestID != req.RequestID ||
+		eventSession(m.selectedSess, e) != eventSession(m.selectedSess, req) {
+		return nil
+	}
+	got := *e
+	r.resp = &got
+	r.respRaw, _ = m.heldRaw(r.resp)
+	m.showDetail(r, false)
+	if m.client != nil && m.needsFullEvent(r.resp) {
+		return fetchDetailEventCmd(m, eventSession(m.selectedSess, r.resp), r.resp.Seq)
+	}
+	return nil
+}
+
 // applyDetailEvent installs a fetched full event and re-renders, or reports why it
 // could not.
 //

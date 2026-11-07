@@ -279,3 +279,23 @@ func TestDetail_FitsAfterAResizeInAnotherPane(t *testing.T) {
 		assertFits(t, m, fmt.Sprintf("detail after %c and a resize", key))
 	}
 }
+
+func TestDetail_ResponseFillsOpenDetail(t *testing.T) {
+	at := time.Now().Add(-time.Minute)
+	req, resp := turnExchange(at)
+	m := openDetail(t, at.Add(time.Minute), req)
+	if !strings.Contains(detailText(m), "waiting for response…") {
+		t.Fatalf("setup: want the waiting note:\n%s", detailText(m))
+	}
+	m.Update(keyRune('j'))
+	m.Update(keyRune('j'))
+	before := cursorPath(m)
+
+	m.Update(streamMsg(apiclient.StreamEvent{Event: &resp}))
+	if !strings.Contains(detailText(m), "the-answer") {
+		t.Errorf("the response did not fill the page:\n%s", detailText(m))
+	}
+	if got := cursorPath(m); got != before {
+		t.Errorf("cursor moved from %q to %q: the fill must keep the reader's place", before, got)
+	}
+}
