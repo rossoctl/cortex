@@ -229,6 +229,23 @@ func TestToolOfARunningSubagentStaysOpen(t *testing.T) {
 	}
 }
 
+// The latest notification ends a run, not the first: a run that SendMessage resumed ends at its
+// own notification, and its tools without a result are lost there too.
+func TestToolOfAResumedSubagentIsLostAtItsEnd(t *testing.T) {
+	var r rec
+	r.turn("", 0, 1, []pipeline.InferenceMessage{user("go")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "s1", Name: "Agent"})
+	r.turn("b2", 1, 1, []pipeline.InferenceMessage{user("p")}, nil, "end_turn")
+	note := user("<task-notification>\n<task-id>b2</task-id>\n<status>completed</status>")
+	h := []pipeline.InferenceMessage{user("go"), note}
+	r.turn("", 5, 1, h, nil, "end_turn")
+	r.turn("b2", 10, 1, []pipeline.InferenceMessage{user("p"), user("more")}, nil, "tool_use",
+		pipeline.InferenceToolCall{ID: "edit", Name: "Edit"}, pipeline.InferenceToolCall{ID: "hb", Name: "SubagentHandback"})
+	r.turn("", 30, 1, append(h, note), nil, "end_turn")
+	if x := findTool(t, Build("s", r.events, time.Time{}), "edit"); !x.Lost || x.End == nil || !x.End.Equal(x.Start) {
+		t.Errorf("edit = %+v, want lost at its start", x)
+	}
+}
+
 // A fork's result names no agent id, so it links to its parent's earliest unmatched spawn
 // whose turn began before the fork's first request. Two forks from one turn take one each.
 func TestForksLinkToTheirOwnSpawnsInOrder(t *testing.T) {
