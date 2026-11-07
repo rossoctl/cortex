@@ -3,6 +3,8 @@
 Date: 2026-11-07
 Issue: rossoctl/cortex#1680
 Branch: `docs/search-bodies-1680`
+Revision 2: the proxy searches the bodies. Revision 1 (agentop fetches one event at a
+time) was built and measured, and was too slow. See "Measurements".
 
 ## Problem
 
@@ -18,199 +20,240 @@ why a session opens about 163x faster (#1339). This design must keep it.
 **A row matches if its detail view would show the query.**
 
 The search reads every field that the detail pane draws, the `raw` part
-included. It does not use a list of fields of its own. So a match is always
-visible when the operator opens the row.
+included. So a match is always visible when the operator opens the row.
 
 A request carries the whole conversation again. So a prompt from turn 3 also
 matches turn 4, 5 and every later turn, because their detail views show it too.
 That is the rule working as intended.
 
-## Why agentop searches, one event at a time
+## Measurements
 
-Measured on this laptop's largest archived session: 10,767 events, 40 MB
-compressed and 414 MB uncompressed on disk. The archive and the in-memory store
-keep each distinct string one time. One full event averages about 209 KB
-(sourced: `core/sessionapi/summary.go`), so all events in full come to about
-2.2 GB (inferred).
+All on this laptop's largest session: 10,767 events, 40 MB compressed and
+414 MB uncompressed on disk. "No match" is the worst case: every event is read.
 
-A search that finds **all** matches at once must read the whole session. A
-search that finds the **next** match stops at the first one. Because history
-repeats, the next match is usually close. So the cost depends on how far the
-next match is, not on the size of the session.
+| Approach | "No match" time | Peak heap |
+|---|---|---|
+| Rev. 1: agentop fetches one event at a time, with `raw` | did not finish in 580 s, over the 2000 events agentop holds | — |
+| A: agentop fetches pages of 200 full events (no `raw`) | 41 s, 2000 events | 764 MB in agentop (upper bound) |
+| A: pages of 50 | 73 s, 2000 events | 218 MB in agentop (upper bound) |
+| **B: the proxy makes one pass** | **3.9 s, all 10,767 events** | **133 MB in the proxy** |
+| (a plain archive read now, for comparison) | 2.3 s | 129 MB |
 
-Three ways were compared:
+Single fetches, for the reason rev. 1 failed: one archived event costs 1.4–1.6 s
+(4.9–5.3 s with `raw`), because the archive reads a segment from its start for
+each event. One event in memory costs 0.04 s (0.45 s with `raw`).
 
-| Approach | Result |
-|---|---|
-| The proxy finds all matches, with the detail rule moved into core | Exact, but needs a new route, a field list in core, and a walk that does not expand shared strings |
-| The proxy finds all matches in every field | A response event also holds its request's messages, which the detail view hides. Rows then match where the detail view shows nothing. Rejected |
-| **agentop finds the next match, one event at a time** | Exact, because it uses the detail view's own code. The proxy does not change, so it works with proxies that are installed now. Chosen |
+B's figure comes from an in-process test on a copy of the archive, with no HTTP,
+a simpler case fold, and capture blocks checked as raw text. The real pass also
+decodes each distinct block, so it is slower. The plan measures it again.
 
-The worst case is "no match": then agentop fetches every event it holds, one
-at a time. A progress line and Esc make that case safe. If it is too slow, a
-proxy route that finds the next match on the server is the next step. It is not
-in this design.
+## Decision: the proxy searches what the summary drops
+
+The work splits along the line that `view=summary` already draws:
+
+- **agentop checks what it holds.** The summary keeps every field but the
+  bodies. agentop runs `detailHas` on each summary row it holds, with no fetch.
+  That covers the header blocks too, because they come from summary fields.
+- **The proxy checks what the summary drops**, and the capture. It sends back the
+  seqs that match. This is one pass over memory and the archive.
+
+A row matches when either side matches it. Neither side can match text the
+detail view does not show, so the union is the rule.
 
 ## What the operator sees
 
 ### The prompt
 
 - On the events pane, the `/` prompt shows one box:
-  `/ hello▏   [ ] details`.
+  `/ hello▏   [ ] details  (tab)`.
 - Tab turns the box on or off. Typed letters go into the query.
 - When the box is off, `/`, `n` and `N` work exactly as they do now.
 - Other panes do not show the box.
 
 ### When `details` is on
 
-- Typing does not search. The footer says `Enter: search details`.
-- Enter starts the search at the row where `/` was pressed, and goes down.
-- The cursor stops on the first matching row.
-- While it searches, the footer says
-  `[/hello details: searching 340 of 1987…]`.
-- On a match, the footer says `[/hello details: match]`. Not the `#` value:
-  that column can be hidden or sorted.
-- On no match, the footer says `[/hello details: no match in 1987 rows]`.
-- Esc stops the search and puts the cursor back where `/` was pressed.
+- Typing does not search. The footer says `[/hello details: Enter to search]`.
+- Enter sends the search. The footer says `[/hello details: searching…]`.
+- When the answer arrives, the cursor goes to the first match at or after the
+  row where `/` was pressed, wrapping. The footer says `[/hello details 1/12]`,
+  as `/` does now.
+- On no match, the footer says `[/hello details: no match]`.
+- When the proxy holds matches older than what agentop holds, the footer adds
+  ` · 3 older (o)`.
+- Esc while it searches drops the answer. The cursor has not moved.
 
-### After a match
+### After the answer
 
-- `n` finds the next match below the cursor. `N` finds the next match above
-  it. Both wrap past the end.
-- An event that was checked is not fetched again for the same query. So a
-  second pass makes no fetch.
+- `n` and `N` go to the next and the previous match at once, wrapping. The
+  footer shows `k/N`.
+- When the session has new events since the search, `n` and `N` send the search
+  again first.
 - Enter opens the row. The detail search gets the same query, so the match is
   highlighted.
 
 ### Limits
 
-- It searches the events agentop holds: the newest 2000, plus the pages loaded
-  with `o`. Older events need `o` first.
+- It moves only to rows agentop holds. Older matches need `o` first.
 - It searches the rows the pane shows. Rows that `s` hides are not searched.
 - The box stays on with the query while the operator stays in this session.
-  Opening another session clears both, as it clears the query now. Neither is
-  saved.
+  Opening another session clears both. Neither is saved.
+- `raw` exists only where the archive is on (a laptop install). Elsewhere the
+  detail view shows no `raw`, and the search does not search it either.
+- A proxy without the route answers 404. The footer then says
+  `[/hello details: this Cortex has no details search]`.
 
 ## How it works
 
-All new code is in `cmd/agentop/tui`. The proxy and the session API do not
-change.
+### The proxy: `GET /v1/sessions/{id}/search?q=<text>`
 
-### One function for the detail view's text
+**Answer.** `200` with `{"seqs":[12,14,40],"lastSeq":980,"schemaVersion":1}`.
+`seqs` is ascending: every event of the session that matches, in memory and in
+the archive. `lastSeq` is the newest seq the pass read. An empty `q` is `400`.
+An unknown session is `404` with the body `{"error":"session not found"}`. That
+body is how agentop tells "no session" from "a proxy without the route", whose
+404 is the mux's plain text.
 
-- Move the first half of `showDetail` (`detail_pane.go`) into
-  `detailContent(row eventRow) (head []string, root *node)`. That half builds
-  the header blocks, then runs `filterForDetail`, `withRaw` and
-  `treeFromJSON`.
-- `showDetail` calls `detailContent`. The detail view does not change.
-- `detailHas(row eventRow, q string) bool` draws that tree with every fold open
-  (`renderTree` with `foldState{all: true}`). It checks the header lines and
-  each tree line with `find.Contains`, the matcher the detail search uses.
-- So "matches" and "the detail view shows it" come from one piece of code.
+**What it matches**, with the case fold of agentop's `find.Contains` (rune by
+rune, `unicode.ToLower`):
 
-### The search loop
+1. The fields `summarizeEvent` drops, kept or dropped per phase as the detail
+   view keeps or drops them:
+   - request: `inference.messages`, `inference.tools`, `inference.toolResults`,
+     `inference.historyToolCalls`, `mcp.params`
+   - response: `inference.toolCalls`, `mcp.result`, `a2a.artifact`
 
-New file `tui/search_details.go`.
+   Both the values and the key names in those subtrees match, because the
+   detail tree shows both. A tool's `parameters` is JSON, so its keys and
+   values match as JSON. Numbers match as the tree writes them.
+2. The capture, where the archive holds one (request events and response
+   events):
+   - each body block, one time for each segment: its JSON keys and values when
+     the block is valid JSON alone, its text when not. Image and document
+     blocks are skipped, because the detail shows them as a label.
+   - the text between blocks, the headers (names and values) and the query
+   - a response's status, headers and body. A binary or compressed body is
+     skipped, because the detail shows it as a label.
+   - an event matches when its capture uses a matching block or holds matching
+     text.
 
-1. Start at the cursor row. Go through the visible rows in the order the pane
-   shows them. An event with more than one row is checked one time.
-2. For each event:
-   - If agentop already holds the full event (`fullFetched`), or the event has
-     no body (`hasBody` is false), or the proxy does not project
-     (`serverProjects` is false), check it at once with no fetch.
-   - Otherwise, fetch it with `GetEventRaw`, as `fetchDetailEventCmd` does,
-     and check the reply.
-3. On a match, put the cursor on that row and pin it by event key, as
-   `eventsSurface.reveal` does.
-4. Record the result (match or no match) for the event, and on no match go
-   to the next event.
-5. When the loop comes back to the start row, report no match.
+**One field list.** The per-phase key lists in `filterForDetail`
+(`inferenceReqKeys` and the five others) move to core as
+`sessionapi.DetailKeys`. agentop's `filterForDetail` and the proxy both read it,
+so the two cannot keep different lists.
 
-One fetch runs at a time.
+**The pass.**
+- Memory: copy the session's events under the lock, as `ViewPage` does, then
+  check them outside it. A string of at least `session.InternMinLen` bytes is
+  checked one time, by its address, because the store shares it between events.
+- Archive: a new `(*archive.Archive).Find(id string, event func(*model.SessionEvent) bool, text func(string) bool) ([]uint64, error)`.
+  It reads each segment one time. It checks each block with `text` one time,
+  and marks each event that matches by `event`, or whose capture uses a
+  matching block or holds matching text. The capture format stays inside the
+  archive package.
+- The two lists are merged by seq. The pass stops when the request's context
+  ends, so a closed connection stops the work.
 
-### Memory rule
+### agentop
 
-- A fetched event lives only in its reply message. agentop checks it and drops
-  it.
-- The search does not call `replaceHeldEvent` or `markFullFetched`. Opening a
-  row calls both, and so keeps the full event. If the search did the same,
-  agentop would keep every event it checked, up to the 2.2 GB above.
-- The only state that stays is one bool for each checked event, keyed by
-  event key, because a linked bucket's seqs count from 1 in their own bucket.
-  It is cleared when the query or the session changes.
+- **Client.** `(*apiclient.Client).SearchSession(ctx, id, q string) (SearchResult, error)`.
+  A 404 with no JSON body is `ErrNoSearch`, so the footer can say the proxy has
+  no route.
+- **Enter.** One command sends one search for each session id among the held
+  rows (a linked bucket's events have their own id and seq numbers). It also
+  runs `detailHas` on every held row, with the capture when agentop holds one.
+  The matches are the rows either side names, in the order the table shows
+  them.
+- **n and N** step through that list. When a session's newest held seq is
+  above the `lastSeq` of its answer, the search is sent again first.
+- **Memory.** The answer is a list of integers. Nothing is fetched to check a
+  row.
+- **Stale answers.** Each search has a generation number. Esc, a new query, a
+  new session, or leaving the pane increases it, and an answer with an old
+  number is dropped.
+- Rev. 1's per-event scan (`detailScan`, `runDetailScan`, the 20-check batch)
+  is removed. `detailContent` and `detailHas` stay. The keys, the box and the
+  resets stay as built.
 
-### Stopping and stale replies
+## Costs and accepted downsides
 
-- Each search has a generation number. Esc, a new query, a new session, or
-  leaving the pane increases it.
-- A reply with an old generation is dropped.
-- A fetch error stops the search. The footer shows the error.
-- An event that left the held list during the search (eviction, `t`) is
-  skipped.
-
-### Keeping the screen live
-
-Checks that need no fetch run at most 20 per update. Then the loop returns a
-command that continues it, so keys and the stream still work during a long
-search against a proxy that does not project.
-
-### State on the model
-
-- `m.searchDetails bool`: the box. It is cleared where the events pane's query
-  is cleared now: `keys.go:708`, `timeline_pane.go:481`, `app.go:1153`.
-- `m.detailScan`: the running search (query, generation, direction, start row,
-  rows left, state), or nil.
-- `searchKey`: Tab toggles the box when the target is `paneEvents`. Enter with
-  the box on commits the query and starts the loop.
-- `searchStep`: with the box on and a committed query on `paneEvents`, `n` and
-  `N` start the loop. Otherwise they work as now.
-- `searchStatus`: on `paneEvents` with the box on, it gives the footer lines
-  above.
-- Opening a row while the box is on sets the detail pane's query to the events
-  pane's query.
+- **A new proxy is needed.** An older proxy answers 404, and agentop says so. On
+  a laptop, the upgrade restarts the proxy, which cuts every attached session.
+  In Kubernetes, the AuthBridge sidecar image must be upgraded too.
+- **The proxy copies part of the detail view's rule.** A parity test guards it
+  (see Tests). Known gaps, which do not match:
+  - text agentop writes itself in the `raw` part: `forwarded as sent`,
+    `rewritten by a plugin: …`, `[image … KB]`, `[gzip body … KB]`, and the key
+    names `raw`, `request`, `response`, `forwarded`, `forwardedBody`
+  - a query that spans a key and its value, such as `role: user`
+  - a block that is not valid JSON alone is matched as stored text, so a query
+    with a quote or a backslash can miss in it
+- **The work runs in the proxy.** On the largest session, one search takes about
+  4 s of one CPU and about 133 MB of heap, about the same as one archive read
+  now. On a laptop with `memory.limit_mb` 2048, this adds GC pressure for that
+  time.
+- **More exposure, not more access.** The session API has no authentication. The
+  route makes it fast to grep every conversation. `GET /events/{seq}` already
+  sends every body.
+- **Size.** About 900 to 1,200 lines in two modules (estimate).
 
 ## Tests
 
-With a fake client that counts fetches:
+**core/sessionapi** (`search_test.go`), with a store and, where named, an
+archive in `t.TempDir()`:
 
-1. The search stops at the first match. It fetches only the events between the
-   cursor and that match.
-2. After a search, `m.events` and `m.fullFetched` are the same as before. This
-   pins the memory rule.
-3. A prompt matches the request row and not its response row. This uses the
-   real `filterForDetail`.
-4. Text that is only in `raw` matches.
-5. `n` wraps past the end. A second pass makes no fetch.
-6. Esc, and a new query, drop a late reply. The cursor goes back to where `/`
-   was pressed.
-7. No match reports the count of events checked.
-8. With the box off, `/`, `n` and `N` behave as now. The current search tests
-   pass with no change.
+1. A prompt in `messages` matches the request event and not its response.
+2. A response's `toolCalls` arguments match the response and not the request.
+3. Key names match: `toolUseId` matches an event whose message has one.
+4. A tool's `parameters` matches by a key inside the schema.
+5. `mcp.params` on a request, `mcp.result` and `a2a.artifact` on a response.
+6. The case fold: `İ` and `ß` fold as `find.Contains` folds them.
+7. Archive: a capture body block matches every event that uses it. An image
+   block does not match by its base64 text. A binary response body does not
+   match.
+8. Archive and memory together: each seq is in the answer one time.
+9. Empty `q` is 400. An unknown session is 404 with the JSON body.
+10. A cancelled request context stops the pass.
+
+**cmd/agentop** (parity and keys):
+
+11. Parity, through a real `sessionapi.Server` on `httptest`: for a fixture of
+    request and response events with messages, tools, tool results, MCP and
+    captures, and a list of queries, "the proxy's seqs or `detailHas` on the
+    summary row" equals "`detailHas` on the full event with its capture", for
+    every event and query, minus the named gaps.
+12. Enter lands on the first match. `n` and `N` step and wrap. The footer
+    shows `k/N`.
+13. A 404 without the JSON body gives the "no details search" footer.
+14. A new event after the search makes `n` search again.
+15. Esc, a new query, and leaving the pane drop a late answer.
+16. The current search tests, and Task 3's key tests, pass.
 
 ## Measurement before the PR
 
-Run a "no match" search on the 10,767-event session. Record in the PR body the
-time it takes, and agentop's peak heap from pprof (`AGENTOP_PPROF_ADDR`).
+Run the real `Find` and matcher, in-process, on the copy of the 10,767-event
+session in `/tmp/arch-measure`. Record the time and the peak heap in the PR
+body, beside the table above. Do not restart the shared proxy for this.
 
 ## Docs
 
-- `cmd/agentop/README.md`: the `/` row in Keybindings, and the `view=summary`
-  note.
+- `docs/session-api.md`: the new route in the Endpoints table, and its own
+  section (request, answer, what matches, the gaps, the cost).
+- `cmd/agentop/README.md`: the `/` row, and the summary-view note.
 - The `?` help overlay.
-- The header comment of `search.go`. Its rule "a pane says what it draws" stays
-  true: with `details` on, the events pane searches what its detail view draws.
+- The header comment of `search.go`.
 
 ## Out of scope
 
-- A total match count, and a mark on every matching row.
-- Search across sessions on the sessions pane.
-- A search route on the proxy.
+- Search across sessions on the sessions pane. The route makes it possible
+  later.
+- Marks on the matching rows in the table.
 - Searching as you type with `details` on.
-- Events older than what agentop holds.
+- Moving to matches older than what agentop holds.
 
 ## Noted, not changed here
 
 `core/sessionapi/summary.go` keeps `Inference.Completion` and A2A `Parts` in
 the summary for `eventHaystack`, a filter that no longer exists. Its comment and
-`TestSummarizeEvent_KeepsEverythingTheFilterSearches` still name it. The PR body
-mentions this. This design does not change it.
+`TestSummarizeEvent_KeepsEverythingTheFilterSearches` still name it. With this
+design, the local check reads those two fields, so they now have a reader
+again. The comment should say so. That change is in this PR.
