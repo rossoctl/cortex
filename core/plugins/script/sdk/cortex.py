@@ -41,7 +41,7 @@ from contextlib import redirect_stdout
 
 __all__ = ["on", "run", "Flow", "Deny"]
 
-PROTOCOL = 1
+PROTOCOL = 2
 SESSION_API = "http://127.0.0.1:47601"
 
 
@@ -356,6 +356,10 @@ class Flow:
     flow.texts        every prompt text fragment
     flow.latest_text  the newest user message only — what gates should read
     flow.inference    what Cortex's inference parser found (model, tools, ...)
+
+    Cortex sends flow.body and flow.inference only when a hook first reads them
+    (or flow.json, texts, latest_text, replace_text): on a long conversation each
+    is the size of the request.
     """
 
     def __init__(self, msg):
@@ -367,16 +371,32 @@ class Flow:
         self.host = req.get("host")
         self.path = req.get("path")
         self.headers = dict(req.get("headers") or {})
-        self.inference = req.get("inference")
         self.mcp = req.get("mcp")
         self.a2a = req.get("a2a")
-        self.body = _body_of(req)
+        self._req = req
+        self._more = set(msg.get("more") or ())
+        self._body = _UNSET
+        self._inference = _UNSET
         self.response = Response(msg["response"]) if self.hook == "response" and msg.get("response") else None
         self._json = _UNSET
         self._set_headers = {}
         self._remove_headers = []
         self._new_body = None
         self.invocation = None
+
+    @property
+    def body(self):
+        if self._body is _UNSET:
+            part = _fetch(self._msg.get("id"), "body") if "body" in self._more else self._req
+            self._body = _body_of(part or {})
+        return self._body
+
+    @property
+    def inference(self):
+        if self._inference is _UNSET:
+            more = "inference" in self._more
+            self._inference = _fetch(self._msg.get("id"), "inference") if more else self._req.get("inference")
+        return self._inference
 
     def _current(self):
         """The body as edits so far have left it — the response's in a response
@@ -548,6 +568,26 @@ def handle(msg):
 
 # ---- the worker loop --------------------------------------------------------
 
+# Cortex's end of the pipe while run() serves it: (stdin, stdout). None in replay
+# and in tests, whose messages carry every part.
+_peer = None
+
+
+def _fetch(msg_id, name):
+    """A part of message msg_id that Cortex held back (named in its "more"), or
+    None when Cortex has none."""
+    if _peer is None:
+        return None
+    inp, out = _peer
+    _send(out, {"id": msg_id, "fetch": name})
+    line = inp.readline()
+    if not line:
+        raise EOFError("Cortex closed the pipe")
+    answer = json.loads(line)
+    if answer.get("id") != msg_id or answer.get("fetch") != name:
+        raise RuntimeError("expected %s of message %s, got %.80s" % (name, msg_id, line))
+    return answer.get("value")
+
 
 def run(enforce=False):
     """Serve Cortex, or with --replay <session-id>, test against a recorded
@@ -556,7 +596,9 @@ def run(enforce=False):
         sys.stdout.reconfigure(errors="backslashreplace")
     if len(sys.argv) >= 3 and sys.argv[1] == "--replay":
         sys.exit(replay(sys.argv[2], api=(sys.argv[3] if len(sys.argv) > 3 else SESSION_API)))
+    global _peer
     out = sys.stdout
+    _peer = (sys.stdin, out)
     _send(
         out,
         {

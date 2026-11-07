@@ -262,18 +262,18 @@ func (s *Script) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline
 			return a
 		}
 	}
-	var msg map[string]any
+	var msg, more map[string]any
 	for _, l := range s.loaded {
 		if !l.hs.Has("request") {
 			continue
 		}
 		// Rebuilt only after an applied edit: the next script must see the body the
-		// one before it left, and an unedited request need not be encoded twice.
+		// one before it left, and an unedited request need not be built twice.
 		if msg == nil {
-			msg = requestMessage(pctx)
+			msg, more = requestMessage(pctx)
 		}
 		msg["plugin"] = l.name
-		a, stop, edited := s.run(ctx, pctx, l, msg, false)
+		a, stop, edited := s.run(ctx, pctx, l, msg, more, false)
 		if stop {
 			return a
 		}
@@ -381,7 +381,7 @@ func responseBudget(ctx context.Context) (context.Context, context.CancelFunc, b
 // responseHooks runs the response hooks. st is the copied stream for a response
 // already delivered, nil for one that is still the pipeline's to change.
 func (s *Script) responseHooks(ctx context.Context, pctx *pipeline.Context, streamed bool, st *streamState) pipeline.Action {
-	var msg map[string]any
+	var msg, more map[string]any
 	for i := len(s.loaded) - 1; i >= 0; i-- {
 		l := s.loaded[i]
 		if !l.hs.Has("response") {
@@ -401,13 +401,12 @@ func (s *Script) responseHooks(ctx context.Context, pctx *pipeline.Context, stre
 			continue
 		}
 		// Built once, and again only after an applied edit, which the next script
-		// must see. The request goes along without its body: a response hook rarely
-		// reads it, and on a long conversation it is the largest thing in the message.
+		// must see.
 		if msg == nil {
-			msg = responseMessage(pctx, streamed, st)
+			msg, more = responseMessage(pctx, streamed, st)
 		}
 		msg["plugin"] = l.name
-		a, stop, edited := s.run(callCtx, pctx, l, msg, true)
+		a, stop, edited := s.run(callCtx, pctx, l, msg, more, true)
 		cancel()
 		if stop {
 			if streamed {
@@ -424,11 +423,13 @@ func (s *Script) responseHooks(ctx context.Context, pctx *pipeline.Context, stre
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
-func responseMessage(pctx *pipeline.Context, streamed bool, st *streamState) map[string]any {
-	msg := requestMessage(pctx)
+// responseMessage is what a response hook receives. The request goes along
+// without its body: a response hook rarely reads it, and on a long conversation it
+// is the largest thing in the message. The inference extension stays fetchable.
+func responseMessage(pctx *pipeline.Context, streamed bool, st *streamState) (msg, more map[string]any) {
+	msg, more = requestMessage(pctx)
 	msg["hook"] = "response"
-	delete(msg["request"].(map[string]any), "body")
-	delete(msg["request"].(map[string]any), "body_base64")
+	delete(more, "body")
 	resp := map[string]any{
 		"status":   pctx.StatusCode,
 		"headers":  flatten(pctx.ResponseHeaders),
@@ -443,7 +444,7 @@ func responseMessage(pctx *pipeline.Context, streamed bool, st *streamState) map
 		putBody(resp, pctx.ResponseBody)
 	}
 	msg["response"] = resp
-	return msg
+	return msg, more
 }
 
 func frameStrings(frames [][]byte) []string {
@@ -456,9 +457,9 @@ func frameStrings(frames [][]byte) []string {
 
 // run calls one script and applies its reply. stop is true when the chain ends
 // here; edited is true when the script's edit reached the request or response.
-func (s *Script) run(ctx context.Context, pctx *pipeline.Context, l *loaded, msg map[string]any, response bool) (a pipeline.Action, stop, edited bool) {
+func (s *Script) run(ctx context.Context, pctx *pipeline.Context, l *loaded, msg, more map[string]any, response bool) (a pipeline.Action, stop, edited bool) {
 	s.m.calls.Add(1)
-	r, err := l.w.Call(ctx, msg)
+	r, err := l.w.Call(ctx, msg, more)
 	if err != nil {
 		a, stop = s.failed(pctx, l, err, nil)
 		return a, stop, false

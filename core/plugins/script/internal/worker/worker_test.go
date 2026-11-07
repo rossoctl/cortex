@@ -91,6 +91,27 @@ func fakeWorker(mode string) {
 			}
 		case "stale-id":
 			send(map[string]any{"id": -1, "stale": true})
+		case "fetch", "fetch-deaf":
+			// Asks for every held-back part and for one the call does not hold, then
+			// replies with what it got.
+			fetched := map[string]any{}
+			names, _ := msg["more"].([]any)
+			for _, n := range append(names, "absent") {
+				send(map[string]any{"id": msg["id"], "fetch": n})
+				if mode == "fetch-deaf" {
+					time.Sleep(time.Hour)
+				}
+				in.Scan()
+				var answer map[string]any
+				json.Unmarshal(in.Bytes(), &answer)
+				if answer["id"] != msg["id"] || answer["fetch"] != n {
+					fetched["mismatch"] = answer
+				}
+				fetched[n.(string)] = answer["value"]
+			}
+			_, inline := msg["big"]
+			send(map[string]any{"id": msg["id"], "fetched": fetched, "more": msg["more"], "inline": inline})
+			continue
 		}
 		fmt.Fprintln(out, "log line", count) // the script's own output, between replies
 		send(map[string]any{"id": msg["id"], "count": count, "echo": msg["echo"]})
@@ -117,7 +138,7 @@ func call(t *testing.T, w *Worker, echo string) (map[string]any, Reply) {
 	if _, err := w.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	r, err := w.Call(context.Background(), map[string]any{"echo": echo})
+	r, err := w.Call(context.Background(), map[string]any{"echo": echo}, nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -155,12 +176,12 @@ func TestWorker_HandshakeAndCalls(t *testing.T) {
 func TestWorker_CallStartsTheProcessInTheBackground(t *testing.T) {
 	w := New(fake(t, "plain"))
 	t.Cleanup(w.Stop)
-	if _, err := w.Call(context.Background(), map[string]any{}); !errors.Is(err, ErrStarting) {
+	if _, err := w.Call(context.Background(), map[string]any{}, nil); !errors.Is(err, ErrStarting) {
 		t.Fatalf("first Call = %v, want ErrStarting", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if _, err := w.Call(context.Background(), map[string]any{}); err == nil {
+		if _, err := w.Call(context.Background(), map[string]any{}, nil); err == nil {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -212,7 +233,7 @@ func TestWorker_TimeoutKillsAndRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	_, err := w.Call(context.Background(), map[string]any{})
+	_, err := w.Call(context.Background(), map[string]any{}, nil)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Call error = %v", err)
 	}
@@ -220,7 +241,7 @@ func TestWorker_TimeoutKillsAndRestarts(t *testing.T) {
 		t.Errorf("timed-out call took %v", d)
 	}
 	// Backing off: refused immediately rather than started again.
-	if _, err := w.Call(context.Background(), map[string]any{}); !errors.Is(err, ErrBackoff) {
+	if _, err := w.Call(context.Background(), map[string]any{}, nil); !errors.Is(err, ErrBackoff) {
 		t.Errorf("second Call error = %v, want ErrBackoff", err)
 	}
 }
@@ -236,7 +257,7 @@ func TestWorker_CallsDuringAStartFailAtOnce(t *testing.T) {
 			t.Cleanup(w.Stop)
 			started := make(chan error, 1)
 			if by == "call" {
-				if _, err := w.Call(context.Background(), map[string]any{}); !errors.Is(err, ErrStarting) {
+				if _, err := w.Call(context.Background(), map[string]any{}, nil); !errors.Is(err, ErrStarting) {
 					t.Fatalf("first Call = %v, want ErrStarting", err)
 				}
 			} else {
@@ -245,7 +266,7 @@ func TestWorker_CallsDuringAStartFailAtOnce(t *testing.T) {
 			time.Sleep(100 * time.Millisecond)
 			for i := range 3 {
 				t0 := time.Now()
-				_, err := w.Call(context.Background(), map[string]any{})
+				_, err := w.Call(context.Background(), map[string]any{}, nil)
 				if !errors.Is(err, ErrStarting) {
 					t.Fatalf("call %d during the start = %v, want ErrStarting", i, err)
 				}
@@ -288,7 +309,7 @@ func TestWorker_AQueueThatOutlastsACallerKeepsTheScript(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 6 { // 6 x 300ms queues past a 1s timeout; no one call comes near it
 		wg.Add(1)
-		go func() { defer wg.Done(); w.Call(context.Background(), map[string]any{}) }()
+		go func() { defer wg.Done(); w.Call(context.Background(), map[string]any{}, nil) }()
 	}
 	wg.Wait()
 	got := callKept(t, w)
@@ -316,7 +337,7 @@ func TestWorker_AnOverloadedScriptAnswersOnlyCallersStillWaiting(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for time.Now().Before(end) {
-				if _, err := w.Call(context.Background(), map[string]any{}); err == nil {
+				if _, err := w.Call(context.Background(), map[string]any{}, nil); err == nil {
 					ok.Add(1)
 				}
 			}
@@ -345,7 +366,7 @@ func TestWorker_LongStderrLinesDoNotStallTheScript(t *testing.T) {
 				t.Fatalf("Start: %v", err)
 			}
 			for i := range 3 {
-				if _, err := w.Call(context.Background(), map[string]any{}); err != nil {
+				if _, err := w.Call(context.Background(), map[string]any{}, nil); err != nil {
 					t.Fatalf("call %d: %v", i, err)
 				}
 			}
@@ -393,7 +414,7 @@ func TestWorker_AnExitKillsTheWholeProcessGroup(t *testing.T) {
 	if _, err := w.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	w.Call(context.Background(), map[string]any{}) // the script exits on it
+	w.Call(context.Background(), map[string]any{}, nil) // the script exits on it
 	b, err := os.ReadFile(pidfile)
 	if err != nil {
 		t.Fatal(err)
@@ -426,7 +447,7 @@ func TestWorker_AReapedChildIsNotSignalledLater(t *testing.T) {
 	t.Cleanup(func() { killGroup = real })
 	p.stdin.Write([]byte("{}\n")) // the second message makes it exit
 	<-p.done
-	w.Call(context.Background(), map[string]any{})
+	w.Call(context.Background(), map[string]any{}, nil)
 	if n := late.Load(); n != 0 {
 		t.Errorf("signalled a reaped child's process group %d times", n)
 	}
@@ -458,7 +479,7 @@ func TestWorker_ACallerThatGivesUpKeepsTheScript(t *testing.T) {
 			for range 5 {
 				ctx, cancel := mk()
 				t0 := time.Now()
-				_, err := w.Call(ctx, map[string]any{})
+				_, err := w.Call(ctx, map[string]any{}, nil)
 				cancel()
 				if err == nil {
 					t.Fatal("a call whose caller gave up succeeded")
@@ -478,7 +499,7 @@ func sameChild(a, b *Worker) bool { return a.child == b.child }
 // callKept calls w and fails unless the running script answers it.
 func callKept(t *testing.T, w *Worker) map[string]any {
 	t.Helper()
-	r, err := w.Call(context.Background(), map[string]any{})
+	r, err := w.Call(context.Background(), map[string]any{}, nil)
 	if err != nil {
 		t.Fatalf("the next call = %v: the script was killed", err)
 	}
@@ -496,7 +517,7 @@ func TestWorker_TimeoutKillsTheWholeProcessGroup(t *testing.T) {
 	if _, err := w.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Call(context.Background(), map[string]any{}); err == nil {
+	if _, err := w.Call(context.Background(), map[string]any{}, nil); err == nil {
 		t.Fatal("call to a hanging script succeeded")
 	}
 	b, err := os.ReadFile(pidfile)
@@ -520,10 +541,10 @@ func TestWorker_CrashThenRestartAfterBackoff(t *testing.T) {
 	clock := time.Now()
 	w.now = func() time.Time { clockMu.Lock(); defer clockMu.Unlock(); return clock }
 	call(t, w, "first")
-	if _, err := w.Call(context.Background(), map[string]any{}); err == nil {
+	if _, err := w.Call(context.Background(), map[string]any{}, nil); err == nil {
 		t.Fatal("call to a crashing script succeeded")
 	}
-	if _, err := w.Call(context.Background(), map[string]any{}); !errors.Is(err, ErrBackoff) {
+	if _, err := w.Call(context.Background(), map[string]any{}, nil); !errors.Is(err, ErrBackoff) {
 		t.Fatalf("call during backoff = %v, want ErrBackoff", err)
 	}
 	clockMu.Lock()
@@ -531,13 +552,13 @@ func TestWorker_CrashThenRestartAfterBackoff(t *testing.T) {
 	clockMu.Unlock()
 	// After the backoff the restart runs in the background: the call that finds no
 	// child fails at once instead of waiting for it.
-	if _, err := w.Call(context.Background(), map[string]any{}); !errors.Is(err, ErrStarting) {
+	if _, err := w.Call(context.Background(), map[string]any{}, nil); !errors.Is(err, ErrStarting) {
 		t.Fatalf("call after backoff = %v, want ErrStarting", err)
 	}
 	// A new process: its count starts over, which is the state loss a crash costs.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		r, err := w.Call(context.Background(), map[string]any{"echo": "again"})
+		r, err := w.Call(context.Background(), map[string]any{"echo": "again"}, nil)
 		if err == nil {
 			var got map[string]any
 			json.Unmarshal(r.Line, &got)
@@ -560,7 +581,7 @@ func TestWorker_StopRefusesCalls(t *testing.T) {
 	}
 	call(t, w, "x")
 	w.Stop()
-	if _, err := w.Call(context.Background(), map[string]any{}); err == nil {
+	if _, err := w.Call(context.Background(), map[string]any{}, nil); err == nil {
 		t.Fatal("Call after Stop succeeded")
 	}
 }
@@ -651,7 +672,7 @@ func waitStopped(t *testing.T, w *Worker, what string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		_, err := w.Call(context.Background(), map[string]any{})
+		_, err := w.Call(context.Background(), map[string]any{}, nil)
 		if err != nil && strings.Contains(err.Error(), "stopped") {
 			return
 		}
@@ -701,7 +722,7 @@ func TestPool_AReusedWorkerTakesTheNewCallTimeout(t *testing.T) {
 		t.Fatal("a changed timeout restarted the script")
 	}
 	t0 := time.Now()
-	if _, err := b.Call(context.Background(), map[string]any{}); err == nil {
+	if _, err := b.Call(context.Background(), map[string]any{}, nil); err == nil {
 		t.Fatal("call to a hanging script succeeded")
 	}
 	if d := time.Since(t0); d > 2*time.Second {
@@ -724,13 +745,13 @@ func TestPool_ABuildsCallTimeoutStaysWithThatBuild(t *testing.T) {
 	cfg.CallTimeout = 50 * time.Millisecond
 	refused := p.NewHolder()
 	p.Acquire(refused, cfg, "h1") // configured, never started
-	if _, err := a.Call(context.Background(), map[string]any{}); err != nil {
+	if _, err := a.Call(context.Background(), map[string]any{}, nil); err != nil {
 		t.Fatalf("the running build's call = %v: it took the refused build's timeout", err)
 	}
 	next := p.NewHolder()
 	p.Acquire(next, cfg, "h1")
 	p.Activate(next) // the old build drains beside it
-	if _, err := a.Call(context.Background(), map[string]any{}); err != nil {
+	if _, err := a.Call(context.Background(), map[string]any{}, nil); err != nil {
 		t.Fatalf("the draining build's call = %v: it took the newer build's timeout", err)
 	}
 }
@@ -807,7 +828,7 @@ func TestWorker_TimeoutCoversTheWrite(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := w.Call(context.Background(), map[string]any{"body": strings.Repeat("x", 2<<20)})
+		_, err := w.Call(context.Background(), map[string]any{"body": strings.Repeat("x", 2<<20)}, nil)
 		done <- err
 	}()
 	select {
@@ -819,7 +840,7 @@ func TestWorker_TimeoutCoversTheWrite(t *testing.T) {
 		t.Fatal("the call blocked past its 200ms deadline")
 	}
 	start := time.Now()
-	if _, err := w.Call(context.Background(), map[string]any{}); !errors.Is(err, ErrBackoff) {
+	if _, err := w.Call(context.Background(), map[string]any{}, nil); !errors.Is(err, ErrBackoff) {
 		t.Errorf("next call = %v, want ErrBackoff", err)
 	}
 	if d := time.Since(start); d > time.Second {
@@ -831,5 +852,63 @@ func TestWorker_TimeoutCoversTheWrite(t *testing.T) {
 	case <-stopped:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Stop blocked behind the stuck call")
+	}
+}
+
+// A held-back part reaches the child only when it asks, named in "more" and
+// answered on its stdin; a name the call does not hold is answered with null.
+func TestWorker_FetchesWhatTheCallHoldsBack(t *testing.T) {
+	w := New(fake(t, "fetch"))
+	t.Cleanup(w.Stop)
+	if _, err := w.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	msg := map[string]any{"echo": "x"}
+	r, err := w.Call(context.Background(), msg, map[string]any{"big": "body", "parsed": map[string]int{"n": 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Fetched map[string]any `json:"fetched"`
+		More    []string       `json:"more"`
+		Inline  bool           `json:"inline"`
+	}
+	if err := json.Unmarshal(r.Line, &got); err != nil {
+		t.Fatalf("reply %q: %v", r.Line, err)
+	}
+	if !slices.Equal(got.More, []string{"big", "parsed"}) || got.Inline {
+		t.Errorf("more = %v, inline = %v", got.More, got.Inline)
+	}
+	want := map[string]any{"big": "body", "parsed": map[string]any{"n": float64(1)}, "absent": nil}
+	if fmt.Sprint(got.Fetched) != fmt.Sprint(want) {
+		t.Errorf("fetched %v, want %v", got.Fetched, want)
+	}
+	if _, ok := msg["more"]; ok {
+		t.Error("Call left more in the caller's message")
+	}
+}
+
+// The call deadline covers the answer to a fetch: a script that asks for a part
+// larger than the pipe buffer and then stops reading must not block the request.
+func TestWorker_TimeoutCoversAFetch(t *testing.T) {
+	cfg := fake(t, "fetch-deaf")
+	cfg.CallTimeout = 200 * time.Millisecond
+	w := New(cfg)
+	t.Cleanup(w.Stop)
+	if _, err := w.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.Call(context.Background(), map[string]any{}, map[string]any{"body": strings.Repeat("x", 2<<20)})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a call to a script that stopped reading succeeded")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the fetch answer blocked past the 200ms deadline")
 	}
 }
