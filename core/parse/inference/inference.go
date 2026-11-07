@@ -6,6 +6,7 @@ package inference
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -46,9 +47,12 @@ func ParseRequest(path string, headers http.Header, body []byte) *model.Inferenc
 
 	slog.Info("inference-parser", "model", model.SanitizeLogValue(ext.Model))
 	slog.Debug("inference-parser: extracted", "model", model.SanitizeLogValue(ext.Model), "messages", len(ext.Messages), "stream", ext.Stream, "tools", len(ext.Tools))
-	for i, m := range ext.Messages {
-		slog.Debug("inference-parser: message", "index", i, "role", model.SanitizeLogValue(m.Role),
-			"content", model.SanitizeLogValue(parsercommon.Truncate(m.Content, parsercommon.DebugBodyMax)))
+	// Guarded: the arguments are evaluated even when Debug is off, and sanitizing allocates.
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		for i, m := range ext.Messages {
+			slog.Debug("inference-parser: message", "index", i, "role", model.SanitizeLogValue(m.Role),
+				"content", model.SanitizeLogValue(parsercommon.Truncate(m.Content, parsercommon.DebugBodyMax)))
+		}
 	}
 
 	return ext

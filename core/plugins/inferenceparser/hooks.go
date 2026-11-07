@@ -349,5 +349,8 @@ func logInferenceFinalized(ext *pipeline.InferenceExtension) {
 		"outputTokens", tok(parsercommon.KindOutput, ext.OutputTokens),
 		"reasoningTokens", tok(parsercommon.KindReasoning, ext.ReasoningTokens),
 	)
-	slog.Debug("inference-parser: completion", "text", pipeline.SanitizeLogValue(parsercommon.Truncate(ext.Completion, parsercommon.DebugBodyMax)))
+	// Guarded: the arguments are evaluated even when Debug is off, and sanitizing allocates.
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		slog.Debug("inference-parser: completion", "text", pipeline.SanitizeLogValue(parsercommon.Truncate(ext.Completion, parsercommon.DebugBodyMax)))
+	}
 }
