@@ -10,7 +10,7 @@ import (
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // Window returns everything the ledger knows about [from, to]: the closed minutes on
@@ -474,7 +474,7 @@ func Groupable(group usage.Group) bool {
 //
 // NOT an agent name, and a consumer must not present it as one — the row is
 // unattributed traffic, not a program that spent money.
-const unknownAgentLabel = pipeline.UnknownClientLabel
+const unknownAgentLabel = model.UnknownClientLabel
 
 // labelFor picks the grouping key, returning ok=false when the row carries no
 // value for that axis — so an empty key never becomes a blank row, the same guard
@@ -522,12 +522,12 @@ func labelFor(r Row, group usage.Group) (string, bool) {
 	// See Row.Agent.
 	//
 	// Versionless, as the ring keys it: the row keeps "claude-code/2.1.285" and this reads
-	// "claude-code", so rows from before the fold join the same series. See pipeline.AgentName.
+	// "claude-code", so rows from before the fold join the same series. See model.AgentName.
 	case usage.GroupAgent:
 		if r.Agent == "" {
 			return unknownAgentLabel, true
 		}
-		return pipeline.AgentName(r.Agent), true
+		return model.AgentName(r.Agent), true
 	default:
 		return "", false
 	}

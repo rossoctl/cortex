@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // BucketScope says whether ScopeToAgent narrows the per-bucket series as well as the
@@ -177,7 +177,7 @@ func narrowBucketsToAgent(buckets []Bucket, agent string) []Bucket {
 // other label, and any agent within a session, is narrowed from the agent axis instead, read
 // uncapped so an agent past MaxSeriesInResponse is still found, and served as group none.
 func (a *Aggregator) AgentSnapshot(window, resolution time.Duration, sessionID, agent string, group Group) Snapshot {
-	if sessionID == "" && pipeline.IsKnownAgent(agent) {
+	if sessionID == "" && model.IsKnownAgent(agent) {
 		snap := a.snapshot(window, resolution, "", agent, group, MaxSeriesInResponse)
 		snap.Agent = agent
 		return snap

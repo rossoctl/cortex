@@ -5,7 +5,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // ProcSpan is when one process named a session through its own header: its first such
@@ -26,8 +26,8 @@ const maxProcsPerSession = 64
 //
 // Requests only: a response, a tunnel's close or a denial is not the process naming anything,
 // and a response arriving after a later claim would stretch the span past it.
-func applyProcs(procs map[string]ProcSpan, sessionID string, e *pipeline.SessionEvent) map[string]ProcSpan {
-	if e.SessionHeader == "" || e.Phase != pipeline.SessionRequest || !IsConversation(sessionID) {
+func applyProcs(procs map[string]ProcSpan, sessionID string, e *model.SessionEvent) map[string]ProcSpan {
+	if e.SessionHeader == "" || e.Phase != model.SessionRequest || !IsConversation(sessionID) {
 		return procs
 	}
 	for _, p := range []string{e.Proc, e.ClientProc} {
@@ -97,7 +97,7 @@ func mergeProcs(earlier, later map[string]ProcSpan) map[string]ProcSpan {
 // applyOwner is the agent that first NAMED the session through its own header: the
 // session's agent ahead of every other label, as a claim owner was before attribution left
 // the store. First-wins, like Title and agents.
-func applyOwner(owner, sessionID, agentName string, e *pipeline.SessionEvent) string {
+func applyOwner(owner, sessionID, agentName string, e *model.SessionEvent) string {
 	if owner != "" || e.SessionHeader == "" || agentName == "" || !IsConversation(sessionID) {
 		return owner
 	}

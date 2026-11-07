@@ -21,7 +21,7 @@ import (
 	"encoding/json"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // Key is the session-event key the cost record is published under.
@@ -40,7 +40,7 @@ import (
 // Exactly ONE component may write this key per request. Extensions.Custom is a plain map,
 // so a second writer would win silently.
 //
-// A PRODUCER does not write this key directly — it writes Key+pipeline.PluginEventSuffix
+// A PRODUCER does not write this key directly — it writes Key+model.PluginEventSuffix
 // into pctx.Extensions.Custom, and pipeline/snapshot.go strips the suffix when building
 // SessionEvent.Plugins. Use settle.Publish rather than assembling the key by hand.
 const Key = "cost"
@@ -566,7 +566,7 @@ func (e Event) Priced() bool { return e.Trust().Spendable() }
 // Reads the current key first and falls back to the legacy one. New wins when both are
 // present: a transitional deployment can run an old producer alongside a new one, and
 // taking the legacy value there would report the figure from the component being retired.
-func Record(e *pipeline.SessionEvent) (Event, bool) {
+func Record(e *model.SessionEvent) (Event, bool) {
 	if e == nil || len(e.Plugins) == 0 {
 		return Event{}, false
 	}
@@ -591,7 +591,7 @@ func Record(e *pipeline.SessionEvent) (Event, bool) {
 // consumer that treated 0 as priced would render $0.00 for traffic it simply cannot price.
 //
 // Use Record instead when you want the record regardless of whether it priced anything.
-func Decode(e *pipeline.SessionEvent) (Event, bool) {
+func Decode(e *model.SessionEvent) (Event, bool) {
 	ev, ok := Record(e)
 	if !ok {
 		return Event{}, false

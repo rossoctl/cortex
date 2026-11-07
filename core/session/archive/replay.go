@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // ReplaySet is the segments a startup replay reads, as ReplaySources found them. Read it any time
@@ -57,13 +57,13 @@ func (a *Archive) ReplaySources(cutoff time.Time) ReplaySet {
 //
 // shortcut: an erase during the read leaves the all-sessions and per-agent totals short by the
 // segments not yet read, which an erase keeps; fix if a LAST 1H after an early erase is reported low.
-func (s ReplaySet) Read(ctx context.Context, fn func(sessionID string, e *pipeline.SessionEvent)) (incomplete int, err error) {
+func (s ReplaySet) Read(ctx context.Context, fn func(sessionID string, e *model.SessionEvent)) (incomplete int, err error) {
 	for _, src := range s.srcs {
 		if err := ctx.Err(); err != nil {
 			return incomplete, err
 		}
 		var stop error
-		truncated, rerr := readSegment(src.path, func(ev *pipeline.SessionEvent) bool {
+		truncated, rerr := readSegment(src.path, func(ev *model.SessionEvent) bool {
 			if stop = ctx.Err(); stop != nil {
 				return false
 			}
@@ -88,6 +88,6 @@ func (s ReplaySet) Read(ctx context.Context, fn func(sessionID string, e *pipeli
 
 // ReplaySince is ReplaySources and Read in one call, for a caller with nothing to start between
 // them.
-func (a *Archive) ReplaySince(ctx context.Context, cutoff time.Time, fn func(sessionID string, e *pipeline.SessionEvent)) (incomplete int, err error) {
+func (a *Archive) ReplaySince(ctx context.Context, cutoff time.Time, fn func(sessionID string, e *model.SessionEvent)) (incomplete int, err error) {
 	return a.ReplaySources(cutoff).Read(ctx, fn)
 }

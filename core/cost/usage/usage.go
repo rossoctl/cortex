@@ -21,7 +21,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 const (
@@ -52,7 +52,7 @@ type Counts struct {
 	Errors   int64 `json:"errors,omitempty"`
 	Tokens   int64 `json:"tokens,omitempty"`
 	// The four billed token kinds, plus reasoning. Names match
-	// pipeline.InferenceExtension exactly: one vocabulary from parser to aggregate
+	// model.InferenceExtension exactly: one vocabulary from parser to aggregate
 	// to ledger to collector, because aggregate-side synonyms are how two halves
 	// of a system come to disagree about what a field means.
 	//
@@ -430,7 +430,7 @@ const maxPlausibleRequestTokens = pricing.MaxPlausibleTokens
 // which is the direction an attacker actually wants.
 //
 // The nil check is the caller's; every call site here has already tested it.
-func plausibleTokenReport(inf *pipeline.InferenceExtension) bool {
+func plausibleTokenReport(inf *model.InferenceExtension) bool {
 	for _, n := range [...]int{
 		inf.TotalTokens, inf.InputTokens, inf.CacheReadTokens,
 		inf.CacheWriteTokens, inf.OutputTokens, inf.ReasoningTokens,
@@ -518,7 +518,7 @@ type bucket struct {
 	// truncateLabel at the addLabel call in foldInto.
 	//
 	// The value is CLIENT-ASSERTED AND TRIVIALLY SPOOFABLE, so this is a display axis and
-	// never a basis for a policy decision; see pipeline.EventClient.
+	// never a basis for a policy decision; see model.EventClient.
 	//
 	// An event with no client folds under the reserved "unknown" bucket rather than "" —
 	// Label() is nil-safe and answers that — because a blank key renders as a blank row,
@@ -668,7 +668,7 @@ type eventCost struct {
 // figure, and event.Record is a JSON unmarshal — see Record's call site. The pricedness
 // rule is applied here, which is the only thing event.Decode did that Record does not,
 // so this arm still means exactly "a priced record was published".
-func (a *Aggregator) costOf(e *pipeline.SessionEvent, ce event.Event, haveRec bool) eventCost {
+func (a *Aggregator) costOf(e *model.SessionEvent, ce event.Event, haveRec bool) eventCost {
 	if haveRec && ce.Priced() {
 		prov := ce.Provenance
 		if prov == "" {
@@ -720,7 +720,7 @@ func (a *Aggregator) costOf(e *pipeline.SessionEvent, ce event.Event, haveRec bo
 		// denial after the parser ran, reports a model with zero usage. Naming it
 		// would advertise a missing rate for a model that may well have one, and
 		// adding that entry would never make the row disappear.
-		if e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied {
+		if e.StatusCode >= 400 || e.Phase == model.SessionDenied {
 			return eventCost{}
 		}
 		// A SUCCEEDED one is a coverage gap and must be counted as one. Returning a
@@ -810,7 +810,7 @@ type Aggregator struct {
 	// axis separately, so once a snapshot reads byAgent to find one agent there is nothing left
 	// to break that agent's traffic down by.
 	//
-	// ONLY pipeline.IsKnownAgent NAMES GET ONE, and that gate is the memory bound. An
+	// ONLY model.IsKnownAgent NAMES GET ONE, and that gate is the memory bound. An
 	// unrecognised agent's label is its raw User-Agent, set off-host, so a ring per label would
 	// let a caller grow this process by varying a header. The known names are a closed set in
 	// code, so nothing here is capped or evicted — and because nothing is evicted, a ring holds
@@ -939,7 +939,7 @@ func New(opts ...Option) *Aggregator {
 // gets the response's own tokens and latency and one turn counts once. Pairing on
 // the id rather than positionally matters because a client can have several
 // requests in flight at a time.
-func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
+func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 	if e == nil {
 		return
 	}
@@ -980,7 +980,7 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	// warns about, in the other direction. Pinned both ways by
 	// TestRecord_WebSocket101IsNotARequestLatency and
 	// TestRecord_InboundWebSocket101IsStillARequest (#1549 review).
-	if e.Tunnel || (e.Direction == pipeline.Outbound && e.StatusCode == http.StatusSwitchingProtocols) {
+	if e.Tunnel || (e.Direction == model.Outbound && e.StatusCode == http.StatusSwitchingProtocols) {
 		return
 	}
 
@@ -989,7 +989,7 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	// Store.Append on the request hot path. Checked before the lock so that path
 	// stays lock-free: neither guard touches aggregator state, so there is nothing
 	// to protect.
-	if e.Phase == pipeline.SessionRequest && (e.RequestID == "" || e.Invocations == nil) {
+	if e.Phase == model.SessionRequest && (e.RequestID == "" || e.Invocations == nil) {
 		return
 	}
 
@@ -1012,7 +1012,7 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	// figure travel on separate wires and no expression can add one to the other by
 	// resembling it. See Counts.AvoidedMicros.
 	var avoided int64
-	if e.Phase != pipeline.SessionRequest {
+	if e.Phase != model.SessionRequest {
 		// ONE unmarshal, feeding both. costOf wants the record only when it priced
 		// something and this wants it either way, so each calling cost/event for itself
 		// would decode the same JSON twice per event — and foldInto runs twice, which is
@@ -1038,11 +1038,11 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if e.Phase == pipeline.SessionRequest {
+	if e.Phase == model.SessionRequest {
 		a.holdRequestPluginsLocked(e, at)
 		return
 	}
-	if e.Phase != pipeline.SessionResponse && e.Phase != pipeline.SessionDenied {
+	if e.Phase != model.SessionResponse && e.Phase != model.SessionDenied {
 		return
 	}
 
@@ -1060,7 +1060,7 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 
 	// BEFORE the session ring, whose branch below returns early on both of its paths. See the
 	// agents field for why only a recognised agent gets a ring.
-	if agent := event.AgentLabel(e.Client); pipeline.IsKnownAgent(agent) {
+	if agent := event.AgentLabel(e.Client); model.IsKnownAgent(agent) {
 		ring, ok := a.agents[agent]
 		if !ok {
 			ring = make([]bucket, NumBuckets)
@@ -1097,7 +1097,7 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 //
 // Nothing is counted here — no requests, no tokens, no latency. The request event
 // contributes only the LABELS its plugins need in order to be attributed later.
-func (a *Aggregator) holdRequestPluginsLocked(e *pipeline.SessionEvent, at time.Time) {
+func (a *Aggregator) holdRequestPluginsLocked(e *model.SessionEvent, at time.Time) {
 	if e.RequestID == "" || e.Invocations == nil {
 		// Without an id there is nothing to pair against, and pairing positionally
 		// misattributes as soon as two requests are in flight — the reason
@@ -1141,13 +1141,13 @@ func (a *Aggregator) expirePendingLocked(now time.Time) {
 //
 // Deduped because one plugin can append several invocations to a single pass, and
 // counting it twice would inflate its share of a stacked bar.
-func invocationPlugins(inv *pipeline.Invocations) []string {
+func invocationPlugins(inv *model.Invocations) []string {
 	if inv == nil {
 		return nil
 	}
 	seen := make(map[string]bool, len(inv.Outbound)+len(inv.Inbound))
 	var out []string
-	for _, list := range [][]pipeline.Invocation{inv.Outbound, inv.Inbound} {
+	for _, list := range [][]model.Invocation{inv.Outbound, inv.Inbound} {
 		for _, iv := range list {
 			if iv.Plugin == "" || seen[iv.Plugin] {
 				continue
@@ -1193,23 +1193,23 @@ func (a *Aggregator) evictColdestLocked() {
 // keeps the sent 200 with the failure in Error (#1543). Keying on status alone counted
 // those as healthy, which is what #1543's rows exist to stop.
 //
-// Except a proxy-declined WebSocket upgrade (pipeline.ErrorKindUpgradeDeclined). Its
+// Except a proxy-declined WebSocket upgrade (model.ErrorKindUpgradeDeclined). Its
 // 426 is Cortex telling Codex to use HTTPS, which it then does, once per session: by
 // design and on the default path, so counting it would give every healthy Codex
 // fleet a nonzero error rate. The Finisher sees it as an allow for the same reason.
 //
-// And except the egress guard's refusal (pipeline.ErrorKindDestinationPrivate). Same
+// And except the egress guard's refusal (model.ErrorKindDestinationPrivate). Same
 // shape, same reasoning: its 403 is the guard doing exactly what the operator
 // configured it to, on traffic that was never going to be allowed through — a
 // nonzero "error rate" made of refusals is the policy working, not the proxy
 // failing. The Finisher sees it as an allow for the same reason.
-func CountsAsError(e *pipeline.SessionEvent) bool {
-	if e.Error != nil && (e.Error.Kind == pipeline.ErrorKindUpgradeDeclined ||
-		e.Error.Kind == pipeline.ErrorKindTurnInterrupted ||
-		e.Error.Kind == pipeline.ErrorKindDestinationPrivate) {
+func CountsAsError(e *model.SessionEvent) bool {
+	if e.Error != nil && (e.Error.Kind == model.ErrorKindUpgradeDeclined ||
+		e.Error.Kind == model.ErrorKindTurnInterrupted ||
+		e.Error.Kind == model.ErrorKindDestinationPrivate) {
 		return false
 	}
-	return e.Error != nil || e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied
+	return e.Error != nil || e.StatusCode >= 400 || e.Phase == model.SessionDenied
 }
 
 // PriceableRequest is the ledger's definition of "this request could have been
@@ -1220,14 +1220,14 @@ func CountsAsError(e *pipeline.SessionEvent) bool {
 // made coverage read "9/9 priced" while real spend was missing. A FAILED
 // response WITH usage is priceable: the counters exist and the rates apply.
 // Usage is read through pricing.UsageFromInference, as costOf reads it.
-func PriceableRequest(e *pipeline.SessionEvent) bool {
+func PriceableRequest(e *model.SessionEvent) bool {
 	if e.Inference == nil || e.Inference.Model == "" {
 		return false
 	}
 	if pricing.UsageFromInference(e.Inference) != (pricing.Usage{}) {
 		return true
 	}
-	return e.StatusCode < 400 && e.Phase != pipeline.SessionDenied
+	return e.StatusCode < 400 && e.Phase != model.SessionDenied
 }
 
 // foldInto accumulates one event into one ring.
@@ -1236,14 +1236,14 @@ func PriceableRequest(e *pipeline.SessionEvent) bool {
 // which session it belongs to: a.all is shared and a sessionRing holds only
 // buckets. Both call sites pass the same id, which is what lets the bySession
 // label be recorded uniformly instead of only on the all-sessions ring.
-func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *pipeline.SessionEvent, requestPlugins []string, ec eventCost, avoided int64) {
+func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *model.SessionEvent, requestPlugins []string, ec eventCost, avoided int64) {
 	b := &ring[slot(t)]
 	if !b.start.Equal(t) {
 		*b = bucket{start: t} // stale lap: reset rather than accumulate onto old data
 	}
 
 	var tokens int64
-	var model string
+	var modelName string
 	// split is read from the wire event's own split counters rather than derived
 	// from tokens: the parser is the only component that knows the breakdown, and
 	// there is no way to recover it from the total afterwards.
@@ -1252,7 +1252,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 	// counted rather than silent. See Counts.RefusedTokenRequests.
 	var refusedTokens int64
 	if e.Inference != nil {
-		model = e.Inference.Model
+		modelName = e.Inference.Model
 		if plausibleTokenReport(e.Inference) {
 			tokens = int64(e.Inference.TotalTokens)
 			split = Counts{
@@ -1331,8 +1331,8 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 	if ec.priced == 0 && avoided == 0 {
 		unit = ""
 	}
-	if model != "" {
-		b.noteUnit(GroupModel, addLabel(&b.byMethod, ringLabel(model), one), unit)
+	if modelName != "" {
+		b.noteUnit(GroupModel, addLabel(&b.byMethod, ringLabel(modelName), one), unit)
 	}
 	// Host is the :authority as the listener saw it, so it is request-controlled
 	// and goes through truncateLabel like the model name. Guarded on empty for the
@@ -1379,7 +1379,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 	b.noteUnit(GroupAgent, addLabel(&b.byAgent, event.AgentLabel(e.Client), one), unit)
 	if e.StatusCode > 0 {
 		addLabel(&b.byStatus, strconv.Itoa(e.StatusCode), one)
-	} else if e.Phase == pipeline.SessionDenied {
+	} else if e.Phase == model.SessionDenied {
 		addLabel(&b.byStatus, "denied", one)
 	}
 	// Per-plugin attribution counts the request once per plugin that ran, so

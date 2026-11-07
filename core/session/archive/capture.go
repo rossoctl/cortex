@@ -11,7 +11,7 @@ import (
 	"slices"
 	"unicode/utf8"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/tidwall/gjson"
 )
@@ -174,7 +174,7 @@ func (b *bodyRec) refs() []string {
 }
 
 // splitCapture is c as an event record carries it, and the blocks it adds to seen.
-func splitCapture(c *pipeline.RequestCapture, seen map[string]struct{}) (*captureRec, []stringRec) {
+func splitCapture(c *model.RequestCapture, seen map[string]struct{}) (*captureRec, []stringRec) {
 	if c == nil {
 		return nil, nil
 	}
@@ -265,9 +265,9 @@ func blockLine(s stringRec) ([]byte, error) {
 // TWO PASSES, so a read holds only the blocks of the one request: the first finds the event's
 // skeletons, the second keeps just the blocks they name. Blocks precede the event that first
 // uses them, so the second pass stops at the event.
-func readCapture(path string, seq uint64) (*pipeline.RequestCapture, error) {
+func readCapture(path string, seq uint64) (*model.RequestCapture, error) {
 	var raw json.RawMessage
-	if _, err := readRecords(path, nil, nil, func(e *pipeline.SessionEvent, c json.RawMessage) bool {
+	if _, err := readRecords(path, nil, nil, func(e *model.SessionEvent, c json.RawMessage) bool {
 		if e.Seq == seq {
 			raw = c
 		}
@@ -298,7 +298,7 @@ func readCapture(path string, seq uint64) (*pipeline.RequestCapture, error) {
 	}
 	blocks := map[string]string{}
 	if len(want) > 0 {
-		if _, err := readRecords(path, want, blocks, func(e *pipeline.SessionEvent, _ json.RawMessage) bool {
+		if _, err := readRecords(path, want, blocks, func(e *model.SessionEvent, _ json.RawMessage) bool {
 			return e.Seq < seq
 		}); err != nil {
 			return nil, err
@@ -310,10 +310,10 @@ func readCapture(path string, seq uint64) (*pipeline.RequestCapture, error) {
 		if hex.EncodeToString(sum[:]) != r.S {
 			return nil, errors.New("archive: response body does not match the captured hash")
 		}
-		return &pipeline.RequestCapture{Response: &pipeline.ResponseCapture{Status: r.C, Header: headerOf(r.H, r.HX),
+		return &model.RequestCapture{Response: &model.ResponseCapture{Status: r.C, Header: headerOf(r.H, r.HX),
 			Body: body, Truncated: r.T, Incomplete: r.IC, Decoded: r.D}}, nil
 	}
-	c := &pipeline.RequestCapture{Header: headerOf(f.H, f.HX), Query: f.Q}
+	c := &model.RequestCapture{Header: headerOf(f.H, f.HX), Query: f.Q}
 	if f.QX != nil {
 		c.Query = string(f.QX)
 	}

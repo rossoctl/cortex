@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/session"
 )
 
@@ -214,7 +214,7 @@ func reconcile(dir string, m *sessionMeta) (bool, error) {
 // numbered after `after`. A torn tail ends the scan; what precedes it counts.
 func scanSegment(path string, fi fs.FileInfo, after uint64, m *sessionMeta) (SegmentInfo, error) {
 	info := SegmentInfo{File: filepath.Base(path), Bytes: fi.Size(), LastWrite: fi.ModTime()}
-	_, err := readSegment(path, func(e *pipeline.SessionEvent) bool {
+	_, err := readSegment(path, func(e *model.SessionEvent) bool {
 		if info.Events == 0 {
 			info.FirstSeq = e.Seq
 		}
