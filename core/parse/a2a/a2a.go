@@ -5,6 +5,7 @@ package a2a
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -119,9 +120,12 @@ func ParseRequest(path string, headers http.Header, rawBody []byte) *model.A2AEx
 		"messageId", model.SanitizeLogValue(ext.MessageID),
 		"parts", len(ext.Parts),
 	)
-	for i, part := range ext.Parts {
-		slog.Debug("a2a-parser: part", "index", i, "kind", model.SanitizeLogValue(part.Kind),
-			"content", model.SanitizeLogValue(parsercommon.Truncate(part.Content, parsercommon.DebugBodyMax)))
+	// Guarded: the arguments are evaluated even when Debug is off, and sanitizing allocates.
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		for i, part := range ext.Parts {
+			slog.Debug("a2a-parser: part", "index", i, "kind", model.SanitizeLogValue(part.Kind),
+				"content", model.SanitizeLogValue(parsercommon.Truncate(part.Content, parsercommon.DebugBodyMax)))
+		}
 	}
 	return ext
 }
