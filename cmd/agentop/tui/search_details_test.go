@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -86,6 +87,13 @@ type fakeSearch struct {
 	noRoute  bool
 	searches int
 	other    int
+	// missing answers as the route does for a session it does not hold.
+	missing map[string]bool
+	// hold keeps each search open until the client ends it or release closes. started gets one
+	// value when a held search arrives, and ended one when the client ended it.
+	hold           bool
+	release        chan struct{}
+	started, ended chan struct{}
 }
 
 func (f *fakeSearch) set(fn func()) { f.mu.Lock(); fn(); f.mu.Unlock() }
@@ -108,6 +116,21 @@ func (f *fakeSearch) client(t *testing.T) *apiclient.Client {
 			return
 		}
 		id := r.PathValue("id")
+		if f.missing[id] {
+			http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+			return
+		}
+		if f.hold {
+			f.mu.Unlock()
+			f.started <- struct{}{}
+			select {
+			case <-r.Context().Done():
+				f.ended <- struct{}{}
+			case <-f.release:
+			}
+			f.mu.Lock()
+			return
+		}
 		seqs := f.answer[id]
 		if seqs == nil {
 			seqs = []uint64{}
@@ -386,5 +409,105 @@ func TestDetailSearch_ResetClearsEverything(t *testing.T) {
 	runAll(m, cmd)
 	if m.detailSearch != nil {
 		t.Error("an answer from before the reset came back")
+	}
+}
+
+// n or N while a search runs sends nothing more: a pass costs the proxy seconds of CPU.
+func TestDetailSearch_NWhileSearchingSendsNothing(t *testing.T) {
+	f := &fakeSearch{answer: map[string][]uint64{"s": {3}}}
+	m := searchModel(t, 6, f)
+	detailsQuery(m, "needle")
+	cmd := enter(m)
+	key(m, 'n')
+	key(m, 'N')
+	if s, _ := f.counts(); s != 0 {
+		t.Errorf("searches %d while the first one ran, want 0", s)
+	}
+	runAll(m, cmd)
+	if s, _ := f.counts(); s != 1 {
+		t.Errorf("searches %d, want 1", s)
+	}
+}
+
+// Esc ends the request itself, so the proxy stops its pass.
+func TestDetailSearch_EscEndsTheRequest(t *testing.T) {
+	f := &fakeSearch{hold: true, release: make(chan struct{}), started: make(chan struct{}, 1), ended: make(chan struct{}, 1)}
+	m := searchModel(t, 4, f)
+	t.Cleanup(func() { close(f.release) })
+	detailsQuery(m, "needle")
+	cmd := enter(m)
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	<-f.started
+	press(m, tea.KeyEsc)
+	select {
+	case <-f.ended:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the proxy's request went on after Esc")
+	}
+	<-done
+}
+
+// The rows `o` loads are older than what the answer covered. n searches again, and reaches them.
+func TestDetailSearch_OlderPageMakesNSearchAgain(t *testing.T) {
+	f := &fakeSearch{answer: map[string][]uint64{"s": {2, 13}}, last: map[string]uint64{"s": 15}}
+	m := searchModel(t, 5, f)
+	for i := range m.events["s"] {
+		m.events["s"][i].Seq = uint64(i + 11)
+	}
+	m.rebuildEventsTable()
+	detailsQuery(m, "needle")
+	runAll(m, enter(m))
+	older := eventSeq(10, "old")
+	for i := range older {
+		older[i].Seq = uint64(i + 1)
+		older[i].At = m.events["s"][0].At.Add(-time.Duration(10-i) * time.Second)
+	}
+	m.events["s"] = append(older, m.events["s"]...)
+	m.rebuildEventsTable()
+	key(m, 'n')
+	if s, _ := f.counts(); s != 2 {
+		t.Fatalf("searches %d, want 2: the page loaded older rows", s)
+	}
+	if e := m.selectedEvent(); e == nil || e.Seq != 2 {
+		t.Errorf("cursor on %+v, want seq 2", e)
+	}
+	if st := m.searchStatus(paneEvents); strings.Contains(st, "older") {
+		t.Errorf("status %q still counts an older match agentop now holds", st)
+	}
+}
+
+// Opening the prompt drops a search in flight, so its answer cannot move the cursor while the
+// operator types.
+func TestDetailSearch_OpeningThePromptDropsTheAnswer(t *testing.T) {
+	m := searchModel(t, 6, &fakeSearch{answer: map[string][]uint64{"s": {5}}})
+	setCursorVisible(&m.eventsTbl, 1)
+	detailsQuery(m, "needle")
+	cmd := enter(m)
+	typeKeys(m, "/")
+	runAll(m, cmd)
+	if c := m.eventsTbl.Cursor(); c != 1 {
+		t.Errorf("cursor %d, want 1: the answer landed while the prompt was open", c)
+	}
+}
+
+// A linked bucket the proxy no longer holds gives no matches. It does not fail the search.
+func TestDetailSearch_AMissingBucketDoesNotFailTheSearch(t *testing.T) {
+	f := &fakeSearch{answer: map[string][]uint64{"s": {2}}, last: map[string]uint64{"s": 4},
+		missing: map[string]bool{"bucket": true}}
+	m := searchModel(t, 4, f)
+	m.events["s"][2].SessionID, m.events["s"][2].Seq = "bucket", 1
+	m.rebuildEventsTable()
+	detailsQuery(m, "needle")
+	runAll(m, enter(m))
+	if e := m.selectedEvent(); e == nil || e.Seq != 2 || e.SessionID == "bucket" {
+		t.Errorf("cursor on %+v, want seq 2 of s", e)
+	}
+	if st := m.searchStatus(paneEvents); st != "[/needle details 1/1]" {
+		t.Errorf("status %q", st)
+	}
+	key(m, 'n')
+	if s, _ := f.counts(); s != 2 {
+		t.Errorf("searches %d, want 2 (one for each id), and no new search on n", s)
 	}
 }

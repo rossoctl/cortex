@@ -106,6 +106,10 @@ func (m *model) openSearch(t paneID) {
 	if s == nil {
 		return
 	}
+	if t == paneEvents {
+		// A details answer must not move the cursor while the operator types a new query.
+		m.cancelDetailSearch()
+	}
 	m.searching = true
 	m.searchPane = t
 	m.searchOrigin = s.spot()

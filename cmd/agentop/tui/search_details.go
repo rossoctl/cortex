@@ -51,12 +51,16 @@ type detailSearch struct {
 	noRoute bool
 	// hits is the held rows that either side matched, by event key.
 	hits map[eventKey]bool
-	// last is the newest seq the proxy read, for each session id it was asked about.
-	last map[string]uint64
+	// last is the newest seq the proxy read, and oldest the oldest seq agentop held, for each
+	// session id it was asked about. A held row outside them makes the answer stale: a new event,
+	// or a page that `o` loaded.
+	last, oldest map[string]uint64
 	// older counts the proxy's matches older than the rows agentop holds.
 	older int
 	// forward and inclusive are the step to take when the answer lands.
 	forward, inclusive bool
+	// cancel ends the request, so the proxy stops its pass when the search is dropped.
+	cancel context.CancelFunc
 }
 
 type detailSearchState int
@@ -69,11 +73,11 @@ const (
 
 // detailSearchMsg is the answer to one details search.
 type detailSearchMsg struct {
-	gen   uint64
-	hits  map[eventKey]bool
-	last  map[string]uint64
-	older int
-	err   error
+	gen          uint64
+	hits         map[eventKey]bool
+	last, oldest map[string]uint64
+	older        int
+	err          error
 }
 
 // sendDetailSearch sends the events pane's committed query, and takes the step when the answer
@@ -84,7 +88,12 @@ func (m *model) sendDetailSearch(forward, inclusive bool) tea.Cmd {
 	if q == "" || m.client == nil {
 		return nil
 	}
-	m.detailSearch = &detailSearch{gen: m.detailSearchGen, query: q, forward: forward, inclusive: inclusive}
+	base := m.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
+	m.detailSearch = &detailSearch{gen: m.detailSearchGen, query: q, forward: forward, inclusive: inclusive, cancel: cancel}
 	// The command runs on its own goroutine, and replaceHeldEvent writes the held events while it
 	// runs. So it gets a copy of each held row.
 	rows := make([]eventRow, 0, len(m.visibleRows))
@@ -97,26 +106,32 @@ func (m *model) sendDetailSearch(forward, inclusive bool) tea.Cmd {
 		r.raw, _ = m.heldRaw(&e)
 		rows = append(rows, r)
 	}
-	ctx, client, gen, sel := m.ctx, m.client, m.detailSearchGen, m.selectedSess
+	client, gen, sel := m.client, m.detailSearchGen, m.selectedSess
 	return func() tea.Msg { return runDetailSearch(ctx, client, gen, sel, rows, q) }
 }
 
 // runDetailSearch asks the proxy about each session id among rows, and checks each row's summary
-// itself. A linked bucket's events have their own id and seqs, so each id is asked one time.
+// itself. A linked bucket's events have their own id and seqs, so each id is asked one time. An
+// id the proxy no longer holds (an evicted bucket) has no matches there, and does not fail the
+// search.
 func runDetailSearch(ctx context.Context, c *apiclient.Client, gen uint64, sel string, rows []eventRow, q string) detailSearchMsg {
-	msg := detailSearchMsg{gen: gen, hits: map[eventKey]bool{}, last: map[string]uint64{}}
-	held, oldest := map[string]map[uint64]bool{}, map[string]uint64{}
+	msg := detailSearchMsg{gen: gen, hits: map[eventKey]bool{}, last: map[string]uint64{}, oldest: map[string]uint64{}}
+	newest := map[string]uint64{}
 	for _, r := range rows {
 		s := eventSession(sel, r.event)
-		if held[s] == nil {
-			held[s] = map[uint64]bool{}
-			oldest[s] = r.event.Seq
+		if _, ok := msg.oldest[s]; !ok {
+			msg.oldest[s] = r.event.Seq
 		}
-		oldest[s] = min(oldest[s], r.event.Seq)
+		msg.oldest[s] = min(msg.oldest[s], r.event.Seq)
+		newest[s] = max(newest[s], r.event.Seq)
 	}
 	found := map[string]map[uint64]bool{}
-	for s := range held {
+	for s := range msg.oldest {
 		res, err := c.SearchSession(ctx, s, q)
+		if errors.Is(err, apiclient.ErrNotFound) {
+			msg.last[s] = newest[s]
+			continue
+		}
 		if err != nil {
 			msg.err = err
 			return msg
@@ -124,7 +139,7 @@ func runDetailSearch(ctx context.Context, c *apiclient.Client, gen uint64, sel s
 		found[s] = map[uint64]bool{}
 		for _, seq := range res.Seqs {
 			found[s][seq] = true
-			if seq < oldest[s] {
+			if seq < msg.oldest[s] {
 				msg.older++
 			}
 		}
@@ -156,7 +171,8 @@ func (m *model) applyDetailSearch(msg detailSearchMsg) {
 		}
 		return
 	}
-	d.hits, d.last, d.older, d.state = msg.hits, msg.last, msg.older, searchReady
+	d.cancel()
+	d.hits, d.last, d.oldest, d.older, d.state = msg.hits, msg.last, msg.oldest, msg.older, searchReady
 	m.stepDetailMatch(d.forward, d.inclusive)
 }
 
@@ -177,28 +193,32 @@ func (m *model) stepDetailMatch(forward, inclusive bool) {
 	}
 }
 
-// stepDetails is n and N with the box on: the next match at once, or a new search first when
-// there is no answer for the query, the last one failed, or the session has grown since.
+// stepDetails is n and N with the box on: nothing while a search runs, else the next match at
+// once, or a new search first when there is no answer for the query, the last one failed, or the
+// held rows reach past what the answer covered.
 func (m *model) stepDetails(forward bool) tea.Cmd {
 	d := m.detailSearch
 	switch {
+	case d != nil && d.state == searchSending && d.query == m.search[paneEvents]:
+		return nil
 	case d == nil || d.query != m.search[paneEvents] || d.state == searchFailed || m.detailSearchStale():
 		return m.sendDetailSearch(forward, false)
-	case d.state == searchSending:
-		return nil
 	}
 	m.stepDetailMatch(forward, false)
 	return nil
 }
 
-// detailSearchStale reports whether a held row is newer than what the proxy read for its session.
+// detailSearchStale reports whether a held row is outside what the answer covered for its
+// session: newer than what the proxy read, or older than what agentop held when it asked.
 func (m *model) detailSearchStale() bool {
+	d := m.detailSearch
 	for _, r := range m.visibleRows {
 		if r.event == nil {
 			continue
 		}
-		last, ok := m.detailSearch.last[eventSession(m.selectedSess, r.event)]
-		if !ok || r.event.Seq > last {
+		s := eventSession(m.selectedSess, r.event)
+		last, ok := d.last[s]
+		if !ok || r.event.Seq > last || r.event.Seq < d.oldest[s] {
 			return true
 		}
 	}
@@ -209,8 +229,11 @@ func (m *model) detailSearching() bool {
 	return m.detailSearch != nil && m.detailSearch.state == searchSending
 }
 
-// cancelDetailSearch drops the search and any answer still to come.
+// cancelDetailSearch drops the search and any answer still to come, and ends its request.
 func (m *model) cancelDetailSearch() {
+	if d := m.detailSearch; d != nil && d.cancel != nil {
+		d.cancel()
+	}
 	m.detailSearchGen++
 	m.detailSearch = nil
 }
