@@ -644,13 +644,13 @@ func (ws *wsSocket) clientMessage(payload []byte) (replace []byte, refuse bool) 
 	if !t.prewarm && ws.s.Sessions != nil {
 		pctx.OutboundSessionID = ws.sid
 		var c *pipeline.RequestCapture
-		if ws.s.Sessions.TakesCaptures() {
+		if ws.s.sink().TakesCaptures() {
 			// The turn as the client sent it and as the origin gets it: the WebSocket messages,
 			// not the request bodies the pipeline was shown.
 			c = &pipeline.RequestCapture{Original: payload, Forwarded: replace, Header: redact.Headers(ws.r.Header), Query: redact.Query(ws.r.URL.RawQuery)}
 			pctx.ResponseCapture = &pipeline.ResponseCapture{Status: http.StatusOK}
 		}
-		ws.s.Sessions.AppendCapture(ws.sid, ws.turnRequestEvent(pctx), c)
+		ws.s.sink().AppendCapture(ws.sid, ws.turnRequestEvent(pctx), c)
 	}
 	ws.turnMu.Lock()
 	ws.turns = append(ws.turns, t)
@@ -867,7 +867,7 @@ func (ws *wsSocket) recordClose() {
 	ev := sessionevent.TunnelClose(ws.hs, pipeline.TunnelWebSocket, http.StatusSwitchingProtocols, nil, ws.bytesUp.Load(), ws.bytesDown.Load())
 	// The socket's duration starts at the 101, not at the handshake request.
 	ev.Duration = time.Since(ws.start)
-	ws.s.Sessions.Append(ws.sid, ev)
+	ws.s.sink().Append(ws.sid, ev)
 	ws.s.touch(ws.sid, ws.chain)
 }
 

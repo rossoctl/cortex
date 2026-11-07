@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/rossoctl/cortex/core/attribution"
+	"github.com/rossoctl/cortex/core/listener/internal/sessionevent"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -195,12 +196,21 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHe
 	return sid
 }
 
+// sink is Sessions as the listener records through it, nil when sessions are off.
+// It returns an untyped nil for a nil store, so "sink() == nil" means what it says.
+func (s *Server) sink() sessionevent.Sink {
+	if s.Sessions == nil {
+		return nil
+	}
+	return s.Sessions
+}
+
 // activeSession is the store's ActiveSession(), "" without a store.
 func (s *Server) activeSession() string {
 	if s.Sessions == nil {
 		return ""
 	}
-	return s.Sessions.ActiveSession()
+	return s.sink().ActiveSession()
 }
 
 // attribute is the attributor's answer for a request, or what an attributor with nothing
@@ -261,7 +271,7 @@ func affinityClient(clientHeaders http.Header) string { return attribution.Agent
 // be rejected before anything is recorded.
 func (s *Server) sessionViewFor(sid string) *pipeline.SessionView {
 	if s.Sessions != nil {
-		if v := s.Sessions.View(sid); v != nil {
+		if v := s.sink().View(sid); v != nil {
 			return v
 		}
 	}

@@ -309,7 +309,7 @@ func (s *Server) appendTunnelOpen(pctx *pipeline.Context, ev pipeline.SessionEve
 	if s.ClientAffinity || s.processesOn() || pctx.SessionSource == pipeline.SessionSourceConnection {
 		pinned = pctx.OutboundSessionID
 	}
-	return s.Sessions.AppendBucket(attribution.FiledSession(pinned, s.Sessions.ActiveSession), ev)
+	return s.sink().AppendBucket(attribution.FiledSession(pinned, s.sink().ActiveSession), ev)
 }
 
 // recordTunnelClosed emits the SessionResponse row for a tunnel that ended, or that
@@ -334,7 +334,7 @@ func (s *Server) recordTunnelClosed(pctx *pipeline.Context, b *session.Bucket, r
 	if s.Sessions == nil {
 		return
 	}
-	s.Sessions.AppendTrailing(b, sessionevent.TunnelClose(pctx, reason, statusCode, fail, up, down))
+	s.sink().AppendTrailing(b, sessionevent.TunnelClose(pctx, reason, statusCode, fail, up, down))
 }
 
 // tunnel bidirectionally copies between two connections, relaying each

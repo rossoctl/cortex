@@ -851,7 +851,7 @@ func (t *tunnelLog) recordWith(sid string, ev pipeline.SessionEvent, c *pipeline
 	t.deferred, t.opened = false, true
 	open := t.openEv
 	open.At = ev.At
-	t.bucket = t.s.Sessions.AppendPairCapture(sid, open, ev, c)
+	t.bucket = t.s.sink().AppendPairCapture(sid, open, ev, c)
 	return true
 }
 

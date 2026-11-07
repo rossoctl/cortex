@@ -370,7 +370,7 @@ func (s *Server) relayUpgradedWebSocket(w http.ResponseWriter, r *http.Request, 
 	}
 	ev := outboundResponseEvent(pctx, http.StatusSwitchingProtocols, fail)
 	ev.BytesUp, ev.BytesDown = up, down
-	s.Sessions.Append(attribution.FiledSession(pctx.OutboundSessionID, s.Sessions.ActiveSession), ev)
+	s.sink().Append(attribution.FiledSession(pctx.OutboundSessionID, s.sink().ActiveSession), ev)
 }
 
 // recordSpliceFailure records the response row for a 101 whose relay broke after
