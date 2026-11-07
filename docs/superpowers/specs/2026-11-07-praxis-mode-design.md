@@ -7,7 +7,7 @@ Background: #1437 (assessment, closed), #1491 (hairpin spec and W1 spike results
 
 Revision marks: **[R n]** = from the no-regressions review, **[D n]** = from the development-speed review, **[T n]** = from the throwaway review.
 
-Third revision (2026-11-07): nine findings of a validation review are fixed, marked **[V n]**.
+Third revision (2026-11-07): nine findings of a validation review are fixed, marked **[V n]**. Then the PR #1717 review by clawgenti, marked **[PR n]** by its comment order.
 
 Second revision (2026-11-07): phase D added (Section 8). The end state is Cortex as a Praxis distribution, in the shape of praxis-ai: one Rust binary, with no Go service and no `/v1/attribute`.
 
@@ -171,12 +171,12 @@ Two cases need Cortex state that Praxis does not have. Both are keyed by `reques
 - **Tunnel pairing.** **[R 3]** Today the open row of a bridged tunnel waits for the tunnel's first request row. `AppendPairCapture` then writes both at once, because agentop folds a tunnel row only into the row that follows it (`forwardproxy/tunnel.go:834-858`). In `praxis` mode the hop registers `requestId → tunnel`. When ingestion receives that request row, it writes it through the tunnel's existing pairing path. Without this, each CONNECT gets an extra unfolded row.
   - **The hop also holds the tunnel's settlement until its row joins.** Today `settleLocked` writes the open row alone, plus a "carried nothing" close row (`forwardproxy/tunnel.go:800-813`). It does this when the tunnel is done, nothing is in flight and nothing answered. In praxis mode a request row can arrive after the client closed the tunnel. An example is a gateway refusal, which sends its answer before its deferred record. So each hopped request counts as "awaiting its row". `settleLocked` waits while any is awaited. When the row joins, the pair is written as today. When the 60 s join entry expires with no row, the tunnel settles as today. **[V 8]**
   - The hop does not mark the tunnel as answered when it sends. If it did, a row that never arrives (a dropped line) would lose the tunnel's open row.
-- **Cuts made by Cortex.** **[R 6]** When Cortex itself ends a hopped stream (the 5-minute idle cut, the per-frame cap), Praxis sees the downstream go away and would record `client_canceled`. The hop records `requestId → kind` (`proxy_error`). Ingestion replaces the response row's error kind with it.
+- **Cuts made by Cortex.** **[R 6]** When Cortex itself ends a hopped stream with its 5-minute idle cut, Praxis sees the downstream go away and would record `client_canceled`. The hop records `requestId → kind` (`proxy_error`). Ingestion replaces the response row's error kind with it.
 
 ### Failure rules
 
 - **Recording never holds up traffic.** The emitter has a bounded queue. When the queue is full or Cortex is unreachable, it drops the line and counts it.
-- **A row is never lost to its capture's size.** The producer sends a capture only for inference rows (the same rule as Cortex, Section 1 "Captures"). When a line with its capture would go over the 64 MiB line cap, the producer drops the capture, keeps the row, and counts it. **[V 5]**
+- **A row is never lost to its capture's size.** The producer sends a capture only for inference rows (the same rule as Cortex, Section 1 "Captures"). When a line with its capture would go over the 64 MiB line cap, the producer drops the capture, keeps the row, and counts it. It sends `"capture": {"dropped": true}` in place of the capture, and ingestion counts it (`ingest_captures_dropped_total`) and stores no capture. **[V 5] [PR 3]**
 - Cortex skips a refused line (bad JSON, unknown `v`, wrong `schemaVersion`, over the 64 MiB line cap) and counts it by reason. The connection stays open.
 - Counters: Praxis `/metrics` (`cortex_rows_emitted_total`, `cortex_rows_dropped_total`, `cortex_parse_errors_total`) and Cortex `/stats` (`ingest_lines_total`, `ingest_refused_total{reason}`).
 - A request row without its response row (the gateway restarted mid-stream) shows the same way an in-flight row shows in agentop today.
@@ -225,7 +225,8 @@ The name keeps clear of `cmd/cortex-praxis`, the paused Go converter, which stay
 1. **`cortex_attribution`** (request head): checks the token, decodes `X-Cortex-Attribution`, removes the `X-Cortex-*` headers that the egress listener does not need, and sets filter metadata (Section 2). **[V 1]**
 2. **`cortex_parse`** (read-only body access):
    - It reads the request body buffered, up to the body limit. Claude Code requests reach about 5 MiB.
-   - It reads `text/event-stream` responses in stream mode, frame by frame, so streaming latency and memory stay as in direct mode. **It also streams the known mislabeled SSE responses**, by a port of `isKnownMislabeledSSE` (`core/listener/forwardproxy/stream.go:165`): today `chatgpt.com` + `/backend-api/codex/responses`, which Codex uses over HTTPS. Without it, each Codex turn would be buffered and arrive at the end (#642). **[V 2]**
+   - It reads `text/event-stream` responses in stream mode, frame by frame, so streaming latency and memory stay as in direct mode. **It enforces direct mode's per-frame cap** of 10 MB. A larger frame aborts the stream, and the row has `proxy_error` with "single SSE frame over the 10485760-byte frame cap" (`forwardproxy/stream.go:132-133`). In praxis mode Cortex's own SSE path is `streamPassthrough`, which has only the idle cut. So this cap must be in `cortex_parse`. **[PR 5]**
+   - **It also streams the known mislabeled SSE responses**, by a port of `isKnownMislabeledSSE` (`core/listener/forwardproxy/stream.go:165`): today `chatgpt.com` + `/backend-api/codex/responses`, which Codex uses over HTTPS. Without it, each Codex turn would be buffered and arrive at the end (#642). **[V 2]**
    - It reads other responses buffered, up to direct mode's buffered cap of 10 MB (`maxBodySize`). Over the cap it does what direct mode does (`forwardproxy/server.go:1287-1304`): it answers 502, and the row has `error.kind: proxy_error` with the same message.
    - **It decodes gzip and zstd itself, for parsing only.** The bytes on the wire do not change. The W1 spike found that praxis-ai's `token_count` misses gzip-coded JSON. This rule removes that gap without upstream ask U6.
    - It writes the parsed request and response into filter metadata in Cortex's types (`inference`, `mcp`, `a2a`).
@@ -294,10 +295,12 @@ praxis:
 ### The hop **[R 1] [D 5]**
 
 - **It runs at the dial, as in the W1 spike.** It comes after the pipeline step (empty), the header sync, `stripForUpstream` and the redirect re-check of the egress allow list. It sets only `r.URL.Scheme`, `r.URL.Host` and the transport. It leaves `r.Host` and the path unchanged. It is not `pctx.Redirect` (#1491 W2).
-- **It lives in its own file, `core/listener/forwardproxy/hop.go`.** `serveOutbound` gets exactly three branch points, and review refuses others:
+- **Cortex owns `Accept-Encoding` for a hopped request, as in direct mode.** In direct mode `inference-parser` reads bodies, so `ownEncoding` is true (`forwardproxy/server.go:747`). `stripForUpstream` then removes the client's `Accept-Encoding`, and Go's transport asks for gzip and decodes it. With an empty pipeline `ownEncoding` would be false, so a client's `gzip, deflate, br` would reach the origin, and a `br` or `deflate` answer would not parse. So a hopped request counts as `ownEncoding`. The hop's transport keeps Go's default compression (no `DisableCompression`). The origin then sees only `gzip`, `cortex_parse` decodes it, and the client gets the decoded body, as in direct mode. **[PR 2]**
+- **It lives in its own file, `core/listener/forwardproxy/hop.go`.** `serveOutbound` gets exactly four branch points, and review refuses others:
   1. skip the request row and its capture (Praxis records them), but keep `touch`.
-  2. swap the dial target and the transport.
-  3. skip the response row and its capture.
+  2. count the request as `ownEncoding` (`forwardproxy/server.go:747`).
+  3. swap the dial target and the transport.
+  4. skip the response row and its capture.
 - The hop speaks **HTTP/1**. At phase B it sends absolute-form requests, which #1480 detects only on HTTP/1. Go's `Transport` sends CONNECT for an `https://` URL through a proxy, so the phase B hop writes absolute form itself (`Request.WriteProxy` on its own connection). **[T F7]**
 - Its transport reads no proxy env.
 
@@ -386,6 +389,7 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
   - A producer's `plugins["cost"]` is removed, and the cost is settled again from `cost.headers`.
   - The store assigns `seq` and ignores a producer's.
   - Credentials in a capture are removed again. A capture on a row without `inference` is dropped.
+  - A line with `"capture": {"dropped": true}` keeps its row, stores no capture, and counts. **[PR 3]**
   - Tunnel pairing: the first ingested request row of a bridged tunnel is written with its open row.
   - A Cortex cut replaces `client_canceled` with `proxy_error`.
   - A tunnel that closes before its request row arrives still gets one pair (open row + request row), and no "carried nothing" close row. **[V 8]**
@@ -414,6 +418,9 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
   - item 7: fail closed at startup.
   - item 8: a 65 s silence mid-stream.
   - item 9: more than 10 MiB each way.
+- **No `X-Cortex-*` header reaches the origin.** The mock origin fails the test when it sees one. **[PR 1]**
+- **A client that sends `Accept-Encoding: gzip, deflate, br`** to an origin that prefers `br` gets a parsed row (tokens, cost) and a decoded body, as in direct mode. The origin sees only `gzip`. **[PR 2]**
+- **A 30 MiB request keeps its row.** Its line would go over the cap with the capture, so the capture is dropped (`capture.dropped`). **[PR 3]**
 - **Codex's mislabeled SSE** (`chatgpt.com` + `/backend-api/codex/responses`, not `text/event-stream`) streams frame by frame through the gateway, as in direct mode. **[V 2]**
 - A 33 MiB request gets 413 with `proxy_error`, and a 12 MB buffered response gets 502 with `proxy_error`, in both modes. **[V 5]**
 - A Cortex restart does not restart the gateway, and a supervisor exit stops it.
@@ -431,7 +438,7 @@ Each step is one PR and is useful when it merges. Nothing changes for a user unt
 1. **The Rust workspace and the inference parser:** `praxis/filters` with `cortex_parse` for inference, the parity gate, the schema drift test, and the path-scoped Rust CI job.
 2. **The gateway and ingestion together:** `cortex_record`, `cortex_attribution`, the emitter, the `cortex-gateway` binary, and `/v1/ingest` with its replay test. The endpoint lands with its producer.
 3. **Supervision** (`cmd/cortex`): two siblings, the token file, `gateway.yaml`, the probe, no orphans, the port-conflict names.
-4. **The hop and the egress listener** (`core/listener/forwardproxy`): `hop.go`, the three branch points, the joins, `gateway_unavailable`, the config checks (startup and reload), and the end-to-end tests.
+4. **The hop and the egress listener** (`core/listener/forwardproxy`): `hop.go`, the four branch points, the joins, `gateway_unavailable`, the config checks (startup and reload), and the end-to-end tests.
 5. **agentop and install:** the `praxis.enabled` contract field, the command refusals, `install.sh --praxis`, setup, update and uninstall.
 6. **Release:** the `cortex-gateway` release job (vendored OpenSSL, static musl, the dynamic-OpenSSL check) and the weekly Praxis build. The static Linux build is proved first.
 7. **The MCP and A2A parsers**, each behind its own parity gate.
@@ -484,7 +491,7 @@ Line counts are non-test, non-comment Go lines on `main` @ `92604f4c`. The forwa
 
 - **Phase D has no upstream trigger.** It starts when praxis mode is the default and stable.
 - **It comes before phase C.** Attribution keeps state that the store's events feed: `Attributor` is a store `Recorder`, `Clearer`, `Deleter`, `Evicter` and `Rekeyer` (`core/attribution/attribution.go:214-262`). So attribution and the store move together. If attribution moved first, it would need a new interface to the Go store, and that interface would be throwaway.
-- **The client address in the interim.** `Attributor.Lookup` takes only the client and server socket addresses (`core/attribution/lookup.go:23`), so any process on the host can ask it. In phase D the Go front door passes them in a token-protected header, `X-Cortex-Client: <client addr> <server addr>`. The binary runs the lookup itself. In phase C the address comes from the connection (praxis#1447), and the header goes away.
+- **The client address in phase D.** `Attributor.Lookup` takes only the client and server socket addresses (`core/attribution/lookup.go:23`), so any process on the host can ask it. In phase D the Go front door passes them in a token-protected header, `X-Cortex-Client: <client addr> <server addr>`. The binary runs the lookup itself. In phase C the address comes from the connection (praxis#1447), and the header goes away.
 
 ### What stays the same
 
