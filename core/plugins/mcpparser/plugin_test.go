@@ -189,7 +189,7 @@ func TestMCPParser_SkipsJSONThatIsNotJSONRPC(t *testing.T) {
 
 // A top-level JSON array is not JSON-RPC, so it is declined on shape
 // before any method check — the body here wraps a real MCP method that
-// would match isMCPMethod if it were an object.
+// would match mcp.isMCPMethod if it were an object.
 func TestMCPParser_TopLevelArray_NoMatch(t *testing.T) {
 	p := NewMCPParser()
 	pctx := &pipeline.Context{
@@ -528,8 +528,8 @@ func TestConfigure_DefaultPaths(t *testing.T) {
 	if pctx.Extensions.MCP == nil {
 		t.Fatal("default paths should match /mcp; MCP extension was nil")
 	}
-	if pctx.Extensions.MCP.Method != syntheticTransportStream {
-		t.Errorf("Method = %q, want %q", pctx.Extensions.MCP.Method, syntheticTransportStream)
+	if pctx.Extensions.MCP.Method != "$transport/stream" {
+		t.Errorf("Method = %q, want %q", pctx.Extensions.MCP.Method, "$transport/stream")
 	}
 }
 
@@ -614,8 +614,8 @@ func TestOnRequest_TransportTerminate(t *testing.T) {
 	if pctx.Extensions.MCP == nil {
 		t.Fatal("expected synthetic MCP extension")
 	}
-	if pctx.Extensions.MCP.Method != syntheticTransportTerminate {
-		t.Errorf("Method = %q, want %q", pctx.Extensions.MCP.Method, syntheticTransportTerminate)
+	if pctx.Extensions.MCP.Method != "$transport/terminate" {
+		t.Errorf("Method = %q, want %q", pctx.Extensions.MCP.Method, "$transport/terminate")
 	}
 	if pctx.Extensions.MCP.IsAction {
 		t.Error("IsAction should be false for transport terminate")
@@ -635,8 +635,8 @@ func TestOnRequest_TransportStream(t *testing.T) {
 	if pctx.Extensions.MCP == nil {
 		t.Fatal("expected synthetic MCP extension")
 	}
-	if pctx.Extensions.MCP.Method != syntheticTransportStream {
-		t.Errorf("Method = %q, want %q", pctx.Extensions.MCP.Method, syntheticTransportStream)
+	if pctx.Extensions.MCP.Method != "$transport/stream" {
+		t.Errorf("Method = %q, want %q", pctx.Extensions.MCP.Method, "$transport/stream")
 	}
 	if pctx.Extensions.MCP.IsAction {
 		t.Error("IsAction should be false for transport stream")
