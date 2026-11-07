@@ -169,6 +169,12 @@ type entry struct {
 	procs         map[string]ProcSpan
 	owner         string
 	lastRequestAt time.Time
+
+	// lastIntent and lastInference are the Seq of the newest event that model.IsIntent and
+	// model.IsInferenceRequest accept, 0 for none. ViewFacts reads them. LATEST VALUES, in
+	// inferenceHost's class: a trim does not change them, and ViewFacts gives FactNone when the
+	// event left.
+	lastIntent, lastInference uint64
 }
 
 // MaxSessionIDLen is the longest session ID the store keeps intact; longer ids
@@ -536,6 +542,13 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event model.SessionEve
 	if h := inferenceHostOf(&event); h != "" {
 		sess.inferenceHost = h
 	}
+	// An event of neither kind must not change the facts.
+	if model.IsIntent(&event) {
+		sess.lastIntent = event.Seq
+	}
+	if model.IsInferenceRequest(&event) {
+		sess.lastInference = event.Seq
+	}
 	sess.procs = applyProcs(sess.procs, sessionID, &event)
 	sess.owner = applyOwner(sess.owner, sessionID, agentName, &event)
 	if event.Phase == model.SessionRequest && event.At.After(sess.lastRequestAt) {
@@ -595,12 +608,10 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event model.SessionEve
 // isIntentEvent matches the SessionView.LastIntent predicate: an
 // inbound A2A request event. IBAC and any future intent-aware
 // guardrail call LastIntent and need the most recent such event to
-// survive FIFO eviction. Defined here so the eviction policy and
-// the consumer view can never drift apart.
+// survive FIFO eviction. It calls model.IsIntent, so the eviction
+// pin and the LastIntent fact of ViewFacts use one rule.
 func isIntentEvent(e model.SessionEvent) bool {
-	return e.Direction == model.Inbound &&
-		e.Phase == model.SessionRequest &&
-		e.A2A != nil
+	return model.IsIntent(&e)
 }
 
 // trimEventsPinIntent reduces events to len <= maxEvents while
@@ -707,18 +718,51 @@ func (s *Store) AddRecorder(r Recorder) {
 func (s *Store) View(sessionID string) *model.SessionView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	v, _ := s.viewLocked(sessionID)
+	return v
+}
 
+// viewLocked is View's body, and the entry it copied. Both are nil for no entry or an expired
+// one. The caller holds s.mu.
+func (s *Store) viewLocked(sessionID string) (*model.SessionView, *entry) {
 	sess, ok := s.sessions[sessionID]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	if s.isExpired(sess, s.clock()) {
-		return nil
+		return nil, nil
 	}
 
 	events := make([]model.SessionEvent, len(sess.Events))
 	copy(events, sess.Events)
-	return &model.SessionView{ID: sessionID, Events: events}
+	return &model.SessionView{ID: sessionID, Events: events}, sess
+}
+
+// ViewFacts is View and the session's facts, read under one lock, so the two agree. Each
+// present fact's Event points into the returned view, as SessionView.LastIntent does. When View
+// returns nil (no entry, or an expired one), the view is nil and both facts are FactNone.
+func (s *Store) ViewFacts(sessionID string) (*model.SessionView, model.SessionFacts) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	v, sess := s.viewLocked(sessionID)
+	if v == nil {
+		return nil, model.SessionFacts{LastIntent: model.SessionFact{State: model.FactNone}, LastInference: model.SessionFact{State: model.FactNone}}
+	}
+	return v, model.SessionFacts{LastIntent: factAt(v.Events, sess.lastIntent), LastInference: factAt(v.Events, sess.lastInference)}
+}
+
+// factAt finds the event with this seq in events, which rise in seq. A seq of 0, or one that a
+// session.max_events trim removed, gives FactNone.
+func factAt(events []model.SessionEvent, seq uint64) model.SessionFact {
+	if seq == 0 {
+		return model.SessionFact{State: model.FactNone}
+	}
+	i := sort.Search(len(events), func(i int) bool { return events[i].Seq >= seq })
+	if i < len(events) && events[i].Seq == seq {
+		return model.SessionFact{Event: &events[i], State: model.FactPresent}
+	}
+	return model.SessionFact{State: model.FactNone}
 }
 
 // ViewTail returns the most recent limit events of a session, and reports how many
