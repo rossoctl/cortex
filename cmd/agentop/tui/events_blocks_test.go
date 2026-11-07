@@ -262,7 +262,7 @@ func TestBlocks_MembersNumberFromOneInsideTheBlock(t *testing.T) {
 	}
 
 	// Rendered: m1, header, a1's two exchanges, m2. The first cell of each EVENT
-	// row is the # column; the header row is one cell of its own, standing in for
+	// row is the # column. The header row is one cell of its own, standing in for
 	// the position.
 	want := []string{"1", "HEADER", "1", "2", "3"}
 	rows := m.eventsTbl.Rows()

@@ -141,9 +141,9 @@ type eventColumn struct {
 	//
 	// Deliberately NOT the rendered cell string. durationCell emits "340ms" and
 	// "1.20s", which compare lexically as 340ms > 1.20s — backwards, and on exactly
-	// the column issue #865 names. TOKENS ("1,048,576(−12.3k)") and COST
-	// ("$0.2546(−$0.0037)") carry thousands separators, a currency sigil and a
-	// parenthesised second figure, none of which sort either.
+	// the column issue #865 names. TOKENS ("70.6k(−3.1k)→9") and COST
+	// ("$0.2546(−$0.0037)") carry a "k" suffix, a currency sigil and a parenthesised
+	// second figure, none of which sort either.
 	//
 	// Takes a cellContext rather than an event because a row is an exchange (#1681), and
 	// the figures of most columns are on its response. Sharing the input means the key

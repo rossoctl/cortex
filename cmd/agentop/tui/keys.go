@@ -784,7 +784,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		half := m.detailHalf()
 		if half == nil {
-			m.setFlash("nothing to yank: this half was not recorded")
+			// The section's own note says why the half is missing, and what to do.
+			lost := rowLost(m.detailRow, nil, 0, m.lostRef(m.events[m.selectedSess]))
+			m.setFlash("nothing to yank: " + missingNote(m.detailRow, sectionOf(m.detailCursorPath), lost))
 			return nil
 		}
 		path, err := yankEventToFile(half)
@@ -1323,7 +1325,11 @@ func (m *model) helpView() string {
 		if sectionOf(m.detailCursorPath) == "response" {
 			other, half = "request", "response"
 		}
-		return "[↑↓] move  [↵] fold  [tab] " + other + "  [y] yank " + half + "  [u] usage  " +
+		yank := "  [y] yank " + half
+		if m.detailHalf() == nil {
+			yank = "" // y has nothing to write in a missing half
+		}
+		return "[↑↓] move  [↵] fold  [tab] " + other + yank + "  [u] usage  " +
 			m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case panePipeline:
 		// ONE SPELLING NOW, where there used to be two. The picker/bypass split

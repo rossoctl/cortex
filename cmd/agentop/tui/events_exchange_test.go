@@ -330,6 +330,13 @@ func TestExchange_LostRequest(t *testing.T) {
 	if got := trimmedCell(t, m, 0, colStatus); got != "" {
 		t.Errorf("inbound, 11 min: STATUS = %q, want blank", got)
 	}
+	// The Timeline skips an outbound event with no host, so it never calls one lost.
+	hostless := req
+	hostless.Host = ""
+	m = lostModel(t0.Add(11*time.Minute), hostless)
+	if got := trimmedCell(t, m, 0, colStatus); got != "" {
+		t.Errorf("no host, 11 min: STATUS = %q, want blank", got)
+	}
 	// A request with no RequestID can have its response on a guessed row of its own.
 	unstamped := req
 	unstamped.RequestID = ""

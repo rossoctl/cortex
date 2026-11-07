@@ -308,7 +308,7 @@ func TestCostUngroupedRow_OnlyDollarsCarryAnAmount(t *testing.T) {
 }
 
 // An exchange in Bobcoins reads in Bobcoins in the events pane, the saving included, with the unit
-// named once; the same exchange without a unit is the dollar cell TestCostCellPhases pins.
+// named once. The same exchange without a unit is the dollar cell TestCostCellPhases pins.
 func TestCostCell_ARecordInAForeignUnitIsLabelledSo(t *testing.T) {
 	wire := strings.Replace(costWire, `"source":"gateway-header",`, `"source":"gateway-header","currency":"Bobcoins",`, 1)
 	if wire == costWire {

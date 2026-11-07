@@ -1157,11 +1157,11 @@ agentop is for, and the other four are surfaces you visit and leave.
   ```
   agentop · ctx-abc-1234…
 
-   #     TIME          DIR   ACTION    PLUGIN              METHOD              STATUS   DURATION              BYTES               TOKENS                COST   HOST
-   1     14:23:07.41   in    allow     jwt-validation                             200      118ms       ↑1.4kB ↓842B                                              weather-agent
-   2     14:23:07.71   out   observe   inference-parser    claude-sonnet-5        200      1.20s   ↑118.6kB ↓12.4kB   681.3k(−9.9k)→412   $0.2767(−$0.0037)   api.anthropic.com
-   3     14:23:09.01   out   modify    token-exchange      tools/call             503       96ms              ↑318B                                              github-tool-mcp
-   4     14:23:09.40   out   observe   inference-parser    claude-sonnet-5                                ↑121.0kB                                              api.anthropic.com
+   #   TIME          DIR   ACTION    PLUGIN             METHOD            STATUS   DURATION              BYTES              TOKENS                COST   HOST
+   1   14:23:07.41   in    allow     jwt-validation                          200      118ms       ↑1.4kB ↓842B                                           weather-agent
+   2   14:23:07.71   out   observe   inference-parser   claude-sonnet-5      200      1.20s   ↑118.6kB ↓12.4kB   681.3k(−9.9k)→412   $0.2767(−$0.0037)   api.anthropic.com
+   3   14:23:09.01   out   modify    token-exchange     tools/call           503       96ms              ↑318B                                           github-tool-mcp
+   4   14:23:09.40   out   observe   inference-parser   claude-sonnet-5                               ↑121.0kB                                           api.anthropic.com
 
   ● connected   2.1 events/sec   [/anthropic 2 matches]   [sort: DURATION▼]
   [↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  [s] hide passthru/skip  [p] pause  [/] search  [n/N] next/prev  [esc] back  ·  [?] keys  [q] quit
@@ -1768,7 +1768,8 @@ pane displays, and a message's text is searched in its detail, which fetches the
 whole exchange. Dropping those fields as well would be ~299x instead of ~163x.
 
 The consequence is worth knowing: the first `↵` on a row fetches each half of the
-exchange in full from `/v1/sessions/{id}/events/{seq}`, one call per half. The detail pane renders the summary
+exchange whose bodies are not loaded yet, in full, from
+`/v1/sessions/{id}/events/{seq}`. The detail pane renders the summary
 immediately and the bodies appear when they arrive, so there is no loading screen —
 but on a slow link the message text lands a moment after the rest. Re-opening the
 same row is free; the bodies are kept. If the fetch fails, the pane keeps what it

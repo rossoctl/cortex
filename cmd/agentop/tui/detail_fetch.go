@@ -89,7 +89,7 @@ func (m *model) markFullFetched(sessionID string, seq uint64, raw ...*pipeline.R
 // operator has already navigated away from.
 //
 // It asks for the exact capture too (?raw=1), which only the proxy's archive holds, so it runs
-// once per row, with the capture kept beside the fetched mark. Against a projecting proxy only:
+// once per half, with the capture kept beside the fetched mark. Against a projecting proxy only:
 // one that does not project predates the per-event route, and would answer 404.
 func fetchDetailEventCmd(m *model, sessionID string, seq uint64) tea.Cmd {
 	ctx, client := m.ctx, m.client

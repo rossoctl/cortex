@@ -224,10 +224,16 @@ func TestDetail_YankMissingHalfWritesNothing(t *testing.T) {
 	at := time.Now().Add(-time.Minute)
 	req, _ := turnExchange(at)
 	m := openDetail(t, at.Add(time.Minute), req)
+	if hint := m.helpView(); !strings.Contains(hint, "[y] yank request") {
+		t.Errorf("hint in REQUEST = %q, want the yank", hint)
+	}
 	m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if hint := m.helpView(); strings.Contains(hint, "[y]") {
+		t.Errorf("hint in the missing RESPONSE = %q, want no yank", hint)
+	}
 	m.Update(keyRune('y'))
-	if !strings.Contains(m.flash, "nothing to yank") {
-		t.Errorf("flash = %q, want nothing to yank", m.flash)
+	if want := "nothing to yank: waiting for response…"; m.flash != want {
+		t.Errorf("flash = %q, want %q: the section's own note", m.flash, want)
 	}
 	if files, _ := filepath.Glob(filepath.Join(home, ".cortex", "agentop-events", "*")); len(files) > 0 {
 		t.Errorf("y wrote %v for a missing half", files)

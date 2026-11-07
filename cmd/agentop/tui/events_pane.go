@@ -75,7 +75,7 @@ func newEventsTable() table.Model {
 // request, or the only event of a row with one half: a denial, a request no answer reached,
 // a response whose request is not held. resp is the response or denial that mergeExchanges
 // folded in. tunnel, when non-nil, is a CONNECT tunnel-open event folded into a TLS-bridged
-// request (see buildEventRows); it contributes a summary line to the detail pane but no
+// request (see buildEventRows). It contributes a summary line to the detail pane but no
 // separate row.
 type eventRow struct {
 	event  *pipeline.SessionEvent
@@ -235,8 +235,8 @@ func (m *model) rebuildEventsTable() {
 	}
 	// keys is the sort value for each row that survived the filters, parallel to
 	// rows and m.visibleRows. Collected inside the loop because the sortKey funcs
-	// take the same cellContext the cells do, and that context only exists here. nil when no sort is active, so the default path allocates
-	// nothing.
+	// take the same cellContext the cells do, and that context only exists here.
+	// nil when no sort is active, so the default path allocates nothing.
 	var keys []rowKey
 	var sortCol *eventColumn
 	if m.sortCol != "" {
@@ -338,10 +338,10 @@ func (m *model) rebuildEventsTable() {
 		// sorted on and the value displayed cannot come apart. cc.width stays zero
 		// here — render takes its own copy — and no sortKey reads it.
 		//
-		// Each row is one exchange (#1681), so exchange is the row's own arrival index.
-		// j indexes ctxs, which is every row before hideInactive drops any. The sort never reads it as a
-		// position in `keys` — only compares two of them — so the filter's gaps are
-		// harmless.
+		// Each row is one exchange (#1681), so exchange is the row's own arrival
+		// index. j indexes ctxs, which is every row before hideInactive drops any.
+		// The sort never reads it as a position in `keys` — only compares two of
+		// them — so the filter's gaps are harmless.
 		//
 		// Member rows take the block branch above and never reach this — safe
 		// because blocks exist only while no sort is active (see the collection
@@ -671,8 +671,8 @@ func answer(r eventRow) *pipeline.SessionEvent {
 }
 
 // exchangeResp is the response that speaks for row r: the merged one, or the row's own event
-// when the row is a response. Nil while no answer arrived — which is also what a guessed
-// pair's request row gets, as pairedResponse always gave it.
+// when the row is a response. Nil while no answer arrived. A guessed pair's request row gets
+// nil too, because its response stays on a row of its own.
 func exchangeResp(r eventRow) *pipeline.SessionEvent {
 	if r.resp != nil {
 		return r.resp
@@ -712,13 +712,13 @@ func (m *model) lostRef(events []pipeline.SessionEvent) time.Time {
 // answered ones, and a blank STATUS would have said "on its way" forever.
 //
 // A tunnel open is never lost. It carries no status, and a passthrough tunnel stays open for
-// hours (6.4 measured), so age says nothing about it. A guessed pair's request is not lost
-// either: its response is on a row of its own. Only a request with no RequestID can be in a
-// guessed pair, so such a request is never lost. The Timeline judges outbound requests only,
-// so an inbound one is never lost here either.
+// hours (6.4 hours measured), so age says nothing about it. A guessed pair's request is not
+// lost either: its response is on a row of its own. A guessed pair can only form around a
+// request with no RequestID, so such a request is never lost here. The Timeline judges
+// outbound requests with a host only, so an inbound or hostless one is never lost here either.
 func rowLost(r eventRow, partner map[int]int, i int, ref time.Time) bool {
 	e := r.event
-	if r.resp != nil || e == nil || e.Direction != pipeline.Outbound ||
+	if r.resp != nil || e == nil || e.Direction != pipeline.Outbound || e.Host == "" ||
 		e.Phase != pipeline.SessionRequest || e.Tunnel || e.RequestID == "" {
 		return false
 	}
@@ -1067,9 +1067,11 @@ func statusCell(e pipeline.SessionEvent) string {
 // A tunnel's close row is the one that reports BOTH, and it keeps the pair rendering
 // even where one side is zero: the counts are absent on the wire when zero, so a
 // genuine zero one way is shown only once the other side proves the row carries
-// counts at all. Every other row reports a single side — a request knows what it
-// forwarded, a response what came back — so printing the pair there would put a
-// fabricated "↓0B" next to every request size.
+// counts at all. A merged row reports both too (exchangeBytes): the request's ↑ and
+// the response's ↓. Each of its sides shows only when it is not zero. A row with one
+// half reports a single side — a request knows what it forwarded, a response what
+// came back — so printing the pair there would put a fabricated "↓0B" next to every
+// request size.
 //
 // Blank when nothing was counted, which is NOT the same as a body of zero bytes:
 // an unbuffered body is relayed unmeasured and reads here exactly as a body-less GET

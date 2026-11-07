@@ -111,7 +111,7 @@ func sectionTree(path, title string, heads []string, data []byte, note string) (
 			return nil, err
 		}
 		ev := buildTree(v, path, "", false)
-		ev.fold = false // the section folds; the event's object does not fold a second time
+		ev.fold = false // The section folds. The event's object does not fold a second time.
 		foldDefaults(ev)
 		s.kids = []*node{ev}
 	}
@@ -126,7 +126,7 @@ func sectionsRoot(secs ...*node) *node {
 }
 
 // sectionOf names the section a tree path belongs to. Every path in the response section
-// starts with "response"; everything else — the request's paths, and "" — is the request's.
+// starts with "response". Everything else — the request's paths, and "" — is the request's.
 func sectionOf(path string) string {
 	if path == "response" || strings.HasPrefix(path, "response.") || strings.HasPrefix(path, "response[") {
 		return "response"
