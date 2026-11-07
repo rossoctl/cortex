@@ -131,7 +131,7 @@ func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, cha
 // name which session's state it is handed. Session is documented as an
 // observability and correlation key rather than an authorization subject (see
 // pipeline.Context.Session), and this resolution assumes that. IBAC is the plugin
-// that tests the assumption, because it reads Session.LastIntent() to judge an
+// that tests the assumption, because it reads pctx.LastIntent() to judge an
 // outbound call and can deny on it — so where header bucketing is enabled, a
 // client naming another session's id can have its action judged against that
 // session's recorded intent. Before this, that required winning an
@@ -148,7 +148,7 @@ func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, cha
 // The open alternative is to narrow what plugins receive for a client-asserted
 // id — the ID, which is all that sessionbudget, contextguru and sparc key on, but
 // not the recorded events, so no client can adopt another session's intent. Its
-// cost is sparc's InferenceRequests() correlation for header-identified sessions.
+// cost is sparc's pctx.LastInference() correlation for header-identified sessions.
 // Stated in full under "Decision recorded: client-asserted ids as plugin input"
 // in #984, which is where to argue with it.
 //
@@ -178,7 +178,9 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHe
 	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
 	sid, source := at.PluginSession(trusted, s.activeSession)
 	if sid != "" {
-		pctx.Session = s.sessionViewFor(sid)
+		var facts pipeline.SessionFacts
+		pctx.Session, facts = s.sessionViewFor(sid)
+		pctx.SetSessionFacts(facts)
 		pctx.SessionID = sid
 		pctx.SessionSource = source
 		pctx.SessionHeader = at.Header
@@ -245,8 +247,8 @@ func (s *Server) touch(sid string, chain []attribution.Proc) {
 // attribution.AgentOf.
 func affinityClient(clientHeaders http.Header) string { return attribution.AgentOf(clientHeaders) }
 
-// sessionViewFor returns the recorded view for sid, or an empty view carrying
-// just the id when nothing has been recorded under it yet.
+// sessionViewFor returns the recorded view for sid and its facts, or an empty view carrying
+// just the id, with both facts FactNone, when nothing has been recorded under it yet.
 //
 // Hydration runs BEFORE the request event is appended, so on a session's first
 // request Store.View returns nil even though the id is known. Passing that nil
@@ -259,11 +261,12 @@ func affinityClient(clientHeaders http.Header) string { return attribution.Agent
 // Synthesizing rather than creating the bucket keeps this a read: hydration must
 // not have the side effect of minting store entries for traffic that may still
 // be rejected before anything is recorded.
-func (s *Server) sessionViewFor(sid string) *pipeline.SessionView {
+func (s *Server) sessionViewFor(sid string) (*pipeline.SessionView, pipeline.SessionFacts) {
 	if s.Sessions != nil {
-		if v := s.Sessions.View(sid); v != nil {
-			return v
+		if v, f := s.Sessions.ViewFacts(sid); v != nil {
+			return v, f
 		}
 	}
-	return &pipeline.SessionView{ID: sid}
+	none := pipeline.SessionFact{State: pipeline.FactNone}
+	return &pipeline.SessionView{ID: sid}, pipeline.SessionFacts{LastIntent: none, LastInference: none}
 }
