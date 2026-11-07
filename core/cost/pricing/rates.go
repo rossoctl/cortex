@@ -47,9 +47,10 @@ const NumTiers = numTiers
 // Usage is one request's token count, split by tier.
 //
 // This mirrors parsercommon.TokenUsage, which is what the inference parsers
-// already publish — but parsercommon sits under core/plugins/internal/, so
-// Go's internal rule puts it out of reach here. Reasoning is omitted (a subset of
-// Output, already counted) and so is ReportedTotal (an aggregate no tier prices).
+// already publish. It was written when parsercommon sat under
+// core/plugins/internal/, where Go's internal rule put it out of reach here.
+// Reasoning is omitted (a subset of Output, already counted) and so is
+// ReportedTotal (an aggregate no tier prices).
 type Usage struct {
 	Input      int // uncached prompt tokens
 	CacheWrite int // prompt tokens written to cache

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/rossoctl/cortex/core/internal/parsercommon"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/plugins/internal/parsercommon"
 )
 
 // checkSplit surfaces every split field in one error message so a

@@ -1,6 +1,6 @@
 package parsercommon
 
-import "github.com/rossoctl/cortex/core/pipeline"
+import "github.com/rossoctl/cortex/core/model"
 
 // Kind is a bitmask naming which sub-kinds the provider populated.
 // A zero on a set bit is "reported zero"; a zero on an unset bit is
@@ -43,7 +43,7 @@ func (u TokenUsage) Total() int {
 // legacy aggregates onto ext. TotalTokens prefers the provider's own
 // reported total when present — a gateway that reports only total_tokens
 // (with prompt/completion zero) would otherwise record 0 here.
-func (u TokenUsage) Fill(ext *pipeline.InferenceExtension) {
+func (u TokenUsage) Fill(ext *model.InferenceExtension) {
 	ext.InputTokens = u.Input
 	ext.CacheReadTokens = u.CacheRead
 	ext.CacheWriteTokens = u.CacheWrite

@@ -10,9 +10,9 @@ import (
 	"strings"
 
 	"github.com/rossoctl/cortex/core/bypass"
+	"github.com/rossoctl/cortex/core/internal/parsercommon"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
-	"github.com/rossoctl/cortex/core/plugins/internal/parsercommon"
 )
 
 // Synthetic method names emitted on body-less MCP transport-layer
