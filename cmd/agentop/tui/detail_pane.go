@@ -12,62 +12,34 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
-// showDetail loads the row's event into the detail viewport as colorized
-// JSON and remembers the focused row so yank (y) can find the event and
-// layout() can re-render on resize.
+// showDetail renders one exchange on the detail page (#1681): a REQUEST section, then a
+// RESPONSE section, each its own event's tree under a title and its header lines. One page
+// rather than two panes side by side, because the detail is for reading long JSON, and half
+// a screen wraps it badly.
 //
-// resetScroll follows showPluginDetail and syncHelpViewport: true when the pane is
-// being OPENED, false when layout() re-renders what it already shows. The re-render
-// exists to re-wrap the JSON for a new width, and it used to GotoTop as well — so
-// resizing the terminal, or merely pressing "/" to search, threw a reader
-// back to the top of a long event.
+// Each half is marshalled with SessionEvent.MarshalJSON (readable wire form — string enums,
+// durationMs), then filterForDetail keeps the half's own inference fields. The response also
+// leaves out the fields equal to the request's (dropShared). Yank still writes the full
+// event.
 //
-// Marshal with SessionEvent.MarshalJSON first (readable wire form — string
-// enums, durationMs), then filter inference/mcp extensions so request
-// events show only request-side fields and response events show only
-// response-side fields (TUI readability only — wire format is unchanged,
-// and yank still writes the full JSON).
-//
-// The whole event is rendered — all plugin invocations, both directions —
-// because the timeline is now one row per message; the per-plugin breakdown
-// lives here in the detail, not in separate rows.
-//
-// When a CONNECT tunnel was folded into this row (TLS bridge), a one-block
-// summary of the tunnel is prepended so the operator sees the bridged
-// origin and the connection-level decision without a separate row. When the
-// event arrived over TLS (SessionEvent.TLS non-nil), a small TLS header
-// block is prepended too. Both absent for plaintext, non-bridged events.
+// resetScroll is false for a re-render of the same exchange — a resize, a fetched body, a
+// response that just arrived — which keeps the reader's folds, cursor and scroll.
 func (m *model) showDetail(r eventRow, resetScroll bool) {
-	e := r.event
 	m.detailRow = r
-	m.detailEvent = e
-	// The header blocks first, each followed by a blank line, in the order they have always
-	// had: TLS, what plugins rewrote, then the folded tunnel. Lines like the JSON below them,
-	// so a search reads them too.
-	m.detailHead = nil
-	m.detailTree = nil
-	if data, err := json.Marshal(e); err != nil {
-		m.detailHead = []string{"error marshaling event: " + err.Error()}
-	} else {
-		var tunnel string
-		if r.tunnel != nil {
-			tunnel = tunnelHeader(r.tunnel)
-		}
-		for _, h := range []string{tlsHeader(e.TLS), rewriteHeader(e), servedHeader(e), timingHeader(e), tunnel} {
-			if h != "" {
-				m.detailHead = append(m.detailHead, strings.Split(h, "\n")...)
-				m.detailHead = append(m.detailHead, "")
-			}
-		}
-		filtered := withRaw(filterForDetail(data, e.Phase), r.raw)
-		if root, err := treeFromJSON(filtered); err == nil {
-			m.detailTree = root
-		} else {
-			m.detailHead = append(m.detailHead, ColorizeJSONBytes(filtered))
-		}
+	m.detailEvent = r.event
+	// The fixed line above the viewport takes one row of the body.
+	if m.bodyHeight > 1 {
+		m.detailVp.Height = m.bodyHeight - 1
 	}
+	req, resp, reqRaw, respRaw := detailHalves(r)
+	lost := rowLost(r, nil, 0, m.lostRef(m.events[m.selectedSess]))
+	m.detailSummary = exchangeSummary(r, m.detailNum, lost)
+	m.detailTree = sectionsRoot(
+		detailSection("request", "REQUEST", req, nil, reqRaw, r.tunnel, missingNote(r, "request", lost)),
+		detailSection("response", "RESPONSE", resp, req, respRaw, nil, missingNote(r, "response", lost)),
+	)
 	if resetScroll {
-		// A new event: the folds the reader opened were for the last one.
+		// A new exchange: the folds the reader opened were for the last one.
 		m.detailFolds = nil
 		m.detailCursorPath, m.detailCursorOff = "", 0
 	}
@@ -86,16 +58,209 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 	m.scrollToDetailCursor()
 }
 
+// detailHalves splits row r into its request and response and their captures. Either half can
+// be nil: a response-only row has no request held, and a request has no response until one
+// arrives. A denial is the request half.
+func detailHalves(r eventRow) (req, resp *pipeline.SessionEvent, reqRaw, respRaw *pipeline.RawCapture) {
+	if r.event != nil && r.event.Phase == pipeline.SessionResponse {
+		return nil, r.event, nil, r.raw
+	}
+	return r.event, r.resp, r.raw, r.respRaw
+}
+
+// detailSection builds one half's section. other is the request when e is the response: the
+// response leaves out what other already shows. tunnel is a CONNECT folded into the request.
+// note is what the section says when e is nil.
+func detailSection(path, name string, e, other *pipeline.SessionEvent, raw *pipeline.RawCapture,
+	tunnel *pipeline.SessionEvent, note string) *node {
+	if e == nil {
+		sec, _ := sectionTree(path, "━━ "+name, nil, nil, note)
+		return sec
+	}
+	invs := allInvocations(e)
+	if tunnel != nil {
+		invs = append(invs, allInvocations(tunnel)...)
+	}
+	title := sectionTitle(name, e, invs)
+	data, err := json.Marshal(e)
+	if err != nil {
+		sec, _ := sectionTree(path, title, nil, nil, "error marshaling event: "+err.Error())
+		return sec
+	}
+	data = filterForDetail(data, e.Phase)
+	if other != nil {
+		if od, err := json.Marshal(other); err == nil {
+			data = dropShared(data, filterForDetail(od, other.Phase))
+		}
+	}
+	data = withRaw(data, raw)
+	var heads []string
+	var tun string
+	if tunnel != nil {
+		tun = tunnelHeader(tunnel)
+	}
+	// The header blocks in the order they have always had: TLS, what plugins rewrote, the
+	// served model, the timing, then the folded tunnel. Each helper returns nothing for an
+	// event without its field, so the request and the response each get their own.
+	for _, h := range []string{tlsHeader(e.TLS), rewriteHeader(e), servedHeader(e), timingHeader(e), tun} {
+		if h != "" {
+			heads = append(heads, h)
+		}
+	}
+	sec, err := sectionTree(path, title, heads, data, "")
+	if err != nil {
+		sec, _ = sectionTree(path, title, heads, nil, ColorizeJSONBytes(data))
+	}
+	return sec
+}
+
+// sectionTitle is a section's title line: the half, its time, and the plugins that acted on
+// it. The events row's ACTION cell merges both halves, so this is where the direction is.
+func sectionTitle(name string, e *pipeline.SessionEvent, invs []pipeline.Invocation) string {
+	t := "━━ " + name + " · " + e.At.Format("15:04:05.00")
+	if acted := actedPlugins(invs); acted != "" {
+		t += " · " + acted
+	}
+	return t
+}
+
+// actedPlugins names the plugins that did more than skip, by action in rank order:
+// "modify tool-prune, thinking-fill · observe inference-parser". A shadow action keeps its
+// "*", as the ACTION cell does.
+func actedPlugins(invs []pipeline.Invocation) string {
+	by := map[pipeline.InvocationAction][]string{}
+	for _, iv := range invs {
+		if actionRank(iv.Action) <= actionRank(pipeline.ActionSkip) {
+			continue
+		}
+		name := iv.Plugin
+		if iv.Shadow {
+			name += "*"
+		}
+		if !slices.Contains(by[iv.Action], name) {
+			by[iv.Action] = append(by[iv.Action], name)
+		}
+	}
+	var parts []string
+	for _, a := range []pipeline.InvocationAction{pipeline.ActionDeny, pipeline.ActionModify, pipeline.ActionObserve, pipeline.ActionAllow} {
+		if len(by[a]) > 0 {
+			parts = append(parts, string(a)+" "+strings.Join(by[a], ", "))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// missingNote is what a section says when its half is not there (#1681).
+func missingNote(r eventRow, path string, lost bool) string {
+	if path == "request" {
+		return "request not loaded: press o in events"
+	}
+	e := r.event
+	switch {
+	case e != nil && e.Phase == pipeline.SessionDenied:
+		d, _ := topInvocation(allInvocations(e), func(iv pipeline.Invocation) bool {
+			return iv.Action == pipeline.ActionDeny && !iv.Shadow
+		})
+		if d.Plugin != "" {
+			return "denied by " + d.Plugin + ": no upstream call"
+		}
+		return "denied: no upstream call"
+	case e != nil && e.Tunnel:
+		return "no close recorded yet"
+	case lost:
+		return "no response recorded"
+	}
+	return "waiting for response…"
+}
+
+// exchangeSummary is the fixed line's figures: the # the row showed, then what the row's
+// cells say — method, status, duration, bytes, tokens, cost — each left out when blank.
+func exchangeSummary(r eventRow, num string, lost bool) string {
+	var parts []string
+	add := func(s string) {
+		if s != "" {
+			parts = append(parts, s)
+		}
+	}
+	if num != "" {
+		add("#" + num)
+	}
+	add(eventMethodValue(*r.event))
+	if lost {
+		add("lost")
+	} else {
+		add(statusCell(*answer(r)))
+	}
+	add(durationCell(*answer(r)))
+	e := *answer(r)
+	e.BytesUp, e.BytesDown = exchangeBytes(r)
+	add(bytesCell(e))
+	if tok := exchangeTokensCell(r); tok != "" {
+		add(tok + " tok")
+	}
+	add(exchangeCostCell(r))
+	return strings.Join(parts, " · ")
+}
+
+// detailFixedLine is the line above the detail viewport (#1681): the name of the section that
+// holds the top visible line, then the exchange's figures. The reader always sees which half
+// is on screen, and never scrolls to the response for its status. Cut to the terminal, never
+// wrapped: a wrapped line would take a row the viewport already has.
+func (m *model) detailFixedLine() string {
+	name := "REQUEST"
+	if i := m.detailDoc.lineAtRow(m.detailVp.YOffset); i >= 0 && i < len(m.detailLines) &&
+		sectionOf(m.detailLines[i].path) == "response" {
+		name = "RESPONSE"
+	}
+	return truncToWidth(styleTitle.Render(name)+" │ "+m.detailSummary, max(m.width, 20))
+}
+
+// jumpDetailSection is Tab on the detail page: the cursor goes to the other section's title,
+// and the title scrolls to the top. On inference calls the request is one to two screens
+// long, so this is how the reader reaches the response.
+func (m *model) jumpDetailSection() {
+	want := "response"
+	if sectionOf(m.detailCursorPath) == "response" {
+		want = "request"
+	}
+	for i, l := range m.detailLines {
+		if l.path == want && l.head {
+			m.moveDetailCursor(i)
+			m.detailVp.SetYOffset(m.detailDoc.firsts[i])
+			return
+		}
+	}
+}
+
+// detailHalf is the event of the section the cursor is in: what y writes. Nil when that half
+// is missing.
+func (m *model) detailHalf() *pipeline.SessionEvent {
+	req, resp, _, _ := detailHalves(m.detailRow)
+	if sectionOf(m.detailCursorPath) == "response" {
+		return resp
+	}
+	return req
+}
+
+// shownNum is the # cell of the events row under the cursor, so the fixed line quotes the
+// number the reader just saw — a subagent block's own number inside a block. "" when # is
+// not shown.
+func (m *model) shownNum() string {
+	cols, _ := layoutColumns(m.eventColumns, m.eventColWidths, m.width)
+	rows, cur := m.eventsTbl.Rows(), m.eventsTbl.Cursor()
+	for i, c := range cols {
+		if c.id == colIndex && cur >= 0 && cur < len(rows) && i < len(rows[cur]) {
+			return strings.TrimSpace(rows[cur][i])
+		}
+	}
+	return ""
+}
+
 // renderDetail draws the event detail pane from the tree showDetail built, with the folds the
 // reader chose and the search query in force, and puts the cursor back on its node.
 func (m *model) renderDetail() {
 	q := m.searchQuery(paneDetail)
 	m.detailLines = m.detailLines[:0]
-	for _, h := range m.detailHead {
-		for _, l := range strings.Split(h, "\n") {
-			m.detailLines = append(m.detailLines, treeLine{text: l})
-		}
-	}
 	if m.detailTree != nil {
 		m.detailLines = append(m.detailLines, renderTree(m.detailTree, foldState{open: m.detailFolds, query: q})...)
 	}
@@ -111,7 +276,7 @@ func (m *model) renderDetail() {
 
 // cursorLineFor is the line the cursor goes back to after a re-render: line off of the node at
 // path, else that node's last line, else the first line of the nearest node above it still
-// drawn. The header lines and the root are the node "".
+// drawn. The root is the node "".
 func (m *model) cursorLineFor(path string, off int) int {
 	for p := path; ; p = parentPath(p) {
 		first, last := -1, -1

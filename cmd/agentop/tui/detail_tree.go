@@ -102,7 +102,7 @@ func treeFromJSON(data []byte) (*node, error) {
 func sectionTree(path, title string, heads []string, data []byte, note string) (*node, error) {
 	s := &node{kind: kindSection, path: path, fold: true, defOpen: true, label: title, heads: heads}
 	if data == nil {
-		s.heads = append(s.heads, note)
+		s.heads = append(heads[:len(heads):len(heads)], note)
 	} else {
 		dec := json.NewDecoder(bytes.NewReader(data))
 		dec.UseNumber()

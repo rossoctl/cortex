@@ -192,6 +192,8 @@ func TestDetailFolds_EnterOnATunnelRowDoesNothing(t *testing.T) {
 	setCursorVisible(&m.eventsTbl, 0)
 	m.selectedEventKey = keyOf(m.selectedEvent())
 	press(m, tea.KeyEnter)
+	// Off the REQUEST title, which is a fold now (#1681), onto the tunnel's own line.
+	cursorTo(t, m, "h:443")
 	press(m, tea.KeyEnter)
 	if m.pane != paneDetail || !strings.Contains(detailScreen(m), "h:443") {
 		t.Errorf("pane %v, screen:\n%s", m.pane, detailScreen(m))
@@ -298,7 +300,7 @@ func BenchmarkRenderDetailAllOpen(b *testing.B) {
 	e := fatTurn()
 	m := &model{detailVp: newDetailViewportForBench()}
 	m.showDetail(eventRow{event: &e}, true)
-	m.detailFolds = map[string]foldChoice{"inference.messages[<19]": {open: true}, "inference.messages[<19][1]": {open: true}, "inference.messages[<19][1].content": {open: true}}
+	m.detailFolds = map[string]foldChoice{"request.inference.messages[<19]": {open: true}, "request.inference.messages[<19][1]": {open: true}, "request.inference.messages[<19][1].content": {open: true}}
 	m.renderDetail()
 	b.Run("render", func(b *testing.B) {
 		for b.Loop() {
@@ -316,7 +318,7 @@ func TestFatTurn_AllOpenShowsTheBigMessage(t *testing.T) {
 	e := fatTurn()
 	m := &model{detailVp: newDetailViewportForBench()}
 	m.showDetail(eventRow{event: &e}, true)
-	m.detailFolds = map[string]foldChoice{"inference.messages[<19]": {open: true}, "inference.messages[<19][1]": {open: true}, "inference.messages[<19][1].content": {open: true}}
+	m.detailFolds = map[string]foldChoice{"request.inference.messages[<19]": {open: true}, "request.inference.messages[<19][1]": {open: true}, "request.inference.messages[<19][1].content": {open: true}}
 	m.renderDetail()
 	if n := len(m.detailLines); n < 1595 {
 		t.Fatalf("the big message did not open: %d lines", n)

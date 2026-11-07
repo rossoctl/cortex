@@ -100,7 +100,7 @@ func TestDetailRaw_Response(t *testing.T) {
 	m.applyDetailEvent(detailEventLoadedMsg{sessionID: "s1", seq: 4, event: ev, raw: &pipeline.RawCapture{
 		Response: &pipeline.RawBody{Status: 200, Headers: map[string][]string{"Content-Encoding": {"gzip"}},
 			BodyBase64: make([]byte, 2048), Incomplete: true}}})
-	m.detailFolds = map[string]foldChoice{"raw": {open: true}}
+	m.detailFolds = map[string]foldChoice{"response.raw": {open: true}}
 	m.renderDetail()
 	out := stripANSI(strings.Join(lineTexts(m.detailLines), "\n"))
 	for _, want := range []string{"200", "incomplete", "[gzip body 2.0kB]"} {

@@ -27,6 +27,11 @@ import (
 // lists without satisfaction status.
 func (m *model) showPluginDetail(p *apiclient.PipelinePlugin, resetScroll bool) {
 	m.detailPlugin = p
+	// The event detail's fixed line took a row of the shared viewport. This pane has no
+	// fixed line, so it gets the whole body back.
+	if m.bodyHeight > 0 {
+		m.detailVp.Height = m.bodyHeight
+	}
 	counts := m.pluginRuns // per-plugin run counts, folded at stream arrival — see model.pluginRuns
 	chain := sameDirectionChain(p, m.pipeline)
 

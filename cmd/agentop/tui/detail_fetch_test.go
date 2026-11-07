@@ -235,7 +235,7 @@ func TestDetailIsProjected(t *testing.T) {
 		{"no protocol extension at all", true, false, &pipeline.SessionEvent{Seq: 4, Host: "h"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := &model{serverProjects: tc.projects, selectedSess: "s1", detailEvent: tc.event}
+			m := &model{serverProjects: tc.projects, selectedSess: "s1", detailEvent: tc.event, detailRow: eventRow{event: tc.event}}
 			if tc.fetched {
 				m.markFullFetched("s1", tc.event.Seq)
 			}
@@ -268,8 +268,10 @@ func TestDetailIsProjected_ToolOnlyAndTextOnlyResponses(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			e := &pipeline.SessionEvent{Seq: 9, Inference: tc.infer}
-			m := &model{serverProjects: true, selectedSess: "s1", detailEvent: e}
+			e := &pipeline.SessionEvent{Seq: 9, Phase: pipeline.SessionResponse, Inference: tc.infer}
+			// The cursor in the RESPONSE section: detailIsProjected judges the half y writes.
+			m := &model{serverProjects: true, selectedSess: "s1", detailEvent: e, detailRow: eventRow{event: e},
+				detailCursorPath: "response"}
 
 			if !m.detailIsProjected() {
 				t.Fatal("before the fetch this is a summary")

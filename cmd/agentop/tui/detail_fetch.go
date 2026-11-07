@@ -99,6 +99,21 @@ func fetchDetailEventCmd(m *model, sessionID string, seq uint64) tea.Cmd {
 	}
 }
 
+// fetchDetailHalves fetches in full each half of r that the summary left bodies out of
+// (#1681). Nil when there is nothing to fetch.
+func (m *model) fetchDetailHalves(r eventRow) tea.Cmd {
+	if m.client == nil {
+		return nil
+	}
+	var cmds []tea.Cmd
+	for _, e := range []*pipeline.SessionEvent{r.event, r.resp} {
+		if e != nil && m.needsFullEvent(e) {
+			cmds = append(cmds, fetchDetailEventCmd(m, eventSession(m.selectedSess, e), e.Seq))
+		}
+	}
+	return tea.Batch(cmds...)
+}
+
 // applyDetailEvent installs a fetched full event and re-renders, or reports why it
 // could not.
 //
@@ -109,7 +124,18 @@ func (m *model) applyDetailEvent(msg detailEventLoadedMsg) {
 	if m.pane != paneDetail || m.detailEvent == nil {
 		return
 	}
-	if eventSession(m.selectedSess, m.detailEvent) != msg.sessionID || m.detailEvent.Seq != msg.seq {
+	// The reply is for one half of the exchange on screen, or for a row the reader left.
+	held := func(e *pipeline.SessionEvent) bool {
+		return e != nil && eventSession(m.selectedSess, e) == msg.sessionID && e.Seq == msg.seq
+	}
+	var slot **pipeline.SessionEvent
+	var rawSlot **pipeline.RawCapture
+	switch {
+	case held(m.detailRow.event):
+		slot, rawSlot = &m.detailRow.event, &m.detailRow.raw
+	case held(m.detailRow.resp):
+		slot, rawSlot = &m.detailRow.resp, &m.detailRow.respRaw
+	default:
 		return
 	}
 	if msg.err != nil {
@@ -141,9 +167,9 @@ func (m *model) applyDetailEvent(msg detailEventLoadedMsg) {
 	// spends the round trip on a figure the operator cannot see.
 	m.rebuildSessionsTable()
 
-	// Re-render through showDetail so the tunnel/TLS headers, wrapping and scroll
-	// position are all rebuilt exactly as the first render built them.
-	m.detailRow.event, m.detailRow.raw = msg.event, msg.raw
+	// Re-render through showDetail so the headers, wrapping and scroll position are all
+	// rebuilt exactly as the first render built them.
+	*slot, *rawSlot = msg.event, msg.raw
 	m.showDetail(m.detailRow, false)
 }
 
@@ -186,7 +212,8 @@ func (m *model) replaceHeldEvent(sessionID string, full *pipeline.SessionEvent) 
 // and `y` told the operator to re-yank an event that was already complete.
 //
 // Used to warn on yank: `y` writes the event's JSON out for debugging, and handing
-// somebody a body-less event that looks complete wastes an afternoon.
+// somebody a body-less event that looks complete wastes an afternoon. It judges the half
+// the cursor is in, because that is the event y writes (#1681).
 func (m *model) detailIsProjected() bool {
-	return m.needsFullEvent(m.detailEvent)
+	return m.needsFullEvent(m.detailHalf())
 }
