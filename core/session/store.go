@@ -382,6 +382,8 @@ type appendPrep struct {
 	titleRank int
 	titleText string
 	agentName string
+	// host is the event's evidence for the session's InferenceHosts table; see hostEvidenceOf.
+	host hostEvidence
 	// capture is the event's request capture, for CaptureRecorders only; see AppendCapture.
 	capture *model.RequestCapture
 }
@@ -430,7 +432,8 @@ func prepareAppend(event *model.SessionEvent) appendPrep {
 	// Only the candidate's EXTRACTION is hoisted, which is the expensive half; the rank comparison
 	// and sanitizeTitle both stay under the lock, for the reason given at the fold site below.
 	titleRank, titleText := titleCandidate(event)
-	return appendPrep{money: money, titleRank: titleRank, titleText: titleText, agentName: event.Client.AffinityName()}
+	return appendPrep{money: money, titleRank: titleRank, titleText: titleText, agentName: event.Client.AffinityName(),
+		host: hostEvidenceOf(event)}
 }
 
 // appendLocked is append's critical section. s.mu must be held; prep is what

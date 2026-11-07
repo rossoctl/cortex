@@ -62,6 +62,12 @@ const (
 	FactPresent   = model.FactPresent
 )
 
+// inferencehosts.go: see core/model for the docs.
+type (
+	InferenceHostSeen = model.InferenceHostSeen
+	InferenceHosts    = model.InferenceHosts
+)
+
 // direction.go: see core/model for the docs.
 type Direction = model.Direction
 
