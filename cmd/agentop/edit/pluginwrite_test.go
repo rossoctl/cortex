@@ -65,6 +65,30 @@ func TestWritePluginConfig_ReportsAReloadTheProxyRefused(t *testing.T) {
 	}
 }
 
+// The proxy reloads 250ms after a write. When it refuses the write before
+// agentop's first poll returns, that first poll already counts the refusal. A
+// baseline read at that poll then hides the refusal, and agentop waits out its
+// whole deadline. The baseline must come from before the write.
+func TestWritePluginConfig_ReportsARefusalThatLandsBeforeTheFirstPoll(t *testing.T) {
+	path := writeFixtureContent(t, withRouter, 0o600)
+	srv := makeStatusServer(t, func() ReloadStatus {
+		if !strings.Contains(readFile(t, path), "claude-code: glm") {
+			return ReloadStatus{ReloadsFailed: 2}
+		}
+		return ReloadStatus{ReloadsFailed: 3, LastError: "refused before the first poll"}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	res, err := WritePluginConfig(ctx, ConfigWrite{Path: path, StatsURL: srv.URL, Changes: []ConfigChange{routeClaudeToGLM()}})
+	if err != nil {
+		t.Fatalf("WritePluginConfig: %v", err)
+	}
+	if res.Outcome != WriteReloadFailed || res.ReloadError != "refused before the first poll" {
+		t.Errorf("result = %+v, want WriteReloadFailed with the proxy's error", res)
+	}
+}
+
 func TestWritePluginConfig_WithNoProxyWritesAndSaysSo(t *testing.T) {
 	path := writeFixtureContent(t, withRouter, 0o600)
 	res, err := WritePluginConfig(context.Background(), ConfigWrite{Path: path, Changes: []ConfigChange{routeClaudeToGLM()}})
@@ -181,10 +205,10 @@ func TestWritePluginConfig_OnRefusedReloadRestoresOriginalAndReportsRolledBack(t
 	var calls atomic.Int32
 	srv := makeStatusServer(t, func() ReloadStatus {
 		if calls.Add(1) == 1 {
-			// First poll: ReloadsFailed=2 becomes the baseline
+			// The read before the write: ReloadsFailed=2 becomes the baseline
 			return ReloadStatus{ReloadsFailed: 2}
 		}
-		// Second poll: ReloadsFailed increments to 3, triggering failure
+		// First poll: ReloadsFailed increments to 3, triggering failure
 		return ReloadStatus{ReloadsFailed: 3, LastError: `configure "inference-router": servers: at least one server is required`}
 	})
 
@@ -213,13 +237,13 @@ func TestWritePluginConfig_AfterRollbackWritingSameChangeIsNotUnchanged(t *testi
 	srv := makeStatusServer(t, func() ReloadStatus {
 		c := calls.Add(1)
 		if c == 1 {
-			// First poll of first write: ReloadsFailed=2 becomes baseline
+			// The read before the first write: ReloadsFailed=2 becomes baseline
 			return ReloadStatus{ReloadsFailed: 2}
 		} else if c == 2 {
-			// Second poll of first write: ReloadsFailed=3, triggers failure
+			// First poll of first write: ReloadsFailed=3, triggers failure
 			return ReloadStatus{ReloadsFailed: 3, LastError: "test refusal"}
 		} else if c == 3 {
-			// First poll of second write: ReloadsFailed=3 becomes new baseline
+			// The read before the second write: ReloadsFailed=3 becomes new baseline
 			return ReloadStatus{ReloadsFailed: 3}
 		}
 		// Subsequent polls: accept the reload
@@ -281,9 +305,9 @@ func TestWritePluginConfig_OnTimeoutLeavesNewBytes(t *testing.T) {
 	}
 }
 
-// refuseOnSecondPoll is a /reload/status that takes its baseline on the first
-// poll and reports a refused reload on the second, after running during — the
-// moment a person's own edit or a failing disk would land.
+// refuseOnSecondPoll is a /reload/status that gives the baseline on the read
+// before the write and reports a refused reload on the first poll, after running
+// during — the moment a person's own edit or a failing disk would land.
 func refuseOnSecondPoll(t *testing.T, during func()) string {
 	t.Helper()
 	var calls atomic.Int32

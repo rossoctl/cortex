@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/event"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // DefaultSessionID is used when no explicit A2A SessionID is present and no
@@ -24,7 +24,7 @@ const DefaultSessionID = "default"
 // entry holds the events for one conversation.
 type entry struct {
 	ID        string
-	Events    []pipeline.SessionEvent
+	Events    []model.SessionEvent
 	CreatedAt time.Time
 	UpdatedAt time.Time
 
@@ -47,7 +47,7 @@ type entry struct {
 	// Nothing here can detect that, and nothing here needs to: the store cannot tell a
 	// re-created session from a trimmed one. A paging client compares wall-clock time
 	// rather than Seq for exactly this reason — see agentop's applyOlderPage. See also
-	// pipeline.SessionEvent.Seq.
+	// model.SessionEvent.Seq.
 	nextSeq uint64
 	// after is the seq this entry numbers its events after: the highest a SeqSeeder held for the id
 	// when the entry was created, 0 when none held any. Unlike nextSeq it never moves. Above 0 the
@@ -141,7 +141,7 @@ type entry struct {
 	// context is the CONTEXT gauge's answer for this session: the main-agent turn that RANKS
 	// HIGHEST under the rule's total order, in prompt tokens — the LATEST such turn where the
 	// client states its role, the one with the MOST MESSAGES where it does not. Maintained by
-	// Append and read by ListSessions; see pipeline.PromptContextFold for the order itself.
+	// Append and read by ListSessions; see model.PromptContextFold for the order itself.
 	//
 	// NOT A MAXIMUM OVER TOKENS, so this can DECREASE: the stated arm leads with the timestamp,
 	// which is the point of the column. A compaction is the ordinary case — 830,000 before it and
@@ -156,7 +156,7 @@ type entry struct {
 	//
 	// So this needs none of the machinery cost needs: no subtraction on trim, and no parallel
 	// per-event slice to make that subtraction decode-free. Fixed size per SESSION.
-	context pipeline.PromptContextFold
+	context model.PromptContextFold
 
 	// inferenceHost is SessionSummary.InferenceHost, folded by Append and read by ListSessions.
 	// A LATEST VALUE, NOT A SUM, so in context's class above: a trim has nothing to subtract, and
@@ -185,7 +185,7 @@ const MaxSessionIDLen = 256
 // Implementations are called while the store holds its write lock, so they must
 // not block or call back into the store.
 type Recorder interface {
-	Record(sessionID string, e *pipeline.SessionEvent)
+	Record(sessionID string, e *model.SessionEvent)
 }
 
 // Store is an in-memory, per-pod session store. It is safe for concurrent use.
@@ -291,7 +291,7 @@ func (s *Store) backgroundCleanup() {
 // Append adds an event to the named session. Creates the session if it
 // doesn't exist. Updates activeID to this session. Evicts the oldest event if the
 // session exceeds maxEvents — which by default it cannot, maxEvents being unset.
-func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
+func (s *Store) Append(sessionID string, event model.SessionEvent) {
 	s.append(sessionID, nil, event, nil)
 }
 
@@ -300,7 +300,7 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 // store's write lock, with c nil for an event that has none. The store never keeps c: raw
 // bodies are megabytes, and the store keeps every event in memory.
 type CaptureRecorder interface {
-	RecordCapture(sessionID string, e *pipeline.SessionEvent, c *pipeline.RequestCapture)
+	RecordCapture(sessionID string, e *model.SessionEvent, c *model.RequestCapture)
 }
 
 // TakesCaptures reports whether some recorder is a CaptureRecorder, so a listener can skip copying
@@ -321,7 +321,7 @@ func (s *Store) TakesCaptures() bool {
 
 // AppendCapture is Append for a request event with its capture c, which only a
 // CaptureRecorder receives.
-func (s *Store) AppendCapture(sessionID string, event pipeline.SessionEvent, c *pipeline.RequestCapture) {
+func (s *Store) AppendCapture(sessionID string, event model.SessionEvent, c *model.RequestCapture) {
 	s.append(sessionID, nil, event, c)
 }
 
@@ -331,7 +331,7 @@ func (s *Store) AppendCapture(sessionID string, event pipeline.SessionEvent, c *
 type Bucket struct{ e *entry }
 
 // AppendBucket is Append, returning the bucket the event went into.
-func (s *Store) AppendBucket(sessionID string, event pipeline.SessionEvent) *Bucket {
+func (s *Store) AppendBucket(sessionID string, event model.SessionEvent) *Bucket {
 	return &Bucket{e: s.append(sessionID, nil, event, nil)}
 }
 
@@ -340,7 +340,7 @@ func (s *Store) AppendBucket(sessionID string, event pipeline.SessionEvent) *Buc
 // it neither makes the session active nor refreshes its UpdatedAt. It reports false, and
 // records nothing, when b's session has been evicted or has expired: the event would pair
 // with nothing, and re-creating the session to hold it could evict another.
-func (s *Store) AppendTrailing(b *Bucket, event pipeline.SessionEvent) bool {
+func (s *Store) AppendTrailing(b *Bucket, event model.SessionEvent) bool {
 	if b == nil {
 		return false
 	}
@@ -352,12 +352,12 @@ func (s *Store) AppendTrailing(b *Bucket, event pipeline.SessionEvent) bool {
 // both went into. agentop folds a bridged tunnel's open row into the event directly
 // after it in the session, and two separate appends could be split by any traffic in
 // between.
-func (s *Store) AppendPair(sessionID string, first, second pipeline.SessionEvent) *Bucket {
+func (s *Store) AppendPair(sessionID string, first, second model.SessionEvent) *Bucket {
 	return s.AppendPairCapture(sessionID, first, second, nil)
 }
 
 // AppendPairCapture is AppendPair with second's capture c; see AppendCapture.
-func (s *Store) AppendPairCapture(sessionID string, first, second pipeline.SessionEvent, c *pipeline.RequestCapture) *Bucket {
+func (s *Store) AppendPairCapture(sessionID string, first, second model.SessionEvent, c *model.RequestCapture) *Bucket {
 	p1, p2 := prepareAppend(&first), prepareAppend(&second)
 	p2.capture = c
 	s.mu.Lock()
@@ -377,12 +377,12 @@ type appendPrep struct {
 	titleText string
 	agentName string
 	// capture is the event's request capture, for CaptureRecorders only; see AppendCapture.
-	capture *pipeline.RequestCapture
+	capture *model.RequestCapture
 }
 
 // append is Append when b is nil, and AppendTrailing when it is not. It returns the
 // session the event went into, nil when AppendTrailing refused it.
-func (s *Store) append(sessionID string, b *Bucket, event pipeline.SessionEvent, c *pipeline.RequestCapture) *entry {
+func (s *Store) append(sessionID string, b *Bucket, event model.SessionEvent, c *model.RequestCapture) *entry {
 	prep := prepareAppend(&event)
 	prep.capture = c
 	s.mu.Lock()
@@ -392,7 +392,7 @@ func (s *Store) append(sessionID string, b *Bucket, event pipeline.SessionEvent,
 
 // prepareAppend computes everything an append needs from the event alone. It runs
 // before the store's lock is taken.
-func prepareAppend(event *pipeline.SessionEvent) appendPrep {
+func prepareAppend(event *model.SessionEvent) appendPrep {
 	// BEFORE THE LOCK. This is a json.Unmarshal of the event's plugin map, the most
 	// expensive thing on this path, and it touches no store state — so it has no business
 	// inside a critical section that blocks every reader and every other appender. Doing it
@@ -429,7 +429,7 @@ func prepareAppend(event *pipeline.SessionEvent) appendPrep {
 
 // appendLocked is append's critical section. s.mu must be held; prep is what
 // prepareAppend computed from event before the lock was taken.
-func (s *Store) appendLocked(sessionID string, b *Bucket, event pipeline.SessionEvent, prep appendPrep) *entry {
+func (s *Store) appendLocked(sessionID string, b *Bucket, event model.SessionEvent, prep appendPrep) *entry {
 	if len(sessionID) > MaxSessionIDLen {
 		sessionID = sessionID[:MaxSessionIDLen]
 	}
@@ -515,7 +515,7 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event pipeline.Session
 	// NOT HOISTED ABOVE THE LOCK like moneyOf, and that is not an oversight. moneyOf is a
 	// json.Unmarshal and was hoisted because of a measured regression; this is a phase check, a
 	// nil check, len(Tools), two AgentRole comparisons, a messageCount read, TWO int adds and
-	// one comparison (pipeline.PromptTokensOf sums three fields), a Round(0) that clears a
+	// one comparison (model.PromptTokensOf sums three fields), a Round(0) that clears a
 	// monotonic reading, and — once the fold already holds a figure — better()'s time.Time
 	// Equal/After chain: tens of nanoseconds, no allocation, NO DECODE. Splitting it to hoist the
 	// extraction would add an exported type for plumbing alone and save nothing measurable.
@@ -538,7 +538,7 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event pipeline.Session
 	}
 	sess.procs = applyProcs(sess.procs, sessionID, &event)
 	sess.owner = applyOwner(sess.owner, sessionID, agentName, &event)
-	if event.Phase == pipeline.SessionRequest && event.At.After(sess.lastRequestAt) {
+	if event.Phase == model.SessionRequest && event.At.After(sess.lastRequestAt) {
 		sess.lastRequestAt = event.At
 	}
 	if b == nil {
@@ -597,9 +597,9 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event pipeline.Session
 // guardrail call LastIntent and need the most recent such event to
 // survive FIFO eviction. Defined here so the eviction policy and
 // the consumer view can never drift apart.
-func isIntentEvent(e pipeline.SessionEvent) bool {
-	return e.Direction == pipeline.Inbound &&
-		e.Phase == pipeline.SessionRequest &&
+func isIntentEvent(e model.SessionEvent) bool {
+	return e.Direction == model.Inbound &&
+		e.Phase == model.SessionRequest &&
 		e.A2A != nil
 }
 
@@ -635,7 +635,7 @@ func isIntentEvent(e pipeline.SessionEvent) bool {
 // second implementation of the pin rule below, and the two would drift the day either changed.
 //
 // ok is false when nothing needs trimming, so a caller can skip the work entirely.
-func planTrim(events []pipeline.SessionEvent, maxEvents int) (trimPlan, bool) {
+func planTrim(events []model.SessionEvent, maxEvents int) (trimPlan, bool) {
 	if maxEvents <= 0 || len(events) <= maxEvents {
 		return trimPlan{}, false
 	}
@@ -704,7 +704,7 @@ func (s *Store) AddRecorder(r Recorder) {
 
 // View returns a read-only snapshot of the session's events.
 // Returns nil if the session doesn't exist or is expired.
-func (s *Store) View(sessionID string) *pipeline.SessionView {
+func (s *Store) View(sessionID string) *model.SessionView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -716,9 +716,9 @@ func (s *Store) View(sessionID string) *pipeline.SessionView {
 		return nil
 	}
 
-	events := make([]pipeline.SessionEvent, len(sess.Events))
+	events := make([]model.SessionEvent, len(sess.Events))
 	copy(events, sess.Events)
-	return &pipeline.SessionView{ID: sessionID, Events: events}
+	return &model.SessionView{ID: sessionID, Events: events}
 }
 
 // ViewTail returns the most recent limit events of a session, and reports how many
@@ -739,7 +739,7 @@ func (s *Store) View(sessionID string) *pipeline.SessionView {
 // The tail IS the newest page, so this delegates rather than repeating the slicing and
 // the two-field bookkeeping — which were identical in both, and are the part a later
 // change would update in one place and not the other.
-func (s *Store) ViewTail(sessionID string, limit int) *pipeline.SessionView {
+func (s *Store) ViewTail(sessionID string, limit int) *model.SessionView {
 	return s.ViewPage(sessionID, 0, limit)
 }
 
@@ -772,7 +772,7 @@ func (s *Store) ViewTail(sessionID string, limit int) *pipeline.SessionView {
 // TotalEvents and OldestSeq are set on the same terms as ViewTail: only when this page is
 // not the whole session, so a caller can tell "this is the beginning" from "there is more
 // behind me" without a second request.
-func (s *Store) ViewPage(sessionID string, before uint64, limit int) *pipeline.SessionView {
+func (s *Store) ViewPage(sessionID string, before uint64, limit int) *model.SessionView {
 	if limit <= 0 {
 		limit = 1
 	}
@@ -804,10 +804,10 @@ func (s *Store) ViewPage(sessionID string, before uint64, limit int) *pipeline.S
 	}
 
 	page := sess.Events[start:end]
-	events := make([]pipeline.SessionEvent, len(page))
+	events := make([]model.SessionEvent, len(page))
 	copy(events, page)
 
-	view := &pipeline.SessionView{ID: sessionID, Events: events}
+	view := &model.SessionView{ID: sessionID, Events: events}
 	if start > 0 || end < len(sess.Events) {
 		view.TotalEvents = len(sess.Events)
 		view.OldestSeq = sess.Events[0].Seq
@@ -982,7 +982,7 @@ func (s *Store) isExpired(sess *entry, now time.Time) bool {
 // state evolution. Fields are chosen to cover the data captured by all four
 // record helpers — extension payloads themselves are intentionally omitted
 // since the parsers already log them.
-func logAppended(sessionID string, e *pipeline.SessionEvent) {
+func logAppended(sessionID string, e *model.SessionEvent) {
 	attrs := []any{
 		// A session id is an attribution key the operator needs in the log to
 		// answer "which session was this bucket?" — validated at the source
@@ -993,7 +993,7 @@ func logAppended(sessionID string, e *pipeline.SessionEvent) {
 		"phase", e.Phase.String(),
 	}
 	if e.Host != "" {
-		attrs = append(attrs, "host", pipeline.SanitizeLogValue(e.Host))
+		attrs = append(attrs, "host", model.SanitizeLogValue(e.Host))
 	}
 	if e.StatusCode != 0 {
 		attrs = append(attrs, "status", e.StatusCode)

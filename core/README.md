@@ -9,7 +9,7 @@ non-test lines, auth is **1.1%** of it (counted 2026-11-05):
 
 | Theme | Packages | Lines | Share |
 |---|---|---|---|
-| Framework | `pipeline`, `plugins`, `listener`, `config`, `spiffe` | 48,904 | 58.3% |
+| Framework | `pipeline`, `model`, `plugins`, `listener`, `config`, `spiffe` | 48,904 | 58.3% |
 | Cost | `cost/*` | 13,850 | 16.5% |
 | Observability | `session`, `sessionapi`, `observe`, `redact` | 11,985 | 14.3% |
 | **Auth** | `auth`, `bypass`, `capabilities` | **920** | **1.1%** |
@@ -36,6 +36,7 @@ is an Envoy ext_proc gRPC server, and `core` has 20 direct dependencies includin
 | Package | Purpose |
 |---------|---------|
 | `pipeline/` | Plugin interface + lifecycle (`Configurable`, `Initializer`, `Shutdowner`) — see [docs/framework-architecture.md](../docs/framework-architecture.md) |
+| `model/` | Shared data types: session events, parsed requests, client labels. Imports no engine code |
 | `plugins/` | Registry + every concrete plugin, each owning its own config — see [docs/plugin-reference.md](../docs/plugin-reference.md) |
 | `listener/` | Every listener implementation: the Envoy `extproc` gRPC server, the forward/reverse/transparent HTTP proxies |
 | `config/` | YAML config with mode presets, `${ENV_VAR}` expansion, credential-file waiters, top-level validation |

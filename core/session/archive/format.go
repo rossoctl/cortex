@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"slices"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/session"
 )
 
@@ -28,12 +28,12 @@ const (
 // which of them were referenced, and F, the request's capture when it has one. One struct for
 // every kind so a reader decodes a line without knowing its kind first.
 type record struct {
-	K string                 `json:"k"`
-	H string                 `json:"h,omitempty"`
-	V string                 `json:"v,omitempty"`
-	X []byte                 `json:"x,omitempty"`
-	E *pipeline.SessionEvent `json:"e,omitempty"`
-	R *refs                  `json:"r,omitempty"`
+	K string              `json:"k"`
+	H string              `json:"h,omitempty"`
+	V string              `json:"v,omitempty"`
+	X []byte              `json:"x,omitempty"`
+	E *model.SessionEvent `json:"e,omitempty"`
+	R *refs               `json:"r,omitempty"`
 	// F stays undecoded until a capture is asked for: an event read has no use for it.
 	F json.RawMessage `json:"f,omitempty"`
 }
@@ -92,7 +92,7 @@ func dirName(sessionID string) string {
 //
 // refs is nil when nothing was referenced, so a contentless event (a tunnel-open, a denial)
 // costs no "r" key at all.
-func split(e pipeline.SessionEvent, seen map[string]struct{}) (pipeline.SessionEvent, *refs, []stringRec) {
+func split(e model.SessionEvent, seen map[string]struct{}) (model.SessionEvent, *refs, []stringRec) {
 	var r refs
 	var fresh []stringRec
 	hit := false
@@ -125,7 +125,7 @@ func split(e pipeline.SessionEvent, seen map[string]struct{}) (pipeline.SessionE
 			r.TD[i] = ref(&cp.Tools[i].Description)
 			p := string(cp.Tools[i].Parameters)
 			r.TP[i] = ref(&p)
-			cp.Tools[i].Parameters = pipeline.RawJSON(p)
+			cp.Tools[i].Parameters = model.RawJSON(p)
 		}
 		cp.ToolResults = slices.Clone(cp.ToolResults)
 		r.TR = make([]*string, len(cp.ToolResults))
@@ -169,7 +169,7 @@ func nilIfAllNil(xs []*string) []*string {
 // reference names a string the table does not hold, or a position the event does not have —
 // both corruption, which a reader treats like a torn tail rather than serving a blanked field
 // as if it were the original.
-func join(e *pipeline.SessionEvent, r *refs, table map[string]string) bool {
+func join(e *model.SessionEvent, r *refs, table map[string]string) bool {
 	if r == nil {
 		return true
 	}
@@ -211,7 +211,7 @@ func join(e *pipeline.SessionEvent, r *refs, table map[string]string) bool {
 			if !set(&p, h) {
 				return false
 			}
-			inf.Tools[i].Parameters = pipeline.RawJSON(p)
+			inf.Tools[i].Parameters = model.RawJSON(p)
 		}
 		for i, h := range r.TR {
 			if !set(&inf.ToolResults[i].Content, h) {
@@ -244,7 +244,7 @@ func stringLine(s stringRec) ([]byte, error) {
 	return appendLine(record{K: kindString, H: s.h, V: s.v})
 }
 
-func eventLine(e pipeline.SessionEvent, r *refs, f *captureRec) ([]byte, error) {
+func eventLine(e model.SessionEvent, r *refs, f *captureRec) ([]byte, error) {
 	rec := record{K: kindEvent, E: &e, R: r}
 	if f != nil {
 		b, err := json.Marshal(f)

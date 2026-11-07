@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/usage"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 var errDurationWindow = errors.New("costledger: a snapshot needs a symbolic window (today, 7d, month)")
@@ -62,7 +62,7 @@ func (w *Writer) Snapshot(ctx context.Context, spec usage.Spec, group usage.Grou
 	}
 	if !caveats.Clean() {
 		slog.Warn("costledger: cost ledger read was incomplete — the total is short",
-			"window", pipeline.SanitizeLogValue(spec.Label), "skippedLines", caveats.SkippedLines,
+			"window", model.SanitizeLogValue(spec.Label), "skippedLines", caveats.SkippedLines,
 			"truncatedDays", caveats.TruncatedDays,
 			"unreadableDays", caveats.UnreadableDays)
 	}

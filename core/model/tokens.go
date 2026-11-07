@@ -1,4 +1,4 @@
-package pipeline
+package model
 
 // PromptTokensOf is the request's own billed token count: what the provider counted for
 // everything we sent. It lives on the response because the provider is the only party that

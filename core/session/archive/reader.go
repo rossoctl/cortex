@@ -9,7 +9,7 @@ import (
 	"os"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // maxDecoderWindow caps the window a segment may declare. The writer uses 1 MiB; the cap sits
@@ -31,15 +31,15 @@ var blockPrefix = []byte(`{"k":"b",`)
 //
 // err is for what is not a property of the data: the file could not be opened, or it declares
 // a window past maxDecoderWindow.
-func readSegment(path string, fn func(e *pipeline.SessionEvent) bool) (truncated bool, err error) {
-	return readRecords(path, nil, nil, func(e *pipeline.SessionEvent, _ json.RawMessage) bool { return fn(e) })
+func readSegment(path string, fn func(e *model.SessionEvent) bool) (truncated bool, err error) {
+	return readRecords(path, nil, nil, func(e *model.SessionEvent, _ json.RawMessage) bool { return fn(e) })
 }
 
 // readRecords is readSegment, handing fn each event's capture record too, undecoded, nil when it
 // has none. It keeps the block records whose hash is in want in blocks. A nil want keeps none,
 // and does not even decode them: a read that does not rebuild a body holds no blocks.
 func readRecords(path string, want map[string]struct{}, blocks map[string]string,
-	fn func(e *pipeline.SessionEvent, c json.RawMessage) bool) (truncated bool, err error) {
+	fn func(e *model.SessionEvent, c json.RawMessage) bool) (truncated bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return false, err

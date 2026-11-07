@@ -10,7 +10,7 @@ import (
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // opsBuffer is how many batches the writer goroutine can be behind by.
@@ -255,7 +255,7 @@ func New(dir string, opts ...Option) (*Writer, error) {
 	return w, nil
 }
 
-// agentLabel is the ledger's STORAGE-side spelling of pipeline.EventClient.Label:
+// agentLabel is the ledger's STORAGE-side spelling of model.EventClient.Label:
 // the same label for a client that exists, and "" instead of "unknown" for one that
 // does not.
 //
@@ -265,7 +265,7 @@ func New(dir string, opts ...Option) (*Writer, error) {
 // indistinguishable from an agent that really did call itself that. labelFor puts the
 // display string back at the query boundary, so nothing a client sees differs. See
 // Row.Agent.
-func agentLabel(c *pipeline.EventClient) string {
+func agentLabel(c *model.EventClient) string {
 	if c == nil {
 		return ""
 	}
@@ -317,7 +317,7 @@ func agentLabel(c *pipeline.EventClient) string {
 // PresentKinds is left as the parser set it. Clearing the bit for the offending kind would
 // be the fuller reading of "absent" — a set bit with a zero value means "reported zero"
 // where an unset bit means "not exposed" — but the bit layout is parsercommon's, restated in
-// pipeline.InferenceExtension precisely to avoid an import, and re-deriving it here would
+// model.InferenceExtension precisely to avoid an import, and re-deriving it here would
 // put a third copy in the tree with nothing keeping the three in agreement. So the residual
 // is that a refused count reads as "reported zero" rather than "not exposed", a smaller
 // error than a wrong total and smaller still because PresentKinds is a UNION over the
@@ -335,7 +335,7 @@ func tokenCount(n int) int64 {
 // session-append path, under the store's write lock, and the ledger is
 // observability. Neither a failure nor a delay here may become a failed or a slow
 // request. See the type doc for how the hand-off works.
-func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
+func (w *Writer) Record(_ string, e *model.SessionEvent) {
 	if e == nil {
 		return
 	}
@@ -351,7 +351,7 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 	// json.Unmarshal, and this method executes under session.Store.Append's write lock.
 	// Decoding a request event's plugin map there would put parsing work in front of every
 	// request to answer a question this guard already settles.
-	if e.Phase != pipeline.SessionResponse && e.Phase != pipeline.SessionDenied {
+	if e.Phase != model.SessionResponse && e.Phase != model.SessionDenied {
 		return
 	}
 	ev, hasCost := event.Record(e)
@@ -446,7 +446,7 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 		// where the live aggregator displays it as "unknown". See Row.Agent for why the two
 		// representations differ and why they still mean the same thing.
 		//
-		// Capped as well. pipeline.maxClientLen already holds the retained User-Agent to
+		// Capped as well. model.maxClientLen already holds the retained User-Agent to
 		// 128, so this is not the unbounded case Model is — but the ring truncates the same
 		// label to maxLabelLen before it becomes a byAgent key, so cutting at 96 here is
 		// what keeps group=agent spelled identically whichever half answers. Sanitised for

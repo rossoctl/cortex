@@ -382,7 +382,7 @@ func TestFileStore_ApplyRefusesAConcurrentWrite(t *testing.T) {
 	}
 
 	// ApplyCmd must surface it and leave the other writer's bytes in place.
-	msg := ApplyCmd(ctx, s, fp, []byte("pipeline: {}\n"))().(AppliedMsg)
+	msg := ApplyCmd(ctx, s, "", fp, []byte("pipeline: {}\n"))().(AppliedMsg)
 	if msg.Err == nil {
 		t.Fatal("ApplyCmd should refuse when the store reports a conflict")
 	}

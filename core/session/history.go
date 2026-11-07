@@ -3,7 +3,7 @@ package session
 import (
 	"time"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // SeqSeeder is optionally implemented by a Recorder that keeps a session's events for longer
@@ -118,7 +118,7 @@ type History interface {
 	// Earlier calls fn, newest first, for the events recorded under sessionID numbered below
 	// before, every one when before is 0, until fn returns false or none are left. It reads
 	// from disk.
-	Earlier(sessionID string, before uint64, fn func(*pipeline.SessionEvent) bool) error
+	Earlier(sessionID string, before uint64, fn func(*model.SessionEvent) bool) error
 }
 
 // HistoryConsumer is implemented by plugins that read a session's archived events.
@@ -187,7 +187,7 @@ func (s *Store) withPriorLocked(sum *SessionSummary, id string, sess *entry) {
 	if !p.CreatedAt.IsZero() && p.CreatedAt.Before(sum.CreatedAt) {
 		sum.CreatedAt = p.CreatedAt
 	}
-	sum.PromptContext = pipeline.MergePromptContext(f.promptContext(), sum.PromptContext)
+	sum.PromptContext = model.MergePromptContext(f.promptContext(), sum.PromptContext)
 	// The entry's own when it has one: everything it holds came after the history. When it has
 	// none the row says so, since a request the entry holds is what a router's pin is made by.
 	if sum.InferenceHost == "" && f.inferenceHost != "" {

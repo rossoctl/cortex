@@ -686,7 +686,7 @@ slot carries the parsed payload; the Invocation carries the
 attribution.
 
 Adding a new named extension is a core-library change: edit
-`pipeline/extensions.go`, `pipeline/session.go` (wire + JSON round-
+`model/extensions.go`, `model/session.go` (wire + JSON round-
 trip), the listener (snapshot + recorder), and agentop if you want
 bespoke rendering. Most new plugins don't need one — they emit an
 Invocation and publish extra context through the Custom map
@@ -1156,7 +1156,7 @@ Keep each implementation to a pure function over the extension's fields.
 Skip fragments with empty text — consumers never want zero-length entries.
 Stringify non-string values with `json.Marshal` so nested maps/slices
 become flat inspectable text. Reference implementations live alongside
-the types in [`core/pipeline/content.go`](../core/pipeline/content.go).
+the types in [`core/model/content.go`](../core/model/content.go).
 
 ### Consuming content in a guardrail
 
@@ -1363,10 +1363,10 @@ The IBAC plugin (`core/plugins/ibac/judge.go`) is the in-tree reference; copy it
 - `core/config/config.go` — `PluginEntry` YAML shape and
   parsing.
 - `core/plugins/registry.go` — how Build calls Configure.
-- `core/pipeline/extensions.go` — named categories
+- `core/model/extensions.go` — named categories
   (`MCP`, `A2A`, `Inference`, `Security`, `Delegation`, `Auth`) + `Custom` map + escape-hatch
   convention.
-- `core/pipeline/session.go` — `SessionEvent` wire shape
+- `core/model/session.go` — `SessionEvent` wire shape
   and the `SessionDenied` phase.
 - `core/llmclient/` — chat-completions helper for
   plugins that call an LLM (see "Plugins making outbound LLM calls"

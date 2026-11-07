@@ -96,6 +96,9 @@ func WritePluginConfig(ctx context.Context, w ConfigWrite) (WriteResult, error) 
 		return WriteResult{}, fmt.Errorf("not writing %s: %w", w.Path, err)
 	}
 
+	// Read before the conflict check: this GET can take 2s, so keep it out of the
+	// window between the check and the write.
+	baseline := ReloadBaseline(ctx, w.StatsURL)
 	store := FileStore{Path: w.Path}
 	if err := store.CheckUnchanged(ctx, &FetchedPipeline{Original: orig}); err != nil {
 		return WriteResult{}, err
@@ -110,7 +113,7 @@ func WritePluginConfig(ctx context.Context, w ConfigWrite) (WriteResult, error) 
 
 	pctx, cancel := context.WithTimeout(ctx, LocalPollDeadline)
 	defer cancel()
-	res := PollUntilReloaded(pctx, w.StatsURL, applyTime, store.Describe().UnreachableHint)
+	res := PollUntilReloaded(pctx, w.StatsURL, applyTime, baseline, store.Describe().UnreachableHint)
 	switch res.Status {
 	case PollSuccess:
 		return WriteResult{Outcome: WriteReloaded}, nil

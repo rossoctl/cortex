@@ -7,7 +7,7 @@
 // fold has: a subagent's first request routinely lands before the response that spawned it is
 // recorded, because Claude Code starts a tool while the response is still streaming.
 //
-// Build depends only on pipeline.SessionEvent, so it works on events from the store, the
+// Build depends only on model.SessionEvent, so it works on events from the store, the
 // archive, or any other producer that fills the same fields.
 package timeline
 
@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // MainAgent is the agent id of the main conversation.
@@ -140,7 +140,7 @@ type Host struct {
 
 // Build computes the timeline of events, which must be one session's events in Seq order.
 // now ages out requests that never got an answer; see LoseUnanswered.
-func Build(id string, events []pipeline.SessionEvent, now time.Time) *Timeline {
+func Build(id string, events []model.SessionEvent, now time.Time) *Timeline {
 	t := &Timeline{ID: id, Agents: []Agent{}, Turns: []Turn{}, Tools: []Tool{}, Returns: []Return{}, Hosts: []Host{}}
 	if len(events) == 0 {
 		return t

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/session"
 )
 
@@ -41,7 +41,7 @@ func (a *Archive) entry(id string) (indexEntry, bool) {
 //
 // Memory is bounded by limit: each segment is scanned forward keeping only its newest qualifying
 // events, so a page never holds a whole segment of events.
-func (a *Archive) Page(id string, before uint64, limit int, fn func(*pipeline.SessionEvent) bool) (PageInfo, bool, error) {
+func (a *Archive) Page(id string, before uint64, limit int, fn func(*model.SessionEvent) bool) (PageInfo, bool, error) {
 	e, ok := a.entry(id)
 	if !ok || len(e.segments) == 0 {
 		return PageInfo{}, false, nil
@@ -54,7 +54,7 @@ func (a *Archive) Page(id string, before uint64, limit int, fn func(*pipeline.Se
 			continue
 		}
 		newest := newLastN(remaining)
-		_, err := readSegment(filepath.Join(e.dir, seg.File), func(ev *pipeline.SessionEvent) bool {
+		_, err := readSegment(filepath.Join(e.dir, seg.File), func(ev *model.SessionEvent) bool {
 			if before > 0 && ev.Seq >= before {
 				return false // a segment's seqs only rise: nothing after this qualifies
 			}
@@ -81,13 +81,13 @@ func (a *Archive) Page(id string, before uint64, limit int, fn func(*pipeline.Se
 
 // Event returns the archived event of id numbered seq. ok is false when the archive does not hold
 // it — never a neighbour in its place.
-func (a *Archive) Event(id string, seq uint64) (*pipeline.SessionEvent, bool, error) {
+func (a *Archive) Event(id string, seq uint64) (*model.SessionEvent, bool, error) {
 	path, ok := a.segmentOf(id, seq)
 	if !ok {
 		return nil, false, nil
 	}
-	var found *pipeline.SessionEvent
-	_, err := readSegment(path, func(ev *pipeline.SessionEvent) bool {
+	var found *model.SessionEvent
+	_, err := readSegment(path, func(ev *model.SessionEvent) bool {
 		if ev.Seq == seq {
 			found = ev
 		}
@@ -107,7 +107,7 @@ func (a *Archive) Event(id string, seq uint64) (*pipeline.SessionEvent, bool, er
 // byte and checked against its hash. ok is false when the archive does not hold the event or the
 // event has no capture: it is not a request, or it was written before lossless capture. err is
 // set when the capture is there but cannot be rebuilt exactly.
-func (a *Archive) Capture(id string, seq uint64) (*pipeline.RequestCapture, bool, error) {
+func (a *Archive) Capture(id string, seq uint64) (*model.RequestCapture, bool, error) {
 	path, ok := a.segmentOf(id, seq)
 	if !ok {
 		return nil, false, nil
@@ -177,14 +177,14 @@ func (a *Archive) Prior(sessionID string, after uint64) (session.Prior, bool) {
 
 // lastN keeps the newest n events pushed into it.
 type lastN struct {
-	buf  []*pipeline.SessionEvent
+	buf  []*model.SessionEvent
 	next int
 	full bool
 }
 
-func newLastN(n int) *lastN { return &lastN{buf: make([]*pipeline.SessionEvent, n)} }
+func newLastN(n int) *lastN { return &lastN{buf: make([]*model.SessionEvent, n)} }
 
-func (l *lastN) push(e *pipeline.SessionEvent) {
+func (l *lastN) push(e *model.SessionEvent) {
 	if len(l.buf) == 0 {
 		return
 	}
@@ -196,7 +196,7 @@ func (l *lastN) push(e *pipeline.SessionEvent) {
 }
 
 // items returns what it holds, oldest first.
-func (l *lastN) items() []*pipeline.SessionEvent {
+func (l *lastN) items() []*model.SessionEvent {
 	if !l.full {
 		return slices.Clone(l.buf[:l.next])
 	}
@@ -211,10 +211,10 @@ var earlierPage = 500
 
 // Earlier implements session.History: Page after Page, each below the oldest event the last
 // one returned, until fn returns false or the session's oldest archived event.
-func (a *Archive) Earlier(id string, before uint64, fn func(*pipeline.SessionEvent) bool) error {
+func (a *Archive) Earlier(id string, before uint64, fn func(*model.SessionEvent) bool) error {
 	for {
 		n, last, stopped := 0, uint64(0), false
-		_, ok, err := a.Page(id, before, earlierPage, func(e *pipeline.SessionEvent) bool {
+		_, ok, err := a.Page(id, before, earlierPage, func(e *model.SessionEvent) bool {
 			n, last = n+1, e.Seq
 			stopped = !fn(e)
 			return !stopped

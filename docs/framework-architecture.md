@@ -12,7 +12,7 @@ Framework-level reference for AuthBridge's plugin pipeline: types, composition, 
 - Anyone debugging the plugin flow via `agentop` or the `:9094` session API.
 
 **Scope:**
-- The Go surface in `core/pipeline/` and `core/session/`.
+- The Go surface in `core/pipeline/`, `core/model/` and `core/session/`.
 - The observability contract carried by `SessionEvent` on the `:9094` API.
 - What the pipeline *does* and *does not* own at the boundary with the listener.
 
@@ -288,7 +288,7 @@ The suffix is the opt-in marker — private state stays out of the session strea
 
 ### Built-in extension shapes
 
-All at `core/pipeline/extensions.go`:
+All at `core/model/extensions.go`:
 
 ```go
 type MCPExtension struct {
@@ -854,7 +854,7 @@ curl http://localhost:9093/config               # now-active config
 2. Debounce 250 ms so a symlink-swap's REMOVE+CREATE+CHMOD burst fires one reload, not three.
 3. SHA-256 dedup — identical bytes are ignored (mtime-only touches don't trigger rebuilds).
 4. `PipelineBuilder` runs: `config.Load` → mode override → `ApplyPreset` → `Validate` → `plugins.Build`. Any failure records the error in `Status.LastError` and leaves the active pipeline untouched.
-5. Compare the new config to the active one on unreloadable fields (`Mode`, `Listener.*`, `Session.*`, `CostLedger.*`, `MTLS.*`); refuse if they differ (see below).
+5. Compare the new config to the active one on unreloadable fields (`Mode`, `Listener.*`, `Session.*`, `CostLedger.*`, `MTLS.*`, `TLSBridge.*`, `SPIFFE.*`, `Memory.*`, `Stats.*`); refuse if they differ (see below).
 6. `Start` the new pipelines with a 60 s budget. On Start failure, `Stop` any partially-started pipelines so their goroutines don't leak.
 7. `inboundH.Store(newIn)` + `outboundH.Store(newOut)` — new requests now route to the new pipelines.
 8. Background goroutine: each old pipeline waits until no request holds it (`Pipeline.Drained`; a request holds from `Run` to `RunFinish`) or the drain window (default 10 min) expires → `oldPipeline.Stop(ctx)` with a 15 s budget. In-flight requests pinned to an old pipeline finish against it; a WARN names how many were still open when the window stopped it. A CONNECT tunnel or WebSocket holds its pipeline until the connection closes, so with a client that keeps one open, the full window and the WARN are the usual outcome, and rapid reloads keep several old pipelines' plugins running until their windows end. `Reloader.Close` at shutdown stops them at once.
@@ -874,6 +874,7 @@ curl http://localhost:9093/config               # now-active config
 | `tls_bridge.*` (mode, ca_dir, passthrough_hosts, ports, …) | ❌ | The bridge engine is built once at boot in each `cmd` main and nothing re-reads the block; refuse reload. An accepted-but-ineffective edit here is the dangerous shape: an operator adding a host to `passthrough_hosts` reads the successful reload as confirmation it stopped being intercepted |
 | `spiffe.*` (socket, mirror settings, …) | ❌ | The in-process Provider is constructed once at boot and handed to plugins through `Deps` at build time; refuse reload |
 | `memory.*` (`limit_mb`) | ❌ | `debug.SetMemoryLimit` is applied once at boot; refuse reload |
+| `stats.*` (`address`) | ❌ | The stats listener binds `stats.address` once at boot. An accepted edit made `/config` serve an address where nothing listens, and agentop probes the address it reads from the file; refuse reload |
 
 **Why `session.*` and `cost_ledger.*` are refused rather than "reloaded but ineffective".**
 Both used to be accepted: the reload succeeded, `ReloadsOK` incremented,
@@ -889,7 +890,7 @@ For the unreloadable cases, `Status.LastError` names the field(s) that changed a
 
 **Validation guarantee: bad YAML never takes the pod down.** Any failure during Load / Validate / Build / Start results in the status being updated and the active pipeline continuing to serve traffic on the previous config. Only a successful end-to-end reload swaps the holders.
 
-**Non-reloadable choices elsewhere.** The in-memory session store, the cost ledger, the stat server, the session API server, and the reloader itself are all process-scoped — they live from startup to shutdown. A change to `session.enabled`, `cost_ledger.enabled`, `stats.address`, `listener.session_api_addr`, or the reloader's own knobs (drain window, debounce) requires a pod restart. `session.*`, `cost_ledger.*`, `listener.*` and `mtls.*` are refused outright, per the table above; `stats.address` and the reloader's own knobs are read once at construction, so an edit there is simply not seen.
+**Non-reloadable choices elsewhere.** The in-memory session store, the cost ledger, the stat server, the session API server, and the reloader itself are all process-scoped — they live from startup to shutdown. A change to `session.enabled`, `cost_ledger.enabled`, `stats.address`, `listener.session_api_addr`, or the reloader's own knobs (drain window, debounce) requires a pod restart. `session.*`, `cost_ledger.*`, `listener.*`, `mtls.*` and `stats.*` are refused outright, per the table above; the reloader's own knobs are read once at construction, so an edit there is simply not seen.
 
 #### Skipping infrastructure hosts (`listener.skip_hosts`)
 
@@ -1094,9 +1095,12 @@ Breaking changes will be announced in `CHANGELOG.md` (TBD) before a 1.0 tag.
 - `plugin.go` — `Plugin` interface, `PluginCapabilities` (with `ReadsBody` / `WritesRequestBody` / `WritesResponseBody` + `Normalize()`; chain-scoped relationship fields `Requires` / `RequiresAny` / `RequiresLater`), `Configurable`, `Initializer`, `Shutdowner`, `Readier`, `Finisher`.
 - `outcome.go` — `Outcome` struct + `OutcomeAction` (allow / deny / error) for `Finisher` consumers; `Context.Outcome()` getter.
 - `action.go` — `Action`, `ActionType`, `Violation`, helper constructors (`Deny`, `DenyStatus`, `DenyWithDetails`, `Challenge`, `RateLimited`), `StatusFromCode`.
-- `context.go` — `Context`, `Direction`, `AgentIdentity`, the `pctx.Record` / `Allow` / `Skip` / `Observe` / `Modify` / `DenyAndRecord` helpers, and `pctx.SetBody` / `SetResponseBody` / `BodyMutated` / `ResponseBodyMutated` for body mutation.
-- `extensions.go` — `Extensions` struct, `Invocation`, `Invocations`, `InvocationAction`, named protocol extensions, `GetState` / `SetState`.
-- `session.go` — `SessionEvent`, `SessionView`, `SessionPhase`, marshalers.
+- `context.go` — `Context`, `AgentIdentity`, the `pctx.Record` / `Allow` / `Skip` / `Observe` / `Modify` / `DenyAndRecord` helpers, and `pctx.SetBody` / `SetResponseBody` / `BodyMutated` / `ResponseBodyMutated` for body mutation.
+- `state.go` — `GetState` / `SetState`, for plugin-private state in the `Custom` map.
+- `model_alias.go` — aliases for the data types, and wrappers for the functions, that moved to `core/model`, so the old `pipeline.X` names still work.
+- `core/model/extensions.go` — `Extensions` struct, `Invocation`, `Invocations`, `InvocationAction`, named protocol extensions.
+- `core/model/session.go` — `SessionEvent`, `SessionView`, `SessionPhase`, marshalers.
+- `core/model/direction.go` — `Direction`.
 - `core/reloader/` — `Reloader`, `Status`, `PipelineBuilder`, `WithDrainWindow` / `WithDebounce` / `WithStartTimeout`, `Handler()` (serves `/reload/status`).
 
 **Downstream integrators:**

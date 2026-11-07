@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/rossoctl/cortex/core/cost/event"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // unlabelledLabel is the reserved key for a caveat a producer disclosed WITHOUT saying
@@ -78,7 +78,7 @@ func hostLabel(authority string) string {
 
 // truncateLabel caps a label at maxLabelLen BYTES, cutting on a rune boundary.
 func truncateLabel(s string) string {
-	return pipeline.TruncateLabel(s, maxLabelLen)
+	return model.TruncateLabel(s, maxLabelLen)
 }
 
 // ringLabel prepares one string for a bucket's label map: sanitised, then capped.
@@ -86,14 +86,14 @@ func truncateLabel(s string) string {
 // THE RING IS A SERVING SURFACE OF ITS OWN. The model comes off the parsed request body and
 // the endpoint is the host the workload asked for, so without this GET /v1/usage serves a
 // model name containing an ANSI escape straight out of memory, while the ledger's copy of the
-// same label is clean. Both sanitize with pipeline.SanitizeControlRunes, so one hostile label
+// same label is clean. Both sanitize with model.SanitizeControlRunes, so one hostile label
 // is one series in both halves. CWE-150.
 //
 // THE ORDER MATTERS, for the reason ledger.rowLabel gives: sanitising can triple a
 // string's length — every replaced byte becomes a 3-byte U+FFFD — so capping first would let
 // 96 control bytes become 288 and break the bound.
 func ringLabel(s string) string {
-	return truncateLabel(pipeline.SanitizeControlRunes(s))
+	return truncateLabel(model.SanitizeControlRunes(s))
 }
 
 // addLabel adds c under key, or under overflowLabel once the map is full, and returns the key it

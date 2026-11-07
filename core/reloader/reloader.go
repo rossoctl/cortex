@@ -641,6 +641,12 @@ func validateReloadable(active, next *config.Config) error {
 	if !reflect.DeepEqual(active.Memory, next.Memory) {
 		diffs = append(diffs, "memory.*")
 	}
+	// stats.* too: the stats listener binds stats.address once at boot
+	// (config.PlanListeners). An accepted edit makes /config serve an address where
+	// nothing listens, and agentop reads that address from the file and probes it.
+	if !reflect.DeepEqual(active.Stats, next.Stats) {
+		diffs = append(diffs, "stats.*")
+	}
 	if len(diffs) > 0 {
 		return fmt.Errorf("unreloadable field changed, pod restart required: %v", diffs)
 	}

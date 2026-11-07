@@ -1,7 +1,7 @@
 package attribution
 
 import (
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/session"
 )
 
@@ -13,16 +13,16 @@ import (
 // PluginSession is the session handed to plugins and how it was decided: trusted, else
 // a.PluginID(), else active() when a names nothing at all, else "". A plugin can hear
 // "nothing known" here, so the default bucket is never its session.
-func (a Attribution) PluginSession(trusted string, active func() string) (string, pipeline.SessionSource) {
+func (a Attribution) PluginSession(trusted string, active func() string) (string, model.SessionSource) {
 	if trusted != "" {
-		return trusted, pipeline.SessionSourceConnection
+		return trusted, model.SessionSourceConnection
 	}
 	if sid := a.PluginID(); sid != "" {
 		return sid, a.Source
 	}
-	if a.Session == "" && a.Source != pipeline.SessionSourcePending {
+	if a.Session == "" && a.Source != model.SessionSourcePending {
 		if sid := active(); sid != "" {
-			return sid, pipeline.SessionSourceActive
+			return sid, model.SessionSourceActive
 		}
 	}
 	return "", ""

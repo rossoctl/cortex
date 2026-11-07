@@ -586,6 +586,13 @@ func scriptInstall(args []string, stdout, stderr io.Writer) int {
 		return fail("%v", err)
 	}
 	dir := filepath.Join(t.root, e.Name)
+	hadSlot := hasSlot(t.cfg, e.Name)
+	// Read before the checks below: this GET can take 2s, so keep it out of the
+	// window between the checks and the write. Only the hadSlot poll reads it.
+	var baseline int64
+	if hadSlot {
+		baseline = edit.ReloadBaseline(context.Background(), t.statsURL)
+	}
 	state := stateOf(t, e)
 	switch state {
 	case stateInstalled:
@@ -611,7 +618,6 @@ func scriptInstall(args []string, stdout, stderr io.Writer) int {
 	if extra := unrecorded(dir, old); len(extra) > 0 {
 		return fail("%s holds files install did not write (%s); move them out first", homeTilde(dir), strings.Join(extra, ", "))
 	}
-	hadSlot := hasSlot(t.cfg, e.Name)
 
 	prior := snapshot(dir, old)
 	wrote := time.Now()
@@ -656,7 +662,7 @@ func scriptInstall(args []string, stdout, stderr io.Writer) int {
 		// No config write, so nothing has waited for the reload the new files
 		// trigger; until it lands, the counts below are the old build's.
 		pctx, cancel := context.WithTimeout(context.Background(), edit.LocalPollDeadline)
-		res := edit.PollUntilReloaded(pctx, t.statsURL, wrote, "")
+		res := edit.PollUntilReloaded(pctx, t.statsURL, wrote, baseline, "")
 		cancel()
 		if res.Status != edit.PollSuccess {
 			undoFiles()

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/event"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // applyTitle is the title rule: FIRST-WINS, EXCEPT THAT A /rename ALWAYS OVERRIDES. It returns
@@ -64,7 +64,7 @@ func applyTitle(rank int, title string, candRank int, candText string) (int, str
 // `agent=` query could reach it.
 //
 // A CLIENT THAT CAN NAME NOTHING STILL RECORDS NOTHING, which is what keeps `agent` omitempty
-// honest: event.AgentLabel answers pipeline.UnknownClientLabel ("unknown") for an event that
+// honest: event.AgentLabel answers model.UnknownClientLabel ("unknown") for an event that
 // carried no User-Agent at all, and that is a RESERVED BUCKET rather than an agent name — see
 // EventClient.Label. Putting it in this slice would render untagged traffic as a program that
 // spent money, on exactly the field a client reads to attribute a session.
@@ -75,7 +75,7 @@ func applyTitle(rank int, title string, candRank int, candText string) (int, str
 // treatment the usage ring's byAgent keys and the ledger's rows get, which is what makes a
 // session's `agent` and its `group=agent` row the same string. Nothing new is invented here, and
 // nothing here may be read as a trusted identity; see EventClient's godoc.
-func applyAgent(agents []sessionAgent, sessionID, agentName string, c *pipeline.EventClient) []sessionAgent {
+func applyAgent(agents []sessionAgent, sessionID, agentName string, c *model.EventClient) []sessionAgent {
 	if sessionID == DefaultSessionID || strings.HasPrefix(sessionID, PendingPrefix) {
 		return agents
 	}
@@ -99,7 +99,7 @@ func applyAgent(agents []sessionAgent, sessionID, agentName string, c *pipeline.
 	// Keyed by the label, since there is no canonical name. "unknown" means the event
 	// carried no User-Agent — nothing to attribute, so nothing recorded.
 	label := event.AgentLabel(c)
-	if label == "" || label == pipeline.UnknownClientLabel {
+	if label == "" || label == model.UnknownClientLabel {
 		return agents
 	}
 	if agentLabelIn(agents, label) != "" {
@@ -142,8 +142,8 @@ func firstAgentLabel(earlier, agents []sessionAgent, known bool) string {
 // turns: a bridged CONNECT's tunnel-open lands between an inference request and its response, and
 // MCP calls and responses interleave too. Clearing the field on any of them would blank a
 // session's server on most of its rows — the intern table's lesson (CLAUDE.md, the session store gotcha).
-func inferenceHostOf(e *pipeline.SessionEvent) string {
-	if e.Phase != pipeline.SessionRequest || e.Inference == nil {
+func inferenceHostOf(e *model.SessionEvent) string {
+	if e.Phase != model.SessionRequest || e.Inference == nil {
 		return ""
 	}
 	return e.Host
@@ -175,11 +175,11 @@ type SummaryFold struct {
 	agents    []sessionAgent
 	// context is the CTX figure folded so far, by the store's own rule (entry.context), and
 	// restoredContext the figure a fold resumed from session.json started from. TWO FIELDS BECAUSE
-	// pipeline.PromptContextFold HAS NO RESTORE PATH: what persists is its published figure, and
+	// model.PromptContextFold HAS NO RESTORE PATH: what persists is its published figure, and
 	// since the published order is the fold's order, merging the restored figure with what was
 	// folded since gives what one uninterrupted fold would have.
-	context         pipeline.PromptContextFold
-	restoredContext *pipeline.PromptContext
+	context         model.PromptContextFold
+	restoredContext *model.PromptContext
 	// inferenceHost is SessionSummary.InferenceHost: the latest inference request's host.
 	inferenceHost string
 	// procs, owner and lastRequestAt are the entry's fields of the same names, by the same
@@ -204,10 +204,10 @@ func (f *SummaryFold) Clone() *SummaryFold {
 // Add folds one event recorded under sessionID. It does the work appendLocked hoists above the
 // store's lock — a plugin-map decode and a scan of message content — so call it from a
 // goroutine of your own, never from Record.
-func (f *SummaryFold) Add(sessionID string, e *pipeline.SessionEvent) {
+func (f *SummaryFold) Add(sessionID string, e *model.SessionEvent) {
 	p := prepareAppend(e)
 	f.events++
-	if e.Phase == pipeline.SessionResponse && e.Inference != nil {
+	if e.Phase == model.SessionResponse && e.Inference != nil {
 		f.tokens += e.Inference.TotalTokens
 	}
 	f.cost.Add(p.money.cost)
@@ -226,14 +226,14 @@ func (f *SummaryFold) Add(sessionID string, e *pipeline.SessionEvent) {
 	}
 	f.procs = applyProcs(f.procs, sessionID, e)
 	f.owner = applyOwner(f.owner, sessionID, p.agentName, e)
-	if e.Phase == pipeline.SessionRequest && e.At.After(f.lastRequestAt) {
+	if e.Phase == model.SessionRequest && e.At.After(f.lastRequestAt) {
 		f.lastRequestAt = e.At
 	}
 }
 
 // promptContext is the fold's CTX figure, nil when nothing can be said.
-func (f *SummaryFold) promptContext() *pipeline.PromptContext {
-	return pipeline.MergePromptContext(f.restoredContext, f.context.Publish())
+func (f *SummaryFold) promptContext() *model.PromptContext {
+	return model.MergePromptContext(f.restoredContext, f.context.Publish())
 }
 
 // Summary sets EventCount, Title, Agent, TotalTokens, CostMicros, AvoidedMicros, Currencies,
@@ -265,17 +265,17 @@ func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 // TitleRank IS A POINTER because rankRename is 0: a document without it must decode to
 // rankNone, not to a rename that would lock the title against every later candidate.
 type foldJSON struct {
-	EventCount       int                     `json:"eventCount"`
-	Title            string                  `json:"title,omitempty"`
-	TitleRank        *int                    `json:"titleRank,omitempty"`
-	Agents           []foldAgent             `json:"agents,omitempty"`
-	TotalTokens      int                     `json:"totalTokens,omitempty"`
-	CostMicros       int64                   `json:"costMicros,omitempty"`
-	CostSaturated    bool                    `json:"costSaturated,omitempty"`
-	AvoidedMicros    int64                   `json:"avoidedMicros,omitempty"`
-	AvoidedSaturated bool                    `json:"avoidedSaturated,omitempty"`
-	Units            map[string]int          `json:"units,omitempty"`
-	PromptContext    *pipeline.PromptContext `json:"promptContext,omitempty"`
+	EventCount       int                  `json:"eventCount"`
+	Title            string               `json:"title,omitempty"`
+	TitleRank        *int                 `json:"titleRank,omitempty"`
+	Agents           []foldAgent          `json:"agents,omitempty"`
+	TotalTokens      int                  `json:"totalTokens,omitempty"`
+	CostMicros       int64                `json:"costMicros,omitempty"`
+	CostSaturated    bool                 `json:"costSaturated,omitempty"`
+	AvoidedMicros    int64                `json:"avoidedMicros,omitempty"`
+	AvoidedSaturated bool                 `json:"avoidedSaturated,omitempty"`
+	Units            map[string]int       `json:"units,omitempty"`
+	PromptContext    *model.PromptContext `json:"promptContext,omitempty"`
 	// InferenceHost is absent from a session.json written before it existed, which decodes to "".
 	// THERE "" MEANS UNKNOWN, NOT "NO INFERENCE TRAFFIC": that history may hold plenty, folded by
 	// a Cortex that did not record where it went. The session's next inference request sets it.
@@ -342,7 +342,7 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		restoredContext: j.PromptContext,
 		inferenceHost:   j.InferenceHost,
 		procs:           j.Procs,
-		owner:           pipeline.CanonicalAgent(j.Owner),
+		owner:           model.CanonicalAgent(j.Owner),
 		lastRequestAt:   j.LastRequestAt,
 	}
 	if j.TitleRank != nil {
@@ -359,8 +359,8 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 	// CanonicalAgent is the identity on every current name.
 	for _, a := range j.Agents {
 		f.agents = append(f.agents, sessionAgent{
-			name:  pipeline.CanonicalAgent(a.Name),
-			label: pipeline.AgentName(a.Label),
+			name:  model.CanonicalAgent(a.Name),
+			label: model.AgentName(a.Label),
 			known: !a.Unknown,
 		})
 	}

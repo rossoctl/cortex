@@ -3,7 +3,7 @@ package event
 import (
 	"math"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // AddSat is a + b, clamped to the int64 range instead of wrapping, and whether it clamped.
@@ -72,11 +72,11 @@ func (s *CostSum) Sub(micros int64) {
 const MaxLabelLen = 96
 
 // AgentLabel is the label per-agent figures key traffic from c by: versionless (see
-// pipeline.AgentName), sanitized, and capped at MaxLabelLen. A nil client is
-// pipeline.UnknownClientLabel.
+// model.AgentName), sanitized, and capped at MaxLabelLen. A nil client is
+// model.UnknownClientLabel.
 //
 // Sanitized before capping, because each replaced byte becomes a 3-byte U+FFFD and capping
 // first would let MaxLabelLen control bytes grow to three times the bound.
-func AgentLabel(c *pipeline.EventClient) string {
-	return pipeline.TruncateLabel(pipeline.SanitizeControlRunes(pipeline.AgentName(c.Label())), MaxLabelLen)
+func AgentLabel(c *model.EventClient) string {
+	return model.TruncateLabel(model.SanitizeControlRunes(model.AgentName(c.Label())), MaxLabelLen)
 }

@@ -3,18 +3,18 @@ package timeline
 import (
 	"time"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // buildHosts pairs each outbound request with its response by RequestID. A request with no
 // response is left open, which is honest for one in flight and for one whose stream died, until
 // LoseUnanswered ages it out.
-func buildHosts(t *Timeline, events []pipeline.SessionEvent) {
+func buildHosts(t *Timeline, events []model.SessionEvent) {
 	open := map[string]int{}
 	// A tunnel the proxy recorded a close for stayed opaque; a bridged one records none.
 	closed := map[string]bool{}
 	for i := range events {
-		if e := &events[i]; e.Tunnel && e.Phase == pipeline.SessionResponse && e.RequestID != "" {
+		if e := &events[i]; e.Tunnel && e.Phase == model.SessionResponse && e.RequestID != "" {
 			closed[e.RequestID] = true
 		}
 	}
@@ -22,11 +22,11 @@ func buildHosts(t *Timeline, events []pipeline.SessionEvent) {
 	// its own row, or an opaque tunnel the transparent listener records before it knows. Held
 	// until the next event says which.
 	pendingOpen := -1
-	settle := func(next *pipeline.SessionEvent) {
+	settle := func(next *model.SessionEvent) {
 		if pendingOpen < 0 {
 			return
 		}
-		if next != nil && !closed[events[t.Hosts[pendingOpen].idx].RequestID] && (next.Phase == pipeline.SessionRequest || next.Phase == pipeline.SessionDenied) && !next.Tunnel &&
+		if next != nil && !closed[events[t.Hosts[pendingOpen].idx].RequestID] && (next.Phase == model.SessionRequest || next.Phase == model.SessionDenied) && !next.Tunnel &&
 			(HostKey(next.Host) == t.Hosts[pendingOpen].Host || HostKey(next.RequestedHost) == t.Hosts[pendingOpen].Host) {
 			// Bridged: drop the open.
 			delete(open, events[t.Hosts[pendingOpen].idx].RequestID)
@@ -36,12 +36,12 @@ func buildHosts(t *Timeline, events []pipeline.SessionEvent) {
 	}
 	for i := range events {
 		e := &events[i]
-		if e.Direction != pipeline.Outbound || e.Host == "" {
+		if e.Direction != model.Outbound || e.Host == "" {
 			continue
 		}
 		settle(e)
 		switch e.Phase {
-		case pipeline.SessionRequest:
+		case model.SessionRequest:
 			if e.RequestID != "" {
 				if j, ok := open[e.RequestID]; ok {
 					loseHost(&t.Hosts[j]) // a reused id: the earlier request never got its answer
@@ -52,13 +52,13 @@ func buildHosts(t *Timeline, events []pipeline.SessionEvent) {
 				pendingOpen = len(t.Hosts)
 			}
 			t.Hosts = append(t.Hosts, Host{Host: HostKey(e.Host), Kind: kindOf(e), Start: e.At, Seq: e.Seq, idx: i})
-		case pipeline.SessionResponse, pipeline.SessionDenied:
+		case model.SessionResponse, model.SessionDenied:
 			j, ok := open[e.RequestID]
 			if !ok || e.RequestID == "" {
 				// A request the pipeline refused before recording it, or a CONNECT refused
 				// at the door, records only the denial. Blocked egress is the host event
 				// that matters most, so it is a span of its own.
-				if e.Phase == pipeline.SessionDenied {
+				if e.Phase == model.SessionDenied {
 					at := e.At
 					t.Hosts = append(t.Hosts, Host{Host: HostKey(e.Host), Kind: kindOf(e), Start: at, End: &at, Status: e.StatusCode, Error: true, Seq: e.Seq})
 				}
@@ -73,7 +73,7 @@ func buildHosts(t *Timeline, events []pipeline.SessionEvent) {
 				end = h.Start.Add(e.Duration)
 			}
 			h.End, h.Status = &end, e.StatusCode
-			h.Error = e.Phase == pipeline.SessionDenied || e.Error != nil || e.StatusCode >= 400
+			h.Error = e.Phase == model.SessionDenied || e.Error != nil || e.StatusCode >= 400
 			if h.Kind == KindHTTP && (e.Inference != nil || e.MCP != nil) {
 				h.Kind = kindOf(e)
 			}
@@ -104,7 +104,7 @@ func loseHost(h *Host) {
 // those were the rare tail), while not drawing a dead stream as busy.
 const hostLostAfter = 10 * time.Minute
 
-func kindOf(e *pipeline.SessionEvent) Kind {
+func kindOf(e *model.SessionEvent) Kind {
 	switch {
 	case e.Inference != nil:
 		return KindLLM

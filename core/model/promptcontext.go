@@ -1,4 +1,4 @@
-package pipeline
+package model
 
 import "time"
 
@@ -519,9 +519,10 @@ func nothingKnown(p *PromptContext) bool { return p == nil || p.Tokens <= 0 }
 // every purpose this package has.
 //
 // SPELLED OUT IN FULL, and a free function rather than a method. Bare `Merge` was rejected: this
-// package also owns pipelines, extensions, sessions, events and snapshots, and `pipeline.Merge(a,
-// b)` reads at the call site as "merge two pipelines". A method — `server.Merge(local)` — was
-// rejected too, and for a sharper reason than symmetry: nil is the identity of this monoid, so a
+// function was written in core/pipeline, which also owns pipelines, and `pipeline.Merge(a, b)`
+// reads at the call site as "merge two pipelines". In core/model, a bare `Merge` is not clear
+// either: this package owns extensions, sessions and events. A method — `server.Merge(local)` —
+// was rejected too, and for a sharper reason than symmetry: nil is the identity of this monoid, so a
 // method would have to be callable on a NIL RECEIVER to accept the operand an old proxy actually
 // sends. That works in Go and it is a footgun, because nothing at the call site warns the next
 // reader that the receiver may be nil; two plainly nilable arguments say so in the signature.
