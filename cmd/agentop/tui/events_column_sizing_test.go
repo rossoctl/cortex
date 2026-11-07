@@ -330,8 +330,9 @@ func TestFitsContentCellsIgnoreWidth(t *testing.T) {
 		sizingExchange(t, "r1", "a.example", time.Now(), 215_305, nil),
 		sizingExchange(t, "r2", "b.example", time.Now(), 1_048_576, estimatedSaving),
 		sizingExchange(t, "r3", "c.example", time.Now(), 1_048_576, countedSaving))
-	rows := buildEventRows(m.events["s"])
-	ids, partner := computeEventPairs(rows)
+	built := buildEventRows(m.events["s"])
+	ids, partner := computeEventPairs(built)
+	rows, _ := mergeExchanges(built, partner)
 
 	checked := 0
 	for _, c := range eventColumns {
@@ -339,7 +340,7 @@ func TestFitsContentCellsIgnoreWidth(t *testing.T) {
 			continue
 		}
 		for i, er := range rows {
-			cc := cellContext{m: m, rows: rows, partner: partner, i: i, row: er, ids: ids}
+			cc := cellContext{m: m, row: er, ids: ids}
 			cc.width = c.width
 			wide := c.cell(cc)
 			cc.width = 1

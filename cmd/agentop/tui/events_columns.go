@@ -37,15 +37,11 @@ const (
 
 // cellContext is what a cell function needs beyond the event itself.
 //
-// rows, partner and i locate the row among the merged rows. After mergeExchanges, partner
-// holds only guessed pairs (#1681). Passing one struct keeps every cell function the same
-// shape, rather than some taking an event and others taking five arguments.
+// Passing one struct keeps every cell function the same shape, rather than some taking an
+// event and others taking five arguments.
 type cellContext struct {
-	m       *model
-	rows    []eventRow
-	partner map[int]int
-	i       int
-	row     eventRow
+	m   *model
+	row eventRow
 	// ids pairs a request event with its response, computed once per rebuild by
 	// computeEventPairs. Carried here rather than recomputed per cell.
 	ids map[*pipeline.SessionEvent]int

@@ -11,8 +11,8 @@ import (
 
 // costWire is the exact JSON the proxy publishes as a cost record.
 //
-// It carries what this UI now READS rather than computes: the exchange total, the
-// prompt-only figure a request row shows, and the saving attributed to tool-prune. The
+// It carries what this UI now READS rather than computes: the exchange total the COST
+// cell shows, the prompt-only and output-only figures, and the saving attributed to tool-prune. The
 // figures are the ones agentop used to derive itself — prompt 1,300 x 3.8e-6 + 680,000 x
 // 3.8e-7 = 0.26334, saving 9,899 tokens at the cache-read rate = 0.0038 — so the rendered
 // cells below are unchanged by the move. That is the point: same output, one owner.
@@ -162,36 +162,19 @@ func TestCostCellPhases(t *testing.T) {
 	}
 }
 
-// TestPromptCostIsTierWeighted: pricing the whole prompt at the uncached input
-// rate overstates a cache-heavy turn by close to an order of magnitude, which is
-// the common shape for a long-running agent. The weighted figure must be well
-// below the flat one.
-// The tier weighting now happens in the proxy (core/cost/settle computes the prompt-only
-// figure; core/cost/pricing weights the tiers), and is tested there against the real rate
-// table. What agentop must still get right is reading the published figure and declining to
-// invent one — a $0.00 in this column reads as a free prompt.
-func TestPromptCost_ReadsThePublishedFigure(t *testing.T) {
-	inf := &pipeline.InferenceExtension{InputTokens: 1_000, CacheReadTokens: 99_000}
-	// A tier-weighted figure, well below the 0.38 a flat input rate would produce for
-	// the same 100k prompt: that gap is why the proxy weights it rather than the UI.
-	e := recordEvent(t, event.Event{CostUSD: 0.05, Settled: true, PromptUSD: 0.0414})
-	e.Inference = inf
-	got, ok := promptCost(e)
-	if !ok {
-		t.Fatal("no cost figure")
+// TestExchangeCost_ReadsThePublishedFigure: agentop reads the exchange total off the
+// record and declines to invent one. A $0.00 in the COST column reads as a free call.
+func TestExchangeCost_ReadsThePublishedFigure(t *testing.T) {
+	got, ok := exchangeCost(recordEvent(t, event.Event{CostUSD: 0.05, Settled: true, PromptUSD: 0.0414}))
+	if !ok || got != 0.05 {
+		t.Errorf("exchangeCost = %v (ok=%v), want the published 0.05", got, ok)
 	}
-	if got != 0.0414 {
-		t.Errorf("promptCost = %v, want the published 0.0414", got)
-	}
-	if flat := float64(pipeline.PromptTokensOf(inf)) * 3.8e-6; got >= flat {
-		t.Errorf("published figure %v is not below the flat %v; the weighting was lost", got, flat)
-	}
-	// No record, and a record with no prompt figure, both decline rather than showing 0.
-	if _, ok := promptCost(respEvent("", inf)); ok {
+	// No record, and a record with no total, both decline rather than showing 0.
+	if _, ok := exchangeCost(respEvent("", agentTurn())); ok {
 		t.Error("a response with no record produced a cost figure")
 	}
-	if _, ok := promptCost(recordEvent(t, event.Event{CostUSD: 0.05, Settled: true})); ok {
-		t.Error("a record with no prompt figure produced one")
+	if _, ok := exchangeCost(recordEvent(t, event.Event{Settled: true, PromptUSD: 0.0414})); ok {
+		t.Error("a record with no total produced one")
 	}
 }
 
@@ -298,7 +281,7 @@ func TestEventMethodSharesTheColumnWidth(t *testing.T) {
 
 // TestFormatUSDCellNeverRendersAFreeCall: %.4f turns anything under $0.00005 into
 // "$0.0000", which reads as a call that cost nothing. decodeCostEvent declines a
-// zero cost and promptCost declines an unpriced model precisely so that reading
+// zero cost and exchangeCost declines a record with no total precisely so that reading
 // never appears, and rounding at the formatting layer would undo both.
 //
 // Reachable: 100 cache-read tokens at a typical rate is $0.000038.
@@ -350,24 +333,23 @@ func TestMethodColumnDistinguishesDatedModelIDs(t *testing.T) {
 	}
 }
 
-// Precision IS the estimate marker: an estimated saving renders compact because trailing
-// digits would be false precision, and a counted one renders exact. No extra glyph — "~"
-// already means projected, and every saving published today is estimated, so a marker on
-// every row would distinguish nothing.
-func TestFormatTokensWithSaving_PrecisionMarksTheEstimate(t *testing.T) {
+// The saving's sign says whether it was applied: "−" for a saving tool-prune made, "~" for
+// a projected one (on_error: observe), where the money was still spent.
+func TestExchangeTokensCell_SavingSignMarksAProjection(t *testing.T) {
 	for _, tc := range []struct {
-		name                 string
-		projected, estimated bool
-		want                 string
+		name      string
+		projected bool
+		want      string
 	}{
-		{"estimated and applied", false, true, "681,300(−9.9k)"},
-		{"estimated and projected", true, true, "681,300(~9.9k)"},
-		// A saving counted by a tokenizer, which nothing publishes yet: exact digits,
-		// because they would be real.
-		{"counted and applied", false, false, "681,300(−9,899)"},
+		{"applied", false, "681.3k(−9.9k)→1.9k"},
+		{"projected", true, "681.3k(~9.9k)→1.9k"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := formatTokensWithSaving(681_300, 9_899, tc.projected, tc.estimated)
+			resp := recordEvent(t, event.Event{CostUSD: 0.2824, Settled: true, Avoided: []event.Saving{{
+				Component: "tool-prune", TokensAvoided: 9_899, Estimated: true, Projected: tc.projected,
+			}}})
+			resp.Inference = agentTurn()
+			got := exchangeTokensCell(eventRow{event: &pipeline.SessionEvent{Phase: pipeline.SessionRequest}, resp: resp})
 			if got != tc.want {
 				t.Errorf("= %q, want %q", got, tc.want)
 			}

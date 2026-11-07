@@ -84,7 +84,7 @@ const usdFloor = 0.0001
 //
 // The floor exists because %.4f renders anything under $0.00005 as "$0.0000",
 // which reads as "this was free" — the exact reading decodeCostEvent (declining a
-// cost of 0) and promptCost (declining an unpriced model rather than showing
+// cost of 0) and exchangeCost (declining a record with no total rather than showing
 // $0.00) both go out of their way to avoid. Reintroducing it at the formatting
 // layer would undo both. Reachable on a small cache-read-only request: 100
 // cache-read tokens at a typical rate is $0.000038.
@@ -121,7 +121,7 @@ func formatUSDCell(v float64) string {
 // than a per-surface habit.
 //
 // NEITHER FORM EVER RENDERS A POSITIVE FIGURE AS ZERO. Cents falls back to "<$0.01" and four
-// decimals to "<$0.0001", which is the rule decodeCostEvent and promptCost already go out of
+// decimals to "<$0.0001", which is the rule decodeCostEvent and exchangeCost already go out of
 // their way to keep: "free" is a claim about the traffic and must not be a rounding artefact.
 //
 // A caller with micros in hand should use formatUSDTotalMicros directly. Going through float64

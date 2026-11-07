@@ -159,7 +159,7 @@ func (m *model) rebuildEventsTable() {
 		invs := er.invocations()
 		action, plugin := rowAction(er, invs)
 		ctxs[i] = cellContext{
-			m: m, rows: eventRows, partner: partner, i: i, row: er, ids: ids,
+			m: m, row: er, ids: ids,
 			invs: invs, action: action, plugin: plugin,
 		}
 	}
