@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/rossoctl/cortex/core/plugins/script/internal/worker"
 )
 
 // Every entry Cortex ships loads, and adding a script is adding a folder: this
@@ -125,7 +127,7 @@ func TestCatalog_EveryScriptHandshakes(t *testing.T) {
 						Hooks           []string `json:"hooks"`
 						RewriteResponse bool     `json:"rewrite_response"`
 					}
-					if err := json.Unmarshal(b, &hs); err != nil || hs.Cortex != 1 || len(hs.Hooks) == 0 {
+					if err := json.Unmarshal(b, &hs); err != nil || hs.Cortex != worker.Protocol || len(hs.Hooks) == 0 {
 						t.Fatalf("handshake %q: %v", b, err)
 					}
 					rewrites = rewrites || hs.RewriteResponse

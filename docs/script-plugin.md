@@ -386,17 +386,27 @@ each message with the `id` it carried:
 ```sh
 #!/bin/sh
 # ~/.cortex/plugins/tag.sh — needs jq
-echo '{"cortex":1,"hooks":["request"],"enforce":true}'
+echo '{"cortex":2,"hooks":["request"],"enforce":true}'
 while IFS= read -r line; do
   printf '%s' "$line" | jq -c '{id: .id, request: {set_headers: {"X-Tagged": "yes"}}}'
 done
 ```
 
 A message carries `hook` (`request` or `response`), `session` and `request`
-(`method`, `host`, `path`, `headers`, `body` or `body_base64`, and the parsers'
-`inference` / `mcp` / `a2a`). A response hook's message also carries `response`
-(`status`, `headers`, `body` or `body_base64`, `streamed`, and for a stream
-`frames`). The handshake lists the hooks the script implements in `hooks`, and
+(`method`, `host`, `path`, `headers`, and the parsers' `mcp` / `a2a`). A
+response hook's message also carries `response` (`status`, `headers`, `body` or
+`body_base64`, `streamed`, and for a stream `frames`).
+
+The request body and the parsers' `inference` are not in the message. On a long
+conversation each is the size of the request, so Cortex sends one only when the
+script asks. `more` lists what it holds for the message: `body` (request hooks
+only) and `inference`. To get one, write `{"id": N, "fetch": "body"}` before the
+reply. Cortex then writes `{"id": N, "fetch": "body", "value": ...}` on stdin. The
+value of `body` is an object with `body` or `body_base64`. A name that Cortex
+does not hold gets `null`. The SDK does this when a hook first reads `flow.body`,
+`flow.json` or `flow.inference`.
+
+The handshake lists the hooks the script implements in `hooks`, and
 says `"rewrite_response": true` if it may change responses. A reply may carry
 `deny` (`reason`, `status`, `code`), `request` or `response` (`body` or
 `body_base64`, and for a request `set_headers`, `remove_headers`), and

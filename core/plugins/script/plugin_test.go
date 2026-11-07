@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -58,7 +60,24 @@ func fakeScript(mode string) {
 				Frames   []string `json:"frames"`
 			} `json:"response"`
 		}
-		json.Unmarshal(in.Bytes(), &msg)
+		line := append([]byte(nil), in.Bytes()...)
+		json.Unmarshal(line, &msg)
+		var held struct {
+			More    []string       `json:"more"`
+			Request map[string]any `json:"request"`
+		}
+		json.Unmarshal(line, &held)
+		// The body is held back: fetch it as the SDK does, except in "keys", which
+		// reports what came in the message itself.
+		if slices.Contains(held.More, "body") && mode != "keys" {
+			send(map[string]any{"id": msg.ID, "fetch": "body"})
+			in.Scan()
+			var answer struct {
+				Value struct{ Body string } `json:"value"`
+			}
+			json.Unmarshal(in.Bytes(), &answer)
+			msg.Request.Body = answer.Value.Body
+		}
 		calls++
 		r := map[string]any{"id": msg.ID}
 		switch strings.TrimSuffix(mode, "-shadow") {
@@ -97,6 +116,10 @@ func fakeScript(mode string) {
 			r["response"] = map[string]any{"body": "changed"}
 		case "resp-deny":
 			r["deny"] = map[string]any{"reason": "bad output"}
+		case "keys", "resp-keys":
+			keys := slices.Sorted(maps.Keys(held.Request))
+			r["invocation"] = map[string]any{"action": "observe", "reason": "keys", "details": map[string]string{
+				"request": strings.Join(keys, ","), "more": strings.Join(held.More, ",")}}
 		}
 		send(r)
 	}
@@ -357,7 +380,7 @@ func TestOnRequest_Headers(t *testing.T) {
 
 // A script never sees a credential header, and may not set one.
 func TestOnRequest_SecretHeaders(t *testing.T) {
-	msg := requestMessage(request("x"))
+	msg, _ := requestMessage(request("x"))
 	if _, ok := msg["request"].(map[string]any)["headers"].(map[string]string)["authorization"]; ok {
 		t.Error("authorization reached the script")
 	}
@@ -628,7 +651,7 @@ func TestInit_SweepsARefusedBuildsWorkers(t *testing.T) {
 	running.Shutdown(context.Background())
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		_, err := orphan.Call(context.Background(), map[string]any{})
+		_, err := orphan.Call(context.Background(), map[string]any{}, nil)
 		if err != nil && strings.Contains(err.Error(), "stopped") {
 			break
 		}
@@ -837,6 +860,34 @@ func response(body string) *pipeline.Context {
 	pctx.ResponseHeaders = http.Header{"Content-Type": {"application/json"}, "Set-Cookie": {"s=1"}}
 	pctx.ResponseBody = []byte(body)
 	return pctx
+}
+
+// The body and the inference extension are not in the message: they are named in
+// "more" and sent only when the script fetches them. A response hook gets no
+// request body at all, and the conversation in the inference extension only on
+// request.
+func TestMessages_HoldBackBodyAndInference(t *testing.T) {
+	for _, tc := range []struct{ mode, more string }{
+		{"keys", "body,inference"},
+		{"resp-keys", "inference"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			dir := home(t)
+			script(t, dir, "k", tc.mode)
+			s := configured(t, true, "")
+			pctx := response(`{"answer":"hi"}`)
+			pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "m"}
+			if tc.mode == "keys" {
+				s.OnRequest(context.Background(), pctx)
+			} else {
+				s.OnResponseFrame(context.Background(), pctx, pctx.ResponseBody, true)
+			}
+			inv := invocations(pctx)[0]
+			if inv.Details["request"] != "direction,headers,host,method,path" || inv.Details["more"] != tc.more {
+				t.Errorf("the script got %+v", inv.Details)
+			}
+		})
+	}
 }
 
 // A buffered response reaches the script whole, as one last frame — the dispatch
