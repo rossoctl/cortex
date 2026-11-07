@@ -269,12 +269,13 @@ curl -s 'localhost:9094/v1/sessions/<id>/search?q=retry%20budget'
   - response: `inference.toolCalls`, `mcp.result`, `a2a.artifact`
   - the key names in those parts, as the view shows them
   - where the archive holds a capture: its body blocks (keys and values when a block is JSON,
-    its text when not), the text between blocks, the headers, the query, and a response's
+    its text when not), the keys and values between blocks, the headers, the query, and a response's
     status. Image and document blocks and binary bodies are skipped: the view shows them as
     labels.
 - **It does not read** the fields the summary keeps (agentop checks those), the labels agentop
-  writes itself in the `raw` part (`forwarded as sent`, `[image … KB]`), or a match that spans a
-  key and its value.
+  writes itself in the `raw` part (`forwarded as sent`, `[image … KB]`), a match that spans a
+  key and its value, or the quotes and punctuation the view draws around the keys and values
+  it reads.
 - **Errors:** an empty `q` is `400` (`{"error":"q is required"}`). An unknown session is `404`
   with `{"error":"session not found"}`. A proxy that predates the route answers the mux's
   plain-text `404`, which is how a client tells the two apart. An archive read that fails is

@@ -17,7 +17,7 @@ import (
 
 // Find returns, ascending, the seqs of id's archived events that match, and the newest seq it
 // read. An event matches when event reports it, or when text reports a piece of its capture: a
-// body block, the text between blocks, a header name or value, the query, or a response's
+// body block, a key or a value between blocks, a header name or value, the query, or a response's
 // status. ok is false when the archive holds nothing under id.
 //
 // ONE READ OF EACH SEGMENT. Every request re-sends the conversation, so its body is mostly
@@ -103,8 +103,8 @@ func jsonMatches(r gjson.Result, text func(string) bool) bool {
 	return text(r.Raw) // a number, true, false or null, as the tree writes it
 }
 
-// captureMatches reports whether text matches c, an event's capture record: a block it uses, the
-// text between its blocks, a header, the query, or a response's status.
+// captureMatches reports whether text matches c, an event's capture record: a block it uses, a key
+// or a value between its blocks, a header, the query, or a response's status.
 func captureMatches(c json.RawMessage, hit map[string]bool, text func(string) bool) bool {
 	if c == nil {
 		return false
@@ -127,15 +127,57 @@ func captureMatches(c json.RawMessage, hit map[string]bool, text func(string) bo
 	return false
 }
 
-// bodyMatches reports whether a body's skeleton matches: a block it names, or the text between.
+// bodyMatches reports whether a body's skeleton matches: a block it names, or a key or a value
+// between them.
 func bodyMatches(b *bodyRec, hit map[string]bool, text func(string) bool) bool {
 	for i, p := range b.P {
 		if i%2 == 1 {
 			if hit[p] {
 				return true
 			}
-		} else if p != "" && text(p) {
+		} else if skeletonMatches(p, text) {
 			return true
+		}
+	}
+	return false
+}
+
+// skeletonMatches reports whether text matches a key or a value in p, the JSON of a body between
+// two blocks: a string decoded, any other value as its JSON text. As in a block, the quotes and
+// the punctuation around them are not checked. A block is a whole value, so p cuts no string in
+// two.
+func skeletonMatches(p string, text func(string) bool) bool {
+	const punct = "{}[]:, \t\r\n"
+	for i := 0; i < len(p); {
+		switch {
+		case p[i] == '"':
+			j := i + 1
+			for ; j < len(p) && p[j] != '"'; j++ {
+				if p[j] == '\\' {
+					j++
+				}
+			}
+			if j < len(p) {
+				s := p[i+1 : j]
+				if strings.IndexByte(s, '\\') >= 0 {
+					_ = json.Unmarshal([]byte(p[i:j+1]), &s) // only an escape needs the decoder
+				}
+				if text(s) {
+					return true
+				}
+			}
+			i = j + 1
+		case strings.IndexByte(punct, p[i]) >= 0:
+			i++
+		default:
+			j := i
+			for j < len(p) && p[j] != '"' && strings.IndexByte(punct, p[j]) < 0 {
+				j++
+			}
+			if text(p[i:j]) {
+				return true
+			}
+			i = j
 		}
 	}
 	return false

@@ -164,3 +164,21 @@ func TestFind_CallsSegmentForEachSegment(t *testing.T) {
 		t.Errorf("segment ran %d times, err %v, want 1 time for the one segment", n, err)
 	}
 }
+
+// The text between blocks is checked as the detail view shows it: each key and value, decoded,
+// and none of the JSON punctuation around them.
+func TestFind_TheSkeletonMatchesKeysAndValuesOnly(t *testing.T) {
+	body := `{"model":"claude-x","max_tokens":100,"metadata":{"note":"caf\u00e9 <b>"},"messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"` + longText("hello") + `"}]}],"stream":true}`
+	a := findArchive(t, &pipeline.RequestCapture{Original: []byte(body)})
+	for q, want := range map[string]bool{
+		"claude-x": true, "max_tokens": true, "100": true, "café <b>": true, "stream": true, "true": true,
+		`{"`: false, `":[`: false, `":"`: false, `model":"claude`: false, `max_tokens":100`: false,
+		`"stream":true`: false, `\u00e9`: false,
+	} {
+		seqs, _, _, err := a.Find(context.Background(), "s", noEvent, nil, foldText(q))
+		if err != nil || (len(seqs) == 1) != want {
+			t.Errorf("%q: seqs %v err %v, want a match = %v", q, seqs, err, want)
+		}
+	}
+}
