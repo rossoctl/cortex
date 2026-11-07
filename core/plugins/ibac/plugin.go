@@ -1,7 +1,7 @@
 // Package ibac implements an Intent-Based Access Control plugin for
 // authbridge. IBAC denies outbound HTTP requests that don't align with
 // the user's most-recent declared intent (extracted from inbound A2A
-// messages and surfaced via pctx.Session.LastIntent).
+// messages and surfaced via pctx.LastIntent).
 //
 // Threat model: prompt-injection attacks where an agent's tool-calling
 // LLM follows malicious instructions embedded in untrusted data —
@@ -293,7 +293,7 @@ func (p *IBAC) Capabilities() pipeline.PluginCapabilities {
 		//
 		// a2a-parser is deliberately NOT in this list. RequiresAny is
 		// a same-chain check, and a2a-parser runs in the INBOUND
-		// chain in every in-tree config (it seeds Session.LastIntent
+		// chain in every in-tree config (it seeds pctx.LastIntent
 		// from inbound A2A user turns). IBAC's a2a dependency is the
 		// inbound session-intent seeding, which the validator can't
 		// enforce cross-chain anyway — that dependency is runtime,
@@ -428,12 +428,14 @@ func (p *IBAC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.A
 	// 6. Pull the user's most recent declared intent. Two distinct
 	//    nil pathways, distinguished so operator dashboards can tell
 	//    them apart:
-	//      - no_session: no inbound A2A request has populated the
+	//      - no_session: pctx.LastIntent() is FactNoSession. The request
+	//        has no session: no inbound A2A request has populated the
 	//        active session bucket yet (or session tracking is off
 	//        entirely). Common at agent startup before any user turn.
-	//      - no_intent: a session exists but contains no extractable
-	//        user message (a2a-parser missing from inbound chain, or
-	//        events present but none are user-role A2A requests).
+	//      - no_intent: a session exists but has no extractable user
+	//        message. pctx.LastIntent() is FactNone (see its reasons), or
+	//        the intent has no user-role text (a2a-parser missing from
+	//        inbound chain, for example).
 	//
 	//    Both states mean "IBAC has no user intent to align against"
 	//    — i.e., the request is either genuinely user-less (agent
@@ -446,7 +448,8 @@ func (p *IBAC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.A
 	//      - deny: treat as misconfiguration, Reject 403. Right for
 	//        deployments where every outbound is user-driven and a
 	//        missing intent should surface as a hard failure.
-	if pctx.Session == nil {
+	intent := pctx.LastIntent()
+	if intent.State == pipeline.FactNoSession {
 		action := describeAction(pctx, p.cfg.JudgeInference)
 		if p.cfg.NoIntentPolicy == NoIntentPolicyAllow {
 			pctx.Record(pipeline.Invocation{
@@ -471,8 +474,7 @@ func (p *IBAC) OnRequest(ctx context.Context, pctx *pipeline.Context) pipeline.A
 		})
 		return pipeline.DenyStatus(403, "ibac.no_session", "no active session for outbound request")
 	}
-	intent := pctx.Session.LastIntent()
-	intentText := extractIntentText(intent)
+	intentText := extractIntentText(intent.Event)
 	if intentText == "" {
 		action := describeAction(pctx, p.cfg.JudgeInference)
 		if p.cfg.NoIntentPolicy == NoIntentPolicyAllow {
