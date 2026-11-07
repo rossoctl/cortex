@@ -30,6 +30,31 @@ headline and the subagent lanes.
 
 The laptop data has no inbound, A2A or response-side guardrail traffic.
 
+A second pass covered the whole archive: 1,331 sessions, 259,635 events.
+
+| Rule | Result |
+|---|---|
+| Only exact pairs merge | 114,236 exact pairs. 0 guessed pairs, 0 duplicate request RequestIDs, 0 duplicate responses. |
+| A merged row sits at its request | 0 responses arrived before their request. |
+| A merged response always has a status | Yes: no merged response lacks one. |
+| Merging hides no response-side action | 0 `deny`, `modify`, `allow` or shadow actions on any response. |
+| Single rows | 103 denials. 53 requests and 14 tunnel opens have no response. For 52 and 14 of them, later responses exist in the same session, so they were never answered. Tunnel opens never carry a status. |
+| Merged cell widths | TOKENS p50 17, p99 19, max 20 (`100.0k(−10.3k)→1.4k`). COST max 18. BYTES max 17. PLUGIN max 16. |
+
+44 real exchanges with full bodies, rendered with agentop's `showDetail` at 160
+columns. Average rows per half, today's folds:
+
+| Kind | Request | Response |
+|---|---|---|
+| Claude Code main | 102 | 84 |
+| Claude Code subagent | 121 | 101 |
+| Bob | 68 | 52 |
+| OpenCode | 66 | 38 |
+| HTTP, tunnels | about 33 | about 21 |
+
+About 10 response rows repeat request fields, and `invocations` (every plugin,
+skips included) is up to half of a short request.
+
 ## Goals
 
 - One row per exchange: one line says what the call sent, how long it took, what
@@ -46,8 +71,9 @@ The laptop data has no inbound, A2A or response-side guardrail traffic.
 - Grouping the exchanges of one user prompt.
 - Stable `#` numbers across `o` (load older page). They change there today, and
   this design does not change that.
-- Changes to the proxy, the session API, the archive or the wire format. All the
-  work is in `cmd/agentop/tui`.
+- Changes to the proxy, the session API, the archive or the wire format. The
+  work is in `cmd/agentop/tui`, plus one exported constant in
+  `core/session/timeline` (section 1).
 
 ## Design
 
@@ -71,6 +97,17 @@ its request:
   - an opaque tunnel that has not closed
   - a fire-and-forget request
   - a response whose request is not held (a page edge before `o`)
+
+  **Lost requests.** This rule applies to a request row with no response that
+  is not a tunnel open. The row is **lost** when it is older than
+  `timeline.HostLostAfter` (10 minutes), measured at the later of now and the
+  session's newest event. This is the rule
+  `Timeline.LoseUnanswered` applies, so the Events pane and the Timeline agree.
+  `hostLostAfter` in `core/session/timeline/hosts.go` becomes the exported
+  `HostLostAfter`, and `LoseUnanswered` uses it. A tunnel open is never lost: it
+  carries no status, and a passthrough tunnel can stay open for hours (6.4 hours
+  measured). A late response still merges into a lost row, which then reads
+  like any other merged row.
 - **The CONNECT fold is unchanged.** A bridged row holds `tunnel`, `event` and
   `resp`.
 - **Opaque tunnels merge.** Their open and close rows share a RequestID, so they
@@ -91,10 +128,10 @@ hidden only when no plugin acted on either half.
 | PHASE | **Removed.** On merged rows it would always read the same. A blank STATUS says that no response arrived yet. | — |
 | ACTION / PLUGIN | `eventAction` over the invocations of both halves and the folded tunnel. PLUGIN counts **distinct** plugin names: the same two plugins observe both halves of most inference calls, and a plain union reads "4 plugins". | the shown value |
 | METHOD | The request's value. | unchanged |
-| STATUS | The response's status. Blank while in flight. A denial shows its own status. | response status |
+| STATUS | The response's status. Blank while in flight. `lost` for a lost request. A denial shows its own status. | response status (`lost` and blank sort as 0) |
 | DURATION | The response's duration. | response duration |
 | BYTES | `↑<request> ↓<response>`, the format `bytesCell` already uses for tunnels. | sum |
-| TOKENS | `<prompt>→<output>` in compact form, `70.6k→9`. With a tool-prune saving, `70.6k(−3.1k)→9`. Blank until the response arrives. | total tokens |
+| TOKENS | `<prompt>→<output>`, each in `formatCompact` form, `70.6k→9`. With a tool-prune saving, `70.6k(−3.1k)→9`. Blank until the response arrives. The cap rises from 18 to 20. | total tokens |
 | COST | The exchange total (`cost_usd`), with the saving in parentheses. | total |
 | HOST | The request's host. | unchanged |
 
@@ -102,8 +139,9 @@ hidden only when no plugin acted on either half.
 is nothing left to fold. The sort's exchange tie-break stays, keyed on the row's
 own arrival index.
 
-The compact TOKENS cell (`70.6k(−3.1k)→9` is 14 wide) stays under today's cap
-of 18. Removing PHASE gives 8 columns back to the others. With savings, the
+The merged TOKENS cell is 17 wide at the median and 20 at most (measured), so
+its cap rises from 18 to 20. Removing PHASE gives 8 columns back, which pays for
+the 2 and leaves 6 for the others. With savings, the
 default columns need 200 columns today. At 160, TOKENS and COST drop off.
 `measureColumns` measures the merged TOKENS and COST cells, as it measures the
 current ones.
@@ -187,9 +225,10 @@ Rules:
    | Row | Note |
    |---|---|
    | in flight | `waiting for response…` |
+   | lost | `no response recorded` |
    | denied | `denied by <plugin>: no upstream call` |
    | response whose request is not held | `request not loaded: press o in events` |
-   | opaque tunnel, not closed | `tunnel open` |
+   | opaque tunnel, not closed | `no close recorded yet` |
 
 10. **A response that arrives while its detail is open fills its section in
     place.** After each events-table rebuild, the pane checks its exchange. If
@@ -199,6 +238,30 @@ Rules:
 11. **Fetches.** Against a projecting proxy, the pane fetches each half that
     `needsFullEvent` names, with its raw capture. `applyDetailEvent` accepts a
     reply whose seq is either half's, and writes it back to that half.
+
+12. **The RESPONSE section leaves out what the request already shows.** Each
+    of `client`, `direction`, `host`, `httpMethod`, `httpPath`, `requestId` and
+    `sessionId` is left out of the response tree when it equals the request's
+    value. `at` stays: it is the response's own time. `y` still writes the full
+    event.
+13. **`invocations` starts folded in both sections.** The section title already
+    names the plugins that acted, and the folded node lists every plugin,
+    skips included. Enter opens it. A search with a match inside opens it, as
+    for any fold.
+
+Measured effect of rules 12 and 13 on the 44 exchanges, average rows per half:
+
+| Kind | Request | Response |
+|---|---|---|
+| Claude Code main | 102 → 71 | 84 → 64 |
+| Claude Code subagent | 121 → 86 | 101 → 77 |
+| Bob | 68 → 44 | 52 → 32 |
+| OpenCode | 66 → 42 | 38 → 18 |
+| HTTP, tunnels | about 33 → 16 | about 21 → 12 |
+
+An HTTP or tunnel exchange then fits on one screen of about 40 rows. For an
+inference call, RESPONSE starts one to two screens down, so `Tab` (rule 5) is
+how the reader gets there.
 
 The plugin detail pane (Pipeline, Catalog) shares the viewport and is not
 changed.
@@ -260,6 +323,16 @@ behaviour is visual (the pattern `tui/table` and the events-pane tests use):
 11. **Yank.** `y` in each section writes that half's event.
 12. **Settings.** A file with a `PHASE` column entry and `sortColumn: PHASE` loads,
     and renders chronological.
+13. **Lost.** A non-tunnel request with no response, 11 minutes older than the
+    newest event, shows `lost` and the `no response recorded` note. At 9 minutes
+    it shows blank. A tunnel open of any age never shows `lost`. A response that
+    arrives after `lost` merges, and the row shows its status.
+14. **Response fields.** The RESPONSE tree leaves out `host` when it equals the
+    request's and keeps it when it differs. `y` on the response writes `host`.
+15. **Folded invocations.** Both sections open with `invocations` folded. A
+    search for a skipped plugin's name opens the fold.
+16. **TOKENS width.** `100.0k(−10.3k)→1.4k` renders whole, with no cut, in a
+    session whose widest cell it is.
 
 Before the PR, run `go vet ./...`, `gofmt -l .` and `go test ./...` in
 `cmd/agentop` with `GOWORK=off`. Then run `agentop observe` against the laptop
