@@ -39,6 +39,7 @@ type SharedStore interface {
 	Delete(key string)
 }
 
+// Context is the shared state passed through the plugin pipeline.
 // Plugins read and mutate fields directly — there is no separate mutation API.
 type Context struct {
 	Direction Direction
