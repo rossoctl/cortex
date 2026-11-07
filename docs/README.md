@@ -82,7 +82,7 @@ effect. The full contract is in [`proxy-contract.md`](proxy-contract.md#hot-relo
 | `cost_ledger:` | The durable per-minute cost ledger | control plane | restart | [`laptop-service.md`](laptop-service.md) |
 | `session:` | Session store TTL, event/session caps, id headers | both | restart | [`framework-architecture.md`](framework-architecture.md#operator-configuration-session) |
 | `session.archive:` | The laptop's on-disk session history, its bounds, and clearing it | control plane | restart | [`laptop-service.md`](laptop-service.md#session-history-is-kept-in-cortexsessions) |
-| `stats:` | The diagnostic listener (`/stats`, `/config`, `/reload/status`, `/pricing/table`, `/tls-bridge/unread`), default `:9093` | control plane | accepted but not applied until a restart: a [known gap](proxy-contract.md#hot-reload), not a contract | [`framework-architecture.md`](framework-architecture.md) |
+| `stats:` | The diagnostic listener (`/stats`, `/config`, `/reload/status`, `/pricing/table`, `/tls-bridge/unread`), default `:9093` | control plane | restart | [`framework-architecture.md`](framework-architecture.md) |
 | `spiffe:` | SVID sourcing over the Workload API and the `/opt` file mirror | data plane | restart | [`architecture.md`](architecture.md#spiffe-configuration) |
 | `listener:` | Listener addresses, `roles`, interception mode, `skip_hosts`, `responses_websockets` | both | restart | [`cmd/README.md`](../cmd/README.md) (ports, roles), [`framework-architecture.md`](framework-architecture.md#skipping-infrastructure-hosts-listenerskip_hosts) (reload rules, `skip_hosts`), [`framework-architecture.md`](framework-architecture.md#responses-api-websockets-listenerresponses_websockets) (`responses_websockets`) |
 | `mtls:` | Transport mTLS on the listeners, both deployment shapes | data plane | restart | [`framework-architecture.md`](framework-architecture.md#8a-mtls-layer) |
@@ -103,9 +103,10 @@ worked out at runtime do not show:
   `cmd/cortex/main.go`)
 - the session store limits and whether the session archive runs
 
-After a `stats.address` reload, `/config` shows the new address while the stats
-server stays on the old one until a restart
-([known gap](proxy-contract.md#hot-reload)).
+A refused reload does not change `/config`. For example, a reload that changes
+`stats.*` is refused, and `/reload/status` reports the error. `/config` then still
+shows the address the stats server listens on, which it keeps until a restart
+([hot-reload](proxy-contract.md#hot-reload)).
 
 ## In this directory
 
