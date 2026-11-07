@@ -447,9 +447,11 @@ func sampleEvent() *pipeline.SessionEvent {
 // focused, which is the only state where `y` yanks.
 func newTestDetailModel(t *testing.T) *model {
 	t.Helper()
+	e := sampleEvent()
 	m := &model{
 		pane:        paneDetail,
-		detailEvent: sampleEvent(),
+		detailEvent: e,
+		detailRow:   eventRow{event: e},
 		width:       200,
 		height:      40,
 		bodyHeight:  12,

@@ -200,7 +200,7 @@ func eventsAlignModel(t *testing.T, width int) *model {
 	return m
 }
 
-// costRecord attaches a cost record the way the proxy does, so costCell has a figure to show.
+// costRecord attaches a cost record the way the proxy does, so exchangeCostCell has a figure to show.
 func costRecord(t *testing.T, ev event.Event) map[string]json.RawMessage {
 	t.Helper()
 	raw, err := json.Marshal(ev)

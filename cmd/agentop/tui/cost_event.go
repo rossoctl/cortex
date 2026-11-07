@@ -39,33 +39,6 @@ func decodeCostEvent(e *pipeline.SessionEvent) (costEvent, bool) {
 	return event.Decode(e)
 }
 
-// promptCost is what the PROMPT of one request cost, read off the cost record.
-//
-// Not computed here any more. The record carries a prompt-only figure precisely so a
-// request row can show one: the gateway reports a single total for the call and cannot
-// answer "what did the prompt cost", while a flat prompt-times-one-rate figure overstates
-// a cache-heavy turn — the common case for a long-running agent — by close to an order of
-// magnitude, because a cache read bills at ~0.1x input and a write at ~1.25x.
-//
-// False when the proxy could not model it, which is an older proxy or a model with no rate,
-// rather than a $0.00 that would read as a free prompt.
-func promptCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
-	ev, ok := event.Record(resp)
-	if !ok || ev.PromptUSD <= 0 {
-		return 0, false
-	}
-	return ev.PromptUSD, true
-}
-
-// outputCost is what the RESPONSE of one exchange cost: its generated tokens at the output
-// rate, nothing of the prompt. The other half of promptCost, read off the same record, so
-// each row's COST cell answers for that row alone.
-//
-// False for a producer that publishes no output figure — an older proxy, or a model whose
-// output tier has no rate — and a response row then renders blank, exactly as a request row
-// does without a prompt figure. Deliberately NOT backfilled with the exchange total: that
-// is what made this column read as cumulative, and a total in a per-row cell is wrong by
-// more than it is right.
 // recordUnit is the unit resp's cost record is in, "" for dollars or no record. See
 // event.Event.Currency: the record's figures are named in USD for history's sake only.
 func recordUnit(resp *pipeline.SessionEvent) string {
@@ -76,12 +49,15 @@ func recordUnit(resp *pipeline.SessionEvent) string {
 	return ev.Currency
 }
 
-func outputCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
+// exchangeCost is what one exchange cost in total: the record's cost_usd (#1681). It is the
+// figure an authoritative gateway sets, and on real traffic prompt_usd + output_usd equal it
+// to within 1% in 5,704 of 5,707 records.
+func exchangeCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
 	ev, ok := event.Record(resp)
-	if !ok || ev.OutputUSD <= 0 {
+	if !ok || ev.CostUSD <= 0 {
 		return 0, false
 	}
-	return ev.OutputUSD, true
+	return ev.CostUSD, true
 }
 
 // savingSign distinguishes a realized saving from a projected one. A projected
@@ -95,38 +71,8 @@ func savingSign(projected bool) string {
 	return "−"
 }
 
-// formatTokensWithSaving renders "681,300(−9.9k)" — the total this row is
-// responsible for, with what was kept off it in parentheses. A bare total when
-// there was no saving.
-//
-// The total is exact-with-commas and an ESTIMATED saving compact: the total is a measured
-// count worth reading precisely, an estimate a figure where trailing digits would be false
-// precision. That is the estimate marker — precision itself — and it is why a counted saving
-// renders exact instead.
-//
-// No third glyph for estimated. "~" already means projected, and every saving published today
-// is estimated (cost/settle derives them from a byte ratio), so a marker on 100% of rows would
-// distinguish nothing while adding noise to every one. The moment a component reports a
-// saving counted by a tokenizer, it renders differently here without a legend to learn.
-//
-// The record itself carries the flag verbatim, so an operator pressing enter sees
-// "estimated": true regardless of how the cell reads.
-func formatTokensWithSaving(total int, saved float64, projected, estimated bool) string {
-	if total <= 0 {
-		return ""
-	}
-	cell := formatCount(total)
-	if saved <= 0 {
-		return cell
-	}
-	figure := formatCompact(saved)
-	if !estimated {
-		figure = formatCount(int(saved))
-	}
-	return cell + "(" + savingSign(projected) + figure + ")"
-}
-
-// formatUSDWithSaving is formatTokensWithSaving for money: "$0.2546(−$0.0037)".
+// formatUSDWithSaving renders a cost with what was saved in parentheses: "$0.2546(−$0.0037)".
+// A bare total when there was no saving.
 //
 // Both halves are rendered at a fixed 4 decimal places rather than through
 // formatUSD's variable precision. Stacked in one column, "$0.255" above

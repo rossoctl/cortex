@@ -14,14 +14,13 @@ import (
 
 // TOKENS AND COST ARE AS WIDE AS THE SESSION NEEDS (#1208).
 //
-// Both are sized for a tool-prune saving appended to the figure — "1,048,576(−12.3k)",
+// Both are sized for a tool-prune saving appended to the figure — "100.0k(−10.3k)→99.9k",
 // "<$0.0001(−<$0.0001)" — which most pipelines never produce. At a fixed 17 and 19 that
 // reservation was blank on every row, and because both right-align it sat between
 // DURATION and the figure, and between TOKENS and COST.
 
-// The two shapes a tool-prune saving arrives in. formatTokensWithSaving renders an
-// estimate compact ("−12.3k") and a counted saving exactly ("−12,300"), so the counted
-// one is the widest a TOKENS cell gets, and what its cap is sized for.
+// The two shapes a tool-prune saving arrives in. exchangeTokensCell renders both compact
+// ("−12.3k"), so the two must size TOKENS alike.
 var (
 	// estimatedSaving is how every saving published today arrives.
 	estimatedSaving = &event.Saving{Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037, Estimated: true}
@@ -91,11 +90,11 @@ func TestMeasureColumns_FitTheFiguresWithoutASaving(t *testing.T) {
 		id   eventColumnID
 		want string
 	}{
-		{colTokens, "1,048,576"},
-		{colCost, "$0.2546"},
+		{colTokens, "1.0M→208"},
+		{colCost, "$0.2767"},
 	} {
 		if got := cellAt(t, m, 0, tc.id); got != tc.want {
-			t.Errorf("%s request cell = %q, want %q with no padding in front", tc.id, got, tc.want)
+			t.Errorf("%s cell = %q, want %q with no padding in front", tc.id, got, tc.want)
 		}
 		if got, want := renderedWidth(t, m, tc.id), lipgloss.Width(tc.want); got != want {
 			t.Errorf("%s is %d wide, want %d — the width of %q", tc.id, got, want, tc.want)
@@ -112,8 +111,7 @@ func TestMeasureColumns_FitTheFiguresWithoutASaving(t *testing.T) {
 }
 
 // With a saving the column grows to the whole cell, saving included — for a seven-digit
-// prompt with a counted saving too, the widest TOKENS cell there is. At a cap of 17 that
-// one rendered "1,048,576(−12,30…".
+// prompt with a counted saving too.
 func TestMeasureColumns_GrowToASaving(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -192,8 +190,8 @@ func TestMeasureColumns_IgnoreTheSearchAndTheInactiveToggle(t *testing.T) {
 		rows   int
 		marked int
 	}{
-		// Every row stays, and the narrow exchange's two rows are marked.
-		{"search", func(m *model) { m.search = map[paneID]string{paneEvents: "narrow.example"} }, 4, 2},
+		// Every row stays, and the narrow exchange's one row is marked.
+		{"search", func(m *model) { m.search = map[paneID]string{paneEvents: "narrow.example"} }, 2, 1},
 		// No plugin acted on these fixture rows, so hiding inactive rows hides all of them.
 		{"hide inactive", func(m *model) { m.hideInactive = true }, 0, 0},
 	} {
@@ -332,8 +330,9 @@ func TestFitsContentCellsIgnoreWidth(t *testing.T) {
 		sizingExchange(t, "r1", "a.example", time.Now(), 215_305, nil),
 		sizingExchange(t, "r2", "b.example", time.Now(), 1_048_576, estimatedSaving),
 		sizingExchange(t, "r3", "c.example", time.Now(), 1_048_576, countedSaving))
-	rows := buildEventRows(m.events["s"])
-	ids, partner := computeEventPairs(rows)
+	built := buildEventRows(m.events["s"])
+	ids, partner := computeEventPairs(built)
+	rows, _ := mergeExchanges(built, partner)
 
 	checked := 0
 	for _, c := range eventColumns {
@@ -341,7 +340,7 @@ func TestFitsContentCellsIgnoreWidth(t *testing.T) {
 			continue
 		}
 		for i, er := range rows {
-			cc := cellContext{m: m, rows: rows, partner: partner, i: i, row: er, ids: ids}
+			cc := cellContext{m: m, row: er, ids: ids}
 			cc.width = c.width
 			wide := c.cell(cc)
 			cc.width = 1

@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
+	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session/timeline"
 )
 
@@ -522,8 +523,11 @@ func (m *model) revealPendingSeq() bool {
 		m.rebuildEventsTable()
 		break
 	}
+	// Either half: the Timeline names a tool by the response that called it (#1681).
 	for i, r := range m.visibleRows {
-		if r.event != nil && r.event.Seq == m.revealSeq && eventSession(m.selectedSess, r.event) == m.selectedSess {
+		if rowHolds(r, func(e *pipeline.SessionEvent) bool {
+			return e.Seq == m.revealSeq && eventSession(m.selectedSess, e) == m.selectedSess
+		}) {
 			setCursorVisible(&m.eventsTbl, i)
 			m.selectedEventKey = keyOf(r.event)
 			m.revealSeq, m.revealSess = 0, ""

@@ -718,14 +718,17 @@ type model struct {
 	// detailRow is the full events-pane row (event + any folded CONNECT
 	// tunnel) the detail view was opened on. Kept so layout() can re-render
 	// the detail pane on resize without re-deriving the tunnel fold.
-	detailRow    eventRow
-	detailPlugin *apiclient.PipelinePlugin
-	// The event detail pane as a tree — see detail_tree.go. detailHead is the header blocks
-	// drawn above it, detailLines what the last render drew, detailFolds the folds the reader
-	// opened or closed, and detailCursorPath the node the cursor is on and detailCursorOff its
-	// line within that node, so a re-render can put it back.
+	detailRow eventRow
+	// detailNum is the # the row showed when Enter opened it, and detailSummary the
+	// exchange's figures. The detail's fixed line quotes both (#1681).
+	detailNum     string
+	detailSummary string
+	detailPlugin  *apiclient.PipelinePlugin
+	// The event detail pane as a tree — see detail_tree.go. detailTree holds the page's two
+	// sections (see sectionsRoot), detailLines what the last render drew, detailFolds the
+	// folds the reader opened or closed, and detailCursorPath the node the cursor is on and
+	// detailCursorOff its line within that node, so a re-render can put it back.
 	detailTree       *node
-	detailHead       []string
 	detailLines      []treeLine
 	detailFolds      map[string]foldChoice
 	detailCursorPath string
@@ -1914,8 +1917,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ev := apiclient.StreamEvent(msg)
 		m.handleStreamEvent(ev)
 		// Re-pump the same channel for the next message. A single apiclient
-		// goroutine fills the channel for the duration of ctx.
-		return m, streamPump(m.streamCh)
+		// goroutine fills the channel for the duration of ctx. A response for the
+		// exchange open in the detail pane fills it (#1681).
+		return m, tea.Batch(streamPump(m.streamCh), m.fillDetailResponse(ev.Event))
 
 	case spendLoadedMsg:
 		m.applySpendLoaded(msg)
@@ -2602,7 +2606,7 @@ func (m *model) paneView() string {
 		}
 	case paneDetail:
 		title = m.sessionHeader(m.selectedSess, "event")
-		body = m.detailVp.View()
+		body = m.detailFixedLine() + "\n" + m.detailVp.View()
 	case panePipeline:
 		// Names itself, because nothing else does any more. While the tab strip
 		// was in the title it said which of the two top-level views was showing;

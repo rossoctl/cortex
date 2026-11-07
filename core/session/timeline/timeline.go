@@ -255,7 +255,7 @@ func endStrandedTools(t *Timeline) {
 	}
 }
 
-// LoseUnanswered ends, as lost, each request still unanswered hostLostAfter before the later
+// LoseUnanswered ends, as lost, each request still unanswered HostLostAfter before the later
 // of now and the session's newest event. The one part of a timeline that depends on the clock,
 // so a cache can keep the rest until the session records something new and run this on each
 // read. It writes h.End, so a cache runs it on a copy whose Hosts it owns.
@@ -265,7 +265,7 @@ func (t *Timeline) LoseUnanswered(now time.Time) {
 		ref = now
 	}
 	for i := range t.Hosts {
-		if h := &t.Hosts[i]; h.End == nil && ref.Sub(h.Start) > hostLostAfter {
+		if h := &t.Hosts[i]; h.End == nil && ref.Sub(h.Start) > HostLostAfter {
 			loseHost(h)
 		}
 	}

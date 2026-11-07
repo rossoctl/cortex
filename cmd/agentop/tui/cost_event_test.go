@@ -11,8 +11,8 @@ import (
 
 // costWire is the exact JSON the proxy publishes as a cost record.
 //
-// It carries what this UI now READS rather than computes: the exchange total, the
-// prompt-only figure a request row shows, and the saving attributed to tool-prune. The
+// It carries what this UI now READS rather than computes: the exchange total the COST
+// cell shows, the prompt-only and output-only figures, and the saving attributed to tool-prune. The
 // figures are the ones agentop used to derive itself — prompt 1,300 x 3.8e-6 + 680,000 x
 // 3.8e-7 = 0.26334, saving 9,899 tokens at the cache-read rate = 0.0038 — so the rendered
 // cells below are unchanged by the move. That is the point: same output, one owner.
@@ -81,40 +81,40 @@ func TestDecodeCostEvent(t *testing.T) {
 	}
 }
 
-// TestExchangeCellsSumToTotal is the invariant behind splitting the column: the
-// request row's prompt count plus the response row's generated count equal the
-// billed total. Before the split the response row showed TotalTokens, so the
-// prompt was counted once on each row and the generated tokens were invisible.
+// TestExchangeCellsSumToTotal: one row is one exchange (#1681), so its TOKENS cell shows the
+// prompt and the output side by side, and its sort value is their sum: the billed total.
 func TestExchangeCellsSumToTotal(t *testing.T) {
 	inf := agentTurn()
 	req := reqEvent(t, bigPromptWire)
 	req.RequestID = "aaa"
 	resp := respEvent(costWire, inf)
 	resp.RequestID = "aaa"
-	rows := []eventRow{{event: req}, {event: resp}}
-	partner := map[int]int{0: 1, 1: 0}
-	m := &model{}
+	row := eventRow{event: req, resp: resp}
 
-	// 1,300 + 680,000 = 681,300 prompt tokens, with the saving in parens:
-	// 34,645 bytes × 681,300 tokens / 2,384,550 bytes ≈ 9.9k tokens.
-	gotReq := m.tokensCell(rows, partner, 0, req)
-	if gotReq != "681,300(−9.9k)" {
-		t.Errorf("request TOKENS = %q, want %q", gotReq, "681,300(−9.9k)")
-	}
-	gotResp := m.tokensCell(rows, partner, 1, resp)
-	if gotResp != "1,850" {
-		t.Errorf("response TOKENS = %q, want %q", gotResp, "1,850")
+	// 1,300 + 680,000 = 681,300 prompt tokens, with the saving in parens, then the
+	// 1,850 generated.
+	if got := exchangeTokensCell(row); got != "681.3k(−9.9k)→1.9k" {
+		t.Errorf("TOKENS = %q, want %q", got, "681.3k(−9.9k)→1.9k")
 	}
 	if want := pipeline.PromptTokensOf(inf) + inf.OutputTokens; want != inf.TotalTokens {
-		t.Errorf("the two rows sum to %d but the provider billed %d", want, inf.TotalTokens)
+		t.Errorf("prompt and output sum to %d but the provider billed %d", want, inf.TotalTokens)
+	}
+	if got := rowTokens(cellContext{row: row}); got != inf.TotalTokens {
+		t.Errorf("rowTokens = %d, want the billed %d", got, inf.TotalTokens)
+	}
+	// No usage reported: blank, not "0→0". A blank cell reads as "not measured".
+	for _, inf := range []*pipeline.InferenceExtension{nil, {}} {
+		if got := exchangeTokensCell(eventRow{event: req, resp: respEvent("", inf)}); got != "" {
+			t.Errorf("cell = %q, want empty", got)
+		}
 	}
 }
 
 // TestExchangeCellsSurviveAReportedTotalThatDisagrees: TokenUsage.Fill prefers the
 // provider's own total_tokens over the sum of the parts, so the two are not
-// obliged to agree. Each row must keep reporting its own measured half rather than
-// back-deriving anything from the total — otherwise a gateway that rounds, or
-// counts a tier this display does not, would silently corrupt both cells.
+// obliged to agree. The cell must keep reporting the measured prompt and output rather
+// than back-deriving anything from the total — otherwise a gateway that rounds, or
+// counts a tier this display does not, would silently corrupt the cell.
 func TestExchangeCellsSurviveAReportedTotalThatDisagrees(t *testing.T) {
 	inf := agentTurn()
 	inf.TotalTokens = 999_999 // a reported total that is not prompt+output
@@ -122,148 +122,59 @@ func TestExchangeCellsSurviveAReportedTotalThatDisagrees(t *testing.T) {
 	req.RequestID = "aaa"
 	resp := respEvent(costWire, inf)
 	resp.RequestID = "aaa"
-	rows := []eventRow{{event: req}, {event: resp}}
-	partner := map[int]int{0: 1, 1: 0}
-	m := &model{}
+	row := eventRow{event: req, resp: resp}
 
-	if got := m.tokensCell(rows, partner, 0, req); got != "681,300(−9.9k)" {
-		t.Errorf("request TOKENS = %q, want the measured prompt regardless of the reported total", got)
+	if got := exchangeTokensCell(row); got != "681.3k(−9.9k)→1.9k" {
+		t.Errorf("TOKENS = %q, want the measured prompt and output regardless of the reported total", got)
 	}
-	if got := m.tokensCell(rows, partner, 1, resp); got != "1,850" {
-		t.Errorf("response TOKENS = %q, want the measured output regardless of the reported total", got)
-	}
-	if strings.Contains(m.tokensCell(rows, partner, 1, resp), "999") {
-		t.Error("the reported total leaked into a cell")
+	if got := rowTokens(cellContext{row: row}); got != 683_150 {
+		t.Errorf("rowTokens = %d, want the measured 683,150: the reported total leaked in", got)
 	}
 }
 
-// TestCostCellPhases: the request row is a modelled prompt figure, the response
-// row the exchange total as budget-track reported it. The response figure
-// INCLUDES the request figure — it is not a generated-token cost, because no
-// plugin publishes an output rate.
+// TestCostCellPhases: the merged row's COST is the exchange total as budget-track
+// reported it (#1681), with the tool-prune saving in parentheses.
 func TestCostCellPhases(t *testing.T) {
 	inf := agentTurn()
 	req := reqEvent(t, bigPromptWire)
 	req.RequestID = "aaa"
 	resp := respEvent(costWire, inf)
 	resp.RequestID = "aaa"
-	rows := []eventRow{{event: req}, {event: resp}}
-	partner := map[int]int{0: 1, 1: 0}
-	m := &model{}
 
-	// Prompt: 1,300 × 3.8e-6 + 680,000 × 3.8e-7 = 0.00494 + 0.2584 = 0.26334.
-	// Saving: 9.9k tokens at the cache-read rate = 0.0038.
-	if got := m.costCell(rows, partner, 0, req); got != "$0.2633(−$0.0038)" {
-		t.Errorf("request COST = %q, want %q", got, "$0.2633(−$0.0038)")
+	if got := exchangeCostCell(eventRow{event: req, resp: resp}); got != "$0.2824(−$0.0038)" {
+		t.Errorf("COST = %q, want %q", got, "$0.2824(−$0.0038)")
 	}
-	// Output: 1,850 × 1.9e-5 = 0.03515. NOT the 0.2824 exchange total also on that
-	// record — the response row answers for the response, and 0.2824 beside 1,850
-	// output tokens implies a $153/MTok output rate to anyone reading the row alone.
-	if got := m.costCell(rows, partner, 1, resp); got != "$0.0352" {
-		t.Errorf("response COST = %q, want %q", got, "$0.0352")
+	// No response yet: blank, not a figure modelled from the request.
+	if got := exchangeCostCell(eventRow{event: req}); got != "" {
+		t.Errorf("COST with no response = %q, want empty", got)
 	}
-	// And the column must not read as cumulative: the response cell is strictly less
-	// than the prompt cell for this turn, where the old total was greater.
-	respUSD, _ := outputCost(resp)
-	promptUSD, _ := promptCost(resp)
-	if respUSD >= promptUSD {
-		t.Errorf("response %v is not below prompt %v; the cell is still a total", respUSD, promptUSD)
-	}
-	// Without the budget-track event nobody reported a cost, so the response cell
-	// is blank rather than modelled from the request's rates.
-	if got := m.costCell(rows, partner, 1, respEvent("", inf)); got != "" {
+	// Without the budget-track event nobody reported a cost, so the cell is blank
+	// rather than modelled from the request's rates.
+	if got := exchangeCostCell(eventRow{event: req, resp: respEvent("", inf)}); got != "" {
 		t.Errorf("unpriced response COST = %q, want empty", got)
 	}
-	// An older proxy publishes a total but no output figure. The cell stays blank
-	// instead of falling back to that total, which is the regression this guards.
-	old := recordEvent(t, event.Event{CostUSD: 0.2824, Settled: true, PromptUSD: 0.26334})
+	// An older proxy publishes the total but no prompt or output split. The total is
+	// what the cell shows, so the cell still has it.
+	old := recordEvent(t, event.Event{CostUSD: 0.2824, Settled: true})
 	old.Inference = inf
-	if got := m.costCell(rows, partner, 1, old); got != "" {
-		t.Errorf("response COST without output_usd = %q, want empty (not the total)", got)
+	if got := exchangeCostCell(eventRow{event: req, resp: old}); got != "$0.2824" {
+		t.Errorf("COST from an older proxy = %q, want the total", got)
 	}
 }
 
-// TestPromptCostIsTierWeighted: pricing the whole prompt at the uncached input
-// rate overstates a cache-heavy turn by close to an order of magnitude, which is
-// the common shape for a long-running agent. The weighted figure must be well
-// below the flat one.
-// The tier weighting now happens in the proxy (core/cost/settle computes the prompt-only
-// figure; core/cost/pricing weights the tiers), and is tested there against the real rate
-// table. What agentop must still get right is reading the published figure and declining to
-// invent one — a $0.00 in this column reads as a free prompt.
-func TestPromptCost_ReadsThePublishedFigure(t *testing.T) {
-	inf := &pipeline.InferenceExtension{InputTokens: 1_000, CacheReadTokens: 99_000}
-	// A tier-weighted figure, well below the 0.38 a flat input rate would produce for
-	// the same 100k prompt: that gap is why the proxy weights it rather than the UI.
-	e := recordEvent(t, event.Event{CostUSD: 0.05, Settled: true, PromptUSD: 0.0414})
-	e.Inference = inf
-	got, ok := promptCost(e)
-	if !ok {
-		t.Fatal("no cost figure")
+// TestExchangeCost_ReadsThePublishedFigure: agentop reads the exchange total off the
+// record and declines to invent one. A $0.00 in the COST column reads as a free call.
+func TestExchangeCost_ReadsThePublishedFigure(t *testing.T) {
+	got, ok := exchangeCost(recordEvent(t, event.Event{CostUSD: 0.05, Settled: true, PromptUSD: 0.0414}))
+	if !ok || got != 0.05 {
+		t.Errorf("exchangeCost = %v (ok=%v), want the published 0.05", got, ok)
 	}
-	if got != 0.0414 {
-		t.Errorf("promptCost = %v, want the published 0.0414", got)
-	}
-	if flat := float64(pipeline.PromptTokensOf(inf)) * 3.8e-6; got >= flat {
-		t.Errorf("published figure %v is not below the flat %v; the weighting was lost", got, flat)
-	}
-	// No record, and a record with no prompt figure, both decline rather than showing 0.
-	if _, ok := promptCost(respEvent("", inf)); ok {
+	// No record, and a record with no total, both decline rather than showing 0.
+	if _, ok := exchangeCost(respEvent("", agentTurn())); ok {
 		t.Error("a response with no record produced a cost figure")
 	}
-	if _, ok := promptCost(recordEvent(t, event.Event{CostUSD: 0.05, Settled: true})); ok {
-		t.Error("a record with no prompt figure produced one")
-	}
-}
-
-// TestOutputCost_ReadsThePublishedFigure is promptCost's mirror: the output half is
-// published by the proxy too, so agentop reads it rather than deriving it from the total.
-//
-// The derivation it must not do is CostUSD − PromptUSD. Here that difference is 0.0086
-// while the modelled output is 0.0352 — the gap is the gateway's discount against the rate
-// table, and subtracting would report it as the completion's cost. It can also go negative,
-// which is why the figure is priced rather than differenced.
-func TestOutputCost_ReadsThePublishedFigure(t *testing.T) {
-	e := recordEvent(t, event.Event{
-		CostUSD: 0.2719, Settled: true, PromptUSD: 0.26334, OutputUSD: 0.03515,
-	})
-	e.Inference = agentTurn()
-	got, ok := outputCost(e)
-	if !ok {
-		t.Fatal("no output figure")
-	}
-	if got != 0.03515 {
-		t.Errorf("outputCost = %v, want the published 0.03515", got)
-	}
-	if diff := 0.2719 - 0.26334; got <= diff {
-		t.Errorf("outputCost %v is the total-minus-prompt %v; it must be priced, not differenced", got, diff)
-	}
-	// No record, and a record with no output figure, both decline rather than showing 0
-	// or the exchange total.
-	if _, ok := outputCost(respEvent("", agentTurn())); ok {
-		t.Error("a response with no record produced an output figure")
-	}
-	if _, ok := outputCost(recordEvent(t, event.Event{CostUSD: 0.05, Settled: true})); ok {
-		t.Error("a record with no output figure produced one")
-	}
-}
-
-// TestGeneratedTokensCellReadsOutputTokens: the response row shows what was
-// generated, and shows nothing rather than "0" when no usage was reported — a
-// blank cell reads as "not measured", a 0 as "generated nothing".
-//
-// Asserts OutputTokens only. The CompletionTokens fallback in the cell is not
-// exercised because it cannot fire: TokenUsage.Fill sets CompletionTokens from
-// the same Output value, so a test feeding one without the other would pin a
-// shape no parser produces.
-func TestGeneratedTokensCellReadsOutputTokens(t *testing.T) {
-	if got := generatedTokensCell(respEvent("", &pipeline.InferenceExtension{OutputTokens: 1_850})); got != "1,850" {
-		t.Errorf("cell = %q, want 1,850", got)
-	}
-	for _, inf := range []*pipeline.InferenceExtension{nil, {}} {
-		if got := generatedTokensCell(respEvent("", inf)); got != "" {
-			t.Errorf("cell = %q, want empty", got)
-		}
+	if _, ok := exchangeCost(recordEvent(t, event.Event{Settled: true, PromptUSD: 0.0414})); ok {
+		t.Error("a record with no total produced one")
 	}
 }
 
@@ -296,9 +207,8 @@ func TestPromptTokensSumsTheSplitTiers(t *testing.T) {
 
 // TestTokensCellFitsASevenDigitPrompt pins the TOKENS column width against the
 // worst realistic case. Million-token contexts are in service, and bubbles
-// truncates each cell at the column width with an ellipsis — so at 15 this
-// rendered "1,048,576(−1…", silently dropping the saving, which is the half of
-// the cell that appears nowhere else in the UI.
+// truncates each cell at the column width with an ellipsis — so a narrow column
+// drops the saving, which is the half of the cell that appears nowhere else in the UI.
 //
 // Asserts against the column definition rather than a transcribed number, so
 // narrowing the column fails here instead of quietly clipping in production.
@@ -311,11 +221,10 @@ func TestTokensCellFitsASevenDigitPrompt(t *testing.T) {
 	req.RequestID = "big"
 	resp := respEvent(costWire, inf)
 	resp.RequestID = "big"
-	rows := []eventRow{{event: req}, {event: resp}}
-	m := &model{}
+	row := eventRow{event: req, resp: resp}
 
-	cell := m.tokensCell(rows, map[int]int{0: 1, 1: 0}, 0, req)
-	if !strings.HasPrefix(cell, "1,048,576(−") {
+	cell := exchangeTokensCell(row)
+	if !strings.HasPrefix(cell, "1.0M(−") {
 		t.Fatalf("TOKENS cell = %q, want a 7-digit prompt with its saving", cell)
 	}
 	width := columnWidth(t, "TOKENS")
@@ -325,7 +234,7 @@ func TestTokensCellFitsASevenDigitPrompt(t *testing.T) {
 	}
 	// The same guard for COST, whose widest realistic value is a sub-cent saving
 	// against a dollar total.
-	costStr := m.costCell(rows, map[int]int{0: 1, 1: 0}, 0, req)
+	costStr := exchangeCostCell(row)
 	if n := len([]rune(costStr)); n > columnWidth(t, "COST") {
 		t.Errorf("COST cell %q is %d cols but the column is %d", costStr, n, columnWidth(t, "COST"))
 	}
@@ -372,7 +281,7 @@ func TestEventMethodSharesTheColumnWidth(t *testing.T) {
 
 // TestFormatUSDCellNeverRendersAFreeCall: %.4f turns anything under $0.00005 into
 // "$0.0000", which reads as a call that cost nothing. decodeCostEvent declines a
-// zero cost and promptCost declines an unpriced model precisely so that reading
+// zero cost and exchangeCost declines a record with no total precisely so that reading
 // never appears, and rounding at the formatting layer would undo both.
 //
 // Reachable: 100 cache-read tokens at a typical rate is $0.000038.
@@ -424,24 +333,23 @@ func TestMethodColumnDistinguishesDatedModelIDs(t *testing.T) {
 	}
 }
 
-// Precision IS the estimate marker: an estimated saving renders compact because trailing
-// digits would be false precision, and a counted one renders exact. No extra glyph — "~"
-// already means projected, and every saving published today is estimated, so a marker on
-// every row would distinguish nothing.
-func TestFormatTokensWithSaving_PrecisionMarksTheEstimate(t *testing.T) {
+// The saving's sign says whether it was applied: "−" for a saving tool-prune made, "~" for
+// a projected one (on_error: observe), where the money was still spent.
+func TestExchangeTokensCell_SavingSignMarksAProjection(t *testing.T) {
 	for _, tc := range []struct {
-		name                 string
-		projected, estimated bool
-		want                 string
+		name      string
+		projected bool
+		want      string
 	}{
-		{"estimated and applied", false, true, "681,300(−9.9k)"},
-		{"estimated and projected", true, true, "681,300(~9.9k)"},
-		// A saving counted by a tokenizer, which nothing publishes yet: exact digits,
-		// because they would be real.
-		{"counted and applied", false, false, "681,300(−9,899)"},
+		{"applied", false, "681.3k(−9.9k)→1.9k"},
+		{"projected", true, "681.3k(~9.9k)→1.9k"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := formatTokensWithSaving(681_300, 9_899, tc.projected, tc.estimated)
+			resp := recordEvent(t, event.Event{CostUSD: 0.2824, Settled: true, Avoided: []event.Saving{{
+				Component: "tool-prune", TokensAvoided: 9_899, Estimated: true, Projected: tc.projected,
+			}}})
+			resp.Inference = agentTurn()
+			got := exchangeTokensCell(eventRow{event: &pipeline.SessionEvent{Phase: pipeline.SessionRequest}, resp: resp})
 			if got != tc.want {
 				t.Errorf("= %q, want %q", got, tc.want)
 			}

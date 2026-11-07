@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -76,10 +75,9 @@ func seedAgentTurns(store *session.Store, sid string, n int) {
 }
 
 // TestSplitColumnsRender drives the real row builder over seeded traffic and
-// asserts the TOKENS and COST cells land on the rows they belong to. This is the
-// regression guard for the split: a request row must carry a prompt total with
-// its saving, a response row the generated count and what generating them cost.
-// Neither cell may be a running total of the other.
+// asserts the TOKENS and COST cells of the exchange's one row (#1681): the prompt
+// with its saving and the generated count in TOKENS, and the exchange total with
+// its saving in COST.
 func TestSplitColumnsRender(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
@@ -89,35 +87,21 @@ func TestSplitColumnsRender(t *testing.T) {
 	if view == nil || len(view.Events) != 2 {
 		t.Fatalf("seeded view = %+v, want 2 events", view)
 	}
-	evs := view.Events
-	rows := []eventRow{{event: &evs[0]}, {event: &evs[1]}}
-	partner := map[int]int{0: 1, 1: 0}
-	m := &model{}
+	built := buildEventRows(view.Events)
+	_, partner := computeEventPairs(built)
+	rows, _ := mergeExchanges(built, partner)
+	if len(rows) != 1 {
+		t.Fatalf("%d rows, want 1: the request and its response are one exchange", len(rows))
+	}
 
-	reqTokens := m.tokensCell(rows, partner, 0, &evs[0])
-	reqCost := m.costCell(rows, partner, 0, &evs[0])
-	respTokens := m.tokensCell(rows, partner, 1, &evs[1])
-	respCost := m.costCell(rows, partner, 1, &evs[1])
-
-	// Request: prompt total (1,300 + 680,000) with the saving in parentheses.
-	if reqTokens != "681,300(−9.9k)" {
-		t.Errorf("request TOKENS = %q, want %q", reqTokens, "681,300(−9.9k)")
+	// Prompt total (1,300 + 680,000) with the saving in parentheses, then the 1,850
+	// generated.
+	if got := exchangeTokensCell(rows[0]); got != "681.3k(−9.9k)→1.9k" {
+		t.Errorf("TOKENS = %q, want %q", got, "681.3k(−9.9k)→1.9k")
 	}
-	if !strings.HasPrefix(reqCost, "$0.2633(−$") {
-		t.Errorf("request COST = %q, want a prompt total with a saving", reqCost)
-	}
-	// Response: generated tokens only, and what those generated tokens cost —
-	// 1,850 × 1.9e-5 = 0.03515, not the 0.2824 exchange total on the same record.
-	// Both cells on this row therefore describe this row.
-	if respTokens != "1,850" {
-		t.Errorf("response TOKENS = %q, want %q", respTokens, "1,850")
-	}
-	if respCost != "$0.0352" {
-		t.Errorf("response COST = %q, want %q", respCost, "$0.0352")
-	}
-	// The halves must not both claim the prompt: that was the pre-split bug.
-	if reqTokens == respTokens {
-		t.Error("both rows show the same token figure")
+	// The 0.2824 exchange total on the record, with the saving.
+	if got := exchangeCostCell(rows[0]); got != "$0.2824(−$0.0038)" {
+		t.Errorf("COST = %q, want %q", got, "$0.2824(−$0.0038)")
 	}
 }
 

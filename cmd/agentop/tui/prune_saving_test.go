@@ -94,16 +94,17 @@ func TestSavingFor_SurvivesAnUnpricedRecord(t *testing.T) {
 		t.Errorf("USD = %v, want 0 — no rate covered it", got.USD)
 	}
 	// And the cost column must stay empty rather than show $0.00.
-	if _, ok := promptCost(e); ok {
-		t.Error("promptCost reported a figure for an unpriced record")
+	req := &pipeline.SessionEvent{Phase: pipeline.SessionRequest}
+	if got := exchangeCostCell(eventRow{event: req, resp: e}); got != "" {
+		t.Errorf("COST = %q for an unpriced record, want empty", got)
 	}
 }
 
 // The legacy key still decodes, because a proxy older than the rename writes only that one.
 func TestSavingFor_ReadsTheLegacyKey(t *testing.T) {
 	raw, err := json.Marshal(event.Event{
-		PromptUSD: 0.0395,
-		Avoided:   []event.Saving{{Component: "tool-prune", TokensAvoided: 10, USD: 0.001}},
+		CostUSD: 0.0395,
+		Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 10, USD: 0.001}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -115,8 +116,8 @@ func TestSavingFor_ReadsTheLegacyKey(t *testing.T) {
 	if _, ok := pruneSavingFor(e); !ok {
 		t.Error("saving not read from the legacy key")
 	}
-	if usd, ok := promptCost(e); !ok || usd != 0.0395 {
-		t.Errorf("promptCost from the legacy key = %v (ok=%v), want 0.0395", usd, ok)
+	if usd, ok := exchangeCost(e); !ok || usd != 0.0395 {
+		t.Errorf("exchangeCost from the legacy key = %v (ok=%v), want 0.0395", usd, ok)
 	}
 }
 

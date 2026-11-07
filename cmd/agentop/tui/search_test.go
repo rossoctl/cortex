@@ -550,20 +550,6 @@ func TestSearch_EverySessionsCellIsSearchable(t *testing.T) {
 	})
 }
 
-// TestSearch_ReqMarksEveryRequestRow is the report that started this: PHASE shows "req", and
-// the search did not read PHASE.
-func TestSearch_ReqMarksEveryRequestRow(t *testing.T) {
-	forceColour(t)
-	m := newSearchEventsModel(t, "r0.test", "r1.test", "r2.test")
-	m.events["s"][1].Phase = pipeline.SessionResponse
-	m.rebuildEventsTable()
-	typeKeys(m, "/req")
-	press(m, tea.KeyEnter)
-	checkLooks(t, "after /req", m.eventsTbl, map[string]string{
-		"r0.test": "marked", "r1.test": "plain", "r2.test": "selected",
-	})
-}
-
 // TestSearch_EventsMatchAHostPastItsCut: HOST is cut to its column; the whole host matches.
 func TestSearch_EventsMatchAHostPastItsCut(t *testing.T) {
 	forceColour(t)

@@ -24,7 +24,6 @@ const (
 	colIndex    eventColumnID = "#"
 	colTime     eventColumnID = "TIME"
 	colDir      eventColumnID = "DIR"
-	colPhase    eventColumnID = "PHASE"
 	colAction   eventColumnID = "ACTION"
 	colPlugin   eventColumnID = "PLUGIN"
 	colMethod   eventColumnID = "METHOD"
@@ -38,16 +37,11 @@ const (
 
 // cellContext is what a cell function needs beyond the event itself.
 //
-// Two cells (TOKENS, COST) pair a request with its response to show a saving, so
-// they need the row slice and the partner index as well as the model. Passing one
-// struct keeps every cell function the same shape, rather than some taking an
+// Passing one struct keeps every cell function the same shape, rather than some taking an
 // event and others taking five arguments.
 type cellContext struct {
-	m       *model
-	rows    []eventRow
-	partner map[int]int
-	i       int
-	row     eventRow
+	m   *model
+	row eventRow
 	// ids pairs a request event with its response, computed once per rebuild by
 	// computeEventPairs. Carried here rather than recomputed per cell.
 	ids map[*pipeline.SessionEvent]int
@@ -72,6 +66,8 @@ type cellContext struct {
 	// action and plugin are that one rowAction result.
 	action string
 	plugin string
+	// lost is rowLost's answer for this row, decided once per rebuild against one instant.
+	lost bool
 	// width is the declared width of the column being filled, set per column in
 	// the row loop.
 	//
@@ -127,8 +123,8 @@ type eventColumn struct {
 	// defaultOn is whether the column shows without the user asking.
 	defaultOn bool
 	// desc is the one-line explanation shown beside the name in the picker. Twelve
-	// abbreviated headers are not self-describing — DIR, PHASE and METHOD least of
-	// all — and a picker that only lists names asks the user to guess.
+	// abbreviated headers are not self-describing — DIR and METHOD least of all —
+	// and a picker that only lists names asks the user to guess.
 	desc string
 	// keep ranks a column against being dropped when the terminal is too narrow.
 	// Higher survives longer.
@@ -145,45 +141,23 @@ type eventColumn struct {
 	//
 	// Deliberately NOT the rendered cell string. durationCell emits "340ms" and
 	// "1.20s", which compare lexically as 340ms > 1.20s — backwards, and on exactly
-	// the column issue #865 names. TOKENS ("1,048,576(−12.3k)") and COST
-	// ("$0.2546(−$0.0037)") carry thousands separators, a currency sigil and a
-	// parenthesised second figure, none of which sort either.
+	// the column issue #865 names. TOKENS ("70.6k(−3.1k)→9") and COST
+	// ("$0.2546(−$0.0037)") carry a "k" suffix, a currency sigil and a parenthesised
+	// second figure, none of which sort either.
 	//
-	// Takes a cellContext rather than an event because TOKENS and COST are
-	// exchange-level: a request row's figures live on its paired RESPONSE, reached
-	// through the same pairedResponse(rows, partner, i, ev) call their cells make.
-	// Sharing the input means the key and the cell cannot disagree about which
-	// response a row belongs to.
+	// Takes a cellContext rather than an event because a row is an exchange (#1681), and
+	// the figures of most columns are on its response. Sharing the input means the key
+	// and the cell cannot disagree about which response a row belongs to.
 	sortKey func(cellContext) sortValue
-	// pairFold makes a request and its response sort as ONE exchange (#1251). Set
-	// only where the figure this column reports belongs to the exchange but lands on
-	// just ONE of its two rows; foldPairKeys carries the mechanism.
-	//
-	// DURATION and STATUS are those: the proxy only knows them once the call
-	// returned, so they sit on the response and the request row is blank.
-	//
-	// NOT SET for TOKENS and COST, and that is the subtle half. Those columns are
-	// already exchange-level per row: a request row reaches its paired response for
-	// the PROMPT figure while the response row reports the COMPLETION figure, so
-	// both rows carry a real number that matches the cell beside it. Folding them to
-	// a shared max would make the sort disagree with the number on screen — the one
-	// thing the sortKey doc above forbids — because a 25k-token prompt row would
-	// rank by its own 25k while its 87-token response row claimed 25k too.
-	//
-	// NOT SET for TIME either: a sort by TIME is already chronological, which is the
-	// order a pair arrives in, so a fold would buy nothing and would flatten the
-	// microsecond gap that correctly puts a request before its response.
-	pairFold bool
 }
 
 // rowKey is one rendered row's sort position: the column's value, plus which
 // exchange the row belongs to.
 //
 // exchange is an ARRIVAL index — a position in the session's full row list, before
-// hideInactive drops any — and the two rows of a folded pair share the request's
-// (see foldPairKeys). It is only ever compared, never used to index a slice, so it
-// stays meaningful next to a filtered `keys`. Tie-breaking on it is what keeps a
-// request beside its response when another exchange has the same key.
+// hideInactive drops any. Each row is one exchange (#1681), so exchange is the row's own
+// arrival index. It is only ever compared, never used to index a slice, so it stays
+// meaningful next to a filtered `keys`.
 type rowKey struct {
 	val      sortValue
 	exchange int
@@ -228,10 +202,10 @@ func strKey(s string) sortValue { return sortValue{str: s} }
 // durationSortKey ranks a tunnel row with the blank ones: its DURATION is how long the
 // tunnel stayed open, not how long a call took.
 func durationSortKey(c cellContext) sortValue {
-	if c.row.event.Tunnel {
-		return numKey(0)
+	if a := answer(c.row); !a.Tunnel {
+		return numKey(a.Duration)
 	}
-	return numKey(c.row.event.Duration)
+	return numKey(0)
 }
 
 // Keep ranks. Only the ordering matters, not the values.
@@ -245,7 +219,7 @@ const (
 // display order.
 var eventColumns = []eventColumn{
 	{id: colIndex, width: 4, defaultOn: true, keep: keepHigh,
-		desc: "exchange number; a request and its response share one, numbered per subagent block",
+		desc: "exchange number: one per request and its response, numbered per subagent block",
 		cell: func(c cellContext) string {
 			if id, ok := c.blockIDs[c.row.event]; ok {
 				return strconv.Itoa(id)
@@ -261,7 +235,7 @@ var eventColumns = []eventColumn{
 	// truncates to hundredths, so it collates two events a day apart as equal and
 	// sorts 23:59 above 00:01 from the following morning.
 	{id: colTime, width: 11, defaultOn: true, keep: keepNormal,
-		desc:    "wall-clock time the message was recorded",
+		desc:    "wall-clock time the request was recorded",
 		cell:    func(c cellContext) string { return c.row.event.At.Format("15:04:05.00") },
 		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.At.UnixNano()) }},
 	{id: colDir, width: 4, defaultOn: true, keep: keepLow,
@@ -283,12 +257,6 @@ var eventColumns = []eventColumn{
 		// The bare direction, not the guttered cell: a sort groups like with like,
 		// and the gutter is not a value.
 		sortKey: func(c cellContext) sortValue { return strKey(shortDirection(c.row.event.Direction)) }},
-	// 6 is the heading with a sort glyph; no value is wider than "resp". It was 7 for
-	// the bracket glyphs that used to prefix the phase ("└│ resp").
-	{id: colPhase, width: 6, defaultOn: true, keep: keepNormal,
-		desc:    "req or resp; a denied request shows as req",
-		cell:    func(c cellContext) string { return shortPhase(c.row.event.Phase) },
-		sortKey: func(c cellContext) sortValue { return strKey(shortPhase(c.row.event.Phase)) }},
 	// c.action, the value the cell shows — not actionRank. The rank orders by
 	// severity for topInvocation's "which invocation headlines this row" question;
 	// a user sorting the ACTION column is grouping like with like, and a severity
@@ -324,9 +292,14 @@ var eventColumns = []eventColumn{
 	// own 7 columns and of DURATION's 9 met between a status and its duration, which
 	// put the widest gap in the row between two values of the same exchange.
 	{id: colStatus, width: 7, defaultOn: true, keep: keepNormal, rightAlign: true,
-		desc:    "HTTP status of the response",
-		cell:    func(c cellContext) string { return statusCell(*c.row.event) },
-		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.StatusCode) }, pairFold: true},
+		desc: "HTTP status of the response: blank while on its way, lost when none came",
+		cell: func(c cellContext) string {
+			if c.lost {
+				return "lost"
+			}
+			return statusCell(*answer(c.row))
+		},
+		sortKey: func(c cellContext) sortValue { return numKey(answer(c.row).StatusCode) }},
 	// The Duration itself. This is the column #865 is about ("the events with the
 	// longest duration"), and the one where sorting the rendered string is most
 	// obviously wrong: "340ms" > "1.20s" lexically.
@@ -335,8 +308,8 @@ var eventColumns = []eventColumn{
 	// produces ("12.34s", "59m59s").
 	{id: colDuration, width: 9, defaultOn: true, keep: keepLow, rightAlign: true,
 		desc:    "how long the exchange took",
-		cell:    func(c cellContext) string { return durationCell(*c.row.event) },
-		sortKey: durationSortKey, pairFold: true},
+		cell:    func(c cellContext) string { return durationCell(*answer(c.row)) },
+		sortKey: durationSortKey},
 	// On by default since #1309. It was off because only an opaque tunnel's close row had
 	// a figure, so the column cost every terminal 17 columns of mostly blank — and an
 	// operator asking how big the request that overran a model's context window was found
@@ -344,31 +317,27 @@ var eventColumns = []eventColumn{
 	// not the body. Ordinary request and response rows now carry a figure, so the reason
 	// for opt-in is gone.
 	//
-	// 17 is the tunnel close row's pair at its widest ("↑999.9GB ↓999.9GB"); an ordinary
-	// row reports one side and is strictly narrower. keepLow stays — it is still the
-	// first column a narrow terminal drops. The total is the sort key, which is also
-	// right for a one-sided row, so a descending sort finds the biggest payload either
-	// way.
+	// 17 is both directions at their widest ("↑999.9GB ↓999.9GB"). A merged row shows the
+	// request's ↑ and the response's ↓ (#1681), so this is now the width of an ordinary
+	// row too. keepLow stays — it is still the first column a narrow terminal drops. The
+	// total is the sort key, so a descending sort finds the biggest exchange.
 	{id: colBytes, width: 17, defaultOn: true, keep: keepLow, rightAlign: true,
-		desc:    "body bytes: ↑ request sent, ↓ response received (tunnels show both)",
-		cell:    func(c cellContext) string { return bytesCell(*c.row.event) },
-		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.BytesUp + c.row.event.BytesDown) }},
-	// 18: sized for a SEVEN-digit prompt with a counted saving, "1,048,576(−12,300)".
-	// Million-token contexts are in service, and bubbles truncates a cell at the column
-	// width, which drops the saving — the half of this cell that appears nowhere else.
-	// It was 17, sized for an ESTIMATED saving, which renders compact
-	// ("1,048,576(−12.3k)"); formatTokensWithSaving prints a counted one exactly, so
-	// the first counted saving would have rendered "1,048,576(−12,30…".
-	//
-	// That is the cap, not the width it renders at (fitsContent). The saving only
-	// renders when tool-prune saved something, and without it no cell is wider than
-	// "1,048,576" — so a fixed width left eight or more blank columns on every row,
-	// between DURATION and the figure.
-	{id: colTokens, width: 18, defaultOn: true, keep: keepLow, rightAlign: true, fitsContent: true,
-		desc: "tokens used, and what tool-prune saved",
+		desc: "body bytes: ↑ request sent, ↓ response received",
 		cell: func(c cellContext) string {
-			return c.m.tokensCell(c.rows, c.partner, c.i, c.row.event)
+			e := *answer(c.row)
+			e.BytesUp, e.BytesDown = exchangeBytes(c.row)
+			return bytesCell(e)
 		},
+		sortKey: func(c cellContext) sortValue {
+			up, down := exchangeBytes(c.row)
+			return numKey(up + down)
+		}},
+	// 20: the widest merged cell measured on real traffic, "100.0k(−10.3k)→99.9k" (#1681).
+	// A cap, not the width: fitsContent renders the column as wide as the session's widest
+	// cell, and without a saving most cells are "70.6k→9".
+	{id: colTokens, width: 20, defaultOn: true, keep: keepLow, rightAlign: true, fitsContent: true,
+		desc:    "prompt→output tokens, and what tool-prune saved",
+		cell:    func(c cellContext) string { return exchangeTokensCell(c.row) },
 		sortKey: func(c cellContext) sortValue { return numKey(rowTokens(c)) }},
 	// 19 fits the widest cell the formatter can produce: "<$0.0001(−<$0.0001)",
 	// where both halves fell under the four-decimal floor. The ordinary shape is
@@ -376,10 +345,8 @@ var eventColumns = []eventColumn{
 	//
 	// A cap, like TOKENS': without a saving the ordinary cell is "$0.2546", at 7.
 	{id: colCost, width: 19, defaultOn: true, keep: keepLow, rightAlign: true, fitsContent: true,
-		desc: "estimated cost, and what tool-prune saved",
-		cell: func(c cellContext) string {
-			return c.m.costCell(c.rows, c.partner, c.i, c.row.event)
-		},
+		desc:    "the exchange's estimated cost, and what tool-prune saved",
+		cell:    func(c cellContext) string { return exchangeCostCell(c.row) },
 		sortKey: func(c cellContext) sortValue { return numKey(rowCostUSD(c)) }},
 	// keepHigh: the column #866 was filed about. Last in display order, so without
 	// a rank it is the first thing a narrow terminal drops — which is how it came
@@ -416,62 +383,25 @@ func (c eventColumn) align(v string) string {
 	return v
 }
 
-// rowTokens and rowCostUSD are the numeric readings behind the TOKENS and COST
-// cells, for sorting (#865).
-//
-// They mirror tokensCell / costCell arm for arm, including the pairedResponse
-// guard, because a sort that disagreed with the number on screen would be worse
-// than no sort: the user sorts to find the biggest figure and then reads the cell
-// to see what it was. Kept beside the column definitions rather than folded into
-// the cells, because the cells return preformatted strings — the formatting is the
-// part that cannot be sorted.
-//
-// Zero means "nothing to order by" — no figure published, or a request whose
-// response has not landed — and lands at the bottom of a descending sort.
+// rowTokens and rowCostUSD are the numeric readings behind the TOKENS and COST cells, for
+// sorting (#865) and for a subagent block's rollup: the exchange's totals (#1681). Zero means
+// "nothing to order by" — no figure published, or no response yet — and lands at the bottom
+// of a descending sort.
 func rowTokens(c cellContext) int {
-	ev := c.row.event
-	switch ev.Phase {
-	case pipeline.SessionResponse:
-		if ev.Inference == nil {
-			return 0
-		}
-		if n := ev.Inference.OutputTokens; n > 0 {
-			return n
-		}
-		return ev.Inference.CompletionTokens
-	case pipeline.SessionRequest:
-		resp := pairedResponse(c.rows, c.partner, c.i, ev)
-		if resp == nil {
-			return 0
-		}
-		return pipeline.PromptTokensOf(resp.Inference)
-	default:
+	resp := exchangeResp(c.row)
+	if resp == nil || resp.Inference == nil {
 		return 0
 	}
+	return pipeline.PromptTokensOf(resp.Inference) + outputTokens(resp.Inference)
 }
 
 func rowCostUSD(c cellContext) float64 {
-	ev := c.row.event
-	switch ev.Phase {
-	case pipeline.SessionResponse:
-		usd, ok := outputCost(ev)
-		if !ok {
-			return 0
-		}
-		return usd
-	case pipeline.SessionRequest:
-		resp := pairedResponse(c.rows, c.partner, c.i, ev)
-		if resp == nil {
-			return 0
-		}
-		usd, ok := promptCost(resp)
-		if !ok {
-			return 0
-		}
-		return usd
-	default:
+	resp := exchangeResp(c.row)
+	if resp == nil {
 		return 0
 	}
+	usd, _ := exchangeCost(resp)
+	return usd
 }
 
 // defaultColumnSelection is the set shown before the user chooses.
@@ -511,7 +441,7 @@ func selectedColumns(sel map[eventColumnID]bool) []eventColumn {
 // bubbles v1.0.0, headersView renders
 // runewidth.Truncate(col.Title, col.Width, "…"), and Truncate leaves a string
 // whose width EQUALS the limit alone. Every header plus one glyph fits its
-// declared width, with DIR (4 of 4), PHASE (6 of 6), STATUS (7 of 7) and
+// declared width, with DIR (4 of 4), STATUS (7 of 7) and
 // DURATION (9 of 9) exactly on the boundary — so no column had to be widened and
 // fitColumns' arithmetic is untouched. TestTableColumns_SortGlyphFitsEveryWidth
 // pins that, since a longer header or a tighter width would silently start

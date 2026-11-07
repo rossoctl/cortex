@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -19,22 +18,11 @@ import (
 // checks the summary rows it holds, and the proxy's search route checks what the summary drops
 // and the capture. A row matches when either side matches it. Nothing is fetched to check a row.
 
-// detailHas reports whether the detail pane, opened on r, shows q: in a header line, or in a
-// line of the tree with every fold open. It reads the lines before wrapping, with the matcher
+// detailHas reports whether the detail pane, opened on r, shows q: in a line of either section
+// with every fold open, the header lines too. It reads the lines before wrapping, with the matcher
 // the pane's own search uses. So a row it reports opens on a highlighted match.
 func detailHas(r eventRow, q string) bool {
-	head, root := detailContent(r)
-	for _, h := range head {
-		for _, l := range strings.Split(h, "\n") {
-			if find.Contains(ansi.Strip(l), q) {
-				return true
-			}
-		}
-	}
-	if root == nil {
-		return false
-	}
-	for _, l := range renderTree(root, foldState{all: true}) {
+	for _, l := range renderTree(detailContent(r, false), foldState{all: true}) {
 		if find.Contains(ansi.Strip(l.text), q) {
 			return true
 		}
@@ -108,6 +96,11 @@ func (m *model) sendDetailSearch(forward, inclusive bool) tea.Cmd {
 		e := *r.event
 		r.event = &e
 		r.raw, _ = m.heldRaw(&e)
+		if r.resp != nil {
+			resp := *r.resp
+			r.resp = &resp
+			r.respRaw, _ = m.heldRaw(&resp)
+		}
 		rows = append(rows, r)
 	}
 	client, gen, sel := m.client, m.detailSearchGen, m.selectedSess
@@ -153,7 +146,8 @@ func runDetailSearch(ctx context.Context, c *apiclient.Client, gen uint64, sel s
 		if ctx.Err() != nil {
 			return msg // dropped: its answer is not used, and a row with a capture is slow to check
 		}
-		msg.hits[keyOf(r.event)] = found[eventSession(sel, r.event)][r.event.Seq] || detailHas(r, q)
+		seqs := found[eventSession(sel, r.event)]
+		msg.hits[keyOf(r.event)] = seqs[r.event.Seq] || (r.resp != nil && seqs[r.resp.Seq]) || detailHas(r, q)
 	}
 	return msg
 }
@@ -255,11 +249,20 @@ func (m *model) detailNewRows() []int {
 		}
 		s := eventSession(m.selectedSess, r.event)
 		_, checked := d.hits[keyOf(r.event)]
-		if r.event.Seq > d.last[s] || (!checked && r.event.Seq > d.newest[s]) {
+		// newestSeq: a response that lands after the answer changes a row the answer checked.
+		if newestSeq(r) > d.last[s] || (!checked && r.event.Seq > d.newest[s]) {
 			out = append(out, i)
 		}
 	}
 	return out
+}
+
+// newestSeq is the seq of the newer half of row r (#1681).
+func newestSeq(r eventRow) uint64 {
+	if r.resp != nil {
+		return max(r.event.Seq, r.resp.Seq)
+	}
+	return r.event.Seq
 }
 
 func (m *model) detailSearching() bool {

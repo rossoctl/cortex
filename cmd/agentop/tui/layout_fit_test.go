@@ -176,6 +176,11 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	m.rebuildPipelineTable()
 	m.rebuildCatalogTable()
 	m.rebuildAgentsTable()
+	if p == paneDetail && len(events) > 0 {
+		// An event on the page, so the fixed line above the viewport is measured too (#1681).
+		m.detailEvent = &m.events["sess-1"][0]
+		m.detailRow = eventRow{event: m.detailEvent}
+	}
 	m.layout()
 	return m
 }

@@ -1094,7 +1094,7 @@ agentop is for, and the other four are surfaces you visit and leave.
   100% of rows. Avoided spend now lives per session in the sessions table and per
   series in the `$` breakdown; volume readings live in the Usage pane.
 - **Events**: per-session event table. `c` opens a column picker — a popup with
-  a checkbox and a one-line description per column, since thirteen abbreviated
+  a checkbox and a one-line description per column, since twelve abbreviated
   headers are not self-describing.
 
   The picker is also where sorting lives: `s` orders the table by the column
@@ -1109,27 +1109,26 @@ agentop is for, and the other four are surfaces you visit and leave.
   90ms before 1.20s, and TOKENS orders 900 before 1,048,576. Blank cells — a
   request whose response has not landed, or a figure the proxy could not model —
   sort to the bottom of a descending view rather than crowding the end you sorted
-  toward. Sorting never changes the `#` exchange pairing or the per-row token and
-  cost figures; it reorders the finished rows only.
+  toward. Sorting never changes the `#` numbers or a row's figures. It reorders the
+  finished rows only.
 
-  The thirteen default columns together need ~185 terminal columns, so the table
+  The twelve default columns together need about 180 terminal columns, so the table
   drops what does not fit and the footer says how many (`→ N more columns`). Columns carry a
   keep rank rather than being equally expendable: DIR, DURATION, TOKENS and COST
   give way first, while `#` and HOST survive longest. That is what makes HOST
   usable at 80 columns despite being last in display order — it is the column
   most people open this pane for.
 
-  All thirteen are on by default: `#` (exchange number, shared by a request and
-  its response), TIME, DIR, PHASE, ACTION, PLUGIN, METHOD, STATUS, DURATION,
-  BYTES, TOKENS, COST, HOST. On a narrow terminal the low-ranked ones are hidden
-  rather than turned off, so widening the window brings them back without
-  touching the picker.
+  All twelve are on by default: `#` (exchange number), TIME, DIR, ACTION, PLUGIN,
+  METHOD, STATUS, DURATION, BYTES, TOKENS, COST, HOST. On a narrow terminal the
+  low-ranked ones are hidden rather than turned off, so widening the window brings
+  them back without touching the picker.
 
   BYTES was the one opt-in column until recently, on the grounds that only an
   opaque tunnel's close row had a figure for it. Ordinary rows now carry one too
-  — a request row the body size it forwarded, a response row the body size that
-  came back — so the reason for hiding it is gone and the picker is where you go
-  to turn it *off*. A blank cell means the proxy counted nothing, which is not
+  — the body size the request forwarded (↑) and the body size that came back (↓) —
+  so the reason for hiding it is gone and the picker is where you go to turn it
+  *off*. A blank cell means the proxy counted nothing, which is not
   the same as a body of zero bytes: a body no plugin asked to buffer is relayed
   unmeasured and reads exactly as a body-less GET does.
 
@@ -1148,51 +1147,57 @@ agentop is for, and the other four are surfaces you visit and leave.
   Live-updates while in view — if the cursor is on the last row, it
   auto-follows new events.
 
-  All thirteen columns, on a terminal wide enough for them. Each `#` appears
-  twice — once for the request, once for its response — which is how a row
-  with no STATUS is read as "still in flight" rather than "failed":
+  All twelve columns, on a terminal wide enough for them. Each row is one
+  exchange: a request and its response. A blank STATUS means the response is on
+  its way. `lost` means an outbound request with a request id got no response
+  for 10 minutes, by the rule the Timeline uses. A tunnel open or an inbound
+  request never shows `lost`. A request the proxy did not stamp with a request id
+  (an older proxy) keeps two rows that share one `#`:
 
   ```
   agentop · ctx-abc-1234…
 
-   #     TIME          DIR   PHASE    ACTION    PLUGIN              METHOD              STATUS   DURATION    BYTES              TOKENS             COST                 HOST
-   1     14:23:07.41   in    req      allow     jwt-validation                                               ↑1.4kB                                                     weather-agent
-   1     14:23:07.52   in    resp     —         —                                       200      118ms       ↓842B                                                      weather-agent
-   2     14:23:07.71   out   req      observe   inference-parser    claude-sonnet-5                          ↑118.6kB                             681,300(−9.9k)   $0.2546(−$0.0037)   api.anthropic.com
-   2     14:23:08.91   out   resp     —         —                   claude-sonnet-5     200      1.20s       ↓12.4kB            412                                     api.anthropic.com
-   3     14:23:09.01   out   req      modify    token-exchange      tools/call                               ↑318B                                                      github-tool-mcp
-   3     14:23:09.10   out   resp     —         —                   tools/call          503      96ms                                                                   github-tool-mcp
+   #   TIME          DIR   ACTION    PLUGIN             METHOD            STATUS   DURATION              BYTES              TOKENS                COST   HOST
+   1   14:23:07.41   in    allow     jwt-validation                          200      118ms       ↑1.4kB ↓842B                                           weather-agent
+   2   14:23:07.71   out   observe   inference-parser   claude-sonnet-5      200      1.20s   ↑118.6kB ↓12.4kB   681.3k(−9.9k)→412   $0.2767(−$0.0037)   api.anthropic.com
+   3   14:23:09.01   out   modify    token-exchange     tools/call           503       96ms              ↑318B                                           github-tool-mcp
+   4   14:23:09.40   out   observe   inference-parser   claude-sonnet-5                               ↑121.0kB                                           api.anthropic.com
 
   ● connected   2.1 events/sec   [/anthropic 2 matches]   [sort: DURATION▼]
   [↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  [s] hide passthru/skip  [p] pause  [/] search  [n/N] next/prev  [esc] back  ·  [?] keys  [q] quit
   ```
 
-  Exchange 3's response has no BYTES figure because there was nothing to count:
+  Exchange 3 has no ↓ figure because there was nothing to count:
   token-exchange could not reach the IdP, so the 503 is the proxy's own and no
-  upstream body ever arrived.
+  upstream body ever arrived. Exchange 4 is still on its way.
 
   `—` in ACTION and PLUGIN means no plugin acted on that message; a `tunnel`
   there is an opaque CONNECT, where METHOD is blank because opaque bytes carry
-  no request line. The tunnel's STATUS arrives on its `resp` row when it closes,
-  with DURATION for how long it stayed open and, in BYTES, what it carried each
-  way — the one row that reports both directions at once, since opaque bytes
-  have no body-and-headers split to separate. That STATUS is the
-  CONNECT's own (200, or 502 when the destination could not be reached), never
-  the destination's, which travels inside the client's TLS. The TOKENS and COST figures on a request
-  row carry what `tool-prune` saved in parentheses — `−` for a counted saving,
-  `~` for a projected one.
-- **Detail**: pretty-printed JSON of a single event. Scroll with arrow
-  keys; `y` yanks to `~/.cortex/agentop-events/<timestamp>-<rand>.json` and
-  shows the path in the footer until you press another key. The directory is
-  private to you (0700, inside `~/.cortex`) and the files are 0600 — yanked
-  events carry identity subjects, raw LLM completions and tool arguments, so
-  they are deliberately not written to a shared location such as `/tmp`.
-  Nothing prunes them: they accumulate until you delete them, and unlike
-  `$TMPDIR` this location is never cleared by the OS. Given what they hold,
-  `rm` the ones you are done with. The footer shows the path expanded rather
-  than abbreviated with `~`, and gives it the whole line while the notice is up;
-  on a terminal too narrow for it the path is truncated from the left, so the
-  filename stays readable.
+  no request line. A tunnel's row gets its STATUS when the tunnel closes, with
+  DURATION for how long it stayed open and, in BYTES, what it carried each way.
+  That STATUS is the CONNECT's own (200, or 502 when the destination could not be
+  reached), never the destination's, which travels inside the client's TLS.
+  TOKENS reads prompt→output. TOKENS and COST carry what `tool-prune` saved in
+  parentheses — `−` for a counted saving, `~` for a projected one.
+- **Detail**: one exchange in full, at the full width of the terminal: a
+  REQUEST section, then a RESPONSE section, each the event as the proxy recorded
+  it, under a title that names its time and the plugins that acted on it. The
+  line above the JSON names the section at the top of the screen, then the
+  exchange's figures. `Tab` moves to the other section's title, and `Enter` folds
+  the section or node at the cursor. The response leaves out the fields equal to
+  the request's (client, direction, host, method, path, ids), and `invocations`
+  starts folded. A half that is missing says why: on its way, lost, denied, or
+  not loaded yet. Move with the arrow keys. `y` yanks the section the cursor is in
+  to `~/.cortex/agentop-events/<timestamp>-<rand>.json` and shows the path in the
+  footer until you press another key. The directory is private to you (0700,
+  inside `~/.cortex`) and the files are 0600 — yanked events carry identity
+  subjects, raw LLM completions and tool arguments, so they are deliberately not
+  written to a shared location such as `/tmp`. Nothing prunes them: they
+  accumulate until you delete them, and unlike `$TMPDIR` this location is never
+  cleared by the OS. Given what they hold, `rm` the ones you are done with. The
+  footer shows the path expanded rather than abbreviated with `~`, and gives it
+  the whole line while the notice is up; on a terminal too narrow for it the path
+  is truncated from the left, so the filename stays readable.
 - **Pipeline**: the active plugin chain in inbound + outbound order, opened by
   `P` from Sessions, Events or Detail; `Esc` returns to whichever of those it was
   opened from. Columns: position, direction, plugin name, DEPS (✓/✗ — see "Plugin
@@ -1473,15 +1478,16 @@ Layered on top of all of them:
 | `Enter` / `→` / `l` | sessions, events | drill into selection; on a subagent block's header row in the events pane, collapse/expand the block instead |
 | `Esc` / `←` / `h` | detail, events | back out |
 | `Esc` | sessions | back to the agents picker when the list was reached by picking an agent there; otherwise (picker mode) tear down port-forward and back to pods. Sessions and the agents picker above it are the only panes that tear down — every key-opened surface returns to its caller instead |
-| `/` | any pane, and the key help | search what the pane shows, as in a text editor: every row stays, the matched characters are highlighted, and the cursor (or, in a text view, the view) jumps to the first match at or after where you pressed `/`, wrapping past the end, as you type. Case-insensitive substring of the text the pane displays: a table's columns that are turned on, at full width (a value cut to `…` matches in full, and so does a column the terminal had no room for); a message's or plugin's detail line by line, before it is wrapped; the key help's and the usage chart's lines as drawn. `deny` finds denied events because ACTION shows it. `Enter` keeps the place; `Esc` puts the place and the previous search back; `Enter` on an empty box clears the search. Each pane keeps its own search; the events pane's and a message's detail's last while you stay with one session (the detail's carries from message to message), and none is saved. On the events pane, `Tab` in the prompt turns on `[x] details`: then `Enter`, `n` and `N` find the next row whose detail view shows the query — every field, the exact capture too. The proxy finds the matches in one pass over memory and the archive (`GET /v1/sessions/{id}/search`), and agentop checks the summary rows it holds itself, so nothing is fetched. The footer counts the matches, and also the matches in events older than the ones agentop holds: press `o` to load those. A Cortex that predates the search says so in the footer |
+| `/` | any pane, and the key help | search what the pane shows, as in a text editor: every row stays, the matched characters are highlighted, and the cursor (or, in a text view, the view) jumps to the first match at or after where you pressed `/`, wrapping past the end, as you type. Case-insensitive substring of the text the pane displays: a table's columns that are turned on, at full width (a value cut to `…` matches in full, and so does a column the terminal had no room for); an exchange's or plugin's detail line by line, before it is wrapped; the key help's and the usage chart's lines as drawn. `deny` finds denied events because ACTION shows it. `Enter` keeps the place; `Esc` puts the place and the previous search back; `Enter` on an empty box clears the search. Each pane keeps its own search; the events pane's and an exchange's detail's last while you stay with one session (the detail's carries from exchange to exchange), and none is saved. On the events pane, `Tab` in the prompt turns on `[x] details`: then `Enter`, `n` and `N` find the next row whose detail view shows the query — in either half, every field, the exact capture too. The proxy finds the matches in one pass over memory and the archive (`GET /v1/sessions/{id}/search`), and agentop checks the summary rows it holds itself, so nothing is fetched. The footer counts the matches, and also the matches in events older than the ones agentop holds: press `o` to load those. A Cortex that predates the search says so in the footer |
 | `n` / `N` | any pane with a search, and the key help | next / previous match, wrapping at both ends; in a text view an off-screen match is scrolled to a third of the way down |
 | `X` | sessions | clear all history: every session this Cortex holds, in memory and on disk. Asks first, with the count and the size on disk; `y` erases, `n`/`esc` keeps. The cost ledger is kept. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer, like `A`: a destructive key should not be advertised on the always-visible line |
 | `x` | sessions, agents | erase the row under the cursor, in memory and on disk: the highlighted session, or every session of the highlighted agent — on *All agents*, everything, as `X`. Asks first, with the count; `y` erases, `n`/`esc` keeps. The cost ledger is kept. An agent still using a session brings it back with its next request. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer, like `X` |
-| `s` | events | toggle hiding exchanges no plugin acted on (default: shown; a request and its response are hidden or shown together; the events footer shows the hidden count) |
+| `s` | events | toggle hiding exchanges no plugin acted on (default: shown; an exchange is hidden only when no plugin acted on either half; the events footer shows the hidden count) |
 | `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `s` sort, `r` reset, `Esc`/`Enter`/`c` close); the selection and sort are saved on close |
 | `s` | column picker | sort by the column under the cursor: descending → ascending → chronological. Pressing it on a different column starts that column descending. `#` is not sortable — its order already *is* chronological |
 | `p` | any | pause/resume stream |
-| `y` | detail | yank event JSON to `~/.cortex/agentop-events` (path stays until the next keypress) |
+| `y` | detail | yank the event of the section the cursor is in (request or response) to `~/.cortex/agentop-events` (path stays until the next keypress) |
+| `Tab` | detail | jump to the other section's title: request or response |
 | `g` / `G` | lists | jump to top / bottom. In the events timeline this also sets where the *next* session opens — see [Where a session opens](#where-a-session-opens) |
 | `o` | events | load the page before the oldest event shown — the timeline's history goes back further than one response holds, and `o` pages backward into it |
 | `t` | events | back to the live tail from a paged-back timeline — resumes receiving updates |
@@ -1691,7 +1697,7 @@ events:
 | `timeline.window` | string | `5m` | timeline-pane window: `5m`, `1h`, `24h` or `all`. A session shorter than it shows `all` |
 | `usage.group` | string | `none` | usage-pane breakdown. `[b]` cycles `none`, `status`, `method`, `plugin`, `host`; a hand-edited file may also use `model`, `endpoint`, `session` or `agent` |
 
-List a column only to change it — the thirteen are all visible until you hide one, and
+List a column only to change it — the twelve are all visible until you hide one, and
 an unrecognised name or sort column is ignored. Inside an entry, always write
 `visible:` explicitly: it is optional to the parser but reads as `false`, so
 `- name: COST` on its own hides COST rather than showing it.
@@ -1708,18 +1714,17 @@ Column ids, in display order — the same headers the picker shows:
 
 | Id | Shows |
 |---|---|
-| `#` | exchange number; a request and its response share one — quote it as `"#"` in YAML, or it reads as a comment |
-| `TIME` | wall-clock time the message was recorded |
+| `#` | exchange number: one per request and its response — quote it as `"#"` in YAML, or it reads as a comment |
+| `TIME` | wall-clock time the request was recorded |
 | `DIR` | `in` = toward your agent, `out` = toward an upstream |
-| `PHASE` | `req`, `resp`, or `denied` |
 | `ACTION` | what took effect: `deny`, `modify`, `observe`, `allow`, or `tunnel` |
 | `PLUGIN` | which plugin acted; blank when none did |
 | `METHOD` | protocol operation: model name, MCP or A2A method |
-| `STATUS` | HTTP status of the response |
+| `STATUS` | HTTP status of the response: blank while it is on its way, `lost` when none came for 10 minutes |
 | `DURATION` | how long the exchange took |
-| `BYTES` | body bytes: ↑ request sent, ↓ response received (tunnels show both); blank when the proxy counted nothing |
-| `TOKENS` | tokens used, and what `tool-prune` saved |
-| `COST` | estimated cost, and what `tool-prune` saved |
+| `BYTES` | body bytes: ↑ request sent, ↓ response received; blank when the proxy counted nothing |
+| `TOKENS` | prompt→output tokens, and what `tool-prune` saved |
+| `COST` | the exchange's estimated cost, and what `tool-prune` saved |
 | `HOST` | host the message was sent to |
 
 A narrow terminal also hides columns to fit, with a `→ N more columns` note in the
@@ -1763,16 +1768,17 @@ and the proxy checks only what the summary drops (`GET /v1/sessions/{id}/search`
 So the search fetches no event. Dropping those fields as well would be ~299x instead
 of ~163x, and the proxy would then have to check them too.
 
-The consequence is worth knowing: the first `↵` on a row fetches that one event in
-full from `/v1/sessions/{id}/events/{seq}`. The detail pane renders the summary
+The consequence is worth knowing: the first `↵` on a row fetches each half of the
+exchange whose bodies are not loaded yet, in full, from
+`/v1/sessions/{id}/events/{seq}`. The detail pane renders the summary
 immediately and the bodies appear when they arrive, so there is no loading screen —
 but on a slow link the message text lands a moment after the rest. Re-opening the
 same row is free; the bodies are kept. If the fetch fails, the pane keeps what it
 has and the error goes to the footer.
 
-`y` yanks whatever the pane is showing, so while the bodies are still in flight — or
-after a failed fetch — it says so in the flash rather than handing you a body-less
-event that looks complete.
+`y` yanks the half the cursor is in. While that half's bodies are still in flight —
+or after a failed fetch — it says so in the flash rather than handing you a
+body-less event that looks complete.
 
 Because a projected event is ~1KB rather than ~200KB, agentop asks for the server's
 full 2000-event ceiling instead of the old 500. A normal session therefore arrives
@@ -1792,16 +1798,18 @@ section: `↵` on it opens it. In it:
 - `forwarded` says whether a plugin rewrote the body, and `forwardedBody` is what
   went upstream when one did.
 - `headers` and `query` are the request's, without credentials.
-- On a response row, `response` has the status, the headers, the body (a compressed
-  one as `[gzip body 12.0kB]`) and `truncated` or `incomplete` when either applies.
+- In the RESPONSE section, `response` has the status, the headers, the body (a
+  compressed one as `[gzip body 12.0kB]`) and `truncated` or `incomplete` when
+  either applies.
 
-The capture comes with the detail fetch, once per row, and agentop keeps it. A row
-has no `raw` section when the archive has no capture for it: an older proxy, a row
-written before capture, or one recorded in the last second. A search does not open
+Each section has its own `raw`. Its capture comes with the fetch of that half, and
+agentop keeps it. A section has no `raw` when the archive has no capture for its
+half: an older proxy, an event written before capture, or one recorded in the last
+second. A search does not open
 `raw`, because it repeats the whole conversation; open it with `↵` to search inside
-it. A row opened from a details search that matches only in the capture opens with
-`raw` open. A row opened from a details search shows its first match, also when the
-match arrives with the fetch. `y` writes the event without its capture.
+it. A row opened from a details search that matches only in a capture opens with
+that half's `raw` open. A row opened from a details search shows its first match, also
+when the match arrives with the fetch. `y` writes the half without its capture.
 
 ## Editing the pipeline
 

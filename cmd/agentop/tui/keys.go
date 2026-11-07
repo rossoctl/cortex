@@ -751,10 +751,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				m.search[paneDetail] = q
 			}
 			er.raw, _ = m.heldRaw(er.event)
+			if er.resp != nil {
+				er.respRaw, _ = m.heldRaw(er.resp)
+			}
+			m.detailNum = m.shownNum()
 			m.showDetail(er, true)
 			m.pane = paneDetail
-			if m.needsFullEvent(er.event) && m.client != nil {
-				return fetchDetailEventCmd(m, eventSession(m.selectedSess, er.event), er.event.Seq)
+			if cmd := m.fetchDetailHalves(er); cmd != nil {
+				return cmd
 			}
 			m.openRawMatch()
 			m.revealDetailMatch()
@@ -782,11 +786,26 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 
+	case "tab":
+		// The detail page's two sections (#1681): Tab is bound nowhere else, and ← already
+		// means back.
+		if m.pane == paneDetail {
+			m.jumpDetailSection()
+		}
+		return nil
+
 	case "y":
 		if m.pane != paneDetail || m.detailEvent == nil {
 			return nil
 		}
-		path, err := yankEventToFile(m.detailEvent)
+		half := m.detailHalf()
+		if half == nil {
+			// The section's own note says why the half is missing, and what to do.
+			lost := rowLost(m.detailRow, nil, 0, m.lostRef(m.events[m.selectedSess]))
+			m.setFlash("nothing to yank: " + missingNote(m.detailRow, sectionOf(m.detailCursorPath), lost))
+			return nil
+		}
+		path, err := yankEventToFile(half)
 		if err != nil {
 			// Sticky, like the success case: checkYankDir's message names the
 			// directory and the chmod that fixes it, which is useless if it
@@ -1321,7 +1340,16 @@ func (m *model) helpView() string {
 		}
 		return base + "  [?] keys  [q] quit"
 	case paneDetail:
-		return "[↑↓] move  [↵] fold  [y] yank  [u] usage  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
+		other, half := "response", "request"
+		if sectionOf(m.detailCursorPath) == "response" {
+			other, half = "request", "response"
+		}
+		yank := "  [y] yank " + half
+		if m.detailHalf() == nil {
+			yank = "" // y has nothing to write in a missing half
+		}
+		return "[↑↓] move  [↵] fold  [tab] " + other + yank + "  [u] usage  " +
+			m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case panePipeline:
 		// ONE SPELLING NOW, where there used to be two. The picker/bypass split
 		// existed only because esc meant different things in the two modes — "back

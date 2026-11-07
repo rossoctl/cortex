@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -644,10 +645,50 @@ func TestDetailSearch_AMatchOnlyInTheCaptureOpensIt(t *testing.T) {
 		detailsQuery(m, "e2")
 		runAll(m, enter(m))
 		press(m, tea.KeyEnter)
-		if _, open := m.detailFolds["raw"]; open || len(m.detailDoc.matches) == 0 {
+		if _, open := m.detailFolds["request.raw"]; open || len(m.detailDoc.matches) == 0 {
 			t.Errorf("raw fold %v, matches %d: want the capture closed, on the host's match", open, len(m.detailDoc.matches))
 		}
 	})
+}
+
+// A merged row is its request and its response (#1681): each half's text matches, a proxy match
+// on the response's seq marks the row, a response that lands after the answer makes the row new,
+// and a match only in the response's capture opens that capture.
+func TestDetailSearch_AMergedRowMatchesByEitherHalf(t *testing.T) {
+	req := &pipeline.SessionEvent{Seq: 1, Phase: pipeline.SessionRequest, RequestID: "r",
+		Inference: &pipeline.InferenceExtension{Model: "m",
+			Messages: []pipeline.InferenceMessage{{Role: "user", Content: "the NEEDLE-PROMPT"}}}}
+	resp := &pipeline.SessionEvent{Seq: 2, Phase: pipeline.SessionResponse, RequestID: "r",
+		Inference: &pipeline.InferenceExtension{Model: "m", Completion: "the reply"}}
+	row := eventRow{event: req, resp: resp}
+	for _, q := range []string{"needle-prompt", "THE REPLY"} {
+		if !detailHas(row, q) {
+			t.Errorf("detailHas(merged row, %q) = false, want true", q)
+		}
+	}
+
+	f := &fakeSearch{answer: map[string][]uint64{"s": {2}}, last: map[string]uint64{"s": 2}}
+	if msg := runDetailSearch(context.Background(), f.client(t), 0, "s", []eventRow{row}, "proxy-only"); !msg.hits[keyOf(req)] {
+		t.Error("a proxy match on the response's seq did not mark the merged row")
+	}
+
+	m := searchModel(t, 1, &fakeSearch{})
+	m.visibleRows = []eventRow{row}
+	m.detailSearch = &detailSearch{hits: map[eventKey]bool{keyOf(req): false},
+		last: map[string]uint64{"s": 1}, oldest: map[string]uint64{"s": 1}, newest: map[string]uint64{"s": 1}}
+	if got := m.detailNewRows(); !slices.Equal(got, []int{0}) {
+		t.Errorf("detailNewRows = %v, want [0]: the response landed after the answer", got)
+	}
+
+	m.detailSearch, m.searchDetails = nil, true
+	m.search = map[paneID]string{paneEvents: "resp-raw-needle", paneDetail: "resp-raw-needle"}
+	row.respRaw = &pipeline.RawCapture{Request: `{"id":"RESP-RAW-NEEDLE"}`}
+	m.pane = paneDetail
+	m.showDetail(row, true)
+	m.openRawMatch()
+	if c := m.detailFolds["response.raw"]; !c.open || len(m.detailDoc.matches) == 0 {
+		t.Errorf("response.raw fold %+v, matches %d: want the response's capture open on the match", c, len(m.detailDoc.matches))
+	}
 }
 
 // A details match far below the first screen is in view when the row opens: when the capture

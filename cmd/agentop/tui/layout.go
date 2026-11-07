@@ -111,7 +111,13 @@ func (m *model) layout() {
 	// pane means adding it to that map too.
 	m.agentsTbl.SetHeight(bodyH)
 	m.detailVp.Width = m.width
+	// The event detail's fixed line takes one row (#1681). Every pane but the plugin detail
+	// gets the shorter viewport, because the event detail is the pane they return to, and
+	// the usage and Timeline panes return to it without a re-render.
 	m.detailVp.Height = bodyH
+	if m.pane != panePluginDetail && bodyH > 1 {
+		m.detailVp.Height = bodyH - 1
+	}
 	// Re-clamp the scroll offset to the new height, for the PLUGIN detail pane:
 	// nothing re-renders that one on a resize, so this is the only place its offset can
 	// be reconciled. The events detail pane is re-rendered just below and clamps itself
