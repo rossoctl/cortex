@@ -979,6 +979,55 @@ func TestValidateReloadable_RefusesMemoryEdit(t *testing.T) {
 	}
 }
 
+// stats.* is boot-only: the stats listener binds stats.address once at startup.
+// Before the guard, a stats.address edit incremented ReloadsOK and /config served
+// the new address, while the listener stayed on the old one. agentop reads the
+// address from the file, so it then probed a port where nothing listened.
+// A real config.Load builder proves the yaml key reaches the comparison.
+func TestReloader_RefusesStatsAddressChange(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: envoy-sidecar\nstats:\n  address: 127.0.0.1:19093\n"), 0o600); err != nil {
+		t.Fatalf("initial WriteFile: %v", err)
+	}
+	initialCfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	newIn, newOut := emptyPipeline(t), emptyPipeline(t)
+	build := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
+		c, lerr := config.Load(cfgPath)
+		if lerr != nil {
+			return nil, nil, nil, lerr
+		}
+		return newIn, newOut, c, nil
+	}
+	inH := pipeline.NewHolder(emptyPipeline(t))
+	outH := pipeline.NewHolder(emptyPipeline(t))
+	r := New(cfgPath, inH, outH, build, initialCfg,
+		WithDebounce(20*time.Millisecond), WithDrainWindow(0), WithStartTimeout(5*time.Second))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := r.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	writeConfig(t, cfgPath, "mode: envoy-sidecar\nstats:\n  address: 127.0.0.1:19094\n")
+
+	waitFor(t, 2*time.Second, func() bool {
+		st := r.Status()
+		return st.ReloadsFailed >= 1 || st.ReloadsOK >= 1
+	}, "the reload to run")
+	st := r.Status()
+	if st.ReloadsOK != 0 || !contains(st.LastError, "stats.*") {
+		t.Errorf("a stats.address edit must be refused with stats.* in the error; ReloadsOK=%d LastError=%q",
+			st.ReloadsOK, st.LastError)
+	}
+	if got := r.ConfigProvider()().Stats.StatsAddress; got != "127.0.0.1:19093" {
+		t.Errorf("/config serves stats.address %q; the listener is still on 127.0.0.1:19093", got)
+	}
+}
+
 // shutdownPlugin records how many requests held its pipeline when it was stopped
 // and whether its ctx was already done, and with block set, stays in Shutdown
 // until block is closed.

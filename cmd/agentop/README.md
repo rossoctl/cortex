@@ -1980,7 +1980,9 @@ The poller terminates with one of:
 - **Success** — `/reload/status.last_success` advances past the apply
   time.
 - **Failure** — `reloads_failed` increments past its baseline; the
-  framework's `last_error` is shown.
+  framework's `last_error` is shown. agentop reads the baseline before it
+  writes, so a refusal that lands before the first poll is still seen. When
+  `/reload/status` does not answer before the write, the first poll sets it.
 - **Unreachable** — 5 consecutive transport errors against `/reload/status`
   surface as `reload status endpoint unreachable` after a few seconds rather than
   waiting the full deadline. The endpoint is the port-forward's `:9093` for a pod

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
@@ -153,4 +154,73 @@ func renderEditOverlay(s editState, width, height int) string {
 		b.WriteString(styleHint.Render("[r] re-edit  [Esc] back to Pipeline"))
 	}
 	return box.Render(b.String())
+}
+
+// handleEditKey is the keymap that takes over while an edit is in flight.
+func (m *model) handleEditKey(msg tea.KeyMsg) tea.Cmd {
+	switch m.editState.phase {
+	case editPhaseDiff:
+		switch msg.String() {
+		case "y", "Y":
+			m.editState.phase = editPhaseApplying
+			newSubtree := m.editState.editedRaw
+			newInner := edit.Splice(
+				m.editState.fetched.InnerYAML,
+				m.editState.fetched.PipelineStart,
+				m.editState.fetched.PipelineEnd,
+				newSubtree,
+			)
+			payload, err := m.editState.store.Build(m.editState.fetched, newInner)
+			if err != nil {
+				m.editState.phase = editPhaseError
+				m.editState.err = "build payload: " + err.Error()
+				return nil
+			}
+			return withGen(m.editState.generation, edit.ApplyCmd(
+				m.ctx, m.editState.store, m.editState.statusURL, m.editState.fetched, payload))
+		case "n", "N", "esc":
+			m.editState = editState{phase: editPhaseDone}
+			return nil
+		}
+		return nil
+	case editPhaseError:
+		switch msg.String() {
+		case "r":
+			// If the fetch never completed (tempPath empty), retry the
+			// fetch instead of opening $EDITOR on "" (which leaves the
+			// user with nothing to edit and a misleading flow). A retry
+			// bumps gen so any straggling messages from the failed
+			// attempt are dropped.
+			if m.editState.tempPath == "" {
+				gen := m.editState.generation + 1
+				// The store the failed attempt used, not a fresh
+				// pipelineStore(): a retry is the same transaction, so
+				// re-resolving could silently retarget it.
+				store, statusURL := m.editState.store, m.editState.statusURL
+				m.editState = editState{phase: editPhaseFetching, generation: gen, store: store, statusURL: statusURL}
+				return withGen(gen, edit.FetchCmd(m.ctx, store, m.client, catalogPlugins(m.catalog)))
+			}
+			m.editState.phase = editPhaseEditing
+			return openEditorCmd(m.editState.generation, m.editState.tempPath)
+		case "esc":
+			m.editState = editState{phase: editPhaseDone}
+			return nil
+		}
+		return nil
+	}
+	// Other phases: Esc backgrounds (Waiting / Rollback) so the in-flight
+	// Cmd's eventual result lands as a footer flash, or cancels outright
+	// (Fetching / Editing / Applying — phases where the result is still
+	// safe to drop).
+	if msg.String() == "esc" {
+		switch m.editState.phase {
+		case editPhaseWaiting, editPhaseRollback:
+			m.editState.phase = editPhaseBackground
+			m.setFlash("hot-reload watch moved to background; you'll be notified")
+		default:
+			m.editState = editState{phase: editPhaseDone}
+		}
+		return nil
+	}
+	return nil
 }
