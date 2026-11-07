@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
-	"net/http"
 	"strings"
 
 	"github.com/rossoctl/cortex/core/internal/parsercommon"
@@ -179,8 +178,7 @@ func flattenResponsesContent(raw json.RawMessage) string {
 // without a supported input value — the one thing every Responses API
 // request carries (see parseOpenAIRequest for why dialectFor's loose suffix
 // match needs this kind of body check as a backstop).
-func parseResponsesRequest(headers http.Header, body []byte) *model.InferenceExtension {
-	body = parsercommon.DecodeRequestBody(headers, body)
+func parseResponsesRequest(body []byte) *model.InferenceExtension {
 	if len(body) == 0 {
 		return nil
 	}
