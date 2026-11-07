@@ -13,12 +13,13 @@ import "github.com/rossoctl/cortex/core/pipeline"
 // 0.98 MiB, which is the difference between waiting seconds to open a session
 // and fetching the whole thing.
 //
-// THE RULE: a field may be dropped only if NEITHER the events table nor its
-// filter reads it. The filter is the half that is easy to forget, and forgetting
-// it is silent — a `/completion text` search simply stops matching. agentop's
-// eventHaystack and matchEventRow (cmd/agentop/tui/events_pane.go) are the source of
-// truth for that half; TestSummarizeEvent_KeepsEverythingTheFilterSearches names
-// each field they read so this cannot drift again.
+// THE RULE: a field may be dropped only if NEITHER the events table nor agentop's details
+// search reads it. The search is the half that is easy to forget, and forgetting it is silent:
+// a search for completion text simply stops matching. agentop checks the summary rows it holds
+// with detailHas (cmd/agentop/tui/search_details.go), and the search route (search.go) checks
+// only what this function drops. A field this function starts to drop must be added to the
+// route, or the search stops seeing it. TestSummarizeEvent_KeepsEverythingTheFilterSearches
+// names each field the local check reads, so this cannot drift again.
 //
 // WHAT STAYS, and why each one is not obvious:
 //   - Invocations. Timeline data, not detail data — agentop renders one row PER
