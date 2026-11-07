@@ -1149,8 +1149,9 @@ agentop is for, and the other four are surfaces you visit and leave.
 
   All twelve columns, on a terminal wide enough for them. Each row is one
   exchange: a request and its response. A blank STATUS means the response is on
-  its way. `lost` means none came for 10 minutes while the session went on, the
-  rule the Timeline uses. A request the proxy did not stamp with a request id
+  its way. `lost` means an outbound request with a request id got no response
+  for 10 minutes, by the rule the Timeline uses. A tunnel open or an inbound
+  request never shows `lost`. A request the proxy did not stamp with a request id
   (an older proxy) keeps two rows that share one `#`:
 
   ```
@@ -1477,7 +1478,7 @@ Layered on top of all of them:
 | `Enter` / `→` / `l` | sessions, events | drill into selection; on a subagent block's header row in the events pane, collapse/expand the block instead |
 | `Esc` / `←` / `h` | detail, events | back out |
 | `Esc` | sessions | back to the agents picker when the list was reached by picking an agent there; otherwise (picker mode) tear down port-forward and back to pods. Sessions and the agents picker above it are the only panes that tear down — every key-opened surface returns to its caller instead |
-| `/` | any pane, and the key help | search what the pane shows, as in a text editor: every row stays, the matched characters are highlighted, and the cursor (or, in a text view, the view) jumps to the first match at or after where you pressed `/`, wrapping past the end, as you type. Case-insensitive substring of the text the pane displays: a table's columns that are turned on, at full width (a value cut to `…` matches in full, and so does a column the terminal had no room for); a message's or plugin's detail line by line, before it is wrapped; the key help's and the usage chart's lines as drawn. `deny` finds denied events because ACTION shows it. `Enter` keeps the place; `Esc` puts the place and the previous search back; `Enter` on an empty box clears the search. Each pane keeps its own search; the events pane's and a message's detail's last while you stay with one session (the detail's carries from message to message), and none is saved |
+| `/` | any pane, and the key help | search what the pane shows, as in a text editor: every row stays, the matched characters are highlighted, and the cursor (or, in a text view, the view) jumps to the first match at or after where you pressed `/`, wrapping past the end, as you type. Case-insensitive substring of the text the pane displays: a table's columns that are turned on, at full width (a value cut to `…` matches in full, and so does a column the terminal had no room for); an exchange's or plugin's detail line by line, before it is wrapped; the key help's and the usage chart's lines as drawn. `deny` finds denied events because ACTION shows it. `Enter` keeps the place; `Esc` puts the place and the previous search back; `Enter` on an empty box clears the search. Each pane keeps its own search; the events pane's and an exchange's detail's last while you stay with one session (the detail's carries from exchange to exchange), and none is saved |
 | `n` / `N` | any pane with a search, and the key help | next / previous match, wrapping at both ends; in a text view an off-screen match is scrolled to a third of the way down |
 | `X` | sessions | clear all history: every session this Cortex holds, in memory and on disk. Asks first, with the count and the size on disk; `y` erases, `n`/`esc` keeps. The cost ledger is kept. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer, like `A`: a destructive key should not be advertised on the always-visible line |
 | `x` | sessions, agents | erase the row under the cursor, in memory and on disk: the highlighted session, or every session of the highlighted agent — on *All agents*, everything, as `X`. Asks first, with the count; `y` erases, `n`/`esc` keeps. The cost ledger is kept. An agent still using a session brings it back with its next request. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer, like `X` |
@@ -1764,18 +1765,18 @@ difference between a session that opens in milliseconds and one that takes secon
 The summary keeps completion and A2A message text, which the table does not show,
 because the events search used to match them. It no longer does: `/` matches what a
 pane displays, and a message's text is searched in its detail, which fetches the
-whole event. Dropping those fields as well would be ~299x instead of ~163x.
+whole exchange. Dropping those fields as well would be ~299x instead of ~163x.
 
-The consequence is worth knowing: the first `↵` on a row fetches that one event in
-full from `/v1/sessions/{id}/events/{seq}`. The detail pane renders the summary
+The consequence is worth knowing: the first `↵` on a row fetches each half of the
+exchange in full from `/v1/sessions/{id}/events/{seq}`, one call per half. The detail pane renders the summary
 immediately and the bodies appear when they arrive, so there is no loading screen —
 but on a slow link the message text lands a moment after the rest. Re-opening the
 same row is free; the bodies are kept. If the fetch fails, the pane keeps what it
 has and the error goes to the footer.
 
-`y` yanks whatever the pane is showing, so while the bodies are still in flight — or
-after a failed fetch — it says so in the flash rather than handing you a body-less
-event that looks complete.
+`y` yanks the half the cursor is in. While that half's bodies are still in flight —
+or after a failed fetch — it says so in the flash rather than handing you a
+body-less event that looks complete.
 
 Because a projected event is ~1KB rather than ~200KB, agentop asks for the server's
 full 2000-event ceiling instead of the old 500. A normal session therefore arrives
@@ -1796,13 +1797,15 @@ section: `↵` on it opens it. In it:
   went upstream when one did.
 - `headers` and `query` are the request's, without credentials.
 - In the RESPONSE section, `response` has the status, the headers, the body (a
-  compressed one as `[gzip body 12.0kB]`) and `truncated` or `incomplete` when either applies.
+  compressed one as `[gzip body 12.0kB]`) and `truncated` or `incomplete` when
+  either applies.
 
-The capture comes with the detail fetch, once per row, and agentop keeps it. A row
-has no `raw` section when the archive has no capture for it: an older proxy, a row
-written before capture, or one recorded in the last second. A search does not open
+Each section has its own `raw`. Its capture comes with the fetch of that half, and
+agentop keeps it. A section has no `raw` when the archive has no capture for its
+half: an older proxy, an event written before capture, or one recorded in the last
+second. A search does not open
 `raw`, because it repeats the whole conversation; open it with `↵` to search inside
-it. `y` writes the event without its capture.
+it. `y` writes the half without its capture.
 
 ## Editing the pipeline
 
