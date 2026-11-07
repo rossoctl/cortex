@@ -168,6 +168,26 @@ func TestDetail_MissingHalfNotes(t *testing.T) {
 	}
 }
 
+// A denial that follows its request is the RESPONSE half, not a missing one.
+func TestDetail_DenialIsTheResponseHalf(t *testing.T) {
+	at := time.Now().Add(-time.Hour)
+	req, _ := turnExchange(at)
+	denied := pipeline.SessionEvent{
+		Seq: 8, At: at.Add(time.Millisecond), SessionID: "s", Direction: pipeline.Outbound,
+		Phase: pipeline.SessionDenied, Host: "h", RequestID: "x", StatusCode: 403,
+		Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: "egress-allowlist", Action: pipeline.ActionDeny}}},
+	}
+	text := detailText(openDetail(t, at.Add(20*time.Minute), req, denied))
+	if !strings.Contains(text, "━━ RESPONSE · "+denied.At.Format("15:04:05.00")+" · deny egress-allowlist") {
+		t.Errorf("want the denial as the RESPONSE section:\n%s", text)
+	}
+	for _, note := range []string{"no response recorded", "waiting for response…", "lost"} {
+		if strings.Contains(text, note) {
+			t.Errorf("found %q, want no missing-half note:\n%s", note, text)
+		}
+	}
+}
+
 // yanked reads the file the footer names.
 func yanked(t *testing.T, m *model) string {
 	t.Helper()

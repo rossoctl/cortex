@@ -60,7 +60,7 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 
 // detailHalves splits row r into its request and response and their captures. Either half can
 // be nil: a response-only row has no request held, and a request has no response until one
-// arrives. A denial is the request half.
+// arrives. A denial on a row of its own is the request half.
 func detailHalves(r eventRow) (req, resp *pipeline.SessionEvent, reqRaw, respRaw *pipeline.RawCapture) {
 	if r.event != nil && r.event.Phase == pipeline.SessionResponse {
 		return nil, r.event, nil, r.raw

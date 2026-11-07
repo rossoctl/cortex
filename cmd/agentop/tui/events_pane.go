@@ -73,9 +73,10 @@ func newEventsTable() table.Model {
 
 // eventRow is one display row: one exchange (#1681). event is the row's first event — the
 // request, or the only event of a row with one half: a denial, a request no answer reached,
-// a response whose request is not held. resp is the response mergeExchanges folded in.
-// tunnel, when non-nil, is a CONNECT tunnel-open event folded into a TLS-bridged request
-// (see buildEventRows); it contributes a summary line to the detail pane but no separate row.
+// a response whose request is not held. resp is the response or denial that mergeExchanges
+// folded in. tunnel, when non-nil, is a CONNECT tunnel-open event folded into a TLS-bridged
+// request (see buildEventRows); it contributes a summary line to the detail pane but no
+// separate row.
 type eventRow struct {
 	event  *pipeline.SessionEvent
 	tunnel *pipeline.SessionEvent
@@ -620,9 +621,9 @@ func buildEventRows(events []pipeline.SessionEvent) []eventRow {
 	return rows
 }
 
-// mergeExchanges folds each response into the row of the request it answers (#1681): one row
-// per exchange, at the request's position, so a response changes its row instead of adding
-// one.
+// mergeExchanges folds each response or denial into the row of the request it answers
+// (#1681): one row per exchange, at the request's position, so a response changes its row
+// instead of adding one.
 //
 // ONLY AN EXACT PAIR MERGES — one partner joined by RequestID. The heuristic pass in
 // computeEventPairs can pair a response with another call's request, and a merged row would
@@ -1167,7 +1168,9 @@ func padLeft(s string, width int) string {
 //
 // Pairing prefers SessionEvent.RequestID, which the proxy stamps on both the
 // request and response event of the same exchange. That is exact, including
-// under concurrency.
+// under concurrency. A denial with the request's RequestID answers it too, as
+// in the Timeline: the egress allow list refuses a redirect target after the
+// request row landed.
 //
 // The closest-preceding heuristic below remains for events with no RequestID —
 // an older proxy, or a listener that has not been taught to stamp it. It matches
@@ -1198,7 +1201,7 @@ func computeEventPairs(rows []eventRow) (map[*pipeline.SessionEvent]int, map[int
 	}
 	for j := range rows {
 		e := rows[j].event
-		if e.RequestID == "" || e.Phase != pipeline.SessionResponse {
+		if e.RequestID == "" || (e.Phase != pipeline.SessionResponse && e.Phase != pipeline.SessionDenied) {
 			continue
 		}
 		i, ok := reqByID[e.RequestID]

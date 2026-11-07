@@ -107,6 +107,28 @@ func TestExchange_SingleHalvesKeepOneRow(t *testing.T) {
 	}
 }
 
+// The egress allow list refuses a redirect target after the request row landed, so a denial
+// with the same RequestID follows the request. The Timeline closes the request with it. This
+// pane must agree: one row, the denial's status, and never lost.
+func TestExchange_DenialClosesItsRequest(t *testing.T) {
+	req := httpExchange("r", "redirect.test", t0, 200)[0]
+	denied := pipeline.SessionEvent{
+		At: t0.Add(time.Millisecond), SessionID: "s", Direction: pipeline.Outbound,
+		Phase: pipeline.SessionDenied, Host: "redirect.test", RequestID: "r", StatusCode: 403,
+		Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: "egress-allowlist", Action: pipeline.ActionDeny}}},
+	}
+	m := lostModel(t0.Add(11*time.Minute), req, denied)
+	if n := len(m.visibleRows); n != 1 {
+		t.Fatalf("%d rows, want 1: the denial closes its request", n)
+	}
+	if got := trimmedCell(t, m, 0, colStatus); got != "403" {
+		t.Errorf("STATUS = %q, want 403, not lost", got)
+	}
+	if a, p := trimmedCell(t, m, 0, colAction), trimmedCell(t, m, 0, colPlugin); a != "deny" || p != "egress-allowlist" {
+		t.Errorf("ACTION/PLUGIN = %q/%q, want deny/egress-allowlist", a, p)
+	}
+}
+
 func TestExchange_BridgedConnectWithResponseIsOneRow(t *testing.T) {
 	open := pipeline.SessionEvent{
 		At: t0, SessionID: "s", Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
