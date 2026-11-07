@@ -1,0 +1,6 @@
+{
+  "last_success": "2026-11-06T10:00:00Z",
+  "reloads_ok": 3,
+  "reloads_failed": 1,
+  "last_error": "plugin \"jwt-validation\": issuer is required"
+}

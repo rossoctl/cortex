@@ -874,8 +874,8 @@ check "pid_exe_path: no /proc -> lsof txt descriptor (the macOS path)" \
 # Same case, stated as the bug it guards: lsof ORs -p and -d unless -a is passed,
 # so without it the query means "this pid OR any txt descriptor on the system" and
 # head -1 can take another process's executable. On macOS this is the source
-# foreign_proxy_holder judges, so the wrong path there classifies our OWN managed
-# proxy as foreign and dies. The stub above emits a foreign record first when -a is
+# pre_rename_proxy_running judges, so the wrong path there hides a v0.7.0 proxy
+# from --stop. The stub above emits a foreign record first when -a is
 # missing, so this check is what fails if the flag is ever dropped.
 check "pid_exe_path: the lsof query is ANDed with -a (not 'this pid OR any txt fd')" \
 	"/Users/u/.local/bin/cortex" \
@@ -889,9 +889,10 @@ check "the lsof executable query passes -a" "1" \
 check "pid_exe_path: no /proc, no lsof -> first field of ps args" \
 	"/Users/u/.local/bin/cortex" \
 	"$(with_pid_exe_path '' '' '/Users/u/.local/bin/cortex --local --supervise')"
-# Nothing can name it: must FAIL, never print a placeholder. foreign_proxy_holder
-# treats any non-match as foreign, so "unknown" as a value would accuse a process
-# nobody can see — the thing the previous `${_ph_cmd:-unknown}` fallback did.
+# Nothing can name it: must FAIL, never print a placeholder. A caller compares the
+# output with a path, so "unknown" as a value would read as a real answer. An
+# earlier `${_ph_cmd:-unknown}` fallback did that. The since-removed
+# foreign_proxy_holder then accused a process nobody could see.
 check "pid_exe_path: nothing can name the pid -> fails, prints no placeholder" \
 	"__NONE__" "$(with_pid_exe_path '' '' '')"
 
@@ -902,7 +903,7 @@ check "pid_exe_path: nothing can name the pid -> fails, prints no placeholder" \
 # Counting is the whole point, and the previous form of this check is why. It grepped
 # for `comm=` and the binary name on ONE line and asserted zero — but the defect
 # spanned two lines (the `comm=` capture in port_holder and the path comparison in
-# foreign_proxy_holder), so that pattern returned 0 on the buggy commit too: the exact
+# the since-removed foreign_proxy_holder), so that pattern returned 0 on the buggy commit too: the exact
 # value it asserted as clean. It could not fail on the bug its own comment named, which
 # is worse than no check, because the comment invited readers to trust it.
 #

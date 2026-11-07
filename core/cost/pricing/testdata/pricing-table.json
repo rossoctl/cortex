@@ -1,0 +1,32 @@
+{
+  "upstreamCommit": "0123456789abcdef0123456789abcdef01234567",
+  "listFetchedAt": "2026-11-06T10:00:00Z",
+  "rows": [
+    {
+      "host": "gw.example",
+      "model": "claude-opus-5",
+      "provenance": "configured",
+      "free": true,
+      "inputPerMillion": 5,
+      "cacheWritePerMillion": 6.25,
+      "cacheReadPerMillion": 0.5,
+      "outputPerMillion": 25,
+      "thresholds": [
+        {
+          "abovePromptTokens": 200000,
+          "inputPerMillion": 10,
+          "cacheWritePerMillion": 12.5,
+          "cacheReadPerMillion": 1,
+          "outputPerMillion": 50
+        }
+      ]
+    }
+  ],
+  "multipliers": [
+    {
+      "host": "*.res.ibm.com",
+      "factor": 0.76,
+      "provenance": "bundled"
+    }
+  ]
+}

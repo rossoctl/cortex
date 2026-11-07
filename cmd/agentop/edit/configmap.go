@@ -316,7 +316,7 @@ func extractInnerYAML(cmYAML []byte) ([]byte, error) {
 // diff prompt, so taking field-manager ownership is the intended outcome.
 //
 // Returns the wall-clock time at which the apply call started; the caller
-// uses this to compare against /reload/status's last_success_unix to know
+// uses this to compare against /reload/status's last_success to know
 // whether the framework has picked up the change yet.
 func Apply(ctx context.Context, run Runner, manifest []byte) (time.Time, error) {
 	tmp, err := os.CreateTemp("", "agentop-cm-*.yaml")

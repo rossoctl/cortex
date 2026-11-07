@@ -93,7 +93,7 @@ func (configStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, erro
 	if env.configFresh {
 		// No timeout: --write-config writes one file and exits, and a hang here is
 		// a hang of setup.
-		out, err := exec.Command(filepath.Join(env.binDir, "cortex"), "--local", "--write-config").CombinedOutput() //nolint:gosec
+		out, err := exec.Command(filepath.Join(env.binDir, proxyBinary), "--local", "--write-config").CombinedOutput() //nolint:gosec
 		if err != nil {
 			return "", u, stepError{reason: "cortex --local --write-config failed", detail: tailLines(string(out), 5)}
 		}

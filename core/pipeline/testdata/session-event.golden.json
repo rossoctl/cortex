@@ -1,0 +1,202 @@
+{
+  "sessionId": "s1",
+  "seq": 7,
+  "at": "2026-11-06T10:00:00Z",
+  "direction": "outbound",
+  "phase": "response",
+  "requestId": "req-7",
+  "a2a": {
+    "method": "message/send",
+    "rpcId": "a2a-1",
+    "sessionId": "ctx-1",
+    "messageId": "msg-1",
+    "taskId": "task-1",
+    "role": "user",
+    "parts": [
+      {
+        "kind": "text",
+        "content": "hi"
+      }
+    ],
+    "finalStatus": "failed",
+    "artifact": "report",
+    "errorMessage": "tool failed",
+    "isAction": true
+  },
+  "mcp": {
+    "method": "tools/call",
+    "rpcId": "7",
+    "params": {
+      "name": "get_weather"
+    },
+    "result": {
+      "content": "sunny"
+    },
+    "error": {
+      "code": -32000,
+      "message": "rate limited",
+      "data": "retry"
+    },
+    "isAction": true
+  },
+  "inference": {
+    "model": "claude-opus-5",
+    "messages": [
+      {
+        "role": "user",
+        "content": "q",
+        "contentBytes": 42,
+        "toolUseId": "toolu_1",
+        "toolCallNames": "get_weather",
+        "toolUseIds": "toolu_0"
+      }
+    ],
+    "temperature": 0.7,
+    "maxTokens": 4096,
+    "topP": 0.9,
+    "stream": true,
+    "tools": [
+      {
+        "name": "get_weather",
+        "description": "weather",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ],
+    "toolChoice": "auto",
+    "requestedModel": "opus",
+    "servedModel": "claude-opus-5-20261101",
+    "toolResults": [
+      {
+        "toolUseId": "toolu_1",
+        "content": "sunny",
+        "isError": true
+      }
+    ],
+    "historyToolCalls": [
+      {
+        "id": "toolu_0",
+        "name": "get_weather",
+        "arguments": "{\"city\":\"Rome\"}"
+      }
+    ],
+    "thinkingType": "adaptive",
+    "thinkingDisplay": "summarized",
+    "effort": "high",
+    "anthropicBeta": "context-1m",
+    "historyThinking": {
+      "blocks": 2,
+      "redacted": 1,
+      "textBytes": 300,
+      "signatureBytes": 120,
+      "redactedBytes": 40
+    },
+    "responseThinking": {
+      "blocks": 1,
+      "redacted": 1,
+      "textBytes": 300,
+      "signatureBytes": 120,
+      "redactedBytes": 40
+    },
+    "messageCount": 3,
+    "toolCount": 1,
+    "agentRole": "subagent",
+    "streamedResponse": true,
+    "completion": "done",
+    "finishReason": "tool_use",
+    "toolCalls": [
+      {
+        "id": "toolu_2",
+        "name": "get_weather",
+        "arguments": "{\"city\":\"Oslo\"}"
+      }
+    ],
+    "promptTokens": 1000,
+    "completionTokens": 200,
+    "totalTokens": 1200,
+    "inputTokens": 100,
+    "cacheReadTokens": 800,
+    "cacheWriteTokens": 100,
+    "outputTokens": 200,
+    "reasoningTokens": 50,
+    "presentKinds": 3,
+    "isAction": true
+  },
+  "invocations": {
+    "inbound": [
+      {
+        "plugin": "jwt-validation",
+        "action": "allow",
+        "phase": "request",
+        "reason": "valid",
+        "path": "/v1/messages",
+        "details": {
+          "iss": "kc"
+        },
+        "shadow": true,
+        "late": true
+      }
+    ],
+    "outbound": [
+      {
+        "plugin": "token-exchange",
+        "action": "modify",
+        "phase": "response",
+        "reason": "exchanged",
+        "path": "/v1/messages",
+        "details": {
+          "aud": "x"
+        },
+        "shadow": true,
+        "late": true
+      }
+    ]
+  },
+  "plugins": {
+    "cost": {
+      "usd": 0.01
+    }
+  },
+  "identity": {
+    "subject": "alice",
+    "scopes": [
+      "openid"
+    ],
+    "clientId": "agent",
+    "agentId": "a1"
+  },
+  "statusCode": 503,
+  "error": {
+    "kind": "upstream",
+    "code": "503",
+    "message": "unavailable"
+  },
+  "host": "api.example:443",
+  "requestedHost": "asked.example:443",
+  "durationMs": 1500,
+  "ttfbMs": 200,
+  "tls": {
+    "version": "TLS 1.3",
+    "cipherSuite": "TLS_AES_128_GCM_SHA256",
+    "peerSpiffeId": "spiffe://example/agent"
+  },
+  "tunnel": true,
+  "tunnelReason": "client-rejected-ca",
+  "bytesUp": 100,
+  "bytesDown": 2000,
+  "httpMethod": "POST",
+  "httpPath": "/v1/messages",
+  "upgradeStripped": "websocket",
+  "client": {
+    "name": "claude-code",
+    "version": "2.1.14",
+    "raw": "claude-cli/2.1.14"
+  },
+  "subagent": "a1a2e36cb5946f31c",
+  "parentSubagent": "a0974b0b8591dc76b",
+  "proc": "/bin/claude",
+  "clientProc": "/bin/zsh",
+  "sessionHeader": "x-session-id",
+  "dialAddr": "203.0.113.7:443"
+}

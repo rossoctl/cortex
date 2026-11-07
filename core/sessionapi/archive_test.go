@@ -317,11 +317,13 @@ func TestHandleGetEvent_RawAddsTheCapture(t *testing.T) {
 	defer ts.Close()
 
 	var got struct {
-		Seq uint64               `json:"seq"`
-		Raw *pipeline.RawCapture `json:"raw"`
+		Seq           uint64               `json:"seq"`
+		SchemaVersion int                  `json:"schemaVersion"`
+		Raw           *pipeline.RawCapture `json:"raw"`
 	}
 	code, body := getBody(t, ts.URL+"/v1/sessions/s1/events/1?raw=1")
-	if code != http.StatusOK || json.Unmarshal(body, &got) != nil || got.Seq != 1 || got.Raw == nil {
+	if code != http.StatusOK || json.Unmarshal(body, &got) != nil || got.Seq != 1 || got.Raw == nil ||
+		got.SchemaVersion != SchemaVersion {
 		t.Fatalf("GET events/1?raw=1 = %d %s", code, body)
 	}
 	if got.Raw.Request != `{"model":"m"}` || got.Raw.Forwarded == nil || *got.Raw.Forwarded != `{"model":"n"}` ||

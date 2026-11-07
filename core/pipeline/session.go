@@ -833,6 +833,10 @@ type SessionView struct {
 	// inference traffic has no message bodies to omit, so "no bodies present" does
 	// not distinguish a projected response from a naturally empty one.
 	View string `json:"view,omitempty"`
+
+	// SchemaVersion is the session API's sessionapi.SchemaVersion. The server sets it
+	// on the response, so a view that the store builds has zero, and omits it.
+	SchemaVersion int `json:"schemaVersion,omitempty"`
 }
 
 // Intents returns only inbound A2A request events (user messages).

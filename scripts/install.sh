@@ -670,8 +670,8 @@ pid_exe_path() { # pid
 		# default, so `-p <pid> -d txt` means "files of this pid OR any txt
 		# descriptor on the system" — which lists every process's executable, and
 		# `head -1` would then take whichever came first. On macOS this is the
-		# source foreign_proxy_holder judges, so a stray first record would name
-		# some other binary and classify our own managed proxy as foreign.
+		# source pre_rename_proxy_running judges, so a stray first record would name
+		# some other binary and hide a v0.7.0 proxy from --stop.
 		# (-sTCP:LISTEN elsewhere needs no -a: a state list is a filter, not an
 		# ORed selection set.)
 		_pep=$(lsof -p "$1" -a -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
@@ -693,7 +693,7 @@ PROXY_PIDFILE="${CORTEX_DIR}/proxy.pid"
 #   - after an unclean shutdown the OS can recycle the pid onto an unrelated process
 #     of the same user, which we must not SIGTERM/SIGKILL.
 # Where `ps` can name the process we require its basename to be exactly cortex — the
-# same check agentop's runningPID uses, so `agentop service install` and this script agree
+# same check agentop's proxyRunning makes, so `agentop service install` and this script agree
 # on what counts as "our proxy". Exact, not a pattern: macOS prints the full path, and
 # a path under ~/.cortex or any checkout of this repo contains the word, so a looser
 # match would claim a stranger's pid for stop_cortex to signal. Where the sandbox hides processes from `ps`, ps prints
@@ -706,6 +706,8 @@ proxy_running() {
 	kill -0 "${_pid}" 2>/dev/null || return 1
 	_comm=$(ps -o comm= -p "${_pid}" 2>/dev/null) || return 0
 	[ -z "${_comm}" ] && return 0
+	# agentop's proxyBinary, preRenameBinary and proxyPIDFile (cmd/agentop/proxy_names.go)
+	# hold the names this script checks. Change both together.
 	case "${_comm##*/}" in
 		cortex) return 0 ;;
 		*) return 1 ;;
