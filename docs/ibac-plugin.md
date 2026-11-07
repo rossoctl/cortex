@@ -140,8 +140,8 @@ they're ordered cheapest-first:
    cases, apply `no_intent_policy` (default `"allow"`): record
    `skip/no_user_context` and `Continue` (treats the request as a
    legitimate self-action). Operators wanting strict fail-closed semantics
-   set `no_intent_policy: "deny"` to get the previous `deny/no_intent`
-   403 behavior.
+   set `no_intent_policy: "deny"` to get a 403 with
+   `deny/no_intent` (or `deny/no_session` when there is no session).
 7. **Build action description.** Always include the bare HTTP request
    line + body excerpt. If `mcp-parser` populated `Extensions.MCP`,
    append the tool name and args. If `inference-parser` populated
