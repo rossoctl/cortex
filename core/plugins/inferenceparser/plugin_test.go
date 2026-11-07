@@ -3,6 +3,7 @@ package inferenceparser
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -657,6 +658,58 @@ func TestInferenceParser_OnResponse_SSE(t *testing.T) {
 	}
 	if ext.TotalTokens != 13 {
 		t.Errorf("TotalTokens = %d, want 13", ext.TotalTokens)
+	}
+}
+
+// The response, not the request's stream flag, selects the reader (#1706).
+func TestInferenceParser_OnResponse_ShapeDisagreesWithRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		path        string
+		contentType string
+		reqStream   bool
+		body        string
+		wantText    string
+		wantFinish  string
+	}{
+		{
+			name:        "json answered to a streaming request",
+			path:        "/v1/messages",
+			contentType: "application/json",
+			reqStream:   true,
+			body: `{"type":"message","content":[{"type":"text","text":"Hi"}],"stop_reason":"end_turn",` +
+				`"usage":{"input_tokens":3,"output_tokens":2}}`,
+			wantText:   "Hi",
+			wantFinish: "end_turn",
+		},
+		{
+			name:        "sse answered to a non-streaming request",
+			path:        "/v1/chat/completions",
+			contentType: "text/event-stream",
+			body: "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\n" +
+				"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5}}\n\n" +
+				"data: [DONE]\n\n",
+			wantText:   "Hi",
+			wantFinish: "stop",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewInferenceParser()
+			pctx := &pipeline.Context{
+				Path:            tc.path,
+				ResponseHeaders: http.Header{"Content-Type": {tc.contentType}},
+				Extensions:      pipeline.Extensions{Inference: &pipeline.InferenceExtension{Model: "m", Stream: tc.reqStream}},
+				ResponseBody:    []byte(tc.body),
+			}
+			p.OnResponse(context.Background(), pctx)
+			ext := pctx.Extensions.Inference
+			if ext.Completion != tc.wantText || ext.FinishReason != tc.wantFinish {
+				t.Errorf("Completion, FinishReason = %q, %q, want %q, %q", ext.Completion, ext.FinishReason, tc.wantText, tc.wantFinish)
+			}
+			if ext.OutputTokens != 2 && ext.CompletionTokens != 2 {
+				t.Errorf("output tokens = %d/%d, want 2", ext.OutputTokens, ext.CompletionTokens)
+			}
+		})
 	}
 }
 

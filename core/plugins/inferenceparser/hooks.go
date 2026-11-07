@@ -87,40 +87,15 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 // hypothetical pipelines that call OnResponse directly without going
 // through RunResponse, with a defensive guard against re-recording if
 // the streaming path has already populated state.
-func (p *InferenceParser) OnResponse(_ context.Context, pctx *pipeline.Context) pipeline.Action {
-	if pctx.Extensions.Inference == nil {
-		// Priced anyway, on the rule OnResponseFrame's guard carries in full: whether this parser
-		// understood the REQUEST decides what can be parsed, never what the gateway may charge.
-		// Defence in depth rather than the live path — RunResponse skips this plugin, so the arm
-		// that settles a nil-extension response under a real listener is OnResponseFrame's.
-		p.settleCost(pctx)
+//
+// It delivers the whole body as one terminal frame, as a listener's buffered
+// path does, so the response selects the reader and the request's stream
+// flag does not (#1706).
+func (p *InferenceParser) OnResponse(ctx context.Context, pctx *pipeline.Context) pipeline.Action {
+	if ext := pctx.Extensions.Inference; ext != nil && (ext.Completion != "" || ext.FinishReason != "" || ext.TotalTokens > 0) {
 		return pipeline.Action{Type: pipeline.Continue}
 	}
-	ext := pctx.Extensions.Inference
-	if ext.Completion != "" || ext.FinishReason != "" || ext.TotalTokens > 0 {
-		return pipeline.Action{Type: pipeline.Continue}
-	}
-	if len(pctx.ResponseBody) == 0 {
-		pctx.Skip("no_response_body")
-		// Priced anyway, because a body is not what makes a response cost money: the gateway
-		// reports its figure in a RESPONSE HEADER and settle.Settle prefers it over anything
-		// modelled, so a costed response with an empty or unrecognised body is real spend.
-		// Returning without settling drops it from the cost record, the aggregate and the budget.
-		//
-		// It cannot flood the aggregate with settled zeros: with no body there are no counters, and
-		// modelledCost short-circuits on an all-zero Usage, so settleCost publishes nothing unless
-		// a header or a modelled figure exists. The Skip row above pairs the response with its
-		// request; it is not a reason to stop charging.
-		p.settleCost(pctx)
-		return pipeline.Action{Type: pipeline.Continue}
-	}
-
-	inference.ReadResponse(endpointPath(pctx), ext.Stream, pctx.ResponseBody, ext)
-
-	logInferenceFinalized(ext)
-	p.settleCost(pctx)
-	pctx.Observe("matched_" + ext.Model + "_response")
-	return pipeline.Action{Type: pipeline.Continue}
+	return p.OnResponseFrame(ctx, pctx, pctx.ResponseBody, true)
 }
 
 // ParseResponse reads a buffered response body as OnResponse would, into a
@@ -281,8 +256,9 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 	// it over in one piece.
 	if len(frame) == 0 {
 		pctx.Skip("no_response_body")
-		// Charged before returning, for the reason spelled out on OnResponse's
-		// identical guard: a positive gateway cost header needs no body at all.
+		// Charged before returning: the gateway reports its figure in a response header,
+		// so a positive cost header needs no body at all. With no body there are no counters,
+		// so settleCost publishes nothing unless a header carries a figure.
 		//
 		// This is the arm a genuinely body-less response takes in production — a 204/304,
 		// or an error status ended on headers. It is reached whatever the request asked for,
