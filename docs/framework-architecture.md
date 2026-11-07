@@ -12,7 +12,7 @@ Framework-level reference for AuthBridge's plugin pipeline: types, composition, 
 - Anyone debugging the plugin flow via `agentop` or the `:9094` session API.
 
 **Scope:**
-- The Go surface in `core/pipeline/` and `core/session/`.
+- The Go surface in `core/pipeline/`, `core/model/` and `core/session/`.
 - The observability contract carried by `SessionEvent` on the `:9094` API.
 - What the pipeline *does* and *does not* own at the boundary with the listener.
 
@@ -288,7 +288,7 @@ The suffix is the opt-in marker — private state stays out of the session strea
 
 ### Built-in extension shapes
 
-All at `core/pipeline/extensions.go`:
+All at `core/model/extensions.go`:
 
 ```go
 type MCPExtension struct {
@@ -1095,9 +1095,12 @@ Breaking changes will be announced in `CHANGELOG.md` (TBD) before a 1.0 tag.
 - `plugin.go` — `Plugin` interface, `PluginCapabilities` (with `ReadsBody` / `WritesRequestBody` / `WritesResponseBody` + `Normalize()`; chain-scoped relationship fields `Requires` / `RequiresAny` / `RequiresLater`), `Configurable`, `Initializer`, `Shutdowner`, `Readier`, `Finisher`.
 - `outcome.go` — `Outcome` struct + `OutcomeAction` (allow / deny / error) for `Finisher` consumers; `Context.Outcome()` getter.
 - `action.go` — `Action`, `ActionType`, `Violation`, helper constructors (`Deny`, `DenyStatus`, `DenyWithDetails`, `Challenge`, `RateLimited`), `StatusFromCode`.
-- `context.go` — `Context`, `Direction`, `AgentIdentity`, the `pctx.Record` / `Allow` / `Skip` / `Observe` / `Modify` / `DenyAndRecord` helpers, and `pctx.SetBody` / `SetResponseBody` / `BodyMutated` / `ResponseBodyMutated` for body mutation.
-- `extensions.go` — `Extensions` struct, `Invocation`, `Invocations`, `InvocationAction`, named protocol extensions, `GetState` / `SetState`.
-- `session.go` — `SessionEvent`, `SessionView`, `SessionPhase`, marshalers.
+- `context.go` — `Context`, `AgentIdentity`, the `pctx.Record` / `Allow` / `Skip` / `Observe` / `Modify` / `DenyAndRecord` helpers, and `pctx.SetBody` / `SetResponseBody` / `BodyMutated` / `ResponseBodyMutated` for body mutation.
+- `state.go` — `GetState` / `SetState`, for plugin-private state in the `Custom` map.
+- `model_alias.go` — aliases for the data types, and wrappers for the functions, that moved to `core/model`, so the old `pipeline.X` names still work.
+- `core/model/extensions.go` — `Extensions` struct, `Invocation`, `Invocations`, `InvocationAction`, named protocol extensions.
+- `core/model/session.go` — `SessionEvent`, `SessionView`, `SessionPhase`, marshalers.
+- `core/model/direction.go` — `Direction`.
 - `core/reloader/` — `Reloader`, `Status`, `PipelineBuilder`, `WithDrainWindow` / `WithDebounce` / `WithStartTimeout`, `Handler()` (serves `/reload/status`).
 
 **Downstream integrators:**

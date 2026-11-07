@@ -5,7 +5,7 @@ import (
 	"unicode"
 
 	"github.com/rossoctl/cortex/core/capabilities"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // maxTitleLen caps a title, in RUNES — a user message is unbounded (the largest measured event
@@ -181,7 +181,7 @@ type screenRow struct {
 //     every message cost +70%, so the scan remembers the index instead. This is the one direction
 //     of the bound that holds — a message with no <user_query>, no leading machinery and no
 //     reminder-hidden /rename prefix has nothing for the strip to uncover. See quickRank.
-func titleCandidate(e *pipeline.SessionEvent) (int, string) {
+func titleCandidate(e *model.SessionEvent) (int, string) {
 	if e.Inference == nil {
 		return rankNone, ""
 	}
@@ -378,7 +378,7 @@ func titleFrom(content string) (int, string) {
 		return rankNone, ""
 	}
 	// A user-role message whose payload was a tool result or an image flattens to "" (see
-	// pipeline.InferenceMessage.ContentBytes) — it is the last message of every agentic turn
+	// model.InferenceMessage.ContentBytes) — it is the last message of every agentic turn
 	// and must not be chosen as the title. A message that was nothing BUT reminders reaches
 	// here as "" too, and falls through by the same route: rankNone, so the walk finds a real
 	// title behind it.
@@ -874,14 +874,14 @@ func sanitizeTitle(s string) string {
 		if emitted == maxTitleLen {
 			break
 		}
-		// TWO PREDICATES, and each catches runes the other misses. pipeline.IsControlRune covers
+		// TWO PREDICATES, and each catches runes the other misses. model.IsControlRune covers
 		// C0/C1/DEL plus the BIDI and zero-width runes that reorder or hide their surroundings.
 		// unicode.IsSpace covers \n\r\t, the exotic spaces (U+00A0, U+3000, the U+2000 block) —
 		// and, most importantly for a single-line guarantee, U+2028 LINE SEPARATOR and U+2029
 		// PARAGRAPH SEPARATOR, which are the runes most likely to break a title across lines and
 		// are NOT control runes. Both FOLD rather than drop, so "one\ntwo" does not become
 		// "onetwo".
-		if unicode.IsSpace(r) || pipeline.IsControlRune(r) {
+		if unicode.IsSpace(r) || model.IsControlRune(r) {
 			if !prevSpace {
 				b.WriteByte(' ')
 				prevSpace = true
@@ -910,7 +910,7 @@ func sanitizeTitle(s string) string {
 // work.
 func foldsBlank(s string) bool {
 	for _, r := range s {
-		if !unicode.IsSpace(r) && !pipeline.IsControlRune(r) {
+		if !unicode.IsSpace(r) && !model.IsControlRune(r) {
 			return false
 		}
 	}

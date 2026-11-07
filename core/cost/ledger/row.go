@@ -52,7 +52,7 @@ import (
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // Row is one minute's totals for one (endpoint, model, agent, provenance) key.
@@ -76,7 +76,7 @@ type Row struct {
 	Model    string `json:"model,omitempty"`
 	// Agent identifies the calling coding agent, as "name/version" —
 	// "claude-code/2.1.14" — or as its raw User-Agent when the parser did not
-	// recognise it. Populated from pipeline.EventClient.Label; see Writer.Record.
+	// recognise it. Populated from model.EventClient.Label; see Writer.Record.
 	//
 	// CLIENT-ASSERTED AND TRIVIALLY SPOOFABLE, because it is derived from a request
 	// header: a cost-attribution and display key, never an authorization subject.
@@ -195,7 +195,7 @@ const maxLabelLen = event.MaxLabelLen
 // model name repositions the cursor, recolors the pane or erases the line that reports it,
 // for every future read of a file that is retained for retentionDays and cannot be edited.
 // CWE-150. This is the primary guard for Endpoint, Model and Provenance, and defence in
-// depth for Agent, which pipeline.ParseUserAgent already sanitized.
+// depth for Agent, which model.ParseUserAgent already sanitized.
 //
 // THE ORDER MATTERS. Sanitising can triple a string's length — every replaced byte becomes
 // three — so capping first would let a label of 96 control bytes reach 288 on disk and break
@@ -203,7 +203,7 @@ const maxLabelLen = event.MaxLabelLen
 // boundary, so it cannot split one of the sanitizer's own U+FFFD runes and put an invalid
 // UTF-8 fragment in a durable row.
 func rowLabel(s string) string {
-	return pipeline.TruncateLabel(pipeline.SanitizeControlRunes(s), maxLabelLen)
+	return model.TruncateLabel(model.SanitizeControlRunes(s), maxLabelLen)
 }
 
 // maxLabelsPerMinute caps how many DISTINCT rows one open minute accumulates, and

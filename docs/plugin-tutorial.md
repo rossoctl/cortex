@@ -365,7 +365,7 @@ If your protocol uses role names that differ from the standard vocabulary
 (e.g., A2A uses `"agent"` where the standard is `"assistant"`), remap
 them to the `capabilities.Role*` constants inside `Fragments` so guardrails
 match uniformly across protocols. See
-[`A2AExtension.Fragments`](../core/pipeline/content.go) for a reference
+[`A2AExtension.Fragments`](../core/model/content.go) for a reference
 implementation that rewrites `"agent"` → `"assistant"`.
 
 Skip this step if your protocol is binary, control-plane only, or

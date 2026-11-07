@@ -4,7 +4,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // subscriberChanBuf caps each subscriber's channel depth. 64 absorbs short
@@ -15,7 +15,7 @@ const subscriberChanBuf = 64
 // subscriber wires one live consumer of session events. Writes on ch are
 // non-blocking — a full channel increments drops and discards the event.
 type subscriber struct {
-	ch        chan pipeline.SessionEvent
+	ch        chan model.SessionEvent
 	drops     uint64 // atomic; reads via LoadDrops
 	closeOnce sync.Once
 }
@@ -37,7 +37,7 @@ func (s *subscriber) LoadDrops() uint64 {
 // drop count via the returned Subscription's Drops method. Always call the
 // cancel func to remove the subscriber and close the channel.
 func (s *Store) Subscribe() (*Subscription, func()) {
-	sub := &subscriber{ch: make(chan pipeline.SessionEvent, subscriberChanBuf)}
+	sub := &subscriber{ch: make(chan model.SessionEvent, subscriberChanBuf)}
 
 	s.mu.Lock()
 	s.subscribers = append(s.subscribers, sub)
@@ -63,7 +63,7 @@ type Subscription struct {
 }
 
 // Events returns the receive-only channel of session events.
-func (s *Subscription) Events() <-chan pipeline.SessionEvent {
+func (s *Subscription) Events() <-chan model.SessionEvent {
 	return s.sub.ch
 }
 
@@ -81,7 +81,7 @@ func (s *Subscription) Drops() uint64 {
 // (O(1) live consumers: one agentop instance + maybe a curl tail). If the
 // store ever needs to support many concurrent subscribers, refactor this
 // to an unlocked broadcast (snapshot the slice under the lock, send outside).
-func (s *Store) publishLocked(event pipeline.SessionEvent) {
+func (s *Store) publishLocked(event model.SessionEvent) {
 	for _, sub := range s.subscribers {
 		select {
 		case sub.ch <- event:

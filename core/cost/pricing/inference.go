@@ -1,6 +1,6 @@
 package pricing
 
-import "github.com/rossoctl/cortex/core/pipeline"
+import "github.com/rossoctl/cortex/core/model"
 
 // UsageFromInference reads the per-tier token split that the inference parsers
 // publish onto pctx.Extensions.Inference.
@@ -26,7 +26,7 @@ import "github.com/rossoctl/cortex/core/pipeline"
 //
 // The two fallbacks are independent because a provider can report a prompt split
 // and only a legacy completion total.
-func UsageFromInference(inf *pipeline.InferenceExtension) Usage {
+func UsageFromInference(inf *model.InferenceExtension) Usage {
 	if inf == nil {
 		return Usage{}
 	}
@@ -105,7 +105,7 @@ const (
 	ReasonCountersBelowTotal = "counters-below-total"
 )
 
-// NO PREDICATE IN THIS FILE READS pipeline.InferenceExtension.PresentKinds, and none should: it
+// NO PREDICATE IN THIS FILE READS model.InferenceExtension.PresentKinds, and none should: it
 // is dialect-unreliable for both questions asked here — see outputUncounted. The bit names the
 // tests need live in incompletereason_test.go, beside the assertions that use them.
 
@@ -125,7 +125,7 @@ const (
 //
 // Takes the extension rather than a Usage because none of the signals it needs — the stop reason,
 // the legacy aggregates, the presence mask — is inside Usage's four tiers.
-func IncompleteReason(inf *pipeline.InferenceExtension) string {
+func IncompleteReason(inf *model.InferenceExtension) string {
 	if inf == nil {
 		return ""
 	}
@@ -188,7 +188,7 @@ func IncompleteReason(inf *pipeline.InferenceExtension) string {
 // Reads the same fields UsageFromInference does, and in the same shape, so the label cannot
 // drift from the arithmetic: PromptTotal() is the prompt side it priced, Output the completion
 // side. The legacy aggregates are covered because UsageFromInference folds them into those two.
-func countersBelowTotal(inf *pipeline.InferenceExtension) bool {
+func countersBelowTotal(inf *model.InferenceExtension) bool {
 	if inf.TotalTokens <= 0 {
 		return false
 	}
@@ -207,7 +207,7 @@ func countersBelowTotal(inf *pipeline.InferenceExtension) bool {
 // that function's question: this is exactly the input on which the whole total is attributed
 // to uncached input, and nothing else is. Asking anything else — a presence mask, a single
 // aggregate — is how the label and the arithmetic drift apart while both look reasonable.
-func totalsOnly(inf *pipeline.InferenceExtension) bool {
+func totalsOnly(inf *model.InferenceExtension) bool {
 	return inf.InputTokens == 0 && inf.CacheWriteTokens == 0 && inf.CacheReadTokens == 0 &&
 		inf.OutputTokens == 0 && inf.PromptTokens == 0 && inf.CompletionTokens == 0 &&
 		inf.TotalTokens > 0
@@ -220,7 +220,7 @@ func totalsOnly(inf *pipeline.InferenceExtension) bool {
 // predicate. Returning "complete" on any non-zero output tally answers "was anything
 // counted" when the question is "is what was counted all there is" — which calls a truncated
 // stream exact.
-func outputUncounted(inf *pipeline.InferenceExtension) bool {
+func outputUncounted(inf *model.InferenceExtension) bool {
 	// THE DISCRIMINATOR, and it is deliberately not the Output presence bit.
 	//
 	// Do not "simplify" this to `PresentKinds & KindOutput == 0`. The mask reads like the

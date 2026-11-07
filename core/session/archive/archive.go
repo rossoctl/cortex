@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/session"
 )
 
@@ -199,9 +199,9 @@ const (
 type op struct {
 	kind   opKind
 	id, to string
-	ev     pipeline.SessionEvent
-	cap    *pipeline.RequestCapture // ev's request capture, nil for most events
-	after  uint64                   // where a store entry began: on its first queued event, and on its rename
+	ev     model.SessionEvent
+	cap    *model.RequestCapture // ev's request capture, nil for most events
+	after  uint64                // where a store entry began: on its first queued event, and on its rename
 	clear  *pendingClear
 	f      func()
 	done   chan struct{}
@@ -308,14 +308,14 @@ func (a *Archive) adopt(l loaded) {
 }
 
 // Record implements session.Recorder. It never blocks and never touches disk; see Archive.
-func (a *Archive) Record(sessionID string, e *pipeline.SessionEvent) {
+func (a *Archive) Record(sessionID string, e *model.SessionEvent) {
 	a.RecordCapture(sessionID, e, nil)
 }
 
 // RecordCapture implements session.CaptureRecorder: Record, with the request's capture c when it
 // has one. The capture is queued only while the bytes waiting for the writer stay within budget;
 // otherwise it is dropped and counted, and the event is queued without it.
-func (a *Archive) RecordCapture(sessionID string, e *pipeline.SessionEvent, c *pipeline.RequestCapture) {
+func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *model.RequestCapture) {
 	if a.closed.Load() {
 		return
 	}
@@ -358,7 +358,7 @@ func (a *Archive) RecordCapture(sessionID string, e *pipeline.SessionEvent, c *p
 // captureSize is what a queued capture holds in memory, near enough: its bodies by length. A
 // body read with io.ReadAll can hold up to twice that, and headers are not counted, so the
 // budget bounds memory within a small factor, not exactly.
-func captureSize(c *pipeline.RequestCapture) int64 {
+func captureSize(c *model.RequestCapture) int64 {
 	n := len(c.Original) + len(c.Forwarded)
 	if c.Response != nil {
 		n += len(c.Response.Body)
@@ -367,7 +367,7 @@ func captureSize(c *pipeline.RequestCapture) int64 {
 }
 
 // releaseCapture gives a queued capture's bytes back to the budget.
-func (a *Archive) releaseCapture(c *pipeline.RequestCapture) {
+func (a *Archive) releaseCapture(c *model.RequestCapture) {
 	if c != nil {
 		a.captureBytes.Add(-captureSize(c))
 	}
@@ -529,7 +529,7 @@ func (a *Archive) begin(id string, after uint64) {
 
 // write appends one event, with its request's capture c when it has one, to its session's open
 // segment, opening one if needed.
-func (a *Archive) write(id string, e *pipeline.SessionEvent, c *pipeline.RequestCapture) {
+func (a *Archive) write(id string, e *model.SessionEvent, c *model.RequestCapture) {
 	if a.paused.Load() {
 		a.dropped.Add(1)
 		return
@@ -775,7 +775,7 @@ func foldSegments(dir string, segs []SegmentInfo, id string) (*session.SummaryFo
 	f := session.NewSummaryFold()
 	var first time.Time
 	for _, seg := range segs {
-		if _, err := readSegment(filepath.Join(dir, seg.File), func(e *pipeline.SessionEvent) bool {
+		if _, err := readSegment(filepath.Join(dir, seg.File), func(e *model.SessionEvent) bool {
 			if first.IsZero() {
 				first = e.At
 			}

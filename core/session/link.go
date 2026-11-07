@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // PendingLink is one session a pending bucket's process named, with the span of its naming
@@ -153,12 +153,12 @@ func ParsePending(id string) (agent, proc string, ok bool) {
 
 // LinkedEvents is the part of a linked bucket's events that belongs to session: the requests
 // OwnerAt gives it, each with its response, wherever the response landed in time.
-func LinkedEvents(events []pipeline.SessionEvent, links []PendingLink, session string) []pipeline.SessionEvent {
+func LinkedEvents(events []model.SessionEvent, links []PendingLink, session string) []model.SessionEvent {
 	keep := map[string]bool{}
 	out := events[:0:0]
 	for i := range events {
 		e := &events[i]
-		if e.Phase == pipeline.SessionRequest {
+		if e.Phase == model.SessionRequest {
 			if OwnerAt(links, e.At) != session {
 				continue
 			}

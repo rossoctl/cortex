@@ -7,7 +7,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // SessionSummary is a per-session view for list endpoints: counters, money figures and
@@ -52,13 +52,13 @@ type SessionSummary struct {
 	// Agent is the client this session belongs to, as event.AgentLabel names it, which is the
 	// label agent= matches: the affinity owner's when one claimed the session, else the first
 	// recognised agent's, else — #1214 — the first UNRECOGNISED client's, which is its raw
-	// User-Agent folded by pipeline.AgentName. Absent for the default and pending buckets, which
+	// User-Agent folded by model.AgentName. Absent for the default and pending buckets, which
 	// are no one agent's, for a claimed session its owner has sent nothing into, and for a session
 	// whose every event carried no User-Agent at all, since "unknown" is a reserved bucket rather
-	// than a name (see pipeline.EventClient.Label).
+	// than a name (see model.EventClient.Label).
 	//
 	// NOT A STATEMENT THAT THE AGENT IS RECOGNISED, and a consumer that reads it as one is the
-	// one thing this field's widening can surprise. pipeline.IsKnownAgent(agent) still answers
+	// one thing this field's widening can surprise. model.IsKnownAgent(agent) still answers
 	// correctly — that is what it exists for, and agentop's AGENTS pane uses it to pool every
 	// label it rejects under one row — but presence alone no longer implies it. The alternative
 	// was a session that nothing in the list could attribute to any program, which is what #1214
@@ -123,9 +123,9 @@ type SessionSummary struct {
 	Saturated bool `json:"saturated,omitempty"`
 	Active    bool `json:"active"` // true if this is the most recently updated session
 	// PromptContext is how full this session's conversation got, by the rule in
-	// pipeline.PromptContextFold: the main-agent turn that RANKS HIGHEST under that rule's total
+	// model.PromptContextFold: the main-agent turn that RANKS HIGHEST under that rule's total
 	// order, in prompt tokens. Where the client states its role that is the LATEST such turn;
-	// where it does not it is the one with the MOST MESSAGES. See pipeline.PromptContext, which is
+	// where it does not it is the one with the MOST MESSAGES. See model.PromptContext, which is
 	// this field's type and carries the order.
 	//
 	// NO MONOTONICITY IS PROMISED, and a client must not build on one: this figure can DECREASE
@@ -135,7 +135,7 @@ type SessionSummary struct {
 	// the conversation is NOW rather than how full it has ever been. The unstated arm claims no such
 	// thing — it ranks by message count, so it can legitimately hold a pre-compaction turn for the
 	// rest of a session, which is the documented cost of having no role to read rather than a defect
-	// (see pipeline.PromptContextOf). So the figure decreases on one arm and goes stale on the
+	// (see model.PromptContextOf). So the figure decreases on one arm and goes stale on the
 	// other, and neither is a guarantee to build on.
 	//
 	// RETENTION-INDEPENDENT ALL THE SAME — unlike TotalTokens and CostMicros above, and the
@@ -157,8 +157,8 @@ type SessionSummary struct {
 	// CONTINUES ACROSS A RESTART WHERE A SESSION ARCHIVE RUNS, like CostMicros, and resets where
 	// none does, because the store is in-memory per-pod. A client that has been watching longer
 	// than this proxy has been up may hold a larger figure legitimately — see
-	// pipeline.MergePromptContext, which is how the two combine.
-	PromptContext *pipeline.PromptContext `json:"promptContext,omitempty"`
+	// model.MergePromptContext, which is how the two combine.
+	PromptContext *model.PromptContext `json:"promptContext,omitempty"`
 
 	// InferenceHost is where this session's inference traffic goes: the host of its most recent
 	// request that carried an inference parse, as the event recorded it. After a redirect that is
@@ -224,7 +224,7 @@ type SessionSummary struct {
 // name is how the agents slice is KEYED, so each client contributes one entry: a recognised
 // agent's canonical AffinityName, and — since #1214 — an unrecognised client's own label, which
 // is the only name it has. known is what tells the two apart, and it has to be a field rather
-// than a pipeline.IsKnownAgent(name) call at the point of use: name is an AffinityName, which
+// than a model.IsKnownAgent(name) call at the point of use: name is an AffinityName, which
 // reads an agent's canonical name out of a COMMENT (Claude Code's WebFetch), so the recognised
 // entry's name and its label can disagree, and only the producer knows which rule made it.
 type sessionAgent struct {
@@ -302,10 +302,10 @@ func (s *Store) ListSessions() []SessionSummary {
 // sumTokens aggregates Inference.TotalTokens across all response events
 // in a session. Used by ListSessions so the summary endpoint can report a
 // per-session cost without the caller loading every event first.
-func sumTokens(events []pipeline.SessionEvent) int {
+func sumTokens(events []model.SessionEvent) int {
 	var total int
 	for i := range events {
-		if events[i].Phase != pipeline.SessionResponse {
+		if events[i].Phase != model.SessionResponse {
 			continue
 		}
 		if events[i].Inference == nil {
@@ -343,7 +343,7 @@ type eventMoney struct {
 // CALLED OUTSIDE THE STORE'S LOCK. It touches no store state and takes the event by pointer
 // only to avoid copying it, so Append resolves it before acquiring mu — the unmarshal is the
 // most expensive thing on that path and it does not belong inside the critical section.
-func moneyOf(e *pipeline.SessionEvent) eventMoney {
+func moneyOf(e *model.SessionEvent) eventMoney {
 	// The two phases that carry a settled figure, matching what the aggregator and the
 	// durable ledger both fold. SessionResponse is the ordinary path; a DENIAL can still
 	// carry one, because the proxy charges for a response whose body never arrived — so
@@ -354,7 +354,7 @@ func moneyOf(e *pipeline.SessionEvent) eventMoney {
 	// CHECKED BEFORE THE DECODE, matching ledger.Writer.Record's own hoisted guard and
 	// for the same reason it gives: a request event's plugin map must not be parsed to
 	// answer a question the phase already settles.
-	if e.Phase != pipeline.SessionResponse && e.Phase != pipeline.SessionDenied {
+	if e.Phase != model.SessionResponse && e.Phase != model.SessionDenied {
 		return eventMoney{}
 	}
 	ev, ok := event.Record(e)
@@ -378,7 +378,7 @@ func moneyOf(e *pipeline.SessionEvent) eventMoney {
 // only as good as the full recomputation it claims to equal, and
 // TestAppend_RunningTotalsMatchAFullRecomputation asserts exactly that after appends, trims
 // and evictions. Deleting it would leave the increments with nothing to check them against.
-func sumCost(events []pipeline.SessionEvent) (cost, avoided event.CostSum) {
+func sumCost(events []model.SessionEvent) (cost, avoided event.CostSum) {
 	for i := range events {
 		m := moneyOf(&events[i])
 		cost.Add(m.cost)

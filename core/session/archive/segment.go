@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 const (
@@ -128,7 +128,7 @@ func createSegment(sessionDir string, opened time.Time) (*segmentWriter, error) 
 
 // append writes e — first the strings it refers to that this segment has not defined, then the
 // event — and stamps now as the segment's last write. Nothing is durable until flush.
-func (w *segmentWriter) append(e pipeline.SessionEvent, now time.Time) error {
+func (w *segmentWriter) append(e model.SessionEvent, now time.Time) error {
 	return w.appendCapture(e, nil, now)
 }
 
@@ -139,7 +139,7 @@ func (w *segmentWriter) append(e pipeline.SessionEvent, now time.Time) error {
 // stream together. If the event cannot be encoded the strings and blocks are forgotten again:
 // recording them as defined without writing them would make every later reference to them
 // dangle.
-func (w *segmentWriter) appendCapture(e pipeline.SessionEvent, c *pipeline.RequestCapture, now time.Time) error {
+func (w *segmentWriter) appendCapture(e model.SessionEvent, c *model.RequestCapture, now time.Time) error {
 	stripped, r, fresh := split(e, w.seen)
 	f, blocks := splitCapture(c, w.blocks)
 	forget := func() {
