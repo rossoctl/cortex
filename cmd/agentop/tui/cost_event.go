@@ -57,15 +57,6 @@ func promptCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
 	return ev.PromptUSD, true
 }
 
-// outputCost is what the RESPONSE of one exchange cost: its generated tokens at the output
-// rate, nothing of the prompt. The other half of promptCost, read off the same record, so
-// each row's COST cell answers for that row alone.
-//
-// False for a producer that publishes no output figure — an older proxy, or a model whose
-// output tier has no rate — and a response row then renders blank, exactly as a request row
-// does without a prompt figure. Deliberately NOT backfilled with the exchange total: that
-// is what made this column read as cumulative, and a total in a per-row cell is wrong by
-// more than it is right.
 // recordUnit is the unit resp's cost record is in, "" for dollars or no record. See
 // event.Event.Currency: the record's figures are named in USD for history's sake only.
 func recordUnit(resp *pipeline.SessionEvent) string {
@@ -76,12 +67,15 @@ func recordUnit(resp *pipeline.SessionEvent) string {
 	return ev.Currency
 }
 
-func outputCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
+// exchangeCost is what one exchange cost in total: the record's cost_usd (#1681). It is the
+// figure an authoritative gateway sets, and on real traffic prompt_usd + output_usd equal it
+// to within 1% in 5,704 of 5,707 records.
+func exchangeCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
 	ev, ok := event.Record(resp)
-	if !ok || ev.OutputUSD <= 0 {
+	if !ok || ev.CostUSD <= 0 {
 		return 0, false
 	}
-	return ev.OutputUSD, true
+	return ev.CostUSD, true
 }
 
 // savingSign distinguishes a realized saving from a projected one. A projected

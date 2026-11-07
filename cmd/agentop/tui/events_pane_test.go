@@ -56,27 +56,6 @@ func TestPageActivePane_EventsTable(t *testing.T) {
 	}
 }
 
-// TestShortPhase covers the rendered string for every SessionPhase.
-// SessionDenied renders as "req" (not "deny") because the deny
-// outcome is already on the row in the ACTION + STATUS columns —
-// duplicating it in PHASE was redundant. PHASE communicates
-// lifecycle position; ACTION communicates outcome.
-func TestShortPhase(t *testing.T) {
-	cases := []struct {
-		phase pipeline.SessionPhase
-		want  string
-	}{
-		{pipeline.SessionRequest, "req"},
-		{pipeline.SessionResponse, "resp"},
-		{pipeline.SessionDenied, "req"},
-	}
-	for _, tc := range cases {
-		if got := shortPhase(tc.phase); got != tc.want {
-			t.Errorf("shortPhase(%v) = %q, want %q", tc.phase, got, tc.want)
-		}
-	}
-}
-
 // TestEventAction_Precedence locks the per-event ACTION/PLUGIN aggregation.
 // One row per message: the winning action is the highest-ranked across all
 // invocations (deny > modify > observe > allow > skip), the PLUGIN cell names
@@ -585,8 +564,8 @@ func TestRebuildEventsTable_HideInactive(t *testing.T) {
 	}
 }
 
-// The `s` toggle hides exchanges, not halves of one: a request it shows keeps its
-// response, and a response it shows keeps its request. The live case is a routed
+// The `s` toggle hides exchanges, not halves of one: an exchange is one row (#1681),
+// and it shows when a plugin acted on either half. The live case is a routed
 // request refused for its model: no plugin acts on the 403, and hiding it left the
 // request looking as if it never got an answer.
 func TestRebuildEventsTable_HideInactiveKeepsAnExchangeWhole(t *testing.T) {
@@ -603,7 +582,7 @@ func TestRebuildEventsTable_HideInactiveKeepsAnExchangeWhole(t *testing.T) {
 		// A request no plugin acted on, and a response one did: shown.
 		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: "b"},
 		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "ete", RequestID: "b", StatusCode: 200, Invocations: observed},
-		// Neither half acted on: hidden, both rows.
+		// Neither half acted on: hidden.
 		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "s3", RequestID: "c"},
 		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "s3", RequestID: "c", StatusCode: 200},
 	}
@@ -611,13 +590,12 @@ func TestRebuildEventsTable_HideInactiveKeepsAnExchangeWhole(t *testing.T) {
 	m.eventsTbl = newEventsTable()
 	m.rebuildEventsTable()
 
-	if len(m.visibleRows) != 4 || m.hiddenInactive != 2 {
-		t.Fatalf("rows=%d hidden=%d, want 4/2", len(m.visibleRows), m.hiddenInactive)
+	if len(m.visibleRows) != 2 || m.hiddenInactive != 1 {
+		t.Fatalf("rows=%d hidden=%d, want 2/1", len(m.visibleRows), m.hiddenInactive)
 	}
-	for i, want := range []*pipeline.SessionEvent{&events[0], &events[1], &events[2], &events[3]} {
-		if got := m.visibleRows[i].event; got != want {
-			t.Errorf("row %d = %s %s %d, want %s %s %d", i,
-				got.RequestID, got.Phase, got.StatusCode, want.RequestID, want.Phase, want.StatusCode)
+	for i, want := range [][2]*pipeline.SessionEvent{{&events[0], &events[1]}, {&events[2], &events[3]}} {
+		if got := m.visibleRows[i]; got.event != want[0] || got.resp != want[1] {
+			t.Errorf("row %d = %+v, want request %s with its response", i, got, want[0].RequestID)
 		}
 	}
 }
@@ -1374,9 +1352,9 @@ func TestSort_ChronologicalIsUnchanged(t *testing.T) {
 // The regression that matters most: sorting must not disturb the request/response
 // pairing. computeEventPairs walks the CHRONOLOGICAL slice — its fallback pass
 // searches backward from a response, and it mints the # exchange numbers in
-// first-seen order — and the TOKENS/COST cells reach a request's figures through a
-// partner map keyed by that slice's indices. Sorting reorders only the finished
-// rows, so every one of those values must come out identical.
+// first-seen order — and mergeExchanges folds each response into its request's row by
+// that slice's indices. Sorting reorders only the finished rows, so every one of
+// those values must come out identical.
 func TestSort_PairingAndExchangeFiguresSurvive(t *testing.T) {
 	// Two exchanges, interleaved, with the SLOWER one first so a DURATION sort has
 	// to move rows. Only the responses carry ids/figures, as in production.
@@ -1403,14 +1381,14 @@ func TestSort_PairingAndExchangeFiguresSurvive(t *testing.T) {
 			tokens: cellAt(t, m, row, colTokens),
 		}
 	}
-	if len(want) != 4 {
-		t.Fatalf("baseline captured %d rows, want 4", len(want))
+	if len(want) != 2 {
+		t.Fatalf("baseline captured %d rows, want 2: one per exchange", len(want))
 	}
-	// The request row must genuinely have borrowed its paired response's prompt
-	// count, or this test would be asserting that blanks stay blank.
+	// The request's row must genuinely show its response's prompt count, or this test
+	// would be asserting that blanks stay blank.
 	reqKey := keyOf(&events[0])
 	if want[reqKey].tokens == "" {
-		t.Fatalf("baseline: slow REQUEST row shows no TOKENS, so pairing was not exercised")
+		t.Fatalf("baseline: slow exchange's row shows no TOKENS, so pairing was not exercised")
 	}
 
 	for _, tc := range []struct {
@@ -1426,8 +1404,8 @@ func TestSort_PairingAndExchangeFiguresSurvive(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m.sortCol, m.sortDesc = tc.col, tc.desc
 			m.rebuildEventsTable()
-			if len(m.visibleRows) != 4 {
-				t.Fatalf("rows = %d, want 4", len(m.visibleRows))
+			if len(m.visibleRows) != 2 {
+				t.Fatalf("rows = %d, want 2", len(m.visibleRows))
 			}
 			for row, er := range m.visibleRows {
 				k := keyOf(er.event)
@@ -1444,9 +1422,8 @@ func TestSort_PairingAndExchangeFiguresSurvive(t *testing.T) {
 	}
 }
 
-// TOKENS sorts on the numeric count, including on a REQUEST row whose figure comes
-// from its paired response — so the sort key has to make the same pairedResponse
-// call the cell does.
+// TOKENS sorts on the numeric count. The figure is on the response, which the merged
+// row holds (#1681), so the sort key reads the same response the cell does.
 func TestSort_TokensIsNumericAcrossThePair(t *testing.T) {
 	events := []pipeline.SessionEvent{
 		{Host: "small", Phase: pipeline.SessionRequest, RequestID: "a", Direction: pipeline.Outbound},
@@ -1460,14 +1437,13 @@ func TestSort_TokensIsNumericAcrossThePair(t *testing.T) {
 	m.sortCol, m.sortDesc = colTokens, true
 	m.rebuildEventsTable()
 
-	// The big REQUEST row leads: 1,048,576 formats with separators, so a string sort
-	// would rank "900" above "1,048,576".
-	first := m.visibleRows[0]
-	if first.event.Host != "big" || first.event.Phase != pipeline.SessionRequest {
-		t.Errorf("first row = %s/%s, want big/request", first.event.Host, first.event.Phase)
+	// The big exchange leads: 1,048,576 formats compact, so a string sort would rank
+	// "900→0" above "1.0M→0".
+	if got := hostsInOrder(m); !slices.Equal(got, []string{"big", "small"}) {
+		t.Errorf("rows = %v, want [big small]", got)
 	}
-	if got := strings.TrimSpace(cellAt(t, m, 0, colTokens)); got != "1,048,576" {
-		t.Errorf("first TOKENS cell = %q, want 1,048,576", got)
+	if got := strings.TrimSpace(cellAt(t, m, 0, colTokens)); got != "1.0M→0" {
+		t.Errorf("first TOKENS cell = %q, want 1.0M→0", got)
 	}
 }
 
@@ -1516,17 +1492,7 @@ func TestSort_VisibleRowsStayParallelToTheTable(t *testing.T) {
 	}
 }
 
-// phasesInOrder reads the rendered rows as a "<host>/<phase>" sequence, so a test
-// can assert that a pair stayed together AND which way round it sits.
-func phasesInOrder(m *model) []string {
-	out := make([]string, 0, len(m.visibleRows))
-	for _, r := range m.visibleRows {
-		out = append(out, r.event.Host+"/"+shortPhase(r.event.Phase))
-	}
-	return out
-}
-
-// Sorting by DURATION keeps each request beside its own response (#1251).
+// Sorting by DURATION ranks exchanges, not halves of them (#1251, #1681).
 //
 // THE REPORTED SYMPTOM, and it is worth stating precisely because the sort was not
 // buggy. A response row carries the figures the proxy only learns once the call
@@ -1534,7 +1500,8 @@ func phasesInOrder(m *model) []string {
 // every response sorted on merit and every request sank into the zero group, which
 // put an 11-minute call's response eleven rows above the request that caused it.
 // The reporter's question was whether the sorting was wrong; it was faithfully
-// ranking two rows that are one exchange.
+// ranking two rows that are one exchange. Each exchange is one row now, so the slowest
+// call ranks as one row.
 //
 // The fixture is the reporter's shape: two slow exchanges and a fast one, each a
 // request/response PAIR rather than the bare response rows the other sort tests
@@ -1556,38 +1523,31 @@ func TestSort_DurationKeepsAnExchangeTogether(t *testing.T) {
 	m.sortCol, m.sortDesc = colDuration, true
 	m.rebuildEventsTable()
 
-	// Descending: slowest exchange first, and within each pair the REQUEST still
-	// leads. That second half is the one a descending sort gets wrong for free —
-	// folding the keys makes the pair tie, and flipping the comparison would then
-	// surface the response above its own request.
-	want := []string{
-		"slow/req", "slow/resp",
-		"mid/req", "mid/resp",
-		"fast/req", "fast/resp",
-	}
-	if got := phasesInOrder(m); !slices.Equal(got, want) {
+	// Descending: slowest exchange first, each one row that holds both halves.
+	want := []string{"slow", "mid", "fast"}
+	if got := hostsInOrder(m); !slices.Equal(got, want) {
 		t.Errorf("descending by duration =\n  %v\nwant\n  %v", got, want)
+	}
+	for row, r := range m.visibleRows {
+		if r.resp == nil {
+			t.Errorf("row %d (%s) has no response: the exchange is split", row, r.event.Host)
+		}
 	}
 
 	m.sortDesc = false
 	m.rebuildEventsTable()
-	wantAsc := []string{
-		"fast/req", "fast/resp",
-		"mid/req", "mid/resp",
-		"slow/req", "slow/resp",
-	}
-	if got := phasesInOrder(m); !slices.Equal(got, wantAsc) {
+	wantAsc := []string{"fast", "mid", "slow"}
+	if got := hostsInOrder(m); !slices.Equal(got, wantAsc) {
 		t.Errorf("ascending by duration =\n  %v\nwant\n  %v", got, wantAsc)
 	}
 }
 
-// An unpaired row still ranks on its own, so folding cannot strand one.
+// An unpaired row still ranks on its own, beside the merged exchanges.
 //
 // Three shapes reach this: a fire-and-forget request that never gets a response
 // (MCP notifications/initialized is the real one), a response whose request has
 // been evicted from the window, and anything computeEventPairs could not match.
-// Each is its own exchange of one row, and the fold must leave it alone rather than
-// pulling it toward a neighbour.
+// Each is its own exchange of one row, and ranks by its own figure.
 func TestSort_DurationLeavesUnpairedRowsAlone(t *testing.T) {
 	base := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
 	events := []pipeline.SessionEvent{
@@ -1604,47 +1564,9 @@ func TestSort_DurationLeavesUnpairedRowsAlone(t *testing.T) {
 	m.sortCol, m.sortDesc = colDuration, true
 	m.rebuildEventsTable()
 
-	want := []string{"pair/req", "pair/resp", "orphanresp/resp", "orphanreq/req"}
-	if got := phasesInOrder(m); !slices.Equal(got, want) {
+	want := []string{"pair", "orphanresp", "orphanreq"}
+	if got := hostsInOrder(m); !slices.Equal(got, want) {
 		t.Errorf("descending with unpaired rows =\n  %v\nwant\n  %v", got, want)
-	}
-}
-
-// TOKENS must NOT fold, and this is the test that keeps it that way.
-//
-// The subtle half of #1251. A TOKENS cell is already exchange-level per ROW: the
-// request row reaches its paired response for the PROMPT count while the response
-// row reports the COMPLETION count, so both rows show a real and different figure.
-// Folding them to a shared max would make the sort disagree with the figure printed
-// beside it — the one thing eventColumn.sortKey's doc forbids — so a 25,093-token
-// prompt and its 217-token reply must stay ranked apart, in that order.
-//
-// Figures taken from the reporter's own capture in #1251.
-func TestSort_TokensDoesNotFoldAPair(t *testing.T) {
-	base := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
-	events := []pipeline.SessionEvent{
-		{Host: "big", RequestID: "r1", Phase: pipeline.SessionRequest, At: base},
-		{
-			Host: "big", RequestID: "r1", Phase: pipeline.SessionResponse, At: base.Add(time.Second),
-			Inference: &pipeline.InferenceExtension{PromptTokens: 25093, CompletionTokens: 217},
-		},
-	}
-
-	m := sortTestModel(events)
-	m.sortCol, m.sortDesc = colTokens, true
-	m.rebuildEventsTable()
-
-	// The request row (25,093 prompt tokens) outranks its own response (217), which
-	// a fold would have flattened into a tie.
-	want := []string{"big/req", "big/resp"}
-	if got := phasesInOrder(m); !slices.Equal(got, want) {
-		t.Errorf("descending by tokens = %v, want %v", got, want)
-	}
-	if got := strings.TrimSpace(cellAt(t, m, 0, colTokens)); got != "25,093" {
-		t.Errorf("first TOKENS cell = %q, want 25,093 — the sort must agree with the cell", got)
-	}
-	if got := strings.TrimSpace(cellAt(t, m, 1, colTokens)); got != "217" {
-		t.Errorf("second TOKENS cell = %q, want 217", got)
 	}
 }
 
@@ -1654,26 +1576,14 @@ func activeInvocation() *pipeline.Invocations {
 	return &pipeline.Invocations{Inbound: []pipeline.Invocation{{Action: pipeline.ActionObserve}}}
 }
 
-// With `s` on, a pair still sorts together — the regression a fixture of whole pairs
-// cannot see.
+// With `s` on, the sort still ranks whole exchanges.
 //
-// The fold and the sort reason about PAIRS, and computeEventPairs numbers rows over
-// the session's full list, before hideInactive drops any. The rendered rows are only
-// what survived that filter. Folding by position in the rendered list therefore read
-// the wrong rows' keys the moment the counts diverged, and the descending pair check
-// looked at the wrong rows too.
-//
-// ONE hidden row is the fixture that catches it, and the count is the whole point: a
-// hidden COMPLETE pair shifts every later index by two, and the two indexes of a pair
-// still differ by one, so the merge lands on a different pair but reads a
-// structurally identical one and happens to give the right answer. An odd shift is
-// what desynchronizes a request from its own response. The hidden row here is a
-// skip-only request with no response, which is the ordinary shape of one: a
-// passthrough request no plugin acted on.
-//
-// Before the fix this produced [slow/resp fast/req fast/resp slow/req] — the slow
-// request last, separated from its own response, which is worse than the #1251
-// symptom it was meant to fix.
+// The sort keys carry an arrival index over the session's full row list, before
+// hideInactive drops any, while the rendered rows are only what survived that filter.
+// ONE hidden row shifts every later index by one, which is the fixture that catches a
+// sort that reads the two index spaces as one. The hidden row here is a skip-only
+// request with no response, which is the ordinary shape of one: a passthrough request
+// no plugin acted on.
 func TestSort_HideInactiveKeepsAnExchangeTogether(t *testing.T) {
 	base := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
 	events := []pipeline.SessionEvent{
@@ -1694,33 +1604,25 @@ func TestSort_HideInactiveKeepsAnExchangeTogether(t *testing.T) {
 	if m.hiddenInactive != 1 {
 		t.Fatalf("hid %d rows, want exactly 1 — an even shift cannot catch this", m.hiddenInactive)
 	}
-	want := []string{"slow/req", "slow/resp", "fast/req", "fast/resp"}
-	if got := phasesInOrder(m); !slices.Equal(got, want) {
+	want := []string{"slow", "fast"}
+	if got := hostsInOrder(m); !slices.Equal(got, want) {
 		t.Errorf("descending by duration with hideInactive =\n  %v\nwant\n  %v", got, want)
 	}
 
 	m.sortDesc = false
 	m.rebuildEventsTable()
-	wantAsc := []string{"fast/req", "fast/resp", "slow/req", "slow/resp"}
-	if got := phasesInOrder(m); !slices.Equal(got, wantAsc) {
+	wantAsc := []string{"fast", "slow"}
+	if got := hostsInOrder(m); !slices.Equal(got, wantAsc) {
 		t.Errorf("ascending by duration with hideInactive =\n  %v\nwant\n  %v", got, wantAsc)
 	}
 }
 
-// Two exchanges that TIE on the sorted column still each keep their own rows
-// together.
+// Two exchanges that TIE on the sorted column keep arrival order, in both directions.
 //
-// Folding the keys makes a pair tie with itself, which is what stops a sort from
-// splitting it — but only while nothing ELSE ties with it. Equal keys are the norm
-// rather than the exception here: on STATUS almost every row is 200. Two exchanges
-// that overlap in time then have four rows with one key, SliceStable keeps their
-// arrival order, and arrival order for overlapping exchanges is
-// req/req/resp/resp — interleaved, with each request two rows from its response.
-//
-// Fixed by tie-breaking on the exchange (the request's arrival index) rather than by
-// a special case for a pair compared against itself, so rows of one exchange sort as
-// a block whatever shares their key. Both directions are asserted: the tie-break
-// must NOT reverse, or descending would read resp-then-req.
+// Equal keys are the norm rather than the exception here: on STATUS almost every row is
+// 200. Two exchanges that overlap in time used to be four rows, interleaved as
+// req/req/resp/resp. Each is one row now (#1681), and the tie-break on the exchange must
+// NOT reverse under a descending sort.
 func TestSort_EqualKeysKeepOverlappingExchangesTogether(t *testing.T) {
 	base := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
 	// a and b overlap: both requests arrive before either response.
@@ -1731,16 +1633,16 @@ func TestSort_EqualKeysKeepOverlappingExchangesTogether(t *testing.T) {
 		{Host: "b", RequestID: "rb", Phase: pipeline.SessionResponse, At: base.Add(3 * time.Second), StatusCode: 200},
 	}
 
-	// Both exchanges answer 200, so every row's folded key is identical and the
-	// column decides nothing: the exchange tie-break is the only thing ordering these.
+	// Both exchanges answer 200, so the column decides nothing: the exchange tie-break
+	// is the only thing ordering these.
 	for _, desc := range []bool{false, true} {
 		m := sortTestModel(events)
 		m.sortCol, m.sortDesc = colStatus, desc
 		m.rebuildEventsTable()
 		// Exchange a arrived first and stays first in BOTH directions: the key ties,
 		// so descending has nothing to reverse.
-		want := []string{"a/req", "a/resp", "b/req", "b/resp"}
-		if got := phasesInOrder(m); !slices.Equal(got, want) {
+		want := []string{"a", "b"}
+		if got := hostsInOrder(m); !slices.Equal(got, want) {
 			t.Errorf("desc=%v by status =\n  %v\nwant\n  %v", desc, got, want)
 		}
 	}
