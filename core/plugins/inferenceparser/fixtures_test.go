@@ -1,6 +1,8 @@
 package inferenceparser
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/internal/parsefixture"
@@ -21,4 +23,26 @@ func TestFixtures(t *testing.T) {
 			}
 			return x.Inference
 		})
+}
+
+// TestFixtureCasesAreComplete fails on a capture that parsefixture.Run would skip or read with no response.
+func TestFixtureCasesAreComplete(t *testing.T) {
+	dirs, err := filepath.Glob("testdata/*/*")
+	if err != nil || len(dirs) == 0 {
+		t.Fatalf("no captures under testdata/*/*: %v", err)
+	}
+	for _, dir := range dirs {
+		if _, err := os.Stat(filepath.Join(dir, "request.headers")); err != nil {
+			t.Errorf("%s: %v", dir, err)
+		}
+		n := 0
+		for _, name := range []string{"response.sse", "response.json", "response.html"} {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				n++
+			}
+		}
+		if n == 0 {
+			t.Errorf("%s: no response.sse, response.json or response.html", dir)
+		}
+	}
 }
