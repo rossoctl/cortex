@@ -1,4 +1,4 @@
-package pipeline
+package model
 
 // Fixtures for the prompt-context rule. DELIBERATELY A SECOND COPY of the set in
 // cmd/agentop/tui/sessions_context_test.go, not a shared helper package.
