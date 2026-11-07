@@ -68,16 +68,17 @@ in this design.
 - The cursor stops on the first matching row.
 - While it searches, the footer says
   `[/hello details: searching 340 of 1987…]`.
-- On a match, the footer says `[/hello details: #123]`.
-- On no match, the footer says `[/hello details: no match in 1987 events]`.
+- On a match, the footer says `[/hello details: match]`. Not the `#` value:
+  that column can be hidden or sorted.
+- On no match, the footer says `[/hello details: no match in 1987 rows]`.
 - Esc stops the search and puts the cursor back where `/` was pressed.
 
 ### After a match
 
 - `n` finds the next match below the cursor. `N` finds the next match above
   it. Both wrap past the end.
-- An event that was checked with no match is not fetched again for the same
-  query. So a second pass is fast.
+- An event that was checked is not fetched again for the same query. So a
+  second pass makes no fetch.
 - Enter opens the row. The detail search gets the same query, so the match is
   highlighted.
 
@@ -121,7 +122,8 @@ New file `tui/search_details.go`.
      and check the reply.
 3. On a match, put the cursor on that row and pin it by event key, as
    `eventsSurface.reveal` does.
-4. On no match, record the seq as checked and go to the next event.
+4. Record the result (match or no match) for the event, and on no match go
+   to the next event.
 5. When the loop comes back to the start row, report no match.
 
 One fetch runs at a time.
@@ -133,8 +135,9 @@ One fetch runs at a time.
 - The search does not call `replaceHeldEvent` or `markFullFetched`. Opening a
   row calls both, and so keeps the full event. If the search did the same,
   agentop would keep every event it checked, up to the 2.2 GB above.
-- The only state that stays is a set of checked seqs. It is cleared when the
-  query changes.
+- The only state that stays is one bool for each checked event, keyed by
+  event key, because a linked bucket's seqs count from 1 in their own bucket.
+  It is cleared when the query or the session changes.
 
 ### Stopping and stale replies
 
@@ -156,7 +159,7 @@ search against a proxy that does not project.
 - `m.searchDetails bool`: the box. It is cleared where the events pane's query
   is cleared now: `keys.go:708`, `timeline_pane.go:481`, `app.go:1153`.
 - `m.detailScan`: the running search (query, generation, direction, start row,
-  checked seqs, progress count), or nil.
+  rows left, state), or nil.
 - `searchKey`: Tab toggles the box when the target is `paneEvents`. Enter with
   the box on commits the query and starts the loop.
 - `searchStep`: with the box on and a committed query on `paneEvents`, `n` and
