@@ -870,15 +870,25 @@ func TestForwardProxy_StripsCortexAttributionHeaders(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, upstream.URL, nil)
 	req.Header.Set("User-Agent", procClaudeUA)
 	req.Header.Set(session.ClaudeCodeSessionHeader, "real")
-	req.Header.Set(attribution.HeaderSession, "forged")
-	req.Header.Set(attribution.HeaderProc, "1.1")
-	req.Header.Set(attribution.HeaderSource, string(pipeline.SessionSourceHeader))
+	// Every attribution header, each with a value Decode would accept.
+	forged := map[string]string{
+		attribution.HeaderAgent:      "claude-code",
+		attribution.HeaderProc:       "1.1",
+		attribution.HeaderClientProc: "2.2",
+		attribution.HeaderSession:    "forged",
+		attribution.HeaderSource:     string(pipeline.SessionSourceHeader),
+		attribution.HeaderNamedBy:    session.ClaudeCodeSessionHeader,
+		attribution.HeaderChain:      "forged-chain",
+	}
+	for k, v := range forged {
+		req.Header.Set(k, v)
+	}
 	resp, err := via.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
-	for _, k := range []string{attribution.HeaderSession, attribution.HeaderProc, attribution.HeaderSource} {
+	for k := range forged {
 		if v := saw.Get(k); v != "" {
 			t.Errorf("upstream saw %s: %q", k, v)
 		}
