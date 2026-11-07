@@ -451,8 +451,9 @@ session:
 ```
 
 The copy keeps `tls_bridge.ca_dir` pointing at `~/.cortex/ca`, so agents trust the same CA.
-Do not give two Cortex processes the same archive `dir`: a clear in one deletes the files the
-other is writing.
+Cortex owns everything under the archive `dir`: a clear deletes its `data/` directory whole.
+Give it an empty directory that nothing else uses. Do not give two Cortex processes the same
+archive `dir`: a clear in one deletes the files the other is writing.
 
 **How big it gets.** Each session's events are written as zstd-compressed segments that store
 a repeated message once rather than once per turn — the same saving the in-memory store makes,

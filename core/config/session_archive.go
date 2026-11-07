@@ -28,7 +28,8 @@ type SessionArchiveConfig struct {
 	// default, 2 GiB.
 	MaxBytes int64 `yaml:"max_bytes,omitempty" json:"max_bytes,omitempty"`
 	// Dir is where the archive writes. Empty means ~/.cortex/sessions, which only a local install
-	// uses. Must be absolute, for the reason cost_ledger.dir must be.
+	// uses. Must be absolute, for the reason cost_ledger.dir must be. The archive owns everything
+	// under it: a clear deletes Dir/data whole, so Dir must be a directory nothing else uses.
 	Dir string `yaml:"dir,omitempty" json:"dir,omitempty"`
 }
 
