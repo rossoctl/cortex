@@ -37,34 +37,9 @@ import (
 // event arrived over TLS (SessionEvent.TLS non-nil), a small TLS header
 // block is prepended too. Both absent for plaintext, non-bridged events.
 func (m *model) showDetail(r eventRow, resetScroll bool) {
-	e := r.event
 	m.detailRow = r
-	m.detailEvent = e
-	// The header blocks first, each followed by a blank line, in the order they have always
-	// had: TLS, what plugins rewrote, then the folded tunnel. Lines like the JSON below them,
-	// so a search reads them too.
-	m.detailHead = nil
-	m.detailTree = nil
-	if data, err := json.Marshal(e); err != nil {
-		m.detailHead = []string{"error marshaling event: " + err.Error()}
-	} else {
-		var tunnel string
-		if r.tunnel != nil {
-			tunnel = tunnelHeader(r.tunnel)
-		}
-		for _, h := range []string{tlsHeader(e.TLS), rewriteHeader(e), servedHeader(e), timingHeader(e), tunnel} {
-			if h != "" {
-				m.detailHead = append(m.detailHead, strings.Split(h, "\n")...)
-				m.detailHead = append(m.detailHead, "")
-			}
-		}
-		filtered := withRaw(filterForDetail(data, e.Phase), r.raw)
-		if root, err := treeFromJSON(filtered); err == nil {
-			m.detailTree = root
-		} else {
-			m.detailHead = append(m.detailHead, ColorizeJSONBytes(filtered))
-		}
-	}
+	m.detailEvent = r.event
+	m.detailHead, m.detailTree = detailContent(r)
 	if resetScroll {
 		// A new event: the folds the reader opened were for the last one.
 		m.detailFolds = nil
@@ -83,6 +58,35 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 	// offset is already in range. Same three lines as syncHelpViewport.
 	m.detailVp.SetYOffset(m.detailVp.YOffset)
 	m.scrollToDetailCursor()
+}
+
+// detailContent is what the detail pane draws for r: the header blocks, each followed by a
+// blank line, and the event's JSON as a tree. When the JSON does not build a tree, it is one
+// more header, colorized. showDetail draws this and detailHas searches it, so a details search
+// matches exactly what opening the row shows.
+func detailContent(r eventRow) (head []string, root *node) {
+	e := r.event
+	data, err := json.Marshal(e)
+	if err != nil {
+		return []string{"error marshaling event: " + err.Error()}, nil
+	}
+	// The header blocks first, in the order they have always had: TLS, what plugins rewrote,
+	// then the folded tunnel. Lines like the JSON below them, so a search reads them too.
+	var tunnel string
+	if r.tunnel != nil {
+		tunnel = tunnelHeader(r.tunnel)
+	}
+	for _, h := range []string{tlsHeader(e.TLS), rewriteHeader(e), servedHeader(e), timingHeader(e), tunnel} {
+		if h != "" {
+			head = append(head, strings.Split(h, "\n")...)
+			head = append(head, "")
+		}
+	}
+	filtered := withRaw(filterForDetail(data, e.Phase), r.raw)
+	if root, err := treeFromJSON(filtered); err == nil {
+		return head, root
+	}
+	return append(head, ColorizeJSONBytes(filtered)), nil
 }
 
 // renderDetail draws the event detail pane from the tree showDetail built, with the folds the
