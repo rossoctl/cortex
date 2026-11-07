@@ -64,6 +64,7 @@ const listenerTTL = 30 * time.Second
 // up, while the client is connected. Every later call on m returns the same chain. A key
 // with an invalid end, or a failed lookup, keeps nil. err is the lookup's error, given only
 // to the call that made the lookup, so the caller logs a failure once per connection.
+// m must not be nil.
 func (a *Attributor) Chain(res peerproc.Resolver, key ConnKey, m *Memo) ([]Proc, error) {
 	var err error
 	m.once.Do(func() {
@@ -96,8 +97,9 @@ func (a *Attributor) Program(chain []Proc) (p tlsbridge.Program, ok bool) {
 // loopback listener the request can reach) is an agent talking to its own service on this
 // host. Every listener found must run the client's executable and be an agent's own
 // process. h is the client's request headers (its User-Agent). svc and pid name the last
-// qualifying listener, for the caller's log.
-func (a *Attributor) SelfTraffic(res peerproc.Resolver, m *Memo, chain []Proc, dests []netip.AddrPort, h http.Header) (svc netip.AddrPort, pid int32, ok bool) {
+// qualifying listener, for the caller's log. m is the client connection's Memo, and must
+// not be nil.
+func (a *Attributor) SelfTraffic(res peerproc.Resolver, chain []Proc, dests []netip.AddrPort, h http.Header, m *Memo) (svc netip.AddrPort, pid int32, ok bool) {
 	if len(chain) == 0 || chain[0].Exe == "" {
 		return netip.AddrPort{}, 0, false
 	}

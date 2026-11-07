@@ -145,7 +145,7 @@ func TestSelfTraffic_ListenerAnswerIsCachedFor30s(t *testing.T) {
 
 	check := func(dest netip.AddrPort, wantOK bool, wantAsked int) {
 		t.Helper()
-		svc, pid, ok := a.SelfTraffic(r, &m, chain, []netip.AddrPort{dest}, h)
+		svc, pid, ok := a.SelfTraffic(r, chain, []netip.AddrPort{dest}, h, &m)
 		if ok != wantOK || (ok && (svc != dest || pid != 101)) {
 			t.Errorf("%v: %v %d %v, want ok=%v", dest, svc, pid, ok, wantOK)
 		}
@@ -171,14 +171,14 @@ func TestSelfTraffic_EveryListenerMustQualify(t *testing.T) {
 	v4, v6 := netip.MustParseAddrPort("127.0.0.1:4096"), netip.MustParseAddrPort("[::1]:4096")
 	r := &connResolver{listeners: map[netip.AddrPort]peerproc.Proc{v4: ownService("/bin/p100"), v6: ownService("/usr/bin/node")}}
 	chain, h := pchain(100), req(claudeUA, "")
-	if _, _, ok := a.SelfTraffic(r, &Memo{}, chain, []netip.AddrPort{v4}, h); !ok {
+	if _, _, ok := a.SelfTraffic(r, chain, []netip.AddrPort{v4}, h, &Memo{}); !ok {
 		t.Fatal("the agent's own listener alone: false, want true")
 	}
-	if _, _, ok := a.SelfTraffic(r, &Memo{}, chain, []netip.AddrPort{v4, v6}, h); ok {
+	if _, _, ok := a.SelfTraffic(r, chain, []netip.AddrPort{v4, v6}, h, &Memo{}); ok {
 		t.Error("one listener runs another executable: true, want false")
 	}
 	// An empty chain returns before it reads the Attributor, which a caller without a store lacks.
-	if _, _, ok := (*Attributor)(nil).SelfTraffic(r, &Memo{}, nil, []netip.AddrPort{v4}, h); ok {
+	if _, _, ok := (*Attributor)(nil).SelfTraffic(r, nil, []netip.AddrPort{v4}, h, &Memo{}); ok {
 		t.Error("an empty chain: true, want false")
 	}
 }

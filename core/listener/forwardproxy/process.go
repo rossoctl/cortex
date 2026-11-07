@@ -93,7 +93,7 @@ func (s *Server) selfTraffic(r *http.Request, chain []attribution.Proc) bool {
 	if m == nil {
 		return false
 	}
-	svc, pid, ok := s.attributor().SelfTraffic(s.Processes, m, chain, loopbackDests(r), r.Header)
+	svc, pid, ok := s.attributor().SelfTraffic(s.Processes, chain, loopbackDests(r), r.Header, m)
 	if ok {
 		s.noteSelfTraffic(chain[0].Exe, svc, pid)
 	}
