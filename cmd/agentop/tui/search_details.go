@@ -49,13 +49,16 @@ type detailSearch struct {
 	state detailSearchState
 	// noRoute is an answer from a proxy without the search route.
 	noRoute bool
-	// hits is the held rows that either side matched, by event key.
+	// hits is the held rows the search checked, by event key: true when either side matched it.
 	hits map[eventKey]bool
 	// last is the newest seq the proxy read, and oldest the oldest seq agentop held, for each
 	// session id it was asked about. A held row older than oldest (a page that `o` loaded) makes
 	// the answer stale. A row newer than last (a new event) makes a step that reaches it search
 	// again.
 	last, oldest map[string]uint64
+	// newest is the newest seq agentop showed for each session id, when it asked. A row newer than
+	// newest that the search did not check is a new row, as one newer than last is.
+	newest map[string]uint64
 	// older counts the proxy's matches older than the rows agentop holds.
 	older int
 	// forward and inclusive are the step to take when the answer lands.
@@ -74,11 +77,11 @@ const (
 
 // detailSearchMsg is the answer to one details search.
 type detailSearchMsg struct {
-	gen          uint64
-	hits         map[eventKey]bool
-	last, oldest map[string]uint64
-	older        int
-	err          error
+	gen                  uint64
+	hits                 map[eventKey]bool
+	last, oldest, newest map[string]uint64
+	older                int
+	err                  error
 }
 
 // sendDetailSearch sends the events pane's committed query, and takes the step when the answer
@@ -116,21 +119,21 @@ func (m *model) sendDetailSearch(forward, inclusive bool) tea.Cmd {
 // id the proxy no longer holds (an evicted bucket) has no matches there, and does not fail the
 // search.
 func runDetailSearch(ctx context.Context, c *apiclient.Client, gen uint64, sel string, rows []eventRow, q string) detailSearchMsg {
-	msg := detailSearchMsg{gen: gen, hits: map[eventKey]bool{}, last: map[string]uint64{}, oldest: map[string]uint64{}}
-	newest := map[string]uint64{}
+	msg := detailSearchMsg{gen: gen, hits: map[eventKey]bool{}, last: map[string]uint64{}, oldest: map[string]uint64{},
+		newest: map[string]uint64{}}
 	for _, r := range rows {
 		s := eventSession(sel, r.event)
 		if _, ok := msg.oldest[s]; !ok {
 			msg.oldest[s] = r.event.Seq
 		}
 		msg.oldest[s] = min(msg.oldest[s], r.event.Seq)
-		newest[s] = max(newest[s], r.event.Seq)
+		msg.newest[s] = max(msg.newest[s], r.event.Seq)
 	}
 	found := map[string]map[uint64]bool{}
 	for s := range msg.oldest {
 		res, err := c.SearchSession(ctx, s, q)
 		if errors.Is(err, apiclient.ErrNotFound) {
-			msg.last[s] = newest[s]
+			msg.last[s] = msg.newest[s]
 			continue
 		}
 		if err != nil {
@@ -147,9 +150,7 @@ func runDetailSearch(ctx context.Context, c *apiclient.Client, gen uint64, sel s
 		msg.last[s] = res.LastSeq
 	}
 	for _, r := range rows {
-		if found[eventSession(sel, r.event)][r.event.Seq] || detailHas(r, q) {
-			msg.hits[keyOf(r.event)] = true
-		}
+		msg.hits[keyOf(r.event)] = found[eventSession(sel, r.event)][r.event.Seq] || detailHas(r, q)
 	}
 	return msg
 }
@@ -173,7 +174,7 @@ func (m *model) applyDetailSearch(msg detailSearchMsg) {
 		return
 	}
 	d.cancel()
-	d.hits, d.last, d.oldest, d.older, d.state = msg.hits, msg.last, msg.oldest, msg.older, searchReady
+	d.hits, d.last, d.oldest, d.newest, d.older, d.state = msg.hits, msg.last, msg.oldest, msg.newest, msg.older, searchReady
 	m.stepDetailMatch(d.forward, d.inclusive)
 }
 
@@ -222,8 +223,9 @@ func (m *model) stepDetails(forward bool) tea.Cmd {
 }
 
 // detailSearchStale reports whether a held row is outside what the answer covered for its
-// session in a way a step cannot go around: a session it did not ask about, or a row older than
-// what agentop held when it asked.
+// session in a way a step cannot go around: a session it did not ask about, a row older than
+// what agentop held when it asked, or a row it did not check that is no newer than what it showed
+// (a hidden one).
 func (m *model) detailSearchStale() bool {
 	d := m.detailSearch
 	for _, r := range m.visibleRows {
@@ -231,20 +233,26 @@ func (m *model) detailSearchStale() bool {
 			continue
 		}
 		s := eventSession(m.selectedSess, r.event)
-		if _, ok := d.last[s]; !ok || r.event.Seq < d.oldest[s] {
+		_, checked := d.hits[keyOf(r.event)]
+		if _, ok := d.last[s]; !ok || r.event.Seq < d.oldest[s] || (!checked && r.event.Seq <= d.newest[s]) {
 			return true
 		}
 	}
 	return false
 }
 
-// detailNewRows is the visible rows newer than what the proxy read for their session, ascending:
-// the rows the answer has nothing to say about.
+// detailNewRows is the visible rows newer than what the proxy read for their session, or newer
+// than what agentop held and not checked, ascending: the rows the answer has nothing to say about.
 func (m *model) detailNewRows() []int {
 	d := m.detailSearch
 	var out []int
 	for i, r := range m.visibleRows {
-		if r.event != nil && r.event.Seq > d.last[eventSession(m.selectedSess, r.event)] {
+		if r.event == nil {
+			continue
+		}
+		s := eventSession(m.selectedSess, r.event)
+		_, checked := d.hits[keyOf(r.event)]
+		if r.event.Seq > d.last[s] || (!checked && r.event.Seq > d.newest[s]) {
 			out = append(out, i)
 		}
 	}

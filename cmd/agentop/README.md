@@ -1799,7 +1799,8 @@ The capture comes with the detail fetch, once per row, and agentop keeps it. A r
 has no `raw` section when the archive has no capture for it: an older proxy, a row
 written before capture, or one recorded in the last second. A search does not open
 `raw`, because it repeats the whole conversation; open it with `↵` to search inside
-it. `y` writes the event without its capture.
+it. A row opened from a details search that matches only in the capture opens with
+`raw` open. `y` writes the event without its capture.
 
 ## Editing the pipeline
 

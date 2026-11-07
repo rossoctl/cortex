@@ -145,6 +145,7 @@ func (m *model) applyDetailEvent(msg detailEventLoadedMsg) {
 	// position are all rebuilt exactly as the first render built them.
 	m.detailRow.event, m.detailRow.raw = msg.event, msg.raw
 	m.showDetail(m.detailRow, false)
+	m.openRawMatch()
 }
 
 // replaceHeldEvent swaps the stored event with the same Seq for the full one.

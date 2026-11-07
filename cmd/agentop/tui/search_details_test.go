@@ -544,3 +544,142 @@ func TestDetailSearch_AMissingBucketDoesNotFailTheSearch(t *testing.T) {
 		t.Errorf("searches %d, want 2 (one for each id), and no new search on n", s)
 	}
 }
+
+// Leaving the events pane while a search runs ends the request, so the proxy stops its pass.
+func TestDetailSearch_LeavingThePaneEndsTheRequest(t *testing.T) {
+	for _, k := range []tea.KeyMsg{{Type: tea.KeyLeft}, keyRune('h'), {Type: tea.KeyEnter}} {
+		t.Run(k.String(), func(t *testing.T) {
+			f := &fakeSearch{hold: true, release: make(chan struct{}), started: make(chan struct{}, 1), ended: make(chan struct{}, 1)}
+			m := searchModel(t, 4, f)
+			t.Cleanup(func() { close(f.release) })
+			detailsQuery(m, "needle")
+			cmd := enter(m)
+			done := make(chan tea.Msg, 1)
+			go func() { done <- cmd() }()
+			<-f.started
+			m.Update(k)
+			if m.pane == paneEvents {
+				t.Fatalf("%s did not leave the events pane", k)
+			}
+			select {
+			case <-f.ended:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("the proxy's request went on after %s left the pane", k)
+			}
+			<-done
+		})
+	}
+}
+
+// An answer that landed stays when the operator opens a match and comes back: n steps on
+// without a new pass.
+func TestDetailSearch_ComingBackKeepsTheAnswer(t *testing.T) {
+	f := &fakeSearch{answer: map[string][]uint64{"s": {2, 4}}}
+	m := searchModel(t, 5, f)
+	detailsQuery(m, "needle")
+	runAll(m, enter(m))
+	press(m, tea.KeyEnter)
+	press(m, tea.KeyLeft)
+	if m.pane != paneEvents {
+		t.Fatalf("pane %v, want events", m.pane)
+	}
+	key(m, 'n')
+	if s, _ := f.counts(); s != 1 {
+		t.Errorf("searches %d, want 1", s)
+	}
+	if e := m.selectedEvent(); e == nil || e.Seq != 4 {
+		t.Errorf("cursor on %+v, want seq 4", e)
+	}
+}
+
+// A row that matches only in its capture opens with the capture open, on a highlighted match:
+// when the capture is held, and when it arrives after the row opens. A match outside the capture
+// leaves it closed.
+func TestDetailSearch_AMatchOnlyInTheCaptureOpensIt(t *testing.T) {
+	raw := &pipeline.RawCapture{Request: `{"system":"RAW-ONLY-NEEDLE"}`}
+	t.Run("held", func(t *testing.T) {
+		m := searchModel(t, 4, &fakeSearch{})
+		m.markFullFetched("s", 3, raw)
+		detailsQuery(m, "raw-only-needle")
+		runAll(m, enter(m))
+		if e := m.selectedEvent(); e == nil || e.Seq != 3 {
+			t.Fatalf("cursor on %+v, want seq 3", e)
+		}
+		press(m, tea.KeyEnter)
+		if len(m.detailDoc.matches) == 0 {
+			t.Errorf("no match drawn, status %q", m.searchStatus(paneDetail))
+		}
+	})
+	t.Run("fetched", func(t *testing.T) {
+		m := searchModel(t, 4, &fakeSearch{answer: map[string][]uint64{"s": {3}}})
+		detailsQuery(m, "raw-only-needle")
+		runAll(m, enter(m))
+		press(m, tea.KeyEnter)
+		full := m.events["s"][2]
+		m.applyDetailEvent(detailEventLoadedMsg{sessionID: "s", seq: 3, event: &full, raw: raw})
+		if len(m.detailDoc.matches) == 0 {
+			t.Errorf("no match drawn, status %q", m.searchStatus(paneDetail))
+		}
+	})
+	t.Run("outside the capture", func(t *testing.T) {
+		m := searchModel(t, 4, &fakeSearch{})
+		m.markFullFetched("s", 3, &pipeline.RawCapture{Request: `{"system":"RAW-ONLY-NEEDLE","host":"e2"}`})
+		detailsQuery(m, "e2")
+		runAll(m, enter(m))
+		press(m, tea.KeyEnter)
+		if _, open := m.detailFolds["raw"]; open || len(m.detailDoc.matches) == 0 {
+			t.Errorf("raw fold %v, matches %d: want the capture closed, on the host's match", open, len(m.detailDoc.matches))
+		}
+	})
+}
+
+// A row hidden when the search ran is outside its answer. Shown again, n searches again and
+// reaches it.
+func TestDetailSearch_ARowShownAgainSearchesAgain(t *testing.T) {
+	f := &fakeSearch{answer: map[string][]uint64{"s": {3}}}
+	m := searchModel(t, 5, f)
+	for i := range m.events["s"] {
+		if i != 2 {
+			m.events["s"][i].Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{
+				{Plugin: "p", Action: pipeline.ActionObserve}}}
+		}
+	}
+	m.hideInactive = true
+	m.rebuildEventsTable()
+	detailsQuery(m, "needle")
+	runAll(m, enter(m))
+	m.hideInactive = false
+	m.rebuildEventsTable()
+	key(m, 'n')
+	if s, _ := f.counts(); s != 2 {
+		t.Errorf("searches %d, want 2: a row the answer did not check is shown", s)
+	}
+	if e := m.selectedEvent(); e == nil || e.Seq != 3 {
+		t.Errorf("cursor on %+v, want seq 3", e)
+	}
+}
+
+// A row that the proxy read before agentop held it is a new row too: a step that does not reach
+// it moves at once.
+func TestDetailSearch_ARowTheProxyReadFirstSearchesOnlyWhenReached(t *testing.T) {
+	f := &fakeSearch{answer: map[string][]uint64{"s": {2, 3}}, last: map[string]uint64{"s": 5}}
+	m := searchModel(t, 4, f)
+	setCursorVisible(&m.eventsTbl, 0)
+	detailsQuery(m, "needle")
+	runAll(m, enter(m))
+	more := eventSeq(1, "new")
+	more[0].Seq = 5
+	m.events["s"] = append(m.events["s"], more...)
+	m.rebuildEventsTable()
+	key(m, 'n')
+	if c := m.eventsTbl.Cursor(); c != 2 {
+		t.Errorf("n landed on %d, want 2 (seq 3)", c)
+	}
+	if s, _ := f.counts(); s != 1 {
+		t.Errorf("searches %d, want 1: the step did not reach the new row", s)
+	}
+	key(m, 'n')
+	if s, _ := f.counts(); s != 2 {
+		t.Errorf("searches %d, want 2: the step reached the new row", s)
+	}
+}

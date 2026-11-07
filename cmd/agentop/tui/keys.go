@@ -756,6 +756,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if m.needsFullEvent(er.event) && m.client != nil {
 				return fetchDetailEventCmd(m, eventSession(m.selectedSess, er.event), er.event.Seq)
 			}
+			m.openRawMatch()
 			return nil
 		case panePipeline:
 			p := m.selectedPlugin()

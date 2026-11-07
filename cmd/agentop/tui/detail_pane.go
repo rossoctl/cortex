@@ -194,6 +194,29 @@ func (m *model) toggleDetailFold() {
 	m.moveDetailCursor(m.cursorLineFor(l.path, 0))
 }
 
+// openRawMatch opens the capture when the details search's query matches in it and nowhere the
+// pane draws: a query does not open the capture by itself (isOpen). A fold the reader chose holds.
+func (m *model) openRawMatch() {
+	q := m.searchQuery(paneDetail)
+	if !m.searchDetails || q == "" || q != m.searchQuery(paneEvents) || len(m.detailDoc.matches) > 0 || m.detailTree == nil {
+		return
+	}
+	if _, chosen := m.detailFolds["raw"]; chosen {
+		return
+	}
+	r := renderer{fs: foldState{query: q}, memo: map[*node]bool{}}
+	for _, n := range m.detailTree.kids {
+		if n.path == "raw" && r.hasMatch(n) {
+			if m.detailFolds == nil {
+				m.detailFolds = map[string]foldChoice{}
+			}
+			m.detailFolds["raw"] = foldChoice{open: true, query: q}
+			m.renderDetail()
+			return
+		}
+	}
+}
+
 // clearFoldQueries is a changed search on the event detail pane: a fold the reader closed
 // under the old one is closed as if under no search, so a later search opens it when it holds
 // a match.

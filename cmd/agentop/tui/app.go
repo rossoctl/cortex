@@ -1368,6 +1368,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	before := m.pane
 	next, cmd := m.update(msg)
 	if m.pane != before {
+		if before == paneEvents && m.detailSearching() {
+			m.cancelDetailSearch() // an answer that already landed stays, for n on the way back
+		}
 		cmd = tea.Batch(tea.ClearScreen, cmd)
 	}
 	return next, cmd
