@@ -843,7 +843,7 @@ type SessionView struct {
 func (v *SessionView) Intents() []SessionEvent {
 	var out []SessionEvent
 	for _, e := range v.Events {
-		if e.Direction == Inbound && e.Phase == SessionRequest && e.A2A != nil {
+		if IsIntent(&e) {
 			out = append(out, e)
 		}
 	}
@@ -876,7 +876,7 @@ func (v *SessionView) ToolResponses() []SessionEvent {
 func (v *SessionView) InferenceRequests() []SessionEvent {
 	var out []SessionEvent
 	for _, e := range v.Events {
-		if e.Direction == Outbound && e.Phase == SessionRequest && e.Inference != nil {
+		if IsInferenceRequest(&e) {
 			out = append(out, e)
 		}
 	}
@@ -887,7 +887,7 @@ func (v *SessionView) InferenceRequests() []SessionEvent {
 func (v *SessionView) LastIntent() *SessionEvent {
 	for i := len(v.Events) - 1; i >= 0; i-- {
 		e := v.Events[i]
-		if e.Direction == Inbound && e.Phase == SessionRequest && e.A2A != nil {
+		if IsIntent(&e) {
 			return &v.Events[i]
 		}
 	}

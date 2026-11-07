@@ -801,10 +801,11 @@ func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 	// this one. From the handshake's resolved session, as hydrateSession resolves one for
 	// an HTTPS request, so a turn has no view exactly when that request would have none.
 	var view *pipeline.SessionView
+	var facts pipeline.SessionFacts
 	var sid string
 	if hs.Session != nil {
 		sid = hs.Session.ID
-		view = ws.s.sessionViewFor(sid)
+		view, facts = ws.s.sessionViewFor(sid)
 	}
 	pctx := &pipeline.Context{
 		Direction:     pipeline.Outbound,
@@ -822,6 +823,7 @@ func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 		SessionHeader: hs.SessionHeader,
 		ChainSession:  hs.ChainSession,
 	}
+	pctx.SetSessionFacts(facts) // with no view, LastIntent and LastInference read FactNoSession
 	pctx.ResolveClient()
 	// The handshake's attribution, which hydrateSession pinned on it: a turn is the same
 	// process on the same session, and without it no turn row names the header that named

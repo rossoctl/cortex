@@ -30,7 +30,7 @@ The motivating scenario is the email-poison / prompt-injection class:
    Every other auth check passed — the bearer token is valid, the host is
    reachable, no policy rule blocked it.
 6. **With IBAC**: on `OnRequest`, the plugin reads
-   `pctx.Session.LastIntent()` (`"Summarize my emails"`), describes the
+   `pctx.LastIntent()` (`"Summarize my emails"`), describes the
    proposed action (the bare HTTP request line + body excerpt + any MCP
    parser enrichment), asks the judge LLM to decide alignment, gets
    `verdict: "deny"`, and returns `DenyStatus(403, "ibac.blocked", reason)`.
@@ -82,7 +82,7 @@ What IBAC does **not** catch (out of scope):
    │   │                                  │           │ │
    │   │            ┌─────────────────────┴─────────┐ │ │
    │   │            │  IBAC.OnRequest               │ │ │
-   │   │            │  1. read Session.LastIntent() │ │ │
+   │   │            │  1. read pctx.LastIntent()    │ │ │
    │   │            │  2. bypass checks             │ │ │
    │   │            │  3. describe action           │ │ │
    │   │            │  4. judge.Evaluate(intent,    │ │ │
@@ -133,12 +133,15 @@ they're ordered cheapest-first:
    gate above — inference-parser correctly classifies LLM calls as actions;
    this step is operator policy ("don't judge the agent's own reasoning by
    default"). Operators flip `judge_inference: true` to opt in.
-6. **Intent extraction.** Read `pctx.Session.LastIntent()`. If empty,
-   apply `no_intent_policy` (default `"allow"`): record
+6. **Intent extraction.** Read `pctx.LastIntent()` (see
+   [Session facts](./plugin-reference.md#session-facts)). `FactNoSession`
+   means the request has no session (`no_session`). `FactNone`, or an
+   intent with no user-role text, means no intent (`no_intent`). In both
+   cases, apply `no_intent_policy` (default `"allow"`): record
    `skip/no_user_context` and `Continue` (treats the request as a
    legitimate self-action). Operators wanting strict fail-closed semantics
-   set `no_intent_policy: "deny"` to get the previous `deny/no_intent`
-   403 behavior.
+   set `no_intent_policy: "deny"` to get a 403 with
+   `deny/no_intent` (or `deny/no_session` when there is no session).
 7. **Build action description.** Always include the bare HTTP request
    line + body excerpt. If `mcp-parser` populated `Extensions.MCP`,
    append the tool name and args. If `inference-parser` populated
@@ -221,9 +224,9 @@ In practice every IBAC deployment includes `mcp-parser` (and usually
 
 The `a2a-parser` dependency for **intent extraction** is runtime, not
 chain-time — the pipeline validator can't see across chains, so a missing
-`a2a-parser` in the **inbound** chain leaves `Session.LastIntent()` empty
-at runtime. Behavior in that state is governed by `no_intent_policy`
-(default `"allow"` — pass through; `"deny"` — fail-closed 403).
+`a2a-parser` in the **inbound** chain leaves no intent at runtime:
+`pctx.LastIntent()` has no event. Behavior in that state is governed by
+`no_intent_policy` (default `"allow"` — pass through; `"deny"` — fail-closed 403).
 
 ## Status Codes & Reasons
 

@@ -1009,3 +1009,35 @@ func TestOnRequest_EmptySessionView_PolicyDeny_FailsClosedAsNoIntent(t *testing.
 		t.Errorf("Invocation reason = %q, want 'no_intent' (an empty view is a session with no intent, not a missing session)", inv.Reason)
 	}
 }
+
+// The listener's facts win over the view: with FactNone set for LastIntent, IBAC takes the
+// no_intent path, also when the view still holds an intent.
+func TestOnRequest_SetFactNone_IsNoIntent(t *testing.T) {
+	none := pipeline.SessionFact{State: pipeline.FactNone}
+	for _, tc := range []struct {
+		name   string
+		newP   func(*testing.T, *fakeJudge) *IBAC
+		action pipeline.ActionType
+		check  func(pipeline.Invocation) bool
+	}{
+		{"allow", newConfiguredIBAC, pipeline.Continue, func(inv pipeline.Invocation) bool { return inv.Details["sub_reason"] == "no_intent" }},
+		{"deny", newConfiguredIBACDeny, pipeline.Reject, func(inv pipeline.Invocation) bool { return inv.Reason == "no_intent" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fj := &fakeJudge{}
+			p := tc.newP(t, fj)
+			pctx := makePCtx(t) // the view holds an intent
+			pctx.SetSessionFacts(pipeline.SessionFacts{LastIntent: none, LastInference: none})
+			action := invokeOnRequest(p, pctx)
+			if action.Type != tc.action {
+				t.Errorf("got %v, want %v", action.Type, tc.action)
+			}
+			if fj.calls != 0 {
+				t.Errorf("judge called %d times, want 0", fj.calls)
+			}
+			if inv := lastInvocation(t, pctx); !tc.check(inv) {
+				t.Errorf("invocation = %+v, want the no_intent path", inv)
+			}
+		})
+	}
+}

@@ -28,6 +28,10 @@ type identityProbePlugin struct {
 	sawHeader []string
 	// sawSessionID is pctx.SessionID, recorded for every request beside sawID.
 	sawSessionID []string
+	// sawIntent is pctx.LastIntent(), and sawViewIntent the view's own LastIntent(), for every
+	// request.
+	sawIntent     []pipeline.SessionFact
+	sawViewIntent []*pipeline.SessionEvent
 }
 
 func (p *identityProbePlugin) Name() string { return "identity-probe" }
@@ -36,7 +40,9 @@ func (p *identityProbePlugin) Capabilities() pipeline.PluginCapabilities {
 }
 func (p *identityProbePlugin) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
 	p.sawSessionID = append(p.sawSessionID, pctx.SessionID)
+	p.sawIntent = append(p.sawIntent, pctx.LastIntent())
 	if pctx.Session == nil {
+		p.sawViewIntent = append(p.sawViewIntent, nil)
 		p.sawNil = append(p.sawNil, true)
 		p.sawID = append(p.sawID, "")
 		p.sawEvents = append(p.sawEvents, -1)
@@ -47,6 +53,7 @@ func (p *identityProbePlugin) OnRequest(_ context.Context, pctx *pipeline.Contex
 	p.sawHeader = append(p.sawHeader, pctx.SessionHeader)
 	p.sawID = append(p.sawID, pctx.Session.ID)
 	p.sawEvents = append(p.sawEvents, len(pctx.Session.Events))
+	p.sawViewIntent = append(p.sawViewIntent, pctx.Session.LastIntent())
 	return pipeline.Action{Type: pipeline.Continue}
 }
 func (p *identityProbePlugin) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {
@@ -231,6 +238,43 @@ func TestPluginIdentity_NoSessionAtAllStaysNil(t *testing.T) {
 	}
 }
 
+// TestPluginIdentity_HydratesSessionFacts: a plugin gets the store's facts with the view.
+// A header session with a recorded A2A intent: FactPresent, at the view's own intent. A header
+// session with no events yet: FactNone, not FactNoSession. No session: FactNoSession.
+func TestPluginIdentity_HydratesSessionFacts(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	const sidA = "511754a6-63e2-47df-bb22-706dc165c344"
+	const sidB = "f4019b9f-3550-442f-9bc7-229809a3b486"
+	store.Append(sidA, pipeline.SessionEvent{
+		At:        time.Now(),
+		Direction: pipeline.Inbound,
+		Phase:     pipeline.SessionRequest,
+		A2A:       &pipeline.A2AExtension{Method: "message/send", SessionID: sidA},
+	})
+	probe, client, backendURL := newProbedProxy(t, store)
+
+	get(t, client, backendURL, sidA)
+	get(t, client, backendURL, sidB)
+	if len(probe.sawIntent) != 2 {
+		t.Fatalf("probe ran %d times, want 2", len(probe.sawIntent))
+	}
+	if got := probe.sawIntent[0]; got.State != pipeline.FactPresent || got.Event == nil || got.Event != probe.sawViewIntent[0] {
+		t.Errorf("recorded intent: LastIntent = %+v, want FactPresent at the view's intent %p", got, probe.sawViewIntent[0])
+	}
+	if got := probe.sawIntent[1]; got.State != pipeline.FactNone || got.Event != nil {
+		t.Errorf("first turn: LastIntent = %+v, want FactNone", got)
+	}
+
+	empty := session.New(5*time.Minute, 100, 0)
+	defer empty.Close()
+	noSession, client2, backendURL2 := newProbedProxy(t, empty)
+	get(t, client2, backendURL2, "")
+	if got := noSession.sawIntent[0]; got.State != pipeline.FactNoSession || !noSession.sawNil[0] {
+		t.Errorf("no session: LastIntent = %+v, Session nil = %v, want FactNoSession and nil", got, noSession.sawNil[0])
+	}
+}
+
 // pctx.SessionID is the view's id when the request has a view, and empty when it has none.
 func TestPluginIdentity_SessionIDIsTheViewID(t *testing.T) {
 	for _, sid := range []string{"511754a6-63e2-47df-bb22-706dc165c344", ""} {
@@ -401,9 +445,12 @@ func TestPinIsNotPluginWritable(t *testing.T) {
 // than a panic. Both current callers guard, so this is latent by design.
 func TestSessionViewFor_NilStoreDoesNotPanic(t *testing.T) {
 	s := &Server{} // Sessions nil: session tracking disabled
-	v := s.sessionViewFor("sess-1")
+	v, f := s.sessionViewFor("sess-1")
 	if v == nil || v.ID != "sess-1" {
 		t.Fatalf("sessionViewFor with a nil store = %+v, want a view identifying sess-1", v)
+	}
+	if f.LastIntent.State != pipeline.FactNone || f.LastInference.State != pipeline.FactNone {
+		t.Errorf("sessionViewFor with a nil store: facts = %+v, want both FactNone", f)
 	}
 }
 
@@ -542,7 +589,8 @@ func TestSessionViewFor_IsTheOnlyHydrationPath(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i, line := range strings.Split(string(b), "\n") {
-			if strings.Contains(line, "pctx.Session = ") && !strings.Contains(line, "sessionViewFor") {
+			assigns := strings.Contains(line, "pctx.Session = ") || strings.Contains(line, "pctx.Session, ")
+			if assigns && !strings.Contains(line, "sessionViewFor") {
 				t.Errorf("%s:%d hydrates pctx.Session without sessionViewFor: %s",
 					f, i+1, strings.TrimSpace(line))
 			}

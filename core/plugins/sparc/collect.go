@@ -16,14 +16,11 @@ import (
 // (no inference-parser, or session tracking off) so the caller can skip rather
 // than reflect on partial data.
 func correlateInferenceContext(pctx *pipeline.Context) (messages, toolSpecs []map[string]any, ok bool) {
-	if pctx.Session == nil {
+	last := pctx.LastInference()
+	if last.Event == nil {
 		return nil, nil, false
 	}
-	infs := pctx.Session.InferenceRequests()
-	if len(infs) == 0 {
-		return nil, nil, false
-	}
-	inf := infs[len(infs)-1].Inference
+	inf := last.Event.Inference
 	if inf == nil || len(inf.Messages) == 0 {
 		return nil, nil, false
 	}
