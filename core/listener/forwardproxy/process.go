@@ -86,8 +86,8 @@ func (s *Server) memoChain(r *http.Request, m *attribution.Memo) []attribution.P
 // plain-HTTP request to a loopback listener held by an agent's own process (see
 // attribution's SelfTraffic) running the same executable as the client. OpenCode's TUI
 // polling its background service is the case it exists for: about 1.3 requests a second
-// of the agent's own UI, sent nowhere. Comparing executables alone would hide a node-based agent's calls to
-// any local node server, which is why the listener must be an agent's.
+// of the agent's own UI, sent nowhere. Comparing executables alone would hide a node-based
+// agent's calls to any local node server, which is why the listener must be an agent's.
 func (s *Server) selfTraffic(r *http.Request, chain []attribution.Proc) bool {
 	m := connProcOf(r.Context())
 	if m == nil {
