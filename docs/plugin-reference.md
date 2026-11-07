@@ -1265,6 +1265,59 @@ housekeeping — none of those qualify. Adding a method to the action
 set is a security-relevant change because it pulls the method into
 every guardrail's evaluation surface; review accordingly.
 
+## Session facts
+
+A plugin that judges a request against the session's history reads the
+session facts. It does not read `pctx.Session.Events`.
+
+- `pctx.LastIntent()` is the newest user intent: an inbound A2A request
+  (`model.IsIntent`). ibac reads it.
+- `pctx.LastInference()` is the newest outbound inference request
+  (`model.IsInferenceRequest`). sparc reads it in `mcp` mode.
+
+Each method returns a `pipeline.SessionFact`. Its `Event` is not nil only
+when its `State` is `FactPresent`.
+
+| State | Meaning |
+|---|---|
+| `FactNone` (the zero value) | The request has a session, and the store has no event of this kind for it. The store has no entry for the session yet, or it dropped the entry (`max_sessions`, `ttl`, `Delete`, `Clear`, a restart). Or no event of this kind was appended. Or a `session.max_events` trim removed the event. |
+| `FactNoSession` | The request has no session: `pctx.Session` is nil. |
+| `FactPresent` | `Event` is set. It points into `pctx.Session.Events`. |
+
+`LastIntent` and `LastInference` apply these rules, in order:
+
+1. `pctx.Session` is nil: `FactNoSession`, also when the listener set facts.
+2. The listener called `SetSessionFacts`: the fact that it set.
+3. Else, from `pctx.Session.Events`: `FactPresent`, or `FactNone`.
+
+Rule 3 serves a listener that sets only `pctx.Session`, and plugin tests
+that build a `SessionView`.
+
+Keep `FactNoSession` and `FactNone` apart when they are different
+decisions. ibac records `no_session` for the first and `no_intent` for the
+second:
+
+```go
+intent := pctx.LastIntent()
+if intent.State == pipeline.FactNoSession {
+    // the request has no session
+}
+if intent.Event == nil {
+    // FactNone: a session with no intent
+}
+```
+
+**Listeners.** Set `pctx.Session` and the facts from one
+`session.Store.ViewFacts` call, then call `pctx.SetSessionFacts`.
+`ViewFacts` reads the view and the facts under one read lock, so the two
+agree. When it returns a nil view, both facts are `FactNone`. A zero
+`SessionFacts` also reads as `FactNone`.
+
+- The forward proxy then gives plugins an empty view with the session id
+  (`sessionViewFor`), with `FactNone` facts.
+- ext_proc sets `pctx.Session` and the facts only with a view. With no view,
+  the facts read `FactNoSession`.
+
 ## Registering a plugin
 
 A plugin advertises itself to the pipeline builder through `RegisterPlugin`
