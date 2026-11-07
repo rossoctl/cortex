@@ -54,10 +54,10 @@ func ParseRequest(path string, headers http.Header, body []byte) *model.Inferenc
 	return ext
 }
 
-// ParseResponse reads a buffered response body as OnResponse would, into a
-// fresh extension, and settles nothing. It is for a plugin that runs before
-// this one on the response pass and needs the normalized completion and tool
-// calls. The bytes decide the shape: a body framed as SSE is read as a
+// ParseResponse reads a whole response body into a fresh extension, and
+// computes no cost. It is for a caller that has the body but not the request's
+// extension, and needs the normalized completion and tool calls.
+// The bytes decide the shape: a body framed as SSE is read as a
 // stream (and marks StreamedResponse), anything else as JSON. It returns nil
 // when path is not an inference endpoint.
 func ParseResponse(path string, body []byte) *model.InferenceExtension {
