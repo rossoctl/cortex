@@ -678,7 +678,7 @@ type tunnelLog struct {
 	skipped bool
 	// conn is the CONNECT's client process slot, handed to the requests a bridged tunnel
 	// decrypts; nil off the CONNECT path.
-	conn *connProc
+	conn *attribution.Memo
 	// connect is the CONNECT request itself, kept for AdoptBridgedRequest so a
 	// listener that derived identity from the accepting connection can stamp it
 	// onto each decrypted request too. nil off the CONNECT path.

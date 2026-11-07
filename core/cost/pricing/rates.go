@@ -47,10 +47,9 @@ const NumTiers = numTiers
 // Usage is one request's token count, split by tier.
 //
 // This mirrors parsercommon.TokenUsage, which is what the inference parsers
-// already publish. It was written when parsercommon sat under
-// core/plugins/internal/, where Go's internal rule put it out of reach here.
-// parsercommon is in core/internal now, so this package can import it. Usage
-// stays a separate type.
+// already publish. This package cannot import parsercommon: parsercommon's
+// tests import cost/usage, which imports this package, so the import makes a
+// test import cycle.
 // Reasoning is omitted (a subset of Output, already counted) and so is
 // ReportedTotal (an aggregate no tier prices).
 type Usage struct {
