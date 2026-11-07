@@ -10,6 +10,7 @@ import (
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // fakeHistory is a session archive: each session's events in the order they were
@@ -48,7 +49,7 @@ func archived(events ...pipeline.SessionEvent) []pipeline.SessionEvent {
 }
 
 // buildWithHistory is build with h injected before Configure, as plugins.BuildWithDeps does.
-func buildWithHistory(t *testing.T, config string, h *fakeHistory) *pipeline.Pipeline {
+func buildWithHistory(t *testing.T, config string, h session.History) *pipeline.Pipeline {
 	t.Helper()
 	r := New()
 	r.SetHistory(h)

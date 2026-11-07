@@ -10,6 +10,7 @@ import (
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/sessionapi"
 )
 
 // showDetail renders one exchange on the detail page (#1681): a REQUEST section, then a
@@ -31,13 +32,9 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 	if m.bodyHeight > 1 {
 		m.detailVp.Height = m.bodyHeight - 1
 	}
-	req, resp, reqRaw, respRaw := detailHalves(r)
 	lost := rowLost(r, nil, 0, m.lostRef(m.events[m.selectedSess]))
 	m.detailSummary = exchangeSummary(r, m.detailNum, lost)
-	m.detailTree = sectionsRoot(
-		detailSection("request", "REQUEST", req, nil, reqRaw, r.tunnel, missingNote(r, "request", lost)),
-		detailSection("response", "RESPONSE", resp, req, respRaw, nil, missingNote(r, "response", lost)),
-	)
+	m.detailTree = detailContent(r, lost)
 	if resetScroll {
 		// A new exchange: the folds the reader opened were for the last one.
 		m.detailFolds = nil
@@ -56,6 +53,17 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 	// offset is already in range. Same three lines as syncHelpViewport.
 	m.detailVp.SetYOffset(m.detailVp.YOffset)
 	m.scrollToDetailCursor()
+}
+
+// detailContent is the page showDetail draws for r: its REQUEST and RESPONSE sections. detailHas
+// searches it too, so a details search matches exactly what opening the row shows. lost picks
+// the missing response's note.
+func detailContent(r eventRow, lost bool) *node {
+	req, resp, reqRaw, respRaw := detailHalves(r)
+	return sectionsRoot(
+		detailSection("request", "REQUEST", req, nil, reqRaw, r.tunnel, missingNote(r, "request", lost)),
+		detailSection("response", "RESPONSE", resp, req, respRaw, nil, missingNote(r, "response", lost)),
+	)
 }
 
 // detailHalves splits row r into its request and response and their captures. Either half can
@@ -355,6 +363,51 @@ func (m *model) toggleDetailFold() {
 	m.moveDetailCursor(m.cursorLineFor(l.path, 0))
 }
 
+// openRawMatch opens a capture when the details search's query matches in it and nowhere the
+// pane draws: a query does not open the capture by itself (isOpen). Each half has its own capture,
+// under its section (#1681). A fold the reader chose holds.
+func (m *model) openRawMatch() {
+	q := m.searchQuery(paneDetail)
+	if !m.searchDetails || q == "" || q != m.searchQuery(paneEvents) || len(m.detailDoc.matches) > 0 || m.detailTree == nil {
+		return
+	}
+	r := renderer{fs: foldState{query: q}, memo: map[*node]bool{}}
+	for _, sec := range m.detailTree.kids {
+		if len(sec.kids) == 0 {
+			continue // a missing half
+		}
+		raw := sec.kids[0].child("raw")
+		if raw == nil {
+			continue
+		}
+		if _, chosen := m.detailFolds[raw.path]; chosen || !r.hasMatch(raw) {
+			continue
+		}
+		if m.detailFolds == nil {
+			m.detailFolds = map[string]foldChoice{}
+		}
+		m.detailFolds[raw.path] = foldChoice{open: true, query: q}
+		m.renderDetail()
+		return
+	}
+}
+
+// revealDetailMatch puts the cursor on the first match of the details search's query while the
+// reader has not moved it from the top: on a long event the match is often below the first
+// screen. It runs when the row opens, and again when its full event arrives.
+func (m *model) revealDetailMatch() {
+	q := m.searchQuery(paneDetail)
+	if !m.searchDetails || q == "" || q != m.searchQuery(paneEvents) ||
+		m.detailCursorPath != "" || m.detailCursorOff != 0 || m.detailVp.YOffset != 0 {
+		return
+	}
+	if s := m.surface(paneDetail); s != nil {
+		if rows := s.matchLines(); len(rows) > 0 {
+			s.reveal(rows[0])
+		}
+	}
+}
+
 // clearFoldQueries is a changed search on the event detail pane: a fold the reader closed
 // under the old one is closed as if under no search, so a later search opens it when it holds
 // a match.
@@ -595,16 +648,10 @@ func filterForDetail(data []byte, phase pipeline.SessionPhase) []byte {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return data
 	}
-	keep := inferenceReqKeys
-	mcpKeep := mcpReqKeys
-	if phase == pipeline.SessionResponse {
-		keep = inferenceRespKeys
-		mcpKeep = mcpRespKeys
-	}
-	a2aKeep := a2aReqKeys
-	if phase == pipeline.SessionResponse {
-		a2aKeep = a2aRespKeys
-	}
+	resp := phase == pipeline.SessionResponse
+	keep := sessionapi.DetailKeys("inference", resp)
+	mcpKeep := sessionapi.DetailKeys("mcp", resp)
+	a2aKeep := sessionapi.DetailKeys("a2a", resp)
 	if inf, ok := m["inference"].(map[string]any); ok {
 		restoreReportedZeroSplits(inf)
 		inf = filterFields(inf, keep)
@@ -670,43 +717,12 @@ func dropShared(resp, req []byte) []byte {
 	return out
 }
 
-// Field classifications for phase-based filtering. Order is not significant —
-// ColorizeJSONBytes sorts keys alphabetically for stable display.
-var (
-	inferenceReqKeys = []string{
-		"model", "requestedModel", "messages", "temperature", "maxTokens", "topP",
-		"stream", "tools", "toolChoice", "toolResults", "historyToolCalls",
-	}
-	// reasoningTokens is a SUBSET of completionTokens, not a sibling: it is the share
-	// of the generated tokens the model spent reasoning, billed at the output rate.
-	// Adding the two double-counts every one of them.
-	//
-	// THIS PANE IS WHERE THE EXACT FIGURE LIVES. The events table shows one total per
-	// row and the spend drawer shows a proportion, so a reader who wants the number
-	// rather than the shape comes here — which is also why the key needs no
-	// abbreviating: there is room for the whole word, unlike a table column.
-	inferenceRespKeys = []string{
-		"model", "requestedModel", "completion", "finishReason", "promptTokens",
-		"completionTokens", "reasoningTokens", "totalTokens", "toolCalls",
-		"cacheWriteTokens", "cacheReadTokens",
-	}
-	mcpReqKeys  = []string{"method", "rpcId", "params"}
-	mcpRespKeys = []string{"method", "rpcId", "result", "error"}
-	// A2A: OnResponse captures the server-assigned contextId plus a summary
-	// of the final result (finalStatus / artifact / errorMessage / taskId).
-	// Drop the request-side message fields (messageId, role, parts) on
-	// response rows so the detail view reflects what the response phase
-	// actually contributed.
-	a2aReqKeys  = []string{"method", "rpcId", "sessionId", "messageId", "taskId", "role", "parts"}
-	a2aRespKeys = []string{"method", "rpcId", "sessionId", "taskId", "finalStatus", "artifact", "errorMessage"}
-)
-
 // restoreReportedZeroSplits puts back a split the provider MEASURED AND FOUND TO BE ZERO.
 //
 // InferenceExtension.ReasoningTokens is omitempty, so a provider that measured the split and
 // got none serialises identically to one that never measured at all — and filterFields keeps
 // only keys the map actually has, so both read as "no reasoning" in the pane that
-// inferenceRespKeys' own doc calls the place the exact figure lives. A measured zero is a
+// the response list of sessionapi.DetailKeys calls the place the exact figure lives. A measured zero is a
 // figure; absence is the lack of one. PresentKinds is the only thing that separates them,
 // and it travels in the same object.
 //
@@ -715,7 +731,7 @@ var (
 // JSON tests forbid. So the repair belongs here, at the surface that lost the distinction.
 //
 // NO PHASE GUARD. Reasoning is response-side, but what keeps it off a request row is
-// inferenceReqKeys not listing it — one allow-list deciding visibility, per this file's
+// the request list of sessionapi.DetailKeys not listing it — one allow-list deciding visibility, per this file's
 // existing rule about a second copy of a predicate. A phase check here would be a guard the
 // allow-list already makes unreachable, so nothing could prove it worked.
 //

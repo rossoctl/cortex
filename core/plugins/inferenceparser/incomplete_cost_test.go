@@ -165,9 +165,9 @@ const openAICompleteSSE = openAITruncatedSSE +
 // figure when delivered whole. Both proxies buffer an event-stream response whenever a plugin in
 // the chain declares WritesResponseBody, so the unflagged path is the one a rewriting chain takes.
 //
-// The last two rows are why the mark is taken from the BYTES rather than from "an SSE parser ran":
-// OnResponse picks its parser from the request's Stream flag, and a JSON envelope answered to a
-// streaming request is routine. Marking that would print "+ partial" over a figure that is exact.
+// The last row is why the mark is taken from the BYTES rather than from the request: a JSON
+// envelope answered to a streaming request is routine. Marking that would print "+ partial" over
+// a figure that is exact.
 func TestTruncatedStream_IsFlaggedWhicheverWayItWasDelivered(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -177,9 +177,6 @@ func TestTruncatedStream_IsFlaggedWhicheverWayItWasDelivered(t *testing.T) {
 		perFrame     bool
 		wantStreamed bool
 		wantReason   string
-		// noCounters marks the row where the body parses to nothing, so the mark is the only
-		// observable there.
-		noCounters bool
 	}{
 		{
 			name:         "truncated stream buffered whole",
@@ -204,18 +201,15 @@ func TestTruncatedStream_IsFlaggedWhicheverWayItWasDelivered(t *testing.T) {
 			wantReason:   "",
 		},
 		{
-			// A JSON envelope on the request-flag arm, which is what every gateway error page is.
-			// The SSE parser reads no `data:` line here so nothing is counted — measured, and the
-			// pre-existing behaviour this arm's own comment describes — which is precisely why the
-			// MARK is what this row asserts: it must stay false on bytes that never streamed, or the
-			// caveat would ride on whatever a later parser did manage to count.
+			// A JSON envelope answered to a streaming request, which is what every gateway error
+			// page is. The JSON reader counts it, and the figure is exact: the mark must stay false
+			// on bytes that never streamed.
 			name:         "json envelope answered to a streaming request",
 			body:         `{"usage":{"prompt_tokens":1000,"completion_tokens":500,"total_tokens":1500}}`,
 			contentType:  "application/json",
 			reqStream:    true,
 			wantStreamed: false,
 			wantReason:   "",
-			noCounters:   true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -245,14 +239,7 @@ func TestTruncatedStream_IsFlaggedWhicheverWayItWasDelivered(t *testing.T) {
 				t.Errorf("StreamedResponse = %v, want %v: this is the fact the caveat is derived from",
 					ext.StreamedResponse, tc.wantStreamed)
 			}
-			if tc.noCounters {
-				if ext.OutputTokens != 0 || ext.CompletionTokens != 0 {
-					t.Fatalf("output = %d/%d counted; this row is the one where nothing parses, so it no longer says what it claims",
-						ext.OutputTokens, ext.CompletionTokens)
-				}
-				return
-			}
-			// Precondition: every other row must reach the branch under test with a counted output.
+			// Precondition: every row must reach the branch under test with a counted output.
 			if ext.OutputTokens == 0 && ext.CompletionTokens == 0 {
 				t.Fatalf("no output counted; the fixture does not reach the branch under test")
 			}

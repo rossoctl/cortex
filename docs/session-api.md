@@ -23,6 +23,7 @@ through DNS rebinding. The stats server applies the same check.
 | `GET /v1/sessions/{id}` | `application/json` | The session's most recent events; `?limit=N` and `?before=<seq>` page backward. `?view=summary` omits the large payloads |
 | `GET /v1/sessions/{id}/events/{seq}` | `application/json` | One event by its sequence number |
 | `GET /v1/sessions/{id}/timeline` | `application/json` | The session as spans: Claude Code agents, tool calls, subagent spawns and returns, and hosts (see below) |
+| `GET /v1/sessions/{id}/search` | `application/json` | The seqs of the session's events whose bodies or capture hold `?q=`, as the detail view shows them (see below) |
 | `DELETE /v1/sessions` | `application/json` | Clear every session: the store, and the session archive where one runs. The cost ledger is kept |
 | `DELETE /v1/sessions/{id}` | `application/json` | Erase one session: the store's entry and, where the archive runs, its files (see below) |
 | `GET /v1/events` | `text/event-stream` | SSE stream of new events; `?session=<id>` filters to one session. Heartbeat every 30s |
@@ -242,6 +243,49 @@ provably stopped is `lost` and ends where it started: a turn or tool whose agent
 moved on, a `SubagentHandback` (it ends the run), a subagent's tool still open
 at a `<task-notification>` naming that agent, or a request more than ten
 minutes old.
+
+## `GET /v1/sessions/{id}/search` — find the events whose bodies hold a text
+
+agentop's events pane uses this for its `details` search. The events list carries
+`view=summary`, which drops the bodies, so agentop checks the summaries it holds, and this
+route checks what the summary drops.
+
+```sh
+curl -s 'localhost:9094/v1/sessions/<id>/search?q=retry%20budget'
+```
+
+```json
+{"seqs":[12,14,40],"lastSeq":980,"schemaVersion":1}
+```
+
+- `seqs` is ascending: every event of the session that matches, in memory and in the archive.
+  `lastSeq` is the newest seq the pass read. A client that holds a newer event asks again.
+- The match is a case-insensitive substring, folded rune by rune with `unicode.ToLower`, as
+  agentop's `/` folds.
+- **What it reads**, only where the event detail view shows it for the event's phase
+  (`sessionapi.DetailKeys`):
+  - request: `inference.messages`, `inference.tools` (a tool's `parameters` as JSON),
+    `inference.toolResults`, the history tool calls, `mcp.params`
+  - response: `inference.toolCalls`, `mcp.result`, `a2a.artifact`
+  - the key names in those parts, as the view shows them
+  - where the archive holds a capture: its body blocks (keys and values when a block is JSON,
+    its text when not), the keys and values between blocks, the headers, the query, and a response's
+    status. Image and document blocks and binary bodies are skipped: the view shows them as
+    labels.
+- **It does not read** the fields the summary keeps (agentop checks those), the labels agentop
+  writes itself in the `raw` part (`forwarded as sent`, `[image … KB]`), a match that spans a
+  key and its value, or the quotes and punctuation the view draws around the keys and values
+  it reads.
+- **Errors:** an empty `q` is `400` (`{"error":"q is required"}`). An unknown session is `404`
+  with `{"error":"session not found"}`. A proxy that predates the route answers the mux's
+  plain-text `404`, which is how a client tells the two apart. An archive read that fails is
+  `500`: an answer without part of the history could say "no match" where there is one.
+- **Cost:** one pass. A long string that many events share is checked one time. On a 10,767-event
+  laptop session, the pass took about 4 s, with a peak heap of 149 MB (95 MB with `GOGC=25`).
+  One plain read of the same archive peaks at about 130 MB. The pass keeps a result for each long
+  string that the events of one segment share, and drops it at the next segment. It keeps none
+  for a capture's text, which no two events share. The pass stops when the client closes
+  the connection, and agentop closes it when its search is dropped.
 
 ## `DELETE /v1/sessions`
 

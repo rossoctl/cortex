@@ -29,6 +29,12 @@ type SessionFact struct {
 type SessionFacts struct {
 	LastIntent    SessionFact // the newest event that IsIntent accepts
 	LastInference SessionFact // the newest event that IsInferenceRequest accepts
+
+	// InferenceHosts is the session's table: the store entry's events and the archive's history.
+	InferenceHosts InferenceHosts
+	// HostsKnown is false when no store answered, or when the archive holds history that it has
+	// no table for. So the zero value is "unknown", and a reader must not use the table.
+	HostsKnown bool
 }
 
 // IsIntent reports an inbound A2A request: a user intent. SessionView.LastIntent uses the

@@ -27,6 +27,10 @@ import (
 // (targetHelp). The events pane's and message detail's are about one session, so opening
 // another session's drops both (see the drill-in in keys.go); message detail keeps its query
 // from one message to the next, so the operator can look for one string message by message.
+//
+// The events pane's `details` box (Tab in the prompt) keeps this rule one level down: a row
+// matches when its detail view shows the query. Those matches are not drawn in the table, so
+// they are found one at a time, by Enter, n and N. See search_details.go.
 
 // targetHelp is the help overlay's search, kept beside the panes'. Outside 0..lastPaneID, as
 // paneNone is, so nothing that walks the panes takes it for one.
@@ -102,6 +106,10 @@ func (m *model) openSearch(t paneID) {
 	if s == nil {
 		return
 	}
+	if t == paneEvents {
+		// A details answer must not move the cursor while the operator types a new query.
+		m.cancelDetailSearch()
+	}
 	m.searching = true
 	m.searchPane = t
 	m.searchOrigin = s.spot()
@@ -154,6 +162,17 @@ func (m *model) searchLayout() {
 func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 	t := m.searchPane
 	switch msg.String() {
+	case "tab":
+		// The events pane's details box. Tab types nothing, so the prompt can take it. With the
+		// box on, typing does not move the cursor, so it goes back to where `/` was pressed. With
+		// it off, the cursor goes to the table's match, as typing puts it.
+		if t == paneEvents {
+			m.searchDetails = !m.searchDetails
+			if s := m.surface(t); s != nil {
+				m.followQuery(s)
+			}
+		}
+		return nil
 	case "enter":
 		if m.search == nil {
 			m.search = make(map[paneID]string)
@@ -163,6 +182,9 @@ func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		m.search[t] = m.searchInput.Value()
 		m.closeSearch()
+		if t == paneEvents && m.searchDetails {
+			return m.sendDetailSearch(true, true)
+		}
 		return nil
 	case "esc":
 		m.closeSearch()
@@ -178,28 +200,42 @@ func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 		return cmd
 	}
 	s.redraw()
-	if m.searchInput.Value() != "" {
+	if t == paneEvents && m.searchDetails {
+		return cmd // the details search runs on Enter, not on each key
+	}
+	m.followQuery(s)
+	return cmd
+}
+
+// followQuery puts the cursor on the first match of the prompt's query, or back where `/` was
+// pressed when there is none. With the events pane's details box on, the query does not move it.
+func (m *model) followQuery(s searchSurface) {
+	if m.searchInput.Value() != "" && !(m.searchPane == paneEvents && m.searchDetails) {
 		// Counted from where `/` was pressed even when following: what streamed in since is
 		// after it, and is searched first.
 		if i, ok := nextMatch(s.matchLines(), s.lineOf(m.searchOrigin), true, true); ok {
 			s.reveal(i)
-			return cmd
+			return
 		}
 	}
 	s.restore(m.searchOrigin)
-	return cmd
 }
 
 // searchStep is n (forward) and N on target t: the next match past where it is, wrapping.
-// Nothing happens with no match, which includes having no search.
-func (m *model) searchStep(t paneID, forward bool) {
+// Nothing happens with no match, which includes having no search. With the events pane's
+// details box on, it starts a details scan instead.
+func (m *model) searchStep(t paneID, forward bool) tea.Cmd {
+	if t == paneEvents && m.searchDetails && m.search[t] != "" {
+		return m.stepDetails(forward)
+	}
 	s := m.surface(t)
 	if s == nil {
-		return
+		return nil
 	}
 	if i, ok := nextMatch(s.matchLines(), s.spot().row, forward, false); ok {
 		s.reveal(i)
 	}
+	return nil
 }
 
 // nextMatch is the first of matches (ascending rows) after from going forward, or before it going
@@ -228,6 +264,9 @@ func nextMatch(matches []int, from int, forward, inclusive bool) (int, bool) {
 // are when it is on none, or that there are none. Live while the prompt is open, so a query
 // that matches nothing says so as it is typed. Empty without a search.
 func (m *model) searchStatus(t paneID) string {
+	if t == paneEvents && m.searchDetails {
+		return m.detailSearchStatus()
+	}
 	s, q := m.surface(t), m.searchQuery(t)
 	if s == nil || q == "" {
 		return ""

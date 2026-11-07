@@ -105,7 +105,7 @@ func TestInferenceParser_ResponsesAPI_NonInferenceBodyIgnored(t *testing.T) {
 
 // Codex's real request arrives zstd-compressed. A corrupt or absent decompression step
 // would leave json.Unmarshal failing on compressed bytes, so this pins decode-before-parse
-// rather than relying on core/parse/inference.parseResponsesRequest's nil-on-bad-JSON fallback to mask it.
+// rather than relying on core/parse/inference's nil-on-bad-JSON fallback to mask it.
 func TestInferenceParser_ResponsesAPI_ZstdCompressedRequest(t *testing.T) {
 	plain := []byte(`{"model":"gpt-6-luna","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`)
 	enc, err := zstd.NewWriter(nil)

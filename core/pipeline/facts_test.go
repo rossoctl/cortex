@@ -52,6 +52,33 @@ func TestContext_SessionFacts(t *testing.T) {
 		}
 	})
 
+	t.Run("InferenceHosts: the 3 rules", func(t *testing.T) {
+		table := InferenceHosts{{Agent: "claude-code", Host: "glm.example.com:8443", Last: 2}}
+		view := &SessionView{ID: "s", Events: []SessionEvent{inferEv}}
+		for _, tc := range []struct {
+			name    string
+			session *SessionView
+			set     *SessionFacts
+			want    InferenceHosts
+			known   bool
+		}{
+			{"1: facts set, Session nil", nil, &SessionFacts{InferenceHosts: table, HostsKnown: true}, nil, false},
+			{"2: the table the listener set", view, &SessionFacts{InferenceHosts: table, HostsKnown: true}, table, true},
+			{"2: zero facts are unknown", view, &SessionFacts{}, nil, false},
+			{"2: a table the store cannot vouch for", view, &SessionFacts{InferenceHosts: table}, table, false},
+			{"3: no facts, a view", view, nil, nil, false},
+		} {
+			c := &Context{Session: tc.session}
+			if tc.set != nil {
+				c.SetSessionFacts(*tc.set)
+			}
+			got, known := c.InferenceHosts()
+			if known != tc.known || len(got) != len(tc.want) || len(got) > 0 && got[0] != tc.want[0] {
+				t.Errorf("%s: InferenceHosts = %+v, %v; want %+v, %v", tc.name, got, known, tc.want, tc.known)
+			}
+		}
+	})
+
 	t.Run("3: derived from the view", func(t *testing.T) {
 		c := &Context{Session: &SessionView{ID: "s", Events: []SessionEvent{intentEv, inferEv, other}}}
 		if got := c.LastIntent(); got.State != FactPresent || got.Event != &c.Session.Events[0] {

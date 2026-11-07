@@ -126,6 +126,9 @@ func (m *model) layout() {
 	m.detailVp.SetYOffset(m.detailVp.YOffset)
 
 	m.searchInput.Width = m.width - 4
+	if m.searchPane == paneEvents {
+		m.searchInput.Width = max(m.searchInput.Width-detailsBoxWidth, 1)
+	}
 
 	// Re-wrap the detail viewport to the new width so long JSON values continue to fit
 	// after a terminal resize. Not a scroll reset: the reader stays where they were, as

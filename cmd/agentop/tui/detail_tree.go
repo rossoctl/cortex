@@ -351,7 +351,8 @@ func (r *renderer) isOpen(n *node) bool {
 	}
 	// Not the raw capture (noQueryOpen): it holds a second copy of the conversation and up to 10 MiB of
 	// response, so nearly every query matches in it, and drawing it took over a second a
-	// keystroke. It opens when the reader opens it.
+	// keystroke. It opens when the reader opens it, or for a details match only it holds
+	// (openRawMatch).
 	if r.fs.query != "" && !n.noQueryOpen && r.hasMatch(n) {
 		return true
 	}

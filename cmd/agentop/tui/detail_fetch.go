@@ -196,6 +196,8 @@ func (m *model) applyDetailEvent(msg detailEventLoadedMsg) {
 	// rebuilt exactly as the first render built them.
 	*slot, *rawSlot = msg.event, msg.raw
 	m.showDetail(m.detailRow, false)
+	m.openRawMatch()
+	m.revealDetailMatch()
 }
 
 // replaceHeldEvent swaps the stored event with the same Seq for the full one.

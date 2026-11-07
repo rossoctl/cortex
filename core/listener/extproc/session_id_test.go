@@ -11,8 +11,12 @@ import (
 )
 
 // sessionIDProbe records, for each request, the id of the view it was given and
-// pctx.SessionID. A nil view records "-".
-type sessionIDProbe struct{ view, id []string }
+// pctx.SessionID. A nil view records "-". hosts is how many InferenceHosts rows
+// pctx.InferenceHosts() gave, -1 for unknown.
+type sessionIDProbe struct {
+	view, id []string
+	hosts    []int
+}
 
 func (*sessionIDProbe) Name() string { return "session-id-probe" }
 func (*sessionIDProbe) Capabilities() pipeline.PluginCapabilities {
@@ -24,6 +28,11 @@ func (p *sessionIDProbe) OnRequest(_ context.Context, pctx *pipeline.Context) pi
 		v = pctx.Session.ID
 	}
 	p.view, p.id = append(p.view, v), append(p.id, pctx.SessionID)
+	n := -1
+	if h, known := pctx.InferenceHosts(); known {
+		n = len(h)
+	}
+	p.hosts = append(p.hosts, n)
 	return pipeline.Action{Type: pipeline.Continue}
 }
 func (*sessionIDProbe) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
@@ -31,7 +40,8 @@ func (*sessionIDProbe) OnResponse(context.Context, *pipeline.Context) pipeline.A
 }
 
 // Both outbound entry points set pctx.SessionID to the view's id, and leave it
-// empty when they give no view.
+// empty when they give no view. With a view they pass the store's facts: the
+// InferenceHosts table is one that the view cannot give.
 func TestOutbound_SessionIDIsTheViewID(t *testing.T) {
 	headerOnly := []*extprocv3.ProcessingRequest{{Request: &extprocv3.ProcessingRequest_RequestHeaders{
 		RequestHeaders: &extprocv3.HttpHeaders{Headers: makeHeaders(
@@ -65,7 +75,10 @@ func TestOutbound_SessionIDIsTheViewID(t *testing.T) {
 			store := session.New(0, 100, 100)
 			t.Cleanup(store.Close)
 			if tc.active != "" {
-				store.Append(tc.active, pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
+				// An inference request: a row of the session's InferenceHosts table, which a view cannot give.
+				store.Append(tc.active, pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+					Host: "glm.example.com:8443", Client: pipeline.ParseUserAgent("claude-cli/2.1.0 (external, cli)"),
+					Inference: &pipeline.InferenceExtension{Model: "m"}})
 			}
 			srv := &Server{OutboundPipeline: pipeline.NewHolder(out), InboundPipeline: pipeline.NewHolder(empty), Sessions: store}
 			_ = srv.Process(&mockStream{ctx: context.Background(), requests: tc.reqs})
@@ -79,6 +92,13 @@ func TestOutbound_SessionIDIsTheViewID(t *testing.T) {
 			}
 			if probe.view[0] != tc.wantView || probe.id[0] != wantID {
 				t.Errorf("view %q, SessionID %q; want view %q, SessionID %q", probe.view[0], probe.id[0], tc.wantView, wantID)
+			}
+			wantHosts := -1 // no session: unknown
+			if tc.active != "" {
+				wantHosts = 1
+			}
+			if probe.hosts[0] != wantHosts {
+				t.Errorf("InferenceHosts rows = %d, want %d (-1: unknown)", probe.hosts[0], wantHosts)
 			}
 		})
 	}
