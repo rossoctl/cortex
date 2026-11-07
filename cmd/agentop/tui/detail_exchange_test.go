@@ -299,3 +299,19 @@ func TestDetail_ResponseFillsOpenDetail(t *testing.T) {
 		t.Errorf("cursor moved from %q to %q: the fill must keep the reader's place", before, got)
 	}
 }
+
+func TestDetail_PausedStreamLeavesOpenDetail(t *testing.T) {
+	at := time.Now().Add(-time.Minute)
+	req, resp := turnExchange(at)
+	m := openDetail(t, at.Add(time.Minute), req)
+	m.Update(keyRune('p'))
+	if !m.paused {
+		t.Fatal("setup: p did not pause the stream")
+	}
+
+	m.Update(streamMsg(apiclient.StreamEvent{Event: &resp}))
+	text := detailText(m)
+	if !strings.Contains(text, "waiting for response…") || strings.Contains(text, "the-answer") {
+		t.Errorf("a paused stream filled the page:\n%s", text)
+	}
+}
