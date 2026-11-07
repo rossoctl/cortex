@@ -396,7 +396,7 @@ func TestPinIsNotPluginWritable(t *testing.T) {
 }
 
 // TestSessionViewFor_NilStoreDoesNotPanic holds sessionViewFor to the convention
-// recordingSessionID states in server.go — safe to call with a nil
+// recordingSessionID states in identity.go — safe to call with a nil
 // store, so a future caller that forgets the guard gets a usable answer rather
 // than a panic. Both current callers guard, so this is latent by design.
 func TestSessionViewFor_NilStoreDoesNotPanic(t *testing.T) {

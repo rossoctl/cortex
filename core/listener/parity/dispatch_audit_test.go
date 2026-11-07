@@ -81,18 +81,18 @@ var dispatchSites = map[string]dispatchClass{
 	"forwardproxy/server.go:serveOutbound:phaseCtx": finalization,
 	"forwardproxy/server.go:serveOutbound:finalCtx": finalization,
 	// The real streaming path's finish defer — the first instance ever fixed.
-	"forwardproxy/server.go:handleStreamingResponse:finalCtx": finalizationDelivered,
+	"forwardproxy/stream.go:handleStreamingResponse:finalCtx": finalizationDelivered,
 	// Mid-stream frames on that same path.
-	"forwardproxy/server.go:handleStreamingResponse:r.Context()": inFlight,
+	"forwardproxy/stream.go:handleStreamingResponse:r.Context()": inFlight,
 	// Passthrough runs the response phase BEFORE any byte is written, so a reject still reaches
 	// the client and cancellation still means stop. No cost owner is on this path: it is taken
 	// only when no StreamingResponder is configured.
-	"forwardproxy/server.go:streamPassthrough:r.Context()": inFlight,
+	"forwardproxy/stream.go:streamPassthrough:r.Context()": inFlight,
 	// The buffered fallback: phase, fold and settle, each after io.ReadAll. Three separate
 	// contexts because each is its own bounded piece of work.
-	"forwardproxy/server.go:streamFallbackBuffered:phaseCtx": finalization,
-	"forwardproxy/server.go:streamFallbackBuffered:foldCtx":  finalization,
-	"forwardproxy/server.go:streamFallbackBuffered:finalCtx": finalization,
+	"forwardproxy/stream.go:streamFallbackBuffered:phaseCtx": finalization,
+	"forwardproxy/stream.go:streamFallbackBuffered:foldCtx":  finalization,
+	"forwardproxy/stream.go:streamFallbackBuffered:finalCtx": finalization,
 	// A carried Responses WebSocket: each turn's terminal frame, once the origin's
 	// terminal event (or the socket's end) has already gone to the client — the SSE
 	// finish defer's case, one turn at a time.
