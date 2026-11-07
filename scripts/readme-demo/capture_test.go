@@ -100,7 +100,9 @@ func TestCapture_EveryBeatShowsWhatTheStoryboardClaims(t *testing.T) {
 
 	c.Press("esc", "G", "enter")
 	events := ansi.Strip(c.Screen())
-	for _, want := range []string{"ACTION", "PLUGIN", "HOST", "inference-parser", "api.anthropic.com"} {
+	// "2 plugins": an inference row holds its request and its response, and two plugins
+	// observe them (inference-parser, litellm-budget-track).
+	for _, want := range []string{"ACTION", "PLUGIN", "HOST", "2 plugins", "api.anthropic.com"} {
 		if !strings.Contains(events, want) {
 			t.Errorf("events table missing %q", want)
 		}
