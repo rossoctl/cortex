@@ -443,11 +443,29 @@ func TestResponsesWebSocket_TurnsAreParsedLikeHTTPS(t *testing.T) {
 		}
 		t.Fatalf("got %d turn rows, want 4 (two request/response pairs)", len(turns))
 	}
+	// Paired by RequestID, as agentop pairs them, not by position. relayDown forwards a
+	// turn's last frame before it records the turn's response row, so the client's next
+	// turn can record its request row first: request 1, request 2, response 1, response 2.
+	var reqs []pipeline.SessionEvent
+	resps := map[string]pipeline.SessionEvent{}
+	for _, e := range turns {
+		if e.Phase == pipeline.SessionRequest {
+			reqs = append(reqs, e)
+		} else {
+			resps[e.RequestID] = e
+		}
+	}
+	if len(reqs) != 2 {
+		t.Fatalf("got %d turn request rows, want 2", len(reqs))
+	}
+	if reqs[0].RequestID == reqs[1].RequestID {
+		t.Fatal("the two turns share a RequestID; each needs its own")
+	}
 	wantInput := []int{12862, 13002}
-	for i := 0; i < 2; i++ {
-		req, res := turns[2*i], turns[2*i+1]
-		if req.Phase != pipeline.SessionRequest || res.Phase != pipeline.SessionResponse || req.RequestID != res.RequestID {
-			t.Errorf("turn %d rows do not pair: %+v / %+v", i+1, req, res)
+	for i, req := range reqs {
+		res, ok := resps[req.RequestID]
+		if !ok || res.Phase != pipeline.SessionResponse {
+			t.Errorf("turn %d request row %+v has no response row with its RequestID", i+1, req)
 			continue
 		}
 		if req.Inference == nil || req.Inference.Model != "gpt-6-luna" || len(req.Inference.Messages) != 1 {
@@ -467,9 +485,6 @@ func TestResponsesWebSocket_TurnsAreParsedLikeHTTPS(t *testing.T) {
 		if inf.Completion != "pong" || inf.CompletionTokens != 5 || inf.TotalTokens != wantInput[i]+5 {
 			t.Errorf("turn %d response parse: completion=%q out=%d total=%d", i+1, inf.Completion, inf.CompletionTokens, inf.TotalTokens)
 		}
-	}
-	if turns[0].RequestID == turns[2].RequestID {
-		t.Error("the two turns share a RequestID; each needs its own")
 	}
 	// Turns sit between the socket's open and close in the timeline.
 	if !(opens[0].Seq < turns[0].Seq && turns[3].Seq < closes[0].Seq) {
