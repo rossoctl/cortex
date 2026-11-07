@@ -177,15 +177,10 @@ type entry struct {
 	// event left.
 	lastIntent, lastInference uint64
 
-	// hosts is the InferenceHosts table over this entry's events (applyHost). priorHosts is the
-	// HostsKeeper's table when the entry was created after earlier history, and priorUnknown is
-	// true when the keeper had no table for it. A LATEST-VALUE FOLD, in inferenceHost's class: a
-	// trim sheds nothing from it.
-	//
-	// A SNAPSHOT AT CREATION, NOT Prior: Prior answers only after the archive's writer takes the
-	// entry's first event, and until then a resumed session would read as new.
-	hosts, priorHosts model.InferenceHosts
-	priorUnknown      bool
+	// hosts is the InferenceHosts table over this entry's events (applyHost). A LATEST-VALUE
+	// FOLD, in inferenceHost's class: a trim sheds nothing from it. ViewFacts adds the history's
+	// table from the HostsKeeper.
+	hosts model.InferenceHosts
 }
 
 // MaxSessionIDLen is the longest session ID the store keeps intact; longer ids
@@ -478,11 +473,6 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event model.SessionEve
 				// prose message would be unnameable. rankNone is the "nothing has named it" rank.
 				titleRank: rankNone,
 			}
-			// No history before the entry when seed is 0, so no table to take.
-			if seed > 0 {
-				hosts, known := s.keeperHostsLocked(sessionID)
-				sess.priorHosts, sess.priorUnknown = slices.Clone(hosts), !known
-			}
 			s.sessions[sessionID] = sess
 			s.entryStartedLocked(sessionID, seed)
 		}
@@ -765,10 +755,16 @@ func (s *Store) viewLocked(sessionID string) (*model.SessionView, *entry) {
 // returns nil (no entry, or an expired one), the view is nil and both facts are FactNone.
 //
 // The InferenceHosts table is a copy:
-//   - With an entry: the table the HostsKeeper had when the entry was created, merged with the
-//     entry's own. HostsKnown is false when the keeper had no table for that history.
+//   - With an entry numbered after earlier history: the HostsKeeper's table now, merged with
+//     the entry's own. HostsKnown is the keeper's.
+//   - With an entry and no earlier history: the entry's own table. HostsKnown is true.
 //   - With no entry: the keeper's table over every event it holds under the id.
 //   - With no keeper: the entry's own table, or none. HostsKnown is true.
+//
+// THE KEEPER IS READ NOW, NOT WHEN THE ENTRY WAS CREATED. The history's last events can still be
+// in the archive's queue when the entry is created (an eviction, then the next request), and a
+// read now has them once the writer writes them. Prior is not used: it answers only after the
+// writer takes the entry's first event.
 func (s *Store) ViewFacts(sessionID string) (*model.SessionView, model.SessionFacts) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -779,14 +775,20 @@ func (s *Store) ViewFacts(sessionID string) (*model.SessionView, model.SessionFa
 		return nil, model.SessionFacts{LastIntent: model.SessionFact{State: model.FactNone}, LastInference: model.SessionFact{State: model.FactNone},
 			InferenceHosts: slices.Clone(hosts), HostsKnown: known}
 	}
-	// The history's seqs are at or below the entry's first (SeqSeeder), so the highest seq of
-	// each pair is the entry's when it has one.
-	hosts := slices.Clone(sess.priorHosts)
+	// The keeper's table also holds the entry's events that it wrote. The merge takes the highest
+	// seq of each pair, and a seq is one event under the id, so nothing counts twice.
+	var hosts model.InferenceHosts
+	known := true
+	if sess.after > 0 {
+		var kept model.InferenceHosts
+		kept, known = s.keeperHostsLocked(sessionID)
+		hosts = slices.Clone(kept)
+	}
 	for _, x := range sess.hosts {
 		hosts = mergeHost(hosts, x)
 	}
 	return v, model.SessionFacts{LastIntent: factAt(v.Events, sess.lastIntent), LastInference: factAt(v.Events, sess.lastInference),
-		InferenceHosts: hosts, HostsKnown: !sess.priorUnknown}
+		InferenceHosts: hosts, HostsKnown: known}
 }
 
 // factAt finds the event with this seq in events, which rise in seq. A seq of 0, or one that a
@@ -959,8 +961,6 @@ func (s *Store) rekeyLocked(oldID, newID string) bool {
 	}
 
 	sess.ID = newID
-	// The history before the entry stays under oldID (EntryStarter), and so does its table.
-	sess.priorHosts, sess.priorUnknown = nil, false
 	s.sessions[newID] = sess
 	delete(s.sessions, oldID)
 	if s.activeID == oldID {

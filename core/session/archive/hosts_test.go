@@ -40,7 +40,7 @@ func hostsOf(st *session.Store, id string) (model.InferenceHosts, bool) {
 }
 
 // A restart changes no session's table: before the new entry exists the archive's table is the
-// answer, and after an event with no evidence creates the entry, the snapshot is.
+// answer, and after an event with no evidence creates the entry, the merge with it is.
 func TestHosts_SameAnswerAcrossARestart(t *testing.T) {
 	evs := hostEvents()
 	ref := session.New(0, 0, 0)
@@ -163,5 +163,34 @@ func TestHosts_ACrashedSessionKeepsItsTable(t *testing.T) {
 	defer a.Close()
 	if got, ok := a.InferenceHosts("s1"); !ok || len(want) != 3 || !reflect.DeepEqual(got, want) {
 		t.Fatalf("after reconcile: %+v %v, want %+v", got, ok, want)
+	}
+}
+
+// An entry re-created while the archive's writer still holds an earlier entry's evidence in its
+// queue sees that evidence once the writer writes it: ViewFacts reads the archive's table when
+// it answers, not when the entry is created.
+func TestHosts_AnEntryReCreatedBeforeTheWriterCatchesUpSeesItsHistory(t *testing.T) {
+	a := openTest(t, t.TempDir(), newClock())
+	defer a.Close()
+	st := session.New(0, 0, 1)
+	defer st.Close()
+	st.AddRecorder(a)
+	evs := hostEvents()
+	st.Append("s1", evs[0]) // seq 1, to glm
+	settle(a)
+	a.gate = make(chan struct{}) // hold the writer
+	st.Append("s1", evs[3])      // seq 2, to ete: queued
+	st.Append("s2", evs[2])      // max_sessions 1 evicts s1
+	st.Append("s1", evs[2])      // s1 again, numbered after seq 2
+	close(a.gate)
+	settle(a)
+
+	got, ok := hostsOf(st, "s1")
+	want := model.InferenceHosts{
+		{Agent: "claude-code", Host: "glm.example.com:8443", Last: 1},
+		{Agent: "claude-code", Host: "ete.example.com", Last: 2},
+	}
+	if !ok || !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the writer caught up: %+v %v, want %+v", got, ok, want)
 	}
 }

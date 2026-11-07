@@ -36,9 +36,8 @@ func (s *Store) archivedSeqLocked(id string) uint64 {
 }
 
 // HostsKeeper is optionally implemented by a Recorder that keeps a session's history for longer
-// than the store does — the session archive. The store asks it for a session's InferenceHosts
-// table when it creates an entry numbered after earlier history, and when ViewFacts finds no
-// entry.
+// than the store does — the session archive. ViewFacts asks it for a session's InferenceHosts
+// table when the entry is numbered after earlier history, and when there is no entry.
 //
 // It is called under the store's lock, like LastSeq: it must be a memory lookup, and must not
 // block or call back into the store.

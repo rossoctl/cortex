@@ -94,8 +94,8 @@ func TestViewFacts_WithNoEntryTheKeeperAnswers(t *testing.T) {
 	wantHosts(t, "an id nobody holds", f, nil, true)
 }
 
-// An entry numbered after history merges the table the keeper had when the entry was created
-// with its own, by the highest seq for each pair. HostsKnown is the keeper's.
+// An entry numbered after history merges the keeper's table with its own, by the highest seq for
+// each pair. HostsKnown is the keeper's.
 func TestViewFacts_AnEntryAfterHistoryMergesTheKeepersTable(t *testing.T) {
 	for _, known := range []bool{true, false} {
 		s := New(0, 0, 0)
