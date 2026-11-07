@@ -359,7 +359,9 @@ func (r *renderer) isOpen(n *node) bool {
 }
 
 // hasMatch says whether the query occurs anywhere in n: its key, its text, its label, or
-// any value inside it.
+// any value inside it. It does not go into a noQueryOpen fold. A match there does not open
+// the fold, so it must not open the folds around it either, and the raw capture is too
+// large to scan on each keystroke.
 func (r *renderer) hasMatch(n *node) bool {
 	if v, ok := r.memo[n]; ok {
 		return v
@@ -369,6 +371,9 @@ func (r *renderer) hasMatch(n *node) bool {
 	for _, k := range n.kids {
 		if m {
 			break
+		}
+		if k.noQueryOpen {
+			continue
 		}
 		m = r.hasMatch(k)
 	}

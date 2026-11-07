@@ -70,6 +70,13 @@ func TestSectionTree_QueryDoesNotOpenRaw(t *testing.T) {
 	if strings.Contains(text, `"body"`) {
 		t.Errorf("the query opened raw:\n%s", text)
 	}
+	// A match that only raw holds does not open a section the reader closed. hasMatch does
+	// not go into raw, so a search does not scan up to 10 MiB on each keystroke.
+	sec, _ = sectionTree("request", "━━ REQUEST", nil, []byte(`{"host":"h","raw":{"body":"needle"}}`), "")
+	ls := sectionLines(t, sec, foldState{query: "needle", open: map[string]foldChoice{"request": {open: false}}})
+	if len(ls) != 1 {
+		t.Errorf("lines = %v, want only the closed title: the match is only in raw", lineTexts(ls))
+	}
 }
 
 func TestSectionOf(t *testing.T) {
