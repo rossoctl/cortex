@@ -13,6 +13,7 @@ import (
 	_ "github.com/rossoctl/cortex/core/cost/pricing"
 	_ "github.com/rossoctl/cortex/core/cost/usage"
 	_ "github.com/rossoctl/cortex/core/parse/a2a"
+	_ "github.com/rossoctl/cortex/core/parse/inference"
 	_ "github.com/rossoctl/cortex/core/parse/mcp"
 	_ "github.com/rossoctl/cortex/core/session"
 	_ "github.com/rossoctl/cortex/core/session/archive"
@@ -32,12 +33,14 @@ var dataOnly = []string{
 	"github.com/rossoctl/cortex/core/session/timeline",
 	"github.com/rossoctl/cortex/core/attribution",
 	"github.com/rossoctl/cortex/core/parse/a2a",
+	"github.com/rossoctl/cortex/core/parse/inference",
 	"github.com/rossoctl/cortex/core/parse/mcp",
 }
 
 // The parser libraries compute no cost (#1503). The plugin that wraps a parser may.
 var parsers = []string{
 	"github.com/rossoctl/cortex/core/parse/a2a",
+	"github.com/rossoctl/cortex/core/parse/inference",
 	"github.com/rossoctl/cortex/core/parse/mcp",
 }
 

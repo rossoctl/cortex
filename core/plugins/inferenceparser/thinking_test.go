@@ -6,13 +6,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/core/parse/inference"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // The thinking and effort a request asked for are recorded, so a reader can tell what a turn
 // was sent with: Claude Code's display setting, the effort level, and the beta flags.
 func TestAnthropicRequestRecordsThinkingAndEffort(t *testing.T) {
-	ext := parseAnthropicRequest([]byte(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}],
+	ext := inference.ParseRequest("/v1/messages", nil, []byte(`{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}],
 		"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"high"}}`))
 	if ext == nil {
 		t.Fatal("request not parsed")
@@ -25,11 +26,11 @@ func TestAnthropicRequestRecordsThinkingAndEffort(t *testing.T) {
 
 // Each dialect names effort in its own field; all three land in Effort.
 func TestOpenAIDialectsRecordEffort(t *testing.T) {
-	chat := parseOpenAIRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"medium"}`))
+	chat := inference.ParseRequest("/v1/chat/completions", nil, []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"medium"}`))
 	if chat == nil || chat.Effort != "medium" {
 		t.Fatalf("chat completions Effort = %+v, want medium", chat)
 	}
-	resp := parseResponsesRequest(nil, []byte(`{"model":"m","input":"hi","reasoning":{"effort":"low"}}`))
+	resp := inference.ParseRequest("/v1/responses", nil, []byte(`{"model":"m","input":"hi","reasoning":{"effort":"low"}}`))
 	if resp == nil || resp.Effort != "low" {
 		t.Fatalf("responses Effort = %+v, want low", resp)
 	}
@@ -49,7 +50,7 @@ func TestThinkingFieldsOfAnUnexpectedTypeKeepTheRequestParsed(t *testing.T) {
 		"redacted data is a bool": `{"model":"m","messages":[{"role":"assistant","content":[{"type":"redacted_thinking","data":true},{"type":"text","text":"ok"}]}]}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			ext := parseAnthropicRequest([]byte(body))
+			ext := inference.ParseRequest("/v1/messages", nil, []byte(body))
 			if ext == nil {
 				t.Fatal("request not parsed")
 			}
@@ -58,11 +59,11 @@ func TestThinkingFieldsOfAnUnexpectedTypeKeepTheRequestParsed(t *testing.T) {
 			}
 		})
 	}
-	chat := parseOpenAIRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"reasoning_effort":{"x":1}}`))
+	chat := inference.ParseRequest("/v1/chat/completions", nil, []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"reasoning_effort":{"x":1}}`))
 	if chat == nil || chat.Effort != "" {
 		t.Fatalf("chat with object reasoning_effort = %+v, want parsed with Effort empty", chat)
 	}
-	resp := parseResponsesRequest(nil, []byte(`{"model":"m","input":"hi","reasoning":"high"}`))
+	resp := inference.ParseRequest("/v1/responses", nil, []byte(`{"model":"m","input":"hi","reasoning":"high"}`))
 	if resp == nil || resp.Effort != "" {
 		t.Fatalf("responses with string reasoning = %+v, want parsed with Effort empty", resp)
 	}
@@ -72,7 +73,7 @@ func TestThinkingFieldsOfAnUnexpectedTypeKeepTheRequestParsed(t *testing.T) {
 // much is signature. A block that arrives with empty text says the reasoning came back
 // encrypted only, which is what a gateway that drops empty blocks needs to be seen against.
 func TestAnthropicRequestCountsHistoryThinking(t *testing.T) {
-	ext := parseAnthropicRequest([]byte(`{"model":"m","messages":[
+	ext := inference.ParseRequest("/v1/messages", nil, []byte(`{"model":"m","messages":[
 		{"role":"user","content":"hi"},
 		{"role":"assistant","content":[
 			{"type":"thinking","thinking":"","signature":"abcd"},
@@ -97,7 +98,7 @@ func TestAnthropicRequestCountsHistoryThinking(t *testing.T) {
 
 // A request with no thinking blocks states nothing, rather than a zero count.
 func TestAnthropicRequestWithoutThinkingLeavesHistoryThinkingNil(t *testing.T) {
-	ext := parseAnthropicRequest([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
+	ext := inference.ParseRequest("/v1/messages", nil, []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
 	if ext == nil || ext.HistoryThinking != nil {
 		t.Fatalf("HistoryThinking = %+v, want nil", ext)
 	}
@@ -126,15 +127,15 @@ func TestOnRequestRecordsAnthropicBeta(t *testing.T) {
 	pctx = &pipeline.Context{Path: "/v1/messages", Headers: long,
 		Body: []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)}
 	p.OnRequest(context.Background(), pctx)
-	if got := len(pctx.Extensions.Inference.AnthropicBeta); got != maxServedModelLen {
-		t.Fatalf("AnthropicBeta length = %d, want the cap %d", got, maxServedModelLen)
+	if got := len(pctx.Extensions.Inference.AnthropicBeta); got != 256 { // inference.maxServedModelLen
+		t.Fatalf("AnthropicBeta length = %d, want the cap %d", got, 256)
 	}
 }
 
 // A buffered response counts its thinking blocks the same way.
 func TestAnthropicBufferedResponseCountsThinking(t *testing.T) {
 	ext := &pipeline.InferenceExtension{}
-	parseAnthropicJSON([]byte(`{"model":"m","stop_reason":"end_turn","content":[
+	inference.ReadResponse("/v1/messages", false, []byte(`{"model":"m","stop_reason":"end_turn","content":[
 		{"type":"thinking","thinking":"","signature":"sig1"},
 		{"type":"redacted_thinking","data":"zz"},
 		{"type":"text","text":"answer"}],"usage":{"input_tokens":1,"output_tokens":2}}`), ext)

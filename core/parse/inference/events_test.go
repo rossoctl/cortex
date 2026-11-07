@@ -1,4 +1,4 @@
-package inferenceparser
+package inference
 
 import (
 	"go/ast"
