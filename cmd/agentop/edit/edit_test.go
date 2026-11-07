@@ -51,7 +51,7 @@ func TestApplyCmd_Success(t *testing.T) {
 	stub := func(ctx context.Context, args ...string) ([]byte, error) {
 		return []byte("applied"), nil
 	}
-	cmd := ApplyCmd(context.Background(), cmStore(stub), nil, []byte("manifest"))
+	cmd := ApplyCmd(context.Background(), cmStore(stub), "", nil, []byte("manifest"))
 	msg := cmd().(AppliedMsg)
 	if msg.Err != nil {
 		t.Fatalf("err = %v", msg.Err)
@@ -69,7 +69,7 @@ func TestPollCmd_Success(t *testing.T) {
 		_, _ = w.Write([]byte(`{"last_success":"` + ts + `"}`))
 	}))
 	defer srv.Close()
-	cmd := PollCmd(context.Background(), srv.URL, applyTime, Target{})
+	cmd := PollCmd(context.Background(), srv.URL, applyTime, baselineFailedSentinel, Target{})
 	msg := cmd().(PolledMsg)
 	if msg.Result.Status != PollSuccess {
 		t.Fatalf("status: %v", msg.Result.Status)

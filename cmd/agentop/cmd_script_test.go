@@ -26,6 +26,9 @@ type fakeCortex struct {
 	// later than any write, as a proxy that has picked a change up does. Unset,
 	// last_success is the time of the poll, which is also after any write.
 	reloadedAfter atomic.Bool
+	// refusedNow, when set, has /reload/status report one refused reload while it
+	// returns true, with last_success left behind the write.
+	refusedNow atomic.Pointer[func() bool]
 }
 
 func newFakeCortex(t *testing.T) *fakeCortex {
@@ -35,8 +38,9 @@ func newFakeCortex(t *testing.T) *fakeCortex {
 		switch r.URL.Path {
 		case "/reload/status":
 			// A refusal, as the poll recognises one: reloads_failed rising after the
-			// poll's first answer, with last_success left behind the write. Poll 1 is
-			// serverTarget's probe and poll 2 the poll's baseline, so it rises at 3.
+			// baseline, with last_success left behind the write. Poll 1 is
+			// serverTarget's probe and poll 2 the baseline read before the write, so
+			// it rises at 3.
 			n := f.polls.Add(1)
 			st := map[string]any{"last_success": time.Now(), "reloads_ok": 1, "reloads_failed": 0}
 			if f.reloadedAfter.Load() {
@@ -47,6 +51,10 @@ func newFakeCortex(t *testing.T) *fakeCortex {
 				if n >= 3 {
 					st["reloads_failed"], st["last_error"] = 1, "refused by the test"
 				}
+			}
+			if fn := f.refusedNow.Load(); fn != nil && (*fn)() {
+				st["last_success"] = time.Now().Add(-time.Hour)
+				st["reloads_failed"], st["last_error"] = 1, "refused by the test"
 			}
 			_ = json.NewEncoder(w).Encode(st)
 		case "/v1/pipeline":
@@ -539,6 +547,39 @@ func TestScript_AFailedUpdateRestoresTheEarlierFiles(t *testing.T) {
 	}
 	if st := listJSON(t, cfg)["moca-sandbox"]; st.State != stateOutdated {
 		t.Errorf("state after a failed update = %s, want outdated", st.State)
+	}
+}
+
+// An update to a slot that is already in the config writes only the script files.
+// When the proxy refuses the reload they cause before the poll's first answer, the
+// refusal is still reported at once, from the baseline read before the write.
+func TestScript_AnUpdateReportsARefusalBeforeTheFirstPoll(t *testing.T) {
+	f := newFakeCortex(t)
+	f.present.Store(true)
+	f.loaded.Store(1)
+	cfg, plugins := scriptEnv(t, f.addr(), f.addr())
+	if code, _, e := runScriptCmd(t, "install", "moca-sandbox", "--config", cfg); code != 0 {
+		t.Fatal(e)
+	}
+	dir := filepath.Join(plugins, "moca-sandbox")
+	old := []byte("#!/usr/bin/env python3\n# an earlier release\n")
+	script := filepath.Join(dir, "moca-sandbox.py")
+	os.WriteFile(script, old, 0o700)
+	b, _ := json.Marshal(installRecord{Version: "v0.0.1", Files: map[string]string{"moca-sandbox.py": sum(old)}})
+	os.WriteFile(filepath.Join(dir, scriptRecord), b, 0o600)
+
+	refused := func() bool { got, _ := os.ReadFile(script); return !bytes.Equal(got, old) }
+	f.refusedNow.Store(&refused)
+	start := time.Now()
+	code, _, errOut := runScriptCmd(t, "install", "moca-sandbox", "--config", cfg)
+	if code != 1 || !strings.Contains(errOut, "refused by the test") {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Errorf("took %v; the refusal must not wait out the poll deadline", took)
+	}
+	if got, _ := os.ReadFile(script); !bytes.Equal(got, old) {
+		t.Errorf("the earlier script was not put back:\n%s", got)
 	}
 }
 

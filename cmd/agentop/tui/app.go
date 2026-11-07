@@ -3,15 +3,11 @@ package tui
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -2175,7 +2171,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.editState.applyTime = msg.ApplyTime
 		m.editState.phase = editPhaseWaiting
 		return m, withGen(m.editState.generation, edit.PollCmd(
-			m.ctx, m.editState.statusURL, msg.ApplyTime,
+			m.ctx, m.editState.statusURL, msg.ApplyTime, msg.BaselineFailed,
 			describeTarget(m.editState.store)))
 
 	case genPolledMsg:
@@ -2833,162 +2829,9 @@ func (m *model) sessionHeader(id, suffix string) string {
 // Latent rather than observed, which is why the fix is a redirect and not a rewrite: on ASCII
 // this is byte-for-byte what the old rune-counting version returned, so no current caller
 // changes behaviour (there is a probe for that equivalence in the sessions title tests). The
-// column-aware implementation lives in sessions_pane.go beside its left-truncating mirror.
+// column-aware implementation lives in sessions_title.go beside its left-truncating mirror.
 func trunc(s string, n int) string {
 	return truncRight(s, n)
-}
-
-// yankDirRel is the yank output directory, relative to the user's home. It
-// follows the same convention as agentop's other durable state (cmd_claudecode.go's
-// cortexCfgRel / stateRel), so there is one ~/.cortex tree rather than a new one.
-const yankDirRel = ".cortex/agentop-events"
-
-// yankDir returns the absolute directory yank writes into.
-//
-// Not os.TempDir(): on macOS that is /var/folders/<opaque>/T, so a yanked file
-// landed on a 92-character path nobody could find or retype, which is #868.
-//
-// Not a fixed path under /tmp either, which is where this started. /tmp is
-// world-writable, and os.MkdirAll returns nil for a path that already exists
-// whatever its owner or mode — so a fixed /tmp/<name> cannot enforce 0700, can
-// be pre-created as a symlink that redirects where events land, and on a shared
-// host is squatted by whoever yanks first, permanently breaking everyone else.
-// Session events carry identity subjects, raw LLM completions and tool
-// arguments, so none of that is acceptable for a directory holding them.
-//
-// ~/.cortex is the user's own tree and is normally 0700, which makes those cases
-// unreachable — but agentop never creates it, so its mode is whatever an installer
-// or the user left. With a 0755 ~/.cortex, MkdirAll neither tightens the mode nor
-// refuses to follow an agentop-events symlink someone planted, and the event lands
-// in their directory. Verified. So the guarantee is enforced here rather than
-// assumed: yankEventToFile Lstats the directory and refuses to write unless it is
-// a real directory, owned by this user, with no group or world access.
-//
-// Still far shorter than where this started, and a location users already know.
-func yankDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine your home directory: %w", err)
-	}
-	if home == "" {
-		// Separate branch, not folded into the one above: %w on a nil error
-		// renders as "%!w(<nil>)", which would make this defensive path
-		// unreadable to whoever ever hits it.
-		return "", errors.New("cannot determine your home directory: it is empty")
-	}
-	return filepath.Join(home, yankDirRel), nil
-}
-
-// checkYankDir refuses to write into a directory that does not actually protect
-// its contents. MkdirAll returns nil for a path that already exists whatever its
-// owner or mode, and it happily follows a symlink — so an agentop-events symlink
-// planted by another local user would silently redirect events carrying identity
-// subjects and raw LLM completions into their directory.
-//
-// Checks every component from the home directory down, not just the leaf: a
-// symlinked ~/.cortex redirects the whole subtree just as effectively, and the
-// leaf-only version of this function missed it (verified — the event landed in the
-// attacker's tree). Lstat, not Stat: Stat resolves the link and would report the
-// target's mode.
-//
-// The mode requirement applies only to the directories agentop owns (~/.cortex and
-// agentop-events), not to the home directory itself: a real home is commonly 0750
-// or 0755 — this machine's is 0750 — and demanding 0700 there would refuse to
-// yank on an ordinary account. Every component is still checked for a symlink,
-// which is the redirection risk.
-//
-// A loose mode on a directory agentop owns is tightened rather than refused, which
-// is what the rest of the tree already does for this exact problem:
-// writeBuiltinConfig in cmd/cortex/local.go chmods ~/.cortex to 0700
-// after MkdirAll, and again one level down for the CA directory. Self-healing
-// beats handing the user a chmod to run by hand, and if the chmod fails — someone
-// else owns it — the refusal below still stands. Symlinks and non-directories stay
-// hard refusals; there is no chmod out of those.
-//
-// Ownership is deliberately not checked via syscall.Stat_t: that type does not
-// exist on Windows and would break this package's cross-compile.
-func checkYankDir(dir string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	rel, err := filepath.Rel(home, dir)
-	if err != nil {
-		return err
-	}
-
-	// home first (symlink check only), then each component agentop owns.
-	fi, err := os.Lstat(home)
-	if err != nil {
-		return err
-	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%s is a symlink; refusing to write session events "+
-			"through it", home)
-	}
-
-	path := home
-	for _, part := range strings.Split(rel, string(filepath.Separator)) {
-		path = filepath.Join(path, part)
-		fi, err := os.Lstat(path)
-		if err != nil {
-			return err
-		}
-		if fi.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s is a symlink; refusing to write session events "+
-				"through it", path)
-		}
-		if !fi.IsDir() {
-			return fmt.Errorf("%s is not a directory", path)
-		}
-		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
-			// Tighten in place; only report if that does not work.
-			if err := os.Chmod(path, 0o700); err != nil {
-				return fmt.Errorf("%s has mode %v and could not be tightened "+
-					"(%v); session events need no group or world access "+
-					"(chmod 700 %s)", path, perm, err, path)
-			}
-		}
-	}
-	return nil
-}
-
-// yankEventToFile writes the currently-focused event to a fresh file in yankDir
-// as pretty JSON and returns the path. Uses os.CreateTemp so the file is
-// created with 0600 perms (session events carry identity subjects, raw
-// LLM completions, and tool arguments — the operator-only default keeps
-// them off shared / CI hosts). CreateTemp also implies O_EXCL, so there is no
-// create-then-chmod window.
-func yankEventToFile(e *pipeline.SessionEvent) (string, error) {
-	dir, err := yankDir()
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	if err := checkYankDir(dir); err != nil {
-		return "", err
-	}
-	ts := time.Now().UTC().Format("20060102-150405")
-	// No "agentop-event-" name prefix: inside a directory already called
-	// agentop-events it says nothing. The random tail stays — it is what keeps
-	// two yanks in the same second from clobbering each other.
-	f, err := os.CreateTemp(dir, ts+"-*.json")
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	data, err := json.MarshalIndent(e, "", "  ")
-	if err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-	if _, err := f.Write(data); err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-	return f.Name(), nil
 }
 
 // RunOptions selects the entry mode for agentop's TUI.
@@ -3094,102 +2937,6 @@ func Run(ctx context.Context, opts RunOptions) error {
 	defer fmt.Fprint(os.Stdout, ansi.SetModeAutoWrap)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx))
 	_, err := p.Run()
-	return err
-}
-
-// wantCursorKeys reports whether agentop is running in Terminal.app, the terminal
-// application cursor-key mode was added for. The mode is not free: terminals that
-// follow xterm (the xterm-256color terminfo says khome=\EOH, kend=\EOF) then send
-// Home and End as ESC O H and ESC O F, and bubbletea v1.3.10 cannot read either —
-// it splits each into alt+O and a bare letter, so the tables' home/end bindings
-// stop working and Home in the search prompt types an H. Terminal.app keeps Home and
-// End for scrolling its own window by default, so it pays nothing for the mode.
-// GNOME Terminal, Konsole, Alacritty and kitty are believed to turn an alt-screen
-// scroll into arrows without it (not verified here), so elsewhere the mode would
-// likely cost those keys and buy nothing.
-//
-// TERM_PROGRAM rather than GOOS, because the cost belongs to the terminal: iTerm2
-// runs on the same Macs and is not known to share Terminal.app's Home/End default.
-// tmux sets its own TERM_PROGRAM, and the scroll is tmux's to handle there anyway.
-func wantCursorKeys() bool {
-	return os.Getenv("TERM_PROGRAM") == "Apple_Terminal"
-}
-
-// openEditorCmd returns a tea.Cmd that suspends bubbletea, runs $EDITOR
-// (vi if unset) on path, and emits editorExitedMsg when the editor exits.
-// gen is captured at call time so the handler can detect a stale exit
-// from an aborted-then-restarted edit.
-func openEditorCmd(gen int, path string) tea.Cmd {
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vi"
-	}
-	c := exec.Command("sh", "-c", editor+" "+path)
-	exited := func(err error) tea.Msg {
-		return editorExitedMsg{gen: gen, err: err}
-	}
-	if wantCursorKeys() {
-		return tea.Exec(cursorKeysCmd{autowrapCmd{c}}, exited)
-	}
-	return tea.Exec(autowrapCmd{c}, exited)
-}
-
-// autowrapCmd lends the terminal to a command with autowrap on, and turns it off again
-// once the command exits. Run turns it off for agentop's own rows (see there), but an
-// editor drawing its own screen expects the terminal's default, and bubbletea's
-// ReleaseTerminal and RestoreTerminal do not know about the mode.
-//
-// Written to the command's own stdout, before its output and after it, for the reason
-// cursorKeysCmd writes there: bubbletea has released the terminal while Run is called,
-// so the writes cannot land inside a frame.
-type autowrapCmd struct{ *exec.Cmd }
-
-// The setters leave an already-set stream alone, as tea.ExecProcess's own wrapper does.
-func (c autowrapCmd) SetStdin(r io.Reader) {
-	if c.Stdin == nil {
-		c.Stdin = r
-	}
-}
-
-func (c autowrapCmd) SetStdout(w io.Writer) {
-	if c.Stdout == nil {
-		c.Stdout = w
-	}
-}
-
-func (c autowrapCmd) SetStderr(w io.Writer) {
-	if c.Stderr == nil {
-		c.Stderr = w
-	}
-}
-
-func (c autowrapCmd) Run() error {
-	if c.Stdout != nil {
-		_, _ = io.WriteString(c.Stdout, ansi.SetModeAutoWrap)
-	}
-	err := c.Cmd.Run()
-	if c.Stdout != nil {
-		_, _ = io.WriteString(c.Stdout, ansi.ResetModeAutoWrap)
-	}
-	return err
-}
-
-// cursorKeysCmd runs a command that borrows the terminal and sets application
-// cursor-key mode again once it exits, because an editor resets the mode on its
-// way out (vi's rmkx does) and bubbletea's RestoreTerminal does not know to set it.
-// Without this, one `e` would leave the trackpad scrolling the terminal's
-// scrollback for the rest of the session. Run is called while bubbletea has
-// released the terminal, so the write cannot interleave with a frame.
-//
-// It wraps an autowrapCmd because every command agentop lends the terminal to needs
-// that one, and takes its stream setters from it.
-type cursorKeysCmd struct{ autowrapCmd }
-
-func (c cursorKeysCmd) Run() error {
-	err := c.autowrapCmd.Run()
-	if c.Stdout != nil {
-		_, _ = io.WriteString(c.Stdout, ansi.SetModeCursorKeys)
-	}
 	return err
 }
 

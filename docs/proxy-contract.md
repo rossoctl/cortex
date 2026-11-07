@@ -59,9 +59,7 @@ the same JSON type. `cmd/agentop/wire_fixture_test.go` decodes the same files in
 agentop's types and refuses unknown keys. It then marshals each value again and
 requires the fixture back. Thus a renamed JSON tag on either side fails a test.
 
-`/config` reports the config in effect, with secret values masked. After a
-`stats.address` reload it shows the new address, but the stats server stays on the
-old one (see the known gap below). `GET /stats` and
+`/config` reports the config in effect, with secret values masked. `GET /stats` and
 the `/` index also exist. agentop does not read them.
 
 ## Health endpoints (`:47604`)
@@ -109,9 +107,12 @@ API. The contract has these parts:
    apply time. The two clocks must agree, so the proxy and agentop must run on the
    same machine.
 5. **Refusal.** A failed reload increments `reloads_failed` and sets `last_error`
-   (`recordFailure`). The active pipeline continues to serve. agentop takes the
-   counter's value at its first poll as the baseline. It reports a failure when the
-   counter is more than the baseline.
+   (`recordFailure`). The active pipeline continues to serve. agentop reads the
+   counter before it writes, and uses that value as the baseline (`ReloadBaseline` in
+   `cmd/agentop/edit/status.go`). When `/reload/status` does not answer before the
+   write, agentop takes the value at its first poll. When a poll reads a value below
+   the baseline, the proxy restarted, and that value becomes the baseline. agentop
+   reports a failure when the counter is more than the baseline.
 6. **Timeout.** agentop waits up to 30 s for a local file (`LocalPollDeadline` in
    `cmd/agentop/edit/edit.go`). Five failed polls in a row (a transport error or a non-200 answer) end the wait early as
    "unreachable".
@@ -127,24 +128,26 @@ of these sections. They need a restart:
 - `tls_bridge.*`
 - `spiffe.*`
 - `memory.*`
+- `stats.*`
 
 A change to `pipeline:` or `pricing:` reloads. The proxy swaps the pricing table after it
 accepts the reload (`applyPricing`, which `main` in `cmd/cortex/main.go` gives to
 `reloader.WithOnCommit`).
 
-**Known gap: `stats.address`.** This is today's behaviour, not a contract item. Do not
-depend on it. `validateReloadable` does not compare `stats:`, so the reloader accepts
-an edit to `stats.address`. `/reload/status` reports success, and `/config` shows the
-new address. But the stats listener binds once at startup (`config.ListenerPlan`), so
-it stays on the old address until a restart. agentop reads `stats.address` from the
-file, and nothing answers at the new address:
+**A `stats.address` edit.** The stats listener binds once at startup
+(`config.ListenerPlan`), so the reloader refuses a reload that changes `stats.*`.
+`/reload/status` reports the error, and `/config` keeps the old address. The listener
+stays on the old address until a restart. Until then, the file differs from the active
+config in `stats.*`, so the reloader also refuses every later reload of the file. And
+agentop reads `stats.address` from the file, where nothing answers:
 
 - The TUI pipeline editor finds no local target and does not edit
   (`localEditTargets` in `cmd/agentop/local_endpoint.go`).
 - `agentop server` and `agentop script` write the file, but do not wait for a reload.
   They say that no Cortex answered and that the change applies at the next start
   (`serverTarget` in `cmd/agentop/cmd_server.go`, `WriteNotRunning` in
-  `cmd/agentop/edit/pluginwrite.go`). The running proxy still reloads the file.
+  `cmd/agentop/edit/pluginwrite.go`). That is correct: the running proxy refuses the
+  reload, because the file still has the changed `stats.*`.
 - `doctor` does not show the unread-programs check (`checkUnread` in
   `cmd/agentop/doctor_unread.go`).
 
