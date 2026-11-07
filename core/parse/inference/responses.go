@@ -1,4 +1,4 @@
-package inferenceparser
+package inference
 
 import (
 	"bytes"
@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/rossoctl/cortex/core/internal/parsercommon"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // --- request ---
@@ -73,8 +73,8 @@ type responsesInputItem struct {
 	Role         string
 	Content      string
 	ContentBytes int
-	Tools        []pipeline.InferenceTool
-	ToolResults  []pipeline.InferenceToolResult
+	Tools        []model.InferenceTool
+	ToolResults  []model.InferenceToolResult
 }
 
 func (it *responsesInputItem) UnmarshalJSON(data []byte) error {
@@ -100,7 +100,7 @@ func (it *responsesInputItem) UnmarshalJSON(data []byte) error {
 			if t.Name == "" {
 				continue
 			}
-			it.Tools = append(it.Tools, pipeline.InferenceTool{
+			it.Tools = append(it.Tools, model.InferenceTool{
 				Name:        t.Name,
 				Description: t.Description,
 				Parameters:  schemaObject(t.Parameters),
@@ -108,7 +108,7 @@ func (it *responsesInputItem) UnmarshalJSON(data []byte) error {
 		}
 	}
 	if raw.Type == "function_call_output" {
-		it.ToolResults = append(it.ToolResults, pipeline.InferenceToolResult{
+		it.ToolResults = append(it.ToolResults, model.InferenceToolResult{
 			ToolUseID: raw.CallID,
 			Content:   flattenResponsesContent(raw.Output),
 		})
@@ -179,7 +179,7 @@ func flattenResponsesContent(raw json.RawMessage) string {
 // without a supported input value — the one thing every Responses API
 // request carries (see parseOpenAIRequest for why dialectFor's loose suffix
 // match needs this kind of body check as a backstop).
-func parseResponsesRequest(headers http.Header, body []byte) *pipeline.InferenceExtension {
+func parseResponsesRequest(headers http.Header, body []byte) *model.InferenceExtension {
 	body = parsercommon.DecodeRequestBody(headers, body)
 	if len(body) == 0 {
 		return nil
@@ -207,7 +207,7 @@ func parseResponsesRequest(headers http.Header, body []byte) *pipeline.Inference
 	if input == nil {
 		return nil
 	}
-	ext := &pipeline.InferenceExtension{
+	ext := &model.InferenceExtension{
 		Model:       req.Model,
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxOutputTokens,
@@ -219,7 +219,7 @@ func parseResponsesRequest(headers http.Header, body []byte) *pipeline.Inference
 	}
 	for _, item := range input {
 		if item.Type == "message" {
-			ext.Messages = append(ext.Messages, pipeline.InferenceMessage{
+			ext.Messages = append(ext.Messages, model.InferenceMessage{
 				Role:         item.Role,
 				Content:      item.Content,
 				ContentBytes: item.ContentBytes,
@@ -244,7 +244,7 @@ func parseResponsesRequest(headers http.Header, body []byte) *pipeline.Inference
 // other dialect's usage block) is not modeled: nothing downstream reads a
 // per-item breakdown today, and it is Codex's own addition rather than
 // something the published Responses API schema documents. A later consumer
-// that wants it can decode it separately as pipeline.RawJSON without
+// that wants it can decode it separately as model.RawJSON without
 // touching this struct.
 type responsesUsage struct {
 	InputTokens  *int `json:"input_tokens"`
@@ -331,7 +331,7 @@ type responsesNonStreaming struct {
 // just arrives complete), usage -> token counts, status -> a best-effort
 // finish reason (see foldResponsesFrame for why this API has no direct
 // finish_reason/stop_reason equivalent).
-func parseResponsesJSON(body []byte, ext *pipeline.InferenceExtension) {
+func parseResponsesJSON(body []byte, ext *model.InferenceExtension) {
 	var resp responsesNonStreaming
 	if err := json.Unmarshal(body, &resp); err != nil {
 		slog.Debug("inference-parser: invalid Responses API JSON", "error", err)
@@ -339,7 +339,7 @@ func parseResponsesJSON(body []byte, ext *pipeline.InferenceExtension) {
 	}
 	noteBodyModel(ext, resp.Model)
 	var b strings.Builder
-	var calls []pipeline.InferenceToolCall
+	var calls []model.InferenceToolCall
 	for _, item := range resp.Output {
 		for _, part := range item.Content {
 			if part.Text == "" {
@@ -352,9 +352,9 @@ func parseResponsesJSON(body []byte, ext *pipeline.InferenceExtension) {
 		}
 		switch item.Type {
 		case "custom_tool_call":
-			calls = append(calls, pipeline.InferenceToolCall{ID: item.CallID, Name: item.Name, Arguments: item.Input})
+			calls = append(calls, model.InferenceToolCall{ID: item.CallID, Name: item.Name, Arguments: item.Input})
 		case "function_call":
-			calls = append(calls, pipeline.InferenceToolCall{ID: item.CallID, Name: item.Name, Arguments: item.Arguments})
+			calls = append(calls, model.InferenceToolCall{ID: item.CallID, Name: item.Name, Arguments: item.Arguments})
 		}
 	}
 	ext.Completion = b.String()
@@ -502,7 +502,7 @@ type responsesOutputItem struct {
 // logged here: the full event vocabulary was confirmed on live traffic
 // rather than inferred from docs, so anything outside it is more likely a
 // wire change worth its own look than routine.
-func foldResponsesFrame(frame []byte, state *inferenceStreamState, ext *pipeline.InferenceExtension) {
+func foldResponsesFrame(frame []byte, state *inferenceStreamState, ext *model.InferenceExtension) {
 	var ev responsesStreamEvent
 	if err := json.Unmarshal(frame, &ev); err != nil {
 		slog.Debug("inference-parser: malformed Responses API streaming frame, skipping",
@@ -569,7 +569,7 @@ func foldResponsesFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 // parseResponsesSSE folds a fully-buffered Responses API SSE body. Mirrors
 // parseAnthropicSSE/parseInferenceSSE for the legacy OnResponse path; the
 // live listener uses foldResponsesFrame via OnResponseFrame instead.
-func parseResponsesSSE(body []byte, ext *pipeline.InferenceExtension) {
+func parseResponsesSSE(body []byte, ext *model.InferenceExtension) {
 	markStreamedResponse(body, ext)
 	state := &inferenceStreamState{}
 	for _, line := range bytes.Split(parsercommon.NormalizeSSE(body), []byte("\n")) {

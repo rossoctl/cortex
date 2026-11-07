@@ -1,5 +1,6 @@
-// Package parsercommon holds small helpers shared by the in-tree
-// protocol parser plugins (a2a-parser, mcp-parser, inference-parser).
+// Package parsercommon holds small helpers shared by the protocol parser
+// libraries in core/parse (mcp, a2a, inference), the mcp-parser and
+// inference-parser plugins, and the cpex plugin.
 // Lives under core/internal/ so only packages under core/ can
 // import it — third-party plugins are expected to either depend on
 // the public pipeline surface or roll their own parsing. The contents

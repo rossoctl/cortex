@@ -1,9 +1,9 @@
-package inferenceparser
+package inference
 
 import (
 	"testing"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // A chat-completions tool result is a "role":"tool" message naming the call it answers by
@@ -34,7 +34,7 @@ func TestChatCompletionsToolResultsCarryTheCallID(t *testing.T) {
 	if got := ext.Messages[1].ToolUseIDs; got != "call_1" {
 		t.Fatalf("assistant ToolUseIDs = %q, want call_1", got)
 	}
-	want := pipeline.InferenceToolCall{ID: "call_1", Name: "read_dir", Arguments: `{"path":"/tmp"}`}
+	want := model.InferenceToolCall{ID: "call_1", Name: "read_dir", Arguments: `{"path":"/tmp"}`}
 	if len(ext.HistoryToolCalls) != 1 || ext.HistoryToolCalls[0] != want {
 		t.Fatalf("HistoryToolCalls = %+v, want [%+v]", ext.HistoryToolCalls, want)
 	}
@@ -64,7 +64,7 @@ func TestHistoryToolCallsOfAnUnexpectedTypeKeepTheRequestParsed(t *testing.T) {
 	if chat == nil {
 		t.Fatal("chat-completions request not parsed")
 	}
-	want := pipeline.InferenceToolCall{ID: "7", Name: "read_dir", Arguments: `{"path":"/tmp"}`}
+	want := model.InferenceToolCall{ID: "7", Name: "read_dir", Arguments: `{"path":"/tmp"}`}
 	if len(chat.HistoryToolCalls) != 1 || chat.HistoryToolCalls[0] != want {
 		t.Errorf("chat HistoryToolCalls = %+v, want [%+v]", chat.HistoryToolCalls, want)
 	}

@@ -354,7 +354,7 @@ prefixes and the release-notes mapping are in
       - It judges the **name**. `listener.egress_guard` judges the resolved **address**, so an allow-list entry is not a permit for the guard.
       - Example: `listener: {egress_allow_hosts: ["github-tool-mcp:8080", "api.anthropic.com:443"]}`, or `MOCA_EGRESS_ALLOW=github-tool-mcp:8080,api.anthropic.com:443`. A change needs a pod restart, and each refusal leaves a `phase: "denied"` row with an `egress-allowlist` invocation.
 
-    - **Backstop — intent pin**, only when `session.max_events` is set: the store pins the most recent inbound A2A request against FIFO eviction. Only the latest intent is pinned, so stale intents cannot starve the buffer. IBAC's `LastIntent()` can still return nil after deletion, `max_sessions` eviction, a `ttl` expiry, or before the first inbound request. Reach for `skip_hosts` first when the noisy traffic is identifiable infrastructure.
+    - **Backstop — intent pin**, only when `session.max_events` is set: the store pins the most recent inbound A2A request against FIFO eviction. Only the latest intent is pinned, so stale intents cannot starve the buffer. IBAC's `pctx.LastIntent()` can still have no event after deletion, `max_sessions` eviction, a `ttl` expiry, a restart, or before the first inbound request. Reach for `skip_hosts` first when the noisy traffic is identifiable infrastructure.
 
 ## DCO Sign-Off (Mandatory)
 

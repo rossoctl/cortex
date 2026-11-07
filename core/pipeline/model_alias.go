@@ -49,6 +49,19 @@ const MaxResponseCapture = model.MaxResponseCapture
 // tokens.go: see core/model for the docs.
 func PromptTokensOf(resp *InferenceExtension) int { return model.PromptTokensOf(resp) }
 
+// facts.go: see core/model for the docs.
+type (
+	FactState    = model.FactState
+	SessionFact  = model.SessionFact
+	SessionFacts = model.SessionFacts
+)
+
+const (
+	FactNone      = model.FactNone
+	FactNoSession = model.FactNoSession
+	FactPresent   = model.FactPresent
+)
+
 // direction.go: see core/model for the docs.
 type Direction = model.Direction
 

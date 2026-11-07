@@ -348,11 +348,80 @@ def test_run_speaks_the_protocol(tmp_path):
         timeout=30,
     )
     lines = proc.stdout.splitlines()
-    assert json.loads(lines[0]) == {"cortex": 1, "hooks": ["request"], "enforce": True, "rewrite_response": False}
+    assert json.loads(lines[0]) == {"cortex": 2, "hooks": ["request"], "enforce": True, "rewrite_response": False}
     assert lines[1] == "masking"
     reply = json.loads(lines[2])
     assert reply["id"] == 7
     assert "a ***" in reply["request"]["body"]
+
+
+def run_held_back(tmp_path, hook_body, msg, answers):
+    """Runs a script whose message holds parts back, answering its fetches with
+    answers in order. Returns its output lines after the handshake."""
+    script = tmp_path / "lazy.py"
+    script.write_text("from cortex import on, run\n@on.request\ndef h(flow):\n    %s\nrun(enforce=True)\n" % hook_body)
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        input="".join(json.dumps(m) + "\n" for m in [msg] + answers),
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": str(SDK.parent)},
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return [json.loads(line) for line in proc.stdout.splitlines()[1:]]
+
+
+def held_back_request():
+    msg = anthropic_request("a secret")
+    msg["id"] = 3
+    body = msg["request"].pop("body")
+    msg["more"] = ["body", "inference"]
+    return msg, body
+
+
+def test_a_held_back_body_is_fetched_once_when_read(tmp_path):
+    msg, body = held_back_request()
+    lines = run_held_back(
+        tmp_path,
+        "flow.replace_text('secret', '***'); flow.set_header('X-Len', str(len(flow.body)))",
+        msg,
+        [{"id": 3, "fetch": "body", "value": {"body": body}}],
+    )
+    assert lines[0] == {"id": 3, "fetch": "body"}
+    assert "a ***" in lines[1]["request"]["body"]
+    assert lines[1]["request"]["set_headers"] == {"X-Len": str(len(body))}
+
+
+def test_held_back_inference_is_fetched_when_read(tmp_path):
+    msg, _ = held_back_request()
+    lines = run_held_back(
+        tmp_path,
+        "flow.set_header('X-Model', flow.inference['model'])",
+        msg,
+        [{"id": 3, "fetch": "inference", "value": {"model": "claude-opus-5-5"}}],
+    )
+    assert lines == [
+        {"id": 3, "fetch": "inference"},
+        {"id": 3, "request": {"set_headers": {"X-Model": "claude-opus-5-5"}}},
+    ]
+
+
+def test_a_hook_that_reads_neither_fetches_nothing(tmp_path):
+    msg, _ = held_back_request()
+    lines = run_held_back(tmp_path, "flow.set_header('X-Host', flow.host)", msg, [])
+    assert lines == [{"id": 3, "request": {"set_headers": {"X-Host": "api.anthropic.com"}}}]
+
+
+def test_a_part_cortex_does_not_hold_is_empty(tmp_path):
+    msg, _ = held_back_request()
+    lines = run_held_back(
+        tmp_path,
+        "flow.set_header('X-Got', repr((flow.body, flow.inference)))",
+        msg,
+        [{"id": 3, "fetch": "body", "value": None}, {"id": 3, "fetch": "inference", "value": None}],
+    )
+    assert lines[-1]["request"]["set_headers"] == {"X-Got": "('', None)"}
 
 
 def strict_json(line):

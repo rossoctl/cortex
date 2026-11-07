@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -164,8 +165,11 @@ func ParseRequest(method, path string, headers http.Header, rawBody []byte, path
 	}
 
 	slog.Info("mcp-parser: request", "method", model.SanitizeLogValue(rpc.Method), "isAction", ext.IsAction)
-	slog.Debug("mcp-parser: payload", "method", model.SanitizeLogValue(rpc.Method),
-		"body", model.SanitizeLogValue(parsercommon.Truncate(string(body), parsercommon.DebugBodyMax)))
+	// Guarded: the arguments are evaluated even when Debug is off, and string(body) copies the whole body.
+	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		slog.Debug("mcp-parser: payload", "method", model.SanitizeLogValue(rpc.Method),
+			"body", model.SanitizeLogValue(parsercommon.Truncate(string(body), parsercommon.DebugBodyMax)))
+	}
 	return ext
 }
 

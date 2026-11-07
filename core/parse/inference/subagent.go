@@ -1,9 +1,9 @@
-package inferenceparser
+package inference
 
 import (
 	"strings"
 
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // billingHeaderPrefix and subagentMarker are what Claude Code writes as the FIRST LINE of its
@@ -21,7 +21,7 @@ const (
 
 // agentRole reports which caller under one client session made a request: its interactive
 // conversation, or a subagent that conversation spawned. Empty when the request says nothing,
-// which is every client that is not Claude Code — see pipeline.AgentRole for what a reader owes
+// which is every client that is not Claude Code — see model.AgentRole for what a reader owes
 // that case.
 //
 // WHY THIS IS WORTH PARSING AT ALL: a session id is not a thread. Claude Code sends a
@@ -53,7 +53,7 @@ const (
 // which agent sent a request, and is recorded as SessionEvent.Subagent (see
 // pipeline.Context.Subagent), but the CLI also sends it from an agent-team teammate's context,
 // so its presence is not a statement of this role.
-func agentRole(msgs []pipeline.InferenceMessage) pipeline.AgentRole {
+func agentRole(msgs []model.InferenceMessage) model.AgentRole {
 	for _, m := range msgs {
 		if m.Role != "system" {
 			continue
@@ -64,9 +64,9 @@ func agentRole(msgs []pipeline.InferenceMessage) pipeline.AgentRole {
 			return ""
 		}
 		if strings.Contains(line, subagentMarker) {
-			return pipeline.AgentRoleSubagent
+			return model.AgentRoleSubagent
 		}
-		return pipeline.AgentRoleMain
+		return model.AgentRoleMain
 	}
 	return ""
 }

@@ -365,3 +365,19 @@ func TestCapabilities(t *testing.T) {
 		t.Error("expected RequiresAny parsers")
 	}
 }
+
+// The listener's facts win over the view: with FactNone set for LastInference, sparc has no
+// context and skips, also when the view still holds an inference request.
+func TestMCP_SetFactNoneSkips(t *testing.T) {
+	fr := &fakeReflector{verdict: ReflectVerdict{Decision: DecisionReject}}
+	p := configured(t, "", fr) // default fail_policy: open
+	pctx := mcpPctx()          // the view holds an inference request
+	none := pipeline.SessionFact{State: pipeline.FactNone}
+	pctx.SetSessionFacts(pipeline.SessionFacts{LastIntent: none, LastInference: none})
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("no context (fail_open) should Continue, got %+v", act)
+	}
+	if fr.calls != 0 {
+		t.Errorf("reflector called %d times, want 0", fr.calls)
+	}
+}

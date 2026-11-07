@@ -120,8 +120,8 @@ func TestServedModel_UntrustedHeader(t *testing.T) {
 	if strings.ContainsRune(ext.ServedModel, '\x1b') {
 		t.Errorf("ServedModel kept an escape byte: %q", ext.ServedModel)
 	}
-	if len(ext.ServedModel) > maxServedModelLen {
-		t.Errorf("len(ServedModel) = %d, want <= %d", len(ext.ServedModel), maxServedModelLen)
+	if len(ext.ServedModel) > 256 { // inference.maxServedModelLen
+		t.Errorf("len(ServedModel) = %d, want <= %d", len(ext.ServedModel), 256)
 	}
 	if !strings.HasPrefix(ext.ServedModel, "evil") || !utf8Valid(ext.ServedModel) {
 		t.Errorf("ServedModel = %q, want a valid-UTF-8 prefix of the header", ext.ServedModel)

@@ -1,4 +1,4 @@
-package inferenceparser
+package inference
 
 import (
 	"bytes"
@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/rossoctl/cortex/core/internal/parsercommon"
-	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // --- request ---
@@ -81,11 +81,11 @@ type anthropicReqMessage struct {
 	Role          string
 	Content       string
 	ContentBytes  int
-	ToolResults   []pipeline.InferenceToolResult
-	ToolCalls     []pipeline.InferenceToolCall
+	ToolResults   []model.InferenceToolResult
+	ToolCalls     []model.InferenceToolCall
 	ToolCallNames string
 	ToolUseIDs    string
-	Thinking      pipeline.InferenceThinking
+	Thinking      model.InferenceThinking
 }
 
 func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
@@ -117,7 +117,7 @@ func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
 // or text blocks, which flattenContent already reads; its non-text blocks (an image a Read
 // returned) are dropped, as flattenContent drops them everywhere. The tool_use blocks give
 // the calls, arguments as sent. The thinking blocks are counted, not kept.
-func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceToolResult, []pipeline.InferenceToolCall, pipeline.InferenceThinking) {
+func flattenAnthropicContent(raw json.RawMessage) (string, []model.InferenceToolResult, []model.InferenceToolCall, model.InferenceThinking) {
 	var blocks []struct {
 		Type      string          `json:"type"`
 		Text      string          `json:"text"`
@@ -131,14 +131,14 @@ func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceT
 		Signature json.RawMessage `json:"signature"`
 		Data      json.RawMessage `json:"data"`
 	}
-	var thinking pipeline.InferenceThinking
+	var thinking model.InferenceThinking
 	if err := json.Unmarshal(raw, &blocks); err != nil {
 		// A plain string, null, or a shape we do not model: none of them holds a tool block.
 		return flattenContent(raw), nil, nil, thinking
 	}
 	var text strings.Builder
-	var results []pipeline.InferenceToolResult
-	var calls []pipeline.InferenceToolCall
+	var results []model.InferenceToolResult
+	var calls []model.InferenceToolCall
 	for _, b := range blocks {
 		thinking.Add(b.Type, rawStringLen(b.Thinking), rawStringLen(b.Signature), rawStringLen(b.Data))
 		switch b.Type {
@@ -150,11 +150,11 @@ func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceT
 				text.WriteString(b.Text)
 			}
 		case "tool_result":
-			results = append(results, pipeline.InferenceToolResult{
+			results = append(results, model.InferenceToolResult{
 				ToolUseID: b.ToolUseID, Content: flattenContent(b.Content), IsError: b.IsError,
 			})
 		case "tool_use":
-			calls = append(calls, pipeline.InferenceToolCall{ID: rawText(b.ID), Name: b.Name, Arguments: string(b.Input)})
+			calls = append(calls, model.InferenceToolCall{ID: rawText(b.ID), Name: b.Name, Arguments: string(b.Input)})
 		}
 	}
 	return text.String(), results, calls, thinking
@@ -164,7 +164,7 @@ func flattenAnthropicContent(raw json.RawMessage) (string, []pipeline.InferenceT
 // request body. Returns nil for an empty or non-JSON body, or one without a
 // messages array (caller treats nil as "not an inference request we can parse"
 // and continues).
-func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
+func parseAnthropicRequest(body []byte) *model.InferenceExtension {
 	if len(body) == 0 {
 		return nil
 	}
@@ -179,7 +179,7 @@ func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 		return nil
 	}
 
-	ext := &pipeline.InferenceExtension{
+	ext := &model.InferenceExtension{
 		Model:       req.Model,
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
@@ -199,13 +199,13 @@ func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 	// Surface it as a leading system message so downstream policy plugins
 	// (IBAC, etc.) see it the same way they see OpenAI's system message.
 	if sys := flattenContent(req.System); sys != "" {
-		ext.Messages = append(ext.Messages, pipeline.InferenceMessage{
+		ext.Messages = append(ext.Messages, model.InferenceMessage{
 			Role: "system", Content: sys, ContentBytes: contentBytes(req.System),
 		})
 	}
-	var history pipeline.InferenceThinking
+	var history model.InferenceThinking
 	for _, msg := range req.Messages {
-		ext.Messages = append(ext.Messages, pipeline.InferenceMessage{
+		ext.Messages = append(ext.Messages, model.InferenceMessage{
 			Role: msg.Role, Content: msg.Content, ContentBytes: msg.ContentBytes,
 			ToolCallNames: msg.ToolCallNames, ToolUseIDs: msg.ToolUseIDs,
 		})
@@ -218,7 +218,7 @@ func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 		if tool.Name == "" {
 			continue
 		}
-		ext.Tools = append(ext.Tools, pipeline.InferenceTool{
+		ext.Tools = append(ext.Tools, model.InferenceTool{
 			Name:        tool.Name,
 			Description: tool.Description,
 			Parameters:  schemaObject(tool.InputSchema),
@@ -306,14 +306,14 @@ type anthropicContentBlock struct {
 
 // parseAnthropicJSON parses a non-streaming Messages response: text blocks ->
 // completion, tool_use blocks -> tool calls, usage -> token counts.
-func parseAnthropicJSON(body []byte, ext *pipeline.InferenceExtension) {
+func parseAnthropicJSON(body []byte, ext *model.InferenceExtension) {
 	var resp anthropicResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return
 	}
 	noteBodyModel(ext, resp.Model)
 	var b strings.Builder
-	var thinking pipeline.InferenceThinking
+	var thinking model.InferenceThinking
 	for _, blk := range resp.Content {
 		thinking.Add(blk.Type, rawStringLen(blk.Thinking), rawStringLen(blk.Signature), rawStringLen(blk.Data))
 		switch blk.Type {
@@ -325,7 +325,7 @@ func parseAnthropicJSON(body []byte, ext *pipeline.InferenceExtension) {
 				b.WriteString(blk.Text)
 			}
 		case "tool_use":
-			ext.ToolCalls = append(ext.ToolCalls, pipeline.InferenceToolCall{
+			ext.ToolCalls = append(ext.ToolCalls, model.InferenceToolCall{
 				ID:        blk.ID,
 				Name:      blk.Name,
 				Arguments: string(blk.Input),
@@ -451,7 +451,7 @@ func (s *inferenceStreamState) closeAnthropicTool() {
 // text_delta blocks; tool calls accumulate from content_block_start plus
 // input_json_delta; stop_reason and the cumulative output_tokens arrive in
 // message_delta. Unknown events (ping, message_stop) are ignored.
-func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline.InferenceExtension) {
+func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *model.InferenceExtension) {
 	var ev anthropicStreamEvent
 	if err := json.Unmarshal(frame, &ev); err != nil {
 		// A malformed frame drops whatever usage it carried, so a stream can
@@ -473,7 +473,7 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 		// value, so it goes only to the log, which already carries bodies at
 		// Debug level.
 		slog.Debug("inference-parser: unrecognized Anthropic stream event type — token counts may be incomplete",
-			"type", ev.Type)
+			"type", model.SanitizeLogValue(ev.Type))
 	}
 	switch ev.Type {
 	case "message_start":
@@ -518,7 +518,7 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 		// and message are provider-generated diagnostics, not user content.
 		if ev.Error != nil {
 			slog.Warn("inference-parser: Anthropic stream returned an error event — token counts will be incomplete",
-				"errorType", ev.Error.Type, "message", ev.Error.Message)
+				"errorType", model.SanitizeLogValue(ev.Error.Type), "message", model.SanitizeLogValue(ev.Error.Message))
 		} else {
 			slog.Warn("inference-parser: Anthropic stream returned an error event with no detail — token counts will be incomplete")
 		}
@@ -582,7 +582,7 @@ func mergeAnthropicUsageMaxSeen(state *inferenceStreamState, incoming parsercomm
 // parseAnthropicSSE folds a fully-buffered Messages SSE body. Mirrors
 // parseInferenceSSE for the legacy OnResponse path; the live listener uses
 // foldAnthropicFrame via OnResponseFrame instead.
-func parseAnthropicSSE(body []byte, ext *pipeline.InferenceExtension) {
+func parseAnthropicSSE(body []byte, ext *model.InferenceExtension) {
 	markStreamedResponse(body, ext)
 	state := &inferenceStreamState{}
 	// parsercommon.NormalizeSSE for the reason given where it is defined: a BOM or CR-only
