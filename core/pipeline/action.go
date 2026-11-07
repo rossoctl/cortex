@@ -63,12 +63,6 @@ type Violation struct {
 	PluginName string
 }
 
-// StatusClientClosedRequest is nginx's 499, for a request the client abandoned
-// before it was answered. No client ever receives it — it has gone — which is
-// what makes it useful in a record: it keeps a hangup out of the 5xx series that
-// an upstream outage shows up in.
-const StatusClientClosedRequest = 499
-
 // codeToStatus maps well-known violation codes to HTTP status. Plugins
 // introducing new codes should either populate Violation.Status explicitly
 // or the host can extend this table (future: make this configurable).

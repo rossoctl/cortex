@@ -1,7 +1,10 @@
 package pipeline
 
 import (
+	"context"
 	"crypto/tls"
+	"encoding/json"
+	"time"
 
 	"github.com/rossoctl/cortex/core/model"
 )
@@ -146,3 +149,25 @@ type (
 
 func PromptContextOf(events []SessionEvent) int             { return model.PromptContextOf(events) }
 func MergePromptContext(a, b *PromptContext) *PromptContext { return model.MergePromptContext(a, b) }
+
+// snapshot.go: see core/model for the docs. The helpers that take *Context stay in
+// snapshot_context.go.
+const StatusClientClosedRequest = model.StatusClientClosedRequest
+
+func SnapshotA2A(ext *A2AExtension) *A2AExtension { return model.SnapshotA2A(ext) }
+func SnapshotMCP(ext *MCPExtension) *MCPExtension { return model.SnapshotMCP(ext) }
+func SnapshotInference(ext *InferenceExtension) *InferenceExtension {
+	return model.SnapshotInference(ext)
+}
+func SnapshotInvocations(ext *Invocations, phase InvocationPhase) *Invocations {
+	return model.SnapshotInvocations(ext, phase)
+}
+func SnapshotPlugins(custom map[string]any) map[string]json.RawMessage {
+	return model.SnapshotPlugins(custom)
+}
+func DurationSince(start time.Time) time.Duration      { return model.DurationSince(start) }
+func DurationBetween(from, to time.Time) time.Duration { return model.DurationBetween(from, to) }
+func ExchangeFailure(ctx context.Context, err error) (int, *EventError) {
+	return model.ExchangeFailure(ctx, err)
+}
+func TransportError(err error) *EventError { return model.TransportError(err) }

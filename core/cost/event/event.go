@@ -35,13 +35,13 @@ import (
 // The framework set this precedent and stated the reason. pipeline/context.go publishes
 // "body-mutation"+PluginEventSuffix from the core, which is not a plugin at all, because
 // "a switch of plugin names in a future refactor shouldn't break operators' dashboards".
-// pipeline/snapshot.go does not require the key to be a plugin name.
+// model/snapshot.go does not require the key to be a plugin name.
 //
 // Exactly ONE component may write this key per request. Extensions.Custom is a plain map,
 // so a second writer would win silently.
 //
 // A PRODUCER does not write this key directly — it writes Key+model.PluginEventSuffix
-// into pctx.Extensions.Custom, and pipeline/snapshot.go strips the suffix when building
+// into pctx.Extensions.Custom, and model/snapshot.go strips the suffix when building
 // SessionEvent.Plugins. Use settle.Publish rather than assembling the key by hand.
 const Key = "cost"
 
