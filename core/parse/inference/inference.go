@@ -19,10 +19,14 @@ import (
 // ParseRequest parses one inference request from plain values. path must be
 // query-free. It returns nil when the parser does not claim the request.
 func ParseRequest(path string, headers http.Header, body []byte) *model.InferenceExtension {
+	d := dialectFor(path)
+	if d == dialectNone {
+		return nil
+	}
 	// Decode once for every dialect: no listener decompresses a request body.
 	body = parsercommon.DecodeRequestBody(headers, body)
 	var ext *model.InferenceExtension
-	switch dialectFor(path) {
+	switch d {
 	case dialectAnthropic:
 		ext = parseAnthropicRequest(body)
 	case dialectOpenAI:
