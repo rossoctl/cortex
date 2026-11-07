@@ -96,6 +96,7 @@ func buildAgents(t *Timeline, events []pipeline.SessionEvent) {
 	agentTools := map[string]bool{}
 	seenReturn := map[string]bool{}
 	stopped := map[string]time.Time{} // agent → its latest <task-notification>: its run ended
+	var askedAt []time.Time           // per t.Tools entry: when the request that asked for it started
 	var spawns []*spawn
 
 	for _, c := range calls {
@@ -195,6 +196,7 @@ func buildAgents(t *Timeline, events []pipeline.SessionEvent) {
 			_ = json.Unmarshal([]byte(tc.Arguments), &a)
 			tool := Tool{Agent: c.agent, ID: tc.ID, Name: tc.Name, Start: end, Preview: preview(tc.Name, a), Seq: c.resp.Seq}
 			t.Tools = append(t.Tools, tool)
+			askedAt = append(askedAt, c.req.At)
 			if tc.Name == "Agent" || tc.Name == "Task" {
 				agentTools[tc.ID] = true
 				spawns = append(spawns, &spawn{by: c.agent, turnAt: c.req.At, desc: a.Description, typ: a.SubagentType})
@@ -227,9 +229,11 @@ func buildAgents(t *Timeline, events []pipeline.SessionEvent) {
 			}
 			tool.End = &at
 			tool.Error = ends[tool.Agent][tool.ID].IsError
-		} else if tool.Name == "SubagentHandback" || lastTurn[tool.Agent].After(tool.Start) || stopped[tool.Agent].After(tool.Start) {
+		} else if tool.Name == "SubagentHandback" || lastTurn[tool.Agent].After(tool.Start) || stopped[tool.Agent].After(askedAt[i]) {
 			// The agent moved on without the result, its run ended without it (a sibling of its
-			// hand-back, or a stopped agent), or the tool ends the run by design.
+			// hand-back, or a stopped agent), or the tool ends the run by design. The run can end
+			// while the asking response still streams, so compare the notification with that
+			// request's start. A resumed run's request starts after the earlier notification.
 			at := tool.Start
 			tool.End, tool.Lost = &at, true
 		}

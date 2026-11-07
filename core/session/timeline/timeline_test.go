@@ -214,6 +214,20 @@ func TestToolOfAnEndedSubagentIsLost(t *testing.T) {
 	}
 }
 
+// A tool starts when the response that asked for it ends, but Claude Code runs the hand-back
+// while that response streams. So the notification can arrive before the tool's start.
+func TestToolOfASubagentEndedMidStreamIsLost(t *testing.T) {
+	var r rec
+	r.turn("", 0, 1, []pipeline.InferenceMessage{user("go")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "s1", Name: "Agent"})
+	r.turn("b2", 1, 4, []pipeline.InferenceMessage{user("p")}, nil, "tool_use",
+		pipeline.InferenceToolCall{ID: "edit", Name: "Edit"}, pipeline.InferenceToolCall{ID: "hb", Name: "SubagentHandback"})
+	r.turn("", 4, 1, []pipeline.InferenceMessage{user("go"),
+		user("<task-notification>\n<task-id>b2</task-id>\n<status>completed</status>")}, nil, "end_turn")
+	if x := findTool(t, Build("s", r.events, time.Time{}), "edit"); !x.Lost || x.End == nil || !x.End.Equal(x.Start) {
+		t.Errorf("edit = %+v, want lost at its start", x)
+	}
+}
+
 // Only the notification ends a run. An <agent-message> arrives while the agent works, and a
 // SendMessage resume starts a new run whose tools the earlier notification does not end.
 func TestToolOfARunningSubagentStaysOpen(t *testing.T) {

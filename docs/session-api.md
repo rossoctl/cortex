@@ -239,7 +239,8 @@ tunnel, and every denial. `kind` is `llm`, `mcp`, `http` or `tunnel`, and
 
 **`end` absent means still in flight.** A span that never got an answer but
 provably stopped is `lost` and ends where it started: a turn or tool whose agent
-moved on, a `SubagentHandback` (it ends the run), or a request more than ten
+moved on, a `SubagentHandback` (it ends the run), a subagent's tool still open
+at a `<task-notification>` naming that agent, or a request more than ten
 minutes old.
 
 ## `DELETE /v1/sessions`
