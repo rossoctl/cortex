@@ -57,13 +57,18 @@ func Encode(h http.Header, a Attribution) {
 }
 
 // Decode reads an Attribution that a trusted hop set on h. ok is false when h carries none,
-// or carries one that is malformed — a source Resolve does not return, a session id the store
-// would refuse, a process that is not "<pid>.<start>", a control rune — and then the caller
-// resolves the request itself. Call it only for a hop the deployment trusts. An empty
-// Attribution{} cannot travel: Encode sets no header for it, and Decode reads that as none.
+// or carries one that is malformed — a header with more than one value, a source Resolve does
+// not return, a session id the store would refuse, a process that is not "<pid>.<start>", a
+// control rune — and then the caller resolves the request itself. Call it only for a hop the
+// deployment trusts. An empty Attribution{} cannot travel: Encode sets no header for it, and
+// Decode reads that as none.
 func Decode(h http.Header) (Attribution, bool) {
 	present := false
 	for _, k := range wireHeaders {
+		// Encode sets one value per header, so a second value is not from a trusted hop.
+		if len(h.Values(k)) > 1 {
+			return Attribution{}, false
+		}
 		present = present || h.Get(k) != ""
 	}
 	if !present {

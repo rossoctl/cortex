@@ -61,6 +61,8 @@ func TestWire_DecodeRefusesWhatItCannotTrust(t *testing.T) {
 		"control in agent":    {HeaderAgent: {"cl\x1baude"}, HeaderProc: {"1.2"}},
 		"control in named-by": {HeaderSession: {"s1"}, HeaderNamedBy: {"X-Id\r"}},
 		"control in ancestor": {HeaderSession: {"s1"}, HeaderChain: {"o\x7f"}},
+		"two sessions":        {HeaderSession: {"s1", "s2"}},
+		"two processes":       {HeaderSession: {"s1"}, HeaderProc: {"1.2", "3.4"}},
 	} {
 		if a, ok := Decode(h); ok {
 			t.Errorf("%s: decoded %+v", name, a)
