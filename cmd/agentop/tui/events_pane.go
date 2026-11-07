@@ -712,12 +712,13 @@ func (m *model) lostRef(events []pipeline.SessionEvent) time.Time {
 //
 // A tunnel open is never lost. It carries no status, and a passthrough tunnel stays open for
 // hours (6.4 measured), so age says nothing about it. A guessed pair's request is not lost
-// either: its response is on a row of its own. The Timeline judges outbound requests only, so
-// an inbound one is never lost here either.
+// either: its response is on a row of its own. Only a request with no RequestID can be in a
+// guessed pair, so such a request is never lost. The Timeline judges outbound requests only,
+// so an inbound one is never lost here either.
 func rowLost(r eventRow, partner map[int]int, i int, ref time.Time) bool {
 	e := r.event
 	if r.resp != nil || e == nil || e.Direction != pipeline.Outbound ||
-		e.Phase != pipeline.SessionRequest || e.Tunnel {
+		e.Phase != pipeline.SessionRequest || e.Tunnel || e.RequestID == "" {
 		return false
 	}
 	if _, ok := partner[i]; ok {

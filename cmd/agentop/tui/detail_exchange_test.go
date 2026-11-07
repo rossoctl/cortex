@@ -261,3 +261,21 @@ func TestDetail_PluginDetailKeepsTheFullBody(t *testing.T) {
 		t.Errorf("plugin detail viewport height %d, want %d", m.detailVp.Height, m.bodyHeight)
 	}
 }
+
+// The usage pane and the Timeline go back to the detail without a re-render. A resize while
+// one of them is up must still leave room for the detail's fixed line.
+func TestDetail_FitsAfterAResizeInAnotherPane(t *testing.T) {
+	for _, key := range []rune{'u', 'T'} {
+		m := exchangeDetail(t)
+		m.Update(keyRune(key))
+		if m.pane == paneDetail {
+			t.Fatalf("%c did not leave the detail", key)
+		}
+		m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+		press(m, tea.KeyEsc)
+		if m.pane != paneDetail {
+			t.Fatalf("esc after %c went to pane %v, want detail", key, m.pane)
+		}
+		assertFits(t, m, fmt.Sprintf("detail after %c and a resize", key))
+	}
+}

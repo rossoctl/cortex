@@ -308,6 +308,13 @@ func TestExchange_LostRequest(t *testing.T) {
 	if got := trimmedCell(t, m, 0, colStatus); got != "" {
 		t.Errorf("inbound, 11 min: STATUS = %q, want blank", got)
 	}
+	// A request with no RequestID can have its response on a guessed row of its own.
+	unstamped := req
+	unstamped.RequestID = ""
+	m = lostModel(t0.Add(11*time.Minute), unstamped)
+	if got := trimmedCell(t, m, 0, colStatus); got != "" {
+		t.Errorf("no RequestID, 11 min: STATUS = %q, want blank", got)
+	}
 }
 
 // A passthrough tunnel stays open for hours, and its open row carries no status. It is never
