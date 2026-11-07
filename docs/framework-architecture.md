@@ -12,7 +12,7 @@ Framework-level reference for AuthBridge's plugin pipeline: types, composition, 
 - Anyone debugging the plugin flow via `agentop` or the `:9094` session API.
 
 **Scope:**
-- The Go surface in `core/pipeline/` and `core/session/`.
+- The Go surface in `core/pipeline/`, `core/model/` and `core/session/`.
 - The observability contract carried by `SessionEvent` on the `:9094` API.
 - What the pipeline *does* and *does not* own at the boundary with the listener.
 

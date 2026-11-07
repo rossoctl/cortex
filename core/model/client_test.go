@@ -17,7 +17,7 @@ func TestIsKnownAgent(t *testing.T) {
 		{"claude-cli", false},
 		// Retired spellings are not canonical names either — but AgentName folds them to
 		// one before any consumer asks, so IsKnownAgent(AgentName(label)) stays true for
-		// a label recorded under the old name. Pinned by TestAgentName below.
+		// a label recorded under the old name. Pinned by TestAgentName in core/pipeline/client_test.go.
 		{"bob-shell", false},
 		{"ibm-bob", false},
 		{"codex_exec", false},

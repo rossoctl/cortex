@@ -514,7 +514,7 @@ type bucket struct {
 	// Bounded by maxLabelsPerBucket and maxLabelLen like every other label map, and here
 	// the bound is load-bearing for the same reason bySession's is: the key is derived from
 	// a REQUEST HEADER, so both its length and its cardinality are set off-host. Capped
-	// twice on the way in — pipeline.maxClientLen when the header is first retained, then
+	// twice on the way in — model.maxClientLen when the header is first retained, then
 	// truncateLabel at the addLabel call in foldInto.
 	//
 	// The value is CLIENT-ASSERTED AND TRIVIALLY SPOOFABLE, so this is a display axis and

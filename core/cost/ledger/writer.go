@@ -446,7 +446,7 @@ func (w *Writer) Record(_ string, e *model.SessionEvent) {
 		// where the live aggregator displays it as "unknown". See Row.Agent for why the two
 		// representations differ and why they still mean the same thing.
 		//
-		// Capped as well. pipeline.maxClientLen already holds the retained User-Agent to
+		// Capped as well. model.maxClientLen already holds the retained User-Agent to
 		// 128, so this is not the unbounded case Model is — but the ring truncates the same
 		// label to maxLabelLen before it becomes a byAgent key, so cutting at 96 here is
 		// what keeps group=agent spelled identically whichever half answers. Sanitised for
