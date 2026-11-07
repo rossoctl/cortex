@@ -2,7 +2,7 @@ package a2a
 
 import (
 	"bytes"
-	"io"
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -11,11 +11,18 @@ import (
 	"github.com/rossoctl/cortex/core/model"
 )
 
+// infoOnly is the production default level, Info, with no output. A text handler is
+// not used: under -race its buffer pool drops items at random and changes the
+// allocation count. See inference.infoOnly.
+type infoOnly struct{ slog.Handler }
+
+func (infoOnly) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelInfo }
+
 // With Debug off, part text must not reach the log sanitizer. See
 // inference.TestParseRequest_DebugOffDoesNotSanitizeMessages for the fixture runes.
 func TestParseRequest_DebugOffDoesNotSanitizeParts(t *testing.T) {
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	slog.SetDefault(slog.New(infoOnly{slog.DiscardHandler}))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	if !model.HasControlRunes("\u0085") || model.HasControlRunes("é") {
