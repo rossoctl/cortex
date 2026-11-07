@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/capabilities"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // Identity carries the subject identity established by whichever auth
@@ -213,6 +214,11 @@ type Context struct {
 	// SessionSource is SessionSourceHeader.
 	SessionSource SessionSource
 	SessionHeader string
+
+	// facts are the store's facts for Session, set by SetSessionFacts. factsSet tells
+	// LastIntent and LastInference to return them instead of reading Session.
+	facts    SessionFacts
+	factsSet bool
 
 	// ChainSession is the session a process above the sender in its process
 	// chain named, when the listener can see the chain: the session of the
@@ -535,6 +541,54 @@ func (c *Context) ClientInfo() *EventClient {
 func (c *Context) ResolveClient() {
 	_ = c.ClientInfo()
 	_ = c.Subagent()
+}
+
+// SetSessionFacts is for listeners: the facts that the session store returned with Session
+// (session.Store.ViewFacts). After this call, LastIntent and LastInference return them.
+func (c *Context) SetSessionFacts(f SessionFacts) {
+	c.facts, c.factsSet = f, true
+}
+
+// LastIntent is the newest user intent (model.IsIntent) of the request's session. The rules,
+// in order:
+//  1. The listener called SetSessionFacts: the fact it set.
+//  2. Session is nil: FactNoSession.
+//  3. Else from Session.Events: FactPresent with Event in Session.Events, or FactNone.
+//
+// A plugin reads this, not Session.Events.
+func (c *Context) LastIntent() SessionFact {
+	if c.factsSet {
+		return c.facts.LastIntent
+	}
+	if c.Session == nil {
+		return SessionFact{State: FactNoSession}
+	}
+	return factOf(c.Session.LastIntent())
+}
+
+// LastInference is the newest outbound inference request (model.IsInferenceRequest) of the
+// request's session, by the same rules as LastIntent.
+func (c *Context) LastInference() SessionFact {
+	if c.factsSet {
+		return c.facts.LastInference
+	}
+	if c.Session == nil {
+		return SessionFact{State: FactNoSession}
+	}
+	for i := len(c.Session.Events) - 1; i >= 0; i-- {
+		if model.IsInferenceRequest(&c.Session.Events[i]) {
+			return factOf(&c.Session.Events[i])
+		}
+	}
+	return factOf(nil)
+}
+
+// factOf is a fact from a view: FactPresent for an event, FactNone for nil.
+func factOf(e *SessionEvent) SessionFact {
+	if e == nil {
+		return SessionFact{State: FactNone}
+	}
+	return SessionFact{Event: e, State: FactPresent}
 }
 
 // PeerCertificate returns the verified peer leaf certificate from
