@@ -262,3 +262,19 @@ func (m *model) detailSearchStatus() string {
 	}
 	return fmt.Sprintf("[/%s details: no match in %d rows]", q, s.total)
 }
+
+// detailsBoxWidth is the room the box takes beside the events pane's prompt.
+const detailsBoxWidth = len("   [ ] details  (tab)")
+
+// searchPromptView is the open prompt, with the details box beside it on the events pane.
+func (m *model) searchPromptView() string {
+	v := m.searchInput.View()
+	if m.searchPane != paneEvents {
+		return v
+	}
+	box := "[ ] details"
+	if m.searchDetails {
+		box = "[x] details"
+	}
+	return v + "   " + box + "  (tab)"
+}

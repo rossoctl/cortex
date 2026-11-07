@@ -27,6 +27,10 @@ import (
 // (targetHelp). The events pane's and message detail's are about one session, so opening
 // another session's drops both (see the drill-in in keys.go); message detail keeps its query
 // from one message to the next, so the operator can look for one string message by message.
+//
+// The events pane's `details` box (Tab in the prompt) keeps this rule one level down: a row
+// matches when its detail view shows the query. Those matches are not drawn in the table, so
+// they are found one at a time, by Enter, n and N. See search_details.go.
 
 // targetHelp is the help overlay's search, kept beside the panes'. Outside 0..lastPaneID, as
 // paneNone is, so nothing that walks the panes takes it for one.
@@ -154,6 +158,16 @@ func (m *model) searchLayout() {
 func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 	t := m.searchPane
 	switch msg.String() {
+	case "tab":
+		// The events pane's details box. Tab types nothing, so the prompt can take it. With the
+		// box on, typing does not move the cursor, so it goes back to where `/` was pressed.
+		if t == paneEvents {
+			m.searchDetails = !m.searchDetails
+			if s := m.surface(t); s != nil {
+				s.restore(m.searchOrigin)
+			}
+		}
+		return nil
 	case "enter":
 		if m.search == nil {
 			m.search = make(map[paneID]string)
@@ -163,6 +177,9 @@ func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		m.search[t] = m.searchInput.Value()
 		m.closeSearch()
+		if t == paneEvents && m.searchDetails {
+			return m.startDetailScan(true, true)
+		}
 		return nil
 	case "esc":
 		m.closeSearch()
@@ -178,6 +195,9 @@ func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 		return cmd
 	}
 	s.redraw()
+	if t == paneEvents && m.searchDetails {
+		return cmd // the details search runs on Enter, not on each key
+	}
 	if m.searchInput.Value() != "" {
 		// Counted from where `/` was pressed even when following: what streamed in since is
 		// after it, and is searched first.
@@ -191,15 +211,20 @@ func (m *model) searchKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // searchStep is n (forward) and N on target t: the next match past where it is, wrapping.
-// Nothing happens with no match, which includes having no search.
-func (m *model) searchStep(t paneID, forward bool) {
+// Nothing happens with no match, which includes having no search. With the events pane's
+// details box on, it starts a details scan instead.
+func (m *model) searchStep(t paneID, forward bool) tea.Cmd {
+	if t == paneEvents && m.searchDetails && m.search[t] != "" {
+		return m.startDetailScan(forward, false)
+	}
 	s := m.surface(t)
 	if s == nil {
-		return
+		return nil
 	}
 	if i, ok := nextMatch(s.matchLines(), s.spot().row, forward, false); ok {
 		s.reveal(i)
 	}
+	return nil
 }
 
 // nextMatch is the first of matches (ascending rows) after from going forward, or before it going

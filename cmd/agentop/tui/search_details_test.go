@@ -356,3 +356,159 @@ func TestDetailScan_RowsShrinkDuringScan(t *testing.T) {
 		t.Errorf("cursor = %d, want 1", c)
 	}
 }
+
+// keysModel is scanModel's pane with the search prompt production builds, so keys reach it.
+func keysModel(t *testing.T, n int, hits ...int) (*model, *atomic.Int32) {
+	t.Helper()
+	resetSettingsForTest(t)
+	m, fetches := scanModel(t, n, nil, hits...)
+	m.searchInput = newSearchInput()
+	m.width, m.height = 200, 40
+	m.eventColumns = defaultColumnSelection()
+	m.search = nil
+	m.searchDetails = false
+	m.layout()
+	m.rebuildEventsTable()
+	return m, fetches
+}
+
+// runAll runs a command and every command its messages lead to, through Update.
+func runAll(m *model, cmd tea.Cmd) {
+	for i := 0; cmd != nil && i < 10_000; i++ {
+		_, cmd = m.Update(cmd())
+	}
+}
+
+func TestDetailSearch_TabTogglesTheBoxOnlyOnEvents(t *testing.T) {
+	m, _ := keysModel(t, 3)
+	typeKeys(m, "/")
+	press(m, tea.KeyTab)
+	if !m.searchDetails {
+		t.Fatal("Tab on the events prompt did not turn the box on")
+	}
+	if v := stripANSI(m.searchPromptView()); !strings.Contains(v, "[x] details  (tab)") {
+		t.Errorf("prompt = %q, want the box on", v)
+	}
+	press(m, tea.KeyTab)
+	if m.searchDetails {
+		t.Error("a second Tab did not turn the box off")
+	}
+
+	press(m, tea.KeyEsc)
+	// The prompt open on another pane: Tab there changes nothing.
+	m.pane, m.searching, m.searchPane = paneSessions, true, paneSessions
+	press(m, tea.KeyTab)
+	if m.searchDetails {
+		t.Error("Tab on the sessions prompt turned the events box on")
+	}
+	if v := stripANSI(m.searchPromptView()); strings.Contains(v, "details") {
+		t.Errorf("prompt = %q, want no box off the events pane", v)
+	}
+}
+
+// With the box on, typing does not move the cursor. Enter runs the scan from the row where
+// `/` was pressed, and n finds the next match.
+func TestDetailSearch_EnterAndN(t *testing.T) {
+	m, _ := keysModel(t, 10, 2, 6)
+	setCursorVisible(&m.eventsTbl, 1)
+	typeKeys(m, "/")
+	press(m, tea.KeyTab)
+	typeKeys(m, "needle")
+	if c := m.eventsTbl.Cursor(); c != 1 {
+		t.Errorf("typing moved the cursor to %d, want 1", c)
+	}
+	if st := m.searchStatus(paneEvents); st != "[/needle details: Enter to search]" {
+		t.Errorf("status while typing = %q", st)
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	runAll(m, cmd)
+	if c := m.eventsTbl.Cursor(); c != 2 {
+		t.Fatalf("Enter landed on %d, want 2", c)
+	}
+	if st := m.searchStatus(paneEvents); st != "[/needle details: match]" {
+		t.Errorf("status after Enter = %q", st)
+	}
+
+	_, cmd = m.Update(keyRune('n'))
+	runAll(m, cmd)
+	if c := m.eventsTbl.Cursor(); c != 6 {
+		t.Errorf("n landed on %d, want 6", c)
+	}
+	_, cmd = m.Update(keyRune('N'))
+	runAll(m, cmd)
+	if c := m.eventsTbl.Cursor(); c != 2 {
+		t.Errorf("N landed on %d, want 2", c)
+	}
+}
+
+// Esc during a scan stops it and puts the cursor back. It does not leave the pane.
+func TestDetailSearch_EscStopsTheScan(t *testing.T) {
+	m, _ := keysModel(t, 10, 8)
+	setCursorVisible(&m.eventsTbl, 1)
+	typeKeys(m, "/")
+	press(m, tea.KeyTab)
+	typeKeys(m, "needle")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.detailScanRunning() {
+		t.Fatal("Enter started no scan")
+	}
+	pending := cmd()
+
+	press(m, tea.KeyEsc)
+	if m.pane != paneEvents {
+		t.Errorf("Esc during a scan left the pane for %v", m.pane)
+	}
+	if m.detailScan != nil {
+		t.Error("Esc did not stop the scan")
+	}
+	m.Update(pending)
+	if c := m.eventsTbl.Cursor(); c != 1 {
+		t.Errorf("cursor = %d, want 1", c)
+	}
+}
+
+// Opening a row while the box is on gives the detail search the same query, so the match
+// is highlighted.
+func TestDetailSearch_OpeningARowCarriesTheQuery(t *testing.T) {
+	m, _ := keysModel(t, 5, 3)
+	m.search = map[paneID]string{paneEvents: "needle"}
+	m.searchDetails = true
+	runAll(m, m.startDetailScan(true, true))
+
+	press(m, tea.KeyEnter)
+	if m.pane != paneDetail {
+		t.Fatalf("pane = %v, want detail", m.pane)
+	}
+	if q := m.search[paneDetail]; q != "needle" {
+		t.Errorf("detail query = %q, want needle", q)
+	}
+}
+
+// With the box off, n uses the table's matches, as before. No scan starts.
+func TestDetailSearch_BoxOffKeepsTheTableSearch(t *testing.T) {
+	m, fetches := keysModel(t, 5)
+	typeKeys(m, "/e3")
+	press(m, tea.KeyEnter)
+	_, cmd := m.Update(keyRune('n'))
+	runAll(m, cmd)
+	if m.detailScan != nil || fetches.Load() != 0 {
+		t.Errorf("box off: scan = %+v, fetches = %d, want neither", m.detailScan, fetches.Load())
+	}
+}
+
+func TestDetailSearch_ResetClearsEverything(t *testing.T) {
+	m, _ := keysModel(t, 5, 3)
+	m.search = map[paneID]string{paneEvents: "needle"}
+	m.searchDetails = true
+	cmd := m.startDetailScan(true, true)
+
+	m.resetDetailSearch()
+	if m.searchDetails || m.detailScan != nil || m.detailChecked != nil || m.detailCheckedQ != "" {
+		t.Errorf("after reset: box=%v scan=%+v checked=%v q=%q", m.searchDetails, m.detailScan, m.detailChecked, m.detailCheckedQ)
+	}
+	runAll(m, cmd)
+	if m.detailScan != nil {
+		t.Error("a reply from before the reset started the scan again")
+	}
+}

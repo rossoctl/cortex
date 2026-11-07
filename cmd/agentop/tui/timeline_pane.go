@@ -480,6 +480,7 @@ func (m *model) openEventsAtSeq(session string, seq uint64) tea.Cmd {
 		m.selectedEventKey = eventKey{}
 		delete(m.search, paneEvents)
 		delete(m.search, paneDetail)
+		m.resetDetailSearch()
 	}
 	m.selectedSess = session
 	m.pane = paneEvents

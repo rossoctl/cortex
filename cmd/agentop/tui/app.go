@@ -1163,6 +1163,7 @@ func (m *model) backToPodsPane() {
 			delete(m.search, t)
 		}
 	}
+	m.resetDetailSearch()
 	m.searching = false
 	m.searchInput.SetValue("")
 	// The prompt's line comes off the height budget while it is open, so dropping the flag
@@ -2684,7 +2685,7 @@ func (m *model) paneView() string {
 	}
 	header := styleTitle.Render(title)
 	if m.searching && m.searchPane != targetHelp {
-		body = m.searchInput.View() + "\n" + body
+		body = m.searchPromptView() + "\n" + body
 	}
 	// A row slice rather than a fixed JoinVertical, so the strip's row can be absent
 	// without needing a second call site. It sits directly under the title because that
