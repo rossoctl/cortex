@@ -2,6 +2,7 @@ package inferenceparser
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
@@ -9,11 +10,18 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
+// infoOnly is the production default level, Info, with no output. Debug is off, Info
+// is on, so a guard on the wrong level fails the test. A text handler is not used:
+// under -race its buffer pool drops items at random and changes the allocation count.
+type infoOnly struct{ slog.Handler }
+
+func (infoOnly) Enabled(_ context.Context, l slog.Level) bool { return l >= slog.LevelInfo }
+
 // With Debug off, the completion must not reach the log sanitizer. See
 // inference.TestParseRequest_DebugOffDoesNotSanitizeMessages for the fixture runes.
 func TestLogInferenceFinalized_DebugOffDoesNotSanitizeCompletion(t *testing.T) {
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.DiscardHandler))
+	slog.SetDefault(slog.New(infoOnly{slog.DiscardHandler}))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	allocs := func(completion string) float64 {
