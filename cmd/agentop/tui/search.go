@@ -228,6 +228,9 @@ func nextMatch(matches []int, from int, forward, inclusive bool) (int, bool) {
 // are when it is on none, or that there are none. Live while the prompt is open, so a query
 // that matches nothing says so as it is typed. Empty without a search.
 func (m *model) searchStatus(t paneID) string {
+	if t == paneEvents && m.searchDetails {
+		return m.detailSearchStatus()
+	}
 	s, q := m.surface(t), m.searchQuery(t)
 	if s == nil || q == "" {
 		return ""
