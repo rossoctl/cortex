@@ -543,25 +543,25 @@ func (c *Context) ResolveClient() {
 	_ = c.Subagent()
 }
 
-// SetSessionFacts is for listeners: the facts that the session store returned with Session
-// (session.Store.ViewFacts). After this call, LastIntent and LastInference return them.
+// SetSessionFacts is for listeners: pass what session.Store.ViewFacts returned. A zero
+// SessionFacts reads as FactNoSession.
 func (c *Context) SetSessionFacts(f SessionFacts) {
 	c.facts, c.factsSet = f, true
 }
 
 // LastIntent is the newest user intent (model.IsIntent) of the request's session. The rules,
 // in order:
-//  1. The listener called SetSessionFacts: the fact it set.
-//  2. Session is nil: FactNoSession.
+//  1. Session is nil: FactNoSession, also when the listener set facts.
+//  2. The listener called SetSessionFacts: the fact it set.
 //  3. Else from Session.Events: FactPresent with Event in Session.Events, or FactNone.
 //
 // A plugin reads this, not Session.Events.
 func (c *Context) LastIntent() SessionFact {
-	if c.factsSet {
-		return c.facts.LastIntent
-	}
 	if c.Session == nil {
 		return SessionFact{State: FactNoSession}
+	}
+	if c.factsSet {
+		return c.facts.LastIntent
 	}
 	return factOf(c.Session.LastIntent())
 }
@@ -569,11 +569,11 @@ func (c *Context) LastIntent() SessionFact {
 // LastInference is the newest outbound inference request (model.IsInferenceRequest) of the
 // request's session, by the same rules as LastIntent.
 func (c *Context) LastInference() SessionFact {
-	if c.factsSet {
-		return c.facts.LastInference
-	}
 	if c.Session == nil {
 		return SessionFact{State: FactNoSession}
+	}
+	if c.factsSet {
+		return c.facts.LastInference
 	}
 	for i := len(c.Session.Events) - 1; i >= 0; i-- {
 		if model.IsInferenceRequest(&c.Session.Events[i]) {

@@ -8,7 +8,7 @@ func TestContext_SessionFacts(t *testing.T) {
 	inferEv := SessionEvent{Seq: 2, Direction: Outbound, Phase: SessionRequest, Inference: &InferenceExtension{Model: "m"}}
 	other := SessionEvent{Seq: 3, Direction: Outbound, Phase: SessionResponse, Inference: &InferenceExtension{}}
 
-	t.Run("1: the facts the listener set win", func(t *testing.T) {
+	t.Run("2: the facts the listener set win", func(t *testing.T) {
 		set := SessionFacts{LastIntent: SessionFact{State: FactNone}, LastInference: SessionFact{Event: &inferEv, State: FactPresent}}
 		c := &Context{Session: &SessionView{ID: "s", Events: []SessionEvent{intentEv}}}
 		c.SetSessionFacts(set)
@@ -20,8 +20,19 @@ func TestContext_SessionFacts(t *testing.T) {
 		}
 	})
 
-	t.Run("2: no session", func(t *testing.T) {
+	t.Run("1: no session", func(t *testing.T) {
 		c := &Context{}
+		if got := c.LastIntent(); got != (SessionFact{State: FactNoSession}) {
+			t.Errorf("LastIntent = %+v, want FactNoSession", got)
+		}
+		if got := c.LastInference(); got != (SessionFact{State: FactNoSession}) {
+			t.Errorf("LastInference = %+v, want FactNoSession", got)
+		}
+	})
+
+	t.Run("1: facts set, Session nil", func(t *testing.T) {
+		c := &Context{}
+		c.SetSessionFacts(SessionFacts{LastIntent: SessionFact{State: FactNone}, LastInference: SessionFact{State: FactNone}})
 		if got := c.LastIntent(); got != (SessionFact{State: FactNoSession}) {
 			t.Errorf("LastIntent = %+v, want FactNoSession", got)
 		}
