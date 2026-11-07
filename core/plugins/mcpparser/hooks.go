@@ -6,29 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"strings"
 
 	"github.com/rossoctl/cortex/core/bypass"
+	"github.com/rossoctl/cortex/core/internal/parsercommon"
+	"github.com/rossoctl/cortex/core/parse/mcp"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
-	"github.com/rossoctl/cortex/core/plugins/internal/parsercommon"
-)
-
-// Synthetic method names emitted on body-less MCP transport-layer
-// requests where there's no JSON-RPC method on the wire to report.
-//
-// The "$" prefix is non-standard — neither MCP nor JSON-RPC 2.0
-// formally reserves it (JSON-RPC 2.0 §6 only reserves "rpc.*").
-// We chose it because no current MCP spec method uses "$" and
-// because it's visually distinct from real category/action method
-// names; operators reading agentop can tell at a glance that these
-// aren't methods that appeared in the request body. If a future MCP
-// revision starts using "$" prefixes, switch this scheme to a less
-// likely sentinel (e.g. "_transport/stream") at that time.
-const (
-	syntheticTransportStream    = "$transport/stream"
-	syntheticTransportTerminate = "$transport/terminate"
 )
 
 // mcpConfig is the plugin's local config schema. The MCP-endpoint
@@ -116,149 +99,12 @@ func (p *MCPParser) Configure(raw json.RawMessage) error {
 	return nil
 }
 
-// isMCPAction reports whether a JSON-RPC method name names a user-
-// meaningful side-effect operation that guardrails should judge.
-// The list is small and grows only when MCP introduces a new method
-// that carries user intent on the wire. Everything not in this list
-// — protocol setup, capability discovery, subscription management,
-// notifications, etc. — is treated as protocol mechanics with
-// IsAction=false (the zero value).
-//
-// Aligned with MCP spec revision 2025-03-26 (Streamable HTTP). When
-// MCP adds a new action-shaped method (a hypothetical
-// "tools/execute_remote", a "prompts/render_with_data", etc.), update
-// this list. The audit anchor is the spec-revision string so future
-// maintainers have a date to compare against rather than re-deriving
-// the action set from scratch.
-func isMCPAction(method string) bool {
-	switch method {
-	case "tools/call", "prompts/get", "resources/read":
-		return true
-	}
-	return false
-}
-
-// isMCPMethod reports whether a JSON-RPC method name belongs to the MCP
-// protocol namespace (spec revision 2025-06-18, Streamable HTTP). MCP
-// methods are either the bare handshake verbs initialize/ping or are
-// slash-namespaced under notifications/, tools/, resources/, prompts/,
-// completion/, logging/, sampling/, roots/, and elicitation/. An empty
-// method (non-JSON-RPC body) matches nothing and is declined. Gating on
-// the namespace is what distinguishes MCP from A2A traffic, which also
-// rides JSON-RPC 2.0 but under message/, tasks/, and agent/. When a
-// future MCP revision adds a top-level namespace, extend this set (the
-// spec-revision string above is the audit anchor).
-func isMCPMethod(method string) bool {
-	switch method {
-	case "initialize", "ping":
-		return true
-	}
-	return strings.HasPrefix(method, "notifications/") ||
-		strings.HasPrefix(method, "tools/") ||
-		strings.HasPrefix(method, "resources/") ||
-		strings.HasPrefix(method, "prompts/") ||
-		strings.HasPrefix(method, "completion/") ||
-		strings.HasPrefix(method, "logging/") ||
-		strings.HasPrefix(method, "sampling/") ||
-		strings.HasPrefix(method, "roots/") ||
-		strings.HasPrefix(method, "elicitation/")
-}
-
 func (p *MCPParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
-	if ext := parseMCPRequest(pctx.Method, pctx.Path, pctx.Headers, pctx.Body, p.paths); ext != nil {
+	if ext := mcp.ParseRequest(pctx.Method, pctx.Path, pctx.Headers, pctx.Body, p.paths); ext != nil {
 		pctx.Extensions.MCP = ext
 		pctx.Observe("matched_" + ext.Method)
 	}
 	return pipeline.Action{Type: pipeline.Continue}
-}
-
-// parseMCPRequest parses one MCP request from plain values. It returns nil
-// when the parser does not claim the request. paths is the matcher of the
-// MCP endpoint paths for body-less requests. A nil paths matches no path.
-func parseMCPRequest(method, path string, headers http.Header, rawBody []byte, paths *bypass.Matcher) *pipeline.MCPExtension {
-	// Parse the bytes as sent after any zstd Content-Encoding, as
-	// inference-parser does, so a compressed call is claimed rather than
-	// passed through unparsed.
-	body := parsercommon.DecodeRequestBody(headers, rawBody)
-	// Body-less transport-layer detection. Scoped to the configured
-	// MCP-endpoint paths because there's no protocol payload to
-	// confirm; without the path narrow, every body-less GET in the
-	// cluster would risk being mis-classified as an MCP SSE channel.
-	if len(body) == 0 {
-		if paths != nil && paths.Match(path) {
-			switch {
-			case method == "DELETE" && headers.Get("Mcp-Session-Id") != "":
-				// MCP Streamable HTTP session termination per spec —
-				// the Mcp-Session-Id header is set by the MCP client
-				// SDK, not user input, so it's a precise distinguisher
-				// from a real "DELETE /api/users/42" action call.
-				slog.Info("mcp-parser: session terminate", "path", pipeline.SanitizeLogValue(path))
-				return &pipeline.MCPExtension{
-					Method: syntheticTransportTerminate,
-					// IsAction defaults to false — protocol mechanics.
-				}
-
-			case method == "GET":
-				// MCP Streamable HTTP server-to-client SSE channel-open.
-				// Heuristic recognition: any body-less GET on a
-				// configured MCP path. If the request turns out not to
-				// be MCP, the worst-case effect is that guardrails
-				// downstream see a "transport/stream" extension and skip
-				// it — same effect as the pre-classification behavior
-				// of letting body-less GETs through.
-				slog.Info("mcp-parser: transport stream", "path", pipeline.SanitizeLogValue(path))
-				return &pipeline.MCPExtension{
-					Method: syntheticTransportStream,
-					// IsAction defaults to false — protocol mechanics.
-				}
-			}
-		}
-		// Empty body, no MCP-shaped transport pattern matched. Don't
-		// attach an extension — the parser doesn't claim this request.
-		// Operators infer "mcp-parser exists in this pipeline" from
-		// config, not per-event rows.
-		slog.Debug("mcp-parser: no body, skipping")
-		return nil
-	}
-
-	// A top-level non-object body (array, string, number, null) is not
-	// JSON-RPC; peek the first byte so it takes the calm skip path below
-	// rather than logging as malformed.
-	trimmed := bytes.TrimLeft(body, " \t\r\n")
-	isObject := len(trimmed) > 0 && trimmed[0] == '{'
-
-	var rpc parsercommon.JSONRPCRequest
-	if isObject {
-		if err := json.Unmarshal(body, &rpc); err != nil {
-			slog.Debug("mcp-parser: body is not valid JSON-RPC", "error", err, "bodyLen", len(body), "path", pipeline.SanitizeLogValue(path))
-			return nil
-		}
-	}
-	// Claim only MCP-namespace methods. Both MCP and A2A ride JSON-RPC 2.0
-	// over HTTP, so "the method is non-empty" cannot tell them apart — the
-	// method namespace is the only in-body signal that does. Gating here
-	// keeps mcp-parser from attaching an MCPExtension to A2A traffic
-	// (message/send, tasks/get, agent/*, ...) or to a non-JSON-RPC body
-	// such as an inference /v1/messages call (which unmarshals into
-	// JSONRPCRequest with an empty Method) — which would otherwise show a
-	// phantom "mcp: {}" on every such event. a2a-parser has the mirror
-	// guard for its own namespace.
-	if !isObject || !isMCPMethod(rpc.Method) {
-		slog.Debug("mcp-parser: not an MCP-namespace method, skipping", "method", pipeline.SanitizeLogValue(rpc.Method),
-			"bodyLen", len(body), "path", pipeline.SanitizeLogValue(path))
-		return nil
-	}
-
-	ext := &pipeline.MCPExtension{
-		Method:   rpc.Method,
-		RPCID:    rpc.ID,
-		Params:   rpc.Params,
-		IsAction: isMCPAction(rpc.Method),
-	}
-
-	slog.Info("mcp-parser: request", "method", pipeline.SanitizeLogValue(rpc.Method), "isAction", ext.IsAction)
-	slog.Debug("mcp-parser: payload", "method", rpc.Method, "body", parsercommon.Truncate(string(body), parsercommon.DebugBodyMax))
-	return ext
 }
 
 // recordEmptyResponse records the terminal invocation for a response that
@@ -319,14 +165,13 @@ func (p *MCPParser) OnResponse(_ context.Context, pctx *pipeline.Context) pipeli
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
-	rpc, ok := parseMCPResponse(pctx.ResponseBody)
-	if !ok {
+	if !mcp.ParseResponse(pctx.ResponseBody, pctx.Extensions.MCP) {
 		slog.Debug("mcp-parser: response is not valid JSON-RPC or SSE", "bodyLen", len(pctx.ResponseBody))
 		pctx.Skip("unparseable_response")
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
-	applyMCPResponseRPC(pctx, rpc)
+	recordResponse(pctx)
 	slog.Debug("mcp-parser: response detail", "method", pctx.Extensions.MCP.Method, "body", parsercommon.Truncate(string(pctx.ResponseBody), parsercommon.DebugBodyMax))
 	return pipeline.Action{Type: pipeline.Continue}
 }
@@ -338,7 +183,7 @@ func (p *MCPParser) OnResponse(_ context.Context, pctx *pipeline.Context) pipeli
 //
 // One response per request: JSON-RPC 2.0 gives a request one response,
 // with a result or an error, not both. The first frame that carries a
-// response wins, as in the buffered path (parseMCPResponse). The parser
+// response wins, as in the buffered path (mcp.ParseResponse). The parser
 // ignores a later response frame, so Result and Err are never both set.
 func (p *MCPParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, frame []byte, last bool) pipeline.Action {
 	// Stay silent when the request side never participated.
@@ -369,11 +214,10 @@ func (p *MCPParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 	// WHOLE response body as a single last=true frame — and for a Streamable
 	// HTTP server that body is a raw `data: {...}` SSE blob. A bare
 	// json.Unmarshal fails on that blob and silently drops the result (the
-	// tools/list-response-not-recorded bug). parseMCPResponse tries a direct
+	// tools/list-response-not-recorded bug). mcp.ParseResponse tries a direct
 	// decode first (clean frame), then scans `data:` lines (raw SSE blob), so
 	// both shapes record correctly.
-	rpc, ok := parseMCPResponse(frame)
-	if !ok {
+	if !mcp.ParseResponse(frame, pctx.Extensions.MCP) {
 		// Notifications, heartbeats, malformed frames, or other shapes with
 		// no JSON-RPC result/error envelope — nothing to record per-frame.
 		// The end-of-stream last=true call records a Skip if no envelope was
@@ -383,76 +227,26 @@ func (p *MCPParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 
-	applyMCPResponseRPC(pctx, rpc)
+	recordResponse(pctx)
 	slog.Debug("mcp-parser: streaming frame", "method", pctx.Extensions.MCP.Method, "body", parsercommon.Truncate(string(frame), parsercommon.DebugBodyMax))
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
-// applyMCPResponseRPC mutates pctx.Extensions.MCP from a parsed
-// JSON-RPC response and emits the operator-facing log + Observe row.
+// recordResponse emits the operator-facing log and Observe row for the
+// response that mcp.ParseResponse wrote into pctx.Extensions.MCP.
 // Shared by OnResponse (buffered) and OnResponseFrame (streaming) so
 // the two paths agree on what gets recorded for one envelope.
-func applyMCPResponseRPC(pctx *pipeline.Context, rpc jsonRPCResponse) {
-	if rpc.Error != nil {
-		pctx.Extensions.MCP.Err = &pipeline.MCPError{
-			Code:    rpc.Error.Code,
-			Message: rpc.Error.Message,
-			Data:    rpc.Error.Data,
-		}
-		slog.Info("mcp-parser: response error", "method", pctx.Extensions.MCP.Method, "code", rpc.Error.Code, "message", rpc.Error.Message)
+func recordResponse(pctx *pipeline.Context) {
+	if e := pctx.Extensions.MCP.Err; e != nil {
+		slog.Info("mcp-parser: response error", "method", pipeline.SanitizeLogValue(pctx.Extensions.MCP.Method),
+			"code", e.Code, "message", pipeline.SanitizeLogValue(e.Message))
 		pctx.Observe("response_error")
 		return
 	}
-	if rpc.Result != nil {
-		pctx.Extensions.MCP.Result = rpc.Result
-		slog.Info("mcp-parser: response", "method", pctx.Extensions.MCP.Method, "resultKeys", resultKeys(rpc.Result))
+	if r := pctx.Extensions.MCP.Result; r != nil {
+		slog.Info("mcp-parser: response", "method", pipeline.SanitizeLogValue(pctx.Extensions.MCP.Method), "resultKeys", resultKeys(r))
 	}
 	pctx.Observe("matched_" + pctx.Extensions.MCP.Method + "_response")
-}
-
-// parseMCPResponse handles both plain JSON-RPC responses and SSE event streams
-// (used by MCP's Streamable HTTP transport). For SSE, the first data: line
-// carrying a result or error wins. Malformed SSE data frames are logged at
-// DEBUG so a broken upstream is observable rather than silently skipped.
-func parseMCPResponse(body []byte) (jsonRPCResponse, bool) {
-	var rpc jsonRPCResponse
-	if json.Unmarshal(body, &rpc) == nil && (rpc.Result != nil || rpc.Error != nil) {
-		return rpc, true
-	}
-	// Normalized before the LF split: a leading BOM or CR-only line endings are
-	// wire-legal SSE, and a raw split reads such a body as one unparseable line —
-	// leaving the extension empty and the exchange unclassified (#1567).
-	for _, line := range bytes.Split(parsercommon.NormalizeSSE(body), []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if !bytes.HasPrefix(line, []byte("data:")) {
-			continue
-		}
-		data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-		if len(data) == 0 {
-			continue
-		}
-		var r jsonRPCResponse
-		if err := json.Unmarshal(data, &r); err != nil {
-			slog.Debug("mcp-parser: skipping malformed SSE data frame", "error", err, "data", parsercommon.Truncate(string(data), 128))
-			continue
-		}
-		if r.Result != nil || r.Error != nil {
-			return r, true
-		}
-	}
-	return jsonRPCResponse{}, false
-}
-
-type jsonRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Data    any    `json:"data"`
-}
-
-type jsonRPCResponse struct {
-	ID     any            `json:"id"`
-	Result map[string]any `json:"result"`
-	Error  *jsonRPCError  `json:"error"`
 }
 
 func resultKeys(m map[string]any) []string {

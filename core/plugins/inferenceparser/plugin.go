@@ -10,9 +10,9 @@ import (
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/settle"
+	"github.com/rossoctl/cortex/core/internal/parsercommon"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
-	"github.com/rossoctl/cortex/core/plugins/internal/parsercommon"
 )
 
 // InferenceParser parses outbound OpenAI-compatible LLM inference requests

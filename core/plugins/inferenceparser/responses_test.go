@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/rossoctl/cortex/core/internal/parsercommon"
 	"github.com/rossoctl/cortex/core/pipeline"
-	"github.com/rossoctl/cortex/core/plugins/internal/parsercommon"
 )
 
 func TestInferenceParser_ResponsesAPI_Request(t *testing.T) {

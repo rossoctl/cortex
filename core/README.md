@@ -37,6 +37,7 @@ is an Envoy ext_proc gRPC server, and `core` has 20 direct dependencies includin
 |---------|---------|
 | `pipeline/` | Plugin interface + lifecycle (`Configurable`, `Initializer`, `Shutdowner`) — see [docs/framework-architecture.md](../docs/framework-architecture.md) |
 | `model/` | Shared data types: session events, parsed requests, client labels. Imports no engine code |
+| `parse/` | Parser libraries for MCP and A2A: plain values in, `core/model` types out. Import no engine code and compute no cost. The mcp-parser and a2a-parser plugins wrap them |
 | `plugins/` | Registry + every concrete plugin, each owning its own config — see [docs/plugin-reference.md](../docs/plugin-reference.md) |
 | `listener/` | Every listener implementation: the Envoy `extproc` gRPC server, the forward/reverse/transparent HTTP proxies |
 | `config/` | YAML config with mode presets, `${ENV_VAR}` expansion, credential-file waiters, top-level validation |
