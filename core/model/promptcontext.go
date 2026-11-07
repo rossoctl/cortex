@@ -59,7 +59,7 @@ import "time"
 // AND THAT FALLBACK IS PERMANENT, not a version-skew relic to be deleted. An earlier version of
 // this comment said the fallback, PromptContextFold.msgs and messageCount could all go "once the
 // supported proxy floor publishes agentRole" — which reads the field as a proxy capability. It is
-// not one: inferenceparser.agentRole returns "" for a request with no system message at all
+// not one: core/parse/inference.agentRole returns "" for a request with no system message at all
 // (/v1/completions), for one whose first system line lacks the required billing-header prefix, and
 // on an unparseable body, so the answer depends on the CLIENT. Its own doc puts it plainly —
 // "every client that is not Claude Code". So there is no proxy version at which the unstated arm
@@ -418,7 +418,7 @@ func (f *PromptContextFold) ResetFolded() { f.n = 0 }
 // MSGS IS PUBLISHED, AND THE REASON IT WAS NOT IS FALSE. An earlier draft dropped it as the
 // FALLBACK rule's comparator, "slated for deletion once the supported proxy floor publishes
 // agentRole". Stated depends on the CLIENT, not on the proxy version:
-// inferenceparser.agentRole returns "" for a request with no system message at all
+// core/parse/inference.agentRole returns "" for a request with no system message at all
 // (/v1/completions), for one whose first system line lacks the required billing-header prefix,
 // and on an unparseable body — "every client that is not Claude Code", as its own doc says. So an
 // unstated figure is a live state on a CURRENT proxy rather than a version-skew relic, the

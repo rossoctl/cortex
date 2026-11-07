@@ -595,7 +595,7 @@ func TestMergePromptContext_BothStatedFollowsAtThenTokensThenMsgs(t *testing.T) 
 //
 // The published order used to be a coarsening — no Msgs on the wire, so one arm served both classes
 // and an unstated pair resolved on At. That was defensible only while the field was believed
-// transitional, and it is not: inferenceparser.agentRole returns "" for every client that is not
+// transitional, and it is not: core/parse/inference.agentRole returns "" for every client that is not
 // Claude Code, so the unstated arm is a live path on a CURRENT proxy and the merge has to rank it
 // the way the fold does.
 func TestMergePromptContext_NeitherStatedRanksMsgsAheadOfAt(t *testing.T) {
