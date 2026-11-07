@@ -1073,7 +1073,7 @@ func requestExtFromHeaders(h http.Header) *rcpex.RequestExtension {
 // the tag-free selector pctxToCMFParts) into the rcpex content part CPEX
 // dispatches on. Splitting the decision (tag-free, unit-tested) from this
 // rcpex conversion (cgo-only) keeps the protocol→CMF mapping testable
-// without the FFI, mirroring the cmf_body.go / applyMCPBodyModFromCMF
+// without the FFI, mirroring the cmf_parts.go / applyMCPBodyModFromCMF
 // split.
 //
 // The structured part carries the tool args/result CPEX policies read and

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
@@ -71,33 +72,44 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 	// downstream policy plugin reads those as facts. So the extension stays absent — and
 	// the RESPONSE side settles the cost regardless, from the gateway's own header, which
 	// needs neither a model nor a body. See the nil-extension guard in OnResponseFrame.
-	var ext *pipeline.InferenceExtension
-	switch dialectFor(endpointPath(pctx)) {
-	case dialectAnthropic:
-		ext = parseAnthropicRequest(pctx.Body)
-	case dialectOpenAI:
-		ext = parseOpenAIRequest(pctx.Body)
-	case dialectResponses:
-		ext = parseResponsesRequest(pctx.Headers, pctx.Body)
-	default:
+	ext := parseInferenceRequest(endpointPath(pctx), pctx.Headers, pctx.Body)
+	if ext == nil {
 		return pipeline.Action{Type: pipeline.Continue}
+	}
+	pctx.Extensions.Inference = ext
+
+	pctx.Observe("matched_" + ext.Model)
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// parseInferenceRequest parses one inference request from plain values. path must be
+// query-free. It returns nil when the parser does not claim the request.
+func parseInferenceRequest(path string, headers http.Header, body []byte) *pipeline.InferenceExtension {
+	var ext *pipeline.InferenceExtension
+	switch dialectFor(path) {
+	case dialectAnthropic:
+		ext = parseAnthropicRequest(body)
+	case dialectOpenAI:
+		ext = parseOpenAIRequest(body)
+	case dialectResponses:
+		ext = parseResponsesRequest(headers, body)
+	default:
+		return nil
 	}
 	if ext == nil {
 		// "no telemetry", not "skipping": this request is still charged if the gateway
 		// says it cost something. Wording that describes the whole request as dropped would
 		// make an operator hunting for missing spend rule out the one path that still
 		// records some.
-		slog.Debug("inference-parser: no/invalid body; no request telemetry, response still priced from the gateway header", "path", pipeline.SanitizeLogValue(pctx.Path))
-		return pipeline.Action{Type: pipeline.Continue}
+		slog.Debug("inference-parser: no/invalid body; no request telemetry, response still priced from the gateway header", "path", pipeline.SanitizeLogValue(path))
+		return nil
 	}
 
 	// Which caller made this request, read off the system prompt — both dialects, one call,
 	// because by here they have converged on a parsed extension whose system message is
 	// flattened the same way. See agentRole for the marker and what empty means.
 	ext.AgentRole = agentRole(ext.Messages)
-	ext.AnthropicBeta = anthropicBeta(pctx.Headers)
-
-	pctx.Extensions.Inference = ext
+	ext.AnthropicBeta = anthropicBeta(headers)
 
 	slog.Info("inference-parser", "model", ext.Model)
 	slog.Debug("inference-parser: extracted", "model", ext.Model, "messages", len(ext.Messages), "stream", ext.Stream, "tools", len(ext.Tools))
@@ -105,8 +117,7 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 		slog.Debug("inference-parser: message", "index", i, "role", m.Role, "content", parsercommon.Truncate(m.Content, parsercommon.DebugBodyMax))
 	}
 
-	pctx.Observe("matched_" + ext.Model)
-	return pipeline.Action{Type: pipeline.Continue}
+	return ext
 }
 
 // parseOpenAIRequest builds an InferenceExtension from an OpenAI
@@ -449,6 +460,7 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 	ext := pctx.Extensions.Inference
+	d := dialectFor(endpointPath(pctx))
 
 	// WHICH ARM — and why the request's stream flag no longer decides it.
 	//
@@ -482,7 +494,7 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 		// its existence is also what tells the terminal frame below that a stream ran.
 		state := getOrCreateStreamState(pctx)
 		if len(frame) > 0 {
-			foldResponseFrame(pctx, frame, state, ext)
+			foldResponseFrame(d, frame, state, ext)
 		}
 		return pipeline.Action{Type: pipeline.Continue}
 	}
@@ -505,7 +517,7 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 		// sending a separate empty one; fold it before finalizing so that shape is not a
 		// silently dropped chunk.
 		if len(frame) > 0 {
-			foldResponseFrame(pctx, frame, state, ext)
+			foldResponseFrame(d, frame, state, ext)
 		}
 		state.finalize(ext)
 		// Empty stream with no body and no chunks — record Skip to
@@ -563,7 +575,7 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 		// must rewrite cannot also be forwarded as it arrives), and then deliver the
 		// entire stream as this one frame. Folding it as a single chunk parses nothing; it
 		// has to go through the SSE reader.
-		switch dialectFor(endpointPath(pctx)) {
+		switch d {
 		case dialectAnthropic:
 			parseAnthropicSSE(frame, ext)
 		case dialectResponses:
@@ -572,7 +584,7 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 			parseInferenceSSE(frame, ext)
 		}
 	} else {
-		switch dialectFor(endpointPath(pctx)) {
+		switch d {
 		case dialectAnthropic:
 			parseAnthropicJSON(frame, ext)
 		case dialectResponses:
@@ -631,11 +643,11 @@ func markStreamedResponse(body []byte, ext *pipeline.InferenceExtension) {
 	}
 }
 
-// foldResponseFrame folds one streamed frame into the running state via the dialect the
+// foldResponseFrame folds one streamed frame into the running state via the dialect d the
 // endpoint speaks. Extracted so the mid-stream and terminal call sites cannot drift apart
 // on which parser a path gets.
-func foldResponseFrame(pctx *pipeline.Context, frame []byte, state *inferenceStreamState, ext *pipeline.InferenceExtension) {
-	switch dialectFor(endpointPath(pctx)) {
+func foldResponseFrame(d dialect, frame []byte, state *inferenceStreamState, ext *pipeline.InferenceExtension) {
+	switch d {
 	case dialectAnthropic:
 		foldAnthropicFrame(frame, state, ext)
 	case dialectResponses:

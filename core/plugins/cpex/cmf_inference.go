@@ -16,7 +16,7 @@ import (
 // request/response envelope and replace only the message/completion text,
 // so every other field the upstream cares about (model, temperature,
 // tools, usage, …) survives untouched. Mirrors the MCP re-serializers in
-// cmf_body.go; kept tag-free so it's unit-tested under CGO_ENABLED=0.
+// cmf_mcp_mod.go; kept tag-free so it's unit-tested under CGO_ENABLED=0.
 
 // inferenceResponse is what cpex reads from a buffered inference response.
 // Response hooks run in reverse pipeline order, so cpex runs before
