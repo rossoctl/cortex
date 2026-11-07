@@ -1,14 +1,17 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+)
 
 // SessionArchiveConfig is `session.archive`: the session archive, which persists every session
 // to disk so it survives a restart and the store's own eviction (core/session/archive).
 //
-// A LAPTOP FEATURE IN THIS RELEASE. The cortex binary runs it only when started from a config
-// inside ~/.cortex, and the directory is always ~/.cortex/sessions; there is deliberately no
-// `dir`. Raw prompts on a cluster's volume need their own decision, so a cluster cannot turn
-// this on by mounting a path.
+// A LAPTOP FEATURE. The cortex binary runs it from a config inside ~/.cortex, where it writes to
+// ~/.cortex/sessions, or from any config that sets Dir. A cluster cannot start it by mounting a
+// volume over ~/.cortex: someone must write Dir. And off loopback, where DELETE /v1/sessions cannot
+// clear it, someone must also write enabled: true. See ArchiveRunsOnLocalInstall.
 //
 // Nested under `session` rather than top-level like cost_ledger, because it records through
 // the session store: the dependency is structural. And because reloader.validateReloadable
@@ -24,6 +27,15 @@ type SessionArchiveConfig struct {
 	// MaxBytes bounds the archive's size; the oldest segments go first past it. 0 means the
 	// default, 2 GiB.
 	MaxBytes int64 `yaml:"max_bytes,omitempty" json:"max_bytes,omitempty"`
+	// Dir is where the archive writes. Empty means ~/.cortex/sessions, which only a local install
+	// uses. Must be absolute, for the reason cost_ledger.dir must be. The archive owns everything
+	// under it: a clear deletes Dir/data whole, so Dir must be a directory nothing else uses.
+	Dir string `yaml:"dir,omitempty" json:"dir,omitempty"`
+}
+
+// DirSet reports whether the config names a directory for the archive. Safe on a nil receiver.
+func (c *SessionArchiveConfig) DirSet() bool {
+	return c != nil && c.Dir != ""
 }
 
 // ArchiveEnabled reports whether the archive should run, given the caller's default for an
@@ -36,8 +48,9 @@ func (c *SessionArchiveConfig) ArchiveEnabled(defaultOn bool) bool {
 }
 
 // ArchiveRunsOnLocalInstall reports whether the session archive runs for c when it is started
-// from a local install — a config inside ~/.cortex — and why. Outside one it never runs; that half
-// is the caller's to decide, since only the caller knows where the config lives.
+// from a local install — a config inside ~/.cortex — or with session.archive.dir set, and why.
+// Otherwise it never runs. That half is the caller's to decide, since only the caller knows where
+// the config lives.
 //
 // ON BY DEFAULT ONLY WHERE A CLEAR REACHES IT: bound to loopback only, the one shape whose
 // DELETE /v1/sessions answers. Elsewhere the history it wrote could only be removed by hand, so
@@ -48,12 +61,12 @@ func (c *Config) ArchiveRunsOnLocalInstall() (bool, string) {
 	case a != nil && a.Enabled != nil && !*a.Enabled:
 		return false, "session.archive.enabled is false"
 	case a != nil && a.Enabled != nil && c.Listener.BindLoopbackOnly:
-		return true, "session.archive.enabled is true on a local install"
+		return true, "session.archive.enabled is true"
 	case a != nil && a.Enabled != nil:
-		return true, "session.archive.enabled is true on a local install; DELETE /v1/sessions refuses to clear it, " +
+		return true, "session.archive.enabled is true; DELETE /v1/sessions refuses to clear it, " +
 			"because listener.bind_loopback_only is false"
 	case c.Listener.BindLoopbackOnly:
-		return true, "on by default for a local install bound to loopback only; set session.archive.enabled: false to turn it off"
+		return true, "on by default when bound to loopback only; set session.archive.enabled: false to turn it off"
 	}
 	return false, "off by default: listener.bind_loopback_only is false, so DELETE /v1/sessions could not clear " +
 		"what it wrote; set session.archive.enabled: true to opt in anyway"
@@ -72,6 +85,10 @@ func (c *SessionArchiveConfig) Validate() error {
 	}
 	if c.MaxBytes < 0 {
 		return fmt.Errorf("session.archive.max_bytes must not be negative, got %d", c.MaxBytes)
+	}
+	if c.Dir != "" && !filepath.IsAbs(c.Dir) {
+		return fmt.Errorf("session.archive.dir must be an absolute path, got %q: a relative path "+
+			"resolves against the proxy's working directory, which is not a property of the config", c.Dir)
 	}
 	return nil
 }

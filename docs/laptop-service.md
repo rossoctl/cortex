@@ -426,14 +426,34 @@ still compressed when the origin compressed it, unless the proxy decompressed it
 for a plugin; the capture is then marked `decoded`. A longer body is marked truncated, and a stream that broke off is marked
 incomplete. A WebSocket turn's response is the origin's messages for the turn, one per line.
 
-**It runs only on a local install** — a config inside `~/.cortex`, which is what `agentop
-service install` and `--local` produce. Anywhere else it is off, and `enabled: true` is refused
-with a WARN naming the reason. On a local install it is on by default only while
-`listener.bind_loopback_only` is true, as the generated config sets it, because that is the one
-setting under which [clearing it](#clearing-it) works; with the binds widened, it stays off
-unless `enabled: true` opts in, and the startup line then says a clear will be refused. There
-is deliberately no `dir` setting: raw prompts on a cluster's volume are a decision of their
-own, and a cluster should not reach it by mounting a path.
+**It runs on a local install, or where `session.archive.dir` is set.** A local install is a
+config inside `~/.cortex`, which is what `agentop service install` and `--local` produce. A
+config outside `~/.cortex` runs the archive only when it names a `dir`. Without one the archive
+is off, and `enabled: true` is refused with a WARN naming the reason. So a cluster cannot start
+it by mounting a volume over `~/.cortex`.
+
+Where it can run, it is on by default only while `listener.bind_loopback_only` is true, as the
+generated config sets it. That is the one setting under which [clearing it](#clearing-it) works.
+With the binds widened, it stays off unless `enabled: true` opts in, and the startup line
+then says a clear will be refused. A cluster cannot bind loopback only, so it needs both `dir`
+and `enabled: true`.
+
+**A second Cortex keeps its own history.** To run a Cortex beside your everyday one, for
+development or a demo, copy `~/.cortex/config.yaml` outside `~/.cortex`, change its ports, and
+give it its own directories:
+
+```yaml
+cost_ledger:
+  dir: /absolute/path/to/demo/cost
+session:
+  archive:
+    dir: /absolute/path/to/demo/sessions
+```
+
+The copy keeps `tls_bridge.ca_dir` pointing at `~/.cortex/ca`, so agents trust the same CA.
+Cortex owns everything under the archive `dir`: a clear deletes its `data/` directory whole.
+Give it an empty directory that nothing else uses. Do not give two Cortex processes the same
+archive `dir`: a clear in one deletes the files the other is writing.
 
 **How big it gets.** Each session's events are written as zstd-compressed segments that store
 a repeated message once rather than once per turn — the same saving the in-memory store makes,
@@ -443,9 +463,10 @@ first by the time they were last written:
 
 | Setting | Default | Notes |
 |---|---|---|
-| `session.archive.enabled` | on for a local install bound to loopback only | `false` always wins; `true` opts in without the loopback bind |
+| `session.archive.enabled` | on when bound to loopback only | `false` always wins; `true` opts in without the loopback bind |
 | `session.archive.retention_days` | 30 | how long a segment is kept after its last write; at most 3650 |
 | `session.archive.max_bytes` | 2 GiB | the archive's total size; past it, the oldest segments go first |
+| `session.archive.dir` | `~/.cortex/sessions` | must be an absolute path; a config outside `~/.cortex` needs it to run the archive |
 
 A full disk does not stop the proxy. The archive stops writing until its next hourly pass,
 and requests are served as before; only the history has a gap.

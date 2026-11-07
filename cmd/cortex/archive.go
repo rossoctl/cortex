@@ -18,10 +18,12 @@ import (
 // sessionArchiveDirName is the archive's directory under ~/.cortex, beside the cost ledger's.
 const sessionArchiveDirName = "sessions"
 
-// sessionArchiveDir is where the session archive lives: always ~/.cortex/sessions. There is no
-// config for it, because in this release the archive is a laptop feature — see
-// config.SessionArchiveConfig.
-func sessionArchiveDir() (string, error) {
+// sessionArchiveDir is where the session archive lives: session.archive.dir when it is set, and
+// ~/.cortex/sessions otherwise.
+func sessionArchiveDir(cfg *config.Config) (string, error) {
+	if a := cfg.Session.Archive; a.DirSet() {
+		return a.Dir, nil
+	}
 	dir, err := defaultCortexDir()
 	if err != nil {
 		return "", err
@@ -31,21 +33,23 @@ func sessionArchiveDir() (string, error) {
 
 // sessionArchiveRuns decides whether the session archive runs, and says why.
 //
-// ONLY ON A LOCAL INSTALL. A laptop is where a restart costs a user their history and where the
-// user can read it back (agentop lists it) and erase it (X, or DELETE /v1/sessions). Elsewhere it is
-// off even when asked for — raw prompts on a cluster's volume need a decision of their own, and a
-// mounted path is not one. On a local install, config.ArchiveRunsOnLocalInstall decides.
+// ON A LOCAL INSTALL, OR WHERE session.archive.dir IS SET. A laptop is where a restart costs a user
+// their history and where the user can read it back (agentop lists it) and erase it (X, or DELETE
+// /v1/sessions). A config outside ~/.cortex gets the same rule when it names a dir, for example a
+// second Cortex beside the everyday one. Without one it is off even when asked for: raw prompts on a
+// cluster's volume need a decision of their own, and a path mounted over ~/.cortex is not one.
+// Where it can run, config.ArchiveRunsOnLocalInstall decides.
 func sessionArchiveRuns(cfg *config.Config, configPath string) (bool, string) {
 	a := cfg.Session.Archive
 	explicit := a != nil && a.Enabled != nil
-	if !startedFromLocalInstall(configPath) {
+	if !startedFromLocalInstall(configPath) && !a.DirSet() {
 		switch {
 		case explicit && !*a.Enabled:
 			return false, "session.archive.enabled is false"
 		case explicit:
-			return false, "the session archive is a laptop feature in this release and runs only from a config inside ~/.cortex"
+			return false, "a config outside ~/.cortex runs the session archive only when session.archive.dir names where to write it"
 		}
-		return false, "not a local install"
+		return false, "not a local install, and session.archive.dir is not set"
 	}
 	return cfg.ArchiveRunsOnLocalInstall()
 }
@@ -69,7 +73,7 @@ func openSessionArchive(cfg *config.Config, configPath string, sessions *session
 		}
 		return nil
 	}
-	dir, err := sessionArchiveDir()
+	dir, err := sessionArchiveDir(cfg)
 	if err != nil {
 		slog.Warn("session archive disabled — cannot determine where to write it", "error", err)
 		return nil
