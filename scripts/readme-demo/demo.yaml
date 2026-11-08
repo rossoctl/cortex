@@ -139,7 +139,6 @@ acts:
           - "  GIT_SSL_CAINFO=/Users/you/.cortex/ca/bundle.crt"
           - "  REQUESTS_CA_BUNDLE=/Users/you/.cortex/ca/bundle.crt"
           - "  CURL_CA_BUNDLE=/Users/you/.cortex/ca/bundle.crt"
-          - "  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
           - "Nothing else in the file changes; a copy is kept as /Users/you/.claude/settings.json.bak"
           - ""
           - "Apply? [y/N] y"
@@ -148,7 +147,6 @@ acts:
         # reader's time to take in what will be written.
         slow:
           - 200ms
-          - 30ms
           - 30ms
           - 30ms
           - 30ms

@@ -719,7 +719,7 @@ agentop configure claude-code disable
 ```
 
 This removes only the keys Cortex added to `~/.claude/settings.json`
-(`HTTPS_PROXY`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, and the CA variables
+(`HTTPS_PROXY` and the CA variables
 `NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` / `GIT_SSL_CAINFO` / `REQUESTS_CA_BUNDLE` /
 `CURL_CA_BUNDLE`) and leaves anything else in that file alone. Claude Code goes
 straight to the API again. Restart `claude` to pick it up.
@@ -1086,7 +1086,7 @@ rm -f ~/.config/systemd/user/cortex.service
 ```
 
 Then delete the Cortex keys from the `env` block of `~/.claude/settings.json`
-yourself. There are **seven**:
+yourself. There are **six**:
 
 ```
 HTTPS_PROXY
@@ -1095,15 +1095,17 @@ SSL_CERT_FILE
 GIT_SSL_CAINFO
 REQUESTS_CA_BUNDLE
 CURL_CA_BUNDLE
-CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
 ```
 
-**Remove all seven, and do it before `rm -rf ~/.cortex`.** The middle four point at
+An older Cortex also set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which stops
+Claude Code's auto-updates. Delete it too, unless you set it yourself.
+
+**Remove all six, and do it before `rm -rf ~/.cortex`.** The middle four point at
 `~/.cortex/ca/bundle.crt`, and unlike `NODE_EXTRA_CA_CERTS` each of them *replaces*
 its tool's trust store rather than adding to it. Leave them behind with the file
 deleted and git, curl and Python fail **every** TLS call — including calls that have
 nothing to do with Cortex — with `error setting certificate verify locations`, on a
-machine you believe you have just cleaned. `agentop uninstall` removes all seven first,
+machine you believe you have just cleaned. `agentop uninstall` removes all six first,
 as `agentop configure claude-code disable` does, and `--purge` deletes `~/.cortex` last,
 and not at all if a removal before it failed; this list is only for when that binary is
 already gone.

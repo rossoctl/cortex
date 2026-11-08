@@ -491,7 +491,7 @@ func unrouteClaudeCode(env *setupEnv, settings, state string) removal {
 // will — a left HTTPS_PROXY is a port, not a path, and holds the directory back on
 // its own account not at all.
 //
-// Five of the seven managed keys point at a file under ~/.cortex, and --purge
+// Five of the six managed keys point at a file under ~/.cortex, and --purge
 // deletes that directory. Pointing at a file that is gone is quiet exactly where it
 // is worst: NODE_EXTRA_CA_CERTS with a missing file is ignored silently — every
 // request tunnels through unparsed and nothing looks wrong — while the four

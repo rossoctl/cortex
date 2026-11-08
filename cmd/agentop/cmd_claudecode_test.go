@@ -108,8 +108,8 @@ func TestClaudeCodeEnable_PreservesEverythingElse(t *testing.T) {
 	if !strings.HasSuffix(env[envCACerts], filepath.Join("ca", "ca.crt")) {
 		t.Errorf("%s = %q, want it under the config's ca_dir", envCACerts, env[envCACerts])
 	}
-	if env[envNoTelem] != "1" {
-		t.Errorf("%s = %q", envNoTelem, env[envNoTelem])
+	if _, ok := env[envNoTelem]; ok {
+		t.Errorf("enable wrote %s, which stops Claude Code's auto-updates (#1729)", envNoTelem)
 	}
 
 	// Unrelated top-level keys survive.
@@ -246,8 +246,8 @@ func TestClaudeCodeEnable_MissingSettingsFileIsCreated(t *testing.T) {
 	if code := claudeCodeEnable(settings, cfg, true, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
-	if got := readEnv(t, settings)[envNoTelem]; got != "1" {
-		t.Errorf("%s = %q", envNoTelem, got)
+	if _, ok := readEnv(t, settings)[envNoTelem]; ok {
+		t.Errorf("enable wrote %s", envNoTelem)
 	}
 }
 
@@ -513,8 +513,8 @@ func TestClaudeCodeEnable_NullSettingsRoot(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
-	if got := readEnv(t, settings)[envNoTelem]; got != "1" {
-		t.Errorf("%s = %q after a null root", envNoTelem, got)
+	if got := readEnv(t, settings)[envProxy]; got != "http://127.0.0.1:47600" {
+		t.Errorf("%s = %q after a null root", envProxy, got)
 	}
 }
 
@@ -547,8 +547,8 @@ func TestClaudeCodeDeclineUsesADistinctExitCode(t *testing.T) {
 
 // TestClaudeCodeDisable_RestoresAValueTheUserSetFirst is the ownership property.
 // A user who already had CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 lost it on
-// disable, because "1" is byte-identical to what we write and nothing recorded
-// that it predated us.
+// disable, because "1" was byte-identical to what an older enable wrote. Enable no
+// longer writes it, and the user's own value must still come through both commands.
 func TestClaudeCodeDisable_RestoresAValueTheUserSetFirst(t *testing.T) {
 	settings, cfg := fixture(t, `{"env":{
 	  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1",
@@ -584,7 +584,9 @@ func TestClaudeCodeDisable_RestoresAValueTheUserSetFirst(t *testing.T) {
 // the ownership record with our own values, or the original is lost exactly when
 // it is needed.
 func TestClaudeCodeEnable_StateRecordedOnlyOnce(t *testing.T) {
-	settings, cfg := fixture(t, `{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}`)
+	// A stale Cortex port: a value enable replaces rather than refuses.
+	const stale = "http://127.0.0.1:47699"
+	settings, cfg := fixture(t, `{"env":{"HTTPS_PROXY":"`+stale+`"}}`)
 	state := filepath.Join(t.TempDir(), "state.json")
 
 	var out, errb bytes.Buffer
@@ -597,13 +599,13 @@ func TestClaudeCodeEnable_StateRecordedOnlyOnce(t *testing.T) {
 	if err != nil || st == nil {
 		t.Fatalf("no state recorded: %v", err)
 	}
-	prior, recorded := st.Prior[envNoTelem]
-	if !recorded || prior == nil || *prior != "1" {
-		t.Errorf("prior for %s = %v, want the user's original \"1\"", envNoTelem, prior)
+	prior, recorded := st.Prior[envProxy]
+	if !recorded || prior == nil || *prior != stale {
+		t.Errorf("prior for %s = %v, want the user's original %q", envProxy, prior, stale)
 	}
 	// And the keys we added are recorded as absent-before.
-	if p, ok := st.Prior[envProxy]; !ok || p != nil {
-		t.Errorf("prior for %s = %v, want nil (absent before)", envProxy, p)
+	if p, ok := st.Prior[envCACerts]; !ok || p != nil {
+		t.Errorf("prior for %s = %v, want nil (absent before)", envCACerts, p)
 	}
 }
 

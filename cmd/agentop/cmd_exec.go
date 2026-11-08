@@ -368,12 +368,7 @@ func execEnv(statsURL string) (env map[string]string, missingBundle string, err 
 	}
 
 	out := make(map[string]string, len(want)+len(execProxyVars))
-	// Every managed key except the Claude-Code-only telemetry switch: that is a
-	// setting for one application, and exec's child is usually not that application.
 	for _, k := range managedKeys {
-		if k == envNoTelem {
-			continue
-		}
 		if v := want[k]; v != "" {
 			out[k] = v
 		}

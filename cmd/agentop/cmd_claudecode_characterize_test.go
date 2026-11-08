@@ -77,7 +77,7 @@ func bundleNote(caDir string) string {
 // lists the keys and disable names them.
 var managedInOrder = []string{
 	"HTTPS_PROXY", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "GIT_SSL_CAINFO",
-	"REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+	"REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
 }
 
 var allManaged = strings.Join(managedInOrder, ", ")
@@ -100,7 +100,6 @@ func enablePreviewOf(settings, caDir string, keys []string) string {
 		"GIT_SSL_CAINFO":      bundle,
 		"REQUESTS_CA_BUNDLE":  bundle,
 		"CURL_CA_BUNDLE":      bundle,
-		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
 	}
 	s := ""
 	if runtime.GOOS == "darwin" {
@@ -272,12 +271,13 @@ func TestCharacterize_ClaudeCodeDisable(t *testing.T) {
 		}
 	})
 	t.Run("restores a value the user had", func(t *testing.T) {
-		settings, cfg := fixture(t, `{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}`)
+		// A stale Cortex port: a value enable replaces rather than refuses.
+		settings, cfg := fixture(t, `{"env":{"HTTPS_PROXY":"http://127.0.0.1:47699"}}`)
 		state := filepath.Join(t.TempDir(), "state.json")
 		runEnable(t, settings, cfg, state, true)
 		runDisable(t, settings, state, true).check(t, 0,
 			"This will remove from "+settings+": "+allManaged+"\n\n"+
-				"\nRestored to the value(s) you had before: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\n"+
+				"\nRestored to the value(s) you had before: HTTPS_PROXY\n"+
 				"\nDisabled. Claude Code no longer routes through Cortex.\n", "")
 	})
 	t.Run("nothing to do", func(t *testing.T) {

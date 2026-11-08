@@ -24,7 +24,7 @@ func (claudeCodeStep) paths(env *setupEnv) (settings, state string) {
 
 func (s claudeCodeStep) plan(env *setupEnv) (stepPlan, *problem) {
 	p := stepPlan{label: "routed"}
-	settings, _ := s.paths(env)
+	settings, state := s.paths(env)
 	if env.configFresh {
 		// No config yet, so no planClaudeCodeEnable: the built-in config the config
 		// step will write always yields Cortex-shaped values, which makes this the
@@ -45,7 +45,7 @@ func (s claudeCodeStep) plan(env *setupEnv) (stepPlan, *problem) {
 	} else if _, err := config.Load(env.configPath()); err == nil {
 		// A config that will not load is the config step's problem to report; the
 		// run stops on it, so this plan is never applied.
-		pl, err := planClaudeCodeEnable(settings, env.configPath())
+		pl, err := planClaudeCodeEnable(settings, env.configPath(), state)
 		if err != nil {
 			lines := strings.Split(env.tildeText(err.Error()), "\n")
 			return p, &problem{reason: lines[0], fix: trimAll(lines[1:])}
@@ -85,7 +85,7 @@ func (s claudeCodeStep) already(env *setupEnv) string {
 		return ""
 	}
 	settings, state := s.paths(env)
-	pl, err := planClaudeCodeEnable(settings, env.configPath())
+	pl, err := planClaudeCodeEnable(settings, env.configPath(), state)
 	if err != nil || len(pl.changes) > 0 {
 		// Nothing a done row can act on: a refusal is plan's to report, and changes
 		// appearing after the plan mean the file moved under us, which the next run
@@ -138,7 +138,7 @@ func (s claudeCodeStep) apply(env *setupEnv, _ *checklist.Running) (string, undo
 	}, manual: "agentop configure claude-code disable"}
 	// Planned again now: the plan before consent may predate the config, and the
 	// file may have changed while the steps before this one ran.
-	pl, err := planClaudeCodeEnable(settings, env.configPath())
+	pl, err := planClaudeCodeEnable(settings, env.configPath(), state)
 	if err != nil {
 		lines := strings.Split(env.tildeText(err.Error()), "\n")
 		return "", undo{}, stepError{reason: lines[0], detail: trimAll(lines[1:])}
