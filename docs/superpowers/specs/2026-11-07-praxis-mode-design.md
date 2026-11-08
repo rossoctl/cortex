@@ -7,7 +7,7 @@ Background: #1437 (assessment, closed), #1491 (hairpin spec and W1 spike results
 
 Revision marks: **[R n]** = from the no-regressions review, **[D n]** = from the development-speed review, **[T n]** = from the throwaway review.
 
-Third revision (2026-11-07): nine findings of a validation review are fixed, marked **[V n]**. Then the PR #1717 review by clawgenti, marked **[PR n]** by its comment order.
+Third revision (2026-11-07): nine findings of a validation review are fixed, marked **[V n]**. Then the PR #1717 review by clawgenti, marked **[PR n]** by its comment order, and the delta review of those fixes, marked **[DR n]**.
 
 Second revision (2026-11-07): phase D added (Section 8). The end state is Cortex as a Praxis distribution, in the shape of praxis-ai: one Rust binary, with no Go service and no `/v1/attribute`.
 
@@ -69,7 +69,7 @@ agent ─► cortex :47600 (forward proxy)   CONNECT, TLS bridge, attribution (i
            │  no plugins. Hop (hop.go): dial the gateway over HTTP/1, inject
            │  X-Cortex-Attribution, X-Cortex-Request-Id, X-Cortex-Dest, X-Cortex-Token
            ▼
-         cortex-gateway :47605           cortex_attribution → cortex_parse → cortex_record → access_log
+         cortex-gateway :47605           cortex_attribution → cortex_observe (parse, then record) → access_log
            │                             listener has a forward_proxy block (end-state shape)
            ▼
          cortex egress listener :47606 ─► origin                    [throwaway at phase B]
@@ -145,10 +145,10 @@ V1 AND PHASE B:  cortex_record ──NDJSON──► Go cortex /v1/ingest ─►
 
 - `v` is the line format version. `schemaVersion` is the session API's (`sessionapi.SchemaVersion`). It is a top-level field, because events do not carry it. **[R 14]** Cortex refuses a line with an unknown `v` or another `schemaVersion`.
 - **Version 1 has only `op: "append"`.** `pair` and `rekey` come in the end state, when Praxis does CONNECT and they have a caller.
-- The store files the event under `session` and assigns `seq` and `sessionId`, as a listener's `Append(sid, ev)` does. Producer values for `seq` and `sessionId` are ignored.
+- The store files the event under `session` and assigns `seq` and `sessionId`, as a listener's `Append(sid, ev)` does. Ingestion also sets `At` (Failure rules, [V 4]). Producer values for `seq`, `sessionId` and `at` are ignored.
 - `session` is the **recording** session (`Attribution.RecordSession`, which can be a `pending:…` id or the `ActiveSession()` fallback). It is a field of its own, not `X-Cortex-Session`. **[R 12]**
 - The request and response rows share `requestId`. The response row names the same `session` as its request.
-- `capture` is a wire struct defined for this line (`model.RequestCapture` has no JSON tags) that maps one to one to `model.RequestCapture` and `model.ResponseCapture`. **[R 15]**
+- `capture` is a wire struct defined for this line (`model.RequestCapture` has no JSON tags) that maps to `model.RequestCapture` and `model.ResponseCapture`, plus the `dropped` flag. **[R 15]**
 - `cost.headers` holds only the cost-relevant response headers: `X-Litellm-Response-Cost`, `-Original`, `-Discount-Amount`, `-Margin-Amount`, `X-Litellm-Model-Name` (for `servedModel`) and `Content-Type`. Response rows only. **[R 16]**
 
 ### Captures
@@ -178,7 +178,7 @@ Two cases need Cortex state that Praxis does not have. Both are keyed by `reques
 - **Recording never holds up traffic.** The emitter has a bounded queue. When the queue is full or Cortex is unreachable, it drops the line and counts it.
 - **A row is never lost to its capture's size.** The producer sends a capture only for inference rows (the same rule as Cortex, Section 1 "Captures"). When a line with its capture would go over the 64 MiB line cap, the producer drops the capture, keeps the row, and counts it. It sends `"capture": {"dropped": true}` in place of the capture, and ingestion counts it (`ingest_captures_dropped_total`) and stores no capture. **[V 5] [PR 3]**
 - Cortex skips a refused line (bad JSON, unknown `v`, wrong `schemaVersion`, over the 64 MiB line cap) and counts it by reason. The connection stays open.
-- Counters: Praxis `/metrics` (`cortex_rows_emitted_total`, `cortex_rows_dropped_total`, `cortex_parse_errors_total`) and Cortex `/stats` (`ingest_lines_total`, `ingest_refused_total{reason}`).
+- Counters: Praxis `/metrics` (`cortex_rows_emitted_total`, `cortex_rows_dropped_total`, `cortex_captures_dropped_total{reason}` with reason `line_cap` or `queue_bytes`, `cortex_parse_errors_total`) and Cortex `/stats` (`ingest_lines_total`, `ingest_refused_total{reason}`, `ingest_captures_dropped_total`).
 - A request row without its response row (the gateway restarted mid-stream) shows the same way an in-flight row shows in agentop today.
 - **Restarts are not made longer.** Lines still in the emitter's queue when Cortex shuts down are lost and counted. Cortex does not wait for them. (Restarts stay quick, not graceful.) **[R 18]**
 - **Ingestion sets each row's `At` when it appends the row**, as the in-process listeners do. agentop's pager compares `At` across pages to detect a restarted session (`cmd/agentop/tui/paging.go:220`). Cortex still writes its own rows with the current time. So a producer's `at` from a few milliseconds earlier could put a row with a later seq before one with an earlier seq. Paging back would then show a false "session restarted". `ttfbMs` and `durationMs` are separate fields and keep the producer's values. **[V 4]**
@@ -213,7 +213,7 @@ Two cases need Cortex state that Praxis does not have. Both are keyed by `reques
 ### Where the code lives
 
 A new Rust workspace `praxis/` in this repository, **outside `go.work`**. The 11 Go modules, `go vet` and `go mod tidy -diff` do not change. **[D 3]**
-- `praxis/filters`: crate `cortex-praxis-filters`, with the three filters and the parser modules.
+- `praxis/filters`: crate `cortex-praxis-filters`, with two filters (`cortex_attribution`, `cortex_observe`) and two modules (`cortex_parse`, the parsers, and `cortex_record`, the row builder).
 - `praxis/server`: binary **`cortex-gateway`**. It depends on the published `praxis-proxy` crates at exactly `=0.8.0` and registers our filters with `register_filters!` (Praxis's "manual registration", `docs/filters/extensions.md`). No Praxis fork.
 - **The crate uses only a small part of the Praxis API:** `HttpFilter`, `register_filters!`, `emit_deferred_record` and filter metadata. No subrequests and no `Protocol`. This keeps the cost of a `praxis-proxy` bump low. Praxis shipped 8 pre-releases from 2026-09-20 to 2026-11-07, some with breaking Rust API changes. **[D 4]**
 - Rust tests build `HttpFilterContext` with Praxis's own test helpers, never with a struct literal, because praxis#1447 adds a field to it. **[T F10]**
@@ -223,23 +223,28 @@ The name keeps clear of `cmd/cortex-praxis`, the paused Go converter, which stay
 ### The chain, in order
 
 1. **`cortex_attribution`** (request head): checks the token, decodes `X-Cortex-Attribution`, removes the `X-Cortex-*` headers that the egress listener does not need, and sets filter metadata (Section 2). **[V 1]**
-2. **`cortex_parse`** (read-only body access):
-   - It reads the request body buffered, up to the body limit. Claude Code requests reach about 5 MiB.
-   - It reads `text/event-stream` responses in stream mode, frame by frame, so streaming latency and memory stay as in direct mode. **It enforces direct mode's per-frame cap** of 10 MB. A larger frame aborts the stream, and the row has `proxy_error` with "single SSE frame over the 10485760-byte frame cap" (`forwardproxy/stream.go:132-133`). In praxis mode Cortex's own SSE path is `streamPassthrough`, which has only the idle cut. So this cap must be in `cortex_parse`. **[PR 5]**
-   - **It also streams the known mislabeled SSE responses**, by a port of `isKnownMislabeledSSE` (`core/listener/forwardproxy/stream.go:165`): today `chatgpt.com` + `/backend-api/codex/responses`, which Codex uses over HTTPS. Without it, each Codex turn would be buffered and arrive at the end (#642). **[V 2]**
-   - It reads other responses buffered, up to direct mode's buffered cap of 10 MB (`maxBodySize`). Over the cap it does what direct mode does (`forwardproxy/server.go:1287-1304`): it answers 502, and the row has `error.kind: proxy_error` with the same message.
-   - **It decodes gzip and zstd itself, for parsing only.** The bytes on the wire do not change. The W1 spike found that praxis-ai's `token_count` misses gzip-coded JSON. This rule removes that gap without upstream ask U6.
-   - It writes the parsed request and response into filter metadata in Cortex's types (`inference`, `mcp`, `a2a`).
-3. **`cortex_record`:**
-   - It builds the request row when the request is parsed, and hands it to the emitter at once, so agentop shows it live.
-   - It builds the response row at the end of the stream: status, bytes, timing (`ttfbMs`, `durationMs`), the parsed response and the capture.
-   - **It records a stream that ends early, and a request rejected before the upstream, from `emit_deferred_record`.** Kinds:
-     - `client_canceled`: the downstream went away.
-     - `upstream_error`: the upstream went away.
-     - `proxy_error` with 413: a request over the body limit, the same row as direct mode (`core/listener/internal/bodyread/bodyread.go:80`). **[V 5]**
-     - `gateway_refused`: any other refusal by Praxis before the upstream.
-   - It reads the egress listener's `X-Cortex-Upstream-Error` response header into the row's error kind (`upstream_dns`, `upstream_tls`, `upstream_timeout`, `upstream_refused`), and removes the header. **[R 6]**
-4. **`access_log`** (Praxis built-in). **Required:** Praxis calls `emit_deferred_record` only when the chain contains `access_log` (`protocol/src/http/pingora/handler/logging_util.rs:31`), and only for the first filter that claims the record (`filter/src/pipeline/mod.rs:561`). `cortex_record` comes first, so it claims the record. Upstream ask: praxis#1228 removes this coupling. **[T F2]**
+2. **`cortex_observe`** (read-only body access): **one filter with two modules**, the parser and the row builder. In each hook it parses first, then records. **[DR 2]**
+   - **Why one filter:** Praxis runs `on_response` and the response-body hooks in **reverse** chain order (`crates/filter/src/pipeline/http.rs:282`, `:723`). Suppose a parse filter came before a record filter. The record filter would then see each response chunk before it is parsed, and response rows would have no tokens or cost. Reversing the order would move the problem to the request side.
+   - **A rule for later Rust filters** (the plugin ports of phase D): a filter that reads parsed request facts goes after `cortex_observe` in the chain. A filter that reads parsed response facts goes before it.
+   **The parser module, `cortex_parse`:**
+     - It reads the request body buffered, up to the body limit. Claude Code requests reach about 5 MiB.
+     - It reads `text/event-stream` responses in stream mode, frame by frame, so streaming latency and memory stay as in direct mode. **It enforces direct mode's per-frame cap** of 10 MB. A larger frame aborts the stream, and the row has `proxy_error` with "single SSE frame over the 10485760-byte frame cap" (`forwardproxy/stream.go:132-133`). In praxis mode Cortex's own SSE path is `streamPassthrough`, which has only the idle cut. So this cap must be in `cortex_parse`. **[PR 5]**
+     - **It also streams the known mislabeled SSE responses**, by a port of `isKnownMislabeledSSE` (`core/listener/forwardproxy/stream.go:165`): today `chatgpt.com` + `/backend-api/codex/responses`, which Codex uses over HTTPS. Without it, each Codex turn would be buffered and arrive at the end (#642). **[V 2]**
+     - It reads other responses buffered, up to direct mode's buffered cap of 10 MB (`maxBodySize`). Direct mode answers 502 over the cap, with `error.kind: proxy_error` and the message "response body over the 10485760-byte buffer limit" (`forwardproxy/server.go:1287-1304`). Praxis sends the response headers before any body hook runs, so a body hook cannot answer 502 (Praxis `docs/architecture/body-buffering.md`: an overflow is a connection abort). So:
+       - **`Content-Length` over 10 MB:** `cortex_observe` answers 502 in `on_response`, before the headers go out, and the row has `proxy_error` with direct mode's message. This is the same as direct mode.
+       - **A chunked response that goes over 10 MB:** Praxis aborts the connection. The row has `proxy_error` with the same message, but the client sees the response start and then a reset, where direct mode sends 502. This is a known difference (Section 5). **[DR 1]**
+     - **It decodes gzip and zstd itself, for parsing only.** The bytes on the wire do not change. The W1 spike found that praxis-ai's `token_count` misses gzip-coded JSON. This rule removes that gap without upstream ask U6.
+     - It writes the parsed request and response into filter metadata in Cortex's types (`inference`, `mcp`, `a2a`).
+   **The row-builder module, `cortex_record`:**
+     - It builds the request row when the request is parsed, and hands it to the emitter at once, so agentop shows it live.
+     - It builds the response row at the end of the stream: status, bytes, timing (`ttfbMs`, `durationMs`), the parsed response and the capture.
+     - **It records a stream that ends early, and a request rejected before the upstream, from `emit_deferred_record`.** Kinds:
+       - `client_canceled`: the downstream went away.
+       - `upstream_error`: the upstream went away.
+       - `proxy_error` with 413: a request over the body limit, the same row as direct mode (`core/listener/internal/bodyread/bodyread.go:80`). **[V 5]**
+       - `gateway_refused`: any other refusal by Praxis before the upstream.
+     - It reads the egress listener's `X-Cortex-Upstream-Error` response header into the row's error kind (`upstream_dns`, `upstream_tls`, `upstream_timeout`, `upstream_refused`), and removes the header. **[R 6]**
+3. **`access_log`** (Praxis built-in). **Required:** Praxis calls `emit_deferred_record` only when the chain contains `access_log` (`protocol/src/http/pingora/handler/logging_util.rs:31`), and only for the first filter that claims the record (`filter/src/pipeline/mod.rs:561`). `cortex_observe` comes first, so it claims the record. Upstream ask: praxis#1228 removes this coupling. **[T F2]**
 
 ### Row fields keep their documented meaning
 
@@ -259,7 +264,7 @@ The name keeps clear of `cmd/cortex-praxis`, the paused Go converter, which stay
 ### The emitter
 
 - One background task per process, with a bounded queue and one streaming `POST /v1/ingest` with the token.
-- **The queue is bounded by bytes, not only by lines:** at most 4096 lines and at most 256 MiB. A Claude Code request line is about 7–12 MiB, so a line limit alone could hold tens of GiB when ingestion slows down. The gateway carries all traffic and fails closed, so a gateway killed for memory would be an outage. Over either limit, the emitter drops the line and counts it. **[V 6]**
+- **The queue is bounded by bytes, not only by lines:** at most 4096 lines and at most 256 MiB. A Claude Code request line is about 7–12 MiB, so a line limit alone could hold tens of GiB when ingestion slows down. The gateway carries all traffic and fails closed, so a gateway killed for memory would be an outage. When a line would go over the byte limit, the emitter first drops that line's capture (`capture.dropped`) and keeps the row. So the rule "a row is never lost to its capture's size" holds. It drops a whole line only in two cases: over the line limit, or when the row alone still does not fit. Both are counted. **[V 6] [DR 3]**
 - It exposes the counters from Section 1 on Praxis `/metrics`.
 
 ## 4. Packaging, the mode switch and failure modes
@@ -273,7 +278,7 @@ praxis:
   egress: 127.0.0.1:47606
 ```
 
-- **With `praxis.enabled`, Cortex does not build the outbound pipeline.** It logs the plugins that it skips, at startup and at each reload. The config keeps them. So a hand edit or `agentop tools scan --write` has no effect in this mode **[R 7]**, and turning the mode off brings the plugins back unchanged. **[V 3]**
+- **With `praxis.enabled`, Cortex does not build the outbound pipeline.** It logs the plugins that it skips, at startup and at each reload. The config keeps them. So a hand edit of the plugin list has no effect in this mode, and agentop refuses `agentop tools scan --write` (Section 4, agentop) **[R 7]**. Turning the mode off brings the plugins back unchanged. **[V 3]**
 - **To turn praxis mode off:** set `praxis.enabled: false` and restart. Nothing else changes in the config.
 - `praxis.enabled` with `mtls` set is refused at startup. **[R 5]**
 - `praxis.enabled` without `listener.bind_loopback_only` is refused at startup, because the ingestion route exists only on a loopback install. Without the check, traffic would flow while every row is lost. **[V 7]**
@@ -394,7 +399,7 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
   - A Cortex cut replaces `client_canceled` with `proxy_error`.
   - A tunnel that closes before its request row arrives still gets one pair (open row + request row), and no "carried nothing" close row. **[V 8]**
   - An ingested row's `At` is the append time, so a page break between an ingested row and a Cortex row never reads as "session restarted". **[V 4]**
-- **The replay test from #1497:** an NDJSON capture through `/v1/ingest` gives the same `/v1/sessions` and `/v1/usage` as the live run.
+- **The replay test from #1497:** an NDJSON capture through `/v1/ingest` gives the same `/v1/sessions` and `/v1/usage` as the live run. The exceptions are the fields that depend on the append time: each row's `at`, and the `/v1/usage` time buckets. The test compares the events field by field without `at`, and the `/v1/usage` totals (tokens, cost, requests) without the buckets. **[DR 4]**
 - Config: with `praxis.enabled`, a config with plugins starts with no outbound pipeline and logs the skipped plugins. A reload that adds a plugin builds no pipeline. With `praxis.enabled: false` again, the same plugins run. `praxis.enabled` with `mtls`, or without `bind_loopback_only`, refuses to start.
 - The hop: a plugin cannot steer it (the W1 test `TestSpikeHairpin_OnlyTheDialTargetMoves`, rewritten), a client's `X-Cortex-*` headers never reach Praxis or an origin, and `touch` still runs.
 
@@ -405,7 +410,8 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
 - With `access_log` in the chain: a mid-body abort gives `client_canceled`, and a body-limit refusal gives 413 with `proxy_error`. Without `access_log`, the test documents that no deferred row appears (it guards the upstream coupling).
 - gzip and zstd responses parse, and the wire bytes do not change.
 - A line whose capture would go over the line cap is sent without the capture, and the row stays. **[V 5]**
-- The emitter queue drops and counts lines past 256 MiB, with a slow ingestion endpoint. **[V 6]**
+- With a slow ingestion endpoint, the emitter queue stays under 256 MiB. It drops captures first and keeps the rows (`cortex_captures_dropped_total{reason="queue_bytes"}`). It drops whole lines only over the line limit. **[V 6] [DR 3]**
+- A frame over 10 MB aborts the stream, and the row has `proxy_error` with direct mode's message. **[PR 5]**
 - `X-Cortex-Upstream-Error` becomes the row's error kind.
 
 ### End-to-end (CI, Linux, only on `praxis/**` changes and before a release)
@@ -422,9 +428,12 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
 - **A client that sends `Accept-Encoding: gzip, deflate, br`** to an origin that prefers `br` gets a parsed row (tokens, cost) and a decoded body, as in direct mode. The origin sees only `gzip`. **[PR 2]**
 - **A 30 MiB request keeps its row.** Its line would go over the cap with the capture, so the capture is dropped (`capture.dropped`). **[PR 3]**
 - **Codex's mislabeled SSE** (`chatgpt.com` + `/backend-api/codex/responses`, not `text/event-stream`) streams frame by frame through the gateway, as in direct mode. **[V 2]**
-- A 33 MiB request gets 413 with `proxy_error`, and a 12 MB buffered response gets 502 with `proxy_error`, in both modes. **[V 5]**
+- A 33 MiB request gets 413 with `proxy_error`, and a 12 MB buffered response with `Content-Length` gets 502 with `proxy_error`, in both modes. A chunked 12 MB buffered response gets a `proxy_error` row in both modes, and in praxis mode the client sees a reset instead of a 502. **[V 5] [DR 1]**
 - A Cortex restart does not restart the gateway, and a supervisor exit stops it.
-- **Direct mode against `praxis` mode** on the same mock traffic: the `/v1/sessions` events must be the same, field by field. Two exceptions: timing fields agree within 50 ms, and the `gateway_*` error kinds exist only in `praxis` mode.
+- **Direct mode against `praxis` mode** on the same mock traffic: the `/v1/sessions` events must be the same, field by field. Three exceptions:
+  - timing fields agree within 50 ms.
+  - the `gateway_*` error kinds exist only in `praxis` mode.
+  - a chunked buffered response over 10 MB ends with a reset instead of a 502 (Section 3). **[DR 1]**
 
 ### Live check (manual, before the default changes)
 
@@ -436,7 +445,7 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
 Each step is one PR and is useful when it merges. Nothing changes for a user until `praxis.enabled` is set. **[D 6]**
 
 1. **The Rust workspace and the inference parser:** `praxis/filters` with `cortex_parse` for inference, the parity gate, the schema drift test, and the path-scoped Rust CI job.
-2. **The gateway and ingestion together:** `cortex_record`, `cortex_attribution`, the emitter, the `cortex-gateway` binary, and `/v1/ingest` with its replay test. The endpoint lands with its producer.
+2. **The gateway and ingestion together:** `cortex_observe` (the parser wired to `cortex_record`), `cortex_attribution`, the emitter, the `cortex-gateway` binary, and `/v1/ingest` with its replay test. The endpoint lands with its producer.
 3. **Supervision** (`cmd/cortex`): two siblings, the token file, `gateway.yaml`, the probe, no orphans, the port-conflict names.
 4. **The hop and the egress listener** (`core/listener/forwardproxy`): `hop.go`, the four branch points, the joins, `gateway_unavailable`, the config checks (startup and reload), and the end-to-end tests.
 5. **agentop and install:** the `praxis.enabled` contract field, the command refusals, `install.sh --praxis`, setup, update and uninstall.
