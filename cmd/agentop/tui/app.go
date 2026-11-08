@@ -1368,8 +1368,12 @@ func (m *model) snapshotCmd(id string) tea.Cmd {
 // Decided HERE, around the dispatch, rather than at the thirty-odd places that assign
 // m.pane, so a pane change added later cannot forget it.
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	before := m.pane
+	before, reserved := m.pane, m.spendDrawerReservesRows()
 	next, cmd := m.update(msg)
+	if m.spendDrawerReservesRows() != reserved {
+		// The drawer's rows depend on the pane now, and no other layout() call sees every pane change.
+		m.layout()
+	}
 	if m.pane != before {
 		if before == paneEvents && m.detailSearching() {
 			m.cancelDetailSearch() // an answer that already landed stays, for n on the way back

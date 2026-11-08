@@ -310,18 +310,15 @@ func spendDrawerHostPane(pane paneID) (bool, string) {
 // spendDrawerReservesRows reports whether layout() must hold spendDrawerLinesFor(width)
 // back.
 //
-// THE FLAG AND THE HEIGHT, deliberately blind to the pane — the same asymmetry
-// spendStripReservesRow has, for the same reason: layout() runs on resizes, drawer
-// toggles and pane transitions alike, and there is no setPane choke point to hook (the
-// pane is assigned in twenty-odd places), so a pane-aware reservation would go stale on
-// the next transition — and stale in the dangerous direction, because a drawer that DRAWS
-// against an unreserved body overflows the terminal.
-//
-// The cost is larger than the strip's: while the drawer is open, a pane that cannot host it
-// renders its reservation shorter than it could. That is a visible loss where the strip's was
-// one invisible row, and it is still the right trade — the alternative is a footer pushed off
-// the bottom, and the state is transient and user-initiated.
+// ONLY ON A PANE THAT CAN HOST THE DRAWER. The flag survives a move to the timeline or the usage
+// pane, and a reservation that ignored the pane left the drawer's rows there as blank lines
+// under the band. A pane-aware reservation can go stale on a pane change, so Update re-runs
+// layout() when this answer changes: a drawer that draws against an unreserved body pushes the
+// footer off the bottom.
 func (m *model) spendDrawerReservesRows() bool {
+	if ok, _ := m.spendDrawerHost(); !ok {
+		return false
+	}
 	return m.spend.expanded && m.height >= spendDrawerMinHeight
 }
 

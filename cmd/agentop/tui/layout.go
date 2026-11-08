@@ -45,7 +45,8 @@ func (m *model) layout() {
 	// And the drawer's rows when it is open. Reserving nothing for them made the view
 	// spendDrawerLines taller than the terminal the moment `$` was pressed, pushing the footer
 	// off the bottom on every pane — the failure the strip's own reservation exists to prevent,
-	// five rows at a time instead of one. See spendDrawerReservesRows.
+	// five rows at a time instead of one. Unlike the strip's, this one reads the pane, and
+	// Update re-runs layout() when it changes. See spendDrawerReservesRows.
 	if m.spendDrawerReservesRows() {
 		bodyH -= spendDrawerLinesFor(m.width)
 	}
