@@ -7,7 +7,7 @@ Background: #1437 (assessment, closed), #1491 (hairpin spec and W1 spike results
 
 Revision marks: **[R n]** = from the no-regressions review, **[D n]** = from the development-speed review, **[T n]** = from the throwaway review.
 
-Third revision (2026-11-07): nine findings of a validation review are fixed, marked **[V n]**. Then the PR #1717 review by clawgenti, marked **[PR n]** by its comment order, and the delta review of those fixes, marked **[DR n]**. Round 3 fixes the second delta review, clawgenti's second review and the CodeRabbit review, marked **[R3 n]**. In those marks, 1–7 are correctness fixes, B is text fixes and C is later-phase items. The comments that came with clawgenti's approval and CodeRabbit's second review are marked **[F n]**.
+Third revision (2026-11-07): nine findings of a validation review are fixed, marked **[V n]**. Then the PR #1717 review by clawgenti, marked **[PR n]** by its comment order, and the delta review of those fixes, marked **[DR n]**. Round 3 fixes the second delta review, clawgenti's second review and the CodeRabbit review, marked **[R3 n]**. In those marks, 1–7 are correctness fixes, B is text fixes and C is later-phase items. The two comments that came with clawgenti's approval, and two of CodeRabbit's second review (L210, L442), are marked **[F n]**. That review's other five comments are tracked in the PR body.
 
 Second revision (2026-11-07): phase D added (Section 8). The end state is Cortex as a Praxis distribution, in the shape of praxis-ai: one Rust binary, with no Go service and no `/v1/attribute`.
 
@@ -155,7 +155,8 @@ V1 AND PHASE B:  cortex_record ──NDJSON──► Go cortex /v1/ingest ─►
 
 - **Cortex keeps a capture only when the event has `inference`**, the same rule as `recordCapturedRequest` (`forwardproxy/record.go:21-25`). The body of any other request, such as an OAuth token refresh, can be a credential. **[R 11]**
 - The response part keeps `MaxResponseCapture` (10 MiB) and the meaning of `Truncated`, `Ended` and `Incomplete`.
-- **The response capture holds the decoded bytes, as in direct mode.** In direct mode Go's transport decodes before the capture, so the capture holds plaintext with `Decoded: true`, and `Content-Encoding` and `Content-Length` are already gone from its headers (`forwardproxy/server.go:907`). In praxis mode the gateway sees the origin's gzip bytes (Section 4, the hop). So the producer captures the output of its own decoder, sets `decoded`, removes `Content-Encoding` and `Content-Length` from the captured headers, and counts the 10 MiB on decoded bytes. Otherwise agentop's raw view would show `[gzip body …]` instead of the JSON or SSE text. **[F 2]**
+- **The response capture holds the decoded bytes, as in direct mode.** In direct mode Go's transport decodes before the capture, so the capture holds plaintext with `Decoded: true`, and `Content-Encoding` and `Content-Length` are already gone from its headers (`forwardproxy/server.go:907`). In praxis mode the gateway sees the origin's gzip bytes (Section 4, the hop). Direct mode decodes only when Go's transport asked for gzip and got it (`Decoded: resp.Uncompressed`). So the rule applies **to a response with `Content-Encoding: gzip` only**. For such a response, the producer captures the output of its own decoder and sets `decoded`. It removes `Content-Encoding` and `Content-Length` from the captured headers, and counts the 10 MiB on decoded bytes. It captures every other response as it came, with `decoded` false and its headers kept, as direct mode does. Otherwise agentop's raw view would show `[gzip body …]` instead of the JSON or SSE text. **[F 2]**
+- **The captured request headers** are the ones that the gateway receives, with the internal hop headers removed and credentials redacted. They differ from direct mode, which captures the agent's headers at entry (`forwardproxy/server.go:592`). The gateway sees the hop's request after `stripForUpstream`, so it has Go's `Accept-Encoding: gzip` and no hop-by-hop headers. Section 5 lists this as a known difference. **[F 2]**
 - **No response capture without its request capture**, as in direct mode (`forwardproxy/server.go:903-906`). When the producer dropped a request's capture, it also drops the capture of that request's response row. As a second layer, ingestion keeps a response capture only when it holds the capture of the same `requestId`'s request row. **[R3 B]**
 - **The producer removes credentials** by the rules of `core/redact` (`redact.Headers`, `redact.Query`), which the forward proxy applies today (`forwardproxy/server.go:592`, `:907`). The Rust redaction is a port of `core/redact`, tested on the same cases.
 - As a second layer, ingestion runs `redact.Headers` and `redact.Query` again.
@@ -207,7 +208,7 @@ Two cases need Cortex state that Praxis does not have. Both are keyed by `reques
 - The forward proxy resolves attribution as today: the process chain from the socket (`Attributor.Chain`), then `Attributor.Resolve`.
 - The seven `wire.go` headers are removed at entry in both modes, as `attribution.Strip` does now.
 - **In praxis mode only, it also removes at entry** `X-Cortex-Attribution`, `X-Cortex-Dest`, `X-Cortex-Token`, `X-Cortex-Request-Id` and `X-Cortex-Probe`, before it injects its own. This closes the W1 finding M5 for praxis mode. **Direct mode does not change:** these five headers reach the origin as they do today. **[R 17] [R3 2]**
-- **`cortex_attribution` refuses a request without a valid `X-Cortex-Token` with 403, before anything is recorded and before any dial.** Every legitimate request to the gateway carries the token: the hop's requests and the readiness probe. So another local process that talks to `:47605` cannot put rows into a session, and it cannot use the gateway to reach anything. **[F 1]**
+- **`cortex_attribution` refuses a request without a valid `X-Cortex-Token` with 403, before anything is recorded and before any dial.** Every legitimate request to the gateway carries the token: the hop's requests and the readiness probe. So a process that cannot read the token file cannot put rows into a session or use the gateway to reach anything. The file is mode 0600, so this covers processes of other users and browser pages. A process of the same user can read the file. **[F 1]**
 - With a valid token, it accepts `X-Cortex-Attribution`.
 - It passes the result to `cortex_record` as filter metadata. Before the request leaves Praxis, it removes **the internal hop headers only**: the seven `wire.go` headers, `X-Cortex-Attribution`, `X-Cortex-Request-Id` and `X-Cortex-Probe`. It keeps `X-Cortex-Dest` and `X-Cortex-Token`, because in the interim the upstream is the egress listener, which needs those two and removes them (Section 4). At phase B, when Praxis dials the origin, it removes those two as well. **[V 1]**
 - **Any other `X-Cortex-…` header goes through unchanged**, as in direct mode. An application can use such a header for its own routing or authorization. **[F 3]**
@@ -254,7 +255,8 @@ The name keeps clear of `cmd/cortex-praxis`, the paused Go converter, which stay
        - `proxy_error` with 413: a request over the body limit, the same row as direct mode (`core/listener/internal/bodyread/bodyread.go:80`). **[V 5]**
        - `proxy_error`, `statusCode` 502: a buffered response over 10 MB (decoded), as above. **[R3 1]**
        - `proxy_error`, `statusCode` as the upstream sent it: an SSE frame over 10 MB. Direct mode keeps the status that is already on the wire (`forwardproxy/stream.go:120-137`). **[R3 1]**
-       - `gateway_refused`: any other refusal by Praxis before the upstream.
+       - `gateway_refused`: any other refusal by Praxis before the upstream, of a request that has a valid token.
+     - **It records nothing, deferred or not, for a request that `cortex_attribution` did not mark as token-valid** in the filter metadata, as for the probe. So a tokenless request gets its 403 and leaves no row. **[F 1]**
      - It reads the egress listener's `X-Cortex-Egress-Error` response header into the row's error kind (`upstream_dns`, `upstream_tls`, `upstream_timeout`, `upstream_refused`), and removes the header. An origin cannot forge it: the egress listener removes any copy from an origin's response (Section 4). An origin's own headers, such as an `X-Cortex-Upstream-Error`, go through unchanged. **[R 6] [R3 3]**
 3. **`access_log`** (Praxis built-in). **Required:** Praxis calls `emit_deferred_record` only when the chain contains `access_log` (`protocol/src/http/pingora/handler/logging_util.rs:31`), and only for the first filter that claims the record (`filter/src/pipeline/mod.rs:561`). `cortex_observe` comes first, so it claims the record. Upstream ask: praxis#1228 removes this coupling. **[T F2]**
 
@@ -417,7 +419,10 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
   - An ingested row's `At` is the append time, so a page break between an ingested row and a Cortex row never reads as "session restarted". **[V 4]**
 - **The replay test from #1497:** an NDJSON capture through `/v1/ingest` gives the same `/v1/sessions` and `/v1/usage` as the live run. The exceptions are the fields that depend on the append time: each row's `at`, the `/v1/usage` time buckets, and every time field of the `/v1/sessions` summary. The test compares the events field by field without `at`, the summaries without their time fields, and the `/v1/usage` totals (tokens, cost, requests) without the buckets. **[DR 4] [R3 B]**
 - Config: with `praxis.enabled`, a config with plugins starts with no outbound pipeline and logs the skipped plugins. A reload that adds a plugin builds no pipeline. With `praxis.enabled: false` again, the same plugins run. `praxis.enabled` with `mtls`, or without `bind_loopback_only`, refuses to start.
-- The hop: a plugin cannot steer it (the W1 test `TestSpikeHairpin_OnlyTheDialTargetMoves`, rewritten), a client's `X-Cortex-*` headers never reach Praxis or an origin, and `touch` still runs.
+- The hop:
+  - a plugin cannot steer it (the W1 test `TestSpikeHairpin_OnlyTheDialTargetMoves`, rewritten).
+  - in praxis mode, a client's five hop headers (`X-Cortex-Attribution`, `-Dest`, `-Token`, `-Request-Id`, `-Probe`) never reach Praxis or an origin. An application's own `X-Cortex-Custom` reaches the origin. **[F 3]**
+  - `touch` still runs.
 
 ### Filter tests (Rust)
 
@@ -448,9 +453,10 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
 - **Codex's mislabeled SSE** (`chatgpt.com` + `/backend-api/codex/responses`, not `text/event-stream`) streams frame by frame through the gateway on a 2xx, as in direct mode. A 405 from the same endpoint is parsed buffered, not as SSE, so its row has the error detail, and the client gets its `{"detail": …}` body. **[V 2] [R3 6]**
 - A 33 MiB request gets 413 with `proxy_error`, and an uncoded 12 MB buffered response with `Content-Length` gets 502 with `proxy_error`, in both modes. A 3 MB gzip response that decodes to 12 MB gets a row with `statusCode` 502 and `proxy_error` in both modes. In praxis mode its client sees a reset. **[R3 1]** A chunked 12 MB buffered response gets a row with `statusCode` 502 and `proxy_error` in both modes. In praxis mode its client sees a reset instead of a 502. **[V 5] [DR 1]**
 - A Cortex restart does not restart the gateway, and a supervisor exit stops it.
-- **Direct mode against `praxis` mode** on the same mock traffic: the `/v1/sessions` events and the captures (`GET /v1/sessions/{id}/events/{seq}?raw=1`) must be the same, field by field. **[F 2]** Three exceptions:
+- **Direct mode against `praxis` mode** on the same mock traffic: the `/v1/sessions` events and the captures (`GET /v1/sessions/{id}/events/{seq}?raw=1`) must be the same, field by field. **[F 2]** Four exceptions:
   - timing fields agree within 50 ms.
   - the `gateway_*` error kinds exist only in `praxis` mode.
+  - the captured request headers differ in `Accept-Encoding` and the hop-by-hop headers (Section 1, "Captures"). **[F 2]**
   - a buffered response over 10 MB ends with a reset instead of a 502 in two cases (Section 3). The two cases are a chunked body and a coded body whose decoded size is over the cap. The row is the same in both modes. **[DR 1]**
 
 ### Live check (manual, before the default changes)
