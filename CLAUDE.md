@@ -308,6 +308,12 @@ re-verify them by hand after a change.
 - If a change deletes a package or its last import of a dependency, also run
   `go mod tidy -diff` in every module. `go-tidy-check` gates on it, and
   `build`/`vet`/`test` all pass while it fails.
+- **`cmd/agentop` tests: use shards and `-short`.** One sequential run takes about 6
+  minutes on a Mac. While you change code, run
+  `scripts/dev/go-test-shards.sh -short cmd/agentop` (about 20 s): `-short` skips the
+  setup, service, doctor and uninstall scenes. Before you push, run the full suite once
+  with `scripts/dev/go-test-shards.sh cmd/agentop` (about 2 min). Run the full suite
+  also when you change those scenes' code. CI runs the full suite, not `-short`.
 - Log with `log/slog`. The binaries log under their own name (`cortex`,
   `cortex-envoy`). The `authbridge-lite` image runs `cortex`, so it logs as `cortex`.
 

@@ -72,11 +72,23 @@ esac
 `
 }
 
+// skipSceneInShort skips a setup, service, doctor or uninstall scene under
+// go test -short. These scenes start many stub processes, and they are most of
+// the suite's time. fakeSupervisor, fakeNoSupervisor and freePorts call it, so
+// every scene built on them skips. CI does not use -short.
+func skipSceneInShort(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("scene test: skipped under -short. Run the full suite before you push.")
+	}
+}
+
 // freePorts makes every port read free: these tests run beside a real Cortex.
 // lsof and ss find no listener either, so portHolder names no holder — the real
 // lsof would name that Cortex. A later installStub of either still wins.
 func freePorts(t *testing.T) {
 	t.Helper()
+	skipSceneInShort(t)
 	saved := portInUse
 	portInUse = func(string) bool { return false }
 	t.Cleanup(func() { portInUse = saved })

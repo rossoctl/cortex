@@ -372,6 +372,11 @@ Smaller pull requests are typically easier to review and merge. If your pull req
 - If your change deletes a package or its last import of a dependency, also run
   `go mod tidy -diff` in every module — CI gates on it, and `build`/`vet`/`test`
   all pass while it fails.
+- `cmd/agentop`'s tests run one at a time, and a full run takes about 6 minutes on a
+  Mac. `scripts/dev/go-test-shards.sh cmd/agentop` runs them as parallel processes
+  (about 2 minutes). Add `-short` while you change code (about 20 s): it skips the
+  setup, service, doctor and uninstall scenes. Run the full suite before you push, and
+  whenever you change the code those scenes test. CI always runs the full suite.
 - Apache 2.0 license header in all Go files
 
 ### Python Code (keycloak_sync.py, sparc-service, demo scripts)
