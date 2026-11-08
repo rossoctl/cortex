@@ -141,6 +141,51 @@ func TestClaudeCodeEnable_RetiresTheKeyUnderARecordWithoutWritten(t *testing.T) 
 	}
 }
 
+// The record is the only proof that Cortex wrote the key, so an enable whose settings
+// write fails must leave that proof for the next enable.
+func TestClaudeCodeEnable_AFailedWriteKeepsTheProofOfARetiredKey(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: a 0o500 directory is still writable")
+	}
+	for _, noWritten := range []bool{false, true} {
+		t.Run(map[bool]string{false: "record with Written", true: "record without Written"}[noWritten], func(t *testing.T) {
+			settings, cfg, state := olderEnable(t, nil)
+			if noWritten {
+				st, _ := readState(state)
+				st.Written = nil
+				if err := writeState(state, *st); err != nil {
+					t.Fatal(err)
+				}
+			}
+			dir := filepath.Dir(settings)
+			if err := os.Chmod(dir, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+			var out, errb bytes.Buffer
+			if code := claudeCodeEnable2(settings, cfg, state, true, &out, &errb); code != 1 {
+				t.Fatalf("enable into a read-only dir: exit %d, want 1:\n%s", code, errb.String())
+			}
+			if err := os.Chmod(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			out.Reset()
+			errb.Reset()
+			if code := claudeCodeEnable2(settings, cfg, state, true, &out, &errb); code != 0 {
+				t.Fatalf("enable: %s", errb.String())
+			}
+			if _, ok := readEnv(t, settings)[envNoTelem]; ok {
+				t.Errorf("%s survived the enable after a failed one:\n%s", envNoTelem, out.String())
+			}
+			if st, _ := readState(state); st != nil {
+				if _, ok := st.Written[envNoTelem]; ok {
+					t.Errorf("the record still claims %s after it was retired", envNoTelem)
+				}
+			}
+		})
+	}
+}
+
 // install.sh --claude-code runs setup on every upgrade, so setup is the path that
 // reaches most installs, not the enable command.
 func TestSetup_RetiresTheKeyAnOlderEnableWrote(t *testing.T) {

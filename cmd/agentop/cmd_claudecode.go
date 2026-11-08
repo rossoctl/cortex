@@ -546,7 +546,7 @@ func topUpWritten(pl claudeCodePlan, statePath string, stderr io.Writer) {
 // set them to, then writes the plan's values. Failing to record is a warning on
 // stderr, as it always was: the write still happens, and disable then deletes the
 // keys rather than restoring them.
-func applyClaudeCodeEnable(pl claudeCodePlan, statePath string, stderr io.Writer) error {
+func applyClaudeCodeEnable(pl claudeCodePlan, statePath string, stderr io.Writer) (err error) {
 	// Record what was there before, so disable restores rather than deletes, and
 	// what we set, so disable can tell our own value from one changed since.
 	if statePath != "" {
@@ -564,10 +564,23 @@ func applyClaudeCodeEnable(pl claudeCodePlan, statePath string, stderr io.Writer
 			}
 			st.Written[k] = pl.want[k]
 		}
+		// The record is the only proof a retired key is Cortex's: keep it until the
+		// settings write below has taken the key out.
+		for k := range pl.retire {
+			st.Written[k] = pl.env[k]
+		}
 		if werr := writeState(statePath, st); werr != nil {
 			fmt.Fprintf(stderr, "agentop: could not record prior settings (%v); disable will delete\n"+
 				"  these keys rather than restore any you had set yourself\n", werr)
 		}
+		defer func() {
+			if err == nil && len(pl.retire) > 0 {
+				for k := range pl.retire {
+					delete(st.Written, k)
+				}
+				_ = writeState(statePath, st)
+			}
+		}()
 	}
 
 	raw := envRaw(pl.doc)

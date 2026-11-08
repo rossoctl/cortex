@@ -134,7 +134,7 @@ client-side settings (`--allowedTools`, disabling unused MCP servers).
   `agentop configure claude-code status`; `NODE_EXTRA_CA_CERTS` must be the absolute
   path to `~/.cortex/ca/ca.crt`. The proxy also warns about this in
   `~/.cortex/proxy.log` after a few requests, naming the path it expects.
-  `agentop configure claude-code enable` sets all seven variables from your running
+  `agentop configure claude-code enable` sets all six variables from your running
   config, which is the reliable way to get them right.
 - **`tool-prune` shows `skip`, never `modify`** — expected until you opt in: the
   remove list ships empty. Run the scan above. If it refuses, you have no
