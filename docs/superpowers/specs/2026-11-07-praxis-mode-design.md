@@ -7,7 +7,7 @@ Background: #1437 (assessment, closed), #1491 (hairpin spec and W1 spike results
 
 Revision marks: **[R n]** = from the no-regressions review, **[D n]** = from the development-speed review, **[T n]** = from the throwaway review.
 
-Third revision (2026-11-07): nine findings of a validation review are fixed, marked **[V n]**. Then the PR #1717 review by clawgenti, marked **[PR n]** by its comment order, and the delta review of those fixes, marked **[DR n]**. Round 3 fixes the second delta review, clawgenti's second review and the CodeRabbit review, marked **[R3 n]**.
+Third revision (2026-11-07): nine findings of a validation review are fixed, marked **[V n]**. Then the PR #1717 review by clawgenti, marked **[PR n]** by its comment order, and the delta review of those fixes, marked **[DR n]**. Round 3 fixes the second delta review, clawgenti's second review and the CodeRabbit review, marked **[R3 n]**. In those marks, 1–7 are correctness fixes, B is text fixes and C is later-phase items.
 
 Second revision (2026-11-07): phase D added (Section 8). The end state is Cortex as a Praxis distribution, in the shape of praxis-ai: one Rust binary, with no Go service and no `/v1/attribute`.
 
@@ -134,7 +134,7 @@ V1 AND PHASE B:  cortex_record ──NDJSON──► Go cortex /v1/ingest ─►
 
 ```json
 {"v":1, "schemaVersion":1, "op":"append",
- "requestId":"<X-Cortex-Request-Id>",
+ "requestId":"<X-Cortex-Request-Id>", "startedAt":"<RFC 3339, nanoseconds>",
  "session":"<recording session, from X-Cortex-Attribution>",
  "event":   { "...": "SessionEvent wire JSON (core/pipeline/testdata/session-event.golden.json)" },
  "capture": { "original":"<base64>", "forwarded":null, "header":{}, "query":"",
@@ -155,7 +155,7 @@ V1 AND PHASE B:  cortex_record ──NDJSON──► Go cortex /v1/ingest ─►
 
 - **Cortex keeps a capture only when the event has `inference`**, the same rule as `recordCapturedRequest` (`forwardproxy/record.go:21-25`). The body of any other request, such as an OAuth token refresh, can be a credential. **[R 11]**
 - The response part keeps `MaxResponseCapture` (10 MiB) and the meaning of `Truncated`, `Ended` and `Incomplete`.
-- **No response capture without its request capture**, as in direct mode (`forwardproxy/server.go:903-906`). When the producer dropped a request's capture, it also drops the capture of that request's response row. **[R3 B]**
+- **No response capture without its request capture**, as in direct mode (`forwardproxy/server.go:903-906`). When the producer dropped a request's capture, it also drops the capture of that request's response row. As a second layer, ingestion keeps a response capture only when it holds the capture of the same `requestId`'s request row. **[R3 B]**
 - **The producer removes credentials** by the rules of `core/redact` (`redact.Headers`, `redact.Query`), which the forward proxy applies today (`forwardproxy/server.go:592`, `:907`). The Rust redaction is a port of `core/redact`, tested on the same cases.
 - As a second layer, ingestion runs `redact.Headers` and `redact.Query` again.
 
@@ -184,8 +184,9 @@ Two cases need Cortex state that Praxis does not have. Both are keyed by `reques
 - **Restarts are not made longer.** Lines still in the emitter's queue when Cortex shuts down are lost and counted. Cortex does not wait for them. (Restarts stay quick, not graceful.) **[R 18]**
 - **Ingestion sets each row's `At` when it appends the row**, as the in-process listeners do. agentop's pager compares `At` across pages to detect a restarted session (`cmd/agentop/tui/paging.go:220`). Cortex still writes its own rows with the current time. So a producer's `at` from a few milliseconds earlier could put a row with a later seq before one with an earlier seq. Paging back would then show a false "session restarted". `ttfbMs` and `durationMs` are separate fields and keep the producer's values. **[V 4]**
 - **Erase wins over queued rows.** **[R3 4]** The store starts a new session on the next append to an erased id (`core/session/delete.go:26`). So a row still in the emitter's queue could bring an erased session back. In direct mode only a response in flight at the erase has that window. In praxis mode the queue makes it longer. So:
-  - On `DELETE /v1/sessions/{id}` and `DELETE /v1/sessions`, the store keeps an erase mark (the id, or all ids, and the time) for 10 minutes.
-  - Each line carries the producer's request start time (`startedAt`). Ingestion drops a line whose `startedAt` is before an erase mark for its session, and counts it (`ingest_dropped_erased_total`).
+  - **In praxis mode only**, ingestion keeps an erase mark for 10 minutes on `DELETE /v1/sessions/{id}` (the id and the time) and on `DELETE /v1/sessions` (all ids and the time). It gets them as a store recorder that implements `session.Deleter` and `session.Clearer` (`core/session/delete.go:10`, `core/session/history.go:87`), registered with `AddRecorder` only when `praxis.enabled` is set. The store itself does not change, and direct mode keeps no marks.
+  - Each line carries the producer's request start time (`startedAt`, Section 1 line format). Ingestion drops a line whose `startedAt` is before an erase mark for its session, and counts it as `ingest_refused_total{reason="erased"}`.
+  - A dropped line also releases its tunnel join (Section 1, "Joins") with no write. Otherwise the join would expire after 60 s and settle the tunnel into the erased session.
   - A request that starts after the erase is kept. It starts a new session, as in direct mode.
 - The readiness probe's requests carry `X-Cortex-Probe` with the token. `cortex_record` records nothing for them. **[R 17]**
 
@@ -378,7 +379,7 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
 
 - **OpenSSL is the trap.** Praxis does its TLS with OpenSSL: `praxis-proxy-tls` requires `rustls-openssl` and `openssl`. Upstream links the system OpenSSL dynamically on purpose, for FIPS (Praxis `Cargo.toml`: "never with the `vendored` feature"). A plain build is not portable. Measured on 2026-11-07: a stock macOS build links `/opt/homebrew/opt/openssl@4/lib/libssl.4.dylib`, so it does not start on a Mac without that package.
 - **Rule: `praxis/server` turns on OpenSSL's `vendored` feature.** Cargo features are additive, so no Praxis change is needed. Measured on macOS arm64 with Praxis v0.8.0: the binary then links only system libraries (Security, CoreFoundation, CoreServices, libiconv, libSystem). It started with no Homebrew library on the path and served a request through the hairpin. Size 25.6 MB (22.4 MB without vendoring). Cold build 6 m 39 s.
-- **Linux:** build on `rust:alpine` for the musl target, with static linking on. (Praxis's own image turns it off with `-crt-static`.) `cortex-cpex` already links its Rust FFI (`libcpex_ffi.a`) statically in `golang:alpine` in the same way. The other native code in the graph must also build statically: `aws-lc-sys` (through `jsonwebtoken`, needs cmake), `zstd-sys` and jemalloc. **Not tested yet. This is the first check of delivery step 6.**
+- **Linux:** build on `rust:alpine` for the musl target, with static linking on. (Praxis's own image turns it off with `-crt-static`.) `cortex-cpex` already links its Rust FFI (`libcpex_ffi.a`) statically in `golang:alpine` in the same way. The other native code in the graph must also build statically: `aws-lc-sys` (through `jsonwebtoken`, needs cmake), `zstd-sys` and jemalloc. **Not tested yet. This is the first check of delivery step 7.**
 - **A release check** fails when a `cortex-gateway` build links OpenSSL dynamically (`otool -L` on macOS, `ldd` or `file` on Linux).
 - **New duty:** Cortex owns OpenSSL security updates for this binary. An OpenSSL CVE needs an `openssl-src` bump and a release. (Go's crypto comes with the Go toolchain.)
 - **No FIPS claim for this binary.** Praxis's FIPS story depends on the system OpenSSL. Cortex makes no FIPS claim today, so nothing changes for users. A future FIPS need would require a separate, dynamically linked build.
@@ -389,7 +390,7 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
 ### Direct mode stays the same
 
 - The existing Go test suites pass with no change to their expectations. This is the main check for "nothing breaks".
-- With `praxis.enabled: false`: `/v1/ingest` answers 404, no token file is created, and no new error kind appears in any row.
+- With `praxis.enabled: false`: `/v1/ingest` answers 404, no token file is created, no erase mark is kept, and no new error kind appears in any row.
 - In direct mode a client's `X-Cortex-Dest`, `X-Cortex-Token`, `X-Cortex-Attribution`, `X-Cortex-Request-Id` and `X-Cortex-Probe` reach the origin unchanged, as today. **[R3 2]**
 
 ### Parser parity
@@ -411,7 +412,7 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
   - After `DELETE /v1/sessions/{id}`, a queued line whose `startedAt` is before the erase is dropped and counted, and the session does not come back. A line that starts after the erase starts a new session. The same holds for `DELETE /v1/sessions`. **[R3 4]**
   - A tunnel that closes before its request row arrives still gets one pair (open row + request row), and no "carried nothing" close row. **[V 8]**
   - An ingested row's `At` is the append time, so a page break between an ingested row and a Cortex row never reads as "session restarted". **[V 4]**
-- **The replay test from #1497:** an NDJSON capture through `/v1/ingest` gives the same `/v1/sessions` and `/v1/usage` as the live run. The exceptions are the fields that depend on the append time: each row's `at`, the `/v1/usage` time buckets, and the times in the `/v1/sessions` summary (`createdAt`, `updatedAt`, `lastRequestAt`, `spawnedAt`, `returnedAt`). The test compares the events field by field without `at`, the summaries without those times, and the `/v1/usage` totals (tokens, cost, requests) without the buckets. **[DR 4] [R3 B]**
+- **The replay test from #1497:** an NDJSON capture through `/v1/ingest` gives the same `/v1/sessions` and `/v1/usage` as the live run. The exceptions are the fields that depend on the append time: each row's `at`, the `/v1/usage` time buckets, and every time field of the `/v1/sessions` summary. The test compares the events field by field without `at`, the summaries without their time fields, and the `/v1/usage` totals (tokens, cost, requests) without the buckets. **[DR 4] [R3 B]**
 - Config: with `praxis.enabled`, a config with plugins starts with no outbound pipeline and logs the skipped plugins. A reload that adds a plugin builds no pipeline. With `praxis.enabled: false` again, the same plugins run. `praxis.enabled` with `mtls`, or without `bind_loopback_only`, refuses to start.
 - The hop: a plugin cannot steer it (the W1 test `TestSpikeHairpin_OnlyTheDialTargetMoves`, rewritten), a client's `X-Cortex-*` headers never reach Praxis or an origin, and `touch` still runs.
 
@@ -439,13 +440,13 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
 - **No `X-Cortex-*` header reaches the origin.** The mock origin fails the test when it sees one. **[PR 1]**
 - **A client that sends `Accept-Encoding: gzip, deflate, br`** to an origin that prefers `br` gets a parsed row (tokens, cost) and a decoded body, as in direct mode. The origin sees only `gzip`. **[PR 2]**
 - **A 30 MiB request keeps its row.** Its line would go over the cap with the capture, so the capture is dropped (`capture.dropped`). **[PR 3]**
-- **Codex's mislabeled SSE** (`chatgpt.com` + `/backend-api/codex/responses`, not `text/event-stream`) streams frame by frame through the gateway on a 2xx, as in direct mode. A 405 from the same endpoint is read as JSON, and the client gets its `{"detail": …}` body. **[V 2] [R3 6]**
-- A 33 MiB request gets 413 with `proxy_error`, and an uncoded 12 MB buffered response with `Content-Length` gets 502 with `proxy_error`, in both modes. A 3 MB gzip response that decodes to 12 MB gets a row with `statusCode` 502 and `proxy_error` in both modes. **[R3 1]** A chunked 12 MB buffered response gets a row with `statusCode` 502 and `proxy_error` in both modes. In praxis mode its client sees a reset instead of a 502. **[V 5] [DR 1]**
+- **Codex's mislabeled SSE** (`chatgpt.com` + `/backend-api/codex/responses`, not `text/event-stream`) streams frame by frame through the gateway on a 2xx, as in direct mode. A 405 from the same endpoint is parsed buffered, not as SSE, so its row has the error detail, and the client gets its `{"detail": …}` body. **[V 2] [R3 6]**
+- A 33 MiB request gets 413 with `proxy_error`, and an uncoded 12 MB buffered response with `Content-Length` gets 502 with `proxy_error`, in both modes. A 3 MB gzip response that decodes to 12 MB gets a row with `statusCode` 502 and `proxy_error` in both modes. In praxis mode its client sees a reset. **[R3 1]** A chunked 12 MB buffered response gets a row with `statusCode` 502 and `proxy_error` in both modes. In praxis mode its client sees a reset instead of a 502. **[V 5] [DR 1]**
 - A Cortex restart does not restart the gateway, and a supervisor exit stops it.
 - **Direct mode against `praxis` mode** on the same mock traffic: the `/v1/sessions` events must be the same, field by field. Three exceptions:
   - timing fields agree within 50 ms.
   - the `gateway_*` error kinds exist only in `praxis` mode.
-  - a chunked buffered response over 10 MB ends with a reset instead of a 502 (Section 3). **[DR 1]**
+  - a buffered response over 10 MB ends with a reset instead of a 502 in two cases (Section 3). The two cases are a chunked body and a coded body whose decoded size is over the cap. The row is the same in both modes. **[DR 1]**
 
 ### Live check (manual, before the default changes)
 
@@ -462,7 +463,7 @@ Each step is one PR and is useful when it merges. Nothing changes for a user unt
 4. **The hop and the egress listener** (`core/listener/forwardproxy`): `hop.go`, the five branch points, the joins, `gateway_unavailable`, the config checks (startup and reload), and the end-to-end tests.
 5. **agentop and install:** the `praxis.enabled` contract field, the command refusals, `install.sh --praxis`, setup, update and uninstall.
 6. **The MCP and A2A parsers**, each behind its own parity gate.
-7. **Release:** the `cortex-gateway` release job (vendored OpenSSL, static musl, the dynamic-OpenSSL check) and the weekly Praxis build. The static Linux build is proved first. **`install.sh --praxis` ships only after step 6**, so no user can opt in to a praxis mode that loses MCP and A2A facts. **[R3 5]**
+7. **Release:** the `cortex-gateway` release job (vendored OpenSSL, static musl, the dynamic-OpenSSL check) and the weekly Praxis build. The static Linux build is proved first. No release has a `cortex-gateway` tarball before this step, so `install.sh --praxis` (added in step 5) refuses every earlier version. So no user can opt in to a praxis mode that loses MCP and A2A facts. **[R3 5]**
 
 Then the live check, then a decision to change the default.
 
