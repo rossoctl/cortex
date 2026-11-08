@@ -53,7 +53,7 @@ func startUnsupervised(bin, cortexDir, healthURL string) (pid int, healthy bool,
 			return pid, true, nil
 		}
 		if healthURL == "" {
-			time.Sleep(time.Second)
+			time.Sleep(time.Second / healthWaitDivisor)
 		}
 	}
 	return pid, false, nil

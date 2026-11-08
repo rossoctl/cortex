@@ -80,8 +80,8 @@ func freePorts(t *testing.T) {
 	saved := portInUse
 	portInUse = func(string) bool { return false }
 	t.Cleanup(func() { portInUse = saved })
-	installStub(t, "lsof", "#!/bin/sh\nexit 1\n")
-	installStub(t, "ss", "#!/bin/sh\nexit 1\n")
+	installFalse(t, "lsof")
+	installFalse(t, "ss")
 }
 
 // serviceEnv is a setupEnv with the stub cortex installed, its config written,
