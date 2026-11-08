@@ -7,7 +7,7 @@ Background: #1437 (assessment, closed), #1491 (hairpin spec and W1 spike results
 
 Revision marks: **[R n]** = from the no-regressions review, **[D n]** = from the development-speed review, **[T n]** = from the throwaway review.
 
-Third revision (2026-11-07): nine findings of a validation review are fixed, marked **[V n]**. Then the PR #1717 review by clawgenti, marked **[PR n]** by its comment order, and the delta review of those fixes, marked **[DR n]**. Round 3 fixes the second delta review, clawgenti's second review and the CodeRabbit review, marked **[R3 n]**. In those marks, 1–7 are correctness fixes, B is text fixes and C is later-phase items.
+Third revision (2026-11-07): nine findings of a validation review are fixed, marked **[V n]**. Then the PR #1717 review by clawgenti, marked **[PR n]** by its comment order, and the delta review of those fixes, marked **[DR n]**. Round 3 fixes the second delta review, clawgenti's second review and the CodeRabbit review, marked **[R3 n]**. In those marks, 1–7 are correctness fixes, B is text fixes and C is later-phase items. The comments that came with clawgenti's approval and CodeRabbit's second review are marked **[F n]**.
 
 Second revision (2026-11-07): phase D added (Section 8). The end state is Cortex as a Praxis distribution, in the shape of praxis-ai: one Rust binary, with no Go service and no `/v1/attribute`.
 
@@ -155,6 +155,7 @@ V1 AND PHASE B:  cortex_record ──NDJSON──► Go cortex /v1/ingest ─►
 
 - **Cortex keeps a capture only when the event has `inference`**, the same rule as `recordCapturedRequest` (`forwardproxy/record.go:21-25`). The body of any other request, such as an OAuth token refresh, can be a credential. **[R 11]**
 - The response part keeps `MaxResponseCapture` (10 MiB) and the meaning of `Truncated`, `Ended` and `Incomplete`.
+- **The response capture holds the decoded bytes, as in direct mode.** In direct mode Go's transport decodes before the capture, so the capture holds plaintext with `Decoded: true`, and `Content-Encoding` and `Content-Length` are already gone from its headers (`forwardproxy/server.go:907`). In praxis mode the gateway sees the origin's gzip bytes (Section 4, the hop). So the producer captures the output of its own decoder, sets `decoded`, removes `Content-Encoding` and `Content-Length` from the captured headers, and counts the 10 MiB on decoded bytes. Otherwise agentop's raw view would show `[gzip body …]` instead of the JSON or SSE text. **[F 2]**
 - **No response capture without its request capture**, as in direct mode (`forwardproxy/server.go:903-906`). When the producer dropped a request's capture, it also drops the capture of that request's response row. As a second layer, ingestion keeps a response capture only when it holds the capture of the same `requestId`'s request row. **[R3 B]**
 - **The producer removes credentials** by the rules of `core/redact` (`redact.Headers`, `redact.Query`), which the forward proxy applies today (`forwardproxy/server.go:592`, `:907`). The Rust redaction is a port of `core/redact`, tested on the same cases.
 - As a second layer, ingestion runs `redact.Headers` and `redact.Query` again.
@@ -206,8 +207,10 @@ Two cases need Cortex state that Praxis does not have. Both are keyed by `reques
 - The forward proxy resolves attribution as today: the process chain from the socket (`Attributor.Chain`), then `Attributor.Resolve`.
 - The seven `wire.go` headers are removed at entry in both modes, as `attribution.Strip` does now.
 - **In praxis mode only, it also removes at entry** `X-Cortex-Attribution`, `X-Cortex-Dest`, `X-Cortex-Token`, `X-Cortex-Request-Id` and `X-Cortex-Probe`, before it injects its own. This closes the W1 finding M5 for praxis mode. **Direct mode does not change:** these five headers reach the origin as they do today. **[R 17] [R3 2]**
-- `cortex_attribution` accepts `X-Cortex-Attribution` **only when the token is valid**. Without it (any other local process that talks to `:47605`), it treats the request as unattributed.
-- It passes the result to `cortex_record` as filter metadata. Before the request leaves Praxis, it removes every `X-Cortex-*` header **except `X-Cortex-Dest` and `X-Cortex-Token`**. In the interim the upstream is the egress listener, which needs those two and removes them (Section 4). At phase B, when Praxis dials the origin, it removes all of them. **[V 1]**
+- **`cortex_attribution` refuses a request without a valid `X-Cortex-Token` with 403, before anything is recorded and before any dial.** Every legitimate request to the gateway carries the token: the hop's requests and the readiness probe. So another local process that talks to `:47605` cannot put rows into a session, and it cannot use the gateway to reach anything. **[F 1]**
+- With a valid token, it accepts `X-Cortex-Attribution`.
+- It passes the result to `cortex_record` as filter metadata. Before the request leaves Praxis, it removes **the internal hop headers only**: the seven `wire.go` headers, `X-Cortex-Attribution`, `X-Cortex-Request-Id` and `X-Cortex-Probe`. It keeps `X-Cortex-Dest` and `X-Cortex-Token`, because in the interim the upstream is the egress listener, which needs those two and removes them (Section 4). At phase B, when Praxis dials the origin, it removes those two as well. **[V 1]**
+- **Any other `X-Cortex-…` header goes through unchanged**, as in direct mode. An application can use such a header for its own routing or authorization. **[F 3]**
 - **Touch and claims stay in Cortex's request path.** `Attributor.Record` only marks a session live (`attribution.go:224`). The touch is a separate call (`defer s.touch`, `identity.go:242`). The hop keeps it. **[R 2]**
 
 ### Self-traffic
@@ -229,7 +232,7 @@ The name keeps clear of `cmd/cortex-praxis`, the paused Go converter, which stay
 
 ### The chain, in order
 
-1. **`cortex_attribution`** (request head): checks the token, decodes `X-Cortex-Attribution`, removes the `X-Cortex-*` headers that the egress listener does not need, and sets filter metadata (Section 2). **[V 1]**
+1. **`cortex_attribution`** (request head): it refuses a tokenless request with 403 and decodes `X-Cortex-Attribution`. It removes the internal hop headers that the egress listener does not need, and sets filter metadata (Section 2). **[V 1] [F 1] [F 3]**
 2. **`cortex_observe`** (read-only body access): **one filter with two modules**, the parser and the row builder. In each hook it parses first, then records. **[DR 2]**
    - **Why one filter:** Praxis runs `on_response` and the response-body hooks in **reverse** chain order (`crates/filter/src/pipeline/http.rs:282`, `:723`). Suppose a parse filter came before a record filter. The record filter would then see each response chunk before it is parsed, and response rows would have no tokens or cost. Reversing the order would move the problem to the request side.
    - **A rule for later Rust filters** (the plugin ports of phase D): a filter that reads parsed request facts goes after `cortex_observe` in the chain. A filter that reads parsed response facts goes before it.
@@ -418,7 +421,8 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
 
 ### Filter tests (Rust)
 
-- `X-Cortex-Attribution` is accepted only with a valid token. Before the upstream, every `X-Cortex-*` header is removed except `X-Cortex-Dest` and `X-Cortex-Token`, which the egress listener needs and removes. **[V 1]**
+- A request without a valid token gets 403 and produces no line. With a valid token, `X-Cortex-Attribution` is accepted. **[F 1]**
+- Before the upstream, the internal hop headers are removed, except `X-Cortex-Dest` and `X-Cortex-Token`, which the egress listener needs and removes. An application's own `X-Cortex-Custom` header goes through. **[V 1] [F 3]**
 - Credential removal matches `core/redact` on the same cases.
 - With `access_log` in the chain: a mid-body abort gives `client_canceled`, and a body-limit refusal gives 413 with `proxy_error`. Without `access_log`, the test documents that no deferred row appears (it guards the upstream coupling).
 - gzip and zstd responses parse, and the wire bytes do not change.
@@ -437,13 +441,14 @@ The Go binaries are pure Go (`CGO_ENABLED=0`). On Linux they are static musl bin
   - item 7: fail closed at startup.
   - item 8: a 65 s silence mid-stream.
   - item 9: more than 10 MiB each way.
-- **No `X-Cortex-*` header reaches the origin.** The mock origin fails the test when it sees one. **[PR 1]**
+- **No internal hop header reaches the origin**, and an application's own `X-Cortex-Custom` header does, as in direct mode. The mock origin checks both. **[PR 1] [F 3]**
+- **A tokenless request to `:47605` gets 403**, and no row appears in any session. **[F 1]**
 - **A client that sends `Accept-Encoding: gzip, deflate, br`** to an origin that prefers `br` gets a parsed row (tokens, cost) and a decoded body, as in direct mode. The origin sees only `gzip`. **[PR 2]**
-- **A 30 MiB request keeps its row.** Its line would go over the cap with the capture, so the capture is dropped (`capture.dropped`). **[PR 3]**
+- **A large request keeps its row.** The fixture is a chat-completions request with about 30 MiB of ASCII message text. The parsed event repeats that text and the capture holds it in base64, so the line is about 70 MiB. The test asserts that the line with its capture is over 64 MiB before it is sent. Then it checks that the capture is dropped (`capture.dropped`) and the row stays. **[PR 3] [F 4]**
 - **Codex's mislabeled SSE** (`chatgpt.com` + `/backend-api/codex/responses`, not `text/event-stream`) streams frame by frame through the gateway on a 2xx, as in direct mode. A 405 from the same endpoint is parsed buffered, not as SSE, so its row has the error detail, and the client gets its `{"detail": …}` body. **[V 2] [R3 6]**
 - A 33 MiB request gets 413 with `proxy_error`, and an uncoded 12 MB buffered response with `Content-Length` gets 502 with `proxy_error`, in both modes. A 3 MB gzip response that decodes to 12 MB gets a row with `statusCode` 502 and `proxy_error` in both modes. In praxis mode its client sees a reset. **[R3 1]** A chunked 12 MB buffered response gets a row with `statusCode` 502 and `proxy_error` in both modes. In praxis mode its client sees a reset instead of a 502. **[V 5] [DR 1]**
 - A Cortex restart does not restart the gateway, and a supervisor exit stops it.
-- **Direct mode against `praxis` mode** on the same mock traffic: the `/v1/sessions` events must be the same, field by field. Three exceptions:
+- **Direct mode against `praxis` mode** on the same mock traffic: the `/v1/sessions` events and the captures (`GET /v1/sessions/{id}/events/{seq}?raw=1`) must be the same, field by field. **[F 2]** Three exceptions:
   - timing fields agree within 50 ms.
   - the `gateway_*` error kinds exist only in `praxis` mode.
   - a buffered response over 10 MB ends with a reset instead of a 502 in two cases (Section 3). The two cases are a chunked body and a coded body whose decoded size is over the cap. The row is the same in both modes. **[DR 1]**
@@ -476,7 +481,7 @@ This section is not built now. It records what the interim parts must allow.
 ### Phase B (praxis#1479 and #1480 in a release)
 
 - The hop sends absolute-form requests over HTTP/1 (Section 4). The egress listener, `X-Cortex-Dest` and the catch-all router entry go away.
-- **The gateway is then the dialer, so the token check moves into it.** `cortex_attribution` refuses a request without a valid `X-Cortex-Token` with 403, before any dial, so `:47605` is not an open proxy for other local processes. The egress allow list still runs in Cortex before the hop. Test: a tokenless absolute-form request never reaches the origin. **[R3 7]**
+- **The gateway is then the dialer.** The token check that `cortex_attribution` already makes in the interim (Section 2) keeps `:47605` from being an open proxy for other local processes. The egress allow list still runs in Cortex before the hop. Test: a tokenless absolute-form request never reaches the origin. **[R3 7]**
 - **Needed upstream first:** a CA and verify option for forward-proxy origination. #1480 uses the system roots only, so users of `upstream_ca_bundle` or `upstream_insecure` would break. **[T F3]**
 
 ### Phase C (#782 and #1447, after phase D)
