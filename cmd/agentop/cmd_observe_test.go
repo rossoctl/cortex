@@ -566,10 +566,10 @@ func TestMain(m *testing.M) {
 		main()
 		return
 	}
-	// Stubs that never turn healthy are the common case here: wait 1/10 of each
-	// health window. Not less: startUnsupervised sees a stub exit only inside its
-	// window, and 1s is far more than a stub needs to exit, even on a loaded CI runner.
-	healthWaitDivisor = 10
+	// Poll a stub's health 10 times as often. The windows stay real: a shorter
+	// window made tests fail on a loaded machine, where a stub can need more than
+	// 1s to answer or to exit.
+	healthPollDivisor = 10
 	os.Exit(m.Run())
 }
 

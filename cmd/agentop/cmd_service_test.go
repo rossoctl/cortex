@@ -496,9 +496,6 @@ func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
 // TestWaitHealthy_TimesOut: install claims success only after the health endpoint
 // answers, because a supervisor reports "loaded" for a proxy that is crash-looping.
 func TestWaitHealthy_TimesOut(t *testing.T) {
-	saved := healthWaitDivisor
-	healthWaitDivisor = 1 // this test is about the real timeout
-	t.Cleanup(func() { healthWaitDivisor = saved })
 	start := time.Now()
 	if waitHealthy("http://127.0.0.1:1/healthz", 1200*time.Millisecond) {
 		t.Error("reported healthy against a closed port")

@@ -55,11 +55,6 @@ func isExitCode(err error, code int) bool {
 // setting up a real systemd --user session, so it can't fall into the same trap.
 func requireRealSystemd(t *testing.T) {
 	t.Helper()
-	// A real proxy under a real systemd needs the real health windows, not
-	// TestMain's shorter ones for stubs.
-	saved := healthWaitDivisor
-	healthWaitDivisor = 1
-	t.Cleanup(func() { healthWaitDivisor = saved })
 	skip := t.Skipf
 	if os.Getenv("AGENTOP_SYSTEMD_TESTS") == "required" {
 		skip = t.Fatalf
