@@ -722,3 +722,36 @@ func TestLayout_DrawerFloorLeavesAUsableTable(t *testing.T) {
 			got, spendDrawerMinHeight)
 	}
 }
+
+// The drawer flag survives a move to the timeline, which cannot host the drawer. Its rows used
+// to stay reserved there and render as blank lines under the band. Through Update and the real
+// keys, because Update is what re-runs layout() on the way in and on the way back.
+func TestLayout_DrawerRowsFollowThePane(t *testing.T) {
+	forceColor(t)
+	m := fitModel(t, paneEvents, 120, 40, cursorRowsFixture(60))
+	closedH := m.bodyHeight
+	m.Update(runeKey('$'))
+	if !m.spendDrawerVisible() || m.bodyHeight >= closedH {
+		t.Fatalf("setup: drawer visible=%v, body %d with it open vs %d closed",
+			m.spendDrawerVisible(), m.bodyHeight, closedH)
+	}
+	openH := m.bodyHeight
+
+	m.Update(runeKey('T'))
+	if m.pane != paneTimeline || !m.spend.expanded {
+		t.Fatalf("setup: pane = %v, expanded = %v", m.pane, m.spend.expanded)
+	}
+	if m.bodyHeight != closedH {
+		t.Errorf("timeline body = %d rows, want %d: the hidden drawer still holds its rows", m.bodyHeight, closedH)
+	}
+	assertFits(t, m, "timeline with the drawer open elsewhere")
+
+	m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.pane != paneEvents || !m.spendDrawerVisible() {
+		t.Fatalf("esc: pane = %v, drawer visible = %v", m.pane, m.spendDrawerVisible())
+	}
+	if m.bodyHeight != openH {
+		t.Errorf("events body = %d rows after the return, want %d", m.bodyHeight, openH)
+	}
+	assertFits(t, m, "events after the return")
+}
