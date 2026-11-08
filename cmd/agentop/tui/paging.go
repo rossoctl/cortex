@@ -33,7 +33,7 @@ type pagingState struct {
 	// recent response. Reaching it means there is nothing left to ask for.
 	serverOldest uint64
 
-	// loading is set while a page request is in flight, so holding [o] down cannot stack
+	// loading is set while a page request is in flight, so holding [↵ on ▲] down cannot stack
 	// requests — each one costs a page of decode.
 	loading bool
 
@@ -43,7 +43,7 @@ type pagingState struct {
 	wantGen uint64
 
 	// fetched counts pages successfully stitched in. Zero means this state is TENTATIVE:
-	// [o] created it but no older page ever arrived, so it must be torn down rather than
+	// [↵ on ▲] created it but no older page ever arrived, so it must be torn down rather than
 	// left suppressing live appends for a timeline that never moved.
 	fetched int
 
@@ -65,7 +65,7 @@ func (m *model) pagedBack(id string) bool {
 	return m.paging[id] != nil
 }
 
-// loadOlderPage is [o]: fetch the page immediately before the oldest event held.
+// loadOlderPage is [↵ on ▲]: fetch the page immediately before the oldest event held.
 //
 // Suspending the live stream for this session is deliberate, and it is why paging has state
 // at all rather than just fetching. Streamed events append to the END of the timeline; once
@@ -89,7 +89,7 @@ func (m *model) loadOlderPage() tea.Cmd {
 
 	// EVERY reason to refuse is checked before any state is created. Creating it first and
 	// validating after left a session paged-back — live appends suppressed, timeline
-	// silently frozen — after a single [o] that could never have fetched anything.
+	// silently frozen — after a single [↵ on ▲] that could never have fetched anything.
 	oldest := own.Seq
 	if oldest == 0 {
 		// A proxy that predates Seq. Paging cannot work against it, and saying so beats
@@ -146,7 +146,7 @@ func (m *model) olderPageCmd(id string, before uint64, heldFrom time.Time, gen u
 	}
 }
 
-// failOlderPage clears the in-flight marker so [o] can be retried, and tears the state down
+// failOlderPage clears the in-flight marker so [↵ on ▲] can be retried, and tears the state down
 // if this was the request that created it.
 func (m *model) failOlderPage(msg olderPageFailedMsg) {
 	st := m.paging[msg.id]
@@ -175,7 +175,7 @@ func (m *model) applyOlderPage(msg olderPageLoadedMsg) {
 		return
 	}
 	// A response from a superseded request. Reachable: [t] tears the state down while a
-	// page is still in flight, the tail snapshot lands, and a fresh [o] builds new state —
+	// page is still in flight, the tail snapshot lands, and a fresh [↵ on ▲] builds new state —
 	// at which point the old response would be stitched in as if it were current. On a
 	// single-event page the timestamp guard below cannot catch that (one event's first and
 	// last timestamps are equal), so the generation is what makes it impossible.

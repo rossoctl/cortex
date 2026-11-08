@@ -406,7 +406,7 @@ func TestDetailSearch_CountsOlderMatches(t *testing.T) {
 	m.rebuildEventsTable()
 	detailsQuery(m, "needle")
 	runAll(m, enter(m))
-	if st := m.searchStatus(paneEvents); st != "[/needle details 1/1] · 1 older (o)" {
+	if st := m.searchStatus(paneEvents); st != "[/needle details 1/1] · 1 older (▲ row)" {
 		t.Errorf("status = %q", st)
 	}
 }

@@ -40,7 +40,7 @@ type detailSearch struct {
 	// hits is the held rows the search checked, by event key: true when either side matched it.
 	hits map[eventKey]bool
 	// last is the newest seq the proxy read, and oldest the oldest seq agentop held, for each
-	// session id it was asked about. A held row older than oldest (a page that `o` loaded) makes
+	// session id it was asked about. A held row older than oldest (a page the ▲ row loaded) makes
 	// the answer stale. A row newer than last (a new event) makes a step that reaches it search
 	// again.
 	last, oldest map[string]uint64
@@ -305,7 +305,7 @@ func (m *model) detailSearchStatus() string {
 	}
 	older := ""
 	if d.older > 0 {
-		older = fmt.Sprintf(" · %d older (o)", d.older)
+		older = fmt.Sprintf(" · %d older (▲ row)", d.older)
 	}
 	rows := m.detailMatchRows()
 	if len(rows) == 0 {

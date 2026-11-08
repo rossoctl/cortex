@@ -159,7 +159,7 @@ func TestDetail_MissingHalfNotes(t *testing.T) {
 		"in flight":     {at.Add(time.Minute), []pipeline.SessionEvent{req}, "waiting for response…"},
 		"lost":          {at.Add(20 * time.Minute), []pipeline.SessionEvent{req}, "no response recorded"},
 		"denied":        {at.Add(time.Minute), []pipeline.SessionEvent{denied}, "denied by guard: no upstream call"},
-		"response only": {at.Add(time.Minute), []pipeline.SessionEvent{resp}, "request not loaded: press o in events"},
+		"response only": {at.Add(time.Minute), []pipeline.SessionEvent{resp}, "request not loaded: load older events in events"},
 		"open tunnel":   {at.Add(6 * time.Hour), []pipeline.SessionEvent{tunnel}, "no close recorded yet"},
 	} {
 		if text := detailText(openDetail(t, tc.now, tc.events...)); !strings.Contains(text, tc.want) {

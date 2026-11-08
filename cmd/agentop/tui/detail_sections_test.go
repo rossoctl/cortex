@@ -39,7 +39,7 @@ func TestSectionTree_FoldsAsOne(t *testing.T) {
 }
 
 func TestSectionTree_MissingHalfShowsNote(t *testing.T) {
-	sec, _ := sectionTree("request", "━━ REQUEST", nil, nil, "request not loaded: press o in events")
+	sec, _ := sectionTree("request", "━━ REQUEST", nil, nil, "request not loaded: load older events in events")
 	ls := sectionLines(t, sec, foldState{})
 	if len(ls) != 2 || !strings.Contains(stripANSI(ls[1].text), "request not loaded") {
 		t.Errorf("lines = %v, want the title and the note", lineTexts(ls))
