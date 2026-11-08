@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/rossoctl/cortex/core/clientstate"
@@ -157,20 +158,30 @@ var managedKeys = []string{
 // CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC was set because auto-update downloads
 // overran the proxy's body cap (#940). downloads.claude.ai is a passthrough host now,
 // and the variable also stopped auto-updates and feature flags (#1729).
-var retiredKeys = []string{envNoTelem}
+// Each key maps to the value the older enable wrote.
+var retiredKeys = map[string]string{envNoTelem: "1"}
 
 // ownedRetired is the retired keys in env that the record shows Cortex wrote and nobody
 // changed since, each with its value before enable: nil means it was absent. A key whose
 // value before enable is the one it holds now is left out: putting it back changes
 // nothing, and the record forgets it on the next write of Written.
+//
+// A record from before v0.9.0 has no Written. There the key is Cortex's when Prior holds
+// it and it still has the value the older enable wrote: the rule changedSinceEnable
+// applies to the managed keys. Without it, topUpWritten would write a Written that
+// lacks the key, and no later run could prove the key was Cortex's.
 func ownedRetired(st *managedState, env map[string]string) map[string]*string {
 	out := map[string]*string{}
 	if st == nil {
 		return out
 	}
-	for _, k := range retiredKeys {
+	for k, old := range retiredKeys {
 		cur, set := env[k]
 		w, recorded := st.Written[k]
+		if st.Written == nil {
+			_, recorded = st.Prior[k]
+			w = old
+		}
 		if prior := st.Prior[k]; set && recorded && cur == w && (prior == nil || *prior != cur) {
 			out[k] = prior
 		}
@@ -448,10 +459,8 @@ func planClaudeCodeEnable(settingsPath, cortexCfgPath, statePath string) (claude
 	if st, _ := readState(statePath); statePath != "" && st != nil && st.Settings == settingsPath {
 		pl.retire = ownedRetired(st, env)
 	}
-	for _, k := range retiredKeys {
-		if _, ok := pl.retire[k]; ok {
-			pl.changes = append(pl.changes, "  -"+k)
-		}
+	for _, k := range slices.Sorted(maps.Keys(pl.retire)) {
+		pl.changes = append(pl.changes, "  -"+k)
 	}
 	return pl, nil
 }
@@ -677,12 +686,7 @@ func planClaudeCodeDisable(settingsPath, statePath string) (claudeCodeDisablePla
 		pl.present = append(pl.present, k)
 	}
 	// A retired key is ours only by the record, never by the remove-outright fallback.
-	owned := ownedRetired(pl.st, env)
-	for _, k := range retiredKeys {
-		if _, ok := owned[k]; ok {
-			pl.present = append(pl.present, k)
-		}
-	}
+	pl.present = append(pl.present, slices.Sorted(maps.Keys(ownedRetired(pl.st, env)))...)
 	return pl, nil
 }
 

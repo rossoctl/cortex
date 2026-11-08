@@ -122,3 +122,42 @@ func TestClaudeCodeDisable_LeavesARetiredKeySetAfterRetirement(t *testing.T) {
 		t.Errorf("%s = %q, want the user's later \"1\" left alone", envNoTelem, got)
 	}
 }
+
+// A record from before v0.9.0 has no Written. The key counts as Cortex's, as the
+// managed keys do under such a record (changedSinceEnable).
+func TestClaudeCodeEnable_RetiresTheKeyUnderARecordWithoutWritten(t *testing.T) {
+	settings, cfg, state := olderEnable(t, nil)
+	st, _ := readState(state)
+	st.Written = nil
+	if err := writeState(state, *st); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := claudeCodeEnable2(settings, cfg, state, true, &out, &errb); code != 0 {
+		t.Fatalf("enable: %s", errb.String())
+	}
+	if _, ok := readEnv(t, settings)[envNoTelem]; ok {
+		t.Errorf("%s survived an enable over a record without Written:\n%s", envNoTelem, out.String())
+	}
+}
+
+// install.sh --claude-code runs setup on every upgrade, so setup is the path that
+// reaches most installs, not the enable command.
+func TestSetup_RetiresTheKeyAnOlderEnableWrote(t *testing.T) {
+	sc := newSetupScene(t, ok200)
+	sc.setUp(t, "--claude-code")
+	settings, state := filepath.Join(sc.home, settingsRel), filepath.Join(sc.home, stateRel)
+	handEdit(t, settings, map[string]string{envNoTelem: "1"})
+	st, err := readState(state)
+	if err != nil || st == nil {
+		t.Fatalf("no record: %v", err)
+	}
+	st.Written[envNoTelem], st.Prior[envNoTelem] = "1", nil
+	if err := writeState(state, *st); err != nil {
+		t.Fatal(err)
+	}
+	out := sc.setUp(t, "--claude-code")
+	if _, ok := readEnv(t, settings)[envNoTelem]; ok {
+		t.Errorf("%s survived the setup run that retires it:\n%s", envNoTelem, out)
+	}
+}
