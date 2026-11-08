@@ -375,8 +375,11 @@ Smaller pull requests are typically easier to review and merge. If your pull req
 - `cmd/agentop`'s tests run one at a time, and a full run takes about 6 minutes on a
   Mac. `scripts/dev/go-test-shards.sh cmd/agentop` runs them as parallel processes
   (about 2 minutes). Add `-short` while you change code (about 20 s): it skips the
-  setup, service, doctor and uninstall scenes. Run the full suite before you push, and
-  whenever you change the code those scenes test. CI always runs the full suite.
+  setup, service, doctor and uninstall scenes. The script tests only the root package.
+  Before you push, and whenever you change the code those scenes test, run the full
+  suite with `-race`. Then, from `cmd/agentop`, run the subpackages with
+  `go test -race $(go list ./... | grep -v 'agentop$')`. CI always runs
+  `go test -race ./...`.
 - Apache 2.0 license header in all Go files
 
 ### Python Code (keycloak_sync.py, sparc-service, demo scripts)

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -149,6 +150,10 @@ func TestUpdateScriptExitsWithTheInstallersStatusOnInterrupt(t *testing.T) {
 	dash, err := exec.LookPath("dash")
 	if err != nil {
 		t.Skip("no dash")
+	}
+	if signal.Ignored(os.Interrupt) {
+		// A shell cannot trap a signal it started with ignored, as under a background job.
+		t.Skip("SIGINT is ignored in this process")
 	}
 	installStub(t, "sh", "#!"+dash+"\nexec "+dash+" \"$@\"\n")
 	installStub(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"trap 'exit 3' INT\" 'echo ready' 'sleep 5 >/dev/null & wait'\n")

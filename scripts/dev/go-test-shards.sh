@@ -51,7 +51,8 @@ awk -v n="$n" -v out="$tmp/list." '{ print > (out ((NR - 1) % n)) }' "$tmp/all"
 
 # Job control. Without it, a background job starts with SIGINT ignored, and its
 # children inherit that: a test that sends SIGINT to a child it started then sees
-# the signal ignored. With it, each shard has its own process group, so a Ctrl-C
+# the signal ignored. set -m cannot restore SIGINT when the caller of this script
+# already ignores it. With it, each shard has its own process group, so a Ctrl-C
 # at the terminal does not reach the shards: the EXIT trap stops them.
 set -m
 pids=""
@@ -71,7 +72,7 @@ while [ "$i" -lt "$n" ]; do
 		run="^($(paste -sd'|' "$tmp/list.$i"))\$"
 		(
 			rc=0
-			cd "$dir" && "$tmp/pkg.test" -test.timeout=10m ${short:+-test.short} -test.run "$run" >"$tmp/out.$i" 2>&1 || rc=$?
+			cd "$dir" && "$tmp/pkg.test" -test.paniconexit0 -test.timeout=10m ${short:+-test.short} -test.run "$run" >"$tmp/out.$i" 2>&1 || rc=$?
 			echo "$rc" >"$tmp/rc.$i"
 		) &
 		pids="$pids $!"

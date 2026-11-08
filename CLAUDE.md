@@ -312,8 +312,10 @@ re-verify them by hand after a change.
   minutes on a Mac. While you change code, run
   `scripts/dev/go-test-shards.sh -short cmd/agentop` (about 20 s): `-short` skips the
   setup, service, doctor and uninstall scenes. Before you push, run the full suite once
-  with `scripts/dev/go-test-shards.sh cmd/agentop` (about 2 min). Run the full suite
-  also when you change those scenes' code. CI runs the full suite, not `-short`.
+  with `scripts/dev/go-test-shards.sh -race cmd/agentop` (about 2 min). The script
+  tests only the root package, so also run, from `cmd/agentop`:
+  `go test -race $(go list ./... | grep -v 'agentop$')`. Run the full suite also when
+  you change those scenes' code. CI runs `go test -race ./...`, not `-short`.
 - Log with `log/slog`. The binaries log under their own name (`cortex`,
   `cortex-envoy`). The `authbridge-lite` image runs `cortex`, so it logs as `cortex`.
 
