@@ -1322,13 +1322,19 @@ func (m *model) onOlderRow() bool {
 	return m.eventsTbl.Cursor() == 0 && m.olderNotice() != ""
 }
 
-// loadOlderFromRow is Enter on the older-events row. It pins the cursor to the event that
-// was first, so the page lands above it and the operator keeps their place.
+// loadOlderFromRow is Enter on the older-events row. It pins the cursor to the first row
+// that has an event, so the page lands above it and the operator keeps their place. A
+// subagent header has no event, so it cannot be the pin. It pins only when a load starts:
+// a pin from a refused load moves the cursor on the next rebuild.
 func (m *model) loadOlderFromRow() tea.Cmd {
-	if len(m.visibleRows) > 1 {
-		m.selectedEventKey = keyOf(m.visibleRows[1].event)
+	cmd := m.loadOlderPage()
+	if cmd == nil {
+		return nil
 	}
-	return m.loadOlderPage()
+	if i := slices.IndexFunc(m.visibleRows, func(r eventRow) bool { return r.event != nil }); i >= 0 {
+		m.selectedEventKey = keyOf(m.visibleRows[i].event)
+	}
+	return cmd
 }
 
 // identityBannerHeightFor is how many rows layout must give up for the banner: the height of

@@ -243,6 +243,46 @@ func TestOlderRow_StaysFirstUnderASort(t *testing.T) {
 	}
 }
 
+// When the first row under the older row is a subagent header, which has no event, the load
+// keeps the cursor on the first row that has one, not on the older row above the new page.
+func TestOlderRow_LoadKeepsPlaceUnderASubagentHeader(t *testing.T) {
+	m := olderRowModel(t)
+	for i := range 3 {
+		m.events["sess-1"][i].Subagent = "a1"
+	}
+	m.rebuildEventsTable()
+	if _, ok := m.headerRows[1]; !ok {
+		t.Fatal("row 1 is not the subagent header")
+	}
+	setCursorVisible(&m.eventsTbl, 0)
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	st := m.paging["sess-1"]
+	if st == nil {
+		t.Fatal("Enter on the older row did not start a page load")
+	}
+	m.Update(olderPageLoadedMsg{id: "sess-1", gen: st.wantGen, events: pagedEvents(491, 10), serverOldest: 1})
+	if e := m.selectedEvent(); e == nil || e.Seq != 504 {
+		t.Errorf("after the load the cursor is on %+v (row %d), want the first main event (Seq 504)", e, m.eventsTbl.Cursor())
+	}
+}
+
+// Enter on the older row that starts no load leaves the cursor there, through later rebuilds.
+func TestOlderRow_RefusedLoadKeepsTheCursor(t *testing.T) {
+	m := olderRowModel(t)
+	for i := range m.events["sess-1"] {
+		m.events["sess-1"][i].Seq = 0 // a proxy that predates Seq: loadOlderPage refuses
+	}
+	m.rebuildEventsTable()
+	setCursorVisible(&m.eventsTbl, 0)
+	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
+		t.Fatal("a proxy with no Seq started a page load")
+	}
+	m.rebuildEventsTable() // the next poll or streamed event
+	if !m.onOlderRow() {
+		t.Errorf("the cursor moved to row %d with no key press", m.eventsTbl.Cursor())
+	}
+}
+
 // The older row replaced the o key.
 func TestOKey_NoLongerLoadsOlder(t *testing.T) {
 	m := olderRowModel(t)
