@@ -64,6 +64,24 @@ func installStub(t *testing.T, name, body string) {
 	}
 }
 
+// installFalse puts name on PATH as a link to false(1): exit 1 and no output, like
+// the stub "#!/bin/sh\nexit 1", without the cost of a shell start on each call.
+func installFalse(t *testing.T, name string) {
+	t.Helper()
+	target, err := exec.LookPath("false")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if got, err := exec.LookPath(name); err != nil || got != filepath.Join(dir, name) {
+		t.Fatalf("stub not reachable: LookPath(%q) = %q, %v", name, got, err)
+	}
+}
+
 // noSystemctlOnPath points PATH at an empty directory, so exec.LookPath("systemctl")
 // fails the same way it would on a box with no systemd at all. Call this instead
 // of, never after, fakeSystemctl/fakeLoginctl/installStub in the same subtest: it

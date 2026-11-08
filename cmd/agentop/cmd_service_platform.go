@@ -504,6 +504,10 @@ func stopPID(pid int) error {
 	return fmt.Errorf("still alive after 18s")
 }
 
+// healthPollDivisor divides waitHealthy's poll interval, never its window. It is 1
+// in agentop. Tests set it, so that a stub that answers soon is seen soon.
+var healthPollDivisor time.Duration = 1
+
 func waitHealthy(url string, within time.Duration) bool {
 	c := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(within)
@@ -515,7 +519,7 @@ func waitHealthy(url string, within time.Duration) bool {
 				return true
 			}
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond / healthPollDivisor)
 	}
 	return false
 }

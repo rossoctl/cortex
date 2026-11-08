@@ -58,7 +58,7 @@ esac
 exit 0
 `)
 	installStub(t, "loginctl", "#!/bin/sh\necho Linger=yes\n")
-	installStub(t, "lsof", "#!/bin/sh\nexit 1\n")
+	installFalse(t, "lsof")
 	return loaded
 }
 

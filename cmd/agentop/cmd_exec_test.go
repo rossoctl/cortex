@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -641,19 +640,16 @@ func TestRunExec_PreservesArgv0AsTyped(t *testing.T) {
 	dir := t.TempDir()
 	// A compiled probe, not a shell script: /bin/sh reports $0 from its shebang
 	// invocation rather than the argv[0] it was handed, so a script cannot observe
-	// what is under test here.
-	src := filepath.Join(dir, "argvprobe.go")
-	if err := os.WriteFile(src, []byte(
-		"package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc main() { fmt.Printf(\"argv0=%s\\n\", os.Args[0]) }\n"),
-		0o600); err != nil {
+	// what is under test here. The probe is this test binary in TestMain's
+	// childArgv0 mode, under the name argvprobe.
+	self, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(dir, "argvprobe")
-	build := exec.Command("go", "build", "-o", bin, src)
-	build.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Skipf("cannot build the probe here: %v\n%s", err, out)
+	if err := os.Symlink(self, filepath.Join(dir, "argvprobe")); err != nil {
+		t.Fatal(err)
 	}
+	t.Setenv(childArgv0, "1")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	var stdout, stderr bytes.Buffer

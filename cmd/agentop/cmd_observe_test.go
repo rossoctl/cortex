@@ -491,6 +491,9 @@ const (
 	// echoSep delimits the echoed argv. A record separator, distinct from argSep, so a round trip
 	// cannot pass by accident just because both sides split on the same byte.
 	echoSep = "\x1e"
+	// childArgv0 makes this binary print the argv[0] it was started with and exit, so a
+	// test can use it as a compiled argv probe without a go build.
+	childArgv0 = "AGENTOP_TEST_ARGV0"
 )
 
 // argSep separates argv entries in childArgs.
@@ -544,6 +547,10 @@ func runAgentopChild(t *testing.T, args ...string) (string, error) {
 // Keyed on an env var rather than on an argument, so the child's argv is agentop's own and
 // carries no test-framework flags.
 func TestMain(m *testing.M) {
+	if os.Getenv(childArgv0) == "1" {
+		fmt.Printf("argv0=%s\n", os.Args[0])
+		return
+	}
 	if os.Getenv(childSentinel) == "1" {
 		argv := []string{"agentop"}
 		if raw := os.Getenv(childArgs); raw != "" {
@@ -559,6 +566,10 @@ func TestMain(m *testing.M) {
 		main()
 		return
 	}
+	// Poll a stub's health 10 times as often. The windows stay real: a shorter
+	// window made tests fail on a loaded machine, where a stub can need more than
+	// 1s to answer or to exit.
+	healthPollDivisor = 10
 	os.Exit(m.Run())
 }
 
