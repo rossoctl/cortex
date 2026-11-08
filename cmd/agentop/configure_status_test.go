@@ -77,7 +77,7 @@ func TestClaudeCodeState_ThreeStates(t *testing.T) {
 		// A settings file holding unrelated env keys is still "not enabled": the
 		// presence of an env block is not the presence of Cortex's keys.
 		{"env block without our keys", `{"env": {"ANTHROPIC_BASE_URL": "https://x"}}`, configureOff, "no Cortex keys"},
-		{"one key of seven", `{"env": {"` + envProxy + `": "http://127.0.0.1:47600"}}`, configurePartial, "1 of 7 keys set"},
+		{"one key of six", `{"env": {"` + envProxy + `": "http://127.0.0.1:47600"}}`, configurePartial, "1 of 6 keys set"},
 		// Not readable JSON is NOT "not enabled": the file exists and says something
 		// agentop cannot parse, so there is no finding to report about its contents.
 		{"not JSON", `{broken`, configureUnknown, "not valid JSON"},

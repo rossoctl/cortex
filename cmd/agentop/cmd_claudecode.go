@@ -146,7 +146,36 @@ func writeState(path string, st managedState) error {
 // the file is touched — notably not ANTHROPIC_BASE_URL or any auth token, which
 // commonly live in the same env block.
 var managedKeys = []string{
-	envProxy, envCACerts, envSSLCert, envGitCA, envRequestsCA, envCurlCA, envNoTelem,
+	envProxy, envCACerts, envSSLCert, envGitCA, envRequestsCA, envCurlCA,
+}
+
+// retiredKeys are keys an older enable wrote and this one does not. Enable and disable
+// take one out only where the ownership record shows Cortex wrote it and it still holds
+// that value: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 is byte-identical to a user's
+// own, so without the record the key is left alone.
+//
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC was set because auto-update downloads
+// overran the proxy's body cap (#940). downloads.claude.ai is a passthrough host now,
+// and the variable also stopped auto-updates and feature flags (#1729).
+var retiredKeys = []string{envNoTelem}
+
+// ownedRetired is the retired keys in env that the record shows Cortex wrote and nobody
+// changed since, each with its value before enable: nil means it was absent. A key whose
+// value before enable is the one it holds now is left out: putting it back changes
+// nothing, and the record forgets it on the next write of Written.
+func ownedRetired(st *managedState, env map[string]string) map[string]*string {
+	out := map[string]*string{}
+	if st == nil {
+		return out
+	}
+	for _, k := range retiredKeys {
+		cur, set := env[k]
+		w, recorded := st.Written[k]
+		if prior := st.Prior[k]; set && recorded && cur == w && (prior == nil || *prior != cur) {
+			out[k] = prior
+		}
+	}
+	return out
 }
 
 // bundleKeys are the managed keys that must point at the CA+roots bundle rather
@@ -187,10 +216,11 @@ Usage:
   agentop configure claude-code disable [--yes] [--settings PATH]
   agentop configure claude-code status  [--settings PATH]
 
-enable writes HTTPS_PROXY, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC and a set of
-CA variables into the "env" block of ~/.claude/settings.json, reading the
-addresses from ~/.cortex/config.yaml so they always match the running proxy.
-Afterwards, plain "claude" goes through Cortex.
+enable writes HTTPS_PROXY and a set of CA variables into the "env" block of
+~/.claude/settings.json, reading the addresses from ~/.cortex/config.yaml so they
+always match the running proxy. Afterwards, plain "claude" goes through Cortex.
+It also removes CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC where an older enable
+set it, because that variable stops Claude Code's auto-updates.
 
 The CA variables cover the tools Claude Code spawns, not just Claude Code
 itself: anything it runs inherits HTTPS_PROXY and so must be able to verify the
@@ -332,8 +362,7 @@ func wantedFromLoaded(cfg *config.Config, source string) (map[string]string, err
 	out := map[string]string{
 		// JoinHostPort, not concatenation: an IPv6 literal must keep its brackets
 		// to be a valid URL authority.
-		envProxy:   "http://" + net.JoinHostPort(host, port),
-		envNoTelem: "1",
+		envProxy: "http://" + net.JoinHostPort(host, port),
 	}
 	// Nil-checked: tls_bridge is an omitempty pointer, so a config without the
 	// block at all leaves it nil and dereferencing it segfaulted — `agentop
@@ -366,15 +395,17 @@ func wantedFromLoaded(cfg *config.Config, source string) (map[string]string, err
 // has changed.
 type claudeCodePlan struct {
 	settingsPath string
-	doc          map[string]any    // the settings file as read; apply mutates it
-	env          map[string]string // its env block before the change
-	want         map[string]string // the managed values enable writes
-	changes      []string          // "  KEY=VALUE" per value that differs; none = already enabled
+	doc          map[string]any     // the settings file as read; apply mutates it
+	env          map[string]string  // its env block before the change
+	want         map[string]string  // the managed values enable writes
+	changes      []string           // "  KEY=VALUE" per value that differs, "  -KEY" per retired key; none = already enabled
+	retire       map[string]*string // retired keys apply takes out, each with the value to put back (nil: delete)
 }
 
 // planClaudeCodeEnable runs the checks that can refuse an enable, in the order enable
-// made them. An error is the refusal, worded to follow "agentop: ".
-func planClaudeCodeEnable(settingsPath, cortexCfgPath string) (claudeCodePlan, error) {
+// made them. An error is the refusal, worded to follow "agentop: ". statePath is the
+// ownership record, read only to find retired keys Cortex wrote; "" means none.
+func planClaudeCodeEnable(settingsPath, cortexCfgPath, statePath string) (claudeCodePlan, error) {
 	want, cfg, err := wantedFromConfig(cortexCfgPath)
 	if err != nil {
 		return claudeCodePlan{}, err
@@ -411,6 +442,15 @@ func planClaudeCodeEnable(settingsPath, cortexCfgPath string) (claudeCodePlan, e
 	for _, k := range managedKeys {
 		if env[k] != want[k] {
 			pl.changes = append(pl.changes, fmt.Sprintf("  %s=%s", k, want[k]))
+		}
+	}
+	// An unreadable record is no proof of ownership, so it retires nothing.
+	if st, _ := readState(statePath); statePath != "" && st != nil && st.Settings == settingsPath {
+		pl.retire = ownedRetired(st, env)
+	}
+	for _, k := range retiredKeys {
+		if _, ok := pl.retire[k]; ok {
+			pl.changes = append(pl.changes, "  -"+k)
 		}
 	}
 	return pl, nil
@@ -525,11 +565,18 @@ func applyClaudeCodeEnable(pl claudeCodePlan, statePath string, stderr io.Writer
 	for _, k := range managedKeys {
 		raw[k] = pl.want[k]
 	}
+	for k, prior := range pl.retire {
+		if prior == nil {
+			delete(raw, k)
+		} else {
+			raw[k] = *prior
+		}
+	}
 	return writeSettings(pl.settingsPath, pl.doc)
 }
 
 func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, stdout, stderr io.Writer) int {
-	pl, err := planClaudeCodeEnable(settingsPath, cortexCfgPath)
+	pl, err := planClaudeCodeEnable(settingsPath, cortexCfgPath, statePath)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
@@ -551,8 +598,21 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 	// needs to say what changes and that the file is backed up; the rest (how to undo
 	// it, that `claude` needs no env vars afterwards) belongs in the closing summary,
 	// where it was also being printed.
-	fmt.Fprintf(stdout, "Adds to the \"env\" block of %s:\n%s\n",
-		settingsPath, strings.Join(pl.changes, "\n"))
+	var adds, removes []string
+	for _, c := range pl.changes {
+		if k, ok := strings.CutPrefix(c, "  -"); ok {
+			removes = append(removes, k)
+		} else {
+			adds = append(adds, c)
+		}
+	}
+	if len(adds) > 0 {
+		fmt.Fprintf(stdout, "Adds to the \"env\" block of %s:\n%s\n", settingsPath, strings.Join(adds, "\n"))
+	}
+	if len(removes) > 0 {
+		fmt.Fprintf(stdout, "Removes from the \"env\" block of %s, as Cortex no longer sets it:\n  %s\n",
+			settingsPath, strings.Join(removes, "\n  "))
+	}
 	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak\n\n", settingsPath)
 	if !yes && !claudeCodeConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
@@ -615,6 +675,13 @@ func planClaudeCodeDisable(settingsPath, statePath string) (claudeCodeDisablePla
 			continue
 		}
 		pl.present = append(pl.present, k)
+	}
+	// A retired key is ours only by the record, never by the remove-outright fallback.
+	owned := ownedRetired(pl.st, env)
+	for _, k := range retiredKeys {
+		if _, ok := owned[k]; ok {
+			pl.present = append(pl.present, k)
+		}
 	}
 	return pl, nil
 }
@@ -813,13 +880,13 @@ func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr
 	return 0
 }
 
-// claudeCodeStatus prints the seven keys and the verdict, and changes nothing.
+// claudeCodeStatus prints the six keys and the verdict, and changes nothing.
 //
 // The verdict comes from claudeCodeState (configure_status.go), which is the same
 // value `agentop configure status` renders as one table row — so the paragraph here
 // and the row there cannot disagree about whether Claude Code is routed. The per-key
 // lines stay local to this function: they are what makes this command worth running
-// over the table, and the table has no room for seven of them.
+// over the table, and the table has no room for six of them.
 func claudeCodeStatus(settingsPath string, stdout io.Writer) int {
 	doc, err := readSettings(settingsPath)
 	st := claudeCodeStateFrom(settingsPath, doc, err)
@@ -853,8 +920,6 @@ func claudeCodeStatus(settingsPath string, stdout io.Writer) int {
 // overwrite guard.
 func isCortexValue(key, val string) bool {
 	switch key {
-	case envNoTelem:
-		return val == "1"
 	case envCACerts, envSSLCert, envGitCA, envRequestsCA, envCurlCA:
 		return strings.Contains(val, ".cortex"+string(os.PathSeparator)) || strings.Contains(val, "cortex-ca")
 	case envProxy:

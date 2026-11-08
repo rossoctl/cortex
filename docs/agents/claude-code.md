@@ -30,7 +30,6 @@ agents, so nothing needs exporting in a shell. The addresses come from
 | `GIT_SSL_CAINFO` | `~/.cortex/ca/bundle.crt` |
 | `REQUESTS_CA_BUNDLE` | `~/.cortex/ca/bundle.crt` |
 | `CURL_CA_BUNDLE` | `~/.cortex/ca/bundle.crt` |
-| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | `1`, see [Known issues](#known-issues) |
 
 Every other setting is left as it was, including any other `env` entry, such as
 `ANTHROPIC_BASE_URL` or an auth token. `enable` refuses to overwrite a value someone
@@ -46,7 +45,7 @@ The same goes after `disable`. While enabled, Claude Code needs Cortex running,
 because its requests go to the proxy: `disable` is the off switch, and `agentop
 service status` says whether the proxy is up.
 
-**The record.** The first `enable` records what each of the seven keys held before, in
+**The record.** The first `enable` records what each of the six keys held before, in
 `~/.cortex/claude-code-state.json`. `disable` removes only the keys `enable` added, and
 puts back any value it recorded. It does not change a key whose value changed after
 `enable`, and it names each key it did not change. `agentop uninstall` runs the same `disable`.
@@ -58,7 +57,7 @@ first `enable`. It does not hold a change you made after that.
 
 ### Undoing it by hand
 
-If `agentop` is already gone, delete the seven keys from the `env` block of
+If `agentop` is already gone, delete the six keys from the `env` block of
 `~/.claude/settings.json` yourself, **before** deleting `~/.cortex`. The four that point
 at `bundle.crt` replace their tools' trust stores, so with the file gone git, curl and
 Python fail every TLS call, including ones that never touch Cortex.
@@ -262,12 +261,14 @@ as Claude Code asked. A file was written and read back on each.
 
 ## Known issues
 
-- **Nonessential traffic is switched off.** `enable` sets
-  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which Claude Code documents as turning
-  off its auto-updater, the `/bug` command, error reporting and telemetry. To keep them,
-  delete that key from the `env` block after `enable`. `status` then reports 6 of 7 keys
-  set, `disable` still works, and the next `enable` adds the key back
-  ([#1205](https://github.com/rossoctl/cortex/issues/1205)).
+- **Older versions turned off auto-updates.** Before
+  [#1729](https://github.com/rossoctl/cortex/issues/1729), `enable` also set
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. That variable stops Claude Code's
+  auto-updates and feature flags, as well as its telemetry. Cortex does not need it: it
+  tunnels the updater's downloads from `downloads.claude.ai`. `enable`, `disable` and
+  `agentop setup` remove the key when the record shows that Cortex wrote it. With no
+  record, they cannot tell it from a value you set, so they leave it: delete it by hand
+  if you did not set it.
 - **A conversation moved to a new session id leaves its server.** Cortex keeps a
   conversation on its server by its session id's pin, and Claude Code's
   continued-in hand-off and `claude daemon`'s forked background jobs carry a

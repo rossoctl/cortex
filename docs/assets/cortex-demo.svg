@@ -117,12 +117,10 @@ g.st1{animation:st1 58s linear infinite}
 .rv1_16{animation:rv1_16 58s linear infinite}
 @keyframes rv1_17{0%,26.7956%{visibility:hidden}26.7966%,100%{visibility:visible}}
 .rv1_17{animation:rv1_17 58s linear infinite}
-@keyframes rv1_18{0%,26.8473%{visibility:hidden}26.8483%,100%{visibility:visible}}
+@keyframes rv1_18{0%,29.3818%{visibility:hidden}29.3828%,100%{visibility:visible}}
 .rv1_18{animation:rv1_18 58s linear infinite}
-@keyframes rv1_19{0%,29.4335%{visibility:hidden}29.4345%,100%{visibility:visible}}
+@keyframes rv1_19{0%,29.8990%{visibility:hidden}29.9000%,100%{visibility:visible}}
 .rv1_19{animation:rv1_19 58s linear infinite}
-@keyframes rv1_20{0%,29.9507%{visibility:hidden}29.9517%,100%{visibility:visible}}
-.rv1_20{animation:rv1_20 58s linear infinite}
 @keyframes st2{0%,34.4818%{opacity:0}34.4828%,44.8266%{opacity:1}44.8276%,100%{opacity:0}}
 g.st2{animation:st2 58s linear infinite}
 @keyframes rv2_0{0%,34.4818%{visibility:hidden}34.4828%,100%{visibility:visible}}
@@ -347,11 +345,10 @@ clipPath rect{width:100000px}
 <text class="rv rv1_13" y="292.0"><tspan x="16.0" textLength="411.6" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  GIT_SSL_CAINFO=/Users/you/.cortex/ca/bundle.crt</tspan></text>
 <text class="rv rv1_14" y="310.0"><tspan x="16.0" textLength="445.2" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  REQUESTS_CA_BUNDLE=/Users/you/.cortex/ca/bundle.crt</tspan></text>
 <text class="rv rv1_15" y="328.0"><tspan x="16.0" textLength="411.6" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  CURL_CA_BUNDLE=/Users/you/.cortex/ca/bundle.crt</tspan></text>
-<text class="rv rv1_16" y="346.0"><tspan x="16.0" textLength="369.6" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1</tspan></text>
-<text class="rv rv1_17" y="364.0"><tspan x="16.0" textLength="739.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Nothing else in the file changes; a copy is kept as /Users/you/.claude/settings.json.bak</tspan></text>
-<text class="rv rv1_18" y="382.0"></text>
-<text class="rv rv1_19" y="400.0"><tspan x="16.0" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#d29922">Apply? [y/N] y</tspan></text>
-<text class="rv rv1_20" y="418.0"><tspan x="16.0" textLength="268.8" lengthAdjust="spacingAndGlyphs" fill="#3fb950">Enabled — run `claude` as usual.</tspan></text>
+<text class="rv rv1_16" y="346.0"><tspan x="16.0" textLength="739.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Nothing else in the file changes; a copy is kept as /Users/you/.claude/settings.json.bak</tspan></text>
+<text class="rv rv1_17" y="364.0"></text>
+<text class="rv rv1_18" y="382.0"><tspan x="16.0" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#d29922">Apply? [y/N] y</tspan></text>
+<text class="rv rv1_19" y="400.0"><tspan x="16.0" textLength="268.8" lengthAdjust="spacingAndGlyphs" fill="#3fb950">Enabled — run `claude` as usual.</tspan></text>
 </g>
 <g class="st st2 lbl-sessions">
 <text class="rv rv2_0" y="58.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#6e7681">┌─ ~/work/api ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐</tspan></text>

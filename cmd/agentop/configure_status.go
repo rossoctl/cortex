@@ -221,7 +221,7 @@ func writeConfigureStatusTable(rows []configureStatus, stdout io.Writer) {
 // what it says, which is not the same as reading it and finding nothing.
 //
 // Note this reads only the settings file and never Cortex's config, so "enabled" here
-// means the seven keys are set, not that they point at THIS machine's proxy. That is
+// means the six keys are set, not that they point at THIS machine's proxy. That is
 // the pre-existing contract of `configure claude-code status` (codexStatus's doc
 // comment names it as the difference between the two), and widening it would change
 // what that command reports.

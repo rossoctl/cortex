@@ -320,7 +320,7 @@ func TestClaudeCodeDisable_EveryKeyChangedLeavesSettingsAlone(t *testing.T) {
 	if !strings.Contains(out.String(), "Nothing to remove") {
 		t.Errorf("output does not say there was nothing to remove:\n%s", out.String())
 	}
-	// Not the plain "Nothing to do": seven keys are set, they are just not ours.
+	// Not the plain "Nothing to do": six keys are set, they are just not ours.
 	if strings.Contains(out.String(), "none of the Cortex variables are set") {
 		t.Errorf("output claims no variables are set, but every managed key is:\n%s", out.String())
 	}
@@ -331,11 +331,11 @@ func TestClaudeCodeDisable_EveryKeyChangedLeavesSettingsAlone(t *testing.T) {
 // an unknown value would strand the client on a Cortex the user is turning off, and
 // the next enable records Written and self-heals.
 func TestClaudeCodeDisable_RecordWithoutWrittenStillRemoves(t *testing.T) {
-	settings, _ := fixture(t, `{"env":{"HTTPS_PROXY":"http://127.0.0.1:47600","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}`)
+	settings, _ := fixture(t, `{"env":{"HTTPS_PROXY":"http://127.0.0.1:47600","CURL_CA_BUNDLE":"/x/.cortex/ca/bundle.crt"}}`)
 	state := filepath.Join(t.TempDir(), "state.json")
 	if err := writeState(state, managedState{
 		Settings: settings,
-		Prior:    map[string]*string{envProxy: nil, envNoTelem: nil},
+		Prior:    map[string]*string{envProxy: nil, envCurlCA: nil},
 	}); err != nil {
 		t.Fatal(err)
 	}

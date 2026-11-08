@@ -32,8 +32,7 @@ const (
 )
 
 // openCodeKeys are the variables enable sets: the nine `agentop exec` gives a child, for
-// the reasons execProxyVars and bundleKeys give. Not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
-// which only Claude Code reads. The order is the one enable lists them in and disable
+// the reasons execProxyVars and bundleKeys give. The order is the one enable lists them in and disable
 // changes them in, the proxy first; enable sets them CA first (openCodeApplyOrder).
 var openCodeKeys = append([]string{envProxy, "HTTP_PROXY", "https_proxy", "http_proxy", envCACerts}, bundleKeys...)
 

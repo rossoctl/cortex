@@ -663,7 +663,7 @@ func TestUninstallLeavesAClaudeCodeKeyChangedSinceEnable(t *testing.T) {
 	sc := newUninstallScene(t)
 	settings := filepath.Join(sc.home, settingsRel)
 	// A prior value, so the row has a restore to report alongside the key it leaves.
-	writeHomeFile(t, settings, `{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}`)
+	writeHomeFile(t, settings, `{"env":{"`+envCurlCA+`":"`+userCurlCA+`"}}`)
 	sc.setUp(t, "--claude-code")
 	const edited = "http://127.0.0.1:9999"
 	handEdit(t, settings, map[string]string{envProxy: edited})
@@ -672,18 +672,18 @@ func TestUninstallLeavesAClaudeCodeKeyChangedSinceEnable(t *testing.T) {
 	// Not "no longer goes through Cortex": the left HTTPS_PROXY still points
 	// somewhere, and the row would be contradicting the note right below it.
 	wantLines(t, code, 1, out,
-		markLine("!", "unrouted")+"removed what Cortex set · restored your "+envNoTelem+"\n",
+		markLine("!", "unrouted")+"removed what Cortex set · restored your "+envCurlCA+"\n",
 		"\n  Left behind:\n    "+envProxy+" in ~/.claude/settings.json, changed since Cortex set "+
 			"them — remove them by hand if you want them gone\n")
 	env := readEnv(t, settings)
 	if env[envProxy] != edited {
 		t.Errorf("%s = %q, want the edit %q left alone", envProxy, env[envProxy], edited)
 	}
-	if env[envNoTelem] != "1" {
-		t.Errorf("%s = %q, want the prior value restored", envNoTelem, env[envNoTelem])
+	if env[envCurlCA] != userCurlCA {
+		t.Errorf("%s = %q, want the prior value restored", envCurlCA, env[envCurlCA])
 	}
 	for _, k := range managedKeys {
-		if k == envProxy || k == envNoTelem {
+		if k == envProxy || k == envCurlCA {
 			continue
 		}
 		if v, ok := env[k]; ok {
@@ -739,17 +739,21 @@ func TestUninstallLeavesEveryClaudeCodeKeyChangedSinceEnable(t *testing.T) {
 	}
 }
 
+// userCurlCA is a CA bundle a user set before setup, in a ".cortex" directory of their
+// own so enable takes it for an older Cortex value and replaces it rather than refusing.
+const userCurlCA = "/opt/team/.cortex/bundle.crt"
+
 // --purge deletes ~/.cortex last. Claude Code's unroute reads the record there,
 // so a value the user had set before setup comes back rather than going.
 func TestUninstallPurgeStillRestoresClaudeCode(t *testing.T) {
 	sc := newUninstallScene(t)
 	settings := filepath.Join(sc.home, settingsRel)
-	const before = `{"model":"opus","env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","FOO":"bar"}}`
+	const before = `{"model":"opus","env":{"` + envCurlCA + `":"` + userCurlCA + `","FOO":"bar"}}`
 	writeHomeFile(t, settings, before)
 	sc.setUp(t, "--claude-code")
 	code, out := sc.uninstall(t, "--yes", "--purge")
 	wantLines(t, code, 0, out,
-		markLine("✓", "unrouted")+"Claude Code no longer goes through Cortex · restored your CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC\n",
+		markLine("✓", "unrouted")+"Claude Code no longer goes through Cortex · restored your "+envCurlCA+"\n",
 		markLine("✓", "purged")+"~/.cortex\n")
 	if strings.Contains(out, "cannot read the record") {
 		t.Errorf("the unroute could not read the record:\n%s", out)
@@ -769,7 +773,7 @@ func TestUninstallPurgeStillRestoresClaudeCode(t *testing.T) {
 	}
 }
 
-// Five of the seven managed keys name a file under ~/.cortex, and --purge deletes
+// Five of the six managed keys name a file under ~/.cortex, and --purge deletes
 // that directory. A key the user edited since enable is theirs, so disable leaves
 // it set — and with the directory gone it would point at nothing: silently for
 // NODE_EXTRA_CA_CERTS, which only extends the trust store, and by failing every
@@ -1368,18 +1372,18 @@ func TestUninstallNamesTheFixForEachFailure(t *testing.T) {
 			readOnly(t, bin(sc))
 			return "rm ~/.local/bin/agentop ~/.local/bin/cortex"
 		}},
-		// The user had CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC set before setup: the
-		// fix restores it from the record rather than removing it with Cortex's keys.
+		// The user had CURL_CA_BUNDLE set before setup: the fix restores it from the
+		// record rather than removing it with Cortex's keys.
 		{"Claude Code settings in a read-only dir", "unrouted", []string{"--claude-code"}, nil, false, func(t *testing.T, sc setupScene) string {
 			settings := filepath.Join(sc.home, settingsRel)
 			doc, err := readSettings(settings)
 			if err != nil {
 				t.Fatal(err)
 			}
-			remove := setKeysBut(t, doc, envNoTelem)
+			remove := setKeysBut(t, doc, envCurlCA)
 			readOnly(t, filepath.Dir(settings))
 			return `in ~/.claude/settings.json, remove the "env" keys ` + strings.Join(remove[:3], ", ") + ", …\n" +
-				"and restore " + envNoTelem + " — your earlier values are in ~/.cortex/" + clientstate.RelPath
+				"and restore " + envCurlCA + " — your earlier values are in ~/.cortex/" + clientstate.RelPath
 		}},
 		{"IBM Bob", "unrouted", nil, nil, true, func(t *testing.T, sc setupScene) string {
 			bob, err := bobSettingsPath(sc.home)
@@ -1416,7 +1420,7 @@ func TestUninstallNamesTheFixForEachFailure(t *testing.T) {
 			var pid int
 			stopProcessOnCleanup(t, &pid)
 			if c.name == "Claude Code settings in a read-only dir" {
-				writeHomeFile(t, filepath.Join(sc.home, settingsRel), `{"env":{"`+envNoTelem+`":"1"}}`)
+				writeHomeFile(t, filepath.Join(sc.home, settingsRel), `{"env":{"`+envCurlCA+`":"`+userCurlCA+`"}}`)
 			}
 			sc.setUp(t, c.flags...)
 			pid = readPIDFile(filepath.Join(sc.home, ".cortex", "proxy.pid"))
