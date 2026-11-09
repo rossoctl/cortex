@@ -351,7 +351,9 @@ fn gateway(origin: &Origin, ingest: &Ingest, access_log: bool) -> Gateway {
         .spawn()
         .expect("start cortex-gateway");
     let deadline = Instant::now() + WAIT;
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
+    // A connect alone is not proof: during startup the port accepts and then
+    // refuses again. Only the gateway answers a tokenless request with 403.
+    while !answers_403(port) {
         if let Ok(Some(st)) = child.try_wait() {
             let log = std::fs::read_to_string(dir.join("gateway.log")).unwrap_or_default();
             panic!("cortex-gateway exited with {st}:\n{log}");
@@ -360,6 +362,15 @@ fn gateway(origin: &Origin, ingest: &Ingest, access_log: bool) -> Gateway {
         std::thread::sleep(Duration::from_millis(20));
     }
     Gateway { child, port, dir }
+}
+
+fn answers_403(port: u16) -> bool {
+    let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) else {
+        return false;
+    };
+    let _ = s.set_read_timeout(Some(QUIET));
+    s.write_all(&head("GET", "/", &[], 0)).is_ok()
+        && read_head(&mut s).is_some_and(|(h, _)| h.split_whitespace().nth(1) == Some("403"))
 }
 
 impl Gateway {
