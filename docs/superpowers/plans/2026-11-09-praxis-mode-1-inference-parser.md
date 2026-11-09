@@ -148,6 +148,9 @@ Required content, so that each case exercises its dialect's main paths:
 - Modify: `praxis/filters/src/parse/mod.rs`
 
 **Interfaces:**
+
+> Note after review: PR #1741 removed `coding_of` and `is_known_mislabeled_sse`, with the `mislabeled` test. They move to #1719 with their caller. The errors became `DecodeError` (`CapExceeded`, `Corrupt`), and `FrameTooLarge` carries the frames completed before the error (`completed`).
+
 - Produces in `parse::sse`:
   - `pub struct FrameReader` — `new(max_frame: usize) -> Self`, `push(&mut self, chunk: &[u8]) -> Result<Vec<Vec<u8>>, FrameTooLarge>` (the data payloads of the events that this chunk completed), `finish(&mut self) -> Result<Vec<Vec<u8>>, FrameTooLarge>` (an event left open at EOF, as `sseframe.Reader.ReadFrame` gives it at EOF).
   - `pub struct FrameTooLarge;` with `Display` = the frame error text from Global Constraints.

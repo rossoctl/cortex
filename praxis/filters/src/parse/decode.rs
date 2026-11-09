@@ -173,6 +173,23 @@ impl Decoder {
     }
 }
 
+/// Ends one gzip member and gives its held output. try_finish fails on a
+/// truncated member or a bad CRC32 or ISIZE: `write` only collects the trailer.
+fn finish_gzip_member(
+    d: &mut flate2::write::GzDecoder<Held>,
+    emit: &mut Sink<'_>,
+) -> Result<(), DecodeError> {
+    loop {
+        let r = d.try_finish();
+        emit(&std::mem::take(&mut d.get_mut().0))?;
+        match r {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(_) => return Err(DecodeError::Corrupt),
+        }
+    }
+}
+
 impl Inner {
     fn feed(&mut self, chunk: &[u8], emit: &mut Sink<'_>) -> Result<(), DecodeError> {
         match self {
@@ -187,6 +204,8 @@ impl Inner {
                         // Bytes after the end of a gzip member: the next member starts
                         // here (RFC 1952 2.2). Go's gzip.Reader reads every member.
                         Ok(0) if !input.is_empty() => {
+                            // Check this member's CRC32 and ISIZE before the next one.
+                            finish_gzip_member(d, emit)?;
                             **d = flate2::write::GzDecoder::new(Held::default());
                         }
                         // flate2 writes its output at the start of the next
@@ -222,16 +241,7 @@ impl Inner {
     fn end(&mut self, emit: &mut Sink<'_>) -> Result<(), DecodeError> {
         match self {
             Inner::Identity => Ok(()),
-            Inner::Gzip(d) => loop {
-                // try_finish fails on a truncated stream or a bad CRC.
-                let r = d.try_finish();
-                emit(&std::mem::take(&mut d.get_mut().0))?;
-                match r {
-                    Ok(()) => return Ok(()),
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(_) => return Err(DecodeError::Corrupt),
-                }
-            },
+            Inner::Gzip(d) => finish_gzip_member(d, emit),
             Inner::Zstd { hint, .. } => {
                 // feed already gave all output that the input made. A nonzero
                 // hint means the last frame wants more input.
@@ -506,6 +516,17 @@ mod tests {
             decode_all(Coding::Gzip, MAX_BODY_SIZE, &padded, 4096).1,
             Some(DecodeError::Corrupt)
         );
+        // A bad CRC32 or ISIZE in a member that is not the last: Corrupt, as in Go.
+        for at in [8, 1] {
+            let mut bad = gzip(&one);
+            let n = bad.len();
+            bad[n - at] ^= 0xff;
+            let coded = [bad, gzip(&two)].concat();
+            for chunk in [1, 7, 4096, coded.len()] {
+                let (_, err) = decode_all(Coding::Gzip, MAX_BODY_SIZE, &coded, chunk);
+                assert_eq!(err, Some(DecodeError::Corrupt), "byte -{at}, chunk {chunk}");
+            }
+        }
     }
 
     #[test]
