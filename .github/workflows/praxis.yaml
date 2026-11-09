@@ -1,0 +1,132 @@
+# Praxis - fmt, clippy and tests for the Rust workspace in praxis/
+#
+# Runs when praxis/ changes, or when the Go code that praxis/ ports changes.
+# Only a change to praxis/ (or to this file) makes a failure block the PR.
+# A Go-only change runs the steps too, so drift shows, but does not block.
+#
+name: Praxis
+
+on:
+  pull_request:
+    branches:
+      - main
+      - "release-*"
+    paths:
+      - "praxis/**"
+      - ".github/workflows/praxis.yaml"
+      - "core/parse/**"
+      - "core/internal/parsercommon/**"
+      - "core/model/extensions.go"
+      - "core/pipeline/testdata/**"
+      - "core/plugins/inferenceparser/**"
+      - "core/plugins/mcpparser/**"
+      - "core/plugins/a2aparser/**"
+      - "core/listener/internal/sseframe/**"
+      - "core/internal/parsefixture/**"
+      - "core/model/client.go"
+      - "core/cost/settle/settle.go"
+      - "core/listener/forwardproxy/server.go"
+  push:
+    branches:
+      - main
+    paths:
+      - "praxis/**"
+      - ".github/workflows/praxis.yaml"
+      - "core/parse/**"
+      - "core/internal/parsercommon/**"
+      - "core/model/extensions.go"
+      - "core/pipeline/testdata/**"
+      - "core/plugins/inferenceparser/**"
+      - "core/plugins/mcpparser/**"
+      - "core/plugins/a2aparser/**"
+      - "core/listener/internal/sseframe/**"
+      - "core/internal/parsefixture/**"
+      - "core/model/client.go"
+      - "core/cost/settle/settle.go"
+      - "core/listener/forwardproxy/server.go"
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust (praxis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check for praxis changes
+        id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "blocking=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pattern='^(praxis/|\.github/workflows/praxis\.yaml$)'
+          if git diff --name-only "$BASE_SHA" HEAD | grep -qE "$pattern"; then
+            echo "blocking=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "blocking=false" >> "$GITHUB_OUTPUT"
+            echo "No praxis/ changes; failures do not block."
+          fi
+
+      # Installs the toolchain that praxis/rust-toolchain.toml names.
+      - name: Install the Rust toolchain
+        working-directory: praxis
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+        with:
+          workspaces: praxis
+          cache-on-failure: false
+
+      - name: cargo fmt
+        id: fmt
+        working-directory: praxis
+        continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        id: clippy
+        working-directory: praxis
+        continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        id: test
+        working-directory: praxis
+        continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}
+        run: cargo test --locked
+
+      # A report-only run passes, so a warning on the PR shows the parity gap.
+      - name: Report failures that do not block
+        if: always() && steps.changes.outputs.blocking != 'true'
+        env:
+          FMT: ${{ steps.fmt.outcome }}
+          CLIPPY: ${{ steps.clippy.outcome }}
+          TEST: ${{ steps.test.outcome }}
+        run: |
+          [ "$FMT" != failure ] || echo "::warning::cargo fmt failed (does not block: no praxis/ changes)"
+          [ "$CLIPPY" != failure ] || echo "::warning::cargo clippy failed (does not block: no praxis/ changes)"
+          [ "$TEST" != failure ] || echo "::warning::cargo test failed (does not block: no praxis/ changes)"
+
+      # Size cap: the cache post-step must not save a target/ over 2 GiB.
+      - name: Cap the target/ cache size
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -d praxis/target ] || exit 0
+          size=$(du -sm praxis/target | cut -f1)
+          echo "praxis/target: ${size} MB"
+          if [ "$size" -gt 2048 ]; then
+            echo "Over 2048 MB; removing praxis/target so the cache does not save it."
+            rm -rf praxis/target
+          fi

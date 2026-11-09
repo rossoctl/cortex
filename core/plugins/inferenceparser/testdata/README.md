@@ -130,7 +130,7 @@ keeps raw bytes, so only events after #1494 have them.
 
 ## Cases
 
-All cases are Claude Code 2.1.295 on the Anthropic Messages dialect, through a LiteLLM
+All captured cases are Claude Code 2.1.295 on the Anthropic Messages dialect, through a LiteLLM
 gateway, captured on 2026-11-06.
 
 | Case | What it covers | Cut |
@@ -144,6 +144,19 @@ gateway, captured on 2026-11-06.
 | `claude-code/side-classifier-nonstream` | Side call: a classifier on `claude-sonnet-5`. Not streamed, no tools, thinking disabled, `stop_sequence`. `response.headers` gives `servedModel` | No |
 | `claude-code/side-nonstream-no-tools` | Side call on `claude-opus-5-5`. One string message, not streamed, `end_turn` | No |
 | `claude-code/error-502-html` | Classifier request answered by a gateway 502 with an HTML body. The parser keeps the request fields and adds no response fields | No |
+
+## Synthetic cases
+
+The cases under `synthetic/` are NOT captures. Their text is invented: no real traffic,
+names, keys or tokens. They give the two OpenAI dialects a parity target until a
+capture exists. Go generates their `expected.json` with `-update`. Do not write it by hand.
+
+| Case | What it covers |
+|---|---|
+| `synthetic/openai-chat-nonstream-tool-calls` | Chat Completions, JSON. History with system, assistant `tool_calls` and a `role: tool` result. 2 tools, `temperature`, `tool_choice`. 2 tool calls, `tool_calls` finish, cached and reasoning tokens |
+| `synthetic/openai-chat-stream-tool-calls` | The same request with `stream: true`. Content deltas, interleaved index-keyed `tool_calls` fragments for 2 calls, a final usage chunk, `[DONE]` |
+| `synthetic/responses-nonstream` | Responses API, JSON. `input` with `message`, `function_call` and `function_call_output` items, `reasoning.effort`. A top-level `tools` array, which the parser does not read. Output `message` and `function_call`, cached and reasoning tokens |
+| `synthetic/responses-stream-function-call` | Codex on `chatgpt.com/backend-api/codex/responses`, SSE with `event:` lines. Tools in an `additional_tools` input item. Text deltas, a `function_call` item with argument deltas, a `response.output_item.done` event, `response.completed` with usage |
 
 ## Not in the archive
 

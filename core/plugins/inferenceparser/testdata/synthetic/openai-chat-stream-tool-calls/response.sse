@@ -1,0 +1,21 @@
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1762646400,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1762646400,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"content":"I will read "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1762646400,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"content":"the file and list the folder."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1762646400,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_fixture_02","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1762646400,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1762646400,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_fixture_03","type":"function","function":{"name":"list_dir","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1762646400,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"config.yaml\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1762646400,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"dir\":\"docs\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1762646400,"model":"gpt-5.1-2025-11-13","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: {"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1762646400,"model":"gpt-5.1-2025-11-13","choices":[],"usage":{"prompt_tokens":420,"completion_tokens":58,"total_tokens":478,"prompt_tokens_details":{"cached_tokens":256},"completion_tokens_details":{"reasoning_tokens":16}}}
+
+data: [DONE]

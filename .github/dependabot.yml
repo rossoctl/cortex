@@ -89,6 +89,12 @@ updates:
     schedule:
       interval: weekly
 
+  # Rust - praxis workspace
+  - package-ecosystem: cargo
+    directory: /praxis
+    schedule:
+      interval: weekly
+
   # Python - root (tests)
   - package-ecosystem: pip
     directory: /
