@@ -69,7 +69,7 @@ kind load docker-image <image> --name rossoctl
 `scripts/dev/local-build-and-test.sh` builds and Kind-loads `authbridge`,
 `authbridge-envoy`, `authbridge-lite` and `proxy-init` (plus `spiffe-idp-setup`
 from the rossoctl repo) — prefer it over building by hand. Note it does not build
-`authbridge-cpex` or `cortex-praxis`.
+`authbridge-cpex`.
 
 Use fully qualified image names in Dockerfiles (e.g., `docker.io/library/golang:1.26-alpine`) to avoid Podman/Buildah "short-name resolution enforced" errors in Shipwright builds.
 

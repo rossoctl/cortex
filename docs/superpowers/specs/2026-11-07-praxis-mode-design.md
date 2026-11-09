@@ -229,7 +229,7 @@ A new Rust workspace `praxis/` in this repository, **outside `go.work`**. The 11
 - **The crate uses only a small part of the Praxis API:** `HttpFilter`, `register_filters!`, `emit_deferred_record` and filter metadata. No subrequests and no `Protocol`. This keeps the cost of a `praxis-proxy` bump low. Praxis shipped 8 pre-releases from 2026-09-20 to 2026-11-07, some with breaking Rust API changes. **[D 4]**
 - Rust tests build `HttpFilterContext` with Praxis's own test helpers, never with a struct literal, because praxis#1447 adds a field to it. **[T F10]**
 
-The name keeps clear of `cmd/cortex-praxis`, the paused Go converter, which stays (CLAUDE.md).
+The name keeps clear of `cmd/cortex-praxis`, the old Go converter. It was removed on 2026-11-09, because it rendered config for stock Praxis, and D4 chose our own filters in our own binary.
 
 ### The chain, in order
 

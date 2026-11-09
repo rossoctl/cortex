@@ -124,8 +124,7 @@ announcing the rename, and in this rule. Treat any other new one as a mistake.
 
 **AuthBridge → Cortex is deliberately partial, and the boundary is the point.**
 `Cortex` is the product: this repo, the registry namespace, the laptop service,
-`~/.cortex/`, and the sidecar binaries — `cortex`, `cortex-envoy`, `cortex-cpex`,
-`cortex-praxis`, renamed from `authbridge-*` as the same kind of clean break (see
+`~/.cortex/`, and the sidecar binaries — `cortex`, `cortex-envoy` and `cortex-cpex`, renamed from `authbridge-*` as the same kind of clean break (see
 `docs/superpowers/specs/2026-09-30-authbridge-binaries-to-cortex-rename-design.md`).
 `AuthBridge` is the name of the **injected sidecar component**, and it survives inside
 artifact identifiers that other things address by name:
@@ -170,7 +169,7 @@ remains there: it runs `scripts/install.sh`, for the URL v0.7.0 and its docs giv
 | Path | What it is |
 |---|---|
 | `core/` | The runtime library: pipeline, plugins, listeners, config, cost, session store, auth. Package table in [`core/README.md`](core/README.md) |
-| `cmd/cortex{,-envoy,-praxis}/` | Sidecar binaries. [`cmd/README.md`](cmd/README.md) says which binary pins which shape |
+| `cmd/cortex{,-envoy}/` | Sidecar binaries. [`cmd/README.md`](cmd/README.md) says which binary pins which shape |
 | `cmd/cortex-cpex/` | No Go code: the `authbridge-cpex` Dockerfile and the CPEX FFI pins |
 | `cmd/agentop/` | The TUI over the session API, and the component the root README leads with. Flags and keys: [`cmd/agentop/README.md`](cmd/agentop/README.md) |
 | `docs/` | Plugin and framework reference ([`docs/README.md`](docs/README.md) is the index). `docs/superpowers/{plans,specs}/` holds dated design records and is **still written to** |
@@ -187,9 +186,8 @@ remains there: it runs `scripts/install.sh`, for the URL v0.7.0 and its docs giv
 | `cmd/cortex-envoy/` | envoy-sidecar | gRPC ext_proc on :9090 | `envoy` profile: full minus inference-router and script |
 | `authbridge-cpex` _(image: `cortex` + cgo + `cpex` profile)_ | proxy-sidecar | HTTP forward + reverse proxies | sidecar plugins + `cpex` (cgo) |
 | `authbridge-lite` _(image: `cortex` + `lite` profile)_ | proxy-sidecar | HTTP forward + reverse proxies | sidecar-minimum plugin set |
-| `cmd/cortex-praxis/` | proxy-sidecar | HTTP (Praxis-rendered) | **none**. Paused, not abandoned: keep it compiling and do not delete it |
 
-Every sidecar binary but praxis pins one deployment shape and refuses a mismatching
+Every sidecar binary pins one deployment shape and refuses a mismatching
 `mode:` at boot. **Config format:** YAML with `${ENV_VAR}` expansion, mode presets,
 and startup validation.
 
@@ -201,10 +199,10 @@ each binary links it in its own `storage_redis.go`. A build with no `-tags` regi
 no plugins and rejects every config it is handed. Tag sets come from
 [`scripts/profile-tags`](scripts/profile-tags/), one profile per shipped artifact.
 
-**Go modules:** 11 in total, all on Go 1.26.10 except the three `demos/*` modules (1.24).
+**Go modules:** 10 in total, all on Go 1.26.10 except the three `demos/*` modules (1.24).
 - `core/`, `core/storage/redis/` (nested, but its own module), `cmd/cortex`,
-  `cmd/cortex-envoy`, `cmd/cortex-praxis`, `cmd/agentop`, `scripts/profile-tags`,
-  `scripts/readme-demo`. `go.work` links these 8.
+  `cmd/cortex-envoy`, `cmd/agentop`, `scripts/profile-tags`, `scripts/readme-demo`.
+  `go.work` links these 7.
 - `demos/{echo,finance-sparc,ibac}/` are self-contained and outside the workspace.
 - `core/` is **consumed outside this repo**, so removing exported API there is a
   cross-repo change.
@@ -300,7 +298,7 @@ re-verify them by hand after a change.
 - Run `go vet ./...` and `gofmt -l .` from each module you touched, before you push.
   **Always give `gofmt` a path:** a bare `gofmt -l` reads stdin, scans nothing and
   exits 0.
-- **Only `go vet` is a CI gate**, on all 11 modules (cpex code is vetted with
+- **Only `go vet` is a CI gate**, on all 10 modules (cpex code is vetted with
   `-tags cpex` in `go-ci-cpex`). pre-commit has no Go hooks, and CI's `go fmt ./...`
   rewrites the checkout and exits 0, so formatting drift never fails a build.
 - Run per-module commands with `GOWORK=off`, as every CI Go job but `core`'s does,

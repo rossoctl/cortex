@@ -8,7 +8,7 @@ including the PR title format and the Go checks that CI gates on, are in the roo
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yaml` | PR to main/release-*, push to main | Pre-commit; `go vet` and build for all 11 modules, and tests for all but the three demos; a macOS job for `peerproc`, `tlsbridge`, `cmd/cortex` and `cmd/agentop`; the cgo `cpex` builds (`go-ci-cpex`); `go mod tidy -diff` for all 11 modules; proxy-init iptables, Python, install-script and release-notes-script tests. `go fmt` rewrites rather than fails, so it does not gate |
+| `ci.yaml` | PR to main/release-*, push to main | Pre-commit; `go vet` and build for all 10 modules, and tests for all but the three demos; a macOS job for `peerproc`, `tlsbridge`, `cmd/cortex` and `cmd/agentop`; the cgo `cpex` builds (`go-ci-cpex`); `go mod tidy -diff` for all 10 modules; proxy-init iptables, Python, install-script and release-notes-script tests. `go fmt` rewrites rather than fails, so it does not gate |
 | `build.yaml` | Tag push (`v*`), push to main, manual; PRs to main build amd64 only and skip `**.md` | Multi-arch Docker builds for the six images below. Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy, CodeQL |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |

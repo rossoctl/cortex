@@ -4,7 +4,6 @@ use (
 	./core
 	./cmd/agentop
 	./cmd/cortex-envoy
-	./cmd/cortex-praxis
 	./cmd/cortex
 	./scripts/profile-tags
 	./scripts/readme-demo

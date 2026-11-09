@@ -1,9 +1,9 @@
 # AuthBridge Binaries
 
-Three authbridge binaries (proxy, envoy, praxis) plus the
-`agentop` TUI — see the table below for which are published and which are paused.
+Two authbridge binaries (proxy, envoy) plus the
+`agentop` TUI — see the table below for which are published.
 Proxy and envoy each pin one deployment shape and refuse a mismatching
-`mode:` at boot; praxis pins none. Mode is selected at
+`mode:` at boot. Mode is selected at
 build time by which binary you run, not at runtime via a flag. The `authbridge-lite`
 and `authbridge-cpex` images are build variants of the proxy binary, not
 separate binaries: `lite` is the proxy Dockerfile with the `lite` profile's
@@ -18,7 +18,6 @@ tags, `cpex` is `cortex` built with cgo and the `cpex` tag (see
 | [`cortex-envoy/`](cortex-envoy/) | `envoy-sidecar` | gRPC ext_proc on `:9090` (hooked into Envoy) | full | `ghcr.io/rossoctl/cortex/authbridge-envoy` |
 | `authbridge-lite` _(build variant of `cortex`)_ | `proxy-sidecar` | HTTP forward + reverse proxies | lite — `cortex` built with the `lite` profile, a sidecar minimum (see [`../scripts/profile-tags`](../scripts/profile-tags)) | `ghcr.io/rossoctl/cortex/authbridge-lite` |
 | `authbridge-cpex` _(build variant of `cortex`; [`cortex-cpex/`](cortex-cpex/) holds its Dockerfile and FFI pins)_ | `proxy-sidecar` | HTTP forward + reverse proxies | the `cpex` profile: sidecar plugins + `cpex` (needs cgo; links `libcpex_ffi.a` from the CPEX release pinned in `CPEX_FFI_VERSION`) | `ghcr.io/rossoctl/cortex/authbridge-cpex` |
-| [`cortex-praxis/`](cortex-praxis/) | `proxy-sidecar` _(output shape; pins no input mode)_ | HTTP, from a rendered Praxis config | **none** — does not import `core/plugins/all`. **Paused, not abandoned:** kept and kept compiling (it is in the `ci.yaml` matrix for that reason). Do not delete. | not published |
 | [`agentop/`](agentop/) | n/a | n/a | n/a | not published as an image; released as a standalone binary by `release-binaries.yaml` |
 
 Each sidecar binary directory contains `main.go`, `go.mod`/`go.sum`,
