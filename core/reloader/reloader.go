@@ -112,6 +112,8 @@ type Reloader struct {
 	drainWindow  time.Duration
 	debounce     time.Duration
 	startTimeout time.Duration
+	// afterFunc arms the debounce timer: time.AfterFunc, or a test's own.
+	afterFunc func(time.Duration, func()) debounceTimer
 	// onCommit is run after a reload is accepted; see WithOnCommit.
 	onCommit func(*config.Config)
 	// extraDirs and fingerprint widen what a reload depends on; see WithExtraWatch.
@@ -160,6 +162,7 @@ func New(configPath string, inbound, outbound *pipeline.Holder, build PipelineBu
 		drainWindow:  10 * time.Minute,
 		debounce:     250 * time.Millisecond,
 		startTimeout: 60 * time.Second,
+		afterFunc:    func(d time.Duration, f func()) debounceTimer { return time.AfterFunc(d, f) },
 		closing:      make(chan struct{}),
 	}
 	for _, opt := range opts {

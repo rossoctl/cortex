@@ -174,10 +174,9 @@ func TestReloader_PlainRewrite(t *testing.T) {
 	}
 }
 
-// Two writes within the debounce window coalesce into a single reload. The
-// window is wide so a loaded runner still lands both writes inside it.
+// Two writes within the debounce window coalesce into a single reload.
 func TestReloader_DebouncesBurst(t *testing.T) {
-	r, b, cfgPath, _, _ := setupWith(t, WithDebounce(500*time.Millisecond))
+	r, b, cfgPath, _, _ := setup(t)
 	b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: &config.Config{Mode: "envoy-sidecar"}})
 
 	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# edit 1\n")
@@ -185,7 +184,7 @@ func TestReloader_DebouncesBurst(t *testing.T) {
 	writeConfig(t, cfgPath, last)
 
 	want := r.hash([]byte(last))
-	waitFor(t, 5*time.Second, func() bool { return r.Status().ActiveConfigSHA256 == want }, "the last edit to go live")
+	waitFor(t, 2*time.Second, func() bool { return r.Status().ActiveConfigSHA256 == want }, "the last edit to go live")
 	if got := r.Status().ReloadsOK; got != 1 {
 		t.Errorf("ReloadsOK = %d, want the burst coalesced into 1", got)
 	}
