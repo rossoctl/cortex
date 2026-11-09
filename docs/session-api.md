@@ -240,7 +240,9 @@ tunnel, and every denial. `kind` is `llm`, `mcp`, `http` or `tunnel`, and
 
 **`end` absent means still in flight.** A span that never got an answer but
 provably stopped is `lost` and ends where it started: a turn or tool whose agent
-moved on, a `SubagentHandback` (it ends the run), a subagent's tool still open
+moved on, a `SubagentHandback` or a workflow agent's final `StructuredOutput` (each
+ends the run, and no result follows) and every tool asked for beside it, a
+subagent's tool still open
 at a `<task-notification>` naming that agent, or a request more than ten
 minutes old.
 

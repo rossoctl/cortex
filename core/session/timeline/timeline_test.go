@@ -214,6 +214,40 @@ func TestToolOfAnEndedSubagentIsLost(t *testing.T) {
 	}
 }
 
+// A workflow agent ends at its StructuredOutput call: the workflow takes the call's input as the
+// agent's answer, and no request carries a result for it. No Agent call spawned it and no
+// notification names it, so before this the call stayed open for good, and agentop drew every
+// finished workflow agent as still running a tool. A tool asked for beside it gets no result
+// either, and no notification closes it as one closes a sibling of a hand-back.
+func TestStructuredOutputOfAWorkflowAgentIsLost(t *testing.T) {
+	var r rec
+	r.turn("", 0, 1, []pipeline.InferenceMessage{user("go")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "wf", Name: "Workflow"})
+	r.turn("", 2, 1, []pipeline.InferenceMessage{user("go"), user("started")}, nil, "end_turn")
+	r.turn("w1", 3, 1, []pipeline.InferenceMessage{user("review")}, nil, "tool_use",
+		pipeline.InferenceToolCall{ID: "read", Name: "Read"},
+		pipeline.InferenceToolCall{ID: "so", Name: "StructuredOutput", Arguments: `{"findings":[]}`})
+	tl := Build("s", r.events, time.Time{})
+	for _, id := range []string{"so", "read"} {
+		if x := findTool(t, tl, id); !x.Lost || x.End == nil || !x.End.Equal(x.Start) {
+			t.Errorf("%s = %+v, want lost at its start", id, x)
+		}
+	}
+}
+
+// A StructuredOutput call that fails the schema gets a result, and the agent tries again. That
+// call ends at its result, as any tool does, not as lost.
+func TestStructuredOutputWithAResultEndsThere(t *testing.T) {
+	var r rec
+	r.turn("w1", 0, 1, []pipeline.InferenceMessage{user("review")}, nil, "tool_use",
+		pipeline.InferenceToolCall{ID: "so1", Name: "StructuredOutput", Arguments: `{}`})
+	r.turn("w1", 3, 1, []pipeline.InferenceMessage{user("review")}, []pipeline.InferenceToolResult{result("so1", "missing findings")}, "tool_use",
+		pipeline.InferenceToolCall{ID: "so2", Name: "StructuredOutput", Arguments: `{"findings":[]}`})
+	tl := Build("s", r.events, time.Time{})
+	if x := findTool(t, tl, "so1"); x.Lost || x.End == nil || !x.End.Equal(at(3)) {
+		t.Errorf("rejected StructuredOutput = %+v, want it to end at its result", x)
+	}
+}
+
 // A tool starts when the response that asked for it ends, but Claude Code runs the hand-back
 // while that response streams. So the notification can arrive before the tool's start.
 func TestToolOfASubagentEndedMidStreamIsLost(t *testing.T) {

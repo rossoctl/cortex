@@ -220,6 +220,17 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 	// Close each tool on its agent's first request carrying its result. Claude Code runs a
 	// tool while the response that asked for it is still streaming, so that request can be
 	// recorded before the response finished: clamp rather than draw a negative span.
+	//
+	// A tool that ends the run by design, with no result, ended it at the response that asked
+	// for it: a workflow agent stops at its StructuredOutput call, and no request carries that
+	// call's result. That response's other tools get no result either, and a workflow agent
+	// gets no notification to close them. A response's tools share its Seq.
+	endedRun := map[uint64]bool{}
+	for _, tool := range t.Tools {
+		if _, ok := endAt[tool.Agent][tool.ID]; !ok && (tool.Name == "SubagentHandback" || tool.Name == "StructuredOutput") {
+			endedRun[tool.Seq] = true
+		}
+	}
 	si := 0
 	for i := range t.Tools {
 		tool := &t.Tools[i]
@@ -229,11 +240,11 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 			}
 			tool.End = &at
 			tool.Error = ends[tool.Agent][tool.ID].IsError
-		} else if tool.Name == "SubagentHandback" || lastTurn[tool.Agent].After(tool.Start) || stopped[tool.Agent].After(askedAt[i]) {
-			// The agent moved on without the result, its run ended without it (a sibling of its
-			// hand-back, or a stopped agent), or the tool ends the run by design. The run can end
-			// while the asking response still streams, so compare the notification with that
-			// request's start. A resumed run's request starts after the earlier notification.
+		} else if endedRun[tool.Seq] || lastTurn[tool.Agent].After(tool.Start) || stopped[tool.Agent].After(askedAt[i]) {
+			// The agent moved on without the result, or its run ended without it (the response
+			// ended the run, or the agent was stopped). The run can end while the asking response
+			// still streams, so compare the notification with that request's start. A resumed
+			// run's request starts after the earlier notification.
 			at := tool.Start
 			tool.End, tool.Lost = &at, true
 		}
