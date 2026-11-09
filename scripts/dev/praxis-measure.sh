@@ -284,6 +284,10 @@ EOF
 		echo "praxis: $(($(date +%s) - start)) s to ingest; stats: $(curl -s --noproxy '*' "http://127.0.0.1:$api/v1/ingest/stats")" >&2
 		echo "praxis: cortex-gateway emitter counters:" >&2
 		curl -s --noproxy '*' "http://127.0.0.1:$gw_metrics/metrics" | grep '^cortex_' >&2 || true
+		if [ "$lines" -lt $((2 * n)) ]; then
+			echo "praxis-measure: ROWS DROPPED: Cortex filed $lines of $((2 * n)) rows, so the praxis numbers do not compare with direct mode" >&2
+			exit 1
+		fi
 	fi
 	sleep 0.5 # one more RSS sample after the last request
 
