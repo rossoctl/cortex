@@ -172,7 +172,7 @@ remains there: it runs `scripts/install.sh`, for the URL v0.7.0 and its docs giv
 | `cmd/cortex{,-envoy}/` | Sidecar binaries. [`cmd/README.md`](cmd/README.md) says which binary pins which shape |
 | `cmd/cortex-cpex/` | No Go code: the `authbridge-cpex` Dockerfile and the CPEX FFI pins |
 | `cmd/agentop/` | The TUI over the session API, and the component the root README leads with. Flags and keys: [`cmd/agentop/README.md`](cmd/agentop/README.md) |
-| `praxis/` | Rust workspace for praxis mode: `cortex-praxis-filters`. Outside `go.work`. See #1714 |
+| `praxis/` | Rust workspace for praxis mode: `cortex-praxis-filters` and the `cortex-gateway` binary. Outside `go.work`. See #1714 |
 | `docs/` | Plugin and framework reference ([`docs/README.md`](docs/README.md) is the index). `docs/superpowers/{plans,specs}/` holds dated design records and is **still written to** |
 | `scripts/` | `install.sh` (laptop installer), `keycloak_sync.py` (scope mappings from `routes.yaml`), `profile-tags/` (build-tag profiles), `hooks/commit-msg`, `dev/` |
 | `deploy/` | `proxy-init/` (iptables init container), `sparc-service/`, `lineage-attach/` |

@@ -11,7 +11,7 @@ mod openai;
 mod responses;
 mod served_model;
 mod subagent;
-mod text;
+pub(crate) mod text;
 mod usage;
 
 pub use observer::InferenceObserver;
