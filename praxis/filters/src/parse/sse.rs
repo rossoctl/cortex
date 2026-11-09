@@ -12,8 +12,15 @@ const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
 /// One SSE event, or one line, is larger than the per-frame cap
 /// (`ErrFrameTooLarge` in Go).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameTooLarge;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameTooLarge {
+    /// The frames that the same call completed before the error, in order.
+    /// Go's `ReadFrame` gives each of them before it gives the error.
+    pub completed: Vec<Vec<u8>>,
+}
+
+/// The internal form of `FrameTooLarge`, before the completed frames are attached.
+struct Over;
 
 impl fmt::Display for FrameTooLarge {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -62,41 +69,51 @@ impl FrameReader {
     /// Gives the data payloads of the events that this chunk completed.
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<Vec<u8>>, FrameTooLarge> {
         let mut out = Vec::new();
-        if self.bom_checked {
-            self.feed(chunk, &mut out)?;
-            return Ok(out);
+        let r = if self.bom_checked {
+            self.feed(chunk, &mut out)
+        } else {
+            self.head.extend_from_slice(chunk);
+            if self.head.len() < UTF8_BOM.len() {
+                return Ok(out);
+            }
+            self.bom_checked = true;
+            let head = std::mem::take(&mut self.head);
+            self.feed(head.strip_prefix(UTF8_BOM).unwrap_or(&head), &mut out)
+        };
+        match r {
+            Ok(()) => Ok(out),
+            Err(Over) => Err(FrameTooLarge { completed: out }),
         }
-        self.head.extend_from_slice(chunk);
-        if self.head.len() < UTF8_BOM.len() {
-            return Ok(out);
-        }
-        self.bom_checked = true;
-        let head = std::mem::take(&mut self.head);
-        self.feed(head.strip_prefix(UTF8_BOM).unwrap_or(&head), &mut out)?;
-        Ok(out)
     }
 
     /// Ends the stream: gives the event left open at EOF, if it has data.
     /// Go dispatches it without the blank line, as the SSE spec says.
     pub fn finish(&mut self) -> Result<Vec<Vec<u8>>, FrameTooLarge> {
         let mut out = Vec::new();
+        match self.finish_into(&mut out) {
+            Ok(()) => Ok(out),
+            Err(Over) => Err(FrameTooLarge { completed: out }),
+        }
+    }
+
+    fn finish_into(&mut self, out: &mut Vec<Vec<u8>>) -> Result<(), Over> {
         if !self.bom_checked {
             // Fewer than 3 bytes: Go's Peek fails, so no BOM is removed.
             self.bom_checked = true;
             let head = std::mem::take(&mut self.head);
-            self.feed(&head, &mut out)?;
+            self.feed(&head, out)?;
         }
         if !self.line.is_empty() {
-            self.end_line(&mut out)?;
+            self.end_line(out)?;
         }
         if self.has_data {
             out.push(std::mem::take(&mut self.scratch));
         }
         self.reset_event();
-        Ok(out)
+        Ok(())
     }
 
-    fn feed(&mut self, bytes: &[u8], out: &mut Vec<Vec<u8>>) -> Result<(), FrameTooLarge> {
+    fn feed(&mut self, bytes: &[u8], out: &mut Vec<Vec<u8>>) -> Result<(), Over> {
         for &b in bytes {
             if std::mem::take(&mut self.after_cr) && b == b'\n' {
                 continue;
@@ -109,7 +126,7 @@ impl FrameReader {
                 }
                 _ => {
                     if self.line.len() + 1 > self.max {
-                        return Err(FrameTooLarge);
+                        return Err(Over);
                     }
                     self.line.push(b);
                 }
@@ -118,7 +135,7 @@ impl FrameReader {
         Ok(())
     }
 
-    fn end_line(&mut self, out: &mut Vec<Vec<u8>>) -> Result<(), FrameTooLarge> {
+    fn end_line(&mut self, out: &mut Vec<Vec<u8>>) -> Result<(), Over> {
         let line = std::mem::take(&mut self.line);
         if line.is_empty() {
             if self.has_data {
@@ -131,14 +148,14 @@ impl FrameReader {
         if field != b"data" {
             self.non_data += line.len();
             if self.non_data > self.max {
-                return Err(FrameTooLarge);
+                return Err(Over);
             }
             // Comments, event:, id:, retry: and unknown fields.
             return Ok(());
         }
         let sep = usize::from(self.has_data);
         if self.scratch.len() + sep + value.len() > self.max {
-            return Err(FrameTooLarge);
+            return Err(Over);
         }
         if self.has_data {
             self.scratch.push(b'\n');
@@ -197,32 +214,49 @@ mod tests {
 
     const BOM: &str = "\u{feff}";
 
-    fn frames(
-        r: &mut FrameReader,
-        input: &[u8],
-        chunk: usize,
-    ) -> Result<Vec<Vec<u8>>, FrameTooLarge> {
+    /// All frames the reader gives, the frames completed before an error
+    /// included, and whether it gave `FrameTooLarge`.
+    fn frames(r: &mut FrameReader, input: &[u8], chunk: usize) -> (Vec<Vec<u8>>, bool) {
         let mut out = Vec::new();
         for c in input.chunks(chunk.max(1)) {
-            out.extend(r.push(c)?);
+            match r.push(c) {
+                Ok(f) => out.extend(f),
+                Err(e) => {
+                    out.extend(e.completed);
+                    return (out, true);
+                }
+            }
         }
-        out.extend(r.finish()?);
-        Ok(out)
+        match r.finish() {
+            Ok(f) => out.extend(f),
+            Err(e) => {
+                out.extend(e.completed);
+                return (out, true);
+            }
+        }
+        (out, false)
     }
 
-    /// Runs the input in one chunk and in 1-byte chunks, and asserts that both give `want`.
+    /// Runs the input in one chunk, in 1-byte chunks and in 7-byte chunks,
+    /// and asserts that each gives `want` and no error.
     fn check(input: &str, max: usize, want: &[&str]) {
         let want: Vec<Vec<u8>> = want.iter().map(|s| s.as_bytes().to_vec()).collect();
-        for chunk in [input.len(), 1] {
-            let got = frames(&mut FrameReader::new(max), input.as_bytes(), chunk).unwrap();
-            assert_eq!(got, want, "chunk size {chunk}, input {input:?}");
+        for chunk in [input.len(), 1, 7] {
+            let got = frames(&mut FrameReader::new(max), input.as_bytes(), chunk);
+            assert_eq!(
+                got,
+                (want.clone(), false),
+                "chunk size {chunk}, input {input:?}"
+            );
         }
     }
 
-    fn check_too_large(input: &str, max: usize) {
-        for chunk in [input.len(), 1] {
+    /// As `check`, but the reader must end with `FrameTooLarge`.
+    fn check_too_large(input: &str, max: usize, want: &[&str]) {
+        let want: Vec<Vec<u8>> = want.iter().map(|s| s.as_bytes().to_vec()).collect();
+        for chunk in [input.len(), 1, 7] {
             let got = frames(&mut FrameReader::new(max), input.as_bytes(), chunk);
-            assert_eq!(got, Err(FrameTooLarge), "chunk size {chunk}");
+            assert_eq!(got, (want.clone(), true), "chunk size {chunk}");
         }
     }
 
@@ -297,7 +331,7 @@ mod tests {
 
     #[test]
     fn frame_reader_frame_too_large() {
-        check_too_large("data: too-long\n\n", 4);
+        check_too_large("data: too-long\n\n", 4, &[]);
     }
 
     #[test]
@@ -363,6 +397,22 @@ mod tests {
     }
 
     #[test]
+    fn frame_reader_error_keeps_completed_frames() {
+        let input = format!("data: ok\n\ndata:{}\n\n", "a".repeat(20));
+        // One chunk: the error carries the frame that the chunk completed first.
+        let err = FrameReader::new(10).push(input.as_bytes()).unwrap_err();
+        assert_eq!(err.completed, vec![b"ok".to_vec()]);
+        check_too_large(&input, 10, &["ok"]);
+        // The open event at EOF is over the cap.
+        let mut r = FrameReader::new(10);
+        assert_eq!(
+            r.push(b"data: ok\n\ndata:12345\ndata:12345").unwrap(),
+            vec![b"ok".to_vec()]
+        );
+        assert_eq!(r.finish().unwrap_err().completed, Vec::<Vec<u8>>::new());
+    }
+
+    #[test]
     fn frame_reader_cap() {
         // Go also caps one line at max_frame, so the event is two data lines:
         // a + LF + b data bytes.
@@ -374,22 +424,22 @@ mod tests {
         let exact = event(MAX_BODY_SIZE);
         for chunk in [usize::MAX, 4096] {
             let got = frames(&mut FrameReader::new(MAX_BODY_SIZE), over.as_bytes(), chunk);
-            assert_eq!(got, Err(FrameTooLarge));
+            assert_eq!(got, (vec![], true));
             let got = frames(
                 &mut FrameReader::new(MAX_BODY_SIZE),
                 exact.as_bytes(),
                 chunk,
-            )
-            .unwrap();
-            assert_eq!(got.len(), 1);
-            assert_eq!(got[0].len(), MAX_BODY_SIZE);
+            );
+            assert!(!got.1);
+            assert_eq!(got.0.len(), 1);
+            assert_eq!(got.0[0].len(), MAX_BODY_SIZE);
         }
         // One line over the cap.
         let line = format!("data:{}\n\n", "a".repeat(MAX_BODY_SIZE));
         let got = frames(&mut FrameReader::new(MAX_BODY_SIZE), line.as_bytes(), 4096);
-        assert_eq!(got, Err(FrameTooLarge));
+        assert_eq!(got, (vec![], true));
         assert_eq!(
-            FrameTooLarge.to_string(),
+            FrameTooLarge { completed: vec![] }.to_string(),
             "single SSE frame over the 10485760-byte frame cap"
         );
     }
