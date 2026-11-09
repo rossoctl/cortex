@@ -1,0 +1,41 @@
+{
+  "model": "gpt-5.1",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is the weather in the example city?",
+      "contentBytes": 73
+    },
+    {
+      "role": "user",
+      "content": "And tomorrow?",
+      "contentBytes": 46
+    }
+  ],
+  "servedModel": "gpt-5.1-2025-11-13",
+  "toolResults": [
+    {
+      "toolUseId": "call_fixture_01",
+      "content": "Sunny, 20 degrees."
+    }
+  ],
+  "effort": "medium",
+  "completion": "I will check the forecast.",
+  "finishReason": "completed",
+  "toolCalls": [
+    {
+      "id": "call_fixture_02",
+      "name": "get_weather",
+      "arguments": "{\"city\":\"Example City\"}"
+    }
+  ],
+  "promptTokens": 310,
+  "completionTokens": 72,
+  "totalTokens": 382,
+  "inputTokens": 182,
+  "cacheReadTokens": 128,
+  "outputTokens": 72,
+  "reasoningTokens": 40,
+  "presentKinds": 31,
+  "isAction": true
+}

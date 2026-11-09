@@ -1,0 +1,104 @@
+{
+  "model": "gpt-5.1",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful coding agent.",
+      "contentBytes": 33
+    },
+    {
+      "role": "user",
+      "content": "Read the config file and list the files in the docs folder.",
+      "contentBytes": 61
+    },
+    {
+      "role": "assistant",
+      "toolCallNames": "read_file",
+      "toolUseIds": "call_fixture_01"
+    },
+    {
+      "role": "tool",
+      "content": "mode: example",
+      "contentBytes": 15,
+      "toolUseId": "call_fixture_01"
+    },
+    {
+      "role": "user",
+      "content": "Now do both steps again.",
+      "contentBytes": 26
+    }
+  ],
+  "temperature": 0.2,
+  "tools": [
+    {
+      "name": "read_file",
+      "description": "Read a file.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "File path."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "list_dir",
+      "description": "List a directory.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dir": {
+            "type": "string",
+            "description": "Directory path."
+          }
+        },
+        "required": [
+          "dir"
+        ]
+      }
+    }
+  ],
+  "toolChoice": "auto",
+  "servedModel": "gpt-5.1-2025-11-13",
+  "toolResults": [
+    {
+      "toolUseId": "call_fixture_01",
+      "content": "mode: example"
+    }
+  ],
+  "historyToolCalls": [
+    {
+      "id": "call_fixture_01",
+      "name": "read_file",
+      "arguments": "{\"path\":\"config.yaml\"}"
+    }
+  ],
+  "completion": "I will read the file and list the folder.",
+  "finishReason": "tool_calls",
+  "toolCalls": [
+    {
+      "id": "call_fixture_02",
+      "name": "read_file",
+      "arguments": "{\"path\":\"config.yaml\"}"
+    },
+    {
+      "id": "call_fixture_03",
+      "name": "list_dir",
+      "arguments": "{\"dir\":\"docs\"}"
+    }
+  ],
+  "promptTokens": 420,
+  "completionTokens": 58,
+  "totalTokens": 478,
+  "inputTokens": 164,
+  "cacheReadTokens": 256,
+  "outputTokens": 58,
+  "reasoningTokens": 16,
+  "presentKinds": 27,
+  "isAction": true
+}

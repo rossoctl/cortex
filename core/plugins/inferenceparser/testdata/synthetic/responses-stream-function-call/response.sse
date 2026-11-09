@@ -1,0 +1,23 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_fixture","object":"response","created_at":1762646400,"model":"gpt-5.1-codex","status":"in_progress","output":[]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"message","id":"msg_fixture","status":"in_progress","role":"assistant","content":[]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":2,"item_id":"msg_fixture","output_index":0,"content_index":0,"delta":"I will list "}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_fixture","output_index":0,"content_index":0,"delta":"the files."}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":4,"output_index":1,"item":{"type":"function_call","id":"fc_fixture","status":"in_progress","call_id":"call_fixture_01","name":"shell","arguments":""}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":5,"item_id":"fc_fixture","output_index":1,"delta":"{\"command\":"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":6,"item_id":"fc_fixture","output_index":1,"delta":"[\"ls\"]}"}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":7,"response":{"id":"resp_fixture","object":"response","created_at":1762646400,"model":"gpt-5.1-codex","status":"completed","output":[],"usage":{"input_tokens":512,"input_tokens_details":{"cached_tokens":384},"output_tokens":40,"output_tokens_details":{"reasoning_tokens":12},"total_tokens":552}}}

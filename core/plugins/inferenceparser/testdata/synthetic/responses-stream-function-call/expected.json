@@ -1,0 +1,62 @@
+{
+  "model": "gpt-5.1-codex",
+  "messages": [
+    {
+      "role": "developer",
+      "content": "Work in the current folder.",
+      "contentBytes": 60
+    },
+    {
+      "role": "user",
+      "content": "List the files in the current folder.",
+      "contentBytes": 70
+    }
+  ],
+  "stream": true,
+  "tools": [
+    {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Command and arguments."
+          }
+        },
+        "required": [
+          "command"
+        ]
+      }
+    },
+    {
+      "name": "apply_patch",
+      "description": "Apply a patch."
+    }
+  ],
+  "toolChoice": "auto",
+  "effort": "low",
+  "streamedResponse": true,
+  "completion": "I will list the files.",
+  "finishReason": "completed",
+  "toolCalls": [
+    {
+      "id": "call_fixture_01",
+      "name": "shell",
+      "arguments": "{\"command\":[\"ls\"]}"
+    }
+  ],
+  "promptTokens": 512,
+  "completionTokens": 40,
+  "totalTokens": 552,
+  "inputTokens": 128,
+  "cacheReadTokens": 384,
+  "outputTokens": 40,
+  "reasoningTokens": 12,
+  "presentKinds": 31,
+  "isAction": true
+}

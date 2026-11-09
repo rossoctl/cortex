@@ -1,0 +1,5 @@
+POST /backend-api/codex/responses HTTP/1.1
+Host: chatgpt.com
+Content-Type: application/json
+User-Agent: codex_cli_rs/0.1.0
+Originator: codex_cli_rs
