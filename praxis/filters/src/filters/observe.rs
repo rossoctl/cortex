@@ -258,13 +258,16 @@ impl HttpFilter for CortexObserve {
             return false;
         }
         o.done = true;
-        // Praxis 0.8.0 gives a client that went away as status 499, so
-        // `downstream_gone` stays false. A proxied response sets no
-        // `stream_termination`: an upstream that sent its head and then did
-        // not finish the body is the upstream's failure.
-        let upstream_gone =
-            ctx.upstream_reached && (o.answered || ctx.stream_termination().is_some());
-        for line in o.exchange.deferred(status, false, upstream_gone) {
+        // Before the response head, Praxis 0.8.0 gives a client that went
+        // away as status 499. After the head, it gives the written status and
+        // `upstream_reached` for both a client and an upstream that went away.
+        // shortcut: a stream cut after the head is always `client_canceled`
+        // (the frequent case: a user stop or a Cortex idle cut), so an
+        // upstream that drops mid-body reads the same; upgrade when Praxis
+        // gives the error source to `emit_deferred_record`.
+        let upstream_gone = ctx.upstream_reached && ctx.stream_termination().is_some();
+        let downstream_gone = o.answered;
+        for line in o.exchange.deferred(status, downstream_gone, upstream_gone) {
             self.submit(&line);
         }
         true

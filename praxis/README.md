@@ -71,6 +71,7 @@ gives the full text.
 15. The filters use the Praxis 0.8.0 API. No fork, no patch.
 16. `CortexObserve` keeps its exchange in filter state as `Arc<Mutex<Exchange>>`.
 17. The ingest stream ends on Cortex shutdown, so restarts stay quick.
+18. A stream cut after the response head is `client_canceled`, also when the upstream cut it. Praxis 0.8.0 gives no error source after the head.
 
 ## The parity rule
 

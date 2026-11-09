@@ -827,8 +827,10 @@ fn without_access_log_no_deferred_row() {
     );
 }
 
+/// Praxis 0.8.0 does not tell this case from a client that closes after the
+/// response head, so it reads as `client_canceled` (see `emit_deferred_record`).
 #[test]
-fn upstream_close_mid_body_is_upstream_error() {
+fn upstream_close_mid_body_reads_as_client_canceled() {
     let o = origin(|_, s| {
         let _ = s.write_all(
             b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"a\":",
@@ -845,5 +847,45 @@ fn upstream_close_mid_body_is_upstream_error() {
     let _ = s.read_to_end(&mut sink);
     let lines = i.take(2);
     let resp = response_row(&lines);
-    assert_eq!(resp["event"]["error"]["kind"], "upstream_error");
+    assert_eq!(resp["event"]["statusCode"], 499);
+    assert_eq!(resp["event"]["error"]["kind"], "client_canceled");
+}
+
+#[test]
+fn client_close_mid_sse_is_client_canceled() {
+    let (closed_tx, closed_rx) = mpsc::channel::<()>();
+    let closed_rx = Mutex::new(closed_rx);
+    let o = origin(move |_, s| {
+        let _ = s.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+        );
+        let _ = write_chunk(s, b"event: ping\ndata: {\"type\":\"ping\"}\n\n");
+        let _ = s.flush();
+        let _ = closed_rx.lock().expect("lock").recv_timeout(WAIT);
+        // Keep the stream open, as a model still writing its answer does.
+        for _ in 0..40 {
+            if write_chunk(s, b"event: ping\ndata: {\"type\":\"ping\"}\n\n").is_err() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    let i = ingest();
+    let g = gateway(&o, &i, true);
+    let mut s = g.connect();
+    let h = fixture_headers();
+    let req = fixture("request.json");
+    s.write_all(&head("POST", "/v1/messages", &as_refs(&h), req.len()))
+        .expect("head");
+    s.write_all(&req).expect("body");
+    let (rh, rest) = read_head(&mut s).expect("response head");
+    assert_eq!(status(&rh), 200);
+    Body::new(&mut s, &rh, rest).read_at_least(1);
+    let _ = s.shutdown(Shutdown::Both);
+    drop(s);
+    closed_tx.send(()).expect("closed");
+    let lines = i.take(2);
+    let resp = response_row(&lines);
+    assert_eq!(resp["event"]["statusCode"], 499, "{resp}");
+    assert_eq!(resp["event"]["error"]["kind"], "client_canceled");
 }
