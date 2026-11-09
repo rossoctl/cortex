@@ -31,6 +31,7 @@ import (
 // launchctl would boot out the Cortex this machine is running.
 func fakeSupervisor(t *testing.T) string {
 	t.Helper()
+	skipSceneInShort(t)
 	loaded := filepath.Join(t.TempDir(), "loaded")
 	installStub(t, "launchctl", `#!/bin/sh
 case "$1" in
@@ -68,6 +69,7 @@ exit 0
 // either platform and can be pinned exactly.
 func fakeNoSupervisor(t *testing.T) {
 	t.Helper()
+	skipSceneInShort(t)
 	installStub(t, "launchctl", "#!/bin/sh\necho 'supervisor unreachable' >&2\nexit 125\n")
 	installStub(t, "systemctl", "#!/bin/sh\necho 'supervisor unreachable' >&2\nexit 1\n")
 }

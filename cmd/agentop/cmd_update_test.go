@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -142,6 +143,9 @@ func TestUpdateRejectsAnArgument(t *testing.T) {
 	}
 }
 
+// Read at package init: a later signal.Notify clears signal.Ignored.
+var sigintIgnoredAtStart = signal.Ignored(os.Interrupt)
+
 // Ctrl-C reaches both shells of updateScript. The installer catches it and rolls
 // back, and update must exit with its status. dash, sh on Debian, dies of an INT it
 // does not catch, so this runs the script under dash where dash is installed.
@@ -149,6 +153,10 @@ func TestUpdateScriptExitsWithTheInstallersStatusOnInterrupt(t *testing.T) {
 	dash, err := exec.LookPath("dash")
 	if err != nil {
 		t.Skip("no dash")
+	}
+	if sigintIgnoredAtStart {
+		// A shell cannot trap a signal it started with ignored, as under a background job.
+		t.Skip("SIGINT is ignored in this process")
 	}
 	installStub(t, "sh", "#!"+dash+"\nexec "+dash+" \"$@\"\n")
 	installStub(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"trap 'exit 3' INT\" 'echo ready' 'sleep 5 >/dev/null & wait'\n")
