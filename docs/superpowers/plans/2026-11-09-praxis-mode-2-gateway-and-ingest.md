@@ -28,6 +28,9 @@ Each one closes a question that the spec or the issue leaves open.
 12. **The emitter has its own thread** with a current-thread Tokio runtime, started once per process. It does not depend on the Praxis runtime, and `from_config` can run outside a runtime.
 13. **`praxis-proxy` without default features**: `features = ["pingora", "admin-api", "forward-proxy"]`. This drops the policy engine and `aws-lc-sys` from the build. OpenSSL is vendored now (spec Section 4, "A standalone binary"), so CI needs no system OpenSSL.
 14. **The measurement** (Done-when, last item) is a script and numbers in the PR body, not a CI gate.
+15. **The Praxis 0.8.0 API names.** The filter hooks and context members that Task 6 names (`request_headers_to_remove`, `insert_filter_state`, `upstream_reached`, `stream_termination()`, `emit_deferred_record`, `Rejection::status`) were read in 0.7.5. After Task 1 fetches 0.8.0, read `~/.cargo/registry/src/*/praxis-proxy-filter-0.8.0/src`. When a name differs, use the 0.8.0 member with the same meaning. Do not add a Praxis fork or a patch.
+16. **`emit_deferred_record` gets `&HttpFilterContext`, not `&mut`.** So `CortexObserve` keeps its exchange in filter state as `Arc<std::sync::Mutex<Exchange>>`, and each hook locks it.
+17. **The ingest stream ends on shutdown** (spec [R 18], restarts stay quick). `New` registers `s.server.RegisterOnShutdown`. It sets a read deadline of now on each open ingest stream (`http.NewResponseController(w).SetReadDeadline`), so a blocked read returns and the handler ends.
 
 ## Global Constraints
 
@@ -41,6 +44,8 @@ Each one closes a question that the spec or the issue leaves open.
 - Error kinds from `X-Cortex-Egress-Error`: `upstream_dns`, `upstream_tls`, `upstream_timeout`, `upstream_refused`. Any other value becomes `upstream_error`.
 - Rust lint gate, from `praxis/`: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`. Use the rustup `cargo` (`$HOME/.cargo/bin`), not Homebrew's, so `rust-toolchain.toml` applies.
 - Go gate: `GOWORK=off go vet ./...` and `gofmt -l <path>` in each module touched (`core`, `cmd/cortex`).
+- The full gate, from the worktree root: `export PATH="$HOME/.cargo/bin:$PATH" && (cd praxis && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked) && (cd core && GOWORK=off go vet ./... && GOWORK=off go test ./config/... ./reloader/... ./model/... ./pipeline/... ./redact/... ./session/... ./sessionapi/... ./cost/... ./listener/forwardproxy/...) && (cd cmd/cortex && GOWORK=off go vet ./... && GOWORK=off go test ./...) && test -z "$(gofmt -l core cmd/cortex)"`.
+- Tasks 1 and 7 both edit `CLAUDE.md` and can run at the same time. Each edits only its own line (Task 1 the Layout row `praxis/`, Task 7 the "Needs a restart" list), so the merge is clean. Do not reflow other lines.
 - Go is the source of truth for every port. When Rust and Go differ, fix Rust.
 - Commits: `git commit -s`, message in ASD-STE100, ending with `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`. No `Co-Authored-By`. PR title `Feat: Build cortex-gateway and the Cortex ingestion endpoint`, body with `Fixes #1719`.
 
@@ -82,7 +87,7 @@ praxis/
     tests/gateway.rs            end-to-end tests with the real binary (Task 6)
 core/config/config.go, validate.go       Praxis block and refusals (Task 7)
 core/reloader/reloader.go                praxis.* needs a restart (Task 7)
-core/model/client_golden_test.go         writes core/model/testdata/user-agent.golden.json (Task 3)
+core/pipeline/client_golden_test.go      writes core/pipeline/testdata/user-agent.golden.json (Task 3)
 core/sessionapi/ingest.go, ingest_test.go, erase_marks.go   (Task 8)
 cmd/cortex/ingest.go, ingest_test.go, main.go               (Task 9)
 core/listener/forwardproxy/ingest_replay_test.go            (Task 10)
@@ -100,7 +105,7 @@ Depends on: none
 All later Rust tasks only fill files that this task creates, so parallel tasks do not touch `Cargo.toml`, `Cargo.lock` or a `mod` list.
 
 **Files:**
-- Modify: `praxis/Cargo.toml`, `praxis/filters/Cargo.toml`, `praxis/filters/src/lib.rs`, `praxis/Cargo.lock`, `praxis/README.md`, `.github/workflows/praxis.yaml`, `CLAUDE.md` (Layout row `praxis/`: add "and the `cortex-gateway` binary")
+- Modify: `praxis/Cargo.toml`, `praxis/filters/Cargo.toml`, `praxis/filters/src/lib.rs`, `praxis/filters/src/parse/inference/mod.rs`, `praxis/Cargo.lock`, `praxis/README.md`, `.github/workflows/praxis.yaml`, `CLAUDE.md` (Layout row `praxis/`: add "and the `cortex-gateway` binary")
 - Create: `praxis/filters/src/record/{mod,attribution,client,emitter,line,redact,row}.rs`, `praxis/filters/src/filters/{mod,attribution,observe}.rs` (each a one-line `//!` doc comment; `emitter.rs` also holds `Queued`, below), `praxis/server/Cargo.toml`, `praxis/server/src/main.rs`
 
 **Interfaces:**
@@ -109,8 +114,9 @@ All later Rust tasks only fill files that this task creates, so parallel tasks d
 
 - [ ] **Step 1: Add the dependencies.** Filters crate: `praxis-proxy-filter = { version = "=0.8.0", default-features = false }`, `async-trait = "0.1"`, `bytes = "1"`, `tokio = { version = "1", features = ["rt", "net", "sync", "time", "io-util", "macros"] }`, `hyper = { version = "1", features = ["client", "http1"] }`, `http-body-util = "0.1"`, `base64 = "0.22"`, `chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }`, `metrics = "0.24"`, `serde_yaml = { package = "yaml_serde", version = "0.10.7" }`. Server crate: `praxis-proxy = { version = "=0.8.0", default-features = false, features = ["pingora", "admin-api", "forward-proxy"] }`, `cortex-praxis-filters = { path = "../filters" }`, `openssl = { version = "0.10", features = ["vendored"] }`. If cargo reports a `links = "zstd"` conflict, raise the filters crate's `zstd` to the version Praxis uses (`0.14`); the API it uses does not change.
 - [ ] **Step 2: Write `server/src/main.rs`**: install the crypto provider (`praxis::install_crypto_provider()`), read the config path from `-c <path>` or `PRAXIS_CONFIG`, load it (`praxis::load_config`), init tracing, and call `praxis::run_server_with_registry(config, custom_registry(), …)` with an empty `praxis_filter::register_filters! {}` for now. Copy the shape of Praxis's own `crates/server/src/main.rs` at v0.8.0.
+- [ ] **Step 2b: Open `text` to the crate.** In `praxis/filters/src/parse/inference/mod.rs`, change `mod text;` to `pub(crate) mod text;`. Task 3 calls `is_control_rune` from `record::client`, and a private module is not visible there.
 - [ ] **Step 3: Build.** `cargo build --locked` after `cargo generate-lockfile` → OK. Record the cold build time and `du -sh target`.
-- [ ] **Step 4: Update `praxis.yaml`.** `timeout-minutes: 45`; target cap 3072 MB in place of 2048; add `core/sessionapi/ingest*.go`, `core/sessionapi/testdata/ingest/**`, `core/redact/**`, `core/model/testdata/**`, `core/pipeline/testdata/session-event.golden.json` to both `paths` lists. Keep the blocking rule.
+- [ ] **Step 4: Update `praxis.yaml`.** `timeout-minutes: 45`; target cap 3072 MB in place of 2048; add `core/sessionapi/ingest*.go`, `core/sessionapi/testdata/ingest/**`, `core/redact/**`, `core/pipeline/subagent.go`, `core/listener/forwardproxy/ingest_replay_test.go` to both `paths` lists (`core/pipeline/testdata/**` is already there, and it holds the Task 3 golden). Keep the blocking rule.
 - [ ] **Step 5: Lint.** fmt, clippy, test → clean.
 - [ ] **Step 6: Commit.** "Feat: Add the cortex-gateway crate and the record module scaffold".
 
@@ -135,17 +141,17 @@ Depends on: Task 1
 Depends on: Task 1
 
 **Files:**
-- Create: `core/model/client_golden_test.go`, `core/model/testdata/user-agent.golden.json`
+- Create: `core/pipeline/client_golden_test.go` (package `pipeline`, because `subagentHeader` is unexported there), `core/pipeline/testdata/user-agent.golden.json`
 - Modify: `praxis/filters/src/record/client.rs`
 
 **Interfaces:**
 - Produces: `pub struct Client` (serde, camelCase, the JSON of `model.EventClient` with its omit rules), `pub fn parse_user_agent(ua: &str) -> Option<Client>` (port of `model.ParseUserAgent`, `core/model/client.go:234-590` with `capUA`, `productVersion`, `trailingKnownClient`), `pub fn subagent_header(v: Option<&str>) -> String` (port of `pipeline.subagentHeader`: trim SP and HTAB only, then refuse an id with control runes or longer than `maxClientLen`). Header names `X-Claude-Code-Agent-Id`, `X-Claude-Code-Parent-Agent-Id`.
-- Consumes: `parse::inference::text` (`is_control_rune`, from #1718).
+- Consumes: `parse::inference::text::is_control_rune` (from #1718, made `pub(crate)` in Task 1).
 
-- [ ] **Step 1: Write the Go golden test** `TestParseUserAgent_Golden`: a list of user-agent strings → `ParseUserAgent` JSON, written with `-update` and compared otherwise. Inputs: every input string in `core/model/client_test.go` cases, every `User-Agent` in `core/plugins/inferenceparser/testdata/*/*/request.headers`, plus `""`, a 600-byte string and one with a control rune. Also a `subagent` section: header value → `subagentHeader` result (from the cases in `core/pipeline/subagent_test.go`). Run with `-update`, then without → PASS.
-- [ ] **Step 2: Write the failing Rust test** `user_agent_golden_matches_go`: read `../../core/model/testdata/user-agent.golden.json`; for each case, `serde_json::to_value(parse_user_agent(ua))` equals the Go JSON; for each subagent case, `subagent_header` equals the Go string. Run → FAIL.
+- [ ] **Step 1: Write the Go golden test** `TestParseUserAgent_Golden` in package `pipeline`: a list of user-agent strings → `ParseUserAgent` JSON, written when the existing `-update` flag is set (it is declared in `fields_test.go`; do not declare a second one) and compared otherwise. Inputs: copy every user-agent string literal from the cases in `core/pipeline/client_test.go` into the test's own list; add every `User-Agent` read at test time from `../plugins/inferenceparser/testdata/*/*/request.headers`; add `""`, a 600-byte string and one with a control rune. Also a `subagent` section: header value → `subagentHeader` result, with the header values copied from `core/pipeline/subagent_test.go`. Run `GOWORK=off go test ./pipeline/ -run Golden -update` from `core`, then without `-update` → PASS.
+- [ ] **Step 2: Write the failing Rust test** `user_agent_golden_matches_go`: read `../../core/pipeline/testdata/user-agent.golden.json`; for each case, `serde_json::to_value(parse_user_agent(ua))` equals the Go JSON; for each subagent case, `subagent_header` equals the Go string. Run → FAIL.
 - [ ] **Step 3: Implement** the port, function by function.
-- [ ] **Step 4: Run** → PASS; Go `GOWORK=off go test ./model/ -run Golden` from `core` → PASS.
+- [ ] **Step 4: Run** → PASS; Go `GOWORK=off go test ./pipeline/ -run Golden` from `core` → PASS.
 - [ ] **Step 5: Commit.** "Feat: Port the user-agent and subagent rules to Rust".
 
 ### Task 4: The emitter (Rust)
@@ -159,7 +165,7 @@ Depends on: Task 1
 - Produces:
   - Consumes `Queued` (Task 1). Task 5 builds it.
   - `pub struct Emitter`; `pub fn Emitter::start(ingest_addr: std::net::SocketAddr, token: String) -> Arc<Emitter>` starts the thread; `pub fn submit(&self, q: Queued)` never blocks and never fails; `pub fn stats(&self) -> EmitterStats`.
-  - `pub struct EmitterStats { pub rows_emitted: u64, pub rows_dropped: u64, pub captures_dropped_line_cap: u64, pub captures_dropped_queue_bytes: u64, queued_lines: usize, queued_bytes: usize }` (all `pub`).
+  - `pub struct EmitterStats { pub rows_emitted: u64, pub rows_dropped: u64, pub captures_dropped_line_cap: u64, pub captures_dropped_queue_bytes: u64, pub queued_lines: usize, pub queued_bytes: usize }`.
   - Constants `MAX_QUEUE_LINES = 4096`, `MAX_QUEUE_BYTES = 256 << 20`, `MAX_LINE = 64 << 20`.
   - `pub fn global(ingest_addr, token) -> Arc<Emitter>`: one emitter per process (a `OnceLock`); a second call with other arguments returns the first one and logs a warning.
 
@@ -170,7 +176,7 @@ Depends on: Task 1
 4. Still over → drop, count `rows_dropped`.
 5. Else queue it and wake the sender.
 
-The sender: a thread with a current-thread Tokio runtime. It connects with `TcpStream`, `hyper::client::conn::http1::handshake`, and sends `POST /v1/ingest` with `Authorization: Bearer <token>`, `Content-Type: application/x-ndjson` and a streaming body (`http_body_util::StreamBody` over a `tokio::sync::mpsc` channel of `Bytes`). It moves lines from the queue to the body. On any error, it counts the line in flight as `rows_dropped`, waits (100 ms, doubling to 5 s, reset on success) and reconnects. `rows_emitted` counts lines written to the body. Each counter also increments the `metrics` counters `cortex_rows_emitted_total`, `cortex_rows_dropped_total`, `cortex_captures_dropped_total{reason="line_cap"|"queue_bytes"}`.
+The sender: a thread with a current-thread Tokio runtime. It connects first, and takes a line from the queue only on an open connection, so a failed connect drops no line (the no-server tests rely on this). It connects with `TcpStream`, `hyper::client::conn::http1::handshake`, and sends `POST /v1/ingest` with `Authorization: Bearer <token>`, `Content-Type: application/x-ndjson` and a streaming body (`http_body_util::StreamBody` over a `tokio::sync::mpsc` channel of `Bytes`). It moves lines from the queue to the body. On any error, it counts the line in flight as `rows_dropped`, waits (100 ms, doubling to 5 s, reset on success) and reconnects. `rows_emitted` counts lines written to the body. Each counter also increments the `metrics` counters `cortex_rows_emitted_total`, `cortex_rows_dropped_total`, `cortex_captures_dropped_total{reason="line_cap"|"queue_bytes"}`.
 
 - [ ] **Step 1: Write the failing tests** (a mock ingest server on `127.0.0.1:0` in the test, reading lines):
   - `lines_arrive_in_order_with_token`: 3 lines → the server reads them in order, with `Authorization: Bearer t`.
@@ -202,7 +208,7 @@ Depends on: Task 2, Task 3
 - Produces, in `record::row`:
   - `pub struct Exchange`, one per request.
   - `pub fn Exchange::new(method: &str, host: &str, path_and_query: &str, headers: &http::HeaderMap, attribution: Attribution, request_id: String, started: std::time::SystemTime, start: std::time::Instant) -> Exchange`.
-  - `pub fn on_request_body(&mut self, body: &[u8]) -> Line`: the request row. It parses with `InferenceObserver::on_request` (after `decode_request_body`), sets `bytesUp = body.len()`, `client`, `subagent`, `parentSubagent`, `proc`, `clientProc`, `sessionHeader`, and carries the capture only when `inference` is set: `original` = body, `header` = `redact::headers` of the request headers without `CAPTURE_REMOVE`, `query` = `redact::query`.
+  - `pub fn on_request_body(&mut self, body: &[u8]) -> Line`: the request row. It parses with `InferenceObserver::on_request` on the raw body (`on_request` calls `decode_request_body` itself, so do not decode twice), sets `bytesUp = body.len()`, `client`, `subagent`, `parentSubagent`, `proc`, `clientProc`, `sessionHeader`, and carries the capture only when `inference` is set: `original` = body, `header` = `redact::headers` of the request headers without `CAPTURE_REMOVE`, `query` = `redact::query`.
   - `pub fn on_response_head(&mut self, status: u16, headers: &mut http::HeaderMap) -> Result<(), Abort>`. It records the TTFB, takes and removes `X-Cortex-Egress-Error` (Global Constraints mapping), and picks the SSE mode (`text/event-stream`, or `is_known_mislabeled_sse`). It returns `Err(Abort::BufferedOverCap)` for a non-SSE response with no `Content-Encoding` and a `Content-Length` over `MAX_BODY_SIZE`.
   - `pub fn on_response_chunk(&mut self, chunk: &[u8]) -> Result<(), Abort>`: decodes for parsing, counts and captures, and returns `Err(Abort::FrameOverCap)` or `Err(Abort::BufferedOverCap)` at a cap.
   - `pub fn on_response_end(&mut self) -> Line`: the response row (`ended: true`).
@@ -211,14 +217,14 @@ Depends on: Task 2, Task 3
   - `pub enum Abort { BufferedOverCap, FrameOverCap }`.
 
 Response row rules (each from direct mode, cited in spec Sections 1 and 3):
-- `inference` = `InferenceObserver::extension()` (the request and response facts together), after `settle_served_model` with the response headers.
+- `inference` = `InferenceObserver::extension()` (the request and response facts together), read after the last `on_response_frame(headers, …, true)` call. That call already runs `settle_served_model`, so do not call it again.
 - Capture only when the request capture was kept. When `Content-Encoding` is `gzip` alone: body = the decoder output, `decoded: true`, without `Content-Encoding` and `Content-Length` in the header. Otherwise: wire bytes, `decoded: false`, headers kept. Header = `redact::headers`. Up to 10 MiB, `truncated` past it. `incomplete = !ended`.
 - `bytesDown` = decoded bytes for gzip, wire bytes otherwise.
 - `cost` = the six headers when present.
 - Kinds: `Abort::BufferedOverCap` → `statusCode` 502, `proxy_error`, `code` = the upstream status as a decimal string, the buffered text. `Abort::FrameOverCap` → `statusCode` = the upstream status, `proxy_error`, the frame text. `deferred`: status 413 → `statusCode` 413, `proxy_error`, the 413 text with the request's `Content-Length`; `downstream_gone` or status 499 → `statusCode` 499, `client_canceled`, Decision 8 text; `upstream_gone` → `statusCode` = status, `upstream_error`, Decision 8 text; otherwise `statusCode` = status, `gateway_refused`.
 
-- [ ] **Step 1: Write the failing drift test** in `line.rs`: `every_session_event_field_is_set_or_listed`. Take the top-level keys of `../../core/pipeline/testdata/session-event.golden.json`, and the keys of `serde_json::to_value(full_event())`, where `full_event()` is a test helper with every field set. Assert golden ⊆ rust ∪ `NOT_SET_IN_PRAXIS_MODE`, and rust ⊆ golden. The list is `sessionId`, `seq`, `at` ("the store sets it") and the Decision 6 fields, with each reason as a comment.
-- [ ] **Step 2: Write the failing row tests** in `row.rs`, on the Claude Code fixture `core/plugins/inferenceparser/testdata/claude-code/<first case>` (fed whole and in 4096-byte chunks):
+- [ ] **Step 1: Write the failing drift test** in `line.rs`: `every_session_event_field_is_set_or_listed`. Take the top-level keys of `../../core/pipeline/testdata/session-event.golden.json`, and the keys of `serde_json::to_value(full_event())`, where `full_event()` is a test helper with every field set. Assert golden ⊆ rust ∪ `NOT_SET_IN_PRAXIS_MODE`, and rust ⊆ golden. The list is `pub const NOT_SET_IN_PRAXIS_MODE: &[&str]` (public, because Task 10's integration test reads it): `sessionId`, `seq`, `at` ("the store sets it") and the Decision 6 fields, with each reason as a comment.
+- [ ] **Step 2: Write the failing row tests** in `row.rs`, on the Claude Code fixture `core/plugins/inferenceparser/testdata/claude-code/main-stream-thinking-tool-use` (fed whole and in 4096-byte chunks). The gzip tests gzip that response in the test with `flate2` and set `Content-Encoding: gzip`. The `br` test sets `Content-Encoding: br` on the raw bytes:
   - `request_row_has_inference_and_capture`
   - `capture_headers_have_no_hop_or_credential_headers`: `Authorization` and `X-Cortex-Token` absent, `X-Cortex-Custom` present.
   - `non_inference_request_has_no_capture`: `POST /oauth/token`.
@@ -253,7 +259,7 @@ Depends on: Task 4, Task 5
 
 **Interfaces:**
 - Consumes: `record::attribution`, `record::row::Exchange`, `record::emitter::global` (Tasks 4, 5).
-- Produces: filter names `cortex_attribution` (config `token_file`) and `cortex_observe` (config `token_file`, `ingest` as `host:port`), registered in `main.rs` with `register_filters! { http "cortex_attribution" => CortexAttribution::from_config, http "cortex_observe" => CortexObserve::from_config }`. A private newtype `TokenValid(Attribution)` goes into `ctx.extensions`.
+- Produces: filter names `cortex_attribution` (config `token_file`) and `cortex_observe` (config `token_file`, `ingest` as `host:port`), registered in `main.rs` with `register_filters! { http "cortex_attribution" => CortexAttribution::from_config, http "cortex_observe" => CortexObserve::from_config }`. A newtype `pub(crate) struct TokenValid(pub Attribution)`, defined in `filters/attribution.rs`, goes into `ctx.extensions`. The exchange is kept as Decision 16 says.
 
 Filter behavior:
 - `CortexAttribution::on_request`: when `token_matches(X-Cortex-Token)` is false → `Reject(Rejection::status(403))`. Else insert `TokenValid(decode(X-Cortex-Attribution))` (unless `X-Cortex-Probe` is present: then insert nothing and continue), and push `UPSTREAM_REMOVE` to `ctx.request_headers_to_remove`.
@@ -265,7 +271,7 @@ The test harness: each test writes `gateway.yaml` from the template into a temp 
   - `tokenless_request_gets_403_and_no_line`: the mock origin sees nothing, and the ingest sees no line in 1 s.
   - `probe_request_records_nothing`
   - `hop_headers_removed_custom_kept`: the origin sees `X-Cortex-Dest`, `X-Cortex-Token` and `X-Cortex-Custom`, and none of the other ten.
-  - `inference_request_gives_request_and_response_lines`: the Claude Code fixture → two lines with one `requestId`, `session` = `recordSession`, response row with tokens and `cost.headers`.
+  - `inference_request_gives_request_and_response_lines`: the fixture `claude-code/main-stream-thinking-tool-use`, with the mock origin adding `X-Litellm-Response-Cost: 0.01` → two lines with one `requestId`, `session` = `recordSession`, response row with tokens and `cost.headers`.
   - `gzip_sse_streams_as_frames_and_wire_bytes_unchanged`: the client receives the gzip bytes unchanged, and receives the first frame before the origin sends the last one.
   - `mid_body_abort_is_client_canceled`: the client sends half of a body with `Content-Length`, then closes → a response row with `client_canceled`, 499.
   - `body_over_limit_is_413_proxy_error`: a 33 MiB body → the client gets 413; lines: request row and response row with `proxy_error` and the 413 text.
@@ -318,7 +324,7 @@ Depends on: none
 - Consumes: `session.Store.AppendCapture`, `session.Store.AddRecorder`, `attribution.FiledSession`, `settle.SettleInput`, `settle.NewRecord`, `inference.SettleServedModel`, `event.Key`, `event.PluginName`, `redact.Headers`, `redact.Query`, `httpx.LoopbackHost`.
 
 Handler rules, in order:
-1. A non-loopback `Host`, or an `Origin` header → 403 (the `clearRefusal` texts).
+1. A non-loopback `Host` (`httpx.LoopbackHost`), or an `Origin` header → 403, with the texts `"ingest is accepted only for a loopback Host (localhost, 127.0.0.1 or [::1])"` and `"ingest is refused from a browser: the request carries an Origin header"`. Do not call `clearRefusal`: its texts say "erasing", and its third check is `allowClear`.
 2. No `Authorization: Bearer <Token>` (`subtle.ConstantTimeCompare`) → 401.
 3. Read the body line by line with a `bufio.Reader` and a 64 MiB cap per line. A line over the cap is discarded up to its `\n` and refused as `line_cap`. The connection stays open after any refusal. The answer, when the body ends, is 204.
 4. For each line: unmarshal (`bad_json`); `v != 1` → `version`; `schemaVersion != SchemaVersion` → `schema`; `op != "append"` → `op`.
@@ -328,7 +334,7 @@ Handler rules, in order:
 8. Capture: `dropped` → count `CapturesDropped`, no capture. No `ev.Inference` → no capture. A request capture: redact `Header` and `Query` again, keep it, and remember `requestId`. A response capture: keep it only when `requestId` is remembered (then forget it), with `Header` redacted again. Entries older than 1 hour are removed when a response line is read (Decision 9).
 9. `store.AppendCapture(sid, ev, capture)`; count `Lines`.
 
-`erase_marks.go`: `type eraseMarks struct` implements `session.Recorder` (a no-op `Record`), `session.Deleter` and `session.Clearer`. It keeps the id → time and the last clear time for 10 minutes. `func (m *eraseMarks) erasedAfter(sid string, startedAt time.Time) bool`. It has an injectable clock. It is registered with `store.AddRecorder` in `New`, only when `WithIngest` was given.
+`erase_marks.go`: `type eraseMarks struct` implements `session.Recorder` (a no-op `Record`), `session.Deleter` and `session.Clearer`. It keeps the id → time and the last clear time for 10 minutes. `func (m *eraseMarks) erasedAfter(sid string, startedAt time.Time) bool`. It has an injectable clock. `Deleted` and `Cleared` run under the store's write lock, so they take only the marks' own mutex and never call the store. It is registered with `store.AddRecorder` in `New`, only when `WithIngest` was given. Tests reach the clock through an unexported field set in the test (package `sessionapi`), not through a new exported option.
 
 - [ ] **Step 1: Write the failing tests** (a `session.Store` with a capture recorder, as in `forwardproxy/capture_test.go`):
   - `TestIngest_NotRegisteredWithoutOption`: `POST /v1/ingest` and `GET /v1/ingest/stats` → 404, and the store has no `eraseMarks` recorder.
@@ -345,6 +351,7 @@ Handler rules, in order:
   - `TestIngest_ClearDropsOlderLines`: the same with `DELETE /v1/sessions`.
   - `TestIngest_EraseMarkExpires`: with the clock 11 minutes on, the older line is kept.
   - `TestIngest_EmptySessionIsFiled`: `session: ""` → filed under the active session.
+  - `TestIngest_ShutdownEndsStream`: an open ingest stream with no line in flight; `Server().Shutdown` with a 2 s context returns nil within 1 s (Decision 17).
 - [ ] **Step 2: Run** `GOWORK=off go test ./sessionapi/ -run Ingest` from `core` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** → PASS; also the whole `./sessionapi/ ./session/...` suite; `go vet ./...` and `gofmt -l sessionapi` clean.
@@ -377,18 +384,19 @@ Depends on: Task 7, Task 8
 Depends on: Task 5, Task 8
 
 **Files:**
-- Create: `core/listener/forwardproxy/ingest_replay_test.go` (package `forwardproxy_test`, so it can import `sessionapi`), `core/sessionapi/testdata/ingest/replay.ndjson`, `praxis/filters/tests/row_parity.rs`
+- Create: `core/listener/forwardproxy/ingest_replay_test.go` (package `forwardproxy`, the same as `capture_test.go`. `sessionapi` does not import `forwardproxy`, so there is no cycle. Reuse `captures` and `proxyWithCaptures` from `capture_test.go`), `core/sessionapi/testdata/ingest/replay.ndjson`, `praxis/filters/tests/row_parity.rs`, `praxis/filters/tests/common/mod.rs`
+- Modify: `praxis/filters/tests/parity.rs` (move its fixture loader, `Case`, `cases`, `load`, `header_map`, `read_body`, into `tests/common/mod.rs` and use `mod common;` from both tests)
 
 **Interfaces:**
 - Consumes: `sessionapi.WithIngest` (Task 8); `record::row::Exchange`, `record::line::Line` (Task 5).
 
 - [ ] **Step 1: Write the Go test** `TestIngestReplay_MatchesLiveRun`:
-  - **Live run:** a forward proxy with `inference-parser` and a fixed `pricing.Table`, a store with a usage aggregator and a capture recorder, and a mock origin that answers each `claude-code` fixture with its response file and headers, plus `X-Litellm-Response-Cost` on half the cases. One request per fixture, in fixture order, all with one session header.
-  - **Lines:** convert each stored event, with its capture, into a v1 line (`startedAt` = the event's `At`, `cost.headers` = the cost headers the origin sent). With `-update`, write them to `testdata/ingest/replay.ndjson`. Otherwise read that file.
+  - **Live run:** a forward proxy with `inference-parser` and a fixed `pricing.Table`, a store with a usage aggregator and a capture recorder, and a mock origin that answers each `claude-code` fixture with its response file and headers (the `parsefixture` rules: `response.headers` when present, else the Content-Type of the response file's type; status 502 for `error-502-html`, else 200), plus `X-Litellm-Response-Cost` on half the cases. One request per fixture, in fixture order, all with one session header.
+  - **Lines:** convert each stored event, with its capture, into a v1 line (`seq` and `sessionId` zeroed as a producer sends them, `startedAt` = the event's `At`, `cost.headers` = the cost headers the origin sent). With `-update`, write them to `testdata/ingest/replay.ndjson`. Otherwise read that file.
   - **Replay:** post the file to a second session API with `WithIngest` and an empty store with its own aggregator.
   - **Compare:** `/v1/sessions/{id}` events field by field without `at`; the `/v1/sessions` summaries without their time fields; the `/v1/usage` totals (tokens, cost, requests) without the buckets (spec Section 5, [DR 4]).
 - [ ] **Step 2: Run** with `-update`, then without → PASS. If they differ, fix ingestion (Task 8 code), not the comparison.
-- [ ] **Step 3: Write the Rust test** `row_parity_matches_replay`: for each request and response line in `replay.ndjson`, build the same exchange from the same fixture files with `Exchange` (the headers from `request.headers`, the response fed in 4096-byte chunks), and compare `event` and `capture` JSON. Leave out `durationMs`, `ttfbMs`, `requestId` and `plugins` (ingestion owns it). A known difference is allowed only for the captured request headers: Go captures the agent's headers at entry (spec Section 1, "Captures", [F 2]).
+- [ ] **Step 3: Write the Rust test** `row_parity_matches_replay`: for each request and response line in `replay.ndjson`, build the same exchange from the same fixture files with `Exchange` (the headers from `request.headers`, the response fed in 4096-byte chunks), and compare `event` and `capture` JSON. Leave out `durationMs`, `ttfbMs`, `requestId`, `plugins` (ingestion owns it) and every key in `NOT_SET_IN_PRAXIS_MODE` (direct mode sets `invocations`, and the store sets `at`). A known difference is allowed only for the captured request headers: Go captures the agent's headers at entry (spec Section 1, "Captures", [F 2]).
 - [ ] **Step 4: Run** `cargo test -p cortex-praxis-filters --test row_parity` → PASS. If it fails, fix Rust.
 - [ ] **Step 5: Commit.** "Test: Pin praxis-mode rows against a direct-mode replay".
 
