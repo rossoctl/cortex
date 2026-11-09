@@ -229,9 +229,11 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 			}
 			tool.End = &at
 			tool.Error = ends[tool.Agent][tool.ID].IsError
-		} else if tool.Name == "SubagentHandback" || lastTurn[tool.Agent].After(tool.Start) || stopped[tool.Agent].After(askedAt[i]) {
+		} else if tool.Name == "SubagentHandback" || tool.Name == "StructuredOutput" ||
+			lastTurn[tool.Agent].After(tool.Start) || stopped[tool.Agent].After(askedAt[i]) {
 			// The agent moved on without the result, its run ended without it (a sibling of its
-			// hand-back, or a stopped agent), or the tool ends the run by design. The run can end
+			// hand-back, or a stopped agent), or the tool ends the run by design: a workflow agent
+			// stops at its StructuredOutput call, and no request carries that call's result. The run can end
 			// while the asking response still streams, so compare the notification with that
 			// request's start. A resumed run's request starts after the earlier notification.
 			at := tool.Start
