@@ -894,6 +894,9 @@ mod tests {
         assert_eq!(r["event"]["statusCode"], 502);
         assert_eq!(r["event"]["error"]["kind"], "proxy_error");
         assert_eq!(r["event"]["error"]["code"], "200");
+        let c = &r["capture"]["response"];
+        assert_eq!(c["truncated"], true);
+        assert_eq!(b64(&c["body"]).len(), MAX_RESPONSE_CAPTURE);
     }
 
     #[test]
