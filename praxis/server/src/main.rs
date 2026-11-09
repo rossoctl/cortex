@@ -2,7 +2,13 @@
 //!
 //! The shape follows Praxis's own `crates/server/src/main.rs` at v0.8.0.
 
-praxis_filter::register_filters! {}
+use cortex_praxis_filters::filters::attribution::CortexAttribution;
+use cortex_praxis_filters::filters::observe::CortexObserve;
+
+praxis_filter::register_filters! {
+    http "cortex_attribution" => CortexAttribution::from_config,
+    http "cortex_observe" => CortexObserve::from_config,
+}
 
 fn main() {
     // Before anything that can build a TLS config.

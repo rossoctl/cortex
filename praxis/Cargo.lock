@@ -475,10 +475,14 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 name = "cortex-gateway"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cortex-praxis-filters",
+ "flate2",
  "openssl",
  "praxis-proxy",
  "praxis-proxy-filter",
+ "serde_json",
+ "yaml_serde",
 ]
 
 [[package]]

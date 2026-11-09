@@ -34,6 +34,21 @@ The config path comes from `-c <path>`, then `PRAXIS_CONFIG`, then
 `praxis.yaml` in the current directory. The supervisor (#1720) writes
 `gateway.yaml`. Until then, write it by hand.
 
+The binary registers two filters. Put them first in the chain, in this order,
+and add `access_log` after them:
+
+- `cortex_attribution` (`token_file`): refuses a request without the token in
+  `X-Cortex-Token` with 403, and removes the hop headers before the upstream.
+- `cortex_observe` (`token_file`, `ingest` as `host:port`): records the request
+  and response rows and streams them to `POST /v1/ingest`.
+
+Without `access_log` in the chain, Praxis does not call the hook that records
+an aborted or refused request, so that request has no response row.
+`server/tests/testdata/gateway.yaml.tmpl` is a full example.
+
+`server/tests/gateway.rs` starts the real binary between a mock origin and a
+mock ingest endpoint. Run it with `cargo test --locked -p cortex-gateway`.
+
 ## Gateway decisions (#1719)
 
 The plan `docs/superpowers/plans/2026-11-09-praxis-mode-2-gateway-and-ingest.md`
