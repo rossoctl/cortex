@@ -468,3 +468,112 @@ func TestIngest_ShutdownEndsStream(t *testing.T) {
 		t.Errorf("Shutdown took %v, want under 1s", d)
 	}
 }
+
+func TestIngest_ResponseGetsRequestFields(t *testing.T) {
+	r := newIngestRig(t)
+	reqInf := map[string]any{"model": "claude-x",
+		"messages":         []map[string]any{{"role": "user", "content": "hi"}},
+		"tools":            []map[string]any{{"name": "Read"}},
+		"toolResults":      []map[string]any{{"toolUseId": "t1", "content": "ok"}},
+		"historyToolCalls": []map[string]any{{"id": "t1", "name": "Read"}},
+		"historyThinking":  map[string]any{"blocks": 1}}
+	reqEv := map[string]any{"phase": "request", "requestId": "r1", "inference": reqInf}
+	r.post(t, nil,
+		line(t, map[string]any{"event": reqEv}),
+		// A response row of format v1: the request-only fields are left out.
+		line(t, map[string]any{"event": responseEvent(map[string]any{"inference": map[string]any{"model": "claude-x", "outputTokens": 5}})}),
+		// A response row that carries its own messages keeps them.
+		line(t, map[string]any{"requestId": "r2", "event": map[string]any{"phase": "request", "requestId": "r2", "inference": reqInf}}),
+		line(t, map[string]any{"requestId": "r2", "event": responseEvent(map[string]any{"requestId": "r2", "inference": map[string]any{"model": "claude-x",
+			"messages": []map[string]any{{"role": "user", "content": "own"}}}})}),
+		// A response with no request row stays as it is.
+		line(t, map[string]any{"requestId": "r3", "event": responseEvent(map[string]any{"requestId": "r3"})}),
+	)
+	evs := r.events("s1")
+	if len(evs) != 5 {
+		t.Fatalf("got %d rows, want 5", len(evs))
+	}
+	req, res := evs[0].Inference, evs[1].Inference
+	if res.OutputTokens != 5 {
+		t.Errorf("the response's own field was lost: outputTokens = %d", res.OutputTokens)
+	}
+	for name, eq := range map[string]bool{
+		"messages":         len(res.Messages) == 1 && res.Messages[0].Content == req.Messages[0].Content,
+		"tools":            len(res.Tools) == 1 && res.Tools[0].Name == "Read",
+		"toolResults":      len(res.ToolResults) == 1,
+		"historyToolCalls": len(res.HistoryToolCalls) == 1,
+		"historyThinking":  res.HistoryThinking != nil && res.HistoryThinking.Blocks == 1,
+	} {
+		if !eq {
+			t.Errorf("response %s was not restored from the request row", name)
+		}
+	}
+	if m := evs[3].Inference.Messages; len(m) != 1 || m[0].Content != "own" {
+		t.Errorf("a response's own messages were replaced: %+v", m)
+	}
+	if m := evs[4].Inference.Messages; m != nil {
+		t.Errorf("a response with no request row got messages: %+v", m)
+	}
+	r.srv.ingest.reqCapsMu.Lock()
+	n := len(r.srv.ingest.reqInf)
+	r.srv.ingest.reqCapsMu.Unlock()
+	if n != 0 {
+		t.Errorf("%d held requests remain after their responses", n)
+	}
+}
+
+func TestIngest_EraseForgetsHeldRequests(t *testing.T) {
+	held := func(r *ingestRig) int {
+		r.srv.ingest.reqCapsMu.Lock()
+		defer r.srv.ingest.reqCapsMu.Unlock()
+		return len(r.srv.ingest.reqInf)
+	}
+	for name, erase := range map[string]func(r *ingestRig){
+		"delete": func(r *ingestRig) { del(t, r.base+"/v1/sessions/s1") },
+		"clear":  func(r *ingestRig) { del(t, r.base+"/v1/sessions") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newIngestRig(t)
+			r.post(t, nil, line(t, nil), line(t, map[string]any{"requestId": "r2", "session": "s2"}))
+			if held(r) != 2 {
+				t.Fatalf("held %d requests, want 2", held(r))
+			}
+			erase(r)
+			want := 1 // s2 stays
+			if name == "clear" {
+				want = 0
+			}
+			if got := held(r); got != want {
+				t.Errorf("after the erase, %d held requests, want %d", got, want)
+			}
+		})
+	}
+}
+
+func TestIngest_ParallelDecodeKeepsOrder(t *testing.T) {
+	r := newIngestRig(t)
+	var lines [][]byte
+	for i := range 200 {
+		id := fmt.Sprintf("r%03d", i)
+		// Uneven sizes, so a later line can finish decoding first.
+		pad := strings.Repeat("x", (i%7)*20000)
+		lines = append(lines, line(t, map[string]any{"requestId": id, "event": map[string]any{"phase": "request",
+			"requestId": id, "inference": map[string]any{"model": "m", "messages": []map[string]any{{"role": "user", "content": pad}}}}}))
+	}
+	lines = append(lines, []byte("{not json"))
+	if got := r.post(t, nil, lines...); got != http.StatusNoContent {
+		t.Fatalf("status %d", got)
+	}
+	evs := r.events("s1")
+	if len(evs) != 200 {
+		t.Fatalf("got %d rows, want 200", len(evs))
+	}
+	for i, ev := range evs {
+		if want := fmt.Sprintf("r%03d", i); ev.RequestID != want {
+			t.Fatalf("row %d is %s, want %s: lines were filed out of order", i, ev.RequestID, want)
+		}
+	}
+	if st := r.stats(t); st.Lines != 200 || st.Refused["bad_json"] != 1 {
+		t.Errorf("stats = %+v", st)
+	}
+}

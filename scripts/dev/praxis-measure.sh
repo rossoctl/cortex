@@ -10,7 +10,8 @@
 # each one with the largest claude-code fixture response.
 #
 # The script prints, for each process: the CPU time (ps -o time), the peak RSS
-# (sampled every 0.2 s) and, for Cortex, the heap in use from /debug/pprof/heap.
+# (sampled every 0.2 s) and, for Cortex, the heap in use after a GC, from
+# /debug/pprof/heap?gc=1.
 # cortex-gateway serves no pprof.
 #
 # Every process runs under a temp HOME on its own ports. The script never touches
@@ -286,7 +287,7 @@ EOF
 	fi
 	sleep 0.5 # one more RSS sample after the last request
 
-	heap=$(curl -s --noproxy '*' "http://127.0.0.1:$stats/debug/pprof/heap?debug=1" |
+	heap=$(curl -s --noproxy '*' "http://127.0.0.1:$stats/debug/pprof/heap?gc=1&debug=1" |
 		awk '/^# HeapInuse = / {printf "%.1f", $4 / 1048576}')
 	row "$mode" cortex "$cortex_pid" "$dir/cortex.rss" "${heap:-n/a}" "$secs"
 	if [ -n "$gateway_pid" ]; then

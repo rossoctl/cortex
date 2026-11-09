@@ -290,6 +290,13 @@ func replayLines(t *testing.T, rig *replayRig, rec *captures, cases []replayCase
 			}
 			l.Cost = map[string]any{"headers": hdr}
 		}
+		if ev.Phase == pipeline.SessionResponse && ev.Inference != nil {
+			// Line format v1: a response row leaves out the request-only fields, and Cortex
+			// puts them back from the request row. The live session still has them.
+			inf := *ev.Inference
+			inf.Messages, inf.Tools, inf.ToolResults, inf.HistoryToolCalls, inf.HistoryThinking = nil, nil, nil, nil, nil
+			ev.Inference = &inf
+		}
 		ev.Seq, ev.SessionID, ev.At = 0, "", ev.At.UTC()
 		l.Event = ev
 		b, err := json.Marshal(l)

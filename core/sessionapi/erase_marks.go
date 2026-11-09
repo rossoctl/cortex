@@ -19,6 +19,9 @@ type eraseMarks struct {
 	now       func() time.Time
 	ids       map[string]time.Time
 	lastClear time.Time
+	// forget, when set, is told each erase after mu is released: a session id, or "" for
+	// a clear. It must not call the store.
+	forget func(sessionID string)
 }
 
 func newEraseMarks() *eraseMarks {
@@ -28,6 +31,13 @@ func newEraseMarks() *eraseMarks {
 func (m *eraseMarks) Record(string, *model.SessionEvent) {}
 
 func (m *eraseMarks) Deleted(sessionID string) {
+	m.mark(sessionID)
+	if m.forget != nil {
+		m.forget(sessionID)
+	}
+}
+
+func (m *eraseMarks) mark(sessionID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
@@ -41,9 +51,12 @@ func (m *eraseMarks) Deleted(sessionID string) {
 
 func (m *eraseMarks) Cleared() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.lastClear = m.now()
 	clear(m.ids) // the clear's mark is later than each of them
+	m.mu.Unlock()
+	if m.forget != nil {
+		m.forget("")
+	}
 }
 
 // erasedAfter reports whether sid was erased, by a delete or a clear, after startedAt and

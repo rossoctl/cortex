@@ -357,6 +357,14 @@ A request row carries `original`, `header` and `query`; a response row
 carries `response` only. A capture the producer dropped is
 `{"dropped": true}`. `cost` is on response rows only.
 
+A response row's `inference` leaves out the request-only fields:
+`messages`, `tools`, `toolResults`, `historyToolCalls` and
+`historyThinking`. They are most of a line's bytes, and the request row
+carries them already. Cortex puts them back from the request row of the same
+`requestId`, so the stored response row is the same as in direct mode. A
+field the response row carries is kept. When the producer dropped the
+request row, the response row is stored without them.
+
 **What Cortex does with a line:**
 
 - Files it under `session`; an empty `session` goes to the active session,
@@ -367,6 +375,8 @@ carries `response` only. A capture the producer dropped is
 - Keeps a capture only for an event with `inference`, removes credentials
   from its headers and query again, and keeps a response capture only after
   the request capture of the same `requestId` (held for up to 1 hour).
+- Decodes up to 8 lines of a stream at the same time (at most one per CPU),
+  and files them one at a time, in stream order.
 - Drops a line whose `startedAt` is before an erase of its session
   (`DELETE /v1/sessions/{id}` or `DELETE /v1/sessions`) in the last 10
   minutes, so a queued row cannot bring an erased session back.

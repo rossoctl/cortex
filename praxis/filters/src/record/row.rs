@@ -508,7 +508,17 @@ impl Exchange {
 
     fn response_row(&mut self, status_code: i64, error: Option<EventError>) -> Line {
         let mut event = Event {
-            inference: self.observer.as_ref().and_then(|o| o.extension()).cloned(),
+            // Line format v1: the request row carries the request-only fields, and Cortex puts
+            // them back on this row. They are most of a line's bytes (docs/session-api.md).
+            inference: self.observer.as_ref().and_then(|o| o.extension()).map(|i| {
+                let mut i = i.clone();
+                i.messages = Vec::new();
+                i.tools = Vec::new();
+                i.tool_results = Vec::new();
+                i.history_tool_calls = Vec::new();
+                i.history_thinking = None;
+                i
+            }),
             status_code,
             error,
             duration_ms: self.start.elapsed().as_millis() as i64,
@@ -668,6 +678,27 @@ mod tests {
         assert!(l.get("cost").is_none());
         let started = chrono::DateTime::parse_from_rfc3339(l["startedAt"].as_str().unwrap());
         assert!(started.is_ok());
+    }
+
+    #[test]
+    fn response_row_leaves_out_request_fields() {
+        let f = fixture();
+        let (req, resp, _) = run(&f.resp_body, &[], 4096);
+        let (req, resp) = (json_of(&req), json_of(&resp));
+        let (qi, ri) = (&req["event"]["inference"], &resp["event"]["inference"]);
+        assert!(qi["messages"].as_array().is_some_and(|m| !m.is_empty()));
+        assert!(qi["tools"].as_array().is_some_and(|t| !t.is_empty()));
+        for k in [
+            "messages",
+            "tools",
+            "toolResults",
+            "historyToolCalls",
+            "historyThinking",
+        ] {
+            assert!(ri.get(k).is_none(), "the response row carries {k}");
+        }
+        assert_eq!(ri["model"], qi["model"]);
+        assert!(ri["outputTokens"].as_i64().unwrap() > 0);
     }
 
     #[test]

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +35,9 @@ const (
 	// requestCaptureTTL is how long a kept request capture waits for its response line. Longer
 	// than any stream: a 60 s window would drop the response capture of every long stream.
 	requestCaptureTTL = time.Hour
+	// maxIngestDecoders caps how many lines of one stream decode at the same time. Each one
+	// can hold a 64 MiB line and its decoded form.
+	maxIngestDecoders = 8
 )
 
 // The refusal reasons of ingest_refused_total.
@@ -82,6 +86,9 @@ type ingester struct {
 	// the response line arrives. A response capture is kept only for an id here.
 	reqCapsMu sync.Mutex
 	reqCaps   map[string]time.Time
+	// reqInf holds, under reqCapsMu, the request-only inference fields of each request row,
+	// by request id, until its response line puts them back.
+	reqInf map[string]heldRequest
 
 	// streams are the open ingest streams, so Shutdown can end them.
 	streamsMu sync.Mutex
@@ -89,8 +96,84 @@ type ingester struct {
 }
 
 func newIngester(cfg Ingest) *ingester {
-	return &ingester{cfg: cfg, marks: newEraseMarks(), refused: map[string]uint64{},
-		reqCaps: map[string]time.Time{}, streams: map[*http.ResponseController]struct{}{}}
+	in := &ingester{cfg: cfg, marks: newEraseMarks(), refused: map[string]uint64{},
+		reqCaps: map[string]time.Time{}, reqInf: map[string]heldRequest{},
+		streams: map[*http.ResponseController]struct{}{}}
+	in.marks.forget = in.forgetRequests
+	return in
+}
+
+// heldRequest is what a response line needs from its request line.
+type heldRequest struct {
+	sid string
+	at  time.Time
+	inf model.InferenceExtension
+}
+
+// holdRequest keeps the request-only fields of a request row until its response line.
+// Line format v1: a response row leaves them out, because they are most of its bytes and
+// the request row carries them already. In direct mode both rows hold them.
+func (in *ingester) holdRequest(id, sid string, inf *model.InferenceExtension) {
+	in.reqCapsMu.Lock()
+	defer in.reqCapsMu.Unlock()
+	in.sweepLocked(time.Now())
+	in.reqInf[id] = heldRequest{sid: sid, at: time.Now(), inf: model.InferenceExtension{
+		Messages: inf.Messages, Tools: inf.Tools, ToolResults: inf.ToolResults,
+		HistoryToolCalls: inf.HistoryToolCalls, HistoryThinking: inf.HistoryThinking}}
+}
+
+// restoreRequest puts the request-only fields back on a response row. A field the row
+// carries is kept. With no request row (the producer dropped it), the row stays as it is.
+func (in *ingester) restoreRequest(id string, inf *model.InferenceExtension) {
+	in.reqCapsMu.Lock()
+	h, ok := in.reqInf[id]
+	delete(in.reqInf, id)
+	in.reqCapsMu.Unlock()
+	if !ok {
+		return
+	}
+	if inf.Messages == nil {
+		inf.Messages = h.inf.Messages
+	}
+	if inf.Tools == nil {
+		inf.Tools = h.inf.Tools
+	}
+	if inf.ToolResults == nil {
+		inf.ToolResults = h.inf.ToolResults
+	}
+	if inf.HistoryToolCalls == nil {
+		inf.HistoryToolCalls = h.inf.HistoryToolCalls
+	}
+	if inf.HistoryThinking == nil {
+		inf.HistoryThinking = h.inf.HistoryThinking
+	}
+}
+
+// sweepLocked drops the held requests and request captures older than requestCaptureTTL:
+// their response line is not coming.
+func (in *ingester) sweepLocked(now time.Time) {
+	for id, at := range in.reqCaps {
+		if now.Sub(at) > requestCaptureTTL {
+			delete(in.reqCaps, id)
+		}
+	}
+	for id, h := range in.reqInf {
+		if now.Sub(h.at) > requestCaptureTTL {
+			delete(in.reqInf, id)
+		}
+	}
+}
+
+// forgetRequests drops the held requests of an erased session, or of every session when
+// sid is "", so an erase does not leave its prompts in memory.
+func (in *ingester) forgetRequests(sid string) {
+	in.reqCapsMu.Lock()
+	defer in.reqCapsMu.Unlock()
+	for id, h := range in.reqInf {
+		if sid == "" || h.sid == sid {
+			delete(in.reqInf, id)
+		}
+	}
 }
 
 func (in *ingester) refuse(reason string) {
@@ -165,6 +248,24 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		in.streamsMu.Unlock()
 	}()
 
+	// JSON decoding is most of a line's cost, so lines decode in parallel. They are filed in
+	// order: a response line needs its request line filed first. The channel's size bounds
+	// the lines held in memory.
+	decoded := make(chan chan decodedLine, min(runtime.GOMAXPROCS(0), maxIngestDecoders))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ch := range decoded {
+			if d := <-ch; d.refused != "" {
+				in.refuse(d.refused)
+			} else {
+				s.fileIngest(d.line)
+			}
+		}
+	}()
+	finish := sync.OnceFunc(func() { close(decoded); <-done })
+	defer finish()
+
 	br := bufio.NewReaderSize(r.Body, 64<<10)
 	for {
 		b, over, err := readIngestLine(br)
@@ -172,9 +273,12 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		case over:
 			in.refuse(refusedLineCap)
 		case len(bytes.TrimSpace(b)) > 0:
-			s.ingestOne(b)
+			ch := make(chan decodedLine, 1)
+			decoded <- ch
+			go func() { ch <- decodeIngestLine(b) }()
 		}
 		if errors.Is(err, io.EOF) {
+			finish() // the producer sees 204 only after every line is filed
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -208,24 +312,32 @@ func readIngestLine(br *bufio.Reader) (line []byte, over bool, err error) {
 	}
 }
 
-// ingestOne files one line, or counts why it was refused.
-func (s *Server) ingestOne(b []byte) {
-	in := s.ingest
+// decodedLine is a decoded line, or why it was refused.
+type decodedLine struct {
+	line    ingestLine
+	refused string
+}
+
+// decodeIngestLine decodes one line and checks its version, schema and op. It touches no
+// shared state, so lines decode in parallel.
+func decodeIngestLine(b []byte) decodedLine {
 	var l ingestLine
 	switch err := json.Unmarshal(b, &l); {
 	case err != nil:
-		in.refuse(refusedBadJSON)
-		return
+		return decodedLine{refused: refusedBadJSON}
 	case l.V != ingestLineVersion:
-		in.refuse(refusedVersion)
-		return
+		return decodedLine{refused: refusedVersion}
 	case l.SchemaVersion != SchemaVersion:
-		in.refuse(refusedSchema)
-		return
+		return decodedLine{refused: refusedSchema}
 	case l.Op != "append":
-		in.refuse(refusedOp)
-		return
+		return decodedLine{refused: refusedOp}
 	}
+	return decodedLine{line: l}
+}
+
+// fileIngest files one decoded line. Lines are filed one at a time, in stream order.
+func (s *Server) fileIngest(l ingestLine) {
+	in := s.ingest
 	sid := attribution.FiledSession(l.Session, s.store.ActiveSession)
 	// #1722 releases the line's tunnel join here.
 	if in.marks.erasedAfter(sid, l.StartedAt) {
@@ -239,6 +351,14 @@ func (s *Server) ingestOne(b []byte) {
 	delete(ev.Plugins, event.PluginName)
 	ev.Seq, ev.SessionID, ev.At = 0, "", time.Now()
 
+	if ev.Inference != nil {
+		switch ev.Phase {
+		case model.SessionRequest:
+			in.holdRequest(l.RequestID, sid, ev.Inference)
+		case model.SessionResponse:
+			in.restoreRequest(l.RequestID, ev.Inference)
+		}
+	}
 	if ev.Phase == model.SessionResponse {
 		s.settleIngested(&ev, l.Cost)
 	}
@@ -292,12 +412,7 @@ func (in *ingester) capture(l ingestLine, ev *model.SessionEvent) *model.Request
 		return &model.RequestCapture{Original: c.Original, Forwarded: c.Forwarded,
 			Header: redact.Headers(c.Header), Query: redact.Query(c.Query)}
 	}
-	now := time.Now()
-	for id, at := range in.reqCaps {
-		if now.Sub(at) > requestCaptureTTL {
-			delete(in.reqCaps, id)
-		}
-	}
+	in.sweepLocked(time.Now())
 	if _, ok := in.reqCaps[l.RequestID]; !ok {
 		return nil
 	}
