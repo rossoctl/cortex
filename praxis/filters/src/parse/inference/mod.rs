@@ -124,6 +124,12 @@ pub(crate) struct InferenceStreamState {
     pub(crate) tools_by_index: HashMap<i64, usize>,
     pub(crate) open_tool: Option<usize>,
 
+    /// The Chat Completions tool calls, keyed by the index each
+    /// delta.tool_calls fragment carries. A separate namespace from the
+    /// Anthropic block index.
+    pub(crate) openai_tool_calls: Vec<ToolCallState>,
+    pub(crate) openai_by_index: HashMap<i64, usize>,
+
     /// The Anthropic thinking blocks.
     pub(crate) thinking: InferenceThinking,
 }
@@ -150,6 +156,7 @@ impl InferenceStreamState {
         let calls: Vec<_> = self
             .tool_calls
             .iter()
+            .chain(&self.openai_tool_calls)
             .map(|tc| InferenceToolCall {
                 id: tc.id.clone(),
                 name: tc.name.clone(),

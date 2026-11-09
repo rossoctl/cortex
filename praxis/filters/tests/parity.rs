@@ -210,8 +210,20 @@ fn same(expected: &Value, got: &Value, path: &str) {
     }
 }
 
-fn check(agent: &str) {
-    for case in cases(agent) {
+/// Checks every case under `testdata/<agent>/` whose directory name starts with `prefix`.
+fn check(agent: &str, prefix: &str) {
+    let cases: Vec<_> = cases(agent)
+        .into_iter()
+        .filter(|c| {
+            c.dir
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(prefix)
+        })
+        .collect();
+    assert!(!cases.is_empty(), "no {agent}/{prefix}* cases");
+    for case in cases {
         let raw = std::fs::read(case.dir.join("expected.json")).unwrap();
         let expected: Value = serde_json::from_slice(&raw).unwrap();
         for variant in variants(&case) {
@@ -226,5 +238,10 @@ fn check(agent: &str) {
 
 #[test]
 fn claude_code() {
-    check("claude-code");
+    check("claude-code", "");
+}
+
+#[test]
+fn synthetic_openai_chat() {
+    check("synthetic", "openai-chat-");
 }
