@@ -1,4 +1,5 @@
 pub mod decode;
+pub mod inference;
 pub mod model;
 pub mod sse;
 

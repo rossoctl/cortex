@@ -155,6 +155,40 @@ pub struct InferenceThinking {
     pub redacted_bytes: i64,
 }
 
+impl InferenceThinking {
+    /// Counts one content block of type `typ`, with the byte sizes of its
+    /// fields. Other block types count nothing.
+    pub fn add(&mut self, typ: &str, text: i64, signature: i64, data: i64) {
+        match typ {
+            "thinking" => {
+                self.blocks += 1;
+                self.text_bytes += text;
+                self.signature_bytes += signature;
+            }
+            "redacted_thinking" => {
+                self.blocks += 1;
+                self.redacted += 1;
+                self.redacted_bytes += data;
+            }
+            _ => {}
+        }
+    }
+
+    /// Adds the counts of `o`.
+    pub fn merge(&mut self, o: &InferenceThinking) {
+        self.blocks += o.blocks;
+        self.redacted += o.redacted;
+        self.text_bytes += o.text_bytes;
+        self.signature_bytes += o.signature_bytes;
+        self.redacted_bytes += o.redacted_bytes;
+    }
+
+    /// The counts, or `None` when no block was counted.
+    pub fn or_nil(self) -> Option<InferenceThinking> {
+        (self.blocks != 0).then_some(self)
+    }
+}
+
 /// One tool result in the request. Mirrors model.InferenceToolResult.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
