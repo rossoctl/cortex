@@ -215,7 +215,8 @@ fn write_chunk(s: &mut TcpStream, b: &[u8]) -> std::io::Result<()> {
 
 struct Ingest {
     port: u16,
-    lines: mpsc::Receiver<Value>,
+    /// A line, or what the mock found wrong, so that the test sees it.
+    lines: mpsc::Receiver<Result<Value, String>>,
 }
 
 fn ingest() -> Ingest {
@@ -229,10 +230,11 @@ fn ingest() -> Ingest {
                 let Some((head, rest)) = read_head(&mut s) else {
                     return;
                 };
-                assert_eq!(
-                    header(&head, "authorization"),
-                    Some(format!("Bearer {TOKEN}").as_str())
-                );
+                let auth = header(&head, "authorization");
+                if auth != Some(format!("Bearer {TOKEN}").as_str()) {
+                    let _ = tx.send(Err(format!("ingest Authorization is {auth:?}")));
+                    return;
+                }
                 let mut body = Body::new(&mut s, &head, rest);
                 let mut sent = 0;
                 loop {
@@ -240,7 +242,10 @@ fn ingest() -> Ingest {
                     body.read_at_least(before + 1);
                     while let Some(i) = body.out[sent..].iter().position(|&b| b == b'\n') {
                         let line = &body.out[sent..sent + i];
-                        let _ = tx.send(serde_json::from_slice(line).expect("line is JSON"));
+                        let _ = tx.send(
+                            serde_json::from_slice(line)
+                                .map_err(|e| format!("ingest line is not JSON: {e}")),
+                        );
                         sent += i + 1;
                     }
                     if body.done || body.out.len() == before {
@@ -263,6 +268,7 @@ impl Ingest {
                 self.lines
                     .recv_timeout(left)
                     .unwrap_or_else(|_| panic!("line {i} of {n} did not arrive"))
+                    .unwrap_or_else(|e| panic!("{e}"))
             })
             .collect()
     }
@@ -275,7 +281,7 @@ impl Ingest {
             .lines
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
         {
-            out.push(v);
+            out.push(v.unwrap_or_else(|e| panic!("{e}")));
         }
         out
     }
@@ -303,11 +309,18 @@ impl Drop for Gateway {
     }
 }
 
+/// A free port in 20000-29999. The mocks bind port 0, which the OS takes from
+/// its ephemeral range (32768 and up on Linux, 49152 and up on macOS), so a
+/// concurrent test's mock cannot take the gateway's port after the check.
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .expect("free port")
-        .port()
+    static N: AtomicUsize = AtomicUsize::new(0);
+    loop {
+        let n = std::process::id() as usize * 37 + N.fetch_add(1, Ordering::Relaxed);
+        let port = 20000 + (n % 10000) as u16;
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
 }
 
 fn gateway(origin: &Origin, ingest: &Ingest, access_log: bool) -> Gateway {
@@ -523,6 +536,12 @@ fn hop_headers_removed_custom_kept() {
         ["x-cortex-custom", "x-cortex-dest", "x-cortex-token"]
     );
     assert_eq!(header(&seen.head, "x-cortex-custom"), Some("kept"));
+    for l in i.take(2) {
+        assert_eq!(
+            l["requestId"], "rid-1",
+            "the id comes from X-Cortex-Request-Id"
+        );
+    }
 }
 
 #[test]
