@@ -48,6 +48,9 @@ type Config struct {
 	// Memory, when set, applies a Go runtime soft memory limit
 	// (debug.SetMemoryLimit) at boot. See MemoryConfig.
 	Memory *MemoryConfig `yaml:"memory,omitempty" json:"memory,omitempty"`
+	// Praxis, when Enabled, turns on praxis mode: cortex-gateway forwards the
+	// traffic and Cortex ingests its rows. Absent means direct mode.
+	Praxis *PraxisConfig `yaml:"praxis,omitempty" json:"praxis,omitempty"`
 	// Pricing configures model rates for the whole process — one section rather
 	// than a knob per plugin, so cost is consistent wherever it is reported.
 	//
@@ -330,6 +333,17 @@ func (b *TLSBridgeConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// PraxisConfig is the top-level `praxis:` block. listen and egress land with
+// their callers (#1720, #1722).
+type PraxisConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+}
+
+// PraxisEnabled reports whether praxis mode is on. False on a nil block.
+func (c *Config) PraxisEnabled() bool {
+	return c.Praxis != nil && c.Praxis.Enabled
 }
 
 // MTLSMode names the inbound + outbound TLS posture. Vocabulary

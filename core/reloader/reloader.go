@@ -647,6 +647,10 @@ func validateReloadable(active, next *config.Config) error {
 	if !reflect.DeepEqual(active.Stats, next.Stats) {
 		diffs = append(diffs, "stats.*")
 	}
+	// praxis.* too: praxis mode decides at boot which listeners and routes exist.
+	if !reflect.DeepEqual(active.Praxis, next.Praxis) {
+		diffs = append(diffs, "praxis.*")
+	}
 	if len(diffs) > 0 {
 		return fmt.Errorf("unreloadable field changed, pod restart required: %v", diffs)
 	}

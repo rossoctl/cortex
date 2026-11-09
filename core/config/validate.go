@@ -38,6 +38,9 @@ func Validate(cfg *Config) error {
 	if err := validateSessionArchive(cfg); err != nil {
 		return err
 	}
+	if err := validatePraxis(cfg); err != nil {
+		return err
+	}
 	return validatePricing(cfg)
 }
 
@@ -71,6 +74,22 @@ func validateCostLedger(cfg *Config) error {
 		"the ledger records through the session store (it is registered as a Recorder on it), so with the " +
 		"store off nothing can reach it and no cost history would be written — set session.enabled: true, " +
 		"or drop cost_ledger.enabled")
+}
+
+// validatePraxis refuses praxis mode outside a loopback-only laptop install, and
+// beside mtls: the ingest endpoint and the hop to cortex-gateway are loopback
+// plaintext, so neither combination can work.
+func validatePraxis(cfg *Config) error {
+	if !cfg.PraxisEnabled() {
+		return nil
+	}
+	if cfg.MTLS != nil {
+		return fmt.Errorf("praxis.enabled: true cannot be used with mtls: drop the mtls block or praxis.enabled")
+	}
+	if !cfg.Listener.BindLoopbackOnly {
+		return fmt.Errorf("praxis.enabled: true requires listener.bind_loopback_only: true")
+	}
+	return nil
 }
 
 // validatePricing builds the rate table and discards it, so a fault in the
