@@ -762,8 +762,46 @@ func axisLabels(lay tlLayout) string {
 	return strings.TrimRight(string(line[:min(len(line), w+8)]), " ")
 }
 
+// timelineLabelHarvestEvery is the shortest time between two harvests that the timeline pane
+// starts for subagents with no label.
+const timelineLabelHarvestEvery = 15 * time.Second
+
+// harvestedLabel is the description Claude Code wrote for a subagent with no spawn call on
+// the wire, or "". An agent that Claude Code's Workflow tool starts has no Agent tool call, so
+// the server can only label it "subagent <id>". Its meta file on disk holds the real label.
+func (m *model) harvestedLabel(a timeline.Agent) string {
+	if a.SpawnTool != "" {
+		return ""
+	}
+	return m.sessionsData[m.timeline.session].Subagents[a.ID].Description
+}
+
+func (m *model) timelineLabel(a timeline.Agent) string {
+	if l := m.harvestedLabel(a); l != "" {
+		return l
+	}
+	return a.Label
+}
+
+// harvestForTimeline starts a harvest when the timeline shows a subagent that has no label
+// yet. A workflow starts agents while its main transcript stays unchanged, so nothing else
+// starts a harvest during the run.
+func (m *model) harvestForTimeline() tea.Cmd {
+	if m.harvest == nil || m.harvesting || m.timeline.tl == nil || time.Since(m.lastHarvest) < timelineLabelHarvestEvery {
+		return nil
+	}
+	for _, a := range m.timeline.tl.Agents {
+		if a.SpawnTool == "" && a.ID != timeline.MainAgent && a.ID != timeline.UnseparatedAgent && m.harvestedLabel(a) == "" {
+			m.harvesting = true
+			m.lastHarvest = time.Now()
+			return harvestCmd(m.harvest)
+		}
+	}
+	return nil
+}
+
 func (m *model) agentLine(r tlAgentRow, lay tlLayout) string {
-	label := r.agent.Label
+	label := m.timelineLabel(r.agent)
 	if r.depth > 0 {
 		label = strings.Repeat("  ", r.depth) + label
 	}
@@ -907,11 +945,12 @@ func (m *model) shortAgent(id string) string {
 	}
 	for _, a := range m.timeline.tl.Agents {
 		if a.ID == id {
-			l := []rune(a.Label)
+			label := m.timelineLabel(a)
+			l := []rune(label)
 			if len(l) > 14 {
 				return string(l[:13]) + "…"
 			}
-			return a.Label
+			return label
 		}
 	}
 	return id
