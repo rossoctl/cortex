@@ -1191,23 +1191,30 @@ func main() {
 
 	var sessionAPISrv *sessionapi.Server
 	if cfg.Listener.SessionAPIAddr != "" && sessions != nil {
+		// POST /v1/ingest, in praxis mode only: nil options in direct mode.
+		ingestOpts, err := ingestOptions(cfg, pricingRegistry, os.Getenv, os.ReadFile)
+		if err != nil {
+			fatalf("praxis ingestion: %v", err)
+		}
 		sessionAPISrv = sessionapi.New(
 			cfg.Listener.SessionAPIAddr,
 			sessions,
-			sessionapi.WithPipelines(inboundH, outboundH),
-			sessionapi.WithCatalog(sessionapi.PluginsCatalog),
-			sessionapi.WithUsage(usageAgg),
-			// nil when the ledger is off, which handleUsage reads as "serve the ring's
-			// maximum window and say which window that was".
-			sessionapi.WithCostLedger(costLedger),
-			// nil unless the archive runs; pages and ?archived=true then read history from disk.
-			sessionapi.WithArchive(sessArchive),
-			// DELETE /v1/sessions and DELETE /v1/sessions/{id} only where the API is this
-			// machine's alone: a laptop install binds loopback-only, and its one user owns the
-			// history. See sessionapi.clearRefusal.
-			sessionapi.WithClearAllowed(cfg.Listener.BindLoopbackOnly),
-			// Reads hold raw prompts: the same browser defenses as the erase, on every route.
-			sessionapi.WithLoopbackOnly(cfg.Listener.BindLoopbackOnly),
+			append([]sessionapi.Option{
+				sessionapi.WithPipelines(inboundH, outboundH),
+				sessionapi.WithCatalog(sessionapi.PluginsCatalog),
+				sessionapi.WithUsage(usageAgg),
+				// nil when the ledger is off, which handleUsage reads as "serve the ring's
+				// maximum window and say which window that was".
+				sessionapi.WithCostLedger(costLedger),
+				// nil unless the archive runs; pages and ?archived=true then read history from disk.
+				sessionapi.WithArchive(sessArchive),
+				// DELETE /v1/sessions and DELETE /v1/sessions/{id} only where the API is this
+				// machine's alone: a laptop install binds loopback-only, and its one user owns the
+				// history. See sessionapi.clearRefusal.
+				sessionapi.WithClearAllowed(cfg.Listener.BindLoopbackOnly),
+				// Reads hold raw prompts: the same browser defenses as the erase, on every route.
+				sessionapi.WithLoopbackOnly(cfg.Listener.BindLoopbackOnly),
+			}, ingestOpts...)...,
 		)
 		sessionLn := listeners.take("session-api")
 		go func() {
