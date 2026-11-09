@@ -130,6 +130,9 @@ pub(crate) struct InferenceStreamState {
     pub(crate) openai_tool_calls: Vec<ToolCallState>,
     pub(crate) openai_by_index: HashMap<i64, usize>,
 
+    /// The Responses API tool calls, in the order they opened.
+    pub(crate) responses_tool_calls: Vec<responses::ResponsesCallState>,
+
     /// The Anthropic thinking blocks.
     pub(crate) thinking: InferenceThinking,
 }
@@ -157,6 +160,7 @@ impl InferenceStreamState {
             .tool_calls
             .iter()
             .chain(&self.openai_tool_calls)
+            .chain(self.responses_tool_calls.iter().map(|c| &c.call))
             .map(|tc| InferenceToolCall {
                 id: tc.id.clone(),
                 name: tc.name.clone(),

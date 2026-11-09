@@ -236,12 +236,49 @@ fn check(agent: &str, prefix: &str) {
     }
 }
 
+/// The (agent, name prefix) pair that each parity test below checks.
+const CLAUDE_CODE: (&str, &str) = ("claude-code", "");
+const SYNTHETIC_OPENAI_CHAT: (&str, &str) = ("synthetic", "openai-chat-");
+const SYNTHETIC_RESPONSES: (&str, &str) = ("synthetic", "responses-");
+
 #[test]
 fn claude_code() {
-    check("claude-code", "");
+    check(CLAUDE_CODE.0, CLAUDE_CODE.1);
 }
 
 #[test]
 fn synthetic_openai_chat() {
-    check("synthetic", "openai-chat-");
+    check(SYNTHETIC_OPENAI_CHAT.0, SYNTHETIC_OPENAI_CHAT.1);
+}
+
+#[test]
+fn synthetic_responses() {
+    check(SYNTHETIC_RESPONSES.0, SYNTHETIC_RESPONSES.1);
+}
+
+/// Fails when a directory under `testdata/*/*` is not checked by a parity test
+/// above. A new agent directory or name prefix needs a new test.
+#[test]
+fn every_case_dir_is_run() {
+    let suites = [CLAUDE_CODE, SYNTHETIC_OPENAI_CHAT, SYNTHETIC_RESPONSES];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(TESTDATA);
+    let mut missed = Vec::new();
+    for agent in std::fs::read_dir(&root).unwrap() {
+        let agent = agent.unwrap().path();
+        if !agent.is_dir() {
+            continue;
+        }
+        let a = agent.file_name().unwrap().to_string_lossy().into_owned();
+        for dir in std::fs::read_dir(&agent).unwrap() {
+            let dir = dir.unwrap().path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+            if !suites.iter().any(|&(s, p)| s == a && name.starts_with(p)) {
+                missed.push(format!("{a}/{name}"));
+            }
+        }
+    }
+    assert!(missed.is_empty(), "no parity test runs: {missed:?}");
 }

@@ -73,7 +73,7 @@ fn decode_anthropic_request<'a>(
 /// The string value of `key` in the JSON object `raw`, or "" when `raw` is not
 /// an object or the value is not a string. It decodes a map, so the key match
 /// is exact and the last duplicate wins.
-fn string_field(raw: Option<&RawValue>, key: &str) -> String {
+pub(crate) fn string_field(raw: Option<&RawValue>, key: &str) -> String {
     let Some(Ok(Some(entries))) = raw.map(gojson::object) else {
         return String::new();
     };
