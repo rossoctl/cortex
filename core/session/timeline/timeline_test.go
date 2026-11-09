@@ -217,16 +217,20 @@ func TestToolOfAnEndedSubagentIsLost(t *testing.T) {
 // A workflow agent ends at its StructuredOutput call: the workflow takes the call's input as the
 // agent's answer, and no request carries a result for it. No Agent call spawned it and no
 // notification names it, so before this the call stayed open for good, and agentop drew every
-// finished workflow agent as still running a tool.
+// finished workflow agent as still running a tool. A tool asked for beside it gets no result
+// either, and no notification closes it as one closes a sibling of a hand-back.
 func TestStructuredOutputOfAWorkflowAgentIsLost(t *testing.T) {
 	var r rec
 	r.turn("", 0, 1, []pipeline.InferenceMessage{user("go")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "wf", Name: "Workflow"})
 	r.turn("", 2, 1, []pipeline.InferenceMessage{user("go"), user("started")}, nil, "end_turn")
 	r.turn("w1", 3, 1, []pipeline.InferenceMessage{user("review")}, nil, "tool_use",
+		pipeline.InferenceToolCall{ID: "read", Name: "Read"},
 		pipeline.InferenceToolCall{ID: "so", Name: "StructuredOutput", Arguments: `{"findings":[]}`})
 	tl := Build("s", r.events, time.Time{})
-	if x := findTool(t, tl, "so"); !x.Lost || x.End == nil || !x.End.Equal(x.Start) {
-		t.Errorf("StructuredOutput = %+v, want lost at its start", x)
+	for _, id := range []string{"so", "read"} {
+		if x := findTool(t, tl, id); !x.Lost || x.End == nil || !x.End.Equal(x.Start) {
+			t.Errorf("%s = %+v, want lost at its start", id, x)
+		}
 	}
 }
 
@@ -239,7 +243,7 @@ func TestStructuredOutputWithAResultEndsThere(t *testing.T) {
 	r.turn("w1", 3, 1, []pipeline.InferenceMessage{user("review")}, []pipeline.InferenceToolResult{result("so1", "missing findings")}, "tool_use",
 		pipeline.InferenceToolCall{ID: "so2", Name: "StructuredOutput", Arguments: `{"findings":[]}`})
 	tl := Build("s", r.events, time.Time{})
-	if x := findTool(t, tl, "so1"); x.Lost || x.End == nil || x.End.Equal(x.Start) {
+	if x := findTool(t, tl, "so1"); x.Lost || x.End == nil || !x.End.Equal(at(3)) {
 		t.Errorf("rejected StructuredOutput = %+v, want it to end at its result", x)
 	}
 }
