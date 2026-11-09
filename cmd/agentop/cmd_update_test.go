@@ -143,6 +143,9 @@ func TestUpdateRejectsAnArgument(t *testing.T) {
 	}
 }
 
+// Read at package init: a later signal.Notify clears signal.Ignored.
+var sigintIgnoredAtStart = signal.Ignored(os.Interrupt)
+
 // Ctrl-C reaches both shells of updateScript. The installer catches it and rolls
 // back, and update must exit with its status. dash, sh on Debian, dies of an INT it
 // does not catch, so this runs the script under dash where dash is installed.
@@ -151,7 +154,7 @@ func TestUpdateScriptExitsWithTheInstallersStatusOnInterrupt(t *testing.T) {
 	if err != nil {
 		t.Skip("no dash")
 	}
-	if signal.Ignored(os.Interrupt) {
+	if sigintIgnoredAtStart {
 		// A shell cannot trap a signal it started with ignored, as under a background job.
 		t.Skip("SIGINT is ignored in this process")
 	}
