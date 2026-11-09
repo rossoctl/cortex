@@ -2,7 +2,7 @@ python-keycloak>=7.1.1,<8
 PyYAML>=6.0.3
 
 langgraph==1.2.20
-langchain-core==1.7.3
+langchain-core==1.7.6
 langchain-openai==1.7.3
 pydantic==2.14.3
 
