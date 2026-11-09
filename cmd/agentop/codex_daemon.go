@@ -63,10 +63,25 @@ const codexRestartTimeout = 5*time.Minute + 90*time.Second
 // codexDaemon is a running app-server daemon, as its pid file and the process table
 // describe it.
 type codexDaemon struct {
-	PID     int
-	Started string // the pid file's processStartTime, as Codex wrote it; may be empty
-	Proxy   string // the HTTPS proxy in its environment, as Codex reads it (codexEnvironProxy); "" when none
-	EnvErr  error  // why its environment could not be read; nil when it was
+	PID      int
+	Started  string             // the pid file's processStartTime, as Codex wrote it; may be empty
+	Identity *codexProcIdentity // the pid file's processIdentity; nil when it has none
+	Proxy    string             // the HTTPS proxy in its environment, as Codex reads it (codexEnvironProxy); "" when none
+	EnvErr   error              // why its environment could not be read; nil when it was
+}
+
+// codexProcIdentity is a pid file's processIdentity, as Codex writes it
+// (codex-rs/app-server-daemon/src/backend/pid_identity.rs). Codex's three shapes are one
+// JSON object with different fields present: Linux {bootId, startTicks}, macOS
+// {bootId, uniqueId, startSeconds, startMicroseconds}, and an older macOS
+// {startSeconds, startMicroseconds}. Pointers, so a field that is absent is told from one
+// that is zero.
+type codexProcIdentity struct {
+	BootID            *string `json:"bootId"`
+	StartTicks        *uint64 `json:"startTicks"`
+	UniqueID          *uint64 `json:"uniqueId"`
+	StartSeconds      *uint64 `json:"startSeconds"`
+	StartMicroseconds *uint64 `json:"startMicroseconds"`
 }
 
 // codexDaemonAlive reports whether pid names a running process. Signal 0 delivers
@@ -105,17 +120,21 @@ var codexRestartDaemon = func(codexHome string, want map[string]string) error {
 // THE PID IS CHECKED BEFORE ITS GROUP IS SIGNALLED. A pid file outlives the updater that
 // wrote it, and its pid can be reused by an unrelated process that leads its own group —
 // a shell, a terminal session — and kill(-pid) would end all of it (#1526 review). So it
-// is signalled only when the process holding the pid started when the file says the
-// updater did: Codex's own guard (process_matches_record, app-server-daemon's pid.rs).
-// Any doubt — no start time recorded, ps unable to read one, or a different one — skips
-// the stop. That is safe: the restart still applies the change to the daemon, and
-// reportRestartedUpdater names an updater left on the old proxy.
+// is signalled only when codexIsRecorded says the process holding the pid is the one the
+// file records. Anything else skips the stop:
+//
+//   - another process: Codex's restart, which runs next, makes the same check, finds the
+//     record stale, and starts a fresh updater on the new settings;
+//   - cannot tell: reportRestartedUpdater says so after the restart.
+//
+// Codex has no command that restarts only its updater, which is why agentop does this at
+// all: `codex app-server daemon restart` keeps an updater it finds running.
 var codexStopUpdater = func(codexHome string) error {
 	u, ok := runningCodexProc(codexHome, codexUpdaterPIDRel)
 	if !ok {
 		return nil
 	}
-	if !codexProcStarted(u.PID, u.Started) {
+	if codexIsRecorded(u) != codexRecordMatches {
 		return nil
 	}
 	if err := syscall.Kill(-u.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
@@ -131,15 +150,92 @@ var codexStopUpdater = func(codexHome string) error {
 	return nil
 }
 
-// codexProcStarted reports whether pid is the process a Codex pid file recorded: the one
-// that started at recorded, the pid file's processStartTime. Codex writes that from
-// `ps -o lstart=`, so the same command reads it back, compared after trimming. An empty
-// record, a ps that fails or prints nothing, or a different time is false. A package
-// variable so tests replace it.
+// codexRecordMatch is whether the process holding a pid file's pid is the one the file
+// records.
+type codexRecordMatch int
+
+const (
+	codexRecordUnknown codexRecordMatch = iota // could not tell
+	codexRecordMatches                         // the recorded process
+	codexRecordStale                           // another process: the pid was reused
+)
+
+// codexIsRecorded reports whether the process holding d's pid is the one its pid file
+// recorded, the way Codex decides it (process_matches_record, app-server-daemon's
+// backend/pid.rs):
 //
-// Codex's legacy check has the same limit this does: lstart is printed in the local time
-// zone, so a time zone change since the updater started reads as a mismatch, and the stop
-// is skipped where it would have been safe.
+//   - with a processIdentity, by that alone (codexIdentityMatches). It is the kernel's own
+//     record of the process, so a time zone or locale change does not move it, and its
+//     boot id means a record from before a reboot never matches.
+//   - without one, as Codex's legacy check does, by the start time ps prints
+//     (codexProcStarted), which a time zone or locale change does move. So there only a
+//     match is an answer; a mismatch is codexRecordUnknown, as Codex treats it ("legacy
+//     start time changed; PID record retained").
+func codexIsRecorded(d codexDaemon) codexRecordMatch {
+	if d.Identity != nil {
+		return codexIdentityMatches(d.PID, *d.Identity)
+	}
+	if codexProcStarted(d.PID, d.Started) {
+		return codexRecordMatches
+	}
+	return codexRecordUnknown
+}
+
+// codexProcessIdentity reads a process's identity; a package variable so tests replace it.
+var codexProcessIdentity = peerproc.ProcessIdentity
+
+// codexIdentityMatches compares a recorded processIdentity with the live process holding
+// pid, field for field as Codex's matches_process does. A different boot id or unique id
+// is stale even when the rest cannot be read, as for another user's process on macOS. A
+// zombie has exited, so it is stale too. A shape this agentop does not know, or an
+// identity it cannot read, is codexRecordUnknown.
+func codexIdentityMatches(pid int, rec codexProcIdentity) codexRecordMatch {
+	live, err := codexProcessIdentity(int32(pid))
+	if rec.BootID != nil && live.BootID != "" && *rec.BootID != live.BootID {
+		return codexRecordStale
+	}
+	if rec.UniqueID != nil && live.UniqueID != 0 && *rec.UniqueID != live.UniqueID {
+		return codexRecordStale
+	}
+	if err != nil {
+		return codexRecordUnknown
+	}
+	if live.Zombie {
+		return codexRecordStale
+	}
+	same := func(r *uint64, v uint64) bool { return r != nil && *r == v }
+	switch {
+	case rec.StartTicks != nil:
+		// Linux. Its shape always carries a boot id.
+		if rec.BootID == nil || live.StartTicks == 0 {
+			return codexRecordUnknown
+		}
+		if same(rec.StartTicks, live.StartTicks) {
+			return codexRecordMatches
+		}
+	case rec.StartSeconds != nil && rec.StartMicroseconds != nil:
+		// macOS, with or without the newer shape's boot id and unique id.
+		if live.StartSeconds == 0 {
+			return codexRecordUnknown
+		}
+		if same(rec.StartSeconds, live.StartSeconds) && same(rec.StartMicroseconds, live.StartMicroseconds) {
+			return codexRecordMatches
+		}
+	default:
+		return codexRecordUnknown
+	}
+	return codexRecordStale
+}
+
+// codexProcStarted reports whether pid is the process a Codex pid file recorded, by the
+// record's processStartTime: Codex's legacy check, for a record with no processIdentity.
+// Codex writes it from `ps -o lstart=`, so the same command reads it back, compared after
+// trimming. An empty record, a ps that fails or prints nothing, or a different time is
+// false. A package variable so tests replace it.
+//
+// lstart is printed in the local time zone and, on macOS, locale (openai/codex#43608), so
+// a change to either since the process started reads as a mismatch. That is why a
+// mismatch here means "cannot tell" (codexIsRecorded), not "another process".
 var codexProcStarted = func(pid int, recorded string) bool {
 	recorded = strings.TrimSpace(recorded)
 	if pid <= 0 || recorded == "" {
@@ -174,13 +270,14 @@ func runningCodexProc(codexHome, pidRel string) (codexDaemon, bool) {
 		return codexDaemon{}, false
 	}
 	var rec struct {
-		PID              int    `json:"pid"`
-		ProcessStartTime string `json:"processStartTime"`
+		PID              int                `json:"pid"`
+		ProcessStartTime string             `json:"processStartTime"`
+		ProcessIdentity  *codexProcIdentity `json:"processIdentity"`
 	}
 	if json.Unmarshal(b, &rec) != nil || rec.PID > math.MaxInt32 || !codexDaemonAlive(rec.PID) {
 		return codexDaemon{}, false
 	}
-	d := codexDaemon{PID: rec.PID, Started: rec.ProcessStartTime}
+	d := codexDaemon{PID: rec.PID, Started: rec.ProcessStartTime, Identity: rec.ProcessIdentity}
 	env, err := codexEnviron(int32(rec.PID))
 	switch {
 	case err != nil:
@@ -330,7 +427,7 @@ func finishCodexChange(codexHome, cortexProxy string, want map[string]string, co
 	}
 	if err := codexStopUpdater(codexHome); err != nil {
 		// Not fatal: the restart still applies the change to the daemon, and the check
-		// below names an updater still on the old settings.
+		// below names an updater it can confirm is still on the old settings.
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 	}
 	fmt.Fprintf(stdout, "Restarting Codex's background app-server (pid %d)...\n", was.PID)
@@ -348,18 +445,22 @@ func finishCodexChange(codexHome, cortexProxy string, want map[string]string, co
 // the daemon it starts after its next update inherits that proxy. No updater, one whose
 // environment cannot be read, or one that agrees, needs no line.
 //
-// A pid file that does not describe the process holding its pid — reused, as
-// codexStopUpdater's comment explains — is said to be unmatched rather than named:
-// naming it would print a kill command for an unrelated process (#1736 review).
+// It names only a process codexIsRecorded confirms is the updater, so a reused pid never
+// gets a kill command (#1736 review). A record of another process needs no line either:
+// the restart that just ran finds it stale and starts a fresh updater, which is what a
+// stale record left here means. When agentop cannot tell, it says what it could not
+// confirm and what to do, rather than naming a process it may be wrong about.
 func reportRestartedUpdater(codexHome, cortexProxy string, configured bool, stdout io.Writer) {
 	u, ok := runningCodexUpdater(codexHome)
 	if !ok {
 		return
 	}
-	if !codexProcStarted(u.PID, u.Started) {
-		fmt.Fprintf(stdout, "Codex's auto-updater pid file names pid %d, which is not the process that wrote it,\n"+
-			"  so it was left alone. Check what pid %d is before stopping anything; Codex replaces\n"+
-			"  the file when its updater next starts.\n", u.PID, u.PID)
+	switch codexIsRecorded(u) {
+	case codexRecordStale:
+		return
+	case codexRecordUnknown:
+		fmt.Fprint(stdout, "Could not confirm that Codex's auto-updater was restarted. If Codex's next update\n"+
+			"  undoes this change, run this again.\n")
 		return
 	}
 	if u.EnvErr != nil || cortexProxy == "" || sameProxy(u.Proxy, cortexProxy) == configured {

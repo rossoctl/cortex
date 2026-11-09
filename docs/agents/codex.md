@@ -120,11 +120,19 @@ updater will not stop, they name it and the command that replaces it.
 
 The updater is stopped only when it is the process Codex recorded. A pid file can outlive
 the updater that wrote it, and its pid can be reused by an unrelated process, so agentop
-first compares the start time in `app-server-daemon/daemon-updater.pid` with the one `ps`
-reports for that pid, the check Codex itself makes. When they differ, or either is
-missing, agentop leaves that process alone and says so after the restart, without naming
-it as the updater. The check after the restart still names an updater it could match that
-is left on the old proxy.
+first checks the process the same way Codex does. Current Codex records a
+`processIdentity` in `app-server-daemon/daemon-updater.pid` (the boot ID, plus the
+kernel's start time and, on macOS, its unique process ID), and agentop compares that.
+Time zone and language settings don't affect it, and a record from before a reboot never
+matches. A file from an older Codex has only `processStartTime`, the start time as text;
+there a time zone or language change can make the real updater look different, so a
+mismatch counts as "can't tell" rather than "another process".
+
+- **The updater:** agentop stops it, and the restart starts a fresh one.
+- **Another process:** agentop leaves it alone. Codex's restart makes the same check,
+  finds the record out of date, and starts a fresh updater.
+- **Can't tell:** agentop leaves the process alone and says it could not confirm the
+  updater was restarted.
 
 **What a restart does to Codex sessions**, from Codex's source (0.163.0 and 0.164.0), not
 measured here: the old daemon stops taking new turns, gives running ones its shutdown grace — 60

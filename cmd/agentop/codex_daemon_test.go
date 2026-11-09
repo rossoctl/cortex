@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/rossoctl/cortex/core/peerproc"
 )
 
 const cortexProxyURL = "http://127.0.0.1:47600" // the forward proxy in cortexCfg
@@ -33,11 +36,12 @@ type fakeCodexDaemon struct {
 	newGone    bool  // the restarted daemon exits straight away
 	restartErr error // the restart command fails
 
-	updaterPID    int
-	updaterEnv    []string
-	newUpdaterPID int   // the updater a restart starts when none is running
-	stopErr       error // stopping the updater fails, and it keeps running
-	updaterReused bool  // the updater's pid now names another process, so its record does not match
+	updaterPID     int
+	updaterEnv     []string
+	newUpdaterPID  int   // the updater a restart starts when none is running
+	stopErr        error // stopping the updater fails, and it keeps running
+	updaterReused  bool  // the updater's pid now names another process, so its record is stale
+	updaterUnknown bool  // agentop cannot tell whether the updater's pid is the recorded process
 
 	restarts []map[string]string // the want each restart was given
 	steps    []string            // "stop-updater" and "restart", in the order they ran
@@ -52,10 +56,16 @@ func stubCodexDaemon(t *testing.T, codexHome string, f *fakeCodexDaemon) {
 	t.Cleanup(func() {
 		codexDaemonAlive, codexEnviron, codexRestartDaemon, codexStopUpdater, codexProcStarted = alive, environ, restart, stop, started
 	})
-	// The fake pids name no real process, so ps could not vouch for them: each fake
-	// process is the one its pid file recorded, unless the test says it was reused.
+	// The fake pids name no real process, so nothing could vouch for them: the pid files
+	// these tests write carry no processIdentity, so codexIsRecorded asks
+	// codexProcStarted, and each fake process is the one its file recorded unless the
+	// test says otherwise. A reused pid and an unknown one both fail that legacy check, so
+	// a reused one is told apart by its identity in the tests that need it.
 	codexProcStarted = func(pid int, _ string) bool {
-		return pid != 0 && (pid == f.pid || (pid == f.updaterPID && !f.updaterReused))
+		if pid == f.updaterPID {
+			return !f.updaterReused && !f.updaterUnknown
+		}
+		return pid != 0 && pid == f.pid
 	}
 	if f.pid != 0 {
 		writeCodexDaemonPID(t, codexHome, f.pid)
@@ -136,6 +146,48 @@ func writeCodexPIDStarted(t *testing.T, codexHome, rel string, pid int, started 
 	if err := os.WriteFile(filepath.Join(codexHome, rel), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// writeCodexPIDIdentity writes one of Codex's pid files with a processIdentity, the JSON
+// object given, and no processStartTime.
+func writeCodexPIDIdentity(t *testing.T, codexHome, rel string, pid int, identity string) {
+	t.Helper()
+	dir := filepath.Join(codexHome, filepath.Dir(rel))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"pid":` + strconv.Itoa(pid) + `,"processIdentity":` + identity + `}`
+	if err := os.WriteFile(filepath.Join(codexHome, rel), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stubProcessIdentity answers codexProcessIdentity from ids; a pid not in it is not found.
+func stubProcessIdentity(t *testing.T, ids map[int32]peerproc.Identity) {
+	t.Helper()
+	prev := codexProcessIdentity
+	t.Cleanup(func() { codexProcessIdentity = prev })
+	codexProcessIdentity = func(pid int32) (peerproc.Identity, error) {
+		if id, ok := ids[pid]; ok {
+			return id, nil
+		}
+		return peerproc.Identity{}, peerproc.ErrNotFound
+	}
+}
+
+// identityJSON is id as Codex writes it in a pid file's processIdentity, in this
+// platform's shape.
+func identityJSON(t *testing.T, id peerproc.Identity) string {
+	t.Helper()
+	switch runtime.GOOS {
+	case "darwin":
+		return fmt.Sprintf(`{"bootId":%q,"uniqueId":%d,"startSeconds":%d,"startMicroseconds":%d}`,
+			id.BootID, id.UniqueID, id.StartSeconds, id.StartMicroseconds)
+	case "linux":
+		return fmt.Sprintf(`{"bootId":%q,"startTicks":%d}`, id.BootID, id.StartTicks)
+	}
+	t.Skip("no processIdentity on " + runtime.GOOS)
+	return ""
 }
 
 // psStarted is what Codex records as a process's processStartTime: ps's lstart, trimmed.
@@ -257,30 +309,53 @@ func TestCodexDisable_NamesAnUpdaterThatKeptCortex(t *testing.T) {
 		"auto-updater (pid 5600) still uses Cortex's proxy", "kill 5600 && "+codexDaemonRestartCmd)
 }
 
-// An updater pid file whose pid now belongs to another process is not named after the
-// restart (#1736 review): naming it printed a kill command for that process. Codex's own
-// legacy check keeps such a file, so it is still there when the report runs.
-func TestCodexEnable_DoesNotNameAReusedUpdaterPID(t *testing.T) {
-	envPath, cfgPath := codexFixture(t, "")
-	f := &fakeCodexDaemon{
-		pid: 5613, env: offCortex, newPID: 7001, newEnv: onCortex,
-		updaterPID: 5600, updaterEnv: offCortex, updaterReused: true,
-		stopErr: errors.New("unused"),
+// An updater pid that agentop cannot confirm is never named after the restart (#1736
+// review): naming it printed a kill command for what may be an unrelated process. With a
+// record of another process the restart has replaced the updater, so nothing is said;
+// when agentop cannot tell, it says only that, and what to do.
+func TestCodexEnable_ReportsOnlyAConfirmedUpdater(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		reused, unknown bool
+		want            string // "" for no line about the updater at all
+	}{
+		{"another process", true, false, ""},
+		{"cannot tell", false, true, "Could not confirm that Codex's auto-updater was restarted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			envPath, cfgPath := codexFixture(t, "")
+			f := &fakeCodexDaemon{
+				pid: 5613, env: offCortex, newPID: 7001, newEnv: onCortex,
+				updaterPID: 5600, updaterEnv: offCortex, updaterReused: tc.reused, updaterUnknown: tc.unknown,
+			}
+			stubCodexDaemon(t, filepath.Dir(envPath), f)
+			// Stands in for the real codexStopUpdater, which leaves an unconfirmed pid alone.
+			codexStopUpdater = func(string) error {
+				f.steps = append(f.steps, "stop-updater")
+				return nil
+			}
+			if tc.reused {
+				// The record's identity says another process: Codex's native check.
+				writeCodexPIDIdentity(t, filepath.Dir(envPath), codexUpdaterPIDRel, 5600, `{"bootId":"old-boot","startTicks":1}`)
+				stubProcessIdentity(t, map[int32]peerproc.Identity{5600: {BootID: "this-boot", StartTicks: 2}})
+			}
+			var out, errb bytes.Buffer
+			if code := codexEnable(envPath, cfgPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+				t.Fatalf("enable exit %d: %s", code, errb.String())
+			}
+			got := out.String()
+			if strings.Contains(got, "kill 5600") || strings.Contains(got, "auto-updater (pid 5600)") {
+				t.Errorf("named an unconfirmed pid as Codex's updater:\n%s", got)
+			}
+			if tc.want == "" {
+				if strings.Contains(got, "auto-updater") {
+					t.Errorf("spoke of an updater the restart has replaced:\n%s", got)
+				}
+				return
+			}
+			wantAll(t, "enable output", got, tc.want, "run this again")
+		})
 	}
-	stubCodexDaemon(t, filepath.Dir(envPath), f)
-	// The real codexStopUpdater, which checks the record and leaves the pid alone.
-	codexStopUpdater = func(home string) error {
-		f.steps = append(f.steps, "stop-updater")
-		return nil
-	}
-	var out, errb bytes.Buffer
-	if code := codexEnable(envPath, cfgPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
-		t.Fatalf("enable exit %d: %s", code, errb.String())
-	}
-	if strings.Contains(out.String(), "kill 5600") || strings.Contains(out.String(), "auto-updater (pid 5600)") {
-		t.Errorf("named a process the pid file does not describe as Codex's updater:\n%s", out.String())
-	}
-	wantAll(t, "enable output", out.String(), "pid file names pid 5600", "not the process that wrote it", "Check what pid 5600 is")
 }
 
 // Enable stops the updater too, so the two processes never disagree, and an install with
@@ -606,46 +681,77 @@ func TestCodexStopUpdater_RealProcess(t *testing.T) {
 	if err := codexStopUpdater(home); err != nil {
 		t.Errorf("no pid file: %v", err)
 	}
-	cmd, exited := startGroupLeader(t)
-	writeCodexPIDStarted(t, home, codexUpdaterPIDRel, cmd.Process.Pid, psStarted(t, cmd.Process.Pid))
-	start := time.Now()
-	if err := codexStopUpdater(home); err != nil {
-		t.Fatalf("stopping a live updater: %v", err)
-	}
-	select {
-	case <-exited:
-	default:
-		t.Fatal("codexStopUpdater returned with the updater still running")
-	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Errorf("stop took %s; SIGTERM should end sleep at once", d)
-	}
-	if err := codexStopUpdater(home); err != nil {
-		t.Errorf("stale pid file: %v", err)
+	for _, record := range []string{"processIdentity", "processStartTime"} {
+		t.Run(record, func(t *testing.T) {
+			cmd, exited := startGroupLeader(t)
+			pid := cmd.Process.Pid
+			if record == "processIdentity" {
+				id, err := peerproc.ProcessIdentity(int32(pid))
+				if err != nil {
+					t.Skipf("cannot read pid %d's identity here: %v", pid, err)
+				}
+				writeCodexPIDIdentity(t, home, codexUpdaterPIDRel, pid, identityJSON(t, id))
+			} else {
+				writeCodexPIDStarted(t, home, codexUpdaterPIDRel, pid, psStarted(t, pid))
+			}
+			start := time.Now()
+			if err := codexStopUpdater(home); err != nil {
+				t.Fatalf("stopping a live updater: %v", err)
+			}
+			select {
+			case <-exited:
+			default:
+				t.Fatal("codexStopUpdater returned with the updater still running")
+			}
+			if d := time.Since(start); d > 5*time.Second {
+				t.Errorf("stop took %s; SIGTERM should end sleep at once", d)
+			}
+			if err := codexStopUpdater(home); err != nil {
+				t.Errorf("stale pid file: %v", err)
+			}
+		})
 	}
 }
 
 // A pid file whose pid now belongs to another process is not that process's to stop
 // (#1526 review). The process here leads its own group, as a shell does, which is what
 // makes signalling it costly: kill(-pid) would end the whole group. It must be left
-// running, and so must one whose record carries no start time to check.
+// running whichever way the record says so — another boot or start in its
+// processIdentity, another start time in a legacy record — and when the record carries
+// nothing to check.
 func TestCodexStopUpdater_LeavesAReusedPIDAlone(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process groups")
 	}
 	for _, tc := range []struct {
 		name, started string
+		identity      func(peerproc.Identity) peerproc.Identity // nil for a legacy record
 	}{
-		{"the record names another start time", "Fri Oct 23 09:03:25 2026"},
-		{"the record has no start time", ""},
+		{"the identity names another boot", "", func(id peerproc.Identity) peerproc.Identity { id.BootID = "another-boot"; return id }},
+		{"the identity names another start", "", func(id peerproc.Identity) peerproc.Identity {
+			id.StartTicks++
+			id.StartMicroseconds++
+			return id
+		}},
+		{"the record names another start time", "Fri Oct 23 09:03:25 2026", nil},
+		{"the record has no start time", "", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			cmd, exited := startGroupLeader(t)
-			if tc.started != "" && tc.started == psStarted(t, cmd.Process.Pid) {
+			pid := cmd.Process.Pid
+			switch {
+			case tc.identity != nil:
+				id, err := peerproc.ProcessIdentity(int32(pid))
+				if err != nil {
+					t.Skipf("cannot read pid %d's identity here: %v", pid, err)
+				}
+				writeCodexPIDIdentity(t, home, codexUpdaterPIDRel, pid, identityJSON(t, tc.identity(id)))
+			case tc.started != "" && tc.started == psStarted(t, pid):
 				t.Skip("the fixed start time happens to be this process's")
+			default:
+				writeCodexPIDStarted(t, home, codexUpdaterPIDRel, pid, tc.started)
 			}
-			writeCodexPIDStarted(t, home, codexUpdaterPIDRel, cmd.Process.Pid, tc.started)
 			if err := codexStopUpdater(home); err != nil {
 				t.Errorf("a pid that is not the updater: %v", err)
 			}
@@ -653,6 +759,49 @@ func TestCodexStopUpdater_LeavesAReusedPIDAlone(t *testing.T) {
 			case <-exited:
 				t.Fatal("signalled a process the pid file does not describe")
 			case <-time.After(300 * time.Millisecond):
+			}
+		})
+	}
+}
+
+// codexIdentityMatches compares a recorded processIdentity field for field, in each of
+// Codex's three shapes, and is unknown — never a match — when it cannot read the process
+// or does not know the shape.
+func TestCodexIdentityMatches(t *testing.T) {
+	u := func(v uint64) *uint64 { return &v }
+	str := func(v string) *string { return &v }
+	mac := peerproc.Identity{BootID: "B", UniqueID: 7, StartSeconds: 100, StartMicroseconds: 5}
+	linux := peerproc.Identity{BootID: "B", StartTicks: 900}
+	macRec := codexProcIdentity{BootID: str("B"), UniqueID: u(7), StartSeconds: u(100), StartMicroseconds: u(5)}
+	linuxRec := codexProcIdentity{BootID: str("B"), StartTicks: u(900)}
+	with := func(r codexProcIdentity, f func(*codexProcIdentity)) codexProcIdentity { f(&r); return r }
+	for _, tc := range []struct {
+		name string
+		live peerproc.Identity
+		err  error
+		rec  codexProcIdentity
+		want codexRecordMatch
+	}{
+		{"macOS, the same process", mac, nil, macRec, codexRecordMatches},
+		{"macOS, another boot", mac, nil, with(macRec, func(r *codexProcIdentity) { r.BootID = str("A") }), codexRecordStale},
+		{"macOS, another unique id", mac, nil, with(macRec, func(r *codexProcIdentity) { r.UniqueID = u(8) }), codexRecordStale},
+		{"macOS, another start", mac, nil, with(macRec, func(r *codexProcIdentity) { r.StartMicroseconds = u(6) }), codexRecordStale},
+		{"macOS, the older shape", mac, nil, codexProcIdentity{StartSeconds: u(100), StartMicroseconds: u(5)}, codexRecordMatches},
+		{"Linux, the same process", linux, nil, linuxRec, codexRecordMatches},
+		{"Linux, another boot", linux, nil, with(linuxRec, func(r *codexProcIdentity) { r.BootID = str("A") }), codexRecordStale},
+		{"Linux, another start", linux, nil, with(linuxRec, func(r *codexProcIdentity) { r.StartTicks = u(901) }), codexRecordStale},
+		{"a zombie", peerproc.Identity{BootID: "B", StartTicks: 900, Zombie: true}, nil, linuxRec, codexRecordStale},
+		{"another user's process, another unique id", peerproc.Identity{BootID: "B", UniqueID: 8}, peerproc.ErrNotFound, macRec, codexRecordStale},
+		{"another user's process, the same unique id", peerproc.Identity{BootID: "B", UniqueID: 7}, peerproc.ErrNotFound, macRec, codexRecordUnknown},
+		{"unreadable", peerproc.Identity{}, peerproc.ErrNotFound, macRec, codexRecordUnknown},
+		{"a shape this agentop does not know", mac, nil, codexProcIdentity{BootID: str("B")}, codexRecordUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := codexProcessIdentity
+			t.Cleanup(func() { codexProcessIdentity = prev })
+			codexProcessIdentity = func(int32) (peerproc.Identity, error) { return tc.live, tc.err }
+			if got := codexIdentityMatches(42, tc.rec); got != tc.want {
+				t.Errorf("= %d, want %d", got, tc.want)
 			}
 		})
 	}
