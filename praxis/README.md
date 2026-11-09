@@ -63,7 +63,7 @@ gives the full text.
 7. `client`, `subagent` and `parentSubagent` are ported to Rust, pinned by a Go golden table.
 8. `client_canceled` and `upstream_error` messages are Rust text. Only the message differs from Go.
 9. Ingestion keeps the request id of a kept request capture for up to 1 hour, until its response line arrives.
-10. Tunnel joins land with the hop (#1722).
+10. Tunnel joins land with the hop (#1721).
 11. One replay NDJSON file is the golden for both the Go ingestion and the Rust row builder.
 12. The emitter has its own thread and a current-thread Tokio runtime.
 13. `praxis-proxy` builds without default features, with vendored OpenSSL.
@@ -72,6 +72,25 @@ gives the full text.
 16. `CortexObserve` keeps its exchange in filter state as `Arc<Mutex<Exchange>>`.
 17. The ingest stream ends on Cortex shutdown, so restarts stay quick.
 18. A stream cut after the response head is `client_canceled`, also when the upstream cut it. Praxis 0.8.0 gives no error source after the head.
+19. A response row leaves out the request-only inference fields (`messages`, `tools`, `toolResults`, `historyToolCalls`, `historyThinking`). Cortex puts them back from the request row (`docs/session-api.md`, line format v1).
+20. The gateway removes `X-Cortex-Dest` and `X-Cortex-Token` before the upstream, against the issue text. No egress listener exists yet, so they would send the token to the origin. #1721 keeps them again for its egress listener.
+
+## Accepted edge cases (#1719)
+
+These come from the PR #1717 review. This PR accepts them:
+
+1. **A restart loses the erase marks.** They are in memory. A line that the
+   gateway queued before an erase, and sends after a Cortex restart, can bring
+   the erased session back.
+2. **The erase check and the append are two steps.** An erase between them
+   lets that one line create the session again. A full fix checks under the
+   store's lock.
+3. **A stream longer than 10 minutes can record after an erase.** Its
+   response line arrives after the erase mark expired. Direct mode has the
+   same window for a response in flight at an erase.
+4. **`at` is set when Cortex appends the row.** So a request that names the
+   session, and arrives before an earlier request that is still pending, can
+   change which rows are linked to the session.
 
 ## The parity rule
 

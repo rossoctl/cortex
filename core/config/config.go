@@ -336,7 +336,7 @@ func (b *TLSBridgeConfig) Validate() error {
 }
 
 // PraxisConfig is the top-level `praxis:` block. listen and egress land with
-// their callers (#1720, #1722).
+// their callers (#1720, #1721).
 type PraxisConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 }

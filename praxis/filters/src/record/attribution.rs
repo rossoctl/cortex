@@ -25,7 +25,7 @@ pub const TOKEN_HEADER: &str = "X-Cortex-Token";
 
 /// The hop headers. The upstream and the request capture get none of them.
 /// `X-Cortex-Token` is the gateway's secret, so it must not reach an origin.
-/// #1722 keeps `X-Cortex-Dest` and the token for its egress listener, which
+/// #1721 keeps `X-Cortex-Dest` and the token for its egress listener, which
 /// removes them itself.
 pub const HOP_HEADERS: [&str; 12] = [
     "X-Cortex-Agent",

@@ -29,7 +29,7 @@ pub const NOT_SET_IN_PRAXIS_MODE: &[&str] = &[
     "plugins",
     // No workload identity on a laptop.
     "identity",
-    // The TLS bridge state is in Cortex; #1722 decides if the hop carries it.
+    // The TLS bridge state is in Cortex; #1721 decides if the hop carries it.
     "tls",
     // No plugins run in the gateway.
     "invocations",

@@ -339,7 +339,7 @@ func decodeIngestLine(b []byte) decodedLine {
 func (s *Server) fileIngest(l ingestLine) {
 	in := s.ingest
 	sid := attribution.FiledSession(l.Session, s.store.ActiveSession)
-	// #1722 releases the line's tunnel join here.
+	// #1721 releases the line's tunnel join here.
 	if in.marks.erasedAfter(sid, l.StartedAt) {
 		in.refuse(refusedErased)
 		return
