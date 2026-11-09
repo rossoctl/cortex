@@ -1,0 +1,3 @@
+[workspace]
+members = ["filters"]
+resolver = "3"
