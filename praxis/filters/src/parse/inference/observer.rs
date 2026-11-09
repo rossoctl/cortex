@@ -24,7 +24,7 @@ fn endpoint_path(path: &str) -> &str {
 }
 
 /// Port of settle.isEventStream: the media type of the first Content-Type is text/event-stream.
-fn is_event_stream(h: &HeaderMap) -> bool {
+pub(crate) fn is_event_stream(h: &HeaderMap) -> bool {
     let ct = h
         .get(http::header::CONTENT_TYPE)
         .map(|v| go_lossy_utf8(v.as_bytes()).text.into_owned())

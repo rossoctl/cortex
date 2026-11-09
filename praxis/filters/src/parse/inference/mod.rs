@@ -15,6 +15,7 @@ pub(crate) mod text;
 mod usage;
 
 pub use observer::InferenceObserver;
+pub(crate) use observer::is_event_stream;
 pub use served_model::settle_served_model;
 
 use std::collections::HashMap;
