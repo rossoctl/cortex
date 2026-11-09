@@ -372,7 +372,7 @@ func TestExchange_LateResponseMergesIntoLostRow(t *testing.T) {
 	}
 }
 
-// A response whose request is not held is a row of its own, keyed by the response. When `o`
+// A response whose request is not held is a row of its own, keyed by the response. When the ▲ row
 // loads the request, the row merges and its first event becomes the request. The pin must
 // still find it, or the cursor falls back to row 0 — which is w's row here, so the fallback
 // cannot pass for the fix.
@@ -386,7 +386,7 @@ func TestExchange_PinOnResponseFollowsTheMerge(t *testing.T) {
 	setCursorVisible(&m.eventsTbl, 0)
 	m.selectedEventKey = keyOf(m.selectedEvent())
 
-	// `o` loaded the older page: w, and x's request.
+	// The ▲ row loaded the older page: w, and x's request.
 	m.events["s"] = append(append(w, x...), y...)
 	m.rebuildEventsTable()
 	if got := m.selectedEvent(); got == nil || got.Host != "x.test" {

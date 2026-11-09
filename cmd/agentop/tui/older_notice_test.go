@@ -290,3 +290,54 @@ func TestOKey_NoLongerLoadsOlder(t *testing.T) {
 		t.Error("o still starts a page load")
 	}
 }
+
+// A search never matches the older row: not its words, and not its count, which can be a
+// status code the operator searches for.
+func TestOlderRow_SearchDoesNotMatchIt(t *testing.T) {
+	for _, q := range []string{"older", "press enter", "500"} {
+		m := olderRowModel(t)
+		if m.search == nil {
+			m.search = map[paneID]string{}
+		}
+		m.search[paneEvents] = q
+		m.rebuildEventsTable()
+		if m.olderNotice() == "" {
+			t.Fatal("the older row is not shown")
+		}
+		if got := m.eventsTbl.Matches(); len(got) > 0 && got[0] == 0 {
+			t.Errorf("/%s matches the older row: matches %v", q, got)
+		}
+	}
+}
+
+// The older row goes away when a page reaches the session's start, whatever the count says:
+// the count drifts when the store drops events after the snapshot.
+func TestOlderRow_GoesAwayAtTheSessionStart(t *testing.T) {
+	for name, page := range map[string][]pipeline.SessionEvent{
+		"page reaches the start": pagedEvents(491, 10),
+		"empty page":             nil,
+	} {
+		m := olderRowModel(t)
+		setCursorVisible(&m.eventsTbl, 0)
+		m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+		st := m.paging["sess-1"]
+		if st == nil {
+			t.Fatalf("%s: Enter on the older row did not start a page load", name)
+		}
+		m.Update(olderPageLoadedMsg{id: "sess-1", gen: st.wantGen, events: page, serverOldest: 491})
+		if got := m.olderNotice(); got != "" {
+			t.Errorf("%s: the older row is still shown at the session start: %q", name, got)
+		}
+	}
+}
+
+// When the pinned event is gone, the cursor goes to the first row under the older row, not to it.
+func TestOlderRow_LostPinSkipsTheOlderRow(t *testing.T) {
+	m := olderRowModel(t)
+	setCursorVisible(&m.eventsTbl, 5)
+	m.selectedEventKey = eventKey{at: 1} // an event the rows no longer hold
+	m.rebuildEventsTable()
+	if e := m.selectedEvent(); e == nil || e.Seq != 501 {
+		t.Errorf("cursor on row %d (%+v), want the oldest event (Seq 501)", m.eventsTbl.Cursor(), e)
+	}
+}

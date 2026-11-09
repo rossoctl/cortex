@@ -265,7 +265,7 @@ func (m *model) rebuildEventsTable() {
 	if q != "" {
 		droppedCols = droppedColumns(selectedColumns(m.eventColumns), cols)
 		for range lead {
-			full = append(full, table.SearchRow{}) // nothing a search can match
+			full = append(full, table.SearchRow{NoMatch: true})
 		}
 	}
 	// renderEventRow appends one event's cells to every parallel structure the
@@ -488,10 +488,10 @@ func (m *model) rebuildEventsTable() {
 		if idx := findByKey(m.visibleRows, m.selectedEventKey); idx >= 0 {
 			target = idx
 		} else {
-			// Event evicted — clamp to the oldest surviving row (row 0),
+			// Event evicted — clamp to the oldest surviving row,
 			// the nearest edge to where the pin was, and drop the stale
 			// key so internal state matches what the operator sees.
-			target = 0
+			target = lead
 			m.selectedEventKey = eventKey{}
 		}
 	}

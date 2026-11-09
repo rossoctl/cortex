@@ -136,7 +136,7 @@ func TestSessionContextFor_AProjectedSnapshotKeepsTheStreamsFigure(t *testing.T)
 // THE HELD EVENTS HAVE TO BE PROJECTED for this to test anything, which the first version of it got
 // wrong. With an unprojected conversation still in the slice, dropping the run and rescanning finds
 // that conversation again and reports the same figure, so the assertion passed with the fix
-// reverted. The production sequence is the one built here: stream, [t] (snapshot, projected), [o].
+// reverted. The production sequence is the one built here: stream, [t] (snapshot, projected), [↵ on ▲].
 func TestSessionContextFor_AnOlderPageKeepsTheFigure(t *testing.T) {
 	base := time.Now()
 	full := conversation("c1", base, 600, 500_000)
@@ -145,7 +145,7 @@ func TestSessionContextFor_AnOlderPageKeepsTheFigure(t *testing.T) {
 	if got, want := m.sessionContextFor("sess-1", nil), 500_000; got != want {
 		t.Fatalf("from the stream: %d, want %d", got, want)
 	}
-	// The snapshot leaves the slice projected — and clears the paging state, so [o] rebuilds it.
+	// The snapshot leaves the slice projected — and clears the paging state, so [↵ on ▲] rebuilds it.
 	m.Update(snapshotLoadedMsg{id: "sess-1", events: projectedNoCounts(full), projected: true})
 	m.paging = map[string]*pagingState{"sess-1": {pageSizes: []int{len(full)}}}
 
@@ -579,7 +579,7 @@ func TestSessionsTable_ASnapshotRepaintsTheGaugeItFilled(t *testing.T) {
 	assertGaugeShows(t, m, id, 500_000, "after the snapshot")
 }
 
-// AN OLDER PAGE IS THE SAME DEFECT AT THE SECOND SITE. [o] merges a projected page, rebases, and
+// AN OLDER PAGE IS THE SAME DEFECT AT THE SECOND SITE. [↵ on ▲] merges a projected page, rebases, and
 // changes the gauge — for a session whose held events cannot answer, it is the first thing that can.
 func TestSessionsTable_AnOlderPageRepaintsTheGauge(t *testing.T) {
 	base := time.Now()

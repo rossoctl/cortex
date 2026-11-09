@@ -187,6 +187,7 @@ func (m *model) applyOlderPage(msg olderPageLoadedMsg) {
 
 	if len(msg.events) == 0 {
 		m.setFlash("at the beginning of the session")
+		delete(m.olderNotFetched, msg.id)
 		m.abandonIfTentative(msg.id, st)
 		return
 	}
@@ -276,7 +277,10 @@ func (m *model) applyOlderPage(msg olderPageLoadedMsg) {
 			own++
 		}
 	}
-	if n := m.olderNotFetched[msg.id] - own; n > 0 {
+	// A page that reaches the server's oldest event leaves nothing older, whatever the count
+	// says: the store can drop events after the snapshot counted them.
+	first := ownOldest(msg.events, msg.id)
+	if n := m.olderNotFetched[msg.id] - own; n > 0 && (first == nil || first.Seq > msg.serverOldest) {
 		m.olderNotFetched[msg.id] = n
 	} else {
 		m.olderNotFetched[msg.id] = 0

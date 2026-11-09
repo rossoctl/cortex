@@ -396,7 +396,7 @@ func TestDetailSearch_LeavingThePaneDropsTheAnswer(t *testing.T) {
 	}
 }
 
-// Matches older than the rows agentop holds are counted, for `o`.
+// Matches older than the rows agentop holds are counted, for the ▲ row.
 func TestDetailSearch_CountsOlderMatches(t *testing.T) {
 	f := &fakeSearch{answer: map[string][]uint64{"s": {2, 13}}, last: map[string]uint64{"s": 15}}
 	m := searchModel(t, 5, f)
@@ -499,7 +499,7 @@ func TestDetailSearch_EscEndsTheRequest(t *testing.T) {
 	<-done
 }
 
-// The rows `o` loads are older than what the answer covered. n searches again, and reaches them.
+// The rows the ▲ row loads are older than what the answer covered. n searches again, and reaches them.
 func TestDetailSearch_OlderPageMakesNSearchAgain(t *testing.T) {
 	f := &fakeSearch{answer: map[string][]uint64{"s": {2, 13}}, last: map[string]uint64{"s": 15}}
 	m := searchModel(t, 5, f)

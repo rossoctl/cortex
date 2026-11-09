@@ -74,10 +74,12 @@ type Row []string
 // SearchRow is one row's full text for a search. Cells is parallel to the row's cells: an
 // entry is the cell's value as it would read with unlimited room, for a cell the pane cut
 // before handing it over, and "" for a cell that is already whole. Dropped is the full
-// values of columns the pane had no room to show.
+// values of columns the pane had no room to show. NoMatch marks a row that no search
+// matches, such as the events pane's older-events row.
 type SearchRow struct {
 	Cells   []string
 	Dropped []string
+	NoMatch bool
 }
 
 // Column defines the table structure.
@@ -418,6 +420,9 @@ func (m *Model) fullCell(r, i int) string {
 }
 
 func (m *Model) rowMatches(r int) bool {
+	if r < len(m.full) && m.full[r].NoMatch {
+		return false
+	}
 	for i := range m.rows[r] {
 		if find.Contains(m.fullCell(r, i), m.query) {
 			return true
