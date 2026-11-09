@@ -122,8 +122,9 @@ The updater is stopped only when it is the process Codex recorded. A pid file ca
 the updater that wrote it, and its pid can be reused by an unrelated process, so agentop
 first compares the start time in `app-server-daemon/daemon-updater.pid` with the one `ps`
 reports for that pid, the check Codex itself makes. When they differ, or either is
-missing, agentop leaves that process alone; the check after the restart still names an
-updater left on the old proxy.
+missing, agentop leaves that process alone and says so after the restart, without naming
+it as the updater. The check after the restart still names an updater it could match that
+is left on the old proxy.
 
 **What a restart does to Codex sessions**, from Codex's source (0.163.0 and 0.164.0), not
 measured here: the old daemon stops taking new turns, gives running ones its shutdown grace — 60

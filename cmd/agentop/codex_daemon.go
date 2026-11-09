@@ -347,9 +347,22 @@ func finishCodexChange(codexHome, cortexProxy string, want map[string]string, co
 // reportRestartedUpdater names an updater whose proxy disagrees with the change, since
 // the daemon it starts after its next update inherits that proxy. No updater, one whose
 // environment cannot be read, or one that agrees, needs no line.
+//
+// A pid file that does not describe the process holding its pid — reused, as
+// codexStopUpdater's comment explains — is said to be unmatched rather than named:
+// naming it would print a kill command for an unrelated process (#1736 review).
 func reportRestartedUpdater(codexHome, cortexProxy string, configured bool, stdout io.Writer) {
 	u, ok := runningCodexUpdater(codexHome)
-	if !ok || u.EnvErr != nil || cortexProxy == "" || sameProxy(u.Proxy, cortexProxy) == configured {
+	if !ok {
+		return
+	}
+	if !codexProcStarted(u.PID, u.Started) {
+		fmt.Fprintf(stdout, "Codex's auto-updater pid file names pid %d, which is not the process that wrote it,\n"+
+			"  so it was left alone. Check what pid %d is before stopping anything; Codex replaces\n"+
+			"  the file when its updater next starts.\n", u.PID, u.PID)
+		return
+	}
+	if u.EnvErr != nil || cortexProxy == "" || sameProxy(u.Proxy, cortexProxy) == configured {
 		return
 	}
 	stale := "still uses Cortex's proxy"

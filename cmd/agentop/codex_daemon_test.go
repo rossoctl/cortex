@@ -37,6 +37,7 @@ type fakeCodexDaemon struct {
 	updaterEnv    []string
 	newUpdaterPID int   // the updater a restart starts when none is running
 	stopErr       error // stopping the updater fails, and it keeps running
+	updaterReused bool  // the updater's pid now names another process, so its record does not match
 
 	restarts []map[string]string // the want each restart was given
 	steps    []string            // "stop-updater" and "restart", in the order they ran
@@ -47,10 +48,15 @@ type fakeCodexDaemon struct {
 // and a real process with one of them would otherwise be the one inspected.
 func stubCodexDaemon(t *testing.T, codexHome string, f *fakeCodexDaemon) {
 	t.Helper()
-	alive, environ, restart, stop := codexDaemonAlive, codexEnviron, codexRestartDaemon, codexStopUpdater
+	alive, environ, restart, stop, started := codexDaemonAlive, codexEnviron, codexRestartDaemon, codexStopUpdater, codexProcStarted
 	t.Cleanup(func() {
-		codexDaemonAlive, codexEnviron, codexRestartDaemon, codexStopUpdater = alive, environ, restart, stop
+		codexDaemonAlive, codexEnviron, codexRestartDaemon, codexStopUpdater, codexProcStarted = alive, environ, restart, stop, started
 	})
+	// The fake pids name no real process, so ps could not vouch for them: each fake
+	// process is the one its pid file recorded, unless the test says it was reused.
+	codexProcStarted = func(pid int, _ string) bool {
+		return pid != 0 && (pid == f.pid || (pid == f.updaterPID && !f.updaterReused))
+	}
 	if f.pid != 0 {
 		writeCodexDaemonPID(t, codexHome, f.pid)
 	}
@@ -249,6 +255,32 @@ func TestCodexDisable_NamesAnUpdaterThatKeptCortex(t *testing.T) {
 	wantAll(t, "stderr", errb.String(), "did not exit")
 	wantAll(t, "disable output", out.String(), "no longer uses Cortex",
 		"auto-updater (pid 5600) still uses Cortex's proxy", "kill 5600 && "+codexDaemonRestartCmd)
+}
+
+// An updater pid file whose pid now belongs to another process is not named after the
+// restart (#1736 review): naming it printed a kill command for that process. Codex's own
+// legacy check keeps such a file, so it is still there when the report runs.
+func TestCodexEnable_DoesNotNameAReusedUpdaterPID(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	f := &fakeCodexDaemon{
+		pid: 5613, env: offCortex, newPID: 7001, newEnv: onCortex,
+		updaterPID: 5600, updaterEnv: offCortex, updaterReused: true,
+		stopErr: errors.New("unused"),
+	}
+	stubCodexDaemon(t, filepath.Dir(envPath), f)
+	// The real codexStopUpdater, which checks the record and leaves the pid alone.
+	codexStopUpdater = func(home string) error {
+		f.steps = append(f.steps, "stop-updater")
+		return nil
+	}
+	var out, errb bytes.Buffer
+	if code := codexEnable(envPath, cfgPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("enable exit %d: %s", code, errb.String())
+	}
+	if strings.Contains(out.String(), "kill 5600") || strings.Contains(out.String(), "auto-updater (pid 5600)") {
+		t.Errorf("named a process the pid file does not describe as Codex's updater:\n%s", out.String())
+	}
+	wantAll(t, "enable output", out.String(), "pid file names pid 5600", "not the process that wrote it", "Check what pid 5600 is")
 }
 
 // Enable stops the updater too, so the two processes never disagree, and an install with
