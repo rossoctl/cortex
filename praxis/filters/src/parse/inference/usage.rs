@@ -28,11 +28,14 @@ pub(crate) struct TokenUsage {
 
 impl TokenUsage {
     pub(crate) fn prompt_total(&self) -> i64 {
-        self.input + self.cache_read + self.cache_write
+        // Go's int wraps.
+        self.input
+            .wrapping_add(self.cache_read)
+            .wrapping_add(self.cache_write)
     }
 
     pub(crate) fn total(&self) -> i64 {
-        self.prompt_total() + self.output
+        self.prompt_total().wrapping_add(self.output)
     }
 
     pub(crate) fn fill(&self, ext: &mut InferenceExtension) {

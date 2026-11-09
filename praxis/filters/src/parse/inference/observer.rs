@@ -83,3 +83,60 @@ impl InferenceObserver {
         self.ext.as_ref()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PATH: &str = "/v1/messages?beta=true";
+    const BODY: &[u8] = br#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#;
+
+    fn headers(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(*k, v.parse().unwrap());
+        }
+        h
+    }
+
+    // #1706: a whole stream in one unframed event, given on the last call.
+    #[test]
+    fn one_unframed_event_on_the_last_frame_runs_the_stream() {
+        let mut o = InferenceObserver::on_request(PATH, &HeaderMap::new(), BODY);
+        let h = headers(&[("content-type", "text/event-stream; charset=utf-8")]);
+        o.on_response_frame(
+            &h,
+            br#"{"type":"message_delta","usage":{"output_tokens":7}}"#,
+            true,
+        );
+        let ext = o.extension().unwrap();
+        assert_eq!(ext.output_tokens, 7);
+        assert!(ext.streamed_response);
+    }
+
+    #[test]
+    fn non_inference_path_is_ignored() {
+        let mut o = InferenceObserver::on_request("/healthz", &HeaderMap::new(), BODY);
+        assert!(o.extension().is_none());
+        let h = headers(&[("x-litellm-model-name", "x")]);
+        o.on_response_frame(&h, b"data: {}", false);
+        o.on_response_frame(&h, br#"{"model":"x"}"#, true);
+        assert!(o.extension().is_none());
+        assert!(o.stream.is_none());
+    }
+
+    #[test]
+    fn last_frame_settles_served_model_from_the_header() {
+        let mut o = InferenceObserver::on_request(PATH, &HeaderMap::new(), BODY);
+        let h = headers(&[("x-litellm-model-name", "served-x")]);
+        o.on_response_frame(
+            &h,
+            br#"{"type":"message_start","message":{"model":"body-m"}}"#,
+            false,
+        );
+        // The body's model is kept until the last frame; the header then wins.
+        assert_eq!(o.extension().unwrap().served_model, "body-m");
+        o.on_response_frame(&h, b"", true);
+        assert_eq!(o.extension().unwrap().served_model, "served-x");
+    }
+}

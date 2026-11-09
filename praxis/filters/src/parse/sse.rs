@@ -50,6 +50,8 @@ pub struct FrameReader {
     has_data: bool,
     /// The bytes of the open event's non-data lines.
     non_data: usize,
+    /// A frame went over the cap. The error is final, as Go's sticky reader error is.
+    failed: bool,
 }
 
 impl FrameReader {
@@ -63,12 +65,16 @@ impl FrameReader {
             scratch: Vec::new(),
             has_data: false,
             non_data: 0,
+            failed: false,
         }
     }
 
     /// Gives the data payloads of the events that this chunk completed.
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<Vec<u8>>, FrameTooLarge> {
         let mut out = Vec::new();
+        if self.failed {
+            return Err(FrameTooLarge { completed: out });
+        }
         let r = if self.bom_checked {
             self.feed(chunk, &mut out)
         } else {
@@ -80,19 +86,31 @@ impl FrameReader {
             let head = std::mem::take(&mut self.head);
             self.feed(head.strip_prefix(UTF8_BOM).unwrap_or(&head), &mut out)
         };
-        match r {
-            Ok(()) => Ok(out),
-            Err(Over) => Err(FrameTooLarge { completed: out }),
-        }
+        self.result(r, out)
     }
 
     /// Ends the stream: gives the event left open at EOF, if it has data.
     /// Go dispatches it without the blank line, as the SSE spec says.
     pub fn finish(&mut self) -> Result<Vec<Vec<u8>>, FrameTooLarge> {
         let mut out = Vec::new();
-        match self.finish_into(&mut out) {
+        if self.failed {
+            return Err(FrameTooLarge { completed: out });
+        }
+        let r = self.finish_into(&mut out);
+        self.result(r, out)
+    }
+
+    fn result(
+        &mut self,
+        r: Result<(), Over>,
+        out: Vec<Vec<u8>>,
+    ) -> Result<Vec<Vec<u8>>, FrameTooLarge> {
+        match r {
             Ok(()) => Ok(out),
-            Err(Over) => Err(FrameTooLarge { completed: out }),
+            Err(Over) => {
+                self.failed = true;
+                Err(FrameTooLarge { completed: out })
+            }
         }
     }
 
@@ -410,6 +428,20 @@ mod tests {
             vec![b"ok".to_vec()]
         );
         assert_eq!(r.finish().unwrap_err().completed, Vec::<Vec<u8>>::new());
+    }
+
+    #[test]
+    fn frame_reader_error_is_final() {
+        let mut r = FrameReader::new(10);
+        assert!(r.push(b"data:12345678901\n\n").is_err());
+        let none = Err(FrameTooLarge { completed: vec![] });
+        assert_eq!(r.push(b"data: ok\n\n"), none);
+        assert_eq!(r.finish(), none);
+        // An error at finish is final too.
+        let mut r = FrameReader::new(10);
+        r.push(b"data:12345\ndata:12345").unwrap();
+        assert!(r.finish().is_err());
+        assert_eq!(r.push(b"data: ok\n\n"), none);
     }
 
     #[test]

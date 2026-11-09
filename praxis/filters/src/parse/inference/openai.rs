@@ -304,7 +304,7 @@ impl InferenceUsage {
             usage.present |= KIND_OUTPUT;
         }
         if let Some(cached) = self.prompt_tokens_details {
-            usage.input -= cached;
+            usage.input = usage.input.wrapping_sub(cached);
             if usage.input < 0 {
                 usage.input = 0;
             }
@@ -632,5 +632,16 @@ mod tests {
             ),
             json!({"stream":true,"streamedResponse":true,"toolCalls":[{"id":"c","name":"n","arguments":"{}"}]})
         );
+    }
+
+    // Go takes a tool_choice 10000 levels deep. The port drops only that field.
+    #[test]
+    fn deep_tool_choice_keeps_the_rest() {
+        let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+        let got = req(&format!(
+            r#"{{"model":"m","messages":[],"tool_choice":{deep}}}"#
+        ));
+        assert_eq!(got["model"], "m");
+        assert!(got.get("toolChoice").is_none());
     }
 }

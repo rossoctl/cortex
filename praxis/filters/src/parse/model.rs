@@ -161,14 +161,14 @@ impl InferenceThinking {
     pub fn add(&mut self, typ: &str, text: i64, signature: i64, data: i64) {
         match typ {
             "thinking" => {
-                self.blocks += 1;
-                self.text_bytes += text;
-                self.signature_bytes += signature;
+                self.blocks = self.blocks.wrapping_add(1);
+                self.text_bytes = self.text_bytes.wrapping_add(text);
+                self.signature_bytes = self.signature_bytes.wrapping_add(signature);
             }
             "redacted_thinking" => {
-                self.blocks += 1;
-                self.redacted += 1;
-                self.redacted_bytes += data;
+                self.blocks = self.blocks.wrapping_add(1);
+                self.redacted = self.redacted.wrapping_add(1);
+                self.redacted_bytes = self.redacted_bytes.wrapping_add(data);
             }
             _ => {}
         }
@@ -176,11 +176,11 @@ impl InferenceThinking {
 
     /// Adds the counts of `o`.
     pub fn merge(&mut self, o: &InferenceThinking) {
-        self.blocks += o.blocks;
-        self.redacted += o.redacted;
-        self.text_bytes += o.text_bytes;
-        self.signature_bytes += o.signature_bytes;
-        self.redacted_bytes += o.redacted_bytes;
+        self.blocks = self.blocks.wrapping_add(o.blocks);
+        self.redacted = self.redacted.wrapping_add(o.redacted);
+        self.text_bytes = self.text_bytes.wrapping_add(o.text_bytes);
+        self.signature_bytes = self.signature_bytes.wrapping_add(o.signature_bytes);
+        self.redacted_bytes = self.redacted_bytes.wrapping_add(o.redacted_bytes);
     }
 
     /// The counts, or `None` when no block was counted.

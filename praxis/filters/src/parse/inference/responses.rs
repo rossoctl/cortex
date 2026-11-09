@@ -329,7 +329,9 @@ impl ResponsesUsage {
             usage.present |= KIND_OUTPUT;
         }
         if let Some(d) = &self.input_tokens_details {
-            usage.input -= d.cached_tokens + d.cache_write_tokens;
+            usage.input = usage
+                .input
+                .wrapping_sub(d.cached_tokens.wrapping_add(d.cache_write_tokens));
             if usage.input < 0 {
                 usage.input = 0;
             }
@@ -693,5 +695,16 @@ mod tests {
             ),
             json!({"stream":true,"streamedResponse":true,"finishReason":"completed","toolCalls":[{"id":"k","name":"f","arguments":"{}"}],"reasoningTokens":4,"presentKinds":16})
         );
+    }
+
+    // Go takes a tool_choice 10000 levels deep. The port drops only that field.
+    #[test]
+    fn deep_tool_choice_keeps_the_rest() {
+        let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+        let got = req(&format!(
+            r#"{{"model":"m","input":"hi","tool_choice":{deep}}}"#
+        ));
+        assert_eq!(got["model"], "m");
+        assert!(got.get("toolChoice").is_none());
     }
 }

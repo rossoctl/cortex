@@ -656,8 +656,18 @@ pub(super) fn fold_anthropic_frame(
                         tc.args.push_str(&d.partial_json);
                     }
                 }
-                "thinking_delta" => state.thinking.text_bytes += raw_string_len(d.thinking),
-                "signature_delta" => state.thinking.signature_bytes += raw_string_len(d.signature),
+                "thinking_delta" => {
+                    state.thinking.text_bytes = state
+                        .thinking
+                        .text_bytes
+                        .wrapping_add(raw_string_len(d.thinking))
+                }
+                "signature_delta" => {
+                    state.thinking.signature_bytes = state
+                        .thinking
+                        .signature_bytes
+                        .wrapping_add(raw_string_len(d.signature))
+                }
                 _ => {}
             }
         }
@@ -817,6 +827,37 @@ mod tests {
                 "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\u{a0}\n\n"
             ),
             json!({"stream":true,"streamedResponse":true,"completion":"hi"})
+        );
+    }
+
+    // Go takes a tool_choice 10000 levels deep. The port drops only that field.
+    #[test]
+    fn deep_tool_choice_keeps_the_rest() {
+        let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+        let got = req(&format!(
+            r#"{{"model":"m","messages":[],"tool_choice":{deep}}}"#
+        ));
+        assert_eq!(got["model"], "m");
+        assert!(got.get("toolChoice").is_none());
+    }
+
+    // Go's int wraps; the expected values are Go's ParseResponse output, measured on 2026-11-09.
+    #[test]
+    fn token_overflow_wraps_as_go() {
+        let resp = |body: &str| {
+            serde_json::to_value(parse_response("/v1/messages", body.as_bytes())).unwrap()
+        };
+        assert_eq!(
+            resp(
+                r#"{"model":"m","usage":{"input_tokens":9223372036854775807,"cache_read_input_tokens":1,"output_tokens":1}}"#
+            ),
+            json!({"servedModel":"m","promptTokens":i64::MIN,"completionTokens":1,"totalTokens":-9223372036854775807_i64,"inputTokens":i64::MAX,"cacheReadTokens":1,"outputTokens":1,"presentKinds":11})
+        );
+        assert_eq!(
+            resp(
+                "data: {\"type\":\"message_start\",\"message\":{\"model\":\"m\",\"usage\":{\"input_tokens\":9223372036854775807,\"cache_read_input_tokens\":1}}}\n\n"
+            ),
+            json!({"stream":true,"servedModel":"m","streamedResponse":true,"promptTokens":i64::MIN,"totalTokens":i64::MIN,"inputTokens":i64::MAX,"cacheReadTokens":1,"presentKinds":11})
         );
     }
 }

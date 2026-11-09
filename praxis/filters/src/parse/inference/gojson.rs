@@ -190,8 +190,10 @@ pub(crate) fn float(raw: &RawValue) -> R<Option<f64>> {
 /// A Go `any`: numbers are float64, a duplicate key's last value wins. `None` for null.
 ///
 /// shortcut: serde_json's own `Value` parser, so a value nested deeper than 128 levels or
-/// a string with an unpaired surrogate escape is an error, where Go takes it (Go's limit is
-/// 10000, and it writes U+FFFD). A deep `Value` also overflows the stack on drop, so a
+/// a string with an unpaired surrogate escape is not decoded, where Go takes it (Go's limit
+/// is 10000, and it writes U+FFFD). For those two, `any` gives `Ok(None)`, so the caller
+/// keeps the rest of the extension with this one field unset. A number out of float64
+/// range is still `Err`, as in Go. A deep `Value` also overflows the stack on drop, so a
 /// port of Go's limit needs a non-recursive `Value` first.
 pub(crate) fn any(raw: &RawValue) -> R<Option<Value>> {
     fn to_f64(v: &mut Value) {
@@ -202,7 +204,12 @@ pub(crate) fn any(raw: &RawValue) -> R<Option<Value>> {
             _ => {}
         }
     }
-    let mut v: Value = serde_json::from_str(raw.get()).map_err(|_| Bad)?;
+    let mut v: Value = match serde_json::from_str(raw.get()) {
+        Ok(v) => v,
+        // Go also fails on this one; serde_json gives no error code to match.
+        Err(e) if e.to_string().starts_with("number out of range") => return Err(Bad),
+        Err(_) => return Ok(None),
+    };
     to_f64(&mut v);
     Ok((!v.is_null()).then_some(v))
 }

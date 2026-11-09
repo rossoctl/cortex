@@ -112,7 +112,13 @@ impl Decoder {
             Coding::Gzip => Inner::Gzip(Box::new(flate2::write::GzDecoder::new(Held::default()))),
             Coding::Zstd => Inner::Zstd {
                 // shortcut: zstd's only failure here is an allocation failure.
-                d: Box::new(zstd::stream::raw::Decoder::new().expect("zstd decoder")),
+                d: Box::new({
+                    let mut d = zstd::stream::raw::Decoder::new().expect("zstd decoder");
+                    // RFC 9659 limits the zstd content coding to an 8 MiB window.
+                    d.set_parameter(zstd::stream::raw::DParameter::WindowLogMax(23))
+                        .expect("zstd window limit");
+                    d
+                }),
                 out: vec![0; SINK_CHUNK],
                 hint: 0,
             },
@@ -266,7 +272,9 @@ pub fn decode_request_body<'a>(headers: &http::HeaderMap, body: &'a [u8]) -> Cow
         return Cow::Borrowed(body);
     }
     let mut out = Vec::new();
-    let read = zstd::stream::read::Decoder::new(body).and_then(|d| {
+    // Window limit 2^26: Go's WithDecoderMaxMemory(64 MiB).
+    let read = zstd::stream::read::Decoder::new(body).and_then(|mut d| {
+        d.window_log_max(26)?;
         d.take(MAX_DECODED_REQUEST_SIZE as u64 + 1)
             .read_to_end(&mut out)
     });
@@ -464,6 +472,34 @@ mod tests {
             decode_all(Coding::Zstd, MAX_BODY_SIZE, b"", 1),
             (vec![], None)
         );
+    }
+
+    /// A zstd frame whose header asks for a 2^`log` window.
+    fn zstd_window(log: u32) -> Vec<u8> {
+        let mut e = zstd::stream::Encoder::new(Vec::new(), 3).unwrap();
+        e.window_log(log).unwrap();
+        e.long_distance_matching(true).unwrap();
+        e.include_contentsize(false).unwrap();
+        e.write_all(&text(1000)).unwrap();
+        e.finish().unwrap()
+    }
+
+    #[test]
+    fn zstd_window_limits() {
+        let big = zstd_window(27);
+        assert_eq!(
+            decode_all(Coding::Zstd, MAX_BODY_SIZE, &big, big.len()).1,
+            Some(DecodeError::Corrupt)
+        );
+        let ok = zstd_window(23);
+        assert_eq!(
+            decode_all(Coding::Zstd, MAX_BODY_SIZE, &ok, ok.len()),
+            (text(1000), None)
+        );
+        let mut h = http::HeaderMap::new();
+        h.insert(http::header::CONTENT_ENCODING, "zstd".parse().unwrap());
+        assert_eq!(&*decode_request_body(&h, &big), &big[..]);
+        assert_eq!(&*decode_request_body(&h, &zstd_window(26)), &text(1000)[..]);
     }
 
     #[test]
