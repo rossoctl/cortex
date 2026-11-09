@@ -98,6 +98,22 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) 
 	t.Fatalf("timed out waiting for %s", msg)
 }
 
+// start starts r, and on cleanup stops its watch loop and waits for it to
+// close its watcher, so the watcher's descriptors close before the next test
+// opens its own.
+func start(t *testing.T, r *Reloader) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := r.Start(ctx); err != nil {
+		cancel()
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		<-r.loopDone
+	})
+}
+
 func setup(t *testing.T) (*Reloader, *fakeBuilder, string, *pipeline.Holder, *pipeline.Holder) {
 	t.Helper()
 	return setupWith(t)
@@ -133,11 +149,7 @@ func setupWith(t *testing.T, extra ...Option) (*Reloader, *fakeBuilder, string, 
 			WithStartTimeout(5 * time.Second),
 		}, extra...)...,
 	)
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	if err := r.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	start(t, r)
 
 	return r, b, cfgPath, inH, outH
 }
@@ -162,20 +174,20 @@ func TestReloader_PlainRewrite(t *testing.T) {
 	}
 }
 
-// Two writes within the debounce window coalesce into a single reload.
+// Two writes within the debounce window coalesce into a single reload. The
+// window is wide so a loaded runner still lands both writes inside it.
 func TestReloader_DebouncesBurst(t *testing.T) {
-	r, b, cfgPath, _, _ := setup(t)
+	r, b, cfgPath, _, _ := setupWith(t, WithDebounce(500*time.Millisecond))
 	b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: &config.Config{Mode: "envoy-sidecar"}})
 
 	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# edit 1\n")
-	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# edit 2\n")
+	last := "mode: envoy-sidecar\n# edit 2\n"
+	writeConfig(t, cfgPath, last)
 
-	waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsOK >= 1 }, "first reload")
-	// Give the debounce a chance to fire a second time if it's going to.
-	time.Sleep(100 * time.Millisecond)
-
-	if got := r.Status().ReloadsOK; got > 1 {
-		t.Errorf("expected coalesced single reload, got %d", got)
+	want := r.hash([]byte(last))
+	waitFor(t, 5*time.Second, func() bool { return r.Status().ActiveConfigSHA256 == want }, "the last edit to go live")
+	if got := r.Status().ReloadsOK; got != 1 {
+		t.Errorf("ReloadsOK = %d, want the burst coalesced into 1", got)
 	}
 }
 
@@ -290,11 +302,7 @@ func TestReloader_RefusesCostLedgerChange(t *testing.T) {
 
 	r := New(cfgPath, inH, outH, build, initialCfg,
 		WithDebounce(20*time.Millisecond), WithDrainWindow(0), WithStartTimeout(5*time.Second))
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	if err := r.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	start(t, r)
 	shaBefore := r.Status().ActiveConfigSHA256
 
 	// The edit an operator makes to stop writing cost history.
@@ -465,11 +473,7 @@ func setupAt(t *testing.T, cfgPath string) (*Reloader, *fakeBuilder, *pipeline.H
 		WithDrainWindow(0),
 		WithStartTimeout(5*time.Second),
 	)
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	if err := r.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	start(t, r)
 	return r, b, inH, outH
 }
 
@@ -899,11 +903,7 @@ func TestReloader_AnEditDuringStartIsReloaded(t *testing.T) {
 	r := New(cfgPath, pipeline.NewHolder(emptyPipeline(t)), pipeline.NewHolder(emptyPipeline(t)), b.build, initialCfg,
 		WithDebounce(20*time.Millisecond), WithDrainWindow(0), WithStartTimeout(5*time.Second),
 		WithExtraWatch(dirs, func([]string) string { return "" }))
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	if err := r.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	start(t, r)
 	waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsOK == 1 }, "the edit made during Start to reload")
 }
 
@@ -1006,11 +1006,7 @@ func TestReloader_RefusesStatsAddressChange(t *testing.T) {
 	outH := pipeline.NewHolder(emptyPipeline(t))
 	r := New(cfgPath, inH, outH, build, initialCfg,
 		WithDebounce(20*time.Millisecond), WithDrainWindow(0), WithStartTimeout(5*time.Second))
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	if err := r.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	start(t, r)
 
 	writeConfig(t, cfgPath, "mode: envoy-sidecar\nstats:\n  address: 127.0.0.1:19094\n")
 

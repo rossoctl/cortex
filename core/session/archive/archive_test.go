@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 	"syscall"
@@ -166,19 +167,16 @@ func TestArchive_ANewProcessOpensANewSegment(t *testing.T) {
 func TestRecord_NeverBlocksAndCountsDropsWhenFull(t *testing.T) {
 	a := openTest(t, t.TempDir(), newClock(), WithQueueDepth(reserve+6))
 	a.gate = make(chan struct{})
-	evs := synthSession(45, 34, 512) // 102 events
-	done := make(chan struct{})
-	go func() {
-		newRecorder(a).record("s1", evs...)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Record blocked with the writer stalled")
+	// The writer takes a rename and is held at the gate with it, so the events
+	// below see the queue empty.
+	a.Rekeyed("filler", "filler2")
+	for len(a.ops) > 0 {
+		runtime.Gosched()
 	}
-	// The writer took one op and is held at the gate; six more fit below the reserve.
-	if got, want := a.Stats().DroppedEvents, uint64(len(evs)-7); got != want {
+	evs := synthSession(45, 34, 512) // 102 events
+	newRecorder(a).record("s1", evs...)
+	// Six fit below the reserve.
+	if got, want := a.Stats().DroppedEvents, uint64(len(evs)-6); got != want {
 		t.Fatalf("dropped %d, want %d", got, want)
 	}
 	close(a.gate)

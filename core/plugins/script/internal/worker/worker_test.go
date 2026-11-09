@@ -647,32 +647,44 @@ func TestEnviron(t *testing.T) {
 }
 
 // A shell whose profile leaves a background process holding stdout still answers
-// within the probe's budget: with its PATH when it printed one, empty when it hung.
+// while that process lives: with its PATH when it printed one, empty when it hung.
+// The process waits on a FIFO the test releases on cleanup, so the exited shell's
+// probe can end only through loginPathWaitDelay, within its generous budget.
 func TestLoginPath_BackgroundChildHoldingStdout(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("no sh")
 	}
-	for name, tc := range map[string]struct{ body, want string }{
-		"printed then exited": {"sleep 5 &\nshift\nPATH=/from/login exec " + sh + " \"$@\"\n", "/from/login"},
-		"hung":                {"sleep 5 &\nsleep 5\n", ""},
+	for name, tc := range map[string]struct {
+		body, want string
+		budget     time.Duration
+	}{
+		"printed then exited": {"read _ < \"$HOLD\" &\nshift\nPATH=/from/login exec " + sh + " \"$@\"\n", "/from/login", time.Minute},
+		"hung":                {"read _ < \"$HOLD\" &\nread _ < \"$HOLD\"\n", "", 500 * time.Millisecond},
 	} {
 		t.Run(name, func(t *testing.T) {
-			shell := filepath.Join(t.TempDir(), "shell")
+			dir := t.TempDir()
+			hold := filepath.Join(dir, "hold")
+			if err := syscall.Mkfifo(hold, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// Opened read-write so it neither blocks nor sends EOF; closing it does.
+			release, err := os.OpenFile(hold, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { release.Close() })
+			shell := filepath.Join(dir, "shell")
 			os.WriteFile(shell, []byte("#!"+sh+"\n"+tc.body), 0o700)
 			t.Setenv("SHELL", shell)
+			t.Setenv("HOLD", hold)
 			loginPathMu.Lock()
 			loginPathVal, loginPathTried = "", time.Time{}
 			old := loginPathTimeout
-			loginPathTimeout = 500 * time.Millisecond
+			loginPathTimeout = tc.budget
 			loginPathMu.Unlock()
 			t.Cleanup(func() { loginPathVal, loginPathTried, loginPathTimeout = "", time.Now(), old })
-			t0 := time.Now()
-			got := loginPath()
-			if d := time.Since(t0); d > 2*time.Second {
-				t.Errorf("loginPath took %v against a %v budget", d, loginPathTimeout)
-			}
-			if got != tc.want {
+			if got := loginPath(); got != tc.want {
 				t.Errorf("loginPath() = %q, want %q", got, tc.want)
 			}
 		})

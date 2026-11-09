@@ -925,12 +925,20 @@ func TestForwardProxy_ResponseEventOmitsTtfbOnFailedExchange(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
 
-	// A server that is already closed: its port answers with a refusal, which
-	// is the fast half of the failure family. The 502 the proxy synthesizes is
-	// the same row shape a timed-out (black-holed) dial produces.
-	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
-	deadURL := dead.URL
-	dead.Close()
+	// An upstream that hangs up on every connection before answering. It keeps
+	// its port, so no other listener can take it. The 502 the proxy synthesizes
+	// is the same row shape a refused or black-holed dial produces.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for c, err := ln.Accept(); err == nil; c, err = ln.Accept() {
+			_ = c.Close()
+		}
+	}()
+	deadURL := "http://" + ln.Addr().String()
 
 	p, err := pipeline.New([]pipeline.Plugin{})
 	if err != nil {

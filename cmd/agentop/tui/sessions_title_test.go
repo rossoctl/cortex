@@ -1218,18 +1218,23 @@ func TestLooksLikePath_AnyUnicodeSpaceSeparates(t *testing.T) {
 //
 // Asserted as a RATIO rather than a wall-clock bound, so it says what it means on a loaded CI machine:
 // quadratic growth shows up as ~4x per doubling, linear as ~2x, and the ceiling sits between them.
-// Both ends are timed inside one test so the comparison is against the same machine at the same moment.
+// Both ends are timed inside one test so the comparison is against the same machine at the same moment,
+// and each is the best of three runs, so one preempted run does not set the ratio.
 func TestTrunc_ScalesLinearly(t *testing.T) {
 	const budget = 40
 	measure := func(f func(string, int) string, runes int) time.Duration {
 		s := "/" + strings.Repeat("a", runes-1)
 		// Warm, so the first-call cost of anything lazy is not charged to the small input.
 		f(s, budget)
-		start := time.Now()
-		for i := 0; i < 20; i++ {
-			f(s, budget)
+		best := time.Duration(1<<63 - 1)
+		for range 3 {
+			start := time.Now()
+			for i := 0; i < 20; i++ {
+				f(s, budget)
+			}
+			best = min(best, time.Since(start))
 		}
-		return time.Since(start)
+		return best
 	}
 	for _, tc := range []struct {
 		name string
