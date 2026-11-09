@@ -45,6 +45,17 @@ func TestPraxis_RefusedWithMTLS(t *testing.T) {
 	}
 }
 
+func TestPraxis_RefusedWithSessionsOff(t *testing.T) {
+	c := praxisConfig()
+	c.Listener.BindLoopbackOnly = true
+	off := false
+	c.Session.Enabled = &off
+	err := Validate(c)
+	if err == nil || !strings.Contains(err.Error(), "session.enabled") {
+		t.Fatalf("Validate = %v, want an error naming session.enabled", err)
+	}
+}
+
 // praxisConfig is a proxy-sidecar config that passes the listener checks, so
 // only the praxis rules can refuse it.
 func praxisConfig() *Config {

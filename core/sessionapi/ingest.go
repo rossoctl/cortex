@@ -17,7 +17,6 @@ import (
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/settle"
-	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/parse/inference"
 	"github.com/rossoctl/cortex/core/redact"
@@ -148,24 +147,10 @@ type ingestResponse struct {
 	Incomplete bool        `json:"incomplete"`
 }
 
-// ingestGuard is why r may not reach an ingest route, or "". It is not clearRefusal: those
-// texts say "erasing", and its third check is allowClear.
-func ingestGuard(r *http.Request) string {
-	switch {
-	case !httpx.LoopbackHost(r.Host):
-		return "ingest is accepted only for a loopback Host (localhost, 127.0.0.1 or [::1])"
-	case r.Header.Get("Origin") != "":
-		return "ingest is refused from a browser: the request carries an Origin header"
-	}
-	return ""
-}
-
+// handleIngest is registered behind httpx.LoopbackOnly (see New), also when the rest of the
+// API is not.
 func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	in := s.ingest
-	if reason := ingestGuard(r); reason != "" {
-		http.Error(w, reason, http.StatusForbidden)
-		return
-	}
 	if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+in.cfg.Token)) != 1 {
 		http.Error(w, "ingest needs the gateway's bearer token", http.StatusUnauthorized)
 		return
@@ -323,10 +308,6 @@ func (in *ingester) capture(l ingestLine, ev *model.SessionEvent) *model.Request
 }
 
 func (s *Server) handleIngestStats(w http.ResponseWriter, r *http.Request) {
-	if reason := ingestGuard(r); reason != "" {
-		http.Error(w, reason, http.StatusForbidden)
-		return
-	}
 	in := s.ingest
 	st := IngestStats{Lines: in.lines.Load(), CapturesDropped: in.capturesDropped.Load(), Refused: map[string]uint64{}}
 	in.refusedMu.Lock()

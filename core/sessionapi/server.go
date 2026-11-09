@@ -236,8 +236,9 @@ func New(addr string, store *session.Store, opts ...Option) *Server {
 	if s.ingestCfg.Token != "" {
 		s.ingest = newIngester(s.ingestCfg)
 		store.AddRecorder(s.ingest.marks)
-		mux.HandleFunc("POST /v1/ingest", s.handleIngest)
-		mux.HandleFunc("GET /v1/ingest/stats", s.handleIngestStats)
+		// Loopback-only even when WithLoopbackOnly is off: only the local gateway may write rows.
+		mux.Handle("POST /v1/ingest", httpx.LoopbackOnly(http.HandlerFunc(s.handleIngest)))
+		mux.Handle("GET /v1/ingest/stats", httpx.LoopbackOnly(http.HandlerFunc(s.handleIngestStats)))
 	}
 
 	var handler http.Handler = mux

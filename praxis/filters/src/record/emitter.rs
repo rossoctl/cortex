@@ -292,12 +292,11 @@ mod tests {
         }
     }
 
-    /// An address with nothing listening on it.
+    /// An address that refuses every connect. Port 0 cannot be listened on,
+    /// so a parallel test's `serve()` can never take it (a freed ephemeral
+    /// port can be reused).
     fn closed_addr() -> SocketAddr {
-        TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
+        SocketAddr::from(([127, 0, 0, 1], 0))
     }
 
     /// Reads one ingest request: sends its Authorization header, then each

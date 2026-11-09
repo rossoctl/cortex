@@ -89,6 +89,10 @@ func validatePraxis(cfg *Config) error {
 	if !cfg.Listener.BindLoopbackOnly {
 		return fmt.Errorf("praxis.enabled: true requires listener.bind_loopback_only: true")
 	}
+	// The rows reach Cortex only through POST /v1/ingest, which needs the session store.
+	if !cfg.Session.SessionEnabled() {
+		return fmt.Errorf("praxis.enabled: true cannot be used with session.enabled: false: Cortex ingests the gateway's rows into the session store")
+	}
 	return nil
 }
 
