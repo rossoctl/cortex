@@ -88,7 +88,6 @@ Framework, not here:
 | `llmclient/` | Small helper for calling OpenAI-compatible endpoints |
 | `placeholder/` | The convention for opaque credential handles. Named accurately despite reading like a TODO, and tied to the `abph_` wire prefix, which cannot change |
 | `clientstate/` | The on-disk record `agentop` writes when it points an agent at a local proxy |
-| `praxis/` | Converts a `config.Config` into a Praxis proxy config. **Paused** — ships in no image and registers no plugins, but deliberately kept compiling |
 
 **Plugin internals** worth knowing about:
 
@@ -102,7 +101,7 @@ Packages that used to live at `core/validation`, `core/exchange`, `core/cache` m
 
 ## Usage
 
-Plugins own their own configuration and construct any `auth.Auth` they need internally from their per-plugin config (see [docs/plugin-reference.md](../docs/plugin-reference.md)). Host processes (`cmd/cortex`, `cmd/cortex-envoy`, `cmd/cortex-praxis`) just load the YAML, call `plugins.Build`, run the pipelines, and let each plugin handle its own dependencies.
+Plugins own their own configuration and construct any `auth.Auth` they need internally from their per-plugin config (see [docs/plugin-reference.md](../docs/plugin-reference.md)). Host processes (`cmd/cortex`, `cmd/cortex-envoy`) just load the YAML, call `plugins.Build`, run the pipelines, and let each plugin handle its own dependencies.
 
 ```go
 import (

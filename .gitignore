@@ -83,7 +83,6 @@ cmd/agentop/agentop
 cmd/cortex/cortex
 cmd/cortex-envoy/cortex-envoy
 cmd/cortex-cpex/cortex-cpex
-cmd/cortex-praxis/cortex-praxis
 # Built from the repo root rather than from inside the package dir, a binary lands
 # here instead, so ignore those spellings too. Note `go build ./cmd/...` is NOT
 # one of those commands: with more than one main package Go compiles and discards
@@ -102,7 +101,6 @@ cmd/cortex-praxis/cortex-praxis
 /cortex-envoy
 /cortex-cpex
 /authbridge-lite
-/cortex-praxis
 
 # MLflow local tracking store — created by `mlflow` runs in the working tree.
 # Local experiment state, not project source.

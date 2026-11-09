@@ -339,13 +339,10 @@ jobs:
           # everywhere else resolved it, and the per-module release build did
           # not — surfacing only when a tag was cut.
           - agentop
-          # cortex-praxis was in no workflow at all, which is how it ended
-          # up broken under GOWORK=off by the same missing go.sum entry. Any
-          # cmd/* module absent from every workflow will drift this way — the
+          # Any cmd/* module absent from every workflow drifts this way: the
           # workspace hides exactly this class of breakage. (cmd/cortex's cpex
           # builds need CGO and libcpex_ffi.a from a pinned release, so
           # go-ci-cpex covers them instead.)
-          - cortex-praxis
     defaults:
       run:
         working-directory: cmd/${{ matrix.binary }}

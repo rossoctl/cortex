@@ -40,7 +40,6 @@ cortex
 cortex-envoy
 cortex-cpex
 authbridge-lite
-cortex-praxis
 profile-tags
 readme-demo
 cmd/agentop/agentop
