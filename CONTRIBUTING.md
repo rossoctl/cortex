@@ -110,7 +110,7 @@ out to be one of these six.
 
 **4. Deploy a workload.** Use a demo rather than hand-written manifests; they
 are kept current, and the manual path is not. Start from
-[`demos/README.md`](demos/README.md).
+[`cortex-demos/README.md`](https://github.com/rossoctl/cortex-demos/blob/main/README.md).
 
 ## Installing an unreleased build
 
@@ -364,7 +364,7 @@ Smaller pull requests are typically easier to review and merge. If your pull req
   Always give `gofmt` a path — a bare `gofmt -l` reads stdin, so it scans nothing
   and exits 0. `gofmt -l .` also lists any pre-existing offenders, so check the
   names it prints are yours.
-- `go vet` is gated: every `Go CI (…)` job runs it, on all 10 modules, and a finding fails the job.
+- `go vet` is gated: every `Go CI (…)` job runs it, on all 7 modules, and a finding fails the job.
   `gofmt` is not — CI's lint step runs `go fmt`, which rewrites files and exits 0,
   so unformatted code still goes green. There are no Go hooks in pre-commit either.
 - Run per-module with `GOWORK=off` — how the root Makefile builds, and how every

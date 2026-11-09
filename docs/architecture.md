@@ -2,7 +2,7 @@
 
 Cortex provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`core/`](../core/); the sidecar binaries live under [`cmd/`](../cmd/) (see [`cmd/README.md`](../cmd/README.md) for which pins which mode). Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
 
-> **📘 Looking to run the demo?** See the [Weather Agent](../demos/weather-agent/demo-ui.md) or [GitHub Issue Agent](../demos/github-issue/demo.md) demos for step-by-step instructions, and [Token-Exchange Routes](../demos/token-exchange-routes/README.md) for route configuration.
+> **📘 Looking to run the demo?** See the [Weather Agent](https://github.com/rossoctl/cortex-demos/blob/main/weather-agent/demo-ui.md) or [GitHub Issue Agent](https://github.com/rossoctl/cortex-demos/blob/main/github-issue/demo.md) demos for step-by-step instructions, and [Token-Exchange Routes](https://github.com/rossoctl/cortex-demos/blob/main/token-exchange-routes/README.md) for route configuration.
 
 ## Deployment Modes
 
@@ -387,7 +387,7 @@ The easiest way to get all prerequisites is to use the [Rossoctl Quickstart](htt
 
 ## Getting Started
 
-See [`demos/README.md`](../demos/README.md) for the full demo index and a
+See [`cortex-demos/README.md`](https://github.com/rossoctl/cortex-demos/blob/main/README.md) for the full demo index and a
 recommended learning path — from the Weather Agent (inbound validation, webhook
 injection) through the GitHub Issue Agent (transparent token exchange +
 scope-based access) to the token-exchange routes reference.

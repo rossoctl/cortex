@@ -280,7 +280,7 @@ func (m *hrIdP) clientToken(t *testing.T) string {
 // secret in a temp file.
 func hrPolicy(t *testing.T, idp *hrIdP) string {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "demos", "hr-cpex", "k8s", "cpex-policy.yaml"))
+	raw, err := os.ReadFile(filepath.Join("testdata", "hr-cpex", "cpex-policy.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ type hrCPEXConfig struct {
 
 func hrManifestConfig(t *testing.T) hrCPEXConfig {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "demos", "hr-cpex", "k8s", "authbridge.yaml"))
+	raw, err := os.ReadFile(filepath.Join("testdata", "hr-cpex", "authbridge.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

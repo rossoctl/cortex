@@ -8,7 +8,7 @@ import "testing"
 // fills the wildcard ":9094" — leaving the session API, which carries
 // DECRYPTED bodies under the bridge, bound on every interface. This is the
 // exact ordering trap the BindLoopbackOnly block's comment in presets.go
-// describes. demos/context-guru/context-guru-tls-bridge.yaml has this shape.
+// describes. cortex-demos/context-guru/context-guru-tls-bridge.yaml has this shape.
 func TestTLSBridge_SessionAPILoopbackWhenAddrUnset(t *testing.T) {
 	cfg := loadFrom(t, `mode: proxy-sidecar
 listener:

@@ -207,7 +207,7 @@ policy can call), `global:` (cross-cutting PDPs such as Cedar and CEL, and
 the session store) and `routes:` (the APL policy, one entry per tool,
 prompt, resource or model). `engine_settings:` holds engine-wide settings;
 its default, `dispatch: policy`, runs a plugin only where a route reaches
-it. [`demos/hr-cpex/`](../demos/hr-cpex/) has a complete working policy.
+it. [`cortex-demos/hr-cpex/`](https://github.com/rossoctl/cortex-demos/tree/main/hr-cpex/) has a complete working policy.
 
 ```yaml
 plugins:
@@ -538,4 +538,4 @@ need to route background results separately from foreground logs.
   the runtime YAML, APL, and the built-in sub-plugins.
 - [CPEX repository](https://github.com/contextforge-org/cpex) — source
   and the FFI ABI.
-- [`demos/hr-cpex/`](../demos/hr-cpex/) — runnable demo configurations.
+- [`cortex-demos/hr-cpex/`](https://github.com/rossoctl/cortex-demos/tree/main/hr-cpex/) — runnable demo configurations.

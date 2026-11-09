@@ -265,34 +265,6 @@ jobs:
       - name: Test
         run: go test -v -race -cover ./...
 
-  # The demo modules build against core through a replace directive, so a core
-  # API change can break them; nothing else compiles them.
-  go-ci-demos:
-    name: Go CI (demos/${{ matrix.demo }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        demo: [echo, finance-sparc, ibac]
-    defaults:
-      run:
-        working-directory: demos/${{ matrix.demo }}
-    env:
-      GOWORK: "off"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
-        with:
-          go-version-file: demos/${{ matrix.demo }}/go.mod
-          cache-dependency-path: demos/${{ matrix.demo }}/go.sum
-
-      - name: Vet and build
-        run: |
-          go vet ./...
-          go build ./...
-
   go-ci-readme-demo:
     name: Go CI (README demo)
     runs-on: ubuntu-latest

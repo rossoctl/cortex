@@ -403,7 +403,7 @@ NetworkPolicy, JWT validation) for the cases IBAC isn't suited to.
 
 ## See Also
 
-- [`demos/ibac/`](../demos/ibac/README.md) — end-to-end demo
+- [`cortex-demos/ibac/`](https://github.com/rossoctl/cortex-demos/blob/main/ibac/README.md) — end-to-end demo
   with a vulnerable email-summarization agent, demonstrating the
   email-poison attack with and without IBAC enabled.
 - [`core/llmclient/`](../core/llmclient/) — the

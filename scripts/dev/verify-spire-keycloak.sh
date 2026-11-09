@@ -18,7 +18,7 @@
 #
 # This checks the PLATFORM only — nothing about sidecar injection, plugin
 # pipelines, or a specific agent. For those, run a demo
-# (see demos/README.md).
+# (see cortex-demos/README.md).
 #
 # Usage:  ./scripts/dev/verify-spire-keycloak.sh (needs kubectl and jq, pointed at the cluster)
 # Exit:   Checks 1, 2, 4 and 5 abort with 1 the moment they fail. Check 3 exits 1

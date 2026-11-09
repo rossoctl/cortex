@@ -224,7 +224,7 @@ container automatically:
   those modes (the operator injects it unconditionally).
 
 See
-[`demos/weather-agent/demo-ui-advanced.md`](../../demos/weather-agent/demo-ui-advanced.md)
+[`cortex-demos/weather-agent/demo-ui-advanced.md`](https://github.com/rossoctl/cortex-demos/blob/main/weather-agent/demo-ui-advanced.md)
 for an end-to-end demo and
-[`demos/token-exchange-routes/README.md`](../../demos/token-exchange-routes/README.md)
+[`cortex-demos/token-exchange-routes/README.md`](https://github.com/rossoctl/cortex-demos/blob/main/token-exchange-routes/README.md)
 for the route-config reference.

@@ -649,6 +649,6 @@ the linker warns that objects target a newer macOS; `make cortex-cpex` does.
 
 ## See also
 
-- `demos/hr-cpex` — end-to-end demo with Bob, Eve, and Alice personas
+- `cortex-demos/hr-cpex` — end-to-end demo with Bob, Eve, and Alice personas
   covering the Workday flow, GitHub flow with Cedar, PII scanning, and session
   taint propagation.

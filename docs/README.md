@@ -24,7 +24,7 @@ holds the repo-level pieces; this file is the index.
 | Move from a laptop to a cluster | [`kubernetes.md`](kubernetes.md) |
 | Understand the sidecar shapes and deployment | [`architecture.md`](architecture.md) |
 | Which binary pins which deployment shape | [`cmd/README.md`](../cmd/README.md) |
-| Run a demo | [`demos/README.md`](../demos/README.md) |
+| Run a demo | [`cortex-demos/README.md`](https://github.com/rossoctl/cortex-demos/blob/main/README.md) |
 
 ## Plugins
 

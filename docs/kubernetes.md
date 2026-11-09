@@ -31,9 +31,9 @@ them by hand.
 
 ## Start here
 
-The **[Weather Agent walkthrough](../demos/weather-agent/demo-ui.md)** is the shortest
+The **[Weather Agent walkthrough](https://github.com/rossoctl/cortex-demos/blob/main/weather-agent/demo-ui.md)** is the shortest
 end-to-end path: a cluster, an agent, inbound validation, and traffic you can watch.
-There is also an [`agentop` version](../demos/weather-agent/demo-with-agentop.md) that
+There is also an [`agentop` version](https://github.com/rossoctl/cortex-demos/blob/main/weather-agent/demo-with-agentop.md) that
 focuses on the plugin pipeline.
 
 For the full deployment architecture — sidecar shapes, container inventory, the
@@ -43,10 +43,10 @@ Then, in rough order of how often people need them:
 
 | Topic | Where |
 |---|---|
-| All the demos, with a recommended order | [demos index](../demos/README.md) |
+| All the demos, with a recommended order | [demos index](https://github.com/rossoctl/cortex-demos/blob/main/README.md) |
 | Deployment modes (proxy-sidecar, envoy-sidecar, lite) | [architecture reference](architecture.md#deployment-modes) |
 | Full request flow, what gets verified | [architecture reference](architecture.md) |
-| Token exchange per destination | [token-exchange routes](../demos/token-exchange-routes/README.md) |
+| Token exchange per destination | [token-exchange routes](https://github.com/rossoctl/cortex-demos/blob/main/token-exchange-routes/README.md) |
 | Writing or configuring a plugin | [plugin reference](./plugin-reference.md) |
 | mTLS between workloads | [framework architecture, §8a](framework-architecture.md#8a-mtls-layer) |
 

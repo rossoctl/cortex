@@ -247,7 +247,7 @@ func writePipelineTable(view *apiclient.PipelineView, stdout io.Writer) {
 	// same divider.
 	//
 	// Only when there is something on both sides of it. A pipeline with one chain empty is
-	// ordinary — demos/context-guru/k8s/authbridge-config.yaml ships `inbound.plugins: []`
+	// ordinary — cortex-demos/context-guru/k8s/authbridge-config.yaml ships `inbound.plugins: []`
 	// — and printing the divider there put it first or last, asserting that plugins run
 	// before or after the application when none do. The whole-table guard above catches
 	// only the case where BOTH chains are empty.
