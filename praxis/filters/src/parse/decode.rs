@@ -41,21 +41,6 @@ pub enum Coding {
     Zstd,
 }
 
-/// The coding a `Content-Encoding` value names, case-insensitive. `None`
-/// for any other coding: the caller then does not parse the body.
-pub fn coding_of(content_encoding: Option<&str>) -> Option<Coding> {
-    let v = content_encoding.unwrap_or("");
-    if v.is_empty() || v.eq_ignore_ascii_case("identity") {
-        Some(Coding::Identity)
-    } else if v.eq_ignore_ascii_case("gzip") {
-        Some(Coding::Gzip)
-    } else if v.eq_ignore_ascii_case("zstd") {
-        Some(Coding::Zstd)
-    } else {
-        None
-    }
-}
-
 /// The gzip decoder's output buffer. It takes at most `SINK_CHUNK` bytes, and
 /// then refuses with `WouldBlock` until the `Decoder` gives them to the sink.
 /// flate2 keeps the refused output and writes it again on the next call.
@@ -199,8 +184,11 @@ impl Inner {
                     let held = std::mem::take(&mut d.get_mut().0);
                     emit(&held)?;
                     match r {
-                        // Bytes after the end of the gzip member.
-                        Ok(0) if !input.is_empty() => return Err(DecodeError::Corrupt),
+                        // Bytes after the end of a gzip member: the next member starts
+                        // here (RFC 1952 2.2). Go's gzip.Reader reads every member.
+                        Ok(0) if !input.is_empty() => {
+                            **d = flate2::write::GzDecoder::new(Held::default());
+                        }
                         // flate2 writes its output at the start of the next
                         // call, so call it with no input until it gives nothing.
                         Ok(_) if input.is_empty() && held.is_empty() => return Ok(()),
@@ -503,14 +491,21 @@ mod tests {
     }
 
     #[test]
-    fn coding_of_cases() {
-        assert_eq!(coding_of(None), Some(Coding::Identity));
-        assert_eq!(coding_of(Some("")), Some(Coding::Identity));
-        assert_eq!(coding_of(Some("Identity")), Some(Coding::Identity));
-        assert_eq!(coding_of(Some("GZIP")), Some(Coding::Gzip));
-        assert_eq!(coding_of(Some("zStd")), Some(Coding::Zstd));
-        assert_eq!(coding_of(Some("br")), None);
-        assert_eq!(coding_of(Some("gzip, br")), None);
+    fn decode_gzip_members() {
+        // Two members, as a server that gzips each flush sends them. Go reads both.
+        let (one, two) = (text(300_000), b"data: two\n\n".to_vec());
+        let coded = [gzip(&one), gzip(&two)].concat();
+        for chunk in [1, 7, 4096, 65536, coded.len()] {
+            let (got, err) = decode_all(Coding::Gzip, MAX_BODY_SIZE, &coded, chunk);
+            assert_eq!(err, None, "chunk {chunk}");
+            assert!(got == [one.as_slice(), &two].concat(), "chunk {chunk}");
+        }
+        // Zero bytes after a member are not a member: Corrupt, as in Go.
+        let padded = [gzip(&two), vec![0; 8]].concat();
+        assert_eq!(
+            decode_all(Coding::Gzip, MAX_BODY_SIZE, &padded, 4096).1,
+            Some(DecodeError::Corrupt)
+        );
     }
 
     #[test]

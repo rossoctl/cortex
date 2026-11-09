@@ -22,6 +22,10 @@ on:
       - "core/plugins/mcpparser/**"
       - "core/plugins/a2aparser/**"
       - "core/listener/internal/sseframe/**"
+      - "core/internal/parsefixture/**"
+      - "core/model/client.go"
+      - "core/cost/settle/settle.go"
+      - "core/listener/forwardproxy/server.go"
   push:
     branches:
       - main
@@ -36,6 +40,10 @@ on:
       - "core/plugins/mcpparser/**"
       - "core/plugins/a2aparser/**"
       - "core/listener/internal/sseframe/**"
+      - "core/internal/parsefixture/**"
+      - "core/model/client.go"
+      - "core/cost/settle/settle.go"
+      - "core/listener/forwardproxy/server.go"
 
 permissions:
   contents: read
