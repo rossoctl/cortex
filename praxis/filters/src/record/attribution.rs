@@ -23,9 +23,11 @@ pub struct Attribution {
 pub const ATTRIBUTION_HEADER: &str = "X-Cortex-Attribution";
 pub const TOKEN_HEADER: &str = "X-Cortex-Token";
 
-/// The hop headers removed before the upstream. `X-Cortex-Dest` and `X-Cortex-Token`
-/// stay: the egress listener needs them and removes them itself.
-pub const UPSTREAM_REMOVE: [&str; 10] = [
+/// The hop headers. The upstream and the request capture get none of them.
+/// `X-Cortex-Token` is the gateway's secret, so it must not reach an origin.
+/// #1722 keeps `X-Cortex-Dest` and the token for its egress listener, which
+/// removes them itself.
+pub const HOP_HEADERS: [&str; 12] = [
     "X-Cortex-Agent",
     "X-Cortex-Proc",
     "X-Cortex-Client-Proc",
@@ -36,20 +38,6 @@ pub const UPSTREAM_REMOVE: [&str; 10] = [
     ATTRIBUTION_HEADER,
     "X-Cortex-Request-Id",
     "X-Cortex-Probe",
-];
-
-/// The hop headers a request capture never keeps: all of them.
-pub const CAPTURE_REMOVE: [&str; 12] = [
-    UPSTREAM_REMOVE[0],
-    UPSTREAM_REMOVE[1],
-    UPSTREAM_REMOVE[2],
-    UPSTREAM_REMOVE[3],
-    UPSTREAM_REMOVE[4],
-    UPSTREAM_REMOVE[5],
-    UPSTREAM_REMOVE[6],
-    UPSTREAM_REMOVE[7],
-    UPSTREAM_REMOVE[8],
-    UPSTREAM_REMOVE[9],
     "X-Cortex-Dest",
     TOKEN_HEADER,
 ];
@@ -123,14 +111,5 @@ mod tests {
         assert!(!token_matches(None, b"tok"));
         assert!(!token_matches(Some(b""), b""));
         assert!(!token_matches(Some(b"x"), b""));
-    }
-
-    #[test]
-    fn hop_lists() {
-        assert!(!UPSTREAM_REMOVE.contains(&"X-Cortex-Dest"));
-        assert!(!UPSTREAM_REMOVE.contains(&TOKEN_HEADER));
-        for h in UPSTREAM_REMOVE {
-            assert!(CAPTURE_REMOVE.contains(&h));
-        }
     }
 }

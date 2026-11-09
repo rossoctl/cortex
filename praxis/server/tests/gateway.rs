@@ -542,10 +542,8 @@ fn hop_headers_removed_custom_kept() {
         .filter(|n| n.starts_with("x-cortex-"))
         .collect();
     cortex.sort();
-    assert_eq!(
-        cortex,
-        ["x-cortex-custom", "x-cortex-dest", "x-cortex-token"]
-    );
+    // The token is the gateway's secret: no hop header reaches the origin.
+    assert_eq!(cortex, ["x-cortex-custom"]);
     assert_eq!(header(&seen.head, "x-cortex-custom"), Some("kept"));
     for l in i.take(2) {
         assert_eq!(

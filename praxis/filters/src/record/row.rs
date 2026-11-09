@@ -9,7 +9,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use http::HeaderMap;
 use http::header::{CONTENT_ENCODING, CONTENT_LENGTH, HOST, USER_AGENT};
 
-use super::attribution::{Attribution, CAPTURE_REMOVE};
+use super::attribution::{Attribution, HOP_HEADERS};
 use super::client::{
     CLAUDE_CODE_AGENT_ID_HEADER, CLAUDE_CODE_PARENT_AGENT_ID_HEADER, Client, parse_user_agent,
     subagent_header,
@@ -301,7 +301,7 @@ impl Exchange {
         let capture = inference.is_some().then(|| {
             let mut h = self.headers.clone();
             h.remove(HOST);
-            for n in CAPTURE_REMOVE {
+            for n in HOP_HEADERS {
                 h.remove(n);
             }
             Capture::Request {
