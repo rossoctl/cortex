@@ -11,6 +11,7 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
+	"github.com/rossoctl/cortex/core/observe/claude"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/session/timeline"
@@ -1378,5 +1379,49 @@ func TestTimelineStrip_NamesTheTurnModel(t *testing.T) {
 	strip := stripANSI(m.cursorStrip(lay))
 	if !strings.Contains(strip, "premium-ide") {
 		t.Errorf("strip = %q, want the turn's model named", strip)
+	}
+}
+
+// A workflow agent has no spawn call on the wire, so the server labels it "subagent <id>". The
+// pane uses the description Claude Code wrote to disk, and asks for a harvest while one is
+// missing. An agent that a spawn call names keeps its wire label.
+func TestTimeline_WorkflowAgentUsesHarvestedLabel(t *testing.T) {
+	m := timelineModel(t, 160, 40)
+	m.timeline.tl.Agents = append(m.timeline.tl.Agents,
+		timeline.Agent{ID: "wf1", Parent: timeline.MainAgent, Label: "subagent wf1"})
+	m.timeline.tl.Turns = append(m.timeline.tl.Turns,
+		timeline.Turn{Agent: "wf1", Start: tlAt(700), End: tlPtr(800), Finish: "end_turn", Seq: 25})
+	harvests := 0
+	m.harvest = func() (map[string]SessionMetadata, error) { harvests++; return nil, nil }
+
+	if !strings.Contains(stripANSI(m.renderTimeline()), "subagent wf1") {
+		t.Fatalf("no harvest yet: want the server's label")
+	}
+	cmd := m.harvestForTimeline()
+	if cmd == nil || !m.harvesting {
+		t.Fatalf("unlabeled agent: want a harvest, got cmd=%v harvesting=%v", cmd != nil, m.harvesting)
+	}
+	cmd()
+	if harvests != 1 {
+		t.Fatalf("harvests = %d, want 1", harvests)
+	}
+	if m.harvestForTimeline() != nil {
+		t.Errorf("a harvest in flight: want no second one")
+	}
+
+	m.harvesting, m.lastHarvest = false, time.Time{}
+	m.sessionsData = map[string]SessionMetadata{"sess-1": {Subagents: map[string]claude.SubagentInfo{
+		"wf1": {AgentType: "workflow-subagent", Description: "implement T1: x"},
+		"a1":  {Description: "not the wire label"},
+	}}}
+	out := stripANSI(m.renderTimeline())
+	if !strings.Contains(out, "implement T1: x") || strings.Contains(out, "subagent wf1") {
+		t.Errorf("want the harvested label for wf1:\n%s", out)
+	}
+	if !strings.Contains(out, "Survey the code") || strings.Contains(out, "not the wire label") {
+		t.Errorf("a spawned agent keeps its wire label:\n%s", out)
+	}
+	if m.harvestForTimeline() != nil {
+		t.Errorf("every agent labeled: want no harvest")
 	}
 }
