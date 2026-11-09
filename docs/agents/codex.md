@@ -118,6 +118,13 @@ read the new file. Comparing `ps` before and after, both processes change. Witho
 `disable` came undone at the next Codex update, with the daemon back on Cortex's proxy. If the
 updater will not stop, they name it and the command that replaces it.
 
+The updater is stopped only when it is the process Codex recorded. A pid file can outlive
+the updater that wrote it, and its pid can be reused by an unrelated process, so agentop
+first compares the start time in `app-server-daemon/daemon-updater.pid` with the one `ps`
+reports for that pid, the check Codex itself makes. When they differ, or either is
+missing, agentop leaves that process alone; the check after the restart still names an
+updater left on the old proxy.
+
 **What a restart does to Codex sessions**, from Codex's source (0.163.0 and 0.164.0), not
 measured here: the old daemon stops taking new turns, gives running ones its shutdown grace — 60
 seconds by default, configurable up to 5 minutes — to finish, and saves its threads. The new daemon restores them and

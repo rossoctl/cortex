@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -100,9 +101,21 @@ var codexRestartDaemon = func(codexHome string, want map[string]string) error {
 // codexStopUpdater ends the updater recorded under codexHome, if it runs, and waits for it
 // to exit. Codex stops its updater the same way: SIGTERM to its process group, which the
 // updater handles by shutting down. A package variable so tests replace it.
+//
+// THE PID IS CHECKED BEFORE ITS GROUP IS SIGNALLED. A pid file outlives the updater that
+// wrote it, and its pid can be reused by an unrelated process that leads its own group —
+// a shell, a terminal session — and kill(-pid) would end all of it (#1526 review). So it
+// is signalled only when the process holding the pid started when the file says the
+// updater did: Codex's own guard (process_matches_record, app-server-daemon's pid.rs).
+// Any doubt — no start time recorded, ps unable to read one, or a different one — skips
+// the stop. That is safe: the restart still applies the change to the daemon, and
+// reportRestartedUpdater names an updater left on the old proxy.
 var codexStopUpdater = func(codexHome string) error {
 	u, ok := runningCodexProc(codexHome, codexUpdaterPIDRel)
 	if !ok {
+		return nil
+	}
+	if !codexProcStarted(u.PID, u.Started) {
 		return nil
 	}
 	if err := syscall.Kill(-u.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
@@ -116,6 +129,24 @@ var codexStopUpdater = func(codexHome string) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	return nil
+}
+
+// codexProcStarted reports whether pid is the process a Codex pid file recorded: the one
+// that started at recorded, the pid file's processStartTime. Codex writes that from
+// `ps -o lstart=`, so the same command reads it back, compared after trimming. An empty
+// record, a ps that fails or prints nothing, or a different time is false. A package
+// variable so tests replace it.
+//
+// Codex's legacy check has the same limit this does: lstart is printed in the local time
+// zone, so a time zone change since the updater started reads as a mismatch, and the stop
+// is skipped where it would have been safe.
+var codexProcStarted = func(pid int, recorded string) bool {
+	recorded = strings.TrimSpace(recorded)
+	if pid <= 0 || recorded == "" {
+		return false
+	}
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	return err == nil && strings.TrimSpace(string(out)) == recorded
 }
 
 // codexUpdaterStopTimeout bounds the wait for the updater to exit. It has no turns to

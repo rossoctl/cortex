@@ -112,14 +112,34 @@ func writeCodexDaemonPID(t *testing.T, codexHome string, pid int) {
 // writeCodexPID writes one of Codex's pid files, rel under codexHome.
 func writeCodexPID(t *testing.T, codexHome, rel string, pid int) {
 	t.Helper()
+	writeCodexPIDStarted(t, codexHome, rel, pid, "Fri Oct 23 09:03:25 2026")
+}
+
+// writeCodexPIDStarted is writeCodexPID with the processStartTime given; "" leaves the
+// field out, as a record written by a version that did not keep it.
+func writeCodexPIDStarted(t *testing.T, codexHome, rel string, pid int, started string) {
+	t.Helper()
 	dir := filepath.Join(codexHome, filepath.Dir(rel))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	body := `{"pid":` + strconv.Itoa(pid) + `,"processStartTime":"Fri Oct 23 09:03:25 2026"}`
+	body := `{"pid":` + strconv.Itoa(pid) + `}`
+	if started != "" {
+		body = `{"pid":` + strconv.Itoa(pid) + `,"processStartTime":"` + started + `"}`
+	}
 	if err := os.WriteFile(filepath.Join(codexHome, rel), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// psStarted is what Codex records as a process's processStartTime: ps's lstart, trimmed.
+func psStarted(t *testing.T, pid int) string {
+	t.Helper()
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		t.Skipf("ps cannot read pid %d's start time here: %v", pid, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // onCortex is a daemon environment routed through Cortex, as enable's file makes it.
@@ -514,17 +534,11 @@ func TestCodexRun(t *testing.T) {
 	}
 }
 
-// The real updater stop, against a process this test starts as its own process-group
-// leader, as Codex starts its updater: SIGTERM to the group, then a wait for it to exit.
-// An updater that is not running, or a stale pid file, needs nothing.
-func TestCodexStopUpdater_RealProcess(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("process groups")
-	}
-	home := t.TempDir()
-	if err := codexStopUpdater(home); err != nil {
-		t.Errorf("no pid file: %v", err)
-	}
+// startGroupLeader starts a process as its own process-group leader, as Codex starts its
+// updater, and points codexDaemonAlive at it: codexDaemonAlive counts a zombie as alive,
+// and only Wait reaps this child, so liveness here is whether Wait has returned.
+func startGroupLeader(t *testing.T) (*exec.Cmd, <-chan struct{}) {
+	t.Helper()
 	cmd := exec.Command("/bin/sh", "-c", "sleep 30")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
@@ -533,10 +547,6 @@ func TestCodexStopUpdater_RealProcess(t *testing.T) {
 	exited := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(exited) }()
 	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); <-exited })
-	writeCodexPID(t, home, codexUpdaterPIDRel, cmd.Process.Pid)
-
-	// codexDaemonAlive counts a zombie as alive, and only Wait reaps this child, so
-	// liveness here is whether Wait has returned.
 	prev := codexDaemonAlive
 	t.Cleanup(func() { codexDaemonAlive = prev })
 	codexDaemonAlive = func(pid int) bool {
@@ -550,6 +560,22 @@ func TestCodexStopUpdater_RealProcess(t *testing.T) {
 			return true
 		}
 	}
+	return cmd, exited
+}
+
+// The real updater stop, against a process this test starts as its own process-group
+// leader, as Codex starts its updater: SIGTERM to the group, then a wait for it to exit.
+// An updater that is not running, or a stale pid file, needs nothing.
+func TestCodexStopUpdater_RealProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups")
+	}
+	home := t.TempDir()
+	if err := codexStopUpdater(home); err != nil {
+		t.Errorf("no pid file: %v", err)
+	}
+	cmd, exited := startGroupLeader(t)
+	writeCodexPIDStarted(t, home, codexUpdaterPIDRel, cmd.Process.Pid, psStarted(t, cmd.Process.Pid))
 	start := time.Now()
 	if err := codexStopUpdater(home); err != nil {
 		t.Fatalf("stopping a live updater: %v", err)
@@ -564,6 +590,61 @@ func TestCodexStopUpdater_RealProcess(t *testing.T) {
 	}
 	if err := codexStopUpdater(home); err != nil {
 		t.Errorf("stale pid file: %v", err)
+	}
+}
+
+// A pid file whose pid now belongs to another process is not that process's to stop
+// (#1526 review). The process here leads its own group, as a shell does, which is what
+// makes signalling it costly: kill(-pid) would end the whole group. It must be left
+// running, and so must one whose record carries no start time to check.
+func TestCodexStopUpdater_LeavesAReusedPIDAlone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process groups")
+	}
+	for _, tc := range []struct {
+		name, started string
+	}{
+		{"the record names another start time", "Fri Oct 23 09:03:25 2026"},
+		{"the record has no start time", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			cmd, exited := startGroupLeader(t)
+			if tc.started != "" && tc.started == psStarted(t, cmd.Process.Pid) {
+				t.Skip("the fixed start time happens to be this process's")
+			}
+			writeCodexPIDStarted(t, home, codexUpdaterPIDRel, cmd.Process.Pid, tc.started)
+			if err := codexStopUpdater(home); err != nil {
+				t.Errorf("a pid that is not the updater: %v", err)
+			}
+			select {
+			case <-exited:
+				t.Fatal("signalled a process the pid file does not describe")
+			case <-time.After(300 * time.Millisecond):
+			}
+		})
+	}
+}
+
+// The start-time check against the real process table: this process matches the start
+// time ps reports for it, and nothing else does.
+func TestCodexProcStarted_RealProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ps")
+	}
+	pid := os.Getpid()
+	started := psStarted(t, pid)
+	if !codexProcStarted(pid, started) {
+		t.Errorf("this process's own start time %q reads as a mismatch", started)
+	}
+	if !codexProcStarted(pid, "  "+started+"\n") {
+		t.Error("surrounding whitespace in the record reads as a mismatch")
+	}
+	if codexProcStarted(pid, "Fri Oct 23 09:03:25 2026") && started != "Fri Oct 23 09:03:25 2026" {
+		t.Error("another start time reads as a match")
+	}
+	if codexProcStarted(pid, "") || codexProcStarted(0, started) || codexProcStarted(-1, started) {
+		t.Error("an empty record or a non-positive pid reads as a match")
 	}
 }
 
