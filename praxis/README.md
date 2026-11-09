@@ -11,13 +11,14 @@ The workspace is outside `go.work`.
 From this directory:
 
 ```sh
+rustup toolchain install
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
 `rust-toolchain.toml` pins the toolchain (Rust 1.96.0, with `rustfmt` and
-`clippy`). `rustup` installs it on the first `cargo` command.
+`clippy`). `rustup toolchain install`, run in this directory, installs it, as CI does.
 
 ## The parity rule
 

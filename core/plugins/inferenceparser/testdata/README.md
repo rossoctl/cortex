@@ -156,7 +156,7 @@ capture exists. Go generates their `expected.json` with `-update`. Do not write 
 | `synthetic/openai-chat-nonstream-tool-calls` | Chat Completions, JSON. History with system, assistant `tool_calls` and a `role: tool` result. 2 tools, `temperature`, `tool_choice`. 2 tool calls, `tool_calls` finish, cached and reasoning tokens |
 | `synthetic/openai-chat-stream-tool-calls` | The same request with `stream: true`. Content deltas, interleaved index-keyed `tool_calls` fragments for 2 calls, a final usage chunk, `[DONE]` |
 | `synthetic/responses-nonstream` | Responses API, JSON. `input` with `message`, `function_call` and `function_call_output` items, `reasoning.effort`. A top-level `tools` array, which the parser does not read. Output `message` and `function_call`, cached and reasoning tokens |
-| `synthetic/responses-stream-function-call` | Codex on `chatgpt.com/backend-api/codex/responses`, SSE with `event:` lines. Tools in an `additional_tools` input item. Text deltas, a `function_call` item with argument deltas, `response.completed` with usage |
+| `synthetic/responses-stream-function-call` | Codex on `chatgpt.com/backend-api/codex/responses`, SSE with `event:` lines. Tools in an `additional_tools` input item. Text deltas, a `function_call` item with argument deltas, a `response.output_item.done` event, `response.completed` with usage |
 
 ## Not in the archive
 

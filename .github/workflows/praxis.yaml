@@ -45,8 +45,6 @@ jobs:
     name: Rust (praxis)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -83,19 +81,34 @@ jobs:
           cache-on-failure: false
 
       - name: cargo fmt
+        id: fmt
         working-directory: praxis
         continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}
         run: cargo fmt --check
 
       - name: cargo clippy
+        id: clippy
         working-directory: praxis
         continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}
         run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: cargo test
+        id: test
         working-directory: praxis
         continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}
         run: cargo test --locked
+
+      # A report-only run passes, so a warning on the PR shows the parity gap.
+      - name: Report failures that do not block
+        if: always() && steps.changes.outputs.blocking != 'true'
+        env:
+          FMT: ${{ steps.fmt.outcome }}
+          CLIPPY: ${{ steps.clippy.outcome }}
+          TEST: ${{ steps.test.outcome }}
+        run: |
+          [ "$FMT" != failure ] || echo "::warning::cargo fmt failed (does not block: no praxis/ changes)"
+          [ "$CLIPPY" != failure ] || echo "::warning::cargo clippy failed (does not block: no praxis/ changes)"
+          [ "$TEST" != failure ] || echo "::warning::cargo test failed (does not block: no praxis/ changes)"
 
       # Size cap: the cache post-step must not save a target/ over 2 GiB.
       - name: Cap the target/ cache size
