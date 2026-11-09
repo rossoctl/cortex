@@ -806,7 +806,7 @@ flows through to a per-agent rendered envoy-config with the matching TLS
 blocks.
 
 > **This envoy-sidecar design has no end-to-end verification in-tree.** The
-> `cortex-demos/mtls/` demo that used to exercise it was retired as superseded.
+> `demos/mtls/` demo that used to exercise it was retired as superseded.
 > Nothing in-tree exercises the Envoy filter chains — re-verify by hand after
 > changing them.
 
