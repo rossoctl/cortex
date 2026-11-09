@@ -37,10 +37,43 @@ pub struct EmitterStats {
     pub queued_bytes: usize,
 }
 
+/// A queued line. `row` is the line without its capture, kept so that a later
+/// row can take the capture's place in the queue.
+struct Entry {
+    line: Vec<u8>,
+    row: Option<Vec<u8>>,
+}
+
+impl Entry {
+    fn size(&self) -> usize {
+        self.line.len() + self.row.as_ref().map_or(0, Vec::len)
+    }
+}
+
+/// `bytes` counts each entry's line and its kept row: both are in memory.
 #[derive(Default)]
 struct Queue {
-    lines: VecDeque<Vec<u8>>,
+    lines: VecDeque<Entry>,
     bytes: usize,
+}
+
+impl Queue {
+    /// Replaces queued captures with their rows, newest first, until `need`
+    /// more bytes fit. Returns how many captures it dropped.
+    fn drop_captures(&mut self, need: usize) -> u64 {
+        let mut dropped = 0;
+        for e in self.lines.iter_mut().rev() {
+            if self.bytes + need <= MAX_QUEUE_BYTES {
+                break;
+            }
+            if let Some(row) = e.row.take() {
+                self.bytes -= e.line.len();
+                e.line = row;
+                dropped += 1;
+            }
+        }
+        dropped
+    }
 }
 
 /// Streams lines to `POST /v1/ingest` from its own thread. `submit` never
@@ -93,38 +126,55 @@ impl Emitter {
         e
     }
 
-    /// Queues one line. It never blocks and never fails; a line that does
-    /// not fit loses its capture first, then is dropped and counted.
+    /// Queues one line. It never blocks and never fails. A line that does not
+    /// fit loses its capture first. Then queued lines lose their captures,
+    /// newest first. Only then is the line dropped and counted.
     pub fn submit(&self, q: Queued) {
         let Queued { row, with_capture } = q;
-        let (mut line, mut fallback) = match with_capture {
+        let mut entry = match with_capture {
             Some(c) if c.len() > MAX_LINE => {
                 bump_capture(&self.captures_dropped_line_cap, "line_cap");
-                (row, None)
+                Entry {
+                    line: row,
+                    row: None,
+                }
             }
-            Some(c) => (c, Some(row)),
-            None => (row, None),
+            Some(c) => Entry {
+                line: c,
+                row: Some(row),
+            },
+            None => Entry {
+                line: row,
+                row: None,
+            },
         };
-        {
+        let mut captures_dropped = 0;
+        let queued = {
             let mut q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
             if q.lines.len() >= MAX_QUEUE_LINES {
-                drop(q);
-                bump(&self.rows_dropped, "cortex_rows_dropped_total");
-                return;
+                false
+            } else {
+                if q.bytes + entry.size() > MAX_QUEUE_BYTES
+                    && let Some(r) = entry.row.take()
+                {
+                    entry.line = r;
+                    captures_dropped += 1;
+                }
+                captures_dropped += q.drop_captures(entry.size());
+                let fits = q.bytes + entry.size() <= MAX_QUEUE_BYTES;
+                if fits {
+                    q.bytes += entry.size();
+                    q.lines.push_back(entry);
+                }
+                fits
             }
-            if q.bytes + line.len() > MAX_QUEUE_BYTES
-                && let Some(r) = fallback.take()
-            {
-                line = r;
-                bump_capture(&self.captures_dropped_queue_bytes, "queue_bytes");
-            }
-            if q.bytes + line.len() > MAX_QUEUE_BYTES {
-                drop(q);
-                bump(&self.rows_dropped, "cortex_rows_dropped_total");
-                return;
-            }
-            q.bytes += line.len();
-            q.lines.push_back(line);
+        };
+        for _ in 0..captures_dropped {
+            bump_capture(&self.captures_dropped_queue_bytes, "queue_bytes");
+        }
+        if !queued {
+            bump(&self.rows_dropped, "cortex_rows_dropped_total");
+            return;
         }
         self.wake.notify_one();
     }
@@ -146,9 +196,9 @@ impl Emitter {
 
     fn pop(&self) -> Option<Vec<u8>> {
         let mut q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
-        let line = q.lines.pop_front()?;
-        q.bytes -= line.len();
-        Some(line)
+        let e = q.lines.pop_front()?;
+        q.bytes -= e.size();
+        Some(e.line)
     }
 
     /// Waits for the next line. Cancel-safe: the pop and the return are in
@@ -346,6 +396,28 @@ mod tests {
         assert!(s.captures_dropped_queue_bytes > 0);
         assert_eq!(s.rows_dropped, 0);
         assert_eq!(s.queued_lines, 30);
+    }
+
+    #[test]
+    fn queued_captures_make_room_for_a_row() {
+        let e = Emitter::start(closed_addr(), "t".into());
+        for _ in 0..25 {
+            e.submit(Queued {
+                row: b"row\n".to_vec(),
+                with_capture: Some(vec![b'x'; 10 << 20]),
+            });
+        }
+        assert_eq!(e.stats().captures_dropped_queue_bytes, 0);
+        // A 15 MiB row with no capture: the newest queued capture gives it room.
+        e.submit(Queued {
+            row: vec![b'r'; 15 << 20],
+            with_capture: None,
+        });
+        let s = e.stats();
+        assert_eq!(s.rows_dropped, 0);
+        assert_eq!(s.captures_dropped_queue_bytes, 1);
+        assert_eq!(s.queued_lines, 26);
+        assert!(s.queued_bytes <= MAX_QUEUE_BYTES, "{}", s.queued_bytes);
     }
 
     #[test]
