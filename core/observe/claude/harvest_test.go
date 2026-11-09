@@ -2995,6 +2995,45 @@ func TestHarvest_ReadsSubagentMetaFiles(t *testing.T) {
 	}
 }
 
+// The Workflow tool's agents keep their meta files in subagents/workflows/<run>/. They
+// start without a write to the main transcript, so an incremental harvest that skips the
+// unchanged transcript must still find an agent that started after the last harvest.
+func TestHarvest_ReadsWorkflowSubagentsWhenTranscriptIsUnchanged(t *testing.T) {
+	metadataHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	proj := filepath.Join(cfg, "projects", "-p")
+	writeSessionTranscript(t, proj, "s1.jsonl", `{"type":"ai-title","aiTitle":"t"}`)
+	subs := filepath.Join(proj, "s1", "subagents")
+	writeSessionTranscript(t, subs, "agent-a1.meta.json", `{"description":"Agent tool child"}`)
+	run := filepath.Join(subs, "workflows", "wf_1")
+	writeSessionTranscript(t, run, "agent-b1.meta.json", `{"agentType":"workflow-subagent","description":"implement T1: x"}`)
+
+	if _, err := Harvest(Options{ConfigDir: cfg, Merge: true, Incremental: true}); err != nil {
+		t.Fatal(err)
+	}
+	writeSessionTranscript(t, run, "agent-b2.meta.json", `{"description":"merge T1: x"}`)
+	res, err := Harvest(Options{ConfigDir: cfg, Merge: true, Incremental: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Skipped != 1 {
+		t.Fatalf("Skipped = %d, want 1: the transcript did not change", res.Skipped)
+	}
+	got := readMetadataFile(t, res.Path)["s1"]
+	want := map[string]string{"a1": "Agent tool child", "b1": "implement T1: x", "b2": "merge T1: x"}
+	if len(got.Subagents) != len(want) {
+		t.Fatalf("Subagents = %v, want %v", got.Subagents, want)
+	}
+	for id, d := range want {
+		if got.Subagents[id].Description != d {
+			t.Errorf("Subagents[%s] = %+v, want description %q", id, got.Subagents[id], d)
+		}
+	}
+	if got.Title != "t" {
+		t.Errorf("Title = %q, want the kept title", got.Title)
+	}
+}
+
 // A session with no subagents carries no Subagents map at all, so the JSON spells nothing
 // out for the sessions that have none — which is most of them.
 func TestHarvest_SessionWithoutSubagentsHasNoMap(t *testing.T) {

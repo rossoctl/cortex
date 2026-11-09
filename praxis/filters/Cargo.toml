@@ -11,7 +11,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 http = "1"
 flate2 = "1"
-zstd = "0.13"
+zstd = "0.14"
 praxis-proxy-filter = { version = "=0.8.0", default-features = false }
 async-trait = "0.1"
 bytes = "1"

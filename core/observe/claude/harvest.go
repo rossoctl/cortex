@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -460,6 +461,14 @@ func ReadSessions(configDir string, since map[string]SessionMetadata) (map[strin
 				// converging.
 				won[id] = st.ModTime()
 				delete(out, id)
+				// The subagent labels are re-read anyway. A workflow (Claude Code's Workflow
+				// tool) starts its agents without a write to the main transcript, so the
+				// mtime above does not move while new agents start. The meta files are small.
+				if subs := readSubagents(filepath.Join(projDir, id, "subagents")); !maps.Equal(subs, since[id].Subagents) {
+					kept := since[id]
+					kept.Subagents = subs
+					out[id] = kept
+				}
 				skipped++
 				continue
 			}
@@ -479,11 +488,8 @@ func ReadSessions(configDir string, since map[string]SessionMetadata) (map[strin
 				LogFile:        path,
 				LogModTime:     st.ModTime(),
 				// The subagents' labels live in a sibling DIRECTORY of the transcript
-				// (<id>/subagents), whose mtime the skip above knows nothing about. That
-				// is fine, because a session only gains a subagent by appending the Agent
-				// tool call that spawned it to the transcript — which moves the
-				// transcript's mtime and re-parses the session, meta files and all. A
-				// skipped session keeps the Subagents its `since` entry already carried.
+				// (<id>/subagents), whose mtime the skip above knows nothing about, so the
+				// skip re-reads them on its own.
 				Subagents: readSubagents(filepath.Join(projDir, id, "subagents")),
 			}
 		}
@@ -492,19 +498,31 @@ func ReadSessions(configDir string, since map[string]SessionMetadata) (map[strin
 }
 
 // readSubagents reads one session's subagents/agent-<id>.meta.json files into a map keyed
-// by the bare id. Nil when the directory is missing or holds nothing harvestable — a
-// session that never spawned a subagent, which is most of them, must not carry an empty
-// map the JSON would then spell out.
+// by the bare id. It also reads subagents/workflows/<run>/agent-<id>.meta.json, where
+// Claude Code puts the agents that its Workflow tool starts. Nil when the directory is
+// missing or holds nothing harvestable — a session that never spawned a subagent, which
+// is most of them, must not carry an empty map the JSON would then spell out.
 //
 // Best-effort per file, for the same reason titleFromTranscript is: one unparseable meta
 // file must not cost the other labels. The transcripts sitting beside the meta files are
 // deliberately not read — see SessionMetadata.Subagents.
 func readSubagents(dir string) map[string]SubagentInfo {
+	out := readSubagentDir(dir, nil)
+	runs, _ := os.ReadDir(filepath.Join(dir, "workflows"))
+	for _, r := range runs {
+		if r.IsDir() {
+			out = readSubagentDir(filepath.Join(dir, "workflows", r.Name()), out)
+		}
+	}
+	return out
+}
+
+// readSubagentDir adds the agent-<id>.meta.json files in dir to out, and returns out.
+func readSubagentDir(dir string, out map[string]SubagentInfo) map[string]SubagentInfo {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		return out
 	}
-	var out map[string]SubagentInfo
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasPrefix(name, "agent-") || !strings.HasSuffix(name, ".meta.json") {

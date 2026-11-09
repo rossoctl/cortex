@@ -479,8 +479,9 @@ type model struct {
 	// version is the build agentop was started as, shown after its name on every title bar.
 	// Empty renders the bare name, which is what tests construct.
 	version string
-	// lastHarvest is when the most recent harvest was STARTED. Read by ONE caller: the sessions
-	// pane's backoff gate, which asks whether untitledBackoff has elapsed since then. The picker
+	// lastHarvest is when the most recent harvest was STARTED. Read by TWO callers: the sessions
+	// pane's backoff gate, which asks whether untitledBackoff has elapsed since then, and the
+	// timeline pane's gate for unlabeled subagents (timelineLabelHarvestEvery). The picker
 	// no longer has a cadence to measure — it harvests on arrival — so nothing there reads this.
 	//
 	// STAMPED BY EVERY PATH, THOUGH, INCLUDING THE ONES THAT NEVER READ IT, and that is a real
@@ -1635,7 +1636,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case timelineLoadedMsg:
 		m.handleTimelineLoaded(msg)
-		return m, nil
+		return m, m.harvestForTimeline()
 
 	case timelineTickMsg:
 		return m, m.handleTimelineTick(msg)
