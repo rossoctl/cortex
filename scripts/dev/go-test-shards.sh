@@ -42,7 +42,11 @@ if [ ! -x "$tmp/pkg.test" ]; then
 	echo "go-test-shards: $dir has no test files" >&2
 	exit 0
 fi
-(cd "$dir" && "$tmp/pkg.test" -test.list '.*') | grep -E '^(Test|Example|Fuzz)' >"$tmp/all" || true
+if ! (cd "$dir" && "$tmp/pkg.test" -test.list '.*') >"$tmp/listed"; then
+	echo "go-test-shards: listing the tests of $dir failed" >&2
+	exit 1
+fi
+grep -E '^(Test|Example|Fuzz)' "$tmp/listed" >"$tmp/all" || true
 if [ ! -s "$tmp/all" ]; then
 	echo "go-test-shards: $dir has no tests" >&2
 	exit 0
@@ -83,14 +87,17 @@ wait
 pids=""
 
 failed=0
-for rcfile in "$tmp"/rc.*; do
-	rc=$(cat "$rcfile")
-	if [ "$rc" -ne 0 ]; then
-		failed=1
-		shard=${rcfile##*.}
-		echo "--- shard $shard failed (exit $rc):"
-		cat "$tmp/out.$shard"
+i=0
+while [ "$i" -lt "$n" ]; do
+	if [ -s "$tmp/list.$i" ]; then
+		rc=$(cat "$tmp/rc.$i" 2>/dev/null || echo "none")
+		if [ "$rc" != 0 ]; then
+			failed=1
+			echo "--- shard $i failed (exit $rc):"
+			cat "$tmp/out.$i" 2>/dev/null || true
+		fi
 	fi
+	i=$((i + 1))
 done
 tests=$(wc -l <"$tmp/all" | tr -d ' ')
 if [ "$failed" -ne 0 ]; then
