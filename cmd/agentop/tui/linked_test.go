@@ -218,7 +218,7 @@ func linkedPagingServer(t *testing.T, s1 []pipeline.SessionEvent, bucket pipelin
 }
 
 // The older-events count is the session's own: linked calls merged into a snapshot or a page
-// are not events the server still holds behind it. And [o] takes the linked call between the
+// are not events the server still holds behind it. And [↵ on ▲] takes the linked call between the
 // older page and the held window, which it can only do if loadOlderPage hands it the held time.
 func TestOlderEvents_CountTheSessionsOwnAndPageTheGap(t *testing.T) {
 	const bucket = "pending:claude-code@1.1"

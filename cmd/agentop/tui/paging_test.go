@@ -41,7 +41,7 @@ func pagedEventsAt(start, n int, at time.Time) []pipeline.SessionEvent {
 	return out
 }
 
-// pagedModel is a model already one page deep, as it stands after the first [o].
+// pagedModel is a model already one page deep, as it stands after the first [↵ on ▲].
 //
 // It sets a client, which fitModel does not. Without one, loadOlderPage returns at its
 // m.client == nil guard before reaching anything else — which made the request-stacking
@@ -69,16 +69,16 @@ func heldSeqs(m *model) []uint64 {
 // An older page goes in FRONT of what is held. Appending it would put older events after
 // newer ones and present them as a timeline.
 func TestApplyOlderPage_PrependsInOrder(t *testing.T) {
-	m := pagedModel(t, pagedEvents(11, 10))
+	m := pagedModel(t, pagedEvents(511, 10))
 
-	m.applyOlderPage(olderPageLoadedMsg{id: "sess-1", events: pagedEvents(1, 10), serverOldest: 1})
+	m.applyOlderPage(olderPageLoadedMsg{id: "sess-1", events: pagedEvents(501, 10), serverOldest: 1})
 
 	got := heldSeqs(m)
 	if len(got) != 20 {
 		t.Fatalf("held %d events, want 20: %v", len(got), got)
 	}
 	for i, seq := range got {
-		if want := uint64(i + 1); seq != want {
+		if want := uint64(i + 501); seq != want {
 			t.Fatalf("event %d has Seq %d, want %d — the page was not prepended in order", i, seq, want)
 		}
 	}
@@ -94,7 +94,7 @@ func TestApplyOlderPage_DropsTheNewestPageAtTheCap(t *testing.T) {
 	// Start at the tail: Seq 301..400 is page one.
 	m := pagedModel(t, pagedEvents(301, 100))
 
-	// Three more pages, newest-to-oldest as [o] fetches them.
+	// Three more pages, newest-to-oldest as [↵ on ▲] fetches them.
 	for i, start := range []int{201, 101, 1} {
 		m.applyOlderPage(olderPageLoadedMsg{
 			id: "sess-1", events: pagedEvents(start, 100), serverOldest: 1,
@@ -193,7 +193,7 @@ func TestReturnToTail_FailedSnapshotLeavesTheWindowDescribed(t *testing.T) {
 	}
 }
 
-// [o] against a proxy that stamps no Seq must not enter paging mode at all.
+// [↵ on ▲] against a proxy that stamps no Seq must not enter paging mode at all.
 //
 // It used to create the state before validating the cursor, so one keypress suspended live
 // appends for a session that could never page — the flash explained the refusal while the
@@ -231,7 +231,7 @@ func TestApplyOlderPage_EmptyFirstPageAbandonsPaging(t *testing.T) {
 	}
 }
 
-// A failed fetch clears the in-flight marker so [o] can be retried, and must not touch the
+// A failed fetch clears the in-flight marker so [↵ on ▲] can be retried, and must not touch the
 // SSE connection state — a page request and the event stream are different connections.
 func TestFailOlderPage_ClearsLoadingAndSparesTheConnection(t *testing.T) {
 	m := pagedModel(t, pagedEvents(11, 10))
@@ -246,7 +246,7 @@ func TestFailOlderPage_ClearsLoadingAndSparesTheConnection(t *testing.T) {
 	m.Update(olderPageFailedMsg{id: "sess-1", gen: gen, err: errors.New("i/o timeout")})
 
 	if m.paging["sess-1"].loading {
-		t.Error("loading still set, so [o] would refuse every retry")
+		t.Error("loading still set, so [↵ on ▲] would refuse every retry")
 	}
 	if m.connState.phase != connOpen {
 		t.Errorf("connection phase = %v, want it untouched: one failed page is not a dead stream",
@@ -256,13 +256,13 @@ func TestFailOlderPage_ClearsLoadingAndSparesTheConnection(t *testing.T) {
 		t.Errorf("flash = %q, want it to name the failure", m.flash)
 	}
 	if cmd := m.loadOlderPage(); cmd == nil {
-		t.Error("[o] did not retry after the failure")
+		t.Error("[↵ on ▲] did not retry after the failure")
 	}
 }
 
 // A response from a superseded request is dropped.
 //
-// The path: [o] is in flight, [t] tears the state down, the tail lands, a fresh [o] builds
+// The path: [↵ on ▲] is in flight, [t] tears the state down, the tail lands, a fresh [↵ on ▲] builds
 // new state — and only then does the first response arrive. A SINGLE-event page is used
 // deliberately, because that is the case the timestamp ordering guard cannot catch: one
 // event's first and last timestamps are equal, so nothing about it looks out of order.
@@ -275,7 +275,7 @@ func TestApplyOlderPage_DropsAStaleGeneration(t *testing.T) {
 	}
 	stale := m.paging["sess-1"].wantGen
 
-	// [t], its snapshot, then a fresh [o] — the new state expects a later generation.
+	// [t], its snapshot, then a fresh [↵ on ▲] — the new state expects a later generation.
 	m.returnToTail()
 	m.Update(snapshotLoadedMsg{id: "sess-1", events: pagedEvents(11, 10), olderNotFetched: 10})
 	if cmd := m.loadOlderPage(); cmd == nil {
@@ -360,7 +360,7 @@ func TestApplyOlderPage_IgnoresAPageWhosePagingEnded(t *testing.T) {
 	}
 }
 
-// A second [o] while one request is in flight is a no-op, so holding the key down cannot
+// A second [↵ on ▲] while one request is in flight is a no-op, so holding the key down cannot
 // stack fetches that each cost a page of decode.
 //
 // The positive case is asserted first, and that is the point: without it this test passed

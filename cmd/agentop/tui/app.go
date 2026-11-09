@@ -279,7 +279,7 @@ type snapshotLoadedMsg struct {
 }
 
 // olderPageLoadedMsg carries a page from BEFORE the events already held — the result of
-// [o]. Separate from snapshotLoadedMsg because that one REPLACES the timeline and this one
+// [↵ on ▲]. Separate from snapshotLoadedMsg because that one REPLACES the timeline and this one
 // extends it backwards; conflating them would drop everything the operator had loaded.
 //
 // gen is the request generation, so a response from a superseded request can be recognised
@@ -291,7 +291,7 @@ type olderPageLoadedMsg struct {
 	serverOldest uint64
 }
 
-// olderPageFailedMsg reports a failed [o] fetch.
+// olderPageFailedMsg reports a failed [↵ on ▲] fetch.
 //
 // Its own type rather than errMsg, whose handler decides severity by string-prefixing
 // `where` and treats anything unrecognised as a terminal connection failure — so a single
@@ -671,7 +671,7 @@ type model struct {
 
 	// pageGen numbers page requests monotonically across the whole model, so a response
 	// from a superseded request is recognisable. Per-model rather than per-session state
-	// because a session's state is torn down and rebuilt by [t] followed by [o], and a
+	// because a session's state is torn down and rebuilt by [t] followed by [↵ on ▲], and a
 	// per-state counter would reissue a generation an in-flight request already holds.
 	pageGen uint64
 
@@ -1861,7 +1861,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Older than the tail the snapshot holds: say so rather than leave the cursor
 				// somewhere the operator did not ask for.
 				m.revealSeq, m.revealSess = 0, ""
-				m.setFlash("that event is older than the loaded tail — [o] loads earlier pages")
+				m.setFlash("that event is older than the loaded tail — the first row loads earlier pages")
 			}
 		}
 		// AND THE SESSIONS ROW, because the rebase above changed this session's CTX(1M)

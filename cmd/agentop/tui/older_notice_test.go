@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,18 +20,24 @@ import (
 // whether a session has 3 events or 5000 of which 3 arrived — which is exactly how the
 // unbounded-snapshot bug presented: a full session rendering as three rows, with the
 // failure only visible as a transport error in the footer.
-func TestFooter_NamesTheEventsTheSnapshotDidNotFetch(t *testing.T) {
+func TestTimeline_NamesTheEventsTheSnapshotDidNotFetch(t *testing.T) {
 	m := fitModel(t, paneEvents, 200, 40, cursorRowsFixture(3))
 	m.rebuildEventsTable()
 
-	if got := m.helpView(); strings.Contains(got, "older") {
+	if got := m.eventsTbl.Rows()[0][0]; strings.Contains(got, "older") {
 		t.Fatalf("an untruncated snapshot must say nothing about older events: %q", got)
 	}
 
 	m.Update(snapshotLoadedMsg{id: m.selectedSess, events: cursorRowsFixture(3), olderNotFetched: 4571})
-	got := m.helpView()
-	if !strings.Contains(got, "4571 older ([o] to load)") {
-		t.Errorf("footer does not name the omitted events: %q", got)
+	if got := m.eventsTbl.Rows()[0][0]; got != "▲ press Enter to load 4571 older events" {
+		t.Errorf("first row does not name the omitted events: %q", got)
+	}
+	if n := len(m.eventsTbl.Rows()); n != 4 {
+		t.Errorf("%d rows, want the older row and 3 events", n)
+	}
+	// The row is off the screen at the tail, so the footer points at it.
+	if got := m.helpView(); !strings.Contains(got, "4571 older (▲ at top)") {
+		t.Errorf("footer does not point at the older row: %q", got)
 	}
 }
 
@@ -76,7 +83,7 @@ func TestSnapshotCmd_DerivesTheOlderCountFromTotalEvents(t *testing.T) {
 // Snapshots land asynchronously, for whichever session was selected when the fetch
 // started. A late one for a session the operator has left must not describe the session
 // they are looking at — which is what a single shared counter did.
-func TestFooter_OlderCountIsPerSession(t *testing.T) {
+func TestTimeline_OlderCountIsPerSession(t *testing.T) {
 	m := fitModel(t, paneEvents, 200, 40, cursorRowsFixture(3))
 	m.selectedSess = "current"
 	m.events["current"] = cursorRowsFixture(3)
@@ -87,13 +94,13 @@ func TestFooter_OlderCountIsPerSession(t *testing.T) {
 	// Then a straggler for a session that was abandoned, reporting thousands omitted.
 	m.Update(snapshotLoadedMsg{id: "abandoned", events: cursorRowsFixture(1), olderNotFetched: 9999})
 
-	if got := m.helpView(); strings.Contains(got, "9999") {
-		t.Errorf("a late snapshot for another session leaked into the footer: %q", got)
+	if got := m.olderNotice(); got != "" {
+		t.Errorf("a late snapshot for another session leaked into the timeline: %q", got)
 	}
 
 	// And selecting that session shows its own count, not the current one's.
 	m.selectedSess = "abandoned"
-	if got := m.helpView(); !strings.Contains(got, "9999 older ([o] to load)") {
+	if got := m.olderNotice(); !strings.Contains(got, "9999 older events") {
 		t.Errorf("the session's own count is not shown after selecting it: %q", got)
 	}
 }
@@ -155,4 +162,182 @@ func TestOlderCount_IsClearedWithTheEventsItDescribes(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The older-events row is the timeline's first row at every terminal size, and the view
+// still fits the terminal with it.
+func TestTimeline_OlderRowIsTheFirstRow(t *testing.T) {
+	forceColor(t)
+	for _, dim := range fitSizes {
+		m := fitModel(t, paneEvents, dim[0], dim[1], cursorRowsFixture(60))
+		label := fmt.Sprintf("%dx%d", dim[0], dim[1])
+		m.Update(snapshotLoadedMsg{id: m.selectedSess, events: cursorRowsFixture(60), olderNotFetched: 4571})
+		m.goTop() // the session opens at the newest event, below the screen's first rows
+		lines := strings.Split(m.View(), "\n")
+		for i, line := range lines {
+			if strings.Contains(line, "TIME") && (i+1 == len(lines) || !strings.Contains(lines[i+1], "press Enter")) {
+				t.Errorf("%s: the line under the headers is not the older row", label)
+			}
+		}
+		assertFits(t, m, label)
+	}
+}
+
+// olderRowModel is a session of ten events, Seq 501-510, with 500 older ones not loaded.
+func olderRowModel(t *testing.T) *model {
+	t.Helper()
+	m := fitModel(t, paneEvents, 200, 40, pagedEvents(501, 10))
+	m.client = apiclient.New("http://127.0.0.1:1")
+	m.ctx = context.Background()
+	m.olderNotFetched = map[string]int{"sess-1": 500}
+	m.rebuildEventsTable()
+	return m
+}
+
+// ↑ from the first event selects the older row, and Enter on it loads the page before. When
+// the page lands, the cursor is on the event that was first, with the loaded page above it.
+func TestOlderRow_UpSelectsItAndEnterLoadsAbove(t *testing.T) {
+	m := olderRowModel(t)
+	setCursorVisible(&m.eventsTbl, 1)
+	m.handleKey(tea.KeyMsg{Type: tea.KeyUp})
+	if !m.onOlderRow() {
+		t.Fatalf("↑ from the first event left the cursor on row %d", m.eventsTbl.Cursor())
+	}
+
+	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter}); cmd == nil {
+		t.Fatalf("Enter on the older row asked for nothing (flash %q)", m.flash)
+	}
+	st := m.paging["sess-1"]
+	if st == nil || !st.loading {
+		t.Fatal("Enter on the older row did not start a page load")
+	}
+	if m.pane != paneEvents {
+		t.Errorf("Enter on the older row opened pane %v", m.pane)
+	}
+
+	m.Update(olderPageLoadedMsg{id: "sess-1", gen: st.wantGen, events: pagedEvents(491, 10), serverOldest: 1})
+	if e := m.selectedEvent(); e == nil || e.Seq != 501 {
+		t.Errorf("after the load the cursor is on %+v, want the event that was first (Seq 501)", e)
+	}
+	if got := m.eventsTbl.Rows()[0][0]; !strings.Contains(got, "490 older events") {
+		t.Errorf("first row after the load: %q", got)
+	}
+}
+
+// A sort ranks the events, not the older row: it stays first, in both directions.
+func TestOlderRow_StaysFirstUnderASort(t *testing.T) {
+	for _, desc := range []bool{false, true} {
+		m := olderRowModel(t)
+		m.sortCol, m.sortDesc = colTime, desc
+		m.rebuildEventsTable()
+		if got := m.eventsTbl.Rows()[0][0]; !strings.Contains(got, "older events") {
+			t.Errorf("desc=%v: first row is %q", desc, got)
+		}
+		want := uint64(501)
+		if desc {
+			want = 510
+		}
+		if e := m.selectedEventOn(1); e == nil || e.Seq != want {
+			t.Errorf("desc=%v: row 1 is %+v, want Seq %d", desc, e, want)
+		}
+	}
+}
+
+// When the first row under the older row is a subagent header, which has no event, the load
+// keeps the cursor on the first row that has one, not on the older row above the new page.
+func TestOlderRow_LoadKeepsPlaceUnderASubagentHeader(t *testing.T) {
+	m := olderRowModel(t)
+	for i := range 3 {
+		m.events["sess-1"][i].Subagent = "a1"
+	}
+	m.rebuildEventsTable()
+	if _, ok := m.headerRows[1]; !ok {
+		t.Fatal("row 1 is not the subagent header")
+	}
+	setCursorVisible(&m.eventsTbl, 0)
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	st := m.paging["sess-1"]
+	if st == nil {
+		t.Fatal("Enter on the older row did not start a page load")
+	}
+	m.Update(olderPageLoadedMsg{id: "sess-1", gen: st.wantGen, events: pagedEvents(491, 10), serverOldest: 1})
+	if e := m.selectedEvent(); e == nil || e.Seq != 504 {
+		t.Errorf("after the load the cursor is on %+v (row %d), want the first main event (Seq 504)", e, m.eventsTbl.Cursor())
+	}
+}
+
+// Enter on the older row that starts no load leaves the cursor there, through later rebuilds.
+func TestOlderRow_RefusedLoadKeepsTheCursor(t *testing.T) {
+	m := olderRowModel(t)
+	for i := range m.events["sess-1"] {
+		m.events["sess-1"][i].Seq = 0 // a proxy that predates Seq: loadOlderPage refuses
+	}
+	m.rebuildEventsTable()
+	setCursorVisible(&m.eventsTbl, 0)
+	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
+		t.Fatal("a proxy with no Seq started a page load")
+	}
+	m.rebuildEventsTable() // the next poll or streamed event
+	if !m.onOlderRow() {
+		t.Errorf("the cursor moved to row %d with no key press", m.eventsTbl.Cursor())
+	}
+}
+
+// The older row replaced the o key.
+func TestOKey_NoLongerLoadsOlder(t *testing.T) {
+	m := olderRowModel(t)
+	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")}); cmd != nil || m.paging["sess-1"] != nil {
+		t.Error("o still starts a page load")
+	}
+}
+
+// A search never matches the older row: not its words, and not its count, which can be a
+// status code the operator searches for.
+func TestOlderRow_SearchDoesNotMatchIt(t *testing.T) {
+	for _, q := range []string{"older", "press enter", "500"} {
+		m := olderRowModel(t)
+		if m.search == nil {
+			m.search = map[paneID]string{}
+		}
+		m.search[paneEvents] = q
+		m.rebuildEventsTable()
+		if m.olderNotice() == "" {
+			t.Fatal("the older row is not shown")
+		}
+		if got := m.eventsTbl.Matches(); len(got) > 0 && got[0] == 0 {
+			t.Errorf("/%s matches the older row: matches %v", q, got)
+		}
+	}
+}
+
+// The older row goes away when a page reaches the session's start, whatever the count says:
+// the count drifts when the store drops events after the snapshot.
+func TestOlderRow_GoesAwayAtTheSessionStart(t *testing.T) {
+	for name, page := range map[string][]pipeline.SessionEvent{
+		"page reaches the start": pagedEvents(491, 10),
+		"empty page":             nil,
+	} {
+		m := olderRowModel(t)
+		setCursorVisible(&m.eventsTbl, 0)
+		m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+		st := m.paging["sess-1"]
+		if st == nil {
+			t.Fatalf("%s: Enter on the older row did not start a page load", name)
+		}
+		m.Update(olderPageLoadedMsg{id: "sess-1", gen: st.wantGen, events: page, serverOldest: 491})
+		if got := m.olderNotice(); got != "" {
+			t.Errorf("%s: the older row is still shown at the session start: %q", name, got)
+		}
+	}
+}
+
+// When the pinned event is gone, the cursor goes to the first row under the older row, not to it.
+func TestOlderRow_LostPinSkipsTheOlderRow(t *testing.T) {
+	m := olderRowModel(t)
+	setCursorVisible(&m.eventsTbl, 5)
+	m.selectedEventKey = eventKey{at: 1} // an event the rows no longer hold
+	m.rebuildEventsTable()
+	if e := m.selectedEvent(); e == nil || e.Seq != 501 {
+		t.Errorf("cursor on row %d (%+v), want the oldest event (Seq 501)", m.eventsTbl.Cursor(), e)
+	}
 }

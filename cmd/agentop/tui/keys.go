@@ -735,6 +735,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// Enter on a subagent block's header collapses/expands it, the tree
 			// convention; on a message it stays the detail drill-down. One key,
 			// the row decides — same as the pickers.
+			if m.onOlderRow() {
+				return m.loadOlderFromRow()
+			}
 			if m.toggleSubagentBlock() {
 				return nil
 			}
@@ -856,14 +859,6 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "G":
 		m.goBottom()
 		return nil
-
-	case "o":
-		// Load the page before the oldest event held. Only in the timeline: the other
-		// panes have nothing to page.
-		if m.pane != paneEvents {
-			return nil
-		}
-		return m.loadOlderPage()
 
 	case "t":
 		// Back to the live tail from a paged-back timeline.
@@ -1314,11 +1309,9 @@ func (m *model) helpView() string {
 		if m.hideInactive && m.hiddenInactive > 0 {
 			base = fmt.Sprintf("%s  ·  %d hidden", base, m.hiddenInactive)
 		}
-		// Older events the snapshot did not ask for. Same reasoning as the hidden count
-		// one line up — a partial timeline should not read as the whole one — and it now
-		// names the key that fetches them, because there is one.
+		// The older-events row is the timeline's first row, off the screen at the tail.
 		if n := m.olderNotFetched[m.selectedSess]; n > 0 {
-			base = fmt.Sprintf("%s  ·  %d older ([o] to load)", base, n)
+			base = fmt.Sprintf("%s  ·  %d older (▲ at top)", base, n)
 		}
 		// Paging backward suspends this session's live appends, and dropping a page at
 		// the cap means the timeline no longer reaches the present. Both are states the

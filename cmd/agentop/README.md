@@ -889,7 +889,7 @@ agentop is for, and the other four are surfaces you visit and leave.
   archive holds beside the ones in memory, so neither a restart nor
   `session.max_sessions` eviction takes a row off it. Enter opens an old session
   like any other; its events are read back from disk a page at a time — the
-  latest on Enter, older ones with `o`, as for a resident session — so a long one
+  latest on Enter, older ones from the timeline's first row, as for a resident session — so a long one
   costs no more to open than a short one. `X` erases all of it, after asking; see
   the keybindings below.
 
@@ -1478,7 +1478,7 @@ Layered on top of all of them:
 | `Enter` / `→` / `l` | sessions, events | drill into selection; on a subagent block's header row in the events pane, collapse/expand the block instead |
 | `Esc` / `←` / `h` | detail, events | back out |
 | `Esc` | sessions | back to the agents picker when the list was reached by picking an agent there; otherwise (picker mode) tear down port-forward and back to pods. Sessions and the agents picker above it are the only panes that tear down — every key-opened surface returns to its caller instead |
-| `/` | any pane, and the key help | search what the pane shows, as in a text editor: every row stays, the matched characters are highlighted, and the cursor (or, in a text view, the view) jumps to the first match at or after where you pressed `/`, wrapping past the end, as you type. Case-insensitive substring of the text the pane displays: a table's columns that are turned on, at full width (a value cut to `…` matches in full, and so does a column the terminal had no room for); an exchange's or plugin's detail line by line, before it is wrapped; the key help's and the usage chart's lines as drawn. `deny` finds denied events because ACTION shows it. `Enter` keeps the place; `Esc` puts the place and the previous search back; `Enter` on an empty box clears the search. Each pane keeps its own search; the events pane's and an exchange's detail's last while you stay with one session (the detail's carries from exchange to exchange), and none is saved. On the events pane, `Tab` in the prompt turns on `[x] details`: then `Enter`, `n` and `N` find the next row whose detail view shows the query — in either half, every field, the exact capture too. The proxy finds the matches in one pass over memory and the archive (`GET /v1/sessions/{id}/search`), and agentop checks the summary rows it holds itself, so nothing is fetched. The footer counts the matches, and also the matches in events older than the ones agentop holds: press `o` to load those. A Cortex that predates the search says so in the footer |
+| `/` | any pane, and the key help | search what the pane shows, as in a text editor: every row stays, the matched characters are highlighted, and the cursor (or, in a text view, the view) jumps to the first match at or after where you pressed `/`, wrapping past the end, as you type. Case-insensitive substring of the text the pane displays: a table's columns that are turned on, at full width (a value cut to `…` matches in full, and so does a column the terminal had no room for); an exchange's or plugin's detail line by line, before it is wrapped; the key help's and the usage chart's lines as drawn. `deny` finds denied events because ACTION shows it. `Enter` keeps the place; `Esc` puts the place and the previous search back; `Enter` on an empty box clears the search. Each pane keeps its own search; the events pane's and an exchange's detail's last while you stay with one session (the detail's carries from exchange to exchange), and none is saved. On the events pane, `Tab` in the prompt turns on `[x] details`: then `Enter`, `n` and `N` find the next row whose detail view shows the query — in either half, every field, the exact capture too. The proxy finds the matches in one pass over memory and the archive (`GET /v1/sessions/{id}/search`), and agentop checks the summary rows it holds itself, so nothing is fetched. The footer counts the matches, and also the matches in events older than the ones agentop holds: Enter on the timeline's `▲` row loads those. A Cortex that predates the search says so in the footer |
 | `n` / `N` | any pane with a search, and the key help | next / previous match, wrapping at both ends; in a text view an off-screen match is scrolled to a third of the way down |
 | `X` | sessions | clear all history: every session this Cortex holds, in memory and on disk. Asks first, with the count and the size on disk; `y` erases, `n`/`esc` keeps. The cost ledger is kept. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer, like `A`: a destructive key should not be advertised on the always-visible line |
 | `x` | sessions, agents | erase the row under the cursor, in memory and on disk: the highlighted session, or every session of the highlighted agent — on *All agents*, everything, as `X`. Asks first, with the count; `y` erases, `n`/`esc` keeps. The cost ledger is kept. An agent still using a session brings it back with its next request. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer, like `X` |
@@ -1489,7 +1489,7 @@ Layered on top of all of them:
 | `y` | detail | yank the event of the section the cursor is in (request or response) to `~/.cortex/agentop-events` (path stays until the next keypress) |
 | `Tab` | detail | jump to the other section's title: request or response |
 | `g` / `G` | lists | jump to top / bottom. In the events timeline this also sets where the *next* session opens — see [Where a session opens](#where-a-session-opens) |
-| `o` | events | load the page before the oldest event shown — the timeline's history goes back further than one response holds, and `o` pages backward into it |
+| `Enter` on the `▲` row | events | load the page before the oldest event shown. When a session holds more events than one response, the timeline's first row reads `▲ press Enter to load N older events`, and the footer says `N older (▲ at top)` |
 | `t` | events | back to the live tail from a paged-back timeline — resumes receiving updates |
 | `u` | sessions, events, detail | open the usage charts (sessions: all sessions; events/detail: the selected session) |
 | `T` | sessions, events, detail | open the timeline (sessions: the highlighted row; events/detail: the selected session) |
@@ -1782,7 +1782,7 @@ body-less event that looks complete.
 
 Because a projected event is ~1KB rather than ~200KB, agentop asks for the server's
 full 2000-event ceiling instead of the old 500. A normal session therefore arrives
-whole, and the `N older ([o] to load)` note appears only for genuinely long ones.
+whole, and the `▲ press Enter to load N older events` row appears only for genuinely long ones.
 
 Against a proxy that predates `?view=summary` this still works — that server
 ignores the parameter and returns full events, so the timeline is correct and as

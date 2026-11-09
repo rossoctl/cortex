@@ -161,7 +161,7 @@ func actedPlugins(invs []pipeline.Invocation) string {
 // missingNote is what a section says when its half is not there (#1681).
 func missingNote(r eventRow, path string, lost bool) string {
 	if path == "request" {
-		return "request not loaded: press o in events"
+		return "request not loaded: Enter on the ▲ row in events loads it"
 	}
 	e := r.event
 	switch {

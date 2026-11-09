@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/agentop/money"
@@ -37,7 +38,7 @@ func keyOf(e *pipeline.SessionEvent) eventKey {
 
 // findByKey is the row that holds the event with key k, by either half (#1681). A pin can
 // name a response: a response-only row is keyed by it, and the row merges with its request
-// when `o` loads the request.
+// when the older page with the request loads.
 func findByKey(rows []eventRow, k eventKey) int {
 	return slices.IndexFunc(rows, func(r eventRow) bool {
 		return rowHolds(r, func(e *pipeline.SessionEvent) bool { return keyOf(e) == k })
@@ -185,6 +186,16 @@ func (m *model) rebuildEventsTable() {
 	m.visibleRows = m.visibleRows[:0]
 	m.hiddenInactive = 0
 
+	// The older-events row goes first, with no event under it, like a subagent header.
+	// lead is how many rows precede the events: the sort below must not move this one.
+	lead := 0
+	older := m.olderNotice()
+	if older != "" {
+		rows = append(rows, table.Row{older})
+		m.visibleRows = append(m.visibleRows, eventRow{})
+		lead = 1
+	}
+
 	// Subagent blocks (#1047), only while CHRONOLOGICAL: under a sort the row
 	// order is a ranking, and pulling a subagent's rows under a header would
 	// contradict the very thing the operator sorted to see. Collected over the
@@ -253,6 +264,9 @@ func (m *model) rebuildEventsTable() {
 	var droppedCols []eventColumn
 	if q != "" {
 		droppedCols = droppedColumns(selectedColumns(m.eventColumns), cols)
+		for range lead {
+			full = append(full, table.SearchRow{NoMatch: true})
+		}
 	}
 	// renderEventRow appends one event's cells to every parallel structure the
 	// pane keeps — the table's rows, visibleRows, and the search rows — so the
@@ -356,7 +370,7 @@ func (m *model) rebuildEventsTable() {
 	// finished rows leaves the exchange numbering and the merged figures exactly as
 	// they were.
 	if sortCol != nil {
-		sortEventRows(rows, m.visibleRows, full, keys, m.sortDesc)
+		sortEventRows(rows[lead:], m.visibleRows[lead:], full[min(lead, len(full)):], keys, m.sortDesc)
 	}
 	// Columns are re-set only when they actually differ, and in an order that keeps
 	// every intermediate state renderable.
@@ -474,10 +488,10 @@ func (m *model) rebuildEventsTable() {
 		if idx := findByKey(m.visibleRows, m.selectedEventKey); idx >= 0 {
 			target = idx
 		} else {
-			// Event evicted — clamp to the oldest surviving row (row 0),
+			// Event evicted — clamp to the oldest surviving row,
 			// the nearest edge to where the pin was, and drop the stale
 			// key so internal state matches what the operator sees.
-			target = 0
+			target = lead
 			m.selectedEventKey = eventKey{}
 		}
 	}
@@ -1291,6 +1305,37 @@ var identityBannerStyle = lipgloss.NewStyle().
 // extra screen rows that the events table had already claimed. Rows fell off the bottom, which
 // is indistinguishable from the cursor bug this pane also had.
 const identityBannerHeight = 6
+
+// olderNotice is the text of the timeline's first row when the session holds events the
+// snapshot did not load. Enter on that row loads the page before them. Empty when nothing
+// is missing. Plain text: the table truncates a row by its width in runes.
+func (m *model) olderNotice() string {
+	n := m.olderNotFetched[m.selectedSess]
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("▲ press Enter to load %d older event%s", n, plural(n))
+}
+
+// onOlderRow reports whether the events cursor is on the older-events row.
+func (m *model) onOlderRow() bool {
+	return m.eventsTbl.Cursor() == 0 && m.olderNotice() != ""
+}
+
+// loadOlderFromRow is Enter on the older-events row. It pins the cursor to the first row
+// that has an event, so the page lands above it and the operator keeps their place. A
+// subagent header has no event, so it cannot be the pin. It pins only when a load starts:
+// a pin from a refused load moves the cursor on the next rebuild.
+func (m *model) loadOlderFromRow() tea.Cmd {
+	cmd := m.loadOlderPage()
+	if cmd == nil {
+		return nil
+	}
+	if i := slices.IndexFunc(m.visibleRows, func(r eventRow) bool { return r.event != nil }); i >= 0 {
+		m.selectedEventKey = keyOf(m.visibleRows[i].event)
+	}
+	return cmd
+}
 
 // identityBannerHeightFor is how many rows layout must give up for the banner: the height of
 // the thing that will actually be rendered, at the width it will be rendered at. Zero when

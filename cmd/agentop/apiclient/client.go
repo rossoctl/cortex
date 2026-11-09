@@ -207,7 +207,7 @@ const SummaryView = "summary"
 //
 // A ceiling still exists, and this is it: 2000 is what the server clamps to, so
 // asking for more would be a request the server quietly shrinks. Sessions longer
-// than that still page, which is what [o] and the "N older" footer note are for.
+// than that still page, which is what the ▲ row and the "N older" footer note are for.
 const SnapshotEventLimit = 2000
 
 // GetSession fetches the most recent SnapshotEventLimit events of a session. Returns an
