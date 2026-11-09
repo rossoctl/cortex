@@ -386,8 +386,17 @@ func TestLogStderr_KeepsLoggingAfterALongLine(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(old) })
 	logStderr(strings.NewReader("before\n"+strings.Repeat("x", 2<<20)+"\n\nafter\n"+strings.Repeat("y", 2<<20)), "s")
 	mu.Lock()
-	out := buf.String()
+	all := buf.String()
 	mu.Unlock()
+	// Keep only this test's lines: a stopped worker from an earlier test can log its
+	// last unterminated line into this logger after its Stop returns.
+	var own []string
+	for _, l := range strings.Split(all, "\n") {
+		if strings.Contains(l, " script=s ") {
+			own = append(own, l)
+		}
+	}
+	out := strings.Join(own, "\n")
 	for _, want := range []string{"line=before", "line=after", "line=xxx", "line=yyy", `line=""`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log lacks %q:\n%.300s", want, out)
