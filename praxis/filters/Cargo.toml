@@ -9,3 +9,6 @@ publish = false
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+http = "1"
+flate2 = "1"
+zstd = "0.13"
