@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -211,5 +213,40 @@ func TestUpdateKeepsTheProfileAsItIs(t *testing.T) {
 	}
 	if got := updateFlags(env, "", false); len(got) != 0 {
 		t.Errorf("flags %q on PATH, want none", got)
+	}
+}
+
+// praxisUpdateFlags writes body as the config of a new install and returns the
+// update flags for it.
+func praxisUpdateFlags(t *testing.T, body string) []string {
+	t.Helper()
+	home := t.TempDir()
+	env := &setupEnv{home: home, goos: runtime.GOOS, binDir: filepath.Join(home, ".local", "bin"), cortexDir: filepath.Join(home, ".cortex")}
+	env.pathEnv = env.binDir
+	if err := os.MkdirAll(env.cortexDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.configPath(), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return updateFlags(env, "", false)
+}
+
+func TestUpdateFlags_PraxisConfigPassesPraxis(t *testing.T) {
+	if got := praxisUpdateFlags(t, "praxis:\n  enabled: true\n"); !slices.Contains(got, "--praxis") {
+		t.Errorf("flags %q, want --praxis", got)
+	}
+}
+
+func TestUpdateFlags_DirectConfigNoPraxis(t *testing.T) {
+	if got := praxisUpdateFlags(t, "praxis:\n  enabled: false\n"); slices.Contains(got, "--praxis") {
+		t.Errorf("flags %q, want no --praxis", got)
+	}
+}
+
+// A config that does not load says nothing about the mode, so update passes nothing.
+func TestUpdateFlags_PraxisConfigBrokenPassesNothing(t *testing.T) {
+	if got := praxisUpdateFlags(t, "praxis: [\n  enabled: true\n"); slices.Contains(got, "--praxis") {
+		t.Errorf("flags %q, want no --praxis", got)
 	}
 }

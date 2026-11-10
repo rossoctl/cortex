@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -100,7 +101,11 @@ type forwardHold struct {
 func (serviceStep) preflightPorts(env *setupEnv) (forwardHold, *problem) {
 	if env.configFresh {
 		var busy []string
-		for _, port := range cortexPorts {
+		ports := cortexPorts
+		if env.opts.praxis {
+			ports = slices.Concat(cortexPorts, praxisPorts)
+		}
+		for _, port := range ports {
 			if portInUse(port) {
 				busy = append(busy, port)
 			}

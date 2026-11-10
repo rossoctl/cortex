@@ -42,7 +42,7 @@ it, and `agentop pricing` takes `--stats-url`. The pipeline editor and `doctor` 
 | Endpoint | What agentop reads | Reader |
 |---|---|---|
 | `GET /reload/status` | `last_success`, `reloads_ok`, `reloads_failed`, `last_error` (shape: `Status` in `core/reloader/status.go`) | `edit.PollUntilReloaded` in `cmd/agentop/edit/status.go`. `localStatsUp` in `cmd/agentop/local_endpoint.go` requires a 2xx with a `reloads_ok` field |
-| `GET /config` | `listener.forward_proxy_addr`, `tls_bridge.mode`, `tls_bridge.ca_dir`. It ignores all other fields | `runningConfig` and `runningConfigFields` in `cmd/agentop/local_endpoint.go`, for `agentop exec` |
+| `GET /config` | `listener.forward_proxy_addr`, `tls_bridge.mode`, `tls_bridge.ca_dir`, `praxis.enabled`. It ignores all other fields | `runningConfig` and `runningConfigFields` in `cmd/agentop/local_endpoint.go`, for `agentop exec` and `praxisRefusal` |
 | `GET /pricing/table` | The table (`describeBody`). With `?host=<gateway>`, the rates for that host (`effective`) | `cmd/agentop/cmd_pricing.go`. A 404 means a proxy older than the endpoint. `Registry.Handler` in `core/cost/pricing/handler.go` serves it |
 | `GET /tls-bridge/unread` | `tlsbridge.UnreadReport` (`programs`, `hosts`, `osTrustsCA`) | `fetchUnread` in `cmd/agentop/doctor_unread.go`. A non-200 or no route makes the check silent |
 
@@ -193,6 +193,7 @@ flag it sends.
 | `--no-modify-path` | Edit no shell profile | `--no-modify-path` |
 | `--yes`, `-y` | Do not ask. Apply the changes setup lists | `--yes` |
 | `--cpex` | Download `cortex-cpex_<ver>_<os>_<arch>.tar.gz`. macOS arm64 and Linux only (`cpex_platform_check`, `require_cpex_build`) | no |
+| `--praxis` | Also download `cortex-gateway_<ver>_<os>_<arch>.tar.gz`, check it against `checksums.txt` and stage `cortex-gateway`. Setup then turns on praxis mode. macOS arm64 and Linux only (`praxis_platform_check`, `require_praxis_build`). Not frozen: every release that `require_praxis_build` accepts has an agentop that takes `--praxis` | `--praxis` |
 | `--ref=REF` | Install the binaries of `REF`: `main` (the developer channel) or a release tag. For any other ref, such as a branch or a SHA, the script warns and installs the newest release's binaries (`resolve_version`). A piped run also runs the copy of this script at `REF`. A run from a local file keeps that file | no (removed before the re-run) |
 | `--stop` | Stop the service and the pidfile proxy, check the ports, exit. Downloads nothing (`stop_cortex`) | no |
 | `-h`, `--help` | Print the usage text | no |

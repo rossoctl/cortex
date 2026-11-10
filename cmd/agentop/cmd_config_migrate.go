@@ -85,13 +85,9 @@ func migrateConfig(path string, stdout io.Writer) (changed bool, err error) {
 		return false, err
 	}
 
-	// Keep the previous file once, under a distinct name so it cannot be confused
-	// with the config itself.
-	bak := path + ".before-agentop-migrate"
-	if _, serr := os.Stat(bak); os.IsNotExist(serr) {
-		if werr := os.WriteFile(bak, raw, 0o600); werr != nil {
-			return false, fmt.Errorf("writing %s: %w", bak, werr)
-		}
+	bak, err := keepPreviousConfig(path, raw)
+	if err != nil {
+		return false, err
 	}
 	if err := replaceConfig(path, updated, nil); err != nil {
 		return false, err
@@ -220,6 +216,18 @@ func loadCandidate(updated string) (cfg *config.Config, loaded bool, err error) 
 	return cfg, true, nil
 }
 
+// keepPreviousConfig writes raw to path's .before-agentop-migrate file, unless that
+// file exists. The distinct name keeps it apart from the config itself.
+func keepPreviousConfig(path string, raw []byte) (bak string, err error) {
+	bak = path + ".before-agentop-migrate"
+	if _, serr := os.Stat(bak); os.IsNotExist(serr) {
+		if werr := os.WriteFile(bak, raw, 0o600); werr != nil {
+			return "", fmt.Errorf("writing %s: %w", bak, werr)
+		}
+	}
+	return bak, nil
+}
+
 // replaceConfig swaps updated in for the file at path, through a temp file that
 // must load first — and, when verify is set, pass it. A migration that produces an
 // unparseable config would take the proxy down on next start, so the original
@@ -263,22 +271,50 @@ func replaceConfig(path, updated string, verify func(*config.Config) error) erro
 
 // insertListenerKeys adds keys to the listener block, matching whatever
 // indentation the file already uses.
+func insertListenerKeys(src string, pins []pinnedListener) (string, error) {
+	return insertBlockKeys(src, "listener", pins)
+}
+
+// topLevelKey returns the index of the first top-level line that starts with head,
+// or -1, and the indentation of the document (-1 when it has no key line). Only a
+// top-level key counts: the same name nested in a plugin's config is another block.
+func topLevelKey(lines []string, head string) (at, docIndent int) {
+	docIndent = -1
+	for i, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || isDocumentMarker(trimmed) {
+			continue
+		}
+		indent := len(l) - len(strings.TrimLeft(l, " "))
+		if docIndent < 0 {
+			docIndent = indent
+		}
+		if indent == docIndent && strings.HasPrefix(trimmed, head) {
+			return i, docIndent
+		}
+	}
+	return -1, docIndent
+}
+
+// isDocumentMarker reports whether trimmed is a "---" document start, a "..."
+// document end or a "%" directive. None of them is a key line.
+func isDocumentMarker(trimmed string) bool {
+	return trimmed == "---" || trimmed == "..." || strings.HasPrefix(trimmed, "--- ") || strings.HasPrefix(trimmed, "%")
+}
+
+// insertBlockKeys adds keys to the block named block, matching whatever
+// indentation the file already uses. A pin with no comment gets no comment line.
 //
 // Indentation is read from the file rather than assumed: a real config turned up
 // with the whole document indented two spaces, which is valid YAML and would have
 // produced a broken file from any hardcoded guess.
-func insertListenerKeys(src string, pins []pinnedListener) (string, error) {
+func insertBlockKeys(src, block string, pins []pinnedListener) (string, error) {
 	lines := strings.Split(src, "\n")
+	head := block + ":"
 
-	listenerAt := -1
-	for i, l := range lines {
-		if strings.HasPrefix(strings.TrimSpace(l), "listener:") && !strings.HasPrefix(strings.TrimSpace(l), "#") {
-			listenerAt = i
-			break
-		}
-	}
+	listenerAt, _ := topLevelKey(lines, head)
 	if listenerAt < 0 {
-		return "", fmt.Errorf("no listener: block found")
+		return "", fmt.Errorf("no %s block found", head)
 	}
 	parentIndent := len(lines[listenerAt]) - len(strings.TrimLeft(lines[listenerAt], " "))
 
@@ -306,9 +342,9 @@ func insertListenerKeys(src string, pins []pinnedListener) (string, error) {
 		// is invalid YAML. That fails closed — the validation before the rename catches
 		// it and the original survives — but the user would see a bare parse error
 		// instead of being told the shape is unsupported.
-		if rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[listenerAt]), "listener:")); rest != "" {
-			return "", fmt.Errorf("listener: is written in flow style (%s); "+
-				"rewrite it as an indented block, or add the keys by hand", rest)
+		if rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[listenerAt]), head)); rest != "" && !strings.HasPrefix(rest, "#") {
+			return "", fmt.Errorf("%s is written in flow style (%s); "+
+				"rewrite it as an indented block, or add the keys by hand", head, rest)
 		}
 		// A genuinely empty block: indent one level in from the parent.
 		childIndent = parentIndent + 2
@@ -323,8 +359,10 @@ func insertListenerKeys(src string, pins []pinnedListener) (string, error) {
 	pad := strings.Repeat(" ", childIndent)
 	add := make([]string, 0, len(pins)*3)
 	for _, pin := range pins {
-		for _, cl := range strings.Split(pin.comment, "\n") {
-			add = append(add, pad+"# "+strings.TrimSpace(cl))
+		if pin.comment != "" {
+			for _, cl := range strings.Split(pin.comment, "\n") {
+				add = append(add, pad+"# "+strings.TrimSpace(cl))
+			}
 		}
 		add = append(add, pad+pin.key+": "+pin.value)
 	}

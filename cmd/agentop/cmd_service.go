@@ -1207,6 +1207,11 @@ func serviceIsCurrent(goos string, p servicePaths) bool {
 	if goos == "darwin" && !strings.Contains(body, "--supervise") {
 		return false
 	}
+	// On Linux the unit supervises only in praxis mode. A unit that does not agree
+	// with the config file must be written again.
+	if goos == "linux" && strings.Contains(body, "--supervise") != configPraxisEnabled(p.configFile) {
+		return false
+	}
 	if running, _ := supervisorRunning(goos, p); !running {
 		return false
 	}
@@ -1214,6 +1219,13 @@ func serviceIsCurrent(goos string, p servicePaths) bool {
 		return false // cannot confirm it is serving, so do not claim it is
 	}
 	return waitHealthy(p.healthURL, 2*time.Second)
+}
+
+// configPraxisEnabled reports whether the config file at path sets praxis.enabled.
+// It is false when the file does not load.
+func configPraxisEnabled(path string) bool {
+	cfg, err := config.Load(path)
+	return err == nil && cfg.PraxisEnabled()
 }
 
 // proxyBinaryUnchanged reports whether the binary on disk is still the one the unit

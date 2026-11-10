@@ -90,8 +90,11 @@ func shQuote(v string) string {
 // KeepAlive stays in the plist for the cases launchd does honour, such as a
 // login-time load; it is no longer what crash recovery depends on.
 //
-// The systemd unit deliberately does NOT use --supervise: Restart=on-failure works
+// In direct mode the systemd unit does NOT use --supervise: Restart=on-failure works
 // there and counts restarts against StartLimit, which a nested supervisor would hide.
+// In praxis mode (praxis.enabled in p.configFile) it uses --supervise, because only
+// the supervisor starts cortex-gateway and writes gateway.token. The unit reads the
+// file itself, so no caller can write a unit that does not agree with it.
 func renderUnitFor(goos string, p servicePaths) string {
 	if goos == "darwin" {
 		// HOME is set explicitly: the config interpolates ${HOME} at load, and an
@@ -148,7 +151,11 @@ func renderUnitFor(goos string, p servicePaths) string {
 	// proxy closes its listeners on SIGTERM rather than draining them (cmd/cortex/main.go)
 	// and is gone in well under a second, so this only ever ends one that hangs — which
 	// systemd's own default would let hold a restart for 90s. There is no supervisor in
-	// between here: KillMode=control-group signals the proxy directly.
+	// between here in direct mode: KillMode=control-group signals the proxy directly.
+	supervise := ""
+	if configPraxisEnabled(p.configFile) {
+		supervise = " --supervise"
+	}
 	return `[Unit]
 Description=Cortex local proxy (cortex)
 Documentation=https://github.com/rossoctl/cortex
@@ -158,7 +165,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=` + shQuote(p.binary) + ` --config ` + shQuote(p.configFile) + `
+ExecStart=` + shQuote(p.binary) + supervise + ` --config ` + shQuote(p.configFile) + `
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=5

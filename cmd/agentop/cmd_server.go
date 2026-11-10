@@ -154,6 +154,19 @@ func serverTarget(configPath string) (cfg *config.Config, path, statsURL string,
 	return cfg, path, statsURL, nil
 }
 
+// serverWriteTarget is serverTarget for an action that changes the router. It
+// refuses in praxis mode, where the change has no effect. A list does not refuse:
+// it shows the file.
+func serverWriteTarget(configPath string) (cfg *config.Config, path, statsURL string, err error) {
+	if cfg, path, statsURL, err = serverTarget(configPath); err == nil {
+		err = praxisRefusal(cfg, path, statsURL)
+	}
+	if err != nil {
+		return nil, "", "", err
+	}
+	return cfg, path, statsURL, nil
+}
+
 // readRouter is the router entry's config, decoded without the plugin's validation
 // so a listing still works on a config the proxy would refuse. present is false
 // when the outbound chain has no router entry.
@@ -212,7 +225,7 @@ func serverList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop server: unexpected argument %q; the action comes first: agentop server <action> [flags]\n", pos[0])
 		return 2
 	}
-	cfg, path, _, err := serverTarget(*cfgPath)
+	cfg, path, statsURL, err := serverTarget(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server: %v\n", err)
 		return 1
@@ -223,6 +236,10 @@ func serverList(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if len(c.Servers) == 0 {
+		if praxisRefusal(cfg, path, statsURL) != nil {
+			fmt.Fprintln(stdout, "No inference servers yet. Praxis mode is on, so `agentop server add` has no effect.")
+			return 0
+		}
 		fmt.Fprintln(stdout, "No inference servers yet. Add one:")
 		fmt.Fprintln(stdout, "  agentop server add <name> <url>")
 		return 0

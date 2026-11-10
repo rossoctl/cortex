@@ -68,8 +68,14 @@ func TestMain(m *testing.M) {
 }
 
 // fakeGateway stands in for cortex-gateway: it listens on the gateway listener of
-// its -c file and, with --exit-on-stdin-eof, exits when stdin closes.
+// its -c file and, with --exit-on-stdin-eof, exits when stdin closes. It answers
+// --version as the real gateway does.
 func fakeGateway(args []string) {
+	// The supervisor starts only a gateway of its own version. This copy is the same build.
+	if slices.Contains(args, "--version") {
+		fmt.Println(gatewayBinary + " " + version)
+		os.Exit(0)
+	}
 	var path string
 	for i, a := range args {
 		if a == "-c" && i+1 < len(args) {

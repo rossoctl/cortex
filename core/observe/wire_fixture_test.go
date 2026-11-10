@@ -15,6 +15,7 @@ import (
 func TestConfigEndpoint_CoversTheWireFixture(t *testing.T) {
 	cfg := newTestConfig()
 	cfg.TLSBridge = &config.TLSBridgeConfig{Mode: "enabled", CADir: "/ca"}
+	cfg.Praxis = &config.PraxisConfig{Enabled: true}
 	w := httptest.NewRecorder()
 	serveMux(cfg, auth.NewStats()).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/config", nil))
 	wirefixture.Covers(t, "testdata/config.json", w.Body.Bytes())

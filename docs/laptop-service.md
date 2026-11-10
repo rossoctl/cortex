@@ -45,11 +45,32 @@ supervisor reads `praxis.*` only when it starts, so after you change `praxis.*`,
 `agentop service restart`. Until then, the next restart of the proxy fails at each
 try.
 
-**On Linux, do not set `praxis.enabled` for the service yet.** The systemd unit does
-not use `--supervise`, so nothing starts the gateway or writes `gateway.token`. Then
-`cortex` refuses to start (`praxis.enabled needs CORTEX_GATEWAY_TOKEN_FILE …`) and
-systemd stops after five tries. A later step (#1722) makes the unit supervise in
-praxis mode.
+On Linux, the systemd unit runs `cortex --supervise` in praxis mode, so you also see
+the supervisor, the proxy and the gateway. In direct mode the unit does not use
+`--supervise`, and systemd restarts the proxy itself. `agentop service install` writes
+the unit again when it does not agree with `praxis.enabled` in the config file.
+
+To turn praxis mode on, run the installer with `--praxis`. It installs
+`cortex-gateway` and adds `praxis: {enabled: true}` to the config. It changes nothing
+else in the file:
+
+```sh
+curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --praxis
+```
+
+When you change `praxis.enabled` by hand in either direction, run
+`agentop service install --restart`. To turn praxis mode off, set
+`praxis.enabled: false` in `~/.cortex/config.yaml` first. `restart` alone does not
+write the unit again, and on Linux the unit has `--supervise` only in praxis mode.
+`install` without `--restart` can report "Already current" and not restart.
+
+From a source tree, build the gateway and give it to setup:
+
+```sh
+cargo build --release -p cortex-gateway --manifest-path praxis/Cargo.toml
+cp praxis/target/release/cortex-gateway bin/
+bin/agentop setup --from bin --yes --no-modify-path --restart --praxis
+```
 
 ## Linux: staying up after you log out
 

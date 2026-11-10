@@ -180,6 +180,10 @@ Options:
   --yes, -y          do not ask; apply the changes setup lists
   --cpex             install cortex built with the cpex policy plugin (macOS
                      arm64, Linux amd64/arm64). Re-run without it to switch back
+  --praxis           also install cortex-gateway and turn on praxis mode (macOS
+                     arm64, Linux amd64/arm64). To turn it off, set
+                     praxis.enabled: false in ~/.cortex/config.yaml and run
+                     agentop service install --restart
   --ref=REF          install from a git ref instead of the newest stable release —
                      both this script and the binaries (e.g. --ref=main for
                      unreleased changes, --ref=v0.8.1 to pin). The only way to
@@ -216,10 +220,14 @@ NO_MODIFY_PATH=""
 # Setup is not told: to it, this is one more cortex binary. Released copies of this
 # script from before the flag reject it as an unknown option.
 CPEX=""
+# PRAXIS also downloads the cortex-gateway archive and passes --praxis to setup, which
+# adds `praxis: {enabled: true}` to the config.
+PRAXIS=""
 for arg in "$@"; do
 	case "$arg" in
 		--install-only) MODE=install-only ;;
 		--cpex) CPEX=1 ;;
+		--praxis) PRAXIS=1 ;;
 		--claude-code) WIRE_CLAUDE_CODE=1 ;;
 		--yes | -y) ASSUME_YES=1 ;;
 		--ref=*) WANT_REF="${arg#*=}" ;;
@@ -233,7 +241,7 @@ for arg in "$@"; do
 			usage
 			exit 0
 			;;
-		*) die "unknown option: $arg (try --claude-code, --cpex, --install-only, --local, --no-modify-path, --no-service, --stop, --ref=REF, --yes, or no argument)" ;;
+		*) die "unknown option: $arg (try --claude-code, --cpex, --install-only, --local, --no-modify-path, --no-service, --praxis, --stop, --ref=REF, --yes, or no argument)" ;;
 	esac
 done
 # Removed knobs die rather than being ignored. Left set in someone's shell,
@@ -425,6 +433,24 @@ require_cpex_build() { # version
 		|| die "release $1 has no cpex build for ${os}/${arch}"
 }
 
+# praxis_platform_check dies unless the release builds cortex-gateway for os/arch.
+praxis_platform_check() {
+	case "${os}/${arch}" in
+		darwin/arm64 | linux/amd64 | linux/arm64) ;;
+		*) die "--praxis is not available for ${os}/${arch} (supported: darwin/arm64, linux/amd64, linux/arm64)" ;;
+	esac
+}
+
+# require_praxis_build dies unless release $1's checksums.txt lists the cortex-gateway
+# archive for os/arch, as require_cpex_build does for the cpex archive.
+require_praxis_build() { # version
+	_rp_sums=$(curl -fsSL "https://github.com/${REPO}/releases/download/$1/checksums.txt" 2>/dev/null) \
+		|| die "could not fetch checksums.txt for $1"
+	_rp_re=$(ere_escape "cortex-gateway_$1_${os}_${arch}.tar.gz")
+	printf '%s\n' "${_rp_sums}" | grep -qE "^[0-9a-fA-F]+[[:space:]]+\*?(\./)?${_rp_re}\$" \
+		|| die "release $1 has no cortex-gateway build for ${os}/${arch}"
+}
+
 # --- run the released copy of this script, not the one from main ---
 #
 # The documented command fetches this file from main, which is whatever landed
@@ -497,6 +523,16 @@ if [ -n "${_reexec}" ]; then
 					detect_platform
 					cpex_platform_check
 					require_cpex_build "${want_ref}"
+					;;
+			esac
+		fi
+		# --praxis, for the same reason.
+		if [ -n "${PRAXIS:-}" ]; then
+			case "${want_ref}" in
+				v*)
+					detect_platform
+					praxis_platform_check
+					require_praxis_build "${want_ref}"
 					;;
 			esac
 		fi
@@ -1107,6 +1143,9 @@ hand_off() {
 	[ -z "${NO_SERVICE}" ] || set -- "$@" --no-service
 	[ "${MODE}" != "install-only" ] || set -- "$@" --install-only
 	[ -z "${NO_MODIFY_PATH}" ] || set -- "$@" --no-modify-path
+	# Not frozen like the others: require_praxis_build refuses every release without a
+	# gateway archive, and the first one with it has an agentop that takes --praxis.
+	[ -z "${PRAXIS}" ] || set -- "$@" --praxis
 	[ -z "${_ho_stage}" ] || set -- "$@" "--handoff-bytes=${bytes}" "--handoff-seconds=${secs}"
 	# CORTEX_INSTALLER_DREW=1 tells setup that the title and the bar are on screen, so it
 	# draws neither its header nor its "✓ downloaded" row. An environment variable, not
@@ -1146,6 +1185,11 @@ if [ -n "${CPEX}" ]; then
 	[ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" != "1" ] \
 		|| die "--cpex selects what to download, and AUTHBRIDGE_SKIP_DOWNLOAD=1 downloads nothing"
 fi
+if [ -n "${PRAXIS}" ]; then
+	praxis_platform_check
+	[ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" != "1" ] \
+		|| die "--praxis selects what to download, and AUTHBRIDGE_SKIP_DOWNLOAD=1 downloads nothing"
+fi
 
 # --- repair, offline: AUTHBRIDGE_SKIP_DOWNLOAD=1 hands the installed agentop to setup ---
 # Nothing is downloaded, so nothing is staged: setup without --from installs no
@@ -1165,6 +1209,7 @@ version=$(resolve_version "${VERSION_REF}") \
 	|| die "could not resolve the newest release (pass --ref=vX.Y.Z to pin one)"
 # The release may predate --cpex: say so before staging anything.
 [ -z "${CPEX}" ] || require_cpex_build "${version}"
+[ -z "${PRAXIS}" ] || require_praxis_build "${version}"
 
 # --- download + verify ---
 # An explicit template under TMPDIR, not a bare `mktemp -d`: macOS's mktemp puts that
@@ -1190,6 +1235,8 @@ base="https://github.com/${REPO}/releases/download/${version}"
 agentop_tgz="agentop_${version}_${os}_${arch}.tar.gz"
 proxy_tgz="cortex_${version}_${os}_${arch}.tar.gz"
 [ -z "${CPEX}" ] || proxy_tgz="cortex-cpex_${version}_${os}_${arch}.tar.gz"
+gateway_tgz=""
+[ -z "${PRAXIS}" ] || gateway_tgz="cortex-gateway_${version}_${os}_${arch}.tar.gz"
 
 # Leaving the cpex build should be visible: re-running the plain one-liner over it
 # installs the default build. The installed binary says which one it is ("cortex
@@ -1310,6 +1357,11 @@ if [ -n "${bar_on}" ]; then
 	bar_total=$(($(file_bytes "${tmp}/${agentop_tgz}") + $(file_bytes "${tmp}/${proxy_tgz}")))
 	bar_draw "${bar_total}"
 fi
+# shortcut: the bar does not count the gateway archive, add it to the bar if users report a stall
+if [ -n "${gateway_tgz}" ]; then
+	curl -fsSL "${base}/${gateway_tgz}" -o "${tmp}/${gateway_tgz}" 2>&4 \
+		|| { curl_errors; die "download failed: ${gateway_tgz}"; }
+fi
 curl -fsSL "${base}/checksums.txt" -o "${tmp}/checksums.txt" 2>&4 \
 	|| { curl_errors; die "download failed: checksums.txt"; }
 exec 4>&-
@@ -1324,7 +1376,8 @@ rm -f "${tmp}/curl.err"
 # Matching is anchored to end-of-line so an unrelated future artifact in
 # checksums.txt can't make verification fail on a file we never fetched.
 : > "${tmp}/checksums.filtered"
-for archive in "${agentop_tgz}" "${proxy_tgz}"; do
+# shellcheck disable=SC2086 # gateway_tgz is empty or one word, split on purpose
+for archive in "${agentop_tgz}" "${proxy_tgz}" ${gateway_tgz}; do
 	# The name may be preceded by whitespace, sha256sum's binary-mode "*", or a
 	# path component: the release workflow runs `sha256sum ./*.tar.gz`, so every
 	# real line reads "HASH  ./agentop_....tar.gz". An earlier version of this
@@ -1344,10 +1397,12 @@ for archive in "${agentop_tgz}" "${proxy_tgz}"; do
 		>> "${tmp}/checksums.filtered" \
 		|| die "checksums.txt has no usable entry for ${archive} — refusing to install it unverified"
 done
-# Both entries present, and exactly the two we asked for.
+# Every entry present, and exactly the ones we asked for: 2, or 3 with the gateway.
+want_lines=2
+[ -z "${gateway_tgz}" ] || want_lines=3
 lines=$(wc -l < "${tmp}/checksums.filtered" | tr -d '[:space:]')
-[ "${lines}" = "2" ] \
-	|| die "expected 2 checksum entries, got ${lines} — refusing to install"
+[ "${lines}" = "${want_lines}" ] \
+	|| die "expected ${want_lines} checksum entries, got ${lines} — refusing to install"
 # Quiet on success, loud on failure. The per-archive "OK" lines are two lines saying
 # what one line implies — but sending them to /dev/null took the FAILED lines (stdout)
 # and shasum's "computed checksum did NOT match" warning (stderr) with them, so a
@@ -1366,7 +1421,7 @@ fi
 # --- the download's counts, for setup's "✓ downloaded" line ---
 # At least 1 byte, and whole seconds: see hand_off for why each matters to setup. A
 # clock reading that is not a number counts as 0 seconds rather than failing here.
-bytes=$(cat "${tmp}/${agentop_tgz}" "${tmp}/${proxy_tgz}" | wc -c | tr -d '[:space:]')
+bytes=$(cat "${tmp}/${agentop_tgz}" "${tmp}/${proxy_tgz}" ${gateway_tgz:+"${tmp}/${gateway_tgz}"} | wc -c | tr -d '[:space:]')
 [ "${bytes:-0}" -gt 0 ] 2>/dev/null || bytes=1
 finished=$(date +%s 2>/dev/null) || finished=""
 case "${started}:${finished}" in
@@ -1380,14 +1435,19 @@ bar_verified "${bytes}" "${secs}"
 # --- extract into the stage ---
 tar -xzf "${tmp}/${agentop_tgz}" -C "$tmp"
 tar -xzf "${tmp}/${proxy_tgz}" -C "$tmp"
-for b in agentop cortex; do
+staged="agentop cortex"
+if [ -n "${gateway_tgz}" ]; then
+	tar -xzf "${tmp}/${gateway_tgz}" -C "$tmp"
+	staged="${staged} cortex-gateway"
+fi
+for b in ${staged}; do
 	[ -f "${tmp}/${b}" ] || die "archive did not contain expected binary: ${b}"
 	chmod +x "${tmp}/${b}"
 done
 
 # macOS: clear the quarantine flag so Gatekeeper doesn't block the unsigned binaries.
 if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
-	xattr -dr com.apple.quarantine "${tmp}/agentop" "${tmp}/cortex" 2>/dev/null || true
+	xattr -dr com.apple.quarantine "${tmp}/agentop" "${tmp}/cortex" ${gateway_tgz:+"${tmp}/cortex-gateway"} 2>/dev/null || true
 fi
 
 stage_session_dump

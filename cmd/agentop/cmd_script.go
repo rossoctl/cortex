@@ -582,6 +582,9 @@ func scriptInstall(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	t, err := loadScriptTarget(cfgPath)
+	if err == nil {
+		err = praxisRefusal(t.cfg, t.path, t.statsURL)
+	}
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -723,6 +726,9 @@ func scriptRemove(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	t, err := loadScriptTarget(cfgPath)
+	if err == nil {
+		err = praxisRefusal(t.cfg, t.path, t.statsURL)
+	}
 	if err != nil {
 		return fail("%v", err)
 	}

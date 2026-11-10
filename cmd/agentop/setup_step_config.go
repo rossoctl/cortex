@@ -22,16 +22,30 @@ func (configStep) name() string { return "config" }
 func (configStep) plan(env *setupEnv) (stepPlan, *problem) {
 	p := stepPlan{label: "config"}
 	cfg := env.configPath()
+	if env.opts.praxis {
+		if prob := praxisGatewayProblem(env); prob != nil {
+			return p, prob
+		}
+	}
 	if !fileExists(cfg) {
 		env.configFresh = true
 		p.verb, p.what, p.where = "write", "the cortex config", env.tilde(cfg)
 		return p, nil
 	}
-	if _, err := config.Load(cfg); err != nil {
+	loaded, err := config.Load(cfg)
+	if err != nil {
 		return p, &problem{reason: env.tilde(cfg) + " will not load: " + err.Error(),
 			fix: []string{"correct it, then " + env.rerun(),
 				"or, to start over from the built-in config, move it aside first: mv " +
 					env.shellPath(cfg) + " " + env.shellPath(cfg+".broken")}}
+	}
+	// A plain re-run of the installer on a praxis install stages no gateway. The
+	// new cortex then refuses the old one, and the proxy answers 503.
+	if !env.opts.praxis && env.fromDir != "" && loaded.PraxisEnabled() {
+		if prob := praxisGatewayProblem(env); prob != nil {
+			prob.reason = "praxis mode is on in " + env.tilde(cfg) + ", and " + gatewayBinary + " is not staged"
+			return p, prob
+		}
 	}
 	pending, err := configMigrationPending(cfg)
 	if err != nil {
@@ -47,11 +61,23 @@ func (configStep) plan(env *setupEnv) (stepPlan, *problem) {
 				fix: []string{pinsRemedy}}
 		}
 	}
-	if !pending {
+	praxisPending := false
+	if env.opts.praxis {
+		raw, err := os.ReadFile(cfg) //nolint:gosec // the user's config
+		if err != nil {
+			return p, &problem{reason: err.Error()}
+		}
+		if _, praxisPending, err = enablePraxisText(string(raw)); err != nil {
+			return p, &problem{reason: env.tilde(cfg) + ": " + err.Error(),
+				fix: []string{praxisHandFix + ", then " + env.rerun()}}
+		}
+	}
+	if !pending && !praxisPending {
 		p.done, p.doneMsg = true, env.tilde(cfg)+" (kept)"
 		return p, nil
 	}
-	env.configPinsPending = listenerPinsPending(cfg)
+	// The praxis block, as the pins, takes effect only on a restart.
+	env.configPinsPending = listenerPinsPending(cfg) || praxisPending
 	p.verb, p.what, p.where = "update", "the cortex config", env.tilde(cfg)+" (previous kept)"
 	return p, nil
 }
@@ -125,8 +151,20 @@ func (configStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, erro
 		// run; Bob's backup is rewritten by each pricing migration.
 		u.manual = manual(".before-agentop-pricing")
 	}
-	if !env.configFresh && (changed || priced) {
+	praxisOn := false
+	if env.opts.praxis {
+		var perr error
+		if praxisOn, perr = enablePraxis(cfg); perr != nil {
+			return "", u, stepError{reason: "praxis mode could not be turned on in " + env.tilde(cfg),
+				detail: []string{firstLine(perr), praxisHandFix}}
+		}
+		env.configPinsChanged = env.configPinsChanged || praxisOn
+	}
+	if !env.configFresh && (changed || priced || praxisOn) {
 		detail += " · updated"
+	}
+	if praxisOn {
+		detail += " · praxis mode on"
 	}
 	if pinsErr != nil {
 		detail += " · listener pins not added (" + firstLine(pinsErr) + ")"

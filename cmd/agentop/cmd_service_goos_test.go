@@ -114,6 +114,35 @@ func TestServiceIsCurrent_BothPlatforms(t *testing.T) {
 		}
 	})
 
+	// In praxis mode the systemd unit must supervise. This clause alone makes install
+	// and setup write the unit again after praxis.enabled changes.
+	t.Run("linux: praxis on and a unit without --supervise is not current", func(t *testing.T) {
+		p := currentServiceFixture(t, "linux")
+		if err := os.WriteFile(p.configFile, []byte("praxis:\n  enabled: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if serviceIsCurrent("linux", p) {
+			t.Error("claimed current for a direct-mode unit under a praxis config")
+		}
+	})
+
+	t.Run("linux: praxis on and a supervising unit is current", func(t *testing.T) {
+		p := currentServiceFixture(t, "linux")
+		if err := os.WriteFile(p.configFile, []byte("praxis:\n  enabled: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		unit := renderUnitFor("linux", p)
+		if !strings.Contains(unit, "--supervise") {
+			t.Fatal("a supervising systemd unit has no --supervise; this case says nothing")
+		}
+		if err := os.WriteFile(p.unitFile, []byte(unit), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if !serviceIsCurrent("linux", p) {
+			t.Error("not current; every Linux praxis install would reinstall at each run")
+		}
+	})
+
 	// The supervisor clause, driven through each platform's own stub. "Installed but
 	// not running" is the state a bad config leaves, and reporting it as current means
 	// an install that skips the repair.

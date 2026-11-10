@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -175,6 +177,36 @@ type childSpec struct {
 	stdinPipe    bool     // the supervisor keeps the write end; closing it stops the child
 	fallback     *fallbackServer
 	fallbackAddr string // cortex only, with fallback
+	wantVersion  string // when set, the child starts only if `path --version` reports it
+}
+
+// gatewayVersionOf returns the last word of the first line that `path --version`
+// prints, or "" on any failure. Tests replace it.
+var gatewayVersionOf = func(path string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "--version").Output() //nolint:gosec // our own binary
+	if err != nil {
+		return ""
+	}
+	line, _, _ := strings.Cut(string(out), "\n")
+	words := strings.Fields(line)
+	if len(words) == 0 {
+		return ""
+	}
+	return words[len(words)-1]
+}
+
+// gatewayVersionErr returns why a gateway that reports version got must not start,
+// or nil when got is want. An empty got means no answer, not a different version.
+func gatewayVersionErr(got, want string) error {
+	switch got {
+	case want:
+		return nil
+	case "":
+		return fmt.Errorf("cortex-gateway gave no --version answer (it is missing, or older than this cortex), so it does not start")
+	}
+	return fmt.Errorf("cortex-gateway version %q differs from cortex %q, so it does not start", got, want)
 }
 
 // supervisorChildren returns the children to run. Direct mode is cortex alone, with
@@ -203,11 +235,12 @@ func supervisorChildren(cfg *config.Config, configPath, self string, args []stri
 	}
 	cortex.env = append(os.Environ(), gatewayTokenEnv+"="+tokenPath)
 	gateway := childSpec{
-		name:      gatewayBinary,
-		path:      filepath.Join(filepath.Dir(self), gatewayBinary),
-		args:      []string{"-c", yamlPath, "--exit-on-stdin-eof"},
-		env:       []string{},
-		stdinPipe: true,
+		name:        gatewayBinary,
+		path:        filepath.Join(filepath.Dir(self), gatewayBinary),
+		args:        []string{"-c", yamlPath, "--exit-on-stdin-eof"},
+		env:         []string{},
+		stdinPipe:   true,
+		wantVersion: version,
 	}
 	return []childSpec{cortex, gateway}
 }
@@ -297,7 +330,13 @@ func superviseChild(spec childSpec, stop <-chan struct{}) error {
 		// closes it however this process exits, SIGKILL included.
 		var stdin io.Closer
 		var err error
-		if spec.stdinPipe {
+		if spec.wantVersion != "" {
+			// A gateway of another version must not start. The backoff retries, so a
+			// later `agentop update` fixes it without a supervisor restart. The error goes
+			// to the start-failure log below, which logs ERROR one time only.
+			err = gatewayVersionErr(gatewayVersionOf(spec.path), spec.wantVersion)
+		}
+		if err == nil && spec.stdinPipe {
 			stdin, err = cmd.StdinPipe()
 		}
 		if err == nil {

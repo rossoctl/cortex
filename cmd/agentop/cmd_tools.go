@@ -122,6 +122,16 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 		window = toolscan.AllTime
 	}
 
+	// A file that does not load keeps today's path: PatchConfig reports the error.
+	if *write != "" {
+		if cfg, path, statsURL, err := serverTarget(*write); err == nil {
+			if err := praxisRefusal(cfg, path, statsURL); err != nil {
+				fmt.Fprintf(stderr, "agentop: %v\n", err)
+				return 1
+			}
+		}
+	}
+
 	scanDir := *dir
 	if scanDir == "" {
 		d, err := toolscan.DefaultProjectsDir()
