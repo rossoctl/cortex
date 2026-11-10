@@ -37,6 +37,12 @@ agents added mid-session — verified across `KeepAlive`, `StartInterval` and
 `RunAtLoad` — so the supervisor is what makes crash recovery work. On Linux there is
 one process; systemd handles it.
 
+In praxis mode (`praxis.enabled: true`), the supervisor has a second child,
+`cortex-gateway`, so you see three processes. At each start the supervisor writes
+`~/.cortex/gateway.token` and `~/.cortex/gateway.yaml`. A restart of the proxy does
+not restart the gateway. When the supervisor exits, the gateway exits too. The systemd
+unit does not use `--supervise`, so on Linux the service does not start the gateway.
+
 ## Linux: staying up after you log out
 
 On Linux, Cortex is a systemd **user** unit, which runs under your own systemd
