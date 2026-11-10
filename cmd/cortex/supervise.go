@@ -197,6 +197,18 @@ var gatewayVersionOf = func(path string) string {
 	return words[len(words)-1]
 }
 
+// gatewayVersionErr returns why a gateway that reports version got must not start,
+// or nil when got is want. An empty got means no answer, not a different version.
+func gatewayVersionErr(got, want string) error {
+	switch got {
+	case want:
+		return nil
+	case "":
+		return fmt.Errorf("cortex-gateway gave no --version answer (it is missing, or older than this cortex), so it does not start")
+	}
+	return fmt.Errorf("cortex-gateway version %q differs from cortex %q, so it does not start", got, want)
+}
+
 // supervisorChildren returns the children to run. Direct mode is cortex alone, with
 // today's args and env, and touches no file. Praxis mode first writes the gateway
 // files next to the config, then adds cortex-gateway, found next to this binary. The
@@ -320,12 +332,9 @@ func superviseChild(spec childSpec, stop <-chan struct{}) error {
 		var err error
 		if spec.wantVersion != "" {
 			// A gateway of another version must not start. The backoff retries, so a
-			// later `agentop update` fixes it without a supervisor restart.
-			if got := gatewayVersionOf(spec.path); got != spec.wantVersion {
-				log.Error("supervisor: cortex-gateway version differs from cortex, so it does not start",
-					"want", spec.wantVersion, "got", got)
-				err = fmt.Errorf("cortex-gateway version %q differs from cortex %q", got, spec.wantVersion)
-			}
+			// later `agentop update` fixes it without a supervisor restart. The error goes
+			// to the start-failure log below, which logs ERROR one time only.
+			err = gatewayVersionErr(gatewayVersionOf(spec.path), spec.wantVersion)
 		}
 		if err == nil && spec.stdinPipe {
 			stdin, err = cmd.StdinPipe()

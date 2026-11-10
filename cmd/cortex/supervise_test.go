@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -374,5 +375,18 @@ func TestSuperviseChild_GatewayVersionMismatchDoesNotStart(t *testing.T) {
 func TestSuperviseChild_GatewayVersionMatchStarts(t *testing.T) {
 	if !runGatewaySpec(t, "v9.9.9", "v9.9.9") {
 		t.Error("the gateway did not start, but its version is the same as cortex")
+	}
+}
+
+func TestGatewayVersionErr(t *testing.T) {
+	if err := gatewayVersionErr("v9.9.9", "v9.9.9"); err != nil {
+		t.Errorf("same version: %v", err)
+	}
+	if err := gatewayVersionErr("v0.0.1", "v9.9.9"); err == nil || !strings.Contains(err.Error(), `"v0.0.1" differs from cortex "v9.9.9"`) {
+		t.Errorf("other version: %v", err)
+	}
+	// A missing gateway, or one from before --version, must not read as a version mismatch.
+	if err := gatewayVersionErr("", "v9.9.9"); err == nil || !strings.Contains(err.Error(), "no --version answer") {
+		t.Errorf("no answer: %v", err)
 	}
 }
