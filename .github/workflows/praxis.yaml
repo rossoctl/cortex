@@ -1,8 +1,9 @@
 # Praxis - fmt, clippy and tests for the Rust workspace in praxis/
 #
 # Runs when praxis/ changes, or when the Go code that praxis/ ports changes.
-# Only a change to praxis/ (or to this file) makes a failure block the PR.
-# A Go-only change runs the steps too, so drift shows, but does not block.
+# A failure blocks the PR only for a change to praxis/, to this file, or to the Go side
+# of praxis mode (the hop, the egress listener, cmd/cortex's praxis wiring). Any other
+# Go change runs the steps too, so drift shows, but does not block.
 #
 name: Praxis
 
@@ -33,6 +34,13 @@ on:
       - "core/redact/**"
       - "core/pipeline/subagent.go"
       - "core/listener/forwardproxy/ingest_replay_test.go"
+      - "core/listener/forwardproxy/hop*.go"
+      - "core/listener/forwardproxy/egress*.go"
+      - "core/listener/forwardproxy/record.go"
+      - "core/listener/forwardproxy/tunnel.go"
+      - "cmd/cortex/praxis*.go"
+      - "cmd/cortex/gateway.go"
+      - "cmd/cortex/ingest.go"
   push:
     branches:
       - main
@@ -58,6 +66,13 @@ on:
       - "core/redact/**"
       - "core/pipeline/subagent.go"
       - "core/listener/forwardproxy/ingest_replay_test.go"
+      - "core/listener/forwardproxy/hop*.go"
+      - "core/listener/forwardproxy/egress*.go"
+      - "core/listener/forwardproxy/record.go"
+      - "core/listener/forwardproxy/tunnel.go"
+      - "cmd/cortex/praxis*.go"
+      - "cmd/cortex/gateway.go"
+      - "cmd/cortex/ingest.go"
 
 permissions:
   contents: read
@@ -84,12 +99,14 @@ jobs:
             echo "blocking=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          pattern='^(praxis/|\.github/workflows/praxis\.yaml$)'
+          # The hop, the egress listener and the gateway wiring are praxis mode's Go side,
+          # not ported code: a change there that breaks the end-to-end tests must block.
+          pattern='^(praxis/|\.github/workflows/praxis\.yaml$|core/listener/forwardproxy/(hop|egress)[^/]*\.go$|cmd/cortex/(praxis[^/]*|gateway|ingest)\.go$)'
           if git diff --name-only "$BASE_SHA" HEAD | grep -qE "$pattern"; then
             echo "blocking=true" >> "$GITHUB_OUTPUT"
           else
             echo "blocking=false" >> "$GITHUB_OUTPUT"
-            echo "No praxis/ changes; failures do not block."
+            echo "No praxis-mode changes. Failures do not block."
           fi
 
       # Installs the toolchain that praxis/rust-toolchain.toml names.
@@ -120,6 +137,24 @@ jobs:
         continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}
         run: cargo test --locked
 
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: cmd/cortex/go.mod
+          cache-dependency-path: cmd/cortex/go.sum
+
+      # Runs from the repo root: the command names praxis/ and cmd/cortex. rustup reads
+      # rust-toolchain.toml only below praxis/, so the step names that toolchain itself.
+      - name: End-to-end (praxis mode)
+        id: e2e
+        continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}
+        run: |
+          set -euo pipefail
+          RUSTUP_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' praxis/rust-toolchain.toml)
+          export RUSTUP_TOOLCHAIN
+          cargo build --locked -p cortex-gateway --manifest-path praxis/Cargo.toml
+          TAGS=$(GOWORK=off go -C scripts/profile-tags run . local)
+          CORTEX_GATEWAY_BIN=$PWD/praxis/target/debug/cortex-gateway GOWORK=off go -C cmd/cortex test -count=1 -timeout 15m -tags "praxis_e2e,$TAGS" -run TestPraxisE2E .
+
       # A report-only run passes, so a warning on the PR shows the parity gap.
       - name: Report failures that do not block
         if: always() && steps.changes.outputs.blocking != 'true'
@@ -127,10 +162,12 @@ jobs:
           FMT: ${{ steps.fmt.outcome }}
           CLIPPY: ${{ steps.clippy.outcome }}
           TEST: ${{ steps.test.outcome }}
+          E2E: ${{ steps.e2e.outcome }}
         run: |
-          [ "$FMT" != failure ] || echo "::warning::cargo fmt failed (does not block: no praxis/ changes)"
-          [ "$CLIPPY" != failure ] || echo "::warning::cargo clippy failed (does not block: no praxis/ changes)"
-          [ "$TEST" != failure ] || echo "::warning::cargo test failed (does not block: no praxis/ changes)"
+          [ "$FMT" != failure ] || echo "::warning::cargo fmt failed (does not block: no praxis-mode changes)"
+          [ "$CLIPPY" != failure ] || echo "::warning::cargo clippy failed (does not block: no praxis-mode changes)"
+          [ "$TEST" != failure ] || echo "::warning::cargo test failed (does not block: no praxis-mode changes)"
+          [ "$E2E" != failure ] || echo "::warning::praxis end-to-end tests failed (does not block: no praxis-mode changes)"
 
       # Size cap: the cache post-step must not save a target/ over 3 GiB.
       - name: Cap the target/ cache size
