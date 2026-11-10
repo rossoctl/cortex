@@ -21,7 +21,7 @@ const setupUsage = `agentop setup — install or repair Cortex on this machine, 
 
 Usage:
   agentop setup [--from DIR] [--claude-code] [--yes] [--no-service]
-                [--install-only] [--no-modify-path] [--restart]
+                [--install-only] [--no-modify-path] [--restart] [--praxis]
 
 Plans every change first and changes nothing until you agree; a failure or a
 Ctrl-C undoes what it did. Without --from it repairs what is installed.
@@ -34,6 +34,7 @@ Ctrl-C undoes what it did. Without --from it repairs what is installed.
   --install-only     install the binaries and PATH only
   --no-modify-path   never edit a shell profile
   --restart          restart the service even when nothing changed
+  --praxis           turn on praxis mode (needs cortex-gateway)
 
 Exit status: 0 done or already current, 1 failed (and rolled back) or refused
 before any change, 2 usage, 3 declined, interrupted before any change, or no
@@ -109,6 +110,7 @@ func parseSetupFlags(args []string, stderr io.Writer) (setupOptions, error) {
 	fs.BoolVar(&o.installOnly, "install-only", false, "")
 	fs.BoolVar(&o.noModifyPath, "no-modify-path", false, "")
 	fs.BoolVar(&o.restart, "restart", false, "")
+	fs.BoolVar(&o.praxis, "praxis", false, "")
 	fs.Int64Var(&o.handoffBytes, "handoff-bytes", 0, "")
 	fs.IntVar(&o.handoffSeconds, "handoff-seconds", 0, "")
 	_ = fs.Bool("local", false, "") // install.sh passes it; local is the only mode

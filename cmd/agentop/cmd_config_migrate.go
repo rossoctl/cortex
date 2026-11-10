@@ -263,22 +263,29 @@ func replaceConfig(path, updated string, verify func(*config.Config) error) erro
 
 // insertListenerKeys adds keys to the listener block, matching whatever
 // indentation the file already uses.
+func insertListenerKeys(src string, pins []pinnedListener) (string, error) {
+	return insertBlockKeys(src, "listener", pins)
+}
+
+// insertBlockKeys adds keys to the block named block, matching whatever
+// indentation the file already uses. A pin with no comment gets no comment line.
 //
 // Indentation is read from the file rather than assumed: a real config turned up
 // with the whole document indented two spaces, which is valid YAML and would have
 // produced a broken file from any hardcoded guess.
-func insertListenerKeys(src string, pins []pinnedListener) (string, error) {
+func insertBlockKeys(src, block string, pins []pinnedListener) (string, error) {
 	lines := strings.Split(src, "\n")
+	head := block + ":"
 
 	listenerAt := -1
 	for i, l := range lines {
-		if strings.HasPrefix(strings.TrimSpace(l), "listener:") && !strings.HasPrefix(strings.TrimSpace(l), "#") {
+		if strings.HasPrefix(strings.TrimSpace(l), head) && !strings.HasPrefix(strings.TrimSpace(l), "#") {
 			listenerAt = i
 			break
 		}
 	}
 	if listenerAt < 0 {
-		return "", fmt.Errorf("no listener: block found")
+		return "", fmt.Errorf("no %s block found", head)
 	}
 	parentIndent := len(lines[listenerAt]) - len(strings.TrimLeft(lines[listenerAt], " "))
 
@@ -306,9 +313,9 @@ func insertListenerKeys(src string, pins []pinnedListener) (string, error) {
 		// is invalid YAML. That fails closed — the validation before the rename catches
 		// it and the original survives — but the user would see a bare parse error
 		// instead of being told the shape is unsupported.
-		if rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[listenerAt]), "listener:")); rest != "" {
-			return "", fmt.Errorf("listener: is written in flow style (%s); "+
-				"rewrite it as an indented block, or add the keys by hand", rest)
+		if rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[listenerAt]), head)); rest != "" {
+			return "", fmt.Errorf("%s is written in flow style (%s); "+
+				"rewrite it as an indented block, or add the keys by hand", head, rest)
 		}
 		// A genuinely empty block: indent one level in from the parent.
 		childIndent = parentIndent + 2
@@ -323,8 +330,10 @@ func insertListenerKeys(src string, pins []pinnedListener) (string, error) {
 	pad := strings.Repeat(" ", childIndent)
 	add := make([]string, 0, len(pins)*3)
 	for _, pin := range pins {
-		for _, cl := range strings.Split(pin.comment, "\n") {
-			add = append(add, pad+"# "+strings.TrimSpace(cl))
+		if pin.comment != "" {
+			for _, cl := range strings.Split(pin.comment, "\n") {
+				add = append(add, pad+"# "+strings.TrimSpace(cl))
+			}
 		}
 		add = append(add, pad+pin.key+": "+pin.value)
 	}
