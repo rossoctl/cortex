@@ -95,3 +95,32 @@ func TestListenerPlan_EmptyTransparentInboundIsAnError(t *testing.T) {
 		t.Fatalf("err = %v, want the empty-address error", err)
 	}
 }
+
+// Praxis mode serves the egress listener beside the forward proxy, and only there.
+func TestListenerPlan_PraxisEgress(t *testing.T) {
+	names := func(cfg *Config) map[string]string {
+		plan, err := ListenerPlan(cfg, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := map[string]string{}
+		for _, p := range plan {
+			m[p.Name] = p.Addr
+		}
+		return m
+	}
+	cfg := &Config{Praxis: &PraxisConfig{Enabled: true}}
+	cfg.Listener.Roles = []string{RoleForward}
+	if got := names(cfg)["praxis-egress"]; got != "127.0.0.1:47606" {
+		t.Errorf("praxis on: praxis-egress at %q, want 127.0.0.1:47606", got)
+	}
+	cfg.Praxis.Enabled = false
+	if _, ok := names(cfg)["praxis-egress"]; ok {
+		t.Error("praxis off: praxis-egress is in the plan")
+	}
+	cfg.Praxis.Enabled = true
+	cfg.Listener.Roles = []string{RoleReverse}
+	if _, ok := names(cfg)["praxis-egress"]; ok {
+		t.Error("no forward role: praxis-egress is in the plan")
+	}
+}

@@ -63,8 +63,8 @@ type gatewayFilter struct {
 }
 
 // gatewayYAML returns the cortex-gateway config for cfg (praxis mode spec,
-// Section 4). Until the egress listener lands (#1721), one catch-all route
-// sends every request to the egress cluster.
+// Section 4). One catch-all route sends every request to the egress cluster:
+// Cortex's egress listener, which dials the origin that X-Cortex-Dest names.
 func gatewayYAML(cfg *config.Config, tokenPath string) ([]byte, error) {
 	ingest, err := ingestAddr(cfg.Listener.SessionAPIAddr)
 	if err != nil {
