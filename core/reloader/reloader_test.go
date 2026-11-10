@@ -1254,3 +1254,15 @@ func TestNew_DrainWindowDefaultsToTenMinutes(t *testing.T) {
 		t.Errorf("drainWindow = %v, want 10m", r.drainWindow)
 	}
 }
+
+func TestValidateReloadable_PraxisNeedsRestart(t *testing.T) {
+	active := &config.Config{}
+	next := &config.Config{Praxis: &config.PraxisConfig{Enabled: true}}
+	if err := validateReloadable(active, next); err == nil || !strings.Contains(err.Error(), "praxis.*") {
+		t.Fatalf("validateReloadable = %v, want an error naming praxis.*", err)
+	}
+	active = &config.Config{Praxis: &config.PraxisConfig{Enabled: true}}
+	if err := validateReloadable(active, next); err != nil {
+		t.Errorf("unchanged praxis block was refused: %v", err)
+	}
+}

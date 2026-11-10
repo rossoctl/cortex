@@ -1,0 +1,24 @@
+[package]
+name = "cortex-gateway"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "cortex-gateway"
+path = "src/main.rs"
+
+[dependencies]
+praxis-proxy = { version = "=0.8.0", default-features = false, features = ["pingora", "admin-api", "forward-proxy"] }
+praxis-proxy-filter = { version = "=0.8.0", default-features = false }
+cortex-praxis-filters = { path = "../filters" }
+openssl = { version = "0.10", features = ["vendored"] }
+# The `register_filters!` expansion names `serde_yaml::Value`.
+serde_yaml = { package = "yaml_serde", version = "0.10.7" }
+
+[dev-dependencies]
+base64 = "0.22"
+flate2 = "1"
+serde_json = "1"

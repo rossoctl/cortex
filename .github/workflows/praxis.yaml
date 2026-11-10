@@ -26,6 +26,11 @@ on:
       - "core/model/client.go"
       - "core/cost/settle/settle.go"
       - "core/listener/forwardproxy/server.go"
+      - "core/sessionapi/ingest*.go"
+      - "core/sessionapi/testdata/ingest/**"
+      - "core/redact/**"
+      - "core/pipeline/subagent.go"
+      - "core/listener/forwardproxy/ingest_replay_test.go"
   push:
     branches:
       - main
@@ -44,6 +49,11 @@ on:
       - "core/model/client.go"
       - "core/cost/settle/settle.go"
       - "core/listener/forwardproxy/server.go"
+      - "core/sessionapi/ingest*.go"
+      - "core/sessionapi/testdata/ingest/**"
+      - "core/redact/**"
+      - "core/pipeline/subagent.go"
+      - "core/listener/forwardproxy/ingest_replay_test.go"
 
 permissions:
   contents: read
@@ -52,7 +62,7 @@ jobs:
   rust:
     name: Rust (praxis)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -118,7 +128,7 @@ jobs:
           [ "$CLIPPY" != failure ] || echo "::warning::cargo clippy failed (does not block: no praxis/ changes)"
           [ "$TEST" != failure ] || echo "::warning::cargo test failed (does not block: no praxis/ changes)"
 
-      # Size cap: the cache post-step must not save a target/ over 2 GiB.
+      # Size cap: the cache post-step must not save a target/ over 3 GiB.
       - name: Cap the target/ cache size
         if: always()
         run: |
@@ -126,7 +136,7 @@ jobs:
           [ -d praxis/target ] || exit 0
           size=$(du -sm praxis/target | cut -f1)
           echo "praxis/target: ${size} MB"
-          if [ "$size" -gt 2048 ]; then
-            echo "Over 2048 MB; removing praxis/target so the cache does not save it."
+          if [ "$size" -gt 3072 ]; then
+            echo "Over 3072 MB; removing praxis/target so the cache does not save it."
             rm -rf praxis/target
           fi

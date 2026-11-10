@@ -82,6 +82,10 @@ type Server struct {
 	// "today" is cut at one instant and filled from another — which is why a caller pinning
 	// one of them has to pin all three.
 	now func() time.Time
+	// ingestCfg is WithIngest's; ingest is the endpoint's state, nil unless ingestCfg has a
+	// token. See ingest.go.
+	ingestCfg Ingest
+	ingest    *ingester
 }
 
 // CatalogEntry is the wire shape for one plugin in /v1/plugins. Mirrors
@@ -229,6 +233,13 @@ func New(addr string, store *session.Store, opts ...Option) *Server {
 	mux.HandleFunc("GET /v1/usage", s.handleUsage)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
+	if s.ingestCfg.Token != "" {
+		s.ingest = newIngester(s.ingestCfg)
+		store.AddRecorder(s.ingest.marks)
+		// Loopback-only even when WithLoopbackOnly is off: only the local gateway may write rows.
+		mux.Handle("POST /v1/ingest", httpx.LoopbackOnly(http.HandlerFunc(s.handleIngest)))
+		mux.Handle("GET /v1/ingest/stats", httpx.LoopbackOnly(http.HandlerFunc(s.handleIngestStats)))
+	}
 
 	var handler http.Handler = mux
 	if s.loopbackOnly {
@@ -238,6 +249,9 @@ func New(addr string, store *session.Store, opts ...Option) *Server {
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+	if s.ingest != nil {
+		s.server.RegisterOnShutdown(s.ingest.endStreams)
 	}
 	return s
 }

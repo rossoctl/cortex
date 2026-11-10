@@ -30,6 +30,8 @@ through DNS rebinding. The stats server applies the same check.
 | `GET /v1/pipeline` | `application/json` | Active pipeline composition, per plugin: name, direction, position, capabilities, runtime `config`. `onError` is sent only when it is not the default — in practice `observe`, since an `on_error: off` plugin is not built. A plugin under observe runs and records, but its rejections, body writes and redirects are dropped (header writes still apply), so its `config` says what it would do. agentop renders this as the Pipeline pane (`P`) |
 | `GET /v1/plugins` | `application/json` | Catalog of every registered plugin, active or not. 404 when the binary built its session API without `WithCatalog`. agentop renders this as the Catalog pane (`C`) |
 | `GET /v1/usage` | `application/json` | Windowed usage aggregation — the aggregate behind `agentop cost`; parameters and semantics in [`pricing.md`](pricing.md#reading-usage-over-http) |
+| `POST /v1/ingest` | NDJSON in, `204` out | Praxis mode only: rows that `cortex-gateway` records (see below). 404 otherwise |
+| `GET /v1/ingest/stats` | `application/json` | Praxis mode only: the ingestion counters (see below). 404 otherwise |
 | `GET /healthz` | text | Liveness probe |
 
 ## `GET /v1/sessions`
@@ -317,6 +319,82 @@ regardless). The cost ledger, usage totals and inference-router pins are
 kept. An agent still using the session brings it back with its next request.
 agentop's `x` drives it, one request per session for an agent-wide erase —
 see [`laptop-service.md`](laptop-service.md) for the user-facing story.
+
+## `POST /v1/ingest` — rows from cortex-gateway (praxis mode)
+
+Registered only when `praxis.enabled` and `listener.bind_loopback_only` are
+both set; otherwise this route and `GET /v1/ingest/stats` answer 404 and no
+erase mark is kept. The design is in
+[`superpowers/specs/2026-11-07-praxis-mode-design.md`](superpowers/specs/2026-11-07-praxis-mode-design.md), Section 1.
+
+**Auth and guards, in order:**
+
+1. A non-loopback `Host`, or an `Origin` header: 403.
+2. No `Authorization: Bearer <token>`: 401. Cortex reads the token from the
+   file that `CORTEX_GATEWAY_TOKEN_FILE` names.
+
+A browser cannot add `Authorization` to a simple cross-site POST, so the
+token is the protection and the guards are a second layer.
+
+**The body** is NDJSON, one line per row, on one long-lived stream. A line
+over 64 MiB is discarded and refused. A refused line does not close the
+stream. When the body ends, the answer is 204. On shutdown, Cortex ends each
+open stream at once; lines still queued in the gateway are lost and counted
+there.
+
+**Line format, version 1:**
+
+```json
+{"v":1, "schemaVersion":1, "op":"append", "requestId":"…", "startedAt":"<RFC 3339, ns, UTC>",
+ "session":"<recording session>", "event":{ "...SessionEvent wire JSON..." },
+ "capture":{"original":"<base64>", "forwarded":null, "header":{"Name":["v"]}, "query":"",
+            "response":{"status":200, "header":{}, "body":"<base64>", "decoded":true,
+                        "truncated":false, "ended":true, "incomplete":false}},
+ "cost":{"headers":{"X-Litellm-Response-Cost":"0.01", "Content-Type":"application/json"}}}
+```
+
+A request row carries `original`, `header` and `query`; a response row
+carries `response` only. A capture the producer dropped is
+`{"dropped": true}`. `cost` is on response rows only.
+
+A response row's `inference` leaves out the request-only fields:
+`messages`, `tools`, `toolResults`, `historyToolCalls` and
+`historyThinking`. They are most of a line's bytes, and the request row
+carries them already. Cortex puts them back from the request row of the same
+`requestId`, so the stored response row is the same as in direct mode. A
+field the response row carries is kept. When the producer dropped the
+request row, the response row is stored without them.
+
+**What Cortex does with a line:**
+
+- Files it under `session`; an empty `session` goes to the active session,
+  then to `default`, as a listener files it.
+- Assigns `seq`, `sessionId` and `at`. The producer's values are not kept.
+- Removes the producer's `plugins.cost` and `plugins.litellm-budget-track`,
+  and settles a response row again from `cost.headers` and its own rate table.
+- Keeps a capture only for an event with `inference`, removes credentials
+  from its headers and query again, and keeps a response capture only after
+  the request capture of the same `requestId` (held for up to 1 hour).
+- Decodes up to 8 lines of a stream at the same time (at most one per CPU),
+  and files them one at a time, in stream order.
+- Drops a line whose `startedAt` is before an erase of its session
+  (`DELETE /v1/sessions/{id}` or `DELETE /v1/sessions`) in the last 10
+  minutes, so a queued row cannot bring an erased session back.
+
+**Refusal reasons:** `bad_json`, `version` (`v` is not 1), `schema`
+(`schemaVersion` is not this API's), `op` (not `append`), `line_cap`,
+`erased`.
+
+## `GET /v1/ingest/stats`
+
+The ingestion counters, since start. The same loopback and `Origin` guards
+as `POST /v1/ingest`; no token.
+
+```json
+{"ingest_lines_total": 120,
+ "ingest_refused_total": {"bad_json":0, "version":0, "schema":0, "op":0, "line_cap":0, "erased":1},
+ "ingest_captures_dropped_total": 0}
+```
 
 ## Quick examples
 
