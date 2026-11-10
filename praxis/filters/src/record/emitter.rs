@@ -382,6 +382,11 @@ mod tests {
         for s in ["a\n", "b\n", "c\n"] {
             assert_eq!(recv(&rx), s);
         }
+        // The emitter counts a row after its write returns, so the server can get "c" first.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while e.stats().rows_emitted < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(e.stats().rows_emitted, 3);
     }
 

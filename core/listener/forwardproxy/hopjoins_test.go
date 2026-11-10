@@ -169,15 +169,19 @@ func TestHopJoin_IdleCutIsTaken(t *testing.T) {
 	}
 	id := gw.only(t).header.Get(headerRequestID)
 	deadline := time.Now().Add(2 * time.Second)
-	cut := srv.Hop.TakeCut(id)
+	cut, status := srv.Hop.TakeCut(id)
 	for cut == nil && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
-		cut = srv.Hop.TakeCut(id)
+		cut, status = srv.Hop.TakeCut(id)
 	}
 	if cut == nil || cut.Kind != "proxy_error" {
 		t.Fatalf("TakeCut = %+v, want kind proxy_error", cut)
 	}
-	if again := srv.Hop.TakeCut(id); again != nil {
+	// The stream's 200 was on the wire before the cut, so the client got 200.
+	if status != http.StatusOK {
+		t.Errorf("TakeCut status = %d, want %d", status, http.StatusOK)
+	}
+	if again, _ := srv.Hop.TakeCut(id); again != nil {
 		t.Errorf("second TakeCut = %+v, want nil", again)
 	}
 }

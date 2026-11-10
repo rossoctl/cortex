@@ -1,6 +1,7 @@
 package sessionapi
 
 import (
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ type fakeJoins struct {
 	mu       sync.Mutex
 	appendOK bool
 	cut      *model.EventError
+	status   int
 	appended []string
 	released []string
 	taken    []string
@@ -31,11 +33,11 @@ func (f *fakeJoins) Release(id string) {
 	f.released = append(f.released, id)
 }
 
-func (f *fakeJoins) TakeCut(id string) *model.EventError {
+func (f *fakeJoins) TakeCut(id string) (*model.EventError, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.taken = append(f.taken, id)
-	return f.cut
+	return f.cut, f.status
 }
 
 func newJoinsRig(t *testing.T, j HopJoins) *ingestRig {
@@ -105,10 +107,11 @@ func TestIngestJoins_ResponseRowNotJoined(t *testing.T) {
 }
 
 func TestIngestJoins_CutReplacesClientCanceled(t *testing.T) {
-	j := &fakeJoins{cut: &model.EventError{Kind: "proxy_error", Message: "stream idle"}}
+	j := &fakeJoins{cut: &model.EventError{Kind: "proxy_error", Message: "stream idle"}, status: http.StatusOK}
 	r := newJoinsRig(t, j)
 	r.post(t, nil, line(t, map[string]any{"event": responseEvent(map[string]any{
-		"error": map[string]any{"kind": "client_canceled", "code": "c1", "message": "client went away"}})}))
+		"statusCode": 499,
+		"error":      map[string]any{"kind": "client_canceled", "code": "c1", "message": "client went away"}})}))
 	evs := r.events("s1")
 	if len(evs) != 1 || evs[0].Error == nil {
 		t.Fatalf("store holds %d rows, want one response row with an error", len(evs))
@@ -116,8 +119,23 @@ func TestIngestJoins_CutReplacesClientCanceled(t *testing.T) {
 	if e := evs[0].Error; e.Kind != "proxy_error" || e.Message != "stream idle" || e.Code != "c1" {
 		t.Errorf("error = %+v, want kind proxy_error, message %q, code c1", *e, "stream idle")
 	}
+	// The row keeps the status Cortex sent, as in direct mode, not the gateway's 499.
+	if evs[0].StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", evs[0].StatusCode, http.StatusOK)
+	}
 	if len(j.taken) != 1 || j.taken[0] != "r1" {
 		t.Errorf("taken = %v, want [r1]", j.taken)
+	}
+}
+
+// A cut with no known status (0) keeps the gateway's status.
+func TestIngestJoins_CutWithNoStatusKeepsGatewayStatus(t *testing.T) {
+	j := &fakeJoins{cut: &model.EventError{Kind: "proxy_error", Message: "stream idle"}}
+	r := newJoinsRig(t, j)
+	r.post(t, nil, line(t, map[string]any{"event": responseEvent(map[string]any{"statusCode": 499})}))
+	evs := r.events("s1")
+	if len(evs) != 1 || evs[0].StatusCode != 499 {
+		t.Fatalf("rows = %+v, want one response row with status 499", evs)
 	}
 }
 

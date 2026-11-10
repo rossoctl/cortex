@@ -72,8 +72,9 @@ type HopJoins interface {
 	AppendRequest(requestID, sid string, ev model.SessionEvent, c *model.RequestCapture) bool
 	// Release drops the join of requestID with no write.
 	Release(requestID string)
-	// TakeCut returns the error of a cut that Cortex made on requestID, or nil.
-	TakeCut(requestID string) *model.EventError
+	// TakeCut returns the error of a cut that Cortex made on requestID and the status Cortex
+	// gave the client, or nil.
+	TakeCut(requestID string) (*model.EventError, int)
 }
 
 // WithIngest turns on the ingestion endpoint (praxis mode). Without it, or with an empty
@@ -396,8 +397,12 @@ func (s *Server) fileIngest(l ingestLine) {
 	}
 	if ev.Phase == model.SessionResponse {
 		if joins != nil {
-			if cut := joins.TakeCut(l.RequestID); cut != nil {
-				// Cortex made the cut, so its error replaces what the gateway saw (client_canceled).
+			if cut, status := joins.TakeCut(l.RequestID); cut != nil {
+				// Cortex made the cut, so its error replaces what the gateway saw (client_canceled),
+				// and the row keeps the status the client got, as in direct mode.
+				if status != 0 {
+					ev.StatusCode = status
+				}
 				if ev.Error != nil {
 					ev.Error.Kind, ev.Error.Message = cut.Kind, cut.Message
 				} else {

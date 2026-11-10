@@ -43,7 +43,10 @@ The binary registers two filters. Put them first in the chain, in this order,
 and add `access_log` after them:
 
 - `cortex_attribution` (`token_file`): refuses a request without the token in
-  `X-Cortex-Token` with 403, and removes the hop headers before the upstream.
+  `X-Cortex-Token` with 403. Before the upstream, it removes every hop header
+  but `X-Cortex-Dest` and `X-Cortex-Token`, which the Cortex egress listener
+  reads and then removes. So the upstream must be the egress listener, never an
+  origin (decision 20).
 - `cortex_observe` (`token_file`, `ingest` as `host:port`): records the request
   and response rows and streams them to `POST /v1/ingest`.
 

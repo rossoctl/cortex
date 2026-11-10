@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/attribution"
 	"github.com/rossoctl/cortex/core/listener/egressguard"
 )
 
@@ -129,6 +130,10 @@ func TestEgress_RelaysAndStripsHeaders(t *testing.T) {
 	req.Header.Set(headerDest, rig.dest())
 	req.Header.Set(headerEgressError, "upstream_dns")
 	req.Header.Set("X-Cortex-Custom", "keep")
+	// Headers a broken gateway strip list would let through.
+	req.Header.Set(attribution.HeaderAttribution, "e30")
+	req.Header.Set(attribution.HeaderSession, "s1")
+	req.Header.Set(headerRequestID, "r1")
 	resp, err := http.DefaultTransport.RoundTrip(req)
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +152,7 @@ func TestEgress_RelaysAndStripsHeaders(t *testing.T) {
 	if got.Header.Get("X-Cortex-Custom") != "keep" {
 		t.Errorf("X-Cortex-Custom did not reach the origin")
 	}
-	for _, h := range []string{headerDest, headerToken, headerEgressError} {
+	for _, h := range []string{headerDest, headerToken, headerEgressError, attribution.HeaderAttribution, attribution.HeaderSession, headerRequestID} {
 		if v := got.Header.Get(h); v != "" {
 			t.Errorf("origin got %s = %q, want none", h, v)
 		}
@@ -220,7 +225,12 @@ func TestEgress_GuardRefusal403(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
+	// Direct mode's body (serveOutbound): the gateway relays it to the client.
+	if !strings.Contains(string(body), `"error":"destination_private"`) {
+		t.Errorf("body = %q, want the destination_private rejection", body)
+	}
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}

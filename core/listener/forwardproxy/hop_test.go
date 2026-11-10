@@ -189,6 +189,52 @@ func TestHop_OnlyTheDialTargetMoves(t *testing.T) {
 	}
 }
 
+func TestHop_OriginFormStaysDirect(t *testing.T) {
+	gw := newFakeGateway(t, nil)
+	proxy, _ := hopProxy(t, gatewayAddr(gw), false, nil)
+
+	// No proxy: the forward proxy gets "GET /p", with no scheme or host to dial.
+	resp, err := http.Get(proxy.URL + "/p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want the direct-mode 502", resp.StatusCode)
+	}
+	if n := len(gw.requests()); n != 0 {
+		t.Errorf("gateway got %d requests, want 0", n)
+	}
+}
+
+// sessionHeaderWriterPlugin writes pctx.SessionHeader, which the Wire must not read.
+type sessionHeaderWriterPlugin struct{}
+
+func (sessionHeaderWriterPlugin) Name() string { return "session-header-writer" }
+func (sessionHeaderWriterPlugin) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
+func (sessionHeaderWriterPlugin) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	pctx.SessionHeader = "X-Plugin-Wrote-This"
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (sessionHeaderWriterPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+func TestHop_WireSessionHeaderIsPinned(t *testing.T) {
+	gw := newFakeGateway(t, nil)
+	proxy, _ := hopProxy(t, gatewayAddr(gw), false, nil, sessionHeaderWriterPlugin{})
+
+	req, _ := http.NewRequest(http.MethodGet, "http://api.example.com/p", nil)
+	req.Header.Set(session.ClaudeCodeSessionHeader, "s1")
+	doVia(t, hopClient(proxy), req)
+	w := decodeWire(t, gw.only(t).header.Get(attribution.HeaderAttribution))
+	if w.SessionHeader == "X-Plugin-Wrote-This" || w.SessionHeader == "" {
+		t.Errorf("wire SessionHeader = %q, want the header that named the session", w.SessionHeader)
+	}
+}
+
 func TestHop_ClientHopHeadersNeverReachGateway(t *testing.T) {
 	gw := newFakeGateway(t, nil)
 	proxy, _ := hopProxy(t, gatewayAddr(gw), false, nil)

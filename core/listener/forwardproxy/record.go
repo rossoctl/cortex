@@ -104,7 +104,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		if _, ok := s.Hop.owns(pctx); ok {
 			// Ingestion puts Cortex's own cut on the gateway's row.
 			if fail != nil && fail.Kind == "proxy_error" {
-				s.Hop.noteCut(pctx.RequestID(), fail)
+				s.Hop.noteCut(pctx.RequestID(), statusCode, fail)
 			}
 			return
 		}

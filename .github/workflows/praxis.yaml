@@ -15,6 +15,8 @@ on:
     paths:
       - "praxis/**"
       - ".github/workflows/praxis.yaml"
+      - "core/attribution/wire.go"
+      - "core/attribution/testdata/**"
       - "core/parse/**"
       - "core/internal/parsercommon/**"
       - "core/model/extensions.go"
@@ -43,6 +45,8 @@ on:
     paths:
       - "praxis/**"
       - ".github/workflows/praxis.yaml"
+      - "core/attribution/wire.go"
+      - "core/attribution/testdata/**"
       - "core/parse/**"
       - "core/internal/parsercommon/**"
       - "core/model/extensions.go"

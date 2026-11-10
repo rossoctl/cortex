@@ -122,7 +122,7 @@ func hopWire(pctx *pipeline.Context, clientHeaders http.Header, recordSession st
 		ClientProc:    pctx.AttributedClientProc(),
 		Session:       pctx.SessionID,
 		Source:        string(pctx.SessionSource),
-		SessionHeader: pctx.SessionHeader,
+		SessionHeader: pctx.NamingHeader(), // the pinned value direct mode records; a plugin can write pctx.SessionHeader
 		ChainSession:  pctx.ChainSession,
 		RecordSession: recordSession,
 	}
