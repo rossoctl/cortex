@@ -328,3 +328,51 @@ func TestSupervisorChildren_LocalPraxisAddsGateway(t *testing.T) {
 		t.Errorf("gateway token not in ~/.cortex: %v", err)
 	}
 }
+
+// The gateway must report the version of the cortex that runs it. Cortex checks no version.
+func TestSupervisorChildren_GatewayWantsCortexVersion(t *testing.T) {
+	specs := supervisorChildren(praxisConfig(), filepath.Join(t.TempDir(), "config.yaml"), "/opt/bin/cortex", nil, writeGatewayFiles)
+	if len(specs) != 2 {
+		t.Fatalf("specs = %+v, want cortex and the gateway", specs)
+	}
+	if specs[1].wantVersion != version || specs[0].wantVersion != "" {
+		t.Errorf("wantVersion: cortex %q, gateway %q; want \"\" and %q", specs[0].wantVersion, specs[1].wantVersion, version)
+	}
+}
+
+// runGatewaySpec runs superviseChild for 200 ms on a script that writes a marker file,
+// with gatewayVersionOf replaced by one that returns got. It returns true when the
+// script ran.
+func runGatewaySpec(t *testing.T, got, want string) bool {
+	t.Helper()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "started")
+	script := filepath.Join(dir, "gateway.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\nexec cat >/dev/null\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	orig := gatewayVersionOf
+	gatewayVersionOf = func(string) string { return got }
+	t.Cleanup(func() { gatewayVersionOf = orig })
+
+	stop := make(chan struct{})
+	time.AfterFunc(200*time.Millisecond, func() { close(stop) })
+	spec := childSpec{name: gatewayBinary, path: script, env: []string{}, stdinPipe: true, wantVersion: want}
+	if err := superviseChild(spec, stop); err != nil {
+		t.Fatalf("superviseChild: %v", err)
+	}
+	_, err := os.Stat(marker)
+	return err == nil
+}
+
+func TestSuperviseChild_GatewayVersionMismatchDoesNotStart(t *testing.T) {
+	if runGatewaySpec(t, "v0.0.1", "v9.9.9") {
+		t.Error("the gateway started, but its version differs from cortex")
+	}
+}
+
+func TestSuperviseChild_GatewayVersionMatchStarts(t *testing.T) {
+	if !runGatewaySpec(t, "v9.9.9", "v9.9.9") {
+		t.Error("the gateway did not start, but its version is the same as cortex")
+	}
+}

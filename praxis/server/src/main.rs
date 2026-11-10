@@ -15,6 +15,11 @@ praxis_filter::register_filters! {
 const EXIT_ON_STDIN_EOF: &str = "--exit-on-stdin-eof";
 
 fn main() {
+    // The supervisor reads this before each start. No config is loaded.
+    if has_flag(std::env::args().skip(1), "--version") {
+        println!("{}", version_line());
+        return;
+    }
     // Before anything that can build a TLS config.
     praxis::install_crypto_provider();
 
@@ -39,6 +44,15 @@ fn main() {
     praxis::run_server_with_registry(config, custom_registry(), config_path, log_level)
 }
 
+/// `cortex-gateway <version>`. The release build sets `CORTEX_VERSION` to the
+/// cortex version. A local build reads `dev`, as a local cortex build does.
+fn version_line() -> String {
+    format!(
+        "cortex-gateway {}",
+        option_env!("CORTEX_VERSION").unwrap_or("dev")
+    )
+}
+
 /// The value of `-c <path>` or `--config <path>`.
 fn config_arg(mut args: impl Iterator<Item = String>) -> Option<String> {
     while let Some(arg) = args.next() {
@@ -56,7 +70,7 @@ fn has_flag(mut args: impl Iterator<Item = String>, flag: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{EXIT_ON_STDIN_EOF, config_arg, has_flag};
+    use super::{EXIT_ON_STDIN_EOF, config_arg, has_flag, version_line};
 
     fn args(list: &[&str]) -> impl Iterator<Item = String> {
         list.iter()
@@ -88,5 +102,14 @@ mod tests {
             assert_eq!(config_arg(args(&list)).as_deref(), Some("a.yaml"));
         }
         assert!(!has_flag(args(&["-c", "a.yaml"]), EXIT_ON_STDIN_EOF));
+    }
+    #[test]
+    fn version_line_names_the_binary() {
+        let line = version_line();
+        assert!(line.starts_with("cortex-gateway "), "{line}");
+        assert_eq!(
+            line.split_whitespace().last(),
+            Some(option_env!("CORTEX_VERSION").unwrap_or("dev"))
+        );
     }
 }
