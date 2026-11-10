@@ -12,11 +12,18 @@ name: Release binaries
 # platform builds on its own runner. Linux builds are static musl binaries, so
 # one tarball runs on glibc and musl hosts alike.
 #
-# Four jobs: `version` derives the tag and the stamp once, `build` and
-# `build-cpex` hold only contents: read, and `publish` alone can write. It
-# publishes nothing unless every expected tarball arrived, so a failed cpex
-# build blocks the release rather than shipping without the variant (and the
-# main-latest prune below never deletes the variant's assets).
+# `cortex-gateway` is the praxis-mode gateway, a Rust binary. scripts/build-gateway.sh
+# builds it on each platform's runner (static musl in rust:alpine on Linux) and
+# checks that it needs no library outside the OS.
+#
+# Five jobs: `version` derives the tag and the stamp once, `build`,
+# `build-cpex` and `build-gateway` hold only contents: read, and `publish` alone
+# can write. It publishes nothing unless every `build` and `build-cpex` tarball
+# arrived, so a failed cpex build blocks the release rather than shipping without
+# the variant (and the main-latest prune below never deletes the variant's assets).
+# `build-gateway` is optional: a failed gateway leg does not block the release, and
+# on main-latest the prune then removes the old gateway asset for that platform.
+# That is correct: checksums.txt would not list it, so nothing could verify it.
 
 on:
   push:
@@ -297,8 +304,80 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  build-gateway:
+    name: build-gateway (${{ matrix.os }}/${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    strategy:
+      # Each platform is optional on its own: install.sh --praxis checks per os/arch
+      # in checksums.txt, so two of three tarballs is a valid release.
+      fail-fast: false
+      matrix:
+        include:
+          - {os: darwin, arch: arm64, runner: macos-15}
+          - {os: linux, arch: amd64, runner: ubuntu-latest}
+          - {os: linux, arch: arm64, runner: ubuntu-24.04-arm}
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
+      TARGET_OS: ${{ matrix.os }}
+      TARGET_ARCH: ${{ matrix.arch }}
+      # Run with `docker run`, not as a job container, for the reason ALPINE_GO gives.
+      RUST_ALPINE: docker.io/library/rust:1.96.0-alpine@sha256:f87aa870663e2b57ec8c69de82c7eedf7383bee987eef7612c0359635eaadb41
+      # Clean hosts for the built binary: musl with no build tools, and no libc and
+      # no OpenSSL at all. Plain alpine ships libssl3, so it is not the second one.
+      ALPINE: docker.io/library/alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f
+      DISTROLESS: gcr.io/distroless/static-debian12@sha256:d75cdd72874d4790092fcb1b058493ecf6bb5bf2b2b897045b00ff01d91843f2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build cortex-gateway
+        run: |
+          set -euo pipefail
+          # The runner user makes dist/, so it can delete the binary root writes there.
+          mkdir -p dist
+          if [ "${TARGET_OS}" = linux ]; then
+            docker run --rm -v "${GITHUB_WORKSPACE}:/src" -w /src -e VERSION \
+              "${RUST_ALPINE}" sh scripts/build-gateway.sh
+          else
+            sh scripts/build-gateway.sh
+          fi
+
+      - name: Run cortex-gateway on clean hosts
+        if: matrix.os == 'linux'
+        run: |
+          set -euo pipefail
+          # glibc host, musl host, and a host with no libc and no OpenSSL.
+          dist/cortex-gateway --version
+          docker run --rm -v "${GITHUB_WORKSPACE}/dist:/d:ro" "${ALPINE}" /d/cortex-gateway --version
+          docker run --rm -v "${GITHUB_WORKSPACE}/dist:/d:ro" "${DISTROLESS}" /d/cortex-gateway --version
+
+      - name: Package cortex-gateway
+        run: |
+          set -euo pipefail
+          tar -C dist -czf "dist/cortex-gateway_${TAG}_${TARGET_OS}_${TARGET_ARCH}.tar.gz" cortex-gateway
+          rm -f dist/cortex-gateway
+          ls -l dist
+
+      - name: Upload the tarball for the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: dist-gateway-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   publish:
-    needs: [version, build, build-cpex]
+    needs: [version, build, build-cpex, build-gateway]
+    # Run whatever build-gateway did, but only when build and build-cpex succeeded.
+    # !cancelled() is needed: without a status function, a failed need skips this job.
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.build-cpex.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       # create/update the Release, upload assets, and move the rolling tag.
@@ -353,6 +432,11 @@ jobs:
             echo "::error::Missing release tarballs:${missing}"
             exit 1
           fi
+          # cortex-gateway is optional: warn, do not add it to missing.
+          for target in darwin/arm64 linux/amd64 linux/arm64; do
+            f="dist/cortex-gateway_${TAG}_${target%/*}_${target#*/}.tar.gz"
+            [ -s "${f}" ] || echo "::warning::No cortex-gateway tarball for ${target}. This release ships without it."
+          done
           ( cd dist && sha256sum ./*.tar.gz > checksums.txt )
           ls -l dist
           cat dist/checksums.txt
@@ -412,6 +496,11 @@ jobs:
           add 'Prebuilt `agentop` and `cortex` binaries for linux and macOS (amd64/arm64).'
           add '`cortex-cpex_*` is `cortex` built with the cpex policy plugin, for macOS arm64 and'
           add 'linux amd64/arm64 (static). Install it with `install.sh --cpex`.'
+          # Name the gateway only when this release has at least one gateway tarball.
+          if ls dist/cortex-gateway_*.tar.gz >/dev/null 2>&1; then
+            add '`cortex-gateway_*` is the praxis-mode gateway, for macOS arm64 and linux amd64/arm64'
+            add '(static). Install it with `install.sh --praxis`.'
+          fi
           add 'Every tarball carries build provenance:'
           add '`gh attestation verify <tarball> --repo rossoctl/cortex`.'
           add ''
