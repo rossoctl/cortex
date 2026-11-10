@@ -24,6 +24,24 @@ cargo test --locked
 `rust-toolchain.toml` pins the toolchain (Rust 1.96.0, with `rustfmt` and
 `clippy`). `rustup toolchain install`, run in this directory, installs it, as CI does.
 
+## Release build (#1723)
+
+- To build the release binary locally, from the repo root (the second command
+  gives the static Linux binary):
+
+  ```sh
+  VERSION=dev sh scripts/build-gateway.sh
+  podman run --rm -v "$PWD:/src" -w /src -e VERSION=dev \
+    docker.io/library/rust:1.96.0-alpine sh scripts/build-gateway.sh
+  ```
+
+  Each writes `dist/cortex-gateway` and runs `scripts/check-gateway-linkage.sh`.
+- OpenSSL is vendored (`openssl-src`). Upstream Praxis links the system
+  OpenSSL, so a plain build does not run on a host without that library.
+- Cortex owns OpenSSL security updates for `cortex-gateway`: an OpenSSL CVE
+  needs an `openssl-src` bump (Dependabot proposes it) and a release.
+- There is no FIPS claim for this binary.
+
 ## Run the gateway
 
 ```sh
