@@ -700,7 +700,11 @@ func TestLoginPath_BackgroundChildHoldingStdout(t *testing.T) {
 			old := loginPathContext
 			loginPathContext = func() (context.Context, context.CancelFunc) { return ctx, func() {} }
 			loginPathMu.Unlock()
-			t.Cleanup(func() { loginPathVal, loginPathTried, loginPathContext = "", time.Now(), old })
+			t.Cleanup(func() {
+				loginPathMu.Lock()
+				defer loginPathMu.Unlock()
+				loginPathVal, loginPathTried, loginPathContext = "", time.Now(), old
+			})
 			if got := loginPath(); got != tc.want {
 				t.Errorf("loginPath() = %q, want %q", got, tc.want)
 			}

@@ -174,23 +174,36 @@ func TestReloader_PlainRewrite(t *testing.T) {
 	}
 }
 
-// manualTimer is a debounce timer that only the test fires.
-type manualTimer struct{}
+// manualTimer is a debounce timer that only the test fires. Each Reset runs
+// onReset.
+type manualTimer struct{ onReset func() }
 
-func (manualTimer) Reset(time.Duration) bool { return true }
-func (manualTimer) Stop() bool               { return true }
+func (m manualTimer) Reset(time.Duration) bool { m.onReset(); return true }
+func (manualTimer) Stop() bool                 { return true }
 
-// A burst of writes lands on one debounce timer, and its one firing reloads
-// the last write.
+// A burst of writes lands on one debounce timer, which the last write resets,
+// and its one firing reloads the last write.
 func TestReloader_DebouncesBurst(t *testing.T) {
 	var arms atomic.Int32
 	armed := make(chan func(), 1)
+	last := "mode: envoy-sidecar\n# edit 2\n"
+	reset := make(chan struct{}, 1)
 	manual := func(r *Reloader) {
+		// One write can raise several events, so a reset counts once the file
+		// holds the last write.
+		onReset := func() {
+			if b, _ := os.ReadFile(r.configPath); string(b) == last {
+				select {
+				case reset <- struct{}{}:
+				default:
+				}
+			}
+		}
 		r.afterFunc = func(_ time.Duration, fire func()) debounceTimer {
 			if arms.Add(1) == 1 {
 				armed <- fire
 			}
-			return manualTimer{}
+			return manualTimer{onReset: onReset}
 		}
 	}
 	committed := make(chan struct{}, 2)
@@ -198,10 +211,11 @@ func TestReloader_DebouncesBurst(t *testing.T) {
 	b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: &config.Config{Mode: "envoy-sidecar"}})
 
 	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# edit 1\n")
-	last := "mode: envoy-sidecar\n# edit 2\n"
+	fire := <-armed
 	writeConfig(t, cfgPath, last)
+	<-reset
 
-	(<-armed)()
+	fire()
 	<-committed
 	r.Close(context.Background()) // returns once the watch loop has, so Status is final
 	st := r.Status()

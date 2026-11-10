@@ -1235,7 +1235,9 @@ func TestTrunc_ScalesLinearly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			small := measure(tc.f, 4000)
 			large := measure(tc.f, 16000)
-			if large > small {
+			// The allocation count is process-wide, so the ceiling leaves room for a stray
+			// allocation; the quadratic search makes thousands.
+			if large > 2*small {
 				t.Errorf("4x the input made %.0f allocations, up from %.0f — that is the quadratic shape "+
 					"back: the per-rune search must skip to the last/first n runes before measuring",
 					large, small)

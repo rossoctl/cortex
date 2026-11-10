@@ -355,16 +355,16 @@ func TestResponsesWebSocket_UnansweredPrewarmIsNotFinishedTwice(t *testing.T) {
 	count := &finishCounter{}
 	logs := captureLogs(t)
 	h := newWSHarness(t, config.ResponsesWebSocketsParse, count)
-	received := make(chan struct{})
+	received := make(chan bool, 1)
 	scriptedOrigin(h, func(read func() *wsframe.Frame, write func(string)) {
-		if read() != nil { // the prewarm, never answered
-			close(received)
-		}
+		received <- read() != nil // the prewarm, never answered
 	})
 	c := h.dial(t, nil)
 	c.send(`{"type":"response.create","generate":false,"model":"gpt-6-luna","input":[]}`)
 	// The close lands once the origin has the prewarm, while it is still queued.
-	<-received
+	if !<-received {
+		t.Fatal("the origin's socket closed before the prewarm reached it")
+	}
 	c.close()
 	events := h.events(t, codexSID, true)
 
