@@ -31,6 +31,10 @@ on:
       - "core/redact/**"
       - "core/pipeline/subagent.go"
       - "core/listener/forwardproxy/ingest_replay_test.go"
+      - "core/listener/forwardproxy/hop*.go"
+      - "core/listener/forwardproxy/egress*.go"
+      - "cmd/cortex/praxis*.go"
+      - "cmd/cortex/gateway.go"
   push:
     branches:
       - main
@@ -54,6 +58,10 @@ on:
       - "core/redact/**"
       - "core/pipeline/subagent.go"
       - "core/listener/forwardproxy/ingest_replay_test.go"
+      - "core/listener/forwardproxy/hop*.go"
+      - "core/listener/forwardproxy/egress*.go"
+      - "cmd/cortex/praxis*.go"
+      - "cmd/cortex/gateway.go"
 
 permissions:
   contents: read
@@ -116,6 +124,20 @@ jobs:
         continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}
         run: cargo test --locked
 
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: cmd/cortex/go.mod
+
+      # Runs from the repo root: the command names praxis/ and cmd/cortex.
+      - name: End-to-end (praxis mode)
+        id: e2e
+        continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}
+        run: |
+          set -euo pipefail
+          cargo build --locked -p cortex-gateway --manifest-path praxis/Cargo.toml
+          TAGS=$(GOWORK=off go -C scripts/profile-tags run . local)
+          CORTEX_GATEWAY_BIN=$PWD/praxis/target/debug/cortex-gateway GOWORK=off go -C cmd/cortex test -count=1 -timeout 15m -tags "praxis_e2e,$TAGS" -run TestPraxisE2E .
+
       # A report-only run passes, so a warning on the PR shows the parity gap.
       - name: Report failures that do not block
         if: always() && steps.changes.outputs.blocking != 'true'
@@ -123,10 +145,12 @@ jobs:
           FMT: ${{ steps.fmt.outcome }}
           CLIPPY: ${{ steps.clippy.outcome }}
           TEST: ${{ steps.test.outcome }}
+          E2E: ${{ steps.e2e.outcome }}
         run: |
           [ "$FMT" != failure ] || echo "::warning::cargo fmt failed (does not block: no praxis/ changes)"
           [ "$CLIPPY" != failure ] || echo "::warning::cargo clippy failed (does not block: no praxis/ changes)"
           [ "$TEST" != failure ] || echo "::warning::cargo test failed (does not block: no praxis/ changes)"
+          [ "$E2E" != failure ] || echo "::warning::praxis end-to-end tests failed (does not block: no praxis/ changes)"
 
       # Size cap: the cache post-step must not save a target/ over 3 GiB.
       - name: Cap the target/ cache size
