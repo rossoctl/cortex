@@ -77,8 +77,7 @@ __pycache__/
 # can tell "the compiled output" from a source file or a package directory —
 # `cmd/*/*` would ignore the source. One line per binary is the only
 # pattern that is safe, so the list below is exhaustive for `cmd/` and for the
-# two `scripts/` helpers further down. The `demos/*` mains are deliberately not
-# listed. Keep adding to it.
+# two `scripts/` helpers further down. Keep adding to it.
 cmd/agentop/agentop
 cmd/cortex/cortex
 cmd/cortex-envoy/cortex-envoy

@@ -248,7 +248,6 @@ jobs:
           scan-type: 'config'
           scan-ref: '.'
           severity: 'CRITICAL,HIGH,MEDIUM'
-          skip-dirs: 'demos'
           exit-code: '0'
           format: 'table'
 

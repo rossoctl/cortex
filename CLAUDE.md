@@ -93,7 +93,6 @@ directories, read its `CLAUDE.md`** if it has not loaded:
 | [`core/plugins/CLAUDE.md`](core/plugins/CLAUDE.md) | Inbound JWT validation and outbound token exchange: route resolver, config loading, credential files |
 | [`core/listener/vmcontrol/CLAUDE.md`](core/listener/vmcontrol/CLAUDE.md) | The MOCA SBX VM control channel |
 | [`deploy/proxy-init/CLAUDE.md`](deploy/proxy-init/CLAUDE.md) | `init-iptables.sh` and its gotchas |
-| [`demos/CLAUDE.md`](demos/CLAUDE.md) | Kubernetes deployment: pod shape, shared volumes, ConfigMaps, Envoy, Keycloak, Kind builds, cluster gotchas |
 | [`.github/CLAUDE.md`](.github/CLAUDE.md) | CI workflows, container images, adding an image to CI, release binaries |
 
 ## Repository Overview
@@ -132,7 +131,7 @@ artifact identifiers that other things address by name:
 | Frozen — do not rename | Where it is defined |
 |---|---|
 | `authbridge`, `authbridge-envoy`, `authbridge-lite`, `authbridge-cpex` | published image names; the operator selects images **by name** |
-| `authbridge-proxy` as a **container** name | **another repo's API** — the operator's `AuthBridgeProxyContainerName`. `kubectl … -c authbridge-proxy`, agentop's pod picker and the demos' sidecar detection address it. The binary inside is `cortex`; the operator sets only `Args`, so the image's entrypoint picks it |
+| `authbridge-proxy` as a **container** name | **another repo's API** — the operator's `AuthBridgeProxyContainerName`. `kubectl … -c authbridge-proxy`, agentop's pod picker and the cortex-demos sidecar detection address it. The binary inside is `cortex`; the operator sets only `Args`, so the image's entrypoint picks it |
 | `x-authbridge-{direction,secret}`, `x-authbridge-unmapped-<name>` | wire protocol |
 | `AUTHBRIDGE_*` | env vars users may already have set |
 | `authbridge-config{,-<agent>}`, `authbridge-runtime{,-config,-mtls}`, `authproxy-routes` | ConfigMaps the operator creates and mounts |
@@ -176,7 +175,6 @@ remains there: it runs `scripts/install.sh`, for the URL v0.7.0 and its docs giv
 | `docs/` | Plugin and framework reference ([`docs/README.md`](docs/README.md) is the index). `docs/superpowers/{plans,specs}/` holds dated design records and is **still written to** |
 | `scripts/` | `install.sh` (laptop installer), `keycloak_sync.py` (scope mappings from `routes.yaml`), `profile-tags/` (build-tag profiles), `hooks/commit-msg`, `dev/` |
 | `deploy/` | `proxy-init/` (iptables init container), `sparc-service/`, `lineage-attach/` |
-| `demos/` | End-to-end demos; [`demos/README.md`](demos/README.md) gives the order |
 | `tests/` | Python tests |
 
 ## AuthBridge Binaries
@@ -200,11 +198,10 @@ each binary links it in its own `storage_redis.go`. A build with no `-tags` regi
 no plugins and rejects every config it is handed. Tag sets come from
 [`scripts/profile-tags`](scripts/profile-tags/), one profile per shipped artifact.
 
-**Go modules:** 10 in total, all on Go 1.26.10 except the three `demos/*` modules (1.24).
+**Go modules:** 7 in total, all on Go 1.26.10.
 - `core/`, `core/storage/redis/` (nested, but its own module), `cmd/cortex`,
   `cmd/cortex-envoy`, `cmd/agentop`, `scripts/profile-tags`, `scripts/readme-demo`.
   `go.work` links these 7.
-- `demos/{echo,finance-sparc,ibac}/` are self-contained and outside the workspace.
 - `core/` is **consumed outside this repo**, so removing exported API there is a
   cross-repo change.
 
@@ -299,7 +296,7 @@ re-verify them by hand after a change.
 - Run `go vet ./...` and `gofmt -l .` from each module you touched, before you push.
   **Always give `gofmt` a path:** a bare `gofmt -l` reads stdin, scans nothing and
   exits 0.
-- **Only `go vet` is a CI gate**, on all 10 modules (cpex code is vetted with
+- **Only `go vet` is a CI gate**, on all 7 modules (cpex code is vetted with
   `-tags cpex` in `go-ci-cpex`). pre-commit has no Go hooks, and CI's `go fmt ./...`
   rewrites the checkout and exits 0, so formatting drift never fails a build.
 - Run per-module commands with `GOWORK=off`, as every CI Go job but `core`'s does,

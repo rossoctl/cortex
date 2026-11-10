@@ -34,9 +34,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The hr-cpex demo's policy, loaded on the real engine with Keycloak
-// replaced by a local IdP that serves the same realm paths. Each test
-// is one of the demo's scenarios.
+// A copy of the hr-cpex demo policy and manifest from
+// cortex-demos/hr-cpex/k8s/{cpex-policy,authbridge}.yaml, kept in testdata/hr-cpex/.
+// The copy does not follow changes in cortex-demos. The policy is loaded
+// on the real engine with Keycloak replaced by a local IdP that serves the
+// same realm paths. Each test is one of the demo's scenarios.
 
 const hrRealmPath = "/realms/cpex-demo"
 
@@ -280,7 +282,7 @@ func (m *hrIdP) clientToken(t *testing.T) string {
 // secret in a temp file.
 func hrPolicy(t *testing.T, idp *hrIdP) string {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "demos", "hr-cpex", "k8s", "cpex-policy.yaml"))
+	raw, err := os.ReadFile(filepath.Join("testdata", "hr-cpex", "cpex-policy.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +295,7 @@ func hrPolicy(t *testing.T, idp *hrIdP) string {
 	return strings.ReplaceAll(policy, "/etc/cpex-secrets/client-secret", secret)
 }
 
-// hrPlugin configures the cpex plugin the way k8s/authbridge.yaml does,
+// hrPlugin configures the cpex plugin the way testdata/hr-cpex/authbridge.yaml does,
 // without SPIRE.
 func hrPlugin(t *testing.T, idp *hrIdP) *CPEX {
 	t.Helper()
@@ -309,7 +311,7 @@ func hrPluginWorkload(t *testing.T, idp *hrIdP, svid spiffe.JWTSource) *CPEX {
 
 // hrPluginForwarding is hrPluginWorkload with delegated credentials
 // forwarded, as `make apply CPEX_DELEGATION=available` configures it, to
-// the hosts k8s/authbridge.yaml binds.
+// the hosts testdata/hr-cpex/authbridge.yaml binds.
 func hrPluginForwarding(t *testing.T, idp *hrIdP, svid spiffe.JWTSource) *CPEX {
 	t.Helper()
 	return hrPluginWith(t, idp, svid, map[string]any{
@@ -318,7 +320,7 @@ func hrPluginForwarding(t *testing.T, idp *hrIdP, svid spiffe.JWTSource) *CPEX {
 	})
 }
 
-// hrCPEXConfig is the cpex plugin's config in k8s/authbridge.yaml, the
+// hrCPEXConfig is the cpex plugin's config in testdata/hr-cpex/authbridge.yaml, the
 // keys these tests copy from it.
 type hrCPEXConfig struct {
 	Hosts       map[string][]string `yaml:"delegated_credential_hosts"`
@@ -327,7 +329,7 @@ type hrCPEXConfig struct {
 
 func hrManifestConfig(t *testing.T) hrCPEXConfig {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "demos", "hr-cpex", "k8s", "authbridge.yaml"))
+	raw, err := os.ReadFile(filepath.Join("testdata", "hr-cpex", "authbridge.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,28 +351,28 @@ func hrManifestConfig(t *testing.T) hrCPEXConfig {
 			return p.Config
 		}
 	}
-	t.Fatal("k8s/authbridge.yaml has no cpex plugin")
+	t.Fatal("testdata/hr-cpex/authbridge.yaml has no cpex plugin")
 	return hrCPEXConfig{}
 }
 
 // hrCredentialHosts returns the cpex plugin's delegated_credential_hosts
-// from k8s/authbridge.yaml.
+// from testdata/hr-cpex/authbridge.yaml.
 func hrCredentialHosts(t *testing.T) map[string][]string {
 	t.Helper()
 	hosts := hrManifestConfig(t).Hosts
 	if len(hosts) == 0 {
-		t.Fatal("k8s/authbridge.yaml binds no delegated_credential_hosts")
+		t.Fatal("testdata/hr-cpex/authbridge.yaml binds no delegated_credential_hosts")
 	}
 	return hosts
 }
 
 // hrStrictHosts returns the cpex plugin's strict_hosts from
-// k8s/authbridge.yaml.
+// testdata/hr-cpex/authbridge.yaml.
 func hrStrictHosts(t *testing.T) []string {
 	t.Helper()
 	hosts := hrManifestConfig(t).StrictHosts
 	if len(hosts) == 0 {
-		t.Fatal("k8s/authbridge.yaml lists no strict_hosts")
+		t.Fatal("testdata/hr-cpex/authbridge.yaml lists no strict_hosts")
 	}
 	return hosts
 }

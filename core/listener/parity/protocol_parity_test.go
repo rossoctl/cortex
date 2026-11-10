@@ -14,7 +14,7 @@ import (
 // A protocol parse reaches the session row in both directions, on every listener (#1575).
 //
 // The parsers do not check the direction, and our own configs put a2a-parser on the
-// outbound chain (demos/session-budget). But each listener built its rows by hand, and
+// outbound chain (cortex-demos/session-budget). But each listener built its rows by hand, and
 // the copies kept only the extension expected in their direction: outbound rows had no
 // A2A and inbound rows had no MCP. The parser's invocation was recorded, so the row
 // showed "a2a-parser observe/matched_message/send" with no method, contextId or parts

@@ -39,7 +39,7 @@ remembers writing.
 
 **Start here:** [RECIPE.md](RECIPE.md) — six steps, expected output, back
 out. **Why it works and where it stops:** [DESIGN.md](DESIGN.md). **See it
-run:** the [lineage demo](../../demos/lineage/README.md) on the Weather Agent pair.
+run:** the [lineage demo](https://github.com/rossoctl/cortex-demos/blob/main/lineage/README.md) on the Weather Agent pair.
 
 ---
 

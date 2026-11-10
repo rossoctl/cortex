@@ -171,7 +171,7 @@ service never echoes provider exception text back to callers; details stay in it
 
 ## See also
 - [`deploy/sparc-service/README.md`](../deploy/sparc-service/README.md) — the reflection service.
-- [`demos/finance-sparc/`](../demos/finance-sparc/README.md) — the end-to-end demo.
+- [`cortex-demos/finance-sparc/`](https://github.com/rossoctl/cortex-demos/blob/main/finance-sparc/README.md) — the end-to-end demo.
 - [`ibac-plugin.md`](ibac-plugin.md) — the complementary intent control.
 
 ## Files

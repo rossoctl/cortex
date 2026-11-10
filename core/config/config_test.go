@@ -568,7 +568,7 @@ func TestSessionConfig_SessionIDHeadersFor(t *testing.T) {
 
 // TestSessionConfig_InClusterDefaultDoesNotReadGenericHeaders pins the in-cluster default to
 // what it was before OpenCode support. X-Session-Id is a generic name: the IBAC demo agent
-// (demos/ibac/agent) sends it on its tool calls with an id it minted. Read by default, that
+// (cortex-demos/ibac/agent) sends it on its tool calls with an id it minted. Read by default, that
 // filed its http_post into an empty session, where IBAC found no user intent and, under
 // no_intent_policy: allow, let the exfiltration through.
 //

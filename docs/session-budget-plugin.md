@@ -275,9 +275,9 @@ before reaching Valkey. Symptom: `session-budget action=skip
 reason=cold_cache` on every request even though the Redis key exists.
 
 For an in-cluster stub, apply
-`demos/session-budget/k8s/pause-webhook-stub.yaml` and set
+`cortex-demos/session-budget/k8s/pause-webhook-stub.yaml` and set
 `pause_webhook: http://pause-webhook-stub.team1.svc.cluster.local`. See
-[`../demos/session-budget/README.md`](../demos/session-budget/README.md).
+[`cortex-demos/session-budget/README.md`](https://github.com/rossoctl/cortex-demos/blob/main/session-budget/README.md).
 
 **Run the plugin tests:**
 

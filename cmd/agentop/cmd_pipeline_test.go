@@ -357,7 +357,7 @@ func TestRunPipelineGet_ColumnsAlignAcrossRows(t *testing.T) {
 // TestRunPipelineGet_DividerOnlyBetweenTwoChains — the divider asserts that plugins run
 // before and after the application, so it must not appear when one side is empty.
 //
-// Not hypothetical: demos/context-guru/k8s/authbridge-config.yaml in this repo ships
+// Not hypothetical: cortex-demos/context-guru/k8s/authbridge-config.yaml ships
 // `inbound.plugins: []` with an outbound chain, and against that the divider printed as the
 // FIRST row of the table.
 func TestRunPipelineGet_DividerOnlyBetweenTwoChains(t *testing.T) {

@@ -51,7 +51,7 @@ jobs:
             echo "::group::go mod tidy in $mod"
             (cd "$mod" && go mod tidy)
             echo "::endgroup::"
-          done < <(find . -name go.mod -not -path '*/demos/*' -print0 | sort -z)
+          done < <(find . -name go.mod -print0 | sort -z)
 
       - name: Commit and push if changed
         id: commit
