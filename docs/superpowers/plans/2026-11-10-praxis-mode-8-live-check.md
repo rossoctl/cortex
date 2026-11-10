@@ -41,6 +41,7 @@ Praxis mode can become the default only when **every** criterion passes:
 - **C4 Resources.** On a long session (at least 40 inference turns and at least 2 subagents): the peak RSS of cortex plus cortex-gateway is at most 1.5 times the peak RSS of direct-mode cortex. Their CPU seconds summed are at most 2 times direct-mode cortex CPU seconds.
 - **C5 Streaming.** Claude Code SSE and Codex (`chatgpt.com` `/backend-api/codex/responses`) stream frame by frame in praxis mode: the time to the first frame is within 100 ms of direct mode.
 - **C6 Fail closed.** Kill `cortex-gateway`: the next agent request gets 503 with a `gateway_unavailable` row. The supervisor restarts the gateway, and requests succeed again within 10 s.
+- **C7 One network proxy.** The conversion is complete: `cortex-gateway` is the only network proxy on the laptop, and no traffic goes through the Go forward proxy. Until C7 passes, praxis mode stays behind the `--praxis` flag (`agentop setup --praxis`), even when C1-C6 pass. Status today: fails (phases B-D of #1714 are open). Decision by Hai.
 
 **Condition to go back to direct mode** (after a future flip): set `praxis.enabled: false` and restart when any one of these occurs:
 
@@ -95,7 +96,7 @@ Praxis mode can become the default only when **every** criterion passes:
 
 **Files:** none (GitHub comments).
 
-- [ ] **Step 1:** Post the section "Criteria for the default" (C1-C6 and the condition to go back) as one comment on #1725, with `gh issue comment 1725 --repo rossoctl/cortex --body-file <file>`. Start it with "Criteria for the default, written before the live check." Write the body file in the scratch directory, not in the repository.
+- [ ] **Step 1:** Post the section "Criteria for the default" (C1-C7 and the condition to go back) as one comment on #1725, with `gh issue comment 1725 --repo rossoctl/cortex --body-file <file>`. Start it with "Criteria for the default, written before the live check." Write the body file in the scratch directory, not in the repository.
 - [ ] **Step 2:** Post a short comment on #1714 that links that comment and says it fills the two gaps under "Gates": criteria for the default, and rollback criteria.
 - [ ] **Step 3:** Record both comment URLs in the Task 4 report.
 
@@ -120,8 +121,8 @@ Praxis mode can become the default only when **every** criterion passes:
 
 **Files:** none (GitHub comments).
 
-- [ ] **Step 1:** Post one comment on #1725: a table with one row per criterion C1-C6 (measured value, threshold, pass / fail / not run), the probe and sample summaries, the agent and Claude Code / Codex versions, the date, and every C2 difference.
-- [ ] **Step 2: Decide.** Rule: the default changes only when C1-C6 all pass. Expected result: C1 fails by design, so the decision is "direct mode stays the default; praxis mode stays opt-in (`agentop setup --praxis`)". Write the decision and the criteria that block it.
+- [ ] **Step 1:** Post one comment on #1725: a table with one row per criterion C1-C7 (measured value, threshold, pass / fail / not run), the probe and sample summaries, the agent and Claude Code / Codex versions, the date, and every C2 difference.
+- [ ] **Step 2: Decide.** Rule: the default changes only when C1-C7 all pass. Expected result: C1 fails by design, so the decision is "direct mode stays the default; praxis mode stays opt-in (`agentop setup --praxis`)". Write the decision and the criteria that block it.
 - [ ] **Step 3:** Post a short comment on #1714 with the decision and a link to the result comment. Update the tracker's phase A row when the body has one for step 8.
 - [ ] **Step 4:** Do not close #1725 by hand. The PR from Task 1 says `Closes #1725` in its body, so the merge closes it after the result is recorded.
 
