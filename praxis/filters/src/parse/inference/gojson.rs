@@ -9,6 +9,8 @@
 //! error is a `Bad`: the Go callers treat a syntax error and a type error the
 //! same way.
 
+use std::borrow::Cow;
+
 use serde::Deserialize;
 use serde::de::{Deserializer, MapAccess, Visitor};
 use serde_json::Value;
@@ -189,12 +191,11 @@ pub(crate) fn float(raw: &RawValue) -> R<Option<f64>> {
 
 /// A Go `any`: numbers are float64, a duplicate key's last value wins. `None` for null.
 ///
-/// shortcut: serde_json's own `Value` parser, so a value nested deeper than 128 levels or
-/// a string with an unpaired surrogate escape is not decoded, where Go takes it (Go's limit
-/// is 10000, and it writes U+FFFD). For those two, `any` gives `Ok(None)`, so the caller
-/// keeps the rest of the extension with this one field unset. A number out of float64
-/// range is still `Err`, as in Go. A deep `Value` also overflows the stack on drop, so a
-/// port of Go's limit needs a non-recursive `Value` first.
+/// shortcut: serde_json's own `Value` parser, so a value nested deeper than 128 levels is
+/// not decoded, where Go takes it (Go's limit is 10000). For that one, `any` gives
+/// `Ok(None)`, so the caller keeps the rest of the extension with this one field unset.
+/// A number out of float64 range is still `Err`, as in Go. A deep `Value` also overflows
+/// the stack on drop, so a port of Go's limit needs a non-recursive `Value` first.
 pub(crate) fn any(raw: &RawValue) -> R<Option<Value>> {
     fn to_f64(v: &mut Value) {
         match v {
@@ -204,7 +205,11 @@ pub(crate) fn any(raw: &RawValue) -> R<Option<Value>> {
             _ => {}
         }
     }
-    let mut v: Value = match serde_json::from_str(raw.get()) {
+    let parse = |t: &str| serde_json::from_str::<Value>(t);
+    let mut v = match parse(raw.get()).or_else(|e| match fffd_unpaired_surrogates(raw.get()) {
+        Cow::Owned(t) => parse(&t),
+        Cow::Borrowed(_) => Err(e),
+    }) {
         Ok(v) => v,
         // Go also fails on this one; serde_json gives no error code to match.
         Err(e) if e.to_string().starts_with("number out of range") => return Err(Bad),
@@ -212,6 +217,43 @@ pub(crate) fn any(raw: &RawValue) -> R<Option<Value>> {
     };
     to_f64(&mut v);
     Ok((!v.is_null()).then_some(v))
+}
+
+/// Rewrites each unpaired surrogate escape in JSON text to `\ufffd`, as Go's unquote
+/// does, so that serde_json, which refuses one, decodes the value. The text is valid JSON,
+/// so a backslash is always inside a string.
+fn fffd_unpaired_surrogates(text: &str) -> Cow<'_, str> {
+    if !text.contains("\\u") {
+        return text.into();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut changed = false;
+    while let Some(i) = rest.find('\\') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let Some(r) = getu4(rest).filter(|r| (0xd800..0xe000).contains(r)) else {
+            out.push_str(&rest[..2]);
+            rest = &rest[2..];
+            continue;
+        };
+        match getu4(&rest[6..]) {
+            Some(r2) if r < 0xdc00 && (0xdc00..0xe000).contains(&r2) => {
+                out.push_str(&rest[..12]);
+                rest = &rest[12..];
+            }
+            _ => {
+                out.push_str("\\ufffd");
+                rest = &rest[6..];
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return text.into();
+    }
+    out.push_str(rest);
+    out.into()
 }
 
 /// Reports whether an object key selects the field `name`: Go compares them
@@ -328,5 +370,22 @@ mod tests {
             .unwrap();
         assert_eq!(v, serde_json::json!({"a": [2.0, "\u{e9}"]}));
         assert!(any(parse("null").unwrap()).unwrap().is_none());
+    }
+
+    #[test]
+    fn any_unpaired_surrogate_is_fffd_as_go() {
+        let v = any(parse(r#"{"a":"\ud800","b":"\ud800\ud800\udc00","\udc00k":[1,"x\udc00"],"c":"\\ud800","d":"\ud83d\ude00"}"#).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "a": "\u{fffd}",
+                "b": "\u{fffd}\u{10000}",
+                "\u{fffd}k": [1.0, "x\u{fffd}"],
+                "c": "\\ud800",
+                "d": "\u{1F600}",
+            })
+        );
     }
 }
