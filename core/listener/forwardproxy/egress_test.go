@@ -220,7 +220,12 @@ func TestEgress_GuardRefusal403(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
+	// Direct mode's body (serveOutbound): the gateway relays it to the client.
+	if !strings.Contains(string(body), `"error":"destination_private"`) {
+		t.Errorf("body = %q, want the destination_private rejection", body)
+	}
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}

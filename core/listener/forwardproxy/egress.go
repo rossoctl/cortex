@@ -2,6 +2,7 @@ package forwardproxy
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 
 	"github.com/rossoctl/cortex/core/listener/egressguard"
+	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -42,7 +44,9 @@ func NewEgressHandler(token string, upstream http.RoundTripper) http.Handler {
 			if errors.As(err, &refusal) {
 				slog.Warn("egress: destination refused", "dest", dest, "error", pipeline.SanitizeLogValue(err.Error()))
 				w.Header().Set(headerEgressError, "destination_private")
-				w.WriteHeader(http.StatusForbidden)
+				// The same body as direct mode (serveOutbound), so the client sees one refusal shape.
+				httpx.WriteRejection(w, pipeline.DenyStatus(http.StatusForbidden, "destination_private",
+					fmt.Sprintf("refusing to reach private destination %s (%s)", refusal.Host, refusal.Addr)))
 				return
 			}
 			if r.Context().Err() != nil {
