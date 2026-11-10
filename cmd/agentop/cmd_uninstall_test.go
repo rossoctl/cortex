@@ -1129,6 +1129,25 @@ func TestUninstallRemovesOurPreRenameBinaries(t *testing.T) {
 	}
 }
 
+// cortex-gateway is Cortex's own: uninstall removes it with the rest, and it does
+// not count as another tool that needs the PATH lines.
+func TestUninstallRemovesTheGateway(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t)
+	bin := filepath.Join(sc.home, ".local", "bin")
+	gw := filepath.Join(bin, "cortex-gateway")
+	writeExe(t, gw, "#!/bin/sh\n")
+	env := &setupEnv{binDir: bin}
+	if !cortexsOwn(env, "cortex-gateway") || slices.Contains(othersInBinDir(env), "cortex-gateway") {
+		t.Errorf("cortex-gateway is not Cortex's own: others = %q", othersInBinDir(env))
+	}
+	code, out := sc.uninstall(t, "--yes")
+	wantLines(t, code, 0, out, markLine("✓", "removed")+"agentop, cortex, cortex-gateway from ~/.local/bin\n")
+	if _, err := os.Lstat(gw); !os.IsNotExist(err) {
+		t.Errorf("cortex-gateway is still there (lstat: %v)", err)
+	}
+}
+
 // lockedWriter lets a test read what a spinner goroutine may still be writing.
 type lockedWriter struct {
 	mu sync.Mutex

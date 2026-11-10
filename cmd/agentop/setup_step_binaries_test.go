@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -155,6 +156,19 @@ func TestBinariesNameWhatIsStaged(t *testing.T) {
 	detail, _, err := binariesStep{}.apply(env, nil)
 	if want := "agentop, cortex, cortex-session-dump → ~/.local/bin"; err != nil || detail != want {
 		t.Errorf("apply = %q %v, want %q", detail, err, want)
+	}
+}
+
+// Setup installs cortex-gateway only when the installer staged it.
+func TestStagedBinariesNeedNoGateway(t *testing.T) {
+	env := newTestSetupEnv(t)
+	env.fromDir = stageDir(t, "#!/bin/sh\necho cortex v9.9.9\n")
+	if got := stagedBinaries(env); !slices.Equal(got, []string{"agentop", "cortex"}) {
+		t.Errorf("stagedBinaries = %q, want agentop and cortex only", got)
+	}
+	writeExe(t, filepath.Join(env.fromDir, "cortex-gateway"), "#!/bin/sh\n")
+	if got := stagedBinaries(env); !slices.Contains(got, "cortex-gateway") {
+		t.Errorf("stagedBinaries = %q, want cortex-gateway in it", got)
 	}
 }
 

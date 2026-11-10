@@ -14,9 +14,10 @@ import (
 // installerOneLiner is the fix for "nothing is installed": the documented install.
 const installerOneLiner = "curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh"
 
-// setupBinaryNames are what the binaries step installs; cortex-session-dump only
-// when the installer staged it (its fetch is never fatal).
-var setupBinaryNames = []string{"agentop", proxyBinary, "cortex-session-dump"}
+// setupBinaryNames are what the binaries step installs; cortex-session-dump and
+// cortex-gateway only when the installer staged them (the dump's fetch is never
+// fatal, and no release has a gateway yet).
+var setupBinaryNames = []string{"agentop", proxyBinary, "cortex-session-dump", "cortex-gateway"}
 
 type binariesStep struct{}
 

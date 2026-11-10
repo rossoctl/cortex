@@ -611,6 +611,9 @@ DEMO_FORWARD_PORT=47600
 DEMO_SESSION_PORT=47601
 DEMO_STATS_PORT=47602
 DEMO_HEALTH_PORT=47604
+# praxis mode: cortex-gateway's listener (praxis.listen) and the egress (praxis.egress).
+DEMO_GATEWAY_PORT=47605
+DEMO_EGRESS_PORT=47606
 
 # port_in_use exits 0 if something is already listening on the given loopback port.
 # Best-effort across platforms: lsof (macOS + many Linux), then ss (iproute2, the
@@ -748,6 +751,35 @@ stop_pidfile_proxy() {
 	rm -f "${PROXY_PIDFILE}"
 }
 
+# stop_gateway stops the cortex-gateway that listens on DEMO_GATEWAY_PORT, and only
+# ours: the holder's executable must be ${BIN_DIR}/cortex-gateway, compared as
+# pre_rename_proxy_running compares. It exits 0 when it sent a signal. Without lsof
+# it cannot name the holder, so it does nothing.
+stop_gateway() {
+	command -v lsof >/dev/null 2>&1 || return 1
+	_gw_pid=$(lsof -t -nP -iTCP@127.0.0.1:"${DEMO_GATEWAY_PORT}" -sTCP:LISTEN 2>/dev/null | head -1)
+	case "${_gw_pid}" in
+		"" | *[!0-9]*) return 1 ;;
+	esac
+	_gw_exe=$(pid_exe_path "${_gw_pid}") || return 1
+	_gw_ours="${BIN_DIR}/cortex-gateway"
+	if [ "${_gw_exe}" != "${_gw_ours}" ]; then
+		command -v readlink >/dev/null 2>&1 || return 1
+		_gw_a=$(readlink -f "${_gw_exe}" 2>/dev/null || true)
+		_gw_b=$(readlink -f "${_gw_ours}" 2>/dev/null || true)
+		[ -n "${_gw_a}" ] && [ "${_gw_a}" = "${_gw_b}" ] || return 1
+	fi
+	info "Stopping cortex-gateway (pid ${_gw_pid})..."
+	kill "${_gw_pid}" 2>/dev/null || true
+	# The gateway exits at once on SIGTERM; wait a little so the port check sees it.
+	_i=0
+	while [ "${_i}" -lt 5 ] && kill -0 "${_gw_pid}" 2>/dev/null; do
+		_i=$((_i + 1))
+		sleep 1
+	done
+	return 0
+}
+
 # stop_cortex stops a running Cortex — the supervised service if agentop installed one,
 # and the background proxy recorded in the pidfile — then reports on the ports so
 # "stopped" is verified rather than assumed. Re-runnable and safe: with nothing
@@ -776,11 +808,13 @@ stop_cortex() {
 		# A stale pidfile from a proxy that already died: clear it so status stays honest.
 		rm -f "${PROXY_PIDFILE}"
 	fi
+	# A gateway the supervisor did not take down with it (praxis mode).
+	stop_gateway && _stopped=1
 	# Verify against the ports rather than trusting the kill. A port still held after
 	# we stopped what we know about means a foreign proxy this script did not start —
 	# worth naming, since in a sandbox it cannot be found through ps.
 	_busy=""
-	for _p in "${DEMO_FORWARD_PORT}" "${DEMO_SESSION_PORT}" "${DEMO_STATS_PORT}" "${DEMO_HEALTH_PORT}"; do
+	for _p in "${DEMO_FORWARD_PORT}" "${DEMO_SESSION_PORT}" "${DEMO_STATS_PORT}" "${DEMO_HEALTH_PORT}" "${DEMO_GATEWAY_PORT}" "${DEMO_EGRESS_PORT}"; do
 		port_in_use "${_p}" && _busy="${_busy} ${_p}"
 	done
 	if [ -n "${_stopped}" ]; then
@@ -836,7 +870,7 @@ no_setup() {
 restage() {
 	mkdir -p "${CORTEX_DIR}/tmp" || return 1
 	_rs=$(mktemp -d "${CORTEX_DIR}/tmp/stage.XXXXXX") || return 1
-	for _rs_b in agentop cortex cortex-session-dump; do
+	for _rs_b in agentop cortex cortex-session-dump cortex-gateway; do
 		[ ! -f "$1/${_rs_b}" ] || cp -p "$1/${_rs_b}" "${_rs}/${_rs_b}" || {
 			rm -rf "${_rs}"
 			return 1
