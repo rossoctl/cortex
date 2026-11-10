@@ -500,9 +500,10 @@ jobs:
           add '`cortex-cpex_*` is `cortex` built with the cpex policy plugin, for macOS arm64 and'
           add 'linux amd64/arm64 (static). Install it with `install.sh --cpex`.'
           # Name the gateway only when this release has at least one gateway tarball.
+          # No platform list: a failed leg leaves a platform out, and the assets show which.
           if ls dist/cortex-gateway_*.tar.gz >/dev/null 2>&1; then
-            add '`cortex-gateway_*` is the praxis-mode gateway, for macOS arm64 and linux amd64/arm64'
-            add '(static). Install it with `install.sh --praxis`.'
+            add '`cortex-gateway_*` is the praxis-mode gateway (static on linux).'
+            add 'Install it with `install.sh --praxis`.'
           fi
           add 'Every tarball carries build provenance:'
           add '`gh attestation verify <tarball> --repo rossoctl/cortex`.'
