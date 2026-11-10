@@ -58,10 +58,11 @@ else in the file:
 curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --praxis
 ```
 
-To turn it off, set `praxis.enabled: false` in `~/.cortex/config.yaml` and run
-`agentop service restart`. On Linux, when you change `praxis.enabled` by hand in
-either direction, run `agentop service install`, not `restart`: only `install` writes
-the unit again, with or without `--supervise`.
+When you change `praxis.enabled` by hand in either direction, run
+`agentop service install --restart`. To turn praxis mode off, set
+`praxis.enabled: false` in `~/.cortex/config.yaml` first. `restart` alone does not
+write the unit again, and on Linux the unit has `--supervise` only in praxis mode.
+`install` without `--restart` can report "Already current" and not restart.
 
 From a source tree, build the gateway and give it to setup:
 

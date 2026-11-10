@@ -78,7 +78,7 @@ func TestPraxisRefusal_FileOnly(t *testing.T) {
 	if err == nil {
 		t.Fatal("got nil, want a refusal")
 	}
-	for _, want := range []string{"praxis mode is on (in /c.yaml)", "set praxis.enabled: false in /c.yaml", "agentop service install"} {
+	for _, want := range []string{"praxis mode is on (in /c.yaml)", "set praxis.enabled: false in /c.yaml", "agentop service install --restart"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("%q does not contain %q", err, want)
 		}
