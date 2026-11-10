@@ -92,10 +92,10 @@ Depends on: none. Estimated lines: 80.
 - [ ] **Step 1: Change the tests first.**
   - In `hop_headers_removed_custom_kept`: assert that `x-cortex-dest` and `x-cortex-token` now reach the upstream with the values sent, and that the other ten hop headers do not. `X-Cortex-Custom` still reaches it. The request capture in the ingested line still has none of the twelve.
   - In `row.rs` tests: `egress_kind("destination_private") == "destination_private"`.
-- [ ] **Step 2:** `cargo test --locked --manifest-path praxis/Cargo.toml` fails on both.
+- [ ] **Step 2:** `cd praxis && cargo test --locked` fails on both.
 - [ ] **Step 3:** Implement. Doc comment on `UPSTREAM_STRIP_HEADERS`: the interim upstream is always the egress listener, which removes Dest and Token. At phase B both go on this list.
 - [ ] **Step 4:** Update README decision 20: the gateway keeps Dest and Token for its upstream, the egress listener (#1721), and removes them before any other upstream.
-- [ ] **Step 5:** `cd praxis && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked` passes.
+- [ ] **Step 5:** `cd praxis && cargo fmt --all --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked` passes.
 - [ ] **Step 6:** Commit `feat: Keep X-Cortex-Dest and X-Cortex-Token for the egress listener`.
 
 ### Task 2: `attribution.Wire`, the Go encoder of `X-Cortex-Attribution`
@@ -411,7 +411,7 @@ Depends on: 1, 7. Estimated lines: 850.
   - `TestPraxisE2E_TokenlessRequestTo47605`: a request straight to `praxis.listen` with no token gets 403. `/v1/sessions` shows no new row.
   - `TestPraxisE2E_SameEventsAsDirect`: the JSON and SSE requests through both chains. Compare `/v1/sessions/{id}` events field by field after removing `seq`, `at`, `sessionId`, `requestId`. `ttfbMs` and `durationMs` agree within 50 ms. Any other difference fails the test. Do not widen the list in the test: fix the cause, or add it to the README's known differences with its reason and a pinned assertion.
 - [ ] **Step 2:** Build the gateway and run:
-  `cargo build --locked -p cortex-gateway --manifest-path praxis/Cargo.toml && TAGS=$(GOWORK=off go -C scripts/profile-tags run . local) && CORTEX_GATEWAY_BIN=$PWD/praxis/target/debug/cortex-gateway GOWORK=off go -C cmd/cortex test -count=1 -timeout 15m -tags "praxis_e2e,$TAGS" -run TestPraxisE2E .`
+  `(cd praxis && cargo build --locked -p cortex-gateway) && TAGS=$(GOWORK=off go -C scripts/profile-tags run . local) && CORTEX_GATEWAY_BIN=$PWD/praxis/target/debug/cortex-gateway GOWORK=off go -C cmd/cortex test -count=1 -timeout 15m -tags "praxis_e2e,$TAGS" -run TestPraxisE2E .`
   Fix what fails in the task that owns the code, in this PR.
 - [ ] **Step 3: CI.** In `praxis.yaml`, after `cargo test`, add `actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0` (`go-version-file: cmd/cortex/go.mod`) and a step `End-to-end (praxis mode)` with the Step 2 command and `continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}`. Give the step `id: e2e` and no `working-directory`, so it runs from the repo root as the command expects. Add its outcome to the report step as the other three are (`E2E: ${{ steps.e2e.outcome }}` in `env`, and a `::warning::` line). Add to both `paths` lists: `core/listener/forwardproxy/hop*.go`, `core/listener/forwardproxy/egress*.go`, `cmd/cortex/praxis*.go`, `cmd/cortex/gateway.go`.
 - [ ] **Step 4:** Commit `test: Run the praxis-mode end-to-end checks through cortex-gateway`.
@@ -423,7 +423,7 @@ Depends on: 1, 7. Estimated lines: 850.
 From the worktree root:
 
 ```sh
-test -z "$(gofmt -l core cmd/cortex)" && GOWORK=off go -C core vet ./... && GOWORK=off go -C core test -race ./attribution/... ./listener/... ./sessionapi/... ./config/... ./model/... ./pipeline/... && TAGS=$(GOWORK=off go -C scripts/profile-tags run . local) && GOWORK=off go -C cmd/cortex vet -tags "$TAGS" ./... && GOWORK=off go -C cmd/cortex test -tags "$TAGS" ./... && cargo fmt --check --manifest-path praxis/Cargo.toml && cargo clippy --manifest-path praxis/Cargo.toml --all-targets --locked -- -D warnings && cargo test --manifest-path praxis/Cargo.toml --locked && cargo build --locked -p cortex-gateway --manifest-path praxis/Cargo.toml && CORTEX_GATEWAY_BIN=$PWD/praxis/target/debug/cortex-gateway GOWORK=off go -C cmd/cortex test -count=1 -timeout 15m -tags "praxis_e2e,$TAGS" -run TestPraxisE2E .
+test -z "$(gofmt -l core cmd/cortex)" && GOWORK=off go -C core vet ./... && GOWORK=off go -C core test -race ./attribution/... ./listener/... ./sessionapi/... ./config/... ./model/... ./pipeline/... && TAGS=$(GOWORK=off go -C scripts/profile-tags run . local) && GOWORK=off go -C cmd/cortex vet -tags "$TAGS" ./... && GOWORK=off go -C cmd/cortex test -tags "$TAGS" ./... && (cd praxis && cargo fmt --all --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked && cargo build --locked -p cortex-gateway) && CORTEX_GATEWAY_BIN=$PWD/praxis/target/debug/cortex-gateway GOWORK=off go -C cmd/cortex test -count=1 -timeout 15m -tags "praxis_e2e,$TAGS" -run TestPraxisE2E .
 ```
 
 Before P1 and P2 there is no `praxis_e2e` file, so the last step runs no test and passes.

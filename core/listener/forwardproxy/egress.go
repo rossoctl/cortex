@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 
+	"github.com/rossoctl/cortex/core/attribution"
 	"github.com/rossoctl/cortex/core/listener/egressguard"
 	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/model"
@@ -29,8 +30,10 @@ func NewEgressHandler(token string, upstream http.RoundTripper) http.Handler {
 			pr.Out.URL.Scheme = dest.Scheme
 			pr.Out.URL.Host = dest.Host
 			pr.Out.Host = pr.In.Host
-			pr.Out.Header.Del(headerDest)
-			pr.Out.Header.Del(headerToken)
+			// Every hop and attribution header, not only Dest and Token: an origin must not
+			// get the session id or process names when the gateway's strip list is wrong.
+			stripHopHeaders(pr.Out.Header)
+			attribution.Strip(pr.Out.Header)
 			pr.Out.Header.Del(headerEgressError)
 		},
 		// The kind header is the egress listener's own signal. An origin must not set it.

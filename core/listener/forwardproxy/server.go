@@ -707,7 +707,8 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	}
 
 	// Hop branch point 2: the gateway records the rows of a request the hop sends.
-	hopped := s.Hop != nil && !skipped && !forwardUpgrade
+	// An origin-form request has no dial target; it stays on the direct path, where client.Do refuses it with a 502.
+	hopped := s.Hop != nil && !skipped && !forwardUpgrade && r.URL.Scheme != "" && r.URL.Host != ""
 	if !skipped && s.Sessions != nil {
 		sid := s.recordingSessionID(sessionID, r.Header, chain)
 		// Pin this session so the paired response event records into the
