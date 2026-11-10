@@ -10,7 +10,7 @@ use praxis_filter::{FilterAction, FilterError, HttpFilter, HttpFilterContext, Re
 use serde::Deserialize;
 
 use crate::record::attribution::{
-    ATTRIBUTION_HEADER, Attribution, HOP_HEADERS, TOKEN_HEADER, decode, token_matches,
+    ATTRIBUTION_HEADER, Attribution, TOKEN_HEADER, decode, token_matches, upstream_strip_headers,
 };
 
 /// Set on a request with a valid token, unless it is a probe. `cortex_observe`
@@ -77,9 +77,7 @@ impl HttpFilter for CortexAttribution {
             ctx.extensions.insert(TokenValid(attribution));
         }
         ctx.request_headers_to_remove.extend(
-            HOP_HEADERS
-                .iter()
-                .filter_map(|n| HeaderName::from_bytes(n.as_bytes()).ok()),
+            upstream_strip_headers().filter_map(|n| HeaderName::from_bytes(n.as_bytes()).ok()),
         );
         Ok(FilterAction::Continue)
     }

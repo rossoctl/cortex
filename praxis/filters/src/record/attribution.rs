@@ -22,11 +22,11 @@ pub struct Attribution {
 
 pub const ATTRIBUTION_HEADER: &str = "X-Cortex-Attribution";
 pub const TOKEN_HEADER: &str = "X-Cortex-Token";
+pub const DEST_HEADER: &str = "X-Cortex-Dest";
 
-/// The hop headers. The upstream and the request capture get none of them.
-/// `X-Cortex-Token` is the gateway's secret, so it must not reach an origin.
-/// #1721 keeps `X-Cortex-Dest` and the token for its egress listener, which
-/// removes them itself.
+/// The hop headers. The request capture gets none of them: `X-Cortex-Token` is
+/// the gateway's secret. The upstream gets only those that
+/// [`upstream_strip_headers`] does not give.
 pub const HOP_HEADERS: [&str; 12] = [
     "X-Cortex-Agent",
     "X-Cortex-Proc",
@@ -38,9 +38,19 @@ pub const HOP_HEADERS: [&str; 12] = [
     ATTRIBUTION_HEADER,
     "X-Cortex-Request-Id",
     "X-Cortex-Probe",
-    "X-Cortex-Dest",
+    DEST_HEADER,
     TOKEN_HEADER,
 ];
+
+/// The hop headers that the gateway removes before its upstream: all but
+/// `X-Cortex-Dest` and `X-Cortex-Token`. The interim upstream is always the
+/// Cortex egress listener (#1721), which removes those two itself. At phase B,
+/// when the gateway dials origins, it removes all of [`HOP_HEADERS`].
+pub fn upstream_strip_headers() -> impl Iterator<Item = &'static str> {
+    HOP_HEADERS
+        .into_iter()
+        .filter(|n| *n != DEST_HEADER && *n != TOKEN_HEADER)
+}
 
 /// Decodes the header. A missing header, bad base64url or bad JSON gives the default.
 pub fn decode(header: Option<&str>) -> Attribution {

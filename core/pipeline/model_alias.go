@@ -148,6 +148,7 @@ const (
 	ErrorKindUpgradeDeclined    = model.ErrorKindUpgradeDeclined
 	ErrorKindTurnInterrupted    = model.ErrorKindTurnInterrupted
 	ErrorKindDestinationPrivate = model.ErrorKindDestinationPrivate
+	ErrorKindGatewayUnavailable = model.ErrorKindGatewayUnavailable
 	SessionSourceHeader         = model.SessionSourceHeader
 	SessionSourceProcess        = model.SessionSourceProcess
 	SessionSourcePending        = model.SessionSourcePending
