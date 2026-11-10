@@ -56,6 +56,19 @@ ports_ok() {
 	! grep -qE ':476[0-9][0-9]' "$1"
 }
 
+# pair_ok CODE CODE: succeeds when a probe pair is kept: both modes got the same code,
+# and it is not 000. A praxis 503 from the hop is not the answer direct got.
+pair_ok() {
+	[ "$1" = "$2" ] && [ "$1" != 000 ]
+}
+
+# is_up MODE HEALTH_CODE LOG: succeeds when an instance is ready for traffic. In praxis
+# mode /healthz does not wait for the hop, so also wait for the hop's ready line.
+is_up() {
+	[ "$2" = 200 ] || return 1
+	[ "$1" != praxis ] || grep -q 'praxis hop: cortex-gateway is ready' "$3"
+}
+
 selftest() {
 	fail=0
 	check() {
@@ -80,6 +93,18 @@ selftest() {
 	# Two pids under one key (a restart): CPU is (3-1) + (2-0.5), not 2-1.
 	printf '1\tpraxis\tcortex-gateway\t10\t100\t1\t-\n1\tpraxis\tcortex-gateway\t10\t300\t3\t-\n2\tpraxis\tcortex-gateway\t11\t200\t0.5\t-\n2\tpraxis\tcortex-gateway\t11\t200\t2\t-\n' >"$t/sample.tsv"
 	check "sample_summary restart" "$(s=$t sample_summary)" "praxis cortex-gateway peak_rss_kb 300 peak_heap_inuse_bytes - cpu_s 3.50"
+	if ! pair_ok 401 401; then echo "selftest: pair_ok refused 401 401" >&2; fail=1; fi
+	if pair_ok 401 000; then echo "selftest: pair_ok kept 401 000" >&2; fail=1; fi
+	# A local 503 from the praxis hop is not the upstream answer direct got.
+	if pair_ok 401 503; then echo "selftest: pair_ok kept 401 503" >&2; fail=1; fi
+	if pair_ok 503 401; then echo "selftest: pair_ok kept 503 401" >&2; fail=1; fi
+	: >"$t/cortex.log"
+	if ! is_up direct 200 "$t/cortex.log"; then echo "selftest: is_up refused direct 200" >&2; fail=1; fi
+	if is_up direct 000 "$t/cortex.log"; then echo "selftest: is_up passed direct 000" >&2; fail=1; fi
+	# /healthz does not wait for the praxis hop; the hop logs once when its probe passes.
+	if is_up praxis 200 "$t/cortex.log"; then echo "selftest: is_up passed praxis before the hop is ready" >&2; fail=1; fi
+	echo 'level=INFO msg="praxis hop: cortex-gateway is ready" gateway=127.0.0.1:49715' >"$t/cortex.log"
+	if ! is_up praxis 200 "$t/cortex.log"; then echo "selftest: is_up refused praxis with the hop ready" >&2; fail=1; fi
 	rm -rf "$t"
 	[ "$fail" = 0 ] || exit 1
 	echo "selftest: ok"
@@ -163,14 +188,14 @@ EOF
 	HOME="$home" "$s/bin/cortex" -supervise --config "$cfg" </dev/null >"$d/cortex.log" 2>&1 &
 	echo $! >"$d/supervisor.pid"
 	for _ in $(seq 300); do
-		if [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$health/healthz" || true)" = 200 ]; then
+		if is_up "$mode" "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$health/healthz" || true)" "$d/cortex.log"; then
 			echo "$mode up: pid $(cat "$d/supervisor.pid"), proxy 127.0.0.1:$proxy, session API 127.0.0.1:$api"
 			return 0
 		fi
 		sleep 0.1
 	done
 	tail -20 "$d/cortex.log" >&2
-	die "$mode: http://127.0.0.1:$health/healthz did not answer 200 in 30 s"
+	die "$mode: not ready in 30 s (/healthz 200, and in praxis mode the hop's ready line)"
 }
 
 env_cmd() {
@@ -229,19 +254,19 @@ probe() {
 	dropped=0
 	for i in $(seq "$n"); do
 		pair=""
-		bad=0
+		codes=""
 		for m in $(order "$i"); do
 			setports "$m"
 			r=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' --proxy "http://127.0.0.1:$proxy" \
 				--cacert "$s/$m/home/.cortex/ca/bundle.crt" -H 'x-api-key: invalid' \
 				-H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
 				--data-binary @"$body" "$url/v1/messages" || true)
-			code=${r%% *}
-			[ "$code" = 000 ] && bad=1
+			codes="$codes ${r%% *}"
 			pair="$pair$(echo "$r" | awk -v i="$i" -v m="$m" '{printf "%s\t%s\t%s\t%.1f\n", i, m, $1, $2 * 1000}')
 "
 		done
-		if [ "$bad" = 1 ]; then dropped=$((dropped + 1)); else printf '%s' "$pair" >>"$out"; fi
+		# shellcheck disable=SC2086 # two codes, one argument each
+		if pair_ok $codes; then printf '%s' "$pair" >>"$out"; else dropped=$((dropped + 1)); fi
 	done
 	[ -s "$out" ] || die "probe: every pair was dropped ($dropped)"
 	summarize "$out" 4 50 95
