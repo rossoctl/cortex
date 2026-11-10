@@ -111,11 +111,23 @@ func TestServerAdd_RefusedInPraxisMode(t *testing.T) {
 	assertFile(t, path, src)
 }
 
-func TestScriptList_RefusedInPraxisMode(t *testing.T) {
-	path, _ := praxisConfigFile(t)
-	code, _, errOut := runScriptCmd(t, "list", "--config", path)
+func TestScriptInstall_RefusedInPraxisMode(t *testing.T) {
+	path, src := praxisConfigFile(t)
+	code, _, errOut := runScriptCmd(t, "install", "moca-sandbox", "--config", path)
 	if code != 1 || !strings.Contains(errOut, "praxis mode is on") {
 		t.Errorf("exit %d, stderr: %s", code, errOut)
+	}
+	assertFile(t, path, src)
+}
+
+// A list changes nothing, so praxis mode does not stop it: it shows the file.
+func TestLists_WorkInPraxisMode(t *testing.T) {
+	path, _ := praxisConfigFile(t)
+	if code, _, errOut := runScriptCmd(t, "list", "--config", path); code != 0 {
+		t.Errorf("script list: exit %d, stderr: %s", code, errOut)
+	}
+	if _, _, errOut := runServerCmd(t, "", "--config", path); strings.Contains(errOut, "praxis mode is on") {
+		t.Errorf("server list refused: %s", errOut)
 	}
 }
 

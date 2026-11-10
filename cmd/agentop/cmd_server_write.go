@@ -121,7 +121,7 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	cfg, path, statsURL, err := serverTarget(*cfgPath)
+	cfg, path, statsURL, err := serverWriteTarget(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server add: %v\n", err)
 		return 1
@@ -235,7 +235,7 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop server remove: %v\n", err)
 		return 2
 	}
-	cfg, path, statsURL, err := serverTarget(*cfgPath)
+	cfg, path, statsURL, err := serverWriteTarget(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server remove: %v\n", err)
 		return 1
@@ -400,7 +400,7 @@ func serverUse(args []string, stdout, stderr io.Writer) int {
 	// The canonical spelling, so the key this command writes and the messages it
 	// prints name the agent today's requests report, however the user spelled it.
 	*agent = pipeline.CanonicalAgent(*agent)
-	cfg, path, statsURL, err := serverTarget(*cfgPath)
+	cfg, path, statsURL, err := serverWriteTarget(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server use: %v\n", err)
 		return 1
@@ -442,7 +442,7 @@ func serverReset(args []string, stdout, stderr io.Writer) int {
 	// The canonical spelling, for the same reason as use: the check below and the
 	// key the reset removes must name the agent the router routes.
 	*agent = pipeline.CanonicalAgent(*agent)
-	cfg, path, statsURL, err := serverTarget(*cfgPath)
+	cfg, path, statsURL, err := serverWriteTarget(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server reset: %v\n", err)
 		return 1
@@ -569,7 +569,7 @@ func serverMove(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop server move: %v\n", err)
 		return 2
 	}
-	cfg, path, statsURL, err := serverTarget(*cfgPath)
+	cfg, path, statsURL, err := serverWriteTarget(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server move: %v\n", err)
 		return 1

@@ -151,7 +151,17 @@ func serverTarget(configPath string) (cfg *config.Config, path, statsURL string,
 	if statsURL = dialURL(cfg.Stats.StatsAddress); statsURL != "" && !localStatsUp(statsURL) {
 		statsURL = ""
 	}
-	if err := praxisRefusal(cfg, path, statsURL); err != nil {
+	return cfg, path, statsURL, nil
+}
+
+// serverWriteTarget is serverTarget for an action that changes the router. It
+// refuses in praxis mode, where the change has no effect. A list does not refuse:
+// it shows the file.
+func serverWriteTarget(configPath string) (cfg *config.Config, path, statsURL string, err error) {
+	if cfg, path, statsURL, err = serverTarget(configPath); err == nil {
+		err = praxisRefusal(cfg, path, statsURL)
+	}
+	if err != nil {
 		return nil, "", "", err
 	}
 	return cfg, path, statsURL, nil
