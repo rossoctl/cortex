@@ -106,6 +106,7 @@ jobs:
         run: |
           TAGS=$(go -C ../../scripts/profile-tags run . local)
           go build -tags "${TAGS}" ./...
+          go vet -tags "praxis_e2e,${TAGS}" .
           go test -race -tags "${TAGS}" ./...
 
       - name: Build and test cmd/agentop

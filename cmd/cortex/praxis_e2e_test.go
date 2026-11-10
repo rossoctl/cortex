@@ -731,14 +731,19 @@ func eventsJSON(t *testing.T, c *chain) []map[string]any {
 // The JSON and SSE requests record the same rows in both modes.
 func TestPraxisE2E_SameEventsAsDirect(t *testing.T) {
 	origin := newMockOrigin(t)
+	// ttfbMs and durationMs are omitempty. The delay keeps both at 5 ms or more, so a
+	// missing key means the field is missing, not a 0 ms value.
+	slow := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) { time.Sleep(5 * time.Millisecond); h(w, r) }
+	}
 	var got [2][]map[string]any
 	for i, c := range []*chain{newDirectChain(t, origin), newPraxisChain(t, origin, chainOpts{})} {
-		origin.serve(serveJSON(chatJSON))
+		origin.serve(slow(serveJSON(chatJSON)))
 		if st, b, _ := c.do(t, request(t, t.Context(), http.MethodPost, chatURL, chatRequest)); st != http.StatusOK {
 			t.Fatalf("status %d: %s", st, b)
 		}
 		c.waitResponses(t, 1, 10*time.Second)
-		origin.serve(serveFrames("text/event-stream", false, chatFrames, nil, 0))
+		origin.serve(slow(serveFrames("text/event-stream", false, chatFrames, nil, 0)))
 		if st, b, _ := c.do(t, request(t, t.Context(), http.MethodPost, chatURL, chatStreamRequest)); st != http.StatusOK {
 			t.Fatalf("status %d: %s", st, b)
 		}
@@ -756,9 +761,12 @@ func TestPraxisE2E_SameEventsAsDirect(t *testing.T) {
 			delete(p, k)
 		}
 		for _, k := range []string{"ttfbMs", "durationMs"} {
-			dv, _ := d[k].(float64)
-			pv, _ := p[k].(float64)
-			if dv-pv > 50 || pv-dv > 50 {
+			dv, dok := d[k].(float64)
+			pv, pok := p[k].(float64)
+			// A missing key reads as 0, which is within 50 ms of the other side's value.
+			if dok != pok {
+				t.Errorf("row %d: %s = %s, direct %s (on one side only)", i, k, compact(p[k]), compact(d[k]))
+			} else if dv-pv > 50 || pv-dv > 50 {
 				t.Errorf("row %d: %s = %v, direct %v (over 50 ms apart)", i, k, pv, dv)
 			}
 			delete(d, k)
