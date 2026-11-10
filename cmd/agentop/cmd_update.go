@@ -23,8 +23,9 @@ Usage:
 Runs the same installer as the one-liner. The installer downloads and verifies
 the release, then gives it to agentop setup. Update keeps these as they are
 now: Claude Code's routing, a proxy with no service (--no-service), the cpex
-build of cortex, an install with no config (--install-only), and a shell
-profile the install did not edit (--no-modify-path).
+build of cortex, praxis mode (--praxis), an install with no config
+(--install-only), and a shell profile the install did not edit
+(--no-modify-path).
 
   --ref=REF   install REF instead of the newest stable release, e.g.
               --ref=v0.9.0-rc.3 for a release candidate, --ref=main
@@ -98,8 +99,9 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 
 // updateFlags are the installer flags that keep this install as it is: without
 // them the installer would unroute nothing but put a service in place of a
-// background proxy, the default cortex in place of the cpex one, and a full setup
-// in place of an install-only one, and would edit a profile the install left alone.
+// background proxy, the default cortex in place of the cpex one, direct mode in
+// place of praxis mode, and a full setup in place of an install-only one, and would
+// edit a profile the install left alone.
 func updateFlags(env *setupEnv, ref string, yes bool) []string {
 	var flags []string
 	if !fileExists(env.configPath()) { // install-only writes no config
@@ -119,6 +121,9 @@ func updateFlags(env *setupEnv, ref string, yes bool) []string {
 	}
 	if installedIsCpex(filepath.Join(env.binDir, proxyBinary)) {
 		flags = append(flags, "--cpex")
+	}
+	if configPraxisEnabled(env.configPath()) {
+		flags = append(flags, "--praxis")
 	}
 	if ref != "" {
 		flags = append(flags, "--ref="+ref)
