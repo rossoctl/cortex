@@ -10,6 +10,10 @@ praxis_filter::register_filters! {
     http "cortex_observe" => CortexObserve::from_config,
 }
 
+/// Exit when stdin closes. The supervisor holds the write end of a pipe, so
+/// the gateway exits when the supervisor exits for any reason, SIGKILL included.
+const EXIT_ON_STDIN_EOF: &str = "--exit-on-stdin-eof";
+
 fn main() {
     // Before anything that can build a TLS config.
     praxis::install_crypto_provider();
@@ -25,6 +29,13 @@ fn main() {
     let tracing_guard = praxis::init_tracing(&config).unwrap_or_else(|e| praxis::fatal(&e));
     let log_level = Some(tracing_guard.log_level_state());
     let _tracing_guard = tracing_guard;
+    if has_flag(std::env::args().skip(1), EXIT_ON_STDIN_EOF) {
+        std::thread::spawn(|| {
+            // EOF or a read error: either way the supervisor is gone.
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            std::process::exit(0);
+        });
+    }
     praxis::run_server_with_registry(config, custom_registry(), config_path, log_level)
 }
 
@@ -38,9 +49,14 @@ fn config_arg(mut args: impl Iterator<Item = String>) -> Option<String> {
     None
 }
 
+/// True when `flag` is one of the arguments.
+fn has_flag(mut args: impl Iterator<Item = String>, flag: &str) -> bool {
+    args.any(|a| a == flag)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::config_arg;
+    use super::{EXIT_ON_STDIN_EOF, config_arg, has_flag};
 
     fn args(list: &[&str]) -> impl Iterator<Item = String> {
         list.iter()
@@ -61,5 +77,16 @@ mod tests {
         );
         assert_eq!(config_arg(args(&[])), None);
         assert_eq!(config_arg(args(&["-c"])), None);
+    }
+
+    #[test]
+    fn exit_flag_is_read() {
+        let before = ["--exit-on-stdin-eof", "-c", "a.yaml"];
+        let after = ["-c", "a.yaml", "--exit-on-stdin-eof"];
+        for list in [before, after] {
+            assert!(has_flag(args(&list), EXIT_ON_STDIN_EOF));
+            assert_eq!(config_arg(args(&list)).as_deref(), Some("a.yaml"));
+        }
+        assert!(!has_flag(args(&["-c", "a.yaml"]), EXIT_ON_STDIN_EOF));
     }
 }

@@ -324,6 +324,12 @@ fn free_port() -> u16 {
 }
 
 fn gateway(origin: &Origin, ingest: &Ingest, access_log: bool) -> Gateway {
+    gateway_with(origin, ingest, access_log, &[])
+}
+
+/// Starts the gateway with `flags` added. Its stdin is a pipe that the
+/// returned `Gateway` holds.
+fn gateway_with(origin: &Origin, ingest: &Ingest, access_log: bool, flags: &[&str]) -> Gateway {
     static N: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "cortex-gateway-test-{}-{}",
@@ -346,6 +352,8 @@ fn gateway(origin: &Origin, ingest: &Ingest, access_log: bool) -> Gateway {
     let mut child = Command::new(env!("CARGO_BIN_EXE_cortex-gateway"))
         .arg("-c")
         .arg(&config)
+        .args(flags)
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(log)
         .spawn()
@@ -950,4 +958,35 @@ fn client_close_mid_sse_is_client_canceled() {
     let resp = response_row(&lines);
     assert_eq!(resp["event"]["statusCode"], 499, "{resp}");
     assert_eq!(resp["event"]["error"]["kind"], "client_canceled");
+}
+
+#[test]
+fn exits_on_stdin_eof() {
+    let (o, i) = (ok_origin(), ingest());
+    let mut g = gateway_with(&o, &i, true, &["--exit-on-stdin-eof"]);
+    drop(g.child.stdin.take());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(st) = g.child.try_wait().expect("try_wait") {
+            assert!(st.success(), "cortex-gateway exited with {st}");
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "cortex-gateway still runs 5s after stdin closed"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn keeps_running_without_flag() {
+    let (o, i) = (ok_origin(), ingest());
+    let mut g = gateway(&o, &i, true);
+    drop(g.child.stdin.take());
+    std::thread::sleep(QUIET);
+    assert!(
+        g.child.try_wait().expect("try_wait").is_none(),
+        "cortex-gateway exited without --exit-on-stdin-eof"
+    );
 }
