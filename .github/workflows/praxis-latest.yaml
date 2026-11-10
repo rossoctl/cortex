@@ -1,0 +1,105 @@
+# Praxis latest - build cortex-gateway weekly against the newest Praxis release.
+#
+# Moves the praxis-proxy pins to the newest crates.io version, then runs the tests and
+# the static release build. It blocks nothing. On failure, the report job comments on
+# the open "Weekly build against the latest Praxis failed" issue, or opens it.
+#
+name: Praxis latest
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build against the latest Praxis
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # The same pinned image as build-gateway in release-binaries.yaml.
+      RUST_ALPINE: docker.io/library/rust:1.96.0-alpine@sha256:f87aa870663e2b57ec8c69de82c7eedf7383bee987eef7612c0359635eaadb41
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # crates.io refuses a request with no User-Agent.
+      - name: Resolve the newest Praxis version
+        id: praxis
+        run: |
+          set -euo pipefail
+          v=$(curl -fsSL -A "rossoctl-cortex-ci (github.com/rossoctl/cortex)" \
+            https://crates.io/api/v1/crates/praxis-proxy | jq -r .crate.max_stable_version)
+          if ! printf '%s\n' "$v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::crates.io gave no usable praxis-proxy version: '$v'"
+            exit 1
+          fi
+          pinned=$(sed -n -E 's/^praxis-proxy = \{ version = "=([0-9.]+)".*/\1/p' praxis/server/Cargo.toml)
+          echo "Pinned Praxis: ${pinned}. Newest Praxis: ${v}."
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
+
+      - name: Move the Praxis pins
+        env:
+          PRAXIS_VERSION: ${{ steps.praxis.outputs.version }}
+        run: |
+          set -euo pipefail
+          v="${PRAXIS_VERSION}"
+          sed -i -E 's/^(praxis-proxy(-filter)? = \{ version = )"=[0-9.]+"/\1"='"$v"'"/' \
+            praxis/server/Cargo.toml praxis/filters/Cargo.toml
+          git diff --stat
+          # If sed matched nothing, the job would test the old pin and pass.
+          for f in praxis/server/Cargo.toml praxis/filters/Cargo.toml; do
+            pins=$(grep -E '^praxis-proxy(-filter)? *=' "$f" || true)
+            if [ -z "$pins" ] || printf '%s\n' "$pins" | grep -vqF "\"=${v}\""; then
+              echo "::error::${f}: the Praxis pins did not move to =${v}"
+              exit 1
+            fi
+          done
+
+      # Installs the toolchain that praxis/rust-toolchain.toml names.
+      - name: Test
+        working-directory: praxis
+        run: |
+          set -euo pipefail
+          rustup toolchain install
+          # --recursive: a new Praxis can need newer shared dependencies too.
+          cargo update --recursive -p praxis-proxy -p praxis-proxy-filter
+          cargo test --locked
+
+      - name: Static release build
+        run: |
+          set -euo pipefail
+          docker run --rm -v "${GITHUB_WORKSPACE}:/src" -w /src -e VERSION=praxis-latest \
+            "${RUST_ALPINE}" sh scripts/build-gateway.sh
+
+  report:
+    name: Report a failure
+    needs: build
+    if: failure()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TITLE: Weekly build against the latest Praxis failed
+    steps:
+      - name: Comment on or open the issue
+        run: |
+          set -euo pipefail
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          n=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open \
+            --search "in:title \"${TITLE}\"" --json number --jq '.[0].number')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --repo "${GITHUB_REPOSITORY}" --body "Failed again: ${run_url}"
+          else
+            gh issue create --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" \
+              --body "Failed run: ${run_url}
+
+          This job does not block anything. See the run log for the cause."
+          fi

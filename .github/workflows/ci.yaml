@@ -487,6 +487,18 @@ jobs:
       - name: Run release_notes.sh tests
         run: sh scripts/release_notes_test.sh
 
+  # check-gateway-linkage.sh runs only at release time, so without this job a
+  # regression in it would show only on a release.
+  gateway-linkage-script:
+    name: check-gateway-linkage.sh tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run check-gateway-linkage.sh tests
+        run: sh scripts/check-gateway-linkage_test.sh
+
   # `go mod tidy -diff` on every module in the repo. GOWORK=off so
   # replace directives resolve as they do in build.yaml and
   # release-binaries.yaml.

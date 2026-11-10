@@ -13,6 +13,7 @@ including the PR title format and the Go checks that CI gates on, are in the roo
 | `praxis.yaml` | PR to main/release-*, push to main, on `praxis/**` or the Go parser paths it ports | `cargo fmt --check`, clippy and tests for `praxis/`. A failure blocks only when `praxis/` or the workflow changed |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy, CodeQL |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |
+| `praxis-latest.yaml` | Weekly (Monday), manual | Builds and tests `cortex-gateway` against the newest Praxis on crates.io. On failure it opens one issue, or comments on the open one. It blocks nothing |
 | `release-binaries.yaml` | Tag push (`v*`), manual; push to main publishes the main-latest channel when `MAIN_CHANNEL_ENABLED` is set | Release tarballs — see [Release binaries](#release-binaries) |
 | `pr-verifier.yml` | PR | PR title check |
 | `spellcheck_action.yml` | PR | Spellcheck on markdown files — **disabled** (`if: false`) |
@@ -63,7 +64,14 @@ musl, in `golang:alpine` via `docker run`). There is no darwin/amd64 FFI. The
 executable inside is still `cortex`, and `cortex --version` prints
 `cortex (cpex) <ver>`. `install.sh --cpex` installs it.
 
-The workflow's jobs are `version`, `build`, `build-cpex` (both `contents: read`) and
-`publish`. Only `publish` writes. It refuses to publish unless every expected tarball
-arrived, writes one `checksums.txt` over all of them, and attests every tarball's
+The praxis-mode gateway ships as `cortex-gateway_<ver>_<os>_<arch>.tar.gz`, from the
+`build-gateway` matrix job: darwin/arm64 natively, and linux/amd64 and linux/arm64 as
+static musl binaries in `rust:alpine`. `scripts/build-gateway.sh` builds it and
+`scripts/check-gateway-linkage.sh` checks that it is standalone. It is optional: a
+failed `build-gateway` leg does not block the release.
+
+The workflow's jobs are `version`, `build`, `build-cpex`, `build-gateway` (all
+`contents: read`) and `publish`. Only `publish` writes. It refuses to publish unless
+every expected tarball arrived, except the gateway tarballs: a missing one gives a
+warning. It writes one `checksums.txt` over all of them, and attests every tarball's
 build provenance.
