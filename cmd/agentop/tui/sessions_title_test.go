@@ -1697,6 +1697,45 @@ func TestUntitledSettled_NamedRowWhoseTranscriptMoved(t *testing.T) {
 	}
 }
 
+// TestSessionsPane_RefreshOfNamedRowCountsAsMiss pins the limit on re-reads of a NAMED row.
+//
+// An active session's transcript moves on every turn. If a re-read that names nothing new did not
+// count as a miss, every pause in that session would start a harvest at the 5s floor.
+func TestSessionsPane_RefreshOfNamedRowCountsAsMiss(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "s1.jsonl")
+	if err := os.WriteFile(log, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := SessionMetadata{Title: "/w/repo", LogFile: log, LogModTime: st.ModTime().Add(-time.Minute)}
+	m := newTitleModel(t, map[string]SessionMetadata{"s1": moved}, "s1")
+	m.sessions = []session.SessionSummary{{ID: "s1", UpdatedAt: time.Now().Add(-time.Hour)}}
+	m.harvest = func() (map[string]SessionMetadata, error) { return nil, nil }
+
+	m.lastHarvest = time.Now().Add(-untitledBackoffCap)
+	m.Update(refreshTickMsg(time.Now()))
+	if !m.harvesting {
+		t.Fatal("no harvest started for a named row whose transcript moved")
+	}
+	// The re-read gives the same title and the transcript's current mtime.
+	m.Update(harvestedMsg{meta: map[string]SessionMetadata{
+		"s1": {Title: "/w/repo", LogFile: log, LogModTime: st.ModTime()},
+	}})
+	if m.untitledMisses != 1 {
+		t.Errorf("a re-read that named nothing new left untitledMisses = %d, want 1", m.untitledMisses)
+	}
+
+	// The transcript has not moved since that re-read, so no harvest starts.
+	m.lastHarvest = time.Now().Add(-untitledBackoffCap)
+	m.Update(refreshTickMsg(time.Now()))
+	if m.harvesting {
+		t.Error("harvested again although the transcript did not move")
+	}
+}
+
 // TestHarvestNamedSomething_JudgesOnlyRowsOnScreen pins the backoff's notion of progress.
 //
 // Two ways to get this wrong, and the function had the second one. len(meta) > 0 is true on every
