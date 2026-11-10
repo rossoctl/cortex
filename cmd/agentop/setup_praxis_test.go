@@ -347,3 +347,31 @@ func TestInsertListenerKeys_AfterDocumentMarker(t *testing.T) {
 		t.Errorf("out =\n%s", out)
 	}
 }
+
+// The plan says "previous kept", so the edit keeps the file it replaces, one time.
+func TestEnablePraxis_KeepsPreviousFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(praxisBase), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enablePraxis(path); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(path + ".before-agentop-migrate"); err != nil || string(got) != praxisBase {
+		t.Fatalf("backup = %q, err %v; want the file before the edit", got, err)
+	}
+
+	// An older backup stays: it is the first file setup replaced.
+	if err := os.WriteFile(path+".before-agentop-migrate", []byte("older\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(praxisBase), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enablePraxis(path); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path + ".before-agentop-migrate"); string(got) != "older\n" {
+		t.Errorf("backup = %q, want the older one", got)
+	}
+}

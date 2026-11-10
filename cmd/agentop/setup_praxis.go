@@ -84,6 +84,9 @@ func enablePraxis(path string) (changed bool, err error) {
 	if err != nil || !changed {
 		return false, err
 	}
+	if _, err := keepPreviousConfig(path, raw); err != nil {
+		return false, err
+	}
 	err = replaceConfig(path, out, func(cfg *config.Config) error {
 		if !cfg.PraxisEnabled() {
 			return errors.New("the edit did not turn praxis mode on")

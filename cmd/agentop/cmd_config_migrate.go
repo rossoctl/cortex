@@ -85,13 +85,9 @@ func migrateConfig(path string, stdout io.Writer) (changed bool, err error) {
 		return false, err
 	}
 
-	// Keep the previous file once, under a distinct name so it cannot be confused
-	// with the config itself.
-	bak := path + ".before-agentop-migrate"
-	if _, serr := os.Stat(bak); os.IsNotExist(serr) {
-		if werr := os.WriteFile(bak, raw, 0o600); werr != nil {
-			return false, fmt.Errorf("writing %s: %w", bak, werr)
-		}
+	bak, err := keepPreviousConfig(path, raw)
+	if err != nil {
+		return false, err
 	}
 	if err := replaceConfig(path, updated, nil); err != nil {
 		return false, err
@@ -218,6 +214,18 @@ func loadCandidate(updated string) (cfg *config.Config, loaded bool, err error) 
 		return nil, false, nil
 	}
 	return cfg, true, nil
+}
+
+// keepPreviousConfig writes raw to path's .before-agentop-migrate file, unless that
+// file exists. The distinct name keeps it apart from the config itself.
+func keepPreviousConfig(path string, raw []byte) (bak string, err error) {
+	bak = path + ".before-agentop-migrate"
+	if _, serr := os.Stat(bak); os.IsNotExist(serr) {
+		if werr := os.WriteFile(bak, raw, 0o600); werr != nil {
+			return "", fmt.Errorf("writing %s: %w", bak, werr)
+		}
+	}
+	return bak, nil
 }
 
 // replaceConfig swaps updated in for the file at path, through a temp file that
