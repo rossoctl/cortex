@@ -536,26 +536,6 @@ func TestSupervisor_KillLeavesNoGateway(t *testing.T) {
 	waitGone(t, gw, 5*time.Second)
 }
 
-// A gateway that a dead supervisor left on praxis.listen is stopped at start.
-func TestSupervisor_StopsStaleGateway(t *testing.T) {
-	r := newPraxisRig(t, true)
-	stale := filepath.Join(r.home, "stale.yaml")
-	if err := os.WriteFile(stale, []byte("listeners:\n  - name: gateway\n    address: "+r.listen+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	old := startChildAt(t, filepath.Join(r.bin, gatewayBinary), r.home, "", "-c", stale)
-	oldPid := old.pids(t, fakeGatewayPid, 1)[0]
-
-	sup := r.supervise(t)
-	old.waitExit(t, time.Now(), 10*time.Second)
-	if gw := sup.pids(t, fakeGatewayPid, 1)[0]; gw == oldPid {
-		t.Fatalf("the new gateway has the stale pid %d", gw)
-	}
-	if !strings.Contains(sup.out.String(), "a cortex-gateway from an earlier run holds the gateway address") {
-		t.Fatalf("no stale-gateway WARN from the supervisor:\n%s", sup.out.String())
-	}
-}
-
 // Direct mode starts no gateway and writes no gateway file, even with no
 // cortex-gateway binary next to cortex.
 func TestSupervisor_DirectModeStartsNoGateway(t *testing.T) {

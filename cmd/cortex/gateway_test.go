@@ -17,7 +17,8 @@ var updateGolden = flag.Bool("update", false, "rewrite testdata goldens")
 
 func praxisConfig() *config.Config {
 	return &config.Config{
-		Listener: config.ListenerConfig{SessionAPIAddr: "127.0.0.1:47601"},
+		Mode:     config.ModeProxySidecar,
+		Listener: config.ListenerConfig{SessionAPIAddr: "127.0.0.1:47601", BindLoopbackOnly: true, ReverseProxyBackend: "127.0.0.1:8000"},
 		Praxis:   &config.PraxisConfig{Enabled: true},
 	}
 }

@@ -739,7 +739,7 @@ with_pre_rename() { # exe-of-4242(__NONE__)  bin_dir  ps-comm(fail)
 		printf 'DEMO_FORWARD_PORT=47600\nDEMO_SESSION_PORT=47601\nDEMO_STATS_PORT=47603\nDEMO_HEALTH_PORT=47604\n'
 		printf 'DEMO_GATEWAY_PORT=47605\nDEMO_EGRESS_PORT=47606\n'
 		printf 'info() { :; }\nwarn() { :; }\nsleep() { :; }\n'
-		printf 'port_in_use() { return 1; }\nlsof() { :; }\n'
+		printf 'port_in_use() { return 1; }\n'
 		printf 'kill() {\n'
 		printf '\tcase "$1" in\n'
 		printf '\t\t-0) [ "$2" = 4242 ] && [ -f "%s" ] && return 1; return 0 ;;\n' "${TMP}/prr_termed"
@@ -750,7 +750,7 @@ with_pre_rename() { # exe-of-4242(__NONE__)  bin_dir  ps-comm(fail)
 		else printf 'ps() { printf "%%s\\n" "%s"; }\n' "$3"; fi
 		if [ "$1" = __NONE__ ]; then printf 'pid_exe_path() { return 1; }\n'
 		else printf 'pid_exe_path() { [ "$1" = 4242 ] && printf "%%s\\n" "%s"; }\n' "$1"; fi
-		for _fn in proxy_running pre_rename_proxy_running stop_pidfile_proxy stop_gateway stop_cortex; do
+		for _fn in proxy_running pre_rename_proxy_running stop_pidfile_proxy stop_cortex; do
 			sed -n "/^${_fn}()/,/^}/p" "${INSTALL_SH}"
 		done
 		printf 'stop_cortex\n'
@@ -783,39 +783,7 @@ check "pre-rename: --stop matches a BIN_DIR reached through a symlink" \
 	"old:stopped pidfile:none" \
 	"$(with_pre_rename "$(cd "${TMP}/prr_real" && pwd -P)/authbridge-proxy" "${TMP}/prr_link" authbridge-prox)"
 
-# --- stop_gateway: --stop stops our cortex-gateway, and only ours ---
-#
-# The gateway listens on DEMO_GATEWAY_PORT. stop_gateway names the holder with
-# lsof and signals it only when its executable is ${BIN_DIR}/cortex-gateway.
-# lsof, pid_exe_path and kill are mocked. Pid 5151 holds the port.
-with_stop_gateway() { # exe-of-5151(__NOHOLDER__ for a free port)  bin_dir
-	_log="${TMP}/sg_log"
-	: >"${_log}"
-	{
-		printf 'BIN_DIR=%s\nDEMO_GATEWAY_PORT=47605\n' "$2"
-		printf 'info() { :; }\nwarn() { :; }\nsleep() { :; }\n'
-		if [ "$1" = __NOHOLDER__ ]; then printf 'lsof() { :; }\n'
-		else printf 'lsof() { case "$*" in *-t*47605*LISTEN*) printf "5151\\n" ;; esac; }\n'; fi
-		printf 'pid_exe_path() { [ "$1" = 5151 ] && printf "%%s\\n" "%s"; }\n' "$1"
-		printf 'kill() {\n'
-		printf '\tcase "$1" in\n'
-		printf '\t\t-0) return 1 ;;\n'
-		printf '\t\t-9) printf "KILL %%s\\n" "$2" >>"%s" ;;\n' "${_log}"
-		printf '\t\t*) printf "TERM %%s\\n" "$1" >>"%s" ;;\n' "${_log}"
-		printf '\tesac\n\treturn 0\n}\n'
-		sed -n '/^stop_gateway()/,/^}/p' "${INSTALL_SH}"
-		printf 'stop_gateway || true\n'
-	} >"${TMP}/sg.sh"
-	sh "${TMP}/sg.sh" >/dev/null 2>&1
-	_sg=$(tr '\n' ' ' <"${_log}")
-	printf '%s\n' "${_sg:-none}"
-}
-check "stop_gateway: our cortex-gateway on 47605 gets SIGTERM" "TERM 5151 " \
-	"$(with_stop_gateway /home/u/.local/bin/cortex-gateway /home/u/.local/bin)"
-check "stop_gateway: a cortex-gateway from another directory gets no signal" "none" \
-	"$(with_stop_gateway /home/u/src/cortex/cortex-gateway /home/u/.local/bin)"
-check "stop_gateway: a free port sends no signal" "none" \
-	"$(with_stop_gateway __NOHOLDER__ /home/u/.local/bin)"
+# --- stop_cortex and restage know the praxis-mode gateway ---
 check "stop_cortex checks the gateway and egress ports too" "1" \
 	"$(grep -c 'for _p in .*DEMO_GATEWAY_PORT.*DEMO_EGRESS_PORT' "${INSTALL_SH}")"
 check "restage copies cortex-gateway" "1" \

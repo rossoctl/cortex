@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"syscall"
 	"testing"
 	"time"
 
@@ -205,16 +204,21 @@ func TestSuperviseDelays_AreOrdered(t *testing.T) {
 }
 
 // Direct mode is the default, and it must not change: one child, today's args and
-// env, no gateway file and no lookup of the gateway binary.
+// env, no gateway file and no lookup of the gateway binary. A praxis config that
+// does not validate also runs cortex alone.
 func TestSupervisorChildren_DirectModeHasOnlyCortex(t *testing.T) {
 	args := []string{"--config", "/x/config.yaml", "-local"}
 	noWrite := func(string, *config.Config) (string, string, error) {
 		t.Error("direct mode wrote the gateway files")
 		return "", "", nil
 	}
+	// Praxis on, but cortex refuses the config: a gateway would serve on 0.0.0.0.
+	notValid := praxisConfig()
+	notValid.Praxis.Listen = "0.0.0.0:47605"
 	for name, cfg := range map[string]*config.Config{
-		"praxis off": {Praxis: &config.PraxisConfig{Enabled: false}},
-		"no config":  nil,
+		"praxis off":           {Praxis: &config.PraxisConfig{Enabled: false}},
+		"no config":            nil,
+		"praxis on, not valid": notValid,
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -262,39 +266,5 @@ func TestSupervisorChildren_PraxisAddsGateway(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
 			t.Errorf("%s: %v", n, err)
 		}
-	}
-}
-
-func TestStopStaleGateway(t *testing.T) {
-	cases := []struct {
-		name      string
-		exe       string
-		lookupErr error
-		freesOn   int // the free() call that first reports the port free; 0 = never
-		want      []syscall.Signal
-	}{
-		{"a stale gateway that stops", "/x/cortex-gateway", nil, 1, []syscall.Signal{syscall.SIGTERM}},
-		{"a stale gateway that does not stop", "/x/cortex-gateway", nil, 0, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}},
-		{"another process", "/x/other", nil, 1, nil},
-		{"no holder", "", errors.New("no listener"), 1, nil},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var got []syscall.Signal
-			calls := 0
-			stopStaleGateway("127.0.0.1:47605",
-				func(string) (holder, error) { return holder{pid: 42, exe: tc.exe}, tc.lookupErr },
-				func(pid int, sig syscall.Signal) error {
-					if pid != 42 {
-						t.Errorf("signalled pid %d", pid)
-					}
-					got = append(got, sig)
-					return nil
-				},
-				func(string) bool { calls++; return tc.freesOn != 0 && calls >= tc.freesOn })
-			if !slices.Equal(got, tc.want) {
-				t.Errorf("signals = %v, want %v", got, tc.want)
-			}
-		})
 	}
 }

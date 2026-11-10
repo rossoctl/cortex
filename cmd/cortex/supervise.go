@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -188,6 +187,11 @@ func supervisorChildren(cfg *config.Config, configPath, self string, args []stri
 	if cfg == nil || !cfg.PraxisEnabled() {
 		return []childSpec{cortex}, nil
 	}
+	// The cortex child refuses this config at each start. Do not run a gateway for it.
+	if err := config.Validate(cfg); err != nil {
+		slog.Error("supervisor: the config is not valid, so cortex-gateway does not start", "error", err)
+		return []childSpec{cortex}, nil
+	}
 	tokenPath, yamlPath, err := write(filepath.Dir(configPath), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("writing the gateway files: %w", err)
@@ -201,39 +205,6 @@ func supervisorChildren(cfg *config.Config, configPath, self string, args []stri
 		stdinPipe: true,
 	}
 	return []childSpec{cortex, gateway}, nil
-}
-
-// stopStaleGateway stops a cortex-gateway that still holds addr, which a supervisor
-// that died by SIGKILL can leave only for the moment the gateway needs to see its
-// stdin close. SIGTERM, then SIGKILL when addr is not free after superviseStopGrace.
-// Any other holder is left alone: the new gateway fails to bind and backs off.
-func stopStaleGateway(addr string, lookup func(string) (holder, error),
-	signal func(pid int, sig syscall.Signal) error, free func(string) bool) {
-	h, err := lookup(addr)
-	if err != nil || filepath.Base(h.exe) != gatewayBinary {
-		return
-	}
-	slog.Warn("supervisor: a cortex-gateway from an earlier run holds the gateway address; stopping it",
-		"addr", addr, "holder_pid", h.pid, "holder", h.exe)
-	pid := int(h.pid)
-	_ = signal(pid, syscall.SIGTERM) //nolint:errcheck
-	for deadline := time.Now().Add(superviseStopGrace); !free(addr); time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			slog.Warn("supervisor: the earlier cortex-gateway did not exit in time; killing it", "holder_pid", pid)
-			_ = signal(pid, syscall.SIGKILL) //nolint:errcheck
-			return
-		}
-	}
-}
-
-// addrFree reports whether addr can be bound now.
-func addrFree(addr string) bool {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return false
-	}
-	_ = ln.Close()
-	return true
 }
 
 // runSupervisor re-executes this binary without the supervise flag and restarts it
@@ -280,9 +251,6 @@ func runSupervisor(flagName string) error {
 		return err
 	}
 	specs[0].fallback, specs[0].fallbackAddr = fallback, fallbackAddr
-	if len(specs) > 1 {
-		stopStaleGateway(cfg.Praxis.ListenAddr(), holderOf, syscall.Kill, addrFree)
-	}
 
 	// Each child stops at the same time, so the whole stop stays inside launchd's 5s.
 	stop := make(chan struct{})

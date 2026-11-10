@@ -111,7 +111,7 @@ gives the full text.
 6. The gateway gets an empty env, so no proxy variable can get to it.
 7. `gateway.yaml` listens on `praxis.listen` (default `127.0.0.1:47605`). A catch-all route sends all traffic to `praxis.egress` (default `127.0.0.1:47606`). The egress listener is #1721. `ip_acl` allows only `127.0.0.1/32` and `::1/128`.
 8. A missing gateway binary, or a gateway that exits, gets the normal backoff. The supervisor does not stop, and `cortex` keeps running.
-9. At start, the supervisor stops a stale `cortex-gateway` that holds `praxis.listen`: SIGTERM, then SIGKILL after the grace. It does not stop a process with a different name.
+9. The supervisor does not stop a gateway from an earlier run. The stdin pipe ends that gateway when its supervisor exits, so a new gateway that cannot bind `praxis.listen` binds it on the next try. A config that `config.Validate` refuses starts no gateway.
 10. Not in this step: the admin metrics port, the startup probe and `gateway_unavailable` (#1721), and the version check of the gateway (#1723).
 11. Direct mode does not change. The supervisor starts only `cortex` and writes no gateway file.
 
