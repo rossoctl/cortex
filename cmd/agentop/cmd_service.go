@@ -111,6 +111,10 @@ type servicePaths struct {
 	// than returned so uninstall and status still work on a broken config.
 	configErr error
 	home      string // set explicitly: a supervisor's environment is minimal
+	// supervise makes the systemd unit run cortex --supervise. It is set from the
+	// config file (praxis.enabled) right before the unit is written. The plist
+	// always supervises.
+	supervise bool
 }
 
 func runService(args []string, stdout, stderr io.Writer) int {
@@ -147,6 +151,7 @@ func runService(args []string, stdout, stderr io.Writer) int {
 	if *printUnit {
 		// Inspect before installing. Also the only way to exercise rendering without
 		// registering a real agent in the caller's session.
+		p.supervise = configPraxisEnabled(p.configFile)
 		fmt.Fprint(stdout, renderUnit(p))
 		return 0
 	}
@@ -470,6 +475,7 @@ func runServiceInstall(p servicePaths, adopt int, forceRestart, announceUnit boo
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return installResult{exit: 1}
 	}
+	p.supervise = configPraxisEnabled(p.configFile)
 	if err := writeFileAtomic(p.unitFile, []byte(renderUnit(p)), 0o644); err != nil {
 		fmt.Fprintf(stderr, "agentop: writing %s: %v\n", p.unitFile, err)
 		return installResult{exit: 1}
@@ -1207,6 +1213,11 @@ func serviceIsCurrent(goos string, p servicePaths) bool {
 	if goos == "darwin" && !strings.Contains(body, "--supervise") {
 		return false
 	}
+	// On Linux the unit supervises only in praxis mode. A unit that does not agree
+	// with the config file must be written again.
+	if goos == "linux" && strings.Contains(body, "--supervise") != configPraxisEnabled(p.configFile) {
+		return false
+	}
 	if running, _ := supervisorRunning(goos, p); !running {
 		return false
 	}
@@ -1214,6 +1225,13 @@ func serviceIsCurrent(goos string, p servicePaths) bool {
 		return false // cannot confirm it is serving, so do not claim it is
 	}
 	return waitHealthy(p.healthURL, 2*time.Second)
+}
+
+// configPraxisEnabled reports whether the config file at path sets praxis.enabled.
+// It is false when the file does not load.
+func configPraxisEnabled(path string) bool {
+	cfg, err := config.Load(path)
+	return err == nil && cfg.PraxisEnabled()
 }
 
 // proxyBinaryUnchanged reports whether the binary on disk is still the one the unit
