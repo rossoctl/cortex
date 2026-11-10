@@ -183,7 +183,7 @@ Options:
   --praxis           also install cortex-gateway and turn on praxis mode (macOS
                      arm64, Linux amd64/arm64). To turn it off, set
                      praxis.enabled: false in ~/.cortex/config.yaml and run
-                     agentop service restart
+                     agentop service install
   --ref=REF          install from a git ref instead of the newest stable release —
                      both this script and the binaries (e.g. --ref=main for
                      unreleased changes, --ref=v0.8.1 to pin). The only way to

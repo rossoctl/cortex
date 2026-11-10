@@ -274,7 +274,7 @@ func topLevelKey(lines []string, head string) (at, docIndent int) {
 	docIndent = -1
 	for i, l := range lines {
 		trimmed := strings.TrimSpace(l)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || isDocumentMarker(trimmed) {
 			continue
 		}
 		indent := len(l) - len(strings.TrimLeft(l, " "))
@@ -286,6 +286,12 @@ func topLevelKey(lines []string, head string) (at, docIndent int) {
 		}
 	}
 	return -1, docIndent
+}
+
+// isDocumentMarker reports whether trimmed is a "---" document start, a "..."
+// document end or a "%" directive. None of them is a key line.
+func isDocumentMarker(trimmed string) bool {
+	return trimmed == "---" || trimmed == "..." || strings.HasPrefix(trimmed, "--- ") || strings.HasPrefix(trimmed, "%")
 }
 
 // insertBlockKeys adds keys to the block named block, matching whatever

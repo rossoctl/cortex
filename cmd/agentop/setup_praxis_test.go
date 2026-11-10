@@ -315,3 +315,35 @@ func TestEnablePraxisText_CommentOnlyBlock(t *testing.T) {
 		t.Errorf("out =\n%s", out)
 	}
 }
+
+// A "---" or "%" directive line is not the document's first key, so it does not
+// set the document's indentation.
+func TestEnablePraxisText_DocumentMarkers(t *testing.T) {
+	for _, tc := range []struct{ src, suffix string }{
+		{"---\n" + praxisBase, "\npraxis:\n  enabled: true\n"},
+		{"%YAML 1.1\n---\n  mode: proxy-sidecar\n  listener:\n    roles: [forward]\n    bind_loopback_only: true\n", "\n  praxis:\n    enabled: true\n"},
+		{"--- # config\n  mode: proxy-sidecar\n  listener:\n    roles: [forward]\n    bind_loopback_only: true\n  praxis:\n    enabled: false\n", "\n  praxis:\n    enabled: true\n"},
+	} {
+		out, _, err := enablePraxisText(tc.src)
+		if err != nil {
+			t.Fatalf("%q: %v", tc.src, err)
+		}
+		if !strings.HasSuffix(out, tc.suffix) {
+			t.Errorf("out =\n%s", out)
+		}
+		if !loadText(t, out).PraxisEnabled() {
+			t.Errorf("praxis mode is not on:\n%s", out)
+		}
+	}
+}
+
+func TestInsertListenerKeys_AfterDocumentMarker(t *testing.T) {
+	src := "---\n  mode: proxy-sidecar\n  listener:\n    roles: [forward]\n"
+	out, err := insertListenerKeys(src, []pinnedListener{{key: "forward_proxy_addr", value: `":8081"`}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "    roles: [forward]\n    forward_proxy_addr: \":8081\"\n"; !strings.HasSuffix(out, want) {
+		t.Errorf("out =\n%s", out)
+	}
+}

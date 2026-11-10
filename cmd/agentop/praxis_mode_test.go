@@ -78,7 +78,7 @@ func TestPraxisRefusal_FileOnly(t *testing.T) {
 	if err == nil {
 		t.Fatal("got nil, want a refusal")
 	}
-	for _, want := range []string{"praxis mode is on (in /c.yaml)", "set praxis.enabled: false in /c.yaml", "agentop service restart"} {
+	for _, want := range []string{"praxis mode is on (in /c.yaml)", "set praxis.enabled: false in /c.yaml", "agentop service install"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("%q does not contain %q", err, want)
 		}
@@ -126,8 +126,9 @@ func TestLists_WorkInPraxisMode(t *testing.T) {
 	if code, _, errOut := runScriptCmd(t, "list", "--config", path); code != 0 {
 		t.Errorf("script list: exit %d, stderr: %s", code, errOut)
 	}
-	if _, _, errOut := runServerCmd(t, "", "--config", path); strings.Contains(errOut, "praxis mode is on") {
-		t.Errorf("server list refused: %s", errOut)
+	// The file has no servers, so the list must not suggest a command praxis mode refuses.
+	if code, out, errOut := runServerCmd(t, "", "--config", path); code != 0 || strings.Contains(errOut, "praxis mode is on") || strings.Contains(out, "Add one") {
+		t.Errorf("server list: exit %d, stdout: %s, stderr: %s", code, out, errOut)
 	}
 }
 

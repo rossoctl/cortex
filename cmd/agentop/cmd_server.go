@@ -225,7 +225,7 @@ func serverList(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop server: unexpected argument %q; the action comes first: agentop server <action> [flags]\n", pos[0])
 		return 2
 	}
-	cfg, path, _, err := serverTarget(*cfgPath)
+	cfg, path, statsURL, err := serverTarget(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server: %v\n", err)
 		return 1
@@ -236,6 +236,10 @@ func serverList(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if len(c.Servers) == 0 {
+		if praxisRefusal(cfg, path, statsURL) != nil {
+			fmt.Fprintln(stdout, "No inference servers yet. Praxis mode is on, so `agentop server add` has no effect.")
+			return 0
+		}
 		fmt.Fprintln(stdout, "No inference servers yet. Add one:")
 		fmt.Fprintln(stdout, "  agentop server add <name> <url>")
 		return 0

@@ -30,5 +30,5 @@ func praxisRefusal(cfg *config.Config, path, statsURL string) error {
 	default:
 		return nil
 	}
-	return fmt.Errorf("praxis mode is on (%s), so Cortex runs no outbound plugins and this command has no effect. To turn it off, set praxis.enabled: false in %s and run: agentop service restart", where, path)
+	return fmt.Errorf("praxis mode is on (%s), so Cortex runs no outbound plugins and this command has no effect. To turn it off, set praxis.enabled: false in %s and run: agentop service install", where, path)
 }
