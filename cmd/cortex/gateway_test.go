@@ -159,7 +159,9 @@ func TestIngestAddr(t *testing.T) {
 	}
 }
 
-func TestWriteGatewayFiles_TokenIs0600AndNew(t *testing.T) {
+// A second call keeps the token, so a second supervisor on the same dir cannot
+// break the first one's pair. An empty token file gets a new token.
+func TestWriteGatewayFiles_TokenIs0600AndKept(t *testing.T) {
 	dir := t.TempDir()
 	hex64 := regexp.MustCompile(`^[0-9a-f]{64}$`)
 	var tokens []string
@@ -196,8 +198,18 @@ func TestWriteGatewayFiles_TokenIs0600AndNew(t *testing.T) {
 			t.Errorf("gateway.yaml does not name %s", tok)
 		}
 	}
-	if tokens[0] == tokens[1] {
-		t.Error("two calls gave the same token")
+	if tokens[0] != tokens[1] {
+		t.Errorf("the second call changed the token: %q, then %q", tokens[0], tokens[1])
+	}
+	tok := filepath.Join(dir, gatewayTokenName)
+	if err := os.WriteFile(tok, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := writeGatewayFiles(dir, praxisConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(tok); !hex64.Match(b) {
+		t.Errorf("after an empty token file, token = %q, want 64 hex chars", b)
 	}
 	ents, err := os.ReadDir(dir)
 	if err != nil {

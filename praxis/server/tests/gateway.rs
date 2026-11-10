@@ -1008,6 +1008,13 @@ fn keeps_running_without_flag() {
 
 #[test]
 fn supervisor_gateway_yaml_serves() {
+    // Every default port in the golden is one this test replaces. Checked on the
+    // golden, not the result: the mocks' ephemeral ports can be in 47600-47609.
+    let rest = SUPERVISOR_YAML
+        .replace("127.0.0.1:47605", "")
+        .replace("127.0.0.1:47606", "")
+        .replace("127.0.0.1:47601", "");
+    assert!(!rest.contains(":4760"), "{SUPERVISOR_YAML}");
     let (o, i) = (ok_origin(), ingest());
     let g = start(&[], |token_file, port| {
         let yaml = SUPERVISOR_YAML
@@ -1015,10 +1022,7 @@ fn supervisor_gateway_yaml_serves() {
             .replace("127.0.0.1:47605", &format!("127.0.0.1:{port}"))
             .replace("127.0.0.1:47606", &format!("127.0.0.1:{}", o.port))
             .replace("127.0.0.1:47601", &format!("127.0.0.1:{}", i.port));
-        assert!(
-            !yaml.contains("CORTEX_DIR") && !yaml.contains(":4760"),
-            "{yaml}"
-        );
+        assert!(!yaml.contains("CORTEX_DIR"), "{yaml}");
         yaml
     });
     let (h, body) = send(&g, "GET", "/v1/models", &[("X-Cortex-Token", TOKEN)], b"");

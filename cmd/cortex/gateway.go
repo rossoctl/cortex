@@ -113,21 +113,26 @@ func ingestAddr(sessionAPIAddr string) (string, error) {
 	return net.JoinHostPort(host, port), nil
 }
 
-// writeGatewayFiles writes a new random token and gateway.yaml into dir, each
-// with mode 0600 and by rename, so a reader never sees a partial file.
+// writeGatewayFiles writes gateway.yaml into dir, and a random token when dir has
+// none. Each file has mode 0600 and is written by rename, so a reader never sees a
+// partial file. An existing token is kept: each child reads it once, at its start,
+// so a second supervisor on the same dir that wrote a new token would break the
+// pair of the first one at its next child restart.
 func writeGatewayFiles(dir string, cfg *config.Config) (tokenPath, yamlPath string, err error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", "", err
-	}
 	tokenPath = filepath.Join(dir, gatewayTokenName)
 	yamlPath = filepath.Join(dir, gatewayYAMLName)
 	y, err := gatewayYAML(cfg, tokenPath)
 	if err != nil {
 		return "", "", err
 	}
-	if err := writeFileAtomic(tokenPath, []byte(hex.EncodeToString(raw))); err != nil {
-		return "", "", err
+	if b, err := os.ReadFile(tokenPath); err != nil || len(bytes.TrimSpace(b)) == 0 {
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			return "", "", err
+		}
+		if err := writeFileAtomic(tokenPath, []byte(hex.EncodeToString(raw))); err != nil {
+			return "", "", err
+		}
 	}
 	if err := writeFileAtomic(yamlPath, y); err != nil {
 		return "", "", err
