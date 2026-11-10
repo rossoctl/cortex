@@ -1216,20 +1216,14 @@ func TestLooksLikePath_AnyUnicodeSpaceSeparates(t *testing.T) {
 // 2.33s — four times the input for sixteen times the work. Reachable because the cwd tier was
 // uncapped, and the renderer redraws on every poll.
 //
-// Asserted as a RATIO rather than a wall-clock bound, so it says what it means on a loaded CI machine:
-// quadratic growth shows up as ~4x per doubling, linear as ~2x, and the ceiling sits between them.
-// Both ends are timed inside one test so the comparison is against the same machine at the same moment.
+// The cost is counted in allocations, so the assertion is about the work done and not about the
+// machine: the skip-ahead tries at most budget candidates whatever the input length, and the
+// one-at-a-time search allocates a candidate per dropped rune.
 func TestTrunc_ScalesLinearly(t *testing.T) {
 	const budget = 40
-	measure := func(f func(string, int) string, runes int) time.Duration {
+	measure := func(f func(string, int) string, runes int) float64 {
 		s := "/" + strings.Repeat("a", runes-1)
-		// Warm, so the first-call cost of anything lazy is not charged to the small input.
-		f(s, budget)
-		start := time.Now()
-		for i := 0; i < 20; i++ {
-			f(s, budget)
-		}
-		return time.Since(start)
+		return testing.AllocsPerRun(3, func() { f(s, budget) })
 	}
 	for _, tc := range []struct {
 		name string
@@ -1241,15 +1235,10 @@ func TestTrunc_ScalesLinearly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			small := measure(tc.f, 4000)
 			large := measure(tc.f, 16000)
-			if small <= 0 {
-				t.Skip("timer resolution too coarse to compare")
-			}
-			// 4x the input. Linear predicts ~4x the time; quadratic predicts ~16x. A ceiling of 8x
-			// separates them with room for scheduling noise.
-			if ratio := float64(large) / float64(small); ratio > 8 {
-				t.Errorf("4x the input took %.1fx the time (%v -> %v) — that is the quadratic shape "+
+			if large > small {
+				t.Errorf("4x the input made %.0f allocations, up from %.0f — that is the quadratic shape "+
 					"back: the per-rune search must skip to the last/first n runes before measuring",
-					ratio, small, large)
+					large, small)
 			}
 		})
 	}

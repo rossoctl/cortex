@@ -174,19 +174,42 @@ func TestReloader_PlainRewrite(t *testing.T) {
 	}
 }
 
-// Two writes within the debounce window coalesce into a single reload.
+// manualTimer is a debounce timer that only the test fires.
+type manualTimer struct{}
+
+func (manualTimer) Reset(time.Duration) bool { return true }
+func (manualTimer) Stop() bool               { return true }
+
+// A burst of writes lands on one debounce timer, and its one firing reloads
+// the last write.
 func TestReloader_DebouncesBurst(t *testing.T) {
-	r, b, cfgPath, _, _ := setup(t)
+	var arms atomic.Int32
+	armed := make(chan func(), 1)
+	manual := func(r *Reloader) {
+		r.afterFunc = func(_ time.Duration, fire func()) debounceTimer {
+			if arms.Add(1) == 1 {
+				armed <- fire
+			}
+			return manualTimer{}
+		}
+	}
+	committed := make(chan struct{}, 2)
+	r, b, cfgPath, _, _ := setupWith(t, manual, WithOnCommit(func(*config.Config) { committed <- struct{}{} }))
 	b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: &config.Config{Mode: "envoy-sidecar"}})
 
 	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# edit 1\n")
 	last := "mode: envoy-sidecar\n# edit 2\n"
 	writeConfig(t, cfgPath, last)
 
-	want := r.hash([]byte(last))
-	waitFor(t, 2*time.Second, func() bool { return r.Status().ActiveConfigSHA256 == want }, "the last edit to go live")
-	if got := r.Status().ReloadsOK; got != 1 {
-		t.Errorf("ReloadsOK = %d, want the burst coalesced into 1", got)
+	(<-armed)()
+	<-committed
+	r.Close(context.Background()) // returns once the watch loop has, so Status is final
+	st := r.Status()
+	if st.ReloadsOK != 1 || st.ActiveConfigSHA256 != r.hash([]byte(last)) {
+		t.Errorf("ReloadsOK = %d, active %s; want 1 reload of the last edit", st.ReloadsOK, st.ActiveConfigSHA256)
+	}
+	if n := arms.Load(); n != 1 {
+		t.Errorf("the burst armed %d debounce timers, want 1", n)
 	}
 }
 

@@ -90,6 +90,11 @@ var (
 	// exited or been killed. A process the profile backgrounds inherits stdout, and
 	// without this the probe would last as long as that process does.
 	loginPathWaitDelay = 100 * time.Millisecond
+	// loginPathContext is one probe's context, bounded by loginPathTimeout. A var
+	// so a test can end a probe itself.
+	loginPathContext = func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), loginPathTimeout)
+	}
 )
 
 // loginPath is the PATH a login shell of the user's own sets up. A successful
@@ -107,7 +112,7 @@ func loginPath() string {
 	if shell == "" {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), loginPathTimeout)
+	ctx, cancel := loginPathContext()
 	defer cancel()
 	cmd := exec.CommandContext(ctx, shell, "-l", "-c", `printf '\n'"$0"'%s'"$0"'\n' "$PATH"`, pathMarker)
 	cmd.WaitDelay = loginPathWaitDelay

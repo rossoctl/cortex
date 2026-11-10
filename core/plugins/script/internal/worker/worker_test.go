@@ -647,9 +647,9 @@ func TestEnviron(t *testing.T) {
 }
 
 // A shell whose profile leaves a background process holding stdout still answers
-// while that process lives: with its PATH when it printed one, empty when it hung.
-// The process waits on a FIFO the test releases on cleanup, so the exited shell's
-// probe can end only through loginPathWaitDelay, within its generous budget.
+// while that process lives: with its PATH when it printed one, empty when it hung
+// and its probe was ended. The process waits on a FIFO the test releases on
+// cleanup, so the exited shell's probe ends only through loginPathWaitDelay.
 func TestLoginPath_BackgroundChildHoldingStdout(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
@@ -657,33 +657,50 @@ func TestLoginPath_BackgroundChildHoldingStdout(t *testing.T) {
 	}
 	for name, tc := range map[string]struct {
 		body, want string
-		budget     time.Duration
+		hangs      bool
 	}{
-		"printed then exited": {"read _ < \"$HOLD\" &\nshift\nPATH=/from/login exec " + sh + " \"$@\"\n", "/from/login", time.Minute},
-		"hung":                {"read _ < \"$HOLD\" &\nread _ < \"$HOLD\"\n", "", 500 * time.Millisecond},
+		"printed then exited": {"read _ < \"$HOLD\" &\nshift\nPATH=/from/login exec " + sh + " \"$@\"\n", "/from/login", false},
+		"hung":                {"read _ < \"$HOLD\" &\necho > \"$STARTED\"\nread _ < \"$HOLD\"\n", "", true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			hold := filepath.Join(dir, "hold")
-			if err := syscall.Mkfifo(hold, 0o600); err != nil {
-				t.Fatal(err)
+			// fifo makes a FIFO, opened read-write so opening it neither blocks nor
+			// sends EOF; closing it on cleanup does.
+			fifo := func(name string) (string, *os.File) {
+				path := filepath.Join(dir, name)
+				if err := syscall.Mkfifo(path, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				f, err := os.OpenFile(path, os.O_RDWR, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { f.Close() })
+				return path, f
 			}
-			// Opened read-write so it neither blocks nor sends EOF; closing it does.
-			release, err := os.OpenFile(hold, os.O_RDWR, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { release.Close() })
+			hold, _ := fifo("hold")
+			started, startedR := fifo("started")
 			shell := filepath.Join(dir, "shell")
 			os.WriteFile(shell, []byte("#!"+sh+"\n"+tc.body), 0o700)
 			t.Setenv("SHELL", shell)
 			t.Setenv("HOLD", hold)
+			t.Setenv("STARTED", started)
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			if tc.hangs {
+				// The probe ends once the shell is running and hung.
+				go func() {
+					if _, err := startedR.Read(make([]byte, 1)); err == nil {
+						cancel()
+					}
+				}()
+			}
 			loginPathMu.Lock()
 			loginPathVal, loginPathTried = "", time.Time{}
-			old := loginPathTimeout
-			loginPathTimeout = tc.budget
+			old := loginPathContext
+			loginPathContext = func() (context.Context, context.CancelFunc) { return ctx, func() {} }
 			loginPathMu.Unlock()
-			t.Cleanup(func() { loginPathVal, loginPathTried, loginPathTimeout = "", time.Now(), old })
+			t.Cleanup(func() { loginPathVal, loginPathTried, loginPathContext = "", time.Now(), old })
 			if got := loginPath(); got != tc.want {
 				t.Errorf("loginPath() = %q, want %q", got, tc.want)
 			}

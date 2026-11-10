@@ -308,6 +308,12 @@ func (r *Reloader) ConfigProvider() func() *config.Config {
 	return func() *config.Config { return r.activeCfg.Load() }
 }
 
+// debounceTimer is the part of *time.Timer the debounce uses.
+type debounceTimer interface {
+	Reset(time.Duration) bool
+	Stop() bool
+}
+
 // watchLoop drains fsnotify events, debounces them, and dispatches
 // each debounced burst to reloadOnce. Exits when ctx is cancelled or
 // the watcher channel closes.
@@ -315,7 +321,7 @@ func (r *Reloader) watchLoop(ctx context.Context, watcher *fsnotify.Watcher) {
 	defer watcher.Close()
 
 	base := filepath.Base(r.configPath)
-	var timer *time.Timer
+	var timer debounceTimer
 	defer func() {
 		if timer != nil {
 			timer.Stop()
@@ -358,7 +364,7 @@ func (r *Reloader) watchLoop(ctx context.Context, watcher *fsnotify.Watcher) {
 			// Debounce: reset the timer on every event. Fire once when
 			// the burst quiesces for `debounce`.
 			if timer == nil {
-				timer = time.AfterFunc(r.debounce, func() {
+				timer = r.afterFunc(r.debounce, func() {
 					select {
 					case trigger <- struct{}{}:
 					default:
