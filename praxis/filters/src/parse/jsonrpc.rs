@@ -1,6 +1,5 @@
 //! Port of core/internal/parsercommon/parsercommon.go and of the JSON-RPC request
 //! decode and the `data:` line scan that core/parse/mcp and core/parse/a2a share.
-#![allow(dead_code)] // T2 and T3 of #1724 use it; T4 removes this line
 
 use serde_json::value::RawValue;
 use serde_json::{Map, Value};
