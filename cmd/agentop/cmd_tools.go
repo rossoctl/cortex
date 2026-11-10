@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/rossoctl/cortex/cmd/agentop/toolscan"
+	"github.com/rossoctl/cortex/core/config"
 )
 
 const toolsUsage = `agentop tools — read agent logs to measure tool use
@@ -120,6 +121,20 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 	window := *days
 	if *all {
 		window = toolscan.AllTime
+	}
+
+	// A file that does not load keeps today's path: PatchConfig reports the error.
+	if *write != "" {
+		if cfg, err := config.Load(*write); err == nil {
+			statsURL := dialURL(cfg.Stats.StatsAddress)
+			if statsURL != "" && !localStatsUp(statsURL) {
+				statsURL = ""
+			}
+			if err := praxisRefusal(cfg, *write, statsURL); err != nil {
+				fmt.Fprintf(stderr, "agentop: %v\n", err)
+				return 1
+			}
+		}
 	}
 
 	scanDir := *dir

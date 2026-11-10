@@ -151,6 +151,9 @@ func serverTarget(configPath string) (cfg *config.Config, path, statsURL string,
 	if statsURL = dialURL(cfg.Stats.StatsAddress); statsURL != "" && !localStatsUp(statsURL) {
 		statsURL = ""
 	}
+	if err := praxisRefusal(cfg, path, statsURL); err != nil {
+		return nil, "", "", err
+	}
 	return cfg, path, statsURL, nil
 }
 
