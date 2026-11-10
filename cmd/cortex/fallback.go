@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -296,4 +297,37 @@ func requestLineForLog(line string) string {
 		return line[:i] + "?<redacted>"
 	}
 	return line
+}
+
+// supervisorConfigPath is the config file the cortex child reads: the -config value,
+// else ~/.cortex/config.yaml when -local or its -demo alias is set, as main.go does.
+// main.go refuses -local together with -config, so -config is checked first.
+func supervisorConfigPath(args []string) string {
+	if path := configPathFromArgs(args); path != "" {
+		return path
+	}
+	// main.go reads the two bool flags separately and ORs them; last occurrence wins.
+	set := map[string]bool{}
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			continue
+		}
+		name, val, hasVal := strings.Cut(strings.TrimPrefix(a[1:], "-"), "=")
+		if name != "local" && name != "demo" {
+			continue
+		}
+		on := true
+		if hasVal {
+			on, _ = strconv.ParseBool(val) // flag.Parse rejects a bad value, so the child never runs
+		}
+		set[name] = on
+	}
+	if !set["local"] && !set["demo"] {
+		return ""
+	}
+	dir, err := defaultCortexDir()
+	if err != nil {
+		return "" // the child fails on the same error
+	}
+	return filepath.Join(dir, localConfigName)
 }

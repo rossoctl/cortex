@@ -238,7 +238,7 @@ func runSupervisor(flagName string) error {
 	stopping := make(chan os.Signal, 1)
 	signal.Notify(stopping, syscall.SIGTERM, syscall.SIGINT)
 
-	configPath := configPathFromArgs(args)
+	configPath := supervisorConfigPath(args)
 	cfg := supervisorConfig(configPath)
 
 	// The fallback holds the forward address whenever no child does, so a routed agent

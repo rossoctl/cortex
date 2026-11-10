@@ -274,3 +274,57 @@ func TestSupervisorChildren_PraxisAddsGateway(t *testing.T) {
 		}
 	}
 }
+
+// The supervisor must read the config file the cortex child reads. With --local (or its
+// --demo alias) and no --config, that is ~/.cortex/config.yaml.
+func TestSupervisorConfigPath_LocalReadsTheChildsConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	local := filepath.Join(home, cortexDirName, localConfigName)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-local"}, local},
+		{[]string{"--local"}, local},
+		{[]string{"--local=true"}, local},
+		{[]string{"-local=1"}, local},
+		{[]string{"--demo"}, local},
+		{[]string{"-demo=true"}, local},
+		{[]string{"--local=false"}, ""},
+		{[]string{"--local", "--local=false"}, ""},
+		{[]string{"--local=false", "-local"}, local},
+		{[]string{"--config", "/etc/c.yaml"}, "/etc/c.yaml"},
+		{[]string{"-ca-dir", "/d"}, ""},
+		{[]string{"local"}, ""},
+		{nil, ""},
+	} {
+		if got := supervisorConfigPath(tc.args); got != tc.want {
+			t.Errorf("supervisorConfigPath(%q) = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+}
+
+// The reviewer's repro: `cortex --local --supervise` with praxis.enabled in
+// ~/.cortex/config.yaml runs the gateway beside cortex.
+func TestSupervisorChildren_LocalPraxisAddsGateway(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, cortexDirName)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "mode: proxy-sidecar\nlistener:\n  session_api_addr: 127.0.0.1:47601\n  bind_loopback_only: true\n  reverse_proxy_backend: 127.0.0.1:8000\npraxis:\n  enabled: true\n"
+	if err := os.WriteFile(filepath.Join(dir, localConfigName), []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--local"}
+	path := supervisorConfigPath(args)
+	specs := supervisorChildren(supervisorConfig(path), path, "/opt/bin/cortex", args, writeGatewayFiles)
+	if len(specs) != 2 || specs[1].name != gatewayBinary {
+		t.Fatalf("specs = %+v, want cortex and the gateway", specs)
+	}
+	if _, err := os.Stat(filepath.Join(dir, gatewayTokenName)); err != nil {
+		t.Errorf("gateway token not in ~/.cortex: %v", err)
+	}
+}
