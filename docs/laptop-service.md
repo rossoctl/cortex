@@ -1019,7 +1019,7 @@ It unroutes Claude Code, OpenCode, IBM Bob and the bob shell function where Cort
 routed them, restarting OpenCode's background service when it finds it running. It
 stops and removes the service, or the background proxy. It removes the PATH lines setup
 added, unless other tools in `~/.local/bin` still need them, and removes `agentop`,
-`cortex` and `cortex-session-dump` from `~/.local/bin`. A step that fails is reported
+`cortex`, `cortex-session-dump` and `cortex-gateway` from `~/.local/bin`. A step that fails is reported
 with its fix, the rest still run, and the end lists what was left behind.
 
 `--purge` also deletes `~/.cortex`: config, CA, logs, cost history, session history,
@@ -1139,5 +1139,5 @@ variables. Remove the ones that point at Cortex with the `opencode` CLI, as
 [Undoing it by hand](agents/opencode.md#undoing-it-by-hand) shows, also before
 `rm -rf ~/.cortex`.
 
-Last, the files setup installed: `rm -f ~/.local/bin/cortex ~/.local/bin/cortex-session-dump`,
+Last, the files setup installed: `rm -f ~/.local/bin/cortex ~/.local/bin/cortex-session-dump ~/.local/bin/cortex-gateway`,
 and the two lines it marked in your shell profile, the first starting `# added by Cortex`.

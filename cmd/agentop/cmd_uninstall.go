@@ -27,8 +27,8 @@ Usage:
 Unroutes Claude Code, OpenCode, IBM Bob, and the bob and pi shell functions and
 Pi's session extension where Cortex routed them; stops and removes the service, or the background proxy; removes the PATH
 lines setup added, unless other tools in ~/.local/bin still need them; and
-removes agentop, cortex and cortex-session-dump from ~/.local/bin. ~/.cortex
-stays unless --purge. What to remove is read from disk, not from a record of
+removes agentop, cortex, cortex-session-dump and cortex-gateway from
+~/.local/bin. ~/.cortex stays unless --purge. What to remove is read from disk, not from a record of
 the install. A removal that fails is reported with its fix and the rest still
 run, but ~/.cortex then stays; the end lists what was left behind. ~/.cortex also
 stays when a setting still points into it afterwards — one left in place, or one

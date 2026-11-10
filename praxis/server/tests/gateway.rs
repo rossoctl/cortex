@@ -363,6 +363,8 @@ fn start(flags: &[&str], config: impl FnOnce(&str, u16) -> String) -> Gateway {
     std::fs::write(&config, yaml).expect("config");
     let log = std::fs::File::create(dir.join("gateway.log")).expect("log");
     let mut child = Command::new(env!("CARGO_BIN_EXE_cortex-gateway"))
+        // The supervisor gives the gateway an empty env. Test it the same way.
+        .env_clear()
         .arg("-c")
         .arg(&config)
         .args(flags)

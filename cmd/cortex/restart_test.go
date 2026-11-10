@@ -483,7 +483,17 @@ func (c *child) pids(t *testing.T, re *regexp.Regexp, n int) []int {
 	}
 }
 
-func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+// alive reports whether pid runs. A zombie has exited: in a container whose PID 1
+// does not reap (CI's job container), an orphan stays a zombie, and kill(pid, 0)
+// still succeeds on it.
+func alive(pid int) bool {
+	if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		if i := bytes.LastIndexByte(b, ')'); i >= 0 && i+2 < len(b) {
+			return b[i+2] != 'Z'
+		}
+	}
+	return syscall.Kill(pid, 0) == nil
+}
 
 func waitGone(t *testing.T, pid int, within time.Duration) {
 	t.Helper()
