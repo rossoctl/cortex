@@ -565,3 +565,36 @@ func TestSupervisor_DirectModeStartsNoGateway(t *testing.T) {
 		}
 	}
 }
+
+// A gateway that cannot start (here, a missing binary) does not stop cortex: the
+// supervisor says so at ERROR one time, retries with backoff, and still stops on SIGTERM.
+func TestSupervisor_GatewayStartFailureKeepsCortex(t *testing.T) {
+	r := newPraxisRig(t, true)
+	gwPath := filepath.Join(r.bin, gatewayBinary)
+	if err := os.Remove(gwPath); err != nil {
+		t.Fatal(err)
+	}
+	sup := r.supervise(t)
+	cortex := sup.pids(t, idleChildPid, 1)[0]
+	// Past the first retry (superviseRestartDelay), so a second failure has happened.
+	time.Sleep(superviseRestartDelay + time.Second)
+	if !alive(cortex) {
+		t.Fatalf("cortex pid %d stopped after the gateway failed to start:\n%s", cortex, sup.out.String())
+	}
+	var errLines []string
+	for _, l := range strings.Split(sup.out.String(), "\n") {
+		if strings.Contains(l, "cannot start the child") && strings.Contains(l, "ERROR") {
+			errLines = append(errLines, l)
+		}
+	}
+	if len(errLines) != 1 || !strings.Contains(errLines[0], gwPath) {
+		t.Fatalf("want one ERROR line that names %s, got %q:\n%s", gwPath, errLines, sup.out.String())
+	}
+
+	sent := time.Now()
+	if err := sup.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	sup.waitExit(t, sent, 5*time.Second)
+	waitGone(t, cortex, 5*time.Second-time.Since(sent))
+}
