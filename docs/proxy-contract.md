@@ -42,7 +42,7 @@ it, and `agentop pricing` takes `--stats-url`. The pipeline editor and `doctor` 
 | Endpoint | What agentop reads | Reader |
 |---|---|---|
 | `GET /reload/status` | `last_success`, `reloads_ok`, `reloads_failed`, `last_error` (shape: `Status` in `core/reloader/status.go`) | `edit.PollUntilReloaded` in `cmd/agentop/edit/status.go`. `localStatsUp` in `cmd/agentop/local_endpoint.go` requires a 2xx with a `reloads_ok` field |
-| `GET /config` | `listener.forward_proxy_addr`, `tls_bridge.mode`, `tls_bridge.ca_dir`. It ignores all other fields | `runningConfig` and `runningConfigFields` in `cmd/agentop/local_endpoint.go`, for `agentop exec` |
+| `GET /config` | `listener.forward_proxy_addr`, `tls_bridge.mode`, `tls_bridge.ca_dir`, `praxis.enabled`. It ignores all other fields | `runningConfig` and `runningConfigFields` in `cmd/agentop/local_endpoint.go`, for `agentop exec` and `praxisRefusal` |
 | `GET /pricing/table` | The table (`describeBody`). With `?host=<gateway>`, the rates for that host (`effective`) | `cmd/agentop/cmd_pricing.go`. A 404 means a proxy older than the endpoint. `Registry.Handler` in `core/cost/pricing/handler.go` serves it |
 | `GET /tls-bridge/unread` | `tlsbridge.UnreadReport` (`programs`, `hosts`, `osTrustsCA`) | `fetchUnread` in `cmd/agentop/doctor_unread.go`. A non-200 or no route makes the check silent |
 

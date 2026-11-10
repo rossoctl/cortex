@@ -281,7 +281,7 @@ func TestWaitForLocalSessionAPI_SaysWhyItIsWaiting(t *testing.T) {
 	}
 }
 
-// runningConfig reads only the three fields exec uses. A newer proxy can change the
+// runningConfig reads only the four fields agentop uses. A newer proxy can change the
 // type of a different field, and the decode must not fail because of it.
 func TestRunningConfig_IgnoresFieldsItDoesNotRead(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -317,5 +317,37 @@ func TestRunningConfig_NoBridgeBlockIsNil(t *testing.T) {
 	}
 	if cfg.TLSBridge != nil {
 		t.Errorf("TLSBridge = %+v, want nil", cfg.TLSBridge)
+	}
+}
+
+// praxisRefusal reads praxis.enabled from the running Cortex.
+func TestRunningConfig_ReadsPraxisEnabled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"listener":{"forward_proxy_addr":"127.0.0.1:47600"},"praxis":{"enabled":true}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg, err := runningConfig(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.PraxisEnabled() {
+		t.Errorf("PraxisEnabled() = false, want true")
+	}
+}
+
+// A /config without a praxis block gives a nil Praxis.
+func TestRunningConfig_NoPraxisBlock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"listener":{"forward_proxy_addr":"127.0.0.1:47600"}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg, err := runningConfig(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Praxis != nil {
+		t.Errorf("Praxis = %+v, want nil", cfg.Praxis)
 	}
 }

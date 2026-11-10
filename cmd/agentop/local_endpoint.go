@@ -235,7 +235,8 @@ const defaultCortexStatsURL = "http://localhost:47602/"
 // errNoRunningCortex means nothing answered at the stats URL.
 var errNoRunningCortex = errors.New("no Cortex is running on this machine")
 
-// runningConfigFields holds the only /config fields that agentop exec reads.
+// runningConfigFields holds the only /config fields that agentop exec and
+// praxisRefusal read.
 // A decode into the full config.Config fails when a newer proxy changes the type
 // of any field. This struct ignores the fields it does not hold.
 type runningConfigFields struct {
@@ -247,6 +248,9 @@ type runningConfigFields struct {
 		Mode  string `json:"mode"`
 		CADir string `json:"ca_dir"`
 	} `json:"tls_bridge"`
+	Praxis *struct {
+		Enabled bool `json:"enabled"`
+	} `json:"praxis"`
 }
 
 // runningConfig returns the config of the Cortex actually running, fetched from
@@ -307,6 +311,9 @@ func runningConfig(base string) (*config.Config, error) {
 	cfg := config.Config{Listener: config.ListenerConfig{ForwardProxyAddr: got.Listener.ForwardProxyAddr}}
 	if got.TLSBridge != nil {
 		cfg.TLSBridge = &config.TLSBridgeConfig{Mode: got.TLSBridge.Mode, CADir: got.TLSBridge.CADir}
+	}
+	if got.Praxis != nil && got.Praxis.Enabled {
+		cfg.Praxis = &config.PraxisConfig{Enabled: true}
 	}
 	// /config redacts values whose keys end in secret/password/token/key/
 	// credential (and the "mappings" host→credential block), exempting the
