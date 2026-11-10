@@ -52,6 +52,14 @@ jobs:
           sed -i -E 's/^(praxis-proxy(-filter)? = \{ version = )"=[0-9.]+"/\1"='"$v"'"/' \
             praxis/server/Cargo.toml praxis/filters/Cargo.toml
           git diff --stat
+          # If sed matched nothing, the job would test the old pin and pass.
+          for f in praxis/server/Cargo.toml praxis/filters/Cargo.toml; do
+            pins=$(grep -E '^praxis-proxy(-filter)? *=' "$f" || true)
+            if [ -z "$pins" ] || printf '%s\n' "$pins" | grep -vqF "\"=${v}\""; then
+              echo "::error::${f}: the Praxis pins did not move to =${v}"
+              exit 1
+            fi
+          done
 
       # Installs the toolchain that praxis/rust-toolchain.toml names.
       - name: Test
@@ -59,7 +67,8 @@ jobs:
         run: |
           set -euo pipefail
           rustup toolchain install
-          cargo update -p praxis-proxy -p praxis-proxy-filter
+          # --recursive: a new Praxis can need newer shared dependencies too.
+          cargo update --recursive -p praxis-proxy -p praxis-proxy-filter
           cargo test --locked
 
       - name: Static release build
