@@ -99,6 +99,12 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	if s.Sessions == nil {
 		return
 	}
+	// Hop branch point 5: the gateway records the response row of a request the hop sends.
+	if s.Hop != nil {
+		if _, ok := s.Hop.owns(pctx); ok {
+			return
+		}
+	}
 	// Prefer the session pinned when the request event was recorded so the
 	// response lands in the same bucket. Fall back to ActiveSession() only
 	// when nothing was pinned (defensive — a response-only path), then to

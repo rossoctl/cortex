@@ -161,6 +161,10 @@ type Server struct {
 	// config.ListenerConfig.EgressGuard.
 	EgressGuard *egressguard.Guard
 
+	// Hop, when non-nil, sends each recorded request to cortex-gateway at the dial
+	// (praxis mode, #1721). nil in direct mode, and then serveOutbound is as before.
+	Hop *Hop
+
 	// Processes, when non-nil, names the process behind each client connection, and a
 	// request with no session header is filed under that process's session — or its
 	// nearest ancestor's — before client affinity is consulted; see core/attribution. Set only where every client is a process on this
@@ -445,6 +449,10 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// Before anything reads the headers: a client must not assert its own attribution, and
 	// no hop in front of this listener is trusted to (attribution.Strip).
 	attribution.Strip(r.Header)
+	// Hop branch point 1: a client must not send its own hop headers.
+	if s.Hop != nil {
+		stripHopHeaders(r.Header)
+	}
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    r.Method,
@@ -698,6 +706,8 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		}
 	}
 
+	// Hop branch point 2: the gateway records the rows of a request the hop sends.
+	hopped := s.Hop != nil && !skipped && !forwardUpgrade
 	if !skipped && s.Sessions != nil {
 		sid := s.recordingSessionID(sessionID, r.Header, chain)
 		// Pin this session so the paired response event records into the
@@ -716,7 +726,12 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// operator wants to see (it carries Host, and the paired response
 		// carries StatusCode). skip_hosts traffic never reaches here (the
 		// !skipped guard above), so it stays suppressed by design.
-		s.recordCapturedRequest(tl, pctx, sid, capture)
+		if hopped {
+			s.Hop.own(pctx, hopWire(pctx, r.Header, sid))
+			defer s.Hop.release(pctx)
+		} else {
+			s.recordCapturedRequest(tl, pctx, sid, capture)
+		}
 	}
 
 	// Propagate every header mutation the outbound pipeline made to the
@@ -744,7 +759,8 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// falls back to the current pipeline (Holder.ForPctx).
 	pinned := s.OutboundPipeline.ForPctx(pctx)
 
-	ownEncoding := !skipped && (pinned.NeedsResponseBody() || pinned.HasStreamingResponders())
+	// Hop branch point 3: the hop always owns the encoding.
+	ownEncoding := hopped || (!skipped && (pinned.NeedsResponseBody() || pinned.HasStreamingResponders()))
 	stripForUpstream(r, ownEncoding, forwardUpgrade)
 
 	// Clear RequestURI — set by the server but must be empty for client requests
@@ -784,7 +800,17 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// to), so the exchange rides this client as HTTP/1.1.
 		client = s.TLSBridge.Upstream
 	}
-	resp, err := client.Do(r)
+	// Hop branch point 4: after the redirect re-check, dial the gateway in place of the origin.
+	var resp *http.Response
+	var err error
+	if hopped {
+		var answered bool
+		if resp, err, answered = s.hopDo(w, r, pctx, tl, pctx.OutboundSessionID); answered {
+			return
+		}
+	} else {
+		resp, err = client.Do(r)
+	}
 	// A Resender reads refused answers, and a 101 is not one — it is the upgrade
 	// succeeding. Peeking at its (empty) body and sending the GET again would tear
 	// down the connection the origin just switched, so a forwarded upgrade never

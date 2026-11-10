@@ -749,6 +749,11 @@ const ErrorKindTurnInterrupted = "turn_interrupted"
 // shared conformance suite matches without a translation table.
 const ErrorKindDestinationPrivate = "destination_private"
 
+// ErrorKindGatewayUnavailable is the praxis hop answering 503 itself because
+// cortex-gateway is not ready or does not accept the dial (#1721). Cortex records
+// the request row and this row, because the gateway never saw the request.
+const ErrorKindGatewayUnavailable = "gateway_unavailable"
+
 // SessionSource is how a listener resolved Context.Session.
 type SessionSource string
 
