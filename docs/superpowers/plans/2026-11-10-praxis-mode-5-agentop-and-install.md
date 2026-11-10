@@ -110,8 +110,8 @@ Depends on: T1. Estimate: 170 lines.
   - `TestPraxisRefusal_DirectMode`: file without praxis, server without praxis. Assert nil.
   - `TestPraxisRefusal_FileOnly`: `cfg.Praxis = &config.PraxisConfig{Enabled: true}`, `statsURL ""`. Assert the error contains `praxis mode is on (in <path>)` and `agentop service restart`.
   - `TestPraxisRefusal_RunningOnly`: file direct mode, test server reports `praxis.enabled: true`. Assert the error contains `in the running Cortex`.
-  - `TestServerAdd_RefusedInPraxisMode`: a temp config with `praxis: {enabled: true}` and `listener.bind_loopback_only: true`. Run `runServer([]string{"add", …, "--config", path}, …)`. Assert exit 1, the refusal on stderr, and the file bytes unchanged.
-  - `TestScriptList_RefusedInPraxisMode`: the same config, `runScript([]string{"list", "--config", path}, …)`. Assert exit 1.
+  - `TestServerAdd_RefusedInPraxisMode`: a temp config with `praxis: {enabled: true}` and `listener.bind_loopback_only: true`. Run `runServerCmd(t, "", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--yes", "--config", path)`. Assert exit 1, the refusal on stderr, and the file bytes unchanged.
+  - `TestScriptList_RefusedInPraxisMode`: the same config, `runScriptCmd(t, "list", "--config", path)`. Assert exit 1.
   - `TestToolsScanWrite_RefusedInPraxisMode`: `runTools` with `scan --dir <temp transcripts> --write <praxis config>`. Assert exit 1 and file unchanged. `TestToolsScan_NoWriteWorksInPraxisMode`: no `--write`. Assert exit 0.
 - [ ] **Step 2: Run** `GOWORK=off go -C cmd/agentop test -run 'Praxis' .` Expected: FAIL.
 - [ ] **Step 3: Implement** `praxisRefusal`. Call it at the end of `serverTarget` (return its error). In `runTools`, when `*write != ""`, load the file with `config.Load`, find the stats URL as `serverTarget` does (`dialURL(cfg.Stats.StatsAddress)` plus `localStatsUp`), and call `praxisRefusal` before the scan. A file that does not load keeps today's path (PatchConfig reports the error).
@@ -136,7 +136,7 @@ Depends on: none. Estimate: 140 lines.
   - Go: `TestSuperviseChild_GatewayVersionMismatchDoesNotStart`: set `gatewayVersionOf` to return `"v0.0.1"`, `wantVersion "v9.9.9"`, path a script that writes a marker file. Close `stop` after 200 ms. Assert the marker file does not exist.
   - Go: `TestSuperviseChild_GatewayVersionMatchStarts`: `gatewayVersionOf` returns `wantVersion`. Assert the marker file exists.
 - [ ] **Step 2: Run** `cargo test --manifest-path praxis/Cargo.toml -p cortex-gateway` and `GOWORK=off go -C cmd/cortex test -tags "$(GOWORK=off go -C scripts/profile-tags run . local)" -run 'TestSupervis' .` Expected: FAIL.
-- [ ] **Step 3: Implement.** Rust: `fn version_line() -> String`. In `main`, before `install_crypto_provider`, when any arg is `--version`, print `version_line()` and return. Go: set `wantVersion: version` on the gateway spec. In `superviseChild`, before `exec.Command`, when `spec.wantVersion != ""` and `gatewayVersionOf(spec.path) != spec.wantVersion`, log per decision 9 (`"want", spec.wantVersion, "got", got`) and take the same path as a start error.
+- [ ] **Step 3: Implement.** Rust: `fn version_line() -> String`. In `main`, before `install_crypto_provider`, when any arg is `--version`, print `version_line()` and return. Go: set `wantVersion: version` on the gateway spec. In `superviseChild`, before `exec.Command`, when `spec.wantVersion != ""` and `gatewayVersionOf(spec.path) != spec.wantVersion`, log per decision 9 (`"want", spec.wantVersion, "got", got`) and set `err` to `fmt.Errorf("cortex-gateway version %q differs from cortex %q", got, spec.wantVersion)` before the `if err == nil { err = cmd.Start() }` line, so the existing start-error branch (backoff, retry) handles it. Do not call `cmd.Start()` when `err` is set.
 - [ ] **Step 4: Run** the Step 2 commands. Expected: PASS. Also `cargo clippy --manifest-path praxis/Cargo.toml --all-targets --locked -- -D warnings`.
 - [ ] **Step 5: Commit** `feat: Refuse a cortex-gateway whose version differs from cortex`.
 
@@ -169,10 +169,10 @@ Depends on: none. Estimate: 420 lines.
   - `TestConfigStep_PraxisKeepsEverythingElse`: an existing config with two outbound plugins and a router `servers:` entry. Run the config step with `opts.praxis`. Assert the only diff lines are the added `praxis` lines.
   - `TestConfigStep_NoPraxisFlagLeavesBlock`: an existing config with `praxis: {enabled: true}` written as a block, no flag. Assert the file is unchanged.
   - `TestConfigStep_PraxisNeedsGateway`: `opts.praxis`, a `--from` dir without `cortex-gateway`. Assert the plan returns the decision-7 problem.
-  - `TestSetup_NoGatewayDirectModeWorks`: the existing setup scene with no `cortex-gateway` anywhere and no flag. Assert success (pins the Global Constraint).
+  - `TestSetup_NoGatewayDirectModeWorks`: a copy of `TestSetupFreshInstallEndToEnd` (`setup_e2e_test.go`) with no `cortex-gateway` in the `--from` dir or the bin dir, and no `--praxis`. Assert success and that the written config has no `praxis:` key (pins the Global Constraint).
   - `TestPreflightPorts_PraxisProbesGatewayPorts`: fresh install, `opts.praxis`, `portInUse = func(p string) bool { return p == "47605" }` (the existing seam in `setup_probe.go`). Assert the problem names 47605. Without `opts.praxis`, assert no problem.
 - [ ] **Step 2: Run** `GOWORK=off go -C cmd/agentop test -run 'Praxis|NoGateway' .` Expected: FAIL.
-- [ ] **Step 3: Implement.** In `configStep.plan`: when `opts.praxis`, return `praxisGatewayProblem(env)` if it is not nil. For an existing config, a praxis edit that is pending makes the plan `update` (not `done`). In `configStep.apply`: after the pin migration and the Bob pricing, call `enablePraxis(cfg)` when `opts.praxis`. A failure is a `stepError` (the step's undo restores the snapshot). Append ` · praxis mode on` to the detail when it changed. In `preflightPorts`: probe `append(cortexPorts, praxisPorts...)` when `opts.praxis`.
+- [ ] **Step 3: Implement.** In `configStep.plan`: when `opts.praxis`, return `praxisGatewayProblem(env)` if it is not nil. For an existing config, read the file and call `enablePraxisText`. When `changed` is true, the plan is `update` (not `done`). When the call returns an error (flow style), return a problem with that error and decision 5's fix. In `configStep.apply`: after the pin migration and the Bob pricing, call `enablePraxis(cfg)` when `opts.praxis`. A failure is a `stepError` (the step's undo restores the snapshot). Append ` · praxis mode on` to the detail when it changed. In `preflightPorts`: probe `append(cortexPorts, praxisPorts...)` when `opts.praxis`.
 - [ ] **Step 4: Run** `scripts/dev/go-test-shards.sh -short cmd/agentop`, then `scripts/dev/go-test-shards.sh -race cmd/agentop` (setup scenes). Expected: PASS.
 - [ ] **Step 5: Commit** `feat: Add the praxis block from agentop setup --praxis`.
 
@@ -214,7 +214,7 @@ Depends on: T5. Estimate: 50 lines.
 
 ### Task 7: `install.sh --praxis`
 
-Depends on: none. Estimate: 270 lines.
+Depends on: T1 (both tasks edit `docs/proxy-contract.md`; run T7 after T1 so the two edits do not conflict). Estimate: 270 lines.
 
 **Files:**
 - Modify: `scripts/install.sh` (arg loop, `usage`, unknown-option message, `praxis_platform_check`, `require_praxis_build`, the re-exec check, the skip-download check, the download, checksum and extract steps, `hand_off`)
