@@ -3,7 +3,7 @@
 This is the Rust workspace for praxis mode (#1714). It has two crates:
 
 - `cortex-praxis-filters` (`filters/`): the Cortex filters that run inside
-  Praxis, a port of the Go inference parser (`parse`), and the row builder and
+  Praxis, ports of the Go inference, MCP and A2A parsers (`parse`), and the row builder and
   emitter that send rows to Cortex (`record`).
 - `cortex-gateway` (`server/`): the Praxis server with the Cortex filters
   registered (#1719).
@@ -152,11 +152,16 @@ and this suite then shows the Rust gap. To regenerate, from this directory:
 
 ```sh
 GOWORK=off go -C ../core test ./plugins/inferenceparser -run TestFixtures -update
+GOWORK=off go -C ../core test ./plugins/mcpparser -run TestFixtures -update
+GOWORK=off go -C ../core test ./plugins/a2aparser -run TestFixtures -update
 ```
 
 `filters/tests/parity.rs` reads each case under
 `../core/plugins/inferenceparser/testdata/`. It feeds the body to the Rust parser
 in several ways (whole, in small chunks, gzip-coded, with CRLF line endings).
+`filters/tests/mcp_parity.rs` and `filters/tests/a2a_parity.rs` do the same for
+`../core/plugins/mcpparser/testdata/` and `../core/plugins/a2aparser/testdata/`
+(whole, and for an SSE case also in chunks and with CRLF line endings).
 Each result must equal the Go `expected.json`.
 
 When the two differ, fix the Rust code. Do not change Go behavior or a Go

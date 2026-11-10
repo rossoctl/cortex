@@ -1,4 +1,4 @@
-//! The fixture loader and the JSON comparison that parity.rs and row_parity.rs share.
+//! The fixture loader and the JSON comparison that the parity tests share.
 #![allow(dead_code)] // each test crate uses only part of this module
 
 use std::path::{Path, PathBuf};
@@ -31,14 +31,19 @@ pub fn cases(agent: &str) -> Vec<Case> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join(TESTDATA)
         .join(agent);
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
+    case_dirs(&root).into_iter().map(load).collect()
+}
+
+/// Every subdirectory of `root` that has a request.headers file, sorted.
+pub fn case_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
         .unwrap_or_else(|e| panic!("{}: {e}", root.display()))
         .map(|e| e.unwrap().path())
         .filter(|d| d.join("request.headers").is_file())
         .collect();
     dirs.sort();
     assert!(!dirs.is_empty(), "no cases under {}", root.display());
-    dirs.into_iter().map(load).collect()
+    dirs
 }
 
 pub fn load(dir: PathBuf) -> Case {

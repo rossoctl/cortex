@@ -5,7 +5,7 @@
 
 mod anthropic;
 mod dialect;
-mod gojson;
+pub(crate) mod gojson;
 mod observer;
 mod openai;
 mod responses;

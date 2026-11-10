@@ -1,8 +1,8 @@
-//! The inference extension, as the Go struct in core/model/extensions.go gives it in JSON.
+//! The inference, MCP and A2A extensions, as the Go structs in core/model/extensions.go give them in JSON.
 
 use serde::Serialize;
-use serde_json::Value;
 use serde_json::value::RawValue;
+use serde_json::{Map, Value};
 
 // Go's omitempty skips a zero number.
 fn is_zero<T: Default + PartialEq>(v: &T) -> bool {
@@ -201,6 +201,75 @@ pub struct InferenceToolResult {
     pub is_error: bool,
 }
 
+// Go's omitempty skips a nil map and an empty map.
+fn map_is_empty(m: &Option<Map<String, Value>>) -> bool {
+    m.as_ref().is_none_or(Map::is_empty)
+}
+
+/// One MCP JSON-RPC request and its response. Mirrors model.MCPExtension.
+/// The parser keeps an empty `result` as `Some`: Go checks `Result != nil`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpExtension {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_id: Option<Value>,
+    #[serde(skip_serializing_if = "map_is_empty")]
+    pub params: Option<Map<String, Value>>,
+    #[serde(skip_serializing_if = "map_is_empty")]
+    pub result: Option<Map<String, Value>>,
+    #[serde(rename = "error", skip_serializing_if = "Option::is_none")]
+    pub err: Option<McpError>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub is_action: bool,
+}
+
+/// A JSON-RPC 2.0 error object. Mirrors model.MCPError.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct McpError {
+    pub code: i64,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
+/// One A2A request and a summary of its response. Mirrors model.A2AExtension.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct A2aExtension {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpc_id: Option<Value>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub session_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub message_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub task_id: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub role: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<A2aPart>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub final_status: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub artifact: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub error_message: String,
+    #[serde(skip_serializing_if = "is_false")]
+    pub is_action: bool,
+}
+
+/// One message part of an A2A request. Mirrors model.A2APart.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct A2aPart {
+    pub kind: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub content: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,8 +358,14 @@ mod tests {
     fn walk(path: &str, v: &Value, kinds: &BTreeMap<String, String>, out: &mut BTreeSet<String>) {
         match v {
             Value::Object(m) => {
+                let is_map = kinds.get(path).map(String::as_str) == Some("map");
                 for (k, child) in m {
-                    let p = format!("{path}.{k}");
+                    // The children of a Go map share one path, as in parsefixture.checkFieldPaths.
+                    let p = if is_map {
+                        format!("{path}{{}}")
+                    } else {
+                        format!("{path}.{k}")
+                    };
                     out.insert(p.clone());
                     if kinds.get(&p).map(String::as_str) != Some("any") {
                         walk(&p, child, kinds, out);
@@ -337,31 +412,100 @@ mod tests {
     }
 
     #[test]
+    fn mcp_a2a_zero_values_follow_go_omitempty() {
+        assert_eq!(json(&McpExtension::default()), "{}");
+        // Go's omitempty omits an empty map too.
+        let empty = McpExtension {
+            params: Some(Map::new()),
+            result: Some(Map::new()),
+            ..Default::default()
+        };
+        assert_eq!(json(&empty), "{}");
+        assert_eq!(json(&McpError::default()), r#"{"code":0,"message":""}"#);
+        assert_eq!(json(&A2aExtension::default()), "{}");
+        assert_eq!(json(&A2aPart::default()), r#"{"kind":""}"#);
+    }
+
+    fn json<T: Serialize>(v: &T) -> String {
+        serde_json::to_string(v).unwrap()
+    }
+
+    fn mcp_sample() -> McpExtension {
+        let map: Map<String, Value> = [("k".to_string(), Value::from(1.0))].into_iter().collect();
+        McpExtension {
+            method: "tools/call".into(),
+            rpc_id: Some(Value::from(1.0)),
+            params: Some(map.clone()),
+            result: Some(map),
+            err: Some(McpError {
+                code: 1,
+                message: "m".into(),
+                data: Some(Value::from("d")),
+            }),
+            is_action: true,
+        }
+    }
+
+    fn a2a_sample() -> A2aExtension {
+        A2aExtension {
+            method: "message/send".into(),
+            rpc_id: Some(Value::from(1.0)),
+            session_id: "s".into(),
+            message_id: "m".into(),
+            task_id: "t".into(),
+            role: "user".into(),
+            parts: vec![A2aPart {
+                kind: "text".into(),
+                content: "c".into(),
+            }],
+            final_status: "completed".into(),
+            artifact: "a".into(),
+            error_message: "e".into(),
+            is_action: true,
+        }
+    }
+
+    #[test]
     fn every_go_inference_field_is_set_or_listed() {
+        check_fields(
+            "inference",
+            serde_json::to_value(full_sample()).unwrap(),
+            NOT_SET_IN_PRAXIS_MODE,
+        );
+    }
+
+    #[test]
+    fn every_go_mcp_field_is_set_or_listed() {
+        check_fields("mcp", serde_json::to_value(mcp_sample()).unwrap(), &[]);
+    }
+
+    #[test]
+    fn every_go_a2a_field_is_set_or_listed() {
+        check_fields("a2a", serde_json::to_value(a2a_sample()).unwrap(), &[]);
+    }
+
+    /// Compares the key paths of `sample` with the `<prefix>.` lines of the Go field list.
+    fn check_fields(prefix: &str, sample: Value, not_set: &[&str]) {
         let file = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../core/pipeline/testdata/parsed-request.fields"
         );
         let text = std::fs::read_to_string(file).unwrap();
+        let dot = format!("{prefix}.");
         let kinds: BTreeMap<String, String> = text
             .lines()
-            .filter(|l| l.starts_with("inference."))
+            .filter(|l| l.starts_with(&dot))
             .filter_map(|l| l.split_once(' '))
             .map(|(p, k)| (p.to_string(), k.to_string()))
             .collect();
-        assert!(!kinds.is_empty(), "no inference fields in {file}");
+        assert!(!kinds.is_empty(), "no {prefix} fields in {file}");
 
         let mut rust = BTreeSet::new();
-        walk(
-            "inference",
-            &serde_json::to_value(full_sample()).unwrap(),
-            &kinds,
-            &mut rust,
-        );
+        walk(prefix, &sample, &kinds, &mut rust);
 
         let missing: Vec<_> = kinds
             .keys()
-            .filter(|p| !rust.contains(*p) && !NOT_SET_IN_PRAXIS_MODE.contains(&p.as_str()))
+            .filter(|p| !rust.contains(*p) && !not_set.contains(&p.as_str()))
             .collect();
         assert!(
             missing.is_empty(),

@@ -844,6 +844,30 @@ fn buffered_over_cap_after_the_head_keeps_upstream_status() {
     assert_eq!(i.quiet(), Vec::<Value>::new(), "a second response row");
 }
 
+/// Praxis calls on_request_body with end-of-stream for an empty body; these rows depend on it.
+#[test]
+fn bodyless_mcp_request_records_transport_method() {
+    for (method, extra, want) in [
+        ("GET", None, "$transport/stream"),
+        (
+            "DELETE",
+            Some(("Mcp-Session-Id", "s1")),
+            "$transport/terminate",
+        ),
+    ] {
+        let o = ok_origin();
+        let i = ingest();
+        let g = gateway(&o, &i, true);
+        let mut h = vec![("X-Cortex-Token", TOKEN)];
+        h.extend(extra);
+        let (rh, _) = send(&g, method, "/mcp", &h, b"");
+        assert_eq!(status(&rh), 200);
+        for l in i.take(2) {
+            assert_eq!(l["event"]["mcp"]["method"], want, "{method}: {l}");
+        }
+    }
+}
+
 #[test]
 fn bodyless_response_ends_its_row() {
     let o = origin(|_, s| {

@@ -17,8 +17,10 @@ use super::client::{
 use super::line::{Capture, Cost, Event, EventError, Line, ResponseCapture, wire_header};
 use super::redact;
 use crate::parse::MAX_BODY_SIZE;
+use crate::parse::a2a::A2aObserver;
 use crate::parse::decode::{Coding, DecodeError, Decoder};
 use crate::parse::inference::{InferenceObserver, is_event_stream};
+use crate::parse::mcp::McpObserver;
 use crate::parse::model::InferenceExtension;
 use crate::parse::sse::FrameReader;
 
@@ -123,6 +125,30 @@ fn keep(capture: &mut Option<ResponseCapture>, b: &[u8]) {
     c.body.extend_from_slice(&b[..b.len().min(room)]);
 }
 
+/// The parsers of one exchange. The Go plugins run one after the other on the same exchange.
+#[derive(Default)]
+struct Observers {
+    inference: Option<InferenceObserver>,
+    mcp: Option<McpObserver>,
+    a2a: Option<A2aObserver>,
+}
+
+impl Observers {
+    /// Gives one response frame to each parser. This is the only call site per frame,
+    /// so a parser added later cannot be missed.
+    fn frame(&mut self, headers: &HeaderMap, f: &[u8], last: bool) {
+        if let Some(o) = self.inference.as_mut() {
+            o.on_response_frame(headers, f, last);
+        }
+        if let Some(o) = self.mcp.as_mut() {
+            o.on_response_frame(f, last);
+        }
+        if let Some(o) = self.a2a.as_mut() {
+            o.on_response_frame(f, last);
+        }
+    }
+}
+
 /// The response side of an exchange, from its head on.
 struct Response {
     status: u16,
@@ -144,11 +170,7 @@ struct Response {
 
 impl Response {
     /// Gives a decoded chunk (or the decoder's end, for `None`) to the parser.
-    fn feed(
-        &mut self,
-        obs: &mut Option<InferenceObserver>,
-        chunk: Option<&[u8]>,
-    ) -> Result<(), Abort> {
+    fn feed(&mut self, obs: &mut Observers, chunk: Option<&[u8]>) -> Result<(), Abort> {
         if self.corrupt {
             return Ok(());
         }
@@ -177,10 +199,8 @@ impl Response {
                 Ok(f) => (f, false),
                 Err(e) => (e.completed, true),
             };
-            if let Some(o) = obs.as_mut() {
-                for f in done {
-                    o.on_response_frame(headers, &f, false);
-                }
+            for f in done {
+                obs.frame(headers, &f, false);
             }
             if over {
                 frame_over = true;
@@ -218,7 +238,7 @@ pub struct Exchange {
     client: Option<Client>,
     subagent: String,
     parent_subagent: String,
-    observer: Option<InferenceObserver>,
+    observers: Observers,
     request_built: bool,
     capture_kept: bool,
     ttfb: Duration,
@@ -254,7 +274,7 @@ impl Exchange {
             request_id,
             started_at: DateTime::<Utc>::from(started).to_rfc3339_opts(SecondsFormat::Nanos, true),
             start,
-            observer: None,
+            observers: Observers::default(),
             request_built: false,
             capture_kept: false,
             ttfb: Duration::ZERO,
@@ -296,7 +316,16 @@ impl Exchange {
             true => self.path.clone(),
             false => format!("{}?{}", self.path, self.query),
         };
-        self.observer = Some(InferenceObserver::on_request(&target, &self.headers, body));
+        self.observers = Observers {
+            inference: Some(InferenceObserver::on_request(&target, &self.headers, body)),
+            mcp: Some(McpObserver::on_request(
+                &self.method,
+                &target,
+                &self.headers,
+                body,
+            )),
+            a2a: Some(A2aObserver::on_request(&self.headers, body)),
+        };
         self.request_row(body)
     }
 
@@ -304,7 +333,8 @@ impl Exchange {
         self.request_built = true;
         // The request-only fields move to this row: nothing on the response side reads them.
         let inference = self
-            .observer
+            .observers
+            .inference
             .as_mut()
             .and_then(|o| o.extension_mut())
             .map(|i| InferenceExtension {
@@ -331,6 +361,19 @@ impl Exchange {
         self.capture_kept = capture.is_some();
         let event = Event {
             inference,
+            // Decision 3 of the plan: the extensions as they are after on_request.
+            mcp: self
+                .observers
+                .mcp
+                .as_ref()
+                .and_then(|o| o.extension())
+                .cloned(),
+            a2a: self
+                .observers
+                .a2a
+                .as_ref()
+                .and_then(|o| o.extension())
+                .cloned(),
             bytes_up: body.len() as i64,
             client_proc: self.attribution.client_proc.clone(),
             session_header: self.attribution.session_header.clone(),
@@ -398,7 +441,7 @@ impl Exchange {
         if !r.gzip {
             keep(&mut r.capture, chunk);
         }
-        r.feed(&mut self.observer, Some(chunk))
+        r.feed(&mut self.observers, Some(chunk))
     }
 
     /// The response row of a response read to its end.
@@ -406,7 +449,7 @@ impl Exchange {
         let Some(r) = self.resp.as_mut() else {
             return self.response_row(0, None);
         };
-        if let Err(a) = r.feed(&mut self.observer, None) {
+        if let Err(a) = r.feed(&mut self.observers, None) {
             return self.on_abort(a);
         }
         if r.sse && !r.corrupt {
@@ -414,19 +457,15 @@ impl Exchange {
                 Ok(f) => (f, false),
                 Err(e) => (e.completed, true),
             };
-            if let Some(o) = self.observer.as_mut() {
-                for f in done {
-                    o.on_response_frame(&r.headers, &f, false);
-                }
+            for f in done {
+                self.observers.frame(&r.headers, &f, false);
             }
             if over {
                 return self.on_abort(Abort::FrameOverCap);
             }
         }
-        if let Some(o) = self.observer.as_mut() {
-            let last: &[u8] = if r.sse { b"" } else { &r.buffered };
-            o.on_response_frame(&r.headers, last, true);
-        }
+        let last: &[u8] = if r.sse { b"" } else { &r.buffered };
+        self.observers.frame(&r.headers, last, true);
         if let Some(c) = r.capture.as_mut() {
             c.ended = true;
         }
@@ -532,7 +571,25 @@ impl Exchange {
         let mut event = Event {
             // Line format v1: the request row carries the request-only fields, and Cortex puts
             // them back on this row. They are most of a line's bytes (docs/session-api.md).
-            inference: self.observer.as_ref().and_then(|o| o.extension()).cloned(),
+            inference: self
+                .observers
+                .inference
+                .as_ref()
+                .and_then(|o| o.extension())
+                .cloned(),
+            // Decision 2 of the plan: the whole extension, request fields included.
+            mcp: self
+                .observers
+                .mcp
+                .as_ref()
+                .and_then(|o| o.extension())
+                .cloned(),
+            a2a: self
+                .observers
+                .a2a
+                .as_ref()
+                .and_then(|o| o.extension())
+                .cloned(),
             status_code,
             error,
             duration_ms: self.start.elapsed().as_millis() as i64,
@@ -600,17 +657,82 @@ mod tests {
     }
 
     fn fixture() -> Fixture {
-        let head = std::fs::read_to_string(format!("{FIXTURE}/request.headers")).unwrap();
+        fixture_at(FIXTURE)
+    }
+
+    /// An SSE case. A missing response.headers file gives `Content-Type: text/event-stream`.
+    fn fixture_at(dir: &str) -> Fixture {
+        let head = std::fs::read_to_string(format!("{dir}/request.headers")).unwrap();
         let mut lines = head.lines();
         let target = lines.next().unwrap().split(' ').nth(1).unwrap().to_owned();
-        let resp = std::fs::read_to_string(format!("{FIXTURE}/response.headers")).unwrap();
+        let resp = std::fs::read_to_string(format!("{dir}/response.headers"))
+            .unwrap_or_else(|_| "Content-Type: text/event-stream".to_owned());
         Fixture {
             target,
             req_headers: header_map(lines),
-            req_body: std::fs::read(format!("{FIXTURE}/request.json")).unwrap(),
+            req_body: std::fs::read(format!("{dir}/request.json")).unwrap(),
             resp_headers: header_map(resp.lines()),
-            resp_body: std::fs::read(format!("{FIXTURE}/response.sse")).unwrap(),
+            resp_body: std::fs::read(format!("{dir}/response.sse")).unwrap(),
         }
+    }
+
+    /// The request row and the response row of the SSE case in `dir`.
+    fn run_at(dir: &str) -> (Value, Value, Value) {
+        let f = fixture_at(dir);
+        let mut ex = exchange("POST", "tool.example.com", &f.target, &f.req_headers);
+        let req = json_of(&ex.on_request_body(&f.req_body));
+        let mut h = f.resp_headers.clone();
+        ex.on_response_head(200, &mut h).unwrap();
+        ex.on_response_chunk(&f.resp_body).unwrap();
+        let resp = json_of(&ex.on_response_end());
+        let expected = std::fs::read(format!("{dir}/expected.json")).unwrap();
+        (req, resp, serde_json::from_slice(&expected).unwrap())
+    }
+
+    /// The JSON values with every number as an f64: Go writes 1 where Rust writes 1.0.
+    fn as_f64(v: &Value) -> Value {
+        match v {
+            Value::Number(n) => json!(n.as_f64()),
+            Value::Array(a) => a.iter().map(as_f64).collect(),
+            Value::Object(o) => o.iter().map(|(k, v)| (k.clone(), as_f64(v))).collect(),
+            v => v.clone(),
+        }
+    }
+
+    const MCP_FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../core/plugins/mcpparser/testdata/tools-call-sse"
+    );
+    const A2A_FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../core/plugins/a2aparser/testdata/message-stream"
+    );
+
+    #[test]
+    fn mcp_request_row_has_no_result() {
+        let (req, resp, expected) = run_at(MCP_FIXTURE);
+        let qm = &req["event"]["mcp"];
+        assert_eq!(qm["method"], "tools/call");
+        assert!(qm["params"].is_object());
+        assert!(qm.get("result").is_none());
+        assert!(resp["event"]["mcp"]["result"].is_object());
+        assert_eq!(as_f64(&resp["event"]["mcp"]), as_f64(&expected));
+    }
+
+    #[test]
+    fn a2a_rows_carry_the_extension() {
+        let (req, resp, expected) = run_at(A2A_FIXTURE);
+        assert_eq!(as_f64(&resp["event"]["a2a"]), as_f64(&expected));
+        let qa = &req["event"]["a2a"];
+        assert_eq!(qa["method"], "message/stream");
+        assert!(qa.get("finalStatus").is_none());
+    }
+
+    #[test]
+    fn mcp_row_has_no_capture() {
+        let (req, resp, _) = run_at(MCP_FIXTURE);
+        assert!(req.get("capture").is_none());
+        assert!(resp.get("capture").is_none());
     }
 
     fn attribution() -> Attribution {
@@ -1070,7 +1192,13 @@ mod tests {
         let f = fixture();
         let mut ex = exchange("POST", "api.example.com", &f.target, &f.req_headers);
         ex.on_request_body(&f.req_body);
-        let i = ex.observer.as_ref().unwrap().extension().unwrap();
+        let i = ex
+            .observers
+            .inference
+            .as_ref()
+            .unwrap()
+            .extension()
+            .unwrap();
         assert!(
             i.messages.is_empty(),
             "the exchange still holds the messages"

@@ -1,5 +1,8 @@
+pub mod a2a;
 pub mod decode;
 pub mod inference;
+pub(crate) mod jsonrpc;
+pub mod mcp;
 pub mod model;
 pub mod sse;
 

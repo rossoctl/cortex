@@ -12,7 +12,7 @@ use serde::{Serialize, Serializer};
 
 use super::client::Client;
 use super::emitter::Queued;
-use crate::parse::model::InferenceExtension;
+use crate::parse::model::{A2aExtension, InferenceExtension, McpExtension};
 
 /// The line format version, `ingestLineVersion` in Go.
 pub const LINE_VERSION: u8 = 1;
@@ -41,9 +41,6 @@ pub const NOT_SET_IN_PRAXIS_MODE: &[&str] = &[
     "tunnel",
     "tunnelReason",
     "dialAddr",
-    // The a2a and mcp parsers move at step 6.
-    "a2a",
-    "mcp",
 ];
 
 fn is_zero(v: &i64) -> bool {
@@ -75,6 +72,10 @@ pub struct Event {
     pub phase: &'static str,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub request_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub a2a: Option<A2aExtension>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<McpExtension>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inference: Option<InferenceExtension>,
     #[serde(skip_serializing_if = "is_zero")]
@@ -252,6 +253,8 @@ pub(crate) mod tests {
             direction: "outbound",
             phase: "response",
             request_id: "r".into(),
+            a2a: Some(A2aExtension::default()),
+            mcp: Some(McpExtension::default()),
             inference: Some(InferenceExtension::default()),
             status_code: 200,
             error: Some(EventError {
