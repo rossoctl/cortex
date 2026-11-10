@@ -216,11 +216,13 @@ probe() {
 	url=$3
 	body="$s/body.json"
 	if [ ! -f "$body" ]; then
-		{
-			printf '{"model":"claude-opus-4-6","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"'
-			head -c 1048576 /dev/zero | tr '\0' x
-			printf '"}]}'
-		} >"$body"
+		# 513 turns of 2 KiB, not one 1 MiB string: the parsers work per message.
+		awk 'BEGIN {
+			x = sprintf("%2048s", ""); gsub(/ /, "x", x)
+			printf "{\"model\":\"claude-opus-4-6\",\"max_tokens\":16,\"stream\":true,\"messages\":["
+			for (i = 1; i <= 513; i++) printf "%s{\"role\":\"%s\",\"content\":\"%s\"}", (i > 1 ? "," : ""), (i % 2 ? "user" : "assistant"), x
+			printf "]}"
+		}' >"$body"
 	fi
 	out="$s/probe.tsv"
 	: >"$out"
@@ -277,7 +279,8 @@ ttff() {
 			setports "$m"
 			ms=$(first_frame_ms curl -sN --proxy "http://127.0.0.1:$proxy" \
 				--cacert "$s/$m/home/.cortex/ca/bundle.crt" \
-				-H "Authorization: Bearer $ANTHROPIC_AUTH_TOKEN" -H 'anthropic-version: 2023-06-01' \
+				-K <(printf 'header = "Authorization: Bearer %s"\n' "$ANTHROPIC_AUTH_TOKEN") \
+				-H 'anthropic-version: 2023-06-01' \
 				-H 'content-type: application/json' --data "$small" "$url/v1/messages" || true)
 			[ -n "$ms" ] || bad=1
 			pair="$pair$i	$m	$ms
@@ -319,7 +322,8 @@ sample_one() {
 	heap=-
 	if [ "$2" = cortex ]; then
 		setports "$1"
-		heap=$(curl -s --noproxy '*' "http://127.0.0.1:$stats/debug/pprof/heap?gc=1&debug=1" |
+		# No gc=1: a forced GC every 5 s adds CPU to both cortex rows and skews C4.
+		heap=$(curl -s --noproxy '*' "http://127.0.0.1:$stats/debug/pprof/heap?debug=1" |
 			awk '/^# HeapInuse = / {print $4}' || true)
 		[ -n "$heap" ] || heap=-
 	fi
