@@ -98,7 +98,7 @@ fn responses_input_item_unmarshal_json(data: &RawValue, body: &LossyBody) -> R<R
             parameters: schema_object(t.parameters),
         });
     }
-    if typ == "function_call_output" {
+    if typ == "function_call_output" || typ == "custom_tool_call_output" {
         it.tool_results.push(InferenceToolResult {
             tool_use_id: call_id,
             content: flatten_responses_content(output),
@@ -665,6 +665,13 @@ mod tests {
                 r#"{"model":"m","input":[null,{"type":"function_call","call_id":"c"},{"type":"function_call_output","call_id":"c","output":[{"type":"output_text","text":"a"},{"text":"b"}]},{"type":"message","role":"user","content":[{"type":"input_image"},{"type":"input_text","text":"q"}]}]}"#
             ),
             json!({"model":"m","messages":[{"role":"user","content":"q","contentBytes":57}],"toolResults":[{"toolUseId":"c","content":"a\nb"}],"isAction":true})
+        );
+        // Codex's custom tools send their results as custom_tool_call_output.
+        assert_eq!(
+            req(
+                r#"{"model":"m","input":[{"type":"custom_tool_call","call_id":"x","name":"exec","input":"ls"},{"type":"custom_tool_call_output","call_id":"x","output":[{"type":"input_text","text":"a\n"},{"type":"input_text","text":"b"}]}]}"#
+            ),
+            json!({"model":"m","toolResults":[{"toolUseId":"x","content":"a\n\nb"}],"isAction":true})
         );
         assert_eq!(
             req(

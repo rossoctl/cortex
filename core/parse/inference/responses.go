@@ -59,8 +59,11 @@ type responsesRequest struct {
 //     Messages, for the same reason the Anthropic one does: tool output
 //     must not reach the plugins that read Messages. The output value is
 //     read with flattenResponsesContent, which accepts the string form this
-//     API documents (and Codex sends) and a text-part array should one
-//     arrive.
+//     API documents and a text-part array should one arrive.
+//   - "custom_tool_call_output": the same thing for a custom (freeform)
+//     tool, with the same call_id and output fields. Codex declares its
+//     tools this way (one "exec" tool taking a script), so every tool result
+//     it sends arrives as this type, with the output as input_text parts.
 //
 // Every other item type (reasoning echoes, function_call round-trips) is
 // skipped — this parser surfaces conversation text, the tool manifest, and
@@ -106,7 +109,7 @@ func (it *responsesInputItem) UnmarshalJSON(data []byte) error {
 			})
 		}
 	}
-	if raw.Type == "function_call_output" {
+	if raw.Type == "function_call_output" || raw.Type == "custom_tool_call_output" {
 		it.ToolResults = append(it.ToolResults, model.InferenceToolResult{
 			ToolUseID: raw.CallID,
 			Content:   flattenResponsesContent(raw.Output),

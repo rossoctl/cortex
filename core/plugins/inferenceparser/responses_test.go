@@ -470,6 +470,37 @@ func TestInferenceParser_ResponsesRequest_ToolResults(t *testing.T) {
 	}
 }
 
+// Codex declares its tools as custom (freeform) tools, so its tool results arrive as
+// custom_tool_call_output items, with the output as a list of input_text parts. They
+// are read the same way as function_call_output. The body is trimmed from a captured
+// Codex 0.167 request.
+func TestInferenceParser_ResponsesRequest_CustomToolResults(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{
+		Path: "/backend-api/codex/responses",
+		Body: []byte(`{"model":"gpt-5","input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"print a.txt"}]},
+			{"type":"custom_tool_call","call_id":"call_x","name":"exec","input":"const r = await tools.exec_command({cmd:\"cat a.txt\"});\ntext(r.output);\n"},
+			{"type":"custom_tool_call_output","call_id":"call_x","output":[
+				{"type":"input_text","text":"Script completed\nOutput:\n"},
+				{"type":"input_text","text":"hello\n"}]}
+		]}`),
+	}
+	p.OnRequest(context.Background(), pctx)
+
+	ext := pctx.Extensions.Inference
+	if ext == nil {
+		t.Fatal("Extensions.Inference is nil")
+	}
+	want := pipeline.InferenceToolResult{ToolUseID: "call_x", Content: "Script completed\nOutput:\n\nhello\n"}
+	if len(ext.ToolResults) != 1 || ext.ToolResults[0] != want {
+		t.Fatalf("ToolResults = %+v, want [%+v]", ext.ToolResults, want)
+	}
+	if len(ext.Messages) != 1 || ext.Messages[0].Content != "print a.txt" {
+		t.Errorf("Messages = %+v, want the user message only", ext.Messages)
+	}
+}
+
 // runResponsesFrames feeds frames through OnResponseFrame as a live listener would and
 // returns the extension once the stream has ended.
 func runResponsesFrames(t *testing.T, frames ...string) (*pipeline.Context, *pipeline.InferenceExtension) {

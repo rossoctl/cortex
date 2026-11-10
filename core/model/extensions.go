@@ -142,9 +142,10 @@ type InferenceExtension struct {
 	ServedModel string `json:"servedModel,omitempty"`
 
 	// ToolResults are the tool_result blocks of an Anthropic request and the
-	// function_call_output items of a Responses API request — what each earlier tool
-	// call returned, as the client sent it back. Message Content keeps only text blocks,
-	// so without this a tool result left nothing behind but its size in ContentBytes.
+	// function_call_output and custom_tool_call_output items of a Responses API request —
+	// what each earlier tool call returned, as the client sent it back. Message Content
+	// keeps only text blocks, so without this a tool result left nothing behind but its
+	// size in ContentBytes.
 	//
 	// KEPT OUT OF MESSAGES ON PURPOSE. Plugins read Messages — IBAC as the user's intent,
 	// OPA/SPARC/CPEX as policy input, lineage as an exported span — and tool output reaches
