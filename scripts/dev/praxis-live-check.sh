@@ -69,6 +69,19 @@ is_up() {
 	[ "$1" != praxis ] || grep -q 'praxis hop: cortex-gateway is ready' "$3"
 }
 
+# port_busy PORT: succeeds when something accepts a TCP connection on 127.0.0.1:PORT.
+port_busy() {
+	(exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+}
+
+# sample_check FILE: fails when FILE has no rows, or has praxis cortex rows but no
+# cortex-gateway rows. A pgrep pattern that matches nothing must not look like a pass.
+sample_check() {
+	[ -s "$1" ] || { echo "no process was sampled" >&2; return 1; }
+	! awk '$2 == "praxis" && $3 == "cortex" {c = 1} $3 == "cortex-gateway" {g = 1} END {exit !(c && !g)}' "$1" ||
+		{ echo "praxis cortex was sampled, but no cortex-gateway" >&2; return 1; }
+}
+
 selftest() {
 	fail=0
 	check() {
@@ -105,6 +118,13 @@ selftest() {
 	if is_up praxis 200 "$t/cortex.log"; then echo "selftest: is_up passed praxis before the hop is ready" >&2; fail=1; fi
 	echo 'level=INFO msg="praxis hop: cortex-gateway is ready" gateway=127.0.0.1:49715' >"$t/cortex.log"
 	if ! is_up praxis 200 "$t/cortex.log"; then echo "selftest: is_up refused praxis with the hop ready" >&2; fail=1; fi
+	: >"$t/empty.tsv"
+	if sample_check "$t/empty.tsv" 2>/dev/null; then echo "selftest: sample_check passed no rows" >&2; fail=1; fi
+	printf '1\tpraxis\tcortex\t10\t100\t1\t5\n' >"$t/nogw.tsv"
+	if sample_check "$t/nogw.tsv" 2>/dev/null; then echo "selftest: sample_check passed praxis with no gateway" >&2; fail=1; fi
+	printf '1\tdirect\tcortex\t9\t100\t1\t5\n' >"$t/direct.tsv"
+	if ! sample_check "$t/direct.tsv"; then echo "selftest: sample_check refused direct only" >&2; fail=1; fi
+	if ! sample_check "$t/sample.tsv"; then echo "selftest: sample_check refused praxis with a gateway" >&2; fail=1; fi
 	rm -rf "$t"
 	[ "$fail" = 0 ] || exit 1
 	echo "selftest: ok"
@@ -185,7 +205,15 @@ pipeline:
 $praxis_block
 EOF
 	ports_ok "$cfg" || die "refusing to start: $cfg names a port of the shared proxy (476xx)"
-	HOME="$home" "$s/bin/cortex" -supervise --config "$cfg" </dev/null >"$d/cortex.log" 2>&1 &
+	last=$((base + 4))
+	[ "$mode" != praxis ] || last=$((base + 6))
+	for p in $(seq "$base" "$last"); do
+		! port_busy "$p" || die "port $p is in use; run down, or stop the other instance"
+	done
+	# The child must not reach the shared proxy or trust its CA from the caller's shell.
+	env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy -u ALL_PROXY -u all_proxy \
+		-u NO_PROXY -u no_proxy -u SSL_CERT_FILE -u SSL_CERT_DIR \
+		HOME="$home" "$s/bin/cortex" -supervise --config "$cfg" </dev/null >"$d/cortex.log" 2>&1 &
 	echo $! >"$d/supervisor.pid"
 	for _ in $(seq 300); do
 		if is_up "$mode" "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$health/healthz" || true)" "$d/cortex.log"; then
@@ -257,8 +285,9 @@ probe() {
 		codes=""
 		for m in $(order "$i"); do
 			setports "$m"
-			r=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' --proxy "http://127.0.0.1:$proxy" \
-				--cacert "$s/$m/home/.cortex/ca/bundle.crt" -H 'x-api-key: invalid' \
+			# --noproxy '': NO_PROXY must not send this past the proxy. Expect: no 100-continue wait.
+			r=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' --noproxy '' --proxy "http://127.0.0.1:$proxy" \
+				--cacert "$s/$m/home/.cortex/ca/bundle.crt" -H 'x-api-key: invalid' -H 'Expect:' \
 				-H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
 				--data-binary @"$body" "$url/v1/messages" || true)
 			codes="$codes ${r%% *}"
@@ -270,6 +299,7 @@ probe() {
 	done
 	[ -s "$out" ] || die "probe: every pair was dropped ($dropped)"
 	summarize "$out" 4 50 95
+	echo "codes $(cut -f3 "$out" | sort | uniq -c | awk '{printf "%s%s:%s", (NR > 1 ? " " : ""), $2, $1 / 2}')"
 	echo "dropped $dropped"
 }
 
@@ -302,7 +332,7 @@ ttff() {
 		bad=0
 		for m in $(order "$i"); do
 			setports "$m"
-			ms=$(first_frame_ms curl -sN --proxy "http://127.0.0.1:$proxy" \
+			ms=$(first_frame_ms curl -sN --noproxy '' --proxy "http://127.0.0.1:$proxy" \
 				--cacert "$s/$m/home/.cortex/ca/bundle.crt" \
 				-K <(printf 'header = "Authorization: Bearer %s"\n' "$ANTHROPIC_AUTH_TOKEN") \
 				-H 'anthropic-version: 2023-06-01' \
@@ -358,7 +388,7 @@ sample_one() {
 sample() {
 	s=$(abs "$1")
 	secs=$2
-	trap 'sample_summary; exit 0' TERM INT
+	trap 'sample_summary; sample_check "$s/sample.tsv" || exit 1; exit 0' TERM INT
 	: >"$s/sample.tsv" # one run per summary; an earlier run's rows would skew it
 	start=$(date +%s)
 	while :; do
@@ -375,6 +405,7 @@ sample() {
 		wait $! || true
 	done
 	sample_summary
+	sample_check "$s/sample.tsv" || exit 1
 }
 
 down() {
