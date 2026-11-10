@@ -222,10 +222,7 @@ func TestSupervisorChildren_DirectModeHasOnlyCortex(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			specs, err := supervisorChildren(cfg, filepath.Join(dir, "config.yaml"), "/bin/cortex", args, noWrite)
-			if err != nil {
-				t.Fatal(err)
-			}
+			specs := supervisorChildren(cfg, filepath.Join(dir, "config.yaml"), "/bin/cortex", args, noWrite)
 			if len(specs) != 1 || specs[0].name != "cortex" {
 				t.Fatalf("specs = %+v, want only cortex", specs)
 			}
@@ -240,13 +237,22 @@ func TestSupervisorChildren_DirectModeHasOnlyCortex(t *testing.T) {
 	}
 }
 
+// Gateway files that cannot be written leave cortex alone, with today's env. It must
+// not end the supervisor: nothing would then restart anything before the next login.
+func TestSupervisorChildren_WriteFailureRunsCortexAlone(t *testing.T) {
+	failWrite := func(string, *config.Config) (string, string, error) {
+		return "", "", errors.New("read-only dir")
+	}
+	specs := supervisorChildren(praxisConfig(), "/x/config.yaml", "/bin/cortex", nil, failWrite)
+	if len(specs) != 1 || specs[0].name != "cortex" || specs[0].env != nil {
+		t.Fatalf("specs = %+v, want only cortex with the inherited env", specs)
+	}
+}
+
 func TestSupervisorChildren_PraxisAddsGateway(t *testing.T) {
 	dir := t.TempDir()
 	cfg := praxisConfig()
-	specs, err := supervisorChildren(cfg, filepath.Join(dir, "config.yaml"), "/opt/bin/cortex", []string{"--config", "c"}, writeGatewayFiles)
-	if err != nil {
-		t.Fatal(err)
-	}
+	specs := supervisorChildren(cfg, filepath.Join(dir, "config.yaml"), "/opt/bin/cortex", []string{"--config", "c"}, writeGatewayFiles)
 	if len(specs) != 2 {
 		t.Fatalf("specs = %+v, want cortex and the gateway", specs)
 	}

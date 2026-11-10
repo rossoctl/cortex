@@ -181,20 +181,25 @@ type childSpec struct {
 // today's args and env, and touches no file. Praxis mode first writes the gateway
 // files next to the config, then adds cortex-gateway, found next to this binary. The
 // gateway gets an empty env, so no proxy variable can reach it.
+//
+// When the gateway cannot run, cortex runs alone: it then refuses the praxis config
+// at each start and logs why, and the fallback keeps the forward address. Ending the
+// supervisor instead would leave nothing until the next login.
 func supervisorChildren(cfg *config.Config, configPath, self string, args []string,
-	write func(dir string, cfg *config.Config) (string, string, error)) ([]childSpec, error) {
+	write func(dir string, cfg *config.Config) (string, string, error)) []childSpec {
 	cortex := childSpec{name: cortexChild, path: self, args: args}
 	if cfg == nil || !cfg.PraxisEnabled() {
-		return []childSpec{cortex}, nil
+		return []childSpec{cortex}
 	}
 	// The cortex child refuses this config at each start. Do not run a gateway for it.
 	if err := config.Validate(cfg); err != nil {
 		slog.Error("supervisor: the config is not valid, so cortex-gateway does not start", "error", err)
-		return []childSpec{cortex}, nil
+		return []childSpec{cortex}
 	}
 	tokenPath, yamlPath, err := write(filepath.Dir(configPath), cfg)
 	if err != nil {
-		return nil, fmt.Errorf("writing the gateway files: %w", err)
+		slog.Error("supervisor: cannot write the gateway files, so cortex-gateway does not start", "error", err)
+		return []childSpec{cortex}
 	}
 	cortex.env = append(os.Environ(), gatewayTokenEnv+"="+tokenPath)
 	gateway := childSpec{
@@ -204,7 +209,7 @@ func supervisorChildren(cfg *config.Config, configPath, self string, args []stri
 		env:       []string{},
 		stdinPipe: true,
 	}
-	return []childSpec{cortex, gateway}, nil
+	return []childSpec{cortex, gateway}
 }
 
 // runSupervisor re-executes this binary without the supervise flag and restarts it
@@ -246,10 +251,7 @@ func runSupervisor(flagName string) error {
 	fallback.open(fallbackAddr)
 	defer fallback.close()
 
-	specs, err := supervisorChildren(cfg, configPath, self, args, writeGatewayFiles)
-	if err != nil {
-		return err
-	}
+	specs := supervisorChildren(cfg, configPath, self, args, writeGatewayFiles)
 	specs[0].fallback, specs[0].fallbackAddr = fallback, fallbackAddr
 
 	// Each child stops at the same time, so the whole stop stays inside launchd's 5s.

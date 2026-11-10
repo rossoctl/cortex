@@ -40,7 +40,10 @@ one process; systemd handles it.
 In praxis mode (`praxis.enabled: true`), the supervisor has a second child,
 `cortex-gateway`, so you see three processes. At each start the supervisor writes
 `~/.cortex/gateway.token` and `~/.cortex/gateway.yaml`. A restart of the proxy does
-not restart the gateway. When the supervisor exits, the gateway exits too.
+not restart the gateway. When the supervisor exits, the gateway exits too. The
+supervisor reads `praxis.*` only when it starts, so after you change `praxis.*`, run
+`agentop service restart`. Until then, the next restart of the proxy fails at each
+try.
 
 **On Linux, do not set `praxis.enabled` for the service yet.** The systemd unit does
 not use `--supervise`, so nothing starts the gateway or writes `gateway.token`. Then
