@@ -102,6 +102,10 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 	// Hop branch point 5: the gateway records the response row of a request the hop sends.
 	if s.Hop != nil {
 		if _, ok := s.Hop.owns(pctx); ok {
+			// Ingestion puts Cortex's own cut on the gateway's row.
+			if fail != nil && fail.Kind == "proxy_error" {
+				s.Hop.noteCut(pctx.RequestID(), statusCode, fail)
+			}
 			return
 		}
 	}

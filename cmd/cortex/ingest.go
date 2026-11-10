@@ -13,23 +13,28 @@ import (
 // POST /v1/ingest. The supervisor creates the file; Cortex only reads it.
 const gatewayTokenEnv = "CORTEX_GATEWAY_TOKEN_FILE"
 
-// ingestOptions turns on the ingestion endpoint in praxis mode. In direct mode it returns
-// nil and reads neither the environment nor a file.
-func ingestOptions(cfg *config.Config, rates pricing.Resolver, getenv func(string) string, readFile func(string) ([]byte, error)) ([]sessionapi.Option, error) {
-	if !cfg.PraxisEnabled() {
-		return nil, nil
-	}
+// readGatewayToken reads the token file that CORTEX_GATEWAY_TOKEN_FILE names.
+func readGatewayToken(getenv func(string) string, readFile func(string) ([]byte, error)) (string, error) {
 	path := getenv(gatewayTokenEnv)
 	if path == "" {
-		return nil, fmt.Errorf("praxis.enabled needs %s to name the gateway token file", gatewayTokenEnv)
+		return "", fmt.Errorf("praxis.enabled needs %s to name the gateway token file", gatewayTokenEnv)
 	}
 	b, err := readFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read the gateway token file (%s): %w", gatewayTokenEnv, err)
+		return "", fmt.Errorf("read the gateway token file (%s): %w", gatewayTokenEnv, err)
 	}
 	token := strings.TrimSpace(string(b))
 	if token == "" {
-		return nil, fmt.Errorf("the gateway token file %s (%s) is empty", path, gatewayTokenEnv)
+		return "", fmt.Errorf("the gateway token file %s (%s) is empty", path, gatewayTokenEnv)
 	}
-	return []sessionapi.Option{sessionapi.WithIngest(sessionapi.Ingest{Token: token, Rates: rates})}, nil
+	return token, nil
+}
+
+// ingestOptions turns on the ingestion endpoint in praxis mode, with the hop's joins
+// (nil when no forward proxy runs). In direct mode it returns nil.
+func ingestOptions(cfg *config.Config, rates pricing.Resolver, token string, joins sessionapi.HopJoins) []sessionapi.Option {
+	if !cfg.PraxisEnabled() {
+		return nil
+	}
+	return []sessionapi.Option{sessionapi.WithIngest(sessionapi.Ingest{Token: token, Rates: rates, Joins: joins})}
 }

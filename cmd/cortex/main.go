@@ -579,7 +579,7 @@ func main() {
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)
 		}
-		out, err := plugins.BuildWithDeps(c.Pipeline.Outbound.Plugins, outDeps)
+		out, err := plugins.BuildWithDeps(outboundEntries(c, slog.Default()), outDeps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("outbound: %w", err)
 		}
@@ -874,6 +874,14 @@ func main() {
 	// TLS so the outbound pipeline sees decrypted HTTPS. Constructed
 	// here and set on fpSrv below (mirroring fpSrv.SkipHosts / fpSrv.Shared).
 	// A nil *Engine leaves today's blind-tunnel behavior intact.
+	// The bridge's re-origination client, and the praxis egress listener's, dial
+	// through the egress guard when one is armed, so a bridged request is checked
+	// exactly like a plaintext one. No option when the guard is off: nil
+	// DialContext is the transport's default dialer.
+	var upOpts []tlsbridge.UpstreamOption
+	if egress != nil {
+		upOpts = append(upOpts, tlsbridge.WithDialContext(egress.DialContext))
+	}
 	var bridge *tlsbridge.Engine
 	if cfg.TLSBridge != nil && cfg.TLSBridge.Mode == "enabled" {
 		// CA is normally the operator-mounted cert-manager Secret (tls.crt/tls.key
@@ -956,14 +964,6 @@ func main() {
 			if extra, err = os.ReadFile(cfg.TLSBridge.UpstreamCABundle); err != nil {
 				fatalf("tls-bridge upstream_ca_bundle read failed: %v", err)
 			}
-		}
-		// The bridge's re-origination client dials through the egress guard
-		// when one is armed, so a bridged request is checked exactly like a
-		// plaintext one. No option when the guard is off: nil DialContext is
-		// the transport's default dialer.
-		var upOpts []tlsbridge.UpstreamOption
-		if egress != nil {
-			upOpts = append(upOpts, tlsbridge.WithDialContext(egress.DialContext))
 		}
 		up, uerr := tlsbridge.NewUpstreamClient(extra, cfg.TLSBridge.UpstreamInsecure, upOpts...)
 		if uerr != nil {
@@ -1050,6 +1050,17 @@ func main() {
 	ctrlCfg, ctrlErr := resolveControlConfig(os.Getenv)
 	if ctrlErr != nil {
 		fatalf("vm control: %v", ctrlErr)
+	}
+	// Praxis mode: one read of the gateway token, for the hop, the egress listener and
+	// POST /v1/ingest. hopJoins stays nil when no forward proxy runs.
+	var gatewayToken string
+	var hopJoins sessionapi.HopJoins
+	if cfg.PraxisEnabled() {
+		t, terr := readGatewayToken(os.Getenv, os.ReadFile)
+		if terr != nil {
+			fatalf("praxis: %v", terr)
+		}
+		gatewayToken = t
 	}
 	if roles[config.RoleForward] {
 		fpSrv, ferr := forwardproxy.NewServer(outboundH, sessions, fpMTLS, forwardproxy.WithEgressGuard(egress))
@@ -1147,9 +1158,33 @@ func main() {
 		if ctrlCfg.Socket != "" {
 			vmCtrl = startVMControl(ctrlCfg, fpSrv)
 		}
+		// Praxis mode, also before the forward proxy serves: startPraxis sets fpSrv.Hop
+		// and fpSrv.ResponsesWebSockets. The egress listener uses the bridge's upstream
+		// options (Decision 11).
+		var egressSrv *http.Server
+		if cfg.PraxisEnabled() {
+			var upstream http.RoundTripper
+			if bridge != nil {
+				upstream = bridge.Upstream.Transport
+			} else {
+				up, uerr := tlsbridge.NewUpstreamClient(nil, false, upOpts...)
+				if uerr != nil {
+					fatalf("praxis egress upstream client failed: %v", uerr)
+				}
+				upstream = up.Transport
+			}
+			var hop *forwardproxy.Hop
+			hop, egressSrv = startPraxis(ctx, cfg, fpSrv, gatewayToken, upstream, listeners.take("praxis-egress"))
+			hopJoins = hop
+		}
 
 		httpServers = append(httpServers, bootstrap.ServeHTTPServer("forward-proxy", fpSrv.Handler(),
 			listeners.take("forward-proxy"), bootstrap.WithConnContext(fpSrv.ConnContext)))
+		// After the forward proxy: the drain shuts servers down in slice order, and a
+		// request still on the forward proxy reaches the gateway, which dials this listener.
+		if egressSrv != nil {
+			httpServers = append(httpServers, egressSrv)
+		}
 
 		// Outbound transparent listener (enforce-redirect mode). It shares the
 		// forward proxy's outbound pipeline via HandleTransparentConn, so explicit
@@ -1192,10 +1227,7 @@ func main() {
 	var sessionAPISrv *sessionapi.Server
 	if cfg.Listener.SessionAPIAddr != "" && sessions != nil {
 		// POST /v1/ingest, in praxis mode only: nil options in direct mode.
-		ingestOpts, err := ingestOptions(cfg, pricingRegistry, os.Getenv, os.ReadFile)
-		if err != nil {
-			fatalf("praxis ingestion: %v", err)
-		}
+		ingestOpts := ingestOptions(cfg, pricingRegistry, gatewayToken, hopJoins)
 		sessionAPISrv = sessionapi.New(
 			cfg.Listener.SessionAPIAddr,
 			sessions,

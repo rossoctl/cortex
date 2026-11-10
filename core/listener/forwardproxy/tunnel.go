@@ -713,6 +713,9 @@ type tunnelLog struct {
 	// returned. The tunnel is settled only when both say nothing more can record.
 	inflight int
 	done     bool
+	// awaiting counts hopped requests whose gateway row has not joined yet (praxis
+	// mode). The tunnel is not settled while it is above zero; see Hop.join.
+	awaiting int
 }
 
 func (s *Server) newTunnelLog(pctx *pipeline.Context, skipped bool) *tunnelLog {
@@ -798,7 +801,7 @@ func (t *tunnelLog) finish() {
 // A settled tunnel's open is stamped and filed now — time.Now(), under today's session
 // rule as it answers at this moment — since there is no request row to take either from.
 func (t *tunnelLog) settleLocked() {
-	if !t.done || t.inflight > 0 || t.answered {
+	if !t.done || t.inflight > 0 || t.awaiting > 0 || t.answered {
 		return
 	}
 	if t.deferred {
@@ -844,6 +847,10 @@ func (t *tunnelLog) recordWith(sid string, ev pipeline.SessionEvent, c *pipeline
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.recordWithLocked(sid, ev, c)
+}
+
+func (t *tunnelLog) recordWithLocked(sid string, ev pipeline.SessionEvent, c *pipeline.RequestCapture) bool {
 	t.answered = true
 	if !t.deferred {
 		return false
@@ -853,6 +860,37 @@ func (t *tunnelLog) recordWith(sid string, ev pipeline.SessionEvent, c *pipeline
 	open.At = ev.At
 	t.bucket = t.s.Sessions.AppendPairCapture(sid, open, ev, c)
 	return true
+}
+
+// await counts a hopped request whose gateway row comes later, through joined or
+// unawait. The tunnel waits for it before it settles.
+func (t *tunnelLog) await() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.awaiting++
+}
+
+// joined records the gateway's request row as recordWith does, ends one await and
+// settles the tunnel if nothing else can record. False: the caller appends the row.
+func (t *tunnelLog) joined(sid string, ev pipeline.SessionEvent, c *pipeline.RequestCapture) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.awaiting--
+	ok := !t.skipped && t.s.Sessions != nil && t.recordWithLocked(sid, ev, c)
+	t.settleLocked()
+	return ok
+}
+
+// unawait ends one await with no row. answered marks the tunnel answered, so it
+// records neither its open nor a close: its request was erased (Decision 13).
+func (t *tunnelLog) unawait(answered bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.awaiting--
+	if answered {
+		t.answered = true
+	}
+	t.settleLocked()
 }
 
 // dialError is a close row's error for a destination the proxy could not reach. The

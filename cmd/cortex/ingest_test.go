@@ -21,37 +21,37 @@ func praxisCfg(enabled bool) *config.Config {
 }
 
 func TestIngestOptions_DirectModeNone(t *testing.T) {
-	getenv := func(string) string { t.Fatal("getenv called in direct mode"); return "" }
-	readFile := func(string) ([]byte, error) { t.Fatal("readFile called in direct mode"); return nil, nil }
-	opts, err := ingestOptions(praxisCfg(false), nil, getenv, readFile)
-	if err != nil || opts != nil {
-		t.Fatalf("got %v, %v; want nil, nil", opts, err)
+	if opts := ingestOptions(praxisCfg(false), nil, "tok", nil); opts != nil {
+		t.Fatalf("got %v; want nil", opts)
 	}
 }
 
-func TestIngestOptions_NeedsTokenFile(t *testing.T) {
-	_, err := ingestOptions(praxisCfg(true), nil, func(string) string { return "" },
+func TestReadGatewayToken_NeedsTokenFile(t *testing.T) {
+	_, err := readGatewayToken(func(string) string { return "" },
 		func(string) ([]byte, error) { return nil, nil })
 	if err == nil || !strings.Contains(err.Error(), "CORTEX_GATEWAY_TOKEN_FILE") {
 		t.Fatalf("err = %v, want one that names CORTEX_GATEWAY_TOKEN_FILE", err)
 	}
-	_, err = ingestOptions(praxisCfg(true), nil, func(string) string { return "/x" },
+}
+
+func TestReadGatewayToken_Unreadable(t *testing.T) {
+	_, err := readGatewayToken(func(string) string { return "/x" },
 		func(string) ([]byte, error) { return nil, errors.New("no such file") })
-	if err == nil {
-		t.Fatal("an unreadable token file must be an error")
+	if err == nil || !strings.Contains(err.Error(), "read the gateway token file") {
+		t.Fatalf("err = %v, want an unreadable-file error", err)
 	}
 }
 
-func TestIngestOptions_EmptyToken(t *testing.T) {
-	_, err := ingestOptions(praxisCfg(true), nil, func(string) string { return "/x" },
+func TestReadGatewayToken_EmptyToken(t *testing.T) {
+	_, err := readGatewayToken(func(string) string { return "/x" },
 		func(string) ([]byte, error) { return []byte(" \n"), nil })
-	if err == nil {
-		t.Fatal("an empty token must be an error")
+	if err == nil || !strings.Contains(err.Error(), "is empty") {
+		t.Fatalf("err = %v, want an empty-token error", err)
 	}
 }
 
 func TestIngestOptions_ReadsToken(t *testing.T) {
-	opts, err := ingestOptions(praxisCfg(true), nil,
+	token, err := readGatewayToken(
 		func(k string) string {
 			if k != "CORTEX_GATEWAY_TOKEN_FILE" {
 				t.Fatalf("getenv(%q)", k)
@@ -64,8 +64,12 @@ func TestIngestOptions_ReadsToken(t *testing.T) {
 			}
 			return []byte("abc\n"), nil
 		})
-	if err != nil || len(opts) != 1 {
-		t.Fatalf("got %d options, %v; want 1, nil", len(opts), err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := ingestOptions(praxisCfg(true), nil, token, nil)
+	if len(opts) != 1 {
+		t.Fatalf("got %d options; want 1", len(opts))
 	}
 	srv := sessionapi.New(":0", session.New(0, 0, 0), opts...)
 	ts := httptest.NewServer(srv.Server().Handler)

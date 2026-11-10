@@ -25,6 +25,12 @@ type Hop struct {
 	client  *http.Client
 	ready   atomic.Bool
 	owned   sync.Map // *pipeline.Context -> attribution.Wire
+
+	// ttl is how long a join or a cut is kept; hopJoinTTL except in tests.
+	ttl    time.Duration
+	joinMu sync.Mutex
+	joins  map[string]*hopJoin // request id -> bridged tunnel that waits for its row
+	cuts   map[string]hopCut   // request id -> Cortex's own cut
 }
 
 // NewHop returns a Hop to the gateway at gatewayAddr (host:port). It is not ready
@@ -33,6 +39,9 @@ func NewHop(gatewayAddr, token string) *Hop {
 	return &Hop{
 		gateway: gatewayAddr,
 		token:   token,
+		ttl:     hopJoinTTL,
+		joins:   map[string]*hopJoin{},
+		cuts:    map[string]hopCut{},
 		client: &http.Client{
 			// HTTP/1, no proxy env, and Go's default compression.
 			Transport: &http.Transport{
@@ -146,10 +155,13 @@ func (s *Server) hopDo(w http.ResponseWriter, r *http.Request, pctx *pipeline.Co
 	r.Header.Set(headerRequestID, pctx.RequestID())
 	r.Header.Set(attribution.HeaderAttribution, wire.Encode())
 	r.URL.Scheme, r.URL.Host = "http", h.gateway
+	// Hold a bridged tunnel until ingestion gives this request's row (Task 6).
+	h.join(pctx.RequestID(), tl)
 	resp, err = h.client.Do(r)
 	var op *net.OpError
 	if errors.As(err, &op) && op.Op == "dial" {
 		s.gatewayUnavailable(w, r, pctx, tl, sid, model.TransportError(err).Message)
+		h.dropJoin(pctx.RequestID())
 		return nil, nil, true
 	}
 	return resp, err, false

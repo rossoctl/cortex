@@ -342,8 +342,8 @@ const (
 )
 
 // PraxisConfig is the top-level `praxis:` block. Listen is cortex-gateway's
-// listener. Egress is the address gateway.yaml routes to; the egress listener
-// itself lands with #1721.
+// listener, where the forward proxy's hop sends each recorded request. Egress is
+// Cortex's egress listener, where the gateway sends each request on to its origin.
 type PraxisConfig struct {
 	Enabled bool   `yaml:"enabled" json:"enabled"`
 	Listen  string `yaml:"listen,omitempty" json:"listen,omitempty"`

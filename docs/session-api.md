@@ -379,7 +379,17 @@ request row, the response row is stored without them.
   and files them one at a time, in stream order.
 - Drops a line whose `startedAt` is before an erase of its session
   (`DELETE /v1/sessions/{id}` or `DELETE /v1/sessions`) in the last 10
-  minutes, so a queued row cannot bring an erased session back.
+  minutes, so a queued row cannot bring an erased session back. A dropped
+  line also releases its tunnel join, and the tunnel then writes no row.
+- Joins the line to the forward proxy's state for the same `requestId`
+  (each join is kept for up to 60 s):
+  - A request row of a TLS-bridged request goes through its CONNECT
+    tunnel's pairing path, so the tunnel's open row and its request row pair
+    as in direct mode. A tunnel that closes before its row arrives waits for
+    the row. A join that expires settles the tunnel as in direct mode.
+  - When Cortex cut the response itself (`proxy_error`, such as its idle
+    read cutoff), Cortex's error replaces the one the gateway recorded, and
+    the row keeps the status the client got, as in direct mode.
 
 **Refusal reasons:** `bad_json`, `version` (`v` is not 1), `schema`
 (`schemaVersion` is not this API's), `op` (not `append`), `line_cap`,
@@ -497,6 +507,11 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   saying which (`upstream_timeout`, `upstream_refused`, `upstream_dns`,
   `upstream_tls`, else `upstream_error`) and `error.message` naming the address
   but never the request URL, whose query string can carry an API key.
+  In praxis mode, a 503 with `error.kind: "gateway_unavailable"` is the
+  forward proxy's own answer when cortex-gateway is not ready (its startup
+  probe has not passed) or refuses the dial. The forward proxy then records
+  the request row and the 503 response row itself, because the gateway never
+  saw the request.
   `error.kind: "proxy_error"` is the one that is the proxy's own: a response
   over the listener's `maxBodySize` (1MB inbound, 10MB outbound), and on the
   streamed arms the 5-minute idle read cutoff and the per-frame cap. **A

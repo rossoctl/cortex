@@ -112,11 +112,38 @@ gives the full text.
 4. To stop the gateway, the supervisor closes the pipe. After `superviseStopGrace` it sends SIGKILL.
 5. At each start, the supervisor writes a new `gateway.token` (32 random bytes, hex, mode 0600) and `gateway.yaml`. It writes each file to a temp file and then renames it. The `cortex` child gets `CORTEX_GATEWAY_TOKEN_FILE`.
 6. The gateway gets an empty env, so no proxy variable can get to it.
-7. `gateway.yaml` listens on `praxis.listen` (default `127.0.0.1:47605`). A catch-all route sends all traffic to `praxis.egress` (default `127.0.0.1:47606`). The egress listener is #1721. `ip_acl` allows only `127.0.0.1/32` and `::1/128`.
+7. `gateway.yaml` listens on `praxis.listen` (default `127.0.0.1:47605`). A catch-all route sends all traffic to `praxis.egress` (default `127.0.0.1:47606`), Cortex's egress listener (#1721). `ip_acl` allows only `127.0.0.1/32` and `::1/128`.
 8. A missing gateway binary, or a gateway that exits, gets the normal backoff. The supervisor does not stop, and `cortex` keeps running.
 9. The supervisor does not stop a gateway from an earlier run. The stdin pipe ends that gateway when its supervisor exits, so a new gateway that cannot bind `praxis.listen` binds it on the next try. A config that `config.Validate` refuses starts no gateway.
 10. Not in this step: the admin metrics port, the startup probe and `gateway_unavailable` (#1721), and the version check of the gateway (#1723).
 11. Direct mode does not change. The supervisor starts only `cortex` and writes no gateway file.
+
+## Hop decisions (#1721)
+
+The plan `docs/superpowers/plans/2026-11-09-praxis-mode-4-hop-and-egress.md`
+gives the full text.
+
+1. `X-Cortex-Dest` is `<scheme>://<host>:<port>`, and the port is always there (80 for http, 443 for https).
+2. The probe is `GET /` to the gateway with `X-Cortex-Token`, `X-Cortex-Probe: 1` and `X-Cortex-Dest: cortex-probe`. The egress listener answers `204` and dials nothing.
+3. The probe runs every 1 s until one passes, then stops. After that, a failed dial to the gateway gives 503 `gateway_unavailable` for each request.
+4. For `gateway_unavailable`, the hop records the request row and a 503 response row itself.
+5. Branch point 5 is in `recordOutboundResponseEvent`: no row for a request the hop owns, and a `proxy_error` cut is kept as a cut join.
+6. The hop marks the requests it owns in a `sync.Map` keyed by `*pipeline.Context`. `pipeline.Context` does not change.
+7. The request id on the wire is `pctx.RequestID()`.
+8. `attribution.Wire` is filled from `pctx` after hydration, and the agent from the client's headers. The hop does not resolve attribution again.
+9. The gateway keeps `X-Cortex-Dest` and `X-Cortex-Token` for its upstream. Its request capture removes all twelve hop headers.
+10. The egress listener answers an egress-guard refusal with 403 and `X-Cortex-Egress-Error: destination_private`.
+11. The egress listener uses the TLS bridge's upstream transport when the bridge is on, else a new one with the same options (`egress_guard`).
+12. `HopJoins` is an interface in `core/sessionapi`. `forwardproxy` does not import `sessionapi`.
+13. The release of a dropped line's join marks the tunnel answered, so the tunnel writes no row.
+14. A join that expires settles the tunnel as in direct mode (an open row and a "carried nothing" close row).
+15. The end-to-end tests run in process in `cmd/cortex`, behind the `praxis_e2e` build tag and `CORTEX_GATEWAY_BIN`.
+16. The end-to-end tests use `startPraxis`, the same wiring function as `main`.
+17. The `Praxis` workflow builds `cortex-gateway` and runs the end-to-end tests after `cargo test`.
+
+In praxis mode, Cortex builds no outbound plugins and logs their names at Warn.
+The gateway does not run them, and a WebSocket upgrade goes direct to its
+origin, so no outbound plugin sees it. Cortex also declines the Codex Responses WebSocket, so Codex uses HTTPS.
 
 ## The parity rule
 

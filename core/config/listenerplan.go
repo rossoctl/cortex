@@ -38,6 +38,9 @@ func ListenerPlan(cfg *Config, local bool) ([]PlannedListener, error) {
 		if !local && cfg.Listener.TransparentProxyAddr != "" {
 			plan = append(plan, PlannedListener{Name: "transparent-proxy", Addr: cfg.Listener.TransparentProxyAddr})
 		}
+		if cfg.PraxisEnabled() {
+			plan = append(plan, PlannedListener{Name: "praxis-egress", Addr: cfg.Praxis.EgressAddr()})
+		}
 	}
 	plan = append(plan, PlannedListener{Name: "stats", Addr: cfg.Stats.StatsAddress})
 	if cfg.Session.SessionEnabled() && cfg.Listener.SessionAPIAddr != "" {
