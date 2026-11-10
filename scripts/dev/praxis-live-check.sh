@@ -77,6 +77,9 @@ selftest() {
 	echo "  forward_proxy_addr: 127.0.0.1:49700" >"$t/good.yaml"
 	if ports_ok "$t/bad.yaml"; then echo "selftest: ports_ok passed :47600" >&2; fail=1; fi
 	if ! ports_ok "$t/good.yaml"; then echo "selftest: ports_ok refused :49700" >&2; fail=1; fi
+	# Two pids under one key (a restart): CPU is (3-1) + (2-0.5), not 2-1.
+	printf '1\tpraxis\tcortex-gateway\t10\t100\t1\t-\n1\tpraxis\tcortex-gateway\t10\t300\t3\t-\n2\tpraxis\tcortex-gateway\t11\t200\t0.5\t-\n2\tpraxis\tcortex-gateway\t11\t200\t2\t-\n' >"$t/sample.tsv"
+	check "sample_summary restart" "$(s=$t sample_summary)" "praxis cortex-gateway peak_rss_kb 300 peak_heap_inuse_bytes - cpu_s 3.50"
 	rm -rf "$t"
 	[ "$fail" = 0 ] || exit 1
 	echo "selftest: ok"
@@ -288,17 +291,21 @@ ttff() {
 }
 
 # sample_summary: per mode and process, peak RSS, peak heap and CPU seconds used.
+# CPU is summed per pid: a restarted process starts its ps time again at 0.
 sample_summary() {
 	awk '{
 		k = $2 " " $3
-		if (!(k in first)) { first[k] = $6; keys[++nk] = k }
-		last[k] = $6
+		p = k " " $4
+		if (!(k in rss)) { rss[k] = 0; keys[++nk] = k }
+		if (!(p in first)) { first[p] = $6; pk[p] = k }
+		last[p] = $6
 		if ($5 > rss[k]) rss[k] = $5
 		if ($7 != "-" && $7 > heap[k]) heap[k] = $7
 	} END {
+		for (p in first) cpu[pk[p]] += last[p] - first[p]
 		for (i = 1; i <= nk; i++) {
 			k = keys[i]
-			printf "%s peak_rss_kb %d peak_heap_inuse_bytes %s cpu_s %.2f\n", k, rss[k], (k in heap) ? heap[k] : "-", last[k] - first[k]
+			printf "%s peak_rss_kb %d peak_heap_inuse_bytes %s cpu_s %.2f\n", k, rss[k], (k in heap) ? heap[k] : "-", cpu[k]
 		}
 	}' "$s/sample.tsv" | tee "$s/sample-summary.txt"
 }
@@ -323,6 +330,7 @@ sample() {
 	s=$(abs "$1")
 	secs=$2
 	trap 'sample_summary; exit 0' TERM INT
+	: >"$s/sample.tsv" # one run per summary; an earlier run's rows would skew it
 	start=$(date +%s)
 	while :; do
 		for m in direct praxis; do
