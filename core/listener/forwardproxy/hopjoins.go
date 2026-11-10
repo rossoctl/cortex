@@ -16,10 +16,12 @@ type hopJoin struct {
 	timer *time.Timer
 }
 
-// hopCut is an error of a cut that Cortex made on a hopped request, and when.
+// hopCut is an error of a cut that Cortex made on a hopped request, the status the
+// client got, and when.
 type hopCut struct {
-	fail model.EventError
-	at   time.Time
+	fail   model.EventError
+	status int
+	at     time.Time
 }
 
 // join holds tl open until ingestion gives the gateway row of requestID, or the join
@@ -75,21 +77,23 @@ func (h *Hop) Release(requestID string) {
 	}
 }
 
-// TakeCut returns the error of a cut that Cortex made on requestID, or nil.
-func (h *Hop) TakeCut(requestID string) *model.EventError {
+// TakeCut returns the error of a cut that Cortex made on requestID and the status Cortex
+// gave the client, or nil.
+func (h *Hop) TakeCut(requestID string) (*model.EventError, int) {
 	h.joinMu.Lock()
 	defer h.joinMu.Unlock()
 	c, ok := h.cuts[requestID]
 	if !ok {
-		return nil
+		return nil, 0
 	}
 	delete(h.cuts, requestID)
-	return &c.fail
+	return &c.fail, c.status
 }
 
-// noteCut keeps fail as the cut of requestID for TakeCut (branch point 5). Cuts older
-// than the ttl are removed here, because ingestion takes a cut only when its row arrives.
-func (h *Hop) noteCut(requestID string, fail *pipeline.EventError) {
+// noteCut keeps fail and the status the client got as the cut of requestID for TakeCut
+// (branch point 5). Cuts older than the ttl are removed here, because ingestion takes a
+// cut only when its row arrives.
+func (h *Hop) noteCut(requestID string, status int, fail *pipeline.EventError) {
 	now := time.Now()
 	h.joinMu.Lock()
 	defer h.joinMu.Unlock()
@@ -98,5 +102,5 @@ func (h *Hop) noteCut(requestID string, fail *pipeline.EventError) {
 			delete(h.cuts, id)
 		}
 	}
-	h.cuts[requestID] = hopCut{fail: *fail, at: now}
+	h.cuts[requestID] = hopCut{fail: *fail, status: status, at: now}
 }
