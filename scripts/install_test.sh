@@ -1085,7 +1085,8 @@ if [ -t 0 ]; then echo 'stdin tty' >>"${T_LOG}"; else printf 'stdin [%s]\n' "$(c
 EOF
 printf '#!/bin/sh\necho "cortex v9.9.9"\n' >"${TMP}/fake-cortex"
 printf '#!/bin/sh\necho "cortex (cpex) v9.9.9"\n' >"${TMP}/fake-cortex-cpex"
-chmod +x "${TMP}/fake-agentop" "${TMP}/fake-cortex" "${TMP}/fake-cortex-cpex"
+printf '#!/bin/sh\necho "cortex-gateway v9.9.9"\n' >"${TMP}/fake-cortex-gateway"
+chmod +x "${TMP}/fake-agentop" "${TMP}/fake-cortex" "${TMP}/fake-cortex-cpex" "${TMP}/fake-cortex-gateway"
 # uname, for the runs that set T_UNAME ("<kernel> <machine>", as uname -s and -m print
 # them), so a platform this machine is not can be tested.
 mkdir -p "${TMP}/unamebin"
@@ -1236,6 +1237,9 @@ t_sha256() { # file
 #   bad    agentop's line carries the wrong hash
 #   cpex   a cortex-cpex archive too, listed beside the cortex one, as a release has it
 #   nocpex the cortex-cpex archive, but no line for it
+#   praxis a cortex-gateway archive too, with its line
+#   nopraxis  the cortex-gateway archive, but no line for it
+#   badpraxis the cortex-gateway archive, with a wrong hash on its line
 # The platform is T_OS/T_ARCH, or MR_OS/MR_ARCH when set.
 make_release() {
 	T_REL="${TMP}/rel-$1"
@@ -1244,10 +1248,12 @@ make_release() {
 	cp "${TMP}/fake-agentop" "${T_REL}/src/agentop"
 	cp "${TMP}/fake-cortex" "${T_REL}/src/cortex"
 	cp "${TMP}/fake-cortex-cpex" "${T_REL}/src-cpex/cortex"
+	cp "${TMP}/fake-cortex-gateway" "${T_REL}/src/cortex-gateway"
 	_mr_p="${MR_OS:-${T_OS}}_${MR_ARCH:-${T_ARCH}}"
 	_mr_a="agentop_$1_${_mr_p}.tar.gz"
 	_mr_c="cortex_$1_${_mr_p}.tar.gz"
 	_mr_x="cortex-cpex_$1_${_mr_p}.tar.gz"
+	_mr_g="cortex-gateway_$1_${_mr_p}.tar.gz"
 	# COPYFILE_DISABLE: macOS tar would otherwise add AppleDouble ._ entries.
 	COPYFILE_DISABLE=1 tar -C "${T_REL}/src" -czf "${T_REL}/${_mr_a}" agentop
 	COPYFILE_DISABLE=1 tar -C "${T_REL}/src" -czf "${T_REL}/${_mr_c}" cortex
@@ -1258,6 +1264,11 @@ make_release() {
 			COPYFILE_DISABLE=1 tar -C "${T_REL}/src-cpex" -czf "${T_REL}/${_mr_x}" cortex
 			_mr_hx=$(t_sha256 "${T_REL}/${_mr_x}")
 			;;
+		praxis | nopraxis | badpraxis)
+			COPYFILE_DISABLE=1 tar -C "${T_REL}/src" -czf "${T_REL}/${_mr_g}" cortex-gateway
+			_mr_hg=$(t_sha256 "${T_REL}/${_mr_g}")
+			[ "$2" != badpraxis ] || _mr_hg=$(printf '%s' "${_mr_hg}" | tr '0-9a-f' '1-9a-f0')
+			;;
 	esac
 	# Every hex digit moved by one, so the bad hash differs in every position.
 	[ "${2:-two}" != bad ] || _mr_ha=$(printf '%s' "${_mr_ha}" | tr '0-9a-f' '1-9a-f0')
@@ -1266,6 +1277,7 @@ make_release() {
 		[ "${2:-two}" = one ] || printf '%s  ./%s\n' "${_mr_hc}" "${_mr_c}"
 		[ "${2:-two}" != three ] || printf '%s  %s\n' "${_mr_ha}" "${_mr_a}"
 		[ "${2:-two}" != cpex ] || printf '%s  ./%s\n' "${_mr_hx}" "${_mr_x}"
+		case "${2:-two}" in praxis | badpraxis) printf '%s  ./%s\n' "${_mr_hg}" "${_mr_g}" ;; esac
 	} >"${T_REL}/checksums.txt"
 	printf '#!/usr/bin/env python3\nprint("dump")\n' >"${T_REL}/cortex-session-dump.py"
 	T_BYTES=$(($(wc -c <"${T_REL}/${_mr_a}") + $(wc -c <"${T_REL}/${_mr_c}")))
@@ -2083,7 +2095,65 @@ run_install ok release --ref=v9.9.9 --cpex --yes
 check "piped: the released copy gets --cpex, and not --ref" "child [--cpex] [--yes]" \
 	"$(grep '^child' "${T_RUN}/out")"
 
+# --- --praxis: the cortex-gateway archive too, only where it is published ---
+make_release v9.9.9
+T_UNAME="Darwin x86_64"
+run_install ok release --ref=v9.9.9 --praxis
+check "--praxis on darwin/amd64: dies naming the supported platforms" "1 yes" \
+	"${T_ST} $(t_in 'error: --praxis is not available for darwin/amd64 (supported: darwin/arm64, linux/amd64, linux/arm64)' err)"
+check "  fetching nothing and running no agentop" " 0" "$(cat "${T_RUN}/urls") $(t_nlog argv)"
+
+MR_OS=linux MR_ARCH=amd64 make_release v9.9.9 nopraxis
+T_UNAME="Linux x86_64"
+run_install ok release --ref=v9.9.9 --praxis
+check "--praxis with no cortex-gateway entry in checksums.txt dies" "1 yes" \
+	"${T_ST} $(t_in 'error: release v9.9.9 has no cortex-gateway build for linux/amd64' err)"
+check "  before any archive is fetched" "0 0" "$(grep -c '\.tar\.gz$' "${T_RUN}/urls" || true) $(t_nlog argv)"
+
+MR_OS=linux MR_ARCH=amd64 make_release v9.9.9 praxis
+T_UNAME="Linux x86_64"
+run_install ok release --ref=v9.9.9 --praxis
+check "--praxis on linux/amd64: hands off with --praxis" \
+	"0 [setup] [--from] [<stage>] [--praxis] [--handoff-bytes=<N>] [--handoff-seconds=<S>]" "${T_ST} $(t_argv)"
+check "  staging an executable cortex-gateway" "yes cortex-gateway v9.9.9" \
+	"$([ -x "$(t_stage)/cortex-gateway" ] && echo yes) $("$(t_stage)/cortex-gateway")"
+check "  verifying the gateway archive's entry too" \
+	"./agentop_v9.9.9_linux_amd64.tar.gz ./cortex_v9.9.9_linux_amd64.tar.gz ./cortex-gateway_v9.9.9_linux_amd64.tar.gz" \
+	"$(awk '{print $2}' "$(t_stage)/checksums.filtered" | tr '\n' ' ' | sed 's/ $//')"
+T_UNAME="Linux x86_64"
+run_install ok release --ref=v9.9.9
+check "without --praxis: no --praxis to setup, and no gateway fetched or staged" \
+	"0 ${T_NOFLAGS} 0 no" \
+	"${T_ST} $(t_argv) $(grep -c 'cortex-gateway' "${T_RUN}/urls" || true) $([ -e "$(t_stage)/cortex-gateway" ] && echo yes || echo no)"
+
+MR_OS=linux MR_ARCH=amd64 make_release v9.9.9 badpraxis
+T_UNAME="Linux x86_64"
+run_install ok release --ref=v9.9.9 --praxis
+check "--praxis with a wrong gateway checksum dies" "1 yes 0" \
+	"${T_ST} $(t_in 'checksum verification failed' err) $(t_nlog argv)"
+
+T_UNAME="Linux x86_64"
+run_install ok repair --praxis
+check "--praxis with AUTHBRIDGE_SKIP_DOWNLOAD=1 dies" "1 yes" \
+	"${T_ST} $(t_in 'error: --praxis selects what to download, and AUTHBRIDGE_SKIP_DOWNLOAD=1 downloads nothing' err)"
+
+# Piped, a release without the gateway: refused before re-execing its install.sh.
+MR_OS=linux MR_ARCH=amd64 make_release v9.9.9
+cat >"${T_REL}/install.sh" <<'EOS'
+printf 'child'; for _a in "$@"; do printf ' [%s]' "${_a}"; done; printf '\n'
+EOS
+T_UNAME="Linux x86_64"
+T_PIPE=1
+run_install ok release --ref=v9.9.9 --praxis
+check "piped --praxis against a release with no gateway build: dies before re-exec" "1 yes 0" \
+	"${T_ST} $(t_in 'error: release v9.9.9 has no cortex-gateway build for linux/amd64' err) $(grep -c '^child' "${T_RUN}/out" || true)"
+
+run_install ok release --help
+check "--help lists --praxis" "1" "$(grep -c '^  --praxis ' "${T_RUN}/out" || true)"
+
 run_install ok release --bogus
+check "an unknown option's message lists --praxis" "1 yes" \
+	"${T_ST} $(t_in '--no-service, --praxis, --stop' err)"
 check "an unknown option's message lists --cpex" "1 yes" \
 	"${T_ST} $(t_in 'unknown option: --bogus (try --claude-code, --cpex,' err)"
 run_install ok release --help

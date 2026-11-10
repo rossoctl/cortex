@@ -193,6 +193,7 @@ flag it sends.
 | `--no-modify-path` | Edit no shell profile | `--no-modify-path` |
 | `--yes`, `-y` | Do not ask. Apply the changes setup lists | `--yes` |
 | `--cpex` | Download `cortex-cpex_<ver>_<os>_<arch>.tar.gz`. macOS arm64 and Linux only (`cpex_platform_check`, `require_cpex_build`) | no |
+| `--praxis` | Also download `cortex-gateway_<ver>_<os>_<arch>.tar.gz`, check it against `checksums.txt` and stage `cortex-gateway`. Setup then turns on praxis mode. macOS arm64 and Linux only (`praxis_platform_check`, `require_praxis_build`). Not frozen: every release that `require_praxis_build` accepts has an agentop that takes `--praxis` | `--praxis` |
 | `--ref=REF` | Install the binaries of `REF`: `main` (the developer channel) or a release tag. For any other ref, such as a branch or a SHA, the script warns and installs the newest release's binaries (`resolve_version`). A piped run also runs the copy of this script at `REF`. A run from a local file keeps that file | no (removed before the re-run) |
 | `--stop` | Stop the service and the pidfile proxy, check the ports, exit. Downloads nothing (`stop_cortex`) | no |
 | `-h`, `--help` | Print the usage text | no |
