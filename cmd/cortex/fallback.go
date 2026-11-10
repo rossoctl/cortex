@@ -56,9 +56,10 @@ func configPathFromArgs(args []string) string {
 	return path
 }
 
-// supervisorForwardAddr is the address the fallback listener binds: the forward proxy's
-// own, so a client routed at it reaches the fallback when no child holds it. Every miss
-// falls back rather than failing, for the reason on fallbackDefaultAddr.
+// supervisorConfig loads the config at path once, for the fallback address and for
+// praxis mode, or returns nil when there is no path or it will not load. Every miss
+// is direct mode with the default fallback address, for the reason on
+// fallbackDefaultAddr.
 //
 // The three steps below mirror the child's own sequence -- Load, coerce the mode,
 // ApplyPreset (main.go:491, :500, :501) -- because only all three yield the address the
@@ -75,10 +76,9 @@ func configPathFromArgs(args []string) string {
 // anything but proxy-sidecar (main.go:495) and so binds nothing at all. The fallback
 // still has somewhere useful to be: whatever the config pinned, else the laptop default,
 // which is where a client routed at this install points either way.
-func supervisorForwardAddr(args []string) string {
-	path := configPathFromArgs(args)
+func supervisorConfig(path string) *config.Config {
 	if path == "" {
-		return fallbackDefaultAddr
+		return nil
 	}
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -87,15 +87,22 @@ func supervisorForwardAddr(args []string) string {
 		// fallback is listening somewhere other than where the config asked.
 		slog.Warn("supervisor: cannot read the config for the fallback address; using the default",
 			"config", path, "addr", fallbackDefaultAddr, "error", err)
-		return fallbackDefaultAddr
+		return nil
 	}
 	cfg.Mode = config.ModeProxySidecar
 	config.ApplyPreset(cfg)
+	return cfg
+}
+
+// supervisorForwardAddr is the address the fallback listener binds: the forward proxy's
+// own, so a client routed at it reaches the fallback when no child holds it. cfg is
+// supervisorConfig's, nil when it did not load.
+func supervisorForwardAddr(cfg *config.Config) string {
 	// Still reachable after the preset, which fills an address only for an ACTIVE role
 	// (presets.go:29): a reverse-only config leaves this empty, and the child then binds
 	// no forward proxy at all. Nothing is routed at the fallback in that case, so where
 	// it listens does not much matter -- but it has to listen somewhere.
-	if cfg.Listener.ForwardProxyAddr == "" {
+	if cfg == nil || cfg.Listener.ForwardProxyAddr == "" {
 		return fallbackDefaultAddr
 	}
 	return cfg.Listener.ForwardProxyAddr

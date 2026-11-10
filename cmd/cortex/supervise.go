@@ -3,13 +3,19 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"slices"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/rossoctl/cortex/core/config"
 )
 
 // Supervision exists because launchd cannot be relied on for it.
@@ -157,8 +163,82 @@ func portInUseExit(werr error) bool {
 	return errors.As(werr, &ee) && ee.ExitCode() == exitPortInUse
 }
 
+// cortexChild names the proxy child in the log and in its childSpec.
+const cortexChild = "cortex"
+
+// childSpec is one child the supervisor runs, each in its own restart loop, so an
+// exit of one child does not touch the other.
+type childSpec struct {
+	name         string
+	path         string
+	args         []string
+	env          []string // nil = inherit
+	stdinPipe    bool     // the supervisor keeps the write end; closing it stops the child
+	fallback     *fallbackServer
+	fallbackAddr string // cortex only, with fallback
+}
+
+// supervisorChildren returns the children to run. Direct mode is cortex alone, with
+// today's args and env, and touches no file. Praxis mode first writes the gateway
+// files next to the config, then adds cortex-gateway, found next to this binary. The
+// gateway gets an empty env, so no proxy variable can reach it.
+func supervisorChildren(cfg *config.Config, configPath, self string, args []string,
+	write func(dir string, cfg *config.Config) (string, string, error)) ([]childSpec, error) {
+	cortex := childSpec{name: cortexChild, path: self, args: args}
+	if cfg == nil || !cfg.PraxisEnabled() {
+		return []childSpec{cortex}, nil
+	}
+	tokenPath, yamlPath, err := write(filepath.Dir(configPath), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("writing the gateway files: %w", err)
+	}
+	cortex.env = append(os.Environ(), gatewayTokenEnv+"="+tokenPath)
+	gateway := childSpec{
+		name:      gatewayBinary,
+		path:      filepath.Join(filepath.Dir(self), gatewayBinary),
+		args:      []string{"-c", yamlPath, "--exit-on-stdin-eof"},
+		env:       []string{},
+		stdinPipe: true,
+	}
+	return []childSpec{cortex, gateway}, nil
+}
+
+// stopStaleGateway stops a cortex-gateway that still holds addr, which a supervisor
+// that died by SIGKILL can leave only for the moment the gateway needs to see its
+// stdin close. SIGTERM, then SIGKILL when addr is not free after superviseStopGrace.
+// Any other holder is left alone: the new gateway fails to bind and backs off.
+func stopStaleGateway(addr string, lookup func(string) (holder, error),
+	signal func(pid int, sig syscall.Signal) error, free func(string) bool) {
+	h, err := lookup(addr)
+	if err != nil || filepath.Base(h.exe) != gatewayBinary {
+		return
+	}
+	slog.Warn("supervisor: a cortex-gateway from an earlier run holds the gateway address; stopping it",
+		"addr", addr, "holder_pid", h.pid, "holder", h.exe)
+	pid := int(h.pid)
+	_ = signal(pid, syscall.SIGTERM) //nolint:errcheck
+	for deadline := time.Now().Add(superviseStopGrace); !free(addr); time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			slog.Warn("supervisor: the earlier cortex-gateway did not exit in time; killing it", "holder_pid", pid)
+			_ = signal(pid, syscall.SIGKILL) //nolint:errcheck
+			return
+		}
+	}
+}
+
+// addrFree reports whether addr can be bound now.
+func addrFree(addr string) bool {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
+}
+
 // runSupervisor re-executes this binary without the supervise flag and restarts it
-// whenever it exits, until the supervisor is asked to stop.
+// whenever it exits, until the supervisor is asked to stop. In praxis mode it runs
+// cortex-gateway beside it, in a loop of its own.
 func runSupervisor(flagName string) error {
 	self, err := os.Executable()
 	if err != nil {
@@ -176,11 +256,14 @@ func runSupervisor(flagName string) error {
 		return errors.New("internal: supervise flag survived argument filtering")
 	}
 
-	// Forward termination to the child so `launchctl bootout` / `systemctl stop`
+	// Forward termination to the children so `launchctl bootout` / `systemctl stop`
 	// takes the whole tree down; otherwise the proxy is orphaned and keeps the ports,
 	// which would look exactly like the "stop that does not stop" this replaces.
 	stopping := make(chan os.Signal, 1)
 	signal.Notify(stopping, syscall.SIGTERM, syscall.SIGINT)
+
+	configPath := configPathFromArgs(args)
+	cfg := supervisorConfig(configPath)
 
 	// The fallback holds the forward address whenever no child does, so a routed agent
 	// gets a 502 that names Cortex instead of a refused connection it cannot trace. It
@@ -188,23 +271,89 @@ func runSupervisor(flagName string) error {
 	// fallback.go. It deliberately does not cover `agentop service stop`: that stops
 	// this supervisor too, and that path already warns, having been asked for.
 	fallback := &fallbackServer{}
-	fallbackAddr := supervisorForwardAddr(args)
+	fallbackAddr := supervisorForwardAddr(cfg)
 	fallback.open(fallbackAddr)
 	defer fallback.close()
 
+	specs, err := supervisorChildren(cfg, configPath, self, args, writeGatewayFiles)
+	if err != nil {
+		return err
+	}
+	specs[0].fallback, specs[0].fallbackAddr = fallback, fallbackAddr
+	if len(specs) > 1 {
+		stopStaleGateway(cfg.Praxis.ListenAddr(), holderOf, syscall.Kill, addrFree)
+	}
+
+	// Each child stops at the same time, so the whole stop stays inside launchd's 5s.
+	stop := make(chan struct{})
+	errs := make(chan error, len(specs))
+	var wg sync.WaitGroup
+	for _, spec := range specs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- superviseChild(spec, stop)
+		}()
+	}
+	select {
+	case sig := <-stopping:
+		slog.Info("supervisor: stopping", "signal", sig.String())
+	case err = <-errs: // only a cortex start failure ends a loop by itself
+	}
+	close(stop)
+	wg.Wait()
+	return err
+}
+
+// superviseChild runs one child and restarts it whenever it exits, until stop closes.
+// A start failure of cortex ends the supervisor, as before praxis mode; a start
+// failure of the gateway (a missing binary, say) is retried with the normal backoff,
+// and cortex keeps running.
+func superviseChild(spec childSpec, stop <-chan struct{}) error {
+	log := slog.With("child", spec.name)
 	policy := &restartPolicy{delay: superviseRestartDelay}
+	startFailing := false
 	for {
 		// Hand the address to the child. Nothing else frees it, so this is what lets the
 		// child bind at all.
-		fallback.close()
-
-		cmd := exec.Command(self, args...) //nolint:gosec // our own binary, filtered args
-		cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, nil
-		start := time.Now()
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("starting the proxy: %w", err)
+		if spec.fallback != nil {
+			spec.fallback.close()
 		}
-		slog.Info("supervisor: proxy started", "pid", cmd.Process.Pid)
+
+		cmd := exec.Command(spec.path, spec.args...) //nolint:gosec // our own binaries, filtered args
+		cmd.Env = spec.env
+		cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, nil
+		// The write end is close-on-exec, so only this process holds it, and the kernel
+		// closes it however this process exits, SIGKILL included.
+		var stdin io.Closer
+		var err error
+		if spec.stdinPipe {
+			stdin, err = cmd.StdinPipe()
+		}
+		if err == nil {
+			err = cmd.Start()
+		}
+		start := time.Now()
+		if err != nil {
+			if spec.name == cortexChild {
+				return fmt.Errorf("starting the proxy: %w", err)
+			}
+			note := policy.exited(false, false)
+			failed := log.Debug
+			if !startFailing {
+				failed = log.Error
+			}
+			startFailing = true
+			failed("supervisor: cannot start the child; retrying", "path", spec.path, "err", err, "restart_in", note.delay)
+			select {
+			case <-stop:
+				return nil
+			case <-time.After(note.delay):
+			}
+			continue
+		}
+		startFailing = false
+		log.Info("supervisor: child started", "pid", cmd.Process.Pid)
 
 		done := make(chan error, 1)
 		go func() { done <- cmd.Wait() }()
@@ -221,14 +370,19 @@ func runSupervisor(flagName string) error {
 	wait:
 		for {
 			select {
-			case sig := <-stopping:
+			case <-stop:
 				healthy.Stop()
-				slog.Info("supervisor: stopping, forwarding signal to the proxy", "signal", sig.String())
-				_ = cmd.Process.Signal(syscall.SIGTERM) //nolint:errcheck
+				if stdin != nil {
+					log.Info("supervisor: stopping, closing the child's stdin")
+					_ = stdin.Close()
+				} else {
+					log.Info("supervisor: stopping, forwarding SIGTERM to the child")
+					_ = cmd.Process.Signal(syscall.SIGTERM) //nolint:errcheck
+				}
 				select {
 				case <-done:
 				case <-time.After(superviseStopGrace):
-					slog.Warn("supervisor: proxy did not exit in time; killing it", "waited", superviseStopGrace)
+					log.Warn("supervisor: child did not exit in time; killing it", "waited", superviseStopGrace)
 					_ = cmd.Process.Kill() //nolint:errcheck
 					<-done
 				}
@@ -237,7 +391,7 @@ func runSupervisor(flagName string) error {
 			case <-healthy.C:
 				wasHealthy = true
 				if policy.healthy() {
-					slog.Info("supervisor: the proxy is up; the address it could not bind is free again")
+					log.Info("supervisor: the proxy is up; the address it could not bind is free again")
 				}
 
 			case werr = <-done:
@@ -248,17 +402,20 @@ func runSupervisor(flagName string) error {
 		}
 
 		// The child is gone, so the address is free and nothing would answer on it.
-		fallback.open(fallbackAddr)
+		if spec.fallback != nil {
+			spec.fallback.open(spec.fallbackAddr)
+		}
 
-		note := policy.exited(portInUseExit(werr), wasHealthy)
+		// Only cortex uses exitPortInUse; the gateway's status gets the normal backoff.
+		note := policy.exited(spec.name == cortexChild && portInUseExit(werr), wasHealthy)
 		if note.explain {
-			slog.Error("supervisor: the proxy cannot bind an address it needs, so it exits as soon as it starts",
+			log.Error("supervisor: the proxy cannot bind an address it needs, so it exits as soon as it starts",
 				"detail", "the error the proxy logged just above names the address and the process holding it",
 				"doing", "retrying, so the proxy starts by itself once that address is free",
 				"not_doing", "giving up — the holder may stop at any moment, and nothing restarts this supervisor before the next login")
 		}
 		if note.slowed {
-			slog.Warn("supervisor: the address is still held; retrying less often from here",
+			log.Warn("supervisor: the address is still held; retrying less often from here",
 				"attempts", note.attempts, "retry_every_at_most", superviseBlockedMaxDelay)
 		}
 		// Once the condition has been stated and nothing has changed, the per-restart
@@ -266,16 +423,16 @@ func runSupervisor(flagName string) error {
 		// day, which is what buried the one line that explained anything. The child still
 		// logs its own ERROR on every attempt, so the log tail `agentop service status`
 		// prints always carries the diagnosis.
-		restarting := slog.Warn
+		restarting := log.Warn
 		if note.quiet {
-			restarting = slog.Debug
+			restarting = log.Debug
 		}
-		restarting("supervisor: proxy exited; restarting",
+		restarting("supervisor: child exited; restarting",
 			"ran", ran.Round(time.Millisecond), "err", werr, "restart_in", note.delay)
 
 		select {
-		case sig := <-stopping:
-			slog.Info("supervisor: stopping instead of restarting", "signal", sig.String())
+		case <-stop:
+			log.Info("supervisor: stopping instead of restarting")
 			return nil
 		case <-time.After(note.delay):
 		}

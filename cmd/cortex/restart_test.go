@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -12,11 +14,16 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/rossoctl/cortex/core/config"
 )
 
 // runMainEnv makes a re-executed copy of this test binary run something other than the
@@ -25,6 +32,10 @@ import (
 const runMainEnv = "CORTEX_TEST_RUN"
 
 func TestMain(m *testing.M) {
+	// The supervisor gives the gateway an empty env, so its copy cannot read runMainEnv.
+	if filepath.Base(os.Args[0]) == gatewayBinary {
+		fakeGateway(os.Args[1:])
+	}
 	switch os.Getenv(runMainEnv) {
 	case "main":
 		main()
@@ -40,8 +51,54 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "stuck child: ignoring SIGTERM")
 		time.Sleep(time.Minute)
 		os.Exit(0)
+	case "idle-child":
+		// A proxy that starts at once and stops on SIGTERM, for the tests about the
+		// gateway beside it.
+		if slices.Contains(os.Args[1:], "-supervise") {
+			main()
+			os.Exit(0)
+		}
+		fmt.Fprintf(os.Stderr, "idle child pid %d\n", os.Getpid())
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGTERM)
+		<-sig
+		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+// fakeGateway stands in for cortex-gateway: it listens on the gateway listener of
+// its -c file and, with --exit-on-stdin-eof, exits when stdin closes.
+func fakeGateway(args []string) {
+	var path string
+	for i, a := range args {
+		if a == "-c" && i+1 < len(args) {
+			path = args[i+1]
+		}
+	}
+	b, err := os.ReadFile(path)
+	var f gatewayFile
+	if err == nil {
+		err = yaml.Unmarshal(b, &f)
+	}
+	if err == nil && len(f.Listeners) == 0 {
+		err = errors.New("no listener")
+	}
+	var ln net.Listener
+	if err == nil {
+		ln, err = net.Listen("tcp", f.Listeners[0].Address)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fake gateway: %v\n", err)
+		os.Exit(1)
+	}
+	defer ln.Close()
+	fmt.Fprintf(os.Stderr, "fake gateway pid %d\n", os.Getpid())
+	if slices.Contains(args, "--exit-on-stdin-eof") {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}
+	select {}
 }
 
 // lockedBuffer collects a child's output while the test reads it.
@@ -146,8 +203,14 @@ type child struct {
 
 func startChild(t *testing.T, home, run string, args ...string) *child {
 	t.Helper()
+	return startChildAt(t, os.Args[0], home, run, args...)
+}
+
+// startChildAt is startChild with a copy of this test binary at path.
+func startChildAt(t *testing.T, path, home, run string, args ...string) *child {
+	t.Helper()
 	c := &child{out: &lockedBuffer{}, done: make(chan error, 1)}
-	c.cmd = exec.Command(os.Args[0], args...) //nolint:gosec // this test binary
+	c.cmd = exec.Command(path, args...) //nolint:gosec // this test binary
 	c.cmd.Env = childEnv(home, run)
 	c.cmd.Stdout, c.cmd.Stderr = c.out, c.out
 	// Its own process group, as under launchd, so cleanup can end a supervisor's child too:
@@ -341,5 +404,164 @@ func TestSupervisorEndsAStuckProxyInsideLaunchdsWindow(t *testing.T) {
 	t.Logf("supervisor exited %s after SIGTERM", took.Round(time.Millisecond))
 	if !strings.Contains(sup.out.String(), "killing it") {
 		t.Errorf("supervisor exited without killing the stuck proxy:\n%s", sup.out.String())
+	}
+}
+
+// praxisRig is a bin dir with this test binary copied in as cortex and as
+// cortex-gateway, and a praxis-mode config. Copies, not links: os.Executable
+// resolves a symlink on Linux, and the supervisor finds the gateway next to itself.
+type praxisRig struct {
+	home, bin, config, listen string
+}
+
+func newPraxisRig(t *testing.T, praxis bool) praxisRig {
+	t.Helper()
+	r := praxisRig{home: t.TempDir(), listen: freeAddr(t)}
+	r.bin = filepath.Join(r.home, "bin")
+	dir := filepath.Join(r.home, cortexDirName)
+	for _, d := range []string{r.bin, dir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	self, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"cortex", gatewayBinary} {
+		if err := os.WriteFile(filepath.Join(r.bin, n), self, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.config = filepath.Join(dir, "config.yaml")
+	writeProxyConfig(t, r.config, anyPort)
+	praxisBlock := fmt.Sprintf("praxis:\n  enabled: %v\n  listen: %s\n", praxis, r.listen)
+	b, _ := os.ReadFile(r.config)
+	if err := os.WriteFile(r.config, append(b, praxisBlock...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(r.config); err != nil {
+		t.Fatalf("the fixture config does not load: %v", err)
+	}
+	return r
+}
+
+func (r praxisRig) supervise(t *testing.T) *child {
+	t.Helper()
+	return startChildAt(t, filepath.Join(r.bin, "cortex"), r.home, "idle-child", "-supervise", "-config", r.config)
+}
+
+var (
+	idleChildPid   = regexp.MustCompile(`idle child pid (\d+)`)
+	fakeGatewayPid = regexp.MustCompile(`fake gateway pid (\d+)`)
+)
+
+// pids waits until out holds at least n lines that re matches, and returns their pids.
+func (c *child) pids(t *testing.T, re *regexp.Regexp, n int) []int {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		var pids []int
+		for _, m := range re.FindAllStringSubmatch(c.out.String(), -1) {
+			p, _ := strconv.Atoi(m[1])
+			pids = append(pids, p)
+		}
+		if len(pids) >= n {
+			return pids
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("waited for %d lines matching %s:\n%s", n, re, c.out.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+func waitGone(t *testing.T, pid int, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for alive(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("pid %d still runs after %s", pid, within)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A cortex crash restarts cortex only: the gateway beside it keeps its pid.
+func TestSupervisor_CortexRestartKeepsGateway(t *testing.T) {
+	r := newPraxisRig(t, true)
+	sup := r.supervise(t)
+	cortex := sup.pids(t, idleChildPid, 1)[0]
+	gw := sup.pids(t, fakeGatewayPid, 1)[0]
+
+	if err := syscall.Kill(cortex, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	if again := sup.pids(t, idleChildPid, 2); again[1] == cortex {
+		t.Fatalf("cortex restarted with the same pid %d", cortex)
+	}
+	if gws := sup.pids(t, fakeGatewayPid, 1); len(gws) != 1 || !alive(gw) {
+		t.Fatalf("the gateway changed after a cortex crash: pids %v, %d alive = %v", gws, gw, alive(gw))
+	}
+
+	sent := time.Now()
+	if err := sup.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	sup.waitExit(t, sent, 5*time.Second)
+	newCortex := sup.pids(t, idleChildPid, 2)[1]
+	waitGone(t, newCortex, 5*time.Second-time.Since(sent))
+	waitGone(t, gw, 5*time.Second-time.Since(sent))
+}
+
+// A SIGKILL of the supervisor closes the gateway's stdin, so the gateway exits.
+func TestSupervisor_KillLeavesNoGateway(t *testing.T) {
+	r := newPraxisRig(t, true)
+	sup := r.supervise(t)
+	sup.pids(t, idleChildPid, 1)
+	gw := sup.pids(t, fakeGatewayPid, 1)[0]
+	if err := sup.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	// The idle cortex child is left behind; startChild's cleanup kills its group.
+	waitGone(t, gw, 5*time.Second)
+}
+
+// A gateway that a dead supervisor left on praxis.listen is stopped at start.
+func TestSupervisor_StopsStaleGateway(t *testing.T) {
+	r := newPraxisRig(t, true)
+	stale := filepath.Join(r.home, "stale.yaml")
+	if err := os.WriteFile(stale, []byte("listeners:\n  - name: gateway\n    address: "+r.listen+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := startChildAt(t, filepath.Join(r.bin, gatewayBinary), r.home, "", "-c", stale)
+	oldPid := old.pids(t, fakeGatewayPid, 1)[0]
+
+	sup := r.supervise(t)
+	old.waitExit(t, time.Now(), 10*time.Second)
+	if gw := sup.pids(t, fakeGatewayPid, 1)[0]; gw == oldPid {
+		t.Fatalf("the new gateway has the stale pid %d", gw)
+	}
+}
+
+// Direct mode starts no gateway and writes no gateway file, even with no
+// cortex-gateway binary next to cortex.
+func TestSupervisor_DirectModeStartsNoGateway(t *testing.T) {
+	r := newPraxisRig(t, false)
+	if err := os.Remove(filepath.Join(r.bin, gatewayBinary)); err != nil {
+		t.Fatal(err)
+	}
+	sup := r.supervise(t)
+	sup.pids(t, idleChildPid, 1)
+	time.Sleep(500 * time.Millisecond)
+	if out := sup.out.String(); strings.Contains(out, gatewayBinary) {
+		t.Errorf("direct mode logged the gateway:\n%s", out)
+	}
+	for _, n := range []string{gatewayTokenName, gatewayYAMLName} {
+		if _, err := os.Stat(filepath.Join(filepath.Dir(r.config), n)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s: err = %v, want not exist", n, err)
+		}
 	}
 }

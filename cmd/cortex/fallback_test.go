@@ -108,7 +108,7 @@ func TestSupervisorForwardAddr_ResolvesTheAddressTheChildWillBind(t *testing.T) 
 		{"reverse-only leaves no forward address", []string{"--config", reverseOnly}, fallbackDefaultAddr},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := supervisorForwardAddr(tc.args); got != tc.want {
+			if got := supervisorForwardAddr(supervisorConfig(configPathFromArgs(tc.args))); got != tc.want {
 				t.Errorf("supervisorForwardAddr(%q) = %q, want %q", tc.args, got, tc.want)
 			}
 		})

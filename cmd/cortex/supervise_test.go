@@ -2,10 +2,16 @@ package main
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/rossoctl/cortex/core/config"
 )
 
 // The policy is the whole of #1122's behaviour change, and it is deliberately separate
@@ -195,5 +201,100 @@ func TestSuperviseDelays_AreOrdered(t *testing.T) {
 		t.Error("one bind failure escalates, so a restart racing a stop is treated as a held address")
 	case superviseHealthyRun <= superviseRestartDelay:
 		t.Error("a child counts as healthy sooner than the wait before starting it")
+	}
+}
+
+// Direct mode is the default, and it must not change: one child, today's args and
+// env, no gateway file and no lookup of the gateway binary.
+func TestSupervisorChildren_DirectModeHasOnlyCortex(t *testing.T) {
+	args := []string{"--config", "/x/config.yaml", "-local"}
+	noWrite := func(string, *config.Config) (string, string, error) {
+		t.Error("direct mode wrote the gateway files")
+		return "", "", nil
+	}
+	for name, cfg := range map[string]*config.Config{
+		"praxis off": {Praxis: &config.PraxisConfig{Enabled: false}},
+		"no config":  nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			specs, err := supervisorChildren(cfg, filepath.Join(dir, "config.yaml"), "/bin/cortex", args, noWrite)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(specs) != 1 || specs[0].name != "cortex" {
+				t.Fatalf("specs = %+v, want only cortex", specs)
+			}
+			s := specs[0]
+			if s.path != "/bin/cortex" || !slices.Equal(s.args, args) || s.env != nil || s.stdinPipe {
+				t.Errorf("cortex spec = %+v, want today's path, args and inherited env", s)
+			}
+			if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+				t.Errorf("files in the config dir: %v", ents)
+			}
+		})
+	}
+}
+
+func TestSupervisorChildren_PraxisAddsGateway(t *testing.T) {
+	dir := t.TempDir()
+	cfg := praxisConfig()
+	specs, err := supervisorChildren(cfg, filepath.Join(dir, "config.yaml"), "/opt/bin/cortex", []string{"--config", "c"}, writeGatewayFiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(specs) != 2 {
+		t.Fatalf("specs = %+v, want cortex and the gateway", specs)
+	}
+	c, g := specs[0], specs[1]
+	tokenEnv := gatewayTokenEnv + "=" + filepath.Join(dir, gatewayTokenName)
+	if c.name != "cortex" || len(c.env) == 0 || c.env[len(c.env)-1] != tokenEnv {
+		t.Errorf("cortex spec = %+v, want env ending in %s", c, tokenEnv)
+	}
+	wantArgs := []string{"-c", filepath.Join(dir, gatewayYAMLName), "--exit-on-stdin-eof"}
+	if g.name != gatewayBinary || g.path != "/opt/bin/cortex-gateway" || !slices.Equal(g.args, wantArgs) {
+		t.Errorf("gateway spec = %+v, want path /opt/bin/cortex-gateway and args %q", g, wantArgs)
+	}
+	if g.env == nil || len(g.env) != 0 || !g.stdinPipe {
+		t.Errorf("gateway env = %#v, stdinPipe = %v; want an empty non-nil env and a stdin pipe", g.env, g.stdinPipe)
+	}
+	for _, n := range []string{gatewayTokenName, gatewayYAMLName} {
+		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
+			t.Errorf("%s: %v", n, err)
+		}
+	}
+}
+
+func TestStopStaleGateway(t *testing.T) {
+	cases := []struct {
+		name      string
+		exe       string
+		lookupErr error
+		freesOn   int // the free() call that first reports the port free; 0 = never
+		want      []syscall.Signal
+	}{
+		{"a stale gateway that stops", "/x/cortex-gateway", nil, 1, []syscall.Signal{syscall.SIGTERM}},
+		{"a stale gateway that does not stop", "/x/cortex-gateway", nil, 0, []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL}},
+		{"another process", "/x/other", nil, 1, nil},
+		{"no holder", "", errors.New("no listener"), 1, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []syscall.Signal
+			calls := 0
+			stopStaleGateway("127.0.0.1:47605",
+				func(string) (holder, error) { return holder{pid: 42, exe: tc.exe}, tc.lookupErr },
+				func(pid int, sig syscall.Signal) error {
+					if pid != 42 {
+						t.Errorf("signalled pid %d", pid)
+					}
+					got = append(got, sig)
+					return nil
+				},
+				func(string) bool { calls++; return tc.freesOn != 0 && calls >= tc.freesOn })
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("signals = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
