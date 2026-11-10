@@ -705,7 +705,11 @@ func TestLoginPath_BackgroundChildHoldingStdout(t *testing.T) {
 				defer loginPathMu.Unlock()
 				loginPathVal, loginPathTried, loginPathContext = "", time.Now(), old
 			})
-			if got := loginPath(); got != tc.want {
+			got := loginPath()
+			if tc.hangs && ctx.Err() == nil {
+				t.Error("loginPath returned before the shell signalled it was hung")
+			}
+			if got != tc.want {
 				t.Errorf("loginPath() = %q, want %q", got, tc.want)
 			}
 		})
