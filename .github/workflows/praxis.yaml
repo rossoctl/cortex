@@ -128,12 +128,15 @@ jobs:
         with:
           go-version-file: cmd/cortex/go.mod
 
-      # Runs from the repo root: the command names praxis/ and cmd/cortex.
+      # Runs from the repo root: the command names praxis/ and cmd/cortex. rustup reads
+      # rust-toolchain.toml only below praxis/, so the step names that toolchain itself.
       - name: End-to-end (praxis mode)
         id: e2e
         continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}
         run: |
           set -euo pipefail
+          RUSTUP_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' praxis/rust-toolchain.toml)
+          export RUSTUP_TOOLCHAIN
           cargo build --locked -p cortex-gateway --manifest-path praxis/Cargo.toml
           TAGS=$(GOWORK=off go -C scripts/profile-tags run . local)
           CORTEX_GATEWAY_BIN=$PWD/praxis/target/debug/cortex-gateway GOWORK=off go -C cmd/cortex test -count=1 -timeout 15m -tags "praxis_e2e,$TAGS" -run TestPraxisE2E .
