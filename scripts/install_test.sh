@@ -737,6 +737,7 @@ with_pre_rename() { # exe-of-4242(__NONE__)  bin_dir  ps-comm(fail)
 	{
 		printf 'PROXY_PIDFILE=%s\nBIN_DIR=%s\nCORTEX_DIR=%s\nSUPERVISOR_NAME=x\n' "${_pf}" "$2" "${TMP}"
 		printf 'DEMO_FORWARD_PORT=47600\nDEMO_SESSION_PORT=47601\nDEMO_STATS_PORT=47603\nDEMO_HEALTH_PORT=47604\n'
+		printf 'DEMO_GATEWAY_PORT=47605\nDEMO_EGRESS_PORT=47606\n'
 		printf 'info() { :; }\nwarn() { :; }\nsleep() { :; }\n'
 		printf 'port_in_use() { return 1; }\n'
 		printf 'kill() {\n'
@@ -781,6 +782,12 @@ ln -s "${TMP}/prr_real" "${TMP}/prr_link"
 check "pre-rename: --stop matches a BIN_DIR reached through a symlink" \
 	"old:stopped pidfile:none" \
 	"$(with_pre_rename "$(cd "${TMP}/prr_real" && pwd -P)/authbridge-proxy" "${TMP}/prr_link" authbridge-prox)"
+
+# --- stop_cortex and restage know the praxis-mode gateway ---
+check "stop_cortex checks the gateway and egress ports too" "1" \
+	"$(grep -c 'for _p in .*DEMO_GATEWAY_PORT.*DEMO_EGRESS_PORT' "${INSTALL_SH}")"
+check "restage copies cortex-gateway" "1" \
+	"$(grep -c 'for _rs_b in .*cortex-gateway' "${INSTALL_SH}")"
 
 # --- ensure_tmpdir: exports TMPDIR on BOTH paths (regression: unset-TMPDIR abort) ---
 #

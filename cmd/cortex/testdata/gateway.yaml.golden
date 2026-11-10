@@ -1,0 +1,36 @@
+insecure_options:
+  allow_unbounded_body: true
+  allow_private_upstreams: true
+  allow_private_endpoints: true
+body_limits:
+  max_request_bytes: 33554432
+  max_response_bytes: null
+listeners:
+  - name: gateway
+    address: 127.0.0.1:47605
+    forward_proxy:
+      enabled: true
+    filter_chains:
+      - main
+filter_chains:
+  - name: main
+    filters:
+      - filter: ip_acl
+        allow:
+          - 127.0.0.1/32
+          - ::1/128
+      - filter: cortex_attribution
+        token_file: /CORTEX_DIR/gateway.token
+      - filter: cortex_observe
+        ingest: 127.0.0.1:47601
+        token_file: /CORTEX_DIR/gateway.token
+      - filter: access_log
+      - filter: router
+        routes:
+          - cluster: egress
+            path_prefix: /
+      - filter: load_balancer
+        clusters:
+          - endpoints:
+              - 127.0.0.1:47606
+            name: egress

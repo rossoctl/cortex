@@ -31,8 +31,13 @@ cargo run --locked -p cortex-gateway -- -c gateway.yaml
 ```
 
 The config path comes from `-c <path>`, then `PRAXIS_CONFIG`, then
-`praxis.yaml` in the current directory. The supervisor (#1720) writes
-`gateway.yaml`. Until then, write it by hand.
+`praxis.yaml` in the current directory. In praxis mode, `cortex -supervise`
+writes `gateway.yaml` and starts the gateway (#1720). To run the gateway by
+hand, write the file yourself.
+
+`--exit-on-stdin-eof` makes the gateway exit when its stdin closes. The
+supervisor uses it. Without the flag, a gateway that you start with
+`</dev/null` keeps running.
 
 The binary registers two filters. Put them first in the chain, in this order,
 and add `access_log` after them:
@@ -92,6 +97,23 @@ These come from the PR #1717 review. This PR accepts them:
 4. **`at` is set when Cortex appends the row.** So a request that names the
    session, and arrives before an earlier request that is still pending, can
    change which rows are linked to the session.
+
+## Supervision decisions (#1720)
+
+The plan `docs/superpowers/plans/2026-11-09-praxis-mode-3-supervise-gateway.md`
+gives the full text.
+
+1. `cortex -supervise` runs `cortex` and `cortex-gateway` as two siblings. Each child has its own restart loop, so a `cortex` restart does not stop the gateway.
+2. The command line is `cortex-gateway -c <dir>/gateway.yaml --exit-on-stdin-eof`. `<dir>` is the directory of the `--config` file, `~/.cortex/` for the service. The binary is in the same directory as `cortex`.
+3. The gateway's stdin is a pipe from the supervisor. When the supervisor exits for any reason, SIGKILL included, the pipe closes and the gateway exits. This is the only orphan guard, on Linux and macOS. No `Pdeathsig`.
+4. To stop the gateway, the supervisor closes the pipe. After `superviseStopGrace` it sends SIGKILL.
+5. At each start, the supervisor writes a new `gateway.token` (32 random bytes, hex, mode 0600) and `gateway.yaml`. It writes each file to a temp file and then renames it. The `cortex` child gets `CORTEX_GATEWAY_TOKEN_FILE`.
+6. The gateway gets an empty env, so no proxy variable can get to it.
+7. `gateway.yaml` listens on `praxis.listen` (default `127.0.0.1:47605`). A catch-all route sends all traffic to `praxis.egress` (default `127.0.0.1:47606`). The egress listener is #1721. `ip_acl` allows only `127.0.0.1/32` and `::1/128`.
+8. A missing gateway binary, or a gateway that exits, gets the normal backoff. The supervisor does not stop, and `cortex` keeps running.
+9. The supervisor does not stop a gateway from an earlier run. The stdin pipe ends that gateway when its supervisor exits, so a new gateway that cannot bind `praxis.listen` binds it on the next try. A config that `config.Validate` refuses starts no gateway.
+10. Not in this step: the admin metrics port, the startup probe and `gateway_unavailable` (#1721), and the version check of the gateway (#1723).
+11. Direct mode does not change. The supervisor starts only `cortex` and writes no gateway file.
 
 ## The parity rule
 

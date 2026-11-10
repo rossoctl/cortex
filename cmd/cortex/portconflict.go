@@ -42,11 +42,12 @@ import (
 // crash worth restarting at speed. Nothing outside this package depends on the number.
 const exitPortInUse = 3
 
-// cortexBinaries are the basenames this proxy has shipped under. The Cortex remedy — stop
+// cortexBinaries are the basenames this proxy has shipped under, and its praxis-mode
+// gateway, which holds praxis.listen. The Cortex remedy — stop
 // the other install — is only right for these: a sidecar that cannot bind :8080 in a pod
 // has met something entirely unrelated, and must not be sent looking for a second laptop
 // install it does not have.
-var cortexBinaries = map[string]bool{"cortex": true, "authbridge-proxy": true}
+var cortexBinaries = map[string]bool{"cortex": true, "authbridge-proxy": true, "cortex-gateway": true}
 
 // listenError is a socket that could not be bound: which one, and at what address. The
 // address is the part a caller cannot otherwise recover — it lives only inside

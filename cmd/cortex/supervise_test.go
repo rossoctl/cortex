@@ -2,10 +2,15 @@ package main
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/rossoctl/cortex/core/config"
 )
 
 // The policy is the whole of #1122's behaviour change, and it is deliberately separate
@@ -195,5 +200,131 @@ func TestSuperviseDelays_AreOrdered(t *testing.T) {
 		t.Error("one bind failure escalates, so a restart racing a stop is treated as a held address")
 	case superviseHealthyRun <= superviseRestartDelay:
 		t.Error("a child counts as healthy sooner than the wait before starting it")
+	}
+}
+
+// Direct mode is the default, and it must not change: one child, today's args and
+// env, no gateway file and no lookup of the gateway binary. A praxis config that
+// does not validate also runs cortex alone.
+func TestSupervisorChildren_DirectModeHasOnlyCortex(t *testing.T) {
+	args := []string{"--config", "/x/config.yaml", "-local"}
+	noWrite := func(string, *config.Config) (string, string, error) {
+		t.Error("direct mode wrote the gateway files")
+		return "", "", nil
+	}
+	// Praxis on, but cortex refuses the config: a gateway would serve on 0.0.0.0.
+	notValid := praxisConfig()
+	notValid.Praxis.Listen = "0.0.0.0:47605"
+	for name, cfg := range map[string]*config.Config{
+		"praxis off":           {Praxis: &config.PraxisConfig{Enabled: false}},
+		"no config":            nil,
+		"praxis on, not valid": notValid,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			specs := supervisorChildren(cfg, filepath.Join(dir, "config.yaml"), "/bin/cortex", args, noWrite)
+			if len(specs) != 1 || specs[0].name != "cortex" {
+				t.Fatalf("specs = %+v, want only cortex", specs)
+			}
+			s := specs[0]
+			if s.path != "/bin/cortex" || !slices.Equal(s.args, args) || s.env != nil || s.stdinPipe {
+				t.Errorf("cortex spec = %+v, want today's path, args and inherited env", s)
+			}
+			if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+				t.Errorf("files in the config dir: %v", ents)
+			}
+		})
+	}
+}
+
+// Gateway files that cannot be written leave cortex alone, with today's env. It must
+// not end the supervisor: nothing would then restart anything before the next login.
+func TestSupervisorChildren_WriteFailureRunsCortexAlone(t *testing.T) {
+	failWrite := func(string, *config.Config) (string, string, error) {
+		return "", "", errors.New("read-only dir")
+	}
+	specs := supervisorChildren(praxisConfig(), "/x/config.yaml", "/bin/cortex", nil, failWrite)
+	if len(specs) != 1 || specs[0].name != "cortex" || specs[0].env != nil {
+		t.Fatalf("specs = %+v, want only cortex with the inherited env", specs)
+	}
+}
+
+func TestSupervisorChildren_PraxisAddsGateway(t *testing.T) {
+	dir := t.TempDir()
+	cfg := praxisConfig()
+	specs := supervisorChildren(cfg, filepath.Join(dir, "config.yaml"), "/opt/bin/cortex", []string{"--config", "c"}, writeGatewayFiles)
+	if len(specs) != 2 {
+		t.Fatalf("specs = %+v, want cortex and the gateway", specs)
+	}
+	c, g := specs[0], specs[1]
+	tokenEnv := gatewayTokenEnv + "=" + filepath.Join(dir, gatewayTokenName)
+	if c.name != "cortex" || len(c.env) == 0 || c.env[len(c.env)-1] != tokenEnv {
+		t.Errorf("cortex spec = %+v, want env ending in %s", c, tokenEnv)
+	}
+	wantArgs := []string{"-c", filepath.Join(dir, gatewayYAMLName), "--exit-on-stdin-eof"}
+	if g.name != gatewayBinary || g.path != "/opt/bin/cortex-gateway" || !slices.Equal(g.args, wantArgs) {
+		t.Errorf("gateway spec = %+v, want path /opt/bin/cortex-gateway and args %q", g, wantArgs)
+	}
+	if g.env == nil || len(g.env) != 0 || !g.stdinPipe {
+		t.Errorf("gateway env = %#v, stdinPipe = %v; want an empty non-nil env and a stdin pipe", g.env, g.stdinPipe)
+	}
+	for _, n := range []string{gatewayTokenName, gatewayYAMLName} {
+		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
+			t.Errorf("%s: %v", n, err)
+		}
+	}
+}
+
+// The supervisor must read the config file the cortex child reads. With --local (or its
+// --demo alias) and no --config, that is ~/.cortex/config.yaml.
+func TestSupervisorConfigPath_LocalReadsTheChildsConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	local := filepath.Join(home, cortexDirName, localConfigName)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-local"}, local},
+		{[]string{"--local"}, local},
+		{[]string{"--local=true"}, local},
+		{[]string{"-local=1"}, local},
+		{[]string{"--demo"}, local},
+		{[]string{"-demo=true"}, local},
+		{[]string{"--local=false"}, ""},
+		{[]string{"--local", "--local=false"}, ""},
+		{[]string{"--local=false", "-local"}, local},
+		{[]string{"--config", "/etc/c.yaml"}, "/etc/c.yaml"},
+		{[]string{"-ca-dir", "/d"}, ""},
+		{[]string{"local"}, ""},
+		{nil, ""},
+	} {
+		if got := supervisorConfigPath(tc.args); got != tc.want {
+			t.Errorf("supervisorConfigPath(%q) = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+}
+
+// The reviewer's repro: `cortex --local --supervise` with praxis.enabled in
+// ~/.cortex/config.yaml runs the gateway beside cortex.
+func TestSupervisorChildren_LocalPraxisAddsGateway(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, cortexDirName)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "mode: proxy-sidecar\nlistener:\n  session_api_addr: 127.0.0.1:47601\n  bind_loopback_only: true\n  reverse_proxy_backend: 127.0.0.1:8000\npraxis:\n  enabled: true\n"
+	if err := os.WriteFile(filepath.Join(dir, localConfigName), []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--local"}
+	path := supervisorConfigPath(args)
+	specs := supervisorChildren(supervisorConfig(path), path, "/opt/bin/cortex", args, writeGatewayFiles)
+	if len(specs) != 2 || specs[1].name != gatewayBinary {
+		t.Fatalf("specs = %+v, want cortex and the gateway", specs)
+	}
+	if _, err := os.Stat(filepath.Join(dir, gatewayTokenName)); err != nil {
+		t.Errorf("gateway token not in ~/.cortex: %v", err)
 	}
 }

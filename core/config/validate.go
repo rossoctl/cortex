@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/netip"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
 )
@@ -92,6 +93,22 @@ func validatePraxis(cfg *Config) error {
 	// The rows reach Cortex only through POST /v1/ingest, which needs the session store.
 	if !cfg.Session.SessionEnabled() {
 		return fmt.Errorf("praxis.enabled: true cannot be used with session.enabled: false: Cortex ingests the gateway's rows into the session store")
+	}
+	if err := validatePraxisAddr("praxis.listen", cfg.Praxis.Listen); err != nil {
+		return err
+	}
+	return validatePraxisAddr("praxis.egress", cfg.Praxis.Egress)
+}
+
+// validatePraxisAddr accepts an empty addr (the default applies) or a literal
+// loopback host:port with a non-zero port.
+func validatePraxisAddr(field, addr string) error {
+	if addr == "" {
+		return nil
+	}
+	ap, err := netip.ParseAddrPort(addr)
+	if err != nil || !ap.Addr().IsLoopback() || ap.Port() == 0 {
+		return fmt.Errorf("%s: %q must be a loopback IP and a non-zero port, such as %q", field, addr, "127.0.0.1:47605")
 	}
 	return nil
 }

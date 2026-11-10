@@ -611,6 +611,9 @@ DEMO_FORWARD_PORT=47600
 DEMO_SESSION_PORT=47601
 DEMO_STATS_PORT=47602
 DEMO_HEALTH_PORT=47604
+# praxis mode: cortex-gateway's listener (praxis.listen) and the egress (praxis.egress).
+DEMO_GATEWAY_PORT=47605
+DEMO_EGRESS_PORT=47606
 
 # port_in_use exits 0 if something is already listening on the given loopback port.
 # Best-effort across platforms: lsof (macOS + many Linux), then ss (iproute2, the
@@ -780,7 +783,7 @@ stop_cortex() {
 	# we stopped what we know about means a foreign proxy this script did not start —
 	# worth naming, since in a sandbox it cannot be found through ps.
 	_busy=""
-	for _p in "${DEMO_FORWARD_PORT}" "${DEMO_SESSION_PORT}" "${DEMO_STATS_PORT}" "${DEMO_HEALTH_PORT}"; do
+	for _p in "${DEMO_FORWARD_PORT}" "${DEMO_SESSION_PORT}" "${DEMO_STATS_PORT}" "${DEMO_HEALTH_PORT}" "${DEMO_GATEWAY_PORT}" "${DEMO_EGRESS_PORT}"; do
 		port_in_use "${_p}" && _busy="${_busy} ${_p}"
 	done
 	if [ -n "${_stopped}" ]; then
@@ -836,7 +839,7 @@ no_setup() {
 restage() {
 	mkdir -p "${CORTEX_DIR}/tmp" || return 1
 	_rs=$(mktemp -d "${CORTEX_DIR}/tmp/stage.XXXXXX") || return 1
-	for _rs_b in agentop cortex cortex-session-dump; do
+	for _rs_b in agentop cortex cortex-session-dump cortex-gateway; do
 		[ ! -f "$1/${_rs_b}" ] || cp -p "$1/${_rs_b}" "${_rs}/${_rs_b}" || {
 			rm -rf "${_rs}"
 			return 1

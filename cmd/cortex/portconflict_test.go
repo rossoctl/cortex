@@ -168,3 +168,15 @@ func TestExitPortInUse_IsNotAnOrdinaryFailure(t *testing.T) {
 		t.Errorf("exitPortInUse = %d, which a crash or a usage error also leaves", exitPortInUse)
 	}
 }
+
+// A holder by any name this proxy or its gateway ships under gets the Cortex remedy.
+func TestCortexBinaries(t *testing.T) {
+	for name, want := range map[string]bool{
+		"cortex": true, "authbridge-proxy": true, "cortex-gateway": true,
+		"cortex-envoy": false, "nginx": false,
+	} {
+		if got := cortexBinaries[name]; got != want {
+			t.Errorf("cortexBinaries[%q] = %v, want %v", name, got, want)
+		}
+	}
+}

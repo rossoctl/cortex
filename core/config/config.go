@@ -335,10 +335,37 @@ func (b *TLSBridgeConfig) Validate() error {
 	return nil
 }
 
-// PraxisConfig is the top-level `praxis:` block. listen and egress land with
-// their callers (#1720, #1721).
+// Default loopback addresses of the praxis-mode listeners.
+const (
+	DefaultPraxisListen = "127.0.0.1:47605"
+	DefaultPraxisEgress = "127.0.0.1:47606"
+)
+
+// PraxisConfig is the top-level `praxis:` block. Listen is cortex-gateway's
+// listener. Egress is the address gateway.yaml routes to; the egress listener
+// itself lands with #1721.
 type PraxisConfig struct {
-	Enabled bool `yaml:"enabled" json:"enabled"`
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	Listen  string `yaml:"listen,omitempty" json:"listen,omitempty"`
+	Egress  string `yaml:"egress,omitempty" json:"egress,omitempty"`
+}
+
+// ListenAddr returns praxis.listen, or DefaultPraxisListen when it is empty or
+// the block is nil.
+func (p *PraxisConfig) ListenAddr() string {
+	if p == nil || p.Listen == "" {
+		return DefaultPraxisListen
+	}
+	return p.Listen
+}
+
+// EgressAddr returns praxis.egress, or DefaultPraxisEgress when it is empty or
+// the block is nil.
+func (p *PraxisConfig) EgressAddr() string {
+	if p == nil || p.Egress == "" {
+		return DefaultPraxisEgress
+	}
+	return p.Egress
 }
 
 // PraxisEnabled reports whether praxis mode is on. False on a nil block.
