@@ -1262,8 +1262,8 @@ func TestTitleFromTranscript_UnwrapsSlashCommands(t *testing.T) {
 		},
 		{
 			"name only",
-			`<command-message>clear</command-message>\n<command-name>/clear</command-name>\n<command-args></command-args>`,
-			"/clear",
+			`<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args></command-args>`,
+			"/review",
 		},
 		{
 			"ordinary prose is untouched",
@@ -1282,6 +1282,46 @@ func TestTitleFromTranscript_UnwrapsSlashCommands(t *testing.T) {
 			got, gerr := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
 			if gerr != nil {
 				t.Fatal(gerr)
+			}
+			if got != tc.want {
+				t.Errorf("title = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// /clear never names a session. Claude Code writes it as the first user turn of the transcript it
+// starts, so a session left idle after /clear was titled "/clear".
+func TestTitleFromTranscript_ClearNamesNothing(t *testing.T) {
+	const clear = `<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>`
+	user := func(content string) string {
+		body, err := json.Marshal(strings.ReplaceAll(content, `\n`, "\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return `{"type":"user","cwd":"/w/repo","message":{"role":"user","content":` + string(body) + `}}`
+	}
+	human := func(line string) string {
+		return strings.Replace(line, `"type":"user",`, `"type":"user","origin":{"kind":"human"},`, 1)
+	}
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"alone falls through to the cwd", []string{user(clear)}, "/w/repo"},
+		{"attributed human turn", []string{human(user(clear))}, "/w/repo"},
+		{"last-prompt record", []string{user(clear), `{"type":"last-prompt","lastPrompt":"/clear"}`}, "/w/repo"},
+		{"the prompt after it wins", []string{user(clear), user("fix the title bug")}, "fix the title bug"},
+		{"a prompt before it is kept", []string{user("fix the title bug"), user(clear)}, "fix the title bug"},
+		{"a longer command name is not /clear", []string{user(`<command-name>/clearcache</command-name><command-args></command-args>`)}, "/clearcache"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeSessionTranscript(t, dir, "s.jsonl", tc.lines...)
+			got, err := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
+			if err != nil {
+				t.Fatal(err)
 			}
 			if got != tc.want {
 				t.Errorf("title = %q, want %q", got, tc.want)

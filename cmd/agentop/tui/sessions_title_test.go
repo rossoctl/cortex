@@ -1661,6 +1661,42 @@ func TestUntitledSettled_BlankAndUnknownRows(t *testing.T) {
 	}
 }
 
+// TestUntitledSettled_NamedRowWhoseTranscriptMoved pins the re-read of a NAMED row.
+//
+// A session started by /clear and left idle is named by its cwd. Before this, a named row was never
+// read again while agentop ran, so the prompt and ai-title that came later never reached the column.
+func TestUntitledSettled_NamedRowWhoseTranscriptMoved(t *testing.T) {
+	settled := time.Now().Add(-2 * untitledSettleDelay)
+	log := filepath.Join(t.TempDir(), "s1.jsonl")
+	if err := os.WriteFile(log, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	harvested := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(log, harvested, harvested); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		meta SessionMetadata
+		want bool
+	}{
+		{"unchanged since the harvest", SessionMetadata{Title: "/w/repo", LogFile: log, LogModTime: harvested}, false},
+		{"changed since the harvest", SessionMetadata{Title: "/w/repo", LogFile: log, LogModTime: harvested.Add(-time.Minute)}, true},
+		{"no transcript recorded", SessionMetadata{Title: "/w/repo"}, false},
+		{"transcript gone", SessionMetadata{Title: "/w/repo", LogFile: log + ".gone"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTitleModel(t, map[string]SessionMetadata{"s1": tc.meta}, "s1")
+			m.sessions = []session.SessionSummary{{ID: "s1", UpdatedAt: settled}}
+			if got := m.untitledSettled(time.Now()); got != tc.want {
+				t.Errorf("untitledSettled = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestHarvestNamedSomething_JudgesOnlyRowsOnScreen pins the backoff's notion of progress.
 //
 // Two ways to get this wrong, and the function had the second one. len(meta) > 0 is true on every
