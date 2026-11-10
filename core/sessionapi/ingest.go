@@ -38,6 +38,9 @@ const (
 	// maxIngestDecoders caps how many lines of one stream decode at the same time. Each one
 	// can hold a 64 MiB line and its decoded form.
 	maxIngestDecoders = 8
+	// maxHeldRequests caps the held request rows. Each one keeps a second copy of its
+	// conversation, and a response row the gateway drops never releases it.
+	maxHeldRequests = 256
 )
 
 // The refusal reasons of ingest_refused_total.
@@ -117,9 +120,25 @@ func (in *ingester) holdRequest(id, sid string, inf *model.InferenceExtension) {
 	in.reqCapsMu.Lock()
 	defer in.reqCapsMu.Unlock()
 	in.sweepLocked(time.Now())
+	if _, ok := in.reqInf[id]; !ok && len(in.reqInf) >= maxHeldRequests {
+		in.dropOldestHeldLocked()
+	}
 	in.reqInf[id] = heldRequest{sid: sid, at: time.Now(), inf: model.InferenceExtension{
 		Messages: inf.Messages, Tools: inf.Tools, ToolResults: inf.ToolResults,
 		HistoryToolCalls: inf.HistoryToolCalls, HistoryThinking: inf.HistoryThinking}}
+}
+
+// dropOldestHeldLocked drops the oldest held request. Its response row, if it comes, is
+// filed without the request-only fields.
+func (in *ingester) dropOldestHeldLocked() {
+	var oldest string
+	var at time.Time
+	for id, h := range in.reqInf {
+		if at.IsZero() || h.at.Before(at) {
+			oldest, at = id, h.at
+		}
+	}
+	delete(in.reqInf, oldest)
 }
 
 // restoreRequest puts the request-only fields back on a response row. A field the row

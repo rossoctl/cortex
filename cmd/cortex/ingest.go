@@ -16,7 +16,7 @@ const gatewayTokenEnv = "CORTEX_GATEWAY_TOKEN_FILE"
 // ingestOptions turns on the ingestion endpoint in praxis mode. In direct mode it returns
 // nil and reads neither the environment nor a file.
 func ingestOptions(cfg *config.Config, rates pricing.Resolver, getenv func(string) string, readFile func(string) ([]byte, error)) ([]sessionapi.Option, error) {
-	if !cfg.PraxisEnabled() || !cfg.Listener.BindLoopbackOnly {
+	if !cfg.PraxisEnabled() {
 		return nil, nil
 	}
 	path := getenv(gatewayTokenEnv)

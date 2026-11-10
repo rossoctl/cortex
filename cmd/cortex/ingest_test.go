@@ -12,9 +12,8 @@ import (
 	"github.com/rossoctl/cortex/core/sessionapi"
 )
 
-func praxisCfg(enabled, loopback bool) *config.Config {
+func praxisCfg(enabled bool) *config.Config {
 	cfg := &config.Config{}
-	cfg.Listener.BindLoopbackOnly = loopback
 	if enabled {
 		cfg.Praxis = &config.PraxisConfig{Enabled: true}
 	}
@@ -24,21 +23,19 @@ func praxisCfg(enabled, loopback bool) *config.Config {
 func TestIngestOptions_DirectModeNone(t *testing.T) {
 	getenv := func(string) string { t.Fatal("getenv called in direct mode"); return "" }
 	readFile := func(string) ([]byte, error) { t.Fatal("readFile called in direct mode"); return nil, nil }
-	for _, cfg := range []*config.Config{praxisCfg(false, true), praxisCfg(true, false)} {
-		opts, err := ingestOptions(cfg, nil, getenv, readFile)
-		if err != nil || opts != nil {
-			t.Fatalf("got %v, %v; want nil, nil", opts, err)
-		}
+	opts, err := ingestOptions(praxisCfg(false), nil, getenv, readFile)
+	if err != nil || opts != nil {
+		t.Fatalf("got %v, %v; want nil, nil", opts, err)
 	}
 }
 
 func TestIngestOptions_NeedsTokenFile(t *testing.T) {
-	_, err := ingestOptions(praxisCfg(true, true), nil, func(string) string { return "" },
+	_, err := ingestOptions(praxisCfg(true), nil, func(string) string { return "" },
 		func(string) ([]byte, error) { return nil, nil })
 	if err == nil || !strings.Contains(err.Error(), "CORTEX_GATEWAY_TOKEN_FILE") {
 		t.Fatalf("err = %v, want one that names CORTEX_GATEWAY_TOKEN_FILE", err)
 	}
-	_, err = ingestOptions(praxisCfg(true, true), nil, func(string) string { return "/x" },
+	_, err = ingestOptions(praxisCfg(true), nil, func(string) string { return "/x" },
 		func(string) ([]byte, error) { return nil, errors.New("no such file") })
 	if err == nil {
 		t.Fatal("an unreadable token file must be an error")
@@ -46,7 +43,7 @@ func TestIngestOptions_NeedsTokenFile(t *testing.T) {
 }
 
 func TestIngestOptions_EmptyToken(t *testing.T) {
-	_, err := ingestOptions(praxisCfg(true, true), nil, func(string) string { return "/x" },
+	_, err := ingestOptions(praxisCfg(true), nil, func(string) string { return "/x" },
 		func(string) ([]byte, error) { return []byte(" \n"), nil })
 	if err == nil {
 		t.Fatal("an empty token must be an error")
@@ -54,7 +51,7 @@ func TestIngestOptions_EmptyToken(t *testing.T) {
 }
 
 func TestIngestOptions_ReadsToken(t *testing.T) {
-	opts, err := ingestOptions(praxisCfg(true, true), nil,
+	opts, err := ingestOptions(praxisCfg(true), nil,
 		func(k string) string {
 			if k != "CORTEX_GATEWAY_TOKEN_FILE" {
 				t.Fatalf("getenv(%q)", k)

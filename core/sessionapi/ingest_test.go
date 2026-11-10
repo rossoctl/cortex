@@ -577,3 +577,23 @@ func TestIngest_ParallelDecodeKeepsOrder(t *testing.T) {
 		t.Errorf("stats = %+v", st)
 	}
 }
+
+func TestIngest_HeldRequestsAreCapped(t *testing.T) {
+	in := newIngester(Ingest{Token: "t"})
+	inf := &model.InferenceExtension{Messages: []model.InferenceMessage{{Role: "user", Content: "hi"}}}
+	for i := range maxHeldRequests + 10 {
+		in.holdRequest(fmt.Sprintf("r%d", i), "s1", inf)
+	}
+	if n := len(in.reqInf); n != maxHeldRequests {
+		t.Errorf("held %d requests, want the cap %d", n, maxHeldRequests)
+	}
+	last := fmt.Sprintf("r%d", maxHeldRequests+9)
+	if _, ok := in.reqInf[last]; !ok {
+		t.Errorf("the newest request %s was dropped", last)
+	}
+	// A repeat of a held id replaces it and drops nothing.
+	in.holdRequest(last, "s1", inf)
+	if n := len(in.reqInf); n != maxHeldRequests {
+		t.Errorf("a repeated id changed the count to %d", n)
+	}
+}
