@@ -219,7 +219,7 @@ Depends on: 2, 3. Estimated lines: 720.
 The hop client: `http.Transport{Proxy: nil, ForceAttemptHTTP2: false, MaxIdleConnsPerHost: 100, IdleConnTimeout: 90 * time.Second, DialContext: (&net.Dialer{Timeout: 2 * time.Second}).DialContext}`, `CheckRedirect` returns `http.ErrUseLastResponse`.
 
 The five branch points in `serveOutbound`, in this order:
-1. Right after `attribution.Strip(r.Header)`: `if s.Hop != nil { stripHopHeaders(r.Header) }`.
+1. Right after `attribution.Strip(r.Header)` in `serveOutbound` (`server.go`, the call near the top of the function; not the one in `handleConnect`): `if s.Hop != nil { stripHopHeaders(r.Header) }`.
 2. At the request row (`if !skipped && s.Sessions != nil` block): `hopped := s.Hop != nil && !skipped && !forwardUpgrade`. When `hopped`, call `s.Hop.own(pctx, wire)` and `defer s.Hop.release(pctx)` in place of `s.recordCapturedRequest`. `defer s.touch` stays (spec: keep `touch`). Build `wire` here (Decision 8).
 3. `ownEncoding := hopped || (!skipped && (...))`.
 4. At `client.Do(r)`: `if hopped { resp, err, answered = s.hopDo(w, r, pctx, tl, sid); if answered { return } } else { resp, err = client.Do(r) }`. `hopDo` runs after the redirect re-check, so the order is the spec's.
@@ -277,7 +277,8 @@ Depends on: none. Estimated lines: 230.
 `fileIngest` changes:
 - The `erased` branch: `if j := in.cfg.Joins; j != nil { j.Release(l.RequestID) }` before `refuse`. Remove the `#1721` comment.
 - A response row: `if cut := joins.TakeCut(id); cut != nil` then set `ev.Error.Kind, ev.Error.Message = cut.Kind, cut.Message` when `ev.Error != nil`, else `ev.Error = cut`. Before `settleIngested`.
-- A request row: `if joins != nil && joins.AppendRequest(id, sid, ev, capture) { lines++; return }`, else `AppendCapture` as now.
+- A request row (`ev.Phase == model.SessionRequest`): keep the `holdRequest` call as it is. Then, in place of the last two lines (`s.store.AppendCapture(sid, ev, in.capture(l, &ev))` and `in.lines.Add(1)`): `c := in.capture(l, &ev)`; when `joins != nil && joins.AppendRequest(l.RequestID, sid, ev, c)`, only `in.lines.Add(1)` and return. Else `s.store.AppendCapture(sid, ev, c)` and `in.lines.Add(1)` as now. Response rows always go to `AppendCapture`.
+- `joins` is `in.cfg.Joins`. Add the field `Joins HopJoins` to the `Ingest` struct with the doc comment `// Joins is the forward proxy's join state in praxis mode. nil: no joins.`
 
 - [ ] **Step 1: Write the failing tests** with a fake `HopJoins` that records calls:
   - `TestIngestJoins_ErasedLineReleasesJoin`: erase the session, then send a line with an earlier `startedAt`. `Release(id)` is called once, nothing is appended, `erased` is counted.
@@ -362,7 +363,7 @@ Depends on: 3, 4, 5, 6. Estimated lines: 370.
   ```
 
 Rules:
-- `buildPipelines` builds the outbound chain from `outboundEntries(c, slog.Default())`. The log line: `slog.Info("praxis mode: outbound plugins not built; cortex-gateway processes the traffic", "plugins", names)`, only when the list is not empty. Startup and each reload go through it. The config keeps the plugins.
+- `buildPipelines` is the closure in `cmd/cortex/main.go`. Change its call `plugins.BuildWithDeps(c.Pipeline.Outbound.Plugins, outDeps)` to `plugins.BuildWithDeps(outboundEntries(c, slog.Default()), outDeps)`. Leave `spiffeProviderNeeded` as it is. The log line: `slog.Info("praxis mode: outbound plugins not built; cortex-gateway processes the traffic", "plugins", names)`, only when the list is not empty. Startup and each reload go through it. The config keeps the plugins.
 - `ListenerPlan`: in the forward role, when `cfg.PraxisEnabled()`, add `PlannedListener{Name: "praxis-egress", Addr: cfg.Praxis.EgressAddr()}`.
 - `startPraxis` sets `fpSrv.ResponsesWebSockets = config.ResponsesWebSocketsDecline`. Call it before the forward proxy serves (the same rule as `startVMControl`). The egress server goes through `bootstrap.ServeHTTPServer("praxis-egress", ...)` into `httpServers`, so shutdown closes it.
 - `upstream` is Decision 11.
@@ -412,7 +413,7 @@ Depends on: 1, 7. Estimated lines: 850.
 - [ ] **Step 2:** Build the gateway and run:
   `cargo build --locked -p cortex-gateway --manifest-path praxis/Cargo.toml && TAGS=$(GOWORK=off go -C scripts/profile-tags run . local) && CORTEX_GATEWAY_BIN=$PWD/praxis/target/debug/cortex-gateway GOWORK=off go -C cmd/cortex test -count=1 -timeout 15m -tags "praxis_e2e,$TAGS" -run TestPraxisE2E .`
   Fix what fails in the task that owns the code, in this PR.
-- [ ] **Step 3: CI.** In `praxis.yaml`, after `cargo test`, add `actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0` (`go-version-file: cmd/cortex/go.mod`) and a step `End-to-end (praxis mode)` with the Step 2 command and `continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}`. Add its outcome to the report step. Add to both `paths` lists: `core/listener/forwardproxy/hop*.go`, `core/listener/forwardproxy/egress*.go`, `cmd/cortex/praxis*.go`, `cmd/cortex/gateway.go`.
+- [ ] **Step 3: CI.** In `praxis.yaml`, after `cargo test`, add `actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0` (`go-version-file: cmd/cortex/go.mod`) and a step `End-to-end (praxis mode)` with the Step 2 command and `continue-on-error: ${{ steps.changes.outputs.blocking != 'true' }}`. Give the step `id: e2e` and no `working-directory`, so it runs from the repo root as the command expects. Add its outcome to the report step as the other three are (`E2E: ${{ steps.e2e.outcome }}` in `env`, and a `::warning::` line). Add to both `paths` lists: `core/listener/forwardproxy/hop*.go`, `core/listener/forwardproxy/egress*.go`, `cmd/cortex/praxis*.go`, `cmd/cortex/gateway.go`.
 - [ ] **Step 4:** Commit `test: Run the praxis-mode end-to-end checks through cortex-gateway`.
 
 ---
