@@ -1161,6 +1161,7 @@ func main() {
 		// Praxis mode, also before the forward proxy serves: startPraxis sets fpSrv.Hop
 		// and fpSrv.ResponsesWebSockets. The egress listener uses the bridge's upstream
 		// options (Decision 11).
+		var egressSrv *http.Server
 		if cfg.PraxisEnabled() {
 			var upstream http.RoundTripper
 			if bridge != nil {
@@ -1172,13 +1173,18 @@ func main() {
 				}
 				upstream = up.Transport
 			}
-			hop, egressSrv := startPraxis(ctx, cfg, fpSrv, gatewayToken, upstream, listeners.take("praxis-egress"))
+			var hop *forwardproxy.Hop
+			hop, egressSrv = startPraxis(ctx, cfg, fpSrv, gatewayToken, upstream, listeners.take("praxis-egress"))
 			hopJoins = hop
-			httpServers = append(httpServers, egressSrv)
 		}
 
 		httpServers = append(httpServers, bootstrap.ServeHTTPServer("forward-proxy", fpSrv.Handler(),
 			listeners.take("forward-proxy"), bootstrap.WithConnContext(fpSrv.ConnContext)))
+		// After the forward proxy: the drain shuts servers down in slice order, and a
+		// request still on the forward proxy reaches the gateway, which dials this listener.
+		if egressSrv != nil {
+			httpServers = append(httpServers, egressSrv)
+		}
 
 		// Outbound transparent listener (enforce-redirect mode). It shares the
 		// forward proxy's outbound pipeline via HandleTransparentConn, so explicit
