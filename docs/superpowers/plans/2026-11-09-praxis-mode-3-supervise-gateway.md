@@ -23,7 +23,7 @@ Each one closes a question that the spec or the issue leaves open.
 7. **The gateway env is empty** (`cmd.Env = []string{}`, not nil). "Clean env" in the spec means no proxy variables. An empty env is the simplest form that cannot leak one. The gateway needs no variable: the config path comes from `-c`.
 8. **`praxis.listen` and `praxis.egress` land in this PR**, because `gateway.yaml` names both (the listener and the interim catch-all route to the egress cluster). Defaults `127.0.0.1:47605` and `127.0.0.1:47606`. When set, each must be a literal loopback `host:port` with a non-zero port, else `Validate` refuses. The egress listener itself is #1721.
 9. **The ingest address** in `gateway.yaml` is `listener.session_api_addr` after `ApplyPreset`. An empty or wildcard host becomes `127.0.0.1`.
-10. **`gateway.yaml` content** (spec Section 4): `insecure_options` (`allow_unbounded_body`, `allow_private_upstreams`, `allow_private_endpoints`, all true); `body_limits` (`max_request_bytes: 33554432`, `max_response_bytes: null`); one listener `gateway` on `praxis.listen` with `forward_proxy: {enabled: true}`; one chain `main`: `ip_acl` (allow `127.0.0.1/32` and `::1/128` only, no `conditions`), `cortex_attribution`, `cortex_observe`, `access_log`, `router` (catch-all `path_prefix: "/"` to cluster `egress`), `load_balancer` (cluster `egress` on `praxis.egress`). The spec puts `access_log` last among the Cortex filters; Praxis needs `router` and `load_balancer` after it, as in `praxis/server/tests/testdata/gateway.yaml.tmpl`. Read the `ip_acl` key names from `~/.cargo/registry/src/*/praxis-proxy-filter-0.8.0/src` (search `ip_acl`). Use the 0.8.0 names; do not guess.
+10. **`gateway.yaml` content** (spec Section 4): `insecure_options` (`allow_unbounded_body`, `allow_private_upstreams`, `allow_private_endpoints`, all true); `body_limits` (`max_request_bytes: 33554432`, `max_response_bytes: null`); one listener `gateway` on `praxis.listen` with `forward_proxy: {enabled: true}`; one chain `main`: `ip_acl` (allow `127.0.0.1/32` and `::1/128` only, no `conditions`), `cortex_attribution`, `cortex_observe`, `access_log`, `router` (catch-all `path_prefix: "/"` to cluster `egress`), `load_balancer` (cluster `egress` on `praxis.egress`). The spec puts `access_log` last among the Cortex filters; Praxis needs `router` and `load_balancer` after it, as in `praxis/server/tests/testdata/gateway.yaml.tmpl`. The 0.8.0 names (checked in `praxis-proxy-filter-0.8.0/src/builtins/http/security/ip_acl.rs` and `praxis-proxy-core-0.8.0/src/config/listener.rs`): the filter is `- filter: ip_acl` with `allow: ["127.0.0.1/32", "::1/128"]`. Do not set `deny`: `allow` and `deny` are mutually exclusive, and the config has `deny_unknown_fields`. The listener key is `forward_proxy: {enabled: true}` on the listener entry. The `cortex_attribution` and `cortex_observe` keys (`token_file`, `ingest`) are as in `gateway.yaml.tmpl`.
 11. **The admin metrics port is not in `gateway.yaml` in this PR.** The issue does not list it, and no caller reads it yet.
 12. **The startup probe and `gateway_unavailable` are #1721.** The spec lists "the probe" in step 3, but the probe goes through the hop, and the hop is #1721. The issue does not list the probe.
 13. **The gateway path is `filepath.Join(filepath.Dir(self), "cortex-gateway")`**, where `self` is `os.Executable()`. A missing or non-executable gateway is a start failure of that child: it logs ERROR once per run of failures and retries with the normal backoff. The supervisor never gives up (see `supervise.go`), and the `cortex` child keeps running.
@@ -31,7 +31,7 @@ Each one closes a question that the spec or the issue leaves open.
 15. **The gateway's exit status gets the normal backoff.** It does not use `exitPortInUse`, so `restartPolicy.exited(false, …)` applies.
 16. **The version check of the gateway is not in this PR.** The spec ties it to `agentop update` and a released gateway. No release has a gateway before step 7 (#1723).
 17. **`cortexPorts` in agentop does not change in this PR.** agentop probes ports only on a fresh install (`env.configFresh`), which has no config, so it cannot be in praxis mode. The only way to ask for praxis mode on a fresh install is `install.sh --praxis` / `agentop setup` with praxis, which step 5 (#1722) adds. The probe of 47605 and 47606 lands there, with its caller. Write this in the PR body as a deviation from the issue text.
-18. **`cortex-gateway` is added to agentop's `setupBinaryNames`.** `planRemoveBinaries` (uninstall) and `cortexsOwn` read that list. `stagedBinaries` installs a name only when the installer staged it, as for `cortex-session-dump`, so setup does not need the gateway. Setup's other uses of the list must treat the gateway as optional; check each use.
+18. **`cortex-gateway` is added to agentop's `setupBinaryNames`.** The list has three uses, all presence-based: `planRemoveBinaries` (uninstall, removes only names that `Lstat` finds), `cortexsOwn` (ownership by name), and `stagedBinaries` (installs a name only when the installer staged it, as for `cortex-session-dump`). So setup does not need the gateway, and no other code changes.
 19. **`install.sh --stop`** gets `stop_gateway`: after the service and the pidfile proxy are stopped, it finds the process that listens on 47605 (`lsof -t -nP -iTCP@127.0.0.1:47605 -sTCP:LISTEN`), and sends it SIGTERM only when `pid_exe_path` is `${BIN_DIR}/cortex-gateway`. The port check after the stop also lists 47605 and 47606.
 
 ## Global Constraints
@@ -121,12 +121,12 @@ Depends on: Task 1
 - Consumes: `config.PraxisConfig.ListenAddr`, `EgressAddr` (Task 1); `cfg.Listener.SessionAPIAddr`.
 - Produces:
   - `const gatewayBinary = "cortex-gateway"`, `gatewayTokenName = "gateway.token"`, `gatewayYAMLName = "gateway.yaml"`.
-  - `func gatewayYAML(cfg *config.Config, tokenPath string) ([]byte, error)`: the file of decision 10. Build it as a Go struct or `map` marshalled with `gopkg.in/yaml.v3` (already in the module graph; it moves from indirect to direct in `cmd/cortex/go.mod`, so run `GOWORK=off go mod tidy` there). The error is for a session API address that does not split.
+  - `func gatewayYAML(cfg *config.Config, tokenPath string) ([]byte, error)`: the file of decision 10. Build it as a Go struct or `map` marshalled with `gopkg.in/yaml.v3` (the library `core/config` uses; already in the module graph; it moves from indirect to direct in `cmd/cortex/go.mod`, so run `GOWORK=off go mod tidy` there). The error is for a session API address that does not split.
   - `func ingestAddr(sessionAPIAddr string) (string, error)`: decision 9.
   - `func writeGatewayFiles(dir string, cfg *config.Config) (tokenPath, yamlPath string, err error)`: decision 5 for the token, then `gateway.yaml` (mode 0600, write-to-temp-then-rename).
 
 - [ ] **Step 1: Write the failing tests:**
-  - `TestGatewayYAML_Golden`: a config with `praxis.enabled`, default addresses, `session_api_addr: 127.0.0.1:47601`, token path `/CORTEX_DIR/gateway.token` → equals `testdata/gateway.yaml.golden`. `-update` rewrites the golden (`flag.Bool("update", …)`, as other goldens in this module do, if any; else add it in this file).
+  - `TestGatewayYAML_Golden`: a config with `praxis.enabled`, default addresses, `session_api_addr: 127.0.0.1:47601`, token path `/CORTEX_DIR/gateway.token` → equals `testdata/gateway.yaml.golden`. `-update` rewrites the golden. No test in `cmd/cortex` declares an `update` flag today, so declare `var updateGolden = flag.Bool("update", false, "rewrite testdata goldens")` in `gateway_test.go`.
   - `TestGatewayYAML_Fields`: unmarshal the output and check each value of decision 10 (listener address, `forward_proxy.enabled`, filter order, `ip_acl` allows only loopback, `max_request_bytes` 33554432, `max_response_bytes` null, the three insecure options, the egress endpoint, the ingest address).
   - `TestIngestAddr`: `:47601` → `127.0.0.1:47601`; `0.0.0.0:1` → `127.0.0.1:1`; `[::]:1` → `127.0.0.1:1`; `127.0.0.1:1` unchanged; `bad` → error.
   - `TestWriteGatewayFiles_TokenIs0600AndNew`: two calls in one temp dir give two different 64-hex-char tokens; both files have mode 0600; no temp file is left in the dir.
@@ -139,7 +139,7 @@ Estimated lines: 260 (the golden does not count).
 
 ### Task 4: The real gateway loads the Go-written `gateway.yaml` (Rust)
 
-Depends on: Task 3
+Depends on: Task 2, Task 3 (Task 2 edits the same `gateway.rs`)
 
 **Files:**
 - Modify: `praxis/server/tests/gateway.rs`
@@ -184,7 +184,7 @@ Depends on: Task 1, Task 3
 - [ ] **Step 5: Run** `GOWORK=off go test -race ./...` from `cmd/cortex` → PASS; vet, gofmt clean.
 - [ ] **Step 6: Commit.** "Feat: Supervise cortex-gateway as a sibling of cortex".
 
-Estimated lines: 480.
+Estimated lines: 650 (the supervise.go refactor and four process tests).
 
 ### Task 6: Know the gateway by name: port conflict, uninstall, `install.sh --stop`
 
@@ -192,11 +192,11 @@ Depends on: none
 
 **Files:**
 - Modify: `cmd/cortex/portconflict.go` (add `"cortex-gateway": true` to `cortexBinaries`), `cmd/agentop/setup_step_binaries.go` (add `"cortex-gateway"` to `setupBinaryNames`; decision 18), `scripts/install.sh` (`DEMO_GATEWAY_PORT=47605`, `DEMO_EGRESS_PORT=47606`, `stop_gateway`, the port list in `stop_cortex`, the `restage` binary list), `scripts/install_test.sh`
-- Test: `cmd/cortex/portconflict_test.go`, `cmd/agentop/cmd_uninstall_test.go`, `scripts/install_test.sh`
+- Test: `cmd/cortex/portconflict_test.go`, `cmd/agentop/cmd_uninstall_test.go`, `cmd/agentop/setup_step_binaries_test.go` (create it if it does not exist), `scripts/install_test.sh`
 
 - [ ] **Step 1: Write the failing tests:**
   - `cmd/cortex`: a `cortexBinaries` case for `cortex-gateway` in the existing table.
-  - `cmd/agentop`: `planRemoveBinaries` removes a `cortex-gateway` in the bin dir; `cortexsOwn` is true for it; `othersInBinDir` does not list it. Then check each other use of `setupBinaryNames` (`grep -n setupBinaryNames cmd/agentop/*.go`): setup with no staged gateway must plan no gateway row and fail nothing. Add a test where a use needs one.
+  - `cmd/agentop`: `planRemoveBinaries` removes a `cortex-gateway` in the bin dir; `cortexsOwn` is true for it; `othersInBinDir` does not list it. Add one `stagedBinaries` test: a staging dir without `cortex-gateway` gives no gateway entry (decision 18).
   - `install_test.sh`: `stop_gateway` with mocked `lsof`, `pid_exe_path` and `kill`: holder exe `${BIN_DIR}/cortex-gateway` → TERM; a holder from another directory → no signal; no holder → no signal. Add `stop_gateway` to every `_fn` list that extracts `stop_cortex`, and the two new port variables to every block that prints the `DEMO_*_PORT` lines.
 - [ ] **Step 2: Run** the three test commands → FAIL.
 - [ ] **Step 3: Implement.** `stop_gateway` follows `pre_rename_proxy_running`'s path compare (`readlink -f` fallback). It is a no-op without `lsof`.
@@ -210,7 +210,7 @@ Estimated lines: 140.
 Depends on: Task 2, Task 5
 
 **Files:**
-- Modify: `praxis/README.md` ("Run the gateway": the supervisor now writes `gateway.yaml`; the flag `--exit-on-stdin-eof`; add the decisions of this plan that change the gateway, as a short "Supervision decisions (#1720)" list), `docs/laptop-service.md` (praxis mode: two children, the two files in `~/.cortex/`, a cortex restart keeps the gateway; only if the file has a supervision section)
+- Modify: `praxis/README.md` ("Run the gateway": the supervisor now writes `gateway.yaml`; the flag `--exit-on-stdin-eof`; add the decisions of this plan that change the gateway, as a new `## Supervision decisions (#1720)` section after `## Accepted edge cases (#1719)`), `docs/laptop-service.md` (one paragraph after the "two `cortex` processes" paragraph near the top: in praxis mode the supervisor has a third child, `cortex-gateway`; it writes `~/.cortex/gateway.token` and `~/.cortex/gateway.yaml` at each start; a cortex restart keeps the gateway)
 
 - [ ] **Step 1: Write** the text in ASD-STE100. No CLAUDE.md change.
 - [ ] **Step 2: Run** `pre-commit run --files <changed files>`.
@@ -222,7 +222,7 @@ Estimated lines: 50.
 
 | PR | Title | Parent | Tasks | estLines |
 |---|---|---|---|---|
-| pr1 | Feat: Supervise cortex-gateway as a sibling of cortex | (none) | 1, 2, 3, 4, 5, 6, 7 | 1220 |
+| pr1 | Feat: Supervise cortex-gateway as a sibling of cortex | (none) | 1, 2, 3, 4, 5, 6, 7 | 1390 |
 
 One PR: the total is under 2,000 counted lines, and the issue is one delivery step (spec Section 6: "Each step is one PR").
 
@@ -231,7 +231,7 @@ One PR: the total is under 2,000 counted lines, and the issue is one delivery st
 From the worktree root:
 
 ```sh
-export PATH="$HOME/.cargo/bin:$PATH" && (cd praxis && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked) && (cd core && GOWORK=off go vet ./... && GOWORK=off go test ./config/... ./reloader/... ./audits/...) && (cd cmd/cortex && GOWORK=off go vet ./... && GOWORK=off go test -race ./...) && (cd cmd/agentop && GOWORK=off go vet ./...) && scripts/dev/go-test-shards.sh -short cmd/agentop && sh scripts/install_test.sh && shellcheck --severity=error scripts/install.sh && test -z "$(gofmt -l core cmd/cortex cmd/agentop)"
+export PATH="$HOME/.cargo/bin:$PATH" && (cd praxis && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked) && (cd core && GOWORK=off go vet ./... && GOWORK=off go test ./config/... ./reloader/... ./audits/...) && (cd cmd/cortex && GOWORK=off go vet ./... && GOWORK=off go mod tidy -diff && GOWORK=off go test -race ./...) && (cd cmd/agentop && GOWORK=off go vet ./...) && scripts/dev/go-test-shards.sh -short cmd/agentop && sh scripts/install_test.sh && shellcheck --severity=error scripts/install.sh && test -z "$(gofmt -l core cmd/cortex cmd/agentop)"
 ```
 
 ## Self-review notes
