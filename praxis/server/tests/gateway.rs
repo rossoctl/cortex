@@ -546,12 +546,22 @@ fn hop_headers_removed_custom_kept() {
         ("X-Cortex-Chain-Session", "cs"),
         ("X-Cortex-Attribution", "e30"),
         ("X-Cortex-Request-Id", "rid-1"),
-        ("X-Cortex-Dest", "api.example.com:443"),
+        ("X-Cortex-Dest", "https://api.example.com:443"),
         ("X-Cortex-Token", TOKEN),
         ("X-Cortex-Custom", "kept"),
     ];
-    let (h, _) = send(&g, "GET", "/v1/models", &hop, b"");
-    assert_eq!(status(&h), 200);
+    // An inference request, so that the request line has a capture.
+    let mut h = fixture_headers();
+    h.retain(|(n, _)| !n.eq_ignore_ascii_case("x-cortex-token"));
+    h.extend(hop.iter().map(|(n, v)| (n.to_string(), v.to_string())));
+    let (rh, _) = send(
+        &g,
+        "POST",
+        "/v1/messages",
+        &as_refs(&h),
+        &fixture("request.json"),
+    );
+    assert_eq!(status(&rh), 200);
     let seen = o
         .seen
         .recv_timeout(WAIT)
@@ -565,13 +575,37 @@ fn hop_headers_removed_custom_kept() {
         .filter(|n| n.starts_with("x-cortex-"))
         .collect();
     cortex.sort();
-    // The token is the gateway's secret: no hop header reaches the origin.
-    assert_eq!(cortex, ["x-cortex-custom"]);
+    // The interim upstream is the egress listener: it gets Dest and the token, and removes them.
+    assert_eq!(
+        cortex,
+        ["x-cortex-custom", "x-cortex-dest", "x-cortex-token"]
+    );
     assert_eq!(header(&seen.head, "x-cortex-custom"), Some("kept"));
-    for l in i.take(2) {
+    assert_eq!(
+        header(&seen.head, "x-cortex-dest"),
+        Some("https://api.example.com:443")
+    );
+    assert_eq!(header(&seen.head, "x-cortex-token"), Some(TOKEN));
+    let lines = i.take(2);
+    for l in &lines {
         assert_eq!(
             l["requestId"], "rid-1",
             "the id comes from X-Cortex-Request-Id"
+        );
+    }
+    // The token must never be in a capture: the request capture has none of the twelve.
+    let req = lines
+        .iter()
+        .find(|l| l["event"]["phase"] == "request")
+        .expect("a request line");
+    let hdr = req["capture"]["header"]
+        .as_object()
+        .expect("the request line has a capture header");
+    assert!(hdr.contains_key("X-Cortex-Custom"), "{hdr:?}");
+    for (n, _) in hop.iter().filter(|(n, _)| *n != "X-Cortex-Custom") {
+        assert!(
+            !hdr.keys().any(|k| k.eq_ignore_ascii_case(n)),
+            "{n} is in the capture"
         );
     }
 }

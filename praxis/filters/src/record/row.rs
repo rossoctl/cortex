@@ -69,6 +69,7 @@ fn egress_kind(v: &str) -> &'static str {
         "upstream_tls" => "upstream_tls",
         "upstream_timeout" => "upstream_timeout",
         "upstream_refused" => "upstream_refused",
+        "destination_private" => "destination_private",
         _ => "upstream_error",
     }
 }
@@ -852,6 +853,12 @@ mod tests {
             let hdr = r["capture"]["response"]["header"].as_object().unwrap();
             assert!(!hdr.contains_key("X-Cortex-Egress-Error"));
         }
+    }
+
+    #[test]
+    fn destination_private_egress_error_keeps_its_kind() {
+        let (r, _) = egress("destination_private");
+        assert_eq!(r["event"]["error"]["kind"], "destination_private");
     }
 
     #[test]
