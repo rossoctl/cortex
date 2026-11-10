@@ -36,6 +36,8 @@ on:
       - "core/listener/forwardproxy/ingest_replay_test.go"
       - "core/listener/forwardproxy/hop*.go"
       - "core/listener/forwardproxy/egress*.go"
+      - "core/listener/forwardproxy/record.go"
+      - "core/listener/forwardproxy/tunnel.go"
       - "cmd/cortex/praxis*.go"
       - "cmd/cortex/gateway.go"
       - "cmd/cortex/ingest.go"
@@ -66,6 +68,8 @@ on:
       - "core/listener/forwardproxy/ingest_replay_test.go"
       - "core/listener/forwardproxy/hop*.go"
       - "core/listener/forwardproxy/egress*.go"
+      - "core/listener/forwardproxy/record.go"
+      - "core/listener/forwardproxy/tunnel.go"
       - "cmd/cortex/praxis*.go"
       - "cmd/cortex/gateway.go"
       - "cmd/cortex/ingest.go"
@@ -136,6 +140,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: cmd/cortex/go.mod
+          cache-dependency-path: cmd/cortex/go.sum
 
       # Runs from the repo root: the command names praxis/ and cmd/cortex. rustup reads
       # rust-toolchain.toml only below praxis/, so the step names that toolchain itself.
