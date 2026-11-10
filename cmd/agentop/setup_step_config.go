@@ -32,11 +32,20 @@ func (configStep) plan(env *setupEnv) (stepPlan, *problem) {
 		p.verb, p.what, p.where = "write", "the cortex config", env.tilde(cfg)
 		return p, nil
 	}
-	if _, err := config.Load(cfg); err != nil {
+	loaded, err := config.Load(cfg)
+	if err != nil {
 		return p, &problem{reason: env.tilde(cfg) + " will not load: " + err.Error(),
 			fix: []string{"correct it, then " + env.rerun(),
 				"or, to start over from the built-in config, move it aside first: mv " +
 					env.shellPath(cfg) + " " + env.shellPath(cfg+".broken")}}
+	}
+	// A plain re-run of the installer on a praxis install stages no gateway. The
+	// new cortex then refuses the old one, and the proxy answers 503.
+	if !env.opts.praxis && env.fromDir != "" && loaded.PraxisEnabled() {
+		if prob := praxisGatewayProblem(env); prob != nil {
+			prob.reason = "praxis mode is on in " + env.tilde(cfg) + ", and " + gatewayBinary + " is not staged"
+			return p, prob
+		}
 	}
 	pending, err := configMigrationPending(cfg)
 	if err != nil {

@@ -277,3 +277,18 @@ func TestPreflightPorts_PraxisProbesGatewayPorts(t *testing.T) {
 		t.Errorf("problem = %+v", prob)
 	}
 }
+
+// A re-run without --praxis on a praxis config must stage the gateway too.
+func TestConfigStep_PraxisConfigNeedsStagedGateway(t *testing.T) {
+	env, _ := praxisEnv(t, praxisBase+"praxis:\n  enabled: true\n")
+	env.fromDir = t.TempDir()
+	_, prob := configStep{}.plan(env)
+	if prob == nil || !strings.Contains(prob.reason, "praxis mode is on") ||
+		!strings.Contains(strings.Join(prob.fix, " "), "sh -s -- --praxis") {
+		t.Fatalf("problem = %+v", prob)
+	}
+	writeExe(t, filepath.Join(env.fromDir, "cortex-gateway"), "#!/bin/sh\n")
+	if p, prob := (configStep{}).plan(env); prob != nil || !p.done {
+		t.Errorf("a staged gateway: plan = %+v %v", p, prob)
+	}
+}
