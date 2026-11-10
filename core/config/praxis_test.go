@@ -63,3 +63,56 @@ func praxisConfig() *Config {
 	c.Listener.ReverseProxyBackend = "127.0.0.1:8000"
 	return c
 }
+
+func TestPraxis_AddrDefaults(t *testing.T) {
+	var nilBlock *PraxisConfig
+	for _, p := range []*PraxisConfig{nilBlock, {}} {
+		if got := p.ListenAddr(); got != DefaultPraxisListen {
+			t.Errorf("ListenAddr() = %q, want %q", got, DefaultPraxisListen)
+		}
+		if got := p.EgressAddr(); got != DefaultPraxisEgress {
+			t.Errorf("EgressAddr() = %q, want %q", got, DefaultPraxisEgress)
+		}
+	}
+	p := &PraxisConfig{Listen: "127.0.0.1:1", Egress: "127.0.0.1:2"}
+	if p.ListenAddr() != "127.0.0.1:1" || p.EgressAddr() != "127.0.0.1:2" {
+		t.Errorf("set fields not returned: %q %q", p.ListenAddr(), p.EgressAddr())
+	}
+}
+
+func TestPraxis_AddrMustBeLoopback(t *testing.T) {
+	for _, tc := range []struct {
+		addr string
+		ok   bool
+	}{
+		{"0.0.0.0:47605", false},
+		{"localhost:47605", false},
+		{"127.0.0.1", false},
+		{"127.0.0.1:0", false},
+		{"10.0.0.1:1", false},
+		{"127.0.0.1:1", true},
+		{"[::1]:2", true},
+	} {
+		for _, field := range []string{"praxis.listen", "praxis.egress"} {
+			c := praxisConfig()
+			c.Listener.BindLoopbackOnly = true
+			if field == "praxis.listen" {
+				c.Praxis.Listen = tc.addr
+			} else {
+				c.Praxis.Egress = tc.addr
+			}
+			err := Validate(c)
+			if tc.ok && err != nil {
+				t.Errorf("%s %q: Validate = %v, want nil", field, tc.addr, err)
+			}
+			if !tc.ok && (err == nil || !strings.Contains(err.Error(), field)) {
+				t.Errorf("%s %q: Validate = %v, want an error naming %s", field, tc.addr, err, field)
+			}
+			// The checks run only in praxis mode.
+			c.Praxis.Enabled = false
+			if err := Validate(c); err != nil {
+				t.Errorf("%s %q with praxis off: Validate = %v, want nil", field, tc.addr, err)
+			}
+		}
+	}
+}
