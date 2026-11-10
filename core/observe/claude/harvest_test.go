@@ -3090,3 +3090,46 @@ func TestHarvest_SessionWithoutSubagentsHasNoMap(t *testing.T) {
 		t.Errorf("Subagents = %v, want nil", got)
 	}
 }
+
+// An entry an older build titled "/clear" is re-parsed even when its transcript has not moved:
+// a session left idle after /clear never writes again, so the mtime skip would keep the title.
+func TestHarvest_IncrementalReparsesAClearTitle(t *testing.T) {
+	for _, title := range []string{"/clear", "/clear my-feature"} {
+		t.Run(title, func(t *testing.T) {
+			metadataHome(t)
+			cfg := filepath.Join(t.TempDir(), "claude")
+			proj := filepath.Join(cfg, "projects", "-p")
+			log := filepath.Join(proj, "s1.jsonl")
+			writeSessionTranscript(t, proj, "s1.jsonl", `{"type":"ai-title","aiTitle":"current"}`)
+			touch(t, log, time.Now().Add(-time.Hour))
+
+			path, err := SessionMetadataPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			old, err := json.Marshal(map[string]SessionMetadata{"s1": {
+				Title: title, AgentType: "Claude Code", LogFile: log, LogModTime: time.Now(),
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, old, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			res, err := Harvest(Options{ConfigDir: cfg, Merge: true, Incremental: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Harvested != 1 || res.Skipped != 0 {
+				t.Errorf("harvested/skipped = %d/%d, want 1/0", res.Harvested, res.Skipped)
+			}
+			if got := readMetadataFile(t, res.Path)["s1"].Title; got != "current" {
+				t.Errorf("title = %q, want %q", got, "current")
+			}
+		})
+	}
+}
