@@ -311,6 +311,9 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 60
+    # A failed leg must not fail the run: release-smoke-linux.yaml runs only after a
+    # successful run, so the release would ship with no smoke test.
+    continue-on-error: true
     strategy:
       # Each platform is optional on its own: install.sh --praxis checks per os/arch
       # in checksums.txt, so two of three tarballs is a valid release.

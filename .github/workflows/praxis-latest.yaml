@@ -92,5 +92,5 @@ jobs:
             gh issue create --repo "${GITHUB_REPOSITORY}" --title "${TITLE}" \
               --body "Failed run: ${run_url}
 
-          The pinned Praxis release still builds. This job does not block anything."
+          This job does not block anything. See the run log for the cause."
           fi
