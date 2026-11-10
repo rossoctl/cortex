@@ -33,6 +33,7 @@ Each one closes a question that the spec or the issue leaves open.
 17. **`cortexPorts` in agentop does not change in this PR.** agentop probes ports only on a fresh install (`env.configFresh`), which has no config, so it cannot be in praxis mode. The only way to ask for praxis mode on a fresh install is `install.sh --praxis` / `agentop setup` with praxis, which step 5 (#1722) adds. The probe of 47605 and 47606 lands there, with its caller. Write this in the PR body as a deviation from the issue text.
 18. **`cortex-gateway` is added to agentop's `setupBinaryNames`.** The list has three uses, all presence-based: `planRemoveBinaries` (uninstall, removes only names that `Lstat` finds), `cortexsOwn` (ownership by name), and `stagedBinaries` (installs a name only when the installer staged it, as for `cortex-session-dump`). So setup does not need the gateway, and no other code changes.
 19. **`install.sh --stop`** gets `stop_gateway`: after the service and the pidfile proxy are stopped, it finds the process that listens on 47605 (`lsof -t -nP -iTCP@127.0.0.1:47605 -sTCP:LISTEN`), and sends it SIGTERM only when `pid_exe_path` is `${BIN_DIR}/cortex-gateway`. The port check after the stop also lists 47605 and 47606.
+20. **The systemd unit does not change in this PR, so a Linux service does not supervise the gateway.** The spec (Section 4, its diagram) says "launchd / systemd -> cortex -supervise", but the unit runs `cortex` without `--supervise` (`cmd/agentop/cmd_service_platform.go`): it relies on `Restart=on-failure` and StartLimit, which a nested supervisor would hide. On a Linux service with `praxis.enabled: true`, nothing writes `gateway.token` and `CORTEX_GATEWAY_TOKEN_FILE` is not set, so `ingestOptions` refuses the boot and `cortex` fails at each start. This is not reachable by a supported path: as decision 17 says, the only way to ask for praxis mode is `install.sh --praxis` / `agentop setup` with praxis, which step 5 (#1722) adds. Step 5 makes the unit use `--supervise` in praxis mode, with its caller. `docs/laptop-service.md` says that a Linux service must not set `praxis.enabled` until then. Write this in the PR body as a deviation from the spec.
 
 ## Global Constraints
 
@@ -43,7 +44,7 @@ Each one closes a question that the spec or the issue leaves open.
 - Log with `log/slog`, prefix `supervisor:` as today. A child's log lines say which child (`"child", "cortex"` or `"child", "cortex-gateway"`).
 - Rust lint gate, from `praxis/`: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`. Use the rustup `cargo` (`$HOME/.cargo/bin`).
 - Go: `GOWORK=off go vet ./...` and `gofmt -l <path>` in each module touched (`core`, `cmd/cortex`, `cmd/agentop`).
-- Commits: `git commit -s`, message in ASD-STE100, ending with `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`. No `Co-Authored-By`. PR title `Feat: Supervise cortex-gateway as a sibling of cortex`, body with `Fixes #1720` and decisions 11, 12, 16 and 17 as deviations from the issue or spec.
+- Commits: `git commit -s`, message in ASD-STE100, ending with `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`. No `Co-Authored-By`. PR title `Feat: Supervise cortex-gateway as a sibling of cortex`, body with `Fixes #1720` and decisions 11, 12, 16, 17 and 20 as deviations from the issue or spec.
 
 ## Review Focus
 

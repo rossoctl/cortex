@@ -40,8 +40,13 @@ one process; systemd handles it.
 In praxis mode (`praxis.enabled: true`), the supervisor has a second child,
 `cortex-gateway`, so you see three processes. At each start the supervisor writes
 `~/.cortex/gateway.token` and `~/.cortex/gateway.yaml`. A restart of the proxy does
-not restart the gateway. When the supervisor exits, the gateway exits too. The systemd
-unit does not use `--supervise`, so on Linux the service does not start the gateway.
+not restart the gateway. When the supervisor exits, the gateway exits too.
+
+**On Linux, do not set `praxis.enabled` for the service yet.** The systemd unit does
+not use `--supervise`, so nothing starts the gateway or writes `gateway.token`. Then
+`cortex` refuses to start (`praxis.enabled needs CORTEX_GATEWAY_TOKEN_FILE …`) and
+systemd stops after five tries. A later step (#1722) makes the unit supervise in
+praxis mode.
 
 ## Linux: staying up after you log out
 
