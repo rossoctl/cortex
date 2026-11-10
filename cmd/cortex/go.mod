@@ -5,6 +5,7 @@ go 1.26.10
 require (
 	github.com/rossoctl/cortex/core v0.0.0
 	github.com/rossoctl/cortex/core/storage/redis v0.0.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -125,7 +126,6 @@ require (
 	google.golang.org/grpc v1.85.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	oras.land/oras-go/v2 v2.6.2 // indirect
 )
 
