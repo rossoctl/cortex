@@ -277,9 +277,18 @@ func insertBlockKeys(src, block string, pins []pinnedListener) (string, error) {
 	lines := strings.Split(src, "\n")
 	head := block + ":"
 
-	listenerAt := -1
+	// Only a top-level key: the same name nested in a plugin's config is another block.
+	listenerAt, docIndent := -1, -1
 	for i, l := range lines {
-		if strings.HasPrefix(strings.TrimSpace(l), head) && !strings.HasPrefix(strings.TrimSpace(l), "#") {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(l) - len(strings.TrimLeft(l, " "))
+		if docIndent < 0 {
+			docIndent = indent
+		}
+		if indent == docIndent && strings.HasPrefix(trimmed, head) {
 			listenerAt = i
 			break
 		}
@@ -313,7 +322,7 @@ func insertBlockKeys(src, block string, pins []pinnedListener) (string, error) {
 		// is invalid YAML. That fails closed — the validation before the rename catches
 		// it and the original survives — but the user would see a bare parse error
 		// instead of being told the shape is unsupported.
-		if rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[listenerAt]), head)); rest != "" {
+		if rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[listenerAt]), head)); rest != "" && !strings.HasPrefix(rest, "#") {
 			return "", fmt.Errorf("%s is written in flow style (%s); "+
 				"rewrite it as an indented block, or add the keys by hand", head, rest)
 		}

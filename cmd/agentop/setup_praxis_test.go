@@ -292,3 +292,26 @@ func TestConfigStep_PraxisConfigNeedsStagedGateway(t *testing.T) {
 		t.Errorf("a staged gateway: plan = %+v %v", p, prob)
 	}
 }
+
+// A praxis: key nested in a plugin's config, before the top-level block, is not the block.
+func TestEnablePraxisText_SkipsNestedPraxisKey(t *testing.T) {
+	src := praxisBase + "pipeline:\n  outbound:\n    plugins:\n      - name: tool-prune\n        config:\n          praxis: x\npraxis:\n  listen: 127.0.0.1:47605\n"
+	out, changed, err := enablePraxisText(src)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if !strings.Contains(out, "          praxis: x\n") || !loadText(t, out).PraxisEnabled() {
+		t.Errorf("out =\n%s", out)
+	}
+}
+
+// A comment after praxis: is not flow style.
+func TestEnablePraxisText_CommentOnlyBlock(t *testing.T) {
+	out, changed, err := enablePraxisText(praxisBase + "praxis: # note\n")
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if !loadText(t, out).PraxisEnabled() {
+		t.Errorf("out =\n%s", out)
+	}
+}
