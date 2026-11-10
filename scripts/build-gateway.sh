@@ -52,6 +52,8 @@ CORTEX_VERSION="${VERSION}" CARGO_PROFILE_RELEASE_STRIP=symbols \
 	cargo build --release --locked -p cortex-gateway --target "${triple}"
 
 mkdir -p ../dist
+# rm first: macOS kills a binary that cp overwrote in place (stale signature).
+rm -f ../dist/cortex-gateway
 cp "target/${triple}/release/cortex-gateway" ../dist/cortex-gateway
 cd ..
 sh scripts/check-gateway-linkage.sh dist/cortex-gateway "${VERSION}"
