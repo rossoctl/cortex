@@ -3,14 +3,14 @@ package forwardproxy
 import (
 	"crypto/subtle"
 	"net/http"
+
+	"github.com/rossoctl/cortex/core/attribution"
 )
 
 // The hop headers between Cortex, cortex-gateway and the egress listener
 // (praxis mode, #1721).
 const (
-	// headerAttribution has the same value as attribution.HeaderAttribution.
-	// Use that constant here when it lands in core/attribution.
-	headerAttribution = "X-Cortex-Attribution"
+	headerAttribution = attribution.HeaderAttribution
 	headerDest        = "X-Cortex-Dest"
 	headerToken       = "X-Cortex-Token"
 	headerRequestID   = "X-Cortex-Request-Id"
