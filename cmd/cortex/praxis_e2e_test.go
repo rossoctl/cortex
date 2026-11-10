@@ -186,8 +186,12 @@ func newDirectChain(t *testing.T, origin *mockOrigin) *chain {
 func newPraxisChain(t *testing.T, origin *mockOrigin, opts chainOpts) *chain {
 	t.Helper()
 	bin := os.Getenv("CORTEX_GATEWAY_BIN")
-	if st, err := os.Stat(bin); bin == "" || err != nil || st.IsDir() {
-		t.Skip("CORTEX_GATEWAY_BIN does not name the cortex-gateway binary")
+	if bin == "" {
+		t.Skip("CORTEX_GATEWAY_BIN is not set")
+	}
+	// A set but wrong path fails: a skip there would make CI's blocking step pass with no test run.
+	if st, err := os.Stat(bin); err != nil || st.IsDir() {
+		t.Fatalf("CORTEX_GATEWAY_BIN=%q does not name the cortex-gateway binary: %v", bin, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -631,8 +635,9 @@ func TestPraxisE2E_CodexMislabeledSSE(t *testing.T) {
 		t.Fatalf("got %d %q, want 405 %q", st, b, detail)
 	}
 	row := lastResponse(t, c.waitResponses(t, 2, 10*time.Second))
-	if row.StatusCode != http.StatusMethodNotAllowed || row.Error == nil || row.Error.Kind != "backend_error" || row.Error.Code != "405" {
-		t.Errorf("row = %d %+v, want 405 backend_error/405", row.StatusCode, row.Error)
+	// The provider's text must not go into the store, which has no authentication.
+	if row.StatusCode != http.StatusMethodNotAllowed || row.Error == nil || row.Error.Kind != "backend_error" || row.Error.Code != "405" || row.Error.Message != "" {
+		t.Errorf("row = %d %+v, want 405 backend_error/405 with no message", row.StatusCode, row.Error)
 	}
 }
 
