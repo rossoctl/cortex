@@ -388,7 +388,8 @@ request row, the response row is stored without them.
     as in direct mode. A tunnel that closes before its row arrives waits for
     the row. A join that expires settles the tunnel as in direct mode.
   - When Cortex cut the response itself (`proxy_error`, such as its idle
-    read cutoff), Cortex's error replaces the one the gateway recorded.
+    read cutoff), Cortex's error replaces the one the gateway recorded, and
+    the row keeps the status the client got, as in direct mode.
 
 **Refusal reasons:** `bad_json`, `version` (`v` is not 1), `schema`
 (`schemaVersion` is not this API's), `op` (not `append`), `line_cap`,
