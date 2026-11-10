@@ -69,7 +69,7 @@
 
 ## Gate
 
-Run from the worktree root. It needs `pre-commit`, `shellcheck`, `yamllint`, a running `podman` machine, and Rust through rustup. It takes about 20 minutes on a cold cache.
+Run from the worktree root. On the unchanged base, the `shellcheck` step fails with "does not exist" because T1 creates the three scripts; that is expected, and the gate passes only after T1. The `yamllint` step passes on the base (two line-length warnings, exit 0). It needs `pre-commit`, `shellcheck`, `yamllint`, a running `podman` machine, and Rust through rustup. It takes about 20 minutes on a cold cache.
 
 ```sh
 pre-commit run --all-files \
@@ -87,6 +87,8 @@ pre-commit run --all-files \
 
 **Depends on:** none.
 
+**Before you start:** read `.github/CLAUDE.md` (it covers CI workflows and release binaries). T2, T3 and T4 also change files below `.github/`.
+
 **Files:**
 - Create: `scripts/build-gateway.sh`
 - Create: `scripts/check-gateway-linkage.sh`
@@ -95,7 +97,7 @@ pre-commit run --all-files \
 
 **Interfaces:**
 - Produces: `sh scripts/build-gateway.sh`. Run from the repo root. Env `VERSION` is required (die with a message when empty). Writes `dist/cortex-gateway` and exits non-zero when the build or the check fails. Optional env `MACOSX_DEPLOYMENT_TARGET` (default `12.0`).
-- Produces: `sh scripts/check-gateway-linkage.sh <binary> <version>`. Exit 0 when the binary is standalone and prints `cortex-gateway <version>`. Exit 1 otherwise, with the reason on stderr. Uses `uname -s` to pick `otool -L` (Darwin) or `readelf -d` (Linux). Any other OS: exit 1.
+- Produces: `sh scripts/check-gateway-linkage.sh <binary> <version>`. Exit 0 when the binary is standalone and prints `cortex-gateway <version>`. Exit 1 otherwise, with the reason on stderr. Uses `uname -s` to pick `otool -L` (Darwin) or `readelf -d` (Linux). Any other OS: exit 1. Call `uname`, `otool` and `readelf` by bare name (never an absolute path), so the test's `PATH` stubs replace them.
 
 - [ ] **Step 1: Write the failing test `scripts/check-gateway-linkage_test.sh`.** Follow the shape of `scripts/release_notes_test.sh` (POSIX sh, one function per case, a failure counter, exit 1 when any case fails). Each case makes a temp dir with stub `uname`, `otool` and `readelf` scripts first on `PATH`, and a stub binary that prints a given `--version` line. Cases and expected results:
   - `test_linux_static_passes`: `uname` prints `Linux`, `readelf -d` prints `There is no dynamic section in this file.` and exits 0, binary prints `cortex-gateway v1.2.3`. Expect exit 0.
@@ -109,7 +111,7 @@ pre-commit run --all-files \
 - [ ] **Step 4: Run** `sh scripts/check-gateway-linkage_test.sh` and `shellcheck --severity=error scripts/check-gateway-linkage.sh scripts/check-gateway-linkage_test.sh`. Expected: all cases pass, no shellcheck error.
 - [ ] **Step 5: Write `scripts/build-gateway.sh`** (POSIX sh, `set -eu`). Order:
   1. Die when `VERSION` is empty.
-  2. When `/etc/alpine-release` exists: `apk add --no-cache musl-dev perl make linux-headers`. (perl and make build `openssl-src`. make builds jemalloc.)
+  2. When `/etc/alpine-release` exists: `apk add --no-cache musl-dev perl make linux-headers binutils`. (perl and make build `openssl-src`. make builds jemalloc. binutils gives `readelf` to the linkage check in step 8.)
   3. `cd praxis && rustup toolchain install` (decision 3).
   4. `triple=$(rustc -vV | sed -n 's/^host: //p')`.
   5. Linux: `export RUSTFLAGS="-C target-feature=+crt-static"`. On `aarch64-*` also `export JEMALLOC_SYS_WITH_LG_PAGE=16` (decision 5). Darwin: `export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"`.
@@ -148,13 +150,13 @@ pre-commit run --all-files \
 
 ### Task T3: Weekly build against the latest Praxis
 
-**Depends on:** T1.
+**Depends on:** T1, T2 (T2 step 1 resolves the pinned `rust:alpine` digest that step 1.5 copies).
 
 **Files:**
 - Create: `.github/workflows/praxis-latest.yaml`
 
 **Interfaces:**
-- Consumes: `scripts/build-gateway.sh` (T1).
+- Consumes: `scripts/build-gateway.sh` (T1), the `RUST_ALPINE` digest in `release-binaries.yaml` (T2).
 
 - [ ] **Step 1: Write the workflow.** `on: schedule: [{cron: "17 6 * * 1"}]` and `workflow_dispatch`. Top-level `permissions: contents: read`. Job `build` on `ubuntu-latest`, `timeout-minutes: 90`:
   1. Checkout (pinned, `persist-credentials: false`).
