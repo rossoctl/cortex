@@ -19,6 +19,11 @@ const FIXTURE: &str = concat!(
     "/../../core/plugins/inferenceparser/testdata/claude-code/main-stream-thinking-tool-use"
 );
 const TEMPLATE: &str = include_str!("testdata/gateway.yaml.tmpl");
+/// The `gateway.yaml` that `cortex -supervise` writes (Go is its source).
+const SUPERVISOR_YAML: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../cmd/cortex/testdata/gateway.yaml.golden"
+));
 const ACCESS_LOG: &str = "      - filter: access_log";
 const WAIT: Duration = Duration::from_secs(10);
 const QUIET: Duration = Duration::from_secs(1);
@@ -330,6 +335,19 @@ fn gateway(origin: &Origin, ingest: &Ingest, access_log: bool) -> Gateway {
 /// Starts the gateway with `flags` added. Its stdin is a pipe that the
 /// returned `Gateway` holds.
 fn gateway_with(origin: &Origin, ingest: &Ingest, access_log: bool, flags: &[&str]) -> Gateway {
+    start(flags, |token_file, port| {
+        TEMPLATE
+            .replace("{{LISTEN}}", &port.to_string())
+            .replace("{{TOKEN_FILE}}", token_file)
+            .replace("{{INGEST}}", &ingest.port.to_string())
+            .replace("{{ORIGIN}}", &origin.port.to_string())
+            .replace("{{ACCESS_LOG}}", if access_log { ACCESS_LOG } else { "" })
+    })
+}
+
+/// Starts the gateway on the config that `config(token_file, listen_port)`
+/// gives, with `flags` added.
+fn start(flags: &[&str], config: impl FnOnce(&str, u16) -> String) -> Gateway {
     static N: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "cortex-gateway-test-{}-{}",
@@ -340,12 +358,7 @@ fn gateway_with(origin: &Origin, ingest: &Ingest, access_log: bool, flags: &[&st
     let token_file = dir.join("token");
     std::fs::write(&token_file, format!("{TOKEN}\n")).expect("token file");
     let port = free_port();
-    let yaml = TEMPLATE
-        .replace("{{LISTEN}}", &port.to_string())
-        .replace("{{TOKEN_FILE}}", token_file.to_str().expect("path"))
-        .replace("{{INGEST}}", &ingest.port.to_string())
-        .replace("{{ORIGIN}}", &origin.port.to_string())
-        .replace("{{ACCESS_LOG}}", if access_log { ACCESS_LOG } else { "" });
+    let yaml = config(token_file.to_str().expect("path"), port);
     let config = dir.join("gateway.yaml");
     std::fs::write(&config, yaml).expect("config");
     let log = std::fs::File::create(dir.join("gateway.log")).expect("log");
@@ -989,4 +1002,30 @@ fn keeps_running_without_flag() {
         g.child.try_wait().expect("try_wait").is_none(),
         "cortex-gateway exited without --exit-on-stdin-eof"
     );
+}
+
+#[test]
+fn supervisor_gateway_yaml_serves() {
+    let (o, i) = (ok_origin(), ingest());
+    let g = start(&[], |token_file, port| {
+        let yaml = SUPERVISOR_YAML
+            .replace("/CORTEX_DIR/gateway.token", token_file)
+            .replace("127.0.0.1:47605", &format!("127.0.0.1:{port}"))
+            .replace("127.0.0.1:47606", &format!("127.0.0.1:{}", o.port))
+            .replace("127.0.0.1:47601", &format!("127.0.0.1:{}", i.port));
+        assert!(
+            !yaml.contains("CORTEX_DIR") && !yaml.contains(":4760"),
+            "{yaml}"
+        );
+        yaml
+    });
+    let (h, body) = send(&g, "GET", "/v1/models", &[("X-Cortex-Token", TOKEN)], b"");
+    assert_eq!(status(&h), 200);
+    assert_eq!(body, b"ok");
+    o.seen
+        .recv_timeout(WAIT)
+        .expect("the origin saw the request");
+    let lines = i.take(2);
+    assert_eq!(lines[0]["event"]["phase"], "request");
+    assert_eq!(lines[1]["event"]["phase"], "response");
 }
