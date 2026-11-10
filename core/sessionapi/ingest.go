@@ -61,6 +61,19 @@ type Ingest struct {
 	Token string
 	// Rates prices ingested rows. nil reports them unpriced.
 	Rates pricing.Resolver
+	// Joins is the forward proxy's join state in praxis mode. nil: no joins.
+	Joins HopJoins
+}
+
+// HopJoins is the forward proxy's join state in praxis mode (spec Section 1, "Joins").
+type HopJoins interface {
+	// AppendRequest writes a request row through its bridged tunnel's pairing path and
+	// reports whether it did. False: the caller appends the row.
+	AppendRequest(requestID, sid string, ev model.SessionEvent, c *model.RequestCapture) bool
+	// Release drops the join of requestID with no write.
+	Release(requestID string)
+	// TakeCut returns the error of a cut that Cortex made on requestID, or nil.
+	TakeCut(requestID string) *model.EventError
 }
 
 // WithIngest turns on the ingestion endpoint (praxis mode). Without it, or with an empty
@@ -358,8 +371,11 @@ func decodeIngestLine(b []byte) decodedLine {
 func (s *Server) fileIngest(l ingestLine) {
 	in := s.ingest
 	sid := attribution.FiledSession(l.Session, s.store.ActiveSession)
-	// #1721 releases the line's tunnel join here.
+	joins := in.cfg.Joins
 	if in.marks.erasedAfter(sid, l.StartedAt) {
+		if joins != nil {
+			joins.Release(l.RequestID)
+		}
 		in.refuse(refusedErased)
 		return
 	}
@@ -379,9 +395,25 @@ func (s *Server) fileIngest(l ingestLine) {
 		}
 	}
 	if ev.Phase == model.SessionResponse {
+		if joins != nil {
+			if cut := joins.TakeCut(l.RequestID); cut != nil {
+				// Cortex made the cut, so its error replaces what the gateway saw (client_canceled).
+				if ev.Error != nil {
+					ev.Error.Kind, ev.Error.Message = cut.Kind, cut.Message
+				} else {
+					c := *cut
+					ev.Error = &c
+				}
+			}
+		}
 		s.settleIngested(&ev, l.Cost)
 	}
-	s.store.AppendCapture(sid, ev, in.capture(l, &ev))
+	c := in.capture(l, &ev)
+	if ev.Phase == model.SessionRequest && joins != nil && joins.AppendRequest(l.RequestID, sid, ev, c) {
+		in.lines.Add(1)
+		return
+	}
+	s.store.AppendCapture(sid, ev, c)
 	in.lines.Add(1)
 }
 
