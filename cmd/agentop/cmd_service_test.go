@@ -804,10 +804,13 @@ func TestReportNotAnswering_LeadsWithTheHolder(t *testing.T) {
 }
 
 // TestRenderUnit_LinuxPraxisSupervises: in praxis mode the supervisor must start the
-// gateway and write gateway.token, so the systemd unit runs cortex --supervise.
+// gateway and write gateway.token, so the systemd unit runs cortex --supervise. The
+// unit reads praxis.enabled from the config file: no caller sets it.
 func TestRenderUnit_LinuxPraxisSupervises(t *testing.T) {
 	p := servicePathsFixture(t)
-	p.supervise = true
+	if err := os.WriteFile(p.configFile, []byte("praxis:\n  enabled: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	u := renderUnitFor("linux", p)
 	want := "ExecStart=" + shQuote(p.binary) + " --supervise --config " + shQuote(p.configFile) + "\n"
 	if !strings.Contains(u, want) {

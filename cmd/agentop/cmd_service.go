@@ -111,10 +111,6 @@ type servicePaths struct {
 	// than returned so uninstall and status still work on a broken config.
 	configErr error
 	home      string // set explicitly: a supervisor's environment is minimal
-	// supervise makes the systemd unit run cortex --supervise. It is set from the
-	// config file (praxis.enabled) right before the unit is written. The plist
-	// always supervises.
-	supervise bool
 }
 
 func runService(args []string, stdout, stderr io.Writer) int {
@@ -151,7 +147,6 @@ func runService(args []string, stdout, stderr io.Writer) int {
 	if *printUnit {
 		// Inspect before installing. Also the only way to exercise rendering without
 		// registering a real agent in the caller's session.
-		p.supervise = configPraxisEnabled(p.configFile)
 		fmt.Fprint(stdout, renderUnit(p))
 		return 0
 	}
@@ -475,7 +470,6 @@ func runServiceInstall(p servicePaths, adopt int, forceRestart, announceUnit boo
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return installResult{exit: 1}
 	}
-	p.supervise = configPraxisEnabled(p.configFile)
 	if err := writeFileAtomic(p.unitFile, []byte(renderUnit(p)), 0o644); err != nil {
 		fmt.Fprintf(stderr, "agentop: writing %s: %v\n", p.unitFile, err)
 		return installResult{exit: 1}

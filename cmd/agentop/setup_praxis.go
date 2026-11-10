@@ -25,22 +25,7 @@ const praxisHandFix = "write `enabled: true` under praxis: by hand"
 // it. A flow-style praxis: block is an error.
 func enablePraxisText(src string) (out string, changed bool, err error) {
 	lines := strings.Split(src, "\n")
-	docIndent := -1
-	praxisAt := -1
-	for i, l := range lines {
-		trimmed := strings.TrimSpace(l)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		indent := len(l) - len(strings.TrimLeft(l, " "))
-		if docIndent < 0 {
-			docIndent = indent
-		}
-		if indent == docIndent && strings.HasPrefix(trimmed, "praxis:") {
-			praxisAt = i
-			break
-		}
-	}
+	praxisAt, docIndent := topLevelKey(lines, "praxis:")
 	if praxisAt < 0 {
 		pad := strings.Repeat(" ", max(docIndent, 0))
 		if src != "" && !strings.HasSuffix(src, "\n") {

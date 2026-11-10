@@ -267,18 +267,11 @@ func insertListenerKeys(src string, pins []pinnedListener) (string, error) {
 	return insertBlockKeys(src, "listener", pins)
 }
 
-// insertBlockKeys adds keys to the block named block, matching whatever
-// indentation the file already uses. A pin with no comment gets no comment line.
-//
-// Indentation is read from the file rather than assumed: a real config turned up
-// with the whole document indented two spaces, which is valid YAML and would have
-// produced a broken file from any hardcoded guess.
-func insertBlockKeys(src, block string, pins []pinnedListener) (string, error) {
-	lines := strings.Split(src, "\n")
-	head := block + ":"
-
-	// Only a top-level key: the same name nested in a plugin's config is another block.
-	listenerAt, docIndent := -1, -1
+// topLevelKey returns the index of the first top-level line that starts with head,
+// or -1, and the indentation of the document (-1 when it has no key line). Only a
+// top-level key counts: the same name nested in a plugin's config is another block.
+func topLevelKey(lines []string, head string) (at, docIndent int) {
+	docIndent = -1
 	for i, l := range lines {
 		trimmed := strings.TrimSpace(l)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -289,10 +282,23 @@ func insertBlockKeys(src, block string, pins []pinnedListener) (string, error) {
 			docIndent = indent
 		}
 		if indent == docIndent && strings.HasPrefix(trimmed, head) {
-			listenerAt = i
-			break
+			return i, docIndent
 		}
 	}
+	return -1, docIndent
+}
+
+// insertBlockKeys adds keys to the block named block, matching whatever
+// indentation the file already uses. A pin with no comment gets no comment line.
+//
+// Indentation is read from the file rather than assumed: a real config turned up
+// with the whole document indented two spaces, which is valid YAML and would have
+// produced a broken file from any hardcoded guess.
+func insertBlockKeys(src, block string, pins []pinnedListener) (string, error) {
+	lines := strings.Split(src, "\n")
+	head := block + ":"
+
+	listenerAt, _ := topLevelKey(lines, head)
 	if listenerAt < 0 {
 		return "", fmt.Errorf("no %s block found", head)
 	}

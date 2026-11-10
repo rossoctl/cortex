@@ -131,7 +131,6 @@ func TestServiceIsCurrent_BothPlatforms(t *testing.T) {
 		if err := os.WriteFile(p.configFile, []byte("praxis:\n  enabled: true\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		p.supervise = true
 		unit := renderUnitFor("linux", p)
 		if !strings.Contains(unit, "--supervise") {
 			t.Fatal("a supervising systemd unit has no --supervise; this case says nothing")

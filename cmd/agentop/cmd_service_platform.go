@@ -92,8 +92,9 @@ func shQuote(v string) string {
 //
 // In direct mode the systemd unit does NOT use --supervise: Restart=on-failure works
 // there and counts restarts against StartLimit, which a nested supervisor would hide.
-// In praxis mode (p.supervise) it uses --supervise, because only the supervisor
-// starts cortex-gateway and writes gateway.token.
+// In praxis mode (praxis.enabled in p.configFile) it uses --supervise, because only
+// the supervisor starts cortex-gateway and writes gateway.token. The unit reads the
+// file itself, so no caller can write a unit that does not agree with it.
 func renderUnitFor(goos string, p servicePaths) string {
 	if goos == "darwin" {
 		// HOME is set explicitly: the config interpolates ${HOME} at load, and an
@@ -152,7 +153,7 @@ func renderUnitFor(goos string, p servicePaths) string {
 	// systemd's own default would let hold a restart for 90s. There is no supervisor in
 	// between here in direct mode: KillMode=control-group signals the proxy directly.
 	supervise := ""
-	if p.supervise {
+	if configPraxisEnabled(p.configFile) {
 		supervise = " --supervise"
 	}
 	return `[Unit]
