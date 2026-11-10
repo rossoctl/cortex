@@ -98,7 +98,14 @@ func fakeGateway(args []string) {
 		_, _ = io.Copy(io.Discard, os.Stdin)
 		os.Exit(0)
 	}
-	select {}
+	// Block in Accept, not select {}: with no other goroutine, select {} is a fatal deadlock.
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			os.Exit(1)
+		}
+		_ = c.Close()
+	}
 }
 
 // lockedBuffer collects a child's output while the test reads it.
@@ -543,6 +550,9 @@ func TestSupervisor_StopsStaleGateway(t *testing.T) {
 	old.waitExit(t, time.Now(), 10*time.Second)
 	if gw := sup.pids(t, fakeGatewayPid, 1)[0]; gw == oldPid {
 		t.Fatalf("the new gateway has the stale pid %d", gw)
+	}
+	if !strings.Contains(sup.out.String(), "a cortex-gateway from an earlier run holds the gateway address") {
+		t.Fatalf("no stale-gateway WARN from the supervisor:\n%s", sup.out.String())
 	}
 }
 
