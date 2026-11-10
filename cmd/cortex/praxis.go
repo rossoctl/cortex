@@ -19,7 +19,8 @@ var _ sessionapi.HopJoins = (*forwardproxy.Hop)(nil)
 const praxisProbeEvery = time.Second
 
 // outboundEntries is the outbound plugin list to build: none in praxis mode, and it logs the
-// skipped names. cortex-gateway processes the traffic there. The config keeps its list.
+// skipped names at Warn: no policy plugin runs in praxis mode, because the gateway does not
+// run them and a WebSocket upgrade does not go through the gateway. The config keeps its list.
 func outboundEntries(c *config.Config, log *slog.Logger) []config.PluginEntry {
 	if !c.PraxisEnabled() {
 		return c.Pipeline.Outbound.Plugins
@@ -29,7 +30,7 @@ func outboundEntries(c *config.Config, log *slog.Logger) []config.PluginEntry {
 		for i, e := range c.Pipeline.Outbound.Plugins {
 			names[i] = e.Name
 		}
-		log.Info("praxis mode: outbound plugins not built; cortex-gateway processes the traffic", "plugins", names)
+		log.Warn("praxis mode: outbound plugins are off; cortex-gateway does not run them, and WebSocket upgrades go direct", "plugins", names)
 	}
 	return nil
 }

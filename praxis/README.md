@@ -138,8 +138,9 @@ gives the full text.
 16. The end-to-end tests use `startPraxis`, the same wiring function as `main`.
 17. The `Praxis` workflow builds `cortex-gateway` and runs the end-to-end tests after `cargo test`.
 
-In praxis mode, Cortex builds no outbound plugins (the gateway processes the
-traffic) and declines the Codex Responses WebSocket, so Codex uses HTTPS.
+In praxis mode, Cortex builds no outbound plugins and logs their names at Warn.
+The gateway does not run them, and a WebSocket upgrade goes direct to its
+origin, so no outbound plugin sees it. Cortex also declines the Codex Responses WebSocket, so Codex uses HTTPS.
 
 ## The parity rule
 

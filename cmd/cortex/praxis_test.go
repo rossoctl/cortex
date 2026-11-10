@@ -31,6 +31,9 @@ func TestOutboundEntries_PraxisSkipsPlugins(t *testing.T) {
 	if got := outboundEntries(cfg, log); len(got) != 0 {
 		t.Fatalf("praxis mode built %v, want none", got)
 	}
+	if !strings.Contains(buf.String(), "level=WARN") {
+		t.Errorf("log %q is not at Warn", buf.String())
+	}
 	for _, name := range []string{"inference-parser", "tool-prune"} {
 		if !strings.Contains(buf.String(), name) {
 			t.Errorf("log %q does not name %s", buf.String(), name)
