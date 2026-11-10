@@ -240,8 +240,9 @@ func awaitsHarvest(s session.SessionSummary) bool { return s.Resident == nil || 
 // this cheap: without it every event on a still-unnamed session would trigger a scan, and
 // with it a busy session is harvested once, after it pauses.
 //
-// Only sessions the metadata does NOT name are considered, so a fully-harvested list triggers
-// nothing at all.
+// Only sessions the metadata does NOT name are considered, plus named sessions whose transcript
+// moved since the harvest that named them (see transcriptMoved). A fully-harvested list whose
+// transcripts are unchanged triggers nothing at all.
 //
 // "FULLY HARVESTED" IS NOT "EVERY ROW NAMED ON SCREEN", and this comment used to conflate the two.
 // sessionHasTitle asks about the HARVEST only — sessionTitleFor's served-title fallback is
@@ -272,7 +273,7 @@ func awaitsHarvest(s session.SessionSummary) bool { return s.Resident == nil || 
 // comment; the optimisation waits for a profile that asks for it.
 func (m *model) untitledSettled(now time.Time) bool {
 	for _, s := range m.sessions {
-		if !awaitsHarvest(s) || m.sessionHasTitle(s.ID) {
+		if !awaitsHarvest(s) || (m.sessionHasTitle(s.ID) && !m.transcriptMoved(s.ID)) {
 			continue
 		}
 		// A ZERO UpdatedAt IS NOT "QUIET SINCE THE EPOCH". The field is whatever /v1/sessions
@@ -309,6 +310,24 @@ func (m *model) untitledSettled(now time.Time) bool {
 		}
 	}
 	return false
+}
+
+// transcriptMoved reports whether the transcript a harvested title came from changed after the
+// harvest that read it. A NAMED row needs this to be read again: the title it has can be the cwd
+// fallback or an early prompt — a session started by /clear and left idle is named by its cwd —
+// and the transcript can since have grown a better one. Without it, a named row kept its first
+// title for as long as agentop ran.
+//
+// One Stat per named live row per tick, on the rows awaitsHarvest admits. A harvest that only
+// refreshes a named row names nothing NEW, so it counts as a miss and widens the backoff: an active
+// session is re-read at most once per untitledBackoff, not once per pause.
+func (m *model) transcriptMoved(id string) bool {
+	meta := m.sessionsData[id]
+	if meta.LogFile == "" {
+		return false
+	}
+	st, err := os.Stat(meta.LogFile)
+	return err == nil && st.ModTime().After(meta.LogModTime)
 }
 
 // untitledFresh reports whether some unnamed row on screen was NOT counted against the backoff

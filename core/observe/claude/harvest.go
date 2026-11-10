@@ -450,7 +450,8 @@ func ReadSessions(configDir string, since map[string]SessionMetadata) (map[strin
 			// int64 per entry, and the Stat here already has it. Deliberately not done in this
 			// change: it is a second on-disk field for a case the explicit subcommand already
 			// answers, and the field added here needs to prove itself first.
-			if since != nil && !st.ModTime().After(harvestedAt(since[id], path)) {
+			// A "/clear" title came from an older build; its idle transcript never moves, so re-parse it.
+			if since != nil && !st.ModTime().After(harvestedAt(since[id], path)) && !isClear(since[id].Title) {
 				// A skipped transcript still WON this id: the entry being kept from `since`
 				// carries its title. So claim it, and drop any weaker claim an older
 				// duplicate already staked in an earlier directory — ReadDir is

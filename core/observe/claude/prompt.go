@@ -477,10 +477,18 @@ func promptCandidate(text string) (string, bool) {
 		candidate = stripWrapperTag(text)
 	}
 	candidate = cutTrailingHarness(candidate)
-	if isSyntheticPrompt(candidate) {
+	if isSyntheticPrompt(candidate) || isClear(candidate) {
 		return "", false
 	}
 	return candidate, true
+}
+
+// isClear reports whether s is the /clear command. /clear resets the session, so it names nothing:
+// Claude Code writes it as the first user turn of the NEW transcript, before the user asks anything,
+// and a session left idle after it was titled "/clear".
+func isClear(s string) bool {
+	f := strings.Fields(s)
+	return len(f) > 0 && f[0] == "/clear"
 }
 
 // isSyntheticPrompt reports whether s READS AS markup Claude Code inserted rather than as something
