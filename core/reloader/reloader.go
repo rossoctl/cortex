@@ -112,6 +112,8 @@ type Reloader struct {
 	drainWindow  time.Duration
 	debounce     time.Duration
 	startTimeout time.Duration
+	// afterFunc arms the debounce timer: time.AfterFunc, or a test's own.
+	afterFunc func(time.Duration, func()) debounceTimer
 	// onCommit is run after a reload is accepted; see WithOnCommit.
 	onCommit func(*config.Config)
 	// extraDirs and fingerprint widen what a reload depends on; see WithExtraWatch.
@@ -160,6 +162,7 @@ func New(configPath string, inbound, outbound *pipeline.Holder, build PipelineBu
 		drainWindow:  10 * time.Minute,
 		debounce:     250 * time.Millisecond,
 		startTimeout: 60 * time.Second,
+		afterFunc:    func(d time.Duration, f func()) debounceTimer { return time.AfterFunc(d, f) },
 		closing:      make(chan struct{}),
 	}
 	for _, opt := range opts {
@@ -305,6 +308,12 @@ func (r *Reloader) ConfigProvider() func() *config.Config {
 	return func() *config.Config { return r.activeCfg.Load() }
 }
 
+// debounceTimer is the part of *time.Timer the debounce uses.
+type debounceTimer interface {
+	Reset(time.Duration) bool
+	Stop() bool
+}
+
 // watchLoop drains fsnotify events, debounces them, and dispatches
 // each debounced burst to reloadOnce. Exits when ctx is cancelled or
 // the watcher channel closes.
@@ -312,7 +321,7 @@ func (r *Reloader) watchLoop(ctx context.Context, watcher *fsnotify.Watcher) {
 	defer watcher.Close()
 
 	base := filepath.Base(r.configPath)
-	var timer *time.Timer
+	var timer debounceTimer
 	defer func() {
 		if timer != nil {
 			timer.Stop()
@@ -355,7 +364,7 @@ func (r *Reloader) watchLoop(ctx context.Context, watcher *fsnotify.Watcher) {
 			// Debounce: reset the timer on every event. Fire once when
 			// the burst quiesces for `debounce`.
 			if timer == nil {
-				timer = time.AfterFunc(r.debounce, func() {
+				timer = r.afterFunc(r.debounce, func() {
 					select {
 					case trigger <- struct{}{}:
 					default:

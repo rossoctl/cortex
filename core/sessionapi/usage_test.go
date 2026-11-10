@@ -555,8 +555,11 @@ func recordCostedMinute(t *testing.T, led *ledger.Writer, at time.Time, host, mo
 func TestHandleUsage_TodayIsServedFromTheLedger(t *testing.T) {
 	// A closed minute on disk, plus an empty ring, so a non-zero total can only
 	// have come from the ledger.
-	led := ledgerWithOneCostedMinute(t, insideToday(t, 2*time.Minute), "gw", "opus", 0.25)
-	ts, _ := newTestServer(t, WithUsage(usage.New()), WithCostLedger(led))
+	// At noon, so today spans more than one bucket whatever time the suite runs.
+	now := time.Date(2026, time.June, 15, 12, 0, 0, 0, time.Local)
+	led := ledgerWithOneCostedMinute(t, now.Add(-2*time.Minute), "gw", "opus", 0.25)
+	ts, _ := newTestServer(t, WithUsage(usage.New()), WithCostLedger(led),
+		WithClock(func() time.Time { return now }))
 
 	status, body := fetchUsage(t, ts.URL, "?window=today")
 	if status != http.StatusOK {

@@ -647,30 +647,67 @@ func TestEnviron(t *testing.T) {
 }
 
 // A shell whose profile leaves a background process holding stdout still answers
-// within the probe's budget: with its PATH when it printed one, empty when it hung.
+// while that process lives: with its PATH when it printed one, empty when it hung
+// and its probe was ended. The process waits on a FIFO the test releases on
+// cleanup, so the exited shell's probe ends only through loginPathWaitDelay.
 func TestLoginPath_BackgroundChildHoldingStdout(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("no sh")
 	}
-	for name, tc := range map[string]struct{ body, want string }{
-		"printed then exited": {"sleep 5 &\nshift\nPATH=/from/login exec " + sh + " \"$@\"\n", "/from/login"},
-		"hung":                {"sleep 5 &\nsleep 5\n", ""},
+	for name, tc := range map[string]struct {
+		body, want string
+		hangs      bool
+	}{
+		"printed then exited": {"read _ < \"$HOLD\" &\nshift\nPATH=/from/login exec " + sh + " \"$@\"\n", "/from/login", false},
+		"hung":                {"read _ < \"$HOLD\" &\necho > \"$STARTED\"\nread _ < \"$HOLD\"\n", "", true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			shell := filepath.Join(t.TempDir(), "shell")
+			dir := t.TempDir()
+			// fifo makes a FIFO, opened read-write so opening it neither blocks nor
+			// sends EOF; closing it on cleanup does.
+			fifo := func(name string) (string, *os.File) {
+				path := filepath.Join(dir, name)
+				if err := syscall.Mkfifo(path, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				f, err := os.OpenFile(path, os.O_RDWR, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { f.Close() })
+				return path, f
+			}
+			hold, _ := fifo("hold")
+			started, startedR := fifo("started")
+			shell := filepath.Join(dir, "shell")
 			os.WriteFile(shell, []byte("#!"+sh+"\n"+tc.body), 0o700)
 			t.Setenv("SHELL", shell)
+			t.Setenv("HOLD", hold)
+			t.Setenv("STARTED", started)
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			if tc.hangs {
+				// The probe ends once the shell is running and hung.
+				go func() {
+					if _, err := startedR.Read(make([]byte, 1)); err == nil {
+						cancel()
+					}
+				}()
+			}
 			loginPathMu.Lock()
 			loginPathVal, loginPathTried = "", time.Time{}
-			old := loginPathTimeout
-			loginPathTimeout = 500 * time.Millisecond
+			old := loginPathContext
+			loginPathContext = func() (context.Context, context.CancelFunc) { return ctx, func() {} }
 			loginPathMu.Unlock()
-			t.Cleanup(func() { loginPathVal, loginPathTried, loginPathTimeout = "", time.Now(), old })
-			t0 := time.Now()
+			t.Cleanup(func() {
+				loginPathMu.Lock()
+				defer loginPathMu.Unlock()
+				loginPathVal, loginPathTried, loginPathContext = "", time.Now(), old
+			})
 			got := loginPath()
-			if d := time.Since(t0); d > 2*time.Second {
-				t.Errorf("loginPath took %v against a %v budget", d, loginPathTimeout)
+			if tc.hangs && ctx.Err() == nil {
+				t.Error("loginPath returned before the shell signalled it was hung")
 			}
 			if got != tc.want {
 				t.Errorf("loginPath() = %q, want %q", got, tc.want)
