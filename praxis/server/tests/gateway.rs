@@ -747,6 +747,70 @@ fn buffered_over_cap_with_content_length_is_502() {
 }
 
 #[test]
+fn buffered_over_cap_after_the_head_keeps_upstream_status() {
+    let o = origin(|_, s| {
+        let _ = s.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n",
+        );
+        let chunk = vec![b' '; 1 << 20];
+        for _ in 0..12 {
+            if write_chunk(s, &chunk).is_err() {
+                return;
+            }
+        }
+        let _ = s.write_all(b"0\r\n\r\n");
+    });
+    let i = ingest();
+    let g = gateway(&o, &i, true);
+    let mut s = g.connect();
+    let h = fixture_headers();
+    let req = fixture("request.json");
+    s.write_all(&head("POST", "/v1/messages", &as_refs(&h), req.len()))
+        .expect("head");
+    s.write_all(&req).expect("body");
+    let (rh, rest) = read_head(&mut s).expect("response head");
+    assert_eq!(status(&rh), 200);
+    let body = Body::new(&mut s, &rh, rest).read_to_end();
+    assert!(body.len() < 12 << 20, "the body was not cut");
+    let lines = i.take(2);
+    let resp = response_row(&lines);
+    assert_eq!(
+        resp["event"]["statusCode"], 200,
+        "the status the client got"
+    );
+    assert_eq!(resp["event"]["error"]["kind"], "proxy_error");
+    assert_eq!(resp["event"]["error"]["code"], "200");
+    assert_eq!(
+        resp["event"]["error"]["message"],
+        "response body over the 10485760-byte buffer limit"
+    );
+    assert_eq!(i.quiet(), Vec::<Value>::new(), "a second response row");
+}
+
+#[test]
+fn bodyless_response_ends_its_row() {
+    let o = origin(|_, s| {
+        let _ = s.write_all(b"HTTP/1.1 204 No Content\r\n\r\n");
+    });
+    let i = ingest();
+    let g = gateway(&o, &i, true);
+    let (rh, _) = send(
+        &g,
+        "POST",
+        "/v1/messages",
+        &as_refs(&fixture_headers()),
+        &fixture("request.json"),
+    );
+    assert_eq!(status(&rh), 204);
+    let lines = i.take(2);
+    let resp = response_row(&lines);
+    assert_eq!(resp["event"]["statusCode"], 204);
+    assert!(resp["event"].get("error").is_none(), "{resp}");
+    assert_eq!(resp["capture"]["response"]["ended"], true);
+    assert_eq!(i.quiet(), Vec::<Value>::new(), "a second response row");
+}
+
+#[test]
 fn frame_over_cap_aborts_stream() {
     let o = origin(|_, s| {
         let _ = s.write_all(

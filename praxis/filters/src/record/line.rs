@@ -170,9 +170,10 @@ struct Wire<'a> {
     session: &'a str,
     event: &'a Event,
     #[serde(skip_serializing_if = "Option::is_none")]
-    capture: Option<&'a Capture>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     cost: Option<&'a Cost>,
+    // Last: `Queued` puts the capture's bytes in place of `{"dropped":true}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture: Option<&'a Capture>,
 }
 
 const DROPPED: Capture = Capture::Dropped { dropped: true };
@@ -192,23 +193,16 @@ impl Line {
         }
     }
 
-    /// The two serializations the emitter chooses from, each ending in `\n`.
+    /// The line for the emitter, serialized once (see `Queued`).
     pub fn queued(&self) -> Queued {
-        let line = |c: Option<&Capture>| {
-            // shortcut: serializing these plain types cannot fail.
-            let mut b = serde_json::to_vec(&self.wire(c)).expect("line serializes");
-            b.push(b'\n');
-            b
-        };
-        match &self.capture {
-            None => Queued {
-                row: line(None),
-                with_capture: None,
-            },
-            Some(c) => Queued {
-                row: line(Some(&DROPPED)),
-                with_capture: Some(line(Some(c))),
-            },
+        // shortcut: serializing these plain types cannot fail.
+        let capture = self.capture.as_ref();
+        let mut row =
+            serde_json::to_vec(&self.wire(capture.map(|_| &DROPPED))).expect("line serializes");
+        row.push(b'\n');
+        Queued {
+            row,
+            capture: capture.map(|c| serde_json::to_vec(c).expect("capture serializes")),
         }
     }
 }
@@ -331,7 +325,7 @@ pub(crate) mod tests {
             cost: None,
         };
         let q = l.queued();
-        let full: Value = serde_json::from_slice(q.with_capture.as_ref().unwrap()).unwrap();
+        let full: Value = serde_json::from_slice(&q.with_capture().unwrap()).unwrap();
         assert_eq!(full["v"], 1);
         assert_eq!(full["schemaVersion"], 1);
         assert_eq!(full["op"], "append");

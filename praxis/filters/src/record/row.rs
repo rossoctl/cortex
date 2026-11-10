@@ -19,6 +19,7 @@ use super::redact;
 use crate::parse::MAX_BODY_SIZE;
 use crate::parse::decode::{Coding, DecodeError, Decoder};
 use crate::parse::inference::{InferenceObserver, is_event_stream};
+use crate::parse::model::InferenceExtension;
 use crate::parse::sse::FrameReader;
 
 /// `maxRequestBodySize` in core/listener/forwardproxy.
@@ -46,7 +47,11 @@ const UPSTREAM_GONE: &str = "upstream closed the connection";
 /// Why a response stopped before its end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Abort {
-    /// A buffered response over `MAX_BODY_SIZE` decoded bytes.
+    /// A buffered response whose `Content-Length` is over `MAX_BODY_SIZE`, at its head.
+    /// The client gets 502.
+    LengthOverCap,
+    /// A buffered response over `MAX_BODY_SIZE` decoded bytes, after its head.
+    /// The client has the upstream status already.
     BufferedOverCap,
     /// One SSE frame over `MAX_BODY_SIZE`.
     FrameOverCap,
@@ -296,7 +301,19 @@ impl Exchange {
 
     fn request_row(&mut self, body: &[u8]) -> Line {
         self.request_built = true;
-        let inference = self.observer.as_ref().and_then(|o| o.extension()).cloned();
+        // The request-only fields move to this row: nothing on the response side reads them.
+        let inference = self
+            .observer
+            .as_mut()
+            .and_then(|o| o.extension_mut())
+            .map(|i| InferenceExtension {
+                messages: std::mem::take(&mut i.messages),
+                tools: std::mem::take(&mut i.tools),
+                tool_results: std::mem::take(&mut i.tool_results),
+                history_tool_calls: std::mem::take(&mut i.history_tool_calls),
+                history_thinking: i.history_thinking.take(),
+                ..i.clone()
+            });
         // Only inference is kept: the body of any other request can be a credential.
         let capture = inference.is_some().then(|| {
             let mut h = self.headers.clone();
@@ -366,7 +383,7 @@ impl Exchange {
             corrupt: false,
         });
         if over_by_length {
-            return Err(Abort::BufferedOverCap);
+            return Err(Abort::LengthOverCap);
         }
         Ok(())
     }
@@ -437,8 +454,12 @@ impl Exchange {
     pub fn on_abort(&mut self, a: Abort) -> Line {
         let status = self.resp.as_ref().map_or(0, |r| r.status);
         let (status_code, message) = match a {
-            Abort::BufferedOverCap => (
+            Abort::LengthOverCap => (
                 502,
+                format!("response body over the {MAX_BODY_SIZE}-byte buffer limit"),
+            ),
+            Abort::BufferedOverCap => (
+                status as i64,
                 format!("response body over the {MAX_BODY_SIZE}-byte buffer limit"),
             ),
             Abort::FrameOverCap => (
@@ -510,15 +531,7 @@ impl Exchange {
         let mut event = Event {
             // Line format v1: the request row carries the request-only fields, and Cortex puts
             // them back on this row. They are most of a line's bytes (docs/session-api.md).
-            inference: self.observer.as_ref().and_then(|o| o.extension()).map(|i| {
-                let mut i = i.clone();
-                i.messages = Vec::new();
-                i.tools = Vec::new();
-                i.tool_results = Vec::new();
-                i.history_tool_calls = Vec::new();
-                i.history_thinking = None;
-                i
-            }),
+            inference: self.observer.as_ref().and_then(|o| o.extension()).cloned(),
             status_code,
             error,
             duration_ms: self.start.elapsed().as_millis() as i64,
@@ -882,11 +895,8 @@ mod tests {
             "content-length",
             (MAX_BODY_SIZE + 1).to_string().parse().unwrap(),
         );
-        assert_eq!(
-            ex.on_response_head(200, &mut h),
-            Err(Abort::BufferedOverCap)
-        );
-        let r = json_of(&ex.on_abort(Abort::BufferedOverCap));
+        assert_eq!(ex.on_response_head(200, &mut h), Err(Abort::LengthOverCap));
+        let r = json_of(&ex.on_abort(Abort::LengthOverCap));
         assert_eq!(r["event"]["statusCode"], 502);
         assert_eq!(
             r["event"]["error"],
@@ -907,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn chunked_over_cap_row_is_502_proxy_error() {
+    fn chunked_over_cap_row_keeps_upstream_status() {
         let mut ex = json_exchange();
         let mut h = HeaderMap::new();
         h.insert("content-type", "application/json".parse().unwrap());
@@ -922,7 +932,10 @@ mod tests {
         }
         assert_eq!(got, Err(Abort::BufferedOverCap));
         let r = json_of(&ex.on_abort(Abort::BufferedOverCap));
-        assert_eq!(r["event"]["statusCode"], 502);
+        assert_eq!(
+            r["event"]["statusCode"], 200,
+            "the client has the 200 head already"
+        );
         assert_eq!(r["event"]["error"]["kind"], "proxy_error");
         assert_eq!(r["event"]["error"]["code"], "200");
         let c = &r["capture"]["response"];
@@ -1046,6 +1059,43 @@ mod tests {
     }
 
     #[test]
+    fn request_fields_leave_the_exchange_with_the_request_row() {
+        let f = fixture();
+        let mut ex = exchange("POST", "api.example.com", &f.target, &f.req_headers);
+        ex.on_request_body(&f.req_body);
+        let i = ex.observer.as_ref().unwrap().extension().unwrap();
+        assert!(
+            i.messages.is_empty(),
+            "the exchange still holds the messages"
+        );
+        assert!(i.tools.is_empty(), "the exchange still holds the tools");
+        assert!(!i.model.is_empty(), "the light fields stay");
+    }
+
+    #[test]
+    fn a_queued_capture_line_costs_the_queue_one_line() {
+        let text = "a".repeat(4 << 20);
+        let body = serde_json::to_vec(&json!({
+            "model": "claude-opus-5",
+            "messages": [{"role": "user", "content": text}],
+        }))
+        .unwrap();
+        let mut ex = exchange("POST", "api.example.com", "/v1/messages", &HeaderMap::new());
+        let l = ex.on_request_body(&body);
+        let full = serde_json::to_vec(&l).unwrap().len();
+        let e = crate::record::emitter::Emitter::start(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            "t".into(),
+        );
+        e.submit(l.queued());
+        let queued = e.stats().queued_bytes;
+        assert!(
+            queued < full + 1024,
+            "queued {queued} bytes for a {full}-byte line"
+        );
+    }
+
+    #[test]
     fn line_with_capture_over_cap_has_dropped_row() {
         let text = "a".repeat(30 << 20);
         let body = serde_json::to_vec(&json!({
@@ -1055,7 +1105,7 @@ mod tests {
         .unwrap();
         let mut ex = exchange("POST", "api.example.com", "/v1/messages", &HeaderMap::new());
         let q = ex.on_request_body(&body).queued();
-        assert!(q.with_capture.as_ref().unwrap().len() > MAX_LINE);
+        assert!(q.with_capture().unwrap().len() > MAX_LINE);
         let row: Value = serde_json::from_slice(&q.row).unwrap();
         assert_eq!(row["capture"], json!({"dropped": true}));
         assert_eq!(row["event"]["inference"]["model"], "claude-opus-5");

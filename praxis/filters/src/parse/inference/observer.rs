@@ -82,6 +82,10 @@ impl InferenceObserver {
     pub fn extension(&self) -> Option<&InferenceExtension> {
         self.ext.as_ref()
     }
+
+    pub fn extension_mut(&mut self) -> Option<&mut InferenceExtension> {
+        self.ext.as_mut()
+    }
 }
 
 #[cfg(test)]

@@ -1,12 +1,42 @@
 //! The emitter: one thread per process that streams NDJSON lines to Cortex.
 
-/// One line, serialized twice: without and with its capture.
-///
-/// Each ends in `\n`. `row` holds `"capture":{"dropped":true}` when the line
-/// has a capture, and no `capture` key otherwise.
+/// One line, serialized once. `row` ends in `\n`. Without a capture, `row` is
+/// the line. With one, `row` ends in `DROPPED_TAIL` and `capture` holds the
+/// capture's JSON: the line is `row` with `capture` in place of
+/// `{"dropped":true}`. Dropping the capture leaves `row`, a valid line.
 pub struct Queued {
     pub row: Vec<u8>,
-    pub with_capture: Option<Vec<u8>>,
+    pub capture: Option<Vec<u8>>,
+}
+
+/// The end of `Queued::row` when the line has a capture.
+pub const DROPPED_TAIL: &[u8] = b"{\"dropped\":true}}\n";
+
+impl Queued {
+    /// The part of `row` before the capture.
+    fn head(&self) -> &[u8] {
+        &self.row[..self.row.len() - DROPPED_TAIL.len()]
+    }
+
+    /// The length of the line that goes on the wire.
+    fn wire_len(&self) -> usize {
+        match &self.capture {
+            Some(c) => self.head().len() + c.len() + 2,
+            None => self.row.len(),
+        }
+    }
+
+    /// The bytes in memory.
+    fn size(&self) -> usize {
+        self.row.len() + self.capture.as_ref().map_or(0, Vec::len)
+    }
+
+    /// The line with its capture, as one buffer.
+    #[cfg(test)]
+    pub fn with_capture(&self) -> Option<Vec<u8>> {
+        let c = self.capture.as_ref()?;
+        Some([self.head(), c, b"}\n"].concat())
+    }
 }
 
 use std::collections::VecDeque;
@@ -37,23 +67,10 @@ pub struct EmitterStats {
     pub queued_bytes: usize,
 }
 
-/// A queued line. `row` is the line without its capture, kept so that a later
-/// row can take the capture's place in the queue.
-struct Entry {
-    line: Vec<u8>,
-    row: Option<Vec<u8>>,
-}
-
-impl Entry {
-    fn size(&self) -> usize {
-        self.line.len() + self.row.as_ref().map_or(0, Vec::len)
-    }
-}
-
-/// `bytes` counts each entry's line and its kept row: both are in memory.
+/// `bytes` counts each line's row and capture.
 #[derive(Default)]
 struct Queue {
-    lines: VecDeque<Entry>,
+    lines: VecDeque<Queued>,
     bytes: usize,
 }
 
@@ -66,9 +83,8 @@ impl Queue {
             if self.bytes + need <= MAX_QUEUE_BYTES {
                 break;
             }
-            if let Some(row) = e.row.take() {
-                self.bytes -= e.line.len();
-                e.line = row;
+            if let Some(c) = e.capture.take() {
+                self.bytes -= c.len();
                 dropped += 1;
             }
         }
@@ -129,35 +145,19 @@ impl Emitter {
     /// Queues one line. It never blocks and never fails. A line that does not
     /// fit loses its capture first. Then queued lines lose their captures,
     /// newest first. Only then is the line dropped and counted.
-    pub fn submit(&self, q: Queued) {
-        let Queued { row, with_capture } = q;
-        let mut entry = match with_capture {
-            Some(c) if c.len() > MAX_LINE => {
-                bump_capture(&self.captures_dropped_line_cap, "line_cap");
-                Entry {
-                    line: row,
-                    row: None,
-                }
-            }
-            Some(c) => Entry {
-                line: c,
-                row: Some(row),
-            },
-            None => Entry {
-                line: row,
-                row: None,
-            },
-        };
+    pub fn submit(&self, mut entry: Queued) {
+        debug_assert!(entry.capture.is_none() || entry.row.ends_with(DROPPED_TAIL));
+        if entry.capture.is_some() && entry.wire_len() > MAX_LINE {
+            entry.capture = None;
+            bump_capture(&self.captures_dropped_line_cap, "line_cap");
+        }
         let mut captures_dropped = 0;
         let queued = {
             let mut q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
             if q.lines.len() >= MAX_QUEUE_LINES {
                 false
             } else {
-                if q.bytes + entry.size() > MAX_QUEUE_BYTES
-                    && let Some(r) = entry.row.take()
-                {
-                    entry.line = r;
+                if q.bytes + entry.size() > MAX_QUEUE_BYTES && entry.capture.take().is_some() {
                     captures_dropped += 1;
                 }
                 captures_dropped += q.drop_captures(entry.size());
@@ -194,16 +194,16 @@ impl Emitter {
         }
     }
 
-    fn pop(&self) -> Option<Vec<u8>> {
+    fn pop(&self) -> Option<Queued> {
         let mut q = self.queue.lock().unwrap_or_else(|p| p.into_inner());
         let e = q.lines.pop_front()?;
         q.bytes -= e.size();
-        Some(e.line)
+        Some(e)
     }
 
     /// Waits for the next line. Cancel-safe: the pop and the return are in
     /// one poll. `notify_one` keeps a permit, so no wake-up is lost.
-    async fn next_line(&self) -> Vec<u8> {
+    async fn next_line(&self) -> Queued {
         loop {
             if let Some(line) = self.pop() {
                 return line;
@@ -247,9 +247,16 @@ impl Emitter {
                 }
             };
             let sent = async {
-                wr.write_all(format!("{:x}\r\n", line.len()).as_bytes())
+                wr.write_all(format!("{:x}\r\n", line.wire_len()).as_bytes())
                     .await?;
-                wr.write_all(&line).await?;
+                match &line.capture {
+                    Some(c) => {
+                        wr.write_all(line.head()).await?;
+                        wr.write_all(c).await?;
+                        wr.write_all(b"}\n").await?;
+                    }
+                    None => wr.write_all(&line.row).await?,
+                }
                 wr.write_all(b"\r\n").await
             }
             .await;
@@ -288,7 +295,17 @@ mod tests {
     fn line(s: &str) -> Queued {
         Queued {
             row: format!("{s}\n").into_bytes(),
-            with_capture: None,
+            capture: None,
+        }
+    }
+
+    /// A line with a capture of `n` bytes of `x`.
+    fn with_capture(n: usize) -> Queued {
+        let mut row = b"{\"capture\":".to_vec();
+        row.extend_from_slice(DROPPED_TAIL);
+        Queued {
+            row,
+            capture: Some(vec![b'x'; n]),
         }
     }
 
@@ -369,15 +386,21 @@ mod tests {
     }
 
     #[test]
+    fn capture_goes_on_the_wire_in_its_line() {
+        let (addr, rx) = serve(vec![usize::MAX]);
+        let e = Emitter::start(addr, "t".into());
+        e.submit(with_capture(3));
+        assert_eq!(recv(&rx), "auth Bearer t");
+        assert_eq!(recv(&rx), "{\"capture\":xxx}\n");
+    }
+
+    #[test]
     fn capture_over_line_cap_is_dropped_row_kept() {
         let (addr, rx) = serve(vec![usize::MAX]);
         let e = Emitter::start(addr, "t".into());
-        e.submit(Queued {
-            row: b"row\n".to_vec(),
-            with_capture: Some(vec![b'x'; MAX_LINE + 1]),
-        });
+        e.submit(with_capture(MAX_LINE + 1));
         assert_eq!(recv(&rx), "auth Bearer t");
-        assert_eq!(recv(&rx), "row\n");
+        assert_eq!(recv(&rx), "{\"capture\":{\"dropped\":true}}\n");
         assert_eq!(e.stats().captures_dropped_line_cap, 1);
     }
 
@@ -385,10 +408,7 @@ mod tests {
     fn queue_drops_captures_before_rows() {
         let e = Emitter::start(closed_addr(), "t".into());
         for _ in 0..30 {
-            e.submit(Queued {
-                row: b"row\n".to_vec(),
-                with_capture: Some(vec![b'x'; 10 << 20]),
-            });
+            e.submit(with_capture(10 << 20));
         }
         let s = e.stats();
         assert!(s.queued_bytes <= MAX_QUEUE_BYTES, "{}", s.queued_bytes);
@@ -401,16 +421,13 @@ mod tests {
     fn queued_captures_make_room_for_a_row() {
         let e = Emitter::start(closed_addr(), "t".into());
         for _ in 0..25 {
-            e.submit(Queued {
-                row: b"row\n".to_vec(),
-                with_capture: Some(vec![b'x'; 10 << 20]),
-            });
+            e.submit(with_capture(10 << 20));
         }
         assert_eq!(e.stats().captures_dropped_queue_bytes, 0);
         // A 15 MiB row with no capture: the newest queued capture gives it room.
         e.submit(Queued {
             row: vec![b'r'; 15 << 20],
-            with_capture: None,
+            capture: None,
         });
         let s = e.stats();
         assert_eq!(s.rows_dropped, 0);

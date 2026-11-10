@@ -74,6 +74,7 @@ gives the full text.
 18. A stream cut after the response head is `client_canceled`, also when the upstream cut it. Praxis 0.8.0 gives no error source after the head.
 19. A response row leaves out the request-only inference fields (`messages`, `tools`, `toolResults`, `historyToolCalls`, `historyThinking`). Cortex puts them back from the request row (`docs/session-api.md`, line format v1).
 20. The gateway removes `X-Cortex-Dest` and `X-Cortex-Token` before the upstream, against the issue text. No egress listener exists yet, so they would send the token to the origin. #1721 keeps them again for its egress listener.
+21. A buffered response body that goes over the 10 MiB cap after the response head gives a row with the upstream status, not 502. The client has that status and a cut body. Direct mode reads the body before it sends the head, so its client and its row get 502. A `Content-Length` over the cap gives 502 in both modes.
 
 ## Accepted edge cases (#1719)
 
