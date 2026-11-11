@@ -744,8 +744,8 @@ func TestBackgroundJobRunsUntilItsNotification(t *testing.T) {
 	r.turn("", 30, 1, h2, nil, "end_turn")
 	r.turn("", 60, 1, append(h2, pipeline.InferenceMessage{Role: "user", Content: "<task-notification>\n<task-id>bk42</task-id>\n<status>completed</status>"}), nil, "end_turn")
 	tl := Build("s", r.events, time.Time{})
-	if len(tl.Jobs) != 1 || tl.Jobs[0].ID != "bk42" || !tl.Jobs[0].Start.Equal(at(2)) || tl.Jobs[0].End == nil || !tl.Jobs[0].End.Equal(at(60)) {
-		t.Fatalf("jobs = %+v, want bk42 from 2s to 60s", tl.Jobs)
+	if len(tl.Jobs) != 1 || tl.Jobs[0].ID != "bk42" || tl.Jobs[0].ToolUseID != "t1" || !tl.Jobs[0].Start.Equal(at(2)) || tl.Jobs[0].End == nil || !tl.Jobs[0].End.Equal(at(60)) {
+		t.Fatalf("jobs = %+v, want bk42 of t1 from 2s to 60s", tl.Jobs)
 	}
 }
 

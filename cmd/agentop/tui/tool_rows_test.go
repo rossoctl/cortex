@@ -148,9 +148,27 @@ func TestIndexTools_BgJob(t *testing.T) {
 		t.Errorf("Read tool: trailing = %q, want %q", got, want)
 	}
 
+	// Two Bash calls of one response: their results share a request, so they end at one time.
+	// Only the call that started the job owns it, and each job goes to its own call.
+	tl = &timeline.Timeline{
+		Tools: []timeline.Tool{tlTool(4, "b1", "Bash", 19, 20), tlTool(4, "b2", "Bash", 19, 20)},
+		Jobs:  []timeline.Job{{Agent: "main", ID: "j1", ToolUseID: "b2", Start: tlAt(20), End: tlPtr(262)}},
+	}
+	if got, want := onlyRow(t, tl, "b1").trailing(tlAt(300)), "p-b1"; got != want {
+		t.Errorf("Bash call with no job: trailing = %q, want %q", got, want)
+	}
+	if got := onlyRow(t, tl, "b2").trailing(tlAt(300)); !strings.HasPrefix(got, "bg 4m02s") {
+		t.Errorf("Bash call with the job: trailing = %q, want a bg part", got)
+	}
+	tl.Jobs = append(tl.Jobs, timeline.Job{Agent: "main", ID: "j2", ToolUseID: "b1", Start: tlAt(20), End: tlPtr(80)})
+	if got := onlyRow(t, tl, "b1").trailing(tlAt(300)); !strings.HasPrefix(got, "bg 1m00s") {
+		t.Errorf("second job: trailing = %q, want bg 1m00s", got)
+	}
+
 	// A job of another agent matches nothing.
+	tl.Jobs = tl.Jobs[:1]
 	tl.Jobs[0].Agent = "sub"
-	if got, want := onlyRow(t, tl, "b").trailing(tlAt(300)), "p-b"; got != want {
+	if got, want := onlyRow(t, tl, "b2").trailing(tlAt(300)), "p-b2"; got != want {
 		t.Errorf("job of another agent: trailing = %q, want %q", got, want)
 	}
 }

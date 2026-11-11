@@ -22,8 +22,11 @@ type toolRow struct {
 	BgTo     *time.Time // the job's End; nil while it runs
 }
 
+// jobKey finds a Bash tool's job: by its tool ID, or, from an older proxy that sends no
+// ToolUseID, by the start time. Two calls whose results share one request share that time.
 type jobKey struct {
 	agent string
+	tool  string
 	start int64
 }
 
@@ -41,7 +44,10 @@ func indexTools(tl *timeline.Timeline) map[uint64][]toolRow {
 	}
 	jobs := make(map[jobKey]timeline.Job, len(tl.Jobs))
 	for _, j := range tl.Jobs {
-		k := jobKey{j.Agent, j.Start.UnixNano()}
+		k := jobKey{agent: j.Agent, tool: j.ToolUseID}
+		if j.ToolUseID == "" {
+			k = jobKey{agent: j.Agent, start: j.Start.UnixNano()}
+		}
 		if _, dup := jobs[k]; !dup {
 			jobs[k] = j
 		}
@@ -63,7 +69,11 @@ func indexTools(tl *timeline.Timeline) map[uint64][]toolRow {
 		if t.End != nil {
 			r.Parallel = ends[endKey{t.Seq, t.End.UnixNano()}] > 1
 			if t.Name == "Bash" {
-				if j, ok := jobs[jobKey{t.Agent, t.End.UnixNano()}]; ok {
+				j, ok := jobs[jobKey{agent: t.Agent, tool: t.ID}]
+				if !ok {
+					j, ok = jobs[jobKey{agent: t.Agent, start: t.End.UnixNano()}]
+				}
+				if ok {
 					r.BgFrom, r.BgTo = &j.Start, j.End
 				}
 			}

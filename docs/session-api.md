@@ -185,7 +185,7 @@ the whole list.
              {"id": "a1bf9707ee0e71012", "parent": "main", "label": "Survey the code",
               "type": "Explore", "spawnTool": "toolu_…", "spawnedAt": "…", "returnedAt": "…"}],
  "turns":   [{"agent": "main", "start": "…", "end": "…", "finish": "tool_use", "seq": 12}],
- "jobs":    [{"agent": "main", "id": "bk42", "start": "…", "end": "…", "seq": 40}],
+ "jobs":    [{"agent": "main", "id": "bk42", "toolUseId": "toolu_…", "start": "…", "end": "…", "seq": 40}],
  "tools":   [{"agent": "main", "id": "toolu_…", "name": "Bash", "start": "…", "end": "…",
               "preview": "go test ./...", "seq": 13}],
  "returns": [{"agent": "a1bf9707ee0e71012", "into": "main", "at": "…", "seq": 90}],
