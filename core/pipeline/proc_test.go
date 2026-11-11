@@ -29,3 +29,19 @@ func TestSessionEvent_ProcAndSessionHeaderRoundTrip(t *testing.T) {
 		t.Errorf("an event naming no process carries the keys anyway: %s", bare)
 	}
 }
+
+// The project pin is write-once, as SetAttribution is: a trusted path that pins "" keeps "".
+func TestSetProject_FirstCallWins(t *testing.T) {
+	c := &Context{}
+	c.SetProject("")
+	c.SetProject("~/a")
+	if got := c.Project(); got != "" {
+		t.Errorf("after SetProject(\"\") then SetProject(\"~/a\"): Project() = %q, want \"\"", got)
+	}
+	c = &Context{}
+	c.SetProject("~/a")
+	c.SetProject("/b")
+	if got := c.Project(); got != "~/a" {
+		t.Errorf("after SetProject(\"~/a\") then SetProject(\"/b\"): Project() = %q, want \"~/a\"", got)
+	}
+}

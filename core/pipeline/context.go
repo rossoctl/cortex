@@ -177,6 +177,10 @@ type Context struct {
 	namingHeader   string
 	attributed     bool
 
+	// project and projectSet hold SetProject's pin.
+	project    string
+	projectSet bool
+
 	Agent    *AgentIdentity
 	Identity Identity // nil before an auth plugin runs
 

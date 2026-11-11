@@ -41,6 +41,10 @@ type Memo struct {
 	once  sync.Once
 	chain []Proc
 
+	// projectOnce and project hold the connection's project label, for Project.
+	projectOnce sync.Once
+	project     string
+
 	// mu guards listeners: which process listens behind each loopback destination this
 	// connection's requests went to, for SelfTraffic.
 	mu        sync.Mutex
@@ -74,6 +78,15 @@ func (a *Attributor) Chain(res peerproc.Resolver, key ConnKey, m *Memo) ([]Proc,
 		m.chain, err = a.Lookup(res, key.Client, key.Server)
 	})
 	return m.chain, err
+}
+
+// Project is the connection's project label: the first call on m runs compute, and every
+// later call on m returns that value. A keep-alive connection keeps its first label: a
+// process that changes its cwd, or a later request with a different Attribution.Proc, keeps
+// the old label until the client reconnects. m must not be nil.
+func (m *Memo) Project(compute func() string) string {
+	m.projectOnce.Do(func() { m.project = compute() })
+	return m.project
 }
 
 // Program names chain's client program for the TLS bridge's per-program rules: the
