@@ -461,6 +461,10 @@ type SessionEvent struct {
 	// session. The fold records a span for it too, so the worker's own pending bucket links.
 	ClientProc string
 
+	// Project is the project label (project.Label of the git repo root of the agent process's
+	// cwd), "" where the listener could not name the process or the row came on the trusted path.
+	Project string
+
 	// SessionHeader is the session-id header that named this row's session, "" when the
 	// session was not named by the request (process, affinity, ActiveSession). Recorded so
 	// the fold can tell which processes NAMED a session from those merely filed into it,
@@ -703,6 +707,7 @@ type sessionEventWire struct {
 	// every event recorded before the field existed.
 	Proc          string `json:"proc,omitempty"`
 	ClientProc    string `json:"clientProc,omitempty"`
+	Project       string `json:"project,omitempty"`
 	SessionHeader string `json:"sessionHeader,omitempty"`
 	// omitempty: absent on every row the egress guard did not dial for — it is
 	// off by default, so the common row costs nothing — and the same skew
@@ -744,6 +749,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		SubagentKind:    e.SubagentKind,
 		Proc:            e.Proc,
 		ClientProc:      e.ClientProc,
+		Project:         e.Project,
 		SessionHeader:   e.SessionHeader,
 		DialAddr:        e.DialAddr,
 	})
@@ -790,6 +796,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		SubagentKind:    w.SubagentKind,
 		Proc:            w.Proc,
 		ClientProc:      w.ClientProc,
+		Project:         w.Project,
 		SessionHeader:   w.SessionHeader,
 		DialAddr:        w.DialAddr,
 	}
