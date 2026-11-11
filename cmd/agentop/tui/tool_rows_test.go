@@ -288,3 +288,34 @@ func TestIndexTools_BgJobOfAClampedCallFromBuild(t *testing.T) {
 		t.Errorf("clamped End from Build: trailing = %q, want a bg part", got)
 	}
 }
+
+// A reused ID (call_0) gives the subagent's run span only to the first Agent call of its
+// parent, not to every tool with that ID.
+func TestIndexTools_RunOnlyOnTheSpawningCall(t *testing.T) {
+	sub := tlTool(5, "call_0", "Read", 11, 12)
+	sub.Agent = "sub"
+	tl := &timeline.Timeline{
+		Tools: []timeline.Tool{
+			tlTool(2, "call_0", "Bash", 1, 2),
+			tlTool(3, "call_0", "Agent", 8, 9.7),
+			sub,
+			tlTool(7, "call_0", "Agent", 20, 21),
+		},
+		Agents: []timeline.Agent{{ID: "main"}, {ID: "sub", Parent: "main", SpawnTool: "call_0", SpawnedAt: tlPtr(10), ReturnedAt: tlPtr(14)}},
+	}
+	idx := indexTools(tl)
+	for seq, want := range map[uint64]bool{2: false, 3: true, 5: false, 7: false} {
+		if got := idx[seq][0].RunFrom != nil; got != want {
+			t.Errorf("seq %d (%s): has run = %v, want %v", seq, idx[seq][0].Name, got, want)
+		}
+	}
+}
+
+// Two calls with no ID in one response: the pin finds the second, not the first.
+func TestPinKey_TwoToolsWithNoIDInOneResponse(t *testing.T) {
+	idx := indexTools(&timeline.Timeline{Tools: []timeline.Tool{tlTool(4, "", "Bash", 1, 2), tlTool(4, "", "Bash", 1, 3)}})
+	rows := []eventRow{{tool: &idx[4][0]}, {tool: &idx[4][1]}}
+	if got := findByKey(rows, pinKeyOf(rows[1])); got != 1 {
+		t.Errorf("findByKey = %d, want 1", got)
+	}
+}

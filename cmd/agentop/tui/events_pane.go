@@ -29,10 +29,11 @@ type eventKey struct {
 	requestID string
 	// isTool, tool, toolAgent and toolSeq pin a tool row: its tool ID, agent and response seq.
 	// The seq tells apart two calls with one ID: some local models send call_0 on every turn,
-	// and some send no ID.
+	// and some send no ID. toolPos tells apart two calls with no ID in one response.
 	isTool          bool
 	tool, toolAgent string
 	toolSeq         uint64
+	toolPos         int
 }
 
 func keyOf(e *pipeline.SessionEvent) eventKey {
@@ -45,7 +46,7 @@ func keyOf(e *pipeline.SessionEvent) eventKey {
 // pinKeyOf is the pin key of row er: its tool for a tool row, else its event.
 func pinKeyOf(er eventRow) eventKey {
 	if er.tool != nil {
-		return eventKey{isTool: true, tool: er.tool.ID, toolAgent: er.tool.Agent, toolSeq: er.tool.Seq}
+		return eventKey{isTool: true, tool: er.tool.ID, toolAgent: er.tool.Agent, toolSeq: er.tool.Seq, toolPos: er.tool.Pos}
 	}
 	return keyOf(er.event)
 }
@@ -61,7 +62,8 @@ func (m *model) selectedPinKey() eventKey {
 func findByKey(rows []eventRow, k eventKey) int {
 	if k.isTool {
 		return slices.IndexFunc(rows, func(r eventRow) bool {
-			return r.tool != nil && r.tool.ID == k.tool && r.tool.Agent == k.toolAgent && r.tool.Seq == k.toolSeq
+			return r.tool != nil && r.tool.ID == k.tool && r.tool.Agent == k.toolAgent && r.tool.Seq == k.toolSeq &&
+				r.tool.Pos == k.toolPos
 		})
 	}
 	return slices.IndexFunc(rows, func(r eventRow) bool {
@@ -544,6 +546,11 @@ func (m *model) rebuildEventsTable() {
 	// operator actually wants followed.
 	case wasAtEnd && m.sortCol == "":
 		target = len(rows) - 1
+		// Move a tool pin to the new last row: a pin left on an older tool row pulls the cursor
+		// back to it when a later timeline lands, and ends tail-follow.
+		if m.selectedEventKey.isTool {
+			m.selectedEventKey = pinKeyOf(m.selectedRowOn(target))
+		}
 	case m.selectedEventKey != (eventKey{}):
 		if idx := findByKey(m.visibleRows, m.selectedEventKey); idx >= 0 {
 			target = idx

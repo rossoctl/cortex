@@ -144,7 +144,7 @@ func TestToolRows_RunAndBg(t *testing.T) {
 			trTool(2, "spawn", "Agent", 12, 13, "explore"),
 			trTool(2, "bash", "Bash", 12, 14, "go test"),
 		},
-		Agents: []timeline.Agent{{ID: "a1", SpawnTool: "spawn", SpawnedAt: tlPtr(12), ReturnedAt: tlPtr(60)}},
+		Agents: []timeline.Agent{{ID: "a1", Parent: timeline.MainAgent, SpawnTool: "spawn", SpawnedAt: tlPtr(12), ReturnedAt: tlPtr(60)}},
 		Jobs:   []timeline.Job{{Agent: timeline.MainAgent, Start: tlAt(14), End: tlPtr(20)}},
 	})
 	if _, row := toolRowAt(t, m, "spawn"); !strings.HasPrefix(trailingOf(row), "run ") {
@@ -452,5 +452,23 @@ func TestToolRows_PinStopsWaitingOnAFailedFetch(t *testing.T) {
 	m.rebuildEventsTable()
 	if m.selectedEventKey != (eventKey{}) {
 		t.Errorf("after a failed fetch the tool pin still waits: %v", m.selectedEventKey)
+	}
+}
+
+// Tail-follow on a tool row survives a look at another session: while the timeline loads
+// again, the cursor follows the end, and it stays at the end when the timeline lands.
+func TestToolRows_TailFollowWhileTheTimelineLoadsAgain(t *testing.T) {
+	m := toolRowsModel(t, trExchange(1, 10, ""), &timeline.Timeline{Tools: []timeline.Tool{trTool(2, "t1", "Bash", 12, 13, "")}})
+	setCursorVisible(&m.eventsTbl, len(m.eventsTbl.Rows())-1)
+	m.selectedEventKey = m.selectedPinKey()
+	m.timeline.tl, m.timeline.tools = nil, nil // a T look at another session dropped it
+	m.rebuildEventsTable()
+	m.events[m.selectedSess] = append(m.events[m.selectedSess], trExchange(2, 20, "")...)
+	m.rebuildEventsTable()
+	tl := &timeline.Timeline{Tools: []timeline.Tool{trTool(2, "t1", "Bash", 12, 13, ""), trTool(4, "t2", "Bash", 22, 23, "")}}
+	m.timeline.tl, m.timeline.tools = tl, indexTools(tl)
+	m.rebuildEventsTable()
+	if c, n := m.eventsTbl.Cursor(), len(m.eventsTbl.Rows()); c != n-1 {
+		t.Errorf("cursor %d, want the last row %d", c, n-1)
 	}
 }

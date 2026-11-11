@@ -18,6 +18,7 @@ type toolRow struct {
 	EndsRun  bool       // Lost and Name is StructuredOutput or SubagentHandback
 	RunFrom  *time.Time // SpawnedAt of the agent whose SpawnTool is this tool's ID
 	RunTo    *time.Time // its ReturnedAt; nil while the subagent runs
+	Pos      int        // position among the tools of its response; tells apart two calls with no ID
 	BgFrom   *time.Time // Start of this Bash tool's job (fact 4)
 	BgTo     *time.Time // the job's End; nil while it runs
 }
@@ -82,8 +83,9 @@ func indexTools(tl *timeline.Timeline) map[uint64][]toolRow {
 	}
 
 	idx := make(map[uint64][]toolRow)
+	ran := map[string]bool{} // a reused ID (call_0) gives the span to the first spawning call only
 	for i, t := range tl.Tools {
-		r := toolRow{Tool: t, EndsRun: t.Lost && endsRunTools[t.Name]}
+		r := toolRow{Tool: t, EndsRun: t.Lost && endsRunTools[t.Name], Pos: len(idx[t.Seq])}
 		if t.End != nil {
 			r.Parallel = ends[endKey{t.Seq, t.End.UnixNano()}] > 1
 			if t.Name == "Bash" {
@@ -96,7 +98,9 @@ func indexTools(tl *timeline.Timeline) map[uint64][]toolRow {
 				}
 			}
 		}
-		if a, ok := spawned[t.ID]; ok && a.SpawnedAt != nil {
+		if a, ok := spawned[t.ID]; ok && a.SpawnedAt != nil && a.Parent == t.Agent &&
+			(t.Name == "Agent" || t.Name == "Task") && !ran[t.ID] {
+			ran[t.ID] = true
 			r.RunFrom, r.RunTo = a.SpawnedAt, a.ReturnedAt
 		}
 		idx[t.Seq] = append(idx[t.Seq], r)
