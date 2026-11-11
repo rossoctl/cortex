@@ -17,6 +17,7 @@ including the PR title format and the Go checks that CI gates on, are in the roo
 | `release-binaries.yaml` | Tag push (`v*`), manual; push to main publishes the main-latest channel when `MAIN_CHANNEL_ENABLED` is set | Release tarballs — see [Release binaries](#release-binaries) |
 | `pr-verifier.yml` | PR | PR title check |
 | `spellcheck_action.yml` | PR | Spellcheck on markdown files — **disabled** (`if: false`) |
+| `site-dispatch.yaml` | Push to main on `scripts/install.sh`, manual | Sends `docs-updated` to `rossoctl/.github`, so the site's `/cortex/install.sh` copy updates in minutes, not at its daily schedule. Needs the `SITE_DISPATCH_TOKEN` secret; without it, a warning only |
 
 Also: `release-smoke-linux.yaml`, `dependabot-tidy.yml`, `install-stats.yaml`, `project.yml`, `self-assign.yml`, `stale.yaml`.
 
