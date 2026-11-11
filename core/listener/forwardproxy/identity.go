@@ -74,12 +74,17 @@ func (s *Server) trustedSessionOf(r *http.Request) string {
 // row from being stamped with the host process that merely happens to own the
 // control socket — the same reasoning hydrateSession's trusted branch gives, applied
 // to the paths that never get there (#1569 review).
-func (s *Server) attributeForRecording(pctx *pipeline.Context, trusted string, clientHeaders http.Header, chain []attribution.Proc) string {
+func (s *Server) attributeForRecording(pctx *pipeline.Context, trusted string, clientHeaders http.Header, chain []attribution.Proc, m *attribution.Memo) string {
 	var at attribution.Attribution
 	if trusted == "" {
 		at = s.attribute(clientHeaders, chain)
 	}
 	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
+	if trusted == "" {
+		pctx.SetProject(s.projectFor(m, chain, at))
+	} else {
+		pctx.SetProject("") // a VM's request ran as no host process
+	}
 	return at.RecordSession(trusted, s.activeSession)
 }
 
@@ -155,7 +160,7 @@ func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, cha
 // With the client's process known (chain non-nil), a header claims the session for that
 // process as well as for its agent, and a request with no header is filed by process first;
 // client affinity and ActiveSession() answer only what it leaves open. See core/attribution.
-func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHeaders http.Header, chain []attribution.Proc) string {
+func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHeaders http.Header, chain []attribution.Proc, m *attribution.Memo) string {
 	// The listener's own answer first, and it ends the search: a session
 	// resolved from how the connection arrived is not something the client has
 	// any say in, and letting a header or a process chain override it would
@@ -176,6 +181,11 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHe
 		at = s.attribute(clientHeaders, chain)
 	}
 	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
+	if trusted == "" {
+		pctx.SetProject(s.projectFor(m, chain, at))
+	} else {
+		pctx.SetProject("") // a VM's request ran as no host process
+	}
 	sid, source := at.PluginSession(trusted, s.activeSession)
 	if sid != "" {
 		var facts pipeline.SessionFacts
@@ -195,6 +205,25 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHe
 		}
 	}
 	return sid
+}
+
+// projectFor is the project label of the request's agent process: the chain entry whose
+// Key is at.Proc, else the client itself. "" when process attribution or ProjectOf is off.
+//
+// The label is memoised on the connection: a keep-alive connection whose later request
+// has a different at.Proc keeps the first request's label until the client reconnects.
+func (s *Server) projectFor(m *attribution.Memo, chain []attribution.Proc, at attribution.Attribution) string {
+	if s.ProjectOf == nil || !s.processesOn() || m == nil || len(chain) == 0 {
+		return ""
+	}
+	pid := chain[0].PID
+	for _, p := range chain {
+		if at.Proc != "" && p.Key() == at.Proc {
+			pid = p.PID
+			break
+		}
+	}
+	return m.Project(func() string { return s.ProjectOf(pid) })
 }
 
 // activeSession is the store's ActiveSession(), "" without a store.

@@ -47,7 +47,7 @@ func (s *Server) recordUnbufferedRequest(tl *tunnelLog, pctx *pipeline.Context, 
 	if s.Sessions == nil {
 		return
 	}
-	sid := s.attributeForRecording(pctx, s.trustedSessionOf(r), r.Header, chain)
+	sid := s.attributeForRecording(pctx, s.trustedSessionOf(r), r.Header, chain, connProcOf(r.Context()))
 	pctx.OutboundSessionID = sid
 	if chain != nil {
 		defer s.touch(sid, chain)

@@ -141,7 +141,7 @@ func (s *Server) refuseMisdirected(w http.ResponseWriter, r *http.Request, pctx 
 	}
 	pctx.Host = r.URL.Host
 	chain := s.clientChain(r)
-	sid := s.attributeForRecording(pctx, s.trustedSessionOf(r), r.Header, chain)
+	sid := s.attributeForRecording(pctx, s.trustedSessionOf(r), r.Header, chain, connProcOf(r.Context()))
 	pctx.OutboundSessionID = sid
 	if chain != nil {
 		defer s.touch(sid, chain)
@@ -311,7 +311,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Same widening as the request path: the trusted answer needs no store,
 		// and a VM's tunnel must carry its identity even with the store off.
 		if s.Sessions != nil || trusted != "" {
-			sessionID = s.hydrateSession(pctx, trusted, r.Header, chain)
+			sessionID = s.hydrateSession(pctx, trusted, r.Header, chain, connProcOf(r.Context()))
 		}
 
 		// Run the outbound pipeline. Plugins that policy on host/identity
