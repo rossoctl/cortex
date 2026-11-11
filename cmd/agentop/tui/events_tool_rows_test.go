@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session/timeline"
 )
@@ -260,18 +258,6 @@ func TestToolRows_SearchFindsHiddenText(t *testing.T) {
 		if !slices.Contains(m.eventsTbl.Matches(), i) {
 			t.Errorf("query %q: matches = %v, want row %d", q, m.eventsTbl.Matches(), i)
 		}
-	}
-}
-
-func TestToolRows_EnterDoesNothing(t *testing.T) {
-	m := toolRowsModel(t, trExchange(1, 10, ""), &timeline.Timeline{Tools: []timeline.Tool{trTool(2, "t1", "Bash", 12, 13, "")}})
-	i, _ := toolRowAt(t, m, "t1")
-	setCursorVisible(&m.eventsTbl, i)
-	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
-		t.Errorf("Enter on a tool row returned a cmd")
-	}
-	if m.pane != paneEvents || m.selectedEvent() != nil {
-		t.Errorf("pane %v, selected event %v", m.pane, m.selectedEvent())
 	}
 }
 

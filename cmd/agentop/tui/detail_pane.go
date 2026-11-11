@@ -253,12 +253,15 @@ func (m *model) detailHalf() *pipeline.SessionEvent {
 // shownNum is the # cell of the events row under the cursor, so the fixed line quotes the
 // number the reader just saw — a subagent block's own number inside a block. "" when # is
 // not shown.
-func (m *model) shownNum() string {
+func (m *model) shownNum() string { return m.numAt(m.eventsTbl.Cursor()) }
+
+// numAt is the # cell of events table row i. "" when # is not shown or i is out of range.
+func (m *model) numAt(i int) string {
 	cols, _ := layoutColumns(m.eventColumns, m.eventColWidths, m.width)
-	rows, cur := m.eventsTbl.Rows(), m.eventsTbl.Cursor()
-	for i, c := range cols {
-		if c.id == colIndex && cur >= 0 && cur < len(rows) && i < len(rows[cur]) {
-			return strings.TrimSpace(rows[cur][i])
+	rows := m.eventsTbl.Rows()
+	for c, col := range cols {
+		if col.id == colIndex && i >= 0 && i < len(rows) && c < len(rows[i]) {
+			return strings.TrimSpace(rows[i][c])
 		}
 	}
 	return ""

@@ -752,9 +752,18 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				return nil
 			}
 			er, ok := m.selectedEventRow()
-			if !ok || er.tool != nil {
-				return nil // a tool row opens nothing (#1776)
+			if !ok {
+				return nil
 			}
+			num := m.shownNum()
+			// A tool row opens the exchange that holds its call and its output (#1795).
+			inRequest := false
+			if er.tool != nil {
+				if er, num, inRequest, ok = m.toolTarget(er.tool); !ok {
+					return nil
+				}
+			}
+			_ = inRequest // Task 2 aims the detail cursor with it
 			// Render from the summary immediately, then fill the message bodies in
 			// when they arrive — the timeline no longer carries them. See
 			// fetchDetailEventCmd for why this is not a blocking spinner.
@@ -767,7 +776,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if er.resp != nil {
 				er.respRaw, _ = m.heldRaw(er.resp)
 			}
-			m.detailNum = m.shownNum()
+			m.detailNum = num
 			m.showDetail(er, true)
 			m.pane = paneDetail
 			if cmd := m.fetchDetailHalves(er); cmd != nil {
