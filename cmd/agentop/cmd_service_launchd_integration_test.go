@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -190,12 +191,19 @@ func TestServiceLifecycle_RealLaunchd(t *testing.T) {
 	if err := os.Mkdir(p.home, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// Only what this test installed. Its plist and processes name its own config, a
+	// temp path nothing else uses. A Cortex someone installed while it ran names
+	// theirs, so the cleanup leaves it alone; and the binary path is no filter, since
+	// AGENTOP_TEST_CORTEX may name the installed one.
 	t.Cleanup(func() {
+		if b, err := os.ReadFile(realPlist); err == nil && !strings.Contains(string(b), cfg) {
+			return
+		}
 		_ = exec.Command("launchctl", "bootout", target).Run()
 		waitBootedOut(target, 20*time.Second)
 		_ = exec.Command("launchctl", "enable", target).Run()
 		_ = os.Remove(realPlist)
-		_ = exec.Command("pkill", "-f", bin).Run()
+		_ = exec.Command("pkill", "-f", regexp.QuoteMeta(cfg)).Run()
 	})
 
 	run := func(name string, f func(stdout, stderr io.Writer) int) (int, string) {
@@ -265,23 +273,26 @@ func TestServiceLifecycle_RealLaunchd(t *testing.T) {
 	expect("status after the supervisor restarted the proxy", code, out, 0, "Cortex is healthy according to")
 
 	// stop: bootout, plus disable so the next login does not start it again, and no
-	// process left holding the ports for the next start to lose to.
+	// process left holding the ports for the next start to lose to. Each is polled:
+	// `launchctl bootout` returns before teardown finishes (see waitBootedOut), and
+	// the supervisor takes up to superviseStopGrace to stop the proxy, so a correct
+	// stop can still be finishing when the command returns.
 	code, out = control("stop")
 	expect("stop", code, out, 0, "stopped, and it will stay stopped across logins")
-	if exec.Command("launchctl", "print", target).Run() == nil {
-		t.Error("after stop launchd still has the job loaded")
+	if !waitBootedOut(target, serviceBootoutTimeout) {
+		t.Errorf("launchd still had the job loaded %s after stop", serviceBootoutTimeout)
 	}
 	if !launchdDisabled(target) {
 		t.Error("after stop the label is not disabled, so the next login would start Cortex again")
 	}
 	for _, pid := range []int{sup, newProxy} {
-		if syscall.Kill(pid, 0) == nil {
-			t.Errorf("after stop process %d is still running", pid)
+		if !waitUntil(10*time.Second, func() bool { return syscall.Kill(pid, 0) != nil }) {
+			t.Errorf("process %d was still running 10s after stop", pid)
 		}
 	}
 	for _, addr := range []string{forward, health} {
-		if !portFree(addr) {
-			t.Errorf("after stop something still holds %s", addr)
+		if !waitUntil(10*time.Second, func() bool { return portFree(addr) }) {
+			t.Errorf("something still held %s 10s after stop", addr)
 		}
 	}
 	// Not the wording: on macOS a deliberate stop and a crash still read alike
@@ -314,8 +325,8 @@ func TestServiceLifecycle_RealLaunchd(t *testing.T) {
 	if _, err := os.Stat(realPlist); err == nil {
 		t.Errorf("uninstall left %s", realPlist)
 	}
-	if exec.Command("launchctl", "print", target).Run() == nil {
-		t.Error("after uninstall launchd still has the job loaded")
+	if !waitBootedOut(target, serviceBootoutTimeout) {
+		t.Errorf("launchd still had the job loaded %s after uninstall", serviceBootoutTimeout)
 	}
 	code, out = status()
 	expect("status after uninstall", code, out, 0, "not installed")
