@@ -166,12 +166,12 @@ func TestEventsTimeline_EscOnCachedOnlySessionFetchesNothing(t *testing.T) {
 	m.sessionsData = map[string]SessionMetadata{}
 	openSession(t, m, "gone")
 	m.pane, m.usage.returnPane = paneUsage, paneEvents
-	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); m.pane != paneEvents || cmd != nil || m.timeline.loading {
-		t.Errorf("Esc from Usage: pane %v cmd %v loading %v", m.pane, cmd, m.timeline.loading)
+	if m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); m.pane != paneEvents || m.timeline.loading {
+		t.Errorf("Esc from Usage: pane %v loading %v", m.pane, m.timeline.loading)
 	}
 	m.pane, m.previousPane = paneAgents, paneEvents
-	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); m.pane != paneEvents || cmd != nil || m.timeline.loading {
-		t.Errorf("Esc from Agents: pane %v cmd %v loading %v", m.pane, cmd, m.timeline.loading)
+	if m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); m.pane != paneEvents || m.timeline.loading {
+		t.Errorf("Esc from Agents: pane %v loading %v", m.pane, m.timeline.loading)
 	}
 }
 
@@ -184,17 +184,17 @@ func TestEventsTimeline_TimelineOfCachedOnlySessionFetchesNothing(t *testing.T) 
 	m.sessions = m.sessions[:1]
 	m.sessionsData = map[string]SessionMetadata{}
 	openSession(t, m, "gone")
-	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("T")}); m.pane != paneTimeline || cmd != nil || m.timeline.loading {
-		t.Fatalf("T: pane %v cmd %v loading %v", m.pane, cmd, m.timeline.loading)
+	if m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("T")}); m.pane != paneTimeline || m.timeline.loading {
+		t.Fatalf("T: pane %v loading %v", m.pane, m.timeline.loading)
 	}
 	if out := stripANSI(m.renderTimeline()); !strings.Contains(out, "no longer has this session") {
 		t.Errorf("the Timeline pane does not say why it is empty:\n%s", out)
 	}
-	if cmd := m.handleTimelineTick(timelineTickMsg{gen: m.timeline.tickGen}); cmd != nil {
-		t.Errorf("a tick on the Timeline pane of a cached-only session scheduled another")
+	if m.handleTimelineTick(timelineTickMsg{gen: m.timeline.tickGen}); m.timeline.loading {
+		t.Errorf("a tick on the Timeline pane of a cached-only session fetched")
 	}
-	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); m.pane != paneEvents || cmd != nil || m.timeline.loading {
-		t.Errorf("Esc from the Timeline: pane %v cmd %v loading %v", m.pane, cmd, m.timeline.loading)
+	if m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); m.pane != paneEvents || m.timeline.loading {
+		t.Errorf("Esc from the Timeline: pane %v loading %v", m.pane, m.timeline.loading)
 	}
 }
 
@@ -215,5 +215,61 @@ func TestEventsTimeline_CachedOnlyDropsInFlightReply(t *testing.T) {
 	m.timeline.stale = true
 	if cmd := m.handleTimelineTick(timelineTickMsg{gen: oldGen}); cmd != nil {
 		t.Errorf("the tick chain of a kept running on the cached-only session")
+	}
+}
+
+// A session list that omits the open session for one refresh (#870) must not end the tick
+// chain: when the list holds the session again, a stream event still gets a fetch.
+func TestEventsTimeline_ChainSurvivesAListBlip(t *testing.T) {
+	for _, pane := range []paneID{paneTimeline, paneEvents} {
+		m := eventsTimelineModel(t)
+		openSession(t, m, "a")
+		if pane == paneTimeline {
+			m.openTimeline("a")
+		}
+		m.timeline.loading = false
+		m.Update(sessionsLoadedMsg{})
+		cmd := m.handleTimelineTick(timelineTickMsg{gen: m.timeline.tickGen})
+		if cmd == nil {
+			t.Fatalf("pane %v: a tick during the blip scheduled no next tick", pane)
+		}
+		if m.timeline.loading {
+			t.Errorf("pane %v: a tick fetched a session the proxy does not list", pane)
+		}
+		m.Update(sessionsLoadedMsg{{ID: "a", UpdatedAt: tlAt(2)}})
+		m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{SessionID: "a", At: tlAt(3)}})
+		m.handleTimelineTick(timelineTickMsg{gen: m.timeline.tickGen})
+		if !m.timeline.loading {
+			t.Errorf("pane %v: after the blip, a stream event got no fetch", pane)
+		}
+	}
+}
+
+// A proxy with no timeline endpoint: a stream event does not refetch on every tick.
+func TestEventsTimeline_UnsupportedStopsStaleFetch(t *testing.T) {
+	m := eventsTimelineModel(t)
+	openSession(t, m, "a")
+	m.handleTimelineLoaded(timelineLoadedMsg{req: m.timeline.reqSeq, err: apiclient.ErrNotFound})
+	m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{SessionID: "a", At: tlAt(3)}})
+	if cmd := m.handleTimelineTick(timelineTickMsg{gen: m.timeline.tickGen}); cmd == nil || m.timeline.loading {
+		t.Errorf("unsupported endpoint: tick cmd %v loading %v, want the chain without a fetch", cmd, m.timeline.loading)
+	}
+}
+
+// Esc back to the events pane while the list omits the session (#870) starts the chain, so a
+// stream event fetches once the list holds the session again.
+func TestEventsTimeline_EscDuringAListBlipStartsTheChain(t *testing.T) {
+	m := eventsTimelineModel(t)
+	openSession(t, m, "a")
+	m.Update(sessionsLoadedMsg{})
+	m.pane, m.usage.returnPane = paneUsage, paneEvents
+	m.timeline.loading = false
+	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); cmd == nil || m.timeline.loading {
+		t.Fatalf("Esc during the blip: cmd %v loading %v, want the chain without a fetch", cmd, m.timeline.loading)
+	}
+	m.Update(sessionsLoadedMsg{{ID: "a", UpdatedAt: tlAt(2)}})
+	m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{SessionID: "a", At: tlAt(3)}})
+	if m.handleTimelineTick(timelineTickMsg{gen: m.timeline.tickGen}); !m.timeline.loading {
+		t.Errorf("after the blip, a stream event got no fetch")
 	}
 }

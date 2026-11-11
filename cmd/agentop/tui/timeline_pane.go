@@ -164,20 +164,22 @@ func (m *model) followEventsTimeline() tea.Cmd {
 func (m *model) timelineChainLive() bool {
 	switch m.pane {
 	case paneTimeline:
-		return m.sessionServed(m.timeline.session)
+		return true
 	case paneEvents, paneDetail:
-		return m.selectedSess != "" && m.timeline.session == m.selectedSess && m.sessionServed(m.selectedSess)
+		return m.selectedSess != "" && m.timeline.session == m.selectedSess
 	}
 	return false
 }
 
-// resumeTimeline starts one refresh chain and fetches now.
+// resumeTimeline starts one refresh chain and fetches now if the proxy lists the session.
 func (m *model) resumeTimeline() tea.Cmd {
-	if !m.sessionServed(m.timeline.session) {
-		return nil // cached-only: the proxy has no timeline for it, so a fetch only 404s
-	}
 	m.timeline.tickGen++
-	return tea.Batch(m.fetchTimeline(), timelineTick(m.timeline.tickGen))
+	var fetch tea.Cmd
+	// cached-only: the proxy has no timeline for it, so a fetch only 404s
+	if m.sessionServed(m.timeline.session) {
+		fetch = m.fetchTimeline()
+	}
+	return tea.Batch(fetch, timelineTick(m.timeline.tickGen))
 }
 
 func timelineTick(gen uint64) tea.Cmd {
@@ -248,8 +250,11 @@ func (m *model) handleTimelineTick(msg timelineTickMsg) tea.Cmd {
 	idle := !t.fetchedAt.IsZero() && now.Sub(t.fetchedAt) >= timelineIdleRefresh && m.timelineLive()
 	// A failed fetch is retried on its backoff, and holds back the other triggers until then: a
 	// stream event or a live session's idle refresh would otherwise retry a dead proxy every tick.
-	retry := t.err != nil && !errors.Is(t.err, errTimelineUnsupported)
-	if waiting := !t.retryAt.IsZero() && now.Before(t.retryAt); (t.stale || idle || retry) && !waiting && !t.loading {
+	unsupported := errors.Is(t.err, errTimelineUnsupported)
+	retry := t.err != nil && !unsupported
+	// The chain outlives a list refresh that omits the session (#870); only the fetch waits.
+	served := m.sessionServed(t.session)
+	if waiting := !t.retryAt.IsZero() && now.Before(t.retryAt); (t.stale || idle || retry) && served && !unsupported && !waiting && !t.loading {
 		fetch = m.fetchTimeline()
 	}
 	return tea.Batch(fetch, timelineTick(msg.gen))

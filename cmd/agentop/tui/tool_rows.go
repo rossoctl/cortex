@@ -22,12 +22,10 @@ type toolRow struct {
 	BgTo     *time.Time // the job's End; nil while it runs
 }
 
-// jobKey finds a Bash tool's job: its agent, tool ID and start, which is the tool's end. The
-// start tells apart two calls with one reused ID (call_0). An older proxy sends no ToolUseID,
-// so tool is empty there, and two calls whose results share one request share that time.
+// jobKey finds a Bash tool's job from an older proxy, which sends no ToolUseID: its agent and
+// start, which is the tool's end. Two calls whose results share one request share that time.
 type jobKey struct {
 	agent string
-	tool  string
 	start int64
 }
 
@@ -43,11 +41,33 @@ func indexTools(tl *timeline.Timeline) map[uint64][]toolRow {
 			spawned[a.SpawnTool] = a
 		}
 	}
-	jobs := make(map[jobKey]timeline.Job, len(tl.Jobs))
+	// Build ends a call at the request carrying its first result, clamped up to the call's
+	// Start, and starts the job at that request. So a job's call has End = max(job Start, Start).
+	// Build keeps only the first result of an ID, so with a reused ID (call_0) the first such
+	// call owns the job. The request can arrive before the asking response ends, so its Seq can
+	// be lower than the call's: Seq does not order them.
+	byTool := map[int]timeline.Job{}
+	legacy := map[jobKey]timeline.Job{}
 	for _, j := range tl.Jobs {
-		k := jobKey{j.Agent, j.ToolUseID, j.Start.UnixNano()}
-		if _, dup := jobs[k]; !dup {
-			jobs[k] = j
+		if j.ToolUseID == "" {
+			k := jobKey{j.Agent, j.Start.UnixNano()}
+			if _, dup := legacy[k]; !dup {
+				legacy[k] = j
+			}
+			continue
+		}
+		for i, t := range tl.Tools {
+			if t.Agent != j.Agent || t.ID != j.ToolUseID || t.Name != "Bash" || t.End == nil {
+				continue
+			}
+			end := j.Start
+			if end.Before(t.Start) {
+				end = t.Start
+			}
+			if _, dup := byTool[i]; t.End.Equal(end) && !dup {
+				byTool[i] = j
+				break
+			}
 		}
 	}
 	type endKey struct {
@@ -62,14 +82,14 @@ func indexTools(tl *timeline.Timeline) map[uint64][]toolRow {
 	}
 
 	idx := make(map[uint64][]toolRow)
-	for _, t := range tl.Tools {
+	for i, t := range tl.Tools {
 		r := toolRow{Tool: t, EndsRun: t.Lost && endsRunTools[t.Name]}
 		if t.End != nil {
 			r.Parallel = ends[endKey{t.Seq, t.End.UnixNano()}] > 1
 			if t.Name == "Bash" {
-				j, ok := jobs[jobKey{t.Agent, t.ID, t.End.UnixNano()}]
+				j, ok := byTool[i]
 				if !ok {
-					j, ok = jobs[jobKey{t.Agent, "", t.End.UnixNano()}]
+					j, ok = legacy[jobKey{t.Agent, t.End.UnixNano()}]
 				}
 				if ok {
 					r.BgFrom, r.BgTo = &j.Start, j.End

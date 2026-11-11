@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session/timeline"
 )
 
@@ -179,6 +180,29 @@ func TestIndexTools_BgJob(t *testing.T) {
 		t.Errorf("later call with the same ID: trailing = %q, want %q", got, want)
 	}
 
+	// Build clamped the tool's End up to its Start: the result request (seq 3, 4.9s) came
+	// before the asking response (seq 4) ended at 5s. The job still goes to the call.
+	tl = &timeline.Timeline{
+		Tools: []timeline.Tool{tlTool(4, "t1", "Bash", 5, 5)},
+		Jobs:  []timeline.Job{{Agent: "main", ID: "bk1", ToolUseID: "t1", Start: tlAt(4.9), End: tlPtr(10), Seq: 3}},
+	}
+	if got := onlyRow(t, tl, "t1").trailing(tlAt(300)); !strings.HasPrefix(got, "bg ") {
+		t.Errorf("clamped End: trailing = %q, want a bg part", got)
+	}
+
+	// A reused ID where only the later call starts a job: the earlier call gets none.
+	tl = &timeline.Timeline{
+		Tools: []timeline.Tool{tlTool(4, "call_0", "Bash", 19, 20), tlTool(9, "call_0", "Bash", 40, 50)},
+		Jobs:  []timeline.Job{{Agent: "main", ID: "j1", ToolUseID: "call_0", Start: tlAt(50), End: tlPtr(60), Seq: 10}},
+	}
+	idx = indexTools(tl)
+	if got, want := idx[4][0].trailing(tlAt(300)), "p-call_0"; got != want {
+		t.Errorf("earlier call, no job: trailing = %q, want %q", got, want)
+	}
+	if got := idx[9][0].trailing(tlAt(300)); !strings.HasPrefix(got, "bg 10.00s") {
+		t.Errorf("later call with the job: trailing = %q, want bg 10.00s", got)
+	}
+
 	// A job of another agent matches nothing.
 	tl = &timeline.Timeline{
 		Tools: []timeline.Tool{tlTool(4, "b1", "Bash", 19, 20), tlTool(4, "b2", "Bash", 19, 20)},
@@ -240,5 +264,27 @@ func TestPinKey_ToolRowWithAReusedID(t *testing.T) {
 	rows := []eventRow{{tool: &toolRow{Tool: a}}, {tool: &toolRow{Tool: b}}}
 	if got := findByKey(rows, pinKeyOf(rows[1])); got != 1 {
 		t.Errorf("findByKey = %d, want 1", got)
+	}
+}
+
+// The clamp case in append order: the result request (at 8) is appended before the
+// response that asked for the call (finished at 10), so it has the lower Seq.
+func TestIndexTools_BgJobOfAClampedCallFromBuild(t *testing.T) {
+	tools := []pipeline.InferenceTool{{Name: "Bash"}}
+	h := []pipeline.InferenceMessage{{Role: "user", Content: "go"}}
+	ev := []pipeline.SessionEvent{
+		{Seq: 1, At: tlAt(0), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, RequestID: "r1", Host: "llm",
+			Inference: &pipeline.InferenceExtension{AgentRole: pipeline.AgentRoleMain, Tools: tools, Messages: h}},
+		{Seq: 2, At: tlAt(8), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, RequestID: "r2", Host: "llm",
+			Inference: &pipeline.InferenceExtension{AgentRole: pipeline.AgentRoleMain, Tools: tools, Messages: h,
+				ToolResults: []pipeline.InferenceToolResult{{ToolUseID: "t1", Content: "Command running in background with ID: bk1"}}}},
+		{Seq: 3, At: tlAt(9), Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, RequestID: "r2", Host: "llm", StatusCode: 200, Duration: time.Second,
+			Inference: &pipeline.InferenceExtension{FinishReason: "end_turn"}},
+		{Seq: 4, At: tlAt(10), Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, RequestID: "r1", Host: "llm", StatusCode: 200, Duration: 10 * time.Second,
+			Inference: &pipeline.InferenceExtension{FinishReason: "tool_use", ToolCalls: []pipeline.InferenceToolCall{{ID: "t1", Name: "Bash"}}}},
+	}
+	tl := timeline.Build("s", ev, time.Time{})
+	if got := onlyRow(t, tl, "t1").trailing(tlAt(300)); !strings.HasPrefix(got, "bg ") {
+		t.Errorf("clamped End from Build: trailing = %q, want a bg part", got)
 	}
 }

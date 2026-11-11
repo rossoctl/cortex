@@ -855,7 +855,9 @@ func toolCells(cols []eventColumn, cc cellContext, tr eventRow, sorted bool, now
 		case colIndex:
 			switch {
 			case sorted:
-				v = "↳" + c.cell(cc)
+				if v = c.cell(cc); len(v) < c.width {
+					v = "↳" + v // the number wins when both do not fit
+				}
 			case tr.last:
 				v = "┗⚒"
 			default:

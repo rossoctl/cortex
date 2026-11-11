@@ -379,3 +379,24 @@ func TestToolRows_ControlRunesRemoved(t *testing.T) {
 		}
 	}
 }
+
+// Under a sort, a tool row of exchange 1000 or more shows its parent's number whole: the
+// # column is 4 wide, so ↳ gives way to the number.
+func TestToolRows_SortedParentNumberFits(t *testing.T) {
+	var events []pipeline.SessionEvent
+	for n := 1; n <= 1000; n++ {
+		events = append(events, trExchange(n, float64(n*3), "")...)
+	}
+	m := toolRowsModel(t, events, &timeline.Timeline{Tools: []timeline.Tool{
+		trTool(2000, "big", "Bash", 3002, 3003, ""),
+		trTool(1998, "small", "Bash", 2999, 3000, ""),
+	}})
+	m.sortCol, m.sortDesc = colDuration, true
+	m.rebuildEventsTable()
+	if _, row := toolRowAt(t, m, "big"); toolCell(m, row, colIndex) != "1000" {
+		t.Errorf("exchange 1000: # = %q, want 1000", toolCell(m, row, colIndex))
+	}
+	if _, row := toolRowAt(t, m, "small"); toolCell(m, row, colIndex) != "↳999" {
+		t.Errorf("exchange 999: # = %q, want ↳999", toolCell(m, row, colIndex))
+	}
+}
