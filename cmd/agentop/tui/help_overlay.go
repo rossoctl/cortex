@@ -330,7 +330,7 @@ var paneKeys = map[paneID]keyGroup{
 			{"/ then tab", "search each row's details: ↵, n and N find the next match"},
 			{"c", "column picker (checkboxes + descriptions)"},
 			{"c then s", "sort by a column: desc → asc → chronological"},
-			{"⚒ rows", "tool calls; for a tool: from the reply to the next request of the same agent"},
+			{"⚒ rows", "tool calls. DURATION, for a tool: from the reply to the next request of the same agent"},
 			{"↵ on ▲ row", "load the page before the oldest event shown"},
 			{"t", "back to the live tail (resumes updates)"},
 			{"esc / ← / h", "back to sessions"},

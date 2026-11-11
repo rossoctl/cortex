@@ -554,7 +554,7 @@ func TestHelpOverlayScrollKeys(t *testing.T) {
 // that no longer existed. Too small fails loudly; too large fails silently.
 const (
 	helpWideTerminal   = 100
-	helpNoScrollHeight = 120
+	helpNoScrollHeight = 121
 )
 
 // With everything visible there must be no scroll affordance — it would be noise
