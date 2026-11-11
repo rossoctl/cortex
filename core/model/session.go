@@ -64,6 +64,21 @@ func (p *SessionPhase) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// BobTaskIDHeader is the request header Bob sets on every chat request, naming the task
+// that made it. It is session.BobSessionHeader's value. It is here because both session
+// and pipeline read it, and session must not import pipeline (#1502). On a Bob child task
+// (a subagent or a subtask) it names the child, and pipeline.Context.Subagent reads it
+// when BobParentTaskIDHeader is also present (issue #1803, rule 2).
+const BobTaskIDHeader = "X-Task-Id"
+
+// BobParentTaskIDHeader is the request header Bob sets on a child task's requests. Every
+// child names the ROOT task, also a child that a subtask started, so the wire gives no
+// deeper tree. It is the only signal that a request is a child's.
+//
+// Client-asserted and unauthenticated: a grouping key, never a principal. NOT a session
+// id header: it must not be added to session.id_headers.
+const BobParentTaskIDHeader = "X-Parent-Task-Id"
+
 // The values of SessionEvent.SubagentKind, for a Bob child task.
 const (
 	SubagentKindSubagent = "subagent"

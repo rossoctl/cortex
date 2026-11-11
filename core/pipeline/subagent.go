@@ -1,6 +1,10 @@
 package pipeline
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/rossoctl/cortex/core/model"
+)
 
 // ClaudeCodeAgentIDHeader is the request header Claude Code sets on the requests of an
 // agent other than the main conversation, naming that agent. Verified on
@@ -40,19 +44,12 @@ const ClaudeCodeAgentIDHeader = "X-Claude-Code-Agent-Id"
 // Not a session id header either, for the reason ClaudeCodeAgentIDHeader gives.
 const ClaudeCodeParentAgentIDHeader = "X-Claude-Code-Parent-Agent-Id"
 
-// BobTaskIDHeader is the request header Bob sets on every chat request, naming the task
-// that made it. It is session.BobSessionHeader's value; it is here because session
-// imports pipeline. On a Bob child task (a subagent or a subtask) it names the child, and
-// Subagent reads it when BobParentTaskIDHeader is also present (issue #1803, rule 2).
-const BobTaskIDHeader = "X-Task-Id"
-
-// BobParentTaskIDHeader is the request header Bob sets on a child task's requests. Every
-// child names the ROOT task, also a child that a subtask started, so the wire gives no
-// deeper tree. It is the only signal that a request is a child's.
-//
-// Client-asserted and unauthenticated: a grouping key, never a principal. NOT a session
-// id header: it must not be added to session.id_headers.
-const BobParentTaskIDHeader = "X-Parent-Task-Id"
+// BobTaskIDHeader and BobParentTaskIDHeader are model's, aliased here: session reads
+// them too, and session must not import pipeline (#1502). See their doc in core/model.
+const (
+	BobTaskIDHeader       = model.BobTaskIDHeader
+	BobParentTaskIDHeader = model.BobParentTaskIDHeader
+)
 
 // Subagent returns the Claude Code subagent this request came from: the value of
 // X-Claude-Code-Agent-Id as the client sent it, or "" when there is none to record.
