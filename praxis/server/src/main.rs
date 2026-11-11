@@ -18,14 +18,21 @@ const EXIT_ON_STDIN_EOF: &str = "--exit-on-stdin-eof";
 /// upstream is always the Cortex egress listener over plain HTTP, so the
 /// connector needs no roots. Without it, Pingora reads the macOS trust store at
 /// startup, which fails on a loaded host, and Pingora panics.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 const NO_ROOTS: &str = "/dev/null";
+
+/// The `SSL_CERT_FILE` to set, given the env's value: `NO_ROOTS` when the env
+/// sets none, else nothing, so the env's file is kept.
+#[cfg(any(target_os = "macos", test))]
+fn ca_file_default(env: Option<std::ffi::OsString>) -> Option<&'static str> {
+    env.is_none().then_some(NO_ROOTS)
+}
 
 fn main() {
     #[cfg(target_os = "macos")]
-    if std::env::var_os("SSL_CERT_FILE").is_none() {
+    if let Some(file) = ca_file_default(std::env::var_os("SSL_CERT_FILE")) {
         // SAFETY: the first statement of main, so no other thread exists yet.
-        unsafe { std::env::set_var("SSL_CERT_FILE", NO_ROOTS) };
+        unsafe { std::env::set_var("SSL_CERT_FILE", file) };
     }
     // The supervisor reads this before each start. No config is loaded.
     if has_flag(std::env::args().skip(1), "--version") {
@@ -82,7 +89,7 @@ fn has_flag(mut args: impl Iterator<Item = String>, flag: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{EXIT_ON_STDIN_EOF, config_arg, has_flag, version_line};
+    use super::{EXIT_ON_STDIN_EOF, NO_ROOTS, ca_file_default, config_arg, has_flag, version_line};
 
     fn args(list: &[&str]) -> impl Iterator<Item = String> {
         list.iter()
@@ -114,6 +121,12 @@ mod tests {
             assert_eq!(config_arg(args(&list)).as_deref(), Some("a.yaml"));
         }
         assert!(!has_flag(args(&["-c", "a.yaml"]), EXIT_ON_STDIN_EOF));
+    }
+
+    #[test]
+    fn ca_file_default_fills_only_an_unset_env() {
+        assert_eq!(ca_file_default(None), Some(NO_ROOTS));
+        assert_eq!(ca_file_default(Some("/etc/ca.pem".into())), None);
     }
     #[test]
     fn version_line_names_the_binary() {
