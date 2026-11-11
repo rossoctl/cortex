@@ -156,6 +156,25 @@ func TestEventsTimeline_CachedOnlySessionFetchesNothing(t *testing.T) {
 	}
 }
 
+// Esc back to the events pane of a cached-only session must not fetch: the 404 would retry on
+// its backoff for as long as the pane is open.
+func TestEventsTimeline_EscOnCachedOnlySessionFetchesNothing(t *testing.T) {
+	m := eventsTimelineModel(t)
+	openSession(t, m, "a")
+	m.events["gone"] = []pipeline.SessionEvent{{SessionID: "gone", At: tlAt(1)}}
+	m.sessions = m.sessions[:1]
+	m.sessionsData = map[string]SessionMetadata{}
+	openSession(t, m, "gone")
+	m.pane, m.usage.returnPane = paneUsage, paneEvents
+	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); m.pane != paneEvents || cmd != nil || m.timeline.loading {
+		t.Errorf("Esc from Usage: pane %v cmd %v loading %v", m.pane, cmd, m.timeline.loading)
+	}
+	m.pane, m.previousPane = paneAgents, paneEvents
+	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); m.pane != paneEvents || cmd != nil || m.timeline.loading {
+		t.Errorf("Esc from Agents: pane %v cmd %v loading %v", m.pane, cmd, m.timeline.loading)
+	}
+}
+
 // A timeline reply for the previous session, still in flight when a cached-only session opens,
 // must not land on the new session, and the previous tick chain must stop.
 func TestEventsTimeline_CachedOnlyDropsInFlightReply(t *testing.T) {

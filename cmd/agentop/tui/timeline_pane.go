@@ -156,6 +156,9 @@ func (m *model) followEventsTimeline() tea.Cmd {
 		return nil
 	}
 	m.setTimelineSession(m.selectedSess)
+	if !m.sessionServed(m.selectedSess) {
+		return nil // cached-only: the proxy has no timeline for it, so a fetch only 404s
+	}
 	return m.resumeTimeline()
 }
 
@@ -166,7 +169,7 @@ func (m *model) timelineChainLive() bool {
 	case paneTimeline:
 		return true
 	case paneEvents, paneDetail:
-		return m.selectedSess != "" && m.timeline.session == m.selectedSess
+		return m.selectedSess != "" && m.timeline.session == m.selectedSess && m.sessionServed(m.selectedSess)
 	}
 	return false
 }
