@@ -156,9 +156,6 @@ func (m *model) followEventsTimeline() tea.Cmd {
 		return nil
 	}
 	m.setTimelineSession(m.selectedSess)
-	if !m.sessionServed(m.selectedSess) {
-		return nil // cached-only: the proxy has no timeline for it, so a fetch only 404s
-	}
 	return m.resumeTimeline()
 }
 
@@ -167,7 +164,7 @@ func (m *model) followEventsTimeline() tea.Cmd {
 func (m *model) timelineChainLive() bool {
 	switch m.pane {
 	case paneTimeline:
-		return true
+		return m.sessionServed(m.timeline.session)
 	case paneEvents, paneDetail:
 		return m.selectedSess != "" && m.timeline.session == m.selectedSess && m.sessionServed(m.selectedSess)
 	}
@@ -176,6 +173,9 @@ func (m *model) timelineChainLive() bool {
 
 // resumeTimeline starts one refresh chain and fetches now.
 func (m *model) resumeTimeline() tea.Cmd {
+	if !m.sessionServed(m.timeline.session) {
+		return nil // cached-only: the proxy has no timeline for it, so a fetch only 404s
+	}
 	m.timeline.tickGen++
 	return tea.Batch(m.fetchTimeline(), timelineTick(m.timeline.tickGen))
 }
@@ -673,6 +673,9 @@ func (m *model) renderTimeline() string {
 			wait = fmt.Sprintf(" in %ds", int(left.Round(time.Second).Seconds()))
 		}
 		b.WriteString(styleMuted.Render("  loading… the last try failed, retrying"+wait+": "+t.err.Error()) + "\n")
+		return b.String()
+	case t.tl == nil && !m.sessionServed(t.session):
+		b.WriteString(styleMuted.Render("  The proxy no longer has this session, so it has no timeline.") + "\n")
 		return b.String()
 	case t.tl == nil:
 		b.WriteString(styleMuted.Render("  loading…") + "\n")

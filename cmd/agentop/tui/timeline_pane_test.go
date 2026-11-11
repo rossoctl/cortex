@@ -455,6 +455,7 @@ func TestTimelineKeys_EscReturnsAndArrowsStay(t *testing.T) {
 func TestTimelineOpen_FromEventsAndFromSessions(t *testing.T) {
 	m := fitModel(t, paneEvents, 120, 40, nil)
 	m.client = deadClient()
+	m.sessions = []session.SessionSummary{{ID: "sess-1"}}
 	m.handleKey(keyRune('T'))
 	if m.pane != paneTimeline || m.timeline.session != "sess-1" || m.timeline.returnPane != paneEvents || !m.timeline.loading {
 		t.Fatalf("T from events: pane %v session %q return %v loading %v", m.pane, m.timeline.session, m.timeline.returnPane, m.timeline.loading)
@@ -463,6 +464,7 @@ func TestTimelineOpen_FromEventsAndFromSessions(t *testing.T) {
 	m = fitModel(t, paneSessions, 120, 40, nil)
 	m.client = deadClient()
 	m.sessionRowIDs = []string{"row-a", "row-b"}
+	m.sessions = []session.SessionSummary{{ID: "row-a"}, {ID: "row-b"}}
 	m.sessionsTbl.SetRows([]table.Row{make(table.Row, len(m.sessionsTbl.Columns())), make(table.Row, len(m.sessionsTbl.Columns()))})
 	m.sessionsTbl.SetCursor(1)
 	m.handleKey(keyRune('T'))

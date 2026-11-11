@@ -175,6 +175,29 @@ func TestEventsTimeline_EscOnCachedOnlySessionFetchesNothing(t *testing.T) {
 	}
 }
 
+// The Timeline pane of a cached-only session fetches nothing and says why, and Esc from it
+// back to the events pane fetches nothing too.
+func TestEventsTimeline_TimelineOfCachedOnlySessionFetchesNothing(t *testing.T) {
+	m := eventsTimelineModel(t)
+	openSession(t, m, "a")
+	m.events["gone"] = []pipeline.SessionEvent{{SessionID: "gone", At: tlAt(1)}}
+	m.sessions = m.sessions[:1]
+	m.sessionsData = map[string]SessionMetadata{}
+	openSession(t, m, "gone")
+	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("T")}); m.pane != paneTimeline || cmd != nil || m.timeline.loading {
+		t.Fatalf("T: pane %v cmd %v loading %v", m.pane, cmd, m.timeline.loading)
+	}
+	if out := stripANSI(m.renderTimeline()); !strings.Contains(out, "no longer has this session") {
+		t.Errorf("the Timeline pane does not say why it is empty:\n%s", out)
+	}
+	if cmd := m.handleTimelineTick(timelineTickMsg{gen: m.timeline.tickGen}); cmd != nil {
+		t.Errorf("a tick on the Timeline pane of a cached-only session scheduled another")
+	}
+	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); m.pane != paneEvents || cmd != nil || m.timeline.loading {
+		t.Errorf("Esc from the Timeline: pane %v cmd %v loading %v", m.pane, cmd, m.timeline.loading)
+	}
+}
+
 // A timeline reply for the previous session, still in flight when a cached-only session opens,
 // must not land on the new session, and the previous tick chain must stop.
 func TestEventsTimeline_CachedOnlyDropsInFlightReply(t *testing.T) {
