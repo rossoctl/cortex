@@ -6,6 +6,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // ClaudeCodeSessionHeader is the request header the Claude Code CLI sets on
@@ -42,7 +44,14 @@ const ClaudeCodeSessionHeader = "X-Claude-Code-Session-Id"
 // Canonical HTTP casing is required here even though IDFromHeaders reads via
 // http.Header.Get, which canonicalizes: tests construct http.Header map literals
 // directly from these constants, and a raw map literal does not.
-const BobSessionHeader = "X-Task-Id"
+//
+// A CHILD TASK FILES IN ITS PARENT (#1803, rule 1). A Bob subagent or subtask
+// sends its own X-Task-Id and also model.BobParentTaskIDHeader, which names
+// the root task (every child names the root, not its direct parent). When this
+// header gave the id and the parent value is valid, IDHeaderFrom returns the
+// parent id. The parent header is never in session.id_headers: it is read only
+// beside this one.
+const BobSessionHeader = model.BobTaskIDHeader
 
 // SessionIDHeader is the generic request header OpenCode, Pi (pi.dev, through the extension
 // `agentop configure pi` installs; it does not send one by default) and similar
@@ -178,6 +187,15 @@ func IDHeaderFrom(h http.Header, names []string) (id, header string) {
 		// every control rune.
 		id = strings.ReplaceAll(id, "\n", "")
 		id = strings.ReplaceAll(id, "\r", "")
+		// Canonical form: a hand-written id_headers entry such as "x-task-id" names the same header.
+		if http.CanonicalHeaderKey(name) == BobSessionHeader {
+			// Rule 1 of #1803: a Bob child files in its root task's session.
+			if _, p := model.BobChildTask(h); p != "" {
+				p = strings.ReplaceAll(p, "\n", "")
+				p = strings.ReplaceAll(p, "\r", "")
+				id = p
+			}
+		}
 		return id, name
 	}
 	return "", ""

@@ -2,6 +2,7 @@ package forwardproxy
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -163,5 +164,89 @@ func TestRecordWebSocketClose_CarriesTheProcAndSubagent(t *testing.T) {
 	}
 	if ev.Duration <= 0 || ev.Duration >= time.Minute {
 		t.Errorf("Duration = %v, want the time since the 101, not since the handshake", ev.Duration)
+	}
+}
+
+// TestForwardProxy_BobChildFilesInRoot is the end-to-end guard for rules 1 and 2 of
+// #1803: a Bob child's rows file in its root's session and name the child, while a
+// child with an unusable parent id, or one that names itself, stays a root in its own
+// session.
+func TestForwardProxy_BobChildFilesInRoot(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	p, err := pipeline.New([]pipeline.Plugin{&identityProbePlugin{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{
+		OutboundPipeline: pipeline.NewHolder(p),
+		Sessions:         store,
+		Client:           http.DefaultClient,
+		SessionIDHeaders: []string{session.BobSessionHeader},
+	}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
+
+	post := func(task, parent string) {
+		t.Helper()
+		req, _ := http.NewRequest("POST", backend.URL+"/v1/messages", strings.NewReader(`{}`))
+		req.Header.Set(pipeline.BobTaskIDHeader, task)
+		if parent != "" {
+			req.Header.Set(pipeline.BobParentTaskIDHeader, parent)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		_ = resp.Body.Close()
+	}
+	post("r1", "")
+	post("c1", "r1")
+	post("c2", strings.Repeat("r", session.MaxSessionIDLen+44)) // over the limit: not a claim
+	post("c3", "c3")
+
+	// rows counts each session's rows by (Subagent, SubagentKind, phase).
+	type key struct {
+		sub, kind string
+		phase     pipeline.SessionPhase
+	}
+	rows := func(id string) map[key]int {
+		v := store.View(id)
+		if v == nil {
+			t.Fatalf("no session %q", id)
+		}
+		out := map[key]int{}
+		for _, ev := range v.Events {
+			out[key{ev.Subagent, ev.SubagentKind, ev.Phase}]++
+		}
+		return out
+	}
+	req, resp := pipeline.SessionRequest, pipeline.SessionResponse
+	want := map[string]map[key]int{
+		"r1": {{"", "", req}: 1, {"", "", resp}: 1, {"c1", pipeline.SubagentKindSubagent, req}: 1, {"c1", pipeline.SubagentKindSubagent, resp}: 1},
+		"c2": {{"", "", req}: 1, {"", "", resp}: 1},
+		"c3": {{"", "", req}: 1, {"", "", resp}: 1},
+	}
+	for id, w := range want {
+		got := rows(id)
+		if len(got) != len(w) {
+			t.Errorf("session %s: rows %v, want %v", id, got, w)
+			continue
+		}
+		for k, n := range w {
+			if got[k] != n {
+				t.Errorf("session %s: rows %v, want %v", id, got, w)
+				break
+			}
+		}
+	}
+	if v := store.View("c1"); v != nil {
+		t.Errorf("session c1 exists with %d events; a child must file in its root", len(v.Events))
 	}
 }

@@ -1,6 +1,8 @@
 package pipeline
 
-import "strings"
+import (
+	"github.com/rossoctl/cortex/core/model"
+)
 
 // ClaudeCodeAgentIDHeader is the request header Claude Code sets on the requests of an
 // agent other than the main conversation, naming that agent. Verified on
@@ -40,12 +42,19 @@ const ClaudeCodeAgentIDHeader = "X-Claude-Code-Agent-Id"
 // Not a session id header either, for the reason ClaudeCodeAgentIDHeader gives.
 const ClaudeCodeParentAgentIDHeader = "X-Claude-Code-Parent-Agent-Id"
 
+// BobTaskIDHeader and BobParentTaskIDHeader are model's, aliased here: session reads
+// them too, and session must not import pipeline (#1502). See their doc in core/model.
+const (
+	BobTaskIDHeader       = model.BobTaskIDHeader
+	BobParentTaskIDHeader = model.BobParentTaskIDHeader
+)
+
 // Subagent returns the Claude Code subagent this request came from: the value of
 // X-Claude-Code-Agent-Id as the client sent it, or "" when there is none to record.
 //
 // "" MEANS NOTHING WAS STATED, and there are four ways to get it: a main-conversation
 // request, a client that is not Claude Code, a row with no request headers (an opaque
-// tunnel, a transparent connection), and a value validSubagentID refused. A reader
+// tunnel, a transparent connection), and a value model.SubagentHeader refused. A reader
 // owes them the same treatment — this request names no subagent — and for "is this
 // a subagent at all" should read Inference.AgentRole, which is stated independently
 // of this header.
@@ -69,7 +78,7 @@ func (c *Context) Subagent() string {
 // unknown: Claude Code sends the header only when the spawner was itself an agent, so
 // on a subagent the main conversation started — every subagent there is, in a session
 // that nests none — it is absent by design. The other three empty cases are Subagent's:
-// a non-subagent request, a row with no headers, and a value validSubagentID refused.
+// a non-subagent request, a row with no headers, and a value model.SubagentHeader refused.
 //
 // Recorded independently of Subagent rather than dropped when Subagent is empty. A
 // parent with no child is not a shape the CLI produces, so if one ever appears it is
@@ -92,42 +101,38 @@ func (c *Context) resolveSubagents() {
 	}
 	c.subagent = subagentHeader(c.Headers.Get(ClaudeCodeAgentIDHeader))
 	c.parentSubagent = subagentHeader(c.Headers.Get(ClaudeCodeParentAgentIDHeader))
-}
-
-// subagentHeader is a header value with its padding trimmed and checked by
-// validSubagentID, or "" when it fails the check.
-//
-// PADDING IS SP AND HTAB ONLY — RFC 9110's optional whitespace around a field value —
-// and not strings.TrimSpace, which also strips \n, \r, \v, \f and U+0085 from either
-// end. Those are control characters, not padding: trimming them would hand
-// validSubagentID a clean id and record "a1a2…\n" as "a1a2…", which is sanitising by
-// another route. Left in place, they reach the check and refuse the value, which is
-// the rule validSubagentID states.
-func subagentHeader(v string) string {
-	if id := strings.Trim(v, " \t"); validSubagentID(id) {
-		return id
+	if c.subagent != "" {
+		return
 	}
-	return ""
+	// A Bob child: its own task id is the subagent.
+	if own, _ := model.BobChildTask(c.Headers); own != "" {
+		c.subagent = own
+		c.bobChild = true
+	}
 }
 
-// validSubagentID reports whether a client-supplied subagent id — either header's — is
-// safe to record.
+// SubagentKind returns the kind of a Bob child task: SubagentKindSubtask when the
+// request's tool list has end_subtask (Bob gives that tool only to a subtask), else
+// SubagentKindSubagent. It is "" on every request that is not a Bob child, Claude Code's
+// subagents included.
 //
-// REFUSED, NOT SANITISED — the opposite choice from RecordStrippedUpgrade, and for a
-// reason that is about what the value is for. An Upgrade token is read by a person, so
-// a cleaned-up one still answers the question. This id is a join key: its use is
-// finding the agent-<id>.meta.json it names, and a sanitised id names no file, so it
-// would sit on the event looking like an answer while matching nothing. Refusing it
-// leaves the row as one that names no subagent, which is true. validHeaderSessionID
-// makes the same call for the same reason.
-//
-// The rules are the session id's, plus the empty check: no longer than maxClientLen
-// bytes, and nothing HasControlRunes objects to, which covers C0, DEL, C1, the
-// glyph-reordering runes and invalid UTF-8. That last group matters here and not
-// only on the forward proxy: ext_proc hands header bytes over from Envoy unparsed, so
-// on that path this function is the only bound on what reaches a terminal and the
-// archive. Claude Code itself percent-encodes the value to printable ASCII before
-// sending it, so none of this costs a real id anything.
-func validSubagentID(id string) bool {
-	return id != "" && len(id) <= maxClientLen && !HasControlRunes(id)
+// Not memoized: the inference parser fills the tool list after ResolveClient pins
+// Subagent, so the answer is read at each call. With no inference parser in the
+// pipeline, a Bob child is SubagentKindSubagent.
+func (c *Context) SubagentKind() string {
+	c.resolveSubagents()
+	if !c.bobChild {
+		return ""
+	}
+	if inf := c.Extensions.Inference; inf != nil {
+		for _, t := range inf.Tools {
+			if t.Name == "end_subtask" {
+				return SubagentKindSubtask
+			}
+		}
+	}
+	return SubagentKindSubagent
 }
+
+// subagentHeader is model.SubagentHeader. See its doc there.
+func subagentHeader(v string) string { return model.SubagentHeader(v) }

@@ -418,3 +418,26 @@ func TestTunnelClose_PopulatesEveryField(t *testing.T) {
 		t.Errorf("close row carries fields it must not: %+v", ev)
 	}
 }
+
+// A Bob subtask's request, response and denied rows all carry its kind, so agentop can
+// read the kind from any row of the block.
+func TestBuilders_CarryTheSubagentKind(t *testing.T) {
+	hdr := http.Header{}
+	hdr.Set(pipeline.BobTaskIDHeader, "c1")
+	hdr.Set(pipeline.BobParentTaskIDHeader, "r1")
+	pctx := &pipeline.Context{
+		Headers: hdr,
+		Extensions: pipeline.Extensions{Inference: &pipeline.InferenceExtension{
+			Tools: []pipeline.InferenceTool{{Name: "end_subtask"}},
+		}},
+	}
+	for name, ev := range map[string]pipeline.SessionEvent{
+		"request":  Request(pctx, pipeline.Outbound),
+		"response": Response(pctx, pipeline.Outbound, 200, nil),
+		"deny":     Deny(pctx, pipeline.DenyStatus(403, "p.denied", "no"), pipeline.Outbound),
+	} {
+		if ev.SubagentKind != pipeline.SubagentKindSubtask || ev.Subagent != "c1" {
+			t.Errorf("%s: subagent %q kind %q, want c1 subtask", name, ev.Subagent, ev.SubagentKind)
+		}
+	}
+}

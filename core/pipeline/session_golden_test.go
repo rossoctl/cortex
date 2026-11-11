@@ -79,6 +79,7 @@ func goldenEvent() SessionEvent {
 		Client:          &EventClient{Name: "claude-code", Version: "2.1.14", Raw: "claude-cli/2.1.14"},
 		Subagent:        "a1a2e36cb5946f31c",
 		ParentSubagent:  "a0974b0b8591dc76b",
+		SubagentKind:    SubagentKindSubtask,
 		Proc:            "/bin/claude",
 		ClientProc:      "/bin/zsh",
 		SessionHeader:   "x-session-id",

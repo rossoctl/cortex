@@ -753,8 +753,9 @@ type model struct {
 	// when no row names one. Rebuilt on every rebuild; the collapse state
 	// lives in subagentOpen, not here.
 	subagentBlocks map[string]*subagentBlock
-	// subagentOpen is the subagent ids whose blocks are expanded. Absent =
-	// collapsed, which is the default. Kept across rebuilds so a live tail
+	// subagentOpen is the operator's open (true) or closed (false) choice per
+	// subagent id. Absent = the default: collapsed, but open for a Bob subtask
+	// (blockOpen). Kept across rebuilds so a live tail
 	// does not re-collapse a block the operator opened; cleared when another
 	// session is opened, since ids are per-session.
 	subagentOpen map[string]bool

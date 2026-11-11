@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -236,5 +237,118 @@ func TestSessionEvent_ParentSubagentRoundTrips(t *testing.T) {
 	if out.ParentSubagent != "a0974b0b8591dc76b" || out.Subagent != "a21728bb34d27cb12" {
 		t.Errorf("after the round trip Subagent/ParentSubagent = %q/%q, want a21728bb34d27cb12/a0974b0b8591dc76b",
 			out.Subagent, out.ParentSubagent)
+	}
+}
+
+func bobCtx(own, parent string) *Context {
+	h := http.Header{}
+	if own != "" {
+		h.Set(BobTaskIDHeader, own)
+	}
+	if parent != "" {
+		h.Set(BobParentTaskIDHeader, parent)
+	}
+	return &Context{Headers: h}
+}
+
+// A Bob child task names its root in X-Parent-Task-Id; its own X-Task-Id is the subagent.
+func TestSubagent_BobChildIsItsOwnTaskID(t *testing.T) {
+	c := bobCtx("c1", "r1")
+	if got := c.Subagent(); got != "c1" {
+		t.Errorf("Subagent() = %q, want c1", got)
+	}
+	if got := c.ParentSubagent(); got != "" {
+		t.Errorf("ParentSubagent() = %q, want empty", got)
+	}
+	if got := c.SubagentKind(); got != SubagentKindSubagent {
+		t.Errorf("SubagentKind() = %q, want %q", got, SubagentKindSubagent)
+	}
+}
+
+func TestSubagent_BobRootHasNoSubagent(t *testing.T) {
+	c := bobCtx("r1", "")
+	if got := c.Subagent(); got != "" {
+		t.Errorf("Subagent() = %q, want empty", got)
+	}
+	if got := c.SubagentKind(); got != "" {
+		t.Errorf("SubagentKind() = %q, want empty", got)
+	}
+}
+
+func TestSubagent_BobParentWithoutTaskIDIsIgnored(t *testing.T) {
+	if got := bobCtx("", "r1").Subagent(); got != "" {
+		t.Errorf("Subagent() = %q, want empty", got)
+	}
+}
+
+// A parent id that model.SubagentHeader refuses gives no subagent id. A 200-byte id passes
+// the session id check (256) but not this one (128).
+func TestSubagent_BobInvalidParentIsIgnored(t *testing.T) {
+	for name, parent := range map[string]string{
+		"control rune": "r\x1b1",
+		"200 bytes":    strings.Repeat("r", 200),
+	} {
+		c := bobCtx("c1", parent)
+		if got := c.Subagent(); got != "" {
+			t.Errorf("%s: Subagent() = %q, want empty", name, got)
+		}
+		if got := c.SubagentKind(); got != "" {
+			t.Errorf("%s: SubagentKind() = %q, want empty", name, got)
+		}
+	}
+}
+
+func TestSubagent_BobParentEqualToSelfIsARoot(t *testing.T) {
+	if got := bobCtx("c1", "c1").Subagent(); got != "" {
+		t.Errorf("Subagent() = %q, want empty", got)
+	}
+}
+
+func TestSubagent_ClaudeCodeHeaderWins(t *testing.T) {
+	c := bobCtx("c1", "r1")
+	c.Headers.Set(ClaudeCodeAgentIDHeader, "a1")
+	if got := c.Subagent(); got != "a1" {
+		t.Errorf("Subagent() = %q, want a1", got)
+	}
+	if got := c.SubagentKind(); got != "" {
+		t.Errorf("SubagentKind() = %q, want empty", got)
+	}
+}
+
+func TestSubagentKind_EndSubtaskToolIsASubtask(t *testing.T) {
+	for name, tc := range map[string]struct {
+		inf  *InferenceExtension
+		want string
+	}{
+		"end_subtask": {&InferenceExtension{Tools: []InferenceTool{{Name: "read_file"}, {Name: "end_subtask"}}}, SubagentKindSubtask},
+		"other tools": {&InferenceExtension{Tools: []InferenceTool{{Name: "read_file"}}}, SubagentKindSubagent},
+		"no parser":   {nil, SubagentKindSubagent},
+	} {
+		c := bobCtx("c1", "r1")
+		c.Extensions.Inference = tc.inf
+		if got := c.SubagentKind(); got != tc.want {
+			t.Errorf("%s: SubagentKind() = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+func TestSessionEvent_SubagentKindRoundTrips(t *testing.T) {
+	b, err := json.Marshal(SessionEvent{SubagentKind: SubagentKindSubtask})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got SessionEvent
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.SubagentKind != SubagentKindSubtask {
+		t.Errorf("SubagentKind = %q after round trip, want subtask", got.SubagentKind)
+	}
+	b, err = json.Marshal(SessionEvent{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "subagentKind") {
+		t.Errorf("empty SubagentKind emitted a key: %s", b)
 	}
 }

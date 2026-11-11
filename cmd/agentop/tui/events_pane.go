@@ -381,7 +381,7 @@ func (m *model) rebuildEventsTable() {
 		if b := m.subagentBlocks[cc.row.event.Subagent]; b != nil {
 			if !b.anchored {
 				b.anchored = true
-				text := b.headerText(m.subagentLabel(b.id), m.blockOpen(b.id, q != ""))
+				text := b.headerText(m.subagentLabel(b.id, b.subtask, b.bob), m.blockOpen(b.id, b.subtask, q != ""))
 				rows = append(rows, table.Row{text})
 				m.visibleRows = append(m.visibleRows, eventRow{})
 				if m.headerRows == nil {
@@ -391,7 +391,7 @@ func (m *model) rebuildEventsTable() {
 				if q != "" {
 					full = append(full, table.SearchRow{Cells: []string{text}})
 				}
-				if m.blockOpen(b.id, q != "") {
+				if m.blockOpen(b.id, b.subtask, q != "") {
 					// b.rows holds exactly the member rows that survived the
 					// inactive filter, in arrival order — the same population the
 					// loop below renders — so nothing is double-counted or skipped.

@@ -414,3 +414,39 @@ func TestRestore_KeepsAClaimAcrossARestart(t *testing.T) {
 		t.Error("a restored claimer is not an agent process")
 	}
 }
+
+// TestResolve_BobChildrenAndHeaderlessCallFileInTheRoot pins rules 1 and 4 of #1803 on
+// the shape of a Bob IDE run: a root, a subtask, two parallel subagents, and header-less
+// router calls between them. Every child names the root, so client affinity files a
+// header-less call in the root, never in a child.
+func TestResolve_BobChildrenAndHeaderlessCallFileInTheRoot(t *testing.T) {
+	a, clk := newTest()
+	bob := func(task, parent string) http.Header {
+		h := req(bobUA, "")
+		if task != "" {
+			h.Set(session.BobSessionHeader, task)
+		}
+		if parent != "" {
+			h.Set(pipeline.BobParentTaskIDHeader, parent)
+		}
+		return h
+	}
+	steps := []struct {
+		name string
+		h    http.Header
+	}{
+		{"root", bob("r1", "")},
+		{"subtask", bob("c-sub", "r1")},
+		{"subagent A", bob("c-a", "r1")},
+		{"header-less call", bob("", "")},
+		{"subagent B", bob("c-b", "r1")},
+		{"header-less call after B", bob("", "")},
+	}
+	for _, s := range steps {
+		got := a.Resolve(s.h, nil)
+		if got.Session != "r1" {
+			t.Errorf("%s: Session = %q, want r1 (%+v)", s.name, got.Session, got)
+		}
+		record(a, clk, got.RecordID())
+	}
+}

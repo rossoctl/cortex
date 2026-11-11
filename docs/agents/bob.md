@@ -162,6 +162,50 @@ Bob/User/settings.json`). Elsewhere `--settings PATH` is required rather than
 guessed — writing a proxy setting into a file nothing reads is a silent no-op,
 which is worse than a refusal that names the flag.
 
+## Subagents and subtasks
+
+Bob can start child tasks. A subagent runs beside its parent. A subtask runs in
+place of its parent until it ends. Cortex files every child in its root task's
+session, so one Bob run shows as one session.
+
+### What Bob sends
+
+- Every chat request has `X-Task-Id`, the task's own id.
+- A child's request also has `X-Parent-Task-Id`. Every child names the root
+  task. A child of a subtask also names the root task.
+- The `router` and `security` calls send no task id.
+
+### What Cortex does
+
+- A child's rows go in the root's session. The session id is the
+  `X-Parent-Task-Id` value. A root task keeps its own `X-Task-Id` as the id.
+- Each row of a child has `subagent` set to the child's own task id.
+- Each row of a child has `subagentKind` set to one of these values:
+  - `subtask`, when the request's tool list has `end_subtask`.
+  - `subagent`, in all other cases. This includes a pipeline with no inference
+    parser.
+- A request whose `X-Parent-Task-Id` is the same as its `X-Task-Id` is a root.
+- The cost of a child is part of the root's cost, as in Bob.
+
+The two headers come from the client and Cortex does not authenticate them.
+Cortex uses them only to group rows, never to identify a principal.
+
+### What agentop shows
+
+- Each subagent is a block. The block is collapsed at first.
+- Each subtask is a section with the label `subtask <id>`, at its place in the
+  conversation. The section is open at first. Push Enter to collapse it.
+- The timeline has one agent row for each child. A subtask row has the label
+  `subtask <id>`.
+
+### Limits
+
+- A child of a subtask shows as a child of the root, because the wire names
+  the root.
+- Archived child sessions from before this change stay as separate sessions.
+- A call with no task id, such as a `router` call, stays in the root's session
+  with no `subagent` id.
+
 ## The shell half: the rc-file block
 
 `agentop configure bob enable` also makes `bob` at a prompt run through Cortex,

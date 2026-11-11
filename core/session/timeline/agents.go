@@ -280,9 +280,13 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 // precedes the end of the response that spawned it.
 func linkAgents(order []string, first map[string]time.Time, calls []call, spawns []*spawn, returns []Return) []Agent {
 	parentHint := map[string]string{}
+	subtask := map[string]bool{}
 	for _, c := range calls {
 		if c.req.ParentSubagent != "" && parentHint[c.agent] == "" {
 			parentHint[c.agent] = c.req.ParentSubagent
+		}
+		if c.req.SubagentKind == model.SubagentKindSubtask {
+			subtask[c.agent] = true
 		}
 	}
 	byChild := map[string]*spawn{}
@@ -319,6 +323,9 @@ func linkAgents(order []string, first map[string]time.Time, calls []call, spawns
 			}
 		}
 		a.Label = "subagent " + shortID(id)
+		if subtask[id] {
+			a.Label, a.Type = "subtask "+shortID(id), model.SubagentKindSubtask
+		}
 		if sp != nil {
 			parent = sp.by
 			a.SpawnTool, a.Type = sp.tool.ID, sp.typ
@@ -379,8 +386,9 @@ func pairCalls(events []model.SessionEvent) []call {
 
 // agentOf names the agent that sent a request. Claude Code's requests carry their own
 // markers: AgentRole from its cc_is_subagent header, Subagent from its agent id header.
-// Every other known client gets the single main row — nothing on the wire says which of
-// its calls belong together beyond that.
+// A Bob child task carries Subagent from its own X-Task-Id (it sends X-Parent-Task-Id).
+// Every other request of a known client gets the single main row — nothing on the wire
+// says which of its calls belong together beyond that.
 func agentOf(e *model.SessionEvent) (string, bool) {
 	switch {
 	case e.Subagent != "":

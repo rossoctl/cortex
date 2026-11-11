@@ -195,6 +195,7 @@
   },
   "subagent": "a1a2e36cb5946f31c",
   "parentSubagent": "a0974b0b8591dc76b",
+  "subagentKind": "subtask",
   "proc": "/bin/claude",
   "clientProc": "/bin/zsh",
   "sessionHeader": "x-session-id",

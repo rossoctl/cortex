@@ -200,6 +200,11 @@ returns and background jobs — those key on the agent ids and marker strings
 (`agentRole`, `subagent`, `parentSubagent`) no other client sends. Requests
 from unknown clients render as host rows only.
 
+**Bob child tasks are agent rows too**, keyed by `subagent` and parented to
+`main`. A subtask (`subagentKind: "subtask"`) has `type: "subtask"` and the
+label `subtask <id>`. A subagent keeps the label `subagent <id>`. A Bob child
+has no spawn link: nothing on the wire names the call that started it.
+
 - A **turn** is one model call, request to end of response. Left out:
   progress-label and away-recap calls (matched by their prompt text in the
   last non-system message — Claude's own prompt strings, applied to every
@@ -798,6 +803,13 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   to `session.id_headers`**. **This key names an agent; it does not say the row
   is a subagent's.** `inference.agentRole` says that, and on a teammate's row
   it is `main` while `subagent` is set.
+  It is present also on rows from a Bob child task (a subagent or a subtask):
+  the child's own `X-Task-Id`, when the request also sends a different, usable
+  `X-Parent-Task-Id`. The Claude Code header wins when a request sends both.
+- `subagentKind` — Bob only: `subtask` when the request's tool list has
+  `end_subtask`, else `subagent`. It is `subagent` also when no inference
+  parser ran. Absent on Claude Code rows and on every row without a Bob
+  `subagent`.
 - `parentSubagent` — the agent that started the one `subagent` names, from
   `X-Claude-Code-Parent-Agent-Id`, under the same rules. Claude Code sends it
   only when the spawner was itself an agent, so on a row that names a
