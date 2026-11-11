@@ -237,6 +237,31 @@ func TestToolRows_SearchFindsPreview(t *testing.T) {
 	}
 }
 
+// With no column after DURATION and no METHOD shown, the preview and the tool name are not
+// in any cell, so search must still find them in the row's dropped text.
+func TestToolRows_SearchFindsHiddenText(t *testing.T) {
+	m := toolRowsModel(t, trExchange(1, 10, ""), &timeline.Timeline{Tools: []timeline.Tool{
+		trTool(2, "t1", "Bash", 12, 13, "git -C /tmp/wt status"),
+	}})
+	for _, id := range []eventColumnID{colBytes, colTokens, colCost, colHost, colMethod} {
+		m.eventColumns[id] = false
+	}
+	for _, q := range []string{"git -C", "Bash"} {
+		m.search = map[paneID]string{paneEvents: q}
+		m.rebuildEventsTable()
+		if p := colPos(m, colMethod); p >= 0 {
+			t.Fatalf("METHOD still shown at %d", p)
+		}
+		i, row := toolRowAt(t, m, "t1")
+		if strings.Contains(strings.Join(row, " "), q) {
+			t.Fatalf("query %q is in a shown cell %q; the test needs it hidden", q, row)
+		}
+		if !slices.Contains(m.eventsTbl.Matches(), i) {
+			t.Errorf("query %q: matches = %v, want row %d", q, m.eventsTbl.Matches(), i)
+		}
+	}
+}
+
 func TestToolRows_EnterDoesNothing(t *testing.T) {
 	m := toolRowsModel(t, trExchange(1, 10, ""), &timeline.Timeline{Tools: []timeline.Tool{trTool(2, "t1", "Bash", 12, 13, "")}})
 	i, _ := toolRowAt(t, m, "t1")
