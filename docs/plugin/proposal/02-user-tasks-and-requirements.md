@@ -53,7 +53,7 @@ These were agreed during the session.
 | R3 | The bar shows the built-in TTL, then each extension as a block, to scale. | T2, T4, T12 |
 | R4 | A planned extension is dashed. An activated extension is solid. | T11 |
 | R5 | When the built-in TTL is about to expire, the next extension turns solid and is outlined. | T4, T11 |
-| R6 | One click on the link adds one planned extension and asks for one ping. | T3, D5 |
+| R6 | One click on the link adds one planned (dashed) extension on the right. Whether the click also sends a ping at once is open (Q8). | T3, D5 |
 | R7 | The link shows the cost of one extension. | T3 |
 | R8 | The session saving and the cost without ContextGuru are shown with a percentage. | T5 |
 | R9 | A link opens the dashboard. | T6 |
@@ -87,3 +87,4 @@ These were agreed during the session.
 | Q5 | Does the VS Code surface support hover on the band? | The hover card in the mockup depends on it. |
 | Q6 | Should the hover card show the cost of the whole plan if every extension is activated? | A user may want the worst case. |
 | Q7 | Should the names in the hover card and the legend ("extension") change to "more time", to match the link? | Wording consistency. |
+| Q8 | Does a click send a ping at once (a paid, solid bar), or only plan one (a dashed bar)? | D5 says planned. The link shows a price, which suggests a payment. |

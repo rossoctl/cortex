@@ -73,8 +73,9 @@ This is how the user's screenshot showed `11:51` with a 5-minute TTL.
 
 - `clockOf()` in `model.ts` returns the plan's horizon (`held_until_ms`) whenever the
   entry is still warm and `held_until_ms` is later than the entry's own expiry.
-- In the first read above: 40 s to ping 1, then about 270 s to ping 2, then 300 s of
-  hold. 40 + 270 + 300 = 610 s.
+- In the first read above: 40 s to ping 1, then the rest of the plan. The data gives
+  only the total after ping 1 (610 − 40 = 570 s). A split of 270 s to ping 2 plus
+  300 s of hold fits that total, but it is an inference, not a field.
 
 So the clock is a **forecast** that assumes every planned ping succeeds. It is not
 the time the cache is guaranteed to stay warm.
@@ -90,7 +91,7 @@ the time the cache is guaranteed to stay warm.
 | P5 | The automatic keep-alive and the manual **Ping** button are shown together without a clear difference. | Row 1 button next to a clock that already counts pings. |
 | P6 | The band has no help for context decisions: compact, use a sub-agent, start a new session. | Only `ctx 37%` exists. |
 | P7 | Text carries meaning that a shape could carry. | `next message`, `if cold`, state words, tips. |
-| P8 | A cold price in cold state is shown in a different color than in the warm state, and the Ping button disappears with no explanation. | The cold state replaces both prices with one. |
+| P8 | In the cold state the Ping button disappears with no explanation, and both prices become one. | `register.tsx` draws the cold price with the warning color, but a screenshot of the running band shows it white. The two disagree and the cause was not found. |
 
 ## 7. Facts that were checked and facts that were not
 

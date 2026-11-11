@@ -72,7 +72,7 @@ drawn as equal 5-minute thirds.
 
 ## 6. Next steps
 
-1. Answer the open questions in the task document (Q1 to Q7).
+1. Answer the open questions in the task document (Q1 to Q8).
 2. Define the context verdict rules and check that the data supports them.
 3. Test the hover card on the VS Code surface with a small mod.
 4. Test a text-only band with block characters (W4).
