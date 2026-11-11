@@ -64,6 +64,12 @@ func (p *SessionPhase) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// The values of SessionEvent.SubagentKind, for a Bob child task.
+const (
+	SubagentKindSubagent = "subagent"
+	SubagentKindSubtask  = "subtask"
+)
+
 // SessionEvent represents a single pipeline event captured by the session store.
 // At most one of A2A, MCP, or Inference is non-nil on any given event, but
 // the event may also carry Invocations (records from any plugin that ran on
@@ -368,6 +374,11 @@ type SessionEvent struct {
 	// Client-asserted, with the same caveat as Client above.
 	ParentSubagent string
 
+	// SubagentKind is the kind of a Bob child task, from Context.SubagentKind:
+	// SubagentKindSubtask or SubagentKindSubagent. Set only on a Bob child's rows, and
+	// empty everywhere else, Claude Code rows included (read Inference.AgentRole there).
+	SubagentKind string
+
 	// Proc is the agent process the request belongs to, "<pid>.<start>", as process
 	// attribution named it (attribution.Attribution.Proc): the agent root of the client's
 	// chain, so a launcher and its worker are one. Empty where the listener could not name
@@ -617,6 +628,8 @@ type sessionEventWire struct {
 	Subagent string `json:"subagent,omitempty"`
 	// omitempty: absent on every row but those of an agent another agent started.
 	ParentSubagent string `json:"parentSubagent,omitempty"`
+	// omitempty: absent on every row but a Bob child task's.
+	SubagentKind string `json:"subagentKind,omitempty"`
 	// omitempty: absent wherever the listener could not name the client's process, and on
 	// every event recorded before the field existed.
 	Proc          string `json:"proc,omitempty"`
@@ -659,6 +672,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Client:          e.Client,
 		Subagent:        e.Subagent,
 		ParentSubagent:  e.ParentSubagent,
+		SubagentKind:    e.SubagentKind,
 		Proc:            e.Proc,
 		ClientProc:      e.ClientProc,
 		SessionHeader:   e.SessionHeader,
@@ -704,6 +718,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Client:          w.Client,
 		Subagent:        w.Subagent,
 		ParentSubagent:  w.ParentSubagent,
+		SubagentKind:    w.SubagentKind,
 		Proc:            w.Proc,
 		ClientProc:      w.ClientProc,
 		SessionHeader:   w.SessionHeader,

@@ -168,6 +168,8 @@ type Context struct {
 	subagent       string
 	parentSubagent string
 	subagentParsed bool
+	// bobChild is true when subagent came from Bob's X-Task-Id, not Claude Code's header.
+	bobChild bool
 
 	// attributedProc, namingHeader and attributed hold SetAttribution's pin.
 	attributedProc string

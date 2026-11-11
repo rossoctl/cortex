@@ -40,6 +40,20 @@ const ClaudeCodeAgentIDHeader = "X-Claude-Code-Agent-Id"
 // Not a session id header either, for the reason ClaudeCodeAgentIDHeader gives.
 const ClaudeCodeParentAgentIDHeader = "X-Claude-Code-Parent-Agent-Id"
 
+// BobTaskIDHeader is the request header Bob sets on every chat request, naming the task
+// that made it. It is session.BobSessionHeader's value; it is here because session
+// imports pipeline. On a Bob child task (a subagent or a subtask) it names the child, and
+// Subagent reads it when BobParentTaskIDHeader is also present (issue #1803, rule 2).
+const BobTaskIDHeader = "X-Task-Id"
+
+// BobParentTaskIDHeader is the request header Bob sets on a child task's requests. Every
+// child names the ROOT task, also a child that a subtask started, so the wire gives no
+// deeper tree. It is the only signal that a request is a child's.
+//
+// Client-asserted and unauthenticated: a grouping key, never a principal. NOT a session
+// id header: it must not be added to session.id_headers.
+const BobParentTaskIDHeader = "X-Parent-Task-Id"
+
 // Subagent returns the Claude Code subagent this request came from: the value of
 // X-Claude-Code-Agent-Id as the client sent it, or "" when there is none to record.
 //
@@ -92,6 +106,40 @@ func (c *Context) resolveSubagents() {
 	}
 	c.subagent = subagentHeader(c.Headers.Get(ClaudeCodeAgentIDHeader))
 	c.parentSubagent = subagentHeader(c.Headers.Get(ClaudeCodeParentAgentIDHeader))
+	if c.subagent != "" {
+		return
+	}
+	// A Bob child: its own task id is the subagent. A parent equal to the task id is a
+	// client that names itself, so the row stays a root's.
+	own := subagentHeader(c.Headers.Get(BobTaskIDHeader))
+	parent := subagentHeader(c.Headers.Get(BobParentTaskIDHeader))
+	if own != "" && parent != "" && own != parent {
+		c.subagent = own
+		c.bobChild = true
+	}
+}
+
+// SubagentKind returns the kind of a Bob child task: SubagentKindSubtask when the
+// request's tool list has end_subtask (Bob gives that tool only to a subtask), else
+// SubagentKindSubagent. It is "" on every request that is not a Bob child, Claude Code's
+// subagents included.
+//
+// Not memoized: the inference parser fills the tool list after ResolveClient pins
+// Subagent, so the answer is read at each call. With no inference parser in the
+// pipeline, a Bob child is SubagentKindSubagent.
+func (c *Context) SubagentKind() string {
+	c.resolveSubagents()
+	if !c.bobChild {
+		return ""
+	}
+	if inf := c.Extensions.Inference; inf != nil {
+		for _, t := range inf.Tools {
+			if t.Name == "end_subtask" {
+				return SubagentKindSubtask
+			}
+		}
+	}
+	return SubagentKindSubagent
 }
 
 // subagentHeader is a header value with its padding trimmed and checked by

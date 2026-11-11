@@ -104,6 +104,8 @@ const (
 	PluginEventSuffix       = model.PluginEventSuffix
 	AgentRoleMain           = model.AgentRoleMain
 	AgentRoleSubagent       = model.AgentRoleSubagent
+	SubagentKindSubagent    = model.SubagentKindSubagent
+	SubagentKindSubtask     = model.SubagentKindSubtask
 	ActionAllow             = model.ActionAllow
 	ActionDeny              = model.ActionDeny
 	ActionSkip              = model.ActionSkip
