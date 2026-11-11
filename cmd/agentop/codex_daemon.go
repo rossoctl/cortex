@@ -270,14 +270,26 @@ func runningCodexProc(codexHome, pidRel string) (codexDaemon, bool) {
 		return codexDaemon{}, false
 	}
 	var rec struct {
-		PID              int                `json:"pid"`
-		ProcessStartTime string             `json:"processStartTime"`
-		ProcessIdentity  *codexProcIdentity `json:"processIdentity"`
+		PID              int             `json:"pid"`
+		ProcessStartTime string          `json:"processStartTime"`
+		ProcessIdentity  json.RawMessage `json:"processIdentity"`
 	}
 	if json.Unmarshal(b, &rec) != nil || rec.PID > math.MaxInt32 || !codexDaemonAlive(rec.PID) {
 		return codexDaemon{}, false
 	}
-	d := codexDaemon{PID: rec.PID, Started: rec.ProcessStartTime, Identity: rec.ProcessIdentity}
+	d := codexDaemon{PID: rec.PID, Started: rec.ProcessStartTime}
+	// Decoded apart from the rest, so an identity of a type agentop does not expect makes
+	// only the identity unknown (#1736 review). Failing the whole record would hide a
+	// running daemon, and enable and disable would skip its restart. An identity that
+	// fails to decode is used empty rather than half-filled: codexIdentityMatches knows no
+	// shape in it, so the answer is codexRecordUnknown.
+	if len(rec.ProcessIdentity) > 0 && string(rec.ProcessIdentity) != "null" {
+		var id codexProcIdentity
+		if json.Unmarshal(rec.ProcessIdentity, &id) != nil {
+			id = codexProcIdentity{}
+		}
+		d.Identity = &id
+	}
 	env, err := codexEnviron(int32(rec.PID))
 	switch {
 	case err != nil:

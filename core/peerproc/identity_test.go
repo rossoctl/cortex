@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 )
 
 // ProcessIdentity against the real process table: this process has one, read twice it is
@@ -59,7 +60,7 @@ func TestProcessIdentity_Zombie(t *testing.T) {
 			return
 		}
 		// Not exited yet; true exits within milliseconds.
-		exec.Command("sleep", "0.01").Run()
+		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("an exited, unreaped child never read as a zombie")
 }

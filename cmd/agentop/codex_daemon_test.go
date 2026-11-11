@@ -358,6 +358,46 @@ func TestCodexEnable_ReportsOnlyAConfirmedUpdater(t *testing.T) {
 	}
 }
 
+// A processIdentity of a type agentop does not expect makes only the identity unknown
+// (#1736 review). Decoded with the rest of the record, it failed the whole file, so a
+// running daemon read as none and enable skipped its restart, leaving it on the old
+// proxy. The daemon is restarted, and the updater is reported as unconfirmed.
+func TestCodexEnable_MalformedIdentityStillRestarts(t *testing.T) {
+	for _, identity := range []string{
+		`"abc"`,
+		`{"bootId":5,"startTicks":1}`,
+		`{"bootId":"b","startTicks":"1"}`,
+	} {
+		t.Run(identity, func(t *testing.T) {
+			envPath, cfgPath := codexFixture(t, "")
+			home := filepath.Dir(envPath)
+			f := &fakeCodexDaemon{
+				pid: 5613, env: offCortex, newPID: 7001, newEnv: onCortex,
+				updaterPID: 5600, updaterEnv: offCortex,
+			}
+			stubCodexDaemon(t, home, f)
+			stubProcessIdentity(t, nil)
+			// Stands in for the real codexStopUpdater, which leaves an unconfirmed pid alone.
+			codexStopUpdater = func(string) error { return nil }
+			writeCodexPIDIdentity(t, home, codexDaemonPIDRel, 5613, identity)
+			writeCodexPIDIdentity(t, home, codexUpdaterPIDRel, 5600, identity)
+
+			var out, errb bytes.Buffer
+			if code := codexEnable(envPath, cfgPath, filepath.Join(home, "state.json"), true, &out, &errb); code != 0 {
+				t.Fatalf("enable exit %d: %s", code, errb.String())
+			}
+			if len(f.restarts) != 1 {
+				t.Fatalf("restarted %d times, want once:\n%s", len(f.restarts), out.String())
+			}
+			got := out.String()
+			wantAll(t, "enable output", got, "pid 5613", "Could not confirm that Codex's auto-updater was restarted")
+			if strings.Contains(got, "kill 5600") {
+				t.Errorf("named an unconfirmed pid as Codex's updater:\n%s", got)
+			}
+		})
+	}
+}
+
 // Enable stops the updater too, so the two processes never disagree, and an install with
 // no updater (auto-update off) stops nothing and names nothing.
 func TestCodexEnable_UpdaterHandling(t *testing.T) {
@@ -726,21 +766,25 @@ func TestCodexStopUpdater_LeavesAReusedPIDAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name, started string
 		identity      func(peerproc.Identity) peerproc.Identity // nil for a legacy record
+		raw           string                                    // a processIdentity written as is
 	}{
-		{"the identity names another boot", "", func(id peerproc.Identity) peerproc.Identity { id.BootID = "another-boot"; return id }},
+		{"the identity names another boot", "", func(id peerproc.Identity) peerproc.Identity { id.BootID = "another-boot"; return id }, ""},
 		{"the identity names another start", "", func(id peerproc.Identity) peerproc.Identity {
 			id.StartTicks++
 			id.StartMicroseconds++
 			return id
-		}},
-		{"the record names another start time", "Fri Oct 23 09:03:25 2026", nil},
-		{"the record has no start time", "", nil},
+		}, ""},
+		{"the record names another start time", "Fri Oct 23 09:03:25 2026", nil, ""},
+		{"the record has no start time", "", nil, ""},
+		{"the identity has a type agentop does not expect", "", nil, `{"bootId":5,"startTicks":"1"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			cmd, exited := startGroupLeader(t)
 			pid := cmd.Process.Pid
 			switch {
+			case tc.raw != "":
+				writeCodexPIDIdentity(t, home, codexUpdaterPIDRel, pid, tc.raw)
 			case tc.identity != nil:
 				id, err := peerproc.ProcessIdentity(int32(pid))
 				if err != nil {
