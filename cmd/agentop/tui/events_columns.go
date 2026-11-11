@@ -844,6 +844,8 @@ func anyColumnSelected(sel map[eventColumnID]bool) bool {
 // row: text that no shown column holds goes in Dropped, so a search still finds it.
 func toolCells(cols []eventColumn, cc cellContext, tr eventRow, sorted bool, now time.Time) (table.Row, table.SearchRow) {
 	t := tr.tool
+	// The model writes the name and the preview, so a control rune must not reach the terminal.
+	name, trailing := sanitizeLabel(t.Name), sanitizeLabel(t.trailing(now))
 	row := make(table.Row, 0, len(cols))
 	var sr table.SearchRow
 	named, spanned := false, false
@@ -867,13 +869,13 @@ func toolCells(cols []eventColumn, cc cellContext, tr eventRow, sorted bool, now
 			}
 		case colAction, colPlugin:
 		case colMethod:
-			v, named = t.Name, true
+			v, named = name, true
 		case colStatus:
 			v = t.status()
 		case colDuration:
 			v = t.durationCell(now)
 		default:
-			row = append(row, t.trailing(now))
+			row = append(row, trailing)
 			spanned = true
 		}
 		if spanned {
@@ -881,13 +883,11 @@ func toolCells(cols []eventColumn, cc cellContext, tr eventRow, sorted bool, now
 		}
 		row = append(row, c.align(v))
 	}
-	if !spanned {
-		if s := t.trailing(now); s != "" {
-			sr.Dropped = append(sr.Dropped, s)
-		}
+	if !spanned && trailing != "" {
+		sr.Dropped = append(sr.Dropped, trailing)
 	}
 	if !named {
-		sr.Dropped = append(sr.Dropped, t.Name)
+		sr.Dropped = append(sr.Dropped, name)
 	}
 	return row, sr
 }

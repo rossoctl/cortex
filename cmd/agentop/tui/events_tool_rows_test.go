@@ -364,3 +364,18 @@ func TestToolRows_LinkedEventNoTools(t *testing.T) {
 		t.Errorf("a linked exchange got the session's tool")
 	}
 }
+
+// The model writes a tool's name and preview: a control rune in either must not reach the
+// terminal, where an OSC 52 sequence would write the clipboard.
+func TestToolRows_ControlRunesRemoved(t *testing.T) {
+	events := slices.Concat(trExchange(1, 10, ""), trExchange(2, 30, ""))
+	m := toolRowsModel(t, events, &timeline.Timeline{Tools: []timeline.Tool{
+		trTool(2, "t1", "Bash\x1b[2J", 12, 16, "echo \x1b]52;c;aGk=\x07"),
+	}})
+	_, row := toolRowAt(t, m, "t1")
+	for _, cell := range []string{toolCell(m, row, colMethod), trailingOf(row)} {
+		if strings.ContainsAny(cell, "\x1b\x07") {
+			t.Errorf("control rune in cell %q", cell)
+		}
+	}
+}
