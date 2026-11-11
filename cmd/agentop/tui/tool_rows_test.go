@@ -289,8 +289,8 @@ func TestIndexTools_BgJobOfAClampedCallFromBuild(t *testing.T) {
 	}
 }
 
-// A reused ID (call_0) gives the subagent's run span only to the first Agent call of its
-// parent, not to every tool with that ID.
+// A reused ID (call_0) gives the subagent's run span only to the call that spawned it,
+// not to every tool with that ID.
 func TestIndexTools_RunOnlyOnTheSpawningCall(t *testing.T) {
 	sub := tlTool(5, "call_0", "Read", 11, 12)
 	sub.Agent = "sub"
@@ -301,12 +301,37 @@ func TestIndexTools_RunOnlyOnTheSpawningCall(t *testing.T) {
 			sub,
 			tlTool(7, "call_0", "Agent", 20, 21),
 		},
-		Agents: []timeline.Agent{{ID: "main"}, {ID: "sub", Parent: "main", SpawnTool: "call_0", SpawnedAt: tlPtr(10), ReturnedAt: tlPtr(14)}},
+		Agents: []timeline.Agent{{ID: "main"}, {ID: "sub", Parent: "main", SpawnTool: "call_0", SpawnedAt: tlPtr(8), ReturnedAt: tlPtr(14)}},
 	}
 	idx := indexTools(tl)
 	for seq, want := range map[uint64]bool{2: false, 3: true, 5: false, 7: false} {
 		if got := idx[seq][0].RunFrom != nil; got != want {
 			t.Errorf("seq %d (%s): has run = %v, want %v", seq, idx[seq][0].Name, got, want)
+		}
+	}
+}
+
+// Two Agent calls reuse call_0 and each spawns its own subagent: each call gets the span of
+// the subagent it spawned. Build sets SpawnedAt to at most the spawning call's Start.
+func TestIndexTools_RunOfEachCallWithAReusedID(t *testing.T) {
+	tl := &timeline.Timeline{
+		Tools: []timeline.Tool{
+			tlTool(2, "call_0", "Agent", 1, 10),
+			tlTool(4, "call_0", "Agent", 3, 4),
+			tlTool(6, "call_0", "Agent", 5, 30),
+			tlTool(8, "call_0", "Task", 40, 41),
+		},
+		Agents: []timeline.Agent{
+			{ID: "main"},
+			{ID: "subB", Parent: "main", SpawnTool: "call_0", SpawnedAt: tlPtr(5), ReturnedAt: tlPtr(30)},
+			{ID: "subA", Parent: "main", SpawnTool: "call_0", SpawnedAt: tlPtr(0.5), ReturnedAt: tlPtr(10)},
+		},
+	}
+	idx := indexTools(tl)
+	for seq, want := range map[uint64]*time.Time{2: tlPtr(0.5), 4: nil, 6: tlPtr(5), 8: nil} {
+		got := idx[seq][0].RunFrom
+		if (got == nil) != (want == nil) || got != nil && !got.Equal(*want) {
+			t.Errorf("seq %d: RunFrom = %v, want %v", seq, got, want)
 		}
 	}
 }

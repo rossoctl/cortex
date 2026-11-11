@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -36,10 +37,40 @@ func indexTools(tl *timeline.Timeline) map[uint64][]toolRow {
 	if tl == nil {
 		return nil
 	}
-	spawned := make(map[string]timeline.Agent, len(tl.Agents))
+	// A reused ID (call_0) can spawn many subagents. Build sets SpawnedAt to at most its call's
+	// Start, so each subagent, earliest first, takes the first free call of its key from then on.
+	type spawnKey struct{ parent, id string }
+	calls := map[spawnKey][]int{}
+	for i, t := range tl.Tools {
+		if t.ID != "" && (t.Name == "Agent" || t.Name == "Task") {
+			k := spawnKey{t.Agent, t.ID}
+			calls[k] = append(calls[k], i)
+		}
+	}
+	var agents []timeline.Agent
 	for _, a := range tl.Agents {
-		if a.SpawnTool != "" {
-			spawned[a.SpawnTool] = a
+		if a.SpawnTool != "" && a.SpawnedAt != nil {
+			agents = append(agents, a)
+		}
+	}
+	sort.SliceStable(agents, func(i, j int) bool { return agents[i].SpawnedAt.Before(*agents[j].SpawnedAt) })
+	runOf := map[int]timeline.Agent{}
+	for _, a := range agents {
+		first := -1 // the first free call; it takes the subagent when no free call starts from then on
+		for _, i := range calls[spawnKey{a.Parent, a.SpawnTool}] {
+			if _, taken := runOf[i]; taken {
+				continue
+			}
+			if first < 0 {
+				first = i
+			}
+			if !tl.Tools[i].Start.Before(*a.SpawnedAt) {
+				first = i
+				break
+			}
+		}
+		if first >= 0 {
+			runOf[first] = a
 		}
 	}
 	// Build ends a call at the request carrying its first result, clamped up to the call's
@@ -83,7 +114,6 @@ func indexTools(tl *timeline.Timeline) map[uint64][]toolRow {
 	}
 
 	idx := make(map[uint64][]toolRow)
-	ran := map[string]bool{} // a reused ID (call_0) gives the span to the first spawning call only
 	for i, t := range tl.Tools {
 		r := toolRow{Tool: t, EndsRun: t.Lost && endsRunTools[t.Name], Pos: len(idx[t.Seq])}
 		if t.End != nil {
@@ -98,9 +128,7 @@ func indexTools(tl *timeline.Timeline) map[uint64][]toolRow {
 				}
 			}
 		}
-		if a, ok := spawned[t.ID]; ok && a.SpawnedAt != nil && a.Parent == t.Agent &&
-			(t.Name == "Agent" || t.Name == "Task") && !ran[t.ID] {
-			ran[t.ID] = true
+		if a, ok := runOf[i]; ok {
 			r.RunFrom, r.RunTo = a.SpawnedAt, a.ReturnedAt
 		}
 		idx[t.Seq] = append(idx[t.Seq], r)
