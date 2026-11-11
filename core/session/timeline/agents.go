@@ -122,7 +122,7 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 				if m := backgroundRe.FindStringSubmatch(r.Content); m != nil {
 					if _, dup := jobs[m[1]]; !dup {
 						jobs[m[1]] = len(t.Jobs)
-						t.Jobs = append(t.Jobs, Job{Agent: c.agent, ID: m[1], Start: c.req.At, Seq: c.req.Seq})
+						t.Jobs = append(t.Jobs, Job{Agent: c.agent, ID: m[1], ToolUseID: r.ToolUseID, Start: c.req.At, Seq: c.req.Seq})
 					}
 				}
 			}

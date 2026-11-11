@@ -333,6 +333,9 @@ func (m *model) forgetSessions(ids []string) {
 			m.detailEvent = nil
 			m.detailPlugin = nil
 		}
+		if m.timeline.session == id {
+			m.setTimelineSession("") // a #1542 retention key, like selectedSess
+		}
 	}
 	m.sessions = slices.DeleteFunc(m.sessions, func(s session.SessionSummary) bool {
 		return slices.Contains(ids, s.ID)
@@ -368,6 +371,7 @@ func (m *model) resetAfterClear() {
 	m.detailEvent = nil
 	m.detailPlugin = nil
 	m.selectedSess = ""
+	m.setTimelineSession("") // a #1542 retention key, like selectedSess
 	m.selectedEventKey = eventKey{}
 	m.visibleRows = nil
 	if m.pane != paneAgents {

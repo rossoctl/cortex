@@ -113,7 +113,11 @@ func TestHistory_AnArchivedSessionIsListedAndOpens(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Enter on an archived row fetched nothing")
 	}
-	m.Update(cmd())
+	msg := cmd()
+	if b, ok := msg.(tea.BatchMsg); ok {
+		msg = b[0]() // the snapshot; the timeline fetch for the tool rows comes after it
+	}
+	m.Update(msg)
 	if n := len(m.events["old"]); n != 4 {
 		t.Fatalf("the archived timeline holds %d events, want 4", n)
 	}

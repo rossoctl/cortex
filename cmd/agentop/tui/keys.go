@@ -511,6 +511,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// picker mode it backs out further to the Pods picker, tearing down PF +
 		// SSE. It is the ONLY pane that does that — a key-opened surface returning
 		// to its caller must never cost the connection.
+		from := m.pane
 		switch m.pane {
 		case panePluginDetail:
 			// Return to whichever pane invoked the detail (Pipeline or Catalog).
@@ -564,12 +565,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				m.pane = paneSessions
 			}
 			m.timeline.tickGen++
-			// The timeline's session is a #1542 retention key (watchingSession),
+			// Back on the events or detail pane, the timeline follows that pane's session
+			// for its tool rows. That session is selectedSess, so it adds no retention.
+			if (m.pane == paneEvents || m.pane == paneDetail) && m.selectedSess != "" {
+				return m.followEventsTimeline()
+			}
+			// Else the timeline's session is a #1542 retention key (watchingSession),
 			// so it must not outlive the pane: left set, it would keep streaming
-			// that session's events for the rest of the run. Cleared here rather
-			// than pane-checked in the predicate — the drill-down path
-			// (openEventsAtSeq) clears it too, the session staying watched
-			// through selectedSess.
+			// that session's events for the rest of the run.
 			m.timeline.session = ""
 		case paneUsage:
 			// Return to whichever pane opened it, from usageState's own field —
@@ -620,6 +623,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if m.parentCtx != nil {
 				m.backToPodsPane()
 			}
+		}
+		// Back on the events or detail pane from a pane opened over it: the timeline tick
+		// stopped on that pane, so start it again for the tool rows.
+		if from != paneEvents && from != paneDetail && m.timelineChainLive() {
+			return m.resumeTimeline()
 		}
 		return nil
 
@@ -720,11 +728,13 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if !live[id] {
 				// Cached-only: there is no server-side session to snapshot, so the
 				// fetch would 404 and flash an error over the very events this
-				// change preserved.
-				return nil
+				// change preserved. Its timeline would 404 too: start only the
+				// chain, which fetches once the proxy lists the session again.
+				return m.followEventsTimeline()
 			}
+			follow := m.followEventsTimeline()
 			// Snapshot in case the stream hasn't yet delivered history.
-			return m.snapshotCmd(id)
+			return tea.Batch(m.snapshotCmd(id), follow)
 		case paneDetail:
 			// Enter is the only fold key, so → and l stay as they were: nothing.
 			if msg.String() == "enter" {
@@ -742,8 +752,8 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				return nil
 			}
 			er, ok := m.selectedEventRow()
-			if !ok {
-				return nil
+			if !ok || er.tool != nil {
+				return nil // a tool row opens nothing (#1776)
 			}
 			// Render from the summary immediately, then fill the message bodies in
 			// when they arrive — the timeline no longer carries them. See
@@ -1027,7 +1037,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// The operator moved the cursor: an event the Timeline asked to land on no longer applies.
 		m.revealSeq, m.revealSess = 0, ""
 		m.eventsTbl, cmd = m.eventsTbl.Update(msg)
-		m.selectedEventKey = keyOf(m.selectedEvent())
+		m.selectedEventKey = m.selectedPinKey()
 		return cmd
 	case paneDetail:
 		m.detailCursorKey(msg.String())
@@ -1085,7 +1095,7 @@ func (m *model) goTop() {
 		setCursorVisible(&m.sessionsTbl, 0)
 	case paneEvents:
 		setCursorVisible(&m.eventsTbl, 0)
-		m.selectedEventKey = keyOf(m.selectedEvent())
+		m.selectedEventKey = m.selectedPinKey()
 		// `g` is an explicit "take me to the oldest end", so it also becomes where
 		// the next session opens — see EventSettings.OpenAtOldest.
 		m.setOpenAtOldest(true)
@@ -1104,7 +1114,7 @@ func (m *model) goBottom() {
 		setCursorVisible(&m.sessionsTbl, len(m.sessionsTbl.Rows())-1)
 	case paneEvents:
 		setCursorVisible(&m.eventsTbl, len(m.eventsTbl.Rows())-1)
-		m.selectedEventKey = keyOf(m.selectedEvent())
+		m.selectedEventKey = m.selectedPinKey()
 		// The mirror of `g` above: back to the tail, and that is where the next
 		// session opens.
 		m.setOpenAtOldest(false)
@@ -1141,7 +1151,7 @@ func (m *model) pageActivePane(msg tea.KeyMsg) tea.Cmd {
 	switch m.pane {
 	case paneEvents:
 		page(&m.eventsTbl)
-		m.selectedEventKey = keyOf(m.selectedEvent())
+		m.selectedEventKey = m.selectedPinKey()
 	case paneSessions:
 		page(&m.sessionsTbl)
 	case panePipeline:

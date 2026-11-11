@@ -554,7 +554,7 @@ func TestHelpOverlayScrollKeys(t *testing.T) {
 // that no longer existed. Too small fails loudly; too large fails silently.
 const (
 	helpWideTerminal   = 100
-	helpNoScrollHeight = 119
+	helpNoScrollHeight = 121
 )
 
 // With everything visible there must be no scroll affordance — it would be noise
@@ -712,6 +712,23 @@ func TestPaneKeys_TheAgentsNoteSaysWhatTheScopeReaches(t *testing.T) {
 	for _, surface := range []string{"sessions", "usage pane", "spend band"} {
 		if !strings.Contains(joined, surface) || strings.Contains(joined, "not the "+surface) {
 			t.Errorf("the AGENTS note does not say the scope reaches the %s:\n  %s", surface, joined)
+		}
+	}
+}
+
+// The events help and the DURATION column both say how a tool's time is measured.
+func TestHelp_EventsExplainsToolTime(t *testing.T) {
+	const phrase = "for a tool: from the reply to the next request of the same agent"
+	var help []string
+	for _, b := range paneKeys[paneEvents].bindings {
+		help = append(help, b.desc)
+	}
+	if !strings.Contains(strings.Join(help, "\n"), phrase) {
+		t.Errorf("the events help does not contain %q", phrase)
+	}
+	for _, c := range eventColumns {
+		if c.id == colDuration && !strings.Contains(c.desc, phrase) {
+			t.Errorf("the DURATION desc %q does not contain %q", c.desc, phrase)
 		}
 	}
 }

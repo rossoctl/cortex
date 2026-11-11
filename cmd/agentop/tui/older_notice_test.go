@@ -237,7 +237,7 @@ func TestOlderRow_StaysFirstUnderASort(t *testing.T) {
 		if desc {
 			want = 510
 		}
-		if e := m.selectedEventOn(1); e == nil || e.Seq != want {
+		if e := m.selectedRowOn(1).event; e == nil || e.Seq != want {
 			t.Errorf("desc=%v: row 1 is %+v, want Seq %d", desc, e, want)
 		}
 	}

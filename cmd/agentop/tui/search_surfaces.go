@@ -105,7 +105,7 @@ func (s eventsSurface) matchLines() []int { return s.m.eventsTbl.Matches() }
 func (s eventsSurface) spot() searchSpot {
 	c := s.m.eventsTbl.Cursor()
 	return searchSpot{
-		row: c, event: keyOf(s.m.selectedEvent()),
+		row: c, event: s.m.selectedPinKey(),
 		tail: s.m.sortCol == "" && c >= len(s.m.eventsTbl.Rows())-1,
 	}
 }
@@ -123,7 +123,7 @@ func (s eventsSurface) lineOf(sp searchSpot) int {
 // keeps the cursor on it — through an eviction or a re-sort — instead of on its row number.
 func (s eventsSurface) reveal(i int) {
 	setCursorVisible(&s.m.eventsTbl, i)
-	s.m.selectedEventKey = keyOf(s.m.selectedEvent())
+	s.m.selectedEventKey = s.m.selectedPinKey()
 }
 
 // restore puts a following cursor back on the newest row, so it goes on following.

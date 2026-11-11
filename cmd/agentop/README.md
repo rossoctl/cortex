@@ -1112,6 +1112,14 @@ agentop is for, and the other four are surfaces you visit and leave.
   toward. Sorting never changes the `#` numbers or a row's figures. It reorders the
   finished rows only.
 
+  Each tool call has its own row under the exchange whose response asked for it.
+  Its `#` cell is `┣⚒` or `┗⚒` (the last tool of the exchange). In a sorted view it
+  is `↳<n>`, where `<n>` is the `#` of that exchange. From exchange 1000 it is `<n>`
+  only, because the column has no space for `↳`. The tool's DURATION is measured
+  from outside the agent: from the reply to the next request of the same agent. So
+  it includes the client's own delay, and it can miss a tool that started while the
+  reply still streamed.
+
   The twelve default columns together need about 180 terminal columns, so the table
   drops what does not fit and the footer says how many (`→ N more columns`). Columns carry a
   keep rank rather than being equally expendable: DIR, DURATION, TOKENS and COST

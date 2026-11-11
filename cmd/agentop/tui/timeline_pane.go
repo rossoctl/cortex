@@ -77,8 +77,11 @@ type timelineState struct {
 	// it shows "all" without changing it; see window.
 	windowIdx int
 	tl        *timeline.Timeline
-	err       error
-	loading   bool
+	// tools is tl's tools by the seq of the response that asked for them, for the events
+	// table. It is set with tl, once per fetch.
+	tools   map[uint64][]toolRow
+	err     error
+	loading bool
 	// stale is set when the stream delivers an event for this session; the next tick refetches.
 	stale bool
 	// fails counts consecutive failed fetches, and retryAt is when the next may go; see
@@ -128,18 +131,55 @@ func (t *timelineState) window(now time.Time) int {
 func (m *model) openTimeline(session string) tea.Cmd {
 	m.timeline.returnPane = m.pane
 	m.pane = paneTimeline
-	if m.timeline.session != session {
-		m.timeline.tl, m.timeline.err, m.timeline.cursor, m.timeline.scroll = nil, nil, -1, 0
-		m.timeline.fails, m.timeline.retryAt = 0, time.Time{}
-	}
-	m.timeline.session = session
+	m.setTimelineSession(session)
 	return m.resumeTimeline()
 }
 
-// resumeTimeline starts one refresh chain and fetches now.
+// setTimelineSession makes session the timeline's session. A change drops what the previous
+// session loaded, and makes its in-flight reply and its tick chain stale, so neither lands on
+// the new session.
+func (m *model) setTimelineSession(session string) {
+	if m.timeline.session != session {
+		m.timeline.tl, m.timeline.tools, m.timeline.err, m.timeline.cursor, m.timeline.scroll = nil, nil, nil, -1, 0
+		m.timeline.fails, m.timeline.retryAt = 0, time.Time{}
+		m.timeline.reqSeq++
+		m.timeline.tickGen++
+		m.timeline.loading, m.timeline.stale = false, false
+	}
+	m.timeline.session = session
+}
+
+// followEventsTimeline starts the timeline fetch chain for the session the events pane shows.
+// The timeline session is then selectedSess, so it adds no #1542 retention.
+func (m *model) followEventsTimeline() tea.Cmd {
+	if m.selectedSess == "" {
+		return nil
+	}
+	m.setTimelineSession(m.selectedSess)
+	return m.resumeTimeline()
+}
+
+// timelineChainLive reports a pane that uses the timeline: the Timeline pane, or the events
+// and detail panes while the timeline follows their session.
+func (m *model) timelineChainLive() bool {
+	switch m.pane {
+	case paneTimeline:
+		return true
+	case paneEvents, paneDetail:
+		return m.selectedSess != "" && m.timeline.session == m.selectedSess
+	}
+	return false
+}
+
+// resumeTimeline starts one refresh chain and fetches now if the proxy lists the session.
 func (m *model) resumeTimeline() tea.Cmd {
 	m.timeline.tickGen++
-	return tea.Batch(m.fetchTimeline(), timelineTick(m.timeline.tickGen))
+	var fetch tea.Cmd
+	// cached-only: the proxy has no timeline for it, so a fetch only 404s
+	if m.sessionServed(m.timeline.session) {
+		fetch = m.fetchTimeline()
+	}
+	return tea.Batch(fetch, timelineTick(m.timeline.tickGen))
 }
 
 func timelineTick(gen uint64) tea.Cmd {
@@ -183,7 +223,11 @@ func (m *model) handleTimelineLoaded(msg timelineLoadedMsg) {
 		return
 	}
 	m.timeline.tl, m.timeline.err, m.timeline.fetchedAt = msg.tl, nil, m.clock()
+	m.timeline.tools = indexTools(msg.tl)
 	m.timeline.fails, m.timeline.retryAt = 0, time.Time{}
+	if m.pane == paneEvents && m.timeline.session == m.selectedSess {
+		m.rebuildEventsTable()
+	}
 }
 
 // sessionServed reports a session the proxy lists, so it can be snapshotted and has a timeline.
@@ -197,7 +241,7 @@ func (m *model) sessionServed(id string) bool {
 }
 
 func (m *model) handleTimelineTick(msg timelineTickMsg) tea.Cmd {
-	if m.pane != paneTimeline || msg.gen != m.timeline.tickGen {
+	if !m.timelineChainLive() || msg.gen != m.timeline.tickGen {
 		return nil
 	}
 	t := &m.timeline
@@ -206,8 +250,12 @@ func (m *model) handleTimelineTick(msg timelineTickMsg) tea.Cmd {
 	idle := !t.fetchedAt.IsZero() && now.Sub(t.fetchedAt) >= timelineIdleRefresh && m.timelineLive()
 	// A failed fetch is retried on its backoff, and holds back the other triggers until then: a
 	// stream event or a live session's idle refresh would otherwise retry a dead proxy every tick.
-	retry := t.err != nil && !errors.Is(t.err, errTimelineUnsupported)
-	if waiting := !t.retryAt.IsZero() && now.Before(t.retryAt); (t.stale || idle || retry) && !waiting && !t.loading {
+	unsupported := errors.Is(t.err, errTimelineUnsupported)
+	retry := t.err != nil && !unsupported
+	// The chain outlives a list refresh that omits the session (#870); only the fetch waits.
+	served := m.sessionServed(t.session)
+	pending := t.tl == nil && t.err == nil // never fetched: resumeTimeline skipped it while unlisted
+	if waiting := !t.retryAt.IsZero() && now.Before(t.retryAt); (t.stale || idle || retry || pending) && served && !unsupported && !waiting && !t.loading {
 		fetch = m.fetchTimeline()
 	}
 	return tea.Batch(fetch, timelineTick(msg.gen))
@@ -485,10 +533,9 @@ func (m *model) openEventsAtSeq(session string, seq uint64) tea.Cmd {
 	}
 	m.selectedSess = session
 	m.pane = paneEvents
-	// Leaving the timeline pane: its session is a #1542 retention key, so the
-	// drill-down drops it the same way Esc does — the session stays watched
-	// through selectedSess, which the lines above just set.
-	m.timeline.session = ""
+	// The timeline keeps its session for the events pane's tool rows. That session is
+	// selectedSess, which the lines above just set, so it adds no #1542 retention.
+	follow := m.followEventsTimeline()
 	m.revealSeq, m.revealSess = seq, session
 	m.rebuildEventsTable()
 	revealed := m.revealPendingSeq()
@@ -496,9 +543,9 @@ func (m *model) openEventsAtSeq(session string, seq uint64) tea.Cmd {
 		if !revealed {
 			m.revealSeq, m.revealSess = 0, ""
 		}
-		return nil
+		return follow
 	}
-	return m.snapshotCmd(session)
+	return tea.Batch(m.snapshotCmd(session), follow)
 }
 
 // revealPendingSeq moves the events cursor to revealSeq if that event is on screen in its own
@@ -632,6 +679,9 @@ func (m *model) renderTimeline() string {
 			wait = fmt.Sprintf(" in %ds", int(left.Round(time.Second).Seconds()))
 		}
 		b.WriteString(styleMuted.Render("  loading… the last try failed, retrying"+wait+": "+t.err.Error()) + "\n")
+		return b.String()
+	case t.tl == nil && !m.sessionServed(t.session):
+		b.WriteString(styleMuted.Render("  The proxy no longer has this session, so it has no timeline.") + "\n")
 		return b.String()
 	case t.tl == nil:
 		b.WriteString(styleMuted.Render("  loading…") + "\n")

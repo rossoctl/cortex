@@ -27,6 +27,13 @@ type eventKey struct {
 	direction pipeline.Direction
 	phase     pipeline.SessionPhase
 	requestID string
+	// isTool, tool, toolAgent and toolSeq pin a tool row: its tool ID, agent and response seq.
+	// The seq tells apart two calls with one ID: some local models send call_0 on every turn,
+	// and some send no ID. toolPos tells apart two calls with no ID in one response.
+	isTool          bool
+	tool, toolAgent string
+	toolSeq         uint64
+	toolPos         int
 }
 
 func keyOf(e *pipeline.SessionEvent) eventKey {
@@ -36,10 +43,29 @@ func keyOf(e *pipeline.SessionEvent) eventKey {
 	return eventKey{at: e.At.UnixNano(), direction: e.Direction, phase: e.Phase, requestID: e.RequestID}
 }
 
+// pinKeyOf is the pin key of row er: its tool for a tool row, else its event.
+func pinKeyOf(er eventRow) eventKey {
+	if er.tool != nil {
+		return eventKey{isTool: true, tool: er.tool.ID, toolAgent: er.tool.Agent, toolSeq: er.tool.Seq, toolPos: er.tool.Pos}
+	}
+	return keyOf(er.event)
+}
+
+// selectedPinKey is the pin key of the row under the cursor.
+func (m *model) selectedPinKey() eventKey {
+	return pinKeyOf(m.selectedRowOn(m.eventsTbl.Cursor()))
+}
+
 // findByKey is the row that holds the event with key k, by either half (#1681). A pin can
 // name a response: a response-only row is keyed by it, and the row merges with its request
 // when the older page with the request loads.
 func findByKey(rows []eventRow, k eventKey) int {
+	if k.isTool {
+		return slices.IndexFunc(rows, func(r eventRow) bool {
+			return r.tool != nil && r.tool.ID == k.tool && r.tool.Agent == k.toolAgent && r.tool.Seq == k.toolSeq &&
+				r.tool.Pos == k.toolPos
+		})
+	}
 	return slices.IndexFunc(rows, func(r eventRow) bool {
 		return rowHolds(r, func(e *pipeline.SessionEvent) bool { return keyOf(e) == k })
 	})
@@ -86,6 +112,10 @@ type eventRow struct {
 	// pane fetched them for.
 	raw     *pipeline.RawCapture
 	respRaw *pipeline.RawCapture
+	// tool is set on a tool row (#1776), which has no event. last is set on the last tool
+	// of its exchange.
+	tool *toolRow
+	last bool
 }
 
 // invocations returns every plugin invocation the row's ACTION/PLUGIN cell and the inactive
@@ -133,7 +163,9 @@ func (m *model) rebuildEventsTable() {
 	}
 
 	prevRow := m.eventsTbl.Cursor()
-	wasAtEnd := prevRow >= len(m.eventsTbl.Rows())-1
+	// A tool pin that waits for its timeline left the cursor on a stand-in row, not at the end.
+	pinWaits := m.selectedEventKey.isTool && findByKey(m.visibleRows, m.selectedEventKey) < 0
+	wasAtEnd := prevRow >= len(m.eventsTbl.Rows())-1 && !pinWaits
 
 	// One display row per network message. CONNECT tunnel-opens are folded
 	// into the decrypted inner request that immediately follows them (TLS
@@ -259,6 +291,20 @@ func (m *model) rebuildEventsTable() {
 			}
 		}
 	}
+	// Tool rows (#1776) join an exchange by its response's seq, only for the session the
+	// timeline is for: a linked bucket's events carry seqs of another session.
+	var tools map[uint64][]toolRow
+	if m.timeline.session == m.selectedSess {
+		tools = m.timeline.tools
+	}
+	toolsOf := func(er eventRow) []toolRow {
+		resp := exchangeResp(er)
+		if len(tools) == 0 || resp == nil || resp.Seq == 0 || eventSession(m.selectedSess, resp) != m.selectedSess {
+			return nil
+		}
+		return tools[resp.Seq]
+	}
+	now := m.clock()
 	q := m.searchQuery(paneEvents)
 	var full []table.SearchRow
 	var droppedCols []eventColumn
@@ -271,8 +317,9 @@ func (m *model) rebuildEventsTable() {
 	// renderEventRow appends one event's cells to every parallel structure the
 	// pane keeps — the table's rows, visibleRows, and the search rows — so the
 	// two places a row can render from (its own loop turn, or its block's
-	// expansion below) cannot drift apart.
-	renderEventRow := func(j int) {
+	// expansion below) cannot drift apart. The exchange's tool rows follow it, and it
+	// returns them.
+	renderEventRow := func(j int) []toolRow {
 		cc := ctxs[j]
 		row := make(table.Row, 0, len(cols))
 		for _, c := range cols {
@@ -293,6 +340,17 @@ func (m *model) rebuildEventsTable() {
 		if q != "" {
 			full = append(full, eventSearchRow(cols, droppedCols, cc))
 		}
+		ts := toolsOf(cc.row)
+		for i := range ts {
+			tr := eventRow{tool: &ts[i], last: i == len(ts)-1}
+			cells, sr := toolCells(cols, cc, tr, sortCol != nil, now)
+			rows = append(rows, cells)
+			m.visibleRows = append(m.visibleRows, tr)
+			if q != "" {
+				full = append(full, sr)
+			}
+		}
+		return ts
 	}
 	for j, cc := range ctxs {
 		// hideInactive (the `s` toggle) is off by default — every message is
@@ -347,7 +405,7 @@ func (m *model) rebuildEventsTable() {
 			continue
 		}
 
-		renderEventRow(j)
+		ts := renderEventRow(j)
 		// Keyed from the SAME cellContext that just rendered the row, so the value
 		// sorted on and the value displayed cannot come apart. cc.width stays zero
 		// here — render takes its own copy — and no sortKey reads it.
@@ -361,7 +419,11 @@ func (m *model) rebuildEventsTable() {
 		// because blocks exist only while no sort is active (see the collection
 		// above), so a row the sort needs cannot be skipped by a block.
 		if sortCol != nil {
-			keys = append(keys, rowKey{val: sortCol.sortKey(cc), exchange: j})
+			k := sortCol.sortKey(cc)
+			keys = append(keys, rowKey{val: k, exchange: j})
+			for i := range ts {
+				keys = append(keys, rowKey{val: toolSortKey(sortCol.id, ts[i], k.numeric, now), exchange: j})
+			}
 		}
 	}
 	// Sort the OUTPUT, never the input. buildEventRows' tunnel fold, the backward
@@ -443,7 +505,7 @@ func (m *model) rebuildEventsTable() {
 	// zero-valued: a real pin, including one the eviction branch below deliberately
 	// cleared, must not be overwritten.
 	if m.sortCol != "" && m.selectedEventKey == (eventKey{}) {
-		m.selectedEventKey = keyOf(m.selectedEventOn(prevRow))
+		m.selectedEventKey = pinKeyOf(m.selectedRowOn(prevRow))
 	}
 
 	// An OPENING, not a refresh: the session under the table changed. This is the
@@ -484,10 +546,15 @@ func (m *model) rebuildEventsTable() {
 	// operator actually wants followed.
 	case wasAtEnd && m.sortCol == "":
 		target = len(rows) - 1
+		// Move a tool pin to the new last row: a pin left on an older tool row pulls the cursor
+		// back to it when a later timeline lands, and ends tail-follow.
+		if m.selectedEventKey.isTool {
+			m.selectedEventKey = pinKeyOf(m.selectedRowOn(target))
+		}
 	case m.selectedEventKey != (eventKey{}):
 		if idx := findByKey(m.visibleRows, m.selectedEventKey); idx >= 0 {
 			target = idx
-		} else {
+		} else if !m.selectedEventKey.isTool || m.toolsLoaded() {
 			// Event evicted — clamp to the oldest surviving row,
 			// the nearest edge to where the pin was, and drop the stale
 			// key so internal state matches what the operator sees.
@@ -496,6 +563,12 @@ func (m *model) rebuildEventsTable() {
 		}
 	}
 	setCursorVisible(&m.eventsTbl, target)
+}
+
+// toolsLoaded reports that the events pane's session has its timeline, or that its fetch
+// failed. Until then a tool pin that matches no row is kept.
+func (m *model) toolsLoaded() bool {
+	return m.timeline.session == m.selectedSess && (m.timeline.tl != nil || m.timeline.err != nil)
 }
 
 // sortEventRows reorders the rendered rows by their sort keys (#865).
@@ -570,18 +643,18 @@ func sortEventRows(rows []table.Row, visible []eventRow, full []table.SearchRow,
 	}
 }
 
-// selectedEventOn returns the event at an arbitrary row of the rows just built, or
-// nil when the row is out of range.
+// selectedRowOn returns the row at an arbitrary row of the rows just built, or the zero
+// eventRow when the row is out of range.
 //
-// Distinct from selectedEvent, which reads the TABLE's cursor: during a rebuild the
+// Distinct from selectedEventRow, which reads the TABLE's cursor: during a rebuild the
 // table has already been handed the new rows but the cursor has not been restored
 // yet, so the only meaningful row index is the one carried over from before the
 // rebuild. Used to seed the sort pin from that row.
-func (m *model) selectedEventOn(row int) *pipeline.SessionEvent {
+func (m *model) selectedRowOn(row int) eventRow {
 	if row < 0 || row >= len(m.visibleRows) {
-		return nil
+		return eventRow{}
 	}
-	return m.visibleRows[row].event
+	return m.visibleRows[row]
 }
 
 // selectedEvent returns the event at the cursor row, or nil. The cursor

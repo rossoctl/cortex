@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 )
@@ -237,4 +238,62 @@ func TestSectionRowSearches(t *testing.T) {
 	if got := tb.Matches(); !slices.Equal(got, []int{1}) {
 		t.Errorf("matches = %v, want [1]", got)
 	}
+}
+
+// spanTable has columns 4, 6, 6, 6 wide. A full row is 30 columns: each cell has 1 column
+// of padding at each side.
+func spanTable(rows []table.Row) table.Model {
+	tb := table.New(
+		table.WithColumns([]table.Column{
+			{Title: "w", Width: 4}, {Title: "x", Width: 6}, {Title: "y", Width: 6}, {Title: "z", Width: 6},
+		}),
+		table.WithRows(rows),
+		table.WithFocused(true),
+	)
+	tb.SetHeight(len(rows) + 1)
+	return tb
+}
+
+const fullRowWidth = 30
+
+// A row with fewer cells than columns (and more than one) puts its last cell across the
+// remaining columns: 6 + 6 + 2 columns of padding between them = 14 columns of text.
+func TestRenderRow_LastCellSpans(t *testing.T) {
+	tb := spanTable([]table.Row{{"a", "b", "long text that is twenty"}, {"c", "d", "e", "f"}})
+	l := stripEsc(lineFor(t, tb, "long text"))
+	if !strings.Contains(l, "long text tha…") {
+		t.Errorf("the last cell does not span 14 columns: %q", l)
+	}
+	if got, full := lipgloss.Width(l), lipgloss.Width(stripEsc(lineFor(t, tb, "c"))); got != fullRowWidth || full != fullRowWidth {
+		t.Errorf("width = %d, full row = %d, want %d", got, full, fullRowWidth)
+	}
+}
+
+func TestRenderRow_SpanTruncatesAtTableWidth(t *testing.T) {
+	tb := spanTable([]table.Row{{"a", "b", strings.Repeat("y", 80)}})
+	l := strings.TrimRight(stripEsc(lineFor(t, tb, "yyy")), " ")
+	if !strings.HasSuffix(l, "…") {
+		t.Errorf("a long last cell does not end in an ellipsis: %q", l)
+	}
+	if w := lipgloss.Width(stripEsc(lineFor(t, tb, "yyy"))); w > fullRowWidth {
+		t.Errorf("width = %d, wider than a full row (%d)", w, fullRowWidth)
+	}
+}
+
+func TestRenderRow_SpanKeepsCursorAndMatchStyles(t *testing.T) {
+	s := searchStyles(t)
+	tb := spanTable([]table.Row{{"a", "b", "spanned-x"}, {"c", "d", "the needle"}})
+	tb.SetStyles(s)
+	if l := lineFor(t, tb, "spanned-x"); !strings.Contains(l, s.Selected.Render("spanned-x     ")) {
+		t.Errorf("the cursor row's spanning cell is not in Selected across its 14 columns: %q", l)
+	}
+	tb.SetSearch("needle", nil)
+	if l := lineFor(t, tb, "the needle"); !strings.Contains(l, s.Match.Render("needle")) {
+		t.Errorf("a hit in the spanning cell is not drawn in Match: %q", l)
+	}
+}
+
+// A row with no cells renders blank, as it did before rows could span.
+func TestRenderRow_EmptyRowRenders(t *testing.T) {
+	_ = spanTable([]table.Row{{}, {"a", "b"}}).View()
 }

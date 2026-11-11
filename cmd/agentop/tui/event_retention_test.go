@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -210,11 +211,12 @@ func TestPickingAnotherSession_KeepsCachedOnlySessions(t *testing.T) {
 // events this change preserves.
 func TestOpeningCachedOnlySession_SkipsTheSnapshot(t *testing.T) {
 	m := newRetentionModel(t, "gone-session", 3)
+	m.client, m.ctx = deadClient(), context.Background()
 	m.Update(sessionsLoadedMsg{}) // restart; nothing is live
 	m.rebuildSessionsTable()
 	m.pane = paneSessions
 
-	if cmd := m.handleKey(keyRune('l')); cmd != nil {
+	if snapshotted(cmdMsgs(m.handleKey(keyRune('l')))) {
 		t.Error("a snapshot was issued for a session the server does not have; " +
 			"it will 404 and flash an error over the retained events")
 	}
@@ -224,10 +226,11 @@ func TestOpeningCachedOnlySession_SkipsTheSnapshot(t *testing.T) {
 // in would render empty.
 func TestOpeningLiveSession_StillSnapshots(t *testing.T) {
 	m := newRetentionModel(t, "live", 3)
+	m.client, m.ctx = deadClient(), context.Background()
 	m.rebuildSessionsTable()
 	m.pane = paneSessions
 
-	if cmd := m.handleKey(keyRune('l')); cmd == nil {
+	if !snapshotted(cmdMsgs(m.handleKey(keyRune('l')))) {
 		t.Error("no snapshot for a live session")
 	}
 }

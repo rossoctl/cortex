@@ -307,7 +307,7 @@ var eventColumns = []eventColumn{
 	// 9 is the heading with a sort glyph, which is wider than anything durationCell
 	// produces ("12.34s", "59m59s").
 	{id: colDuration, width: 9, defaultOn: true, keep: keepLow, rightAlign: true,
-		desc:    "how long the exchange took",
+		desc:    "how long the exchange took; for a tool: from the reply to the next request of the same agent",
 		cell:    func(c cellContext) string { return durationCell(*answer(c.row)) },
 		sortKey: durationSortKey},
 	// On by default since #1309. It was off because only an opaque tunnel's close row had
@@ -836,4 +836,75 @@ func anyColumnSelected(sel map[eventColumnID]bool) bool {
 		}
 	}
 	return false
+}
+
+// toolCells is the cells of tool row tr (#1776), whose exchange is cc. The columns up to
+// DURATION get the tool's own cells. At the first shown column after them, one last cell
+// holds the trailing text, and the table spans it to the right edge. sr is the row's search
+// row: text that no shown column holds goes in Dropped, so a search still finds it.
+func toolCells(cols []eventColumn, cc cellContext, tr eventRow, sorted bool, now time.Time) (table.Row, table.SearchRow) {
+	t := tr.tool
+	// The model writes the name and the preview, so a control rune must not reach the terminal.
+	name, trailing := sanitizeLabel(t.Name), sanitizeLabel(t.trailing(now))
+	row := make(table.Row, 0, len(cols))
+	var sr table.SearchRow
+	named, spanned := false, false
+	for _, c := range cols {
+		var v string
+		switch c.id {
+		case colIndex:
+			switch {
+			case sorted:
+				if v = c.cell(cc); len(v) < c.width {
+					v = "↳" + v // the number wins when both do not fit
+				}
+			case tr.last:
+				v = "┗⚒"
+			default:
+				v = "┣⚒"
+			}
+		case colTime:
+			v = t.Start.Format("15:04:05.00")
+		case colDir:
+			if cc.row.event.Subagent != "" && cc.m.subagentBlocks != nil {
+				v = "│"
+			}
+		case colAction, colPlugin:
+		case colMethod:
+			v, named = name, true
+		case colStatus:
+			v = t.status()
+		case colDuration:
+			v = t.durationCell(now)
+		default:
+			row = append(row, trailing)
+			spanned = true
+		}
+		if spanned {
+			break
+		}
+		row = append(row, c.align(v))
+	}
+	if !spanned && trailing != "" {
+		sr.Dropped = append(sr.Dropped, trailing)
+	}
+	if !named {
+		sr.Dropped = append(sr.Dropped, name)
+	}
+	return row, sr
+}
+
+// toolSortKey is a tool row's sort value on column id (rule 11). A column with no tool value
+// gives the zero value, with numeric as the column's other keys have it, so less compares the
+// same field on every row.
+func toolSortKey(id eventColumnID, t toolRow, numeric bool, now time.Time) sortValue {
+	switch id {
+	case colDuration:
+		return numKey(t.duration(now))
+	case colTime:
+		return numKey(t.Start.UnixNano())
+	case colMethod:
+		return strKey(t.Name)
+	}
+	return sortValue{numeric: numeric}
 }

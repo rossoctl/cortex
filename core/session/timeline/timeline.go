@@ -109,11 +109,13 @@ type Tool struct {
 // running in background with ID: …") to the <task-notification> naming that id. Its tool call
 // ends at the acknowledgement, so without this the agent looks idle while the job runs.
 type Job struct {
-	Agent string     `json:"agent"`
-	ID    string     `json:"id"`
-	Start time.Time  `json:"start"`
-	End   *time.Time `json:"end,omitempty"`
-	Seq   uint64     `json:"seq"`
+	Agent string `json:"agent"`
+	ID    string `json:"id"`
+	// ToolUseID is the Bash call whose result started the job. Empty from an older proxy.
+	ToolUseID string     `json:"toolUseId,omitempty"`
+	Start     time.Time  `json:"start"`
+	End       *time.Time `json:"end,omitempty"`
+	Seq       uint64     `json:"seq"`
 }
 
 // Return is a subagent's result reaching another agent's context.

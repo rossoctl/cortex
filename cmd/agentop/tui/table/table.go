@@ -570,10 +570,16 @@ func (m Model) headersView() string {
 // truncated first cell. No caller rendered a one-cell row before this (the pipeline
 // pane's "── (app) ──" divider carries a cell per column), so the convention changes
 // nothing that existed.
+//
+// A row of n cells, with 1 < n < len(cols), draws cells 0..n-2 in their columns and cell
+// n-1 across all the remaining columns. That cell is as wide as the remaining columns
+// together, plus the padding between them, so the line is as wide as a full row. The
+// events pane's tool rows use it for their last cell. Rows of other shapes are unchanged.
 func (m *Model) renderRow(r int) string {
 	if len(m.rows[r]) == 1 {
 		return m.renderSectionRow(r)
 	}
+	widths := m.cellWidths(len(m.rows[r]))
 	texts := make([]string, len(m.rows[r]))
 	var spans [][]find.Range
 	if r < len(m.hits) && m.hits[r] {
@@ -581,10 +587,10 @@ func (m *Model) renderRow(r int) string {
 	}
 	lit := false
 	for i, value := range m.rows[r] {
-		if m.cols[i].Width <= 0 {
+		if widths[i] <= 0 {
 			continue
 		}
-		texts[i] = runewidth.Truncate(value, m.cols[i].Width, "…")
+		texts[i] = runewidth.Truncate(value, widths[i], "…")
 		if spans != nil {
 			spans[i] = m.cellSpans(r, i, texts[i])
 			lit = lit || len(spans[i]) > 0
@@ -602,20 +608,45 @@ func (m *Model) renderRow(r int) string {
 
 	s := make([]string, 0, len(m.cols))
 	for i := range m.rows[r] {
-		if m.cols[i].Width <= 0 {
+		if widths[i] <= 0 {
 			continue
 		}
 		var sp []find.Range
 		if spans != nil {
 			sp = spans[i]
 		}
-		box := lipgloss.NewStyle().Width(m.cols[i].Width).MaxWidth(m.cols[i].Width).Inline(true).Inherit(row)
+		box := lipgloss.NewStyle().Width(widths[i]).MaxWidth(widths[i]).Inline(true).Inherit(row)
 		// Filled to the column before it is painted, so the text and the padding after it are
 		// one run in the row's style rather than a run and a pad lipgloss styles apart.
-		filled := runewidth.FillRight(texts[i], m.cols[i].Width)
+		filled := runewidth.FillRight(texts[i], widths[i])
 		s = append(s, m.styles.Cell.Inherit(row).Render(box.Render(paint(filled, sp, row, match))))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, s...)
+}
+
+// cellWidths gives the text width of each of a row's n cells. The cells of a full row get
+// their column's width. For 1 < n < len(cols), the last cell gets the sum of the remaining
+// shown columns' widths plus 2 columns of cell padding between each pair of them.
+func (m *Model) cellWidths(n int) []int {
+	w := make([]int, n)
+	for i := range w {
+		w[i] = m.cols[i].Width
+	}
+	if n == 0 || n >= len(m.cols) {
+		return w
+	}
+	w[n-1] = 0
+	k := 0
+	for _, c := range m.cols[n-1:] {
+		if c.Width > 0 {
+			w[n-1] += c.Width
+			k++
+		}
+	}
+	if k > 1 {
+		w[n-1] += 2 * (k - 1)
+	}
+	return w
 }
 
 // renderSectionRow draws a one-cell row across the whole table width, in the same

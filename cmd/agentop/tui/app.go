@@ -2411,7 +2411,7 @@ func (m *model) handleStreamEvent(ev apiclient.StreamEvent) {
 	}
 stale:
 	m.sessionsStale = true
-	if m.pane == paneTimeline && m.timeline.session == e.SessionID {
+	if m.timelineChainLive() && m.timeline.session == e.SessionID {
 		m.timeline.stale = true // refetched on the pane's next tick, at most once a second
 	}
 	if m.pane == paneEvents && m.selectedSess == e.SessionID {
@@ -2431,7 +2431,8 @@ stale:
 // only opening another session or erasing clears it) or the timeline's
 // (openTimeline does not set selectedSess; leaving the timeline pane clears
 // it, so a session glanced at once does not keep its stream for the rest of
-// the run). This is the retention predicate for streamed events (#1542):
+// the run. The events pane sets it only to selectedSess, and erasing clears
+// it with selectedSess). This is the retention predicate for streamed events (#1542):
 // everything else arrives, updates its summary, and is dropped.
 func (m *model) watchingSession(id string) bool {
 	return m.selectedSess == id || m.timeline.session == id
