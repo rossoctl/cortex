@@ -1671,3 +1671,259 @@ func TestUninstallLeavesAForeignPiExtension(t *testing.T) {
 		t.Error("uninstall changed a file agentop did not write")
 	}
 }
+
+// codexEnabledIn routes the scene's Codex through Cortex as configure codex enable does:
+// ~/.codex/.env holds Cortex's five values beside a line of the user's own, and enable's
+// record is where configure codex keeps it. Enable runs with no daemon, so its own
+// restart spends nothing of f, which is the daemon uninstall then finds.
+func codexEnabledIn(t *testing.T, sc setupScene, f *fakeCodexDaemon) string {
+	t.Helper()
+	t.Setenv(codexHomeEnv, "")
+	envPath := filepath.Join(sc.home, codexEnvRel)
+	codexHome, state := filepath.Dir(envPath), filepath.Join(sc.home, codexStateRel)
+	writeHomeFile(t, envPath, "RUST_LOG=info\n")
+	stubCodexDaemon(t, codexHome, &fakeCodexDaemon{})
+	var out, errb bytes.Buffer
+	if code := codexEnable(envPath, filepath.Join(sc.home, cortexCfgRel), state, true, &out, &errb); code != 0 {
+		t.Fatalf("fixture: configure codex enable exit %d:\n%s%s", code, out.String(), errb.String())
+	}
+	if got := readCodexEnv(t, envPath); len(got) != len(codexKeys) || !fileExists(state) {
+		t.Fatalf("fixture: enable left %v in ~/.codex/.env, and a record: %v", got, fileExists(state))
+	}
+	stubCodexDaemon(t, codexHome, f)
+	return envPath
+}
+
+// runningCodex is an app-server on Cortex's proxy with its auto-updater, both of which a
+// restart replaces with processes on the file's new settings.
+func runningCodex() *fakeCodexDaemon {
+	return &fakeCodexDaemon{
+		pid: 4101, env: onCortex, newPID: 4102, newEnv: offCortex,
+		updaterPID: 4103, updaterEnv: onCortex, newUpdaterPID: 4104,
+	}
+}
+
+// configure codex enable routes Codex through its dotenv file. Uninstall takes Cortex's
+// values out of it before the proxy stops and agentop goes, keeping the user's own line,
+// and restarts an app-server that runs, its auto-updater stopped first, since both read
+// the file only when they start.
+func TestUninstallUnroutesCodex(t *testing.T) {
+	for _, running := range []bool{true, false} {
+		t.Run(fmt.Sprintf("running=%v", running), func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t)
+			f := &fakeCodexDaemon{}
+			if running {
+				f = runningCodex()
+			}
+			envPath := codexEnabledIn(t, sc, f)
+			code, out := sc.uninstall(t, "--yes")
+			where, done, steps := "~/.codex/.env", "Codex no longer goes through Cortex", []string(nil)
+			if running {
+				where += " · restarts its app-server, interrupting running turns"
+				done += " · restarted its app-server"
+				steps = []string{"stop-updater", "restart"}
+			}
+			wantLines(t, code, 0, out, markLine("✓", "unrouted")+done+"\n", "\n  Uninstalled.\n")
+			if row := consentRow(out, "unroute"); !strings.Contains(row, " Codex ") || !strings.HasSuffix(row, where) {
+				t.Errorf("the consent row is %q, want Codex and %q:\n%s", row, where, out)
+			}
+			if got := readCodexEnv(t, envPath); len(got) != 0 {
+				t.Errorf("Cortex's values survived the unroute: %v", got)
+			}
+			if body := readFile(t, envPath); !strings.Contains(body, "RUST_LOG=info\n") || strings.Contains(body, codexMarker) {
+				t.Errorf("~/.codex/.env is %q, want the user's line kept and enable's comment gone", body)
+			}
+			if fileExists(filepath.Join(sc.home, codexStateRel)) {
+				t.Error("enable's record is still there")
+			}
+			if !slices.Equal(f.steps, steps) {
+				t.Errorf("the daemon saw %v, want %v", f.steps, steps)
+			}
+			if i, j := strings.Index(out, markLine("✓", "unrouted")+"Codex"), strings.Index(out, markLine("✓", "stopped")); i < 0 || j < i {
+				t.Errorf("Codex is not unrouted before the service stops:\n%s", out)
+			}
+		})
+	}
+}
+
+// A Codex whose dotenv file holds nothing of Cortex's gets no row and no change: the proxy
+// and CA there are the user's, which disable on its own would have removed.
+func TestUninstallLeavesACodexCortexDidNotRoute(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t)
+	t.Setenv(codexHomeEnv, "")
+	stubCodexDaemon(t, filepath.Join(sc.home, ".codex"), runningCodex())
+	envPath := filepath.Join(sc.home, codexEnvRel)
+	const mine = "HTTPS_PROXY=http://proxy.corp.example:8080\nSSL_CERT_FILE=/etc/ssl/corp.pem\n"
+	writeHomeFile(t, envPath, mine)
+	code, out := sc.uninstall(t, "--yes")
+	wantLines(t, code, 0, out, "\n  Uninstalled.\n")
+	if strings.Contains(out, "Codex") {
+		t.Errorf("uninstall offered to change a Codex that Cortex did not route:\n%s", out)
+	}
+	if got := readFile(t, envPath); got != mine {
+		t.Errorf("~/.codex/.env is %q, want it untouched", got)
+	}
+}
+
+// A managed key whose value is not Cortex's, here a CA bundle swapped in after enable, is
+// the user's. Uninstall takes out Cortex's values, leaves that one and says so, where
+// disable would remove it with the rest.
+func TestUninstallLeavesACodexValueOfTheUsers(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t)
+	envPath := codexEnabledIn(t, sc, &fakeCodexDaemon{})
+	const corp = "/etc/ssl/corp.pem"
+	ours := envSSLCert + "=" + readCodexEnv(t, envPath)[envSSLCert]
+	writeHomeFile(t, envPath, strings.Replace(readFile(t, envPath), ours, envSSLCert+"="+corp, 1))
+	code, out := sc.uninstall(t, "--yes")
+	wantLines(t, code, 1, out, markLine("!", "unrouted")+"removed what Cortex set\n",
+		"\n  Left behind:\n    "+envSSLCert+" in ~/.codex/.env, not Cortex's values — left as they are\n")
+	if got := readCodexEnv(t, envPath); !maps.Equal(got, map[string]string{envSSLCert: corp}) {
+		t.Errorf("~/.codex/.env holds %v, want only the user's %s", got, envSSLCert)
+	}
+}
+
+// A dotenv file that defines a managed key twice is one disable refuses to guess about, so
+// the row fails with the lines to fix by hand. Its SSL_CERT_FILE still names Cortex's CA
+// bundle, so --purge keeps ~/.cortex rather than leave Codex trusting a file that is gone,
+// and the consent screen never offers the delete.
+func TestUninstallPurgeKeepsCortexForACodexItCannotUnroute(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t)
+	envPath := codexEnabledIn(t, sc, &fakeCodexDaemon{})
+	writeHomeFile(t, envPath, readFile(t, envPath)+"HTTP_PROXY="+cortexProxyURL+"\n")
+	code, out := sc.uninstall(t, "--yes", "--purge")
+	wantLines(t, code, 1, out, markLine("✗", "unrouted"),
+		markLine("·", "purged")+"kept ~/.cortex: "+envSSLCert+
+			" in ~/.codex/.env still points into it — delete it once nothing points into it: rm -rf ~/.cortex\n")
+	fixes := strings.Join(fixesUnder(out, markLine("✗", "unrouted")), "\n")
+	if !strings.Contains(fixes, "in ~/.codex/.env, remove the lines that set ") || !strings.Contains(fixes, codexDaemonRestartCmd) {
+		t.Errorf("the fix rows are %q, want the dotenv lines to remove and the restart:\n%s", fixes, out)
+	}
+	if _, err := os.Stat(filepath.Join(sc.home, ".cortex", "config.yaml")); err != nil {
+		t.Errorf("--purge deleted ~/.cortex while Codex's %s named its CA: %v", envSSLCert, err)
+	}
+	if row := consentRow(out, "delete"); strings.Contains(row, ".cortex") {
+		t.Errorf("--purge asked to delete ~/.cortex and then kept it: %q", row)
+	}
+}
+
+// What still has Cortex's proxy after the row's restart is left behind with the command
+// that clears it: an app-server the restart did not replace, an updater that would not
+// stop, and an app-server whose proxy came from somewhere other than the file.
+func TestUninstallNamesWhatACodexRestartLeaves(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		tweak func(*fakeCodexDaemon)
+		left  string
+	}{
+		{"restart fails", func(f *fakeCodexDaemon) { f.restartErr = errors.New("daemon lock held") },
+			"Codex's app-server, which may still use Cortex's proxy — restart it: " + codexDaemonRestartCmd},
+		{"updater would not stop", func(f *fakeCodexDaemon) { f.stopErr = errors.New("it would not stop") },
+			"Codex's auto-updater (pid 4103), which still has Cortex's proxy — stop it, then restart the app-server: kill 4103 && " + codexDaemonRestartCmd},
+		{"proxy from elsewhere", func(f *fakeCodexDaemon) { f.newEnv = onCortex },
+			"Codex's app-server (pid 4102), which still has Cortex's proxy from the environment it started in — restart it from a shell without one: " + codexDaemonRestartCmd},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t)
+			f := runningCodex()
+			tc.tweak(f)
+			envPath := codexEnabledIn(t, sc, f)
+			code, out := sc.uninstall(t, "--yes")
+			wantLines(t, code, 1, out, markLine("!", "unrouted")+"Codex no longer goes through Cortex", "\n  Left behind:\n", "    "+tc.left+"\n")
+			if got := readCodexEnv(t, envPath); len(got) != 0 {
+				t.Errorf("Cortex's values survived the unroute: %v", got)
+			}
+		})
+	}
+}
+
+// Every agent configure status lists, routed through Cortex, comes out of uninstall
+// unrouted by configure status's own verdict. The agents are that list's, not this
+// test's, so one added there that uninstall does not unroute fails here: Codex was routed
+// by configure codex and skipped by uninstall for a month (#1365).
+func TestUninstallUnroutesEveryConfiguredAgent(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t, "--claude-code")
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv(piAgentDirEnv, "")
+	for _, v := range []string{bobShellEnvVar, piShellEnvVar} {
+		t.Setenv(v, "") // restores the developer's value; the unset below is what the test sees
+		if err := os.Unsetenv(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saved := configureFindOpenCode
+	configureFindOpenCode = func() (string, error) { return "", errors.New("no opencode in this scene yet") }
+	t.Cleanup(func() { configureFindOpenCode = saved })
+
+	rc := filepath.Join(sc.home, ".zshrc")
+	enable := map[string]func(){
+		"claude-code": func() {}, // setup's --claude-code
+		"bob": func() {
+			enableBobShellAt(t, rc)
+			if runtime.GOOS != "darwin" {
+				return // Bob the IDE's settings exist only on macOS
+			}
+			bob, err := bobSettingsPath(sc.home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeHomeFile(t, bob, "{}\n")
+			want, _ := bobWanted(filepath.Join(sc.home, cortexCfgRel), sc.home)
+			if err := bobWriteKey(bob, bobProxyKey, want); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"opencode": func() {
+			openCodeEnabled(t, sc, false)
+			configureFindOpenCode = func() (string, error) { return fakeOpenCodePath, nil }
+		},
+		"codex": func() { codexEnabledIn(t, sc, &fakeCodexDaemon{}) },
+		"pi": func() {
+			var out, errb bytes.Buffer
+			if code := runPi([]string{"enable", "--yes"}, &out, &errb); code != 0 {
+				t.Fatalf("fixture: configure pi enable = %d\n%s%s", code, out.String(), errb.String())
+			}
+		},
+	}
+	states := func() map[string]configureState {
+		got := map[string]configureState{}
+		for _, fn := range configureStatusFuncs() {
+			r := fn(sc.home)
+			got[r.Agent] = r.State
+		}
+		return got
+	}
+	listed := states()
+	for agent := range listed {
+		if enable[agent] == nil {
+			t.Fatalf("configure status lists %q, which this test does not route: add it to enable here, "+
+				"and give planUninstall a row that unroutes it", agent)
+		}
+	}
+	for _, agent := range slices.Sorted(maps.Keys(enable)) {
+		if _, ok := listed[agent]; !ok {
+			t.Errorf("enable routes %q, which configure status no longer lists", agent)
+		}
+		enable[agent]()
+	}
+	// Partial counts as routed: on Linux, Bob has its shell half only.
+	routed := func(s configureState) bool { return s == configureOn || s == configurePartial }
+	for agent, s := range states() {
+		if !routed(s) {
+			t.Fatalf("fixture: %s reads %v once enabled, want it routed", agent, s)
+		}
+	}
+	if code, out := sc.uninstall(t, "--yes"); code != 0 {
+		t.Fatalf("uninstall exit %d:\n%s", code, out)
+	}
+	for agent, s := range states() {
+		if routed(s) {
+			t.Errorf("%s still reads %v after uninstall", agent, s)
+		}
+	}
+}

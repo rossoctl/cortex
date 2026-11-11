@@ -160,6 +160,19 @@ OpenAI:
 lsof -nP -a -p "$(pgrep -f 'codex app-server --listen')" -iTCP -sTCP:ESTABLISHED
 ```
 
+### When you uninstall Cortex
+
+`agentop uninstall` unroutes Codex before it stops the proxy: it removes each of the five
+variables whose value is Cortex's, deletes the record, and restarts a running app-server
+the way `disable` does. Unlike `disable`, it leaves a variable whose value is not Cortex's,
+such as a proxy or CA bundle of your own, and lists it under *Left behind*, because it
+changes everything on one question. When it cannot change the file, for example when a
+variable is defined twice, `--purge` keeps `~/.cortex`, since Codex's `SSL_CERT_FILE` still
+names the CA bundle there.
+
+`agentop uninstall` in v0.9.5 and earlier skipped Codex. If you uninstalled with one of
+those, Codex still points at a proxy that is gone: undo it by hand, as below.
+
 ### Undoing it by hand
 
 Without `agentop`: open `$CODEX_HOME/.env` (or `~/.codex/.env`) and remove the lines for the five variables above,

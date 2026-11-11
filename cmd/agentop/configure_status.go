@@ -80,6 +80,11 @@ type configureStatus struct {
 	Detail string
 }
 
+// configureFindOpenCode finds the opencode CLI the OpenCode row reads with. A var for
+// the reason uninstallFindOpenCode is one: a test names a fake one, and no test may run
+// the real one.
+var configureFindOpenCode = findOpenCode
+
 // configureStatusFuncs is the table's source: one closure per agent, in the order
 // configureUsage lists them.
 //
@@ -98,6 +103,10 @@ type configureStatus struct {
 // defaultCodexEnvPath, findOpenCode and cortexCfgRel rather than through two copies of
 // the same join. None of them may return an error: see runConfigureStatus on why one
 // agent's missing file must not end the table.
+//
+// It is also the list of agents agentop routes: TestUninstallUnroutesEveryConfiguredAgent
+// enables each one here and checks that uninstall unroutes it, so an agent added to
+// this list without an uninstall row fails that test.
 func configureStatusFuncs() []func(home string) configureStatus {
 	return []func(home string) configureStatus{
 		func(home string) configureStatus {
@@ -107,7 +116,7 @@ func configureStatusFuncs() []func(home string) configureStatus {
 			return bobRow(home)
 		},
 		func(home string) configureStatus {
-			bin, err := findOpenCode()
+			bin, err := configureFindOpenCode()
 			if err != nil {
 				// The CLI is how OpenCode's service environment is read at all, so
 				// without it there is nothing to read — "uncertain", not "not
