@@ -402,17 +402,17 @@ func TestBlocks_DirGutterMarksMemberRows(t *testing.T) {
 // back to the raw id — which is what a teammate or a stale harvest renders.
 func TestBlocks_LabelSources(t *testing.T) {
 	m := newBlockModel(t, blockEvents())
-	if got := m.subagentLabel("a1"); got != "a1" {
+	if got := m.subagentLabel("a1", false, false); got != "a1" {
 		t.Errorf("no harvest: label = %q, want the id", got)
 	}
 	m.sessionsData = map[string]SessionMetadata{"s": {Subagents: map[string]claude.SubagentInfo{
 		"a1": {AgentType: "general-purpose", Description: "PR review (execution-first)"},
 		"a2": {AgentType: "Explore"},
 	}}}
-	if got := m.subagentLabel("a1"); got != "PR review (execution-first)" {
+	if got := m.subagentLabel("a1", false, false); got != "PR review (execution-first)" {
 		t.Errorf("label = %q, want the description", got)
 	}
-	if got := m.subagentLabel("a2"); got != "Explore" {
+	if got := m.subagentLabel("a2", false, false); got != "Explore" {
 		t.Errorf("label = %q, want the agent type", got)
 	}
 }
@@ -524,5 +524,59 @@ func TestBlocks_RevealOpensACollapsedBlock(t *testing.T) {
 	cur := m.eventsTbl.Cursor()
 	if m.visibleRows[cur].event == nil || m.visibleRows[cur].event.Seq != 11 {
 		t.Errorf("cursor on %v, want the event with seq 11", m.visibleRows[cur].event)
+	}
+}
+
+// A Bob session (#1803): a subtask, then two parallel subagents, then a
+// header-less router call, all in the root's session. Each subagent is a
+// collapsed block labeled by its kind. The subtask is the same block, open by
+// default and labeled "subtask", at its place in time. Enter still collapses it.
+func TestEventsBlocks_BobSubagentsAndSubtask(t *testing.T) {
+	ev := func(id, sub, kind string, phase pipeline.SessionPhase) pipeline.SessionEvent {
+		return pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: phase, Host: "ete",
+			RequestID: id, Subagent: sub, SubagentKind: kind}
+	}
+	req, resp := pipeline.SessionRequest, pipeline.SessionResponse
+	m := newBlockModel(t, []pipeline.SessionEvent{
+		ev("r1", "", "", req), ev("r1", "", "", resp),
+		ev("s1", "c-sub", pipeline.SubagentKindSubtask, req), ev("s1", "c-sub", pipeline.SubagentKindSubtask, resp),
+		ev("a1", "c-a", pipeline.SubagentKindSubagent, req),
+		ev("b1", "c-b", pipeline.SubagentKindSubagent, req),
+		ev("a1", "c-a", pipeline.SubagentKindSubagent, resp),
+		ev("b1", "c-b", pipeline.SubagentKindSubagent, resp),
+		ev("x1", "", "", req), ev("x1", "", "", resp),
+		ev("r2", "", "", req), ev("r2", "", "", resp),
+	})
+
+	// Rendered: r1, header(c-sub), s1, header(c-a), header(c-b), x1, r2.
+	rows := m.eventsTbl.Rows()
+	if len(rows) != 7 || len(m.headerRows) != 3 {
+		t.Fatalf("rendered rows = %d, headers = %d; want 7 and 3", len(rows), len(m.headerRows))
+	}
+	for pos, want := range map[int]string{1: "▾─ subtask c-sub", 3: "▸─ subagent c-a", 4: "▸─ subagent c-b"} {
+		if h := rows[pos][0]; !strings.HasPrefix(h, want) {
+			t.Errorf("row %d = %q, want prefix %q", pos, h, want)
+		}
+	}
+	for pos, want := range map[int]string{0: "r1", 2: "s1", 5: "x1", 6: "r2"} {
+		if e := m.visibleRows[pos].event; e == nil || e.RequestID != want {
+			t.Errorf("row %d = %+v, want %s", pos, e, want)
+		}
+	}
+	if e := m.visibleRows[5].event; e != nil && e.Subagent != "" {
+		t.Errorf("header-less row filed in block %q", e.Subagent)
+	}
+
+	m.eventsTbl.SetCursor(1)
+	if !m.toggleSubagentBlock() {
+		t.Fatal("Enter on the subtask header did not toggle")
+	}
+	if got := len(m.eventsTbl.Rows()); got != 6 || !strings.HasPrefix(m.eventsTbl.Rows()[1][0], "▸─ subtask") {
+		t.Fatalf("collapsed subtask: rows = %d, header = %q", got, m.eventsTbl.Rows()[1][0])
+	}
+	m.eventsTbl.SetCursor(1)
+	m.toggleSubagentBlock()
+	if got := len(m.eventsTbl.Rows()); got != 7 {
+		t.Fatalf("re-opened subtask: rows = %d, want 7", got)
 	}
 }

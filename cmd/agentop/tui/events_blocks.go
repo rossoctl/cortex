@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // subagentBlock is one subagent's share of the events pane (#1047): the rows its
@@ -32,6 +34,9 @@ type subagentBlock struct {
 	// anchored is set when the header has been emitted for this rebuild, so the
 	// header lands at the block's FIRST surviving row and never before it.
 	anchored bool
+	// subtask is set when a member row is a Bob subtask; bob when a member row
+	// carries any subagentKind, which only a Bob child does (#1803).
+	subtask, bob bool
 }
 
 // headerText is the block's collapsible line: the rollup the issue asked for —
@@ -60,8 +65,9 @@ func (b *subagentBlock) headerText(label string, open bool) string {
 // harvest cannot name — a teammate, a non-Claude-Code agent, a stale harvest.
 // Description first: it is the one Claude Code shows in its own tree, and the
 // type alone ("general-purpose") answers less than the id does about WHICH
-// general-purpose agent this was.
-func (m *model) subagentLabel(id string) string {
+// general-purpose agent this was. A Bob child has no harvest, so its kind names
+// it ("subtask <id>" or "subagent <id>"). A Claude Code block keeps the raw id.
+func (m *model) subagentLabel(id string, subtask, bob bool) string {
 	if info, ok := m.sessionsData[m.selectedSess].Subagents[id]; ok {
 		if info.Description != "" {
 			return sanitizeLabel(info.Description)
@@ -70,6 +76,12 @@ func (m *model) subagentLabel(id string) string {
 			return sanitizeLabel(info.AgentType)
 		}
 	}
+	switch {
+	case subtask:
+		return "subtask " + id
+	case bob:
+		return "subagent " + id
+	}
 	return id
 }
 
@@ -77,9 +89,17 @@ func (m *model) subagentLabel(id string) string {
 // the issue's motivating case is an agent whose subagents drown the conversation,
 // so the pane opens quiet and Enter buys the detail. A live search opens every
 // block: a match inside a collapsed block must be findable, and hidden rows are
-// unreachable from a search that only sees rendered rows.
-func (m *model) blockOpen(id string, searching bool) bool {
-	return searching || m.subagentOpen[id]
+// unreachable from a search that only sees rendered rows. A Bob subtask opens by
+// default: it is a section of the main conversation, not a side agent (#1803).
+// subagentOpen holds the operator's choice and overrides either default.
+func (m *model) blockOpen(id string, subtask, searching bool) bool {
+	if searching {
+		return true
+	}
+	if v, ok := m.subagentOpen[id]; ok {
+		return v
+	}
+	return subtask
 }
 
 // rowInactiveHidden is the hideInactive (`s` toggle) predicate, stated once so the
@@ -92,7 +112,7 @@ func (m *model) rowInactiveHidden(ctxs []cellContext, partner map[int]int, j int
 
 // collectSubagentBlocks groups the rows that survive the inactive filter by their
 // `subagent` field. Nil when no row names one, which is every session without
-// Claude Code subagents — those rebuild exactly as before.
+// Claude Code or Bob subagents — those rebuild exactly as before.
 func (m *model) collectSubagentBlocks(ctxs []cellContext, partner map[int]int) map[string]*subagentBlock {
 	var blocks map[string]*subagentBlock
 	for j, cc := range ctxs {
@@ -114,6 +134,10 @@ func (m *model) collectSubagentBlocks(ctxs []cellContext, partner map[int]int) m
 		b.rows = append(b.rows, j)
 		b.tokens += rowTokens(cc)
 		b.cost += rowCostUSD(cc)
+		if k := cc.row.event.SubagentKind; k != "" {
+			b.bob = true
+			b.subtask = b.subtask || k == pipeline.SubagentKindSubtask
+		}
 	}
 	return blocks
 }
@@ -129,11 +153,7 @@ func (m *model) toggleSubagentBlock() bool {
 	if m.subagentOpen == nil {
 		m.subagentOpen = make(map[string]bool)
 	}
-	if m.subagentOpen[b.id] {
-		delete(m.subagentOpen, b.id)
-	} else {
-		m.subagentOpen[b.id] = true
-	}
+	m.subagentOpen[b.id] = !m.blockOpen(b.id, b.subtask, false)
 	m.rebuildEventsTable()
 	return true
 }

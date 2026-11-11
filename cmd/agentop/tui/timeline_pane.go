@@ -560,7 +560,7 @@ func (m *model) revealPendingSeq() bool {
 	// readily as the conversation's — open the block that holds the target and
 	// rebuild, then land as usual.
 	for _, ev := range m.events[m.selectedSess] {
-		if ev.Seq != m.revealSeq || ev.Subagent == "" || m.blockOpen(ev.Subagent, false) {
+		if ev.Seq != m.revealSeq || ev.Subagent == "" || m.blockOpen(ev.Subagent, ev.SubagentKind == pipeline.SubagentKindSubtask, false) {
 			continue
 		}
 		if m.subagentOpen == nil {
