@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/rossoctl/cortex/core/model"
 )
@@ -29,7 +30,7 @@ func Root(dir, home string) string {
 		fi, err := os.Lstat(filepath.Join(level, ".git"))
 		if err == nil {
 			root = level
-			if !fi.IsDir() {
+			if fi.Mode().IsRegular() {
 				if main := mainRepo(level); main != "" {
 					root = main
 				}
@@ -72,12 +73,17 @@ func mainRepo(level string) string {
 	return filepath.Dir(common)
 }
 
+// firstLine reads only a regular file. O_NONBLOCK keeps open(2) from blocking on a FIFO, and
+// the fstat check closes the gap between a Lstat and the open.
 func firstLine(path string) string {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return ""
 	}
 	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
 	s := bufio.NewScanner(f)
 	s.Scan()
 	return strings.TrimSpace(s.Text())
