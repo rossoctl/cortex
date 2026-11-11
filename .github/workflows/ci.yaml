@@ -109,10 +109,15 @@ jobs:
           go vet -tags "praxis_e2e,${TAGS}" .
           go test -race -tags "${TAGS}" ./...
 
+      # AGENTOP_LAUNCHD_TESTS=required turns a skip in the real-launchd tests into a
+      # failure, as AGENTOP_SYSTEMD_TESTS=required does on Linux. They need a desktop
+      # session to load a launch agent into, and GitHub's macOS runners have one: they
+      # log the runner user in automatically at boot.
       - name: Build and test cmd/agentop
         working-directory: cmd/agentop
         env:
           GOWORK: "off"
+          AGENTOP_LAUNCHD_TESTS: required
         run: |
           go build ./...
           go test -race ./...
