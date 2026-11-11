@@ -259,7 +259,7 @@ impl HttpFilter for CortexObserve {
         }
         o.done = true;
         // Before the response head, Praxis 0.8.0 gives a client that went
-        // away as status 499. After the head, it gives the written status and
+        // away as status 499, or as 0 when it wrote nothing. After the head, it gives the written status and
         // `upstream_reached` for both a client and an upstream that went away.
         // shortcut: a stream cut after the head is always `client_canceled`
         // (the frequent case: a user stop or a Cortex idle cut), so an

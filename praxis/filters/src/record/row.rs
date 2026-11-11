@@ -544,7 +544,9 @@ impl Exchange {
                 None => format!("request body over the {MAX_REQUEST_BODY}-byte buffer limit"),
             };
             (413, ("proxy_error", String::new(), message))
-        } else if downstream_gone || status == 499 {
+        // Status 0: Praxis wrote nothing to the client, so the client left
+        // before any answer (an upstream failure is written as 502).
+        } else if downstream_gone || status == 499 || status == 0 {
             (499, ("client_canceled", code, CLIENT_GONE.to_owned()))
         } else if upstream_gone {
             (
@@ -1136,6 +1138,21 @@ mod tests {
             assert_eq!(r["capture"]["response"]["incomplete"], true);
             assert_eq!(r["event"]["bytesDown"], 100);
         }
+    }
+
+    // Seen in the #1725 live check: the agent exited while the hop waited for
+    // the head, so Praxis wrote nothing and gave status 0.
+    #[test]
+    fn deferred_nothing_written_is_client_canceled() {
+        let f = fixture();
+        let mut ex = exchange("GET", "api.example.com", &f.target, &f.req_headers);
+        let rows: Vec<Value> = ex.deferred(0, false, false).iter().map(json_of).collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1]["event"]["statusCode"], 499);
+        assert_eq!(
+            rows[1]["event"]["error"],
+            json!({"kind": "client_canceled", "message": CLIENT_GONE})
+        );
     }
 
     #[test]
