@@ -118,6 +118,26 @@ read the new file. Comparing `ps` before and after, both processes change. Witho
 `disable` came undone at the next Codex update, with the daemon back on Cortex's proxy. If the
 updater will not stop, they name it and the command that replaces it.
 
+The updater is stopped only when it is the process Codex recorded. A pid file can outlive
+the updater that wrote it, and its pid can be reused by an unrelated process, so agentop
+first checks the process the same way Codex does. Current Codex records a
+`processIdentity` in `app-server-daemon/daemon-updater.pid` (the boot ID, plus the
+kernel's start time and, on macOS, its unique process ID), and agentop compares that.
+Time zone and language settings don't affect it, and a record from before a reboot never
+matches. A file from an older Codex has only `processStartTime`, the start time as text;
+there a time zone or language change can make the real updater look different, so a
+mismatch counts as "can't tell" rather than "another process".
+
+- **The updater:** agentop stops it, and the restart starts a fresh one.
+- **Another process:** agentop leaves it alone. Codex's restart makes the same check,
+  finds the record out of date, and starts a fresh updater.
+- **Can't tell:** agentop leaves the process alone and says it could not confirm the
+  updater picked up the change. It does not name the process or suggest stopping it,
+  since it could not tell what that process is. If `agentop configure codex status`
+  later shows the app-server back on its old settings, restarting the computer fixes it:
+  that ends the old updater, and the fresh one Codex starts reads the new settings.
+  Running agentop again would not help, because it would make the same check.
+
 **What a restart does to Codex sessions**, from Codex's source (0.163.0 and 0.164.0), not
 measured here: the old daemon stops taking new turns, gives running ones its shutdown grace — 60
 seconds by default, configurable up to 5 minutes — to finish, and saves its threads. The new daemon restores them and
