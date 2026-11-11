@@ -18,6 +18,7 @@ import (
 	_ "github.com/rossoctl/cortex/core/session"
 	_ "github.com/rossoctl/cortex/core/session/archive"
 	_ "github.com/rossoctl/cortex/core/session/timeline"
+	_ "github.com/rossoctl/cortex/core/sessionexport"
 )
 
 // These packages parse requests, or read and store Cortex events. They must build without
@@ -31,6 +32,7 @@ var dataOnly = []string{
 	"github.com/rossoctl/cortex/core/session",
 	"github.com/rossoctl/cortex/core/session/archive",
 	"github.com/rossoctl/cortex/core/session/timeline",
+	"github.com/rossoctl/cortex/core/sessionexport",
 	"github.com/rossoctl/cortex/core/attribution",
 	"github.com/rossoctl/cortex/core/parse/a2a",
 	"github.com/rossoctl/cortex/core/parse/inference",
