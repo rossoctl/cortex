@@ -49,10 +49,10 @@ func isExitCode(err error, code int) bool {
 // don't need the same thing proved in the first place.
 //
 // That macOS test's env-var escape hatch exists because silent skipping is exactly
-// how the bootout-race bug (#880) shipped unexercised. Its own workflow never sets
-// the var, though, so the test has skipped in every CI run since it was written.
-// The one CI job that runs THIS test should set AGENTOP_SYSTEMD_TESTS=required after
-// setting up a real systemd --user session, so it can't fall into the same trap.
+// how the bootout-race bug (#880) shipped unexercised. The macOS CI job sets it
+// (AGENTOP_LAUNCHD_TESTS=required, read by requireRealLaunchd), and the one CI job
+// that runs THIS test sets AGENTOP_SYSTEMD_TESTS=required after setting up a real
+// systemd --user session, so neither platform's tests can pass by skipping.
 func requireRealSystemd(t *testing.T) {
 	t.Helper()
 	skip := t.Skipf

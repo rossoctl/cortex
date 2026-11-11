@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -57,19 +56,10 @@ func TestWaitBootedOut_RealLaunchd(t *testing.T) {
 	// on the very machine a release is built from. AGENTOP_LAUNCHD_TESTS=required turns
 	// every skip into a failure, so a release check can prove the race was exercised
 	// rather than hope it was. This bug shipped because a path was never exercised; the
-	// guard against it should not be silently skippable.
-	skip := t.Skipf
-	if os.Getenv("AGENTOP_LAUNCHD_TESTS") == "required" {
-		skip = t.Fatalf
-	}
-	if runtime.GOOS != "darwin" {
-		skip("launchd only (GOOS=%s)", runtime.GOOS)
-		return
-	}
-	if _, err := exec.LookPath("launchctl"); err != nil {
-		skip("no launchctl: %v", err)
-		return
-	}
+	// guard against it should not be silently skippable. requireRealLaunchd covers the
+	// first two (not macOS; no launchctl or no desktop session); the other two are below.
+	requireRealLaunchd(t)
+	skip := launchdSkip(t)
 	uid := strconv.Itoa(os.Getuid())
 	label := "io.rossoctl.cortex.test.bootout"
 	target := "gui/" + uid + "/" + label
