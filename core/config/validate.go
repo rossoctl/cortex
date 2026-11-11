@@ -93,8 +93,7 @@ var praxisOffSafe = map[string]bool{
 	"lineage-telemetry": true,
 }
 
-// PraxisOffSafe returns the praxisOffSafe names, sorted, for a test that checks
-// each one against the registered plugins.
+// PraxisOffSafe returns the praxisOffSafe names, sorted.
 func PraxisOffSafe() []string { return slices.Sorted(maps.Keys(praxisOffSafe)) }
 
 // validatePraxis refuses praxis mode outside a loopback-only laptop install,
