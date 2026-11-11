@@ -6,6 +6,7 @@ import (
 	"net/netip"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // Validate checks the top-level runtime config: mode and listener combo.
@@ -108,7 +109,8 @@ func validatePraxis(cfg *Config) error {
 		return fmt.Errorf("praxis.enabled: true cannot be used with session.enabled: false: Cortex ingests the gateway's rows into the session store")
 	}
 	for _, e := range cfg.Pipeline.Outbound.Plugins {
-		if !praxisOffSafe[e.Name] {
+		// An off entry is never dispatched, so its absence cannot fail open.
+		if !praxisOffSafe[e.Name] && e.OnError.Resolved() != pipeline.ErrorPolicyOff {
 			return fmt.Errorf("praxis.enabled: true cannot be used with outbound plugin %q: cortex-gateway does not run it, so it would fail open; remove the plugin or praxis.enabled", e.Name)
 		}
 	}
