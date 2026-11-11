@@ -80,7 +80,7 @@ func validateCostLedger(cfg *Config) error {
 
 // praxisOffSafe names the outbound plugins whose absence changes no allow or deny
 // decision and no credential. In praxis mode cortex-gateway runs no outbound plugin
-// (#1768), so validatePraxis refuses every other name. Add a plugin here when #1714
+// (#1768), so validatePraxis refuses every other name unless its on_error is off. Add a plugin here when #1714
 // ports it to the gateway.
 var praxisOffSafe = map[string]bool{
 	"inference-parser": true,
@@ -92,7 +92,7 @@ var praxisOffSafe = map[string]bool{
 }
 
 // validatePraxis refuses praxis mode outside a loopback-only laptop install,
-// beside mtls, and with an outbound plugin that is not in praxisOffSafe. The
+// beside mtls, and with an outbound plugin that is not in praxisOffSafe and not off. The
 // ingest endpoint and the hop to cortex-gateway are loopback plaintext.
 func validatePraxis(cfg *Config) error {
 	if !cfg.PraxisEnabled() {
