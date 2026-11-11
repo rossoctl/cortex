@@ -22,10 +22,10 @@ const EXIT_ON_STDIN_EOF: &str = "--exit-on-stdin-eof";
 const NO_ROOTS: &str = "/dev/null";
 
 /// The `SSL_CERT_FILE` to set, given the env's value: `NO_ROOTS` when the env
-/// sets none, else nothing, so the env's file is kept.
+/// sets none or an empty one, else nothing, so the env's file is kept.
 #[cfg(any(target_os = "macos", test))]
 fn ca_file_default(env: Option<std::ffi::OsString>) -> Option<&'static str> {
-    env.is_none().then_some(NO_ROOTS)
+    env.filter(|v| !v.is_empty()).is_none().then_some(NO_ROOTS)
 }
 
 fn main() {
@@ -126,6 +126,7 @@ mod tests {
     #[test]
     fn ca_file_default_fills_only_an_unset_env() {
         assert_eq!(ca_file_default(None), Some(NO_ROOTS));
+        assert_eq!(ca_file_default(Some("".into())), Some(NO_ROOTS));
         assert_eq!(ca_file_default(Some("/etc/ca.pem".into())), None);
     }
     #[test]
