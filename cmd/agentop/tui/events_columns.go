@@ -156,8 +156,8 @@ type eventColumn struct {
 //
 // exchange is an ARRIVAL index — a position in the session's full row list, before
 // hideInactive drops any. Each row is one exchange (#1681), so exchange is the row's own
-// arrival index. It is only ever compared, never used to index a slice, so it stays
-// meaningful next to a filtered `keys`.
+// arrival index. A tool row has the index of its exchange. It is only ever compared, never
+// used to index a slice, so it stays meaningful next to a filtered `keys`.
 type rowKey struct {
 	val      sortValue
 	exchange int
@@ -843,7 +843,7 @@ func anyColumnSelected(sel map[eventColumnID]bool) bool {
 // holds the trailing text, and the table spans it to the right edge. sr is the row's search
 // row: text that no shown column holds goes in Dropped, so a search still finds it. The
 // preview is never shown, so it is always in Dropped.
-func toolCells(cols []eventColumn, cc cellContext, tr eventRow, sorted bool, now time.Time) (table.Row, table.SearchRow) {
+func toolCells(cols []eventColumn, cc cellContext, tr eventRow, now time.Time) (table.Row, table.SearchRow) {
 	t := tr.tool
 	// The model writes the name and the preview, so a control rune must not reach the terminal.
 	name, trailing := sanitizeLabel(t.Name), sanitizeLabel(t.trailing(now))
@@ -854,15 +854,9 @@ func toolCells(cols []eventColumn, cc cellContext, tr eventRow, sorted bool, now
 		var v string
 		switch c.id {
 		case colIndex:
-			switch {
-			case sorted:
-				if v = c.cell(cc); len(v) < c.width {
-					v = "↳" + v // the number wins when both do not fit
-				}
-			case tr.last:
+			// Also under a sort: the tool rows stay under their exchange (#1805).
+			if v = "┣⚒"; tr.last {
 				v = "┗⚒"
-			default:
-				v = "┣⚒"
 			}
 		case colTime:
 			v = t.Start.Format("15:04:05.00")
@@ -896,19 +890,4 @@ func toolCells(cols []eventColumn, cc cellContext, tr eventRow, sorted bool, now
 		sr.Dropped = append(sr.Dropped, sanitizeLabel(t.Preview))
 	}
 	return row, sr
-}
-
-// toolSortKey is a tool row's sort value on column id (rule 11). A column with no tool value
-// gives the zero value, with numeric as the column's other keys have it, so less compares the
-// same field on every row.
-func toolSortKey(id eventColumnID, t toolRow, numeric bool, now time.Time) sortValue {
-	switch id {
-	case colDuration:
-		return numKey(t.duration(now))
-	case colTime:
-		return numKey(t.Start.UnixNano())
-	case colMethod:
-		return strKey(t.Name)
-	}
-	return sortValue{numeric: numeric}
 }

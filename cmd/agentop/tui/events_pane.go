@@ -343,7 +343,7 @@ func (m *model) rebuildEventsTable() {
 		ts := toolsOf(cc.row)
 		for i := range ts {
 			tr := eventRow{tool: &ts[i], last: i == len(ts)-1}
-			cells, sr := toolCells(cols, cc, tr, sortCol != nil, now)
+			cells, sr := toolCells(cols, cc, tr, now)
 			rows = append(rows, cells)
 			m.visibleRows = append(m.visibleRows, tr)
 			if q != "" {
@@ -415,14 +415,19 @@ func (m *model) rebuildEventsTable() {
 		// The sort never reads it as a position in `keys` — only compares two of
 		// them — so the filter's gaps are harmless.
 		//
+		// The exchange's tool rows take its key and its exchange (#1805). All three
+		// tiers of sortEventRows then tie, and the row position keeps the tools
+		// directly under the exchange, in timeline order. With keys of their own, the
+		// tools left their exchange, and on a column with no tool value they all
+		// collected at one end of the table.
+		//
 		// Member rows take the block branch above and never reach this — safe
 		// because blocks exist only while no sort is active (see the collection
 		// above), so a row the sort needs cannot be skipped by a block.
 		if sortCol != nil {
-			k := sortCol.sortKey(cc)
-			keys = append(keys, rowKey{val: k, exchange: j})
-			for i := range ts {
-				keys = append(keys, rowKey{val: toolSortKey(sortCol.id, ts[i], k.numeric, now), exchange: j})
+			k := rowKey{val: sortCol.sortKey(cc), exchange: j}
+			for range len(ts) + 1 {
+				keys = append(keys, k)
 			}
 		}
 	}
@@ -602,7 +607,8 @@ func sortEventRows(rows []table.Row, visible []eventRow, full []table.SearchRow,
 	//  1. the column's key, flipped for descending — what the operator asked for.
 	//  2. the exchange, ascending always. Each row is one exchange (#1681), so
 	//     exchange is the row's own arrival index. Ties keep arrival order.
-	//  3. the row's position, ascending always.
+	//  3. the row's position, ascending always. Only an exchange and its tool rows
+	//     tie on the first two tiers, so this keeps the tools under the exchange.
 	//
 	// Tiers 2 and 3 do NOT flip. Descending flips which exchange comes first, never
 	// the order of rows that tie.

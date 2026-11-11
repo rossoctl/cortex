@@ -232,27 +232,6 @@ func TestToolRow_EndsRunTrailing(t *testing.T) {
 	}
 }
 
-func TestToolRow_DurationSortValue(t *testing.T) {
-	now := tlAt(100)
-	lost := tlTool(1, "l", "Bash", 1, 2)
-	lost.Lost = true
-	cases := []struct {
-		name string
-		row  toolRow
-		want time.Duration
-	}{
-		{"running", toolRow{Tool: tlTool(1, "a", "Bash", 60, -1)}, 40 * time.Second},
-		{"lost", toolRow{Tool: lost}, 0},
-		{"end of run", toolRow{Tool: lost, EndsRun: true}, 0},
-		{"ended", toolRow{Tool: tlTool(1, "a", "Bash", 1, 3.5)}, 2500 * time.Millisecond},
-	}
-	for _, c := range cases {
-		if got := c.row.duration(now); got != c.want {
-			t.Errorf("%s: duration = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
 // Some local models send one tool ID (call_0) on every turn: the pin finds the row of its own
 // response, not the first row with that ID.
 func TestPinKey_ToolRowWithAReusedID(t *testing.T) {
