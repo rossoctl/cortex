@@ -101,7 +101,7 @@ gives the full text.
 19. A response row leaves out the request-only inference fields (`messages`, `tools`, `toolResults`, `historyToolCalls`, `historyThinking`). Cortex puts them back from the request row (`docs/session-api.md`, line format v1).
 20. The gateway keeps `X-Cortex-Dest` and `X-Cortex-Token` for its upstream, which is always the Cortex egress listener (#1721). The egress listener removes both before it dials the origin. The gateway must remove them before any other upstream. The request capture never has them.
 21. A buffered response body that goes over the 10 MiB cap after the response head gives a row with the upstream status, not 502. The client has that status and a cut body. Direct mode reads the body before it sends the head, so its client and its row get 502. A `Content-Length` over the cap gives 502 in both modes.
-22. On macOS, when the env does not set `SSL_CERT_FILE`, the gateway sets it to `/dev/null`, so its TLS connector has no roots. Its upstream is plain HTTP (decision 20). Pingora otherwise reads the macOS trust store at startup, and panics when that read fails on a loaded host.
+22. On macOS, when the env does not set `SSL_CERT_FILE`, or sets it empty, the gateway sets it to `/dev/null`, so its TLS connector has no roots. Its upstream is plain HTTP (decision 20). Pingora otherwise reads the macOS trust store at startup, and panics when that read fails on a loaded host.
 
 ## Accepted edge cases (#1719)
 

@@ -14,10 +14,10 @@ praxis_filter::register_filters! {
 /// the gateway exits when the supervisor exits for any reason, SIGKILL included.
 const EXIT_ON_STDIN_EOF: &str = "--exit-on-stdin-eof";
 
-/// The CA file the TLS connector reads on macOS when the env names none. The
-/// upstream is always the Cortex egress listener over plain HTTP, so the
-/// connector needs no roots. Without it, Pingora reads the macOS trust store at
-/// startup, which fails on a loaded host, and Pingora panics.
+/// The CA file the TLS connector reads on macOS when the env names none or
+/// an empty one. The upstream is always the Cortex egress listener over plain
+/// HTTP, so the connector needs no roots. Without it, Pingora reads the macOS
+/// trust store at startup, which fails on a loaded host, and Pingora panics.
 #[cfg(any(target_os = "macos", test))]
 const NO_ROOTS: &str = "/dev/null";
 
@@ -124,7 +124,7 @@ mod tests {
     }
 
     #[test]
-    fn ca_file_default_fills_only_an_unset_env() {
+    fn ca_file_default_fills_an_unset_or_empty_env() {
         assert_eq!(ca_file_default(None), Some(NO_ROOTS));
         assert_eq!(ca_file_default(Some("".into())), Some(NO_ROOTS));
         assert_eq!(ca_file_default(Some("/etc/ca.pem".into())), None);
