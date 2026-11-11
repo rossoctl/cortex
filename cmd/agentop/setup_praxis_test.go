@@ -125,6 +125,22 @@ func TestEnablePraxis_InvalidPraxisConfigLeavesFile(t *testing.T) {
 	}
 }
 
+// An outbound plugin that cortex-gateway does not run would fail open, so setup
+// refuses praxis mode and leaves the file as it was (#1768).
+func TestEnablePraxis_UnsafePluginLeavesFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	src := praxisBase + "pipeline:\n  outbound:\n    plugins:\n" + routerBlock
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enablePraxis(path); err == nil || !strings.Contains(err.Error(), `"inference-router"`) {
+		t.Errorf("err = %v, want the inference-router refusal", err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != src {
+		t.Errorf("the file changed:\n%s", got)
+	}
+}
+
 func TestEnablePraxis_WritesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(praxisBase), 0o600); err != nil {
@@ -162,7 +178,8 @@ func praxisEnv(t *testing.T, src string) (*setupEnv, string) {
 }
 
 func TestConfigStep_PraxisKeepsEverythingElse(t *testing.T) {
-	src := praxisBase + "pipeline:\n  outbound:\n    plugins:\n      - name: inference-parser\n" + routerBlock
+	src := praxisBase + "pipeline:\n  outbound:\n    plugins:\n      - name: inference-parser\n" +
+		"      - name: tool-prune\n        on_error: enforce\n        config:\n          remove: []\n"
 	env, before := praxisEnv(t, src)
 	env.opts.praxis = true
 	p, prob := configStep{}.plan(env)

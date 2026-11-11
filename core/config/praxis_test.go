@@ -116,3 +116,29 @@ func TestPraxis_AddrMustBeLoopback(t *testing.T) {
 		}
 	}
 }
+
+// TestPraxis_RefusesUnsafeOutboundPlugin pins #1768: cortex-gateway runs no outbound
+// plugin, so a plugin that can reject or add a credential would fail open.
+func TestPraxis_RefusesUnsafeOutboundPlugin(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		refused bool
+	}{
+		{"inference-parser", false}, {"mcp-parser", false}, {"a2a-parser", false},
+		{"tool-prune", false}, {"context-guru", false}, {"lineage", false},
+		{"opa", true}, {"script", true}, {"token-exchange", true},
+		{"inference-router", true}, {"no-such-plugin", true},
+	} {
+		c := praxisConfig()
+		c.Listener.BindLoopbackOnly = true
+		c.Pipeline.Outbound.Plugins = []PluginEntry{{Name: tc.name}}
+		err := Validate(c)
+		if tc.refused != (err != nil) {
+			t.Errorf("%s: Validate = %v, refused want %v", tc.name, err, tc.refused)
+			continue
+		}
+		if tc.refused && !strings.Contains(err.Error(), tc.name) {
+			t.Errorf("%s: error %q does not name the plugin", tc.name, err)
+		}
+	}
+}
