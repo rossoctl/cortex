@@ -177,10 +177,11 @@ func (t toolRow) durationCell(now time.Time) string {
 	return s
 }
 
-// trailing is the cell after DURATION (rule 10): run, bg, ends run and the preview, joined
-// with " · ".
+// trailing is the cell after DURATION (rule 10): run, bg and ends run, joined with " · ".
+// The preview (a command and its arguments) is not in it: it made the table hard to read.
+// Search finds it in the row's dropped text, and Enter opens the full call.
 func (t toolRow) trailing(now time.Time) string {
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 3)
 	if t.RunFrom != nil {
 		parts = append(parts, "run "+span(*t.RunFrom, t.RunTo, now))
 	}
@@ -189,9 +190,6 @@ func (t toolRow) trailing(now time.Time) string {
 	}
 	if t.EndsRun {
 		parts = append(parts, "ends run")
-	}
-	if t.Preview != "" {
-		parts = append(parts, t.Preview)
 	}
 	return strings.Join(parts, " · ")
 }

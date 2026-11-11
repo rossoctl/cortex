@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session/timeline"
 )
@@ -85,8 +83,8 @@ func TestToolRows_OneTool(t *testing.T) {
 			t.Errorf("%s = %q, want %q", id, got, want)
 		}
 	}
-	if got := trailingOf(row); got != "git -C /tmp/wt status" {
-		t.Errorf("trailing = %q", got)
+	if got := trailingOf(row); got != "" {
+		t.Errorf("trailing = %q, want no preview", got)
 	}
 	if want := colPos(m, colDuration) + 2; len(row) != want {
 		t.Errorf("cells = %d, want %d", len(row), want)
@@ -123,7 +121,7 @@ func TestToolRows_States(t *testing.T) {
 		{"run", "running", "⋯ 1m28s", ""},
 		{"err", "error", "1.00s", ""},
 		{"lost", "lost", "", ""},
-		{"end", "", "", "ends run · done"},
+		{"end", "", "", "ends run"},
 	} {
 		_, row := toolRowAt(t, m, c.id)
 		if got := toolCell(m, row, colStatus); got != c.status {
@@ -238,8 +236,8 @@ func TestToolRows_SearchFindsPreview(t *testing.T) {
 	}
 }
 
-// With no column after DURATION and no METHOD shown, the preview and the tool name are not
-// in any cell, so search must still find them in the row's dropped text.
+// The preview is in no cell, and with no METHOD shown the tool name is in none either, so
+// search must still find both in the row's dropped text.
 func TestToolRows_SearchFindsHiddenText(t *testing.T) {
 	m := toolRowsModel(t, trExchange(1, 10, ""), &timeline.Timeline{Tools: []timeline.Tool{
 		trTool(2, "t1", "Bash", 12, 13, "git -C /tmp/wt status"),
@@ -260,18 +258,6 @@ func TestToolRows_SearchFindsHiddenText(t *testing.T) {
 		if !slices.Contains(m.eventsTbl.Matches(), i) {
 			t.Errorf("query %q: matches = %v, want row %d", q, m.eventsTbl.Matches(), i)
 		}
-	}
-}
-
-func TestToolRows_EnterDoesNothing(t *testing.T) {
-	m := toolRowsModel(t, trExchange(1, 10, ""), &timeline.Timeline{Tools: []timeline.Tool{trTool(2, "t1", "Bash", 12, 13, "")}})
-	i, _ := toolRowAt(t, m, "t1")
-	setCursorVisible(&m.eventsTbl, i)
-	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
-		t.Errorf("Enter on a tool row returned a cmd")
-	}
-	if m.pane != paneEvents || m.selectedEvent() != nil {
-		t.Errorf("pane %v, selected event %v", m.pane, m.selectedEvent())
 	}
 }
 

@@ -40,9 +40,16 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 		m.detailFolds = nil
 		m.detailCursorPath, m.detailCursorOff = "", 0
 	}
+	aimed := m.applyToolAim()
+	if aimed {
+		m.detailAim = nil
+	}
 	m.renderDetail()
 	if resetScroll {
 		m.detailVp.GotoTop()
+		if aimed {
+			m.scrollToDetailCursor()
+		}
 		return
 	}
 	// Held position, clamped to what the new content and height can show: assigning
@@ -253,12 +260,15 @@ func (m *model) detailHalf() *pipeline.SessionEvent {
 // shownNum is the # cell of the events row under the cursor, so the fixed line quotes the
 // number the reader just saw — a subagent block's own number inside a block. "" when # is
 // not shown.
-func (m *model) shownNum() string {
+func (m *model) shownNum() string { return m.numAt(m.eventsTbl.Cursor()) }
+
+// numAt is the # cell of events table row i. "" when # is not shown or i is out of range.
+func (m *model) numAt(i int) string {
 	cols, _ := layoutColumns(m.eventColumns, m.eventColWidths, m.width)
-	rows, cur := m.eventsTbl.Rows(), m.eventsTbl.Cursor()
-	for i, c := range cols {
-		if c.id == colIndex && cur >= 0 && cur < len(rows) && i < len(rows[cur]) {
-			return strings.TrimSpace(rows[cur][i])
+	rows := m.eventsTbl.Rows()
+	for c, col := range cols {
+		if col.id == colIndex && i >= 0 && i < len(rows) && c < len(rows[i]) {
+			return strings.TrimSpace(rows[i][c])
 		}
 	}
 	return ""
@@ -354,6 +364,7 @@ func (m *model) toggleDetailFold() {
 		return
 	}
 	l := m.detailLines[i]
+	m.detailAim = nil
 	if m.detailFolds == nil {
 		m.detailFolds = map[string]foldChoice{}
 	}
@@ -438,14 +449,17 @@ func (m *model) detailCursorKey(msg string) bool {
 	case "d", "ctrl+d":
 		step = half
 	case "g":
+		m.detailAim = nil
 		m.moveDetailCursor(0)
 		return true
 	case "G":
+		m.detailAim = nil
 		m.moveDetailCursor(len(m.detailLines) - 1)
 		return true
 	default:
 		return false
 	}
+	m.detailAim = nil // a reader move is never undone
 	first, last := m.detailDoc.rowsOf(i)
 	top, tall := m.detailVp.YOffset, last-first >= m.detailVp.Height
 	switch {

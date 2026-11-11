@@ -734,7 +734,9 @@ type model struct {
 	detailFolds      map[string]foldChoice
 	detailCursorPath string
 	detailCursorOff  int
-	searchInput      textinput.Model
+	// detailAim is where Enter on a tool row puts the cursor once the tree holds it (#1795).
+	detailAim   *toolAim
+	searchInput textinput.Model
 
 	// visibleRows holds the eventRow for each rendered row in eventsTbl —
 	// one per network message. Populated by rebuildEventsTable so

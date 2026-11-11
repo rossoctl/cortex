@@ -752,8 +752,20 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				return nil
 			}
 			er, ok := m.selectedEventRow()
-			if !ok || er.tool != nil {
-				return nil // a tool row opens nothing (#1776)
+			if !ok {
+				return nil
+			}
+			num := m.shownNum()
+			// A tool row opens the exchange that holds its call and its output (#1795).
+			m.detailAim = nil
+			if t := er.tool; t != nil {
+				var inRequest bool
+				if er, num, inRequest, ok = m.toolTarget(t); !ok {
+					return nil
+				}
+				if t.ID != "" {
+					m.detailAim = &toolAim{id: t.ID, pos: t.Pos, inRequest: inRequest}
+				}
 			}
 			// Render from the summary immediately, then fill the message bodies in
 			// when they arrive — the timeline no longer carries them. See
@@ -767,7 +779,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if er.resp != nil {
 				er.respRaw, _ = m.heldRaw(er.resp)
 			}
-			m.detailNum = m.shownNum()
+			m.detailNum = num
 			m.showDetail(er, true)
 			m.pane = paneDetail
 			if cmd := m.fetchDetailHalves(er); cmd != nil {

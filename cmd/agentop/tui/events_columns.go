@@ -841,7 +841,8 @@ func anyColumnSelected(sel map[eventColumnID]bool) bool {
 // toolCells is the cells of tool row tr (#1776), whose exchange is cc. The columns up to
 // DURATION get the tool's own cells. At the first shown column after them, one last cell
 // holds the trailing text, and the table spans it to the right edge. sr is the row's search
-// row: text that no shown column holds goes in Dropped, so a search still finds it.
+// row: text that no shown column holds goes in Dropped, so a search still finds it. The
+// preview is never shown, so it is always in Dropped.
 func toolCells(cols []eventColumn, cc cellContext, tr eventRow, sorted bool, now time.Time) (table.Row, table.SearchRow) {
 	t := tr.tool
 	// The model writes the name and the preview, so a control rune must not reach the terminal.
@@ -890,6 +891,9 @@ func toolCells(cols []eventColumn, cc cellContext, tr eventRow, sorted bool, now
 	}
 	if !named {
 		sr.Dropped = append(sr.Dropped, name)
+	}
+	if t.Preview != "" {
+		sr.Dropped = append(sr.Dropped, sanitizeLabel(t.Preview))
 	}
 	return row, sr
 }
