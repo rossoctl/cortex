@@ -23,7 +23,7 @@ const NO_ROOTS: &str = "/dev/null";
 
 fn main() {
     #[cfg(target_os = "macos")]
-    if std::env::var_os("SSL_CERT_FILE").is_none() && std::env::var_os("SSL_CERT_DIR").is_none() {
+    if std::env::var_os("SSL_CERT_FILE").is_none() {
         // SAFETY: the first statement of main, so no other thread exists yet.
         unsafe { std::env::set_var("SSL_CERT_FILE", NO_ROOTS) };
     }

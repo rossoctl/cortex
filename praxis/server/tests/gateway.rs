@@ -329,13 +329,19 @@ fn free_port() -> u16 {
 }
 
 fn gateway(origin: &Origin, ingest: &Ingest, access_log: bool) -> Gateway {
-    gateway_with(origin, ingest, access_log, &[])
+    gateway_with(origin, ingest, access_log, &[], &[])
 }
 
-/// Starts the gateway with `flags` added. Its stdin is a pipe that the
-/// returned `Gateway` holds.
-fn gateway_with(origin: &Origin, ingest: &Ingest, access_log: bool, flags: &[&str]) -> Gateway {
-    start(flags, |token_file, port| {
+/// Starts the gateway with `flags` added and `env` as its env. Its stdin is a
+/// pipe that the returned `Gateway` holds.
+fn gateway_with(
+    origin: &Origin,
+    ingest: &Ingest,
+    access_log: bool,
+    flags: &[&str],
+    env: &[(&str, &str)],
+) -> Gateway {
+    start(flags, env, |token_file, port| {
         TEMPLATE
             .replace("{{LISTEN}}", &port.to_string())
             .replace("{{TOKEN_FILE}}", token_file)
@@ -346,8 +352,12 @@ fn gateway_with(origin: &Origin, ingest: &Ingest, access_log: bool, flags: &[&st
 }
 
 /// Starts the gateway on the config that `config(token_file, listen_port)`
-/// gives, with `flags` added.
-fn start(flags: &[&str], config: impl FnOnce(&str, u16) -> String) -> Gateway {
+/// gives, with `flags` added and `env` as its env.
+fn start(
+    flags: &[&str],
+    env: &[(&str, &str)],
+    config: impl FnOnce(&str, u16) -> String,
+) -> Gateway {
     static N: AtomicUsize = AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "cortex-gateway-test-{}-{}",
@@ -365,6 +375,7 @@ fn start(flags: &[&str], config: impl FnOnce(&str, u16) -> String) -> Gateway {
     let mut child = Command::new(env!("CARGO_BIN_EXE_cortex-gateway"))
         // The supervisor gives the gateway an empty env. Test it the same way.
         .env_clear()
+        .envs(env.iter().copied())
         .arg("-c")
         .arg(&config)
         .args(flags)
@@ -512,6 +523,16 @@ fn tokenless_request_gets_403_and_no_line() {
         "the origin saw a request"
     );
     assert_eq!(i.quiet(), Vec::<Value>::new());
+}
+
+#[test]
+fn starts_and_serves_with_an_empty_ca_file() {
+    // The CA file that the gateway sets on macOS. Set here, so that Linux runs it too.
+    let (o, i) = (ok_origin(), ingest());
+    let g = gateway_with(&o, &i, true, &[], &[("SSL_CERT_FILE", "/dev/null")]);
+    let (h, body) = send(&g, "GET", "/v1/models", &[("X-Cortex-Token", TOKEN)], b"");
+    assert_eq!(status(&h), 200);
+    assert_eq!(body, b"ok");
 }
 
 #[test]
@@ -1036,7 +1057,7 @@ fn client_close_mid_sse_is_client_canceled() {
 #[test]
 fn exits_on_stdin_eof() {
     let (o, i) = (ok_origin(), ingest());
-    let mut g = gateway_with(&o, &i, true, &["--exit-on-stdin-eof"]);
+    let mut g = gateway_with(&o, &i, true, &["--exit-on-stdin-eof"], &[]);
     drop(g.child.stdin.take());
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -1074,7 +1095,7 @@ fn supervisor_gateway_yaml_serves() {
         .replace("127.0.0.1:47601", "");
     assert!(!rest.contains(":4760"), "{SUPERVISOR_YAML}");
     let (o, i) = (ok_origin(), ingest());
-    let g = start(&[], |token_file, port| {
+    let g = start(&[], &[], |token_file, port| {
         let yaml = SUPERVISOR_YAML
             .replace("/CORTEX_DIR/gateway.token", token_file)
             .replace("127.0.0.1:47605", &format!("127.0.0.1:{port}"))
