@@ -215,3 +215,13 @@ func TestToolRow_DurationSortValue(t *testing.T) {
 		}
 	}
 }
+
+// Some local models send one tool ID (call_0) on every turn: the pin finds the row of its own
+// response, not the first row with that ID.
+func TestPinKey_ToolRowWithAReusedID(t *testing.T) {
+	a, b := tlTool(4, "call_0", "Bash", 1, 2), tlTool(9, "call_0", "Bash", 5, 6)
+	rows := []eventRow{{tool: &toolRow{Tool: a}}, {tool: &toolRow{Tool: b}}}
+	if got := findByKey(rows, pinKeyOf(rows[1])); got != 1 {
+		t.Errorf("findByKey = %d, want 1", got)
+	}
+}

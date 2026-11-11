@@ -27,8 +27,10 @@ type eventKey struct {
 	direction pipeline.Direction
 	phase     pipeline.SessionPhase
 	requestID string
-	// tool and toolAgent pin a tool row: its tool ID and agent.
+	// tool, toolAgent and toolSeq pin a tool row: its tool ID, agent and response seq. The seq
+	// tells apart two calls with one ID: some local models send call_0 on every turn.
 	tool, toolAgent string
+	toolSeq         uint64
 }
 
 func keyOf(e *pipeline.SessionEvent) eventKey {
@@ -41,7 +43,7 @@ func keyOf(e *pipeline.SessionEvent) eventKey {
 // pinKeyOf is the pin key of row er: its tool for a tool row, else its event.
 func pinKeyOf(er eventRow) eventKey {
 	if er.tool != nil {
-		return eventKey{tool: er.tool.ID, toolAgent: er.tool.Agent}
+		return eventKey{tool: er.tool.ID, toolAgent: er.tool.Agent, toolSeq: er.tool.Seq}
 	}
 	return keyOf(er.event)
 }
@@ -57,7 +59,7 @@ func (m *model) selectedPinKey() eventKey {
 func findByKey(rows []eventRow, k eventKey) int {
 	if k.tool != "" {
 		return slices.IndexFunc(rows, func(r eventRow) bool {
-			return r.tool != nil && r.tool.ID == k.tool && r.tool.Agent == k.toolAgent
+			return r.tool != nil && r.tool.ID == k.tool && r.tool.Agent == k.toolAgent && r.tool.Seq == k.toolSeq
 		})
 	}
 	return slices.IndexFunc(rows, func(r eventRow) bool {
