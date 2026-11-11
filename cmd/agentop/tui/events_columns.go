@@ -307,7 +307,7 @@ var eventColumns = []eventColumn{
 	// 9 is the heading with a sort glyph, which is wider than anything durationCell
 	// produces ("12.34s", "59m59s").
 	{id: colDuration, width: 9, defaultOn: true, keep: keepLow, rightAlign: true,
-		desc:    "how long the exchange took",
+		desc:    "how long the exchange took; for a tool: from the reply to the next request of the same agent",
 		cell:    func(c cellContext) string { return durationCell(*answer(c.row)) },
 		sortKey: durationSortKey},
 	// On by default since #1309. It was off because only an opaque tunnel's close row had
