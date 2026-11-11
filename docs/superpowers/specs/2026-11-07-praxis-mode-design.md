@@ -524,7 +524,7 @@ Line counts are non-test, non-comment Go lines on `main` @ `92604f4c`. The forwa
 
 ### Trigger and order
 
-- **Phase D has no upstream trigger.** It starts when praxis mode is the default and stable.
+- **Phase D has no upstream trigger.** It starts when praxis mode is stable behind `agentop setup --praxis`. Praxis mode does not become the default before phase C, because criterion C7 of the live check needs one network proxy (`docs/superpowers/plans/2026-11-10-praxis-mode-8-live-check.md`).
 - **It comes before phase C.** Attribution keeps state that the store's events feed: `Attributor` is a store `Recorder`, `Clearer`, `Deleter`, `Evicter` and `Rekeyer` (`core/attribution/attribution.go:214-262`). So attribution and the store move together. If attribution moved first, it would need a new interface to the Go store, and that interface would be throwaway.
 - **The client address in phase D.** `Attributor.Lookup` takes only the client and server socket addresses (`core/attribution/lookup.go:23`), so any process on the host can ask it. In phase D the Go front door passes them in a token-protected header, `X-Cortex-Client: <client addr> <server addr>`. The binary runs the lookup itself. In phase C the address comes from the connection (praxis#1447), and the header goes away.
 
