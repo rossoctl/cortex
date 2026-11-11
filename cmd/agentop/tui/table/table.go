@@ -677,7 +677,8 @@ func (m *Model) renderSectionRow(r int) string {
 	match = match.Inherit(row)
 
 	filled := runewidth.FillRight(text, total)
-	return m.styles.Cell.Inherit(row).Render(paint(filled, spans, row, match))
+	box := lipgloss.NewStyle().Width(total).MaxWidth(total).Inline(true).Inherit(row)
+	return m.styles.Cell.Inherit(row).Render(box.Render(paint(filled, spans, row, match)))
 }
 
 func clamp(v, low, high int) int {
