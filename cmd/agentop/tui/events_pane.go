@@ -106,11 +106,10 @@ type eventRow struct {
 	// pane fetched them for.
 	raw     *pipeline.RawCapture
 	respRaw *pipeline.RawCapture
-	// tool is set on a tool row (#1776), which has no event. parent is its exchange's index
-	// in the rebuild's ctxs, and last is set on the last tool of that exchange.
-	tool   *toolRow
-	parent int
-	last   bool
+	// tool is set on a tool row (#1776), which has no event. last is set on the last tool
+	// of its exchange.
+	tool *toolRow
+	last bool
 }
 
 // invocations returns every plugin invocation the row's ACTION/PLUGIN cell and the inactive
@@ -335,7 +334,7 @@ func (m *model) rebuildEventsTable() {
 		}
 		ts := toolsOf(cc.row)
 		for i := range ts {
-			tr := eventRow{tool: &ts[i], parent: j, last: i == len(ts)-1}
+			tr := eventRow{tool: &ts[i], last: i == len(ts)-1}
 			cells, sr := toolCells(cols, cc, tr, sortCol != nil, now)
 			rows = append(rows, cells)
 			m.visibleRows = append(m.visibleRows, tr)
