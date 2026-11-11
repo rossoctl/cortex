@@ -699,11 +699,11 @@ func openCodeByHand(env *setupEnv, cli string, pl openCodeDisablePlan, planned b
 }
 
 // planUnrouteCodex takes Cortex's values out of Codex's dotenv file, as configure codex
-// disable does, when the file holds any. Only those: disable removes every managed key,
-// but a value Cortex did not write — a corporate proxy, a CA bundle of the user's own —
-// is the user's, and uninstall changes everything on one question, so the row leaves it
-// and says so. The file is read now, as is enable's record, which --purge deletes. One
-// that cannot be read fails the row only when that record says Cortex routed Codex.
+// disable does, when the file holds any. Only those, as disable changes only those: a
+// value Cortex did not write — a corporate proxy, a CA bundle of the user's own — stays,
+// and the row says so. The file is read now, as is enable's record, which --purge
+// deletes. One that cannot be read fails the row only when that record says Cortex
+// routed Codex.
 //
 // A running app-server is restarted after the change, as disable restarts it, so it
 // drops the proxy that is about to stop. Its auto-updater is stopped first, for the
@@ -716,48 +716,25 @@ func planUnrouteCodex(env *setupEnv) (removal, bool) {
 	// Judged by Cortex's values when its config gives them. Without them codexIsOurs
 	// falls back to the value's shape, as disable does when Cortex is gone.
 	want := codexValues(env.configPath())
+	// Read here as well as by the plan: a file disable refuses, one defining a key twice,
+	// is still Cortex's to unroute when it holds Cortex's values, and still names them.
 	f, readErr := parseCodexEnv(envPath)
 	var ours, theirs []string
 	cortexProxy := want["HTTPS_PROXY"]
 	if readErr == nil {
-		for _, k := range codexKeys {
-			vals := f.all(k)
-			if len(vals) == 0 {
-				continue
-			}
-			// Every definition, not only the first that get returns: Codex uses the last
-			// of a duplicated key, so a line of Cortex's anywhere is Cortex's to unroute.
-			// The plan then refuses the duplicate, and the row fails with its fix.
-			cortexs := false
-			for _, v := range vals {
-				if codexIsOurs(k, v, want) {
-					cortexs = true
-					if k == "HTTPS_PROXY" || (k == "https_proxy" && cortexProxy == "") {
-						cortexProxy = v
-					}
-				}
-			}
-			if cortexs {
-				ours = append(ours, k)
-			} else {
-				theirs = append(theirs, k)
-			}
-		}
+		ours, theirs = codexOwnership(f, want)
+		cortexProxy = codexCortexProxy(f, ours, want)
 	}
 	if (readErr != nil && !fileExists(state)) || (readErr == nil && len(ours) == 0) {
 		return removal{}, false
 	}
-	pl, planErr := planCodexDisable(envPath)
-	if planErr == nil {
-		pl.present = ours
-	}
+	pl, planErr := planCodexDisable(envPath, want)
 	where := env.tilde(envPath)
 	if _, running := runningCodexDaemon(codexHome); running {
 		where += " · restarts its app-server, interrupting running turns"
 	}
 	fix := remedy{byHand: codexByHand(env, envPath, ours)}
-	if planErr == nil && len(theirs) == 0 {
-		// Not while a value is the user's: disable would remove that too.
+	if planErr == nil {
 		fix.agentop = "agentop configure codex disable"
 	}
 	return removal{

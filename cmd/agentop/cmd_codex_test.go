@@ -277,7 +277,7 @@ func TestCodexEnable_FiltersStaleCortexValueFromPrior(t *testing.T) {
 
 	// Disable must now DELETE the key, not restore the stale address.
 	var dOut, dErr bytes.Buffer
-	if code := codexDisable(envPath, statePath, true, &dOut, &dErr); code != 0 {
+	if code := codexDisable(envPath, cfgPath, statePath, true, &dOut, &dErr); code != 0 {
 		t.Fatalf("disable: exit %d: %s", code, dErr.String())
 	}
 	if strings.Contains(dOut.String(), "Restored") {
@@ -323,7 +323,7 @@ func TestCodexDisable_RestoresRecordedPriorValue(t *testing.T) {
 	}
 
 	var dOut, dErr bytes.Buffer
-	if code := codexDisable(envPath, statePath, true, &dOut, &dErr); code != 0 {
+	if code := codexDisable(envPath, cfgPath, statePath, true, &dOut, &dErr); code != 0 {
 		t.Fatalf("disable: exit %d: %s", code, dErr.String())
 	}
 	if !strings.Contains(dOut.String(), "HTTP_PROXY") || !strings.Contains(dOut.String(), "Restored") {
@@ -346,7 +346,7 @@ func TestCodexDisable_RestoresRecordedPriorValue(t *testing.T) {
 func TestCodexDisable_NothingToDo(t *testing.T) {
 	envPath, _ := codexFixture(t, "")
 	var out, errb bytes.Buffer
-	if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+	if code := codexDisable(envPath, "", filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	if !strings.Contains(out.String(), "Nothing to do") {
@@ -456,7 +456,7 @@ func TestCodexDeclining(t *testing.T) {
 		prompts := declineAll(t)
 
 		var out, errb bytes.Buffer
-		if code := codexDisable(envPath, statePath, false, &out, &errb); code != exitDeclined {
+		if code := codexDisable(envPath, cfgPath, statePath, false, &out, &errb); code != exitDeclined {
 			t.Errorf("exit = %d, want %d", code, exitDeclined)
 		}
 		if !strings.HasSuffix(out.String(), "Not changed.\n") {
@@ -537,7 +537,7 @@ func TestCodexEnableDisable_RoundTripsWithoutLeakingTheMarker(t *testing.T) {
 		}
 		out.Reset()
 		errb.Reset()
-		if code := codexDisable(envPath, statePath, true, &out, &errb); code != 0 {
+		if code := codexDisable(envPath, cfgPath, statePath, true, &out, &errb); code != 0 {
 			t.Fatalf("cycle %d: disable exit = %d, stderr=%q", i, code, errb.String())
 		}
 	}
@@ -565,7 +565,7 @@ func TestCodexDisable_LeavesAnEditedMarkerAlone(t *testing.T) {
 	}
 	out.Reset()
 	errb.Reset()
-	if code := codexDisable(envPath, statePath, true, &out, &errb); code != 0 {
+	if code := codexDisable(envPath, cfgPath, statePath, true, &out, &errb); code != 0 {
 		t.Fatalf("disable exit = %d, stderr=%q", code, errb.String())
 	}
 	b, err := os.ReadFile(envPath)
@@ -658,5 +658,82 @@ func TestConfigureUsage_CodexPersists(t *testing.T) {
 		if strings.Contains(prose, stale) {
 			t.Errorf("configureUsage still says %q", stale)
 		}
+	}
+}
+
+// #1289's rule, as claude-code's and opencode's disable keep it: a managed key set to a
+// value of the user's after enable — here a corporate CA bundle — is left and named, and
+// only Cortex's values come out. Before, disable removed all five, losing the user's.
+func TestCodexDisable_LeavesAValueChangedSinceEnable(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "RUST_LOG=info\n")
+	statePath := filepath.Join(filepath.Dir(envPath), "state.json")
+	var out, errb bytes.Buffer
+	if code := codexEnable(envPath, cfgPath, statePath, true, &out, &errb); code != 0 {
+		t.Fatalf("enable exit %d: %s", code, errb.String())
+	}
+	const corp = "/etc/ssl/corp.pem"
+	ours := envSSLCert + "=" + readCodexEnv(t, envPath)[envSSLCert]
+	body, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, []byte(strings.Replace(string(body), ours, envSSLCert+"="+corp, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	if code := codexDisable(envPath, cfgPath, statePath, true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"This will remove from " + envPath + ": HTTP_PROXY, HTTPS_PROXY, http_proxy, https_proxy\n",
+		"  " + envSSLCert + ` left as "` + corp + `": it is not a value Cortex set. Remove it yourself from ` + envPath + "\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("disable output lacks %q:\n%s", want, got)
+		}
+	}
+	if env := readCodexEnv(t, envPath); len(env) != 1 || env[envSSLCert] != corp {
+		t.Errorf("after disable the managed keys are %v, want only the user's %s=%s", env, envSSLCert, corp)
+	}
+}
+
+// Without Cortex's config, which disable must work without, a value is Cortex's by its
+// shape: a loopback proxy on Cortex's port goes, a corporate proxy stays.
+func TestCodexDisable_JudgesByShapeWithoutCortexsConfig(t *testing.T) {
+	const corp = "http://proxy.corp.example:8080"
+	envPath, _ := codexFixture(t, "HTTP_PROXY=http://127.0.0.1:47600\nHTTPS_PROXY="+corp+"\n")
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, filepath.Join(t.TempDir(), "no-config.yaml"), filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	if env := readCodexEnv(t, envPath); len(env) != 1 || env["HTTPS_PROXY"] != corp {
+		t.Errorf("after disable the managed keys are %v, want only the user's HTTPS_PROXY", env)
+	}
+	if !strings.Contains(out.String(), `HTTPS_PROXY left as "`+corp+`"`) {
+		t.Errorf("disable did not name the proxy it left:\n%s", out.String())
+	}
+}
+
+// A file whose managed keys all hold the user's values has nothing of Cortex's to take
+// out: disable names them, changes nothing, and restarts nothing.
+func TestCodexDisable_ChangesNothingWhenEveryValueIsTheUsers(t *testing.T) {
+	const mine = "HTTPS_PROXY=http://proxy.corp.example:8080\nSSL_CERT_FILE=/etc/ssl/corp.pem\n"
+	envPath, cfgPath := codexFixture(t, mine)
+	f := &fakeCodexDaemon{pid: 5613, env: onCortex, newPID: 7001, newEnv: offCortex}
+	stubCodexDaemon(t, filepath.Dir(envPath), f)
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, cfgPath, filepath.Join(filepath.Dir(envPath), "state.json"), false, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d, want 0 with no question asked: %s", code, errb.String())
+	}
+	if strings.Contains(out.String(), "This will remove") {
+		t.Errorf("disable offered to remove something:\n%s", out.String())
+	}
+	if b, _ := os.ReadFile(envPath); string(b) != mine {
+		t.Errorf("the file is %q, want it untouched", b)
+	}
+	if len(f.steps) != 0 {
+		t.Errorf("the daemon saw %v, want nothing", f.steps)
 	}
 }

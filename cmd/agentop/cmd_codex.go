@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -162,7 +163,8 @@ refuses rather than pick a side if a key is defined more than once. Codex
 parses this file with dotenvy, whose precedence is last-wins, so appending
 would quietly beat an earlier definition — including a corporate proxy
 someone set deliberately. The first run copies the original file to .env.bak
-and never overwrites that copy. disable removes only the keys it added.
+and never overwrites that copy. disable removes only the keys that still hold
+Cortex's values; one set to anything else since enable is left, and named.
 
 Codex's background app-server, which makes the model calls for every codex
 window, reads the file only when it starts, and so does its auto-updater. So
@@ -207,7 +209,7 @@ func runCodex(args []string, stdout, stderr io.Writer) int {
 	case "enable":
 		return codexEnable(*envPath, *cortexCfgPath, statePath, yes, stdout, stderr)
 	case "disable":
-		return codexDisable(*envPath, statePath, yes, stdout, stderr)
+		return codexDisable(*envPath, *cortexCfgPath, statePath, yes, stdout, stderr)
 	default:
 		return codexStatus(*envPath, *cortexCfgPath, stdout)
 	}
@@ -585,10 +587,19 @@ func codexEnable(envPath, cortexCfgPath, statePath string, yes bool, stdout, std
 type codexDisablePlan struct {
 	envPath string
 	f       *codexEnvFile
-	present []string // managed keys set in the file, in codexKeys order; none = nothing to do
+	present []string // managed keys holding Cortex's values, in codexKeys order; none = nothing to do
+	left    []string // managed keys holding a value that is not Cortex's, which disable leaves
 }
 
-func planCodexDisable(envPath string) (codexDisablePlan, error) {
+// planCodexDisable is what disable would change in envPath. want is Cortex's values for
+// the managed keys, nil when Cortex's config cannot be read: disable has to work when
+// Cortex is gone, and codexIsOurs then judges by the value's shape.
+//
+// ONLY CORTEX'S VALUES, as claude-code's and opencode's disable change only theirs
+// (#1289). enable refuses a managed key that holds a value of the user's, so any such
+// value was set after enable — a corporate proxy, a CA bundle — and removing it would
+// lose it. It goes in left instead, and disable names it.
+func planCodexDisable(envPath string, want map[string]string) (codexDisablePlan, error) {
 	f, err := parseCodexEnv(envPath)
 	if err != nil {
 		return codexDisablePlan{}, err
@@ -599,18 +610,50 @@ func planCodexDisable(envPath string) (codexDisablePlan, error) {
 			envPath, strings.Join(dup, ", "))
 	}
 	pl := codexDisablePlan{envPath: envPath, f: f}
-	for _, k := range codexKeys {
-		if _, ok := f.get(k); ok {
-			pl.present = append(pl.present, k)
-		}
-	}
+	pl.present, pl.left = codexOwnership(f, want)
 	return pl, nil
 }
 
-// applyCodexDisable puts back what enable recorded, removes what it added, and
-// deletes the record. It returns the keys restored to a value the user had
-// set. It restores Prior unconditionally, with no check on whether the value
-// changed since enable.
+// codexOwnership splits the managed keys f sets into those holding Cortex's values and
+// those holding someone else's, each in codexKeys order. A key defined more than once is
+// Cortex's when any of its lines is, not only the first that get returns: Codex uses the
+// last. disable refuses a duplicate before it gets here; uninstall asks first, so a line
+// of Cortex's anywhere still gets its row, which then fails on the duplicate.
+func codexOwnership(f *codexEnvFile, want map[string]string) (ours, theirs []string) {
+	for _, k := range codexKeys {
+		vals := f.all(k)
+		switch {
+		case len(vals) == 0:
+		case slices.ContainsFunc(vals, func(v string) bool { return codexIsOurs(k, v, want) }):
+			ours = append(ours, k)
+		default:
+			theirs = append(theirs, k)
+		}
+	}
+	return ours, theirs
+}
+
+// codexCortexProxy is the proxy a restarted daemon is compared with: Cortex's value of
+// HTTPS_PROXY in f, or else of https_proxy, when that key is one of ours; else want's. It
+// is read from the file because disable has to work when Cortex is gone, and only from a
+// line of Cortex's because a proxy of the user's left in place is not Cortex's.
+func codexCortexProxy(f *codexEnvFile, ours []string, want map[string]string) string {
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy"} {
+		if !slices.Contains(ours, k) {
+			continue
+		}
+		for _, v := range f.all(k) {
+			if codexIsOurs(k, v, want) {
+				return v
+			}
+		}
+	}
+	return want["HTTPS_PROXY"]
+}
+
+// applyCodexDisable puts back what enable recorded for the keys the plan found holding
+// Cortex's values, removes the rest of them, and deletes the record. It returns the keys
+// restored to a value the user had set. A key in pl.left is not touched.
 //
 // IN PRACTICE THE RESTORE BRANCH IS UNREACHABLE TODAY, and it is worth knowing
 // that before reading the warning below as a live case. planCodexEnable refuses
@@ -663,28 +706,34 @@ func applyCodexDisable(pl codexDisablePlan, statePath string, stderr io.Writer) 
 	return restored, nil
 }
 
-func codexDisable(envPath, statePath string, yes bool, stdout, stderr io.Writer) int {
-	pl, err := planCodexDisable(envPath)
+func codexDisable(envPath, cortexCfgPath, statePath string, yes bool, stdout, stderr io.Writer) int {
+	// The config is not required: disable has to work when Cortex is gone. Without it,
+	// codexIsOurs judges by the value's shape.
+	want, _ := codexWanted(cortexCfgPath)
+	pl, err := planCodexDisable(envPath, want)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
-	if len(pl.present) == 0 {
+	if len(pl.present) == 0 && len(pl.left) == 0 {
 		fmt.Fprintf(stdout, "Nothing to do: none of the Cortex variables are set in %s.\n", envPath)
 		return 0
 	}
-	fmt.Fprintf(stdout, "This will remove from %s: %s\n", envPath, strings.Join(pl.present, ", "))
+	if len(pl.present) > 0 {
+		fmt.Fprintf(stdout, "This will remove from %s: %s\n", envPath, strings.Join(pl.present, ", "))
+	}
+	for _, k := range pl.left {
+		v, _ := pl.f.get(k)
+		fmt.Fprintf(stdout, "  %s left as %q: it is not a value Cortex set. Remove it yourself from %s\n", k, v, envPath)
+	}
+	if len(pl.present) == 0 {
+		return 0
+	}
 	codexHome := filepath.Dir(envPath)
 	was := noteCodexDaemonRestart(codexHome, stdout)
 	fmt.Fprintln(stdout)
 	// The proxy the restarted daemon is compared with, read before the file loses it.
-	// Disable has to work when Cortex is gone, so this is what the file held, not
-	// Cortex's config; want is nil for the same reason, and codexIsOurs falls back to
-	// the value's shape.
-	cortexProxy, _ := pl.f.get("HTTPS_PROXY")
-	if cortexProxy == "" {
-		cortexProxy, _ = pl.f.get("https_proxy")
-	}
+	cortexProxy := codexCortexProxy(pl.f, pl.present, want)
 	if !yes && !codexConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
