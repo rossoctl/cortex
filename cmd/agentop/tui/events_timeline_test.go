@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -151,9 +152,75 @@ func TestEventsTimeline_CachedOnlySessionFetchesNothing(t *testing.T) {
 	if !slices.Contains(m.sessionRowIDs, "gone") {
 		t.Fatalf("cached-only session not listed: %v", m.sessionRowIDs)
 	}
-	if cmd := openSession(t, m, "gone"); cmd != nil || m.timeline.session != "gone" {
-		t.Errorf("cmd %v timeline session %q", cmd, m.timeline.session)
+	msgs := cmdMsgs(openSession(t, m, "gone"))
+	if snapshotted(msgs) || m.timeline.loading || m.timeline.session != "gone" {
+		t.Errorf("msgs %v loading %v timeline session %q", msgs, m.timeline.loading, m.timeline.session)
 	}
+}
+
+// Enter on a session while the list omits it (#870) starts the tick chain with no fetch, so
+// the timeline loads on the first tick after the list holds the session again.
+func TestEventsTimeline_EnterDuringAListBlipStartsTheChain(t *testing.T) {
+	m := eventsTimelineModel(t)
+	m.events["b"] = []pipeline.SessionEvent{{SessionID: "b", At: tlAt(1)}}
+	m.Update(sessionsLoadedMsg{})
+	msgs := cmdMsgs(openSession(t, m, "b"))
+	if snapshotted(msgs) || m.timeline.loading {
+		t.Fatalf("Enter during the blip fetched: msgs %v loading %v", msgs, m.timeline.loading)
+	}
+	i := slices.IndexFunc(msgs, func(msg tea.Msg) bool {
+		tick, ok := msg.(timelineTickMsg)
+		return ok && tick.gen == m.timeline.tickGen
+	})
+	if i < 0 {
+		t.Fatalf("Enter during the blip started no tick chain: %v", msgs)
+	}
+	m.Update(sessionsLoadedMsg{{ID: "a", UpdatedAt: tlAt(2)}, {ID: "b", UpdatedAt: tlAt(1)}})
+	m.Update(msgs[i])
+	if !m.timeline.loading {
+		t.Errorf("after the blip, the tick did not fetch the timeline")
+	}
+}
+
+// cmdMsgs runs cmd and the members of a batch it returns, and collects what they send within
+// a little more than one timeline tick.
+func cmdMsgs(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	out := make(chan tea.Msg, 16)
+	var run func(tea.Cmd)
+	run = func(c tea.Cmd) {
+		msg := c()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, b := range batch {
+				if b != nil {
+					go run(b)
+				}
+			}
+			return
+		}
+		out <- msg
+	}
+	go run(cmd)
+	var msgs []tea.Msg
+	deadline := time.After(timelineRefresh + 500*time.Millisecond)
+	for {
+		select {
+		case msg := <-out:
+			msgs = append(msgs, msg)
+		case <-deadline:
+			return msgs
+		}
+	}
+}
+
+// snapshotted reports a snapshot among msgs: against deadClient it fails as errMsg.
+func snapshotted(msgs []tea.Msg) bool {
+	return slices.ContainsFunc(msgs, func(msg tea.Msg) bool {
+		e, ok := msg.(errMsg)
+		return ok && strings.HasPrefix(e.where, "snapshot ")
+	})
 }
 
 // Esc back to the events pane of a cached-only session must not fetch: the 404 would retry on

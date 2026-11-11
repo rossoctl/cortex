@@ -728,10 +728,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if !live[id] {
 				// Cached-only: there is no server-side session to snapshot, so the
 				// fetch would 404 and flash an error over the very events this
-				// change preserved. Its timeline would 404 too: set the session
-				// only, so the previous one is not kept, and fetch nothing.
-				m.setTimelineSession(id)
-				return nil
+				// change preserved. Its timeline would 404 too: start only the
+				// chain, which fetches once the proxy lists the session again.
+				return m.followEventsTimeline()
 			}
 			follow := m.followEventsTimeline()
 			// Snapshot in case the stream hasn't yet delivered history.
