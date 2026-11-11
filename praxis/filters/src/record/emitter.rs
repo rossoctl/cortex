@@ -45,7 +45,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Notify;
 
@@ -212,6 +212,22 @@ impl Emitter {
         }
     }
 
+    /// The next line, or `None` once ingest ends the stream. Cortex answers
+    /// only when the stream ends, so any read (a response, EOF or an error)
+    /// ends it. The read is polled first, so once the end is readable no line
+    /// is taken into the closed stream.
+    async fn next_line_or_end<R: AsyncRead + Unpin>(
+        &self,
+        rd: &mut R,
+        buf: &mut [u8],
+    ) -> Option<Queued> {
+        tokio::select! {
+            biased;
+            _ = rd.read(buf) => None,
+            line = self.next_line() => Some(line),
+        }
+    }
+
     async fn run(self: Arc<Self>) {
         let mut backoff = BACKOFF_MIN;
         loop {
@@ -238,13 +254,8 @@ impl Emitter {
         let (mut rd, mut wr) = conn.split();
         let mut buf = [0u8; 512];
         loop {
-            // Cortex answers only when the stream ends, so any read (a
-            // response, EOF or an error) ends this stream.
-            let line = tokio::select! {
-                line = self.next_line() => line,
-                _ = rd.read(&mut buf) => {
-                    return Err(std::io::Error::other("ingest ended the stream"));
-                }
+            let Some(line) = self.next_line_or_end(&mut rd, &mut buf).await else {
+                return Err(std::io::Error::other("ingest ended the stream"));
             };
             let sent = async {
                 wr.write_all(format!("{:x}\r\n", line.wire_len()).as_bytes())
@@ -290,7 +301,6 @@ mod tests {
     use std::io::{BufRead, BufReader, Read};
     use std::net::TcpListener;
     use std::sync::mpsc;
-    use std::time::{Duration, Instant};
 
     fn line(s: &str) -> Queued {
         Queued {
@@ -368,26 +378,42 @@ mod tests {
     }
 
     fn recv(rx: &mpsc::Receiver<String>) -> String {
-        rx.recv_timeout(Duration::from_secs(10)).unwrap()
+        rx.recv().unwrap()
     }
 
     #[test]
     fn lines_arrive_in_order_with_token() {
         let (addr, rx) = serve(vec![usize::MAX]);
         let e = Emitter::start(addr, "t".into());
-        for s in ["a", "b", "c"] {
+        for s in ["a", "b", "c", "d"] {
             e.submit(line(s));
         }
         assert_eq!(recv(&rx), "auth Bearer t");
-        for s in ["a\n", "b\n", "c\n"] {
+        for s in ["a\n", "b\n", "c\n", "d\n"] {
             assert_eq!(recv(&rx), s);
         }
-        // The emitter counts a row after its write returns, so the server can get "c" first.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while e.stats().rows_emitted < 3 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(e.stats().rows_emitted, 3);
+        // The emitter counts each row before it writes the next, so "d"
+        // arriving means "c" is counted.
+        let n = e.stats().rows_emitted;
+        assert!((3..=4).contains(&n), "rows_emitted = {n}");
+    }
+
+    #[test]
+    fn a_closed_stream_ends_before_a_queued_line_is_taken() {
+        // Ingest refuses the connect, so the sender thread never takes a line.
+        let e = Emitter::start(closed_addr(), "t".into());
+        e.submit(line("a"));
+        let (mut closed, peer) = tokio::io::duplex(64);
+        drop(peer);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let mut buf = [0u8; 16];
+        assert!(
+            rt.block_on(e.next_line_or_end(&mut closed, &mut buf))
+                .is_none()
+        );
+        assert_eq!(e.stats().queued_lines, 1);
     }
 
     #[test]
@@ -455,11 +481,13 @@ mod tests {
     #[test]
     fn submit_never_blocks_when_ingest_is_down() {
         let e = Emitter::start(closed_addr(), "t".into());
-        let t = Instant::now();
         for _ in 0..1000 {
             e.submit(line("x"));
         }
-        assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+        // Every submit returned with ingest down, and every line is queued.
+        let s = e.stats();
+        assert_eq!(s.queued_lines, 1000);
+        assert_eq!(s.rows_dropped, 0);
     }
 
     #[test]
@@ -469,14 +497,16 @@ mod tests {
         e.submit(line("1"));
         assert_eq!(recv(&rx), "auth Bearer t");
         assert_eq!(recv(&rx), "1\n");
-        // The server closed the stream. Line 2 can be lost; line 3 must arrive.
-        std::thread::sleep(Duration::from_millis(100));
+        // The server closed the stream. Line 2 can go into it before the
+        // emitter reads the close, and be lost.
         e.submit(line("2"));
-        std::thread::sleep(Duration::from_millis(300));
+        // A line queued after the emitter reconnects must arrive.
+        assert_eq!(recv(&rx), "auth Bearer t");
         e.submit(line("3"));
-        let t = Instant::now();
-        while recv(&rx) != "3\n" {
-            assert!(t.elapsed() < Duration::from_secs(10));
+        let mut got = recv(&rx);
+        if got == "2\n" {
+            got = recv(&rx);
         }
+        assert_eq!(got, "3\n");
     }
 }

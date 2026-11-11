@@ -14,7 +14,19 @@ praxis_filter::register_filters! {
 /// the gateway exits when the supervisor exits for any reason, SIGKILL included.
 const EXIT_ON_STDIN_EOF: &str = "--exit-on-stdin-eof";
 
+/// The CA file the TLS connector reads on macOS when the env names none. The
+/// upstream is always the Cortex egress listener over plain HTTP, so the
+/// connector needs no roots. Without it, Pingora reads the macOS trust store at
+/// startup, which fails on a loaded host, and Pingora panics.
+#[cfg(target_os = "macos")]
+const NO_ROOTS: &str = "/dev/null";
+
 fn main() {
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("SSL_CERT_FILE").is_none() && std::env::var_os("SSL_CERT_DIR").is_none() {
+        // SAFETY: the first statement of main, so no other thread exists yet.
+        unsafe { std::env::set_var("SSL_CERT_FILE", NO_ROOTS) };
+    }
     // The supervisor reads this before each start. No config is loaded.
     if has_flag(std::env::args().skip(1), "--version") {
         println!("{}", version_line());
