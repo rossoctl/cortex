@@ -26,7 +26,7 @@ picker.
 Cortex needs SPIRE and Keycloak in place. The
 [rossoctl](https://github.com/rossoctl/rossoctl) installer sets up both, plus the
 [operator](https://github.com/rossoctl/operator) that does the injecting — start from
-its [quickstart](https://www.rossoctl.dev/docs/get-started/kubernetes) rather than wiring
+its [quickstart](https://www.rossoctl.dev/docs/get-started/kubernetes/) rather than wiring
 them by hand.
 
 ## Start here

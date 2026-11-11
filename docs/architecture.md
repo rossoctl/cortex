@@ -383,7 +383,7 @@ sequenceDiagram
 
 ### Quick Setup
 
-The easiest way to get all prerequisites is to use the [Rossoctl Quickstart](https://www.rossoctl.dev/docs/get-started/kubernetes).
+The easiest way to get all prerequisites is to use the [Rossoctl Quickstart](https://www.rossoctl.dev/docs/get-started/kubernetes/).
 
 ## Getting Started
 
@@ -509,5 +509,5 @@ Keycloak client registration is handled by the [operator](https://github.com/ros
 ## References
 
 - [Rossoctl Installation](https://github.com/rossoctl/rossoctl/blob/main/docs/operate/install-kubernetes.md)
-- [SPIRE Documentation](https://spiffe.io/docs/latest/)
+- [SPIRE Documentation](https://spiffe.io/docs/latest/spire-about/)
 - [OAuth 2.0 Token Exchange (RFC 8693)](https://www.rfc-editor.org/rfc/rfc8693)
