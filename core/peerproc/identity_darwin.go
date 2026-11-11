@@ -3,6 +3,7 @@
 package peerproc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"unsafe"
@@ -23,6 +24,14 @@ const (
 	procUniqInfoSize          = 56  // sizeof(struct proc_uniqidentifierinfo)
 	procUniqInfoUniqueIDOff   = 16  // p_uniqueid, uint64, after the 16-byte executable UUID
 	sZomb                     = 5   // SZOMB in <sys/proc.h>
+)
+
+// The proc_info flavor cwd reads. Offsets are from <sys/proc_info.h>.
+const (
+	procPIDVnodePathInfo     = 9    // PROC_PIDVNODEPATHINFO: struct proc_vnodepathinfo
+	procVnodePathInfoSize    = 2352 // sizeof(struct proc_vnodepathinfo)
+	procVnodePathCdirPathOff = 152  // pvi_cdir.vip_path, char[MAXPATHLEN]
+	maxPathLen               = 1024 // MAXPATHLEN in <sys/param.h>
 )
 
 // processIdentity reads pid as Codex's macOS reader does (read_process_details): the
@@ -79,4 +88,20 @@ func pidInfo(pid int32, flavor int, buf []byte) (int, error) {
 		return 0, errno
 	}
 	return int(n), nil
+}
+
+// cwd reads pid's current directory from the pvi_cdir path of PROC_PIDVNODEPATHINFO.
+func cwd(pid int32) (string, error) {
+	if pid <= 0 {
+		return "", ErrNotFound
+	}
+	buf := make([]byte, procVnodePathInfoSize)
+	if n, err := pidInfo(pid, procPIDVnodePathInfo, buf); err != nil || n != procVnodePathInfoSize {
+		return "", fmt.Errorf("%w: proc_vnodepathinfo for pid %d: %d bytes, %v", ErrNotFound, pid, n, err)
+	}
+	p := buf[procVnodePathCdirPathOff : procVnodePathCdirPathOff+maxPathLen]
+	if i := bytes.IndexByte(p, 0); i >= 0 {
+		p = p[:i]
+	}
+	return string(p), nil
 }
