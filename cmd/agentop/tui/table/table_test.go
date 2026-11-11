@@ -292,3 +292,8 @@ func TestRenderRow_SpanKeepsCursorAndMatchStyles(t *testing.T) {
 		t.Errorf("a hit in the spanning cell is not drawn in Match: %q", l)
 	}
 }
+
+// A row with no cells renders blank, as it did before rows could span.
+func TestRenderRow_EmptyRowRenders(t *testing.T) {
+	_ = spanTable([]table.Row{{}, {"a", "b"}}).View()
+}

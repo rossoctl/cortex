@@ -632,7 +632,7 @@ func (m *Model) cellWidths(n int) []int {
 	for i := range w {
 		w[i] = m.cols[i].Width
 	}
-	if n >= len(m.cols) {
+	if n == 0 || n >= len(m.cols) {
 		return w
 	}
 	w[n-1] = 0

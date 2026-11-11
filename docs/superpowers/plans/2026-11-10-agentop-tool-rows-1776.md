@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- No new API field and no change under `core/`. All data comes from `GET /v1/sessions/{id}/timeline` (`apiclient.Client.GetTimeline`).
+- No new API field, and only one change under `core/`: the review added `Job.ToolUseID`, so that a Bash row finds its background job by tool ID. All data comes from `GET /v1/sessions/{id}/timeline` (`apiclient.Client.GetTimeline`).
 - Not in v1: Enter on a tool row, totals per tool name, a "waiting for you" label.
 - End-of-run tool names are exactly `StructuredOutput` and `SubagentHandback`. Do not add others.
 - Tool rows come from the timeline's `tools[]`, never from events' `ToolCalls`/`ToolResults` (agentop loads `view=summary`, which strips them).
@@ -28,7 +28,7 @@
 4. **`error` STATUS is plain text.** Reason: the events table has no per-cell color (see `newEventsTable`). "The error style that exchange rows use" is therefore no style.
 5. **Tool row cells.** Walk the shown columns in order. Columns `#`, TIME, DIR, ACTION, PLUGIN, METHOD, STATUS, DURATION get the tool cell (rules 2-8). At the first shown column outside that set, append the trailing cell (rule 10) and stop. If no such column is shown, the trailing text is not drawn (search still sees it). Reason: these eight columns are first in `eventColumns` display order, so the cells stay parallel to `cols` when the picker or the fit drops a column.
 6. **Sort key for "other columns".** `sortValue{numeric: k.numeric}`, where `k` is `sortCol.sortKey(ctxs[0])`. Reason: `sortValue.less` reads `numeric` from its receiver, so a non-numeric zero beside numeric keys gives an inconsistent order. Tool rows exist only when `ctxs` is not empty.
-7. **Pin key.** Add `tool, toolAgent string` to `eventKey`. A new `pinKeyOf(er eventRow) eventKey` returns `{tool: id, toolAgent: agent}` for a tool row and `keyOf(er.event)` otherwise. Every `keyOf(m.selectedEvent())` and `keyOf(m.selectedEventOn(...))` caller changes to `pinKeyOf` of the same row. Reason: rule 14, and `keyOf(nil)` is the zero (unpinned) key. Do not name it `rowKey`: `events_columns.go` already declares `type rowKey struct` (the sort key), so that name does not compile.
+7. **Pin key.** Add `isTool bool`, `tool, toolAgent string`, `toolSeq uint64` and `toolPos int` to `eventKey`. The review added `isTool`, `toolSeq` and `toolPos`: one ID can occur in many responses, and two calls in one response can have no ID. A new `pinKeyOf(er eventRow) eventKey` returns `{isTool: true, tool: id, toolAgent: agent, toolSeq: seq, toolPos: pos}` for a tool row and `keyOf(er.event)` otherwise. Every `keyOf(m.selectedEvent())` and `keyOf(m.selectedEventOn(...))` caller changes to `pinKeyOf` of the same row. Reason: rule 14, and `keyOf(nil)` is the zero (unpinned) key. Do not name it `rowKey`: `events_columns.go` already declares `type rowKey struct` (the sort key), so that name does not compile.
 8. **Index location.** The index is a field `tools map[uint64][]toolRow` on `timelineState`, set in `handleTimelineLoaded` on success and cleared with `tl` when the session changes. Reason: spec task 2, "once per fetched timeline".
 9. **`now`** for `running`, `run ⋯` and `bg ⋯` is `m.clock()` read once per rebuild. Reason: the model already injects a clock for tests.
 10. **One PR.** The estimate is about 1,400 counted lines, under the 2,000 limit.
