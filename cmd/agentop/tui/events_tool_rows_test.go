@@ -187,40 +187,66 @@ func TestToolRows_HideInactiveHidesTools(t *testing.T) {
 	}
 }
 
+// The issue (#1805): under a DURATION sort a long tool stays under its exchange, and it does
+// not rank above an exchange that took longer than its own.
 func TestToolRows_SortByDuration(t *testing.T) {
 	events := slices.Concat(trExchange(1, 10, ""), trExchange(2, 20, ""))
-	events[1].Duration = 4400 * time.Millisecond
-	m := toolRowsModel(t, events, &timeline.Timeline{Tools: []timeline.Tool{trTool(4, "long", "Bash", 62, -1, "")}})
+	events[3].Duration = 4400 * time.Millisecond
+	m := toolRowsModel(t, events, &timeline.Timeline{Tools: []timeline.Tool{trTool(2, "long", "Bash", 62, -1, "")}})
 	m.sortCol, m.sortDesc = colDuration, true
 	m.rebuildEventsTable()
 	i, row := toolRowAt(t, m, "long")
-	if i != 0 {
-		t.Errorf("the 38s tool is row %d, want 0 above the 4.4s exchange", i)
+	if i != 2 || m.visibleRows[1].resp == nil || m.visibleRows[1].resp.Seq != 2 {
+		t.Errorf("the 38s tool is row %d, want 2 under its 2s exchange, below the 4.4s exchange", i)
 	}
-	if got := toolCell(m, row, colIndex); got != "↳2" {
-		t.Errorf("# = %q, want ↳2", got)
+	if got := toolCell(m, row, colIndex); got != "┗⚒" {
+		t.Errorf("# = %q, want ┗⚒", got)
 	}
 }
 
-func TestToolRows_SortOtherColumnIsStable(t *testing.T) {
-	events := slices.Concat(trExchange(1, 10, ""), trExchange(2, 20, ""))
+// Every sort keeps an exchange's tool rows directly under it, in timeline order, with the
+// chronological # cells. Before #1805 a column with no tool value put all of the tools at
+// one end of the table, and a TIME▼ sort put them above their exchange.
+func TestToolRows_EverySortKeepsToolsUnderTheirExchange(t *testing.T) {
+	events := slices.Concat(trExchange(1, 10, ""), trExchange(2, 20, ""), trExchange(3, 40, ""))
+	events[1].Duration, events[3].Duration, events[5].Duration = 4*time.Second, 9*time.Second, time.Second
+	events[3].StatusCode = 500
 	m := toolRowsModel(t, events, &timeline.Timeline{Tools: []timeline.Tool{
-		trTool(2, "a", "Bash", 12, 13, ""),
-		trTool(4, "b", "Bash", 22, 23, ""),
+		trTool(2, "1a", "Read", 14, 15, ""),
+		trTool(2, "1b", "Bash", 14, 30, ""),
+		trTool(4, "2", "Agent", 29, 31, ""),
+		trTool(6, "3", "Bash", 43, -1, ""),
 	}})
-	m.sortCol = colCost
-	m.rebuildEventsTable()
-	var got []string
-	for _, r := range m.visibleRows {
-		switch {
-		case r.tool != nil:
-			got = append(got, r.tool.ID)
-		case r.resp != nil:
-			got = append(got, r.resp.RequestID)
+	want := map[string]string{"1a": "┣⚒", "1b": "┗⚒", "2": "┗⚒", "3": "┗⚒"}
+	for _, c := range eventColumns {
+		if c.sortKey == nil {
+			continue
 		}
-	}
-	if want := []string{"rb", "a", "rc", "b"}; !slices.Equal(got, want) {
-		t.Errorf("order = %v, want %v", got, want)
+		for _, desc := range []bool{false, true} {
+			m.sortCol, m.sortDesc = c.id, desc
+			m.rebuildEventsTable()
+			var seq uint64 // the response seq of the last exchange row
+			pos := 0       // the Pos the next tool row must have
+			tools := 0
+			for i, r := range m.visibleRows {
+				if r.tool == nil {
+					seq, pos = exchangeResp(r).Seq, 0
+					continue
+				}
+				tools++
+				if r.tool.Seq != seq || r.tool.Pos != pos {
+					t.Errorf("%s desc=%v: tool %q (seq %d, pos %d) is row %d, under exchange seq %d at pos %d",
+						c.id, desc, r.tool.ID, r.tool.Seq, r.tool.Pos, i, seq, pos)
+				}
+				pos++
+				if got := strings.TrimSpace(m.eventsTbl.Rows()[i][colPos(m, colIndex)]); got != want[r.tool.ID] {
+					t.Errorf("%s desc=%v: tool %q # = %q, want %q", c.id, desc, r.tool.ID, got, want[r.tool.ID])
+				}
+			}
+			if tools != len(want) {
+				t.Errorf("%s desc=%v: %d tool rows, want %d", c.id, desc, tools, len(want))
+			}
+		}
 	}
 }
 
@@ -364,27 +390,6 @@ func TestToolRows_ControlRunesRemoved(t *testing.T) {
 		if strings.ContainsAny(cell, "\x1b\x07") {
 			t.Errorf("control rune in cell %q", cell)
 		}
-	}
-}
-
-// Under a sort, a tool row of exchange 1000 or more shows its parent's number whole: the
-// # column is 4 wide, so ↳ gives way to the number.
-func TestToolRows_SortedParentNumberFits(t *testing.T) {
-	var events []pipeline.SessionEvent
-	for n := 1; n <= 1000; n++ {
-		events = append(events, trExchange(n, float64(n*3), "")...)
-	}
-	m := toolRowsModel(t, events, &timeline.Timeline{Tools: []timeline.Tool{
-		trTool(2000, "big", "Bash", 3002, 3003, ""),
-		trTool(1998, "small", "Bash", 2999, 3000, ""),
-	}})
-	m.sortCol, m.sortDesc = colDuration, true
-	m.rebuildEventsTable()
-	if _, row := toolRowAt(t, m, "big"); toolCell(m, row, colIndex) != "1000" {
-		t.Errorf("exchange 1000: # = %q, want 1000", toolCell(m, row, colIndex))
-	}
-	if _, row := toolRowAt(t, m, "small"); toolCell(m, row, colIndex) != "↳999" {
-		t.Errorf("exchange 999: # = %q, want ↳999", toolCell(m, row, colIndex))
 	}
 }
 

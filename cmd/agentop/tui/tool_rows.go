@@ -151,17 +151,6 @@ func (t toolRow) status() string {
 	return "ok"
 }
 
-// duration is the DURATION sort value (rule 11).
-func (t toolRow) duration(now time.Time) time.Duration {
-	switch {
-	case t.End == nil:
-		return now.Sub(t.Start)
-	case t.Lost:
-		return 0
-	}
-	return t.End.Sub(t.Start)
-}
-
 // durationCell is the DURATION cell (rule 8).
 func (t toolRow) durationCell(now time.Time) string {
 	switch {
