@@ -28,7 +28,7 @@
 4. **`error` STATUS is plain text.** Reason: the events table has no per-cell color (see `newEventsTable`). "The error style that exchange rows use" is therefore no style.
 5. **Tool row cells.** Walk the shown columns in order. Columns `#`, TIME, DIR, ACTION, PLUGIN, METHOD, STATUS, DURATION get the tool cell (rules 2-8). At the first shown column outside that set, append the trailing cell (rule 10) and stop. If no such column is shown, the trailing text is not drawn (search still sees it). Reason: these eight columns are first in `eventColumns` display order, so the cells stay parallel to `cols` when the picker or the fit drops a column.
 6. **Sort key for "other columns".** `sortValue{numeric: k.numeric}`, where `k` is `sortCol.sortKey(ctxs[0])`. Reason: `sortValue.less` reads `numeric` from its receiver, so a non-numeric zero beside numeric keys gives an inconsistent order. Tool rows exist only when `ctxs` is not empty.
-7. **Pin key.** Add `tool, toolAgent string` to `eventKey`. A new `rowKey(er eventRow) eventKey` returns `{tool: id, toolAgent: agent}` for a tool row and `keyOf(er.event)` otherwise. Every `keyOf(m.selectedEvent())` and `keyOf(m.selectedEventOn(...))` caller changes to `rowKey` of the same row. Reason: rule 14, and `keyOf(nil)` is the zero (unpinned) key.
+7. **Pin key.** Add `tool, toolAgent string` to `eventKey`. A new `pinKeyOf(er eventRow) eventKey` returns `{tool: id, toolAgent: agent}` for a tool row and `keyOf(er.event)` otherwise. Every `keyOf(m.selectedEvent())` and `keyOf(m.selectedEventOn(...))` caller changes to `pinKeyOf` of the same row. Reason: rule 14, and `keyOf(nil)` is the zero (unpinned) key. Do not name it `rowKey`: `events_columns.go` already declares `type rowKey struct` (the sort key), so that name does not compile.
 8. **Index location.** The index is a field `tools map[uint64][]toolRow` on `timelineState`, set in `handleTimelineLoaded` on success and cleared with `tl` when the session changes. Reason: spec task 2, "once per fetched timeline".
 9. **`now`** for `running`, `run ⋯` and `bg ⋯` is `m.clock()` read once per rebuild. Reason: the model already injects a clock for tests.
 10. **One PR.** The estimate is about 1,400 counted lines, under the 2,000 limit.
@@ -54,9 +54,9 @@
 - Test: `cmd/agentop/tui/events_timeline_test.go` (new)
 
 **Interfaces:**
-- Produces: `func (m *model) followEventsTimeline() tea.Cmd` — sets `m.timeline.session = m.selectedSess` (resetting `tl`, `err`, `tools`, `fails`, `retryAt`, `cursor=-1`, `scroll=0` when the session changes) and returns `m.resumeTimeline()`. Returns nil when `m.selectedSess == ""`.
+- Produces: `func (m *model) followEventsTimeline() tea.Cmd` — sets `m.timeline.session = m.selectedSess` (resetting `tl`, `err`, `fails`, `retryAt`, `cursor=-1`, `scroll=0` when the session changes) and returns `m.resumeTimeline()`. Returns nil when `m.selectedSess == ""`.
 - Produces: `func (m *model) timelineChainLive() bool` — true when `m.pane == paneTimeline`, or `m.pane` is `paneEvents`/`paneDetail` and `m.timeline.session == m.selectedSess != ""`.
-- Produces: `handleTimelineLoaded` calls `m.rebuildEventsTable()` after a successful load when `m.pane == paneEvents && m.timeline.session == m.selectedSess`. This task does not add the `tools` field; Task 4 adds it and fills it with `indexTools` (Task 2), so Task 1 and Task 2 stay independent.
+- Produces: `handleTimelineLoaded` calls `m.rebuildEventsTable()` after a successful load when `m.pane == paneEvents && m.timeline.session == m.selectedSess`. This task does not add the `tools` field; Task 4 adds it, fills it with `indexTools` (Task 2), and adds `m.timeline.tools = nil` to `followEventsTimeline`, so Task 1 and Task 2 stay independent.
 
 - [ ] **Step 1: Write the failing tests** in `events_timeline_test.go`, built like `TestTimelineRefresh` in `timeline_pane_test.go`:
   - `TestEventsTimeline_ChainStartsOnEventsPane`: Enter on a session in the sessions pane returns a cmd; after it, `m.timeline.session == m.selectedSess` and a `timelineTickMsg{gen: m.timeline.tickGen}` handled on `paneEvents` returns a non-nil cmd (the next tick).
@@ -173,7 +173,7 @@ func (t toolRow) trailing(now time.Time) string             // rule 10, parts jo
 
 **Interfaces:**
 - Consumes: `toolRow`, `indexTools`, `status`, `durationCell`, `duration`, `trailing` (Task 2); `followEventsTimeline` and the rebuild on load (Task 1); the spanning cell (Task 3).
-- Produces: `eventRow.tool *toolRow`, `eventRow.parent int` (the parent exchange's index in `ctxs`), `eventRow.last bool` (last tool of its exchange); `eventKey.tool`, `eventKey.toolAgent`; `func rowKey(er eventRow) eventKey`; `func toolCells(cols []eventColumn, cc cellContext, t eventRow, sorted bool, now time.Time) table.Row` in `events_columns.go`.
+- Produces: `eventRow.tool *toolRow`, `eventRow.parent int` (the parent exchange's index in `ctxs`), `eventRow.last bool` (last tool of its exchange); `eventKey.tool`, `eventKey.toolAgent`; `func pinKeyOf(er eventRow) eventKey`; `func (m *model) selectedRowOn(row int) eventRow`; `func toolCells(cols []eventColumn, cc cellContext, t eventRow, sorted bool, now time.Time) table.Row` in `events_columns.go`.
 
 - [ ] **Step 1: Write failing tests** in `events_tool_rows_test.go`. Build a model like `rebuildBenchModel` (events with `Seq` set on responses) and set `m.timeline.session = "s"`, `m.timeline.tl`, `m.timeline.tools = indexTools(tl)`, and a fixed `m.clock`. Read rendered cells from `m.eventsTbl.Rows()`:
   - `TestToolRows_OneTool`: row after exchange 12 has `#` `"┗⚒"`, empty DIR, TIME = tool start in `"15:04:05.00"`, METHOD `"Bash"`, STATUS `"ok"`, DURATION `"4.21s"`, last cell = preview; `len(row) == index of first column after DURATION + 1`.
@@ -186,7 +186,8 @@ func (t toolRow) trailing(now time.Time) string             // rule 10, parts jo
   - `TestToolRows_SortOtherColumnIsStable`: sort by COST: tool rows keep their place after their exchange among ties (tie-break by `parent`).
   - `TestToolRows_SearchFindsPreview`: `m.search[paneEvents] = "git -C"` → the tool row index is in `m.eventsTbl.Matches()`.
   - `TestToolRows_EnterDoesNothing`: cursor on a tool row, Enter → pane stays `paneEvents`, cmd nil, `m.selectedEvent() == nil`.
-  - `TestToolRows_CursorStaysOnTool`: cursor on a tool row, then a new event arrives and a sort is toggled → cursor is on the same tool (`rowKey` equal).
+  - `TestToolRows_CursorStaysOnTool`: cursor on a tool row, then a new event arrives and a sort is toggled → cursor is on the same tool (`pinKeyOf` equal).
+  - `TestToolRows_TailFollowOnToolRow`: no sort, cursor on the last row, which is a tool row; a new exchange with a tool arrives → after the rebuild the cursor is on the new last row, and `m.selectedEvent() == nil` does not panic. (Yank needs no test: it runs only in the detail pane, and a tool row cannot open the detail pane, rule 13.)
   - Review Focus tests: `TestToolRows_TimelineBeforeEvents`, `TestToolRows_OrphanToolNotShown`, `TestToolRows_NarrowTerminalCellCount` (width 80: every row has `len(row) <= len(m.eventsTbl.Columns())`), `TestToolRows_DetailSearchSkipsToolRows` (start a detail search with tool rows visible; `detailMatchRows`, `detailSearchStale`, `detailNewRows` do not panic and never return a tool row index).
   - `TestToolRows_LinkedEventNoTools`: a response whose `SessionID` is another session with a matching `Seq` gets no tool rows (decision 3).
 
@@ -194,8 +195,8 @@ func (t toolRow) trailing(now time.Time) string             // rule 10, parts jo
 
 - [ ] **Step 3: Implement.**
   - `eventRow`: add `tool *toolRow`, `parent int`, `last bool`. `rowHolds` is unchanged (tool rows have nil `event` and `resp`).
-  - `eventKey`/`findByKey`: a key with `tool != ""` matches the row whose `tool.ID == k.tool && tool.Agent == k.toolAgent`; other keys as today. `rowKey(er)` per decision 7. Replace the `keyOf(m.selectedEvent())`, `keyOf(m.selectedEventOn(prevRow))`, `keyOf(r.event)` pin writes listed in Files with `rowKey` of the same row (add `selectedRowOn(row int) eventRow` beside `selectedEventOn` if needed). `revealPendingSeq` and `loadOlderFromRow` only ever land on event rows; leave them.
-  - `renderEventRow(j)` in `rebuildEventsTable`: after the exchange row, look up `m.timeline.tools[resp.Seq]` (decision 3; only when `m.timeline.session == m.selectedSess`), and append one row per tool to `rows`, `m.visibleRows` (an `eventRow{tool: &t, parent: j, last: i == n-1}`) and, when searching, `full` (cells: tool name for METHOD, the full trailing text for the last cell, `NoMatch` false). Return the number of tool rows appended. In the main loop, when `sortCol != nil`, append one key per tool row after the exchange's key: `rowKey{val: <tool key>, exchange: j}` (rule 11, decision 6). Member rows in blocks reach `renderEventRow` too, so rule 1 holds inside expanded blocks with no extra code.
+  - `eventKey`/`findByKey`: a key with `tool != ""` matches the row whose `tool.ID == k.tool && tool.Agent == k.toolAgent`; other keys as today. `rowKey(er)` per decision 7. Replace the `keyOf(m.selectedEvent())`, `keyOf(m.selectedEventOn(prevRow))`, `keyOf(r.event)` pin writes listed in Files with `pinKeyOf` of the same row. Add `selectedRowOn(row int) eventRow` beside `selectedEventOn` (zero `eventRow{}` when `row` is out of range), and change `events_pane.go` ~446 to `pinKeyOf(m.selectedRowOn(prevRow))`. Change the keys.go and search_surfaces.go callers to `er, _ := m.selectedEventRow(); pinKeyOf(er)`. Leave the `keyOf(r.event)` calls in `search_details.go`: they key the detail-search hits by event, and tool rows are skipped there by `r.event == nil`. `revealPendingSeq` and `loadOlderFromRow` only ever land on event rows; leave them.
+  - `renderEventRow(j)` in `rebuildEventsTable`: after the exchange row, look up `m.timeline.tools[resp.Seq]` (decision 3; only when `m.timeline.session == m.selectedSess`), and append one row per tool to `rows`, `m.visibleRows` (an `eventRow{tool: &t, parent: j, last: i == n-1}`) and, when searching, `full` (cells: tool name for METHOD, the full trailing text for the last cell, `NoMatch` false). Return the number of tool rows appended. In the main loop, when `sortCol != nil`, append one key per tool row after the exchange's key: `rowKey{val: <tool key>, exchange: j}` (the existing `rowKey` struct type; rule 11, decision 6). Member rows in blocks reach `renderEventRow` too, so rule 1 holds inside expanded blocks with no extra code.
   - `toolCells` per decision 5 and rules 2-10: `#` is `"┣⚒"`/`"┗⚒"`, or `"↳" + <parent # cell>` when `sorted`; DIR is `"│"` when the parent row is a subagent member and `m.subagentBlocks != nil`; apply each column's `align`. The parent `#` is the parent ctx's `#` column cell (`blockIDs` then `ids`).
   - Enter (keys.go ~744): after `selectedEventRow`, return nil when `er.tool != nil` (rule 13).
   - `handleTimelineLoaded`: set `m.timeline.tools = indexTools(msg.tl)` with `tl`; set it to nil wherever `tl` is set to nil (`openTimeline`, `followEventsTimeline`). On error keep the old index (rule 15: no extra error; a 404 before any load leaves it nil).
@@ -241,7 +242,7 @@ func (t toolRow) trailing(now time.Time) string             // rule 10, parts jo
 
 - [ ] **Step 1:** In `rebuildBenchModel`, give each response `Seq: uint64(2*i+2)` (requests `2*i+1`) and build a `*timeline.Timeline` with one tool per response (95% of steps have one tool, fact table) and two parallel tools on every 20th response, each ended 1s after the response. Set `m.timeline.session = "s"`, `m.timeline.tl`, `m.timeline.tools = indexTools(tl)`. Add a `"sorted"` sub-benchmark with `m.sortCol = colDuration`.
 
-- [ ] **Step 2: Run** `go test ./tui -run '^$' -bench BenchmarkRebuildEventsTable -benchmem -count=6` on this branch, and the same with the old fixture on `refs/base/tool-rows-1776` (copy the result before the change). Put both tables in the commit message body so the PR body can quote them (use `benchstat` if installed; otherwise the raw lines).
+- [ ] **Step 2: Run** `go test ./tui -run '^$' -bench BenchmarkRebuildEventsTable -benchmem -count=6` on this branch. For the base figures, run from the worktree root: `git worktree add --detach /tmp/tool-rows-1776-base refs/base/tool-rows-1776`, then `(cd /tmp/tool-rows-1776-base/cmd/agentop && go test ./tui -run '^$' -bench BenchmarkRebuildEventsTable -benchmem -count=6)`, then `git worktree remove --force /tmp/tool-rows-1776-base`. The base has no `"sorted"` sub-benchmark; compare only the sub-benchmarks that both have. Put both tables in the commit message body so the PR body can quote them (use `benchstat` if installed; otherwise the raw lines).
 
 - [ ] **Step 3: Commit** `test: Add tool rows to the events-table rebuild benchmark`.
 
@@ -259,7 +260,7 @@ The PR body reports the Task 6 benchmark against `main` and lists the Review Foc
 
 ## Gate
 
-From the worktree root:
+From the worktree root. The gofmt and vet steps were run once on the unchanged base (ce712778) during plan review: both pass, with no change to how they are called.
 
 ```sh
 (cd cmd/agentop && test -z "$(gofmt -l .)" && GOWORK=off go vet ./...) && scripts/dev/go-test-shards.sh -race cmd/agentop && (cd cmd/agentop && go test -race $(go list ./... | grep -v 'agentop$'))
