@@ -171,9 +171,10 @@ not part of the name. Each sees the request as the one before it left it. A
 script in shadow mode changes nothing, so the next one sees what it saw.
 
 All of `~/.cortex/plugins/` is one slot, which Cortex appends to the end of the
-outbound pipeline (but not in praxis mode, which runs no outbound plugin). A folder inside it is a slot of its own once the config names
-it. To put scripts somewhere else — between two Go plugins, for example — list
-the slot yourself and give it a folder of its own:
+outbound pipeline (but not in praxis mode, which runs no outbound plugin). A
+folder inside it is a slot of its own once the config names it. To put scripts
+somewhere else — between two Go plugins, for example — list the slot yourself
+and give it a folder of its own:
 
 ```yaml
 pipeline:

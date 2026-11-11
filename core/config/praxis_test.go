@@ -126,7 +126,7 @@ func TestPraxis_RefusesUnsafeOutboundPlugin(t *testing.T) {
 		refused bool
 	}{
 		{"inference-parser", false}, {"mcp-parser", false}, {"a2a-parser", false},
-		{"tool-prune", false}, {"context-guru", false}, {"lineage", false},
+		{"tool-prune", false}, {"context-guru", false}, {"lineage-telemetry", false},
 		{"opa", true}, {"script", true}, {"token-exchange", true},
 		{"inference-router", true}, {"no-such-plugin", true},
 	} {
