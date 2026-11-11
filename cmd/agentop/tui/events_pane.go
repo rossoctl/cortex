@@ -27,8 +27,10 @@ type eventKey struct {
 	direction pipeline.Direction
 	phase     pipeline.SessionPhase
 	requestID string
-	// tool, toolAgent and toolSeq pin a tool row: its tool ID, agent and response seq. The seq
-	// tells apart two calls with one ID: some local models send call_0 on every turn.
+	// isTool, tool, toolAgent and toolSeq pin a tool row: its tool ID, agent and response seq.
+	// The seq tells apart two calls with one ID: some local models send call_0 on every turn,
+	// and some send no ID.
+	isTool          bool
 	tool, toolAgent string
 	toolSeq         uint64
 }
@@ -43,7 +45,7 @@ func keyOf(e *pipeline.SessionEvent) eventKey {
 // pinKeyOf is the pin key of row er: its tool for a tool row, else its event.
 func pinKeyOf(er eventRow) eventKey {
 	if er.tool != nil {
-		return eventKey{tool: er.tool.ID, toolAgent: er.tool.Agent, toolSeq: er.tool.Seq}
+		return eventKey{isTool: true, tool: er.tool.ID, toolAgent: er.tool.Agent, toolSeq: er.tool.Seq}
 	}
 	return keyOf(er.event)
 }
@@ -57,7 +59,7 @@ func (m *model) selectedPinKey() eventKey {
 // name a response: a response-only row is keyed by it, and the row merges with its request
 // when the older page with the request loads.
 func findByKey(rows []eventRow, k eventKey) int {
-	if k.tool != "" {
+	if k.isTool {
 		return slices.IndexFunc(rows, func(r eventRow) bool {
 			return r.tool != nil && r.tool.ID == k.tool && r.tool.Agent == k.toolAgent && r.tool.Seq == k.toolSeq
 		})
@@ -159,7 +161,9 @@ func (m *model) rebuildEventsTable() {
 	}
 
 	prevRow := m.eventsTbl.Cursor()
-	wasAtEnd := prevRow >= len(m.eventsTbl.Rows())-1
+	// A tool pin that waits for its timeline left the cursor on a stand-in row, not at the end.
+	pinWaits := m.selectedEventKey.isTool && findByKey(m.visibleRows, m.selectedEventKey) < 0
+	wasAtEnd := prevRow >= len(m.eventsTbl.Rows())-1 && !pinWaits
 
 	// One display row per network message. CONNECT tunnel-opens are folded
 	// into the decrypted inner request that immediately follows them (TLS
@@ -543,7 +547,7 @@ func (m *model) rebuildEventsTable() {
 	case m.selectedEventKey != (eventKey{}):
 		if idx := findByKey(m.visibleRows, m.selectedEventKey); idx >= 0 {
 			target = idx
-		} else {
+		} else if !m.selectedEventKey.isTool || m.toolsLoaded() {
 			// Event evicted — clamp to the oldest surviving row,
 			// the nearest edge to where the pin was, and drop the stale
 			// key so internal state matches what the operator sees.
@@ -552,6 +556,12 @@ func (m *model) rebuildEventsTable() {
 		}
 	}
 	setCursorVisible(&m.eventsTbl, target)
+}
+
+// toolsLoaded reports that the events pane's session has its timeline, or that its fetch
+// failed. Until then a tool pin that matches no row is kept.
+func (m *model) toolsLoaded() bool {
+	return m.timeline.session == m.selectedSess && (m.timeline.tl != nil || m.timeline.err != nil)
 }
 
 // sortEventRows reorders the rendered rows by their sort keys (#865).

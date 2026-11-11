@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -398,5 +399,58 @@ func TestToolRows_SortedParentNumberFits(t *testing.T) {
 	}
 	if _, row := toolRowAt(t, m, "small"); toolCell(m, row, colIndex) != "↳999" {
 		t.Errorf("exchange 999: # = %q, want ↳999", toolCell(m, row, colIndex))
+	}
+}
+
+// A tool pin survives a rebuild while the timeline is not loaded yet, for example after a `T`
+// look at another session: the tool row comes back when the timeline lands.
+func TestToolRows_PinWaitsForTheTimeline(t *testing.T) {
+	events := slices.Concat(trExchange(1, 10, ""), trExchange(2, 20, ""))
+	tl := &timeline.Timeline{Tools: []timeline.Tool{trTool(2, "t1", "Bash", 12, 13, "")}}
+	m := toolRowsModel(t, events, tl)
+	i, _ := toolRowAt(t, m, "t1")
+	setCursorVisible(&m.eventsTbl, i)
+	m.selectedEventKey = m.selectedPinKey()
+	want := m.selectedEventKey
+	m.setTimelineSession("other")
+	m.setTimelineSession(m.selectedSess)
+	m.rebuildEventsTable()
+	if m.selectedEventKey != want {
+		t.Fatalf("a rebuild with no timeline cleared the tool pin: %v", m.selectedEventKey)
+	}
+	m.handleTimelineLoaded(timelineLoadedMsg{tl: tl, req: m.timeline.reqSeq})
+	if got := m.selectedPinKey(); got != want {
+		t.Errorf("after the timeline landed the cursor is on %v, want %v", got, want)
+	}
+}
+
+// A tool call with no ID (some local models send none) can be pinned.
+func TestToolRows_PinToolWithNoID(t *testing.T) {
+	events := slices.Concat(trExchange(1, 10, ""), trExchange(2, 20, ""))
+	m := toolRowsModel(t, events, &timeline.Timeline{Tools: []timeline.Tool{trTool(2, "", "Bash", 12, 13, "")}})
+	i, _ := toolRowAt(t, m, "")
+	setCursorVisible(&m.eventsTbl, i)
+	m.selectedEventKey = m.selectedPinKey()
+	want := m.selectedEventKey
+	m.events[m.selectedSess] = append(m.events[m.selectedSess], trExchange(3, 30, "")...)
+	m.rebuildEventsTable()
+	if got := m.selectedPinKey(); got != want || m.eventsTbl.Cursor() != i {
+		t.Errorf("after a new event the cursor is on row %d %v, want row %d %v", m.eventsTbl.Cursor(), got, i, want)
+	}
+}
+
+// A tool pin stops waiting when the timeline fetch fails.
+func TestToolRows_PinStopsWaitingOnAFailedFetch(t *testing.T) {
+	events := slices.Concat(trExchange(1, 10, ""), trExchange(2, 20, ""))
+	m := toolRowsModel(t, events, &timeline.Timeline{Tools: []timeline.Tool{trTool(2, "t1", "Bash", 12, 13, "")}})
+	i, _ := toolRowAt(t, m, "t1")
+	setCursorVisible(&m.eventsTbl, i)
+	m.selectedEventKey = m.selectedPinKey()
+	m.setTimelineSession("other")
+	m.setTimelineSession(m.selectedSess)
+	m.handleTimelineLoaded(timelineLoadedMsg{err: errors.New("boom"), req: m.timeline.reqSeq})
+	m.rebuildEventsTable()
+	if m.selectedEventKey != (eventKey{}) {
+		t.Errorf("after a failed fetch the tool pin still waits: %v", m.selectedEventKey)
 	}
 }
