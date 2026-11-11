@@ -718,20 +718,27 @@ func TestReplyWithoutAFinishIsAnError(t *testing.T) {
 
 // Bob's router call is not a stream, and its complete reply names a model and has no choice, so
 // it has no finish reason. Only a stream can stop mid-reply as a 200, so the router turn is not
-// an error. A streamed reply with no finish still is.
+// an error. A reply with no finish that was a stream still is: the request asked for one, or a
+// gateway answered a buffered request with one.
 func TestBufferedReplyWithoutAFinishIsNotAnError(t *testing.T) {
 	var r rec
 	client := &pipeline.EventClient{Name: "bob"}
-	for i, stream := range []bool{false, true} {
+	cases := []struct{ asked, streamed, wantErr bool }{{false, false, false}, {true, false, true}, {false, true, true}}
+	for i, c := range cases {
 		id := r.id()
 		r.add(pipeline.SessionEvent{At: at(float64(i * 2)), Phase: pipeline.SessionRequest, RequestID: id, Host: "api.us-east.bob.ibm.com", Client: client,
-			Inference: &pipeline.InferenceExtension{Model: "router", Messages: []pipeline.InferenceMessage{user("go")}, Stream: stream}})
+			Inference: &pipeline.InferenceExtension{Model: "router", Messages: []pipeline.InferenceMessage{user("go")}, Stream: c.asked}})
 		r.add(pipeline.SessionEvent{At: at(float64(i*2 + 1)), Phase: pipeline.SessionResponse, RequestID: id, Host: "api.us-east.bob.ibm.com", Client: client,
-			StatusCode: 200, Inference: &pipeline.InferenceExtension{Model: "router", ServedModel: "explorer"}})
+			StatusCode: 200, Inference: &pipeline.InferenceExtension{Model: "router", ServedModel: "explorer", StreamedResponse: c.streamed}})
 	}
 	tl := Build("s", r.events, time.Time{})
-	if len(tl.Turns) != 2 || tl.Turns[0].Error || !tl.Turns[1].Error {
-		t.Errorf("turns = %+v, want the buffered reply clean and the streamed one an error", tl.Turns)
+	if len(tl.Turns) != len(cases) {
+		t.Fatalf("turns = %+v, want %d", tl.Turns, len(cases))
+	}
+	for i, c := range cases {
+		if tl.Turns[i].Error != c.wantErr {
+			t.Errorf("asked stream %v, streamed %v: error = %v, want %v", c.asked, c.streamed, tl.Turns[i].Error, c.wantErr)
+		}
 	}
 }
 
