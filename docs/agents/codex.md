@@ -132,7 +132,11 @@ mismatch counts as "can't tell" rather than "another process".
 - **Another process:** agentop leaves it alone. Codex's restart makes the same check,
   finds the record out of date, and starts a fresh updater.
 - **Can't tell:** agentop leaves the process alone and says it could not confirm the
-  updater was restarted.
+  updater picked up the change. It does not name the process or suggest stopping it,
+  since it could not tell what that process is. If `agentop configure codex status`
+  later shows the app-server back on its old settings, restarting the computer fixes it:
+  that ends the old updater, and the fresh one Codex starts reads the new settings.
+  Running agentop again would not help, because it would make the same check.
 
 **What a restart does to Codex sessions**, from Codex's source (0.163.0 and 0.164.0), not
 measured here: the old daemon stops taking new turns, gives running ones its shutdown grace — 60

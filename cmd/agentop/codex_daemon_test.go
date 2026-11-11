@@ -320,7 +320,7 @@ func TestCodexEnable_ReportsOnlyAConfirmedUpdater(t *testing.T) {
 		want            string // "" for no line about the updater at all
 	}{
 		{"another process", true, false, ""},
-		{"cannot tell", false, true, "Could not confirm that Codex's auto-updater was restarted"},
+		{"cannot tell", false, true, "Could not confirm that Codex's auto-updater picked up this change"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			envPath, cfgPath := codexFixture(t, "")
@@ -353,7 +353,7 @@ func TestCodexEnable_ReportsOnlyAConfirmedUpdater(t *testing.T) {
 				}
 				return
 			}
-			wantAll(t, "enable output", got, tc.want, "run this again")
+			wantAll(t, "enable output", got, tc.want, "agentop configure codex status", "restart your computer")
 		})
 	}
 }
@@ -390,7 +390,7 @@ func TestCodexEnable_MalformedIdentityStillRestarts(t *testing.T) {
 				t.Fatalf("restarted %d times, want once:\n%s", len(f.restarts), out.String())
 			}
 			got := out.String()
-			wantAll(t, "enable output", got, "pid 5613", "Could not confirm that Codex's auto-updater was restarted")
+			wantAll(t, "enable output", got, "pid 5613", "Could not confirm that Codex's auto-updater picked up this change")
 			if strings.Contains(got, "kill 5600") {
 				t.Errorf("named an unconfirmed pid as Codex's updater:\n%s", got)
 			}

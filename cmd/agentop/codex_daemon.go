@@ -471,8 +471,14 @@ func reportRestartedUpdater(codexHome, cortexProxy string, configured bool, stdo
 	case codexRecordStale:
 		return
 	case codexRecordUnknown:
-		fmt.Fprint(stdout, "Could not confirm that Codex's auto-updater was restarted. If Codex's next update\n"+
-			"  undoes this change, run this again.\n")
+		// No pid and no kill: agentop could not tell what the process is, so the user is
+		// not asked to stop it (#1736 review). Running agentop again would make the same
+		// check, and Codex's own restart keeps such a record too, so the fix offered is the
+		// one that cannot touch another process: a computer restart ends the old updater,
+		// and the fresh one Codex starts reads the new settings.
+		fmt.Fprint(stdout, "Could not confirm that Codex's auto-updater picked up this change. If\n"+
+			"  `agentop configure codex status` later shows the app-server on its old settings,\n"+
+			"  restart your computer.\n")
 		return
 	}
 	if u.EnvErr != nil || cortexProxy == "" || sameProxy(u.Proxy, cortexProxy) == configured {
