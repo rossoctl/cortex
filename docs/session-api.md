@@ -200,6 +200,11 @@ returns and background jobs — those key on the agent ids and marker strings
 (`agentRole`, `subagent`, `parentSubagent`) no other client sends. Requests
 from unknown clients render as host rows only.
 
+**Bob child tasks are agent rows too**, keyed by `subagent` and parented to
+`main`. A subtask (`subagentKind: "subtask"`) has `type: "subtask"` and the
+label `subtask <id>`. A subagent keeps the label `subagent <id>`. A Bob child
+has no spawn link: nothing on the wire names the call that started it.
+
 - A **turn** is one model call, request to end of response. Left out:
   progress-label and away-recap calls (matched by their prompt text in the
   last non-system message — Claude's own prompt strings, applied to every

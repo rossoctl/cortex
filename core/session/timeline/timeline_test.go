@@ -1052,3 +1052,44 @@ func TestPreMarkerRecapIsNotATurn(t *testing.T) {
 		t.Errorf("turns = %+v, want only the real call at 2s", tl.Turns)
 	}
 }
+
+// Bob child tasks are agent rows by their subagent id, all under main: a subtask is labeled
+// and typed "subtask", a subagent keeps the default label. A header-less call is main's.
+func TestTimeline_BobChildTasks(t *testing.T) {
+	var r rec
+	child := func(id, kind string, start, dur float64) {
+		r.bobTurn("premium-ide", start, dur, []pipeline.InferenceMessage{user(id)}, nil)
+		for i := len(r.events) - 2; i < len(r.events); i++ {
+			r.events[i].Subagent, r.events[i].SubagentKind = id, kind
+		}
+	}
+	r.bobTurn("premium-ide", 0, 2, []pipeline.InferenceMessage{user("root")}, nil)
+	child("c-sub", pipeline.SubagentKindSubtask, 3, 2)
+	child("c-a", pipeline.SubagentKindSubagent, 6, 3)
+	child("c-b", pipeline.SubagentKindSubagent, 7, 3)
+	child("c-a", pipeline.SubagentKindSubagent, 10, 1)
+	r.bobTurn("router", 12, 1, []pipeline.InferenceMessage{user("route")}, nil)
+	r.bobTurn("premium-ide", 14, 2, []pipeline.InferenceMessage{user("root again")}, nil)
+	tl := Build("s", r.events, at(30))
+
+	if len(tl.Agents) != 4 {
+		t.Fatalf("Agents = %+v, want 4", tl.Agents)
+	}
+	if sub := findAgent(t, tl, "c-sub"); sub.Parent != MainAgent || sub.Type != "subtask" || !strings.HasPrefix(sub.Label, "subtask ") {
+		t.Fatalf("subtask agent = %+v", sub)
+	}
+	for _, id := range []string{"c-a", "c-b"} {
+		if a := findAgent(t, tl, id); a.Parent != MainAgent || a.Type != "" || !strings.HasPrefix(a.Label, "subagent ") {
+			t.Fatalf("subagent %s = %+v", id, a)
+		}
+	}
+	want := []string{MainAgent, "c-sub", "c-a", "c-b", "c-a", MainAgent, MainAgent}
+	if len(tl.Turns) != len(want) {
+		t.Fatalf("Turns = %d, want %d", len(tl.Turns), len(want))
+	}
+	for i, tu := range tl.Turns {
+		if tu.Agent != want[i] {
+			t.Fatalf("turn %d agent = %q, want %q", i, tu.Agent, want[i])
+		}
+	}
+}
