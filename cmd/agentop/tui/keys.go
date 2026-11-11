@@ -757,13 +757,16 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			num := m.shownNum()
 			// A tool row opens the exchange that holds its call and its output (#1795).
-			inRequest := false
-			if er.tool != nil {
-				if er, num, inRequest, ok = m.toolTarget(er.tool); !ok {
+			m.detailAim = nil
+			if t := er.tool; t != nil {
+				var inRequest bool
+				if er, num, inRequest, ok = m.toolTarget(t); !ok {
 					return nil
 				}
+				if t.ID != "" {
+					m.detailAim = &toolAim{id: t.ID, pos: t.Pos, inRequest: inRequest}
+				}
 			}
-			_ = inRequest // Task 2 aims the detail cursor with it
 			// Render from the summary immediately, then fill the message bodies in
 			// when they arrive — the timeline no longer carries them. See
 			// fetchDetailEventCmd for why this is not a blocking spinner.

@@ -1118,7 +1118,10 @@ agentop is for, and the other four are surfaces you visit and leave.
   only, because the column has no space for `↳`. The tool's DURATION is measured
   from outside the agent: from the reply to the next request of the same agent. So
   it includes the client's own delay, and it can miss a tool that started while the
-  reply still streamed.
+  reply still streamed. `Enter` on a tool row opens the exchange whose request
+  carries the tool's output, with the cursor on the call and the output open below
+  it. When no such request is held, it opens the exchange that asked for the tool.
+  `Esc` goes back to the tool row.
 
   The twelve default columns together need about 180 terminal columns, so the table
   drops what does not fit and the footer says how many (`→ N more columns`). Columns carry a

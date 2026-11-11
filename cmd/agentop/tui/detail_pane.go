@@ -40,9 +40,16 @@ func (m *model) showDetail(r eventRow, resetScroll bool) {
 		m.detailFolds = nil
 		m.detailCursorPath, m.detailCursorOff = "", 0
 	}
+	aimed := m.applyToolAim()
+	if aimed {
+		m.detailAim = nil
+	}
 	m.renderDetail()
 	if resetScroll {
 		m.detailVp.GotoTop()
+		if aimed {
+			m.scrollToDetailCursor()
+		}
 		return
 	}
 	// Held position, clamped to what the new content and height can show: assigning
@@ -357,6 +364,7 @@ func (m *model) toggleDetailFold() {
 		return
 	}
 	l := m.detailLines[i]
+	m.detailAim = nil
 	if m.detailFolds == nil {
 		m.detailFolds = map[string]foldChoice{}
 	}
@@ -441,14 +449,17 @@ func (m *model) detailCursorKey(msg string) bool {
 	case "d", "ctrl+d":
 		step = half
 	case "g":
+		m.detailAim = nil
 		m.moveDetailCursor(0)
 		return true
 	case "G":
+		m.detailAim = nil
 		m.moveDetailCursor(len(m.detailLines) - 1)
 		return true
 	default:
 		return false
 	}
+	m.detailAim = nil // a reader move is never undone
 	first, last := m.detailDoc.rowsOf(i)
 	top, tall := m.detailVp.YOffset, last-first >= m.detailVp.Height
 	switch {
