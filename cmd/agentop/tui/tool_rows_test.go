@@ -165,8 +165,25 @@ func TestIndexTools_BgJob(t *testing.T) {
 		t.Errorf("second job: trailing = %q, want bg 1m00s", got)
 	}
 
+	// A reused ID (call_0): the job goes to the call that started it, not to a later call
+	// with the same ID.
+	tl = &timeline.Timeline{
+		Tools: []timeline.Tool{tlTool(4, "call_0", "Bash", 19, 20), tlTool(9, "call_0", "Bash", 40, 50)},
+		Jobs:  []timeline.Job{{Agent: "main", ID: "j1", ToolUseID: "call_0", Start: tlAt(20), End: tlPtr(262)}},
+	}
+	idx := indexTools(tl)
+	if got := idx[4][0].trailing(tlAt(300)); !strings.HasPrefix(got, "bg 4m02s") {
+		t.Errorf("call that started the job: trailing = %q, want a bg part", got)
+	}
+	if got, want := idx[9][0].trailing(tlAt(300)), "p-call_0"; got != want {
+		t.Errorf("later call with the same ID: trailing = %q, want %q", got, want)
+	}
+
 	// A job of another agent matches nothing.
-	tl.Jobs = tl.Jobs[:1]
+	tl = &timeline.Timeline{
+		Tools: []timeline.Tool{tlTool(4, "b1", "Bash", 19, 20), tlTool(4, "b2", "Bash", 19, 20)},
+		Jobs:  []timeline.Job{{Agent: "main", ID: "j1", ToolUseID: "b2", Start: tlAt(20), End: tlPtr(262)}},
+	}
 	tl.Jobs[0].Agent = "sub"
 	if got, want := onlyRow(t, tl, "b2").trailing(tlAt(300)), "p-b2"; got != want {
 		t.Errorf("job of another agent: trailing = %q, want %q", got, want)
