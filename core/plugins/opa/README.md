@@ -571,7 +571,7 @@ bundles/my-agent.tar.gz
 Only include the paths you need — the plugin skips evaluation for any
 undefined path.
 
-See the [OPA bundle documentation](https://www.openpolicyagent.org/docs/latest/management-bundles/)
+See the [OPA bundle documentation](https://www.openpolicyagent.org/docs/management-bundles)
 for the full specification.
 
 ## Pipeline ordering
