@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
+	"slices"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -90,6 +92,10 @@ var praxisOffSafe = map[string]bool{
 	"context-guru":      true,
 	"lineage-telemetry": true,
 }
+
+// PraxisOffSafe returns the praxisOffSafe names, sorted, for a test that checks
+// each one against the registered plugins.
+func PraxisOffSafe() []string { return slices.Sorted(maps.Keys(praxisOffSafe)) }
 
 // validatePraxis refuses praxis mode outside a loopback-only laptop install,
 // beside mtls, and with an outbound plugin that is not in praxisOffSafe and not
