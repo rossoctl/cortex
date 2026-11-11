@@ -115,11 +115,11 @@ func TestIndexTools_AgentRun(t *testing.T) {
 		Tools:  []timeline.Tool{tlTool(3, "t1", "Agent", 8, 9.7)},
 		Agents: []timeline.Agent{{ID: "main"}, {ID: "sub", Parent: "main", SpawnTool: "t1", SpawnedAt: tlPtr(10), ReturnedAt: tlPtr(358)}},
 	}
-	if got, want := onlyRow(t, tl, "t1").trailing(tlAt(400)), "run 5m48s · p-t1"; got != want {
+	if got, want := onlyRow(t, tl, "t1").trailing(tlAt(400)), "run 5m48s"; got != want {
 		t.Errorf("ended run: trailing = %q, want %q", got, want)
 	}
 	tl.Agents[1].ReturnedAt = nil
-	if got, want := onlyRow(t, tl, "t1").trailing(tlAt(40)), "run ⋯ 30.00s · p-t1"; got != want {
+	if got, want := onlyRow(t, tl, "t1").trailing(tlAt(40)), "run ⋯ 30.00s"; got != want {
 		t.Errorf("running run: trailing = %q, want %q", got, want)
 	}
 }
@@ -129,7 +129,7 @@ func TestIndexTools_BgJob(t *testing.T) {
 		Tools: []timeline.Tool{tlTool(4, "b", "Bash", 19, 20)},
 		Jobs:  []timeline.Job{{Agent: "main", ID: "j1", Start: tlAt(20), End: tlPtr(262)}},
 	}
-	if got, want := onlyRow(t, tl, "b").trailing(tlAt(300)), "bg 4m02s · p-b"; got != want {
+	if got, want := onlyRow(t, tl, "b").trailing(tlAt(300)), "bg 4m02s"; got != want {
 		t.Errorf("ended job: trailing = %q, want %q", got, want)
 	}
 	tl.Jobs[0].End = nil
@@ -145,7 +145,7 @@ func TestIndexTools_BgJob(t *testing.T) {
 	if got := onlyRow(t, tl, "b").trailing(tlAt(300)); !strings.HasPrefix(got, "bg ") {
 		t.Errorf("Bash tool: trailing = %q, want a bg part", got)
 	}
-	if got, want := onlyRow(t, tl, "r").trailing(tlAt(300)), "p-r"; got != want {
+	if got, want := onlyRow(t, tl, "r").trailing(tlAt(300)), ""; got != want {
 		t.Errorf("Read tool: trailing = %q, want %q", got, want)
 	}
 
@@ -155,7 +155,7 @@ func TestIndexTools_BgJob(t *testing.T) {
 		Tools: []timeline.Tool{tlTool(4, "b1", "Bash", 19, 20), tlTool(4, "b2", "Bash", 19, 20)},
 		Jobs:  []timeline.Job{{Agent: "main", ID: "j1", ToolUseID: "b2", Start: tlAt(20), End: tlPtr(262)}},
 	}
-	if got, want := onlyRow(t, tl, "b1").trailing(tlAt(300)), "p-b1"; got != want {
+	if got, want := onlyRow(t, tl, "b1").trailing(tlAt(300)), ""; got != want {
 		t.Errorf("Bash call with no job: trailing = %q, want %q", got, want)
 	}
 	if got := onlyRow(t, tl, "b2").trailing(tlAt(300)); !strings.HasPrefix(got, "bg 4m02s") {
@@ -176,7 +176,7 @@ func TestIndexTools_BgJob(t *testing.T) {
 	if got := idx[4][0].trailing(tlAt(300)); !strings.HasPrefix(got, "bg 4m02s") {
 		t.Errorf("call that started the job: trailing = %q, want a bg part", got)
 	}
-	if got, want := idx[9][0].trailing(tlAt(300)), "p-call_0"; got != want {
+	if got, want := idx[9][0].trailing(tlAt(300)), ""; got != want {
 		t.Errorf("later call with the same ID: trailing = %q, want %q", got, want)
 	}
 
@@ -196,7 +196,7 @@ func TestIndexTools_BgJob(t *testing.T) {
 		Jobs:  []timeline.Job{{Agent: "main", ID: "j1", ToolUseID: "call_0", Start: tlAt(50), End: tlPtr(60), Seq: 10}},
 	}
 	idx = indexTools(tl)
-	if got, want := idx[4][0].trailing(tlAt(300)), "p-call_0"; got != want {
+	if got, want := idx[4][0].trailing(tlAt(300)), ""; got != want {
 		t.Errorf("earlier call, no job: trailing = %q, want %q", got, want)
 	}
 	if got := idx[9][0].trailing(tlAt(300)); !strings.HasPrefix(got, "bg 10.00s") {
@@ -209,7 +209,7 @@ func TestIndexTools_BgJob(t *testing.T) {
 		Jobs:  []timeline.Job{{Agent: "main", ID: "j1", ToolUseID: "b2", Start: tlAt(20), End: tlPtr(262)}},
 	}
 	tl.Jobs[0].Agent = "sub"
-	if got, want := onlyRow(t, tl, "b2").trailing(tlAt(300)), "p-b2"; got != want {
+	if got, want := onlyRow(t, tl, "b2").trailing(tlAt(300)), ""; got != want {
 		t.Errorf("job of another agent: trailing = %q, want %q", got, want)
 	}
 }
@@ -222,12 +222,8 @@ func TestToolRow_EndsRunTrailing(t *testing.T) {
 	if !r.EndsRun {
 		t.Fatal("lost SubagentHandback: EndsRun = false")
 	}
-	if got, want := r.trailing(tlAt(5)), "ends run · x"; got != want {
-		t.Errorf("trailing = %q, want %q", got, want)
-	}
-	r.Preview = ""
 	if got, want := r.trailing(tlAt(5)), "ends run"; got != want {
-		t.Errorf("empty preview: trailing = %q, want %q", got, want)
+		t.Errorf("trailing = %q, want %q (the preview is not shown)", got, want)
 	}
 	// Not lost: an ordinary tool, not the end of the run.
 	h.Lost = false

@@ -1113,7 +1113,8 @@ agentop is for, and the other four are surfaces you visit and leave.
   finished rows only.
 
   Each tool call has its own row under the exchange whose response asked for it.
-  Its `#` cell is `┣⚒` or `┗⚒` (the last tool of the exchange). In a sorted view it
+  The row shows the tool's name, not its command or arguments: `/` still finds
+  them, and `Enter` opens the full call. Its `#` cell is `┣⚒` or `┗⚒` (the last tool of the exchange). In a sorted view it
   is `↳<n>`, where `<n>` is the `#` of that exchange. From exchange 1000 it is `<n>`
   only, because the column has no space for `↳`. The tool's DURATION is measured
   from outside the agent: from the reply to the next request of the same agent. So
