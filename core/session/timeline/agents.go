@@ -184,9 +184,14 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 			turn.Finish = c.resp.Inference.FinishReason
 		}
 		// No finish reason is a reply that never finished: the proxy records a stream cut
-		// mid-reply as the 200 it started as. A refusal is a call that failed too.
-		turn.Error = c.resp.Phase == model.SessionDenied || c.resp.Error != nil || c.resp.StatusCode >= 400 ||
-			failedFinish[turn.Finish]
+		// mid-reply as the 200 it started as. Only a stream can stop like that. A buffered
+		// reply with no choice is complete: Bob's router answers with a model name, not a
+		// reply. A refusal is a call that failed too.
+		failed := failedFinish[turn.Finish]
+		if turn.Finish == "" && c.resp.Inference != nil && !inf.Stream && !c.resp.Inference.StreamedResponse {
+			failed = false
+		}
+		turn.Error = c.resp.Phase == model.SessionDenied || c.resp.Error != nil || c.resp.StatusCode >= 400 || failed
 		t.Turns = append(t.Turns, turn)
 		if c.resp.Inference == nil {
 			continue
@@ -224,10 +229,11 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 	// A tool that ends the run by design, with no result, ended it at the response that asked
 	// for it: a workflow agent stops at its StructuredOutput call, and no request carries that
 	// call's result. That response's other tools get no result either, and a workflow agent
-	// gets no notification to close them. A response's tools share its Seq.
+	// gets no notification to close them. A Bob subtask stops at its end_subtask call the same
+	// way. A response's tools share its Seq.
 	endedRun := map[uint64]bool{}
 	for _, tool := range t.Tools {
-		if _, ok := endAt[tool.Agent][tool.ID]; !ok && (tool.Name == "SubagentHandback" || tool.Name == "StructuredOutput") {
+		if _, ok := endAt[tool.Agent][tool.ID]; !ok && (tool.Name == "SubagentHandback" || tool.Name == "StructuredOutput" || tool.Name == "end_subtask") {
 			endedRun[tool.Seq] = true
 		}
 	}
