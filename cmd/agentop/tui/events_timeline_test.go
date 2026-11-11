@@ -245,6 +245,33 @@ func TestEventsTimeline_ChainSurvivesAListBlip(t *testing.T) {
 	}
 }
 
+// A timeline that was never fetched, because the list omitted the session when the pane opened
+// (#870), fetches on the first tick after the list holds the session again, with no stream event.
+func TestEventsTimeline_FirstFetchAfterAListBlip(t *testing.T) {
+	for _, pane := range []paneID{paneTimeline, paneEvents} {
+		m := eventsTimelineModel(t)
+		m.selectedSess, m.pane = "a", paneEvents
+		m.Update(sessionsLoadedMsg{})
+		if pane == paneTimeline {
+			m.openTimeline("a")
+		} else {
+			m.followEventsTimeline()
+		}
+		if m.timeline.loading {
+			t.Fatalf("pane %v: opening during the blip fetched a session the proxy does not list", pane)
+		}
+		m.handleTimelineTick(timelineTickMsg{gen: m.timeline.tickGen})
+		if m.timeline.loading {
+			t.Errorf("pane %v: a tick during the blip fetched", pane)
+		}
+		m.Update(sessionsLoadedMsg{{ID: "a", UpdatedAt: tlAt(2)}})
+		m.handleTimelineTick(timelineTickMsg{gen: m.timeline.tickGen})
+		if !m.timeline.loading {
+			t.Errorf("pane %v: after the blip, a tick did not fetch the never-fetched timeline", pane)
+		}
+	}
+}
+
 // A proxy with no timeline endpoint: a stream event does not refetch on every tick.
 func TestEventsTimeline_UnsupportedStopsStaleFetch(t *testing.T) {
 	m := eventsTimelineModel(t)

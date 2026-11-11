@@ -254,7 +254,8 @@ func (m *model) handleTimelineTick(msg timelineTickMsg) tea.Cmd {
 	retry := t.err != nil && !unsupported
 	// The chain outlives a list refresh that omits the session (#870); only the fetch waits.
 	served := m.sessionServed(t.session)
-	if waiting := !t.retryAt.IsZero() && now.Before(t.retryAt); (t.stale || idle || retry) && served && !unsupported && !waiting && !t.loading {
+	pending := t.tl == nil && t.err == nil // never fetched: resumeTimeline skipped it while unlisted
+	if waiting := !t.retryAt.IsZero() && now.Before(t.retryAt); (t.stale || idle || retry || pending) && served && !unsupported && !waiting && !t.loading {
 		fetch = m.fetchTimeline()
 	}
 	return tea.Batch(fetch, timelineTick(msg.gen))
