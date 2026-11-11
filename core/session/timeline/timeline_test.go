@@ -41,7 +41,7 @@ func (r *rec) turn(agent string, start, dur float64, msgs []pipeline.InferenceMe
 	}
 	id := r.id()
 	r.add(pipeline.SessionEvent{At: at(start), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example", Subagent: agent,
-		Inference: &pipeline.InferenceExtension{AgentRole: role, Tools: tools, Messages: msgs, ToolResults: results}})
+		Inference: &pipeline.InferenceExtension{AgentRole: role, Tools: tools, Messages: msgs, ToolResults: results, Stream: true}})
 	r.add(pipeline.SessionEvent{At: at(start + dur), Phase: pipeline.SessionResponse, RequestID: id, Host: "llm.example", Subagent: agent,
 		StatusCode: 200, Duration: time.Duration(dur * float64(time.Second)),
 		Inference: &pipeline.InferenceExtension{FinishReason: finish, ToolCalls: calls}})
@@ -712,6 +712,41 @@ func TestReplyWithoutAFinishIsAnError(t *testing.T) {
 	for i, w := range want {
 		if tl.Turns[i].Error != w {
 			t.Errorf("turn %d finish %q: error = %v, want %v", i, tl.Turns[i].Finish, tl.Turns[i].Error, w)
+		}
+	}
+}
+
+// Bob's router call is not a stream, and its complete reply names a model and has no choice, so
+// it has no finish reason. Only a stream can stop mid-reply as a 200, so the router turn is not
+// an error. A streamed reply with no finish still is.
+func TestBufferedReplyWithoutAFinishIsNotAnError(t *testing.T) {
+	var r rec
+	client := &pipeline.EventClient{Name: "bob"}
+	for i, stream := range []bool{false, true} {
+		id := r.id()
+		r.add(pipeline.SessionEvent{At: at(float64(i * 2)), Phase: pipeline.SessionRequest, RequestID: id, Host: "api.us-east.bob.ibm.com", Client: client,
+			Inference: &pipeline.InferenceExtension{Model: "router", Messages: []pipeline.InferenceMessage{user("go")}, Stream: stream}})
+		r.add(pipeline.SessionEvent{At: at(float64(i*2 + 1)), Phase: pipeline.SessionResponse, RequestID: id, Host: "api.us-east.bob.ibm.com", Client: client,
+			StatusCode: 200, Inference: &pipeline.InferenceExtension{Model: "router", ServedModel: "explorer"}})
+	}
+	tl := Build("s", r.events, time.Time{})
+	if len(tl.Turns) != 2 || tl.Turns[0].Error || !tl.Turns[1].Error {
+		t.Errorf("turns = %+v, want the buffered reply clean and the streamed one an error", tl.Turns)
+	}
+}
+
+// A Bob subtask stops at its end_subtask call, and no request of the subtask carries its result.
+// Before, the call and its sibling stayed open, and agentop drew the subtask as still running a
+// tool.
+func TestEndSubtaskOfABobSubtaskIsLost(t *testing.T) {
+	var r rec
+	r.turn("st", 0, 1, []pipeline.InferenceMessage{user("count")}, nil, "tool_calls",
+		pipeline.InferenceToolCall{ID: "todo", Name: "update_todo_list"},
+		pipeline.InferenceToolCall{ID: "end", Name: "end_subtask"})
+	tl := Build("s", r.events, time.Time{})
+	for _, id := range []string{"end", "todo"} {
+		if x := findTool(t, tl, id); !x.Lost || x.End == nil || !x.End.Equal(x.Start) {
+			t.Errorf("%s = %+v, want lost at its start", id, x)
 		}
 	}
 }

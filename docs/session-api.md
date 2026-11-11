@@ -211,8 +211,10 @@ has no spawn link: nothing on the wire names the call that started it.
   client), and Claude Code's tool-less side calls (titler, classifier).
   Another client's side calls are kept, cost and all. `error`
   marks a call that failed: an upstream error, a refusal, the client giving up,
-  a finish of `content_filter`, `failed` or `cancelled`, or a response that
-  ended with no finish reason, which is a stream cut mid-reply. `resent` marks
+  a finish of `content_filter`, `failed` or `cancelled`, or a streamed response
+  that ended with no finish reason, which is a stream cut mid-reply. A buffered
+  reply with no finish reason is complete, not an error: Bob's `router` call
+  answers with a model name only. `resent` marks
   a call that sent its agent's previous call's conversation again unchanged: a
   retry.
 - A **tool** runs from the response that requested it to the agent's first

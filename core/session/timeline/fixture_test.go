@@ -32,6 +32,13 @@ func loadFixture(t testing.TB) []pipeline.SessionEvent {
 	if err := json.NewDecoder(zr).Decode(&v); err != nil {
 		t.Fatal(err)
 	}
+	// The trim dropped the request's stream flag. Every Claude Code call streams, and the
+	// timeline reads the flag to tell a cut stream from a complete reply with no finish.
+	for i := range v.Events {
+		if e := &v.Events[i]; e.Phase == pipeline.SessionRequest && e.Inference != nil {
+			e.Inference.Stream = true
+		}
+	}
 	return v.Events
 }
 
