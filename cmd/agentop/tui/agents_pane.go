@@ -520,7 +520,8 @@ func (m *model) leaveAgentsPane() tea.Cmd {
 	if m.pane == paneUsage {
 		return m.resumeUsagePolling()
 	}
-	if m.pane == paneTimeline {
+	// The Timeline pane, or the events and detail panes for their tool rows (#1776).
+	if m.timelineChainLive() {
 		return m.resumeTimeline()
 	}
 	return nil

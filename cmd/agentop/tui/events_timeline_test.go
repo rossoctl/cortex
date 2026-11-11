@@ -126,6 +126,18 @@ func TestEventsTimeline_EscFromUsageResumes(t *testing.T) {
 	}
 }
 
+// The Agents overlay (A) returns from its own Esc arm, before the check above: it must also
+// start the fetch again, or the tool rows stop updating.
+func TestEventsTimeline_EscFromAgentsResumes(t *testing.T) {
+	m := eventsTimelineModel(t)
+	openSession(t, m, "a")
+	gen := m.timeline.tickGen
+	m.pane, m.previousPane = paneAgents, paneEvents
+	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEsc}); m.pane != paneEvents || cmd == nil || m.timeline.tickGen == gen {
+		t.Errorf("pane %v cmd %v tickGen %d (was %d)", m.pane, cmd, m.timeline.tickGen, gen)
+	}
+}
+
 // A cached-only session has no timeline on the server: opening one fetches nothing, but the
 // timeline drops the previous session, so that session is not kept.
 func TestEventsTimeline_CachedOnlySessionFetchesNothing(t *testing.T) {
