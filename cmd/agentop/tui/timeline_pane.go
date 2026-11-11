@@ -128,12 +128,40 @@ func (t *timelineState) window(now time.Time) int {
 func (m *model) openTimeline(session string) tea.Cmd {
 	m.timeline.returnPane = m.pane
 	m.pane = paneTimeline
+	m.setTimelineSession(session)
+	return m.resumeTimeline()
+}
+
+// setTimelineSession makes session the timeline's session. A change drops what the previous
+// session loaded.
+func (m *model) setTimelineSession(session string) {
 	if m.timeline.session != session {
 		m.timeline.tl, m.timeline.err, m.timeline.cursor, m.timeline.scroll = nil, nil, -1, 0
 		m.timeline.fails, m.timeline.retryAt = 0, time.Time{}
 	}
 	m.timeline.session = session
+}
+
+// followEventsTimeline starts the timeline fetch chain for the session the events pane shows.
+// The timeline session is then selectedSess, so it adds no #1542 retention.
+func (m *model) followEventsTimeline() tea.Cmd {
+	if m.selectedSess == "" {
+		return nil
+	}
+	m.setTimelineSession(m.selectedSess)
 	return m.resumeTimeline()
+}
+
+// timelineChainLive reports a pane that uses the timeline: the Timeline pane, or the events
+// and detail panes while the timeline follows their session.
+func (m *model) timelineChainLive() bool {
+	switch m.pane {
+	case paneTimeline:
+		return true
+	case paneEvents, paneDetail:
+		return m.selectedSess != "" && m.timeline.session == m.selectedSess
+	}
+	return false
 }
 
 // resumeTimeline starts one refresh chain and fetches now.
@@ -184,6 +212,9 @@ func (m *model) handleTimelineLoaded(msg timelineLoadedMsg) {
 	}
 	m.timeline.tl, m.timeline.err, m.timeline.fetchedAt = msg.tl, nil, m.clock()
 	m.timeline.fails, m.timeline.retryAt = 0, time.Time{}
+	if m.pane == paneEvents && m.timeline.session == m.selectedSess {
+		m.rebuildEventsTable()
+	}
 }
 
 // sessionServed reports a session the proxy lists, so it can be snapshotted and has a timeline.
@@ -197,7 +228,7 @@ func (m *model) sessionServed(id string) bool {
 }
 
 func (m *model) handleTimelineTick(msg timelineTickMsg) tea.Cmd {
-	if m.pane != paneTimeline || msg.gen != m.timeline.tickGen {
+	if !m.timelineChainLive() || msg.gen != m.timeline.tickGen {
 		return nil
 	}
 	t := &m.timeline
@@ -485,10 +516,9 @@ func (m *model) openEventsAtSeq(session string, seq uint64) tea.Cmd {
 	}
 	m.selectedSess = session
 	m.pane = paneEvents
-	// Leaving the timeline pane: its session is a #1542 retention key, so the
-	// drill-down drops it the same way Esc does — the session stays watched
-	// through selectedSess, which the lines above just set.
-	m.timeline.session = ""
+	// The timeline keeps its session for the events pane's tool rows. That session is
+	// selectedSess, which the lines above just set, so it adds no #1542 retention.
+	follow := m.followEventsTimeline()
 	m.revealSeq, m.revealSess = seq, session
 	m.rebuildEventsTable()
 	revealed := m.revealPendingSeq()
@@ -496,9 +526,9 @@ func (m *model) openEventsAtSeq(session string, seq uint64) tea.Cmd {
 		if !revealed {
 			m.revealSeq, m.revealSess = 0, ""
 		}
-		return nil
+		return follow
 	}
-	return m.snapshotCmd(session)
+	return tea.Batch(m.snapshotCmd(session), follow)
 }
 
 // revealPendingSeq moves the events cursor to revealSeq if that event is on screen in its own

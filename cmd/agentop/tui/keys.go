@@ -511,6 +511,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// picker mode it backs out further to the Pods picker, tearing down PF +
 		// SSE. It is the ONLY pane that does that — a key-opened surface returning
 		// to its caller must never cost the connection.
+		from := m.pane
 		switch m.pane {
 		case panePluginDetail:
 			// Return to whichever pane invoked the detail (Pipeline or Catalog).
@@ -564,12 +565,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				m.pane = paneSessions
 			}
 			m.timeline.tickGen++
-			// The timeline's session is a #1542 retention key (watchingSession),
+			// Back on the events or detail pane, the timeline follows that pane's session
+			// for its tool rows. That session is selectedSess, so it adds no retention.
+			if (m.pane == paneEvents || m.pane == paneDetail) && m.selectedSess != "" {
+				return m.followEventsTimeline()
+			}
+			// Else the timeline's session is a #1542 retention key (watchingSession),
 			// so it must not outlive the pane: left set, it would keep streaming
-			// that session's events for the rest of the run. Cleared here rather
-			// than pane-checked in the predicate — the drill-down path
-			// (openEventsAtSeq) clears it too, the session staying watched
-			// through selectedSess.
+			// that session's events for the rest of the run.
 			m.timeline.session = ""
 		case paneUsage:
 			// Return to whichever pane opened it, from usageState's own field —
@@ -620,6 +623,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if m.parentCtx != nil {
 				m.backToPodsPane()
 			}
+		}
+		// Back on the events or detail pane from a pane opened over it: the timeline tick
+		// stopped on that pane, so start it again for the tool rows.
+		if from != paneEvents && from != paneDetail && m.timelineChainLive() {
+			return m.resumeTimeline()
 		}
 		return nil
 
@@ -720,11 +728,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if !live[id] {
 				// Cached-only: there is no server-side session to snapshot, so the
 				// fetch would 404 and flash an error over the very events this
-				// change preserved.
+				// change preserved. Its timeline would 404 too: set the session
+				// only, so the previous one is not kept, and fetch nothing.
+				m.setTimelineSession(id)
 				return nil
 			}
+			follow := m.followEventsTimeline()
 			// Snapshot in case the stream hasn't yet delivered history.
-			return m.snapshotCmd(id)
+			return tea.Batch(m.snapshotCmd(id), follow)
 		case paneDetail:
 			// Enter is the only fold key, so → and l stay as they were: nothing.
 			if msg.String() == "enter" {

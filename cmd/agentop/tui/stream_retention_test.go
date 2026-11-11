@@ -129,10 +129,10 @@ func TestStreamRetentionTimelineStopsAfterEsc(t *testing.T) {
 }
 
 // The Enter drill-down is an exit from the timeline too: openEventsAtSeq moves
-// the pane to Events while the session stays watched through selectedSess, so
-// timeline.session must be cleared there as Esc clears it — otherwise, once the
-// user opens another session, the timeline's old session keeps streaming into
-// m.events for the rest of the run.
+// the pane to Events while the session stays watched through selectedSess. The
+// timeline then follows selectedSess, so when the user opens another session the
+// timeline's old session must not keep streaming into m.events for the rest of
+// the run.
 func TestStreamRetentionTimelineStopsAfterDrillDown(t *testing.T) {
 	m := newRetentionModel(t, "other", 0)
 	m.pane = paneTimeline
@@ -150,6 +150,7 @@ func TestStreamRetentionTimelineStopsAfterDrillDown(t *testing.T) {
 	}
 	// The user opens session C — the state Enter on Sessions leaves.
 	m.selectedSess = "other"
+	m.followEventsTimeline()
 	m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{
 		At: time.Now(), SessionID: "tl-sess", Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
 	}})
