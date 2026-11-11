@@ -76,6 +76,10 @@ knowing by name:
 - **`procs`** — the processes, `<pid>.<start>`, whose own session header named
   this session. Recorded from each request's `proc` and `sessionHeader`, and
   continued from the archive's fold like the other figures.
+- **`projects`** — the distinct `project` labels that the session's events
+  carried, most recent first, at most 8. Folded at append time, and continued
+  from the archive's fold like the other figures. Absent on `default` and on
+  pending buckets.
 - **Pending buckets.** A coding agent's calls before its process names a session
   are recorded under `pending:<agent>@<pid>.<start>` (or `pending:<agent>` when
   the process could not be looked up), carrying their `proc`. Nothing renames a
@@ -794,6 +798,15 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   is absent. Note a secret in a path *segment* (a bot token, a webhook path)
   does survive on this unauthenticated surface — worth knowing before
   exporting events off-box.
+- `project` — the git repo root of the agent process's cwd. The agent process
+  is the one that `proc` names, else the client process. A linked worktree gives
+  its main repo. A cwd with no repo gives the cwd itself. The home dir is shown
+  as `~`, so a terminal agent started in home gives `~`. A cwd of `/` gives "".
+  At most 256 runes: a longer label keeps its tail, cut to start at a `/`. The
+  proxy reads it once per connection, so a process that changes its cwd keeps
+  the old label until it opens a new connection. Absent on every listener that
+  has no PID (transparent, the VM control path, extproc, reverseproxy,
+  transparentproxy) and when `session.process_attribution` is off.
 - `subagent` — present on rows from a Claude Code subagent or agent-team
   teammate: the `X-Claude-Code-Agent-Id` the request carried. For a subagent it
   is the same id that names its files under
