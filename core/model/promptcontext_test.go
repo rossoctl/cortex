@@ -201,6 +201,26 @@ func TestSessionContext_IgnoresASubagentThatSpokeLast(t *testing.T) {
 	}
 }
 
+// A BOB CHILD TASK states no role, but SubagentKind marks its rows, and it files in the root's
+// session (#1803). Neither kind may take the root's figure: moving the session re-sends the
+// root's conversation, not the child's.
+func TestSessionContext_IgnoresBobChildTasks(t *testing.T) {
+	for _, kind := range []string{SubagentKindSubagent, SubagentKindSubtask} {
+		base := time.Now()
+		evs := conversation("root1", base, 10, 50_000)
+		child := conversation("c1", base.Add(time.Minute), 40, 120_000)
+		for i := range child {
+			child[i].Subagent, child[i].SubagentKind = "c1", kind
+		}
+		evs = append(evs, child...)
+		evs = append(evs, conversation("root2", base.Add(2*time.Minute), 12, 60_000)...)
+
+		if got, want := PromptContextOf(evs), 60_000; got != want {
+			t.Errorf("%s: PromptContextOf = %d, want %d — a Bob child took the column", kind, got, want)
+		}
+	}
+}
+
 // BOTH FILTERS ARE NEEDED, AND THE ONE-SHOT IS WHY.
 //
 // A one-shot is issued by the same CLI as the conversation, so it declares itself MAIN — the role

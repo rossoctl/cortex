@@ -206,7 +206,8 @@ func candidateOf(e *SessionEvent) candidate {
 	}
 	// The role is the second filter. See the doc comment above for why a subagent cannot be
 	// filtered by size or by message count instead.
-	if e.Inference.AgentRole == AgentRoleSubagent {
+	// A Bob child states no role, so SubagentKind is what marks its rows.
+	if e.Inference.AgentRole == AgentRoleSubagent || e.SubagentKind != "" {
 		return candidate{}
 	}
 	n := PromptTokensOf(e.Inference)
