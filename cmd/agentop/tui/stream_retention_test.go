@@ -177,3 +177,31 @@ func TestPluginRunsCountUnwatchedStream(t *testing.T) {
 		t.Errorf("un-watched session retained %d events", len(m.events["bg"]))
 	}
 }
+
+// Erasing the session the events pane followed clears the timeline's #1542 retention key too,
+// both for a per-session erase and for a clear of all sessions.
+func TestStreamRetentionTimelineStopsAfterErase(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		erase func(m *model)
+	}{
+		{"erase one", func(m *model) { m.forgetSessions([]string{"tl-sess"}) }},
+		{"clear all", func(m *model) { m.resetAfterClear() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newRetentionModel(t, "tl-sess", 0)
+			m.followEventsTimeline()
+			m.timeline.tl = sampleTimeline()
+			tc.erase(m)
+			if m.timeline.session != "" || m.timeline.tl != nil {
+				t.Fatalf("erase left timeline session %q (tl kept: %v)", m.timeline.session, m.timeline.tl != nil)
+			}
+			m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{
+				At: time.Now(), SessionID: "tl-sess", Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+			}})
+			if len(m.events["tl-sess"]) != 0 {
+				t.Errorf("erased session holds %d streamed events", len(m.events["tl-sess"]))
+			}
+		})
+	}
+}

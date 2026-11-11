@@ -133,11 +133,15 @@ func (m *model) openTimeline(session string) tea.Cmd {
 }
 
 // setTimelineSession makes session the timeline's session. A change drops what the previous
-// session loaded.
+// session loaded, and makes its in-flight reply and its tick chain stale, so neither lands on
+// the new session.
 func (m *model) setTimelineSession(session string) {
 	if m.timeline.session != session {
 		m.timeline.tl, m.timeline.err, m.timeline.cursor, m.timeline.scroll = nil, nil, -1, 0
 		m.timeline.fails, m.timeline.retryAt = 0, time.Time{}
+		m.timeline.reqSeq++
+		m.timeline.tickGen++
+		m.timeline.loading, m.timeline.stale = false, false
 	}
 	m.timeline.session = session
 }

@@ -143,3 +143,23 @@ func TestEventsTimeline_CachedOnlySessionFetchesNothing(t *testing.T) {
 		t.Errorf("cmd %v timeline session %q", cmd, m.timeline.session)
 	}
 }
+
+// A timeline reply for the previous session, still in flight when a cached-only session opens,
+// must not land on the new session, and the previous tick chain must stop.
+func TestEventsTimeline_CachedOnlyDropsInFlightReply(t *testing.T) {
+	m := eventsTimelineModel(t)
+	openSession(t, m, "a")
+	inFlight, oldGen := m.timeline.reqSeq, m.timeline.tickGen
+	m.events["gone"] = []pipeline.SessionEvent{{SessionID: "gone", At: tlAt(1)}}
+	m.sessions = m.sessions[:1]
+	m.sessionsData = map[string]SessionMetadata{}
+	openSession(t, m, "gone")
+	m.handleTimelineLoaded(timelineLoadedMsg{req: inFlight, tl: sampleTimeline()})
+	if m.timeline.tl != nil || m.timeline.loading {
+		t.Errorf("the reply for a landed on the cached-only session: tl %v loading %v", m.timeline.tl != nil, m.timeline.loading)
+	}
+	m.timeline.stale = true
+	if cmd := m.handleTimelineTick(timelineTickMsg{gen: oldGen}); cmd != nil {
+		t.Errorf("the tick chain of a kept running on the cached-only session")
+	}
+}
