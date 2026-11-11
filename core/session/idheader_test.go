@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // TestIDFromHeaders_FirstConfiguredHeaderWins pins the ordering contract of
@@ -331,4 +333,55 @@ func TestIDFromHeaders_Codex(t *testing.T) {
 			t.Errorf("CodexSessionHeader = %q, want canonical form %q", CodexSessionHeader, got)
 		}
 	})
+}
+
+// TestIDFromHeaders_BobChildFilesInItsParent pins rule 1 of #1803: a Bob child
+// task names its root in X-Parent-Task-Id, and its rows file in that session.
+// The header name stays X-Task-Id: that header gave the claim.
+func TestIDFromHeaders_BobChildFilesInItsParent(t *testing.T) {
+	h := http.Header{
+		BobSessionHeader:               []string{"c1"},
+		pipeline.BobParentTaskIDHeader: []string{"r1"},
+	}
+	id, name := IDHeaderFrom(h, []string{BobSessionHeader})
+	if id != "r1" || name != BobSessionHeader {
+		t.Errorf("IDHeaderFrom() = (%q, %q), want (%q, %q)", id, name, "r1", BobSessionHeader)
+	}
+}
+
+// TestIDFromHeaders_BobInvalidParentKeepsOwnSession: an unusable parent id is
+// not a claim, so the child keeps the session its own X-Task-Id names.
+func TestIDFromHeaders_BobInvalidParentKeepsOwnSession(t *testing.T) {
+	for _, parent := range []string{"r\n1", strings.Repeat("r", MaxSessionIDLen+1)} {
+		h := http.Header{
+			BobSessionHeader:               []string{"c1"},
+			pipeline.BobParentTaskIDHeader: []string{parent},
+		}
+		id, name := IDHeaderFrom(h, []string{BobSessionHeader})
+		if id != "c1" || name != BobSessionHeader {
+			t.Errorf("parent len %d: IDHeaderFrom() = (%q, %q), want (%q, %q)", len(parent), id, name, "c1", BobSessionHeader)
+		}
+	}
+}
+
+// TestIDFromHeaders_BobParentAloneIsNotAnID: X-Parent-Task-Id is not in
+// id_headers, so without X-Task-Id it names no session.
+func TestIDFromHeaders_BobParentAloneIsNotAnID(t *testing.T) {
+	h := http.Header{pipeline.BobParentTaskIDHeader: []string{"r1"}}
+	if id, name := IDHeaderFrom(h, []string{BobSessionHeader}); id != "" || name != "" {
+		t.Errorf("IDHeaderFrom() = (%q, %q), want empty", id, name)
+	}
+}
+
+// TestIDFromHeaders_BobParentIgnoredWhenAnotherHeaderNamed: rule 1 applies
+// only when X-Task-Id gave the id.
+func TestIDFromHeaders_BobParentIgnoredWhenAnotherHeaderNamed(t *testing.T) {
+	h := http.Header{
+		ClaudeCodeSessionHeader:        []string{"s1"},
+		pipeline.BobParentTaskIDHeader: []string{"r1"},
+	}
+	id, name := IDHeaderFrom(h, []string{ClaudeCodeSessionHeader, BobSessionHeader})
+	if id != "s1" || name != ClaudeCodeSessionHeader {
+		t.Errorf("IDHeaderFrom() = (%q, %q), want (%q, %q)", id, name, "s1", ClaudeCodeSessionHeader)
+	}
 }
