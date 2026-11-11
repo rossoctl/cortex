@@ -4,6 +4,8 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"log/slog"
+	"net/http"
+	"strings"
 	"time"
 )
 
@@ -78,6 +80,58 @@ const BobTaskIDHeader = "X-Task-Id"
 // Client-asserted and unauthenticated: a grouping key, never a principal. NOT a session
 // id header: it must not be added to session.id_headers.
 const BobParentTaskIDHeader = "X-Parent-Task-Id"
+
+// SubagentHeader is a header value with its padding trimmed and checked by
+// validSubagentID, or "" when it fails the check.
+//
+// PADDING IS SP AND HTAB ONLY — RFC 9110's optional whitespace around a field value —
+// and not strings.TrimSpace, which also strips \n, \r, \v, \f and U+0085 from either
+// end. Those are control characters, not padding: trimming them would hand
+// validSubagentID a clean id and record "a1a2…\n" as "a1a2…", which is sanitising by
+// another route. Left in place, they reach the check and refuse the value, which is
+// the rule validSubagentID states.
+func SubagentHeader(v string) string {
+	if id := strings.Trim(v, " \t"); validSubagentID(id) {
+		return id
+	}
+	return ""
+}
+
+// validSubagentID reports whether a client-supplied subagent id — either header's — is
+// safe to record.
+//
+// REFUSED, NOT SANITISED — the opposite choice from RecordStrippedUpgrade, and for a
+// reason that is about what the value is for. An Upgrade token is read by a person, so
+// a cleaned-up one still answers the question. This id is a join key: its use is
+// finding the agent-<id>.meta.json it names, and a sanitised id names no file, so it
+// would sit on the event looking like an answer while matching nothing. Refusing it
+// leaves the row as one that names no subagent, which is true. validHeaderSessionID
+// makes the same call for the same reason.
+//
+// The rules are the session id's, plus the empty check: no longer than maxClientLen
+// bytes, and nothing HasControlRunes objects to, which covers C0, DEL, C1, the
+// glyph-reordering runes and invalid UTF-8. That last group matters here and not
+// only on the forward proxy: ext_proc hands header bytes over from Envoy unparsed, so
+// on that path this function is the only bound on what reaches a terminal and the
+// archive. Claude Code itself percent-encodes the value to printable ASCII before
+// sending it, so none of this costs a real id anything.
+func validSubagentID(id string) bool {
+	return id != "" && len(id) <= maxClientLen && !HasControlRunes(id)
+}
+
+// BobChildTask returns a Bob child task's own id and its root's, from BobTaskIDHeader and
+// BobParentTaskIDHeader, or "", "" when the request is not a child: both ids must pass
+// SubagentHeader and differ. A parent equal to the task id is a client that names itself,
+// so the row stays a root's. Session rule 1 and pipeline rule 2 (#1803) both ask this, so
+// a row filed in its root's session is always a child row.
+func BobChildTask(h http.Header) (own, root string) {
+	own = SubagentHeader(h.Get(BobTaskIDHeader))
+	root = SubagentHeader(h.Get(BobParentTaskIDHeader))
+	if own == "" || root == "" || own == root {
+		return "", ""
+	}
+	return own, root
+}
 
 // The values of SessionEvent.SubagentKind, for a Bob child task.
 const (

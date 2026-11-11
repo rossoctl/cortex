@@ -281,8 +281,8 @@ func TestSubagent_BobParentWithoutTaskIDIsIgnored(t *testing.T) {
 	}
 }
 
-// A parent id that validSubagentID refuses gives no subagent id. A 200-byte id passes
-// the session id check (256) but not this one (128): the row reads as the root's own.
+// A parent id that model.SubagentHeader refuses gives no subagent id. A 200-byte id passes
+// the session id check (256) but not this one (128).
 func TestSubagent_BobInvalidParentIsIgnored(t *testing.T) {
 	for name, parent := range map[string]string{
 		"control rune": "r\x1b1",

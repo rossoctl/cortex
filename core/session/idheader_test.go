@@ -368,6 +368,33 @@ func TestIDFromHeaders_BobInvalidParentKeepsOwnSession(t *testing.T) {
 	}
 }
 
+// TestIDFromHeaders_BobRulesAgree: rule 1 files a row in its parent's session
+// only when rule 2 marks the row as a child. Otherwise the child's rows sit in
+// the root's session with no subagent id, and look like the root's own turns.
+func TestIDFromHeaders_BobRulesAgree(t *testing.T) {
+	long := strings.Repeat("r", 200) // passes the session id check, not the subagent one
+	for _, tc := range []struct{ own, parent string }{
+		{"c1", "r1"},
+		{"c1", long},
+		{"c1", "r‮1"},
+		{"c1", "r​1"},
+		{long, "r1"},
+		{"r1", "r1"},
+	} {
+		h := http.Header{
+			BobSessionHeader:               []string{tc.own},
+			pipeline.BobParentTaskIDHeader: []string{tc.parent},
+		}
+		id, _ := IDHeaderFrom(h, []string{BobSessionHeader})
+		inParent := id != tc.own
+		child := (&pipeline.Context{Headers: h}).Subagent() != ""
+		if inParent != child {
+			t.Errorf("own len %d, parent %q: session id %q (in parent: %v), child row: %v",
+				len(tc.own), tc.parent, id, inParent, child)
+		}
+	}
+}
+
 // TestIDFromHeaders_BobParentAloneIsNotAnID: X-Parent-Task-Id is not in
 // id_headers, so without X-Task-Id it names no session.
 func TestIDFromHeaders_BobParentAloneIsNotAnID(t *testing.T) {
