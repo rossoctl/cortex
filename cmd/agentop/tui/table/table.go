@@ -651,14 +651,13 @@ func (m *Model) cellWidths(n int) []int {
 
 // renderSectionRow draws a one-cell row across the whole table width, in the same
 // row/cursor/match styles a data row gets. The line is the sum of the column widths
-// — without each cell's padding, which a spanning line has no use for, so it sits a
-// few columns short of a full data row's right edge and reads as its own kind of row.
+// plus the 2 columns of cell padding between each pair of them, so its highlight ends
+// at the same right edge as a data row's. cellWidths(1) gives that sum, the same one a
+// tool row's last cell gets.
 func (m *Model) renderSectionRow(r int) string {
 	total := 0
-	for _, col := range m.cols {
-		if col.Width > 0 {
-			total += col.Width
-		}
+	if len(m.cols) > 0 { // cellWidths indexes m.cols[0]
+		total = max(m.cellWidths(1)[0], 0)
 	}
 	text := runewidth.Truncate(m.rows[r][0], total, "…")
 	var spans []find.Range
@@ -678,7 +677,8 @@ func (m *Model) renderSectionRow(r int) string {
 	match = match.Inherit(row)
 
 	filled := runewidth.FillRight(text, total)
-	return m.styles.Cell.Inherit(row).Render(paint(filled, spans, row, match))
+	box := lipgloss.NewStyle().Width(total).MaxWidth(total).Inline(true).Inherit(row)
+	return m.styles.Cell.Inherit(row).Render(box.Render(paint(filled, spans, row, match)))
 }
 
 func clamp(v, low, high int) int {
