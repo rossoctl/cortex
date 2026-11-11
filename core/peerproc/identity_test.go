@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -32,8 +33,23 @@ func TestProcessIdentity_RealProcesses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a child: %v", err)
 	}
-	if other == self || other.BootID != self.BootID {
-		t.Errorf("a child = %+v, this process = %+v: want the same boot, a different process", other, self)
+	if other.BootID != self.BootID {
+		t.Errorf("a child's boot id = %q, this process's = %q: want the same", other.BootID, self.BootID)
+	}
+	// A child cannot start before its parent, but on Linux it can share its parent's
+	// identity: the start is counted in clock ticks, 10ms each, and this test runs within
+	// the test binary's first few milliseconds (it did on CI). An identity names a process
+	// together with its pid, which is how Codex and agentop use it. macOS's unique id is
+	// never shared.
+	switch runtime.GOOS {
+	case "linux":
+		if other.StartTicks < self.StartTicks {
+			t.Errorf("a child started at tick %d, before this process at %d", other.StartTicks, self.StartTicks)
+		}
+	case "darwin":
+		if other.UniqueID == self.UniqueID {
+			t.Errorf("a child has this process's unique id %d", self.UniqueID)
+		}
 	}
 	for _, pid := range []int32{0, -1} {
 		if _, err := ProcessIdentity(pid); !errors.Is(err, ErrNotFound) {
