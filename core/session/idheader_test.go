@@ -347,6 +347,10 @@ func TestIDFromHeaders_BobChildFilesInItsParent(t *testing.T) {
 	if id != "r1" || name != BobSessionHeader {
 		t.Errorf("IDHeaderFrom() = (%q, %q), want (%q, %q)", id, name, "r1", BobSessionHeader)
 	}
+	// A hand-written id_headers entry in lowercase names the same header, so rule 1 applies.
+	if id, _ := IDHeaderFrom(h, []string{"x-task-id"}); id != "r1" {
+		t.Errorf("IDHeaderFrom(x-task-id) = %q, want r1", id)
+	}
 }
 
 // TestIDFromHeaders_BobInvalidParentKeepsOwnSession: an unusable parent id is

@@ -574,9 +574,16 @@ func TestEventsBlocks_BobSubagentsAndSubtask(t *testing.T) {
 	if got := len(m.eventsTbl.Rows()); got != 6 || !strings.HasPrefix(m.eventsTbl.Rows()[1][0], "▸─ subtask") {
 		t.Fatalf("collapsed subtask: rows = %d, header = %q", got, m.eventsTbl.Rows()[1][0])
 	}
+	// A live tail rebuilds the table. The operator's "closed" must win over the
+	// subtask's open default.
+	m.events["s"] = append(m.events["s"], ev("s2", "c-sub", pipeline.SubagentKindSubtask, req))
+	m.rebuildEventsTable()
+	if got := len(m.eventsTbl.Rows()); got != 6 || !strings.HasPrefix(m.eventsTbl.Rows()[1][0], "▸─ subtask") {
+		t.Fatalf("subtask after a rebuild: rows = %d, header = %q; want it still collapsed", got, m.eventsTbl.Rows()[1][0])
+	}
 	m.eventsTbl.SetCursor(1)
 	m.toggleSubagentBlock()
-	if got := len(m.eventsTbl.Rows()); got != 7 {
-		t.Fatalf("re-opened subtask: rows = %d, want 7", got)
+	if got := len(m.eventsTbl.Rows()); got != 8 {
+		t.Fatalf("re-opened subtask: rows = %d, want 8", got)
 	}
 }

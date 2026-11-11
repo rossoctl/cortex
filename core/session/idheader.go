@@ -187,7 +187,8 @@ func IDHeaderFrom(h http.Header, names []string) (id, header string) {
 		// every control rune.
 		id = strings.ReplaceAll(id, "\n", "")
 		id = strings.ReplaceAll(id, "\r", "")
-		if name == BobSessionHeader {
+		// Canonical form: a hand-written id_headers entry such as "x-task-id" names the same header.
+		if http.CanonicalHeaderKey(name) == BobSessionHeader {
 			// Rule 1 of #1803: a Bob child files in its root task's session.
 			if p := h.Get(model.BobParentTaskIDHeader); p != "" && validHeaderSessionID(p) {
 				p = strings.ReplaceAll(p, "\n", "")
