@@ -753,8 +753,8 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				return nil
 			}
 			er, ok := m.selectedEventRow()
-			if !ok {
-				return nil
+			if !ok || er.tool != nil {
+				return nil // a tool row opens nothing (#1776)
 			}
 			// Render from the summary immediately, then fill the message bodies in
 			// when they arrive — the timeline no longer carries them. See
@@ -1038,7 +1038,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// The operator moved the cursor: an event the Timeline asked to land on no longer applies.
 		m.revealSeq, m.revealSess = 0, ""
 		m.eventsTbl, cmd = m.eventsTbl.Update(msg)
-		m.selectedEventKey = keyOf(m.selectedEvent())
+		m.selectedEventKey = m.selectedPinKey()
 		return cmd
 	case paneDetail:
 		m.detailCursorKey(msg.String())
@@ -1096,7 +1096,7 @@ func (m *model) goTop() {
 		setCursorVisible(&m.sessionsTbl, 0)
 	case paneEvents:
 		setCursorVisible(&m.eventsTbl, 0)
-		m.selectedEventKey = keyOf(m.selectedEvent())
+		m.selectedEventKey = m.selectedPinKey()
 		// `g` is an explicit "take me to the oldest end", so it also becomes where
 		// the next session opens — see EventSettings.OpenAtOldest.
 		m.setOpenAtOldest(true)
@@ -1115,7 +1115,7 @@ func (m *model) goBottom() {
 		setCursorVisible(&m.sessionsTbl, len(m.sessionsTbl.Rows())-1)
 	case paneEvents:
 		setCursorVisible(&m.eventsTbl, len(m.eventsTbl.Rows())-1)
-		m.selectedEventKey = keyOf(m.selectedEvent())
+		m.selectedEventKey = m.selectedPinKey()
 		// The mirror of `g` above: back to the tail, and that is where the next
 		// session opens.
 		m.setOpenAtOldest(false)
@@ -1152,7 +1152,7 @@ func (m *model) pageActivePane(msg tea.KeyMsg) tea.Cmd {
 	switch m.pane {
 	case paneEvents:
 		page(&m.eventsTbl)
-		m.selectedEventKey = keyOf(m.selectedEvent())
+		m.selectedEventKey = m.selectedPinKey()
 	case paneSessions:
 		page(&m.sessionsTbl)
 	case panePipeline:

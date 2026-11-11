@@ -77,8 +77,11 @@ type timelineState struct {
 	// it shows "all" without changing it; see window.
 	windowIdx int
 	tl        *timeline.Timeline
-	err       error
-	loading   bool
+	// tools is tl's tools by the seq of the response that asked for them, for the events
+	// table. It is set with tl, once per fetch.
+	tools   map[uint64][]toolRow
+	err     error
+	loading bool
 	// stale is set when the stream delivers an event for this session; the next tick refetches.
 	stale bool
 	// fails counts consecutive failed fetches, and retryAt is when the next may go; see
@@ -137,7 +140,7 @@ func (m *model) openTimeline(session string) tea.Cmd {
 // the new session.
 func (m *model) setTimelineSession(session string) {
 	if m.timeline.session != session {
-		m.timeline.tl, m.timeline.err, m.timeline.cursor, m.timeline.scroll = nil, nil, -1, 0
+		m.timeline.tl, m.timeline.tools, m.timeline.err, m.timeline.cursor, m.timeline.scroll = nil, nil, nil, -1, 0
 		m.timeline.fails, m.timeline.retryAt = 0, time.Time{}
 		m.timeline.reqSeq++
 		m.timeline.tickGen++
@@ -215,6 +218,7 @@ func (m *model) handleTimelineLoaded(msg timelineLoadedMsg) {
 		return
 	}
 	m.timeline.tl, m.timeline.err, m.timeline.fetchedAt = msg.tl, nil, m.clock()
+	m.timeline.tools = indexTools(msg.tl)
 	m.timeline.fails, m.timeline.retryAt = 0, time.Time{}
 	if m.pane == paneEvents && m.timeline.session == m.selectedSess {
 		m.rebuildEventsTable()

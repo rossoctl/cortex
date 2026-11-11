@@ -837,3 +837,72 @@ func anyColumnSelected(sel map[eventColumnID]bool) bool {
 	}
 	return false
 }
+
+// toolCells is the cells of tool row tr (#1776), whose exchange is cc. The columns up to
+// DURATION get the tool's own cells. At the first shown column after them, one last cell
+// holds the trailing text, and the table spans it to the right edge. sr is the row's search
+// row: text that no shown column holds goes in Dropped, so a search still finds it.
+func toolCells(cols []eventColumn, cc cellContext, tr eventRow, sorted bool, now time.Time) (table.Row, table.SearchRow) {
+	t := tr.tool
+	row := make(table.Row, 0, len(cols))
+	var sr table.SearchRow
+	named, spanned := false, false
+	for _, c := range cols {
+		var v string
+		switch c.id {
+		case colIndex:
+			switch {
+			case sorted:
+				v = "↳" + c.cell(cc)
+			case tr.last:
+				v = "┗⚒"
+			default:
+				v = "┣⚒"
+			}
+		case colTime:
+			v = t.Start.Format("15:04:05.00")
+		case colDir:
+			if cc.row.event.Subagent != "" && cc.m.subagentBlocks != nil {
+				v = "│"
+			}
+		case colAction, colPlugin:
+		case colMethod:
+			v, named = t.Name, true
+		case colStatus:
+			v = t.status()
+		case colDuration:
+			v = t.durationCell(now)
+		default:
+			row = append(row, t.trailing(now))
+			spanned = true
+		}
+		if spanned {
+			break
+		}
+		row = append(row, c.align(v))
+	}
+	if !spanned {
+		if s := t.trailing(now); s != "" {
+			sr.Dropped = append(sr.Dropped, s)
+		}
+	}
+	if !named {
+		sr.Dropped = append(sr.Dropped, t.Name)
+	}
+	return row, sr
+}
+
+// toolSortKey is a tool row's sort value on column id (rule 11). A column with no tool value
+// gives the zero value, with numeric as the column's other keys have it, so less compares the
+// same field on every row.
+func toolSortKey(id eventColumnID, t toolRow, numeric bool, now time.Time) sortValue {
+	switch id {
+	case colDuration:
+		return numKey(t.duration(now))
+	case colTime:
+		return numKey(t.Start.UnixNano())
+	case colMethod:
+		return strKey(t.Name)
+	}
+	return sortValue{numeric: numeric}
+}
