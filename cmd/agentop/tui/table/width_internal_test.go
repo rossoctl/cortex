@@ -22,3 +22,10 @@ func TestSectionRowIsAsWideAsADataRow(t *testing.T) {
 		}
 	}
 }
+
+// A section row in a table with no columns renders without a panic: it does not index a
+// column that is not there.
+func TestSectionRowWithNoColumns(t *testing.T) {
+	tb := New(WithRows([]Row{{"▸─ subagent"}}))
+	_ = tb.renderRow(0)
+}

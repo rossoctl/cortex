@@ -652,17 +652,12 @@ func (m *Model) cellWidths(n int) []int {
 // renderSectionRow draws a one-cell row across the whole table width, in the same
 // row/cursor/match styles a data row gets. The line is the sum of the column widths
 // plus the 2 columns of cell padding between each pair of them, so its highlight ends
-// at the same right edge as a data row's.
+// at the same right edge as a data row's. cellWidths(1) gives that sum, the same one a
+// tool row's last cell gets.
 func (m *Model) renderSectionRow(r int) string {
-	total, k := 0, 0
-	for _, col := range m.cols {
-		if col.Width > 0 {
-			total += col.Width
-			k++
-		}
-	}
-	if k > 1 {
-		total += 2 * (k - 1)
+	total := 0
+	if len(m.cols) > 0 { // cellWidths indexes m.cols[0]
+		total = max(m.cellWidths(1)[0], 0)
 	}
 	text := runewidth.Truncate(m.rows[r][0], total, "…")
 	var spans []find.Range
