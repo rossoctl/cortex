@@ -141,6 +141,9 @@ type Record struct {
 
 	// AgentRole says which caller under one session id made the request: "main" or
 	// "subagent". EMPTY MEANS NOT STATED, NOT MAIN — only Claude Code declares it today.
+	//
+	// EXACTLY THOSE TWO WORDS OR EMPTY, enforced on the way out rather than trusted: a
+	// decoded archive event carries whatever its JSON said here.
 	AgentRole string `json:"agentRole,omitempty"`
 
 	// --- inference ---
@@ -298,7 +301,17 @@ func FromEvent(e *model.SessionEvent, sessionID string) Record {
 		r.Stream = inf.Stream
 		r.StreamedResponse = inf.StreamedResponse
 		r.FinishReason = exportLabel(inf.FinishReason)
-		r.AgentRole = string(inf.AgentRole)
+		// A CLOSED VOCABULARY GETS A CLOSED EXPORT, like Client's name and unlike the capped
+		// strings above. The live producer (parse/inference's subagent detection) answers only
+		// these two or "", but FromEvent's input is an archive walk — a DECODED event, where
+		// this field is whatever the JSON said. A 144-byte agentRole carrying an escape
+		// sequence round-tripped verbatim before this switch. Capping it would have bounded
+		// the damage; naming the values removes it, and anything else is "not stated", which
+		// is what this field's own doc says an empty value means.
+		switch inf.AgentRole {
+		case model.AgentRoleMain, model.AgentRoleSubagent:
+			r.AgentRole = string(inf.AgentRole)
+		}
 		r.InputTokens = inf.InputTokens
 		r.CacheReadTokens = inf.CacheReadTokens
 		r.CacheWriteTokens = inf.CacheWriteTokens
@@ -355,28 +368,44 @@ func exportLabel(s string) string {
 }
 
 // versionShape is what an exported client version may look like: a NUMERIC core of up to
-// four parts, an optional pre-release from a CLOSED LIST of words, and an optional short
-// build tag. It admits every form this proxy has observed ("1", "2.1", "2.1.285",
-// "2.1.0-beta.3", "8.4.0", "1.126.0+bob2.2.1") and nothing that reads as prose, a path or a
-// token.
+// four parts, an optional pre-release from a CLOSED LIST of words with at most two numeric
+// parts, and the one `+build` tag this proxy has observed, named literally. It admits every
+// observed form ("1", "2.1", "2.1.285", "2.1.0-beta.3", "8.4.0", "1.126.0+bob2.2.1") and
+// EVERY LETTER IT ADMITS IS ONE SPELLED OUT HERE.
 //
-// THE CHARACTER CLASS HAS TO BE NUMERIC, NOT MERELY DIGIT-LED, which is the whole reason
-// this is a grammar rather than `^[0-9][0-9A-Za-z.-]*$`. That earlier shape demanded only
-// that the header's first character be a digit, so every one of these shipped:
+// EVERY RELAXATION OF THIS HAS TO BE BY NAME, NEVER BY CHARACTER CLASS, which is the rule
+// this comment exists to pass on, because the shape was wrong twice in the same way. A
+// charset cannot tell a version from the text beside it — only the vocabulary can — so each
+// time one was left in, the header walked through whatever it covered:
 //
-//	claude-cli/1-acme-merger-q3-plan                 -> claude-code/1-acme-merger-q3-plan
-//	claude-cli/3f2a9c1e-7b4d-4e2a-9f1c-1234567890ab  -> claude-code/3f2a9c1e-…  (a UUID)
-//	claude-cli/0SECRETUSERAGENTTAIL                  -> claude-code/0SECRETUSERAGENTTAIL
-//	claude-cli/2.1.0-my.customer.list.foo            -> claude-code/2.1.0-my.customer.list.foo
+//	^[0-9][0-9A-Za-z.-]*$ required only a leading digit:
+//	  claude-cli/1-acme-merger-q3-plan                 -> claude-code/1-acme-merger-q3-plan
+//	  claude-cli/3f2a9c1e-7b4d-4e2a-9f1c-1234567890ab  -> claude-code/3f2a9c1e-…  (a UUID)
+//	  claude-cli/0SECRETUSERAGENTTAIL                  -> claude-code/0SECRETUSERAGENTTAIL
 //
-// A free-text suffix after a leading digit is exactly the content this package must not
-// carry, and a test whose planted secret happened to start with a letter could not see it.
-// Enumerating the pre-release words is what closes that: "beta" is a version, "acme-merger"
-// is not, and no charset distinguishes them.
+//	then `\+[a-z]{0,8}\d…` left eight free letters after the plus:
+//	  claude-cli/1.0+hunter2                           -> claude-code/1.0+hunter2
+//	  claude-cli/2.1.0+acmecorp1                       -> claude-code/2.1.0+acmecorp1
+//	  claude-cli/1+password1                           -> claude-code/1+password1
+//
+//	and an unbounded `(\.?\d{1,6})*` took any digit payload up to the 128-byte UA cap:
+//	  claude-cli/2.1.0-rc.4111.1111.1111.1111.5555.6666 -> …same, verbatim
+//
+// WIDENING IT LATER: add the literal, not a class. A second build tag means `(\+bob…|\+foo…)`,
+// and a new pre-release word means adding that word. `+bob` earns its place from a live path
+// — "bob-shell/1.126.0+bob2.2.1" parses to Name "bob" with that version, so this branch
+// serves real traffic and not only a test (the "Code/…" and "IBMBob/…" spellings of the same
+// build reach an empty Name and never get here; see knownClients' "NOT CLAIMED" note).
+//
+// WHAT THIS CANNOT DO, and the honest limit of the idea: a purely numeric core still admits
+// "4111.1111.1111.1111". A version IS digits, so no grammar separates those — read the
+// promise as "nothing but digits and the words above", not "nothing that could be a number
+// worth keeping". A digit-only false positive is bounded at 6 digits per part and 4 parts,
+// which is the most a shape rule can offer here.
 var versionShape = regexp.MustCompile(
 	`^\d{1,6}(\.\d{1,6}){0,3}` + // numeric core, 1-4 parts
-		`(-(alpha|beta|rc|pre|dev|canary|nightly|preview)(\.?\d{1,6})*)?` + // known pre-release words only
-		`(\+[a-z]{0,8}\d{1,6}(\.\d{1,6})*)?$`) // short build tag, e.g. +bob2.2.1
+		`(-(alpha|beta|rc|pre|dev|canary|nightly|preview)(\.?\d{1,6}){0,2})?` + // known word, <=2 numeric parts
+		`(\+bob\d{1,6}(\.\d{1,6}){0,3})?$`) // the one observed build tag; widen by NAME, not charset
 
 // clientLabel is the content-safe form of a client's label: a RECOGNISED NAME, and its
 // version only when the version looks like one.

@@ -263,6 +263,34 @@ func TestFromEvent_ClientCarriesNoHeaderContent(t *testing.T) {
 		name: "trailing known client",
 		ua:   "mystery/1.0 claude-cli/9" + secretUserAgent,
 		want: "claude-code",
+	}, {
+		// The second door: a free character class after the `+` is the same hole as a free
+		// one after the digit, one character further along.
+		name: "secret in the build tag",
+		ua:   "claude-cli/1.0+" + secretUserAgent,
+		want: "claude-code",
+	}, {
+		name: "a word in the build tag",
+		ua:   "claude-cli/1.0+hunter2",
+		want: "claude-code",
+	}, {
+		name: "a customer name in the build tag",
+		ua:   "claude-cli/2.1.0+acmecorp1",
+		want: "claude-code",
+	}, {
+		name: "build tag on the trailing-client path",
+		ua:   "mystery/1.0 claude-cli/1.0+hunter2",
+		want: "claude-code",
+	}, {
+		name: "an unbounded digit payload after a pre-release word",
+		ua:   "claude-cli/2.1.0-rc.4111.1111.1111.1111.5555.6666",
+		want: "claude-code",
+	}, {
+		// The one build tag that is real, and it reaches here through a live path:
+		// bob-shell parses to Name "bob" with this version.
+		name: "the observed build tag survives",
+		ua:   "bob-shell/1.126.0+bob2.2.1",
+		want: "bob/1.126.0+bob2.2.1",
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := loadedEvent()
@@ -301,6 +329,13 @@ func TestClientLabel_VersionShape(t *testing.T) {
 		"1-private-data", "0" + secretUserAgent, "1-acme-merger-q3-plan",
 		"3f2a9c1e-7b4d-4e2a-9f1c-1234567890ab", "2.1.0-my.customer.list.foo",
 		"1.2.3-internal-codename", "9SECRET-TAIL", "1234567", "1.2.3.4.5",
+		// A FREE CHARACTER CLASS AFTER THE `+` IS THE SAME HOLE AS ONE AFTER THE DIGIT.
+		// `\+[a-z]{0,8}\d…` admitted eight letters of whatever the header said, so the
+		// bypass simply moved past the plus. Only the literal tag is allowed now.
+		"1.0+hunter2", "2.1.0+acmecorp1", "1+password1", "2.1.0+customer1.2.3",
+		"1.0+" + secretUserAgent, "1.0+acme", "2.1.0+bob", "1.0+BOB2.2.1",
+		// An unbounded repeat is a payload channel even when every character is a digit.
+		"2.1.0-rc.4111.1111.1111.1111.5555.6666", "1.0-beta.1.2.3.4.5.6.7.8",
 	} {
 		if got := clientLabel(&model.EventClient{Name: "claude-code", Version: drop}); got != "claude-code" {
 			t.Errorf("version %q: Client = %q, want the bare name — a non-version must not be exported",
@@ -400,6 +435,46 @@ func TestWriter_SkipsNilEvents(t *testing.T) {
 	}
 	if n := strings.Count(strings.TrimRight(buf.String(), "\n"), "\n"); n != 0 {
 		t.Errorf("got %d extra lines, want a single record:\n%s", n, buf.String())
+	}
+}
+
+// TestFromEvent_AgentRoleIsAClosedVocabulary: the live producer answers only "main",
+// "subagent" or "", but FromEvent's input is an archive walk — a DECODED event, where this
+// field is whatever the JSON said. It is the one string in the record that is neither capped
+// nor from a closed set, so it gets the closed set.
+//
+// Driven through json.Unmarshal rather than by assigning the field, because the decoded event
+// IS the threat model: a fixture that sets it directly proves nothing about what a file can
+// contain.
+func TestFromEvent_AgentRoleIsAClosedVocabulary(t *testing.T) {
+	for _, tc := range []struct {
+		role string
+		want string
+	}{
+		{"main", "main"},
+		{"subagent", "subagent"},
+		{"", ""},
+		{"Main", ""}, // the vocabulary is exact, not case-folded
+		{"orchestrator", ""},
+		{strings.Repeat("r", 130) + "\x1b[31m", ""},
+		{secretUserAgent, ""},
+	} {
+		payload, err := json.Marshal(map[string]any{
+			"SessionID": "s",
+			"At":        "2026-11-12T00:00:00Z",
+			"Inference": map[string]any{"agentRole": tc.role},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var e model.SessionEvent
+		if err := json.Unmarshal(payload, &e); err != nil {
+			t.Fatalf("unmarshal %q: %v", tc.role, err)
+		}
+		if got := FromEvent(&e, "s").AgentRole; got != tc.want {
+			t.Errorf("agentRole %q decoded from an archive exported as %q, want %q",
+				tc.role, got, tc.want)
+		}
 	}
 }
 
