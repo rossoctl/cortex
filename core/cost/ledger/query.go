@@ -455,7 +455,7 @@ func Groupable(group usage.Group) bool {
 	// Every axis a Row has a field for. GroupMethod is the model series under an older
 	// name — see labelFor.
 	case usage.GroupModel, usage.GroupMethod, usage.GroupEndpoint, usage.GroupAgent,
-		usage.GroupCurrency:
+		usage.GroupProject, usage.GroupCurrency:
 		return true
 	}
 	// GroupNone included: it asks for no breakdown, so there is nothing to answer and
@@ -487,9 +487,9 @@ const unknownAgentLabel = model.UnknownClientLabel
 // no series is the honest answer; an empty map that a client renders as "no
 // breakdown" would be the same answer said less clearly.
 //
-// usage.GroupAgent is the ONE axis that maps an absent value to a label rather than
-// dropping the row from the series, so it returns early instead of reaching that
-// guard. See its case.
+// usage.GroupAgent and usage.GroupProject map an absent value to a label rather than
+// dropping the row from the series, so they return early instead of reaching that
+// guard. See the agent case.
 func labelFor(r Row, group usage.Group) (string, bool) {
 	var v string
 	switch group {
@@ -528,6 +528,12 @@ func labelFor(r Row, group usage.Group) (string, bool) {
 			return unknownAgentLabel, true
 		}
 		return model.AgentName(r.Agent), true
+	// Project maps "" to a label for the reason Agent does: that spend belongs in the breakdown.
+	case usage.GroupProject:
+		if r.Project == "" {
+			return usage.UnknownProjectLabel, true
+		}
+		return r.Project, true
 	default:
 		return "", false
 	}
@@ -595,13 +601,13 @@ func unitSpellings(rows []Row) map[string]string {
 	return seen
 }
 
-// SeriesCurrenciesIn is usage.Snapshot.SeriesCurrencies for these rows: for group=model, endpoint
-// and agent, each series' units as CurrenciesIn reports them, keyed by the label Fold gives that
+// SeriesCurrenciesIn is usage.Snapshot.SeriesCurrencies for these rows: for group=model, endpoint,
+// agent and project, each series' units as CurrenciesIn reports them, keyed by the label Fold gives that
 // series in the capped series Fold returned. A label the cap folded away lends its rows to the
 // overflow band. Nil for every other grouping, where the field is not defined.
 func SeriesCurrenciesIn(rows []Row, group usage.Group, series map[string]usage.Counts) map[string][]string {
 	switch group {
-	case usage.GroupModel, usage.GroupMethod, usage.GroupEndpoint, usage.GroupAgent:
+	case usage.GroupModel, usage.GroupMethod, usage.GroupEndpoint, usage.GroupAgent, usage.GroupProject:
 	default:
 		return nil
 	}

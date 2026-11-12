@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/cmd/agentop/money"
@@ -69,11 +70,12 @@ Usage:
   agentop cost --endpoint URL      ask a specific proxy rather than the local one
   agentop cost --agent NAME        only this coding agent, e.g. bob
   agentop cost --by agent          a row per agent, costliest first
+  agentop cost --by project        a row per project (git repo), costliest first
 
 --by breaks the total into a row per label. A row nothing could price shows "—" and
 never "$0.00": an unpriced figure is not a free one. A ledger-served window ("today",
-"month", "7d") breaks down by agent, model and endpoint; the other axes need a
-duration window, and asking for one the window cannot serve prints what the server
+"month", "7d") breaks down by agent, project, model, endpoint and currency; the other
+axes need a duration window, and asking for one the window cannot serve prints what the server
 answered with instead of a table pretending to be a breakdown.
 
 --agent reports ONE agent's figures, every version of it together. The name is the
@@ -1145,7 +1147,7 @@ func tokenSplit(t usage.Counts) string {
 
 // costByAxes names the values --by accepts, in one place so the flag's help and its error
 // message cannot list different sets.
-const costByAxes = "agent, model, endpoint, currency, session, status, plugin or host"
+const costByAxes = "agent, project, model, endpoint, currency, session, status, plugin or host"
 
 // ledgerServedAxes names the axes a ledger-backed window can break down, for the downgrade
 // message.
@@ -1155,12 +1157,12 @@ const costByAxes = "agent, model, endpoint, currency, session, status, plugin or
 // sentence would be the wrong trade.
 //
 // IT IS EXHAUSTIVE TODAY, which the "kept general so it degrades into vagueness rather than into a
-// lie" this comment used to claim is no longer a description of: naming all four of
+// lie" this comment used to claim is no longer a description of: naming all five of
 // ledger.Groupable's axes is a list that becomes wrong, not vague, the next time one is added.
 // Since the string cannot import its authority, a test pins the part that matters — that currency
 // is in here at all, because this is the sentence a reader who was just refused a combined total is
 // given. See TestRunCost_UnknownByNamesTheAcceptedAxes.
-const ledgerServedAxes = "agent, model, endpoint and currency"
+const ledgerServedAxes = "agent, project, model, endpoint and currency"
 
 // emptyCostCell is the unpriced cell, matching the TUI's spelling so one figure reads the same
 // on both surfaces. See writeCostBreakdown for why it is never "$0.00".
@@ -1221,7 +1223,13 @@ func writeCostBreakdown(snap *usage.Snapshot, stdout io.Writer, requested usage.
 	// row, for the same reason.
 	byUnit := requested == usage.GroupCurrency
 	unit, labelled := windowUnit(snap)
-	fmt.Fprintf(stdout, "\n  %-34s %10s %10s %14s\n", strings.ToUpper(asked), "REQUESTS", "TOKENS", "COST")
+	// The LABEL column widens to the longest label and never cuts one: a project path is long,
+	// and a cut path can name the wrong repository. %-*s pads by runes.
+	width := max(34, utf8.RuneCountInString(asked))
+	for _, label := range labels {
+		width = max(width, utf8.RuneCountInString(label))
+	}
+	fmt.Fprintf(stdout, "\n  %-*s %10s %10s %14s\n", width, strings.ToUpper(asked), "REQUESTS", "TOKENS", "COST")
 	var withheld []string
 	for _, label := range labels {
 		c := series[label]
@@ -1238,8 +1246,8 @@ func writeCostBreakdown(snap *usage.Snapshot, stdout io.Writer, requested usage.
 			cost = mixedCostCell
 			withheld = append(withheld, label)
 		}
-		fmt.Fprintf(stdout, "  %-34s %10s %10s %14s\n",
-			label, plainCount(c.Requests), compactTokens(c.Tokens), cost)
+		fmt.Fprintf(stdout, "  %-*s %10s %10s %14s\n",
+			width, label, plainCount(c.Requests), compactTokens(c.Tokens), cost)
 	}
 	// SAID ONCE UNDER THE TABLE, not per row. A column of "(mixed)" with no explanation reads as a
 	// defect in the tool; naming the units and the axis that resolves them is the same disclosure

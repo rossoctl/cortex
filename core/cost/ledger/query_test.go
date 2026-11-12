@@ -335,6 +335,7 @@ func TestRecord_LabelsAreCappedSoALineCanNeverExceedTheReadLimit(t *testing.T) {
 	e := costedEvent(t, huge, huge, 0.25, 100, 50)
 	e.Client = &pipeline.EventClient{Raw: huge}
 	setProvenance(t, e, huge)
+	e.Project = huge
 	w.Record("s1", e)
 
 	now = at.Add(time.Minute)
@@ -354,6 +355,7 @@ func TestRecord_LabelsAreCappedSoALineCanNeverExceedTheReadLimit(t *testing.T) {
 	for name, got := range map[string]string{
 		"Endpoint": rows[0].Endpoint, "Model": rows[0].Model,
 		"Agent": rows[0].Agent, "Provenance": rows[0].Provenance,
+		"Project": rows[0].Project,
 	} {
 		if len(got) != maxLabelLen {
 			t.Errorf("%s is %d bytes on disk, want it capped at %d", name, len(got), maxLabelLen)

@@ -254,6 +254,8 @@ func (b *bucket) series(g Group) map[string]Counts {
 		src = b.bySession
 	case GroupAgent:
 		src = b.byAgent
+	case GroupProject:
+		src = b.byProject
 	case GroupCurrency:
 		src = b.byCurrency
 	case GroupStatus:

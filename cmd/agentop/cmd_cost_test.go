@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -2070,12 +2071,95 @@ func TestRunCost_UnknownByNamesTheAcceptedAxes(t *testing.T) {
 				"costByAxes":       costByAxes,
 				"ledgerServedAxes": ledgerServedAxes,
 			} {
+				if !strings.Contains(list, "project") {
+					t.Errorf("%s = %q, which does not name project", name, list)
+				}
 				if !strings.Contains(list, "currency") {
 					t.Errorf("%s = %q, which does not name currency; the refusal would point at "+
 						"an axis this command then rejects", name, list)
 				}
 			}
 		})
+	}
+}
+
+// longProjectLabel is 60 runes, longer than the 34-rune default LABEL column.
+const longProjectLabel = "~/works/go/src/github.com/example/a-rather-long-repository-name"
+
+// costTable runs `agentop cost --by <by>` against reply and returns the table lines:
+// the header (which begins with the upper-case axis) and every line after it.
+func costTable(t *testing.T, by, reply string) []string {
+	t.Helper()
+	srv := fakeUsageServer(t, reply)
+	defer srv.Close()
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--by", by}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	lines := strings.Split(out.String(), "\n")
+	for i, l := range lines {
+		if strings.HasPrefix(l, "  "+strings.ToUpper(by)+" ") {
+			var table []string
+			for _, r := range lines[i:] {
+				if r == "" {
+					break
+				}
+				table = append(table, r)
+			}
+			return table
+		}
+	}
+	t.Fatalf("no %s header in:\n%s", strings.ToUpper(by), out.String())
+	return nil
+}
+
+const projectReply = `{"window":"1h","group":"project","priced":true,
+	"totals":{"requests":6,"costMicros":6000,"pricedRequests":6,"priceableRequests":6},
+	"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+	   "/repo/a":{"requests":3,"tokens":300,"costMicros":3000,"pricedRequests":3,"priceableRequests":3},
+	   "unknown":{"requests":1,"tokens":100,"costMicros":1000,"pricedRequests":1,"priceableRequests":1},
+	   "` + longProjectLabel + `":{"requests":2,"tokens":200,"costMicros":2000,"pricedRequests":2,"priceableRequests":2}}}]}`
+
+// --by project prints a row per project, a long label whole.
+func TestRunCost_ByProjectPrintsARowPerProject(t *testing.T) {
+	table := costTable(t, "project", projectReply)
+	if len(table) != 4 {
+		t.Fatalf("want a header and 3 rows, got %d lines:\n%s", len(table), strings.Join(table, "\n"))
+	}
+	for _, want := range []string{"/repo/a", "unknown", longProjectLabel} {
+		found := false
+		for _, row := range table[1:] {
+			if strings.HasPrefix(row, "  "+want+" ") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no row for %q:\n%s", want, strings.Join(table, "\n"))
+		}
+	}
+}
+
+// A label longer than the default column widens it for every row and the header.
+// Only short labels keep the column at 34.
+func TestRunCost_ByAlignsALongLabel(t *testing.T) {
+	table := costTable(t, "project", projectReply)
+	end := strings.Index(table[0], "REQUESTS") + len("REQUESTS")
+	if want := 2 + len(longProjectLabel) + 1 + 10; end != want {
+		t.Errorf("REQUESTS ends at %d, want %d:\n%s", end, want, strings.Join(table, "\n"))
+	}
+	for _, row := range table[1:] {
+		f := strings.Fields(row)
+		if len(row) < end || !strings.HasSuffix(row[:end], " "+f[1]) {
+			t.Errorf("requests cell does not end under REQUESTS (col %d):\n%s", end, strings.Join(table, "\n"))
+		}
+	}
+
+	short := costTable(t, "agent", `{"window":"1h","group":"agent","priced":true,
+		"totals":{"requests":1,"costMicros":1000,"pricedRequests":1,"priceableRequests":1},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "bob":{"requests":1,"tokens":10,"costMicros":1000,"pricedRequests":1,"priceableRequests":1}}}]}`)
+	if want := "  " + fmt.Sprintf("%-34s", "AGENT") + " "; !strings.HasPrefix(short[0], want) {
+		t.Errorf("short labels: header = %q, want prefix %q", short[0], want)
 	}
 }
 

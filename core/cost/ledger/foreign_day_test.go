@@ -79,9 +79,9 @@ func TestReadDay_SanitisesAndCapsLabelsFromAForeignFile(t *testing.T) {
 	// Row.PricedBy is reconstructed from, so it reached a series key uncleaned. A fixture that
 	// exercises one field per defect cannot catch the field nobody thought of.
 	writeDay(t, dir, at, fmt.Sprintf(
-		`{"at":%q,"endpoint":%q,"model":%q,"agent":%q,"provenance":%q,"requests":1,"costMicros":100,`+
+		`{"at":%q,"endpoint":%q,"model":%q,"agent":%q,"provenance":%q,"project":%q,"requests":1,"costMicros":100,`+
 			`"pricedRequests":1,"priceableRequests":1}`,
-		at.Format(time.RFC3339Nano), hostile, long, hostile, long+hostile))
+		at.Format(time.RFC3339Nano), hostile, long, hostile, long+hostile, long+hostile))
 	w := newTestWriter(t, dir, func() time.Time { return at })
 
 	rows, _, err := w.Query(context.Background(), at.Add(-time.Minute), at.Add(time.Minute))
@@ -99,6 +99,7 @@ func TestReadDay_SanitisesAndCapsLabelsFromAForeignFile(t *testing.T) {
 		{"Model", rows[0].Model},
 		{"Agent", rows[0].Agent},
 		{"Provenance", rows[0].Provenance},
+		{"Project", rows[0].Project},
 	} {
 		if strings.ContainsRune(f.value, '\u009b') {
 			t.Errorf("%s = %q still carries U+009B: it reaches /v1/usage and then a terminal",

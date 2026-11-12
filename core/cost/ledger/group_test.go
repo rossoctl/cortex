@@ -11,6 +11,7 @@ import (
 var allGroups = []usage.Group{
 	usage.GroupNone, usage.GroupModel, usage.GroupMethod, usage.GroupEndpoint,
 	usage.GroupAgent, usage.GroupSession, usage.GroupStatus, usage.GroupPlugin,
+	usage.GroupProject, usage.GroupCurrency, usage.GroupHost,
 }
 
 // fullRow is a row with every label a ledger row HAS populated, and a dollar on it.
@@ -20,7 +21,7 @@ var allGroups = []usage.Group{
 // Groupable a statement about the SOURCE rather than about one row's contents.
 func fullRow() Row {
 	return Row{
-		Endpoint: "gw.example", Model: "m", Agent: "claude-code/1.0", Provenance: "authoritative",
+		Endpoint: "gw.example", Model: "m", Agent: "claude-code/1.0", Provenance: "authoritative", Project: "/repo/a",
 		Counts: usage.Counts{Requests: 1, Tokens: 100, CostMicros: 1_000_000, PricedRequests: 1, PriceableRequests: 1},
 	}
 }

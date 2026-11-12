@@ -65,6 +65,10 @@ const (
 	// lands under its raw User-Agent, so a new coding agent is visible the day someone
 	// runs it rather than after a parser update ships.
 	GroupAgent Group = "agent"
+	// GroupProject breaks totals down by project: the git repo root of the agent process's
+	// working directory, from SessionEvent.Project. An event with no project lands under
+	// UnknownProjectLabel. Folded for every event, like GroupAgent, so the series sum to the total.
+	GroupProject Group = "project"
 	// GroupCurrency breaks totals down by the BILLING UNIT the figures are denominated in.
 	//
 	// It exists so a deployment whose gateways bill in different units has somewhere to get a
@@ -77,6 +81,10 @@ const (
 	GroupPlugin   Group = "plugin"
 	GroupHost     Group = "host"
 )
+
+// UnknownProjectLabel is the GroupProject series of an event with no project. A whole project
+// label starts with "/" or "~", and a cut one is at least 93 bytes, so neither is this one.
+const UnknownProjectLabel = "unknown"
 
 // ParseGroup validates a group parameter. Empty means GroupNone.
 func ParseGroup(s string) (Group, error) {
@@ -97,6 +105,8 @@ func ParseGroup(s string) (Group, error) {
 		return GroupSession, nil
 	case GroupAgent:
 		return GroupAgent, nil
+	case GroupProject:
+		return GroupProject, nil
 	case GroupCurrency:
 		return GroupCurrency, nil
 	case GroupStatus:
@@ -110,7 +120,7 @@ func ParseGroup(s string) (Group, error) {
 	// over an unauthenticated endpoint, and reflecting arbitrary query input
 	// into a response body is how a reflected-content issue starts. The valid
 	// set is short enough that naming it is more useful than quoting the input.
-	return "", errors.New("unknown group (want none, model, endpoint, session, agent, currency, status, plugin or host; method is accepted as an alias for model)")
+	return "", errors.New("unknown group (want none, model, endpoint, session, agent, project, currency, status, plugin or host; method is accepted as an alias for model)")
 }
 
 // Snapshot is the wire shape of GET /v1/usage.
