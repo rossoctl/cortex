@@ -284,3 +284,47 @@ func TestScopeToAgent_DoesNotMutateTheCallersSnapshot(t *testing.T) {
 		t.Errorf("caller's Group = %v, want it untouched", snap.Group)
 	}
 }
+
+// projectScopeFixture is an agent-scoped group=project snapshot: the agent echo is set and the
+// series are projects.
+func projectScopeFixture() Snapshot {
+	return Snapshot{
+		Window: "today",
+		Agent:  "claude-code",
+		Group:  GroupProject,
+		Buckets: []Bucket{{
+			At:     time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC),
+			Counts: Counts{Requests: 4, CostMicros: 400},
+			Series: map[string]Counts{
+				"~/a": {Requests: 3, CostMicros: 300},
+				"~/b": {Requests: 1, CostMicros: 100},
+			},
+		}},
+	}
+}
+
+func TestNarrowToLabel_KeepsTheAgentEcho(t *testing.T) {
+	got := NarrowToLabel(projectScopeFixture(), "~/a")
+	if got.Totals.Requests != 3 || got.Totals.CostMicros != 300 {
+		t.Errorf("totals = %+v, want 3 requests and 300 micros", got.Totals)
+	}
+	if got.Agent != "claude-code" || got.Group != GroupNone {
+		t.Errorf("agent = %q, group = %q, want the echo kept and group none", got.Agent, got.Group)
+	}
+	if got.Buckets[0].Series != nil {
+		t.Errorf("bucket series = %v, want none", got.Buckets[0].Series)
+	}
+}
+
+func TestNarrowToLabel_AbsentLabelIsZero(t *testing.T) {
+	got := NarrowToLabel(projectScopeFixture(), "~/c")
+	if got.Totals != (Counts{}) || len(got.Buckets) != 1 {
+		t.Errorf("totals = %+v in %d buckets, want zero in 1", got.Totals, len(got.Buckets))
+	}
+}
+
+func TestNarrowToAgent_StillSetsTheAgent(t *testing.T) {
+	if got := NarrowToAgent(*scopeFixture(), "codex").Agent; got != "codex" {
+		t.Errorf("agent = %q, want codex", got)
+	}
+}

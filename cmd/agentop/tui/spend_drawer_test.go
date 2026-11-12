@@ -1122,7 +1122,7 @@ func TestRenderSpendDrawer_HeadersNameTheScopedAgent(t *testing.T) {
 		return ""
 	}
 	got := header(renderSpendDrawerAxes(scoped, nil, usage.GroupEndpoint,
-		usage.GroupEndpoint, spendDrawerAxes, "today", 100))
+		usage.GroupEndpoint, spendDrawerAxes, "today", "", 100))
 	if !strings.Contains(got, "BY ENDPOINT · claude-code") {
 		t.Errorf("header %q does not name the scoped agent; a reader cannot tell the "+
 			"cursor's breakdown from the band's scope above it", got)
@@ -1133,7 +1133,7 @@ func TestRenderSpendDrawer_HeadersNameTheScopedAgent(t *testing.T) {
 	dirty := drawerSnap()
 	dirty.Agent = "claude-code\x1b[2J"
 	if got := header(renderSpendDrawerAxes(dirty, nil, usage.GroupEndpoint,
-		usage.GroupEndpoint, spendDrawerAxes, "today", 100)); strings.ContainsAny(got, "\x1b") {
+		usage.GroupEndpoint, spendDrawerAxes, "today", "", 100)); strings.ContainsAny(got, "\x1b") {
 		t.Errorf("header %q carries an unsanitised escape from the agent label", got)
 	}
 }

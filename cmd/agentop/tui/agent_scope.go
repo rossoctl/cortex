@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
@@ -41,6 +42,44 @@ func fetchUsageScoped(ctx context.Context, client *apiclient.Client, window stri
 	return &scoped, nil
 }
 
+// narrowToProject narrows a group=project snapshot to one project. For Other it first folds the
+// unknown and overflow series into Other, as fetchUsageScoped does for the agent Other, so the
+// figure is the one the project sub-row shows.
+//
+// A named project that is not a series of a reply with an overflow series is an error, not a
+// zero: the server keeps only the costliest usage.MaxSeriesInResponse series, so the project can
+// be inside the overflow. A month with more projects than that otherwise reads as "—".
+func narrowToProject(snap *usage.Snapshot, project string) (*usage.Snapshot, error) {
+	if snap == nil {
+		return nil, nil
+	}
+	if project == otherProjects {
+		snap = foldSeriesInto(snap, namedProject, otherProjects)
+	} else if series := usage.FoldSeriesAcrossWindow(snap.Buckets); series != nil {
+		_, found := series[project]
+		if _, capped := series[projectOverflowLabel]; capped && !found {
+			return nil, fmt.Errorf("project %s is not among the %d costliest projects in the %s window",
+				project, usage.MaxSeriesInResponse, snap.Window)
+		}
+	}
+	scoped := usage.NarrowToLabel(*snap, project)
+	return &scoped, nil
+}
+
+// fetchUsageScopedProject is fetchUsageScoped narrowed to one project when project is set: it
+// asks for the project axis (of agent, when set) and narrows the reply here. No project= key goes
+// to the server.
+func fetchUsageScopedProject(ctx context.Context, client *apiclient.Client, window string, resolution time.Duration, agent, project string, group usage.Group) (*usage.Snapshot, error) {
+	if project == "" {
+		return fetchUsageScoped(ctx, client, window, resolution, agent, group)
+	}
+	snap, err := fetchUsageScoped(ctx, client, window, resolution, agent, usage.GroupProject)
+	if err != nil {
+		return nil, err
+	}
+	return narrowToProject(snap, project)
+}
+
 // sessionsScope is the agent the sessions list is narrowed to: the scope, when some session names
 // its agent, else "" — a server that names none cannot say which sessions are whose.
 func (m *model) sessionsScope() string {
@@ -50,9 +89,23 @@ func (m *model) sessionsScope() string {
 	return m.agentScope
 }
 
+// sessionsProjectScope is the project the sessions list is narrowed to: the scope, when some
+// session names a project, else "" — a server that records no project cannot say which sessions
+// are in one, and the list must not go empty.
+func (m *model) sessionsProjectScope() string {
+	if m.projectScope == "" || !m.sessionsNameProjects() {
+		return ""
+	}
+	return m.projectScope
+}
+
 // spendAxes are the drawer's axes: every one, less the agent axis under a scope, where it would
 // be a single row. The DRAWER'S scope, which on the agents pane is the highlighted row.
 func (m *model) spendAxes() []usage.Group {
+	// A reply narrowed to a project is one series: there is nothing to break down.
+	if m.spendScopeProject() != "" {
+		return nil
+	}
 	if m.spendScopeAgent() == "" {
 		return spendDrawerAxes
 	}

@@ -126,6 +126,9 @@ func projectsModel(t *testing.T, series map[string]map[string]int64) (*model, fu
 		mu.Lock()
 		asked = append(asked, r.URL.RawQuery)
 		mu.Unlock()
+		if r.URL.Query().Has("project") {
+			t.Errorf("query %q carries project=", r.URL.RawQuery)
+		}
 		q := r.URL.Query()
 		// The agent is echoed, as the real server does, so fetchUsageScoped takes no fallback.
 		snap := usage.Snapshot{Window: q.Get("window"), Group: usage.Group(q.Get("group")), Agent: q.Get("agent")}
@@ -394,13 +397,13 @@ func TestAgentsProjects_SpaceOnASubRowClosesTheParent(t *testing.T) {
 	}
 }
 
-func TestAgentsProjects_EnterOnAProjectRowScopesTheParent(t *testing.T) {
+func TestAgentsProjects_EnterOnAProjectRowScopesTheProject(t *testing.T) {
 	m, _ := projectsModel(t, defaultProjectSeries)
 	openClaudeCode(t, m)
 	onDesc(t, m, cortexRow)
 	pressCmd(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.agentScope != projAgent || m.pane != paneSessions {
-		t.Errorf("scope %q pane %v; want claude-code on sessions", m.agentScope, m.pane)
+	if m.agentScope != projAgent || m.projectScope != "~/works/cortex" || m.pane != paneSessions {
+		t.Errorf("scope (%q, %q) pane %v; want claude-code and ~/works/cortex on sessions", m.agentScope, m.projectScope, m.pane)
 	}
 }
 
@@ -426,7 +429,7 @@ func TestAgentsProjects_EraseAndServerDoNothingOnAProjectRow(t *testing.T) {
 	}
 }
 
-func TestAgentsProjects_BandFollowsTheParentAgent(t *testing.T) {
+func TestAgentsProjects_BandFollowsTheSubRow(t *testing.T) {
 	m, asked := projectsModel(t, defaultProjectSeries)
 	openClaudeCode(t, m)
 	onRow(t, m, "codex")
@@ -437,18 +440,12 @@ func TestAgentsProjects_BandFollowsTheParentAgent(t *testing.T) {
 	if d, _ := m.selectedAgentRow(); d != otherRow {
 		t.Fatalf("cursor on %+v, want claude-code's Other sub-row", d)
 	}
-	got := bandAgents(asked())
-	if len(got) == 0 {
-		t.Fatal("no band fetch when the cursor moved from codex to a claude-code sub-row")
+	if got := asked(); !hasQuery(got, "agent=claude-code", "group=project") {
+		t.Errorf("band queries %q on Other, want agent=claude-code and group=project", got)
 	}
-	for _, a := range got {
-		if a != projAgent {
-			t.Errorf("band asked for %q, want claude-code", a)
-		}
-	}
-	onDesc(t, m, mocaRow)
-	if got := m.spendScopeAgent(); got != projAgent {
-		t.Errorf("spendScopeAgent on moca = %q", got)
+	onDesc(t, m, allProjs)
+	if a, p := m.spendScopeAgent(), m.spendScopeProject(); a != projAgent || p != "" {
+		t.Errorf("scope on All projects = (%q, %q), want (%q, \"\")", a, p, projAgent)
 	}
 }
 

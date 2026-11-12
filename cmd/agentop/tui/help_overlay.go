@@ -408,7 +408,7 @@ var paneKeys = map[paneID]keyGroup{
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
 			// Said here too because the footer only describes the row under the cursor.
-			{"↵", "scope to this agent and list its sessions; All agents clears"},
+			{"↵", "scope to this agent or project and list its sessions; All agents clears"},
 			// One line each, at 76 columns here and 90 in the note: Other under a project is
 			// where spend from before the upgrade lands, so a month view can be mostly Other.
 			{"space", "open projects; COST adds up, SESSIONS overlap, pre-upgrade spend is in Other"},
@@ -430,7 +430,7 @@ var paneKeys = map[paneID]keyGroup{
 		// the same narrowing `agentop cost --agent` uses, and the endpoint's limit now bounds WHICH
 		// views can honour it rather than whether any can.
 		notes: []string{
-			"Opens at two agents. Scopes sessions, usage pane, spend band. Other pools unknown agents.",
+			"Opens at 2 agents. Agent/project scopes sessions, usage pane, spend band. Other: unknowns.",
 		},
 	},
 }

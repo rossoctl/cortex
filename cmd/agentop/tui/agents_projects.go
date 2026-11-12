@@ -130,6 +130,12 @@ func (m *model) agentRowOpen(label string) bool {
 	return m.agentsExpanded[label] && m.agentRowExpandable(label)
 }
 
+// sessionInProject reports whether s names the project whose series label is label. A session
+// keeps the full path; the series label is its cut, sanitised form.
+func sessionInProject(s session.SessionSummary, label string) bool {
+	return slices.ContainsFunc(s.Projects, func(p string) bool { return usage.ProjectLabel(p) == label })
+}
+
 // subRowSessions counts the listed sessions a sub-row d holds, and gives the newest UpdatedAt.
 // A session in two projects counts in both.
 func (m *model) subRowSessions(d agentRowDesc) (n int, last time.Time) {
@@ -139,10 +145,7 @@ func (m *model) subRowSessions(d agentRowDesc) (n int, last time.Time) {
 		}
 		switch d.kind {
 		case agentRowProject:
-			// shortcut: an exact match on the series label, so a project path longer than
-			// event.MaxLabelLen (which the usage side truncates) counts in no row; match on the
-			// truncated form when a real path hits it.
-			if !slices.Contains(s.Projects, d.project) {
+			if !sessionInProject(s, d.project) {
 				continue
 			}
 		case agentRowProjectOther:
@@ -195,6 +198,58 @@ func (m *model) selectedAgentActs() (string, bool) {
 		return "", false
 	}
 	return d.agent, true
+}
+
+// projectScopeName is the name a title shows for the project label under agent: "Other" for
+// otherProjects; the sub-row's name while that row's projects are loaded; else the last "/"
+// segment of the label.
+func (m *model) projectScopeName(agent, project string) string {
+	if project == otherProjects {
+		return otherProjects
+	}
+	if data, ok := m.agentProjects[agent]; ok {
+		var labels []string
+		for _, r := range data.rows {
+			if r.label != otherProjects {
+				labels = append(labels, r.label)
+			}
+		}
+		if i := slices.Index(labels, project); i >= 0 {
+			return projectDisplayNames(labels)[i]
+		}
+	}
+	return project[strings.LastIndex(project, "/")+1:]
+}
+
+// scopeSuffix is the title text that names a scope: " · agent=<agent>" when agent is set, then
+// " · project=<name>" when project is set. Both are request-controlled, so both are sanitised.
+func (m *model) scopeSuffix(agent, project string) string {
+	out := ""
+	if agent != "" {
+		out += " · agent=" + sanitizeLabel(agent)
+	}
+	if project != "" {
+		out += " · project=" + sanitizeLabel(m.projectScopeName(agent, project))
+	}
+	return out
+}
+
+// revealProjectScope opens the scoped agent's row and asks rebuildAgentsTable to put the cursor on
+// the committed project sub-row, now or when the row's projects arrive. Call it before
+// rebuildAgentsTable.
+func (m *model) revealProjectScope() {
+	if m.projectScope == "" || !m.agentRowExpandable(m.agentScope) {
+		return
+	}
+	if m.agentsExpanded == nil {
+		m.agentsExpanded = map[string]bool{}
+	}
+	m.agentsExpanded[m.agentScope] = true
+	want := agentRowDesc{agent: m.agentScope, kind: agentRowProject, project: m.projectScope}
+	if m.projectScope == otherProjects {
+		want = agentRowDesc{agent: m.agentScope, kind: agentRowProjectOther}
+	}
+	m.agentsCursorWant, m.agentsCursorWantAt = &want, m.agentsTbl.Cursor()
 }
 
 // agentRowAdder is how rebuildAgentsTable adds one row: its descriptor and its cells.

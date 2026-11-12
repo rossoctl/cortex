@@ -158,11 +158,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if m.usage.metric.isLatency() {
 				break
 			}
-			// Inert under an agent scope, which the footer and the [?] overlay both say. The
-			// scope needs group=agent on the wire, so there is no axis left for this key to
+			// Inert under an agent or a project scope, which the footer and the [?] overlay both
+			// say. The scope needs group=agent (or group=project) on the wire, so there is no axis left for this key to
 			// move; dropping it here is what keeps it from refetching against an axis the
 			// scoped narrowing would immediately discard.
-			if m.agentScope != "" {
+			if m.agentScope != "" || m.projectScope != "" {
 				break
 			}
 			// Refetch: the breakdown is a server-side query parameter, not a
@@ -639,11 +639,20 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			//
 			// NOT A TOGGLE: Enter on the agent already scoped keeps it, and the All agents row is
 			// what clears it. See allAgentsLabel.
-			scope, ok := m.selectedAgentScope()
+			//
+			// A project sub-row also sets the project scope; every other row clears it, so the
+			// next agent's list is not narrowed to a project of the old one.
+			d, ok := m.selectedAgentRow()
 			if !ok {
 				return nil
 			}
-			m.agentScope = scope
+			m.agentScope, m.projectScope = d.agent, ""
+			switch d.kind {
+			case agentRowProject:
+				m.projectScope = d.project
+			case agentRowProjectOther:
+				m.projectScope = otherProjects
+			}
 			// SESSIONS, NOT THE PANE `A` WAS PRESSED ON. This used to share esc's exit and return
 			// there, and from a session's events that hid the pick: the events pane shows one
 			// session whatever the scope, so the reader landed back in the session they were
@@ -1411,10 +1420,10 @@ func (m *model) helpView() string {
 		// [b] is omitted under latency rather than shown as a no-op: a footer that
 		// advertises an inert key is worse than a shorter footer.
 		breakdownHint := "  [b] breakdown"
-		// Omitted under an agent scope for the same reason as under latency: the scope has taken
+		// Omitted under an agent or a project scope for the same reason as under latency: the scope has taken
 		// the wire axis, so there is no second one to break down by, and a footer that advertises
 		// an inert key is worse than a shorter footer.
-		if m.agentScope != "" {
+		if m.agentScope != "" || m.projectScope != "" {
 			breakdownHint = ""
 		}
 		if m.usage.metric.isLatency() {
@@ -1437,8 +1446,13 @@ func (m *model) helpView() string {
 		// duplicate the way in, and advertising it would be the inert-key problem the usage
 		// pane's breakdownHint above avoids.
 		enterHint := "  [↵] scope to this agent"
-		if scope, ok := m.selectedAgentScope(); ok && scope == "" {
-			enterHint = "  [↵] all agents"
+		if d, ok := m.selectedAgentRow(); ok {
+			switch {
+			case d.kind == agentRowProject || d.kind == agentRowProjectOther:
+				enterHint = "  [↵] scope to this project"
+			case d.agent == "":
+				enterHint = "  [↵] all agents"
+			}
 		}
 		// [space] after [↵], and the full project label after nav: the cell may show only a tail.
 		navHint, spaceHint := "[↑↓] nav", ""

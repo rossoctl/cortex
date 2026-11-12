@@ -161,7 +161,7 @@ func (m *model) applyClearCounts(msg clearCountsMsg) {
 			if cc.name = m.sessionTitleFor(s.ID, s.Title); cc.name == "" {
 				cc.name = sanitizeLabel(s.ID)
 			}
-		case cc.target == eraseAgent && m.sessionListed(s, cc.agent):
+		case cc.target == eraseAgent && m.sessionListed(s, cc.agent, ""):
 			cc.ids = append(cc.ids, s.ID)
 		}
 	}

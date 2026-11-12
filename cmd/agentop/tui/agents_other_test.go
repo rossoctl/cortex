@@ -259,7 +259,7 @@ func TestFetchUsageScoped_OtherIsNarrowedHereAndNeverSent(t *testing.T) {
 			snap.Totals.Requests, snap.Agent, snap.Group)
 	}
 	// The drawer says what it could not break down, without calling several agents one.
-	if note := drawerScopeNote(snap, usage.GroupModel, "today"); note != "no model breakdown for Other in today" {
+	if note := drawerScopeNote(snap, usage.GroupModel, "today", ""); note != "no model breakdown for Other in today" {
 		t.Errorf("drawer note %q", note)
 	}
 }

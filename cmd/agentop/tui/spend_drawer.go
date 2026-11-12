@@ -418,14 +418,15 @@ func (m *model) toggleSpendDrawer() tea.Cmd {
 // on screen until the new one lands is the behaviour cycleSpendAxis already chose for its
 // axis change. The caption comes from the snapshot, so rows and caption lag together.
 func (m *model) syncSpendScope() tea.Cmd {
-	if m.client != nil && m.spendScopeAgent() != m.spend.bandAgent {
+	if m.client != nil && (m.spendScopeAgent() != m.spend.bandAgent || m.spendScopeProject() != m.spend.bandProject) {
 		// startSpendPolling refetches an open drawer too, under the same agent.
 		return m.startSpendPolling()
 	}
 	if !m.spend.expanded {
 		return nil
 	}
-	if m.spendScopeAgent() == m.spend.drawerAgent && m.spendDrawerSpan() == m.spend.drawerSpan {
+	if m.spendScopeAgent() == m.spend.drawerAgent && m.spendScopeProject() == m.spend.drawerProject &&
+		m.spendDrawerSpan() == m.spend.drawerSpan {
 		return nil
 	}
 	return m.fetchSpendDrawer()
@@ -448,6 +449,10 @@ func (m *model) syncSpendScope() tea.Cmd {
 // does not blink through an empty frame — it is a breakdown of the same traffic either way.
 func (m *model) cycleSpendAxis() tea.Cmd {
 	axes := m.spendAxes()
+	// A project scope has no axes, and `a` does nothing.
+	if len(axes) == 0 {
+		return nil
+	}
 	next := axes[(slices.Index(axes, m.spendAxis())+1)%len(axes)]
 	m.spend.groupIdx = slices.Index(spendDrawerAxes, next)
 	// THE PREVIOUS SPAN'S ERROR IS DROPPED HERE, and it has to be dropped rather than left to
@@ -826,12 +831,13 @@ func drawerScopeLabel(snap *usage.Snapshot) string {
 // exactly the silence applySpendLoaded's doc forbids for the band — the chain clears snap on
 // failure, so without this a broken endpoint rendered as headers over blank rows forever.
 func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, windowLabel string, width int) []string {
-	return renderSpendDrawerAxes(snap, err, axis, axis, spendDrawerAxes, windowLabel, width)
+	return renderSpendDrawerAxes(snap, err, axis, axis, spendDrawerAxes, windowLabel, "", width)
 }
 
-// renderSpendDrawerAxes is renderSpendDrawer with the axis cycle its hint line spells, and the axis
-// snap was asked for.
-func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis, asked usage.Group, axes []usage.Group, windowLabel string, width int) []string {
+// renderSpendDrawerAxes is renderSpendDrawer with the axis cycle its hint line spells, the axis
+// snap was asked for, and the project scope snap was narrowed to. With no axes, the hint line
+// has no `[a]` figure.
+func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis, asked usage.Group, axes []usage.Group, windowLabel, project string, width int) []string {
 	if err != nil {
 		// The reservation still has to be filled, so this is spendDrawerLinesFor(width) rows with the
 		// diagnostic on the first and the hint line last — the hints stay because `w` and `$`
@@ -842,17 +848,13 @@ func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis, asked usage.Gr
 		for len(out) < spendDrawerLinesFor(width)-1 {
 			out = append(out, "")
 		}
-		return append(out, fitStripFigures(" ", plainFigures(
-			"[a] "+axisHintOf(axis, axes),
-			"[w] "+windowLabel,
-			"[$] closes",
-		), width))
+		return append(out, fitStripFigures(" ", plainFigures(drawerHints(axis, axes, windowLabel)...), width))
 	}
 	rows := spendDrawerRows(snap, spendDrawerSeries)
 	if snap != nil {
 		drawerRowUnits(snap, rows)
 	}
-	note := drawerScopeNote(snap, asked, windowLabel)
+	note := drawerScopeNote(snap, asked, windowLabel, project)
 	hintAxis := axis
 	if note != "" {
 		hintAxis = asked
@@ -937,11 +939,7 @@ func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis, asked usage.Gr
 	// The hint line is LAST and always present: it is the only place the two keys and the
 	// current axis are written down, and a drawer whose controls are undiscoverable is a
 	// drawer nobody changes the axis of.
-	out = append(out, fitStripFigures(" ", plainFigures(
-		"[a] "+axisHintOf(hintAxis, axes),
-		"[w] "+windowLabel,
-		"[$] closes",
-	), width))
+	out = append(out, fitStripFigures(" ", plainFigures(drawerHints(hintAxis, axes, windowLabel)...), width))
 
 	// PADDED OUT TO THE RESERVATION. layout() holds back spendDrawerLinesFor(width), and it
 	// has to: a poll can land between the layout and the render, so sizing the body to the rows
@@ -1150,9 +1148,21 @@ func gapOf(c usage.Counts) int64 {
 	return 0
 }
 
+// drawerHints is the drawer's hint line: `[a]` and its axes when there are some, then `[w]` and `[$]`.
+func drawerHints(axis usage.Group, axes []usage.Group, windowLabel string) []string {
+	hints := []string{"[w] " + windowLabel, "[$] closes"}
+	if len(axes) == 0 {
+		return hints
+	}
+	return append([]string{"[a] " + axisHintOf(axis, axes)}, hints...)
+}
+
 // drawerScopeNote is the series column's line when a scoped reply came back without the breakdown
-// it was asked for, or "".
-func drawerScopeNote(snap *usage.Snapshot, asked usage.Group, windowLabel string) string {
+// it was asked for, or "". A reply narrowed to a project never has a breakdown.
+func drawerScopeNote(snap *usage.Snapshot, asked usage.Group, windowLabel, project string) string {
+	if project != "" && snap != nil {
+		return "no breakdown for this scope in " + windowLabel
+	}
 	if snap == nil || snap.Agent == "" || snap.Group != usage.GroupNone || asked == "" || asked == usage.GroupNone {
 		return ""
 	}

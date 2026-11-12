@@ -1526,7 +1526,7 @@ Layered on top of all of them:
 | `A` | any session-view pane (not the picker) | open the per-agent breakdown — each coding agent's sessions, when it was last seen, and what it has spent today (`w` moves the window), plus a row for any agent that owns a listed session but has spent nothing in it, since the sessions list is not limited to today and every session in it needs a row to scope to. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press and opens however many agents it finds, one or none included; pressed on the agents pane it only refreshes the rows. Not in the footer, for width; the `?` overlay names it |
 | `↑↓` / `jk` | agents | move the cursor |
 | `space` | agents | open the row under the cursor into its projects, or close it; on a sub-row it closes the parent and moves the cursor there. Offered only when sessions record a project; the `Other` row never opens |
-| `↵` | agents | scope to the agent under the cursor and list its sessions, whichever pane `A` was pressed on — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope.** It reaches the sessions list, the usage pane, and the spend band and its drawer — except on the agents pane itself, where the band and the drawer follow the highlighted row instead of the committed scope; `agentop cost --agent` is a separate process. On a project sub-row, `↵` scopes to the parent agent. `x` and `S` act on the parent on the open row and on `All projects`, and do nothing on a project or `Other` sub-row |
+| `↵` | agents | scope to the agent under the cursor and list its sessions, whichever pane `A` was pressed on — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope.** It reaches the sessions list, the usage pane, and the spend band and its drawer — except on the agents pane itself, where the band and the drawer follow the highlighted row instead of the committed scope; `agentop cost --agent` is a separate process. On a project sub-row, `↵` scopes to that project and its agent; on a project under All agents, to the project only; on the project `Other`, to the sessions and spend that record no project. `All projects` clears only the project scope. `x` and `S` act on the parent on the open row and on `All projects`, and do nothing on a project or `Other` sub-row |
 | `S` | agents | choose the inference server the highlighted agent's new sessions use: a picker over the pane, its cursor on what the agent has now. `↵` applies the highlighted entry, `Esc`/`q`/`Ctrl+C` close it, and an entry the config file already holds writes nothing. Opens only on an agent's row, when agentop is attached to this machine's Cortex and its `inference-router` routes; elsewhere a panel says why. See [Choosing an agent's server](#choosing-an-agents-server-s) |
 | `Esc` | agents | back to the pane `A` was pressed on, leaving the scope as it is. When the picker opened itself at startup, or was reached with `Esc` from the sessions list, it is the level above that list instead, and `Esc` backs out as `Esc` on sessions does: to the pods picker, or nowhere with `--endpoint` |
 | `e` | pipeline | edit pipeline subtree in `$EDITOR` |
@@ -1622,7 +1622,20 @@ SESSIONS does not, because a session that used two projects counts under both. S
 recorded before the upgrade has no project and is in `Other`: for the month window
 that can be most of the spend for up to a month. Rows start closed and stay open across
 the 20s refresh, `w` and `A`, not across a restart. On a sub-row, the spend band and
-drawer follow the parent agent.
+drawer follow that project.
+
+**`↵` on a project sub-row scopes to that project.** The project scope narrows the
+sessions list to the sessions that recorded the project, and narrows the usage pane,
+the spend band and its drawer to the project's figures. Every title then says
+`project=<display name>`, beside `agent=` when an agent is scoped. agentop asks for
+the `group=project` series and narrows the reply itself: the server has no `project=`
+parameter. Under a project scope, `[b]` is inert on the usage pane, latency is not
+available per project, and the drawer shows no breakdown (`no breakdown for this
+scope`). Within one session, the usage pane reads that session's projects without the
+agent. Against a server that names no session's project, the sessions list stays whole
+and its footer says `list not scoped`. `esc` keeps both scopes; `All projects` clears
+the project scope, and All agents clears both. The project scope is not saved across
+a restart.
 
 ### Choosing an agent's server (`S`)
 

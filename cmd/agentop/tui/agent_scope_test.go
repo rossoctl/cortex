@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -366,5 +367,61 @@ func TestSessionsPane_SanitisesTheAgentCell(t *testing.T) {
 				t.Errorf("a cell carries an escape: %q", c)
 			}
 		}
+	}
+}
+
+// The Other project holds the unknown and the overflow series; a named project is its own series.
+func TestNarrowToProject_OtherFoldsUnknownAndOverflow(t *testing.T) {
+	snap := &usage.Snapshot{
+		Window: "today",
+		Group:  usage.GroupProject,
+		Buckets: []usage.Bucket{{
+			Counts: usage.Counts{CostMicros: 115},
+			Series: map[string]usage.Counts{
+				"~/a":                     {CostMicros: 100},
+				usage.UnknownProjectLabel: {CostMicros: 10},
+				projectOverflowLabel:      {CostMicros: 5},
+			},
+		}},
+	}
+	if got, err := narrowToProject(snap, otherProjects); err != nil || got.Totals.CostMicros != 15 {
+		t.Errorf("Other = %+v (err %v), want 15 micros", got, err)
+	}
+	if got, err := narrowToProject(snap, "~/a"); err != nil || got.Totals.CostMicros != 100 {
+		t.Errorf("~/a = %+v (err %v), want 100 micros", got, err)
+	}
+	// A project that is not a series, beside the overflow series, may be inside it: an error.
+	if got, err := narrowToProject(snap, "~/b"); err == nil || !strings.Contains(err.Error(), "costliest") {
+		t.Errorf("~/b = %+v (err %v), want the not-among-the-costliest error", got, err)
+	}
+}
+
+// A project scope asks for the project axis and narrows it here: no project= key goes on the wire
+// (D3). With no project the read is fetchUsageScoped's.
+func TestFetchUsageScopedProject_AsksGroupProjectAndNoProjectKey(t *testing.T) {
+	var queries []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		_, _ = w.Write([]byte(`{"window":"today","agent":"` + r.URL.Query().Get("agent") + `","totals":{}}`))
+	}))
+	defer ts.Close()
+	client := apiclient.New(ts.URL)
+	if _, err := fetchUsageScopedProject(context.Background(), client, "today", 0, "claude-code", "~/a", usage.GroupNone); err != nil {
+		t.Fatal(err)
+	}
+	if len(queries) != 1 || !strings.Contains(queries[0], "agent=claude-code") || !strings.Contains(queries[0], "group=project") {
+		t.Fatalf("queries = %q, want one with agent=claude-code and group=project", queries)
+	}
+	for _, q := range queries {
+		if v, _ := url.ParseQuery(q); v.Has("project") {
+			t.Errorf("query %q has a project key", q)
+		}
+	}
+	queries = nil
+	if _, err := fetchUsageScopedProject(context.Background(), client, "today", 0, "claude-code", "", usage.GroupNone); err != nil {
+		t.Fatal(err)
+	}
+	if len(queries) != 1 || strings.Contains(queries[0], "group=") {
+		t.Errorf("queries = %q, want one with no group=", queries)
 	}
 }
