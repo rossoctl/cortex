@@ -41,6 +41,34 @@ func fetchUsageScoped(ctx context.Context, client *apiclient.Client, window stri
 	return &scoped, nil
 }
 
+// narrowToProject narrows a group=project snapshot to one project. For Other it first folds the
+// unknown and overflow series into Other, as fetchUsageScoped does for the agent Other, so the
+// figure is the one the project sub-row shows.
+func narrowToProject(snap *usage.Snapshot, project string) *usage.Snapshot {
+	if snap == nil {
+		return nil
+	}
+	if project == otherProjects {
+		snap = foldSeriesInto(snap, namedProject, otherProjects)
+	}
+	scoped := usage.NarrowToLabel(*snap, project)
+	return &scoped
+}
+
+// fetchUsageScopedProject is fetchUsageScoped narrowed to one project when project is set: it
+// asks for the project axis (of agent, when set) and narrows the reply here. No project= key goes
+// to the server.
+func fetchUsageScopedProject(ctx context.Context, client *apiclient.Client, window string, resolution time.Duration, agent, project string, group usage.Group) (*usage.Snapshot, error) {
+	if project == "" {
+		return fetchUsageScoped(ctx, client, window, resolution, agent, group)
+	}
+	snap, err := fetchUsageScoped(ctx, client, window, resolution, agent, usage.GroupProject)
+	if err != nil {
+		return nil, err
+	}
+	return narrowToProject(snap, project), nil
+}
+
 // sessionsScope is the agent the sessions list is narrowed to: the scope, when some session names
 // its agent, else "" — a server that names none cannot say which sessions are whose.
 func (m *model) sessionsScope() string {

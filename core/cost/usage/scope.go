@@ -190,17 +190,25 @@ func (a *Aggregator) AgentSnapshot(window, resolution time.Duration, sessionID, 
 // rather than an error. The narrowed buckets carry no series, so any grouping is served as none,
 // and Group says so.
 func NarrowToAgent(snap Snapshot, agent string) Snapshot {
-	scoped, err := ScopeToAgent(&snap, agent, NarrowBuckets)
+	s := NarrowToLabel(snap, agent)
+	s.Agent = agent
+	return s
+}
+
+// NarrowToLabel is NarrowToAgent for any series axis: a grouped snapshot becomes one series's,
+// served as group none. It KEEPS snap.Agent, so a group=project read for one agent narrowed to one
+// project still says which agent it is. A label with no series gets zeroed buckets, not an error.
+func NarrowToLabel(snap Snapshot, label string) Snapshot {
+	scoped, err := ScopeToAgent(&snap, label, NarrowBuckets)
 	if err != nil {
 		idle := snap
 		idle.Totals, idle.Priced = Counts{}, false
 		idle.PricedBy, idle.UnpricedBy, idle.IncompleteBy = nil, nil, nil
 		idle.Currencies, idle.SeriesCurrencies = nil, nil
-		idle.Buckets = narrowBucketsToAgent(snap.Buckets, agent)
+		idle.Buckets = narrowBucketsToAgent(snap.Buckets, label)
 		scoped = &idle
 	}
 	scoped.UngroupedCostMicros, scoped.UngroupedAvoidedMicros = nil, nil
 	scoped.Group = GroupNone
-	scoped.Agent = agent
 	return *scoped
 }
