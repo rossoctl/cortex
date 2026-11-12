@@ -135,6 +135,12 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 	if got.Inference.ToolCount != len(full.Inference.Tools) {
 		t.Errorf("toolCount = %d, want %d", got.Inference.ToolCount, len(full.Inference.Tools))
 	}
+	// ToolCalls joins them: core/sessionexport exports a tool-call figure, and reading
+	// len(ToolCalls) alone reported absence for every row this projection delivers.
+	if got.Inference.ToolCallCount != len(full.Inference.ToolCalls) {
+		t.Errorf("toolCallCount = %d, want %d", got.Inference.ToolCallCount,
+			len(full.Inference.ToolCalls))
+	}
 	// agentRole needs no such rescue — it is a scalar the struct copy carries — but it is read by
 	// the same consumer for the same question, so a projection that lost it would break the
 	// CONTEXT gauge exactly as dropping the counts did.
@@ -437,7 +443,11 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// 29 since HistoryToolCalls, DETAIL data like ToolResults: dropped, asserted above.
 		// 35 since ThinkingType, ThinkingDisplay, Effort, AnthropicBeta, HistoryThinking and
 		// ResponseThinking: small scalars and counts, kept, asserted above.
-		{"InferenceExtension", reflect.TypeOf(pipeline.InferenceExtension{}), 35},
+		// 36 since ToolCallCount, the third member of the derived-count category beside
+		// MessageCount and ToolCount: recorded before ToolCalls is dropped, because
+		// core/sessionexport's content-free record carries a tool-call figure and len() on a
+		// nilled slice reported absence for every projected row. Kept; asserted above.
+		{"InferenceExtension", reflect.TypeOf(pipeline.InferenceExtension{}), 36},
 		{"A2AExtension", reflect.TypeOf(pipeline.A2AExtension{}), 11},
 		{"MCPExtension", reflect.TypeOf(pipeline.MCPExtension{}), 6},
 	} {

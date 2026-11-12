@@ -61,6 +61,7 @@ inference.streamedResponse bool
 inference.temperature number
 inference.thinkingDisplay string
 inference.thinkingType string
+inference.toolCallCount number
 inference.toolCalls array
 inference.toolCalls[] object
 inference.toolCalls[].arguments string

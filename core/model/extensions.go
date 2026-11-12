@@ -217,6 +217,22 @@ type InferenceExtension struct {
 	MessageCount int `json:"messageCount,omitempty"`
 	ToolCount    int `json:"toolCount,omitempty"`
 
+	// ToolCallCount is how many ToolCalls this event HAD, on the same terms as the two counts
+	// above: set only by sessionapi.summarizeEvent immediately before it nils the slice, zero
+	// everywhere else, and ZERO MEANS "NOT STATED", NOT "NONE" — so a reader prefers the slice
+	// when it is present, as in the snippet above.
+	//
+	// NOT THE SAME QUESTION AS ToolCount, which is the manifest the REQUEST offered; this is
+	// how many calls the RESPONSE actually made of it. A request can carry 40 tools and the
+	// model call none.
+	//
+	// It exists because a consumer of a projected copy could otherwise not distinguish "the
+	// model called no tools" from "the projection dropped them": core/sessionexport.Record
+	// exports a tool-call figure, and reading len(ToolCalls) alone made every view=summary
+	// row report absence. ToolResults deliberately has no equivalent — it is re-sent whole on
+	// every request, so a count of it sums to nonsense over a session (rossoctl/cortex#1740).
+	ToolCallCount int `json:"toolCallCount,omitempty"`
+
 	// AgentRole says WHICH CALLER under one session id made this request — the interactive
 	// conversation, or a subagent it spawned. Claude Code declares it: every request's system
 	// prompt opens with a pseudo-header line, and a subagent's carries cc_is_subagent=true.

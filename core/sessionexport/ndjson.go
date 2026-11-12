@@ -24,10 +24,10 @@ func NewWriter(w io.Writer) *Writer {
 	return &Writer{enc: json.NewEncoder(w)}
 }
 
-// Write encodes one record. json.Encoder appends the newline, so a record is exactly one
-// line as long as no field can hold one — and none can: every string a Record carries is a
-// host, a method, an id or a closed vocabulary, never prose. The content fields that could
-// are the ones this package does not carry.
+// Write encodes one record, which is always exactly one line. json.Encoder appends the
+// newline, and encoding/json escapes a literal newline — and every other control character —
+// inside a string, so the property is structural rather than a consequence of what Record
+// happens to carry today. A field added here later that holds prose cannot break it.
 func (w *Writer) Write(r Record) error {
 	if err := w.enc.Encode(r); err != nil {
 		return err

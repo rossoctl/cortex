@@ -18,10 +18,18 @@
 // encoding contains payload text.
 //
 // NOT IN A RECORD, AND NOT BY OVERSIGHT: message content, the completion, tool-call
-// arguments, tool-result bodies, MCP params and results, A2A parts, plugin event payloads,
-// TLS peer identity and request headers. Tool-call NAMES are also absent here (see
-// rossoctl/cortex#1810's Tier 2) — the names alone are low risk, but arguments are not, and
-// nothing in this package's first form needs either.
+// arguments, tool-result bodies, MCP params and results, A2A parts, artifacts and error
+// messages, plugin event payloads, thinking blocks, authenticated identity, TLS peer
+// identity, and request headers — the User-Agent included, which is why Client carries a
+// parsed name or nothing. Tool-call NAMES are also absent here (see rossoctl/cortex#1810's
+// Tier 2) — the names alone are low risk, but arguments are not, and nothing in this
+// package's first form needs either.
+//
+// THE REQUEST PATH IS ABSENT TOO, and it is the subtlest of these: a path SEGMENT can hold a
+// bot token or a webhook secret, which nothing can tell from a resource id — SessionEvent.
+// HTTPPath says so itself, naming an off-box export as the case to know it before. So
+// neither HTTPPath nor Invocation.Path, which is a back-filled copy of the same string,
+// reaches a record. HTTPMethod alone carries the shape of the request.
 package sessionexport
 
 import (
@@ -60,10 +68,13 @@ type Record struct {
 
 	// Seq is the event's position in its session, counting from 1.
 	//
-	// ORDER BY At, NOT BY Seq. The numbering is unique within one incarnation of a session,
-	// not forever: the counter lives on the store's entry, so a session re-created under the
-	// same id restarts at 1, and a consumer cannot tell that from a trimmed prefix. Seq is
-	// here to pair with the session API and to spot gaps, not to sort a file.
+	// ORDER BY At, THEN Seq — and never by Seq alone. The numbering is unique within one
+	// incarnation of a session, not forever: the counter lives on the store's entry, so a
+	// session re-created under the same id restarts at 1, and a consumer cannot tell that
+	// from a trimmed prefix. But At cannot break its own ties either (see DurationMs below),
+	// and ties are common on a fast local proxy, so At alone leaves tied rows in arbitrary
+	// order. Seq is the tiebreak within a session, which is the rule SessionEvent.Seq states
+	// for paging the session API; it is also here to spot gaps.
 	Seq uint64 `json:"seq,omitempty"`
 
 	// RequestID pairs a request record with its response record. Positional pairing
@@ -114,8 +125,12 @@ type Record struct {
 	//
 	// CLIENT-ASSERTED AND TRIVIALLY SPOOFABLE: a cost-attribution and display key, never an
 	// authorization subject. Worth restating here rather than only on the event, because an
-	// external collector is exactly where this is likely to be mistaken for identity. Empty
-	// when the request carried no User-Agent — absence, not an agent named "unknown".
+	// external collector is exactly where this is likely to be mistaken for identity.
+	//
+	// A RECOGNISED AGENT OR NOTHING. Empty both when the request carried no User-Agent and
+	// when it carried one this proxy does not parse — absence, not an agent named "unknown",
+	// and never the raw header. So a consumer counting agents undercounts rather than
+	// inventing a name, and the record cannot carry whatever a caller put in that header.
 	Client string `json:"client,omitempty"`
 
 	// AgentRole says which caller under one session id made the request: "main" or
@@ -138,23 +153,48 @@ type Record struct {
 
 	FinishReason string `json:"finishReason,omitempty"`
 
-	// Token counts, ALL FOUR SEPARATELY AND NEVER AS A TOTAL. Cost is derived from the
-	// cache-read/write split rather than the sum, so a consumer handed a partial set
-	// computes a different figure than the proxy does — the same argument cost/ledger.Row
-	// makes for keeping them apart on disk.
-	PromptTokens     int `json:"promptTokens,omitempty"`
-	CompletionTokens int `json:"completionTokens,omitempty"`
+	// Token counts, THE SPLIT ONLY AND NEVER AN AGGREGATE. These five are exactly what
+	// cost/ledger.Row prices from, and InputTokens is the UNCACHED prompt — the three
+	// prompt-side kinds are disjoint, so a consumer adds them itself if it wants a prompt
+	// total.
+	//
+	// NO promptTokens / completionTokens HERE, DELIBERATELY. The event carries a legacy pair
+	// of those names, but InferenceExtension.PromptTokens is already
+	// Input+CacheRead+CacheWrite (parsercommon.TokenUsage.Fill writes it; model.PromptTokensOf
+	// documents it). Exporting it beside CacheReadTokens would ship a total next to its own
+	// components, and a consumer pricing the input rate on one and the cache rate on the other
+	// counts every cached token twice — on a real archive, 196k of them on a single response.
+	// An aggregate a consumer can compute is not worth a figure it can misread.
+	InputTokens      int `json:"inputTokens,omitempty"`
 	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`
 	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
+	OutputTokens     int `json:"outputTokens,omitempty"`
+	ReasoningTokens  int `json:"reasoningTokens,omitempty"`
+
+	// PresentKinds names which of the five counts above the provider actually reported, and is
+	// the one field here that escapes this type's zero-means-absent rule: a set bit with a
+	// zero count is "the provider reported zero", an unset bit is "the provider does not
+	// expose this kind". Without it those two are the same absent key, and a consumer cannot
+	// tell a model that wrote no cache from a provider that never says.
+	//
+	// Bit layout is parsercommon.Kind (Input=1, CacheRead=2, CacheWrite=4, Output=8,
+	// Reasoning=16); uint8 rather than the typed Kind for the same reason
+	// InferenceExtension.PresentKinds is — neither type imports parsercommon.
+	PresentKinds uint8 `json:"presentKinds,omitempty"`
 
 	// MessageCount and ToolCount are how long the conversation was and whether the request
 	// carried a tool manifest. The manifest separates an agentic turn from a one-shot
 	// utility completion, which matters because a coding agent interleaves both under one
 	// session id.
+	//
+	// Zero here is "not stated" rather than "none" for the reason the rest of this type's
+	// numbers are: a view=summary source states them while a full event states the slices,
+	// and FromEvent reads whichever is there.
 	MessageCount int `json:"messageCount,omitempty"`
 	ToolCount    int `json:"toolCount,omitempty"`
 
-	// ToolCallCount is how many tool calls the model emitted on this response.
+	// ToolCallCount is how many tool calls the model emitted on this response. Distinct from
+	// ToolCount above, which is the manifest the REQUEST offered.
 	//
 	// DELIBERATELY NOT A COUNT OF ToolResults. A request re-sends the whole conversation, so
 	// every earlier tool result is present again on every later turn: summing len(ToolResults)
@@ -219,12 +259,15 @@ func FromEvent(e *model.SessionEvent, sessionID string) Record {
 	r.DurationMs = e.Duration.Milliseconds()
 	r.TtfbMs = e.Ttfb.Milliseconds()
 
-	// Client.Label() answers "unknown" for a nil client, which must not become a real agent
-	// name in an aggregate. Absence stays absence.
-	if e.Client != nil {
-		if l := e.Client.Label(); l != model.UnknownClientLabel {
-			r.Client = l
-		}
+	// ONLY A PARSED CLIENT REACHES THE EXPORT, which is why this reads Name rather than
+	// filtering Label()'s output. Label() falls back to the RAW User-Agent when Name is empty
+	// — so a header of "claude-cli/private-data" would arrive here verbatim, putting
+	// attacker-controlled free text in a record this package promises carries none. Guarding
+	// on Name covers the nil client too: Label() answers UnknownClientLabel in exactly the
+	// cases Name is empty, and that reserved word must not become a real agent in an
+	// aggregate either. Absence stays absence.
+	if e.Client != nil && e.Client.Name != "" {
+		r.Client = e.Client.Label()
 	}
 	if e.Error != nil {
 		r.ErrorKind, r.ErrorCode = e.Error.Kind, e.Error.Code
@@ -237,16 +280,17 @@ func FromEvent(e *model.SessionEvent, sessionID string) Record {
 		r.StreamedResponse = inf.StreamedResponse
 		r.FinishReason = inf.FinishReason
 		r.AgentRole = string(inf.AgentRole)
-		r.PromptTokens = inf.PromptTokens
-		r.CompletionTokens = inf.CompletionTokens
+		r.InputTokens = inf.InputTokens
 		r.CacheReadTokens = inf.CacheReadTokens
 		r.CacheWriteTokens = inf.CacheWriteTokens
-		r.ToolCallCount = len(inf.ToolCalls)
+		r.OutputTokens = inf.OutputTokens
+		r.ReasoningTokens = inf.ReasoningTokens
+		r.PresentKinds = inf.PresentKinds
 
-		// The counts come from the slices when present and from the event's own count fields
-		// otherwise: a projected copy (sessionapi's view=summary) carries the counts with
-		// the slices already dropped, so reading only len() would report zero for every row
-		// such a reader delivers.
+		// All three counts come from the slice when present and from the event's own count
+		// field otherwise: a projected copy (sessionapi's view=summary) carries the counts
+		// with the slices already dropped, so reading only len() would report zero for every
+		// row such a reader delivers.
 		if n := len(inf.Messages); n > 0 {
 			r.MessageCount = n
 		} else {
@@ -256,6 +300,11 @@ func FromEvent(e *model.SessionEvent, sessionID string) Record {
 			r.ToolCount = n
 		} else {
 			r.ToolCount = inf.ToolCount
+		}
+		if n := len(inf.ToolCalls); n > 0 {
+			r.ToolCallCount = n
+		} else {
+			r.ToolCallCount = inf.ToolCallCount
 		}
 	}
 	return r
