@@ -145,3 +145,38 @@ func TestLocalChain_ADefaultSlotRewriterBeforeANamedReader(t *testing.T) {
 		t.Errorf("the default slot listed after the named reader did not build: %v", err)
 	}
 }
+
+// #1814: in praxis mode the shipped local config, run through buildPipelines'
+// steps (ApplyPreset, addScriptSlot, Validate), passes. cortex-gateway runs no
+// outbound plugin, so a script slot there could only fail open.
+func TestLocalChain_PraxisValidates(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SHELL", "")
+	p, err := writeBuiltinConfig(filepath.Join(home, ".cortex"), filepath.Join(home, ".cortex", "ca"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("\npraxis:\n  enabled: true\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ApplyPreset(cfg)
+	addScriptSlot(cfg, true)
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("Validate = %v", err)
+	}
+	for _, e := range cfg.Pipeline.Outbound.Plugins {
+		if e.Name == scriptPlugin {
+			t.Errorf("praxis chain has a script slot: %+v", cfg.Pipeline.Outbound.Plugins)
+		}
+	}
+}

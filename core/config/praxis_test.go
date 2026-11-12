@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/core/pipeline"
 	"gopkg.in/yaml.v3"
 )
 
@@ -113,6 +114,52 @@ func TestPraxis_AddrMustBeLoopback(t *testing.T) {
 			if err := Validate(c); err != nil {
 				t.Errorf("%s %q with praxis off: Validate = %v, want nil", field, tc.addr, err)
 			}
+		}
+	}
+}
+
+// TestPraxis_RefusesUnsafeOutboundPlugin pins #1768: cortex-gateway runs no outbound
+// plugin, so a plugin that can reject or add a credential would fail open.
+func TestPraxis_RefusesUnsafeOutboundPlugin(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		refused bool
+	}{
+		{"inference-parser", false}, {"mcp-parser", false}, {"a2a-parser", false},
+		{"tool-prune", false}, {"context-guru", false}, {"lineage-telemetry", false},
+		{"opa", true}, {"script", true}, {"token-exchange", true},
+		{"inference-router", true}, {"no-such-plugin", true},
+	} {
+		c := praxisConfig()
+		c.Listener.BindLoopbackOnly = true
+		c.Pipeline.Outbound.Plugins = []PluginEntry{{Name: tc.name}}
+		err := Validate(c)
+		if tc.refused != (err != nil) {
+			t.Errorf("%s: Validate = %v, refused want %v", tc.name, err, tc.refused)
+			continue
+		}
+		if tc.refused && !strings.Contains(err.Error(), tc.name) {
+			t.Errorf("%s: error %q does not name the plugin", tc.name, err)
+		}
+	}
+}
+
+// An on_error: off entry is never dispatched, in direct mode too, so praxis mode
+// cannot fail open on it. observe still dispatches, so it is refused.
+func TestPraxis_AllowsOffOutboundPlugin(t *testing.T) {
+	for _, tc := range []struct {
+		policy  pipeline.ErrorPolicy
+		refused bool
+	}{
+		{pipeline.ErrorPolicyOff, false},
+		{pipeline.ErrorPolicyObserve, true},
+		{"", true},
+	} {
+		c := praxisConfig()
+		c.Listener.BindLoopbackOnly = true
+		c.Pipeline.Outbound.Plugins = []PluginEntry{{Name: "opa", OnError: tc.policy}}
+		if err := Validate(c); tc.refused != (err != nil) {
+			t.Errorf("on_error %q: Validate = %v, refused want %v", tc.policy, err, tc.refused)
 		}
 	}
 }

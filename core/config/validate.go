@@ -3,9 +3,12 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
+	"slices"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // Validate checks the top-level runtime config: mode and listener combo.
@@ -77,9 +80,25 @@ func validateCostLedger(cfg *Config) error {
 		"or drop cost_ledger.enabled")
 }
 
-// validatePraxis refuses praxis mode outside a loopback-only laptop install, and
-// beside mtls: the ingest endpoint and the hop to cortex-gateway are loopback
-// plaintext, so neither combination can work.
+// praxisOffSafe names the outbound plugins whose absence changes no allow or deny
+// decision and no credential. In praxis mode cortex-gateway runs no outbound plugin
+// (#1768), so validatePraxis refuses every other name unless its on_error is off.
+// Add a plugin here when #1714 ports it to the gateway.
+var praxisOffSafe = map[string]bool{
+	"inference-parser":  true,
+	"mcp-parser":        true,
+	"a2a-parser":        true,
+	"tool-prune":        true,
+	"context-guru":      true,
+	"lineage-telemetry": true,
+}
+
+// PraxisOffSafe returns the praxisOffSafe names, sorted.
+func PraxisOffSafe() []string { return slices.Sorted(maps.Keys(praxisOffSafe)) }
+
+// validatePraxis refuses praxis mode outside a loopback-only laptop install,
+// beside mtls, and with an outbound plugin that is not in praxisOffSafe and not
+// off. The ingest endpoint and the hop to cortex-gateway are loopback plaintext.
 func validatePraxis(cfg *Config) error {
 	if !cfg.PraxisEnabled() {
 		return nil
@@ -93,6 +112,12 @@ func validatePraxis(cfg *Config) error {
 	// The rows reach Cortex only through POST /v1/ingest, which needs the session store.
 	if !cfg.Session.SessionEnabled() {
 		return fmt.Errorf("praxis.enabled: true cannot be used with session.enabled: false: Cortex ingests the gateway's rows into the session store")
+	}
+	for _, e := range cfg.Pipeline.Outbound.Plugins {
+		// An off entry is never dispatched, so its absence cannot fail open.
+		if !praxisOffSafe[e.Name] && e.OnError.Resolved() != pipeline.ErrorPolicyOff {
+			return fmt.Errorf("praxis.enabled: true cannot be used with outbound plugin %q: cortex-gateway does not run it, so it would fail open; remove the plugin or praxis.enabled", e.Name)
+		}
 	}
 	if err := validatePraxisAddr("praxis.listen", cfg.Praxis.Listen); err != nil {
 		return err

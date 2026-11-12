@@ -31,6 +31,13 @@ func addScriptSlot(c *config.Config, local bool) {
 	if !local || !slices.Contains(plugins.RegisteredPlugins(), scriptPlugin) {
 		return
 	}
+	// cortex-gateway runs no outbound plugin (#1768), so a slot here could only fail open.
+	if c.PraxisEnabled() {
+		if dir, err := scriptSlotDir(""); err == nil && scriptFingerprint([]string{dir}) != "" {
+			slog.Warn("script plugin: praxis mode runs no outbound plugin; the scripts in this folder are off", "dir", dir)
+		}
+		return
+	}
 	chain := c.Pipeline.Outbound.Plugins
 	first := -1
 	for i, e := range chain {
