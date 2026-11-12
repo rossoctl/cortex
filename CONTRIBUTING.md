@@ -243,6 +243,15 @@ there you get a stopped service rather than a looping one. Either way the proxy 
 missing plugin and the set it does have, and `agentop service status` shows the last log
 lines; the default `full` avoids the question.
 
+### Stopping a bad release
+
+To stop a bad release, mark the previous release as Latest on GitHub.
+
+- Auto-updaters that installed the bad release go back at their next run, within 24 hours.
+- The others never install it, because it is no longer Latest.
+
+The 72-hour delay gives time to do this before most users install the bad release.
+
 ## Release candidates
 
 A tag with `-rc`, `-alpha` or `-beta` in it publishes a **prerelease**: binaries and
