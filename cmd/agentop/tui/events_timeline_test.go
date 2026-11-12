@@ -3,8 +3,8 @@ package tui
 import (
 	"slices"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -182,37 +182,37 @@ func TestEventsTimeline_EnterDuringAListBlipStartsTheChain(t *testing.T) {
 	}
 }
 
-// cmdMsgs runs cmd and the members of a batch it returns, and collects what they send within
-// a little more than one timeline tick.
+// cmdMsgs runs cmd and the members of a batch it returns, and returns what they send once
+// every one has returned.
 func cmdMsgs(cmd tea.Cmd) []tea.Msg {
-	if cmd == nil {
-		return nil
-	}
-	out := make(chan tea.Msg, 16)
-	var run func(tea.Cmd)
+	var (
+		mu   sync.Mutex
+		wg   sync.WaitGroup
+		msgs []tea.Msg
+		run  func(tea.Cmd)
+	)
 	run = func(c tea.Cmd) {
+		defer wg.Done()
 		msg := c()
 		if batch, ok := msg.(tea.BatchMsg); ok {
 			for _, b := range batch {
 				if b != nil {
+					wg.Add(1)
 					go run(b)
 				}
 			}
 			return
 		}
-		out <- msg
+		mu.Lock()
+		msgs = append(msgs, msg)
+		mu.Unlock()
 	}
-	go run(cmd)
-	var msgs []tea.Msg
-	deadline := time.After(timelineRefresh + 500*time.Millisecond)
-	for {
-		select {
-		case msg := <-out:
-			msgs = append(msgs, msg)
-		case <-deadline:
-			return msgs
-		}
+	if cmd != nil {
+		wg.Add(1)
+		go run(cmd)
 	}
+	wg.Wait()
+	return msgs
 }
 
 // snapshotted reports a snapshot among msgs: against deadClient it fails as errMsg.
