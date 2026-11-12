@@ -38,6 +38,7 @@ type fakeCodexDaemon struct {
 
 	updaterPID     int
 	updaterEnv     []string
+	updaterEnvErr  error // the updater's environment cannot be read
 	newUpdaterPID  int   // the updater a restart starts when none is running
 	stopErr        error // stopping the updater fails, and it keeps running
 	updaterReused  bool  // the updater's pid now names another process, so its record is stale
@@ -79,7 +80,7 @@ func stubCodexDaemon(t *testing.T, codexHome string, f *fakeCodexDaemon) {
 		case f.pid:
 			return f.env, f.envErr
 		case f.updaterPID:
-			return f.updaterEnv, nil
+			return f.updaterEnv, f.updaterEnvErr
 		}
 		t.Errorf("read the environment of pid %d, which is neither fake process", pid)
 		return nil, errors.New("not a fake process")

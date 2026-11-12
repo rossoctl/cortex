@@ -321,6 +321,19 @@ func (f *codexEnvFile) get(key string) (string, bool) {
 	return m[2], true
 }
 
+// all returns every value the file defines key as, in file order: one for a key defined
+// once, more for a duplicate, of which Codex uses the last (dotenvy is last-wins). get
+// gives only the first.
+func (f *codexEnvFile) all(key string) []string {
+	var vals []string
+	for _, line := range f.lines {
+		if m := codexEnvLineRe.FindStringSubmatch(line); m != nil && m[1] == key {
+			vals = append(vals, m[2])
+		}
+	}
+	return vals
+}
+
 // ambiguous names every key in keys defined more than once in the file.
 func (f *codexEnvFile) ambiguous(keys []string) []string {
 	var out []string
