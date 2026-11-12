@@ -384,11 +384,15 @@ func TestNarrowToProject_OtherFoldsUnknownAndOverflow(t *testing.T) {
 			},
 		}},
 	}
-	if got := narrowToProject(snap, otherProjects).Totals.CostMicros; got != 15 {
-		t.Errorf("Other = %d micros, want 15", got)
+	if got, err := narrowToProject(snap, otherProjects); err != nil || got.Totals.CostMicros != 15 {
+		t.Errorf("Other = %+v (err %v), want 15 micros", got, err)
 	}
-	if got := narrowToProject(snap, "~/a").Totals.CostMicros; got != 100 {
-		t.Errorf("~/a = %d micros, want 100", got)
+	if got, err := narrowToProject(snap, "~/a"); err != nil || got.Totals.CostMicros != 100 {
+		t.Errorf("~/a = %+v (err %v), want 100 micros", got, err)
+	}
+	// A project that is not a series, beside the overflow series, may be inside it: an error.
+	if got, err := narrowToProject(snap, "~/b"); err == nil || !strings.Contains(err.Error(), "costliest") {
+		t.Errorf("~/b = %+v (err %v), want the not-among-the-costliest error", got, err)
 	}
 }
 

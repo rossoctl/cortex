@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
@@ -44,15 +45,25 @@ func fetchUsageScoped(ctx context.Context, client *apiclient.Client, window stri
 // narrowToProject narrows a group=project snapshot to one project. For Other it first folds the
 // unknown and overflow series into Other, as fetchUsageScoped does for the agent Other, so the
 // figure is the one the project sub-row shows.
-func narrowToProject(snap *usage.Snapshot, project string) *usage.Snapshot {
+//
+// A named project that is not a series of a reply with an overflow series is an error, not a
+// zero: the server keeps only the costliest usage.MaxSeriesInResponse series, so the project can
+// be inside the overflow. A month with more projects than that otherwise reads as "—".
+func narrowToProject(snap *usage.Snapshot, project string) (*usage.Snapshot, error) {
 	if snap == nil {
-		return nil
+		return nil, nil
 	}
 	if project == otherProjects {
 		snap = foldSeriesInto(snap, namedProject, otherProjects)
+	} else if series := usage.FoldSeriesAcrossWindow(snap.Buckets); series != nil {
+		_, found := series[project]
+		if _, capped := series[projectOverflowLabel]; capped && !found {
+			return nil, fmt.Errorf("project %s is not among the %d costliest projects in the %s window",
+				project, usage.MaxSeriesInResponse, snap.Window)
+		}
 	}
 	scoped := usage.NarrowToLabel(*snap, project)
-	return &scoped
+	return &scoped, nil
 }
 
 // fetchUsageScopedProject is fetchUsageScoped narrowed to one project when project is set: it
@@ -66,7 +77,7 @@ func fetchUsageScopedProject(ctx context.Context, client *apiclient.Client, wind
 	if err != nil {
 		return nil, err
 	}
-	return narrowToProject(snap, project), nil
+	return narrowToProject(snap, project)
 }
 
 // sessionsScope is the agent the sessions list is narrowed to: the scope, when some session names

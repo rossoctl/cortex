@@ -240,7 +240,11 @@ func readProjectUsage(ctx context.Context, client *apiclient.Client, window, res
 		if err != nil {
 			return usageLoadedMsg{err: err}
 		}
-		return usageLoadedMsg{snap: narrowToProject(snap, project), windowUnits: snap.Currencies}
+		scoped, err := narrowToProject(snap, project)
+		if err != nil {
+			return usageLoadedMsg{err: err}
+		}
+		return usageLoadedMsg{snap: scoped, windowUnits: snap.Currencies}
 	}
 	snap, err := fetchUsageScopedProject(ctx, client, window.String(), resolution, scope, project, usage.GroupNone)
 	if err != nil {

@@ -1,11 +1,16 @@
 package tui
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
@@ -42,13 +47,65 @@ func TestProjectScope_BandOnTheOtherSubRow(t *testing.T) {
 	}
 }
 
+// With no overflow series in the reply, a project that is not a series has no traffic.
 func TestProjectScope_BandOnAProjectWithNoTrafficIsEmpty(t *testing.T) {
-	m, _ := projectsModel(t, defaultProjectSeries)
+	m, _ := projectsModel(t, map[string]map[string]int64{projAgent: {"~/works/cortex": 97_400_000}})
 	m.agentScope, m.projectScope = projAgent, "~/gone"
 	m.pane = paneSessions
 	msg := bandReply(t, m)
 	if msg.err != nil || msg.snap == nil || msg.snap.Totals != (usage.Counts{}) {
 		t.Errorf("band reply %+v (err %v), want zero totals and no error", msg.snap, msg.err)
+	}
+}
+
+// With an overflow series, the project can be inside it: the band reports an error, not "—".
+func TestProjectScope_BandOnAProjectPastTheSeriesCapIsAnError(t *testing.T) {
+	m, _ := projectsModel(t, defaultProjectSeries)
+	m.agentScope, m.projectScope = projAgent, "~/gone"
+	m.pane = paneSessions
+	msg := bandReply(t, m)
+	if msg.err == nil || !strings.Contains(msg.err.Error(), "costliest") {
+		t.Errorf("band reply %+v (err %v), want the not-among-the-costliest error", msg.snap, msg.err)
+	}
+}
+
+// A mixed-unit window under a project scope makes no group=currency read: that read is the
+// whole agent's, so its per-unit figures would show under the project's title.
+func TestProjectScope_BandMakesNoCurrencyReadForAMixedWindow(t *testing.T) {
+	m, _ := projectsModel(t, defaultProjectSeries)
+	var mu sync.Mutex
+	var asked []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		asked = append(asked, r.URL.RawQuery)
+		mu.Unlock()
+		q := r.URL.Query()
+		_ = json.NewEncoder(w).Encode(usage.Snapshot{
+			Window: q.Get("window"), Group: usage.Group(q.Get("group")), Agent: q.Get("agent"),
+			Currencies: []string{"USD", "EUR"},
+			Buckets: []usage.Bucket{{Series: map[string]usage.Counts{
+				"~/works/cortex": projectCounts(97_400_000),
+				"EUR":            projectCounts(1),
+				"USD":            projectCounts(1),
+			}}},
+		})
+	}))
+	t.Cleanup(ts.Close)
+	m.client = apiclient.New(ts.URL)
+	m.agentScope, m.projectScope = projAgent, "~/works/cortex"
+	m.pane = paneSessions
+	if msg := bandReply(t, m); msg.err != nil {
+		t.Fatalf("band reply err %v", msg.err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, q := range asked {
+		if strings.Contains(q, "group=currency") {
+			t.Errorf("band asked %q under a project scope, want no group=currency read", q)
+		}
+	}
+	if len(asked) != 1 {
+		t.Errorf("band made %d reads %q, want 1", len(asked), asked)
 	}
 }
 
