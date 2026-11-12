@@ -1911,10 +1911,21 @@ func TestUninstallUnroutesEveryConfiguredAgent(t *testing.T) {
 		}
 		enable[agent]()
 	}
-	// Partial counts as routed: on Linux, Bob has its shell half only.
-	routed := func(s configureState) bool { return s == configureOn || s == configurePartial }
+	// What configure status cannot see is read from disk instead. It judges Bob's shell
+	// function by CORTEX_BOBSHELL in agentop's own environment, never by the rc file, so
+	// that half is the rc block here. On Linux, where Bob the IDE has no settings to read,
+	// it is all there is of Bob: status reads "uncertain" before and after.
+	onDisk := map[string]func() bool{
+		"bob": func() bool { return strings.Contains(readFile(t, rc), bobShellMarkerStart) },
+	}
+	routed := func(agent string, s configureState) bool {
+		if s == configureOn || s == configurePartial {
+			return true
+		}
+		return onDisk[agent] != nil && onDisk[agent]()
+	}
 	for agent, s := range states() {
-		if !routed(s) {
+		if !routed(agent, s) {
 			t.Fatalf("fixture: %s reads %v once enabled, want it routed", agent, s)
 		}
 	}
@@ -1922,8 +1933,8 @@ func TestUninstallUnroutesEveryConfiguredAgent(t *testing.T) {
 		t.Fatalf("uninstall exit %d:\n%s", code, out)
 	}
 	for agent, s := range states() {
-		if routed(s) {
-			t.Errorf("%s still reads %v after uninstall", agent, s)
+		if routed(agent, s) {
+			t.Errorf("%s is still routed after uninstall (configure status reads %v)", agent, s)
 		}
 	}
 }
