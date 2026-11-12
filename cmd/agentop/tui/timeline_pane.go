@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -908,8 +909,8 @@ func (m *model) cursorAt(c int, s string) string {
 	if c == m.timeline.cursor {
 		// Unstyled, so the cell's own reset does not undo the cursor's reverse video.
 		g := ansi.Strip(s)
-		if g == " " {
-			g = "│"
+		if g == " " && lipgloss.ColorProfile() == termenv.Ascii {
+			g = "│" // no colour drops reverse video, and this bar is then the only cursor mark
 		}
 		return styleTLCursor.Render(g)
 	}

@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
@@ -1425,5 +1426,24 @@ func TestTimeline_WorkflowAgentUsesHarvestedLabel(t *testing.T) {
 	}
 	if m.harvestForTimeline() != nil {
 		t.Errorf("every agent labeled: want no harvest")
+	}
+}
+
+// The cursor on an empty cell is a solid block. A "│" there showed as a black line through
+// the white cursor column, because reverse video draws the glyph in the background colour.
+// With no colour (NO_COLOR, TERM=dumb) reverse video is dropped, so the cell keeps the "│".
+func TestTimelineCursor_EmptyCell(t *testing.T) {
+	orig := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
+	m := timelineModel(t, 140, 46)
+	m.timeline.cursor = 3
+
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	if got := m.cursorAt(3, " "); !strings.Contains(got, "\x1b[7m") || stripANSI(got) != " " {
+		t.Errorf("colour: cursor on an empty cell = %q, want a reversed space", got)
+	}
+	lipgloss.SetColorProfile(termenv.Ascii)
+	if got := m.cursorAt(3, " "); got != "│" {
+		t.Errorf("no colour: cursor on an empty cell = %q, want \"│\"", got)
 	}
 }
