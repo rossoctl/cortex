@@ -25,7 +25,9 @@ gap; in a cluster it is still open.
 
 A dump is the *content* — prompts, completions, tool results. When what you want is the
 *measurements* over a month of traffic, [`GET /v1/export`](session-export.md) writes the
-archive as content-free records instead, safe to pipe anywhere the dump is not.
+archive as content-free records instead — no prompts, completions or tool results, though
+still hosts, models, session ids and timestamps, so safe anywhere the dump is not and
+worth a look before one goes further than that.
 
 ## Install
 

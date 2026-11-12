@@ -2,6 +2,7 @@ package sessionexport
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -42,9 +43,28 @@ type UnknownSessionsError struct {
 	Known     []string
 }
 
+// The rendered message caps both lists, because the HTTP layer forwards it as a 400 body
+// and a client bounds what it reads of one (agentop reads 512 bytes): an archive holding a
+// year of sessions must not turn a typo into an answer the asker cannot parse. The struct's
+// fields stay complete — a programmatic caller gets every id; a printed one gets the first
+// few and a count of the rest.
+const (
+	errorListMaxRequested = 5
+	errorListMaxKnown     = 8
+)
+
 func (e *UnknownSessionsError) Error() string {
 	return fmt.Sprintf("sessionexport: no archived session %s (archived: %s)",
-		strings.Join(e.Requested, ", "), strings.Join(e.Known, ", "))
+		cappedList(e.Requested, errorListMaxRequested), cappedList(e.Known, errorListMaxKnown))
+}
+
+// cappedList renders ids for an error message: the first n verbatim, then a count of the
+// rest — "a, b and 3 more" rather than a list that grows with the archive.
+func cappedList(ids []string, n int) string {
+	if len(ids) <= n {
+		return strings.Join(ids, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(ids[:n], ", "), len(ids)-n)
 }
 
 // Walk projects every archived event the filter admits into w, one session at a time, and
@@ -74,7 +94,11 @@ func Walk(a *archive.Archive, w *Writer, f Filter) (WalkStats, error) {
 	if len(f.Sessions) == 0 {
 		carry = summaries
 	} else {
-		want := f.Sessions
+		// CLONED, NOT ALIASED: the matching loop below deletes what it finds, and deleting
+		// from the caller's map would leave a reused Filter naming every session — the one
+		// silent widening this package must not do. The clone is the whole defence; nothing
+		// else between here and the delete touches f.
+		want := maps.Clone(f.Sessions)
 		var missing []string
 		for _, s := range summaries {
 			if _, ok := want[s.ID]; ok {
@@ -107,12 +131,14 @@ func Walk(a *archive.Archive, w *Writer, f Filter) (WalkStats, error) {
 		wrote, writeErr := 0, error(nil)
 		err := a.Earlier(s.ID, 0, func(e *model.SessionEvent) bool {
 			// STOP, NOT FILTER: Earlier walks newest first, and a session's events are
-			// appended in time order — a bridged tunnel open is stamped with the request it
-			// precedes, so at worst two events share an instant. At falls with seq, up to
-			// those same-instant ties, and the floor compares instants rather than positions,
-			// so the first event below it is where every later one is below it too. The
-			// alternative — filtering without stopping — costs decoding the whole session to
-			// carry its tail, which is the one thing a since exists to avoid.
+			// appended in time order — approximately. At is stamped when an event is built
+			// and Append takes the store lock later, so two concurrent requests in one
+			// session can land with seq and At inverted by that build→append gap; the floor
+			// is therefore fuzzy by it, which for a relative since means the odd event
+			// within microseconds of the floor lands on the wrong side. The first event
+			// below the floor is still where every later one is below it too, and the
+			// alternative — filtering without stopping — costs decoding the whole session
+			// to carry its tail, which is the one thing a since exists to avoid.
 			if !f.Since.IsZero() && e.At.Before(f.Since) {
 				return false
 			}
@@ -123,15 +149,18 @@ func Walk(a *archive.Archive, w *Writer, f Filter) (WalkStats, error) {
 			wrote++
 			return true
 		})
+		// Folded before the error checks, not after: the docs promise the stats report
+		// what was carried up to a failure, and a read error on a session's second page
+		// must not erase the 500 lines its first page already wrote.
+		if wrote > 0 {
+			stats.Sessions++
+			stats.Records += wrote
+		}
 		if err != nil {
 			return stats, err
 		}
 		if writeErr != nil {
 			return stats, writeErr
-		}
-		if wrote > 0 {
-			stats.Sessions++
-			stats.Records += wrote
 		}
 	}
 	return stats, nil

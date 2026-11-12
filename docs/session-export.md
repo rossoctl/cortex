@@ -27,15 +27,18 @@ projected from the event, never the event itself:
  "durationMs":4279,"ttfbMs":3182,"bytesDown":3142,"client":"claude-code/2.1.270",
  "agentRole":"main","model":"rits/zai-org/glm-5-3","servedModel":"hosted_vllm/zai-org/GLM-5.3",
  "stream":true,"streamedResponse":true,"finishReason":"end_turn",
- "promptTokens":197345,"completionTokens":49,"cacheReadTokens":196096,
- "messageCount":385,"toolCount":24}
+ "inputTokens":1249,"cacheReadTokens":196096,"outputTokens":49,
+ "messageCount":385,"toolCount":24,"toolCallCount":11}
 ```
 
 **Never in a record:** message content, completions, tool-call names or arguments,
 tool results, MCP params, request paths, headers, authenticated identity. The field list
 is an allowlist, so a field added to the event later reaches an export only when someone
 adds it to the projection on purpose — that is what makes this endpoint safe to pipe
-off the machine where the full events must stay.
+off the machine where the full events must stay. Content-free is not detail-free: what a
+record does carry — hosts, models, client and session identifiers, timestamps — still
+describes where an agent talked and how much, which is what an external analysis wants
+and what to look over before a file leaves your hands entirely.
 
 `client` deserves its own line: it is parsed from the User-Agent, **a cost-attribution
 and display key, never an authorization subject**. An external collector is exactly where
@@ -69,12 +72,13 @@ The full field list with these rules on each field is the doc comments on
 | Parameter | Meaning |
 |---|---|
 | *(none)* | Every archived session, every event |
-| `?session=<id>` | Only the named sessions; repeatable (`&session=a&session=b`). An unknown id is a 400 naming the archived ones |
-| `?since=<duration>` | Only events newer than that far back — `168h` (a Go duration) or `7d` (a day count). Parsed before the first byte, so a bad value is a real 400 |
+| `?session=<id>` | Only the named sessions; repeatable (`&session=a&session=b`). An unknown id is a 400 naming the first few archived ones and a count of the rest — the list is capped so the answer always arrives whole |
+| `?since=<duration>` | Only events newer than that far back — `168h` (a Go duration) or `7d` (a day count). Parsed before the first byte, so a bad value is a real 400; a repeated `since` is one too |
 
 `since` floors on **event time**, not session age: a month-old session with traffic this
-morning is carried by `?since=24h`, whole. Sessions the archive last touched before the
-floor are skipped without reading their segments.
+morning has this morning's events carried by `?since=24h`; its older ones are not.
+Sessions the archive last touched before the floor are skipped without reading their
+segments.
 
 ## What it does not carry, and why
 
@@ -94,5 +98,6 @@ floor are skipped without reading their segments.
 
 A walk that fails past its first record ends the response there, because the status line
 is already gone — and NDJSON keeps every complete line valid in a truncated file, so a
-partial export is still a processable one. A failure before any record (unknown session,
-bad `since`) answers a proper 400.
+partial export is still a processable one. A failure before any record answers a status:
+a refused query (unknown session, bad `since`) a 400, an archive that will not decode a
+500 — so a broken archive never reads as an empty one.
