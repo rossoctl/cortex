@@ -182,3 +182,13 @@ func TestSelfTraffic_EveryListenerMustQualify(t *testing.T) {
 		t.Error("an empty chain: true, want false")
 	}
 }
+
+func TestMemoProject_ComputesOnce(t *testing.T) {
+	var m Memo
+	calls := 0
+	compute := func() string { calls++; return "~/p" + string(rune('0'+calls)) }
+	first, second := m.Project(compute), m.Project(compute)
+	if first != "~/p1" || second != first || calls != 1 {
+		t.Errorf("Project = %q then %q after %d computes, want \"~/p1\" twice after 1", first, second, calls)
+	}
+}

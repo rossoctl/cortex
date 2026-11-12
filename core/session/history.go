@@ -1,6 +1,7 @@
 package session
 
 import (
+	"slices"
 	"time"
 
 	"github.com/rossoctl/cortex/core/model"
@@ -222,6 +223,14 @@ func (s *Store) withPriorLocked(sum *SessionSummary, id string, sess *entry) {
 	if len(f.procs) > 0 {
 		sum.procSpans = mergeProcs(f.procs, sum.procSpans)
 		sum.Procs = procsList(sum.procSpans)
+	}
+	// The history's projects with the entry's folded on top, oldest first, as one fold over both.
+	if len(f.projects) > 0 {
+		projects := slices.Clone(f.projects)
+		for _, p := range slices.Backward(sum.Projects) {
+			projects = applyProject(projects, id, p)
+		}
+		sum.Projects = projects
 	}
 	if f.lastRequestAt.After(sum.LastRequestAt) {
 		sum.LastRequestAt = f.lastRequestAt

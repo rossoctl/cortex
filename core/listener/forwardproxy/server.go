@@ -173,6 +173,11 @@ type Server struct {
 	// resolution byte for byte.
 	Processes peerproc.Resolver
 
+	// ProjectOf, when non-nil, names the project (project.Label of the repo root) of the
+	// process with pid, recorded as SessionEvent.Project. Used only while process
+	// attribution is on, once per client connection. nil records no project (#1815).
+	ProjectOf func(pid int32) string
+
 	// TrustedSessionID, when set, is the listener's own answer to "which
 	// session is this request on" — resolved from how the connection arrived
 	// (which per-VM socket accepted it, vmcontrol), not from anything the
@@ -514,7 +519,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		host := hostOnly(r.URL.Host)
 		action := egressAllowRefusal(pctx, host)
 		chain := s.clientChain(r)
-		s.recordOutboundRejectIn(tl, pctx, action, s.recordingSessionID(trusted, r.Header, chain))
+		s.recordOutboundRejectIn(tl, pctx, action, s.attributeForRecording(pctx, trusted, r.Header, chain, connProcOf(r.Context())))
 		// Sanitized: host (the URL authority), Method and Path are all client-controlled,
 		// and a control rune forged into any of them would forge a log entry — the same
 		// CWE-150 shape #1539's egress guard was flagged for.
@@ -622,7 +627,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// the store off (#1569 review).
 	var sessionID string
 	if !skipped && (s.Sessions != nil || trusted != "") {
-		sessionID = s.hydrateSession(pctx, trusted, r.Header, chain)
+		sessionID = s.hydrateSession(pctx, trusted, r.Header, chain, connProcOf(r.Context()))
 	}
 
 	if !skipped {

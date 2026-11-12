@@ -198,3 +198,10 @@ func TestReplayCopy_KeepsWhatExcludesA101Row(t *testing.T) {
 			weightedLatMean(before), weightedLatMean(after))
 	}
 }
+
+func TestReplayCopy_KeepsProject(t *testing.T) {
+	e := &pipeline.SessionEvent{Project: "~/p"}
+	if c := ReplayCopy(e); c.Project != "~/p" {
+		t.Errorf("ReplayCopy project = %q, want ~/p", c.Project)
+	}
+}

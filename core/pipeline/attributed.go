@@ -26,3 +26,17 @@ func (c *Context) AttributedProc() string { return c.attributedProc }
 // NamingHeader is the pinned session-id header that named the request's session, "" when
 // none did. Recorded as SessionEvent.SessionHeader on the request's own row.
 func (c *Context) NamingHeader() string { return c.namingHeader }
+
+// SetProject pins the project label (project.Label of the agent process's repo root) for
+// every row recorded from this request. FIRST CALL WINS, as SetAttribution does, with its
+// own flag: a path that pins "" keeps "", and no later call can write a label.
+func (c *Context) SetProject(label string) {
+	if c.projectSet {
+		return
+	}
+	c.projectSet, c.project = true, label
+}
+
+// Project is the pinned project label, "" when none was pinned. Recorded as
+// SessionEvent.Project.
+func (c *Context) Project() string { return c.project }

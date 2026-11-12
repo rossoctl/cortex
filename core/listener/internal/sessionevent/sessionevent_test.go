@@ -441,3 +441,19 @@ func TestBuilders_CarryTheSubagentKind(t *testing.T) {
 		}
 	}
 }
+
+func TestBuilders_CopyProject(t *testing.T) {
+	pctx := &pipeline.Context{}
+	pctx.SetProject("~/p")
+	for name, ev := range map[string]pipeline.SessionEvent{
+		"deny":        Deny(pctx, pipeline.DenyStatus(403, "p.denied", "no"), pipeline.Outbound),
+		"request":     Request(pctx, pipeline.Outbound),
+		"response":    Response(pctx, pipeline.Outbound, 200, nil),
+		"tunnelOpen":  TunnelOpen(pctx, pipeline.TunnelReason("")),
+		"tunnelClose": TunnelClose(pctx, pipeline.TunnelReason(""), 200, nil, 0, 0),
+	} {
+		if ev.Project != "~/p" {
+			t.Errorf("%s: project %q, want ~/p", name, ev.Project)
+		}
+	}
+}

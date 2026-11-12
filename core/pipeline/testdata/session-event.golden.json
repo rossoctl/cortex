@@ -198,6 +198,7 @@
   "subagentKind": "subtask",
   "proc": "/bin/claude",
   "clientProc": "/bin/zsh",
+  "project": "~/src/app",
   "sessionHeader": "x-session-id",
   "dialAddr": "203.0.113.7:443"
 }

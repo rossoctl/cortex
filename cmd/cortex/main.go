@@ -45,6 +45,7 @@ import (
 	"github.com/rossoctl/cortex/core/peerproc"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
+	"github.com/rossoctl/cortex/core/project"
 	"github.com/rossoctl/cortex/core/reloader"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/session/archive"
@@ -1124,6 +1125,21 @@ func main() {
 				slog.Warn("process attribution off: this host's process lookup is unavailable", "error", perr)
 			} else {
 				fpSrv.Processes = procs
+				// The kernel gives a resolved cwd (/private/tmp for /tmp), so resolve home too,
+				// or its prefix never matches. No home: no "~" and no home rule (#1815).
+				home, herr := os.UserHomeDir()
+				if herr != nil {
+					home = ""
+				} else if resolved, rerr := filepath.EvalSymlinks(home); rerr == nil {
+					home = resolved
+				}
+				fpSrv.ProjectOf = func(pid int32) string {
+					dir, err := peerproc.Cwd(pid)
+					if err != nil {
+						return ""
+					}
+					return project.Label(project.Root(dir, home), home)
+				}
 				if bridge != nil {
 					// The unread report lists a process's own entry only while that process
 					// runs. A pid alone could be reused, so the start time must match too;

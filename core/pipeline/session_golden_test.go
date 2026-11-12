@@ -82,6 +82,7 @@ func goldenEvent() SessionEvent {
 		SubagentKind:    SubagentKindSubtask,
 		Proc:            "/bin/claude",
 		ClientProc:      "/bin/zsh",
+		Project:         "~/src/app",
 		SessionHeader:   "x-session-id",
 		DialAddr:        "203.0.113.7:443",
 	}

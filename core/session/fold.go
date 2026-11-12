@@ -108,6 +108,31 @@ func applyAgent(agents []sessionAgent, sessionID, agentName string, c *model.Eve
 	return append(agents, sessionAgent{name: label, label: label, known: false})
 }
 
+// maxSessionProjects caps SessionSummary.Projects.
+const maxSessionProjects = 8
+
+// applyProject puts label at the front of projects, the distinct project labels of a session's
+// events, most recent first and at most maxSessionProjects. "" and the default and pending
+// buckets change nothing: those buckets collect traffic for no one session. Shared by
+// appendLocked and SummaryFold for applyTitle's reason.
+func applyProject(projects []string, sessionID, label string) []string {
+	if label == "" || sessionID == DefaultSessionID || strings.HasPrefix(sessionID, PendingPrefix) {
+		return projects
+	}
+	// The steady state: one string compare under the store's lock.
+	if len(projects) > 0 && projects[0] == label {
+		return projects
+	}
+	if i := slices.Index(projects, label); i >= 0 {
+		projects = slices.Delete(projects, i, i+1)
+	}
+	projects = slices.Insert(projects, 0, label)
+	if len(projects) > maxSessionProjects {
+		projects = projects[:maxSessionProjects]
+	}
+	return projects
+}
+
 // agentLabelIn is the first label the agent named name sent, or "".
 func agentLabelIn(agents []sessionAgent, name string) string {
 	for _, a := range agents {
@@ -234,6 +259,8 @@ type SummaryFold struct {
 	titleRank int
 	title     string
 	agents    []sessionAgent
+	// projects is SessionSummary.Projects, by the store's rule (applyProject).
+	projects []string
 	// context is the CTX figure folded so far, by the store's own rule (entry.context), and
 	// restoredContext the figure a fold resumed from session.json started from. TWO FIELDS BECAUSE
 	// model.PromptContextFold HAS NO RESTORE PATH: what persists is its published figure, and
@@ -273,6 +300,7 @@ func (f *SummaryFold) Clone() *SummaryFold {
 	c := *f
 	c.units = maps.Clone(f.units)
 	c.agents = slices.Clone(f.agents)
+	c.projects = slices.Clone(f.projects)
 	c.procs = maps.Clone(f.procs)
 	c.hosts = slices.Clone(f.hosts)
 	return &c
@@ -297,6 +325,7 @@ func (f *SummaryFold) Add(sessionID string, e *model.SessionEvent) {
 	}
 	f.titleRank, f.title = applyTitle(f.titleRank, f.title, p.titleRank, p.titleText)
 	f.agents = applyAgent(f.agents, sessionID, p.agentName, e.Client)
+	f.projects = applyProject(f.projects, sessionID, e.Project)
 	f.context.Add(e)
 	if h := inferenceHostOf(e); h != "" {
 		f.inferenceHost = h
@@ -333,6 +362,7 @@ func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 		procSpans:     maps.Clone(f.procs),
 		LastRequestAt: f.lastRequestAt,
 		Agent:         pickAgent(sessionID, f.owner, nil, f.agents),
+		Projects:      slices.Clone(f.projects),
 	}
 	return sum
 }
@@ -343,10 +373,12 @@ func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 // TitleRank IS A POINTER because rankRename is 0: a document without it must decode to
 // rankNone, not to a rename that would lock the title against every later candidate.
 type foldJSON struct {
-	EventCount       int                  `json:"eventCount"`
-	Title            string               `json:"title,omitempty"`
-	TitleRank        *int                 `json:"titleRank,omitempty"`
-	Agents           []foldAgent          `json:"agents,omitempty"`
+	EventCount int         `json:"eventCount"`
+	Title      string      `json:"title,omitempty"`
+	TitleRank  *int        `json:"titleRank,omitempty"`
+	Agents     []foldAgent `json:"agents,omitempty"`
+	// Projects is absent from a session.json written before it existed, which decodes to none.
+	Projects         []string             `json:"projects,omitempty"`
 	TotalTokens      int                  `json:"totalTokens,omitempty"`
 	CostMicros       int64                `json:"costMicros,omitempty"`
 	CostSaturated    bool                 `json:"costSaturated,omitempty"`
@@ -416,6 +448,7 @@ func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 		Procs:            f.procs,
 		Owner:            f.owner,
 		LastRequestAt:    f.lastRequestAt,
+		Projects:         f.projects,
 	}
 	if !f.hostsUnknown {
 		j.InferenceHosts = &hostsDoc{V: hostRuleVersion, Hosts: f.hosts}
@@ -445,6 +478,7 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		procs:           j.Procs,
 		owner:           model.CanonicalAgent(j.Owner),
 		lastRequestAt:   j.LastRequestAt,
+		projects:        j.Projects,
 		hostsUnknown:    j.InferenceHosts == nil || j.InferenceHosts.V != hostRuleVersion,
 	}
 	if j.TitleRank != nil {

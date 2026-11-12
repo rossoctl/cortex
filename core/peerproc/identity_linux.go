@@ -50,3 +50,15 @@ func parseStatIdentity(b []byte) (state string, startTicks uint64, err error) {
 	}
 	return f[0], st, nil
 }
+
+// cwd reads pid's current directory from the /proc/<pid>/cwd link.
+func cwd(pid int32) (string, error) {
+	if pid <= 0 {
+		return "", ErrNotFound
+	}
+	p, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
+	if err != nil {
+		return "", fmt.Errorf("%w: /proc/%d/cwd: %v", ErrNotFound, pid, err)
+	}
+	return p, nil
+}
