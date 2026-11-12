@@ -1,0 +1,25 @@
+# AI Review Label
+#
+# Applies ready-for-ai-review to every non-draft PR so RepoMan's PR-review
+# scanner picks it up. Interim until RepoMan can scan without a label.
+#
+name: AI review label
+
+on:
+  pull_request_target:  # fork PRs need this for a write token; no PR code is checked out
+    types: [opened, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  label:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write  # add the label
+    steps:
+      - run: gh pr edit "$PR" --repo "$REPO" --add-label ready-for-ai-review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
