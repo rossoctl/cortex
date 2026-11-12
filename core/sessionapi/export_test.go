@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -173,11 +175,89 @@ func TestHandleExport_SinceParameter(t *testing.T) {
 	if code, _, rs := exportRecords(t, ts, "/v1/export?since=8d"); code != http.StatusOK || len(rs) != 9 {
 		t.Fatalf("?since=8d = %d, %d records, want all 9", code, len(rs))
 	}
-	for _, raw := range []string{"garbage", "-5h", "0s", "7x", "d"} {
+	// A single empty value reads as absent — ?since= alone is a trailing separator — but
+	// a second value is a caller bug and a 400, however valid the first one looks: taking
+	// the first silently would let ?since=&since=7d and ?since=1h&since=garbage mean
+	// different things than they appear to.
+	if code, _, rs := exportRecords(t, ts, "/v1/export?since="); code != http.StatusOK || len(rs) != 9 {
+		t.Fatalf("?since= = %d, %d records, want the empty value read as absent", code, len(rs))
+	}
+	for _, raw := range []string{"garbage", "-5h", "0s", "7x", "d", "106752d", "200000d"} {
 		code, body, _ := exportRecords(t, ts, "/v1/export?since="+raw)
 		if code != http.StatusBadRequest {
 			t.Fatalf("?since=%s = %d %s, want 400", raw, code, body)
 		}
+	}
+	for _, q := range []string{"since=7d&since=garbage", "since=&since=7d", "since=1h&since=1h"} {
+		code, body, _ := exportRecords(t, ts, "/v1/export?"+q)
+		if code != http.StatusBadRequest {
+			t.Fatalf("?%s = %d %s, want 400: a repeated since is a caller bug", q, code, body)
+		}
+	}
+}
+
+// A walk that fails before its first record answers 500, not 200 with an empty body: a
+// segment that cannot be opened is a broken archive, and on the wire it was byte for byte
+// an empty one — "nothing happened this month" on both sides (#1830 review). The fixture
+// makes the segment unreadable behind the read-side archive's back, after Open has
+// reconciled the metadata Summaries reads; a segment whose CONTENT is damaged is a
+// different, tolerated case (readSegment serves the readable prefix and calls the rest
+// truncated), which this test deliberately does not touch.
+func TestHandleExport_BrokenSegmentIs500(t *testing.T) {
+	root := t.TempDir()
+	write, err := archive.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := exportBase
+	store := session.New(0, 0, 0, session.WithClock(func() time.Time { return now }))
+	store.AddRecorder(write)
+	for i := range 3 {
+		at := exportBase.Add(time.Duration(i) * time.Hour)
+		now = at
+		store.Append("s1", model.SessionEvent{At: at, Direction: model.Outbound,
+			Phase: model.SessionRequest, Host: "h", HTTPMethod: "POST"})
+	}
+	store.Close()
+	if err := write.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := archive.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+	var segs []string
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error { //nolint:errcheck // a missing file is the test's own failure to set up
+		if err == nil && !d.IsDir() && strings.HasSuffix(path, ".jsonl.zst") {
+			segs = append(segs, path)
+		}
+		return nil
+	})
+	if len(segs) == 0 {
+		t.Fatal("fixture wrote no segment to make unreadable")
+	}
+	for _, seg := range segs {
+		if err := os.Chmod(seg, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, seg := range segs { // readable again, so t.TempDir's cleanup can remove them
+			os.Chmod(seg, 0o644) //nolint:errcheck // best effort for cleanup
+		}
+	})
+
+	ts := httptest.NewServer(New(":0", session.New(0, 0, 0), WithArchive(a),
+		WithClock(func() time.Time { return exportNow })).server.Handler)
+	t.Cleanup(ts.Close)
+	code, body := getBody(t, ts.URL+"/v1/export")
+	if code != http.StatusInternalServerError {
+		t.Fatalf("GET /v1/export = %d %s, want 500 on an unreadable archive", code, body)
+	}
+	if !strings.Contains(string(body), "archive read failed") {
+		t.Fatalf("body = %s, want search.go's archive-read-failed shape", body)
 	}
 }
 
