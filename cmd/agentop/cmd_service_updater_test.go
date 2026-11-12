@@ -145,6 +145,40 @@ func TestServiceInstallWritesUpdaterUnit(t *testing.T) {
 	}
 }
 
+// A failed load removes the unit, so uninstall then has nothing to do. The updater file
+// must go with it, or nothing removes it.
+func TestServiceInstallFailedLoadRemovesUpdaterUnit(t *testing.T) {
+	fakeSupervisor(t)
+	sc := newServiceScene(t)
+	// Only the proxy's load fails, so install gets past its preflight and writes both files.
+	installStub(t, "launchctl", `#!/bin/sh
+case "$1" in
+  print) case "$2" in */*/*) echo 'Could not find service' >&2; exit 113 ;; esac; exit 0 ;;
+  bootstrap) echo 'Bootstrap failed: 5: Input/output error' >&2; exit 5 ;;
+esac
+exit 0
+`)
+	installStub(t, "systemctl", `#!/bin/sh
+case "$*" in
+  *restart*|*start*) echo 'Job failed' >&2; exit 1 ;;
+  *is-active*) echo inactive; exit 3 ;;
+esac
+exit 0
+`)
+	var out, errb bytes.Buffer
+	if r := runServiceInstall(sc.p, 0, false, false, &out, &errb); r.exit == 0 {
+		t.Fatalf("install with a failing load = %+v, want a failure\n%s%s", r, out.String(), errb.String())
+	}
+	if strings.Contains(errb.String(), "cannot manage") {
+		t.Fatalf("install stopped at its preflight, before it wrote the files:\n%s", errb.String())
+	}
+	for _, f := range []string{sc.p.unitFile, sc.p.updaterFile} {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Errorf("%s left after a failed load: %v\n%s", f, err, errb.String())
+		}
+	}
+}
+
 // The updater job runs `agentop update --auto`, which runs this install. A bootout of
 // the updater would kill the run before it finishes.
 func TestServiceInstallNeverBootsOutTheUpdater(t *testing.T) {

@@ -512,6 +512,10 @@ func runServiceInstall(p servicePaths, adopt int, forceRestart, announceUnit boo
 		if rmErr := os.Remove(p.unitFile); rmErr != nil && !os.IsNotExist(rmErr) {
 			fmt.Fprintf(stderr, "agentop: also could not remove %s: %v\n", p.unitFile, rmErr)
 		}
+		// Without the unit, uninstall says "Nothing to do" and leaves this file behind.
+		if rmErr := os.Remove(p.updaterFile); rmErr != nil && !os.IsNotExist(rmErr) {
+			fmt.Fprintf(stderr, "agentop: also could not remove %s: %v\n", p.updaterFile, rmErr)
+		}
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return installResult{exit: 1, replaced: true}
 	}
