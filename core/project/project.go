@@ -3,6 +3,8 @@ package project
 
 import (
 	"bufio"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,10 +21,11 @@ const maxDepth = 64
 
 // Root returns the git repo root that holds dir. A linked worktree gives its main repo.
 // A submodule or a bare common dir gives the level that holds the .git file. No repo, or a
-// repo root equal to home (a dotfiles repo), gives dir itself. A dir of "/" gives "".
+// repo root equal to home (a dotfiles repo), gives dir itself. A dir of "/" or one that is not
+// absolute gives "". A .git lookup error other than non-existence stops the walk at that level.
 func Root(dir, home string) string {
 	dir = filepath.Clean(dir)
-	if dir == "/" {
+	if !filepath.IsAbs(dir) || dir == "/" {
 		return ""
 	}
 	root := dir
@@ -35,6 +38,9 @@ func Root(dir, home string) string {
 					root = main
 				}
 			}
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
 			break
 		}
 		parent := filepath.Dir(level)

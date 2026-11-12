@@ -263,7 +263,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// hydration, and a VM's denied row filed by header or process lands in
 		// another VM's session (#1569 review).
 		chain := s.clientChain(r)
-		s.recordOutboundReject(pctx, action, s.recordingSessionID(trusted, r.Header, chain))
+		s.recordOutboundReject(pctx, action, s.attributeForRecording(pctx, trusted, r.Header, chain, connProcOf(r.Context())))
 		// Sanitized like the serveOutbound refusal: host is client-controlled and
 		// lands in a log file.
 		slog.Info("forward-proxy: CONNECT destination refused by egress allow list",

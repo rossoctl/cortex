@@ -3,6 +3,7 @@
 package project
 
 import (
+	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -35,5 +36,23 @@ func TestRootFIFO(t *testing.T) {
 				t.Fatal("Root blocked on a FIFO")
 			}
 		})
+	}
+}
+
+// A .git lookup that fails for a reason other than non-existence stops the walk: the inner
+// level was not ruled out, so the outer repo must not be named.
+func TestRootStopsOnLookupError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	b := tempDir(t)
+	mkdirs(t, b, ".git", "inner")
+	inner := filepath.Join(b, "inner")
+	if err := os.Chmod(inner, 0o600); err != nil { // no search bit: Lstat(inner/.git) gives EACCES
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(inner, 0o755) })
+	if got := Root(inner, ""); got != inner {
+		t.Fatalf("Root = %q; want %q", got, inner)
 	}
 }

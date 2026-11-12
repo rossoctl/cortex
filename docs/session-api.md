@@ -807,6 +807,8 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   the old label until it opens a new connection. Absent on every listener that
   has no PID (transparent, the VM control path, extproc, reverseproxy,
   transparentproxy) and when `session.process_attribution` is off.
+  In praxis mode the request and response rows that cortex-gateway sends through
+  `POST /v1/ingest` have no `project`: only the forward proxy's own rows have it.
 - `subagent` — present on rows from a Claude Code subagent or agent-team
   teammate: the `X-Claude-Code-Agent-Id` the request carried. For a subagent it
   is the same id that names its files under

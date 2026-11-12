@@ -975,6 +975,7 @@ func (s *Store) rekeyLocked(oldID, newID string) bool {
 	// reads stay consistent with live-streamed events after a rekey.
 	for i := range sess.Events {
 		sess.Events[i].SessionID = newID
+		sess.projects = applyProject(sess.projects, newID, sess.Events[i].Project)
 	}
 	// Every rename tells the recorders that keep per-session state, so that state follows the
 	// session: Adopt's pending bucket → session and Rekey's A2A default → contextId alike. Here

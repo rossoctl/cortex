@@ -519,7 +519,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		host := hostOnly(r.URL.Host)
 		action := egressAllowRefusal(pctx, host)
 		chain := s.clientChain(r)
-		s.recordOutboundRejectIn(tl, pctx, action, s.recordingSessionID(trusted, r.Header, chain))
+		s.recordOutboundRejectIn(tl, pctx, action, s.attributeForRecording(pctx, trusted, r.Header, chain, connProcOf(r.Context())))
 		// Sanitized: host (the URL authority), Method and Path are all client-controlled,
 		// and a control rune forged into any of them would forge a log entry — the same
 		// CWE-150 shape #1539's egress guard was flagged for.

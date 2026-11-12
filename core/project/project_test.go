@@ -125,3 +125,13 @@ func TestLabel(t *testing.T) {
 		t.Errorf("one element: Label = %q (%d runes)", got, utf8.RuneCountInString(got))
 	}
 }
+
+// A dir that is not absolute gives "": the label rule needs "/" or "~", and a .git lookup
+// would resolve against the proxy's own cwd.
+func TestRootRelative(t *testing.T) {
+	for _, dir := range []string{"", ".", "a/b"} {
+		if got := Root(dir, ""); got != "" {
+			t.Fatalf("Root(%q) = %q; want \"\"", dir, got)
+		}
+	}
+}

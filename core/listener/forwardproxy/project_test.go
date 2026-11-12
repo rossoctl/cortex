@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rossoctl/cortex/core/listener/egressallow"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -187,5 +188,51 @@ func TestWebSocketTurn_CarriesTheHandshakeProject(t *testing.T) {
 	ev := ws.turnRequestEvent(ws.newTurnContext([]byte(`{"type":"response.create"}`)))
 	if ev.Project != "~/repo" {
 		t.Errorf("turn row Project = %q, want the handshake's ~/repo", ev.Project)
+	}
+}
+
+// An egress allow-list denial is refused before hydration, so it pins the project like the
+// other refusals: a plain request and a CONNECT from pid 100 carry the label; the same
+// requests on a trusted (VM) connection carry "".
+func TestProject_EgressAllowDenialRow(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		trusted string
+		want    string
+	}{
+		{"agent process", "", "~/repo"},
+		{"trusted session", "vm-1", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			procs := newFakeProcs(fproc(100, 50, "/bin/claude"))
+			store := session.New(0, 0, 0)
+			defer store.Close()
+			allow, err := egressallow.New([]string{"allowed.example:443"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			proxyURL, backendURL, hits := newProcessProxy(t, store, procs, func(s *Server) {
+				s.ProjectOf = (&fakeProjects{}).of
+				s.EgressAllow = allow
+				if tc.trusted != "" {
+					s.TrustedSessionID = func(*http.Request) string { return tc.trusted }
+				}
+			})
+			sendAs(t, procs.clientFor(proxyURL, 100), backendURL+"/v1/messages", procClaudeUA, "", "")
+			raw, _, cresp := connectAs(t, procs, proxyURL, "denied.example:443", 100)
+			_ = raw.Close()
+			if cresp.StatusCode != http.StatusForbidden || hits.Load() != 0 {
+				t.Fatalf("CONNECT answered %d, backend hits %d; want 403 and none", cresp.StatusCode, hits.Load())
+			}
+			var got []string
+			for _, e := range allEvents(t, store) {
+				if e.Phase == pipeline.SessionDenied {
+					got = append(got, e.Project)
+				}
+			}
+			if !slices.Equal(got, []string{tc.want, tc.want}) {
+				t.Errorf("denial row projects = %q, want [%q %q]", got, tc.want, tc.want)
+			}
+		})
 	}
 }

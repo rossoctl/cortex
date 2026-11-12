@@ -122,3 +122,16 @@ func TestListSessions_ProjectsMergeTheEarlierHistory(t *testing.T) {
 		t.Fatalf("Projects = %v, want [~/b ~/old ~/a]", got)
 	}
 }
+
+// A rename out of a bucket that applyProject skips keeps the labels of the events it moves.
+func TestStoreRekey_Projects(t *testing.T) {
+	st := New(0, 0, 0)
+	defer st.Close()
+	for _, e := range projectEvents() {
+		st.Append(DefaultSessionID, e)
+	}
+	st.Rekey(DefaultSessionID, "ctx-1")
+	if got := summaryOf(t, st, "ctx-1").Projects; !slices.Equal(got, []string{"~/a", "~/b"}) {
+		t.Fatalf("ctx-1 Projects = %v, want [~/a ~/b]", got)
+	}
+}
