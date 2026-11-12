@@ -127,8 +127,8 @@ events table). It does not send it on `GET /v1/sessions/{id}/timeline`. The scri
 proxy then removes these fields from each event in the response:
 
 - `inference`: `messages`, `tools`, `toolCalls`, `toolResults` and `historyToolCalls`.
-  It adds `messageCount` and `toolCount`, the lengths of `messages` and `tools`.
-  Each one is absent when it is zero.
+  It adds `messageCount`, `toolCount` and `toolCallCount`, the lengths of
+  `messages`, `tools` and `toolCalls`. Each one is absent when it is zero.
 - `a2a`: `artifact`.
 - `mcp`: `params` and `result`.
 
@@ -707,10 +707,11 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   split counts. `promptTokens` is input plus cache read plus cache write.
   `completionTokens` is output. `totalTokens` is the provider's own total when
   it sent one, else prompt plus output.
-- `inference.messageCount`, `inference.toolCount` — set only on a
-  `view=summary` copy, which removes `messages` and `tools`: how many items
-  each list had. Zero means "not stated". When the list is present, use its
-  length.
+- `inference.messageCount`, `inference.toolCount`, `inference.toolCallCount` —
+  set only on a `view=summary` copy, which removes `messages`, `tools` and
+  `toolCalls`: how many items each list had. Zero means "not stated". When the
+  list is present, use its length. `toolCount` is the manifest the request
+  offered; `toolCallCount` is how many calls the response made of it.
 - `inference.isAction`, `mcp.isAction`, `a2a.isAction` — the parser's
   classification. It is true on every inference row. It is true on the MCP
   methods `tools/call`, `prompts/get` and `resources/read`, and on the A2A

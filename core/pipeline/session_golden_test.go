@@ -43,7 +43,7 @@ func goldenEvent() SessionEvent {
 			HistoryToolCalls: []InferenceToolCall{{ID: "toolu_0", Name: "get_weather", Arguments: `{"city":"Rome"}`}},
 			ThinkingType:     "adaptive", ThinkingDisplay: "summarized", Effort: "high", AnthropicBeta: "context-1m",
 			HistoryThinking: thinking(2), ResponseThinking: thinking(1),
-			MessageCount: 3, ToolCount: 1, AgentRole: AgentRoleSubagent, StreamedResponse: true,
+			MessageCount: 3, ToolCount: 1, ToolCallCount: 1, AgentRole: AgentRoleSubagent, StreamedResponse: true,
 			Completion: "done", FinishReason: "tool_use",
 			ToolCalls:    []InferenceToolCall{{ID: "toolu_2", Name: "get_weather", Arguments: `{"city":"Oslo"}`}},
 			PromptTokens: 1000, CompletionTokens: 200, TotalTokens: 1200, InputTokens: 100,

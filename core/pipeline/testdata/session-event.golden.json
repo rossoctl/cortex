@@ -101,6 +101,7 @@
     },
     "messageCount": 3,
     "toolCount": 1,
+    "toolCallCount": 1,
     "agentRole": "subagent",
     "streamedResponse": true,
     "completion": "done",

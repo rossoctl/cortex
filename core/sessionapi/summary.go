@@ -73,7 +73,12 @@ func summarizeEvent(e *pipeline.SessionEvent) *pipeline.SessionEvent {
 		//
 		// AgentRole is not in this list and needs nothing: the struct copy above carries it, which
 		// is the whole difference between a scalar and the slices below.
+		// ToolCallCount joins them for a third fact that survives with none of the content:
+		// how many calls the response made. A content-free export (core/sessionexport)
+		// carries that figure, and reading len(ToolCalls) alone reported absence for every
+		// row this projection delivered — the same blanking the two counts above fixed.
 		inf.MessageCount, inf.ToolCount = len(inf.Messages), len(inf.Tools)
+		inf.ToolCallCount = len(inf.ToolCalls)
 		inf.Messages = nil
 		inf.Tools = nil
 		inf.ToolCalls = nil
