@@ -908,9 +908,6 @@ func (m *model) cursorAt(c int, s string) string {
 	if c == m.timeline.cursor {
 		// Unstyled, so the cell's own reset does not undo the cursor's reverse video.
 		g := ansi.Strip(s)
-		if g == " " {
-			g = "│"
-		}
 		return styleTLCursor.Render(g)
 	}
 	return s

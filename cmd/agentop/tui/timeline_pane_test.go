@@ -1427,3 +1427,13 @@ func TestTimeline_WorkflowAgentUsesHarvestedLabel(t *testing.T) {
 		t.Errorf("every agent labeled: want no harvest")
 	}
 }
+
+// The cursor on an empty cell is a solid block. A "│" there showed as a black line through
+// the white cursor column, because reverse video draws the glyph in the background colour.
+func TestTimelineCursor_EmptyCellIsSolid(t *testing.T) {
+	m := timelineModel(t, 140, 46)
+	m.timeline.cursor = 3
+	if got := stripANSI(m.cursorAt(3, " ")); got != " " {
+		t.Errorf("cursor on an empty cell = %q, want a reversed space", got)
+	}
+}
