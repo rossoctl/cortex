@@ -158,11 +158,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if m.usage.metric.isLatency() {
 				break
 			}
-			// Inert under an agent scope, which the footer and the [?] overlay both say. The
-			// scope needs group=agent on the wire, so there is no axis left for this key to
+			// Inert under an agent or a project scope, which the footer and the [?] overlay both
+			// say. The scope needs group=agent (or group=project) on the wire, so there is no axis left for this key to
 			// move; dropping it here is what keeps it from refetching against an axis the
 			// scoped narrowing would immediately discard.
-			if m.agentScope != "" {
+			if m.agentScope != "" || m.projectScope != "" {
 				break
 			}
 			// Refetch: the breakdown is a server-side query parameter, not a
@@ -1420,10 +1420,10 @@ func (m *model) helpView() string {
 		// [b] is omitted under latency rather than shown as a no-op: a footer that
 		// advertises an inert key is worse than a shorter footer.
 		breakdownHint := "  [b] breakdown"
-		// Omitted under an agent scope for the same reason as under latency: the scope has taken
+		// Omitted under an agent or a project scope for the same reason as under latency: the scope has taken
 		// the wire axis, so there is no second one to break down by, and a footer that advertises
 		// an inert key is worse than a shorter footer.
-		if m.agentScope != "" {
+		if m.agentScope != "" || m.projectScope != "" {
 			breakdownHint = ""
 		}
 		if m.usage.metric.isLatency() {

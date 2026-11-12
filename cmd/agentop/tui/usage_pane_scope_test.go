@@ -2,12 +2,16 @@ package tui
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
@@ -149,5 +153,119 @@ func TestUsagePane_PickerHintsNameU(t *testing.T) {
 			t.Errorf("%s: [A], [enter], [u] left pane %v scope %q, want Usage scoped to %q",
 				tc.name, m.pane, m.agentScope, tc.want)
 		}
+	}
+}
+
+// projectUsageJSON is a group=project reply that echoes the agent the request named.
+func projectUsageJSON(agent string) string {
+	return `{"window":"today","bucketSeconds":60,"group":"project","agent":"` + agent + `",
+  "buckets":[{"at":"2026-09-29T10:00:00Z","requests":4,"costMicros":400,"latMeanMs":50,"latSamples":4,
+    "series":{"~/a":{"requests":3,"costMicros":300},"~/b":{"requests":1,"costMicros":100}}}],
+  "totals":{"requests":4,"costMicros":400}}`
+}
+
+// projectUsageFetch runs one usage fetch from m against a server that records every query. The
+// server fails the test when a query has a project key (D3).
+func projectUsageFetch(t *testing.T, m *model) (usageLoadedMsg, []url.Values) {
+	t.Helper()
+	var queries []url.Values
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Has("project") {
+			t.Errorf("query %q carries project=", r.URL.RawQuery)
+		}
+		queries = append(queries, q)
+		_, _ = w.Write([]byte(projectUsageJSON(q.Get("agent"))))
+	}))
+	t.Cleanup(ts.Close)
+	m.client = apiclient.New(ts.URL)
+	msg, ok := m.fetchUsage()().(usageLoadedMsg)
+	if !ok || msg.err != nil {
+		t.Fatalf("fetch gave %#v", msg)
+	}
+	return msg, queries
+}
+
+func TestUsagePane_ProjectScopeAsksAgentAndGroupProject(t *testing.T) {
+	m := &model{agentScope: "claude-code/2.1.270", projectScope: "~/a"}
+	m.usage.group = usage.GroupModel
+	msg, queries := projectUsageFetch(t, m)
+	if len(queries) != 1 {
+		t.Fatalf("got %d reads, want 1: %v", len(queries), queries)
+	}
+	if q := queries[0]; q.Get("agent") != "claude-code/2.1.270" || q.Get("group") != string(usage.GroupProject) {
+		t.Errorf("query = %v, want agent=claude-code/2.1.270 and group=project", q)
+	}
+	if msg.snap.Totals.CostMicros != 300 {
+		t.Errorf("Totals.CostMicros = %d, want the project's 300", msg.snap.Totals.CostMicros)
+	}
+	var plotted int64
+	for _, b := range msg.snap.Buckets {
+		plotted += b.CostMicros
+	}
+	if plotted != 300 {
+		t.Errorf("plotted bucket cost = %d, want 300", plotted)
+	}
+}
+
+func TestUsagePane_ProjectScopeUnderAllAgentsHasNoAgent(t *testing.T) {
+	m := &model{projectScope: "~/a"}
+	_, queries := projectUsageFetch(t, m)
+	if len(queries) != 1 || queries[0].Has("agent") || queries[0].Get("group") != string(usage.GroupProject) {
+		t.Errorf("queries = %v, want one with group=project and no agent=", queries)
+	}
+}
+
+// Decision 3: within a session the agent axis has no project series, so the read drops agent=.
+func TestUsagePane_ProjectScopeWithinASessionDropsTheAgent(t *testing.T) {
+	m := &model{agentScope: "claude-code/2.1.270", projectScope: "~/a"}
+	m.usage.session = "s1"
+	msg, queries := projectUsageFetch(t, m)
+	if len(queries) != 1 {
+		t.Fatalf("got %d reads, want 1: %v", len(queries), queries)
+	}
+	if q := queries[0]; q.Get("session") != "s1" || q.Get("group") != string(usage.GroupProject) || q.Has("agent") {
+		t.Errorf("query = %v, want session=s1, group=project and no agent=", q)
+	}
+	if msg.snap.Totals.CostMicros != 300 {
+		t.Errorf("Totals.CostMicros = %d, want the project's 300", msg.snap.Totals.CostMicros)
+	}
+}
+
+func TestUsageKeys_BreakdownIsInertUnderAProjectScope(t *testing.T) {
+	m := &model{pane: paneUsage, projectScope: "~/a", client: deadClient()}
+	m.usage.group = usage.GroupModel
+	m.usage.metric = metricCost
+	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}}); cmd != nil {
+		t.Error("`b` under a project scope returned a fetch")
+	}
+	if m.usage.group != usage.GroupModel {
+		t.Errorf("group = %q, want it unchanged", m.usage.group)
+	}
+	if strings.Contains(m.helpView(), "[b]") {
+		t.Errorf("footer offers [b] under a project scope:\n%s", m.helpView())
+	}
+	m.usage.snap = costChartSnapshot(nil)
+	if head := strings.SplitN(m.renderUsage(120, 30), "\n", 2)[0]; !strings.Contains(head, "ungrouped") {
+		t.Errorf("header = %q, want ungrouped", head)
+	}
+}
+
+func TestUsagePane_LatencyUnderAProjectScopeSaysPerProject(t *testing.T) {
+	m := &model{projectScope: "~/a"}
+	m.usage.metric = metricLatency
+	msg, queries := projectUsageFetch(t, m)
+	if len(queries) != 1 {
+		t.Errorf("got %d reads, want only the window read: %v", len(queries), queries)
+	}
+	m.Update(msg)
+	m.usage.snap, m.usage.agentLatency = msg.snap, msg.agentLatency
+	body := m.renderUsage(100, 30)
+	if !strings.Contains(body, "latency is not available per project") ||
+		!strings.Contains(body, "Response times are recorded per agent, not per project.") {
+		t.Errorf("body does not say latency is per agent only:\n%s", body)
+	}
+	if strings.Contains(body, "per agent)") {
+		t.Errorf("body gives the per-agent text under a project scope:\n%s", body)
 	}
 }
