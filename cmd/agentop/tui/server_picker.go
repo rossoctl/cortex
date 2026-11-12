@@ -127,14 +127,14 @@ func (m *model) sessionKeyRefusal(id string) string {
 // that routes, or while a switch is in flight, where S would only say why not. Per row, as the
 // footer's [↵] is.
 func (m *model) serverKeyOffered() bool {
-	label, ok := m.selectedAgentScope()
+	label, ok := m.selectedAgentActs()
 	return ok && m.serverKeyRefusal(label) == ""
 }
 
 // openServerPicker is S on the AGENTS pane: the picker over the pane, its cursor on the value
 // the agent has now — or, in its place, the panel saying why there is none (renderServerNotice).
 func (m *model) openServerPicker() tea.Cmd {
-	label, ok := m.selectedAgentScope()
+	label, ok := m.selectedAgentActs()
 	if !ok {
 		return nil
 	}

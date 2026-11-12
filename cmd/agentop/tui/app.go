@@ -851,11 +851,21 @@ type model struct {
 	// restoring into.
 	agentScope string
 	agentsTbl  table.Model
-	// agentRowLabels is the scope each agentsTbl row selects, "" for All agents.
-	agentRowLabels []string
+	// agentRowDescs identifies each agentsTbl row, in row order (see rebuildAgentsTable).
+	agentRowDescs []agentRowDesc
 	// agentsErr is the last fetch failure, shown in the pane rather than swallowed: an empty
 	// breakdown and an unreachable endpoint look identical otherwise.
 	agentsErr error
+	// agentsExpanded holds the agent rows that space opened ("" is All agents); a closed row has
+	// no key. Not persisted across runs. agentProjects is each open row's last project fetch, and
+	// agentProjectsErr the last project fetch failure. agentsCursorWant is a project sub-row the
+	// cursor goes back to when its open row's fetch lands, while the cursor stays at
+	// agentsCursorWantAt (see rebuildAgentsTable).
+	agentsExpanded     map[string]bool
+	agentProjects      map[string]agentProjectsData
+	agentProjectsErr   error
+	agentsCursorWant   *agentRowDesc
+	agentsCursorWantAt int
 	// agentsFetchedAt is when the last per-agent fetch was issued, so the open pane polls.
 	agentsFetchedAt time.Time
 	// agentsWindowStep is how far `w` has moved the agents pane's window past today; see
@@ -1607,11 +1617,31 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// background refresh reordered under the cursor — the one transition no keypress
 		// sees, since `A` enters a round trip after the press. See syncSpendScope.
 		sync := m.syncSpendScope()
+		// The open rows refetch their projects with the rows: the poll, `w`, `A` and esc all come
+		// here.
+		projects := m.fetchOpenProjectsCmd()
 		if m.client != nil && !m.pipelineFetching {
 			m.pipelineFetching = true
-			return m, tea.Batch(m.loadPipelineCmd(), sync)
+			return m, tea.Batch(m.loadPipelineCmd(), sync, projects)
 		}
-		return m, sync
+		return m, tea.Batch(sync, projects)
+
+	case agentProjectsLoadedMsg:
+		if msg.window != m.agentsSpanDef().window {
+			return m, nil
+		}
+		// A failed fetch keeps the sub-rows it has, with the error under the table.
+		m.agentProjectsErr = msg.err
+		if msg.err == nil {
+			if m.agentProjects == nil {
+				m.agentProjects = map[string]agentProjectsData{}
+			}
+			m.agentProjects[msg.agent] = msg.data
+		}
+		if m.pane == paneAgents {
+			m.rebuildAgentsTable()
+		}
+		return m, nil
 
 	case usageLoadedMsg:
 		// Discard anything but the newest request's reply. Two rapid `w` presses
@@ -2665,13 +2695,17 @@ func (m *model) paneView() string {
 			body = styleHint.Render("(agent breakdown unavailable: " + m.agentsErr.Error() + ")")
 		case !hasRows:
 			body = styleHint.Render("(no agent traffic in this window)")
-		case m.agentsErr != nil:
+		case m.agentsErr != nil || m.agentProjectsErr != nil:
 			// A failed refresh keeps the rows on screen, one line shorter to fit the hint.
+			err := m.agentsErr
+			if err == nil {
+				err = m.agentProjectsErr
+			}
 			tbl := m.agentsTbl
 			if m.bodyHeight > 1 {
 				tbl.SetHeight(m.bodyHeight - 1)
 			}
-			body = tbl.View() + "\n" + styleHint.Render(clipRow("(refresh failed: "+m.agentsErr.Error()+")", m.width))
+			body = tbl.View() + "\n" + styleHint.Render(clipRow("(refresh failed: "+err.Error()+")", m.width))
 		default:
 			body = m.agentsTbl.View()
 		}

@@ -13,7 +13,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
-	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -631,11 +630,9 @@ func TestFetchSpendDrawer_AgentsPaneScopesToTheHighlightedRow(t *testing.T) {
 				agents:     navRows(),
 				agentsTbl:  newAgentsTable(),
 			}
-			// Rows on the table only so the cursor index is real; selectedAgentScope reads
-			// the label from pickerRows (m.agents), never from the rendered cell.
-			m.agentsTbl.SetRows([]table.Row{
-				{"All agents"}, {"claude-code/2.1.270"}, {"bob-shell/2.0.5"},
-			})
+			// The rows come from m.agents, so the cursor index is real; selectedAgentScope reads
+			// the label from m.agentRowDescs, never from the rendered cell.
+			m.rebuildAgentsTable()
 			setCursorVisible(&m.agentsTbl, tc.cursor)
 			cmd := m.fetchSpendDrawer()
 			if cmd == nil {

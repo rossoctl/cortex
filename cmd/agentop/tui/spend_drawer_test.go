@@ -20,7 +20,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
-	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
@@ -1179,9 +1178,7 @@ func TestSpendDrawer_FollowsTheAgentsCursor(t *testing.T) {
 		agents:     navRows(),
 		agentsTbl:  newAgentsTable(),
 	}
-	m.agentsTbl.SetRows([]table.Row{
-		{"All agents"}, {"claude-code/2.1.270"}, {"bob-shell/2.0.5"},
-	})
+	m.rebuildAgentsTable()
 	setCursorVisible(&m.agentsTbl, 1)
 	m.spend.expanded = true
 	press := func(key tea.KeyMsg) {

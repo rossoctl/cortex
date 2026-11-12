@@ -53,7 +53,12 @@ type agentRow struct {
 // UNRECOGNISED AGENTS ARE ONE ROW, otherAgents, folded here by foldOtherAgents before anything is
 // counted. See otherAgents for why a row per raw User-Agent was a row that scoped nothing.
 func agentRowsFromSnapshot(snap *usage.Snapshot) []agentRow {
-	snap = foldOtherAgents(snap)
+	return seriesRowsFromSnapshot(foldOtherAgents(snap))
+}
+
+// seriesRowsFromSnapshot is agentRowsFromSnapshot without the fold, for a snapshot whose series
+// are already folded.
+func seriesRowsFromSnapshot(snap *usage.Snapshot) []agentRow {
 	rows := agentRowsFromBuckets(snap.Buckets)
 	for i := range rows {
 		units, ok := snap.SeriesCurrencies[rows[i].label]
@@ -181,6 +186,9 @@ func (m *model) agentsWindowLabel() string {
 // the next span, and an open drawer with them, since on this pane it breaks down the same span.
 func (m *model) cycleAgentsWindow() tea.Cmd {
 	m.agentsWindowStep = (m.agentsWindowStep + 1) % len(spendDrawerSpans)
+	// Project figures are for the old window, so they go; the open rows stay open.
+	m.agentProjects = nil
+	m.agentProjectsErr = nil
 	cmds := []tea.Cmd{m.fetchAgentRowsCmd(agentsOpenNever, paneNone)}
 	if m.spendDrawerVisible() {
 		// cycleSpendWindow's reason: the old error describes a request for another span.
@@ -313,17 +321,33 @@ func newAgentsTable() table.Model {
 	return t
 }
 
-// rebuildAgentsTable rebuilds rows from All agents then m.pickerRows, which selectedAgentScope
-// indexes too.
+// agentRowKind is what one row of the agents table shows.
+type agentRowKind int
+
+const (
+	agentRowAgent        agentRowKind = iota // All agents ("") or an agent, closed
+	agentRowHeading                          // an open agent row, figures blank
+	agentRowAllProjects                      // first sub-row
+	agentRowProject                          // one project
+	agentRowProjectOther                     // the project Other sub-row
+)
+
+// agentRowDesc identifies one row of the agents table. Every cursor reader uses it, so a sub-row
+// always resolves to its parent agent.
+type agentRowDesc struct {
+	agent   string // parent agent label; "" is All agents
+	kind    agentRowKind
+	project string // the usage series label; set only for agentRowProject
+}
+
+// rebuildAgentsTable rebuilds rows from All agents then m.pickerRows, and keeps
+// m.agentRowDescs in step with the rows.
 func (m *model) rebuildAgentsTable() {
 	// Columns and rows change together, as in rebuildSessionsTable: SESSIONS appears only once a
 	// session names its agent, so a server that names none shows the table unchanged.
 	withSessions := m.sessionsNameAgents()
 	cursor := m.agentsTbl.Cursor()
-	prev, hadPrev := "", cursor >= 0 && cursor < len(m.agentRowLabels)
-	if hadPrev {
-		prev = m.agentRowLabels[cursor]
-	}
+	prev, hadPrev := m.selectedAgentRow()
 	cols := agentsColumns(m.agentsWindowLabel())
 	if withSessions {
 		cols = slices.Insert(cols, 1,
@@ -351,41 +375,80 @@ func (m *model) rebuildAgentsTable() {
 	}
 	picker := m.pickerRows()
 	rows := make([]table.Row, 0, len(picker)+1)
-	// Its figures are left blank: the band above already carries the window's total, and summed
-	// across agents billing in different units it would only read as mixed.
-	all := table.Row{allAgentsLabel, ""}
-	if withSessions {
-		all = slices.Insert(all, 1, "", "")
-	}
-	// Nothing under SERVER either: routing is chosen per agent, and S on this row says so.
-	if routed {
-		all = append(all, "")
-	}
-	rows = append(rows, all)
-	labels := make([]string, 0, len(picker)+1)
-	labels = append(labels, "")
-	now := m.clock()
-	for _, a := range picker {
-		labels = append(labels, a.label)
-		row := table.Row{
-			// SANITISED AT RENDER TIME. The label is a User-Agent, so it is
-			// request-controlled; sanitizeLabel applies the proxy's own rule.
-			sanitizeLabel(a.label),
-			agentCostCellIn(a.Counts, a.units, agentsCostWidth),
-		}
+	descs := make([]agentRowDesc, 0, len(picker)+1)
+	add := func(d agentRowDesc, agent, sessions, lastSeen, cost, server string) {
+		row := table.Row{agent, cost}
 		if withSessions {
-			row = slices.Insert(row, 1, m.agentSessionsCell(a.label), relTime(now, m.agentLastSeen(a.label)))
+			row = slices.Insert(row, 1, sessions, lastSeen)
 		}
 		if routed {
-			row = append(row, agentServerCell(router, a.label))
+			row = append(row, server)
 		}
 		rows = append(rows, row)
+		descs = append(descs, d)
+	}
+	// The ▸ / ▾ marks show only while a listed session names a project, so a server that records
+	// none shows the table unchanged.
+	projects := m.sessionsNameProjects()
+	mark := func(label string) string {
+		switch {
+		case !projects:
+			return ""
+		case m.agentRowOpen(label):
+			return "▾ "
+		case m.agentRowExpandable(label):
+			return "▸ "
+		}
+		return "  "
+	}
+	now := m.clock()
+	// Its figures are left blank: the band above already carries the window's total, and summed
+	// across agents billing in different units it would only read as mixed. Nothing under SERVER
+	// either: routing is chosen per agent, and S on this row says so.
+	if m.agentRowOpen("") {
+		add(agentRowDesc{kind: agentRowHeading}, mark("")+allAgentsLabel, "", "", "", "")
+		m.addProjectRows(add, "", nil, now)
+	} else {
+		add(agentRowDesc{kind: agentRowAgent}, mark("")+allAgentsLabel, "", "", "", "")
+	}
+	for _, a := range picker {
+		// SANITISED AT RENDER TIME. The label is a User-Agent, so it is request-controlled;
+		// sanitizeLabel applies the proxy's own rule.
+		label := mark(a.label) + sanitizeLabel(a.label)
+		if m.agentRowOpen(a.label) {
+			// An open row is a heading: its figures move to All projects below it.
+			add(agentRowDesc{agent: a.label, kind: agentRowHeading}, label, "", "", "", "")
+			m.addProjectRows(add, a.label, &a, now)
+			continue
+		}
+		add(agentRowDesc{agent: a.label, kind: agentRowAgent}, label,
+			m.agentSessionsCell(a.label), relTime(now, m.agentLastSeen(a.label)),
+			agentCostCellIn(a.Counts, a.units, agentsCostWidth), agentServerCell(router, a.label))
 	}
 	m.agentsTbl.SetRows(rows)
-	m.agentRowLabels = labels
-	// Follow the agent, not the index: a refresh can reorder the rows under the cursor.
-	if i := slices.Index(labels, prev); hadPrev && i >= 0 {
-		cursor = i
+	m.agentRowDescs = descs
+	// Follow the row, not the index: a refresh can reorder the rows under the cursor. When the
+	// row is gone, go to the first row of the same agent.
+	//
+	// A project sub-row that is gone only because its open row waits for a new fetch (after `w`)
+	// is kept as m.agentsCursorWant, so the cursor goes back to it when the reply lands — unless
+	// the reader moved the cursor in the meantime.
+	if w := m.agentsCursorWant; w != nil && cursor == m.agentsCursorWantAt {
+		prev, hadPrev = *w, true
+	}
+	m.agentsCursorWant = nil
+	if hadPrev {
+		if i := slices.Index(descs, prev); i >= 0 {
+			cursor = i
+		} else if i := slices.IndexFunc(descs, func(d agentRowDesc) bool { return d.agent == prev.agent }); i >= 0 {
+			cursor = i
+			if (prev.kind == agentRowProject || prev.kind == agentRowProjectOther) && m.agentRowOpen(prev.agent) {
+				if _, loaded := m.agentProjects[prev.agent]; !loaded {
+					want := prev
+					m.agentsCursorWant, m.agentsCursorWantAt = &want, i
+				}
+			}
+		}
 	}
 	setCursorVisible(&m.agentsTbl, cursor)
 }
@@ -478,24 +541,27 @@ func (m *model) enterAgentsAtStartup() bool {
 // list that agentsPaneApplies and the Other row reason about, and this row partitions nothing.
 const allAgentsLabel = "All agents"
 
-// selectedAgentScope is the scope the row under the cursor selects: "" on All agents, else that
-// agent's label. ok is false when the cursor is on no row.
-//
-// READ OFF m.pickerRows BY CURSOR INDEX, not out of the rendered table cell: the cell is passed
-// through sanitizeLabel, which is a display transform — a control character or a long label
-// arrives on the wire and leaves that function altered, so scoping to what the cell says could
-// scope to a string no agent ever sent. The two are kept in step by rebuildAgentsTable, which
-// builds the rows from m.pickerRows in order, after All agents.
-func (m *model) selectedAgentScope() (scope string, ok bool) {
+// selectedAgentRow is the descriptor of the row under the cursor. ok is false when the cursor is
+// on no row.
+func (m *model) selectedAgentRow() (agentRowDesc, bool) {
 	i := m.agentsTbl.Cursor()
-	if i == 0 {
-		return "", true
+	if i < 0 || i >= len(m.agentRowDescs) {
+		return agentRowDesc{}, false
 	}
-	picker := m.pickerRows()
-	if i < 1 || i > len(picker) {
-		return "", false
-	}
-	return picker[i-1].label, true
+	return m.agentRowDescs[i], true
+}
+
+// selectedAgentScope is the scope the row under the cursor selects: "" on All agents, else that
+// agent's label. On a sub-row it is the parent agent. ok is false when the cursor is on no row.
+//
+// READ OFF m.agentRowDescs BY CURSOR INDEX, not out of the rendered table cell: the cell is
+// passed through sanitizeLabel, which is a display transform — a control character or a long
+// label arrives on the wire and leaves that function altered, so scoping to what the cell says
+// could scope to a string no agent ever sent. rebuildAgentsTable keeps the descriptors in step
+// with the rows.
+func (m *model) selectedAgentScope() (scope string, ok bool) {
+	row, ok := m.selectedAgentRow()
+	return row.agent, ok
 }
 
 // leaveAgentsPane is esc's exit. As the level above Sessions it backs out of the connection the

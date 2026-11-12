@@ -360,9 +360,9 @@ func cursorToAgent(t *testing.T, m *model, label string) {
 	t.Helper()
 	m.pane = paneAgents
 	m.rebuildAgentsTable()
-	i := slices.Index(m.agentRowLabels, label)
+	i := agentRowIndex(m, label)
 	if i < 0 {
-		t.Fatalf("no agents row %q in %v", label, m.agentRowLabels)
+		t.Fatalf("no agents row %q in %v", label, m.agentRowDescs)
 	}
 	setCursorVisible(&m.agentsTbl, i)
 }

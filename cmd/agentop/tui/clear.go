@@ -78,7 +78,8 @@ func (m *model) openSessionErase() tea.Cmd {
 // openAgentErase is x on the agents pane: erase every session of the highlighted agent — or, on
 // All agents, everything, which is X's confirmation and X's single request.
 func (m *model) openAgentErase() tea.Cmd {
-	scope, ok := m.selectedAgentScope()
+	// Nothing on a project sub-row: it is not the whole agent.
+	scope, ok := m.selectedAgentActs()
 	if !ok {
 		return nil
 	}

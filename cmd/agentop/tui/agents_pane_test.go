@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -751,5 +752,38 @@ func TestAgentsPane_CostTitleNamesTheWindow(t *testing.T) {
 	m.rebuildAgentsTable()
 	if got := m.agentsTbl.Columns()[1].Title; got != "COST 7 DAYS" {
 		t.Errorf("COST title after w = %q, want %q", got, "COST 7 DAYS")
+	}
+}
+
+// agentRowIndex is the index of the closed agent row labelled label, "" being All agents, or -1.
+func agentRowIndex(m *model, label string) int {
+	return slices.IndexFunc(m.agentRowDescs, func(d agentRowDesc) bool {
+		return d.agent == label && d.kind == agentRowAgent
+	})
+}
+
+// The row under the cursor is read from the descriptor slice that rebuildAgentsTable keeps.
+func TestAgentsPane_SelectedRowReadsTheDescriptors(t *testing.T) {
+	m := &model{pane: paneAgents, agents: navRows(), agentsTbl: newAgentsTable()}
+	m.rebuildAgentsTable()
+	for _, tc := range []struct {
+		cursor int
+		want   agentRowDesc
+		ok     bool
+	}{
+		{0, agentRowDesc{agent: "", kind: agentRowAgent}, true},
+		{2, agentRowDesc{agent: "bob-shell/2.0.5", kind: agentRowAgent}, true},
+	} {
+		m.agentsTbl.SetCursor(tc.cursor)
+		got, ok := m.selectedAgentRow()
+		if ok != tc.ok || (ok && got != tc.want) {
+			t.Errorf("cursor %d: selectedAgentRow() = %+v, %v; want %+v, %v", tc.cursor, got, ok, tc.want, tc.ok)
+		}
+	}
+	// The table clamps its cursor, so a cursor past the descriptors comes from a slice that is
+	// out of step with the rows.
+	m.agentRowDescs = m.agentRowDescs[:2]
+	if got, ok := m.selectedAgentRow(); ok {
+		t.Errorf("cursor past the descriptors: selectedAgentRow() = %+v, true; want false", got)
 	}
 }

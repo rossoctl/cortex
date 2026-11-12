@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -155,13 +154,11 @@ func serverModel(t *testing.T, f *fakeProxy) *model {
 // onRow puts the AGENTS cursor on the row labelled label, All agents being "".
 func onRow(t *testing.T, m *model, label string) {
 	t.Helper()
-	for i, l := range m.agentRowLabels {
-		if l == label {
-			m.agentsTbl.SetCursor(i)
-			return
-		}
+	if i := agentRowIndex(m, label); i >= 0 {
+		m.agentsTbl.SetCursor(i)
+		return
 	}
-	t.Fatalf("no AGENTS row %q in %q", label, m.agentRowLabels)
+	t.Fatalf("no AGENTS row %q in %+v", label, m.agentRowDescs)
 }
 
 // agentsCell is the cell under the column titled title in the AGENTS row labelled label, and
@@ -177,12 +174,10 @@ func agentsCell(t *testing.T, m *model, label, title string) (string, bool) {
 	if col < 0 {
 		return "", false
 	}
-	for i, l := range m.agentRowLabels {
-		if l == label {
-			return m.agentsTbl.Rows()[i][col], true
-		}
+	if i := agentRowIndex(m, label); i >= 0 {
+		return m.agentsTbl.Rows()[i][col], true
 	}
-	t.Fatalf("no AGENTS row %q", label)
+	t.Fatalf("no AGENTS row %q in %+v", label, m.agentRowDescs)
 	return "", false
 }
 
@@ -401,11 +396,11 @@ func TestPipelineLoaded_RepaintsTheAgentsOnlyWhenTheRouterChanged(t *testing.T) 
 	// Rows that are not drawn yet: they appear only when something repaints.
 	m.agents = append(m.agents, agentRow{label: "bob-shell/1.0", Counts: usage.Counts{Requests: 2}})
 	m.Update(pipelineLoadedMsg(routerPipeline(routerRaw)))
-	if slices.Contains(m.agentRowLabels, "bob-shell/1.0") {
+	if agentRowIndex(m, "bob-shell/1.0") >= 0 {
 		t.Error("an unchanged router repainted the agents table")
 	}
 	m.Update(pipelineLoadedMsg(routerPipeline(strings.Replace(routerRaw, `"claude-code":"ete"`, `"claude-code":"glm"`, 1))))
-	if !slices.Contains(m.agentRowLabels, "bob-shell/1.0") {
+	if agentRowIndex(m, "bob-shell/1.0") < 0 {
 		t.Error("a changed route did not repaint the agents table")
 	}
 	if got, _ := agentsCell(t, m, "claude-code/2.1.270", "SERVER"); got != "glm" {
