@@ -63,7 +63,6 @@ func TestProjectScope_EnterOnAllAgentsClearsBoth(t *testing.T) {
 	m.agentScope, m.projectScope = projAgent, "~/moca"
 	m.agentsTbl.SetCursor(0)
 	deliver(m, pressCmd(m, enterKey)) // opens All agents
-	onDesc(t, m, agentRowDesc{kind: agentRowAllProjects})
 	pressCmd(m, enterKey)
 	wantScopes(t, m, "", "")
 }
@@ -74,7 +73,6 @@ func TestProjectScope_EnterOnAnAgentRowClearsTheProject(t *testing.T) {
 	m.agentScope, m.projectScope = projAgent, "~/moca"
 	onRow(t, m, "codex")
 	deliver(m, pressCmd(m, enterKey)) // opens codex
-	onDesc(t, m, agentRowDesc{agent: "codex", kind: agentRowAllProjects})
 	pressCmd(m, enterKey)
 	wantScopes(t, m, "codex", "")
 }
@@ -87,7 +85,7 @@ func TestProjectScope_EnterTogglesAnAgentRow(t *testing.T) {
 	if !m.agentRowOpen(projAgent) || m.pane != paneAgents {
 		t.Fatalf("after Enter: open=%v pane=%v; want open on the agents pane", m.agentRowOpen(projAgent), m.pane)
 	}
-	onDesc(t, m, agentRowDesc{agent: projAgent, kind: agentRowHeading})
+	pressCmd(m, tea.KeyMsg{Type: tea.KeyUp}) // from All projects to the heading
 	pressCmd(m, enterKey)
 	if m.agentRowOpen(projAgent) || m.pane != paneAgents {
 		t.Fatalf("after 2nd Enter: open=%v pane=%v; want closed on the agents pane", m.agentRowOpen(projAgent), m.pane)
@@ -270,5 +268,25 @@ func TestProjectScope_TimelineTitleNamesTheScopeOnce(t *testing.T) {
 	title := strings.SplitN(m.paneView(), "\n", 2)[0]
 	if n := strings.Count(title, "project=cortex"); n != 1 {
 		t.Errorf("timeline title %q names the project %d times, want 1", title, n)
+	}
+}
+
+// Two Enter presses, with no cursor move between them, list the agent's sessions: the first opens
+// the row and puts the cursor on its All projects sub-row.
+func TestProjectScope_EnterTwiceListsTheAgentsSessions(t *testing.T) {
+	for _, agent := range []string{projAgent, "codex", ""} {
+		m, _ := projectsModel(t, defaultProjectSeries)
+		if agent == "" {
+			m.agentsTbl.SetCursor(0)
+		} else {
+			onRow(t, m, agent)
+		}
+		m.agentScope, m.projectScope = projAgent, "~/moca"
+		deliver(m, pressCmd(m, enterKey))
+		pressCmd(m, enterKey)
+		if m.pane != paneSessions {
+			t.Errorf("%q: pane %v after Enter, Enter; want sessions", agent, m.pane)
+		}
+		wantScopes(t, m, agent, "")
 	}
 }

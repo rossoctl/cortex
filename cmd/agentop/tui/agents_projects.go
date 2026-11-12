@@ -162,9 +162,9 @@ func (m *model) subRowSessions(d agentRowDesc) (n int, last time.Time) {
 }
 
 // toggleAgentRow is space on the agents pane, and Enter on an agent row that opens or is open. On
-// a closed row that can open, it opens the row and fetches its projects. On an open row or a
-// sub-row, it closes the row and the cursor goes to it. ok is false on every other row, so space
-// pages the table there.
+// a closed row that can open, it opens the row, puts the cursor on its All projects sub-row and
+// fetches its projects. On an open row or a sub-row, it closes the row and the cursor goes to it.
+// ok is false on every other row, so space pages the table there.
 func (m *model) toggleAgentRow() (tea.Cmd, bool) {
 	d, ok := m.selectedAgentRow()
 	if !ok {
@@ -188,6 +188,10 @@ func (m *model) toggleAgentRow() (tea.Cmd, bool) {
 	}
 	m.agentsExpanded[d.agent] = true
 	m.rebuildAgentsTable()
+	// On All projects, so a second press lists the agent's sessions; on the heading it would close.
+	if i := slices.Index(m.agentRowDescs, agentRowDesc{agent: d.agent, kind: agentRowAllProjects}); i >= 0 {
+		setCursorVisible(&m.agentsTbl, i)
+	}
 	return m.fetchAgentProjectsCmd(d.agent), true
 }
 
