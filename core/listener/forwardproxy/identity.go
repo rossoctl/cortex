@@ -80,11 +80,7 @@ func (s *Server) attributeForRecording(pctx *pipeline.Context, trusted string, c
 		at = s.attribute(clientHeaders, chain)
 	}
 	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
-	if trusted == "" {
-		pctx.SetProject(s.projectFor(m, chain, at))
-	} else {
-		pctx.SetProject("") // a VM's request ran as no host process
-	}
+	pctx.SetProject(s.projectFor(trusted, m, chain, at))
 	return at.RecordSession(trusted, s.activeSession)
 }
 
@@ -181,11 +177,7 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHe
 		at = s.attribute(clientHeaders, chain)
 	}
 	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
-	if trusted == "" {
-		pctx.SetProject(s.projectFor(m, chain, at))
-	} else {
-		pctx.SetProject("") // a VM's request ran as no host process
-	}
+	pctx.SetProject(s.projectFor(trusted, m, chain, at))
 	sid, source := at.PluginSession(trusted, s.activeSession)
 	if sid != "" {
 		var facts pipeline.SessionFacts
@@ -208,12 +200,14 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHe
 }
 
 // projectFor is the project label of the request's agent process: the chain entry whose
-// Key is at.Proc, else the client itself. "" when process attribution or ProjectOf is off.
+// Key is at.Proc, else the client itself. "" on the trusted path (a VM's request ran as no
+// host process) and when process attribution or ProjectOf is off. The caller pins "" too, so
+// no later call can write a label.
 //
 // The label is memoised on the connection: a keep-alive connection whose later request
 // has a different at.Proc keeps the first request's label until the client reconnects.
-func (s *Server) projectFor(m *attribution.Memo, chain []attribution.Proc, at attribution.Attribution) string {
-	if s.ProjectOf == nil || !s.processesOn() || m == nil || len(chain) == 0 {
+func (s *Server) projectFor(trusted string, m *attribution.Memo, chain []attribution.Proc, at attribution.Attribution) string {
+	if trusted != "" || s.ProjectOf == nil || !s.processesOn() || m == nil || len(chain) == 0 {
 		return ""
 	}
 	pid := chain[0].PID
