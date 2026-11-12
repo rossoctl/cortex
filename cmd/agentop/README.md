@@ -762,6 +762,63 @@ rather than refused, so set its context length above the agent's prompts: Claude
 Code's opening turn can pass 64k tokens, Bob's reach about 21k. On a Mac with
 less than 64 GB, see [Choose a model](../../docs/laptop-local-model.md#choose-a-model).
 
+## A summary to share (`agentop receipt`)
+
+`agentop receipt` prints a 36-column card that summarises a window of usage, made to be pasted
+into a chat inside a code block. It defaults to the last seven days. `--window month` covers the
+month so far, `--window today` the day, and `--json` prints the same figures for a script.
+
+```
+           CORTEX RECEIPT
+        Nov 5 - Nov 12, 2026
+------------------------------------
+Agents          claude-code +1 other
+Model calls                    1,284
+Sessions                           1
+------------------------------------
+Prompt tokens                  44.5M
+  cache reads                  41.9M
+  cache writes                  2.4M
+  uncached                    186.4k
+Output tokens                 312.8k
+Cache hit                      94.2%
+Read : write                 142 : 1
+------------------------------------
+Top model              88% of tokens
+  claude-sonnet-4-5
+Models used                        2
+------------------------------------
+SPEND                         $26.82
+------------------------------------
+         * CACHE HOARDER *
+ 94% of the prompt came from cache
+------------------------------------
+          agentop receipt
+```
+
+**Every line is an aggregate, so it can be posted as it is.** The card never shows a session
+title (the proxy derives titles from your prompts), a project or repository name, a path, a
+host, a prompt or a tool name. A screenshot of `agentop observe` shows titles, and `agentop
+cost --by project` names repositories, so use this to share a summary instead. The command asks
+the proxy for the `model` and `agent` breakdowns and the session list, and nothing else.
+Programs that are not a recognised coding agent appear only as a count (`+1 other`).
+
+- **Cache hit** is the share of prompt tokens served from the provider's cache. **Read :
+  write** is prompt tokens per output token. Each line appears only when the window's
+  traffic reported the token kinds it is computed from, so a provider that exposes no cache
+  counter shows no cache figure rather than 0%.
+- **Sessions** counts the sessions with any activity in the window. It is omitted, with a
+  warning on stderr, when the session list cannot be read.
+- **Spend** follows `agentop cost`'s rules: a window nothing could price shows `-`, never
+  `$0.00`, and a window holding two billing units shows no combined figure. Anything that
+  qualifies a figure, such as unpriced requests, a damaged ledger read or a window the proxy
+  served narrower than you asked, is a note under the card, so it travels with the post.
+- **The persona** is chosen by the first rule that matches, rarest first: Pruner (tool
+  pruning saved at least a twentieth of the window's cost), Agent Juggler (two or more
+  agents), Polyglot (three or more models), Bookworm (300 prompt tokens or more per output
+  token), Cache Hoarder (90% cache hit or more), else Explorer. Each line names the figure
+  that earned it. No rule rewards volume or spend.
+
 ## Panes
 
 The UI has these panes. `Enter` drills in; `Esc` backs out.
