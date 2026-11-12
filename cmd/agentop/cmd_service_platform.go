@@ -403,6 +403,85 @@ func lingerEnabled(uid string) bool {
 	return !strings.Contains(strings.ToLower(string(out)), "linger=no")
 }
 
+// renderUpdaterUnitFor builds the updater unit for goos. It has no RunAtLoad,
+// KeepAlive, StartInterval, timer or [Install] section: only the proxy starts it,
+// once a day (cmd/cortex/update_trigger.go).
+func renderUpdaterUnitFor(goos string, p servicePaths) string {
+	agentop := filepath.Join(filepath.Dir(p.binary), "agentop")
+	log := filepath.Join(filepath.Dir(p.logFile), "update.log")
+	if goos == "darwin" {
+		return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>` + updaterLabel + `</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>` + xmlStr(agentop) + `</string>
+    <string>update</string>
+    <string>--yes</string>
+    <string>--auto</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict><key>HOME</key><string>` + xmlStr(p.home) + `</string></dict>
+  <key>AgentopVersion</key><string>` + xmlStr(version) + `</string>
+  <key>StandardOutPath</key><string>` + xmlStr(log) + `</string>
+  <key>StandardErrorPath</key><string>` + xmlStr(log) + `</string>
+</dict>
+</plist>
+`
+	}
+	return `[Unit]
+Description=Cortex updater (agentop update --auto)
+X-AgentopVersion=` + version + `
+
+[Service]
+Type=oneshot
+ExecStart=` + shQuote(agentop) + ` update --yes --auto
+StandardOutput=append:` + log + `
+StandardError=append:` + log + `
+`
+}
+
+// updaterUnitCurrent reports whether the updater file holds what install writes.
+func updaterUnitCurrent(goos string, p servicePaths) bool {
+	b, err := os.ReadFile(p.updaterFile) //nolint:gosec // path we wrote
+	return err == nil && string(b) == renderUpdaterUnitFor(goos, p)
+}
+
+// loadUpdater loads the updater job on darwin when launchd does not have it. On linux
+// loadService's daemon-reload is enough, because the unit is never enabled.
+//
+// It never boots out the updater: the updater job can be the process that runs this
+// install, and a bootout kills it before setup finishes.
+//
+// shortcut: a loaded updater keeps its old definition until uninstall; only AgentopVersion changes between releases, so it runs the same agentop path.
+func loadUpdater(goos string, p servicePaths) error {
+	if goos != "darwin" {
+		return nil
+	}
+	uid := strconv.Itoa(os.Getuid())
+	if exec.Command("launchctl", "print", "gui/"+uid+"/"+updaterLabel).Run() == nil {
+		return nil
+	}
+	if out, err := exec.Command("launchctl", "bootstrap", "gui/"+uid, p.updaterFile).CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl bootstrap %s: %v: %s", p.updaterFile, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// removeUpdater unloads the updater on darwin and removes its file. An updater that
+// is not loaded or not on disk is not an error.
+func removeUpdater(goos string, p servicePaths) error {
+	if goos == "darwin" {
+		_ = exec.Command("launchctl", "bootout", "gui/"+strconv.Itoa(os.Getuid())+"/"+updaterLabel).Run() //nolint:errcheck
+	}
+	if err := os.Remove(p.updaterFile); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func unloadService(goos string, p servicePaths) error {
 	if goos == "darwin" {
 		uid := strconv.Itoa(os.Getuid())

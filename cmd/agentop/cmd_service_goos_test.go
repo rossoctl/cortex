@@ -52,6 +52,9 @@ func currentServiceFixture(t *testing.T, goos string) servicePaths {
 	if err := os.WriteFile(p.unitFile, []byte(renderUnitFor(goos, p)), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(p.updaterFile, []byte(renderUpdaterUnitFor(goos, p)), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	writeProxyStamp(p)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

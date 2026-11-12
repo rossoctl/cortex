@@ -21,14 +21,15 @@ func servicePathsFixture(t *testing.T) servicePaths {
 		t.Fatal(err)
 	}
 	return servicePaths{
-		unitFile:   filepath.Join(dir, "unit"),
-		binary:     bin,
-		configFile: filepath.Join(dir, "config.yaml"),
-		logFile:    filepath.Join(dir, "proxy.log"),
-		pidFile:    filepath.Join(dir, "proxy.pid"),
-		stampFile:  filepath.Join(dir, "proxy.sha256"),
-		healthURL:  "http://127.0.0.1:1/healthz",
-		home:       dir,
+		unitFile:    filepath.Join(dir, "unit"),
+		updaterFile: filepath.Join(dir, "updater"),
+		binary:      bin,
+		configFile:  filepath.Join(dir, "config.yaml"),
+		logFile:     filepath.Join(dir, "proxy.log"),
+		pidFile:     filepath.Join(dir, "proxy.pid"),
+		stampFile:   filepath.Join(dir, "proxy.sha256"),
+		healthURL:   "http://127.0.0.1:1/healthz",
+		home:        dir,
 	}
 }
 

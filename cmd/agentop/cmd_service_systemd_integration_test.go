@@ -421,6 +421,7 @@ func TestServiceLifecycle_RealSystemd(t *testing.T) {
 		_ = exec.Command("systemctl", "--user", "disable", "--now", systemdUnit).Run()
 		_ = exec.Command("systemctl", "--user", "reset-failed", systemdUnit).Run()
 		_ = os.Remove(realUnit)
+		_ = os.Remove(filepath.Join(filepath.Dir(realUnit), updaterUnit))
 		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	})
 
