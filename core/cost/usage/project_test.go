@@ -104,8 +104,9 @@ func TestReplay_RebuildsTheProjectSeries(t *testing.T) {
 	now := time.Date(2026, 10, 5, 12, 0, 30, 0, time.UTC)
 	live := New(WithClock(func() time.Time { return now }))
 	priv := live.BeginReplay()
+	// The /repo/a event (i == 0) shares the live event's slot, so mergeRing calls bucket.add.
 	for i, e := range threeProjects(t) {
-		e.At = now.Add(-time.Duration(i+1) * time.Hour)
+		e.At = now.Add(-time.Duration(i) * time.Hour)
 		priv.Replay("s1", e)
 	}
 	// Live traffic in the same session, so FinishReplay merges into an existing ring.
