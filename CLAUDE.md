@@ -162,8 +162,7 @@ management", "the AuthBridge sidecar validates the JWT".
 
 ## Layout
 
-What used to live under `authbridge/` is the repo root. Only `authbridge/install.sh`
-remains there: it runs `scripts/install.sh`, for the URL v0.7.0 and its docs give.
+What used to live under `authbridge/` is the repo root.
 
 | Path | What it is |
 |---|---|
