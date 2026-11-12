@@ -177,10 +177,21 @@ Other rules:
 
 ## `install.sh` flags
 
-`scripts/install.sh` parses these (the `for arg` loop and `usage`). `agentop update`
-runs `install.sh` with some of them (`updateFlags` in
+`scripts/install.sh` parses these (the `for arg` loop and `usage`). For `--ref=main`
+(any ref that does not start with `v`), `agentop update` runs the website `install.sh`
+with some of them (`updateFlags` in
 [`cmd/agentop/cmd_update.go`](../cmd/agentop/cmd_update.go)). Some flags go to
 `agentop setup` unchanged (`hand_off`).
+For a release tag (the newest release, or `--ref=vX`), `agentop update` does not run
+`install.sh`. It downloads and checks the tarballs itself, and checks the
+build-provenance attestation of each one (see *Re-running the installer is safe* in
+[`laptop-service.md`](laptop-service.md)). It gets each bundle from
+`https://api.github.com/repos/rossoctl/cortex/attestations/sha256:<digest>` with no
+login. It sends `GH_TOKEN` or `GITHUB_TOKEN` when one is set, for the rate limit. Then
+it runs `<stage>/agentop setup --from <stage>` with the `hand_off` set: `--claude-code`,
+`--yes`, `--no-service`, `--install-only`, `--no-modify-path`, `--praxis`, plus
+`--handoff-bytes` and `--handoff-seconds`. `--cpex` selects the `cortex-cpex_` tarball,
+and `--praxis` adds the `cortex-gateway_` tarball.
 The `hand_off` comment says that set is frozen: an older agentop must accept every
 flag it sends.
 
