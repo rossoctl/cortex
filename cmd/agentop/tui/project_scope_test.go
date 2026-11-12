@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 var enterKey = tea.KeyMsg{Type: tea.KeyEnter}
@@ -174,5 +175,65 @@ func TestClear_EraseAgentIgnoresTheProjectScope(t *testing.T) {
 	m.applyClearCounts(clearCountsMsg{cc: cc, list: apiclient.SessionList{Sessions: m.sessions}})
 	if want := []string{"s1", "s2", "s3", "s4"}; !slices.Equal(cc.ids, want) {
 		t.Errorf("erase ids %q, want %q", cc.ids, want)
+	}
+}
+
+func TestProjectScope_ProjectsReplyThatMovesTheCursorResyncsTheBand(t *testing.T) {
+	m, _ := projectsModel(t, defaultProjectSeries)
+	openClaudeCode(t, m)
+	data := m.agentProjects[projAgent]
+	delete(m.agentProjects, projAgent)
+	m.agentScope, m.projectScope = projAgent, "~/works/cortex"
+	m.revealProjectScope()
+	m.rebuildAgentsTable()
+	runCmds(m.syncSpendScope())
+	if m.spend.bandProject != "" {
+		t.Fatalf("before the reply bandProject %q, want the whole agent", m.spend.bandProject)
+	}
+	_, cmd := m.Update(agentProjectsLoadedMsg{agent: projAgent, data: data, window: m.agentsSpanDef().window})
+	if d, _ := m.selectedAgentRow(); d != cortexRow {
+		t.Fatalf("the reply put the cursor on %+v, want %+v", d, cortexRow)
+	}
+	runCmds(cmd)
+	if m.spend.bandProject != "~/works/cortex" {
+		t.Errorf("after the reply bandProject %q, want ~/works/cortex", m.spend.bandProject)
+	}
+}
+
+func TestProjectScope_APathPastTheLabelCapMatchesItsSeriesLabel(t *testing.T) {
+	m, _ := projectsModel(t, defaultProjectSeries)
+	long := "/home/u/" + strings.Repeat("deep/", 30) + "repo"
+	label := long[len(long)-96:] // the usage side keeps the last 96 bytes of a path
+	m.sessions[0].Projects = []string{long}
+	m.agentScope, m.projectScope = projAgent, label
+	m.pane = paneSessions
+	m.rebuildSessionsTable()
+	wantRows(t, m, m.sessions[0].ID)
+	if n, _ := m.subRowSessions(agentRowDesc{agent: projAgent, kind: agentRowProject, project: label}); n != 1 {
+		t.Errorf("the sub-row counts %d sessions, want 1", n)
+	}
+}
+
+func TestProjectScope_ACachedOnlySessionListsOnlyUnderNoNamedProject(t *testing.T) {
+	m, _ := projectsModel(t, defaultProjectSeries)
+	m.events = map[string][]pipeline.SessionEvent{"gone": {{Host: "example.test"}}}
+	m.pane = paneSessions
+	for project, want := range map[string]bool{"": true, otherProjects: true, "~/works/cortex": false} {
+		m.projectScope = project
+		m.rebuildSessionsTable()
+		if got := slices.Contains(m.sessionRowIDs, "gone"); got != want {
+			t.Errorf("project scope %q: cached-only row listed %v, want %v", project, got, want)
+		}
+	}
+}
+
+func TestProjectScope_TimelineTitleNamesTheScopeOnce(t *testing.T) {
+	m, _ := projectsModel(t, defaultProjectSeries)
+	m.agentScope, m.projectScope = projAgent, "~/works/cortex"
+	m.pane = paneTimeline
+	m.timeline.session = "s1"
+	title := strings.SplitN(m.paneView(), "\n", 2)[0]
+	if n := strings.Count(title, "project=cortex"); n != 1 {
+		t.Errorf("timeline title %q names the project %d times, want 1", title, n)
 	}
 }

@@ -130,6 +130,12 @@ func (m *model) agentRowOpen(label string) bool {
 	return m.agentsExpanded[label] && m.agentRowExpandable(label)
 }
 
+// sessionInProject reports whether s names the project whose series label is label. A session
+// keeps the full path; the series label is its cut, sanitised form.
+func sessionInProject(s session.SessionSummary, label string) bool {
+	return slices.ContainsFunc(s.Projects, func(p string) bool { return usage.ProjectLabel(p) == label })
+}
+
 // subRowSessions counts the listed sessions a sub-row d holds, and gives the newest UpdatedAt.
 // A session in two projects counts in both.
 func (m *model) subRowSessions(d agentRowDesc) (n int, last time.Time) {
@@ -139,10 +145,7 @@ func (m *model) subRowSessions(d agentRowDesc) (n int, last time.Time) {
 		}
 		switch d.kind {
 		case agentRowProject:
-			// shortcut: an exact match on the series label, so a project path longer than
-			// event.MaxLabelLen (which the usage side truncates) counts in no row; match on the
-			// truncated form when a real path hits it.
-			if !slices.Contains(s.Projects, d.project) {
+			if !sessionInProject(s, d.project) {
 				continue
 			}
 		case agentRowProjectOther:

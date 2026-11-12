@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"math"
-	"slices"
 	"sort"
 	"time"
 
@@ -361,6 +360,10 @@ func (m *model) rebuildSessionsTable() {
 		if scope != "" && scope != otherAgents {
 			continue
 		}
+		// Nor does it name a project, so a named project scope lists none of these rows.
+		if project != "" && project != otherProjects {
+			continue
+		}
 		cached := m.events[id]
 		b := newRowBuilder(q != "")
 		b.cut(sessionIDCell(id, idW), func() string { return sessionIDCell(id, noLimit) })
@@ -482,7 +485,7 @@ func (m *model) sessionListed(s session.SessionSummary, scope, project string) b
 			return false
 		}
 	default:
-		if !slices.Contains(s.Projects, project) {
+		if !sessionInProject(s, project) {
 			return false
 		}
 	}

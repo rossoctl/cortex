@@ -1644,6 +1644,8 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.pane == paneAgents {
 			m.rebuildAgentsTable()
+			// The rebuild can move the cursor onto the scoped sub-row.
+			return m, m.syncSpendScope()
 		}
 		return m, nil
 
@@ -2726,8 +2728,8 @@ func (m *model) paneView() string {
 	}
 
 	// The band above every pane is scoped too, so every pane says so; usage and agents word it
-	// themselves above, and sessionHeader carries it for the events and detail panes.
-	if m.pane != paneUsage && m.pane != paneAgents && m.pane != paneEvents && m.pane != paneDetail {
+	// themselves above, and sessionHeader carries it for the events, detail and timeline panes.
+	if m.pane != paneUsage && m.pane != paneAgents && m.pane != paneEvents && m.pane != paneDetail && m.pane != paneTimeline {
 		title += m.scopeSuffix(m.agentScope, m.projectScope)
 	}
 	header := styleTitle.Render(title)
