@@ -12,14 +12,32 @@ import (
 
 	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/root"
+	"github.com/sigstore/sigstore-go/pkg/tuf"
 	"github.com/sigstore/sigstore-go/pkg/verify"
+	"github.com/theupdateframework/go-tuf/v2/metadata/fetcher"
 )
 
 // attestationsAPI is the GitHub attestations endpoint; the key is "sha256:<hex>".
 var attestationsAPI = "https://api.github.com/repos/rossoctl/cortex/attestations/"
 
 // provenanceTrustedMaterial loads the Sigstore public-good trusted root (TUF, cached under ~/.sigstore).
-var provenanceTrustedMaterial = func() (root.TrustedMaterial, error) { return root.FetchTrustedRoot() }
+var provenanceTrustedMaterial = func() (root.TrustedMaterial, error) {
+	// The TUF fetch takes no context, its default client has no timeout, and
+	// installRelease catches Ctrl-C: without this a stalled connection hangs the update.
+	opts := tuf.DefaultOptions()
+	opts.RepositoryBaseURL = tufMirror
+	f := fetcher.NewDefaultFetcher()
+	f.SetHTTPClient(&http.Client{Timeout: tufFetchTimeout})
+	opts.Fetcher = f
+	return root.FetchTrustedRootWithOptions(opts)
+}
+
+// tufMirror and tufFetchTimeout are the TUF repository and the limit on each of its
+// requests; a test points them at a stalled server.
+var (
+	tufMirror       = tuf.DefaultMirror
+	tufFetchTimeout = 30 * time.Second
+)
 
 // provenanceWant is the certificate identity that a release attestation must have.
 type provenanceWant struct{ issuer, san string }

@@ -187,7 +187,9 @@ For a release tag (the newest release, or `--ref=vX`), `agentop update` does not
 build-provenance attestation of each one (see *Re-running the installer is safe* in
 [`laptop-service.md`](laptop-service.md)). It gets each bundle from
 `https://api.github.com/repos/rossoctl/cortex/attestations/sha256:<digest>` with no
-login. It sends `GH_TOKEN` or `GITHUB_TOKEN` when one is set, for the rate limit. Then
+login. It sends `GH_TOKEN` or `GITHUB_TOKEN` when one is set, for the rate limit. It
+gets the Sigstore trusted root from `https://tuf-repo-cdn.sigstore.dev`, with a
+30-second limit on each request, and caches it under `~/.sigstore/root`. Then
 it runs `<stage>/agentop setup --from <stage>` with the `hand_off` set: `--claude-code`,
 `--yes`, `--no-service`, `--install-only`, `--no-modify-path`, `--praxis`, plus
 `--handoff-bytes` and `--handoff-seconds`. `--cpex` selects the `cortex-cpex_` tarball,

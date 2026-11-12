@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sigstore/sigstore-go/pkg/root"
 )
@@ -219,4 +220,26 @@ func TestCheckProvenanceEndToEnd(t *testing.T) {
 
 	provenanceTrustedMaterial = func() (root.TrustedMaterial, error) { return nil, errors.New("tuf down") }
 	wantErrContains(t, checkProvenance(ctx, provenanceFixtureName, digest, "v0.9.5"), "Sigstore trusted root")
+}
+
+// A TUF server that accepts the connection and never answers must not hang the update.
+func TestProvenanceTrustedMaterialTimesOut(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	t.Cleanup(func() { close(release); srv.Close() })
+	t.Setenv("HOME", t.TempDir()) // an empty TUF cache, so the client must fetch
+	oldMirror, oldTimeout := tufMirror, tufFetchTimeout
+	t.Cleanup(func() { tufMirror, tufFetchTimeout = oldMirror, oldTimeout })
+	tufMirror, tufFetchTimeout = srv.URL, 200*time.Millisecond
+
+	done := make(chan error, 1)
+	go func() { _, err := provenanceTrustedMaterial(); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("trusted root loaded from a server that never answers")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("trusted root fetch did not time out")
+	}
 }
