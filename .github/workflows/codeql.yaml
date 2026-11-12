@@ -1,0 +1,49 @@
+# CodeQL - Go and Python code scanning
+#
+# CodeQL runs on main as well as on PRs. GitHub compares a PR's analysis with
+# main's, so a flow that is already on main is not new for the PR. Without the
+# main run, every PR result is judged only by matching the fingerprint of an
+# earlier alert. An edit near an old sink line changes that fingerprint, and the
+# old flow fails the PR as a new alert (#1819).
+#
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+  pull_request:
+    branches: [main]
+    # Markdown cannot trip CodeQL; docs-only PRs skip it.
+    paths-ignore:
+      - "**.md"
+
+permissions: {}
+
+jobs:
+  codeql:
+    name: CodeQL Analysis (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    strategy:
+      matrix:
+        language: [go, python]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066  # v4
+        with:
+          languages: ${{ matrix.language }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@33d7b85da1a04171e211befe2c739303b9a4c066  # v4
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066  # v4
+        with:
+          category: "/language:${{ matrix.language }}"
