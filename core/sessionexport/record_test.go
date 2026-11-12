@@ -44,6 +44,7 @@ const (
 	secretAgentID     = "SECRET-AGENT-ID"
 	secretScope       = "SECRET-SCOPE"
 	secretUserAgent   = "SECRET-USER-AGENT-TAIL"
+	secretVersion     = "SECRET-CLIENT-VERSION"
 	secretThinking    = "SECRET-THINKING-TYPE"
 )
 
@@ -54,7 +55,7 @@ func allSecrets() []string {
 		secretHistoryArgs, secretMCPParams, secretMCPResult, secretA2APart, secretA2AArtifact,
 		secretA2AError, secretPath, secretInvPath, secretInvReason, secretInvDetail,
 		secretPlugin, secretSPIFFE, secretSubject, secretClientID, secretAgentID, secretScope,
-		secretUserAgent, secretThinking,
+		secretUserAgent, secretVersion, secretThinking,
 	}
 }
 
@@ -79,10 +80,14 @@ func loadedEvent() *model.SessionEvent {
 		BytesDown:     678,
 		Tunnel:        true,
 		TunnelReason:  model.TunnelReason("dial-failed"),
-		// Name/Version stay recognisable so Client projects to a value at all; Raw carries the
-		// planted secret, because Label() falls back to it when Name is empty and that is the
-		// header-content leak this fixture has to be able to see.
-		Client:   &model.EventClient{Name: "claude-code", Version: "2.1.270", Raw: "claude-code/2.1.270 " + secretUserAgent},
+		// Name/Version stay recognisable so Client projects to a value at all, while Raw and
+		// the parsed Version both carry planted secrets — the two places the header's own text
+		// reaches an EventClient, and so the two leaks this fixture has to be able to see.
+		Client: &model.EventClient{
+			Name:    "claude-code",
+			Version: secretVersion,
+			Raw:     "claude-code/2.1.270 " + secretUserAgent,
+		},
 		Error:    &model.EventError{Kind: "upstream", Code: "429", Message: secretPrompt},
 		Identity: &model.EventIdentity{Subject: secretSubject, ClientID: secretClientID, AgentID: secretAgentID, Scopes: []string{secretScope}},
 		TLS:      &model.EventTLS{PeerSPIFFEID: secretSPIFFE},
@@ -186,26 +191,94 @@ func TestFromEvent_UnknownClientStaysAbsent(t *testing.T) {
 	}
 }
 
-// TestFromEvent_UnrecognisedClientCarriesNoHeader is the header-content regression. Label()
-// falls back to the RAW User-Agent when Name is empty, so filtering only the literal
-// "unknown" let an arbitrary header reach the export: a User-Agent of
-// "claude-cli/private-data" became the label "claude-cli/private-data".
+// TestFromEvent_ClientCarriesNoHeaderContent is the header-content regression, and it drives
+// the REAL parser rather than a hand-built EventClient: model.ParseUserAgent is what
+// populates the field in production, and a fixture that sets Raw without Name describes a
+// header no parser produces — so it could pass while the header still reached the file.
 //
-// Asserted on the ENCODED BYTES, not on r.Client, so it still holds if the projection later
-// routes that string to some other field.
-func TestFromEvent_UnrecognisedClientCarriesNoHeader(t *testing.T) {
-	e := loadedEvent()
-	e.Client = &model.EventClient{Raw: "claude-cli/" + secretUserAgent}
+// Both halves of the label come from the header and each needed its own guard:
+//
+//   - an UNRECOGNISED product token leaves Name empty, so Label() answers the whole raw
+//     header
+//   - a RECOGNISED one ("claude-cli" is in knownClients) copies the rest of the token into
+//     Version verbatim, so a name-only guard still exports "claude-code/<header text>"
+//
+// Asserted on the ENCODED BYTES as well as the field, so it still holds if the projection
+// later routes that string somewhere else.
+func TestFromEvent_ClientCarriesNoHeaderContent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ua   string
+		want string // the exported Client
+	}{{
+		name: "recognised product token, secret in the version",
+		ua:   "claude-cli/" + secretUserAgent,
+		want: "claude-code", // the name survives; the unparseable version does not
+	}, {
+		name: "unrecognised product token",
+		ua:   "mystery-agent/" + secretUserAgent,
+		want: "",
+	}, {
+		name: "secret as a trailing comment on a real version",
+		ua:   "claude-cli/2.1.270 (" + secretUserAgent + ")",
+		want: "claude-code/2.1.270", // the comment is not part of the product token
+	}, {
+		name: "no slash at all",
+		ua:   secretUserAgent,
+		want: "",
+	}, {
+		name: "a path-shaped version",
+		ua:   "claude-cli//etc/" + secretUserAgent,
+		want: "claude-code",
+	}, {
+		name: "a genuine version is kept",
+		ua:   "claude-cli/2.1.270",
+		want: "claude-code/2.1.270",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := loadedEvent()
+			e.Client = model.ParseUserAgent(tc.ua)
 
-	if got := FromEvent(e, "s").Client; got != "" {
-		t.Errorf("Client = %q, want empty — an unparsed User-Agent is not an agent name", got)
+			if got := FromEvent(e, "s").Client; got != tc.want {
+				t.Errorf("Client = %q, want %q (parsed name %q, version %q)",
+					got, tc.want, e.Client.Name, e.Client.Version)
+			}
+			var buf bytes.Buffer
+			if err := NewWriter(&buf).WriteEvent(e, "s"); err != nil {
+				t.Fatalf("WriteEvent: %v", err)
+			}
+			if strings.Contains(buf.String(), secretUserAgent) {
+				t.Errorf("User-Agent content reached the export:\n%s", buf.String())
+			}
+		})
 	}
-	var buf bytes.Buffer
-	if err := NewWriter(&buf).WriteEvent(e, "s"); err != nil {
-		t.Fatalf("WriteEvent: %v", err)
+}
+
+// TestClientLabel_VersionShape pins the shape rule directly, because the version is the half
+// that is copied from the header and the boundary is where a rule like this goes wrong. Every
+// "keep" below is a form this proxy has actually observed.
+func TestClientLabel_VersionShape(t *testing.T) {
+	for _, keep := range []string{"1", "2.1", "2.1.285", "2.1.0-beta.3", "8.4.0", "1.126.0+bob2.2.1"} {
+		if got := clientLabel(&model.EventClient{Name: "claude-code", Version: keep}); got != "claude-code/"+keep {
+			t.Errorf("version %q: Client = %q, want it kept — this is a real version form", keep, got)
+		}
 	}
-	if strings.Contains(buf.String(), secretUserAgent) {
-		t.Errorf("the raw User-Agent reached the export:\n%s", buf.String())
+	for _, drop := range []string{
+		secretUserAgent, "private-data", "tok_abc123", "/etc/passwd", "v2.1.0", "2.1 270",
+		"a.b.c", "", "../../x", "2.1.0;rm -rf /",
+	} {
+		if got := clientLabel(&model.EventClient{Name: "claude-code", Version: drop}); got != "claude-code" {
+			t.Errorf("version %q: Client = %q, want the bare name — a non-version must not be exported",
+				drop, got)
+		}
+	}
+	// An empty Name is absence whatever the version says, since Label() would answer the raw
+	// header or the reserved "unknown".
+	if got := clientLabel(&model.EventClient{Version: "2.1.285", Raw: "mystery/2.1.285"}); got != "" {
+		t.Errorf("Client = %q, want empty for an unrecognised agent", got)
+	}
+	if got := clientLabel(nil); got != "" {
+		t.Errorf("Client = %q, want empty for a nil client", got)
 	}
 }
 

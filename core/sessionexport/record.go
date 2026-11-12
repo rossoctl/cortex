@@ -21,7 +21,8 @@
 // arguments, tool-result bodies, MCP params and results, A2A parts, artifacts and error
 // messages, plugin event payloads, thinking blocks, authenticated identity, TLS peer
 // identity, and request headers — the User-Agent included, which is why Client carries a
-// parsed name or nothing. Tool-call NAMES are also absent here (see rossoctl/cortex#1810's
+// recognised name and a version-shaped version, never the header's own text in either half
+// (see clientLabel). Tool-call NAMES are also absent here (see rossoctl/cortex#1810's
 // Tier 2) — the names alone are low risk, but arguments are not, and nothing in this
 // package's first form needs either.
 //
@@ -33,6 +34,7 @@
 package sessionexport
 
 import (
+	"regexp"
 	"time"
 
 	"github.com/rossoctl/cortex/core/model"
@@ -127,10 +129,14 @@ type Record struct {
 	// authorization subject. Worth restating here rather than only on the event, because an
 	// external collector is exactly where this is likely to be mistaken for identity.
 	//
-	// A RECOGNISED AGENT OR NOTHING. Empty both when the request carried no User-Agent and
-	// when it carried one this proxy does not parse — absence, not an agent named "unknown",
-	// and never the raw header. So a consumer counting agents undercounts rather than
-	// inventing a name, and the record cannot carry whatever a caller put in that header.
+	// A RECOGNISED AGENT OR NOTHING, AND A VERSION-SHAPED VERSION OR NO VERSION. Empty both
+	// when the request carried no User-Agent and when it carried one this proxy does not
+	// parse — absence, not an agent named "unknown", and never the raw header. The version is
+	// dropped, keeping the name, when it does not look like a version: it is copied from the
+	// header verbatim, so "claude-cli/private-data" would otherwise export as
+	// "claude-code/private-data". See clientLabel. So a consumer counting agents undercounts
+	// rather than inventing a name, and MAY FIND A NAME WITHOUT A VERSION where the header
+	// was malformed — read an absent version as "not stated", as everywhere else here.
 	Client string `json:"client,omitempty"`
 
 	// AgentRole says which caller under one session id made the request: "main" or
@@ -259,15 +265,10 @@ func FromEvent(e *model.SessionEvent, sessionID string) Record {
 	r.DurationMs = e.Duration.Milliseconds()
 	r.TtfbMs = e.Ttfb.Milliseconds()
 
-	// ONLY A PARSED CLIENT REACHES THE EXPORT, which is why this reads Name rather than
-	// filtering Label()'s output. Label() falls back to the RAW User-Agent when Name is empty
-	// — so a header of "claude-cli/private-data" would arrive here verbatim, putting
-	// attacker-controlled free text in a record this package promises carries none. Guarding
-	// on Name covers the nil client too: Label() answers UnknownClientLabel in exactly the
-	// cases Name is empty, and that reserved word must not become a real agent in an
-	// aggregate either. Absence stays absence.
-	if e.Client != nil && e.Client.Name != "" {
-		r.Client = e.Client.Label()
+	// BOTH HALVES OF THE LABEL ARE CHECKED, because both can carry the header's text and
+	// neither check implies the other. See clientLabel.
+	if e.Client != nil {
+		r.Client = clientLabel(e.Client)
 	}
 	if e.Error != nil {
 		r.ErrorKind, r.ErrorCode = e.Error.Kind, e.Error.Code
@@ -308,4 +309,43 @@ func FromEvent(e *model.SessionEvent, sessionID string) Record {
 		}
 	}
 	return r
+}
+
+// versionShape is what an exported client version may look like: a digit, then digits, dots
+// and dashes, with optional `+build` metadata. Deliberately narrower than "what a version
+// could be" — it admits every form this proxy has observed ("2.1.285", "2.1.0-beta.3",
+// "1.126.0+bob2.2.1", "8.4.0", "1") and nothing that reads as prose, a path or a token.
+var versionShape = regexp.MustCompile(`^[0-9][0-9A-Za-z.-]*(\+[0-9A-Za-z.-]+)?$`)
+
+// clientLabel is the content-safe form of a client's label: a RECOGNISED NAME, and its
+// version only when the version looks like one.
+//
+// BOTH HALVES COME FROM THE HEADER, which is the whole difference between this and reading
+// Label() directly, and checking only one of them is the bug this function exists to close:
+//
+//   - Name is safe once it is non-empty, because it is not copied from the header at all —
+//     ParseUserAgent sets it from knownClients, a closed vocabulary. An empty Name means
+//     Label() would answer the RAW User-Agent (or the reserved "unknown"), so neither may
+//     reach a record.
+//   - Version IS copied from the header, verbatim, for every agent but opencode
+//     (model.productVersion returns `rest` unchanged). "claude-cli" is a known client, so a
+//     header of "claude-cli/private-data" parses to Name "claude-code" and Version
+//     "private-data" — a recognised name carrying arbitrary text past a name-only guard,
+//     and Label() then exports "claude-code/private-data". Only the cap (maxClientLen) and
+//     the control-rune sanitiser stand between that header and the file.
+//
+// A VERSION IS KEPT RATHER THAN ALWAYS DROPPED because it is the point of the field for an
+// export — agent-version adoption is a question a month of records should answer, and
+// model.AgentName already exists for consumers that want the version folded away. The shape
+// check is what makes keeping it safe: a version is a closed-shape token, so anything that
+// is not one is not a version and is dropped with the name retained. A real agent therefore
+// still files under its own name, with its release absent rather than its header exported.
+func clientLabel(c *model.EventClient) string {
+	if c == nil || c.Name == "" {
+		return ""
+	}
+	if c.Version == "" || !versionShape.MatchString(c.Version) {
+		return c.Name
+	}
+	return c.Name + "/" + c.Version
 }
