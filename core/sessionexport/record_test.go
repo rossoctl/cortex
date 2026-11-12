@@ -234,6 +234,35 @@ func TestFromEvent_ClientCarriesNoHeaderContent(t *testing.T) {
 		name: "a genuine version is kept",
 		ua:   "claude-cli/2.1.270",
 		want: "claude-code/2.1.270",
+	}, {
+		// The cases a digit-led charset let through. The first secret in this test only
+		// dropped because it begins with a letter; put a digit in front and the old shape
+		// shipped the lot.
+		name: "digit-led free text",
+		ua:   "claude-cli/1-" + secretUserAgent,
+		want: "claude-code",
+	}, {
+		name: "digit-prefixed secret, no separator",
+		ua:   "claude-cli/0" + secretUserAgent,
+		want: "claude-code",
+	}, {
+		name: "a project name that starts with a digit",
+		ua:   "claude-cli/1-acme-merger-q3-plan",
+		want: "claude-code",
+	}, {
+		name: "a UUID",
+		ua:   "claude-cli/3f2a9c1e-7b4d-4e2a-9f1c-1234567890ab",
+		want: "claude-code",
+	}, {
+		name: "prose hung off a real version",
+		ua:   "claude-cli/2.1.0-my.customer.list.foo",
+		want: "claude-code",
+	}, {
+		// trailingKnownClient's path: the agent is the LAST token, so the version comes from
+		// there and the same gate has to hold.
+		name: "trailing known client",
+		ua:   "mystery/1.0 claude-cli/9" + secretUserAgent,
+		want: "claude-code",
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := loadedEvent()
@@ -266,6 +295,12 @@ func TestClientLabel_VersionShape(t *testing.T) {
 	for _, drop := range []string{
 		secretUserAgent, "private-data", "tok_abc123", "/etc/passwd", "v2.1.0", "2.1 270",
 		"a.b.c", "", "../../x", "2.1.0;rm -rf /",
+		// DIGIT-LED IS NOT VERSION-SHAPED. A charset that merely required a leading digit
+		// admitted every one of these, which is why the rule is a grammar with a numeric core
+		// and a closed list of pre-release words.
+		"1-private-data", "0" + secretUserAgent, "1-acme-merger-q3-plan",
+		"3f2a9c1e-7b4d-4e2a-9f1c-1234567890ab", "2.1.0-my.customer.list.foo",
+		"1.2.3-internal-codename", "9SECRET-TAIL", "1234567", "1.2.3.4.5",
 	} {
 		if got := clientLabel(&model.EventClient{Name: "claude-code", Version: drop}); got != "claude-code" {
 			t.Errorf("version %q: Client = %q, want the bare name — a non-version must not be exported",
@@ -333,6 +368,78 @@ func TestFromEvent_SessionIDFallback(t *testing.T) {
 func TestFromEvent_NilIsSafe(t *testing.T) {
 	if got := FromEvent(nil, "s"); got.Schema != SchemaVersion {
 		t.Errorf("Schema = %d, want %d even for a nil event", got.Schema, SchemaVersion)
+	}
+}
+
+// TestWriter_SkipsNilEvents: FromEvent stays total, but a LINE for a nil event is a phantom
+// row. At has no omitempty — an event always has a time — so the record read
+// `{"schema":1,"sessionId":"","at":"0001-01-01T00:00:00Z"}`: a consumer bucketing by At gets
+// an event in year 1, one counting rows per session gets a row belonging to none, and the
+// sessionID the caller passed was dropped because FromEvent's nil branch returns before the
+// fallback. The gap in an archive walk is the walk's, not an event that happened.
+func TestWriter_SkipsNilEvents(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+
+	if err := w.WriteEvent(nil, "sess-x"); err != nil {
+		t.Fatalf("WriteEvent(nil) = %v, want nil — a nil element is not an error", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("a nil event wrote %q, want nothing", buf.String())
+	}
+	if w.Count() != 0 {
+		t.Errorf("Count = %d, want 0 — a skipped event is not a written record", w.Count())
+	}
+
+	// A real event still writes, and the count is of records on the wire.
+	if err := w.WriteEvent(loadedEvent(), "sess-x"); err != nil {
+		t.Fatalf("WriteEvent: %v", err)
+	}
+	if w.Count() != 1 {
+		t.Errorf("Count = %d, want 1 after one real event", w.Count())
+	}
+	if n := strings.Count(strings.TrimRight(buf.String(), "\n"), "\n"); n != 0 {
+		t.Errorf("got %d extra lines, want a single record:\n%s", n, buf.String())
+	}
+}
+
+// TestRecord_WireStringsAreBounded: "a record is ~30 small scalars" is a claim about the
+// file, and Model/RequestedModel/ServedModel/FinishReason come off the wire with no cap of
+// their own — a 5KB `model` in a request body exported as 5KB before this bound. Host and
+// the error fields are bounded on the same grounds.
+func TestRecord_WireStringsAreBounded(t *testing.T) {
+	long := strings.Repeat("m", 5014)
+	e := &model.SessionEvent{
+		SessionID:     "s",
+		At:            time.Now(),
+		Host:          long,
+		RequestedHost: long,
+		HTTPMethod:    long,
+		Error:         &model.EventError{Kind: long, Code: long},
+		Inference: &model.InferenceExtension{
+			Model: long, RequestedModel: long, ServedModel: long, FinishReason: long,
+		},
+	}
+	r := FromEvent(e, "s")
+	for _, f := range []struct {
+		name string
+		got  string
+	}{
+		{"Model", r.Model}, {"RequestedModel", r.RequestedModel}, {"ServedModel", r.ServedModel},
+		{"FinishReason", r.FinishReason}, {"Host", r.Host}, {"RequestedHost", r.RequestedHost},
+		{"HTTPMethod", r.HTTPMethod}, {"ErrorKind", r.ErrorKind}, {"ErrorCode", r.ErrorCode},
+	} {
+		if len(f.got) > maxLabelLen {
+			t.Errorf("%s is %d bytes, want <= %d — an unbounded wire string reached the export",
+				f.name, len(f.got), maxLabelLen)
+		}
+	}
+
+	// Control runes are stripped before the cut, so no row can carry something a terminal
+	// would act on, and the one-line property does not depend on the encoder alone.
+	e.Inference.Model = "claude\x00opus\x1b[31m"
+	if got := FromEvent(e, "s").Model; strings.ContainsAny(got, "\x00\x1b") {
+		t.Errorf("Model = %q, want control runes removed", got)
 	}
 }
 

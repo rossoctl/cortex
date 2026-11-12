@@ -148,6 +148,13 @@ type Record struct {
 	// Model is the model the request was sent for. RequestedModel is set only when a plugin
 	// changed it, ServedModel only when the response named a different one than was asked
 	// for.
+	//
+	// BOUNDED, BECAUSE THESE ARE FREE TEXT OFF THE WIRE. Model and RequestedModel are
+	// whatever the request body's `model` said and ServedModel whatever the response named;
+	// no parser caps any of them, so a 5KB model name exported as 5KB and the "~30 small
+	// scalars" this package promises held only because real traffic is well-behaved. Capped
+	// at maxLabelLen on the way in — see exportLabel. The ledger bounds the same field for
+	// the same reason (ledger.rowLabel).
 	Model          string `json:"model,omitempty"`
 	RequestedModel string `json:"requestedModel,omitempty"`
 	ServedModel    string `json:"servedModel,omitempty"`
@@ -157,12 +164,21 @@ type Record struct {
 	Stream           bool `json:"stream,omitempty"`
 	StreamedResponse bool `json:"streamedResponse,omitempty"`
 
+	// FinishReason is the upstream's own stop reason, and is bounded as the model fields are:
+	// it comes off the response body and nothing caps it there.
 	FinishReason string `json:"finishReason,omitempty"`
 
-	// Token counts, THE SPLIT ONLY AND NEVER AN AGGREGATE. These five are exactly what
-	// cost/ledger.Row prices from, and InputTokens is the UNCACHED prompt — the three
-	// prompt-side kinds are disjoint, so a consumer adds them itself if it wants a prompt
-	// total.
+	// Token counts, THE SPLIT ONLY AND NEVER AN AGGREGATE. InputTokens is the UNCACHED
+	// prompt, and the three prompt-side kinds are disjoint, so a consumer adds them itself if
+	// it wants a prompt total.
+	//
+	// FOUR DISJOINT KINDS AND ONE SUBSET, which is the one thing to read before summing
+	// anything here. Input, CacheRead, CacheWrite and Output are disjoint. ReasoningTokens is
+	// NOT a fifth kind: it is a SUBSET OF OutputTokens, the provider saying how much of what
+	// it generated was reasoning, so `outputTokens + reasoningTokens` double-counts every
+	// reasoning token at the output rate. usage.Counts carries the same warning in the same
+	// words, and parsercommon.TokenUsage.Total deliberately omits Reasoning for this reason.
+	// Pricing reads the four; this one is for attribution, not arithmetic.
 	//
 	// NO promptTokens / completionTokens HERE, DELIBERATELY. The event carries a legacy pair
 	// of those names, but InferenceExtension.PromptTokens is already
@@ -175,10 +191,12 @@ type Record struct {
 	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`
 	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
 	OutputTokens     int `json:"outputTokens,omitempty"`
-	ReasoningTokens  int `json:"reasoningTokens,omitempty"`
 
-	// PresentKinds names which of the five counts above the provider actually reported, and is
-	// the one field here that escapes this type's zero-means-absent rule: a set bit with a
+	// ReasoningTokens is a SUBSET of OutputTokens, already counted there. Never add the two.
+	ReasoningTokens int `json:"reasoningTokens,omitempty"`
+
+	// PresentKinds names which of the token counts above the provider actually reported, and
+	// is the one field here that escapes this type's zero-means-absent rule: a set bit with a
 	// zero count is "the provider reported zero", an unset bit is "the provider does not
 	// expose this kind". Without it those two are the same absent key, and a consumer cannot
 	// tell a model that wrote no cache from a provider that never says.
@@ -244,14 +262,14 @@ func FromEvent(e *model.SessionEvent, sessionID string) Record {
 		At:            e.At,
 		Direction:     e.Direction.String(),
 		Phase:         e.Phase.String(),
-		Host:          e.Host,
-		RequestedHost: e.RequestedHost,
-		HTTPMethod:    e.HTTPMethod,
+		Host:          exportLabel(e.Host),
+		RequestedHost: exportLabel(e.RequestedHost),
+		HTTPMethod:    exportLabel(e.HTTPMethod),
 		StatusCode:    e.StatusCode,
 		BytesUp:       e.BytesUp,
 		BytesDown:     e.BytesDown,
 		Tunnel:        e.Tunnel,
-		TunnelReason:  string(e.TunnelReason),
+		TunnelReason:  exportLabel(string(e.TunnelReason)),
 	}
 	if r.SessionID == "" {
 		r.SessionID = sessionID
@@ -271,15 +289,15 @@ func FromEvent(e *model.SessionEvent, sessionID string) Record {
 		r.Client = clientLabel(e.Client)
 	}
 	if e.Error != nil {
-		r.ErrorKind, r.ErrorCode = e.Error.Kind, e.Error.Code
+		r.ErrorKind, r.ErrorCode = exportLabel(e.Error.Kind), exportLabel(e.Error.Code)
 	}
 	if inf := e.Inference; inf != nil {
-		r.Model = inf.Model
-		r.RequestedModel = inf.RequestedModel
-		r.ServedModel = inf.ServedModel
+		r.Model = exportLabel(inf.Model)
+		r.RequestedModel = exportLabel(inf.RequestedModel)
+		r.ServedModel = exportLabel(inf.ServedModel)
 		r.Stream = inf.Stream
 		r.StreamedResponse = inf.StreamedResponse
-		r.FinishReason = inf.FinishReason
+		r.FinishReason = exportLabel(inf.FinishReason)
 		r.AgentRole = string(inf.AgentRole)
 		r.InputTokens = inf.InputTokens
 		r.CacheReadTokens = inf.CacheReadTokens
@@ -311,11 +329,54 @@ func FromEvent(e *model.SessionEvent, sessionID string) Record {
 	return r
 }
 
-// versionShape is what an exported client version may look like: a digit, then digits, dots
-// and dashes, with optional `+build` metadata. Deliberately narrower than "what a version
-// could be" — it admits every form this proxy has observed ("2.1.285", "2.1.0-beta.3",
-// "1.126.0+bob2.2.1", "8.4.0", "1") and nothing that reads as prose, a path or a token.
-var versionShape = regexp.MustCompile(`^[0-9][0-9A-Za-z.-]*(\+[0-9A-Za-z.-]+)?$`)
+// maxLabelLen bounds every string a Record carries that came off the wire. 96 bytes, the
+// same bound core/cost/event.MaxLabelLen puts on the same values — matched by value rather
+// than imported, because an export has no business depending on the cost packages.
+const maxLabelLen = 96
+
+// exportLabel is the bound every wire-sourced string in a Record passes through: control
+// runes out, then truncated to maxLabelLen on a rune boundary.
+//
+// WHY A CAP AT ALL, when none of these is content in the sense this package exists to keep
+// out: a model name is a routing key, not a prompt. Because "a record is ~30 small scalars"
+// is a claim about the FILE, and it was true only by the grace of what traffic happens to
+// send — `model` is free text off the request body and no parser bounds it, so a 5KB model
+// name produced a 5KB record. A month of those is a different file than this package
+// promises. Bounding by construction is cheaper than hoping.
+//
+// SANITISE BEFORE TRUNCATE, matching model.ParseUserAgent's order and for its reason: a
+// substitution can lengthen the string, so capping first would let the cap be exceeded
+// afterwards. TruncateLabel cuts on a rune boundary, so the result is never half a rune.
+func exportLabel(s string) string {
+	if s == "" {
+		return ""
+	}
+	return model.TruncateLabel(model.SanitizeControlRunes(s), maxLabelLen)
+}
+
+// versionShape is what an exported client version may look like: a NUMERIC core of up to
+// four parts, an optional pre-release from a CLOSED LIST of words, and an optional short
+// build tag. It admits every form this proxy has observed ("1", "2.1", "2.1.285",
+// "2.1.0-beta.3", "8.4.0", "1.126.0+bob2.2.1") and nothing that reads as prose, a path or a
+// token.
+//
+// THE CHARACTER CLASS HAS TO BE NUMERIC, NOT MERELY DIGIT-LED, which is the whole reason
+// this is a grammar rather than `^[0-9][0-9A-Za-z.-]*$`. That earlier shape demanded only
+// that the header's first character be a digit, so every one of these shipped:
+//
+//	claude-cli/1-acme-merger-q3-plan                 -> claude-code/1-acme-merger-q3-plan
+//	claude-cli/3f2a9c1e-7b4d-4e2a-9f1c-1234567890ab  -> claude-code/3f2a9c1e-…  (a UUID)
+//	claude-cli/0SECRETUSERAGENTTAIL                  -> claude-code/0SECRETUSERAGENTTAIL
+//	claude-cli/2.1.0-my.customer.list.foo            -> claude-code/2.1.0-my.customer.list.foo
+//
+// A free-text suffix after a leading digit is exactly the content this package must not
+// carry, and a test whose planted secret happened to start with a letter could not see it.
+// Enumerating the pre-release words is what closes that: "beta" is a version, "acme-merger"
+// is not, and no charset distinguishes them.
+var versionShape = regexp.MustCompile(
+	`^\d{1,6}(\.\d{1,6}){0,3}` + // numeric core, 1-4 parts
+		`(-(alpha|beta|rc|pre|dev|canary|nightly|preview)(\.?\d{1,6})*)?` + // known pre-release words only
+		`(\+[a-z]{0,8}\d{1,6}(\.\d{1,6})*)?$`) // short build tag, e.g. +bob2.2.1
 
 // clientLabel is the content-safe form of a client's label: a RECOGNISED NAME, and its
 // version only when the version looks like one.

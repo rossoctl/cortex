@@ -36,8 +36,22 @@ func (w *Writer) Write(r Record) error {
 	return nil
 }
 
-// WriteEvent projects e and writes it.
+// WriteEvent projects e and writes it. A NIL EVENT WRITES NOTHING and is not counted,
+// returning nil: an archive walk hands this whatever it holds, and a nil element is the
+// walk's gap rather than an event that happened.
+//
+// SKIPPED HERE RATHER THAN HANDLED IN FromEvent, which stays total and returns a usable
+// zero Record for a nil event. The two answer different questions: a projection of nothing
+// is harmless, but a LINE for nothing is not — Record.At has no omitempty (an event always
+// has a time), so the row read `{"schema":1,"sessionId":"","at":"0001-01-01T00:00:00Z"}`,
+// which a consumer counting rows per session or bucketing by At takes for a real event in
+// year 1 with no session. It also dropped the sessionID the caller passed, since FromEvent's
+// nil branch returns before the fallback. One line is the wrong place to learn that an
+// archive had a hole in it.
 func (w *Writer) WriteEvent(e *model.SessionEvent, sessionID string) error {
+	if e == nil {
+		return nil
+	}
 	return w.Write(FromEvent(e, sessionID))
 }
 
