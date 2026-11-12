@@ -116,10 +116,11 @@ func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io
 			return errors.New("could not read the newest release")
 		}
 	}
-	var cmd *exec.Cmd
-	var restage func() (*exec.Cmd, error) // v* only: the same stage, moved off a noexec temp dir
+	var run func() error
 	if !strings.HasPrefix(ref, "v") {
-		cmd = exec.Command("sh", append([]string{"-c", updateScript, installerURL}, flags...)...)
+		cmd := exec.Command("sh", append([]string{"-c", updateScript, installerURL}, flags...)...)
+		cmd.Stdout, cmd.Stderr = stdout, stderr
+		run = cmd.Run
 	} else {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		start := time.Now()
@@ -143,33 +144,35 @@ func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io
 			c.Env = slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, installerDrewEnv+"=") })
 			return c
 		}
-		cmd = build(stage)
-		restage = func() (*exec.Cmd, error) {
-			dir, err := restageUnderHome(stage, env.home)
-			if err != nil {
-				return nil, fmt.Errorf("cannot run programs from %s, and could not stage under ~/.cortex/tmp instead: %w", filepath.Dir(stage), err)
-			}
-			_, _ = fmt.Fprintf(stderr, "%s does not let programs run; staged under %s instead.\n", filepath.Dir(stage), filepath.Dir(dir))
-			_ = os.RemoveAll(stage)
-			stage = dir // the deferred RemoveAll now removes the new stage
-			return build(dir), nil
+		run = func() (err error) {
+			stage, err = runStaged(stage, env.home, build, stderr) // the deferred RemoveAll removes the stage left
+			return err
 		}
 	}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
 	// Ctrl-C reaches the installer too, and setup undoes its steps on it: caught
 	// here, so the prompt does not come back while that rollback still prints.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigs)
-	err := cmd.Run()
-	// A start error of EACCES is a noexec temp dir (install.sh's exit 126); an
-	// *exec.ExitError never matches, so setup has not run and a retry is safe.
-	if restage != nil && errors.Is(err, fs.ErrPermission) {
-		if cmd, err = restage(); err == nil {
-			err = cmd.Run()
-		}
+	return run()
+}
+
+// runStaged runs build(stage). A start error of EACCES is a noexec temp dir
+// (install.sh's exit 126); an *exec.ExitError never matches, so setup has not
+// run and a retry is safe: it copies the stage under home/.cortex/tmp, removes
+// the first stage and runs once more. It returns the stage that still exists.
+func runStaged(stage, home string, build func(string) *exec.Cmd, stderr io.Writer) (string, error) {
+	err := build(stage).Run()
+	if !errors.Is(err, fs.ErrPermission) {
+		return stage, err
 	}
-	return err
+	dir, err := restageUnderHome(stage, home)
+	if err != nil {
+		return stage, fmt.Errorf("cannot run programs from %s, and could not stage under ~/.cortex/tmp instead: %w", filepath.Dir(stage), err)
+	}
+	_, _ = fmt.Fprintf(stderr, "%s does not let programs run; staged under %s instead.\n", filepath.Dir(stage), filepath.Dir(dir))
+	_ = os.RemoveAll(stage)
+	return dir, build(dir).Run()
 }
 
 // restageUnderHome copies stage into a new stage under home/.cortex/tmp, a root

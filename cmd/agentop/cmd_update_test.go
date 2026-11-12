@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"net/http"
@@ -483,5 +484,79 @@ func TestRestageUnderHomeAfterExecPermissionError(t *testing.T) {
 	}
 	if _, err := restageUnderHome(stage, "relative"); err == nil {
 		t.Fatal("a relative HOME must not stage under the working directory")
+	}
+}
+
+// runStagedFixture makes a stage whose agentop has mode, and a build that runs
+// it with a log file. A copy keeps mode 0644, so build makes any stage but the
+// first one runnable: that is the noexec temp dir, without a noexec mount.
+func runStagedFixture(t *testing.T, script string, mode os.FileMode) (stage, log string, build func(string) *exec.Cmd) {
+	t.Helper()
+	stage = t.TempDir()
+	log = filepath.Join(t.TempDir(), "runs")
+	if err := os.WriteFile(filepath.Join(stage, "agentop"), []byte(script), mode); err != nil {
+		t.Fatal(err)
+	}
+	first := stage
+	build = func(s string) *exec.Cmd {
+		if s != first {
+			if err := os.Chmod(filepath.Join(s, "agentop"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return exec.Command(filepath.Join(s, "agentop"), log)
+	}
+	return stage, log, build
+}
+
+func TestRunStagedRestagesAfterExecPermissionError(t *testing.T) {
+	stage, log, build := runStagedFixture(t, "#!/bin/sh\necho \"$0\" >> \"$1\"\n", 0o644)
+	home := t.TempDir()
+	var stderr bytes.Buffer
+	left, err := runStaged(stage, home, build, &stderr)
+	if err != nil {
+		t.Fatalf("runStaged: %v", err)
+	}
+	if left == stage || !isStagingDir(left, home) {
+		t.Fatalf("stage left = %s, want a new staging dir under %s", left, home)
+	}
+	if _, err := os.Stat(stage); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("first stage %s is not removed: %v", stage, err)
+	}
+	if _, err := os.Stat(filepath.Join(left, "agentop")); err != nil {
+		t.Fatalf("new stage must stay for the caller to remove: %v", err)
+	}
+	if got, _ := os.ReadFile(log); string(got) != filepath.Join(left, "agentop")+"\n" {
+		t.Fatalf("runs = %q, want one run of the copied agentop", got)
+	}
+	if !strings.Contains(stderr.String(), "staged under "+filepath.Join(home, ".cortex", "tmp")) {
+		t.Fatalf("stderr = %q, want the restage line", stderr.String())
+	}
+}
+
+func TestRunStagedDoesNotRetryWhenSetupFails(t *testing.T) {
+	stage, log, build := runStagedFixture(t, "#!/bin/sh\necho run >> \"$1\"\nexit 126\n", 0o755)
+	home := t.TempDir()
+	left, err := runStaged(stage, home, build, io.Discard)
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || left != stage {
+		t.Fatalf("runStaged = (%s, %v), want (%s, an ExitError)", left, err, stage)
+	}
+	if got, _ := os.ReadFile(log); string(got) != "run\n" {
+		t.Fatalf("runs = %q, want exactly one run", got)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".cortex")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a setup failure must not restage: %v", err)
+	}
+}
+
+func TestRunStagedKeepsFirstStageWhenRestageFails(t *testing.T) {
+	stage, _, build := runStagedFixture(t, "#!/bin/sh\n", 0o644)
+	left, err := runStaged(stage, "relative", build, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "could not stage under ~/.cortex/tmp") || left != stage {
+		t.Fatalf("runStaged = (%s, %v), want (%s, a restage error)", left, err, stage)
+	}
+	if _, err := os.Stat(stage); err != nil {
+		t.Fatalf("first stage must stay for the caller to remove: %v", err)
 	}
 }
