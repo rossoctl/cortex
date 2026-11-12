@@ -186,6 +186,8 @@ func (m *model) agentsWindowLabel() string {
 // the next span, and an open drawer with them, since on this pane it breaks down the same span.
 func (m *model) cycleAgentsWindow() tea.Cmd {
 	m.agentsWindowStep = (m.agentsWindowStep + 1) % len(spendDrawerSpans)
+	// Project figures are for the old window, so they go; the open rows stay open.
+	m.agentProjects = nil
 	cmds := []tea.Cmd{m.fetchAgentRowsCmd(agentsOpenNever, paneNone)}
 	if m.spendDrawerVisible() {
 		// cycleSpendWindow's reason: the old error describes a request for another span.
@@ -372,45 +374,79 @@ func (m *model) rebuildAgentsTable() {
 	}
 	picker := m.pickerRows()
 	rows := make([]table.Row, 0, len(picker)+1)
-	// Its figures are left blank: the band above already carries the window's total, and summed
-	// across agents billing in different units it would only read as mixed.
-	all := table.Row{allAgentsLabel, ""}
-	if withSessions {
-		all = slices.Insert(all, 1, "", "")
-	}
-	// Nothing under SERVER either: routing is chosen per agent, and S on this row says so.
-	if routed {
-		all = append(all, "")
-	}
-	rows = append(rows, all)
 	descs := make([]agentRowDesc, 0, len(picker)+1)
-	descs = append(descs, agentRowDesc{kind: agentRowAgent})
-	now := m.clock()
-	for _, a := range picker {
-		descs = append(descs, agentRowDesc{agent: a.label, kind: agentRowAgent})
-		row := table.Row{
-			// SANITISED AT RENDER TIME. The label is a User-Agent, so it is
-			// request-controlled; sanitizeLabel applies the proxy's own rule.
-			sanitizeLabel(a.label),
-			agentCostCellIn(a.Counts, a.units, agentsCostWidth),
-		}
+	add := func(d agentRowDesc, agent, sessions, lastSeen, cost, server string) {
+		row := table.Row{agent, cost}
 		if withSessions {
-			row = slices.Insert(row, 1, m.agentSessionsCell(a.label), relTime(now, m.agentLastSeen(a.label)))
+			row = slices.Insert(row, 1, sessions, lastSeen)
 		}
 		if routed {
-			row = append(row, agentServerCell(router, a.label))
+			row = append(row, server)
 		}
 		rows = append(rows, row)
+		descs = append(descs, d)
+	}
+	// The ▸ / ▾ marks show only while a listed session names a project, so a server that records
+	// none shows the table unchanged.
+	projects := m.sessionsNameProjects()
+	mark := func(label string) string {
+		switch {
+		case !projects:
+			return ""
+		case m.agentRowOpen(label):
+			return "▾ "
+		case m.agentRowExpandable(label):
+			return "▸ "
+		}
+		return "  "
+	}
+	now := m.clock()
+	// Its figures are left blank: the band above already carries the window's total, and summed
+	// across agents billing in different units it would only read as mixed. Nothing under SERVER
+	// either: routing is chosen per agent, and S on this row says so.
+	if m.agentRowOpen("") {
+		add(agentRowDesc{kind: agentRowHeading}, mark("")+allAgentsLabel, "", "", "", "")
+		m.addProjectRows(add, "", nil, now)
+	} else {
+		add(agentRowDesc{kind: agentRowAgent}, mark("")+allAgentsLabel, "", "", "", "")
+	}
+	for _, a := range picker {
+		// SANITISED AT RENDER TIME. The label is a User-Agent, so it is request-controlled;
+		// sanitizeLabel applies the proxy's own rule.
+		label := mark(a.label) + sanitizeLabel(a.label)
+		if m.agentRowOpen(a.label) {
+			// An open row is a heading: its figures move to All projects below it.
+			add(agentRowDesc{agent: a.label, kind: agentRowHeading}, label, "", "", "", "")
+			m.addProjectRows(add, a.label, &a, now)
+			continue
+		}
+		add(agentRowDesc{agent: a.label, kind: agentRowAgent}, label,
+			m.agentSessionsCell(a.label), relTime(now, m.agentLastSeen(a.label)),
+			agentCostCellIn(a.Counts, a.units, agentsCostWidth), agentServerCell(router, a.label))
 	}
 	m.agentsTbl.SetRows(rows)
 	m.agentRowDescs = descs
 	// Follow the row, not the index: a refresh can reorder the rows under the cursor. When the
 	// row is gone, go to the first row of the same agent.
+	//
+	// A project sub-row that is gone only because its open row waits for a new fetch (after `w`)
+	// is kept as m.agentsCursorWant, so the cursor goes back to it when the reply lands — unless
+	// the reader moved the cursor in the meantime.
+	if w := m.agentsCursorWant; w != nil && cursor == m.agentsCursorWantAt {
+		prev, hadPrev = *w, true
+	}
+	m.agentsCursorWant = nil
 	if hadPrev {
 		if i := slices.Index(descs, prev); i >= 0 {
 			cursor = i
 		} else if i := slices.IndexFunc(descs, func(d agentRowDesc) bool { return d.agent == prev.agent }); i >= 0 {
 			cursor = i
+			if (prev.kind == agentRowProject || prev.kind == agentRowProjectOther) && m.agentRowOpen(prev.agent) {
+				if _, loaded := m.agentProjects[prev.agent]; !loaded {
+					want := prev
+					m.agentsCursorWant, m.agentsCursorWantAt = &want, i
+				}
+			}
 		}
 	}
 	setCursorVisible(&m.agentsTbl, cursor)

@@ -1090,6 +1090,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		//
 		// NO `r` BRANCH, unlike the catalog above: the rows are refetched by every `A` press,
 		// which is why the footer advertises no refresh key either.
+		//
+		// SPACE opens or closes a row's projects. On a row that cannot open, it goes to the table,
+		// which pages down.
+		if msg.String() == " " {
+			if cmd, ok := m.toggleAgentRow(); ok {
+				return cmd
+			}
+		}
 		var cmd tea.Cmd
 		m.agentsTbl, cmd = m.agentsTbl.Update(msg)
 		return cmd
@@ -1432,6 +1440,19 @@ func (m *model) helpView() string {
 		if scope, ok := m.selectedAgentScope(); ok && scope == "" {
 			enterHint = "  [↵] all agents"
 		}
+		// [space] after [↵], and the full project label after nav: the cell may show only a tail.
+		navHint, spaceHint := "[↑↓] nav", ""
+		if d, ok := m.selectedAgentRow(); ok {
+			switch {
+			case d.kind != agentRowAgent:
+				spaceHint = "  [space] close"
+			case m.agentRowExpandable(d.agent):
+				spaceHint = "  [space] projects"
+			}
+			if d.kind == agentRowProject {
+				navHint += "  " + sanitizeLabel(d.project)
+			}
+		}
 		escHint := "  [esc] back"
 		if m.agentsAboveSessions {
 			escHint = ""
@@ -1449,7 +1470,7 @@ func (m *model) helpView() string {
 		// key gets discovered. The drawer here breaks down the row under the cursor.
 		spendHint := "  [$] spend"
 		// [w] the pane's window, which the title names; see cycleAgentsWindow.
-		return "[↑↓] nav" + enterHint + escHint + serverHint + "  [w] window" + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
+		return navHint + enterHint + spaceHint + escHint + serverHint + "  [w] window" + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	}
 	return "[?] keys  [q] quit"
 }
