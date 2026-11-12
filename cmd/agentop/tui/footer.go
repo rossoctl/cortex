@@ -86,6 +86,9 @@ func (m *model) footerView() string {
 	if m.pane == paneSessions && m.agentScope != "" && m.sessionsScope() == "" {
 		status.WriteString(styleWarn.Render("   [no session names its agent: list not scoped]"))
 	}
+	if m.pane == paneSessions && m.projectScope != "" && m.sessionsProjectScope() == "" {
+		status.WriteString(styleWarn.Render("   [no session names its project: list not scoped]"))
+	}
 	// A non-chronological sort, for the same reason as the search above: it is
 	// state the operator chose, and a table in an order the eye does not expect
 	// reads as a bug when nothing on screen names the ordering.

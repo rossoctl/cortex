@@ -509,6 +509,7 @@ func (m *model) enterAgents(from paneID) {
 	m.previousPane = from
 	m.agentsAboveSessions = false
 	m.pane = paneAgents
+	m.revealProjectScope()
 	m.rebuildAgentsTable()
 }
 
@@ -600,6 +601,7 @@ func (m *model) returnToAgentsPane() tea.Cmd {
 	m.previousPane = paneNone
 	m.agentsAboveSessions = true
 	m.pane = paneAgents
+	m.revealProjectScope()
 	m.rebuildAgentsTable()
 	return m.fetchAgentRowsCmd(agentsOpenNever, paneNone)
 }

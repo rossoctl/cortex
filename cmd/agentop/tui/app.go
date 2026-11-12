@@ -850,7 +850,11 @@ type model struct {
 	// window at all — which is the error case the fetch has to report rather than a state worth
 	// restoring into.
 	agentScope string
-	agentsTbl  table.Model
+	// projectScope is the project label the views are narrowed to under agentScope ("" is every
+	// project, otherProjects the sessions and spend that no named project holds). Enter on a
+	// project sub-row sets it (#1818). Not persisted, for the reason agentScope gives.
+	projectScope string
+	agentsTbl    table.Model
 	// agentRowDescs identifies each agentsTbl row, in row order (see rebuildAgentsTable).
 	agentRowDescs []agentRowDesc
 	// agentsErr is the last fetch failure, shown in the pane rather than swallowed: an empty
@@ -2630,8 +2634,10 @@ func (m *model) paneView() string {
 		// for a reader who wants it spelled out.
 		title = fmt.Sprintf("%s · %s", m.appName(), m.endpoint)
 		body = m.sessionsTbl.View()
-		if m.sessionsScope() != "" && len(m.sessionRowIDs) == 0 {
-			body = styleHint.Render("(no session belongs to " + sanitizeLabel(m.agentScope) + ")")
+		if (m.sessionsScope() != "" || m.sessionsProjectScope() != "") && len(m.sessionRowIDs) == 0 {
+			rest := strings.TrimPrefix(m.scopeSuffix(m.sessionsScope(), m.sessionsProjectScope()), " · ")
+			rest = strings.TrimPrefix(rest, "agent=")
+			body = styleHint.Render("(no session belongs to " + rest + ")")
 		}
 	case paneEvents:
 		// Fitted to the terminal rather than to a fixed 36: a bare UUID is 36 characters, so
@@ -2670,11 +2676,9 @@ func (m *model) paneView() string {
 			scope = m.usage.session
 		}
 		title = fmt.Sprintf("%s · %s · usage · %s", m.appName(), m.endpoint, scope)
-		// The agent scope goes in the TITLE because it changes what every figure on the pane
-		// means.
-		if m.agentScope != "" {
-			title += " · agent=" + sanitizeLabel(m.agentScope)
-		}
+		// The agent and project scopes go in the TITLE because they change what every figure on
+		// the pane means.
+		title += m.scopeSuffix(m.agentScope, m.projectScope)
 		body = m.usageBody()
 	case paneAgents:
 		// The window is in the title because the figures are a day's, not a lifetime's, and
@@ -2684,9 +2688,7 @@ func (m *model) paneView() string {
 		// cursor here (spendScopeAgent), so the row is what every figure on screen describes.
 		// It used to name the committed scope, which put "scoped to claude-code" over a band
 		// and drawer showing bob-shell. Enter still commits the row.
-		if agent := m.spendScopeAgent(); agent != "" {
-			title += " · agent=" + sanitizeLabel(agent)
-		}
+		title += m.scopeSuffix(m.spendScopeAgent(), m.spendScopeProject())
 		hasRows := len(m.pickerRows()) > 0
 		switch {
 		case m.agentsErr != nil && !hasRows:
@@ -2725,8 +2727,8 @@ func (m *model) paneView() string {
 
 	// The band above every pane is scoped too, so every pane says so; usage and agents word it
 	// themselves above, and sessionHeader carries it for the events and detail panes.
-	if m.agentScope != "" && m.pane != paneUsage && m.pane != paneAgents && m.pane != paneEvents && m.pane != paneDetail {
-		title += " · agent=" + sanitizeLabel(m.agentScope)
+	if m.pane != paneUsage && m.pane != paneAgents && m.pane != paneEvents && m.pane != paneDetail {
+		title += m.scopeSuffix(m.agentScope, m.projectScope)
 	}
 	header := styleTitle.Render(title)
 	if m.searching && m.searchPane != targetHelp {
@@ -2844,9 +2846,7 @@ func (m *model) sessionHeader(id, suffix string) string {
 	if suffix != "" {
 		tail = " · " + suffix
 	}
-	if m.agentScope != "" {
-		tail += " · agent=" + sanitizeLabel(m.agentScope)
-	}
+	tail += m.scopeSuffix(m.agentScope, m.projectScope)
 	// A floor of 12, so a very narrow terminal shows a stub of the label rather than dropping
 	// it: the header is the only thing on screen naming which session these events belong to.
 	//

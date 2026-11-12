@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"time"
 
@@ -244,11 +245,11 @@ func (m *model) rebuildSessionsTable() {
 	// Fitted, THEN aligned, and in that order: the alignment pads each heading to the width the
 	// fitter settled on, so padding first would pad to a width the column no longer has. Every
 	// lookup below still finds its column, because they go through headerTitle.
-	scope := m.sessionsScope()
+	scope, project := m.sessionsScope(), m.sessionsProjectScope()
 	router, showServer := m.sessionsShowServer()
 	// AGENT and SERVER are asked for by what is listed, then dropped whole when the terminal has
 	// no room. Kept, so the search can still read a dropped one.
-	twoAgents := m.sessionsListTwoAgents(scope)
+	twoAgents := m.sessionsListTwoAgents(scope, project)
 	want := alignSessionsHeaders(fitTableColumns(
 		sessionsColumnsWith(m.width, twoAgents, showServer), m.width))
 	agentW := sessionsColumnWidth(want, "AGENT")
@@ -289,7 +290,7 @@ func (m *model) rebuildSessionsTable() {
 	q := m.searchQuery(paneSessions)
 	folded := m.foldedFigures()
 	for _, s := range m.sessions {
-		if !m.sessionListed(s, scope) || foldedInto(s) != "" {
+		if !m.sessionListed(s, scope, project) || foldedInto(s) != "" {
 			continue
 		}
 		b := newRowBuilder(q != "")
@@ -471,8 +472,20 @@ func (m *model) cachedOnlySessionIDs() []string {
 
 // sessionListed reports whether the sessions table shows s: every session, and under an agent
 // scope only the sessions of that agent — under Other, every session that names no recognised
-// agent. A search hides nothing; it marks.
-func (m *model) sessionListed(s session.SessionSummary, scope string) bool {
+// agent. Under a project scope only the sessions in that project — under otherProjects, every
+// session that names no project. A search hides nothing; it marks.
+func (m *model) sessionListed(s session.SessionSummary, scope, project string) bool {
+	switch project {
+	case "":
+	case otherProjects:
+		if len(s.Projects) > 0 {
+			return false
+		}
+	default:
+		if !slices.Contains(s.Projects, project) {
+			return false
+		}
+	}
 	switch scope {
 	case "":
 		return true
@@ -484,11 +497,11 @@ func (m *model) sessionListed(s session.SessionSummary, scope string) bool {
 
 // sessionsListTwoAgents reports whether the listed sessions name two or more agents, which is when
 // the AGENT column says something.
-func (m *model) sessionsListTwoAgents(scope string) bool {
+func (m *model) sessionsListTwoAgents(scope, project string) bool {
 	var first string
 	for _, s := range m.sessions {
 		agent := sessionAgent(s)
-		if agent == "" || !m.sessionListed(s, scope) {
+		if agent == "" || !m.sessionListed(s, scope, project) {
 			continue
 		}
 		if first == "" {

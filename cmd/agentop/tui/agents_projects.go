@@ -197,6 +197,58 @@ func (m *model) selectedAgentActs() (string, bool) {
 	return d.agent, true
 }
 
+// projectScopeName is the name a title shows for the project label under agent: "Other" for
+// otherProjects; the sub-row's name while that row's projects are loaded; else the last "/"
+// segment of the label.
+func (m *model) projectScopeName(agent, project string) string {
+	if project == otherProjects {
+		return otherProjects
+	}
+	if data, ok := m.agentProjects[agent]; ok {
+		var labels []string
+		for _, r := range data.rows {
+			if r.label != otherProjects {
+				labels = append(labels, r.label)
+			}
+		}
+		if i := slices.Index(labels, project); i >= 0 {
+			return projectDisplayNames(labels)[i]
+		}
+	}
+	return project[strings.LastIndex(project, "/")+1:]
+}
+
+// scopeSuffix is the title text that names a scope: " · agent=<agent>" when agent is set, then
+// " · project=<name>" when project is set. Both are request-controlled, so both are sanitised.
+func (m *model) scopeSuffix(agent, project string) string {
+	out := ""
+	if agent != "" {
+		out += " · agent=" + sanitizeLabel(agent)
+	}
+	if project != "" {
+		out += " · project=" + sanitizeLabel(m.projectScopeName(agent, project))
+	}
+	return out
+}
+
+// revealProjectScope opens the scoped agent's row and asks rebuildAgentsTable to put the cursor on
+// the committed project sub-row, now or when the row's projects arrive. Call it before
+// rebuildAgentsTable.
+func (m *model) revealProjectScope() {
+	if m.projectScope == "" || !m.agentRowExpandable(m.agentScope) {
+		return
+	}
+	if m.agentsExpanded == nil {
+		m.agentsExpanded = map[string]bool{}
+	}
+	m.agentsExpanded[m.agentScope] = true
+	want := agentRowDesc{agent: m.agentScope, kind: agentRowProject, project: m.projectScope}
+	if m.projectScope == otherProjects {
+		want = agentRowDesc{agent: m.agentScope, kind: agentRowProjectOther}
+	}
+	m.agentsCursorWant, m.agentsCursorWantAt = &want, m.agentsTbl.Cursor()
+}
+
 // agentRowAdder is how rebuildAgentsTable adds one row: its descriptor and its cells.
 type agentRowAdder func(d agentRowDesc, agent, sessions, lastSeen, cost, server string)
 

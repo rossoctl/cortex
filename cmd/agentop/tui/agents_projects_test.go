@@ -126,6 +126,9 @@ func projectsModel(t *testing.T, series map[string]map[string]int64) (*model, fu
 		mu.Lock()
 		asked = append(asked, r.URL.RawQuery)
 		mu.Unlock()
+		if r.URL.Query().Has("project") {
+			t.Errorf("query %q carries project=", r.URL.RawQuery)
+		}
 		q := r.URL.Query()
 		// The agent is echoed, as the real server does, so fetchUsageScoped takes no fallback.
 		snap := usage.Snapshot{Window: q.Get("window"), Group: usage.Group(q.Get("group")), Agent: q.Get("agent")}
@@ -394,13 +397,13 @@ func TestAgentsProjects_SpaceOnASubRowClosesTheParent(t *testing.T) {
 	}
 }
 
-func TestAgentsProjects_EnterOnAProjectRowScopesTheParent(t *testing.T) {
+func TestAgentsProjects_EnterOnAProjectRowScopesTheProject(t *testing.T) {
 	m, _ := projectsModel(t, defaultProjectSeries)
 	openClaudeCode(t, m)
 	onDesc(t, m, cortexRow)
 	pressCmd(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.agentScope != projAgent || m.pane != paneSessions {
-		t.Errorf("scope %q pane %v; want claude-code on sessions", m.agentScope, m.pane)
+	if m.agentScope != projAgent || m.projectScope != "~/works/cortex" || m.pane != paneSessions {
+		t.Errorf("scope (%q, %q) pane %v; want claude-code and ~/works/cortex on sessions", m.agentScope, m.projectScope, m.pane)
 	}
 }
 

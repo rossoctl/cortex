@@ -78,6 +78,16 @@ func (m *model) sessionsScope() string {
 	return m.agentScope
 }
 
+// sessionsProjectScope is the project the sessions list is narrowed to: the scope, when some
+// session names a project, else "" — a server that records no project cannot say which sessions
+// are in one, and the list must not go empty.
+func (m *model) sessionsProjectScope() string {
+	if m.projectScope == "" || !m.sessionsNameProjects() {
+		return ""
+	}
+	return m.projectScope
+}
+
 // spendAxes are the drawer's axes: every one, less the agent axis under a scope, where it would
 // be a single row. The DRAWER'S scope, which on the agents pane is the highlighted row.
 func (m *model) spendAxes() []usage.Group {

@@ -639,11 +639,20 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			//
 			// NOT A TOGGLE: Enter on the agent already scoped keeps it, and the All agents row is
 			// what clears it. See allAgentsLabel.
-			scope, ok := m.selectedAgentScope()
+			//
+			// A project sub-row also sets the project scope; every other row clears it, so the
+			// next agent's list is not narrowed to a project of the old one.
+			d, ok := m.selectedAgentRow()
 			if !ok {
 				return nil
 			}
-			m.agentScope = scope
+			m.agentScope, m.projectScope = d.agent, ""
+			switch d.kind {
+			case agentRowProject:
+				m.projectScope = d.project
+			case agentRowProjectOther:
+				m.projectScope = otherProjects
+			}
 			// SESSIONS, NOT THE PANE `A` WAS PRESSED ON. This used to share esc's exit and return
 			// there, and from a session's events that hid the pick: the events pane shows one
 			// session whatever the scope, so the reader landed back in the session they were
@@ -1437,8 +1446,13 @@ func (m *model) helpView() string {
 		// duplicate the way in, and advertising it would be the inert-key problem the usage
 		// pane's breakdownHint above avoids.
 		enterHint := "  [↵] scope to this agent"
-		if scope, ok := m.selectedAgentScope(); ok && scope == "" {
-			enterHint = "  [↵] all agents"
+		if d, ok := m.selectedAgentRow(); ok {
+			switch {
+			case d.kind == agentRowProject || d.kind == agentRowProjectOther:
+				enterHint = "  [↵] scope to this project"
+			case d.agent == "":
+				enterHint = "  [↵] all agents"
+			}
 		}
 		// [space] after [↵], and the full project label after nav: the cell may show only a tail.
 		navHint, spaceHint := "[↑↓] nav", ""

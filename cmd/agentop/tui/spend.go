@@ -1036,6 +1036,23 @@ func (m *model) spendScopeAgent() string {
 	return m.agentScope
 }
 
+// spendScopeProject is the project scope of the band's and the drawer's next fetches, read the
+// same way as spendScopeAgent: on the agents pane the project sub-row under the cursor ("" on
+// every other row), elsewhere the committed m.projectScope.
+func (m *model) spendScopeProject() string {
+	if m.pane != paneAgents {
+		return m.projectScope
+	}
+	d, _ := m.selectedAgentRow()
+	switch d.kind {
+	case agentRowProject:
+		return d.project
+	case agentRowProjectOther:
+		return otherProjects
+	}
+	return ""
+}
+
 // fetchSpendDrawer requests the breakdown: ONE window, folded by the current axis.
 //
 // The window comes from the drawer's own cycle and the axis from `a`, and both are captured
