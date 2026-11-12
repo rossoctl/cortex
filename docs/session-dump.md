@@ -23,6 +23,10 @@ only what the store still holds at the moment it runs, and it has to be run
 before the thing you want to keep is gone. On a laptop the session archive closes that
 gap; in a cluster it is still open.
 
+A dump is the *content* — prompts, completions, tool results. When what you want is the
+*measurements* over a month of traffic, [`GET /v1/export`](session-export.md) writes the
+archive as content-free records instead, safe to pipe anywhere the dump is not.
+
 ## Install
 
 `scripts/install.sh` fetches it with the release, and `agentop setup` installs it
