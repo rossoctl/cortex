@@ -61,7 +61,7 @@ type bridgeScene struct {
 	trusting, refusing *x509.CertPool
 }
 
-func newBridgeScene(t *testing.T, store *session.Store, procs *fakeProcs) *bridgeScene {
+func newBridgeScene(t *testing.T, store *session.Store, procs *fakeProcs, configure ...func(*Server)) *bridgeScene {
 	t.Helper()
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("OK"))
@@ -94,6 +94,9 @@ func newBridgeScene(t *testing.T, store *session.Store, procs *fakeProcs) *bridg
 	sc.proxyURL, sc.backendURL, _ = newProcessProxy(t, store, procs, func(s *Server) {
 		s.TLSBridge = sc.engine
 		sc.server = s
+		for _, c := range configure {
+			c(s)
+		}
 	})
 	return sc
 }
