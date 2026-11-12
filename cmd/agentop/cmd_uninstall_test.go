@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -1798,9 +1799,14 @@ func TestUninstallPurgeKeepsCortexForACodexItCannotUnroute(t *testing.T) {
 	wantLines(t, code, 1, out, markLine("✗", "unrouted"),
 		markLine("·", "purged")+"kept ~/.cortex: "+envSSLCert+
 			" in ~/.codex/.env still points into it — delete it once nothing points into it: rm -rf ~/.cortex\n")
-	fixes := strings.Join(fixesUnder(out, markLine("✗", "unrouted")), "\n")
-	if !strings.Contains(fixes, "in ~/.codex/.env, remove the lines that set ") || !strings.Contains(fixes, codexDaemonRestartCmd) {
-		t.Errorf("the fix rows are %q, want the dotenv lines to remove and the restart:\n%s", fixes, out)
+	// Every key, not someKeys' first three, since agentop is gone; and the updater
+	// stopped before the restart, which would otherwise keep it on the proxy.
+	fixes := fixesUnder(out, markLine("✗", "unrouted"))
+	if want := []string{
+		"in ~/.codex/.env, remove the lines that set HTTP_PROXY, HTTPS_PROXY, http_proxy, https_proxy, " + envSSLCert + " to Cortex's values",
+		"then, if Codex's app-server runs: " + codexUpdaterStopByHand + "; " + codexDaemonRestartCmd,
+	}; !slices.Equal(fixes, want) {
+		t.Errorf("the fix rows are %q, want %q:\n%s", fixes, want, out)
 	}
 	if _, err := os.Stat(filepath.Join(sc.home, ".cortex", "config.yaml")); err != nil {
 		t.Errorf("--purge deleted ~/.cortex while Codex's %s named its CA: %v", envSSLCert, err)
@@ -1812,19 +1818,31 @@ func TestUninstallPurgeKeepsCortexForACodexItCannotUnroute(t *testing.T) {
 
 // What still has Cortex's proxy after the row's restart is left behind with the command
 // that clears it: an app-server the restart did not replace, an updater that would not
-// stop, and an app-server whose proxy came from somewhere other than the file.
+// stop, and an app-server whose proxy came from somewhere other than the file. An updater
+// that would not stop is named whatever else happened: when the restart fails too, and
+// when its environment cannot be read, since either way it kept the one it started with.
 func TestUninstallNamesWhatACodexRestartLeaves(t *testing.T) {
+	const (
+		appServer = "Codex's app-server, which may still use Cortex's proxy — restart it: " + codexDaemonRestartCmd
+		unstopped = "Codex's auto-updater (pid 4103), which agentop could not stop, so it may still have Cortex's proxy — " +
+			"stop it, then restart the app-server: kill 4103 && " + codexDaemonRestartCmd
+	)
 	for _, tc := range []struct {
 		name  string
 		tweak func(*fakeCodexDaemon)
-		left  string
+		left  []string
 	}{
-		{"restart fails", func(f *fakeCodexDaemon) { f.restartErr = errors.New("daemon lock held") },
-			"Codex's app-server, which may still use Cortex's proxy — restart it: " + codexDaemonRestartCmd},
-		{"updater would not stop", func(f *fakeCodexDaemon) { f.stopErr = errors.New("it would not stop") },
-			"Codex's auto-updater (pid 4103), which still has Cortex's proxy — stop it, then restart the app-server: kill 4103 && " + codexDaemonRestartCmd},
-		{"proxy from elsewhere", func(f *fakeCodexDaemon) { f.newEnv = onCortex },
-			"Codex's app-server (pid 4102), which still has Cortex's proxy from the environment it started in — restart it from a shell without one: " + codexDaemonRestartCmd},
+		{"restart fails", func(f *fakeCodexDaemon) { f.restartErr = errors.New("daemon lock held") }, []string{appServer}},
+		{"updater would not stop", func(f *fakeCodexDaemon) { f.stopErr = errors.New("it would not stop") }, []string{unstopped}},
+		{"updater would not stop, and restart fails", func(f *fakeCodexDaemon) {
+			f.stopErr, f.restartErr = errors.New("it would not stop"), errors.New("daemon lock held")
+		}, []string{appServer, unstopped}},
+		{"updater would not stop, its environment unreadable", func(f *fakeCodexDaemon) {
+			f.stopErr, f.updaterEnvErr = errors.New("it would not stop"), errors.New("operation not permitted")
+		}, []string{unstopped}},
+		{"proxy from elsewhere", func(f *fakeCodexDaemon) { f.newEnv, f.newUpdaterPID = onCortex, 0 }, []string{
+			"Codex's app-server (pid 4102), which still has Cortex's proxy from the environment it started in — restart it from a shell without one: " + codexDaemonRestartCmd,
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sc := newUninstallScene(t)
@@ -1833,11 +1851,72 @@ func TestUninstallNamesWhatACodexRestartLeaves(t *testing.T) {
 			tc.tweak(f)
 			envPath := codexEnabledIn(t, sc, f)
 			code, out := sc.uninstall(t, "--yes")
-			wantLines(t, code, 1, out, markLine("!", "unrouted")+"Codex no longer goes through Cortex", "\n  Left behind:\n", "    "+tc.left+"\n")
+			want := []string{markLine("!", "unrouted") + "Codex no longer goes through Cortex", "\n  Left behind:\n"}
+			for _, l := range tc.left {
+				want = append(want, "    "+l+"\n")
+			}
+			wantLines(t, code, 1, out, want...)
 			if got := readCodexEnv(t, envPath); len(got) != 0 {
 				t.Errorf("Cortex's values survived the unroute: %v", got)
 			}
 		})
+	}
+}
+
+// Codex uses the last definition of a duplicated key, and get reads only the first. A
+// file whose first HTTPS_PROXY is the user's and whose last is Cortex's still routes
+// Codex through Cortex, so it gets a row, which fails on the duplicate with its fix; a
+// file whose duplicates are all the user's gets none.
+func TestUninstallFindsCortexsLineInADuplicatedKey(t *testing.T) {
+	const corp = "HTTPS_PROXY=http://proxy.corp.example:8080\n"
+	for _, tc := range []struct {
+		name, env string
+		row       bool
+	}{
+		{"Cortex's line last", corp + "HTTPS_PROXY=" + cortexProxyURL + "\n", true},
+		{"only the user's lines", corp + "HTTPS_PROXY=http://proxy2.corp.example:8080\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t)
+			t.Setenv(codexHomeEnv, "")
+			stubCodexDaemon(t, filepath.Join(sc.home, ".codex"), &fakeCodexDaemon{})
+			envPath := filepath.Join(sc.home, codexEnvRel)
+			writeHomeFile(t, envPath, tc.env)
+			code, out := sc.uninstall(t, "--yes")
+			if got := readFile(t, envPath); got != tc.env {
+				t.Errorf("~/.codex/.env is %q, want it untouched", got)
+			}
+			if !tc.row {
+				wantLines(t, code, 0, out, "\n  Uninstalled.\n")
+				if strings.Contains(out, "Codex") {
+					t.Errorf("uninstall offered to change a Codex that Cortex did not route:\n%s", out)
+				}
+				return
+			}
+			wantLines(t, code, 1, out, markLine("✗", "unrouted")+"~/.codex/.env defines HTTPS_PROXY more than once")
+			if fixes := fixesUnder(out, markLine("✗", "unrouted")); len(fixes) == 0 || !strings.Contains(fixes[0], "remove the lines that set HTTPS_PROXY to Cortex's values") {
+				t.Errorf("the fix rows are %q, want the HTTPS_PROXY line to remove:\n%s", fixes, out)
+			}
+		})
+	}
+}
+
+// The by-hand updater stop matches the updater's command line, and not its own: a shell
+// that runs it, as `sh -c "…"` would, carries the pattern's text in its command line, and
+// pkill -f would end that shell before the restart after it ran.
+func TestCodexUpdaterStopByHandMatchesTheUpdaterNotItself(t *testing.T) {
+	pattern := strings.TrimSuffix(strings.TrimPrefix(codexUpdaterStopByHand, "pkill -f '"), "'")
+	re := regexp.MustCompile(pattern)
+	for cmdline, want := range map[string]bool{
+		"/Users/someone/.codex/packages/standalone/current/codex app-server daemon pid-update-loop": true,
+		"codex app-server daemon pid-update-loop":                                                   true,
+		"sh -c " + codexUpdaterStopByHand + "; " + codexDaemonRestartCmd:                            false,
+		"codex app-server --managed-daemon":                                                         false,
+	} {
+		if got := re.MatchString(cmdline); got != want {
+			t.Errorf("%q matched %q: %v, want %v", pattern, cmdline, got, want)
+		}
 	}
 }
 
