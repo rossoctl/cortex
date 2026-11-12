@@ -634,11 +634,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "enter", "right", "l":
 		switch m.pane {
 		case paneAgents:
-			// Pick the agent the views are narrowed to, then LIST ITS SESSIONS: the pane is a
-			// picker, and picking an agent is asking for its sessions.
+			// On a sub-row, or a row that cannot open: pick the agent the views are narrowed to,
+			// then LIST ITS SESSIONS. A row that opens toggles instead (below).
 			//
-			// NOT A TOGGLE: Enter on the agent already scoped keeps it, and the All agents row is
-			// what clears it. See allAgentsLabel.
+			// THE SCOPE IS NOT A TOGGLE: Enter on the agent already scoped keeps it, and All agents
+			// (or its All projects sub-row, when it opens) is what clears it. See allAgentsLabel.
 			//
 			// A project sub-row also sets the project scope; every other row clears it, so the
 			// next agent's list is not narrowed to a project of the old one.
