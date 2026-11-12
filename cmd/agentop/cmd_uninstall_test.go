@@ -2017,3 +2017,36 @@ func TestUninstallUnroutesEveryConfiguredAgent(t *testing.T) {
 		}
 	}
 }
+
+// replaceIn replaces old with new in path once, and fails the test when old is not there,
+// so a fixture edit that no longer matches the file it edits cannot pass unnoticed.
+func replaceIn(t *testing.T, path, old, new string) {
+	t.Helper()
+	body := readFile(t, path)
+	if !strings.Contains(body, old) {
+		t.Fatalf("fixture: %s has no %q:\n%s", path, old, body)
+	}
+	writeHomeFile(t, path, strings.Replace(body, old, new, 1))
+}
+
+// Cortex's values are told from the user's by Cortex's config, even once its TLS bridge
+// is turned off, which enable's own reading of the config refuses. Without them the
+// values' shape decides, and on a custom port that calls the four proxy values the
+// user's: uninstall would leave Codex on a proxy it then stops (#1783 review).
+func TestUninstallUnroutesACodexOnACustomPortWithTheBridgeOff(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t)
+	cfg := filepath.Join(sc.home, cortexCfgRel)
+	replaceIn(t, cfg, "forward_proxy_addr: 127.0.0.1:47600", "forward_proxy_addr: 127.0.0.1:8081")
+	envPath := codexEnabledIn(t, sc, &fakeCodexDaemon{})
+	if got := readCodexEnv(t, envPath)["HTTPS_PROXY"]; got != "http://127.0.0.1:8081" {
+		t.Fatalf("fixture: enable set HTTPS_PROXY=%q, want the custom port", got)
+	}
+	replaceIn(t, cfg, "tls_bridge:\n  mode: enabled\n", "tls_bridge:\n  mode: disabled\n")
+
+	code, out := sc.uninstall(t, "--yes")
+	wantLines(t, code, 0, out, markLine("✓", "unrouted")+"Codex no longer goes through Cortex\n")
+	if got := readCodexEnv(t, envPath); len(got) != 0 {
+		t.Errorf("Cortex's values survived the unroute: %v\n%s", got, out)
+	}
+}

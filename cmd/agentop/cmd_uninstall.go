@@ -715,7 +715,7 @@ func planUnrouteCodex(env *setupEnv) (removal, bool) {
 	state := filepath.Join(env.home, codexStateRel)
 	// Judged by Cortex's values when its config gives them. Without them codexIsOurs
 	// falls back to the value's shape, as disable does when Cortex is gone.
-	want, _ := codexWanted(env.configPath())
+	want := codexValues(env.configPath())
 	f, readErr := parseCodexEnv(envPath)
 	var ours, theirs []string
 	cortexProxy := want["HTTPS_PROXY"]
