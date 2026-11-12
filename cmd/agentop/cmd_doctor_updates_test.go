@@ -55,7 +55,8 @@ func TestDoctorUpdatesFailed(t *testing.T) {
 		Result: updatestatus.ResultFailed, Error: "exit status 1\ninstall.sh: download failed"})
 	code, out := sc.doctor(t)
 	wantLines(t, code, 1, out, "\n"+markLine("✗", "updates")+"update to v9.9.10 failed at "+updatesTime(at)+
-		"\n      exit status 1\n      install.sh: download failed\n      see ~/.cortex/update.log\n")
+		"\n      exit status 1\n      install.sh: download failed\n      fix: see ~/.cortex/update.log\n")
+	everyFailHasAFix(t, out)
 }
 
 func TestDoctorUpdatesCheckFailed(t *testing.T) {

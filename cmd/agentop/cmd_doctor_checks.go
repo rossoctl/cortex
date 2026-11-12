@@ -226,7 +226,7 @@ func checkUpdates(env *setupEnv, ui *checklist.UI) (failed bool) {
 		ui.Advise(label, "no update check since "+at(st.CheckedAt), fix)
 	case st.Result == updatestatus.ResultFailed:
 		ui.Fail(label, "update to "+st.Latest+" failed at "+at(st.CheckedAt), strings.Split(st.Error, "\n")...)
-		ui.Remedy("", fix)
+		ui.Remedy("fix: ", fix)
 		return true
 	case st.Result == updatestatus.ResultCheckFailed:
 		first, _, _ := strings.Cut(st.Error, "\n")
