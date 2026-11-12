@@ -181,6 +181,34 @@ func (c *Client) ListSessionsArchived(ctx context.Context) (SessionList, error) 
 	return body, nil
 }
 
+// Export streams GET /v1/export: the session archive as content-free records, one NDJSON
+// line per archived event. sessions names the sessions to carry (nil or empty: every one
+// the archive holds); since is the raw query value the server parses ("168h" or "7d") and
+// "" omits the floor.
+//
+// A STREAM, NOT A DOCUMENT: the body is the whole export — a month of traffic, ~12MB — and
+// the caller reads and closes it. getBody's status mapping is the whole error contract
+// here: an unknown session or a malformed since is a 400 the server answers BEFORE its
+// first byte, carrying its own words (the archived session ids, the accepted since forms),
+// and a proxy without an archive is a 404. A walk that fails past its first record simply
+// ends the body, which NDJSON tolerates: every complete line stays valid.
+func (c *Client) Export(ctx context.Context, sessions []string, since string) (io.ReadCloser, error) {
+	q := url.Values{}
+	for _, id := range sessions {
+		if id != "" {
+			q.Add("session", id)
+		}
+	}
+	if since != "" {
+		q.Set("since", since)
+	}
+	path := "/v1/export"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	return c.getBody(ctx, path)
+}
+
 // SummaryView is the projection every timeline fetch asks for. Must match
 // sessionapi's recognised `view` value.
 const SummaryView = "summary"

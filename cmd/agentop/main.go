@@ -69,7 +69,7 @@ func displayVersionOf(version, revision string) string {
 // The deprecated "claude-code" alias still dispatches (its case stays in main)
 // but is intentionally omitted here: it is no longer advertised in the usage
 // block or the unknown-subcommand hint. Use "configure claude-code" instead.
-var dispatchableSubcommands = []string{"observe", "setup", "doctor", "uninstall", "update", "service", "configure", "exec", "server", "script", "tools", "pipeline", "pricing", "cost", "experimental"}
+var dispatchableSubcommands = []string{"observe", "setup", "doctor", "uninstall", "update", "service", "configure", "exec", "server", "script", "tools", "pipeline", "pricing", "cost", "export", "experimental"}
 
 // unknownSubcommandMessage is the error for an unrecognised first argument.
 func unknownSubcommandMessage(name string) string {
@@ -104,6 +104,8 @@ Usage:
   agentop pipeline <action>    the plugin pipeline in effect: get
   agentop pricing              show the model rates in effect (--host <gateway>)
   agentop cost                 what your agents have spent (--window today|month|7d|1h)
+  agentop export               the archive as content-free NDJSON (--out, --session,
+                               --since)
   agentop experimental <action>
                                unstable helpers: read-claude-sessions
 
@@ -135,6 +137,8 @@ func main() {
 			os.Exit(runPricing(os.Args[2:], os.Stdout, os.Stderr))
 		case "cost":
 			os.Exit(runCost(os.Args[2:], os.Stdout, os.Stderr))
+		case "export":
+			os.Exit(runExport(os.Args[2:], os.Stdout, os.Stderr))
 		case "configure":
 			os.Exit(runConfigure(os.Args[2:], os.Stdout, os.Stderr))
 		case "claude-code":

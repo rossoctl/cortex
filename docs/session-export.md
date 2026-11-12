@@ -3,10 +3,13 @@
 `GET /v1/export` on the [Session Events API](session-api.md) writes the session archive
 as **NDJSON, one line per archived event** — a month of traffic as a file a laptop can
 process (~12 MB for 30 days on the install it was measured on), where the same events
-as full snapshots are multi-gigabyte.
+as full snapshots are multi-gigabyte. `agentop export` is the same thing as a command,
+writing a file:
 
 ```sh
-curl -s localhost:47601/v1/export > export.ndjson
+agentop export --out export.ndjson
+agentop export --since 168h          # only the last week
+curl -s localhost:47601/v1/export    # the same stream, raw
 curl -s "localhost:47601/v1/export?since=168h" | jq -c 'select(.model)'
 ```
 
@@ -75,6 +78,23 @@ The full field list with these rules on each field is the doc comments on
 `since` floors on **event time**, not session age: a month-old session with traffic this
 morning is carried by `?since=24h`, whole. Sessions the archive last touched before the
 floor are skipped without reading their segments.
+
+## `agentop export`
+
+The command wraps the endpoint for the shell: same parameters as flags, the file or the
+pipe, and a summary line on stderr (`3 records, 231B → (stdout)`) that never mixes into
+the stream.
+
+| Flag | Meaning |
+|---|---|
+| `--out FILE` | Write to a file rather than stdout; an existing file is refused without `--force` |
+| `--session ID` | Repeatable and comma-separated (`--session a --session b` or `--session a,b`) |
+| `--since DUR` | `168h` or `7d`, as on the endpoint |
+| `--endpoint URL` | Ask a specific proxy rather than the local one |
+
+A refused query — an unknown `--session`, a malformed `--since` — fails before the
+output file is created, with the proxy's own words naming the sessions it does hold.
+The file is opened only after the proxy answered.
 
 ## What it does not carry, and why
 
