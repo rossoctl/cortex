@@ -1221,9 +1221,18 @@ func TestLooksLikePath_AnyUnicodeSpaceSeparates(t *testing.T) {
 // one-at-a-time search allocates a candidate per dropped rune.
 func TestTrunc_ScalesLinearly(t *testing.T) {
 	const budget = 40
+	// THE LOWEST OF FIVE MEASUREMENTS. The count is process-wide, and earlier tests in this package
+	// leave goroutines alive (bubbletea.Tick timers, apiclient stream loops that reconnect). One that
+	// wakes during a measurement adds its allocations, which failed this test in a loaded gate run
+	// ("18 allocations, up from 8") with no change to the code. Another goroutine can only add to the
+	// count, so the lowest of several runs drops that noise and cannot hide the function's own work.
 	measure := func(f func(string, int) string, runes int) float64 {
 		s := "/" + strings.Repeat("a", runes-1)
-		return testing.AllocsPerRun(3, func() { f(s, budget) })
+		lowest := testing.AllocsPerRun(3, func() { f(s, budget) })
+		for range 4 {
+			lowest = min(lowest, testing.AllocsPerRun(3, func() { f(s, budget) }))
+		}
+		return lowest
 	}
 	for _, tc := range []struct {
 		name string
