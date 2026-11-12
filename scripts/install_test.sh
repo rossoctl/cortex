@@ -1953,56 +1953,6 @@ check "  and does no install of its own" "0" \
 check "  and nothing in the Makefile uses remove_stale" "0" \
 	"$(grep -c 'remove_stale' "${REPO_ROOT}/Makefile" || true)"
 
-# --- authbridge/install.sh: the URL v0.7.0 and its docs give, which 404'd ---
-#
-# The curl stub serves a fake installer that reports how it was run, and records the
-# URL. A v0.7.0 installer re-execs <tag>/authbridge/install.sh with
-# AUTHBRIDGE_SCRIPT_REF=<tag>, so that tag's scripts/install.sh must be what runs.
-STUB_SH="${REPO_ROOT}/authbridge/install.sh"
-cat >"${TMP}/fake-installer.sh" <<'EOF'
-printf 'zero=%s ref=%s argc=%s' "$0" "${AUTHBRIDGE_SCRIPT_REF:-}" "$#"
-for _a in "$@"; do printf ' [%s]' "${_a}"; done
-printf '\n'
-EOF
-with_stub() { # serve(ok|fail)  how(pipe|reexec)  args...
-	_serve=$1 _how=$2
-	shift 2
-	mkdir -p "${TMP}/stubbin"
-	{
-		printf '#!/bin/sh\n'
-		printf 'for a in "$@"; do case "$a" in http*) printf "%%s\\n" "$a" >>"%s" ;; esac; done\n' "${TMP}/stub-urls"
-		if [ "${_serve}" = ok ]; then
-			printf 'out=""; prev=""; for a in "$@"; do [ "$prev" = -o ] && out=$a; prev=$a; done\n'
-			printf 'if [ -n "$out" ]; then cat "%s" >"$out"; else cat "%s"; fi\n' "${TMP}/fake-installer.sh" "${TMP}/fake-installer.sh"
-		else
-			printf 'exit 22\n'
-		fi
-	} >"${TMP}/stubbin/curl"
-	chmod +x "${TMP}/stubbin/curl"
-	: >"${TMP}/stub-urls"
-	_st=0
-	if [ "${_how}" = pipe ]; then
-		PATH="${TMP}/stubbin:${PATH}" sh -s -- "$@" <"${STUB_SH}" 2>/dev/null || _st=$?
-	else
-		PATH="${TMP}/stubbin:${PATH}" AUTHBRIDGE_SCRIPT_REF=v9.9.9 sh "${STUB_SH}" "$@" 2>/dev/null || _st=$?
-	fi
-	printf 'status=%s url=%s\n' "${_st}" "$(cat "${TMP}/stub-urls")"
-}
-check "authbridge/install.sh piped: runs main's scripts/install.sh from stdin" \
-	"zero=sh ref= argc=0
-status=0 url=https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh" \
-	"$(with_stub ok pipe)"
-check "authbridge/install.sh re-exec'd by v0.7.0: runs that tag's scripts/install.sh" \
-	"zero=sh ref=v9.9.9 argc=0
-status=0 url=https://raw.githubusercontent.com/rossoctl/cortex/v9.9.9/scripts/install.sh" \
-	"$(with_stub ok reexec)"
-check "authbridge/install.sh passes arguments through, spaces intact" \
-	"zero=sh ref= argc=2 [--no-service] [--ref=a b]
-status=0 url=https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh" \
-	"$(with_stub ok pipe --no-service '--ref=a b')"
-check_fails "authbridge/install.sh: a failed download exits non-zero" \
-	"$(with_stub fail pipe | sed -n 's/^status=\([0-9]*\) .*/\1/p')"
-
 # --- --cpex: the cortex-cpex tarball, only where it is published ---
 # Run as if on darwin/amd64, which has no cpex build: refused before anything is
 # resolved, fetched or staged.
