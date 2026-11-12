@@ -53,7 +53,12 @@ type agentRow struct {
 // UNRECOGNISED AGENTS ARE ONE ROW, otherAgents, folded here by foldOtherAgents before anything is
 // counted. See otherAgents for why a row per raw User-Agent was a row that scoped nothing.
 func agentRowsFromSnapshot(snap *usage.Snapshot) []agentRow {
-	snap = foldOtherAgents(snap)
+	return seriesRowsFromSnapshot(foldOtherAgents(snap))
+}
+
+// seriesRowsFromSnapshot is agentRowsFromSnapshot without the fold, for a snapshot whose series
+// are already folded.
+func seriesRowsFromSnapshot(snap *usage.Snapshot) []agentRow {
 	rows := agentRowsFromBuckets(snap.Buckets)
 	for i := range rows {
 		units, ok := snap.SeriesCurrencies[rows[i].label]

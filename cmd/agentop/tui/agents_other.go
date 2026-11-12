@@ -62,6 +62,12 @@ func inOtherAgents(s session.SessionSummary) bool {
 // falls back to the window's list — over-refusing a mixed figure rather than labelling one agent's
 // spend with another's units, the same trade agentRowsFromSnapshot makes.
 func foldOtherAgents(snap *usage.Snapshot) *usage.Snapshot {
+	return foldSeriesInto(snap, knownAgentLabel, otherAgents)
+}
+
+// foldSeriesInto is foldOtherAgents for any series axis: every series that keep refuses merges into
+// one series named into, with the same SeriesCurrencies rule.
+func foldSeriesInto(snap *usage.Snapshot, keep func(label string) bool, into string) *usage.Snapshot {
 	if snap == nil {
 		return nil
 	}
@@ -76,8 +82,8 @@ func foldOtherAgents(snap *usage.Snapshot) *usage.Snapshot {
 		series := make(map[string]usage.Counts, len(b.Series))
 		for label, c := range b.Series {
 			key := label
-			if !knownAgentLabel(label) {
-				key = otherAgents
+			if !keep(label) {
+				key = into
 				if !slices.Contains(members, label) {
 					members = append(members, label)
 				}
@@ -104,7 +110,7 @@ func foldOtherAgents(snap *usage.Snapshot) *usage.Snapshot {
 			}
 		}
 		for label, u := range snap.SeriesCurrencies {
-			if knownAgentLabel(label) {
+			if keep(label) {
 				out.SeriesCurrencies[label] = u
 			}
 		}
@@ -113,7 +119,7 @@ func foldOtherAgents(snap *usage.Snapshot) *usage.Snapshot {
 				units = append([]string(nil), snap.Currencies...)
 			}
 			slices.Sort(units)
-			out.SeriesCurrencies[otherAgents] = units
+			out.SeriesCurrencies[into] = units
 		}
 	}
 	return &out
