@@ -145,7 +145,7 @@
 
 - [ ] **Step 3: Implement.**
   - `costByAxes = "agent, project, model, endpoint, currency, session, status, plugin or host"`.
-  - `ledgerServedAxes = "agent, project, model, endpoint and currency"`; the usage text "breaks down by agent, model and endpoint" becomes "breaks down by agent, project, model, endpoint and currency"; add the example line `  agentop cost --by project        a row per project (git repo), costliest first`.
+  - `ledgerServedAxes = "agent, project, model, endpoint and currency"`; in its godoc, "naming all four of ledger.Groupable's axes" becomes "naming all five of ledger.Groupable's axes"; the usage text "breaks down by agent, model and endpoint" becomes "breaks down by agent, project, model, endpoint and currency"; add the example line `  agentop cost --by project        a row per project (git repo), costliest first`.
   - `writeCostBreakdown`: `width := 34`, raised to the largest `utf8.RuneCountInString(label)` among `labels` and of `asked`; print header and rows with `%-*s` and `width`. `%-*s` pads by runes, which is what is wanted. Truncate nothing. Applies to every axis.
 
 - [ ] **Step 4: Run, expect PASS.** Run: `scripts/dev/go-test-shards.sh -short cmd/agentop && cd cmd/agentop && GOWORK=off go vet ./...`
@@ -185,6 +185,8 @@ Run from the worktree root:
 ```sh
 test -z "$(gofmt -l core cmd/agentop cmd/cortex)" && (cd core && GOWORK=off go vet ./... && GOWORK=off go test -race ./cost/... ./sessionapi/... && GOWORK=off go test ./... && GOWORK=off go mod tidy -diff) && (cd cmd/cortex && TAGS=$(GOWORK=off go -C ../../scripts/profile-tags run . local) && GOWORK=off go vet -tags "$TAGS" ./... && GOWORK=off go test -tags "$TAGS" ./...) && (cd cmd/agentop && GOWORK=off go vet ./... && GOWORK=off go mod tidy -diff && GOWORK=off go test -race $(GOWORK=off go list ./... | grep -v 'agentop$')) && GOWORK=off scripts/dev/go-test-shards.sh -race cmd/agentop
 ```
+
+Gate check (plan review, on base 97526c02): `gofmt -l core cmd/agentop cmd/cortex` printed nothing; `go vet` in `core`, `cmd/cortex` (with the `local` profile tags) and `cmd/agentop` passed; `go mod tidy -diff` in `core` and `cmd/agentop` passed. The gate needed no change. Test steps were not run here.
 
 ## For a human after review
 
