@@ -1519,13 +1519,14 @@ Layered on top of all of them:
 | `b` | usage | cycle breakdown: none / status / method / plugin (not offered for latency — there is no per-label latency) |
 | `s` | usage | toggle between this session and all sessions |
 | `Esc` | usage | back to the pane it was opened from |
-| `P` | sessions, events, detail | open the pipeline. Capital `P` because lowercase `p` pauses the stream and has no replacement worth the trade — `space` and `d` are the table's page-down and half-page-down |
+| `P` | sessions, events, detail | open the pipeline. Capital `P` because lowercase `p` pauses the stream and has no replacement worth the trade — `space` and `d` page the table, except on the agents pane, where `space` opens projects and `d`, `PgDn` and `f` still page down |
 | `Esc` | pipeline | back to the pane `P` was pressed on |
 | `C` | any session-view pane (not the picker) | open the registered-plugin catalog. Was `P` until the pipeline took that letter |
 | `r` | catalog | refresh the catalog from `/v1/plugins` |
 | `A` | any session-view pane (not the picker) | open the per-agent breakdown — each coding agent's sessions, when it was last seen, and what it has spent today (`w` moves the window), plus a row for any agent that owns a listed session but has spent nothing in it, since the sessions list is not limited to today and every session in it needs a row to scope to. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press and opens however many agents it finds, one or none included; pressed on the agents pane it only refreshes the rows. Not in the footer, for width; the `?` overlay names it |
 | `↑↓` / `jk` | agents | move the cursor |
-| `↵` | agents | scope to the agent under the cursor and list its sessions, whichever pane `A` was pressed on — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope.** It reaches the sessions list, the usage pane, and the spend band and its drawer — except on the agents pane itself, where the band and the drawer follow the highlighted row instead of the committed scope; `agentop cost --agent` is a separate process |
+| `space` | agents | open the row under the cursor into its projects, or close it; on a sub-row it closes the parent and moves the cursor there. Offered only when sessions record a project; the `Other` row never opens |
+| `↵` | agents | scope to the agent under the cursor and list its sessions, whichever pane `A` was pressed on — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope.** It reaches the sessions list, the usage pane, and the spend band and its drawer — except on the agents pane itself, where the band and the drawer follow the highlighted row instead of the committed scope; `agentop cost --agent` is a separate process. On a project sub-row, `↵` scopes to the parent agent. `x` and `S` act on the parent on the open row and on `All projects`, and do nothing on a project or `Other` sub-row |
 | `S` | agents | choose the inference server the highlighted agent's new sessions use: a picker over the pane, its cursor on what the agent has now. `↵` applies the highlighted entry, `Esc`/`q`/`Ctrl+C` close it, and an entry the config file already holds writes nothing. Opens only on an agent's row, when agentop is attached to this machine's Cortex and its `inference-router` routes; elsewhere a panel says why. See [Choosing an agent's server](#choosing-an-agents-server-s) |
 | `Esc` | agents | back to the pane `A` was pressed on, leaving the scope as it is. When the picker opened itself at startup, or was reached with `Esc` from the sessions list, it is the level above that list instead, and `Esc` backs out as `Esc` on sessions does: to the pods picker, or nowhere with `--endpoint` |
 | `e` | pipeline | edit pipeline subtree in `$EDITOR` |
@@ -1610,6 +1611,18 @@ that cannot break the last hour down for one agent. Unscoped, the sessions pane 
 two agents are listed, and the agents pane `SESSIONS` and `LAST SEEN` once sessions
 name their agent. Those two describe the whole sessions list; `COST <window>` is the
 pane's only windowed column, and `w` moves it.
+
+**`space` opens an agents row into its projects.** An open row shows `All projects`
+(the agent's figures), one row per project, then `Other`. A project row shows the last
+path segment, or the shortest unique tail of segments when two share it, for example
+`github.com/kagenti/kagenti-extensions` and `git/kagenti/kagenti-extensions`. `Other`
+holds traffic with no project (no PID, or an app started by macOS with cwd `/`) and the
+overflow past 16 series. COST of the projects and `Other` adds up to `All projects`;
+SESSIONS does not, because a session that used two projects counts under both. Spend
+recorded before the upgrade has no project and is in `Other`: for the month window
+that can be most of the spend for up to a month. Rows start closed and stay open across
+the 20s refresh, `w` and `A`, not across a restart. On a sub-row, the spend band and
+drawer follow the parent agent.
 
 ### Choosing an agent's server (`S`)
 
