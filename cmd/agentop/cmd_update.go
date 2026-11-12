@@ -13,12 +13,14 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
 )
 
 const updateUsage = `agentop update — install the newest Cortex release over this one
 
 Usage:
-  agentop update [--ref=REF] [--yes]
+  agentop update [--ref=REF] [--yes] [--auto]
 
 Runs the same installer as the one-liner. The installer downloads and verifies
 the release, then gives it to agentop setup. Update keeps these as they are
@@ -30,6 +32,7 @@ build of cortex, praxis mode (--praxis), an install with no config
   --ref=REF   install REF instead of the newest stable release, e.g.
               --ref=v0.9.0-rc.3 for a release candidate, --ref=main
   --yes, -y   do not ask; needed when there is no terminal
+  --auto      what the daily updater runs: install the newest release only when it is a plain release and 72 hours old; never asks
 
 Downloads nothing when agentop and cortex in ~/.local/bin are already at the
 release asked for. Run agentop doctor to check the rest of the install.
@@ -58,6 +61,7 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	var yes bool
 	fs.BoolVar(&yes, "yes", false, "")
 	fs.BoolVar(&yes, "y", false, "")
+	auto := fs.Bool("auto", false, "")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			_, _ = fmt.Fprint(stdout, updateUsage)
@@ -70,16 +74,57 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "agentop: unexpected argument %q\n%s", fs.Arg(0), updateUsage)
 		return 2
 	}
+	if *auto {
+		if *ref != "" {
+			_, _ = fmt.Fprintf(stderr, "agentop: --auto always installs the newest release; it takes no --ref\n%s", updateUsage)
+			return 2
+		}
+		yes = true
+	}
 	env, err := newSetupEnv(setupOptions{})
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
-	if v := currentRelease(env, *ref); v != "" {
+	unlock, held, err := lockUpdate(env.cortexDir)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
+		return 1
+	}
+	if held {
+		if *auto {
+			return 0
+		}
+		_, _ = fmt.Fprintln(stderr, "agentop: another update is running")
+		return 1
+	}
+	defer unlock()
+	if *auto {
+		return runAutoUpdate(env, stdout, stderr)
+	}
+	latest := ""
+	if *ref == "" {
+		latest = latestRelease()
+	}
+	status := func(result string, err error) {
+		s := updatestatus.Status{
+			CheckedAt: updateNow().UTC(), Latest: latest, Result: result,
+			Installed: installedVersion(filepath.Join(env.binDir, "agentop")),
+		}
+		if err != nil {
+			s.Error = err.Error()
+		}
+		if err := writeUpdateStatus(env.cortexDir, s); err != nil {
+			_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
+		}
+	}
+	if v := currentRelease(env, *ref, latest); v != "" {
+		status(updatestatus.ResultCurrent, nil)
 		_, _ = fmt.Fprintf(stdout, "Already at %s.\n", v)
 		return 0
 	}
 	if err := installReleaseFn(env, *ref, updateFlags(env, *ref, yes), stdout, stderr); err != nil {
+		status(updatestatus.ResultFailed, err)
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			return exit.ExitCode()
@@ -87,6 +132,7 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
+	status(updatestatus.ResultUpdated, nil)
 	return 0
 }
 
@@ -144,18 +190,18 @@ func updateFlags(env *setupEnv, ref string, yes bool) []string {
 }
 
 // currentRelease is the installed version when agentop and cortex both report it
-// and it is the release ref names, or the newest one when ref is "". It is ""
-// otherwise, and when the newest release cannot be read: the installer then
+// and it is the release ref names, or latest when ref is "". It is ""
+// otherwise, and when latest is "" (not read): the installer then
 // runs, and finds the answer or the error itself. --ref=main is never current,
 // as no release reports "main" as its version.
-func currentRelease(env *setupEnv, ref string) string {
+func currentRelease(env *setupEnv, ref, latest string) string {
 	env.readVersions()
 	v := env.installedVersion
 	if v == "" || v != installedVersion(filepath.Join(env.binDir, proxyBinary)) {
 		return ""
 	}
 	if ref == "" {
-		ref = latestRelease()
+		ref = latest
 	}
 	if ref != v {
 		return ""
