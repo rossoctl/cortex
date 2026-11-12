@@ -68,8 +68,8 @@ The export reads the durable archive, not memory: a session with nothing flushed
 does not appear, and the live tail is /v1/events, not this.
 
 An unknown --session or a malformed --since is refused by the proxy before it writes a
-byte, naming the sessions it does hold; a proxy with no session archive (a cluster
-sidecar) answers 404.
+byte, naming the first few sessions it does hold and a count of the rest; a proxy with
+no session archive (a cluster sidecar, or one predating /v1/export) answers 404.
 
 A 30-day archive walks in about ten seconds server-side; this command waits up to ten
 minutes before giving up.
@@ -86,6 +86,14 @@ Flags:
 	}
 	if *force && *out == "" {
 		fmt.Fprintln(stderr, "agentop export: --force is for --out; stdout cannot be overwritten")
+		return 2
+	}
+	if fs.NArg() > 0 {
+		// Every sibling command rejects stray positionals, and this is the one where a
+		// stray positional hurts most: `agentop export out.ndjson` would dump a month of
+		// NDJSON into the terminal and call it success.
+		fmt.Fprintf(stderr, "agentop export: unexpected argument %q — write the export to a file with --out\n",
+			fs.Arg(0))
 		return 2
 	}
 
@@ -112,12 +120,15 @@ Flags:
 		switch {
 		case errors.Is(err, apiclient.ErrNotFound):
 			// A reachable proxy with no archive — a cluster sidecar, or an install with
-			// session.archive off. Different problem from a down proxy, different fix.
-			fmt.Fprintln(stderr, "  this proxy has no session archive — exports read the archive, which a cluster sidecar does not run")
+			// session.archive off — or one predating /v1/export entirely, which answers
+			// the same 404 from an unregistered route. Different problem from a down
+			// proxy, different fix.
+			fmt.Fprintln(stderr, "  this proxy has no session archive, or predates /v1/export (`agentop update`); a cluster sidecar never runs one")
 		case errors.Is(err, apiclient.ErrBadRequest):
-			// The proxy's own words: the archived session ids, or the accepted since
-			// forms. Nothing this side adds would be more authoritative than the
-			// archive it just asked.
+			// The proxy's own words: the archived session ids — the first few and a
+			// count of the rest, capped server-side so the answer always arrives whole —
+			// or the accepted since forms. Nothing this side adds would be more
+			// authoritative than the archive it just asked.
 		default:
 			fmt.Fprintln(stderr, "  is Cortex running? `agentop service status`")
 		}
@@ -165,19 +176,29 @@ Flags:
 
 // sessionIDs is the repeatable --session flag: --session a --session b, or --session a,b.
 //
-// Comma-split because ids are UUIDs and the literal "default" — neither contains a
-// comma, so the split cannot invent an id — and because a caller scripting this command
-// against `agentop export --session "$(ids)"` should not have to re-join what it already
-// holds as one list.
+// Comma-split because ids are UUIDs and the literal "default" — in practice neither
+// contains a comma, so the split cannot invent an id. A header-derived id can contain
+// one (id_headers accepts any id without control runes); such an id still exports
+// through the raw endpoint, which takes it as a single session parameter.
+//
+// A value that yields no ids is an error, not an absence: `--session "$(ids)"` with an
+// empty expansion is the exact scripting case the comma split exists for, and reading it
+// as "every session" would turn a broken pipe into a full-archive export — the one
+// silent widening this command must not do.
 type sessionIDs struct{ ids []string }
 
 func (s *sessionIDs) String() string { return strings.Join(s.ids, ",") }
 
 func (s *sessionIDs) Set(v string) error {
+	got := 0
 	for _, id := range strings.Split(v, ",") {
 		if id = strings.TrimSpace(id); id != "" {
 			s.ids = append(s.ids, id)
+			got++
 		}
+	}
+	if got == 0 {
+		return fmt.Errorf("--session needs at least one id")
 	}
 	return nil
 }

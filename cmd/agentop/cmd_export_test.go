@@ -139,3 +139,34 @@ func TestRunExport_ForceWithoutOutIsAUsageError(t *testing.T) {
 		t.Fatalf("runExport --force = %d, want 2", code)
 	}
 }
+
+// A --session that yields no ids is refused, not read as absence: `--session "$(ids)"`
+// with an empty expansion is the scripting case the comma split exists for, and reading
+// it as "every session" would turn a broken pipe into a full-archive export.
+func TestRunExport_EmptySessionIsAUsageError(t *testing.T) {
+	for _, arg := range []string{"", " ", ","} {
+		var out, errOut strings.Builder
+		if code := runExport([]string{"--session", arg}, &out, &errOut); code != 2 {
+			t.Fatalf("runExport --session %q = %d, want 2", arg, code)
+		}
+		if !strings.Contains(errOut.String(), "needs at least one id") {
+			t.Fatalf("stderr = %q, want the refusal to name the problem", errOut.String())
+		}
+	}
+}
+
+// A stray positional is a usage error, not a silently ignored filename: `agentop export
+// out.ndjson` would otherwise dump the archive into the terminal and call it success.
+// Every sibling command rejects positionals the same way.
+func TestRunExport_StrayPositionalIsAUsageError(t *testing.T) {
+	var out, errOut strings.Builder
+	if code := runExport([]string{"out.ndjson"}, &out, &errOut); code != 2 {
+		t.Fatalf("runExport out.ndjson = %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "out.ndjson") || !strings.Contains(errOut.String(), "--out") {
+		t.Fatalf("stderr = %q, want the argument named and --out suggested", errOut.String())
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout = %q, want nothing on a usage error", out.String())
+	}
+}

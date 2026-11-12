@@ -97,8 +97,9 @@ the stream.
 | `--endpoint URL` | Ask a specific proxy rather than the local one |
 
 A refused query — an unknown `--session`, a malformed `--since` — fails before the
-output file is created, with the proxy's own words naming the sessions it does hold.
-The file is opened only after the proxy answered.
+output file is created, with the proxy's own words: the first few sessions it does hold
+and a count of the rest, the list capped server-side so the answer always reaches the
+client whole. The file is opened only after the proxy answered.
 
 ## What it does not carry, and why
 
