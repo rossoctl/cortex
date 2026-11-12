@@ -716,6 +716,19 @@ func TestPaneKeys_TheAgentsNoteSaysWhatTheScopeReaches(t *testing.T) {
 	}
 }
 
+// The AGENTS help says that ↵ also scopes to a project, and the note names that scope.
+func TestPaneKeys_TheAgentsHelpNamesTheProjectScope(t *testing.T) {
+	g := paneKeys[paneAgents]
+	for _, b := range g.bindings {
+		if b.keys == "↵" && !strings.Contains(b.desc, "project") {
+			t.Errorf("the ↵ binding does not name the project scope: %q", b.desc)
+		}
+	}
+	if joined := strings.Join(g.notes, " "); !strings.Contains(joined, "project") {
+		t.Errorf("the AGENTS note does not name the project scope:\n  %s", joined)
+	}
+}
+
 // The events help and the DURATION column both say how a tool's time is measured.
 func TestHelp_EventsExplainsToolTime(t *testing.T) {
 	const phrase = "for a tool: from the reply to the next request of the same agent"
