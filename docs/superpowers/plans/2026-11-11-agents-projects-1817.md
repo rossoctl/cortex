@@ -47,7 +47,7 @@
 
 | PR | Title | Parent | Tasks | estLines |
 |---|---|---|---|---|
-| P1 | `feat: Expand an Agents row into its projects (#1817)` | "" | T1, T2, T3, T4 | 1170 |
+| P1 | `feat: Expand an Agents row into its projects (#1817)` | "" | T1, T2, T3, T4 | 1200 |
 
 One PR: the total is under 2,000 counted lines, and T3 needs T1 and T2.
 
@@ -56,7 +56,7 @@ One PR: the total is under 2,000 counted lines, and T3 needs T1 and T2.
 | Id | Title | Depends on | estLines |
 |---|---|---|---|
 | T1 | Project rows and display names | — | 230 |
-| T2 | Row descriptors for the agents table | — | 120 |
+| T2 | Row descriptors for the agents table | — | 150 |
 | T3 | Open and close rows with space | T1, T2 | 790 |
 | T4 | README: space on the Agents pane | — | 30 |
 
@@ -124,6 +124,7 @@ Depends on: none. No change in behavior.
 - Modify: `cmd/agentop/tui/app.go:854-855` (field `agentRowLabels`)
 - Modify: `cmd/agentop/tui/agents_pane.go` (`rebuildAgentsTable` 318-391, `selectedAgentScope` 481-499)
 - Modify tests that set rows by hand: `cmd/agentop/tui/agents_cursor_scope_test.go:43-46`, `cmd/agentop/tui/spend_test.go:634-638`, `cmd/agentop/tui/spend_drawer_test.go:1182-1184` — replace the `m.agentsTbl.SetRows(...)` call with `m.rebuildAgentsTable()` (keep the following `setCursorVisible`), and fix the comment at `spend_test.go:634`.
+- Modify tests that read `m.agentRowLabels` (they stop compiling when the field goes): `cmd/agentop/tui/erase_test.go:363-366` (`cursorToAgent`), `cmd/agentop/tui/server_route_test.go:158-164` (`onRow`), `:180-184` (`agentsCell`), `:404` and `:408`. Add to `agents_pane_test.go` the helper `func agentRowIndex(m *model, label string) int` — `slices.IndexFunc(m.agentRowDescs, func(d agentRowDesc) bool { return d.agent == label && d.kind == agentRowAgent })` — and use it in each of these places (`slices.Contains(m.agentRowLabels, x)` becomes `agentRowIndex(m, x) >= 0`). Keep each failure message, printing `m.agentRowDescs`.
 - Test: `cmd/agentop/tui/agents_pane_test.go`
 
 **Interfaces:**
@@ -253,3 +254,5 @@ From the worktree root:
 ```sh
 (cd cmd/agentop && GOWORK=off go vet ./... && test -z "$(gofmt -l .)") && scripts/dev/go-test-shards.sh -race cmd/agentop && (cd cmd/agentop && GOWORK=off go test -race $(GOWORK=off go list ./... | grep -v 'agentop$'))
 ```
+
+Gate check (plan review, 2026-11-11): `go vet ./...` and `gofmt -l .` were run from `cmd/agentop` with `GOWORK=off` on the base. Both pass. No change to the gate.
