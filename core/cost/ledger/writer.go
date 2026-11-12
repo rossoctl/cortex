@@ -451,8 +451,9 @@ func (w *Writer) Record(_ string, e *model.SessionEvent) {
 		// label to maxLabelLen before it becomes a byAgent key, so cutting at 96 here is
 		// what keeps group=agent spelled identically whichever half answers. Sanitised for
 		// the same reason as the two above: EventClient.Raw is the header verbatim.
-		Agent:  rowLabel(agentLabel(e.Client)),
-		Counts: usage.Counts{Requests: 1},
+		Agent:   rowLabel(agentLabel(e.Client)),
+		Project: rowLabel(e.Project),
+		Counts:  usage.Counts{Requests: 1},
 	}
 	// NIL-SAFE, because the guard above admits a row with no extension: an endpoint
 	// inference-parser cannot parse still gets its gateway-reported cost settled, and that
