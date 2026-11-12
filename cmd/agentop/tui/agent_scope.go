@@ -91,6 +91,10 @@ func (m *model) sessionsProjectScope() string {
 // spendAxes are the drawer's axes: every one, less the agent axis under a scope, where it would
 // be a single row. The DRAWER'S scope, which on the agents pane is the highlighted row.
 func (m *model) spendAxes() []usage.Group {
+	// A reply narrowed to a project is one series: there is nothing to break down.
+	if m.spendScopeProject() != "" {
+		return nil
+	}
 	if m.spendScopeAgent() == "" {
 		return spendDrawerAxes
 	}

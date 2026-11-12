@@ -429,7 +429,7 @@ func TestAgentsProjects_EraseAndServerDoNothingOnAProjectRow(t *testing.T) {
 	}
 }
 
-func TestAgentsProjects_BandFollowsTheParentAgent(t *testing.T) {
+func TestAgentsProjects_BandFollowsTheSubRow(t *testing.T) {
 	m, asked := projectsModel(t, defaultProjectSeries)
 	openClaudeCode(t, m)
 	onRow(t, m, "codex")
@@ -440,18 +440,12 @@ func TestAgentsProjects_BandFollowsTheParentAgent(t *testing.T) {
 	if d, _ := m.selectedAgentRow(); d != otherRow {
 		t.Fatalf("cursor on %+v, want claude-code's Other sub-row", d)
 	}
-	got := bandAgents(asked())
-	if len(got) == 0 {
-		t.Fatal("no band fetch when the cursor moved from codex to a claude-code sub-row")
+	if got := asked(); !hasQuery(got, "agent=claude-code", "group=project") {
+		t.Errorf("band queries %q on Other, want agent=claude-code and group=project", got)
 	}
-	for _, a := range got {
-		if a != projAgent {
-			t.Errorf("band asked for %q, want claude-code", a)
-		}
-	}
-	onDesc(t, m, mocaRow)
-	if got := m.spendScopeAgent(); got != projAgent {
-		t.Errorf("spendScopeAgent on moca = %q", got)
+	onDesc(t, m, allProjs)
+	if a, p := m.spendScopeAgent(), m.spendScopeProject(); a != projAgent || p != "" {
+		t.Errorf("scope on All projects = (%q, %q), want (%q, \"\")", a, p, projAgent)
 	}
 }
 

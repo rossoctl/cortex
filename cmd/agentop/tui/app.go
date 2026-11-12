@@ -2797,7 +2797,7 @@ func (m *model) paneView() string {
 				// The axis and span come off the SNAPSHOT, not off what was last requested: see
 				// drawerLabels.
 				axis, window := m.drawerLabels()
-				lines = renderSpendDrawerAxes(m.spend.drawer.snap, m.spend.drawer.err, axis, m.spend.drawerAxis, m.spendAxes(), window, m.width)
+				lines = renderSpendDrawerAxes(m.spend.drawer.snap, m.spend.drawer.err, axis, m.spend.drawerAxis, m.spendAxes(), window, m.spend.drawerProject, m.width)
 			}
 			for len(lines) < spendDrawerLinesFor(m.width) {
 				lines = append(lines, "")
