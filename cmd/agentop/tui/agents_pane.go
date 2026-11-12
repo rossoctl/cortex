@@ -188,6 +188,7 @@ func (m *model) cycleAgentsWindow() tea.Cmd {
 	m.agentsWindowStep = (m.agentsWindowStep + 1) % len(spendDrawerSpans)
 	// Project figures are for the old window, so they go; the open rows stay open.
 	m.agentProjects = nil
+	m.agentProjectsErr = nil
 	cmds := []tea.Cmd{m.fetchAgentRowsCmd(agentsOpenNever, paneNone)}
 	if m.spendDrawerVisible() {
 		// cycleSpendWindow's reason: the old error describes a request for another span.

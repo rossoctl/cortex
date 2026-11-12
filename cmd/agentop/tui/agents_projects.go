@@ -169,6 +169,10 @@ func (m *model) toggleAgentRow() (tea.Cmd, bool) {
 	if d.kind != agentRowAgent {
 		// rebuildAgentsTable puts the cursor on the first row of the same agent: the closed row.
 		delete(m.agentsExpanded, d.agent)
+		if len(m.agentsExpanded) == 0 {
+			// No open row fetches again, so nothing else would clear it.
+			m.agentProjectsErr = nil
+		}
 		m.rebuildAgentsTable()
 		return nil, true
 	}

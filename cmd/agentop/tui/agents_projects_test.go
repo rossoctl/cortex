@@ -518,3 +518,22 @@ func TestAgentsProjects_FailedFetchKeepsTheRows(t *testing.T) {
 		t.Errorf("view has no error line:\n%s", v)
 	}
 }
+
+func TestAgentsProjects_FetchErrorClearsOnCloseAndW(t *testing.T) {
+	m, _ := projectsModel(t, defaultProjectSeries)
+	fail := func() {
+		openClaudeCode(t, m)
+		m.Update(agentProjectsLoadedMsg{agent: projAgent, err: errors.New("boom"), window: m.agentsSpanDef().window})
+	}
+	fail()
+	onDesc(t, m, cortexRow)
+	runCmds(pressCmd(m, spaceKey))
+	if strings.Contains(m.View(), "refresh failed") {
+		t.Error("error still shows after the last row closed")
+	}
+	fail()
+	pressCmd(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}})
+	if m.agentProjectsErr != nil {
+		t.Error("error still set after w")
+	}
+}
