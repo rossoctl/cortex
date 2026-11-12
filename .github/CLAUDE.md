@@ -12,7 +12,7 @@ including the PR title format and the Go checks that CI gates on, are in the roo
 | `build.yaml` | Tag push (`v*`), push to main, manual; PRs to main build amd64 only and skip `**.md` | Multi-arch Docker builds for the six images below. Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
 | `praxis.yaml` | PR to main/release-*, push to main, on `praxis/**` or the Go parser paths it ports | `cargo fmt --check`, clippy and tests for `praxis/`. A failure blocks only when `praxis/` or the workflow changed |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy |
-| `codeql.yaml` | PR to main, push to main; skips `**.md` | CodeQL for Go and Python. The push run is the baseline that the PR check compares with, so an alert already on main is not new for a PR |
+| `codeql.yaml` | PR to main (skips `**.md`), every push to main | CodeQL for Go and Python. The push run is the baseline that the PR check compares with, so an alert already on main is not new for a PR |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |
 | `praxis-latest.yaml` | Weekly (Monday), manual | Builds and tests `cortex-gateway` against the newest Praxis on crates.io. On failure it opens one issue, or comments on the open one. It blocks nothing |
 | `release-binaries.yaml` | Tag push (`v*`), manual; push to main publishes the main-latest channel when `MAIN_CHANNEL_ENABLED` is set | Release tarballs — see [Release binaries](#release-binaries) |

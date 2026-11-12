@@ -9,10 +9,10 @@
 name: CodeQL
 
 on:
+  # No paths-ignore on push: every main commit needs an analysis, because a PR
+  # is compared with the analysis of its exact base commit.
   push:
     branches: [main]
-    paths-ignore:
-      - "**.md"
   pull_request:
     branches: [main]
     # Markdown cannot trip CodeQL; docs-only PRs skip it.
