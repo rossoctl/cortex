@@ -52,7 +52,7 @@ func fetchAttestations(ctx context.Context, name string, digest []byte) ([]json.
 	if err != nil {
 		return nil, fmt.Errorf("could not reach the GitHub attestation API (%s): %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("no attestation for %s", name)
 	}
