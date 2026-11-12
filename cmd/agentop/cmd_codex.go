@@ -134,7 +134,7 @@ const codexUsage = `agentop configure codex — route Codex through Cortex via i
 
 Usage:
   agentop configure codex enable  [--yes] [--env PATH] [--config PATH]
-  agentop configure codex disable [--yes] [--env PATH]
+  agentop configure codex disable [--yes] [--env PATH] [--config PATH]
   agentop configure codex status  [--env PATH] [--config PATH]
 
 Codex loads $CODEX_HOME/.env (default ~/.codex/.env) itself at process start —
@@ -184,7 +184,8 @@ on), 1 something went wrong, 2 a usage error.
 Flags:
   --yes          do not prompt for confirmation (enable and disable)
   --env PATH     Codex's dotenv file (default ~/.codex/.env)
-  --config PATH  Cortex config to read addresses from (default ~/.cortex/config.yaml)
+  --config PATH  Cortex config to read addresses from; disable uses it to tell
+                 Cortex's values from yours (default ~/.cortex/config.yaml)
 `
 
 func runCodex(args []string, stdout, stderr io.Writer) int {
@@ -708,8 +709,9 @@ func applyCodexDisable(pl codexDisablePlan, statePath string, stderr io.Writer) 
 
 func codexDisable(envPath, cortexCfgPath, statePath string, yes bool, stdout, stderr io.Writer) int {
 	// The config is not required: disable has to work when Cortex is gone. Without it,
-	// codexIsOurs judges by the value's shape.
-	want, _ := codexWanted(cortexCfgPath)
+	// codexIsOurs judges by the value's shape. Read without enable's refusals, so a
+	// bridge turned off since enable still gives Cortex's values (codexValues).
+	want := codexValues(cortexCfgPath)
 	pl, err := planCodexDisable(envPath, want)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)

@@ -737,3 +737,41 @@ func TestCodexDisable_ChangesNothingWhenEveryValueIsTheUsers(t *testing.T) {
 		t.Errorf("the daemon saw %v, want nothing", f.steps)
 	}
 }
+
+// disable tells Cortex's values from the user's by Cortex's config, without enable's
+// refusals. With the bridge turned off after enable, a custom port, and a ca_dir outside
+// ~/.cortex, the values' shape alone would call all five the user's, keep them, and say
+// "it is not a value Cortex set" five times (#1783 review).
+func TestCodexDisable_KnowsCortexsValuesWithTheBridgeOff(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	edit := func(old, new string) {
+		t.Helper()
+		b, err := os.ReadFile(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), old) {
+			t.Fatalf("fixture: the config has no %q", old)
+		}
+		if err := os.WriteFile(cfgPath, []byte(strings.Replace(string(b), old, new, 1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	edit(`forward_proxy_addr: "127.0.0.1:47600"`, `forward_proxy_addr: "127.0.0.1:8081"`)
+	enableCodex(t, envPath, cfgPath)
+	if got := readCodexEnv(t, envPath)["HTTPS_PROXY"]; got != "http://127.0.0.1:8081" {
+		t.Fatalf("fixture: enable set HTTPS_PROXY=%q, want the custom port", got)
+	}
+	edit("tls_bridge:\n  mode: enabled\n", "tls_bridge:\n  mode: disabled\n")
+
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, cfgPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	if env := readCodexEnv(t, envPath); len(env) != 0 {
+		t.Errorf("after disable the managed keys are %v, want none", env)
+	}
+	if strings.Contains(out.String(), "left as") {
+		t.Errorf("disable called Cortex's values the user's:\n%s", out.String())
+	}
+}
