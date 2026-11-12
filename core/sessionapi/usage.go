@@ -34,7 +34,8 @@ import (
 //	session     session ID; omit for all sessions. REFUSED alongside a symbolic window:
 //	            the ledger holds no session ids, and serving all-sessions data under a
 //	            session label would be worse than refusing.
-//	group       none (default), model, endpoint, session, agent, status, plugin, host.
+//	group       none (default), model, endpoint, session, agent, project, currency,
+//	            status, plugin, host.
 //	            "method" is an alias for "model".
 //	agent       an agent, as group=agent reports it (versionless: a versioned label is
 //	            read as its agent); narrows the window to that agent's traffic, and the
