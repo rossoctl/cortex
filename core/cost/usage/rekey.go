@@ -72,6 +72,7 @@ func (b *bucket) add(o *bucket) {
 	addLabels(&b.byMethod, o.byMethod, b.unitsFrom(o, GroupModel))
 	addLabels(&b.byEndpoint, o.byEndpoint, b.unitsFrom(o, GroupEndpoint))
 	addLabels(&b.byAgent, o.byAgent, b.unitsFrom(o, GroupAgent))
+	addLabels(&b.byProject, o.byProject, b.unitsFrom(o, GroupProject))
 	addLabels(&b.bySession, o.bySession, nil)
 	addLabels(&b.byStatus, o.byStatus, nil)
 	addLabels(&b.byPlugin, o.byPlugin, nil)

@@ -525,10 +525,12 @@ type bucket struct {
 	// which reads as a rendering bug rather than as unattributed traffic. "unknown" is NOT
 	// an agent name. An agent that WAS reported but matched no known name keeps its raw
 	// User-Agent instead, so a new coding agent never pools in with untagged traffic.
-	byAgent  map[string]Counts
-	byStatus map[string]Counts
-	byPlugin map[string]Counts
-	byHost   map[string]Counts
+	byAgent map[string]Counts
+	// byProject tallies by SessionEvent.Project, folded for every event like byAgent.
+	byProject map[string]Counts
+	byStatus  map[string]Counts
+	byPlugin  map[string]Counts
+	byHost    map[string]Counts
 	// byProvenance tallies priced requests by where their figure came from, so a
 	// total can disclose how much of it is a gateway's own number versus modelled
 	// from a rate table. Like byUnpriced, kept outside the Group machinery: it
@@ -558,17 +560,25 @@ type bucket struct {
 	// UNCONDITIONAL, like byAgent, so its series sum to the bucket total and group=currency
 	// leaves nothing ungrouped — the unit is a property of the endpoint, so every request has one.
 	byCurrency map[string]Counts
-	// labelUnits is, per unit-labelled axis (model, endpoint, agent) and per key of that axis's
+	// labelUnits is, per unit-labelled axis (model, endpoint, agent, project) and per key of that axis's
 	// map, the units of those requests that were priced or carried a saving: the
 	// cross-tabulation Snapshot.SeriesCurrencies reports. Keyed by the label byAgent actually
 	// used, overflow included, so the two can never name different agents.
 	labelUnits map[Group]map[string]map[string]struct{}
 }
 
+// projectLabel is the GroupProject key of e.
+func projectLabel(e *model.SessionEvent) string {
+	if e.Project == "" {
+		return UnknownProjectLabel
+	}
+	return ringLabel(e.Project)
+}
+
 // unitAxes are the groupings Snapshot.SeriesCurrencies is reported for: the spend drawer's three
-// breakdowns. Every other axis mixes endpoints within a series, so it has no per-series unit worth
+// breakdowns, and project, because one project can call gateways in two units. Every other axis mixes endpoints within a series, so it has no per-series unit worth
 // keeping a cross-tabulation for.
-var unitAxes = [...]Group{GroupModel, GroupEndpoint, GroupAgent}
+var unitAxes = [...]Group{GroupModel, GroupEndpoint, GroupAgent, GroupProject}
 
 // noteUnit records that a request filed under label on axis g was in unit.
 func (b *bucket) noteUnit(g Group, label, unit string) {
@@ -1377,6 +1387,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *m
 	// makes this axis's series sum to the bucket total. That is also what gives it a
 	// different denominator from group=model's; see byAgent.
 	b.noteUnit(GroupAgent, addLabel(&b.byAgent, event.AgentLabel(e.Client), one), unit)
+	b.noteUnit(GroupProject, addLabel(&b.byProject, projectLabel(e), one), unit)
 	if e.StatusCode > 0 {
 		addLabel(&b.byStatus, strconv.Itoa(e.StatusCode), one)
 	} else if e.Phase == model.SessionDenied {
