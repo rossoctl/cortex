@@ -255,6 +255,20 @@ func TruncateLabel(s string, n int) string {
 	return s[:cut]
 }
 
+// TruncateLabelTail cuts s to at most n BYTES, on a rune boundary, and keeps the END.
+// For a path label: the end names the repo, and two repos with one long prefix must stay apart.
+func TruncateLabelTail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := len(s) - n
+	// Walk forward off a continuation byte, so the result never starts inside a rune.
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return s[cut:]
+}
+
 // knownClients maps a lowercased User-Agent product token to a canonical agent
 // name.
 //

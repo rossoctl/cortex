@@ -589,7 +589,7 @@ func (s *store) decodeDay(path string) ([]Row, dayIssues, error) {
 		// write.
 		r.Endpoint, r.Model = rowLabel(r.Endpoint), rowLabel(r.Model)
 		r.Agent, r.Provenance = rowLabel(r.Agent), rowLabel(r.Provenance)
-		r.Project = rowLabel(r.Project)
+		r.Project = projectRowLabel(r.Project)
 		out = append(out, r)
 	}
 	if serr := sc.Err(); serr != nil {

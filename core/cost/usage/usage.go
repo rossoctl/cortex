@@ -567,12 +567,13 @@ type bucket struct {
 	labelUnits map[Group]map[string]map[string]struct{}
 }
 
-// projectLabel is the GroupProject key of e.
+// projectLabel is the GroupProject key of e. It keeps the END of a long path, like
+// ledger.projectRowLabel, so the ring and the ledger spell one project the same way.
 func projectLabel(e *model.SessionEvent) string {
 	if e.Project == "" {
 		return UnknownProjectLabel
 	}
-	return ringLabel(e.Project)
+	return model.TruncateLabelTail(model.SanitizeControlRunes(e.Project), maxLabelLen)
 }
 
 // unitAxes are the groupings Snapshot.SeriesCurrencies is reported for: the spend drawer's three

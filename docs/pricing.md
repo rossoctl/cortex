@@ -259,8 +259,8 @@ install) is the aggregate behind `agentop cost`. Query parameters:
 
 `group=project` breaks the window down by the `project` label of each request: the git repo
 root of the agent process's cwd ([session-api.md](session-api.md#event-schema)). A request with
-no project is in the series `unknown`. A label longer than 96 bytes is cut to its first 96
-bytes, in the ring and in the ledger alike.
+no project is in the series `unknown`. A label longer than 96 bytes keeps its last 96 bytes,
+in the ring and in the ledger alike: the end of the path names the repo.
 
 Response envelope: `window`, `bucketSeconds`, `group`, `buckets[]`, `totals` and `priced` are
 always present. Every other field is `omitempty` and appears only when it applies, so a clean

@@ -452,7 +452,7 @@ func (w *Writer) Record(_ string, e *model.SessionEvent) {
 		// what keeps group=agent spelled identically whichever half answers. Sanitised for
 		// the same reason as the two above: EventClient.Raw is the header verbatim.
 		Agent:   rowLabel(agentLabel(e.Client)),
-		Project: rowLabel(e.Project),
+		Project: projectRowLabel(e.Project),
 		Counts:  usage.Counts{Requests: 1},
 	}
 	// NIL-SAFE, because the guard above admits a row with no extension: an endpoint

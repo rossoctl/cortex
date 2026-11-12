@@ -82,8 +82,8 @@ const (
 	GroupHost     Group = "host"
 )
 
-// UnknownProjectLabel is the GroupProject series of an event with no project. A real project
-// label starts with "/" or "~", so it cannot collide with this one.
+// UnknownProjectLabel is the GroupProject series of an event with no project. A whole project
+// label starts with "/" or "~", and a cut one is at least 93 bytes, so neither is this one.
 const UnknownProjectLabel = "unknown"
 
 // ParseGroup validates a group parameter. Empty means GroupNone.

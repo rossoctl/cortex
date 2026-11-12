@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +67,36 @@ func TestWriter_GroupProjectOverAMonth(t *testing.T) {
 	}
 	if snap.Totals.CostMicros != 1_100_000 {
 		t.Errorf("Totals.CostMicros = %d, want 1100000", snap.Totals.CostMicros)
+	}
+}
+
+// Two repos whose paths share a prefix longer than 96 bytes stay two series: the cut keeps the end.
+func TestWriter_LongProjectsWithOnePrefixStayApart(t *testing.T) {
+	base := "~/src/github.com/example-org/" + strings.Repeat("a", 70) + "-"
+	now := at
+	w := newTestWriter(t, t.TempDir(), func() time.Time { return now })
+	w.Record("s1", projectEvent(t, at, base+"frontend", 0.25))
+	w.Record("s1", projectEvent(t, at, base+"backend", 0.25))
+	now = at.Add(time.Minute)
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	spec, err := usage.ParseWindowSpec(usage.WindowToday, now)
+	if err != nil {
+		t.Fatalf("ParseWindowSpec: %v", err)
+	}
+	snap, err := w.Snapshot(context.Background(), spec, usage.GroupProject, "")
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	keys := seriesKeys(snap.Buckets[0].Series)
+	if len(keys) != 2 {
+		t.Fatalf("series = %q, want two, one per repo", keys)
+	}
+	for _, k := range keys {
+		if len(k) > maxLabelLen || !strings.HasSuffix(k, "end") {
+			t.Errorf("label %q: want at most %d bytes that keep the end of the path", k, maxLabelLen)
+		}
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
@@ -48,6 +49,24 @@ func assertProjectSeries(t *testing.T, snap Snapshot) {
 	}
 	if sum.Requests != snap.Totals.Requests || sum.CostMicros != snap.Totals.CostMicros {
 		t.Errorf("series sum %+v does not equal totals %+v", sum, snap.Totals)
+	}
+}
+
+// A long project keeps its END, so two repos with one long prefix stay two series. The cut
+// never splits a rune: "é" is two bytes, and the trailing "z" puts a plain byte cut inside one.
+func TestProjectLabel_LongPathKeepsTheEnd(t *testing.T) {
+	base := "~/src/github.com/example-org/" + strings.Repeat("a", 70) + "-"
+	front := projectLabel(projectEvent(t, "claude-code", base+"frontend"))
+	back := projectLabel(projectEvent(t, "claude-code", base+"backend"))
+	if front == back {
+		t.Fatalf("two repos share one series %q", front)
+	}
+	if !strings.HasSuffix(front, "-frontend") || len(front) > maxLabelLen {
+		t.Errorf("label %q: want at most %d bytes ending in -frontend", front, maxLabelLen)
+	}
+	wide := projectLabel(projectEvent(t, "claude-code", "/"+strings.Repeat("é", 60)+"z"))
+	if !utf8.ValidString(wide) || !strings.HasSuffix(wide, "z") || len(wide) > maxLabelLen || len(wide) < maxLabelLen-3 {
+		t.Errorf("label %q (%d bytes): want valid UTF-8 of %d to %d bytes ending in z", wide, len(wide), maxLabelLen-3, maxLabelLen)
 	}
 }
 

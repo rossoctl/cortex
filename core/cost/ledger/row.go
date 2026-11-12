@@ -210,6 +210,12 @@ func rowLabel(s string) string {
 	return model.TruncateLabel(model.SanitizeControlRunes(s), maxLabelLen)
 }
 
+// projectRowLabel is rowLabel for Row.Project, but it keeps the END of a long path: the end
+// names the repo, so a cut from the end would merge two repos with one long prefix.
+func projectRowLabel(s string) string {
+	return model.TruncateLabelTail(model.SanitizeControlRunes(s), maxLabelLen)
+}
+
 // maxLabelsPerMinute caps how many DISTINCT rows one open minute accumulates, and
 // it is usage.maxLabelsPerBucket's 64, again matched rather than re-chosen.
 //
