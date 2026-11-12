@@ -1,19 +1,28 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/sigstore/sigstore-go/pkg/root"
 )
 
 // fakeInstaller puts a curl on PATH that serves an installer which prints its
@@ -49,18 +58,18 @@ func latestIs(t *testing.T, tag string) {
 func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 	for _, c := range []struct {
 		name, latest, cortex string
+		release              string // the tag fakeRelease serves, if any
 		args                 []string
 		want                 string // stdout
 		code                 int
 	}{
 		{name: "newest", latest: "v9.9.9", want: "Already at v9.9.9.\n"},
 		{name: "pinned", latest: "v9.9.8", args: []string{"--ref=v9.9.9"}, want: "Already at v9.9.9.\n"},
-		{name: "older", latest: "v9.9.10", want: "installer: \n", code: 7},
-		{name: "pinned to another", latest: "v9.9.9", args: []string{"--ref=v9.9.8"}, want: "installer: --ref=v9.9.8\n", code: 7},
+		{name: "older", latest: "v9.9.10", release: "v9.9.10", want: "staged setup\n", code: 7},
+		{name: "pinned to another", latest: "v9.9.9", release: "v9.9.8", args: []string{"--ref=v9.9.8"}, want: "staged setup\n", code: 7},
 		{name: "main", latest: "v9.9.9", args: []string{"--ref=main"}, want: "installer: --ref=main\n", code: 7},
-		{name: "newest unknown", want: "installer: \n", code: 7},
 		// setup repairs a pair that disagree.
-		{name: "cortex behind", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", want: "installer: \n", code: 7},
+		{name: "cortex behind", latest: "v9.9.9", release: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", want: "staged setup\n", code: 7},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sc := newDoctorScene(t)
@@ -70,6 +79,9 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 			}
 			latestIs(t, c.latest)
 			fakeInstaller(t, false)
+			if c.release != "" {
+				fakeRelease(t, c.release, false, false)
+			}
 			var out, errb bytes.Buffer
 			if code := runUpdate(c.args, &out, &errb); code != c.code || out.String() != c.want {
 				t.Errorf("exit %d stdout %q, want %d %q\n%s", code, out.String(), c.code, c.want, errb.String())
@@ -78,19 +90,201 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 	}
 }
 
-func TestUpdateRunsTheInstallerAndKeepsTheInstall(t *testing.T) {
+// fakeSetup is the staged agentop: it writes its arguments and whether it saw
+// CORTEX_INSTALLER_DREW to $FAKE_SETUP_ARGS, then exits 7.
+const fakeSetup = `#!/bin/sh
+printf '%s\n' "$@" "drew=${CORTEX_INSTALLER_DREW-unset}" > "$FAKE_SETUP_ARGS"
+echo staged setup
+exit 7
+`
+
+// fakeRelease serves the tag's release for this machine with right checksums,
+// sets TMPDIR to a new empty dir and records provenance checks instead of making
+// them. setupArgs is the file the staged agentop writes its arguments to.
+func fakeRelease(t *testing.T, tag string, cpex, praxis bool) (setupArgs string, checked *[]string, files map[string][]byte) {
+	t.Helper()
+	files = map[string][]byte{}
+	for _, name := range releaseTarballs(tag, runtime.GOOS, runtime.GOARCH, cpex, praxis) {
+		body := "#!/bin/sh\necho " + tarballBinary(name) + "\n"
+		if tarballBinary(name) == "agentop" {
+			body = fakeSetup
+		}
+		files[name] = tarGz(t, tarEntry{name: tarballBinary(name), typ: tar.TypeReg, body: body})
+	}
+	releaseServer(t, tag, withSums(files))
+	setupArgs = filepath.Join(t.TempDir(), "setup-args")
+	emptyTmp(t)
+	t.Setenv("FAKE_SETUP_ARGS", setupArgs)
+	checked = new([]string)
+	saved := provenanceCheckFn
+	provenanceCheckFn = func(_ context.Context, name string, _ []byte, gotTag string) error {
+		if gotTag != tag {
+			t.Errorf("provenance checked for %s, want %s", gotTag, tag)
+		}
+		*checked = append(*checked, name)
+		return nil
+	}
+	t.Cleanup(func() { provenanceCheckFn = saved })
+	return setupArgs, checked, files
+}
+
+// hashDir is the SHA-256 of each file in dir, by name.
+func hashDir(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sums := map[string]string{}
+	for _, e := range ents {
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sums[e.Name()] = fmt.Sprintf("%x", sha256.Sum256(b))
+	}
+	return sums
+}
+
+func TestUpdateHandsOffToTheStagedSetup(t *testing.T) {
 	sc := newDoctorScene(t)
-	sc.installed(t, "--claude-code")
+	sc.installed(t, "--claude-code", "--no-service")
 	writeExe(t, filepath.Join(sc.home, ".local", "bin", "cortex"), "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n")
-	fakeInstaller(t, false)
+	t.Setenv("CORTEX_INSTALLER_DREW", "1")
+	setupArgs, checked, files := fakeRelease(t, "v9.9.9-rc.1", true, false)
+	tmp := os.Getenv("TMPDIR")
 	var out, errb bytes.Buffer
 	code := runUpdate([]string{"--ref=v9.9.9-rc.1", "-y"}, &out, &errb)
-	// The installer's exit status is update's.
-	if code != 7 {
-		t.Fatalf("exit %d, want 7:\n%s%s", code, out.String(), errb.String())
+	// The staged setup's exit status is update's.
+	if code != 7 || out.String() != "staged setup\n" {
+		t.Fatalf("exit %d stdout %q, want 7 and the staged setup's line:\n%s", code, out.String(), errb.String())
 	}
-	if want := "installer: --claude-code --cpex --ref=v9.9.9-rc.1 --yes\n"; out.String() != want {
-		t.Errorf("stdout %q, want %q", out.String(), want)
+	names := releaseTarballs("v9.9.9-rc.1", runtime.GOOS, runtime.GOARCH, true, false)
+	if !strings.HasPrefix(names[1], "cortex-cpex_") || !slices.Equal(*checked, names) {
+		t.Errorf("checked %q, want %q", *checked, names)
+	}
+	var size int
+	for _, n := range names {
+		size += len(files[n])
+	}
+	b, err := os.ReadFile(setupArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	if len(got) != 9 {
+		t.Fatalf("setup args %q, want 9 lines", got)
+	}
+	want := []string{"setup", "--from", got[2], "--claude-code", "--no-service", "--yes", fmt.Sprintf("--handoff-bytes=%d", size), got[7], "drew=unset"}
+	if !slices.Equal(got, want) {
+		t.Errorf("setup args %q, want %q", got, want)
+	}
+	if !strings.HasPrefix(got[2], filepath.Join(tmp, "cortex-stage.")) {
+		t.Errorf("--from %q, want a stage under %s", got[2], tmp)
+	}
+	if !regexp.MustCompile(`^--handoff-seconds=[0-9]+$`).MatchString(got[7]) {
+		t.Errorf("arg %q, want --handoff-seconds=<digits>", got[7])
+	}
+	assertEmptyDir(t, tmp)
+}
+
+func TestInstallReleasePraxis(t *testing.T) {
+	setupArgs, checked, _ := fakeRelease(t, "v9.9.9", false, true)
+	var out, errb bytes.Buffer
+	err := installRelease(&setupEnv{}, "v9.9.9", []string{"--praxis"}, &out, &errb)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 7 {
+		t.Fatalf("err %v, want exit 7:\n%s", err, errb.String())
+	}
+	if !slices.Contains(*checked, "cortex-gateway_v9.9.9_"+runtime.GOOS+"_"+runtime.GOARCH+".tar.gz") {
+		t.Errorf("checked %q, want the cortex-gateway tarball", *checked)
+	}
+	b, err := os.ReadFile(setupArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(strings.Split(string(b), "\n"), "--praxis") {
+		t.Errorf("setup args %q lack --praxis", b)
+	}
+}
+
+func TestUpdateChecksumMismatchChangesNothing(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	_, checked, files := fakeRelease(t, "v9.9.10", false, false)
+	agentop := releaseTarballs("v9.9.10", runtime.GOOS, runtime.GOARCH, false, false)[0]
+	wrong := maps.Clone(files)
+	wrong[agentop] = []byte("not the tarball")
+	delete(wrong, "checksums.txt")
+	files["checksums.txt"] = sumsFor(wrong)
+	releaseServer(t, "v9.9.10", files)
+	binDir := filepath.Join(sc.home, ".local", "bin")
+	before := hashDir(t, binDir)
+	var out, errb bytes.Buffer
+	if code := runUpdate([]string{"--ref=v9.9.10", "-y"}, &out, &errb); code != 1 || !strings.Contains(errb.String(), "checksum mismatch for agentop_v9.9.10") {
+		t.Errorf("exit %d stderr %q, want 1 and a checksum mismatch", code, errb.String())
+	}
+	if after := hashDir(t, binDir); !maps.Equal(before, after) {
+		t.Errorf("bin dir changed: %v, was %v", after, before)
+	}
+	if len(*checked) != 0 {
+		t.Errorf("checked %q before the checksums passed", *checked)
+	}
+	assertEmptyDir(t, os.Getenv("TMPDIR"))
+}
+
+func TestUpdateUnreachableAttestationAPIFailsClosed(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	setupArgs, _, _ := fakeRelease(t, "v9.9.10", false, false)
+	provenanceCheckFn = checkProvenance // fakeRelease's cleanup restores it
+	srv := httptest.NewServer(http.NotFoundHandler())
+	srv.Close()
+	savedAPI, savedTM := attestationsAPI, provenanceTrustedMaterial
+	attestationsAPI = srv.URL + "/"
+	provenanceTrustedMaterial = func() (root.TrustedMaterial, error) {
+		t.Error("trusted root loaded before the attestation API answered")
+		return nil, errors.New("not here")
+	}
+	t.Cleanup(func() { attestationsAPI, provenanceTrustedMaterial = savedAPI, savedTM })
+	binDir := filepath.Join(sc.home, ".local", "bin")
+	before := hashDir(t, binDir)
+	env, err := newSetupEnv(setupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if err := installRelease(env, "v9.9.10", nil, &out, &errb); err == nil || !strings.Contains(err.Error(), "attestation API") {
+		t.Errorf("err %v, want the attestation API named", err)
+	}
+	if _, err := os.Stat(setupArgs); !os.IsNotExist(err) {
+		t.Errorf("staged setup ran (stat %v)", err)
+	}
+	if after := hashDir(t, binDir); !maps.Equal(before, after) {
+		t.Errorf("bin dir changed: %v, was %v", after, before)
+	}
+	assertEmptyDir(t, os.Getenv("TMPDIR"))
+}
+
+func TestInstallReleaseMainUsesTheWebsiteInstaller(t *testing.T) {
+	fakeInstaller(t, false)
+	var out, errb bytes.Buffer
+	err := installRelease(&setupEnv{}, "main", []string{"--ref=main"}, &out, &errb)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 7 || out.String() != "installer: --ref=main\n" {
+		t.Errorf("err %v stdout %q, want exit 7 and the installer's line\n%s", err, out.String(), errb.String())
+	}
+}
+
+// The newest release is a v* tag, so not reading it must not fall back to the
+// unchecked installer (D1).
+func TestUpdateFailsClosedWithoutTheNewestRelease(t *testing.T) {
+	newDoctorScene(t).installed(t)
+	latestIs(t, "")
+	fakeInstaller(t, false)
+	var out, errb bytes.Buffer
+	if code := runUpdate(nil, &out, &errb); code != 1 || !strings.Contains(errb.String(), "could not read the newest release") {
+		t.Errorf("exit %d stdout %q stderr %q, want 1 and the newest release named", code, out.String(), errb.String())
 	}
 }
 
@@ -130,12 +324,19 @@ func TestUpdateFailsWhenTheDownloadFails(t *testing.T) {
 	latestIs(t, "v9.9.10")
 	fakeInstaller(t, true)
 	var out, errb bytes.Buffer
-	if code := runUpdate(nil, &out, &errb); code != 1 {
+	if code := runUpdate([]string{"--ref=main"}, &out, &errb); code != 1 {
 		t.Errorf("exit %d, want 1", code)
 	}
 	if !strings.Contains(errb.String(), "Could not resolve host") {
 		t.Errorf("stderr lacks curl's error: %q", errb.String())
 	}
+	t.Run("release", func(t *testing.T) {
+		releaseServer(t, "v9.9.10", map[string][]byte{})
+		var out, errb bytes.Buffer
+		if code := runUpdate([]string{"--ref=v9.9.10"}, &out, &errb); code != 1 || !strings.Contains(errb.String(), "download failed: checksums.txt") {
+			t.Errorf("exit %d stderr %q, want 1 and the failed download named", code, errb.String())
+		}
+	})
 }
 
 func TestUpdateRejectsAnArgument(t *testing.T) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -20,9 +23,12 @@ const updateUsage = `agentop update — install the newest Cortex release over t
 Usage:
   agentop update [--ref=REF] [--yes]
 
-Runs the same installer as the one-liner. The installer downloads and verifies
-the release, then gives it to agentop setup. Update keeps these as they are
-now: Claude Code's routing, a proxy with no service (--no-service), the cpex
+For a release (the newest, or --ref=vX), agentop downloads the release itself,
+checks each archive's SHA-256 against checksums.txt and its build provenance
+against GitHub's attestation for this repository's release workflow and that
+tag, and only then gives it to the new agentop setup. Any failed check stops the
+update and changes nothing. --ref=main runs the same installer as the one-liner.
+Update keeps these as they are now: Claude Code's routing, a proxy with no service (--no-service), the cpex
 build of cortex, praxis mode (--praxis), an install with no config
 (--install-only), and a shell profile the install did not edit
 (--no-modify-path).
@@ -34,8 +40,8 @@ build of cortex, praxis mode (--praxis), an install with no config
 Downloads nothing when agentop and cortex in ~/.local/bin are already at the
 release asked for. Run agentop doctor to check the rest of the install.
 
-Exit status: 0 already current, else the installer's, which is setup's once it
-hands off.
+Exit status: 0 already current, 1 when a download or check fails, else setup's
+(or the installer's for --ref=main).
 `
 
 // installerURL is where the documented one-liner fetches install.sh.
@@ -93,9 +99,46 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 // installReleaseFn is what callers use, so tests can replace the installer.
 var installReleaseFn = installRelease
 
-// installRelease runs the installer for ref ("" = newest release) with flags.
+// provenanceCheckFn checks a release tarball's provenance; tests replace it.
+var provenanceCheckFn = checkProvenance
+
+// setupHandOffFlags are the flags of updateFlags that setup takes (D3).
+var setupHandOffFlags = []string{"--claude-code", "--yes", "--no-service", "--install-only", "--no-modify-path", "--praxis"}
+
+// installRelease installs ref ("" = newest release) with flags. A v* tag is
+// downloaded, checked and staged here, then handed to the staged agentop setup;
+// any other ref runs the website installer.
 func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io.Writer) error {
-	cmd := exec.Command("sh", append([]string{"-c", updateScript, installerURL}, flags...)...)
+	if ref == "" {
+		// Fail closed: falling back to the installer would skip the check (D1).
+		if ref = latestRelease(); ref == "" {
+			return errors.New("could not read the newest release")
+		}
+	}
+	var cmd *exec.Cmd
+	if !strings.HasPrefix(ref, "v") {
+		cmd = exec.Command("sh", append([]string{"-c", updateScript, installerURL}, flags...)...)
+	} else {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		start := time.Now()
+		names := releaseTarballs(ref, runtime.GOOS, runtime.GOARCH, slices.Contains(flags, "--cpex"), slices.Contains(flags, "--praxis"))
+		stage, size, err := stageRelease(ctx, ref, names, func(n string, d []byte) error { return provenanceCheckFn(ctx, n, d, ref) })
+		stop()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = os.RemoveAll(stage) }() // setup removes it too, unless it exits early
+		args := []string{"setup", "--from", stage}
+		for _, f := range flags {
+			if slices.Contains(setupHandOffFlags, f) {
+				args = append(args, f)
+			}
+		}
+		args = append(args, fmt.Sprintf("--handoff-bytes=%d", max(size, 1)), fmt.Sprintf("--handoff-seconds=%d", int(time.Since(start).Seconds())))
+		cmd = exec.Command(filepath.Join(stage, "agentop"), args...)
+		cmd.Stdin = os.Stdin
+		cmd.Env = slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, installerDrewEnv+"=") })
+	}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	// Ctrl-C reaches the installer too, and setup undoes its steps on it: caught
 	// here, so the prompt does not come back while that rollback still prints.
