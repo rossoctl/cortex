@@ -118,8 +118,8 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		return s
 	}
 	if err := installReleaseFn(env, tag, updateFlags(env, "", true), stdout, stderr); err != nil {
-		log := lastLines(filepath.Join(env.cortexDir, "update.log"), 5)
-		s.Result, s.Error = updatestatus.ResultFailed, err.Error()+"\n"+strings.Join(log, "\n")
+		s.Result, s.Error = updatestatus.ResultFailed, strings.Join(append([]string{err.Error()},
+			lastLines(filepath.Join(env.cortexDir, "update.log"), 5)...), "\n")
 		return s
 	}
 	s.Result = updatestatus.ResultUpdated
