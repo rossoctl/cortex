@@ -136,7 +136,7 @@ Verification uses `bundle.Bundle.UnmarshalJSON`, `verify.NewVerifier(tm, verify.
   - `TestCheckProvenanceEndToEnd`: server serves the fixture, `provenanceTrustedMaterial` returns the fixture root → `checkProvenance(ctx, "agentop_v0.9.5_darwin_arm64.tar.gz", digest, "v0.9.5")` is nil, and with tag `v0.9.6` is an error.
   Restore every replaced var with `t.Cleanup`.
 - [ ] **Step 2:** `cd cmd/agentop && go test -count=1 -run 'Provenance|FetchAttestations' ./...`. Expected: FAIL (undefined names).
-- [ ] **Step 3:** `go get github.com/sigstore/sigstore-go@v1.3.0`, implement `update_provenance.go`, `go mod tidy`. Check that the `go` directive in `go.mod` stays `1.26.10`.
+- [ ] **Step 3:** `go get github.com/sigstore/sigstore-go@v1.3.0`, implement `update_provenance.go`, `go mod tidy`. Check that the `go` directive in `go.mod` stays `1.26.10` and that no `toolchain` line is added. **Decision if it changes:** find the dependency that raised it (`go mod graph | grep <dep>` and its `go.mod`), pin that dependency with `go get <dep>@<newest version whose go directive is <= 1.26.10>`, and run `go mod tidy` again. If sigstore-go v1.3.0 itself cannot build with that pin, use `github.com/sigstore/sigstore-go@v1.2.2` (its `go.mod` says `go 1.25.8`, checked 2026-11-12) and record the version in the commit message. Never raise the `go` directive.
 - [ ] **Step 4:** Same test command. Expected: PASS. Then `GOWORK=off go mod tidy -diff` prints nothing.
 - [ ] **Step 5:** Commit `feat: Check release attestations against the release workflow policy`.
 
@@ -201,7 +201,7 @@ Depends on: T1, T2, T3. Est. 380 lines (code 110, tests 270).
 
 `updateUsage`: replace the paragraph "Runs the same installer as the one-liner. The installer downloads and verifies the release, then gives it to agentop setup." with: "For a release (the newest, or --ref=vX), agentop downloads the release itself, checks each archive's SHA-256 against checksums.txt and its build provenance against GitHub's attestation for this repository's release workflow and that tag, and only then gives it to the new agentop setup. Any failed check stops the update and changes nothing. --ref=main runs the same installer as the one-liner." Keep the rest. Change "Exit status: … else the installer's, which is setup's once it hands off." to "Exit status: 0 already current, 1 when a download or check fails, else setup's (or the installer's for --ref=main)."
 
-- [ ] **Step 1: Write the failing tests** in `cmd_update_test.go`. Helper `fakeRelease(t, tag string, cpex, praxis bool) (setupArgs string, checked *[]string)`: builds the `releaseTarballs(tag, runtime.GOOS, runtime.GOARCH, cpex, praxis)` tarballs (agentop = `#!/bin/sh\nprintf '%s\n' "$@" "drew=${CORTEX_INSTALLER_DREW-unset}" > "$FAKE_SETUP_ARGS"\necho staged setup\nexit 7\n`; cortex and cortex-gateway = any script), serves them with `checksums.txt` (T3's `releaseServer` pattern), sets `TMPDIR` to `t.TempDir()`, sets `FAKE_SETUP_ARGS` to a file path, and sets `provenanceCheckFn` to a recorder that appends the name and returns nil. Tests:
+- [ ] **Step 1: Write the failing tests** in `cmd_update_test.go`. Helper `fakeRelease(t, tag string, cpex, praxis bool) (setupArgs string, checked *[]string)`: builds the `releaseTarballs(tag, runtime.GOOS, runtime.GOARCH, cpex, praxis)` tarballs (agentop = `#!/bin/sh\nprintf '%s\n' "$@" "drew=${CORTEX_INSTALLER_DREW-unset}" > "$FAKE_SETUP_ARGS"\necho staged setup\nexit 7\n`; cortex and cortex-gateway = any script), serves them with `checksums.txt` (call T3's `tarGz` and `releaseServer` helpers from `update_stage_test.go` directly: same package, do not copy them), sets `TMPDIR` to `t.TempDir()`, sets `FAKE_SETUP_ARGS` to a file path, and sets `provenanceCheckFn` to a recorder that appends the name and returns nil. Tests:
   - `TestUpdateHandsOffToTheStagedSetup`: scene `installed(t, "--claude-code", "--no-service")`, cortex is the cpex build (`echo cortex \(cpex\) v9.9.9`), `t.Setenv("CORTEX_INSTALLER_DREW", "1")`, `runUpdate([]string{"--ref=v9.9.9-rc.1", "-y"})`. Expect exit 7; stdout `staged setup\n`; recorded names = the agentop and `cortex-cpex_` tarballs; args lines = `setup`, `--from`, `<a dir under TMPDIR>`, `--claude-code`, `--no-service`, `--yes`, `--handoff-bytes=<sum of tarball sizes>`, `--handoff-seconds=<digits>`, `drew=unset`; `TMPDIR` is empty after the run.
   - `TestInstallReleasePraxis`: `installRelease(env, "v9.9.9", []string{"--praxis"}, …)` → names include `cortex-gateway_v9.9.9_…`; args include `--praxis`.
   - `TestUpdateChecksumMismatchChangesNothing`: `fakeRelease`, then serve a wrong hash for the agentop tarball. Record the SHA-256 of every file in `binDir` before; `runUpdate([]string{"--ref=v9.9.10", "-y"})` → exit 1, stderr contains `checksum mismatch for agentop_v9.9.10`; same hashes after; no recorded provenance call; `TMPDIR` empty.
@@ -243,6 +243,12 @@ From the worktree root:
 ```sh
 cd cmd/agentop && test -z "$(gofmt -l .)" && go vet ./... && go build ./... && go test -race -count=1 ./... && GOWORK=off go mod tidy -diff && golangci-lint run --new-from-rev=16fa0be3964dbdd9303b8eeafb03a6f0a30673f4 ./...
 ```
+
+Checked on the unchanged base (2026-11-12), from the worktree root: `cd cmd/agentop && test -z "$(gofmt -l .)"` exits 0 and `go vet ./...` exits 0. No change to how the gate is called. `GOWORK=off go mod tidy -diff` is the form CI uses (`.github/workflows/ci.yaml`, step "Run go mod tidy -diff in every module"). CI does not run golangci-lint; the gate keeps it, scoped to new code by `--new-from-rev`.
+
+## Scope
+
+The plan covers every item of the issue's Goal, Decisions, Design and Tests. Left out, as the issue says: first installs and the documented one-liner (still `install.sh`, no provenance check), and `main-latest` channel builds (any ref that does not start with `v` keeps the website installer). One change from the issue's text: sigstore-go v1.3.0, not v1.4.0, because v1.4.0's `go.mod` says `go 1.27.0` (checked 2026-11-12) and agentop is on `go 1.26.10`.
 
 ## For a human after review
 
