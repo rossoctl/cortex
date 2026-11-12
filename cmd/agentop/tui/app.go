@@ -851,8 +851,8 @@ type model struct {
 	// restoring into.
 	agentScope string
 	agentsTbl  table.Model
-	// agentRowLabels is the scope each agentsTbl row selects, "" for All agents.
-	agentRowLabels []string
+	// agentRowDescs identifies each agentsTbl row, in row order (see rebuildAgentsTable).
+	agentRowDescs []agentRowDesc
 	// agentsErr is the last fetch failure, shown in the pane rather than swallowed: an empty
 	// breakdown and an unreachable endpoint look identical otherwise.
 	agentsErr error

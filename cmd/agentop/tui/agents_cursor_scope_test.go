@@ -11,7 +11,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
-	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 )
 
 // cursorScopeModel is a connected agents pane over navRows, cursor on claude-code's row, with
@@ -40,9 +39,7 @@ func cursorScopeModel(t *testing.T) (*model, func() []string) {
 		agents:     navRows(),
 		agentsTbl:  newAgentsTable(),
 	}
-	m.agentsTbl.SetRows([]table.Row{
-		{"All agents"}, {"claude-code/2.1.270"}, {"bob-shell/2.0.5"},
-	})
+	m.rebuildAgentsTable()
 	setCursorVisible(&m.agentsTbl, 1)
 	return m, func() []string {
 		mu.Lock()

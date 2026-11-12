@@ -318,17 +318,33 @@ func newAgentsTable() table.Model {
 	return t
 }
 
-// rebuildAgentsTable rebuilds rows from All agents then m.pickerRows, which selectedAgentScope
-// indexes too.
+// agentRowKind is what one row of the agents table shows.
+type agentRowKind int
+
+const (
+	agentRowAgent        agentRowKind = iota // All agents ("") or an agent, closed
+	agentRowHeading                          // an open agent row, figures blank
+	agentRowAllProjects                      // first sub-row
+	agentRowProject                          // one project
+	agentRowProjectOther                     // the project Other sub-row
+)
+
+// agentRowDesc identifies one row of the agents table. Every cursor reader uses it, so a sub-row
+// always resolves to its parent agent.
+type agentRowDesc struct {
+	agent   string // parent agent label; "" is All agents
+	kind    agentRowKind
+	project string // the usage series label; set only for agentRowProject
+}
+
+// rebuildAgentsTable rebuilds rows from All agents then m.pickerRows, and keeps
+// m.agentRowDescs in step with the rows.
 func (m *model) rebuildAgentsTable() {
 	// Columns and rows change together, as in rebuildSessionsTable: SESSIONS appears only once a
 	// session names its agent, so a server that names none shows the table unchanged.
 	withSessions := m.sessionsNameAgents()
 	cursor := m.agentsTbl.Cursor()
-	prev, hadPrev := "", cursor >= 0 && cursor < len(m.agentRowLabels)
-	if hadPrev {
-		prev = m.agentRowLabels[cursor]
-	}
+	prev, hadPrev := m.selectedAgentRow()
 	cols := agentsColumns(m.agentsWindowLabel())
 	if withSessions {
 		cols = slices.Insert(cols, 1,
@@ -367,11 +383,11 @@ func (m *model) rebuildAgentsTable() {
 		all = append(all, "")
 	}
 	rows = append(rows, all)
-	labels := make([]string, 0, len(picker)+1)
-	labels = append(labels, "")
+	descs := make([]agentRowDesc, 0, len(picker)+1)
+	descs = append(descs, agentRowDesc{kind: agentRowAgent})
 	now := m.clock()
 	for _, a := range picker {
-		labels = append(labels, a.label)
+		descs = append(descs, agentRowDesc{agent: a.label, kind: agentRowAgent})
 		row := table.Row{
 			// SANITISED AT RENDER TIME. The label is a User-Agent, so it is
 			// request-controlled; sanitizeLabel applies the proxy's own rule.
@@ -387,10 +403,15 @@ func (m *model) rebuildAgentsTable() {
 		rows = append(rows, row)
 	}
 	m.agentsTbl.SetRows(rows)
-	m.agentRowLabels = labels
-	// Follow the agent, not the index: a refresh can reorder the rows under the cursor.
-	if i := slices.Index(labels, prev); hadPrev && i >= 0 {
-		cursor = i
+	m.agentRowDescs = descs
+	// Follow the row, not the index: a refresh can reorder the rows under the cursor. When the
+	// row is gone, go to the first row of the same agent.
+	if hadPrev {
+		if i := slices.Index(descs, prev); i >= 0 {
+			cursor = i
+		} else if i := slices.IndexFunc(descs, func(d agentRowDesc) bool { return d.agent == prev.agent }); i >= 0 {
+			cursor = i
+		}
 	}
 	setCursorVisible(&m.agentsTbl, cursor)
 }
@@ -483,24 +504,27 @@ func (m *model) enterAgentsAtStartup() bool {
 // list that agentsPaneApplies and the Other row reason about, and this row partitions nothing.
 const allAgentsLabel = "All agents"
 
-// selectedAgentScope is the scope the row under the cursor selects: "" on All agents, else that
-// agent's label. ok is false when the cursor is on no row.
-//
-// READ OFF m.pickerRows BY CURSOR INDEX, not out of the rendered table cell: the cell is passed
-// through sanitizeLabel, which is a display transform — a control character or a long label
-// arrives on the wire and leaves that function altered, so scoping to what the cell says could
-// scope to a string no agent ever sent. The two are kept in step by rebuildAgentsTable, which
-// builds the rows from m.pickerRows in order, after All agents.
-func (m *model) selectedAgentScope() (scope string, ok bool) {
+// selectedAgentRow is the descriptor of the row under the cursor. ok is false when the cursor is
+// on no row.
+func (m *model) selectedAgentRow() (agentRowDesc, bool) {
 	i := m.agentsTbl.Cursor()
-	if i == 0 {
-		return "", true
+	if i < 0 || i >= len(m.agentRowDescs) {
+		return agentRowDesc{}, false
 	}
-	picker := m.pickerRows()
-	if i < 1 || i > len(picker) {
-		return "", false
-	}
-	return picker[i-1].label, true
+	return m.agentRowDescs[i], true
+}
+
+// selectedAgentScope is the scope the row under the cursor selects: "" on All agents, else that
+// agent's label. On a sub-row it is the parent agent. ok is false when the cursor is on no row.
+//
+// READ OFF m.agentRowDescs BY CURSOR INDEX, not out of the rendered table cell: the cell is
+// passed through sanitizeLabel, which is a display transform — a control character or a long
+// label arrives on the wire and leaves that function altered, so scoping to what the cell says
+// could scope to a string no agent ever sent. rebuildAgentsTable keeps the descriptors in step
+// with the rows.
+func (m *model) selectedAgentScope() (scope string, ok bool) {
+	row, ok := m.selectedAgentRow()
+	return row.agent, ok
 }
 
 // leaveAgentsPane is esc's exit. As the level above Sessions it backs out of the connection the
