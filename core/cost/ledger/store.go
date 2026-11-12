@@ -579,7 +579,8 @@ func (s *store) decodeDay(path string) ([]Row, dayIssues, error) {
 		// sanitizes then truncates, and both steps are fixed points on their own output.
 		// That is what makes doing it twice free rather than lossy.
 		//
-		// ALL FOUR, INCLUDING Provenance, which was the one left out. The write path caps every one
+		// ALL FIVE, INCLUDING Provenance, which was the one left out, and Project, a series key
+		// for group=project. The write path caps every one
 		// of them, and Provenance is the field pricedBy is reconstructed from — so a foreign file's
 		// multi-KB provenance carrying a C1 CSI escape reached a series key with nothing else
 		// checking it. It is a small closed set in this process's own output ("configured",
@@ -588,6 +589,7 @@ func (s *store) decodeDay(path string) ([]Row, dayIssues, error) {
 		// write.
 		r.Endpoint, r.Model = rowLabel(r.Endpoint), rowLabel(r.Model)
 		r.Agent, r.Provenance = rowLabel(r.Agent), rowLabel(r.Provenance)
+		r.Project = rowLabel(r.Project)
 		out = append(out, r)
 	}
 	if serr := sc.Err(); serr != nil {
