@@ -173,3 +173,19 @@ func TestProject_RefusalRow(t *testing.T) {
 		})
 	}
 }
+
+// A WebSocket turn is a request of the handshake's process, so its row carries the
+// project that the handshake pinned. Codex Responses over WebSocket records only turn rows.
+func TestWebSocketTurn_CarriesTheHandshakeProject(t *testing.T) {
+	hs := &pipeline.Context{Direction: pipeline.Outbound, Host: "chatgpt.com:443", Path: "/backend-api/codex/responses"}
+	hs.SetProject("~/repo")
+	r, err := http.NewRequest(http.MethodGet, "https://chatgpt.com/backend-api/codex/responses", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := &wsSocket{s: &Server{}, hs: hs, r: r}
+	ev := ws.turnRequestEvent(ws.newTurnContext([]byte(`{"type":"response.create"}`)))
+	if ev.Project != "~/repo" {
+		t.Errorf("turn row Project = %q, want the handshake's ~/repo", ev.Project)
+	}
+}
