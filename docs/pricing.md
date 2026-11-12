@@ -252,10 +252,15 @@ install) is the aggregate behind `agentop cost`. Query parameters:
 | Parameter | Values | Notes |
 |---|---|---|
 | `window` | `today`, `month`, `7d`, or a duration (`1h`, `6h`) | `today`, `month` and `7d` are served from the durable ledger. A duration is served from the in-memory ring. |
-| `group` | `none`, `model`, `endpoint`, `session`, `agent`, `currency`, `status`, `plugin`, `host` (`method` aliases `model`) | See the caveat below. |
+| `group` | `none`, `model`, `endpoint`, `session`, `agent`, `project`, `currency`, `status`, `plugin`, `host` (`method` aliases `model`) | See the caveat below. |
 | `resolution` | a duration | Bucket size on a ring-served window. A ledger-backed window is answered as one bucket spanning the whole window and does not read this at all; `bucketSeconds` reports the span actually served. |
 | `session` | a session id | Combining it with a symbolic window (`today`, `month`, `7d`) is rejected with 400. |
 | `agent` | an agent label, as `group=agent` reports it (`claude-code`, `unknown`) — versionless; a versioned label such as `claude-code/2.1.284` is read as its agent | Narrows the window to that agent's traffic, every version together. Longer than 96 bytes is rejected with 400. |
+
+`group=project` breaks the window down by the `project` label of each request: the git repo
+root of the agent process's cwd ([session-api.md](session-api.md#event-schema)). A request with
+no project is in the series `unknown`. A label longer than 96 bytes is cut to its first 96
+bytes, in the ring and in the ledger alike.
 
 Response envelope: `window`, `bucketSeconds`, `group`, `buckets[]`, `totals` and `priced` are
 always present. Every other field is `omitempty` and appears only when it applies, so a clean
@@ -276,10 +281,12 @@ order. `unpricedBy` is keyed by `<endpoint> <model>`.
 
 **The response reports the `group` it SERVED, not the one you asked for — and the
 difference is silent.** On a ledger-backed window (`today`, `month`, `7d`) only
-`endpoint`, `agent`, `model` and `currency` are actually grouped; `host`, `session`, `status`
+`endpoint`, `agent`, `project`, `model` and `currency` are actually grouped; `host`, `session`, `status`
 and `plugin` fall back to `group: "none"` with no error and HTTP 200. With `agent=`, a window
 served from the ring — a duration, or any window without a ledger — falls back to `none` for every
-grouping. Always read the `group` field back:
+grouping, unless the agent is a recognised one and no `session=` is given: then the ring keeps
+the group. So `agent=claude-code&group=project` gives per-project series for that agent only, on
+any window. Always read the `group` field back:
 
 ```sh
 curl -s 'localhost:47601/v1/usage?window=today&group=endpoint' | jq .group
@@ -287,6 +294,9 @@ curl -s 'localhost:47601/v1/usage?window=today&group=endpoint' | jq .group
 
 curl -s 'localhost:47601/v1/usage?window=today&group=host' | jq .group
 # "none"        <- silently degraded
+
+curl -s 'localhost:47601/v1/usage?window=1h&agent=claude-code&group=project' | jq .group
+# "project"     <- honoured: per-project series for claude-code only
 ```
 
 Two aggregates answer the same question and may disagree slightly, which is not a bug

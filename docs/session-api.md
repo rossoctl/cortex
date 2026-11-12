@@ -809,6 +809,9 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   transparentproxy) and when `session.process_attribution` is off.
   In praxis mode the request and response rows that cortex-gateway sends through
   `POST /v1/ingest` have no `project`: only the forward proxy's own rows have it.
+  `/v1/usage?group=project` totals cost by this label; an event with no
+  `project` is counted under `unknown`. See
+  [pricing.md](pricing.md#reading-usage-over-http).
 - `subagent` — present on rows from a Claude Code subagent or agent-team
   teammate: the `X-Claude-Code-Agent-Id` the request carried. For a subagent it
   is the same id that names its files under

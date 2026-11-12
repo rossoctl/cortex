@@ -1581,6 +1581,11 @@ than asked of the server, so the spend drawer reads `BY NONE` on every axis unde
 it. The raw User-Agents are still in the unscoped drawer's agent axis and in
 `agentop cost --by agent`.
 
+**`agentop cost --by project` gives a row per project**, costliest first. A project is
+the git repo root of the agent process's cwd, and traffic that had no project is the row
+`unknown`. On every `--by` axis the LABEL column widens to the longest label and cuts
+nothing. `--by` together with `--agent` stays refused: use one or the other.
+
 [#1210]: https://github.com/rossoctl/cortex/issues/1210
 
 While a scope is active, two things on the usage pane change: `[b]` disappears
