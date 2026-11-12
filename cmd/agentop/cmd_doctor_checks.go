@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
+	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
 	"github.com/rossoctl/cortex/core/config"
 )
 
@@ -202,4 +203,40 @@ func checkPython(env *setupEnv, ui *checklist.UI) {
 		return
 	}
 	ui.Advise("python3", "cortex-session-dump needs python3, which is not on PATH")
+}
+
+// checkUpdates draws the row for automatic updates from ~/.cortex/update.json.
+// Only a failed install is a failure.
+func checkUpdates(env *setupEnv, ui *checklist.UI) (failed bool) {
+	const label, fix = "updates", "see ~/.cortex/update.log"
+	if cfg, err := config.Load(env.configPath()); err == nil && !cfg.UpdateAutoEnabled() {
+		ui.Already(label, "automatic updates off (update.auto: false)")
+		return false
+	}
+	if sp, err := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, proxyBinary)); err != nil || !serviceInstalled(sp) {
+		ui.Already(label, "not automatic without the service; agentop update installs a release")
+		return false
+	}
+	at := func(t time.Time) string { return t.Local().Format("2006-01-02 15:04") }
+	st, err := updatestatus.Read(filepath.Join(env.cortexDir, updatestatus.FileName))
+	switch {
+	case err != nil:
+		ui.Advise(label, "no update check yet", fix)
+	case doctorNow().Sub(st.CheckedAt) > 72*time.Hour:
+		ui.Advise(label, "no update check since "+at(st.CheckedAt), fix)
+	case st.Result == updatestatus.ResultFailed:
+		ui.Fail(label, "update to "+st.Latest+" failed at "+at(st.CheckedAt), strings.Split(st.Error, "\n")...)
+		ui.Remedy("", fix)
+		return true
+	case st.Result == updatestatus.ResultCheckFailed:
+		first, _, _ := strings.Cut(st.Error, "\n")
+		ui.Advise(label, "the last check failed at "+at(st.CheckedAt)+": "+first, fix)
+	default:
+		detail := "auto on · " + st.Result + " at " + at(st.CheckedAt)
+		if st.Result == updatestatus.ResultWaiting {
+			detail += " · installs " + st.Latest + " after " + at(st.InstallAfter)
+		}
+		ui.Already(label, detail)
+	}
+	return false
 }
