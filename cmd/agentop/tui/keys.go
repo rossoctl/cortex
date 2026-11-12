@@ -634,17 +634,24 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "enter", "right", "l":
 		switch m.pane {
 		case paneAgents:
-			// Pick the agent the views are narrowed to, then LIST ITS SESSIONS: the pane is a
-			// picker, and picking an agent is asking for its sessions.
+			// On a sub-row, or a row that cannot open: pick the agent the views are narrowed to,
+			// then LIST ITS SESSIONS. A row that opens toggles instead (below).
 			//
-			// NOT A TOGGLE: Enter on the agent already scoped keeps it, and the All agents row is
-			// what clears it. See allAgentsLabel.
+			// THE SCOPE IS NOT A TOGGLE: Enter on the agent already scoped keeps it, and All agents
+			// (or its All projects sub-row, when it opens) is what clears it. See allAgentsLabel.
 			//
 			// A project sub-row also sets the project scope; every other row clears it, so the
 			// next agent's list is not narrowed to a project of the old one.
 			d, ok := m.selectedAgentRow()
 			if !ok {
 				return nil
+			}
+			// A ROW THAT OPENS IS A TOGGLE, at the reader's request: Enter opens or closes it, and
+			// its All projects sub-row is what lists the agent's sessions. Space was the only way
+			// in, and nobody found it. A row that cannot open still scopes, or it would be inert.
+			if d.kind == agentRowHeading || (d.kind == agentRowAgent && m.agentRowExpandable(d.agent)) {
+				cmd, _ := m.toggleAgentRow()
+				return cmd
 			}
 			m.agentScope, m.projectScope = d.agent, ""
 			switch d.kind {
@@ -1450,6 +1457,10 @@ func (m *model) helpView() string {
 			switch {
 			case d.kind == agentRowProject || d.kind == agentRowProjectOther:
 				enterHint = "  [↵] scope to this project"
+			case d.kind == agentRowHeading:
+				enterHint = "  [↵] close"
+			case d.kind == agentRowAgent && m.agentRowExpandable(d.agent):
+				enterHint = "  [↵] projects"
 			case d.agent == "":
 				enterHint = "  [↵] all agents"
 			}
@@ -1457,11 +1468,9 @@ func (m *model) helpView() string {
 		// [space] after [↵], and the full project label after nav: the cell may show only a tail.
 		navHint, spaceHint := "[↑↓] nav", ""
 		if d, ok := m.selectedAgentRow(); ok {
-			switch {
-			case d.kind != agentRowAgent:
+			// Only on a sub-row: on an agent row [↵] already says it.
+			if d.kind != agentRowAgent && d.kind != agentRowHeading {
 				spaceHint = "  [space] close"
-			case m.agentRowExpandable(d.agent):
-				spaceHint = "  [space] projects"
 			}
 			if d.kind == agentRowProject {
 				navHint += "  " + sanitizeLabel(d.project)

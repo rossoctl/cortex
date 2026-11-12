@@ -489,8 +489,8 @@ func TestAgentsProjects_FooterNamesTheFullLabel(t *testing.T) {
 	m.sessions[0].Projects = []string{label}
 	m.rebuildAgentsTable()
 	onRow(t, m, projAgent)
-	if got := m.helpView(); !strings.Contains(got, "[space] projects") {
-		t.Errorf("closed row footer %q; want [space] projects", got)
+	if got := m.helpView(); !strings.Contains(got, "[↵] projects") {
+		t.Errorf("closed row footer %q; want [↵] projects", got)
 	}
 	deliver(m, pressCmd(m, spaceKey))
 	onDesc(t, m, agentRowDesc{agent: projAgent, kind: agentRowProject, project: label})
