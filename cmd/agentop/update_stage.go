@@ -25,7 +25,7 @@ var releaseClient = &http.Client{Timeout: 5 * time.Minute}
 // releaseTarballs is the agentop tarball, then the cortex (or cortex-cpex) one, then cortex-gateway when praxis.
 func releaseTarballs(tag, goos, goarch string, cpex, praxis bool) []string {
 	suffix := "_" + tag + "_" + goos + "_" + goarch + ".tar.gz"
-	proxy := "cortex"
+	proxy := proxyBinary
 	if cpex {
 		proxy = "cortex-cpex"
 	}
@@ -44,7 +44,7 @@ func tarballBinary(name string) string {
 	case strings.HasPrefix(name, "cortex-gateway_"):
 		return "cortex-gateway"
 	default: // cortex_ and cortex-cpex_
-		return "cortex"
+		return proxyBinary
 	}
 }
 
