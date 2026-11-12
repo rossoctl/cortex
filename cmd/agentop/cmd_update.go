@@ -79,14 +79,7 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stdout, "Already at %s.\n", v)
 		return 0
 	}
-	cmd := exec.Command("sh", append([]string{"-c", updateScript, installerURL}, updateFlags(env, *ref, yes)...)...)
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	// Ctrl-C reaches the installer too, and setup undoes its steps on it: caught
-	// here, so the prompt does not come back while that rollback still prints.
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigs)
-	if err := cmd.Run(); err != nil {
+	if err := installReleaseFn(env, *ref, updateFlags(env, *ref, yes), stdout, stderr); err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			return exit.ExitCode()
@@ -95,6 +88,21 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// installReleaseFn is what callers use, so tests can replace the installer.
+var installReleaseFn = installRelease
+
+// installRelease runs the installer for ref ("" = newest release) with flags.
+func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io.Writer) error {
+	cmd := exec.Command("sh", append([]string{"-c", updateScript, installerURL}, flags...)...)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	// Ctrl-C reaches the installer too, and setup undoes its steps on it: caught
+	// here, so the prompt does not come back while that rollback still prints.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigs)
+	return cmd.Run()
 }
 
 // updateFlags are the installer flags that keep this install as it is: without
