@@ -146,7 +146,9 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		s.Result, s.InstallAfter = updatestatus.ResultWaiting, released.Add(updateWait).UTC()
 		return s
 	}
-	if err := installReleaseFn(env, tag, updateFlags(env, "", true), stdout, stderr); err != nil {
+	// --ref pins the tag that passed the wait. Without it, install.sh reads Latest
+	// again, and a release published in between skips the wait.
+	if err := installReleaseFn(env, tag, updateFlags(env, tag, true), stdout, stderr); err != nil {
 		s.Result, s.Error = updatestatus.ResultFailed, strings.Join(append([]string{err.Error()},
 			lastLines(filepath.Join(env.cortexDir, "update.log"), 5)...), "\n")
 		return s

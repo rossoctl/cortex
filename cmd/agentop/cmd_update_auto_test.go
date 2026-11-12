@@ -158,7 +158,7 @@ func TestAutoUpdateDecisions(t *testing.T) {
 					t.Error("no error text")
 				}
 			case "updated":
-				if fake.ref != c.latest || slices.ContainsFunc(fake.flags, func(f string) bool { return strings.HasPrefix(f, "--ref=") }) || !slices.Contains(fake.flags, "--yes") {
+				if fake.ref != c.latest || !slices.Contains(fake.flags, "--ref="+c.latest) || !slices.Contains(fake.flags, "--yes") {
 					t.Errorf("installer ref %q flags %q", fake.ref, fake.flags)
 				}
 			case "failed":

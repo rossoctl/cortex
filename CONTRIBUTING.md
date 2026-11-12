@@ -252,6 +252,14 @@ To stop a bad release, mark the previous release as Latest on GitHub.
 
 The 72-hour delay gives time to do this before most users install the bad release.
 
+The go-back needs two things from the bad release:
+
+- Its proxy runs for 10 minutes, because only the running proxy starts the updater.
+- Its `agentop update --auto` works, because that command installs the older release.
+
+A release that breaks either one does not go back by itself. Its users must run the
+one-liner again.
+
 ## Release candidates
 
 A tag with `-rc`, `-alpha` or `-beta` in it publishes a **prerelease**: binaries and
