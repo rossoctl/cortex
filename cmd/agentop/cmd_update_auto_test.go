@@ -74,6 +74,8 @@ var autoUpdateRows = []autoRow{
 	{name: "disabled", latest: "v9.9.10", config: "update:\n  auto: false\n", age: 73 * time.Hour, want: updatestatus.ResultDisabled},
 	// An opt-out holds when another field fails validation.
 	{name: "disabled, config invalid", latest: "v9.9.10", config: "update:\n  auto: false\ncost_ledger:\n  retention_days: 1\n", age: 73 * time.Hour, want: updatestatus.ResultDisabled},
+	// config.Load expands ${VAR}, so the opt-out does too.
+	{name: "disabled by env", latest: "v9.9.10", config: "update:\n  auto: ${AGENTOP_TEST_UPDATE_AUTO}\n", age: 73 * time.Hour, want: updatestatus.ResultDisabled},
 	{name: "latest not a release", latest: "v9.9.10-rc.1", age: 73 * time.Hour, want: updatestatus.ResultCheckFailed},
 	{name: "not-a-release", latest: "v9.9.10", agentop: "#!/bin/sh\necho agentop dev\n", age: 73 * time.Hour, want: updatestatus.ResultNotARelease},
 	{name: "current", latest: "v9.9.9", age: 73 * time.Hour, want: updatestatus.ResultCurrent},
@@ -91,6 +93,7 @@ var autoUpdateRows = []autoRow{
 func runAutoRow(t *testing.T, i int) (int, doctorScene, *fakeRelease) {
 	t.Helper()
 	c := autoUpdateRows[i]
+	t.Setenv("AGENTOP_TEST_UPDATE_AUTO", "false")
 	sc := newDoctorScene(t)
 	sc.installed(t)
 	bin := filepath.Join(sc.home, ".local", "bin")

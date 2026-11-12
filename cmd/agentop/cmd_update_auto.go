@@ -100,7 +100,14 @@ func autoUpdateOff(path string) bool {
 	var c struct {
 		Update *config.UpdateConfig `yaml:"update"`
 	}
-	if yaml.Unmarshal(b, &c) != nil {
+	// The same ${VAR} expansion as config.Load.
+	expanded := os.Expand(string(b), func(key string) string {
+		if val, ok := os.LookupEnv(key); ok {
+			return val
+		}
+		return "${" + key + "}"
+	})
+	if yaml.Unmarshal([]byte(expanded), &c) != nil {
 		return false
 	}
 	return !(&config.Config{Update: c.Update}).UpdateAutoEnabled()
