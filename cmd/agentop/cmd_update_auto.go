@@ -14,6 +14,7 @@ import (
 
 	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
 	"github.com/rossoctl/cortex/core/config"
+	"gopkg.in/yaml.v3"
 )
 
 // releaseAssetURL is a file of each release. Its Last-Modified is the release
@@ -23,7 +24,8 @@ var releaseAssetURL = "https://github.com/rossoctl/cortex/releases/download/%s/c
 // updateNow is a var so tests can set the clock.
 var updateNow = time.Now
 
-// updateWait is how long a release must be Latest before --auto installs it.
+// updateWait is how long after its publication (the upload time of its
+// checksums.txt) --auto installs the Latest release.
 // It gives the maintainers time to stop a bad release.
 const updateWait = 72 * time.Hour
 
@@ -86,6 +88,24 @@ func runAutoUpdate(env *setupEnv, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// autoUpdateOff reports an explicit update.auto: false. It reads only the update
+// block, so an error in another field does not cancel the opt-out. A file that
+// does not parse leaves auto on: a broken config must not stop the update that
+// can repair it.
+func autoUpdateOff(path string) bool {
+	b, err := os.ReadFile(path) //nolint:gosec // the user's own config
+	if err != nil {
+		return false
+	}
+	var c struct {
+		Update *config.UpdateConfig `yaml:"update"`
+	}
+	if yaml.Unmarshal(b, &c) != nil {
+		return false
+	}
+	return !(&config.Config{Update: c.Update}).UpdateAutoEnabled()
+}
+
 func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 	tag := latestRelease()
 	if tag == "" {
@@ -94,14 +114,16 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 	s := updatestatus.Status{Latest: tag}
 	env.readVersions()
 	agentop, cortex := env.installedVersion, installedVersion(filepath.Join(env.binDir, proxyBinary))
-	// A config that does not load leaves auto on: a broken config must not stop
-	// the update that can repair it.
-	if cfg, err := config.Load(env.configPath()); err == nil && !cfg.UpdateAutoEnabled() {
+	if autoUpdateOff(env.configPath()) {
 		s.Result = updatestatus.ResultDisabled
 		return s
 	}
 	if !updatestatus.IsRelease(agentop) || !updatestatus.IsRelease(cortex) {
 		s.Result = updatestatus.ResultNotARelease
+		return s
+	}
+	if !updatestatus.IsRelease(tag) {
+		s.Result, s.Error = updatestatus.ResultCheckFailed, "Latest "+tag+" is not a plain release"
 		return s
 	}
 	if agentop == tag && cortex == tag {

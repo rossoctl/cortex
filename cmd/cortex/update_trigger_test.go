@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -79,5 +80,16 @@ func TestUpdateTriggerIgnoresStartError(t *testing.T) {
 	*now = now.Add(time.Hour)
 	if tr.tick() || *starts != 1 {
 		t.Fatalf("tick 1h after a failed start: starts = %d, want 1", *starts)
+	}
+}
+
+// time.Now carries a monotonic reading, and a monotonic Sub leaves out the time a
+// laptop sleeps. lastStart must hold the wall clock only.
+func TestUpdateTriggerLastStartIsWallClock(t *testing.T) {
+	tr, _, _ := newTestTrigger(t, nil)
+	tr.now = time.Now
+	tr.tick()
+	if strings.Contains(tr.lastStart.String(), "m=") {
+		t.Errorf("lastStart %s has a monotonic reading", tr.lastStart)
 	}
 }

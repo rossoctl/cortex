@@ -108,3 +108,32 @@ func TestDoctorUpdatesNoService(t *testing.T) {
 		t.Errorf("output lacks %q:\n%s", want, out)
 	}
 }
+
+// A failed install stays a failure when no check has run since.
+func TestDoctorUpdatesFailedStale(t *testing.T) {
+	at := updatesNow.Add(-100 * time.Hour)
+	sc := updatesScene(t, updatestatus.Status{CheckedAt: at, Latest: "v9.9.10", Installed: "v9.9.9",
+		Result: updatestatus.ResultFailed, Error: "exit status 1"})
+	code, out := sc.doctor(t)
+	wantLines(t, code, 1, out, "\n"+markLine("✗", "updates")+"update to v9.9.10 failed at "+updatesTime(at)+
+		"\n      exit status 1\n      fix: see ~/.cortex/update.log\n")
+}
+
+// An opt-out holds when another field fails validation.
+func TestDoctorUpdatesOffWithInvalidConfig(t *testing.T) {
+	sc := updatesScene(t, updatestatus.Status{CheckedAt: updatesNow, Result: updatestatus.ResultFailed})
+	f, err := os.OpenFile(filepath.Join(sc.home, ".cortex", "config.yaml"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.WriteString("update:\n  auto: false\ncost_ledger:\n  retention_days: 1\n")
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, out := sc.doctor(t); !strings.Contains(out, "automatic updates off") {
+		t.Errorf("doctor did not report the opt-out:\n%s", out)
+	}
+}

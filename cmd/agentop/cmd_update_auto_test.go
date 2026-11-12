@@ -72,6 +72,9 @@ type autoRow struct {
 
 var autoUpdateRows = []autoRow{
 	{name: "disabled", latest: "v9.9.10", config: "update:\n  auto: false\n", age: 73 * time.Hour, want: updatestatus.ResultDisabled},
+	// An opt-out holds when another field fails validation.
+	{name: "disabled, config invalid", latest: "v9.9.10", config: "update:\n  auto: false\ncost_ledger:\n  retention_days: 1\n", age: 73 * time.Hour, want: updatestatus.ResultDisabled},
+	{name: "latest not a release", latest: "v9.9.10-rc.1", age: 73 * time.Hour, want: updatestatus.ResultCheckFailed},
 	{name: "not-a-release", latest: "v9.9.10", agentop: "#!/bin/sh\necho agentop dev\n", age: 73 * time.Hour, want: updatestatus.ResultNotARelease},
 	{name: "current", latest: "v9.9.9", age: 73 * time.Hour, want: updatestatus.ResultCurrent},
 	{name: "waiting", latest: "v9.9.10", age: 71 * time.Hour, want: updatestatus.ResultWaiting},

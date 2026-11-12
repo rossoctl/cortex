@@ -32,7 +32,7 @@ type updateTrigger struct {
 // tick starts the updater when the status file is missing or older than a day.
 // It returns true when it called start.
 func (t *updateTrigger) tick() bool {
-	now := t.now()
+	now := t.now().Round(0) // wall clock: a monotonic Sub leaves out sleep
 	if fi, err := os.Stat(t.file); err == nil && now.Sub(fi.ModTime()) <= updateEvery {
 		return false
 	}

@@ -162,8 +162,9 @@ A service install (launchd or systemd) updates itself:
   after the proxy starts. The unit is `io.rossoctl.cortex.update` on macOS and
   `cortex-update.service` on Linux.
 - The updater runs `agentop update --yes --auto`.
-- It installs the release that GitHub marks Latest, but only when that release has been
-  Latest for 72 hours.
+- It installs the release that GitHub marks Latest, but only when that release was
+  published at least 72 hours ago. The publication time is the upload time of the
+  release's `checksums.txt`.
 - Then it restarts the proxy. Attached sessions lose the request in flight and retry it.
 
 It does not change a `dev`, `main-<sha>` or release-candidate service install. Those

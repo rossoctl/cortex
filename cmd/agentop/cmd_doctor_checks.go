@@ -209,7 +209,7 @@ func checkPython(env *setupEnv, ui *checklist.UI) {
 // Only a failed install is a failure.
 func checkUpdates(env *setupEnv, ui *checklist.UI) (failed bool) {
 	const label, fix = "updates", "see ~/.cortex/update.log"
-	if cfg, err := config.Load(env.configPath()); err == nil && !cfg.UpdateAutoEnabled() {
+	if autoUpdateOff(env.configPath()) {
 		ui.Already(label, "automatic updates off (update.auto: false)")
 		return false
 	}
@@ -222,12 +222,12 @@ func checkUpdates(env *setupEnv, ui *checklist.UI) (failed bool) {
 	switch {
 	case err != nil:
 		ui.Advise(label, "no update check yet", fix)
-	case doctorNow().Sub(st.CheckedAt) > 72*time.Hour:
-		ui.Advise(label, "no update check since "+at(st.CheckedAt), fix)
 	case st.Result == updatestatus.ResultFailed:
 		ui.Fail(label, "update to "+st.Latest+" failed at "+at(st.CheckedAt), strings.Split(st.Error, "\n")...)
 		ui.Remedy("fix: ", fix)
 		return true
+	case doctorNow().Sub(st.CheckedAt) > 72*time.Hour:
+		ui.Advise(label, "no update check since "+at(st.CheckedAt), fix)
 	case st.Result == updatestatus.ResultCheckFailed:
 		first, _, _ := strings.Cut(st.Error, "\n")
 		ui.Advise(label, "the last check failed at "+at(st.CheckedAt)+": "+first, fix)
