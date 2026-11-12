@@ -166,9 +166,10 @@ A service install (launchd or systemd) updates itself:
   Latest for 72 hours.
 - Then it restarts the proxy. Attached sessions lose the request in flight and retry it.
 
-It does not change a `dev`, `main-<sha>`, release-candidate or `--no-service` install.
-Those installs get the notice only. A newer Latest shows on the `agentop` title bar at
-once, before the 72 hours end.
+It does not change a `dev`, `main-<sha>` or release-candidate service install. Those
+installs get the notice only. A newer Latest shows on the `agentop` title bar after the
+next daily check, before the 72 hours end. A `--no-service` install has no updater, so
+it gets no notice. `agentop update` by hand still works there.
 
 To turn it off, set this in `~/.cortex/config.yaml`:
 

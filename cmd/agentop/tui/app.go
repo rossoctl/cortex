@@ -1696,6 +1696,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.fetchUsage(), usageTick(m.usage.tickGen))
 
 	case refreshTickMsg:
+		// On each tick, not on reconnect: the updater writes the file after the
+		// restarted proxy serves, so a reconnect usually reads the old result.
+		m.readUpdateNotice()
 		// ARRIVING AT THE PICKER ENDS ITS ONE-HARVEST-PER-VISIT BUDGET. Detected here, on the
 		// edge, so the two dozen places that assign m.pane do not each have to remember to clear
 		// it — and so one added later cannot quietly skip the harvest by inheriting a set flag.
@@ -2371,14 +2374,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleStreamEvent routes a single StreamEvent from the apiclient.
 func (m *model) handleStreamEvent(ev apiclient.StreamEvent) {
 	if ev.Status.Phase != "" {
-		prev := m.connState.phase
 		switch ev.Status.Phase {
 		case "open":
 			m.connState.phase = connOpen
-			// The proxy can restart after an update, so read the result again.
-			if prev == connReconnecting {
-				m.readUpdateNotice()
-			}
 		case "reconnecting":
 			m.connState.phase = connReconnecting
 			m.connState.attempt = ev.Status.Attempt

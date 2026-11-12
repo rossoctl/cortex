@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
 )
 
@@ -76,21 +75,16 @@ func TestAppNameCarriesUpdateNote(t *testing.T) {
 	}
 }
 
-func TestUpdateNoticeRereadOnReconnect(t *testing.T) {
+// The updater writes the file after the restarted proxy serves, so the stream is
+// often open again before the result lands: each refresh tick reads it.
+func TestUpdateNoticeRereadOnRefreshTick(t *testing.T) {
 	path := filepath.Join(t.TempDir(), updatestatus.FileName)
 	writeNoticeFile(t, path, "v0.9.6")
-	m := &model{version: "v0.9.5", updateFile: path}
+	m := &model{version: "v0.9.5", updateFile: path, pane: paneNamespaces, pickerShowing: true, pickerHarvested: true}
 	m.readUpdateNotice()
-	m.handleStreamEvent(apiclient.StreamEvent{Status: apiclient.StreamStatus{Phase: "reconnecting", Attempt: 1}})
 	writeNoticeFile(t, path, "v0.9.7")
-	m.handleStreamEvent(apiclient.StreamEvent{Status: apiclient.StreamStatus{Phase: "open"}})
+	m.update(refreshTickMsg(time.Now()))
 	if got, want := m.updateNote, "· v0.9.7 available"; got != want {
-		t.Errorf("updateNote after reconnect = %q, want %q", got, want)
-	}
-	// An "open" that does not follow a reconnect does not read the file again.
-	writeNoticeFile(t, path, "v0.9.8")
-	m.handleStreamEvent(apiclient.StreamEvent{Status: apiclient.StreamStatus{Phase: "open"}})
-	if got, want := m.updateNote, "· v0.9.7 available"; got != want {
-		t.Errorf("updateNote after a second open = %q, want %q", got, want)
+		t.Errorf("updateNote after a tick = %q, want %q", got, want)
 	}
 }
