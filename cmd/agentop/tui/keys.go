@@ -646,6 +646,13 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if !ok {
 				return nil
 			}
+			// A ROW THAT OPENS IS A TOGGLE, at the reader's request: Enter opens or closes it, and
+			// its All projects sub-row is what lists the agent's sessions. Space was the only way
+			// in, and nobody found it. A row that cannot open still scopes, or it would be inert.
+			if d.kind == agentRowHeading || (d.kind == agentRowAgent && m.agentRowExpandable(d.agent)) {
+				cmd, _ := m.toggleAgentRow()
+				return cmd
+			}
 			m.agentScope, m.projectScope = d.agent, ""
 			switch d.kind {
 			case agentRowProject:
@@ -1450,6 +1457,10 @@ func (m *model) helpView() string {
 			switch {
 			case d.kind == agentRowProject || d.kind == agentRowProjectOther:
 				enterHint = "  [↵] scope to this project"
+			case d.kind == agentRowHeading:
+				enterHint = "  [↵] close"
+			case d.kind == agentRowAgent && m.agentRowExpandable(d.agent):
+				enterHint = "  [↵] projects"
 			case d.agent == "":
 				enterHint = "  [↵] all agents"
 			}
@@ -1457,11 +1468,9 @@ func (m *model) helpView() string {
 		// [space] after [↵], and the full project label after nav: the cell may show only a tail.
 		navHint, spaceHint := "[↑↓] nav", ""
 		if d, ok := m.selectedAgentRow(); ok {
-			switch {
-			case d.kind != agentRowAgent:
+			// Only on a sub-row: on an agent row [↵] already says it.
+			if d.kind != agentRowAgent && d.kind != agentRowHeading {
 				spaceHint = "  [space] close"
-			case m.agentRowExpandable(d.agent):
-				spaceHint = "  [space] projects"
 			}
 			if d.kind == agentRowProject {
 				navHint += "  " + sanitizeLabel(d.project)

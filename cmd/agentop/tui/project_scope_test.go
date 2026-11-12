@@ -62,6 +62,8 @@ func TestProjectScope_EnterOnAllAgentsClearsBoth(t *testing.T) {
 	openClaudeCode(t, m)
 	m.agentScope, m.projectScope = projAgent, "~/moca"
 	m.agentsTbl.SetCursor(0)
+	deliver(m, pressCmd(m, enterKey)) // opens All agents
+	onDesc(t, m, agentRowDesc{kind: agentRowAllProjects})
 	pressCmd(m, enterKey)
 	wantScopes(t, m, "", "")
 }
@@ -71,8 +73,41 @@ func TestProjectScope_EnterOnAnAgentRowClearsTheProject(t *testing.T) {
 	openClaudeCode(t, m)
 	m.agentScope, m.projectScope = projAgent, "~/moca"
 	onRow(t, m, "codex")
+	deliver(m, pressCmd(m, enterKey)) // opens codex
+	onDesc(t, m, agentRowDesc{agent: "codex", kind: agentRowAllProjects})
 	pressCmd(m, enterKey)
 	wantScopes(t, m, "codex", "")
+}
+
+// Enter on a row that opens is a toggle: it opens, then closes, and scopes nothing.
+func TestProjectScope_EnterTogglesAnAgentRow(t *testing.T) {
+	m, _ := projectsModel(t, defaultProjectSeries)
+	onRow(t, m, projAgent)
+	deliver(m, pressCmd(m, enterKey))
+	if !m.agentRowOpen(projAgent) || m.pane != paneAgents {
+		t.Fatalf("after Enter: open=%v pane=%v; want open on the agents pane", m.agentRowOpen(projAgent), m.pane)
+	}
+	onDesc(t, m, agentRowDesc{agent: projAgent, kind: agentRowHeading})
+	pressCmd(m, enterKey)
+	if m.agentRowOpen(projAgent) || m.pane != paneAgents {
+		t.Fatalf("after 2nd Enter: open=%v pane=%v; want closed on the agents pane", m.agentRowOpen(projAgent), m.pane)
+	}
+	wantScopes(t, m, "", "")
+}
+
+// Without projects no row opens, so Enter scopes as before rather than doing nothing.
+func TestProjectScope_EnterScopesARowThatCannotOpen(t *testing.T) {
+	m, _ := projectsModel(t, defaultProjectSeries)
+	for i := range m.sessions {
+		m.sessions[i].Projects = nil
+	}
+	m.rebuildAgentsTable()
+	onRow(t, m, projAgent)
+	pressCmd(m, enterKey)
+	wantScopes(t, m, projAgent, "")
+	if m.pane != paneSessions {
+		t.Errorf("pane %v; want sessions", m.pane)
+	}
 }
 
 func TestProjectScope_AProjectUnderAllAgentsHasNoAgent(t *testing.T) {
