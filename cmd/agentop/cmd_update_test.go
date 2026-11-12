@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -449,5 +450,38 @@ func TestUpdateFlags_DirectConfigNoPraxis(t *testing.T) {
 func TestUpdateFlags_PraxisConfigBrokenPassesNothing(t *testing.T) {
 	if got := praxisUpdateFlags(t, "praxis: [\n  enabled: true\n"); slices.Contains(got, "--praxis") {
 		t.Errorf("flags %q, want no --praxis", got)
+	}
+}
+
+// A noexec temp dir fails the hand-off with EACCES at start; installRelease takes
+// that as the sign to restage, and the copy under ~/.cortex/tmp must still run.
+func TestRestageUnderHomeAfterExecPermissionError(t *testing.T) {
+	stage := t.TempDir()
+	bin := filepath.Join(stage, "agentop")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command(bin).Run(); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("exec of a file that cannot run: got %v, want fs.ErrPermission", err)
+	}
+	if err := os.Chmod(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("sh", "-c", "exit 126").Run(); err == nil || errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("an exit 126 from setup itself must not read as a permission error: %v", err)
+	}
+	home := t.TempDir()
+	dir, err := restageUnderHome(stage, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isStagingDir(dir, home) {
+		t.Fatalf("restaged dir %s is not a staging dir setup may delete", dir)
+	}
+	if err := exec.Command(filepath.Join(dir, "agentop")).Run(); err != nil {
+		t.Fatalf("restaged agentop does not run: %v", err)
+	}
+	if _, err := restageUnderHome(stage, "relative"); err == nil {
+		t.Fatal("a relative HOME must not stage under the working directory")
 	}
 }

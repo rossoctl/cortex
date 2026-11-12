@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -116,6 +117,7 @@ func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io
 		}
 	}
 	var cmd *exec.Cmd
+	var restage func() (*exec.Cmd, error) // v* only: the same stage, moved off a noexec temp dir
 	if !strings.HasPrefix(ref, "v") {
 		cmd = exec.Command("sh", append([]string{"-c", updateScript, installerURL}, flags...)...)
 	} else {
@@ -128,16 +130,30 @@ func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io
 			return err
 		}
 		defer func() { _ = os.RemoveAll(stage) }() // setup removes it too, unless it exits early
-		args := []string{"setup", "--from", stage}
-		for _, f := range flags {
-			if slices.Contains(setupHandOffFlags, f) {
-				args = append(args, f)
+		build := func(stage string) *exec.Cmd {
+			args := []string{"setup", "--from", stage}
+			for _, f := range flags {
+				if slices.Contains(setupHandOffFlags, f) {
+					args = append(args, f)
+				}
 			}
+			args = append(args, fmt.Sprintf("--handoff-bytes=%d", max(size, 1)), fmt.Sprintf("--handoff-seconds=%d", int(time.Since(start).Seconds())))
+			c := exec.Command(filepath.Join(stage, "agentop"), args...)
+			c.Stdin, c.Stdout, c.Stderr = os.Stdin, stdout, stderr
+			c.Env = slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, installerDrewEnv+"=") })
+			return c
 		}
-		args = append(args, fmt.Sprintf("--handoff-bytes=%d", max(size, 1)), fmt.Sprintf("--handoff-seconds=%d", int(time.Since(start).Seconds())))
-		cmd = exec.Command(filepath.Join(stage, "agentop"), args...)
-		cmd.Stdin = os.Stdin
-		cmd.Env = slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, installerDrewEnv+"=") })
+		cmd = build(stage)
+		restage = func() (*exec.Cmd, error) {
+			dir, err := restageUnderHome(stage, env.home)
+			if err != nil {
+				return nil, fmt.Errorf("cannot run programs from %s, and could not stage under ~/.cortex/tmp instead: %w", filepath.Dir(stage), err)
+			}
+			_, _ = fmt.Fprintf(stderr, "%s does not let programs run; staged under %s instead.\n", filepath.Dir(stage), filepath.Dir(dir))
+			_ = os.RemoveAll(stage)
+			stage = dir // the deferred RemoveAll now removes the new stage
+			return build(dir), nil
+		}
 	}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	// Ctrl-C reaches the installer too, and setup undoes its steps on it: caught
@@ -145,7 +161,36 @@ func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigs)
-	return cmd.Run()
+	err := cmd.Run()
+	// A start error of EACCES is a noexec temp dir (install.sh's exit 126); an
+	// *exec.ExitError never matches, so setup has not run and a retry is safe.
+	if restage != nil && errors.Is(err, fs.ErrPermission) {
+		if cmd, err = restage(); err == nil {
+			err = cmd.Run()
+		}
+	}
+	return err
+}
+
+// restageUnderHome copies stage into a new stage under home/.cortex/tmp, a root
+// isStagingDir accepts, as install.sh's restage does for a noexec temp dir.
+func restageUnderHome(stage, home string) (string, error) {
+	if !filepath.IsAbs(home) {
+		return "", errors.New("HOME is not an absolute path")
+	}
+	root := filepath.Join(home, ".cortex", "tmp")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp(root, "cortex-stage.")
+	if err != nil {
+		return "", err
+	}
+	if err := os.CopyFS(dir, os.DirFS(stage)); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
+	}
+	return dir, nil
 }
 
 // updateFlags are the installer flags that keep this install as it is: without
