@@ -51,6 +51,8 @@ type Config struct {
 	// Praxis, when Enabled, turns on praxis mode: cortex-gateway forwards the
 	// traffic and Cortex ingests its rows. Absent means direct mode.
 	Praxis *PraxisConfig `yaml:"praxis,omitempty" json:"praxis,omitempty"`
+	// Update configures agentop's automatic updates. Only agentop reads it.
+	Update *UpdateConfig `yaml:"update,omitempty" json:"update,omitempty"`
 	// Pricing configures model rates for the whole process — one section rather
 	// than a knob per plugin, so cost is consistent wherever it is reported.
 	//
@@ -371,6 +373,16 @@ func (p *PraxisConfig) EgressAddr() string {
 // PraxisEnabled reports whether praxis mode is on. False on a nil block.
 func (c *Config) PraxisEnabled() bool {
 	return c.Praxis != nil && c.Praxis.Enabled
+}
+
+// UpdateConfig is the top-level `update:` block.
+type UpdateConfig struct {
+	Auto *bool `yaml:"auto,omitempty" json:"auto,omitempty"`
+}
+
+// UpdateAutoEnabled is true unless update.auto is set to false. Nil-safe on c.
+func (c *Config) UpdateAutoEnabled() bool {
+	return c == nil || c.Update == nil || c.Update.Auto == nil || *c.Update.Auto
 }
 
 // MTLSMode names the inbound + outbound TLS posture. Vocabulary
