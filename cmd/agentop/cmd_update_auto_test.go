@@ -88,6 +88,10 @@ var autoUpdateRows = []autoRow{
 	// A wrong-type field does not cancel auto: false either.
 	{name: "wait list, disabled", latest: "v9.9.10", config: "update:\n  auto: false\n  wait: [24h]\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
 	{name: "check_every map, disabled", latest: "v9.9.10", config: "update:\n  auto: false\n  check_every: {h: 6}\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
+	// A wrong-type auto is not an opt-out.
+	{name: "auto string", latest: "v9.9.10", config: "update:\n  auto: \"false\"\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
+	{name: "auto number", latest: "v9.9.10", config: "update:\n  auto: 0\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
+	{name: "auto list", latest: "v9.9.10", config: "update:\n  auto: [false]\n  wait: [1h]\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
 	{name: "wait invalid, disabled", latest: "v9.9.10", config: "update:\n  auto: false\n  wait: soon\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
 	{name: "check-failed latest", latest: "", age: 25 * time.Hour, want: updatestatus.ResultCheckFailed},
 	{name: "check-failed time", latest: "v9.9.10", want: updatestatus.ResultCheckFailed},

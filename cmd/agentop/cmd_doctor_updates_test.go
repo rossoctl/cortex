@@ -129,6 +129,22 @@ func TestDoctorUpdatesWrongTypeTimes(t *testing.T) {
 	}
 }
 
+func TestDoctorUpdatesWrongTypeAuto(t *testing.T) {
+	sc := updatesScene(t, updatestatus.Status{CheckedAt: updatesNow, Result: updatestatus.ResultCurrent})
+	cfg := filepath.Join(sc.home, ".cortex", "config.yaml")
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(b, "\nupdate:\n  auto: \"false\"\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, out := sc.doctor(t)
+	if strings.Contains(out, "automatic updates off") || !strings.Contains(out, markLine("!", "updates")+"update: ") {
+		t.Fatalf("want an updates advice that names the update block, not \"off\":\n%s", out)
+	}
+}
+
 func TestDoctorUpdatesNoService(t *testing.T) {
 	sc := newDoctorScene(t)
 	var pid int

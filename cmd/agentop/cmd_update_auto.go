@@ -121,6 +121,15 @@ func readUpdateConfig(path string) (*config.UpdateConfig, error) {
 	err = yaml.Unmarshal([]byte(expanded), &c)
 	// yaml.v3 decodes the other fields after a type error.
 	if te := (*yaml.TypeError)(nil); errors.As(err, &te) {
+		// It also sets a wrong-type auto to false. Keep auto only when it decodes alone.
+		var a struct {
+			Update struct {
+				Auto *bool `yaml:"auto"`
+			} `yaml:"update"`
+		}
+		if c.Update != nil && yaml.Unmarshal([]byte(expanded), &a) != nil {
+			c.Update.Auto = nil
+		}
 		return c.Update, fmt.Errorf("update: %s", strings.Join(te.Errors, "; "))
 	}
 	if err != nil {
