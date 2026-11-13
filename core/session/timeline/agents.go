@@ -98,6 +98,7 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 	stopped := map[string]time.Time{} // agent → its latest <task-notification>: its run ended
 	var askedAt []time.Time           // per t.Tools entry: when the request that asked for it started
 	var spawns []*spawn
+	var calBytes, calTokens int64 // sums over the turns that set t.bytesPerToken
 
 	for _, c := range calls {
 		inf := c.req.Inference
@@ -173,15 +174,20 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 		}
 		st.prev = msgs
 
-		turn := Turn{Agent: c.agent, Start: c.req.At, Resent: resent, Seq: c.req.Seq, Model: inf.Model}
+		turn := Turn{Agent: c.agent, Start: c.req.At, Resent: resent, Seq: c.req.Seq, Model: inf.Model, requestID: c.req.RequestID}
 		if c.resp == nil {
 			t.Turns = append(t.Turns, turn)
 			continue
 		}
 		end := responseEnd(c.req, c.resp)
 		turn.End = &end
-		if c.resp.Inference != nil {
-			turn.Finish = c.resp.Inference.FinishReason
+		if out := c.resp.Inference; out != nil {
+			turn.Finish = out.FinishReason
+			turn.OutputTokens = out.OutputTokens
+			if out.OutputTokens > 0 && c.resp.Duration-c.resp.Ttfb >= calibrateMinStream {
+				calBytes += c.resp.BytesDown
+				calTokens += int64(out.OutputTokens)
+			}
 		}
 		// No finish reason is a reply that never finished: the proxy records a stream cut
 		// mid-reply as the 200 it started as. Only a stream can stop like that. A buffered
@@ -207,6 +213,10 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 				spawns = append(spawns, &spawn{by: c.agent, turnAt: c.req.At, desc: a.Description, typ: a.SubagentType})
 			}
 		}
+	}
+
+	if calTokens > 0 {
+		t.bytesPerToken = float64(calBytes) / float64(calTokens)
 	}
 
 	// An unanswered turn followed by another turn of the same agent is a stream that died.

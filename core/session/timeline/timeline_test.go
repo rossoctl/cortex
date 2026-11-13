@@ -1135,3 +1135,86 @@ func TestTimeline_BobChildTasks(t *testing.T) {
 		}
 	}
 }
+
+// streamed records a finished main turn with its stream timing, body size and output tokens.
+func (r *rec) streamed(start, dur, ttfb float64, bytesDown int64, outTokens int) {
+	r.turn("", start, dur, []pipeline.InferenceMessage{user(r.id())}, nil, "end_turn")
+	resp := &r.events[len(r.events)-1]
+	resp.Ttfb = time.Duration(ttfb * float64(time.Second))
+	resp.BytesDown = bytesDown
+	resp.Inference.OutputTokens = outTokens
+}
+
+// open records a main request that has no response yet.
+func (r *rec) open(start float64, id string) {
+	r.add(pipeline.SessionEvent{At: at(start), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example",
+		Inference: &pipeline.InferenceExtension{AgentRole: pipeline.AgentRoleMain, Tools: tools, Messages: []pipeline.InferenceMessage{user(id)}, Stream: true}})
+}
+
+func TestBuild_TurnCarriesOutputTokens(t *testing.T) {
+	var r rec
+	r.streamed(0, 2, 1, 500, 120)
+	tl := Build("s", r.events, at(10))
+	if len(tl.Turns) != 1 || tl.Turns[0].OutputTokens != 120 {
+		t.Fatalf("turns = %+v, want one turn with 120 output tokens", tl.Turns)
+	}
+}
+
+// calibrated is turn A (streamed 7 s, 39 bytes per token) and turn B (streamed 2 s, too short
+// to count).
+func calibrated() *rec {
+	var r rec
+	r.streamed(0, 8, 1, 39000, 1000)
+	r.streamed(10, 3, 1, 999999, 10)
+	return &r
+}
+
+func TestBuild_BytesPerTokenFromLongTurnsOnly(t *testing.T) {
+	tl := Build("s", calibrated().events, at(20))
+	if tl.bytesPerToken != 39 {
+		t.Fatalf("bytesPerToken = %v, want 39", tl.bytesPerToken)
+	}
+}
+
+func TestFillLive_FillsOnlyOpenTurns(t *testing.T) {
+	r := calibrated()
+	r.open(20, "open")
+	tl := Build("s", r.events, at(30))
+	tl.FillLive(func(string) (int64, bool) { return 3900, true })
+	if len(tl.Turns) != 3 {
+		t.Fatalf("turns = %+v", tl.Turns)
+	}
+	for i, tu := range tl.Turns {
+		want := 0
+		if tu.End == nil {
+			want = 100
+		}
+		if tu.LiveTokens != want {
+			t.Errorf("turn %d LiveTokens = %d, want %d", i, tu.LiveTokens, want)
+		}
+	}
+	if tl.Turns[2].End != nil {
+		t.Errorf("turn 2 is not open: %+v", tl.Turns[2])
+	}
+}
+
+func TestFillLive_NoRatioDoesNothing(t *testing.T) {
+	var r rec
+	r.streamed(0, 3, 1, 999999, 10)
+	r.open(10, "open")
+	tl := Build("s", r.events, at(20))
+	tl.FillLive(func(string) (int64, bool) { return 3900, true })
+	if tl.Turns[1].LiveTokens != 0 {
+		t.Fatalf("LiveTokens = %d, want 0 with no calibration turn", tl.Turns[1].LiveTokens)
+	}
+}
+
+func TestFillLive_UnknownStreamLeavesZero(t *testing.T) {
+	r := calibrated()
+	r.open(20, "open")
+	tl := Build("s", r.events, at(30))
+	tl.FillLive(func(string) (int64, bool) { return 0, false })
+	if tl.Turns[2].LiveTokens != 0 {
+		t.Fatalf("LiveTokens = %d, want 0 for an unknown stream", tl.Turns[2].LiveTokens)
+	}
+}
