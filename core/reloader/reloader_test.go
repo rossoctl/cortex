@@ -1313,7 +1313,7 @@ func TestValidateReloadable_PraxisNeedsRestart(t *testing.T) {
 	}
 }
 
-func TestValidateReloadable_PraxisPolicyNeedsRestart(t *testing.T) {
+func TestValidateReloadable_PraxisPolicyPathNeedsRestart(t *testing.T) {
 	praxis := func(path string) *config.Config {
 		p := &config.PraxisConfig{Enabled: true}
 		if path != "" {

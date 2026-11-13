@@ -750,6 +750,43 @@ fn policy_filter_denies_a_model() {
         o.seen.recv_timeout(WAIT).is_ok(),
         "the origin saw no request"
     );
+
+    // A policy file that does not parse keeps the last good policy.
+    std::fs::write(&policy, "routes: [").expect("bad policy");
+    std::thread::sleep(Duration::from_millis(1500)); // the watcher debounces for 500 ms
+    let (rh, _) = send(
+        &g,
+        "POST",
+        "/v1/messages?beta=true",
+        &as_refs(&h),
+        body("model-bad").as_bytes(),
+    );
+    assert_eq!(status(&rh), 403, "after a bad edit: {rh}");
+
+    // A valid edit applies live, so the check above saw a running watcher.
+    std::fs::write(
+        &policy,
+        "routes:\n  - llm: \"*\"\n    authorization:\n      pre_invocation:\n        - \"deny('no', 'all_denied')\"\n",
+    )
+    .expect("deny-all policy");
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        let (rh, _) = send(
+            &g,
+            "POST",
+            "/v1/messages?beta=true",
+            &as_refs(&h),
+            body("model-ok").as_bytes(),
+        );
+        if header(&rh, "x-policy-violation") == Some("all_denied") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the edit did not apply: {rh}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
