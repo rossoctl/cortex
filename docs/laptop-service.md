@@ -119,9 +119,22 @@ uninstall: turn it off with `loginctl disable-linger` if you no longer want it.
 
 ## Re-running the installer is safe
 
-`agentop update` is how you upgrade. It runs the one-liner with the flags that keep the
-install as it is (`agentop update --help` lists them), and when the newest release is
-already installed it prints `Already at vX.` and downloads nothing. The one-liner is
+`agentop update` is how you upgrade. When the newest release is already installed it
+prints `Already at vX.` and downloads nothing. For a release tag (the newest release, or
+`--ref=vX`) it does not run `install.sh`. The installed agentop downloads `checksums.txt`
+and the tarballs from `https://github.com/rossoctl/cortex/releases/download/<tag>/`,
+checks the SHA-256 of each tarball, checks the build-provenance attestation of each
+tarball, extracts them into a temporary stage, and runs
+`<stage>/agentop setup --from <stage>`. The attestation must come from
+`https://github.com/rossoctl/cortex/.github/workflows/release-binaries.yaml@refs/tags/<tag>`
+with issuer `https://token.actions.githubusercontent.com`, and must have a
+transparency-log entry that is checked against the Sigstore public-good trusted root. A
+missing, invalid or unreachable attestation stops the update, and the update changes
+nothing. You can check a tarball yourself with
+`gh attestation verify <tarball> --repo rossoctl/cortex`. For `--ref=main` (any ref that
+does not start with `v`) `agentop update` runs the one-liner with the flags that keep the
+install as it is (`agentop update --help` lists them). The one-liner and a first install
+use `install.sh`, with no provenance check. The one-liner is
 meant to be run repeatedly too. When nothing has changed it changes nothing. It still
 downloads the release, but `agentop setup` finds the staged binaries identical to the
 installed ones, asks nothing, and ends on one line,

@@ -1,15 +1,20 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -22,9 +27,12 @@ const updateUsage = `agentop update — install the newest Cortex release over t
 Usage:
   agentop update [--ref=REF] [--yes] [--auto]
 
-Runs the same installer as the one-liner. The installer downloads and verifies
-the release, then gives it to agentop setup. Update keeps these as they are
-now: Claude Code's routing, a proxy with no service (--no-service), the cpex
+For a release (the newest, or --ref=vX), agentop downloads the release itself,
+checks each archive's SHA-256 against checksums.txt and its build provenance
+against GitHub's attestation for this repository's release workflow and that
+tag, and only then gives it to the new agentop setup. Any failed check stops the
+update and changes nothing. --ref=main runs the same installer as the one-liner.
+Update keeps these as they are now: Claude Code's routing, a proxy with no service (--no-service), the cpex
 build of cortex, praxis mode (--praxis), an install with no config
 (--install-only), and a shell profile the install did not edit
 (--no-modify-path).
@@ -37,8 +45,8 @@ build of cortex, praxis mode (--praxis), an install with no config
 Downloads nothing when agentop and cortex in ~/.local/bin are already at the
 release asked for. Run agentop doctor to check the rest of the install.
 
-Exit status: 0 already current, else the installer's, which is setup's once it
-hands off.
+Exit status: 0 already current, 1 when a download or check fails, else setup's
+(or the installer's for --ref=main).
 `
 
 // installerURL is where the documented one-liner fetches install.sh.
@@ -139,17 +147,107 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 // installReleaseFn is what callers use, so tests can replace the installer.
 var installReleaseFn = installRelease
 
-// installRelease runs the installer for ref ("" = newest release) with flags.
-// The error from an installer that fails wraps its *exec.ExitError.
+// provenanceCheckFn checks a release tarball's provenance; tests replace it.
+var provenanceCheckFn = checkProvenance
+
+// setupHandOffFlags are the flags of updateFlags that setup takes (D3).
+var setupHandOffFlags = []string{"--claude-code", "--yes", "--no-service", "--install-only", "--no-modify-path", "--praxis"}
+
+// releaseTag is the shape of a release tag that installRelease downloads and checks.
+var releaseTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
+
+// installRelease installs ref ("" = newest release) with flags. A v* tag is
+// downloaded, checked and staged here, then handed to the staged agentop setup;
+// any other ref runs the website installer.
 func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io.Writer) error {
-	cmd := exec.Command("sh", append([]string{"-c", updateScript, installerURL}, flags...)...)
-	cmd.Stdout, cmd.Stderr = stdout, stderr
+	if ref == "" {
+		// Fail closed: falling back to the installer would skip the check (D1).
+		if ref = latestRelease(); !releaseTag.MatchString(ref) {
+			return fmt.Errorf("could not read the newest release (got %q)", ref)
+		}
+	}
+	var run func() error
+	if strings.HasPrefix(ref, "v") && !releaseTag.MatchString(ref) {
+		// The tag goes into a file name in the stage, a URL path and the SAN.
+		return fmt.Errorf("--ref=%s is not a release tag like v1.2.3 or v1.2.3-rc.1", ref)
+	}
+	if !strings.HasPrefix(ref, "v") {
+		cmd := exec.Command("sh", append([]string{"-c", updateScript, installerURL}, flags...)...)
+		cmd.Stdout, cmd.Stderr = stdout, stderr
+		run = cmd.Run
+	} else {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		start := time.Now()
+		names := releaseTarballs(ref, runtime.GOOS, runtime.GOARCH, slices.Contains(flags, "--cpex"), slices.Contains(flags, "--praxis"))
+		stage, size, err := stageRelease(ctx, ref, names, func(n string, d []byte) error { return provenanceCheckFn(ctx, n, d, ref) })
+		stop()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = os.RemoveAll(stage) }() // setup removes it too, unless it exits early
+		build := func(stage string) *exec.Cmd {
+			args := []string{"setup", "--from", stage}
+			for _, f := range flags {
+				if slices.Contains(setupHandOffFlags, f) {
+					args = append(args, f)
+				}
+			}
+			args = append(args, fmt.Sprintf("--handoff-bytes=%d", max(size, 1)), fmt.Sprintf("--handoff-seconds=%d", int(time.Since(start).Seconds())))
+			c := exec.Command(filepath.Join(stage, "agentop"), args...)
+			c.Stdin, c.Stdout, c.Stderr = os.Stdin, stdout, stderr
+			c.Env = slices.DeleteFunc(os.Environ(), func(e string) bool { return strings.HasPrefix(e, installerDrewEnv+"=") })
+			return c
+		}
+		run = func() (err error) {
+			stage, err = runStaged(stage, env.home, build, stderr) // the deferred RemoveAll removes the stage left
+			return err
+		}
+	}
 	// Ctrl-C reaches the installer too, and setup undoes its steps on it: caught
 	// here, so the prompt does not come back while that rollback still prints.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigs)
-	return cmd.Run()
+	return run()
+}
+
+// runStaged runs build(stage). A start error of EACCES is a noexec temp dir
+// (install.sh's exit 126); an *exec.ExitError never matches, so setup has not
+// run and a retry is safe: it copies the stage under home/.cortex/tmp, removes
+// the first stage and runs once more. It returns the stage that still exists.
+func runStaged(stage, home string, build func(string) *exec.Cmd, stderr io.Writer) (string, error) {
+	err := build(stage).Run()
+	if !errors.Is(err, fs.ErrPermission) {
+		return stage, err
+	}
+	dir, err := restageUnderHome(stage, home)
+	if err != nil {
+		return stage, fmt.Errorf("cannot run programs from %s, and could not stage under ~/.cortex/tmp instead: %w", filepath.Dir(stage), err)
+	}
+	_, _ = fmt.Fprintf(stderr, "%s does not let programs run; staged under %s instead.\n", filepath.Dir(stage), filepath.Dir(dir))
+	_ = os.RemoveAll(stage)
+	return dir, build(dir).Run()
+}
+
+// restageUnderHome copies stage into a new stage under home/.cortex/tmp, a root
+// isStagingDir accepts, as install.sh's restage does for a noexec temp dir.
+func restageUnderHome(stage, home string) (string, error) {
+	if !filepath.IsAbs(home) {
+		return "", errors.New("HOME is not an absolute path")
+	}
+	root := filepath.Join(home, ".cortex", "tmp")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	dir, err := os.MkdirTemp(root, "cortex-stage.")
+	if err != nil {
+		return "", err
+	}
+	if err := os.CopyFS(dir, os.DirFS(stage)); err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
+	}
+	return dir, nil
 }
 
 // updateFlags are the installer flags that keep this install as it is: without
