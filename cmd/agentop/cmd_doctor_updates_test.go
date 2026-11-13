@@ -112,6 +112,22 @@ func TestDoctorUpdatesBadTimes(t *testing.T) {
 		"\n      fix: edit ~/.cortex/config.yaml\n")
 }
 
+// The proxy refuses a bad time also when auto is off, so doctor names it.
+func TestDoctorUpdatesBadTimesAutoOff(t *testing.T) {
+	sc := updatesScene(t, updatestatus.Status{CheckedAt: updatesNow, Result: updatestatus.ResultCurrent})
+	cfg := filepath.Join(sc.home, ".cortex", "config.yaml")
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(b, "\nupdate:\n  auto: false\n  check_every: 10m\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out := sc.doctor(t)
+	wantLines(t, code, 0, out, "\n"+markLine("!", "updates")+`update.check_every "10m": must be a duration from 1h to 24h`+
+		"\n      fix: edit ~/.cortex/config.yaml\n")
+}
+
 func TestDoctorUpdatesWrongTypeTimes(t *testing.T) {
 	sc := updatesScene(t, updatestatus.Status{CheckedAt: updatesNow, Result: updatestatus.ResultCurrent})
 	cfg := filepath.Join(sc.home, ".cortex", "config.yaml")

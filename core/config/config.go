@@ -396,7 +396,7 @@ const (
 // Times resolves update.wait and update.check_every. Nil-safe on u. On an
 // error it returns the defaults with the error.
 //
-// check_every is at least 1h, because the proxy looks once an hour. It is at most
+// check_every is at least 1h, so the updater does not run too often. It is at most
 // 24h, because agentop reports "no update check" after 72h.
 func (u *UpdateConfig) Times() (wait, checkEvery time.Duration, err error) {
 	wait, checkEvery = DefaultUpdateWait, DefaultUpdateCheckEvery

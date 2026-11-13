@@ -37,7 +37,7 @@ func (t *updateTrigger) tick() bool {
 	if fi, err := os.Stat(t.file); err == nil && now.Sub(fi.ModTime()) <= t.every {
 		return false
 	}
-	// A run that stops before it writes the file must not cause a start each hour.
+	// A run that stops before it writes the file must not cause a start at each tick.
 	if !t.lastStart.IsZero() && now.Sub(t.lastStart) < t.every {
 		return false
 	}
