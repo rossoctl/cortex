@@ -77,7 +77,11 @@ func gatewayYAML(cfg *config.Config, tokenPath string) ([]byte, error) {
 	}
 	// policy comes after cortex_observe, so a denied request still gets a full row.
 	if p := cfg.Praxis.Policy; p != nil && p.ConfigPath != "" {
-		filters = append(filters, gatewayFilter{Filter: "policy", Opts: map[string]any{"config_path": p.ConfigPath}})
+		// The hop sends all traffic here. require_model defaults to true, which refuses each body without a model.
+		filters = append(filters, gatewayFilter{Filter: "policy", Opts: map[string]any{
+			"config_path": p.ConfigPath,
+			"llm":         map[string]any{"require_model": false},
+		}})
 	}
 	filters = append(filters,
 		gatewayFilter{Filter: "access_log"},

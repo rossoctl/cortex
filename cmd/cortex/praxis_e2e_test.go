@@ -872,6 +872,34 @@ func TestPraxisE2E_PolicyDeniesModel(t *testing.T) {
 	c.waitResponses(t, 2, 10*time.Second)
 }
 
+// A policy with llm: routes passes requests that are not inference calls.
+func TestPraxisE2E_PolicyPassesNonInference(t *testing.T) {
+	origin := newMockOrigin(t)
+	origin.serve(serveJSON(chatJSON))
+	c := newPraxisChain(t, origin, chainOpts{policy: e2ePolicy})
+
+	form := request(t, t.Context(), http.MethodPost, "http://oauth.example.com/token",
+		[]byte("grant_type=refresh_token&refresh_token=r"))
+	form.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	reqs := map[string]*http.Request{
+		"json without model": request(t, t.Context(), http.MethodPost, "http://telemetry.example.com/v1/events", []byte(`{"events":[{"n":1}]}`)),
+		"form body":          form,
+		"put":                request(t, t.Context(), http.MethodPut, "http://api.example.com/repos/x", []byte(`{"name":"x"}`)),
+		"mcp tools/call":     request(t, t.Context(), http.MethodPost, "http://mcp.example.com/mcp", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{}}}`)),
+	}
+	want := 0
+	for name, req := range reqs {
+		want++
+		if st, b, h := c.do(t, req); st != http.StatusOK {
+			t.Errorf("%s: status %d, X-Policy-Violation %q, body %s", name, st, h.Get("X-Policy-Violation"), b)
+		}
+		if n := origin.count(); n != want {
+			t.Errorf("%s: the origin got %d requests, want %d", name, n, want)
+			want = n
+		}
+	}
+}
+
 // Without a policy, a model-bad request reaches the origin.
 func TestPraxisE2E_NoPolicyNoChange(t *testing.T) {
 	origin := newMockOrigin(t)

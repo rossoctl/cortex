@@ -159,8 +159,9 @@ func TestGatewayYAML_PolicyOrder(t *testing.T) {
 	if !slices.Equal(order, want) {
 		t.Fatalf("filter order = %v, want %v", order, want)
 	}
-	if p := fs[3]; len(p) != 2 || p["config_path"] != "/p/policy.yaml" {
-		t.Errorf("policy filter = %v, want only filter and config_path /p/policy.yaml", p)
+	llm, _ := fs[3]["llm"].(map[string]any)
+	if p := fs[3]; len(p) != 3 || p["config_path"] != "/p/policy.yaml" || len(llm) != 1 || llm["require_model"] != false {
+		t.Errorf("policy filter = %v, want filter, config_path /p/policy.yaml and llm.require_model false", p)
 	}
 }
 
