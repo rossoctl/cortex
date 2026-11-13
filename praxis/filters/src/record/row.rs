@@ -21,7 +21,7 @@ use crate::parse::a2a::A2aObserver;
 use crate::parse::decode::{Coding, DecodeError, Decoder};
 use crate::parse::inference::{InferenceObserver, is_event_stream};
 use crate::parse::mcp::McpObserver;
-use crate::parse::model::InferenceExtension;
+use crate::parse::model::{InferenceExtension, McpExtension};
 use crate::parse::sse::FrameReader;
 
 /// `maxRequestBodySize` in core/listener/forwardproxy.
@@ -308,6 +308,11 @@ impl Exchange {
             capture,
             cost,
         }
+    }
+
+    /// The MCP request that `on_request_body` parsed, if any.
+    pub fn mcp(&self) -> Option<&McpExtension> {
+        self.observers.mcp.as_ref().and_then(McpObserver::extension)
     }
 
     /// The request row. Parses the raw body (the parser decodes it itself).

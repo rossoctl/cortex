@@ -18,6 +18,7 @@ use praxis_filter::{
 use serde::Deserialize;
 
 use super::attribution::{TokenValid, read_token};
+use crate::parse::model::McpExtension;
 use crate::record::emitter::{self, Emitter};
 use crate::record::line::Line;
 use crate::record::row::{EGRESS_ERROR_HEADER, Exchange};
@@ -82,6 +83,37 @@ fn state(ctx: &HttpFilterContext<'_>) -> Option<State> {
 
 fn lock(s: &State) -> std::sync::MutexGuard<'_, Observed> {
     s.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// The longest metadata value that `cortex_observe` writes. `set_metadata`
+/// also refuses a longer value, but a dropped key is the safe result: the
+/// policy filter then fails closed (500 or deny), and a truncated name could
+/// match an allow rule.
+const MAX_METADATA_VALUE: usize = 256;
+
+/// The `filter_metadata` keys that the Praxis `policy` filter reads for an
+/// MCP request.
+fn mcp_metadata(ext: &McpExtension) -> Vec<(&'static str, &str)> {
+    // A synthetic `$transport/...` row is a bodyless GET or DELETE, not JSON-RPC.
+    if ext.method.starts_with('$') {
+        return Vec::new();
+    }
+    let mut keys = vec![("mcp.method", ext.method.as_str())];
+    let param = match ext.method.as_str() {
+        "tools/call" | "prompts/get" => "name",
+        "resources/read" => "uri",
+        _ => "",
+    };
+    if let Some(name) = ext
+        .params
+        .as_ref()
+        .and_then(|p| p.get(param))
+        .and_then(|v| v.as_str())
+    {
+        keys.push(("mcp.name", name));
+    }
+    keys.retain(|(_, v)| v.len() <= MAX_METADATA_VALUE);
+    keys
 }
 
 /// A response that has no body, so no body hook ends it.
@@ -180,10 +212,25 @@ impl HttpFilter for CortexObserve {
     ) -> Result<FilterAction, FilterError> {
         // StreamBuffer: at the end of the stream, `body` is the whole body.
         if end_of_stream && let Some(s) = state(ctx) {
-            let line = lock(&s)
-                .exchange
-                .on_request_body(body.as_deref().unwrap_or_default());
+            let (line, metadata) = {
+                let mut o = lock(&s);
+                let line = o
+                    .exchange
+                    .on_request_body(body.as_deref().unwrap_or_default());
+                let metadata: Vec<(&'static str, String)> = o
+                    .exchange
+                    .mcp()
+                    .map(mcp_metadata)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(k, v)| (k, v.to_owned()))
+                    .collect();
+                (line, metadata)
+            };
             self.submit(&line);
+            for (k, v) in metadata {
+                ctx.set_metadata(k, v);
+            }
         }
         Ok(FilterAction::Continue)
     }
@@ -271,5 +318,96 @@ impl HttpFilter for CortexObserve {
             self.submit(&line);
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use http::HeaderMap;
+
+    use super::*;
+    use crate::parse::mcp::parse_request;
+
+    fn keys(method: &str, body: &[u8]) -> Vec<(&'static str, String)> {
+        let ext = parse_request(method, "/mcp", &HeaderMap::new(), body).expect("an MCP request");
+        mcp_metadata(&ext)
+            .into_iter()
+            .map(|(k, v)| (k, v.to_owned()))
+            .collect()
+    }
+
+    fn rpc(method: &str, params: &str) -> Vec<u8> {
+        format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{params}}}"#).into_bytes()
+    }
+
+    fn pairs(p: &[(&'static str, &str)]) -> Vec<(&'static str, String)> {
+        p.iter().map(|(k, v)| (*k, (*v).to_owned())).collect()
+    }
+
+    #[test]
+    fn tools_call_sets_method_and_name() {
+        let got = keys(
+            "POST",
+            &rpc("tools/call", r#"{"name":"safe_tool","arguments":{}}"#),
+        );
+        assert_eq!(
+            got,
+            pairs(&[("mcp.method", "tools/call"), ("mcp.name", "safe_tool")])
+        );
+    }
+
+    #[test]
+    fn prompts_get_name_comes_from_name() {
+        let got = keys("POST", &rpc("prompts/get", r#"{"name":"greet"}"#));
+        assert_eq!(
+            got,
+            pairs(&[("mcp.method", "prompts/get"), ("mcp.name", "greet")])
+        );
+    }
+
+    #[test]
+    fn resources_read_name_comes_from_uri() {
+        let got = keys("POST", &rpc("resources/read", r#"{"uri":"file:///a.txt"}"#));
+        assert_eq!(
+            got,
+            pairs(&[
+                ("mcp.method", "resources/read"),
+                ("mcp.name", "file:///a.txt")
+            ])
+        );
+    }
+
+    #[test]
+    fn tools_list_sets_only_method() {
+        let got = keys("POST", &rpc("tools/list", "{}"));
+        assert_eq!(got, pairs(&[("mcp.method", "tools/list")]));
+    }
+
+    #[test]
+    fn long_name_is_dropped() {
+        let name = "a".repeat(300);
+        let got = keys(
+            "POST",
+            &rpc("tools/call", &format!(r#"{{"name":"{name}"}}"#)),
+        );
+        assert_eq!(got, pairs(&[("mcp.method", "tools/call")]));
+    }
+
+    #[test]
+    fn name_that_is_not_a_string_is_dropped() {
+        let got = keys("POST", &rpc("tools/call", r#"{"name":1}"#));
+        assert_eq!(got, pairs(&[("mcp.method", "tools/call")]));
+    }
+
+    #[test]
+    fn synthetic_transport_row_sets_nothing() {
+        assert!(keys("GET", b"").is_empty());
+    }
+
+    #[test]
+    fn batch_and_non_json_bodies_are_not_parsed() {
+        let batch = br#"[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t"}}]"#;
+        assert!(parse_request("POST", "/mcp", &HeaderMap::new(), batch).is_none());
+        assert!(parse_request("POST", "/mcp", &HeaderMap::new(), b"not json").is_none());
     }
 }
