@@ -23,6 +23,21 @@ go build .
 
 Either way you get a single binary (~10 MB; the linux build is fully static).
 
+## Updating (`agentop update`)
+
+`agentop update` installs the newest release at once.
+[Automatic updates](../../docs/laptop-service.md#automatic-updates) tells how a service
+install updates itself.
+
+`--auto` is what the daily updater runs. It implies `--yes` and never asks.
+
+The title bar shows one of these notices. When more than one applies, it shows the first:
+
+1. `· updated to vX.Y.Z, restart agentop`
+2. `· update to vX.Y.Z failed, see agentop doctor`
+3. `· vX.Y.Z available`
+4. `· no update check since <date>`: service installs only, after 72 hours with no check.
+
 ## Run
 
 `agentop observe` discovers AuthBridge agents in your current `kubectl`

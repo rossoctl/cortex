@@ -21,12 +21,14 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
 	"github.com/rossoctl/cortex/cmd/agentop/cluster"
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
 	"github.com/rossoctl/cortex/cmd/agentop/tui"
+	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
 	"github.com/rossoctl/cortex/core/observe/claude"
 )
 
@@ -563,6 +565,7 @@ func runObserve(args []string) int {
 	// that exists for exactly that.
 	opts := tui.RunOptions{Endpoint: *endpoint, Version: displayVersion()}
 	opts.Harvest = observeHarvester(f, os.Stderr)
+	opts.UpdateFile, opts.ServiceInstall = updateNoticeInputs()
 	if prefsPath != "" {
 		opts.Save = func(s tui.UserSettings) error { return saveUserConfig(prefsPath, s) }
 	}
@@ -582,4 +585,22 @@ func runObserve(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// updateNoticeInputs gives the update status file and whether the service unit
+// exists, for the update notice on the title bar.
+func updateNoticeInputs() (file string, service bool) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", false
+	}
+	file = filepath.Join(home, ".cortex", updatestatus.FileName)
+	_, path, err := localCortexConfig()
+	if err != nil {
+		path = filepath.Join(home, ".cortex", "config.yaml")
+	}
+	if sp, err := resolveServicePaths(path, "", ""); err == nil {
+		service = serviceInstalled(sp)
+	}
+	return file, service
 }

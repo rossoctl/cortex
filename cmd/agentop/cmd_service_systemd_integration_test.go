@@ -399,6 +399,10 @@ func TestServiceLifecycle_RealSystemd(t *testing.T) {
 	if exec.Command("systemctl", "--user", "cat", systemdUnit).Run() == nil {
 		t.Skipf("systemd already knows %s; not replacing it", systemdUnit)
 	}
+	realUpdater := filepath.Join(filepath.Dir(realUnit), updaterUnit)
+	if _, err := os.Stat(realUpdater); err == nil || exec.Command("systemctl", "--user", "cat", updaterUnit).Run() == nil {
+		t.Skipf("%s is installed or known to systemd; this test would remove it", updaterUnit)
+	}
 
 	dir := t.TempDir()
 	addr := freeLoopbackAddr(t)
@@ -421,6 +425,7 @@ func TestServiceLifecycle_RealSystemd(t *testing.T) {
 		_ = exec.Command("systemctl", "--user", "disable", "--now", systemdUnit).Run()
 		_ = exec.Command("systemctl", "--user", "reset-failed", systemdUnit).Run()
 		_ = os.Remove(realUnit)
+		_ = os.Remove(filepath.Join(filepath.Dir(realUnit), updaterUnit))
 		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	})
 
