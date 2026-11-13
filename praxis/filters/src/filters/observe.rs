@@ -94,10 +94,8 @@ const MAX_METADATA_VALUE: usize = 256;
 /// The `filter_metadata` keys that the Praxis `policy` filter reads for an
 /// MCP request.
 fn mcp_metadata(ext: &McpExtension) -> Vec<(&'static str, &str)> {
-    // A synthetic `$transport/...` row is a bodyless GET or DELETE, not JSON-RPC.
-    if ext.method.starts_with('$') {
-        return Vec::new();
-    }
+    // A synthetic `$transport/...` method (bodyless GET or DELETE) is set too:
+    // without `mcp.method`, a policy with only tool/prompt/resource routes answers 500.
     let mut keys = vec![("mcp.method", ext.method.as_str())];
     let param = match ext.method.as_str() {
         "tools/call" | "prompts/get" => "name",
@@ -400,8 +398,11 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_transport_row_sets_nothing() {
-        assert!(keys("GET", b"").is_empty());
+    fn synthetic_transport_row_sets_only_method() {
+        assert_eq!(
+            keys("GET", b""),
+            pairs(&[("mcp.method", "$transport/stream")])
+        );
     }
 
     #[test]

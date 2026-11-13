@@ -905,8 +905,10 @@ func TestPraxisE2E_PolicyPassesNonInference(t *testing.T) {
 }
 
 // e2eToolPolicy permits safe_tool and denies every other MCP tool.
-// The llm: route admits the hop's bodyless readiness probe: a policy with only
-// tool: routes refuses every request that has no mcp.method (500).
+// The llm: route admits the hop's readiness probe (GET /, no MCP row): a policy
+// with only tool: routes refuses every request that has no mcp.method (500).
+// The llm: route also admits any bodyless request, so the GET and DELETE /mcp
+// cases below do not prove that mcp.method is set; the observe.rs unit test does.
 const e2eToolPolicy = `routes:
   - llm: "*"
     authorization:
@@ -970,6 +972,20 @@ func TestPraxisE2E_PolicyDeniesTool(t *testing.T) {
 	}
 	if n := origin.count(); n != 2 {
 		t.Fatalf("tools/list: the origin got %d requests, want 2", n)
+	}
+
+	// A bodyless GET (SSE stream) and DELETE (session end) carry a synthetic
+	// mcp.method, so the policy admits them with no tool hook.
+	stream := request(t, t.Context(), http.MethodGet, mcpURL, nil)
+	end := request(t, t.Context(), http.MethodDelete, mcpURL, nil)
+	end.Header.Set("Mcp-Session-Id", "s1")
+	for i, req := range []*http.Request{stream, end} {
+		if st, b, _ := c.do(t, req); st != http.StatusOK {
+			t.Fatalf("%s /mcp: status %d, body %s", req.Method, st, b)
+		}
+		if n := origin.count(); n != 3+i {
+			t.Fatalf("%s /mcp: the origin got %d requests, want %d", req.Method, n, 3+i)
+		}
 	}
 }
 
