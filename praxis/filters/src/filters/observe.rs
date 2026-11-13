@@ -103,7 +103,8 @@ fn mcp_metadata(view: PolicyView<'_>) -> Vec<(&'static str, &str)> {
         PolicyView::Exact(ext) => ext,
         PolicyView::Ambiguous => return vec![("mcp.method", "tools/call")],
     };
-    // A synthetic `$transport/...` method (bodyless GET or DELETE) is set too:
+    // A synthetic `$transport/...` method (bodyless GET, or DELETE with an
+    // `mcp-session-id`) is set too:
     // without `mcp.method`, a policy with only tool/prompt/resource routes answers 500.
     let mut keys = vec![("mcp.method", ext.method.as_str())];
     let param = match ext.method.as_str() {
@@ -489,7 +490,7 @@ mod tests {
     fn body_that_parsers_read_differently_gets_tools_call_without_name() {
         let none = HeaderMap::new();
         let refused = [("mcp.method", "tools/call".to_owned())];
-        let ambiguous: [&[u8]; 13] = [
+        let ambiguous: [&[u8]; 28] = [
             br#"{"id":1,"Method":"tools/call","params":{"name":"danger_tool"}}"#,
             br#"{"JSONRPC":"2.0","id":1,"Method":"tools/call","params":{"name":"danger_tool"}}"#,
             br#"{"method":"tools/list","Method":"tools/call","params":{"name":"danger_tool"}}"#,
@@ -503,6 +504,28 @@ mod tests {
             br#"{"method":"tools/call","params":{"name":"t","arguments":{"list":[{"k":1,"K":2}]}}}"#,
             br#"{"method":"tools/call","params":{"name":"safe","Name":"danger"}}"#,
             br#"{"method":"prompts/get","params":{"name":"p","arguments":{"x":"1","x":"2"}}}"#,
+            // Numbers out of f64 range: no claim by the Go-style parse, and no
+            // serde_json parse in the policy. Node and Python read them, and Go reads
+            // them into a field that it skips.
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{},"pad":1e400}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","pad":-1e400}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{"x":1e400}}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","_meta":{"t":1e400}}}"#,
+            br#"{"jsonrpc":"2.0","id":1e400,"method":"tools/call","params":{"name":"danger_tool"}}"#,
+            // A Go json.Decoder reads the first value and ignores the rest.
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool"}} x"#,
+            br#"{"jsonrpc":"2.0","id":1,"Method":"tools/call","params":{"name":"danger_tool","pad":1e400}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":7,"METHOD":"tools/call","params":{"pad":1e400}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","\ud800":1,"params":{"name":"danger_tool","pad":1e400}}"#,
+            // Parsers that accept NaN and Infinity (pydantic in the Python SDK).
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","_meta":{"t":NaN}}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{"x":Infinity}}}"#,
+            br#"{"jsonrpc":"2.0","id":-Infinity,"method":"tools/call","params":{"name":"danger_tool"}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"\u006dethod":"tools/call","params":{"name":"danger_tool","x":NaN}}"#,
+            // A UTF-8 BOM: Node's TextDecoder and Python remove it.
+            b"\xef\xbb\xbf{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"danger_tool\"}}",
+            // A batch: the TypeScript SDK runs each element.
+            br#"[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool"}}]"#,
         ];
         for body in ambiguous {
             assert_eq!(
@@ -512,6 +535,142 @@ mod tests {
                 String::from_utf8_lossy(body)
             );
         }
+        // UTF-16 and UTF-32, with and without a BOM: Python's json.loads reads them.
+        let text =
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool"}}"#;
+        let le16: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let be16: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        let le32: Vec<u8> = text
+            .chars()
+            .flat_map(|c| (c as u32).to_le_bytes())
+            .collect();
+        let be32: Vec<u8> = text
+            .chars()
+            .flat_map(|c| (c as u32).to_be_bytes())
+            .collect();
+        let bom16: Vec<u8> = [0xff, 0xfe]
+            .into_iter()
+            .chain(le16.iter().copied())
+            .collect();
+        for (what, body) in [
+            ("utf-16le", &le16),
+            ("utf-16be", &be16),
+            ("utf-32le", &le32),
+            ("utf-32be", &be32),
+            ("utf-16le bom", &bom16),
+        ] {
+            assert_eq!(written(&none, body), refused, "{what}");
+        }
+
+        // The other BOM arms of the decode.
+        let bom16be: Vec<u8> = [0xfe, 0xff]
+            .into_iter()
+            .chain(be16.iter().copied())
+            .collect();
+        let bom32le: Vec<u8> = [0xff, 0xfe, 0, 0]
+            .into_iter()
+            .chain(le32.iter().copied())
+            .collect();
+        let bom32be: Vec<u8> = [0, 0, 0xfe, 0xff]
+            .into_iter()
+            .chain(be32.iter().copied())
+            .collect();
+        for (what, body) in [
+            ("utf-16be bom", &bom16be),
+            ("utf-32le bom", &bom32le),
+            ("utf-32be bom", &bom32be),
+        ] {
+            assert_eq!(written(&none, body), refused, "{what}");
+        }
+
+        let ex: &[u8] = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t"}}"#;
+        // The TypeScript SDK decodes the body with the Content-Type charset.
+        let with = |pairs: &[(http::header::HeaderName, &'static str)]| {
+            let mut h = HeaderMap::new();
+            for (k, v) in pairs {
+                h.insert(k, http::HeaderValue::from_static(v));
+            }
+            h
+        };
+        let ct = http::header::CONTENT_TYPE;
+        let ce = http::header::CONTENT_ENCODING;
+        let utf7 = with(&[(ct.clone(), "application/json; charset=utf-7")]);
+        let utf7_body = b"{+ACI-jsonrpc+ACI-:+ACI-2.0+ACI-,+ACI-id+ACI-:1,+ACI-method+ACI-:+ACI-tools/call+ACI-,+ACI-params+ACI-:{+ACI-name+ACI-:+ACI-danger+ACI-}}";
+        assert_eq!(written(&utf7, utf7_body), refused, "utf-7");
+        let sjis = with(&[(ct.clone(), "application/json;charset=Shift_JIS")]);
+        assert_eq!(
+            written(&sjis, ex),
+            refused,
+            "shift_jis, also when the parser claims it"
+        );
+        let utf8 = with(&[(ct.clone(), "application/json; charset=\"UTF-8\"")]);
+        assert_eq!(
+            written(&utf8, ex),
+            pairs(&[("mcp.method", "tools/call"), ("mcp.name", "t")]),
+            "utf-8"
+        );
+        // The TypeScript SDK accepts a header with `application/json` anywhere,
+        // and Node reads a header byte over 0x7f.
+        let hidden = with(&[(
+            ct.clone(),
+            "text/plain; x=\"application/json\"; charset=utf-7",
+        )]);
+        assert_eq!(written(&hidden, utf7_body), refused, "json in a parameter");
+        let hidden_sjis = with(&[(
+            ct.clone(),
+            "text/plain; x=\"application/json\"; charset=shift_jis",
+        )]);
+        assert_eq!(
+            written(&hidden_sjis, ex),
+            refused,
+            "json in a parameter, claimed"
+        );
+        let mut obs = HeaderMap::new();
+        obs.insert(
+            ct.clone(),
+            http::HeaderValue::from_bytes(b"application/json; x=\"\xe9\"; charset=utf-7").unwrap(),
+        );
+        assert_eq!(written(&obs, utf7_body), refused, "a header byte over 0x7f");
+        let mut obs_only = HeaderMap::new();
+        obs_only.insert(
+            ct.clone(),
+            http::HeaderValue::from_bytes(b"application/json; x=\"\xe9\"").unwrap(),
+        );
+        assert_eq!(
+            written(&obs_only, ex),
+            refused,
+            "a header byte over 0x7f, no charset"
+        );
+        let ascii = with(&[(ct.clone(), "application/json; charset=US-ASCII")]);
+        assert_eq!(
+            written(&ascii, ex),
+            pairs(&[("mcp.method", "tools/call"), ("mcp.name", "t")]),
+            "us-ascii"
+        );
+        let text = with(&[(ct.clone(), "text/plain; charset=utf-7")]);
+        assert_eq!(written(&text, b"hello"), [], "not JSON");
+
+        // gzip is decoded and scanned. Another coding of a JSON body cannot be read.
+        let gz = |b: &[u8]| {
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            std::io::Write::write_all(&mut e, b).unwrap();
+            e.finish().unwrap()
+        };
+        let gzip = with(&[(ce.clone(), "gzip"), (ct.clone(), "application/json")]);
+        let inference = br#"{"model":"m","messages":[]}"#;
+        assert_eq!(written(&gzip, &gz(ex)), refused, "gzip tools/call");
+        assert_eq!(written(&gzip, &gz(inference)), [], "gzip inference");
+        let br = with(&[(ce.clone(), "br"), (ct.clone(), "application/json")]);
+        assert_eq!(written(&br, b"\x1b\x00\x00"), refused, "br");
+        let br_bin = with(&[(ce.clone(), "br"), (ct.clone(), "application/octet-stream")]);
+        assert_eq!(written(&br_bin, b"\x1b\x00\x00"), [], "br, not JSON");
+        let bad_zstd = with(&[(ce.clone(), "zstd"), (ct.clone(), "application/json")]);
+        assert_eq!(
+            written(&bad_zstd, b"not zstd"),
+            refused,
+            "zstd that does not decode"
+        );
+
         // The policy does not decode zstd, so it sees no arguments.
         let mut zstd = HeaderMap::new();
         zstd.insert(
@@ -528,6 +687,25 @@ mod tests {
         );
         let list = br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
         assert_eq!(written(&none, list), pairs(&[("mcp.method", "tools/list")]));
+        // No key at the top level, or in a top-level array element, that
+        // selects an MCP method: nothing is set. A truncated body sets nothing.
+        let not_mcp: [&[u8]; 7] = [
+            br#"{"model":"m","messages":[{"role":"user","content":"hi"}],"n":1e400}"#,
+            br#"{"model":"m","messages":[{"role":"user","content":[{"type":"tool_use","input":{"method":"tools/call"}}]}],"n":NaN}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"x":1e400}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t"}"#,
+            br#"{"x":"{\"method\":\"tools/call\"}","n":NaN}"#,
+            br#"{}{"method":"tools/call"}"#,
+            b"not json",
+        ];
+        for body in not_mcp {
+            assert_eq!(
+                written(&none, body),
+                [],
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
     }
 
     #[test]

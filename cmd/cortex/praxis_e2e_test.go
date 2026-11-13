@@ -967,16 +967,48 @@ func TestPraxisE2E_PolicyDeniesTool(t *testing.T) {
 	}
 
 	// A Go server folds "Method" to "method" and "Path" to "path". The policy
-	// cannot read bad UTF-8.
+	// cannot read bad UTF-8, 1e400, NaN or a BOM. A Go json.Decoder ignores data
+	// after the body, and the TypeScript SDK runs a batch.
 	for _, body := range []string{
 		`{"id":1,"Method":"tools/call","params":{"name":"danger_tool"}}`,
 		`{"JSONRPC":"2.0","id":1,"Method":"tools/call","params":{"name":"danger_tool"}}`,
 		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"danger_tool\",\"arguments\":{\"x\":\"\xff\"}}}",
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe_tool","arguments":{"path":"ok","Path":"/etc/passwd"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{},"_meta":{"t":1e400}}}`,
+		`{"jsonrpc":"2.0","id":1e400,"method":"tools/call","params":{"name":"danger_tool","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{}}} x`,
+		"\xef\xbb\xbf{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"danger_tool\",\"arguments\":{}}}",
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{},"_meta":{"t":NaN}}}`,
+		`[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{}}}]`,
 	} {
 		req := request(t, t.Context(), http.MethodPost, mcpURL, []byte(body))
 		if st, b, _ := c.do(t, req); st != http.StatusInternalServerError {
 			t.Fatalf("%q: status %d, want 500; body %s", body, st, b)
+		}
+	}
+	// The TypeScript SDK decodes the body with the Content-Type charset. The
+	// scan decodes gzip.
+	var packed bytes.Buffer
+	zw := gzip.NewWriter(&packed)
+	_, _ = zw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{}}}`))
+	_ = zw.Close()
+	utf7 := []byte(`{+ACI-jsonrpc+ACI-:+ACI-2.0+ACI-,+ACI-id+ACI-:1,+ACI-method+ACI-:+ACI-tools/call+ACI-,+ACI-params+ACI-:{+ACI-name+ACI-:+ACI-danger_tool+ACI-,+ACI-arguments+ACI-:{}}}`)
+	for _, tc := range []struct {
+		body          []byte
+		ctype, coding string
+	}{
+		{utf7, "application/json; charset=utf-7", ""},
+		{packed.Bytes(), "application/json", "gzip"},
+		{utf7, `text/plain; x="application/json"; charset=utf-7`, ""},
+		{utf7, "application/json; x=\"\xe9\"; charset=utf-7", ""},
+	} {
+		req := request(t, t.Context(), http.MethodPost, mcpURL, tc.body)
+		req.Header.Set("Content-Type", tc.ctype)
+		if tc.coding != "" {
+			req.Header.Set("Content-Encoding", tc.coding)
+		}
+		if st, b, _ := c.do(t, req); st != http.StatusInternalServerError {
+			t.Fatalf("%s %s: status %d, want 500; body %s", tc.ctype, tc.coding, st, b)
 		}
 	}
 	if n := origin.count(); n != 1 {

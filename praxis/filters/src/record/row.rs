@@ -310,7 +310,9 @@ impl Exchange {
         }
     }
 
-    /// The MCP request that `on_request_body` parsed, for the policy filter.
+    /// The MCP request of the body that `on_request_body` read, as the policy
+    /// filter may use it. `Ambiguous` also for a body that the parser does not
+    /// claim but `mcp_shaped` matches.
     pub fn mcp(&self) -> Option<PolicyView<'_>> {
         self.observers
             .mcp
