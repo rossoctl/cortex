@@ -24,11 +24,6 @@ var releaseAssetURL = "https://github.com/rossoctl/cortex/releases/download/%s/c
 // updateNow is a var so tests can set the clock.
 var updateNow = time.Now
 
-// updateWait is how long after its publication (the upload time of its
-// checksums.txt) --auto installs the Latest release.
-// It gives the maintainers time to stop a bad release.
-const updateWait = 72 * time.Hour
-
 // releaseTime is the Last-Modified time of tag's checksums.txt.
 func releaseTime(tag string) (time.Time, error) {
 	url := fmt.Sprintf(releaseAssetURL, tag)
@@ -75,7 +70,7 @@ func writeUpdateStatus(cortexDir string, s updatestatus.Status) error {
 	return writeFileAtomic(filepath.Join(cortexDir, updatestatus.FileName), b, 0o600)
 }
 
-// runAutoUpdate is what the daily updater runs. It always returns 0: the
+// runAutoUpdate is what the updater runs. It always returns 0: the
 // result is in the status file, and the updater job has no one to tell.
 func runAutoUpdate(env *setupEnv, stdout, stderr io.Writer) int {
 	s := autoUpdate(env, stdout, stderr)
@@ -88,14 +83,30 @@ func runAutoUpdate(env *setupEnv, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// autoUpdateOff reports an explicit update.auto: false. It reads only the update
-// block, so an error in another field does not cancel the opt-out. A file that
-// does not parse leaves auto on: a broken config must not stop the update that
-// can repair it.
+// autoUpdateOff reports an explicit update.auto: false.
 func autoUpdateOff(path string) bool {
+	u, _ := readUpdateConfig(path)
+	return !(&config.Config{Update: u}).UpdateAutoEnabled()
+}
+
+// updateWait is update.wait: how long after its publication (the upload time of
+// its checksums.txt) --auto installs the Latest release. It gives the maintainers
+// time to stop a bad release. A bad value gives the default: the proxy refuses it
+// at boot, and agentop doctor names it.
+func updateWait(path string) time.Duration {
+	u, _ := readUpdateConfig(path)
+	w, _, _ := u.Times()
+	return w
+}
+
+// readUpdateConfig reads only the update block, so an error in another field
+// does not cancel the opt-out. A file that does not parse gives nil, which leaves
+// auto on: a broken config must not stop the update that can repair it. A field
+// of the wrong type gives the block with that field empty, and the error.
+func readUpdateConfig(path string) (*config.UpdateConfig, error) {
 	b, err := os.ReadFile(path) //nolint:gosec // the user's own config
 	if err != nil {
-		return false
+		return nil, nil
 	}
 	var c struct {
 		Update *config.UpdateConfig `yaml:"update"`
@@ -107,10 +118,24 @@ func autoUpdateOff(path string) bool {
 		}
 		return "${" + key + "}"
 	})
-	if yaml.Unmarshal([]byte(expanded), &c) != nil {
-		return false
+	err = yaml.Unmarshal([]byte(expanded), &c)
+	// yaml.v3 decodes the other fields after a type error.
+	if te := (*yaml.TypeError)(nil); errors.As(err, &te) {
+		// It also sets a wrong-type auto to false. Keep auto only when it decodes alone.
+		var a struct {
+			Update struct {
+				Auto *bool `yaml:"auto"`
+			} `yaml:"update"`
+		}
+		if c.Update != nil && yaml.Unmarshal([]byte(expanded), &a) != nil {
+			c.Update.Auto = nil
+		}
+		return c.Update, fmt.Errorf("update: %s", strings.Join(te.Errors, "; "))
 	}
-	return !(&config.Config{Update: c.Update}).UpdateAutoEnabled()
+	if err != nil {
+		return nil, nil
+	}
+	return c.Update, nil
 }
 
 func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
@@ -142,8 +167,8 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		s.Result, s.Error = updatestatus.ResultCheckFailed, err.Error()
 		return s
 	}
-	if updateNow().Sub(released) < updateWait {
-		s.Result, s.InstallAfter = updatestatus.ResultWaiting, released.Add(updateWait).UTC()
+	if wait := updateWait(env.configPath()); updateNow().Sub(released) < wait {
+		s.Result, s.InstallAfter = updatestatus.ResultWaiting, released.Add(wait).UTC()
 		return s
 	}
 	// --ref pins the tag that passed the wait. Without it, install.sh reads Latest

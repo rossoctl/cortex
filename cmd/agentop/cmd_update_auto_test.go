@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
+	"github.com/rossoctl/cortex/core/config"
 )
 
 var autoNow = time.Date(2026, 11, 12, 15, 0, 0, 0, time.UTC)
@@ -71,23 +72,35 @@ type autoRow struct {
 }
 
 var autoUpdateRows = []autoRow{
-	{name: "disabled", latest: "v9.9.10", config: "update:\n  auto: false\n", age: 73 * time.Hour, want: updatestatus.ResultDisabled},
+	{name: "disabled", latest: "v9.9.10", config: "update:\n  auto: false\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
 	// An opt-out holds when another field fails validation.
-	{name: "disabled, config invalid", latest: "v9.9.10", config: "update:\n  auto: false\ncost_ledger:\n  retention_days: 1\n", age: 73 * time.Hour, want: updatestatus.ResultDisabled},
+	{name: "disabled, config invalid", latest: "v9.9.10", config: "update:\n  auto: false\ncost_ledger:\n  retention_days: 1\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
 	// config.Load expands ${VAR}, so the opt-out does too.
-	{name: "disabled by env", latest: "v9.9.10", config: "update:\n  auto: ${AGENTOP_TEST_UPDATE_AUTO}\n", age: 73 * time.Hour, want: updatestatus.ResultDisabled},
-	{name: "latest not a release", latest: "v9.9.10-rc.1", age: 73 * time.Hour, want: updatestatus.ResultCheckFailed},
-	{name: "not-a-release", latest: "v9.9.10", agentop: "#!/bin/sh\necho agentop dev\n", age: 73 * time.Hour, want: updatestatus.ResultNotARelease},
-	{name: "current", latest: "v9.9.9", age: 73 * time.Hour, want: updatestatus.ResultCurrent},
-	{name: "waiting", latest: "v9.9.10", age: 71 * time.Hour, want: updatestatus.ResultWaiting},
-	{name: "check-failed latest", latest: "", age: 73 * time.Hour, want: updatestatus.ResultCheckFailed},
+	{name: "disabled by env", latest: "v9.9.10", config: "update:\n  auto: ${AGENTOP_TEST_UPDATE_AUTO}\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
+	{name: "latest not a release", latest: "v9.9.10-rc.1", age: 25 * time.Hour, want: updatestatus.ResultCheckFailed},
+	{name: "not-a-release", latest: "v9.9.10", agentop: "#!/bin/sh\necho agentop dev\n", age: 25 * time.Hour, want: updatestatus.ResultNotARelease},
+	{name: "current", latest: "v9.9.9", age: 25 * time.Hour, want: updatestatus.ResultCurrent},
+	{name: "waiting", latest: "v9.9.10", age: 23 * time.Hour, want: updatestatus.ResultWaiting},
+	{name: "wait set", latest: "v9.9.10", config: "update:\n  wait: 72h\n", age: 71 * time.Hour, want: updatestatus.ResultWaiting},
+	{name: "wait 0", latest: "v9.9.10", config: "update:\n  wait: \"0\"\n", age: time.Minute, want: updatestatus.ResultUpdated, ran: true},
+	// A bad wait keeps the default and does not cancel auto: false.
+	{name: "wait invalid", latest: "v9.9.10", config: "update:\n  wait: soon\n", age: 23 * time.Hour, want: updatestatus.ResultWaiting},
+	// A wrong-type field does not cancel auto: false either.
+	{name: "wait list, disabled", latest: "v9.9.10", config: "update:\n  auto: false\n  wait: [24h]\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
+	{name: "check_every map, disabled", latest: "v9.9.10", config: "update:\n  auto: false\n  check_every: {h: 6}\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
+	// A wrong-type auto is not an opt-out.
+	{name: "auto string", latest: "v9.9.10", config: "update:\n  auto: \"false\"\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
+	{name: "auto number", latest: "v9.9.10", config: "update:\n  auto: 0\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
+	{name: "auto list", latest: "v9.9.10", config: "update:\n  auto: [false]\n  wait: [1h]\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
+	{name: "wait invalid, disabled", latest: "v9.9.10", config: "update:\n  auto: false\n  wait: soon\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
+	{name: "check-failed latest", latest: "", age: 25 * time.Hour, want: updatestatus.ResultCheckFailed},
 	{name: "check-failed time", latest: "v9.9.10", want: updatestatus.ResultCheckFailed},
-	{name: "updated", latest: "v9.9.10", age: 73 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
-	{name: "failed", latest: "v9.9.10", age: 73 * time.Hour, fail: errors.New("installer broke"), want: updatestatus.ResultFailed, ran: true},
+	{name: "updated", latest: "v9.9.10", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
+	{name: "failed", latest: "v9.9.10", age: 25 * time.Hour, fail: errors.New("installer broke"), want: updatestatus.ResultFailed, ran: true},
 	// A half-done swap is repaired, not reported as current.
-	{name: "mismatch", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", age: 73 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
+	{name: "mismatch", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
 	// The kill switch: Latest moved back.
-	{name: "downgrade", latest: "v9.9.8", age: 73 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
+	{name: "downgrade", latest: "v9.9.8", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
 }
 
 func runAutoRow(t *testing.T, i int) (int, doctorScene, *fakeRelease) {
@@ -146,7 +159,7 @@ func TestAutoUpdateDecisions(t *testing.T) {
 			}
 			switch c.name {
 			case "waiting":
-				if want := autoNow.Add(-c.age).Add(updateWait); !s.InstallAfter.Equal(want) {
+				if want := autoNow.Add(-c.age).Add(config.DefaultUpdateWait); !s.InstallAfter.Equal(want) {
 					t.Errorf("installAfter %v, want %v", s.InstallAfter, want)
 				}
 			case "check-failed latest":

@@ -29,7 +29,7 @@ Either way you get a single binary (~10 MB; the linux build is fully static).
 [Automatic updates](../../docs/laptop-service.md#automatic-updates) tells how a service
 install updates itself.
 
-`--auto` is what the daily updater runs. It implies `--yes` and never asks.
+`--auto` is what the updater runs. It implies `--yes` and never asks.
 
 The title bar shows one of these notices. When more than one applies, it shows the first:
 

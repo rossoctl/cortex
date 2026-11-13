@@ -16,6 +16,7 @@ func newTestTrigger(t *testing.T, startErr error) (*updateTrigger, *time.Time, *
 	starts := 0
 	tr := &updateTrigger{
 		file:  filepath.Join(t.TempDir(), updateStatusFile),
+		every: 6 * time.Hour,
 		now:   func() time.Time { return now },
 		start: func() error { starts++; return startErr },
 	}
@@ -41,9 +42,9 @@ func TestUpdateTriggerStartsOnMissingFile(t *testing.T) {
 
 func TestUpdateTriggerStartsOnOldFile(t *testing.T) {
 	tr, now, starts := newTestTrigger(t, nil)
-	writeStatusAged(t, tr.file, now.Add(-25*time.Hour))
+	writeStatusAged(t, tr.file, now.Add(-7*time.Hour))
 	if !tr.tick() || *starts != 1 {
-		t.Fatalf("tick on a 25h-old file: starts = %d, want 1", *starts)
+		t.Fatalf("tick on a 7h-old file, every 6h: starts = %d, want 1", *starts)
 	}
 }
 
@@ -55,20 +56,29 @@ func TestUpdateTriggerSkipsFreshFile(t *testing.T) {
 	}
 }
 
-func TestUpdateTriggerWaits24hAfterAStartWithNoFile(t *testing.T) {
+func TestUpdateTriggerWaitsEveryAfterAStartWithNoFile(t *testing.T) {
 	tr, now, starts := newTestTrigger(t, nil)
 	base := *now
-	for _, d := range []time.Duration{0, time.Hour, 23 * time.Hour} {
+	for _, d := range []time.Duration{0, time.Hour, 5 * time.Hour} {
 		*now = base.Add(d)
 		tr.tick()
 	}
 	if *starts != 1 {
-		t.Fatalf("ticks at +0, +1h, +23h with no file: starts = %d, want 1", *starts)
+		t.Fatalf("ticks at +0, +1h, +5h with no file, every 6h: starts = %d, want 1", *starts)
 	}
-	*now = base.Add(24 * time.Hour)
+	*now = base.Add(6 * time.Hour)
 	tr.tick()
 	if *starts != 2 {
-		t.Fatalf("tick at +24h: starts = %d, want 2", *starts)
+		t.Fatalf("tick at +6h: starts = %d, want 2", *starts)
+	}
+}
+
+func TestUpdateTriggerUsesEvery(t *testing.T) {
+	tr, now, starts := newTestTrigger(t, nil)
+	tr.every = 24 * time.Hour
+	writeStatusAged(t, tr.file, now.Add(-7*time.Hour))
+	if tr.tick() || *starts != 0 {
+		t.Fatalf("tick on a 7h-old file, every 24h: starts = %d, want 0", *starts)
 	}
 }
 

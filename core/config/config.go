@@ -51,7 +51,8 @@ type Config struct {
 	// Praxis, when Enabled, turns on praxis mode: cortex-gateway forwards the
 	// traffic and Cortex ingests its rows. Absent means direct mode.
 	Praxis *PraxisConfig `yaml:"praxis,omitempty" json:"praxis,omitempty"`
-	// Update configures agentop's automatic updates. Only agentop reads it.
+	// Update configures automatic updates. agentop reads auto and wait on each run.
+	// The proxy reads check_every at boot.
 	Update *UpdateConfig `yaml:"update,omitempty" json:"update,omitempty"`
 	// Pricing configures model rates for the whole process — one section rather
 	// than a knob per plugin, so cost is consistent wherever it is reported.
@@ -378,6 +379,42 @@ func (c *Config) PraxisEnabled() bool {
 // UpdateConfig is the top-level `update:` block.
 type UpdateConfig struct {
 	Auto *bool `yaml:"auto,omitempty" json:"auto,omitempty"`
+	// Wait is how long after its publication agentop update --auto waits before it
+	// installs a release. A duration string. Default DefaultUpdateWait. "0" installs at once.
+	Wait string `yaml:"wait,omitempty" json:"wait,omitempty"`
+	// CheckEvery is how often the proxy starts the updater. A duration string from
+	// 1h to 24h. Default DefaultUpdateCheckEvery. A change needs a restart.
+	CheckEvery string `yaml:"check_every,omitempty" json:"check_every,omitempty"`
+}
+
+// The defaults for update.wait and update.check_every.
+const (
+	DefaultUpdateWait       = 24 * time.Hour
+	DefaultUpdateCheckEvery = 6 * time.Hour
+)
+
+// Times resolves update.wait and update.check_every. Nil-safe on u. On an
+// error it returns the defaults with the error.
+//
+// check_every is at least 1h, so the updater does not run too often. It is at most
+// 24h, because agentop reports "no update check" after 72h.
+func (u *UpdateConfig) Times() (wait, checkEvery time.Duration, err error) {
+	wait, checkEvery = DefaultUpdateWait, DefaultUpdateCheckEvery
+	if u == nil {
+		return wait, checkEvery, nil
+	}
+	w, c := wait, checkEvery
+	if u.Wait != "" {
+		if w, err = time.ParseDuration(u.Wait); err != nil || w < 0 {
+			return wait, checkEvery, fmt.Errorf("update.wait %q: must be a duration of 0 or more", u.Wait)
+		}
+	}
+	if u.CheckEvery != "" {
+		if c, err = time.ParseDuration(u.CheckEvery); err != nil || c < time.Hour || c > 24*time.Hour {
+			return wait, checkEvery, fmt.Errorf("update.check_every %q: must be a duration from 1h to 24h", u.CheckEvery)
+		}
+	}
+	return w, c, nil
 }
 
 // UpdateAutoEnabled is true unless update.auto is set to false. Nil-safe on c.

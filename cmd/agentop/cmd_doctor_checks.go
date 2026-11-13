@@ -209,6 +209,15 @@ func checkPython(env *setupEnv, ui *checklist.UI) {
 // Only a failed install is a failure.
 func checkUpdates(env *setupEnv, ui *checklist.UI) (failed bool) {
 	const label, fix = "updates", "see ~/.cortex/update.log"
+	// Check the times first: the proxy refuses a bad value also when auto is off.
+	u, err := readUpdateConfig(env.configPath())
+	if err == nil {
+		_, _, err = u.Times()
+	}
+	if err != nil {
+		ui.Advise(label, err.Error(), "edit "+env.tilde(env.configPath()))
+		return false
+	}
 	if autoUpdateOff(env.configPath()) {
 		ui.Already(label, "automatic updates off (update.auto: false)")
 		return false

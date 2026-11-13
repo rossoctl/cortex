@@ -405,7 +405,7 @@ func lingerEnabled(uid string) bool {
 
 // renderUpdaterUnitFor builds the updater unit for goos. It has no RunAtLoad,
 // KeepAlive, StartInterval, timer or [Install] section: only the proxy starts it,
-// once a day (cmd/cortex/update_trigger.go).
+// once each update.check_every (cmd/cortex/update_trigger.go).
 func renderUpdaterUnitFor(goos string, p servicePaths) string {
 	agentop := filepath.Join(filepath.Dir(p.binary), "agentop")
 	log := filepath.Join(filepath.Dir(p.logFile), "update.log")

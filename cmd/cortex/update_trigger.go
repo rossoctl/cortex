@@ -16,28 +16,29 @@ const updateStatusFile = "update.json"
 
 const (
 	updateFirstWait = 10 * time.Minute
-	updateTick      = time.Hour
-	updateEvery     = 24 * time.Hour
+	// A start comes at most one tick after check_every, so keep the tick short.
+	updateTick = 10 * time.Minute
 )
 
-// updateTrigger starts the updater unit at most once a day. It reads no config
-// and makes no network call: agentop update --auto makes all the decisions.
+// updateTrigger starts the updater unit at most once each update.check_every. It
+// makes no network call: agentop update --auto makes all the decisions.
 type updateTrigger struct {
 	file      string           // ~/.cortex/update.json
+	every     time.Duration    // update.check_every
 	now       func() time.Time // wall clock
 	start     func() error     // starts the updater unit
 	lastStart time.Time        // zero: never
 }
 
-// tick starts the updater when the status file is missing or older than a day.
+// tick starts the updater when the status file is missing or older than every.
 // It returns true when it called start.
 func (t *updateTrigger) tick() bool {
 	now := t.now().Round(0) // wall clock: a monotonic Sub leaves out sleep
-	if fi, err := os.Stat(t.file); err == nil && now.Sub(fi.ModTime()) <= updateEvery {
+	if fi, err := os.Stat(t.file); err == nil && now.Sub(fi.ModTime()) <= t.every {
 		return false
 	}
-	// A run that stops before it writes the file must not cause a start each hour.
-	if !t.lastStart.IsZero() && now.Sub(t.lastStart) < updateEvery {
+	// A run that stops before it writes the file must not cause a start at each tick.
+	if !t.lastStart.IsZero() && now.Sub(t.lastStart) < t.every {
 		return false
 	}
 	t.lastStart = now
@@ -59,7 +60,7 @@ func startUpdaterUnit() error {
 }
 
 // runUpdateTrigger calls tick after updateFirstWait, then each updateTick until
-// ctx is done. Each tick compares wall clock times, because a 24-hour timer
+// ctx is done. Each tick compares wall clock times, because a long timer
 // does not count the time that a laptop sleeps.
 func runUpdateTrigger(ctx context.Context, t *updateTrigger) {
 	select {

@@ -45,6 +45,9 @@ func Validate(cfg *Config) error {
 	if err := validatePraxis(cfg); err != nil {
 		return err
 	}
+	if _, _, err := cfg.Update.Times(); err != nil {
+		return err
+	}
 	return validatePricing(cfg)
 }
 

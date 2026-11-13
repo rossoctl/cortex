@@ -97,6 +97,70 @@ func TestDoctorUpdatesDisabled(t *testing.T) {
 	wantLines(t, code, 0, out, "  · updates      automatic updates off (update.auto: false)\n")
 }
 
+func TestDoctorUpdatesBadTimes(t *testing.T) {
+	sc := updatesScene(t, updatestatus.Status{CheckedAt: updatesNow, Result: updatestatus.ResultCurrent})
+	cfg := filepath.Join(sc.home, ".cortex", "config.yaml")
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(b, "\nupdate:\n  check_every: 10m\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out := sc.doctor(t)
+	wantLines(t, code, 0, out, "\n"+markLine("!", "updates")+`update.check_every "10m": must be a duration from 1h to 24h`+
+		"\n      fix: edit ~/.cortex/config.yaml\n")
+}
+
+// The proxy refuses a bad time also when auto is off, so doctor names it.
+func TestDoctorUpdatesBadTimesAutoOff(t *testing.T) {
+	sc := updatesScene(t, updatestatus.Status{CheckedAt: updatesNow, Result: updatestatus.ResultCurrent})
+	cfg := filepath.Join(sc.home, ".cortex", "config.yaml")
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(b, "\nupdate:\n  auto: false\n  check_every: 10m\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out := sc.doctor(t)
+	wantLines(t, code, 0, out, "\n"+markLine("!", "updates")+`update.check_every "10m": must be a duration from 1h to 24h`+
+		"\n      fix: edit ~/.cortex/config.yaml\n")
+}
+
+func TestDoctorUpdatesWrongTypeTimes(t *testing.T) {
+	sc := updatesScene(t, updatestatus.Status{CheckedAt: updatesNow, Result: updatestatus.ResultCurrent})
+	cfg := filepath.Join(sc.home, ".cortex", "config.yaml")
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(b, "\nupdate:\n  wait: [24h]\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out := sc.doctor(t)
+	// The config row fails too: config.Load refuses the same file.
+	if code != 1 || !strings.Contains(out, markLine("!", "updates")+"update: ") || !strings.Contains(out, "fix: edit ~/.cortex/config.yaml") {
+		t.Fatalf("code %d, want 1 and an updates advice that names the update block:\n%s", code, out)
+	}
+}
+
+func TestDoctorUpdatesWrongTypeAuto(t *testing.T) {
+	sc := updatesScene(t, updatestatus.Status{CheckedAt: updatesNow, Result: updatestatus.ResultCurrent})
+	cfg := filepath.Join(sc.home, ".cortex", "config.yaml")
+	b, err := os.ReadFile(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg, append(b, "\nupdate:\n  auto: \"false\"\n"...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, out := sc.doctor(t)
+	if strings.Contains(out, "automatic updates off") || !strings.Contains(out, markLine("!", "updates")+"update: ") {
+		t.Fatalf("want an updates advice that names the update block, not \"off\":\n%s", out)
+	}
+}
+
 func TestDoctorUpdatesNoService(t *testing.T) {
 	sc := newDoctorScene(t)
 	var pid int

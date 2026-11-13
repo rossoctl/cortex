@@ -40,7 +40,7 @@ build of cortex, praxis mode (--praxis), an install with no config
   --ref=REF   install REF instead of the newest stable release, e.g.
               --ref=v0.9.0-rc.3 for a release candidate, --ref=main
   --yes, -y   do not ask; needed when there is no terminal
-  --auto      what the daily updater runs: install the newest release only when it is a plain release and 72 hours old; never asks
+  --auto      what the updater runs: install the newest release only when it is a plain release and update.wait (24h) old; never asks
 
 Downloads nothing when agentop and cortex in ~/.local/bin are already at the
 release asked for. Run agentop doctor to check the rest of the install.
