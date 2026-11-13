@@ -113,6 +113,28 @@ pub fn parse_request(
     })
 }
 
+/// Reports whether each of the top-level keys `method` and `params` occurs at
+/// most once, with the exact name. `parse_request` folds case and merges a
+/// repeated `params` as Go does. A TypeScript or Python MCP server does
+/// neither, so a policy decision must not use a body that fails this check.
+pub fn top_level_keys_exact(headers: &HeaderMap, body: &[u8]) -> bool {
+    let body = decode_request_body(headers, body);
+    if body.is_empty() {
+        return true;
+    }
+    let text = go_lossy_utf8(&body).text;
+    let Some(entries) = gojson::parse(&text)
+        .ok()
+        .and_then(|raw| gojson::object(raw).ok().flatten())
+    else {
+        return false;
+    };
+    ["method", "params"].iter().all(|name| {
+        let mut hits = entries.iter().filter(|(k, _)| gojson::is(k, name));
+        hits.next().is_none_or(|(k, _)| k == name) && hits.next().is_none()
+    })
+}
+
 /// Port of mcp.ParseResponse: reads one MCP response (plain JSON-RPC, or an SSE
 /// body or frame) into `ext`. False, with `ext` unchanged, when `body` holds no
 /// JSON-RPC result or error.

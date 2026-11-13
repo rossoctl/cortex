@@ -310,9 +310,12 @@ impl Exchange {
         }
     }
 
-    /// The MCP request that `on_request_body` parsed, if any.
+    /// The MCP request that `on_request_body` parsed, for the policy filter.
     pub fn mcp(&self) -> Option<&McpExtension> {
-        self.observers.mcp.as_ref().and_then(McpObserver::extension)
+        self.observers
+            .mcp
+            .as_ref()
+            .and_then(McpObserver::policy_extension)
     }
 
     /// The request row. Parses the raw body (the parser decodes it itself).
@@ -1266,5 +1269,47 @@ mod tests {
         let row: Value = serde_json::from_slice(&q.row).unwrap();
         assert_eq!(row["capture"], json!({"dropped": true}));
         assert_eq!(row["event"]["inference"]["model"], "claude-opus-5");
+    }
+
+    // The policy filter trusts `mcp()`. A TypeScript or Python MCP server reads the
+    // exact top-level keys, last one wins, so an envelope that the Go-style parse
+    // reads in another way must give no MCP request.
+    #[test]
+    fn mcp_for_policy_needs_exact_top_level_keys() {
+        let mcp = |h: &HeaderMap, body: &[u8]| {
+            let mut ex = exchange("POST", "tools.example", "/mcp", h);
+            ex.on_request_body(body);
+            ex.mcp().map(|e| e.method.clone())
+        };
+        let none = HeaderMap::new();
+        let ambiguous: [&[u8]; 6] = [
+            br#"{"method":"tools/call","params":{"name":"danger"},"Params":{"name":"safe"}}"#,
+            br#"{"method":"tools/call","METHOD":"tools/list","params":{"name":"danger"}}"#,
+            br#"{"Method":"tools/call","params":{"name":"danger"}}"#,
+            br#"{"method":"tools/call","param\u017f":{"name":"safe"}}"#,
+            br#"{"method":"tools/call","params":{"name":"danger"},"params":{"name":"safe"}}"#,
+            br#"{"method":"tools/list","method":"tools/call","params":{"name":"danger"}}"#,
+        ];
+        for body in ambiguous {
+            assert_eq!(mcp(&none, body), None, "{}", String::from_utf8_lossy(body));
+        }
+        let mut zstd = HeaderMap::new();
+        zstd.insert(CONTENT_ENCODING, HeaderValue::from_static("zstd"));
+        let packed = zstd::encode_all(ambiguous[0], 0).unwrap();
+        assert_eq!(mcp(&zstd, &packed), None, "zstd body");
+
+        let exact: [&[u8]; 2] = [
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t"}}"#,
+            br#"{"method":"tools/call","par\u0061ms":{"name":"t"}}"#,
+        ];
+        for body in exact {
+            assert_eq!(mcp(&none, body).as_deref(), Some("tools/call"));
+        }
+        let mut get = exchange("GET", "tools.example", "/mcp", &none);
+        get.on_request_body(b"");
+        assert_eq!(
+            get.mcp().map(|e| e.method.as_str()),
+            Some("$transport/stream")
+        );
     }
 }
