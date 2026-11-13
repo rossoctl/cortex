@@ -881,7 +881,11 @@ func TestPraxisE2E_PolicyPassesNonInference(t *testing.T) {
 	form := request(t, t.Context(), http.MethodPost, "http://oauth.example.com/token",
 		[]byte("grant_type=refresh_token&refresh_token=r"))
 	form.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Over the policy filter's 10 MiB default, under the gateway's 32 MiB.
+	upload := request(t, t.Context(), http.MethodPost, "http://files.example.com/upload", bytes.Repeat([]byte("u"), 11<<20))
+	upload.Header.Set("Content-Type", "application/octet-stream")
 	reqs := map[string]*http.Request{
+		"upload over 10 MiB": upload,
 		"json without model": request(t, t.Context(), http.MethodPost, "http://telemetry.example.com/v1/events", []byte(`{"events":[{"n":1}]}`)),
 		"form body":          form,
 		"put":                request(t, t.Context(), http.MethodPut, "http://api.example.com/repos/x", []byte(`{"name":"x"}`)),

@@ -160,8 +160,8 @@ func TestGatewayYAML_PolicyOrder(t *testing.T) {
 		t.Fatalf("filter order = %v, want %v", order, want)
 	}
 	llm, _ := fs[3]["llm"].(map[string]any)
-	if p := fs[3]; len(p) != 3 || p["config_path"] != "/p/policy.yaml" || len(llm) != 1 || llm["require_model"] != false {
-		t.Errorf("policy filter = %v, want filter, config_path /p/policy.yaml and llm.require_model false", p)
+	if p := fs[3]; len(p) != 3 || p["config_path"] != "/p/policy.yaml" || len(llm) != 2 || llm["require_model"] != false || llm["max_request_bytes"] != gatewayMaxRequestBytes {
+		t.Errorf("policy filter = %v, want filter, config_path /p/policy.yaml, llm.require_model false and llm.max_request_bytes %d", p, gatewayMaxRequestBytes)
 	}
 }
 

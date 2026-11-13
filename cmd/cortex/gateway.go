@@ -78,9 +78,11 @@ func gatewayYAML(cfg *config.Config, tokenPath string) ([]byte, error) {
 	// policy comes after cortex_observe, so a denied request still gets a full row.
 	if p := cfg.Praxis.Policy; p != nil && p.ConfigPath != "" {
 		// The hop sends all traffic here. require_model defaults to true, which refuses each body without a model.
+		// max_request_bytes defaults to 10 MiB and applies to every body, so it gets the gateway's limit.
+		// An llm: allow-list is not complete: a gzip or zstd body, or a body with no string model, matches no llm: route.
 		filters = append(filters, gatewayFilter{Filter: "policy", Opts: map[string]any{
 			"config_path": p.ConfigPath,
-			"llm":         map[string]any{"require_model": false},
+			"llm":         map[string]any{"require_model": false, "max_request_bytes": gatewayMaxRequestBytes},
 		}})
 	}
 	filters = append(filters,

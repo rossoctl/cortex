@@ -762,6 +762,16 @@ fn policy_filter_denies_a_model() {
         body("model-bad").as_bytes(),
     );
     assert_eq!(status(&rh), 403, "after a bad edit: {rh}");
+    assert_eq!(header(&rh, "x-policy-violation"), Some("model_not_allowed"));
+    // A policy that refuses every request also gives the 403 above, so check the permit too.
+    let (rh, _) = send(
+        &g,
+        "POST",
+        "/v1/messages?beta=true",
+        &as_refs(&h),
+        body("model-ok").as_bytes(),
+    );
+    assert_eq!(status(&rh), 200, "model-ok after a bad edit: {rh}");
 
     // A valid edit applies live, so the check above saw a running watcher.
     std::fs::write(
