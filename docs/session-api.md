@@ -188,7 +188,8 @@ the whole list.
  "agents":  [{"id": "main", "label": "main agent"},
              {"id": "a1bf9707ee0e71012", "parent": "main", "label": "Survey the code",
               "type": "Explore", "spawnTool": "toolu_…", "spawnedAt": "…", "returnedAt": "…"}],
- "turns":   [{"agent": "main", "start": "…", "end": "…", "finish": "tool_use", "seq": 12}],
+ "turns":   [{"agent": "main", "start": "…", "end": "…", "finish": "tool_use", "seq": 12,
+              "outputTokens": 850}],
  "jobs":    [{"agent": "main", "id": "bk42", "toolUseId": "toolu_…", "start": "…", "end": "…", "seq": 40}],
  "tools":   [{"agent": "main", "id": "toolu_…", "name": "Bash", "start": "…", "end": "…",
               "preview": "go test ./...", "seq": 13}],
@@ -222,6 +223,15 @@ has no spawn link: nothing on the wire names the call that started it.
   `router` call answers with a model name only. `resent` marks
   a call that sent its agent's previous call's conversation again unchanged: a
   retry.
+  `outputTokens` is the output token count of the finished response
+  (`inference.outputTokens` of the response row). `liveTokens` is on an open
+  turn only. It estimates the tokens that the response sent so far: the bytes
+  the forward proxy read, divided by the session's bytes per output token. The
+  ratio comes from the session's finished turns that streamed for 5 s or more
+  (`durationMs` − `ttfbMs` of the response row). A session with no such turn has
+  no `liveTokens`. The envoy-sidecar (ext_proc) and the reverse proxy do not
+  give `liveTokens`. `liveTokens` is calculated on each read. It is not part of
+  the cached timeline.
 - A **tool** runs from the response that requested it to the agent's first
   request carrying its result (`inference.toolResults[].toolUseId`). A tool
   Claude Code started while the response was still streaming can have its
