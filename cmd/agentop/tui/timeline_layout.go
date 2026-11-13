@@ -269,7 +269,6 @@ type tlAgentRow struct {
 	alive     []bool
 	modelTime time.Duration
 	toolTime  time.Duration
-	calls     int
 	// tokPerSec is the agent's output tokens for each second of model time over its newest
 	// tokPerSecWindow of turns. live marks a window that holds an open turn. hasRate is false
 	// when no turn has tokens, and the cell is then blank.
@@ -281,8 +280,9 @@ type tlAgentRow struct {
 // tokPerSecWindow is how much of an agent's newest model time its tok/s is measured over.
 const tokPerSecWindow = 60 * time.Second
 
-// tokPerSec is Σ tokens / Σ turn time over the agent's newest turns, until that time reaches
-// tokPerSecWindow. The turn that makes it reach the window counts in full. A turn with no
+// tokPerSec is Σ tokens / model time over the agent's newest turns, until that time reaches
+// tokPerSecWindow. Model time is the union of the turns' spans, so idle, tool and subagent time
+// between turns does not count, and neither does overlap twice. The turn that makes it reach the window counts in full. A turn with no
 // tokens (failed, lost, without usage, or open without a live estimate) does not count, so one
 // error does not pull the value down. An open turn ends at fetched, the time its LiveTokens were
 // read, so the rate does not fall between fetches. A zero fetched means now.
@@ -299,17 +299,21 @@ func tokPerSec(turns []timeline.Turn, agent string, fetched, now time.Time) (rat
 	slices.SortStableFunc(mine, func(a, b timeline.Turn) int { return b.Start.Compare(a.Start) })
 	var sumTok int
 	var sumDur time.Duration
+	var spans [][2]time.Time
 	for _, t := range mine {
 		tokens := t.LiveTokens
 		if t.End != nil {
 			tokens = t.OutputTokens
 		}
-		d := tlEndOr(t.End, now).Sub(t.Start)
-		if tokens == 0 || d <= 0 {
+		e := tlEndOr(t.End, now)
+		if tokens == 0 || !e.After(t.Start) {
 			continue
 		}
 		sumTok += tokens
-		sumDur += d
+		// Time in which two turns of the agent ran at once counts once.
+		spans = append(spans, [2]time.Time{t.Start, e})
+		v := newIvs(spans)
+		sumDur = v.cover(v[0][0], v[len(v)-1][1])
 		live = live || t.End == nil
 		if sumDur >= tokPerSecWindow {
 			break
@@ -570,7 +574,6 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, fetched, now time.T
 		life[id] = [2]time.Time{tlMinTime(l[0], s), tlMaxTime(l[1], e)}
 	}
 	model, tool, asking := map[string][][2]time.Time{}, map[string][][2]time.Time{}, map[string][][2]time.Time{}
-	calls := map[string]int{}
 	for _, t := range tl.Turns {
 		e := tlEndOr(t.End, now)
 		note(t.Agent, t.Start, e)
@@ -579,9 +582,6 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, fetched, now time.T
 	for _, t := range tl.Tools {
 		e := tlEndOr(t.End, now)
 		note(t.Agent, t.Start, e)
-		if !t.Start.Before(from) && !t.Start.After(to) {
-			calls[t.Agent]++
-		}
 		// An Agent call's own span is the few seconds until the async ack; the child's row
 		// carries the work. AskUserQuestion runs until the user answers, which is the user's
 		// time, not a tool's: one left overnight drew as 7 hours of work.
@@ -622,7 +622,7 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, fetched, now time.T
 		retry, subs, user := waits(tl, a.ID, children[a.ID], life, now)
 		user = newIvs(append(user, asking[a.ID]...))
 		row := tlAgentRow{agent: a, depth: depth, cells: make([]share, ax.width()), alive: make([]bool, ax.width()),
-			modelTime: m.cover(from, to), toolTime: t.cover(from, to), calls: calls[a.ID]}
+			modelTime: m.cover(from, to), toolTime: t.cover(from, to)}
 		// All the agent's turns, not only the window's: the rate is of its newest work.
 		row.tokPerSec, row.live, row.hasRate = tokPerSec(tl.Turns, a.ID, fetched, now)
 		l, known := life[a.ID]

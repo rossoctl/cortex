@@ -333,10 +333,10 @@ func (m *model) moveTimelineCursor(d int) {
 	}
 }
 
-// The label column and the right gutter, "│  1.6h    29m    316     85".
+// The label column and the right gutter, "│  1.6h    29m     85".
 const (
 	timelineLabelWidth  = 26
-	timelineGutterWidth = 29
+	timelineGutterWidth = 22
 )
 
 // timelineCells is how many cells the chart gets at the current width.
@@ -708,7 +708,7 @@ func (m *model) renderTimeline() string {
 	fmt.Fprintf(&b, "%s  %s\n", styleTitle.Render("window "+strings.Join(tabs, " ")), styleMuted.Render(m.timelineStatus(lay)))
 	width := lay.axis.width()
 	b.WriteString(strings.Repeat(" ", timelineLabelWidth) + styleMuted.Render(axisLabels(lay)) + "\n")
-	b.WriteString(strings.Repeat(" ", timelineLabelWidth+width) + styleMuted.Render("   model  tools  calls  tok/s") + "\n")
+	b.WriteString(strings.Repeat(" ", timelineLabelWidth+width) + styleMuted.Render("   model  tools  tok/s") + "\n")
 
 	agentRows := m.timelineAgentRows(lay)
 	agentOff, hostOff := m.timelineOffsets(lay)
@@ -875,10 +875,9 @@ func (m *model) agentLine(r tlAgentRow, lay tlLayout) string {
 		}
 		b.WriteString(m.cursorAt(c, g))
 	}
-	fmt.Fprintf(&b, "%s%s%s%s", styleMuted.Render("│"),
+	fmt.Fprintf(&b, "%s%s%s", styleMuted.Render("│"),
 		lipgloss.NewStyle().Foreground(colorTLModel).Render(fmt.Sprintf("%6s", tlDuration(r.modelTime))),
-		lipgloss.NewStyle().Foreground(colorTLTool).Render(fmt.Sprintf("%7s", tlDuration(r.toolTime))),
-		styleMuted.Render(fmt.Sprintf("%7d", r.calls)))
+		lipgloss.NewStyle().Foreground(colorTLTool).Render(fmt.Sprintf("%7s", tlDuration(r.toolTime))))
 	rate, st := "", styleMuted
 	if r.hasRate {
 		rate = strconv.FormatFloat(r.tokPerSec, 'f', 0, 64)

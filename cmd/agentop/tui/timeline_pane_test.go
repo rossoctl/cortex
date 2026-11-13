@@ -153,8 +153,8 @@ func TestTimelineLayout_GutterCountsTheWindow(t *testing.T) {
 	main := lay.agents[0]
 	// Model time is the five turns (200+10+300+240+300); tool time is Bash only, not the Agent
 	// call's async ack.
-	if main.modelTime != 1050*time.Second || main.toolTime != 90*time.Second || main.calls != 2 {
-		t.Errorf("main model %v tool %v calls %d, want 17m30s, 1m30s, 2", main.modelTime, main.toolTime, main.calls)
+	if main.modelTime != 1050*time.Second || main.toolTime != 90*time.Second {
+		t.Errorf("main model %v tool %v, want 17m30s, 1m30s", main.modelTime, main.toolTime)
 	}
 }
 
@@ -345,7 +345,7 @@ func TestTimelineRender_RowsAndSpacing(t *testing.T) {
 	if !strings.Contains(lines[mainIdx], "█") {
 		t.Errorf("main row draws no bars: %q", lines[mainIdx])
 	}
-	if !strings.Contains(lines[mainIdx-1], "model  tools  calls") {
+	if !strings.Contains(lines[mainIdx-1], "model  tools  tok/s") {
 		t.Errorf("the line above the first row is not the column headers: %q", lines[mainIdx-1])
 	}
 }
@@ -1467,6 +1467,19 @@ func TestTimelineTokPerSec_Window(t *testing.T) {
 	}
 }
 
+// Turns of one agent that run at once count their shared time once: 2 turns of 10 s that overlap
+// by 5 s are 15 s of model time, not 20 s.
+func TestTimelineTokPerSec_OverlapCountsOnce(t *testing.T) {
+	m := timeline.MainAgent
+	turns := []timeline.Turn{
+		{Agent: m, Start: tlAt(0), End: tlPtr(10), OutputTokens: 600},
+		{Agent: m, Start: tlAt(5), End: tlPtr(15), OutputTokens: 900},
+	}
+	if rate, _, ok := tokPerSec(turns, m, time.Time{}, tlAt(20)); !near(rate, 100) || !ok {
+		t.Errorf("tokPerSec = %v, %v, want 100, true", rate, ok)
+	}
+}
+
 // A finished subagent keeps the rate of its last turns, however long ago they ended.
 func TestTimelineTokPerSec_FinishedSubagentKeepsItsRate(t *testing.T) {
 	turns := []timeline.Turn{{Agent: "a1", Start: tlAt(0), End: tlPtr(10), OutputTokens: 850}}
@@ -1507,7 +1520,7 @@ func TestTimelineTokPerSec_OpenTurnEndsAtFetch(t *testing.T) {
 	}
 }
 
-// The gutter shows tok/s after calls: the rate on a row with tokens, blank on a row without.
+// The gutter shows tok/s after tool time: the rate on a row with tokens, blank on a row without.
 func TestTimelineRender_TokPerSecColumn(t *testing.T) {
 	m := timelineModel(t, 140, 46)
 	m.timeline.windowIdx = 3
@@ -1523,14 +1536,14 @@ func TestTimelineRender_TokPerSecColumn(t *testing.T) {
 		t.Fatalf("no line starting %q in:\n%s", prefix, body)
 		return ""
 	}
-	if !strings.Contains(body, "model  tools  calls  tok/s") {
+	if !strings.Contains(body, "model  tools  tok/s") {
 		t.Errorf("no tok/s header in:\n%s", body)
 	}
 	if l := find("main agent"); !strings.HasSuffix(l, "     85") {
 		t.Errorf("main row does not end with its rate: %q", l)
 	}
-	if l := find("  Survey the code"); !strings.HasSuffix(l, "      3"+strings.Repeat(" ", 7)) {
-		t.Errorf("row without tokens does not end with 7 blanks after its calls: %q", l)
+	if l := find("  Survey the code"); !strings.HasSuffix(l, strings.Repeat(" ", 7)) || strings.HasSuffix(l, strings.Repeat(" ", 8)) {
+		t.Errorf("row without tokens does not end with 7 blanks after its tool time: %q", l)
 	}
 	// From legend(), not the body: at 140 columns the body cuts the legend's tail, as it does
 	// on any narrow terminal.
