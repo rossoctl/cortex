@@ -1331,10 +1331,10 @@ agentop is for, and the other four are surfaces you visit and leave.
   ```
   window 5m 1h [all]  10-26 14:28 → 10-26 20:08
                             14:28           15:17           16:06   37m  39m      18:41
-                                                                                           model  tools  calls
-  main agent                ▂█▃▅▃██▁▄▃▁▃█▁▆▁▂▇█▂▁▁▂████████▁▁▅▁███▅▁ ┆ ▄▁ ┆ ▂▁▆▂▁███▄▁│  1.6h    29m    316
+                                                                                           model  tools  calls  tok/s
+  main agent                ▂█▃▅▃██▁▄▃▁▃█▁▆▁▂▇█▂▁▁▂████████▁▁▅▁███▅▁ ┆ ▄▁ ┆ ▂▁▆▂▁███▄▁│  1.6h    29m    316     85
 
-    Survey cortex egress da ▃▂▁                                      ┆    ┆           │    4m     1m     41
+    Survey cortex egress da ▃▂▁                                      ┆    ┆           │    4m     1m     41     92
 
   ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
   llm-gateway.example   LLM ▂▃▂▁▂  ▁▂▁▁▃▄▄▂▁▁▁ ▁▁▁▂▂▂▂▂▂▂▂▂▂▂▁▁   ▂▁ ┆ ▁▁ ┆ ▂▂▁▁▁   │           1041 req
@@ -1360,7 +1360,9 @@ agentop is for, and the other four are surfaces you visit and leave.
   host cell's height is how many requests were in flight at once (`▁` one … `█`
   eight or more); red is an error or a refusal. Loopback hosts, the proxy itself
   among them, are not drawn. The gutter is the window's model time, tool time and
-  tool calls for an agent, and the request count for a host.
+  tool calls for an agent, and its output tokens for each second of model time
+  over its last 60 s of model time (`tok/s`, in the model colour while a turn
+  streams, blank when no turn has tokens), and the request count for a host.
 
   `w` cycles 5m / 1h / 24h / all, offering only the windows shorter than the
   session, so a short session shows "all" alone; the choice is saved, and a saved

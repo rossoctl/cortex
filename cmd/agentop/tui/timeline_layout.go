@@ -270,6 +270,51 @@ type tlAgentRow struct {
 	modelTime time.Duration
 	toolTime  time.Duration
 	calls     int
+	// tokPerSec is the agent's output tokens for each second of model time over its newest
+	// tokPerSecWindow of turns. live marks a window that holds an open turn. hasRate is false
+	// when no turn has tokens, and the cell is then blank.
+	tokPerSec float64
+	live      bool
+	hasRate   bool
+}
+
+// tokPerSecWindow is how much of an agent's newest model time its tok/s is measured over.
+const tokPerSecWindow = 60 * time.Second
+
+// tokPerSec is Σ tokens / Σ turn time over the agent's newest turns, until that time reaches
+// tokPerSecWindow. The turn that makes it reach the window counts in full. A turn with no
+// tokens (failed, lost, without usage, or open without a live estimate) does not count, so one
+// error does not pull the value down.
+func tokPerSec(turns []timeline.Turn, agent string, now time.Time) (rate float64, live, ok bool) {
+	var mine []timeline.Turn
+	for _, t := range turns {
+		if t.Agent == agent && !t.Lost {
+			mine = append(mine, t)
+		}
+	}
+	slices.SortStableFunc(mine, func(a, b timeline.Turn) int { return b.Start.Compare(a.Start) })
+	var sumTok int
+	var sumDur time.Duration
+	for _, t := range mine {
+		tokens := t.LiveTokens
+		if t.End != nil {
+			tokens = t.OutputTokens
+		}
+		d := tlEndOr(t.End, now).Sub(t.Start)
+		if tokens == 0 || d <= 0 {
+			continue
+		}
+		sumTok += tokens
+		sumDur += d
+		live = live || t.End == nil
+		if sumDur >= tokPerSecWindow {
+			break
+		}
+	}
+	if sumDur <= 0 {
+		return 0, false, false
+	}
+	return float64(sumTok) / sumDur.Seconds(), live, true
 }
 
 type tlHostRow struct {
@@ -573,6 +618,8 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, now time.Time) []tl
 		user = newIvs(append(user, asking[a.ID]...))
 		row := tlAgentRow{agent: a, depth: depth, cells: make([]share, ax.width()), alive: make([]bool, ax.width()),
 			modelTime: m.cover(from, to), toolTime: t.cover(from, to), calls: calls[a.ID]}
+		// All the agent's turns, not only the window's: the rate is of its newest work.
+		row.tokPerSec, row.live, row.hasRate = tokPerSec(tl.Turns, a.ID, now)
 		l, known := life[a.ID]
 		// Gap cells are filled too, each with the whole stretch it stands for, so the marker can
 		// say what that stretch was.

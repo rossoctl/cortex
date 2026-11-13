@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -332,10 +333,10 @@ func (m *model) moveTimelineCursor(d int) {
 	}
 }
 
-// The label column and the right gutter, "│  1.6h    29m    316".
+// The label column and the right gutter, "│  1.6h    29m    316     85".
 const (
 	timelineLabelWidth  = 26
-	timelineGutterWidth = 22
+	timelineGutterWidth = 29
 )
 
 // timelineCells is how many cells the chart gets at the current width.
@@ -707,7 +708,7 @@ func (m *model) renderTimeline() string {
 	fmt.Fprintf(&b, "%s  %s\n", styleTitle.Render("window "+strings.Join(tabs, " ")), styleMuted.Render(m.timelineStatus(lay)))
 	width := lay.axis.width()
 	b.WriteString(strings.Repeat(" ", timelineLabelWidth) + styleMuted.Render(axisLabels(lay)) + "\n")
-	b.WriteString(strings.Repeat(" ", timelineLabelWidth+width) + styleMuted.Render("   model  tools  calls") + "\n")
+	b.WriteString(strings.Repeat(" ", timelineLabelWidth+width) + styleMuted.Render("   model  tools  calls  tok/s") + "\n")
 
 	agentRows := m.timelineAgentRows(lay)
 	agentOff, hostOff := m.timelineOffsets(lay)
@@ -752,7 +753,8 @@ func (m *model) legend() string {
 	}
 	return sw(colorTLTool, "tools") + sw(colorTLModel, "model") + sw(colorTLRetry, "retrying") +
 		sw(colorTLSubs, "waiting on subagents") + sw(colorTLUser, "waiting on you") +
-		styleMuted.Render("┆ time cut from the axis, in its colour   ▁…█ requests in flight")
+		styleMuted.Render("┆ time cut from the axis, in its colour   ▁…█ requests in flight") +
+		styleMuted.Render("   tok/s output per second of model time, last 60 s")
 }
 
 func (m *model) timelineStatus(lay tlLayout) string {
@@ -877,6 +879,14 @@ func (m *model) agentLine(r tlAgentRow, lay tlLayout) string {
 		lipgloss.NewStyle().Foreground(colorTLModel).Render(fmt.Sprintf("%6s", tlDuration(r.modelTime))),
 		lipgloss.NewStyle().Foreground(colorTLTool).Render(fmt.Sprintf("%7s", tlDuration(r.toolTime))),
 		styleMuted.Render(fmt.Sprintf("%7d", r.calls)))
+	rate, st := "", styleMuted
+	if r.hasRate {
+		rate = strconv.FormatFloat(r.tokPerSec, 'f', 0, 64)
+	}
+	if r.live {
+		st = lipgloss.NewStyle().Foreground(colorTLModel)
+	}
+	b.WriteString(st.Render(fmt.Sprintf("%7s", rate)))
 	return b.String()
 }
 

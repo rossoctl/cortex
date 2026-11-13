@@ -1303,7 +1303,7 @@ func TestTimelineAll_LongLiveWaitIsCapped(t *testing.T) {
 	for _, tc := range []struct {
 		after  time.Duration
 		capped bool
-	}{{20 * time.Second, false}, {25 * time.Minute, true}} {
+	}{{30 * time.Second, false}, {25 * time.Minute, true}} {
 		m := timelineModel(t, 140, 46)
 		live := tlAt(1800).Add(tc.after)
 		m.now = func() time.Time { return live }
@@ -1445,5 +1445,85 @@ func TestTimelineCursor_EmptyCell(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	if got := m.cursorAt(3, " "); got != "│" {
 		t.Errorf("no colour: cursor on an empty cell = %q, want \"│\"", got)
+	}
+}
+
+// The window takes the newest turns until their model time reaches 60 s. The turn that makes it
+// reach 60 s counts in full, and a tool gap between turns does not count.
+func TestTimelineTokPerSec_Window(t *testing.T) {
+	m := timeline.MainAgent
+	turns := []timeline.Turn{
+		{Agent: m, Start: tlAt(0), End: tlPtr(30), OutputTokens: 900},
+		{Agent: m, Start: tlAt(50), End: tlPtr(70), OutputTokens: 2000},
+		{Agent: m, Start: tlAt(70), End: tlPtr(71), OutputTokens: 100},
+		{Agent: m, Start: tlAt(71), End: tlPtr(72), OutputTokens: 100},
+		{Agent: m, Start: tlAt(72), End: tlPtr(73), OutputTokens: 100},
+		{Agent: m, Start: tlAt(80), LiveTokens: 2000},
+		{Agent: "other", Start: tlAt(80), End: tlPtr(90), OutputTokens: 99999},
+	}
+	rate, live, ok := tokPerSec(turns, m, tlAt(100))
+	if !near(rate, 5200.0/73) || !live || !ok {
+		t.Errorf("tokPerSec = %v, %v, %v, want %.2f, true, true", rate, live, ok, 5200.0/73)
+	}
+}
+
+// A finished subagent keeps the rate of its last turns, however long ago they ended.
+func TestTimelineTokPerSec_FinishedSubagentKeepsItsRate(t *testing.T) {
+	turns := []timeline.Turn{{Agent: "a1", Start: tlAt(0), End: tlPtr(10), OutputTokens: 850}}
+	for _, now := range []time.Time{tlAt(10), tlAt(3610)} {
+		if rate, live, ok := tokPerSec(turns, "a1", now); !near(rate, 85) || live || !ok {
+			t.Errorf("at %v: tokPerSec = %v, %v, %v, want 85, false, true", now, rate, live, ok)
+		}
+	}
+}
+
+// An open turn with no live estimate has no tokens, so it does not count.
+func TestTimelineTokPerSec_OpenTurnWithoutLiveTokensNotCounted(t *testing.T) {
+	turns := []timeline.Turn{{Agent: timeline.MainAgent, Start: tlAt(0)}}
+	if _, _, ok := tokPerSec(turns, timeline.MainAgent, tlAt(30)); ok {
+		t.Errorf("an open turn without live tokens gave a rate")
+	}
+}
+
+// A turn that streams for more than 60 s is the whole window: the value is its live estimate.
+func TestTimelineTokPerSec_LongLiveTurnIsTheWindow(t *testing.T) {
+	turns := []timeline.Turn{
+		{Agent: timeline.MainAgent, Start: tlAt(0), End: tlPtr(10), OutputTokens: 5000},
+		{Agent: timeline.MainAgent, Start: tlAt(20), LiveTokens: 7200},
+	}
+	if rate, live, ok := tokPerSec(turns, timeline.MainAgent, tlAt(110)); !near(rate, 80) || !live || !ok {
+		t.Errorf("tokPerSec = %v, %v, %v, want 80, true, true", rate, live, ok)
+	}
+}
+
+// The gutter shows tok/s after calls: the rate on a row with tokens, blank on a row without.
+func TestTimelineRender_TokPerSecColumn(t *testing.T) {
+	m := timelineModel(t, 140, 46)
+	m.timeline.windowIdx = 3
+	m.timeline.tl.Turns[4].OutputTokens = 25500 // the newest main turn, 300 s: 85 tok/s
+	body := stripANSI(m.timelineBody())
+	lines := strings.Split(body, "\n")
+	find := func(prefix string) string {
+		for _, l := range lines {
+			if strings.HasPrefix(l, prefix) {
+				return l
+			}
+		}
+		t.Fatalf("no line starting %q in:\n%s", prefix, body)
+		return ""
+	}
+	if !strings.Contains(body, "model  tools  calls  tok/s") {
+		t.Errorf("no tok/s header in:\n%s", body)
+	}
+	if l := find("main agent"); !strings.HasSuffix(l, "     85") {
+		t.Errorf("main row does not end with its rate: %q", l)
+	}
+	if l := find("  Survey the code"); !strings.HasSuffix(l, "      3"+strings.Repeat(" ", 7)) {
+		t.Errorf("row without tokens does not end with 7 blanks after its calls: %q", l)
+	}
+	// From legend(), not the body: at 140 columns the body cuts the legend's tail, as it does
+	// on any narrow terminal.
+	if l := stripANSI(m.legend()); !strings.Contains(l, "tok/s output per second of model time, last 60 s") {
+		t.Errorf("legend does not explain tok/s: %q", l)
 	}
 }
