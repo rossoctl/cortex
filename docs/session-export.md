@@ -97,9 +97,14 @@ the stream.
 | `--endpoint URL` | Ask a specific proxy rather than the local one |
 
 A refused query — an unknown `--session`, a malformed `--since` — fails before the
-output file is created, with the proxy's own words: the first few sessions it does hold
-and a count of the rest, the list capped server-side so the answer always reaches the
-client whole. The file is opened only after the proxy answered.
+output file is created, with the proxy's own words: as many of the sessions it does hold
+as fit the refusal's byte budget, then a count of the rest. The file is opened only
+after the proxy answered, so a typo costs nothing.
+
+The budget is what keeps those words readable: the command reads 512 bytes of a refusal,
+and a count-based cap would overrun that on long ids. Against an older proxy that caps by
+id count it still can, and the command then prints the `curl` that lists the archived
+sessions directly rather than leaving a typo with no answer.
 
 ## What it does not carry, and why
 

@@ -68,8 +68,9 @@ The export reads the durable archive, not memory: a session with nothing flushed
 does not appear, and the live tail is /v1/events, not this.
 
 An unknown --session or a malformed --since is refused by the proxy before it writes a
-byte, naming the first few sessions it does hold and a count of the rest; a proxy with
-no session archive (a cluster sidecar, or one predating /v1/export) answers 404.
+byte, naming as many of the sessions it does hold as the refusal has room for, then a
+count of the rest; a proxy with no session archive (a cluster sidecar, or one predating
+/v1/export) answers 404.
 
 A 30-day archive walks in about ten seconds server-side; this command waits up to ten
 minutes before giving up.
@@ -125,10 +126,20 @@ Flags:
 			// proxy, different fix.
 			fmt.Fprintln(stderr, "  this proxy has no session archive, or predates /v1/export (`agentop update`); a cluster sidecar never runs one")
 		case errors.Is(err, apiclient.ErrBadRequest):
-			// The proxy's own words: the archived session ids — the first few and a
-			// count of the rest, capped server-side so the answer always arrives whole —
-			// or the accepted since forms. Nothing this side adds would be more
-			// authoritative than the archive it just asked.
+			// Normally the proxy's own words are the whole answer: the archived session
+			// ids it does hold, or the accepted since forms. Nothing this side adds would
+			// be more authoritative than the archive it just asked.
+			//
+			// But those words only arrive if they fit what getBody reads of a 400 body
+			// (512 bytes). #1830 sizes the refusal to a byte budget so they do, and a
+			// proxy this binary shipped with answers inside it — but an older proxy caps
+			// by id count, not bytes, and a future message may be longer still. When the
+			// detail did not survive, the error above is a bare "bad request" and a typo
+			// would otherwise be a dead end, so point at where the ids can be read
+			// directly rather than leaving the user with nothing.
+			if len(sessions.ids) > 0 && !strings.Contains(err.Error(), ": no archived session") {
+				fmt.Fprintf(stderr, "  the proxy did not name the sessions it holds; list them with:\n    curl -s '%s/v1/sessions?archived=true'\n", target)
+			}
 		default:
 			fmt.Fprintln(stderr, "  is Cortex running? `agentop service status`")
 		}

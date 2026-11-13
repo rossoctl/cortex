@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -99,6 +100,50 @@ func TestRunExport_OutFile(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "nope") || !strings.Contains(errOut.String(), "old") {
 		t.Fatalf("stderr = %q, want the proxy's own words naming the ids", errOut.String())
+	}
+}
+
+// A REFUSAL TOO LONG FOR THE 512 BYTES getBody READS still leaves the user somewhere to
+// go. exportServer's canned body is 72 bytes and always fits, so it cannot exercise this;
+// #1830's byte budget keeps a current proxy inside the read, but an older proxy caps the
+// refusal by id COUNT, and long ids there overrun it. The JSON is then cut mid-string,
+// badRequestDetail finds nothing, and the error is a bare "apiclient: bad request" — so
+// the command prints where the archived ids can be read instead of stopping at that.
+func TestRunExport_RefusalTooLongToParseStillPointsSomewhere(t *testing.T) {
+	// What a count-capping proxy answers for 5 unknown UUIDs against 8 archived ones: 538
+	// bytes of message, past the client's read. Built here rather than imported, because
+	// the point is a proxy this binary did NOT ship with.
+	var ids []string
+	for i := range 8 {
+		ids = append(ids, fmt.Sprintf("3f2504e0-4f89-11d3-9a0c-0305e82c33%02d", i))
+	}
+	var unknown []string
+	for i := range 5 {
+		unknown = append(unknown, fmt.Sprintf("nope-3f2504e0-4f89-11d3-9a0c-0305e82c33%02d", i))
+	}
+	long := fmt.Sprintf(`{"error":"sessionexport: no archived session %s (archived: %s)"}`,
+		strings.Join(unknown, ", "), strings.Join(ids, ", "))
+	if len(long) <= 512 {
+		t.Fatalf("fixture body is %d bytes; it must exceed the 512 getBody reads to test this", len(long))
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(long)) //nolint:errcheck // a test server writing to a closed client is the test's own failure
+	}))
+	t.Cleanup(srv.Close)
+
+	var out, errOut strings.Builder
+	if code := runExport([]string{"--endpoint", srv.URL, "--session", unknown[0]}, &out, &errOut); code != 1 {
+		t.Fatalf("runExport = %d, want 1 on a refused query", code)
+	}
+	// The premise: the detail really did not survive the read.
+	if strings.Contains(errOut.String(), "no archived session") {
+		t.Fatalf("fixture no longer overruns the read; stderr = %q", errOut.String())
+	}
+	// The fallback: a command the user can run to get the ids the refusal could not carry.
+	if !strings.Contains(errOut.String(), "/v1/sessions?archived=true") {
+		t.Fatalf("stderr = %q, want a pointer to the archived-session list", errOut.String())
 	}
 }
 

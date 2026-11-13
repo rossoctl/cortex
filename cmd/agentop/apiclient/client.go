@@ -189,9 +189,12 @@ func (c *Client) ListSessionsArchived(ctx context.Context) (SessionList, error) 
 // A STREAM, NOT A DOCUMENT: the body is the whole export — a month of traffic, ~12MB — and
 // the caller reads and closes it. getBody's status mapping is the whole error contract
 // here: an unknown session or a malformed since is a 400 the server answers BEFORE its
-// first byte, carrying its own words (the first few archived session ids and a count of
-// the rest, capped server-side so the answer always fits what getBody reads of it, and
-// the accepted since forms), and a proxy without an archive is a 404. A walk that fails
+// first byte, carrying its own words (the archived session ids, or the accepted since
+// forms). A current proxy renders that refusal under a byte budget sized to fit the 512
+// bytes getBody reads of a 400 body, so the detail survives; an older one caps by id
+// COUNT rather than by bytes, and long ids there can still overrun the read, in which
+// case badRequestDetail finds nothing and the caller gets a bare ErrBadRequest. A proxy
+// without an archive is a 404. A walk that fails
 // past its first record simply ends the body, which NDJSON tolerates: every complete
 // line stays valid.
 func (c *Client) Export(ctx context.Context, sessions []string, since string) (io.ReadCloser, error) {
