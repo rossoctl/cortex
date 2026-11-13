@@ -271,8 +271,8 @@ on the old pipeline.
 
 - **Reloads:** any plugin list change and any plugin `config:` subtree edit.
 - **Needs a restart:** `mode` and every field of `listener`, `session`, `cost_ledger`,
-  `mtls`, `tls_bridge`, `spiffe`, `memory`, `stats` and `praxis` (`validateReloadable` in
-  `core/reloader/reloader.go`).
+  `mtls`, `tls_bridge`, `spiffe`, `memory`, `stats` and `praxis`, and `update.check_every`
+  (`validateReloadable` in `core/reloader/reloader.go`).
 - **Bad YAML stays safe:** the active pipeline keeps serving, and `/reload/status`
   shows the error with `reloads_failed` incremented.
 

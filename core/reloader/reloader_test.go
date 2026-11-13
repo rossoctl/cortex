@@ -1015,6 +1015,20 @@ func TestValidateReloadable_RefusesMemoryEdit(t *testing.T) {
 	}
 }
 
+// update.check_every is read once at boot. update.auto and update.wait reload.
+func TestValidateReloadable_UpdateCheckEveryNeedsRestart(t *testing.T) {
+	off := false
+	active := &config.Config{}
+	next := &config.Config{Update: &config.UpdateConfig{CheckEvery: "12h"}}
+	if err := validateReloadable(active, next); err == nil || !strings.Contains(err.Error(), "update.check_every") {
+		t.Fatalf("adding check_every: %v, want an update.check_every refusal", err)
+	}
+	next = &config.Config{Update: &config.UpdateConfig{Auto: &off, Wait: "1h"}}
+	if err := validateReloadable(active, next); err != nil {
+		t.Errorf("auto and wait edits were refused: %v", err)
+	}
+}
+
 // stats.* is boot-only: the stats listener binds stats.address once at startup.
 // Before the guard, a stats.address edit incremented ReloadsOK and /config served
 // the new address, while the listener stayed on the old one. agentop reads the

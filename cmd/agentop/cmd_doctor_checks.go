@@ -213,6 +213,10 @@ func checkUpdates(env *setupEnv, ui *checklist.UI) (failed bool) {
 		ui.Already(label, "automatic updates off (update.auto: false)")
 		return false
 	}
+	if _, _, err := readUpdateConfig(env.configPath()).Times(); err != nil {
+		ui.Advise(label, err.Error(), "edit "+env.tilde(env.configPath()))
+		return false
+	}
 	if sp, err := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, proxyBinary)); err != nil || !serviceInstalled(sp) {
 		ui.Already(label, "not automatic without the service; agentop update installs a release")
 		return false

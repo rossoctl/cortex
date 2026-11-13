@@ -673,10 +673,11 @@ func main() {
 	if localInstall && cfg.Pricing.BundledEnabled() {
 		go runPriceList(ctx, live)
 	}
-	// Not behind any config field: agentop update --auto reads update.auto itself.
+	// Not behind update.auto: agentop update --auto reads it itself.
 	if localInstall {
 		if dir, err := defaultCortexDir(); err == nil {
-			go runUpdateTrigger(ctx, &updateTrigger{file: filepath.Join(dir, updateStatusFile), now: time.Now, start: startUpdaterUnit})
+			_, every, _ := cfg.Update.Times() // Validate refused a bad value
+			go runUpdateTrigger(ctx, &updateTrigger{file: filepath.Join(dir, updateStatusFile), every: every, now: time.Now, start: startUpdaterUnit})
 		}
 	}
 

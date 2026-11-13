@@ -158,18 +158,18 @@ To restart deliberately: `agentop service restart`.
 
 A service install (launchd or systemd) updates itself:
 
-- The proxy starts the updater unit at most once a day. The first start is 10 minutes
-  after the proxy starts. The unit is `io.rossoctl.cortex.update` on macOS and
-  `cortex-update.service` on Linux.
+- The proxy starts the updater unit at most once every 6 hours (`update.check_every`).
+  The first start is 10 minutes after the proxy starts. The unit is
+  `io.rossoctl.cortex.update` on macOS and `cortex-update.service` on Linux.
 - The updater runs `agentop update --yes --auto`.
 - It installs the release that GitHub marks Latest, but only when that release was
-  published at least 72 hours ago. The publication time is the upload time of the
-  release's `checksums.txt`.
+  published at least 24 hours ago (`update.wait`). The publication time is the upload
+  time of the release's `checksums.txt`.
 - Then it restarts the proxy. Attached sessions lose the request in flight and retry it.
 
 It does not change a `dev`, `main-<sha>` or release-candidate service install. Those
 installs get the notice only. A newer Latest shows on the `agentop` title bar after the
-next daily check, before the 72 hours end. A `--no-service` install has no updater, so
+next check, before the wait ends. A `--no-service` install has no updater, so
 it gets no notice. `agentop update` by hand still works there.
 
 To turn it off, set this in `~/.cortex/config.yaml`:
@@ -181,13 +181,31 @@ update:
 
 The next run reads it. You do not need a restart.
 
+To change the timing, set one or both of these. The values here are the defaults:
+
+```yaml
+update:
+  wait: 24h          # how long after its publication a release installs; "0" installs at once
+  check_every: 6h    # how often the proxy starts the updater; from 1h to 24h
+```
+
+| Field | Default | Range | Who reads it | When a change applies |
+|---|---|---|---|---|
+| `wait` | `24h` | `0` or more | `agentop update --auto` | at the next check |
+| `check_every` | `6h` | `1h` to `24h` | the proxy, at boot | after `agentop service restart`. A hot reload refuses the change |
+
+The values are Go durations, for example `90m` or `12h`. With the defaults, a laptop
+that is on installs a new release from 24 to about 30 hours after it is published. The
+proxy refuses to start when a value is not valid, and `agentop doctor` names it on the
+`updates` row.
+
 Where to look:
 
 - `~/.cortex/update.json` holds the result of the last run.
 - `~/.cortex/update.log` holds the output of the updater.
 - `agentop doctor` has an `updates` row.
 
-`agentop update` by hand still installs at once, with no 72-hour wait.
+`agentop update` by hand still installs at once, with no wait.
 
 ## The cpex build
 
