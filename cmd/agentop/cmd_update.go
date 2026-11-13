@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -106,17 +107,24 @@ var provenanceCheckFn = checkProvenance
 // setupHandOffFlags are the flags of updateFlags that setup takes (D3).
 var setupHandOffFlags = []string{"--claude-code", "--yes", "--no-service", "--install-only", "--no-modify-path", "--praxis"}
 
+// releaseTag is the shape of a release tag that installRelease downloads and checks.
+var releaseTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
+
 // installRelease installs ref ("" = newest release) with flags. A v* tag is
 // downloaded, checked and staged here, then handed to the staged agentop setup;
 // any other ref runs the website installer.
 func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io.Writer) error {
 	if ref == "" {
 		// Fail closed: falling back to the installer would skip the check (D1).
-		if ref = latestRelease(); ref == "" {
-			return errors.New("could not read the newest release")
+		if ref = latestRelease(); !releaseTag.MatchString(ref) {
+			return fmt.Errorf("could not read the newest release (got %q)", ref)
 		}
 	}
 	var run func() error
+	if strings.HasPrefix(ref, "v") && !releaseTag.MatchString(ref) {
+		// The tag goes into a file name in the stage, a URL path and the SAN.
+		return fmt.Errorf("--ref=%s is not a release tag like v1.2.3 or v1.2.3-rc.1", ref)
+	}
 	if !strings.HasPrefix(ref, "v") {
 		cmd := exec.Command("sh", append([]string{"-c", updateScript, installerURL}, flags...)...)
 		cmd.Stdout, cmd.Stderr = stdout, stderr

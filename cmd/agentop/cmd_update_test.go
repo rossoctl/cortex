@@ -560,3 +560,22 @@ func TestRunStagedKeepsFirstStageWhenRestageFails(t *testing.T) {
 		t.Fatalf("first stage must stay for the caller to remove: %v", err)
 	}
 }
+
+// A tag goes into a stage file name, a URL path and the SAN, so only a release tag reaches them.
+func TestInstallReleaseRefusesANonReleaseTag(t *testing.T) {
+	newDoctorScene(t).installed(t)
+	fakeInstaller(t, false)
+	for _, latest := range []string{"main-latest", "v1/../../x"} {
+		latestIs(t, latest)
+		var errb bytes.Buffer
+		if code := runUpdate(nil, io.Discard, &errb); code != 1 || !strings.Contains(errb.String(), "could not read the newest release") {
+			t.Errorf("newest %q: exit %d stderr %q, want 1 and the newest release named", latest, code, errb.String())
+		}
+	}
+	for _, ref := range []string{"v1/../../x", "v1.2", "v1.2.3/x"} {
+		var errb bytes.Buffer
+		if code := runUpdate([]string{"--ref=" + ref}, io.Discard, &errb); code != 1 || !strings.Contains(errb.String(), "is not a release tag") {
+			t.Errorf("--ref=%s: exit %d stderr %q, want 1 and a refused tag", ref, code, errb.String())
+		}
+	}
+}

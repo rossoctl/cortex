@@ -243,3 +243,51 @@ func TestProvenanceTrustedMaterialTimesOut(t *testing.T) {
 		t.Fatal("trusted root fetch did not time out")
 	}
 }
+
+// A statement of another predicate type (an SBOM, for example) from the same workflow is refused.
+func TestProvenanceWrongPredicateType(t *testing.T) {
+	bundles, tm, digest := provenanceFixture(t)
+	old := slsaProvenanceV1
+	t.Cleanup(func() { slsaProvenanceV1 = old })
+	slsaProvenanceV1 = "https://spdx.dev/Document/v2.3"
+	wantErrContains(t, verifyBundles(provenanceFixtureName, bundles, digest, releaseProvenance("v0.9.5"), tm), "attestation is not SLSA build provenance v1")
+}
+
+func TestFetchAttestationsSkipsURLOnlyEntries(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/provenance/agentop_v0.9.5_darwin_arm64.attestations.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Attestations []json.RawMessage `json:"attestations"`
+	}
+	if err := json.Unmarshal(fixture, &body); err != nil {
+		t.Fatal(err)
+	}
+	mixed := []byte(`{"attestations":[{"bundle":null,"bundle_url":"x"},` + string(body.Attestations[0]) + `]}`)
+	attestationServer(t, http.StatusOK, mixed)
+	_, _, digest := provenanceFixture(t)
+	got, err := fetchAttestations(context.Background(), provenanceFixtureName, digest)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("got %d bundles, %v; want the 1 inline bundle", len(got), err)
+	}
+}
+
+func TestFetchAttestationsHints(t *testing.T) {
+	_, _, digest := provenanceFixture(t)
+	for _, tc := range []struct {
+		status int
+		token  string
+		want   string
+	}{
+		{http.StatusUnauthorized, "stale", "refresh it, or unset it"},
+		{http.StatusForbidden, "", "set GH_TOKEN to raise it"},
+		{http.StatusTooManyRequests, "", "set GH_TOKEN to raise it"},
+	} {
+		t.Setenv("GH_TOKEN", tc.token)
+		t.Setenv("GITHUB_TOKEN", "")
+		attestationServer(t, tc.status, nil)
+		_, err := fetchAttestations(context.Background(), provenanceFixtureName, digest)
+		wantErrContains(t, err, tc.want)
+	}
+}

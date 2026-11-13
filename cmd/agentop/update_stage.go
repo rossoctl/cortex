@@ -22,6 +22,12 @@ var releaseDownloadBase = "https://github.com/rossoctl/cortex/releases/download/
 // releaseClient downloads release assets (D10).
 var releaseClient = &http.Client{Timeout: 5 * time.Minute}
 
+// Size limits for a release download. GitHub caps a release asset at 2 GiB.
+var (
+	maxChecksumsBytes int64 = 1 << 20
+	maxTarballBytes   int64 = 2 << 30
+)
+
 // releaseTarballs is the agentop tarball, then the cortex (or cortex-cpex) one, then cortex-gateway when praxis.
 func releaseTarballs(tag, goos, goarch string, cpex, praxis bool) []string {
 	suffix := "_" + tag + "_" + goos + "_" + goarch + ".tar.gz"
@@ -62,8 +68,8 @@ func checksumFor(sums []byte, name string) (string, error) {
 	}
 }
 
-// download writes the release asset name of tag to w.
-func download(ctx context.Context, tag, name string, w io.Writer) (int64, error) {
+// download writes the release asset name of tag to w. It refuses an asset of more than limit bytes.
+func download(ctx context.Context, tag, name string, limit int64, w io.Writer) (int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releaseDownloadBase+tag+"/"+name, nil)
 	if err != nil {
 		return 0, fmt.Errorf("download failed: %s: %w", name, err)
@@ -76,9 +82,12 @@ func download(ctx context.Context, tag, name string, w io.Writer) (int64, error)
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("download failed: %s: %s", name, resp.Status)
 	}
-	n, err := io.Copy(w, resp.Body)
+	n, err := io.Copy(w, io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return n, fmt.Errorf("download failed: %s: %w", name, err)
+	}
+	if n > limit {
+		return n, fmt.Errorf("download failed: %s is larger than %d bytes", name, limit)
 	}
 	return n, nil
 }
@@ -90,7 +99,7 @@ func downloadTarball(ctx context.Context, tag, name, stage string) ([]byte, int6
 		return nil, 0, err
 	}
 	h := sha256.New()
-	n, err := download(ctx, tag, name, io.MultiWriter(f, h))
+	n, err := download(ctx, tag, name, maxTarballBytes, io.MultiWriter(f, h))
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -111,7 +120,7 @@ func stageRelease(ctx context.Context, tag string, names []string, check func(na
 		}
 	}()
 	var sums bytes.Buffer
-	if _, err = download(ctx, tag, "checksums.txt", &sums); err != nil {
+	if _, err = download(ctx, tag, "checksums.txt", maxChecksumsBytes, &sums); err != nil {
 		return
 	}
 	digests := make([][]byte, len(names))

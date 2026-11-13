@@ -309,3 +309,18 @@ func TestExtractTarballRefusesUnsafeEntries(t *testing.T) {
 		})
 	}
 }
+
+func TestStageReleaseRefusesALargeChecksums(t *testing.T) {
+	tmp := emptyTmp(t)
+	names, files := stageFixture(t)
+	withSums(files)
+	old := maxChecksumsBytes
+	t.Cleanup(func() { maxChecksumsBytes = old })
+	maxChecksumsBytes = int64(len(files["checksums.txt"])) - 1
+	releaseServer(t, "v1.2.3", files)
+	stage, _, err := stageRelease(context.Background(), "v1.2.3", names, func(string, []byte) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "checksums.txt is larger than") || stage != "" {
+		t.Errorf("got %q, %v", stage, err)
+	}
+	assertEmptyDir(t, tmp)
+}

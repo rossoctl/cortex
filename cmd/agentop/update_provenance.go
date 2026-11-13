@@ -39,6 +39,9 @@ var (
 	tufFetchTimeout = 30 * time.Second
 )
 
+// slsaProvenanceV1 is the predicate type actions/attest-build-provenance writes.
+var slsaProvenanceV1 = "https://slsa.dev/provenance/v1"
+
 // provenanceWant is the certificate identity that a release attestation must have.
 type provenanceWant struct{ issuer, san string }
 
@@ -75,7 +78,14 @@ func fetchAttestations(ctx context.Context, name string, digest []byte) ([]json.
 		return nil, fmt.Errorf("no attestation for %s", name)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub attestation API answered %s for %s", resp.Status, name)
+		hint := ""
+		switch {
+		case resp.StatusCode == http.StatusUnauthorized && token != "":
+			hint = " (GitHub refused GH_TOKEN or GITHUB_TOKEN: refresh it, or unset it)"
+		case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests:
+			hint = " (a rate limit? set GH_TOKEN to raise it)"
+		}
+		return nil, fmt.Errorf("GitHub attestation API answered %s for %s%s", resp.Status, name, hint)
 	}
 	var body struct {
 		Attestations []struct {
@@ -90,11 +100,13 @@ func fetchAttestations(ctx context.Context, name string, digest []byte) ([]json.
 	}
 	bundles := make([]json.RawMessage, 0, len(body.Attestations))
 	for _, a := range body.Attestations {
-		// shortcut: a bundle_url-only answer is refused (snappy blob, new dependency); upgrade when GitHub stops inlining bundles.
-		if len(a.Bundle) == 0 || string(a.Bundle) == "null" {
-			return nil, fmt.Errorf("attestation for %s has no inline bundle", name)
+		// shortcut: a bundle_url-only entry is skipped (snappy blob, new dependency); upgrade when GitHub stops inlining bundles.
+		if len(a.Bundle) != 0 && string(a.Bundle) != "null" {
+			bundles = append(bundles, a.Bundle)
 		}
-		bundles = append(bundles, a.Bundle)
+	}
+	if len(bundles) == 0 {
+		return nil, fmt.Errorf("attestation for %s has no inline bundle", name)
 	}
 	return bundles, nil
 }
@@ -120,8 +132,14 @@ func verifyBundles(name string, bundles []json.RawMessage, digest []byte, want p
 			errs = append(errs, err)
 			continue
 		}
-		if _, err := v.Verify(&b, policy); err != nil {
+		res, err := v.Verify(&b, policy)
+		if err != nil {
 			errs = append(errs, err)
+			continue
+		}
+		// The workflow identity and digest alone also accept an SBOM or other statement.
+		if res.Statement == nil || res.Statement.PredicateType != slsaProvenanceV1 {
+			errs = append(errs, errors.New("attestation is not SLSA build provenance v1"))
 			continue
 		}
 		return nil
