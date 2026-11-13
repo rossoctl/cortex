@@ -11,11 +11,13 @@ fields), #1494 (lossless capture, closed), #1466 (long-term performance view),
 Items marked **Open** must be decided before the work they belong to begins. Everything in
 §4 and §5.1 is normative and already merged; §5.2 onward is requirements, not code.
 
-Requirements are numbered R1–R56 and phrased as plain declaratives: a requirement says what
-the system does once built, not what an implementer ought to feel. The numbering is stable —
-cite it in review and in the PRs that implement it.
+**56 requirements, R1–R56**, phrased as plain declaratives: a requirement says what the
+system does once built, not what an implementer ought to feel. The numbering is stable so it
+can be cited in review and in the PRs that implement it — and it is therefore in the order
+the requirements were ADDED, not document order. R52–R54 sit in §9 and §11, R55–R56 in §8.6,
+so a reader should not look for them between R51 and R55.
 
-Related spec: [context-guru's metrics spec](https://github.com/rossoctl/context-guru/blob/docs/prometheus-metrics-spec/docs/metrics/spec.md)
+Related spec: [context-guru's metrics spec](https://github.com/rossoctl/context-guru/blob/main/docs/metrics/spec.md)
 is the **aggregate** layer to this one's per-event layer, and already names Cortex as one of
 its two emitters. §8.6 compares the two metric by metric and says which Context Guru ideas
 Cortex should adopt.
@@ -128,22 +130,46 @@ R6. An interrupted writer leaves a file whose every complete line is still valid
 
 ### 3.2 Privacy and safety
 
-R7. A record carries no message content, no completion, no tool arguments, no tool results,
-no MCP params or results, no A2A parts or artifacts, no plugin event payloads, no thinking
-blocks, no authenticated identity and no TLS peer identity.
+R7. **In Tier 1**, a record carries no message content, no completion, no tool arguments,
+no tool results, no MCP params or results, no A2A parts or artifacts, no plugin event
+payloads, no thinking fields, no authenticated identity and no TLS peer identity. Tier 2
+(§7.2) proposes `identity` and is the only thing that may narrow this, per-destination and
+never by default (R49).
 R8. A record carries no request path. Neither `SessionEvent.HTTPPath` nor
 `Invocation.Path`, which is a copy of the same string.
-R9. Every string a record carries is one of: an id the client already asserted, a value from
-a closed vocabulary, or a wire-sourced label capped at 96 bytes with control runes removed.
-R10. A field whose values come from a closed vocabulary is exported by naming the values, not
-by sanitising whatever arrives. `agentRole` and the client name work this way.
+R9. Every string a record carries is one of: an id the client asserted or the PROXY minted
+(`sessionId` is the client's, `requestId` is `pipeline.Context`'s — see `newRequestID`), a
+value from a closed vocabulary, or a wire-sourced label capped at 96 bytes with control runes
+removed.
+R10. A field whose values come from a closed vocabulary **and whose type refuses an unknown
+value** is exported by naming the values, not by sanitising whatever arrives. `agentRole` and
+the client name work this way; `direction` and `phase` get it from their own `UnmarshalJSON`,
+which clamps.
+R10a. `tunnelReason` is the exception, and it is a capped label rather than a named
+vocabulary. It has 15 constants in `core/model/session.go` but no `UnmarshalJSON`, so a
+decoded archive event can carry any string — the same threat model R10 exists for. Named
+export for it is a code follow-up; until then it passes through `exportLabel` and a consumer
+treats it as free text that happens to usually match the vocabulary.
 R11. A client version reaches a record only when it matches a version grammar whose every
 letter is spelled out in that grammar. Widening the grammar is done by adding a literal,
 never by widening a character class.
+R11a. THE CONTENT-FREE GUARANTEE IS ABOUT FIELDS, NOT ABOUT WHAT A CLIENT PUTS IN THEM. A
+record carries no field whose PURPOSE is to hold content (R7). It cannot promise that a
+client did not put content in a metadata field: `model` is free text off the request body, so
+a caller that sends a 96-byte model name containing a secret gets a 96-byte model name
+containing a secret. The cap bounds it; nothing removes it. Closing that needs a model
+vocabulary, which no proxy has. State this where the guarantee is stated, rather than letting
+a reader infer a stronger promise.
 R12. Tier 1 is the default and the only tier an export can emit without configuration.
 R13. Tier 3 (content) is refused by an export path rather than offered as a flag.
 R14. The privacy contract is held by a test that inspects the ENCODED BYTES of a record
-projected from an event whose every content-bearing field holds a planted secret.
+projected from an event carrying a planted secret in every field `allSecrets()` lists.
+R14a. THAT LIST IS NOT YET EVERY FIELD AN EVENT HAS. `loadedEvent` does not set `Project`,
+`DialAddr`, `Subagent`/`ParentSubagent`, `Proc`/`ClientProc`, `SessionHeader`, `Effort` or
+`AnthropicBeta`. The allowlist (R16) keeps them out today, so nothing leaks — but the test
+could not catch someone adding `Project` to `Record`, which is exactly the field §4.7 holds
+open on privacy grounds. Plant those before `project` is settled, so the test rather than the
+allowlist is what holds it.
 R15. A field added to `Record` without being populated in `FromEvent` fails a test.
 R16. A field added to `SessionEvent` does not reach an export until someone adds it to
 `Record` on purpose.
@@ -151,7 +177,8 @@ R16. A field added to `SessionEvent` does not reach an export until someone adds
 ### 3.3 Data rules
 
 R17. Zero means "not recorded", never a real zero, for every numeric field, and every
-numeric field is `omitempty` to say so on the wire.
+numeric field is `omitempty` to say so on the wire — except `schema`, which is always present
+because a record with no version cannot be read at all.
 R18. A record carries no aggregate of fields it already carries. A consumer sums what it
 needs.
 R19. Token counts are exported as the disjoint split, never as a prompt or grand total.
@@ -178,7 +205,10 @@ to start. See §6.3.
 R31. `schema` is bumped when a field is removed, or when a field's meaning changes.
 R32. Adding a field does not bump `schema`, because an absent key already reads as "not
 present" (R17).
-R33. A consumer reading a mixed file tells the shapes apart by `schema` alone.
+R33. A consumer tolerates a key it does not know and an absent key it does. `schema` tells
+it which GUARANTEES hold, not which keys are present: by R32 two records of the same version
+may differ in shape, since an addition does not bump it, and an absent key already reads as
+"not present" (R17).
 R34. The field reference in §4 is the schema. A field not listed there is not in the export.
 
 ### 3.6 Documentation
@@ -218,7 +248,7 @@ Stated first, because it is the point of the projection. None of these reaches a
 | Tool results | `inference.toolResults[].content` | file contents, command output |
 | Earlier tool calls | `inference.historyToolCalls` | re-sent whole on every request |
 | Tool names | `inference.tools[]`, `toolCalls[].name` | low risk, but nothing in v1 needs them — see §7.2 |
-| Thinking blocks | `inference.historyThinking`, `responseThinking` | reasoning text |
+| Thinking type and display | `inference.thinkingType`, `thinkingDisplay` | free text off the request; what `TestRecord_CarriesNoContent` plants `secretThinking` in. `historyThinking`/`responseThinking` are COUNTS (`{Blocks, Redacted, TextBytes, …}`), not text — left out because v1 needs them, not because they are content |
 | MCP params and results | `mcp.params`, `mcp.result` | the MCP tool's name, arguments and output |
 | A2A parts, artifact, error | `a2a.parts[].content`, `.artifact`, `.errorMessage` | agent-to-agent message bodies |
 | Plugin event payloads | `plugins{}` | plugin-defined, so unbounded by construction |
@@ -293,7 +323,7 @@ wrong twice during review in exactly that way.
 
 | Field | Type | Unit | Values | Meaning |
 |---|---|---|---|---|
-| `model` | string | — | ≤96 B | The model the request was sent for. Free text off the request body, capped here because no parser caps it. |
+| `model` | string | — | ≤96 B | The model the request was sent for. **Free text off the request body**, capped here because no parser caps it — so a caller that puts content in a model name gets 96 bytes of it in the record. The cap bounds that; nothing removes it (R11a). |
 | `requestedModel` | string | — | ≤96 B | Set **only** when a plugin changed the model. |
 | `servedModel` | string | — | ≤96 B | Set **only** when the response named a different model than was asked for. |
 | `stream` | bool | — | `true` when set | What the request asked for. |
@@ -486,7 +516,7 @@ transport for prompts.
 
 ### 8.6 The Context Guru metrics spec — one schema, two emitters
 
-[`context-guru/docs/metrics/spec.md`](https://github.com/rossoctl/context-guru/blob/docs/prometheus-metrics-spec/docs/metrics/spec.md)
+[`context-guru/docs/metrics/spec.md`](https://github.com/rossoctl/context-guru/blob/main/docs/metrics/spec.md)
 specifies 32 Prometheus metrics pushed to a central Collector over OTLP. Read it before
 building §5.3 or #898.
 
@@ -541,14 +571,14 @@ a deliberate non-goal.
 
 | Context Guru metric | Type | Cortex source | Derivable from records | Note |
 |---|---|---|---|---|
-| `llm_inference_requests_total` | counter | one record per event | **yes** — count rows where `phase=request` | the Context Guru counter is requests; a record is a row per phase, so count one phase |
-| `llm_inference_errors_total` | counter | `errorKind`, `errorCode`, `statusCode` | **yes** | Context Guru's `source` (`upstream`/`proxy`/`client`) has no Cortex equivalent — `errorKind` is a different taxonomy |
+| `llm_inference_requests_total` | counter | one record per event | **yes** — count rows where `phase=request` **and `model` is set** | a record is a row per phase, so count one phase. The model test is load-bearing: a tunnel-open row is also `phase=request` and carries no inference, and tunnel rows are a third of the events — counting them inflates an *inference* counter with non-LLM traffic |
+| `llm_inference_errors_total` | counter | `errorKind`, `errorCode`, `statusCode` | **partly** | the count yes, the `source` split no: `upstream`/`proxy`/`client` has no Cortex equivalent, and `errorKind` is a different taxonomy. Same gap as the bytes rows, so the same label (R55) |
 | `llm_inference_request_bytes_total` | counter | `bytesUp` | **partly** | one measurement point only. Context Guru's `stage` splits `client` vs `forwarded`; a record cannot say what a plugin removed (§10 step 10) |
 | `llm_inference_response_bytes_total` | counter | `bytesDown` | **partly** | same: Context Guru's `upstream` vs `delivered`. `bytesDown` is pre-rewrite |
 | `llm_inference_duration_seconds` | histogram | `durationMs` | **yes** — percentiles from raw values | a record gives exact values, so any quantile; a histogram gives only its buckets |
 | `llm_inference_ttfb_seconds` | histogram | `ttfbMs` | **yes** | absent rather than 0 when headers never arrived (§4.4) |
 | `llm_inference_added_seconds` | histogram | **—** | **no** | the proxy's own contribution. Needs a second timestamp the event does not carry (§10 step 12) |
-| `llm_inference_tokens_total` | counter | `inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens` | **yes** | Context Guru's `tier` splits cache-write by TTL; Cortex folds the two (§10 step 11) |
+| `llm_inference_tokens_total` | counter | `inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens` | **partly** | the four counts yes, the `tier` decomposition no: Context Guru splits cache-write by TTL (`cache_write_5m`/`cache_write_1h`) and Cortex folds them (§10 step 11) |
 | `llm_inference_cost_usd_total` | counter | ledger `*CostMicros`, not the record | **no** | a record carries **no money** — deliberate: pricing is the ledger's job, and a rate table changes under a record that would then be wrong |
 | `llm_inference_estimated_cost_usd_total` | counter | ledger `PriceableRequests` / `IncompleteRequests` | **no** | same |
 
@@ -621,11 +651,16 @@ Where the same dimension exists on both sides, it must mean the same thing (R55)
 | `proxy` | `cortex`, `context-guru` | — | **collector-added**, and the reason this section exists |
 | `machine` | one per install | — | collector-added from `service.instance.id` |
 
-##### What a record carries that no metric does
+##### What Cortex has that no metric does
 
 The other direction, and the reason both layers exist. None of these can be a Prometheus
 series: the first group is unbounded cardinality, the second is per-request facts a counter
 cannot hold.
+
+**Rows 1–9 are in a record today. The last two are not** — `project` is Open (§4.7) and tool
+spans come from `/timeline`, not the export (§9.1). They are here because they are things
+Cortex knows and a metric cannot carry, which is the table's point; they do not count toward
+the record-field arithmetic below.
 
 | Cortex field | Why it has no metric form |
 |---|---|
@@ -648,14 +683,29 @@ cannot hold.
 | Metrics / fields | 32 metrics (27 counters, 1 gauge, 4 histograms) | 36 record fields |
 | Of Context Guru's, sourced in a Cortex **record** | **7 of 32** (22%) | — |
 | Of Context Guru's, sourced anywhere in Cortex (record, ledger or API) | **15 of 32** (47%) | — |
-| Of Context Guru's, derivable from a month of records | **5 fully, 3 partly** | — |
-| Of Context Guru's with no Cortex source at all | **17 of 32** — 11 savings, 4 keep-alive, 2 cache-cause | — |
-| Cortex fields with no metric counterpart | — | **11 of 36** |
+| Of Context Guru's, derivable from a month of records | **3 fully, 5 partly** | — |
+| Of Context Guru's with no Cortex source at all | **17 of 32** | — |
+| Cortex rows with no metric counterpart | — | **11 rows** (9 of them record fields) |
 
-The 17 unsourced are not a backlog. 15 of them (savings, keep-alive) describe behaviour
-Cortex does not have, and money a record deliberately does not carry. The real work list is
-the three `—` rows in 5.1 (`added_seconds`, and the two `stage` splits) plus the cache-write
-TTL fold — which is exactly §10 steps 10–12.
+The 17 unsourced, counted from the `—` rows above rather than asserted:
+
+| Section | Unsourced | Of |
+|---|---|---|
+| 5.1 Inference | 1 (`added_seconds`) | 10 |
+| 5.2 Savings | 8 | 11 |
+| 5.3 Keep-alive | 4 | 4 |
+| 5.4 Cache health | 2 | 2 |
+| 5.5 Proxy health | 2 (`fail_open`, `export_failures`) | 5 |
+| **Total** | **17** | **32** |
+
+The 17 unsourced are not a backlog. **12 of them** — the 8 savings and the 4 keep-alive —
+describe behaviour Cortex does not have, and money a record deliberately does not carry:
+every savings metric needs a counterfactual, the request as the client authored it, which a
+record of what actually happened cannot contain.
+
+The real work list is four items: `added_seconds` (the one `—` in 5.1), the two `stage`
+splits (which are on the *bytes* rows, marked **partly** because the counts exist and the
+second measurement point does not), and the cache-write TTL fold. That is §10 steps 10–12.
 
 #### Where Cortex and Context Guru agree, independently
 
@@ -710,7 +760,8 @@ per label, with Context Guru's R42 test as the arbiter.
 
 Corrected after measuring it. An earlier draft of this section claimed per-tool latency needed
 Tier 2's `toolCallNames`; it does not. `GET /v1/sessions/{id}/timeline` already pairs each tool
-call with the request carrying its result and returns named spans, content-free:
+call with the request carrying its result and returns named spans, **with no message content**
+— but with an argument preview, which is not the same as content-free:
 
 ```json
 {"agent":"main","name":"Bash","start":"2026-10-21T20:50:36.459496-04:00",
@@ -727,11 +778,27 @@ Measured on one 2,911-event session of the reference archive:
 | `Edit` | 87 | 48 ms | 269 ms | 5 s |
 | `Read` | 5 | 24 ms | 57 ms | 0 s |
 
+Excerpt: the session's `WebSearch` and the single-call tools are left out for width. The full
+table is in [`session-api.md`](../../session-api.md#reading-timings-out).
+
 `preview` is built from a fixed list of tool-ARGUMENT keys (`command`, `file_path`, `pattern`,
-`url`, `query`, `skill`, `description`, `path`, `to`), capped at 80 characters, and never reads
-message content — so a Bash command line is available without a prompt. The untruncated command
-is on the response event at `inference.toolCalls[].arguments.command`, which needs the full
-event view.
+`url`, `query`, `skill`, `description`, `path`, `to`), capped at 80 runes, and never reads
+message content — so a Bash command line is available without a prompt.
+
+**THAT IS "NO PROMPTS", NOT "SAFE TO SHARE".** A `command` is a shell line, and a shell line
+can hold a credential, a host, or a customer name; a `description` is prose an agent wrote.
+So `/timeline` is the right tool for *measuring* without prompts, and its output still wants
+the same care as a command history. The untruncated command is on the response event at
+`inference.toolCalls[].arguments`, which is a JSON **string** — read it as
+`.arguments | fromjson | .command`, and note the full event view carries every prompt, so
+filter in `jq` rather than assuming the download was content-free.
+
+**EXCLUDE `lost` SPANS FROM ANY LATENCY FIGURE.** A span that never got an answer but
+provably stopped carries `lost: true` with `end` set EQUAL TO `start` (`timeline.go`'s own
+doc: "its End is its Start, so it draws as a tick rather than a bar"). It therefore passes an
+`end != null` filter as a 0 ms call and drags a p50 toward zero. A span with no `end` at all
+is still running, and will make a `jq` date helper fail outright rather than read as zero.
+Filter both.
 
 **So the export is not what makes per-tool timing possible.** Stating that plainly here because
 the opposite claim was already repeated outside this document, and it sends people to
@@ -745,26 +812,36 @@ it cannot do is the whole reason for §5 and §6:
 
 | Question | Why the timeline cannot | What the export gives |
 |---|---|---|
-| Per-tool latency across 82 sessions | one session per request; one compute each | one file, one pass |
+| Per-tool latency across every session | one session per request; one compute each | one file, one pass — **but needs Tier 2** (`toolCallNames`, §7.2); a v1 record has `toolCallCount` and no names |
 | How p50 moved release over release (#1466) | no durable aggregate; archive ages out at 30 days | records outlive the archive |
 | Fleet totals (#898) | per-session HTTP, not shippable | a sink (§5.3) |
-| Join tool spans to token counts | **spans and tokens are in different responses** (§9.3) | one record carries both |
+| Join tool counts to token counts | **spans and tokens are in different responses** (§9.3) | one record carries both — tool *names* still need Tier 2 |
 | Anything after the archive's retention | 30 days or 2 GiB, whichever first | the file is yours |
 
-Measured cost of doing it the timeline way: 82 timeline requests, ~1 s each for a session only
-on disk, against ~10 s for a single `jq` pass over a 29,606-record NDJSON file.
+Measured cost of doing it the timeline way: 82 timeline requests (the live install's full
+list, which includes `pending:` buckets the 66-session corpus of §13 excludes), ~1 s each for
+a session only on disk, against ~10 s for a single `jq` pass over a 29,606-record NDJSON
+file.
 
 ### 9.3 Two API facts a consumer has to know, and why they argue for a record
 
 Found by writing the queries rather than by reading the code, which is the point:
 
-1. **`turns[].seq` is the REQUEST seq; `tools[].seq` is the RESPONSE seq.** Same field name,
-   same type, different referent — declared at `core/session/timeline/timeline.go:88`
-   (`Turn`) and `:105` (`Tool`), set at `core/session/timeline/agents.go:176`
-   (`Seq: c.req.Seq`) and `:202` (`Seq: c.resp.Seq`). Note `core/sessionapi/timeline.go` is a
-   different file and not where these live. Both fields are undocumented. Joining turn spans
-   to token counts on `seq` therefore matches nothing and returns an empty table — no error,
-   just no rows.
+1. **`Turn.Seq` is the REQUEST seq; `Tool.Seq` is the RESPONSE seq.** Same field name, same
+   type, different referent — the symbols outlive the line numbers, but at the time of
+   writing both are declared in `core/session/timeline/timeline.go` (`Turn` at :88, `Tool` at
+   :105) and set in the same package's `agents.go` (`Seq: c.req.Seq` at :176,
+   `Seq: c.resp.Seq` at :202). `core/sessionapi/timeline.go` is a different file and not
+   where these live. Both fields **were undocumented until this PR**, which documents the
+   mapping in `session-api.md`; the struct fields themselves are still bare, which is
+   rossoctl/cortex#1859.
+
+   Joining turn spans to token counts on `seq` matches nothing and returns an empty table —
+   no error, just no rows. And a `Turn` span carries **no `requestId`** to pair with, so
+   "pair by requestId" is not something a consumer can do from the span alone: it has to read
+   the request event at `Turn.Seq`, take its `requestId`, and find the response event
+   carrying the same one. Joining on `Tool.Seq` instead needs none of that, which is why the
+   worked query in `session-api.md` uses it.
 2. **The two endpoints have different ceilings.** `/timeline` reads up to 50,000 events;
    `/v1/sessions/{id}` caps `?limit` at 2,000. On a 2,911-event session the events call
    returns only the newest 2,000, so 134 of 592 tool spans have no token row unless the
@@ -777,20 +854,29 @@ wrong and no two ceilings to reconcile.
 ### 9.4 Where the wall-clock went
 
 The motivating question, with no agent-harness access. Classifying each `turn end → next turn
-start` gap by whether a tool span overlapped it, on the same session as §9.1:
+start` gap by whether a tool span overlapped it, on the same session as §9.1, **with a
+1,800-second ceiling** (R52 — the figure is meaningless without it):
 
 | | n | p50 | total | share |
 |---|---|---|---|---|
 | Tool time (a tool ran in the gap) | 558 | 248 ms | 2.0 h | 18% |
 | User wait (no tool in the gap) | 69 | 122.9 s | 8.8 h | 82% |
 
-The shape reproduces the earlier whole-archive figure (18.8% / 72.6%) closely enough to trust
-the method, and `AskUserQuestion` landing three orders of magnitude above the machine tools is
-the validation: the classifier never sees tool names, yet separates the one human-blocking tool
+The shape reproduces the whole-archive figure #1810 reported — 18.8% proxied tool, 8.6% local
+tool, 72.6% user wait, which sums to 100% across THREE rows where this table has two: that
+analysis split tool time into proxied and inferred-local, and this one does not, so its 18%
+corresponds to their 18.8% + 8.6% = 27.4%. Close enough in shape to trust the method, not
+close enough to quote as the same measurement.
+
+`AskUserQuestion` landing three orders of magnitude above the machine tools is the
+validation: the classifier never sees tool names, yet separates the one human-blocking tool
 from the rest.
 
 R52. A consumer publishing a user-wait total publishes its gap ceiling with it. The figure is
-very sensitive to it: 24.8 h at 300 s, 44.8 h at 1800 s, 56.8 h at 3600 s, 539 h uncapped.
+very sensitive to it — measured over the whole reference archive (66 sessions, 29,606 events;
+§13), the user-wait total is 24.8 h at a 300 s ceiling, 44.8 h at 1,800 s, 56.8 h at 3,600 s
+and 539 h uncapped. The 8.8 h in the table above is ONE session at 1,800 s, not a subset of
+those figures.
 R54. A consumer joining timing to tokens reads §9.3 first, or pages both sides to the same
 depth.
 
@@ -888,12 +974,15 @@ were cases where a test passed for a reason unrelated to what it claimed to chec
   `claude-code/2.1.270`). The **field list generalises** — it follows the event schema, not
   this traffic. The **ratios do not**: #1494 measured 59% of replies batching tool calls under
   explicit prompting against 7.3% here unprompted, so those move with working style (R37).
-- **Sizing.** ~30 scalars per event; 29,606 records in 12.5 MB; a full 30-day pass in `jq`
-  and Python took ~10 s single-threaded. The same corpus at full fidelity is multi-gigabyte
-  (`bytesUp` alone totals 6.08 GB).
-- **The 203x number.** `summarizeEvent` measured dropping payloads at 203x on real traffic,
-  because 99.5% of an inference event is its `inference` field. That measurement is why this
-  is a projection and not a filter over whole events.
+- **Sizing.** 36 fields per event, most absent on any given row (R17), averaging ~430 B of
+  NDJSON; 29,606 records in 12.5 MB; a full 30-day pass in `jq` and Python took ~10 s
+  single-threaded. The same corpus at full fidelity is multi-gigabyte (`bytesUp` alone totals
+  6.08 GB). #1810 and earlier drafts said "~30 scalars"; the shipped record has 36 fields.
+- **The projection ratio is 163x, not 203x.** 203x was the first measurement, before
+  `summarizeEvent` decided to KEEP `Plugins` and `Completion` for the search filter; its own
+  comment records the cost of that as "299x → 163x", and the session API's route list says
+  "~163x smaller". Either way the argument holds — 99.5% of an inference event is its
+  `inference` field — which is why this is a projection and not a filter over whole events.
 - **The failure mode to copy, and the one to avoid.** `summarizeEvent`'s drop rule fails
   *silently* — "a search for completion text simply stops matching". An export inverts that
   risk: a content field added to the event later would start *leaving the machine*. Hence the

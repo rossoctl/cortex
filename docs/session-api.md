@@ -478,9 +478,22 @@ curl -N "http://localhost:9094/v1/events?session=$SID"
 
 ## Reading timings out
 
-Per-tool and per-call latency, **without prompts**. All of this is a local install on
-`:47601`; in a cluster use the port-forward above. Queries below are against a real
-2,911-event session.
+Per-tool and per-call latency **without downloading prompts**. All of this is a local
+install on `:47601`; in a cluster use the port-forward above. Queries below are against a
+real 2,911-event session.
+
+**WHAT EACH QUERY DOWNLOADS**, because "no prompts" is a property of the query, not of the
+API:
+
+| Query | Endpoint | Carries |
+|---|---|---|
+| per-tool latency, Bash previews | `/timeline` | spans only — no message bodies, but `preview` IS tool-argument text (a shell line, a path, a URL) |
+| per-call tokens, models | `?view=summary` | no `messages`, `tools`, `toolCalls` or `toolResults` — **but `view=summary` KEEPS `inference.completion` and `a2a.parts`**, because the `/` search reads them, so every model reply is in the response |
+| untruncated Bash command | full event view | **everything**, prompts included; `jq` discards them after the download |
+
+So `/timeline` is the only one of the three that never transfers a prompt. For the other
+two, the body reaches your shell and `jq` filters it — fine on a laptop, worth knowing
+before piping it anywhere.
 
 **Pick a session.** `?archived=true` is the important part — without it you see only
 what is still in memory, which on a laptop is a fraction of the history.
@@ -497,16 +510,29 @@ curl -s "$API/v1/sessions?archived=true" | jq -r '
 Skip the `pending:` buckets: those are an agent's calls from before its process named
 a session, which are real traffic but not a session to analyse.
 
-**Per-tool latency.** `jq`'s `fromdateiso8601` cannot parse these timestamps — they
-carry fractional seconds *and* a numeric offset — so parse the parts. Dropping the
-fraction instead costs the sub-second resolution that separates `Edit` from `Read`.
+Copy one id into `SID` — every query below uses it:
+
+```sh
+SID=<paste-a-session-id>
+# or take the largest:
+SID=$(curl -s "$API/v1/sessions?archived=true" | jq -r '
+  [.sessions[] | select(.id | startswith("pending:") | not)]
+  | sort_by(-(.eventCount//0)) | .[0].id')
+```
+
+**Per-tool latency.** `jq`'s `fromdateiso8601` cannot parse these timestamps — they carry
+fractional seconds *and* a numeric offset — so parse the parts. Dropping the fraction costs
+the sub-second resolution that separates `Edit` from `Read`; ignoring the offset makes any
+span that crosses a DST transition an hour out, so `ts` below subtracts it.
 
 ```sh
 curl -s "$API/v1/sessions/$SID/timeline" | jq -r '
-  def ts: capture("^(?<b>[^.Z+]+)(\\.(?<f>[0-9]+))?(?<z>Z|[+-][0-9:]+)$")
-          | ((.b+"Z"|fromdateiso8601) + (if .f then (".\(.f)"|tonumber) else 0 end));
+  def ts: capture("^(?<b>[^.Z+]+)(\\.(?<f>[0-9]+))?(?<sign>[+-])(?<oh>[0-9]{2}):(?<om>[0-9]{2})$|^(?<bz>[^.Z]+)(\\.(?<fz>[0-9]+))?Z$")
+          | if .b then (.b+"Z"|fromdateiso8601) + (if .f then (".\(.f)"|tonumber) else 0 end)
+                       - (((.oh|tonumber)*3600 + (.om|tonumber)*60) * (if .sign=="-" then -1 else 1 end))
+            else (.bz+"Z"|fromdateiso8601) + (if .fz then (".\(.fz)"|tonumber) else 0 end) end;
   def pct(a;p): (a|length) as $n | if $n==0 then null else a[(($n-1)*p)|round] end;
-  [.tools[] | select(.end != null)
+  [.tools[] | select(.end != null and (.lost // false) == false)
    | {name, ms: ((((.end|ts)-(.start|ts))*1000)|round), err: (.error//false)}]
   | group_by(.name)
   | map({name:.[0].name, n:length, ms:(map(.ms)|sort), errs:(map(select(.err))|length)})
@@ -520,12 +546,24 @@ curl -s "$API/v1/sessions/$SID/timeline" | jq -r '
 TOOL             N    ERRS  P50ms  P95ms   TOTALs
 Bash             452  9     487    65029   6260
 AskUserQuestion  7    0     37419  409509  703
-Edit             87   0     48     269     5
+WebFetch         34   1     14448  26565   440
+WebSearch        12   0     15448  15458   206
+Edit             87   1     48     201     6
 Read             5    0     24     57      0
 ```
 
-**A tool with no `end` is still running**, not a zero-duration call — hence the
-`select(.end != null)`. Without it, fast tools disappear into false zeros.
+(An excerpt — the single-call tools are left out for width.)
+
+**TWO SPAN STATES TO FILTER, for different reasons.**
+
+- **No `end`** — still running. Not a zero: `ts` would run `capture` on `null` and the whole
+  query fails with `null (null) cannot be matched, as it is not a string`. Hence
+  `select(.end != null)`.
+- **`lost: true`** — never answered but provably stopped, and `end` is set EQUAL TO `start`
+  (`timeline.go`: "its End is its Start, so it draws as a tick rather than a bar"). This one
+  is the false zero, and it passes an `end != null` filter. Hence `(.lost // false) == false`.
+
+Drop the `lost` filter and a session with many unanswered calls reports a p50 near zero.
 
 **The command a Bash call ran.** `preview` is the tool's own argument (`command`,
 `file_path`, `url`, …), capped at 80 characters, and never message content:
@@ -543,7 +581,7 @@ specifically rather than dumping all arguments — `WebFetch` arguments carry a
 curl -s "$API/v1/sessions/$SID?limit=2000" | jq -r '
   .events[] | select(.phase=="response" and .inference.toolCalls != null)
   | .inference.toolCalls[] | select(.name=="Bash")
-  | (try (.arguments|fromjson) catch {}) | select(.command) | .command'
+  | (try (.arguments | fromjson) catch {}) | select(.command) | .command'
 ```
 
 **LLM latency and tokens per call.** `view=summary` keeps both — it drops message
