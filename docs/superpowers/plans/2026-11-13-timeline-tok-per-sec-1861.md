@@ -9,6 +9,8 @@ response in the session store. The timeline endpoint converts those bytes to liv
 with a bytes-per-token ratio from the session's long finished turns. agentop calculates
 `Σ tokens / Σ turn time` over each agent's newest 60 s of model time.
 
+**Reviewer check (2026-11-13):** gofmt and both `go vet` steps of the gate pass on the base, run from the worktree root as written. No gate change.
+
 **Tech Stack:** Go 1.26.10, `sync/atomic`, bubbletea/lipgloss (agentop).
 
 **Spec:** issue #1861 (`gh issue view 1861 --repo rossoctl/cortex`). The issue body is the design. Read it before you start a task.
@@ -154,7 +156,7 @@ Depends on: T4
 **Files:**
 - Modify: `cmd/agentop/tui/timeline_layout.go` (`tlAgentRow`, the `build` closure in `tlAgentRows`, new func `tokPerSec`)
 - Modify: `cmd/agentop/tui/timeline_pane.go` (`timelineGutterWidth`, the header at the `"   model  tools  calls"` line, `agentLine`, `legend`, and `hostLine` if its gutter pads to the width)
-- Modify: `cmd/agentop/README.md` only if it describes the Timeline columns (grep `model  tools`; add `tok/s` there if so)
+- Modify: `cmd/agentop/README.md`, Timeline section (about line 1334). In the example block, change the header `model  tools  calls` to `model  tools  calls  tok/s`, and append a right-aligned 7-column value to each agent row (`     85` on `main agent`, `     92` on the subagent row). Do not change the host row. In the sentence "The gutter is the window's model time, tool time and tool calls for an agent", add: "and its output tokens for each second of model time over its last 60 s of model time (`tok/s`, in the model colour while a turn streams, blank when no turn has tokens)".
 - Test: `cmd/agentop/tui/timeline_pane_test.go`
 
 **Interfaces:**
