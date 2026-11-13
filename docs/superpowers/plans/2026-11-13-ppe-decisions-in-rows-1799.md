@@ -85,7 +85,11 @@ Not in scope:
    dependency. Keep the default feature `crypto-rustcrypto`: the filters crate's tests
    construct a policy engine without the server crate, and an engine with no crypto
    backend cannot hash. The gateway's `policy-crypto-default` selects the same backend, so
-   feature unification gives one backend and no double-backend compile error.
+   feature unification gives one backend and no double-backend compile error. Leave the
+   filters crate's `praxis-proxy-filter` dependency as it is
+   (`default-features = false`): the crate never names `register_policy_plugin_factory`,
+   which is behind that crate's `policy-engine` feature, and only `praxis/server` calls
+   it, where `praxis-proxy`'s `policy-engine` feature enables it.
 4. **The sink writes an entry on every `handle` call, allow or deny (T1).** The plan
    in the issue asks for an `allow` entry. A deny replaces an allow for the same request
    id, because the last call is the verdict the caller got.
@@ -132,12 +136,11 @@ Files:
     order, in one `Mutex`, with `std::sync::LazyLock`. The cap is 4096.
   - `pub fn record(request_id: &str, decision: Decision)`.
   - `pub fn take(request_id: &str) -> Option<Decision>`.
-  - `pub(crate) fn attach(line: &mut Line)`: on a line whose `event.phase` is
-    `"response"`, take the decision for `line.request_id` and set
-    `line.event.invocations` to one outbound entry with `plugin: "policy"`. On any other
-    phase, change nothing.
-  - `pub struct CortexRecorder` with `PluginConfig`. `Plugin::as_audit_handler` returns
-    `Some(self)`. `AuditHandler::handle`:
+  - `pub struct CortexRecorder { config: PluginConfig }`. Implement
+    `Plugin::config(&self) -> &PluginConfig` and
+    `Plugin::as_audit_handler(self: Arc<Self>) -> Option<Arc<dyn AuditHandler>>`,
+    which returns `Some(self)`. `AuditHandler::handle` is
+    `async fn handle(&self, _payload: &dyn PluginPayload, ext: &Extensions, log: &DecisionLog)`:
     - read `x-cortex-request-id` from `ext.http.request_headers` with a
       case-insensitive key compare. Return with no write when the header is absent or
       empty.
@@ -153,8 +156,6 @@ Files:
     - A deny replaces an allow.
     - A take empties the entry.
     - The 4097th id evicts the first.
-    - `attach` on a response row sets one entry and empties the store.
-    - `attach` on a request row sets nothing and keeps the entry.
 - `praxis/server/src/main.rs`: before `praxis::run_server_with_registry`, call
   `praxis_filter::register_policy_plugin_factory(cortex_praxis_filters::policy_recorder::KIND, std::sync::Arc::new(|| Box::new(cortex_praxis_filters::policy_recorder::CortexRecorderFactory)))`.
 - `praxis/filters/tests/policy_recorder.rs` (new): the engine test.
@@ -174,18 +175,26 @@ Files:
           pre_invocation:
             - "deny('model is not permitted', 'model_not_allowed')"
     ```
+  - Imports: `praxis_policy::PolicyEngine`,
+    `praxis_policy::prelude::{Extensions, PluginFactory}`,
+    `praxis_policy::praxis_policy_core::http_hook::{HttpHook, HttpPayload}`. The facade
+    re-exports the whole `praxis_policy_core` crate, so this path is nameable with only
+    the `praxis-policy` dependency.
   - Build `PolicyEngine::default()`, call
     `register_factory(KIND, Box::new(CortexRecorderFactory))`, `load_config_yaml`,
     `initialize().await`.
   - Invoke `mgr.invoke_named::<HttpHook>("http.request", HttpPayload, extensions, None)`.
-    `extensions` sets `meta.entity_type = "llm"`, `meta.entity_name = "model-bad"` (or
-    `"model-ok"`), and `http.request_headers = {"x-cortex-request-id": "r1"}`.
+    `extensions` is `Extensions` with `meta.entity_type = Some("llm".into())`,
+    `meta.entity_name = Some("model-bad".into())` (or `"model-ok"`), and
+    `http.request_headers` holding `("x-cortex-request-id", "r1")`. `HttpExtension` and
+    `MetaExtension` hold these fields; `Extensions.http` and `Extensions.meta` are
+    `Option<Arc<..>>`.
   - Assert: `model-bad` gives a deny and `take("r1")` gives
     `{action: "deny", reason: "model_not_allowed"}`. `model-ok` gives an allow and a
     second id gives `{action: "allow", reason: ""}`. A call with no request-id header
     leaves the store empty.
-  - This test runs first. If `handle` does not run on a deny, stop and report it in the
-    PR body. Do not change the design.
+  - Write this test before the rest of T1's code. If `handle` does not run on a deny,
+    record that as a finding in the PR description and stop. Do not change the design.
 
 Test command: `rustup run 1.96.0 cargo test --locked -p cortex-praxis-filters` from
 `praxis/`.
@@ -198,14 +207,23 @@ Files:
 
 - `praxis/filters/src/record/line.rs`:
   - Add `Invocation { plugin: String, action: String, reason: String }` with
-    `#[serde(skip_serializing_if = "String::is_empty")]` on `reason`.
-  - Add `Invocations { outbound: Vec<Invocation> }` with the same skip on `outbound`.
+    `#[serde(skip_serializing_if = "String::is_empty")]` on `reason`, and derive
+    `Debug, Clone, Default, Serialize` (`Event` derives `Debug, Clone`).
+  - Add `Invocations { outbound: Vec<Invocation> }` with the same skip on `outbound`,
+    and the same derives.
   - Add `pub invocations: Option<Invocations>` to `Event`, with
     `#[serde(skip_serializing_if = "Option::is_none")]`.
   - Remove `"invocations"` from `NOT_SET_IN_PRAXIS_MODE`. Put this comment in its place:
     `// Only a policy decision sets this (policy_recorder).`
   - Add `invocations: Some(...)` to `full_event()` so the drift test sees the field set
     once.
+- `praxis/filters/src/policy_recorder.rs` (changed here, not in T1): add
+  `pub(crate) fn attach(line: &mut Line)`. When `line.event.phase == "response"`, it
+  calls `take(&line.request_id)` and, on `Some(decision)`, sets
+  `line.event.invocations = Some(Invocations { outbound: vec![Invocation { plugin:
+  "policy".into(), action: decision.action.into(), reason: decision.reason }] })`. On any
+  other phase it changes nothing. This function needs the `Event.invocations` type that
+  this task adds, so it stays in T2.
 - `praxis/filters/src/filters/observe.rs`:
   - Change `submit(&self, line: &Line)` to `submit(&self, mut line: Line)`.
   - In `submit`, call `crate::policy_recorder::attach(&mut line)` before `line.queued()`.
@@ -213,16 +231,19 @@ Files:
 - `praxis/filters/tests/row_parity.rs`: add `"invocations"` to the local `skipped()`
   vector with this comment: `// Direct mode's Go plugins record these; this run has no policy.`
 
-Tests, in `praxis/filters/src/policy_recorder.rs` (from T1) or a new `#[cfg(test)]` block
-in `observe.rs`:
+Tests, in the `#[cfg(test)] mod tests` of `policy_recorder.rs`:
 
 - `attach` on a `"response"` line with a recorded deny sets exactly one outbound entry
   with `plugin: "policy"`, `action: "deny"`, the code in `reason`, and the store is empty
   after it.
 - `attach` on a `"response"` line with no stored decision leaves `invocations` as `None`.
+- `attach` on a `"request"` line sets nothing and keeps the entry in the store.
 - An allow entry serializes without `reason`, which matches Go's `omitempty`.
 - `row_parity_matches_replay` passes.
 - `every_session_event_field_is_set_or_listed` passes.
+
+`observe::submit` is private, so no unit test drives it. The Go e2e test in T3 proves
+that `submit` calls `attach` on the live path.
 
 ### T3: Go end-to-end tests
 
@@ -247,15 +268,20 @@ File: `cmd/cortex/praxis_e2e_test.go`.
     `invocations.outbound == [{plugin: "policy", action: "deny", reason: "model_not_allowed"}]`.
   - With `e2eToolPolicy`, a `tools/call` for `danger_tool` (status 200, JSON-RPC error
     -32001). Its response row has the same shape with `reason: "tool_not_allowed"`.
-  - Find each response row by `phase == "response"` and by `inference.model` or
-    `mcp.name`. Read the rows with the existing `eventsJSON(t, c)` after
-    `c.waitResponses`.
-  - A request row for either request has no `invocations`.
+  - Use one chain and one request for each case, so the last response row belongs to
+    that request: read it with
+    `lastResponse(t, c.waitResponses(t, 1, 10*time.Second))` and inspect its
+    `Invocations.Outbound`.
+  - For the request-row check, read `eventsJSON(t, c)` after `c.waitResponses` and select
+    the row with `phase == "request"`. Assert `invocations` is absent on it. Do not
+    select rows by `inference.model` or `mcp.name`: the deferred deny row is built from
+    the exchange state, and the test must not depend on which request fields survive a
+    deny.
 - Update the comment in `TestPraxisE2E_SameEventsAsDirect` that says the gateway runs no
   Cortex plugin. The run has no policy, and requirement 5 keeps the rows unchanged. Keep
   the assertion that `invocations` is absent.
 
-Run: `CORTEX_GATEWAY_BIN=... GOWORK=off go -C cmd/cortex test -tags "praxis_e2e,..." -run TestPraxisE2E .`
+Run: the e2e part of the Gate command in this file. It runs exactly these tests.
 
 ### T4: The praxis README
 
@@ -280,14 +306,22 @@ Run from the worktree root. One command. It runs the Rust gates of the `Praxis` 
 workflow and the Go vet and e2e steps.
 
 ```
-rustup run 1.96.0 cargo fmt --manifest-path praxis/Cargo.toml --check && rustup run 1.96.0 cargo clippy --manifest-path praxis/Cargo.toml --all-targets --locked -- -D warnings && rustup run 1.96.0 cargo test --manifest-path praxis/Cargo.toml --locked && rustup run 1.96.0 cargo build --locked -p cortex-gateway --manifest-path praxis/Cargo.toml && TAGS=$(GOWORK=off go -C scripts/profile-tags run . local) && CORTEX_GATEWAY_BIN=$PWD/praxis/target/debug/cortex-gateway GOWORK=off go -C cmd/cortex test -count=1 -timeout 15m -tags "praxis_e2e,$TAGS" -run TestPraxisE2E . && GOWORK=off go -C cmd/cortex vet ./...
+rustup run 1.96.0 cargo fmt --all --manifest-path praxis/Cargo.toml --check && rustup run 1.96.0 cargo clippy --manifest-path praxis/Cargo.toml --all-targets --locked -- -D warnings && rustup run 1.96.0 cargo test --manifest-path praxis/Cargo.toml --locked && rustup run 1.96.0 cargo build --locked -p cortex-gateway --manifest-path praxis/Cargo.toml && TAGS=$(GOWORK=off go -C scripts/profile-tags run . local) && CORTEX_GATEWAY_BIN=$PWD/praxis/target/debug/cortex-gateway GOWORK=off go -C cmd/cortex test -count=1 -timeout 15m -tags "praxis_e2e,$TAGS" -run TestPraxisE2E . && GOWORK=off go -C cmd/cortex vet ./...
 ```
+
+The `--all` on the fmt step is required, and it was checked on this base. Without it,
+`cargo fmt --manifest-path praxis/Cargo.toml --check` exits 1 with `Failed to find
+targets` and formats nothing. With `--all` it checks every package of the workspace that
+`cargo fmt --check`, run in `praxis/`, checks (verified: exit 0 on this base). The other
+steps are the CI forms; `cargo fmt --all --check --manifest-path praxis/Cargo.toml` was
+run once from the worktree root and passed, and `GOWORK=off go -C cmd/cortex vet ./...`
+was run once from the worktree root and passed.
 
 ## For a human after review
 
 None of the tasks in this plan needs a human. These steps are not tasks:
 
-1. After P1 merges, close #1799 and tick its row in the #1785 checklist.
+1. After P1 merges, close #1799 and tick its row in the #1785 checklist. It needs P1.
 2. Run the live check on a laptop (the PPE policy path with a real agent), in the same
    way as #1799's parent checklist asks. This needs a desktop session and real
    credentials, so it is not part of this workflow. It needs P1.
