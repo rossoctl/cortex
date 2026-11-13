@@ -320,12 +320,29 @@ type TLSBridgeConfig struct {
 	// stream as HTTP/1.1 or h2, so terminating a non-HTTP TLS protocol (LDAPS,
 	// SMTPS, DB-over-TLS, …) would break it.
 	Ports []int `yaml:"ports" json:"ports"`
+	// FailClosed makes interception a requirement rather than a best effort, for a
+	// shared host where an opaque tunnel is a policy bypass. A host the bridge
+	// intercepts is always intercepted, or refused: no skip memory, no fallback
+	// tunnel, an SNI that must name the CONNECT host, and an unverified origin
+	// answered 502 upstream_unverified. The default passthrough list does not
+	// apply; an explicit passthrough_hosts still tunnels.
+	FailClosed bool `yaml:"fail_closed" json:"fail_closed"`
 }
 
 // Validate is called from the loader when TLSBridge != nil.
 func (b *TLSBridgeConfig) Validate() error {
 	if b.Mode != "" && b.Mode != "disabled" && b.Mode != "enabled" {
 		return fmt.Errorf("tls_bridge.mode must be 'disabled' or 'enabled', got %q", b.Mode)
+	}
+	// Without the bridge every connection is an opaque tunnel, which is what
+	// fail_closed exists to refuse.
+	if b.FailClosed && b.Mode != "enabled" {
+		return fmt.Errorf("tls_bridge.fail_closed requires mode=enabled")
+	}
+	// fail_closed refuses an origin that does not verify; upstream_insecure
+	// verifies none.
+	if b.FailClosed && b.UpstreamInsecure {
+		return fmt.Errorf("tls_bridge.fail_closed cannot be combined with upstream_insecure")
 	}
 	if b.Mode == "enabled" && b.CADir == "" {
 		return fmt.Errorf("tls_bridge.mode=enabled requires ca_dir")

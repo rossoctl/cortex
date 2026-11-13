@@ -310,7 +310,7 @@ func TestTunnelReasonsAreDocumented(t *testing.T) {
 		TunnelOriginUnverified, TunnelSkipCached, TunnelProgramRefused, TunnelOSTrustOnly,
 		TunnelBridgeDisabled,
 		TunnelPassthroughPort, TunnelPassthroughNonTLS, TunnelPassthroughHost,
-		TunnelDialFailed,
+		TunnelDialFailed, TunnelSNIMismatch, TunnelRefusedNonTLS,
 	} {
 		if !strings.Contains(string(doc), string(reason)) {
 			t.Errorf("tunnel reason %q is not in laptop-service.md; an operator who sees "+

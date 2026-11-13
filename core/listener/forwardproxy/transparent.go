@@ -237,8 +237,20 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		if pc, ok := clientConn.(*peekedConn); ok {
 			first, _ = pc.Peek(5)
 		}
-		if !s.TLSBridge.Skip.Contains(key) {
-			v, reason := s.TLSBridge.Decision.Classify(key, portOf(dst), first)
+		// Fail-closed consults no skip memory, and judges passthrough by the address
+		// the tunnel would dial, which the client cannot rename with an SNI or Host.
+		// Non-TLS bytes to a destination it intercepts are refused.
+		classifyKey := key
+		if s.failClosed() {
+			classifyKey = hostOnly(dst)
+		}
+		if s.failClosed() || !s.TLSBridge.Skip.Contains(key) {
+			v, reason := s.TLSBridge.Decision.Classify(classifyKey, portOf(dst), first)
+			if s.failClosed() && reason == tlsbridge.ReasonNonTLS && s.TLSBridge.Decision.Intercepts(classifyKey, portOf(dst)) {
+				s.refuseFailClosed(clientConn, key, tl, pipeline.TunnelRefusedNonTLS, http.StatusOK, pipeline.ErrorKindNotTLS,
+					errors.New("not a TLS handshake"))
+				return
+			}
 			if v == tlsbridge.Terminate {
 				if upstream != nil {
 					_ = upstream.Close() // bridgeServe dials its own verified upstream; drop the pre-dial

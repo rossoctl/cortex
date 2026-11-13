@@ -666,6 +666,7 @@ decrypted HTTPS. It is configured under the top-level `tls_bridge:` block in
 | `upstream_ca_bundle` | *(system roots)* | Extra-roots PEM file for re-origination, for private-CA origins the agent trusts. Empty means system roots only. |
 | `upstream_insecure` | `false` | Disable origin cert verification on re-origination, for internal/self-signed upstreams whose CA is unavailable. Prefer `upstream_ca_bundle` when possible. |
 | `passthrough_hosts` | *(see below)* | Hosts to tunnel, never intercept. Distinct from `listener.skip_hosts`, which bypasses the whole pipeline: these still run the egress gate, they just aren't TLS-terminated. See [Developer tooling is not intercepted at all](#developer-tooling-is-not-intercepted-at-all). |
+| `fail_closed` | `false` | Bridge or refuse every connection the bridge intercepts, never tunnel it. Needs `mode: enabled`. See [Failing closed](#failing-closed). |
 | `ports` | `{443, 8443}` | TCP ports to intercept as TLS. Only HTTP(S)-bearing ports belong here — the bridge serves the decrypted stream as HTTP/1.1 or h2, so terminating a non-HTTP TLS protocol (LDAPS, SMTPS, DB-over-TLS, …) would break it. |
 
 The bridge is built once at startup, so changing any `tls_bridge:` field takes
@@ -985,7 +986,9 @@ The other reasons you may see, and what each one asks of you:
 | `bridge-disabled` | No TLS bridge is configured. | only if you wanted one |
 | `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. OpenCode hangs up rather than rejecting the CA; see [its page](agents/opencode.md#ca-trust). | usually no |
 | `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |
-| `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. The first failure for each host logs a WARN (`reason=upstream-verify`). Later failures for that host log at INFO. | investigate the destination |
+| `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. Under `fail_closed` the CONNECT is answered `502` `upstream_unverified` instead, and nothing is tunnelled. The first failure for each host logs a WARN (`reason=upstream-verify`). Later failures for that host log at INFO. | investigate the destination |
+| `sni-mismatch` | Under `fail_closed`, the client's TLS SNI named a host other than the CONNECT target, so the handshake was refused. The close row carries `421` and `error.kind: misdirected_request`. | check what the client is connecting to |
+| `refused-non-tls` | Under `fail_closed`, a connection to a host the bridge intercepts sent bytes that are not a TLS handshake, so it was closed. The close row carries `error.kind: not_tls`. | add the host to `passthrough_hosts` if it should be tunnelled |
 | `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout. Without the TLS bridge the CONNECT is answered `502` and no tunnel opened. With the bridge on (this install's default) the CONNECT is answered `200` first, because a redirect can still send the request to a live server; when nothing rescued it, the close row carries that `200` with the dial error in `error`. The TCP dial is bounded at 10s, so a destination that silently drops the SYN (off the VPN that reaches it, a dead NAT) fails within that rather than hanging the agent for longer. | check the destination and the network path to it |
 
 Only a CA rejection asks you to restart anything: `client-rejected-ca` itself, and
@@ -1050,6 +1053,33 @@ To see the list, or to override it, set `tls_bridge.passthrough_hosts` in
 to it, and `passthrough_hosts: []` intercepts everything. Never list an inference
 endpoint there: it would silently remove the parsing and the token savings, with no
 error anywhere to notice it by.
+
+### Failing closed
+
+By default the bridge falls open: a connection it cannot read is tunnelled, so the
+agent's call still works. `tls_bridge.fail_closed: true` turns that around for every
+host the bridge intercepts, so policy judged on a host is policy for every byte sent
+to it:
+
+- An origin whose certificate does not verify is refused on the CONNECT itself:
+  `502` with `X-Moca-Egress-Error: upstream_unverified`. When the origin could not
+  be dialled, the CONNECT is answered `200` as usual and each request is verified
+  when it is sent.
+- A TLS handshake whose SNI names another host than the CONNECT target is refused
+  (`sni-mismatch`, `421 misdirected_request`).
+- A client that rejects Cortex's CA is refused every time. Nothing is remembered,
+  so neither `skip-cached`, `program-refused` nor `os-trust-only` appears. Go tools
+  on macOS that trust only the keychain need the CA there.
+- Bytes that are not a TLS handshake are refused (`refused-non-tls`).
+
+The default `passthrough_hosts` list is dropped, so GitHub and the package
+registries are intercepted too. An explicit `passthrough_hosts` list is still
+tunnelled. `listener.skip_hosts` destinations are verified too: give a private-CA
+origin `upstream_ca_bundle`, or list it in `passthrough_hosts`. `fail_closed`
+cannot be combined with `upstream_insecure`. The transparent listener follows the same rules, with two differences. It
+judges `passthrough_hosts` by the address it dials, because the client chooses
+the SNI: only an IP entry is tunnelled there. And it records each refusal as a
+close row, since it has no CONNECT to answer.
 
 ### Go tools on macOS are passed through unread
 

@@ -577,6 +577,14 @@ const (
 	// identifier, used verbatim. Never confused with dial-failed: a refused
 	// destination was never attempted.
 	TunnelDestPrivate TunnelReason = "dest-private"
+	// TunnelSNIMismatch — under tls_bridge.fail_closed, the client's TLS SNI named a
+	// host other than the CONNECT target, so the bridge refused the handshake. Recorded
+	// with a 421 close row carrying error.kind "misdirected_request".
+	TunnelSNIMismatch TunnelReason = "sni-mismatch"
+	// TunnelRefusedNonTLS — under tls_bridge.fail_closed, a connection to a host the
+	// bridge intercepts sent bytes that are not a TLS handshake, so it was closed
+	// rather than tunnelled.
+	TunnelRefusedNonTLS TunnelReason = "refused-non-tls"
 )
 
 // EventTLS describes the TLS state of a connection that produced a
@@ -844,6 +852,21 @@ const ErrorKindDestinationPrivate = "destination_private"
 // cortex-gateway is not ready or does not accept the dial (#1721). Cortex records
 // the request row and this row, because the gateway never saw the request.
 const ErrorKindGatewayUnavailable = "gateway_unavailable"
+
+// ErrorKindUpstreamUnverified is the TLS bridge refusing a connection whose origin
+// certificate did not verify, under tls_bridge.fail_closed: a CONNECT is answered
+// 502 upstream_unverified instead of being tunnelled. The MOCA egress contract's
+// identifier, used verbatim.
+const ErrorKindUpstreamUnverified = "upstream_unverified"
+
+// ErrorKindMisdirectedRequest is a 421 for traffic naming a host other than its
+// tunnel's: a bridged request's Host, or under tls_bridge.fail_closed a ClientHello's
+// SNI. The MOCA egress contract's identifier, used verbatim.
+const ErrorKindMisdirectedRequest = "misdirected_request"
+
+// ErrorKindNotTLS is the TLS bridge closing a connection to a host it intercepts
+// whose first bytes are not a TLS handshake, under tls_bridge.fail_closed.
+const ErrorKindNotTLS = "not_tls"
 
 // SessionSource is how a listener resolved Context.Session.
 type SessionSource string
