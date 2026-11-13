@@ -92,7 +92,7 @@ func near(a, b float64) bool { return a > b-0.02 && a < b+0.02 }
 // Each cell of the main row divides its time among the five states, and the shares match the
 // sample exactly at a 30s cell width.
 func TestTimelineLayout_MainRowSharesEachState(t *testing.T) {
-	lay := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 60, tlAt(3600))
+	lay := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 60, time.Time{}, tlAt(3600))
 	main := lay.agents[0]
 	if main.agent.ID != timeline.MainAgent {
 		t.Fatalf("first row %q", main.agent.ID)
@@ -123,7 +123,7 @@ func TestTimelineLayout_FailedCallThenNewMessageIsNotRetry(t *testing.T) {
 	for i := range tl.Turns {
 		tl.Turns[i].Resent = false
 	}
-	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 60, tlAt(3600))
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 60, time.Time{}, tlAt(3600))
 	if got := lay.agents[0].cells[cellOf(t, lay, 930)]; got.retry != 0 {
 		t.Errorf("gap after a failed call with no re-send: %+v, want no retry share", got)
 	}
@@ -134,7 +134,7 @@ func TestTimelineLayout_FailedCallThenNewMessageIsNotRetry(t *testing.T) {
 func TestTimelineLayout_SubagentIsScaledToItsLifetime(t *testing.T) {
 	tl := sampleTimeline()
 	// 300s cells: the subagent lives 300-580s, so the 300-600 cell is 93% alive.
-	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 6, tlAt(3600))
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 6, time.Time{}, tlAt(3600))
 	sub := lay.agents[1]
 	c := cellOf(t, lay, 400)
 	if !sub.alive[c] || !near(sub.cells[c].total(), 1) {
@@ -149,7 +149,7 @@ func TestTimelineLayout_SubagentIsScaledToItsLifetime(t *testing.T) {
 }
 
 func TestTimelineLayout_GutterCountsTheWindow(t *testing.T) {
-	lay := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 60, tlAt(3600))
+	lay := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 60, time.Time{}, tlAt(3600))
 	main := lay.agents[0]
 	// Model time is the five turns (200+10+300+240+300); tool time is Bash only, not the Agent
 	// call's async ack.
@@ -159,7 +159,7 @@ func TestTimelineLayout_GutterCountsTheWindow(t *testing.T) {
 }
 
 func TestTimelineLayout_HostRows(t *testing.T) {
-	lay := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 60, tlAt(3600))
+	lay := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 60, time.Time{}, tlAt(3600))
 	var llm, refused *tlHostRow
 	for i := range lay.hosts {
 		switch lay.hosts[i].host {
@@ -211,7 +211,7 @@ func TestTimelineSweepPeaks(t *testing.T) {
 	// is floored to 1 by its error mark, so it would not show the sweep's handling.)
 	tl := sampleTimeline()
 	tl.Hosts = append(tl.Hosts, timeline.Host{Host: "blip.example", Kind: timeline.KindHTTP, Start: tlAt(700), End: tlPtr(700), Status: 204})
-	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 60, tlAt(3600))
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 60, time.Time{}, tlAt(3600))
 	found := false
 	for _, h := range lay.hosts {
 		if h.host == "blip.example" {
@@ -285,7 +285,7 @@ func TestTimelineAxisLabels_NameTheGap(t *testing.T) {
 	lateEnd := late.Add(5 * time.Minute)
 	tl.Turns = append(tl.Turns, timeline.Turn{Agent: timeline.MainAgent, Start: late, End: &lateEnd, Finish: "end_turn", Seq: 50})
 	tl.End = lateEnd
-	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 80, lateEnd)
+	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 80, time.Time{}, lateEnd)
 	if labels := axisLabels(lay); !strings.Contains(labels, "26.0h") {
 		t.Errorf("axis does not label the gap: %q", labels)
 	}
@@ -632,7 +632,7 @@ func TestTimelineRender_HostGuttersAlign(t *testing.T) {
 // finished: here the subagent stops at 580s and its result wakes main at 600s.
 func TestTimelineWaits_ResultEndsTheWaitAfterTheSubagentFinished(t *testing.T) {
 	tl := sampleTimeline()
-	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600)) // 10s cells
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600)) // 10s cells
 	got := lay.agents[0].cells[cellOf(t, lay, 590)]
 	if !near(got.subs, 1) || got.user != 0 {
 		t.Errorf("580-600s, after the subagent stopped and before its result: %+v, want waiting on subagents", got)
@@ -725,7 +725,7 @@ func TestTimelineWaits_UserWaitSurvivesABriefSubagent(t *testing.T) {
 	// Main finishes a reply at 1200s and the user answers at 1500s; a subagent runs 1210-1260s.
 	tl.Agents = append(tl.Agents, timeline.Agent{ID: "bg", Parent: timeline.MainAgent, Label: "background"})
 	tl.Turns = append(tl.Turns, timeline.Turn{Agent: "bg", Start: tlAt(1210), End: tlPtr(1260), Finish: "end_turn", Seq: 35})
-	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600)) // 10s cells
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600)) // 10s cells
 	main := lay.agents[0]
 	if c := main.cells[cellOf(t, lay, 1235)]; !near(c.subs, 1) {
 		t.Errorf("during the subagent: %+v, want waiting on subagents", c)
@@ -738,7 +738,7 @@ func TestTimelineWaits_UserWaitSurvivesABriefSubagent(t *testing.T) {
 // A live main agent that has finished its reply is waiting on the user now, not idle.
 func TestTimelineWaits_LiveSessionIsWaitingOnTheUserNow(t *testing.T) {
 	tl := sampleTimeline() // the last main turn ends at 1800s with end_turn
-	lay := buildTimelineLayout(tl, tlAt(1500), tlAt(2100), 60, tlAt(2100))
+	lay := buildTimelineLayout(tl, tlAt(1500), tlAt(2100), 60, time.Time{}, tlAt(2100))
 	if c := lay.agents[0].cells[cellOf(t, lay, 2000)]; !near(c.user, 1) {
 		t.Errorf("after the last reply, live: %+v, want waiting on the user", c)
 	}
@@ -786,7 +786,7 @@ func TestTimelineLayout_HostOnlySessionDrawsAtAll(t *testing.T) {
 		s := float64(i) * 6000
 		tl.Hosts = append(tl.Hosts, timeline.Host{Host: "h.example", Kind: timeline.KindHTTP, Start: tlAt(s), End: tlPtr(s + 30)})
 	}
-	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 60, tlAt(20000))
+	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 60, time.Time{}, tlAt(20000))
 	lit := 0
 	for _, p := range lay.hosts[0].peak {
 		if p > 0 {
@@ -978,7 +978,7 @@ func gapMarker(t *testing.T, lay tlLayout) int {
 func TestTimelineGap_MarkerCarriesItsState(t *testing.T) {
 	forceColor(t)
 	tl := laterSession(timeline.Turn{})
-	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 120, tl.End)
+	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 120, time.Time{}, tl.End)
 	c := gapMarker(t, lay)
 	if got := lay.agents[0].cells[c]; !near(got.user, 1) {
 		t.Fatalf("gap cell = %+v, want the whole stretch waiting on the user", got)
@@ -999,7 +999,7 @@ func TestTimelineGap_HostErrorInTheGapShows(t *testing.T) {
 	tl := laterSession(timeline.Turn{})
 	at := tlAt(1800).Add(3 * time.Hour)
 	tl.Hosts = append(tl.Hosts, timeline.Host{Host: "llm.example", Kind: timeline.KindLLM, Start: at, End: &at, Status: 502, Error: true, Seq: 45})
-	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 120, tl.End)
+	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 120, time.Time{}, tl.End)
 	c := gapMarker(t, lay)
 	for _, r := range lay.hosts {
 		if r.host == "llm.example" && !r.err[c] {
@@ -1019,7 +1019,7 @@ func TestTimelineWaits_RetryEndsAtTheLastFailureThenWaitsOnYou(t *testing.T) {
 		timeline.Host{Host: "llm.example", Kind: timeline.KindLLM, Start: tlAt(600), End: tlPtr(900), Status: 200, Seq: 20},
 		timeline.Host{Host: "llm.example", Kind: timeline.KindTunnel, Start: tlAt(910), End: tlPtr(911), Status: 502, Error: true, Seq: 21},
 		timeline.Host{Host: "llm.example", Kind: timeline.KindTunnel, Start: tlAt(930), End: tlPtr(931), Status: 502, Error: true, Seq: 22})
-	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600)) // 10s cells
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600)) // 10s cells
 	main := lay.agents[0]
 	if c := main.cells[cellOf(t, lay, 915)]; !near(c.retry, 1) {
 		t.Errorf("between the failures: %+v, want retrying", c)
@@ -1032,7 +1032,7 @@ func TestTimelineWaits_RetryEndsAtTheLastFailureThenWaitsOnYou(t *testing.T) {
 // A call that re-sent the conversation unchanged makes the whole gap before it retrying.
 func TestTimelineWaits_ResentCallMakesTheGapRetrying(t *testing.T) {
 	tl := sampleTimeline() // the 960s call re-sends the 600s call's conversation
-	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600))
 	if c := lay.agents[0].cells[cellOf(t, lay, 950)]; !near(c.retry, 1) {
 		t.Errorf("just before the re-send: %+v, want retrying", c)
 	}
@@ -1045,12 +1045,12 @@ func TestTimelineWaits_MainDefaultsToYouExceptAfterALostTool(t *testing.T) {
 	// A main turn that ends on tool_use, whose Bash was lost, then a gap until 1500s.
 	tl.Turns[4] = timeline.Turn{Agent: timeline.MainAgent, Start: tlAt(960), End: tlPtr(1200), Finish: "tool_use", Seq: 30}
 	tl.Tools = append(tl.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "lost", Name: "Bash", Start: tlAt(1200), End: tlPtr(1200), Lost: true, Seq: 31})
-	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600))
 	if c := lay.agents[0].cells[cellOf(t, lay, 1350)]; c.total() != 0 {
 		t.Errorf("after a lost tool: %+v, want unclaimed", c)
 	}
 	tl.Tools = tl.Tools[:len(tl.Tools)-1]
-	lay = buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	lay = buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600))
 	if c := lay.agents[0].cells[cellOf(t, lay, 1350)]; !near(c.user, 1) {
 		t.Errorf("after a tool_use turn with nothing running: %+v, want waiting on the user", c)
 	}
@@ -1061,7 +1061,7 @@ func TestTimelineWaits_MainDefaultsToYouExceptAfterALostTool(t *testing.T) {
 func TestTimelineWaits_BackgroundJobIsATool(t *testing.T) {
 	tl := sampleTimeline() // main finishes a reply at 1200s; the user answers at 1500s
 	tl.Jobs = []timeline.Job{{Agent: timeline.MainAgent, ID: "bk1", Start: tlAt(1190), End: tlPtr(1400), Seq: 29}}
-	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600))
 	if c := lay.agents[0].cells[cellOf(t, lay, 1300)]; !near(c.tool, 1) {
 		t.Errorf("while the job ran: %+v, want tools", c)
 	}
@@ -1070,7 +1070,7 @@ func TestTimelineWaits_BackgroundJobIsATool(t *testing.T) {
 	}
 	// It is in the tools total too, by what the bar gives it: the job's first 10s fall inside the
 	// reply that ends at 1200s, so those are the model's, not tools'.
-	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, tlAt(3600)).agents[0].toolTime
+	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600)).agents[0].toolTime
 	if got := lay.agents[0].toolTime - without; got != 200*time.Second {
 		t.Errorf("tools total grew by %v, want the job's 200s outside the reply", got)
 	}
@@ -1081,7 +1081,7 @@ func TestTimelineWaits_BackgroundJobIsATool(t *testing.T) {
 func TestTimelineWaits_BackgroundJobDoesNotHideTheModel(t *testing.T) {
 	tl := sampleTimeline() // main's turn 960-1200s, then the user answers at 1500s
 	tl.Jobs = []timeline.Job{{Agent: timeline.MainAgent, ID: "bk1", Start: tlAt(1150), End: tlPtr(1300), Seq: 29}}
-	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600))
 	if c := lay.agents[0].cells[cellOf(t, lay, 1170)]; !near(c.model, 1) || !near(c.tool, 0) {
 		t.Errorf("job through a turn: %+v, want model only", c)
 	}
@@ -1090,7 +1090,7 @@ func TestTimelineWaits_BackgroundJobDoesNotHideTheModel(t *testing.T) {
 	}
 	// The tools total counts the time the bar gives the job: its 50s inside the reply is the
 	// model's.
-	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, tlAt(3600)).agents[0].toolTime
+	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600)).agents[0].toolTime
 	if got := lay.agents[0].toolTime - without; got != 100*time.Second {
 		t.Errorf("tools total grew by %v, want the job's 100s outside the reply", got)
 	}
@@ -1108,7 +1108,7 @@ func TestTimelineWaits_BackgroundJobInACollapsedGapCountedOnce(t *testing.T) {
 		},
 		Jobs: []timeline.Job{{Agent: timeline.MainAgent, ID: "bk1", Start: tlAt(120), End: tlPtr(5000), Seq: 2}},
 	}
-	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 40, tlAt(7360))
+	lay := buildTimelineLayout(tl, time.Time{}, time.Time{}, 40, time.Time{}, tlAt(7360))
 	markers := 0
 	for _, c := range lay.axis.cells {
 		if c.marker {
@@ -1331,11 +1331,11 @@ func TestTimelineAll_LongLiveWaitIsCapped(t *testing.T) {
 func TestTimelineWaits_AskUserQuestionIsWaitingOnYou(t *testing.T) {
 	tl := sampleTimeline() // main finishes a reply at 1200s; the user answers at 1500s
 	tl.Tools = append(tl.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "q1", Name: "AskUserQuestion", Start: tlAt(1200), End: tlPtr(1500), Seq: 35})
-	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, tlAt(3600))
+	lay := buildTimelineLayout(tl, tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600))
 	if c := lay.agents[0].cells[cellOf(t, lay, 1300)]; !near(c.user, 1) || c.tool != 0 {
 		t.Errorf("while the question waited: %+v, want waiting on the user", c)
 	}
-	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, tlAt(3600))
+	without := buildTimelineLayout(sampleTimeline(), tlAt(0), tlAt(1800), 180, time.Time{}, tlAt(3600))
 	if got, want := lay.agents[0].toolTime, without.agents[0].toolTime; got != want {
 		t.Errorf("tool time = %s, want %s: the question is not tool time", got, want)
 	}
@@ -1352,7 +1352,7 @@ func TestTimelineWaits_AskUserQuestionIsWaitingOnYou(t *testing.T) {
 		return tl
 	}
 	work := func(tl *timeline.Timeline) int {
-		ax := buildTimelineLayout(tl, time.Time{}, time.Time{}, 180, tl.End.Add(time.Hour)).axis
+		ax := buildTimelineLayout(tl, time.Time{}, time.Time{}, 180, time.Time{}, tl.End.Add(time.Hour)).axis
 		return ax.width() - ax.cellsFrom(tlAt(1800))
 	}
 	if got, want := work(overnight(true)), work(overnight(false)); got != want {
@@ -1360,7 +1360,7 @@ func TestTimelineWaits_AskUserQuestionIsWaitingOnYou(t *testing.T) {
 	}
 	open := sampleTimeline()
 	open.Tools = append(open.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "q1", Name: "AskUserQuestion", Start: tlAt(1800), Seq: 45})
-	if ax := buildTimelineLayout(open, time.Time{}, tlAt(1800+7*3600), 180, tlAt(1800+7*3600)).axis; ax.tail != timelineTailCells {
+	if ax := buildTimelineLayout(open, time.Time{}, tlAt(1800+7*3600), 180, time.Time{}, tlAt(1800+7*3600)).axis; ax.tail != timelineTailCells {
 		t.Errorf("an open question's wait has tail %d, want the capped %d", ax.tail, timelineTailCells)
 	}
 }
@@ -1461,7 +1461,7 @@ func TestTimelineTokPerSec_Window(t *testing.T) {
 		{Agent: m, Start: tlAt(80), LiveTokens: 2000},
 		{Agent: "other", Start: tlAt(80), End: tlPtr(90), OutputTokens: 99999},
 	}
-	rate, live, ok := tokPerSec(turns, m, tlAt(100))
+	rate, live, ok := tokPerSec(turns, m, time.Time{}, tlAt(100))
 	if !near(rate, 5200.0/73) || !live || !ok {
 		t.Errorf("tokPerSec = %v, %v, %v, want %.2f, true, true", rate, live, ok, 5200.0/73)
 	}
@@ -1471,7 +1471,7 @@ func TestTimelineTokPerSec_Window(t *testing.T) {
 func TestTimelineTokPerSec_FinishedSubagentKeepsItsRate(t *testing.T) {
 	turns := []timeline.Turn{{Agent: "a1", Start: tlAt(0), End: tlPtr(10), OutputTokens: 850}}
 	for _, now := range []time.Time{tlAt(10), tlAt(3610)} {
-		if rate, live, ok := tokPerSec(turns, "a1", now); !near(rate, 85) || live || !ok {
+		if rate, live, ok := tokPerSec(turns, "a1", time.Time{}, now); !near(rate, 85) || live || !ok {
 			t.Errorf("at %v: tokPerSec = %v, %v, %v, want 85, false, true", now, rate, live, ok)
 		}
 	}
@@ -1480,7 +1480,7 @@ func TestTimelineTokPerSec_FinishedSubagentKeepsItsRate(t *testing.T) {
 // An open turn with no live estimate has no tokens, so it does not count.
 func TestTimelineTokPerSec_OpenTurnWithoutLiveTokensNotCounted(t *testing.T) {
 	turns := []timeline.Turn{{Agent: timeline.MainAgent, Start: tlAt(0)}}
-	if _, _, ok := tokPerSec(turns, timeline.MainAgent, tlAt(30)); ok {
+	if _, _, ok := tokPerSec(turns, timeline.MainAgent, time.Time{}, tlAt(30)); ok {
 		t.Errorf("an open turn without live tokens gave a rate")
 	}
 }
@@ -1491,8 +1491,19 @@ func TestTimelineTokPerSec_LongLiveTurnIsTheWindow(t *testing.T) {
 		{Agent: timeline.MainAgent, Start: tlAt(0), End: tlPtr(10), OutputTokens: 5000},
 		{Agent: timeline.MainAgent, Start: tlAt(20), LiveTokens: 7200},
 	}
-	if rate, live, ok := tokPerSec(turns, timeline.MainAgent, tlAt(110)); !near(rate, 80) || !live || !ok {
+	if rate, live, ok := tokPerSec(turns, timeline.MainAgent, time.Time{}, tlAt(110)); !near(rate, 80) || !live || !ok {
 		t.Errorf("tokPerSec = %v, %v, %v, want 80, true, true", rate, live, ok)
+	}
+}
+
+// Between fetches LiveTokens does not change, so an open turn ends at the fetch, not at now: the
+// rate stays the same while now moves on.
+func TestTimelineTokPerSec_OpenTurnEndsAtFetch(t *testing.T) {
+	turns := []timeline.Turn{{Agent: timeline.MainAgent, Start: tlAt(0), LiveTokens: 3000}}
+	for _, now := range []time.Time{tlAt(30), tlAt(35), tlAt(39)} {
+		if rate, live, ok := tokPerSec(turns, timeline.MainAgent, tlAt(30), now); !near(rate, 100) || !live || !ok {
+			t.Errorf("at %v: tokPerSec = %v, %v, %v, want 100, true, true", now, rate, live, ok)
+		}
 	}
 }
 

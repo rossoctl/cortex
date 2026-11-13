@@ -28,7 +28,7 @@ with a bytes-per-token ratio from the session's long finished turns. agentop cal
 
 1. **Turns with zero tokens do not count in the window.** A failed, lost or usage-less turn has no tokens. If its time counted, one error would pull the value down. An open turn with `LiveTokens == 0` is also left out (the spec says so).
 2. **The turn that makes the total reach 60 s counts in full.** The spec says "stop when the total reaches 60 s". The plan does not cut a turn into parts. This keeps the calculation simple, and a long live turn then gives the live estimate alone, which is correct.
-3. **`now` for an open turn is the `now` that `buildTimelineLayout` receives.** `timelineLayout` already rounds it to the refresh interval, so the value changes at most once each 10 s.
+3. **An open turn ends at the time of the fetch that gave its `LiveTokens` (`m.timeline.fetchedAt`), not at the layout's `now`.** `now` moves once each second, but `LiveTokens` changes only at a fetch. If the turn ended at `now`, the rate would fall between fetches and jump up at the next one. So the value changes only at a fetch.
 4. **`live` is true when the window contains an open turn.**
 5. **Format:** `fmt.Sprintf("%7s", strconv.FormatFloat(v, 'f', 0, 64))`, and 7 spaces when the row has no counted turn.
 6. **`FillLive` runs before `Clip`** in `handleTimeline`, on the clone. `clone` copies `Turns` with `slices.Clone`, so the cached timeline keeps no `LiveTokens`.

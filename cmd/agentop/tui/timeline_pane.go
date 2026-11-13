@@ -381,7 +381,7 @@ func (m *model) timelineLayoutNow() (tlLayout, bool) {
 	// now is rounded to the refresh interval, so a redraw within it reuses the layout.
 	key := tlLayoutKey{tl: t.tl, window: win, cells: m.timelineCells(), from: from, now: now}
 	if key != t.layoutKey {
-		t.layout, t.layoutKey = buildTimelineLayout(t.tl, from, to, key.cells, now), key
+		t.layout, t.layoutKey = buildTimelineLayout(t.tl, from, to, key.cells, t.fetchedAt, now), key
 		// A narrower layout can leave the cursor past its end, or on what is now a gap.
 		if c := t.cursor; c >= t.layout.axis.width() || (c >= 0 && t.layout.axis.cells[c].gap) {
 			t.cursor = -1

@@ -284,8 +284,12 @@ const tokPerSecWindow = 60 * time.Second
 // tokPerSec is Σ tokens / Σ turn time over the agent's newest turns, until that time reaches
 // tokPerSecWindow. The turn that makes it reach the window counts in full. A turn with no
 // tokens (failed, lost, without usage, or open without a live estimate) does not count, so one
-// error does not pull the value down.
-func tokPerSec(turns []timeline.Turn, agent string, now time.Time) (rate float64, live, ok bool) {
+// error does not pull the value down. An open turn ends at fetched, the time its LiveTokens were
+// read, so the rate does not fall between fetches. A zero fetched means now.
+func tokPerSec(turns []timeline.Turn, agent string, fetched, now time.Time) (rate float64, live, ok bool) {
+	if !fetched.IsZero() {
+		now = fetched
+	}
 	var mine []timeline.Turn
 	for _, t := range turns {
 		if t.Agent == agent && !t.Lost {
@@ -335,7 +339,8 @@ type tlLayout struct {
 }
 
 // buildTimelineLayout bins tl into cells over [from, to]. A zero from means the window is "all".
-func buildTimelineLayout(tl *timeline.Timeline, from, to time.Time, cells int, now time.Time) tlLayout {
+// fetched is when tl arrived; see tokPerSec.
+func buildTimelineLayout(tl *timeline.Timeline, from, to time.Time, cells int, fetched, now time.Time) tlLayout {
 	all := from.IsZero()
 	if all {
 		// A live session's "all" runs to now, as its windows do: the wait after its last reply is
@@ -364,7 +369,7 @@ func buildTimelineLayout(tl *timeline.Timeline, from, to time.Time, cells int, n
 	} else {
 		ax = tlLinearAxis(from, to, cells)
 	}
-	return tlLayout{axis: ax, from: from, to: to, agents: tlAgentRows(tl, ax, from, to, now), hosts: tlHostRows(tl, ax, from, to, now)}
+	return tlLayout{axis: ax, from: from, to: to, agents: tlAgentRows(tl, ax, from, to, fetched, now), hosts: tlHostRows(tl, ax, from, to, now)}
 }
 
 // askUserTool's span is the user's time: it waits on their answer.
@@ -554,7 +559,7 @@ func modelHostFailures(tl *timeline.Timeline, now time.Time) [][2]time.Time {
 
 // tlAgentRows orders agents as a tree, main first and each child under its parent, and fills
 // each cell with how its time divided.
-func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, now time.Time) []tlAgentRow {
+func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, fetched, now time.Time) []tlAgentRow {
 	life := map[string][2]time.Time{}
 	note := func(id string, s, e time.Time) {
 		l, ok := life[id]
@@ -619,7 +624,7 @@ func tlAgentRows(tl *timeline.Timeline, ax tlAxis, from, to, now time.Time) []tl
 		row := tlAgentRow{agent: a, depth: depth, cells: make([]share, ax.width()), alive: make([]bool, ax.width()),
 			modelTime: m.cover(from, to), toolTime: t.cover(from, to), calls: calls[a.ID]}
 		// All the agent's turns, not only the window's: the rate is of its newest work.
-		row.tokPerSec, row.live, row.hasRate = tokPerSec(tl.Turns, a.ID, now)
+		row.tokPerSec, row.live, row.hasRate = tokPerSec(tl.Turns, a.ID, fetched, now)
 		l, known := life[a.ID]
 		// Gap cells are filled too, each with the whole stretch it stands for, so the marker can
 		// say what that stretch was.
