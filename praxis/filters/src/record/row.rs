@@ -1305,6 +1305,13 @@ mod tests {
         for body in exact {
             assert_eq!(mcp(&none, body).as_deref(), Some("tools/call"));
         }
+        // Fails when top_level_keys_exact stops decoding the body.
+        let packed = zstd::encode_all(exact[0], 0).unwrap();
+        assert_eq!(
+            mcp(&zstd, &packed).as_deref(),
+            Some("tools/call"),
+            "zstd body"
+        );
         let mut get = exchange("GET", "tools.example", "/mcp", &none);
         get.on_request_body(b"");
         assert_eq!(

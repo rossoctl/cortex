@@ -18,6 +18,7 @@ use praxis_filter::{
 use serde::Deserialize;
 
 use super::attribution::{TokenValid, read_token};
+use crate::parse::inference::gojson;
 use crate::parse::model::McpExtension;
 use crate::record::emitter::{self, Emitter};
 use crate::record::line::Line;
@@ -98,15 +99,15 @@ fn mcp_metadata(ext: &McpExtension) -> Vec<(&'static str, &str)> {
     // without `mcp.method`, a policy with only tool/prompt/resource routes answers 500.
     let mut keys = vec![("mcp.method", ext.method.as_str())];
     let param = match ext.method.as_str() {
-        "tools/call" | "prompts/get" => "name",
-        "resources/read" => "uri",
-        _ => "",
+        "tools/call" | "prompts/get" => Some("name"),
+        "resources/read" => Some("uri"),
+        _ => None,
     };
-    if let Some(name) = ext
-        .params
-        .as_ref()
-        .and_then(|p| p.get(param))
-        .and_then(|v| v.as_str())
+    // A Go server folds case, so `{"name":"a","Name":"b"}` can run `b`. No
+    // `mcp.name` then, and the policy filter denies the entity method.
+    if let (Some(param), Some(p)) = (param, ext.params.as_ref())
+        && p.keys().all(|k| k == param || !gojson::is(k, param))
+        && let Some(name) = p.get(param).and_then(|v| v.as_str())
     {
         keys.push(("mcp.name", name));
     }
@@ -398,11 +399,34 @@ mod tests {
     }
 
     #[test]
+    fn name_that_matches_only_by_case_is_dropped() {
+        for params in [
+            r#"{"name":"safe_tool","Name":"danger_tool"}"#,
+            r#"{"NAME":"danger_tool"}"#,
+        ] {
+            let got = keys("POST", &rpc("tools/call", params));
+            assert_eq!(got, pairs(&[("mcp.method", "tools/call")]), "{params}");
+        }
+        let got = keys("POST", &rpc("resources/read", r#"{"uri":"a","URI":"b"}"#));
+        assert_eq!(got, pairs(&[("mcp.method", "resources/read")]));
+    }
+
+    #[test]
+    fn method_without_entity_sets_no_name() {
+        let got = keys("POST", &rpc("tools/list", r#"{"":"safe_tool"}"#));
+        assert_eq!(got, pairs(&[("mcp.method", "tools/list")]));
+    }
+
+    #[test]
     fn synthetic_transport_row_sets_only_method() {
         assert_eq!(
             keys("GET", b""),
             pairs(&[("mcp.method", "$transport/stream")])
         );
+        let mut session = HeaderMap::new();
+        session.insert("mcp-session-id", http::HeaderValue::from_static("s1"));
+        let ext = parse_request("DELETE", "/mcp", &session, b"").expect("an MCP request");
+        assert_eq!(mcp_metadata(&ext), [("mcp.method", "$transport/terminate")]);
     }
 
     #[test]
