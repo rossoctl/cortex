@@ -279,6 +279,7 @@ mod tests {
         "inference.requestedModel", // only Context.SetRequestModel sets it; no plugin runs in praxis mode
         "inference.messageCount",   // only sessionapi.summarizeEvent sets it, in Go
         "inference.toolCount",      // the same
+        "inference.toolCallCount",  // the same
     ];
 
     fn thinking() -> InferenceThinking {

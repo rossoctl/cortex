@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"maps"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
@@ -122,10 +124,35 @@ func validatePraxis(cfg *Config) error {
 			return fmt.Errorf("praxis.enabled: true cannot be used with outbound plugin %q: cortex-gateway does not run it, so it would fail open; remove the plugin or praxis.enabled", e.Name)
 		}
 	}
+	if err := validatePraxisPolicy(cfg.Praxis.Policy); err != nil {
+		return err
+	}
 	if err := validatePraxisAddr("praxis.listen", cfg.Praxis.Listen); err != nil {
 		return err
 	}
 	return validatePraxisAddr("praxis.egress", cfg.Praxis.Egress)
+}
+
+// validatePraxisPolicy refuses a policy block whose config_path is not an
+// absolute path to an existing file. It does not parse the file: cortex-gateway does.
+func validatePraxisPolicy(p *PraxisPolicyConfig) error {
+	if p == nil {
+		return nil
+	}
+	if p.ConfigPath == "" {
+		return fmt.Errorf("praxis.policy.config_path: must be set when praxis.policy is set")
+	}
+	if !filepath.IsAbs(p.ConfigPath) {
+		return fmt.Errorf("praxis.policy.config_path: %q must be an absolute path", p.ConfigPath)
+	}
+	fi, err := os.Stat(p.ConfigPath)
+	if err != nil {
+		return fmt.Errorf("praxis.policy.config_path: %w", err)
+	}
+	if fi.IsDir() {
+		return fmt.Errorf("praxis.policy.config_path: %q is a directory, not a policy file", p.ConfigPath)
+	}
+	return nil
 }
 
 // validatePraxisAddr accepts an empty addr (the default applies) or a literal

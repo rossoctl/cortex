@@ -124,6 +124,7 @@ type chain struct {
 
 type chainOpts struct {
 	noGateway bool
+	policy    string // policy file content; when set, praxis.policy.config_path names it
 }
 
 // e2eConfig has inference-parser on the outbound chain. In praxis mode outboundEntries
@@ -202,6 +203,13 @@ func newPraxisChain(t *testing.T, origin *mockOrigin, opts chainOpts) *chain {
 	c.cfg.Praxis.Egress = egressLn.Addr().String()
 
 	dir := t.TempDir()
+	if opts.policy != "" {
+		path := dir + "/policy.yaml"
+		if err := os.WriteFile(path, []byte(opts.policy), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c.cfg.Praxis.Policy = &config.PraxisPolicyConfig{ConfigPath: path}
+	}
 	tokenPath, yamlPath, err := writeGatewayFiles(dir, c.cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -813,4 +821,98 @@ func compact(v any) string {
 		return fmt.Sprint(v)
 	}
 	return string(b)
+}
+
+// e2ePolicy permits model-ok and denies every other model.
+const e2ePolicy = `routes:
+  - llm: model-ok
+    authorization:
+      pre_invocation:
+        - "llm.provider == 'never': deny('unreachable', 'never')"
+  - llm: "*"
+    authorization:
+      pre_invocation:
+        - "deny('model is not permitted', 'model_not_allowed')"
+`
+
+func (o *mockOrigin) count() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.headers)
+}
+
+func modelRequest(t *testing.T, model string) *http.Request {
+	t.Helper()
+	return request(t, t.Context(), http.MethodPost, chatURL,
+		[]byte(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`))
+}
+
+// The policy filter permits model-ok and refuses model-bad before the origin.
+func TestPraxisE2E_PolicyDeniesModel(t *testing.T) {
+	origin := newMockOrigin(t)
+	origin.serve(serveJSON(chatJSON))
+	c := newPraxisChain(t, origin, chainOpts{policy: e2ePolicy})
+
+	if st, b, _ := c.do(t, modelRequest(t, "model-ok")); st != http.StatusOK {
+		t.Fatalf("model-ok: status %d, body %s", st, b)
+	}
+	if n := origin.count(); n != 1 {
+		t.Fatalf("model-ok: the origin got %d requests, want 1", n)
+	}
+	st, b, h := c.do(t, modelRequest(t, "model-bad"))
+	if st != http.StatusForbidden {
+		t.Fatalf("model-bad: status %d, body %s", st, b)
+	}
+	if got := h.Get("X-Policy-Violation"); got != "model_not_allowed" {
+		t.Fatalf("model-bad: X-Policy-Violation = %q, want model_not_allowed", got)
+	}
+	if n := origin.count(); n != 1 {
+		t.Fatalf("model-bad: the origin got %d requests, want 1", n)
+	}
+	c.waitResponses(t, 2, 10*time.Second)
+}
+
+// A policy with llm: routes passes requests that are not inference calls.
+func TestPraxisE2E_PolicyPassesNonInference(t *testing.T) {
+	origin := newMockOrigin(t)
+	origin.serve(serveJSON(chatJSON))
+	c := newPraxisChain(t, origin, chainOpts{policy: e2ePolicy})
+
+	form := request(t, t.Context(), http.MethodPost, "http://oauth.example.com/token",
+		[]byte("grant_type=refresh_token&refresh_token=r"))
+	form.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Over the policy filter's 10 MiB default, under the gateway's 32 MiB.
+	upload := request(t, t.Context(), http.MethodPost, "http://files.example.com/upload", bytes.Repeat([]byte("u"), 11<<20))
+	upload.Header.Set("Content-Type", "application/octet-stream")
+	reqs := map[string]*http.Request{
+		"upload over 10 MiB": upload,
+		"json without model": request(t, t.Context(), http.MethodPost, "http://telemetry.example.com/v1/events", []byte(`{"events":[{"n":1}]}`)),
+		"form body":          form,
+		"put":                request(t, t.Context(), http.MethodPut, "http://api.example.com/repos/x", []byte(`{"name":"x"}`)),
+		"mcp tools/call":     request(t, t.Context(), http.MethodPost, "http://mcp.example.com/mcp", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{}}}`)),
+	}
+	want := 0
+	for name, req := range reqs {
+		want++
+		if st, b, h := c.do(t, req); st != http.StatusOK {
+			t.Errorf("%s: status %d, X-Policy-Violation %q, body %s", name, st, h.Get("X-Policy-Violation"), b)
+		}
+		if n := origin.count(); n != want {
+			t.Errorf("%s: the origin got %d requests, want %d", name, n, want)
+			want = n
+		}
+	}
+}
+
+// Without a policy, a model-bad request reaches the origin.
+func TestPraxisE2E_NoPolicyNoChange(t *testing.T) {
+	origin := newMockOrigin(t)
+	origin.serve(serveJSON(chatJSON))
+	c := newPraxisChain(t, origin, chainOpts{})
+	if st, b, _ := c.do(t, modelRequest(t, "model-bad")); st != http.StatusOK {
+		t.Fatalf("status %d, body %s", st, b)
+	}
+	if n := origin.count(); n != 1 {
+		t.Fatalf("the origin got %d requests, want 1", n)
+	}
 }

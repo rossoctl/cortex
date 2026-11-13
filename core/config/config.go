@@ -348,9 +348,15 @@ const (
 // listener, where the forward proxy's hop sends each recorded request. Egress is
 // Cortex's egress listener, where the gateway sends each request on to its origin.
 type PraxisConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Listen  string `yaml:"listen,omitempty" json:"listen,omitempty"`
-	Egress  string `yaml:"egress,omitempty" json:"egress,omitempty"`
+	Enabled bool                `yaml:"enabled" json:"enabled"`
+	Listen  string              `yaml:"listen,omitempty" json:"listen,omitempty"`
+	Egress  string              `yaml:"egress,omitempty" json:"egress,omitempty"`
+	Policy  *PraxisPolicyConfig `yaml:"policy,omitempty" json:"policy,omitempty"`
+}
+
+// PraxisPolicyConfig is `praxis.policy:`, the Praxis policy filter that cortex-gateway runs.
+type PraxisPolicyConfig struct {
+	ConfigPath string `yaml:"config_path" json:"config_path"`
 }
 
 // ListenAddr returns praxis.listen, or DefaultPraxisListen when it is empty or

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -161,5 +163,53 @@ func TestPraxis_AllowsOffOutboundPlugin(t *testing.T) {
 		if err := Validate(c); tc.refused != (err != nil) {
 			t.Errorf("on_error %q: Validate = %v, refused want %v", tc.policy, err, tc.refused)
 		}
+	}
+}
+
+func TestPraxis_PolicyConfigPath(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "policy.yaml")
+	if err := os.WriteFile(file, []byte("routes: []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, path string
+		ok         bool
+	}{
+		{"empty", "", false},
+		{"relative", "policy.yaml", false},
+		{"missing", filepath.Join(dir, "missing.yaml"), false},
+		{"directory", dir, false},
+		{"valid", file, true},
+	} {
+		c := praxisConfig()
+		c.Listener.BindLoopbackOnly = true
+		c.Praxis.Policy = &PraxisPolicyConfig{ConfigPath: tc.path}
+		err := Validate(c)
+		if tc.ok && err != nil {
+			t.Errorf("%s: Validate = %v, want nil", tc.name, err)
+		}
+		if !tc.ok && (err == nil || !strings.HasPrefix(err.Error(), "praxis.policy.config_path")) {
+			t.Errorf("%s: Validate = %v, want an error that starts with praxis.policy.config_path", tc.name, err)
+		}
+	}
+}
+
+func TestPraxis_PolicyIgnoredWhenOff(t *testing.T) {
+	c := praxisConfig()
+	c.Praxis.Enabled = false
+	c.Praxis.Policy = &PraxisPolicyConfig{ConfigPath: "relative"}
+	if err := Validate(c); err != nil {
+		t.Fatalf("Validate with praxis off = %v, want nil", err)
+	}
+}
+
+func TestPraxis_PolicyParses(t *testing.T) {
+	var c Config
+	if err := yaml.Unmarshal([]byte("praxis: {enabled: true, policy: {config_path: /p.yaml}}\n"), &c); err != nil {
+		t.Fatalf("yaml: %v", err)
+	}
+	if c.Praxis.Policy == nil || c.Praxis.Policy.ConfigPath != "/p.yaml" {
+		t.Fatalf("Policy = %+v, want ConfigPath /p.yaml", c.Praxis.Policy)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -131,6 +132,54 @@ func TestGatewayYAML_Fields(t *testing.T) {
 	eps, _ := c["endpoints"].([]any)
 	if c["name"] != "egress" || len(eps) != 1 || eps[0] != config.DefaultPraxisEgress {
 		t.Errorf("cluster = %v", clusters[0])
+	}
+}
+
+func TestGatewayYAML_PolicyOrder(t *testing.T) {
+	cfg := praxisConfig()
+	cfg.Praxis.Policy = &config.PraxisPolicyConfig{ConfigPath: "/p/policy.yaml"}
+	out, err := gatewayYAML(cfg, "/d/gateway.token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var g struct {
+		FilterChains []struct {
+			Filters []map[string]any `yaml:"filters"`
+		} `yaml:"filter_chains"`
+	}
+	if err := yaml.Unmarshal(out, &g); err != nil {
+		t.Fatal(err)
+	}
+	fs := g.FilterChains[0].Filters
+	var order []any
+	for _, f := range fs {
+		order = append(order, f["filter"])
+	}
+	want := []any{"ip_acl", "cortex_attribution", "cortex_observe", "policy", "access_log", "router", "load_balancer"}
+	if !slices.Equal(order, want) {
+		t.Fatalf("filter order = %v, want %v", order, want)
+	}
+	llm, _ := fs[3]["llm"].(map[string]any)
+	if p := fs[3]; len(p) != 3 || p["config_path"] != "/p/policy.yaml" || len(llm) != 2 || llm["require_model"] != false || llm["max_request_bytes"] != gatewayMaxRequestBytes {
+		t.Errorf("policy filter = %v, want filter, config_path /p/policy.yaml, llm.require_model false and llm.max_request_bytes %d", p, gatewayMaxRequestBytes)
+	}
+}
+
+func TestGatewayYAML_NoPolicyNoChange(t *testing.T) {
+	want, err := gatewayYAML(praxisConfig(), "/t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []*config.PraxisPolicyConfig{nil, {ConfigPath: ""}} {
+		cfg := praxisConfig()
+		cfg.Praxis.Policy = p
+		got, err := gatewayYAML(cfg, "/t")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("Policy %+v changed the output:\n%s", p, got)
+		}
 	}
 }
 
