@@ -966,11 +966,13 @@ func TestPraxisE2E_PolicyDeniesTool(t *testing.T) {
 		t.Fatalf("danger_tool: the origin got %d requests, want 1", n)
 	}
 
-	// A Go server folds "Method" to "method". The policy cannot read bad UTF-8.
+	// A Go server folds "Method" to "method" and "Path" to "path". The policy
+	// cannot read bad UTF-8.
 	for _, body := range []string{
 		`{"id":1,"Method":"tools/call","params":{"name":"danger_tool"}}`,
 		`{"JSONRPC":"2.0","id":1,"Method":"tools/call","params":{"name":"danger_tool"}}`,
 		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"danger_tool\",\"arguments\":{\"x\":\"\xff\"}}}",
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe_tool","arguments":{"path":"ok","Path":"/etc/passwd"}}}`,
 	} {
 		req := request(t, t.Context(), http.MethodPost, mcpURL, []byte(body))
 		if st, b, _ := c.do(t, req); st != http.StatusInternalServerError {

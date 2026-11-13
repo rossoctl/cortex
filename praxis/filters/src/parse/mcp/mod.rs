@@ -113,12 +113,16 @@ pub fn parse_request(
     })
 }
 
-/// Reports whether the top level of the raw body reads the same in `parse_request`, in
-/// the Praxis `policy` filter and in a TypeScript or Python MCP server. `parse_request`
-/// decodes zstd, replaces bad UTF-8, folds case and merges a repeated `params`,
-/// as Go does. The policy filter parses the raw bytes with `serde_json`. True for
-/// an empty body, and for strict JSON in which each of the top-level keys
-/// `method` and `params` occurs at most once, with the exact name.
+/// Reports whether the envelope and `params` of the raw body read the same in
+/// `parse_request`, in the Praxis `policy` filter and in a TypeScript or Python
+/// MCP server. `parse_request` decodes zstd, replaces bad UTF-8, folds case and
+/// merges a repeated `params`, as Go does. The policy filter parses the raw bytes
+/// with `serde_json`. True for an empty body, and for strict JSON in which:
+/// - each of the top-level keys `method` and `params` occurs at most once, with
+///   the exact name;
+/// - no object in `params`, at any depth, has two keys that are equal when case
+///   is ignored. A Go server keeps the last of them for a struct field, and
+///   merges a repeated object into a map field.
 pub fn reads_alike(body: &[u8]) -> bool {
     if body.is_empty() {
         return true;
@@ -138,7 +142,29 @@ pub fn reads_alike(body: &[u8]) -> bool {
     ["method", "params"].iter().all(|name| {
         let mut hits = entries.iter().filter(|(k, _)| gojson::is(k, name));
         hits.next().is_none_or(|(k, _)| k == name) && hits.next().is_none()
-    })
+    }) && entries
+        .iter()
+        .filter(|(k, _)| k == "params")
+        .all(|(_, v)| !keys_collide(v))
+}
+
+/// Reports whether an object in `raw`, at any depth, has two keys with the
+/// same `gojson::fold_key`. The serde_json parse in `reads_alike` limits the depth.
+fn keys_collide(raw: &RawValue) -> bool {
+    match raw.get().as_bytes().first() {
+        Some(b'{') => {
+            let Ok(Some(entries)) = gojson::object(raw) else {
+                return true;
+            };
+            let mut seen = std::collections::HashSet::new();
+            entries
+                .iter()
+                .any(|(k, v)| !seen.insert(gojson::fold_key(k)) || keys_collide(v))
+        }
+        Some(b'[') => serde_json::from_str::<Vec<&RawValue>>(raw.get())
+            .map_or(true, |items| items.into_iter().any(keys_collide)),
+        _ => false,
+    }
 }
 
 /// Port of mcp.ParseResponse: reads one MCP response (plain JSON-RPC, or an SSE

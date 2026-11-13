@@ -95,9 +95,10 @@ const MAX_METADATA_VALUE: usize = 256;
 /// The `filter_metadata` keys that the Praxis `policy` filter reads for an
 /// MCP request.
 fn mcp_metadata(view: PolicyView<'_>) -> Vec<(&'static str, &str)> {
-    // An entity method with no `mcp.name` gets 500 from a policy filter with a
-    // tool, prompt, resource or llm route. With no `mcp.method`, a policy with
-    // an `llm:` route can admit the body.
+    // A policy filter with a tool, prompt, resource or llm route refuses an
+    // entity method with no `mcp.name`: 500, or a deny when the body also has
+    // a top-level `model`. With no `mcp.method`, a policy with an `llm:` route
+    // can admit the body.
     let ext = match view {
         PolicyView::Exact(ext) => ext,
         PolicyView::Ambiguous => return vec![("mcp.method", "tools/call")],
@@ -488,7 +489,7 @@ mod tests {
     fn body_that_parsers_read_differently_gets_tools_call_without_name() {
         let none = HeaderMap::new();
         let refused = [("mcp.method", "tools/call".to_owned())];
-        let ambiguous: [&[u8]; 8] = [
+        let ambiguous: [&[u8]; 13] = [
             br#"{"id":1,"Method":"tools/call","params":{"name":"danger_tool"}}"#,
             br#"{"JSONRPC":"2.0","id":1,"Method":"tools/call","params":{"name":"danger_tool"}}"#,
             br#"{"method":"tools/list","Method":"tools/call","params":{"name":"danger_tool"}}"#,
@@ -497,6 +498,11 @@ mod tests {
             br#"{"method":"tools/list","method":"tools/call","params":{"name":"danger"}}"#,
             b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"write_file\",\"arguments\":{\"x\":\"\xff\"}}}",
             br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","arguments":{"x":"\ud800"}}}"#,
+            br#"{"method":"tools/call","params":{"name":"t","arguments":{"path":"ok","Path":"/etc/passwd"}}}"#,
+            br#"{"method":"tools/call","params":{"name":"t","arguments":{"a":"ok"},"arguments":{"b":"x"}}}"#,
+            br#"{"method":"tools/call","params":{"name":"t","arguments":{"list":[{"k":1,"K":2}]}}}"#,
+            br#"{"method":"tools/call","params":{"name":"safe","Name":"danger"}}"#,
+            br#"{"method":"prompts/get","params":{"name":"p","arguments":{"x":"1","x":"2"}}}"#,
         ];
         for body in ambiguous {
             assert_eq!(
