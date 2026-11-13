@@ -174,6 +174,80 @@ func TestWalk_SessionFilter(t *testing.T) {
 	}
 }
 
+// The unknown-session error is bounded in BYTES, with ids long enough that a count cap
+// would not have been enough. These are the shapes that overran it: plain UUIDs (5
+// requested against 8 known rendered 538 bytes under the old count cap), ids at
+// session.MaxSessionIDLen, which is the only bound a client-asserted id has, and a wide
+// archive behind a single typo. Each must stay parseable by a client that reads 512 bytes
+// of the `{"error":...}` body the HTTP layer wraps this in — so the budget here is checked
+// against that wrapped length, not the bare message.
+func TestWalk_UnknownSessionErrorIsBoundedInBytes(t *testing.T) {
+	uuid := func(i int) string { return fmt.Sprintf("3f2504e0-4f89-11d3-9a0c-0305e82c33%02d", i) }
+	long := func(i int) string { return fmt.Sprintf("%s-%02d", strings.Repeat("x", 250), i) }
+
+	for _, tc := range []struct {
+		name               string
+		requested, archive []string
+	}{
+		{"uuids, 5 requested against 8 archived", // 538 bytes before the byte budget
+			[]string{uuid(1), uuid(2), uuid(3), uuid(4), uuid(5)},
+			[]string{uuid(50), uuid(51), uuid(52), uuid(53), uuid(54), uuid(55), uuid(56), uuid(57)}},
+		{"uuids, 4 requested against a 50-session archive", // 512 bytes before
+			[]string{uuid(1), uuid(2), uuid(3), uuid(4)}, nil},
+		{"one maximum-length id against a wide archive", // 618 bytes before
+			[]string{long(1)}, nil},
+		{"a single typo against 20 long ids", // 614 bytes before
+			[]string{"typo"}, []string{long(1), long(2), long(3), long(4), long(5)}},
+		{"every id at maximum length, on both sides",
+			[]string{long(1), long(2), long(3), long(4), long(5)},
+			[]string{long(6), long(7), long(8), long(9)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			archived := tc.archive
+			if archived == nil {
+				for i := range 50 {
+					archived = append(archived, uuid(i))
+				}
+			}
+			err := &UnknownSessionsError{Requested: tc.requested, Known: archived}
+			// The body the handler builds: what the client actually reads 512 bytes of.
+			body, merr := json.Marshal(err.Error())
+			if merr != nil {
+				t.Fatal(merr)
+			}
+			wrapped := len(`{"error":`) + len(body) + len(`}`)
+			if wrapped >= 512 {
+				t.Errorf("400 body is %d bytes; a client that reads 512 cannot parse it: %s", wrapped, err.Error())
+			}
+			// Bounded is not useful if it names nothing: the asker's first id must survive,
+			// at least as a recognisable prefix.
+			first := tc.requested[0]
+			if len(first) > errorListIDMaxLen {
+				first = first[:errorListIDMaxLen]
+			}
+			if !strings.Contains(err.Error(), first) {
+				t.Errorf("message names none of the requested ids: %s", err.Error())
+			}
+			// Whatever the budget did not fit must be accounted for rather than silently
+			// dropped. cappedList renders every id it fits separated by ", ", so the ids
+			// shown is one more than the separators; the rest must be in an "and N more".
+			rendered := cappedList(archived, errorMsgBudget)
+			ids, dropped := rendered, 0
+			// The tail joins the last id with " and ", so it is cut before the ids are split.
+			if head, tail, found := strings.Cut(rendered, " and "); found {
+				if _, scanErr := fmt.Sscanf(tail, "%d more", &dropped); scanErr != nil {
+					t.Fatalf("unparseable tail %q in %s", tail, rendered)
+				}
+				ids = head
+			}
+			if shown := strings.Count(ids, ", ") + 1; shown+dropped != len(archived) {
+				t.Errorf("archived list shows %d ids and claims %d more, but the archive holds %d: %s",
+					shown, dropped, len(archived), rendered)
+			}
+		})
+	}
+}
+
 // The unknown-session error caps what it prints on both sides, because the HTTP layer
 // forwards it as a 400 body and a client bounds what it reads of one (agentop reads 512
 // bytes): an archive of hundreds of sessions must not turn a typo into an answer the
@@ -211,11 +285,14 @@ func TestWalk_UnknownSessionErrorIsCapped(t *testing.T) {
 		t.Fatalf("Known = %d ids, want the complete list", len(unknown.Known))
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "nope-5 and 1 more") {
-		t.Errorf("message %q does not cap the requested list at 5", msg)
-	}
-	if !strings.Contains(msg, "session-07 and 4 more") {
-		t.Errorf("message %q does not cap the known list at 8", msg)
+	// Short ids, so the whole budget is spent on names rather than on a count: this is the
+	// case where the asker gets everything, and the "and N more" tail is what the byte
+	// budget adds when they do not. TestWalk_UnknownSessionErrorIsBoundedInBytes holds the
+	// cases that do overflow.
+	for _, want := range []string{"nope-1", "nope-6", "session-00", "session-11"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q drops %s, which fits the budget", msg, want)
+		}
 	}
 	if len(msg) >= 512 {
 		t.Errorf("message is %d bytes; a client that reads 512 cannot parse it: %s", len(msg), msg)

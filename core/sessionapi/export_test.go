@@ -2,6 +2,7 @@ package sessionapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -149,6 +150,70 @@ func TestHandleExport_SessionParameter(t *testing.T) {
 	}
 }
 
+// A refusal naming a WIDE archive of LONG ids still fits what a client reads of a 400
+// body. This is the case a count cap could not hold and the fixture above cannot reach:
+// its two ids are "s1" and "old", so its refusal is 60-odd bytes however the message is
+// rendered. Here 50 archived sessions at UUID length behind 5 unknown ids rendered 538
+// bytes under the old cap — past agentop's 512-byte read, so the detail was dropped and
+// the user saw a bare "apiclient: bad request" (#1830, #1831 review).
+//
+// The budget lives in core/sessionexport; what this test pins is the contract at the HTTP
+// surface, where the message is wrapped in `{"error":...}` and the client's limit applies.
+func TestHandleExport_UnknownSessionRefusalFitsAClientRead(t *testing.T) {
+	root := t.TempDir()
+	write, err := archive.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := exportBase
+	store := session.New(0, 0, 0, session.WithClock(func() time.Time { return now }))
+	store.AddRecorder(write)
+	for i := range 50 {
+		id := fmt.Sprintf("3f2504e0-4f89-11d3-9a0c-0305e82c33%02d", i)
+		at := exportBase.Add(time.Duration(i) * time.Minute)
+		now = at
+		store.Append(id, model.SessionEvent{At: at, Direction: model.Outbound,
+			Phase: model.SessionRequest, Host: "h", HTTPMethod: "POST"})
+	}
+	store.Close()
+	if err := write.Close(); err != nil {
+		t.Fatal(err)
+	}
+	a, err := archive.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+	ts := httptest.NewServer(New(":0", session.New(0, 0, 0), WithArchive(a),
+		WithClock(func() time.Time { return exportNow })).server.Handler)
+	t.Cleanup(ts.Close)
+
+	q := "/v1/export"
+	for i := range 5 {
+		q += fmt.Sprintf("&session=nope-%s-%d", strings.Repeat("f", 30), i)
+	}
+	code, body := getBody(t, ts.URL+strings.Replace(q, "&", "?", 1))
+	if code != http.StatusBadRequest {
+		t.Fatalf("GET %s = %d %s, want 400", q, code, body)
+	}
+	// agentop reads 512 bytes of a 400 body and parses the "error" field out of it; past
+	// that the JSON is cut mid-string and the detail is lost entirely.
+	if len(body) >= 512 {
+		t.Errorf("400 body is %d bytes; a client reading 512 cannot parse it: %s", len(body), body)
+	}
+	// Bounded is not useful if it names nothing actionable.
+	var refusal struct{ Error string }
+	if err := json.Unmarshal(body, &refusal); err != nil {
+		t.Fatalf("400 body is not parseable JSON: %v: %s", err, body)
+	}
+	if !strings.Contains(refusal.Error, "nope-") {
+		t.Errorf("refusal names none of the requested ids: %s", refusal.Error)
+	}
+	if !strings.Contains(refusal.Error, "3f2504e0") || !strings.Contains(refusal.Error, "more") {
+		t.Errorf("refusal does not name the archived ids and count the rest: %s", refusal.Error)
+	}
+}
+
 // ?since= carries only events newer than that far back: a session the archive last
 // touched before the floor is skipped whole, one that straddles it stops at its first
 // event below. 7d reads as a day count, which time.ParseDuration alone rejects.
@@ -238,16 +303,22 @@ func TestHandleExport_BrokenSegmentIs500(t *testing.T) {
 	if len(segs) == 0 {
 		t.Fatal("fixture wrote no segment to make unreadable")
 	}
+	// A SELF-REFERENTIAL SYMLINK WHERE THE SEGMENT WAS, not chmod 0: root ignores the mode
+	// bits, so a chmod fixture passes CI and fails for anyone running `go test` as root (a
+	// devcontainer, an agent sandbox) with a 200 and the first record. ELOOP is refused for
+	// every uid, root included, and it needs no chmod-back cleanup for t.TempDir to remove.
+	//
+	// A directory would NOT do: os.Open succeeds on one on macOS and the read fails later,
+	// which readSegment reports as truncated rather than as an error — the tolerated case
+	// above, and a 200. Only a path that cannot be OPENED reaches the handler's 500.
 	for _, seg := range segs {
-		if err := os.Chmod(seg, 0); err != nil {
+		if err := os.Remove(seg); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(seg, seg); err != nil {
 			t.Fatal(err)
 		}
 	}
-	t.Cleanup(func() {
-		for _, seg := range segs { // readable again, so t.TempDir's cleanup can remove them
-			os.Chmod(seg, 0o644) //nolint:errcheck // best effort for cleanup
-		}
-	})
 
 	ts := httptest.NewServer(New(":0", session.New(0, 0, 0), WithArchive(a),
 		WithClock(func() time.Time { return exportNow })).server.Handler)
