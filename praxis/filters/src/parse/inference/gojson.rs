@@ -265,10 +265,12 @@ pub(crate) fn is(key: &str, name: &str) -> bool {
 
 /// A key for comparing strings when case is ignored. It joins the pairs that
 /// strings.EqualFold joins in the test below (s and long s, k and the Kelvin
-/// sign, the sigmas, micro and mu). It also joins more pairs, for example `ß`
-/// and `ss`, so a check that refuses equal keys refuses more.
+/// sign, the sigmas, micro and mu, small and capital sharp s). It also joins
+/// more pairs, for example `ß` and `ss`, so a check that refuses equal keys
+/// refuses more.
 pub(crate) fn fold_key(s: &str) -> String {
     s.chars()
+        .flat_map(char::to_lowercase)
         .flat_map(char::to_uppercase)
         .flat_map(char::to_lowercase)
         .collect()
@@ -352,12 +354,13 @@ mod tests {
     #[test]
     fn fold_key_joins_what_go_equal_fold_joins() {
         let c = |u: u32| char::from_u32(u).unwrap().to_string();
-        // s and long s, k and Kelvin sign, the three sigmas, micro and mu.
+        // s and long s, k and Kelvin sign, the three sigmas, micro and mu, sharp s.
         let orbits = [
             vec!["S".to_owned(), "s".to_owned(), c(0x17f)],
             vec!["K".to_owned(), "k".to_owned(), c(0x212a)],
             vec![c(0x3a3), c(0x3c3), c(0x3c2)],
             vec![c(0xb5), c(0x39c), c(0x3bc)],
+            vec![c(0xdf), c(0x1e9e)],
             vec!["Path".to_owned(), "PATH".to_owned(), "path".to_owned()],
         ];
         for orbit in orbits {

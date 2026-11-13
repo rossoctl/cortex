@@ -96,9 +96,9 @@ const MAX_METADATA_VALUE: usize = 256;
 /// MCP request.
 fn mcp_metadata(view: PolicyView<'_>) -> Vec<(&'static str, &str)> {
     // A policy filter with a tool, prompt, resource or llm route refuses an
-    // entity method with no `mcp.name`: 500, or a deny when the body also has
-    // a top-level `model`. With no `mcp.method`, a policy with an `llm:` route
-    // can admit the body.
+    // entity method with no `mcp.name`: 500, or a deny when the policy has an
+    // `llm:` route and the body has a top-level `model`. With no `mcp.method`,
+    // a policy with an `llm:` route can admit the body.
     let ext = match view {
         PolicyView::Exact(ext) => ext,
         PolicyView::Ambiguous => return vec![("mcp.method", "tools/call")],
@@ -484,7 +484,7 @@ mod tests {
     // The policy filter reads the raw body with serde_json. A TypeScript or
     // Python server reads the exact keys. When either can read the body in
     // another way than the Go-style parse, a policy with entity routes must
-    // refuse it: `tools/call` with no `mcp.name` gets 500.
+    // refuse it: `tools/call` with no `mcp.name`.
     #[test]
     fn body_that_parsers_read_differently_gets_tools_call_without_name() {
         let none = HeaderMap::new();
