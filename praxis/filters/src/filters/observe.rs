@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use super::attribution::{TokenValid, read_token};
 use crate::parse::inference::gojson;
-use crate::parse::model::McpExtension;
+use crate::parse::mcp::PolicyView;
 use crate::record::emitter::{self, Emitter};
 use crate::record::line::Line;
 use crate::record::row::{EGRESS_ERROR_HEADER, Exchange};
@@ -94,7 +94,14 @@ const MAX_METADATA_VALUE: usize = 256;
 
 /// The `filter_metadata` keys that the Praxis `policy` filter reads for an
 /// MCP request.
-fn mcp_metadata(ext: &McpExtension) -> Vec<(&'static str, &str)> {
+fn mcp_metadata(view: PolicyView<'_>) -> Vec<(&'static str, &str)> {
+    // An entity method with no `mcp.name` gets 500 from a policy filter with a
+    // tool, prompt, resource or llm route. With no `mcp.method`, a policy with
+    // an `llm:` route can admit the body.
+    let ext = match view {
+        PolicyView::Exact(ext) => ext,
+        PolicyView::Ambiguous => return vec![("mcp.method", "tools/call")],
+    };
     // A synthetic `$transport/...` method (bodyless GET or DELETE) is set too:
     // without `mcp.method`, a policy with only tool/prompt/resource routes answers 500.
     let mut keys = vec![("mcp.method", ext.method.as_str())];
@@ -103,10 +110,15 @@ fn mcp_metadata(ext: &McpExtension) -> Vec<(&'static str, &str)> {
         "resources/read" => Some("uri"),
         _ => None,
     };
-    // A Go server folds case, so `{"name":"a","Name":"b"}` can run `b`. No
-    // `mcp.name` then, and the policy filter denies the entity method.
+    // A Go server folds case, so `{"name":"a","Name":"b"}` can run `b`, and
+    // `Arguments` can hold the arguments that the policy does not read. No
+    // `mcp.name` then.
     if let (Some(param), Some(p)) = (param, ext.params.as_ref())
-        && p.keys().all(|k| k == param || !gojson::is(k, param))
+        && p.keys().all(|k| {
+            [param, "arguments"]
+                .iter()
+                .all(|w| k == w || !gojson::is(k, w))
+        })
         && let Some(name) = p.get(param).and_then(|v| v.as_str())
     {
         keys.push(("mcp.name", name));
@@ -329,7 +341,7 @@ mod tests {
 
     fn keys(method: &str, body: &[u8]) -> Vec<(&'static str, String)> {
         let ext = parse_request(method, "/mcp", &HeaderMap::new(), body).expect("an MCP request");
-        mcp_metadata(&ext)
+        mcp_metadata(PolicyView::Exact(&ext))
             .into_iter()
             .map(|(k, v)| (k, v.to_owned()))
             .collect()
@@ -409,6 +421,21 @@ mod tests {
         }
         let got = keys("POST", &rpc("resources/read", r#"{"uri":"a","URI":"b"}"#));
         assert_eq!(got, pairs(&[("mcp.method", "resources/read")]));
+        // The policy reads only the exact `arguments` key for `args.*` rules.
+        for (method, params) in [
+            (
+                "tools/call",
+                r#"{"name":"t","Arguments":{"path":"/etc/passwd"}}"#,
+            ),
+            (
+                "tools/call",
+                r#"{"name":"t","arguments":{"path":"ok"},"Arguments":{"path":"/etc/passwd"}}"#,
+            ),
+            ("prompts/get", r#"{"name":"p","ARGUMENTS":{"x":"y"}}"#),
+        ] {
+            let got = keys("POST", &rpc(method, params));
+            assert_eq!(got, pairs(&[("mcp.method", method)]), "{params}");
+        }
     }
 
     #[test]
@@ -426,7 +453,75 @@ mod tests {
         let mut session = HeaderMap::new();
         session.insert("mcp-session-id", http::HeaderValue::from_static("s1"));
         let ext = parse_request("DELETE", "/mcp", &session, b"").expect("an MCP request");
-        assert_eq!(mcp_metadata(&ext), [("mcp.method", "$transport/terminate")]);
+        assert_eq!(
+            mcp_metadata(PolicyView::Exact(&ext)),
+            [("mcp.method", "$transport/terminate")]
+        );
+    }
+
+    /// The keys that `on_request_body` writes for one POST to /mcp.
+    fn written(h: &HeaderMap, body: &[u8]) -> Vec<(&'static str, String)> {
+        let mut ex = Exchange::new(
+            "POST",
+            "tools.example",
+            "/mcp",
+            h,
+            crate::record::attribution::Attribution::default(),
+            "req-1".into(),
+            SystemTime::now(),
+            std::time::Instant::now(),
+        );
+        ex.on_request_body(body);
+        ex.mcp()
+            .map(mcp_metadata)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| (k, v.to_owned()))
+            .collect()
+    }
+
+    // The policy filter reads the raw body with serde_json. A TypeScript or
+    // Python server reads the exact keys. When either can read the body in
+    // another way than the Go-style parse, a policy with entity routes must
+    // refuse it: `tools/call` with no `mcp.name` gets 500.
+    #[test]
+    fn body_that_parsers_read_differently_gets_tools_call_without_name() {
+        let none = HeaderMap::new();
+        let refused = [("mcp.method", "tools/call".to_owned())];
+        let ambiguous: [&[u8]; 8] = [
+            br#"{"id":1,"Method":"tools/call","params":{"name":"danger_tool"}}"#,
+            br#"{"JSONRPC":"2.0","id":1,"Method":"tools/call","params":{"name":"danger_tool"}}"#,
+            br#"{"method":"tools/list","Method":"tools/call","params":{"name":"danger_tool"}}"#,
+            br#"{"method":"tools/call","params":{"name":"danger"},"Params":{"name":"safe"}}"#,
+            br#"{"method":"tools/call","params":{"name":"danger"},"params":{"name":"safe"}}"#,
+            br#"{"method":"tools/list","method":"tools/call","params":{"name":"danger"}}"#,
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"write_file\",\"arguments\":{\"x\":\"\xff\"}}}",
+            br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","arguments":{"x":"\ud800"}}}"#,
+        ];
+        for body in ambiguous {
+            assert_eq!(
+                written(&none, body),
+                refused,
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+        // The policy does not decode zstd, so it sees no arguments.
+        let mut zstd = HeaderMap::new();
+        zstd.insert(
+            http::header::CONTENT_ENCODING,
+            http::HeaderValue::from_static("zstd"),
+        );
+        let exact = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t"}}"#;
+        let packed = zstd::encode_all(&exact[..], 0).unwrap();
+        assert_eq!(written(&zstd, &packed), refused, "zstd body");
+
+        assert_eq!(
+            written(&none, exact),
+            pairs(&[("mcp.method", "tools/call"), ("mcp.name", "t")])
+        );
+        let list = br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+        assert_eq!(written(&none, list), pairs(&[("mcp.method", "tools/list")]));
     }
 
     #[test]

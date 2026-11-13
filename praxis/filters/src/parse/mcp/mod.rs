@@ -12,7 +12,7 @@ use crate::parse::inference::text::go_lossy_utf8;
 use crate::parse::jsonrpc;
 use crate::parse::model::{McpError, McpExtension};
 
-pub use observer::McpObserver;
+pub use observer::{McpObserver, PolicyView};
 
 const SYNTHETIC_TRANSPORT_STREAM: &str = "$transport/stream";
 const SYNTHETIC_TRANSPORT_TERMINATE: &str = "$transport/terminate";
@@ -113,17 +113,23 @@ pub fn parse_request(
     })
 }
 
-/// Reports whether each of the top-level keys `method` and `params` occurs at
-/// most once, with the exact name. `parse_request` folds case and merges a
-/// repeated `params` as Go does. A TypeScript or Python MCP server does
-/// neither, so a policy decision must not use a body that fails this check.
-pub fn top_level_keys_exact(headers: &HeaderMap, body: &[u8]) -> bool {
-    let body = decode_request_body(headers, body);
+/// Reports whether the top level of the raw body reads the same in `parse_request`, in
+/// the Praxis `policy` filter and in a TypeScript or Python MCP server. `parse_request`
+/// decodes zstd, replaces bad UTF-8, folds case and merges a repeated `params`,
+/// as Go does. The policy filter parses the raw bytes with `serde_json`. True for
+/// an empty body, and for strict JSON in which each of the top-level keys
+/// `method` and `params` occurs at most once, with the exact name.
+pub fn reads_alike(body: &[u8]) -> bool {
     if body.is_empty() {
         return true;
     }
-    let text = go_lossy_utf8(&body).text;
-    let Some(entries) = gojson::parse(&text)
+    if serde_json::from_slice::<serde_json::Value>(body).is_err() {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(body) else {
+        return false;
+    };
+    let Some(entries) = gojson::parse(text)
         .ok()
         .and_then(|raw| gojson::object(raw).ok().flatten())
     else {
