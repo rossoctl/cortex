@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
+	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
 )
 
 // installerOneLiner is the fix for "nothing is installed": the documented install.
@@ -85,7 +86,12 @@ func (binariesStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, er
 		}
 	}
 	u.fn = undoMoves(restores, env.previousDir(), prevExisted)
-	env.onSuccess = append(env.onSuccess, func() { _ = os.RemoveAll(env.previousDir()) })
+	env.onSuccess = append(env.onSuccess, func() {
+		_ = os.RemoveAll(env.previousDir())
+		// The result names the binaries just replaced. agentop update writes it again
+		// after setup; an install by other means leaves it out until the next check.
+		_ = os.Remove(filepath.Join(env.cortexDir, updatestatus.FileName))
+	})
 	names := strings.Join(stagedBinaries(env), ", ")
 	if env.freshInstall {
 		return names + " → " + env.tilde(env.binDir), u, nil

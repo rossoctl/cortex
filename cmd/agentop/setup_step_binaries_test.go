@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
 )
 
 func TestBinariesFreshInstallAndUndo(t *testing.T) {
@@ -70,16 +72,30 @@ func TestBinariesUpgradeKeepsThePreviousUntilUndoneOrDone(t *testing.T) {
 		t.Error("undo left the previous/ it made")
 	}
 
-	// Done: once every step has applied, onSuccess drops previous/.
+	// Done: once every step has applied, onSuccess drops previous/ and the update
+	// result, which names the binaries just replaced.
+	status := filepath.Join(env.cortexDir, updatestatus.FileName)
+	if err := os.MkdirAll(env.cortexDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(status, []byte(`{"installed":"v1.0.0"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	env.onSuccess = nil
 	if _, _, err := (binariesStep{}).apply(env, nil); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(status); err != nil {
+		t.Error("apply removed the update result before setup succeeded")
 	}
 	for _, f := range env.onSuccess {
 		f()
 	}
 	if _, err := os.Stat(env.previousDir()); err == nil {
 		t.Error("onSuccess left previous/")
+	}
+	if _, err := os.Stat(status); err == nil {
+		t.Error("onSuccess left the update result that names the old binaries")
 	}
 }
 

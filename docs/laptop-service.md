@@ -167,6 +167,41 @@ Setup does not pass that line on.
 
 To restart deliberately: `agentop service restart`.
 
+## Automatic updates
+
+A service install (launchd or systemd) updates itself:
+
+- The proxy starts the updater unit at most once a day. The first start is 10 minutes
+  after the proxy starts. The unit is `io.rossoctl.cortex.update` on macOS and
+  `cortex-update.service` on Linux.
+- The updater runs `agentop update --yes --auto`.
+- It installs the release that GitHub marks Latest, but only when that release was
+  published at least 72 hours ago. The publication time is the upload time of the
+  release's `checksums.txt`.
+- Then it restarts the proxy. Attached sessions lose the request in flight and retry it.
+
+It does not change a `dev`, `main-<sha>` or release-candidate service install. Those
+installs get the notice only. A newer Latest shows on the `agentop` title bar after the
+next daily check, before the 72 hours end. A `--no-service` install has no updater, so
+it gets no notice. `agentop update` by hand still works there.
+
+To turn it off, set this in `~/.cortex/config.yaml`:
+
+```yaml
+update:
+  auto: false
+```
+
+The next run reads it. You do not need a restart.
+
+Where to look:
+
+- `~/.cortex/update.json` holds the result of the last run.
+- `~/.cortex/update.log` holds the output of the updater.
+- `agentop doctor` has an `updates` row.
+
+`agentop update` by hand still installs at once, with no 72-hour wait.
+
 ## The cpex build
 
 Each release also publishes `cortex` built with the [cpex policy plugin](cpex-plugin.md),
