@@ -65,7 +65,8 @@ impl CortexObserve {
         }))
     }
 
-    fn submit(&self, line: &Line) {
+    fn submit(&self, mut line: Line) {
+        crate::policy_recorder::attach(&mut line);
         self.emitter.submit(line.queued());
     }
 
@@ -73,7 +74,7 @@ impl CortexObserve {
     fn finish(&self, o: &mut Observed, row: impl FnOnce(&mut Exchange) -> Line) {
         if !o.done {
             o.done = true;
-            self.submit(&row(&mut o.exchange));
+            self.submit(row(&mut o.exchange));
         }
     }
 }
@@ -240,7 +241,7 @@ impl HttpFilter for CortexObserve {
                     .collect();
                 (line, metadata)
             };
-            self.submit(&line);
+            self.submit(line);
             for (k, v) in metadata {
                 ctx.set_metadata(k, v);
             }
@@ -328,7 +329,7 @@ impl HttpFilter for CortexObserve {
         let upstream_gone = ctx.upstream_reached && ctx.stream_termination().is_some();
         let downstream_gone = o.answered;
         for line in o.exchange.deferred(status, downstream_gone, upstream_gone) {
-            self.submit(&line);
+            self.submit(line);
         }
         true
     }

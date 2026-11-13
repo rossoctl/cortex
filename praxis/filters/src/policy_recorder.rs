@@ -13,6 +13,8 @@ use praxis_policy::prelude::{
     Extensions, Plugin, PluginConfig, PluginError, PluginFactory, PluginInstance, PluginPayload,
 };
 
+use crate::record::line::{Invocation, Invocations, Line};
+
 /// The `kind:` a policy file names to attach this sink.
 pub const KIND: &str = "cortex/recorder";
 
@@ -86,6 +88,22 @@ pub fn take(request_id: &str) -> Option<Decision> {
     Some(decision)
 }
 
+/// Put the recorded decision for `line`'s request in its response row.
+pub(crate) fn attach(line: &mut Line) {
+    if line.event.phase != "response" {
+        return;
+    }
+    if let Some(decision) = take(&line.request_id) {
+        line.event.invocations = Some(Invocations {
+            outbound: vec![Invocation {
+                plugin: "policy".into(),
+                action: decision.action.into(),
+                reason: decision.reason,
+            }],
+        });
+    }
+}
+
 /// The sink. A policy file declares it with `kind: cortex/recorder` and the
 /// `read_headers` capability.
 pub struct CortexRecorder {
@@ -140,6 +158,7 @@ impl PluginFactory for CortexRecorderFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::record::line::Event;
 
     /// The store is process-wide, so the cap test must not evict a sibling's id.
     static TESTS: Mutex<()> = Mutex::new(());
@@ -148,6 +167,28 @@ mod tests {
         Decision {
             action,
             reason: reason.to_owned(),
+        }
+    }
+
+    fn guard() -> std::sync::MutexGuard<'static, ()> {
+        TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn line(phase: &'static str, request_id: &str) -> Line {
+        Line {
+            request_id: request_id.to_owned(),
+            started_at: "2026-11-13T10:00:00.000000000Z".into(),
+            session: "s".into(),
+            event: Event {
+                direction: "outbound",
+                phase,
+                request_id: request_id.to_owned(),
+                ..Default::default()
+            },
+            capture: None,
+            cost: None,
         }
     }
 
@@ -206,5 +247,57 @@ mod tests {
         for i in 0..=CAPACITY {
             take(&format!("t-cap-{i}"));
         }
+    }
+
+    #[test]
+    fn attach_puts_a_deny_in_the_response_row() {
+        let _guard = guard();
+        record("t-attach-deny", decision("deny", "model_not_allowed"));
+        let mut l = line("response", "t-attach-deny");
+        attach(&mut l);
+        let inv = l
+            .event
+            .invocations
+            .as_ref()
+            .expect("the row carries the decision");
+        assert_eq!(inv.outbound.len(), 1);
+        assert_eq!(inv.outbound[0].plugin, "policy");
+        assert_eq!(inv.outbound[0].action, "deny");
+        assert_eq!(inv.outbound[0].reason, "model_not_allowed");
+        assert!(take("t-attach-deny").is_none(), "attach takes the entry");
+    }
+
+    #[test]
+    fn attach_leaves_a_response_row_alone_with_no_decision() {
+        let _guard = guard();
+        let mut l = line("response", "t-attach-none");
+        attach(&mut l);
+        assert!(l.event.invocations.is_none());
+    }
+
+    #[test]
+    fn attach_leaves_a_request_row_and_its_entry_alone() {
+        let _guard = guard();
+        record("t-attach-request", decision("allow", ""));
+        let mut l = line("request", "t-attach-request");
+        attach(&mut l);
+        assert!(l.event.invocations.is_none());
+        assert!(
+            take("t-attach-request").is_some(),
+            "the entry stays for the response row"
+        );
+    }
+
+    #[test]
+    fn an_allow_entry_serializes_without_a_reason() {
+        let _guard = guard();
+        record("t-attach-allow", decision("allow", ""));
+        let mut l = line("response", "t-attach-allow");
+        attach(&mut l);
+        let v = serde_json::to_value(&l.event).unwrap();
+        assert_eq!(
+            v["invocations"],
+            serde_json::json!({"outbound": [{"plugin": "policy", "action": "allow"}]})
+        );
     }
 }

@@ -22,7 +22,14 @@ const SESSION: &str = "00000000-0000-4000-8000-000000000000";
 /// The event keys left out of the comparison: timings and the request id differ
 /// per run, ingestion owns `plugins`, and praxis mode does not set the rest.
 fn skipped() -> Vec<&'static str> {
-    let mut k = vec!["durationMs", "ttfbMs", "requestId", "plugins"];
+    // Direct mode's Go plugins record these; this run has no policy.
+    let mut k = vec![
+        "durationMs",
+        "ttfbMs",
+        "requestId",
+        "plugins",
+        "invocations",
+    ];
     k.extend_from_slice(NOT_SET_IN_PRAXIS_MODE);
     k
 }
