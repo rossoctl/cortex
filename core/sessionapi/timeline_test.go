@@ -437,3 +437,41 @@ func TestTimelineCacheAgesUnansweredRequestsOnAHit(t *testing.T) {
 		t.Error("aging the served copy reached the cached timeline")
 	}
 }
+
+// Live bytes change with no new event, so the endpoint fills them on the served copy each time
+// and the cached timeline keeps none.
+func TestTimeline_LiveTokensOnOpenTurnNotCached(t *testing.T) {
+	base := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
+	store := session.New(0, 0, 0)
+	srv := New(":0", store, WithClock(func() time.Time { return base.Add(20 * time.Second) }))
+	ts := httptest.NewServer(srv.server.Handler)
+	t.Cleanup(func() { ts.Close(); store.Close() })
+	main := func(msg string) *pipeline.InferenceExtension {
+		return &pipeline.InferenceExtension{AgentRole: pipeline.AgentRoleMain, Tools: []pipeline.InferenceTool{{Name: "Bash"}},
+			Messages: []pipeline.InferenceMessage{{Role: "user", Content: msg}}}
+	}
+	store.Append("s1", pipeline.SessionEvent{At: base, Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, RequestID: "done", Host: "llm.example", Inference: main("one")})
+	resp := main("one")
+	resp.OutputTokens = 1000
+	store.Append("s1", pipeline.SessionEvent{At: base.Add(8 * time.Second), Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, RequestID: "done", Host: "llm.example",
+		StatusCode: 200, Duration: 8 * time.Second, Ttfb: time.Second, BytesDown: 39000, Inference: resp})
+	store.Append("s1", pipeline.SessionEvent{At: base.Add(10 * time.Second), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, RequestID: "open", Host: "llm.example", Inference: main("two")})
+	var n int64 = 3900
+	defer store.TrackStream("open", &n)()
+
+	for _, want := range []int{100, 200} {
+		tl, code := getTimeline(t, ts.URL, "s1", "")
+		if code != http.StatusOK || len(tl.Turns) != 2 {
+			t.Fatalf("status = %d, timeline = %+v", code, tl)
+		}
+		if got := tl.Turns[1].LiveTokens; tl.Turns[1].End != nil || got != want {
+			t.Errorf("open turn = %+v, want liveTokens %d", tl.Turns[1], want)
+		}
+		atomic.StoreInt64(&n, 7800)
+	}
+	for i, tu := range srv.timelines.entries["s1"].tl.Turns {
+		if tu.LiveTokens != 0 {
+			t.Errorf("cached turn %d LiveTokens = %d, want 0", i, tu.LiveTokens)
+		}
+	}
+}
