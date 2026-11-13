@@ -60,6 +60,14 @@ fn main() {
             std::process::exit(0);
         });
     }
+    // Before the server starts: the policy filter is built during startup, so
+    // the factory must be registered first.
+    praxis_filter::register_policy_plugin_factory(
+        cortex_praxis_filters::policy_recorder::KIND,
+        std::sync::Arc::new(|| {
+            Box::new(cortex_praxis_filters::policy_recorder::CortexRecorderFactory)
+        }),
+    );
     praxis::run_server_with_registry(config, custom_registry(), config_path, log_level)
 }
 

@@ -14,6 +14,8 @@ http = "1"
 flate2 = "1"
 zstd = "0.14"
 praxis-proxy-filter = { version = "=0.8.0", default-features = false }
+# The sink traits; praxis-proxy-filter does not re-export them.
+praxis-policy = { version = "=0.6.0" }
 async-trait = "0.1"
 bytes = "1"
 tokio = { version = "1", features = ["rt", "net", "sync", "time", "io-util", "macros"] }
