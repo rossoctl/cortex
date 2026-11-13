@@ -759,9 +759,12 @@ on disk, against ~10 s for a single `jq` pass over a 29,606-record NDJSON file.
 Found by writing the queries rather than by reading the code, which is the point:
 
 1. **`turns[].seq` is the REQUEST seq; `tools[].seq` is the RESPONSE seq.** Same field name,
-   same type, different referent (`timeline.go:88` vs `:105`; set at `agents.go:176` and
-   `:197`). Both are undocumented. Joining turn spans to token counts on `seq` therefore
-   matches nothing and returns an empty table — no error, just no rows.
+   same type, different referent — declared at `core/session/timeline/timeline.go:88`
+   (`Turn`) and `:105` (`Tool`), set at `core/session/timeline/agents.go:176`
+   (`Seq: c.req.Seq`) and `:202` (`Seq: c.resp.Seq`). Note `core/sessionapi/timeline.go` is a
+   different file and not where these live. Both fields are undocumented. Joining turn spans
+   to token counts on `seq` therefore matches nothing and returns an empty table — no error,
+   just no rows.
 2. **The two endpoints have different ceilings.** `/timeline` reads up to 50,000 events;
    `/v1/sessions/{id}` caps `?limit` at 2,000. On a 2,911-event session the events call
    returns only the newest 2,000, so 134 of 592 tool spans have no token row unless the
@@ -836,7 +839,11 @@ answers §3.1's first four needs.
 | `TestRecord_TokensAreTheSplitNeverAnAggregate` | runs the real `TokenUsage.Fill`; the cached count appears exactly once | R18, R19 |
 | `TestRecord_PresentKindsSurvives` | reported-zero stays distinguishable from not-exposed | R17 |
 | `TestRecord_AbsentNumbersAreOmitted` | no unmeasured figure renders as 0 | R17 |
-| `TestFromEvent_CountsFallBackToTheEventsOwn` | a `view=summary` source still reports counts | R21 |
+| `TestFromEvent_CountsFallBackToTheEventsOwn` | a `view=summary` source still reports counts — the fallback direction of R21 | R21 |
+| `TestFromEvent_SlicesWinOverTheCounts` | the **other** direction of R21: when both a slice and a count are present, the slice is the truth, since zero on a count means "not stated" | R21 |
+| `TestFromEvent_UnknownClientStaysAbsent` | a nil client exports nothing, so the reserved `"unknown"` label never becomes a real agent in an aggregate | R9, R10 |
+| `TestFromEvent_SessionIDFallback` | an archive reader's id is stamped when the event carries none, and the event's own id wins when it has one | R1 |
+| `TestFromEvent_NilIsSafe` | `FromEvent` stays total: a nil event still yields a usable record with the schema set. The *writer* is what skips it, which is the next row | R25 |
 | `TestWriter_SkipsNilEvents` | a nil event writes nothing and is not counted | R25 |
 | `TestWriter_IsOneLinePerRecord` | one line per record | R5, R6 |
 | `TestRecord_DurationsAreMilliseconds` | the unit, since field names are the only place it is stated | R22 |
