@@ -43,28 +43,62 @@ type UnknownSessionsError struct {
 	Known     []string
 }
 
-// The rendered message caps both lists, because the HTTP layer forwards it as a 400 body
-// and a client bounds what it reads of one (agentop reads 512 bytes): an archive holding a
-// year of sessions must not turn a typo into an answer the asker cannot parse. The struct's
-// fields stay complete — a programmatic caller gets every id; a printed one gets the first
-// few and a count of the rest.
+// The rendered message is bounded in BYTES, not in ids, because the HTTP layer forwards it
+// as a 400 body and a client bounds what it reads of one (agentop reads 512 bytes): an
+// archive holding a year of sessions must not turn a typo into an answer the asker cannot
+// parse. A count cap cannot do this job — session ids are client-asserted and bounded only
+// by session.MaxSessionIDLen (256), so five requested ids and eight known ones render 538
+// bytes at plain UUID length, and a single maximum-length id overruns the budget alone.
+// The struct's fields stay complete: a programmatic caller gets every id; a printed one
+// gets as many as fit and a count of the rest.
+//
+// The budget is the whole message, split between the two lists so that neither can starve
+// the other, and sized well under 512 to leave room for the `{"error":...}` the HTTP layer
+// wraps it in and for any JSON escaping of an id's own bytes.
 const (
-	errorListMaxRequested = 5
-	errorListMaxKnown     = 8
+	errorMsgBudget      = 400
+	errorListIDMaxLen   = 64 // one long id is truncated rather than spending the whole budget
+	errorRequestedShare = 2  // the requested ids get half the budget; they are what was asked
 )
 
 func (e *UnknownSessionsError) Error() string {
-	return fmt.Sprintf("sessionexport: no archived session %s (archived: %s)",
-		cappedList(e.Requested, errorListMaxRequested), cappedList(e.Known, errorListMaxKnown))
+	// The requested ids are rendered first and to half the budget: they are the asker's own
+	// words, so they matter more than the suggestions. Whatever half they leave unspent is
+	// handed to the known list rather than wasted.
+	req := cappedList(e.Requested, errorMsgBudget/errorRequestedShare)
+	known := cappedList(e.Known, errorMsgBudget-len(req))
+	return fmt.Sprintf("sessionexport: no archived session %s (archived: %s)", req, known)
 }
 
-// cappedList renders ids for an error message: the first n verbatim, then a count of the
-// rest — "a, b and 3 more" rather than a list that grows with the archive.
-func cappedList(ids []string, n int) string {
-	if len(ids) <= n {
-		return strings.Join(ids, ", ")
+// cappedList renders ids for an error message under a byte budget: as many as fit verbatim,
+// then a count of the rest — "a, b and 3 more" rather than a list that grows with the
+// archive. An id longer than errorListIDMaxLen is truncated with an ellipsis, so that one
+// pathological id neither hides every other nor blows the budget by itself.
+//
+// At least one id is always rendered, however long it is: "and 12 more" alone names nothing
+// the asker can act on, and a truncated id is still a recognisable prefix.
+func cappedList(ids []string, budget int) string {
+	var b strings.Builder
+	for i, id := range ids {
+		if len(id) > errorListIDMaxLen {
+			id = id[:errorListIDMaxLen] + "…"
+		}
+		// The separator and the "and N more" tail this id would force are part of its cost:
+		// a list must not fit its last id only to overrun on the tail that follows it.
+		cost := len(id)
+		if i > 0 {
+			cost += len(", ")
+		}
+		if i > 0 && b.Len()+cost+len(fmt.Sprintf(" and %d more", len(ids)-i)) > budget {
+			fmt.Fprintf(&b, " and %d more", len(ids)-i)
+			return b.String()
+		}
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(id)
 	}
-	return fmt.Sprintf("%s and %d more", strings.Join(ids[:n], ", "), len(ids)-n)
+	return b.String()
 }
 
 // Walk projects every archived event the filter admits into w, one session at a time, and

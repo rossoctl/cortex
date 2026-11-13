@@ -37,7 +37,16 @@ import (
 // line is long gone by then, and NDJSON keeps every complete line valid in a truncated
 // file — Writer's stated design property — so the handler logs (Warn: that log line is
 // the only trace a truncated export leaves) and stops. A failure before any record — an
-// unknown session, a bad since, a segment that will not decode — still answers a status.
+// unknown session, a bad since, a segment that cannot be OPENED OR READ — still answers
+// a status.
+//
+// A segment whose CONTENT is damaged is a different case, and it is tolerated rather
+// than answered: readSegment serves the readable prefix and reports the rest as
+// truncated, which Page discards, so the walk sees no error. Such a segment contributes
+// its readable events and nothing more — the same behaviour the paging endpoints have.
+// A segment damaged before its first event therefore does read as an empty one here;
+// surfacing that as an error needs the archive to hand `truncated` up, which is an
+// archive change rather than this endpoint's: #1855.
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	if s.archive == nil {
 		http.Error(w, `{"error":"session archive not enabled"}`, http.StatusNotFound)
@@ -83,7 +92,9 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		}
 		if !cw.wrote {
 			// The walk died before its first record, so the status line is still ours to
-			// answer: a segment that will not decode must not read as an empty archive.
+			// answer: a segment that cannot be opened or read must not read as an empty
+			// archive. A segment whose content is merely damaged never reaches here —
+			// see the note on this function for why that case is tolerated instead.
 			// search.go's shape, for the same class of failure one endpoint over.
 			http.Error(w, `{"error":"archive read failed"}`, http.StatusInternalServerError)
 			return

@@ -75,7 +75,7 @@ The full field list with these rules on each field is the doc comments on
 | Parameter | Meaning |
 |---|---|
 | *(none)* | Every archived session, every event |
-| `?session=<id>` | Only the named sessions; repeatable (`&session=a&session=b`). An unknown id is a 400 naming the first few archived ones and a count of the rest — the list is capped so the answer always arrives whole |
+| `?session=<id>` | Only the named sessions; repeatable (`&session=a&session=b`). An unknown id is a 400 naming as many archived ones as fit a byte budget, then a count of the rest — bounded in bytes, not in ids, so the answer stays inside what a client reads of a 400 body however long the ids are |
 | `?since=<duration>` | Only events newer than that far back — `168h` (a Go duration) or `7d` (a day count). Parsed before the first byte, so a bad value is a real 400; a repeated `since` is one too |
 
 `since` floors on **event time**, not session age: a month-old session with traffic this
@@ -120,5 +120,11 @@ client whole. The file is opened only after the proxy answered.
 A walk that fails past its first record ends the response there, because the status line
 is already gone — and NDJSON keeps every complete line valid in a truncated file, so a
 partial export is still a processable one. A failure before any record answers a status:
-a refused query (unknown session, bad `since`) a 400, an archive that will not decode a
-500 — so a broken archive never reads as an empty one.
+a refused query (unknown session, bad `since`) a 400, an archive whose segments cannot be
+opened or read a 500.
+
+A segment whose *content* is damaged is tolerated rather than refused: it is served up to
+its readable prefix, as the paging endpoints serve it, so a wholly unreadable one
+contributes nothing and a partly readable one contributes what it has. An export is
+therefore not a way to detect a corrupt archive
+([#1855](https://github.com/rossoctl/cortex/issues/1855)).
