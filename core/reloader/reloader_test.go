@@ -1312,3 +1312,25 @@ func TestValidateReloadable_PraxisNeedsRestart(t *testing.T) {
 		t.Errorf("unchanged praxis block was refused: %v", err)
 	}
 }
+
+func TestValidateReloadable_PraxisPolicyNeedsRestart(t *testing.T) {
+	praxis := func(path string) *config.Config {
+		p := &config.PraxisConfig{Enabled: true}
+		if path != "" {
+			p.Policy = &config.PraxisPolicyConfig{ConfigPath: path}
+		}
+		return &config.Config{Praxis: p}
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"add", "", "/a.yaml"},
+		{"change", "/a.yaml", "/b.yaml"},
+		{"remove", "/a.yaml", ""},
+	} {
+		if err := validateReloadable(praxis(tc.from), praxis(tc.to)); err == nil || !strings.Contains(err.Error(), "praxis.*") {
+			t.Errorf("%s: validateReloadable = %v, want an error naming praxis.*", tc.name, err)
+		}
+	}
+	if err := validateReloadable(praxis("/a.yaml"), praxis("/a.yaml")); err != nil {
+		t.Errorf("unchanged policy was refused: %v", err)
+	}
+}

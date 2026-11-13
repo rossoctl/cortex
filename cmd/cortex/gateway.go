@@ -70,6 +70,20 @@ func gatewayYAML(cfg *config.Config, tokenPath string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	filters := []gatewayFilter{
+		{Filter: "ip_acl", Opts: map[string]any{"allow": []string{"127.0.0.1/32", "::1/128"}}},
+		{Filter: "cortex_attribution", Opts: map[string]any{"token_file": tokenPath}},
+		{Filter: "cortex_observe", Opts: map[string]any{"token_file": tokenPath, "ingest": ingest}},
+	}
+	// policy comes after cortex_observe, so a denied request still gets a full row.
+	if p := cfg.Praxis.Policy; p != nil && p.ConfigPath != "" {
+		filters = append(filters, gatewayFilter{Filter: "policy", Opts: map[string]any{"config_path": p.ConfigPath}})
+	}
+	filters = append(filters,
+		gatewayFilter{Filter: "access_log"},
+		gatewayFilter{Filter: "router", Opts: map[string]any{"routes": []map[string]string{{"path_prefix": "/", "cluster": "egress"}}}},
+		gatewayFilter{Filter: "load_balancer", Opts: map[string]any{"clusters": []map[string]any{{"name": "egress", "endpoints": []string{cfg.Praxis.EgressAddr()}}}}},
+	)
 	f := gatewayFile{
 		Insecure:   gatewayInsecure{true, true, true},
 		BodyLimits: gatewayLimits{MaxRequestBytes: gatewayMaxRequestBytes},
@@ -79,14 +93,7 @@ func gatewayYAML(cfg *config.Config, tokenPath string) ([]byte, error) {
 			ForwardProxy: map[string]bool{"enabled": true},
 			FilterChains: []string{"main"},
 		}},
-		FilterChains: []gatewayChain{{Name: "main", Filters: []gatewayFilter{
-			{Filter: "ip_acl", Opts: map[string]any{"allow": []string{"127.0.0.1/32", "::1/128"}}},
-			{Filter: "cortex_attribution", Opts: map[string]any{"token_file": tokenPath}},
-			{Filter: "cortex_observe", Opts: map[string]any{"token_file": tokenPath, "ingest": ingest}},
-			{Filter: "access_log"},
-			{Filter: "router", Opts: map[string]any{"routes": []map[string]string{{"path_prefix": "/", "cluster": "egress"}}}},
-			{Filter: "load_balancer", Opts: map[string]any{"clusters": []map[string]any{{"name": "egress", "endpoints": []string{cfg.Praxis.EgressAddr()}}}}},
-		}}},
+		FilterChains: []gatewayChain{{Name: "main", Filters: filters}},
 	}
 	var b bytes.Buffer
 	enc := yaml.NewEncoder(&b)
