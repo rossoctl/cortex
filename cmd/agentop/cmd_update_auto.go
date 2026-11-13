@@ -85,7 +85,8 @@ func runAutoUpdate(env *setupEnv, stdout, stderr io.Writer) int {
 
 // autoUpdateOff reports an explicit update.auto: false.
 func autoUpdateOff(path string) bool {
-	return !(&config.Config{Update: readUpdateConfig(path)}).UpdateAutoEnabled()
+	u, _ := readUpdateConfig(path)
+	return !(&config.Config{Update: u}).UpdateAutoEnabled()
 }
 
 // updateWait is update.wait: how long after its publication (the upload time of
@@ -93,17 +94,19 @@ func autoUpdateOff(path string) bool {
 // time to stop a bad release. A bad value gives the default: the proxy refuses it
 // at boot, and agentop doctor names it.
 func updateWait(path string) time.Duration {
-	w, _, _ := readUpdateConfig(path).Times()
+	u, _ := readUpdateConfig(path)
+	w, _, _ := u.Times()
 	return w
 }
 
 // readUpdateConfig reads only the update block, so an error in another field
 // does not cancel the opt-out. A file that does not parse gives nil, which leaves
-// auto on: a broken config must not stop the update that can repair it.
-func readUpdateConfig(path string) *config.UpdateConfig {
+// auto on: a broken config must not stop the update that can repair it. A field
+// of the wrong type gives the block with that field empty, and the error.
+func readUpdateConfig(path string) (*config.UpdateConfig, error) {
 	b, err := os.ReadFile(path) //nolint:gosec // the user's own config
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	var c struct {
 		Update *config.UpdateConfig `yaml:"update"`
@@ -115,10 +118,15 @@ func readUpdateConfig(path string) *config.UpdateConfig {
 		}
 		return "${" + key + "}"
 	})
-	if yaml.Unmarshal([]byte(expanded), &c) != nil {
-		return nil
+	err = yaml.Unmarshal([]byte(expanded), &c)
+	// yaml.v3 decodes the other fields after a type error.
+	if te := (*yaml.TypeError)(nil); errors.As(err, &te) {
+		return c.Update, fmt.Errorf("update: %s", strings.Join(te.Errors, "; "))
 	}
-	return c.Update
+	if err != nil {
+		return nil, nil
+	}
+	return c.Update, nil
 }
 
 func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {

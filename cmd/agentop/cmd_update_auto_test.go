@@ -85,6 +85,9 @@ var autoUpdateRows = []autoRow{
 	{name: "wait 0", latest: "v9.9.10", config: "update:\n  wait: \"0\"\n", age: time.Minute, want: updatestatus.ResultUpdated, ran: true},
 	// A bad wait keeps the default and does not cancel auto: false.
 	{name: "wait invalid", latest: "v9.9.10", config: "update:\n  wait: soon\n", age: 23 * time.Hour, want: updatestatus.ResultWaiting},
+	// A wrong-type field does not cancel auto: false either.
+	{name: "wait list, disabled", latest: "v9.9.10", config: "update:\n  auto: false\n  wait: [24h]\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
+	{name: "check_every map, disabled", latest: "v9.9.10", config: "update:\n  auto: false\n  check_every: {h: 6}\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
 	{name: "wait invalid, disabled", latest: "v9.9.10", config: "update:\n  auto: false\n  wait: soon\n", age: 25 * time.Hour, want: updatestatus.ResultDisabled},
 	{name: "check-failed latest", latest: "", age: 25 * time.Hour, want: updatestatus.ResultCheckFailed},
 	{name: "check-failed time", latest: "v9.9.10", want: updatestatus.ResultCheckFailed},

@@ -213,7 +213,11 @@ func checkUpdates(env *setupEnv, ui *checklist.UI) (failed bool) {
 		ui.Already(label, "automatic updates off (update.auto: false)")
 		return false
 	}
-	if _, _, err := readUpdateConfig(env.configPath()).Times(); err != nil {
+	u, err := readUpdateConfig(env.configPath())
+	if err == nil {
+		_, _, err = u.Times()
+	}
+	if err != nil {
 		ui.Advise(label, err.Error(), "edit "+env.tilde(env.configPath()))
 		return false
 	}
