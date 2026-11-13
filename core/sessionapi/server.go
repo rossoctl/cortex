@@ -228,6 +228,7 @@ func New(addr string, store *session.Store, opts ...Option) *Server {
 	mux.HandleFunc("GET /v1/sessions/{id}/timeline", s.handleTimeline)
 	mux.HandleFunc("GET /v1/sessions/{id}/search", s.handleSearch)
 	mux.HandleFunc("GET /v1/events", s.handleStream)
+	mux.HandleFunc("GET /v1/export", s.handleExport)
 	mux.HandleFunc("GET /v1/pipeline", s.handlePipeline)
 	mux.HandleFunc("GET /v1/plugins", s.handlePluginCatalog)
 	mux.HandleFunc("GET /v1/usage", s.handleUsage)
@@ -282,13 +283,13 @@ const indexBody = `Cortex / AuthBridge Session API
   GET /v1/sessions        list active sessions (?archived=true adds the session
                           archive's sessions no longer in memory)
   DELETE /v1/sessions     clear every session, memory and disk (laptop only)
-  GET /v1/sessions/{id}   recent events (?limit=N max 2000, ?before=<seq>,
-                          ?view=summary drops message bodies, ~163x smaller)
+  GET /v1/sessions/{id}   recent events (?limit, ?before=<seq>, ?view=summary)
   GET /v1/sessions/{id}/events/{seq}  one event in full (?raw=1: exact bytes)
   GET /v1/sessions/{id}/timeline      agents, tools and hosts as spans
   GET /v1/sessions/{id}/search?q=     seqs of the events whose bodies hold q
   DELETE /v1/sessions/{id}            erase one session, memory and disk
   GET /v1/events          SSE stream of new events (?session=<id> to filter)
+  GET /v1/export          archive as content-free NDJSON (?session=, ?since=)
   GET /v1/pipeline        active plugin pipeline
   GET /v1/plugins         catalog of registered plugins
   GET /v1/usage           time-bucketed usage aggregates
