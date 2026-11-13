@@ -85,7 +85,12 @@ gives the full text.
 3. The Go `praxis` config block has only `enabled` for now.
 4. Ingest counters are at `GET /v1/ingest/stats` on the session API, in praxis mode only.
 5. `X-Cortex-Attribution` is base64url JSON without padding. A missing or bad header gives the default attribution.
-6. Fields that the gateway cannot know in v1 stay unset (`identity`, `tls`, `invocations`, and others).
+6. Fields that the gateway cannot know in v1 stay unset (`identity`, `tls`, and
+   others). Exception: the response row carries one `invocations.outbound` entry
+   when the policy file declares a plugin of kind `cortex/recorder` with
+   capability `read_headers`. The entry is
+   `{plugin: "policy", action: "allow"|"deny", reason: <violation code>}`.
+   Without a policy, or without that declaration, the row does not change.
 7. `client`, `subagent` and `parentSubagent` are ported to Rust, pinned by a Go golden table.
 8. `client_canceled` and `upstream_error` messages are Rust text. Only the message differs from Go.
 9. Ingestion keeps the request id of a kept request capture for up to 1 hour, until its response line arrives.
