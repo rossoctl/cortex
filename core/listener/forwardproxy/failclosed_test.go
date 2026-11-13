@@ -234,9 +234,12 @@ func TestFailClosed_TransparentRefusesNonTLS(t *testing.T) {
 	if n != 0 || hits.Load() != 0 {
 		t.Errorf("client read %q and the origin served %d, want neither", buf[:n], hits.Load())
 	}
-	_, closes := tunnelRows(store, session.DefaultSessionID)
-	if len(closes) != 1 || closes[0].Error == nil || closes[0].Error.Kind != pipeline.ErrorKindNotTLS {
-		t.Errorf("close rows = %+v, want one %s", closes, pipeline.ErrorKindNotTLS)
+	open, closed := onePair(t, store, session.DefaultSessionID)
+	if open.TunnelReason != pipeline.TunnelRefusedNonTLS || closed.TunnelReason != pipeline.TunnelRefusedNonTLS {
+		t.Errorf("reasons = {open %q, close %q}, want %q", open.TunnelReason, closed.TunnelReason, pipeline.TunnelRefusedNonTLS)
+	}
+	if closed.Error == nil || closed.Error.Kind != pipeline.ErrorKindNotTLS {
+		t.Errorf("close error = %+v, want %s", closed.Error, pipeline.ErrorKindNotTLS)
 	}
 }
 

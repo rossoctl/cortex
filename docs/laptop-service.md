@@ -1066,7 +1066,8 @@ to it:
   be dialled, the CONNECT is answered `200` as usual and each request is verified
   when it is sent.
 - A TLS handshake whose SNI names another host than the CONNECT target is refused
-  (`sni-mismatch`, `421 misdirected_request`).
+  (`sni-mismatch`, `421 misdirected_request`). The names are compared as text, so
+  a CONNECT to an IP whose SNI names a domain is refused too: CONNECT by name.
 - A client that rejects Cortex's CA is refused every time. Nothing is remembered,
   so neither `skip-cached`, `program-refused` nor `os-trust-only` appears. Go tools
   on macOS that trust only the keychain need the CA there.
@@ -1076,10 +1077,12 @@ The default `passthrough_hosts` list is dropped, so GitHub and the package
 registries are intercepted too. An explicit `passthrough_hosts` list is still
 tunnelled. `listener.skip_hosts` destinations are verified too: give a private-CA
 origin `upstream_ca_bundle`, or list it in `passthrough_hosts`. `fail_closed`
-cannot be combined with `upstream_insecure`. The transparent listener follows the same rules, with two differences. It
-judges `passthrough_hosts` by the address it dials, because the client chooses
-the SNI: only an IP entry is tunnelled there. And it records each refusal as a
-close row, since it has no CONNECT to answer.
+cannot be combined with `upstream_insecure`.
+
+The transparent listener follows the same rules, with two differences. It judges
+`passthrough_hosts` by the address it dials, because the client chooses the SNI:
+only an IP entry is tunnelled there. And it records each refusal as a close row,
+since it has no CONNECT to answer.
 
 ### Go tools on macOS are passed through unread
 

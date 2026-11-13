@@ -227,30 +227,35 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	// a follow-up rather than half-done, since this listener is off by default
 	// (--local skips it) and every reason it could report is already correct in
 	// the log.
-	tl.open("")
-
+	// host is the policy authority: "<sniffed-SNI>:port" when a name was
+	// recovered, else dst ("<dial-IP>:port"). key is the SNI name or dial IP.
+	// Fail-closed consults no skip memory, and judges passthrough by the address
+	// the tunnel would dial, which the client cannot rename with an SNI or Host.
+	key, classifyKey := hostOnly(host), hostOnly(host)
+	var first []byte
 	if s.TLSBridge != nil {
-		// host is the policy authority: "<sniffed-SNI>:port" when a name was
-		// recovered, else dst ("<dial-IP>:port"). key is the SNI name or dial IP.
-		key := hostOnly(host)
-		var first []byte
 		if pc, ok := clientConn.(*peekedConn); ok {
 			first, _ = pc.Peek(5)
 		}
-		// Fail-closed consults no skip memory, and judges passthrough by the address
-		// the tunnel would dial, which the client cannot rename with an SNI or Host.
-		// Non-TLS bytes to a destination it intercepts are refused.
-		classifyKey := key
 		if s.failClosed() {
 			classifyKey = hostOnly(dst)
 		}
+	}
+	// Non-TLS bytes to a destination fail-closed intercepts are refused before
+	// the open, so the refusal's rows carry its reason.
+	if s.failClosed() && s.TLSBridge.Decision.Intercepts(classifyKey, portOf(dst)) {
+		if _, reason := s.TLSBridge.Decision.Classify(classifyKey, portOf(dst), first); reason == tlsbridge.ReasonNonTLS {
+			s.refuseFailClosed(clientConn, key, tl, pipeline.TunnelRefusedNonTLS, http.StatusOK, pipeline.ErrorKindNotTLS,
+				errors.New("not a TLS handshake"))
+			return
+		}
+	}
+
+	tl.open("")
+
+	if s.TLSBridge != nil {
 		if s.failClosed() || !s.TLSBridge.Skip.Contains(key) {
 			v, reason := s.TLSBridge.Decision.Classify(classifyKey, portOf(dst), first)
-			if s.failClosed() && reason == tlsbridge.ReasonNonTLS && s.TLSBridge.Decision.Intercepts(classifyKey, portOf(dst)) {
-				s.refuseFailClosed(clientConn, key, tl, pipeline.TunnelRefusedNonTLS, http.StatusOK, pipeline.ErrorKindNotTLS,
-					errors.New("not a TLS handshake"))
-				return
-			}
 			if v == tlsbridge.Terminate {
 				if upstream != nil {
 					_ = upstream.Close() // bridgeServe dials its own verified upstream; drop the pre-dial

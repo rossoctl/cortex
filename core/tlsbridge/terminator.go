@@ -52,7 +52,7 @@ func (t *Terminator) Terminate(client net.Conn, host string, exactSNI bool) (*tl
 }
 
 // sameHost compares two host names as DNS does: case-insensitively, with a
-// trailing dot ignored.
+// trailing dot ignored. The comparison is textual: an IP never matches a name.
 func sameHost(a, b string) bool {
 	return strings.EqualFold(strings.TrimSuffix(a, "."), strings.TrimSuffix(b, "."))
 }
