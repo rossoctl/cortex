@@ -16,7 +16,8 @@ const updateStatusFile = "update.json"
 
 const (
 	updateFirstWait = 10 * time.Minute
-	updateTick      = time.Hour // update.check_every is at least this
+	// A start comes at most one tick after check_every, so keep the tick short.
+	updateTick = 10 * time.Minute
 )
 
 // updateTrigger starts the updater unit at most once each update.check_every. It

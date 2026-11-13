@@ -247,7 +247,7 @@ lines; the default `full` avoids the question.
 
 To stop a bad release, mark the previous release as Latest on GitHub.
 
-- Auto-updaters that installed the bad release go back at their next check, within 6
+- Auto-updaters that installed the bad release go back at their next check, within about 6
   hours with the default `update.check_every`.
 - The others never install it, because it is no longer Latest.
 
