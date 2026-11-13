@@ -33,6 +33,7 @@ with a bytes-per-token ratio from the session's long finished turns. agentop cal
 5. **Format:** `fmt.Sprintf("%7s", strconv.FormatFloat(v, 'f', 0, 64))`, and 7 spaces when the row has no counted turn.
 6. **`FillLive` runs before `Clip`** in `handleTimeline`, on the clone. `clone` copies `Turns` with `slices.Clone`, so the cached timeline keeps no `LiveTokens`.
 7. **No forwardproxy test.** The wiring is 5 lines. The `bodycount` race test, the store tests and the sessionapi test cover the parts. The full `core` race run covers the listener.
+   **As built (2026-11-13, review):** this decision is reversed. `TestStream_CountsArePublishedWhileTheResponseIsOpen` covers the wiring: it fails when the `TrackStream` call is deleted.
 8. **The store map is global, keyed by request ID**, not per session. Request IDs are unique per process.
 
 ## Review Focus
