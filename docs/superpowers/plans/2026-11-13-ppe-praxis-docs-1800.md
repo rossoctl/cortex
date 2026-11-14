@@ -17,6 +17,15 @@ T1. T3 needs nothing. All three tasks go in one PR.
 **Spec:** The body of issue #1800 (parent #1785). This plan copies that body's facts
 and decisions, and it adds the decisions that the issue leaves open.
 
+**Coverage.** Every requirement of #1800 is in this plan; nothing is left out.
+
+| Issue requirement | Task |
+|---|---|
+| 1. `docs/praxis-policy.md` with every section, linked from three places | T1 |
+| 2. The migration section, with the table of options with no equivalent | T1 |
+| 3. The deprecation banner, the installer line, the binary Warn line, and the notes in `docs/laptop-service.md`, `cmd/README.md` and `README.md` | T3 |
+| 4. A Rust test that loads every example in the page | T2 |
+
 **Base:** `afaa76546c469f24cec693e55eae23fcfc970c9a` (upstream `main`, 2026-11-13,
 the merge of #1863). Branch: `feat/ppe-docs-1800`.
 
@@ -31,8 +40,11 @@ the merge of #1863). Branch: `feat/ppe-docs-1800`.
 - The five policy examples are load-tested. Each one is a complete policy file and uses
   the fence ```` ```yaml policy ````. Every other YAML block in the page uses a plain
   ```` ```yaml ```` fence.
-- The deprecation sentence is one fixed string. Use it in every place that T3 names:
-  `the laptop cpex build is deprecated; use praxis mode with praxis.policy instead (docs/praxis-policy.md); Kubernetes cpex use is not affected`
+- The deprecation sentence is one fixed string. Use it in the installer line and in the
+  binary's Warn line, which issue #1800 requires to carry "the same text". The document
+  banners are prose and can differ. The sentence must carry the `--praxis` flag and the
+  page path, as the issue requires:
+  `the laptop cpex build is deprecated; use praxis mode with praxis.policy instead (enable it with --praxis; see docs/praxis-policy.md); Kubernetes cpex use is not affected`
 - The `praxis.policy.config_path` value must be an absolute path that exists
   (`core/config/validate.go`, `validatePraxisPolicy`). The page says so.
 - Run `pre-commit run --all-files` before you push.
@@ -76,6 +88,8 @@ the merge of #1863). Branch: `feat/ppe-docs-1800`.
 ---
 
 ### Task 1: The policy page, its links and the migration section
+
+**Depends on:** none.
 
 **Files:**
 - Create: `docs/praxis-policy.md`
@@ -146,10 +160,11 @@ Not built:
 - Cedar, OPA, OAuth delegation, CIBA, Vault and Valkey.
 - A2A policy. The gateway has no A2A route.
 
-**`## Where policy runs`** One paragraph. The filter chain is `cortex_attribution`,
-`cortex_observe`, `policy`, `access_log`. So `policy` runs after the row is recorded
-and a denied request still gets its row. The supervisor writes this chain into
-`~/.cortex/gateway.yaml` from `praxis.policy.config_path`.
+**`## Where policy runs`** One paragraph. The supervisor writes this chain into
+`~/.cortex/gateway.yaml` from `praxis.policy.config_path`. The chain is `ip_acl`,
+`cortex_attribution`, `cortex_observe`, `policy`, `access_log`, `router`,
+`load_balancer` (`cmd/cortex/gateway.go`). So `policy` runs after the row is recorded
+and a denied request still gets its row.
 
 **`## Record the decision in the session row`** One paragraph and a YAML block with a
 plain fence. Add this plugin to the top of the policy file. The response row then
@@ -262,7 +277,7 @@ policy, so deny the stream in the request phase.
 | Case | Response |
 |---|---|
 | Identity or transport failure | 401, `WWW-Authenticate: Bearer`, `X-Policy-Violation: <code>` |
-| Inference request deny | HTTP with an OpenAI-compatible error envelope, `X-Policy-Violation: <code>` |
+| Inference request deny | 403 by default, from the policy's `denyWith`, with an OpenAI-compatible error envelope, `X-Policy-Violation: <code>` |
 | Generic HTTP deny | 403 by default, from the policy's `denyWith`, `X-Policy-Violation: <code>` |
 | MCP deny | HTTP 200 with a JSON-RPC error, `code: -32001`, `X-Policy-Violation: <code>` |
 | MCP request with no `mcp.method` metadata | 500 |
@@ -288,8 +303,27 @@ policy, so deny the stream in the request phase.
    aliases.
 3. Remove the `cpex` entry from `pipeline.outbound`.
 4. Set `praxis.policy.config_path` and restart, as "Turn policy on" says.
-5. Check the options in the "Known gaps" list above. Move each one you use another way,
-   or accept that it is gone.
+5. Check the options in the table below. Move each one you use another way, or accept
+   that it is gone.
+
+After the list, add this table of the CPEX plugin options with no equivalent (issue
+#1800, requirement 2). Every option comes from the "Known gaps" list, and every
+description comes from the option table in `docs/cpex-plugin.md`:
+
+| CPEX option | In praxis mode |
+|---|---|
+| `observe_codes` | No equivalent. Write the step as a `when:`/`do:` taint step. |
+| `principal.token_file` | No equivalent. `identity/jwt` reads a header, cookie or query parameter, not a file. |
+| `workload` (`workload.audience`, `workload.header`) | No equivalent. The gateway asserts no workload token. |
+| `bypass_hosts` | No equivalent. Every request that reaches the gateway is judged. |
+| `bypass_paths` | No equivalent. |
+| `strict_hosts` | No equivalent. |
+| `synthetic_egress` | No equivalent. |
+| `delegated_credential_hosts` | No equivalent. The gateway builds no OAuth delegation. |
+| `session_source` | No equivalent. A taint step reads the `X-Session-Id` header. |
+| `fallback_identification` | No equivalent. Write the rule in the policy. |
+| `hooks` | The `hooks:` key of each plugin in the policy file. |
+| `fail_open` | No equivalent. |
 
 The paragraph before the list says: the constructs in
 `core/plugins/cpex/testdata/hr-cpex/cpex-policy.yaml` and in the examples in
@@ -343,10 +377,12 @@ git commit -s -m "docs: Add the praxis policy page and its migration section (#1
 
 **Interfaces:**
 - Consumes: `docs/praxis-policy.md`, five blocks that start with ```` ```yaml policy ````
-  (T1). `praxis_proxy_filter::PolicyFilter::from_config(&serde_yaml::Value) ->
-  Result<Box<dyn HttpFilter>, FilterError>`.
-  `praxis_proxy_filter::register_policy_plugin_factory(kind: &str,
-  factory: Arc<PolicyPluginFactoryFn>)`. `cortex_praxis_filters::policy_recorder::{KIND,
+  (T1). `praxis_filter::PolicyFilter::from_config(&serde_yaml::Value) ->
+  Result<Box<dyn HttpFilter>, FilterError>`. The crate is
+  `praxis-proxy-filter` in `Cargo.toml` but `praxis_filter` in Rust code, because its
+  `[lib] name` is `praxis_filter`; `praxis/server/src/main.rs` already imports it that
+  way. `praxis_filter::register_policy_plugin_factory(kind: impl Into<String>,
+  make: PolicyPluginFactoryFn)`. `cortex_praxis_filters::policy_recorder::{KIND,
   CortexRecorderFactory}`.
 - Produces: no code that another task uses.
 
@@ -357,13 +393,23 @@ git commit -s -m "docs: Add the praxis policy page and its migration section (#1
   `praxis/server/Cargo.toml` enables (`policy-jwt`, `policy-cel`,
   `policy-crypto-default`). Its doc comment says it builds the filter without a
   sub-request connector, which a load test does not need.
+- **No `Cargo.toml` change is needed.** `praxis/server` sets
+  `default-features = false` on `praxis-proxy-filter` with no features of its own, but
+  the same file enables `policy-engine`, `policy-jwt`, `policy-cel` and
+  `policy-crypto-default` on `praxis-proxy`, and those turn on the matching
+  `praxis-filter/*` features. `praxis/server/src/main.rs` already uses
+  `praxis_filter::register_policy_plugin_factory` under that setup. `PolicyFilter::from_config`
+  is `pub` and `PolicyFilter::new` is `pub(crate)`, so call `from_config`.
 - **The test lives in `praxis/server/tests/`.** That package holds the feature list
   that defines "the gateway's features". A test in `filters/` would need its own copy
   of that list, and the two would drift.
 - **The test asserts the count is exactly five.** A page that loses an example must
   fail, not pass with fewer checks.
-- **Register `cortex/recorder` before the first example.** One example names that sink
-  kind, and `main.rs` registers the factory before the server starts. Do the same.
+- **Register `cortex/recorder` before the first example.** No tagged example names that
+  sink kind today, because its `plugins:` block is a plain fence. Register it anyway,
+  as `praxis/server/src/main.rs` does before the server starts: a later edit that tags
+  the recorder block as a policy example then loads instead of failing on an unknown
+  `kind:`, and the test keeps the same build path as the gateway.
 - **A failing example is fixed in the document, not in the test.** The test is the
   contract. If `from_config` cannot build an example, change the example.
 
@@ -417,7 +463,7 @@ fn every_documented_policy_loads() {
     );
 
     // As main.rs does before the server starts: the factory must be registered first.
-    praxis_proxy_filter::register_policy_plugin_factory(
+    praxis_filter::register_policy_plugin_factory(
         KIND,
         Arc::new(|| Box::new(CortexRecorderFactory)),
     );
@@ -431,7 +477,7 @@ fn every_documented_policy_loads() {
             file.to_str().expect("utf-8 path")
         ))
         .expect("filter config");
-        let _filter = praxis_proxy_filter::PolicyFilter::from_config(&config)
+        let _filter = praxis_filter::PolicyFilter::from_config(&config)
             .unwrap_or_else(|e| panic!("example {i} does not load: {e}\n{block}"));
     }
 }
@@ -439,25 +485,27 @@ fn every_documented_policy_loads() {
 
 - [ ] **Step 2: Run the test**
 
-Run: `cargo test --locked -p cortex-gateway --test doc_policy_examples`
+Run: `cargo test --locked --manifest-path praxis/Cargo.toml -p cortex-gateway --test doc_policy_examples`
 Expected: PASS. If it fails, the message names the example and the text. Fix that
-example in `docs/praxis-policy.md` and run again. If `PolicyFilter` or
-`register_policy_plugin_factory` is not in scope, add
-`features = ["policy-engine", "policy-jwt", "policy-cel"]` to the `praxis-proxy-filter`
-entry in `praxis/server/Cargo.toml`, then run again. Both names come from the crate
-root (`praxis-proxy-filter-0.8.0/src/lib.rs`).
+example in `docs/praxis-policy.md` and run again. Do not edit `Cargo.toml` and do not
+edit the test: the examples are the contract. Both names come from the crate root
+(`praxis-proxy-filter-0.8.0/src/lib.rs`), which re-exports them from
+`builtins::http::security::policy`.
 
 - [ ] **Step 3: Run the Rust gates**
 
 Run, from the worktree root:
 
 ```sh
-cargo fmt --check --manifest-path praxis/Cargo.toml
+cargo fmt --check --all --manifest-path praxis/Cargo.toml
 cargo clippy --all-targets --locked --manifest-path praxis/Cargo.toml -- -D warnings
-cargo test --locked --manifest-path praxis/Cargo.toml
+cargo test --locked --manifest-path praxis/Cargo.toml -p cortex-gateway
 ```
 
 Expected: all three pass. If `clippy` names a lint in the new test, fix the test.
+`--all` is required: without it, `cargo fmt` prints `Failed to find targets` for this
+workspace's virtual manifest. CI runs plain `cargo fmt --check` inside `praxis/`, which
+formats the same two member packages.
 
 - [ ] **Step 4: Commit**
 
@@ -469,6 +517,10 @@ git commit -s -m "test: Load every documented praxis policy example (#1800)"
 ---
 
 ### Task 3: The deprecation lines
+
+**Depends on:** none. The three links it adds point at `docs/praxis-policy.md`, which
+T1 creates in the same PR; a link is not a dependency, and the page exists before the
+PR is ready.
 
 **Files:**
 - Modify: `cmd/cortex/praxis.go` (the package-level constants and `outboundEntries`)
@@ -486,16 +538,23 @@ git commit -s -m "test: Load every documented praxis policy example (#1800)"
   task uses them.
 
 **Decisions and reasons:**
-- **One fixed sentence in every place.** The issue asks for "the same text". The
-  sentence is the one in Global Constraints.
+- **One fixed sentence in the installer and the binary.** The issue asks the binary for
+  "the same text" as the installer. The sentence is the one in Global Constraints, and
+  both use it byte for byte.
 - **The Go line is logged from `outboundEntries`.** That function is the only point
   that both knows the outbound list and runs on the start-up build. It is also the
   existing home of the praxis-mode skip Warn, and that Warn already repeats on a
   config reload. A reload repeats this line for the same reason: the reload rebuilds
   the outbound chain.
-- **The Go code reads the package variable `localInstall`.** `main` sets it before the
-  first `buildPipelines` call (`cmd/cortex/main.go:460`), and the repository already
-  uses that variable this way. Do not add a parameter: no caller has a better value.
+- **The Go code reads the package variable `localInstall`.** That is the check the
+  issue points at: `core/config/session_archive.go`'s `ArchiveRunsOnLocalInstall`
+  cannot decide it, because its own doc comment says "That half is the caller's to
+  decide, since only the caller knows where the config lives". The caller's decision is
+  `startedFromLocalInstall(*configPath)` (`cmd/cortex/main.go:266`), and `main` caches
+  it in `localInstall` at `cmd/cortex/main.go:460`, before the first `buildPipelines`
+  call that reaches `outboundEntries` at `cmd/cortex/main.go:583`. The repository
+  already uses that variable this way. Do not add a parameter: no caller has a better
+  value.
 - **No line in praxis mode.** In praxis mode the outbound plugins are off, and the
   existing skip Warn already names `cpex`.
 - **`install.sh` warns and then installs as before.** The issue says "Install as
@@ -559,7 +618,7 @@ Above `outboundEntries`, add:
 ```go
 // deprecatedCpexWarning is the one deprecation sentence for the laptop cpex build.
 // The installer prints the same words.
-const deprecatedCpexWarning = "the laptop cpex build is deprecated; use praxis mode with praxis.policy instead (docs/praxis-policy.md); Kubernetes cpex use is not affected"
+const deprecatedCpexWarning = "the laptop cpex build is deprecated; use praxis mode with praxis.policy instead (enable it with --praxis; see docs/praxis-policy.md); Kubernetes cpex use is not affected"
 
 // warnDeprecatedCpex logs the deprecation once when a local install builds the cpex
 // plugin. A sidecar does not log it, and praxis mode does not build the plugin.
@@ -590,8 +649,12 @@ In `scripts/install.sh`, inside the `if [ -n "${CPEX}" ]; then` block at the sta
 `main`, after `cpex_platform_check`, add:
 
 ```sh
-warn "the laptop cpex build is deprecated; use praxis mode with praxis.policy instead (docs/praxis-policy.md); Kubernetes cpex use is not affected"
+warn "the laptop cpex build is deprecated; use praxis mode with praxis.policy instead (enable it with --praxis; see docs/praxis-policy.md); Kubernetes cpex use is not affected"
 ```
+
+`warn` (`scripts/install.sh:92`) writes to stderr with the `warning: ` prefix. Put the
+line after `cpex_platform_check` and before the `AUTHBRIDGE_SKIP_DOWNLOAD` check, so a
+platform that has no cpex build still dies first and prints no warning.
 
 In `scripts/install_test.sh`, in the linux/amd64 `--cpex` success case (after the
 `staging the cpex build as cortex` check), add:
@@ -651,8 +714,9 @@ git commit -s -m "feat: Deprecate the laptop cpex build and name praxis policy i
 |---|---|---|---|---|
 | P1 | docs: Document praxis policy and deprecate the laptop cpex build | "" | T1, T2, T3 | 700 |
 
-The total counted lines are about 660. That is under the 2,000-line limit, so this is
-one PR. The plan document is not counted.
+The tasks add about 350 counted lines: one new page, one new Rust test, one Go test, and
+edits to five existing documents and two scripts. 700 is the estimate with headroom.
+That is under the 2,000-line limit, so this is one PR. The plan document is not counted.
 
 T1 and T3 change no shared code, so they run at the same time. T2 needs T1.
 
@@ -661,8 +725,16 @@ T1 and T3 change no shared code, so they run at the same time. T2 needs T1.
 Run this one command from the worktree root. Every step must pass.
 
 ```sh
-pre-commit run --all-files && sh scripts/install_test.sh && GOWORK=off go -C cmd/cortex vet ./... && GOWORK=off go -C cmd/cortex test -race ./... && cargo fmt --check --manifest-path praxis/Cargo.toml && cargo clippy --all-targets --locked --manifest-path praxis/Cargo.toml -- -D warnings && cargo test --locked --manifest-path praxis/Cargo.toml -p cortex-gateway
+pre-commit run --all-files && sh scripts/install_test.sh && GOWORK=off go -C cmd/cortex vet ./... && GOWORK=off go -C cmd/cortex test -race ./... && cargo fmt --check --all --manifest-path praxis/Cargo.toml && cargo clippy --all-targets --locked --manifest-path praxis/Cargo.toml -- -D warnings && cargo test --locked --manifest-path praxis/Cargo.toml -p cortex-gateway
 ```
+
+**Checked on the base.** On `afaa7654`, from this worktree, `GOWORK=off go -C cmd/cortex
+vet ./...` passes. `cargo fmt --check --manifest-path praxis/Cargo.toml` fails with
+`Failed to find targets` because the workspace manifest is virtual; adding `--all`
+makes it pass (`cargo fmt --check --all --manifest-path praxis/Cargo.toml`, exit 0), and
+it formats the same two member packages that CI's `cargo fmt --check` inside `praxis/`
+does. That is the change: `--all` was added to the `cargo fmt` step here and in T2
+Step 3. No step was removed or narrowed.
 
 ## Done when
 
