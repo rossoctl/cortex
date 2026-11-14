@@ -7,7 +7,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cortex_praxis_filters::policy_recorder::{CortexRecorderFactory, Decision, KIND, record, take};
+use cortex_praxis_filters::policy_recorder::{
+    CortexRecorderFactory, Decision, JOIN_HEADER, KIND, record, take,
+};
 use praxis_policy::praxis_policy_core::cmf::enums::Role;
 use praxis_policy::praxis_policy_core::cmf::{CmfHook, Message, MessagePayload};
 use praxis_policy::praxis_policy_core::executor::PipelineResult;
@@ -45,7 +47,8 @@ async fn engine() -> Arc<PolicyEngine> {
 fn extensions(entity_name: &str, request_id: Option<&str>) -> Extensions {
     let mut request_headers = HashMap::new();
     if let Some(id) = request_id {
-        request_headers.insert("x-cortex-request-id".to_owned(), id.to_owned());
+        // The live path: the proxy strips the hop headers, so this is the key.
+        request_headers.insert(JOIN_HEADER.to_owned(), id.to_owned());
     }
     Extensions {
         http: Some(Arc::new(HttpExtension {
@@ -98,34 +101,6 @@ async fn an_allow_records_an_empty_reason() {
     let decision = take("r2").expect("the allow is recorded");
     assert_eq!(decision.action, "allow");
     assert_eq!(decision.reason, "");
-}
-
-/// The live path: the hop header is gone, so the reserved copy is what the
-/// policy filter sees.
-#[tokio::test]
-async fn the_reserved_join_header_is_read() {
-    let mgr = engine().await;
-    let mut ext = extensions("model-bad", None);
-    let http = Arc::make_mut(ext.http.as_mut().expect("the test builds http"));
-    http.request_headers.insert(
-        cortex_praxis_filters::policy_recorder::JOIN_HEADER.to_owned(),
-        "r3".to_owned(),
-    );
-    let (result, _background) = mgr
-        .invoke_named::<CmfHook>(
-            "cmf.llm_input",
-            MessagePayload {
-                message: Message::text(Role::User, "hi"),
-            },
-            ext,
-            None,
-        )
-        .await;
-    assert!(!result.continue_processing, "model-bad is denied");
-    assert_eq!(
-        take("r3").expect("the deny is recorded").reason,
-        "model_not_allowed"
-    );
 }
 
 #[tokio::test]

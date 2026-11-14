@@ -120,7 +120,8 @@ Not in scope:
 11. **The join id also goes in the reserved `x-praxis-cortex-request-id` header
     (T1/T2).** The proxy removes the hop headers before the policy filter runs, so the
     recorder cannot see `x-cortex-request-id` on the live path. `cortex_observe` sets
-    `JOIN_HEADER` for the policy filter, and the recorder falls back to the hop header.
+    `JOIN_HEADER` for the policy filter, and the recorder reads only that header. No
+    fallback to the hop header exists, because the live path never has it.
     praxis-proxy-core 0.8.0 lists `x-praxis-` in `RESERVED_HEADER_PREFIXES`, strips
     these headers from the upstream request, and admission refuses a client that sends a
     reserved name. Residual risk: a praxis upgrade that stops passing filter-set headers
@@ -152,10 +153,9 @@ Files:
     `Plugin::as_audit_handler(self: Arc<Self>) -> Option<Arc<dyn AuditHandler>>`,
     which returns `Some(self)`. `AuditHandler::handle` is
     `async fn handle(&self, _payload: &dyn PluginPayload, ext: &Extensions, log: &DecisionLog)`:
-    - read `x-praxis-cortex-request-id`, then `x-cortex-request-id`, from
-      `ext.http.request_headers` with a case-insensitive key compare. The reserved copy
-      is the live path; the hop header keeps the direct engine test valid. Return with
-      no write when neither header is present or empty.
+    - read `x-praxis-cortex-request-id` from `ext.http.request_headers` with a
+      case-insensitive key compare. Return with no write when the header is absent or
+      empty.
     - `DecisionLog::verdict()`: a `Deny(v)` gives
       `action: "deny", reason: v.code`. Any other verdict gives
       `action: "allow", reason: String::new()`.
@@ -202,15 +202,13 @@ Files:
   - Invoke `mgr.invoke_named::<HttpHook>("http.request", HttpPayload, extensions, None)`.
     `extensions` is `Extensions` with `meta.entity_type = Some("llm".into())`,
     `meta.entity_name = Some("model-bad".into())` (or `"model-ok"`), and
-    `http.request_headers` holding `("x-cortex-request-id", "r1")`. `HttpExtension` and
+    `http.request_headers` holding `(JOIN_HEADER, "r1")`. `HttpExtension` and
     `MetaExtension` hold these fields; `Extensions.http` and `Extensions.meta` are
     `Option<Arc<..>>`.
   - Assert: `model-bad` gives a deny and `take("r1")` gives
     `{action: "deny", reason: "model_not_allowed"}`. `model-ok` gives an allow and a
     second id gives `{action: "allow", reason: ""}`. A call with no request-id header
     leaves the store empty.
-  - A second test sets only `x-praxis-cortex-request-id` (`JOIN_HEADER`) and proves the
-    reserved copy is read. This is the live path; the hop-header test above stays.
   - Write this test before the rest of T1's code. If `handle` does not run on a deny,
     record that as a finding in the PR description and stop. Do not change the design.
 

@@ -18,12 +18,9 @@ use crate::record::line::{Invocation, Invocations, Line};
 /// The `kind:` a policy file names to attach this sink.
 pub const KIND: &str = "cortex/recorder";
 
-/// The join header that `cortex_observe` sets on the hop.
-const REQUEST_ID_HEADER: &str = "x-cortex-request-id";
-
-/// The same id in the reserved namespace. The proxy strips the hop headers
-/// before the policy filter runs, so `cortex_observe` also sets the id here,
-/// and the proxy removes every `x-praxis-*` header before the upstream.
+/// The id in the reserved namespace. The proxy strips the hop headers before
+/// the policy filter runs, so `cortex_observe` sets the id here, and the proxy
+/// removes every `x-praxis-*` header before the upstream.
 pub const JOIN_HEADER: &str = "x-praxis-cortex-request-id";
 
 /// How many request ids the store keeps. A response row always takes its entry,
@@ -136,17 +133,14 @@ impl AuditHandler for CortexRecorder {
     }
 }
 
-/// The join header's value, found with a case-insensitive name compare. The
-/// reserved copy wins: on the live path it is the only one the policy sees.
+/// The join header's value, found with a case-insensitive name compare.
 fn request_id(ext: &Extensions) -> Option<&str> {
     let headers = &ext.http.as_ref()?.request_headers;
-    [JOIN_HEADER, REQUEST_ID_HEADER].iter().find_map(|key| {
-        headers
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case(key))
-            .map(|(_, value)| value.as_str())
-            .filter(|value| !value.is_empty())
-    })
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(JOIN_HEADER))
+        .map(|(_, value)| value.as_str())
+        .filter(|value| !value.is_empty())
 }
 
 pub struct CortexRecorderFactory;

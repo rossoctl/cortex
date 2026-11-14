@@ -90,7 +90,8 @@ gives the full text.
    when the policy file declares a plugin of kind `cortex/recorder` with
    capability `read_headers`. The entry is
    `{plugin: "policy", action: "allow"|"deny", reason: <violation code>}`.
-   Without a policy, or without that declaration, the row does not change.
+   `reason` is absent on an allow. Without a policy, or without that
+   declaration, the row does not change.
 7. `client`, `subagent` and `parentSubagent` are ported to Rust, pinned by a Go golden table.
 8. `client_canceled` and `upstream_error` messages are Rust text. Only the message differs from Go.
 9. Ingestion keeps the request id of a kept request capture for up to 1 hour, until its response line arrives.

@@ -31,7 +31,6 @@ pub const NOT_SET_IN_PRAXIS_MODE: &[&str] = &[
     "identity",
     // The TLS bridge state is in Cortex; #1721 decides if the hop carries it.
     "tls",
-    // Only a policy decision sets this (policy_recorder).
     // No router in the gateway.
     "requestedHost",
     // Cortex strips upgrades before the hop.
@@ -96,6 +95,7 @@ pub struct Event {
     pub mcp: Option<McpExtension>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inference: Option<InferenceExtension>,
+    /// Only a policy decision sets this (`policy_recorder`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub invocations: Option<Invocations>,
     #[serde(skip_serializing_if = "is_zero")]
