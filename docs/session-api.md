@@ -172,6 +172,13 @@ value is ignored, so an older proxy answers with the event alone.
 
 ## `GET /v1/sessions/{id}/timeline` — agents, tools and hosts on one time axis
 
+**This is the endpoint for per-tool and per-call timings, and it carries no prompts.**
+Each `tools[]` entry is a named span with `start`, `end` and a `preview` of the
+tool's own argument; each `turns[]` entry is one model call. Both are derived from
+the events, so neither needs the message bodies — reach for this rather than a
+`cortex-session-dump --full`, which does carry them. Worked queries are under
+[Reading timings out](#reading-timings-out) below.
+
 The session's history as spans, for agentop's Timeline pane. Computed from the
 whole session: memory first, then the archive behind it (a 6,000-event session
 takes a few milliseconds; reading one that is only on disk takes over a second).
@@ -196,6 +203,26 @@ the whole list.
  "returns": [{"agent": "a1bf9707ee0e71012", "into": "main", "at": "…", "seq": 90}],
  "hosts":   [{"host": "api.github.com", "kind": "tunnel", "start": "…", "end": "…", "status": 200, "seq": 7}]}
 ```
+
+**`seq` does not mean the same event on every span, which matters when joining.**
+A span's `seq` is the event it was derived FROM, and that is not the same end of
+the exchange in each case:
+
+| Span | Its `seq` is | So to join it to an event |
+|---|---|---|
+| `turns[]` | the **request** event | token counts are on the *response* — pair by `requestId`, not by this `seq` |
+| `tools[]` | the **response** that asked for the tool | joins directly to that response's `inference` |
+| `jobs[]`, `returns[]` | the **request** that carried the result | as `turns[]` |
+| `hosts[]` | the event the row came from | — |
+
+Joining `turns[].seq` to a response event therefore matches nothing and yields an
+empty result rather than an error. Use `tools[].seq` when you want tokens beside a
+span, or pair turns by `requestId`.
+
+**The two endpoints read to different depths.** This one reads up to 50,000 events;
+`GET /v1/sessions/{id}` caps `?limit` at 2,000. So on a session larger than that,
+a join against a single events page silently covers only the newest 2,000 events —
+page with `?before=` to the same depth, or expect spans with no matching event.
 
 **Turns and tools are attributed to any known client** (Claude Code, Bob, Codex,
 OpenCode, Pi — the canonical name parsed from the User-Agent); each gets a
@@ -458,6 +485,154 @@ curl -N http://localhost:9094/v1/events
 # Live tail a single session
 curl -N "http://localhost:9094/v1/events?session=$SID"
 ```
+
+## Reading timings out
+
+Per-tool and per-call latency **without downloading prompts**. All of this is a local
+install on `:47601`; in a cluster use the port-forward above. Queries below are against a
+real 2,911-event session.
+
+**WHAT EACH QUERY DOWNLOADS**, because "no prompts" is a property of the query, not of the
+API:
+
+| Query | Endpoint | Carries |
+|---|---|---|
+| per-tool latency, Bash previews | `/timeline` | spans only — no message bodies, but `preview` IS tool-argument text (a shell line, a path, a URL) |
+| per-call tokens, models | `?view=summary` | no `messages`, `tools`, `toolCalls` or `toolResults` — **but `view=summary` KEEPS `inference.completion` and `a2a.parts`**, because the `/` search reads them, so every model reply is in the response |
+| untruncated Bash command | full event view | **everything**, prompts included; `jq` discards them after the download |
+
+So `/timeline` is the only one of the three that never transfers a prompt. For the other
+two, the body reaches your shell and `jq` filters it — fine on a laptop, worth knowing
+before piping it anywhere.
+
+**Pick a session.** `?archived=true` is the important part — without it you see only
+what is still in memory, which on a laptop is a fraction of the history.
+
+```sh
+API=http://localhost:47601
+curl -s "$API/v1/sessions?archived=true" | jq -r '
+  (["EVENTS","AGENT","SESSION"]|@tsv),
+  ([.sessions[] | select(.id | startswith("pending:") | not)]
+   | sort_by(-(.eventCount//0)) | .[]
+   | [(.eventCount//0), (.agent//"-"), .id] | @tsv)' | column -t
+```
+
+Skip the `pending:` buckets: those are an agent's calls from before its process named
+a session, which are real traffic but not a session to analyse.
+
+Copy one id into `SID` — every query below uses it:
+
+```sh
+SID=<paste-a-session-id>
+# or take the largest:
+SID=$(curl -s "$API/v1/sessions?archived=true" | jq -r '
+  [.sessions[] | select(.id | startswith("pending:") | not)]
+  | sort_by(-(.eventCount//0)) | .[0].id')
+```
+
+**Per-tool latency.** `jq`'s `fromdateiso8601` cannot parse these timestamps — they carry
+fractional seconds *and* a numeric offset — so parse the parts. Dropping the fraction costs
+the sub-second resolution that separates `Edit` from `Read`; ignoring the offset makes any
+span that crosses a DST transition an hour out, so `ts` below subtracts it.
+
+```sh
+curl -s "$API/v1/sessions/$SID/timeline" | jq -r '
+  def ts: capture("^(?<b>[^.Z+]+)(\\.(?<f>[0-9]+))?(?<sign>[+-])(?<oh>[0-9]{2}):(?<om>[0-9]{2})$|^(?<bz>[^.Z]+)(\\.(?<fz>[0-9]+))?Z$")
+          | if .b then (.b+"Z"|fromdateiso8601) + (if .f then (".\(.f)"|tonumber) else 0 end)
+                       - (((.oh|tonumber)*3600 + (.om|tonumber)*60) * (if .sign=="-" then -1 else 1 end))
+            else (.bz+"Z"|fromdateiso8601) + (if .fz then (".\(.fz)"|tonumber) else 0 end) end;
+  def pct(a;p): (a|length) as $n | if $n==0 then null else a[(($n-1)*p)|round] end;
+  [.tools[] | select(.end != null and (.lost // false) == false)
+   | {name, ms: ((((.end|ts)-(.start|ts))*1000)|round), err: (.error//false)}]
+  | group_by(.name)
+  | map({name:.[0].name, n:length, ms:(map(.ms)|sort), errs:(map(select(.err))|length)})
+  | map({name,n,errs, p50:pct(.ms;0.5), p95:pct(.ms;0.95), total_s:((.ms|add)/1000|round)})
+  | sort_by(-.total_s)
+  | (["TOOL","N","ERRS","P50ms","P95ms","TOTALs"]|@tsv),
+    (.[]|[.name,.n,.errs,.p50,.p95,.total_s]|@tsv)' | column -t
+```
+
+```
+TOOL             N    ERRS  P50ms  P95ms   TOTALs
+Bash             452  9     487    65029   6260
+AskUserQuestion  7    0     37419  409509  703
+WebFetch         34   1     14448  26565   440
+WebSearch        12   0     15448  15458   206
+Edit             87   1     48     201     6
+Read             5    0     24     57      0
+```
+
+(An excerpt — the single-call tools are left out for width.)
+
+**TWO SPAN STATES TO FILTER, for different reasons.**
+
+- **No `end`** — still running. Not a zero: `ts` would run `capture` on `null` and the whole
+  query fails with `null (null) cannot be matched, as it is not a string`. Hence
+  `select(.end != null)`.
+- **`lost: true`** — never answered but provably stopped, and `end` is set EQUAL TO `start`
+  (`timeline.go`: "its End is its Start, so it draws as a tick rather than a bar"). This one
+  is the false zero, and it passes an `end != null` filter. Hence `(.lost // false) == false`.
+
+Drop the `lost` filter and a session with many unanswered calls reports a p50 near zero.
+
+**The command a Bash call ran.** `preview` is the tool's own argument (`command`,
+`file_path`, `url`, …), capped at 80 characters, and never message content:
+
+```sh
+curl -s "$API/v1/sessions/$SID/timeline" \
+  | jq -r '.tools[] | select(.name=="Bash") | "\(.seq)\t\(.preview)"' | column -t -s $'\t'
+```
+
+For the untruncated command, read it off the response event. Pull the `command` key
+specifically rather than dumping all arguments — `WebFetch` arguments carry a
+`prompt`, and `Agent`/`Task` carry subagent instructions:
+
+```sh
+curl -s "$API/v1/sessions/$SID?limit=2000" | jq -r '
+  .events[] | select(.phase=="response" and .inference.toolCalls != null)
+  | .inference.toolCalls[] | select(.name=="Bash")
+  | (try (.arguments | fromjson) catch {}) | select(.command) | .command'
+```
+
+**LLM latency and tokens per call.** `view=summary` keeps both — it drops message
+bodies, not measurements:
+
+```sh
+curl -s "$API/v1/sessions/$SID?limit=2000&view=summary" | jq -r '
+  (["SEQ","MODEL","MS","TTFB","INPUT","CACHE_R","CACHE_W","OUTPUT"]|@tsv),
+  (.events[] | select(.phase=="response" and .inference != null) | .inference as $i
+   | [.seq, ($i.model//"-"), (.durationMs//"-"), (.ttfbMs//"-"),
+      ($i.inputTokens//0), ($i.cacheReadTokens//0),
+      ($i.cacheWriteTokens//0), ($i.outputTokens//0)]|@tsv)' | column -t
+```
+
+Do **not** add `promptTokens` to the cache fields: it is a legacy aggregate already
+equal to `inputTokens + cacheReadTokens + cacheWriteTokens`, so summing it with the
+split double-counts every cached token. `reasoningTokens` is likewise a *subset* of
+`outputTokens`. See [Event schema](#event-schema).
+
+**Tool spans beside token counts.** Join on `tools[].seq`, which is the response seq
+(see the `seq` table under `/timeline`). Pass the JSON through files — `--argjson`
+puts it in argv and a large session exceeds the limit with
+`Argument list too long`:
+
+```sh
+D=$(mktemp -d)
+curl -s "$API/v1/sessions/$SID/timeline" -o "$D/tl.json"
+curl -s "$API/v1/sessions/$SID?limit=2000&view=summary" -o "$D/ev.json"
+jq -n --slurpfile tl "$D/tl.json" --slurpfile ev "$D/ev.json" -r '
+  ([$tl[0].tools[] | {seq, name}] | group_by(.seq)
+   | map({key:(.[0].seq|tostring), value:(map(.name)|join(","))}) | from_entries) as $tools
+  | (["SEQ","MS","INPUT","CACHE_R","OUTPUT","TOOLS_ASKED"]|@tsv),
+    ($ev[0].events[] | select(.phase=="response" and .inference != null) | .inference as $i
+     | [.seq, (.durationMs//"-"), ($i.inputTokens//0), ($i.cacheReadTokens//0),
+        ($i.outputTokens//0), ($tools[(.seq|tostring)] // "")]|@tsv)' | column -t
+rm -rf "$D"
+```
+
+On a session over 2,000 events the events side covers only the newest 2,000, so
+spans older than that have no token row. Page with `?before=` to the same depth when
+that matters.
 
 ## Schema version
 

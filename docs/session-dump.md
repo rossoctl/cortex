@@ -152,6 +152,22 @@ loopback or reached through a port-forward, and its payloads are readable by
 anything that can reach the port. Dumping to a file does not change that; it
 just makes a copy that outlives the process.
 
+## For timings and tool names, use the timeline instead
+
+**A dump is the wrong tool for "how long did each tool take, and what did it run".**
+Without `--full` it asks the API for `view=summary`, which strips `toolCalls` — so you
+get `toolCallCount` but no tool names. With `--full` you get the names and arguments
+*and* every prompt, completion and tool result, which is usually more than the
+question needs.
+
+`GET /v1/sessions/{id}/timeline` answers it directly and carries no prompts: named
+tool spans with `start`, `end` and a `preview` of the tool's own argument (the Bash
+command, the file path, the URL), plus one span per model call. See
+[Reading timings out](session-api.md#reading-timings-out) for worked queries.
+
+Reach for a dump when you want the session's *contents* as files, which is what it is
+for.
+
 ## What a dump does and does not capture
 
 A dump is a point-in-time copy of what the store still holds, which is not the
