@@ -194,7 +194,7 @@ func assertOpen(t *testing.T, m *model, paths ...string) {
 func TestToolEnter_AimOnCall(t *testing.T) {
 	m := aimModel(t, callMsgs("t1"))
 	enterOnTool(t, m)
-	assertCursorAt(t, m, "request.inference.messages[1]")
+	assertCursorAt(t, m, "request.inference.messages[1].toolCalls[0]")
 	assertOpen(t, m, "request.inference.messages[1].toolCalls", "request.inference.messages[1].toolCalls[0]",
 		"request.inference.messages[2].toolResults", "request.inference.messages[2].toolResults[0]")
 	if m.detailAim != nil {
@@ -214,7 +214,7 @@ func TestToolEnter_AimAfterFetch(t *testing.T) {
 		t.Fatalf("before the fetch: cursor %q, aim %v", m.detailCursorPath, m.detailAim)
 	}
 	m.applyDetailEvent(detailEventLoadedMsg{sessionID: m.selectedSess, seq: 3, event: &full})
-	assertCursorAt(t, m, "request.inference.messages[1]")
+	assertCursorAt(t, m, "request.inference.messages[1].toolCalls[0]")
 }
 
 func TestToolEnter_ReaderMoveHolds(t *testing.T) {
@@ -235,7 +235,7 @@ func TestToolEnter_ReaderMoveHolds(t *testing.T) {
 	enterOnTool(t, m)
 	m.handleKey(keyRune('j'))
 	m.applyDetailEvent(detailEventLoadedMsg{sessionID: m.selectedSess, seq: 3, event: &full})
-	if m.detailCursorPath == "request.inference.messages[1]" {
+	if m.detailCursorPath == "request.inference.messages[1].toolCalls[0]" {
 		t.Error("the fetch moved the cursor to the call after the reader moved it")
 	}
 }
@@ -246,7 +246,7 @@ func TestToolEnter_AimInEarlierGroup(t *testing.T) {
 	if !strings.HasPrefix(m.detailCursorPath, "request.inference.messages[<") {
 		t.Fatalf("cursor path = %q, want one in the earlier group", m.detailCursorPath)
 	}
-	assertCursorAt(t, m, "request.inference.messages[<3][1]")
+	assertCursorAt(t, m, "request.inference.messages[<3][1].toolCalls[0]")
 	assertOpen(t, m, "request.inference.messages[<3]")
 }
 
@@ -254,6 +254,8 @@ func TestToolEnter_ReusedID(t *testing.T) {
 	msgs := append(callMsgs("call_0"), callMsgs("call_0")[1:]...)
 	m := aimModel(t, msgs, trTool(2, "call_0", "Bash", 12, 20, ""))
 	enterOnRow(t, m, func(r *toolRow) bool { return r.ID == "call_0" })
+	// nestToolBlocks gives the one call to the first message that names it, so the last
+	// one holds no entry to aim at and the message is the target.
 	assertCursorAt(t, m, "request.inference.messages[3]")
 }
 
