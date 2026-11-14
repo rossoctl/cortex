@@ -785,8 +785,8 @@ func TestPraxisE2E_SameEventsAsDirect(t *testing.T) {
 			delete(d, k)
 			delete(p, k)
 		}
-		// Known difference, praxis/README.md "Gateway decisions" 6: the gateway runs no
-		// Cortex plugin, so its rows have no invocations.
+		// This run has no policy, so no sink records a decision and the rows do not
+		// change (praxis/README.md "Gateway decisions" 6).
 		if p["invocations"] != nil {
 			t.Errorf("row %d: praxis invocations = %s, want none", i, compact(p["invocations"]))
 		}
@@ -1021,6 +1021,85 @@ func TestPraxisE2E_PolicyDeniesTool(t *testing.T) {
 	}
 	if n := origin.count(); n != 2 {
 		t.Fatalf("tools/list: the origin got %d requests, want 2", n)
+	}
+}
+
+// e2eRecorderPlugins declares the recorder sink. Without it, an e2ePolicy run
+// records nothing.
+const e2eRecorderPlugins = `plugins:
+  - name: cortex-recorder
+    kind: cortex/recorder
+    capabilities: [read_headers]
+`
+
+// The policy decision lands in the response row of the request it judged (#1799).
+// One chain and one request per case: the only response row is that request's.
+func TestPraxisE2E_PolicyDecisionInRow(t *testing.T) {
+	allow := model.Invocation{Plugin: "policy", Action: model.ActionAllow}
+	mcpCall := func(tool string) *http.Request {
+		return request(t, t.Context(), http.MethodPost, "http://mcp.example.com/mcp",
+			fmt.Appendf(nil, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"%s","arguments":{}}}`, tool))
+	}
+	cases := []struct {
+		name   string
+		policy string
+		req    *http.Request
+		status int
+		// rpcCode is the JSON-RPC error the body must carry; 0 means a plain body.
+		rpcCode int
+		want    model.Invocation
+	}{
+		{"model-ok", e2eRecorderPlugins + e2ePolicy, modelRequest(t, "model-ok"), http.StatusOK, 0, allow},
+		{"model-bad", e2eRecorderPlugins + e2ePolicy, modelRequest(t, "model-bad"), http.StatusForbidden, 0,
+			model.Invocation{Plugin: "policy", Action: model.ActionDeny, Reason: "model_not_allowed"}},
+		{"danger_tool", e2eRecorderPlugins + e2eToolPolicy, mcpCall("danger_tool"), http.StatusOK, -32001,
+			model.Invocation{Plugin: "policy", Action: model.ActionDeny, Reason: "tool_not_allowed"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origin := newMockOrigin(t)
+			origin.serve(serveJSON(chatJSON))
+			c := newPraxisChain(t, origin, chainOpts{policy: tc.policy})
+			st, b, _ := c.do(t, tc.req)
+			if st != tc.status {
+				t.Fatalf("status %d, want %d; body %s", st, tc.status, b)
+			}
+			if tc.rpcCode != 0 {
+				var rpc struct {
+					Error struct {
+						Code int `json:"code"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(b, &rpc); err != nil || rpc.Error.Code != tc.rpcCode {
+					t.Fatalf("error.code = %d (%v), want %d; body %s", rpc.Error.Code, err, tc.rpcCode, b)
+				}
+			}
+			row := lastResponse(t, c.waitResponses(t, 1, 10*time.Second))
+			if row.Invocations == nil || !reflect.DeepEqual(row.Invocations.Outbound, []model.Invocation{tc.want}) {
+				t.Errorf("response row outbound = %+v, want %+v", row.Invocations, []model.Invocation{tc.want})
+			}
+
+			// A policy decision belongs only to the response row.
+			requests := 0
+			for _, ev := range eventsJSON(t, c) {
+				if ev["phase"] != model.SessionRequest.String() {
+					continue
+				}
+				requests++
+				if ev["invocations"] != nil {
+					t.Errorf("request row invocations = %s, want none", compact(ev["invocations"]))
+				}
+			}
+			if requests == 0 {
+				t.Error("the session has no request row")
+			}
+			// The join key is reserved: the proxy strips it before the origin.
+			if origin.count() > 0 {
+				if got := origin.lastHeader(t).Get("X-Praxis-Cortex-Request-Id"); got != "" {
+					t.Errorf("the origin saw the join header: %q", got)
+				}
+			}
+		})
 	}
 }
 
