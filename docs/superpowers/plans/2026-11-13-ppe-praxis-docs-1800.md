@@ -276,8 +276,9 @@ routes:
         - "custom.llm.stream == true: deny('a streamed response is not allowed', 'stream_not_allowed')"
 ```
 
-The paragraph says: a streamed (SSE) inference response skips the response-phase
-policy, so deny the stream in the request phase.
+The paragraph says: the gateway runs no `llm:` response-phase rule (see Known gaps), so
+a check on the completion cannot be enforced; to refuse streamed responses outright,
+deny the stream in the request phase.
 
 **`## Deny responses`** One table:
 
@@ -294,8 +295,14 @@ policy, so deny the stream in the request phase.
 - A `praxis.policy` block does nothing while `praxis.enabled` is false, and startup
   prints no warning.
 - The gateway sets no `body_access`, so the policy runs in the filter's default
-  `read_only` mode. A rule that rewrites a field, such as `args.ssn: redact(...)` or
-  `result.ssn: redact(...)`, loads and has no effect.
+  `read_only` mode. That mode does not buffer the response, so no `llm:`, `tool:`,
+  `prompt:` or `resource:` response-phase rule runs, streamed or not. Every
+  `post_invocation` step on those routes loads and has no effect, and so does a
+  `result.<field>` rule on a `tool:` route. A `result.<field>` rule on a `prompt:` or
+  `resource:` route stops the policy from loading. A request-side rewrite such as
+  `args.ssn: redact(...)` also has no effect. A `post_invocation` step on an `http:`
+  route or under `global:` runs at the response header phase, which carries no
+  completion. Put a check on a completion in a `pre_invocation` step.
 - A body with no readable `model` takes no `llm:` route. The gateway sets
   `llm.require_model: false` (`cmd/cortex/gateway.go`), so PPE runs the policy's HTTP
   admission on it: a matching `http:` route, or else the `global` rules. A policy with
@@ -303,7 +310,6 @@ policy, so deny the stream in the request phase.
   and a body with no string `model`, take this path. A `global:` rule that reads
   `llm.request` denies the request, because it carries no inference request. Keep model
   rules in `llm:` routes or `global.defaults.llm`.
-- A streamed (SSE) inference response skips the response-phase policy.
 - Taints are held in memory and are lost at each gateway restart and each policy
   reload.
 - WebSocket upgrades do not go through the gateway (`cmd/cortex/praxis.go`), so no
