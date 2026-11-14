@@ -70,13 +70,17 @@ putting back a stale Cortex address). Those two rules are exact opposites, so ev
 that reaches the record is stored as "was not set". The file, and `disable`'s restore
 branch, exist to keep Codex's state shape identical to claude-code's and OpenCode's.
 
-**What `disable` does.** It removes the five variables, removes the
-`# Added by agentop configure codex enable` marker if it is still exactly as written, and
-deletes the record — so an `enable` / `disable` cycle is a round trip that leaves the file
-as it found it. It would restore a recorded prior value if one existed, which per the
-paragraph above does not happen today; if you hand-edit one of the five variables after
-`enable`, `disable` simply removes it. Unlike Claude Code's `disable`, it does not check
-whether a value changed since `enable`.
+**What `disable` does.** It removes each of the five variables whose value is Cortex's,
+removes the `# Added by agentop configure codex enable` marker if it is still exactly as
+written, and deletes the record — so an `enable` / `disable` cycle is a round trip that
+leaves the file as it found it. A variable you set to a value of your own after `enable`,
+such as a corporate proxy or CA bundle, is left as it is and named, as Claude Code's and
+OpenCode's `disable` leave theirs. It tells Cortex's values from yours by Cortex's config
+when it can read it, and otherwise by their shape (a proxy on `localhost:476…` or
+`127.0.0.1:476…`, a CA path under `~/.cortex/ca`), because `disable` has to work after
+Cortex is gone. It would restore a recorded prior value if one existed, which per the
+paragraph above does not happen today. In v0.9.5 and earlier, `disable` removed all five
+variables whatever they held.
 
 **What `status` says.** It prints the five variables as the file currently holds them, a
 warning if any is defined more than once, then `enabled` if every one matches what `enable`
@@ -164,11 +168,10 @@ lsof -nP -a -p "$(pgrep -f 'codex app-server --listen')" -iTCP -sTCP:ESTABLISHED
 
 `agentop uninstall` unroutes Codex before it stops the proxy: it removes each of the five
 variables whose value is Cortex's, deletes the record, and restarts a running app-server
-the way `disable` does. Unlike `disable`, it leaves a variable whose value is not Cortex's,
-such as a proxy or CA bundle of your own, and lists it under *Left behind*, because it
-changes everything on one question. When it cannot change the file, for example when a
-variable is defined twice, `--purge` keeps `~/.cortex`, since Codex's `SSL_CERT_FILE` still
-names the CA bundle there.
+the way `disable` does. Like `disable`, it leaves a variable whose value is not Cortex's,
+such as a proxy or CA bundle of your own, and lists it under *Left behind*. When it cannot
+change the file, for example when a variable is defined twice, `--purge` keeps `~/.cortex`,
+since Codex's `SSL_CERT_FILE` still names the CA bundle there.
 
 `agentop uninstall` in v0.9.5 and earlier skipped Codex. If you uninstalled with one of
 those, Codex still points at a proxy that is gone: undo it by hand, as below.
