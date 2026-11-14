@@ -56,8 +56,8 @@ func TestDoctorVersionsMustAgree(t *testing.T) {
 	for _, c := range []struct{ name, cortex, reason, fix string }{
 		{"another version", "#!/bin/sh\necho cortex v9.9.7\n", "agentop is v9.9.9, cortex is v9.9.7", installerOneLiner},
 		{"no version", "#!/bin/sh\nexit 3\n", "cortex did not report its version", installerOneLiner},
-		// Following the plain one-liner would take a cpex install off cpex.
-		{"cpex build", "#!/bin/sh\necho cortex \\(cpex\\) v9.9.7\n", "agentop is v9.9.9, cortex is v9.9.7", installerOneLiner + " -s -- --cpex"},
+		// A cpex install gets the plain one-liner, which moves it to the default build.
+		{"cpex build", "#!/bin/sh\necho cortex \\(cpex\\) v9.9.7\n", "agentop is v9.9.9, cortex is v9.9.7", installerOneLiner},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sc := newDoctorScene(t)

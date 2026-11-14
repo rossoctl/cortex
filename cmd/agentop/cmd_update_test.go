@@ -82,7 +82,7 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 			latestIs(t, c.latest)
 			fakeInstaller(t, false)
 			if c.release != "" {
-				fakeStagedRelease(t, c.release, false, false)
+				fakeStagedRelease(t, c.release, false)
 			}
 			var out, errb bytes.Buffer
 			if code := runUpdate(c.args, &out, &errb); code != c.code || out.String() != c.want {
@@ -103,10 +103,10 @@ exit 7
 // fakeStagedRelease serves the tag's release for this machine with right checksums,
 // sets TMPDIR to a new empty dir and records provenance checks instead of making
 // them. setupArgs is the file the staged agentop writes its arguments to.
-func fakeStagedRelease(t *testing.T, tag string, cpex, praxis bool) (setupArgs string, checked *[]string, files map[string][]byte) {
+func fakeStagedRelease(t *testing.T, tag string, praxis bool) (setupArgs string, checked *[]string, files map[string][]byte) {
 	t.Helper()
 	files = map[string][]byte{}
-	for _, name := range releaseTarballs(tag, runtime.GOOS, runtime.GOARCH, cpex, praxis) {
+	for _, name := range releaseTarballs(tag, runtime.GOOS, runtime.GOARCH, praxis) {
 		body := "#!/bin/sh\necho " + tarballBinary(name) + "\n"
 		if tarballBinary(name) == "agentop" {
 			body = fakeSetup
@@ -153,16 +153,16 @@ func TestUpdateHandsOffToTheStagedSetup(t *testing.T) {
 	sc.installed(t, "--claude-code", "--no-service")
 	writeExe(t, filepath.Join(sc.home, ".local", "bin", "cortex"), "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n")
 	t.Setenv("CORTEX_INSTALLER_DREW", "1")
-	setupArgs, checked, files := fakeStagedRelease(t, "v9.9.9-rc.1", true, false)
+	setupArgs, checked, files := fakeStagedRelease(t, "v9.9.9-rc.1", false)
 	tmp := os.Getenv("TMPDIR")
 	var out, errb bytes.Buffer
 	code := runUpdate([]string{"--ref=v9.9.9-rc.1", "-y"}, &out, &errb)
 	// The staged setup's exit status is update's.
-	if code != 7 || out.String() != "staged setup\n" {
-		t.Fatalf("exit %d stdout %q, want 7 and the staged setup's line:\n%s", code, out.String(), errb.String())
+	if code != 7 || out.String() != cpexUpdateNotice+"\nstaged setup\n" {
+		t.Fatalf("exit %d stdout %q, want 7 and the notice then the staged setup's line:\n%s", code, out.String(), errb.String())
 	}
-	names := releaseTarballs("v9.9.9-rc.1", runtime.GOOS, runtime.GOARCH, true, false)
-	if !strings.HasPrefix(names[1], "cortex-cpex_") || !slices.Equal(*checked, names) {
+	names := releaseTarballs("v9.9.9-rc.1", runtime.GOOS, runtime.GOARCH, false)
+	if !strings.HasPrefix(names[1], "cortex_") || !slices.Equal(*checked, names) {
 		t.Errorf("checked %q, want %q", *checked, names)
 	}
 	var size int
@@ -191,7 +191,7 @@ func TestUpdateHandsOffToTheStagedSetup(t *testing.T) {
 }
 
 func TestInstallReleasePraxis(t *testing.T) {
-	setupArgs, checked, _ := fakeStagedRelease(t, "v9.9.9", false, true)
+	setupArgs, checked, _ := fakeStagedRelease(t, "v9.9.9", true)
 	var out, errb bytes.Buffer
 	err := installRelease(&setupEnv{}, "v9.9.9", []string{"--praxis"}, &out, &errb)
 	var exit *exec.ExitError
@@ -213,8 +213,8 @@ func TestInstallReleasePraxis(t *testing.T) {
 func TestUpdateChecksumMismatchChangesNothing(t *testing.T) {
 	sc := newDoctorScene(t)
 	sc.installed(t)
-	_, checked, files := fakeStagedRelease(t, "v9.9.10", false, false)
-	agentop := releaseTarballs("v9.9.10", runtime.GOOS, runtime.GOARCH, false, false)[0]
+	_, checked, files := fakeStagedRelease(t, "v9.9.10", false)
+	agentop := releaseTarballs("v9.9.10", runtime.GOOS, runtime.GOARCH, false)[0]
 	wrong := maps.Clone(files)
 	wrong[agentop] = []byte("not the tarball")
 	delete(wrong, "checksums.txt")
@@ -238,7 +238,7 @@ func TestUpdateChecksumMismatchChangesNothing(t *testing.T) {
 func TestUpdateUnreachableAttestationAPIFailsClosed(t *testing.T) {
 	sc := newDoctorScene(t)
 	sc.installed(t)
-	setupArgs, _, _ := fakeStagedRelease(t, "v9.9.10", false, false)
+	setupArgs, _, _ := fakeStagedRelease(t, "v9.9.10", false)
 	provenanceCheckFn = checkProvenance // fakeStagedRelease's cleanup restores it
 	srv := httptest.NewServer(http.NotFoundHandler())
 	srv.Close()

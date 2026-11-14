@@ -32,10 +32,10 @@ checks each archive's SHA-256 against checksums.txt and its build provenance
 against GitHub's attestation for this repository's release workflow and that
 tag, and only then gives it to the new agentop setup. Any failed check stops the
 update and changes nothing. --ref=main runs the same installer as the one-liner.
-Update keeps these as they are now: Claude Code's routing, a proxy with no service (--no-service), the cpex
-build of cortex, praxis mode (--praxis), an install with no config
-(--install-only), and a shell profile the install did not edit
-(--no-modify-path).
+Update keeps these as they are now: Claude Code's routing, a proxy with no service (--no-service),
+praxis mode (--praxis), an install with no config (--install-only), and a
+shell profile the install did not edit (--no-modify-path). It moves an
+install that runs the cpex build of cortex to the default build, and says so.
 
   --ref=REF   install REF instead of the newest stable release, e.g.
               --ref=v0.9.0-rc.3 for a release candidate, --ref=main
@@ -156,6 +156,9 @@ var setupHandOffFlags = []string{"--claude-code", "--yes", "--no-service", "--in
 // releaseTag is the shape of a release tag that installRelease downloads and checks.
 var releaseTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$`)
 
+// cpexUpdateNotice is the one line an update prints when it replaces a cpex build.
+const cpexUpdateNotice = "the laptop cpex build is removed: installed the default cortex; use praxis mode with praxis.policy for laptop policy (docs/praxis-policy.md)"
+
 // installRelease installs ref ("" = newest release) with flags. A v* tag is
 // downloaded, checked and staged here, then handed to the staged agentop setup;
 // any other ref runs the website installer.
@@ -171,6 +174,10 @@ func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io
 		// The tag goes into a file name in the stage, a URL path and the SAN.
 		return fmt.Errorf("--ref=%s is not a release tag like v1.2.3 or v1.2.3-rc.1", ref)
 	}
+	// Read before the install runs, because the install overwrites the binary.
+	if installedIsCpex(filepath.Join(env.binDir, proxyBinary)) {
+		_, _ = fmt.Fprintln(stdout, cpexUpdateNotice)
+	}
 	if !strings.HasPrefix(ref, "v") {
 		cmd := exec.Command("sh", append([]string{"-c", updateScript, installerURL}, flags...)...)
 		cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -178,7 +185,7 @@ func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io
 	} else {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		start := time.Now()
-		names := releaseTarballs(ref, runtime.GOOS, runtime.GOARCH, slices.Contains(flags, "--cpex"), slices.Contains(flags, "--praxis"))
+		names := releaseTarballs(ref, runtime.GOOS, runtime.GOARCH, slices.Contains(flags, "--praxis"))
 		stage, size, err := stageRelease(ctx, ref, names, func(n string, d []byte) error { return provenanceCheckFn(ctx, n, d, ref) })
 		stop()
 		if err != nil {
@@ -252,9 +259,8 @@ func restageUnderHome(stage, home string) (string, error) {
 
 // updateFlags are the installer flags that keep this install as it is: without
 // them the installer would unroute nothing but put a service in place of a
-// background proxy, the default cortex in place of the cpex one, direct mode in
-// place of praxis mode, and a full setup in place of an install-only one, and would
-// edit a profile the install left alone.
+// background proxy, direct mode in place of praxis mode, and a full setup in
+// place of an install-only one, and would edit a profile the install left alone.
 func updateFlags(env *setupEnv, ref string, yes bool) []string {
 	var flags []string
 	if !fileExists(env.configPath()) { // install-only writes no config
@@ -271,9 +277,6 @@ func updateFlags(env *setupEnv, ref string, yes bool) []string {
 	}
 	if noService {
 		flags = append(flags, "--no-service")
-	}
-	if installedIsCpex(filepath.Join(env.binDir, proxyBinary)) {
-		flags = append(flags, "--cpex")
 	}
 	if configPraxisEnabled(env.configPath()) {
 		flags = append(flags, "--praxis")

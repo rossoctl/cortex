@@ -28,14 +28,10 @@ var (
 	maxTarballBytes   int64 = 2 << 30
 )
 
-// releaseTarballs is the agentop tarball, then the cortex (or cortex-cpex) one, then cortex-gateway when praxis.
-func releaseTarballs(tag, goos, goarch string, cpex, praxis bool) []string {
+// releaseTarballs is the agentop tarball, then the cortex one, then cortex-gateway when praxis.
+func releaseTarballs(tag, goos, goarch string, praxis bool) []string {
 	suffix := "_" + tag + "_" + goos + "_" + goarch + ".tar.gz"
-	proxy := proxyBinary
-	if cpex {
-		proxy = "cortex-cpex"
-	}
-	names := []string{"agentop" + suffix, proxy + suffix}
+	names := []string{"agentop" + suffix, proxyBinary + suffix}
 	if praxis {
 		names = append(names, "cortex-gateway"+suffix)
 	}
@@ -49,7 +45,7 @@ func tarballBinary(name string) string {
 		return "agentop"
 	case strings.HasPrefix(name, "cortex-gateway_"):
 		return "cortex-gateway"
-	default: // cortex_ and cortex-cpex_
+	default: // cortex_
 		return proxyBinary
 	}
 }
