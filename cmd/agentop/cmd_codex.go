@@ -228,6 +228,32 @@ func codexWanted(cortexCfgPath string) (map[string]string, error) {
 		return nil, fmt.Errorf("%s has no tls_bridge.ca_dir, so Codex has no CA to trust;\n"+
 			"  requests would fail certificate verification. Enable the TLS bridge first.", cortexCfgPath)
 	}
+	return codexValuesFrom(want), nil
+}
+
+// codexValues is Cortex's values for the five managed keys, for telling them from the
+// user's: what codexWanted gives, without enable's refusals. A bridge turned off since
+// enable changes nothing about the values enable wrote, and without them codexIsOurs
+// falls back to their shape, which a custom forward_proxy_addr or ca_dir does not have:
+// disable and uninstall would then call Cortex's own values the user's (#1783 review).
+// OpenCode reads its values the same way. nil when the config cannot be read; a value
+// the config does not give is left out, so it matches nothing.
+func codexValues(cortexCfgPath string) map[string]string {
+	want, _, err := wantedFromConfig(cortexCfgPath)
+	if err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for k, v := range codexValuesFrom(want) {
+		if v != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// codexValuesFrom puts the values wantedFromConfig derived under Codex's five keys.
+func codexValuesFrom(want map[string]string) map[string]string {
 	proxy := want[envProxy]
 	return map[string]string{
 		"HTTP_PROXY":  proxy,
@@ -238,7 +264,7 @@ func codexWanted(cortexCfgPath string) (map[string]string, error) {
 		// vars resolve to — not the bare ca.crt envCACerts names. See the comment
 		// at the top of this file for why SSL_CERT_FILE and not Codex's own name.
 		envSSLCert: want[envSSLCert],
-	}, nil
+	}
 }
 
 // codexEnvLineRe matches a dotenv assignment as DOTENVY parses it, which is what
@@ -319,6 +345,19 @@ func (f *codexEnvFile) get(key string) (string, bool) {
 	}
 	m := codexEnvLineRe.FindStringSubmatch(f.lines[i])
 	return m[2], true
+}
+
+// all returns every value the file defines key as, in file order: one for a key defined
+// once, more for a duplicate, of which Codex uses the last (dotenvy is last-wins). get
+// gives only the first.
+func (f *codexEnvFile) all(key string) []string {
+	var vals []string
+	for _, line := range f.lines {
+		if m := codexEnvLineRe.FindStringSubmatch(line); m != nil && m[1] == key {
+			vals = append(vals, m[2])
+		}
+	}
+	return vals
 }
 
 // ambiguous names every key in keys defined more than once in the file.

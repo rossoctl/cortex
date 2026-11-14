@@ -1102,8 +1102,9 @@ agentop uninstall --purge
 ```
 
 `agentop uninstall` lists what it will remove and asks once; `--yes` skips the question.
-It unroutes Claude Code, OpenCode, IBM Bob and the bob shell function where Cortex
-routed them, restarting OpenCode's background service when it finds it running. It
+It unroutes Claude Code, OpenCode, Codex, IBM Bob, and the bob and pi shell functions
+and Pi's session extension where Cortex routed them, restarting OpenCode's background
+service and Codex's app-server when it finds them running. It
 stops and removes the service, or the background proxy. It removes the PATH lines setup
 added, unless other tools in `~/.local/bin` still need them, and removes `agentop`,
 `cortex`, `cortex-session-dump` and `cortex-gateway` from `~/.local/bin`. A step that fails is reported

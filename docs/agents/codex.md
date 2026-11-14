@@ -160,20 +160,37 @@ OpenAI:
 lsof -nP -a -p "$(pgrep -f 'codex app-server --listen')" -iTCP -sTCP:ESTABLISHED
 ```
 
+### When you uninstall Cortex
+
+`agentop uninstall` unroutes Codex before it stops the proxy: it removes each of the five
+variables whose value is Cortex's, deletes the record, and restarts a running app-server
+the way `disable` does. Unlike `disable`, it leaves a variable whose value is not Cortex's,
+such as a proxy or CA bundle of your own, and lists it under *Left behind*, because it
+changes everything on one question. When it cannot change the file, for example when a
+variable is defined twice, `--purge` keeps `~/.cortex`, since Codex's `SSL_CERT_FILE` still
+names the CA bundle there.
+
+`agentop uninstall` in v0.9.5 and earlier skipped Codex. If you uninstalled with one of
+those, Codex still points at a proxy that is gone: undo it by hand, as below.
+
 ### Undoing it by hand
 
 Without `agentop`: open `$CODEX_HOME/.env` (or `~/.codex/.env`) and remove the lines for the five variables above,
 if they point at Cortex (a proxy on `localhost:476…`/`127.0.0.1:476…`, or a CA path under
 `~/.cortex/ca` unless you moved its `ca_dir`). Leave any that point elsewhere — they are not
-Cortex's. Then delete the record, and restart Codex's background server so it stops using
-the proxy.
+Cortex's. Then delete the record, stop Codex's auto-updater, and restart Codex's background
+server, so neither keeps using the proxy. The updater has to go first: `codex app-server
+daemon restart` keeps a running updater, which still has the proxy and passes it to the
+app-server it starts after its next update, and Codex has no command that stops one. The
+`pkill` matches the updater by its command line; the brackets keep the pattern from
+matching the shell that runs it.
 
 ```sh
 # Remove only lines matching these five keys, and only if they point at Cortex:
 #   HTTP_PROXY  HTTPS_PROXY  http_proxy  https_proxy  SSL_CERT_FILE
 $EDITOR ~/.codex/.env
 rm -f ~/.cortex/codex-state.json
-codex app-server daemon restart
+pkill -f 'app-server daemon pid-update-loo[p]'; codex app-server daemon restart
 ```
 
 ## CA trust
