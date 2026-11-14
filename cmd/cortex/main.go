@@ -992,7 +992,7 @@ func main() {
 		// matching presents as "the bridge broke my tool", with nothing tying the
 		// symptom back to the typo.
 		decision, derr := tlsbridge.NewDecision(tlsbridge.DecisionOpts{
-			Ports: ports, SkipHosts: cfg.TLSBridge.PassthroughHosts,
+			Ports: ports, SkipHosts: cfg.TLSBridge.PassthroughHosts, FailClosed: cfg.TLSBridge.FailClosed,
 		})
 		if derr != nil {
 			fatalf("tls-bridge: %v", derr)
@@ -1007,8 +1007,10 @@ func main() {
 			Upstream: up,
 			CAPEM:    src.CACertPEM(),
 			CAFile:   caTrustPath(cfg.TLSBridge.CADir),
+
+			FailClosed: cfg.TLSBridge.FailClosed,
 		}
-		slog.Info("tls-bridge enabled", "ca_dir", cfg.TLSBridge.CADir)
+		slog.Info("tls-bridge enabled", "ca_dir", cfg.TLSBridge.CADir, "fail_closed", cfg.TLSBridge.FailClosed)
 	}
 
 	// Proxy-sidecar: reverse proxy (inbound) and/or forward proxy (outbound),

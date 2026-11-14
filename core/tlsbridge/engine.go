@@ -32,6 +32,12 @@ type Engine struct {
 	Upstream     *http.Client
 	CAPEM        []byte
 
+	// FailClosed is tls_bridge.fail_closed: a connection Decision intercepts is
+	// bridged or refused, never tunnelled. Skip, Programs and Trust are not
+	// consulted and no failure is recorded to them, the SNI must name the CONNECT
+	// host, and an origin that does not verify is refused.
+	FailClosed bool
+
 	// CAFile is the on-disk trust anchor clients must load. Diagnostics only:
 	// the bridge itself works from CAPEM. It exists so a listener that notices
 	// nothing is being decrypted can name the exact file to trust, which is

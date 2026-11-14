@@ -2,7 +2,9 @@ package tlsbridge
 
 import (
 	"crypto/tls"
+	"errors"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -18,12 +20,20 @@ type Terminator struct {
 
 func NewTerminator(m *Minter) *Terminator { return &Terminator{minter: m} }
 
+// ErrSNIMismatch is Terminate refusing a ClientHello whose SNI names a host other
+// than the one it was given.
+var ErrSNIMismatch = errors.New("tls-bridge: SNI does not name the CONNECT host")
+
 // Terminate completes the server-side TLS handshake against the agent. host is
-// the dialed name/IP, used to mint when the ClientHello carries no SNI.
-func (t *Terminator) Terminate(client net.Conn, host string) (*tls.Conn, error) {
+// the dialed name/IP, used to mint when the ClientHello carries no SNI. With
+// exactSNI, a ClientHello whose SNI names another host fails with ErrSNIMismatch.
+func (t *Terminator) Terminate(client net.Conn, host string, exactSNI bool) (*tls.Conn, error) {
 	cfg := &tls.Config{
 		NextProtos: []string{"h2", "http/1.1"},
 		GetCertificate: func(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if exactSNI && chi.ServerName != "" && !sameHost(chi.ServerName, host) {
+				return nil, ErrSNIMismatch
+			}
 			if chi.ServerName != "" {
 				return t.minter.GetCertificateForHost(chi.ServerName)
 			}
@@ -39,4 +49,10 @@ func (t *Terminator) Terminate(client net.Conn, host string) (*tls.Conn, error) 
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
+}
+
+// sameHost compares two host names as DNS does: case-insensitively, with a
+// trailing dot ignored. The comparison is textual: an IP never matches a name.
+func sameHost(a, b string) bool {
+	return strings.EqualFold(strings.TrimSuffix(a, "."), strings.TrimSuffix(b, "."))
 }
