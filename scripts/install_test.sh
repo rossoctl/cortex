@@ -1973,6 +1973,8 @@ check "--cpex on linux/amd64: hands off" "0 1" "${T_ST} $(t_nlog argv)"
 check "  downloading cortex-cpex's archive, not cortex's" "1 0" \
 	"$(grep -c '/cortex-cpex_v9\.9\.9_linux_amd64\.tar\.gz$' "${T_RUN}/urls" || true) $(grep -c '/cortex_v9\.9\.9_linux_amd64\.tar\.gz$' "${T_RUN}/urls" || true)"
 check "  staging the cpex build as cortex" "cortex (cpex) v9.9.9" "$("$(t_stage)/cortex" --version)"
+check "  warning that the laptop cpex build is deprecated" "yes" \
+	"$(t_in 'warning: the laptop cpex build is deprecated' err)"
 check "  verifying exactly agentop's and cortex-cpex's entries" \
 	"./agentop_v9.9.9_linux_amd64.tar.gz ./cortex-cpex_v9.9.9_linux_amd64.tar.gz" \
 	"$(awk '{print $2}' "$(t_stage)/checksums.filtered" | tr '\n' ' ' | sed 's/ $//')"

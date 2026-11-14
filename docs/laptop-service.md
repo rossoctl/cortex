@@ -225,6 +225,10 @@ Where to look:
 
 ## The cpex build
 
+**Deprecated.** The laptop cpex build is deprecated. Use praxis mode with
+[`praxis.policy`](praxis-policy.md) instead (see `--praxis` above). This section stays for
+existing installs. Kubernetes use of the `authbridge-cpex` image is **not** deprecated.
+
 Each release also publishes `cortex` built with the [cpex policy plugin](cpex-plugin.md),
 as `cortex-cpex_<version>_<os>_<arch>.tar.gz`, for macOS arm64 (14.5 or later) and Linux
 amd64/arm64. The Linux builds are static, so they run on glibc and musl alike. To install
