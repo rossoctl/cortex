@@ -1,9 +1,11 @@
 # Praxis - fmt, clippy and tests for the Rust workspace in praxis/
 #
-# Runs when praxis/ changes, or when the Go code that praxis/ ports changes.
-# A failure blocks the PR only for a change to praxis/, to this file, or to the Go side
-# of praxis mode (the hop, the egress listener, cmd/cortex's praxis wiring). Any other
-# Go change runs the steps too, so drift shows, but does not block.
+# Runs when praxis/ changes, when docs/praxis-policy.md changes, or when the Go code
+# that praxis/ ports changes.
+# A failure blocks the PR only for a change to praxis/, to the policy page, to this
+# file, or to the Go side of praxis mode (the hop, the egress listener, cmd/cortex's
+# praxis wiring). Any other Go change runs the steps too, so drift shows, but does not
+# block.
 #
 name: Praxis
 
@@ -14,6 +16,7 @@ on:
       - "release-*"
     paths:
       - "praxis/**"
+      - "docs/praxis-policy.md"
       - ".github/workflows/praxis.yaml"
       - "core/attribution/wire.go"
       - "core/attribution/testdata/**"
@@ -46,6 +49,7 @@ on:
       - main
     paths:
       - "praxis/**"
+      - "docs/praxis-policy.md"
       - ".github/workflows/praxis.yaml"
       - "core/attribution/wire.go"
       - "core/attribution/testdata/**"
@@ -101,7 +105,8 @@ jobs:
           fi
           # The hop, the egress listener and the gateway wiring are praxis mode's Go side,
           # not ported code: a change there that breaks the end-to-end tests must block.
-          pattern='^(praxis/|\.github/workflows/praxis\.yaml$|core/listener/forwardproxy/(hop|egress)[^/]*\.go$|cmd/cortex/(praxis[^/]*|gateway|ingest)\.go$)'
+          # The policy page is the input of doc_policy_examples.rs, so its examples block too.
+          pattern='^(praxis/|docs/praxis-policy\.md$|\.github/workflows/praxis\.yaml$|core/listener/forwardproxy/(hop|egress)[^/]*\.go$|cmd/cortex/(praxis[^/]*|gateway|ingest)\.go$)'
           if git diff --name-only "$BASE_SHA" HEAD | grep -qE "$pattern"; then
             echo "blocking=true" >> "$GITHUB_OUTPUT"
           else

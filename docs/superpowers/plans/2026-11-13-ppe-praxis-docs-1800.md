@@ -291,6 +291,8 @@ policy, so deny the stream in the request phase.
 
 **`## Known gaps`** This list, verbatim:
 - No A2A policy.
+- A `praxis.policy` block does nothing while `praxis.enabled` is false, and startup
+  prints no warning.
 - A body with no readable `model` takes no `llm:` route. The gateway sets
   `llm.require_model: false` (`cmd/cortex/gateway.go`), so PPE runs the policy's HTTP
   admission on it: a matching `http:` route, or else the `global` rules. A policy with
@@ -310,14 +312,14 @@ policy, so deny the stream in the request phase.
 
 **`## Move from the CPEX plugin`** A numbered list:
 1. Move the CPEX policy YAML out of the `cpex` plugin entry and into its own file.
-2. Apply the 0.5 to 0.6 changes. A CIBA config needs `store: { kind: memory }`.
-   `ConversationContext.history` is now `Vec<Message>`, in CMF shape. `&` and `|`
-   behave differently when an operand cannot be ordered. There are new `llm.input.*`,
-   `llm.model.*` and `llm.output.*` facts, and the old `llm.model_id` keys stay as
-   aliases.
-3. Remove the `cpex` entry from `pipeline.outbound`.
-4. Set `praxis.policy.config_path` and restart, as "Turn policy on" says.
-5. Check the options in the table below. Move each one you use another way, or accept
+2. Delete every `elicitation/ciba` plugin. CIBA is not in the gateway.
+3. Apply the 0.5 to 0.6 changes. `ConversationContext.history` is now `Vec<Message>`,
+   in CMF shape. `&` and `|` behave differently when an operand cannot be ordered.
+   There are new `llm.input.*`, `llm.model.*` and `llm.output.*` facts, and the old
+   `llm.model_id` keys stay as aliases.
+4. Remove the `cpex` entry from `pipeline.outbound`.
+5. Set `praxis.policy.config_path` and restart, as "Turn policy on" says.
+6. Check the options in the table below. Move each one you use another way, or accept
    that it is gone.
 
 After the list, add this table of the CPEX plugin options with no equivalent (issue
@@ -342,7 +344,9 @@ description comes from the option table in `docs/cpex-plugin.md`:
 The paragraph before the list says: the constructs in
 `core/plugins/cpex/testdata/hr-cpex/cpex-policy.yaml` and in the examples in
 `docs/cpex-plugin.md` exist in PPE 0.6.0. In a load check against 0.6.0, the `hr-cpex`
-file failed only with `missing field store`.
+file failed only with `missing field store`, from its `elicitation/ciba` plugin. The
+gateway does not build that plugin, so delete the block. A `store` does not make it
+load.
 
 - [ ] **Step 2: Add the three links**
 
