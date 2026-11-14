@@ -282,7 +282,8 @@ const tokPerSecWindow = 60 * time.Second
 
 // tokPerSec is Σ tokens / model time over the agent's newest turns, until that time reaches
 // tokPerSecWindow. Model time is the union of the turns' spans, so idle, tool and subagent time
-// between turns does not count, and neither does overlap twice. The turn that makes it reach the window counts in full. A turn with no
+// between turns does not count, and neither does overlap twice. The turn that makes it reach the
+// window counts in full, and so does every turn that ran beside the counted ones. A turn with no
 // tokens (failed, lost, without usage, or open without a live estimate) does not count, so one
 // error does not pull the value down. An open turn ends at fetched, the time its LiveTokens were
 // read, so the rate does not fall between fetches. A zero fetched means now.
@@ -300,6 +301,7 @@ func tokPerSec(turns []timeline.Turn, agent string, fetched, now time.Time) (rat
 	var sumTok int
 	var sumDur time.Duration
 	var spans [][2]time.Time
+	var winEnd time.Time // the latest end among the counted turns
 	for _, t := range mine {
 		tokens := t.LiveTokens
 		if t.End != nil {
@@ -309,15 +311,19 @@ func tokPerSec(turns []timeline.Turn, agent string, fetched, now time.Time) (rat
 		if tokens == 0 || !e.After(t.Start) {
 			continue
 		}
+		// A turn that started before the counted window ended cannot overlap it, so it is
+		// older work than the rate measures. A turn that ran beside the window's turns still
+		// counts: the agent made its tokens in that model time.
+		if sumDur >= tokPerSecWindow && t.Start.Before(winEnd.Add(-tokPerSecWindow)) {
+			break
+		}
 		sumTok += tokens
 		// Time in which two turns of the agent ran at once counts once.
 		spans = append(spans, [2]time.Time{t.Start, e})
 		v := newIvs(spans)
 		sumDur = v.cover(v[0][0], v[len(v)-1][1])
 		live = live || t.End == nil
-		if sumDur >= tokPerSecWindow {
-			break
-		}
+		winEnd = tlMaxTime(winEnd, e)
 	}
 	if sumDur <= 0 {
 		return 0, false, false

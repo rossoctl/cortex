@@ -302,9 +302,9 @@ type Context struct {
 	// Another goroutine reads it while the body streams: the Timeline's live
 	// token estimate (#1861) reads forwardproxy's count through
 	// session.Store.StreamBytes, with atomic.LoadInt64. So every write must be
-	// atomic (atomic.AddInt64 or atomic.StoreInt64). The writes that are still
-	// plain — forwardproxy's websocket relay, extproc — are safe only because
-	// no live stream is tracked for them. Plugins do not write to it.
+	// atomic (atomic.AddInt64 or atomic.StoreInt64). Extproc's write is still
+	// plain, and is safe only because no live stream is tracked for it. Plugins
+	// do not write to it.
 	ResponseBytes int64
 
 	// ResponseCapture is the response body as the listener read it off the wire, for the

@@ -184,7 +184,8 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 		if out := c.resp.Inference; out != nil {
 			turn.Finish = out.FinishReason
 			turn.OutputTokens = out.OutputTokens
-			if out.OutputTokens > 0 && c.resp.Duration-c.resp.Ttfb >= calibrateMinStream {
+			// Only a stream: the ratio estimates the tokens behind a streamed body.
+			if out.OutputTokens > 0 && (inf.Stream || out.StreamedResponse) && c.resp.Duration-c.resp.Ttfb >= calibrateMinStream {
 				calBytes += c.resp.BytesDown
 				calTokens += int64(out.OutputTokens)
 			}

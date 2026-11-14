@@ -391,9 +391,14 @@ func (m *model) timelineLayoutNow() (tlLayout, bool) {
 }
 
 // The pane's fixed lines: tabs, axis, column heads, the separator, the closing rule, the
-// legend and the cursor line. Each agent and host row takes two lines, its own and the blank
-// one that keeps a row's bars off the next row's.
-const timelineFixedLines = 7
+// legend's lines and the cursor line. Each agent and host row takes two lines, its own and the
+// blank one that keeps a row's bars off the next row's.
+const (
+	timelineFixedLines = 8
+	// timelineLegendLines is how many lines legend draws. The tok/s note has a line of its own,
+	// so the pane's width cannot cut it off.
+	timelineLegendLines = 2
+)
 
 // tlEmptyLines is what an empty side draws in place of its rows: a note and a blank line.
 func tlEmptyLines(lay tlLayout) int {
@@ -412,7 +417,7 @@ func tlEmptyLines(lay tlLayout) int {
 func (m *model) timelineRowBudget(lay tlLayout) int {
 	fixed := timelineFixedLines + tlEmptyLines(lay)
 	if m.bodyHeight < timelineFixedLines+2*4 {
-		fixed-- // no legend
+		fixed -= timelineLegendLines // no legend
 	}
 	return max((m.bodyHeight-fixed)/2, 0)
 }
@@ -753,8 +758,8 @@ func (m *model) legend() string {
 	}
 	return sw(colorTLTool, "tools") + sw(colorTLModel, "model") + sw(colorTLRetry, "retrying") +
 		sw(colorTLSubs, "waiting on subagents") + sw(colorTLUser, "waiting on you") +
-		styleMuted.Render("┆ time cut from the axis, in its colour   ▁…█ requests in flight") +
-		styleMuted.Render("   tok/s output per second of model time, last 60 s")
+		styleMuted.Render("┆ time cut from the axis, in its colour   ▁…█ requests in flight") + "\n" +
+		styleMuted.Render("  tok/s output per second of model time, last 60 s")
 }
 
 func (m *model) timelineStatus(lay tlLayout) string {

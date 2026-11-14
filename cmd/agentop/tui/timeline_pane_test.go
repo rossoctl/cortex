@@ -1480,6 +1480,34 @@ func TestTimelineTokPerSec_OverlapCountsOnce(t *testing.T) {
 	}
 }
 
+// Turns that ran at the same time as the ones that fill the window count too: the agent made
+// their tokens in that model time, and the time is already in the span. The newer turn alone
+// fills the window here, so the older concurrent turn must not be cut off by the sort order.
+func TestTimelineTokPerSec_ConcurrentTurnsAtTheWindow(t *testing.T) {
+	m := timeline.MainAgent
+	// Turns are sorted by start, and the sort is stable, so equal starts keep the input order
+	// either way round.
+	for _, turns := range [][]timeline.Turn{
+		{{Agent: m, Start: tlAt(0), End: tlPtr(60), OutputTokens: 4000},
+			{Agent: m, Start: tlAt(0), End: tlPtr(60), OutputTokens: 8000}},
+		{{Agent: m, Start: tlAt(0), End: tlPtr(60), OutputTokens: 8000},
+			{Agent: m, Start: tlAt(0), End: tlPtr(60), OutputTokens: 4000}},
+	} {
+		if rate, _, ok := tokPerSec(turns, m, time.Time{}, tlAt(70)); !near(rate, 200) || !ok {
+			t.Errorf("%+v: tokPerSec = %v, %v, want 200, true", turns, rate, ok)
+		}
+	}
+	// A turn older than the window and clear of it stays out, so an idle agent's old work does
+	// not raise the rate.
+	turns := []timeline.Turn{
+		{Agent: m, Start: tlAt(0), End: tlPtr(60), OutputTokens: 6000},
+		{Agent: m, Start: tlAt(120), End: tlPtr(180), OutputTokens: 6000},
+	}
+	if rate, _, ok := tokPerSec(turns, m, time.Time{}, tlAt(190)); !near(rate, 100) || !ok {
+		t.Errorf("tokPerSec = %v, %v, want 100, true", rate, ok)
+	}
+}
+
 // A finished subagent keeps the rate of its last turns, however long ago they ended.
 func TestTimelineTokPerSec_FinishedSubagentKeepsItsRate(t *testing.T) {
 	turns := []timeline.Turn{{Agent: "a1", Start: tlAt(0), End: tlPtr(10), OutputTokens: 850}}
@@ -1545,9 +1573,24 @@ func TestTimelineRender_TokPerSecColumn(t *testing.T) {
 	if l := find("  Survey the code"); !strings.HasSuffix(l, strings.Repeat(" ", 7)) || strings.HasSuffix(l, strings.Repeat(" ", 8)) {
 		t.Errorf("row without tokens does not end with 7 blanks after its tool time: %q", l)
 	}
-	// From legend(), not the body: at 140 columns the body cuts the legend's tail, as it does
-	// on any narrow terminal.
-	if l := stripANSI(m.legend()); !strings.Contains(l, "tok/s output per second of model time, last 60 s") {
-		t.Errorf("legend does not explain tok/s: %q", l)
+}
+
+// The tok/s note is the only text that explains the column, so the user must see it. The body
+// cuts every line at the pane's width, so the note needs its own legend line to survive at the
+// widths people use.
+func TestTimelineRender_TokPerSecNoteReachesTheUser(t *testing.T) {
+	const note = "tok/s output per second of model time, last 60 s"
+	for _, w := range []int{140, 120} {
+		m := timelineModel(t, w, 46)
+		m.timeline.windowIdx = 3
+		body := stripANSI(m.timelineBody())
+		if !strings.Contains(body, note) {
+			t.Errorf("at %d columns the body does not explain tok/s:\n%s", w, body)
+		}
+		for _, l := range strings.Split(stripANSI(m.legend()), "\n") {
+			if strings.Contains(l, note) && lipgloss.Width(l) > w {
+				t.Errorf("at %d columns the note's legend line is %d wide: %q", w, lipgloss.Width(l), l)
+			}
+		}
 	}
 }

@@ -1176,6 +1176,18 @@ func TestBuild_BytesPerTokenFromLongTurnsOnly(t *testing.T) {
 	}
 }
 
+// The ratio estimates the tokens behind a streamed body, so a buffered reply must not set it: its
+// JSON carries the whole message, not the SSE framing the estimate is read against.
+func TestBuild_BufferedResponseDoesNotCalibrate(t *testing.T) {
+	var r rec
+	r.streamed(0, 8, 1, 39000, 1000)
+	r.events[len(r.events)-2].Inference.Stream = false // the request did not ask for a stream
+	tl := Build("s", r.events, at(20))
+	if tl.bytesPerToken != 0 {
+		t.Fatalf("bytesPerToken = %v from a buffered response, want 0", tl.bytesPerToken)
+	}
+}
+
 func TestFillLive_FillsOnlyOpenTurns(t *testing.T) {
 	r := calibrated()
 	r.open(20, "open")
