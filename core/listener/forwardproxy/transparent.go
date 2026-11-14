@@ -228,8 +228,12 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	key, classifyKey := hostOnly(host), hostOnly(host)
 	var first []byte
 	if s.TLSBridge != nil {
+		// The sniff usually buffered these bytes already. A client that stalls
+		// short of five is bounded as the sniff is, and classifies as not TLS.
 		if pc, ok := clientConn.(*peekedConn); ok {
+			_ = pc.SetReadDeadline(time.Now().Add(sniffTimeout))
 			first, _ = pc.Peek(5)
+			_ = pc.SetReadDeadline(time.Time{})
 		}
 		if s.failClosed() {
 			classifyKey = hostOnly(dst)
