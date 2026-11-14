@@ -5,8 +5,15 @@ Praxis policy engine. `praxis.policy` is the replacement for the laptop CPEX bui
 
 ## Turn policy on
 
-1. Install praxis mode: `agentop setup --praxis`. It installs `cortex-gateway` and
-   sets `praxis: {enabled: true}`.
+1. Install praxis mode:
+   `curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --praxis`. It
+   installs `cortex-gateway` and sets `praxis: {enabled: true}`. `--praxis` needs a
+   release that carries `cortex-gateway`. If the installer stops with `release … has no
+   cortex-gateway build for <os>/<arch>`, add `--ref=main` to install the channel
+   build, which has the gateway, or build it from source
+   ([`laptop-service.md`](laptop-service.md)). On a machine that already has
+   `cortex-gateway`, `agentop setup --praxis` sets the flag without a download. Without
+   the binary, setup stops and gives the installer one-liner as the fix.
 2. Write the policy file, for example `~/.cortex/policy.yaml`. Copy one of the examples
    below.
 3. Set the path in `~/.cortex/config.yaml`. It must be an absolute path to an existing
@@ -59,8 +66,11 @@ plugins:
 
 ## Examples
 
-The model allow list admits only the models that you name. Every other model is
-denied:
+The model allow list denies every model that you do not name. It holds only when PPE
+can read the model. The gateway sets `llm.require_model: false`
+(`cmd/cortex/gateway.go`), so a gzip or zstd body, or a body with no string `model`,
+matches no `llm:` route. No rule denies it, and this example declares no global block,
+so the request is admitted.
 
 ```yaml policy
 routes:
@@ -77,7 +87,10 @@ routes:
 This policy permits the MCP tool `read_file` and denies every other tool. The
 `tool: read_file` route holds a guard that never denies. PPE route selection uses
 specificity, so this route outranks `tool: "*"`. To deny `read_file`, remove its
-route. The first `llm:` route admits inference requests, which carry no MCP method:
+route. A request that PPE reads as neither an inference request nor a tool call takes
+no `llm:` or `tool:` route, so this example admits it, except a JSON-RPC envelope that
+cortex_observe cannot classify: that request gets no `mcp.method` and is refused with
+500. The first `llm:` route admits inference requests, which carry no MCP method:
 
 ```yaml policy
 routes:
@@ -163,6 +176,13 @@ routes:
 ## Known gaps
 
 - No A2A policy.
+- A body with no readable `model` takes no `llm:` route. The gateway sets
+  `llm.require_model: false` (`cmd/cortex/gateway.go`), so PPE runs the policy's HTTP
+  admission on it: a matching `http:` route, or else the `global` rules. A policy with
+  no HTTP rules and no request assertions admits it on identity. A gzip or zstd body,
+  and a body with no string `model`, take this path. A `global:` rule that reads
+  `llm.request` denies the request, because it carries no inference request. Keep model
+  rules in `llm:` routes or `global.defaults.llm`.
 - A streamed (SSE) inference response skips the response-phase policy.
 - Taints are held in memory and are lost at each gateway restart and each policy
   reload.

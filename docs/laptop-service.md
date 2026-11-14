@@ -58,6 +58,10 @@ else in the file:
 curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --praxis
 ```
 
+`--praxis` needs a release that carries `cortex-gateway`. If the installer stops with
+`release … has no cortex-gateway build for <os>/<arch>`, add `--ref=main` to install
+the channel build, which has the gateway, or build it from source as below.
+
 To put a policy in the gateway, read
 [policy in praxis mode](praxis-policy.md).
 

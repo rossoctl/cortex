@@ -131,8 +131,15 @@ that `praxis.policy` is the replacement for the laptop CPEX build.
 
 **`## Turn policy on`** A numbered list:
 
-1. Install praxis mode: `agentop setup --praxis`. It installs `cortex-gateway` and
-   sets `praxis: {enabled: true}`.
+1. Install praxis mode:
+   `curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --praxis`. It
+   installs `cortex-gateway` and sets `praxis: {enabled: true}`. `--praxis` needs a
+   release that carries `cortex-gateway`. If the installer stops with `release … has no
+   cortex-gateway build for <os>/<arch>`, add `--ref=main` to install the channel
+   build, which has the gateway, or build it from source
+   ([`laptop-service.md`](laptop-service.md)). On a machine that already has
+   `cortex-gateway`, `agentop setup --praxis` sets the flag without a download. Without
+   the binary, setup stops and gives the installer one-liner as the fix.
 2. Write the policy file, for example `~/.cortex/policy.yaml`. Copy one of the examples
    below.
 3. Set the path in `~/.cortex/config.yaml`. It must be absolute:
@@ -284,6 +291,13 @@ policy, so deny the stream in the request phase.
 
 **`## Known gaps`** This list, verbatim:
 - No A2A policy.
+- A body with no readable `model` takes no `llm:` route. The gateway sets
+  `llm.require_model: false` (`cmd/cortex/gateway.go`), so PPE runs the policy's HTTP
+  admission on it: a matching `http:` route, or else the `global` rules. A policy with
+  no HTTP rules and no request assertions admits it on identity. A gzip or zstd body,
+  and a body with no string `model`, take this path. A `global:` rule that reads
+  `llm.request` denies the request, because it carries no inference request. Keep model
+  rules in `llm:` routes or `global.defaults.llm`.
 - A streamed (SSE) inference response skips the response-phase policy.
 - Taints are held in memory and are lost at each gateway restart and each policy
   reload.
