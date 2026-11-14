@@ -33,7 +33,10 @@ import (
 const timelineRefresh = time.Second
 
 // timelineIdleRefresh is how often a live session with no new events is refetched anyway:
-// spans in flight grow and the window slides even when nothing new is recorded.
+// spans in flight grow and the window slides even when nothing new is recorded. A session with
+// a response in flight is refetched every timelineRefresh instead: its live token estimate
+// grows with the stream, and the tok/s read off it steps once per refetch, so ten seconds
+// between them read as a static number. See idleRefresh.
 const timelineIdleRefresh = 10 * time.Second
 
 // timelineReadTimeout bounds one refresh. timelineFirstReadTimeout bounds the first fetch of a
@@ -249,7 +252,7 @@ func (m *model) handleTimelineTick(msg timelineTickMsg) tea.Cmd {
 	t := &m.timeline
 	var fetch tea.Cmd
 	now := m.clock()
-	idle := !t.fetchedAt.IsZero() && now.Sub(t.fetchedAt) >= timelineIdleRefresh && m.timelineLive()
+	idle := !t.fetchedAt.IsZero() && now.Sub(t.fetchedAt) >= t.idleRefresh() && m.timelineLive()
 	// A failed fetch is retried on its backoff, and holds back the other triggers until then: a
 	// stream event or a live session's idle refresh would otherwise retry a dead proxy every tick.
 	unsupported := errors.Is(t.err, errTimelineUnsupported)
@@ -269,6 +272,21 @@ func (m *model) handleTimelineTick(msg timelineTickMsg) tea.Cmd {
 func (m *model) timelineLive() bool {
 	t := &m.timeline
 	return t.tl != nil && m.clock().Sub(t.tl.End) <= timelineLiveFor
+}
+
+// idleRefresh is how long this session may go without a refetch when no event arrives: one
+// second while a response is in flight, whose live estimate only a refetch grows, else
+// timelineIdleRefresh.
+func (t *timelineState) idleRefresh() time.Duration {
+	if t.tl == nil {
+		return timelineIdleRefresh
+	}
+	for _, tu := range t.tl.Turns {
+		if tu.End == nil && !tu.Lost {
+			return timelineRefresh
+		}
+	}
+	return timelineIdleRefresh
 }
 
 // timelineKey handles the pane's own keys; false leaves the key to the global handlers.

@@ -539,6 +539,18 @@ func TestTimelineRefresh(t *testing.T) {
 	if !m.timeline.loading {
 		t.Errorf("a live session idle for %v was not refetched", timelineIdleRefresh)
 	}
+	// Live with a response in flight: refetched every timelineRefresh, so the tok/s read off its
+	// live estimate does not step once per idle interval.
+	m = timelineModel(t, 120, 40)
+	m.client = deadClient()
+	m.now = func() time.Time { return live }
+	m.timeline.tl.Turns = append(m.timeline.tl.Turns, timeline.Turn{Agent: timeline.MainAgent, Start: live.Add(-5 * time.Second)})
+	m.timeline.fetchedAt = live.Add(-timelineRefresh)
+	m.timeline.tickGen = 1
+	m.handleTimelineTick(timelineTickMsg{gen: 1})
+	if !m.timeline.loading {
+		t.Errorf("a live session with a response in flight was not refetched after %v", timelineRefresh)
+	}
 	// Ended: no refetch without events.
 	m = timelineModel(t, 120, 40)
 	m.client = deadClient()
