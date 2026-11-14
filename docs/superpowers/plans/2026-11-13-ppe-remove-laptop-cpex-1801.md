@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status: BLOCKED. Do not execute a task in this plan yet.** Two conditions in the issue are not met. See "Blocked" below.
+**Status: PR #1868 executes this plan. Do not merge it until the deprecation window in "Blocked" below ends.**
 
 **Goal:** Remove the laptop CPEX build. Keep every artifact that Kubernetes uses.
 
@@ -395,7 +395,7 @@ git commit -s -m "feat: Move a cpex install to the default build on agentop upda
 
 Delete `CORTEX_CPEX_DIR`, `CPEX_FFI_DIR` and the `cortex-cpex` rule (lines 87-109). Remove `cortex-cpex` from `.PHONY` at line 4. Then run `grep -n "cortex-cpex" Makefile` and expect no output.
 
-In `scripts/profile-tags/profiles.go:48`, change the `fullcpex` comment from "make cortex-cpex, a cgo build of cortex" to "the `authbridge-cpex` image, a cgo build of cortex".
+In `scripts/profile-tags/profiles.go:48`, change the `fullcpex` comment from "make cortex-cpex, a cgo build of cortex" to "the go-ci-cpex CI job, a cgo build".
 
 - [ ] **Step 2: Update the docs and the release note in `.github/CLAUDE.md`**
 

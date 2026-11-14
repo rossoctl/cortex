@@ -21,8 +21,8 @@ const (
 	ProfileLite  ProfileName = "lite"
 	ProfileEnvoy ProfileName = "envoy"
 	ProfileCpex  ProfileName = "cpex"
-	// ProfileFullCpex is full plus the cpex plugin, for a cgo laptop build of
-	// cortex. Build with the `cpex` tag alongside these.
+	// ProfileFullCpex is full plus the cpex plugin. CI's go-ci-cpex job builds
+	// it. Build with the `cpex` tag alongside these.
 	ProfileFullCpex ProfileName = "fullcpex"
 )
 
@@ -45,7 +45,7 @@ var allProfiles = []ProfileName{
 //	lite      authbridge-lite image — sidecar minimum
 //	envoy     authbridge-envoy image
 //	cpex      authbridge-cpex image
-//	fullcpex  full plus cpex — the `authbridge-cpex` image, a cgo build of cortex
+//	fullcpex  full plus cpex — the go-ci-cpex CI job, a cgo build
 var membership = map[PluginName][]ProfileName{
 	"a2aparser":       {ProfileLocal, ProfileFull, ProfileFullCpex, ProfileEnvoy, ProfileCpex},
 	"inferenceparser": {ProfileLocal, ProfileFull, ProfileFullCpex, ProfileEnvoy, ProfileCpex},

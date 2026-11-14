@@ -73,7 +73,7 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 		// setup repairs a pair that disagree.
 		{name: "cortex behind", latest: "v9.9.9", release: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", want: "staged setup\n", code: 7},
 		// A cpex cortex at the newest tag still gets the default build.
-		{name: "cpex at the tag", latest: "v9.9.9", release: "v9.9.9", cortex: "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n", want: cpexUpdateNotice + "\nstaged setup\n", code: 7},
+		{name: "cpex at the tag", latest: "v9.9.9", release: "v9.9.9", cortex: "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n", want: "staged setup\n", code: 7},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sc := newDoctorScene(t)
@@ -95,11 +95,11 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 }
 
 // fakeSetup is the staged agentop: it writes its arguments and whether it saw
-// CORTEX_INSTALLER_DREW to $FAKE_SETUP_ARGS, then exits 7.
+// CORTEX_INSTALLER_DREW to $FAKE_SETUP_ARGS, then exits $FAKE_SETUP_EXIT (default 7).
 const fakeSetup = `#!/bin/sh
 printf '%s\n' "$@" "drew=${CORTEX_INSTALLER_DREW-unset}" > "$FAKE_SETUP_ARGS"
 echo staged setup
-exit 7
+exit ${FAKE_SETUP_EXIT-7}
 `
 
 // fakeStagedRelease serves the tag's release for this machine with right checksums,
@@ -150,6 +150,20 @@ func hashDir(t *testing.T, dir string) map[string]string {
 	return sums
 }
 
+// The cpex notice says the default cortex is installed, so it prints only after setup succeeds.
+func TestUpdateCpexNoticeAfterSetupSucceeds(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	writeExe(t, filepath.Join(sc.home, ".local", "bin", "cortex"), "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n")
+	latestIs(t, "v9.9.9")
+	fakeStagedRelease(t, "v9.9.9", false)
+	t.Setenv("FAKE_SETUP_EXIT", "0")
+	var out, errb bytes.Buffer
+	if code := runUpdate(nil, &out, &errb); code != 0 || out.String() != "staged setup\n"+cpexUpdateNotice+"\n" {
+		t.Fatalf("exit %d stdout %q, want 0, the staged setup's line, then the notice:\n%s", code, out.String(), errb.String())
+	}
+}
+
 func TestUpdateHandsOffToTheStagedSetup(t *testing.T) {
 	sc := newDoctorScene(t)
 	sc.installed(t, "--claude-code", "--no-service")
@@ -160,8 +174,9 @@ func TestUpdateHandsOffToTheStagedSetup(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := runUpdate([]string{"--ref=v9.9.9-rc.1", "-y"}, &out, &errb)
 	// The staged setup's exit status is update's.
-	if code != 7 || out.String() != cpexUpdateNotice+"\nstaged setup\n" {
-		t.Fatalf("exit %d stdout %q, want 7 and the notice then the staged setup's line:\n%s", code, out.String(), errb.String())
+	// The setup failed, so the cpex build is still installed: no notice.
+	if code != 7 || out.String() != "staged setup\n" {
+		t.Fatalf("exit %d stdout %q, want 7 and only the staged setup's line:\n%s", code, out.String(), errb.String())
 	}
 	names := releaseTarballs("v9.9.9-rc.1", runtime.GOOS, runtime.GOARCH, false)
 	if !strings.HasPrefix(names[1], "cortex_") || !slices.Equal(*checked, names) {

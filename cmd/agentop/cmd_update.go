@@ -179,9 +179,7 @@ func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io
 		return fmt.Errorf("--ref=%s is not a release tag like v1.2.3 or v1.2.3-rc.1", ref)
 	}
 	// Read before the install runs, because the install overwrites the binary.
-	if installedIsCpex(filepath.Join(env.binDir, proxyBinary)) {
-		_, _ = fmt.Fprintln(stdout, cpexUpdateNotice)
-	}
+	wasCpex := installedIsCpex(filepath.Join(env.binDir, proxyBinary))
 	if !strings.HasPrefix(ref, "v") {
 		cmd := exec.Command("sh", append([]string{"-c", updateScript, installerURL}, flags...)...)
 		cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -219,7 +217,13 @@ func installRelease(env *setupEnv, ref string, flags []string, stdout, stderr io
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigs)
-	return run()
+	if err := run(); err != nil {
+		return err
+	}
+	if wasCpex {
+		_, _ = fmt.Fprintln(stdout, cpexUpdateNotice)
+	}
+	return nil
 }
 
 // runStaged runs build(stage). A start error of EACCES is a noexec temp dir
