@@ -221,12 +221,6 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		enableKeepalive(upstream)
 	}
 
-	// The transparent path records before its own bridge decision for now, so it
-	// reports only that the tunnel opened. Threading the reason through here too
-	// means the same restructuring done for handleConnect; deliberately left for
-	// a follow-up rather than half-done, since this listener is off by default
-	// (--local skips it) and every reason it could report is already correct in
-	// the log.
 	// host is the policy authority: "<sniffed-SNI>:port" when a name was
 	// recovered, else dst ("<dial-IP>:port"). key is the SNI name or dial IP.
 	// Fail-closed consults no skip memory, and judges passthrough by the address
@@ -241,16 +235,27 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 			classifyKey = hostOnly(dst)
 		}
 	}
-	// Non-TLS bytes to a destination fail-closed intercepts are refused before
-	// the open, so the refusal's rows carry its reason.
+	// Fail-closed bridges or refuses what it intercepts, and records each row with
+	// its reason, as handleConnect does.
 	if s.failClosed() && s.TLSBridge.Decision.Intercepts(classifyKey, portOf(dst)) {
-		if _, reason := s.TLSBridge.Decision.Classify(classifyKey, portOf(dst), first); reason == tlsbridge.ReasonNonTLS {
+		if v, _ := s.TLSBridge.Decision.Classify(classifyKey, portOf(dst), first); v != tlsbridge.Terminate {
 			s.refuseFailClosed(clientConn, key, tl, pipeline.TunnelRefusedNonTLS, http.StatusOK, pipeline.ErrorKindNotTLS,
 				errors.New("not a TLS handshake"))
 			return
 		}
+		if upstream != nil {
+			_ = upstream.Close() // bridgeServe dials its own verified upstream
+		}
+		s.bridgeServe(clientConn, host, key, tl, dialFail != nil)
+		return
 	}
 
+	// The transparent path otherwise records before its own bridge decision, so it
+	// reports only that the tunnel opened. Threading the reason through here too
+	// means the same restructuring done for handleConnect; deliberately left for
+	// a follow-up rather than half-done, since this listener is off by default
+	// (--local skips it) and every reason it could report is already correct in
+	// the log.
 	tl.open("")
 
 	if s.TLSBridge != nil {

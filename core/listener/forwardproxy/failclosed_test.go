@@ -243,6 +243,107 @@ func TestFailClosed_TransparentRefusesNonTLS(t *testing.T) {
 	}
 }
 
+// The transparent listener's refusals of a TLS client carry their reason on both rows.
+func TestFailClosed_TransparentRefusalReasons(t *testing.T) {
+	for name, tc := range map[string]struct {
+		trustOrigin bool
+		reason      pipeline.TunnelReason
+		status      int
+		kind        string
+	}{
+		"unverified origin": {false, pipeline.TunnelOriginUnverified, http.StatusBadGateway, pipeline.ErrorKindUpstreamUnverified},
+		"CA rejected":       {true, pipeline.TunnelClientRejectedCA, http.StatusOK, "tls_handshake"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ln := listenSniffable()
+			if ln == nil {
+				t.Skip("transparent bridge test needs a free sniffable port (8443 or 8080)")
+			}
+			origin := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+			_ = origin.Listener.Close()
+			origin.Listener = ln
+			origin.StartTLS()
+			defer origin.Close()
+			dst := strings.TrimPrefix(origin.URL, "https://")
+
+			var upstreamCA []byte
+			if tc.trustOrigin {
+				upstreamCA = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: origin.Certificate().Raw})
+			}
+			store := session.New(5*time.Minute, 100, 0)
+			defer store.Close()
+			srv := connectServer(t, store, failClosedEngine(t, portOf(dst), upstreamCA, nil))
+
+			clientSide, serverSide := net.Pipe()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				srv.HandleTransparentConn(serverSide, dst)
+			}()
+			client := tls.Client(clientSide, &tls.Config{ServerName: hostOnly(dst), RootCAs: x509.NewCertPool()})
+			_ = client.Handshake()
+			_ = clientSide.Close()
+			<-done
+
+			open, closed := onePair(t, store, session.DefaultSessionID)
+			if open.TunnelReason != tc.reason || closed.TunnelReason != tc.reason {
+				t.Errorf("reasons = {open %q, close %q}, want %q", open.TunnelReason, closed.TunnelReason, tc.reason)
+			}
+			if closed.StatusCode != tc.status || closed.Error == nil || closed.Error.Kind != tc.kind {
+				t.Errorf("close = {status %d, error %+v}, want {%d, %s}", closed.StatusCode, closed.Error, tc.status, tc.kind)
+			}
+		})
+	}
+}
+
+// A bridged transparent connection records its open beside its first request, as a
+// bridged CONNECT does, and no close.
+func TestFailClosed_TransparentBridgedFoldsOpen(t *testing.T) {
+	ln := listenSniffable()
+	if ln == nil {
+		t.Skip("transparent bridge test needs a free sniffable port (8443 or 8080)")
+	}
+	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	_ = origin.Listener.Close()
+	origin.Listener = ln
+	origin.StartTLS()
+	defer origin.Close()
+	dst := strings.TrimPrefix(origin.URL, "https://")
+
+	upstreamCA := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: origin.Certificate().Raw})
+	engine := failClosedEngine(t, portOf(dst), upstreamCA, nil)
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	srv := connectServer(t, store, engine)
+
+	clientSide, serverSide := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.HandleTransparentConn(serverSide, dst)
+	}()
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(engine.CAPEM)
+	client := tls.Client(clientSide, &tls.Config{ServerName: hostOnly(dst), RootCAs: pool, NextProtos: []string{"http/1.1"}})
+	req, _ := http.NewRequest(http.MethodGet, "https://"+dst+"/", nil)
+	go func() { _ = req.Write(client) }()
+	resp, err := http.ReadResponse(bufio.NewReader(client), req)
+	if err != nil {
+		t.Fatalf("bridged request: %v", err)
+	}
+	_ = resp.Body.Close()
+	_ = client.Close()
+	<-done
+
+	events := store.View(session.DefaultSessionID).Events
+	if len(events) < 2 || !events[0].Tunnel || events[0].TunnelReason != "" || events[1].Tunnel {
+		t.Fatalf("events = %+v, want the tunnel open directly before its request", events)
+	}
+	if _, closes := tunnelRows(store, session.DefaultSessionID); len(closes) != 0 {
+		t.Errorf("%d tunnel closes, want none", len(closes))
+	}
+}
+
 // A named program's remembered refusal and a predicted one are both ignored: the
 // program is shown the bridge's leaf.
 func TestFailClosed_IgnoresProgramMemoryAndTrust(t *testing.T) {
