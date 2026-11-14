@@ -296,6 +296,46 @@ func TestFailClosed_TransparentRefusalReasons(t *testing.T) {
 	}
 }
 
+// A transparent client that stops short of a record header is bridged, as on
+// CONNECT, so its handshake names the failure rather than a non-TLS refusal.
+func TestFailClosed_TransparentShortPeekIsBridged(t *testing.T) {
+	ln := listenSniffable()
+	if ln == nil {
+		t.Skip("transparent bridge test needs a free sniffable port (8443 or 8080)")
+	}
+	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	_ = origin.Listener.Close()
+	origin.Listener = ln
+	origin.StartTLS()
+	defer origin.Close()
+	dst := strings.TrimPrefix(origin.URL, "https://")
+
+	upstreamCA := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: origin.Certificate().Raw})
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	srv := connectServer(t, store, failClosedEngine(t, portOf(dst), upstreamCA, nil))
+
+	clientSide, serverSide := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.HandleTransparentConn(serverSide, dst)
+	}()
+	if _, err := clientSide.Write([]byte{0x16, 0x03}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = clientSide.Close()
+	<-done
+
+	open, closed := onePair(t, store, session.DefaultSessionID)
+	if open.TunnelReason == pipeline.TunnelRefusedNonTLS {
+		t.Errorf("open reason = %q, want the handshake's failure", open.TunnelReason)
+	}
+	if closed.Error == nil || closed.Error.Kind != "tls_handshake" {
+		t.Errorf("close error = %+v, want tls_handshake", closed.Error)
+	}
+}
+
 // A bridged transparent connection records its open beside its first request, as a
 // bridged CONNECT does, and no close.
 func TestFailClosed_TransparentBridgedFoldsOpen(t *testing.T) {

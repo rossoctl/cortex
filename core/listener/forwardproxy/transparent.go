@@ -229,7 +229,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	var first []byte
 	if s.TLSBridge != nil {
 		// The sniff usually buffered these bytes already. A client that stalls
-		// short of five is bounded as the sniff is, and classifies as not TLS.
+		// short of five is bounded as the sniff is.
 		if pc, ok := clientConn.(*peekedConn); ok {
 			_ = pc.SetReadDeadline(time.Now().Add(sniffTimeout))
 			first, _ = pc.Peek(5)
@@ -240,9 +240,10 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		}
 	}
 	// Fail-closed bridges or refuses what it intercepts, and records each row with
-	// its reason, as handleConnect does.
+	// its reason, as handleConnect does. A short peek is a slow client, as there:
+	// the handshake decides.
 	if s.failClosed() && s.TLSBridge.Decision.Intercepts(classifyKey, portOf(dst)) {
-		if v, _ := s.TLSBridge.Decision.Classify(classifyKey, portOf(dst), first); v != tlsbridge.Terminate {
+		if v, _ := s.TLSBridge.Decision.Classify(classifyKey, portOf(dst), first); v != tlsbridge.Terminate && len(first) == 5 {
 			s.refuseFailClosed(clientConn, key, tl, pipeline.TunnelRefusedNonTLS, http.StatusOK, pipeline.ErrorKindNotTLS,
 				errors.New("not a TLS handshake"))
 			return
