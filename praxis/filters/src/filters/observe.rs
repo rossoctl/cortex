@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::Method;
 use http::header::HOST;
+use http::{HeaderName, HeaderValue};
 use praxis_filter::{
     BodyAccess, BodyMode, FilterAction, FilterError, HttpFilter, HttpFilterContext, Rejection,
 };
@@ -65,7 +66,8 @@ impl CortexObserve {
         }))
     }
 
-    fn submit(&self, line: &Line) {
+    fn submit(&self, mut line: Line) {
+        crate::policy_recorder::attach(&mut line);
         self.emitter.submit(line.queued());
     }
 
@@ -73,7 +75,7 @@ impl CortexObserve {
     fn finish(&self, o: &mut Observed, row: impl FnOnce(&mut Exchange) -> Line) {
         if !o.done {
             o.done = true;
-            self.submit(&row(&mut o.exchange));
+            self.submit(row(&mut o.exchange));
         }
     }
 }
@@ -169,6 +171,15 @@ impl HttpFilter for CortexObserve {
             .map(str::to_owned)
             .or_else(|| ctx.request_id().map(str::to_owned))
             .unwrap_or_else(|| ctx.id_generator.generate(ctx.time_source));
+        // The policy filter runs after the proxy strips the hop headers, so the
+        // id reaches it only in a reserved header, which the proxy strips before
+        // the upstream. A client cannot forge one: admission rejects reserved names.
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(crate::policy_recorder::JOIN_HEADER.as_bytes()),
+            HeaderValue::from_str(&request_id),
+        ) {
+            ctx.request_headers_to_set.push((name, value));
+        }
         let host = req
             .uri
             .host()
@@ -240,7 +251,7 @@ impl HttpFilter for CortexObserve {
                     .collect();
                 (line, metadata)
             };
-            self.submit(&line);
+            self.submit(line);
             for (k, v) in metadata {
                 ctx.set_metadata(k, v);
             }
@@ -328,7 +339,7 @@ impl HttpFilter for CortexObserve {
         let upstream_gone = ctx.upstream_reached && ctx.stream_termination().is_some();
         let downstream_gone = o.answered;
         for line in o.exchange.deferred(status, downstream_gone, upstream_gone) {
-            self.submit(&line);
+            self.submit(line);
         }
         true
     }
