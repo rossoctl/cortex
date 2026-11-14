@@ -1081,10 +1081,11 @@ tunnelled. `listener.skip_hosts` destinations are verified too: give a private-C
 origin `upstream_ca_bundle`, or list it in `passthrough_hosts`. `fail_closed`
 cannot be combined with `upstream_insecure`.
 
-The transparent listener follows the same rules, with two differences. It judges
+The transparent listener follows the same rules, with three differences. It judges
 `passthrough_hosts` by the address it dials, because the client chooses the SNI:
-only an IP entry is tunnelled there. And it records each refusal as a close row,
-since it has no CONNECT to answer.
+only an IP entry is tunnelled there. The SNI is the host there, so there is no
+`sni-mismatch`: a bridged request goes to the SNI host the pipeline judged. And
+it records each refusal as a close row, since it has no CONNECT to answer.
 
 ### Go tools on macOS are passed through unread
 
