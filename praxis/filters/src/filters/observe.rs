@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use http::Method;
 use http::header::HOST;
+use http::{HeaderName, HeaderValue};
 use praxis_filter::{
     BodyAccess, BodyMode, FilterAction, FilterError, HttpFilter, HttpFilterContext, Rejection,
 };
@@ -170,6 +171,15 @@ impl HttpFilter for CortexObserve {
             .map(str::to_owned)
             .or_else(|| ctx.request_id().map(str::to_owned))
             .unwrap_or_else(|| ctx.id_generator.generate(ctx.time_source));
+        // The policy filter runs after the proxy strips the hop headers, so the
+        // id reaches it only in a reserved header, which the proxy strips before
+        // the upstream. A client cannot forge one: admission rejects reserved names.
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(crate::policy_recorder::JOIN_HEADER.as_bytes()),
+            HeaderValue::from_str(&request_id),
+        ) {
+            ctx.request_headers_to_set.push((name, value));
+        }
         let host = req
             .uri
             .host()

@@ -100,6 +100,34 @@ async fn an_allow_records_an_empty_reason() {
     assert_eq!(decision.reason, "");
 }
 
+/// The live path: the hop header is gone, so the reserved copy is what the
+/// policy filter sees.
+#[tokio::test]
+async fn the_reserved_join_header_is_read() {
+    let mgr = engine().await;
+    let mut ext = extensions("model-bad", None);
+    let http = Arc::make_mut(ext.http.as_mut().expect("the test builds http"));
+    http.request_headers.insert(
+        cortex_praxis_filters::policy_recorder::JOIN_HEADER.to_owned(),
+        "r3".to_owned(),
+    );
+    let (result, _background) = mgr
+        .invoke_named::<CmfHook>(
+            "cmf.llm_input",
+            MessagePayload {
+                message: Message::text(Role::User, "hi"),
+            },
+            ext,
+            None,
+        )
+        .await;
+    assert!(!result.continue_processing, "model-bad is denied");
+    assert_eq!(
+        take("r3").expect("the deny is recorded").reason,
+        "model_not_allowed"
+    );
+}
+
 #[tokio::test]
 async fn a_call_with_no_request_id_header_records_nothing() {
     let mgr = engine().await;
