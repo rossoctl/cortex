@@ -18,7 +18,7 @@ The issue says: *"Do not start this issue until Hai writes on it that the deprec
 
 Two facts at upstream `main` `c72995b433ef86a74ffd3d301e7abcf7b0b310be` (2026-11-13):
 
-1. **The prerequisite is not merged.** #1800 is open, and its PR **#1866** is open. #1797, #1798 and #1799 are closed. `docs/praxis-policy.md` does not exist at the tip. Task 2 of this plan must name that page in the new `--cpex` error, so the task needs #1866 in its base.
+1. **The prerequisite is not merged.** #1800 is open, and its PR **#1866** is open. #1797, #1798 and #1799 are closed. `docs/praxis-policy.md` does not exist at the tip. T2 of this plan must name that page in the new `--cpex` error, so the base of P1 must contain #1866.
 2. **The deprecation window has not started.** The window starts with the first release that ships #1800. #1800 is not merged, so no release ships it yet. This is a decision that belongs to a person (see "For a human after review").
 
 Do not send this issue to a work agent until both conditions hold. When they hold, rebase the branch onto `main` and run the tasks below. The line estimates and the PR split stay correct.
@@ -28,36 +28,65 @@ Do not send this issue to a work agent until both conditions hold. When they hol
 All line numbers are from `c72995b433ef86a74ffd3d301e7abcf7b0b310be`.
 
 - `.github/workflows/release-binaries.yaml`
-  - header comments name `build-cpex`: lines 10, 11, 20, 21, 22;
+  - the cpex paragraph in the header: lines 10-11;
+  - the job count and the `build-cpex` sentence in the header: lines 19-23;
   - job `build-cpex`: lines 205-302;
   - `publish.needs` includes `build-cpex`: line 380;
   - `publish` condition reads `needs.build-cpex.result == 'success'`: line 383;
-  - the tarball download loop collects `cortex-cpex_${TAG}_…`: line 431;
-  - release-notes text for `cortex-cpex_*`: lines 500-501.
+  - the tarball download loop collects `cortex-cpex_${TAG}_…`: lines 429-434, inside the "Check every tarball is present" step;
+  - release-notes text for `cortex-cpex_*` and `install.sh --cpex`: lines 500-501;
+  - line 515 names `-cpex` as an OLD binary name, in the rename note. **Keep line 515.**
 - `scripts/install.sh`
-  - help text `--cpex`: line 181;
+  - help text `--cpex`: lines 181-182;
   - the `CPEX` variable and its comment: lines 219-222;
   - flag parse `--cpex) CPEX=1`: line 229;
-  - the unknown-option list names `--cpex`: line 244;
+  - the unknown-option hint names `--cpex`: line 244;
   - `cpex_platform_check`: lines 415-421;
   - `require_cpex_build`: lines 424-434;
   - the `--cpex` branch of the release check: lines 517-527;
-  - the cpex download path: lines 1181-1248. Line 1248 holds the "Replacing the installed cpex build of cortex with the default one (pass --cpex to keep it)." message.
-- `scripts/release_smoke_test_linux.sh`: the `--cpex` scenes are lines 365-404. Line 398 asserts the "Replacing the installed cpex build…" message.
+  - the `--cpex` guard before staging: lines 1181-1187;
+  - the `require_cpex_build` call: line 1211;
+  - the `proxy_tgz` override: line 1237;
+  - the "leaving the cpex build" notice: lines 1241-1250. Line 1245 has the `[ -z "${CPEX}" ] &&` test; line 1248 has the message. **Keep lines 1241-1250 and change them** — they are how an old cpex install moves to the default build.
+- `scripts/release_smoke_test_linux.sh`
+  - the header clause "a switch to the cpex build and back": line 8;
+  - the `(--cpex)` parenthetical in `install_cortex`'s comment: line 59;
+  - the `(cpex)` sentence in `assert_running_version_is`'s comment: line 163;
+  - the `plugins_list_cpex` helper: lines 173-188;
+  - the `--cpex` scenes: lines 365-404. Line 398 asserts the "Replacing the installed cpex build…" message.
 - `cmd/agentop`
-  - `cmd_update.go:276` appends `"--cpex"` when `installedIsCpex(...)`. The doc comment at lines 34-35 names the cpex build.
+  - `cmd_update.go:275-277` appends `"--cpex"` when `installedIsCpex(...)`. The usage text at lines 34-36 and the `updateFlags` comment at lines 252-257 name the cpex build.
+  - `cmd_update.go:181` passes `slices.Contains(flags, "--cpex")` to `releaseTarballs`.
   - `setup_step_binaries.go:178` defines `installedIsCpex(path string) bool`. It reads `" (cpex) "` in `--version`. **Keep this function.** It is how the update detects an old install.
-  - `cmd_doctor_checks.go:88-91` appends `" -s -- --cpex"` to the fix one-liner.
-  - `update_stage.go:32` defines `releaseTarballs(tag, goos, goarch string, cpex, praxis bool) []string`. `update_stage.go:52` maps `cortex-cpex_` to `proxyBinary` in `tarballBinary`.
-- `Makefile:87-109` holds `cortex-cpex` and `CORTEX_CPEX_DIR`. The `.PHONY` list is line 4.
-- `cmd/cortex-cpex/Dockerfile:91` runs its own `go build -tags "cpex…"`. It does not call `make cortex-cpex`. `.github/workflows/build.yaml:80` builds the image from that Dockerfile. **So requirement 5 says remove the Makefile target.**
-- `scripts/install_test.sh:2021` holds `_switch='Replacing the installed cpex build of cortex with the default one (pass --cpex to keep it).'`
+  - `cmd_doctor_checks.go:86-92` appends `" -s -- --cpex"` to the fix one-liner.
+  - `update_stage.go:31-45` defines `releaseTarballs(tag, goos, goarch string, cpex, praxis bool) []string` and its `cpex` branch; `update_stage.go:52` maps `cortex-cpex_` to `proxyBinary` in `tarballBinary`.
+  - `setupHandOffFlags` (`cmd_update.go:154`) never held `--cpex`. It does not change.
+  - `cmd_update_test.go:106-109`: `fakeStagedRelease(t, tag string, cpex, praxis bool)` passes `cpex` to `releaseTarballs`. Call sites: lines 85, 156, 194, 216, 241.
+  - `cmd_update_test.go:154-186`: `TestUpdateHandsOffToTheStagedSetup` installs a cpex cortex stub, asserts stdout is exactly `"staged setup\n"`, and expects 9 setup args. The setup args stay 9: `--cpex` is filtered out by `setupHandOffFlags` before setup, so only stdout changes.
+  - `cmd_update_test.go:164` and `:217` call `releaseTarballs` with the old signature.
+  - `update_stage_test.go:119-137`: `TestReleaseTarballs` has a `cpex` column and a "cpex" case.
+  - `cmd_doctor_checks_test.go:59-60`: the `"cpex build"` case expects `installerOneLiner + " -s -- --cpex"`.
+- `Makefile:87-109` holds `cortex-cpex`, `CORTEX_CPEX_DIR` and `CPEX_FFI_DIR`. The `.PHONY` list is line 4.
+- `cmd/cortex-cpex/Dockerfile:91` runs its own `go build -tags "cpex…"`. It does not call `make cortex-cpex`. `.github/workflows/build.yaml:80` builds the image from that Dockerfile. No workflow calls `make cortex-cpex`. **So requirement 5 says remove the Makefile target.**
+- `scripts/install_test.sh`
+  - `make_release` has a cpex mode: the `src-cpex` directory and copies at lines 1249-1250, `_mr_x` at line 1255, the `cpex | nocpex` arm at lines 1263-1268, and the cpex checksums line at line 1284. Only the cpex section uses that mode.
+  - the cpex test section is lines 1956-2046, from the `--- --cpex:` comment to the last `piped: the released copy gets --cpex` check. The `--praxis` section starts at line 2048.
+  - line 2021 holds `_switch='Replacing the installed cpex build of cortex with the default one (pass --cpex to keep it).'`.
+  - `install_test.sh` has no `assert_contains` helper and no `TMP_DIR`. Its helpers are `check`, `check_fails`, `run_install`, `t_in`, `t_argv`, `t_nlog`, `t_stage`, and the sandbox is `T_RUN` inside `TMP`.
+- The docs and comments that name the laptop build:
+  - `README.md:118` links `[cpex policy build](./docs/laptop-service.md#the-cpex-build)`;
+  - `cmd/README.md:126-142`, and the `[cpex builds](#cpex-builds)` link at line 11;
+  - `docs/cpex-plugin.md:6-7` (the banner) and the body of the "On a laptop" section at lines 76-94 (the heading is line 74), which links `#on-a-laptop` and `laptop-service.md#the-cpex-build`;
+  - `docs/laptop-service.md:223-250`, the "The cpex build" section;
+  - `docs/plugin-catalog.md:67-69` says the plugin needs "the `authbridge-cpex` image or `make cortex-cpex`";
+  - `.github/CLAUDE.md:61-67` says a `cortex-cpex_*` release tarball exists and that `install.sh --cpex` installs it;
+  - `scripts/profile-tags/profiles.go:48` says `fullcpex` is "make cortex-cpex".
 
 ## Global Constraints
 
 - Work in the worktree `.claude/worktrees/ppe-1801`. Do not touch the top-level checkout.
 - Do not remove these: `cmd/cortex-cpex/Dockerfile`, `cmd/cortex-cpex/entrypoint.sh`, `cmd/cortex-cpex/CPEX_FFI_*`, `.github/workflows/build.yaml:71-161`, `scripts/fetch-cpex-ffi.sh`, `scripts/profile-tags` profiles `cpex` and `fullcpex`, `core/plugins/cpex/`, and the `go-ci-cpex` job in `.github/workflows/ci.yaml:120-197`.
-- Do not remove `installedIsCpex` from `cmd/agentop/setup_step_binaries.go`. Task 3 needs it.
+- Do not remove `installedIsCpex` from `cmd/agentop/setup_step_binaries.go`. T3 needs it.
 - Commit with `git commit -s`. End each commit message with `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`. Do not add `Co-Authored-By`.
 - PR title prefix is `docs:` or `feat:`. Use the prefix that the majority of the diff needs.
 - Run `go vet` with `GOWORK=off` in each module that you change. `gofmt` always needs a path.
@@ -76,23 +105,26 @@ All line numbers are from `c72995b433ef86a74ffd3d301e7abcf7b0b310be`.
 | File | Change |
 |---|---|
 | `.github/workflows/release-binaries.yaml` | Remove the `build-cpex` job and every reference to it |
-| `scripts/release_smoke_test_linux.sh` | Remove the `--cpex` scenes |
+| `scripts/release_smoke_test_linux.sh` | Remove the `--cpex` scenes and the `plugins_list_cpex` helper |
 | `scripts/install.sh` | `--cpex` fails with the new message; remove the cpex helpers and download path |
-| `scripts/install_test.sh` | Add a case for the new `--cpex` error |
+| `scripts/install_test.sh` | Replace the cpex section with a case for the new `--cpex` error |
 | `cmd/agentop/cmd_update.go` | Stop passing `--cpex`; print one line |
 | `cmd/agentop/update_stage.go` | Drop the `cpex` parameter from `releaseTarballs` |
 | `cmd/agentop/cmd_doctor_checks.go` | Drop the `--cpex` fix |
 | `cmd/agentop/*_test.go` | Update the tests that name cpex |
 | `Makefile` | Remove the `cortex-cpex` target |
-| `docs/cpex-plugin.md`, `docs/laptop-service.md`, `cmd/README.md`, `README.md` | State that the laptop build is gone |
+| `docs/cpex-plugin.md`, `docs/laptop-service.md`, `cmd/README.md`, `README.md`, `docs/plugin-catalog.md`, `.github/CLAUDE.md` | State that the laptop build is gone |
+| `scripts/profile-tags/profiles.go` | Drop the dead `make cortex-cpex` from the `fullcpex` comment |
 
 ---
 
-### Task 1: Release workflow and Linux smoke test
+### T1 — Release workflow and Linux smoke test
+
+**Depends on:** nothing.
 
 **Files:**
-- Modify: `.github/workflows/release-binaries.yaml:10-22,205-302,380-383,431,500-501`
-- Modify: `scripts/release_smoke_test_linux.sh:365-404`
+- Modify: `.github/workflows/release-binaries.yaml:10-11,19-23,205-302,380-383,429-434,500-501`
+- Modify: `scripts/release_smoke_test_linux.sh:8,59,163,173-188,365-404`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -114,30 +146,38 @@ The new form:
 ```yaml
   publish:
     needs: [version, build, build-gateway]
+    # Run whatever build-gateway did, but only when build succeeded.
+    # !cancelled() is needed: without a status function, a failed need skips this job.
     if: ${{ !cancelled() && needs.build.result == 'success' }}
 ```
 
-Delete the comment lines 10, 11 and 20-22 that describe the cpex build. Keep the comment that says `build-gateway` is optional and that `publish` alone can write.
+Delete the cpex paragraph at lines 10-11. In the paragraph at lines 19-23, write "Four jobs" in place of "Five jobs", remove `build-cpex` from the job list, and replace the "every `build` and `build-cpex` tarball arrived, so a failed cpex build blocks the release rather than shipping without the variant (and the main-latest prune below never deletes the variant's assets)" sentence with "every `build` tarball arrived". Keep the sentence that says `build-gateway` is optional and that `publish` alone can write.
 
 - [ ] **Step 4: Remove the cpex tarball from the publish download loop**
 
-Delete the loop body that builds `dist/cortex-cpex_${TAG}_${target%/*}_${target#*/}.tar.gz` at line 431. Keep the loop for `cortex`, `agentop` and `cortex-gateway`.
+Delete the `for target in darwin/arm64 linux/amd64 linux/arm64` loop that builds `dist/cortex-cpex_${TAG}_${target%/*}_${target#*/}.tar.gz`, lines 429-434. Keep the `for name in agentop cortex` loop and the `cortex-gateway` warning loop.
 
 - [ ] **Step 5: Remove the `cortex-cpex_*` release-notes lines**
 
-Delete lines 500-501, the two `add '…'` calls that describe `cortex-cpex_*` and `install.sh --cpex`.
+Delete lines 500-501, the two `add '…'` calls that describe `cortex-cpex_*` and `install.sh --cpex`. **Keep line 515**, which names `-cpex` as an old binary name in the rename note.
 
-- [ ] **Step 6: Delete the `--cpex` scenes from the Linux smoke test**
+- [ ] **Step 6: Delete the `--cpex` parts of the Linux smoke test**
 
-Remove the block from `log "Switch to the cpex build: …"` through the "Switch back to the default build" assertions, lines 365-404. Keep the install re-run check directly above it and the `log "Uninstall"` step directly below it.
+Remove the block from the `# The cpex build is TAG's own variant` comment through the "Switch back to the default build" assertions, lines 365-404. Keep the install re-run check directly above it and the `log "Uninstall"` step directly below it.
+
+Then remove the parts that only that block used:
+- line 8: delete `, a switch to the cpex build and back` from the header sentence (it spans lines 7-8; keep the sentence grammatical);
+- line 59: delete ` (--cpex)` from `install_cortex`'s comment;
+- line 163: delete the sentence `# The cpex build prints "cortex (cpex) <version>"; pass "(cpex) <version>" for it.`;
+- lines 173-188: delete the `plugins_list_cpex` helper and its comment. Nothing else calls it.
 
 - [ ] **Step 7: Verify**
 
 Run: `grep -n -i cpex .github/workflows/release-binaries.yaml scripts/release_smoke_test_linux.sh`
-Expected: no output.
+Expected: exactly one line, line 515 of the workflow, the rename note that lists `-cpex` as an old binary name. No other line.
 
-Run: `command -v actionlint >/dev/null && actionlint .github/workflows/release-binaries.yaml || echo "actionlint not installed"`
-Expected: no error. If `actionlint` is not installed, run `bash -n scripts/release_smoke_test_linux.sh` and state in the PR that `actionlint` was not available.
+Run: `shellcheck --severity=error scripts/release_smoke_test_linux.sh`
+Expected: exit 0. This is the form the repository's CI uses (`.github/workflows/security-scans.yaml:77`). CI runs no YAML linter, and `actionlint` is not installed here: do not add it, and do not install it.
 
 - [ ] **Step 8: Commit**
 
@@ -146,38 +186,48 @@ git add .github/workflows/release-binaries.yaml scripts/release_smoke_test_linux
 git commit -s -m "feat: Stop publishing the laptop cpex tarballs"
 ```
 
-### Task 2: install.sh
+### T2 — install.sh and its tests
+
+**Depends on:** nothing.
 
 **Files:**
-- Modify: `scripts/install.sh:181,219-222,229,244,415-434,517-527,1181-1248`
-- Test: `scripts/install_test.sh`
+- Modify: `scripts/install.sh:181-182,219-222,229,244,415-421,424-434,517-527,1181-1187,1211,1237,1241-1250`
+- Test: `scripts/install_test.sh:1249-1250,1255,1263-1268,1284,1956-2046,2107-2110`
 
 **Interfaces:**
-- Consumes: nothing.
-- Produces: `--cpex` exits 1 with `die "--cpex is removed: the laptop cpex build is gone. Use --praxis with praxis.policy (see docs/praxis-policy.md); Kubernetes cpex use is not affected."`
+- Consumes: nothing. The base must contain `docs/praxis-policy.md` (from #1800/#1866); the error names it by path only, so the code does not read it.
+- Produces: `--cpex` exits 1 and prints, on stderr, `error: --cpex is removed: the laptop cpex build is gone. Use --praxis with praxis.policy (see docs/praxis-policy.md); Kubernetes cpex use is not affected.`
 
 - [ ] **Step 1: Write the failing test**
 
-Add a case near the other argument-parsing cases in `scripts/install_test.sh`. It runs the script with `--cpex` and no network access and asserts a non-zero status and the message. Use the existing helper style in that file:
+Replace the whole cpex section of `scripts/install_test.sh`, lines 1956-2046, with this block. Use the file's real helpers: `run_install` sets `T_RUN` and `T_ST`, and `t_in` answers `yes`/`no`.
 
-```bash
-# --cpex is gone: it names the replacement and exits non-zero.
-_cpex_out="$TMP_DIR/cpex.out"
-if bash "${REPO_ROOT}/scripts/install.sh" --cpex >"${_cpex_out}" 2>&1; then
-	check_fails "--cpex fails" 0
-else
-	check_fails "--cpex fails" 1
-fi
-assert_contains "${_cpex_out}" "docs/praxis-policy.md" "--cpex names the policy page"
-assert_contains "${_cpex_out}" "--praxis" "--cpex names --praxis"
+```sh
+# --- --cpex is gone: it names the replacement, and fetches nothing ---
+make_release v9.9.9
+run_install ok release --cpex
+check "--cpex: dies" "1" "${T_ST}"
+check "  naming --praxis and the policy page" "yes yes" \
+	"$(t_in '--praxis' err) $(t_in 'docs/praxis-policy.md' err)"
+check "  fetching nothing, staging nothing, running no agentop" "0 0 0" \
+	"$(grep -c . "${T_RUN}/urls" || true) $(ls -A "${T_RUN}/tmp" | wc -l | tr -d ' ') $(t_nlog argv)"
 ```
 
-Match the helper names that `scripts/install_test.sh` already defines (`check_fails`, `assert_contains`, `TMP_DIR`).
+Keep these three cases, which move into this block, with the notice text changed:
+- cpex installed, re-run without `--cpex`: says so, installs the default. `make_release v9.9.9` (no second argument), `T_INSTALLED=cpex`, `run_install ok release --ref=v9.9.9`, and the `_switch` string becomes `'Replacing the installed cpex build of cortex with the default one.'`.
+- default installed, re-run without `--cpex`: no notice.
+- The `MR_OS=linux MR_ARCH=amd64 make_release v9.9.9 cpex` line becomes `make_release v9.9.9`.
+
+Delete the cases that name `--cpex` as a working flag: the darwin/amd64 refusal, the linux hands-off and checksums cases, the "no cpex build" and `nocpex` cases, and the piped `--cpex` case.
+
+At the end of the file, delete the two checks that expect `--cpex` in the help or in the unknown-option hint (lines 2107-2110). Keep the `--praxis` checks beside them.
+
+Then remove the cpex mode from `make_release`: delete the `src-cpex` directory and its copy (lines 1249-1250), `_mr_x` (line 1255), the `cpex | nocpex` case arm (lines 1263-1268), and the `[ "${2:-two}" != cpex ]` checksums line (line 1284). Keep `${TMP}/fake-cortex-cpex`; `T_INSTALLED=cpex` in `run_install` still uses it.
 
 - [ ] **Step 2: Run the test to see it fail**
 
 Run: `bash scripts/install_test.sh 2>&1 | grep -n cpex`
-Expected: FAIL. `--cpex is not available for …` or a successful install.
+Expected: FAIL on the new `--cpex: dies` case, because the script still installs the cpex build.
 
 - [ ] **Step 3: Make `--cpex` fail in the flag parse**
 
@@ -187,21 +237,29 @@ Replace line 229 with:
 		--cpex) die "--cpex is removed: the laptop cpex build is gone. Use --praxis with praxis.policy (see docs/praxis-policy.md); Kubernetes cpex use is not affected." ;;
 ```
 
-Delete the `CPEX` variable and its comment (lines 219-222). Keep `--cpex` in the unknown-option list at line 244, or drop it — either is correct once the flag has its own case. Keep it.
+Delete the `CPEX` variable and its comment (lines 219-222). Remove `--cpex` from the unknown-option hint at line 244: a removed flag must not be listed as a usable one.
 
-- [ ] **Step 4: Delete the cpex helpers and the download path**
+- [ ] **Step 4: Delete the cpex helpers, the guards and the download path**
 
-Remove `cpex_platform_check` (415-421), `require_cpex_build` (424-434), the `--cpex` branch at 517-527, and the whole cpex download path at 1181-1248. Remove the `--cpex` line from the help text at 181.
+Remove:
+- the `--cpex` help entry (lines 181-182);
+- `cpex_platform_check` (415-421) and `require_cpex_build` (424-434);
+- the `--cpex, checked here` block (517-527);
+- the `# --- --cpex: only where the cpex build is published ---` guard (1181-1187);
+- `[ -z "${CPEX}" ] || require_cpex_build "${version}"` (line 1211);
+- `[ -z "${CPEX}" ] || proxy_tgz="cortex-cpex_…"` (line 1237).
 
-At line 1248, the "Replacing the installed cpex build of cortex with the default one (pass --cpex to keep it)." message must stay. It is now how a cpex install moves to the normal build. Remove only the parenthetical ` (pass --cpex to keep it)`.
+Then change the "leaving the cpex build" notice, which stays:
+- line 1245: `if [ -z "${CPEX}" ] && [ -x "${BIN_DIR}/cortex" ]; then` becomes `if [ -x "${BIN_DIR}/cortex" ]; then`. Without this, `set -u` fails on the deleted `CPEX`.
+- line 1248: remove the parenthetical. The message becomes `Replacing the installed cpex build of cortex with the default one.`
 
 - [ ] **Step 5: Run the test to see it pass**
 
 Run: `bash scripts/install_test.sh 2>&1 | tail -20`
-Expected: PASS. No case names `--cpex` as a working flag.
+Expected: PASS, and the run ends with `0 failed`.
 
-Run: `bash -n scripts/install.sh`
-Expected: no output.
+Run: `bash -n scripts/install.sh && shellcheck --severity=error scripts/install.sh scripts/install_test.sh`
+Expected: no output, exit 0.
 
 - [ ] **Step 6: Commit**
 
@@ -210,40 +268,49 @@ git add scripts/install.sh scripts/install_test.sh
 git commit -s -m "feat: Reject install.sh --cpex with a pointer to praxis mode"
 ```
 
-### Task 3: agentop
+### T3 — agentop
+
+**Depends on:** nothing.
 
 **Files:**
-- Modify: `cmd/agentop/cmd_update.go:34-35,181,255-280`
+- Modify: `cmd/agentop/cmd_update.go:34-36,181,252-257,275-277`
 - Modify: `cmd/agentop/update_stage.go:31-45,52`
-- Modify: `cmd/agentop/cmd_doctor_checks.go:85-92`
-- Modify: `cmd/agentop/cmd_update_test.go`, `cmd/agentop/update_stage_test.go`, `cmd/agentop/cmd_doctor_checks_test.go`
-- Keep: `cmd/agentop/setup_step_binaries.go:176-180`
+- Modify: `cmd/agentop/cmd_doctor_checks.go:86-92`
+- Modify: `cmd/agentop/cmd_update_test.go:85,106-109,154-186,194,216-217,241`
+- Modify: `cmd/agentop/update_stage_test.go:119-137`
+- Modify: `cmd/agentop/cmd_doctor_checks_test.go:59-60`
+- Keep: `cmd/agentop/setup_step_binaries.go:166-180`
 
 **Interfaces:**
 - Consumes: `installedIsCpex(path string) bool` from `setup_step_binaries.go`. It stays.
-- Produces: `releaseTarballs(tag, goos, goarch string, praxis bool) []string`. The `cpex` parameter is gone. `updateFlags` no longer appends `--cpex`. A new function `cpexUpdateNotice() string` returns the one line.
+- Produces: `releaseTarballs(tag, goos, goarch string, praxis bool) []string`. The `cpex` parameter is gone. `updateFlags` no longer appends `--cpex`. A new constant `cpexUpdateNotice` holds the one line: `"the laptop cpex build is removed: installed the default cortex; use praxis mode with praxis.policy for laptop policy (docs/praxis-policy.md)"`.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `cmd/agentop/update_stage_test.go`, change the table to the new signature. The `cpex` column goes. `releaseTarballs("v1.2.3", "darwin", "arm64", false)` returns `["agentop_v1.2.3_darwin_arm64.tar.gz", "cortex_v1.2.3_darwin_arm64.tar.gz"]`.
+`update_stage_test.go`: `TestReleaseTarballs` (lines 119-137) loses the `cpex` column and the `"cpex"` case. The call becomes `releaseTarballs("v1.2.3", "darwin", "arm64", c.praxis)`. The two remaining cases expect `["agentop_v1.2.3_darwin_arm64.tar.gz", "cortex_v1.2.3_darwin_arm64.tar.gz"]` and, with praxis, the extra `cortex-gateway` name.
 
-In `cmd/agentop/cmd_update_test.go`, keep the existing scene that installs `cortex (cpex) v9.9.9` (line 154). Change its assertion: the tarballs are the plain `cortex_` ones, and the update output holds the notice line.
+`cmd_update_test.go`: change `fakeStagedRelease` to `func fakeStagedRelease(t *testing.T, tag string, praxis bool)` and its `releaseTarballs` call to `releaseTarballs(tag, runtime.GOOS, runtime.GOARCH, praxis)`. Update its five call sites: `fakeStagedRelease(t, c.release, false)` at line 85, `(t, "v9.9.9-rc.1", false)` at line 156, `(t, "v9.9.9", true)` at line 194, `(t, "v9.9.10", false)` at lines 216 and 241.
+
+`TestUpdateHandsOffToTheStagedSetup` (lines 154-186) keeps the `cortex (cpex) v9.9.9` stub at line 154. Its assertions become:
 
 ```go
-if !slices.Equal(*checked, names) || strings.Contains(strings.Join(names, " "), "cortex-cpex") {
-	t.Fatalf("cpex install did not move to the default build: %v", names)
-}
-if !strings.Contains(out, "the laptop cpex build is removed") {
-	t.Errorf("update did not say why it left the cpex build: %q", out)
-}
+	if code != 7 || out.String() != cpexUpdateNotice+"\nstaged setup\n" {
+		t.Fatalf("exit %d stdout %q, want 7 and the notice then the staged setup's line:\n%s", code, out.String(), errb.String())
+	}
+	names := releaseTarballs("v9.9.9-rc.1", runtime.GOOS, runtime.GOARCH, false)
+	if !strings.HasPrefix(names[1], "cortex_") || !slices.Equal(*checked, names) {
+		t.Errorf("checked %q, want %q", *checked, names)
+	}
 ```
 
-In `cmd/agentop/cmd_doctor_checks_test.go`, change the `"cpex build"` case (line 60) so that the fix is `installerOneLiner` with no `--cpex` suffix.
+The setup-argument checks in that test do not change: `--cpex` was never in `setupHandOffFlags`, so `got` still has 9 lines and `want` is the same.
+
+`cmd_doctor_checks_test.go`: the `"cpex build"` case (line 60) expects `installerOneLiner`, with no ` -s -- --cpex` suffix.
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `cd cmd/agentop && go test -short -run 'TestReleaseTarballs|TestUpdate|TestDoctor' ./...`
-Expected: FAIL, from the changed signatures and the missing notice.
+Run: `cd cmd/agentop && go test -run 'TestReleaseTarballs|TestUpdate|TestDoctor' .`
+Expected: FAIL, from the changed signatures and the missing notice. No `-short` here: `newDoctorScene` calls `freePorts`, which skips every scene under `-short`, so the update and doctor tests would be skipped instead of failing.
 
 - [ ] **Step 3: Change `releaseTarballs`**
 
@@ -261,30 +328,40 @@ func releaseTarballs(tag, goos, goarch string, praxis bool) []string {
 
 In `tarballBinary`, the `default:` branch now names only `cortex_`. Remove the `cortex-cpex_` mention from its comment.
 
-- [ ] **Step 4: Change the two call sites**
+- [ ] **Step 4: Drop the `--cpex` flag and print the notice**
 
-`cmd_update.go:181`: drop the `slices.Contains(flags, "--cpex")` argument. `updateFlags`: delete the `installedIsCpex(...) → append "--cpex"` block at lines 275-277.
+`cmd_update.go:181`: drop the `slices.Contains(flags, "--cpex")` argument.
 
-Add the notice. In `cmd_update.go`:
+`updateFlags`: delete the `if installedIsCpex(...) { flags = append(flags, "--cpex") }` block at lines 275-277. Change its doc comment (lines 252-257) and the usage text (lines 34-36) so neither says the update keeps the cpex build. Say instead that the update moves a cpex install to the default build and says so.
+
+Add the constant above `installRelease`:
 
 ```go
 // cpexUpdateNotice is the one line an update prints when it replaces a cpex build.
 const cpexUpdateNotice = "the laptop cpex build is removed: installed the default cortex; use praxis mode with praxis.policy for laptop policy (docs/praxis-policy.md)"
 ```
 
-In the update path, before the install runs, check `installedIsCpex(filepath.Join(env.binDir, proxyBinary))`. Cache the result in a local variable, because the install overwrites the binary. When the result is true, print `cpexUpdateNotice` to stdout, once.
+In `installRelease`, after the `ref` checks and before `var run func() error` — so both the release path and the `--ref=main` installer path print it — add:
+
+```go
+	if installedIsCpex(filepath.Join(env.binDir, proxyBinary)) {
+		_, _ = fmt.Fprintln(stdout, cpexUpdateNotice)
+	}
+```
+
+Read it before the install runs, because the install overwrites the binary.
 
 - [ ] **Step 5: Change doctor**
 
-In `cmd_doctor_checks.go`, delete the `fix += " -s -- --cpex"` branch and its comment. `bad.fix` is always `[]string{installerOneLiner}`.
+In `cmd_doctor_checks.go`, delete the `fix += " -s -- --cpex"` branch and its comment (lines 86-91). `bad.fix` is always `[]string{installerOneLiner}`.
 
 - [ ] **Step 6: Run the tests to see them pass**
 
-Run: `scripts/dev/go-test-shards.sh -short cmd/agentop`
-Expected: PASS.
+Run: `cd cmd/agentop && go test -run 'TestReleaseTarballs|TestUpdate|TestDoctor' .`
+Expected: PASS. This runs the changed scenes. `-short` skips them (see Step 2), so do not use it here.
 
-Then, from `cmd/agentop`: `go test -short $(go list ./... | grep -v 'agentop$')`
-Expected: PASS.
+Then: `scripts/dev/go-test-shards.sh -short cmd/agentop` and, from `cmd/agentop`, `go test -short $(go list ./... | grep -v 'agentop$')`.
+Expected: PASS both. The full `-race` suite in the gate is what runs the scenes that `-short` skips.
 
 - [ ] **Step 7: Commit**
 
@@ -293,49 +370,64 @@ git add cmd/agentop
 git commit -s -m "feat: Move a cpex install to the default build on agentop update"
 ```
 
-### Task 4: Makefile and docs
+### T4 — Makefile, docs and stale comments
 
-**Depends on:** Task 1, Task 2, Task 3.
+**Depends on:** nothing. The two strings it copies are written in full in T2 and T3, so it does not wait for them.
 
 **Files:**
 - Modify: `Makefile:4,87-109`
-- Modify: `docs/cpex-plugin.md`, `docs/laptop-service.md`, `cmd/README.md`, `README.md`
+- Modify: `docs/cpex-plugin.md`
+- Modify: `docs/laptop-service.md:223-250`
+- Modify: `docs/plugin-catalog.md:67-69`
+- Modify: `cmd/README.md:11,126-142`
+- Modify: `README.md:118`
+- Modify: `.github/CLAUDE.md:61-67`
+- Modify: `scripts/profile-tags/profiles.go:48`
 
 **Interfaces:**
-- Consumes: the final `--cpex` error text (Task 2) and the update notice text (Task 3). The docs copy these strings.
+- Consumes: nothing at build time. It copies these two strings, written here:
+  - the `--cpex` error: `--cpex is removed: the laptop cpex build is gone. Use --praxis with praxis.policy (see docs/praxis-policy.md); Kubernetes cpex use is not affected.`
+  - the update notice: `the laptop cpex build is removed: installed the default cortex; use praxis mode with praxis.policy for laptop policy (docs/praxis-policy.md)`
 - Produces: no `cortex-cpex` Makefile target.
 
 - [ ] **Step 1: Remove the Makefile target**
 
-Delete `CORTEX_CPEX_DIR`, `CPEX_FFI_DIR` and the `cortex-cpex` rule (87-109). Remove `cortex-cpex` from `.PHONY` at line 4. Check that no other target calls it: `grep -n "cortex-cpex" Makefile`.
+Delete `CORTEX_CPEX_DIR`, `CPEX_FFI_DIR` and the `cortex-cpex` rule (lines 87-109). Remove `cortex-cpex` from `.PHONY` at line 4. Then run `grep -n "cortex-cpex" Makefile` and expect no output.
 
-- [ ] **Step 2: Update the four docs**
+In `scripts/profile-tags/profiles.go:48`, change the `fullcpex` comment from "make cortex-cpex, a cgo build of cortex" to "the `authbridge-cpex` image, a cgo build of cortex".
 
-In each file, state these facts and no others:
+- [ ] **Step 2: Update the docs and the release note in `.github/CLAUDE.md`**
+
+State these facts, and no others:
 - the laptop cpex build and `install.sh --cpex` are removed;
-- the `--cpex` error names `--praxis` and `docs/praxis-policy.md`;
-- an install that runs a cpex build moves to the default `cortex` on `agentop update`, with one notice line;
+- `--cpex` now exits with the error string above, which names `--praxis` and `docs/praxis-policy.md`;
+- an install that runs a cpex build moves to the default `cortex` on `agentop update`, with the notice line above;
 - `make cortex-cpex` is removed;
-- the `authbridge-cpex` image, the `cpex` and `fullcpex` build profiles, `core/plugins/cpex/` and `go-ci-cpex` stay.
+- the `authbridge-cpex` image, the `cpex` and `fullcpex` build profiles, `core/plugins/cpex/` and `go-ci-cpex` stay, and Kubernetes use is unchanged.
 
-In `docs/cpex-plugin.md`, change the #1800 deprecation banner to say "removed on a laptop".
-
-In `docs/laptop-service.md`, change the "Deprecated." paragraph in the cpex section to say removed, and remove the `--cpex` instructions from that section.
-
-In `cmd/README.md` and `README.md`, change the words "deprecated" for the laptop cpex build to "removed". Keep the Kubernetes sentence unchanged.
+File by file:
+- `docs/laptop-service.md:223-250`: replace the body of the section with a short paragraph that states the facts above. **Keep the heading `## The cpex build`** so the links to it still resolve. Do not keep the `--cpex` command, the `(cpex)` version check or the "keep passing --cpex" paragraph.
+- `docs/cpex-plugin.md`: change the banner at lines 6-7 so it says the laptop build is removed and points to `--praxis`. Replace the body of the "On a laptop" section (lines 76-94) with a paragraph that says the laptop build is gone and that the `authbridge-cpex` image is unchanged. **Keep both headings**, so the `#on-a-laptop` self-link at line 7 and the `laptop-service.md#the-cpex-build` link at lines 92-93 still resolve; change the sentence at line 92 to say the laptop build is removed.
+- `cmd/README.md`: delete the "Laptop" bullet at lines 137-142. Keep the `authbridge-cpex` image bullet and the Kubernetes text. Keep the `[cpex builds](#cpex-builds)` link at line 11; the section stays.
+- `README.md:118`: delete `[cpex policy build](./docs/laptop-service.md#the-cpex-build) ·` from the "Learn more" line. The laptop build no longer exists to point at.
+- `docs/plugin-catalog.md:67-69`: change "the `authbridge-cpex` image or `make cortex-cpex`" to "the `authbridge-cpex` image".
+- `.github/CLAUDE.md:61-67`: delete the paragraph that says a `cortex-cpex_*` release tarball exists and that `install.sh --cpex` installs it. State that the laptop build is removed and that `build-cpex` no longer exists. Keep the `authbridge-cpex` image description.
 
 - [ ] **Step 3: Verify the docs agree with the code**
 
-Run: `grep -rn -i "cpex" docs/cpex-plugin.md docs/laptop-service.md cmd/README.md README.md Makefile`
-Expected: no line tells a user to run `--cpex` or `make cortex-cpex`.
+Run: `grep -rn "make cortex-cpex\|install.sh --cpex\|sh -s -- --cpex" README.md cmd/README.md docs/*.md .github/CLAUDE.md Makefile scripts/profile-tags/profiles.go`
+Expected: no line. The removed flag may still appear in a sentence that says it is removed.
+
+Run: `grep -rn -i "cortex-cpex_" README.md cmd/README.md docs/*.md .github/CLAUDE.md`
+Expected: no line that says a release still publishes it.
 
 Run: `grep -rn "praxis-policy.md" docs/ cmd/README.md README.md scripts/install.sh cmd/agentop`
-Expected: every reference resolves. `docs/praxis-policy.md` exists in the base (it comes from #1800).
+Expected: every reference resolves. `docs/praxis-policy.md` must exist in the base (it comes from #1800); if it is absent, stop — the base is wrong, not the docs.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add Makefile docs cmd/README.md README.md
+git add Makefile docs/cpex-plugin.md docs/laptop-service.md docs/plugin-catalog.md cmd/README.md README.md .github/CLAUDE.md scripts/profile-tags/profiles.go
 git commit -s -m "docs: State that the laptop cpex build is removed"
 ```
 
@@ -343,11 +435,11 @@ git commit -s -m "docs: State that the laptop cpex build is removed"
 
 ## PR List
 
-One PR. Every change is a removal, and the total is about 635 counted lines.
+One PR. Most changes are removals, and the total is about 450 counted lines, far under the 2000 limit. Tasks in one PR run at the same time, so T1, T2, T3 and T4 all start together.
 
 | PR | Title | Parent | Tasks | estLines |
 |---|---|---|---|---|
-| P1 | `feat: Remove the laptop cpex build` | "" | T1, T2, T3, T4 | 635 |
+| P1 | `feat: Remove the laptop cpex build` | "" | T1, T2, T3, T4 | 450 |
 
 The base of P1 must be `main` after #1866 merges. If #1866 is not merged, stack P1 on the #1866 branch (`feat/ppe-docs-1800-pP1`). Do not start P1 before a human writes the go-ahead (see below).
 
@@ -356,12 +448,14 @@ The base of P1 must be `main` after #1866 merges. If #1866 is not merged, stack 
 One command, from the worktree root:
 
 ```sh
-bash -n scripts/install.sh && bash -n scripts/release_smoke_test_linux.sh && bash scripts/install_test.sh && (cd cmd/agentop && GOWORK=off go vet ./... && go test -short $(go list ./... | grep -v 'agentop$')) && scripts/dev/go-test-shards.sh -race cmd/agentop && (cd core && GOWORK=off go vet ./...) && (cd cmd/cortex && GOWORK=off go vet ./...) && (cd cmd/cortex-envoy && GOWORK=off go vet ./...) && (cd scripts/profile-tags && GOWORK=off go vet ./...) && gofmt -l cmd/agentop
+bash -n scripts/install.sh && bash -n scripts/release_smoke_test_linux.sh && shellcheck --severity=error scripts/install.sh scripts/install_test.sh scripts/release_smoke_test_linux.sh && bash scripts/install_test.sh && (cd cmd/agentop && GOWORK=off go vet ./... && GOWORK=off go mod tidy -diff && go test -short $(go list ./... | grep -v 'agentop$')) && scripts/dev/go-test-shards.sh -race cmd/agentop && (cd core && GOWORK=off go vet ./...) && (cd core/storage/redis && GOWORK=off go vet ./...) && (cd cmd/cortex && GOWORK=off go vet ./...) && (cd cmd/cortex-envoy && GOWORK=off go vet ./...) && (cd scripts/profile-tags && GOWORK=off go vet ./...) && (cd scripts/readme-demo && GOWORK=off go vet ./...) && gofmt -l cmd/agentop
 ```
 
-Expected: no output from `gofmt`, and exit 0.
+Expected: no output from `gofmt` or `go mod tidy -diff`, and exit 0.
 
-The cpex module (`cmd/cortex-cpex` has no Go code) and `core/storage/redis` are not changed by this plan. `go mod tidy -diff` is still required by the issue: run it in `core/`, `cmd/cortex`, `cmd/cortex-envoy`, `cmd/agentop`, `scripts/profile-tags` and `scripts/readme-demo` with `GOWORK=off`.
+Checked on the unchanged base `c72995b43`: `bash -n` on both scripts, `shellcheck --severity=error` on all three scripts, `gofmt -l cmd/agentop`, `go vet ./...` in all 7 modules, and `go mod tidy -diff` in `cmd/agentop` all pass. The test, shard and tidy steps for the other modules were not run (they are slow, and the plan changes no import in them).
+
+`scripts/profile-tags/profiles.go` is one of the 7 modules' files, so `scripts/profile-tags` is a real vet target. `cmd/cortex-cpex` holds no Go code. `go mod tidy -diff` is required by requirement 7; run it also in `core/`, `cmd/cortex`, `cmd/cortex-envoy`, `scripts/profile-tags` and `scripts/readme-demo` with `GOWORK=off` before you push.
 
 ## For a human after review
 
@@ -378,7 +472,7 @@ Needs: nothing in this plan. It needs #1866 merged and one release.
 
 **2. Add a release-notes line after the removal PR merges.** The repo publishes release notes from PR titles. After the merge, check the next release's notes: they must say the laptop CPEX build is removed and name `--praxis`. If the title does not carry it, edit the release body by hand.
 
-Needs: Task 1 through Task 4.
+Needs: T1 through T4.
 
 **3. Tell the CPEX contributor.** #1800 already asks for a message to Frederico Araujo (`araujof`) about the deprecation. After this removal PR merges, send one message that the laptop build is gone. Do not send it before the merge.
 
@@ -386,8 +480,10 @@ Needs: the merge of PR P1.
 
 ## Self-Review
 
-- **Spec coverage:** Requirement 1 → Task 1. Requirement 2 → Task 2. Requirement 3 → Task 3. Requirement 4 → Task 1, Step 6. Requirement 5 → Task 4, Step 1. Requirement 6 → Task 4, Step 2. Requirement 7 → the Gate section.
-- **Step scan:** every step names a file, a line or a command. The two exact strings (the `--cpex` error and the update notice) appear once, in the task that owns them.
-- **Type consistency:** `releaseTarballs` has four parameters in Task 3 and in the Gate. `installedIsCpex` keeps one signature and one caller in Task 3.
-- **Review focus:** each of the five lines has a test. Line 1 → Task 2, Step 1. Line 2 → Task 3, Step 1. Line 3 → Task 1, Step 3 and Step 7. Line 4 → the file list in Global Constraints, which no task changes. Line 5 → Task 3, Step 1.
-- **Proportion:** about 635 counted lines of change. The plan is not longer than the code it removes.
+- **Spec coverage:** Requirement 1 → T1. Requirement 2 → T2. Requirement 3 → T3. Requirement 4 → T1, Step 6. Requirement 5 → T4, Step 1. Requirement 6 → T4, Step 2. Requirement 7 → the Gate section.
+- **What is left out:** the deprecation window and the release note are human steps, in "For a human after review". The Go plugin, the `authbridge-cpex` image, the `cpex`/`fullcpex` profiles, the FFI pins and `go-ci-cpex` stay, as the issue says.
+- **Step scan:** every step names a file, a line or a command. The two exact strings (the `--cpex` error and the update notice) appear in full in T2, T3 and T4, so no task waits on another for a value.
+- **Dependencies:** T1, T2, T3 and T4 each depend on no task. They touch different files. The full strings a doc needs are in T4 itself. All four are in P1, so they run at the same time.
+- **Type consistency:** `releaseTarballs` has four parameters in T3. `installedIsCpex` keeps one signature. `cpexUpdateNotice` is a const, not a function.
+- **Review focus:** each of the five focus lines has a test or a check. Line 1 → T2, Step 1. Line 2 → T3, Step 1. Line 3 → T1, Steps 3 and 7. Line 4 → the file list in Global Constraints, which no task changes. Line 5 → T3, Step 1.
+- **Proportion:** about 450 counted lines of change. The plan is not longer than the code and docs it changes.
