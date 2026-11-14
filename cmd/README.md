@@ -134,13 +134,9 @@ downloads and verifies the library pinned in `cortex-cpex/`.
   with the `cpex` profile against the musl library, and installs it as
   `/usr/local/bin/cortex-cpex` so the entrypoint and container args are
   unchanged.
-- **Laptop** — Deprecated on a laptop. Use praxis mode with
-  [`praxis.policy`](../docs/praxis-policy.md) instead. `make cortex-cpex` builds
-  `cmd/cortex` with the `fullcpex` profile (`full` plus `cpex`) for the host
-  (linux amd64/arm64, darwin arm64) to `bin/cortex-cpex/cortex`. It needs a C
-  toolchain (Xcode Command Line Tools on macOS) and `cosign`. The binary is
-  still called `cortex` and runs `--local` like the default build;
-  `cortex --version` prints `cortex (cpex) <version>`.
+
+The laptop build (`make cortex-cpex`) is removed. The image is the only cpex
+build left, so Kubernetes use is unchanged.
 
 The image used to run its own `main.go`, a reduced copy of `cortex`'s. With
 the same config, the `cortex` build differs from it in these ways:

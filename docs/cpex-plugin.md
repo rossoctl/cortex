@@ -8,8 +8,8 @@
 > **The `authbridge-cpex` image is a build variant** of the AuthBridge
 > proxy-sidecar — `cortex` built with cgo and `-tags cpex` — deployed *in
 > place of* the `authbridge` image when CPEX policy enforcement is needed, not
-> as an additional sidecar. On a laptop, `install.sh --cpex` installs the
-> released build of it (see [On a laptop](#on-a-laptop)).
+> as an additional sidecar. The laptop build of it is removed: `--cpex` now
+> exits with an error that names `--praxis` (see [On a laptop](#on-a-laptop)).
 
 The `cpex` plugin embeds the [CPEX](https://github.com/contextforge-org/cpex)
 runtime inside AuthBridge so operators can drive policy with CPEX's
@@ -78,25 +78,12 @@ It is **not** the right home for:
 
 ## On a laptop
 
-Each release publishes `cortex-cpex_<version>_<os>_<arch>.tar.gz` for macOS arm64
-and Linux amd64/arm64 (static, so glibc and musl hosts alike). It holds `cortex`
-built with the `fullcpex` profile: the default plugin set plus `cpex`. Install it
-with the laptop installer's `--cpex` flag:
-
-```sh
-curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --cpex
-```
-
-The binary is still `cortex`, run by the same service with the same
-`~/.cortex/config.yaml`; the plugin does nothing until that config names it.
-`cortex --version` prints `cortex (cpex) <version>`, and `/v1/plugins` on the
-session API lists `cpex`. The install binds to loopback, so Cortex has process
-attribution there and `session_source: resolved` keeps a child process in its
-parent's session. Re-running the installer without `--cpex` switches back, and
-`agentop update` keeps the cpex build.
-[The cpex build](laptop-service.md#the-cpex-build) covers verification and
-switching. To build it from a checkout instead, `make cortex-cpex` writes
-`bin/cortex-cpex/cortex`.
+The laptop build is gone. The installer no longer publishes or accepts a cpex
+build for a laptop: `install.sh --cpex` exits with an error, and `make
+cortex-cpex` is removed. That error names `--praxis` and
+`docs/praxis-policy.md`, which is the way to run laptop policy now. The
+`authbridge-cpex` image is unchanged: Kubernetes use of this plugin does not
+change. [The cpex build](laptop-service.md#the-cpex-build) states the same.
 
 ## Architecture
 
@@ -104,10 +91,10 @@ switching. To build it from a checkout instead, `make cortex-cpex` writes
 
 The cpex plugin links `libcpex_ffi.a` via cgo. Only `cortex` built with
 `-tags cpex`, `CGO_ENABLED=1` and a profile that carries the plugin compiles
-it: `cpex` for the `authbridge-cpex` image, `fullcpex` for the `cortex-cpex`
-release tarballs and `make cortex-cpex`. Every other build (the `authbridge`,
-`authbridge-lite` and `authbridge-envoy` images, the default `cortex` tarballs)
-stays pure-Go and never imports the plugin.
+it: `cpex` for the `authbridge-cpex` image, `fullcpex` for a cgo build of it.
+Every other build (the `authbridge`, `authbridge-lite` and `authbridge-envoy`
+images, the default `cortex` tarballs) stays pure-Go and never imports the
+plugin.
 
 The plugin's chassis (config decode, dispatch, Invocation recording)
 is tag-free; only the cgo adapter that talks to `cpex.PolicyEngine`

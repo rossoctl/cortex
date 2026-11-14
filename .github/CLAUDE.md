@@ -58,13 +58,11 @@ default plugin set (the `authbridge` image's). The `lite` profile ships only as 
 `<suffix>:<build-tags>` entry to the `proxy_variants` array in the workflow — never
 enumerate combos.
 
-The one other variant is `cortex-cpex_<ver>_<os>_<arch>.tar.gz`: `cortex` built with
-cgo, the `cpex` tag and the `fullcpex` profile (`full` + `cpex`). It cannot
-cross-compile, so a separate `build-cpex` matrix job builds it natively for
-darwin/arm64 (`macos-15`, macOS 14.5 floor) and linux/amd64 and linux/arm64 (static
-musl, in `golang:alpine` via `docker run`). There is no darwin/amd64 FFI. The
-executable inside is still `cortex`, and `cortex --version` prints
-`cortex (cpex) <ver>`. `install.sh --cpex` installs it.
+The laptop cpex build is removed, and so is the `build-cpex` job: no release publishes
+a `cortex-cpex_*` tarball for a laptop. `install.sh --cpex` exits with an error that
+names `--praxis` and `docs/praxis-policy.md`. An install that runs a cpex build moves to
+the default `cortex` on `agentop update`, which prints one line that says so. The
+`authbridge-cpex` image is unchanged.
 
 The praxis-mode gateway ships as `cortex-gateway_<ver>_<os>_<arch>.tar.gz`, from the
 `build-gateway` matrix job: darwin/arm64 natively, and linux/amd64 and linux/arm64 as
@@ -72,7 +70,7 @@ static musl binaries in `rust:alpine`. `scripts/build-gateway.sh` builds it and
 `scripts/check-gateway-linkage.sh` checks that it is standalone. It is optional: a
 failed `build-gateway` leg does not block the release.
 
-The workflow's jobs are `version`, `build`, `build-cpex`, `build-gateway` (all
+The workflow's jobs are `version`, `build`, `build-gateway` (all
 `contents: read`) and `publish`. Only `publish` writes. It refuses to publish unless
 every expected tarball arrived, except the gateway tarballs: a missing one gives a
 warning. It writes one `checksums.txt` over all of them, and attests every tarball's
