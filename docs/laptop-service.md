@@ -1057,35 +1057,30 @@ error anywhere to notice it by.
 ### Failing closed
 
 By default the bridge falls open: a connection it cannot read is tunnelled, so the
-agent's call still works. `tls_bridge.fail_closed: true` turns that around for every
-host the bridge intercepts, so policy judged on a host is policy for every byte sent
-to it:
+agent's call still works. `tls_bridge.fail_closed: true` instead bridges or refuses
+every connection the bridge intercepts, so policy judged on a host covers every byte
+sent to it:
 
-- An origin whose certificate does not verify is refused on the CONNECT itself:
-  `502` with `X-Moca-Egress-Error: upstream_unverified`. The check is a `HEAD`
-  bounded at 10s, so an origin that does not answer it in time, or resets it, is
-  refused the same way; the row's `error.message` says which. When the origin
-  could not be dialled, the CONNECT is answered `200` as usual and each request is
-  verified when it is sent.
-- A TLS handshake whose SNI names another host than the CONNECT target is refused
-  (`sni-mismatch`, `421 misdirected_request`). The names are compared as text, so
-  a CONNECT to an IP whose SNI names a domain is refused too: CONNECT by name.
-- A client that rejects Cortex's CA is refused every time. Nothing is remembered,
-  so neither `skip-cached`, `program-refused` nor `os-trust-only` appears. Go tools
-  on macOS that trust only the keychain need the CA there.
+- An origin that fails verification is refused on the CONNECT: `502` with
+  `X-Moca-Egress-Error: upstream_unverified`. The check is a `HEAD` bounded at 10s,
+  so a timeout or reset is refused the same way; `error.message` says which. An
+  origin that could not be dialled still gets a `200`, and each request is verified
+  when sent.
+- An SNI that names another host than the CONNECT target is refused (`sni-mismatch`,
+  `421`). The comparison is textual, so CONNECT by name, not IP.
+- A client that rejects Cortex's CA is refused every time, and nothing is
+  remembered. Go tools on macOS need the CA in the keychain.
 - Bytes that are not a TLS handshake are refused (`refused-non-tls`).
 
-The default `passthrough_hosts` list is dropped, so GitHub and the package
-registries are intercepted too. An explicit `passthrough_hosts` list is still
-tunnelled. `listener.skip_hosts` destinations are verified too: give a private-CA
-origin `upstream_ca_bundle`, or list it in `passthrough_hosts`. `fail_closed`
-cannot be combined with `upstream_insecure`.
+The default `passthrough_hosts` list is dropped; an explicit list is still
+tunnelled. `listener.skip_hosts` destinations are verified too, so give a private-CA
+origin `upstream_ca_bundle`. `fail_closed` cannot be combined with
+`upstream_insecure`.
 
-The transparent listener follows the same rules, with three differences. It judges
-`passthrough_hosts` by the address it dials, because the client chooses the SNI:
-only an IP entry is tunnelled there. The SNI is the host there, so there is no
-`sni-mismatch`: a bridged request goes to the SNI host the pipeline judged. And
-it records each refusal as a close row, since it has no CONNECT to answer.
+On the transparent listener, `passthrough_hosts` is judged by the dialled address,
+so only IP entries apply. The sniffed SNI is the host, so `sni-mismatch` fires only
+when the SNI could not be sniffed, such as a ClientHello over 8 KiB. Refusals there
+are close rows, since there is no CONNECT to answer.
 
 ### Go tools on macOS are passed through unread
 
