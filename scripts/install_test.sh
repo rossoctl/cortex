@@ -1235,8 +1235,6 @@ t_sha256() { # file
 #   one    the cortex line missing
 #   three  agentop listed twice, as ./name and as a bare name
 #   bad    agentop's line carries the wrong hash
-#   cpex   a cortex-cpex archive too, listed beside the cortex one, as a release has it
-#   nocpex the cortex-cpex archive, but no line for it
 #   praxis a cortex-gateway archive too, with its line
 #   nopraxis  the cortex-gateway archive, but no line for it
 #   badpraxis the cortex-gateway archive, with a wrong hash on its line
@@ -1244,15 +1242,13 @@ t_sha256() { # file
 make_release() {
 	T_REL="${TMP}/rel-$1"
 	rm -rf "${T_REL}"
-	mkdir -p "${T_REL}/src" "${T_REL}/src-cpex"
+	mkdir -p "${T_REL}/src"
 	cp "${TMP}/fake-agentop" "${T_REL}/src/agentop"
 	cp "${TMP}/fake-cortex" "${T_REL}/src/cortex"
-	cp "${TMP}/fake-cortex-cpex" "${T_REL}/src-cpex/cortex"
 	cp "${TMP}/fake-cortex-gateway" "${T_REL}/src/cortex-gateway"
 	_mr_p="${MR_OS:-${T_OS}}_${MR_ARCH:-${T_ARCH}}"
 	_mr_a="agentop_$1_${_mr_p}.tar.gz"
 	_mr_c="cortex_$1_${_mr_p}.tar.gz"
-	_mr_x="cortex-cpex_$1_${_mr_p}.tar.gz"
 	_mr_g="cortex-gateway_$1_${_mr_p}.tar.gz"
 	# COPYFILE_DISABLE: macOS tar would otherwise add AppleDouble ._ entries.
 	COPYFILE_DISABLE=1 tar -C "${T_REL}/src" -czf "${T_REL}/${_mr_a}" agentop
@@ -1260,10 +1256,6 @@ make_release() {
 	_mr_ha=$(t_sha256 "${T_REL}/${_mr_a}")
 	_mr_hc=$(t_sha256 "${T_REL}/${_mr_c}")
 	case "${2:-two}" in
-		cpex | nocpex)
-			COPYFILE_DISABLE=1 tar -C "${T_REL}/src-cpex" -czf "${T_REL}/${_mr_x}" cortex
-			_mr_hx=$(t_sha256 "${T_REL}/${_mr_x}")
-			;;
 		praxis | nopraxis | badpraxis)
 			COPYFILE_DISABLE=1 tar -C "${T_REL}/src" -czf "${T_REL}/${_mr_g}" cortex-gateway
 			_mr_hg=$(t_sha256 "${T_REL}/${_mr_g}")
@@ -1276,7 +1268,6 @@ make_release() {
 		printf '%s  ./%s\n' "${_mr_ha}" "${_mr_a}"
 		[ "${2:-two}" = one ] || printf '%s  ./%s\n' "${_mr_hc}" "${_mr_c}"
 		[ "${2:-two}" != three ] || printf '%s  %s\n' "${_mr_ha}" "${_mr_a}"
-		[ "${2:-two}" != cpex ] || printf '%s  ./%s\n' "${_mr_hx}" "${_mr_x}"
 		case "${2:-two}" in praxis | badpraxis) printf '%s  ./%s\n' "${_mr_hg}" "${_mr_g}" ;; esac
 	} >"${T_REL}/checksums.txt"
 	printf '#!/usr/bin/env python3\nprint("dump")\n' >"${T_REL}/cortex-session-dump.py"
@@ -1953,99 +1944,27 @@ check "  and does no install of its own" "0" \
 check "  and nothing in the Makefile uses remove_stale" "0" \
 	"$(grep -c 'remove_stale' "${REPO_ROOT}/Makefile" || true)"
 
-# --- --cpex: the cortex-cpex tarball, only where it is published ---
-# Run as if on darwin/amd64, which has no cpex build: refused before anything is
-# resolved, fetched or staged.
+# --- --cpex is gone: it names the replacement, and fetches nothing ---
 make_release v9.9.9
-T_UNAME="Darwin x86_64"
-run_install ok release --ref=v9.9.9 --cpex
-check "--cpex on darwin/amd64: dies naming the supported platforms" "1 yes" \
-	"${T_ST} $(t_in 'error: --cpex is not available for darwin/amd64 (supported: darwin/arm64, linux/amd64, linux/arm64)' err)"
-check "  fetching nothing and staging nothing" " 0" \
-	"$(cat "${T_RUN}/urls") $(ls -A "${T_RUN}/tmp" | wc -l | tr -d ' ')"
-check "  and never running agentop" "0 0" "$(t_nlog probe) $(t_nlog argv)"
+run_install ok release --cpex
+check "--cpex: dies" "1" "${T_ST}"
+check "  naming --praxis and the policy page" "yes yes" \
+	"$(t_in '--praxis' err) $(t_in 'docs/praxis-policy.md' err)"
+check "  fetching nothing, staging nothing, running no agentop" "0 0 0" \
+	"$(grep -c . "${T_RUN}/urls" || true) $(ls -A "${T_RUN}/tmp" | wc -l | tr -d ' ') $(t_nlog argv)"
 
-# linux/amd64, from a release that lists both cortex_ and cortex-cpex_ archives.
-MR_OS=linux MR_ARCH=amd64 make_release v9.9.9 cpex
-T_UNAME="Linux x86_64"
-run_install ok release --ref=v9.9.9 --cpex
-check "--cpex on linux/amd64: hands off" "0 1" "${T_ST} $(t_nlog argv)"
-check "  downloading cortex-cpex's archive, not cortex's" "1 0" \
-	"$(grep -c '/cortex-cpex_v9\.9\.9_linux_amd64\.tar\.gz$' "${T_RUN}/urls" || true) $(grep -c '/cortex_v9\.9\.9_linux_amd64\.tar\.gz$' "${T_RUN}/urls" || true)"
-check "  staging the cpex build as cortex" "cortex (cpex) v9.9.9" "$("$(t_stage)/cortex" --version)"
-check "  warning that the laptop cpex build is deprecated" "yes" \
-	"$(t_in 'warning: the laptop cpex build is deprecated' err)"
-check "  verifying exactly agentop's and cortex-cpex's entries" \
-	"./agentop_v9.9.9_linux_amd64.tar.gz ./cortex-cpex_v9.9.9_linux_amd64.tar.gz" \
-	"$(awk '{print $2}' "$(t_stage)/checksums.filtered" | tr '\n' ' ' | sed 's/ $//')"
-check "  and telling setup nothing new: the flags are frozen" "${T_NOFLAGS}" "$(t_argv)"
-T_UNAME="Linux x86_64"
-run_install ok release --ref=v9.9.9
-check "without --cpex, the same release: cortex's entry, not cortex-cpex's" \
-	"./agentop_v9.9.9_linux_amd64.tar.gz ./cortex_v9.9.9_linux_amd64.tar.gz" \
-	"$(awk '{print $2}' "$(t_stage)/checksums.filtered" | tr '\n' ' ' | sed 's/ $//')"
-check "  staging the default build" "cortex v9.9.9" "$("$(t_stage)/cortex" --version)"
-# The archive is there but checksums.txt does not list it. cortex_'s line must not
-# stand in for it: the match is the whole name, not a prefix.
-MR_OS=linux MR_ARCH=amd64 make_release v9.9.9 nocpex
-T_UNAME="Linux x86_64"
-run_install ok release --ref=v9.9.9 --cpex
-check "--cpex with no cortex-cpex entry in checksums.txt dies" "1 yes" \
-	"${T_ST} $(t_in 'error: release v9.9.9 has no cpex build for linux/amd64' err)"
-check "  and runs no agentop" "0 0" "$(t_nlog probe) $(t_nlog argv)"
-
-# A release from before --cpex: no cortex-cpex archive at all. Refused once
-# checksums.txt is read, before any archive is fetched or a stage made, and the
-# installed cortex is left as it was.
+# Leaving the cpex build is announced; staying on the default is not.
+_switch='Replacing the installed cpex build of cortex with the default one.'
 MR_OS=linux MR_ARCH=amd64 make_release v9.9.9
 T_UNAME="Linux x86_64"
-T_INSTALLED=plain
-run_install ok release --ref=v9.9.9 --cpex
-check "--cpex against a release with no cpex build: dies saying so" "1 yes" \
-	"${T_ST} $(t_in 'error: release v9.9.9 has no cpex build for linux/amd64' err)"
-check "  fetching only checksums.txt, staging nothing" "1 0 0" \
-	"$(grep -c '/checksums\.txt$' "${T_RUN}/urls" || true) $(grep -c '\.tar\.gz$' "${T_RUN}/urls" || true) $(ls -A "${T_RUN}/tmp" | wc -l | tr -d ' ')"
-check "  running no agentop, and leaving the installed cortex alone" "0 0 cortex v9.9.9" \
-	"$(t_nlog probe) $(t_nlog argv) $("${T_RUN}/home/.local/bin/cortex" --version)"
-
-# Piped, the same release: the bootstrap refuses before re-execing that release's
-# install.sh, which would only say "unknown option: --cpex".
-cat >"${T_REL}/install.sh" <<'EOF'
-printf 'child'; for _a in "$@"; do printf ' [%s]' "${_a}"; done; printf '\n'
-EOF
-T_UNAME="Linux x86_64"
-T_PIPE=1
-run_install ok release --ref=v9.9.9 --cpex
-check "piped --cpex against a release with no cpex build: dies before re-exec" "1 yes 0 0" \
-	"${T_ST} $(t_in 'error: release v9.9.9 has no cpex build for linux/amd64' err) $(grep -c '^child' "${T_RUN}/out" || true) $(grep -c '/install\.sh$' "${T_RUN}/urls" || true)"
-
-# Leaving the cpex build is announced; staying on either build is not.
-_switch='Replacing the installed cpex build of cortex with the default one (pass --cpex to keep it).'
-MR_OS=linux MR_ARCH=amd64 make_release v9.9.9 cpex
-T_UNAME="Linux x86_64"
 T_INSTALLED=cpex
 run_install ok release --ref=v9.9.9
-check "cpex installed, re-run without --cpex: says so, and installs the default" "0 yes cortex v9.9.9" \
+check "cpex installed, re-run: says so, and installs the default" "0 yes cortex v9.9.9" \
 	"${T_ST} $(t_in "${_switch}" out) $("$(t_stage)/cortex" --version)"
 T_UNAME="Linux x86_64"
-T_INSTALLED=cpex
-run_install ok release --ref=v9.9.9 --cpex
-check "cpex installed, re-run with --cpex: no notice" "0 no" "${T_ST} $(t_in "${_switch}" out)"
-T_UNAME="Linux x86_64"
 T_INSTALLED=plain
 run_install ok release --ref=v9.9.9
-check "default installed, re-run without --cpex: no notice" "0 no" "${T_ST} $(t_in "${_switch}" out)"
-
-# Piped, the bootstrap re-execs the released copy of this script with every argument
-# but --ref, so --cpex reaches it. The stub serves this one as that copy.
-cat >"${T_REL}/install.sh" <<'EOF'
-printf 'child'; for _a in "$@"; do printf ' [%s]' "${_a}"; done; printf '\n'
-EOF
-T_UNAME="Linux x86_64"
-T_PIPE=1
-run_install ok release --ref=v9.9.9 --cpex --yes
-check "piped: the released copy gets --cpex, and not --ref" "child [--cpex] [--yes]" \
-	"$(grep '^child' "${T_RUN}/out")"
+check "default installed, re-run: no notice" "0 no" "${T_ST} $(t_in "${_switch}" out)"
 
 # --- --praxis: the cortex-gateway archive too, only where it is published ---
 make_release v9.9.9
@@ -2106,10 +2025,6 @@ check "--help lists --praxis" "1" "$(grep -c '^  --praxis ' "${T_RUN}/out" || tr
 run_install ok release --bogus
 check "an unknown option's message lists --praxis" "1 yes" \
 	"${T_ST} $(t_in '--no-service, --praxis, --stop' err)"
-check "an unknown option's message lists --cpex" "1 yes" \
-	"${T_ST} $(t_in 'unknown option: --bogus (try --claude-code, --cpex,' err)"
-run_install ok release --help
-check "--help lists --cpex" "1" "$(grep -c '^  --cpex ' "${T_RUN}/out" || true)"
 
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" = "0" ]

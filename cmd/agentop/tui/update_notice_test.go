@@ -23,6 +23,9 @@ func TestUpdateSuffix(t *testing.T) {
 			"v0.9.5", true, "· updated to v0.9.6, restart agentop"},
 		{"failed", updatestatus.Status{Installed: "v0.9.5", Latest: "v0.9.6", Result: updatestatus.ResultFailed, CheckedAt: noticeNow},
 			"v0.9.5", true, "· update to v0.9.6 failed, see agentop doctor"},
+		// A cpex replacement keeps the version, so the only sign is the note.
+		{"cpex note", updatestatus.Status{Installed: "v0.9.5", Latest: "v0.9.5", Result: updatestatus.ResultUpdated, Note: "the laptop cpex build is removed", CheckedAt: noticeNow},
+			"v0.9.5", true, "· the laptop cpex build is removed"},
 		{"available", updatestatus.Status{Installed: "v0.9.5", Latest: "v0.9.6", Result: updatestatus.ResultWaiting, CheckedAt: noticeNow},
 			"v0.9.5", true, "· v0.9.6 available"},
 		{"stale", updatestatus.Status{Installed: "v0.9.5", Latest: "v0.9.5", Result: updatestatus.ResultCurrent, CheckedAt: noticeNow.Add(-73 * time.Hour)},

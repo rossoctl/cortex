@@ -119,17 +119,16 @@ func assertEmptyDir(t *testing.T, dir string) {
 
 func TestReleaseTarballs(t *testing.T) {
 	cases := []struct {
-		name         string
-		cpex, praxis bool
-		want         []string
+		name   string
+		praxis bool
+		want   []string
 	}{
-		{"default", false, false, []string{"agentop_v1.2.3_darwin_arm64.tar.gz", "cortex_v1.2.3_darwin_arm64.tar.gz"}},
-		{"cpex", true, false, []string{"agentop_v1.2.3_darwin_arm64.tar.gz", "cortex-cpex_v1.2.3_darwin_arm64.tar.gz"}},
-		{"praxis", false, true, []string{"agentop_v1.2.3_darwin_arm64.tar.gz", "cortex_v1.2.3_darwin_arm64.tar.gz", "cortex-gateway_v1.2.3_darwin_arm64.tar.gz"}},
+		{"default", false, []string{"agentop_v1.2.3_darwin_arm64.tar.gz", "cortex_v1.2.3_darwin_arm64.tar.gz"}},
+		{"praxis", true, []string{"agentop_v1.2.3_darwin_arm64.tar.gz", "cortex_v1.2.3_darwin_arm64.tar.gz", "cortex-gateway_v1.2.3_darwin_arm64.tar.gz"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := releaseTarballs("v1.2.3", "darwin", "arm64", c.cpex, c.praxis)
+			got := releaseTarballs("v1.2.3", "darwin", "arm64", c.praxis)
 			if !slices.Equal(got, c.want) {
 				t.Errorf("got %v, want %v", got, c.want)
 			}

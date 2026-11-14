@@ -97,6 +97,8 @@ var autoUpdateRows = []autoRow{
 	{name: "check-failed time", latest: "v9.9.10", want: updatestatus.ResultCheckFailed},
 	{name: "updated", latest: "v9.9.10", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
 	{name: "failed", latest: "v9.9.10", age: 25 * time.Hour, fail: errors.New("installer broke"), want: updatestatus.ResultFailed, ran: true},
+	// A cpex cortex reports the tag too, and is not current.
+	{name: "cpex current", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
 	// A half-done swap is repaired, not reported as current.
 	{name: "mismatch", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
 	// The kill switch: Latest moved back.
@@ -157,6 +159,9 @@ func TestAutoUpdateDecisions(t *testing.T) {
 			if c.agentop == "" && s.Installed != "v9.9.9" {
 				t.Errorf("installed %q, want v9.9.9", s.Installed)
 			}
+			if c.name != "cpex current" && s.Note != "" {
+				t.Errorf("note %q, want empty", s.Note)
+			}
 			switch c.name {
 			case "waiting":
 				if want := autoNow.Add(-c.age).Add(config.DefaultUpdateWait); !s.InstallAfter.Equal(want) {
@@ -173,6 +178,11 @@ func TestAutoUpdateDecisions(t *testing.T) {
 			case "updated":
 				if fake.ref != c.latest || !slices.Contains(fake.flags, "--ref="+c.latest) || !slices.Contains(fake.flags, "--yes") {
 					t.Errorf("installer ref %q flags %q", fake.ref, fake.flags)
+				}
+			case "cpex current":
+				// No terminal: the line has to reach the status file.
+				if s.Note != cpexStatusNote {
+					t.Errorf("note %q, want the cpex notice", s.Note)
 				}
 			case "failed":
 				if !strings.Contains(s.Error, "installer broke") {

@@ -31,6 +31,9 @@ type Status struct {
 	Result       string    `json:"result"`
 	InstallAfter time.Time `json:"installAfter,omitzero"`
 	Error        string    `json:"error"`
+	// Note is a line the automatic update could not print to anyone, such as the
+	// cpex removal. agentop shows it on the title bar. Empty on every other run.
+	Note string `json:"note,omitempty"`
 }
 
 // Read decodes the status file at path. A missing file gives an error that

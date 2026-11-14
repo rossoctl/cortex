@@ -145,7 +145,8 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 	}
 	s := updatestatus.Status{Latest: tag}
 	env.readVersions()
-	agentop, cortex := env.installedVersion, installedVersion(filepath.Join(env.binDir, proxyBinary))
+	cortexPath := filepath.Join(env.binDir, proxyBinary)
+	agentop, cortex := env.installedVersion, installedVersion(cortexPath)
 	if autoUpdateOff(env.configPath()) {
 		s.Result = updatestatus.ResultDisabled
 		return s
@@ -158,7 +159,9 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		s.Result, s.Error = updatestatus.ResultCheckFailed, "Latest "+tag+" is not a plain release"
 		return s
 	}
-	if agentop == tag && cortex == tag {
+	// A cpex cortex reports the tag too, and the default build must replace it.
+	wasCpex := installedIsCpex(cortexPath)
+	if agentop == tag && cortex == tag && !wasCpex {
 		s.Result = updatestatus.ResultCurrent
 		return s
 	}
@@ -179,5 +182,9 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		return s
 	}
 	s.Result = updatestatus.ResultUpdated
+	if wasCpex {
+		// The updater job has no terminal, so keep the line where agentop reads it.
+		s.Note = cpexStatusNote
+	}
 	return s
 }

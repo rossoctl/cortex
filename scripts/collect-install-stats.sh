@@ -44,8 +44,8 @@
 #
 # A TAG-push run is the exception: every leg after its fresh install lands on a
 # real release, the tag under test, and none is subtracted, so the people figure
-# runs HIGH on a day that cut a tag -- by up to 5 per job since the cpex legs were
-# added. Stated in the page footnote rather than modelled.
+# runs HIGH on a day that cut a tag -- by up to 2 per job, the upgrade and the
+# re-install. Stated in the page footnote rather than modelled.
 #
 # Nothing here separates maintainers from strangers -- at a base of ~16, a few
 # contributors on a few machines each could account for all of it. Label any

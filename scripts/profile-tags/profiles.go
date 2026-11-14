@@ -45,7 +45,7 @@ var allProfiles = []ProfileName{
 //	lite      authbridge-lite image — sidecar minimum
 //	envoy     authbridge-envoy image
 //	cpex      authbridge-cpex image
-//	fullcpex  full plus cpex — make cortex-cpex, a cgo build of cortex
+//	fullcpex  full plus cpex — the `authbridge-cpex` image, a cgo build of cortex
 var membership = map[PluginName][]ProfileName{
 	"a2aparser":       {ProfileLocal, ProfileFull, ProfileFullCpex, ProfileEnvoy, ProfileCpex},
 	"inferenceparser": {ProfileLocal, ProfileFull, ProfileFullCpex, ProfileEnvoy, ProfileCpex},

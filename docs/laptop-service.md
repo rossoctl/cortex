@@ -229,36 +229,22 @@ Where to look:
 
 ## The cpex build
 
-**Deprecated.** The laptop cpex build is deprecated. Use praxis mode with
-[`praxis.policy`](praxis-policy.md) instead (see `--praxis` above). This section stays for
-existing installs. Kubernetes use of the `authbridge-cpex` image is **not** deprecated.
+The laptop cpex build is removed. No release publishes a cpex tarball for a laptop,
+and `install.sh --cpex` exits with an error. That error names `--praxis` and
+`docs/praxis-policy.md`, which is the way to run laptop policy now. `make
+cortex-cpex` is gone too. An install that runs a cpex build moves to the default
+`cortex` on `agentop update`, which prints one line that says so.
 
-Each release also publishes `cortex` built with the [cpex policy plugin](cpex-plugin.md),
-as `cortex-cpex_<version>_<os>_<arch>.tar.gz`, for macOS arm64 (14.5 or later) and Linux
-amd64/arm64. The Linux builds are static, so they run on glibc and musl alike. To install
-it, pass `--cpex`:
+An `agentop` from before the removal cannot make that move. Its update asks the
+release for the cpex tarball, and no release publishes one now. Run the one-liner
+once to move the install to the default build.
 
-```sh
-curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --cpex
-```
+Kubernetes use does not change: the `authbridge-cpex` image, the `cpex` and `fullcpex`
+build profiles, `core/plugins/cpex/` and the `go-ci-cpex` CI job stay. See
+[cpex-plugin.md](cpex-plugin.md).
 
-It installs as `cortex`, in the same place, under the same service; only the binary
-differs. Elsewhere, `--cpex` stops before downloading anything and names the platforms it
-supports. To check which build is running:
-
-```sh
-cortex --version                                         # cortex (cpex) v0.9.3
-curl -s http://127.0.0.1:47601/v1/plugins | grep -c '"name":"cpex"'   # 1
-```
-
-Every release tarball, cpex or not, carries build provenance as well as its `checksums.txt`
-entry: `gh attestation verify <tarball> --repo rossoctl/cortex`.
-
-The installer does not remember the choice. Re-running it without `--cpex` installs the
-default build again, and says so first; keep passing `--cpex` to stay on it.
-`agentop update` passes `--cpex` for you when the installed cortex is the cpex build.
-Against a release from before `--cpex` existed, the installer stops before staging
-anything and says that release has no cpex build.
+Every release tarball carries build provenance as well as its `checksums.txt` entry:
+`gh attestation verify <tarball> --repo rossoctl/cortex`.
 
 ## How traffic is grouped into sessions
 
