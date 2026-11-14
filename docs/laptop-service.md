@@ -1062,9 +1062,11 @@ host the bridge intercepts, so policy judged on a host is policy for every byte 
 to it:
 
 - An origin whose certificate does not verify is refused on the CONNECT itself:
-  `502` with `X-Moca-Egress-Error: upstream_unverified`. When the origin could not
-  be dialled, the CONNECT is answered `200` as usual and each request is verified
-  when it is sent.
+  `502` with `X-Moca-Egress-Error: upstream_unverified`. The check is a `HEAD`
+  bounded at 10s, so an origin that does not answer it in time, or resets it, is
+  refused the same way; the row's `error.message` says which. When the origin
+  could not be dialled, the CONNECT is answered `200` as usual and each request is
+  verified when it is sent.
 - A TLS handshake whose SNI names another host than the CONNECT target is refused
   (`sni-mismatch`, `421 misdirected_request`). The names are compared as text, so
   a CONNECT to an IP whose SNI names a domain is refused too: CONNECT by name.

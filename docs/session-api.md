@@ -789,7 +789,9 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   destination — the same refusal a plain request gets, one layer down.
   Under `tls_bridge.fail_closed` three more refusals close a tunnel row:
   `origin-unverified` with 502 and `error.kind: "upstream_unverified"` (the
-  CONNECT itself is answered 502), `sni-mismatch` with 421 and
+  CONNECT itself is answered 502; a verification probe that times out or fails
+  in transport is reported the same way, and `error.message` tells them
+  apart), `sni-mismatch` with 421 and
   `"misdirected_request"`, and `refused-non-tls` with 200 and `"not_tls"`.
 - `dialAddr` — present on a tunnel's open row when the egress guard is on:
   the address the guard checked and the proxy dialed, `"ip:port"`. Together
