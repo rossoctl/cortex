@@ -1497,14 +1497,31 @@ func TestTimelineTokPerSec_ConcurrentTurnsAtTheWindow(t *testing.T) {
 			t.Errorf("%+v: tokPerSec = %v, %v, want 200, true", turns, rate, ok)
 		}
 	}
+	// A turn that started first and ran into the counted window counts too, and its span joins
+	// the model time: 70 s of union for 7000 tokens.
+	turns := []timeline.Turn{
+		{Agent: m, Start: tlAt(90), End: tlPtr(120), OutputTokens: 3500},
+		{Agent: m, Start: tlAt(100), End: tlPtr(160), OutputTokens: 3500},
+	}
+	if rate, _, ok := tokPerSec(turns, m, time.Time{}, tlAt(170)); !near(rate, 100) || !ok {
+		t.Errorf("tokPerSec = %v, %v, want 100, true", rate, ok)
+	}
 	// A turn older than the window and clear of it stays out, so an idle agent's old work does
 	// not raise the rate.
-	turns := []timeline.Turn{
+	turns = []timeline.Turn{
 		{Agent: m, Start: tlAt(0), End: tlPtr(60), OutputTokens: 6000},
 		{Agent: m, Start: tlAt(120), End: tlPtr(180), OutputTokens: 6000},
 	}
 	if rate, _, ok := tokPerSec(turns, m, time.Time{}, tlAt(190)); !near(rate, 100) || !ok {
 		t.Errorf("tokPerSec = %v, %v, want 100, true", rate, ok)
+	}
+	// An open turn beside the window's turns still shows the row live.
+	turns = []timeline.Turn{
+		{Agent: m, Start: tlAt(100), End: tlPtr(160), OutputTokens: 6000},
+		{Agent: m, Start: tlAt(160), LiveTokens: 3000},
+	}
+	if rate, live, ok := tokPerSec(turns, m, time.Time{}, tlAt(190)); !near(rate, 100) || !live || !ok {
+		t.Errorf("tokPerSec = %v, %v, %v, want 100, true, true", rate, live, ok)
 	}
 }
 

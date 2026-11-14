@@ -396,7 +396,7 @@ func (m *model) timelineLayoutNow() (tlLayout, bool) {
 const (
 	timelineFixedLines = 8
 	// timelineLegendLines is how many lines legend draws. The tok/s note has a line of its own,
-	// so the pane's width cannot cut it off.
+	// so it is not cut at a width where the chart itself still fits.
 	timelineLegendLines = 2
 )
 
@@ -412,14 +412,19 @@ func tlEmptyLines(lay tlLayout) int {
 	return n
 }
 
-// timelineRowBudget is how many two-line rows fit under the fixed lines and any empty side's
-// note. A body too short for the legend drops it; see renderTimeline.
-func (m *model) timelineRowBudget(lay tlLayout) int {
+// timelineFixed is the pane's fixed line count, less the legend when the body is too short for
+// it. A body too short for the legend drops it; see renderTimeline.
+func (m *model) timelineFixed(lay tlLayout) int {
 	fixed := timelineFixedLines + tlEmptyLines(lay)
 	if m.bodyHeight < timelineFixedLines+2*4 {
-		fixed -= timelineLegendLines // no legend
+		fixed -= timelineLegendLines
 	}
-	return max((m.bodyHeight-fixed)/2, 0)
+	return fixed
+}
+
+// timelineRowBudget is how many two-line rows fit under the fixed lines and any empty side's note.
+func (m *model) timelineRowBudget(lay tlLayout) int {
+	return max((m.bodyHeight-m.timelineFixed(lay))/2, 0)
 }
 
 // timelineAgentRows is how many agent rows fit, sharing the body with the host rows: hosts get
@@ -697,7 +702,7 @@ func (m *model) renderTimeline() string {
 	// The chart needs its fixed lines, any empty side's note and one row; below that, say so
 	// rather than run past the terminal.
 	lay, _ := m.timelineLayoutNow()
-	if m.bodyHeight < timelineFixedLines+tlEmptyLines(lay)+1 {
+	if m.bodyHeight < m.timelineFixed(lay)+1 {
 		b.WriteString(styleMuted.Render("  make the terminal taller to see the timeline"))
 		return b.String()
 	}

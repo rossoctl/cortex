@@ -448,11 +448,12 @@ func TestTimeline_LiveTokensOnOpenTurnNotCached(t *testing.T) {
 	t.Cleanup(func() { ts.Close(); store.Close() })
 	main := func(msg string) *pipeline.InferenceExtension {
 		return &pipeline.InferenceExtension{AgentRole: pipeline.AgentRoleMain, Tools: []pipeline.InferenceTool{{Name: "Bash"}},
-			Stream: true, Messages: []pipeline.InferenceMessage{{Role: "user", Content: msg}}}
+			Messages: []pipeline.InferenceMessage{{Role: "user", Content: msg}}}
 	}
 	store.Append("s1", pipeline.SessionEvent{At: base, Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, RequestID: "done", Host: "llm.example", Inference: main("one")})
 	resp := main("one")
 	resp.OutputTokens = 1000
+	resp.StreamedResponse = true
 	store.Append("s1", pipeline.SessionEvent{At: base.Add(8 * time.Second), Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, RequestID: "done", Host: "llm.example",
 		StatusCode: 200, Duration: 8 * time.Second, Ttfb: time.Second, BytesDown: 39000, Inference: resp})
 	store.Append("s1", pipeline.SessionEvent{At: base.Add(10 * time.Second), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, RequestID: "open", Host: "llm.example", Inference: main("two")})

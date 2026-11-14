@@ -1143,6 +1143,7 @@ func (r *rec) streamed(start, dur, ttfb float64, bytesDown int64, outTokens int)
 	resp.Ttfb = time.Duration(ttfb * float64(time.Second))
 	resp.BytesDown = bytesDown
 	resp.Inference.OutputTokens = outTokens
+	resp.Inference.StreamedResponse = true
 }
 
 // open records a main request that has no response yet.
@@ -1177,14 +1178,27 @@ func TestBuild_BytesPerTokenFromLongTurnsOnly(t *testing.T) {
 }
 
 // The ratio estimates the tokens behind a streamed body, so a buffered reply must not set it: its
-// JSON carries the whole message, not the SSE framing the estimate is read against.
+// JSON carries the whole message, not the SSE framing the estimate is read against. A gateway
+// answers a streaming request this way routinely.
 func TestBuild_BufferedResponseDoesNotCalibrate(t *testing.T) {
 	var r rec
-	r.streamed(0, 8, 1, 39000, 1000)
-	r.events[len(r.events)-2].Inference.Stream = false // the request did not ask for a stream
+	r.streamed(0, 8, 1, 39000, 1000)                             // the request asked for a stream...
+	r.events[len(r.events)-1].Inference.StreamedResponse = false // ...and the reply was buffered
 	tl := Build("s", r.events, at(20))
 	if tl.bytesPerToken != 0 {
 		t.Fatalf("bytesPerToken = %v from a buffered response, want 0", tl.bytesPerToken)
+	}
+}
+
+// The request's stream flag says nothing about the response: a WebSocket turn carries no stream
+// field, and the per-frame parser is what marks its response streamed.
+func TestBuild_StreamedResponseAloneCalibrates(t *testing.T) {
+	var r rec
+	r.streamed(0, 8, 1, 39000, 1000)
+	r.events[len(r.events)-2].Inference.Stream = false
+	tl := Build("s", r.events, at(20))
+	if tl.bytesPerToken != 39 {
+		t.Fatalf("bytesPerToken = %v, want 39 from a response marked streamed", tl.bytesPerToken)
 	}
 }
 

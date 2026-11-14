@@ -541,8 +541,17 @@ func TestResponsesWebSocket_OpenTurnPublishesItsLiveCount(t *testing.T) {
 	if id == "" {
 		t.Fatal("the turn recorded no request row")
 	}
-	if _, ok := h.store.StreamBytes(id); !ok {
-		t.Fatalf("StreamBytes(%q) has no entry while the turn streams", id)
+	// The first frame reached the client, so it is counted: a permanent zero must fail here.
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if n, ok := h.store.StreamBytes(id); ok && n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			n, ok := h.store.StreamBytes(id)
+			t.Fatalf("StreamBytes(%q) = (%d, %v) with a frame relayed, want a positive count", id, n, ok)
+		}
+		time.Sleep(time.Millisecond)
 	}
 
 	rel()

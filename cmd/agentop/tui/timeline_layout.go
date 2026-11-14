@@ -280,13 +280,14 @@ type tlAgentRow struct {
 // tokPerSecWindow is how much of an agent's newest model time its tok/s is measured over.
 const tokPerSecWindow = 60 * time.Second
 
-// tokPerSec is Σ tokens / model time over the agent's newest turns, until that time reaches
-// tokPerSecWindow. Model time is the union of the turns' spans, so idle, tool and subagent time
-// between turns does not count, and neither does overlap twice. The turn that makes it reach the
-// window counts in full, and so does every turn that ran beside the counted ones. A turn with no
-// tokens (failed, lost, without usage, or open without a live estimate) does not count, so one
-// error does not pull the value down. An open turn ends at fetched, the time its LiveTokens were
-// read, so the rate does not fall between fetches. A zero fetched means now.
+// tokPerSec is Σ tokens / model time over the agent's newest turns. Model time is the union of
+// the turns' spans, so idle, tool and subagent time between turns does not count, and neither does
+// overlap twice. Turns are counted from the newest until their model time reaches tokPerSecWindow,
+// and with them every turn that reaches into that window, however it started: the agent made their
+// tokens in that model time. A turn that ended before the window began is older work and does not
+// count. A turn with no tokens (failed, lost, without usage, or open without a live estimate) does
+// not count, so one error does not pull the value down. An open turn ends at fetched, the time its
+// LiveTokens were read, so the rate does not fall between fetches. A zero fetched means now.
 func tokPerSec(turns []timeline.Turn, agent string, fetched, now time.Time) (rate float64, live, ok bool) {
 	if !fetched.IsZero() {
 		now = fetched
@@ -311,11 +312,11 @@ func tokPerSec(turns []timeline.Turn, agent string, fetched, now time.Time) (rat
 		if tokens == 0 || !e.After(t.Start) {
 			continue
 		}
-		// A turn that started before the counted window ended cannot overlap it, so it is
-		// older work than the rate measures. A turn that ran beside the window's turns still
-		// counts: the agent made its tokens in that model time.
-		if sumDur >= tokPerSecWindow && t.Start.Before(winEnd.Add(-tokPerSecWindow)) {
-			break
+		// Once the counted model time reaches the window, only a turn that reaches into it
+		// counts. The loop continues past the first turn that does not, because ends are not in
+		// start order: a turn counted already may end before a later-sorted one.
+		if sumDur >= tokPerSecWindow && !e.After(winEnd.Add(-tokPerSecWindow)) {
+			continue
 		}
 		sumTok += tokens
 		// Time in which two turns of the agent ran at once counts once.
