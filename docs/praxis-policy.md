@@ -178,6 +178,9 @@ routes:
 - No A2A policy.
 - A `praxis.policy` block does nothing while `praxis.enabled` is false, and startup
   prints no warning.
+- The gateway sets no `body_access`, so the policy runs in the filter's default
+  `read_only` mode. A rule that rewrites a field, such as `args.ssn: redact(...)` or
+  `result.ssn: redact(...)`, loads and has no effect.
 - A body with no readable `model` takes no `llm:` route. The gateway sets
   `llm.require_model: false` (`cmd/cortex/gateway.go`), so PPE runs the policy's HTTP
   admission on it: a matching `http:` route, or else the `global` rules. A policy with
@@ -198,13 +201,16 @@ routes:
 ## Move from the CPEX plugin
 
 The constructs in `core/plugins/cpex/testdata/hr-cpex/cpex-policy.yaml` and in the
-examples in `docs/cpex-plugin.md` exist in PPE 0.6.0. In a load check against 0.6.0,
-the `hr-cpex` file failed only with `missing field store`, from its `elicitation/ciba`
-plugin. The gateway does not build that plugin, so delete the block. A `store` does
-not make it load.
+examples in `docs/cpex-plugin.md` exist in PPE 0.6.0. The gateway builds less than a
+full PPE, so neither file loads there as it stands: `hr-cpex` fails on
+`delegator/oauth`, which it names.
 
 1. Move the CPEX policy YAML out of the `cpex` plugin entry and into its own file.
-2. Delete every `elicitation/ciba` plugin. CIBA is not in the gateway.
+2. Delete every construct the gateway does not build: `elicitation/ciba` plugins,
+   `delegator/oauth` plugins, and the `cedar-direct` PDP. `hr-cpex` carries all three.
+   Also delete each step that calls one. A `require_approval(...)` or `confirm(...)`
+   step with no plugin, a `delegate(...)` step with no plugin, and a `cedar:` step with
+   no PDP each deny the request.
 3. Apply the 0.5 to 0.6 changes. `ConversationContext.history` is now `Vec<Message>`,
    in CMF shape. `&` and `|` behave differently when an operand cannot be ordered.
    There are new `llm.input.*`, `llm.model.*` and `llm.output.*` facts, and the old

@@ -197,7 +197,9 @@ When the two differ, fix the Rust code. Do not change Go behavior or a Go
 golden file to suit Rust.
 
 A Go-only parser PR gets a report from this suite, not a block. The CI job
-blocks only when the PR changes `praxis/` or its workflow.
+blocks when the PR changes `praxis/`, `docs/praxis-policy.md`, its workflow, or the
+Go side of praxis mode (`cmd/cortex/praxis*.go`, `gateway.go`, `ingest.go`, and
+`core/listener/forwardproxy/hop*.go` and `egress*.go`).
 
 ## Go decode rules
 
