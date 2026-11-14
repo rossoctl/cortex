@@ -386,6 +386,11 @@ jobs:
             fi
           fi
           add 'Prebuilt `agentop` and `cortex` binaries for linux and macOS (amd64/arm64).'
+          # The laptop cpex build is gone, and an older agentop cannot fetch its own
+          # replacement. Drop this once no supported release ships a cpex laptop build.
+          add 'The laptop cpex build is removed. If `cortex --version` prints `(cpex)`,'
+          add 'run the install one-liner once: an older `agentop update` cannot fetch the'
+          add 'removed tarball. Laptop policy now uses `--praxis` and docs/praxis-policy.md.'
           # Name the gateway only when this release has at least one gateway tarball.
           # No platform list: a failed leg leaves a platform out, and the assets show which.
           if ls dist/cortex-gateway_*.tar.gz >/dev/null 2>&1; then

@@ -160,7 +160,8 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		return s
 	}
 	// A cpex cortex reports the tag too, and the default build must replace it.
-	if agentop == tag && cortex == tag && !installedIsCpex(cortexPath) {
+	wasCpex := installedIsCpex(cortexPath)
+	if agentop == tag && cortex == tag && !wasCpex {
 		s.Result = updatestatus.ResultCurrent
 		return s
 	}
@@ -181,5 +182,9 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		return s
 	}
 	s.Result = updatestatus.ResultUpdated
+	if wasCpex {
+		// The updater job has no terminal, so keep the line where agentop reads it.
+		s.Note = cpexStatusNote
+	}
 	return s
 }

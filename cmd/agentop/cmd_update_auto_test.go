@@ -159,6 +159,9 @@ func TestAutoUpdateDecisions(t *testing.T) {
 			if c.agentop == "" && s.Installed != "v9.9.9" {
 				t.Errorf("installed %q, want v9.9.9", s.Installed)
 			}
+			if c.name != "cpex current" && s.Note != "" {
+				t.Errorf("note %q, want empty", s.Note)
+			}
 			switch c.name {
 			case "waiting":
 				if want := autoNow.Add(-c.age).Add(config.DefaultUpdateWait); !s.InstallAfter.Equal(want) {
@@ -175,6 +178,11 @@ func TestAutoUpdateDecisions(t *testing.T) {
 			case "updated":
 				if fake.ref != c.latest || !slices.Contains(fake.flags, "--ref="+c.latest) || !slices.Contains(fake.flags, "--yes") {
 					t.Errorf("installer ref %q flags %q", fake.ref, fake.flags)
+				}
+			case "cpex current":
+				// No terminal: the line has to reach the status file.
+				if s.Note != cpexStatusNote {
+					t.Errorf("note %q, want the cpex notice", s.Note)
 				}
 			case "failed":
 				if !strings.Contains(s.Error, "installer broke") {

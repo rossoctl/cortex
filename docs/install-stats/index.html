@@ -156,10 +156,9 @@ const PLATFORMS = ["darwin_arm64", "darwin_amd64", "linux_amd64", "linux_arm64"]
 // (112 / 2 = 56 = 51 + 5).
 //
 // A TAG-push run adds more, on the tag under test: every leg after the fresh install
-// lands on that tag, and none of them is subtracted. Since the cpex legs were added
-// that is 5 installs per job (measured on the v0.9.2 and v0.9.3 tag pushes), so the
-// people figure runs high by up to 5 per job on a day that cut a tag. That is stated
-// in the footnote rather than modelled.
+// lands on that tag, and none of them is subtracted. That is 2 installs per job (the
+// upgrade and the re-install), so the people figure runs high by up to 2 per job on a
+// day that cut a tag. That is stated in the footnote rather than modelled.
 const installsOf = (run) =>
   typeof run.installs === "number" ? run.installs : 1;
 
@@ -344,7 +343,7 @@ function renderDaily(snapshots) {
     <strong>Cortex CI Tests</strong> is one install per job of the release smoke
     test that ran, passed or failed, with one job per architecture. It installs exactly the
     way a person does, which is why it has to be subtracted rather than filtered
-    out. On a day that cut a release tag the real figure is higher by up to 5 per job,
+    out. On a day that cut a release tag the real figure is higher by up to 2 per job,
     because a tag-push job's upgrade and re-install legs land on that tag instead of
     on <code>main-latest</code>, and are not counted here.
     Each row covers the span between two snapshots, and CI runs are counted over

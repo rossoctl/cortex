@@ -12,6 +12,8 @@ func updateSuffix(st updatestatus.Status, version string, serviceInstall bool, n
 	switch {
 	case st.Installed != version && updatestatus.IsRelease(st.Installed) && updatestatus.IsRelease(version):
 		return "· updated to " + st.Installed + ", restart agentop"
+	case st.Note != "":
+		return "· " + st.Note
 	case st.Result == updatestatus.ResultFailed:
 		return "· update to " + st.Latest + " failed, see agentop doctor"
 	case st.Latest != "" && st.Latest != st.Installed:

@@ -159,6 +159,10 @@ var releaseTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$
 // cpexUpdateNotice is the one line an update prints when it replaces a cpex build.
 const cpexUpdateNotice = "the laptop cpex build is removed: installed the default cortex; use praxis mode with praxis.policy for laptop policy (docs/praxis-policy.md)"
 
+// cpexStatusNote is the short form the automatic update writes to the status file,
+// because agentop puts it on the title bar and that line has no room for the full text.
+const cpexStatusNote = "cpex build removed; now the default cortex"
+
 // installRelease installs ref ("" = newest release) with flags. A v* tag is
 // downloaded, checked and staged here, then handed to the staged agentop setup;
 // any other ref runs the website installer.
