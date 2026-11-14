@@ -66,7 +66,10 @@ fn lock() -> std::sync::MutexGuard<'static, Store> {
 
 /// Record `decision` for `request_id`. A later call replaces an earlier one:
 /// the last verdict is the one the caller got.
-pub fn record(request_id: &str, decision: Decision) {
+///
+/// shortcut: the id must be unique per request, add a per-request token if
+/// clients reuse `X-Cortex-Request-Id` while two requests are open.
+pub(crate) fn record(request_id: &str, decision: Decision) {
     let mut store = lock();
     if store
         .entries

@@ -7,9 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use cortex_praxis_filters::policy_recorder::{
-    CortexRecorderFactory, Decision, JOIN_HEADER, KIND, record, take,
-};
+use cortex_praxis_filters::policy_recorder::{CortexRecorderFactory, JOIN_HEADER, KIND, take};
 use praxis_policy::praxis_policy_core::cmf::enums::Role;
 use praxis_policy::praxis_policy_core::cmf::{CmfHook, Message, MessagePayload};
 use praxis_policy::praxis_policy_core::executor::PipelineResult;
@@ -44,11 +42,11 @@ async fn engine() -> Arc<PolicyEngine> {
     mgr
 }
 
-fn extensions(entity_name: &str, request_id: Option<&str>) -> Extensions {
+fn extensions(entity_name: &str, header: Option<(&str, &str)>) -> Extensions {
     let mut request_headers = HashMap::new();
-    if let Some(id) = request_id {
-        // The live path: the proxy strips the hop headers, so this is the key.
-        request_headers.insert(JOIN_HEADER.to_owned(), id.to_owned());
+    if let Some((name, value)) = header {
+        // The live path: the proxy strips the hop headers, so JOIN_HEADER is the key.
+        request_headers.insert(name.to_owned(), value.to_owned());
     }
     Extensions {
         http: Some(Arc::new(HttpExtension {
@@ -68,7 +66,7 @@ fn extensions(entity_name: &str, request_id: Option<&str>) -> Extensions {
 async fn invoke(
     mgr: &Arc<PolicyEngine>,
     entity_name: &str,
-    request_id: Option<&str>,
+    header: Option<(&str, &str)>,
 ) -> PipelineResult {
     let (result, _background) = mgr
         .invoke_named::<CmfHook>(
@@ -76,7 +74,7 @@ async fn invoke(
             MessagePayload {
                 message: Message::text(Role::User, "hi"),
             },
-            extensions(entity_name, request_id),
+            extensions(entity_name, header),
             None,
         )
         .await;
@@ -86,7 +84,7 @@ async fn invoke(
 #[tokio::test]
 async fn a_deny_records_its_violation_code() {
     let mgr = engine().await;
-    let result = invoke(&mgr, "model-bad", Some("r1")).await;
+    let result = invoke(&mgr, "model-bad", Some((JOIN_HEADER, "r1"))).await;
     assert!(!result.continue_processing, "model-bad is denied");
     let decision = take("r1").expect("the deny is recorded");
     assert_eq!(decision.action, "deny");
@@ -96,7 +94,7 @@ async fn a_deny_records_its_violation_code() {
 #[tokio::test]
 async fn an_allow_records_an_empty_reason() {
     let mgr = engine().await;
-    let result = invoke(&mgr, "model-ok", Some("r2")).await;
+    let result = invoke(&mgr, "model-ok", Some((JOIN_HEADER, "r2"))).await;
     assert!(result.continue_processing, "model-ok is allowed");
     let decision = take("r2").expect("the allow is recorded");
     assert_eq!(decision.action, "allow");
@@ -104,17 +102,18 @@ async fn an_allow_records_an_empty_reason() {
 }
 
 #[tokio::test]
-async fn a_call_with_no_request_id_header_records_nothing() {
+async fn an_absent_or_empty_id_records_nothing_and_the_name_compare_ignores_case() {
     let mgr = engine().await;
-    // A handler that writes without the header would key on an empty id.
-    record(
-        "",
-        Decision {
-            action: "deny",
-            reason: "sentinel".to_owned(),
-        },
-    );
+    // A sink that wrote without an id would key on the empty string.
     let _ = invoke(&mgr, "model-ok", None).await;
-    let decision = take("").expect("the sentinel is still there");
-    assert_eq!(decision.reason, "sentinel", "the sink wrote with no id");
+    let _ = invoke(&mgr, "model-ok", Some((JOIN_HEADER, ""))).await;
+    assert!(take("").is_none(), "the sink wrote with no id");
+    // The proxy lowercases names in production; the sink must not depend on that.
+    let _ = invoke(
+        &mgr,
+        "model-bad",
+        Some(("X-Praxis-Cortex-Request-Id", "r3")),
+    )
+    .await;
+    assert_eq!(take("r3").expect("the sink found the name").action, "deny");
 }

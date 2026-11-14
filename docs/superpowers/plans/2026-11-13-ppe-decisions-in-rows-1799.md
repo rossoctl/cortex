@@ -109,7 +109,8 @@ Not in scope:
 8. **The first test is engine-level, not filter-level (T1).** `praxis-proxy-filter`'s
    request harness (`test_utils`) is `pub(crate)`, so a test in this repository cannot
    drive `PolicyFilter` with a request. The test loads the same policy document into a
-   `PolicyEngine` and invokes `http.request`. Reason: this runs the real engine, the real
+   `PolicyEngine` and invokes `cmf.llm_input`, the hook an `llm:` route dispatches on.
+   Reason: this runs the real engine, the real
    factory registration and the real verdict emit, which is the risk the issue names.
    The Go e2e test (T3) proves the live call through the real gateway binary.
 9. **The registration call goes just before the server starts (T1).** `main.rs` calls
@@ -146,8 +147,10 @@ Files:
   - `pub struct Decision { pub action: &'static str, pub reason: String }`.
   - A static store: `HashMap<String, Decision>` plus `VecDeque<String>` for insertion
     order, in one `Mutex`, with `std::sync::LazyLock`. The cap is 4096.
-  - `pub fn record(request_id: &str, decision: Decision)`.
-  - `pub fn take(request_id: &str) -> Option<Decision>`.
+  - `pub(crate) fn record(request_id: &str, decision: Decision)`. Residual risk: the id
+    must be unique per request. Two open requests that share an id share one entry, so a
+    deny can land on the other request's row. A `shortcut:` comment names the limit.
+  - `pub fn take(request_id: &str) -> Option<Decision>`. The integration test calls it.
   - `pub struct CortexRecorder { config: PluginConfig }`. Implement
     `Plugin::config(&self) -> &PluginConfig` and
     `Plugin::as_audit_handler(self: Arc<Self>) -> Option<Arc<dyn AuditHandler>>`,
@@ -191,15 +194,18 @@ Files:
           pre_invocation:
             - "deny('model is not permitted', 'model_not_allowed')"
     ```
-  - Imports: `praxis_policy::PolicyEngine`,
-    `praxis_policy::prelude::{Extensions, PluginFactory}`,
-    `praxis_policy::praxis_policy_core::http_hook::{HttpHook, HttpPayload}`. The facade
-    re-exports the whole `praxis_policy_core` crate, so this path is nameable with only
-    the `praxis-policy` dependency.
-  - Build `PolicyEngine::default()`, call
-    `register_factory(KIND, Box::new(CortexRecorderFactory))`, `load_config_yaml`,
-    `initialize().await`.
-  - Invoke `mgr.invoke_named::<HttpHook>("http.request", HttpPayload, extensions, None)`.
+  - Imports: `praxis_policy::{AplOptions, PolicyEngine, register_apl}`,
+    `praxis_policy::prelude::Extensions`,
+    `praxis_policy::praxis_policy_core::cmf::{CmfHook, Message, MessagePayload}`,
+    `praxis_policy::praxis_policy_core::cmf::enums::Role`. The facade re-exports the
+    whole `praxis_policy_core` crate, so this path is nameable with only the
+    `praxis-policy` dependency.
+  - Build `PolicyEngine::default()`, call `register_apl(&mgr, AplOptions::in_process())`
+    as `PolicyFilter::new` does, `register_factory(KIND, Box::new(CortexRecorderFactory))`,
+    `load_config_yaml`, `initialize().await`.
+  - Invoke `mgr.invoke_named::<CmfHook>("cmf.llm_input", MessagePayload { message:
+    Message::text(Role::User, "hi") }, extensions, None)`. An `llm:` route registers the
+    cmf hook, so `http.request` would run nothing.
     `extensions` is `Extensions` with `meta.entity_type = Some("llm".into())`,
     `meta.entity_name = Some("model-bad".into())` (or `"model-ok"`), and
     `http.request_headers` holding `(JOIN_HEADER, "r1")`. `HttpExtension` and
@@ -207,8 +213,8 @@ Files:
     `Option<Arc<..>>`.
   - Assert: `model-bad` gives a deny and `take("r1")` gives
     `{action: "deny", reason: "model_not_allowed"}`. `model-ok` gives an allow and a
-    second id gives `{action: "allow", reason: ""}`. A call with no request-id header
-    leaves the store empty.
+    second id gives `{action: "allow", reason: ""}`. A call with no id, or with an empty
+    one, leaves the store empty. A name in mixed case is still found.
   - Write this test before the rest of T1's code. If `handle` does not run on a deny,
     record that as a finding in the PR description and stop. Do not change the design.
 
