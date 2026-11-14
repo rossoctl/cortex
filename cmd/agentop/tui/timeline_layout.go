@@ -302,7 +302,7 @@ func tokPerSec(turns []timeline.Turn, agent string, fetched, now time.Time) (rat
 	var sumTok int
 	var sumDur time.Duration
 	var spans [][2]time.Time
-	var winEnd time.Time // the latest end among the counted turns
+	var full ivs // the counted model time, frozen once it reaches the window
 	for _, t := range mine {
 		tokens := t.LiveTokens
 		if t.End != nil {
@@ -313,9 +313,9 @@ func tokPerSec(turns []timeline.Turn, agent string, fetched, now time.Time) (rat
 			continue
 		}
 		// Once the counted model time reaches the window, only a turn that reaches into it
-		// counts. The loop continues past the first turn that does not, because ends are not in
-		// start order: a turn counted already may end before a later-sorted one.
-		if sumDur >= tokPerSecWindow && !e.After(winEnd.Add(-tokPerSecWindow)) {
+		// counts. The loop continues past the first turn that does not, because a turn counted
+		// already may end before a later-sorted one.
+		if full != nil && full.cover(t.Start, e) == 0 {
 			continue
 		}
 		sumTok += tokens
@@ -324,7 +324,9 @@ func tokPerSec(turns []timeline.Turn, agent string, fetched, now time.Time) (rat
 		v := newIvs(spans)
 		sumDur = v.cover(v[0][0], v[len(v)-1][1])
 		live = live || t.End == nil
-		winEnd = tlMaxTime(winEnd, e)
+		if full == nil && sumDur >= tokPerSecWindow {
+			full = v
+		}
 	}
 	if sumDur <= 0 {
 		return 0, false, false

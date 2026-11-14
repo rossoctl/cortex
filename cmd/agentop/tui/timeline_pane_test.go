@@ -1523,6 +1523,17 @@ func TestTimelineTokPerSec_ConcurrentTurnsAtTheWindow(t *testing.T) {
 	if rate, live, ok := tokPerSec(turns, m, time.Time{}, tlAt(190)); !near(rate, 100) || !live || !ok {
 		t.Errorf("tokPerSec = %v, %v, %v, want 100, true, true", rate, live, ok)
 	}
+	// A tool gap between the counted turns moves the window back in wall time: C runs through
+	// B's span, so it reaches the counted model time and its tokens count, though it ends
+	// before the wall-clock 60 s of A's end. A+B is 60 s of model time with a 70 s gap.
+	turns = []timeline.Turn{
+		{Agent: m, Start: tlAt(1000), End: tlPtr(1030), OutputTokens: 3000}, // A
+		{Agent: m, Start: tlAt(900), End: tlPtr(930), OutputTokens: 3000},   // B
+		{Agent: m, Start: tlAt(890), End: tlPtr(950), OutputTokens: 6000},   // C
+	}
+	if rate, _, ok := tokPerSec(turns, m, time.Time{}, tlAt(1100)); !near(rate, 12000.0/90) || !ok {
+		t.Errorf("tokPerSec = %v, %v, want %v, true", rate, ok, 12000.0/90)
+	}
 }
 
 // A finished subagent keeps the rate of its last turns, however long ago they ended.
