@@ -72,6 +72,8 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 		{name: "main", latest: "v9.9.9", args: []string{"--ref=main"}, want: "installer: --ref=main\n", code: 7},
 		// setup repairs a pair that disagree.
 		{name: "cortex behind", latest: "v9.9.9", release: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", want: "staged setup\n", code: 7},
+		// A cpex cortex at the newest tag still gets the default build.
+		{name: "cpex at the tag", latest: "v9.9.9", release: "v9.9.9", cortex: "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n", want: cpexUpdateNotice + "\nstaged setup\n", code: 7},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sc := newDoctorScene(t)

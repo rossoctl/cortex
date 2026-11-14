@@ -294,7 +294,8 @@ func updateFlags(env *setupEnv, ref string, yes bool) []string {
 // and it is the release ref names, or latest when ref is "". It is ""
 // otherwise, and when latest is "" (not read): the installer then
 // runs, and finds the answer or the error itself. --ref=main is never current,
-// as no release reports "main" as its version.
+// as no release reports "main" as its version. A cpex cortex is never current,
+// so that the default build replaces it at its own version.
 func currentRelease(env *setupEnv, ref, latest string) string {
 	env.readVersions()
 	v := env.installedVersion
@@ -305,6 +306,9 @@ func currentRelease(env *setupEnv, ref, latest string) string {
 		ref = latest
 	}
 	if ref != v {
+		return ""
+	}
+	if installedIsCpex(filepath.Join(env.binDir, proxyBinary)) {
 		return ""
 	}
 	return v

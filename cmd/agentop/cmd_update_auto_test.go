@@ -97,6 +97,8 @@ var autoUpdateRows = []autoRow{
 	{name: "check-failed time", latest: "v9.9.10", want: updatestatus.ResultCheckFailed},
 	{name: "updated", latest: "v9.9.10", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
 	{name: "failed", latest: "v9.9.10", age: 25 * time.Hour, fail: errors.New("installer broke"), want: updatestatus.ResultFailed, ran: true},
+	// A cpex cortex reports the tag too, and is not current.
+	{name: "cpex current", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex (cpex) v9.9.9\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
 	// A half-done swap is repaired, not reported as current.
 	{name: "mismatch", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
 	// The kill switch: Latest moved back.
