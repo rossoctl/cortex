@@ -74,8 +74,10 @@ routes:
         - "deny('model is not permitted', 'model_not_allowed')"
 ```
 
-This policy denies the MCP tool `read_file` and every other tool. The first `llm:`
-route admits inference requests, which carry no MCP method:
+This policy permits the MCP tool `read_file` and denies every other tool. The
+`tool: read_file` route holds a guard that never denies. PPE route selection uses
+specificity, so this route outranks `tool: "*"`. To deny `read_file`, remove its
+route. The first `llm:` route admits inference requests, which carry no MCP method:
 
 ```yaml policy
 routes:
