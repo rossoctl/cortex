@@ -30,10 +30,12 @@ Not in scope:
 - The gateway registers two HTTP filters, `cortex_attribution` and `cortex_observe`
   (`praxis/server/src/main.rs`). `cortex_observe` writes the request row and one response
   row.
-- `cortex_observe` reads the join header `X-Cortex-Request-Id`
-  (`REQUEST_ID_HEADER`, `praxis/filters/src/filters/observe.rs`). `cortex_attribution`
-  removes the hop headers only before the upstream, so the header is still present when
-  `policy` runs.
+- `cortex_observe` reads the id from `X-Cortex-Request-Id`, or from the filter context
+  when the header is absent (`REQUEST_ID_HEADER`,
+  `praxis/filters/src/filters/observe.rs`). It sets the id again in the reserved
+  `x-praxis-cortex-request-id` header (`JOIN_HEADER`), because the proxy strips the hop
+  headers before `policy` runs. The proxy strips every `x-praxis-*` header before the
+  upstream, and admission refuses a client that sends a reserved name.
 - `cortex_observe::submit` is the one place that sends a `Line` to the emitter. Three
   call sites use it: `on_request_body` (request row), `finish` (response row), and
   `emit_deferred_record` (response row).
@@ -115,6 +117,15 @@ Not in scope:
    comment. Reason: the policy filter is constructed during startup, so the registration
    must come first.
 10. **One PR.** The estimated counted lines are about 720, below the 2000 limit.
+11. **The join id also goes in the reserved `x-praxis-cortex-request-id` header
+    (T1/T2).** The proxy removes the hop headers before the policy filter runs, so the
+    recorder cannot see `x-cortex-request-id` on the live path. `cortex_observe` sets
+    `JOIN_HEADER` for the policy filter, and the recorder falls back to the hop header.
+    praxis-proxy-core 0.8.0 lists `x-praxis-` in `RESERVED_HEADER_PREFIXES`, strips
+    these headers from the upstream request, and admission refuses a client that sends a
+    reserved name. Residual risk: a praxis upgrade that stops passing filter-set headers
+    to later filters, or stops stripping `x-praxis-*` before the upstream, empties
+    `invocations` again. Only the T3 e2e test guards this.
 
 ## Tasks
 
@@ -141,9 +152,10 @@ Files:
     `Plugin::as_audit_handler(self: Arc<Self>) -> Option<Arc<dyn AuditHandler>>`,
     which returns `Some(self)`. `AuditHandler::handle` is
     `async fn handle(&self, _payload: &dyn PluginPayload, ext: &Extensions, log: &DecisionLog)`:
-    - read `x-cortex-request-id` from `ext.http.request_headers` with a
-      case-insensitive key compare. Return with no write when the header is absent or
-      empty.
+    - read `x-praxis-cortex-request-id`, then `x-cortex-request-id`, from
+      `ext.http.request_headers` with a case-insensitive key compare. The reserved copy
+      is the live path; the hop header keeps the direct engine test valid. Return with
+      no write when neither header is present or empty.
     - `DecisionLog::verdict()`: a `Deny(v)` gives
       `action: "deny", reason: v.code`. Any other verdict gives
       `action: "allow", reason: String::new()`.
@@ -156,6 +168,10 @@ Files:
     - A deny replaces an allow.
     - A take empties the entry.
     - The 4097th id evicts the first.
+- `praxis/filters/src/filters/observe.rs`: in `on_request_head`, push the id into
+  `ctx.request_headers_to_set` as `x-praxis-cortex-request-id` (`JOIN_HEADER`). The
+  policy filter runs after the proxy removes the hop headers, so the recorder needs this
+  reserved copy. Keep the id also on the hop header, as it is today.
 - `praxis/server/src/main.rs`: before `praxis::run_server_with_registry`, call
   `praxis_filter::register_policy_plugin_factory(cortex_praxis_filters::policy_recorder::KIND, std::sync::Arc::new(|| Box::new(cortex_praxis_filters::policy_recorder::CortexRecorderFactory)))`.
 - `praxis/filters/tests/policy_recorder.rs` (new): the engine test.
@@ -193,6 +209,8 @@ Files:
     `{action: "deny", reason: "model_not_allowed"}`. `model-ok` gives an allow and a
     second id gives `{action: "allow", reason: ""}`. A call with no request-id header
     leaves the store empty.
+  - A second test sets only `x-praxis-cortex-request-id` (`JOIN_HEADER`) and proves the
+    reserved copy is read. This is the live path; the hop-header test above stays.
   - Write this test before the rest of T1's code. If `handle` does not run on a deny,
     record that as a finding in the PR description and stop. Do not change the design.
 
