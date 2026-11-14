@@ -328,11 +328,11 @@ func TestFailClosed_TransparentShortPeekIsBridged(t *testing.T) {
 	<-done
 
 	open, closed := onePair(t, store, session.DefaultSessionID)
-	if open.TunnelReason == pipeline.TunnelRefusedNonTLS {
-		t.Errorf("open reason = %q, want the handshake's failure", open.TunnelReason)
+	if open.TunnelReason != pipeline.TunnelClientHungUp || closed.TunnelReason != pipeline.TunnelClientHungUp {
+		t.Errorf("reasons = {open %q, close %q}, want %q", open.TunnelReason, closed.TunnelReason, pipeline.TunnelClientHungUp)
 	}
-	if closed.Error == nil || closed.Error.Kind != "tls_handshake" {
-		t.Errorf("close error = %+v, want tls_handshake", closed.Error)
+	if closed.StatusCode != http.StatusOK || closed.Error == nil || closed.Error.Kind != "tls_handshake" {
+		t.Errorf("close = {status %d, error %+v}, want {200, tls_handshake}", closed.StatusCode, closed.Error)
 	}
 }
 
