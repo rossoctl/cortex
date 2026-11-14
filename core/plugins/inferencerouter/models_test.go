@@ -415,15 +415,21 @@ func TestInit_FetchesEachServersModelsAndKeepsThem(t *testing.T) {
 	}
 	defer func() { _ = r.Shutdown(context.Background()) }()
 
+	// Wait for the durable copy: the fetch writes it after the in-memory one, so
+	// seeing it in the store means both are done.
 	deadline := time.Now().Add(5 * time.Second)
-	for routerconfig.Resolve("glm", r.catalogs.get("glm")) != "rits/zai-org/glm-6" {
+	for {
+		v, _ := st.Get(context.Background(), catalogPrefix+"glm")
+		if strings.Contains(v, "glm-6") {
+			break
+		}
 		if time.Now().After(deadline) {
-			t.Fatalf("list = %v, want the fetched one", r.catalogs.get("glm"))
+			t.Fatalf("stored list = %s, want the fetched one kept", v)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if v, _ := st.Get(context.Background(), catalogPrefix+"glm"); !strings.Contains(v, "glm-6") {
-		t.Errorf("stored list = %s, want the fetched one kept", v)
+	if got := routerconfig.Resolve("glm", r.catalogs.get("glm")); got != "rits/zai-org/glm-6" {
+		t.Errorf("list = %v, want the fetched one", r.catalogs.get("glm"))
 	}
 }
 
