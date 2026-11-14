@@ -539,6 +539,31 @@ func TestTimelineRefresh(t *testing.T) {
 	if !m.timeline.loading {
 		t.Errorf("a live session idle for %v was not refetched", timelineIdleRefresh)
 	}
+	// Live with a response in flight: refetched on every tick, however recently it last fetched,
+	// so the tok/s read off its live estimate does not step once per idle interval. The last
+	// fetch finished a moment ago: a reply arrives after the tick that asked for it, so the next
+	// tick is always short of a full timelineRefresh.
+	m = timelineModel(t, 120, 40)
+	m.client = deadClient()
+	m.now = func() time.Time { return live }
+	m.timeline.tl.Turns = append(m.timeline.tl.Turns, timeline.Turn{Agent: timeline.MainAgent, Start: live.Add(-5 * time.Second)})
+	m.timeline.fetchedAt = live.Add(-time.Millisecond)
+	m.timeline.tickGen = 1
+	m.handleTimelineTick(timelineTickMsg{gen: 1})
+	if !m.timeline.loading {
+		t.Errorf("a live session with a response in flight was not refetched on the tick after a fetch")
+	}
+	// A lost turn is not in flight: its stream died, so no refetch until the idle interval passes.
+	m = timelineModel(t, 120, 40)
+	m.client = deadClient()
+	m.now = func() time.Time { return live }
+	m.timeline.tl.Turns = append(m.timeline.tl.Turns, timeline.Turn{Agent: timeline.MainAgent, Start: tlAt(1825), End: tlPtr(1825), Lost: true})
+	m.timeline.fetchedAt = live.Add(-time.Millisecond)
+	m.timeline.tickGen = 1
+	m.handleTimelineTick(timelineTickMsg{gen: 1})
+	if m.timeline.loading {
+		t.Errorf("a live session whose only open turn was lost was refetched early")
+	}
 	// Ended: no refetch without events.
 	m = timelineModel(t, 120, 40)
 	m.client = deadClient()

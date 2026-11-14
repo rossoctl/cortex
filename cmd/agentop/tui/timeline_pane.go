@@ -33,7 +33,8 @@ import (
 const timelineRefresh = time.Second
 
 // timelineIdleRefresh is how often a live session with no new events is refetched anyway:
-// spans in flight grow and the window slides even when nothing new is recorded.
+// spans in flight grow and the window slides even when nothing new is recorded. A session with
+// a response in flight is refetched every tick instead, see openTurn.
 const timelineIdleRefresh = 10 * time.Second
 
 // timelineReadTimeout bounds one refresh. timelineFirstReadTimeout bounds the first fetch of a
@@ -249,7 +250,11 @@ func (m *model) handleTimelineTick(msg timelineTickMsg) tea.Cmd {
 	t := &m.timeline
 	var fetch tea.Cmd
 	now := m.clock()
-	idle := !t.fetchedAt.IsZero() && now.Sub(t.fetchedAt) >= timelineIdleRefresh && m.timelineLive()
+	// A response in flight is refetched every tick: its live token estimate only a refetch
+	// grows, and the tick period is timelineRefresh. Its check must not be time-based, because
+	// fetchedAt is when the last reply arrived, one request time after the tick that fetched it:
+	// comparing against timelineRefresh would skip that next tick and halve the rate.
+	idle := m.timelineLive() && (t.openTurn() || (!t.fetchedAt.IsZero() && now.Sub(t.fetchedAt) >= timelineIdleRefresh))
 	// A failed fetch is retried on its backoff, and holds back the other triggers until then: a
 	// stream event or a live session's idle refresh would otherwise retry a dead proxy every tick.
 	unsupported := errors.Is(t.err, errTimelineUnsupported)
@@ -269,6 +274,18 @@ func (m *model) handleTimelineTick(msg timelineTickMsg) tea.Cmd {
 func (m *model) timelineLive() bool {
 	t := &m.timeline
 	return t.tl != nil && m.clock().Sub(t.tl.End) <= timelineLiveFor
+}
+
+// openTurn reports a response in flight, whose live token estimate only a refetch grows. The
+// caller has checked tl is set. A lost turn is not one: its stream died, and no refetch makes
+// its estimate grow.
+func (t *timelineState) openTurn() bool {
+	for _, tu := range t.tl.Turns {
+		if tu.End == nil && !tu.Lost {
+			return true
+		}
+	}
+	return false
 }
 
 // timelineKey handles the pane's own keys; false leaves the key to the global handlers.
