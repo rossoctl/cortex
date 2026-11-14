@@ -383,6 +383,7 @@ git commit -s -m "feat: Move a cpex install to the default build on agentop upda
 - Modify: `README.md:118`
 - Modify: `.github/CLAUDE.md:61-67`
 - Modify: `scripts/profile-tags/profiles.go:48`
+- Modify: `core/plugins/cpex/README.md:7,63,635-640,648` — it tells the reader to run `make cortex-cpex`
 
 **Interfaces:**
 - Consumes: nothing at build time. It copies these two strings, written here:
@@ -415,7 +416,7 @@ File by file:
 
 - [ ] **Step 3: Verify the docs agree with the code**
 
-Run: `grep -rn "make cortex-cpex\|install.sh --cpex\|sh -s -- --cpex" README.md cmd/README.md docs/*.md .github/CLAUDE.md Makefile scripts/profile-tags/profiles.go`
+Run: `grep -rn "make cortex-cpex\|install.sh --cpex\|sh -s -- --cpex" README.md cmd/README.md docs/*.md core/plugins/cpex/README.md .github/CLAUDE.md Makefile scripts/profile-tags/profiles.go`
 Expected: no line. The removed flag may still appear in a sentence that says it is removed.
 
 Run: `grep -rn -i "cortex-cpex_" README.md cmd/README.md docs/*.md .github/CLAUDE.md`
@@ -427,7 +428,7 @@ Expected: every reference resolves. `docs/praxis-policy.md` must exist in the ba
 - [ ] **Step 4: Commit**
 
 ```bash
-git add Makefile docs/cpex-plugin.md docs/laptop-service.md docs/plugin-catalog.md cmd/README.md README.md .github/CLAUDE.md scripts/profile-tags/profiles.go
+git add Makefile docs/cpex-plugin.md docs/laptop-service.md docs/plugin-catalog.md cmd/README.md README.md .github/CLAUDE.md scripts/profile-tags/profiles.go core/plugins/cpex/README.md
 git commit -s -m "docs: State that the laptop cpex build is removed"
 ```
 

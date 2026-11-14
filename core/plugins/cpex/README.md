@@ -4,7 +4,7 @@
 > the AuthBridge proxy-sidecar — `cortex` built with cgo and the `cpex` tag —
 > deployed *in place of* the `authbridge` image, not as an additional sidecar.
 > The operator selects the image when CPEX policy enforcement is needed for a
-> workload. `make cortex-cpex` builds the same variant for a laptop.
+> workload. No release publishes this variant for a laptop.
 
 The CPEX plugin routes AuthBridge pipeline hooks through the [CPEX](https://github.com/contextforge-org/cpex) framework,
 so operators can define authorization flows inline and declaratively, and turn decisions into ordered effects (including invoking CPEX plugins).
@@ -60,7 +60,7 @@ the plugin and ship a policy update later.
 
 The CPEX backend uses cgo and links `libcpex_ffi.a`. Only `cortex` built with
 `-tags cpex` and an `include_plugin_cpex` profile (`cpex` for the
-`authbridge-cpex` image, `fullcpex` for `make cortex-cpex`) links it; other
+`authbridge-cpex` image, `fullcpex` for a cgo build of it) links it; other
 builds do not register the plugin, so a config naming it fails at boot with an
 unknown-plugin error rather than running a silent no-op. The package itself
 compiles tag-free for unit tests via a fake manager, so
@@ -635,9 +635,6 @@ CGO_ENABLED=1 CGO_LDFLAGS="-L$FFI" go -C core test -tags cpex ./plugins/cpex/...
 podman build -f cmd/cortex-cpex/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . cpex)" \
   -t authbridge-cpex:latest .
-
-# Build cortex with cpex for this host, to ./bin/cortex-cpex/cortex
-make cortex-cpex
 ```
 
 The tagged run also loads every CPEX policy in this README and in
@@ -645,7 +642,7 @@ The tagged run also loads every CPEX policy in this README and in
 `CPEX_FFI_VERSION` is the CPEX release tag, `CPEX_FFI_ABI` the FFI ABI integer,
 and `CPEX_FFI_SHA256` the digest of each target's tarball. On macOS, set
 `MACOSX_DEPLOYMENT_TARGET` to the SDK version (`xcrun --show-sdk-version`) if
-the linker warns that objects target a newer macOS; `make cortex-cpex` does.
+the linker warns that objects target a newer macOS.
 
 ## See also
 
