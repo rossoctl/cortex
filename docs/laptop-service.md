@@ -58,6 +58,9 @@ else in the file:
 curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --praxis
 ```
 
+To put a policy in the gateway, read
+[policy in praxis mode](praxis-policy.md).
+
 When you change `praxis.enabled` by hand in either direction, run
 `agentop service install --restart`. To turn praxis mode off, set
 `praxis.enabled: false` in `~/.cortex/config.yaml` first. `restart` alone does not

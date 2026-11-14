@@ -53,6 +53,10 @@ The config path comes from `-c <path>`, then `PRAXIS_CONFIG`, then
 writes `gateway.yaml` and starts the gateway (#1720). To run the gateway by
 hand, write the file yourself.
 
+A policy needs `praxis.policy.config_path` in `config.yaml`. The supervisor writes
+the `policy` filter into `gateway.yaml` from that path. See
+[policy in praxis mode](../docs/praxis-policy.md).
+
 `--exit-on-stdin-eof` makes the gateway exit when its stdin closes. The
 supervisor uses it. Without the flag, a gateway that you start with
 `</dev/null` keeps running.
