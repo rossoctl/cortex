@@ -187,7 +187,10 @@ routes:
   `resource:` route stops the policy from loading. A request-side rewrite such as
   `args.ssn: redact(...)` also has no effect. A `post_invocation` step on an `http:`
   route or under `global:` runs at the response header phase, which carries no
-  completion. Put a check on a completion in a `pre_invocation` step.
+  completion. No rule in this gateway reads the response body of the request it
+  judges. A `pre_invocation` step sees only the request, so state the limit there as a
+  deny. A request that sets no cap writes no `llm.input.max_tokens`, so a rule on that
+  fact does not catch it.
 - A body with no readable `model` takes no `llm:` route. The gateway sets
   `llm.require_model: false` (`cmd/cortex/gateway.go`), so PPE runs the policy's HTTP
   admission on it: a matching `http:` route, or else the `global` rules. A policy with
