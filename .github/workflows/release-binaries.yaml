@@ -219,7 +219,9 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       TARGET_OS: ${{ matrix.os }}
       TARGET_ARCH: ${{ matrix.arch }}
-      # Run with `docker run`, not as a job container, for the reason ALPINE_GO gives.
+      # Run with `docker run`, not as a job container: GitHub's runner cannot run
+      # JavaScript actions (checkout, upload-artifact) inside an Alpine container on
+      # arm64.
       RUST_ALPINE: docker.io/library/rust:1.96.0-alpine@sha256:f87aa870663e2b57ec8c69de82c7eedf7383bee987eef7612c0359635eaadb41
       # Clean hosts for the built binary: musl with no build tools, and no libc and
       # no OpenSSL at all. Plain alpine ships libssl3, so it is not the second one.
