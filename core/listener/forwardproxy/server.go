@@ -942,6 +942,10 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	} else {
 		resp.Body = bodycount.Wrap(resp.Body, &pctx.ResponseBytes)
 	}
+	// The Timeline reads the live count to estimate the tokens of an open turn (#1861).
+	if s.Sessions != nil && pctx.Extensions.Inference != nil {
+		defer s.Sessions.TrackStream(pctx.RequestID(), &pctx.ResponseBytes)()
+	}
 
 	// SkipHosts: bypass response-phase pipeline + recording entirely.
 	// Stream the upstream body straight through to the caller. Falls

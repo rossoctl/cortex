@@ -44,6 +44,9 @@ type wsOrigin struct {
 	sawExtensions string
 	// answer, when set, is the events the origin sends for turn n instead of turnEvents.
 	answer func(n int) []string
+	// pause, when set, runs after each event the origin writes, so a test can hold a turn
+	// open mid-stream.
+	pause func()
 }
 
 // wsHost is the name the origin is addressed by. It must be one of OpenAI's: the
@@ -142,6 +145,9 @@ func (o *wsOrigin) serve(conn net.Conn, br *bufio.Reader) {
 		o.mu.Unlock()
 		for _, ev := range events(turn) {
 			_, _ = conn.Write(wsframe.Encode(wsframe.OpText, []byte(ev), false))
+			if o.pause != nil {
+				o.pause()
+			}
 		}
 	}
 }
@@ -489,6 +495,76 @@ func TestResponsesWebSocket_TurnsAreParsedLikeHTTPS(t *testing.T) {
 	// Turns sit between the socket's open and close in the timeline.
 	if !(opens[0].Seq < turns[0].Seq && turns[3].Seq < closes[0].Seq) {
 		t.Errorf("order: open %d, turns %d..%d, close %d", opens[0].Seq, turns[0].Seq, turns[3].Seq, closes[0].Seq)
+	}
+}
+
+// A parsed turn is an open inference response like any other, so the store publishes its live byte
+// count while it streams and drops it when the turn ends (#1861).
+func TestResponsesWebSocket_OpenTurnPublishesItsLiveCount(t *testing.T) {
+	h := newWSHarness(t, config.ResponsesWebSocketsParse)
+	held, release := make(chan struct{}), make(chan struct{})
+	var holdOnce, relOnce sync.Once
+	rel := func() { relOnce.Do(func() { close(release) }) }
+	t.Cleanup(rel) // before the harness's cleanup, which waits on the origin
+	// Hold the turn open after its first event, so the client has read part of it.
+	h.origin.pause = func() {
+		holdOnce.Do(func() { close(held); <-release })
+	}
+
+	c := h.dial(t, nil)
+	if c.status != http.StatusSwitchingProtocols {
+		t.Fatalf("handshake answered %d (%s), want 101", c.status, c.body)
+	}
+	defer c.close()
+	c.send(responseCreate("hello"))
+	select {
+	case <-held:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the origin did not write the turn's first event")
+	}
+
+	// The turn's own request row names the stream, as an HTTPS request's does.
+	var id string
+	deadline := time.Now().Add(5 * time.Second)
+	for id == "" && time.Now().Before(deadline) {
+		if v := h.store.View(codexSID); v != nil {
+			for _, e := range v.Events {
+				if e.Phase == pipeline.SessionRequest && !e.Tunnel {
+					id = e.RequestID
+				}
+			}
+		}
+		if id == "" {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if id == "" {
+		t.Fatal("the turn recorded no request row")
+	}
+	// The first frame reached the client, so it is counted: a permanent zero must fail here.
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if n, ok := h.store.StreamBytes(id); ok && n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			n, ok := h.store.StreamBytes(id)
+			t.Fatalf("StreamBytes(%q) = (%d, %v) with a frame relayed, want a positive count", id, n, ok)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	rel()
+	c.readUntil("response.completed")
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := h.store.StreamBytes(id); !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("StreamBytes(%q) still answers after the turn ended", id)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

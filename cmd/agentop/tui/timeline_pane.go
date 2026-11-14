@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -332,7 +333,7 @@ func (m *model) moveTimelineCursor(d int) {
 	}
 }
 
-// The label column and the right gutter, "│  1.6h    29m    316".
+// The label column and the right gutter, "│  1.6h    29m     85".
 const (
 	timelineLabelWidth  = 26
 	timelineGutterWidth = 22
@@ -380,7 +381,7 @@ func (m *model) timelineLayoutNow() (tlLayout, bool) {
 	// now is rounded to the refresh interval, so a redraw within it reuses the layout.
 	key := tlLayoutKey{tl: t.tl, window: win, cells: m.timelineCells(), from: from, now: now}
 	if key != t.layoutKey {
-		t.layout, t.layoutKey = buildTimelineLayout(t.tl, from, to, key.cells, now), key
+		t.layout, t.layoutKey = buildTimelineLayout(t.tl, from, to, key.cells, t.fetchedAt, now), key
 		// A narrower layout can leave the cursor past its end, or on what is now a gap.
 		if c := t.cursor; c >= t.layout.axis.width() || (c >= 0 && t.layout.axis.cells[c].gap) {
 			t.cursor = -1
@@ -390,9 +391,14 @@ func (m *model) timelineLayoutNow() (tlLayout, bool) {
 }
 
 // The pane's fixed lines: tabs, axis, column heads, the separator, the closing rule, the
-// legend and the cursor line. Each agent and host row takes two lines, its own and the blank
-// one that keeps a row's bars off the next row's.
-const timelineFixedLines = 7
+// legend's lines and the cursor line. Each agent and host row takes two lines, its own and the
+// blank one that keeps a row's bars off the next row's.
+const (
+	timelineFixedLines = 8
+	// timelineLegendLines is how many lines legend draws. The tok/s note has a line of its own,
+	// so it is not cut at a width where the chart itself still fits.
+	timelineLegendLines = 2
+)
 
 // tlEmptyLines is what an empty side draws in place of its rows: a note and a blank line.
 func tlEmptyLines(lay tlLayout) int {
@@ -406,14 +412,19 @@ func tlEmptyLines(lay tlLayout) int {
 	return n
 }
 
-// timelineRowBudget is how many two-line rows fit under the fixed lines and any empty side's
-// note. A body too short for the legend drops it; see renderTimeline.
-func (m *model) timelineRowBudget(lay tlLayout) int {
+// timelineFixed is the pane's fixed line count, less the legend when the body is too short for
+// it. A body too short for the legend drops it; see renderTimeline.
+func (m *model) timelineFixed(lay tlLayout) int {
 	fixed := timelineFixedLines + tlEmptyLines(lay)
 	if m.bodyHeight < timelineFixedLines+2*4 {
-		fixed-- // no legend
+		fixed -= timelineLegendLines
 	}
-	return max((m.bodyHeight-fixed)/2, 0)
+	return fixed
+}
+
+// timelineRowBudget is how many two-line rows fit under the fixed lines and any empty side's note.
+func (m *model) timelineRowBudget(lay tlLayout) int {
+	return max((m.bodyHeight-m.timelineFixed(lay))/2, 0)
 }
 
 // timelineAgentRows is how many agent rows fit, sharing the body with the host rows: hosts get
@@ -691,7 +702,7 @@ func (m *model) renderTimeline() string {
 	// The chart needs its fixed lines, any empty side's note and one row; below that, say so
 	// rather than run past the terminal.
 	lay, _ := m.timelineLayoutNow()
-	if m.bodyHeight < timelineFixedLines+tlEmptyLines(lay)+1 {
+	if m.bodyHeight < m.timelineFixed(lay)+1 {
 		b.WriteString(styleMuted.Render("  make the terminal taller to see the timeline"))
 		return b.String()
 	}
@@ -707,7 +718,7 @@ func (m *model) renderTimeline() string {
 	fmt.Fprintf(&b, "%s  %s\n", styleTitle.Render("window "+strings.Join(tabs, " ")), styleMuted.Render(m.timelineStatus(lay)))
 	width := lay.axis.width()
 	b.WriteString(strings.Repeat(" ", timelineLabelWidth) + styleMuted.Render(axisLabels(lay)) + "\n")
-	b.WriteString(strings.Repeat(" ", timelineLabelWidth+width) + styleMuted.Render("   model  tools  calls") + "\n")
+	b.WriteString(strings.Repeat(" ", timelineLabelWidth+width) + styleMuted.Render("   model  tools  tok/s") + "\n")
 
 	agentRows := m.timelineAgentRows(lay)
 	agentOff, hostOff := m.timelineOffsets(lay)
@@ -752,7 +763,8 @@ func (m *model) legend() string {
 	}
 	return sw(colorTLTool, "tools") + sw(colorTLModel, "model") + sw(colorTLRetry, "retrying") +
 		sw(colorTLSubs, "waiting on subagents") + sw(colorTLUser, "waiting on you") +
-		styleMuted.Render("┆ time cut from the axis, in its colour   ▁…█ requests in flight")
+		styleMuted.Render("┆ time cut from the axis, in its colour   ▁…█ requests in flight") + "\n" +
+		styleMuted.Render("  tok/s output per second of model time, last 60 s")
 }
 
 func (m *model) timelineStatus(lay tlLayout) string {
@@ -873,10 +885,17 @@ func (m *model) agentLine(r tlAgentRow, lay tlLayout) string {
 		}
 		b.WriteString(m.cursorAt(c, g))
 	}
-	fmt.Fprintf(&b, "%s%s%s%s", styleMuted.Render("│"),
+	fmt.Fprintf(&b, "%s%s%s", styleMuted.Render("│"),
 		lipgloss.NewStyle().Foreground(colorTLModel).Render(fmt.Sprintf("%6s", tlDuration(r.modelTime))),
-		lipgloss.NewStyle().Foreground(colorTLTool).Render(fmt.Sprintf("%7s", tlDuration(r.toolTime))),
-		styleMuted.Render(fmt.Sprintf("%7d", r.calls)))
+		lipgloss.NewStyle().Foreground(colorTLTool).Render(fmt.Sprintf("%7s", tlDuration(r.toolTime))))
+	rate, st := "", styleMuted
+	if r.hasRate {
+		rate = strconv.FormatFloat(r.tokPerSec, 'f', 0, 64)
+	}
+	if r.live {
+		st = lipgloss.NewStyle().Foreground(colorTLModel)
+	}
+	b.WriteString(st.Render(fmt.Sprintf("%7s", rate)))
 	return b.String()
 }
 

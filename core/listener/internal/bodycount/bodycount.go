@@ -11,16 +11,19 @@
 // every arm downstream read through the wrapper.
 package bodycount
 
-import "io"
+import (
+	"io"
+	"sync/atomic"
+)
 
 // Wrap returns rc with the length of every successful read added to *n. The
 // pointer is a pipeline.Context field at both call sites: the arms that consume
 // the body are several frames below the wrap, and the record site is above it
 // again, so there is nowhere to thread a return value through.
 //
-// Not safe for concurrent reads, which is not a constraint in practice: a
-// response body is read by the one goroutine serving its request, and that is the
-// goroutine that records the row.
+// The count is added atomically, so another goroutine can read *n with
+// atomic.LoadInt64 while the body streams (the Timeline does, #1861). Reads of
+// the body itself are for one goroutine only: the one that serves the request.
 func Wrap(rc io.ReadCloser, n *int64) io.ReadCloser {
 	return &countingBody{rc: rc, n: n}
 }
@@ -47,7 +50,7 @@ type countingBody struct {
 // which is the figure the 502 it produces is worth reading next to.
 func (c *countingBody) Read(p []byte) (int, error) {
 	n, err := c.rc.Read(p)
-	*c.n += int64(n)
+	atomic.AddInt64(c.n, int64(n))
 	if c.keep != nil && n > 0 {
 		room := c.max - len(*c.keep)
 		if n > room {

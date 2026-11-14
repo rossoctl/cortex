@@ -728,8 +728,9 @@ func TestSetupDrawsNoLogoUnlessARunWorked(t *testing.T) {
 }
 
 // ready in counts the time the changes took, from the answer at the prompt: not the
-// time spent reading the list of them before it. The apply takes under a second here,
-// race detector included, so a ready in past the prompt's 2.5s can only be counting it.
+// time spent reading the list of them before it. So ready in is at most the run's wall
+// time less the 2.5s at the prompt. A fixed bound flaked: under shard load the apply
+// alone can take more than 2.5s.
 func TestSetupReadyInLeavesOutThePrompt(t *testing.T) {
 	const atThePrompt = 2500 * time.Millisecond
 	sc := newSetupScene(t, ok200)
@@ -737,12 +738,15 @@ func TestSetupReadyInLeavesOutThePrompt(t *testing.T) {
 	saved := setupConfirm
 	setupConfirm = func(io.Writer) bool { time.Sleep(atThePrompt); return true }
 	t.Cleanup(func() { setupConfirm = saved })
+	start := time.Now()
 	code, out := sc.run(t, "--from", sc.stage)
+	wall := time.Since(start)
 	m := regexp.MustCompile(`\n    v9\.9\.9 ready in (\d+\.\d)s\n`).FindStringSubmatch(onScreen(out))
 	if code != 0 || m == nil {
 		t.Fatalf("exit %d, no ready in:\n%s", code, onScreen(out))
 	}
-	if took, _ := strconv.ParseFloat(m[1], 64); took >= atThePrompt.Seconds() {
-		t.Errorf("ready in %ss counts the %v at the prompt", m[1], atThePrompt)
+	// 0.05s is the rounding of ready in to one decimal.
+	if took, _ := strconv.ParseFloat(m[1], 64); took > (wall-atThePrompt).Seconds()+0.05 {
+		t.Errorf("ready in %ss counts the %v at the prompt (run took %v)", m[1], atThePrompt, wall)
 	}
 }

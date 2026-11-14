@@ -43,6 +43,8 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 				http.NotFound(w, r)
 				return
 			}
+			// Live bytes change with no new event, so they go on this copy and not into the cache.
+			tl.FillLive(s.store.StreamBytes)
 			tl.Clip(from, to)
 			w.Header().Set("Content-Type", "application/json")
 			if err := json.NewEncoder(w).Encode(tl); err != nil {

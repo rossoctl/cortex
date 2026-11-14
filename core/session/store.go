@@ -224,6 +224,12 @@ type Store struct {
 	// recorders are notified of every appended event. Registered at setup via
 	// AddRecorder, before the store serves traffic.
 	recorders []Recorder
+
+	// streams holds the live byte counter of each open inference response, by
+	// request ID (see TrackStream). It has its own lock so that the hot path
+	// does not take mu.
+	streamMu sync.Mutex
+	streams  map[string]*int64
 }
 
 // New creates a Store with the given TTL, per-session event limit, and max
