@@ -1,5 +1,10 @@
 # cpex plugin
 
+> **Deprecated on a laptop.** `install.sh --cpex` and the laptop cpex build are
+> deprecated. Use praxis mode with
+> [`praxis.policy`](praxis-policy.md) instead. The
+> `authbridge-cpex` image and Kubernetes deployments are **not** deprecated.
+
 > **The `authbridge-cpex` image is a build variant** of the AuthBridge
 > proxy-sidecar — `cortex` built with cgo and `-tags cpex` — deployed *in
 > place of* the `authbridge` image when CPEX policy enforcement is needed, not

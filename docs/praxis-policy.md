@@ -1,0 +1,245 @@
+# Policy in praxis mode
+
+In praxis mode, the policy filter runs inside `cortex-gateway`. It uses PPE, the
+Praxis policy engine. `praxis.policy` is the replacement for the laptop CPEX build.
+
+## Turn policy on
+
+1. Install praxis mode:
+   `curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --praxis`. It
+   installs `cortex-gateway` and sets `praxis: {enabled: true}`. `--praxis` needs a
+   release that carries `cortex-gateway`. If the installer stops with `release … has no
+   cortex-gateway build for <os>/<arch>`, add `--ref=main` to install the channel
+   build, which has the gateway, or build it from source
+   ([`laptop-service.md`](laptop-service.md)). On a machine that already has
+   `cortex-gateway`, `agentop setup --praxis` sets the flag without a download. Without
+   the binary, setup stops and gives the installer one-liner as the fix.
+2. Write the policy file, for example `~/.cortex/policy.yaml`. Copy one of the examples
+   below.
+3. Set the path in `~/.cortex/config.yaml`. It must be an absolute path to an existing
+   file:
+
+```yaml
+praxis:
+  enabled: true
+  policy:
+    config_path: /Users/you/.cortex/policy.yaml
+```
+
+4. Run `agentop service restart`. The supervisor reads `praxis.*` only when it starts,
+   so a save alone changes nothing.
+5. Edit the policy file later without a restart. The gateway reloads it. A file that
+   does not parse keeps the last good policy.
+
+## What the gateway runs
+
+Built:
+
+- `identity/jwt`, with its JWKS, PEM and JWK key sources, and its claim presets.
+- `cel:` steps. They need `global: { pdp: [{ kind: cel }] }`.
+- Everything in PPE that does not need a plugin from the list below.
+
+Not built:
+
+- Cedar, OPA, OAuth delegation, CIBA, Vault and Valkey.
+- A2A policy. The gateway has no A2A route.
+
+## Where policy runs
+
+The supervisor writes the filter chain into `~/.cortex/gateway.yaml` from
+`praxis.policy.config_path`. The chain is `ip_acl`, `cortex_attribution`,
+`cortex_observe`, `policy`, `access_log`, `router`, `load_balancer`
+(`cmd/cortex/gateway.go`). So `policy` runs after the row is recorded, and a denied
+request still gets its row.
+
+## Record the decision in the session row
+
+Add the `cortex-recorder` plugin to the top of the policy file. The response row then
+carries `{plugin: "policy", action: "allow"|"deny", reason: <violation code>}`:
+
+```yaml
+plugins:
+  - name: cortex-recorder
+    kind: cortex/recorder
+    capabilities: [read_headers]
+```
+
+## Examples
+
+The model allow list denies every model that you do not name. It holds only when PPE
+can read the model. The gateway sets `llm.require_model: false`
+(`cmd/cortex/gateway.go`), so a gzip or zstd body, or a body with no string `model`,
+matches no `llm:` route. No rule denies it, and this example declares no global block,
+so the request is admitted.
+
+```yaml policy
+routes:
+  - llm: claude-sonnet-4
+    authorization:
+      pre_invocation:
+        - "llm.provider == 'never': deny('unreachable', 'never')"
+  - llm: "*"
+    authorization:
+      pre_invocation:
+        - "deny('model is not permitted', 'model_not_allowed')"
+```
+
+This policy permits the MCP tool `read_file` and denies every other tool. The
+`tool: read_file` route holds a guard that never denies. PPE route selection uses
+specificity, so this route outranks `tool: "*"`. To deny `read_file`, remove its
+route. A request that PPE reads as neither an inference request nor a tool call takes
+no `llm:` or `tool:` route, so this example admits it, except a JSON-RPC envelope that
+cortex_observe cannot classify: that request gets no `mcp.method` and is refused with
+500. The first `llm:` route admits inference requests, which carry no MCP method:
+
+```yaml policy
+routes:
+  - llm: "*"
+    authorization:
+      pre_invocation:
+        - "llm.provider == 'never': deny('unreachable', 'never')"
+  - tool: read_file
+    authorization:
+      pre_invocation:
+        - "http.method == 'NEVER': deny('unreachable', 'never')"
+  - tool: "*"
+    authorization:
+      pre_invocation:
+        - "deny('tool is not permitted', 'tool_not_allowed')"
+```
+
+This policy reads the user JWT from `X-Agent-Token`. On a laptop, `Authorization`
+carries the agent's provider key, so a user JWT goes in another header. PPE does not
+remove `X-Agent-Token`, so the origin receives it. Production uses `jwks_url` or
+`pem_file`, not an inline PEM. A loopback JWKS needs `allow_private_idp: true`, which
+`praxis.policy` does not set. A JWKS URL also needs `capabilities: [perform_http]`:
+
+```yaml policy
+plugins:
+  - name: user-jwt
+    kind: identity/jwt
+    hooks: [identity.resolve]
+    config:
+      credential: { kind: header, name: X-Agent-Token }
+      trusted_issuers:
+        - issuer: https://idp.example.com
+          audiences: [cortex]
+          algorithms: [ES256]
+          decoding_key:
+            kind: pem
+            pem: |
+              -----BEGIN PUBLIC KEY-----
+              MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaSRwuPUoZ6cKqrpd88zDaoK8Ph2N
+              bkonAXfrgNqiB9ccLFGc/vkCNYh2Gndh7L1Cc07oMseoSM4MoJWjYhnp/w==
+              -----END PUBLIC KEY-----
+routes:
+  - llm: "*"
+    authentication: [user-jwt]
+```
+
+This step taints the session with the label `oversized` when the request asks for more
+than 8000 output tokens. The step needs a resolved subject and an `X-Session-Id`
+header. It does not block. `on_allow` on a `cel:` step is not a replacement, because a
+false `cel:` step denies. Taints live in memory, so a gateway restart or a policy
+reload loses them:
+
+```yaml policy
+routes:
+  - llm: "*"
+    authorization:
+      pre_invocation:
+        - when: "llm.input.max_tokens > 8000"
+          do: ["taint(oversized, session)"]
+```
+
+The gateway runs no `llm:` response-phase rule (see Known gaps), so a check on the
+completion cannot be enforced. To refuse streamed responses outright, deny the stream
+in the request phase:
+
+```yaml policy
+routes:
+  - llm: "*"
+    authorization:
+      pre_invocation:
+        - "custom.llm.stream == true: deny('a streamed response is not allowed', 'stream_not_allowed')"
+```
+
+## Deny responses
+
+| Case | Response |
+|---|---|
+| Identity or transport failure | 401, `WWW-Authenticate: Bearer`, `X-Policy-Violation: <code>` |
+| Inference request deny | 403 by default, from the policy's `denyWith`, with an OpenAI-compatible error envelope, `X-Policy-Violation: <code>` |
+| Generic HTTP deny | 403 by default, from the policy's `denyWith`, `X-Policy-Violation: <code>` |
+| MCP deny | HTTP 200 with a JSON-RPC error, `code: -32001`, `X-Policy-Violation: <code>` |
+| MCP request with no `mcp.method` metadata | 500 |
+
+## Known gaps
+
+- No A2A policy.
+- A `praxis.policy` block does nothing while `praxis.enabled` is false, and startup
+  prints no warning.
+- The gateway sets no `body_access`, so the policy runs in the filter's default
+  `read_only` mode. That mode does not buffer the response, so no `llm:`, `tool:`,
+  `prompt:` or `resource:` response-phase rule runs, streamed or not. Every
+  `post_invocation` step on those routes loads and has no effect, and so does a
+  `result.<field>` rule on a `tool:` route. A `result.<field>` rule on a `prompt:` or
+  `resource:` route stops the policy from loading. A request-side rewrite such as
+  `args.ssn: redact(...)` also has no effect. A `post_invocation` step on an `http:`
+  route or under `global:` runs at the response header phase, which carries no
+  completion. No rule in this gateway reads the response body of the request it
+  judges. A `pre_invocation` step sees only the request, so state the limit there as a
+  deny. A request that sets no cap writes no `llm.input.max_tokens`, so a rule on that
+  fact does not catch it.
+- A body with no readable `model` takes no `llm:` route. The gateway sets
+  `llm.require_model: false` (`cmd/cortex/gateway.go`), so PPE runs the policy's HTTP
+  admission on it: a matching `http:` route, or else the `global` rules. A policy with
+  no HTTP rules and no request assertions admits it on identity. A gzip or zstd body,
+  and a body with no string `model`, take this path. A `global:` rule that reads
+  `llm.request` denies the request, because it carries no inference request. Keep model
+  rules in `llm:` routes or `global.defaults.llm`.
+- Taints are held in memory and are lost at each gateway restart and each policy
+  reload.
+- WebSocket upgrades do not go through the gateway (`cmd/cortex/praxis.go`), so no
+  policy runs on them.
+- These Cortex-only CPEX options have no equivalent: `observe_codes`,
+  `principal.token_file`, `workload`, `bypass_hosts`, `bypass_paths`, `strict_hosts`,
+  `synthetic_egress`, `delegated_credential_hosts`, `session_source`,
+  `fallback_identification`, `hooks`, `fail_open`.
+
+## Move from the CPEX plugin
+
+The constructs in `core/plugins/cpex/testdata/hr-cpex/cpex-policy.yaml` and in the
+examples in `docs/cpex-plugin.md` exist in PPE 0.6.0. The gateway builds less than a
+full PPE, so neither file loads there as it stands: `hr-cpex` fails on
+`delegator/oauth`, which it names.
+
+1. Move the CPEX policy YAML out of the `cpex` plugin entry and into its own file.
+2. Delete every construct the gateway does not build: `elicitation/ciba` plugins,
+   `delegator/oauth` plugins, and the `cedar-direct` PDP. `hr-cpex` carries all three.
+   Also delete each step that calls one. A `require_approval(...)` or `confirm(...)`
+   step with no plugin, a `delegate(...)` step with no plugin, and a `cedar:` step with
+   no PDP each deny the request.
+3. Apply the 0.5 to 0.6 changes. `ConversationContext.history` is now `Vec<Message>`,
+   in CMF shape. `&` and `|` behave differently when an operand cannot be ordered.
+   There are new `llm.input.*`, `llm.model.*` and `llm.output.*` facts, and the old
+   `llm.model_id` keys stay as aliases.
+4. Remove the `cpex` entry from `pipeline.outbound`.
+5. Set `praxis.policy.config_path` and restart, as "Turn policy on" says.
+6. Check the options in the table below. Move each one you use another way, or accept
+   that it is gone.
+
+| CPEX option | In praxis mode |
+|---|---|
+| `observe_codes` | No equivalent. Write the step as a `when:`/`do:` taint step. |
+| `principal.token_file` | No equivalent. `identity/jwt` reads a header, cookie or query parameter, not a file. |
+| `workload` (`workload.audience`, `workload.header`) | No equivalent. The gateway asserts no workload token. |
+| `bypass_hosts` | No equivalent. Every request that reaches the gateway is judged. |
+| `bypass_paths` | No equivalent. |
+| `strict_hosts` | No equivalent. |
+| `synthetic_egress` | No equivalent. |
+| `delegated_credential_hosts` | No equivalent. The gateway builds no OAuth delegation. |
+| `session_source` | No equivalent. A taint step reads the `X-Session-Id` header. |
+| `fallback_identification` | No equivalent. Write the rule in the policy. |
+| `hooks` | The `hooks:` key of each plugin in the policy file. |
+| `fail_open` | No equivalent. |

@@ -53,6 +53,10 @@ The config path comes from `-c <path>`, then `PRAXIS_CONFIG`, then
 writes `gateway.yaml` and starts the gateway (#1720). To run the gateway by
 hand, write the file yourself.
 
+A policy needs `praxis.policy.config_path` in `config.yaml`. The supervisor writes
+the `policy` filter into `gateway.yaml` from that path. See
+[policy in praxis mode](../docs/praxis-policy.md).
+
 `--exit-on-stdin-eof` makes the gateway exit when its stdin closes. The
 supervisor uses it. Without the flag, a gateway that you start with
 `</dev/null` keeps running.
@@ -193,7 +197,9 @@ When the two differ, fix the Rust code. Do not change Go behavior or a Go
 golden file to suit Rust.
 
 A Go-only parser PR gets a report from this suite, not a block. The CI job
-blocks only when the PR changes `praxis/` or its workflow.
+blocks when the PR changes `praxis/`, `docs/praxis-policy.md`, its workflow, or the
+Go side of praxis mode (`cmd/cortex/praxis*.go`, `gateway.go`, `ingest.go`, and
+`core/listener/forwardproxy/hop*.go` and `egress*.go`).
 
 ## Go decode rules
 

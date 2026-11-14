@@ -58,6 +58,13 @@ else in the file:
 curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --praxis
 ```
 
+`--praxis` needs a release that carries `cortex-gateway`. If the installer stops with
+`release … has no cortex-gateway build for <os>/<arch>`, add `--ref=main` to install
+the channel build, which has the gateway, or build it from source as below.
+
+To put a policy in the gateway, read
+[policy in praxis mode](praxis-policy.md).
+
 When you change `praxis.enabled` by hand in either direction, run
 `agentop service install --restart`. To turn praxis mode off, set
 `praxis.enabled: false` in `~/.cortex/config.yaml` first. `restart` alone does not
@@ -221,6 +228,10 @@ Where to look:
 `agentop update` by hand still installs at once, with no wait.
 
 ## The cpex build
+
+**Deprecated.** The laptop cpex build is deprecated. Use praxis mode with
+[`praxis.policy`](praxis-policy.md) instead (see `--praxis` above). This section stays for
+existing installs. Kubernetes use of the `authbridge-cpex` image is **not** deprecated.
 
 Each release also publishes `cortex` built with the [cpex policy plugin](cpex-plugin.md),
 as `cortex-cpex_<version>_<os>_<arch>.tar.gz`, for macOS arm64 (14.5 or later) and Linux

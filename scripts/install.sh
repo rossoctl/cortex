@@ -1182,6 +1182,7 @@ fi
 # Before anything is resolved or staged.
 if [ -n "${CPEX}" ]; then
 	cpex_platform_check
+	warn "the laptop cpex build is deprecated; use praxis mode with praxis.policy instead (enable it with --praxis; see docs/praxis-policy.md); Kubernetes cpex use is not affected"
 	[ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" != "1" ] \
 		|| die "--cpex selects what to download, and AUTHBRIDGE_SKIP_DOWNLOAD=1 downloads nothing"
 fi

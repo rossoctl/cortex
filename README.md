@@ -115,7 +115,8 @@ The same binary also runs on a remote machine — a VM, a home server, a pod —
 
 [All docs](./docs/README.md) · [agentop reference](./cmd/agentop/README.md) ·
 [plugin catalog](./docs/plugin-catalog.md) · [script plugins](./docs/script-plugin.md) ·
-[cpex policy build](./docs/laptop-service.md#the-cpex-build) ·
+[cpex policy build (deprecated on a laptop)](./docs/laptop-service.md#the-cpex-build) ·
+[policy in praxis mode](./docs/praxis-policy.md) ·
 [full install guide](https://www.rossoctl.dev/docs/dev/get-started/laptop) ·
 [install stats](https://rossoctl.github.io/cortex/install-stats/) (from GitHub's download counts, no telemetry)
 

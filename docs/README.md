@@ -12,6 +12,7 @@ holds the repo-level pieces; this file is the index.
 | Run the service, group sessions into sessions, troubleshoot | [`laptop-service.md`](laptop-service.md) |
 | Run Cortex on a remote machine and connect from anywhere | [`remote.md`](remote.md) |
 | Cut token cost with tool pruning | [`laptop-token-savings.md`](laptop-token-savings.md) |
+| Enforce policy on agent traffic in praxis mode | [`praxis-policy.md`](praxis-policy.md) |
 | Customize Cortex with a small Python or shell script | [`script-plugin.md`](script-plugin.md) |
 | Run an agent on a local model, or switch inference servers | [`laptop-local-model.md`](laptop-local-model.md) |
 | Use the `agentop` TUI | [`cmd/agentop/README.md`](../cmd/agentop/README.md) |
