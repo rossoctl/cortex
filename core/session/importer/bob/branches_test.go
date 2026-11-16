@@ -27,7 +27,7 @@ func TestTrees_CycleGivesOneRoot(t *testing.T) {
 }
 
 func TestTask_Branches(t *testing.T) {
-	p := parser{projects: map[string]string{}}
+	p := parser{projects: map[string]string{}, turned: map[string]bool{}}
 	rows := []row{
 		{ID: "m1", Role: "user", Data: `{"content":"go"}`, CreatedAt: 10},
 		{ID: "m2", Role: "assistant", Data: `{"content":"ok","reasoning":"abc"}`, CreatedAt: 30},
@@ -76,20 +76,20 @@ func TestSource_UnreadableChildKeepsRoot(t *testing.T) {
 }
 
 func TestSubagent_ReadOnce(t *testing.T) {
-	p := parser{projects: map[string]string{}, read: map[string]bool{"own": true}}
-	msgs := []json.RawMessage{json.RawMessage(`{"id":"a","role":"user","content":"go"}`),
-		json.RawMessage(`{"id":"b","role":"assistant","content":"ok","_meta":{"timestamp":20}}`)}
-	d := func(id string) *data {
+	p := parser{projects: map[string]string{}, read: map[string]bool{"own": true}, turned: map[string]bool{}}
+	d := func(id, msg string) *data {
 		var x data
-		x.Messages, x.Meta.SubagentID = msgs, id
+		x.Messages = []json.RawMessage{json.RawMessage(`{"id":"` + msg + `a","role":"user","content":"go"}`),
+			json.RawMessage(`{"id":"` + msg + `b","role":"assistant","content":"ok","_meta":{"timestamp":20}}`)}
+		x.Meta.SubagentID = id
 		return &x
 	}
-	if ev, _ := p.subagent(agent{model: "premium-ide"}, d("s"), time.UnixMilli(10)); len(ev) != 2 {
+	if ev, _ := p.subagent(agent{model: "premium-ide"}, d("s", "m1"), time.UnixMilli(10)); len(ev) != 2 {
 		t.Fatalf("first read: %d events, want 2", len(ev))
 	}
 	// A second spawn row of s, and a subagent whose task has its own rows, add nothing.
 	for _, id := range []string{"s", "own"} {
-		if ev, _ := p.subagent(agent{model: "premium-ide"}, d(id), time.UnixMilli(10)); len(ev) != 0 {
+		if ev, _ := p.subagent(agent{model: "premium-ide"}, d(id, "m2"), time.UnixMilli(10)); len(ev) != 0 {
 			t.Errorf("%s: %d events, want 0", id, len(ev))
 		}
 	}

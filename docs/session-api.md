@@ -477,11 +477,15 @@ agents continue. When `bob.db` does not exist, the source imports nothing.
 - A subtask is in the session of its root task. Its events have `subagent`
   set to the subtask's id and `subagentKind: "subtask"`.
 - Bob keeps a subagent's turns in the `messages` of the parent's
-  `spawn_subagent` tool row, not in the subagent's task. They are in the
-  session of the root task, with `subagent` set to `_meta.subagentId` and
-  `subagentKind: "subagent"`. A nested message with no `_meta.timestamp` has
-  the time of the message before it, or of the parent's spawning turn. The `messages` of a `start_subtask` tool
-  row is a copy of the subtask's own rows, and the import does not read it.
+  `spawn_subagent` tool row. They are in the session of the root task, with
+  `subagent` set to `_meta.subagentId` and `subagentKind: "subagent"`. A
+  nested message with no `_meta.timestamp` has the time of the message
+  before it, or of the parent's spawning turn. When the subagent's task has
+  its own rows, the import reads those rows and not the spawn row.
+- A message gives one turn per session. The spawn row of a resumed subagent
+  holds its earlier messages again, and they are context only.
+- The `messages` of a `start_subtask` tool row is a copy of the subtask's own
+  rows, and the import does not read it.
 - Each event has the `bob` client, the model alias that Bob records (for
   example `premium-ide`), and the project of `tasks.directory`. When that is
   empty, the project is the task's workspace.

@@ -145,7 +145,7 @@ func trees(tasks []task) []*tree {
 // read reads the messages of each task of tr and makes the session.
 func (s source) read(db string, tr *tree, home string) importer.Session {
 	sess := importer.Session{ID: tr.root.ID}
-	p := parser{home: home, projects: map[string]string{}, rootDir: tr.root.Dir, read: map[string]bool{}}
+	p := parser{home: home, projects: map[string]string{}, rootDir: tr.root.Dir, read: map[string]bool{}, turned: map[string]bool{}}
 	for _, t := range tr.tasks {
 		p.read[t.ID] = t.Last != nil
 	}

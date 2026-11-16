@@ -45,7 +45,6 @@ type data struct {
 	Messages []json.RawMessage `json:"messages"`
 	Meta     struct {
 		SubagentID string `json:"subagentId"` // on a spawn_subagent row
-		Timestamp  int64  `json:"timestamp"`  // in ms; set on a nested assistant or tool message
 		StopReason string `json:"stopReason"`
 		Spend      *struct {
 			Cost          float64 `json:"cost"`
@@ -89,6 +88,9 @@ type parser struct {
 	// read holds the subagent ids whose turns the session has: a task with its own rows, or
 	// a spawn_subagent row already read. Each subagent's turns are read once.
 	read map[string]bool
+	// turned holds the ids of the rows that gave a turn. A resumed subagent's spawn row
+	// holds the earlier rows again, with their ids, under a new subagent id.
+	turned map[string]bool
 }
 
 // agent is what the events of one task or subagent share.
@@ -200,7 +202,10 @@ func (p *parser) turns(a agent, rows []row) ([]model.SessionEvent, int) {
 				calls = append(calls, tc)
 			}
 			msg := chatMessage{Role: "assistant", Content: d.Content, ToolCalls: calls}
-			if req, resp, plugins := turn(a.model, conv, tools, msg, &d); req != nil {
+			if r.ID != "" && p.turned[r.ID] {
+				// Context for the turns after it; its own turn is in the session already.
+			} else if req, resp, plugins := turn(a.model, conv, tools, msg, &d); req != nil {
+				p.turned[r.ID] = true
 				client := func() *model.EventClient { return &model.EventClient{Name: agentName, Version: a.version} }
 				req.AgentRole, resp.AgentRole = a.role, a.role
 				events = append(events,

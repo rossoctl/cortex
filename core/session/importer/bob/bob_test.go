@@ -241,9 +241,10 @@ func TestSource_SubagentTurnsFromSpawnRows(t *testing.T) {
 		cost  float64 // the spawn row's _meta.spend.cost
 		first int64   // the first request's time, in ms
 	}{
-		{"t-sub", 2, 0.0001, 1763000006000},    // a task row with no messages
-		{"s-inner", 1, 0.00001, 1763000006200}, // spawned by t-sub; no task row
-		{"s-copy", 1, 0.00005, 1763000006600},  // spawned by subtask t-child; also in the start_subtask copy
+		{"t-sub", 2, 0.0001, 1763000006000},      // a task row with no messages
+		{"s-inner", 1, 0.00001, 1763000006200},   // spawned by t-sub, which Bob does not allow; no task row
+		{"s-copy", 1, 0.00005, 1763000006600},    // spawned by subtask t-child; also in the start_subtask copy
+		{"s-resumed", 1, 0.00002, 1763000006740}, // resumes s-copy: its spawn row repeats j1 and j2
 	} {
 		reqs, resps := phase(s, model.SessionRequest, c.id), phase(s, model.SessionResponse, c.id)
 		if len(reqs) != c.turns || len(resps) != c.turns {
@@ -265,6 +266,11 @@ func TestSource_SubagentTurnsFromSpawnRows(t *testing.T) {
 		if !reqs[0].At.Equal(time.UnixMilli(c.first)) {
 			t.Errorf("%s: first request At %v, want %v", c.id, reqs[0].At, time.UnixMilli(c.first))
 		}
+	}
+	// A subagent task with its own rows: the spawn row's copy adds nothing.
+	orphan := sessionByID(t, readAll(t, New(fixtureDB(t)), time.Time{}), "t-orphan")
+	if n := len(phase(orphan, model.SessionResponse, "t-own")); n != 1 {
+		t.Errorf("t-own responses %d, want 1", n)
 	}
 	if reqs := phase(s, model.SessionRequest, "t-sub"); len(reqs) == 0 || len(reqs[0].Inference.Messages) != 2 || reqs[0].Inference.Messages[0].Role != "system" {
 		t.Errorf("t-sub requests %+v, want the first with its system and user rows", reqs)
