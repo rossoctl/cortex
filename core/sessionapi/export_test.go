@@ -305,6 +305,54 @@ func TestHandleExport_UnknownSessionRefusalFitsAClientReadWhenIDsEscape(t *testi
 // ?since= carries only events newer than that far back: a session the archive last
 // touched before the floor is skipped whole, one that straddles it stops at its first
 // event below. 7d reads as a day count, which time.ParseDuration alone rejects.
+// A REFUSAL IS LABELLED application/json, not text/plain. http.Error sets plain text
+// unconditionally, which on this route also overwrote the application/x-ndjson set for
+// the success path — so one endpoint's two surfaces disagreed about a header they both
+// send, over a body that is JSON either way.
+func TestHandleExport_RefusalsAreLabelledJSON(t *testing.T) {
+	ts := exportFixture(t)
+	for _, tc := range []struct {
+		path string
+		code int
+	}{
+		{"/v1/export?session=nope", http.StatusBadRequest},
+		{"/v1/export?since=garbage", http.StatusBadRequest},
+		{"/v1/export?since=1h&since=2h", http.StatusBadRequest},
+		{"/v1/export?session=%GG", http.StatusBadRequest},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			resp, err := http.Get(ts.URL + tc.path) //nolint:noctx // a test fetching a test server
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			if resp.StatusCode != tc.code {
+				t.Fatalf("GET %s = %d, want %d; body:\n%s", tc.path, resp.StatusCode, tc.code, body)
+			}
+			if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+				t.Fatalf("GET %s content-type = %q, want application/json", tc.path, ct)
+			}
+			// The label has to be true: the body must actually parse.
+			var refusal struct{ Error string }
+			if err := json.Unmarshal(body, &refusal); err != nil || refusal.Error == "" {
+				t.Fatalf("GET %s body is not a JSON refusal: %s (%v)", tc.path, body, err)
+			}
+		})
+	}
+
+	// The success path keeps its own type, which is the half that was already right.
+	resp, err := http.Get(ts.URL + "/v1/export") //nolint:noctx // a test fetching a test server
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+	if ct := resp.Header.Get("Content-Type"); ct != "application/x-ndjson" {
+		t.Fatalf("success content-type = %q, want application/x-ndjson", ct)
+	}
+}
+
 // A MALFORMED QUERY IS A 400, NOT A FULL EXPORT. URL.Query() drops the pairs it cannot
 // decode and returns the rest, so a mistyped escape in a filter used to read as an absent
 // filter: every row below answered 200 with all 9 records — the whole archive, for a

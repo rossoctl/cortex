@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -53,7 +54,7 @@ import (
 // archive change rather than this endpoint's: #1855.
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	if s.archive == nil {
-		http.Error(w, `{"error":"session archive not enabled"}`, http.StatusNotFound)
+		jsonError(w, `{"error":"session archive not enabled"}`, http.StatusNotFound)
 		return
 	}
 	// ParseQuery rather than URL.Query(), which discards the pairs it cannot decode and
@@ -65,7 +66,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	// for. agentop never gets here (url.Values.Encode escapes properly); curl does.
 	q, qerr := url.ParseQuery(r.URL.RawQuery)
 	if qerr != nil {
-		http.Error(w, `{"error":"malformed query"}`, http.StatusBadRequest)
+		jsonError(w, `{"error":"malformed query"}`, http.StatusBadRequest)
 		return
 	}
 	f := sessionexport.Filter{}
@@ -81,13 +82,13 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	}
 	if raws := q["since"]; len(raws) > 0 {
 		if len(raws) > 1 {
-			http.Error(w, `{"error":"since must appear at most once"}`, http.StatusBadRequest)
+			jsonError(w, `{"error":"since must appear at most once"}`, http.StatusBadRequest)
 			return
 		}
 		if raw := raws[0]; raw != "" {
 			d, err := parseSince(raw)
 			if err != nil {
-				http.Error(w, `{"error":"since must be a duration or Nd, e.g. 168h or 7d"}`, http.StatusBadRequest)
+				jsonError(w, `{"error":"since must be a duration or Nd, e.g. 168h or 7d"}`, http.StatusBadRequest)
 				return
 			}
 			f.Since = s.clock().Add(-d)
@@ -102,7 +103,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			// json.Marshal rather than %q: %q is Go quoting, and a session id with a
 			// control rune in it would escape in a form no JSON parser accepts.
 			msg, _ := json.Marshal(err.Error())
-			http.Error(w, `{"error":`+string(msg)+`}`, http.StatusBadRequest)
+			jsonError(w, `{"error":`+string(msg)+`}`, http.StatusBadRequest)
 			return
 		}
 		if !cw.wrote {
@@ -111,7 +112,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			// archive. A segment whose content is merely damaged never reaches here —
 			// see the note on this function for why that case is tolerated instead.
 			// search.go's shape, for the same class of failure one endpoint over.
-			http.Error(w, `{"error":"archive read failed"}`, http.StatusInternalServerError)
+			jsonError(w, `{"error":"archive read failed"}`, http.StatusInternalServerError)
 			return
 		}
 		// Past the first record the status line is gone, so the only honest signal left is
@@ -129,6 +130,25 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("sessionapi: export truncated", "error", err)
 		panic(http.ErrAbortHandler)
 	}
+}
+
+// jsonError is http.Error for a body that is already JSON.
+//
+// http.Error sets `text/plain; charset=utf-8` unconditionally, so every refusal on this
+// route went out labelled plain text over a `{"error":...}` body — and on this route
+// specifically it OVERWROTE the `application/x-ndjson` set for the success path, so the
+// two surfaces of one endpoint disagreed about a header they both send. Nothing consumes
+// it today (agentop parses the body regardless), but docs/session-api.md documents the
+// route's content type, and a client negotiating on it would be misled.
+//
+// Scoped to this file rather than offered as a package-wide helper: the other handlers
+// have the same wart, and fixing them is a repo-wide change with its own blast radius
+// (see the #1830 review thread). This keeps the endpoint the PR introduces honest without
+// quietly changing the responses of endpoints it does not own.
+func jsonError(w http.ResponseWriter, body string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_, _ = io.WriteString(w, body+"\n")
 }
 
 // parseSince reads a since value: a Go duration ("168h", "30m") or a whole-day count
