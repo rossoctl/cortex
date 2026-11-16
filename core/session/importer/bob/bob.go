@@ -40,7 +40,8 @@ type task struct {
 	Version  *string `json:"version"`
 	Dir      string  `json:"dir"`
 	Model    string  `json:"model"`
-	Last     *int64  `json:"last"` // newest message, in ms; nil when the task has no messages
+	Last     *int64  `json:"last"` // newest message, in ms; nil when no message has a time
+	Messages int     `json:"messages"`
 }
 
 // tree is a root task and its child tasks.
@@ -48,12 +49,15 @@ type tree struct {
 	root  *task
 	tasks []*task // the root first
 	last  int64
+	// messages is true when a task of the tree has messages. With last 0, no message has a time.
+	messages bool
 }
 
 const taskQuery = `select t.id, t.parent_id, t.task_type, t.version,
-  coalesce(nullif(t.directory,''), case when json_valid(t.env) then json_extract(t.env,'$.workspace') end, '') as dir,
+  coalesce(nullif(t.directory,''), case when json_valid(t.env) then case when json_type(t.env,'$.workspace') = 'text' then json_extract(t.env,'$.workspace') end end, '') as dir,
   case when json_valid(t.env) then cast(json_extract(t.env,'$.model.id') as text) end as model,
-  (select max(` + createdAt + `) from messages where task_id = t.id) as last
+  (select max(` + createdAt + `) from messages where task_id = t.id) as last,
+  (select count(*) from messages where task_id = t.id) as messages
 from tasks t`
 
 // createdAt is a message's created_at, or null when it is not an integer. turns skips a row
@@ -84,6 +88,13 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 		}
 		home, _ := os.UserHomeDir()
 		for _, tr := range trees(tasks) {
+			if tr.last == 0 {
+				slog.Warn("importer: no message of a Bob task tree has a time", "task", tr.root.ID)
+				if !yield(importer.Session{ID: tr.root.ID, Unreadable: true}, nil) {
+					return
+				}
+				continue
+			}
 			at := time.UnixMilli(tr.last)
 			if !since.IsZero() && at.Before(since) {
 				continue
@@ -135,11 +146,12 @@ func trees(tasks []task) []*tree {
 		if t != r {
 			tr.tasks = append(tr.tasks, t)
 		}
+		tr.messages = tr.messages || t.Messages > 0
 		if t.Last != nil && *t.Last > tr.last {
 			tr.last = *t.Last
 		}
 	}
-	out = slices.DeleteFunc(out, func(tr *tree) bool { return tr.last == 0 })
+	out = slices.DeleteFunc(out, func(tr *tree) bool { return tr.last == 0 && !tr.messages })
 	slices.SortFunc(out, func(a, b *tree) int {
 		return cmp.Or(cmp.Compare(b.last, a.last), strings.Compare(a.root.ID, b.root.ID))
 	})

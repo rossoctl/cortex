@@ -342,6 +342,8 @@ func TestSource_BadTaskOrMessageValueKeepsTheImport(t *testing.T) {
 		"env empty":             `insert into tasks values ('t-bad', null, 'bad', '', null, '', 'normal')`,
 		"env truncated":         `insert into tasks values ('t-bad', null, 'bad', '', null, '{"model":', 'normal')`,
 		"model id a number":     `insert into tasks values ('t-bad', null, 'bad', '', null, '{"model":{"id":7}}', 'normal')`,
+		"workspace a number":    `insert into tasks values ('t-bad', null, 'bad', '', null, '{"workspace":7}', 'normal')`,
+		"workspace a boolean":   `insert into tasks values ('t-bad', null, 'bad', '', null, '{"workspace":true}', 'normal')`,
 		"created_at as text":    `insert into tasks values ('t-bad', null, 'bad', '', null, '{}', 'normal'); insert into messages values ('m-bad', 't-bad', 'user', '{"content":"x"}', '2026-11-16')`,
 		"child created_at text": `insert into messages values ('m-bad', 't-child', 'user', '{"content":"x"}', '2026-11-16')`,
 	} {
@@ -354,6 +356,11 @@ func TestSource_BadTaskOrMessageValueKeepsTheImport(t *testing.T) {
 			for _, id := range []string{"t-plain", "t-tools", "t-orphan"} {
 				if s := sessionByID(t, sessions, id); s.Unreadable || len(s.Events) == 0 {
 					t.Errorf("%s: Unreadable %v, events %d; want it imported", id, s.Unreadable, len(s.Events))
+				}
+			}
+			if name == "created_at as text" {
+				if s := sessionByID(t, sessions, "t-bad"); !s.Unreadable {
+					t.Errorf("t-bad: Unreadable false; want true (no message has a time)")
 				}
 			}
 			if s := sessionByID(t, sessions, "t-tools"); name == "child created_at text" && (s.Skipped != clean.Skipped+1 || len(s.Events) != len(clean.Events)) {
