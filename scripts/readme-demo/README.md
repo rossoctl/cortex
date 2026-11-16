@@ -10,21 +10,28 @@ go test ./...               # includes the staleness check
 
 ## What it is
 
-A ~1 minute animated SVG that follows the README's quick start: the install one-liner,
+A 50-second animated SVG that follows the README's quick start: the install one-liner,
 `agentop configure claude-code enable` in a new terminal, three Claude Code sessions
-started as usual, then `agentop observe` answering "where did the money go?".
+started as usual, then `agentop observe`. In agentop, the Timeline pane shows one
+session's main agent and its five subagents as they work: the bars grow, the
+subagents hand back one by one, and each row has its `tok/s`. Then the events pane of
+another session shows each tool call as its own row, and Enter on one opens the call
+and its output.
 
 **The agentop screens are rendered by the real agentop.** `tuicapture.go` starts a real
 `session.Store`, `usage.Aggregator` and `ledger.Writer`, attaches the
-production Bubble Tea model to them through the real HTTP API, feeds synthetic
-events, and captures `View()`. So every column heading, gauge and money figure in
-the asset came out of the shipping code path, and a UI change shows up on the next
-regeneration instead of quietly making the demo a lie.
+production Bubble Tea model to them through the real HTTP API, feeds events, and
+captures `View()`. So every column heading, bar and figure in the asset came out of
+the shipping code path, and a UI change shows up on the next regeneration instead of
+quietly making the demo a lie.
 
-**Nothing is recorded.** There is no screen capture and no live proxy. `demo.yaml`
-holds the storyboard; the sessions in it are invented. `HOME` is redirected to a
-scratch directory for the whole run, so the generator cannot read your Claude Code
-history even by accident.
+**Nothing is screen-recorded, and no text is real.** `demo.yaml` holds the storyboard.
+Two of the sessions are invented. The live one is the shape of a real Claude Code
+session, scrubbed: only its times, token counts, models, tool names and ids, and the
+markers that link a subagent to its parent are kept. Every message is a hash, and the
+subagent labels and commands are invented. `testdata/README.md` says how it was made.
+`HOME` is redirected to a scratch directory for the whole run, so the generator cannot
+read your Claude Code history even by accident.
 
 ## Editing the demo
 
@@ -74,12 +81,15 @@ animation runs, which is why none of this uses JavaScript.
 - **Do not drop Bubble Tea commands that miss their deadline.** Their goroutines
   hold the model's timer chain; dropping them permanently stops the 2s sessions
   refresh. `pump` parks them and reads them later.
-- **Record every event before the API server starts.** The spend band's four spans
-  each poll on their own cadence, so anything arriving afterwards produced screens
-  where `LAST 1H` exceeded `TODAY` — both figures correct, sampled seconds apart,
-  and indistinguishable from a bug.
-- **The usage chart cannot be made deterministic.** It plots a ten-minute window
-  ending *now* on a continuous axis, so its bars slide with the current second.
-  That one state is elided from the staleness check; its contract is asserted
-  structurally instead. Everything else is compared byte for byte, with nothing
-  masked — masking digits once made `CTX(1M)` and `CTX(2M)` compare equal.
+- **Give the replay's cost to the ledger before the API server starts.** The spend
+  band's four spans each poll on their own cadence, so cost arriving afterwards
+  produced screens where `LAST 1H` exceeded `THIS MONTH`. Only the replay's events
+  arrive live; its cost goes in at the start, dated then.
+- **With a replay, the clock stops at each beat's moment.** The timeline cuts its
+  cells from "now", so a clock that moved during a settle moved every cell by however
+  long that settle took, and two runs differed. The store also dates a session's
+  update by this clock, so events recorded before the start set it to their own time:
+  a tie leaves the sessions list's order to chance.
+- **A beat's `frames: N` is what makes the replay read as live.** Each frame is a
+  capture. Rows that two frames share are drawn once, in `<defs>`, and touching cells
+  of one colour merge into one rect: without both, the asset was twice its budget.

@@ -45,7 +45,7 @@ type Reveal struct {
 type Row struct {
 	Runs   []Run
 	Reveal Reveal
-	// SolidBlocks draws each █ as a filled cell rather than a glyph. A terminal's
+	// SolidBlocks draws each █, and each lower block ▁…▇, as a filled cell rather than a glyph. A terminal's
 	// cells touch, so block art such as setup's logo reads as solid there; here the
 	// line height is taller than the glyph, and drawn as text it reads as stripes.
 	// Not for agentop's screens, whose block-drawn bars sit on adjacent rows and
@@ -84,7 +84,7 @@ func screenRows(screen string, g Grid) []Row {
 	rows := make([]Row, 0, g.Rows)
 	for i := 0; i < g.Rows; i++ {
 		if i < len(lines) {
-			rows = append(rows, Row{Runs: DecodeLine(lines[i])})
+			rows = append(rows, Row{Runs: DecodeLine(lines[i]), SolidBlocks: true})
 			continue
 		}
 		rows = append(rows, Row{})
