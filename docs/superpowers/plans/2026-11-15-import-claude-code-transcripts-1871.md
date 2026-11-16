@@ -169,7 +169,9 @@ type Report struct {
     Agents []AgentReport `json:"agents"`
 }
 ```
-`types.go` imports only `iter`, `time` and `core/model`, so agentop can import it.
+`types.go` imports only `iter`, `time` and `core/model`. agentop imports the whole
+`importer` package for `Request` and `Report`. That is accepted: agentop already links
+`archive`, `ledger` and `settle` (checked with `go list -deps`), so no `go.mod` changes.
 
 - [ ] **Step 1:** Write `TestSessionEvent_SourceRoundTrips`: an event with
   `Source: model.ImportedSource("claude-code")` marshals to `"source":"imported:claude-code"`
@@ -200,8 +202,8 @@ Fold state: `imported string` (the first imported event's Source) and `live bool
 (true after any event with `Source == ""`). `Summary` sets `Source = f.imported` only
 when `!f.live`. `foldJSON` gets `Imported string \`json:"imported,omitempty"\`` and
 `Live bool \`json:"live,omitempty"\``. `Store.ListSessions` does not set `Source`: store
-entries are live. Check that `withPriorLocked` does not copy the prior's `Source` onto a
-live store row; add a line that clears it if it does.
+entries are live. `withPriorLocked` (`core/session/history.go:171`) copies named fields
+only, so it does not copy `Source` onto a live store row. Do not change it.
 
 - [ ] **Step 1:** Write tests:
   - `TestFold_AllImportedIsMarked`: two events with `Source "imported:claude-code"` →
@@ -238,10 +240,23 @@ func (a *Archive) Lookup(id string) (session.SessionSummary, bool)
 // ErrExists when !replace and the id is archived. A closed archive returns an error.
 func (a *Archive) WriteSession(id string, events []model.SessionEvent, replace bool) error
 ```
-Implementation: one new `opKind` (`opWriteSession`) or an `opFunc` with a result channel;
-send it with a blocking send (`a.ops <- op`), not into the reserve. After the write, set
-`a.lastSeq[id] = uint64(len(events))` under `a.mu`, so a resumed live session numbers on
-(SeqSeeder). Close the segment at the end (`closeWriter`), `writeMeta`, `refreshBytes`.
+Implementation (decided, do not change):
+- Use the existing `opFunc` kind with a closure and a `done` channel, as `inWriter` does.
+  Do not add an `opKind`.
+- Before the send, return `errors.New("the session archive is closed")` when
+  `a.closed.Load()`. Send with `select { case a.ops <- o: case <-a.done: return <closed error> }`
+  and wait with `select { case <-o.done: case <-a.done: return <closed error> }`. A bare
+  `a.ops <- o` blocks forever after `Close`, because the writer stops reading.
+- In the closure, on the writer goroutine, take `a.mu` ONCE for the check and the
+  reservation: read `a.lastSeq[id]` and the archived state, decide `ErrLive`/`ErrExists`
+  (decision 9), and when the write may go on, set `a.lastSeq[id] = uint64(len(events))`
+  before you release `a.mu`. Then a live `Record` that runs during the write numbers after
+  the import (SeqSeeder), not from 1. When the disk write fails, put the old `lastSeq`
+  value back and return the error.
+- Replace: call `a.deleteSession(id, &pendingClear{done: make(chan struct{}), seqs: map[string]uint64{}})`
+  first. Give it an EMPTY `seqs` map, so its `forgetSeqs` does not drop the `lastSeq`
+  value reserved above. Return its error, if any, before the write.
+- After the events: `closeWriter`, `writeMeta`, `publish`, `refreshBytes`.
 
 - [ ] **Step 1:** Write tests (open the archive in `t.TempDir()` like `archive_test.go`):
   - `TestWriteSession_WritesAndNumbers`: 4 events → `Page` returns Seq 1..4,
@@ -324,7 +339,8 @@ func Run(ctx context.Context, src Source, o Options) AgentReport
 func price(e *model.SessionEvent, host string, rates pricing.Resolver)
 ```
 Rules in `Run`, for each session, in this order:
-1. `Store.View(id) != nil`, or `Lookup(id)` is found with `Source == ""` → `SkippedLive++`.
+1. `Store.ViewTail(id, 1) != nil` (`Store` non-nil; `ViewTail` copies one event, `View`
+   copies all of them), or `Lookup(id)` is found with `Source == ""` → `SkippedLive++`.
 2. Found and imported, and `!s.Updated.After(sum.LastRequestAt)` → `SkippedCurrent++`.
 3. Found and imported, and newer → replace. 4. Not found → import.
 5. `len(s.Events) == 0` → nothing written, not counted as imported.
@@ -340,8 +356,10 @@ Set `Source = model.ImportedSource(src.Agent())` on every event before the write
 
 - [ ] **Step 1:** Write tests with a `fakeSource` in the test file (fixed sessions, each a
   request/response pair with `Inference{Model: "claude-sonnet-4-5", InputTokens: 1000,
-  CompletionTokens: 100, TotalTokens: 1100}`), a temp archive, a temp ledger and a
-  `pricing` resolver from the bundled table:
+  CompletionTokens: 100, TotalTokens: 1100}`), a temp archive, a temp ledger
+  (`ledger.New(t.TempDir())`) and a resolver from the bundled table:
+  `tab, err := pricing.NewTable(pricing.Bundled()); rates := pricing.NewRegistry(tab)`
+  (`pricing.NewRegistry(nil)` prices nothing):
   - `TestRun_ImportsNewSession` (rule 4): `Imported 1`; archive holds it, marked.
   - `TestRun_SkipsLiveInStore` (rule 1, store): `SkippedLive 1`, archive untouched.
   - `TestRun_SkipsLiveInArchive` (rule 1, archive without mark).
@@ -389,6 +407,16 @@ func New(configDir string) importer.Source
 ```
 Rules for the parse (one transcript file = `<project>/<uuid>.jsonl`; id = file uuid):
 - Do not take the harvest metadata lock. Do not write any file.
+- This package is also named `claude`. Import `core/observe/claude` as `ccstore`.
+- Discovery: call `ccstore.ReadSessions(dir, nil)`. A missing `projects` directory
+  returns an empty map and no error: the source then yields nothing and no error, so
+  `agentop import` with no `--agent` on a machine without Claude Code reports 0 sessions.
+- Subagent transcripts: list `agent-*.jsonl` files with `os.ReadDir` in
+  `<projDir>/<uuid>/subagents/` and in each `<projDir>/<uuid>/subagents/workflows/<run>/`
+  (`projDir` = `filepath.Dir(LogFile)`). Do not use the `Subagents` map for this: it holds
+  only agents that have a `.meta.json` file. The subagent id is the file name without
+  `agent-` and `.jsonl` (the bare id, the same value live capture stores from
+  `X-Claude-Code-Agent-Id`).
 - Sort sessions by `LogModTime` newest first. Skip a session whose file mtime and every
   subagent file mtime are before `since`.
 - Line `type` `user` or `assistant` is a message. `type` `system` with
@@ -416,16 +444,18 @@ Rules for the parse (one transcript file = `<project>/<uuid>.jsonl`; id = file u
   main file first on ties). Pass every event through one `session.Interner`, in the
   final order.
 - `Updated` = the latest request `At`. `SizeHint` = the sum of the file sizes read.
-- A file that cannot be opened: yield `(Session{}, err)` only when the projects
-  directory itself cannot be read; one unreadable transcript is skipped and counted.
+- A file that cannot be opened: yield `(Session{}, err)` only when `ReadSessions` returns
+  an error (the projects directory exists but cannot be read). One unreadable main
+  transcript: do not yield that session, and log it with `slog.Warn` and its path. One
+  unreadable subagent transcript: add 1 to that session's `Skipped`.
 
 - [ ] **Step 1:** Write scrubbed fixtures under `testdata/projects/-tmp-demo/`, built
   from real Claude Code 2.x lines (no real content, paths or ids):
   `11111111-1111-4111-8111-111111111111.jsonl` (plain: 2 user prompts, 2 assistant
   turns, a `summary` line, a `file-history-snapshot` line, one non-JSON line),
-  `22222222-...jsonl` (a `tool_use` turn split over 2 assistant lines with the same
+  `22222222-2222-4222-8222-222222222222jsonl` (a `tool_use` turn split over 2 assistant lines with the same
   `message.id`, a `tool_result` user line, a `thinking` block, a `compact_boundary`), and
-  `22222222-.../subagents/agent-a1b2c3.jsonl` + `agent-a1b2c3.meta.json`
+  `22222222-2222-4222-8222-222222222222/subagents/agent-a1b2c3.jsonl` + `agent-a1b2c3.meta.json`
   (`{"agentType":"Explore"}`).
 - [ ] **Step 2:** Write tests:
   - `TestSource_PlainSession`: 2 turns → 4 events; `Skipped == 1`; models, `Completion`,
@@ -437,13 +467,13 @@ Rules for the parse (one transcript file = `<project>/<uuid>.jsonl`; id = file u
   - `TestSource_CompactBoundaryResetsConversation`: the turn after the boundary has fewer
     `Messages` than the turn before.
   - `TestSource_SubagentEventsInRootSession`: subagent events have `Subagent "a1b2c3"`
-    and `AgentRole subagent`; they are in session `22222222-...`.
+    and `AgentRole subagent`; they are in session `22222222-2222-4222-8222-222222222222`.
   - `TestSource_NewestFirstAndSince`: order by mtime (set with `os.Chtimes`); `since`
     after one file's mtime drops it.
   - `TestSource_HonoursClaudeConfigDir`: `t.Setenv("CLAUDE_CONFIG_DIR", testdata)` and
     `New("")` find the sessions.
   - `timeline_test.go` `TestTimeline_ImportedSessionShowsTurnsToolsSubagents`: run
-    `timeline.Build(id, events, now)` over session `22222222-...` (with Seq set 1..n) and
+    `timeline.Build(id, events, now)` over session `22222222-2222-4222-8222-222222222222` (with Seq set 1..n) and
     check it has the main turns, the tool call by name, and a separate subagent row.
 - [ ] **Step 3:** Run `GOWORK=off go -C core test ./session/importer/claude/`. Expected: FAIL.
 - [ ] **Step 4:** Implement.
@@ -509,7 +539,16 @@ func WithImport(i Import) Option
 ```go
 func (c *Client) Import(ctx context.Context, req importer.Request) (importer.Report, error)
 func runImport(args []string, stdout, stderr io.Writer) int
+// apiclient/import.go:
+var ErrImportRunning = errors.New("an import is already running") // 409
+// 404 returns the existing ErrNotFound; 400 returns an error that wraps the existing
+// ErrBadRequest and holds the response body text.
 ```
+- `Client.Import` posts JSON with `http.NewRequestWithContext` and the client's
+  `c.http` transport, the way `clear.go`'s `sendDelete` sends its request. It does not
+  use `getJSON`, which sets a short default deadline.
+- `cmd/agentop/main.go`: add `case "import": os.Exit(runImport(os.Args[2:], os.Stdout, os.Stderr))`
+  next to `case "cost":` (line 138).
 - Flags: `--agent` (`claude-code|bob|codex|opencode|pi`; the proxy answers 400 for an
   agent it has no source for), `--since` (decision 8), `--dry-run`, `--endpoint` (as
   `agentop cost`: default `localSessionEndpoint()`, same error lines).
@@ -538,15 +577,23 @@ func runImport(args []string, stdout, stderr io.Writer) int
 **Depends on:** T1, T2. **PR:** PR2. **Est:** 260 lines.
 
 **Files:**
-- Modify: `cmd/agentop/tui/sessions_title.go` (`sessionTitleCell`: a dim `imp ` prefix
-  when the summary's `Source` is imported, counted in the title budget)
-- Modify: `cmd/agentop/tui/events_columns.go` (status, duration, bytes, host, plugin
-  cells: `n/a` when `c.row.event.Imported()`)
-- Modify: `cmd/agentop/tui/detail_pane.go` (the timing line at line 491: `timing: n/a`
-  on an imported event)
-- Modify: `cmd/agentop/tui/detail_raw.go` / `detail_fetch.go` (the raw request view of
-  an imported event shows `not captured: imported from claude-code`, from
-  `strings.TrimPrefix(e.Source, model.ImportedSourcePrefix)`, and does not fetch `?raw=1`)
+- Modify: `cmd/agentop/tui/sessions_pane.go` (the sessions loop near line 302, which has
+  the summary `s` in hand: when `strings.HasPrefix(s.Source, model.ImportedSourcePrefix)`,
+  the title cell is a dim `imp ` followed by `m.sessionTitleCell(s.ID, s.Title, titleW-4)`.
+  `sessionTitleCell` gets only an id, so do not change its signature. The no-limit
+  search closure gets the same `imp ` prefix.)
+- Modify: `cmd/agentop/tui/events_columns.go` (`colStatus`, `colDuration`, `colBytes`,
+  `colHost`, `colPlugin` render `n/a` when `c.row.event.Imported()`; also in
+  `toolCells` near line 867 for the same columns)
+- Modify: `cmd/agentop/tui/detail_pane.go` (`timingHeader` near line 490: return
+  `timing: n/a` when `e.Imported()`, before the `Ttfb` check)
+- Modify: `cmd/agentop/tui/detail_raw.go` (`withRaw` gets the event as a third argument;
+  its one caller is `detail_pane.go:111`. When `raw == nil` and `e.Imported()`, set the
+  `"raw"` node to the string `not captured: imported from <agent>`, with
+  `<agent> = strings.TrimPrefix(e.Source, model.ImportedSourcePrefix)`.) Do NOT change
+  `detail_fetch.go`: the full-event fetch must still run, because the list projection
+  drops the parsed fields (`Messages`, `ToolResults`) that the detail pane shows. The
+  `?raw=1` part of that fetch returns no capture for an imported event, which is correct.
 - Test: `cmd/agentop/tui/imported_test.go`
 
 - [ ] **Step 1:** Write tests: `TestSessionTitleCell_ImportedPrefix`,
@@ -598,6 +645,9 @@ test -z "$(gofmt -l core cmd/cortex cmd/agentop)" \
  && scripts/dev/go-test-shards.sh -short cmd/agentop \
  && GOWORK=off go -C cmd/agentop test ./apiclient/... ./tui/...
 ```
+
+Checked on the base commit c50de9be, from the worktree root: the `gofmt` step and the
+three `go vet` steps pass as written. No step was changed.
 
 ## For a human after review
 
