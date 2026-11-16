@@ -458,3 +458,21 @@ func TestRun_SkipsSessionPastRetention(t *testing.T) {
 		t.Fatal("the run wrote a session past retention")
 	}
 }
+
+// A cancel stops the run after an archive-full stop too.
+func TestRun_CancelStopsAfterArchiveFull(t *testing.T) {
+	const maxBytes = 64 << 10
+	a := openArchive(t, archive.WithMaxBytes(maxBytes))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var ss []Session
+	for i := range 3 {
+		s := fakeSession(fmt.Sprintf("s%d", i), start, 1)
+		s.SizeHint = maxBytes // never fits
+		ss = append(ss, s)
+	}
+	r := Run(ctx, &fakeSource{sessions: ss, yielded: cancel}, Options{Archive: a, Rates: testRates(t)})
+	if r.Stopped != StoppedArchiveFull || r.NotImported != 1 || r.Error != context.Canceled.Error() {
+		t.Fatalf("report = %+v, want the stop, 1 not imported and the cancel error", r)
+	}
+}

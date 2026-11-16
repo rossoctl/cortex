@@ -40,13 +40,13 @@ func Run(ctx context.Context, src Source, o Options) AgentReport {
 			r.Error = err.Error()
 			break
 		}
-		if r.Stopped != "" {
-			r.NotImported++
-			continue
-		}
 		if err := ctx.Err(); err != nil {
 			r.Error = err.Error()
 			break
+		}
+		if r.Stopped != "" {
+			r.NotImported++
+			continue
 		}
 		r.SkippedLines += s.Skipped
 
