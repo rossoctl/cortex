@@ -18,7 +18,7 @@
 - File: `<archive root>/forgotten.jsonl` (next to `data/`, not inside it). Mode `fileMode`. A clear does not touch it.
 - Write and fsync the record BEFORE the session leaves the disk.
 - `WriteSession`'s own delete (replace, and the `fail` path) writes no record.
-- A record expires when `to` is before `localMidnight(now) - ledgerDays days`. (Ledger cutoff is `midnight(now) - (ledgerDays-1) days`. The extra day covers whole-day files.)
+- A record expires when `to` is before `expireBefore`, where `y, m, d := now.Date(); expireBefore := time.Date(y, m, d, 0, 0, 0, 0, now.Location()).AddDate(0, 0, -a.ledgerDays)` and `now = a.now()`. The archive package has no midnight helper; write this inline in `compactForgotten`. (Ledger cutoff is `midnight(now) - (ledgerDays-1) days`. The extra day covers whole-day files.)
 - Do not change the cost ledger, the session API, agentop, or the import report.
 - Comments, commit messages: ASD-STE100 plain English. Commits: `git commit -s`, trailer `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`.
 
@@ -35,7 +35,7 @@
 9. **Compaction:** at `Open` (after `prune`), and on `tick` when `now - lastCompact >= 24h`. Drop expired entries from the map. Rewrite the file when dead lines (expired, duplicate ids, lines that do not parse) are at least half of its lines: temp file `.forgotten.jsonl.tmp`, fsync, rename, `syncDir(root)`.
 10. **Records survive a reopen.** `Open` reads the file BEFORE its `prune`, so the prune at `Open` merges into loaded records.
 11. **The `skippedExpired` rule already covers the day limit** in most cases, because the importer skips a transcript older than the archive retention. The records cover the day limit too (for a transcript that is newer than its archived segments).
-12. **The test helper `openArchive` in `core/session/importer/importer_test.go` passes `archive.WithLedgerRetentionDays(31)` before the caller's options**, so every importer test runs with records on.
+12. **The test helper `openArchiveAt` in `core/session/importer/importer_test.go` (which `openArchive` calls) passes `archive.WithLedgerRetentionDays(31)` before the caller's options**, so every importer test runs with records on.
 13. One PR. The total estimate is about 1,000 counted lines.
 
 ## Review Focus
@@ -68,7 +68,7 @@ Depends on: none. estLines: 560.
 
 **Interfaces:**
 - Produces:
-  - `func WithLedgerRetentionDays(n int) Option` — 0 (the default) means no ledger: no records are written. Values over `MaxRetentionDays` of the ledger (3650) are clamped to 3650.
+  - `func WithLedgerRetentionDays(n int) Option` — 0 (the default) means no ledger: no records are written. Values over 3650 are clamped to 3650, and negative values are 0. Use a package constant `maxLedgerDays = 3650` with the comment `// ledger.MaxRetentionDays; the archive does not import the ledger.` Do not import `core/cost/ledger` from the archive.
   - `func (a *Archive) Forgotten(id string) (from, to time.Time, ok bool)` — reads the in-memory map under `fgMu.RLock`.
   - `Stats.ForgetRecords int` (entries in the map), `Stats.BadForgetLines uint64` (lines skipped at load), `Stats.ForgetWriteErrors uint64`.
   - Internal: `forgetFile = "forgotten.jsonl"`, `type forgetRecord struct { ID string \`json:"id"\`; From int64 \`json:"from"\`; To int64 \`json:"to"\` }`, `func (a *Archive) forget(ss []*sessionState)` (writer goroutine only), `func (a *Archive) loadForgotten()`, `func (a *Archive) compactForgotten(now time.Time)`.
@@ -77,7 +77,7 @@ Depends on: none. estLines: 560.
   - `TestForgotten_DeleteWritesRecord`: record a session, `Deleted(id)`, `AwaitDelete`. One line. `ID == id`, `From == meta CreatedAt` in ms (take it from `Lookup(id).CreatedAt` before the delete), `To == Lookup(id).LastRequestAt` in ms. `Forgotten(id)` returns the same times and `ok`.
   - `TestForgotten_ClearWritesOnePerSession`: 3 sessions with tokens, `Cleared()`, `AwaitClear`. 3 lines, one per id. The file still exists after the clear, and `data/` is empty.
   - `TestForgotten_DayLimitWritesRecord`: record a session, `Close`, reopen the same root with `WithClock` 31 days in the future (default archive retention is 30). The session is gone and the record exists. Open both archives with `WithLedgerRetentionDays(40)`, so that the compaction at the second `Open` (clock + 31 days) does not expire the new record.
-  - `TestForgotten_SizeLimitWritesRecord`: record a session, `Close`, reopen with `WithMaxBytes(1)`. The session is gone and the record exists. Open both archives with `WithLedgerRetentionDays(40)`, so that the compaction at the second `Open` (clock + 31 days) does not expire the new record.
+  - `TestForgotten_SizeLimitWritesRecord`: record a session, `Close`, reopen the same root with `WithMaxBytes(1)` and the same clock. The session is gone and the record exists. Open both archives with `WithLedgerRetentionDays(31)`.
   - `TestForgotten_NoInferenceWritesNone`: a session with only events that carry no tokens and no cost. Delete it. No file, or an empty file. `Forgotten` is not `ok`.
   - `TestWriteSession_ReplaceWritesNoRecord`: `WriteSession(id, evs, false)`, then `WriteSession(id, evs2, true)`. No record.
   - `TestForgotten_LedgerOffWritesNone`: no `WithLedgerRetentionDays`. Delete and clear sessions with tokens. No file.
@@ -94,7 +94,7 @@ Expected: FAIL (build errors: `WithLedgerRetentionDays`, `Forgotten` undefined).
 - [ ] **Step 3: Implement**
   - `forgotten.go`: `loadForgotten` reads the file line by line (`bufio.Scanner` with a 64 KiB buffer is enough: an id is ≤ 45 characters). A line that does not unmarshal, or has an empty `id`, increments `badForgetLines`. Merge rule: min `from`, max `to`. Count all lines in `forgetLines` (writer-only int) for compaction.
   - `forget(ss)`: return at once when `ledgerDays == 0`. For each session, compute `sum := s.meta.Summary.Summary(s.meta.ID)`. Skip it unless `!sum.LastRequestAt.IsZero() && (sum.TotalTokens > 0 || sum.CostMicros > 0)`. Merge each record into the map first. Then open with `O_WRONLY|O_CREATE|O_APPEND`, write all lines, `Sync`, `Close`. If the file was new, `syncDir(a.root)`. On any error: `slog.Warn` and `forgetWriteErrors.Add(1)`, then return (Decision 2).
-  - `compactForgotten(now)`: `expireBefore := midnight(now.In(time.Local)).AddDate(0, 0, -a.ledgerDays)`. Drop map entries with `to` before it. When `dead*2 >= forgetLines` and `forgetLines > 0`, rewrite the file (Decision 9) from the map and set `forgetLines = len(map)`. With `ledgerDays == 0`, do nothing.
+  - `compactForgotten(now)`: compute `expireBefore` as the Global Constraints say. Drop map entries with `to` before it. Then `dead := forgetLines - len(map)` (expired, duplicate and bad lines). When `dead*2 >= forgetLines` and `forgetLines > 0`, rewrite the file (Decision 9) from the map and set `forgetLines = len(map)`. With `ledgerDays == 0`, do nothing.
   - `archive.go`:
     - In `Open`: after `removeTrash`, call `loadForgotten()`. After `a.prune(now)`, call `compactForgotten(now)` and set `lastCompact = now`.
     - In `take`: `case opDelete:` — `if s := a.sessions[o.id]; s != nil { a.forget([]*sessionState{s}) }`, then `deleteSession`.
@@ -207,6 +207,8 @@ test -z "$(gofmt -l core cmd/cortex)" \
  && GOWORK=off go -C cmd/cortex vet ./... \
  && GOWORK=off go -C cmd/cortex test -race ./...
 ```
+
+Proof run on the unchanged base (2026-11-16, from the worktree root): `gofmt -l core cmd/cortex` printed nothing, `GOWORK=off go -C core vet ./...` and `GOWORK=off go -C cmd/cortex vet ./...` passed. No change to how the steps are called.
 
 ## For a human after review
 
