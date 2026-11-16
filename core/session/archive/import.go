@@ -2,6 +2,9 @@ package archive
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/session"
@@ -129,6 +132,25 @@ func (a *Archive) writeSession(id string, events []model.SessionEvent, replace b
 	}
 	s = a.sessions[id]
 	a.closeWriter(s)
+	// Retention and the usage replay judge a segment by LastWrite: for an import that is its
+	// newest event, not the import time.
+	for i := range s.meta.Segments {
+		seg := &s.meta.Segments[i]
+		if seg.FirstSeq < 1 || seg.LastSeq > uint64(len(events)) {
+			continue
+		}
+		var t time.Time
+		for _, e := range events[seg.FirstSeq-1 : seg.LastSeq] {
+			if e.At.After(t) {
+				t = e.At
+			}
+		}
+		if !t.IsZero() {
+			seg.LastWrite = t
+			// The mtime is what a reconcile reads when session.json does not list the segment.
+			_ = os.Chtimes(filepath.Join(s.dir, seg.File), t, t)
+		}
+	}
 	a.writeMeta(s)
 	if a.writeErrors.Load() != errs {
 		return fail(errors.New("session archive: the write failed; see the log"))

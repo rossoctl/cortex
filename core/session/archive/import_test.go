@@ -4,6 +4,7 @@ import (
 	"errors"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/rossoctl/cortex/core/model"
 )
@@ -274,4 +275,42 @@ func TestWriteSession_PausedReplaceKeepsOldCopy(t *testing.T) {
 	}
 	a.paused.Store(false)
 	wantSeqs(t, seqs(t, a, "s1"), 4)
+}
+
+// An imported segment is as old as its newest event, so the size bound deletes it before a live
+// session written before the import, and the usage replay of the last hours leaves it out.
+func TestWriteSession_SegmentAgeIsItsEvents(t *testing.T) {
+	clk := newClock()
+	a := openTest(t, t.TempDir(), clk)
+	defer a.Close()
+	newRecorder(a).record("live", synthSession(72, 2, 512)...)
+	settle(a)
+	a.inWriter(func() { a.closeWriter(a.sessions["live"]) })
+	clk.advance(time.Hour)
+	newest := clk.now().Add(-60 * 24 * time.Hour)
+	evs := importedEvents(4)
+	for i := range evs {
+		evs[i].At = newest.Add(time.Duration(i-len(evs)+1) * time.Second)
+	}
+	if err := a.WriteSession("old", evs, false); err != nil {
+		t.Fatal(err)
+	}
+	if src := a.ReplaySources(clk.now().Add(-6 * time.Hour)); len(src.srcs) != 1 || src.srcs[0].id != "live" {
+		t.Errorf("replay sources %v, want only the live segment", src.srcs)
+	}
+	var lastWrite time.Time
+	a.inWriter(func() {
+		lastWrite = a.sessions["old"].meta.Segments[0].LastWrite
+		a.retainDays, a.maxBytes = 0, a.sessions["live"].meta.Segments[0].Bytes
+		a.prune(clk.now())
+	})
+	if !lastWrite.Equal(newest) {
+		t.Errorf("imported LastWrite = %v, want the newest event %v", lastWrite, newest)
+	}
+	if _, ok := a.Lookup("old"); ok {
+		t.Error("the size bound kept the imported session")
+	}
+	if _, ok := a.Lookup("live"); !ok {
+		t.Error("the size bound deleted the live session before the older import")
+	}
 }

@@ -29,11 +29,6 @@ type Options struct {
 // Run imports the sessions of one source. A session the proxy recorded live is never
 // changed. A cancelled ctx stops the run between two sessions.
 //
-// shortcut: an imported session expires from the archive 30 days after the import, and a
-// later import then writes it as new and sends its turns to the ledger again. The ledger skips
-// turns before RetentionCutoff, so only a turn inside both windows (about one day at a month
-// boundary) counts two times. Keep the imported turn ids if that becomes a problem.
-//
 // A live session that the archive pruned (max_bytes or retention_days) is new again here, but
 // its ledger rows are not pruned with it. toLedger skips each turn that has a live row near it.
 func Run(ctx context.Context, src Source, o Options) AgentReport {
@@ -68,6 +63,11 @@ func Run(ctx context.Context, src Source, o Options) AgentReport {
 		// Rule 2: the archived copy is as new as the transcript.
 		if found && !s.Updated.After(sum.LastRequestAt) {
 			r.SkippedCurrent++
+			continue
+		}
+		// The next prune would delete a session past the archive's retention.
+		if d := o.Archive.RetentionDays(); d > 0 && s.Updated.Before(time.Now().Add(-time.Duration(d)*24*time.Hour)) {
+			r.SkippedExpired++
 			continue
 		}
 		// Rule 5.

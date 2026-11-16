@@ -44,8 +44,9 @@ type AgentReport struct {
 	SkippedLive    int    `json:"skippedLive"`
 	SkippedCurrent int    `json:"skippedCurrent"`
 	SkippedLines   int    `json:"skippedLines"`
-	NotImported    int    `json:"notImported,omitempty"` // left after an archive-full stop
-	Stopped        string `json:"stopped,omitempty"`     // "archive full" or ""
+	SkippedExpired int    `json:"skippedExpired,omitempty"` // older than the archive's retention
+	NotImported    int    `json:"notImported,omitempty"`    // left after an archive-full stop
+	Stopped        string `json:"stopped,omitempty"`        // "archive full" or ""
 	Error          string `json:"error,omitempty"`
 }
 

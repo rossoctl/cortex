@@ -75,12 +75,7 @@ the import in `POST /v1/import`. agentop calls the route and marks imported rows
 10. **Two PRs.** The total estimate is about 3,100 counted lines. PR 1 is the core write
     path with a fake source in the tests. PR 2 adds the Claude source, the route, agentop
     and docs on top of it.
-11. **Known limit, accepted:** an imported session expires from the archive 30 days after
-    the import. A later re-import is then rule 4 and sends its turns to the ledger again.
-    The ledger skips turns before `RetentionCutoff()`, so only a turn inside both windows
-    (at most about one day at a month boundary) can count twice. Write this as a
-    `shortcut:` comment in `importer.Run`.
-12. **LAST 1H does not show imported turns until the next proxy restart.** The spec
+11. **LAST 1H does not show imported turns until the next proxy restart.** The spec
     accepts this. The importer does not feed the usage ring.
 
 ## Review Focus
@@ -624,7 +619,8 @@ imported events have `source: "imported:<agent>"`; the summary is marked only wh
 its events are imported; cost `source: "transcript"` priced at today's rates; ledger
 rows `source: "transcript"`; turns before the ledger cutoff reach the archive only; LAST
 1H shows imported turns only after a proxy restart; the import stops at 90% of
-`max_bytes`; an imported session is kept 30 days from the import, not from its date;
+`max_bytes`; an imported segment is kept `retention_days` from its newest event, and a session older
+than that is skipped (`skippedExpired`);
 only Claude Code is supported now (#1872–#1875 add the others).
 
 - [ ] **Step 1:** Write the docs in ASD-STE100 style.

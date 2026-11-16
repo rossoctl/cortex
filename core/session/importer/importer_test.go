@@ -443,3 +443,18 @@ func TestRun_LedgerSkipsTurnsRecordedLive(t *testing.T) {
 		t.Fatalf("ledger has %d imported requests, want 1", imported)
 	}
 }
+
+// A session past the archive's retention is not written: the next prune would delete it, and the
+// next run would write it again.
+func TestRun_SkipsSessionPastRetention(t *testing.T) {
+	a := openArchive(t, archive.WithRetentionDays(3))
+	old := fakeSession("old", time.Now().Add(-4*24*time.Hour), 2)
+	r := Run(context.Background(), &fakeSource{sessions: []Session{old, fakeSession("new", start, 1)}},
+		Options{Archive: a, Rates: testRates(t)})
+	if r.Imported != 1 || r.SkippedExpired != 1 {
+		t.Fatalf("report = %+v, want 1 imported and 1 past retention", r)
+	}
+	if _, ok := a.Lookup("old"); ok {
+		t.Fatal("the run wrote a session past retention")
+	}
+}
