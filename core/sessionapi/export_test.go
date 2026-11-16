@@ -3,11 +3,13 @@ package sessionapi
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -421,5 +423,132 @@ func TestHandleExport_WithoutAnArchiveIs404(t *testing.T) {
 	ts, _ := newTestServer(t)
 	if code, body := getBody(t, ts.URL+"/v1/export"); code != http.StatusNotFound {
 		t.Fatalf("GET /v1/export = %d %s, want 404 with no archive", code, body)
+	}
+}
+
+// readKeepingError GETs url and returns the body read ALONGSIDE the error that ended it.
+//
+// getBody and getPath both t.Fatalf on a body-read error, so neither can observe the one
+// thing these two tests are about: whether the read ended cleanly or broke. Modelled on
+// forwardproxy's readViaProxy, for the same #1543 question one endpoint over — a
+// header-phase error counts as client-visible too, since an abort can land before the
+// client reads the flushed headers.
+func readKeepingError(t *testing.T, url string) (string, error) {
+	t.Helper()
+	resp, err := http.Get(url) //nolint:noctx // a test fetching a test server
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	b, readErr := io.ReadAll(resp.Body)
+	return string(b), readErr
+}
+
+// twoSegmentArchive writes one session across TWO segment files and returns the archive
+// root plus the segments in write order, oldest first.
+//
+// Two open/close cycles, not one: segments roll on size (10k events, 128MB) and on idle,
+// never on an event's timestamp, so appending hours apart in a single cycle still gives
+// ONE file. createSegment opens O_EXCL and never reopens, so a second archive.Open over
+// the same root always starts a fresh segment; the distinct clocks only make the two
+// filenames differ so the caller can tell them apart.
+func twoSegmentArchive(t *testing.T) (string, []string) {
+	t.Helper()
+	root := t.TempDir()
+	var segs []string
+	for cycle := range 2 {
+		at := exportBase.Add(time.Duration(cycle) * time.Hour)
+		write, err := archive.Open(root, archive.WithClock(func() time.Time { return at }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := session.New(0, 0, 0, session.WithClock(func() time.Time { return at }))
+		store.AddRecorder(write)
+		for i := range 3 {
+			store.Append("s1", model.SessionEvent{At: at.Add(time.Duration(i) * time.Minute),
+				Direction: model.Outbound, Phase: model.SessionRequest, Host: "h", HTTPMethod: "POST"})
+		}
+		store.Close()
+		if err := write.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var found []string
+		filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error { //nolint:errcheck // a missing file is the test's own failure to set up
+			if err == nil && !d.IsDir() && strings.HasSuffix(path, ".jsonl.zst") {
+				found = append(found, path)
+			}
+			return nil
+		})
+		if len(found) != cycle+1 {
+			t.Fatalf("after %d cycles the archive holds %d segments, want %d: %v",
+				cycle+1, len(found), cycle+1, found)
+		}
+		sort.Strings(found)
+		segs = found
+	}
+	return root, segs
+}
+
+// A WALK THAT DIES PAST ITS FIRST RECORD REACHES THE CLIENT AS AN ERROR, not as a clean
+// 200 off a short body. Without the abort the handler logs a Warn and returns normally,
+// net/http writes the terminating chunk, and a caller's io.Copy sees nil — a truncated
+// export indistinguishable from a whole one (#1543, and huang195's review of #1831).
+//
+// The fixture breaks the OLDER of two segments: Page reads newest-segment-first, so the
+// newer one's records are written before the broken one is reached. A self-referential
+// symlink (ELOOP) rather than os.Remove, which read.go skips as fs.ErrNotExist and
+// tolerates, or a directory, which opens and then reads as merely truncated.
+func TestHandleExport_TruncatedWalkReachesClientAsError(t *testing.T) {
+	root, segs := twoSegmentArchive(t)
+
+	a, err := archive.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+
+	// Behind the read-side archive's back, after Open reconciled the metadata Summaries
+	// reads — so the walk still believes the segment is there and fails on opening it.
+	oldest := segs[0]
+	if err := os.Remove(oldest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(oldest, oldest); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(New(":0", session.New(0, 0, 0), WithArchive(a),
+		WithClock(func() time.Time { return exportNow })).server.Handler)
+	t.Cleanup(ts.Close)
+
+	body, readErr := readKeepingError(t, ts.URL+"/v1/export")
+	if readErr == nil {
+		t.Fatalf("a truncated export reached the client as a clean end of body; got %d bytes:\n%s",
+			len(body), body)
+	}
+	// What did arrive is still NDJSON: the records from the readable segment, whole lines.
+	// Truncation, not corruption — the point of aborting rather than mangling the stream.
+	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var r sessionexport.Record
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("line is not a whole record: %q: %v", line, err)
+		}
+	}
+}
+
+// The control for the test above: a HEALTHY export still reads clean. An abort on the
+// failure path is only correct if it never fires on the happy one — the same pair
+// forwardproxy keeps around its own abort.
+func TestHandleExport_CleanWalkStillReadsClean(t *testing.T) {
+	ts := exportFixture(t)
+	body, readErr := readKeepingError(t, ts.URL+"/v1/export")
+	if readErr != nil {
+		t.Fatalf("a complete export broke on read: %v", readErr)
+	}
+	if n := strings.Count(strings.TrimRight(body, "\n"), "\n") + 1; n != 9 {
+		t.Fatalf("got %d records, want the fixture's 9", n)
 	}
 }

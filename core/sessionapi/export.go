@@ -33,12 +33,15 @@ import (
 // values are a caller bug, and the first one looking valid must not hide the second.
 // Absent parameters carry everything.
 //
-// A WALK THAT FAILS PAST ITS FIRST RECORD TRUNCATES RATHER THAN CORRUPTS. The status
-// line is long gone by then, and NDJSON keeps every complete line valid in a truncated
-// file — Writer's stated design property — so the handler logs (Warn: that log line is
-// the only trace a truncated export leaves) and stops. A failure before any record — an
-// unknown session, a bad since, a segment that cannot be OPENED OR READ — still answers
-// a status.
+// A WALK THAT FAILS PAST ITS FIRST RECORD RESETS THE CONNECTION. The status line is long
+// gone by then, so the client cannot be told in the response — and it must not be left
+// believing the export is whole: returning normally would write the terminating chunk and
+// hand it a COMPLETE 200 off a dead walk, the #1543 bug class. So the handler logs (Warn:
+// that log line is the server's only trace of a truncated export) and panics with
+// http.ErrAbortHandler. NDJSON keeps every complete line already flushed valid —
+// Writer's stated design property — so a consumer keeps what arrived and reads an error
+// at the end rather than a clean EOF. A failure before any record — an unknown session,
+// a bad since, a segment that cannot be OPENED OR READ — still answers a status.
 //
 // A segment whose CONTENT is damaged is a different case, and it is tolerated rather
 // than answered: readSegment serves the readable prefix and reports the rest as
@@ -99,9 +102,20 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"archive read failed"}`, http.StatusInternalServerError)
 			return
 		}
-		// Past the first record there is nothing left to answer with: the file the client
-		// holds ends at a line boundary, which is the best a stream can do.
+		// Past the first record the status line is gone, so the only honest signal left is
+		// a broken connection. Returning normally here would make net/http write the
+		// terminating chunk and hand the client a COMPLETE 200 off a walk that died —
+		// io.Copy returns nil, a CLI prints its success summary, and a short export is
+		// indistinguishable from a whole one (#1543, the same bug the forward proxy's
+		// stream relay fixed the same way: see classifyBrokenStream's note on abort).
+		// ErrAbortHandler is the standard library's own abort signal — deferred
+		// finalization still runs and net/http logs no stack trace.
+		//
+		// The Warn stays: it is the server's trace of the failure, and the panic only
+		// tells the CLIENT. Every complete NDJSON line already flushed stays valid, so a
+		// consumer keeps what arrived — it just cannot mistake it for the whole archive.
 		slog.Warn("sessionapi: export truncated", "error", err)
+		panic(http.ErrAbortHandler)
 	}
 }
 
