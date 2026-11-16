@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -736,6 +737,9 @@ func TestRecord_TheCapResetsWithTheMinute(t *testing.T) {
 // A day file records spend, so it must not be readable by other accounts on a
 // shared machine. 0o644 is the default that would be wrong here.
 func TestWriter_DayFileIsNotWorldReadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no Unix permission bits; access is governed by ACLs")
+	}
 	dir := t.TempDir()
 	now := at
 	w := newTestWriter(t, dir, func() time.Time { return now })

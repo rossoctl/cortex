@@ -54,6 +54,7 @@ func TestMeta_ACrashedWriteLeavesTheOldFileWhole(t *testing.T) {
 }
 
 func TestMeta_ModeIs0600(t *testing.T) {
+	skipWithoutUnixModes(t)
 	dir := filepath.Join(t.TempDir(), dirName("s1"))
 	if err := writeMeta(dir, newMeta("s1")); err != nil {
 		t.Fatal(err)
