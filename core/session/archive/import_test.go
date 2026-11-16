@@ -123,6 +123,24 @@ func TestWriteSession_RefusesAfterLiveRecord(t *testing.T) {
 	}
 }
 
+// The store numbered a live event that the archive does not hold (dropped or still queued):
+// an import must not take its seqs.
+func TestWriteSession_RefusesWhenLiveEventNotOnDisk(t *testing.T) {
+	a := openTest(t, t.TempDir(), newClock())
+	defer a.Close()
+	a.mu.Lock()
+	a.lastSeq["s1"] = 1
+	a.mu.Unlock()
+	for _, replace := range []bool{false, true} {
+		if err := a.WriteSession("s1", importedEvents(4), replace); !errors.Is(err, ErrLive) {
+			t.Fatalf("replace=%v: err = %v, want ErrLive", replace, err)
+		}
+	}
+	if got := a.LastSeq("s1"); got != 1 {
+		t.Fatalf("LastSeq = %d, want 1", got)
+	}
+}
+
 // A live event queued for an imported session, not yet written, must not be numbered into a
 // replacement's seqs.
 func TestWriteSession_RefusesReplaceWithLiveEventQueued(t *testing.T) {
