@@ -1,10 +1,12 @@
-# Exporting sessions for analysis
+# Export sessions for analysis
 
-`GET /v1/export` on the [Session Events API](session-api.md) writes the session archive
-as **NDJSON, one line per archived event** — a month of traffic as a file a laptop can
-process (~12 MB for 30 days on the install it was measured on), where the same events
-as full snapshots are multi-gigabyte. `agentop export` is the same thing as a command,
-writing a file:
+`GET /v1/export` writes the session archive as NDJSON. One line per archived event. It is
+on the [Session Events API](session-api.md).
+
+A month of traffic is a file a laptop can process. 30 days measured about 12 MB on the
+install used for development. The same events as full snapshots are multiple gigabytes.
+
+`agentop export` is the same endpoint as a command:
 
 ```sh
 agentop export --out export.ndjson
@@ -13,15 +15,19 @@ curl -s localhost:47601/v1/export    # the same stream, raw
 curl -s "localhost:47601/v1/export?since=168h" | jq -c 'select(.model)'
 ```
 
-What it is for: post-processing outside the tool. Latency percentiles, token spend by
-model, agent-version adoption, cache-hit rates, tool failure rates — the questions a
-month of records answers and a live TUI does not. [`agentop cost`](pricing.md) answers a
-few of them inside the tool; this is the layer behind anything else.
+Use it to post-process outside the tool. It answers questions that need a month of
+records: latency percentiles, token spend per model, agent-version adoption, cache-hit
+rates, tool failure rates. A live TUI cannot answer these.
+[`agentop cost`](pricing.md) answers a few of them inside the tool. This endpoint is the
+layer behind anything else.
+
+For a step-by-step walkthrough, see
+[`session-export-guide.md`](session-export-guide.md). This page is the reference.
 
 ## What a record is
 
-One line, one event, content-free by construction — an allowlist of ~30 scalars
-projected from the event, never the event itself:
+One line is one event. A record is content-free by construction. It is an allowlist of
+about 30 scalars projected from the event. It is never the event itself.
 
 ```json
 {"schema":1,"sessionId":"45fa31b2-…","seq":2077,"requestId":"a0-9e37cd",
@@ -34,111 +40,123 @@ projected from the event, never the event itself:
  "messageCount":385,"toolCount":24,"toolCallCount":11}
 ```
 
-**Never in a record:** message content, completions, tool-call names or arguments,
-tool results, MCP params, request paths, headers, authenticated identity. The field list
-is an allowlist, so a field added to the event later reaches an export only when someone
-adds it to the projection on purpose — that is what makes this endpoint safe to pipe
-off the machine where the full events must stay. Content-free is not detail-free: what a
-record does carry — hosts, models, client and session identifiers, timestamps — still
-describes where an agent talked and how much, which is what an external analysis wants
-and what to look over before a file leaves your hands entirely.
+**A record never carries** message content, completions, tool-call names, tool-call
+arguments, tool results, MCP params, request paths, headers or authenticated identity.
 
-`client` deserves its own line: it is parsed from the User-Agent, **a cost-attribution
-and display key, never an authorization subject**. An external collector is exactly where
-someone will be tempted to treat it as identity.
+The field list is an allowlist. A field added to the event later does not reach an export
+on its own. Someone must add it to the projection first. This is what makes the endpoint
+safe to pipe off the machine that must keep the full events.
+
+**Content-free is not detail-free.** A record carries hosts, models, client identifiers,
+session identifiers and timestamps. These describe where an agent talked, and how much.
+An external analysis wants exactly this. Review a file before it leaves your hands.
+
+`client` needs its own warning. Cortex parses it from the User-Agent. It is a
+cost-attribution key and a display key. **It is never an authorization subject.** An
+external collector is where someone will treat it as identity.
 
 ## Reading rules
 
-- **Zero means "not recorded", never a real zero.** Every numeric field is omitted when
-  unknown. A consumer rendering an absent figure as 0 reports an unmeasured request as
-  one that took no time and sent no bytes.
-- **Order by `at`, then `seq`.** The walk emits sessions most recently updated first,
-  events newest first within a session — a consumer sorts its own timeline. `seq` is
-  unique within one incarnation of a session, not forever: a session re-created under
-  the same id restarts at 1.
-- **Never subtract timestamps for a latency.** Same-instant events are common on a fast
-  local proxy. `durationMs` is the measurement; `durationMs` − `ttfbMs` is how long the
-  body took.
-- **Token counts are the split only** — `inputTokens` is the uncached prompt; add
-  `inputTokens` + `cacheReadTokens` + `cacheWriteTokens` yourself if you want a prompt
-  total. There is no aggregate field, deliberately: a total beside its own components
-  gets every cached token counted twice by the first consumer to mix them.
-- **No tool-result count exists at all.** Every request re-sends the whole conversation,
-  so summing raw tool results overcounts ~272x on real traffic. `toolCallCount` (calls
-  the model emitted) is exported and is not affected.
+- **An absent number means "not recorded". It never means zero.** Cortex omits a numeric
+  field when the value is unknown. Do not render an absent figure as 0. That reports an
+  unmeasured request as one that took no time and sent no bytes.
+- **Order by `at`, then `seq`.** The walk emits the most recently updated session first.
+  Within a session it emits the newest event first. A consumer sorts its own timeline.
+  `seq` is unique within one run of a session, not forever. A session re-created under the
+  same id restarts at 1.
+- **Never subtract timestamps to get a latency.** Same-instant events are common on a fast
+  local proxy. Use `durationMs` for the measurement. Use `durationMs` − `ttfbMs` for the
+  time the body took.
+- **Token counts are the split only.** `inputTokens` is the uncached prompt. To get a
+  prompt total, add `inputTokens` + `cacheReadTokens` + `cacheWriteTokens` yourself. No
+  aggregate field exists, and that is deliberate. A total next to its own components makes
+  the first consumer count every cached token twice.
+- **No tool-result count exists.** Every request re-sends the whole conversation. A sum of
+  raw tool results therefore overcounts by about 272x on real traffic. `toolCallCount` is the
+  count of calls the model emitted. It is exported, and this problem does not affect it.
 
-The full field list with these rules on each field is the doc comments on
-`core/sessionexport/record.go` — this file summarizes; that is the reference.
+The doc comments on `core/sessionexport/record.go` are the full field list. They carry
+these rules per field. This page is the summary.
 
 ## Selection
 
 | Parameter | Meaning |
 |---|---|
 | *(none)* | Every archived session, every event |
-| `?session=<id>` | Only the named sessions; repeatable (`&session=a&session=b`). An unknown id is a 400 naming as many archived ones as fit a byte budget, then a count of the rest — bounded in bytes, not in ids, so the answer stays inside what a client reads of a 400 body however long the ids are |
-| `?since=<duration>` | Only events newer than that far back — `168h` (a Go duration) or `7d` (a day count). Parsed before the first byte, so a bad value is a real 400; a repeated `since` is one too |
+| `?session=<id>` | Only the named sessions. Repeatable: `&session=a&session=b`. An unknown id is a 400 (see below) |
+| `?since=<duration>` | Only events newer than that far back. Use `168h` (a Go duration) or `7d` (a day count) |
 
-`since` floors on **event time**, not session age: a month-old session with traffic this
-morning has this morning's events carried by `?since=24h`; its older ones are not.
-Sessions the archive last touched before the floor are skipped without reading their
-segments.
+Cortex parses both parameters before it writes the first byte. A bad value is therefore a
+real 400, not a truncated stream. A repeated `since` is also a 400.
+
+An unknown `?session=` is a 400 that names the archived sessions. The list is bounded in
+bytes, not in ids. This keeps the answer inside what a client reads of a 400 body, however
+long the ids are. The refusal lists as many ids as fit, then a count of the rest.
+
+`since` floors on **event time**, not on session age. Example: a session is a month old,
+and it has traffic from this morning. `?since=24h` carries this morning's events. It
+excludes the older ones. Cortex skips a session that it last touched before the floor, and
+does not read its segments.
 
 ## `agentop export`
 
-The command wraps the endpoint for the shell: same parameters as flags, the file or the
-pipe, and a summary line on stderr (`3 records, 231B → (stdout)`) that never mixes into
-the stream.
-
-For a walkthrough — first export, `jq` and DuckDB recipes, the three ways a reader gets a
-wrong answer, and exporting from a cluster — see
-[`session-export-guide.md`](session-export-guide.md).
+The command wraps the endpoint for the shell. The parameters above become flags. The
+output goes to a file or to a pipe. A summary line goes to stderr, for example
+`3 records, 231B → (stdout)`. The summary never mixes into the stream.
 
 | Flag | Meaning |
 |---|---|
-| `--out FILE` | Write to a file rather than stdout; an existing file is refused without `--force` |
-| `--session ID` | Repeatable and comma-separated (`--session a --session b` or `--session a,b`) |
+| `--out FILE` | Write to a file rather than stdout. An existing file is refused without `--force` |
+| `--session ID` | Repeatable and comma-separated: `--session a --session b` or `--session a,b` |
 | `--since DUR` | `168h` or `7d`, as on the endpoint |
 | `--endpoint URL` | Ask a specific proxy rather than the local one |
 
-A refused query — an unknown `--session`, a malformed `--since` — fails before the
-output file is created, with the proxy's own words: as many of the sessions it does hold
-as fit the refusal's byte budget, then a count of the rest. The file is opened only
-after the proxy answered, so a typo costs nothing.
+A refused query fails before the command creates the output file. An unknown `--session`
+and a malformed `--since` are both refused this way. The command prints the proxy's own
+words. The command opens the file only after the proxy answers, so a typo costs nothing.
 
-The budget is what keeps those words readable: the command reads 512 bytes of a refusal,
-and a count-based cap would overrun that on long ids. Against an older proxy that caps by
-id count it still can, and the command then prints the `curl` that lists the archived
-sessions directly rather than leaving a typo with no answer.
+The byte budget is what keeps those words readable. The command reads 512 bytes of a
+refusal. A count-based cap would overrun that on long ids. An older proxy still caps by id
+count. The command then prints the `curl` that lists the archived sessions, so a typo
+always has an answer.
 
 ## What it does not carry, and why
 
-- **Events still in memory only.** This is a backfill of the durable archive, at most a
-  tick behind the open segments — the same gap the paging endpoints document. A session
-  with nothing flushed yet does not appear. For the live tail, `GET /v1/events`.
-- **A session "incarnation" key.** A session id is client-asserted and reused: the id
-  `default` can span weeks of unrelated work. A consumer wanting "one sitting" infers it
-  from gaps in `at` for now ([#1739](https://github.com/rossoctl/cortex/issues/1739)).
+- **Events that are still only in memory.** This endpoint is a backfill of the durable
+  archive. It is at most one tick behind the open segments, which is the same gap the
+  paging endpoints document. A session with nothing flushed yet does not appear. For the
+  live tail, use `GET /v1/events`.
+- **A session "incarnation" key.** A client asserts its own session id and can reuse it.
+  The id `default` can cover weeks of unrelated work. A consumer that wants "one sitting"
+  must infer it from gaps in `at`
+  ([#1739](https://github.com/rossoctl/cortex/issues/1739)).
 - **Full-fidelity capture.** The exact request and response bytes stay on
-  `GET /v1/sessions/{id}/events/{seq}?raw=1`, and [`cortex-session-dump`](session-dump.md)
-  is the tool for keeping whole sessions as files. Use that when you want the content;
-  use this when you want the measurements — a dump and an export of the same traffic
-  answer different questions, and neither substitutes for the other.
+  `GET /v1/sessions/{id}/events/{seq}?raw=1`.
+  [`cortex-session-dump`](session-dump.md) keeps whole sessions as files. Use the dump
+  when you want the content. Use the export when you want the measurements. A dump and an
+  export of the same traffic answer different questions. Neither one replaces the other.
 
 ## Truncation, not corruption
 
-A walk that fails past its first record **resets the connection**, because the status line
-is already gone and a 200 cannot be taken back. NDJSON keeps every complete line valid, so
-a consumer keeps every record that arrived — but the read ends in an error rather than a
-clean end of body, so a truncated export cannot be mistaken for a whole one. `agentop
-export` turns that into a non-zero exit and says the file holds every complete record
-before the failure; a `curl > file` leaves the partial file and a non-zero exit of its own.
-The server also logs the failure (`sessionapi: export truncated`).
+A walk that fails past its first record **resets the connection**. The status line is
+already gone by then, and a 200 cannot be taken back.
 
-A failure before any record answers a status instead: a refused query (unknown session,
-bad `since`) a 400, an archive whose segments cannot be opened or read a 500.
+NDJSON keeps every complete line valid, so a consumer keeps every record that arrived. The
+read ends in an error, not in a clean end of body. A truncated export therefore cannot be
+mistaken for a whole one.
 
-A segment whose *content* is damaged is tolerated rather than refused: it is served up to
-its readable prefix, as the paging endpoints serve it, so a wholly unreadable one
-contributes nothing and a partly readable one contributes what it has. An export is
+`agentop export` turns that error into a non-zero exit. It also reports that the file holds
+every complete record written before the failure. A `curl > file` leaves the partial file
+and returns a non-zero exit of its own. The server logs the failure as
+`sessionapi: export truncated`.
+
+A failure before any record answers a status instead:
+
+- A refused query is a 400. This covers an unknown session and a bad `since`.
+- An archive whose segments cannot be opened or read is a 500.
+
+Cortex tolerates a segment whose *content* is damaged. It serves the segment up to its
+readable prefix, as the paging endpoints do. A segment that is unreadable throughout
+contributes nothing. A partly readable segment contributes what it has. An export is
 therefore not a way to detect a corrupt archive
 ([#1855](https://github.com/rossoctl/cortex/issues/1855)).
