@@ -2,6 +2,7 @@ package archive
 
 import (
 	"errors"
+	"os"
 	"syscall"
 	"testing"
 	"time"
@@ -312,5 +313,25 @@ func TestWriteSession_SegmentAgeIsItsEvents(t *testing.T) {
 	}
 	if _, ok := a.Lookup("live"); !ok {
 		t.Error("the size bound deleted the live session before the older import")
+	}
+}
+
+// A failed write whose erase also fails keeps its numbering: the partial copy is still on disk, so
+// a live event must not number into its seqs.
+func TestWriteSession_FailedEraseKeepsNumbering(t *testing.T) {
+	a := openTest(t, t.TempDir(), newClock())
+	defer a.Close()
+	a.segHook = func(w *segmentWriter) {
+		w.out.w = failWriter{syscall.ENOSPC}
+		if err := os.Chmod(a.data, 0o500); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { os.Chmod(a.data, 0o700) })
+	if err := a.WriteSession("s1", importedEvents(4), false); err == nil {
+		t.Fatal("a failed write returned no error")
+	}
+	if got := a.LastSeq("s1"); got != 4 {
+		t.Fatalf("LastSeq = %d, want the 4 reserved", got)
 	}
 }

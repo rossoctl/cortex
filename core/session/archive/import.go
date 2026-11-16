@@ -104,7 +104,10 @@ func (a *Archive) writeSession(id string, events []model.SessionEvent, replace b
 	}
 	// fail erases what part of the session reached disk, then restores.
 	fail := func(err error) error {
-		del()
+		if derr := del(); derr != nil {
+			// The partial copy stays on disk, so its seqs stay reserved.
+			return errors.Join(err, derr)
+		}
 		return restore(err)
 	}
 	// Paused is checked before the replace delete: a paused write must not erase the old copy.
