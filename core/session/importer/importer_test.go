@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -282,6 +284,28 @@ func TestRun_WriteErrorStopsRun(t *testing.T) {
 	r := Run(context.Background(), src, Options{Archive: a, Rates: testRates(t)})
 	if r.Error == "" || r.Imported+r.SkippedLive != 0 {
 		t.Fatalf("report = %+v, want the write error and nothing counted", r)
+	}
+}
+
+// A ledger that cannot write stops the run after the session that hit it, with the error named.
+func TestRun_LedgerWriteErrorStopsRun(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory")
+	}
+	dir := t.TempDir()
+	w, err := ledger.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { w.Close() })
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	src := &fakeSource{sessions: []Session{fakeSession("s1", start, 1), fakeSession("s2", start, 1)}}
+	r := Run(context.Background(), src, Options{Archive: openArchive(t), Ledger: w, Rates: testRates(t)})
+	if !strings.HasPrefix(r.Error, "cost ledger: ") || r.Imported != 1 {
+		t.Fatalf("report = %+v, want a cost ledger error after the first session", r)
 	}
 }
 

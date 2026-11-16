@@ -106,6 +106,8 @@ func Run(ctx context.Context, src Source, o Options) AgentReport {
 			if found {
 				after = sum.LastRequestAt
 			}
+			// shortcut: the archive already holds s, so a re-run skips it as current and its rows stay
+			// lost. Only a failed append (ENOSPC, EROFS) or a Close during it gets here. Undo the archive write if it shows up.
 			if err := toLedger(ctx, o.Ledger, s, after); err != nil {
 				r.Error = "cost ledger: " + err.Error()
 				break

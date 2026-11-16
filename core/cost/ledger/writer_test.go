@@ -2167,7 +2167,7 @@ func assertOwnership(t *testing.T, w *Writer, dir, step string) {
 	}
 }
 
-// Every path that writes a row has to keep the ownership rule, so this drives all
+// Every path that writes an accumulator row has to keep the ownership rule, so this drives all
 // three of them in one sequence rather than trusting the one that is obvious.
 func TestPendingMinute_IsNeverAlsoOnDisk(t *testing.T) {
 	dir := t.TempDir()

@@ -43,7 +43,7 @@ type batch struct {
 	// pruneAt is non-zero when retention should be enforced back from that instant.
 	pruneAt time.Time
 	// done, when non-nil, receives the append error. Set by submit for the callers
-	// that need to know the write landed — shutdown and tests.
+	// that need to know the write landed — shutdown, RecordBatch and tests.
 	done chan error
 }
 
@@ -60,10 +60,12 @@ type batch struct {
 // in sixty closes a minute and walks the accumulator, which foldLocked caps. Anything
 // added to this path has to keep that bound.
 //
-// OWNERSHIP: while pending() reports a minute, nothing THIS WRITER has put on disk carries
-// that minute or a later one. Three write paths keep it and TestPendingMinute_IsNeverAlsoOnDisk
-// drives all three. Note the qualifier — it says nothing about day files another writer
-// left there, and Window must not infer anything about the disk from it.
+// OWNERSHIP: while pending() reports a minute, no row that went through the accumulator
+// (Record) is on disk for that minute or a later one. Three write paths keep it and
+// TestPendingMinute_IsNeverAlsoOnDisk drives all three. RecordBatch is outside the rule: its
+// rows never enter the accumulator, so they may share a held minute, and Window sums them
+// with the held rows once each. The rule says nothing about day files another writer left
+// there, and Window must not infer anything about the disk from it.
 type Writer struct {
 	store *store
 	now   func() time.Time
@@ -150,9 +152,10 @@ type Writer struct {
 	// be added. If it HAS moved, the memory half may now also be on disk and is dropped
 	// instead. See Window.
 	flushGen uint64
-	// flushedThrough is the newest minute any of whose rows have reached disk.
+	// flushedThrough is the newest minute any of whose accumulator rows have reached disk.
+	// RecordBatch rows do not move it: they never enter the map, so they cannot be counted twice.
 	//
-	// It exists so a minute is never HELD after part of it has been written. Without
+	// It exists so a minute is never HELD after part of its accumulator rows were written. Without
 	// it, a Flush (shutdown, or the periodic settle) followed by another event in the
 	// same minute would leave that minute both on disk and in memory, and Window —
 	// which counts the held minute from memory and everything else from disk — would
@@ -822,7 +825,7 @@ func (w *Writer) markPruned(at time.Time) {
 // COPIED, not aliased: the caller is an HTTP handler that will encode these while the
 // next Record mutates the live map.
 //
-// The returned minute is the ownership boundary the writer keeps — see the type doc and
+// The returned minute is the ownership boundary for accumulator rows — see the type doc and
 // TestPendingMinute_IsNeverAlsoOnDisk. Zero, with no rows, when nothing is held. Window
 // decides nothing from it; the third return is what Window uses.
 //
@@ -1142,7 +1145,7 @@ func (w *Writer) sync() error {
 }
 
 // submit sends a batch and waits for it. Blocking, unlike enqueue — every caller is
-// a shutdown or a test, never a request.
+// a shutdown, a test or RecordBatch (the transcript import), never a request.
 func (w *Writer) submit(b batch) error {
 	if len(b.rows) == 0 && b.pruneAt.IsZero() {
 		return nil
