@@ -304,3 +304,34 @@ func TestSource_HonoursClaudeConfigDir(t *testing.T) {
 		t.Fatalf("got %v, want 2 sessions", ids(got))
 	}
 }
+
+// A parallel tool call puts the tool_result lines between the lines of one message.
+// They must not split the message into two turns: that counts one API call twice.
+func TestFile_InterleavedParallelToolCallIsOneTurn(t *testing.T) {
+	p := &parser{projects: map[string]string{}}
+	res, err := p.file(filepath.Join("testdata", "parallel-tools.jsonl"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := importer.Session{Events: res.events}
+	resp, reqs := responses(s, ""), requests(s, "")
+	if len(resp) != 2 || len(reqs) != 2 {
+		t.Fatalf("got %d responses, %d requests, want 2 turns", len(resp), len(reqs))
+	}
+	r := resp[0].Inference
+	if resp[0].RequestID != "req_011XXXXXXXXXXXXXXXXXXXXX" || r.CompletionTokens != 144 || len(r.ToolCalls) != 2 || r.FinishReason != "tool_use" {
+		t.Errorf("parallel turn: RequestID %q CompletionTokens %d ToolCalls %+v FinishReason %q",
+			resp[0].RequestID, r.CompletionTokens, r.ToolCalls, r.FinishReason)
+	}
+	// The held user lines follow the assistant message: user, assistant, 3 user lines.
+	next := reqs[1].Inference
+	if len(next.Messages) != 5 || next.Messages[1].Role != "assistant" {
+		t.Fatalf("second request Messages = %+v", next.Messages)
+	}
+	if len(next.ToolResults) != 2 {
+		t.Errorf("second request ToolResults = %+v, want 2", next.ToolResults)
+	}
+	if !reqs[1].At.Equal(time.Date(2026, 11, 1, 12, 0, 5, 0, time.UTC)) {
+		t.Errorf("second request At = %v, want the last held user line", reqs[1].At)
+	}
+}

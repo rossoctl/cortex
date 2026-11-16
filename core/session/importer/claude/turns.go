@@ -53,7 +53,7 @@ type parser struct {
 	projects map[string]string // cwd -> project label
 }
 
-// turn is one assistant message: the consecutive assistant lines with the same message.id.
+// turn is one assistant message: the assistant lines with the same message.id, with only user lines between them.
 type turn struct {
 	blocks  []json.RawMessage
 	last    *line
@@ -79,12 +79,10 @@ func (p *parser) file(path, subagent string) (fileResult, error) {
 	conv := []convMessage{}
 	var userAt, prevAt time.Time // the last user line, and the previous turn's response
 	var cur *turn
-	flush := func() {
-		if cur == nil {
-			return
-		}
-		t := cur
-		cur = nil
+	// held keeps the user lines read while a turn is open. Claude Code writes the
+	// tool_result of a parallel tool call before the next line of the same message.
+	var held []*line
+	emit := func(t *turn) {
 		content, _ := json.Marshal(t.blocks)
 		reqAt := userAt
 		if reqAt.IsZero() {
@@ -129,6 +127,18 @@ func (p *parser) file(path, subagent string) (fileResult, error) {
 		prevAt = t.last.Timestamp
 		conv = append(conv, convMessage{Role: "assistant", Content: content})
 	}
+	flush := func() {
+		if cur == nil {
+			return
+		}
+		emit(cur)
+		cur = nil
+		for _, u := range held {
+			conv = append(conv, convMessage{Role: "user", Content: u.Message.Content})
+			userAt = u.Timestamp
+		}
+		held = nil
+	}
 
 	r := bufio.NewReader(f)
 	for {
@@ -145,8 +155,9 @@ func (p *parser) file(path, subagent string) (fileResult, error) {
 				// summary, file-history-snapshot, other system lines: not part of the conversation.
 			case l.Message == nil:
 				res.skipped++
+			case l.Type == "user" && cur != nil:
+				held = append(held, &l)
 			case l.Type == "user":
-				flush()
 				conv = append(conv, convMessage{Role: "user", Content: l.Message.Content})
 				userAt = l.Timestamp
 			default:
