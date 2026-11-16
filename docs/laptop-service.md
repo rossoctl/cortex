@@ -604,15 +604,8 @@ keeps in `~/.bob/db/bob.db`, to this history and to the cost ledger. Bob needs
 the `sqlite3` program on `PATH`. Use it for the sessions that ran before you installed Cortex.
 `agentop import --since 30d --dry-run` counts first and writes nothing. The
 import skips every session that Cortex captured live, and never changes one.
-Each imported session is marked `imp` in agentop. A Claude Code turn is priced
-at today's rates. A Bob turn keeps Bob's own cost. LAST 1H shows imported turns
-only after the next restart. The import stops at 90% of `max_bytes`. A session
-that you erased, or that a limit removed, comes back in full on the next import.
-Its forget record tells the import which turns the cost ledger already holds.
-The turns inside that span are not counted again, and the turns after it are. A
-turn before the span is counted only when the cost ledger has no row of the same
-project near it that the proxy wrote live or that an earlier import wrote. Flags
-and output:
+Each imported session is marked `(*)` in agentop. A Claude Code turn is priced
+at today's rates. A Bob turn keeps Bob's own cost. LAST 1H shows imported turns only after the next restart. The import
 [`agentop import`](../cmd/agentop/README.md#importing-agent-history-agentop-import).
 Rules: [`POST /v1/import`](session-api.md#post-v1import--transcript-import-laptop-only).
 

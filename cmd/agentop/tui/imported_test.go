@@ -14,7 +14,7 @@ import (
 
 const importedSrc = coremodel.ImportedSourcePrefix + "claude-code"
 
-// TestSessionTitleCell_ImportedPrefix: an imported session's TITLE cell starts with "imp ",
+// TestSessionTitleCell_ImportedPrefix: an imported session's TITLE cell starts with importedMarker,
 // and its search row has the same prefix. A live session has no prefix.
 func TestSessionTitleCell_ImportedPrefix(t *testing.T) {
 	m := fitModel(t, paneSessions, 200, 40, nil)
@@ -36,14 +36,14 @@ func TestSessionTitleCell_ImportedPrefix(t *testing.T) {
 		t.Fatalf("no title cell in %q", r)
 		return ""
 	}
-	if got := title(rows[0]); !strings.HasPrefix(got, "imp fix the build") {
-		t.Errorf("imported title = %q, want the prefix %q", got, "imp ")
+	if got := title(rows[0]); !strings.HasPrefix(got, importedMarker+"fix the build") {
+		t.Errorf("imported title = %q, want the prefix %q", got, importedMarker)
 	}
-	if got := title(rows[1]); strings.HasPrefix(got, "imp ") {
+	if got := title(rows[1]); strings.HasPrefix(got, importedMarker) {
 		t.Errorf("live title = %q, has the imported prefix", got)
 	}
 	// The search reads the same prefix: it matches the imported row only.
-	m.search = map[paneID]string{paneSessions: "imp fix the build"}
+	m.search = map[paneID]string{paneSessions: importedMarker + "fix the build"}
 	m.rebuildSessionsTable()
 	if got := m.sessionsTbl.Matches(); len(got) != 1 || got[0] != 0 {
 		t.Errorf("search matches = %v, want [0]", got)

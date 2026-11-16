@@ -295,7 +295,7 @@ func (m *model) rebuildSessionsTable() {
 			continue
 		}
 		b := newRowBuilder(q != "")
-		// An imported session's title starts with "imp ". Plain text, not dim: the table cuts
+		// An imported session's title starts with "(*) ". Plain text, not dim: the table cuts
 		// a cell by its bytes, and a style's escape bytes would mangle it (see cachedMarker).
 		// With no TITLE column, the SESSION cell has the mark.
 		mark, markW := "", 0

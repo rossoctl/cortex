@@ -7,6 +7,7 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -26,12 +27,14 @@ type importSource struct {
 
 func (f *importSource) Agent() string       { return "claude-code" }
 func (f *importSource) PricingHost() string { return "api.anthropic.com" }
-func (f *importSource) Sessions(_ time.Time, skip func(string, time.Time) bool) iter.Seq2[importer.Session, error] {
+func (f *importSource) Sessions(_ time.Time, skip func(string, time.Time) bool, progress func(int, int)) iter.Seq2[importer.Session, error] {
 	return func(yield func(importer.Session, error) bool) {
 		if f.block != nil {
 			<-f.block
 		}
-		for _, s := range f.sessions {
+		defer progress(len(f.sessions), len(f.sessions))
+		for i, s := range f.sessions {
+			progress(i, len(f.sessions))
 			if skip(s.ID, s.Updated) {
 				continue
 			}
@@ -131,6 +134,32 @@ func TestImport_RunsAndReports(t *testing.T) {
 		t.Fatalf("report = %+v, want 1 imported", r)
 	}
 	wantImported(t, ts.URL, "s1")
+}
+
+// With "progress": true, Progress lines come before the report line, and the last one has
+// done == total. The first and the last line pass the rate limit.
+func TestImport_ProgressLinesBeforeTheReport(t *testing.T) {
+	ts := importServer(t, []importer.Source{&importSource{sessions: []importer.Session{importSession("s1"), importSession("s2")}}})
+	code, b := postImport(t, ts.URL, `{"progress":true}`)
+	if code != http.StatusOK {
+		t.Fatalf("POST /v1/import = %d %s", code, b)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	var got []importer.Progress
+	for _, l := range lines[:len(lines)-1] {
+		var p struct{ Progress importer.Progress }
+		if err := json.Unmarshal([]byte(l), &p); err != nil {
+			t.Fatalf("line %q: %v", l, err)
+		}
+		got = append(got, p.Progress)
+	}
+	want := []importer.Progress{{Agent: "claude-code", Done: 0, Total: 2}, {Agent: "claude-code", Done: 2, Total: 2}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("progress = %+v, want %+v", got, want)
+	}
+	if r := decodeReport(t, []byte(lines[len(lines)-1])); len(r.Agents) != 1 || r.Agents[0].Imported != 2 {
+		t.Fatalf("report = %+v, want 2 imported", r)
+	}
 }
 
 func TestImport_UnknownAgentIs400(t *testing.T) {

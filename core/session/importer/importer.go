@@ -24,6 +24,8 @@ type Options struct {
 	Rates   pricing.Resolver
 	Since   time.Time
 	DryRun  bool
+	// Progress gets the source's progress. nil: none.
+	Progress func(done, total int)
 }
 
 // Run imports the sessions of one source. A session the proxy recorded live is never
@@ -78,7 +80,11 @@ func Run(ctx context.Context, src Source, o Options) AgentReport {
 		}
 		return false
 	}
-	for s, err := range src.Sessions(o.Since, skip) {
+	progress := o.Progress
+	if progress == nil {
+		progress = func(int, int) {}
+	}
+	for s, err := range src.Sessions(o.Since, skip, progress) {
 		if err != nil {
 			r.Error = err.Error()
 			break
