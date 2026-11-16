@@ -11,8 +11,9 @@ fields), #1494 (lossless capture, closed), #1466 (long-term performance view),
 Items marked **Open** must be decided before the work they belong to begins. Everything in
 §4 and §5.1 is normative and already merged; §5.2 onward is requirements, not code.
 
-**56 requirements, R1–R56**, phrased as plain declaratives: a requirement says what the
-system does once built, not what an implementer ought to feel. The numbering is stable so it
+**56 numbered requirements R1–R56, plus three lettered refinements (R10a, R11a, R14a) that
+sit beside the requirement they narrow**, phrased as plain declaratives: a requirement says
+what the system does once built, not what an implementer ought to feel. The numbering is stable so it
 can be cited in review and in the PRs that implement it — and it is therefore in the order
 the requirements were ADDED, not document order. R52–R54 sit in §9 and §11, R55–R56 in §8.6,
 so a reader should not look for them between R51 and R55.
@@ -248,7 +249,7 @@ Stated first, because it is the point of the projection. None of these reaches a
 | Tool results | `inference.toolResults[].content` | file contents, command output |
 | Earlier tool calls | `inference.historyToolCalls` | re-sent whole on every request |
 | Tool names | `inference.tools[]`, `toolCalls[].name` | low risk, but nothing in v1 needs them — see §7.2 |
-| Thinking type and display | `inference.thinkingType`, `thinkingDisplay` | free text off the request; what `TestRecord_CarriesNoContent` plants `secretThinking` in. `historyThinking`/`responseThinking` are COUNTS (`{Blocks, Redacted, TextBytes, …}`), not text — left out because v1 needs them, not because they are content |
+| Thinking type and display | `inference.thinkingType`, `thinkingDisplay` | free text off the request; what `TestRecord_CarriesNoContent` plants `secretThinking` in. `historyThinking`/`responseThinking` are COUNTS (`{Blocks, Redacted, TextBytes, …}`), not text — left out because v1 does not need them, not because they are content |
 | MCP params and results | `mcp.params`, `mcp.result` | the MCP tool's name, arguments and output |
 | A2A parts, artifact, error | `a2a.parts[].content`, `.artifact`, `.errorMessage` | agent-to-agent message bodies |
 | Plugin event payloads | `plugins{}` | plugin-defined, so unbounded by construction |
@@ -263,7 +264,7 @@ Stated first, because it is the point of the projection. None of these reaches a
 |---|---|---|---|---|
 | `schema` | int | — | `1` | The record format. Always present. Bumped only on a removal or a meaning change (R31). |
 | `sessionId` | string | — | any | The session the event belongs to, as the client asserted it. Always present. **Not a unit of work** — see §4.7. |
-| `seq` | uint | — | ≥1 | Position in the session. Unique within one *incarnation*: it restarts at 1 when an id is reused. |
+| `seq` | uint | — | ≥1 | Position in the session. Unique per id while the archive holds that id's history: a re-created session numbers on from the archive's last seq (`session.SeqSeeder`). It restarts at 1 only after a clear, after retention has removed every segment of the id, or on an install with no archive. |
 | `requestId` | string | — | any | Pairs a request record with its response record. Positional pairing misattributes whenever a client has concurrent requests, which a coding agent routinely does. |
 | `at` | string | — | RFC 3339 | When the event was recorded. Always present. **Order by `at`, then `seq`** (R23). |
 
@@ -380,6 +381,7 @@ consumer would reasonably misread.
 | `toolCallNames` | Tier 2 | §7.2. Names are low risk; arguments are not. |
 | `invocations` | Tier 2 | §7.2. Per-plugin outcomes, minus `path` and `details`. |
 | `identity` | Tier 2 | §7.2. The authenticated principal, as distinct from `client`. |
+
 ## 5. Transport and sinks
 
 ### 5.1 NDJSON — shipped
@@ -460,7 +462,7 @@ Not implemented. Each item is a deliberate narrowing of something Tier 1 refuses
 
 | Item | Shape | Why it is separable from content |
 |---|---|---|
-| `toolCallNames` | `[]string` | The tool *names* a response asked for. Names are low risk; **arguments are not** — a `Bash` command line is effectively a secret and stays in Tier 3. Names alone yield per-tool latency (§9). |
+| `toolCallNames` | `[]string` | The tool *names* a response asked for. Names are low risk; **arguments are not** — a `Bash` command line is effectively a secret and stays in Tier 3. Names say *which* tools a response asked for; they do **not** yield per-tool latency, because no record carries a per-call correlation key to pair a call with the request that carries its result. That pairing is `/timeline`'s, by tool-use ID (§9.1). |
 | `invocations` | `[{plugin, action, reason}]` | Per-plugin outcomes. Deliberately **not** `path` (R8) and not `details`, which is free-form. |
 | `identity` | `{subject, clientId, agentId}` | The *authenticated* principal, as distinct from `client`. Answers "who", where `client` answers "what program". |
 
@@ -571,7 +573,7 @@ a deliberate non-goal.
 
 | Context Guru metric | Type | Cortex source | Derivable from records | Note |
 |---|---|---|---|---|
-| `llm_inference_requests_total` | counter | one record per event | **yes** — count rows where `phase=request` **and `model` is set** | a record is a row per phase, so count one phase. The model test is load-bearing: a tunnel-open row is also `phase=request` and carries no inference, and tunnel rows are a third of the events — counting them inflates an *inference* counter with non-LLM traffic |
+| `llm_inference_requests_total` | counter | one record per event | **partly** — count rows where `phase=request` **and `model` is set** | a record is a row per phase, so count one phase. The model test is load-bearing: a tunnel-open row is also `phase=request` and carries no inference, and tunnel rows are a third of the events — counting them inflates an *inference* counter with non-LLM traffic. The same test also drops real inference requests that carry no model: Azure names the deployment in the path and sends none (`TestInferenceParser_AzureDeploymentPath_NoModel`), so the count undercounts that path |
 | `llm_inference_errors_total` | counter | `errorKind`, `errorCode`, `statusCode` | **partly** | the count yes, the `source` split no: `upstream`/`proxy`/`client` has no Cortex equivalent, and `errorKind` is a different taxonomy. Same gap as the bytes rows, so the same label (R55) |
 | `llm_inference_request_bytes_total` | counter | `bytesUp` | **partly** | one measurement point only. Context Guru's `stage` splits `client` vs `forwarded`; a record cannot say what a plugin removed (§10 step 10) |
 | `llm_inference_response_bytes_total` | counter | `bytesDown` | **partly** | same: Context Guru's `upstream` vs `delivered`. `bytesDown` is pre-rewrite |
@@ -683,9 +685,9 @@ the record-field arithmetic below.
 | Metrics / fields | 32 metrics (27 counters, 1 gauge, 4 histograms) | 36 record fields |
 | Of Context Guru's, sourced in a Cortex **record** | **7 of 32** (22%) | — |
 | Of Context Guru's, sourced anywhere in Cortex (record, ledger or API) | **15 of 32** (47%) | — |
-| Of Context Guru's, derivable from a month of records | **3 fully, 5 partly** | — |
+| Of Context Guru's, derivable from a month of records | **2 fully, 6 partly** | — |
 | Of Context Guru's with no Cortex source at all | **17 of 32** | — |
-| Cortex rows with no metric counterpart | — | **11 rows** (9 of them record fields) |
+| Cortex rows with no metric counterpart | — | **11 rows** (15 record fields across 9 of them) |
 
 The 17 unsourced, counted from the `—` rows above rather than asserted:
 
@@ -702,6 +704,13 @@ The 17 unsourced are not a backlog. **12 of them** — the 8 savings and the 4 k
 describe behaviour Cortex does not have, and money a record deliberately does not carry:
 every savings metric needs a counterfactual, the request as the client authored it, which a
 record of what actually happened cannot contain.
+
+That leaves five. `added_seconds` is the work list below. Of the remaining four:
+`llm_cache_miss_cost_usd_total` is money, so it goes with the argument above;
+`llm_cache_misses_total` is **partly** derivable already (the miss, not the cause);
+`llm_proxy_fail_open_total` counts something Cortex does not count; and
+`llm_proxy_export_failures_total` is the metric form of R29/R43, so it arrives with the
+sink that those requirements describe rather than needing a producer change here.
 
 The real work list is four items: `added_seconds` (the one `—` in 5.1), the two `stage`
 splits (which are on the *bytes* rows, marked **partly** because the counts exist and the
@@ -775,7 +784,7 @@ Measured on one 2,911-event session of the reference archive:
 | `Bash` | 452 | 487 ms | 65.0 s | 6,260 s |
 | `AskUserQuestion` | 7 | 37.4 s | 409.5 s | 703 s |
 | `WebFetch` | 34 | 14.4 s | 26.6 s | 440 s |
-| `Edit` | 87 | 48 ms | 269 ms | 5 s |
+| `Edit` | 87 | 48 ms | 201 ms | 6 s |
 | `Read` | 5 | 24 ms | 57 ms | 0 s |
 
 Excerpt: the session's `WebSearch` and the single-call tools are left out for width. The full
@@ -812,7 +821,7 @@ it cannot do is the whole reason for §5 and §6:
 
 | Question | Why the timeline cannot | What the export gives |
 |---|---|---|
-| Per-tool latency across every session | one session per request; one compute each | one file, one pass — **but needs Tier 2** (`toolCallNames`, §7.2); a v1 record has `toolCallCount` and no names |
+| Per-tool latency across every session | one session per request; one compute each | **not from the export as specified.** `toolCallNames` (§7.2) would give names, but no record carries a per-call correlation key, so a consumer cannot pair a call with the later request that carries its result. `/timeline` pairs by tool-use ID (§9.1) |
 | How p50 moved release over release (#1466) | no durable aggregate; archive ages out at 30 days | records outlive the archive |
 | Fleet totals (#898) | per-session HTTP, not shippable | a sink (§5.3) |
 | Join tool counts to token counts | **spans and tokens are in different responses** (§9.3) | one record carries both — tool *names* still need Tier 2 |

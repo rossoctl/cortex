@@ -491,9 +491,10 @@ API:
 | per-call tokens, models | `?view=summary` | no `messages`, `tools`, `toolCalls` or `toolResults` — **but `view=summary` KEEPS `inference.completion` and `a2a.parts`**, because the `/` search reads them, so every model reply is in the response |
 | untruncated Bash command | full event view | **everything**, prompts included; `jq` discards them after the download |
 
-So `/timeline` is the only one of the three that never transfers a prompt. For the other
-two, the body reaches your shell and `jq` filters it — fine on a laptop, worth knowing
-before piping it anywhere.
+So `/timeline` is the only one of the three that never transfers a message body. It is not
+prompt-free: its `preview` fields copy tool-argument text, and a search query or a task
+description can repeat prompt text verbatim. For the other two, the body reaches your shell
+and `jq` filters it — fine on a laptop, worth knowing before piping it anywhere.
 
 **Pick a session.** `?archived=true` is the important part — without it you see only
 what is still in memory, which on a laptop is a fraction of the history.
