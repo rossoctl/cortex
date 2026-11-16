@@ -316,6 +316,38 @@ func TestWriteSession_SegmentAgeIsItsEvents(t *testing.T) {
 	}
 }
 
+// The session list sorts by UpdatedAt, so an import carries its events' times, also after a reopen.
+func TestWriteSession_SessionTimesAreItsEvents(t *testing.T) {
+	clk, dir := newClock(), t.TempDir()
+	a := openTest(t, dir, clk)
+	newest := clk.now().Add(-48 * time.Hour) // inside retention, so the reopen keeps it
+	evs := importedEvents(4)
+	for i := range evs {
+		evs[i].At = newest.Add(time.Duration(i-len(evs)+1) * time.Second)
+	}
+	oldest := evs[0].At
+	if err := a.WriteSession("old", evs, false); err != nil {
+		t.Fatal(err)
+	}
+	check := func(when string, a *Archive) {
+		t.Helper()
+		for _, s := range a.Summaries() {
+			if s.ID == "old" {
+				if !s.CreatedAt.Equal(oldest) || !s.UpdatedAt.Equal(newest) {
+					t.Errorf("%s: CreatedAt, UpdatedAt = %v, %v, want %v, %v", when, s.CreatedAt, s.UpdatedAt, oldest, newest)
+				}
+				return
+			}
+		}
+		t.Errorf("%s: no summary for the import", when)
+	}
+	check("after the import", a)
+	a.Close()
+	b := openTest(t, dir, clk)
+	defer b.Close()
+	check("after a reopen", b)
+}
+
 // A failed write whose erase also fails keeps its numbering: the partial copy is still on disk, so
 // a live event must not number into its seqs.
 func TestWriteSession_FailedEraseKeepsNumbering(t *testing.T) {

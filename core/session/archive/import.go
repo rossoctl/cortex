@@ -154,6 +154,21 @@ func (a *Archive) writeSession(id string, events []model.SessionEvent, replace b
 			_ = os.Chtimes(filepath.Join(s.dir, seg.File), t, t)
 		}
 	}
+	// The session list sorts by UpdatedAt: an import must sort by its events, not the import time.
+	var first, last time.Time
+	for i := range events {
+		if t := events[i].At; !t.IsZero() {
+			if first.IsZero() || t.Before(first) {
+				first = t
+			}
+			if t.After(last) {
+				last = t
+			}
+		}
+	}
+	if !last.IsZero() {
+		s.meta.CreatedAt, s.meta.UpdatedAt = first, last
+	}
 	a.writeMeta(s)
 	if a.writeErrors.Load() != errs {
 		return fail(errors.New("session archive: the write failed; see the log"))
