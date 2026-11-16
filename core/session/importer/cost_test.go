@@ -1,6 +1,7 @@
 package importer
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/cost/event"
@@ -24,5 +25,22 @@ func TestPrice_NoUsageNoRecord(t *testing.T) {
 	price(&e, "api.anthropic.com", testRates(t))
 	if _, ok := event.Record(&e); ok {
 		t.Fatal("a response with no usage got a cost record")
+	}
+}
+
+func TestPrice_KeepsASourcesRecord(t *testing.T) {
+	e := fakeSession("s1", start, 1).Events[1]
+	b, err := json.Marshal(event.Event{CostUSD: 0.5, Source: event.SourceTranscript, Provenance: "authoritative", Settled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Plugins = map[string]json.RawMessage{event.Key: b}
+	price(&e, "api.anthropic.com", testRates(t))
+	rec, ok := event.Record(&e)
+	if !ok {
+		t.Fatal("no cost record")
+	}
+	if rec.CostUSD != 0.5 || rec.Provenance != "authoritative" {
+		t.Fatalf("record = %+v, want the source's own record", rec)
 	}
 }

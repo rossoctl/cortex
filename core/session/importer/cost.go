@@ -17,6 +17,10 @@ func price(e *model.SessionEvent, host string, rates pricing.Resolver) {
 	if e.Phase != model.SessionResponse || pricing.UsageFromInference(e.Inference) == (pricing.Usage{}) {
 		return
 	}
+	// A source that has the agent's own figure (Bob) sets the record first.
+	if _, ok := event.Record(e); ok {
+		return
+	}
 	st := settle.SettleInput(settle.Input{Host: host, Path: "/v1/messages", Inference: e.Inference}, rates)
 	rec := settle.NewRecord(st, nil)
 	rec.Source = event.SourceTranscript
