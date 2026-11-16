@@ -49,6 +49,11 @@ func (binariesStep) plan(env *setupEnv) (stepPlan, *problem) {
 			return p, &problem{reason: n + " is missing from " + env.tilde(env.fromDir)}
 		}
 	}
+	// Here, not only in agentop update: an agentop from before the cpex removal, and
+	// install.sh, hand the default cortex to this setup with no check of their own.
+	if err := cpexConfigBlocks(env); err != nil && !installedIsCpex(filepath.Join(env.fromDir, proxyBinary)) {
+		return p, &problem{reason: err.Error()}
+	}
 	// Only binDir is asked: a ~/.cortex/previous that cannot be written fails
 	// apply, which rolls back, so it fails safe.
 	if prob := checkWritable(env, env.binDir); prob != nil {
@@ -201,9 +206,11 @@ func configNamesCpex(path string) bool {
 }
 
 // cpexConfigBlocks is the error for a cpex cortex whose config names the cpex plugin:
-// the default build that replaces it would not start, and setup would roll back.
+// the default build that replaces it would not start. Setup's binaries plan refuses
+// on it. agentop update also asks first, so that it stops before the download.
 func cpexConfigBlocks(env *setupEnv) error {
-	if !installedIsCpex(filepath.Join(env.binDir, proxyBinary)) || !configNamesCpex(env.configPath()) {
+	// The config first: it is a file read, and the version is a process start.
+	if !configNamesCpex(env.configPath()) || !installedIsCpex(filepath.Join(env.binDir, proxyBinary)) {
 		return nil
 	}
 	return fmt.Errorf("the laptop cpex build is removed, and %s names the cpex plugin, which the default cortex does not have: "+
