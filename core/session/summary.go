@@ -212,6 +212,9 @@ type SessionSummary struct {
 	// LastRequestAt is the time of the newest request this session holds, zero when it holds
 	// none. On a pending bucket it is what Link compares with a process's claims.
 	LastRequestAt time.Time `json:"lastRequestAt,omitzero"`
+	// Source is "imported:<agent>" while every event of the session is imported, and ""
+	// otherwise. Only the archive's fold sets it: store entries are live.
+	Source string `json:"source,omitempty"`
 	// LinkedTo, on a pending bucket, is the sessions its process named that OwnerAt gives a
 	// call of the bucket, each with the span of its naming requests (Link says how close that
 	// is); LinkedAll says every request in the bucket falls before one of them. Set by Link when
