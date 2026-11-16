@@ -73,8 +73,11 @@ One HTTP exchange through the sidecar produces two OTLP spans.
 - **Bypass.** Requests whose path matches a `bypass_paths` glob, and outbound requests whose
   host matches a `bypass_hosts` glob (both `path.Match`; hosts port-stripped and case folded,
   paths canonical only), produce no spans
-  (defaults in §6). `bypass_hosts` is outbound-only: an inbound `Host` is the caller's own header,
-  so honouring it there would let a caller suppress the record of its own request.
+  (defaults in §6). A path with a dot segment, a doubled slash, or a `;`, `\`, `%` or `?`
+  after decoding never matches, and a trailing slash matches only a glob that ends in one,
+  so such a request produces spans. `bypass_hosts` is outbound-only: an inbound `Host` is the
+  caller's own header, so honouring it there would let a caller suppress the record of its own
+  request.
 
 ## 3. Trace context on the wire
 
@@ -273,7 +276,7 @@ construction.
 | `max_payload_bytes` | `4096` | producer-side cap on those two values; `0` or unset takes the default, `-1` attaches whole, any other negative is refused at start |
 | `max_attr_bytes` | `256` | cap on every variable-content string attribute and the span name (§4), except the two identity facts `lineage.self.id` and `lineage.self.namespace`, which are operator configuration and never truncated; same `0` / `-1` / negative semantics as `max_payload_bytes` |
 | `mint_traceparent` | `true` | §3.3; `false` = a pure observer that never writes a `traceparent` |
-| `bypass_paths` | `/.well-known/*`, `/healthz`, `/readyz`, `/health` | path globs (`path.Match`; `*` does not cross `/`) that produce no spans, matched by the shared bypass package (query stripped, canonical paths only) — the same key and semantics as `jwt-validation` and `sparc` |
+| `bypass_paths` | `/.well-known/*`, `/healthz`, `/readyz`, `/health` | path globs (`path.Match`; `*` does not cross `/`) that produce no spans, matched by the shared bypass package (query stripped, canonical paths only, as in §2) — the same key and semantics as `jwt-validation` and `sparc` |
 | `bypass_hosts` | `otel-collector`, `otel-collector.*`, `jaeger`, `jaeger.*`, `zipkin`, `zipkin.*`, `prometheus`, `prometheus.*` | outbound host globs that produce no spans |
 | `self_id` | — | this workload's identity (§4: reduced to its last `/`-segment); a blank value, or one with no non-empty `/`-segment (`/`), is refused at start — no name, no subject |
 | `self_id_file` | `/shared/client-id.txt` | read when `self_id` is empty. Until it is readable and carries an identity the producer is not ready — every exchange skipped, nothing written to the wire — and it re-reads the file in the background, the sidecar's `/readyz` naming it meanwhile (a pod whose readiness probe uses `/readyz` stays out of rotation until the file lands — the `Readier` contract for a mounted credential, and in the stock chain `jwt-validation` already holds readiness on this same file); the process starts regardless, so the plugin never takes the sidecar's other plugins down over a late mount. Refused at start only when `self_id` is also empty |

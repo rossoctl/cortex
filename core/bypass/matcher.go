@@ -39,8 +39,8 @@ func NewMatcher(patterns []string) (*Matcher, error) {
 // Match reports whether requestPath, a decoded path with no query, is a
 // canonical path that matches a pattern as written. The app gets the path as
 // sent and may route any other form elsewhere, so a dot segment, a doubled
-// slash, or a ';', '\', '%' or '?' never matches, and "/healthz/" matches only
-// a pattern with the trailing slash.
+// slash, or a ';', '\', '%' or '?' never matches, and a path with a trailing
+// slash matches only a pattern that ends in one.
 func (m *Matcher) Match(requestPath string) bool {
 	clean := path.Clean(requestPath)
 	trailingSlash := clean != "/" && clean+"/" == requestPath
@@ -48,6 +48,9 @@ func (m *Matcher) Match(requestPath string) bool {
 		return false
 	}
 	for _, pattern := range m.patterns {
+		if trailingSlash && !strings.HasSuffix(pattern, "/") {
+			continue
+		}
 		if matched, _ := path.Match(pattern, requestPath); matched {
 			return true
 		}

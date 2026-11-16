@@ -46,9 +46,11 @@ func TestMatch(t *testing.T) {
 		{"/./healthz", false},
 		{"/foo/../healthz", false},
 		{"/healthz/", false},
+		{"/.well-known/", false},
+		{"/.well-known/..", false},
 		{"/.well-known/..;", false},
 		{`/.well-known/..\mcp`, false},
-		{"/healthz?", false},           // a decoded %3F; the listener strips a real query
+		{"/.well-known/x?y", false},    // a decoded %3F; the listener strips a real query
 		{"/.well-known/%2e%2e", false}, // a double-encoded dot segment
 
 		// Sub-paths of /metrics are NOT bypassed (exact match only)
