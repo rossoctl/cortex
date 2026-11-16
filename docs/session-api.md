@@ -363,8 +363,9 @@ the server must have been built with clearing allowed
 `core/sessionapi/clear_test.go`. agentop's `X` drives it.
 
 An erased session comes back on the next `agentop import` while its transcript
-is still on disk. It comes back as an imported session. This applies to both
-`DELETE` routes. See
+is still on disk. It comes back as an imported session. The erase keeps a
+forget record of the session, so the import does not count its cost again.
+This applies to both `DELETE` routes. See
 [`POST /v1/import`](#post-v1import--transcript-import-laptop-only).
 
 ## `DELETE /v1/sessions/{id}` — erase one session
@@ -379,8 +380,8 @@ kept. An agent still using the session brings it back with its next request.
 agentop's `x` drives it, one request per session for an agent-wide erase —
 see [`laptop-service.md`](laptop-service.md) for the user-facing story.
 The next `agentop import` brings an erased session back from its transcript, as
-an imported session. Its cost is not counted again, because the erase kept the
-ledger rows.
+an imported session. Its cost is not counted again: the erase kept the ledger
+rows, and a forget record tells the import which turns those rows hold.
 
 ## `POST /v1/import` — transcript import (laptop only)
 
@@ -430,9 +431,27 @@ session in order:
    turns go to the cost ledger.
 4. A session that the archive does not hold is imported (`imported`).
 
-Rule 4 also applies to an erased session. An erase leaves no record of the
-session, so the next import writes it again as an imported session. The erase
-kept the ledger rows, so the import does not count its cost again.
+Rule 4 also applies to an erased session, and to a session that the day limit
+or the size limit removed. The next import writes it again in full, as an
+imported session. The ledger kept the rows of the removed session, so the
+import must not count them again. The archive keeps a **forget record** for
+this:
+
+- When the archive removes a session (`x`, a clear `X`,
+  `session.archive.retention_days` or `session.archive.max_bytes`), it adds one
+  line to `forgotten.jsonl` in the archive `dir`, next to `data/`:
+  `{"id":"<session id>","from":<unix ms>,"to":<unix ms>}`. `from` is the time
+  the archive first wrote the session, and `to` is its last request.
+- It writes a line only for a session with tokens or cost, and only when the
+  cost ledger is on. A clear does not remove `forgotten.jsonl`.
+- The import sends to the cost ledger only the turns outside that span: turns
+  from before Cortex saw the session, and turns added after the remove. A turn
+  in the minute before `from` counts as inside the span.
+- A line is kept until its `to` is older than `cost_ledger.retention_days`
+  plus 1 day. After that the ledger has no rows of the session to protect.
+
+A session that was removed before Cortex kept forget records has no record.
+For it, the import does not count a turn that is near a live ledger row.
 
 **What an import writes:**
 
