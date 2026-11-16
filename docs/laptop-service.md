@@ -590,12 +590,13 @@ more than 256 MB of them waited for the writer.
 ### Importing history from before Cortex
 
 `agentop import` adds the sessions that Claude Code keeps in
-`~/.claude/projects` (or under `CLAUDE_CONFIG_DIR`) to this history and to the
-cost ledger. Use it for the sessions that ran before you installed Cortex.
+`~/.claude/projects` (or under `CLAUDE_CONFIG_DIR`), and the tasks that Bob
+keeps in `~/.bob/db/bob.db`, to this history and to the cost ledger. Bob needs
+the `sqlite3` program on `PATH`. Use it for the sessions that ran before you installed Cortex.
 `agentop import --since 30d --dry-run` counts first and writes nothing. The
 import skips every session that Cortex captured live, and never changes one.
-Each imported session is marked `imp` in agentop. Its cost is priced at today's
-rates. LAST 1H shows imported turns only after the next restart. The import
+Each imported session is marked `imp` in agentop. A Claude Code turn is priced
+at today's rates. A Bob turn keeps Bob's own cost. LAST 1H shows imported turns only after the next restart. The import
 stops at 90% of `max_bytes`. A session that you erased comes back on the next
 import, and its cost is not counted again. Flags and output:
 [`agentop import`](../cmd/agentop/README.md#importing-agent-history-agentop-import).
