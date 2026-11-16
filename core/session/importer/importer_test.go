@@ -476,3 +476,122 @@ func TestRun_CancelStopsAfterArchiveFull(t *testing.T) {
 		t.Fatalf("report = %+v, want the stop, 1 not imported and the cancel error", r)
 	}
 }
+
+// sumCost is the requests, tokens and cost of every ledger row, after a flush.
+func sumCost(t *testing.T, w *ledger.Writer) (requests, tokens, micros int64) {
+	t.Helper()
+	rows := ledgerRows(t, w)
+	requests, tokens = sumRows(rows)
+	for _, r := range rows {
+		micros += r.CostMicros
+	}
+	return requests, tokens, micros
+}
+
+// erase deletes id from the archive, as DELETE /v1/sessions/{id} does.
+func erase(t *testing.T, a *archive.Archive, id string) {
+	t.Helper()
+	a.Deleted(id)
+	if _, err := a.AwaitDelete(id, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.Lookup(id); ok {
+		t.Fatalf("the archive still holds %s after the erase", id)
+	}
+}
+
+// The user erases an imported session and imports again: it comes back, and its cost is not
+// counted a second time.
+func TestRun_ErasedImportedSessionComesBackOnce(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	src := &fakeSource{sessions: []Session{fakeSession("A", start, 2)}}
+	o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+	if r := Run(context.Background(), src, o); r.Imported != 1 {
+		t.Fatalf("first report = %+v, want 1 imported", r)
+	}
+	req, tok, micros := sumCost(t, w)
+	if req != 2 || micros <= 0 {
+		t.Fatalf("ledger has %d requests, %d micros after the import; want 2, priced", req, micros)
+	}
+	erase(t, a, "A")
+	if r := Run(context.Background(), src, o); r.Imported != 1 {
+		t.Fatalf("second report = %+v, want 1 imported", r)
+	}
+	if sum, ok := a.Lookup("A"); !ok || sum.Source != "imported:claude-code" {
+		t.Fatalf("Lookup = %+v, %v; want the session back, marked imported", sum, ok)
+	}
+	if r2, t2, m2 := sumCost(t, w); r2 != req || t2 != tok || m2 != micros {
+		t.Fatalf("ledger has %d requests, %d tokens, %d micros; want %d, %d, %d (unchanged)", r2, t2, m2, req, tok, micros)
+	}
+}
+
+// An erased live session is new to the import, so the transcript writes it back as imported.
+func TestRun_ErasedLiveSessionComesBack(t *testing.T) {
+	a := openArchive(t)
+	live := model.SessionEvent{Seq: 1, SessionID: "A", At: start, Direction: model.Outbound,
+		Phase: model.SessionRequest, RequestID: "live"}
+	a.Record("A", &live)
+	deadline := time.Now().Add(5 * time.Second)
+	for a.LastSeq("A") == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if a.LastSeq("A") == 0 {
+		t.Fatal("the live event was not recorded")
+	}
+	erase(t, a, "A")
+	r := Run(context.Background(), &fakeSource{sessions: []Session{fakeSession("A", start, 2)}},
+		Options{Archive: a, Rates: testRates(t)})
+	if r.Imported != 1 {
+		t.Fatalf("report = %+v, want 1 imported", r)
+	}
+	if sum, ok := a.Lookup("A"); !ok || sum.Source != "imported:claude-code" {
+		t.Fatalf("Lookup = %+v, %v; want the session marked imported", sum, ok)
+	}
+}
+
+// Two new sessions in one project and one minute, in one run: the rows of the first do not hide
+// the turns of the second.
+func TestRun_TwoNewSessionsInOneMinuteBothCount(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	sa, sb := fakeSession("A", start, 2), fakeSession("B", start.Add(10*time.Second), 2)
+	for _, s := range []Session{sa, sb} {
+		for i := range s.Events {
+			s.Events[i].Project = "/repo"
+		}
+	}
+	r := Run(context.Background(), &fakeSource{sessions: []Session{sa, sb}},
+		Options{Archive: a, Ledger: w, Rates: testRates(t)})
+	if r.Imported != 2 {
+		t.Fatalf("report = %+v, want 2 imported", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 4 || tok != 4400 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 4, 4400", req, tok)
+	}
+}
+
+// A replace does not read the rows of the earlier import as a reason to skip: a new turn in the
+// same minute as the last old turn still reaches the ledger.
+func TestRun_ReplaceIgnoresOwnTranscriptRows(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+	old := fakeSession("A", start, 2)
+	Run(context.Background(), &fakeSource{sessions: []Session{old}}, o)
+	grown := fakeSession("A", start, 2)
+	last := old.Events[len(old.Events)-2].At // the last old request
+	at := last.Add(10 * time.Second)
+	grown.Events = append(grown.Events,
+		model.SessionEvent{At: at, Direction: model.Outbound, Phase: model.SessionRequest, RequestID: "A-r2",
+			Inference: &model.InferenceExtension{Model: "claude-sonnet-4-5"}},
+		model.SessionEvent{At: at.Add(time.Second), Direction: model.Outbound, Phase: model.SessionResponse, RequestID: "A-r2",
+			Inference: &model.InferenceExtension{Model: "claude-sonnet-4-5", InputTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}})
+	grown.Updated = at
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{grown}}, o); r.Replaced != 1 {
+		t.Fatalf("report = %+v, want 1 replaced", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 3 || tok != 3300 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 3, 3300", req, tok)
+	}
+}

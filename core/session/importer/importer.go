@@ -32,17 +32,19 @@ type Options struct {
 // A live session that the archive pruned (max_bytes or retention_days) is new again here, but
 // its ledger rows are not pruned with it. toLedger skips each turn that has a live row near it.
 //
-// shortcut: the ledger keeps an imported session's rows when the archive loses the session (an
-// erase, or a max_bytes prune, which deletes the oldest segments first). The next import then
-// writes it as new and sends its turns to the ledger again, so they count two times. Rows carry
-// no session id to match. Keep the imported turn ids, or the session id on rows, if that shows up.
+// An erased or pruned imported session is new again here too. toLedger skips each of its turns
+// that has a transcript row near it that an earlier run wrote.
+// shortcut: rows carry no session id, so a new session's turn is skipped when another session in
+// the same project was imported by an earlier run in that minute. Keep the session id on ledger
+// rows if that undercount shows up.
 //
 // A session older than the archive's retention_days is skipped, so its turns do not reach the
 // ledger even when the ledger keeps rows longer.
 func Run(ctx context.Context, src Source, o Options) AgentReport {
 	r := AgentReport{Agent: src.Agent()}
 	mark := model.ImportedSource(src.Agent())
-	var dryBytes int64 // the bytes a dry run would have written, for the size check
+	var dryBytes int64            // the bytes a dry run would have written, for the size check
+	written := map[liveKey]bool{} // the ledger rows this call wrote
 	for s, err := range src.Sessions(o.Since) {
 		if err != nil {
 			r.Error = err.Error()
@@ -116,7 +118,7 @@ func Run(ctx context.Context, src Source, o Options) AgentReport {
 			}
 			// shortcut: the archive already holds s, so a re-run skips it as current and its rows stay
 			// lost. Only a failed append (ENOSPC, EROFS) or a Close during it gets here. Undo the archive write if it shows up.
-			if err := toLedger(ctx, o.Ledger, s, after); err != nil {
+			if err := toLedger(ctx, o.Ledger, s, after, !found, written); err != nil {
 				r.Error = "cost ledger: " + err.Error()
 				break
 			}
@@ -138,10 +140,13 @@ func count(r *AgentReport, replace bool) {
 //
 // It also skips a response when the ledger has a live row for the same project within one
 // minute of it: the proxy recorded that turn live, and the archive later pruned the session.
+// On a new session it also skips a response with a transcript row near it, unless this run wrote
+// that row (written): an earlier run imported the turn, and the user erased the session. A replace
+// does not need that check, because after already drops the turns of the earlier import.
 // shortcut: rows carry no session id, so a turn of a session that did not go through Cortex is
 // skipped when another session in the same project had live traffic in that minute. Keep the
 // session id on ledger rows if that undercount shows up.
-func toLedger(ctx context.Context, w *ledger.Writer, s Session, after time.Time) error {
+func toLedger(ctx context.Context, w *ledger.Writer, s Session, after time.Time, newSession bool, written map[liveKey]bool) error {
 	cutoff := w.RetentionCutoff()
 	requestAt := map[string]time.Time{}
 	var turns []*model.SessionEvent
@@ -172,20 +177,35 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, after time.Time)
 	// An error leaves live empty: the import then records every turn, as before this check.
 	rows, _, _ := w.Window(ctx, from.Add(-time.Minute), to.Add(time.Minute))
 	for _, r := range rows {
-		if r.Source == "" {
-			live[liveKey{r.At.Truncate(time.Minute).Unix(), r.Project}] = true
+		k := liveKey{r.At.Truncate(time.Minute).Unix(), r.Project}
+		if r.Source == "" || (newSession && r.Source == event.SourceTranscript && !written[k]) {
+			live[k] = true
 		}
 	}
 	var keep []*model.SessionEvent
+	var keys []liveKey
 	for _, e := range turns {
-		m := e.At.Truncate(time.Minute)
-		p := model.TruncateLabelTail(model.SanitizeControlRunes(e.Project), event.MaxLabelLen) // as Row.Project
-		if live[liveKey{m.Unix(), p}] || live[liveKey{m.Add(-time.Minute).Unix(), p}] || live[liveKey{m.Add(time.Minute).Unix(), p}] {
+		k := turnKey(e)
+		m, p := k.minute, k.project
+		if live[k] || live[liveKey{m - 60, p}] || live[liveKey{m + 60, p}] {
 			continue
 		}
 		keep = append(keep, e)
+		keys = append(keys, k)
 	}
-	return w.RecordBatch(keep)
+	if err := w.RecordBatch(keep); err != nil {
+		return err
+	}
+	for _, k := range keys {
+		written[k] = true
+	}
+	return nil
+}
+
+// turnKey is the minute and project of e, in the form of the ledger row it makes.
+func turnKey(e *model.SessionEvent) liveKey {
+	p := model.TruncateLabelTail(model.SanitizeControlRunes(e.Project), event.MaxLabelLen) // as Row.Project
+	return liveKey{e.At.Truncate(time.Minute).Unix(), p}
 }
 
 type liveKey struct {
