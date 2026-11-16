@@ -196,6 +196,7 @@
   },
   "subagent": "a1a2e36cb5946f31c",
   "parentSubagent": "a0974b0b8591dc76b",
+  "source": "imported:claude-code",
   "subagentKind": "subtask",
   "proc": "/bin/claude",
   "clientProc": "/bin/zsh",

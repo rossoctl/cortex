@@ -2167,7 +2167,7 @@ func assertOwnership(t *testing.T, w *Writer, dir, step string) {
 	}
 }
 
-// Every path that writes a row has to keep the ownership rule, so this drives all
+// Every path that writes an accumulator row has to keep the ownership rule, so this drives all
 // three of them in one sequence rather than trusting the one that is obvious.
 func TestPendingMinute_IsNeverAlsoOnDisk(t *testing.T) {
 	dir := t.TempDir()
@@ -2743,5 +2743,37 @@ func TestSettleClosedMinute_PrunesOnAnIdleDayRoll(t *testing.T) {
 	if slices.Contains(liveDayFiles(t, dir), filepath.Base(w.store.path(stale))) {
 		t.Errorf("the 400-day-old file is still readable after an idle day roll (%v): retention waited for traffic",
 			liveDayFiles(t, dir))
+	}
+}
+
+// RecordBatch writes at once, also into the minute Record still holds in memory: Window
+// counts both rows once each, and the held one still reaches disk at its Flush.
+func TestRecordBatch_WritesNowAndSumsWithTheOpenMinute(t *testing.T) {
+	dir := t.TempDir()
+	w := newTestWriter(t, dir, func() time.Time { return at })
+
+	w.Record("live", costedEvent(t, "gw", "m", 0.25, 100, 50))
+	if err := w.RecordBatch([]*pipeline.SessionEvent{costedEvent(t, "gw", "m", 0.10, 10, 5)}); err != nil {
+		t.Fatalf("RecordBatch: %v", err)
+	}
+	if rows := readAllRows(t, dir); len(rows) != 1 {
+		t.Fatalf("got %d rows on disk after RecordBatch, want 1 (the batch row)", len(rows))
+	}
+	rows, _, err := w.Window(context.Background(), at.Add(-time.Hour), at.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req int64
+	for _, r := range rows {
+		req += r.Requests
+	}
+	if req != 2 {
+		t.Fatalf("Window counts %d requests, want 2", req)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if rows := readAllRows(t, dir); len(rows) != 2 {
+		t.Fatalf("got %d rows on disk after Flush, want 2", len(rows))
 	}
 }

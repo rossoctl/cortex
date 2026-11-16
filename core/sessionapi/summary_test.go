@@ -98,6 +98,7 @@ func fullEvent() pipeline.SessionEvent {
 		ClientProc:    "101.5",
 		SessionHeader: "X-Claude-Code-Session-Id",
 		Project:       "~/src/app",
+		Source:        "imported:claude-code",
 	}
 }
 
@@ -229,6 +230,10 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 	// project is kept: a short scalar (capped at 256 runes) that labels the row.
 	if got.Project != full.Project {
 		t.Errorf("project = %q, want %q", got.Project, full.Project)
+	}
+	// source is kept: a short scalar that marks an imported row in the timeline.
+	if got.Source != full.Source {
+		t.Errorf("source = %q, want %q", got.Source, full.Source)
 	}
 	if got.Direction != full.Direction || got.Phase != full.Phase {
 		t.Error("direction/phase did not survive")
@@ -437,7 +442,9 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// 34 since SubagentKind, TIMELINE data: agentop labels a subtask block by it.
 		// 35 since Project, TIMELINE data: the project label of the row (#1815). A scalar,
 		// so the struct copy keeps it; asserted above.
-		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 35},
+		// 36 since Source, TIMELINE data: agentop marks an imported row by it (#1871). A
+		// scalar, so the struct copy keeps it; asserted above.
+		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 36},
 		// 25 since AgentRole, which is TIMELINE data: agentop's CONTEXT gauge reads it on every
 		// row the timeline serves. It needs no assertion of its own in the projection test
 		// beyond the equality one there — a scalar survives the struct copy, unlike the two

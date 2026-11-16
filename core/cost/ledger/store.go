@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/usage"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // dayLayout names a day file. Sortable, and the same layout Query parses back, so
@@ -559,8 +560,15 @@ func (s *store) decodeDay(path string) ([]Row, dayIssues, error) {
 		if len(bytes.TrimSpace(b)) == 0 {
 			continue
 		}
-		var r Row
-		if derr := json.Unmarshal(b, &r); derr != nil {
+		// Source shadows Row.Source: a source of the wrong type must not drop the row and its cost.
+		var w struct {
+			Row
+			Source model.LenientString `json:"source,omitempty"`
+		}
+		derr := json.Unmarshal(b, &w)
+		r := w.Row
+		r.Source = string(w.Source)
+		if derr != nil {
 			// No offset in the message and no bytes from the line: a corrupt ledger line
 			// could contain anything, and this text reaches a log an operator pastes.
 			issues.skippedLines++
@@ -590,6 +598,7 @@ func (s *store) decodeDay(path string) ([]Row, dayIssues, error) {
 		r.Endpoint, r.Model = rowLabel(r.Endpoint), rowLabel(r.Model)
 		r.Agent, r.Provenance = rowLabel(r.Agent), rowLabel(r.Provenance)
 		r.Project = projectRowLabel(r.Project)
+		r.Source = rowLabel(r.Source)
 		out = append(out, r)
 	}
 	if serr := sc.Err(); serr != nil {
