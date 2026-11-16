@@ -122,11 +122,16 @@ sessions directly rather than leaving a typo with no answer.
 
 ## Truncation, not corruption
 
-A walk that fails past its first record ends the response there, because the status line
-is already gone — and NDJSON keeps every complete line valid in a truncated file, so a
-partial export is still a processable one. A failure before any record answers a status:
-a refused query (unknown session, bad `since`) a 400, an archive whose segments cannot be
-opened or read a 500.
+A walk that fails past its first record **resets the connection**, because the status line
+is already gone and a 200 cannot be taken back. NDJSON keeps every complete line valid, so
+a consumer keeps every record that arrived — but the read ends in an error rather than a
+clean end of body, so a truncated export cannot be mistaken for a whole one. `agentop
+export` turns that into a non-zero exit and says the file holds every complete record
+before the failure; a `curl > file` leaves the partial file and a non-zero exit of its own.
+The server also logs the failure (`sessionapi: export truncated`).
+
+A failure before any record answers a status instead: a refused query (unknown session,
+bad `since`) a 400, an archive whose segments cannot be opened or read a 500.
 
 A segment whose *content* is damaged is tolerated rather than refused: it is served up to
 its readable prefix, as the paging endpoints serve it, so a wholly unreadable one

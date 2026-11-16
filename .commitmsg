@@ -1,37 +1,10 @@
-fix: Print the session hint only when the refusal would not say why
+docs: Say that a truncated export resets rather than ends cleanly
 
-Three review findings on the ErrBadRequest branch, all on the same few lines.
+The same two places #1830 corrects, carried here so this branch's own diff does
+not describe the old behaviour: a walk that dies part-way resets the connection,
+so a client reads an error and `agentop export` exits non-zero, rather than
+ending the body cleanly and looking complete.
 
-The hint fired on a refusal that HAD explained itself. The condition was "a
-session was asked for and the words do not mention sessions", so
-`--session s1 --since bogus` printed "the proxy did not name the sessions it
-holds" underneath the proxy's own perfectly clear complaint about since,
-sending the reader to look at sessions when since was the problem.
-
-What the branch wants to know is whether any detail arrived at all, and getBody
-already knows: it either wraps the server's words or does not. Carry that as an
-exported ErrNoDetail sentinel beside ErrBadRequest and check it with errors.Is,
-rather than matching on either the server's wording or getBody's own formatting.
-It is wrapped in a type that adds nothing to the message, because the text is
-printed to a user and "bad request: apiclient: no detail" reads worse than the
-bare refusal it would replace. errors.Is(err, ErrBadRequest) is unaffected.
-
-The hint's curl was not runnable. It printed the raw --endpoint, so
-`--endpoint http://host:47601/` produced `host:47601//v1/sessions`, which
-ServeMux answers with a 307 whose HTML body is all `curl -s` shows -- the one
-fallback meant to rescue a dead end leading into another. Keep the client and
-print Endpoint(), the trimmed form the request itself uses.
-
-And the Export doc comment claimed a failed walk "simply ends the body, which
-NDJSON tolerates". It resets the connection as of #1830, so the caller sees an
-error rather than a short success; the help text now says the command exits
-non-zero and what the output holds.
-
-Tests: a refusal that named a different problem gets no hint, a trailing-slash
-endpoint produces no doubled slash, a truncated export exits 1, and ErrNoDetail
-is pinned across all three 400 shapes -- parseable, undocumented, and cut by the
-512-byte read. The first two go red against the old conditions.
-
-Reported by clawgenti and huang195.
+Identical text to #1830's, so merging that into this branch changes nothing.
 
 Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>
