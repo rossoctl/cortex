@@ -50,6 +50,7 @@ import (
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/session/archive"
 	"github.com/rossoctl/cortex/core/session/importer"
+	bobimport "github.com/rossoctl/cortex/core/session/importer/bob"
 	claudeimport "github.com/rossoctl/cortex/core/session/importer/claude"
 	"github.com/rossoctl/cortex/core/sessionapi"
 	"github.com/rossoctl/cortex/core/spiffe"
@@ -1275,7 +1276,7 @@ func main() {
 				sessionapi.WithLoopbackOnly(cfg.Listener.BindLoopbackOnly),
 				// POST /v1/import, only with the archive on and loopback-only; else no route.
 				sessionapi.WithImport(sessionapi.Import{Rates: pricingRegistry,
-					Sources: []importer.Source{claudeimport.New("")}}),
+					Sources: []importer.Source{claudeimport.New(""), bobimport.New("")}}),
 			}, ingestOpts...)...,
 		)
 		sessionLn := listeners.take("session-api")
