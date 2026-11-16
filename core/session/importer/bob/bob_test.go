@@ -335,3 +335,30 @@ func TestSource_UnreadableRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestSource_BadTaskOrMessageValueKeepsTheImport(t *testing.T) {
+	clean := sessionByID(t, readAll(t, New(fixtureDB(t)), time.Time{}), "t-tools")
+	for name, sql := range map[string]string{
+		"env empty":             `insert into tasks values ('t-bad', null, 'bad', '', null, '', 'normal')`,
+		"env truncated":         `insert into tasks values ('t-bad', null, 'bad', '', null, '{"model":', 'normal')`,
+		"model id a number":     `insert into tasks values ('t-bad', null, 'bad', '', null, '{"model":{"id":7}}', 'normal')`,
+		"created_at as text":    `insert into tasks values ('t-bad', null, 'bad', '', null, '{}', 'normal'); insert into messages values ('m-bad', 't-bad', 'user', '{"content":"x"}', '2026-11-16')`,
+		"child created_at text": `insert into messages values ('m-bad', 't-child', 'user', '{"content":"x"}', '2026-11-16')`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			db := fixtureDB(t)
+			if out, err := exec.Command(sqlitecli.Program, db, sql).CombinedOutput(); err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			sessions := readAll(t, New(db), time.Time{})
+			for _, id := range []string{"t-plain", "t-tools", "t-orphan"} {
+				if s := sessionByID(t, sessions, id); s.Unreadable || len(s.Events) == 0 {
+					t.Errorf("%s: Unreadable %v, events %d; want it imported", id, s.Unreadable, len(s.Events))
+				}
+			}
+			if s := sessionByID(t, sessions, "t-tools"); name == "child created_at text" && (s.Skipped != clean.Skipped+1 || len(s.Events) != len(clean.Events)) {
+				t.Errorf("t-tools Skipped %d, events %d; want %d and %d (the bad row skipped and counted)", s.Skipped, len(s.Events), clean.Skipped+1, len(clean.Events))
+			}
+		})
+	}
+}

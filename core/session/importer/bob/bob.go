@@ -51,10 +51,14 @@ type tree struct {
 }
 
 const taskQuery = `select t.id, t.parent_id, t.task_type, t.version,
-  coalesce(nullif(t.directory,''), json_extract(t.env,'$.workspace'), '') as dir,
-  json_extract(t.env,'$.model.id') as model,
-  (select max(m.created_at) from messages m where m.task_id = t.id) as last
+  coalesce(nullif(t.directory,''), case when json_valid(t.env) then json_extract(t.env,'$.workspace') end, '') as dir,
+  case when json_valid(t.env) then cast(json_extract(t.env,'$.model.id') as text) end as model,
+  (select max(` + createdAt + `) from messages where task_id = t.id) as last
 from tasks t`
+
+// createdAt is a message's created_at, or null when it is not an integer. turns skips a row
+// with no time.
+const createdAt = "case when typeof(created_at) = 'integer' then created_at end"
 
 func (s source) Sessions(since time.Time, skip func(id string, updated time.Time) bool) iter.Seq2[importer.Session, error] {
 	return func(yield func(importer.Session, error) bool) {
@@ -151,7 +155,7 @@ func (s source) read(db string, tr *tree, home string) importer.Session {
 	}
 	for _, t := range tr.tasks {
 		var rows []row
-		if err := sqlitecli.Query(s.prog, db, "select id, role, data, created_at from messages where task_id = "+
+		if err := sqlitecli.Query(s.prog, db, "select id, role, data, "+createdAt+" as created_at from messages where task_id = "+
 			sqlitecli.Quote(t.ID)+" order by created_at, rowid", &rows); err != nil {
 			if t == tr.root {
 				slog.Warn("importer: cannot read a Bob task", "task", t.ID, "error", err)

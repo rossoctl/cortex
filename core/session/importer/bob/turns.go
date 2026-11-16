@@ -156,7 +156,7 @@ func (p *parser) turns(a agent, rows []row) ([]model.SessionEvent, int) {
 	var inputAt, prevAt time.Time // the newest non-assistant row since the last assistant row, and that row's time
 	for _, r := range rows {
 		var d data
-		if !strings.HasPrefix(strings.TrimSpace(r.Data), "{") || json.Unmarshal([]byte(r.Data), &d) != nil {
+		if r.CreatedAt <= 0 || !strings.HasPrefix(strings.TrimSpace(r.Data), "{") || json.Unmarshal([]byte(r.Data), &d) != nil {
 			skipped++
 			continue
 		}
