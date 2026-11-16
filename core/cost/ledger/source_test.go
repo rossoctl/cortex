@@ -81,3 +81,30 @@ func TestRecord_SourceSplitsTheKey(t *testing.T) {
 		t.Errorf("Window total = %d micros, want %d (both rows)", micros, want)
 	}
 }
+
+// A source that is not a string keeps the row and its cost: the day file can come from another writer.
+func TestReadDay_NonStringSourceKeepsTheRow(t *testing.T) {
+	day := time.Date(2026, 9, 13, 9, 0, 0, 0, testZone)
+	for _, src := range []string{`1`, `{"x":1}`, `["a"]`, `true`, `null`, `"transcript"`} {
+		s, err := newStore(t.TempDir(), 30, testZone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		l := line(day, "gw", "m", 1, 10, 5, 100)
+		row := l[:len(l)-1] + `,"source":` + src + `}`
+		if err := os.WriteFile(s.path(day), []byte(row+"\n"), fileMode); err != nil {
+			t.Fatal(err)
+		}
+		rows, issues, err := s.readDay(dayOf(day))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ""
+		if src == `"transcript"` {
+			want = event.SourceTranscript
+		}
+		if len(rows) != 1 || issues.skippedLines != 0 || rows[0].CostMicros != 100 || rows[0].Source != want {
+			t.Errorf("source %s: rows %+v, skipped %d, want one row of 100 micros with source %q", src, rows, issues.skippedLines, want)
+		}
+	}
+}

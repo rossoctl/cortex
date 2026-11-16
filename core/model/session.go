@@ -714,7 +714,7 @@ type sessionEventWire struct {
 	// omitempty: absent on every row but those of an agent another agent started.
 	ParentSubagent string `json:"parentSubagent,omitempty"`
 	// omitempty: absent on every live event.
-	Source string `json:"source,omitempty"`
+	Source LenientString `json:"source,omitempty"`
 	// omitempty: absent on every row but a Bob child task's.
 	SubagentKind string `json:"subagentKind,omitempty"`
 	// omitempty: absent wherever the listener could not name the client's process, and on
@@ -760,7 +760,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Client:          e.Client,
 		Subagent:        e.Subagent,
 		ParentSubagent:  e.ParentSubagent,
-		Source:          e.Source,
+		Source:          LenientString(e.Source),
 		SubagentKind:    e.SubagentKind,
 		Proc:            e.Proc,
 		ClientProc:      e.ClientProc,
@@ -808,7 +808,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Client:          w.Client,
 		Subagent:        w.Subagent,
 		ParentSubagent:  w.ParentSubagent,
-		Source:          w.Source,
+		Source:          string(w.Source),
 		SubagentKind:    w.SubagentKind,
 		Proc:            w.Proc,
 		ClientProc:      w.ClientProc,
@@ -1071,6 +1071,19 @@ const ImportedSourcePrefix = "imported:"
 
 // ImportedSource returns the Source value for an event that an import of agent wrote.
 func ImportedSource(agent string) string { return ImportedSourcePrefix + agent }
+
+// LenientString decodes a JSON string as itself and any other JSON value as "". A field that
+// another writer can set uses it, so that one key of the wrong type does not refuse the whole line.
+type LenientString string
+
+func (s *LenientString) UnmarshalJSON(b []byte) error {
+	var v string
+	if json.Unmarshal(b, &v) != nil {
+		v = ""
+	}
+	*s = LenientString(v)
+	return nil
+}
 
 // Imported tells if an import wrote e. A live event gives false.
 func (e *SessionEvent) Imported() bool {

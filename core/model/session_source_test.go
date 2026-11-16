@@ -35,3 +35,17 @@ func TestSessionEvent_SourceRoundTrips(t *testing.T) {
 		t.Fatal("live event Imported() = true")
 	}
 }
+
+// A source that is not a string decodes as a live event, and the other fields stay.
+func TestSessionEvent_NonStringSourceDecodesAsLive(t *testing.T) {
+	for _, src := range []string{`1`, `{"a":1}`, `["x"]`, `true`, `null`} {
+		var e SessionEvent
+		if err := json.Unmarshal([]byte(`{"requestId":"r1","source":`+src+`}`), &e); err != nil {
+			t.Errorf("source %s: %v", src, err)
+			continue
+		}
+		if e.Source != "" || e.RequestID != "r1" {
+			t.Errorf("source %s: Source %q, RequestID %q, want a live event r1", src, e.Source, e.RequestID)
+		}
+	}
+}

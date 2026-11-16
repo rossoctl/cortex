@@ -611,3 +611,15 @@ func TestIngest_HeldRequestsAreCapped(t *testing.T) {
 		t.Errorf("a repeated id changed the count to %d", n)
 	}
 }
+
+// A source that is not a string is dropped, not the whole line: the event is stored and live.
+func TestIngest_NonStringSourceKeepsTheRow(t *testing.T) {
+	for _, src := range []any{1, map[string]any{"a": 1}, []any{"x"}, true} {
+		r := newIngestRig(t)
+		ev := map[string]any{"source": src, "phase": "request", "requestId": "r1", "inference": map[string]any{"model": "m"}}
+		r.post(t, nil, line(t, map[string]any{"event": ev}))
+		if evs := r.events("s1"); len(evs) != 1 || evs[0].Source != "" {
+			t.Errorf("source %v: stored %+v, want one live event", src, evs)
+		}
+	}
+}
