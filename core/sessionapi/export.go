@@ -125,10 +125,17 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 // of it. So is a day count past 106751: time.Duration cannot hold it, and the overflow
 // would wrap negative and floor ahead of now, which reads as an empty export rather than
 // the refusal it is.
+//
+// A LEADING SIGN IS REFUSED IN THE DAY-COUNT BRANCH, because strconv.Atoi accepts one and
+// the grammar this endpoint documents ("a duration or Nd") does not: "+7d" would parse to
+// 168h while being a form no client was told it could send. The duration branch keeps
+// whatever time.ParseDuration accepts — a sign is part of ITS documented grammar, and "-7h"
+// is still refused below for being non-positive.
 func parseSince(s string) (time.Duration, error) {
 	if rest, ok := strings.CutSuffix(s, "d"); ok {
 		days, err := strconv.Atoi(rest)
-		if err != nil || days <= 0 || int64(days) > math.MaxInt64/int64(24*time.Hour) {
+		if err != nil || strings.HasPrefix(rest, "+") || days <= 0 ||
+			int64(days) > math.MaxInt64/int64(24*time.Hour) {
 			return 0, fmt.Errorf("day count %q", s)
 		}
 		return time.Duration(days) * 24 * time.Hour, nil

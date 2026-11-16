@@ -302,6 +302,54 @@ func TestHandleExport_UnknownSessionRefusalFitsAClientReadWhenIDsEscape(t *testi
 // ?since= carries only events newer than that far back: a session the archive last
 // touched before the floor is skipped whole, one that straddles it stops at its first
 // event below. 7d reads as a day count, which time.ParseDuration alone rejects.
+// parseSince ACCEPTS EXACTLY THE GRAMMAR THE ENDPOINT DOCUMENTS — "a duration or Nd" —
+// because that grammar is what a client codes against, and the 400 message states it.
+//
+// The leading-sign row is the one that drifted: strconv.Atoi accepts "+7", so "+7d" used
+// to parse to 168h, a form nothing documents. A sign in the DURATION branch is fine, since
+// time.ParseDuration documents it and a negative value is refused for being non-positive.
+func TestParseSince_Grammar(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want time.Duration // 0 means "must be refused"
+	}{
+		{"7d", 168 * time.Hour},
+		{"30d", 720 * time.Hour},
+		{"168h", 168 * time.Hour},
+		{"90m", 90 * time.Minute},
+		// Refused: a sign the day-count grammar never advertised.
+		{"+7d", 0},
+		{"-7d", 0},
+		// Refused: non-positive asks for nothing, whichever branch it comes through.
+		{"0d", 0},
+		{"0h", 0},
+		{"-7h", 0},
+		// Refused: not the shape at all.
+		{" 7d", 0},
+		{"7days", 0},
+		{"d", 0},
+		{"", 0},
+		// Refused: time.Duration cannot hold it, and the overflow would floor ahead of now.
+		{"106752d", 0},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := parseSince(tc.in)
+			if tc.want == 0 {
+				if err == nil {
+					t.Fatalf("parseSince(%q) = %v, want a refusal", tc.in, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseSince(%q): %v", tc.in, err)
+			}
+			if got != tc.want {
+				t.Fatalf("parseSince(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHandleExport_SinceParameter(t *testing.T) {
 	ts := exportFixture(t)
 	// exportNow is a day past s1's newest event and a week past old's, so 21h30m floors
@@ -501,7 +549,11 @@ func twoSegmentArchive(t *testing.T) (string, []string) {
 func TestHandleExport_TruncatedWalkReachesClientAsError(t *testing.T) {
 	root, segs := twoSegmentArchive(t)
 
-	a, err := archive.Open(root)
+	// The fixture clock, not wall time: Open prunes to the 30-day retention as it
+	// reconciles, and these segments carry fixed November 2026 timestamps. With wall time
+	// this test passes until that date is 30 days old and then fails on the os.Remove
+	// below, having quietly stopped testing the walk long before.
+	a, err := archive.Open(root, archive.WithClock(func() time.Time { return exportNow }))
 	if err != nil {
 		t.Fatal(err)
 	}
