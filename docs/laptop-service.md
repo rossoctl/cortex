@@ -608,8 +608,9 @@ Each imported session is marked `imp` in agentop. Its cost is priced at today's
 rates. LAST 1H shows imported turns only after the next restart. The import
 stops at 90% of `max_bytes`. A session that you erased, or that a limit removed,
 comes back in full on the next import. Its forget record tells the import which turns the cost
-ledger already holds, so only the turns outside that span are counted: turns from before Cortex
-saw the session, and turns added after the remove. Flags and output:
+ledger already holds. The turns inside that span are not counted again, and the turns after it
+are. A turn before the span is counted only when the cost ledger has no live row of the same
+project near it. Flags and output:
 [`agentop import`](../cmd/agentop/README.md#importing-agent-history-agentop-import).
 Rules: [`POST /v1/import`](session-api.md#post-v1import--transcript-import-laptop-only).
 
