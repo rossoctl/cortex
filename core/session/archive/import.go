@@ -104,13 +104,14 @@ func (a *Archive) writeSession(id string, events []model.SessionEvent, replace b
 		del()
 		return restore(err)
 	}
+	// Paused is checked before the replace delete: a paused write must not erase the old copy.
+	if a.paused.Load() {
+		return restore(errors.New("session archive: paused after a full disk"))
+	}
 	if s != nil {
 		if err := del(); err != nil {
 			return restore(err)
 		}
-	}
-	if a.paused.Load() {
-		return fail(errors.New("session archive: paused after a full disk"))
 	}
 
 	// write counts its failures instead of returning them; a change in the count is this

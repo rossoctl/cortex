@@ -2,6 +2,7 @@ package archive
 
 import (
 	"errors"
+	"syscall"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/model"
@@ -197,4 +198,41 @@ func TestWriteSession_ClosedArchive(t *testing.T) {
 	if err := a.WriteSession("s1", importedEvents(2), false); err == nil {
 		t.Fatal("a closed archive accepted a write")
 	}
+}
+
+// A failed disk write erases what part of the session reached disk and gives the numbering back.
+func TestWriteSession_FailedWriteLeavesNothing(t *testing.T) {
+	a := openTest(t, t.TempDir(), newClock())
+	defer a.Close()
+	a.segHook = func(w *segmentWriter) { w.out.w = failWriter{syscall.ENOSPC} }
+	if err := a.WriteSession("s1", importedEvents(4), false); err == nil {
+		t.Fatal("a failed write returned no error")
+	}
+	if _, ok := a.Lookup("s1"); ok {
+		t.Fatal("Lookup found the half-written session")
+	}
+	if got := a.LastSeq("s1"); got != 0 {
+		t.Fatalf("LastSeq = %d, want 0", got)
+	}
+}
+
+// A replace on a paused archive keeps the old copy: the import's source may be gone.
+func TestWriteSession_PausedReplaceKeepsOldCopy(t *testing.T) {
+	a := openTest(t, t.TempDir(), newClock())
+	defer a.Close()
+	if err := a.WriteSession("s1", importedEvents(4), false); err != nil {
+		t.Fatal(err)
+	}
+	a.paused.Store(true)
+	if err := a.WriteSession("s1", importedEvents(6), true); err == nil {
+		t.Fatal("a paused archive accepted a replace")
+	}
+	if sum, ok := a.Lookup("s1"); !ok || sum.EventCount != 4 {
+		t.Fatalf("after a paused replace: ok %v, EventCount %d, want the old 4", ok, sum.EventCount)
+	}
+	if got := a.LastSeq("s1"); got != 4 {
+		t.Fatalf("LastSeq = %d, want 4", got)
+	}
+	a.paused.Store(false)
+	wantSeqs(t, seqs(t, a, "s1"), 4)
 }
