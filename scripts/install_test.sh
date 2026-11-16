@@ -1954,8 +1954,8 @@ check "  and nothing in the Makefile uses remove_stale" "0" \
 make_release v9.9.9
 run_install ok release --cpex
 check "--cpex: dies" "1" "${T_ST}"
-check "  naming --praxis and the policy page" "yes yes" \
-	"$(t_in '--praxis' err) $(t_in 'docs/praxis-policy.md' err)"
+check "  naming the re-run without --cpex, --praxis and the policy page" "yes yes yes" \
+	"$(t_in 'again without --cpex' err) $(t_in '--praxis' err) $(t_in 'docs/praxis-policy.md' err)"
 check "  fetching nothing, staging nothing, running no agentop" "0 0 0" \
 	"$(grep -c . "${T_RUN}/urls" || true) $(ls -A "${T_RUN}/tmp" | wc -l | tr -d ' ') $(t_nlog argv)"
 

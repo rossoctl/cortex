@@ -220,7 +220,7 @@ PRAXIS=""
 for arg in "$@"; do
 	case "$arg" in
 		--install-only) MODE=install-only ;;
-		--cpex) die "--cpex is removed: the laptop cpex build is gone. Use --praxis with praxis.policy (see docs/praxis-policy.md); Kubernetes cpex use is not affected." ;;
+		--cpex) die "--cpex is removed: the laptop cpex build is gone. Run this again without --cpex to install the default cortex. For laptop policy, use --praxis with praxis.policy (see docs/praxis-policy.md). Kubernetes cpex use is not affected." ;;
 		--praxis) PRAXIS=1 ;;
 		--claude-code) WIRE_CLAUDE_CODE=1 ;;
 		--yes | -y) ASSUME_YES=1 ;;

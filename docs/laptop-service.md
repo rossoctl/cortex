@@ -230,8 +230,10 @@ Where to look:
 ## The cpex build
 
 The laptop cpex build is removed. No release publishes a cpex tarball for a laptop,
-and `install.sh --cpex` exits with an error. That error names `--praxis` and
-`docs/praxis-policy.md`, which is the way to run laptop policy now. `make
+and `install.sh --cpex` exits with an error. That error says to run the
+installer again without `--cpex`, which installs the default `cortex`. It also
+names `--praxis` and `docs/praxis-policy.md`, which is the way to run laptop
+policy now. `make
 cortex-cpex` is gone too. An install that runs a cpex build moves to the default
 `cortex` on `agentop update`, which prints one line that says so.
 
