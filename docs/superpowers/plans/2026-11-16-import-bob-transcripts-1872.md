@@ -198,7 +198,8 @@ select id, role, data, created_at from messages where task_id = <Quote(id)> orde
 **`Sessions(since, skip)` rule:**
 1. `os.Stat(db)`: not exist → yield nothing. Other stat error → `yield(Session{}, err)`.
 2. Task query error (this includes a missing `sqlite3`) → `yield(Session{}, err)` and return.
-3. Group tasks by root (Decision 8). Tree time = the max `last` of its tasks. Drop a tree
+3. Group tasks by root (Decision 8). Decode `last` and `version` as pointers
+   (`*int64`, `*string`): `sqlite3 -json` writes SQL NULL as JSON `null`. Tree time = the max `last` of its tasks. Drop a tree
    whose tree time is NULL (no messages). Sort trees by tree time newest first, then id.
 4. When `since` is not zero and the tree time is before `since`, skip the tree.
 5. Call `skip(rootID, treeTime)`; when true, do not read the tree.
@@ -249,8 +250,10 @@ from the column lists above, with only the columns the queries read plus `title`
   `readAll(t, src, since)` collects `Sessions(since, func(string, time.Time) bool { return false })`.
   - `TestSource_AgentAndHost`: `"bob"`, `"api.us-east.bob.ibm.com"`.
   - `TestSource_NoDatabaseYieldsNothing`: `New(<tmp>/missing.db)` yields 0 sessions, no error.
-  - `TestSource_MissingSqlite3FailsWithItsName`: a source with `prog: "sqlite3-not-here-1872"`
-    yields one error whose text contains `sqlite3-not-here-1872`.
+  - `TestSource_MissingSqlite3FailsWithItsName`: build the fixture DB with `fixtureDB(t)`
+    (so `os.Stat` passes), then make the source in the package with that path and
+    `prog: "sqlite3-not-here-1872"`. It yields exactly one error whose text contains
+    `sqlite3-not-here-1872`, and no session.
   - `TestSource_PlainTask`: session `t-plain` has 2 events (request, response, one
     `RequestID`); request `Inference.Model == "premium-ide"`, messages system + user;
     response `Completion == "hi"`, `TotalTokens == 9`; `Client.Name == "bob"`,
@@ -270,12 +273,17 @@ from the column lists above, with only the columns the queries read plus `title`
     cost record and `TotalTokens == 0`.
   - `TestSource_NewestFirstSinceAndSkip`: ids in order start with `t-tools`; `t-empty` is
     not yielded; a `since` after `t-plain`'s newest message drops `t-plain`; a `skip`
-    that gives true for `t-tools` stops its read and it is not yielded, and `skip` gets a
-    time not before that session's `Updated`.
-  - `TestSource_UnreadableRoot`: copy the fixture, then `drop table messages`; every tree
-    yields `Unreadable == true` (the task query still works).
+    that gives true for `t-tools` stops its read and it is not yielded. Read once with a
+    `skip` that gives false to get `t-tools`'s `Updated`; then assert that the time `skip`
+    got for `t-tools` is not before that `Updated`.
+  - `TestSource_UnreadableRoot`: build the fixture, then run
+    `sqlite3 <db> "alter table messages rename column role to role_gone"`. Every tree
+    yields `Unreadable == true`, and the source gives no error. Do not drop the
+    `messages` table: the task query reads `messages` in its `last` subquery, so a
+    dropped table makes the task query fail, not the messages query. The rename breaks
+    only the messages query (it reads `role`).
 - [ ] **Step 2:** In `timeline_test.go`, `TestTimeline_ImportedTaskShowsToolsAndChild`
-  (copy the shape of `claude/timeline_test.go`): set `Seq` and
+  (copy the shape of `claude/timeline_test.go`): set `Seq = uint64(i + 1)` and
   `Source = model.ImportedSource("bob")` on `t-tools`'s events, run `timeline.Build`;
   assert tools `read_file` and `list_files` are in `tl.Tools`, and `tl.Agents` has a row
   with `ID == "t-child"`.
@@ -334,6 +342,12 @@ From the worktree root:
 ```sh
 GOWORK=off go -C core vet ./... && GOWORK=off go -C core test -race ./session/importer/... ./sessionapi/... && GOWORK=off go -C cmd/cortex vet ./... && GOWORK=off go -C cmd/cortex build ./... && test -z "$(gofmt -l core/session/importer cmd/cortex)"
 ```
+
+## Gate check (run on the base, 2026-11-16)
+
+From the worktree root, each vet and format step of the gate ran once on the unchanged
+base and passed: `GOWORK=off go -C core vet ./...`, `GOWORK=off go -C cmd/cortex vet ./...`,
+`test -z "$(gofmt -l core/session/importer cmd/cortex)"`. No change to how they are called.
 
 ## For a human after review
 
