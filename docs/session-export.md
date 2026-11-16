@@ -89,6 +89,10 @@ The command wraps the endpoint for the shell: same parameters as flags, the file
 pipe, and a summary line on stderr (`3 records, 231B → (stdout)`) that never mixes into
 the stream.
 
+For a walkthrough — first export, `jq` and DuckDB recipes, the three ways a reader gets a
+wrong answer, and exporting from a cluster — see
+[`session-export-guide.md`](session-export-guide.md).
+
 | Flag | Meaning |
 |---|---|
 | `--out FILE` | Write to a file rather than stdout; an existing file is refused without `--force` |

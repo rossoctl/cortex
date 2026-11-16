@@ -18,6 +18,7 @@ holds the repo-level pieces; this file is the index.
 | Use the `agentop` TUI | [`cmd/agentop/README.md`](../cmd/agentop/README.md) |
 | Export sessions to files | [`session-dump.md`](session-dump.md) |
 | Export the archive for offline analysis (content-free records) | [`session-export.md`](session-export.md) |
+| Walk through exporting and analysing it, with the traps | [`session-export-guide.md`](session-export-guide.md) |
 
 ## Kubernetes and architecture
 
