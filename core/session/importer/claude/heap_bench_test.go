@@ -43,7 +43,7 @@ func BenchmarkImportHeap(b *testing.B) {
 
 	var events int
 	for i := 0; i < b.N; i++ {
-		for s, err := range New(dir).Sessions(time.Time{}) {
+		for s, err := range New(dir).Sessions(time.Time{}, func(string, time.Time) bool { return false }) {
 			if err != nil {
 				b.Fatal(err)
 			}

@@ -449,8 +449,8 @@ kept the ledger rows, so the import does not count its cost again.
 - The import stops before a session that would take the archive above 90% of
   `max_bytes`. Then `stopped` is `"archive full"`, and `notImported` counts the
   sessions left.
-- One line that the source does not recognize is skipped and counted
-  (`skippedLines`). It does not stop the import.
+- One line that the source does not recognize, in a session that the import
+  parses, is skipped and counted (`skippedLines`). It does not stop the import.
 - LAST 1H and the usage pane's hour windows show imported turns only after the
   next proxy restart. The import does not feed them.
 

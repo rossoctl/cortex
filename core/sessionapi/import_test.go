@@ -25,12 +25,15 @@ type importSource struct {
 
 func (f *importSource) Agent() string       { return "claude-code" }
 func (f *importSource) PricingHost() string { return "api.anthropic.com" }
-func (f *importSource) Sessions(time.Time) iter.Seq2[importer.Session, error] {
+func (f *importSource) Sessions(_ time.Time, skip func(string, time.Time) bool) iter.Seq2[importer.Session, error] {
 	return func(yield func(importer.Session, error) bool) {
 		if f.block != nil {
 			<-f.block
 		}
 		for _, s := range f.sessions {
+			if skip(s.ID, s.Updated) {
+				continue
+			}
 			if !yield(s, nil) {
 				return
 			}

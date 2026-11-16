@@ -18,18 +18,23 @@ import (
 )
 
 // fakeSource yields fixed sessions, and then err when it is set. After each session is
-// handled, it calls yielded when that is set.
+// handled, it calls yielded when that is set. parsed counts the sessions that skip let through.
 type fakeSource struct {
 	sessions []Session
 	err      error
 	yielded  func()
+	parsed   int
 }
 
 func (f *fakeSource) Agent() string       { return "claude-code" }
 func (f *fakeSource) PricingHost() string { return "api.anthropic.com" }
-func (f *fakeSource) Sessions(time.Time) iter.Seq2[Session, error] {
+func (f *fakeSource) Sessions(_ time.Time, skip func(string, time.Time) bool) iter.Seq2[Session, error] {
 	return func(yield func(Session, error) bool) {
 		for _, s := range f.sessions {
+			if skip(s.ID, s.Updated) {
+				continue
+			}
+			f.parsed++
 			if !yield(s, nil) {
 				return
 			}
@@ -54,7 +59,7 @@ func fakeSession(id string, start time.Time, turns int) Session {
 				Inference: &model.InferenceExtension{Model: "claude-sonnet-4-5"}},
 			model.SessionEvent{At: at.Add(time.Second), Direction: model.Outbound, Phase: model.SessionResponse, RequestID: rid,
 				Inference: &model.InferenceExtension{Model: "claude-sonnet-4-5", InputTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}})
-		s.Updated = at
+		s.Updated = at.Add(time.Second)
 	}
 	return s
 }
@@ -184,9 +189,13 @@ func TestRun_SkipsCurrent(t *testing.T) {
 	o := Options{Archive: a, Rates: testRates(t)}
 	Run(context.Background(), src, o)
 	bytes := a.Stats().Bytes
+	src.parsed = 0
 	r := Run(context.Background(), src, o)
 	if r.SkippedCurrent != 1 || r.Imported+r.Replaced != 0 {
 		t.Fatalf("report = %+v, want 1 skipped current", r)
+	}
+	if src.parsed != 0 {
+		t.Fatalf("the source parsed %d sessions, want 0: skip decides before the parse", src.parsed)
 	}
 	if got := a.Stats().Bytes; got != bytes {
 		t.Fatalf("archive bytes %d, want %d", got, bytes)
@@ -587,9 +596,69 @@ func TestRun_ReplaceIgnoresOwnTranscriptRows(t *testing.T) {
 			Inference: &model.InferenceExtension{Model: "claude-sonnet-4-5"}},
 		model.SessionEvent{At: at.Add(time.Second), Direction: model.Outbound, Phase: model.SessionResponse, RequestID: "A-r2",
 			Inference: &model.InferenceExtension{Model: "claude-sonnet-4-5", InputTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}})
-	grown.Updated = at
+	grown.Updated = at.Add(time.Second)
 	if r := Run(context.Background(), &fakeSource{sessions: []Session{grown}}, o); r.Replaced != 1 {
 		t.Fatalf("report = %+v, want 1 replaced", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 3 || tok != 3300 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 3, 3300", req, tok)
+	}
+}
+
+// cancelRates cancels the run when the import prices its first event, so the cancel lands
+// between the price and the ledger read.
+type cancelRates struct {
+	pricing.Resolver
+	cancel func()
+}
+
+func (c cancelRates) Resolve(endpoint, model string, promptTotal int) (pricing.Rates, pricing.Provenance) {
+	c.cancel()
+	return c.Resolver.Resolve(endpoint, model, promptTotal)
+}
+
+// A cancel after the archive write does not make the ledger read fail open: the erased
+// session's turns are not counted a second time.
+func TestRun_CancelAfterTheArchiveWriteCountsOnce(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	src := &fakeSource{sessions: []Session{fakeSession("A", start, 2)}}
+	Run(context.Background(), src, Options{Archive: a, Ledger: w, Rates: testRates(t)})
+	req, tok, micros := sumCost(t, w)
+	erase(t, a, "A")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := Run(ctx, src, Options{Archive: a, Ledger: w, Rates: cancelRates{testRates(t), cancel}})
+	if r.Imported != 1 {
+		t.Fatalf("report = %+v, want 1 imported", r)
+	}
+	if r2, t2, m2 := sumCost(t, w); r2 != req || t2 != tok || m2 != micros {
+		t.Fatalf("ledger has %d requests, %d tokens, %d micros; want %d, %d, %d (unchanged)", r2, t2, m2, req, tok, micros)
+	}
+}
+
+// A replace that writes a row in the minute of an erased session's earlier row does not make
+// that earlier row look like this run's: the erased session's turn is not counted again.
+func TestRun_ReplaceDoesNotHideAnErasedSessionsRow(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+	at := start.Add(5 * time.Minute)
+	sa, sb := fakeSession("A", at, 1), fakeSession("B", start, 1)
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{sa, sb}}, o); r.Imported != 2 {
+		t.Fatalf("first report = %+v, want 2 imported", r)
+	}
+	erase(t, a, "A")
+	grown := fakeSession("B", start, 1)
+	grown.Events = append(grown.Events,
+		model.SessionEvent{At: at.Add(10 * time.Second), Direction: model.Outbound, Phase: model.SessionRequest, RequestID: "B-r1",
+			Inference: &model.InferenceExtension{Model: "claude-sonnet-4-5"}},
+		model.SessionEvent{At: at.Add(11 * time.Second), Direction: model.Outbound, Phase: model.SessionResponse, RequestID: "B-r1",
+			Inference: &model.InferenceExtension{Model: "claude-sonnet-4-5", InputTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}})
+	grown.Updated = at.Add(11 * time.Second)
+	r := Run(context.Background(), &fakeSource{sessions: []Session{grown, sa}}, o)
+	if r.Replaced != 1 || r.Imported != 1 {
+		t.Fatalf("second report = %+v, want 1 replaced and 1 imported", r)
 	}
 	if req, tok, _ := sumCost(t, w); req != 3 || tok != 3300 {
 		t.Fatalf("ledger has %d requests, %d tokens; want 3, 3300", req, tok)

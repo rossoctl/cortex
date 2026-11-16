@@ -43,9 +43,45 @@ type Options struct {
 func Run(ctx context.Context, src Source, o Options) AgentReport {
 	r := AgentReport{Agent: src.Agent()}
 	mark := model.ImportedSource(src.Agent())
-	var dryBytes int64            // the bytes a dry run would have written, for the size check
-	written := map[liveKey]bool{} // the ledger rows this call wrote
-	for s, err := range src.Sessions(o.Since) {
+	var dryBytes int64             // the bytes a dry run would have written, for the size check
+	written := map[liveKey]bool{}  // see toLedger
+	var sum session.SessionSummary // the archived copy of the session that skip last let through
+	var found bool
+	// skip applies Rules 1 and 2 and the retention check, and counts a skipped session. Sessions
+	// calls it before the parse with a time not before Updated, and Run calls it again after.
+	skip := func(id string, updated time.Time) bool {
+		if err := ctx.Err(); err != nil {
+			r.Error = err.Error()
+			return true
+		}
+		if r.Stopped != "" {
+			r.NotImported++
+			return true
+		}
+		// Rule 1: a session with live events is not touched.
+		if o.Store != nil && o.Store.ViewTail(id, 1) != nil {
+			r.SkippedLive++
+			return true
+		}
+		sum, found = o.Archive.Lookup(id)
+		if found && sum.Source == "" {
+			r.SkippedLive++
+			return true
+		}
+		// Rule 2: the archived copy is as new as the transcript.
+		if found && !updated.After(sum.UpdatedAt) {
+			r.SkippedCurrent++
+			return true
+		}
+		// The next prune would delete a session past the archive's retention. A zero time is a
+		// session with no events: Rule 5 skips it after the parse.
+		if d := o.Archive.RetentionDays(); d > 0 && !updated.IsZero() && updated.Before(time.Now().Add(-time.Duration(d)*24*time.Hour)) {
+			r.SkippedExpired++
+			return true
+		}
+		return false
+	}
+	for s, err := range src.Sessions(o.Since, skip) {
 		if err != nil {
 			r.Error = err.Error()
 			break
@@ -54,32 +90,11 @@ func Run(ctx context.Context, src Source, o Options) AgentReport {
 			r.Error = err.Error()
 			break
 		}
-		if r.Stopped != "" {
-			r.NotImported++
-			continue
-		}
 		r.SkippedLines += s.Skipped
+		if skip(s.ID, s.Updated) {
+			continue
+		}
 
-		// Rule 1: a session with live events is not touched.
-		if o.Store != nil && o.Store.ViewTail(s.ID, 1) != nil {
-			r.SkippedLive++
-			continue
-		}
-		sum, found := o.Archive.Lookup(s.ID)
-		if found && sum.Source == "" {
-			r.SkippedLive++
-			continue
-		}
-		// Rule 2: the archived copy is as new as the transcript.
-		if found && !s.Updated.After(sum.LastRequestAt) {
-			r.SkippedCurrent++
-			continue
-		}
-		// The next prune would delete a session past the archive's retention.
-		if d := o.Archive.RetentionDays(); d > 0 && s.Updated.Before(time.Now().Add(-time.Duration(d)*24*time.Hour)) {
-			r.SkippedExpired++
-			continue
-		}
 		// Rule 5.
 		if len(s.Events) == 0 {
 			continue
@@ -113,11 +128,14 @@ func Run(ctx context.Context, src Source, o Options) AgentReport {
 		if o.Ledger != nil {
 			// After is the zero time on a new session, so every turn goes to the ledger.
 			var after time.Time
+			// shortcut: a turn that an earlier import read while its message was partly written keeps
+			// that earlier row, because its request is not after LastRequestAt. Replace the row if
+			// that undercount shows up.
 			if found {
 				after = sum.LastRequestAt
 			}
 			// shortcut: the archive already holds s, so a re-run skips it as current and its rows stay
-			// lost. Only a failed append (ENOSPC, EROFS) or a Close during it gets here. Undo the archive write if it shows up.
+			// lost. Only a failed ledger read or append (ENOSPC, EROFS) or a Close during it gets here. Undo the archive write if it shows up.
 			if err := toLedger(ctx, o.Ledger, s, after, !found, written); err != nil {
 				r.Error = "cost ledger: " + err.Error()
 				break
@@ -140,8 +158,9 @@ func count(r *AgentReport, replace bool) {
 //
 // It also skips a response when the ledger has a live row for the same project within one
 // minute of it: the proxy recorded that turn live, and the archive later pruned the session.
-// On a new session it also skips a response with a transcript row near it, unless this run wrote
-// that row (written): an earlier run imported the turn, and the user erased the session. A replace
+// On a new session it also skips a response with a transcript row near it, unless only this run
+// wrote that row (written[k] true): an earlier run imported the turn, and the user erased the
+// session. written[k] is false when an earlier run wrote a row at k. A replace
 // does not need that check, because after already drops the turns of the earlier import.
 // shortcut: rows carry no session id, so a turn of a session that did not go through Cortex is
 // skipped when another session in the same project had live traffic in that minute. Keep the
@@ -174,11 +193,23 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, after time.Time,
 		}
 	}
 	live := map[liveKey]bool{}
-	// An error leaves live empty: the import then records every turn, as before this check.
-	rows, _, _ := w.Window(ctx, from.Add(-time.Minute), to.Add(time.Minute))
+	// The archive holds s already, so a cancel here must not stop the read.
+	rows, _, err := w.Window(context.WithoutCancel(ctx), from.Add(-time.Minute), to.Add(time.Minute))
+	if err != nil {
+		return err
+	}
 	for _, r := range rows {
 		k := liveKey{r.At.Truncate(time.Minute).Unix(), r.Project}
-		if r.Source == "" || (newSession && r.Source == event.SourceTranscript && !written[k]) {
+		if r.Source != event.SourceTranscript {
+			if r.Source == "" {
+				live[k] = true
+			}
+			continue
+		}
+		if _, seen := written[k]; !seen {
+			written[k] = false // a row that an earlier run wrote
+		}
+		if newSession && !written[k] {
 			live[k] = true
 		}
 	}
@@ -197,7 +228,9 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, after time.Time,
 		return err
 	}
 	for _, k := range keys {
-		written[k] = true
+		if _, seen := written[k]; !seen {
+			written[k] = true
+		}
 	}
 	return nil
 }

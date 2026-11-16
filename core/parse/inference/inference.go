@@ -51,7 +51,6 @@ func ParseRequest(path string, headers http.Header, body []byte) *model.Inferenc
 	ext.AgentRole = agentRole(ext.Messages)
 	ext.AnthropicBeta = anthropicBeta(headers)
 
-	slog.Info("inference-parser", "model", model.SanitizeLogValue(ext.Model))
 	slog.Debug("inference-parser: extracted", "model", model.SanitizeLogValue(ext.Model), "messages", len(ext.Messages), "stream", ext.Stream, "tools", len(ext.Tools))
 	// Guarded: the arguments are evaluated even when Debug is off, and sanitizing allocates.
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {

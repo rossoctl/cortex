@@ -4,7 +4,9 @@
 package claude
 
 import (
+	"bufio"
 	"cmp"
+	"encoding/json"
 	"iter"
 	"log/slog"
 	"os"
@@ -35,7 +37,7 @@ type subFile struct {
 	mod      time.Time
 }
 
-func (s source) Sessions(since time.Time) iter.Seq2[importer.Session, error] {
+func (s source) Sessions(since time.Time, skip func(id string, updated time.Time) bool) iter.Seq2[importer.Session, error] {
 	return func(yield func(importer.Session, error) bool) {
 		dir := s.configDir
 		if dir == "" {
@@ -46,7 +48,7 @@ func (s source) Sessions(since time.Time) iter.Seq2[importer.Session, error] {
 			}
 			dir = d
 		}
-		metas, _, _, err := ccstore.ReadSessions(dir, nil)
+		metas, err := transcripts(dir)
 		if err != nil {
 			yield(importer.Session{}, err)
 			return
@@ -56,17 +58,20 @@ func (s source) Sessions(since time.Time) iter.Seq2[importer.Session, error] {
 			ids = append(ids, id)
 		}
 		slices.SortFunc(ids, func(a, b string) int {
-			return cmp.Or(metas[b].LogModTime.Compare(metas[a].LogModTime), strings.Compare(a, b))
+			return cmp.Or(metas[b].mod.Compare(metas[a].mod), strings.Compare(a, b))
 		})
 		home, _ := os.UserHomeDir()
 		for _, id := range ids {
 			m := metas[id]
-			subs := subagentFiles(filepath.Join(filepath.Dir(m.LogFile), id, "subagents"))
-			if !since.IsZero() && m.LogModTime.Before(since) &&
+			subs := subagentFiles(filepath.Join(filepath.Dir(m.path), id, "subagents"))
+			if !since.IsZero() && m.mod.Before(since) &&
 				!slices.ContainsFunc(subs, func(f subFile) bool { return !f.mod.Before(since) }) {
 				continue
 			}
-			sess, ok := readSession(id, m.LogFile, subs, home)
+			if skip(id, newestAt(m.path, subs)) {
+				continue
+			}
+			sess, ok := readSession(id, m.path, subs, home)
 			if !ok {
 				continue
 			}
@@ -75,6 +80,41 @@ func (s source) Sessions(since time.Time) iter.Seq2[importer.Session, error] {
 			}
 		}
 	}
+}
+
+// transcripts lists <dir>/projects/*/<id>.jsonl by id, with the files of ccstore.ReadSessions.
+// It does not read the files: ReadSessions parses each one for its title. A symlink counts as
+// its target, and of two files with one id the newer wins.
+func transcripts(dir string) (map[string]subFile, error) {
+	projects := filepath.Join(dir, "projects")
+	entries, err := os.ReadDir(projects)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]subFile{}
+	for _, e := range entries {
+		proj := filepath.Join(projects, e.Name())
+		files, _ := os.ReadDir(proj) // one unreadable project must not stop the others
+		for _, f := range files {
+			if !strings.HasSuffix(f.Name(), ".jsonl") {
+				continue
+			}
+			path := filepath.Join(proj, f.Name())
+			st, err := os.Stat(path)
+			if err != nil || st.IsDir() {
+				continue
+			}
+			id := strings.TrimSuffix(f.Name(), ".jsonl")
+			if prev, dup := out[id]; dup && !st.ModTime().After(prev.mod) {
+				continue
+			}
+			out[id] = subFile{path: path, id: id, mod: st.ModTime()}
+		}
+	}
+	return out, nil
 }
 
 // subagentFiles lists agent-*.jsonl in dir and in each dir/workflows/<run>/. The harvest's
@@ -134,9 +174,59 @@ func readSession(id, path string, subs []subFile, home string) (importer.Session
 	// Stable: on a tie the main file stays first, and a request stays before its response.
 	slices.SortStableFunc(s.Events, func(a, b model.SessionEvent) int { return a.At.Compare(b.At) })
 	for _, e := range s.Events {
-		if e.Phase == model.SessionRequest && e.At.After(s.Updated) {
+		if e.At.After(s.Updated) {
 			s.Updated = e.At
 		}
 	}
 	return s, true
+}
+
+// newestAt reads the timestamps of the files of one session, without the parse. It gives
+// the newest assistant line, and the newest user line that an assistant line follows. Each
+// event that the parse makes has the time of one of these lines, so the result is not before
+// Session.Updated. A file it cannot read gives the zero time.
+func newestAt(path string, subs []subFile) time.Time {
+	t := newestInFile(path)
+	for _, f := range subs {
+		if n := newestInFile(f.path); n.After(t) {
+			t = n
+		}
+	}
+	return t
+}
+
+func newestInFile(path string) time.Time {
+	f, err := os.Open(path)
+	if err != nil {
+		return time.Time{}
+	}
+	defer f.Close()
+	var newest, user time.Time
+	r := bufio.NewReader(f)
+	for {
+		raw, rerr := r.ReadBytes('\n')
+		var l struct {
+			Type      string           `json:"type"`
+			Timestamp time.Time        `json:"timestamp"`
+			Message   *json.RawMessage `json:"message"`
+		}
+		if json.Unmarshal(raw, &l) == nil && l.Message != nil {
+			switch l.Type {
+			case "user":
+				if l.Timestamp.After(user) {
+					user = l.Timestamp
+				}
+			case "assistant":
+				for _, t := range []time.Time{l.Timestamp, user} {
+					if t.After(newest) {
+						newest = t
+					}
+				}
+				user = time.Time{}
+			}
+		}
+		if rerr != nil {
+			return newest
+		}
+	}
 }

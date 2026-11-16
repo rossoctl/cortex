@@ -17,13 +17,15 @@ type Source interface {
 	PricingHost() string
 	// Sessions yields the sessions newest first (by file mtime). A zero since gives all
 	// sessions. A non-nil error stops the import of this agent only, and Run reports it.
-	Sessions(since time.Time) iter.Seq2[Session, error]
+	// Before it parses a session, it calls skip with the session id and a time that is not
+	// before the parsed Updated. When skip gives true, it does not parse or yield the session.
+	Sessions(since time.Time, skip func(id string, updated time.Time) bool) iter.Seq2[Session, error]
 }
 
 // Session is one agent session that a Source read.
 type Session struct {
 	ID       string               // the Cortex session id
-	Updated  time.Time            // At of the latest request event
+	Updated  time.Time            // At of the newest event
 	SizeHint int64                // bytes of the files read, for the archive size check
 	Events   []model.SessionEvent // request/response pairs in order; Seq unset
 	Skipped  int                  // lines not recognized

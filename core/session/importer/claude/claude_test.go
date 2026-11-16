@@ -28,7 +28,7 @@ func fixtures(t *testing.T) string {
 func readAll(t *testing.T, src importer.Source, since time.Time) []importer.Session {
 	t.Helper()
 	var out []importer.Session
-	for s, err := range src.Sessions(since) {
+	for s, err := range src.Sessions(since, func(string, time.Time) bool { return false }) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -114,7 +114,7 @@ func TestSource_PlainSession(t *testing.T) {
 	if got, want := s.Events[1].At, time.Date(2026, 11, 1, 10, 0, 5, 0, time.UTC); !got.Equal(want) {
 		t.Errorf("response At = %v, want %v", got, want)
 	}
-	if got, want := s.Updated, time.Date(2026, 11, 1, 10, 1, 0, 0, time.UTC); !got.Equal(want) {
+	if got, want := s.Updated, time.Date(2026, 11, 1, 10, 1, 4, 0, time.UTC); !got.Equal(want) {
 		t.Errorf("Updated = %v, want %v", got, want)
 	}
 	if s.Events[0].RequestID != "req_011AAAAAAAAAAAAAAAAAAAAA" || s.Events[1].RequestID != s.Events[0].RequestID {
@@ -333,5 +333,29 @@ func TestFile_InterleavedParallelToolCallIsOneTurn(t *testing.T) {
 	}
 	if !reqs[1].At.Equal(time.Date(2026, 11, 1, 12, 0, 5, 0, time.UTC)) {
 		t.Errorf("second request At = %v, want the last held user line", reqs[1].At)
+	}
+}
+
+// skip gets a time that is not before the parsed Updated, and a true from it stops the parse.
+func TestSessions_SkipBeforeTheParse(t *testing.T) {
+	dir := fixtures(t)
+	want := map[string]time.Time{}
+	for _, s := range readAll(t, New(dir), time.Time{}) {
+		want[s.ID] = s.Updated
+	}
+	got := map[string]time.Time{}
+	for s, err := range New(dir).Sessions(time.Time{}, func(id string, updated time.Time) bool {
+		got[id] = updated
+		return true
+	}) {
+		t.Fatalf("yielded %+v, %v after skip gave true", s.ID, err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("skip saw %d sessions, want %d", len(got), len(want))
+	}
+	for id, u := range want {
+		if got[id].Before(u) {
+			t.Errorf("%s: skip got %v, before Updated %v", id, got[id], u)
+		}
 	}
 }
