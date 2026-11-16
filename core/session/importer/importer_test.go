@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -81,7 +82,7 @@ func openArchive(t *testing.T, opts ...archive.Option) *archive.Archive {
 
 func openArchiveAt(t *testing.T, dir string, opts ...archive.Option) *archive.Archive {
 	t.Helper()
-	a, err := archive.Open(dir, opts...)
+	a, err := archive.Open(dir, append([]archive.Option{archive.WithLedgerRetentionDays(31)}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,9 +511,9 @@ func erase(t *testing.T, a *archive.Archive, id string) {
 	}
 }
 
-// The user erases an imported session and imports again: it comes back, and its cost is not
-// counted a second time.
-func TestRun_ErasedImportedSessionComesBackOnce(t *testing.T) {
+// The user erases an imported session and imports again: it comes back, and the forget record
+// keeps its cost from being counted a second time.
+func TestRun_ErasedImportedSessionComesBackThroughRecord(t *testing.T) {
 	a := openArchive(t)
 	w := openLedger(t)
 	src := &fakeSource{sessions: []Session{fakeSession("A", start, 2)}}
@@ -525,6 +526,9 @@ func TestRun_ErasedImportedSessionComesBackOnce(t *testing.T) {
 		t.Fatalf("ledger has %d requests, %d micros after the import; want 2, priced", req, micros)
 	}
 	erase(t, a, "A")
+	if _, _, ok := a.Forgotten("A"); !ok {
+		t.Fatal("the erase left no forget record")
+	}
 	if r := Run(context.Background(), src, o); r.Imported != 1 {
 		t.Fatalf("second report = %+v, want 1 imported", r)
 	}
@@ -533,6 +537,110 @@ func TestRun_ErasedImportedSessionComesBackOnce(t *testing.T) {
 	}
 	if r2, t2, m2 := sumCost(t, w); r2 != req || t2 != tok || m2 != micros {
 		t.Fatalf("ledger has %d requests, %d tokens, %d micros; want %d, %d, %d (unchanged)", r2, t2, m2, req, tok, micros)
+	}
+}
+
+// An erased live session whose transcript has turns from before Cortex saw it: only the turns
+// before the record's span, less one minute of slack, reach the ledger.
+func TestRun_ErasedLiveSessionWithEarlierTurns(t *testing.T) {
+	a := openArchive(t, archive.WithClock(func() time.Time { return start.Add(10 * time.Minute) }))
+	w := openLedger(t)
+	var seq uint64
+	for _, at := range []time.Time{start.Add(10 * time.Minute), start.Add(11 * time.Minute)} {
+		for _, e := range turnPair(fmt.Sprintf("live-%d", seq), "", at) {
+			seq++
+			e.Seq, e.SessionID = seq, "A"
+			a.Record("A", &e)
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for a.LastSeq("A") < seq && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if a.LastSeq("A") < seq {
+		t.Fatal("the live events were not recorded")
+	}
+	erase(t, a, "A")
+	r := Run(context.Background(), &fakeSource{sessions: []Session{fakeSession("A", start, 12)}},
+		Options{Archive: a, Ledger: w, Rates: testRates(t)})
+	if r.Imported != 1 {
+		t.Fatalf("report = %+v, want 1 imported", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 9 || tok != 9900 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 9, 9900 (the turns before start+9m)", req, tok)
+	}
+}
+
+// An erased imported session that grew in the transcript: only the turns after the erase count.
+func TestRun_ErasedThenGrownCountsOnlyNewTurns(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+	Run(context.Background(), &fakeSource{sessions: []Session{fakeSession("A", start, 2)}}, o)
+	erase(t, a, "A")
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{fakeSession("A", start, 5)}}, o); r.Imported != 1 {
+		t.Fatalf("report = %+v, want 1 imported", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 5 || tok != 5500 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 5, 5500 (2 + 3 new)", req, tok)
+	}
+}
+
+// The size limit removes an imported session at Open, and a later import brings it back with no
+// second count.
+func TestRun_SizeLimitPruneThenImportCountsOnce(t *testing.T) {
+	dir := t.TempDir()
+	w := openLedger(t)
+	src := &fakeSource{sessions: []Session{fakeSession("A", start, 2)}}
+	a := openArchiveAt(t, dir)
+	if r := Run(context.Background(), src, Options{Archive: a, Ledger: w, Rates: testRates(t)}); r.Imported != 1 {
+		t.Fatalf("first report = %+v, want 1 imported", r)
+	}
+	req, tok, micros := sumCost(t, w)
+	a.Close()
+	a = openArchiveAt(t, dir, archive.WithMaxBytes(1))
+	if _, ok := a.Lookup("A"); ok {
+		t.Fatal("the size limit did not remove the session")
+	}
+	a.Close()
+	a = openArchiveAt(t, dir)
+	if r := Run(context.Background(), src, Options{Archive: a, Ledger: w, Rates: testRates(t)}); r.Imported != 1 {
+		t.Fatalf("second report = %+v, want 1 imported", r)
+	}
+	if r2, t2, m2 := sumCost(t, w); r2 != req || t2 != tok || m2 != micros {
+		t.Fatalf("ledger has %d requests, %d tokens, %d micros; want %d, %d, %d (unchanged)", r2, t2, m2, req, tok, micros)
+	}
+}
+
+// A record for a session that is still in the archive (a crash between the record and the
+// remove): the import follows the archive, and the record does not hide a new turn.
+func TestRun_RecordWithSessionOnDiskFollowsArchive(t *testing.T) {
+	dir := t.TempDir()
+	w := openLedger(t)
+	a := openArchiveAt(t, dir)
+	Run(context.Background(), &fakeSource{sessions: []Session{fakeSession("A", start, 2)}},
+		Options{Archive: a, Ledger: w, Rates: testRates(t)})
+	a.Close()
+	line := fmt.Sprintf(`{"id":"A","from":%d,"to":%d}`+"\n", start.Add(-time.Hour).UnixMilli(), start.Add(time.Hour).UnixMilli())
+	f, err := os.OpenFile(filepath.Join(dir, "forgotten.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(line); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	a = openArchiveAt(t, dir)
+	if _, _, ok := a.Forgotten("A"); !ok {
+		t.Fatal("the hand-written record did not load")
+	}
+	r := Run(context.Background(), &fakeSource{sessions: []Session{fakeSession("A", start, 3)}},
+		Options{Archive: a, Ledger: w, Rates: testRates(t)})
+	if r.Replaced != 1 {
+		t.Fatalf("report = %+v, want 1 replaced", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 3 || tok != 3300 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 3, 3300 (the new turn added)", req, tok)
 	}
 }
 
