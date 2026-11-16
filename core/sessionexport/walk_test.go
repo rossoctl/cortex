@@ -220,11 +220,12 @@ func TestWalk_UnknownSessionErrorIsBoundedInBytes(t *testing.T) {
 				t.Errorf("400 body is %d bytes; a client that reads 512 cannot parse it: %s", wrapped, err.Error())
 			}
 			// Bounded is not useful if it names nothing: the asker's first id must survive,
-			// at least as a recognisable prefix.
-			first := tc.requested[0]
-			if len(first) > errorListIDMaxLen {
-				first = first[:errorListIDMaxLen]
-			}
+			// at least as a recognisable prefix. The cap is on ESCAPED width, so ask the
+			// same helper the message does rather than slicing raw bytes here — for an id
+			// whose bytes expand under json.Marshal the two differ, and a raw slice would
+			// assert a prefix the message is right not to contain.
+			first := truncateToEscaped(tc.requested[0], errorListIDMaxLen)
+			first = strings.TrimSuffix(first, "…")
 			if !strings.Contains(err.Error(), first) {
 				t.Errorf("message names none of the requested ids: %s", err.Error())
 			}

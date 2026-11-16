@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -211,6 +212,88 @@ func TestHandleExport_UnknownSessionRefusalFitsAClientRead(t *testing.T) {
 	}
 	if !strings.Contains(refusal.Error, "3f2504e0") || !strings.Contains(refusal.Error, "more") {
 		t.Errorf("refusal does not name the archived ids and count the rest: %s", refusal.Error)
+	}
+}
+
+// The budget is spent on the JSON-ESCAPED message, because that is what the handler sends:
+// export.go marshals err.Error() into the {"error":...} body. An id of bytes that escape —
+// `<` is HTML-escaped by encoding/json by default, a control rune becomes a six-byte \u00XX —
+// costs several times its length on the wire, so a cap counted in raw bytes is not a cap on
+// what a client reads. These ids all pass validHeaderSessionID, and the last case needs no
+// hostile query at all: one `&` in a client's own ids makes every typo against that archive
+// unparseable. With a raw-byte budget each case returns about 830-2000 bytes.
+func TestHandleExport_UnknownSessionRefusalFitsAClientReadWhenIDsEscape(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		archived  func(i int) string
+		requested []string
+	}{
+		{
+			name:      "angle brackets, HTML-escaped by encoding/json",
+			archived:  func(i int) string { return fmt.Sprintf("3f2504e0-4f89-11d3-9a0c-0305e82c33%02d", i) },
+			requested: []string{strings.Repeat("<", 64), strings.Repeat("<", 63) + "a"},
+		},
+		{
+			name:      "control runes, six bytes each escaped",
+			archived:  func(i int) string { return fmt.Sprintf("3f2504e0-4f89-11d3-9a0c-0305e82c33%02d", i) },
+			requested: []string{strings.Repeat("\x01", 64), strings.Repeat("\x02", 64)},
+		},
+		{
+			name:      "ampersands in the ARCHIVED ids, so a plain typo overruns",
+			archived:  func(i int) string { return strings.Repeat("&", 40) + fmt.Sprintf("-%02d", i) },
+			requested: []string{"typo"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			write, err := archive.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := exportBase
+			store := session.New(0, 0, 0, session.WithClock(func() time.Time { return now }))
+			store.AddRecorder(write)
+			for i := range 20 {
+				at := exportBase.Add(time.Duration(i) * time.Minute)
+				now = at
+				store.Append(tc.archived(i), model.SessionEvent{At: at, Direction: model.Outbound,
+					Phase: model.SessionRequest, Host: "h", HTTPMethod: "POST"})
+			}
+			store.Close()
+			if err := write.Close(); err != nil {
+				t.Fatal(err)
+			}
+			a, err := archive.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { a.Close() })
+			ts := httptest.NewServer(New(":0", session.New(0, 0, 0), WithArchive(a),
+				WithClock(func() time.Time { return exportNow })).server.Handler)
+			t.Cleanup(ts.Close)
+
+			// url.Values, so the bytes reach the handler the way a real client sends them.
+			v := url.Values{}
+			for _, id := range tc.requested {
+				v.Add("session", id)
+			}
+			code, body := getBody(t, ts.URL+"/v1/export?"+v.Encode())
+			if code != http.StatusBadRequest {
+				t.Fatalf("GET /v1/export = %d %s, want 400", code, body)
+			}
+			if len(body) >= 512 {
+				t.Errorf("400 body is %d bytes; a client reading 512 cannot parse it: %s", len(body), body)
+			}
+			// The bound is only worth anything if the truncated body is still parseable at
+			// the cut: this is what agentop actually does with it.
+			var refusal struct{ Error string }
+			if err := json.Unmarshal(body, &refusal); err != nil {
+				t.Fatalf("400 body is not parseable JSON: %v: %s", err, body)
+			}
+			if refusal.Error == "" {
+				t.Error("refusal carries no error detail")
+			}
+		})
 	}
 }
 
