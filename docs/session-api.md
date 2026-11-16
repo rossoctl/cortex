@@ -809,8 +809,9 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   probe has not passed) or refuses the dial. The forward proxy then records
   the request row and the 503 response row itself, because the gateway never
   saw the request.
-  `error.kind: "proxy_error"` is the one that is the proxy's own: a response
-  over the listener's `maxBodySize` (1MB inbound, 10MB outbound), and on the
+  `error.kind: "proxy_error"` is the one that is the proxy's own: a buffered
+  response over the listener's `maxBodySize` (1MB inbound, 10MB outbound), and
+  on the
   streamed arms the 5-minute idle read cutoff and the per-frame cap. **A
   streamed response that breaks off mid-body has no 502 to synthesize** — the
   status is already on the wire. Both proxies abort the client's connection

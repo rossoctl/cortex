@@ -29,7 +29,8 @@ type PluginCapabilities struct {
 	ReadsBody bool
 
 	// ReadsResponseBody: the plugin reads pctx.ResponseBody and never pctx.Body.
-	// The listener buffers the response body, not the request body, and
+	// The listener buffers the response body, not the request body — on the
+	// forward proxy, also for a request no parser claimed — and
 	// Pipeline.New orders it against response mutators only: a request mutator
 	// before it changes nothing it reads.
 	ReadsResponseBody bool

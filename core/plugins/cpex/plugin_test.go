@@ -616,6 +616,23 @@ func TestCapabilities_RequiresAnyParser(t *testing.T) {
 	}
 }
 
+// Response hooks read every response, so the forward proxy buffers one no
+// parser claimed for them.
+func TestCapabilities_ResponseHooksReadEveryResponse(t *testing.T) {
+	for cfg, want := range map[string]bool{
+		cfgOneRequestHook: false,
+		`{"hooks":{"on_response":["cmf.tool_post_invoke"]}}`: true,
+	} {
+		p := setupFake(&FakeManager{})
+		if err := p.Configure([]byte(cfg)); err != nil {
+			t.Fatalf("Configure(%s): %v", cfg, err)
+		}
+		if got := p.Capabilities().ReadsResponseBody; got != want {
+			t.Errorf("%s: ReadsResponseBody = %v, want %v", cfg, got, want)
+		}
+	}
+}
+
 func TestConfigSchema_IncludesExpectedFields(t *testing.T) {
 	schema := NewCPEX().ConfigSchema()
 	if len(schema) == 0 {

@@ -20,7 +20,8 @@ type responseWriter struct {
 
 func (p *responseWriter) Name() string { return p.name }
 func (p *responseWriter) Capabilities() pipeline.PluginCapabilities {
-	return pipeline.PluginCapabilities{ReadsBody: true, WritesResponseBody: true}
+	// ReadsResponseBody: its test paths are ones no parser claims.
+	return pipeline.PluginCapabilities{ReadsBody: true, ReadsResponseBody: true, WritesResponseBody: true}
 }
 func (p *responseWriter) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}

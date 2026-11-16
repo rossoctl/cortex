@@ -506,6 +506,18 @@ func (p *Pipeline) NeedsResponseBody() bool {
 	return false
 }
 
+// ReadsEveryResponseBody reports whether a plugin declares ReadsResponseBody
+// itself. The forward proxy buffers a response no parser claimed only for such
+// a plugin.
+func (p *Pipeline) ReadsEveryResponseBody() bool {
+	for _, plugin := range p.plugins {
+		if plugin.Capabilities().ReadsResponseBody { // raw — see NeedsRequestBody
+			return true
+		}
+	}
+	return false
+}
+
 // WritesRequestBody returns true if any plugin in the pipeline declares
 // WritesRequestBody. Listeners use this to decide whether to diff-and-emit a
 // body mutation on the wire. A pipeline with no WritesRequestBody plugins

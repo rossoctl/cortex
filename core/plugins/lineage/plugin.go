@@ -208,10 +208,12 @@ func (p *LineageTelemetry) Capabilities() pipeline.PluginCapabilities {
 		// pctx.Body for the request size and the http payload,
 		// pctx.ResponseBody for the http payload — but every parser in
 		// RequiresAny declares ReadsBody, so the listener buffers them
-		// already (TestRequiredParsersBufferTheBody pins it). Declaring
-		// ReadsBody here would forbid lineage after a body-rewriting plugin,
-		// and after the rewriters is where it records the request as it was
-		// forwarded.
+		// already (TestRequiredParsersBufferTheBody pins it). A response no
+		// parser claimed is buffered on the forward proxy only for a
+		// ReadsResponseBody plugin, so its http payload is recorded only then.
+		// Declaring ReadsBody here would forbid lineage after a body-rewriting
+		// plugin, and after the rewriters is where it records the request as it
+		// was forwarded.
 		ReadsBody: false,
 		// The contract is cited major.minor only, deliberately: patch
 		// revisions (v1.5.x) clarify prose and never change span semantics,

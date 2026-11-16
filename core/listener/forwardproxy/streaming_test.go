@@ -36,6 +36,7 @@ func newStreamingProbe(writesRequestBody bool) *streamingProbe {
 	return &streamingProbe{
 		caps: pipeline.PluginCapabilities{
 			ReadsBody:         true,
+			ReadsResponseBody: true, // its test paths are ones no parser claims
 			WritesRequestBody: writesRequestBody,
 		},
 	}
