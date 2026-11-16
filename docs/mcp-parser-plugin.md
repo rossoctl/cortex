@@ -17,4 +17,4 @@ Place `mcp-parser` **before** these plugins on the outbound chain;
 without it they see no MCP data and pass the traffic through
 unclassified.
 
-- `paths` (`[]string`) — URL path globs treated as MCP endpoints (for body-less transport detection: SSE GET, session-terminate DELETE). Default `["/mcp"]`.
+- `paths` (`[]string`) — URL path globs treated as MCP endpoints (for body-less transport detection: SSE GET, session-terminate DELETE). Default `["/mcp", "/mcp/"]`. Only a canonical path matches, as for `jwt-validation`'s `bypass_paths`.

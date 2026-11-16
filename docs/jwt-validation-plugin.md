@@ -9,6 +9,6 @@ Validates inbound JWTs: signature via JWKS, issuer, and audience.
 - `audience_file` (string) — file to read expected audience from. Default `/shared/client-id.txt`.
 - `audience_mode` (string) — `static` only. `per-host` was removed: it derived the expected audience from the client-controlled `Host` header, so a token minted for any host was accepted for this agent (confused deputy). A config still naming it fails validation at load.
 - `allowed_audiences` (`[]string`) — extra audience values accepted (OR semantics).
-- `bypass_paths` (`[]string`) — path globs skipped. Default `/healthz`, `/readyz`, `/livez`, `/metrics`, `/.well-known/*`.
+- `bypass_paths` (`[]string`) — path globs skipped. Default `/healthz`, `/readyz`, `/livez`, `/metrics`, `/.well-known/*`. Only a canonical path matches: the app gets the path as sent, so `/mcp/../healthz`, `//healthz`, `/healthz/` and any path with `;`, `\`, `%` or `?` after decoding are validated.
 - `placeholder_mode` (bool) — replace the validated inbound token with an opaque placeholder before forwarding, for later outbound resolution. Default `false`.
 - `placeholder_ttl` (string) — how long the real token is retained. Default `1h`.

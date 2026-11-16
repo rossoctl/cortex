@@ -36,14 +36,17 @@ func NewMatcher(patterns []string) (*Matcher, error) {
 	return &Matcher{patterns: clean}, nil
 }
 
-// Match checks if the given request path matches any bypass pattern.
-// Query strings are stripped and the path is normalized via path.Clean
-// to prevent bypass via non-canonical forms (e.g., //healthz, /./healthz).
+// Match reports whether requestPath, a decoded path with no query, is a
+// canonical path that matches a pattern as written. The app gets the path as
+// sent and may route any other form elsewhere, so a dot segment, a doubled
+// slash, or a ';', '\', '%' or '?' never matches, and "/healthz/" matches only
+// a pattern with the trailing slash.
 func (m *Matcher) Match(requestPath string) bool {
-	if idx := strings.IndexByte(requestPath, '?'); idx >= 0 {
-		requestPath = requestPath[:idx]
+	clean := path.Clean(requestPath)
+	trailingSlash := clean != "/" && clean+"/" == requestPath
+	if (clean != requestPath && !trailingSlash) || strings.ContainsAny(requestPath, `;\%?`) {
+		return false
 	}
-	requestPath = path.Clean(requestPath)
 	for _, pattern := range m.patterns {
 		if matched, _ := path.Match(pattern, requestPath); matched {
 			return true
