@@ -811,8 +811,7 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   saw the request.
   `error.kind: "proxy_error"` is the one that is the proxy's own: a buffered
   response over the listener's `maxBodySize` (1MB inbound, 10MB outbound), and
-  on the
-  streamed arms the 5-minute idle read cutoff and the per-frame cap. **A
+  on the streamed arms the 5-minute idle read cutoff and the per-frame cap. **A
   streamed response that breaks off mid-body has no 502 to synthesize** — the
   status is already on the wire. Both proxies abort the client's connection
   (h1 reset, h2 `RST_STREAM`) rather than end it cleanly, so the agent cannot
