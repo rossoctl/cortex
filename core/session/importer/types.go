@@ -17,16 +17,21 @@ type Source interface {
 	PricingHost() string
 	// Sessions yields the sessions newest first (by file mtime). A zero since gives all
 	// sessions. A non-nil error stops the import of this agent only, and Run reports it.
-	Sessions(since time.Time) iter.Seq2[Session, error]
+	// Before it parses a session, it calls skip with the session id and a time that is not
+	// before the parsed Updated. When skip gives true, it does not parse or yield the session.
+	Sessions(since time.Time, skip func(id string, updated time.Time) bool) iter.Seq2[Session, error]
 }
 
 // Session is one agent session that a Source read.
 type Session struct {
 	ID       string               // the Cortex session id
-	Updated  time.Time            // At of the latest request event
+	Updated  time.Time            // At of the newest event
 	SizeHint int64                // bytes of the files read, for the archive size check
 	Events   []model.SessionEvent // request/response pairs in order; Seq unset
 	Skipped  int                  // lines not recognized
+	// Unreadable is true when the session's main transcript could not be read. Run counts the
+	// session in AgentReport.Unreadable, and does not write it.
+	Unreadable bool
 }
 
 // Request is the body of POST /v1/import.
@@ -45,6 +50,7 @@ type AgentReport struct {
 	SkippedCurrent int    `json:"skippedCurrent"`
 	SkippedLines   int    `json:"skippedLines"`
 	SkippedExpired int    `json:"skippedExpired,omitempty"` // older than the archive's retention
+	Unreadable     int    `json:"unreadable,omitempty"`     // sessions whose transcript could not be read
 	NotImported    int    `json:"notImported,omitempty"`    // left after an archive-full stop
 	Stopped        string `json:"stopped,omitempty"`        // "archive full" or ""
 	Error          string `json:"error,omitempty"`

@@ -49,6 +49,8 @@ import (
 	"github.com/rossoctl/cortex/core/reloader"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/session/archive"
+	"github.com/rossoctl/cortex/core/session/importer"
+	claudeimport "github.com/rossoctl/cortex/core/session/importer/claude"
 	"github.com/rossoctl/cortex/core/sessionapi"
 	"github.com/rossoctl/cortex/core/spiffe"
 	"github.com/rossoctl/cortex/core/tlsbridge"
@@ -1271,6 +1273,9 @@ func main() {
 				sessionapi.WithClearAllowed(cfg.Listener.BindLoopbackOnly),
 				// Reads hold raw prompts: the same browser defenses as the erase, on every route.
 				sessionapi.WithLoopbackOnly(cfg.Listener.BindLoopbackOnly),
+				// POST /v1/import, only with the archive on and loopback-only; else no route.
+				sessionapi.WithImport(sessionapi.Import{Rates: pricingRegistry,
+					Sources: []importer.Source{claudeimport.New("")}}),
 			}, ingestOpts...)...,
 		)
 		sessionLn := listeners.take("session-api")

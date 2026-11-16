@@ -72,11 +72,29 @@ the import in `POST /v1/import`. agentop calls the route and marks imported rows
    mark, or when `lastSeq[id] > 0` and the archive holds no imported session for the id
    (a live event was recorded before the write). It refuses (`ErrExists`) a plain write
    when the archive already holds the id.
-10. **Two PRs.** The total estimate is about 3,100 counted lines. PR 1 is the core write
-    path with a fake source in the tests. PR 2 adds the Claude source, the route, agentop
-    and docs on top of it.
+10. **Two PRs.** The total estimate was about 3,100 counted lines. PR 1 (T1–T5, the core
+    write path with a fake source in the tests) is merged as #1876. PR 2 (T6–T11, about
+    1,890 lines) adds the Claude source, the route, agentop, docs and the erase fix on
+    `main`. This run builds PR 2 only.
 11. **LAST 1H does not show imported turns until the next proxy restart.** The spec
     accepts this. The importer does not feed the usage ring.
+12. **`agentop import` brings an erased session back** (user request, 2026-11-16). An
+    erase (`DELETE /v1/sessions/{id}`, `DELETE /v1/sessions`, agentop's `x`) removes the
+    session from the store and the archive, and leaves no tombstone. So the next import
+    finds no copy and writes the transcript as a new imported session (rule 4). The merged
+    code already does this for the archive. Do NOT add a tombstone or an "erased" skip
+    rule. What the merged code gets wrong is the cost: an erase keeps the ledger rows, and
+    rule 4 sends every turn to the ledger again. The merged `toLedger` already skips a
+    turn with a LIVE row (`Row.Source == ""`) near it, so an erased live session does not
+    count two times. An erased IMPORTED session does (the `shortcut:` comment in `Run`).
+    T11 fixes that: on rule 4 only (not on a replace), `toLedger` also skips a turn with a
+    `transcript` row near it, except a row that this same `Run` call wrote. Reason: the
+    user now uses erase-then-import as a workflow, so the double count shows up in
+    `agentop cost`. Rows carry no session id; a session id on rows is a schema change to a
+    durable file and is larger than this fix. The known limit (two imported sessions in
+    one project in the same minute, imported by two separate runs, the second is
+    undercounted) is the same class as the merged live-row check, and goes in a
+    `shortcut:` comment.
 
 ## Review Focus
 
@@ -92,6 +110,9 @@ the import in `POST /v1/import`. agentop calls the route and marks imported rows
    `session.json`, so rule 2 still skips. Test: `TestArchive_ImportedMarkSurvivesReopen` (T3).
 5. A second `POST /v1/import` while one runs. Expected: 409, and the first one finishes.
    Test: `TestImport_SecondRequestIs409` (T7).
+6. The user erases an imported session, then runs `agentop import` again. Expected: the
+   session comes back, marked imported, and the ledger total does not change. Tests:
+   `TestRun_ErasedImportedSessionComesBackOnce` (T11), `TestImport_ErasedSessionComesBack` (T7).
 
 ---
 
@@ -99,16 +120,15 @@ the import in `POST /v1/import`. agentop calls the route and marks imported rows
 
 | PR | Title | Parent | Tasks | estLines |
 |---|---|---|---|---|
-| PR1 | `feat: Add the shared transcript import path to the session archive and cost ledger` | "" | T1, T2, T3, T4, T5 | 1350 |
-| PR2 | `feat: Import Claude Code transcripts with agentop import` | PR1 | T6, T7, T8, T9, T10 | 1750 |
+| PR2 | `feat: Import Claude Code transcripts with agentop import` | "" | T6, T7, T8, T9, T10, T11 | 1890 |
 
-PR1 passes the gate alone: its importer tests use a fake source. PR2 needs PR1 below it.
+**STATUS (2026-11-16): T1–T5 (PR1) are MERGED in `main` as #1876. Do not build them again.** Build only PR2 (T6–T11), on `main`. Where this plan and the merged code differ, follow the merged code. One difference: `importer.Run` sends ledger rows through `ledger.Writer.RecordBatch` (blocking), not `Record`.
 
 ## Tasks
 
-### T1: Event `Source` field and the importer types
+### T1: Event `Source` field and the importer types (MERGED in #1876)
 
-**Depends on:** none. **PR:** PR1. **Est:** 110 lines.
+**Depends on:** none. **PR:** none: MERGED in #1876, do not build. **Est:** 110 lines.
 
 **Files:**
 - Modify: `core/model/session.go` (field on `SessionEvent`, on `sessionEventWire`, in
@@ -178,9 +198,9 @@ type Report struct {
 - [ ] **Step 4:** Run the same command. Expected: PASS. Run `GOWORK=off go -C core vet ./model/ ./session/importer/`.
 - [ ] **Step 5:** Commit `feat(model): Add SessionEvent.Source and the importer types`.
 
-### T2: The imported mark in the session summary
+### T2: The imported mark in the session summary (MERGED in #1876)
 
-**Depends on:** T1. **PR:** PR1. **Est:** 170 lines.
+**Depends on:** none (T1–T5 are merged). **PR:** none: MERGED in #1876, do not build. **Est:** 170 lines.
 
 **Files:**
 - Modify: `core/session/fold.go` (`SummaryFold`, `Add`, `Summary`, `Clone`, `foldJSON`,
@@ -212,9 +232,9 @@ only, so it does not copy `Source` onto a live store row. Do not change it.
 - [ ] **Step 4:** Run `GOWORK=off go -C core test ./session/`. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(session): Mark a session as imported while all its events are`.
 
-### T3: Blocking whole-session write and lookup in the archive
+### T3: Blocking whole-session write and lookup in the archive (MERGED in #1876)
 
-**Depends on:** T1, T2. **PR:** PR1. **Est:** 330 lines.
+**Depends on:** none (T1–T5 are merged). **PR:** none: MERGED in #1876, do not build. **Est:** 330 lines.
 
 **Files:**
 - Create: `core/session/archive/import.go`
@@ -273,9 +293,9 @@ Implementation (decided, do not change):
 - [ ] **Step 4:** Run `GOWORK=off go -C core test -race ./session/archive/`. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(archive): Add a blocking whole-session write for imports`.
 
-### T4: `transcript` cost source and `Row.Source` in the ledger
+### T4: `transcript` cost source and `Row.Source` in the ledger (MERGED in #1876)
 
-**Depends on:** T1. **PR:** PR1. **Est:** 140 lines.
+**Depends on:** none (T1–T5 are merged). **PR:** none: MERGED in #1876, do not build. **Est:** 140 lines.
 
 **Files:**
 - Modify: `core/cost/event/event.go` (const next to `SourceUsageFallback`; update the
@@ -303,9 +323,9 @@ const SourceTranscript = "transcript" // core/cost/event
 - [ ] **Step 4:** Run `GOWORK=off go -C core test ./cost/...`. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(ledger): Tag imported cost rows with Source transcript`.
 
-### T5: The importer run
+### T5: The importer run (MERGED in #1876)
 
-**Depends on:** T1, T2, T3, T4. **PR:** PR1. **Est:** 600 lines.
+**Depends on:** none (T1–T5 are merged). **PR:** none: MERGED in #1876, do not build. **Est:** 600 lines.
 
 **Files:**
 - Create: `core/session/importer/importer.go`, `core/session/importer/cost.go`
@@ -382,7 +402,7 @@ Set `Source = model.ImportedSource(src.Agent())` on every event before the write
 
 ### T6: The Claude Code source
 
-**Depends on:** T1. **PR:** PR2. **Est:** 750 lines (fixtures included).
+**Depends on:** none (T1–T5 are merged). **PR:** PR2. **Est:** 750 lines (fixtures included).
 
 **Files:**
 - Create: `core/session/importer/claude/claude.go`, `core/session/importer/claude/turns.go`
@@ -406,7 +426,8 @@ func New(configDir string) importer.Source
 Rules for the parse (one transcript file = `<project>/<uuid>.jsonl`; id = file uuid):
 - Do not take the harvest metadata lock. Do not write any file.
 - This package is also named `claude`. Import `core/observe/claude` as `ccstore`.
-- Discovery: call `ccstore.ReadSessions(dir, nil)`. A missing `projects` directory
+- Discovery: call `metas, _, _, err := ccstore.ReadSessions(dir, nil)` (it returns
+  four values; ignore the partial-title list and the skip count). A missing `projects` directory
   returns an empty map and no error: the source then yields nothing and no error, so
   `agentop import` with no `--agent` on a machine without Claude Code reports 0 sessions.
 - Subagent transcripts: list `agent-*.jsonl` files with `os.ReadDir` in
@@ -440,7 +461,8 @@ Rules for the parse (one transcript file = `<project>/<uuid>.jsonl`; id = file u
   `<uuid>/subagents/workflows/<run>/agent-<aid>.jsonl`: parse them the same way, with
   `Subagent = "<aid>"` on each event. Merge all events of the session by `At` (stable:
   main file first on ties). Pass every event through one `session.Interner`, in the
-  final order.
+  final order. The zero value `var in session.Interner` is ready to use; make one per
+  session.
 - `Updated` = the latest request `At`. `SizeHint` = the sum of the file sizes read.
 - A file that cannot be opened: yield `(Session{}, err)` only when `ReadSessions` returns
   an error (the projects directory exists but cannot be read). One unreadable main
@@ -451,7 +473,7 @@ Rules for the parse (one transcript file = `<project>/<uuid>.jsonl`; id = file u
   from real Claude Code 2.x lines (no real content, paths or ids):
   `11111111-1111-4111-8111-111111111111.jsonl` (plain: 2 user prompts, 2 assistant
   turns, a `summary` line, a `file-history-snapshot` line, one non-JSON line),
-  `22222222-2222-4222-8222-222222222222jsonl` (a `tool_use` turn split over 2 assistant lines with the same
+  `22222222-2222-4222-8222-222222222222.jsonl` (a `tool_use` turn split over 2 assistant lines with the same
   `message.id`, a `tool_result` user line, a `thinking` block, a `compact_boundary`), and
   `22222222-2222-4222-8222-222222222222/subagents/agent-a1b2c3.jsonl` + `agent-a1b2c3.meta.json`
   (`{"agentType":"Explore"}`).
@@ -480,7 +502,7 @@ Rules for the parse (one transcript file = `<project>/<uuid>.jsonl`; id = file u
 
 ### T7: `POST /v1/import` and the proxy wiring
 
-**Depends on:** T5, T6. **PR:** PR2. **Est:** 300 lines.
+**Depends on:** T6. **PR:** PR2. **Est:** 300 lines.
 
 **Files:**
 - Create: `core/sessionapi/import.go`
@@ -518,6 +540,11 @@ func WithImport(i Import) Option
     `"path"` key reads no other directory).
   - `TestImport_SecondRequestIs409`: a source that blocks on a channel; the second request
     gets 409; release; the first returns 200.
+  - `TestImport_ErasedSessionComesBack` (decision 12): import, then
+    `DELETE /v1/sessions/{id}` (with the clear guards satisfied: `WithClearAllowed(true)`,
+    a loopback `Host`, no `Origin`), then import again → the second report has
+    `Imported == 1`, and `GET /v1/sessions?archived=true` lists the id with
+    `source "imported:claude-code"`.
 - [ ] **Step 2:** Run `GOWORK=off go -C core test ./sessionapi/ -run Import_`. Expected: FAIL.
 - [ ] **Step 3:** Implement and wire `cmd/cortex`.
 - [ ] **Step 4:** Run `GOWORK=off go -C core test ./sessionapi/ && GOWORK=off go -C cmd/cortex vet ./... && GOWORK=off go -C cmd/cortex build ./...`. Expected: PASS.
@@ -525,7 +552,7 @@ func WithImport(i Import) Option
 
 ### T8: `agentop import`
 
-**Depends on:** T1. **PR:** PR2. **Est:** 330 lines.
+**Depends on:** none (T1–T5 are merged). **PR:** PR2. **Est:** 330 lines.
 
 **Files:**
 - Create: `cmd/agentop/cmd_import.go`, `cmd/agentop/apiclient/import.go`
@@ -572,7 +599,7 @@ var ErrImportRunning = errors.New("an import is already running") // 409
 
 ### T9: Imported rows in the agentop TUI
 
-**Depends on:** T1, T2. **PR:** PR2. **Est:** 260 lines.
+**Depends on:** none (T1–T5 are merged). **PR:** PR2. **Est:** 260 lines.
 
 **Files:**
 - Modify: `cmd/agentop/tui/sessions_pane.go` (the sessions loop near line 302, which has
@@ -616,7 +643,11 @@ var ErrImportRunning = errors.New("an import is already running") // 409
 Facts to write (all from this plan): the command line and its 4 flags; `--since`
 accepts `YYYY-MM-DD` and `<N>d`; the route exists only when the archive is on and the
 session API is loopback-only, else 404; body `{"agent","since","dryRun"}`; 409 while one
-runs; the per-agent counts; the 4 rules of "Live sessions and re-import" (T5); the
+runs; the per-agent counts; the 4 rules of "Live sessions and re-import": (1) a session
+that has live events (in memory, or archived without the imported mark) is skipped and
+never changed; (2) an imported copy that is as new as the transcript is skipped; (3) a
+newer transcript replaces the imported copy, and only its new turns reach the ledger;
+(4) a session that the archive does not hold is imported; the
 Claude Code store `~/.claude/projects/<project>/<uuid>.jsonl` and `CLAUDE_CONFIG_DIR`;
 imported events have `source: "imported:<agent>"`; the summary is marked only while all
 its events are imported; cost `source: "transcript"` priced at today's rates; ledger
@@ -624,11 +655,62 @@ rows `source: "transcript"`; turns before the ledger cutoff reach the archive on
 1H shows imported turns only after a proxy restart; the import stops at 90% of
 `max_bytes`; an imported segment is kept `retention_days` from its newest event, and a session older
 than that is skipped (`skippedExpired`);
-only Claude Code is supported now (#1872–#1875 add the others).
+only Claude Code is supported now (#1872–#1875 add the others); an erased session
+(`DELETE /v1/sessions/{id}`, `DELETE /v1/sessions`, or agentop's erase) comes back on the
+next `agentop import` while its transcript is still on disk, as an imported session; its
+cost is not counted again, because an erase keeps the ledger rows (decision 12). Put the
+erase fact in `docs/session-api.md` next to the two `DELETE` routes too.
 
 - [ ] **Step 1:** Write the docs in ASD-STE100 style.
 - [ ] **Step 2:** Run `pre-commit run --files docs/session-api.md cmd/agentop/README.md docs/laptop-service.md`. Expected: pass.
 - [ ] **Step 3:** Commit `docs: Describe agentop import and POST /v1/import`.
+
+### T11: An erased imported session comes back without a second cost
+
+**Depends on:** none (changes only merged code). **PR:** PR2. **Est:** 140 lines.
+
+**Files:**
+- Modify: `core/session/importer/importer.go` (`Run`, `toLedger`, the two `shortcut:`
+  comments about erase)
+- Test: `core/session/importer/importer_test.go`
+
+**What to change (decision 12):**
+- `Run` keeps one `written := map[liveKey]bool{}` for the whole call. `toLedger` gets it
+  and a `newSession bool` (`!found`) as new arguments.
+- In `toLedger`, a row with `r.Source == ""` marks its key as before. When `newSession`
+  is true, a row with `r.Source == event.SourceTranscript` also marks its key, unless
+  `written[key]` is true. When `newSession` is false (a replace), transcript rows mark
+  nothing: `after` already drops the turns of the earlier import.
+- After `RecordBatch(keep)` returns nil, add the key of each kept turn to `written`
+  (the same minute and `Project` form that the check uses). Reason: two new sessions in
+  one project and one minute in the same run must both reach the ledger.
+- Replace the `Run` comment "shortcut: the ledger keeps an imported session's rows when
+  the archive loses the session ..." with: an erased or pruned imported session is new
+  again; its turns are skipped when the ledger has a transcript row near them that an
+  earlier run wrote. Add `shortcut: rows carry no session id, so a new session's turn is
+  skipped when another session in the same project was imported by an earlier run in
+  that minute. Keep the session id on ledger rows if that undercount shows up.`
+- Do not change the archive, the store, the erase routes or the ledger.
+
+- [ ] **Step 1:** Write tests with the existing helpers in `importer_test.go`
+  (`openArchive`, `openLedger`, `ledgerRows`, `sumRows`, `testRates`, `fakeSession`,
+  `fakeSource`):
+  - `TestRun_ErasedImportedSessionComesBackOnce`: `Run` imports session A (2 turns); flush
+    the ledger and sum the tokens and `CostMicros` of `Window`; `AwaitDelete(A, time.Second)`
+    on the archive; `Run` again with the same source → `Imported == 1`, `Lookup(A)` is
+    found with `Source "imported:claude-code"`, and the ledger sums are unchanged.
+  - `TestRun_ErasedLiveSessionComesBack`: `Record` one live event for A in the archive
+    (no store), wait for it, `AwaitDelete(A, ...)`, `Run` → `Imported == 1`, `Lookup(A)` is
+    imported.
+  - `TestRun_TwoNewSessionsInOneMinuteBothCount`: sessions A and B, same project, turns in
+    the same minute, one `Run` → the ledger has the tokens of both.
+  - `TestRun_ReplaceIgnoresOwnTranscriptRows`: the merged
+    `TestRun_LedgerGetsOnlyNewTurnsOnReplace` still passes; add one case where the new
+    turn is in the same minute as the last old turn → it still reaches the ledger.
+- [ ] **Step 2:** Run `GOWORK=off go -C core test ./session/importer/ -run 'Erased|TwoNewSessions|ReplaceIgnores'`. Expected: FAIL for `ErasedImportedSessionComesBackOnce` (double count) and the new-session minute case may PASS already; that is accepted.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Run `GOWORK=off go -C core test -race ./session/importer/`. Expected: PASS.
+- [ ] **Step 5:** Commit `fix(importer): Do not count an erased imported session's cost two times`.
 
 ## Gate
 
@@ -645,12 +727,15 @@ test -z "$(gofmt -l core cmd/cortex cmd/agentop)" \
  && GOWORK=off go -C cmd/agentop test ./apiclient/... ./tui/...
 ```
 
-Checked on the base commit c50de9be, from the worktree root: the `gofmt` step and the
-three `go vet` steps pass as written. No step was changed.
+Checked on the base commit 1300d93c (after #1876), from the worktree root: the `gofmt`
+step and the three `go vet` steps pass as written. No step was changed. The gate covers
+T6 (`./session/...`), T7 (`./sessionapi/...`, `cmd/cortex` vet and build), T8 (the
+agentop shards and `./apiclient/...`), T9 (`./tui/...`) and T11 (`./session/...`). T10's
+`pre-commit` step runs in that task, not in the gate.
 
 ## For a human after review
 
-Needs T1–T10 merged (both PRs) and a laptop install of that build.
+Needs T1–T11 merged (both PRs) and a laptop install of that build.
 
 1. `agentop import --agent claude-code --dry-run` against a real `~/.claude`. Check the
    counts look right.
@@ -661,3 +746,6 @@ Needs T1–T10 merged (both PRs) and a laptop install of that build.
 5. `agentop cost --window month`. Check the total includes the imported cost.
 6. Check the T6 fixture lines against a current Claude Code transcript. If the line
    shapes changed, open a follow-up in this repo's tracker.
+7. In `agentop observe`, erase one imported session (`x`). Run `agentop import` again.
+   Check the session comes back, marked `imp`, and `agentop cost --window month` shows the
+   same total as in step 5.

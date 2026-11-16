@@ -388,7 +388,8 @@ func pairCalls(events []model.SessionEvent) []call {
 				continue
 			}
 			id, ok := agentOf(e)
-			if !ok || isSideCall(e.Inference) {
+			// A transcript holds only real turns, and no tool manifest, so an imported call is never a side call.
+			if !ok || (!e.Imported() && isSideCall(e.Inference)) {
 				continue
 			}
 			byReq[e.RequestID] = len(calls)

@@ -5,19 +5,28 @@ import (
 	"fmt"
 	"strings"
 
+	coremodel "github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // withRaw adds the event's exact capture to the detail JSON under "raw", so it renders, folds
 // and searches as one more node of the tree. The bodies are decoded into JSON where they are
 // JSON, which puts thinking blocks in place among the messages, and every image or document
-// becomes "[type size]" rather than its base64.
-func withRaw(data []byte, raw *pipeline.RawCapture) []byte {
-	if raw == nil {
+// becomes "[type size]" rather than its base64. An imported event e has no capture, so its
+// "raw" node says so.
+func withRaw(data []byte, raw *pipeline.RawCapture, e *pipeline.SessionEvent) []byte {
+	if raw == nil && !e.Imported() {
 		return data
 	}
 	var m map[string]any
 	if json.Unmarshal(data, &m) != nil {
+		return data
+	}
+	if raw == nil {
+		m["raw"] = "not captured: imported from " + strings.TrimPrefix(e.Source, coremodel.ImportedSourcePrefix)
+		if out, err := json.Marshal(m); err == nil {
+			return out
+		}
 		return data
 	}
 	r := map[string]any{}
