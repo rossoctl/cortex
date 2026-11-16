@@ -143,9 +143,10 @@ func TestForwardProxy_SSE_StreamsWithoutResponder(t *testing.T) {
 // declares ReadsBody, so it exercises the ReadsBody-but-not-StreamingResponder
 // footgun (see TestForwardProxy_SSE_ReadsBodyPluginWarnsAndStreams).
 type responseProbePlugin struct {
-	deny      bool
-	readsBody bool
-	ranResp   atomic.Bool
+	deny               bool
+	readsBody          bool
+	writesResponseBody bool
+	ranResp            atomic.Bool
 	// sawBodyLen is the length of pctx.ResponseBody observed in OnResponse.
 	sawBodyLen atomic.Int64
 }
@@ -154,7 +155,7 @@ func (p *responseProbePlugin) Name() string { return "response-probe" }
 func (p *responseProbePlugin) Capabilities() pipeline.PluginCapabilities {
 	// Never a StreamingResponder → streamPassthrough path. ReadsBody is opt-in
 	// so most callers stay on the status/header-only shape.
-	return pipeline.PluginCapabilities{ReadsBody: p.readsBody}
+	return pipeline.PluginCapabilities{ReadsBody: p.readsBody, WritesResponseBody: p.writesResponseBody}
 }
 func (p *responseProbePlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}
@@ -319,5 +320,33 @@ func TestForwardProxy_SSE_ReadsBodyPluginWarnsAndStreams(t *testing.T) {
 	// The misconfiguration must be logged, not silent.
 	if got := logBuf.String(); !strings.Contains(got, "ReadsBody plugin that is not a StreamingResponder") {
 		t.Errorf("expected a warning about the ReadsBody+SSE misconfiguration, got logs: %q", got)
+	}
+}
+
+// A response writer on an SSE response no parser claimed is streamed past, and
+// the warning names that cause.
+func TestForwardProxy_SSE_UnparsedResponseWriterWarnsAndStreams(t *testing.T) {
+	logBuf := &syncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	probe := &responseProbePlugin{writesResponseBody: true}
+	client, url := sseProxy(t, []pipeline.Plugin{probe})
+
+	req, _ := http.NewRequest("POST", url, bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if n := probe.sawBodyLen.Load(); n != 0 || !strings.Contains(string(body), "id: 7") {
+		t.Errorf("writer saw %d body bytes, client got %q; want 0 and the stream verbatim", n, body)
+	}
+	if got := logBuf.String(); !strings.Contains(got, "no parser claimed, with a WritesResponseBody plugin") {
+		t.Errorf("want a warning naming the unparsed response writer, got logs: %q", got)
 	}
 }

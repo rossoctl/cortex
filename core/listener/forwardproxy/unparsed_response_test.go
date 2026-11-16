@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferenceparser"
@@ -60,33 +61,64 @@ func TestForwardProxy_BuffersOnlyParsedResponses(t *testing.T) {
 	}
 }
 
-// flushRecorder records the order of body writes and flushes.
+// flushRecorder records the body written so far at each flush that carries body
+// bytes, and whether any write went unflushed.
 type flushRecorder struct {
-	header http.Header
-	events []string
+	header    http.Header
+	body      []byte
+	flushed   []string
+	unflushed bool
+	first     chan struct{} // closed at the first flush of body bytes
 }
 
 func (r *flushRecorder) Header() http.Header { return r.header }
 func (r *flushRecorder) WriteHeader(int)     {}
 func (r *flushRecorder) Write(b []byte) (int, error) {
-	r.events = append(r.events, "write")
+	r.body = append(r.body, b...)
+	r.unflushed = true
 	return len(b), nil
 }
-func (r *flushRecorder) Flush() { r.events = append(r.events, "flush") }
-
-// A stream that is not SSE is flushed to the client as it is relayed.
-func TestForwardProxy_RelaysUnparsedStreamAsItArrives(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		_, _ = io.WriteString(w, "{\"n\":1}\n")
-		w.(http.Flusher).Flush()
-		_, _ = io.WriteString(w, "{\"n\":2}\n")
-	}))
-	t.Cleanup(upstream.Close)
-
-	rec := &flushRecorder{header: http.Header{}}
-	parserServer(t).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, upstream.URL+"/api/chat", nil))
-	if n := len(rec.events); n < 2 || rec.events[n-2] != "write" || rec.events[n-1] != "flush" {
-		t.Errorf("events = %v, want each body write flushed", rec.events)
+func (r *flushRecorder) Flush() {
+	if len(r.body) == 0 {
+		return
 	}
+	if len(r.flushed) == 0 {
+		close(r.first)
+	}
+	r.flushed = append(r.flushed, string(r.body))
+	r.unflushed = false
+}
+
+// A stream that is not SSE reaches the client as it arrives: the upstream sends
+// its second line only after the client was flushed the first. The upstream is
+// an in-memory pipe in a synctest bubble, so a proxy that waits for the end of
+// the stream deadlocks the bubble and fails at once.
+func TestForwardProxy_RelaysUnparsedStreamAsItArrives(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const line1, line2 = "{\"n\":1}\n", "{\"n\":2}\n"
+		rec := &flushRecorder{header: http.Header{}, first: make(chan struct{})}
+		pr, pw := io.Pipe()
+		go func() {
+			_, _ = io.WriteString(pw, line1)
+			<-rec.first
+			_, _ = io.WriteString(pw, line2)
+			_ = pw.Close()
+		}()
+		srv := parserServer(t)
+		srv.Client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode:    http.StatusOK,
+				Header:        http.Header{"Content-Type": {"application/x-ndjson"}},
+				Body:          pr,
+				ContentLength: -1,
+				Request:       r,
+			}, nil
+		})}
+
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://ollama.test/api/chat", nil))
+		if len(rec.flushed) == 0 || rec.flushed[0] != line1 || string(rec.body) != line1+line2 || rec.unflushed {
+			t.Errorf("flushed %q of body %q (unflushed tail: %v), want %q flushed first and every write flushed",
+				rec.flushed, rec.body, rec.unflushed, line1)
+		}
+	})
 }
