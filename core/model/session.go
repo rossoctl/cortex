@@ -443,6 +443,10 @@ type SessionEvent struct {
 	// Client-asserted, with the same caveat as Client above.
 	ParentSubagent string
 
+	// Source is "" on a live event, "imported:<agent>" on an event an import wrote.
+	// Use ImportedSource to make the value and Imported to test it.
+	Source string
+
 	// SubagentKind is the kind of a Bob child task, from Context.SubagentKind:
 	// SubagentKindSubtask or SubagentKindSubagent. Set only on a Bob child's rows, and
 	// empty everywhere else, Claude Code rows included (read Inference.AgentRole there).
@@ -709,6 +713,8 @@ type sessionEventWire struct {
 	Subagent string `json:"subagent,omitempty"`
 	// omitempty: absent on every row but those of an agent another agent started.
 	ParentSubagent string `json:"parentSubagent,omitempty"`
+	// omitempty: absent on every live event.
+	Source string `json:"source,omitempty"`
 	// omitempty: absent on every row but a Bob child task's.
 	SubagentKind string `json:"subagentKind,omitempty"`
 	// omitempty: absent wherever the listener could not name the client's process, and on
@@ -754,6 +760,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Client:          e.Client,
 		Subagent:        e.Subagent,
 		ParentSubagent:  e.ParentSubagent,
+		Source:          e.Source,
 		SubagentKind:    e.SubagentKind,
 		Proc:            e.Proc,
 		ClientProc:      e.ClientProc,
@@ -801,6 +808,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Client:          w.Client,
 		Subagent:        w.Subagent,
 		ParentSubagent:  w.ParentSubagent,
+		Source:          w.Source,
 		SubagentKind:    w.SubagentKind,
 		Proc:            w.Proc,
 		ClientProc:      w.ClientProc,
@@ -1056,4 +1064,15 @@ type ArchiveUsage struct {
 	DroppedCaptures uint64 `json:"droppedCaptures,omitempty"`
 	// Paused is true after the disk filled, until the archive's next retention pass.
 	Paused bool `json:"paused,omitempty"`
+}
+
+// ImportedSourcePrefix starts the Source of every event that an import wrote.
+const ImportedSourcePrefix = "imported:"
+
+// ImportedSource returns the Source value for an event that an import of agent wrote.
+func ImportedSource(agent string) string { return ImportedSourcePrefix + agent }
+
+// Imported tells if an import wrote e. A live event gives false.
+func (e *SessionEvent) Imported() bool {
+	return strings.HasPrefix(e.Source, ImportedSourcePrefix)
 }
