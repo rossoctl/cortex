@@ -131,6 +131,11 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stdout, "Already at %s.\n", v)
 		return 0
 	}
+	if err := cpexConfigBlocks(env); err != nil {
+		status(updatestatus.ResultFailed, err)
+		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
+		return 1
+	}
 	if err := installReleaseFn(env, *ref, updateFlags(env, *ref, yes), stdout, stderr); err != nil {
 		status(updatestatus.ResultFailed, err)
 		var exit *exec.ExitError

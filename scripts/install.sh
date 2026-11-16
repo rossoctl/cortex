@@ -1201,7 +1201,15 @@ gateway_tgz=""
 if [ -x "${BIN_DIR}/cortex" ]; then
 	_iv=$("${BIN_DIR}/cortex" --version 2>/dev/null | head -n 1) || _iv=""
 	case " ${_iv} " in
-		*" (cpex) "*) info "Replacing the installed cpex build of cortex with the default one." ;;
+		*" (cpex) "*)
+			# The default cortex does not start on a config that names cpex, and setup would roll back.
+			# shortcut: a line match, not a YAML parse; it misses a flow list ([cpex]). Parse if that shows up.
+			if [ -f "${CORTEX_DIR}/config.yaml" ] &&
+				grep -Eq "^[[:space:]]*-[[:space:]]*(name:[[:space:]]*)?[\"']?cpex[\"']?[[:space:]]*(#.*)?\$" "${CORTEX_DIR}/config.yaml"; then
+				die "the laptop cpex build is removed, and ${CORTEX_DIR}/config.yaml names the cpex plugin, which the default cortex does not have: remove the cpex entry from pipeline (docs/praxis-policy.md#move-from-the-cpex-plugin), then run this again."
+			fi
+			info "Replacing the installed cpex build of cortex with the default one."
+			;;
 	esac
 fi
 

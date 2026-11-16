@@ -235,9 +235,16 @@ and `install.sh --cpex` exits with an error. That error names `--praxis` and
 cortex-cpex` is gone too. An install that runs a cpex build moves to the default
 `cortex` on `agentop update`, which prints one line that says so.
 
+The default `cortex` has no cpex plugin, and it does not start on a config that names
+`cpex`. So when `~/.cortex/config.yaml` has a `cpex` entry under `pipeline`,
+`agentop update`, the automatic update and the one-liner stop before they download.
+Remove the entry first, as [Move from the CPEX plugin](praxis-policy.md#move-from-the-cpex-plugin)
+says.
+
 An `agentop` from before the removal cannot make that move. Its update asks the
-release for the cpex tarball, and no release publishes one now. Run the one-liner
-once to move the install to the default build.
+release for the cpex tarball, and no release publishes one now. Remove any `cpex`
+entry from the config, then run the one-liner once to move the install to the
+default build.
 
 Kubernetes use does not change: the `authbridge-cpex` image, the `cpex` and `fullcpex`
 build profiles, `core/plugins/cpex/` and the `go-ci-cpex` CI job stay. See

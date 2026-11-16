@@ -65,6 +65,7 @@ type autoRow struct {
 	name, latest    string
 	agentop, cortex string        // --version scripts; "" keeps the scene's
 	config          string        // appended to config.yaml
+	cpexEntry       bool          // puts a cpex entry in config.yaml's outbound pipeline
 	age             time.Duration // of the release; 0 serves a 404
 	fail            error
 	want            string
@@ -99,6 +100,8 @@ var autoUpdateRows = []autoRow{
 	{name: "failed", latest: "v9.9.10", age: 25 * time.Hour, fail: errors.New("installer broke"), want: updatestatus.ResultFailed, ran: true},
 	// A cpex cortex reports the tag too, and is not current.
 	{name: "cpex current", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
+	// The default cortex does not start on a config that names cpex: no install.
+	{name: "cpex in config", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n", cpexEntry: true, age: 25 * time.Hour, want: updatestatus.ResultFailed},
 	// A half-done swap is repaired, not reported as current.
 	{name: "mismatch", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
 	// The kill switch: Latest moved back.
@@ -117,6 +120,9 @@ func runAutoRow(t *testing.T, i int) (int, doctorScene, *fakeRelease) {
 	}
 	if c.cortex != "" {
 		writeExe(t, filepath.Join(bin, "cortex"), c.cortex)
+	}
+	if c.cpexEntry {
+		addCpexEntry(t, sc.home)
 	}
 	if c.config != "" {
 		f, err := os.OpenFile(filepath.Join(sc.home, ".cortex", "config.yaml"), os.O_APPEND|os.O_WRONLY, 0)
@@ -183,6 +189,10 @@ func TestAutoUpdateDecisions(t *testing.T) {
 				// No terminal: the line has to reach the status file.
 				if s.Note != cpexStatusNote {
 					t.Errorf("note %q, want the cpex notice", s.Note)
+				}
+			case "cpex in config":
+				if !strings.Contains(s.Error, "docs/praxis-policy.md#move-from-the-cpex-plugin") {
+					t.Errorf("error %q does not name the migration steps", s.Error)
 				}
 			case "failed":
 				if !strings.Contains(s.Error, "installer broke") {

@@ -174,6 +174,10 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		s.Result, s.InstallAfter = updatestatus.ResultWaiting, released.Add(wait).UTC()
 		return s
 	}
+	if err := cpexConfigBlocks(env); err != nil {
+		s.Result, s.Error = updatestatus.ResultFailed, err.Error()
+		return s
+	}
 	// --ref pins the tag that passed the wait. Without it, install.sh reads Latest
 	// again, and a release published in between skips the wait.
 	if err := installReleaseFn(env, tag, updateFlags(env, tag, true), stdout, stderr); err != nil {

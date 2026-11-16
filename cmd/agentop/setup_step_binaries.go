@@ -2,14 +2,18 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
 	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
+	"github.com/rossoctl/cortex/core/config"
+	"gopkg.in/yaml.v3"
 )
 
 // installerOneLiner is the fix for "nothing is installed": the documented install.
@@ -177,6 +181,33 @@ func installedVersion(path string) string {
 // `--version` reads "cortex (cpex) <version>" — the check install.sh makes.
 func installedIsCpex(path string) bool {
 	return strings.Contains(versionLine(path), " (cpex) ")
+}
+
+// configNamesCpex reports whether the config at path puts the cpex plugin in a
+// pipeline. The default cortex has no cpex plugin and does not start on such a config.
+func configNamesCpex(path string) bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var c struct {
+		Pipeline config.PipelineConfig `yaml:"pipeline"`
+	}
+	if yaml.Unmarshal(b, &c) != nil {
+		return false
+	}
+	return slices.ContainsFunc(slices.Concat(c.Pipeline.Inbound.Plugins, c.Pipeline.Outbound.Plugins),
+		func(e config.PluginEntry) bool { return e.Name == "cpex" })
+}
+
+// cpexConfigBlocks is the error for a cpex cortex whose config names the cpex plugin:
+// the default build that replaces it would not start, and setup would roll back.
+func cpexConfigBlocks(env *setupEnv) error {
+	if !installedIsCpex(filepath.Join(env.binDir, proxyBinary)) || !configNamesCpex(env.configPath()) {
+		return nil
+	}
+	return fmt.Errorf("the laptop cpex build is removed, and %s names the cpex plugin, which the default cortex does not have: "+
+		"remove the cpex entry from pipeline (docs/praxis-policy.md#move-from-the-cpex-plugin), then update again", env.configPath())
 }
 
 // versionLine is the first line of `path --version`; "" when there is no such

@@ -1309,6 +1309,7 @@ T_PIPE=""
 T_ENV=""
 T_UNAME=""
 T_INSTALLED=""
+T_CONFIG=""
 # t_pty SCRIPT runs `sh SCRIPT` on a pseudo-terminal, with util-linux's script (CI's)
 # or the BSD one (macOS's). With neither, the run fails, and so do its checks.
 # t_pty_bg is the same in the background, with script's own pid in T_SPID.
@@ -1348,6 +1349,10 @@ run_install() {
 			cp "${_ri_c}" "${T_RUN}/home/.local/bin/cortex"
 			;;
 	esac
+	if [ -n "${T_CONFIG}" ]; then
+		mkdir -p "${T_RUN}/home/.cortex"
+		printf '%s' "${T_CONFIG}" >"${T_RUN}/home/.cortex/config.yaml"
+	fi
 	_ri_skip=""
 	case "${_ri_where}" in
 		repair)
@@ -1425,6 +1430,7 @@ run_install() {
 	T_ENV=""
 	T_UNAME=""
 	T_INSTALLED=""
+	T_CONFIG=""
 }
 # t_drawn says yes once the terminal has been sent a bar: the cursor hidden, then a line.
 t_drawn() { if tr '\033\r' 'ER' <"${T_RUN}/out" | grep -q 'E\[?25lR  '; then echo yes; fi; }
@@ -1965,6 +1971,46 @@ T_UNAME="Linux x86_64"
 T_INSTALLED=plain
 run_install ok release --ref=v9.9.9
 check "default installed, re-run: no notice" "0 no" "${T_ST} $(t_in "${_switch}" out)"
+
+# The default cortex does not start on a config that names cpex: stop before the download.
+_cpexcfg='pipeline:
+  outbound:
+    plugins:
+      - name: cpex
+'
+for _cfg in "${_cpexcfg}" 'pipeline:
+  inbound:
+    plugins:
+      - cpex
+'; do
+	MR_OS=linux MR_ARCH=amd64 make_release v9.9.9
+	T_UNAME="Linux x86_64"
+	T_INSTALLED=cpex
+	T_CONFIG=${_cfg}
+	run_install ok release --ref=v9.9.9
+	check "cpex installed, config names cpex: dies naming the migration steps" "1 yes" \
+		"${T_ST} $(t_in 'docs/praxis-policy.md#move-from-the-cpex-plugin' err)"
+	check "  fetching no archive and running no agentop" "0 0" "$(grep -c '\.tar\.gz$' "${T_RUN}/urls" || true) $(t_nlog argv)"
+done
+# A commented-out entry or another plugin's name does not stop it.
+MR_OS=linux MR_ARCH=amd64 make_release v9.9.9
+T_UNAME="Linux x86_64"
+T_INSTALLED=cpex
+T_CONFIG='pipeline:
+  outbound:
+    plugins:
+      # - name: cpex
+      - name: cpex-audit
+'
+run_install ok release --ref=v9.9.9
+check "cpex installed, config does not name cpex: installs" "0 yes" "${T_ST} $(t_in "${_switch}" out)"
+# A default cortex is not moved, so its config is not read.
+MR_OS=linux MR_ARCH=amd64 make_release v9.9.9
+T_UNAME="Linux x86_64"
+T_INSTALLED=plain
+T_CONFIG=${_cpexcfg}
+run_install ok release --ref=v9.9.9
+check "default installed, config names cpex: installs" "0" "${T_ST}"
 
 # --- --praxis: the cortex-gateway archive too, only where it is published ---
 make_release v9.9.9

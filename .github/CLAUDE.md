@@ -61,8 +61,9 @@ enumerate combos.
 The laptop cpex build is removed, and so is the `build-cpex` job: no release publishes
 a `cortex-cpex_*` tarball for a laptop. `install.sh --cpex` exits with an error that
 names `--praxis` and `docs/praxis-policy.md`. An install that runs a cpex build moves to
-the default `cortex` on `agentop update`, which prints one line that says so. The
-`authbridge-cpex` image is unchanged.
+the default `cortex` on `agentop update`, which prints one line that says so. When
+its config names the `cpex` plugin, the update stops before it downloads, because the
+default `cortex` does not start on that config. The `authbridge-cpex` image is unchanged.
 
 The praxis-mode gateway ships as `cortex-gateway_<ver>_<os>_<arch>.tar.gz`, from the
 `build-gateway` matrix job: darwin/arm64 natively, and linux/amd64 and linux/arm64 as

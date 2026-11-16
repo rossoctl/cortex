@@ -164,6 +164,73 @@ func TestUpdateCpexNoticeAfterSetupSucceeds(t *testing.T) {
 	}
 }
 
+// addCpexEntry puts a cpex entry first in the outbound pipeline of the config setup wrote.
+func addCpexEntry(t *testing.T, home string) {
+	t.Helper()
+	path := filepath.Join(home, ".cortex", "config.yaml")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const at = "  outbound:\n    plugins:\n"
+	switch {
+	case bytes.Contains(b, []byte(at)):
+		b = bytes.Replace(b, []byte(at), []byte(at+"      - name: cpex\n"), 1)
+	case bytes.Contains(b, []byte("pipeline:")):
+		t.Fatalf("config.yaml has a pipeline with no %q", at)
+	default: // the scene's fake cortex writes no pipeline
+		b = append(b, "\npipeline:\n"+at+"      - name: cpex\n"...)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The default cortex does not start on a config that names cpex, so update
+// refuses before it downloads and names the migration steps.
+func TestUpdateRefusesACpexConfig(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	writeExe(t, filepath.Join(sc.home, ".local", "bin", "cortex"), "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n")
+	addCpexEntry(t, sc.home)
+	latestIs(t, "v9.9.9")
+	setupArgs, checked, _ := fakeStagedRelease(t, "v9.9.9", false)
+	var out, errb bytes.Buffer
+	code := runUpdate(nil, &out, &errb)
+	if code != 1 || out.String() != "" || !strings.Contains(errb.String(), "docs/praxis-policy.md#move-from-the-cpex-plugin") {
+		t.Fatalf("exit %d stdout %q stderr %q, want 1, nothing, and the migration steps", code, out.String(), errb.String())
+	}
+	if _, err := os.Stat(setupArgs); !errors.Is(err, fs.ErrNotExist) || len(*checked) != 0 {
+		t.Errorf("setup ran (%v) or %d tarballs were checked, want neither", err, len(*checked))
+	}
+}
+
+func TestConfigNamesCpex(t *testing.T) {
+	for _, c := range []struct {
+		name, yaml string
+		want       bool
+	}{
+		{"outbound map form", "pipeline:\n  outbound:\n    plugins:\n      - name: mcp-parser\n      - name: cpex\n        config: {}\n", true},
+		{"inbound bare name", "pipeline:\n  inbound:\n    plugins:\n      - cpex\n", true},
+		{"commented out", "pipeline:\n  outbound:\n    plugins:\n      # - name: cpex\n      - name: mcp-parser\n", false},
+		{"another plugin", "pipeline:\n  outbound:\n    plugins:\n      - name: cpex-audit\n", false},
+		{"no pipeline", "update:\n  auto: false\n", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(c.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := configNamesCpex(path); got != c.want {
+				t.Errorf("configNamesCpex = %v, want %v", got, c.want)
+			}
+		})
+	}
+	if configNamesCpex(filepath.Join(t.TempDir(), "missing.yaml")) {
+		t.Error("a missing config names cpex")
+	}
+}
+
 func TestUpdateHandsOffToTheStagedSetup(t *testing.T) {
 	sc := newDoctorScene(t)
 	sc.installed(t, "--claude-code", "--no-service")
