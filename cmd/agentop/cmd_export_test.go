@@ -147,6 +147,82 @@ func TestRunExport_RefusalTooLongToParseStillPointsSomewhere(t *testing.T) {
 	}
 }
 
+// A REFUSAL THAT DID NAME THE PROBLEM GETS NO HINT, even with --session set. The 400 for
+// a bad --since arrives whole and says exactly what is wrong; adding "the proxy did not
+// name the sessions it holds" under it would send the reader to look at sessions when
+// since is the problem. The old condition — "--session was given and the words do not
+// mention sessions" — could not tell the two apart.
+func TestRunExport_RefusalThatNamedTheProblemGetsNoSessionHint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"since must be a duration or Nd, e.g. 168h or 7d"}`)) //nolint:errcheck // a test server writing to a closed client is the test's own failure
+	}))
+	t.Cleanup(srv.Close)
+
+	var out, errOut strings.Builder
+	if code := runExport([]string{"--endpoint", srv.URL, "--session", "s1", "--since", "bogus"},
+		&out, &errOut); code != 1 {
+		t.Fatalf("runExport = %d, want 1 on a refused query", code)
+	}
+	if !strings.Contains(errOut.String(), "since must be a duration") {
+		t.Fatalf("stderr = %q, want the proxy's own words about since", errOut.String())
+	}
+	if strings.Contains(errOut.String(), "/v1/sessions?archived=true") {
+		t.Fatalf("stderr = %q, want NO session hint when the refusal explained itself", errOut.String())
+	}
+}
+
+// The hint's curl is runnable: a --endpoint with a trailing slash must not produce
+// `host//v1/sessions`, which ServeMux answers with a 307 whose HTML body is all `curl -s`
+// would print. Endpoint() is the trimmed form the request itself uses.
+func TestRunExport_HintTrimsTheEndpoint(t *testing.T) {
+	var out, errOut strings.Builder
+	// A 400 body getBody cannot read as the documented shape, so the no-detail path runs
+	// and the hint fires: exportServer's canned body parses fine and would not reach it.
+	bare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`<html>not the documented shape</html>`)) //nolint:errcheck // a test server writing to a closed client is the test's own failure
+	}))
+	t.Cleanup(bare.Close)
+
+	if code := runExport([]string{"--endpoint", bare.URL + "/", "--session", "nope"},
+		&out, &errOut); code != 1 {
+		t.Fatalf("runExport = %d, want 1 on a refused query", code)
+	}
+	if !strings.Contains(errOut.String(), bare.URL+"/v1/sessions?archived=true") {
+		t.Fatalf("stderr = %q, want the hint to name %s/v1/sessions", errOut.String(), bare.URL)
+	}
+	if strings.Contains(errOut.String(), "//v1/sessions") {
+		t.Fatalf("stderr = %q, want no doubled slash in the hint", errOut.String())
+	}
+}
+
+// A TRUNCATED EXPORT EXITS NON-ZERO. The server resets the connection when its walk dies
+// part-way (#1830), rather than ending the body cleanly, so io.Copy fails and this
+// command reports it instead of printing a success summary over a short file.
+func TestRunExport_TruncatedWalkExitsNonZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte("{\"schema\":1,\"sessionId\":\"s1\",\"seq\":2}\n")) //nolint:errcheck // a test server writing to a closed client is the test's own failure
+		w.(http.Flusher).Flush()
+		// What handleExport does when the walk dies past its first record: no terminating
+		// chunk, so the client's read breaks rather than returning a clean EOF.
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(srv.Close)
+
+	var out, errOut strings.Builder
+	if code := runExport([]string{"--endpoint", srv.URL}, &out, &errOut); code != 1 {
+		t.Fatalf("runExport = %d, want 1 on a truncated export; stderr:\n%s", code, errOut.String())
+	}
+	if strings.Contains(errOut.String(), "records,") {
+		t.Fatalf("stderr = %q, want no success summary over a truncated export", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "the walk failed part-way") {
+		t.Fatalf("stderr = %q, want the part-way-walk line", errOut.String())
+	}
+}
+
 // The flags reach the wire as the endpoint reads them: repeatable and comma-separated
 // sessions, and the since value passed through for the server to parse.
 func TestRunExport_FlagsReachTheQuery(t *testing.T) {

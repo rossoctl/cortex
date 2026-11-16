@@ -193,10 +193,15 @@ func (c *Client) ListSessionsArchived(ctx context.Context) (SessionList, error) 
 // forms). A current proxy renders that refusal under a byte budget sized to fit the 512
 // bytes getBody reads of a 400 body, so the detail survives; an older one caps by id
 // COUNT rather than by bytes, and long ids there can still overrun the read, in which
-// case badRequestDetail finds nothing and the caller gets a bare ErrBadRequest. A proxy
-// without an archive is a 404. A walk that fails
-// past its first record simply ends the body, which NDJSON tolerates: every complete
-// line stays valid.
+// case badRequestDetail finds nothing and the error carries ErrNoDetail beside
+// ErrBadRequest — check that rather than the server's wording to tell "it would not say
+// why" from "it refused something else". A proxy without an archive is a 404.
+//
+// A WALK THAT DIES PAST ITS FIRST RECORD IS AN ERROR ON THE BODY READ, not a short
+// success: the server resets the connection rather than ending the body cleanly, so the
+// caller's read fails instead of returning io.EOF (an older proxy predating that ends
+// the body cleanly, and a truncated export there is indistinguishable from a whole one).
+// Every complete line already read stays valid NDJSON either way.
 func (c *Client) Export(ctx context.Context, sessions []string, since string) (io.ReadCloser, error) {
 	q := url.Values{}
 	for _, id := range sessions {
@@ -272,6 +277,30 @@ var ErrNotFound = fmt.Errorf("apiclient: not found")
 // window". The server's own message is carried through — see getBody for why that is
 // safe.
 var ErrBadRequest = fmt.Errorf("apiclient: bad request")
+
+// ErrNoDetail accompanies ErrBadRequest when the server's own words did NOT survive: the
+// 400 body was not the documented shape, or it was longer than the 512 bytes getBody
+// reads and the JSON arrived cut.
+//
+// Wrapped ALONGSIDE ErrBadRequest, never instead of it, so an errors.Is(err,
+// ErrBadRequest) caller is unaffected. It exists because "the refusal explained itself"
+// and "it did not" are different situations for a caller that wants to add a hint: the
+// only other way to tell them apart is to match the formatting getBody itself applies,
+// or to guess from the server's wording — and a message about a different parameter
+// then reads as a missing detail. See cmd_export.go's ErrBadRequest branch.
+var ErrNoDetail = fmt.Errorf("apiclient: no detail")
+
+// noDetail adds ErrNoDetail to an error's chain without adding anything to its text.
+//
+// The wrapped message is what a user sees, and it is already complete ("…: apiclient:
+// bad request"); appending the sentinel's own words would only make it read worse. Is
+// reports both the sentinel and whatever the wrapped error carries, so
+// errors.Is(err, ErrBadRequest) and errors.Is(err, ErrNoDetail) both hold.
+type noDetail struct{ error }
+
+func (n noDetail) Is(target error) bool { return target == ErrNoDetail }
+
+func (n noDetail) Unwrap() error { return n.error }
 
 // PipelineView is the decoded shape of GET /v1/pipeline.
 type PipelineView struct {
@@ -410,7 +439,11 @@ func (c *Client) getBody(ctx context.Context, path string) (body io.ReadCloser, 
 		if detail := badRequestDetail(msg); detail != "" {
 			return nil, fmt.Errorf("%s: %w: %s", path, ErrBadRequest, detail)
 		}
-		return nil, fmt.Errorf("%s: %w", path, ErrBadRequest)
+		// Both sentinels: the request was refused, AND the refusal did not say why.
+		// noDetail carries the second one WITHOUT adding words, because this message is
+		// printed to a user and "bad request: apiclient: no detail" reads worse than the
+		// bare refusal it replaces.
+		return nil, noDetail{fmt.Errorf("%s: %w", path, ErrBadRequest)}
 	}
 	if resp.StatusCode != http.StatusOK {
 		_ = resp.Body.Close()

@@ -73,7 +73,9 @@ count of the rest; a proxy with no session archive (a cluster sidecar, or one pr
 /v1/export) answers 404.
 
 A 30-day archive walks in about ten seconds server-side; this command waits up to ten
-minutes before giving up.
+minutes before giving up. A walk that dies part-way exits non-zero and says so: the
+output holds every complete record written before the failure, never a short file
+reported as a whole one.
 
 Flags:
 `)
@@ -115,7 +117,13 @@ Flags:
 
 	ctx, cancel := context.WithTimeout(context.Background(), exportTimeout)
 	defer cancel()
-	body, err := apiclient.New(target).Export(ctx, sessions.ids, *since)
+	// Kept rather than inlined: Endpoint() is target with its trailing slashes trimmed,
+	// which is what the hint below must print. `--endpoint http://host:47601/` would
+	// otherwise produce `http://host:47601//v1/sessions?archived=true`, and ServeMux
+	// answers a doubled slash with a 307 whose HTML body is all `curl -s` would show —
+	// a fallback leading into a second dead end.
+	client := apiclient.New(target)
+	body, err := client.Export(ctx, sessions.ids, *since)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop export: %v\n", err)
 		switch {
@@ -137,8 +145,15 @@ Flags:
 			// detail did not survive, the error above is a bare "bad request" and a typo
 			// would otherwise be a dead end, so point at where the ids can be read
 			// directly rather than leaving the user with nothing.
-			if len(sessions.ids) > 0 && !strings.Contains(err.Error(), ": no archived session") {
-				fmt.Fprintf(stderr, "  the proxy did not name the sessions it holds; list them with:\n    curl -s '%s/v1/sessions?archived=true'\n", target)
+			//
+			// ErrNoDetail, not a match on the server's wording: the condition is "the
+			// refusal would not say why", and a refusal that named a DIFFERENT problem
+			// has said why. Matching on the absence of "no archived session" made
+			// `--session s1 --since bogus` print this hint under the proxy's own
+			// perfectly clear complaint about since, sending the reader to look at
+			// sessions.
+			if len(sessions.ids) > 0 && errors.Is(err, apiclient.ErrNoDetail) {
+				fmt.Fprintf(stderr, "  the proxy did not name the sessions it holds; list them with:\n    curl -s '%s/v1/sessions?archived=true'\n", client.Endpoint())
 			}
 		default:
 			fmt.Fprintln(stderr, "  is Cortex running? `agentop service status`")
