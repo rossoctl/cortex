@@ -794,7 +794,11 @@ func main() {
 
 		// The session archive is the store's third Recorder: it persists every event so
 		// sessions survive a restart and the store's eviction. See core/session/archive.
-		sessArchive = openSessionArchive(cfg, *configPath, sessions)
+		ledgerDays := 0
+		if costLedger != nil {
+			ledgerDays = costLedger.RetentionDays()
+		}
+		sessArchive = openSessionArchive(cfg, *configPath, sessions, ledgerDays)
 		if sessArchive != nil {
 			history.open(sessArchive)
 			// Started before any listener, finished beside them: see replayUsage.

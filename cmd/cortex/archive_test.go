@@ -98,7 +98,7 @@ func TestOpenSessionArchive_RecordsWhatTheStoreAppends(t *testing.T) {
 	on := true
 	st := session.New(0, 0, 0)
 	defer st.Close()
-	arch := openSessionArchive(archiveCfg(&on), inside, st)
+	arch := openSessionArchive(archiveCfg(&on), inside, st, 0)
 	if arch == nil {
 		t.Fatal("the archive did not open on a local install with enabled: true")
 	}
@@ -131,7 +131,7 @@ func TestOpenSessionArchive_OpensWithEnabledUnset(t *testing.T) {
 			inside, _ := localConfig(t)
 			st := session.New(0, 0, 0)
 			defer st.Close()
-			arch := openSessionArchive(tc.cfg, inside, st)
+			arch := openSessionArchive(tc.cfg, inside, st, 0)
 			if arch == nil {
 				t.Fatal("the archive did not open on a local install")
 			}
@@ -154,7 +154,7 @@ func TestOpenSessionArchive_NotOnALocalInstallIsNil(t *testing.T) {
 	on := true
 	st := session.New(0, 0, 0)
 	defer st.Close()
-	if arch := openSessionArchive(archiveCfg(&on), outside, st); arch != nil {
+	if arch := openSessionArchive(archiveCfg(&on), outside, st, 0); arch != nil {
 		arch.Close()
 		t.Fatal("the archive opened outside a local install")
 	}
@@ -167,7 +167,7 @@ func TestOpenSessionArchive_RecordsToDirOutsideALocalInstall(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sessions")
 	st := session.New(0, 0, 0)
 	defer st.Close()
-	arch := openSessionArchive(loopbackOnly(archiveDirCfg(nil, dir)), outside, st)
+	arch := openSessionArchive(loopbackOnly(archiveDirCfg(nil, dir)), outside, st, 0)
 	if arch == nil {
 		t.Fatal("the archive did not open outside a local install with session.archive.dir set")
 	}
@@ -208,5 +208,36 @@ func TestFatalf_ClosesTheArchive(t *testing.T) {
 	})
 	if !found {
 		t.Fatal("fatalf never calls closeArchiveOnFatal: a fatal startup error would leave open segments unfinished")
+	}
+}
+
+// The ledger retention that main passes turns the archive's forget records on, and 0 keeps them off.
+func TestOpenSessionArchive_LedgerDaysTurnsRecordsOn(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		ledgerDays, want int
+	}{{"ledger on", 31, 1}, {"ledger off", 0, 0}} {
+		t.Run(tc.name, func(t *testing.T) {
+			inside, _ := localConfig(t)
+			on := true
+			st := session.New(0, 0, 0)
+			defer st.Close()
+			arch := openSessionArchive(archiveCfg(&on), inside, st, tc.ledgerDays)
+			if arch == nil {
+				t.Fatal("the archive did not open on a local install with enabled: true")
+			}
+			defer arch.Close()
+			now := time.Now()
+			st.Append("s1", pipeline.SessionEvent{At: now, Phase: pipeline.SessionRequest})
+			st.Append("s1", pipeline.SessionEvent{At: now.Add(time.Second), Phase: pipeline.SessionResponse,
+				Inference: &pipeline.InferenceExtension{Model: "m", TotalTokens: 1100}})
+			arch.Deleted("s1")
+			if _, err := arch.AwaitDelete("s1", 5*time.Second); err != nil {
+				t.Fatal(err)
+			}
+			if got := arch.Stats().ForgetRecords; got != tc.want {
+				t.Fatalf("ForgetRecords = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
