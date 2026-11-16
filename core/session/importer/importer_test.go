@@ -368,3 +368,33 @@ func TestRun_SourceErrorFailsAgentOnly(t *testing.T) {
 		t.Fatalf("report = %+v, want 1 imported and the error", r)
 	}
 }
+
+// A live session the archive pruned is new to the import, but the ledger still has its live
+// rows. Only the turn with no live row near it goes to the ledger.
+func TestRun_LedgerSkipsTurnsRecordedLive(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	s := fakeSession("s1", start, 3)
+	for i := range s.Events {
+		s.Events[i].Project = "/repo"
+	}
+	// The proxy recorded the first turn live; the transcript has it a few seconds later.
+	liveTurn := s.Events[1]
+	w.Record("s1", &liveTurn)
+	// A live row in another project does not hide the third turn.
+	other := s.Events[5]
+	other.Project = "/other"
+	w.Record("s2", &other)
+	Run(context.Background(), &fakeSource{sessions: []Session{s}},
+		Options{Archive: a, Ledger: w, Rates: testRates(t)})
+	var imported int64
+	for _, r := range ledgerRows(t, w) {
+		if r.Source == "transcript" {
+			imported += r.Requests
+		}
+	}
+	// Turn 1 is live; turn 2 is one minute from it, so it is skipped too; turn 3 is imported.
+	if imported != 1 {
+		t.Fatalf("ledger has %d imported requests, want 1", imported)
+	}
+}
