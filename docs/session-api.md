@@ -518,7 +518,9 @@ agents continue. When `bob.db` does not exist, the source imports nothing.
   empty, the project is the task's workspace.
 - The cost of a Bob turn is Bob's own figure (`_meta.spend.cost`), with
   `source: "transcript"` and `provenance: "authoritative"`. Cortex does not
-  price Bob turns from its rate table. `totalTokens` is Bob's `contextTokens`.
+  price Bob turns from its rate table. The rate table gives the unit only: the
+  record's `currency` is the unit of the Bob endpoint (`Bobcoins` on a local
+  install), and so is the ledger row's. `totalTokens` is Bob's `contextTokens`.
   Bob records no split into input and output tokens.
 - Bob Shell and Bob IDE both write `bob.db`. The source does not read the older
   `~/.bob/tmp/*/chats/*.json` files or the IDE's

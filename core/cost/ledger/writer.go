@@ -531,7 +531,13 @@ func (w *Writer) row(e *model.SessionEvent) (minute time.Time, r Row, ok bool) {
 	if e.Inference != nil {
 		model = e.Inference.Model
 	}
-	if c := pricing.UnitOf(w.rates, e.Host, model); c != "" {
+	// An imported event has no Host, so UnitOf gives "". Then the record's own unit, which the
+	// importer set from the source's endpoint, labels the row, as usage.Aggregator does.
+	c := pricing.UnitOf(w.rates, e.Host, model)
+	if c == "" && hasCost {
+		c = ev.Currency // set by pricing.UnitOf, so "" is already the default
+	}
+	if c != "" {
 		r.Currency = rowLabel(c)
 	}
 	// The error rule is the ring's own function and the priceable rule matches
