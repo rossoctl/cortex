@@ -269,11 +269,11 @@ var eventColumns = []eventColumn{
 	// 18-character prefix render identically and would otherwise tie arbitrarily.
 	{id: colPlugin, width: 18, defaultOn: true, keep: keepNormal,
 		desc: "which plugin acted; blank when none did",
-		cell: func(c cellContext) string {
+		cell: proxyOnly(func(c cellContext) string {
 			p := c.plugin
 			return trunc(p, c.width)
-		},
-		full:    func(c cellContext) string { return c.plugin },
+		}),
+		full:    proxyOnly(func(c cellContext) string { return c.plugin }),
 		sortKey: func(c cellContext) sortValue { return strKey(c.plugin) }},
 	// methodColWidth rather than 22: the widest realistic value is a model name
 	// ("claude-opus-5"), and the columns freed pay for splitting TOKENS and COST
@@ -293,12 +293,12 @@ var eventColumns = []eventColumn{
 	// put the widest gap in the row between two values of the same exchange.
 	{id: colStatus, width: 7, defaultOn: true, keep: keepNormal, rightAlign: true,
 		desc: "HTTP status of the response: blank while on its way, lost when none came",
-		cell: func(c cellContext) string {
+		cell: proxyOnly(func(c cellContext) string {
 			if c.lost {
 				return "lost"
 			}
 			return statusCell(*answer(c.row))
-		},
+		}),
 		sortKey: func(c cellContext) sortValue { return numKey(answer(c.row).StatusCode) }},
 	// The Duration itself. This is the column #865 is about ("the events with the
 	// longest duration"), and the one where sorting the rendered string is most
@@ -308,7 +308,7 @@ var eventColumns = []eventColumn{
 	// produces ("12.34s", "59m59s").
 	{id: colDuration, width: 9, defaultOn: true, keep: keepLow, rightAlign: true,
 		desc:    "how long the exchange took; for a tool: from the reply to the next request of the same agent",
-		cell:    func(c cellContext) string { return durationCell(*answer(c.row)) },
+		cell:    proxyOnly(func(c cellContext) string { return durationCell(*answer(c.row)) }),
 		sortKey: durationSortKey},
 	// On by default since #1309. It was off because only an opaque tunnel's close row had
 	// a figure, so the column cost every terminal 17 columns of mostly blank — and an
@@ -323,11 +323,11 @@ var eventColumns = []eventColumn{
 	// total is the sort key, so a descending sort finds the biggest exchange.
 	{id: colBytes, width: 17, defaultOn: true, keep: keepLow, rightAlign: true,
 		desc: "body bytes: ↑ request sent, ↓ response received",
-		cell: func(c cellContext) string {
+		cell: proxyOnly(func(c cellContext) string {
 			e := *answer(c.row)
 			e.BytesUp, e.BytesDown = exchangeBytes(c.row)
 			return bytesCell(e)
-		},
+		}),
 		sortKey: func(c cellContext) sortValue {
 			up, down := exchangeBytes(c.row)
 			return numKey(up + down)
@@ -353,13 +353,27 @@ var eventColumns = []eventColumn{
 	// to be declared but never visible.
 	{id: colHost, width: 20, defaultOn: true, keep: keepHigh,
 		desc: "host the message was sent to",
-		cell: func(c cellContext) string { return trunc(c.row.event.Host, c.width) },
-		full: func(c cellContext) string { return c.row.event.Host },
+		cell: proxyOnly(func(c cellContext) string { return trunc(c.row.event.Host, c.width) }),
+		full: proxyOnly(func(c cellContext) string { return c.row.event.Host }),
 		// hostOnly, so "api.example.com:443" and "api.example.com" sort together
 		// rather than the port deciding. Full host, not the truncated cell, for the
 		// same reason PLUGIN uses the full name.
 		sortKey: func(c cellContext) sortValue { return strKey(hostOnly(c.row.event.Host)) }},
 }
+
+// proxyOnly makes f give "n/a" on an imported exchange: only the proxy measures that column,
+// and a blank would read as a live value of zero.
+func proxyOnly(f func(cellContext) string) func(cellContext) string {
+	return func(c cellContext) string {
+		if c.row.event.Imported() {
+			return importedNA
+		}
+		return f(c)
+	}
+}
+
+// importedNA is the cell of a column that an imported exchange has no value for.
+const importedNA = "n/a"
 
 // render is one cell as the table receives it: the column's value, aligned the way the column
 // declares.
@@ -864,13 +878,18 @@ func toolCells(cols []eventColumn, cc cellContext, tr eventRow, now time.Time) (
 			if cc.row.event.Subagent != "" && cc.m.subagentBlocks != nil {
 				v = "│"
 			}
-		case colAction, colPlugin:
+		case colAction:
 		case colMethod:
 			v, named = name, true
-		case colStatus:
-			v = t.status()
-		case colDuration:
-			v = t.durationCell(now)
+		case colPlugin, colStatus, colDuration:
+			switch {
+			case cc.row.event.Imported():
+				v = importedNA
+			case c.id == colStatus:
+				v = t.status()
+			case c.id == colDuration:
+				v = t.durationCell(now)
+			}
 		default:
 			row = append(row, trailing)
 			spanned = true

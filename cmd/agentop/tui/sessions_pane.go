@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/agentop/money"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
+	coremodel "github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -299,9 +301,15 @@ func (m *model) rebuildSessionsTable() {
 		// probed across many inputs without finding a divergence. Do not "unify" one into the
 		// other: this loop has the summary in hand and should not pay a lookup, and the header
 		// path has only an id and cannot avoid one.
-		title := func() string { return m.sessionTitleCell(s.ID, s.Title, noLimit) }
+		// An imported session's title starts with "imp ". Plain text, not dim: the table cuts
+		// a cell by its bytes, and a style's escape bytes would mangle it (see cachedMarker).
+		mark, markW := "", 0
+		if strings.HasPrefix(s.Source, coremodel.ImportedSourcePrefix) {
+			mark, markW = importedMarker, len(importedMarker)
+		}
+		title := func() string { return mark + m.sessionTitleCell(s.ID, s.Title, noLimit) }
 		if showTitle {
-			b.cut(m.sessionTitleCell(s.ID, s.Title, titleW), title)
+			b.cut(mark+m.sessionTitleCell(s.ID, s.Title, titleW-markW), title)
 		} else {
 			// TITLE is the column a narrow terminal gives up; it is still searched.
 			b.dropped(title)

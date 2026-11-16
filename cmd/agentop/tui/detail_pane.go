@@ -108,7 +108,7 @@ func detailSection(path, name string, e, other *pipeline.SessionEvent, raw *pipe
 			data = dropShared(data, filterForDetail(od, other.Phase))
 		}
 	}
-	data = withRaw(data, raw)
+	data = withRaw(data, raw, e)
 	var heads []string
 	var tun string
 	if tunnel != nil {
@@ -488,6 +488,10 @@ func (m *model) detailCursorKey(msg string) bool {
 //
 //	timing:  ttfb 412ms · body 10m32s of 11m07s total
 func timingHeader(e *pipeline.SessionEvent) string {
+	if e.Imported() {
+		// The proxy did not carry an imported exchange, so it has no timing.
+		return "timing: n/a"
+	}
 	if e.Phase != pipeline.SessionResponse || e.Ttfb <= 0 || e.Duration == 0 {
 		return ""
 	}
