@@ -1009,8 +1009,8 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 				// no body. Reaching this branch rules out HasStreamingResponders — a
 				// request-only mutator can still be here — so ask about the response
 				// side specifically rather than asserting what NeedsBody implies. A
-				// WritesResponseBody plugin is here only on a response no parser
-				// claimed, with no ReadsResponseBody plugin.
+				// WritesResponseBody plugin reaches it only on a response the listener
+				// does not buffer.
 				if pinned.WritesResponseBody() {
 					slog.Warn("forward-proxy: text/event-stream response no parser claimed, with a WritesResponseBody plugin — streaming byte-for-byte; its OnResponse will see an empty body (declare ReadsResponseBody to rewrite a response no parser claimed)", "host", pipeline.SanitizeLogValue(r.Host))
 				} else if pinned.NeedsResponseBody() {

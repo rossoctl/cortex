@@ -767,7 +767,7 @@ the entry describes (its invocation carries `shadow: true`).
 ```go
 type PluginCapabilities struct {
     ReadsBody          bool // plugin reads pctx.Body / pctx.ResponseBody
-    ReadsResponseBody  bool // plugin reads pctx.ResponseBody, on every request
+    ReadsResponseBody  bool // plugin reads pctx.ResponseBody of every response
     WritesRequestBody  bool // plugin may call pctx.SetBody and pctx.SetRequestModel
     WritesResponseBody bool // plugin may call pctx.SetResponseBody
 }
@@ -775,10 +775,10 @@ type PluginCapabilities struct {
 
 - `ReadsBody`: listener buffers the body; plugin sees bytes.
 - `ReadsResponseBody`: listener buffers the response body, not the request body.
-- On the forward proxy, a response is buffered only when a parser claimed the
+  On the forward proxy, a response is buffered only when a parser claimed the
   request (`Extensions.Inference`, `MCP` or `A2A` is set) or a plugin declares
-  `ReadsResponseBody`. Any other response — a download, an NDJSON stream —
-  is relayed as it arrives, at any size, and its `pctx.ResponseBody` is empty.
+  this. Any other response — a download, an NDJSON stream — is relayed as it
+  arrives, at any size, with an empty `pctx.ResponseBody`.
 - `WritesRequestBody`: implies `ReadsBody`. Listener propagates `pctx.SetBody`
   rewrites to the upstream. Required by `pctx.SetRequestModel`, which refuses a
   plugin that does not declare it.
@@ -787,10 +787,10 @@ type PluginCapabilities struct {
 
 **Declare the direction you actually write.** The two flags are not
 interchangeable, and getting this wrong is silent: `WritesResponseBody` is the
-SSE streaming predicate. A plugin that declares it forces every response it
-buffers onto the buffered path — on the forward proxy, every response a parser
-claimed — so a long completion arrives in one lump
-after a silent wait instead of appearing incrementally. Declaring
+SSE streaming predicate. A plugin that declares it stops SSE responses on that
+chain from streaming — on the forward proxy, those it buffers by the rule above —
+so a long completion arrives in one lump after a silent wait instead of
+appearing incrementally. Declaring
 `WritesRequestBody` costs nothing — requests arrive complete with a
 `Content-Length` and are read end to end before dispatch, so rewriting one says
 nothing about how the response may be relayed.
