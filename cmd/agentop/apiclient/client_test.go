@@ -511,6 +511,46 @@ func TestGetUsageWindow_BadRequestWithAnUnreadableBodyStaysBare(t *testing.T) {
 	}
 }
 
+// ErrNoDetail SEPARATES "the refusal would not say why" from "it refused something else",
+// and adds nothing to the message a user reads.
+//
+// A caller that wants to add a hint when the server's words did not arrive has no other
+// way to tell the two apart: matching the server's wording makes a refusal about a
+// DIFFERENT parameter look like a missing detail, which is the bug this fixes in
+// `agentop export`. ErrBadRequest must keep matching either way — callers test for it.
+func TestGetBody_ErrNoDetailMarksARefusalThatExplainedNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		wantDetail bool
+	}{
+		{"the documented shape, so the words arrived", `{"error":"since must be a duration"}`, true},
+		{"not the documented shape", "<html>Bad Request</html>", false},
+		// Longer than the 512 bytes getBody reads: the JSON arrives cut mid-string, so
+		// badRequestDetail cannot parse it. The export refusal's real failure mode.
+		{"cut by the 512-byte read", `{"error":"` + strings.Repeat("x", 600) + `"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer ts.Close()
+
+			_, err := New(ts.URL).Export(context.Background(), []string{"nope"}, "")
+			if !errors.Is(err, ErrBadRequest) {
+				t.Fatalf("error = %v, want ErrBadRequest in the chain either way", err)
+			}
+			if got := !errors.Is(err, ErrNoDetail); got != tc.wantDetail {
+				t.Fatalf("error = %v: detail arrived = %v, want %v", err, got, tc.wantDetail)
+			}
+			// The sentinel is for matching, not for reading: it must not reach the message.
+			if strings.Contains(err.Error(), "no detail") {
+				t.Errorf("error = %v: the sentinel's own words reached a user-facing message", err)
+			}
+		})
+	}
+}
+
 // GetUsageWindow sends the window VERBATIM and omits resolution when zero, which is the
 // one-bucket path a symbolic window is served on. Asserted on the wire, because a
 // stringified duration here ("0s", or "24h0m0s" for "today") is refused by the server and
