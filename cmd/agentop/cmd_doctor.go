@@ -105,6 +105,9 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 	checkUnread(env, ui)
 	checkPython(env, ui)
+	if checkUpdates(env, ui) {
+		failed = true
+	}
 
 	ui.Blank()
 	if !failed {

@@ -278,6 +278,10 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 	if err != nil {
 		return "", undo{}, err
 	}
+	updaterSnap, err := snapshotFile(sp.updaterFile)
+	if err != nil {
+		return "", undo{}, err
+	}
 	// A unit on disk whose job the supervisor does not have is what `agentop service
 	// stop` leaves. The install below loads the job, so the undo stops it again; the
 	// stop needs no binary, as the binaries undo runs after this one. Accepted: a job
@@ -297,7 +301,9 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 				return err
 			}
 		}
-		err := errors.Join(unitSnap.restore(), stampSnap.restore())
+		// The undo puts back the updater file only. It does not boot out an updater
+		// that the install loaded: this setup can run inside that updater job.
+		err := errors.Join(unitSnap.restore(), stampSnap.restore(), updaterSnap.restore())
 		if stopped {
 			if serr := controlService(env.goos, "stop", sp, io.Discard); serr != nil {
 				err = errors.Join(err, serr)

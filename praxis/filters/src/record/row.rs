@@ -20,7 +20,7 @@ use crate::parse::MAX_BODY_SIZE;
 use crate::parse::a2a::A2aObserver;
 use crate::parse::decode::{Coding, DecodeError, Decoder};
 use crate::parse::inference::{InferenceObserver, is_event_stream};
-use crate::parse::mcp::McpObserver;
+use crate::parse::mcp::{McpObserver, PolicyView};
 use crate::parse::model::InferenceExtension;
 use crate::parse::sse::FrameReader;
 
@@ -308,6 +308,16 @@ impl Exchange {
             capture,
             cost,
         }
+    }
+
+    /// The MCP request of the body that `on_request_body` read, as the policy
+    /// filter may use it. `Ambiguous` also for a body that the parser does not
+    /// claim but `mcp_shaped` matches.
+    pub fn mcp(&self) -> Option<PolicyView<'_>> {
+        self.observers
+            .mcp
+            .as_ref()
+            .and_then(McpObserver::policy_view)
     }
 
     /// The request row. Parses the raw body (the parser decodes it itself).
@@ -1261,5 +1271,24 @@ mod tests {
         let row: Value = serde_json::from_slice(&q.row).unwrap();
         assert_eq!(row["capture"], json!({"dropped": true}));
         assert_eq!(row["event"]["inference"]["model"], "claude-opus-5");
+    }
+
+    // An escaped key reads as its decoded name. `ſ` folds to `s` in Go only.
+    #[test]
+    fn mcp_for_policy_reads_escaped_keys() {
+        let none = HeaderMap::new();
+        let method = |verb: &str, body: &[u8]| {
+            let mut ex = exchange(verb, "tools.example", "/mcp", &none);
+            ex.on_request_body(body);
+            ex.mcp().map(|v| match v {
+                PolicyView::Exact(e) => e.method.clone(),
+                PolicyView::Ambiguous => "ambiguous".to_owned(),
+            })
+        };
+        let folded = br#"{"method":"tools/call","param\u017f":{"name":"safe"}}"#;
+        assert_eq!(method("POST", folded).as_deref(), Some("ambiguous"));
+        let escaped = br#"{"method":"tools/call","par\u0061ms":{"name":"t"}}"#;
+        assert_eq!(method("POST", escaped).as_deref(), Some("tools/call"));
+        assert_eq!(method("GET", b"").as_deref(), Some("$transport/stream"));
     }
 }

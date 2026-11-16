@@ -279,6 +279,10 @@ type SummaryFold struct {
 	// is true when the fold resumed from history it has no table for.
 	hosts        model.InferenceHosts
 	hostsUnknown bool
+	// imported is the first imported event's Source, and live is true after any live event
+	// (Source ""). Summary marks the session as imported only while live is false.
+	imported string
+	live     bool
 }
 
 // InferenceHosts is a copy of the fold's table, and false when the fold holds history it has no
@@ -336,6 +340,11 @@ func (f *SummaryFold) Add(sessionID string, e *model.SessionEvent) {
 		f.lastRequestAt = e.At
 	}
 	f.hosts = applyHost(f.hosts, p.host, e.Host, e.Seq)
+	if e.Source == "" {
+		f.live = true
+	} else if f.imported == "" {
+		f.imported = e.Source
+	}
 }
 
 // promptContext is the fold's CTX figure, nil when nothing can be said.
@@ -363,6 +372,9 @@ func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 		LastRequestAt: f.lastRequestAt,
 		Agent:         pickAgent(sessionID, f.owner, nil, f.agents),
 		Projects:      slices.Clone(f.projects),
+	}
+	if !f.live {
+		sum.Source = f.imported
 	}
 	return sum
 }
@@ -398,6 +410,10 @@ type foldJSON struct {
 	// InferenceHosts is written only when the fold knows its table. Absent (a session.json from
 	// before it existed, or an unknown table), or of another hostRuleVersion, it decodes as unknown.
 	InferenceHosts *hostsDoc `json:"inferenceHosts,omitempty"`
+	// Imported and Live are SummaryFold's fields of the same names. A session.json written
+	// before they existed holds no imported events, so it decodes as not imported.
+	Imported string `json:"imported,omitempty"`
+	Live     bool   `json:"live,omitempty"`
 }
 
 // hostsDoc is SummaryFold's InferenceHosts table in session.json. V is the hostRuleVersion that
@@ -449,6 +465,8 @@ func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 		Owner:            f.owner,
 		LastRequestAt:    f.lastRequestAt,
 		Projects:         f.projects,
+		Imported:         f.imported,
+		Live:             f.live,
 	}
 	if !f.hostsUnknown {
 		j.InferenceHosts = &hostsDoc{V: hostRuleVersion, Hosts: f.hosts}
@@ -479,7 +497,11 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		owner:           model.CanonicalAgent(j.Owner),
 		lastRequestAt:   j.LastRequestAt,
 		projects:        j.Projects,
-		hostsUnknown:    j.InferenceHosts == nil || j.InferenceHosts.V != hostRuleVersion,
+		imported:        j.Imported,
+		// A fold with events and no imported one holds only live events, also in a
+		// session.json written before Live existed.
+		live:         j.Live || (j.EventCount > 0 && j.Imported == ""),
+		hostsUnknown: j.InferenceHosts == nil || j.InferenceHosts.V != hostRuleVersion,
 	}
 	if j.TitleRank != nil {
 		f.titleRank = *j.TitleRank

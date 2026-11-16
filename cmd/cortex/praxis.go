@@ -18,10 +18,29 @@ var _ sessionapi.HopJoins = (*forwardproxy.Hop)(nil)
 // praxisProbeEvery is how often the hop probes the gateway until one probe passes (Decision 3).
 const praxisProbeEvery = time.Second
 
+// deprecatedCpexWarning is the one deprecation sentence for the laptop cpex build.
+// The installer prints the same words.
+const deprecatedCpexWarning = "the laptop cpex build is deprecated; use praxis mode with praxis.policy instead (enable it with --praxis; see docs/praxis-policy.md); Kubernetes cpex use is not affected"
+
+// warnDeprecatedCpex logs the deprecation once when a local install builds the cpex
+// plugin. A sidecar does not log it, and praxis mode does not build the plugin.
+func warnDeprecatedCpex(c *config.Config, log *slog.Logger) {
+	if !localInstall || c.PraxisEnabled() {
+		return
+	}
+	for _, e := range c.Pipeline.Outbound.Plugins {
+		if e.Name == "cpex" {
+			log.Warn(deprecatedCpexWarning)
+			return
+		}
+	}
+}
+
 // outboundEntries is the outbound plugin list to build: none in praxis mode, and it logs the
 // skipped names at Warn: no policy plugin runs in praxis mode, because the gateway does not
 // run them and a WebSocket upgrade does not go through the gateway. The config keeps its list.
 func outboundEntries(c *config.Config, log *slog.Logger) []config.PluginEntry {
+	warnDeprecatedCpex(c, log)
 	if !c.PraxisEnabled() {
 		return c.Pipeline.Outbound.Plugins
 	}

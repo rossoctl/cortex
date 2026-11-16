@@ -8,6 +8,7 @@ import (
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/internal/parsercommon"
+	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/parse/inference"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
@@ -75,6 +76,7 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 	pctx.Extensions.Inference = ext
+	slog.Info("inference-parser", "model", model.SanitizeLogValue(ext.Model))
 
 	pctx.Observe("matched_" + ext.Model)
 	return pipeline.Action{Type: pipeline.Continue}

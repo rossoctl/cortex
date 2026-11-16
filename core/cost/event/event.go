@@ -64,6 +64,9 @@ const (
 	// reported 0 — which every streamed response does, so for a streaming agent
 	// this is the common case, not the exception.
 	SourceUsageFallback = "usage-fallback"
+	// SourceTranscript is priced from the token counts in an agent transcript that
+	// an import read. No gateway saw the request, so no header figure exists.
+	SourceTranscript = "transcript"
 )
 
 // Reasons a producer REFUSED a cost figure that was on the wire. Carried in
@@ -95,7 +98,7 @@ const (
 // figure.
 type Event struct {
 	CostUSD float64 `json:"cost_usd"`
-	// Source is SourceGatewayHeader or SourceUsageFallback. A consumer that
+	// Source is SourceGatewayHeader, SourceUsageFallback or SourceTranscript. A consumer that
 	// distinguishes authoritative from modelled figures reads this.
 	Source        string  `json:"source"`
 	DailyTotalUSD float64 `json:"daily_total_usd"`

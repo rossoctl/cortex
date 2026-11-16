@@ -196,6 +196,21 @@ func TestDecisionOpts_ExplicitEmptyDisablesDefaults(t *testing.T) {
 	}
 }
 
+// Fail-closed intercepts the default list's hosts and still honours an explicit one.
+func TestDecisionOpts_FailClosedDropsDefaults(t *testing.T) {
+	fc := mustDecision(t, DecisionOpts{FailClosed: true})
+	if !fc.Intercepts("api.github.com", 443) {
+		t.Error("fail_closed should intercept a default passthrough host")
+	}
+	own := mustDecision(t, DecisionOpts{FailClosed: true, SkipHosts: []string{"pinned.example.com"}})
+	if own.Intercepts("pinned.example.com", 443) || !own.Intercepts("api.github.com", 443) {
+		t.Error("fail_closed should tunnel exactly the explicit list")
+	}
+	if fc.Intercepts("api.github.com", 22) {
+		t.Error("Intercepts should keep Classify's port gate")
+	}
+}
+
 // TestNewDecision_RejectsUnusablePatterns: a pattern that cannot match is a typo,
 // and ignoring it presents as "the bridge broke my tool" with nothing connecting
 // the symptom to the cause. Match-all is rejected for a different reason — it

@@ -105,3 +105,40 @@ func TestStartPraxis_EgressServesProbe(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+func TestOutboundEntries_WarnsDeprecatedCpexOnLocalInstall(t *testing.T) {
+	old := localInstall
+	t.Cleanup(func() { localInstall = old })
+
+	cfg := praxisCfg(false)
+	cfg.Pipeline.Outbound.Plugins = []config.PluginEntry{{Name: "cpex"}}
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	localInstall = true
+	if got := outboundEntries(cfg, log); len(got) != 1 {
+		t.Fatalf("local install built %v, want the cpex entry", got)
+	}
+	if n := strings.Count(buf.String(), "level=WARN"); n != 1 {
+		t.Fatalf("local install logged %d Warn lines, want 1: %q", n, buf.String())
+	}
+	if !strings.Contains(buf.String(), "the laptop cpex build is deprecated") {
+		t.Errorf("log %q does not name the deprecation", buf.String())
+	}
+
+	buf.Reset()
+	localInstall = false
+	outboundEntries(cfg, log)
+	if buf.Len() != 0 {
+		t.Errorf("a sidecar logged %q", buf.String())
+	}
+
+	buf.Reset()
+	localInstall = true
+	if got := outboundEntries(praxisCfg(true), log); len(got) != 0 {
+		t.Fatalf("praxis mode built %v, want none", got)
+	}
+	if strings.Contains(buf.String(), "deprecated") {
+		t.Errorf("praxis mode logged the deprecation: %q", buf.String())
+	}
+}

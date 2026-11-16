@@ -31,8 +31,6 @@ pub const NOT_SET_IN_PRAXIS_MODE: &[&str] = &[
     "identity",
     // The TLS bridge state is in Cortex; #1721 decides if the hop carries it.
     "tls",
-    // No plugins run in the gateway.
-    "invocations",
     // No router in the gateway.
     "requestedHost",
     // Cortex strips upgrades before the hop.
@@ -41,6 +39,11 @@ pub const NOT_SET_IN_PRAXIS_MODE: &[&str] = &[
     "tunnel",
     "tunnelReason",
     "dialAddr",
+    // The Go listener sets these two from its pipeline context. The gateway does not.
+    "subagentKind",
+    "project",
+    // An import sets it; every gateway row is live.
+    "source",
 ];
 
 fn is_zero(v: &i64) -> bool {
@@ -64,6 +67,22 @@ pub struct EventError {
     pub message: String,
 }
 
+/// One plugin's decision on a row (`Invocation` in core/model/extensions.go).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Invocation {
+    pub plugin: String,
+    pub action: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+/// The plugin records on a row (`Invocations` in core/model/extensions.go).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Invocations {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub outbound: Vec<Invocation>,
+}
+
 /// One session event, as `sessionEventWire` writes it.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +97,9 @@ pub struct Event {
     pub mcp: Option<McpExtension>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inference: Option<InferenceExtension>,
+    /// Only a policy decision sets this (`policy_recorder`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invocations: Option<Invocations>,
     #[serde(skip_serializing_if = "is_zero")]
     pub status_code: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -256,6 +278,13 @@ pub(crate) mod tests {
             a2a: Some(A2aExtension::default()),
             mcp: Some(McpExtension::default()),
             inference: Some(InferenceExtension::default()),
+            invocations: Some(Invocations {
+                outbound: vec![Invocation {
+                    plugin: "p".into(),
+                    action: "allow".into(),
+                    reason: "r".into(),
+                }],
+            }),
             status_code: 200,
             error: Some(EventError {
                 kind: "k".into(),

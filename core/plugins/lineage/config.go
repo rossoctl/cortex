@@ -123,8 +123,8 @@ type Config struct {
 	// BypassPaths lists URL path globs that should not generate lineage
 	// hops. Useful for suppressing infrastructure polling (agent-card
 	// discovery, health checks) that would otherwise flood the lineage graph.
-	// Matched by the shared bypass package (path.Match, query stripped, path
-	// normalized) — the same package and semantics jwt-validation and sparc
+	// Matched by the shared bypass package (path.Match, canonical paths
+	// only) — the same package and semantics jwt-validation and sparc
 	// use for this key, so a pattern copied between plugins means the same
 	// thing. Note path.Match's "*" does not cross "/": "/.well-known/*"
 	// matches "/.well-known/agent.json" but not "/.well-known/a/b". An

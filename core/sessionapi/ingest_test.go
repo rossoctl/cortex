@@ -259,6 +259,20 @@ func TestIngest_StoreAssignsSeqAndAt(t *testing.T) {
 	}
 }
 
+func TestIngest_ProducerImportedMarkIsDropped(t *testing.T) {
+	r := newIngestRig(t)
+	ev := map[string]any{"source": "imported:claude-code", "phase": "request",
+		"requestId": "r1", "inference": map[string]any{"model": "m"}}
+	r.post(t, nil, line(t, map[string]any{"event": ev}))
+	evs := r.events("s1")
+	if len(evs) != 1 {
+		t.Fatalf("got %d rows", len(evs))
+	}
+	if evs[0].Source != "" {
+		t.Errorf("source = %q, want empty: an ingested event is live", evs[0].Source)
+	}
+}
+
 func TestIngest_ProducerCostIsReplaced(t *testing.T) {
 	r := newIngestRig(t)
 	forged := map[string]any{"cost_usd": 999, "source": "gateway_header", "settled": true}
@@ -595,5 +609,17 @@ func TestIngest_HeldRequestsAreCapped(t *testing.T) {
 	in.holdRequest(last, "s1", inf)
 	if n := len(in.reqInf); n != maxHeldRequests {
 		t.Errorf("a repeated id changed the count to %d", n)
+	}
+}
+
+// A source that is not a string is dropped, not the whole line: the event is stored and live.
+func TestIngest_NonStringSourceKeepsTheRow(t *testing.T) {
+	for _, src := range []any{1, map[string]any{"a": 1}, []any{"x"}, true} {
+		r := newIngestRig(t)
+		ev := map[string]any{"source": src, "phase": "request", "requestId": "r1", "inference": map[string]any{"model": "m"}}
+		r.post(t, nil, line(t, map[string]any{"event": ev}))
+		if evs := r.events("s1"); len(evs) != 1 || evs[0].Source != "" {
+			t.Errorf("source %v: stored %+v, want one live event", src, evs)
+		}
 	}
 }

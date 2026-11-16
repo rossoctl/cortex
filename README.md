@@ -7,7 +7,7 @@ Claude Code · OpenCode · Codex · IBM Bob · Pi · any agent that can use an H
 One binary on macOS or Linux. No Kubernetes, no account.
 
 <img src="./docs/assets/cortex-demo.svg" width="100%"
-     alt="A terminal installs Cortex with one command, and a second command points Claude Code at it. Three Claude Code sessions run in separate directories, and agentop then lists all three with their token counts, cost and remaining context. Pressing $ breaks the spend down by tier, where cache reads dominate. Drilling into the busiest session shows the whole conversation and the fifteen-tool manifest it re-sends on every turn.">
+     alt="A terminal installs Cortex with one command, and a second command points Claude Code at it. Three Claude Code sessions run in separate directories. In agentop, the Timeline pane shows one session as it works: the main agent starts five subagents, their bars grow as they read files and run tools, they hand back one by one, and each row shows its tokens per second. Another session's events then list each tool call as its own row, and opening the Bash call shows its command and its test output.">
 
 ## Quick start
 
@@ -115,7 +115,7 @@ The same binary also runs on a remote machine — a VM, a home server, a pod —
 
 [All docs](./docs/README.md) · [agentop reference](./cmd/agentop/README.md) ·
 [plugin catalog](./docs/plugin-catalog.md) · [script plugins](./docs/script-plugin.md) ·
-[cpex policy build](./docs/laptop-service.md#the-cpex-build) ·
+[policy in praxis mode](./docs/praxis-policy.md) ·
 [full install guide](https://www.rossoctl.dev/docs/dev/get-started/laptop) ·
 [install stats](https://rossoctl.github.io/cortex/install-stats/) (from GitHub's download counts, no telemetry)
 

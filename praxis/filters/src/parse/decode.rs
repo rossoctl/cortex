@@ -256,7 +256,7 @@ impl Inner {
 }
 
 /// `MaxDecodedRequestSize` in encoding.go.
-const MAX_DECODED_REQUEST_SIZE: usize = 64 << 20;
+pub(crate) const MAX_DECODED_REQUEST_SIZE: usize = 64 << 20;
 
 /// Port of `parsercommon.DecodeRequestBody`: decodes a zstd request body. Any
 /// other coding, or a body that does not decode within 64 MiB, comes back as

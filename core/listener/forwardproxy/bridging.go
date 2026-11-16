@@ -24,6 +24,24 @@ import (
 // program it sets tl.program, so bridgeServe records the outcome against the program.
 func (s *Server) bridgeVerdict(r *http.Request, tl *tunnelLog, host string, first []byte) (reason pipeline.TunnelReason, bridge bool) {
 	prog, named := s.bridgeProgram(r)
+	if s.failClosed() {
+		// Host and port alone decide: no memory of earlier failures and no
+		// prediction of a refusal. An intercepted host is always bridged or
+		// refused, never tunnelled.
+		v, why := s.TLSBridge.Decision.Classify(host, portOf(r.Host), first)
+		if v != tlsbridge.Terminate && !s.TLSBridge.Decision.Intercepts(host, portOf(r.Host)) {
+			return passthroughReason(why), false
+		}
+		if v != tlsbridge.Terminate && len(first) == 5 {
+			return pipeline.TunnelRefusedNonTLS, false
+		}
+		// A short peek is a slow client, not evidence of another protocol: the
+		// handshake decides, and fails within its own bound if it is not TLS.
+		if named {
+			tl.program = &prog
+		}
+		return "", true
+	}
 	if !named {
 		// Unchanged from before programs could be named, order included.
 		if s.TLSBridge.Skip.Contains(host) {
@@ -76,6 +94,41 @@ func (s *Server) bridgeMemory(tl *tunnelLog, host string) (*tlsbridge.SkipSet, s
 	return s.TLSBridge.Programs, tl.program.Key()
 }
 
+// failClosed reports whether tls_bridge.fail_closed is on.
+func (s *Server) failClosed() bool { return s.TLSBridge != nil && s.TLSBridge.FailClosed }
+
+// refuseFailClosed ends a connection fail-closed will neither bridge nor tunnel:
+// it records the open with reason and a close with status and kind, then closes
+// the client.
+func (s *Server) refuseFailClosed(client net.Conn, host string, tl *tunnelLog, reason pipeline.TunnelReason, status int, kind string, err error) {
+	slog.Warn("tls-bridge refused (fail_closed)", "host", pipeline.SanitizeLogValue(host),
+		"reason", reason, "client", clientAddr(client), "error", err)
+	tl.open(reason)
+	tl.close(status, &pipeline.EventError{Kind: kind, Message: err.Error()}, 0, 0)
+	_ = client.Close()
+}
+
+// verifyUpstream checks that authority is reachable and its certificate verifies.
+// HEAD avoids GET side-effects; a non-2xx status still returns err==nil (cert
+// verified), which is all we need. Only a transport/TLS error fails here. The
+// verify is bounded by its own context timeout so a slow/stalled origin can't pin
+// the caller — the timeout is on this probe ONLY, not on the relay (which must
+// stay unbounded for streaming responses).
+func (s *Server) verifyUpstream(authority string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), upstreamVerifyTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+authority, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.TLSBridge.Upstream.Do(req)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // logUpstreamUnverified reports that the bridge could not verify host's certificate, so the
 // host's traffic passes through unread: no plugin sees it and nothing is parsed. That is a
 // loss of visibility, so the first failure for a host is a WARN. Repeats stay at INFO, so a
@@ -105,44 +158,40 @@ func (s *Server) logUpstreamUnverified(host string, err error) {
 // bridgeServe records its close too. A bridged tunnel is settled by whichever of
 // finish and the last handler's release comes last, which records what the tunnel
 // still owes — its open and a close — only if no request recorded a row. On the
-// false path the caller tunnels and records the close itself. originDead says the
-// CONNECT's own pre-dial failed, in which case the origin probe is skipped: see
-// step 1.
-func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnelLog, originDead bool) bool {
+// false path the caller tunnels and records the close itself. skipProbe skips the
+// origin probe: see step 1. Under fail-closed bridgeServe never returns false.
+func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnelLog, skipProbe bool) bool {
 	// 1) Verify upstream reachability + cert via the dedicated client, BEFORE forging.
-	//    HEAD avoids GET side-effects; a non-2xx status still returns err==nil (cert
-	//    verified), which is all we need. Only a transport/TLS error fails here. The
-	//    verify is bounded by its own context timeout so a slow/stalled origin can't
-	//    pin the bridging goroutine — the timeout is on this probe ONLY, not on the
-	//    relay (which must stay unbounded for streaming responses).
 	//
-	//    Skipped when the pre-dial already failed (originDead): the probe would only
-	//    re-confirm a dead origin at up to upstreamVerifyTimeout more, and its
-	//    passthrough fallback dials the same dead origin. Bridging proceeds so a
-	//    plugin redirect (inference-router moving a pinned session) can still send
-	//    the request to a live server (#1595); the re-originated request is verified
-	//    against whatever host it actually goes to.
-	if !originDead {
-		ctx, cancel := context.WithTimeout(context.Background(), upstreamVerifyTimeout)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+authority, nil)
-		if err != nil {
-			s.logUpstreamUnverified(host, err)
-			tl.open(pipeline.TunnelOriginUnverified)
-			return false
-		}
-		resp, err := s.TLSBridge.Upstream.Do(req)
-		if err != nil {
+	//    Skipped when the pre-dial already failed: the probe would only re-confirm a
+	//    dead origin at up to upstreamVerifyTimeout more, and its passthrough fallback
+	//    dials the same dead origin. Bridging proceeds so a plugin redirect
+	//    (inference-router moving a pinned session) can still send the request to a
+	//    live server (#1595); the re-originated request is verified against whatever
+	//    host it actually goes to. Skipped too when the CONNECT already verified the
+	//    origin before its 200 (fail-closed).
+	if !skipProbe {
+		if err := s.verifyUpstream(authority); err != nil {
+			if s.failClosed() {
+				s.refuseFailClosed(client, host, tl, pipeline.TunnelOriginUnverified,
+					http.StatusBadGateway, pipeline.ErrorKindUpstreamUnverified, err)
+				return true
+			}
 			s.logUpstreamUnverified(host, err)
 			tl.open(pipeline.TunnelOriginUnverified)
 			return false // fall back to plain tunnel — agent's own e2e TLS still reaches origin
 		}
-		_ = resp.Body.Close()
 	}
 
-	// 2) Forge + terminate downstream.
-	tconn, err := s.TLSBridge.Term.Terminate(client, hostOnly(authority))
+	// 2) Forge + terminate downstream. Fail-closed requires the SNI to name the
+	//    CONNECT host, so policy judged on that host is policy for the bytes inside.
+	tconn, err := s.TLSBridge.Term.Terminate(client, hostOnly(authority), s.failClosed())
 	if err != nil {
+		if errors.Is(err, tlsbridge.ErrSNIMismatch) {
+			s.refuseFailClosed(client, host, tl, pipeline.TunnelSNIMismatch,
+				http.StatusMisdirectedRequest, pipeline.ErrorKindMisdirectedRequest, err)
+			return true
+		}
 		reason := handshakeFailureReason(err)
 		// Seed a skip either way — the forged handshake killed this connection, so the
 		// client's retry needs a tunnel whatever went wrong. The skip is the program's
@@ -158,13 +207,20 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 		// The decision is here rather than inside SkipSet because the reason vocabulary
 		// belongs to the session-event layer, and tlsbridge has no other business
 		// knowing about it.
-		memory, key := s.bridgeMemory(tl, host)
-		if reason == pipeline.TunnelClientRejectedCA {
-			memory.Fail(key)
-		} else {
-			memory.FailTransient(key)
+		//
+		// Fail-closed seeds nothing: the retry is bridged again, and fails again,
+		// until the client trusts the CA.
+		var memory *tlsbridge.SkipSet
+		var key string
+		if !s.failClosed() {
+			memory, key = s.bridgeMemory(tl, host)
+			if reason == pipeline.TunnelClientRejectedCA {
+				memory.Fail(key)
+			} else {
+				memory.FailTransient(key)
+			}
 		}
-		if memory == s.TLSBridge.Programs {
+		if memory != nil && memory == s.TLSBridge.Programs {
 			// The failed connection was not read either, and it names the host the
 			// program refused, which the report would otherwise lack until its next try.
 			// Under the key just failed, so the note joins that entry. A host's entry is
@@ -215,7 +271,12 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 				"fix", "restart clients started before ca_not_before, or point the client at ca_file "+
 					"and compare its fingerprint (openssl x509 -noout -fingerprint -sha256)")
 		}
-		slog.Warn("tls-bridge passthrough", args...)
+		msg := "tls-bridge passthrough"
+		if s.failClosed() {
+			msg = "tls-bridge refused (fail_closed)"
+			_ = client.Close()
+		}
+		slog.Warn(msg, args...)
 		tl.open(reason)
 		// The CONNECT was answered 200 before the handshake, so that is the status; the
 		// error is what killed the tunnel. Without this row the tunnel would read as
@@ -319,7 +380,11 @@ func (s *Server) noteBridgeHandshakeFailure() {
 func (s *Server) warnBridgeUnused(countKey string, count uint64, cause string) {
 	s.bridgeWarnOnce.Do(func() {
 		s.bridgeWarned.Store(true)
-		slog.Warn("tls-bridge: enabled but nothing has been decrypted — every request is tunnelling through opaquely, so body-reading plugins (parsers, tool-prune) cannot act",
+		msg := "tls-bridge: enabled but nothing has been decrypted — every request is tunnelling through opaquely, so body-reading plugins (parsers, tool-prune) cannot act"
+		if s.failClosed() {
+			msg = "tls-bridge: enabled but nothing has been decrypted — fail_closed is refusing every intercepted request"
+		}
+		slog.Warn(msg,
 			countKey, count,
 			"tunnels_opened", s.tunnelsOpened.Load(),
 			"bridged_requests", 0,

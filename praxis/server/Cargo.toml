@@ -11,7 +11,7 @@ name = "cortex-gateway"
 path = "src/main.rs"
 
 [dependencies]
-praxis-proxy = { version = "=0.8.0", default-features = false, features = ["pingora", "admin-api", "forward-proxy"] }
+praxis-proxy = { version = "=0.8.0", default-features = false, features = ["pingora", "admin-api", "forward-proxy", "policy-engine", "policy-crypto-default", "policy-jwt", "policy-cel", "config-reload"] }
 praxis-proxy-filter = { version = "=0.8.0", default-features = false }
 cortex-praxis-filters = { path = "../filters" }
 openssl = { version = "0.10", features = ["vendored"] }

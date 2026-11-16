@@ -124,6 +124,7 @@ type chain struct {
 
 type chainOpts struct {
 	noGateway bool
+	policy    string // policy file content; when set, praxis.policy.config_path names it
 }
 
 // e2eConfig has inference-parser on the outbound chain. In praxis mode outboundEntries
@@ -202,6 +203,13 @@ func newPraxisChain(t *testing.T, origin *mockOrigin, opts chainOpts) *chain {
 	c.cfg.Praxis.Egress = egressLn.Addr().String()
 
 	dir := t.TempDir()
+	if opts.policy != "" {
+		path := dir + "/policy.yaml"
+		if err := os.WriteFile(path, []byte(opts.policy), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c.cfg.Praxis.Policy = &config.PraxisPolicyConfig{ConfigPath: path}
+	}
 	tokenPath, yamlPath, err := writeGatewayFiles(dir, c.cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -777,8 +785,8 @@ func TestPraxisE2E_SameEventsAsDirect(t *testing.T) {
 			delete(d, k)
 			delete(p, k)
 		}
-		// Known difference, praxis/README.md "Gateway decisions" 6: the gateway runs no
-		// Cortex plugin, so its rows have no invocations.
+		// This run has no policy, so no sink records a decision and the rows do not
+		// change (praxis/README.md "Gateway decisions" 6).
 		if p["invocations"] != nil {
 			t.Errorf("row %d: praxis invocations = %s, want none", i, compact(p["invocations"]))
 		}
@@ -813,4 +821,297 @@ func compact(v any) string {
 		return fmt.Sprint(v)
 	}
 	return string(b)
+}
+
+// e2ePolicy permits model-ok and denies every other model.
+const e2ePolicy = `routes:
+  - llm: model-ok
+    authorization:
+      pre_invocation:
+        - "llm.provider == 'never': deny('unreachable', 'never')"
+  - llm: "*"
+    authorization:
+      pre_invocation:
+        - "deny('model is not permitted', 'model_not_allowed')"
+`
+
+func (o *mockOrigin) count() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.headers)
+}
+
+func modelRequest(t *testing.T, model string) *http.Request {
+	t.Helper()
+	return request(t, t.Context(), http.MethodPost, chatURL,
+		[]byte(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`))
+}
+
+// The policy filter permits model-ok and refuses model-bad before the origin.
+func TestPraxisE2E_PolicyDeniesModel(t *testing.T) {
+	origin := newMockOrigin(t)
+	origin.serve(serveJSON(chatJSON))
+	c := newPraxisChain(t, origin, chainOpts{policy: e2ePolicy})
+
+	if st, b, _ := c.do(t, modelRequest(t, "model-ok")); st != http.StatusOK {
+		t.Fatalf("model-ok: status %d, body %s", st, b)
+	}
+	if n := origin.count(); n != 1 {
+		t.Fatalf("model-ok: the origin got %d requests, want 1", n)
+	}
+	st, b, h := c.do(t, modelRequest(t, "model-bad"))
+	if st != http.StatusForbidden {
+		t.Fatalf("model-bad: status %d, body %s", st, b)
+	}
+	if got := h.Get("X-Policy-Violation"); got != "model_not_allowed" {
+		t.Fatalf("model-bad: X-Policy-Violation = %q, want model_not_allowed", got)
+	}
+	if n := origin.count(); n != 1 {
+		t.Fatalf("model-bad: the origin got %d requests, want 1", n)
+	}
+	c.waitResponses(t, 2, 10*time.Second)
+}
+
+// A policy with llm: routes passes requests that are not inference calls.
+func TestPraxisE2E_PolicyPassesNonInference(t *testing.T) {
+	origin := newMockOrigin(t)
+	origin.serve(serveJSON(chatJSON))
+	c := newPraxisChain(t, origin, chainOpts{policy: e2ePolicy})
+
+	form := request(t, t.Context(), http.MethodPost, "http://oauth.example.com/token",
+		[]byte("grant_type=refresh_token&refresh_token=r"))
+	form.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Over the policy filter's 10 MiB default, under the gateway's 32 MiB.
+	upload := request(t, t.Context(), http.MethodPost, "http://files.example.com/upload", bytes.Repeat([]byte("u"), 11<<20))
+	upload.Header.Set("Content-Type", "application/octet-stream")
+	reqs := map[string]*http.Request{
+		"upload over 10 MiB": upload,
+		"json without model": request(t, t.Context(), http.MethodPost, "http://telemetry.example.com/v1/events", []byte(`{"events":[{"n":1}]}`)),
+		"form body":          form,
+		"put":                request(t, t.Context(), http.MethodPut, "http://api.example.com/repos/x", []byte(`{"name":"x"}`)),
+		"mcp tools/call":     request(t, t.Context(), http.MethodPost, "http://mcp.example.com/mcp", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{}}}`)),
+	}
+	want := 0
+	for name, req := range reqs {
+		want++
+		if st, b, h := c.do(t, req); st != http.StatusOK {
+			t.Errorf("%s: status %d, X-Policy-Violation %q, body %s", name, st, h.Get("X-Policy-Violation"), b)
+		}
+		if n := origin.count(); n != want {
+			t.Errorf("%s: the origin got %d requests, want %d", name, n, want)
+			want = n
+		}
+	}
+}
+
+// e2eToolPolicy permits safe_tool and denies every other MCP tool.
+// The llm: route admits the hop's readiness probe (GET /, no MCP row): a policy
+// with only tool: routes refuses every request that has no mcp.method (500).
+// The llm: route also admits any bodyless request, so this test does not cover
+// the synthetic GET and DELETE methods. The observe.rs unit tests cover them.
+const e2eToolPolicy = `routes:
+  - llm: "*"
+    authorization:
+      pre_invocation:
+        - "llm.provider == 'never': deny('unreachable', 'never')"
+  - tool: safe_tool
+    authorization:
+      pre_invocation:
+        - "http.method == 'NEVER': deny('unreachable', 'never')"
+  - tool: "*"
+    authorization:
+      pre_invocation:
+        - "deny('tool is not permitted', 'tool_not_allowed')"
+`
+
+// cortex_observe writes mcp.method and mcp.name, so the policy filter
+// permits safe_tool, refuses danger_tool before the origin, and passes tools/list.
+func TestPraxisE2E_PolicyDeniesTool(t *testing.T) {
+	origin := newMockOrigin(t)
+	origin.serve(serveJSON(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	c := newPraxisChain(t, origin, chainOpts{policy: e2eToolPolicy})
+	const mcpURL = "http://mcp.example.com/mcp"
+	call := func(id int, tool string) *http.Request {
+		return request(t, t.Context(), http.MethodPost, mcpURL,
+			fmt.Appendf(nil, `{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"%s","arguments":{}}}`, id, tool))
+	}
+
+	if st, b, _ := c.do(t, call(1, "safe_tool")); st != http.StatusOK {
+		t.Fatalf("safe_tool: status %d, body %s", st, b)
+	}
+	if n := origin.count(); n != 1 {
+		t.Fatalf("safe_tool: the origin got %d requests, want 1", n)
+	}
+
+	st, b, h := c.do(t, call(7, "danger_tool"))
+	if st != http.StatusOK {
+		t.Fatalf("danger_tool: status %d, body %s", st, b)
+	}
+	if got := h.Get("X-Policy-Violation"); got != "tool_not_allowed" {
+		t.Fatalf("danger_tool: X-Policy-Violation = %q, want tool_not_allowed", got)
+	}
+	var rpc struct {
+		ID    int `json:"id"`
+		Error struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(b, &rpc); err != nil {
+		t.Fatalf("danger_tool: body %s: %v", b, err)
+	}
+	if rpc.Error.Code != -32001 || rpc.ID != 7 {
+		t.Fatalf("danger_tool: error.code %d, id %d, want -32001 and 7; body %s", rpc.Error.Code, rpc.ID, b)
+	}
+	if n := origin.count(); n != 1 {
+		t.Fatalf("danger_tool: the origin got %d requests, want 1", n)
+	}
+
+	// A Go server folds "Method" to "method" and "Path" to "path". The policy
+	// cannot read bad UTF-8, 1e400, NaN or a BOM. A Go json.Decoder ignores data
+	// after the body, and the TypeScript SDK runs a batch.
+	for _, body := range []string{
+		`{"id":1,"Method":"tools/call","params":{"name":"danger_tool"}}`,
+		`{"JSONRPC":"2.0","id":1,"Method":"tools/call","params":{"name":"danger_tool"}}`,
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"danger_tool\",\"arguments\":{\"x\":\"\xff\"}}}",
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe_tool","arguments":{"path":"ok","Path":"/etc/passwd"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{},"_meta":{"t":1e400}}}`,
+		`{"jsonrpc":"2.0","id":1e400,"method":"tools/call","params":{"name":"danger_tool","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{}}} x`,
+		"\xef\xbb\xbf{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"danger_tool\",\"arguments\":{}}}",
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{},"_meta":{"t":NaN}}}`,
+		`[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{}}}]`,
+	} {
+		req := request(t, t.Context(), http.MethodPost, mcpURL, []byte(body))
+		if st, b, _ := c.do(t, req); st != http.StatusInternalServerError {
+			t.Fatalf("%q: status %d, want 500; body %s", body, st, b)
+		}
+	}
+	// The TypeScript SDK decodes the body with the Content-Type charset. The
+	// scan decodes gzip.
+	var packed bytes.Buffer
+	zw := gzip.NewWriter(&packed)
+	_, _ = zw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"danger_tool","arguments":{}}}`))
+	_ = zw.Close()
+	utf7 := []byte(`{+ACI-jsonrpc+ACI-:+ACI-2.0+ACI-,+ACI-id+ACI-:1,+ACI-method+ACI-:+ACI-tools/call+ACI-,+ACI-params+ACI-:{+ACI-name+ACI-:+ACI-danger_tool+ACI-,+ACI-arguments+ACI-:{}}}`)
+	for _, tc := range []struct {
+		body          []byte
+		ctype, coding string
+	}{
+		{utf7, "application/json; charset=utf-7", ""},
+		{packed.Bytes(), "application/json", "gzip"},
+		{utf7, `text/plain; x="application/json"; charset=utf-7`, ""},
+		{utf7, "application/json; x=\"\xe9\"; charset=utf-7", ""},
+	} {
+		req := request(t, t.Context(), http.MethodPost, mcpURL, tc.body)
+		req.Header.Set("Content-Type", tc.ctype)
+		if tc.coding != "" {
+			req.Header.Set("Content-Encoding", tc.coding)
+		}
+		if st, b, _ := c.do(t, req); st != http.StatusInternalServerError {
+			t.Fatalf("%s %s: status %d, want 500; body %s", tc.ctype, tc.coding, st, b)
+		}
+	}
+	if n := origin.count(); n != 1 {
+		t.Fatalf("refused bodies: the origin got %d requests, want 1", n)
+	}
+
+	list := request(t, t.Context(), http.MethodPost, mcpURL, []byte(`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`))
+	if st, b, _ := c.do(t, list); st != http.StatusOK {
+		t.Fatalf("tools/list: status %d, body %s", st, b)
+	}
+	if n := origin.count(); n != 2 {
+		t.Fatalf("tools/list: the origin got %d requests, want 2", n)
+	}
+}
+
+// e2eRecorderPlugins declares the recorder sink. Without it, an e2ePolicy run
+// records nothing.
+const e2eRecorderPlugins = `plugins:
+  - name: cortex-recorder
+    kind: cortex/recorder
+    capabilities: [read_headers]
+`
+
+// The policy decision lands in the response row of the request it judged (#1799).
+// One chain and one request per case: the only response row is that request's.
+func TestPraxisE2E_PolicyDecisionInRow(t *testing.T) {
+	allow := model.Invocation{Plugin: "policy", Action: model.ActionAllow}
+	mcpCall := func(tool string) *http.Request {
+		return request(t, t.Context(), http.MethodPost, "http://mcp.example.com/mcp",
+			fmt.Appendf(nil, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"%s","arguments":{}}}`, tool))
+	}
+	cases := []struct {
+		name   string
+		policy string
+		req    *http.Request
+		status int
+		// rpcCode is the JSON-RPC error the body must carry; 0 means a plain body.
+		rpcCode int
+		want    model.Invocation
+	}{
+		{"model-ok", e2eRecorderPlugins + e2ePolicy, modelRequest(t, "model-ok"), http.StatusOK, 0, allow},
+		{"model-bad", e2eRecorderPlugins + e2ePolicy, modelRequest(t, "model-bad"), http.StatusForbidden, 0,
+			model.Invocation{Plugin: "policy", Action: model.ActionDeny, Reason: "model_not_allowed"}},
+		{"danger_tool", e2eRecorderPlugins + e2eToolPolicy, mcpCall("danger_tool"), http.StatusOK, -32001,
+			model.Invocation{Plugin: "policy", Action: model.ActionDeny, Reason: "tool_not_allowed"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origin := newMockOrigin(t)
+			origin.serve(serveJSON(chatJSON))
+			c := newPraxisChain(t, origin, chainOpts{policy: tc.policy})
+			st, b, _ := c.do(t, tc.req)
+			if st != tc.status {
+				t.Fatalf("status %d, want %d; body %s", st, tc.status, b)
+			}
+			if tc.rpcCode != 0 {
+				var rpc struct {
+					Error struct {
+						Code int `json:"code"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(b, &rpc); err != nil || rpc.Error.Code != tc.rpcCode {
+					t.Fatalf("error.code = %d (%v), want %d; body %s", rpc.Error.Code, err, tc.rpcCode, b)
+				}
+			}
+			row := lastResponse(t, c.waitResponses(t, 1, 10*time.Second))
+			if row.Invocations == nil || !reflect.DeepEqual(row.Invocations.Outbound, []model.Invocation{tc.want}) {
+				t.Errorf("response row outbound = %+v, want %+v", row.Invocations, []model.Invocation{tc.want})
+			}
+
+			// A policy decision belongs only to the response row.
+			requests := 0
+			for _, ev := range eventsJSON(t, c) {
+				if ev["phase"] != model.SessionRequest.String() {
+					continue
+				}
+				requests++
+				if ev["invocations"] != nil {
+					t.Errorf("request row invocations = %s, want none", compact(ev["invocations"]))
+				}
+			}
+			if requests == 0 {
+				t.Error("the session has no request row")
+			}
+			// The join key is reserved: the proxy strips it before the origin.
+			if origin.count() > 0 {
+				if got := origin.lastHeader(t).Get("X-Praxis-Cortex-Request-Id"); got != "" {
+					t.Errorf("the origin saw the join header: %q", got)
+				}
+			}
+		})
+	}
+}
+
+// Without a policy, a model-bad request reaches the origin.
+func TestPraxisE2E_NoPolicyNoChange(t *testing.T) {
+	origin := newMockOrigin(t)
+	origin.serve(serveJSON(chatJSON))
+	c := newPraxisChain(t, origin, chainOpts{})
+	if st, b, _ := c.do(t, modelRequest(t, "model-bad")); st != http.StatusOK {
+		t.Fatalf("status %d, body %s", st, b)
+	}
+	if n := origin.count(); n != 1 {
+		t.Fatalf("the origin got %d requests, want 1", n)
+	}
 }

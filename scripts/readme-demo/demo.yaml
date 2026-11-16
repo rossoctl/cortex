@@ -26,7 +26,7 @@
 # up as it fills, show only once it is full; and the spinner on a running step, which
 # the pause before its ✓ stands in for.
 
-total: 58s
+total: 50s
 grid:
   cols: 120
   rows: 34
@@ -42,7 +42,7 @@ acts:
     steps:
       - cmd: "curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh"
         out:
-          - "  rosso cortex · installer                               v0.9.3 · darwin/arm64"
+          - "  rosso cortex · installer                               v0.9.5 · darwin/arm64"
           - "  \e[38;5;167m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\e[0m  100%  15.6 MB · sha256 ✓  2.0s"
           - ""
           - "  This will:"
@@ -67,7 +67,7 @@ acts:
           - "  \e[38;2;249;112;102m╚██████╗╚██████╔╝██║  ██║   ██║   ███████╗██╔╝ ██╗\e[0m"
           - "  \e[38;2;249;112;102m ╚═════╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝\e[0m"
           - ""
-          - "    v0.9.3 ready in 1.9s"
+          - "    v0.9.5 ready in 1.9s"
           - ""
           - "  Open a new terminal, then:"
           - ""
@@ -176,8 +176,8 @@ acts:
       - title: "~/work/api"
         lines:
           - "$ claude"
-          - "▸ fix the retry handler"
-          - "  Read src/retry/handler.go"
+          - "▸ audit the repo before release"
+          - "  Agent ×5 running in background"
       - title: "~/work/web"
         lines:
           - "$ claude"
@@ -197,56 +197,75 @@ acts:
     steps:
       - cmd: "agentop observe"
 
-  # Where did the money go? Answered with evidence, in the real agentop.
-  - name: insights
+  # Watch an agent work: the Timeline of a session whose main agent starts five
+  # subagents in parallel, captured as the replay advances. Each beat's `at` is how far
+  # into the recording it is, so the bars grow, subagents hand back one by one, and
+  # tok/s moves, all drawn by the real Timeline pane.
+  - name: timeline
     kind: tui
-    runtime: 30s
+    runtime: 22s
     beats:
       - label: sessions
+        at: 1m
         keys: []
-        hold: 5s
-      - label: spend
-        keys: ["$"]
-        hold: 6s
-      - label: usage
-        keys: ["$", "u"]
-        hold: 4s
-      - label: events
-        keys: ["esc", "G", "enter"]
-        hold: 5s
-      # "up" off the bottom lands on the last REQUEST rather than its response:
-      # the request is the event carrying the tool manifest and the whole
-      # conversation, which is the thing this act exists to show.
-      - label: detail
-        keys: ["up", "enter"]
-        hold: 4s
-      # A search for "tools" opens the folded tool manifest, the list this agent
-      # re-sends on every turn.
-      - label: manifest
-        keys: ["/", "tools", "enter"]
-        hold: 4s
-      - label: back
-        keys: ["esc", "esc"]
         hold: 2s
+      - label: spawned
+        keys: ["T"]
+        hold: 1s
+      # About 40s of the recording every half second: fast enough to read as live.
+      - label: run
+        at: 5m
+        frames: 6
+        hold: 3s
+      # Past five minutes the default 5m window would scroll the spawns off; `w`
+      # cycles to all.
+      - label: all
+        at: 5m15s
+        keys: ["w"]
+        hold: 500ms
+      - label: run-all
+        at: 12m30s
+        frames: 10
+        hold: 5s
+      - label: done
+        hold: 500ms
+      # Then into a session's messages: down is the dark-mode session, the newest after
+      # the replay. Each tool call is a row under the exchange that asked for it; G lands
+      # on the last exchange and up on the Bash call above it.
+      - label: sessions-back
+        keys: ["esc", "down"]
+        hold: 1500ms
+      - label: tool-rows
+        keys: ["enter", "G", "up"]
+        hold: 3500ms
+      # Enter on a tool row opens the request that carries its output, with the
+      # cursor on the call and the output open below it.
+      - label: tool-call
+        keys: ["enter"]
+        hold: 2s
+      # Down to the output, which opens below the call off the bottom of the screen.
+      - label: tool-output
+        keys: ["down", "down", "down", "down", "down", "down", "down", "down",
+               "down", "down", "down", "down", "down", "down", "down", "down"]
+        hold: 3s
 
-    # Synthetic sessions. Costs are per turn and the tier split is derived from
-    # the token counts, so the COST column, the spend band and the `$` breakdown
-    # all agree with each other.
+    # The two idle sessions are invented. The live one is a recorded Claude Code
+    # session, scrubbed to what the timeline reads: see testdata/README.md.
     fixture:
+      replay:
+        file: testdata/timeline-replay.json.gz
+        id: api-7f3c
+        title: "audit the repo before release"
       sessions:
-        - id: api-7f3c
-          title: "fix the retry handler"
-          model: claude-opus-5
-          turns:
-            - {messages: 4, tools: 15, input: 1800, cache_read: 46000, cache_write: 9000, output: 620, reasoning: 341, prompt_usd: 0.098, output_usd: 0.047, tool_call: "tools/call", tool_host: "github-tool-mcp"}
-            - {messages: 10, tools: 15, input: 900, cache_read: 93000, cache_write: 2400, output: 810, reasoning: 446, prompt_usd: 0.121, output_usd: 0.061}
-            - {messages: 16, tools: 15, input: 1100, cache_read: 141000, cache_write: 3100, output: 940, reasoning: 517, prompt_usd: 0.174, output_usd: 0.071}
         - id: web-2a91
           title: "add dark mode toggle"
           model: claude-opus-5
           turns:
-            - {messages: 4, tools: 15, input: 1200, cache_read: 21000, cache_write: 6400, output: 380, reasoning: 209, prompt_usd: 0.061, output_usd: 0.029}
-            - {messages: 8, tools: 15, input: 700, cache_read: 44000, cache_write: 1800, output: 520, reasoning: 286, prompt_usd: 0.074, output_usd: 0.039}
+            - {messages: 2, tools: 15, input: 1200, cache_read: 0, cache_write: 6400, output: 120, reasoning: 60, prompt_usd: 0.031, output_usd: 0.009}
+            - {messages: 4, tools: 15, input: 600, cache_read: 7600, cache_write: 900, output: 140, reasoning: 70, prompt_usd: 0.012, output_usd: 0.011}
+            - {messages: 6, tools: 15, input: 500, cache_read: 8500, cache_write: 700, output: 260, reasoning: 120, prompt_usd: 0.011, output_usd: 0.020}
+            - {messages: 8, tools: 15, input: 500, cache_read: 9200, cache_write: 800, output: 110, reasoning: 50, prompt_usd: 0.012, output_usd: 0.008}
+            - {messages: 10, tools: 15, input: 700, cache_read: 10000, cache_write: 900, output: 180, reasoning: 90, prompt_usd: 0.014, output_usd: 0.014}
         - id: infra-55de
           title: "debug the helm chart"
           model: claude-sonnet-5

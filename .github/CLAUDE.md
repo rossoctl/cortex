@@ -8,9 +8,9 @@ including the PR title format and the Go checks that CI gates on, are in the roo
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yaml` | PR to main/release-*, push to main | Pre-commit; `go vet`, build and tests for all 7 modules; a macOS job for `peerproc`, `tlsbridge`, `cmd/cortex` and `cmd/agentop`; the cgo `cpex` builds (`go-ci-cpex`); `go mod tidy -diff` for all 7 modules; proxy-init iptables, Python, install-script and release-notes-script tests. `go fmt` rewrites rather than fails, so it does not gate |
+| `ci.yaml` | PR to main/release-*, push to main | Pre-commit; `go vet`, build and tests for all 7 modules; a macOS job for `peerproc`, `tlsbridge`, `cmd/cortex` and `cmd/agentop`; a Windows job that builds core and `cmd/cortex` and tests `bootstrap`, the session archive and the cost ledger, without `-race` (`go-ci-windows`); the cgo `cpex` builds (`go-ci-cpex`); `go mod tidy -diff` for all 7 modules; proxy-init iptables, Python, install-script and release-notes-script tests. `go fmt` rewrites rather than fails, so it does not gate |
 | `build.yaml` | Tag push (`v*`), push to main, manual; PRs to main build amd64 only and skip `**.md` | Multi-arch Docker builds for the six images below. Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
-| `praxis.yaml` | PR to main/release-*, push to main, on `praxis/**` or the Go parser paths it ports | `cargo fmt --check`, clippy and tests for `praxis/`. A failure blocks only when `praxis/` or the workflow changed |
+| `praxis.yaml` | PR to main/release-*, push to main, on `praxis/**`, `docs/praxis-policy.md` or the Go parser paths it ports | `cargo fmt --check`, clippy and tests for `praxis/`. A failure blocks only when `praxis/`, the policy page, the workflow, or the Go side of praxis mode (the hop, the egress listener, `cmd/cortex`'s praxis wiring) changed |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy |
 | `codeql.yaml` | PR to main (skips `**.md`), every push to main | CodeQL for Go and Python. The push run is the baseline that the PR check compares with, so an alert already on main is not new for a PR |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |
@@ -58,13 +58,14 @@ default plugin set (the `authbridge` image's). The `lite` profile ships only as 
 `<suffix>:<build-tags>` entry to the `proxy_variants` array in the workflow — never
 enumerate combos.
 
-The one other variant is `cortex-cpex_<ver>_<os>_<arch>.tar.gz`: `cortex` built with
-cgo, the `cpex` tag and the `fullcpex` profile (`full` + `cpex`). It cannot
-cross-compile, so a separate `build-cpex` matrix job builds it natively for
-darwin/arm64 (`macos-15`, macOS 14.5 floor) and linux/amd64 and linux/arm64 (static
-musl, in `golang:alpine` via `docker run`). There is no darwin/amd64 FFI. The
-executable inside is still `cortex`, and `cortex --version` prints
-`cortex (cpex) <ver>`. `install.sh --cpex` installs it.
+The laptop cpex build is removed, and so is the `build-cpex` job. `publish` still
+writes `cortex-cpex_*` tarballs for darwin/arm64 and linux/amd64/arm64, as copies of
+the `cortex_*` ones: an agentop from before the removal asks for that name, and the copy
+lets it move a cpex install to the default build. `install.sh --cpex` exits with an error that
+names `--praxis` and `docs/praxis-policy.md`. An install that runs a cpex build moves to
+the default `cortex` on `agentop update`, which prints one line that says so. When
+its config names the `cpex` plugin, the update stops before it downloads, because the
+default `cortex` does not start on that config. The `authbridge-cpex` image is unchanged.
 
 The praxis-mode gateway ships as `cortex-gateway_<ver>_<os>_<arch>.tar.gz`, from the
 `build-gateway` matrix job: darwin/arm64 natively, and linux/amd64 and linux/arm64 as
@@ -72,7 +73,7 @@ static musl binaries in `rust:alpine`. `scripts/build-gateway.sh` builds it and
 `scripts/check-gateway-linkage.sh` checks that it is standalone. It is optional: a
 failed `build-gateway` leg does not block the release.
 
-The workflow's jobs are `version`, `build`, `build-cpex`, `build-gateway` (all
+The workflow's jobs are `version`, `build`, `build-gateway` (all
 `contents: read`) and `publish`. Only `publish` writes. It refuses to publish unless
 every expected tarball arrived, except the gateway tarballs: a missing one gives a
 warning. It writes one `checksums.txt` over all of them, and attests every tarball's

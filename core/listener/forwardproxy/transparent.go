@@ -221,7 +221,41 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		enableKeepalive(upstream)
 	}
 
-	// The transparent path records before its own bridge decision for now, so it
+	// host is the policy authority: "<sniffed-SNI>:port" when a name was
+	// recovered, else dst ("<dial-IP>:port"). key is the SNI name or dial IP.
+	// Fail-closed consults no skip memory, and judges passthrough by the address
+	// the tunnel would dial, which the client cannot rename with an SNI or Host.
+	key, classifyKey := hostOnly(host), hostOnly(host)
+	var first []byte
+	if s.TLSBridge != nil {
+		// The sniff usually buffered these bytes already. A client that stalls
+		// short of five is bounded as the sniff is.
+		if pc, ok := clientConn.(*peekedConn); ok {
+			_ = pc.SetReadDeadline(time.Now().Add(sniffTimeout))
+			first, _ = pc.Peek(5)
+			_ = pc.SetReadDeadline(time.Time{})
+		}
+		if s.failClosed() {
+			classifyKey = hostOnly(dst)
+		}
+	}
+	// Fail-closed bridges or refuses what it intercepts, and records each row with
+	// its reason, as handleConnect does. A short peek is a slow client, as there:
+	// the handshake decides.
+	if s.failClosed() && s.TLSBridge.Decision.Intercepts(classifyKey, portOf(dst)) {
+		if v, _ := s.TLSBridge.Decision.Classify(classifyKey, portOf(dst), first); v != tlsbridge.Terminate && len(first) == 5 {
+			s.refuseFailClosed(clientConn, key, tl, pipeline.TunnelRefusedNonTLS, http.StatusOK, pipeline.ErrorKindNotTLS,
+				errors.New("not a TLS handshake"))
+			return
+		}
+		if upstream != nil {
+			_ = upstream.Close() // bridgeServe dials its own verified upstream
+		}
+		s.bridgeServe(clientConn, host, key, tl, dialFail != nil)
+		return
+	}
+
+	// The transparent path otherwise records before its own bridge decision, so it
 	// reports only that the tunnel opened. Threading the reason through here too
 	// means the same restructuring done for handleConnect; deliberately left for
 	// a follow-up rather than half-done, since this listener is off by default
@@ -230,15 +264,8 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	tl.open("")
 
 	if s.TLSBridge != nil {
-		// host is the policy authority: "<sniffed-SNI>:port" when a name was
-		// recovered, else dst ("<dial-IP>:port"). key is the SNI name or dial IP.
-		key := hostOnly(host)
-		var first []byte
-		if pc, ok := clientConn.(*peekedConn); ok {
-			first, _ = pc.Peek(5)
-		}
-		if !s.TLSBridge.Skip.Contains(key) {
-			v, reason := s.TLSBridge.Decision.Classify(key, portOf(dst), first)
+		if s.failClosed() || !s.TLSBridge.Skip.Contains(key) {
+			v, reason := s.TLSBridge.Decision.Classify(classifyKey, portOf(dst), first)
 			if v == tlsbridge.Terminate {
 				if upstream != nil {
 					_ = upstream.Close() // bridgeServe dials its own verified upstream; drop the pre-dial

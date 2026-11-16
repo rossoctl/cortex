@@ -1015,6 +1015,20 @@ func TestValidateReloadable_RefusesMemoryEdit(t *testing.T) {
 	}
 }
 
+// update.check_every is read once at boot. update.auto and update.wait reload.
+func TestValidateReloadable_UpdateCheckEveryNeedsRestart(t *testing.T) {
+	off := false
+	active := &config.Config{}
+	next := &config.Config{Update: &config.UpdateConfig{CheckEvery: "12h"}}
+	if err := validateReloadable(active, next); err == nil || !strings.Contains(err.Error(), "update.check_every") {
+		t.Fatalf("adding check_every: %v, want an update.check_every refusal", err)
+	}
+	next = &config.Config{Update: &config.UpdateConfig{Auto: &off, Wait: "1h"}}
+	if err := validateReloadable(active, next); err != nil {
+		t.Errorf("auto and wait edits were refused: %v", err)
+	}
+}
+
 // stats.* is boot-only: the stats listener binds stats.address once at startup.
 // Before the guard, a stats.address edit incremented ReloadsOK and /config served
 // the new address, while the listener stayed on the old one. agentop reads the
@@ -1296,5 +1310,27 @@ func TestValidateReloadable_PraxisNeedsRestart(t *testing.T) {
 	active = &config.Config{Praxis: &config.PraxisConfig{Enabled: true}}
 	if err := validateReloadable(active, next); err != nil {
 		t.Errorf("unchanged praxis block was refused: %v", err)
+	}
+}
+
+func TestValidateReloadable_PraxisPolicyPathNeedsRestart(t *testing.T) {
+	praxis := func(path string) *config.Config {
+		p := &config.PraxisConfig{Enabled: true}
+		if path != "" {
+			p.Policy = &config.PraxisPolicyConfig{ConfigPath: path}
+		}
+		return &config.Config{Praxis: p}
+	}
+	for _, tc := range []struct{ name, from, to string }{
+		{"add", "", "/a.yaml"},
+		{"change", "/a.yaml", "/b.yaml"},
+		{"remove", "/a.yaml", ""},
+	} {
+		if err := validateReloadable(praxis(tc.from), praxis(tc.to)); err == nil || !strings.Contains(err.Error(), "praxis.*") {
+			t.Errorf("%s: validateReloadable = %v, want an error naming praxis.*", tc.name, err)
+		}
+	}
+	if err := validateReloadable(praxis("/a.yaml"), praxis("/a.yaml")); err != nil {
+		t.Errorf("unchanged policy was refused: %v", err)
 	}
 }

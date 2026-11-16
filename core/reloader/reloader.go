@@ -578,6 +578,13 @@ func (r *Reloader) hash(data []byte) string {
 // validateReloadable returns an error when a newly-loaded config
 // differs from the active one on a field that cannot be reloaded
 // under the running listeners.
+func updateCheckEvery(c *config.Config) string {
+	if c.Update == nil {
+		return ""
+	}
+	return c.Update.CheckEvery
+}
+
 func validateReloadable(active, next *config.Config) error {
 	if active == nil {
 		return nil // first load
@@ -655,6 +662,11 @@ func validateReloadable(active, next *config.Config) error {
 	// nothing listens, and agentop reads that address from the file and probes it.
 	if !reflect.DeepEqual(active.Stats, next.Stats) {
 		diffs = append(diffs, "stats.*")
+	}
+	// update.check_every too: the update trigger reads it once at boot. update.auto
+	// and update.wait reload, because agentop reads them on each run.
+	if updateCheckEvery(active) != updateCheckEvery(next) {
+		diffs = append(diffs, "update.check_every")
 	}
 	// praxis.* too: praxis mode decides at boot which listeners and routes exist.
 	if !reflect.DeepEqual(active.Praxis, next.Praxis) {

@@ -169,7 +169,7 @@ func (s *Server) serveResponsesWebSocket(w http.ResponseWriter, r *http.Request,
 		}
 		w.WriteHeader(resp.StatusCode)
 		n, _ := io.Copy(w, io.LimitReader(resp.Body, maxBodySize))
-		pctx.ResponseBytes = n
+		atomic.StoreInt64(&pctx.ResponseBytes, n)
 		pctx.StatusCode = resp.StatusCode
 		s.recordWebSocketRefusal(pctx, tl, sid, chain, resp.StatusCode, nil)
 		return
@@ -337,6 +337,8 @@ type wsTurn struct {
 	// prewarm is a generate:false response.create: run through the request phase, not
 	// recorded, and its answer not parsed.
 	prewarm bool
+	// untrack drops the turn's live byte count from the store, once its relay ends.
+	untrack func()
 }
 
 func (ws *wsSocket) run() {
@@ -651,6 +653,10 @@ func (ws *wsSocket) clientMessage(payload []byte) (replace []byte, refuse bool) 
 			pctx.ResponseCapture = &pipeline.ResponseCapture{Status: http.StatusOK}
 		}
 		ws.s.Sessions.AppendCapture(ws.sid, ws.turnRequestEvent(pctx), c)
+		// The Timeline reads the live count to estimate the tokens of an open turn (#1861).
+		if pctx.Extensions.Inference != nil {
+			t.untrack = ws.s.Sessions.TrackStream(pctx.RequestID(), &pctx.ResponseBytes)
+		}
 	}
 	ws.turnMu.Lock()
 	ws.turns = append(ws.turns, t)
@@ -725,7 +731,7 @@ func (ws *wsSocket) serverMessage(payload []byte) {
 	// turning a turn the client received into a denial.
 	t.pctx.MarkResponseDelivered()
 	t.p.RunResponseFrame(ws.ctx(), t.pctx, payload, false)
-	t.pctx.ResponseBytes += int64(len(payload))
+	atomic.AddInt64(&t.pctx.ResponseBytes, int64(len(payload)))
 	captureMessage(t.pctx, payload)
 	// The three events inference-parser reads usage and the finish reason from; each
 	// ends a response, as response.completed ends Codex's own read loop.
@@ -759,6 +765,9 @@ func (ws *wsSocket) popTurn(t *wsTurn) bool {
 // row, and the Finisher dispatch — the three things handleStreamingResponse's deferred
 // block does at the end of an SSE stream, in the same order.
 func (ws *wsSocket) endTurn(t *wsTurn, status int, fail *pipeline.EventError) {
+	if t.untrack != nil {
+		defer t.untrack()
+	}
 	finalCtx, cancelFinal := httpx.TeardownContext(ws.ctx())
 	defer cancelFinal()
 	t.pctx.MarkResponseDelivered()

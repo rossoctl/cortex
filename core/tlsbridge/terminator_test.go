@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -25,7 +26,7 @@ func TestTerminator_AgentTrustingCAHandshakes(t *testing.T) {
 
 	errc := make(chan error, 1)
 	go func() {
-		tconn, err := term.Terminate(c2, "api.example.com")
+		tconn, err := term.Terminate(c2, "api.example.com", false)
 		if err != nil {
 			errc <- err
 			return
@@ -76,7 +77,7 @@ func TestServeConn_HTTP11KeepAlive(t *testing.T) {
 
 	// Server side: terminate, then serve with keep-alive.
 	go func() {
-		tconn, err := term.Terminate(c2, "api.example.com")
+		tconn, err := term.Terminate(c2, "api.example.com", false)
 		if err != nil {
 			return
 		}
@@ -145,7 +146,7 @@ func TestServeConnIdle_ClosesIdleConn(t *testing.T) {
 			served := make(chan struct{})
 			go func() {
 				defer close(served)
-				if tconn, err := term.Terminate(c2, "api.example.com"); err == nil {
+				if tconn, err := term.Terminate(c2, "api.example.com", false); err == nil {
 					if tc.header == 0 {
 						ServeConnIdle(tconn, ok, time.Millisecond)
 					} else {
@@ -181,5 +182,44 @@ func TestServeConnIdle_ClosesIdleConn(t *testing.T) {
 			<-drained
 			<-served
 		})
+	}
+}
+
+// With exactSNI, the SNI must name the host Terminate was given, as DNS compares
+// names; an absent SNI mints for that host.
+func TestTerminator_ExactSNI(t *testing.T) {
+	src, _ := NewEphemeralSource()
+	term := NewTerminator(NewMinter(src, MinterOpts{}))
+	for _, tc := range []struct {
+		sni     string
+		refused bool
+	}{
+		{"evil.test", true},
+		{"API.Example.com.", false},
+		{"", false},
+	} {
+		c1, c2 := net.Pipe()
+		errc := make(chan error, 1)
+		go func() {
+			tconn, err := term.Terminate(c2, "api.example.com", true)
+			if err == nil {
+				_ = tconn.Close()
+			}
+			_ = c2.Close()
+			errc <- err
+		}()
+		client := tls.Client(c1, &tls.Config{ServerName: tc.sni, InsecureSkipVerify: true})
+		cerr := client.Handshake()
+		_ = c1.Close()
+		serr := <-errc
+		if tc.refused {
+			if cerr == nil || !errors.Is(serr, ErrSNIMismatch) {
+				t.Errorf("SNI %q: client err %v, server err %v, want a refusal with ErrSNIMismatch", tc.sni, cerr, serr)
+			}
+			continue
+		}
+		if cerr != nil || serr != nil {
+			t.Errorf("SNI %q: client err %v, server err %v, want a handshake", tc.sni, cerr, serr)
+		}
 	}
 }

@@ -53,6 +53,10 @@ The config path comes from `-c <path>`, then `PRAXIS_CONFIG`, then
 writes `gateway.yaml` and starts the gateway (#1720). To run the gateway by
 hand, write the file yourself.
 
+A policy needs `praxis.policy.config_path` in `config.yaml`. The supervisor writes
+the `policy` filter into `gateway.yaml` from that path. See
+[policy in praxis mode](../docs/praxis-policy.md).
+
 `--exit-on-stdin-eof` makes the gateway exit when its stdin closes. The
 supervisor uses it. Without the flag, a gateway that you start with
 `</dev/null` keeps running.
@@ -85,7 +89,13 @@ gives the full text.
 3. The Go `praxis` config block has only `enabled` for now.
 4. Ingest counters are at `GET /v1/ingest/stats` on the session API, in praxis mode only.
 5. `X-Cortex-Attribution` is base64url JSON without padding. A missing or bad header gives the default attribution.
-6. Fields that the gateway cannot know in v1 stay unset (`identity`, `tls`, `invocations`, and others).
+6. Fields that the gateway cannot know in v1 stay unset (`identity`, `tls`, and
+   others). Exception: the response row carries one `invocations.outbound` entry
+   when the policy file declares a plugin of kind `cortex/recorder` with
+   capability `read_headers`. The entry is
+   `{plugin: "policy", action: "allow"|"deny", reason: <violation code>}`.
+   `reason` is absent on an allow. Without a policy, or without that
+   declaration, the row does not change.
 7. `client`, `subagent` and `parentSubagent` are ported to Rust, pinned by a Go golden table.
 8. `client_canceled` and `upstream_error` messages are Rust text. Only the message differs from Go.
 9. Ingestion keeps the request id of a kept request capture for up to 1 hour, until its response line arrives.
@@ -187,7 +197,9 @@ When the two differ, fix the Rust code. Do not change Go behavior or a Go
 golden file to suit Rust.
 
 A Go-only parser PR gets a report from this suite, not a block. The CI job
-blocks only when the PR changes `praxis/` or its workflow.
+blocks when the PR changes `praxis/`, `docs/praxis-policy.md`, its workflow, or the
+Go side of praxis mode (`cmd/cortex/praxis*.go`, `gateway.go`, `ingest.go`, and
+`core/listener/forwardproxy/hop*.go` and `egress*.go`).
 
 ## Go decode rules
 

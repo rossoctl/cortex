@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
 )
 
 func TestBinariesFreshInstallAndUndo(t *testing.T) {
@@ -41,6 +43,39 @@ func TestBinariesFreshInstallAndUndo(t *testing.T) {
 	}
 }
 
+// An agentop from before the cpex removal hands the default cortex to this setup
+// with no config check. The default cortex would not start on a config that names
+// cpex, so the plan refuses before anything is replaced or restarted.
+func TestBinariesRefuseTheDefaultCortexOverACpexConfig(t *testing.T) {
+	cpexCfg := "pipeline:\n  outbound:\n    plugins:\n      - name: cpex\n"
+	for _, c := range []struct {
+		name, installed, staged, config string
+		refuse                          bool
+	}{
+		{"cpex to default, config names cpex", "cortex (cpex) v1.0.0", "cortex v9.9.9", cpexCfg, true},
+		{"cpex to default, config does not", "cortex (cpex) v1.0.0", "cortex v9.9.9", "update:\n  auto: false\n", false},
+		{"default to default", "cortex v1.0.0", "cortex v9.9.9", cpexCfg, false},
+		{"cpex to cpex", "cortex (cpex) v1.0.0", "cortex (cpex) v9.9.9", cpexCfg, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env := newTestSetupEnv(t)
+			writeExe(t, filepath.Join(env.binDir, "agentop"), "#!/bin/sh\necho agentop v1.0.0\n")
+			writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\necho '"+c.installed+"'\n")
+			env.fromDir = stageDir(t, "#!/bin/sh\necho '"+c.staged+"'\n")
+			if err := os.MkdirAll(env.cortexDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(env.configPath(), []byte(c.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, prob := binariesStep{}.plan(env)
+			if got := prob != nil && strings.Contains(prob.reason, "docs/praxis-policy.md#move-from-the-cpex-plugin"); got != c.refuse {
+				t.Errorf("refused = %v (%v), want %v", got, prob, c.refuse)
+			}
+		})
+	}
+}
+
 func TestBinariesUpgradeKeepsThePreviousUntilUndoneOrDone(t *testing.T) {
 	env := newTestSetupEnv(t)
 	writeExe(t, filepath.Join(env.binDir, "agentop"), "#!/bin/sh\necho agentop v1.0.0\n")
@@ -70,16 +105,30 @@ func TestBinariesUpgradeKeepsThePreviousUntilUndoneOrDone(t *testing.T) {
 		t.Error("undo left the previous/ it made")
 	}
 
-	// Done: once every step has applied, onSuccess drops previous/.
+	// Done: once every step has applied, onSuccess drops previous/ and the update
+	// result, which names the binaries just replaced.
+	status := filepath.Join(env.cortexDir, updatestatus.FileName)
+	if err := os.MkdirAll(env.cortexDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(status, []byte(`{"installed":"v1.0.0"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	env.onSuccess = nil
 	if _, _, err := (binariesStep{}).apply(env, nil); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(status); err != nil {
+		t.Error("apply removed the update result before setup succeeded")
 	}
 	for _, f := range env.onSuccess {
 		f()
 	}
 	if _, err := os.Stat(env.previousDir()); err == nil {
 		t.Error("onSuccess left previous/")
+	}
+	if _, err := os.Stat(status); err == nil {
+		t.Error("onSuccess left the update result that names the old binaries")
 	}
 }
 

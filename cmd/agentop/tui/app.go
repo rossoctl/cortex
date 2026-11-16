@@ -479,6 +479,12 @@ type model struct {
 	// version is the build agentop was started as, shown after its name on every title bar.
 	// Empty renders the bare name, which is what tests construct.
 	version string
+	// updateFile is ~/.cortex/update.json. Empty shows no update notice.
+	updateFile string
+	// serviceInstall is true when the laptop service unit exists.
+	serviceInstall bool
+	// updateNote is the update notice after the build on the title bar.
+	updateNote string
 	// lastHarvest is when the most recent harvest was STARTED. Read by TWO callers: the sessions
 	// pane's backoff gate, which asks whether untitledBackoff has elapsed since then, and the
 	// timeline pane's gate for unlabeled subagents (timelineLabelHarvestEvery). The picker
@@ -1690,6 +1696,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.fetchUsage(), usageTick(m.usage.tickGen))
 
 	case refreshTickMsg:
+		// On each tick, not on reconnect: the updater writes the file after the
+		// restarted proxy serves, so a reconnect usually reads the old result.
+		m.readUpdateNotice()
 		// ARRIVING AT THE PICKER ENDS ITS ONE-HARVEST-PER-VISIT BUDGET. Detected here, on the
 		// edge, so the two dozen places that assign m.pane do not each have to remember to clear
 		// it — and so one added later cannot quietly skip the harvest by inheriting a set flag.
@@ -2823,10 +2832,14 @@ func (m *model) paneView() string {
 // is how a report about this TUI usually arrives, and the build is the first thing worth
 // knowing about it.
 func (m *model) appName() string {
-	if m.version == "" {
-		return "agentop"
+	name := "agentop"
+	if m.version != "" {
+		name += " " + m.version
 	}
-	return "agentop " + m.version
+	if m.updateNote != "" {
+		name += " " + m.updateNote
+	}
+	return name
 }
 
 // sessionHeader renders a session-scoped title bar: "agentop · <label>" plus an optional
@@ -2941,6 +2954,10 @@ type RunOptions struct {
 	Harvest HarvestFunc
 	// Version names this build on the title bar. Empty shows the name alone.
 	Version string
+	// UpdateFile is ~/.cortex/update.json. Empty shows no update notice.
+	UpdateFile string
+	// ServiceInstall is true when the laptop service unit exists.
+	ServiceInstall bool
 }
 
 // Run starts the bubbletea program. See RunOptions for mode selection.
@@ -2963,6 +2980,9 @@ func Run(ctx context.Context, opts RunOptions) error {
 	m.save = opts.Save
 	m.harvest = opts.Harvest
 	m.version = opts.Version
+	m.updateFile = opts.UpdateFile
+	m.serviceInstall = opts.ServiceInstall
+	m.readUpdateNotice()
 	defer func() {
 		if m.activePF != nil {
 			_ = m.activePF.Close()

@@ -219,8 +219,9 @@ func (w *segmentWriter) info() SegmentInfo {
 }
 
 // syncDir fsyncs a directory, so a file just created in it survives a crash under its name.
+// openDir opens it the way the platform can flush it (syncdir_windows.go).
 func syncDir(dir string) error {
-	d, err := os.Open(dir)
+	d, err := openDir(dir)
 	if err != nil {
 		return err
 	}

@@ -147,10 +147,15 @@ const (
 	TunnelPassthroughUnknown    = model.TunnelPassthroughUnknown
 	TunnelWebSocket             = model.TunnelWebSocket
 	TunnelDestPrivate           = model.TunnelDestPrivate
+	TunnelSNIMismatch           = model.TunnelSNIMismatch
+	TunnelRefusedNonTLS         = model.TunnelRefusedNonTLS
 	ErrorKindUpgradeDeclined    = model.ErrorKindUpgradeDeclined
 	ErrorKindTurnInterrupted    = model.ErrorKindTurnInterrupted
 	ErrorKindDestinationPrivate = model.ErrorKindDestinationPrivate
 	ErrorKindGatewayUnavailable = model.ErrorKindGatewayUnavailable
+	ErrorKindUpstreamUnverified = model.ErrorKindUpstreamUnverified
+	ErrorKindMisdirectedRequest = model.ErrorKindMisdirectedRequest
+	ErrorKindNotTLS             = model.ErrorKindNotTLS
 	SessionSourceHeader         = model.SessionSourceHeader
 	SessionSourceProcess        = model.SessionSourceProcess
 	SessionSourcePending        = model.SessionSourcePending

@@ -148,7 +148,7 @@ func (s *Server) refuseMisdirected(w http.ResponseWriter, r *http.Request, pctx 
 	}
 	s.recordOutboundRequestEvent(tl, pctx, sid)
 	s.recordOutboundResponseEvent(pctx, http.StatusMisdirectedRequest, &pipeline.EventError{
-		Kind:    "misdirected_request",
+		Kind:    pipeline.ErrorKindMisdirectedRequest,
 		Message: fmt.Sprintf("Host %q does not name the tunnel's destination %s", claimed, r.URL.Host),
 	})
 }
@@ -469,6 +469,27 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Fail-closed verifies an intercepted origin before the 200, so one that does
+	// not verify is answered 502 upstream_unverified and no tunnel opens. A failed
+	// pre-dial skips this, as it skips bridgeServe's probe.
+	verified := false
+	if s.failClosed() && dialFail == nil && s.TLSBridge.Decision.Intercepts(hostOnly(r.Host), portOf(r.Host)) {
+		if verr := s.verifyUpstream(r.Host); verr != nil {
+			if upstream != nil {
+				_ = upstream.Close()
+			}
+			host := hostOnly(r.Host)
+			slog.Warn("tls-bridge refused (fail_closed)", "host", pipeline.SanitizeLogValue(host),
+				"reason", pipeline.TunnelOriginUnverified, "error", verr)
+			httpx.WriteRejection(w, pipeline.MocaRefusal(http.StatusBadGateway, pipeline.ErrorKindUpstreamUnverified, host))
+			pctx.StatusCode = http.StatusBadGateway
+			tl.open(pipeline.TunnelOriginUnverified)
+			tl.close(http.StatusBadGateway, &pipeline.EventError{Kind: pipeline.ErrorKindUpstreamUnverified, Message: verr.Error()}, 0, 0)
+			return
+		}
+		verified = true
+	}
+
 	clientConn, _, err := w.(http.Hijacker).Hijack()
 	if err != nil {
 		if upstream != nil {
@@ -518,12 +539,20 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		key := hostOnly(r.Host)
 		var bridge bool
 		reason, bridge = s.bridgeVerdict(r, tl, key, first)
+		if reason == pipeline.TunnelRefusedNonTLS {
+			if upstream != nil {
+				_ = upstream.Close()
+			}
+			s.refuseFailClosed(clientConn, key, tl, reason, http.StatusOK, pipeline.ErrorKindNotTLS,
+				errors.New("not a TLS handshake"))
+			return
+		}
 		if bridge {
 			s.noteBridgeAttempt()
 			if upstream != nil {
 				_ = upstream.Close() // bridgeServe dials its own verified upstream
 			}
-			if s.bridgeServe(clientConn, authority, key, tl, dialFail != nil) {
+			if s.bridgeServe(clientConn, authority, key, tl, dialFail != nil || verified) {
 				return
 			}
 			// fell open → re-dial for the tunnel. That tunnel is opaque, so it

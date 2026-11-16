@@ -49,6 +49,8 @@ import (
 	"github.com/rossoctl/cortex/core/reloader"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/session/archive"
+	"github.com/rossoctl/cortex/core/session/importer"
+	claudeimport "github.com/rossoctl/cortex/core/session/importer/claude"
 	"github.com/rossoctl/cortex/core/sessionapi"
 	"github.com/rossoctl/cortex/core/spiffe"
 	"github.com/rossoctl/cortex/core/tlsbridge"
@@ -673,6 +675,13 @@ func main() {
 	if localInstall && cfg.Pricing.BundledEnabled() {
 		go runPriceList(ctx, live)
 	}
+	// Not behind update.auto: agentop update --auto reads it itself.
+	if localInstall {
+		if dir, err := defaultCortexDir(); err == nil {
+			_, every, _ := cfg.Update.Times() // Validate refused a bad value
+			go runUpdateTrigger(ctx, &updateTrigger{file: filepath.Join(dir, updateStatusFile), every: every, now: time.Now, start: startUpdaterUnit})
+		}
+	}
 
 	var sessions *session.Store
 	var usageAgg *usage.Aggregator
@@ -785,7 +794,11 @@ func main() {
 
 		// The session archive is the store's third Recorder: it persists every event so
 		// sessions survive a restart and the store's eviction. See core/session/archive.
-		sessArchive = openSessionArchive(cfg, *configPath, sessions)
+		ledgerDays := 0
+		if costLedger != nil {
+			ledgerDays = costLedger.RetentionDays()
+		}
+		sessArchive = openSessionArchive(cfg, *configPath, sessions, ledgerDays)
 		if sessArchive != nil {
 			history.open(sessArchive)
 			// Started before any listener, finished beside them: see replayUsage.
@@ -985,7 +998,7 @@ func main() {
 		// matching presents as "the bridge broke my tool", with nothing tying the
 		// symptom back to the typo.
 		decision, derr := tlsbridge.NewDecision(tlsbridge.DecisionOpts{
-			Ports: ports, SkipHosts: cfg.TLSBridge.PassthroughHosts,
+			Ports: ports, SkipHosts: cfg.TLSBridge.PassthroughHosts, FailClosed: cfg.TLSBridge.FailClosed,
 		})
 		if derr != nil {
 			fatalf("tls-bridge: %v", derr)
@@ -1000,8 +1013,10 @@ func main() {
 			Upstream: up,
 			CAPEM:    src.CACertPEM(),
 			CAFile:   caTrustPath(cfg.TLSBridge.CADir),
+
+			FailClosed: cfg.TLSBridge.FailClosed,
 		}
-		slog.Info("tls-bridge enabled", "ca_dir", cfg.TLSBridge.CADir)
+		slog.Info("tls-bridge enabled", "ca_dir", cfg.TLSBridge.CADir, "fail_closed", cfg.TLSBridge.FailClosed)
 	}
 
 	// Proxy-sidecar: reverse proxy (inbound) and/or forward proxy (outbound),
@@ -1262,6 +1277,9 @@ func main() {
 				sessionapi.WithClearAllowed(cfg.Listener.BindLoopbackOnly),
 				// Reads hold raw prompts: the same browser defenses as the erase, on every route.
 				sessionapi.WithLoopbackOnly(cfg.Listener.BindLoopbackOnly),
+				// POST /v1/import, only with the archive on and loopback-only; else no route.
+				sessionapi.WithImport(sessionapi.Import{Rates: pricingRegistry,
+					Sources: []importer.Source{claudeimport.New("")}}),
 			}, ingestOpts...)...,
 		)
 		sessionLn := listeners.take("session-api")

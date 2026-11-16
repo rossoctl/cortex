@@ -31,6 +31,7 @@ through DNS rebinding. The stats server applies the same check.
 | `GET /v1/pipeline` | `application/json` | Active pipeline composition, per plugin: name, direction, position, capabilities, runtime `config`. `onError` is sent only when it is not the default — in practice `observe`, since an `on_error: off` plugin is not built. A plugin under observe runs and records, but its rejections, body writes and redirects are dropped (header writes still apply), so its `config` says what it would do. agentop renders this as the Pipeline pane (`P`) |
 | `GET /v1/plugins` | `application/json` | Catalog of every registered plugin, active or not. 404 when the binary built its session API without `WithCatalog`. agentop renders this as the Catalog pane (`C`) |
 | `GET /v1/usage` | `application/json` | Windowed usage aggregation — the aggregate behind `agentop cost`; parameters and semantics in [`pricing.md`](pricing.md#reading-usage-over-http) |
+| `POST /v1/import` | `application/json` | Laptop only: import agent transcripts from disk into the archive and the cost ledger (see below). 404 otherwise |
 | `POST /v1/ingest` | NDJSON in, `204` out | Praxis mode only: rows that `cortex-gateway` records (see below). 404 otherwise |
 | `GET /v1/ingest/stats` | `application/json` | Praxis mode only: the ingestion counters (see below). 404 otherwise |
 | `GET /healthz` | text | Liveness probe |
@@ -81,6 +82,10 @@ knowing by name:
   carried, most recent first, at most 8. Folded at append time, and continued
   from the archive's fold like the other figures. Absent on `default` and on
   pending buckets.
+- **`source`** is `"imported:<agent>"` while every event of the session is
+  imported (see [`POST /v1/import`](#post-v1import--transcript-import-laptop-only)).
+  It is absent when the session has one or more live events. So a live request
+  for an imported session gives it a live event, and the mark goes.
 - **Pending buckets.** A coding agent's calls before its process names a session
   are recorded under `pending:<agent>@<pid>.<start>` (or `pending:<agent>` when
   the process could not be looked up), carrying their `proc`. Nothing renames a
@@ -173,6 +178,13 @@ value is ignored, so an older proxy answers with the event alone.
 
 ## `GET /v1/sessions/{id}/timeline` — agents, tools and hosts on one time axis
 
+**This is the endpoint for per-tool and per-call timings, and it carries no prompts.**
+Each `tools[]` entry is a named span with `start`, `end` and a `preview` of the
+tool's own argument; each `turns[]` entry is one model call. Both are derived from
+the events, so neither needs the message bodies — reach for this rather than a
+`cortex-session-dump --full`, which does carry them. Worked queries are under
+[Reading timings out](#reading-timings-out) below.
+
 The session's history as spans, for agentop's Timeline pane. Computed from the
 whole session: memory first, then the archive behind it (a 6,000-event session
 takes a few milliseconds; reading one that is only on disk takes over a second).
@@ -189,13 +201,34 @@ the whole list.
  "agents":  [{"id": "main", "label": "main agent"},
              {"id": "a1bf9707ee0e71012", "parent": "main", "label": "Survey the code",
               "type": "Explore", "spawnTool": "toolu_…", "spawnedAt": "…", "returnedAt": "…"}],
- "turns":   [{"agent": "main", "start": "…", "end": "…", "finish": "tool_use", "seq": 12}],
+ "turns":   [{"agent": "main", "start": "…", "end": "…", "finish": "tool_use", "seq": 12,
+              "outputTokens": 850}],
  "jobs":    [{"agent": "main", "id": "bk42", "toolUseId": "toolu_…", "start": "…", "end": "…", "seq": 40}],
  "tools":   [{"agent": "main", "id": "toolu_…", "name": "Bash", "start": "…", "end": "…",
               "preview": "go test ./...", "seq": 13}],
  "returns": [{"agent": "a1bf9707ee0e71012", "into": "main", "at": "…", "seq": 90}],
  "hosts":   [{"host": "api.github.com", "kind": "tunnel", "start": "…", "end": "…", "status": 200, "seq": 7}]}
 ```
+
+**`seq` does not mean the same event on every span, which matters when joining.**
+A span's `seq` is the event it was derived FROM, and that is not the same end of
+the exchange in each case:
+
+| Span | Its `seq` is | So to join it to an event |
+|---|---|---|
+| `turns[]` | the **request** event | token counts are on the *response* — pair by `requestId`, not by this `seq` |
+| `tools[]` | the **response** that asked for the tool | joins directly to that response's `inference` |
+| `jobs[]`, `returns[]` | the **request** that carried the result | as `turns[]` |
+| `hosts[]` | the event the row came from | — |
+
+Joining `turns[].seq` to a response event therefore matches nothing and yields an
+empty result rather than an error. Use `tools[].seq` when you want tokens beside a
+span, or pair turns by `requestId`.
+
+**The two endpoints read to different depths.** This one reads up to 50,000 events;
+`GET /v1/sessions/{id}` caps `?limit` at 2,000. So on a session larger than that,
+a join against a single events page silently covers only the newest 2,000 events —
+page with `?before=` to the same depth, or expect spans with no matching event.
 
 **Turns and tools are attributed to any known client** (Claude Code, Bob, Codex,
 OpenCode, Pi — the canonical name parsed from the User-Agent); each gets a
@@ -223,6 +256,15 @@ has no spawn link: nothing on the wire names the call that started it.
   `router` call answers with a model name only. `resent` marks
   a call that sent its agent's previous call's conversation again unchanged: a
   retry.
+  `outputTokens` is the output token count of the finished response
+  (`inference.outputTokens` of the response row). `liveTokens` is on an open
+  turn only. It estimates the tokens that the response sent so far: the bytes
+  the forward proxy read, divided by the session's bytes per output token. The
+  ratio comes from the session's finished turns that streamed for 5 s or more
+  (`durationMs` − `ttfbMs` of the response row). A session with no such turn has
+  no `liveTokens`. The envoy-sidecar (ext_proc) and the reverse proxy do not
+  give `liveTokens`. `liveTokens` is calculated on each read. It is not part of
+  the cached timeline.
 - A **tool** runs from the response that requested it to the agent's first
   request carrying its result (`inference.toolResults[].toolUseId`). A tool
   Claude Code started while the response was still streaming can have its
@@ -321,6 +363,12 @@ the server must have been built with clearing allowed
 `{"error": ...}`. Each guard is pinned by its own test in
 `core/sessionapi/clear_test.go`. agentop's `X` drives it.
 
+An erased session comes back on the next `agentop import` while its transcript
+is still on disk. It comes back as an imported session. The erase keeps a
+forget record of the session, so the import does not count its cost again.
+This applies to both `DELETE` routes. See
+[`POST /v1/import`](#post-v1import--transcript-import-laptop-only).
+
 ## `DELETE /v1/sessions/{id}` — erase one session
 
 Erases one session: the store's entry and, where the archive runs, its files —
@@ -332,6 +380,117 @@ regardless). The cost ledger, usage totals and inference-router pins are
 kept. An agent still using the session brings it back with its next request.
 agentop's `x` drives it, one request per session for an agent-wide erase —
 see [`laptop-service.md`](laptop-service.md) for the user-facing story.
+The next `agentop import` brings an erased session back from its transcript, as
+an imported session. Its cost is not counted again: the erase kept the ledger
+rows, and a forget record tells the import which turns those rows hold.
+
+## `POST /v1/import` — transcript import (laptop only)
+
+Reads the transcripts that an agent keeps on disk, and writes each session into
+the session archive and the cost ledger. The sessions then show in agentop as
+ordinary sessions with an imported mark. `agentop import` drives this route
+(see [`cmd/agentop/README.md`](../cmd/agentop/README.md#importing-agent-history-agentop-import)).
+
+**The route exists only when the archive is on and the session API is
+loopback-only** (`listener.bind_loopback_only`, as on a local install).
+Otherwise the answer is 404. The route reads only the agent's own store. It
+does not accept a path, events or files from the caller.
+
+The body is JSON, at most 4 KiB:
+
+```json
+{"agent": "claude-code", "since": "2026-10-01T00:00:00-04:00", "dryRun": true}
+```
+
+- `agent` selects one source. Empty selects every source. An unknown agent is a
+  400 that names the supported agents.
+- `since` (RFC 3339) skips a transcript file that was last changed before it.
+- `dryRun` counts what an import would do and writes nothing.
+
+Bad JSON is a 400. **One import runs at a time:** a second request while one
+runs gets 409, and the first one continues. After these checks the route sends
+the 200 header at once, and then does the work. So an error of one agent is in
+the body, not in the status:
+
+```json
+{"dryRun": true, "agents": [{"agent": "claude-code", "imported": 12, "replaced": 3,
+  "skippedLive": 40, "skippedCurrent": 7, "skippedLines": 2, "skippedExpired": 1,
+  "unreadable": 1, "notImported": 5, "stopped": "archive full", "error": "…"}]}
+```
+
+`skippedExpired`, `unreadable`, `notImported`, `stopped` and `error` are sent
+only when they are set.
+
+**Live sessions and re-import.** The import applies these rules to each
+session in order:
+
+1. A session with live events is skipped and never changed (`skippedLive`).
+   Live events are in memory, or in the archive without the imported mark.
+2. An imported copy that is as new as the transcript is skipped
+   (`skippedCurrent`).
+3. A newer transcript replaces the imported copy (`replaced`). Only its new
+   turns go to the cost ledger.
+4. A session that the archive does not hold is imported (`imported`).
+
+Rule 4 also applies to an erased session, and to a session that the day limit
+or the size limit removed. The next import writes it again in full, as an
+imported session. The ledger kept the rows of the removed session, so the
+import must not count them again. The archive keeps a **forget record** for
+this:
+
+- When the archive removes a session (`x`, a clear `X`,
+  `session.archive.retention_days` or `session.archive.max_bytes`), it adds one
+  line to `forgotten.jsonl` in the archive `dir`, next to `data/`:
+  `{"id":"<session id>","from":<unix ms>,"to":<unix ms>}`. `from` is the time
+  the archive first wrote the session, and `to` is its last request.
+- It writes a line only for a session with tokens or cost, and only when the
+  cost ledger is on. A clear does not remove `forgotten.jsonl`.
+- The import does not send a turn inside that span to the cost ledger. A turn
+  in the minute before `from` counts as inside the span. It sends a turn after
+  `to`. It sends a turn before the span only when no ledger row of the same
+  project is near it that the proxy wrote live or that an earlier import
+  wrote: a fork copies its parent's turns, and the ledger can already hold
+  them for the parent.
+- A replace by an import also adds a line for the old copy, before it deletes
+  that copy. If the write of the new copy fails, the next import uses the line.
+- A line is kept until its `to` is older than `cost_ledger.retention_days`
+  plus 1 day. After that the ledger has no rows of the session to protect.
+
+A new session has no record. A session that was removed before Cortex kept
+forget records has no record too. For such a session, the import does not count
+any turn that is near a live ledger row, or near a row that an earlier import
+wrote. The rows have no session id, so this check can also skip a turn when
+only another session of the same project made a row in that minute.
+
+**What an import writes:**
+
+- Each imported event has `source: "imported:<agent>"`. A live event has no
+  `source`. The session summary has the mark only while all its events are
+  imported.
+- The `cost` record of an imported turn has `source: "transcript"`. Cortex
+  prices it at today's rates. A turn with no usage has no `cost` record.
+- The ledger row of an imported turn has `source: "transcript"`. A live row has
+  no `source`.
+- A turn before the ledger's retention cutoff goes to the archive only.
+- An imported segment is kept for `retention_days` from its newest event. A
+  session older than that is skipped (`skippedExpired`).
+- The import stops before a session that would take the archive above 90% of
+  `max_bytes`. Then `stopped` is `"archive full"`, and `notImported` counts the
+  sessions left.
+- One line that the source does not recognize, in a session that the import
+  parses, is skipped and counted (`skippedLines`). It does not stop the import.
+- A session whose main transcript cannot be read is skipped and counted
+  (`unreadable`). The proxy logs the path and the error.
+- LAST 1H and the usage pane's hour windows show imported turns only after the
+  next proxy restart. The import does not feed them.
+
+**Sources.** Only Claude Code (`claude-code`) is supported now. #1872 to #1875
+add the other agents. The Claude Code source reads
+`~/.claude/projects/<project>/<uuid>.jsonl`, or the same path under
+`CLAUDE_CONFIG_DIR` when that variable is set. Each event has the
+`claude-code` client and the project of the transcript's working directory.
+A `<synthetic>` assistant line is not a turn: Claude Code writes it itself, for
+an API error or "No response requested.".
 
 ## `POST /v1/ingest` — rows from cortex-gateway (praxis mode)
 
@@ -450,6 +609,155 @@ curl -N http://localhost:9094/v1/events
 curl -N "http://localhost:9094/v1/events?session=$SID"
 ```
 
+## Reading timings out
+
+Per-tool and per-call latency **without downloading prompts**. All of this is a local
+install on `:47601`; in a cluster use the port-forward above. Queries below are against a
+real 2,911-event session.
+
+**WHAT EACH QUERY DOWNLOADS**, because "no prompts" is a property of the query, not of the
+API:
+
+| Query | Endpoint | Carries |
+|---|---|---|
+| per-tool latency, Bash previews | `/timeline` | spans only — no message bodies, but `preview` IS tool-argument text (a shell line, a path, a URL) |
+| per-call tokens, models | `?view=summary` | no `messages`, `tools`, `toolCalls` or `toolResults` — **but `view=summary` KEEPS `inference.completion` and `a2a.parts`**, because the `/` search reads them, so every model reply is in the response |
+| untruncated Bash command | full event view | **everything**, prompts included; `jq` discards them after the download |
+
+So `/timeline` is the only one of the three that never transfers a message body. It is not
+prompt-free: its `preview` fields copy tool-argument text, and a search query or a task
+description can repeat prompt text verbatim. For the other two, the body reaches your shell
+and `jq` filters it — fine on a laptop, worth knowing before piping it anywhere.
+
+**Pick a session.** `?archived=true` is the important part — without it you see only
+what is still in memory, which on a laptop is a fraction of the history.
+
+```sh
+API=http://localhost:47601
+curl -s "$API/v1/sessions?archived=true" | jq -r '
+  (["EVENTS","AGENT","SESSION"]|@tsv),
+  ([.sessions[] | select(.id | startswith("pending:") | not)]
+   | sort_by(-(.eventCount//0)) | .[]
+   | [(.eventCount//0), (.agent//"-"), .id] | @tsv)' | column -t
+```
+
+Skip the `pending:` buckets: those are an agent's calls from before its process named
+a session, which are real traffic but not a session to analyse.
+
+Copy one id into `SID` — every query below uses it:
+
+```sh
+SID=<paste-a-session-id>
+# or take the largest:
+SID=$(curl -s "$API/v1/sessions?archived=true" | jq -r '
+  [.sessions[] | select(.id | startswith("pending:") | not)]
+  | sort_by(-(.eventCount//0)) | .[0].id')
+```
+
+**Per-tool latency.** `jq`'s `fromdateiso8601` cannot parse these timestamps — they carry
+fractional seconds *and* a numeric offset — so parse the parts. Dropping the fraction costs
+the sub-second resolution that separates `Edit` from `Read`; ignoring the offset makes any
+span that crosses a DST transition an hour out, so `ts` below subtracts it.
+
+```sh
+curl -s "$API/v1/sessions/$SID/timeline" | jq -r '
+  def ts: capture("^(?<b>[^.Z+]+)(\\.(?<f>[0-9]+))?(?<sign>[+-])(?<oh>[0-9]{2}):(?<om>[0-9]{2})$|^(?<bz>[^.Z]+)(\\.(?<fz>[0-9]+))?Z$")
+          | if .b then (.b+"Z"|fromdateiso8601) + (if .f then (".\(.f)"|tonumber) else 0 end)
+                       - (((.oh|tonumber)*3600 + (.om|tonumber)*60) * (if .sign=="-" then -1 else 1 end))
+            else (.bz+"Z"|fromdateiso8601) + (if .fz then (".\(.fz)"|tonumber) else 0 end) end;
+  def pct(a;p): (a|length) as $n | if $n==0 then null else a[(($n-1)*p)|round] end;
+  [.tools[] | select(.end != null and (.lost // false) == false)
+   | {name, ms: ((((.end|ts)-(.start|ts))*1000)|round), err: (.error//false)}]
+  | group_by(.name)
+  | map({name:.[0].name, n:length, ms:(map(.ms)|sort), errs:(map(select(.err))|length)})
+  | map({name,n,errs, p50:pct(.ms;0.5), p95:pct(.ms;0.95), total_s:((.ms|add)/1000|round)})
+  | sort_by(-.total_s)
+  | (["TOOL","N","ERRS","P50ms","P95ms","TOTALs"]|@tsv),
+    (.[]|[.name,.n,.errs,.p50,.p95,.total_s]|@tsv)' | column -t
+```
+
+```
+TOOL             N    ERRS  P50ms  P95ms   TOTALs
+Bash             452  9     487    65029   6260
+AskUserQuestion  7    0     37419  409509  703
+WebFetch         34   1     14448  26565   440
+WebSearch        12   0     15448  15458   206
+Edit             87   1     48     201     6
+Read             5    0     24     57      0
+```
+
+(An excerpt — the single-call tools are left out for width.)
+
+**TWO SPAN STATES TO FILTER, for different reasons.**
+
+- **No `end`** — still running. Not a zero: `ts` would run `capture` on `null` and the whole
+  query fails with `null (null) cannot be matched, as it is not a string`. Hence
+  `select(.end != null)`.
+- **`lost: true`** — never answered but provably stopped, and `end` is set EQUAL TO `start`
+  (`timeline.go`: "its End is its Start, so it draws as a tick rather than a bar"). This one
+  is the false zero, and it passes an `end != null` filter. Hence `(.lost // false) == false`.
+
+Drop the `lost` filter and a session with many unanswered calls reports a p50 near zero.
+
+**The command a Bash call ran.** `preview` is the tool's own argument (`command`,
+`file_path`, `url`, …), capped at 80 characters, and never message content:
+
+```sh
+curl -s "$API/v1/sessions/$SID/timeline" \
+  | jq -r '.tools[] | select(.name=="Bash") | "\(.seq)\t\(.preview)"' | column -t -s $'\t'
+```
+
+For the untruncated command, read it off the response event. Pull the `command` key
+specifically rather than dumping all arguments — `WebFetch` arguments carry a
+`prompt`, and `Agent`/`Task` carry subagent instructions:
+
+```sh
+curl -s "$API/v1/sessions/$SID?limit=2000" | jq -r '
+  .events[] | select(.phase=="response" and .inference.toolCalls != null)
+  | .inference.toolCalls[] | select(.name=="Bash")
+  | (try (.arguments | fromjson) catch {}) | select(.command) | .command'
+```
+
+**LLM latency and tokens per call.** `view=summary` keeps both — it drops message
+bodies, not measurements:
+
+```sh
+curl -s "$API/v1/sessions/$SID?limit=2000&view=summary" | jq -r '
+  (["SEQ","MODEL","MS","TTFB","INPUT","CACHE_R","CACHE_W","OUTPUT"]|@tsv),
+  (.events[] | select(.phase=="response" and .inference != null) | .inference as $i
+   | [.seq, ($i.model//"-"), (.durationMs//"-"), (.ttfbMs//"-"),
+      ($i.inputTokens//0), ($i.cacheReadTokens//0),
+      ($i.cacheWriteTokens//0), ($i.outputTokens//0)]|@tsv)' | column -t
+```
+
+Do **not** add `promptTokens` to the cache fields: it is a legacy aggregate already
+equal to `inputTokens + cacheReadTokens + cacheWriteTokens`, so summing it with the
+split double-counts every cached token. `reasoningTokens` is likewise a *subset* of
+`outputTokens`. See [Event schema](#event-schema).
+
+**Tool spans beside token counts.** Join on `tools[].seq`, which is the response seq
+(see the `seq` table under `/timeline`). Pass the JSON through files — `--argjson`
+puts it in argv and a large session exceeds the limit with
+`Argument list too long`:
+
+```sh
+D=$(mktemp -d)
+curl -s "$API/v1/sessions/$SID/timeline" -o "$D/tl.json"
+curl -s "$API/v1/sessions/$SID?limit=2000&view=summary" -o "$D/ev.json"
+jq -n --slurpfile tl "$D/tl.json" --slurpfile ev "$D/ev.json" -r '
+  ([$tl[0].tools[] | {seq, name}] | group_by(.seq)
+   | map({key:(.[0].seq|tostring), value:(map(.name)|join(","))}) | from_entries) as $tools
+  | (["SEQ","MS","INPUT","CACHE_R","OUTPUT","TOOLS_ASKED"]|@tsv),
+    ($ev[0].events[] | select(.phase=="response" and .inference != null) | .inference as $i
+     | [.seq, (.durationMs//"-"), ($i.inputTokens//0), ($i.cacheReadTokens//0),
+        ($i.outputTokens//0), ($tools[(.seq|tostring)] // "")]|@tsv)' | column -t
+rm -rf "$D"
+```
+
+On a session over 2,000 events the events side covers only the newest 2,000, so
+spans older than that have no token row. Page with `?before=` to the same depth when
+that matters.
+
 ## Schema version
 
 Each JSON response that carries events has one top-level `schemaVersion` field.
@@ -504,6 +812,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   into an id the archive already holds is refused (the session keeps its old
   id), because the two numberings would collide. A proxy that predates paging
   sends no `seq`, which is how a client tells it cannot page there.
+- `source` — `"imported:<agent>"` on an event that
+  [`POST /v1/import`](#post-v1import--transcript-import-laptop-only) wrote.
+  Absent on a live event. The proxy did not see an imported exchange, so such
+  an event has no `host` and no capture.
 - `a2a` / `mcp` / `inference` — protocol parser payloads (one at most).
 - `invocations` — per-plugin invocation records for every plugin that ran on
   the pipeline pass, structured `{inbound: [...], outbound: [...]}`. Each entry
@@ -788,6 +1100,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   egress guard's refusal: the close row carries 403 and
   `error.kind: "destination_private"`, and no tunnel was ever opened to the
   destination — the same refusal a plain request gets, one layer down.
+  Under `tls_bridge.fail_closed` three more refusals close a tunnel row:
+  `origin-unverified` with 502 and `error.kind: "upstream_unverified"` (also
+  for a probe timeout; `error.message` says which), `sni-mismatch` with 421
+  and `"misdirected_request"`, and `refused-non-tls` with 200 and `"not_tls"`.
 - `dialAddr` — present on a tunnel's open row when the egress guard is on:
   the address the guard checked and the proxy dialed, `"ip:port"`. Together
   with `host` it is the audit trail against DNS rebinding — "asked for the

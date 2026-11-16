@@ -58,6 +58,9 @@ type Timeline struct {
 	// scanned counts the message bytes searched for returns, so a test can pin that only
 	// messages new to an agent are read.
 	scanned int
+	// bytesPerToken converts an open stream's bytes to tokens for FillLive. It comes from the
+	// finished turns that streamed calibrateMinStream or longer. Zero when there is no such turn.
+	bytesPerToken float64
 }
 
 // Agent is one row of the agent tree.
@@ -89,6 +92,35 @@ type Turn struct {
 	// Model is the model the call asked for, so a client that runs several models side by
 	// side (Bob's premium-ide turns beside its security classifier) reads apart.
 	Model string `json:"model,omitempty"`
+	// OutputTokens is the number of tokens the response generated, as its usage reports it.
+	OutputTokens int `json:"outputTokens,omitempty"`
+	// LiveTokens is an estimate of the tokens an open response has streamed until now. Only
+	// FillLive sets it.
+	LiveTokens int `json:"liveTokens,omitempty"`
+
+	requestID string // pairs an open turn with its live stream in FillLive
+}
+
+// calibrateMinStream is the shortest stream time (Duration − Ttfb) of a turn that sets
+// bytesPerToken. In a shorter stream, the fixed bytes of the stream framing are too large a part.
+const calibrateMinStream = 5 * time.Second
+
+// FillLive sets LiveTokens on each open turn for which bytes gives the stream size. It uses the
+// bytes-per-token ratio of the long finished turns of the session. With no ratio, it does nothing.
+// It writes the turns, so a cache runs it on a copy whose Turns it owns.
+func (t *Timeline) FillLive(bytes func(requestID string) (int64, bool)) {
+	if t.bytesPerToken == 0 {
+		return
+	}
+	for i := range t.Turns {
+		tu := &t.Turns[i]
+		if tu.End != nil || tu.Lost {
+			continue
+		}
+		if b, ok := bytes(tu.requestID); ok {
+			tu.LiveTokens = int(float64(b) / t.bytesPerToken)
+		}
+	}
 }
 
 // Tool is one tool call: from the response that requested it to the agent's first request

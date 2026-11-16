@@ -408,10 +408,10 @@ var paneKeys = map[paneID]keyGroup{
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
 			// Said here too because the footer only describes the row under the cursor.
-			{"↵", "scope to this agent or project and list its sessions; All agents clears"},
+			{"↵", "open/close a row's projects; on a sub-row, scope and list its sessions"},
 			// One line each, at 76 columns here and 90 in the note: Other under a project is
 			// where spend from before the upgrade lands, so a month view can be mostly Other.
-			{"space", "open projects; COST adds up, SESSIONS overlap, pre-upgrade spend is in Other"},
+			{"space", "close from a sub-row; COST adds up, SESSIONS overlap, pre-upgrade is Other"},
 			{"S", "choose the inference server this agent's new sessions use"},
 			{"w", "cycle the window: the rows and the breakdown together"},
 			{"x", "erase this agent's sessions (asks first); on All agents, everything"},

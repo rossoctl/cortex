@@ -105,10 +105,10 @@ func TestOverflow_KeepsTheUnit(t *testing.T) {
 	if r.Currency != "credits" {
 		t.Errorf("Currency = %q after overflow, want credits", r.Currency)
 	}
-	if r.key() != overflowKeyFor("credits") {
-		t.Errorf("overflow row key = %+v, want %+v", r.key(), overflowKeyFor("credits"))
+	if r.key() != overflowKeyFor("", "credits") {
+		t.Errorf("overflow row key = %+v, want %+v", r.key(), overflowKeyFor("", "credits"))
 	}
-	if overflowKeyFor("credits") == overflowKeyFor("usd") {
+	if overflowKeyFor("", "credits") == overflowKeyFor("", "usd") {
 		t.Error("two units share one overflow key, so their figures would be summed into one row")
 	}
 }

@@ -178,6 +178,7 @@ func TestPrior_ARenameLeftUnderTheOldIdIsNotCountedTwice(t *testing.T) {
 			}
 		}},
 		{"the target's session.json cannot be written", func(t *testing.T, a *Archive, st *session.Store) {
+			skipWithoutUnixModes(t)
 			if os.Geteuid() == 0 {
 				t.Skip("root writes through a read-only directory")
 			}

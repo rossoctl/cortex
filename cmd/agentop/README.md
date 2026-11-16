@@ -23,6 +23,21 @@ go build .
 
 Either way you get a single binary (~10 MB; the linux build is fully static).
 
+## Updating (`agentop update`)
+
+`agentop update` installs the newest release at once.
+[Automatic updates](../../docs/laptop-service.md#automatic-updates) tells how a service
+install updates itself.
+
+`--auto` is what the updater runs. It implies `--yes` and never asks.
+
+The title bar shows one of these notices. When more than one applies, it shows the first:
+
+1. `· updated to vX.Y.Z, restart agentop`
+2. `· update to vX.Y.Z failed, see agentop doctor`
+3. `· vX.Y.Z available`
+4. `· no update check since <date>`: service installs only, after 72 hours with no check.
+
 ## Run
 
 `agentop observe` discovers AuthBridge agents in your current `kubectl`
@@ -762,6 +777,55 @@ rather than refused, so set its context length above the agent's prompts: Claude
 Code's opening turn can pass 64k tokens, Bob's reach about 21k. On a Mac with
 less than 64 GB, see [Choose a model](../../docs/laptop-local-model.md#choose-a-model).
 
+## Importing agent history (`agentop import`)
+
+`agentop import` reads the transcripts that an agent keeps on disk, and adds
+them to Cortex's session history and cost ledger. Use it for the sessions that
+ran before you installed Cortex, or that did not go through it.
+
+```sh
+agentop import                                  # every supported agent
+agentop import --agent claude-code --since 30d
+agentop import --since 2026-10-01 --dry-run     # count only, write nothing
+```
+
+| Flag | Meaning |
+|---|---|
+| `--agent` | `claude-code`, `bob`, `codex`, `opencode` or `pi`. Only `claude-code` is supported now: the proxy answers the others with an error that names the supported agents. #1872 to #1875 add them |
+| `--since` | skip a transcript file last changed before this time: `YYYY-MM-DD` (local midnight) or `<N>d` (N days ago) |
+| `--dry-run` | count what an import would do, and write nothing |
+| `--endpoint` | the session API, as for `agentop cost` |
+
+The proxy does the work in
+[`POST /v1/import`](../../docs/session-api.md#post-v1import--transcript-import-laptop-only).
+agentop does not open the archive or the ledger. The route exists only on a
+local install: the archive is on and the session API is loopback-only.
+Otherwise agentop says that the proxy has no import route, and exits 1. Only one
+import runs at a time. A second one prints `agentop import: an import is already
+running` and exits 1.
+
+The output is one line for each agent:
+
+```text
+claude-code: 12 imported, 3 replaced, 40 skipped (live), 7 skipped (current), 1 skipped (expired), 2 lines not recognized
+```
+
+`--dry-run` puts `dry run: ` before each line. A `stopped:` line follows when the
+archive got full, and an `error:` line when the agent failed. The exit status is
+1 when an agent has an error.
+
+**What it does not change.** A session that Cortex captured live is skipped, and
+the import never changes it. An imported copy that is as new as its transcript
+is skipped. A newer transcript replaces the imported copy, and only its new
+turns are counted as cost. A session that you erased with `x` or `X` comes back
+as an imported session while its transcript is still on disk. Its cost is not
+counted again, because the erase kept the ledger rows.
+
+An imported session has `imp` before its title in the sessions pane. When the
+terminal is too narrow for TITLE, `imp` is before its id.
+Its events show `n/a` for status, duration, bytes, host and plugin, because the
+proxy did not see them. Tokens and cost show values, priced at today's rates.
+
 ## Panes
 
 The UI has these panes. `Enter` drills in; `Esc` backs out.
@@ -1316,10 +1380,10 @@ agentop is for, and the other four are surfaces you visit and leave.
   ```
   window 5m 1h [all]  10-26 14:28 → 10-26 20:08
                             14:28           15:17           16:06   37m  39m      18:41
-                                                                                           model  tools  calls
-  main agent                ▂█▃▅▃██▁▄▃▁▃█▁▆▁▂▇█▂▁▁▂████████▁▁▅▁███▅▁ ┆ ▄▁ ┆ ▂▁▆▂▁███▄▁│  1.6h    29m    316
+                                                                                           model  tools  tok/s
+  main agent                ▂█▃▅▃██▁▄▃▁▃█▁▆▁▂▇█▂▁▁▂████████▁▁▅▁███▅▁ ┆ ▄▁ ┆ ▂▁▆▂▁███▄▁│  1.6h    29m     85
 
-    Survey cortex egress da ▃▂▁                                      ┆    ┆           │    4m     1m     41
+    Survey cortex egress da ▃▂▁                                      ┆    ┆           │    4m     1m     92
 
   ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
   llm-gateway.example   LLM ▂▃▂▁▂  ▁▂▁▁▃▄▄▂▁▁▁ ▁▁▁▂▂▂▂▂▂▂▂▂▂▂▁▁   ▂▁ ┆ ▁▁ ┆ ▂▂▁▁▁   │           1041 req
@@ -1344,8 +1408,10 @@ agentop is for, and the other four are surfaces you visit and leave.
   at 1h or 5m) shows its two largest; the line below the chart has the detail. A
   host cell's height is how many requests were in flight at once (`▁` one … `█`
   eight or more); red is an error or a refusal. Loopback hosts, the proxy itself
-  among them, are not drawn. The gutter is the window's model time, tool time and
-  tool calls for an agent, and the request count for a host.
+  among them, are not drawn. The gutter is the window's model time and tool time
+  for an agent, and its output tokens for each second of model time over its
+  last 60 s of model time (`tok/s`, in the model colour while a turn
+  streams, blank when no turn has tokens), and the request count for a host.
 
   `w` cycles 5m / 1h / 24h / all, offering only the windows shorter than the
   session, so a short session shows "all" alone; the choice is saved, and a saved
@@ -1525,8 +1591,8 @@ Layered on top of all of them:
 | `r` | catalog | refresh the catalog from `/v1/plugins` |
 | `A` | any session-view pane (not the picker) | open the per-agent breakdown — each coding agent's sessions, when it was last seen, and what it has spent today (`w` moves the window), plus a row for any agent that owns a listed session but has spent nothing in it, since the sessions list is not limited to today and every session in it needs a row to scope to. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press and opens however many agents it finds, one or none included; pressed on the agents pane it only refreshes the rows. Not in the footer, for width; the `?` overlay names it |
 | `↑↓` / `jk` | agents | move the cursor |
-| `space` | agents | open the row under the cursor into its projects, or close it; on a sub-row it closes the parent and moves the cursor there. Offered only when sessions record a project; the `Other` row never opens |
-| `↵` | agents | scope to the agent under the cursor and list its sessions, whichever pane `A` was pressed on — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope.** It reaches the sessions list, the usage pane, and the spend band and its drawer — except on the agents pane itself, where the band and the drawer follow the highlighted row instead of the committed scope; `agentop cost --agent` is a separate process. On a project sub-row, `↵` scopes to that project and its agent; on a project under All agents, to the project only; on the project `Other`, to the sessions and spend that record no project. `All projects` clears only the project scope. `x` and `S` act on the parent on the open row and on `All projects`, and do nothing on a project or `Other` sub-row |
+| `space` | agents | on a sub-row, close the parent and move the cursor there; on an agent row that opens, the same as `↵`; on any other row, it pages down. Offered only when sessions record a project; the `Other` row never opens |
+| `↵` | agents | on a row that opens (sessions record a project), open it into its projects or close it. Opening puts the cursor on its `All projects` sub-row, so `↵` `↵` lists the agent's sessions. On any other row, scope to the agent under the cursor and list its sessions, whichever pane `A` was pressed on — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope** — from its `All projects` sub-row when sessions record a project. It reaches the sessions list, the usage pane, and the spend band and its drawer — except on the agents pane itself, where the band and the drawer follow the highlighted row instead of the committed scope; `agentop cost --agent` is a separate process. On a project sub-row, `↵` scopes to that project and its agent; on a project under All agents, to the project only; on the project `Other`, to the sessions and spend that record no project. `All projects` clears only the project scope. `x` and `S` act on the parent on the open row and on `All projects`, and do nothing on a project or `Other` sub-row |
 | `S` | agents | choose the inference server the highlighted agent's new sessions use: a picker over the pane, its cursor on what the agent has now. `↵` applies the highlighted entry, `Esc`/`q`/`Ctrl+C` close it, and an entry the config file already holds writes nothing. Opens only on an agent's row, when agentop is attached to this machine's Cortex and its `inference-router` routes; elsewhere a panel says why. See [Choosing an agent's server](#choosing-an-agents-server-s) |
 | `Esc` | agents | back to the pane `A` was pressed on, leaving the scope as it is. When the picker opened itself at startup, or was reached with `Esc` from the sessions list, it is the level above that list instead, and `Esc` backs out as `Esc` on sessions does: to the pods picker, or nowhere with `--endpoint` |
 | `e` | pipeline | edit pipeline subtree in `$EDITOR` |
@@ -1612,7 +1678,7 @@ two agents are listed, and the agents pane `SESSIONS` and `LAST SEEN` once sessi
 name their agent. Those two describe the whole sessions list; `COST <window>` is the
 pane's only windowed column, and `w` moves it.
 
-**`space` opens an agents row into its projects.** An open row shows `All projects`
+**`↵` opens an agents row into its projects, and closes it.** `space` does too. An open row shows `All projects`
 (the agent's figures), one row per project, then `Other`. A project row shows the last
 path segment, or the shortest unique tail of segments when two share it, for example
 `github.com/kagenti/kagenti-extensions` and `git/kagenti/kagenti-extensions`. `Other`

@@ -13,6 +13,7 @@ package main
 // both exported, so a small synchronous runtime is the whole requirement.
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -67,9 +69,19 @@ type FixtureSession struct {
 	Turns []Turn `yaml:"turns"`
 }
 
-// Fixture is every session the demo shows. Authored, never harvested.
+// Fixture is every session the demo shows.
 type Fixture struct {
 	Sessions []FixtureSession `yaml:"sessions"`
+	Replay   *Replay          `yaml:"replay"`
+}
+
+// Replay is one recorded session, scrubbed to what the timeline reads, replayed into
+// the store as the beats' At values advance. Its text is hashes and its labels are
+// invented: see testdata/README.md for how it was made.
+type Replay struct {
+	File  string `yaml:"file"`
+	ID    string `yaml:"id"`
+	Title string `yaml:"title"`
 }
 
 // Capturer owns a live-but-synthetic cortex stack plus a TUI model attached to it.
@@ -87,6 +99,18 @@ type Capturer struct {
 	cols   int
 	rows   int
 	perCmd time.Duration
+	// shift moves the clock forward to the current beat's At, in nanoseconds. Atomic,
+	// because the API server's goroutines read the clock while a beat changes it.
+	shift atomic.Int64
+	// replay is the recorded session's events not yet recorded, oldest first, already
+	// moved onto the demo clock; replayID is the session they file under.
+	replay   []pipeline.SessionEvent
+	replayID string
+	// frozen stops the clock at demoAnchor plus shift. Set with a replay: the timeline
+	// cuts its cells from "now", so a clock that moved during a settle moved every cell
+	// by however long that settle took, and two runs differed. The model's timers run on
+	// real time either way, so its polls still fire.
+	frozen atomic.Bool
 	// inflight holds commands that outlived their deadline. Their goroutines
 	// still carry the model's timer chain, so the channels are kept and read
 	// later rather than discarded — see settle.
@@ -149,6 +173,9 @@ func WriteTitles(home string, f Fixture) error {
 	for _, s := range f.Sessions {
 		meta[s.ID] = tui.SessionMetadata{Title: s.Title, AgentType: "Claude Code"}
 	}
+	if r := f.Replay; r != nil {
+		meta[r.ID] = tui.SessionMetadata{Title: r.Title, AgentType: "Claude Code"}
+	}
 	blob, err := json.Marshal(meta)
 	if err != nil {
 		return err
@@ -179,29 +206,60 @@ var demoAnchor = time.Date(2026, time.September, 15, 12, 0, 5, 0, time.Local)
 
 // NewCapturer builds the synthetic stack, replays the fixture into it, and
 // attaches a TUI model sized to cols x rows.
-func NewCapturer(f Fixture, cols, rows int, ledgerDir string) (*Capturer, error) {
+func NewCapturer(f Fixture, cols, rows int, ledgerDir string, start time.Duration) (*Capturer, error) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	lipgloss.SetHasDarkBackground(true)
 
 	offset := time.Until(demoAnchor)
-	clock := func() time.Time { return time.Now().Add(offset) }
+	c := &Capturer{}
+	c.frozen.Store(f.Replay != nil)
+	clock := func() time.Time {
+		if c.frozen.Load() {
+			return demoAnchor.Add(time.Duration(c.shift.Load()))
+		}
+		return time.Now().Add(offset + time.Duration(c.shift.Load()))
+	}
 
 	ledger, err := ledger.New(ledgerDir, ledger.WithClock(clock))
 	if err != nil {
 		return nil, fmt.Errorf("cost ledger: %w", err)
 	}
-	c := &Capturer{
-		store:  session.New(0, 0, 100, session.WithClock(clock)),
-		usage:  usage.New(usage.WithClock(clock)),
-		ledger: ledger,
-		now:    clock,
-		cols:   cols,
-		rows:   rows,
-		perCmd: 400 * time.Millisecond,
-	}
+	c.store = session.New(0, 0, 100, session.WithClock(clock))
+	c.usage = usage.New(usage.WithClock(clock))
+	c.ledger = ledger
+	c.now = clock
+	c.cols, c.rows = cols, rows
+	c.perCmd = 400 * time.Millisecond
 
 	for _, e := range c.build(f) {
+		if c.frozen.Load() {
+			// The store dates a session's update by its own clock: a stopped clock tied
+			// every session, and the list order was left to chance.
+			c.shift.Store(int64(e.event.At.Sub(demoAnchor)))
+		}
 		c.record(e.session, e.event)
+	}
+	c.shift.Store(0)
+	if f.Replay != nil {
+		if err := c.loadReplay(*f.Replay); err != nil {
+			return nil, err
+		}
+		// The whole replay's cost goes in now, and only its events arrive later: the
+		// spend band's spans poll on different cadences, so cost arriving mid-capture
+		// showed LAST 1H above THIS MONTH, as warm's comment describes. Dated now, not
+		// at its own time: a span's first fetch leaves out a cost dated after it.
+		for i := range c.replay {
+			e := c.replay[i]
+			e.Client = demoClient
+			e.At = c.now()
+			c.usage.Record(c.replayID, &e)
+			c.ledger.Record(c.replayID, &e)
+		}
+		// The store dates a session's update by its own clock, so the clock must be at
+		// the first beat when its events go in, or every session ties and the list order
+		// is left to chance.
+		c.shift.Store(int64(start))
+		c.feed(start)
 	}
 	if err := c.ledger.Flush(); err != nil {
 		return nil, fmt.Errorf("ledger flush: %w", err)
@@ -267,19 +325,36 @@ func (c *Capturer) build(f Fixture) []pendingEvent {
 			at := turnTime(now, si, ti, len(s.Turns))
 			reqID := fmt.Sprintf("%s-%03d", s.ID, ti)
 
+			msgs := conversation(s.ID, t.Messages)
+			history, results := toolHistory(msgs)
+			// The response asks for the tools whose results the next turn sends back:
+			// that is what gives the events pane its tool rows.
+			var asked []pipeline.InferenceToolCall
+			finish := "end_turn"
+			if ti+1 < len(s.Turns) {
+				next := conversation(s.ID, s.Turns[ti+1].Messages)
+				if len(next) > len(msgs) {
+					asked, _ = toolHistory(next[len(msgs):])
+				}
+			}
+			if len(asked) > 0 {
+				finish = "tool_use"
+			}
 			var turn []pendingEvent
 			turn = append(turn, pendingEvent{s.ID, pipeline.SessionEvent{
 				At: at, Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
 				RequestID: reqID, Host: "api.anthropic.com",
 				HTTPMethod: "POST", HTTPPath: "/v1/messages",
 				Inference: &pipeline.InferenceExtension{
-					Model:        s.Model,
-					AgentRole:    pipeline.AgentRoleMain,
-					IsAction:     true,
-					Messages:     conversation(s.ID, t.Messages),
-					Tools:        tools(t.Tools),
-					MessageCount: t.Messages,
-					ToolCount:    t.Tools,
+					Model:            s.Model,
+					AgentRole:        pipeline.AgentRoleMain,
+					IsAction:         true,
+					Messages:         msgs,
+					HistoryToolCalls: history,
+					ToolResults:      results,
+					Tools:            tools(t.Tools),
+					MessageCount:     t.Messages,
+					ToolCount:        t.Tools,
 				},
 				// Without invocations the events table renders ACTION and PLUGIN
 				// as dashes, which reads as "cortex did nothing to this request".
@@ -298,14 +373,16 @@ func (c *Capturer) build(f Fixture) []pendingEvent {
 				Phase: pipeline.SessionResponse, RequestID: reqID,
 				Host: "api.anthropic.com", StatusCode: 200, Duration: 2900 * time.Millisecond,
 				Inference: &pipeline.InferenceExtension{
-					Model:     s.Model,
-					AgentRole: pipeline.AgentRoleMain,
+					Model:        s.Model,
+					AgentRole:    pipeline.AgentRoleMain,
+					ToolCalls:    asked,
+					FinishReason: finish,
 					// The manifest and the conversation must be present as
 					// ARRAYS, not just as counts: summarizeEvent recomputes both
 					// counts from len() and then nils the arrays, so counts alone
 					// arrive as zero and the CTX(1M) fold skips the response.
 					Tools:            tools(t.Tools),
-					Messages:         conversation(s.ID, t.Messages),
+					Messages:         msgs,
 					ToolCount:        t.Tools,
 					MessageCount:     t.Messages,
 					InputTokens:      t.Input,
@@ -350,38 +427,74 @@ func (c *Capturer) build(f Fixture) []pendingEvent {
 	return out
 }
 
-// turnTime places a turn on the clock so three different surfaces each have
-// something to show.
-//
-// The newest turn of every session is seconds old, because that is what makes a
-// session look live. One turn sits yesterday, so the spend band's 7 DAYS and THIS
-// MONTH exceed TODAY instead of all four spans repeating one figure. The remainder
-// land inside the last eight minutes, which is what puts more than a single bar
-// inside the usage chart's default ten-minute window.
-//
-// Everything inside that window is anchored to a WHOLE MINUTE, counted back from
-// the truncated current minute. The usage chart buckets by absolute minute, so an
-// offset that is not a multiple of a minute lands in one bucket or the next
-// depending on where in the current minute the generator happens to run — which
-// moved a 97k bar one column sideways between a laptop and CI and is the kind of
-// difference no amount of digit masking can reconcile.
+// turnTime places a turn on the clock. The newest turn of the first session sits on
+// the current minute, which makes it look live, and each later session's 5 seconds
+// earlier, so the sessions list has one order and not a tie left to chance. Each
+// earlier turn is 20 seconds before the next: the gap is what the events pane measures
+// a tool row's DURATION from, so it has to be a plausible tool's run.
 func turnTime(now time.Time, si, ti, n int) time.Time {
-	minute := now.Truncate(time.Minute)
-	switch {
-	case ti == n-1:
-		// Seconds old, but still pinned to a minute boundary: this event only has
-		// to be inside the newest bucket, and being exactly on its edge is what
-		// keeps it there however long the capture takes.
-		return minute
-	case ti == 0 && n >= 3:
-		return minute.Add(-26 * time.Hour).Add(time.Duration(si) * 13 * time.Minute)
-	default:
-		return minute.Add(-time.Duration(8-ti-si) * time.Minute)
+	return now.Truncate(time.Minute).Add(-time.Duration(si)*5*time.Second - time.Duration(n-1-ti)*20*time.Second)
+}
+
+// loadReplay reads the recorded session and moves it onto the demo clock: its first
+// event lands on demoAnchor, so a beat's At is how far into the recording it is.
+func (c *Capturer) loadReplay(r Replay) error {
+	f, err := os.Open(r.File)
+	if err != nil {
+		return fmt.Errorf("replay: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("replay %s: %w", r.File, err)
+	}
+	var v pipeline.SessionView
+	if err := json.NewDecoder(zr).Decode(&v); err != nil {
+		return fmt.Errorf("replay %s: %w", r.File, err)
+	}
+	if len(v.Events) == 0 {
+		return fmt.Errorf("replay %s: no events", r.File)
+	}
+	d := demoAnchor.Sub(v.Events[0].At)
+	for i := range v.Events {
+		v.Events[i].At = v.Events[i].At.Add(d)
+		v.Events[i].Seq = 0 // the store numbers what it is given
+	}
+	c.replay, c.replayID = v.Events, r.ID
+	return nil
+}
+
+// advance moves the demo to at into the replay: the clock jumps, and every replayed
+// event up to then is recorded while the TUI is attached, so it arrives over the live
+// stream the way a proxy's events do. The settle is longer than a key's, because the
+// timeline refetches on its own one-second tick after the stream marks it stale.
+func (c *Capturer) advance(at time.Duration) {
+	c.shift.Store(int64(at))
+	c.feed(at)
+	c.settle(2500 * time.Millisecond)
+}
+
+// feed records every replayed event at or before at into the replay.
+func (c *Capturer) feed(at time.Duration) {
+	cut := demoAnchor.Add(at)
+	for len(c.replay) > 0 && !c.replay[0].At.After(cut) {
+		e := c.replay[0]
+		if e.Client == nil {
+			e.Client = demoClient
+		}
+		c.store.Append(c.replayID, e) // its cost is already in: see NewCapturer
+		c.replay = c.replay[1:]
 	}
 }
 
+var demoClient = pipeline.ParseUserAgent("claude-cli/2.1.323 (external, cli)")
+
 // record publishes one event to every consumer a real proxy would feed.
 func (c *Capturer) record(id string, e pipeline.SessionEvent) {
+	if e.Client == nil {
+		// The replay's client on every event: one agent, so agentop lands on Sessions.
+		e.Client = demoClient
+	}
 	c.store.Append(id, e)
 	c.usage.Record(id, &e)
 	c.ledger.Record(id, &e)
@@ -543,6 +656,12 @@ var agePattern = regexp.MustCompile(`\d{1,3}[smhd] ago +`)
 
 const canonicalAge = "42s ago"
 
+// eventRate matches the footer's events/sec, which agentop measures over real time, so
+// it read differently on every run; canonicalRate is the one figure it becomes.
+var eventRate = regexp.MustCompile(`\d+\.\d events/sec`)
+
+const canonicalRate = "12.4 events/sec"
+
 func fixAge(match string) string {
 	if len(match) < len(canonicalAge) {
 		return fixClock(match)
@@ -579,6 +698,7 @@ func (c *Capturer) Screen() string {
 	}
 	view = isoTimestamp.ReplaceAllString(view, canonicalISO)
 	view = agePattern.ReplaceAllStringFunc(view, fixAge)
+	view = eventRate.ReplaceAllString(view, canonicalRate)
 	for _, re := range clockPatterns {
 		view = re.ReplaceAllStringFunc(view, fixClock)
 	}

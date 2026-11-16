@@ -21,12 +21,14 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
 	"github.com/rossoctl/cortex/cmd/agentop/cluster"
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
 	"github.com/rossoctl/cortex/cmd/agentop/tui"
+	"github.com/rossoctl/cortex/cmd/agentop/updatestatus"
 	"github.com/rossoctl/cortex/core/observe/claude"
 )
 
@@ -69,7 +71,7 @@ func displayVersionOf(version, revision string) string {
 // The deprecated "claude-code" alias still dispatches (its case stays in main)
 // but is intentionally omitted here: it is no longer advertised in the usage
 // block or the unknown-subcommand hint. Use "configure claude-code" instead.
-var dispatchableSubcommands = []string{"observe", "setup", "doctor", "uninstall", "update", "service", "configure", "exec", "server", "script", "tools", "pipeline", "pricing", "cost", "export", "experimental"}
+var dispatchableSubcommands = []string{"observe", "setup", "doctor", "uninstall", "update", "service", "configure", "exec", "server", "script", "tools", "pipeline", "pricing", "cost", "export", "import", "experimental"}
 
 // unknownSubcommandMessage is the error for an unrecognised first argument.
 func unknownSubcommandMessage(name string) string {
@@ -106,6 +108,7 @@ Usage:
   agentop cost                 what your agents have spent (--window today|month|7d|1h)
   agentop export               the archive as content-free NDJSON (--out, --session,
                                --since)
+  agentop import               import agent transcripts into Cortex (--help)
   agentop experimental <action>
                                unstable helpers: read-claude-sessions
 
@@ -139,6 +142,8 @@ func main() {
 			os.Exit(runCost(os.Args[2:], os.Stdout, os.Stderr))
 		case "export":
 			os.Exit(runExport(os.Args[2:], os.Stdout, os.Stderr))
+		case "import":
+			os.Exit(runImport(os.Args[2:], os.Stdout, os.Stderr))
 		case "configure":
 			os.Exit(runConfigure(os.Args[2:], os.Stdout, os.Stderr))
 		case "claude-code":
@@ -567,6 +572,7 @@ func runObserve(args []string) int {
 	// that exists for exactly that.
 	opts := tui.RunOptions{Endpoint: *endpoint, Version: displayVersion()}
 	opts.Harvest = observeHarvester(f, os.Stderr)
+	opts.UpdateFile, opts.ServiceInstall = updateNoticeInputs()
 	if prefsPath != "" {
 		opts.Save = func(s tui.UserSettings) error { return saveUserConfig(prefsPath, s) }
 	}
@@ -586,4 +592,22 @@ func runObserve(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// updateNoticeInputs gives the update status file and whether the service unit
+// exists, for the update notice on the title bar.
+func updateNoticeInputs() (file string, service bool) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", false
+	}
+	file = filepath.Join(home, ".cortex", updatestatus.FileName)
+	_, path, err := localCortexConfig()
+	if err != nil {
+		path = filepath.Join(home, ".cortex", "config.yaml")
+	}
+	if sp, err := resolveServicePaths(path, "", ""); err == nil {
+		service = serviceInstalled(sp)
+	}
+	return file, service
 }

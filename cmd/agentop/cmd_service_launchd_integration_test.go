@@ -162,6 +162,11 @@ func TestServiceLifecycle_RealLaunchd(t *testing.T) {
 	if exec.Command("launchctl", "print", target).Run() == nil {
 		t.Skipf("launchd already has %s loaded; not replacing it", target)
 	}
+	realUpdater := filepath.Join(home, "Library", "LaunchAgents", updaterLabel+".plist")
+	updater := "gui/" + strconv.Itoa(os.Getuid()) + "/" + updaterLabel
+	if _, err := os.Stat(realUpdater); err == nil || exec.Command("launchctl", "print", updater).Run() == nil {
+		t.Skipf("%s is installed or loaded; this test would remove it", updaterLabel)
+	}
 
 	dir := t.TempDir()
 	bin := realCortexBinary(t, dir)
@@ -203,6 +208,8 @@ func TestServiceLifecycle_RealLaunchd(t *testing.T) {
 		waitBootedOut(target, 20*time.Second)
 		_ = exec.Command("launchctl", "enable", target).Run()
 		_ = os.Remove(realPlist)
+		_ = exec.Command("launchctl", "bootout", updater).Run()
+		_ = os.Remove(realUpdater)
 		_ = exec.Command("pkill", "-f", regexp.QuoteMeta(cfg)).Run()
 	})
 

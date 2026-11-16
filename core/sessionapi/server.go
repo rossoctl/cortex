@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -86,6 +87,9 @@ type Server struct {
 	// token. See ingest.go.
 	ingestCfg Ingest
 	ingest    *ingester
+	// importCfg is WithImport's; importMu lets one POST /v1/import run at a time. See import.go.
+	importCfg Import
+	importMu  sync.Mutex
 }
 
 // CatalogEntry is the wire shape for one plugin in /v1/plugins. Mirrors
@@ -234,6 +238,9 @@ func New(addr string, store *session.Store, opts ...Option) *Server {
 	mux.HandleFunc("GET /v1/usage", s.handleUsage)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /{$}", s.handleIndex)
+	if s.archive != nil && s.loopbackOnly && len(s.importCfg.Sources) > 0 {
+		mux.HandleFunc("POST /v1/import", s.handleImport)
+	}
 	if s.ingestCfg.Token != "" {
 		s.ingest = newIngester(s.ingestCfg)
 		store.AddRecorder(s.ingest.marks)
@@ -280,8 +287,7 @@ func (s *Server) Shutdown(ctx context.Context) error { return s.server.Shutdown(
 // HTML to be consistent with.
 const indexBody = `Cortex / AuthBridge Session API
 
-  GET /v1/sessions        list active sessions (?archived=true adds the session
-                          archive's sessions no longer in memory)
+  GET /v1/sessions        list sessions (?archived=true adds those only on disk)
   DELETE /v1/sessions     clear every session, memory and disk (laptop only)
   GET /v1/sessions/{id}   recent events (?limit, ?before=<seq>, ?view=summary)
   GET /v1/sessions/{id}/events/{seq}  one event in full (?raw=1: exact bytes)
@@ -293,6 +299,7 @@ const indexBody = `Cortex / AuthBridge Session API
   GET /v1/pipeline        active plugin pipeline
   GET /v1/plugins         catalog of registered plugins
   GET /v1/usage           time-bucketed usage aggregates
+  POST /v1/import         import agent transcripts from disk (laptop only)
   GET /healthz            liveness probe
 
 Unauthenticated: payloads may contain request and response bodies.

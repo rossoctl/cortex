@@ -680,6 +680,127 @@ fn inference_request_gives_request_and_response_lines() {
 }
 
 #[test]
+fn policy_filter_denies_a_model() {
+    let dir = std::env::temp_dir().join(format!("cortex-gateway-policy-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("policy dir");
+    let policy = dir.join("policy.yaml");
+    std::fs::write(
+        &policy,
+        r#"routes:
+  - llm: model-ok
+    authorization:
+      pre_invocation:
+        - "llm.provider == 'never': deny('unreachable', 'never')"
+  - llm: "*"
+    authorization:
+      pre_invocation:
+        - "deny('model is not permitted', 'model_not_allowed')"
+"#,
+    )
+    .expect("policy file");
+    let path = policy.to_str().expect("path").to_owned();
+    let o = origin(|_, s| respond(s, "200 OK", &[("Content-Type", "application/json")], b"{}"));
+    let i = ingest();
+    // `policy` goes right after `cortex_observe` and before `access_log`.
+    let g = start(&[], &[], |token_file, port| {
+        TEMPLATE
+            .replace("{{LISTEN}}", &port.to_string())
+            .replace("{{TOKEN_FILE}}", token_file)
+            .replace("{{INGEST}}", &i.port.to_string())
+            .replace("{{ORIGIN}}", &o.port.to_string())
+            .replace(
+                "{{ACCESS_LOG}}",
+                &format!("      - filter: policy\n        config_path: \"{path}\"\n{ACCESS_LOG}"),
+            )
+    });
+    let mut h = fixture_headers();
+    h.push((
+        "X-Cortex-Attribution".into(),
+        attribution(json!({"recordSession": "s1", "proc": "claude"})),
+    ));
+    let body = |model: &str| {
+        format!(
+            r#"{{"model":"{model}","max_tokens":1,"messages":[{{"role":"user","content":"hi"}}]}}"#
+        )
+    };
+
+    let (rh, _) = send(
+        &g,
+        "POST",
+        "/v1/messages?beta=true",
+        &as_refs(&h),
+        body("model-bad").as_bytes(),
+    );
+    assert_eq!(status(&rh), 403, "{rh}");
+    assert_eq!(header(&rh, "x-policy-violation"), Some("model_not_allowed"));
+    assert!(
+        o.seen.try_recv().is_err(),
+        "the origin saw a denied request"
+    );
+
+    let (rh, _) = send(
+        &g,
+        "POST",
+        "/v1/messages?beta=true",
+        &as_refs(&h),
+        body("model-ok").as_bytes(),
+    );
+    assert_eq!(status(&rh), 200, "{rh}");
+    assert!(
+        o.seen.recv_timeout(WAIT).is_ok(),
+        "the origin saw no request"
+    );
+
+    // A policy file that does not parse keeps the last good policy.
+    std::fs::write(&policy, "routes: [").expect("bad policy");
+    std::thread::sleep(Duration::from_millis(1500)); // the watcher debounces for 500 ms
+    let (rh, _) = send(
+        &g,
+        "POST",
+        "/v1/messages?beta=true",
+        &as_refs(&h),
+        body("model-bad").as_bytes(),
+    );
+    assert_eq!(status(&rh), 403, "after a bad edit: {rh}");
+    assert_eq!(header(&rh, "x-policy-violation"), Some("model_not_allowed"));
+    // A policy that refuses every request also gives the 403 above, so check the permit too.
+    let (rh, _) = send(
+        &g,
+        "POST",
+        "/v1/messages?beta=true",
+        &as_refs(&h),
+        body("model-ok").as_bytes(),
+    );
+    assert_eq!(status(&rh), 200, "model-ok after a bad edit: {rh}");
+
+    // A valid edit applies live, so the check above saw a running watcher.
+    std::fs::write(
+        &policy,
+        "routes:\n  - llm: \"*\"\n    authorization:\n      pre_invocation:\n        - \"deny('no', 'all_denied')\"\n",
+    )
+    .expect("deny-all policy");
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        let (rh, _) = send(
+            &g,
+            "POST",
+            "/v1/messages?beta=true",
+            &as_refs(&h),
+            body("model-ok").as_bytes(),
+        );
+        if header(&rh, "x-policy-violation") == Some("all_denied") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the edit did not apply: {rh}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn gzip_sse_streams_as_frames_and_wire_bytes_unchanged() {
     use flate2::Compression;
     use flate2::write::GzEncoder;

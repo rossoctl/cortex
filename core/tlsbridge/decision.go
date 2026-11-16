@@ -23,6 +23,8 @@ type DecisionOpts struct {
 	// vs `passthrough_hosts: []`), which is what makes the default overridable
 	// without a second config field.
 	SkipHosts []string
+	// FailClosed drops DefaultPassthroughHosts: a nil SkipHosts tunnels nothing.
+	FailClosed bool
 }
 
 type Decision struct {
@@ -135,7 +137,7 @@ func NewDecision(o DecisionOpts) (*Decision, error) {
 		d.ports = map[int]bool{443: true, 8443: true}
 	}
 	patterns := o.SkipHosts
-	if patterns == nil {
+	if patterns == nil && !o.FailClosed {
 		patterns = DefaultPassthroughHosts
 	}
 	m, err := skiphost.New(patterns)
@@ -151,6 +153,12 @@ func NewDecision(o DecisionOpts) (*Decision, error) {
 // transparent listener consults it so it sniffs (and thus can bridge) exactly
 // the configured ports, never drifting from Classify's port gate.
 func (d *Decision) HandlesPort(port int) bool { return d.ports[port] }
+
+// Intercepts reports whether Classify terminates a TLS connection to host on port:
+// Classify's verdict before the client's first bytes are known.
+func (d *Decision) Intercepts(host string, port int) bool {
+	return d.ports[port] && !d.skip.Match(host)
+}
 
 // Classify decides whether to bridge. first is the peeked client bytes. The
 // bridge intercepts everything eligible on the configured ports (no in-cluster

@@ -12,7 +12,7 @@ package main
 // pane has genuine content to scroll.
 
 import (
-	"fmt"
+	"slices"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -65,51 +65,82 @@ func tools(n int) []pipeline.InferenceTool {
 	return out
 }
 
-// conversationSeeds are the opening exchanges of each demo session, so the detail
-// pane shows a conversation somebody might recognise rather than lorem ipsum.
-var conversationSeeds = map[string][]pipeline.InferenceMessage{
-	"api-7f3c": {
-		{Role: "system", Content: "You are Claude Code, Anthropic's official CLI for Claude."},
-		{Role: "user", Content: "The retry handler drops the last attempt's error. Fix it and add a test."},
-		{Role: "assistant", Content: "I'll start by reading the retry handler to see how attempts are tracked."},
-		{Role: "user", Content: "[tool_result] src/retry/handler.go (142 lines)"},
-	},
-	"web-2a91": {
-		{Role: "system", Content: "You are Claude Code, Anthropic's official CLI for Claude."},
-		{Role: "user", Content: "Add a dark mode toggle to the settings page, persisted in localStorage."},
-		{Role: "assistant", Content: "Let me look at how the settings page is composed today."},
-		{Role: "user", Content: "[tool_result] src/pages/Settings.tsx (88 lines)"},
-	},
-	"infra-55de": {
-		{Role: "system", Content: "You are Claude Code, Anthropic's official CLI for Claude."},
-		{Role: "user", Content: "helm upgrade fails with 'template: no such key'. Find which values file is wrong."},
-		{Role: "assistant", Content: "I'll diff the values files against the chart's template references."},
-		{Role: "user", Content: "[tool_result] charts/app/values.staging.yaml (61 lines)"},
-	},
+// fixtureCall is one tool call in a demo conversation, with the output it got back.
+type fixtureCall struct {
+	name, args, result string
 }
 
-// conversation grows a session's message list to n entries, which is what makes a
-// later turn's prompt visibly larger than an earlier one: every turn re-sends
-// every earlier message.
-func conversation(sessionID string, n int) []pipeline.InferenceMessage {
-	seed := conversationSeeds[sessionID]
-	out := make([]pipeline.InferenceMessage, 0, n)
-	out = append(out, seed...)
-	filler := []pipeline.InferenceMessage{
-		{Role: "assistant", Content: "Now I'll make the change in the file I just read."},
-		{Role: "user", Content: "[tool_result] edit applied: 1 replacement"},
-		{Role: "assistant", Content: "Running the tests to confirm the change holds."},
-		{Role: "user", Content: "[tool_result] ok  0.412s"},
+// call makes the assistant message that calls a tool and the user message that carries
+// its result, as Claude Code sends them: the text names the step, and the call and its
+// output travel as tool blocks keyed by id, which the detail pane shows under the message.
+func call(id, say string, c fixtureCall) []pipeline.InferenceMessage {
+	fixtureCalls[id] = c
+	return []pipeline.InferenceMessage{
+		{Role: "assistant", Content: say, ToolCallNames: c.name, ToolUseIDs: id},
+		{Role: "user", ToolUseIDs: id},
 	}
-	for i := 0; len(out) < n; i++ {
-		m := filler[i%len(filler)]
-		if m.Role == "user" {
-			m.Content = fmt.Sprintf("%s  (step %d)", m.Content, i/len(filler)+1)
-		}
-		out = append(out, m)
-	}
-	if len(out) > n {
-		out = out[:n]
+}
+
+// fixtureCalls holds every call that call made, by id.
+var fixtureCalls = map[string]fixtureCall{}
+
+func seed(system, ask string, steps ...[]pipeline.InferenceMessage) []pipeline.InferenceMessage {
+	out := []pipeline.InferenceMessage{{Role: "system", Content: system}, {Role: "user", Content: ask}}
+	for _, st := range steps {
+		out = append(out, st...)
 	}
 	return out
+}
+
+const claudeSystem = "You are Claude Code, Anthropic's official CLI for Claude."
+
+// conversationSeeds are the exchanges of each demo session, so the detail pane shows a
+// conversation somebody might recognise rather than lorem ipsum.
+var conversationSeeds = map[string][]pipeline.InferenceMessage{
+	"web-2a91": seed(claudeSystem, "Add a dark mode toggle to the settings page, persisted in localStorage.",
+		call("toolu_web_01", "Let me look at how the settings page is composed today.",
+			fixtureCall{"Read", `{"file_path":"src/pages/Settings.tsx"}`,
+				"export function Settings() {\n  return (\n    <Page title=\"Settings\">\n      <ProfileForm />\n    </Page>\n  )\n}"}),
+		call("toolu_web_02", "I'll find where the theme is set, so the toggle can drive it.",
+			fixtureCall{"Grep", `{"pattern":"data-theme","path":"src"}`,
+				"src/main.tsx:9:  document.documentElement.dataset.theme = \"light\""}),
+		call("toolu_web_03", "Now I'll add the toggle and store the choice.",
+			fixtureCall{"Edit", `{"file_path":"src/pages/Settings.tsx","old_string":"<ProfileForm />","new_string":"<ProfileForm />\n      <ThemeToggle storageKey=\"theme\" />"}`,
+				"The file src/pages/Settings.tsx has been updated."}),
+		call("toolu_web_04", "Running the tests to confirm the change holds.",
+			fixtureCall{"Bash", `{"command":"npm test -- Settings"}`,
+				"PASS  src/pages/Settings.test.tsx\n  ✓ toggles dark mode (31 ms)\n  ✓ keeps the choice after reload (12 ms)"}),
+	),
+	"infra-55de": seed(claudeSystem, "helm upgrade fails with 'template: no such key'. Find which values file is wrong.",
+		call("toolu_infra_01", "I'll render the chart with the staging values to see the failing key.",
+			fixtureCall{"Bash", `{"command":"helm template charts/app -f charts/app/values.staging.yaml"}`,
+				"Error: template: app/templates/deploy.yaml:31: map has no entry for key \"replicas\""}),
+	),
+}
+
+// conversation is the first n messages of a session's seed, which is what makes a later
+// turn's prompt visibly larger than an earlier one: every turn re-sends every earlier
+// message.
+func conversation(sessionID string, n int) []pipeline.InferenceMessage {
+	seed := conversationSeeds[sessionID]
+	if n > len(seed) {
+		n = len(seed)
+	}
+	return slices.Clone(seed[:n])
+}
+
+// toolHistory is the tool calls and results that msgs carry, in the two fields a request
+// sends them in.
+func toolHistory(msgs []pipeline.InferenceMessage) (calls []pipeline.InferenceToolCall, results []pipeline.InferenceToolResult) {
+	for _, m := range msgs {
+		c, ok := fixtureCalls[m.ToolUseIDs]
+		switch {
+		case !ok:
+		case m.Role == "assistant":
+			calls = append(calls, pipeline.InferenceToolCall{ID: m.ToolUseIDs, Name: c.name, Arguments: c.args})
+		default:
+			results = append(results, pipeline.InferenceToolResult{ToolUseID: m.ToolUseIDs, Content: c.result})
+		}
+	}
+	return calls, results
 }

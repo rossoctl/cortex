@@ -513,7 +513,7 @@ func TestMCPParser_OnResponse_SSE_SkipsMalformedFramesUntilGoodOne(t *testing.T)
 
 // --- Configure ---
 
-// Default paths value: omitting the config gives ["/mcp"], which
+// Default paths value: omitting the config gives ["/mcp", "/mcp/"], which
 // matches the standard MCP Streamable HTTP setup. Most operators
 // won't override this.
 func TestConfigure_DefaultPaths(t *testing.T) {
@@ -521,15 +521,17 @@ func TestConfigure_DefaultPaths(t *testing.T) {
 	if err := p.Configure(nil); err != nil {
 		t.Fatalf("Configure(nil): %v", err)
 	}
-	// Probe the matcher with a body-less GET on /mcp; if the default
-	// is right, the synthetic transport extension fires.
-	pctx := &pipeline.Context{Method: "GET", Path: "/mcp", Headers: http.Header{}}
-	_ = p.OnRequest(context.Background(), pctx)
-	if pctx.Extensions.MCP == nil {
-		t.Fatal("default paths should match /mcp; MCP extension was nil")
-	}
-	if pctx.Extensions.MCP.Method != "$transport/stream" {
-		t.Errorf("Method = %q, want %q", pctx.Extensions.MCP.Method, "$transport/stream")
+	// Probe the matcher with a body-less GET; if the default is right,
+	// the synthetic transport extension fires.
+	for _, path := range []string{"/mcp", "/mcp/"} {
+		pctx := &pipeline.Context{Method: "GET", Path: path, Headers: http.Header{}}
+		_ = p.OnRequest(context.Background(), pctx)
+		if pctx.Extensions.MCP == nil {
+			t.Fatalf("default paths should match %s; MCP extension was nil", path)
+		}
+		if pctx.Extensions.MCP.Method != "$transport/stream" {
+			t.Errorf("%s: Method = %q, want %q", path, pctx.Extensions.MCP.Method, "$transport/stream")
+		}
 	}
 }
 

@@ -299,8 +299,12 @@ type Context struct {
 	// body was empty. Consumers render that as unknown rather than as 0 B; see
 	// SessionEvent.BytesDown.
 	//
-	// Written only by the listener, on the one goroutine serving the request,
-	// before the response row is recorded. Plugins do not write to it.
+	// Another goroutine reads it while the body streams: the Timeline's live
+	// token estimate (#1861) reads forwardproxy's count through
+	// session.Store.StreamBytes, with atomic.LoadInt64. So every write must be
+	// atomic (atomic.AddInt64 or atomic.StoreInt64). Extproc's write is still
+	// plain, and is safe only because no live stream is tracked for it. Plugins
+	// do not write to it.
 	ResponseBytes int64
 
 	// ResponseCapture is the response body as the listener read it off the wire, for the

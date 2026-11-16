@@ -51,6 +51,9 @@ type Config struct {
 	// Praxis, when Enabled, turns on praxis mode: cortex-gateway forwards the
 	// traffic and Cortex ingests its rows. Absent means direct mode.
 	Praxis *PraxisConfig `yaml:"praxis,omitempty" json:"praxis,omitempty"`
+	// Update configures automatic updates. agentop reads auto and wait on each run.
+	// The proxy reads check_every at boot.
+	Update *UpdateConfig `yaml:"update,omitempty" json:"update,omitempty"`
 	// Pricing configures model rates for the whole process — one section rather
 	// than a knob per plugin, so cost is consistent wherever it is reported.
 	//
@@ -317,12 +320,29 @@ type TLSBridgeConfig struct {
 	// stream as HTTP/1.1 or h2, so terminating a non-HTTP TLS protocol (LDAPS,
 	// SMTPS, DB-over-TLS, …) would break it.
 	Ports []int `yaml:"ports" json:"ports"`
+	// FailClosed makes interception a requirement rather than a best effort, for a
+	// shared host where an opaque tunnel is a policy bypass. A host the bridge
+	// intercepts is always intercepted, or refused: no skip memory, no fallback
+	// tunnel, an SNI that must name the CONNECT host, and an unverified origin
+	// answered 502 upstream_unverified. The default passthrough list does not
+	// apply; an explicit passthrough_hosts still tunnels.
+	FailClosed bool `yaml:"fail_closed" json:"fail_closed"`
 }
 
 // Validate is called from the loader when TLSBridge != nil.
 func (b *TLSBridgeConfig) Validate() error {
 	if b.Mode != "" && b.Mode != "disabled" && b.Mode != "enabled" {
 		return fmt.Errorf("tls_bridge.mode must be 'disabled' or 'enabled', got %q", b.Mode)
+	}
+	// Without the bridge every connection is an opaque tunnel, which is what
+	// fail_closed exists to refuse.
+	if b.FailClosed && b.Mode != "enabled" {
+		return fmt.Errorf("tls_bridge.fail_closed requires mode=enabled")
+	}
+	// fail_closed refuses an origin that does not verify; upstream_insecure
+	// verifies none.
+	if b.FailClosed && b.UpstreamInsecure {
+		return fmt.Errorf("tls_bridge.fail_closed cannot be combined with upstream_insecure")
 	}
 	if b.Mode == "enabled" && b.CADir == "" {
 		return fmt.Errorf("tls_bridge.mode=enabled requires ca_dir")
@@ -345,9 +365,15 @@ const (
 // listener, where the forward proxy's hop sends each recorded request. Egress is
 // Cortex's egress listener, where the gateway sends each request on to its origin.
 type PraxisConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Listen  string `yaml:"listen,omitempty" json:"listen,omitempty"`
-	Egress  string `yaml:"egress,omitempty" json:"egress,omitempty"`
+	Enabled bool                `yaml:"enabled" json:"enabled"`
+	Listen  string              `yaml:"listen,omitempty" json:"listen,omitempty"`
+	Egress  string              `yaml:"egress,omitempty" json:"egress,omitempty"`
+	Policy  *PraxisPolicyConfig `yaml:"policy,omitempty" json:"policy,omitempty"`
+}
+
+// PraxisPolicyConfig is `praxis.policy:`, the Praxis policy filter that cortex-gateway runs.
+type PraxisPolicyConfig struct {
+	ConfigPath string `yaml:"config_path" json:"config_path"`
 }
 
 // ListenAddr returns praxis.listen, or DefaultPraxisListen when it is empty or
@@ -371,6 +397,52 @@ func (p *PraxisConfig) EgressAddr() string {
 // PraxisEnabled reports whether praxis mode is on. False on a nil block.
 func (c *Config) PraxisEnabled() bool {
 	return c.Praxis != nil && c.Praxis.Enabled
+}
+
+// UpdateConfig is the top-level `update:` block.
+type UpdateConfig struct {
+	Auto *bool `yaml:"auto,omitempty" json:"auto,omitempty"`
+	// Wait is how long after its publication agentop update --auto waits before it
+	// installs a release. A duration string. Default DefaultUpdateWait. "0" installs at once.
+	Wait string `yaml:"wait,omitempty" json:"wait,omitempty"`
+	// CheckEvery is how often the proxy starts the updater. A duration string from
+	// 1h to 24h. Default DefaultUpdateCheckEvery. A change needs a restart.
+	CheckEvery string `yaml:"check_every,omitempty" json:"check_every,omitempty"`
+}
+
+// The defaults for update.wait and update.check_every.
+const (
+	DefaultUpdateWait       = 24 * time.Hour
+	DefaultUpdateCheckEvery = 6 * time.Hour
+)
+
+// Times resolves update.wait and update.check_every. Nil-safe on u. On an
+// error it returns the defaults with the error.
+//
+// check_every is at least 1h, so the updater does not run too often. It is at most
+// 24h, because agentop reports "no update check" after 72h.
+func (u *UpdateConfig) Times() (wait, checkEvery time.Duration, err error) {
+	wait, checkEvery = DefaultUpdateWait, DefaultUpdateCheckEvery
+	if u == nil {
+		return wait, checkEvery, nil
+	}
+	w, c := wait, checkEvery
+	if u.Wait != "" {
+		if w, err = time.ParseDuration(u.Wait); err != nil || w < 0 {
+			return wait, checkEvery, fmt.Errorf("update.wait %q: must be a duration of 0 or more", u.Wait)
+		}
+	}
+	if u.CheckEvery != "" {
+		if c, err = time.ParseDuration(u.CheckEvery); err != nil || c < time.Hour || c > 24*time.Hour {
+			return wait, checkEvery, fmt.Errorf("update.check_every %q: must be a duration from 1h to 24h", u.CheckEvery)
+		}
+	}
+	return w, c, nil
+}
+
+// UpdateAutoEnabled is true unless update.auto is set to false. Nil-safe on c.
+func (c *Config) UpdateAutoEnabled() bool {
+	return c == nil || c.Update == nil || c.Update.Auto == nil || *c.Update.Auto
 }
 
 // MTLSMode names the inbound + outbound TLS posture. Vocabulary

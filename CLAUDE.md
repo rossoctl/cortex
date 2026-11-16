@@ -162,8 +162,7 @@ management", "the AuthBridge sidecar validates the JWT".
 
 ## Layout
 
-What used to live under `authbridge/` is the repo root. Only `authbridge/install.sh`
-remains there: it runs `scripts/install.sh`, for the URL v0.7.0 and its docs give.
+What used to live under `authbridge/` is the repo root.
 
 | Path | What it is |
 |---|---|
@@ -272,8 +271,8 @@ on the old pipeline.
 
 - **Reloads:** any plugin list change and any plugin `config:` subtree edit.
 - **Needs a restart:** `mode` and every field of `listener`, `session`, `cost_ledger`,
-  `mtls`, `tls_bridge`, `spiffe`, `memory`, `stats` and `praxis` (`validateReloadable` in
-  `core/reloader/reloader.go`).
+  `mtls`, `tls_bridge`, `spiffe`, `memory`, `stats` and `praxis`, and `update.check_every`
+  (`validateReloadable` in `core/reloader/reloader.go`).
 - **Bad YAML stays safe:** the active pipeline keeps serving, and `/reload/status`
   shows the error with `reloads_failed` incremented.
 

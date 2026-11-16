@@ -58,6 +58,13 @@ else in the file:
 curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --praxis
 ```
 
+`--praxis` needs a release that carries `cortex-gateway`. If the installer stops with
+`release … has no cortex-gateway build for <os>/<arch>`, add `--ref=main` to install
+the channel build, which has the gateway, or build it from source as below.
+
+To put a policy in the gateway, read
+[policy in praxis mode](praxis-policy.md).
+
 When you change `praxis.enabled` by hand in either direction, run
 `agentop service install --restart`. To turn praxis mode off, set
 `praxis.enabled: false` in `~/.cortex/config.yaml` first. `restart` alone does not
@@ -119,9 +126,22 @@ uninstall: turn it off with `loginctl disable-linger` if you no longer want it.
 
 ## Re-running the installer is safe
 
-`agentop update` is how you upgrade. It runs the one-liner with the flags that keep the
-install as it is (`agentop update --help` lists them), and when the newest release is
-already installed it prints `Already at vX.` and downloads nothing. The one-liner is
+`agentop update` is how you upgrade. When the newest release is already installed it
+prints `Already at vX.` and downloads nothing. For a release tag (the newest release, or
+`--ref=vX`) it does not run `install.sh`. The installed agentop downloads `checksums.txt`
+and the tarballs from `https://github.com/rossoctl/cortex/releases/download/<tag>/`,
+checks the SHA-256 of each tarball, checks the build-provenance attestation of each
+tarball, extracts them into a temporary stage, and runs
+`<stage>/agentop setup --from <stage>`. The attestation must come from
+`https://github.com/rossoctl/cortex/.github/workflows/release-binaries.yaml@refs/tags/<tag>`
+with issuer `https://token.actions.githubusercontent.com`, and must have a
+transparency-log entry that is checked against the Sigstore public-good trusted root. A
+missing, invalid or unreachable attestation stops the update, and the update changes
+nothing. You can check a tarball yourself with
+`gh attestation verify <tarball> --repo rossoctl/cortex`. For `--ref=main` (any ref that
+does not start with `v`) `agentop update` runs the one-liner with the flags that keep the
+install as it is (`agentop update --help` lists them). The one-liner and a first install
+use `install.sh`, with no provenance check. The one-liner is
 meant to be run repeatedly too. When nothing has changed it changes nothing. It still
 downloads the release, but `agentop setup` finds the staged binaries identical to the
 installed ones, asks nothing, and ends on one line,
@@ -154,34 +174,86 @@ Setup does not pass that line on.
 
 To restart deliberately: `agentop service restart`.
 
+## Automatic updates
+
+A service install (launchd or systemd) updates itself:
+
+- The proxy starts the updater unit at most once every 6 hours (`update.check_every`).
+  The first start is 10 minutes after the proxy starts. The unit is
+  `io.rossoctl.cortex.update` on macOS and `cortex-update.service` on Linux.
+- The updater runs `agentop update --yes --auto`.
+- It installs the release that GitHub marks Latest, but only when that release was
+  published at least 24 hours ago (`update.wait`). The publication time is the upload
+  time of the release's `checksums.txt`.
+- Then it restarts the proxy. Attached sessions lose the request in flight and retry it.
+
+It does not change a `dev`, `main-<sha>` or release-candidate service install. Those
+installs get the notice only. A newer Latest shows on the `agentop` title bar after the
+next check, before the wait ends. A `--no-service` install has no updater, so
+it gets no notice. `agentop update` by hand still works there.
+
+To turn it off, set this in `~/.cortex/config.yaml`:
+
+```yaml
+update:
+  auto: false
+```
+
+The next run reads it. You do not need a restart.
+
+To change the timing, set one or both of these. The values here are the defaults:
+
+```yaml
+update:
+  wait: 24h          # how long after its publication a release installs; "0" installs at once
+  check_every: 6h    # how often the proxy starts the updater; from 1h to 24h
+```
+
+| Field | Default | Range | Who reads it | When a change applies |
+|---|---|---|---|---|
+| `wait` | `24h` | `0` or more | `agentop update --auto` | at the next check |
+| `check_every` | `6h` | `1h` to `24h` | the proxy, at boot | after `agentop service restart`. A hot reload refuses the change |
+
+The values are Go durations, for example `90m` or `12h`. With the defaults, a laptop
+that is on installs a new release from 24 to about 30 hours after it is published. The
+proxy refuses to start when a value is not valid, and `agentop doctor` names it on the
+`updates` row.
+
+Where to look:
+
+- `~/.cortex/update.json` holds the result of the last run.
+- `~/.cortex/update.log` holds the output of the updater.
+- `agentop doctor` has an `updates` row.
+
+`agentop update` by hand still installs at once, with no wait.
+
 ## The cpex build
 
-Each release also publishes `cortex` built with the [cpex policy plugin](cpex-plugin.md),
-as `cortex-cpex_<version>_<os>_<arch>.tar.gz`, for macOS arm64 (14.5 or later) and Linux
-amd64/arm64. The Linux builds are static, so they run on glibc and musl alike. To install
-it, pass `--cpex`:
+The laptop cpex build is removed, and `install.sh --cpex` exits with an error. That error says to run the
+installer again without `--cpex`, which installs the default `cortex`. It also
+names `--praxis` and `docs/praxis-policy.md`, which is the way to run laptop
+policy now. `make
+cortex-cpex` is gone too. An install that runs a cpex build moves to the default
+`cortex` on `agentop update`, which prints one line that says so.
 
-```sh
-curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --cpex
-```
+The default `cortex` has no cpex plugin, and it does not start on a config that names
+`cpex`. So when `~/.cortex/config.yaml` has a `cpex` entry under `pipeline`,
+`agentop update`, the automatic update and the one-liner stop before they download.
+Remove the entry first, as [Move from the CPEX plugin](praxis-policy.md#move-from-the-cpex-plugin)
+says.
 
-It installs as `cortex`, in the same place, under the same service; only the binary
-differs. Elsewhere, `--cpex` stops before downloading anything and names the platforms it
-supports. To check which build is running:
+An `agentop` from before the removal asks the release for the cpex tarball. So each
+release still publishes `cortex-cpex_<ver>_<os>_<arch>.tar.gz`, as a copy of the
+default `cortex` tarball, and that older update moves the install too. It does not
+check the config first: when the config names `cpex`, setup rolls back and the
+update fails. Remove the entry, then update again.
 
-```sh
-cortex --version                                         # cortex (cpex) v0.9.3
-curl -s http://127.0.0.1:47601/v1/plugins | grep -c '"name":"cpex"'   # 1
-```
+Kubernetes use does not change: the `authbridge-cpex` image, the `cpex` and `fullcpex`
+build profiles, `core/plugins/cpex/` and the `go-ci-cpex` CI job stay. See
+[cpex-plugin.md](cpex-plugin.md).
 
-Every release tarball, cpex or not, carries build provenance as well as its `checksums.txt`
-entry: `gh attestation verify <tarball> --repo rossoctl/cortex`.
-
-The installer does not remember the choice. Re-running it without `--cpex` installs the
-default build again, and says so first; keep passing `--cpex` to stay on it.
-`agentop update` passes `--cpex` for you when the installed cortex is the cpex build.
-Against a release from before `--cpex` existed, the installer stops before staging
-anything and says that release has no cpex build.
+Every release tarball carries build provenance as well as its `checksums.txt` entry:
+`gh attestation verify <tarball> --repo rossoctl/cortex`.
 
 ## How traffic is grouped into sessions
 
@@ -486,7 +558,8 @@ session:
 ```
 
 The copy keeps `tls_bridge.ca_dir` pointing at `~/.cortex/ca`, so agents trust the same CA.
-Cortex owns everything under the archive `dir`: a clear deletes its `data/` directory whole.
+Cortex owns everything under the archive `dir`: a clear deletes its `data/` directory whole,
+and keeps `forgotten.jsonl` beside it.
 Give it an empty directory that nothing else uses. Do not give two Cortex processes the same
 archive `dir`: a clear in one deletes the files the other is writing.
 
@@ -506,6 +579,14 @@ first by the time they were last written:
 A full disk does not stop the proxy. The archive stops writing until its next hourly pass,
 and requests are served as before; only the history has a gap.
 
+**A removed session leaves a forget record.** When the archive removes a session — `x`, a
+clear `X`, the day limit, the size limit, or an import that replaces it — it adds one line to
+`~/.cortex/sessions/forgotten.jsonl` (in the archive `dir`, next to `data/`). The line holds
+the session id and the time span of its turns, `{"id":"...","from":<unix ms>,"to":<unix ms>}`,
+and no content. It writes a line only for a session with tokens or cost, and only when the cost
+ledger is on. A clear keeps the file. A line is kept until its span is older than
+`cost_ledger.retention_days` (default 31) plus 1 day. `agentop import` uses it: see below.
+
 **What it does not promise.** Writing happens off the request path — and the cost of that is
 that a burst the writer cannot keep up with is dropped *from the archive*, never from memory. An
 unclean kill loses at most the last second.
@@ -514,6 +595,23 @@ unclean kill loses at most the last second.
 `droppedRenames`, `droppedCaptures`, `paused` when any is nonzero); nonzero means what you are
 reading has gaps. `droppedCaptures` counts requests kept without their exact bytes, because
 more than 256 MB of them waited for the writer.
+
+### Importing history from before Cortex
+
+`agentop import` adds the sessions that Claude Code keeps in
+`~/.claude/projects` (or under `CLAUDE_CONFIG_DIR`) to this history and to the
+cost ledger. Use it for the sessions that ran before you installed Cortex.
+`agentop import --since 30d --dry-run` counts first and writes nothing. The
+import skips every session that Cortex captured live, and never changes one.
+Each imported session is marked `imp` in agentop. Its cost is priced at today's
+rates. LAST 1H shows imported turns only after the next restart. The import
+stops at 90% of `max_bytes`. A session that you erased, or that a limit removed,
+comes back in full on the next import. Its forget record tells the import which turns the cost
+ledger already holds. The turns inside that span are not counted again, and the turns after it
+are. A turn before the span is counted only when the cost ledger has no row of the same
+project near it that the proxy wrote live or that an earlier import wrote. Flags and output:
+[`agentop import`](../cmd/agentop/README.md#importing-agent-history-agentop-import).
+Rules: [`POST /v1/import`](session-api.md#post-v1import--transcript-import-laptop-only).
 
 ### Clearing it
 
@@ -600,6 +698,7 @@ decrypted HTTPS. It is configured under the top-level `tls_bridge:` block in
 | `upstream_ca_bundle` | *(system roots)* | Extra-roots PEM file for re-origination, for private-CA origins the agent trusts. Empty means system roots only. |
 | `upstream_insecure` | `false` | Disable origin cert verification on re-origination, for internal/self-signed upstreams whose CA is unavailable. Prefer `upstream_ca_bundle` when possible. |
 | `passthrough_hosts` | *(see below)* | Hosts to tunnel, never intercept. Distinct from `listener.skip_hosts`, which bypasses the whole pipeline: these still run the egress gate, they just aren't TLS-terminated. See [Developer tooling is not intercepted at all](#developer-tooling-is-not-intercepted-at-all). |
+| `fail_closed` | `false` | Bridge or refuse every connection the bridge intercepts, never tunnel it. Needs `mode: enabled`. See [Failing closed](#failing-closed). |
 | `ports` | `{443, 8443}` | TCP ports to intercept as TLS. Only HTTP(S)-bearing ports belong here — the bridge serves the decrypted stream as HTTP/1.1 or h2, so terminating a non-HTTP TLS protocol (LDAPS, SMTPS, DB-over-TLS, …) would break it. |
 
 The bridge is built once at startup, so changing any `tls_bridge:` field takes
@@ -919,7 +1018,9 @@ The other reasons you may see, and what each one asks of you:
 | `bridge-disabled` | No TLS bridge is configured. | only if you wanted one |
 | `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. OpenCode hangs up rather than rejecting the CA; see [its page](agents/opencode.md#ca-trust). | usually no |
 | `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |
-| `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. The first failure for each host logs a WARN (`reason=upstream-verify`). Later failures for that host log at INFO. | investigate the destination |
+| `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. Under `fail_closed` the CONNECT is answered `502` `upstream_unverified` instead, and nothing is tunnelled. The first failure for each host logs a WARN (`reason=upstream-verify`). Later failures for that host log at INFO. | investigate the destination |
+| `sni-mismatch` | Under `fail_closed`, the client's TLS SNI named a host other than the CONNECT target, so the handshake was refused. The close row carries `421` and `error.kind: misdirected_request`. | check what the client is connecting to |
+| `refused-non-tls` | Under `fail_closed`, a connection to a host the bridge intercepts sent bytes that are not a TLS handshake, so it was closed. The close row carries `error.kind: not_tls`. | add the host to `passthrough_hosts` if it should be tunnelled |
 | `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout. Without the TLS bridge the CONNECT is answered `502` and no tunnel opened. With the bridge on (this install's default) the CONNECT is answered `200` first, because a redirect can still send the request to a live server; when nothing rescued it, the close row carries that `200` with the dial error in `error`. The TCP dial is bounded at 10s, so a destination that silently drops the SYN (off the VPN that reaches it, a dead NAT) fails within that rather than hanging the agent for longer. | check the destination and the network path to it |
 
 Only a CA rejection asks you to restart anything: `client-rejected-ca` itself, and
@@ -984,6 +1085,34 @@ To see the list, or to override it, set `tls_bridge.passthrough_hosts` in
 to it, and `passthrough_hosts: []` intercepts everything. Never list an inference
 endpoint there: it would silently remove the parsing and the token savings, with no
 error anywhere to notice it by.
+
+### Failing closed
+
+By default the bridge falls open: a connection it cannot read is tunnelled, so the
+agent's call still works. `tls_bridge.fail_closed: true` instead bridges or refuses
+every connection the bridge intercepts, so policy judged on a host covers every byte
+sent to it:
+
+- An origin that fails verification is refused on the CONNECT: `502` with
+  `X-Moca-Egress-Error: upstream_unverified`. The check is a `HEAD` bounded at 10s,
+  so a timeout or reset is refused the same way; `error.message` says which. An
+  origin that could not be dialled still gets a `200`, and each request is verified
+  when sent.
+- An SNI that names another host than the CONNECT target is refused (`sni-mismatch`,
+  `421`). The comparison is textual, so CONNECT by name, not IP.
+- A client that rejects Cortex's CA is refused every time, and nothing is
+  remembered. Go tools on macOS need the CA in the keychain.
+- Bytes that are not a TLS handshake are refused (`refused-non-tls`).
+
+The default `passthrough_hosts` list is dropped; an explicit list is still
+tunnelled. `listener.skip_hosts` destinations are verified too, so give a private-CA
+origin `upstream_ca_bundle`. `fail_closed` cannot be combined with
+`upstream_insecure`.
+
+On the transparent listener, `passthrough_hosts` is judged by the dialled address,
+so only IP entries apply. The sniffed SNI is the host, so `sni-mismatch` fires only
+when the SNI could not be sniffed, such as a ClientHello over 8 KiB. Refusals there
+are close rows, since there is no CONNECT to answer.
 
 ### Go tools on macOS are passed through unread
 

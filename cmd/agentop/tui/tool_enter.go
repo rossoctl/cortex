@@ -89,9 +89,10 @@ func (m *model) applyToolAim() bool {
 	return true
 }
 
-// aimInRequest is the last assistant message of the open request that names call id (rule 2.1),
-// and the folds that show the call and its result: the message's toolCalls entry and the next
-// message's toolResults entry. The message index comes from the held event, because the tree
+// aimInRequest is the toolCalls entry that names call id in the last assistant message of the
+// open request that names it (rule 2.1), and the folds that show the call and its result: that
+// entry and the next message's toolResults entry. The message index comes from the held event,
+// because the tree
 // no longer has toolUseIds. groupEarlier puts the first messages under one group, so the
 // tree's messages are counted with the group's kids in place.
 func (m *model) aimInRequest(id string) (*node, []*node) {
@@ -119,23 +120,28 @@ func (m *model) aimInRequest(id string) (*node, []*node) {
 		return nil, nil
 	}
 	var opens []*node
-	add := func(list *node, key string) {
+	add := func(list *node, key string) *node {
+		if list == nil {
+			return nil
+		}
 		for _, e := range list.kids {
 			if e.str(key) == id {
 				opens = append(opens, list, e)
-				return
+				return e
 			}
 		}
+		return nil
 	}
-	if calls := flat[i].child("toolCalls"); calls != nil {
-		add(calls, "id")
-	}
+	// The cursor goes to the call itself: the message's first line is its header, and
+	// Enter on a tool row means that tool.
+	target := add(flat[i].child("toolCalls"), "id")
 	if i+1 < len(flat) {
-		if res := flat[i+1].child("toolResults"); res != nil {
-			add(res, "toolUseId")
-		}
+		add(flat[i+1].child("toolResults"), "toolUseId")
 	}
-	return flat[i], opens
+	if target == nil {
+		target = flat[i]
+	}
+	return target, opens
 }
 
 // callWithID is the entry of calls at pos when its id is id (rule 2.2), else the first entry

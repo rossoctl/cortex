@@ -3,6 +3,7 @@ package tui
 import (
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -152,7 +153,7 @@ func TestEventsTimeline_CachedOnlySessionFetchesNothing(t *testing.T) {
 	if !slices.Contains(m.sessionRowIDs, "gone") {
 		t.Fatalf("cached-only session not listed: %v", m.sessionRowIDs)
 	}
-	msgs := cmdMsgs(openSession(t, m, "gone"))
+	msgs := cmdMsgs(t, openSession(t, m, "gone"))
 	if snapshotted(msgs) || m.timeline.loading || m.timeline.session != "gone" {
 		t.Errorf("msgs %v loading %v timeline session %q", msgs, m.timeline.loading, m.timeline.session)
 	}
@@ -164,7 +165,7 @@ func TestEventsTimeline_EnterDuringAListBlipStartsTheChain(t *testing.T) {
 	m := eventsTimelineModel(t)
 	m.events["b"] = []pipeline.SessionEvent{{SessionID: "b", At: tlAt(1)}}
 	m.Update(sessionsLoadedMsg{})
-	msgs := cmdMsgs(openSession(t, m, "b"))
+	msgs := cmdMsgs(t, openSession(t, m, "b"))
 	if snapshotted(msgs) || m.timeline.loading {
 		t.Fatalf("Enter during the blip fetched: msgs %v loading %v", msgs, m.timeline.loading)
 	}
@@ -182,37 +183,50 @@ func TestEventsTimeline_EnterDuringAListBlipStartsTheChain(t *testing.T) {
 	}
 }
 
-// cmdMsgs runs cmd and the members of a batch it returns, and collects what they send within
-// a little more than one timeline tick.
-func cmdMsgs(cmd tea.Cmd) []tea.Msg {
-	if cmd == nil {
-		return nil
-	}
-	out := make(chan tea.Msg, 16)
-	var run func(tea.Cmd)
+// cmdMsgs runs cmd and the members of a batch it returns, and returns what they send once
+// every one has returned. A command that never returns fails the test shortly before go
+// test's own timeout, so the failure names cmdMsgs, not a goroutine dump.
+func cmdMsgs(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	var (
+		mu   sync.Mutex
+		wg   sync.WaitGroup
+		msgs []tea.Msg
+		run  func(tea.Cmd)
+	)
 	run = func(c tea.Cmd) {
+		defer wg.Done()
 		msg := c()
 		if batch, ok := msg.(tea.BatchMsg); ok {
 			for _, b := range batch {
 				if b != nil {
+					wg.Add(1)
 					go run(b)
 				}
 			}
 			return
 		}
-		out <- msg
+		mu.Lock()
+		msgs = append(msgs, msg)
+		mu.Unlock()
 	}
-	go run(cmd)
-	var msgs []tea.Msg
-	deadline := time.After(timelineRefresh + 500*time.Millisecond)
-	for {
-		select {
-		case msg := <-out:
-			msgs = append(msgs, msg)
-		case <-deadline:
-			return msgs
-		}
+	if cmd != nil {
+		wg.Add(1)
+		go run(cmd)
 	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	var hung <-chan time.Time
+	if d, ok := t.Deadline(); ok {
+		left := time.Until(d)
+		hung = time.After(left - left/10)
+	}
+	select {
+	case <-done:
+	case <-hung:
+		t.Fatal("a command never returned")
+	}
+	return msgs
 }
 
 // snapshotted reports a snapshot among msgs: against deadClient it fails as errMsg.

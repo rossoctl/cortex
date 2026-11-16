@@ -942,6 +942,9 @@ func TestTLSBridgeConfig_Validate(t *testing.T) {
 		{"enabled without ca_dir", TLSBridgeConfig{Mode: "enabled"}, true},
 		{"valid ports", TLSBridgeConfig{Ports: []int{443, 8443, 9443}}, false},
 		{"port zero", TLSBridgeConfig{Ports: []int{0}}, true},
+		{"fail_closed enabled", TLSBridgeConfig{Mode: "enabled", CADir: "/tmp/ca", FailClosed: true}, false},
+		{"fail_closed without the bridge", TLSBridgeConfig{FailClosed: true}, true},
+		{"fail_closed with upstream_insecure", TLSBridgeConfig{Mode: "enabled", CADir: "/tmp/ca", FailClosed: true, UpstreamInsecure: true}, true},
 		{"port too high", TLSBridgeConfig{Ports: []int{70000}}, true},
 		{"port negative", TLSBridgeConfig{Ports: []int{-1}}, true},
 	}

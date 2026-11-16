@@ -443,6 +443,10 @@ type SessionEvent struct {
 	// Client-asserted, with the same caveat as Client above.
 	ParentSubagent string
 
+	// Source is "" on a live event, "imported:<agent>" on an event an import wrote.
+	// Use ImportedSource to make the value and Imported to test it.
+	Source string
+
 	// SubagentKind is the kind of a Bob child task, from Context.SubagentKind:
 	// SubagentKindSubtask or SubagentKindSubagent. Set only on a Bob child's rows, and
 	// empty everywhere else, Claude Code rows included (read Inference.AgentRole there).
@@ -577,6 +581,14 @@ const (
 	// identifier, used verbatim. Never confused with dial-failed: a refused
 	// destination was never attempted.
 	TunnelDestPrivate TunnelReason = "dest-private"
+	// TunnelSNIMismatch — under tls_bridge.fail_closed, the client's TLS SNI named a
+	// host other than the CONNECT target, so the bridge refused the handshake. Recorded
+	// with a 421 close row carrying error.kind "misdirected_request".
+	TunnelSNIMismatch TunnelReason = "sni-mismatch"
+	// TunnelRefusedNonTLS — under tls_bridge.fail_closed, a connection to a host the
+	// bridge intercepts sent bytes that are not a TLS handshake, so it was closed
+	// rather than tunnelled.
+	TunnelRefusedNonTLS TunnelReason = "refused-non-tls"
 )
 
 // EventTLS describes the TLS state of a connection that produced a
@@ -701,6 +713,8 @@ type sessionEventWire struct {
 	Subagent string `json:"subagent,omitempty"`
 	// omitempty: absent on every row but those of an agent another agent started.
 	ParentSubagent string `json:"parentSubagent,omitempty"`
+	// omitempty: absent on every live event.
+	Source LenientString `json:"source,omitempty"`
 	// omitempty: absent on every row but a Bob child task's.
 	SubagentKind string `json:"subagentKind,omitempty"`
 	// omitempty: absent wherever the listener could not name the client's process, and on
@@ -746,6 +760,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Client:          e.Client,
 		Subagent:        e.Subagent,
 		ParentSubagent:  e.ParentSubagent,
+		Source:          LenientString(e.Source),
 		SubagentKind:    e.SubagentKind,
 		Proc:            e.Proc,
 		ClientProc:      e.ClientProc,
@@ -793,6 +808,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Client:          w.Client,
 		Subagent:        w.Subagent,
 		ParentSubagent:  w.ParentSubagent,
+		Source:          string(w.Source),
 		SubagentKind:    w.SubagentKind,
 		Proc:            w.Proc,
 		ClientProc:      w.ClientProc,
@@ -844,6 +860,21 @@ const ErrorKindDestinationPrivate = "destination_private"
 // cortex-gateway is not ready or does not accept the dial (#1721). Cortex records
 // the request row and this row, because the gateway never saw the request.
 const ErrorKindGatewayUnavailable = "gateway_unavailable"
+
+// ErrorKindUpstreamUnverified is the TLS bridge refusing a connection whose origin
+// certificate did not verify, under tls_bridge.fail_closed: a CONNECT is answered
+// 502 upstream_unverified instead of being tunnelled. The MOCA egress contract's
+// identifier, used verbatim.
+const ErrorKindUpstreamUnverified = "upstream_unverified"
+
+// ErrorKindMisdirectedRequest is a 421 for traffic naming a host other than its
+// tunnel's: a bridged request's Host, or under tls_bridge.fail_closed a ClientHello's
+// SNI. The MOCA egress contract's identifier, used verbatim.
+const ErrorKindMisdirectedRequest = "misdirected_request"
+
+// ErrorKindNotTLS is the TLS bridge closing a connection to a host it intercepts
+// whose first bytes are not a TLS handshake, under tls_bridge.fail_closed.
+const ErrorKindNotTLS = "not_tls"
 
 // SessionSource is how a listener resolved Context.Session.
 type SessionSource string
@@ -1033,4 +1064,28 @@ type ArchiveUsage struct {
 	DroppedCaptures uint64 `json:"droppedCaptures,omitempty"`
 	// Paused is true after the disk filled, until the archive's next retention pass.
 	Paused bool `json:"paused,omitempty"`
+}
+
+// ImportedSourcePrefix starts the Source of every event that an import wrote.
+const ImportedSourcePrefix = "imported:"
+
+// ImportedSource returns the Source value for an event that an import of agent wrote.
+func ImportedSource(agent string) string { return ImportedSourcePrefix + agent }
+
+// LenientString decodes a JSON string as itself and any other JSON value as "". A field that
+// another writer can set uses it, so that one key of the wrong type does not refuse the whole line.
+type LenientString string
+
+func (s *LenientString) UnmarshalJSON(b []byte) error {
+	var v string
+	if json.Unmarshal(b, &v) != nil {
+		v = ""
+	}
+	*s = LenientString(v)
+	return nil
+}
+
+// Imported tells if an import wrote e. A live event gives false.
+func (e *SessionEvent) Imported() bool {
+	return strings.HasPrefix(e.Source, ImportedSourcePrefix)
 }
