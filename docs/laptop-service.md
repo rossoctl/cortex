@@ -580,13 +580,12 @@ A full disk does not stop the proxy. The archive stops writing until its next ho
 and requests are served as before; only the history has a gap.
 
 **A removed session leaves a forget record.** When the archive removes a session — `x`, a
-clear `X`, the day limit or the size limit — it adds one line to
+clear `X`, the day limit, the size limit, or an import that replaces it — it adds one line to
 `~/.cortex/sessions/forgotten.jsonl` (in the archive `dir`, next to `data/`). The line holds
 the session id and the time span of its turns, `{"id":"...","from":<unix ms>,"to":<unix ms>}`,
 and no content. It writes a line only for a session with tokens or cost, and only when the cost
 ledger is on. A clear keeps the file. A line is kept until its span is older than
-`cost_ledger.retention_days` (default 31) plus 1 day, so the file holds only the sessions
-removed in that time. `agentop import` uses it: see below.
+`cost_ledger.retention_days` (default 31) plus 1 day. `agentop import` uses it: see below.
 
 **What it does not promise.** Writing happens off the request path — and the cost of that is
 that a burst the writer cannot keep up with is dropped *from the archive*, never from memory. An

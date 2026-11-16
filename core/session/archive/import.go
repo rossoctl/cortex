@@ -117,6 +117,9 @@ func (a *Archive) writeSession(id string, events []model.SessionEvent, replace b
 	if s != nil {
 		// The ledger holds the old copy's turns. If the write below fails or the process stops, the
 		// record keeps the next import from counting them again.
+		// shortcut: after a failed replace, the next import also skips a turn that only the new
+		// copy has, when its request is inside the old copy's span (a parallel subagent). Keep the
+		// request ids of the old copy with the record if that undercount shows up.
 		a.forget([]*sessionState{s})
 		if err := del(); err != nil {
 			return restore(err)

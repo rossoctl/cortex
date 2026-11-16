@@ -895,6 +895,61 @@ func TestRun_TurnAfterSpanKeepsEarlierRowsOfItsMinute(t *testing.T) {
 	}
 }
 
+// A fork of an imported parent runs live, is erased and is imported. Its copy of the parent's
+// turn is before the record's span, and the parent's imported row keeps it from counting again.
+func TestRun_ErasedLiveForkOfImportedParent(t *testing.T) {
+	forkAt := start.Add(10 * time.Minute)
+	a := openArchive(t, archive.WithClock(func() time.Time { return forkAt }))
+	w := openLedger(t)
+	o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+	parent := Session{ID: "P", SizeHint: 1024, Events: turnPair("P-r0", "/repo", start)}
+	parent.Updated = parent.Events[1].At
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{parent}}, o); r.Imported != 1 {
+		t.Fatalf("first report = %+v, want 1 imported", r)
+	}
+	forkTurn := turnPair("F-r0", "/repo", forkAt)
+	w.Record("F", &forkTurn[1])
+	for i, e := range forkTurn {
+		e.Seq, e.SessionID = uint64(i+1), "F"
+		a.Record("F", &e)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for a.LastSeq("F") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if a.LastSeq("F") < 2 {
+		t.Fatal("the live events were not recorded")
+	}
+	erase(t, a, "F")
+	fork := Session{ID: "F", SizeHint: 1024, Events: append(turnPair("P-r0", "/repo", start), forkTurn...)}
+	fork.Updated = forkTurn[1].At
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{fork}}, o); r.Imported != 1 {
+		t.Fatalf("second report = %+v, want 1 imported", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 2 || tok != 2200 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 2, 2200 (P-r0 and F-r0 once each)", req, tok)
+	}
+}
+
+// A record holds Unix milliseconds. A last request with a time below the millisecond is still in
+// the span, so a re-import after the erase does not count it again.
+func TestRun_SubMillisecondLastRequestStaysInSpan(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+	s := Session{ID: "A", SizeHint: 1024,
+		Events: append(turnPair("A-r0", "", start), turnPair("A-r1", "", start.Add(time.Minute+500*time.Microsecond))...)}
+	s.Updated = s.Events[3].At
+	Run(context.Background(), &fakeSource{sessions: []Session{s}}, o)
+	erase(t, a, "A")
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{s}}, o); r.Imported != 1 {
+		t.Fatalf("second report = %+v, want 1 imported", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 2 || tok != 2200 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 2, 2200 (unchanged)", req, tok)
+	}
+}
+
 // A replace sends each turn that the earlier import did not have, also when its request is
 // before the newest request of that import: a parallel subagent was mid-turn during it.
 func TestRun_ReplaceKeepsAParallelTurnWithAnEarlierRequest(t *testing.T) {

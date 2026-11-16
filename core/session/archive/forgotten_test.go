@@ -161,6 +161,27 @@ func TestForgotten_NoInferenceWritesNone(t *testing.T) {
 	}
 }
 
+// A replace that works keeps the session and writes the record of the old copy.
+func TestWriteSession_ReplaceKeepsSessionAndRecord(t *testing.T) {
+	root := t.TempDir()
+	a := openTest(t, root, newClock(), WithLedgerRetentionDays(31))
+	defer a.Close()
+	if err := a.WriteSession("s1", importedEvents(4), false); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := a.Lookup("s1")
+	if err := a.WriteSession("s1", importedEvents(6), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := a.Lookup("s1"); !ok {
+		t.Fatal("the session is not archived after the replace")
+	}
+	want := forgetRecord{ID: "s1", From: old.CreatedAt.UnixMilli(), To: old.LastRequestAt.UnixMilli()}
+	if recs := readForgotten(t, root); len(recs) != 1 || recs[0] != want {
+		t.Fatalf("records = %+v, want [%+v]", recs, want)
+	}
+}
+
 // A replace that fails after it deleted the old copy leaves the session off disk. The record of
 // the old copy keeps the next import from counting the old copy's turns again.
 func TestWriteSession_FailedReplaceKeepsRecordOfOldCopy(t *testing.T) {

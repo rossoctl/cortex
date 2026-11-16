@@ -226,7 +226,8 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, prior *priorTurn
 			if prior != nil && (prior.ids[e.RequestID] || at.Before(prior.oldest)) {
 				continue
 			}
-			if span != nil && at.After(span.to) {
+			// The record holds milliseconds.
+			if span != nil && at.Truncate(time.Millisecond).After(span.to) {
 				after = append(after, e)
 				continue
 			}
