@@ -15,10 +15,12 @@ import (
 	"github.com/rossoctl/cortex/core/session/archive"
 )
 
-// fakeSource yields fixed sessions, and then err when it is set.
+// fakeSource yields fixed sessions, and then err when it is set. After each session is
+// handled, it calls yielded when that is set.
 type fakeSource struct {
 	sessions []Session
 	err      error
+	yielded  func()
 }
 
 func (f *fakeSource) Agent() string       { return "claude-code" }
@@ -28,6 +30,9 @@ func (f *fakeSource) Sessions(time.Time) iter.Seq2[Session, error] {
 		for _, s := range f.sessions {
 			if !yield(s, nil) {
 				return
+			}
+			if f.yielded != nil {
+				f.yielded()
 			}
 		}
 		if f.err != nil {
@@ -232,20 +237,51 @@ func TestRun_LiveEventClearsMarkThenSkips(t *testing.T) {
 }
 
 func TestRun_StopsAtSizeLimit(t *testing.T) {
-	const maxBytes = 64 << 10
-	a := openArchive(t, archive.WithMaxBytes(maxBytes))
-	var ss []Session
-	for i := range 3 {
-		s := fakeSession(fmt.Sprintf("s%d", i), start, 2)
-		s.SizeHint = maxBytes*9/10 - 1 // fits only in an empty archive
-		ss = append(ss, s)
+	// A dry run predicts the stop of a real run from the size hints.
+	for _, dry := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dry=%v", dry), func(t *testing.T) {
+			const maxBytes = 64 << 10
+			a := openArchive(t, archive.WithMaxBytes(maxBytes))
+			var ss []Session
+			for i := range 3 {
+				s := fakeSession(fmt.Sprintf("s%d", i), start, 2)
+				s.SizeHint = maxBytes*9/10 - 1 // fits only in an empty archive
+				ss = append(ss, s)
+			}
+			r := Run(context.Background(), &fakeSource{sessions: ss}, Options{Archive: a, Rates: testRates(t), DryRun: dry})
+			if r.Stopped != "archive full" || r.Imported != 1 || r.NotImported != 2 {
+				t.Fatalf("report = %+v, want a stop with sessions not imported", r)
+			}
+			if st := a.Stats(); st.Bytes > st.MaxBytes {
+				t.Fatalf("archive bytes %d over max %d", st.Bytes, st.MaxBytes)
+			}
+		})
 	}
-	r := Run(context.Background(), &fakeSource{sessions: ss}, Options{Archive: a, Rates: testRates(t)})
-	if r.Stopped != "archive full" || r.Imported != 1 || r.NotImported != 2 {
-		t.Fatalf("report = %+v, want a stop with sessions not imported", r)
+}
+
+func TestRun_CancelStopsBetweenSessions(t *testing.T) {
+	a := openArchive(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	src := &fakeSource{sessions: []Session{fakeSession("s1", start, 1), fakeSession("s2", start, 1)}, yielded: cancel}
+	r := Run(ctx, src, Options{Archive: a, Rates: testRates(t)})
+	if r.Imported != 1 || r.Error != context.Canceled.Error() {
+		t.Fatalf("report = %+v, want 1 imported and the cancel error", r)
 	}
-	if st := a.Stats(); st.Bytes > st.MaxBytes {
-		t.Fatalf("archive bytes %d over max %d", st.Bytes, st.MaxBytes)
+	if _, ok := a.Lookup("s2"); ok {
+		t.Fatal("the run wrote a session after the cancel")
+	}
+}
+
+func TestRun_WriteErrorStopsRun(t *testing.T) {
+	a := openArchive(t)
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	src := &fakeSource{sessions: []Session{fakeSession("s1", start, 1), fakeSession("s2", start, 1)}}
+	r := Run(context.Background(), src, Options{Archive: a, Rates: testRates(t)})
+	if r.Error == "" || r.Imported+r.SkippedLive != 0 {
+		t.Fatalf("report = %+v, want the write error and nothing counted", r)
 	}
 }
 
