@@ -234,6 +234,27 @@ func TestWriteSession_FailedWriteLeavesNothing(t *testing.T) {
 	}
 }
 
+// A replace that fails after the delete forgets the id: a retry is not refused as live.
+func TestWriteSession_FailedReplaceForgetsID(t *testing.T) {
+	a := openTest(t, t.TempDir(), newClock())
+	defer a.Close()
+	if err := a.WriteSession("s1", importedEvents(4), false); err != nil {
+		t.Fatal(err)
+	}
+	a.segHook = func(w *segmentWriter) { w.out.w = failWriter{syscall.ENOSPC} }
+	if err := a.WriteSession("s1", importedEvents(6), true); err == nil {
+		t.Fatal("a failed replace returned no error")
+	}
+	if got := a.LastSeq("s1"); got != 0 {
+		t.Fatalf("LastSeq = %d, want 0", got)
+	}
+	a.segHook = nil
+	a.paused.Store(false)
+	if err := a.WriteSession("s1", importedEvents(6), false); err != nil {
+		t.Fatalf("retry after a failed replace: %v", err)
+	}
+}
+
 // A replace on a paused archive keeps the old copy: the import's source may be gone.
 func TestWriteSession_PausedReplaceKeepsOldCopy(t *testing.T) {
 	a := openTest(t, t.TempDir(), newClock())

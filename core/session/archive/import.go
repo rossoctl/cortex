@@ -112,6 +112,8 @@ func (a *Archive) writeSession(id string, events []model.SessionEvent, replace b
 		if err := del(); err != nil {
 			return restore(err)
 		}
+		// The old copy is gone from disk, so a failure below must not restore its numbering.
+		old = 0
 	}
 
 	// write counts its failures instead of returning them; a change in the count is this
