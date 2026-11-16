@@ -41,15 +41,17 @@ func TestMatch(t *testing.T) {
 		{"/api/v1/agents", false},
 		{"/", false},
 
-		// Query string stripping
-		{"/healthz?verbose=true", true},
-		{"/.well-known/agent.json?format=json", true},
-		{"/metrics?format=prometheus", true},
-
-		// Path normalization (security)
-		{"//healthz", true},
-		{"/./healthz", true},
-		{"/foo/../healthz", true},
+		// A non-canonical path never matches (security)
+		{"//healthz", false},
+		{"/./healthz", false},
+		{"/foo/../healthz", false},
+		{"/healthz/", false},
+		{"/.well-known/", false},
+		{"/.well-known/..", false},
+		{"/.well-known/..;", false},
+		{`/.well-known/..\mcp`, false},
+		{"/.well-known/x?y", false},    // a decoded %3F; the listener strips a real query
+		{"/.well-known/%2e%2e", false}, // a double-encoded dot segment
 
 		// Sub-paths of /metrics are NOT bypassed (exact match only)
 		{"/metrics/cadvisor", false},
@@ -86,6 +88,16 @@ func TestMatch_CustomPatterns(t *testing.T) {
 	}
 	if m.Match("/private/data") {
 		t.Error("expected /private/data to not match")
+	}
+	if m.Match("/status/") {
+		t.Error("expected /status/ to not match")
+	}
+	m, err = NewMatcher([]string{"/mcp/"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !m.Match("/mcp/") || m.Match("/mcp//") {
+		t.Error("expected /mcp/ to match only itself")
 	}
 }
 

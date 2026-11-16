@@ -22,7 +22,7 @@ import (
 type mcpConfig struct {
 	// Paths is the set of URL path globs that should be treated as
 	// MCP endpoints for body-less-request detection. Defaults to
-	// ["/mcp"] which matches the standard MCP Streamable HTTP setup
+	// ["/mcp", "/mcp/"] which matches the standard MCP Streamable HTTP setup
 	// used by the MCP Python SDK and most server templates.
 	//
 	// Path-shape detection only fires on body-less requests; body-
@@ -33,7 +33,7 @@ type mcpConfig struct {
 
 func (c *mcpConfig) applyDefaults() {
 	if len(c.Paths) == 0 {
-		c.Paths = []string{"/mcp"}
+		c.Paths = []string{"/mcp", "/mcp/"}
 	}
 }
 

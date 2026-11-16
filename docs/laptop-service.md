@@ -558,7 +558,8 @@ session:
 ```
 
 The copy keeps `tls_bridge.ca_dir` pointing at `~/.cortex/ca`, so agents trust the same CA.
-Cortex owns everything under the archive `dir`: a clear deletes its `data/` directory whole.
+Cortex owns everything under the archive `dir`: a clear deletes its `data/` directory whole,
+and keeps `forgotten.jsonl` beside it.
 Give it an empty directory that nothing else uses. Do not give two Cortex processes the same
 archive `dir`: a clear in one deletes the files the other is writing.
 
@@ -578,6 +579,14 @@ first by the time they were last written:
 A full disk does not stop the proxy. The archive stops writing until its next hourly pass,
 and requests are served as before; only the history has a gap.
 
+**A removed session leaves a forget record.** When the archive removes a session — `x`, a
+clear `X`, the day limit, the size limit, or an import that replaces it — it adds one line to
+`~/.cortex/sessions/forgotten.jsonl` (in the archive `dir`, next to `data/`). The line holds
+the session id and the time span of its turns, `{"id":"...","from":<unix ms>,"to":<unix ms>}`,
+and no content. It writes a line only for a session with tokens or cost, and only when the cost
+ledger is on. A clear keeps the file. A line is kept until its span is older than
+`cost_ledger.retention_days` (default 31) plus 1 day. `agentop import` uses it: see below.
+
 **What it does not promise.** Writing happens off the request path — and the cost of that is
 that a burst the writer cannot keep up with is dropped *from the archive*, never from memory. An
 unclean kill loses at most the last second.
@@ -596,9 +605,14 @@ the `sqlite3` program on `PATH`. Use it for the sessions that ran before you ins
 `agentop import --since 30d --dry-run` counts first and writes nothing. The
 import skips every session that Cortex captured live, and never changes one.
 Each imported session is marked `imp` in agentop. A Claude Code turn is priced
-at today's rates. A Bob turn keeps Bob's own cost. LAST 1H shows imported turns only after the next restart. The import
-stops at 90% of `max_bytes`. A session that you erased comes back on the next
-import, and its cost is not counted again. Flags and output:
+at today's rates. A Bob turn keeps Bob's own cost. LAST 1H shows imported turns
+only after the next restart. The import stops at 90% of `max_bytes`. A session
+that you erased, or that a limit removed, comes back in full on the next import.
+Its forget record tells the import which turns the cost ledger already holds.
+The turns inside that span are not counted again, and the turns after it are. A
+turn before the span is counted only when the cost ledger has no row of the same
+project near it that the proxy wrote live or that an earlier import wrote. Flags
+and output:
 [`agentop import`](../cmd/agentop/README.md#importing-agent-history-agentop-import).
 Rules: [`POST /v1/import`](session-api.md#post-v1import--transcript-import-laptop-only).
 

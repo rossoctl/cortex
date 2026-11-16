@@ -62,8 +62,9 @@ var closeArchiveOnFatal func()
 // openSessionArchive opens the archive and registers it on the store when sessionArchiveRuns
 // says it should, and returns nil otherwise. A failure to open is a warning, not a fatal error:
 // the archive is observability, and refusing to start the proxy over it would trade a nicety for
-// an outage.
-func openSessionArchive(cfg *config.Config, configPath string, sessions *session.Store) *archive.Archive {
+// an outage. ledgerDays is the cost ledger retention, 0 when no ledger runs: the archive keeps a
+// forget record of a removed session only while the ledger can still hold its cost.
+func openSessionArchive(cfg *config.Config, configPath string, sessions *session.Store, ledgerDays int) *archive.Archive {
 	run, why := sessionArchiveRuns(cfg, configPath)
 	if !run {
 		if a := cfg.Session.Archive; a != nil && a.Enabled != nil && *a.Enabled {
@@ -82,7 +83,8 @@ func openSessionArchive(cfg *config.Config, configPath string, sessions *session
 	if cfg.Session.Archive != nil {
 		ac = *cfg.Session.Archive
 	}
-	arch, err := archive.Open(dir, archive.WithRetentionDays(ac.RetentionDays), archive.WithMaxBytes(ac.MaxBytes))
+	arch, err := archive.Open(dir, archive.WithRetentionDays(ac.RetentionDays), archive.WithMaxBytes(ac.MaxBytes),
+		archive.WithLedgerRetentionDays(ledgerDays))
 	if err != nil {
 		slog.Warn("session archive disabled — could not open it", "dir", dir, "error", err,
 			"effect", "sessions do not survive a restart or eviction")
