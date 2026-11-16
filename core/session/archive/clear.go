@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -98,6 +99,7 @@ func (a *Archive) clearAll(p *pendingClear) {
 	}
 	a.refreshBytes()
 	res := ClearResult{Sessions: len(a.sessions), Bytes: a.bytes.Load()}
+	a.forget(slices.Collect(maps.Values(a.sessions)))
 
 	// The wall clock, not a.now: this only has to be a name no earlier trash holds.
 	trash := filepath.Join(a.root, fmt.Sprintf("%s%d", trashPrefix, time.Now().UnixNano()))

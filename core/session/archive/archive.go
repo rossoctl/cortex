@@ -94,6 +94,11 @@ type Stats struct {
 	DroppedCaptures uint64
 	// Paused is true after ENOSPC, until the next retention pass.
 	Paused bool
+	// ForgetRecords is how many forget records are in memory. BadForgetLines counts the lines of
+	// forgotten.jsonl that Open could not read. ForgetWriteErrors counts failed record writes.
+	ForgetRecords     int
+	BadForgetLines    uint64
+	ForgetWriteErrors uint64
 }
 
 // Archive is the session archive: a session.Recorder that writes every event the store appends
@@ -108,6 +113,7 @@ type Archive struct {
 	root, data string
 	now        func() time.Time
 	retainDays int
+	ledgerDays int // the cost ledger's retention; 0 is no ledger, and no forget records
 	maxBytes   int64
 	depth      int
 	idleClose  time.Duration
@@ -146,6 +152,12 @@ type Archive struct {
 	bytes         atomic.Int64
 	paused        atomic.Bool
 
+	// forgotten is the forget records, id -> {from, to} in Unix ms; see forgotten.go. The writer
+	// goroutine changes it; Forgotten reads it from any goroutine.
+	fgMu                              sync.RWMutex
+	forgotten                         map[string][2]int64
+	badForgetLines, forgetWriteErrors atomic.Uint64
+
 	// index is what readers see: each session's directory, segment ranges and summary,
 	// republished by the writer goroutine whenever they change. Readers decode segment files on
 	// their own goroutine against this snapshot, so a page read never stalls the writer — and a
@@ -162,6 +174,11 @@ type Archive struct {
 	// reportedCaptureDrops and lastCaptureDropLog are the same, for dropped captures.
 	reportedCaptureDrops uint64
 	lastCaptureDropLog   time.Time
+	// forgetLines counts the lines of forgotten.jsonl, forgetTorn is true when its last line may
+	// lack its newline, and lastCompact is the last compactForgotten.
+	forgetLines int
+	forgetTorn  bool
+	lastCompact time.Time
 }
 
 // entryStart is where a store entry began numbering; see Archive.started.
@@ -226,6 +243,7 @@ func Open(root string, opts ...Option) (*Archive, error) {
 		started:       map[string]entryStart{},
 		sessions:      map[string]*sessionState{},
 		index:         map[string]*indexEntry{},
+		forgotten:     map[string][2]int64{},
 	}
 	for _, o := range opts {
 		o(a)
@@ -238,6 +256,7 @@ func Open(root string, opts ...Option) (*Archive, error) {
 			"requested", a.retainDays, "using", MaxRetentionDays)
 		a.retainDays = MaxRetentionDays
 	}
+	a.ledgerDays = min(max(a.ledgerDays, 0), maxLedgerDays)
 	if a.maxBytes <= 0 {
 		a.maxBytes = defaultMaxBytes
 	}
@@ -254,6 +273,8 @@ func Open(root string, opts ...Option) (*Archive, error) {
 		return nil, err
 	}
 	removeTrash(a.root)
+	// Before the prune below, so that what it removes merges into the loaded records.
+	a.loadForgotten()
 
 	loadedSessions, skipped, err := loadMetas(a.data)
 	if err != nil {
@@ -267,7 +288,8 @@ func Open(root string, opts ...Option) (*Archive, error) {
 	}
 	now := a.now()
 	a.prune(now)
-	a.lastPrune, a.lastMeta = now, now
+	a.compactForgotten(now)
+	a.lastPrune, a.lastMeta, a.lastCompact = now, now, now
 	a.refreshBytes()
 
 	a.ops = make(chan op, a.depth)
@@ -424,7 +446,7 @@ func (a *Archive) LastSeq(sessionID string) uint64 {
 
 // Stats reports the archive's size, bounds and losses.
 func (a *Archive) Stats() Stats {
-	return Stats{
+	st := Stats{
 		Bytes:           a.bytes.Load(),
 		MaxBytes:        a.maxBytes,
 		RetentionDays:   a.retainDays,
@@ -434,6 +456,11 @@ func (a *Archive) Stats() Stats {
 		DroppedCaptures: a.droppedCaptures.Load(),
 		Paused:          a.paused.Load(),
 	}
+	a.fgMu.RLock()
+	st.ForgetRecords = len(a.forgotten)
+	a.fgMu.RUnlock()
+	st.BadForgetLines, st.ForgetWriteErrors = a.badForgetLines.Load(), a.forgetWriteErrors.Load()
+	return st
 }
 
 // Root is the directory the archive was opened at.
@@ -502,6 +529,11 @@ func (a *Archive) take(o op) {
 	case opClear:
 		a.clearAll(o.clear)
 	case opDelete:
+		// Only a delete the store asks for keeps a record. WriteSession calls deleteSession
+		// directly.
+		if s := a.sessions[o.id]; s != nil {
+			a.forget([]*sessionState{s})
+		}
 		a.deleteSession(o.id, o.clear)
 	case opFunc:
 		o.f()
@@ -836,6 +868,10 @@ func (a *Archive) tick() {
 			slog.Info("session archive: resuming after a full disk")
 		}
 	}
+	if now.Sub(a.lastCompact) >= 24*time.Hour {
+		a.compactForgotten(now)
+		a.lastCompact = now
+	}
 	if d := a.dropped.Load(); d > a.reportedDrops && now.Sub(a.lastDropLog) >= time.Minute {
 		slog.Warn("session archive: events were not archived", "dropped", d-a.reportedDrops, "droppedTotal", d)
 		a.reportedDrops, a.lastDropLog = d, now
@@ -875,10 +911,15 @@ func (a *Archive) prune(now time.Time) {
 		s.metaDirty = true
 		a.publish(s)
 	}
-	for id, s := range a.sessions {
-		if s.w != nil || len(s.meta.Segments) > 0 {
-			continue
+	var gone []*sessionState
+	for _, s := range a.sessions {
+		if s.w == nil && len(s.meta.Segments) == 0 {
+			gone = append(gone, s)
 		}
+	}
+	a.forget(gone)
+	for _, s := range gone {
+		id := s.meta.ID
 		if err := os.RemoveAll(s.dir); err != nil {
 			slog.Warn("session archive: could not remove an emptied session", "dir", s.dir, "error", err)
 			continue
