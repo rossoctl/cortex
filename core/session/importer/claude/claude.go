@@ -15,7 +15,6 @@ import (
 
 	"github.com/rossoctl/cortex/core/model"
 	ccstore "github.com/rossoctl/cortex/core/observe/claude"
-	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/session/importer"
 )
 
@@ -134,10 +133,8 @@ func readSession(id, path string, subs []subFile, home string) (importer.Session
 	}
 	// Stable: on a tie the main file stays first, and a request stays before its response.
 	slices.SortStableFunc(s.Events, func(a, b model.SessionEvent) int { return a.At.Compare(b.At) })
-	var in session.Interner
-	for i := range s.Events {
-		in.InternEvent(&s.Events[i])
-		if e := &s.Events[i]; e.Phase == model.SessionRequest && e.At.After(s.Updated) {
+	for _, e := range s.Events {
+		if e.Phase == model.SessionRequest && e.At.After(s.Updated) {
 			s.Updated = e.At
 		}
 	}

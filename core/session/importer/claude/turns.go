@@ -12,6 +12,7 @@ import (
 	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/parse/inference"
 	"github.com/rossoctl/cortex/core/project"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // messagesPath is the path the live parser reads an Anthropic Messages body for.
@@ -51,6 +52,11 @@ type fileResult struct {
 type parser struct {
 	home     string
 	projects map[string]string // cwd -> project label
+	// in interns each event when emit makes it. Each event holds the whole conversation,
+	// so an event kept un-interned until the merge makes the parse O(turns^2) in memory.
+	// File order is the order inside each agent, and the tables are per conversation, so
+	// the merge after the parse does not change what is shared.
+	in session.Interner
 }
 
 // turn is one assistant message: the assistant lines with the same message.id, with only user lines between them.
@@ -124,6 +130,9 @@ func (p *parser) file(path, subagent string) (fileResult, error) {
 				Inference: req, Client: client(), Project: proj, Subagent: subagent},
 			model.SessionEvent{At: t.last.Timestamp, Direction: model.Outbound, Phase: model.SessionResponse, RequestID: rid,
 				Inference: &resp, Client: client(), Project: proj, Subagent: subagent})
+		for i := len(res.events) - 2; i < len(res.events); i++ {
+			p.in.InternEvent(&res.events[i])
+		}
 		prevAt = t.last.Timestamp
 		conv = append(conv, convMessage{Role: "assistant", Content: content})
 	}
