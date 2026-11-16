@@ -1,6 +1,7 @@
 package bob
 
 import (
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,7 +164,7 @@ func TestSource_ToolCallsAndResults(t *testing.T) {
 	}
 	calls := resps[0].Inference.ToolCalls
 	if len(calls) != 2 || calls[0].ID != "c1" || calls[0].Name != "read_file" || calls[0].Arguments != `{"path":"a.go"}` ||
-		calls[1].ID != "c2" || calls[1].Name != "list_files" || calls[1].Arguments != `{"path":"."}` {
+		calls[1].ID != "c2" || calls[1].Name != "spawn_subagent" || calls[1].Arguments != `{"message":"list the files"}` {
 		t.Errorf("tool calls %+v", calls)
 	}
 	if th := resps[0].Inference.ResponseThinking; th == nil || th.Blocks != 1 || th.TextBytes != len("look first") || th.SignatureBytes != len("sig") {
@@ -180,7 +181,7 @@ func TestSource_ToolCallsAndResults(t *testing.T) {
 	for _, tl := range reqs[1].Inference.Tools {
 		tools = append(tools, tl.Name)
 	}
-	if !slices.Equal(tools, []string{"read_file", "list_files"}) {
+	if !slices.Equal(tools, []string{"read_file", "spawn_subagent"}) {
 		t.Errorf("tools %v", tools)
 	}
 	if !slices.ContainsFunc(reqs[1].Inference.Messages, func(m model.InferenceMessage) bool {
@@ -211,15 +212,15 @@ func TestSource_ChildTaskInRootSession(t *testing.T) {
 	}
 	s := sessionByID(t, sessions, "t-tools")
 	child := append(phase(s, model.SessionRequest, "t-child"), phase(s, model.SessionResponse, "t-child")...)
-	if len(child) != 2 {
-		t.Fatalf("child events %d, want 2", len(child))
+	if len(child) != 4 {
+		t.Fatalf("child events %d, want 4", len(child))
 	}
 	rootProj := phase(s, model.SessionRequest, "")[0].Project
 	if rootProj == "" {
 		t.Fatal("root has no project")
 	}
 	for _, e := range child {
-		if e.SubagentKind != "subagent" || e.Inference.AgentRole != model.AgentRoleSubagent || e.Project != rootProj {
+		if e.SubagentKind != "subtask" || e.Inference.AgentRole != model.AgentRoleSubagent || e.Project != rootProj {
 			t.Errorf("child event kind %q role %q project %q (root %q)", e.SubagentKind, e.Inference.AgentRole, e.Project, rootProj)
 		}
 	}
@@ -228,6 +229,45 @@ func TestSource_ChildTaskInRootSession(t *testing.T) {
 	}
 	if !slices.IsSortedFunc(s.Events, func(a, b model.SessionEvent) int { return a.At.Compare(b.At) }) {
 		t.Error("events not sorted by At")
+	}
+}
+
+func TestSource_SubagentTurnsFromSpawnRows(t *testing.T) {
+	s := sessionByID(t, readAll(t, New(fixtureDB(t)), time.Time{}), "t-tools")
+	rootProj := phase(s, model.SessionRequest, "")[0].Project
+	for _, c := range []struct {
+		id    string
+		turns int
+		cost  float64 // the spawn row's _meta.spend.cost
+		first int64   // the first request's time, in ms
+	}{
+		{"t-sub", 2, 0.0001, 1763000006000},    // a task row with no messages
+		{"s-inner", 1, 0.00001, 1763000006200}, // spawned by t-sub; no task row
+		{"s-copy", 1, 0.00005, 1763000006600},  // spawned by subtask t-child; also in the start_subtask copy
+	} {
+		reqs, resps := phase(s, model.SessionRequest, c.id), phase(s, model.SessionResponse, c.id)
+		if len(reqs) != c.turns || len(resps) != c.turns {
+			t.Errorf("%s: requests %d, responses %d; want %d", c.id, len(reqs), len(resps), c.turns)
+			continue
+		}
+		var cost float64
+		for _, e := range append(reqs, resps...) {
+			if e.SubagentKind != model.SubagentKindSubagent || e.Inference.AgentRole != model.AgentRoleSubagent || e.Project != rootProj {
+				t.Errorf("%s: kind %q role %q project %q", c.id, e.SubagentKind, e.Inference.AgentRole, e.Project)
+			}
+			if rec, ok := event.Record(&e); ok {
+				cost += rec.CostUSD
+			}
+		}
+		if math.Abs(cost-c.cost) > 1e-12 {
+			t.Errorf("%s: cost %v, want %v", c.id, cost, c.cost)
+		}
+		if !reqs[0].At.Equal(time.UnixMilli(c.first)) {
+			t.Errorf("%s: first request At %v, want %v", c.id, reqs[0].At, time.UnixMilli(c.first))
+		}
+	}
+	if reqs := phase(s, model.SessionRequest, "t-sub"); len(reqs) == 0 || len(reqs[0].Inference.Messages) != 2 || reqs[0].Inference.Messages[0].Role != "system" {
+		t.Errorf("t-sub requests %+v, want the first with its system and user rows", reqs)
 	}
 }
 

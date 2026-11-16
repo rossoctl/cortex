@@ -21,16 +21,18 @@ func TestTimeline_ImportedTaskShowsToolsAndChild(t *testing.T) {
 	for _, tool := range tl.Tools {
 		tools[tool.Name] = true
 	}
-	for _, name := range []string{"read_file", "list_files"} {
+	for _, name := range []string{"read_file", "spawn_subagent"} {
 		if !tools[name] {
 			t.Errorf("no tool %q in %+v", name, tl.Tools)
 		}
 	}
-	var child bool
+	agents := map[string]bool{}
 	for _, a := range tl.Agents {
-		child = child || a.ID == "t-child"
+		agents[a.ID] = true
 	}
-	if !child {
-		t.Fatalf("no t-child row in %+v", tl.Agents)
+	for _, id := range []string{"t-child", "t-sub", "s-inner", "s-copy"} {
+		if !agents[id] {
+			t.Errorf("no %s row in %+v", id, tl.Agents)
+		}
 	}
 }

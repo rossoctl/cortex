@@ -1,6 +1,7 @@
 package bob
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,5 +72,25 @@ func TestSource_UnreadableChildKeepsRoot(t *testing.T) {
 	}
 	if s.Skipped != 2 {
 		t.Errorf("Skipped %d, want 2 (the bad row and the child task)", s.Skipped)
+	}
+}
+
+func TestSubagent_ReadOnce(t *testing.T) {
+	p := parser{projects: map[string]string{}, read: map[string]bool{"own": true}}
+	msgs := []json.RawMessage{json.RawMessage(`{"id":"a","role":"user","content":"go"}`),
+		json.RawMessage(`{"id":"b","role":"assistant","content":"ok","_meta":{"timestamp":20}}`)}
+	d := func(id string) *data {
+		var x data
+		x.Messages, x.Meta.SubagentID = msgs, id
+		return &x
+	}
+	if ev, _ := p.subagent(agent{model: "premium-ide"}, d("s"), time.UnixMilli(10)); len(ev) != 2 {
+		t.Fatalf("first read: %d events, want 2", len(ev))
+	}
+	// A second spawn row of s, and a subagent whose task has its own rows, add nothing.
+	for _, id := range []string{"s", "own"} {
+		if ev, _ := p.subagent(agent{model: "premium-ide"}, d(id), time.UnixMilli(10)); len(ev) != 0 {
+			t.Errorf("%s: %d events, want 0", id, len(ev))
+		}
 	}
 }

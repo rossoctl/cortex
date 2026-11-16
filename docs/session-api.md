@@ -474,8 +474,14 @@ a subprocess, and adds no SQLite driver to Cortex. When `sqlite3` is not on
 agents continue. When `bob.db` does not exist, the source imports nothing.
 
 - One Bob task is one session. The session id is the task id (`X-Task-Id`).
-- A child task (`subtask` or `subagent`) is in the session of its root task.
-  Its events have `subagent` set to the child task's id.
+- A subtask is in the session of its root task. Its events have `subagent`
+  set to the subtask's id and `subagentKind: "subtask"`.
+- Bob keeps a subagent's turns in the `messages` of the parent's
+  `spawn_subagent` tool row, not in the subagent's task. They are in the
+  session of the root task, with `subagent` set to `_meta.subagentId` and
+  `subagentKind: "subagent"`. A nested message with no `_meta.timestamp` has
+  the time of the message before it, or of the parent's spawning turn. The `messages` of a `start_subtask` tool
+  row is a copy of the subtask's own rows, and the import does not read it.
 - Each event has the `bob` client, the model alias that Bob records (for
   example `premium-ide`), and the project of `tasks.directory`. When that is
   empty, the project is the task's workspace.

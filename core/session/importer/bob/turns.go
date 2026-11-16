@@ -40,7 +40,12 @@ type data struct {
 		Thinking  string `json:"thinking"`
 		Signature string `json:"signature"`
 	} `json:"thinkingBlocks"`
-	Meta struct {
+	// Messages is a spawn_subagent row's copy of the subagent's conversation. A
+	// start_subtask row has one too, of the subtask, whose own task rows hold it.
+	Messages []json.RawMessage `json:"messages"`
+	Meta     struct {
+		SubagentID string `json:"subagentId"` // on a spawn_subagent row
+		Timestamp  int64  `json:"timestamp"`  // in ms; set on a nested assistant or tool message
 		StopReason string `json:"stopReason"`
 		Spend      *struct {
 			Cost          float64 `json:"cost"`
@@ -81,26 +86,67 @@ type parser struct {
 	// in interns each event when it is made, as in the Claude source: each event holds the
 	// whole conversation.
 	in session.Interner
+	// read holds the subagent ids whose turns the session has: a task with its own rows, or
+	// a spawn_subagent row already read. Each subagent's turns are read once.
+	read map[string]bool
+}
+
+// agent is what the events of one task or subagent share.
+type agent struct {
+	role                                    model.AgentRole
+	subagent, kind, model, version, project string
 }
 
 // task makes the request and response events of the rows of one task.
 func (p *parser) task(t *task, root bool, rows []row) ([]model.SessionEvent, int) {
-	var events []model.SessionEvent
-	var skipped int
-	role, subagent, kind := model.AgentRoleMain, "", ""
+	a := agent{role: model.AgentRoleMain, model: t.Model}
 	if !root {
-		role, subagent, kind = model.AgentRoleSubagent, t.ID, t.TaskType
+		a.role, a.subagent, a.kind = model.AgentRoleSubagent, t.ID, t.TaskType
 	}
 	dir := t.Dir
 	if dir == "" {
 		dir = p.rootDir
 	}
-	proj := p.project(dir)
-	version := ""
+	a.project = p.project(dir)
 	if t.Version != nil {
-		version = *t.Version
+		a.version = *t.Version
 	}
+	return p.turns(a, rows)
+}
 
+// subagent makes the events of the conversation in a spawn_subagent row. A nested message
+// with no timestamp gets the time of the message before it, from start.
+func (p *parser) subagent(parent agent, d *data, start time.Time) ([]model.SessionEvent, int) {
+	id := d.Meta.SubagentID
+	if id == "" || p.read[id] {
+		return nil, 0
+	}
+	p.read[id] = true
+	rows := make([]row, 0, len(d.Messages))
+	at := start.UnixMilli()
+	for _, raw := range d.Messages {
+		var m struct {
+			ID   string `json:"id"`
+			Role string `json:"role"`
+			Meta struct {
+				Timestamp int64 `json:"timestamp"`
+			} `json:"_meta"`
+		}
+		_ = json.Unmarshal(raw, &m) // a bad message is skipped by turns
+		if m.Meta.Timestamp > 0 {
+			at = m.Meta.Timestamp
+		}
+		rows = append(rows, row{ID: m.ID, Role: m.Role, Data: string(raw), CreatedAt: at})
+	}
+	a := parent
+	a.role, a.subagent, a.kind = model.AgentRoleSubagent, id, model.SubagentKindSubagent
+	return p.turns(a, rows)
+}
+
+// turns makes the request and response events of rows.
+func (p *parser) turns(a agent, rows []row) ([]model.SessionEvent, int) {
+	var events []model.SessionEvent
+	var skipped int
 	conv := []chatMessage{}
 	var tools []chatTool
 	var pending []string // the tool-call ids of the last assistant message
@@ -132,6 +178,12 @@ func (p *parser) task(t *task, root bool, rows []row) ([]model.SessionEvent, int
 			}
 			next++
 			conv = append(conv, m)
+			start := prevAt
+			if start.IsZero() {
+				start = at
+			}
+			sub, subSkipped := p.subagent(a, &d, start)
+			events, skipped = append(events, sub...), skipped+subSkipped
 			inputAt = at
 		case "assistant":
 			reqAt := inputAt
@@ -148,14 +200,14 @@ func (p *parser) task(t *task, root bool, rows []row) ([]model.SessionEvent, int
 				calls = append(calls, tc)
 			}
 			msg := chatMessage{Role: "assistant", Content: d.Content, ToolCalls: calls}
-			if req, resp, plugins := turn(t.Model, conv, tools, msg, &d); req != nil {
-				client := func() *model.EventClient { return &model.EventClient{Name: agentName, Version: version} }
-				req.AgentRole, resp.AgentRole = role, role
+			if req, resp, plugins := turn(a.model, conv, tools, msg, &d); req != nil {
+				client := func() *model.EventClient { return &model.EventClient{Name: agentName, Version: a.version} }
+				req.AgentRole, resp.AgentRole = a.role, a.role
 				events = append(events,
 					model.SessionEvent{At: reqAt, Direction: model.Outbound, Phase: model.SessionRequest, RequestID: r.ID,
-						Inference: req, Client: client(), Project: proj, Subagent: subagent, SubagentKind: kind},
+						Inference: req, Client: client(), Project: a.project, Subagent: a.subagent, SubagentKind: a.kind},
 					model.SessionEvent{At: at, Direction: model.Outbound, Phase: model.SessionResponse, RequestID: r.ID,
-						Inference: resp, Plugins: plugins, Client: client(), Project: proj, Subagent: subagent, SubagentKind: kind})
+						Inference: resp, Plugins: plugins, Client: client(), Project: a.project, Subagent: a.subagent, SubagentKind: a.kind})
 				for i := len(events) - 2; i < len(events); i++ {
 					p.in.InternEvent(&events[i])
 				}
