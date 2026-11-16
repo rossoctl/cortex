@@ -413,11 +413,11 @@ the body, not in the status:
 ```json
 {"dryRun": true, "agents": [{"agent": "claude-code", "imported": 12, "replaced": 3,
   "skippedLive": 40, "skippedCurrent": 7, "skippedLines": 2, "skippedExpired": 1,
-  "notImported": 5, "stopped": "archive full", "error": "…"}]}
+  "unreadable": 1, "notImported": 5, "stopped": "archive full", "error": "…"}]}
 ```
 
-`skippedExpired`, `notImported`, `stopped` and `error` are sent only when they
-are set.
+`skippedExpired`, `unreadable`, `notImported`, `stopped` and `error` are sent
+only when they are set.
 
 **Live sessions and re-import.** The import applies these rules to each
 session in order:
@@ -451,6 +451,8 @@ kept the ledger rows, so the import does not count its cost again.
   sessions left.
 - One line that the source does not recognize, in a session that the import
   parses, is skipped and counted (`skippedLines`). It does not stop the import.
+- A session whose main transcript cannot be read is skipped and counted
+  (`unreadable`). The proxy logs the path and the error.
 - LAST 1H and the usage pane's hour windows show imported turns only after the
   next proxy restart. The import does not feed them.
 
@@ -459,6 +461,8 @@ add the other agents. The Claude Code source reads
 `~/.claude/projects/<project>/<uuid>.jsonl`, or the same path under
 `CLAUDE_CONFIG_DIR` when that variable is set. Each event has the
 `claude-code` client and the project of the transcript's working directory.
+A `<synthetic>` assistant line is not a turn: Claude Code writes it itself, for
+an API error or "No response requested.".
 
 ## `POST /v1/ingest` — rows from cortex-gateway (praxis mode)
 

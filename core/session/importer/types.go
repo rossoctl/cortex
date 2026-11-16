@@ -29,6 +29,9 @@ type Session struct {
 	SizeHint int64                // bytes of the files read, for the archive size check
 	Events   []model.SessionEvent // request/response pairs in order; Seq unset
 	Skipped  int                  // lines not recognized
+	// Unreadable is true when the session's main transcript could not be read. Run counts the
+	// session in AgentReport.Unreadable, and does not write it.
+	Unreadable bool
 }
 
 // Request is the body of POST /v1/import.
@@ -47,6 +50,7 @@ type AgentReport struct {
 	SkippedCurrent int    `json:"skippedCurrent"`
 	SkippedLines   int    `json:"skippedLines"`
 	SkippedExpired int    `json:"skippedExpired,omitempty"` // older than the archive's retention
+	Unreadable     int    `json:"unreadable,omitempty"`     // sessions whose transcript could not be read
 	NotImported    int    `json:"notImported,omitempty"`    // left after an archive-full stop
 	Stopped        string `json:"stopped,omitempty"`        // "archive full" or ""
 	Error          string `json:"error,omitempty"`

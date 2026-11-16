@@ -295,18 +295,23 @@ func (m *model) rebuildSessionsTable() {
 			continue
 		}
 		b := newRowBuilder(q != "")
-		b.cut(sessionIDCell(s.ID, idW), func() string { return sessionIDCell(s.ID, noLimit) })
+		// An imported session's title starts with "imp ". Plain text, not dim: the table cuts
+		// a cell by its bytes, and a style's escape bytes would mangle it (see cachedMarker).
+		// With no TITLE column, the SESSION cell has the mark.
+		mark, markW := "", 0
+		if strings.HasPrefix(s.Source, coremodel.ImportedSourcePrefix) {
+			mark, markW = importedMarker, len(importedMarker)
+		}
+		if showTitle || mark == "" {
+			b.cut(sessionIDCell(s.ID, idW), func() string { return sessionIDCell(s.ID, noLimit) })
+		} else {
+			b.cut(mark+sessionIDCell(s.ID, idW-markW), func() string { return sessionIDCell(s.ID, noLimit) })
+		}
 		// s.Title straight off the summary, where sessionLabel reaches the same value by id
 		// through m.servedTitle. Two routes, equal only because they read the same slice —
 		// probed across many inputs without finding a divergence. Do not "unify" one into the
 		// other: this loop has the summary in hand and should not pay a lookup, and the header
 		// path has only an id and cannot avoid one.
-		// An imported session's title starts with "imp ". Plain text, not dim: the table cuts
-		// a cell by its bytes, and a style's escape bytes would mangle it (see cachedMarker).
-		mark, markW := "", 0
-		if strings.HasPrefix(s.Source, coremodel.ImportedSourcePrefix) {
-			mark, markW = importedMarker, len(importedMarker)
-		}
 		title := func() string { return mark + m.sessionTitleCell(s.ID, s.Title, noLimit) }
 		if showTitle {
 			b.cut(mark+m.sessionTitleCell(s.ID, s.Title, titleW-markW), title)

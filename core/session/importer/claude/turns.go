@@ -164,6 +164,8 @@ func (p *parser) file(path, subagent string) (fileResult, error) {
 				// summary, file-history-snapshot, other system lines: not part of the conversation.
 			case l.Message == nil:
 				res.skipped++
+			case l.Type == "assistant" && l.Message.Model == "<synthetic>":
+				// Claude Code wrote it (an API error, "No response requested."): no API call made it.
 			case l.Type == "user" && cur != nil:
 				held = append(held, &l)
 			case l.Type == "user":

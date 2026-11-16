@@ -68,12 +68,13 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 				!slices.ContainsFunc(subs, func(f subFile) bool { return !f.mod.Before(since) }) {
 				continue
 			}
-			if skip(id, newestAt(m.path, subs)) {
+			var sess importer.Session
+			if newest, err := newestAt(m.path, subs); err != nil {
+				sess = unreadable(id, m.path, err)
+			} else if skip(id, newest) {
 				continue
-			}
-			sess, ok := readSession(id, m.path, subs, home)
-			if !ok {
-				continue
+			} else {
+				sess = readSession(id, m.path, subs, home)
 			}
 			if !yield(sess, nil) {
 				return
@@ -151,14 +152,18 @@ func listAgents(dir string) []subFile {
 	return out
 }
 
-// readSession parses the main transcript and the subagent transcripts of one session. It
-// gives false when the main transcript cannot be read.
-func readSession(id, path string, subs []subFile, home string) (importer.Session, bool) {
+// unreadable is the session of a main transcript that cannot be read.
+func unreadable(id, path string, err error) importer.Session {
+	slog.Warn("importer: cannot read a Claude Code transcript", "path", path, "error", err)
+	return importer.Session{ID: id, Unreadable: true}
+}
+
+// readSession parses the main transcript and the subagent transcripts of one session.
+func readSession(id, path string, subs []subFile, home string) importer.Session {
 	p := parser{home: home, projects: map[string]string{}}
 	main, err := p.file(path, "")
 	if err != nil {
-		slog.Warn("importer: cannot read a Claude Code transcript", "path", path, "error", err)
-		return importer.Session{}, false
+		return unreadable(id, path, err)
 	}
 	s := importer.Session{ID: id, Events: main.events, Skipped: main.skipped, SizeHint: main.size}
 	for _, f := range subs {
@@ -178,27 +183,31 @@ func readSession(id, path string, subs []subFile, home string) (importer.Session
 			s.Updated = e.At
 		}
 	}
-	return s, true
+	return s
 }
 
 // newestAt reads the timestamps of the files of one session, without the parse. It gives
 // the newest assistant line, and the newest user line that an assistant line follows. Each
 // event that the parse makes has the time of one of these lines, so the result is not before
-// Session.Updated. A file it cannot read gives the zero time.
-func newestAt(path string, subs []subFile) time.Time {
-	t := newestInFile(path)
+// Session.Updated. It gives an error when the main transcript cannot be opened. A subagent file
+// it cannot open gives the zero time.
+func newestAt(path string, subs []subFile) (time.Time, error) {
+	t, err := newestInFile(path)
+	if err != nil {
+		return t, err
+	}
 	for _, f := range subs {
-		if n := newestInFile(f.path); n.After(t) {
+		if n, _ := newestInFile(f.path); n.After(t) {
 			t = n
 		}
 	}
-	return t
+	return t, nil
 }
 
-func newestInFile(path string) time.Time {
+func newestInFile(path string) (time.Time, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return time.Time{}
+		return time.Time{}, err
 	}
 	defer f.Close()
 	var newest, user time.Time
@@ -226,7 +235,7 @@ func newestInFile(path string) time.Time {
 			}
 		}
 		if rerr != nil {
-			return newest
+			return newest, nil
 		}
 	}
 }

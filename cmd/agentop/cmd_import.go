@@ -114,6 +114,9 @@ Flags:
 	for _, a := range rep.Agents {
 		fmt.Fprintf(stdout, "%s%s: %d imported, %d replaced, %d skipped (live), %d skipped (current), %d skipped (expired), %d lines not recognized\n",
 			prefix, a.Agent, a.Imported, a.Replaced, a.SkippedLive, a.SkippedCurrent, a.SkippedExpired, a.SkippedLines)
+		if a.Unreadable > 0 {
+			fmt.Fprintf(stdout, "  unreadable: %d transcripts could not be read\n", a.Unreadable)
+		}
 		if a.Stopped != "" {
 			fmt.Fprintf(stdout, "  stopped: %s, %d sessions not imported\n", a.Stopped, a.NotImported)
 		}

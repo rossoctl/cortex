@@ -124,3 +124,29 @@ func TestRawView_ImportedNotCaptured(t *testing.T) {
 		t.Errorf("live event without capture = %s, want unchanged", got)
 	}
 }
+
+// TestSessionIDCell_ImportedPrefixWithoutTitle: a terminal too narrow for TITLE puts the
+// imported mark on the SESSION cell, so the row is still marked.
+func TestSessionIDCell_ImportedPrefixWithoutTitle(t *testing.T) {
+	m := fitModel(t, paneSessions, 60, 40, nil)
+	m.sessions = []session.SessionSummary{
+		{ID: "imp-1", Title: "fix the build", Source: importedSrc},
+		{ID: "live-1", Title: "fix the build"},
+	}
+	m.rebuildSessionsTable()
+	rows := m.sessionsTbl.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	for _, c := range rows[0] {
+		if strings.Contains(c, "fix the build") {
+			t.Fatalf("TITLE is shown at 60 columns: %q", rows[0])
+		}
+	}
+	if got := rows[0][0]; !strings.HasPrefix(got, importedMarker) {
+		t.Errorf("imported SESSION cell = %q, want the prefix %q", got, importedMarker)
+	}
+	if got := rows[1][0]; strings.HasPrefix(got, importedMarker) {
+		t.Errorf("live SESSION cell = %q, has the imported prefix", got)
+	}
+}

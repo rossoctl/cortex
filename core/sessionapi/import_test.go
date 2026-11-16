@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -158,6 +159,11 @@ func TestImport_PathFieldIgnored(t *testing.T) {
 func TestImport_SecondRequestIs409(t *testing.T) {
 	src := &importSource{sessions: []importer.Session{importSession("s1")}, block: make(chan struct{})}
 	ts := importServer(t, []importer.Source{src})
+	// Registered after the server, so it runs first: a failed check must not leave the handler
+	// blocked while the server's cleanup waits for it.
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(src.block) }) }
+	t.Cleanup(unblock)
 	resp, err := http.Post(ts.URL+"/v1/import", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +176,7 @@ func TestImport_SecondRequestIs409(t *testing.T) {
 	if code, _ := postImport(t, ts.URL, `{}`); code != http.StatusConflict {
 		t.Fatalf("second POST = %d, want 409", code)
 	}
-	close(src.block)
+	unblock()
 	b, _ := io.ReadAll(resp.Body)
 	if r := decodeReport(t, b); len(r.Agents) != 1 || r.Agents[0].Imported != 1 {
 		t.Fatalf("first report = %+v, want 1 imported", r)

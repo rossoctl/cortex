@@ -821,7 +821,8 @@ turns are counted as cost. A session that you erased with `x` or `X` comes back
 as an imported session while its transcript is still on disk. Its cost is not
 counted again, because the erase kept the ledger rows.
 
-An imported session has a dim `imp` before its title in the sessions pane.
+An imported session has `imp` before its title in the sessions pane. When the
+terminal is too narrow for TITLE, `imp` is before its id.
 Its events show `n/a` for status, duration, bytes, host and plugin, because the
 proxy did not see them. Tokens and cost show values, priced at today's rates.
 

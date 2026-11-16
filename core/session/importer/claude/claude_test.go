@@ -359,3 +359,50 @@ func TestSessions_SkipBeforeTheParse(t *testing.T) {
 		}
 	}
 }
+
+// Claude Code writes local "<synthetic>" assistant lines (an API error, "No response
+// requested."). No API call made them, so they are not turns.
+func TestFile_SyntheticLineIsNotATurn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.jsonl")
+	lines := `{"type":"user","timestamp":"2026-11-01T12:00:00Z","message":{"role":"user","content":"hi"}}
+{"type":"assistant","timestamp":"2026-11-01T12:00:01Z","message":{"id":"msg_syn","model":"<synthetic>","content":[{"type":"text","text":"API Error: Request rejected (429)"}],"usage":{"input_tokens":0,"output_tokens":0}}}
+{"type":"user","timestamp":"2026-11-01T12:00:02Z","message":{"role":"user","content":"again"}}
+{"type":"assistant","timestamp":"2026-11-01T12:00:03Z","requestId":"req_1","message":{"id":"msg_1","model":"claude-opus-5-5","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":5,"output_tokens":2}}}
+`
+	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &parser{projects: map[string]string{}}
+	res, err := p.file(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := importer.Session{Events: res.events}
+	resp, reqs := responses(s, ""), requests(s, "")
+	if len(resp) != 1 || resp[0].RequestID != "req_1" || res.skipped != 0 {
+		t.Fatalf("got %d responses (%+v), %d skipped; want only req_1 and 0 skipped", len(resp), resp, res.skipped)
+	}
+	for _, m := range reqs[0].Inference.Messages {
+		if m.Role == "assistant" {
+			t.Errorf("request has the synthetic message: %+v", reqs[0].Inference.Messages)
+		}
+	}
+}
+
+// A main transcript that cannot be read gives a Session with Unreadable set, so the report
+// counts it.
+func TestSource_UnreadableMainTranscriptIsReported(t *testing.T) {
+	dir := fixtures(t)
+	main := filepath.Join(dir, "projects", "-tmp-demo", plainID+".jsonl")
+	if err := os.Chmod(main, 0); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := os.Open(main); err == nil {
+		f.Close()
+		t.Skip("the file is readable without permission (root)")
+	}
+	s := sessionByID(t, dir, plainID)
+	if !s.Unreadable || len(s.Events) != 0 {
+		t.Fatalf("Unreadable = %v with %d events, want true with none", s.Unreadable, len(s.Events))
+	}
+}

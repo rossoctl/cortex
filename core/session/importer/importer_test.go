@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -662,5 +663,74 @@ func TestRun_ReplaceDoesNotHideAnErasedSessionsRow(t *testing.T) {
 	}
 	if req, tok, _ := sumCost(t, w); req != 3 || tok != 3300 {
 		t.Fatalf("ledger has %d requests, %d tokens; want 3, 3300", req, tok)
+	}
+}
+
+// turnPair is one request/response pair of id rid: the request at at, the response a second later.
+func turnPair(rid, project string, at time.Time) []model.SessionEvent {
+	return []model.SessionEvent{
+		{At: at, Direction: model.Outbound, Phase: model.SessionRequest, RequestID: rid, Project: project,
+			Inference: &model.InferenceExtension{Model: "claude-sonnet-4-5"}},
+		{At: at.Add(time.Second), Direction: model.Outbound, Phase: model.SessionResponse, RequestID: rid, Project: project,
+			Inference: &model.InferenceExtension{Model: "claude-sonnet-4-5", InputTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}},
+	}
+}
+
+// A fork (claude --resume --fork-session) copies its parent's turns with the same request ids.
+// When one run imports both, the copied turn reaches the ledger one time, in either order.
+func TestRun_ForkedCopyCountsOnceInOneRun(t *testing.T) {
+	parent := Session{ID: "P", SizeHint: 1024, Events: turnPair("P-r0", "/repo", start)}
+	fork := Session{ID: "F", SizeHint: 1024,
+		Events: append(turnPair("P-r0", "/repo", start), turnPair("F-r0", "/repo", start.Add(70*time.Second))...)}
+	parent.Updated, fork.Updated = parent.Events[1].At, fork.Events[3].At
+	for _, order := range [][]Session{{parent, fork}, {fork, parent}} {
+		a := openArchive(t)
+		w := openLedger(t)
+		r := Run(context.Background(), &fakeSource{sessions: order}, Options{Archive: a, Ledger: w, Rates: testRates(t)})
+		if r.Imported != 2 {
+			t.Fatalf("report = %+v, want 2 imported", r)
+		}
+		if req, tok, _ := sumCost(t, w); req != 2 || tok != 2200 {
+			t.Fatalf("first %s: ledger has %d requests, %d tokens; want 2, 2200", order[0].ID, req, tok)
+		}
+	}
+}
+
+// A replace sends each turn that the earlier import did not have, also when its request is
+// before the newest request of that import: a parallel subagent was mid-turn during it.
+func TestRun_ReplaceKeepsAParallelTurnWithAnEarlierRequest(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+	old := Session{ID: "A", SizeHint: 1024,
+		Events: append(turnPair("A-r0", "/repo", start), turnPair("A-r1", "/repo", start.Add(5*time.Minute))...)}
+	old.Updated = old.Events[3].At
+	Run(context.Background(), &fakeSource{sessions: []Session{old}}, o)
+
+	grown := old
+	grown.Events = append(slices.Clone(old.Events), turnPair("A-r3", "/repo", start.Add(7*time.Minute))...)
+	// A-r2's request came before A-r1's, and its response after the earlier import.
+	r2 := turnPair("A-r2", "/repo", start.Add(2*time.Minute))
+	r2[1].At = start.Add(6 * time.Minute)
+	grown.Events = append(grown.Events, r2...)
+	grown.Updated = start.Add(7*time.Minute + time.Second)
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{grown}}, o); r.Replaced != 1 {
+		t.Fatalf("report = %+v, want 1 replaced", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 4 || tok != 4400 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 4, 4400", req, tok)
+	}
+}
+
+// A session whose transcript the source could not read is counted, and nothing is written.
+func TestRun_UnreadableSessionIsCounted(t *testing.T) {
+	a := openArchive(t)
+	r := Run(context.Background(), &fakeSource{sessions: []Session{{ID: "x", Unreadable: true}, fakeSession("s1", start, 1)}},
+		Options{Archive: a})
+	if r.Unreadable != 1 || r.Imported != 1 {
+		t.Fatalf("report = %+v, want 1 unreadable and 1 imported", r)
+	}
+	if _, ok := a.Lookup("x"); ok {
+		t.Fatal("the unreadable session was archived")
 	}
 }

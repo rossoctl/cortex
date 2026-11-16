@@ -31,7 +31,7 @@ func fakeImportServer(t *testing.T, code int, body string, got *importer.Request
 
 func TestRunImport_PrintsOneLinePerAgent(t *testing.T) {
 	srv := fakeImportServer(t, 200, `{"agents":[`+
-		`{"agent":"claude-code","imported":12,"replaced":3,"skippedLive":40,"skippedCurrent":7,"skippedExpired":1,"skippedLines":2,"stopped":"archive full","notImported":5},`+
+		`{"agent":"claude-code","imported":12,"replaced":3,"skippedLive":40,"skippedCurrent":7,"skippedExpired":1,"skippedLines":2,"unreadable":2,"stopped":"archive full","notImported":5},`+
 		`{"agent":"bob","error":"no store"}]}`, nil)
 	defer srv.Close()
 	var out, errOut strings.Builder
@@ -40,6 +40,7 @@ func TestRunImport_PrintsOneLinePerAgent(t *testing.T) {
 		t.Errorf("exit = %d, want 1 (one agent has an error)", code)
 	}
 	want := "claude-code: 12 imported, 3 replaced, 40 skipped (live), 7 skipped (current), 1 skipped (expired), 2 lines not recognized\n" +
+		"  unreadable: 2 transcripts could not be read\n" +
 		"  stopped: archive full, 5 sessions not imported\n" +
 		"bob: 0 imported, 0 replaced, 0 skipped (live), 0 skipped (current), 0 skipped (expired), 0 lines not recognized\n" +
 		"  error: no store\n"
