@@ -317,6 +317,27 @@ func TestRun_LedgerGetsAllTurnsOnImport(t *testing.T) {
 	}
 }
 
+// More back-dated turns than the ledger's queue holds (1024): none may be dropped.
+func TestRun_LedgerKeepsEveryTurnOfALargeImport(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	old := time.Now().AddDate(0, 0, -20).Truncate(time.Minute)
+	var ss []Session
+	for i := range 40 {
+		ss = append(ss, fakeSession(fmt.Sprintf("big%d", i), old, 200))
+	}
+	rep := Run(context.Background(), &fakeSource{sessions: ss}, Options{Archive: a, Ledger: w, Rates: testRates(t)})
+	if rep.Error != "" || rep.Imported != 40 {
+		t.Fatalf("report = %+v, want 40 imported and no error", rep)
+	}
+	if req, _ := sumRows(ledgerRows(t, w)); req != 8000 {
+		t.Fatalf("ledger has %d requests, want 8000", req)
+	}
+	if d := w.Dropped(); d != 0 {
+		t.Fatalf("ledger dropped %d rows, want 0", d)
+	}
+}
+
 func TestRun_LedgerGetsOnlyNewTurnsOnReplace(t *testing.T) {
 	a := openArchive(t)
 	w := openLedger(t)

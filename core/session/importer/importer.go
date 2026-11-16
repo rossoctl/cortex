@@ -106,7 +106,10 @@ func Run(ctx context.Context, src Source, o Options) AgentReport {
 			if found {
 				after = sum.LastRequestAt
 			}
-			toLedger(ctx, o.Ledger, s, after)
+			if err := toLedger(ctx, o.Ledger, s, after); err != nil {
+				r.Error = "cost ledger: " + err.Error()
+				break
+			}
 		}
 	}
 	return r
@@ -128,7 +131,7 @@ func count(r *AgentReport, replace bool) {
 // shortcut: rows carry no session id, so a turn of a session that did not go through Cortex is
 // skipped when another session in the same project had live traffic in that minute. Keep the
 // session id on ledger rows if that undercount shows up.
-func toLedger(ctx context.Context, w *ledger.Writer, s Session, after time.Time) {
+func toLedger(ctx context.Context, w *ledger.Writer, s Session, after time.Time) error {
 	cutoff := w.RetentionCutoff()
 	requestAt := map[string]time.Time{}
 	var turns []*model.SessionEvent
@@ -144,7 +147,7 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, after time.Time)
 		}
 	}
 	if len(turns) == 0 {
-		return
+		return nil
 	}
 	from, to := turns[0].At, turns[0].At
 	for _, e := range turns {
@@ -163,14 +166,16 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, after time.Time)
 			live[liveKey{r.At.Truncate(time.Minute).Unix(), r.Project}] = true
 		}
 	}
+	var keep []*model.SessionEvent
 	for _, e := range turns {
 		m := e.At.Truncate(time.Minute)
 		p := model.TruncateLabelTail(model.SanitizeControlRunes(e.Project), event.MaxLabelLen) // as Row.Project
 		if live[liveKey{m.Unix(), p}] || live[liveKey{m.Add(-time.Minute).Unix(), p}] || live[liveKey{m.Add(time.Minute).Unix(), p}] {
 			continue
 		}
-		w.Record(s.ID, e)
+		keep = append(keep, e)
 	}
+	return w.RecordBatch(keep)
 }
 
 type liveKey struct {

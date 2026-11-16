@@ -336,6 +336,27 @@ func tokenCount(n int) int64 {
 // observability. Neither a failure nor a delay here may become a failed or a slow
 // request. See the type doc for how the hand-off works.
 func (w *Writer) Record(_ string, e *model.SessionEvent) {
+	if minute, r, ok := w.row(e); ok {
+		w.add(minute, r)
+	}
+}
+
+// RecordBatch records es as Record does, but writes every row in one append and waits for it.
+// For a bulk caller (the transcript import): Record never blocks, so thousands of back-dated
+// rows overflow the queue and are dropped, live rows with them. Writing a minute that is also
+// held in memory is safe: Window sums the disk rows and the pending ones.
+func (w *Writer) RecordBatch(es []*model.SessionEvent) error {
+	var rows []Row
+	for _, e := range es {
+		if _, r, ok := w.row(e); ok {
+			rows = append(rows, r)
+		}
+	}
+	return w.submit(batch{rows: rows})
+}
+
+// row builds the ledger row for e. ok is false when e is not admitted.
+func (w *Writer) row(e *model.SessionEvent) (minute time.Time, r Row, ok bool) {
 	if e == nil {
 		return
 	}
@@ -417,13 +438,13 @@ func (w *Writer) Record(_ string, e *model.SessionEvent) {
 	// window — so a producer that built At in UTC while a reader asks about a local day
 	// put the row in one file and looked for it in another, losing rows near midnight.
 	// Normalising here pins both sides to store.loc. See store.loc and Query.
-	minute := e.At.In(w.store.loc).Truncate(time.Minute)
+	minute = e.At.In(w.store.loc).Truncate(time.Minute)
 	if e.At.IsZero() {
 		// A zero At would file the row under year 1 and make it invisible to every
 		// query. The aggregator substitutes its own clock for the same reason.
 		minute = w.now().In(w.store.loc).Truncate(time.Minute)
 	}
-	r := Row{
+	r = Row{
 		At: minute,
 		// SANITISED AND TRUNCATED, both of them, and neither is cosmetic: Model is the model
 		// name straight off the parsed request body and Host is whatever the workload asked
@@ -646,7 +667,7 @@ func (w *Writer) Record(_ string, e *model.SessionEvent) {
 		}
 	}
 
-	w.add(minute, r)
+	return minute, r, true
 }
 
 // add folds one row into the open minute and hands off any work that touches disk.
