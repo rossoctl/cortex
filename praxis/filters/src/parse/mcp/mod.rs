@@ -40,43 +40,15 @@ fn is_mcp_method(method: &str) -> bool {
         .any(|p| method.starts_with(p))
 }
 
-/// Port of bypass.Matcher.Match for the default mcp-parser paths, `["/mcp"]`.
-/// shortcut: only the default "/mcp" pattern, no globs; port path.Match when praxis mode reads mcp-parser config
+/// Port of bypass.Matcher.Match for the default mcp-parser paths, `["/mcp", "/mcp/"]`.
+/// Only a canonical path matches, so with two literal patterns the match is exact.
+/// shortcut: only the default patterns, no globs; port path.Match when praxis mode reads mcp-parser config
 fn is_mcp_path(path: &str) -> bool {
     let path = path.split_once('?').map_or(path, |(p, _)| p);
-    go_path_clean(path) == "/mcp"
+    path == "/mcp" || path == "/mcp/"
 }
 
-/// Port of Go's path.Clean.
-fn go_path_clean(path: &str) -> String {
-    if path.is_empty() {
-        return ".".to_owned();
-    }
-    let rooted = path.starts_with('/');
-    let mut out: Vec<&str> = Vec::new();
-    for elem in path.split('/') {
-        match elem {
-            "" | "." => {}
-            ".." => match out.last() {
-                Some(&l) if l != ".." => {
-                    out.pop();
-                }
-                // A rooted path cannot go above the root.
-                _ if rooted => {}
-                _ => out.push(".."),
-            },
-            e => out.push(e),
-        }
-    }
-    let joined = out.join("/");
-    match (rooted, joined.is_empty()) {
-        (true, _) => format!("/{joined}"),
-        (false, true) => ".".to_owned(),
-        (false, false) => joined,
-    }
-}
-
-/// Port of mcp.ParseRequest with the default paths matcher `["/mcp"]`. `path` may
+/// Port of mcp.ParseRequest with the default paths matcher `["/mcp", "/mcp/"]`. `path` may
 /// have a query. `None` when the parser does not claim the request.
 pub fn parse_request(
     method: &str,
@@ -501,16 +473,23 @@ mod tests {
     }
 
     #[test]
-    fn path_clean_matches_go() {
-        for p in ["/mcp", "/mcp/", "//mcp", "/a/../mcp", "/mcp?x=1", "/../mcp"] {
+    fn mcp_path_matches_go() {
+        for p in ["/mcp", "/mcp/", "/mcp?x=1"] {
             assert!(is_mcp_path(p), "{p}");
         }
-        for p in ["/mcpx", "/mcp/x", "mcp", "", "/"] {
+        for p in [
+            "//mcp",
+            "/a/../mcp",
+            "/../mcp",
+            "/mcp;x",
+            "/mcpx",
+            "/mcp/x",
+            "mcp",
+            "",
+            "/",
+        ] {
             assert!(!is_mcp_path(p), "{p}");
         }
-        assert_eq!(go_path_clean(""), ".");
-        assert_eq!(go_path_clean("a/../.."), "..");
-        assert_eq!(go_path_clean("a/./b/"), "a/b");
     }
 
     #[test]

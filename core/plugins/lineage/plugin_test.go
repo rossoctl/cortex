@@ -1936,7 +1936,7 @@ func TestBypassPaths_GlobMatchEmitsNothing(t *testing.T) {
 		{"glob matches one level", "/.well-known/agent.json", 0},
 		{"glob does not cross /", "/.well-known/a/b", 2},
 		{"over-match fixed: not a prefix rule", "/health-records/patient/42", 2},
-		{"non-canonical form normalized", "//health", 0},
+		{"non-canonical form emits", "//health", 2},
 		{"non-matching path emits", "/api/health-report", 2},
 	}
 	for _, tc := range cases {

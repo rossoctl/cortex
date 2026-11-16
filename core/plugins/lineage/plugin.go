@@ -225,7 +225,7 @@ func (p *LineageTelemetry) Configure(raw json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	// The shared bypass matcher (path.Match globs, path normalization) — the
+	// The shared bypass matcher (path.Match globs, canonical paths only) — the
 	// same package and wiring jwt-validation and sparc use for this key. It
 	// validates at boot: invalid syntax and match-everything patterns refuse
 	// to start.

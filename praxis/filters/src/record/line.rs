@@ -42,6 +42,8 @@ pub const NOT_SET_IN_PRAXIS_MODE: &[&str] = &[
     // The Go listener sets these two from its pipeline context. The gateway does not.
     "subagentKind",
     "project",
+    // An import sets it; every gateway row is live.
+    "source",
 ];
 
 fn is_zero(v: &i64) -> bool {
