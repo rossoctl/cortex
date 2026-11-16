@@ -197,18 +197,17 @@ func readPrior(ctx context.Context, a *archive.Archive, id string) (*priorTurns,
 // With a forget record (span not nil) it skips each turn whose request is in
 // [span.from - 1 minute, span.to]: the ledger counted those turns before the archive removed the
 // session. The minute of slack is there because a transcript time comes before the time at
-// which the proxy sees the request. With a record it does not read the ledger.
+// which the proxy sees the request.
 //
-// With no record it skips a response when the ledger has a live row for the same project within
-// one minute of it: the proxy recorded that turn live, and the archive removed the session
-// before forget records.
+// With no record, or before the span, it skips a response when the ledger has a live row for the
+// same project within one minute of it: the proxy recorded that turn live.
 // shortcut: rows carry no session id, so a turn of a session that did not go through Cortex is
 // skipped when another session in the same project had live traffic in that minute. Keep the
 // session id on ledger rows if that undercount shows up.
 func toLedger(ctx context.Context, w *ledger.Writer, s Session, prior *priorTurns, sent map[string]bool, span *forgotSpan) error {
 	cutoff := w.RetentionCutoff()
 	requestAt := map[string]time.Time{}
-	var turns []*model.SessionEvent
+	var turns, after []*model.SessionEvent
 	for i := range s.Events {
 		e := &s.Events[i]
 		switch e.Phase {
@@ -222,17 +221,21 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, prior *priorTurn
 			if prior != nil && (prior.ids[e.RequestID] || at.Before(prior.oldest)) {
 				continue
 			}
-			if span != nil && !at.Before(span.from.Add(-time.Minute)) && !at.After(span.to) {
+			if span != nil && at.After(span.to) {
+				after = append(after, e)
+				continue
+			}
+			if span != nil && !at.Before(span.from.Add(-time.Minute)) {
 				continue
 			}
 			turns = append(turns, e)
 		}
 	}
+	if err := record(w, after, sent); err != nil {
+		return err
+	}
 	if len(turns) == 0 {
 		return nil
-	}
-	if span != nil {
-		return record(w, turns, sent)
 	}
 	from, to := turns[0].At, turns[0].At
 	for _, e := range turns {
@@ -243,7 +246,6 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, prior *priorTurn
 			to = e.At
 		}
 	}
-	// shortcut: the guess is for sessions forgotten before forget records; 32 days after an upgrade it has nothing to do. Remove it in a later release.
 	live := map[liveKey]bool{}
 	// The archive holds s already, so a cancel here must not stop the read.
 	rows, _, err := w.Window(context.WithoutCancel(ctx), from.Add(-time.Minute), to.Add(time.Minute))
@@ -269,6 +271,9 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, prior *priorTurn
 
 // record sends turns to the ledger and adds their request ids to sent.
 func record(w *ledger.Writer, turns []*model.SessionEvent, sent map[string]bool) error {
+	if len(turns) == 0 {
+		return nil
+	}
 	if err := w.RecordBatch(turns); err != nil {
 		return err
 	}

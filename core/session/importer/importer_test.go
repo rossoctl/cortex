@@ -804,6 +804,39 @@ func TestRun_ForkedCopyCountsOnceInOneRun(t *testing.T) {
 	}
 }
 
+// A fork that Cortex saw live is erased and imported: its copy of the parent's turn is before the
+// record's span, and the parent's live row keeps it from being counted again.
+func TestRun_ErasedForkDoesNotCountParentTurnAgain(t *testing.T) {
+	forkAt := start.Add(10 * time.Minute)
+	a := openArchive(t, archive.WithClock(func() time.Time { return forkAt }))
+	w := openLedger(t)
+	parentTurn := turnPair("P-r0", "/repo", start)
+	w.Record("P", &parentTurn[1])
+	forkTurn := turnPair("F-r0", "/repo", forkAt)
+	w.Record("F", &forkTurn[1])
+	for i, e := range forkTurn {
+		e.Seq, e.SessionID = uint64(i+1), "F"
+		a.Record("F", &e)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for a.LastSeq("F") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if a.LastSeq("F") < 2 {
+		t.Fatal("the live events were not recorded")
+	}
+	erase(t, a, "F")
+	fork := Session{ID: "F", SizeHint: 1024, Events: append(slices.Clone(parentTurn), forkTurn...)}
+	fork.Updated = forkTurn[1].At
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{fork}},
+		Options{Archive: a, Ledger: w, Rates: testRates(t)}); r.Imported != 1 {
+		t.Fatalf("report = %+v, want 1 imported", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 2 || tok != 2200 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 2, 2200 (the two live rows)", req, tok)
+	}
+}
+
 // A replace sends each turn that the earlier import did not have, also when its request is
 // before the newest request of that import: a parallel subagent was mid-turn during it.
 func TestRun_ReplaceKeepsAParallelTurnWithAnEarlierRequest(t *testing.T) {
