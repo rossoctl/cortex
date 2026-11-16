@@ -99,16 +99,15 @@ the import in `POST /v1/import`. agentop calls the route and marks imported rows
 
 | PR | Title | Parent | Tasks | estLines |
 |---|---|---|---|---|
-| PR1 | `feat: Add the shared transcript import path to the session archive and cost ledger` | "" | T1, T2, T3, T4, T5 | 1350 |
-| PR2 | `feat: Import Claude Code transcripts with agentop import` | PR1 | T6, T7, T8, T9, T10 | 1750 |
+| PR2 | `feat: Import Claude Code transcripts with agentop import` | "" | T6, T7, T8, T9, T10 | 1750 |
 
-PR1 passes the gate alone: its importer tests use a fake source. PR2 needs PR1 below it.
+**STATUS (2026-11-16): T1–T5 (PR1) are MERGED in `main` as #1876. Do not build them again.** Build only PR2 (T6–T10), on `main`. Where this plan and the merged code differ, follow the merged code. One difference: `importer.Run` sends ledger rows through `ledger.Writer.RecordBatch` (blocking), not `Record`.
 
 ## Tasks
 
-### T1: Event `Source` field and the importer types
+### T1: Event `Source` field and the importer types (MERGED in #1876)
 
-**Depends on:** none. **PR:** PR1. **Est:** 110 lines.
+**Depends on:** none. **PR:** none: MERGED in #1876, do not build. **Est:** 110 lines.
 
 **Files:**
 - Modify: `core/model/session.go` (field on `SessionEvent`, on `sessionEventWire`, in
@@ -178,9 +177,9 @@ type Report struct {
 - [ ] **Step 4:** Run the same command. Expected: PASS. Run `GOWORK=off go -C core vet ./model/ ./session/importer/`.
 - [ ] **Step 5:** Commit `feat(model): Add SessionEvent.Source and the importer types`.
 
-### T2: The imported mark in the session summary
+### T2: The imported mark in the session summary (MERGED in #1876)
 
-**Depends on:** T1. **PR:** PR1. **Est:** 170 lines.
+**Depends on:** none (T1–T5 are merged). **PR:** none: MERGED in #1876, do not build. **Est:** 170 lines.
 
 **Files:**
 - Modify: `core/session/fold.go` (`SummaryFold`, `Add`, `Summary`, `Clone`, `foldJSON`,
@@ -212,9 +211,9 @@ only, so it does not copy `Source` onto a live store row. Do not change it.
 - [ ] **Step 4:** Run `GOWORK=off go -C core test ./session/`. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(session): Mark a session as imported while all its events are`.
 
-### T3: Blocking whole-session write and lookup in the archive
+### T3: Blocking whole-session write and lookup in the archive (MERGED in #1876)
 
-**Depends on:** T1, T2. **PR:** PR1. **Est:** 330 lines.
+**Depends on:** none (T1–T5 are merged). **PR:** none: MERGED in #1876, do not build. **Est:** 330 lines.
 
 **Files:**
 - Create: `core/session/archive/import.go`
@@ -273,9 +272,9 @@ Implementation (decided, do not change):
 - [ ] **Step 4:** Run `GOWORK=off go -C core test -race ./session/archive/`. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(archive): Add a blocking whole-session write for imports`.
 
-### T4: `transcript` cost source and `Row.Source` in the ledger
+### T4: `transcript` cost source and `Row.Source` in the ledger (MERGED in #1876)
 
-**Depends on:** T1. **PR:** PR1. **Est:** 140 lines.
+**Depends on:** none (T1–T5 are merged). **PR:** none: MERGED in #1876, do not build. **Est:** 140 lines.
 
 **Files:**
 - Modify: `core/cost/event/event.go` (const next to `SourceUsageFallback`; update the
@@ -303,9 +302,9 @@ const SourceTranscript = "transcript" // core/cost/event
 - [ ] **Step 4:** Run `GOWORK=off go -C core test ./cost/...`. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(ledger): Tag imported cost rows with Source transcript`.
 
-### T5: The importer run
+### T5: The importer run (MERGED in #1876)
 
-**Depends on:** T1, T2, T3, T4. **PR:** PR1. **Est:** 600 lines.
+**Depends on:** none (T1–T5 are merged). **PR:** none: MERGED in #1876, do not build. **Est:** 600 lines.
 
 **Files:**
 - Create: `core/session/importer/importer.go`, `core/session/importer/cost.go`
@@ -382,7 +381,7 @@ Set `Source = model.ImportedSource(src.Agent())` on every event before the write
 
 ### T6: The Claude Code source
 
-**Depends on:** T1. **PR:** PR2. **Est:** 750 lines (fixtures included).
+**Depends on:** none (T1–T5 are merged). **PR:** PR2. **Est:** 750 lines (fixtures included).
 
 **Files:**
 - Create: `core/session/importer/claude/claude.go`, `core/session/importer/claude/turns.go`
@@ -480,7 +479,7 @@ Rules for the parse (one transcript file = `<project>/<uuid>.jsonl`; id = file u
 
 ### T7: `POST /v1/import` and the proxy wiring
 
-**Depends on:** T5, T6. **PR:** PR2. **Est:** 300 lines.
+**Depends on:** T6. **PR:** PR2. **Est:** 300 lines.
 
 **Files:**
 - Create: `core/sessionapi/import.go`
@@ -525,7 +524,7 @@ func WithImport(i Import) Option
 
 ### T8: `agentop import`
 
-**Depends on:** T1. **PR:** PR2. **Est:** 330 lines.
+**Depends on:** none (T1–T5 are merged). **PR:** PR2. **Est:** 330 lines.
 
 **Files:**
 - Create: `cmd/agentop/cmd_import.go`, `cmd/agentop/apiclient/import.go`
@@ -572,7 +571,7 @@ var ErrImportRunning = errors.New("an import is already running") // 409
 
 ### T9: Imported rows in the agentop TUI
 
-**Depends on:** T1, T2. **PR:** PR2. **Est:** 260 lines.
+**Depends on:** none (T1–T5 are merged). **PR:** PR2. **Est:** 260 lines.
 
 **Files:**
 - Modify: `cmd/agentop/tui/sessions_pane.go` (the sessions loop near line 302, which has
