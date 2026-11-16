@@ -186,7 +186,7 @@ jobs:
           go test -v -count=1 -tags cpex ./plugins/cpex/...
 
       # cmd/cortex is the binary for both cpex artifacts: the authbridge-cpex
-      # image (the `cpex` profile) and the laptop build (`fullcpex`).
+      # image (the `cpex` profile) and full plus cpex (`fullcpex`).
       - name: Vet, build and test cmd/cortex with cpex
         if: steps.changes.outputs.run == 'true'
         working-directory: cmd/cortex

@@ -83,13 +83,7 @@ func checkBinaries(env *setupEnv) (bad, doubt *problem) {
 		bad = &problem{reason: "agentop is " + a + ", cortex is " + c}
 	}
 	if bad != nil {
-		// The plain one-liner installs the default build, so it would take a
-		// cpex install off cpex.
-		fix := installerOneLiner
-		if installedIsCpex(cortex) {
-			fix += " -s -- --cpex"
-		}
-		bad.fix = []string{fix}
+		bad.fix = []string{installerOneLiner}
 		return bad, nil
 	}
 	// Found nowhere is the PATH step's to report.

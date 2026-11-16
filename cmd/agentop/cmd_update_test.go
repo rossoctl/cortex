@@ -72,6 +72,8 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 		{name: "main", latest: "v9.9.9", args: []string{"--ref=main"}, want: "installer: --ref=main\n", code: 7},
 		// setup repairs a pair that disagree.
 		{name: "cortex behind", latest: "v9.9.9", release: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", want: "staged setup\n", code: 7},
+		// A cpex cortex at the newest tag still gets the default build.
+		{name: "cpex at the tag", latest: "v9.9.9", release: "v9.9.9", cortex: "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n", want: "staged setup\n", code: 7},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sc := newDoctorScene(t)
@@ -82,7 +84,7 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 			latestIs(t, c.latest)
 			fakeInstaller(t, false)
 			if c.release != "" {
-				fakeStagedRelease(t, c.release, false, false)
+				fakeStagedRelease(t, c.release, false)
 			}
 			var out, errb bytes.Buffer
 			if code := runUpdate(c.args, &out, &errb); code != c.code || out.String() != c.want {
@@ -93,20 +95,20 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 }
 
 // fakeSetup is the staged agentop: it writes its arguments and whether it saw
-// CORTEX_INSTALLER_DREW to $FAKE_SETUP_ARGS, then exits 7.
+// CORTEX_INSTALLER_DREW to $FAKE_SETUP_ARGS, then exits $FAKE_SETUP_EXIT (default 7).
 const fakeSetup = `#!/bin/sh
 printf '%s\n' "$@" "drew=${CORTEX_INSTALLER_DREW-unset}" > "$FAKE_SETUP_ARGS"
 echo staged setup
-exit 7
+exit ${FAKE_SETUP_EXIT-7}
 `
 
 // fakeStagedRelease serves the tag's release for this machine with right checksums,
 // sets TMPDIR to a new empty dir and records provenance checks instead of making
 // them. setupArgs is the file the staged agentop writes its arguments to.
-func fakeStagedRelease(t *testing.T, tag string, cpex, praxis bool) (setupArgs string, checked *[]string, files map[string][]byte) {
+func fakeStagedRelease(t *testing.T, tag string, praxis bool) (setupArgs string, checked *[]string, files map[string][]byte) {
 	t.Helper()
 	files = map[string][]byte{}
-	for _, name := range releaseTarballs(tag, runtime.GOOS, runtime.GOARCH, cpex, praxis) {
+	for _, name := range releaseTarballs(tag, runtime.GOOS, runtime.GOARCH, praxis) {
 		body := "#!/bin/sh\necho " + tarballBinary(name) + "\n"
 		if tarballBinary(name) == "agentop" {
 			body = fakeSetup
@@ -148,21 +150,103 @@ func hashDir(t *testing.T, dir string) map[string]string {
 	return sums
 }
 
+// The cpex notice says the default cortex is installed, so it prints only after setup succeeds.
+func TestUpdateCpexNoticeAfterSetupSucceeds(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	writeExe(t, filepath.Join(sc.home, ".local", "bin", "cortex"), "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n")
+	latestIs(t, "v9.9.9")
+	fakeStagedRelease(t, "v9.9.9", false)
+	t.Setenv("FAKE_SETUP_EXIT", "0")
+	var out, errb bytes.Buffer
+	if code := runUpdate(nil, &out, &errb); code != 0 || out.String() != "staged setup\n"+cpexUpdateNotice+"\n" {
+		t.Fatalf("exit %d stdout %q, want 0, the staged setup's line, then the notice:\n%s", code, out.String(), errb.String())
+	}
+}
+
+// addCpexEntry puts a cpex entry first in the outbound pipeline of the config setup wrote.
+func addCpexEntry(t *testing.T, home string) {
+	t.Helper()
+	path := filepath.Join(home, ".cortex", "config.yaml")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const at = "  outbound:\n    plugins:\n"
+	switch {
+	case bytes.Contains(b, []byte(at)):
+		b = bytes.Replace(b, []byte(at), []byte(at+"      - name: cpex\n"), 1)
+	case bytes.Contains(b, []byte("pipeline:")):
+		t.Fatalf("config.yaml has a pipeline with no %q", at)
+	default: // the scene's fake cortex writes no pipeline
+		b = append(b, "\npipeline:\n"+at+"      - name: cpex\n"...)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The default cortex does not start on a config that names cpex, so update
+// refuses before it downloads and names the migration steps.
+func TestUpdateRefusesACpexConfig(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	writeExe(t, filepath.Join(sc.home, ".local", "bin", "cortex"), "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n")
+	addCpexEntry(t, sc.home)
+	latestIs(t, "v9.9.9")
+	setupArgs, checked, _ := fakeStagedRelease(t, "v9.9.9", false)
+	var out, errb bytes.Buffer
+	code := runUpdate(nil, &out, &errb)
+	if code != 1 || out.String() != "" || !strings.Contains(errb.String(), "docs/praxis-policy.md#move-from-the-cpex-plugin") {
+		t.Fatalf("exit %d stdout %q stderr %q, want 1, nothing, and the migration steps", code, out.String(), errb.String())
+	}
+	if _, err := os.Stat(setupArgs); !errors.Is(err, fs.ErrNotExist) || len(*checked) != 0 {
+		t.Errorf("setup ran (%v) or %d tarballs were checked, want neither", err, len(*checked))
+	}
+}
+
+func TestConfigNamesCpex(t *testing.T) {
+	for _, c := range []struct {
+		name, yaml string
+		want       bool
+	}{
+		{"outbound map form", "pipeline:\n  outbound:\n    plugins:\n      - name: mcp-parser\n      - name: cpex\n        config: {}\n", true},
+		{"inbound bare name", "pipeline:\n  inbound:\n    plugins:\n      - cpex\n", true},
+		{"commented out", "pipeline:\n  outbound:\n    plugins:\n      # - name: cpex\n      - name: mcp-parser\n", false},
+		{"another plugin", "pipeline:\n  outbound:\n    plugins:\n      - name: cpex-audit\n", false},
+		{"no pipeline", "update:\n  auto: false\n", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(c.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := configNamesCpex(path); got != c.want {
+				t.Errorf("configNamesCpex = %v, want %v", got, c.want)
+			}
+		})
+	}
+	if configNamesCpex(filepath.Join(t.TempDir(), "missing.yaml")) {
+		t.Error("a missing config names cpex")
+	}
+}
+
 func TestUpdateHandsOffToTheStagedSetup(t *testing.T) {
 	sc := newDoctorScene(t)
 	sc.installed(t, "--claude-code", "--no-service")
 	writeExe(t, filepath.Join(sc.home, ".local", "bin", "cortex"), "#!/bin/sh\necho cortex \\(cpex\\) v9.9.9\n")
 	t.Setenv("CORTEX_INSTALLER_DREW", "1")
-	setupArgs, checked, files := fakeStagedRelease(t, "v9.9.9-rc.1", true, false)
+	setupArgs, checked, files := fakeStagedRelease(t, "v9.9.9-rc.1", false)
 	tmp := os.Getenv("TMPDIR")
 	var out, errb bytes.Buffer
 	code := runUpdate([]string{"--ref=v9.9.9-rc.1", "-y"}, &out, &errb)
 	// The staged setup's exit status is update's.
+	// The setup failed, so the cpex build is still installed: no notice.
 	if code != 7 || out.String() != "staged setup\n" {
-		t.Fatalf("exit %d stdout %q, want 7 and the staged setup's line:\n%s", code, out.String(), errb.String())
+		t.Fatalf("exit %d stdout %q, want 7 and only the staged setup's line:\n%s", code, out.String(), errb.String())
 	}
-	names := releaseTarballs("v9.9.9-rc.1", runtime.GOOS, runtime.GOARCH, true, false)
-	if !strings.HasPrefix(names[1], "cortex-cpex_") || !slices.Equal(*checked, names) {
+	names := releaseTarballs("v9.9.9-rc.1", runtime.GOOS, runtime.GOARCH, false)
+	if !strings.HasPrefix(names[1], "cortex_") || !slices.Equal(*checked, names) {
 		t.Errorf("checked %q, want %q", *checked, names)
 	}
 	var size int
@@ -191,7 +275,7 @@ func TestUpdateHandsOffToTheStagedSetup(t *testing.T) {
 }
 
 func TestInstallReleasePraxis(t *testing.T) {
-	setupArgs, checked, _ := fakeStagedRelease(t, "v9.9.9", false, true)
+	setupArgs, checked, _ := fakeStagedRelease(t, "v9.9.9", true)
 	var out, errb bytes.Buffer
 	err := installRelease(&setupEnv{}, "v9.9.9", []string{"--praxis"}, &out, &errb)
 	var exit *exec.ExitError
@@ -213,8 +297,8 @@ func TestInstallReleasePraxis(t *testing.T) {
 func TestUpdateChecksumMismatchChangesNothing(t *testing.T) {
 	sc := newDoctorScene(t)
 	sc.installed(t)
-	_, checked, files := fakeStagedRelease(t, "v9.9.10", false, false)
-	agentop := releaseTarballs("v9.9.10", runtime.GOOS, runtime.GOARCH, false, false)[0]
+	_, checked, files := fakeStagedRelease(t, "v9.9.10", false)
+	agentop := releaseTarballs("v9.9.10", runtime.GOOS, runtime.GOARCH, false)[0]
 	wrong := maps.Clone(files)
 	wrong[agentop] = []byte("not the tarball")
 	delete(wrong, "checksums.txt")
@@ -238,7 +322,7 @@ func TestUpdateChecksumMismatchChangesNothing(t *testing.T) {
 func TestUpdateUnreachableAttestationAPIFailsClosed(t *testing.T) {
 	sc := newDoctorScene(t)
 	sc.installed(t)
-	setupArgs, _, _ := fakeStagedRelease(t, "v9.9.10", false, false)
+	setupArgs, _, _ := fakeStagedRelease(t, "v9.9.10", false)
 	provenanceCheckFn = checkProvenance // fakeStagedRelease's cleanup restores it
 	srv := httptest.NewServer(http.NotFoundHandler())
 	srv.Close()

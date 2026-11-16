@@ -192,8 +192,8 @@ gets the Sigstore trusted root from `https://tuf-repo-cdn.sigstore.dev`, with a
 30-second limit on each request, and caches it under `~/.sigstore/root`. Then
 it runs `<stage>/agentop setup --from <stage>` with the `hand_off` set: `--claude-code`,
 `--yes`, `--no-service`, `--install-only`, `--no-modify-path`, `--praxis`, plus
-`--handoff-bytes` and `--handoff-seconds`. `--cpex` selects the `cortex-cpex_` tarball,
-and `--praxis` adds the `cortex-gateway_` tarball.
+`--handoff-bytes` and `--handoff-seconds`. `--praxis` adds the `cortex-gateway_`
+tarball.
 The `hand_off` comment says that set is frozen: an older agentop must accept every
 flag it sends.
 
@@ -205,7 +205,7 @@ flag it sends.
 | `--no-service` | Run the proxy as a background process, not under launchd or systemd | `--no-service` |
 | `--no-modify-path` | Edit no shell profile | `--no-modify-path` |
 | `--yes`, `-y` | Do not ask. Apply the changes setup lists | `--yes` |
-| `--cpex` | Download `cortex-cpex_<ver>_<os>_<arch>.tar.gz`. macOS arm64 and Linux only (`cpex_platform_check`, `require_cpex_build`) | no |
+| `--cpex` | Removed. Stops the script with an error that names `--praxis` and `docs/praxis-policy.md` | no |
 | `--praxis` | Also download `cortex-gateway_<ver>_<os>_<arch>.tar.gz`, check it against `checksums.txt` and stage `cortex-gateway`. Setup then turns on praxis mode. macOS arm64 and Linux only (`praxis_platform_check`, `require_praxis_build`). Not frozen: every release that `require_praxis_build` accepts has an agentop that takes `--praxis` | `--praxis` |
 | `--ref=REF` | Install the binaries of `REF`: `main` (the developer channel) or a release tag. For any other ref, such as a branch or a SHA, the script warns and installs the newest release's binaries (`resolve_version`). A piped run also runs the copy of this script at `REF`. A run from a local file keeps that file | no (removed before the re-run) |
 | `--stop` | Stop the service and the pidfile proxy, check the ports, exit. Downloads nothing (`stop_cortex`) | no |

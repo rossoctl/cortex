@@ -145,7 +145,8 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 	}
 	s := updatestatus.Status{Latest: tag}
 	env.readVersions()
-	agentop, cortex := env.installedVersion, installedVersion(filepath.Join(env.binDir, proxyBinary))
+	cortexPath := filepath.Join(env.binDir, proxyBinary)
+	agentop, cortex := env.installedVersion, installedVersion(cortexPath)
 	if autoUpdateOff(env.configPath()) {
 		s.Result = updatestatus.ResultDisabled
 		return s
@@ -158,7 +159,9 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		s.Result, s.Error = updatestatus.ResultCheckFailed, "Latest "+tag+" is not a plain release"
 		return s
 	}
-	if agentop == tag && cortex == tag {
+	// A cpex cortex reports the tag too, and the default build must replace it.
+	wasCpex := installedIsCpex(cortexPath)
+	if agentop == tag && cortex == tag && !wasCpex {
 		s.Result = updatestatus.ResultCurrent
 		return s
 	}
@@ -171,6 +174,10 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		s.Result, s.InstallAfter = updatestatus.ResultWaiting, released.Add(wait).UTC()
 		return s
 	}
+	if err := cpexConfigBlocks(env); err != nil {
+		s.Result, s.Error = updatestatus.ResultFailed, err.Error()
+		return s
+	}
 	// --ref pins the tag that passed the wait. Without it, install.sh reads Latest
 	// again, and a release published in between skips the wait.
 	if err := installReleaseFn(env, tag, updateFlags(env, tag, true), stdout, stderr); err != nil {
@@ -179,5 +186,9 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		return s
 	}
 	s.Result = updatestatus.ResultUpdated
+	if wasCpex {
+		// The updater job has no terminal, so keep the line where agentop reads it.
+		s.Note = cpexStatusNote
+	}
 	return s
 }
