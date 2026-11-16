@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -55,7 +56,18 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"session archive not enabled"}`, http.StatusNotFound)
 		return
 	}
-	q := r.URL.Query()
+	// ParseQuery rather than URL.Query(), which discards the pairs it cannot decode and
+	// returns the rest: a mistyped escape in a FILTER then reads as an absent filter, so
+	// `?session=%GG` exported the whole archive with a 200 instead of refusing. Worse for
+	// a repeated parameter — `?since=1h&since=%ZZ` dropped both values, so even the
+	// repeated-since refusal below never saw them. A malformed query is a caller bug, and
+	// the one thing this endpoint must not do is answer it with more data than was asked
+	// for. agentop never gets here (url.Values.Encode escapes properly); curl does.
+	q, qerr := url.ParseQuery(r.URL.RawQuery)
+	if qerr != nil {
+		http.Error(w, `{"error":"malformed query"}`, http.StatusBadRequest)
+		return
+	}
 	f := sessionexport.Filter{}
 	if ids := q["session"]; len(ids) > 0 {
 		f.Sessions = make(map[string]struct{}, len(ids))
@@ -150,9 +162,9 @@ func parseSince(s string) (time.Duration, error) {
 // flushWriter flushes after every write and remembers whether anything was written.
 //
 // Flushing per record keeps a consumer piping this through jq or wc current as the walk
-// runs, rather than at the end of a response that can be a month of traffic; a 30-day
-// archive walks in about ten seconds, but a consumer tailing one live should not wait
-// for the buffer. The wrote flag is how the handler tells an error it may still answer
+// runs, rather than at the end of a response that can be a month of traffic; the walk
+// takes long enough on a large archive that a consumer tailing one live should not wait
+// for the buffer (how long exactly is unbenchmarked — see exportTimeout's note). The wrote flag is how the handler tells an error it may still answer
 // with a status from one that can only truncate.
 type flushWriter struct {
 	http.ResponseWriter

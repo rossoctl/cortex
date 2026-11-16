@@ -67,7 +67,10 @@ func exportFixture(t *testing.T) *httptest.Server {
 	if err := write.Close(); err != nil {
 		t.Fatal(err)
 	}
-	a, err := archive.Open(root)
+	// On the fixture clock, as the server below is: Open prunes to the 30-day retention,
+	// and `old` is dated a week before exportBase, so on wall time every test built on
+	// this fixture quietly drops to 6 records once exportBase is a month old.
+	a, err := archive.Open(root, archive.WithClock(func() time.Time { return exportNow }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,6 +305,39 @@ func TestHandleExport_UnknownSessionRefusalFitsAClientReadWhenIDsEscape(t *testi
 // ?since= carries only events newer than that far back: a session the archive last
 // touched before the floor is skipped whole, one that straddles it stops at its first
 // event below. 7d reads as a day count, which time.ParseDuration alone rejects.
+// A MALFORMED QUERY IS A 400, NOT A FULL EXPORT. URL.Query() drops the pairs it cannot
+// decode and returns the rest, so a mistyped escape in a filter used to read as an absent
+// filter: every row below answered 200 with all 9 records — the whole archive, for a
+// request that asked for one session. The last row is the worst of them: both since values
+// were dropped, so the repeated-since refusal never saw them either and no floor applied.
+func TestHandleExport_MalformedQueryIsRefused(t *testing.T) {
+	ts := exportFixture(t)
+	for _, q := range []string{
+		"?session=%GG",
+		"?session=s1;x",
+		"?since=%ZZ",
+		"?since=1h;x",
+		"?since=1h&since=%ZZ",
+	} {
+		t.Run(q, func(t *testing.T) {
+			code, body := getBody(t, ts.URL+"/v1/export"+q)
+			if code != http.StatusBadRequest {
+				t.Fatalf("GET /v1/export%s = %d, want 400; body:\n%s", q, code, body)
+			}
+			// A filter that could not be read must never widen the selection.
+			if strings.Contains(string(body), `"sessionId"`) {
+				t.Fatalf("GET /v1/export%s answered with records: %s", q, body)
+			}
+		})
+	}
+
+	// The control: a well-formed escape still works, so the refusal is about decodability
+	// rather than about anything that merely looks unusual.
+	if code, _, rs := exportRecords(t, ts, "/v1/export?session=s1"); code != http.StatusOK || len(rs) != 6 {
+		t.Fatalf("?session=s1 = %d with %d records, want 200 and 6", code, len(rs))
+	}
+}
+
 // parseSince ACCEPTS EXACTLY THE GRAMMAR THE ENDPOINT DOCUMENTS — "a duration or Nd" —
 // because that grammar is what a client codes against, and the 400 message states it.
 //

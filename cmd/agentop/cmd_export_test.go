@@ -307,6 +307,40 @@ func TestRunExport_EmptySessionIsAUsageError(t *testing.T) {
 	}
 }
 
+// AN EXPLICITLY EMPTY --since IS A USAGE ERROR TOO, the sibling of --session's. Reading
+// it as an absent floor turned `--since "$(window)"` with an empty expansion into a
+// full-archive export at exit 0 — a broken variable answered with more data than was
+// asked for, which is the one direction a filter must not fail in.
+//
+// Checked against a server, so a regression shows as "it exported anyway" rather than
+// passing on the flag parse alone.
+func TestRunExport_EmptySinceIsAUsageError(t *testing.T) {
+	srv, query := exportServer(t, http.StatusOK, exportLines)
+	// Whitespace-only counts: it is the same broken expansion, and the refusal belongs
+	// here rather than as the server's 400 after a round trip.
+	for _, arg := range []string{"", " ", "\t", "\n"} {
+		var out, errOut strings.Builder
+		if code := runExport([]string{"--endpoint", srv.URL, "--since", arg}, &out, &errOut); code != 2 {
+			t.Fatalf("runExport --since %q = %d, want 2", arg, code)
+		}
+		if !strings.Contains(errOut.String(), "--since needs a value") {
+			t.Fatalf("stderr = %q, want the refusal to name the problem", errOut.String())
+		}
+		if out.Len() != 0 {
+			t.Fatalf("an empty --since still wrote %d bytes of export", out.Len())
+		}
+	}
+	if query.String() != "" {
+		t.Fatalf("query = %q, want the request never to have been made", query.String())
+	}
+
+	// The control: --since omitted entirely is still a legitimate "every event".
+	var out, errOut strings.Builder
+	if code := runExport([]string{"--endpoint", srv.URL}, &out, &errOut); code != 0 {
+		t.Fatalf("runExport without --since = %d, stderr:\n%s", code, errOut.String())
+	}
+}
+
 // A stray positional is a usage error, not a silently ignored filename: `agentop export
 // out.ndjson` would otherwise dump the archive into the terminal and call it success.
 // Every sibling command rejects positionals the same way.

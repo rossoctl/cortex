@@ -57,7 +57,10 @@ func fixtureArchive(t *testing.T) *archive.Archive {
 	if err := write.Close(); err != nil {
 		t.Fatal(err)
 	}
-	a, err := archive.Open(root)
+	// On the fixture clock, because Open prunes to the 30-day retention and this fixture's
+	// `old` session is dated a week before base: on wall time every test built on it
+	// silently loses that session once base is a month old.
+	a, err := archive.Open(root, archive.WithClock(func() time.Time { return base }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +371,11 @@ func TestWalk_SinceSkipsOnUpdatedAtNotJustEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a, err := archive.Open(root)
+	// The fixture clock, not wall time: Open prunes to the 30-day retention as it
+	// reconciles, and old's segment is dated a week before base. On wall time this test
+	// passes until base is 30 days old and then fails with old's segment already gone —
+	// having stopped testing the skip branch it exists for.
+	a, err := archive.Open(root, archive.WithClock(func() time.Time { return base }))
 	if err != nil {
 		t.Fatal(err)
 	}
