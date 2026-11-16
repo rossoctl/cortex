@@ -329,6 +329,13 @@ jobs:
             f="dist/cortex-gateway_${TAG}_${target%/*}_${target#*/}.tar.gz"
             [ -s "${f}" ] || echo "::warning::No cortex-gateway tarball for ${target}. This release ships without it."
           done
+          # An agentop from before the cpex removal asks a cpex install for this name.
+          # The copy is the default cortex, so that agentop moves the install itself.
+          # setup gets no --cpex from it. Drop this with the release-notes line below.
+          for target in darwin/arm64 linux/amd64 linux/arm64; do
+            p="${TAG}_${target%/*}_${target#*/}.tar.gz"
+            cp "dist/cortex_${p}" "dist/cortex-cpex_${p}"
+          done
           ( cd dist && sha256sum ./*.tar.gz > checksums.txt )
           ls -l dist
           cat dist/checksums.txt
@@ -386,13 +393,14 @@ jobs:
             fi
           fi
           add 'Prebuilt `agentop` and `cortex` binaries for linux and macOS (amd64/arm64).'
-          # The laptop cpex build is gone, and an older agentop cannot fetch its own
-          # replacement. Drop this once no supported release ships a cpex laptop build.
-          add 'The laptop cpex build is removed. If `cortex --version` prints `(cpex)`,'
-          add 'remove any `cpex` entry from `pipeline` in `~/.cortex/config.yaml`, then run'
-          add 'the install one-liner once: an older `agentop update` cannot fetch the'
-          add 'removed tarball. Laptop policy now uses `--praxis`: see'
-          add 'docs/praxis-policy.md, "Move from the CPEX plugin".'
+          # The laptop cpex build is gone. Drop this, and the cortex-cpex_* copies above,
+          # once no supported release ships a cpex laptop build.
+          add 'The laptop cpex build is removed. `cortex-cpex_*` is a copy of `cortex_*`,'
+          add 'so that an older `agentop update` moves a cpex install to the default build.'
+          add 'If `cortex --version` prints `(cpex)`, remove any `cpex` entry from `pipeline`'
+          add 'in `~/.cortex/config.yaml` first: the default build does not start on it.'
+          add 'Laptop policy now uses `--praxis`: see docs/praxis-policy.md,'
+          add '"Move from the CPEX plugin".'
           # Name the gateway only when this release has at least one gateway tarball.
           # No platform list: a failed leg leaves a platform out, and the assets show which.
           if ls dist/cortex-gateway_*.tar.gz >/dev/null 2>&1; then

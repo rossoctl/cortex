@@ -229,8 +229,7 @@ Where to look:
 
 ## The cpex build
 
-The laptop cpex build is removed. No release publishes a cpex tarball for a laptop,
-and `install.sh --cpex` exits with an error. That error says to run the
+The laptop cpex build is removed, and `install.sh --cpex` exits with an error. That error says to run the
 installer again without `--cpex`, which installs the default `cortex`. It also
 names `--praxis` and `docs/praxis-policy.md`, which is the way to run laptop
 policy now. `make
@@ -243,10 +242,11 @@ The default `cortex` has no cpex plugin, and it does not start on a config that 
 Remove the entry first, as [Move from the CPEX plugin](praxis-policy.md#move-from-the-cpex-plugin)
 says.
 
-An `agentop` from before the removal cannot make that move. Its update asks the
-release for the cpex tarball, and no release publishes one now. Remove any `cpex`
-entry from the config, then run the one-liner once to move the install to the
-default build.
+An `agentop` from before the removal asks the release for the cpex tarball. So each
+release still publishes `cortex-cpex_<ver>_<os>_<arch>.tar.gz`, as a copy of the
+default `cortex` tarball, and that older update moves the install too. It does not
+check the config first: when the config names `cpex`, setup rolls back and the
+update fails. Remove the entry, then update again.
 
 Kubernetes use does not change: the `authbridge-cpex` image, the `cpex` and `fullcpex`
 build profiles, `core/plugins/cpex/` and the `go-ci-cpex` CI job stay. See

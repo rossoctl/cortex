@@ -58,8 +58,10 @@ default plugin set (the `authbridge` image's). The `lite` profile ships only as 
 `<suffix>:<build-tags>` entry to the `proxy_variants` array in the workflow — never
 enumerate combos.
 
-The laptop cpex build is removed, and so is the `build-cpex` job: no release publishes
-a `cortex-cpex_*` tarball for a laptop. `install.sh --cpex` exits with an error that
+The laptop cpex build is removed, and so is the `build-cpex` job. `publish` still
+writes `cortex-cpex_*` tarballs for darwin/arm64 and linux/amd64/arm64, as copies of
+the `cortex_*` ones: an agentop from before the removal asks for that name, and the copy
+lets it move a cpex install to the default build. `install.sh --cpex` exits with an error that
 names `--praxis` and `docs/praxis-policy.md`. An install that runs a cpex build moves to
 the default `cortex` on `agentop update`, which prints one line that says so. When
 its config names the `cpex` plugin, the update stops before it downloads, because the
