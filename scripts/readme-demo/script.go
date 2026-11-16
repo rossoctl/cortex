@@ -47,6 +47,16 @@ type Beat struct {
 	Keys    []string      `yaml:"keys"`
 	HoldStr string        `yaml:"hold"`
 	Hold    time.Duration `yaml:"-"`
+	// At is how far into the fixture's replay this beat is captured. Every replayed
+	// event up to it reaches the TUI over the live stream before the keys are sent,
+	// so the panes show a session that grows from beat to beat. Beats without one
+	// keep the previous beat's moment.
+	AtStr string        `yaml:"at"`
+	At    time.Duration `yaml:"-"`
+	// Frames splits the beat into that many captures, evenly spaced from the previous
+	// beat's At to this one's and sharing its hold, so a replay plays as motion rather
+	// than as a slideshow. Keys go with the first frame only.
+	Frames int `yaml:"frames"`
 }
 
 // Act is one narrative segment.
@@ -123,9 +133,47 @@ func (s *Script) normalize() error {
 			if b.Hold, err = time.ParseDuration(b.HoldStr); err != nil {
 				return fmt.Errorf("act %d (%q) beat %q hold: %w", i, a.Name, b.Label, err)
 			}
+			if b.AtStr != "" {
+				if b.At, err = time.ParseDuration(b.AtStr); err != nil {
+					return fmt.Errorf("act %d (%q) beat %q at: %w", i, a.Name, b.Label, err)
+				}
+			} else if j > 0 {
+				b.At = a.Beats[j-1].At
+			}
+			if j > 0 && b.At < a.Beats[j-1].At {
+				return fmt.Errorf("act %d (%q) beat %q: at goes back in time", i, a.Name, b.Label)
+			}
 		}
+		a.Beats = expandFrames(a.Beats)
 	}
 	return nil
+}
+
+// expandFrames replaces each beat with Frames > 1 by that many beats. The holds add up
+// to the beat's own, so the act's runtime check still holds.
+func expandFrames(in []Beat) []Beat {
+	var out []Beat
+	var prev time.Duration
+	for _, b := range in {
+		n := b.Frames
+		if n <= 1 {
+			out = append(out, b)
+			prev = b.At
+			continue
+		}
+		for k := 1; k <= n; k++ {
+			f := b
+			f.Label = fmt.Sprintf("%s-%d", b.Label, k)
+			f.At = prev + (b.At-prev)*time.Duration(k)/time.Duration(n)
+			f.Hold = b.Hold*time.Duration(k)/time.Duration(n) - b.Hold*time.Duration(k-1)/time.Duration(n)
+			if k > 1 {
+				f.Keys = nil
+			}
+			out = append(out, f)
+		}
+		prev = b.At
+	}
+	return out
 }
 
 func (s *Script) validate() error {
@@ -150,7 +198,7 @@ func (s *Script) validate() error {
 			if len(a.Beats) == 0 {
 				return fmt.Errorf("act %d (%q): kind tui needs beats", i, a.Name)
 			}
-			if len(a.Fixture.Sessions) == 0 {
+			if len(a.Fixture.Sessions) == 0 && a.Fixture.Replay == nil {
 				return fmt.Errorf("act %d (%q): kind tui needs fixture sessions", i, a.Name)
 			}
 		default:

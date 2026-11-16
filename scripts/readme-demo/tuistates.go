@@ -29,7 +29,7 @@ func TUIStates(a Act, start time.Duration, g Grid, home, ledgerDir string) ([]St
 	if err := WriteTitles(home, a.Fixture); err != nil {
 		return nil, fmt.Errorf("session titles: %w", err)
 	}
-	c, err := NewCapturer(a.Fixture, g.Cols, g.Rows, ledgerDir)
+	c, err := NewCapturer(a.Fixture, g.Cols, g.Rows, ledgerDir, a.Beats[0].At)
 	if err != nil {
 		return nil, err
 	}
@@ -40,6 +40,9 @@ func TUIStates(a Act, start time.Duration, g Grid, home, ledgerDir string) ([]St
 		at     = start
 	)
 	for bi, b := range a.Beats {
+		if a.Fixture.Replay != nil {
+			c.advance(b.At)
+		}
 		c.Press(b.Keys...)
 		rows := screenRows(c.Screen(), g)
 		if bi == 0 {

@@ -39,6 +39,11 @@ type emitter struct {
 	total time.Duration
 	grid  Grid
 	css   []string
+	// rows holds each distinct row markup once, by content, and rowIDs its id in order.
+	// A state draws a row it shares with another state as a <use> of it: the timeline's
+	// frames repeat most of their rows, and drawn inline the asset was twice its budget.
+	rows   map[string]int
+	rowIDs []string
 }
 
 // pct converts an absolute offset on the timeline into a keyframe percentage.
@@ -61,7 +66,7 @@ func EmitSVG(w io.Writer, states []State, total time.Duration, g Grid) error {
 	if len(states) == 0 {
 		return fmt.Errorf("no states to emit")
 	}
-	e := &emitter{w: w, total: total, grid: g}
+	e := &emitter{w: w, total: total, grid: g, rows: map[string]int{}}
 
 	width := padX*2 + float64(g.Cols)*cellW
 	height := barH + padY*2 + float64(g.Rows)*lineH
@@ -72,7 +77,7 @@ func EmitSVG(w io.Writer, states []State, total time.Duration, g Grid) error {
 		body.WriteString(e.stateBody(i, st))
 	}
 
-	fmt.Fprintf(w, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %.0f %.0f" width="%.0f" height="%.0f" font-size="%.0f" role="img" aria-label="Cortex: install, point Claude Code at it, run several sessions, then read what they cost in agentop">`+"\n",
+	fmt.Fprintf(w, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %.0f %.0f" width="%.0f" height="%.0f" font-size="%.0f" role="img" aria-label="Cortex: install, point Claude Code at it, run several sessions, then watch an agent and its subagents work in the agentop timeline and open a tool call">`+"\n",
 		width, height, width, height, fontSize)
 
 	fmt.Fprintf(w, "<style>\n%s</style>\n", e.styleSheet())
@@ -87,6 +92,11 @@ func EmitSVG(w io.Writer, states []State, total time.Duration, g Grid) error {
 	fmt.Fprintf(w, `<text x="%.0f" y="%.1f" fill="%s" font-size="12" text-anchor="middle">cortex</text>`+"\n",
 		width/2, barH/2+4, chromeFG)
 
+	io.WriteString(w, "<defs>\n")
+	for id, markup := range e.rowIDs {
+		fmt.Fprintf(w, `<g id="r%d">%s</g>`+"\n", id, markup)
+	}
+	io.WriteString(w, "</defs>\n")
 	io.WriteString(w, body.String())
 	io.WriteString(w, "</svg>\n")
 	return nil
@@ -207,6 +217,17 @@ func (e *emitter) stateBody(i int, st State) string {
 		if len(row.Runs) == 0 {
 			continue
 		}
+		e.row(&b, i, ri, row)
+	}
+	b.WriteString("</g>\n")
+	return b.String()
+}
+
+// row draws one row into out: inline when it has a reveal, whose markup names its own
+// state, and otherwise as a <use> of the one copy in the shared table.
+func (e *emitter) row(out *strings.Builder, i, ri int, row Row) {
+	var b strings.Builder
+	{
 		y := barH + padY + float64(ri+1)*lineH - 4
 		rowClass := ""
 		switch row.Reveal.Kind {
@@ -218,27 +239,35 @@ func (e *emitter) stateBody(i int, st State) string {
 				i, ri, padX, y-lineH+5, lineH)
 		}
 
-		// Background runs first, so text lands on top of its own highlight.
+		// Backgrounds and full blocks first, then partial blocks over them, then text on
+		// top. A █ covers its whole cell, so it can share the background layer, and a
+		// bar of them merges with the backgrounds beside it into one rect.
+		var under, over cellRects
 		col := 0
 		for _, run := range row.Runs {
 			n := len([]rune(run.Text))
 			if run.BG != "" {
-				fmt.Fprintf(&b, `<rect%s x="%.1f" y="%.1f" width="%.1f" height="%.1f" fill="%s"/>`+"\n",
-					rowClassForRect(rowClass), padX+float64(col)*cellW, y-lineH+5,
-					float64(n)*cellW, lineH, run.BG)
+				under.add(col, n, lineH, run.BG)
 			}
 			col += n
 		}
 		if row.SolidBlocks {
-			e.blockRects(&b, row, y, rowClassForRect(rowClass))
+			blockRects(&under, &over, row)
 		}
+		under.write(&b, rowClassForRect(rowClass), y)
+		over.write(&b, rowClassForRect(rowClass), y)
 
 		fmt.Fprintf(&b, `<text%s y="%.1f">`, rowClass, y)
 		col = 0
 		for _, run := range row.Runs {
 			n := len([]rune(run.Text))
 			if row.SolidBlocks {
-				run.Text = strings.ReplaceAll(run.Text, "█", " ") // drawn by blockRects
+				run.Text = strings.Map(func(r rune) rune { // drawn by blockRects
+					if lowerEighths(r) > 0 {
+						return ' '
+					}
+					return r
+				}, run.Text)
 			}
 			if strings.TrimSpace(run.Text) != "" {
 				fill := run.FG
@@ -265,35 +294,86 @@ func (e *emitter) stateBody(i int, st State) string {
 				i, ri, padX, y-lineH+6, cellW, lineH-4)
 		}
 	}
-	b.WriteString("</g>\n")
-	return b.String()
+	if row.Reveal.Kind != "" {
+		out.WriteString(b.String())
+		return
+	}
+	id, ok := e.rows[b.String()]
+	if !ok {
+		id = len(e.rowIDs)
+		e.rows[b.String()] = id
+		e.rowIDs = append(e.rowIDs, b.String())
+	}
+	fmt.Fprintf(out, `<use href="#r%d"/>`+"\n", id)
 }
 
-// blockRects draws each run of █ in a row as one rect the full size of its cells, in
-// the run's colour, so that block art is solid across rows as a terminal draws it.
-func (e *emitter) blockRects(b *strings.Builder, row Row, y float64, class string) {
+// blockRects adds a row's block cells: each █ to under, the full size of its cell in
+// the run's colour, so block art is solid across rows as a terminal draws it, and each
+// lower block ▁…▇ to over, filling the bottom of its cell over the run's background. A
+// font glyph does not reach a cell's edges, which is why neither is drawn as text.
+func blockRects(under, over *cellRects, row Row) {
 	col := 0
 	for _, run := range row.Runs {
 		fill := run.FG
 		if fill == "" {
 			fill = defaultFG
 		}
-		rs := []rune(run.Text)
-		for i := 0; i < len(rs); {
-			if rs[i] != '█' {
-				i++
-				continue
+		for _, r := range run.Text {
+			switch e := lowerEighths(r); {
+			case e == 8:
+				under.add(col, 1, lineH, fill)
+			case e > 0:
+				over.add(col, 1, lineH*float64(e)/8, fill)
 			}
-			j := i
-			for j < len(rs) && rs[j] == '█' {
-				j++
-			}
-			fmt.Fprintf(b, `<rect%s x="%.1f" y="%.1f" width="%.1f" height="%.1f" fill="%s"/>`+"\n",
-				class, padX+float64(col+i)*cellW, y-lineH+5, float64(j-i)*cellW, lineH, fill)
-			i = j
+			col++
 		}
-		col += len(rs)
 	}
+}
+
+// cellRect is a run of cells of one height and colour, bottom-aligned in its row.
+type cellRect struct {
+	col, n int
+	h      float64
+	fill   string
+}
+
+// cellRects collects a row's cell rects in column order, merging each into the one
+// before it when they touch and match: the timeline's bars are a rect per cell
+// otherwise, which was most of the asset's size.
+type cellRects []cellRect
+
+func (r *cellRects) add(col, n int, h float64, fill string) {
+	if k := len(*r) - 1; k >= 0 {
+		if last := &(*r)[k]; last.col+last.n == col && last.h == h && last.fill == fill {
+			last.n += n
+			return
+		}
+	}
+	*r = append(*r, cellRect{col, n, h, fill})
+}
+
+func (r cellRects) write(b *strings.Builder, class string, y float64) {
+	for _, c := range r {
+		fmt.Fprintf(b, `<rect%s x="%.1f" y="%.1f" width="%.1f" height="%.1f" fill="%s"/>`+"\n",
+			class, padX+float64(c.col)*cellW, y+5-c.h, float64(c.n)*cellW+seamOverlap, c.h, c.fill)
+	}
+}
+
+// seamOverlap widens each cell rect into its right neighbour. Cells sit at fractional
+// x, and the browser's anti-aliasing of two touching edges otherwise leaves a faint
+// line between cells that a terminal never draws.
+const seamOverlap = 0.5
+
+// lowerEighths is how many eighths of a cell a lower block element fills from the
+// bottom: 8 for █, 1 for ▁ up to 7 for ▇, and 0 for any other rune.
+func lowerEighths(r rune) int {
+	switch {
+	case r == '█':
+		return 8
+	case r >= '▁' && r <= '▇':
+		return int(r-'▁') + 1
+	}
+	return 0
 }
 
 // rowClassForRect keeps a background rect on the same reveal as its text, but a

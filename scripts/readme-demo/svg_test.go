@@ -167,9 +167,21 @@ func TestEmitSVG_BarRevealStepsByCellWithNoCursor(t *testing.T) {
 	}
 }
 
-// A shell row's █ becomes one rect per run, the full cell height, and leaves the
-// text; agentop's rows keep their block glyphs, since their bars sit on adjacent rows.
+// A SolidBlocks row's █ becomes one rect per run, the full cell height, and leaves the
+// text; a row without the flag keeps its block glyphs.
 func TestEmitSVG_SolidBlocksDrawCellsNotGlyphs(t *testing.T) {
+	// ▃ is three eighths of the cell, at its bottom, over the run's background.
+	lower := []State{{Label: "bars", Dur: time.Second, Final: true, Rows: []Row{
+		{Runs: []Run{{Text: "▃", FG: "#fbbf24", BG: "#a78bfa"}}, SolidBlocks: true},
+	}}}
+	var lb bytes.Buffer
+	if err := EmitSVG(&lb, lower, time.Second, Grid{Cols: 4, Rows: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(lb.String(), `y="56.2" width="8.9" height="6.8" fill="#fbbf24"/>`) || strings.Contains(lb.String(), "▃") {
+		t.Errorf("want ▃ as a 3/8-height rect at the cell's bottom, not a glyph:\n%s", lb.String())
+	}
+
 	states := []State{{Label: "logo", Dur: 10 * time.Second, Final: true, Rows: []Row{
 		{Runs: []Run{{Text: " ██╗", FG: "#f97066"}}, SolidBlocks: true},
 		{Runs: []Run{{Text: "██", FG: "#9ca3af"}}},
@@ -179,7 +191,7 @@ func TestEmitSVG_SolidBlocksDrawCellsNotGlyphs(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, `<rect x="24.4" y="45.0" width="16.8" height="18.0" fill="#f97066"/>`) {
+	if !strings.Contains(out, `<rect x="24.4" y="45.0" width="17.3" height="18.0" fill="#f97066"/>`) {
 		t.Errorf("want one 2-cell rect for the logo row's █ run:\n%s", out)
 	}
 	if strings.Contains(out, `fill="#f97066"> ██╗`) || !strings.Contains(out, "╗</tspan>") {
