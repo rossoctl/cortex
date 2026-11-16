@@ -95,20 +95,25 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 }
 
 // trees groups the tasks by their root task, and gives the trees that have messages, newest
-// first. A parent_id that names a missing task, or a cycle, ends the walk to the root.
+// first. A parent_id that names a missing task ends the walk to the root. In a cycle, the
+// task with the smallest id is the root.
 func trees(tasks []task) []*tree {
 	byID := make(map[string]*task, len(tasks))
 	for i := range tasks {
 		byID[tasks[i].ID] = &tasks[i]
 	}
 	rootOf := func(t *task) *task {
-		seen := map[string]bool{t.ID: true}
+		path := []*task{t}
 		for {
 			p, ok := byID[t.ParentID]
-			if !ok || seen[p.ID] {
+			if !ok {
 				return t
 			}
-			seen[p.ID] = true
+			if i := slices.Index(path, p); i >= 0 {
+				// A cycle: each start point must find the same root, so take its smallest id.
+				return slices.MinFunc(path[i:], func(a, b *task) int { return strings.Compare(a.ID, b.ID) })
+			}
+			path = append(path, p)
 			t = p
 		}
 	}
