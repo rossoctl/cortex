@@ -351,6 +351,7 @@ func TestWriteSession_SessionTimesAreItsEvents(t *testing.T) {
 // A failed write whose erase also fails keeps its numbering: the partial copy is still on disk, so
 // a live event must not number into its seqs.
 func TestWriteSession_FailedEraseKeepsNumbering(t *testing.T) {
+	skipWithoutUnixModes(t) // the erase fails through a read-only data dir, which Windows ignores
 	a := openTest(t, t.TempDir(), newClock())
 	defer a.Close()
 	a.segHook = func(w *segmentWriter) {
