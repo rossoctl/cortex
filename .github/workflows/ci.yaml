@@ -122,6 +122,44 @@ jobs:
           go build ./...
           go test -race ./...
 
+  # Windows (#1520): core and the laptop proxy must keep building, and the session archive and
+  # cost ledger must keep writing where a directory is flushed only through a write handle and
+  # cannot be renamed with a file open in it. Only those packages' tests run: the rest of core
+  # and cmd/cortex still have Unix-only tests (Setpgid, SIGUSR1), and agentop does not build
+  # yet. No -race: the race detector needs cgo and a C toolchain on the runner.
+  go-ci-windows:
+    name: Go CI (Windows build, archive and ledger)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - name: Build core
+        working-directory: core
+        run: go build ./...
+
+      - name: Vet and test bootstrap, the session archive and the cost ledger
+        working-directory: core
+        run: |
+          go vet ./bootstrap/... ./session/archive/... ./cost/ledger/...
+          go test ./bootstrap/... ./session/archive/... ./cost/ledger/...
+
+      - name: Build cmd/cortex (local profile)
+        working-directory: cmd/cortex
+        run: |
+          TAGS=$(go -C ../../scripts/profile-tags run . local)
+          go build -tags "${TAGS}" ./...
+
   # The cpex plugin's FFI-backed code sits behind the `cpex` build tag and needs
   # cgo plus the pinned libcpex_ffi.a, so no other job compiles or tests it. It
   # runs in Alpine to link the same musl asset the authbridge-cpex image does,
