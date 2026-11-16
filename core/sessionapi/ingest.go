@@ -382,10 +382,10 @@ func (s *Server) fileIngest(l ingestLine) {
 	}
 
 	ev := l.Event
-	// Cortex does not trust a producer's cost record, nor its numbering or time.
+	// Cortex does not trust a producer's cost record, nor its numbering, time or imported mark.
 	delete(ev.Plugins, event.Key)
 	delete(ev.Plugins, event.PluginName)
-	ev.Seq, ev.SessionID, ev.At = 0, "", time.Now()
+	ev.Seq, ev.SessionID, ev.At, ev.Source = 0, "", time.Now(), ""
 
 	if ev.Inference != nil {
 		switch ev.Phase {

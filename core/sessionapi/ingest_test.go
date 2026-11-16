@@ -259,6 +259,20 @@ func TestIngest_StoreAssignsSeqAndAt(t *testing.T) {
 	}
 }
 
+func TestIngest_ProducerImportedMarkIsDropped(t *testing.T) {
+	r := newIngestRig(t)
+	ev := map[string]any{"source": "imported:claude-code", "phase": "request",
+		"requestId": "r1", "inference": map[string]any{"model": "m"}}
+	r.post(t, nil, line(t, map[string]any{"event": ev}))
+	evs := r.events("s1")
+	if len(evs) != 1 {
+		t.Fatalf("got %d rows", len(evs))
+	}
+	if evs[0].Source != "" {
+		t.Errorf("source = %q, want empty: an ingested event is live", evs[0].Source)
+	}
+}
+
 func TestIngest_ProducerCostIsReplaced(t *testing.T) {
 	r := newIngestRig(t)
 	forged := map[string]any{"cost_usd": 999, "source": "gateway_header", "settled": true}
