@@ -91,12 +91,7 @@ func TestDelete_AFailedRenameKeepsTheHistoryAndReportsIt(t *testing.T) {
 	defer a.Close()
 	newRecorder(a).record("s1", synthSession(96, 1, 512)...)
 	settle(a)
-	// The rename creates an entry in root; a read-only root refuses it, while data/ underneath
-	// stays writable.
-	if err := os.Chmod(root, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(root, 0o700) })
+	blockRenames(t, root, filepath.Join(root, dataDirName, dirName("s1")))
 
 	a.Deleted("s1")
 	if _, err := a.AwaitDelete("s1", 5*time.Second); err == nil {

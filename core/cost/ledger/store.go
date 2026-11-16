@@ -318,9 +318,10 @@ var syncNewDayFileName = syncDir
 // BEST EFFORT BY DESIGN on the platforms where it is not a thing: opening a directory for
 // reading and fsyncing it is POSIX behaviour, and a filesystem that refuses either returns
 // an error here which the caller reports as a durability claim it cannot make. It never
-// affects whether the rows are readable.
+// affects whether the rows are readable. openDir opens the directory the way the platform
+// can flush it (syncdir_windows.go).
 func syncDir(dir string) error {
-	f, err := os.Open(dir)
+	f, err := openDir(dir)
 	if err != nil {
 		return fmt.Errorf("costledger: cannot open %s to make a new day file's name durable: %w", dir, err)
 	}
@@ -919,5 +920,7 @@ func mergeDayFiles(src, dst string) error {
 		"kept", filepath.Base(dst), "mergedFrom", filepath.Base(src),
 		"cause", "the host clock moved far enough for a day to be condemned and then written again",
 		"effect", "both sets of rows are in the surviving file; a per-minute total is the sum of what each held")
+	// Closed before the unlink: Windows will not remove a file that is still open.
+	_ = in.Close()
 	return os.Remove(src)
 }

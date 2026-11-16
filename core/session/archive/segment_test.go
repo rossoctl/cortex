@@ -79,6 +79,7 @@ func TestCreateSegment_NamesByLocalOpenTimeAndNeverOverwrites(t *testing.T) {
 
 // Segments hold raw prompts and completions: readable by the user only.
 func TestCreateSegment_ModesAre0600And0700(t *testing.T) {
+	skipWithoutUnixModes(t)
 	dir := filepath.Join(t.TempDir(), "sess")
 	w, err := createSegment(dir, time.Now())
 	if err != nil {

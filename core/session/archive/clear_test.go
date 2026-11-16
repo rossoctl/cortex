@@ -140,17 +140,13 @@ func TestClear_AFailedRenameKeepsEverythingAndReportsIt(t *testing.T) {
 	r := newRecorder(a)
 	r.record("s1", synthSession(88, 1, 512)...)
 	settle(a)
-	// The rename needs to create an entry in root; a read-only root refuses it, while data/
-	// underneath stays writable.
-	if err := os.Chmod(root, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(root, 0o700) })
+	release := blockRenames(t, root, filepath.Join(root, dataDirName, dirName("s1")))
 
 	a.Cleared()
 	if _, err := a.AwaitClear(5 * time.Second); err == nil {
 		t.Fatal("a clear whose rename failed reported success")
 	}
+	release()
 	if rows := a.Summaries(); len(rows) != 1 || rows[0].ID != "s1" {
 		t.Fatalf("Summaries after a failed clear = %+v, want s1 kept", rows)
 	}
