@@ -72,9 +72,10 @@ the import in `POST /v1/import`. agentop calls the route and marks imported rows
    mark, or when `lastSeq[id] > 0` and the archive holds no imported session for the id
    (a live event was recorded before the write). It refuses (`ErrExists`) a plain write
    when the archive already holds the id.
-10. **Two PRs.** The total estimate is about 3,100 counted lines. PR 1 is the core write
-    path with a fake source in the tests. PR 2 adds the Claude source, the route, agentop
-    and docs on top of it.
+10. **Two PRs.** The total estimate was about 3,100 counted lines. PR 1 (T1–T5, the core
+    write path with a fake source in the tests) is merged as #1876. PR 2 (T6–T11, about
+    1,890 lines) adds the Claude source, the route, agentop, docs and the erase fix on
+    `main`. This run builds PR 2 only.
 11. **LAST 1H does not show imported turns until the next proxy restart.** The spec
     accepts this. The importer does not feed the usage ring.
 12. **`agentop import` brings an erased session back** (user request, 2026-11-16). An
@@ -425,7 +426,8 @@ func New(configDir string) importer.Source
 Rules for the parse (one transcript file = `<project>/<uuid>.jsonl`; id = file uuid):
 - Do not take the harvest metadata lock. Do not write any file.
 - This package is also named `claude`. Import `core/observe/claude` as `ccstore`.
-- Discovery: call `ccstore.ReadSessions(dir, nil)`. A missing `projects` directory
+- Discovery: call `metas, _, _, err := ccstore.ReadSessions(dir, nil)` (it returns
+  four values; ignore the partial-title list and the skip count). A missing `projects` directory
   returns an empty map and no error: the source then yields nothing and no error, so
   `agentop import` with no `--agent` on a machine without Claude Code reports 0 sessions.
 - Subagent transcripts: list `agent-*.jsonl` files with `os.ReadDir` in
@@ -459,7 +461,8 @@ Rules for the parse (one transcript file = `<project>/<uuid>.jsonl`; id = file u
   `<uuid>/subagents/workflows/<run>/agent-<aid>.jsonl`: parse them the same way, with
   `Subagent = "<aid>"` on each event. Merge all events of the session by `At` (stable:
   main file first on ties). Pass every event through one `session.Interner`, in the
-  final order.
+  final order. The zero value `var in session.Interner` is ready to use; make one per
+  session.
 - `Updated` = the latest request `At`. `SizeHint` = the sum of the file sizes read.
 - A file that cannot be opened: yield `(Session{}, err)` only when `ReadSessions` returns
   an error (the projects directory exists but cannot be read). One unreadable main
@@ -470,7 +473,7 @@ Rules for the parse (one transcript file = `<project>/<uuid>.jsonl`; id = file u
   from real Claude Code 2.x lines (no real content, paths or ids):
   `11111111-1111-4111-8111-111111111111.jsonl` (plain: 2 user prompts, 2 assistant
   turns, a `summary` line, a `file-history-snapshot` line, one non-JSON line),
-  `22222222-2222-4222-8222-222222222222jsonl` (a `tool_use` turn split over 2 assistant lines with the same
+  `22222222-2222-4222-8222-222222222222.jsonl` (a `tool_use` turn split over 2 assistant lines with the same
   `message.id`, a `tool_result` user line, a `thinking` block, a `compact_boundary`), and
   `22222222-2222-4222-8222-222222222222/subagents/agent-a1b2c3.jsonl` + `agent-a1b2c3.meta.json`
   (`{"agentType":"Explore"}`).
@@ -640,7 +643,11 @@ var ErrImportRunning = errors.New("an import is already running") // 409
 Facts to write (all from this plan): the command line and its 4 flags; `--since`
 accepts `YYYY-MM-DD` and `<N>d`; the route exists only when the archive is on and the
 session API is loopback-only, else 404; body `{"agent","since","dryRun"}`; 409 while one
-runs; the per-agent counts; the 4 rules of "Live sessions and re-import" (T5); the
+runs; the per-agent counts; the 4 rules of "Live sessions and re-import": (1) a session
+that has live events (in memory, or archived without the imported mark) is skipped and
+never changed; (2) an imported copy that is as new as the transcript is skipped; (3) a
+newer transcript replaces the imported copy, and only its new turns reach the ledger;
+(4) a session that the archive does not hold is imported; the
 Claude Code store `~/.claude/projects/<project>/<uuid>.jsonl` and `CLAUDE_CONFIG_DIR`;
 imported events have `source: "imported:<agent>"`; the summary is marked only while all
 its events are imported; cost `source: "transcript"` priced at today's rates; ledger
@@ -685,8 +692,9 @@ erase fact in `docs/session-api.md` next to the two `DELETE` routes too.
   that minute. Keep the session id on ledger rows if that undercount shows up.`
 - Do not change the archive, the store, the erase routes or the ledger.
 
-- [ ] **Step 1:** Write tests with the existing helpers in `importer_test.go` (temp
-  archive, `ledger.New(t.TempDir())`, the bundled resolver, `fakeSource`):
+- [ ] **Step 1:** Write tests with the existing helpers in `importer_test.go`
+  (`openArchive`, `openLedger`, `ledgerRows`, `sumRows`, `testRates`, `fakeSession`,
+  `fakeSource`):
   - `TestRun_ErasedImportedSessionComesBackOnce`: `Run` imports session A (2 turns); flush
     the ledger and sum the tokens and `CostMicros` of `Window`; `AwaitDelete(A, time.Second)`
     on the archive; `Run` again with the same source → `Imported == 1`, `Lookup(A)` is
@@ -719,8 +727,11 @@ test -z "$(gofmt -l core cmd/cortex cmd/agentop)" \
  && GOWORK=off go -C cmd/agentop test ./apiclient/... ./tui/...
 ```
 
-Checked on the base commit c50de9be, from the worktree root: the `gofmt` step and the
-three `go vet` steps pass as written. No step was changed.
+Checked on the base commit 1300d93c (after #1876), from the worktree root: the `gofmt`
+step and the three `go vet` steps pass as written. No step was changed. The gate covers
+T6 (`./session/...`), T7 (`./sessionapi/...`, `cmd/cortex` vet and build), T8 (the
+agentop shards and `./apiclient/...`), T9 (`./tui/...`) and T11 (`./session/...`). T10's
+`pre-commit` step runs in that task, not in the gate.
 
 ## For a human after review
 
