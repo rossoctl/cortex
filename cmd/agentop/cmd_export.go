@@ -19,9 +19,11 @@ import (
 // the archive single-threaded, which EXTRAPOLATES to ~10s for a 30-day archive — a figure
 // from a smaller fixture, not a measurement of one, and the walk re-decodes per page, so
 // the real number for a busy month may be well above it (#1830 review). Nothing benchmarks
-// the walk yet. This budget exists to catch a live-but-pathologically-slow walk rather
-// than to be tight against a healthy one, so an optimistic estimate costs nothing here —
-// but do not quote the ten seconds as a measurement.
+// the walk yet: #1895 covers measuring it, and the two paging fixes that would change it.
+//
+// This budget exists to catch a live-but-pathologically-slow walk rather than to be tight
+// against a healthy one, so an optimistic estimate costs nothing here — but do not quote
+// the ten seconds as a measurement.
 //
 // A proxy that stalls is caught sooner and elsewhere: HeaderTimeout (2 minutes)
 // bounds the wait for the first byte, and the walk flushes a line per record, so silence
@@ -67,9 +69,8 @@ counts, hosts, models, outcomes — never message content, completions or tool a
 which is what makes it shareable where the full events are not. It is not anonymous,
 though: hosts, models, session ids and timestamps remain, and together they describe who
 talked to what and when. A month of traffic is about 12MB. The reading rules that keep a
-consumer from
-misinterpreting the fields (zero means "not recorded", never a real zero; order by
-"at" then "seq") are in Cortex's docs/session-export.md.
+consumer from misinterpreting the fields (zero means "not recorded", never a real zero;
+order by "at" then "seq") are in Cortex's docs/session-export.md.
 
 The export reads the durable archive, not memory: a session with nothing flushed yet
 does not appear, and the live tail is /v1/events, not this.
@@ -102,8 +103,7 @@ Flags:
 	// --session "" is: `--since "$(window)"` with an empty expansion is the scripting case
 	// this flag is typed into, and reading it as "every event ever" turns a broken variable
 	// into a full-archive export. fs.Visit sees only the flags actually given, so an unset
-	// --since still means no floor.
-	// Trimmed, as sessionIDs.Set trims: `--since " "` out of a quoted expansion is the
+	// --since still means no floor. Trimmed, as sessionIDs.Set trims: `--since " "` out of a quoted expansion is the
 	// same broken variable, and letting it through only moves the refusal to the server,
 	// which answers 400 after a round trip rather than 2 before one.
 	var emptySince bool
