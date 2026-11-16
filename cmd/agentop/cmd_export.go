@@ -192,7 +192,16 @@ Flags:
 	counted := &lineCounter{w: dest}
 	if _, err := io.Copy(counted, body); err != nil {
 		fmt.Fprintf(stderr, "agentop export: %v\n", err)
-		fmt.Fprintf(stderr, "  the walk failed part-way; %s holds every complete record before it\n", where)
+		// Which END broke decides what to say, and io.Copy's error alone does not tell
+		// them apart. A failed write is the local disk (--out to a small partition), and
+		// it can stop mid-line, so promising whole records there would be wrong twice:
+		// wrong cause, wrong guarantee. A failed read is the walk, which only ever ends
+		// the stream at a record boundary.
+		if counted.err != nil {
+			fmt.Fprintf(stderr, "  writing %s failed; it may end in a partial line\n", where)
+		} else {
+			fmt.Fprintf(stderr, "  the walk failed part-way; %s holds every complete record before it\n", where)
+		}
 		return 1
 	}
 	fmt.Fprintf(stderr, "  %s records, %s → %s\n",
@@ -230,10 +239,15 @@ func (s *sessionIDs) Set(v string) error {
 }
 
 // lineCounter counts newlines and bytes passing through it, for the summary line.
+//
+// It also keeps the last write error, because io.Copy reports a failed READ and a failed
+// WRITE as the same non-nil error and the caller has to tell a dead walk from a full
+// disk: only this side knows which end broke.
 type lineCounter struct {
 	w     io.Writer
 	lines int64
 	bytes int64
+	err   error
 }
 
 func (l *lineCounter) Write(p []byte) (int, error) {
@@ -243,6 +257,9 @@ func (l *lineCounter) Write(p []byte) (int, error) {
 		if b == '\n' {
 			l.lines++
 		}
+	}
+	if err != nil {
+		l.err = err
 	}
 	return n, err
 }

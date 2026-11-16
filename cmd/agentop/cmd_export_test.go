@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -220,6 +221,36 @@ func TestRunExport_TruncatedWalkExitsNonZero(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "the walk failed part-way") {
 		t.Fatalf("stderr = %q, want the part-way-walk line", errOut.String())
+	}
+}
+
+// errWriter fails every write, the way a full partition does.
+type errWriter struct{ err error }
+
+func (e errWriter) Write([]byte) (int, error) { return 0, e.err }
+
+// A FAILED WRITE BLAMES THE DISK, NOT THE WALK. io.Copy returns one error for either
+// end, and the walk is the wrong thing to accuse when --out ran out of space: the cause
+// is local, and a short write can stop mid-line, so "every complete record" would be
+// wrong as well. The server here is healthy and sends the whole export.
+func TestRunExport_FailedWriteDoesNotBlameTheWalk(t *testing.T) {
+	srv, _ := exportServer(t, http.StatusOK, exportLines)
+	var errOut strings.Builder
+	// A writer that fails like a full disk, rather than /dev/full: the destination goes
+	// through the same lineCounter either way, and this runs on every platform instead of
+	// skipping everywhere but Linux.
+	code := runExport([]string{"--endpoint", srv.URL}, errWriter{errors.New("no space left on device")}, &errOut)
+	if code != 1 {
+		t.Fatalf("runExport = %d, want 1 when the write fails; stderr:\n%s", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "no space left") {
+		t.Fatalf("stderr = %q, want the write error itself", errOut.String())
+	}
+	if strings.Contains(errOut.String(), "the walk failed") {
+		t.Fatalf("stderr = %q, want no accusation against the walk on a write failure", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "may end in a partial line") {
+		t.Fatalf("stderr = %q, want the partial-line warning", errOut.String())
 	}
 }
 
