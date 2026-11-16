@@ -30,6 +30,7 @@ through DNS rebinding. The stats server applies the same check.
 | `GET /v1/pipeline` | `application/json` | Active pipeline composition, per plugin: name, direction, position, capabilities, runtime `config`. `onError` is sent only when it is not the default — in practice `observe`, since an `on_error: off` plugin is not built. A plugin under observe runs and records, but its rejections, body writes and redirects are dropped (header writes still apply), so its `config` says what it would do. agentop renders this as the Pipeline pane (`P`) |
 | `GET /v1/plugins` | `application/json` | Catalog of every registered plugin, active or not. 404 when the binary built its session API without `WithCatalog`. agentop renders this as the Catalog pane (`C`) |
 | `GET /v1/usage` | `application/json` | Windowed usage aggregation — the aggregate behind `agentop cost`; parameters and semantics in [`pricing.md`](pricing.md#reading-usage-over-http) |
+| `POST /v1/import` | `application/json` | Laptop only: import agent transcripts from disk into the archive and the cost ledger (see below). 404 otherwise |
 | `POST /v1/ingest` | NDJSON in, `204` out | Praxis mode only: rows that `cortex-gateway` records (see below). 404 otherwise |
 | `GET /v1/ingest/stats` | `application/json` | Praxis mode only: the ingestion counters (see below). 404 otherwise |
 | `GET /healthz` | text | Liveness probe |
@@ -80,6 +81,10 @@ knowing by name:
   carried, most recent first, at most 8. Folded at append time, and continued
   from the archive's fold like the other figures. Absent on `default` and on
   pending buckets.
+- **`source`** is `"imported:<agent>"` while every event of the session is
+  imported (see [`POST /v1/import`](#post-v1import--transcript-import-laptop-only)).
+  It is absent when the session has one or more live events. So a live request
+  for an imported session gives it a live event, and the mark goes.
 - **Pending buckets.** A coding agent's calls before its process names a session
   are recorded under `pending:<agent>@<pid>.<start>` (or `pending:<agent>` when
   the process could not be looked up), carrying their `proc`. Nothing renames a
@@ -357,6 +362,11 @@ the server must have been built with clearing allowed
 `{"error": ...}`. Each guard is pinned by its own test in
 `core/sessionapi/clear_test.go`. agentop's `X` drives it.
 
+An erased session comes back on the next `agentop import` while its transcript
+is still on disk. It comes back as an imported session. This applies to both
+`DELETE` routes. See
+[`POST /v1/import`](#post-v1import--transcript-import-laptop-only).
+
 ## `DELETE /v1/sessions/{id}` — erase one session
 
 Erases one session: the store's entry and, where the archive runs, its files —
@@ -368,6 +378,87 @@ regardless). The cost ledger, usage totals and inference-router pins are
 kept. An agent still using the session brings it back with its next request.
 agentop's `x` drives it, one request per session for an agent-wide erase —
 see [`laptop-service.md`](laptop-service.md) for the user-facing story.
+The next `agentop import` brings an erased session back from its transcript, as
+an imported session. Its cost is not counted again, because the erase kept the
+ledger rows.
+
+## `POST /v1/import` — transcript import (laptop only)
+
+Reads the transcripts that an agent keeps on disk, and writes each session into
+the session archive and the cost ledger. The sessions then show in agentop as
+ordinary sessions with an imported mark. `agentop import` drives this route
+(see [`cmd/agentop/README.md`](../cmd/agentop/README.md#importing-agent-history-agentop-import)).
+
+**The route exists only when the archive is on and the session API is
+loopback-only** (`listener.bind_loopback_only`, as on a local install).
+Otherwise the answer is 404. The route reads only the agent's own store. It
+does not accept a path, events or files from the caller.
+
+The body is JSON, at most 4 KiB:
+
+```json
+{"agent": "claude-code", "since": "2026-10-01T00:00:00-04:00", "dryRun": true}
+```
+
+- `agent` selects one source. Empty selects every source. An unknown agent is a
+  400 that names the supported agents.
+- `since` (RFC 3339) skips a transcript file that was last changed before it.
+- `dryRun` counts what an import would do and writes nothing.
+
+Bad JSON is a 400. **One import runs at a time:** a second request while one
+runs gets 409, and the first one continues. After these checks the route sends
+the 200 header at once, and then does the work. So an error of one agent is in
+the body, not in the status:
+
+```json
+{"dryRun": true, "agents": [{"agent": "claude-code", "imported": 12, "replaced": 3,
+  "skippedLive": 40, "skippedCurrent": 7, "skippedLines": 2, "skippedExpired": 1,
+  "notImported": 5, "stopped": "archive full", "error": "…"}]}
+```
+
+`skippedExpired`, `notImported`, `stopped` and `error` are sent only when they
+are set.
+
+**Live sessions and re-import.** The import applies these rules to each
+session in order:
+
+1. A session with live events is skipped and never changed (`skippedLive`).
+   Live events are in memory, or in the archive without the imported mark.
+2. An imported copy that is as new as the transcript is skipped
+   (`skippedCurrent`).
+3. A newer transcript replaces the imported copy (`replaced`). Only its new
+   turns go to the cost ledger.
+4. A session that the archive does not hold is imported (`imported`).
+
+Rule 4 also applies to an erased session. An erase leaves no record of the
+session, so the next import writes it again as an imported session. The erase
+kept the ledger rows, so the import does not count its cost again.
+
+**What an import writes:**
+
+- Each imported event has `source: "imported:<agent>"`. A live event has no
+  `source`. The session summary has the mark only while all its events are
+  imported.
+- The `cost` record of an imported turn has `source: "transcript"`. Cortex
+  prices it at today's rates. A turn with no usage has no `cost` record.
+- The ledger row of an imported turn has `source: "transcript"`. A live row has
+  no `source`.
+- A turn before the ledger's retention cutoff goes to the archive only.
+- An imported segment is kept for `retention_days` from its newest event. A
+  session older than that is skipped (`skippedExpired`).
+- The import stops before a session that would take the archive above 90% of
+  `max_bytes`. Then `stopped` is `"archive full"`, and `notImported` counts the
+  sessions left.
+- One line that the source does not recognize is skipped and counted
+  (`skippedLines`). It does not stop the import.
+- LAST 1H and the usage pane's hour windows show imported turns only after the
+  next proxy restart. The import does not feed them.
+
+**Sources.** Only Claude Code (`claude-code`) is supported now. #1872 to #1875
+add the other agents. The Claude Code source reads
+`~/.claude/projects/<project>/<uuid>.jsonl`, or the same path under
+`CLAUDE_CONFIG_DIR` when that variable is set. Each event has the
+`claude-code` client and the project of the transcript's working directory.
 
 ## `POST /v1/ingest` — rows from cortex-gateway (praxis mode)
 
@@ -689,6 +780,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   into an id the archive already holds is refused (the session keeps its old
   id), because the two numberings would collide. A proxy that predates paging
   sends no `seq`, which is how a client tells it cannot page there.
+- `source` — `"imported:<agent>"` on an event that
+  [`POST /v1/import`](#post-v1import--transcript-import-laptop-only) wrote.
+  Absent on a live event. The proxy did not see an imported exchange, so such
+  an event has no `host` and no capture.
 - `a2a` / `mcp` / `inference` — protocol parser payloads (one at most).
 - `invocations` — per-plugin invocation records for every plugin that ran on
   the pipeline pass, structured `{inbound: [...], outbound: [...]}`. Each entry

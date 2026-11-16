@@ -777,6 +777,54 @@ rather than refused, so set its context length above the agent's prompts: Claude
 Code's opening turn can pass 64k tokens, Bob's reach about 21k. On a Mac with
 less than 64 GB, see [Choose a model](../../docs/laptop-local-model.md#choose-a-model).
 
+## Importing agent history (`agentop import`)
+
+`agentop import` reads the transcripts that an agent keeps on disk, and adds
+them to Cortex's session history and cost ledger. Use it for the sessions that
+ran before you installed Cortex, or that did not go through it.
+
+```sh
+agentop import                                  # every supported agent
+agentop import --agent claude-code --since 30d
+agentop import --since 2026-10-01 --dry-run     # count only, write nothing
+```
+
+| Flag | Meaning |
+|---|---|
+| `--agent` | `claude-code`, `bob`, `codex`, `opencode` or `pi`. Only `claude-code` is supported now: the proxy answers the others with an error that names the supported agents. #1872 to #1875 add them |
+| `--since` | skip a transcript file last changed before this time: `YYYY-MM-DD` (local midnight) or `<N>d` (N days ago) |
+| `--dry-run` | count what an import would do, and write nothing |
+| `--endpoint` | the session API, as for `agentop cost` |
+
+The proxy does the work in
+[`POST /v1/import`](../../docs/session-api.md#post-v1import--transcript-import-laptop-only).
+agentop does not open the archive or the ledger. The route exists only on a
+local install: the archive is on and the session API is loopback-only.
+Otherwise agentop says that the proxy has no import route, and exits 1. Only one
+import runs at a time. A second one prints `agentop import: an import is already
+running` and exits 1.
+
+The output is one line for each agent:
+
+```text
+claude-code: 12 imported, 3 replaced, 40 skipped (live), 7 skipped (current), 1 skipped (expired), 2 lines not recognized
+```
+
+`--dry-run` puts `dry run: ` before each line. A `stopped:` line follows when the
+archive got full, and an `error:` line when the agent failed. The exit status is
+1 when an agent has an error.
+
+**What it does not change.** A session that Cortex captured live is skipped, and
+the import never changes it. An imported copy that is as new as its transcript
+is skipped. A newer transcript replaces the imported copy, and only its new
+turns are counted as cost. A session that you erased with `x` or `X` comes back
+as an imported session while its transcript is still on disk. Its cost is not
+counted again, because the erase kept the ledger rows.
+
+An imported session has a dim `imp` before its title in the sessions pane.
+Its events show `n/a` for status, duration, bytes, host and plugin, because the
+proxy did not see them. Tokens and cost show values, priced at today's rates.
+
 ## Panes
 
 The UI has these panes. `Enter` drills in; `Esc` backs out.
