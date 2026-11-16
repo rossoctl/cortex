@@ -137,7 +137,21 @@ jobs:
     env:
       GOWORK: "off"
     steps:
+      # .claude/skills has directories with a colon in their names, which Windows cannot
+      # create, so a plain checkout fails. Leave .claude/ out of the worktree. Git still
+      # refuses those paths in the index (core.protectNTFS), even as skip-worktree entries,
+      # so turn that check off for this step only. actions/checkout passes the step's env to
+      # git, and GIT_CONFIG_* applies to every git call it makes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.protectNTFS
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          sparse-checkout: |
+            /*
+            !/.claude/
+          sparse-checkout-cone-mode: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
