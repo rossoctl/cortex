@@ -51,7 +51,7 @@ func (a *Archive) mergeForgotten(r forgetRecord) {
 	a.forgotten[r.ID] = [2]int64{r.From, r.To}
 }
 
-// loadForgotten reads forgetFile into the map. A line that does not parse is skipped and counted.
+// loadForgotten reads forgetFile into the map. A line that does not parse is skipped and logged.
 // It runs in Open, before the writer goroutine starts.
 func (a *Archive) loadForgotten() {
 	b, err := os.ReadFile(filepath.Join(a.root, forgetFile))
@@ -63,6 +63,7 @@ func (a *Archive) loadForgotten() {
 	}
 	// A crash during an append can leave a torn last line. The next append must not join it.
 	a.forgetTorn = len(b) > 0 && b[len(b)-1] != '\n'
+	bad := 0
 	for _, line := range bytes.Split(b, []byte("\n")) {
 		if len(line) == 0 {
 			continue
@@ -70,13 +71,13 @@ func (a *Archive) loadForgotten() {
 		a.forgetLines++
 		var r forgetRecord
 		if json.Unmarshal(line, &r) != nil || r.ID == "" {
-			a.badForgetLines.Add(1)
+			bad++
 			continue
 		}
 		a.mergeForgotten(r)
 	}
-	if n := a.badForgetLines.Load(); n > 0 {
-		slog.Warn("session archive: some forget records could not be read and are skipped", "lines", n)
+	if bad > 0 {
+		slog.Warn("session archive: some forget records could not be read and are skipped", "lines", bad)
 	}
 }
 
@@ -115,7 +116,6 @@ func (a *Archive) forget(ss []*sessionState) {
 	}
 	if err != nil {
 		a.forgetTorn = true // a short write may have left part of a line
-		a.forgetWriteErrors.Add(1)
 		slog.Warn("session archive: could not write a forget record; after a restart an import can count the session again",
 			"error", err)
 		return

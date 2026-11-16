@@ -32,7 +32,7 @@ type Options struct {
 // A session that the archive removed (an erase, a clear, max_bytes or retention_days) is new
 // again here, but its ledger rows are not removed with it. When the archive has a forget record
 // for the session, toLedger skips each turn in the span of that record. With no record, toLedger
-// skips each turn that has a live row near it.
+// skips each turn that has a live row near it, or a row near it that an earlier run imported.
 //
 // A session older than the archive's retention_days is skipped, so its turns do not reach the
 // ledger even when the ledger keeps rows longer.
@@ -40,7 +40,8 @@ func Run(ctx context.Context, src Source, o Options) AgentReport {
 	r := AgentReport{Agent: src.Agent()}
 	mark := model.ImportedSource(src.Agent())
 	var dryBytes int64             // the bytes a dry run would have written, for the size check
-	sent := map[string]bool{}      // the request ids this run sent to the ledger; see toLedger
+	written := map[liveKey]bool{}  // see toLedger
+	sent := map[string]bool{}      // the request ids whose turns the ledger holds; see toLedger
 	var sum session.SessionSummary // the archived copy of the session that skip last let through
 	var found bool
 	// skip applies Rules 1 and 2 and the retention check, and counts a skipped session. Sessions
@@ -147,7 +148,7 @@ func Run(ctx context.Context, src Source, o Options) AgentReport {
 					span = &forgotSpan{f, t}
 				}
 			}
-			if err := toLedger(ctx, o.Ledger, s, prior, sent, span); err != nil {
+			if err := toLedger(ctx, o.Ledger, s, prior, sent, written, span); err != nil {
 				r.Error = "cost ledger: " + err.Error()
 				break
 			}
@@ -200,11 +201,15 @@ func readPrior(ctx context.Context, a *archive.Archive, id string) (*priorTurns,
 // which the proxy sees the request.
 //
 // With no record, or before the span, it skips a response when the ledger has a live row for the
-// same project within one minute of it: the proxy recorded that turn live.
+// same project within one minute of it: the proxy recorded that turn live. On a new session it
+// also skips a response with a transcript row near it, unless only this run wrote that row
+// (written[k] true): an earlier run imported the turn, for example the parent of a fork.
 // shortcut: rows carry no session id, so a turn of a session that did not go through Cortex is
-// skipped when another session in the same project had live traffic in that minute. Keep the
-// session id on ledger rows if that undercount shows up.
-func toLedger(ctx context.Context, w *ledger.Writer, s Session, prior *priorTurns, sent map[string]bool, span *forgotSpan) error {
+// skipped when another session in the same project had live traffic in that minute, and a turn
+// of a new session is skipped when an earlier run imported another session of that project in
+// that minute. Keep the session id on ledger rows if that undercount shows up.
+func toLedger(ctx context.Context, w *ledger.Writer, s Session, prior *priorTurns, sent map[string]bool, written map[liveKey]bool, span *forgotSpan) error {
+	newSession := prior == nil
 	cutoff := w.RetentionCutoff()
 	requestAt := map[string]time.Time{}
 	var turns, after []*model.SessionEvent
@@ -231,14 +236,14 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, prior *priorTurn
 			turns = append(turns, e)
 		}
 	}
-	if err := record(w, after, sent); err != nil {
-		return err
-	}
-	if len(turns) == 0 {
+	if len(turns) == 0 && len(after) == 0 {
 		return nil
 	}
-	from, to := turns[0].At, turns[0].At
-	for _, e := range turns {
+	// The read also covers the turns after the span: written must see the earlier rows of their
+	// minutes before record marks those minutes.
+	all := append(append([]*model.SessionEvent(nil), turns...), after...)
+	from, to := all[0].At, all[0].At
+	for _, e := range all {
 		if e.At.Before(from) {
 			from = e.At
 		}
@@ -253,8 +258,18 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, prior *priorTurn
 		return err
 	}
 	for _, r := range rows {
-		if r.Source == "" {
-			live[liveKey{r.At.Truncate(time.Minute).Unix(), r.Project}] = true
+		k := liveKey{r.At.Truncate(time.Minute).Unix(), r.Project}
+		if r.Source != event.SourceTranscript {
+			if r.Source == "" {
+				live[k] = true
+			}
+			continue
+		}
+		if _, seen := written[k]; !seen {
+			written[k] = false // a row that an earlier run wrote
+		}
+		if newSession && !written[k] {
+			live[k] = true
 		}
 	}
 	var keep []*model.SessionEvent
@@ -266,11 +281,12 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, prior *priorTurn
 		}
 		keep = append(keep, e)
 	}
-	return record(w, keep, sent)
+	return record(w, append(keep, after...), sent, written)
 }
 
-// record sends turns to the ledger and adds their request ids to sent.
-func record(w *ledger.Writer, turns []*model.SessionEvent, sent map[string]bool) error {
+// record sends turns to the ledger, adds their request ids to sent, and marks their minutes in
+// written as rows that this run wrote.
+func record(w *ledger.Writer, turns []*model.SessionEvent, sent map[string]bool, written map[liveKey]bool) error {
 	if len(turns) == 0 {
 		return nil
 	}
@@ -278,6 +294,9 @@ func record(w *ledger.Writer, turns []*model.SessionEvent, sent map[string]bool)
 		return err
 	}
 	for _, e := range turns {
+		if _, seen := written[turnKey(e)]; !seen {
+			written[turnKey(e)] = true
+		}
 		if e.RequestID != "" {
 			sent[e.RequestID] = true
 		}

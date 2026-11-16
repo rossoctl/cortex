@@ -94,11 +94,6 @@ type Stats struct {
 	DroppedCaptures uint64
 	// Paused is true after ENOSPC, until the next retention pass.
 	Paused bool
-	// ForgetRecords is how many forget records are in memory. BadForgetLines counts the lines of
-	// forgotten.jsonl that Open could not read. ForgetWriteErrors counts failed record writes.
-	ForgetRecords     int
-	BadForgetLines    uint64
-	ForgetWriteErrors uint64
 }
 
 // Archive is the session archive: a session.Recorder that writes every event the store appends
@@ -154,9 +149,8 @@ type Archive struct {
 
 	// forgotten is the forget records, id -> {from, to} in Unix ms; see forgotten.go. The writer
 	// goroutine changes it; Forgotten reads it from any goroutine.
-	fgMu                              sync.RWMutex
-	forgotten                         map[string][2]int64
-	badForgetLines, forgetWriteErrors atomic.Uint64
+	fgMu      sync.RWMutex
+	forgotten map[string][2]int64
 
 	// index is what readers see: each session's directory, segment ranges and summary,
 	// republished by the writer goroutine whenever they change. Readers decode segment files on
@@ -446,7 +440,7 @@ func (a *Archive) LastSeq(sessionID string) uint64 {
 
 // Stats reports the archive's size, bounds and losses.
 func (a *Archive) Stats() Stats {
-	st := Stats{
+	return Stats{
 		Bytes:           a.bytes.Load(),
 		MaxBytes:        a.maxBytes,
 		RetentionDays:   a.retainDays,
@@ -456,11 +450,6 @@ func (a *Archive) Stats() Stats {
 		DroppedCaptures: a.droppedCaptures.Load(),
 		Paused:          a.paused.Load(),
 	}
-	a.fgMu.RLock()
-	st.ForgetRecords = len(a.forgotten)
-	a.fgMu.RUnlock()
-	st.BadForgetLines, st.ForgetWriteErrors = a.badForgetLines.Load(), a.forgetWriteErrors.Load()
-	return st
 }
 
 // Root is the directory the archive was opened at.
@@ -529,8 +518,6 @@ func (a *Archive) take(o op) {
 	case opClear:
 		a.clearAll(o.clear)
 	case opDelete:
-		// Only a delete the store asks for keeps a record. WriteSession calls deleteSession
-		// directly.
 		if s := a.sessions[o.id]; s != nil {
 			a.forget([]*sessionState{s})
 		}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -160,22 +161,29 @@ func TestForgotten_NoInferenceWritesNone(t *testing.T) {
 	}
 }
 
-func TestWriteSession_ReplaceWritesNoRecord(t *testing.T) {
+// A replace that fails after it deleted the old copy leaves the session off disk. The record of
+// the old copy keeps the next import from counting the old copy's turns again.
+func TestWriteSession_FailedReplaceKeepsRecordOfOldCopy(t *testing.T) {
 	root := t.TempDir()
 	a := openTest(t, root, newClock(), WithLedgerRetentionDays(31))
 	defer a.Close()
 	if err := a.WriteSession("s1", importedEvents(4), false); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.WriteSession("s1", importedEvents(6), true); err != nil {
-		t.Fatal(err)
+	old, ok := a.Lookup("s1")
+	if !ok || old.LastRequestAt.IsZero() {
+		t.Fatalf("Lookup = %+v, %v; want a session with a request", old, ok)
 	}
-	settle(a)
-	if recs := readForgotten(t, root); len(recs) != 0 {
-		t.Fatalf("records = %+v, want none after a replace", recs)
+	a.segHook = func(w *segmentWriter) { w.out.w = failWriter{syscall.ENOSPC} }
+	if err := a.WriteSession("s1", importedEvents(6), true); err == nil {
+		t.Fatal("a failed replace returned no error")
 	}
-	if _, _, ok := a.Forgotten("s1"); ok {
-		t.Fatal("Forgotten(s1) ok after a replace")
+	if _, ok := a.Lookup("s1"); ok {
+		t.Fatal("the session is still archived after the failed replace")
+	}
+	want := forgetRecord{ID: "s1", From: old.CreatedAt.UnixMilli(), To: old.LastRequestAt.UnixMilli()}
+	if recs := readForgotten(t, root); len(recs) != 1 || recs[0] != want {
+		t.Fatalf("records = %+v, want [%+v]", recs, want)
 	}
 }
 
@@ -211,21 +219,15 @@ func TestForgotten_SecondRecordMerges(t *testing.T) {
 	if !ok || from.UnixMilli() != 50 || to.UnixMilli() != 300 {
 		t.Fatalf("Forgotten = %d, %d, %v; want 50, 300, true", from.UnixMilli(), to.UnixMilli(), ok)
 	}
-	if n := a.Stats().ForgetRecords; n != 1 {
-		t.Fatalf("ForgetRecords = %d, want 1", n)
-	}
 }
 
-func TestForgotten_CorruptLineSkippedAndCounted(t *testing.T) {
+func TestForgotten_CorruptLineSkipped(t *testing.T) {
 	root := t.TempDir()
 	clk := newClock()
 	at := clk.now().Add(-time.Hour)
 	writeForgotten(t, root, recordLine("good", at, at)+"not json\n"+`{"id":"x","fr`)
 	a := openTest(t, root, clk, WithLedgerRetentionDays(31))
 	defer a.Close()
-	if n := a.Stats().BadForgetLines; n != 2 {
-		t.Fatalf("BadForgetLines = %d, want 2", n)
-	}
 	if _, _, ok := a.Forgotten("good"); !ok {
 		t.Fatal("the good record did not load")
 	}

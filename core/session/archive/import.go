@@ -115,6 +115,9 @@ func (a *Archive) writeSession(id string, events []model.SessionEvent, replace b
 		return restore(errors.New("session archive: paused after a full disk"))
 	}
 	if s != nil {
+		// The ledger holds the old copy's turns. If the write below fails or the process stops, the
+		// record keeps the next import from counting them again.
+		a.forget([]*sessionState{s})
 		if err := del(); err != nil {
 			return restore(err)
 		}

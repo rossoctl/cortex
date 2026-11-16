@@ -214,9 +214,10 @@ func TestFatalf_ClosesTheArchive(t *testing.T) {
 // The ledger retention that main passes turns the archive's forget records on, and 0 keeps them off.
 func TestOpenSessionArchive_LedgerDaysTurnsRecordsOn(t *testing.T) {
 	for _, tc := range []struct {
-		name             string
-		ledgerDays, want int
-	}{{"ledger on", 31, 1}, {"ledger off", 0, 0}} {
+		name       string
+		ledgerDays int
+		want       bool
+	}{{"ledger on", 31, true}, {"ledger off", 0, false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			inside, _ := localConfig(t)
 			on := true
@@ -235,8 +236,8 @@ func TestOpenSessionArchive_LedgerDaysTurnsRecordsOn(t *testing.T) {
 			if _, err := arch.AwaitDelete("s1", 5*time.Second); err != nil {
 				t.Fatal(err)
 			}
-			if got := arch.Stats().ForgetRecords; got != tc.want {
-				t.Fatalf("ForgetRecords = %d, want %d", got, tc.want)
+			if _, _, got := arch.Forgotten("s1"); got != tc.want {
+				t.Fatalf("Forgotten(s1) ok = %v, want %v", got, tc.want)
 			}
 		})
 	}

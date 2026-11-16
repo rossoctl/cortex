@@ -446,16 +446,20 @@ this:
   cost ledger is on. A clear does not remove `forgotten.jsonl`.
 - The import does not send a turn inside that span to the cost ledger. A turn
   in the minute before `from` counts as inside the span. It sends a turn after
-  `to`. It sends a turn before the span only when no live ledger row of the
-  same project is near it: a fork copies its parent's turns,
-  and the proxy can have counted them live for the parent.
+  `to`. It sends a turn before the span only when no ledger row of the same
+  project is near it that the proxy wrote live or that an earlier import
+  wrote: a fork copies its parent's turns, and the ledger can already hold
+  them for the parent.
+- A replace by an import also adds a line for the old copy, before it deletes
+  that copy. If the write of the new copy fails, the next import uses the line.
 - A line is kept until its `to` is older than `cost_ledger.retention_days`
   plus 1 day. After that the ledger has no rows of the session to protect.
 
-A session that was removed before Cortex kept forget records has no record.
-For it, the import does not count any turn that is near a live ledger row.
-The rows have no session id, so this check can also skip a turn that only
-another session of the same project made live in that minute.
+A new session has no record. A session that was removed before Cortex kept
+forget records has no record too. For such a session, the import does not count
+any turn that is near a live ledger row, or near a row that an earlier import
+wrote. The rows have no session id, so this check can also skip a turn when
+only another session of the same project made a row in that minute.
 
 **What an import writes:**
 
