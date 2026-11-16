@@ -21,8 +21,8 @@ func skipWithoutUnixModes(t *testing.T) {
 // blockRenames makes a rename that creates an entry in root, or that moves sessionDir, fail
 // until release is called. On Unix a read-only root refuses the new entry while data/
 // underneath stays writable. Windows ignores that permission, but it will not rename a
-// directory while a file under it is open, so there the test holds a segment open, as a
-// concurrent reader would.
+// directory while a file under it is open, so there the test holds every segment open, as
+// concurrent readers would.
 func blockRenames(t *testing.T, root, sessionDir string) (release func()) {
 	t.Helper()
 	if runtime.GOOS != "windows" {
@@ -33,6 +33,14 @@ func blockRenames(t *testing.T, root, sessionDir string) (release func()) {
 		t.Cleanup(release)
 		return release
 	}
+	var held []*os.File
+	release = func() {
+		for _, f := range held {
+			f.Close()
+		}
+		held = nil
+	}
+	t.Cleanup(release)
 	entries, err := os.ReadDir(sessionDir)
 	if err != nil {
 		t.Fatal(err)
@@ -43,11 +51,11 @@ func blockRenames(t *testing.T, root, sessionDir string) (release func()) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			release = func() { f.Close() }
-			t.Cleanup(release)
-			return release
+			held = append(held, f)
 		}
 	}
-	t.Fatalf("no segment in %s to hold open", sessionDir)
-	return nil
+	if len(held) == 0 {
+		t.Fatalf("no segment in %s to hold open", sessionDir)
+	}
+	return release
 }

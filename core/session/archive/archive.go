@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -669,13 +668,7 @@ func (a *Archive) rename(oldID, newID string, after uint64) {
 	if after > 0 && a.renameEntry(s, oldID, newID, newDir, after) {
 		return
 	}
-	// Windows will not rename a directory while a file in it is open, so close the segment
-	// first; the next event opens a new one under newDir. A reader that holds a segment open
-	// (a Page read) still makes the rename fail there: the history then stays in the old
-	// directory, under the new id, until adopt moves it at the next start.
-	if runtime.GOOS == "windows" {
-		a.closeWriter(s)
-	}
+	a.closeWriterBeforeRename(s) // a no-op except on Windows: see rename_windows.go
 	s.meta.ID = newID
 	a.writeMeta(s)
 	if err := os.Rename(s.dir, newDir); err != nil {
