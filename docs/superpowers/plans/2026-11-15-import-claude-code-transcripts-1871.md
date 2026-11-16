@@ -77,6 +77,23 @@ the import in `POST /v1/import`. agentop calls the route and marks imported rows
     and docs on top of it.
 11. **LAST 1H does not show imported turns until the next proxy restart.** The spec
     accepts this. The importer does not feed the usage ring.
+12. **`agentop import` brings an erased session back** (user request, 2026-11-16). An
+    erase (`DELETE /v1/sessions/{id}`, `DELETE /v1/sessions`, agentop's `x`) removes the
+    session from the store and the archive, and leaves no tombstone. So the next import
+    finds no copy and writes the transcript as a new imported session (rule 4). The merged
+    code already does this for the archive. Do NOT add a tombstone or an "erased" skip
+    rule. What the merged code gets wrong is the cost: an erase keeps the ledger rows, and
+    rule 4 sends every turn to the ledger again. The merged `toLedger` already skips a
+    turn with a LIVE row (`Row.Source == ""`) near it, so an erased live session does not
+    count two times. An erased IMPORTED session does (the `shortcut:` comment in `Run`).
+    T11 fixes that: on rule 4 only (not on a replace), `toLedger` also skips a turn with a
+    `transcript` row near it, except a row that this same `Run` call wrote. Reason: the
+    user now uses erase-then-import as a workflow, so the double count shows up in
+    `agentop cost`. Rows carry no session id; a session id on rows is a schema change to a
+    durable file and is larger than this fix. The known limit (two imported sessions in
+    one project in the same minute, imported by two separate runs, the second is
+    undercounted) is the same class as the merged live-row check, and goes in a
+    `shortcut:` comment.
 
 ## Review Focus
 
@@ -92,6 +109,9 @@ the import in `POST /v1/import`. agentop calls the route and marks imported rows
    `session.json`, so rule 2 still skips. Test: `TestArchive_ImportedMarkSurvivesReopen` (T3).
 5. A second `POST /v1/import` while one runs. Expected: 409, and the first one finishes.
    Test: `TestImport_SecondRequestIs409` (T7).
+6. The user erases an imported session, then runs `agentop import` again. Expected: the
+   session comes back, marked imported, and the ledger total does not change. Tests:
+   `TestRun_ErasedImportedSessionComesBackOnce` (T11), `TestImport_ErasedSessionComesBack` (T7).
 
 ---
 
@@ -99,9 +119,9 @@ the import in `POST /v1/import`. agentop calls the route and marks imported rows
 
 | PR | Title | Parent | Tasks | estLines |
 |---|---|---|---|---|
-| PR2 | `feat: Import Claude Code transcripts with agentop import` | "" | T6, T7, T8, T9, T10 | 1750 |
+| PR2 | `feat: Import Claude Code transcripts with agentop import` | "" | T6, T7, T8, T9, T10, T11 | 1890 |
 
-**STATUS (2026-11-16): T1–T5 (PR1) are MERGED in `main` as #1876. Do not build them again.** Build only PR2 (T6–T10), on `main`. Where this plan and the merged code differ, follow the merged code. One difference: `importer.Run` sends ledger rows through `ledger.Writer.RecordBatch` (blocking), not `Record`.
+**STATUS (2026-11-16): T1–T5 (PR1) are MERGED in `main` as #1876. Do not build them again.** Build only PR2 (T6–T11), on `main`. Where this plan and the merged code differ, follow the merged code. One difference: `importer.Run` sends ledger rows through `ledger.Writer.RecordBatch` (blocking), not `Record`.
 
 ## Tasks
 
@@ -517,6 +537,11 @@ func WithImport(i Import) Option
     `"path"` key reads no other directory).
   - `TestImport_SecondRequestIs409`: a source that blocks on a channel; the second request
     gets 409; release; the first returns 200.
+  - `TestImport_ErasedSessionComesBack` (decision 12): import, then
+    `DELETE /v1/sessions/{id}` (with the clear guards satisfied: `WithClearAllowed(true)`,
+    a loopback `Host`, no `Origin`), then import again → the second report has
+    `Imported == 1`, and `GET /v1/sessions?archived=true` lists the id with
+    `source "imported:claude-code"`.
 - [ ] **Step 2:** Run `GOWORK=off go -C core test ./sessionapi/ -run Import_`. Expected: FAIL.
 - [ ] **Step 3:** Implement and wire `cmd/cortex`.
 - [ ] **Step 4:** Run `GOWORK=off go -C core test ./sessionapi/ && GOWORK=off go -C cmd/cortex vet ./... && GOWORK=off go -C cmd/cortex build ./...`. Expected: PASS.
@@ -623,11 +648,61 @@ rows `source: "transcript"`; turns before the ledger cutoff reach the archive on
 1H shows imported turns only after a proxy restart; the import stops at 90% of
 `max_bytes`; an imported segment is kept `retention_days` from its newest event, and a session older
 than that is skipped (`skippedExpired`);
-only Claude Code is supported now (#1872–#1875 add the others).
+only Claude Code is supported now (#1872–#1875 add the others); an erased session
+(`DELETE /v1/sessions/{id}`, `DELETE /v1/sessions`, or agentop's erase) comes back on the
+next `agentop import` while its transcript is still on disk, as an imported session; its
+cost is not counted again, because an erase keeps the ledger rows (decision 12). Put the
+erase fact in `docs/session-api.md` next to the two `DELETE` routes too.
 
 - [ ] **Step 1:** Write the docs in ASD-STE100 style.
 - [ ] **Step 2:** Run `pre-commit run --files docs/session-api.md cmd/agentop/README.md docs/laptop-service.md`. Expected: pass.
 - [ ] **Step 3:** Commit `docs: Describe agentop import and POST /v1/import`.
+
+### T11: An erased imported session comes back without a second cost
+
+**Depends on:** none (changes only merged code). **PR:** PR2. **Est:** 140 lines.
+
+**Files:**
+- Modify: `core/session/importer/importer.go` (`Run`, `toLedger`, the two `shortcut:`
+  comments about erase)
+- Test: `core/session/importer/importer_test.go`
+
+**What to change (decision 12):**
+- `Run` keeps one `written := map[liveKey]bool{}` for the whole call. `toLedger` gets it
+  and a `newSession bool` (`!found`) as new arguments.
+- In `toLedger`, a row with `r.Source == ""` marks its key as before. When `newSession`
+  is true, a row with `r.Source == event.SourceTranscript` also marks its key, unless
+  `written[key]` is true. When `newSession` is false (a replace), transcript rows mark
+  nothing: `after` already drops the turns of the earlier import.
+- After `RecordBatch(keep)` returns nil, add the key of each kept turn to `written`
+  (the same minute and `Project` form that the check uses). Reason: two new sessions in
+  one project and one minute in the same run must both reach the ledger.
+- Replace the `Run` comment "shortcut: the ledger keeps an imported session's rows when
+  the archive loses the session ..." with: an erased or pruned imported session is new
+  again; its turns are skipped when the ledger has a transcript row near them that an
+  earlier run wrote. Add `shortcut: rows carry no session id, so a new session's turn is
+  skipped when another session in the same project was imported by an earlier run in
+  that minute. Keep the session id on ledger rows if that undercount shows up.`
+- Do not change the archive, the store, the erase routes or the ledger.
+
+- [ ] **Step 1:** Write tests with the existing helpers in `importer_test.go` (temp
+  archive, `ledger.New(t.TempDir())`, the bundled resolver, `fakeSource`):
+  - `TestRun_ErasedImportedSessionComesBackOnce`: `Run` imports session A (2 turns); flush
+    the ledger and sum the tokens and `CostMicros` of `Window`; `AwaitDelete(A, time.Second)`
+    on the archive; `Run` again with the same source → `Imported == 1`, `Lookup(A)` is
+    found with `Source "imported:claude-code"`, and the ledger sums are unchanged.
+  - `TestRun_ErasedLiveSessionComesBack`: `Record` one live event for A in the archive
+    (no store), wait for it, `AwaitDelete(A, ...)`, `Run` → `Imported == 1`, `Lookup(A)` is
+    imported.
+  - `TestRun_TwoNewSessionsInOneMinuteBothCount`: sessions A and B, same project, turns in
+    the same minute, one `Run` → the ledger has the tokens of both.
+  - `TestRun_ReplaceIgnoresOwnTranscriptRows`: the merged
+    `TestRun_LedgerGetsOnlyNewTurnsOnReplace` still passes; add one case where the new
+    turn is in the same minute as the last old turn → it still reaches the ledger.
+- [ ] **Step 2:** Run `GOWORK=off go -C core test ./session/importer/ -run 'Erased|TwoNewSessions|ReplaceIgnores'`. Expected: FAIL for `ErasedImportedSessionComesBackOnce` (double count) and the new-session minute case may PASS already; that is accepted.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Run `GOWORK=off go -C core test -race ./session/importer/`. Expected: PASS.
+- [ ] **Step 5:** Commit `fix(importer): Do not count an erased imported session's cost two times`.
 
 ## Gate
 
@@ -649,7 +724,7 @@ three `go vet` steps pass as written. No step was changed.
 
 ## For a human after review
 
-Needs T1–T10 merged (both PRs) and a laptop install of that build.
+Needs T1–T11 merged (both PRs) and a laptop install of that build.
 
 1. `agentop import --agent claude-code --dry-run` against a real `~/.claude`. Check the
    counts look right.
@@ -660,3 +735,6 @@ Needs T1–T10 merged (both PRs) and a laptop install of that build.
 5. `agentop cost --window month`. Check the total includes the imported cost.
 6. Check the T6 fixture lines against a current Claude Code transcript. If the line
    shapes changed, open a follow-up in this repo's tracker.
+7. In `agentop observe`, erase one imported session (`x`). Run `agentop import` again.
+   Check the session comes back, marked `imp`, and `agentop cost --window month` shows the
+   same total as in step 5.
