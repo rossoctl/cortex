@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -81,7 +82,7 @@ func openArchive(t *testing.T, opts ...archive.Option) *archive.Archive {
 
 func openArchiveAt(t *testing.T, dir string, opts ...archive.Option) *archive.Archive {
 	t.Helper()
-	a, err := archive.Open(dir, opts...)
+	a, err := archive.Open(dir, append([]archive.Option{archive.WithLedgerRetentionDays(31)}, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,9 +511,9 @@ func erase(t *testing.T, a *archive.Archive, id string) {
 	}
 }
 
-// The user erases an imported session and imports again: it comes back, and its cost is not
-// counted a second time.
-func TestRun_ErasedImportedSessionComesBackOnce(t *testing.T) {
+// The user erases an imported session and imports again: it comes back, and the forget record
+// keeps its cost from being counted a second time.
+func TestRun_ErasedImportedSessionComesBackThroughRecord(t *testing.T) {
 	a := openArchive(t)
 	w := openLedger(t)
 	src := &fakeSource{sessions: []Session{fakeSession("A", start, 2)}}
@@ -525,6 +526,9 @@ func TestRun_ErasedImportedSessionComesBackOnce(t *testing.T) {
 		t.Fatalf("ledger has %d requests, %d micros after the import; want 2, priced", req, micros)
 	}
 	erase(t, a, "A")
+	if _, _, ok := a.Forgotten("A"); !ok {
+		t.Fatal("the erase left no forget record")
+	}
 	if r := Run(context.Background(), src, o); r.Imported != 1 {
 		t.Fatalf("second report = %+v, want 1 imported", r)
 	}
@@ -533,6 +537,110 @@ func TestRun_ErasedImportedSessionComesBackOnce(t *testing.T) {
 	}
 	if r2, t2, m2 := sumCost(t, w); r2 != req || t2 != tok || m2 != micros {
 		t.Fatalf("ledger has %d requests, %d tokens, %d micros; want %d, %d, %d (unchanged)", r2, t2, m2, req, tok, micros)
+	}
+}
+
+// An erased live session whose transcript has turns from before Cortex saw it: only the turns
+// before the record's span, less one minute of slack, reach the ledger.
+func TestRun_ErasedLiveSessionWithEarlierTurns(t *testing.T) {
+	a := openArchive(t, archive.WithClock(func() time.Time { return start.Add(10 * time.Minute) }))
+	w := openLedger(t)
+	var seq uint64
+	for _, at := range []time.Time{start.Add(10 * time.Minute), start.Add(11 * time.Minute)} {
+		for _, e := range turnPair(fmt.Sprintf("live-%d", seq), "", at) {
+			seq++
+			e.Seq, e.SessionID = seq, "A"
+			a.Record("A", &e)
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for a.LastSeq("A") < seq && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if a.LastSeq("A") < seq {
+		t.Fatal("the live events were not recorded")
+	}
+	erase(t, a, "A")
+	r := Run(context.Background(), &fakeSource{sessions: []Session{fakeSession("A", start, 12)}},
+		Options{Archive: a, Ledger: w, Rates: testRates(t)})
+	if r.Imported != 1 {
+		t.Fatalf("report = %+v, want 1 imported", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 9 || tok != 9900 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 9, 9900 (the turns before start+9m)", req, tok)
+	}
+}
+
+// An erased imported session that grew in the transcript: only the turns after the erase count.
+func TestRun_ErasedThenGrownCountsOnlyNewTurns(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+	Run(context.Background(), &fakeSource{sessions: []Session{fakeSession("A", start, 2)}}, o)
+	erase(t, a, "A")
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{fakeSession("A", start, 5)}}, o); r.Imported != 1 {
+		t.Fatalf("report = %+v, want 1 imported", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 5 || tok != 5500 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 5, 5500 (2 + 3 new)", req, tok)
+	}
+}
+
+// The size limit removes an imported session at Open, and a later import brings it back with no
+// second count.
+func TestRun_SizeLimitPruneThenImportCountsOnce(t *testing.T) {
+	dir := t.TempDir()
+	w := openLedger(t)
+	src := &fakeSource{sessions: []Session{fakeSession("A", start, 2)}}
+	a := openArchiveAt(t, dir)
+	if r := Run(context.Background(), src, Options{Archive: a, Ledger: w, Rates: testRates(t)}); r.Imported != 1 {
+		t.Fatalf("first report = %+v, want 1 imported", r)
+	}
+	req, tok, micros := sumCost(t, w)
+	a.Close()
+	a = openArchiveAt(t, dir, archive.WithMaxBytes(1))
+	if _, ok := a.Lookup("A"); ok {
+		t.Fatal("the size limit did not remove the session")
+	}
+	a.Close()
+	a = openArchiveAt(t, dir)
+	if r := Run(context.Background(), src, Options{Archive: a, Ledger: w, Rates: testRates(t)}); r.Imported != 1 {
+		t.Fatalf("second report = %+v, want 1 imported", r)
+	}
+	if r2, t2, m2 := sumCost(t, w); r2 != req || t2 != tok || m2 != micros {
+		t.Fatalf("ledger has %d requests, %d tokens, %d micros; want %d, %d, %d (unchanged)", r2, t2, m2, req, tok, micros)
+	}
+}
+
+// A record for a session that is still in the archive (a crash between the record and the
+// remove): the import follows the archive, and the record does not hide a new turn.
+func TestRun_RecordWithSessionOnDiskFollowsArchive(t *testing.T) {
+	dir := t.TempDir()
+	w := openLedger(t)
+	a := openArchiveAt(t, dir)
+	Run(context.Background(), &fakeSource{sessions: []Session{fakeSession("A", start, 2)}},
+		Options{Archive: a, Ledger: w, Rates: testRates(t)})
+	a.Close()
+	line := fmt.Sprintf(`{"id":"A","from":%d,"to":%d}`+"\n", start.Add(-time.Hour).UnixMilli(), start.Add(time.Hour).UnixMilli())
+	f, err := os.OpenFile(filepath.Join(dir, "forgotten.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(line); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	a = openArchiveAt(t, dir)
+	if _, _, ok := a.Forgotten("A"); !ok {
+		t.Fatal("the hand-written record did not load")
+	}
+	r := Run(context.Background(), &fakeSource{sessions: []Session{fakeSession("A", start, 3)}},
+		Options{Archive: a, Ledger: w, Rates: testRates(t)})
+	if r.Replaced != 1 {
+		t.Fatalf("report = %+v, want 1 replaced", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 3 || tok != 3300 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 3, 3300 (the new turn added)", req, tok)
 	}
 }
 
@@ -693,6 +801,152 @@ func TestRun_ForkedCopyCountsOnceInOneRun(t *testing.T) {
 		if req, tok, _ := sumCost(t, w); req != 2 || tok != 2200 {
 			t.Fatalf("first %s: ledger has %d requests, %d tokens; want 2, 2200", order[0].ID, req, tok)
 		}
+	}
+}
+
+// A fork that Cortex saw live is erased and imported: its copy of the parent's turn is before the
+// record's span, and the parent's live row keeps it from being counted again.
+func TestRun_ErasedForkDoesNotCountParentTurnAgain(t *testing.T) {
+	forkAt := start.Add(10 * time.Minute)
+	a := openArchive(t, archive.WithClock(func() time.Time { return forkAt }))
+	w := openLedger(t)
+	parentTurn := turnPair("P-r0", "/repo", start)
+	w.Record("P", &parentTurn[1])
+	forkTurn := turnPair("F-r0", "/repo", forkAt)
+	w.Record("F", &forkTurn[1])
+	for i, e := range forkTurn {
+		e.Seq, e.SessionID = uint64(i+1), "F"
+		a.Record("F", &e)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for a.LastSeq("F") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if a.LastSeq("F") < 2 {
+		t.Fatal("the live events were not recorded")
+	}
+	erase(t, a, "F")
+	fork := Session{ID: "F", SizeHint: 1024, Events: append(slices.Clone(parentTurn), forkTurn...)}
+	fork.Updated = forkTurn[1].At
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{fork}},
+		Options{Archive: a, Ledger: w, Rates: testRates(t)}); r.Imported != 1 {
+		t.Fatalf("report = %+v, want 1 imported", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 2 || tok != 2200 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 2, 2200 (the two live rows)", req, tok)
+	}
+}
+
+// A fork of an imported parent copies the parent's turn. A later run that imports the fork, or
+// that brings back an erased parent with the fork, does not count that turn again.
+func TestRun_ForkOfImportedParentCountsParentTurnOnce(t *testing.T) {
+	parent := Session{ID: "P", SizeHint: 1024, Events: turnPair("P-r0", "/repo", start)}
+	parent.Updated = parent.Events[1].At
+	fork := Session{ID: "F", SizeHint: 1024,
+		Events: append(turnPair("P-r0", "/repo", start), turnPair("F-r0", "/repo", start.Add(10*time.Minute))...)}
+	fork.Updated = fork.Events[3].At
+	for _, tc := range []struct {
+		name  string
+		erase bool
+		order []Session
+	}{
+		{"fork in a later run", false, []Session{parent, fork}},
+		{"erased parent then fork", true, []Session{parent, fork}},
+		{"fork then erased parent", true, []Session{fork, parent}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := openArchive(t)
+			w := openLedger(t)
+			o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+			Run(context.Background(), &fakeSource{sessions: []Session{parent}}, o)
+			if tc.erase {
+				erase(t, a, "P")
+			}
+			Run(context.Background(), &fakeSource{sessions: tc.order}, o)
+			if req, tok, _ := sumCost(t, w); req != 2 || tok != 2200 {
+				t.Fatalf("ledger has %d requests, %d tokens; want 2, 2200 (P-r0 and F-r0 once each)", req, tok)
+			}
+		})
+	}
+}
+
+// A turn after a forget record's span lands in a minute where an earlier run wrote a row of
+// another session. A fork of that session later in the same run does not count its copy of the
+// row's turn again.
+func TestRun_TurnAfterSpanKeepsEarlierRowsOfItsMinute(t *testing.T) {
+	m := start.Add(10 * time.Minute)
+	p1 := Session{ID: "P", SizeHint: 1024, Events: turnPair("P-r0", "/repo", start)}
+	p1.Updated = p1.Events[1].At
+	q := Session{ID: "Q", SizeHint: 1024, Events: turnPair("Q-r0", "/repo", m)}
+	q.Updated = q.Events[1].At
+	p2 := Session{ID: "P", SizeHint: 1024, Events: append(turnPair("P-r0", "/repo", start), turnPair("P-r1", "/repo", m)...)}
+	p2.Updated = p2.Events[3].At
+	f := Session{ID: "F", SizeHint: 1024,
+		Events: append(turnPair("Q-r0", "/repo", m), turnPair("F-r0", "/repo", start.Add(20*time.Minute))...)}
+	f.Updated = f.Events[3].At
+	a := openArchive(t)
+	w := openLedger(t)
+	o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+	Run(context.Background(), &fakeSource{sessions: []Session{p1, q}}, o)
+	erase(t, a, "P")
+	Run(context.Background(), &fakeSource{sessions: []Session{p2, f}}, o)
+	if req, tok, _ := sumCost(t, w); req != 4 || tok != 4400 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 4, 4400 (P-r0, Q-r0, P-r1, F-r0)", req, tok)
+	}
+}
+
+// A fork of an imported parent runs live, is erased and is imported. Its copy of the parent's
+// turn is before the record's span, and the parent's imported row keeps it from counting again.
+func TestRun_ErasedLiveForkOfImportedParent(t *testing.T) {
+	forkAt := start.Add(10 * time.Minute)
+	a := openArchive(t, archive.WithClock(func() time.Time { return forkAt }))
+	w := openLedger(t)
+	o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+	parent := Session{ID: "P", SizeHint: 1024, Events: turnPair("P-r0", "/repo", start)}
+	parent.Updated = parent.Events[1].At
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{parent}}, o); r.Imported != 1 {
+		t.Fatalf("first report = %+v, want 1 imported", r)
+	}
+	forkTurn := turnPair("F-r0", "/repo", forkAt)
+	w.Record("F", &forkTurn[1])
+	for i, e := range forkTurn {
+		e.Seq, e.SessionID = uint64(i+1), "F"
+		a.Record("F", &e)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for a.LastSeq("F") < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if a.LastSeq("F") < 2 {
+		t.Fatal("the live events were not recorded")
+	}
+	erase(t, a, "F")
+	fork := Session{ID: "F", SizeHint: 1024, Events: append(turnPair("P-r0", "/repo", start), forkTurn...)}
+	fork.Updated = forkTurn[1].At
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{fork}}, o); r.Imported != 1 {
+		t.Fatalf("second report = %+v, want 1 imported", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 2 || tok != 2200 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 2, 2200 (P-r0 and F-r0 once each)", req, tok)
+	}
+}
+
+// A record holds Unix milliseconds. A last request with a time below the millisecond is still in
+// the span, so a re-import after the erase does not count it again.
+func TestRun_SubMillisecondLastRequestStaysInSpan(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+	s := Session{ID: "A", SizeHint: 1024,
+		Events: append(turnPair("A-r0", "", start), turnPair("A-r1", "", start.Add(time.Minute+500*time.Microsecond))...)}
+	s.Updated = s.Events[3].At
+	Run(context.Background(), &fakeSource{sessions: []Session{s}}, o)
+	erase(t, a, "A")
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{s}}, o); r.Imported != 1 {
+		t.Fatalf("second report = %+v, want 1 imported", r)
+	}
+	if req, tok, _ := sumCost(t, w); req != 2 || tok != 2200 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 2, 2200 (unchanged)", req, tok)
 	}
 }
 
