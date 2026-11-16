@@ -133,6 +133,11 @@ type Row struct {
 	// neither dollars nor credits.
 	Currency string `json:"currency,omitempty"`
 
+	// Source is event.SourceTranscript when an import wrote the event, else "". Part of
+	// the key, so imported spend and live spend in one minute stay two rows. Omitted for
+	// live rows, so their bytes do not change.
+	Source string `json:"source,omitempty"`
+
 	usage.Counts
 }
 
@@ -151,6 +156,9 @@ func (r Row) currencyOrUSD() string {
 // key is the in-memory accumulation key. Mirrors the JSON identity fields exactly.
 type key struct {
 	endpoint, model, agent, provenance, project string
+	// source is Row.Source. It is a closed set that this process writes, so the overflow
+	// row keeps it, as it keeps the unit.
+	source string
 	// currency is NORMALISED — defaulted and lower-cased — where the others are verbatim, and
 	// both halves of that are load-bearing.
 	//
@@ -166,7 +174,7 @@ type key struct {
 }
 
 func (r Row) key() key {
-	return key{r.Endpoint, r.Model, r.Agent, r.Provenance, r.Project, strings.ToLower(r.currencyOrUSD())}
+	return key{r.Endpoint, r.Model, r.Agent, r.Provenance, r.Project, r.Source, strings.ToLower(r.currencyOrUSD())}
 }
 
 // maxLabelLen bounds one label ON DISK. It is event.MaxLabelLen, so a model name is
@@ -246,7 +254,7 @@ const maxLabelsPerMinute = 64
 const overflowLabel = "(other)"
 
 // overflowKeyFor is the reserved accumulator slot every label past the cap folds
-// into, one per unit. currency is the key's own, already normalised.
+// into, one per unit and source. currency is the key's own, already normalised.
 //
 // ALL FIVE labels, not just the request-controlled two: the key is a tuple, so
 // keeping any real label would let the overflow row multiply on that axis and defeat
@@ -258,8 +266,8 @@ const overflowLabel = "(other)"
 // Row.Currency exists to prevent, and a unit cannot multiply the row the way a label
 // can: it is the rate table's answer, one of the units the table was configured with,
 // not a string a request supplies.
-func overflowKeyFor(currency string) key {
-	return key{overflowLabel, overflowLabel, overflowLabel, overflowLabel, overflowLabel, currency}
+func overflowKeyFor(source, currency string) key {
+	return key{overflowLabel, overflowLabel, overflowLabel, overflowLabel, overflowLabel, source, currency}
 }
 
 // overflow rewrites a row's labels onto overflowKeyFor's, keeping its unit, At and

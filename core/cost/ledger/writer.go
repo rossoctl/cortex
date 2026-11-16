@@ -455,6 +455,9 @@ func (w *Writer) Record(_ string, e *model.SessionEvent) {
 		Project: projectRowLabel(e.Project),
 		Counts:  usage.Counts{Requests: 1},
 	}
+	if e.Imported() {
+		r.Source = event.SourceTranscript
+	}
 	// NIL-SAFE, because the guard above admits a row with no extension: an endpoint
 	// inference-parser cannot parse still gets its gateway-reported cost settled, and that
 	// event has no token counts and no model to read. The row is deliberately thin rather
@@ -703,7 +706,7 @@ func (w *Writer) foldLocked(r Row) {
 	// (cap+1)th entry, so the map would settle one over the bound it claims. A second unit's
 	// overflow row goes past it — see overflowKeyFor for why units are bounded anyway.
 	if len(w.rows) >= maxLabelsPerMinute-1 {
-		k = overflowKeyFor(k.currency)
+		k = overflowKeyFor(k.source, k.currency)
 		if cur, ok := w.rows[k]; ok {
 			cur.Add(r.Counts)
 			return
