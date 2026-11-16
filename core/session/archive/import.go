@@ -150,7 +150,7 @@ func (a *Archive) writeSession(id string, events []model.SessionEvent, replace b
 		}
 		if !t.IsZero() {
 			seg.LastWrite = t
-			// The mtime is what a reconcile reads when session.json does not list the segment.
+			// A reconcile reads the mtime when session.json does not match the segment file.
 			_ = os.Chtimes(filepath.Join(s.dir, seg.File), t, t)
 		}
 	}

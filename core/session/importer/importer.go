@@ -32,9 +32,13 @@ type Options struct {
 // A live session that the archive pruned (max_bytes or retention_days) is new again here, but
 // its ledger rows are not pruned with it. toLedger skips each turn that has a live row near it.
 //
-// shortcut: an erase keeps the ledger, so an import after the user erased an imported session
-// sends its turns to the ledger again, and they count two times. Rows carry no session id to
-// match. Keep the imported turn ids, or the session id on rows, if that shows up.
+// shortcut: the ledger keeps an imported session's rows when the archive loses the session (an
+// erase, or a max_bytes prune, which deletes the oldest segments first). The next import then
+// writes it as new and sends its turns to the ledger again, so they count two times. Rows carry
+// no session id to match. Keep the imported turn ids, or the session id on rows, if that shows up.
+//
+// A session older than the archive's retention_days is skipped, so its turns do not reach the
+// ledger even when the ledger keeps rows longer.
 func Run(ctx context.Context, src Source, o Options) AgentReport {
 	r := AgentReport{Agent: src.Agent()}
 	mark := model.ImportedSource(src.Agent())

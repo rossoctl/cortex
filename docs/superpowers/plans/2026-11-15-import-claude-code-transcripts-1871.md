@@ -155,6 +155,7 @@ type AgentReport struct {
     SkippedLive    int    `json:"skippedLive"`
     SkippedCurrent int    `json:"skippedCurrent"`
     SkippedLines   int    `json:"skippedLines"`
+    SkippedExpired int    `json:"skippedExpired,omitempty"` // older than the archive's retention
     NotImported    int    `json:"notImported,omitempty"` // left after an archive-full stop
     Stopped        string `json:"stopped,omitempty"`     // "archive full" or ""
     Error          string `json:"error,omitempty"`
@@ -337,6 +338,8 @@ Rules in `Run`, for each session, in this order:
 1. `Store.ViewTail(id, 1) != nil` (`Store` non-nil; `ViewTail` copies one event, `View`
    copies all of them), or `Lookup(id)` is found with `Source == ""` → `SkippedLive++`.
 2. Found and imported, and `!s.Updated.After(sum.LastRequestAt)` → `SkippedCurrent++`.
+2a. `s.Updated` is before now minus the archive's `retention_days` → `SkippedExpired++`.
+   The next prune would delete it. Its turns do not reach the ledger.
 3. Found and imported, and newer → replace. 4. Not found → import.
 5. `len(s.Events) == 0` → nothing written, not counted as imported.
 6. Before a write: when `Stats().Bytes + s.SizeHint > Stats().MaxBytes*9/10`, set
@@ -345,7 +348,7 @@ Rules in `Run`, for each session, in this order:
 8. Ledger (not on dry run, and only when `Ledger != nil`): each response event whose
    paired request `At` is after the old `LastRequestAt` (all events on rule 4) and whose
    `At` is not before `Ledger.RetentionCutoff()` → `Ledger.Record(id, &e)`.
-9. Dry run: apply rules 1–6 and count, but call neither `WriteSession` nor the ledger.
+9. Dry run: apply rules 1–6 and 2a and count, but call neither `WriteSession` nor the ledger.
 Set `Source = model.ImportedSource(src.Agent())` on every event before the write.
 `SkippedLines` sums `s.Skipped`. An iterator error sets `Error` and ends the run.
 
@@ -373,7 +376,7 @@ Set `Source = model.ImportedSource(src.Agent())` on every event before the write
   - `cost_test.go`: `TestPrice_TokensGetTranscriptRecord` (`event.Record` finds it,
     `Source "transcript"`, `Priced()` true), `TestPrice_NoUsageNoRecord`.
 - [ ] **Step 2:** Run `GOWORK=off go -C core test ./session/importer/`. Expected: FAIL.
-- [ ] **Step 3:** Implement. Put the decision 11 `shortcut:` comment in `Run`.
+- [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run `GOWORK=off go -C core test -race ./session/importer/ && GOWORK=off go -C core vet ./...`. Expected: PASS.
 - [ ] **Step 5:** Commit `feat(importer): Add the shared transcript import run`.
 
@@ -550,7 +553,7 @@ var ErrImportRunning = errors.New("an import is already running") // 409
 - `context.WithTimeout` of 1 hour. While it waits, print a spinner to stderr only when
   stderr is a terminal.
 - Output, one line per agent:
-  `claude-code: 12 imported, 3 replaced, 40 skipped (live), 7 skipped (current), 2 lines not recognized`
+  `claude-code: 12 imported, 3 replaced, 40 skipped (live), 7 skipped (current), 1 skipped (expired), 2 lines not recognized`
   plus `  stopped: archive full, N sessions not imported` and `  error: ...` lines when
   set. `--dry-run` prefixes `dry run: `. Exit 1 when any agent has `Error`; 409 prints
   `agentop import: an import is already running` and exits 1; 404 prints that the proxy
