@@ -69,7 +69,8 @@ knowing by name:
   Tunnel rows, MCP calls, responses and denials leave it as it was: an event
   with no inference parse must not clear it. agentop's sessions-table `SERVER`
   column reads it, and so do the count of running sessions on `S`'s result line
-  and the warning from `agentop server remove`. `inferenceHostFromHistory` is
+  and the warnings from `agentop server remove` and `agentop server rename`.
+  `inferenceHostFromHistory` is
   `true` when that host came only from the archive's fold, because no request
   the proxy's current entry for the session holds has set it. On a local install
   the inference-router keeps its pins in the plugin store

@@ -469,6 +469,120 @@ func removeLastServer(stdout, stderr io.Writer, path, statsURL string, c routerc
 	})
 }
 
+// serverRename gives server old a new name in one write: the key in place, so the
+// server's URL, key — a ${NAME} reference included — models, comments and place in the
+// file stay, and every agents:, sessions: and key_routes: entry naming it, without which
+// the config would not load.
+//
+// The router pins a running session to its server by name, so a session pinned to old
+// gets the removed server's error until it is moved or the server gets old back. That is
+// remove's case, and rename warns of it as remove does, without asking. A session with a
+// sessions: entry follows: the entry beats the pin, and the rename rewrites it.
+func serverRename(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("server rename", flag.ContinueOnError)
+	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
+	pos, code, ok := serverFlags(flags, args, stdout, stderr)
+	if !ok {
+		return code
+	}
+	if len(pos) != 2 {
+		fmt.Fprintln(stderr, "agentop server rename: want the server's name and its new one: agentop server rename <name> <new-name>")
+		return 2
+	}
+	old, name := pos[0], pos[1]
+	// Both first, as add and remove check theirs: every message below echoes them.
+	// The old name is not refused as "own": a server given that name by hand can only
+	// be renamed away from it.
+	for _, n := range []string{old, name} {
+		if err := routerconfig.CheckName(n); err != nil {
+			fmt.Fprintf(stderr, "agentop server rename: %v\n", err)
+			return 2
+		}
+	}
+	if name == ownProvider {
+		fmt.Fprintf(stderr, "agentop server rename: %q is reserved: agentop server move <session-id> %s sends a session to its own provider\n", name, ownProvider)
+		return 2
+	}
+	cfg, path, statsURL, err := serverWriteTarget(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server rename: %v\n", err)
+		return 1
+	}
+	c, _, err := readRouter(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server rename: %v\n", err)
+		return 1
+	}
+	if _, ok := c.Servers[old]; !ok {
+		fmt.Fprintf(stderr, "agentop server rename: no server named %s%s\n", old, configuredServers(c))
+		return 1
+	}
+	if old == name {
+		fmt.Fprintf(stdout, "%s is already called %s; nothing to change.\n", old, name)
+		return 0
+	}
+	if _, ok := c.Servers[name]; ok {
+		fmt.Fprintf(stderr, "agentop server rename: there is already a server named %s; remove it first, or pick another name\n", name)
+		return 1
+	}
+
+	changes := []edit.ConfigChange{{Chain: "outbound", Plugin: routerName, Path: []string{"servers", old}, RenameTo: name}}
+	agents := agentsOn(c, old)
+	for _, a := range agents {
+		changes = append(changes, servers.AgentChanges(a, name)...)
+	}
+	for _, id := range sessionsOn(c, old) {
+		changes = append(changes, servers.SessionChanges(id, name)...)
+	}
+	changes = append(changes, keyRouteRenames(c, old, name)...)
+	done := fmt.Sprintf("Renamed %s to %s.", old, name)
+	if len(agents) > 0 {
+		done = fmt.Sprintf("Renamed %s to %s. New %s sessions go to %s.", old, name, strings.Join(agents, " and "), name)
+	}
+	// Only against a proxy that answered: its session API is the one with the pins.
+	pinned := 0
+	if statsURL != "" {
+		// Unread sessions are taken as none, as remove's warning takes them.
+		ids, _ := runningOnIDs(dialURL(cfg.Listener.SessionAPIAddr), c, old)
+		for _, id := range ids {
+			if _, moved := c.Sessions[id]; !moved {
+				pinned++
+			}
+		}
+	}
+	live := ""
+	if pinned > 0 {
+		fmt.Fprintf(stderr, "agentop server rename: warning: %s last sent inference to %s. A session the proxy routed "+
+			"there gets an error asking for a new session, until it is moved or the server is renamed back to %s.\n",
+			runningSessions(pinned), old, old)
+		live = fmt.Sprintf("A session the proxy routed to %s now gets an error asking for a new session. "+
+			"Renaming the server back to %s routes them to it again.", old, old)
+	}
+	return runServerWrite(stdout, stderr, path, statsURL, changes, writeReport{
+		done: done,
+		live: live,
+		note: routerInactive(cfg, path),
+	})
+}
+
+// keyRouteRenames is the changes that make every key_routes: entry naming old, on either
+// side, name name instead: a key renamed in place, as the server's is, and a value set.
+func keyRouteRenames(c routerconfig.Config, old, name string) []edit.ConfigChange {
+	var changes []edit.ConfigChange
+	for _, k := range slices.Sorted(maps.Keys(c.KeyRoutes)) {
+		from := k
+		if k == old {
+			changes = append(changes, edit.ConfigChange{Chain: "outbound", Plugin: routerName, Path: []string{"key_routes", old}, RenameTo: name})
+			from = name
+		}
+		if c.KeyRoutes[k] == old {
+			changes = append(changes, edit.ConfigChange{Chain: "outbound", Plugin: routerName, Path: []string{"key_routes", from},
+				Value: edit.ScalarValue(name)})
+		}
+	}
+	return changes
+}
+
 // runningOn counts the sessions the proxy at sessionsURL holds in memory whose inference
 // traffic last went to server name: the ones a remove can leave asking for a new session,
 // or, when name is the only server, sends where their agent sends them.
@@ -490,25 +604,31 @@ func removeLastServer(stdout, stderr io.Writer, path, statsURL string, c routerc
 // The last server's question takes it as unknown, and asks. With no proxy to ask
 // (sessionsURL ""), nothing runs, so that is 0 and no error.
 func runningOn(sessionsURL string, c routerconfig.Config, name string) (int, error) {
+	ids, err := runningOnIDs(sessionsURL, c, name)
+	return len(ids), err
+}
+
+// runningOnIDs is the ids of the sessions runningOn counts.
+func runningOnIDs(sessionsURL string, c routerconfig.Config, name string) ([]string, error) {
 	if sessionsURL == "" {
-		return 0, nil
+		return nil, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	list, err := apiclient.New(sessionsURL).ListSessions(ctx)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n := 0
+	var ids []string
 	for _, s := range list {
 		if !session.IsConversation(s.ID) {
 			continue
 		}
 		if on, ok := servers.ForSession(c, s); ok && on == name {
-			n++
+			ids = append(ids, s.ID)
 		}
 	}
-	return n, nil
+	return ids, nil
 }
 
 // sessionsOn is the session ids whose sessions: entry names server, sorted.
