@@ -221,6 +221,8 @@ func (e *encoder) user(blocks []pivot.Block) ([]message, error) {
 					toolImages = append(toolImages, imagePart(c))
 				case pivot.BlockDocument:
 					return nil, errDocument
+				default:
+					e.dropped[string(c.Kind)] = true
 				}
 			}
 			if len(text) == 0 {
@@ -230,6 +232,8 @@ func (e *encoder) user(blocks []pivot.Block) ([]message, error) {
 			}
 			text[len(text)-1].CacheControl = b.CacheControl
 			msgs = append(msgs, message{Role: "tool", Content: text, ToolCallID: b.ToolUseID})
+		default:
+			e.dropped[string(b.Kind)] = true
 		}
 	}
 	if len(toolImages) > 0 {
@@ -266,6 +270,8 @@ func (e *encoder) assistant(blocks []pivot.Block) message {
 			m.ThinkingBlocks = append(m.ThinkingBlocks, thinkingBlock{Type: "thinking", Thinking: &t, Signature: b.Signature})
 		case pivot.BlockRedactedThinking:
 			m.ThinkingBlocks = append(m.ThinkingBlocks, thinkingBlock{Type: "redacted_thinking", Data: b.Data})
+		default:
+			e.dropped[string(b.Kind)] = true
 		}
 	}
 	if text.Len() > 0 {

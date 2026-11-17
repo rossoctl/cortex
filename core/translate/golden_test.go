@@ -172,7 +172,8 @@ func TestReplyGolden(t *testing.T) {
 		for _, agentStream := range c.agentForms() {
 			name := goldenName(c, agentStream)
 			t.Run(filepath.Base(name), func(t *testing.T) {
-				checkGolden(t, name, Reply(Anthropic, Chat, c.status, c.stream, agentStream, body))
+				_, out := Reply(Anthropic, Chat, c.status, c.stream, agentStream, body)
+				checkGolden(t, name, out)
 			})
 		}
 	}

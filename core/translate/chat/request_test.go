@@ -211,3 +211,23 @@ func TestEncodeRequest_PrefixStable(t *testing.T) {
 		t.Errorf("moved marker:\n got %s\nwant %s", got, wantMoved)
 	}
 }
+
+func TestEncodeRequest_UnknownBlocksDropped(t *testing.T) {
+	req := pivot.Request{Model: "m", MaxTokens: 10, Messages: []pivot.Message{
+		{Role: "user", Content: []pivot.Block{
+			{Kind: pivot.BlockText, Text: "hi"},
+			{Kind: "search_result"},
+			{Kind: pivot.BlockToolResult, ToolUseID: "t", Content: []pivot.Block{{Kind: "web_fetch_result"}}},
+		}},
+		{Role: "assistant", Content: []pivot.Block{{Kind: "server_tool_use"}}},
+	}}
+	_, dropped, err := Protocol{}.EncodeRequest(req, http.Header{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"search_result", "server_tool_use", "web_fetch_result"} {
+		if !strings.Contains(strings.Join(dropped, ","), k) {
+			t.Errorf("dropped = %v, want it to name %s", dropped, k)
+		}
+	}
+}

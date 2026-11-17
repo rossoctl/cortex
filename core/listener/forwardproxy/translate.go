@@ -1,7 +1,10 @@
 package forwardproxy
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -115,33 +118,70 @@ func (t *translation) agentStream(status int) bool {
 	return t.conv.Stream && status/100 == 2
 }
 
-// wrapReply makes resp carry the reply in the agent's protocol, converted as it is
-// read (rule 10). Every later arm then reads the converted bytes. When rc is not nil,
+// wrapReply makes resp carry the reply in the agent's protocol. A stream is
+// converted as it is read (rule 10). Every later arm then reads the converted bytes. When rc is not nil,
 // it keeps the server's reply before the conversion in rc.Upstream (rule 8a).
 func (t *translation) wrapReply(resp *http.Response, rc *pipeline.ResponseCapture) {
 	if rc != nil {
 		// The count and the end are the converted body's, which the caller's wrapper keeps.
 		var unused int64
 		var ended bool
+		rc.Upstream = []byte{} // not nil: the reply is converted, also when it is empty
 		resp.Body = bodycount.WrapCapture(resp.Body, &unused, &rc.Upstream, &rc.UpstreamTruncated, &ended, pipeline.MaxResponseCapture)
 	}
 	stream := t.agentStream(resp.StatusCode)
-	dec := t.dec.NewReplyDecoder(resp.StatusCode, httpx.IsEventStream(resp.Header.Get("Content-Type")))
-	enc := t.enc.NewReplyEncoder(stream)
-	resp.Body = translate.NewReplyReader(resp.Body, dec, enc)
+	upstreamStream := httpx.IsEventStream(resp.Header.Get("Content-Type"))
 	if stream {
+		dec := t.dec.NewReplyDecoder(resp.StatusCode, upstreamStream)
+		resp.Body = translate.NewReplyReader(resp.Body, dec, t.enc.NewReplyEncoder(true))
 		resp.Header.Set("Content-Type", "text/event-stream")
 	} else {
+		t.convertWhole(resp, upstreamStream)
 		resp.Header.Set("Content-Type", "application/json")
 	}
 	resp.Header.Del("Content-Length")
 	resp.Header.Del("Content-Encoding")
 	resp.ContentLength = -1
+	if rc != nil {
+		rc.Status = resp.StatusCode
+	}
 }
+
+// convertWhole converts a reply that the agent gets as one body. It reads the
+// whole body before the status is sent, so that an error that the decoder finds
+// in a 2xx body gives its own status, not the 2xx.
+func (t *translation) convertWhole(resp *http.Response, upstreamStream bool) {
+	upstream := resp.Body
+	raw, err := io.ReadAll(io.LimitReader(upstream, maxBodySize+1))
+	var body io.Reader
+	switch {
+	case err != nil:
+		// The arm that reads the body reports the failed read.
+		body = &failedRead{err}
+	case len(raw) > maxBodySize:
+		resp.StatusCode = http.StatusBadGateway
+		body = bytes.NewReader(translate.ErrorBody(t.source, http.StatusBadGateway, "api_error",
+			fmt.Sprintf("the inference server's reply is over the %d-byte buffer limit", maxBodySize)))
+	default:
+		status, out := translate.Reply(t.source, t.target, resp.StatusCode, upstreamStream, false, raw)
+		resp.StatusCode = status
+		body = bytes.NewReader(out)
+	}
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{body, upstream}
+}
+
+// failedRead gives err at the first Read.
+type failedRead struct{ err error }
+
+func (f *failedRead) Read([]byte) (int, error) { return 0, f.err }
 
 // replyBody converts a whole upstream body, for the row of a refused attempt
 // (decision 19).
 func (t *translation) replyBody(resp *http.Response, body []byte) []byte {
-	return translate.Reply(t.source, t.target, resp.StatusCode,
+	_, out := translate.Reply(t.source, t.target, resp.StatusCode,
 		httpx.IsEventStream(resp.Header.Get("Content-Type")), t.agentStream(resp.StatusCode), body)
+	return out
 }

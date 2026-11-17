@@ -671,3 +671,50 @@ func TestTranslate_CaptureHoldsFourBodies(t *testing.T) {
 		}
 	}
 }
+
+func TestTranslate_NotStreamedErrorStatus(t *testing.T) {
+	for _, c := range []struct {
+		name, body string
+		want       int
+	}{
+		{"error body at 200", replyFixture(t, "chunk_error.json"), http.StatusInternalServerError},
+		{"not JSON", "not json", http.StatusBadGateway},
+		{"over the limit", strings.Repeat("x", maxBodySize+1), http.StatusBadGateway},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			up := newChatServer(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, c.body)
+			})
+			store := newStore(t)
+			proxy := newRedirectProxy(t, store, nil, &translator{target: up.URL, translate: true})
+			resp := postAnthropic(t, proxy, anthropicRequest, nil)
+			body := replyText(t, resp)
+
+			if resp.StatusCode != c.want || !strings.HasPrefix(body, `{"type":"error"`) {
+				t.Errorf("reply = %d %q, want %d with an Anthropic error body", resp.StatusCode, body, c.want)
+			}
+			if rows := waitRows(t, store, pipeline.SessionResponse, 1); rows[0].StatusCode != c.want {
+				t.Errorf("response row status = %d, want %d", rows[0].StatusCode, c.want)
+			}
+		})
+	}
+}
+
+func TestTranslate_EmptyReplyCapturesUpstream(t *testing.T) {
+	up := newChatServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+	})
+	proxy, rec := proxyWithCaptures(t, inferenceparser.NewInferenceParser(), &translator{target: up.URL, translate: true})
+	_ = replyText(t, postAnthropic(t, proxy, anthropicStreamRequest, nil))
+
+	res := rec.responses()
+	if len(res) != 1 {
+		t.Fatalf("%d response captures, want 1", len(res))
+	}
+	for _, r := range res {
+		if r.Upstream == nil {
+			t.Errorf("Upstream is nil, want an empty capture of the server's reply")
+		}
+	}
+}

@@ -362,3 +362,11 @@ func TestReplyDecoder_ToolCallIDsNotStream(t *testing.T) {
 		checkEvents(t, 200, false, body, []pivot.Event{apiError(502, "api_error", msg)})
 	}
 }
+
+func TestReplyDecoder_StreamLineOverLimit(t *testing.T) {
+	d := Protocol{}.NewReplyDecoder(200, true)
+	evs := d.Feed([]byte("data: " + strings.Repeat("x", maxStreamLine)))
+	if len(evs) != 1 || evs[0].Kind != pivot.EventError || evs[0].Status != 502 {
+		t.Errorf("events = %+v, want one 502 error", evs)
+	}
+}

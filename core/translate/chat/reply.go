@@ -14,6 +14,10 @@ import (
 // maxErrorBody is the most of a non-2xx body that the decoder keeps.
 const maxErrorBody = 1 << 20
 
+// maxStreamLine is the longest stream line that the decoder keeps. It is the
+// forward proxy's limit for one SSE frame.
+const maxStreamLine = 10 << 20
+
 // maxErrorMessage is the most of a non-JSON error body that goes into the
 // error message (Review Focus 4).
 const maxErrorMessage = 512
@@ -90,6 +94,11 @@ func (d *decoder) Feed(p []byte) []pivot.Event {
 		}
 		d.line(rest[:i])
 		rest = rest[i+1:]
+	}
+	if len(rest) > maxStreamLine {
+		d.fail(http.StatusBadGateway, "api_error", "the inference server sent a stream line over the "+strconv.Itoa(maxStreamLine)+"-byte limit")
+		d.buf = nil
+		return d.out
 	}
 	// Keep only the partial line, in a new array, so that the stream
 	// read so far is not held (rule 10).

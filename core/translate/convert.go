@@ -55,16 +55,22 @@ func replyCodecs(source, target string, status int, upstreamStream, agentStream 
 // that the source protocol's agent expects. upstreamStream tells if the
 // body is SSE; agentStream tells if the agent asked for a stream. When a
 // direction is missing, it gives a 502 error body in the source protocol
-// (nil for an unknown source).
-func Reply(source, target string, status int, upstreamStream, agentStream bool, body []byte) []byte {
+// (nil for an unknown source). It also gives the status of the converted
+// reply: the status of its error event, or status when it has none.
+func Reply(source, target string, status int, upstreamStream, agentStream bool, body []byte) (int, []byte) {
 	dec, enc, ok := replyCodecs(source, target, status, upstreamStream, agentStream)
 	if !ok {
-		return ErrorBody(source, http.StatusBadGateway, "api_error",
+		return http.StatusBadGateway, ErrorBody(source, http.StatusBadGateway, "api_error",
 			"Cortex cannot convert a "+target+" reply to "+source)
 	}
-	out := encodeAll(enc, nil, dec.Feed(body))
-	out = encodeAll(enc, out, dec.End())
-	return append(out, enc.End()...)
+	evs := append(dec.Feed(body), dec.End()...)
+	for _, ev := range evs {
+		if ev.Kind == pivot.EventError && ev.Status != 0 {
+			status = ev.Status
+		}
+	}
+	out := encodeAll(enc, nil, evs)
+	return status, append(out, enc.End()...)
 }
 
 // encodeAll appends the encoded events to out.
