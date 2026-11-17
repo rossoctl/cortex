@@ -90,12 +90,15 @@ func TestModelledCost_Prices1hWrites(t *testing.T) {
 	resolver := pricing.NewRegistry(tab)
 
 	u := pricing.Usage{CacheWrite: 1000, CacheWrite1h: 600}
-	micros, tiers, prov, ok, refusal := modelledCost(resolver, "gw.internal", "claude-sonnet-4-5", u, u.PromptTotal())
+	micros, tiers, prov, ok, refusal, estimated1h := modelledCost(resolver, "gw.internal", "claude-sonnet-4-5", u, u.PromptTotal())
 	if !ok {
 		t.Fatalf("modelledCost refused: %v", refusal)
 	}
 	if prov != pricing.ProvConfigured {
 		t.Errorf("provenance = %v, want ProvConfigured", prov)
+	}
+	if estimated1h {
+		t.Error("estimated1h = true, want false: a Claude model derives the 1h rate from Anthropic's documented 2x-input premium, not a guess")
 	}
 
 	wantUSD := 400*cw5mRate + 600*cw1hRate
@@ -108,6 +111,125 @@ func TestModelledCost_Prices1hWrites(t *testing.T) {
 	}
 	if got := tiers[pricing.TierCacheWrite]; got != wantMicros {
 		t.Errorf("tiers[TierCacheWrite] = %d, want %d — the whole write cost should land on this tier", got, wantMicros)
+	}
+}
+
+// onehourRates builds the same Sonnet-like table TestModelledCost_Prices1hWrites
+// uses, so the two review-fix tests below share one fixture.
+func onehourRates(t *testing.T) (pricing.Resolver, float64, float64, float64) {
+	t.Helper()
+	const (
+		inputRate  = 3.80e-6
+		cw5mRate   = 4.75e-6
+		outputRate = 19.00e-6
+	)
+	var r pricing.Rates
+	r.Base[pricing.TierInput], r.Set[pricing.TierInput] = inputRate, true
+	r.Base[pricing.TierCacheWrite], r.Set[pricing.TierCacheWrite] = cw5mRate, true
+	r.Base[pricing.TierOutput], r.Set[pricing.TierOutput] = outputRate, true
+	tab, err := pricing.NewTable([]pricing.Entry{{Host: "*", Model: "*", Rates: r, Prov: pricing.ProvConfigured}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pricing.NewRegistry(tab), inputRate, cw5mRate, outputRate
+}
+
+// TestSettle_OutputHalfExcludesCacheWrite1hPremium is the regression for the
+// review finding on task 7 (2026-11-17 accountant-integration): outputOnly used
+// to zero Input/CacheWrite/CacheRead but leave CacheWrite1h set, so modelledCost
+// added the 1h-vs-5m delta a SECOND time onto the output-only figure, which
+// carries no cache-write tokens at all. Asserted through Settle/SettleInput, not
+// modelledCost directly, because that is the path a real response takes and the
+// one the leak actually reached.
+func TestSettle_OutputHalfExcludesCacheWrite1hPremium(t *testing.T) {
+	resolver, inputRate, cw5mRate, outputRate := onehourRates(t)
+	cw1hRate := inputRate * 2.0 // Anthropic's documented 1h premium
+
+	inf := &pipeline.InferenceExtension{
+		Model:              "claude-sonnet-4-5",
+		CacheWriteTokens:   1000,
+		CacheWrite1hTokens: 600,
+		OutputTokens:       100,
+		FinishReason:       "end_turn", // keeps IncompleteReason from firing for an unrelated cause
+	}
+	settled := SettleInput(Input{Host: "gw.internal", Inference: inf}, resolver)
+	if !settled.HasModelled || !settled.HasPrompt || !settled.HasOutput {
+		t.Fatalf("settled = %+v, want HasModelled/HasPrompt/HasOutput all true", settled)
+	}
+
+	wantOutputMicros, ok := pricing.MicrosFromUSD(100 * outputRate)
+	if !ok {
+		t.Fatal("test fixture produced an unrepresentable USD figure")
+	}
+	gotOutputMicros, ok := pricing.MicrosFromUSD(settled.OutputUSD)
+	if !ok {
+		t.Fatal("OutputUSD did not round-trip through MicrosFromUSD")
+	}
+	if gotOutputMicros != wantOutputMicros {
+		t.Errorf("OutputUSD = %d micros, want %d (100 output tokens x the output rate, no 1h premium)",
+			gotOutputMicros, wantOutputMicros)
+	}
+
+	wantWholeMicros, ok := pricing.MicrosFromUSD(400*cw5mRate + 600*cw1hRate + 100*outputRate)
+	if !ok {
+		t.Fatal("test fixture produced an unrepresentable USD figure")
+	}
+	promptMicros, _ := pricing.MicrosFromUSD(settled.PromptUSD)
+	outputMicros, _ := pricing.MicrosFromUSD(settled.OutputUSD)
+	if got := promptMicros + outputMicros; got != wantWholeMicros {
+		t.Errorf("PromptUSD + OutputUSD = %d micros, want %d (the whole modelled cost)", got, wantWholeMicros)
+	}
+	wholeMicros, _ := pricing.MicrosFromUSD(settled.ModelledUSD)
+	if wholeMicros != wantWholeMicros {
+		t.Errorf("ModelledUSD = %d micros, want %d", wholeMicros, wantWholeMicros)
+	}
+}
+
+// TestSettle_CacheWrite1hEstimatedWhenFallbackRateUsed covers spec §5.6: "price
+// at the 5m rate and mark the figure estimated" for a non-Anthropic model with no
+// explicit 1h rate, and that an Anthropic model's documented-premium derivation
+// is NOT marked estimated. Added in review of task 7 (2026-11-17
+// accountant-integration).
+func TestSettle_CacheWrite1hEstimatedWhenFallbackRateUsed(t *testing.T) {
+	resolver, _, _, _ := onehourRates(t)
+
+	for _, tc := range []struct {
+		name          string
+		model         string
+		wantEstimated bool
+	}{
+		{"non-Anthropic model falls back to the 5m rate, estimated", "gpt-5", true},
+		{"Anthropic model derives the documented 2x-input premium, not estimated", "claude-sonnet-4-5", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inf := &pipeline.InferenceExtension{
+				Model:              tc.model,
+				CacheWriteTokens:   1000,
+				CacheWrite1hTokens: 600,
+				OutputTokens:       100,
+				FinishReason:       "end_turn",
+			}
+			settled := SettleInput(Input{Host: "gw.internal", Inference: inf}, resolver)
+			if !settled.HasModelled {
+				t.Fatal("settled.HasModelled = false, want true")
+			}
+			if settled.ModelledIncomplete != tc.wantEstimated {
+				t.Errorf("ModelledIncomplete = %v, want %v", settled.ModelledIncomplete, tc.wantEstimated)
+			}
+			if tc.wantEstimated {
+				if settled.ModelledIncompleteReason != pricing.ReasonCacheWrite1hRateEstimated {
+					t.Errorf("ModelledIncompleteReason = %q, want %q", settled.ModelledIncompleteReason, pricing.ReasonCacheWrite1hRateEstimated)
+				}
+				// The modelled figure is also what was CHARGED here (no gateway header, no
+				// declared-free), so Incomplete/IncompleteReason mirror it.
+				if !settled.Incomplete || settled.IncompleteReason != pricing.ReasonCacheWrite1hRateEstimated {
+					t.Errorf("Incomplete/IncompleteReason = %v/%q, want true/%q",
+						settled.Incomplete, settled.IncompleteReason, pricing.ReasonCacheWrite1hRateEstimated)
+				}
+			} else if settled.ModelledIncompleteReason != "" {
+				t.Errorf("ModelledIncompleteReason = %q, want empty", settled.ModelledIncompleteReason)
+			}
+		})
 	}
 }
 

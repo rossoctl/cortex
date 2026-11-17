@@ -104,6 +104,22 @@ const (
 	// short-reported prompt produces identical arithmetic, and a wrong tier in the label sends
 	// an operator to the wrong side of the request.
 	ReasonCountersBelowTotal = "counters-below-total"
+
+	// ReasonCacheWrite1hRateEstimated: the figure prices some cache-write tokens at a
+	// GUESSED 1-hour rate rather than a known one — the generic fallback
+	// Rates.CacheWrite1hRate takes for a table with no explicit 1h rate and no
+	// documented premium for the provider (Anthropic's is: 2x input, which is NOT
+	// this reason, since that derivation is a documented fact rather than a guess).
+	//
+	// Unlike the three reasons above, this is not about the PARSER's counters — it
+	// is decided by settle.modelledCost from pricing.CacheWrite1hDeltaMicros's own
+	// estimated return, keyed on which rate the 1h subset priced at. Reused on the
+	// same Settled/event fields (Incomplete/IncompleteReason,
+	// ModelledIncomplete/ModelledIncompleteReason) rather than a parallel field,
+	// because the claim is the same shape: the figure stands, and it is not an exact
+	// total. Added for the 1h cache-write tier (2026-11-17 accountant-integration
+	// task 7), in review.
+	ReasonCacheWrite1hRateEstimated = "cache-write-1h-rate-estimated"
 )
 
 // NO PREDICATE IN THIS FILE READS model.InferenceExtension.PresentKinds, and none should: it

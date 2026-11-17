@@ -297,6 +297,18 @@ func PlausibleUsage(u Usage) bool {
 			return false
 		}
 	}
+	// CacheWrite1h is not one of u.tokens()'s four tiers (see Usage.CacheWrite1h and
+	// TierCacheWrite1h), so the loop above never sees it and never bounds it. Checked
+	// here, on the same two rules every other counter gets, PLUS the one rule that is
+	// its own: it is a SUBSET of CacheWrite, never a sibling total, so a report with
+	// more 1h writes than writes altogether is not a real provider shape — the same
+	// kind of impossible count maxPlausibleTokens exists to catch, just shaped as a
+	// relationship between two counters rather than a single one past the ceiling.
+	// Added in review of the 1h cache-write tier (2026-11-17 accountant-integration
+	// task 7).
+	if u.CacheWrite1h < 0 || u.CacheWrite1h > maxPlausibleTokens || u.CacheWrite1h > u.CacheWrite {
+		return false
+	}
 	return true
 }
 
@@ -434,28 +446,39 @@ func CostWithReason(r Rates, u Usage) (int64, bool, Refusal) {
 // cheaper than 5m, which no real provider does) is also left unapplied rather
 // than credited back — see the n==0/usd<0 branch.
 //
+// estimated is CacheWrite1hRate's own estimated — true when the 1h rate came
+// from the generic 5m-rate fallback (no explicit rate, not Anthropic-shaped)
+// rather than an explicit rate or Anthropic's documented 2x-input premium.
+// false when n<=0: with no 1h tokens, no rate was looked up and nothing was
+// estimated. The caller (settle.modelledCost / SettleInput) is responsible for
+// publishing this on the settled result — spec §5.6: "price at the 5m rate and
+// mark the figure estimated."
+//
 // Added for the 1h cache-write tier (2026-11-17 accountant-integration task 7).
-func CacheWrite1hDeltaMicros(r Rates, n int, anthropicShaped bool) (int64, bool) {
+// estimated's propagation added in review of the same task.
+func CacheWrite1hDeltaMicros(r Rates, n int, anthropicShaped bool) (micros int64, ok, estimated bool) {
 	if n <= 0 {
-		return 0, true
+		return 0, true, false
 	}
 	rate5m, ok5m := r.For(TierCacheWrite)
-	rate1h, ok1h, _ := r.CacheWrite1hRate(anthropicShaped)
+	rate1h, ok1h, rateEstimated := r.CacheWrite1hRate(anthropicShaped)
 	if !ok5m || !ok1h || !finiteNonNegative(rate5m) || !finiteNonNegative(rate1h) {
-		return 0, false
+		return 0, false, false
 	}
 	usd := float64(n) * (rate1h - rate5m)
 	if usd <= 0 {
 		// Zero: no premium to add. Negative: a 1h rate cheaper than the 5m one is
 		// not a shape any real table should produce; rather than credit money back,
-		// leave the tokens at the 5m rate CostByTier already priced them at.
-		return 0, true
+		// leave the tokens at the 5m rate CostByTier already priced them at. Still
+		// reports estimated as resolved above: the RATE was estimated even though
+		// no delta was applied from it.
+		return 0, true, rateEstimated
 	}
-	m, ok := MicrosFromUSD(usd)
-	if !ok {
-		return 0, false
+	m, converted := MicrosFromUSD(usd)
+	if !converted {
+		return 0, false, false
 	}
-	return m, true
+	return m, true, rateEstimated
 }
 
 // finiteNonNegative is the per-rate validity check CostByTier applies inline to
