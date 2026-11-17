@@ -555,6 +555,9 @@ func TestServerUseAndRemove_RefuseABadServerNameFirst(t *testing.T) {
 		{"remove", "ETE", "--config", path},
 		{"remove", "a\x1b[2Jb", "--config", path},
 		{"remove", "a\x1b[2Jb", "--config", missing},
+		{"rename", "ETE", "zai", "--config", path},
+		{"rename", "ete", "a\x1b[2Jb", "--config", path},
+		{"rename", "a\x1b[2Jb", "zai", "--config", missing},
 	} {
 		code, out, errOut := runServerCmd(t, "", args...)
 		if code != 2 || !strings.Contains(errOut, "is not a server name") {
@@ -850,6 +853,7 @@ func TestServerWrites_ForTheNextStartPromiseNoRunningSessionStays(t *testing.T) 
 		{"reset", routerBlock, []string{"reset", "--agent", "claude-code"}},
 		{"remove", routerBlock, []string{"remove", "ete"}},
 		{"remove the only server", onlyEte, []string{"remove", "ete"}},
+		{"rename", routerBlock, []string{"rename", "glm", "zai"}},
 	} {
 		args := tc.args
 		t.Run(tc.name, func(t *testing.T) {
@@ -1552,5 +1556,197 @@ func TestServerAdd_BobHostGetsNoHiddenDefaults(t *testing.T) {
 	}
 	if cfg := readConfig(t, path); strings.Contains(cfg, "bob-shell") || strings.Contains(cfg, "auth_header") {
 		t.Errorf("config:\n%s", cfg)
+	}
+}
+
+// rename gives the server a new name in place, and every agents: and sessions: value
+// naming it follows in the same write. Nothing else in the file changes.
+func TestServerRename_RenamesTheServerAndWhatNamesIt(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock+
+		"            opencode: glm\n          sessions:\n            s0: glm\n            s1: ete\n")
+	before := readConfig(t, path)
+	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if want := "Renamed glm to zai. New claude-code and opencode sessions go to zai."; !strings.Contains(out, want) {
+		t.Errorf("want %q in stdout:\n%s", want, out)
+	}
+	want := strings.NewReplacer(
+		"            glm:\n", "            zai:\n",
+		"            claude-code: glm\n", "            claude-code: zai\n",
+		"            opencode: glm\n", "            opencode: zai\n",
+		"            s0: glm\n", "            s0: zai\n",
+	).Replace(before)
+	if got := readConfig(t, path); got != want {
+		t.Errorf("config:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// The server's own lines stay byte for byte: the comments on and above it, and a key
+// written as an environment variable reference, which a rename that copied the
+// loaded value to a new key would write out as the secret itself.
+func TestServerRename_KeepsTheServersBytesAndAnEnvReference(t *testing.T) {
+	t.Setenv("GLM_KEY", "sk-glm-from-env")
+	block := strings.Replace(routerBlock, "            glm:\n              url: https://glm.example.com:8443\n              key: sk-glm\n",
+		"            # the GLM gateway\n            glm:   # added in October\n              url: https://glm.example.com:8443\n              key: ${GLM_KEY}\n", 1)
+	path := serverEnv(t, newFakeStats(t, 0).addr(), block)
+	if code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path); code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	got := readConfig(t, path)
+	if want := "            # the GLM gateway\n            zai:   # added in October\n              url: https://glm.example.com:8443\n              key: ${GLM_KEY}\n"; !strings.Contains(got, want) {
+		t.Errorf("the server's lines changed:\n%s", got)
+	}
+	if strings.Contains(got, "sk-glm-from-env") {
+		t.Errorf("the environment variable's value was written into the file:\n%s", got)
+	}
+}
+
+func TestServerRename_RefusesAnUnknownServer(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	before := readConfig(t, path)
+	code, _, errOut := runServerCmd(t, "", "rename", "nope", "zai", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "no server named nope") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+	if readConfig(t, path) != before {
+		t.Error("the config was written")
+	}
+}
+
+// rename does not merge two servers: a name another server has is refused, with the
+// way to free it.
+func TestServerRename_RefusesATakenName(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	before := readConfig(t, path)
+	code, _, errOut := runServerCmd(t, "", "rename", "glm", "ete", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "there is already a server named ete; remove it first") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+	if readConfig(t, path) != before {
+		t.Error("the config was written")
+	}
+}
+
+func TestServerRename_RefusesOwnAsTheNewName(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	code, _, errOut := runServerCmd(t, "", "rename", "glm", "own", "--config", path)
+	if code != 2 || !strings.Contains(errOut, `"own" is reserved`) {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+}
+
+func TestServerRename_ToItsOwnNameChangesNothing(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	before := readConfig(t, path)
+	code, out, errOut := runServerCmd(t, "", "rename", "glm", "glm", "--config", path)
+	if code != 0 || !strings.Contains(out, "nothing to change") {
+		t.Errorf("exit %d, stdout:\n%s%s", code, out, errOut)
+	}
+	if readConfig(t, path) != before {
+		t.Error("the config was written")
+	}
+}
+
+func TestServerRename_WantsTwoNames(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	for _, args := range [][]string{{"rename", "glm"}, {"rename", "glm", "zai", "extra"}} {
+		code, _, errOut := runServerCmd(t, "", append(args, "--config", path)...)
+		if code != 2 || !strings.Contains(errOut, "agentop server rename <name> <new-name>") {
+			t.Errorf("%q: exit %d, stderr:\n%s", args, code, errOut)
+		}
+	}
+}
+
+// The router pins a running session to its server by name, so the sessions pinned to
+// the old name get the removed server's error: rename warns how many, as remove does,
+// and asks nothing.
+func TestServerRename_WarnsOfTheSessionsPinnedToTheOldName(t *testing.T) {
+	asks := stubConfirm(t, false)
+	sessions := sessionsAPI(t, "glm.example.com:8443", "GLM.example.com:8443", "ete.example.com")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock)
+	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
+	if code != 0 || !strings.Contains(out, "Renamed glm to zai.") {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if want := "agentop server rename: warning: 2 running sessions last sent inference to glm. A session the proxy " +
+		"routed there gets an error asking for a new session, until it is moved or the server is renamed back to glm."; !strings.Contains(flat(errOut), want) {
+		t.Errorf("want %q in stderr:\n%s", want, errOut)
+	}
+	if want := "A session the proxy routed to glm now gets an error asking for a new session. " +
+		"Renaming the server back to glm routes them to it again."; !strings.Contains(flat(out), want) {
+		t.Errorf("want %q in stdout:\n%s", want, out)
+	}
+	if *asks != 0 {
+		t.Errorf("asked %d times; rename warns as remove does", *asks)
+	}
+}
+
+// A session with a sessions: entry follows the rename, since the entry beats its pin
+// and the rename rewrites it, so the warning leaves it out.
+func TestServerRename_LeavesAMovedSessionOutOfTheWarning(t *testing.T) {
+	sessions := sessionsAPI(t, "glm.example.com:8443", "glm.example.com:8443")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock+"          sessions:\n            s0: glm\n")
+	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if want := "warning: 1 running session last sent inference to glm."; !strings.Contains(flat(errOut), want) {
+		t.Errorf("want %q in stderr:\n%s", want, errOut)
+	}
+	if got := readConfig(t, path); !strings.Contains(got, "            s0: zai\n") {
+		t.Errorf("want s0 moved to zai:\n%s", got)
+	}
+}
+
+// With no running session on the server, rename warns of none.
+func TestServerRename_SaysNothingWhenNoRunningSessionUsesIt(t *testing.T) {
+	sessions := sessionsAPI(t, "ete.example.com")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock)
+	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
+	if code != 0 || strings.Contains(errOut, "warning") || strings.Contains(out, "error asking") {
+		t.Errorf("exit %d: %s%s", code, out, errOut)
+	}
+}
+
+// A key_routes: entry naming the server, on either side, follows the rename: without it
+// the config would not load.
+func TestServerRename_RewritesTheKeyRoutesThatNameIt(t *testing.T) {
+	for _, tc := range []struct{ name, routes, want string }{
+		{"its key", "            glm: ete\n", "            zai: ete\n"},
+		{"its server", "            ete: glm\n", "            ete: zai\n"},
+		{"both", "            glm: glm\n", "            zai: zai\n"},
+		{"both entries", "            ete: glm\n            glm: ete\n", "            ete: zai\n            zai: ete\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock+"          key_routes:\n"+tc.routes)
+			before := readConfig(t, path)
+			code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
+			if code != 0 {
+				t.Fatalf("exit %d: %s%s", code, out, errOut)
+			}
+			want := strings.NewReplacer(
+				"            glm:\n", "            zai:\n",
+				"            claude-code: glm\n", "            claude-code: zai\n",
+				tc.routes, tc.want,
+			).Replace(before)
+			if got := readConfig(t, path); got != want {
+				t.Errorf("want:\n%s\ngot:\n%s", want, got)
+			}
+		})
+	}
+}
+
+// An agent named by a retired spelling is written under today's, as use writes it.
+func TestServerRename_MovesARetiredAgentSpelling(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), strings.Replace(routerBlock,
+		"            claude-code: glm\n", "            bob-shell: glm\n", 1))
+	if code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path); code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	got := readConfig(t, path)
+	if !strings.Contains(got, "            bob: zai\n") || strings.Contains(got, "bob-shell") {
+		t.Errorf("want bob: zai and no retired spelling:\n%s", got)
 	}
 }

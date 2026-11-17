@@ -1241,6 +1241,7 @@ agentop server use ete --key-of glm                       # new sessions that se
 agentop server reset --key-of glm                         # glm's key goes to glm again
 agentop server move <session-id> glm                      # move one running session → glm
 agentop server                                            # the servers, their models, their agents
+agentop server rename ete litellm-external               # a new name; its agents follow
 agentop server reset --agent opencode                     # stop routing opencode
 agentop server remove glm                                 # refused while an agent uses it; the last takes the router out
 ```
@@ -1428,6 +1429,17 @@ refusal is believed for an hour, and a session keeps the model it was given.
   getting the 503. When there are any, `remove` says how many and asks first
   (`--yes` skips the question). Their pins stay in the plugin store, so adding the
   server back takes them back to it.
+- **`rename <name> <new-name>`** gives a server a new name in one write: the
+  server's key in the file is renamed in place, so its URL, key (a `${NAME}`
+  reference included), models, comments and place in the file stay as they were,
+  and every `agents:`, `sessions:` and `key_routes:` entry naming it is rewritten
+  to the new name. The router pins a running session to its server by name, so a
+  session pinned to the old name gets the removed server's 503 until it is moved
+  or the server is renamed back. `rename` warns how many before it goes ahead, as
+  `remove` does, and asks nothing. A session moved with a `sessions:` entry
+  follows the rename, since the entry beats the pin. It refuses a name another
+  server has (remove that one first) and `own`, and with the old name again
+  changes nothing.
 - **`agentop server`** lists each server's host (its whole URL when it is plain
   `http`), what its main and helper words name on its list now, read with its own
   key, the agents routed to it and, for a server whose key is routed to another
