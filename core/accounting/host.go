@@ -76,15 +76,19 @@ type Host struct {
 	mu            sync.Mutex
 	recorders     []session.Recorder
 	threadBilling map[threadBillingKey]threadBillingEntry
+	// pingFacts holds the latest keep-alive ping's facts per (session, thread), until the
+	// thread's next priced request takes them (ping.go). Bounded by pingFactsCap.
+	pingFacts map[threadBillingKey]pingEntry
 
 	// Test hooks. beforeEnd runs first on the record's goroutine, computeHook just before the
 	// library's Compute, onEnd with the ops the record was given, metaHook with the
-	// RequestMeta RequestEnd built (synchronously, before the record's goroutine starts). Nil
-	// outside tests.
+	// RequestMeta RequestEnd built (synchronously, before the record's goroutine starts),
+	// factsHook with the EntryFacts the record is ended with. Nil outside tests.
 	beforeEnd   func()
 	computeHook func()
 	onEnd       func(ops []accountant.Operation)
 	metaHook    func(meta accountant.RequestMeta)
+	factsHook   func(f accountant.EntryFacts)
 }
 
 // threadBillingKey keys Host.threadBilling: a thread id is only unique within its session.
@@ -156,6 +160,12 @@ type pending struct {
 	done       chan struct{}
 	req        *accountant.Request
 	serverHeld bool
+	// ping is the (session, thread) whose ping facts the record was ended with, and pingWindow
+	// their window; Compute drops them once the request is priced. pinged is false when there
+	// were none.
+	ping       threadBillingKey
+	pingWindow string
+	pinged     bool
 
 	computed bool
 	result   accountant.Result
@@ -323,7 +333,18 @@ func (h *Host) end(p *pending, format wire.Format, meta accountant.RequestMeta, 
 		req.Add(op)
 	}
 	// The cache facts come from the bytes sent: the marks there are the ones the provider reads.
-	req.EndRequest(thread, fwdBody, fwdBPs, facts.For(provider, meta.Model, wire.AllMarksAsk1h(forwarded)))
+	f := facts.For(provider, meta.Model, wire.AllMarksAsk1h(forwarded))
+	// The thread's last ping, if one was sent since its previous request (design §5.8). Kept
+	// until Compute prices this request, so a request that books nothing leaves them.
+	if pf, ok := h.peekPing(meta.Session, thread.ID); ok {
+		pf.Apply(&f)
+		p.ping = threadBillingKey{session: meta.Session, thread: thread.ID}
+		p.pingWindow, p.pinged = pf.PingWindow, true
+	}
+	if h.factsHook != nil {
+		h.factsHook(f)
+	}
+	req.EndRequest(thread, fwdBody, fwdBPs, f)
 	if h.onEnd != nil {
 		h.onEnd(ops)
 	}
@@ -375,6 +396,9 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	usage := accountant.Usage{Input: inf.InputTokens, CacheRead: inf.CacheReadTokens, CacheWrite: inf.CacheWriteTokens}
 	p.result, p.ok = h.computeSafe(p.req, usage)
 	p.req = nil
+	if p.ok && p.pinged {
+		h.dropPing(p.ping.session, p.ping.thread, p.pingWindow)
+	}
 	return p.result, p.ok
 }
 
