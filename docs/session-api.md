@@ -507,8 +507,8 @@ only another session of the same project made a row in that minute.
 - LAST 1H and the usage pane's hour windows show imported turns only after the
   next proxy restart. The import does not feed them.
 
-**Sources.** Claude Code (`claude-code`), Bob (`bob`) and Codex (`codex`) are
-supported now. #1874 and #1875 add the other agents (`opencode`, `pi`). The
+**Sources.** Claude Code (`claude-code`), Bob (`bob`), Codex (`codex`) and Pi
+(`pi`) are supported now. #1874 adds the other agent (`opencode`). The
 proxy answers the others with an error that names the supported agents.
 
 The Claude Code source reads
@@ -566,6 +566,24 @@ source imports nothing.
   turn, because some Codex versions write `token_count` after the tool
   results. A turn with no usage has no `cost` record and no ledger row. When a
   later import finds its usage, that import adds the row.
+
+The Pi source reads `~/.pi/agent/sessions/<dir>/<time>_<id>.jsonl`, or the
+same path under `$PI_CODING_AGENT_DIR/sessions/` when that variable is set in
+the proxy's environment.
+
+- One Pi session file is one session. The session id is the `id` of the
+  file's `session` header line. It is the same id that the extension from
+  `agentop configure pi` sends as `x-session-id`.
+- A file with no `session` header is counted as `unreadable`.
+- A fork (a header with `parentSession`) is its own session. The import does
+  not follow `parentSession`.
+- Each event has the `pi` client and the project of the header's `cwd`.
+- Each assistant message is one turn, error turns included. The request holds
+  the conversation that Pi sent: the turn's own branch of the entry tree, and
+  after a compaction the summary and the kept entries.
+- A Pi turn is priced at today's rates through the pricing table, by model id.
+  The import does not use Pi's own `usage.cost`. A turn with no token counts
+  (for example an error turn) has no cost.
 
 ## `POST /v1/ingest` — rows from cortex-gateway (praxis mode)
 

@@ -98,6 +98,28 @@ the proxy with no CA, and the bridge would fall back to opaque tunnels.
 - **Inference** on Anthropic Messages, OpenAI Chat Completions and OpenAI Responses: model,
   messages, tool calls, token counts and cost.
 
+## Import history
+
+`agentop import --agent pi` adds the Pi sessions from before Cortex to the
+session history and the cost ledger. It reads
+`~/.pi/agent/sessions/<dir>/<time>_<id>.jsonl`, or
+`$PI_CODING_AGENT_DIR/sessions/` when that variable is set in the proxy's
+environment.
+
+- One Pi session file is one session. Its id is the file's header `id`, the
+  same id that the extension sends as `x-session-id`. So the import skips a
+  session that Cortex captured live.
+- The project is the header's `cwd`. Each event has the `pi` client.
+- Each assistant message is one turn, error turns included. The request holds
+  the conversation that Pi sent: the turn's own branch, and after a compaction
+  the summary and the kept entries.
+- A turn is priced at today's rates through the pricing table, by model id.
+  Pi's own `usage.cost` is not used. A turn with no token counts has no cost.
+- A file with no session header is counted as unreadable. A fork
+  (`parentSession`) is its own session.
+
+Rules: [`POST /v1/import`](../session-api.md#post-v1import--transcript-import-laptop-only).
+
 ## Verified depth
 
 Tested live with Pi 1.4.0 on macOS 26 (arm64), against a LiteLLM gateway on
