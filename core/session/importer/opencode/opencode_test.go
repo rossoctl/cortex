@@ -289,3 +289,36 @@ func TestSource_UnreadableRoot(t *testing.T) {
 		}
 	}
 }
+
+// TestSource_UnreadableChildRow fails the messages query of one non-root row. The group stays
+// readable and counts the row in Skipped: ses_tools with its root row, and ses_gone, which has
+// no root row and keeps one readable row.
+func TestSource_UnreadableChildRow(t *testing.T) {
+	db := fixtureDB(t)
+	if out, err := exec.Command(sqlitecli.Program, db, `insert into session_v2 values ('ses_orphan2', 'ses_gone', null, '/tmp/demo', '2.0.26', 1763000000060);
+insert into session_message values ('msg_o9', 'ses_orphan2', 'user', 1, 1763000000110, 1763000000110, '{"text":"orphan two","time":{"created":1763000000110}}');`).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	base := readAll(t, New(db), time.Time{})
+	// The shim fails each query that names ses_child or ses_orphan, and runs sqlite3 for the others.
+	shim := filepath.Join(t.TempDir(), "sqlite3-shim")
+	script := "#!/bin/sh\ncase \"$*\" in *\"'ses_child'\"*|*\"'ses_orphan'\"*) echo no such table >&2; exit 1;; esac\nexec " + sqlitecli.Program + " \"$@\"\n"
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := readAll(t, source{dbPath: db, prog: shim}, time.Time{})
+	for _, id := range []string{"ses_tools", "ses_gone"} {
+		s, b := sessionByID(t, got, id), sessionByID(t, base, id)
+		if s.Unreadable {
+			t.Errorf("%s is Unreadable", id)
+		}
+		if s.Skipped != b.Skipped+1 {
+			t.Errorf("%s: Skipped %d, want %d", id, s.Skipped, b.Skipped+1)
+		}
+	}
+	// ses_orphan2 has only a user message, so ses_gone is readable with no events.
+	tools := sessionByID(t, got, "ses_tools")
+	if len(tools.Events) == 0 || len(phase(tools, model.SessionRequest, "ses_child")) != 0 {
+		t.Errorf("ses_tools: events %d, want the root row's events and none from ses_child", len(tools.Events))
+	}
+}
