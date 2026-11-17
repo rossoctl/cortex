@@ -648,3 +648,27 @@ func TestIngest_CaptureKeepsTheTranslatedHop(t *testing.T) {
 		t.Errorf("upstream = %q, truncated %v", res.Upstream, res.UpstreamTruncated)
 	}
 }
+
+// A wrong JSON type in a translated-hop key drops that key, not the line.
+func TestIngest_BadTranslatedHopKeysKeepTheRow(t *testing.T) {
+	for _, bad := range []any{123, "{not base64}", map[string]any{"a": 1}, true} {
+		r := newIngestRig(t)
+		r.post(t, nil,
+			line(t, map[string]any{"capture": map[string]any{"original": []byte(`{"a":1}`), "translated": bad}}),
+			line(t, map[string]any{"event": responseEvent(nil), "capture": map[string]any{
+				"response": map[string]any{"status": 200, "upstream": bad, "upstreamTruncated": bad, "ended": true},
+			}}),
+		)
+		if evs := r.events("s1"); len(evs) != 2 {
+			t.Errorf("value %v: stored %d events, want 2", bad, len(evs))
+			continue
+		}
+		req, res := r.caps.get("r1")
+		if req == nil || res == nil {
+			t.Fatalf("value %v: captures: request %v, response %v", bad, req, res)
+		}
+		if wantTrunc := bad == true; req.Translated != nil || res.Upstream != nil || res.UpstreamTruncated != wantTrunc {
+			t.Errorf("value %v: translated %q, upstream %q, truncated %v; want empty, empty, %v", bad, req.Translated, res.Upstream, res.UpstreamTruncated, wantTrunc)
+		}
+	}
+}
