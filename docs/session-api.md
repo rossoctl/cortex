@@ -482,10 +482,15 @@ only another session of the same project made a row in that minute.
   `source`. The session summary has the mark only while all its events are
   imported.
 - The `cost` record of an imported turn has `source: "transcript"`. Cortex
-  prices a Claude Code turn at today's rates. A Bob turn keeps Bob's own cost
-  (see **Sources**). A turn with no usage has no `cost` record.
+  prices a Claude Code turn and a Codex turn at today's rates. A Bob turn
+  keeps Bob's own cost (see **Sources**). A turn with no usage has no `cost`
+  record.
 - The ledger row of an imported turn has `source: "transcript"`. A live row has
   no `source`.
+- An imported turn with no `cost` record has no ledger row, from every source.
+  The live proxy records such a turn as one request at $0, so the request count
+  and the priced share of an import can be lower than those of live traffic.
+  When a later import finds the usage of the turn, that import adds the row.
 - A turn before the ledger's retention cutoff goes to the archive only.
 - An imported segment is kept for `retention_days` from its newest event. A
   session older than that is skipped (`skippedExpired`). The Claude Code source checks
@@ -501,9 +506,9 @@ only another session of the same project made a row in that minute.
 - LAST 1H and the usage pane's hour windows show imported turns only after the
   next proxy restart. The import does not feed them.
 
-**Sources.** Claude Code (`claude-code`) and Bob (`bob`) are supported now.
-#1873 to #1875 add the other agents (`codex`, `opencode`, `pi`). The proxy
-answers the others with an error that names the supported agents.
+**Sources.** Claude Code (`claude-code`), Bob (`bob`) and Codex (`codex`) are
+supported now. #1874 and #1875 add the other agents (`opencode`, `pi`). The
+proxy answers the others with an error that names the supported agents.
 
 The Claude Code source reads
 `~/.claude/projects/<project>/<uuid>.jsonl`, or the same path under
@@ -542,6 +547,24 @@ agents continue. When `bob.db` does not exist, the source imports nothing.
 - Bob Shell and Bob IDE both write `bob.db`. The source does not read the older
   `~/.bob/tmp/*/chats/*.json` files or the IDE's
   `globalStorage/ibm.bob-code/tasks`.
+
+The Codex source reads `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, or the
+same path under `CODEX_HOME` when that variable is set. It also reads a
+rollout that Codex compressed to `.jsonl.zst`. It does not import a rollout from
+`archived_sessions/`. When the `sessions/` directory does not exist, the
+source imports nothing.
+
+- The session id is the rollout's `session_meta.session_id`, else its `id`.
+  This is the value that Codex sends in the `Session-Id` header.
+- The rollout of a subagent is in the session of its root, with `subagent`
+  set to the subagent's thread id.
+- Each event has the `codex` client, the model of the turn
+  (`turn_context.model`), and the project of the turn's working directory.
+- Cortex prices a Codex turn at today's rates, from the usage of its
+  `token_usage_record` or `token_count` line. A tool result does not end a
+  turn, because some Codex versions write `token_count` after the tool
+  results. A turn with no usage has no `cost` record and no ledger row. When a
+  later import finds its usage, that import adds the row.
 
 ## `POST /v1/ingest` — rows from cortex-gateway (praxis mode)
 
