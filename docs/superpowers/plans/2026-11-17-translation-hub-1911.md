@@ -47,7 +47,9 @@
 18. **The listener passes `pctx.Headers` to `EncodeRequest`**, which deletes `anthropic-version` and `anthropic-beta` there. The sync to the wire request then removes them.
 19. **The refused attempt row of a resend** (`resendIfAsked`) records the Anthropic form of the refused body (`translate.Reply`). The raw head is still what `Resend` reads (rule 8) and what the capture keeps.
 20. **Capture field names:** `model.RequestCapture.Translated []byte`; `model.ResponseCapture.Upstream []byte` and `UpstreamTruncated bool`; `model.RawCapture.Translated *string` / `TranslatedBase64 []byte` (`json:"translated"`, `"translatedBase64"`); `model.RawBody.Upstream *string` / `UpstreamBase64 []byte` / `UpstreamTruncated bool` (`json:"upstream"`, `"upstreamBase64"`, `"upstreamTruncated"`).
-21. **Three PRs, stacked.** The total estimate is about 5,000 counted lines, so three PRs is the fewest under the 2,000-line limit. The issue's split (a)/(b) is kept, with (b) cut in two: PR 2 adds the listener layer with its own test plugin; PR 3 adds the config fields with the router that reads them, so no config field merges before its reader.
+21. **The hop path (`s.Hop`, praxis) gets no special code.** The request conversion runs before the `hopped` branch in `serveOutbound`, and the reply conversion runs after `hopDo` returns, so both arms convert. When `hopDo` answers its own 503 `gateway_unavailable` (`answered` true), that answer is not converted. No hop test in this plan.
+22. **`record.go` does not change.** `recordCapturedRequest` copies the capture struct, so a `Translated` field set before the call is recorded.
+23. **Three PRs, stacked.** The total estimate is about 5,000 counted lines, so three PRs is the fewest under the 2,000-line limit. The issue's split (a)/(b) is kept, with (b) cut in two: PR 2 adds the listener layer with its own test plugin; PR 3 adds the config fields with the router that reads them, so no config field merges before its reader.
 
 ## Review Focus
 
@@ -94,6 +96,8 @@ From the worktree root:
 ```sh
 (cd core && GOWORK=off go vet ./... && test -z "$(gofmt -l .)" && GOWORK=off go test ./translate/... ./pipeline/... ./redact/... ./parse/... ./plugins/inferencerouter/... ./listener/... ./model/... ./session/... ./sessionapi/... && GOWORK=off go mod tidy -diff) && (cd cmd/cortex && GOWORK=off go vet ./...) && (cd cmd/agentop && GOWORK=off go vet ./... && test -z "$(gofmt -l .)" && GOWORK=off go mod tidy -diff && GOWORK=off go test $(GOWORK=off go list ./... | grep -v 'agentop$')) && scripts/dev/go-test-shards.sh -short cmd/agentop
 ```
+
+On the base commit 8695f5f0d, the format and vet steps of this gate were run one by one from the worktree root (`core` vet and gofmt, `cmd/cortex` vet, `cmd/agentop` vet and gofmt). All passed. The test, tidy and shard steps were not run.
 
 ---
 
@@ -273,7 +277,7 @@ func NewReplyReader(body io.ReadCloser, dec pivot.ReplyDecoder, enc pivot.ReplyE
 `NewReplyReader`: each `Read` reads at most 32 KiB from `body`, feeds it, encodes each event, and returns the bytes; it returns as soon as it has bytes (never waits for the whole stream). At upstream EOF it calls `dec.End()` and `enc.End()`. `Close` closes `body`. An upstream read error other than EOF is returned after the bytes already converted.
 
 - [ ] **Step 1:** Write `TestNames` (`[anthropic-messages chat-completions responses]`), `TestTarget` (`[responses]` → false; `[responses chat-completions]` → `chat-completions`; `[anthropic-messages responses]` → false), `TestDecodes`.
-- [ ] **Step 2:** Write the request goldens: one input per rule 11-19 and 20a (`call_3833__thought__AY89a1+8zd/x=` id in a `tool_use` and its `tool_result`), and `full_multiturn.json` (text, image, tool_use, tool_result, thinking with signature, `cache_control` on system and a message, a mid-conversation `system` message). The test runs `Request(Anthropic, Chat, in, nil)` and compares the body to `<name>.golden` byte for byte, and `Dropped` to the golden's first line. With `-update` it writes the golden.
+- [ ] **Step 2:** Write the request goldens: one input per rule 11, 12, 13, 13a, 14 (each bullet, with a `tool_result` that holds an image), 15, 16, 17, 18, 19 and 20a (`call_3833__thought__AY89a1+8zd/x=` id in a `tool_use` and its `tool_result`), and `full_multiturn.json` (text, image, tool_use, tool_result, thinking with signature, `cache_control` on system and a message, a mid-conversation `system` message). The test runs `Request(Anthropic, Chat, in, nil)` and compares the body to `<name>.golden` byte for byte, and `Dropped` to the golden's first line. With `-update` it writes the golden.
 - [ ] **Step 3:** Write `TestDeterministic` (rule 9a): encode `full_multiturn.json` twice → equal bytes; append one user turn → old output is a byte prefix up to the end of the old last message; move `cache_control` from the last message to the new message → the two outputs differ only in the marker bytes (compare after removing `,"cache_control":{"type":"ephemeral"}` from both).
 - [ ] **Step 4:** Write the reply goldens for the issue's three Bob shapes, `stream_two_tools`, and errors (403 LiteLLM `team_model_access_denied`, 404 Bob `not_found_error`, 429, an in-stream `{"error":…}` chunk), each streamed and not streamed: `Reply(Anthropic, Chat, …)` vs golden. Shape 3: `output_tokens` 296 and no thinking block. Shape 2: a thinking block with empty text and its `signature_delta`.
 - [ ] **Step 5:** Write `TestReplyReader_EveryByteSplit`: for each streamed reply input, feed it through `NewReplyReader` over a reader that returns one byte per `Read`; the output equals the golden. Write `TestReplyReader_Incremental`: an `io.Pipe` upstream; after writing the first chunk only, a `Read` returns the `message_start` frame.
@@ -305,7 +309,7 @@ func (c *Context) SetUpstreamHeaders(h http.Header) error
 func (c *Context) UpstreamHeaders() http.Header // nil unless Redirected
 ```
 
-- [ ] **Step 1:** Write tests, following the setup of the existing `SetRedirectPath` tests in `core/pipeline`: accepted after a Redirect (Path unchanged, `TranslateTarget` ok); refused before a Redirect, without WritesDestination, outside OnRequest, under observe (no Redirect took effect), with `path` `v1/x`, `/a?b`, `/a/../b`, with `source == target`; `SetUpstreamHeaders` stores a clone (a later change to the caller's map does not show).
+- [ ] **Step 1:** Write tests, following the setup of the existing `SetRedirectPath` tests in `core/pipeline/resend_test.go`: accepted after a Redirect (Path unchanged, `TranslateTarget` ok); refused before a Redirect, without WritesDestination, outside OnRequest, under observe (no Redirect took effect), with `path` `v1/x`, `/a?b`, `/a/../b`, with `source == target`; `SetUpstreamHeaders` stores a clone (a later change to the caller's map does not show).
 - [ ] **Step 2:** Run `cd core && GOWORK=off go test ./pipeline/ -run 'Translate|UpstreamHeaders'` → FAIL. Implement. Run → PASS. Commit `feat: Add pipeline calls for translation and fixed upstream headers`.
 
 ### Task T8: The forward-proxy layer
@@ -345,8 +349,8 @@ func (c *Context) UpstreamHeaders() http.Header // nil unless Redirected
 **Depends on:** T8. **Estimate:** 400 lines. **Rules:** 8a, decision 20.
 
 **Files:**
-- Modify: `core/model/capture.go` (fields of decision 20), `core/listener/forwardproxy/server.go` and `translate.go` (fill them), `core/listener/forwardproxy/record.go` if needed, `core/session/archive/capture.go` (write and read the new bodies the way `Forwarded` and the response `Body` are written, with `splitBody`/`rebuild`), `core/session/archive/archive.go:378` (count the new bodies in the size), `core/sessionapi/raw.go` (`textOr64` for both), `core/sessionapi/ingest.go` (accept `translated` and the response `upstream` and carry them to `model.RequestCapture`), `cmd/agentop/tui/detail_raw.go` (labels below)
-- Test: `core/listener/forwardproxy/translate_test.go` (`TestTranslate_CaptureHoldsFourBodies`), `core/session/archive/capture_test.go`, `core/sessionapi/raw_test.go` or the existing raw test file, `cmd/agentop/tui/detail_raw_test.go` (or the existing test of `detail_raw.go`)
+- Modify: `core/model/capture.go` (fields of decision 20), `core/listener/forwardproxy/server.go` and `translate.go` (fill them), `core/session/archive/capture.go` (write and read the new bodies the way `Forwarded` and the response `Body` are written, with `splitBody`/`rebuild`), `core/session/archive/archive.go` (`captureSize`: count the new bodies in the size), `core/sessionapi/raw.go` (`textOr64` for both), `core/sessionapi/ingest.go` (accept `translated` and the response `upstream` and carry them to `model.RequestCapture`), `cmd/agentop/tui/detail_raw.go` (labels below)
+- Test: `core/listener/forwardproxy/translate_test.go` (`TestTranslate_CaptureHoldsFourBodies`), `core/session/archive/capture_test.go`, `core/sessionapi/archive_test.go` (beside `TestHandleGetEvent_RawAddsTheCapture`), `core/sessionapi/ingest_test.go`, `cmd/agentop/tui/detail_raw_test.go`
 
 Behavior: `capture.Translated = conv.Body` before the request row is recorded. For the reply, wrap the upstream body **before** `NewReplyReader` with `bodycount.WrapCapture(body, &unused, &rc.Upstream, &rc.UpstreamTruncated, &ended, pipeline.MaxResponseCapture)`; the present `rc.Body` stays the converted reply as the agent got it. agentop labels: `translated` → `sent upstream, translated by Cortex: <size>` with body key `translatedBody`; `upstream` → `server's reply before translation: <size>` with body key `upstreamBody`. The `forwarded` label ("rewritten by a plugin") does not change.
 
@@ -363,7 +367,7 @@ Behavior: `capture.Translated = conv.Body` before the request row is recorded. F
 
 **Files:**
 - Modify: `core/plugins/inferencerouter/routerconfig/config.go`, `core/redact/redact.go`
-- Test: `core/plugins/inferencerouter/routerconfig/config_test.go` (or the existing test file), `core/redact/redact_test.go`
+- Test: `core/plugins/inferencerouter/routerconfig/config_test.go`, `core/redact/redact_test.go`
 
 **Interfaces (Produces):**
 
@@ -387,7 +391,7 @@ Errors (prefix `servers.<name>.<field>` added by `Validate`):
 
 `redact.redactMap`: when a key equals `headers` exactly (case-sensitive) and the value is an object, replace each value in it with `"[REDACTED]"` and keep the names. Do not add `headers` to `sensitiveKeys`.
 
-- [ ] **Step 1:** Write tests: `api` valid (`{chat-completions: /v1/chat/completions}`, DeepSeek's two entries, `{responses: /v1/responses}`), unknown key error lists the valid keys, relative path refused, `?` refused; `auth_header` `authorization`, `x-api-key`, `api-key` valid, `Host` and `Connection` refused; `headers` `User-Agent: bob-shell` valid, `Authorization`, `X-Api-Key`, `Content-Length`, `Transfer-Encoding` refused, a value with `\n` refused; a strict decode of a config with all three fields succeeds. Redact: `{"servers":{"bob":{"headers":{"User-Agent":"bob-shell"}}},"session":{"id_headers":["X-Session"]}}` → `User-Agent` value `[REDACTED]`, `id_headers` unchanged; `delegated_credential_headers` and `remove_headers` unchanged.
+- [ ] **Step 1:** Write tests: `api` valid (`{chat-completions: /v1/chat/completions}`, DeepSeek's two entries, `{responses: /v1/responses}`), unknown key error lists the valid keys, relative path refused, `?` refused; `auth_header` `authorization`, `x-api-key`, `api-key` valid, `Host` and `Connection` refused; `headers` `User-Agent: bob-shell` valid, `Authorization`, `X-Api-Key`, `Content-Length`, `Transfer-Encoding` refused, a value with `\n` refused; a strict decode of a config with all three fields succeeds. Redact, through `redact.JSON` (the function that `/config` in `core/observe/statserver.go` and `/v1/pipeline` in `core/sessionapi/server.go` call): `{"servers":{"bob":{"headers":{"User-Agent":"bob-shell"}}},"session":{"id_headers":["X-Session"]}}` → `User-Agent` value `[REDACTED]`, `id_headers` unchanged; `delegated_credential_headers` and `remove_headers` unchanged.
 - [ ] **Step 2:** Run `cd core && GOWORK=off go test ./plugins/inferencerouter/routerconfig/ ./redact/` → FAIL. Implement (the path rule is the same as `SetRedirectPath`'s). Run → PASS. Commit `feat: Add the api, auth_header and headers server fields`.
 
 ### Task T7: Router rules
@@ -397,7 +401,7 @@ Errors (prefix `servers.<name>.<field>` added by `Validate`):
 **Files:**
 - Modify: `core/parse/inference/dialect.go` (add `ProtocolFor`), `core/plugins/inferencerouter/plugin.go` (`route` gets `api map[string]string`, `authHeader string`, `headers http.Header`; `Configure` fills them; `OnRequest` uses the plan; `setKey` call replaced by `setAuth`)
 - Create: `core/plugins/inferencerouter/api.go`
-- Test: `core/parse/inference/dialect_test.go` (or existing), `core/plugins/inferencerouter/api_test.go`, `core/listener/forwardproxy/inferencerouter_test.go` (end-to-end cases)
+- Test: `core/parse/inference/dialect_test.go`, `core/plugins/inferencerouter/api_test.go`, `core/listener/forwardproxy/inferencerouter_test.go` (end-to-end cases)
 
 **Interfaces:**
 
