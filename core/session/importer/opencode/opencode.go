@@ -67,8 +67,7 @@ type group struct {
 }
 
 // num gives the integer part of a REAL or INTEGER column, and NULL for any other value. NULL
-// decodes as 0, which is no time. min and max of a NULL give NULL, so last leaves out each row
-// that the parser skips for its time.
+// decodes as 0, which is no time.
 func num(col string) string {
 	return "(case when typeof(" + col + ") in ('integer', 'real') then cast(" + col + " as integer) end)"
 }
