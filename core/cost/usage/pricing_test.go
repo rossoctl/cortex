@@ -618,3 +618,46 @@ func TestAggregator_CountsASavingOnAnUnpricedRequest(t *testing.T) {
 			totals.CostMicros, totals.PricedRequests)
 	}
 }
+
+// A keep-alive ping is not agent activity: it creates no per-session ring, refreshes none, and so
+// cannot evict a real session's ring at the cap. It still counts in the all-sessions totals.
+func TestAggregator_AKeepAlivePingTouchesNoSessionRing(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	clock := now
+	a := New(WithPricing(nil), WithMaxSessions(1), WithClock(func() time.Time { return clock }))
+	ping, err := json.Marshal(event.Event{CostUSD: 0.002, Settled: true, Provenance: "configured", Purpose: event.PurposeKeepAlive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pingEv := func(sess string) *pipeline.SessionEvent {
+		return &pipeline.SessionEvent{
+			At: clock, Phase: pipeline.SessionResponse, Host: "api.anthropic.com", RequestID: "keep-alive:" + sess,
+			Inference: &pipeline.InferenceExtension{Model: "m", InputTokens: 3}, StatusCode: 200,
+			Plugins: map[string]json.RawMessage{event.Key: ping},
+		}
+	}
+	a.Record("real", &pipeline.SessionEvent{At: clock, Phase: pipeline.SessionResponse, Host: "h", RequestID: "r1",
+		Inference: &pipeline.InferenceExtension{Model: "m", InputTokens: 10}, StatusCode: 200})
+	clock = clock.Add(time.Second)
+	a.Record("idle", pingEv("idle")) // a ping for another session, at the cap of one ring
+	if got := a.Snapshot(10*BucketWidth, BucketWidth, "real", GroupNone).Totals.Requests; got != 1 {
+		t.Errorf("real session's ring has %d requests, want 1: a ping evicted it", got)
+	}
+	if got := a.Snapshot(10*BucketWidth, BucketWidth, "idle", GroupNone).Totals.KeepAlivePings; got != 0 {
+		t.Errorf("the ping made a ring for its session (%d pings there)", got)
+	}
+	if got := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone).Totals.KeepAlivePings; got != 1 {
+		t.Errorf("all-sessions KeepAlivePings = %d, want 1", got)
+	}
+	a.mu.Lock()
+	seen := a.sessions["real"].lastSeen
+	a.mu.Unlock()
+	clock = clock.Add(time.Second)
+	a.Record("real", pingEv("real"))
+	a.mu.Lock()
+	after := a.sessions["real"].lastSeen
+	a.mu.Unlock()
+	if !after.Equal(seen) {
+		t.Errorf("a ping refreshed the session ring's lastSeen: %v -> %v", seen, after)
+	}
+}

@@ -263,6 +263,15 @@ tunnel rows, `subagent`), the 5-value invocation `action` vocabulary, paging, an
 guards on the two `DELETE` routes. The producer-side contract is in
 [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events).
 
+**Savings are the accountant's figure, and only basis `usd` is money.** `GET /v1/sessions`
+rows carry `avoidedMicros` and, omitted rather than zero like every figure there,
+`penaltyMicros`, `avoidedUnits`, `penaltyUnits`, `avoidedApiEquivalentMicros`,
+`avoidedUnknownMicros`, `pluginSpendMicros`, `pluginSpendUnits` and
+`pluginSpendUnknownMicros`. `/v1/usage` totals and ledger rows carry the same fields plus
+`keepAliveMicros` and `keepAlivePings`: a keep-alive ping is in no request, token, cost or
+latency figure. Plugin spend is not in `costMicros`. What each sums:
+[`docs/pricing.md`](docs/pricing.md#cost-records).
+
 ## Config Hot-Reload (`:9093/reload/status`)
 
 The binary watches its config file (`/etc/authbridge/config.yaml`) via `core/reloader`

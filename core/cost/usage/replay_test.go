@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -203,5 +204,22 @@ func TestReplayCopy_KeepsProject(t *testing.T) {
 	e := &pipeline.SessionEvent{Project: "~/p"}
 	if c := ReplayCopy(e); c.Project != "~/p" {
 		t.Errorf("ReplayCopy project = %q, want ~/p", c.Project)
+	}
+}
+
+// A saving archived before the accountant has no basis. It was dollars, the ledger row written
+// from it counts it, and so must the ring replayed from the archive at startup.
+func TestReplay_CountsALegacySavingWithNoBasis(t *testing.T) {
+	now := time.Date(2026, 10, 5, 12, 0, 30, 0, time.UTC)
+	a := New(WithClock(func() time.Time { return now }))
+	e := respEvent(now.Add(-BucketWidth), 200, time.Second, "m", 100)
+	e.Plugins = map[string]json.RawMessage{event.Key: json.RawMessage(`{"cost_usd":0.05,"settled":true,` +
+		`"provenance":"bundled","avoided":[{"component":"tool-prune","tokensAvoided":10210,"usd":0.00388,` +
+		`"tier":"cache_read","estimated":true}]}`)}
+	if !a.Replay("s1", e) {
+		t.Fatal("event not replayed")
+	}
+	if got := a.Snapshot(MaxWindow, MaxWindow, "", GroupNone).Totals.AvoidedMicros; got != 3_880 {
+		t.Errorf("AvoidedMicros = %d, want 3880 from the legacy saving", got)
 	}
 }

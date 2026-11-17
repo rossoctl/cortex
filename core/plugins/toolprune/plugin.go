@@ -569,7 +569,7 @@ func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	// Only a "usd" saving is money (design §5.7a): a subscription saving's dollars are what the
 	// API would have charged, so its tokens are counted and its dollars are not.
 	usd := sv.USD
-	if sv.Basis != event.BasisUSD {
+	if sv.EffectiveBasis() != event.BasisUSD {
 		usd = 0
 	}
 	p.m.observeSaving(float64(sv.TokensAvoided), tier, usd, prov, modelOf(pctx), sv.Projected)

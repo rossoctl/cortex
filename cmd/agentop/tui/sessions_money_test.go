@@ -569,7 +569,8 @@ func TestSessionsRows_RightAlignNumericCells(t *testing.T) {
 	m.sessionsTbl = newSessionsTable()
 	m.sessions = []session.SessionSummary{
 		{ID: "aaa", UpdatedAt: time.Now(), EventCount: 5, TotalTokens: 1_000, CostMicros: 1_000_000},
-		{ID: "bbb", UpdatedAt: time.Now(), EventCount: 105, TotalTokens: 7_000_000, CostMicros: 5_834_400},
+		// A usage-limit saving, so the optional UNITS column is in the table and checked too.
+		{ID: "bbb", UpdatedAt: time.Now(), EventCount: 105, TotalTokens: 7_000_000, CostMicros: 5_834_400, AvoidedUnits: 1_500},
 	}
 	m.rebuildSessionsTable()
 
@@ -683,5 +684,62 @@ func TestSessionsPicker_SavedIsNetAndCanBeNegative(t *testing.T) {
 	}
 	if row := strings.Join(rows[1], " "); !strings.Contains(row, "$0.38") || strings.Contains(row, "$0.50") {
 		t.Errorf("row %q, want the net $0.38 and not the gross $0.50", row)
+	}
+}
+
+// A session on a subscription login saves usage-limit units, not money (design §5.7a). The UNITS
+// column appears when a listed session has such a saving, seated after SAVED, shows the net, and
+// is dropped whole on a terminal too narrow for it — with every row's arity matching the header.
+// The API-equivalent dollars ride in the cell's full text, labelled so.
+func TestSessionsPicker_UsageLimitColumn(t *testing.T) {
+	sub := session.SessionSummary{ID: "sub", UpdatedAt: time.Now(), EventCount: 3, TotalTokens: 1000,
+		CostMicros: 1_000_000, AvoidedUnits: 4_500, PenaltyUnits: 500, AvoidedAPIEquivalentMicros: 1_000_000}
+	api := session.SessionSummary{ID: "api", UpdatedAt: time.Now().Add(-time.Minute), EventCount: 3, TotalTokens: 1000,
+		CostMicros: 1_000_000, AvoidedMicros: 100_000}
+
+	m := &model{width: 200, height: 40}
+	m.sessionsTbl = newSessionsTable()
+	m.sessions = []session.SessionSummary{api}
+	m.layout()
+	m.rebuildSessionsTable()
+	if hasColumn(m.sessionsTbl.Columns(), unitsColumnTitle) {
+		t.Error("UNITS shown with no usage-limit saving listed")
+	}
+
+	m.sessions = []session.SessionSummary{sub, api}
+	m.rebuildSessionsTable()
+	got := titles(m.sessionsTbl.Columns())
+	at := -1
+	for i, c := range got {
+		if c == unitsColumnTitle {
+			at = i
+		}
+	}
+	if at < 1 || got[at-1] != "SAVED" {
+		t.Fatalf("columns = %v, want UNITS right after SAVED", got)
+	}
+	if cell := strings.TrimSpace(m.sessionsTbl.Rows()[0][at]); cell != "4.0" {
+		t.Errorf("sub's UNITS = %q, want the net 4.0", cell)
+	}
+	if cell := strings.TrimSpace(m.sessionsTbl.Rows()[1][at]); cell != emptyCell {
+		t.Errorf("api's UNITS = %q, want the em dash", cell)
+	}
+	if full := sessionUnitsCell(sub, noLimit, true); full != "4.0 units (API equivalent $1.00)" {
+		t.Errorf("full text = %q, want the API equivalent labelled", full)
+	}
+
+	for _, term := range []int{200, 120, 90, 60, 40} {
+		m := &model{width: term, height: 40}
+		m.sessionsTbl = newSessionsTable()
+		m.sessions = []session.SessionSummary{sub, api}
+		m.events = map[string][]pipeline.SessionEvent{"cached-one": {{}}}
+		m.layout()
+		m.rebuildSessionsTable()
+		want := len(m.sessionsTbl.Columns())
+		for i, r := range m.sessionsTbl.Rows() {
+			if len(r) != want {
+				t.Errorf("term %d row %d has %d cells, header has %d: %v", term, i, len(r), want, r)
+			}
+		}
 	}
 }

@@ -243,3 +243,17 @@ func TestSummaryFold_UnmarshalFoldsRetiredAgentSpellings(t *testing.T) {
 		}
 	}
 }
+
+// The archive re-folds a session's history from its segments (foldSegments → SummaryFold.Add).
+// A saving archived before the accountant has no basis, and is dollars: the re-fold counts it as
+// the ledger does.
+func TestSummaryFold_CountsALegacySavingWithNoBasis(t *testing.T) {
+	f := NewSummaryFold()
+	f.Add("s1", &pipeline.SessionEvent{Phase: pipeline.SessionResponse, Plugins: map[string]json.RawMessage{
+		event.Key: json.RawMessage(`{"cost_usd":0.05,"settled":true,"avoided":[{"component":"tool-prune",` +
+			`"tokensAvoided":10210,"usd":0.00388,"tier":"cache_read","estimated":true}]}`),
+	}})
+	if got := f.Summary("s1").AvoidedMicros; got != 3_880 {
+		t.Errorf("AvoidedMicros = %d, want 3880 from the legacy saving", got)
+	}
+}

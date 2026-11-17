@@ -3,7 +3,6 @@ package forwardproxy
 import (
 	"context"
 	"encoding/json"
-	"github.com/rossoctl/cortex/core/accounting"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"

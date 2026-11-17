@@ -720,7 +720,9 @@ presence.
 | `keepAliveMicros`, `keepAlivePings` | a `purpose: keep-alive` record's cost and count. A ping is in no other column: not `requests`, not `costMicros`, not the tokens, the coverage counters or the latency mean |
 
 A ledger row written before these columns existed reads them as 0. A saving recorded before the
-accountant has no `basis`, so it is in no total folded from session events. It is a container rather than a few flat fields because more counterfactuals are
+accountant has no `basis`; it was priced in dollars, so every reader takes an empty `basis` as
+`usd` (`event.Saving.EffectiveBasis`), and a replayed ring or re-folded archive counts it as the
+ledger does. It is a container rather than a few flat fields because more counterfactuals are
 coming — compaction, redaction, "what a cheaper model would have cost" — and as siblings of
 `cost_usd` the record would become half-real and half-hypothetical, which is how someone
 eventually sums two fields that must never be summed.

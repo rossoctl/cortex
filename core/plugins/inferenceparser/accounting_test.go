@@ -11,6 +11,7 @@ import (
 	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/toolprune"
 )
@@ -153,5 +154,28 @@ func TestSettleCost_NoAccountantIsFine(t *testing.T) {
 	p.SetAccounting(nil)
 	if p.acct != nil {
 		t.Error("SetAccounting(nil) stored a typed nil, which would read as set")
+	}
+}
+
+// THE REFUSED-COUNTS GUARD, ported from settle.Avoided (the assertion that sat in
+// core/cost/settle's bound_agreement_test): when settle refuses the token report, no saving is
+// calibrated on it. The gateway's header still prices the request; the accountant is not asked,
+// and the record carries no saving.
+func TestSettleCost_NoSavingOnRefusedCounts(t *testing.T) {
+	acc := &countingAccountant{saving: []event.Saving{{Component: "tool-prune", Basis: event.BasisUSD, USD: 20}}}
+	p := NewInferenceParser()
+	p.rates = bodylessRates(t)
+	p.acct = acc
+	pctx := &pipeline.Context{Path: "/v1/messages", ResponseHeaders: http.Header{
+		settle.ResponseCostHeader: {"0.25"}, "Content-Type": {"application/json"},
+	}}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "m", InputTokens: 1000, OutputTokens: -5}
+	p.settleCost(pctx)
+	ev, ok := publishedCost(t, pctx)
+	if !ok || !ev.UsageRefused || ev.CostUSD != 0.25 {
+		t.Fatalf("record = %+v ok=%v, want the header's $0.25 with the counts refused", ev, ok)
+	}
+	if acc.calls != 0 || len(ev.Avoided) != 0 {
+		t.Errorf("accountant asked %d times, avoided = %+v on a response whose counters were refused", acc.calls, ev.Avoided)
 	}
 }

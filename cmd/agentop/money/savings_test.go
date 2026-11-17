@@ -2,6 +2,7 @@ package money
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/cost/usage"
@@ -46,6 +47,12 @@ func TestAccountantLines(t *testing.T) {
 	}
 	if got := AccountantLines(c, ""); !reflect.DeepEqual(got, want) {
 		t.Errorf("AccountantLines =\n%+v\nwant\n%+v", got, want)
+	}
+	// Every figure in the window's unit, the API equivalent and the unknown ones included.
+	for _, l := range AccountantLines(c, "credits") {
+		if strings.Contains(l.Figure, "$") {
+			t.Errorf("%s = %q in a credits window carries a $", l.Label, l.Figure)
+		}
 	}
 	if got := AccountantLines(usage.Counts{CostMicros: 5}, ""); got != nil {
 		t.Errorf("no accountant figure, lines = %+v", got)

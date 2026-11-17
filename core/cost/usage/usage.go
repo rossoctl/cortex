@@ -1145,6 +1145,12 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 		a.foldInto(ring, t, sessionID, e, requestPlugins, ec, avoided, keepAlive)
 	}
 
+	// A KEEP-ALIVE PING IS NOT AGENT ACTIVITY, so it neither creates a session ring nor refreshes
+	// one: its lastSeen would keep an idle session's ring warm, and a new ring at the cap would
+	// evict a real session's. It is in the all-sessions and agent rings above.
+	if keepAlive {
+		return
+	}
 	if ring, ok := a.sessions[sessionID]; ok {
 		ring.lastSeen = at
 		a.foldInto(ring.buckets, t, sessionID, e, requestPlugins, ec, avoided, keepAlive)

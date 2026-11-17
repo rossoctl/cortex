@@ -317,7 +317,8 @@ func lastInk(s string) int {
 // shape — it stays covered only because headerTitle strips the marker before the lookup. This
 // test makes that a checked property rather than a coincidence.
 func TestSessionsRightAligned_EveryNameResolvesToAColumn(t *testing.T) {
-	cols := sessionsColumns()
+	// The base columns plus every optional one, asked for at a width that seats them all.
+	cols := sessionsColumnsWith(200, true, true, true)
 	for name := range sessionsRightAligned {
 		found := false
 		for _, c := range cols {

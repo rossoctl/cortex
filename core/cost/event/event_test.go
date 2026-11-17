@@ -206,11 +206,11 @@ func TestTotalAvoidedMicros_ReadsWhatTheProducerActuallyWrites(t *testing.T) {
 	if err := json.Unmarshal([]byte(wire), &ev); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	// THAT RECORD PREDATES THE ACCOUNTANT and names no basis, so it is in no money total: only a
-	// "usd" saving is (design §5.7a). The same bytes as the accountant writes them, with its
-	// basis, count.
-	if got := ev.TotalAvoidedMicros(); got != 0 {
-		t.Errorf("TotalAvoidedMicros = %d for a saving with no basis, want 0", got)
+	// THAT RECORD PREDATES THE ACCOUNTANT and names no basis. settle.Avoided wrote it, and it
+	// priced only dollars, so it counts as "usd" (Saving.EffectiveBasis) — as the ledger rows
+	// written from it already do. The accountant's own bytes, with their basis, count the same.
+	if got, want := ev.TotalAvoidedMicros(), int64(3_880); got != want {
+		t.Errorf("TotalAvoidedMicros = %d for a legacy saving with no basis, want %d", got, want)
 	}
 	const withBasis = `{"cost_usd":0.0526,"source":"usage-fallback","daily_total_usd":0,` +
 		`"daily_max_usd":0,"provenance":"bundled","settled":true,` +
@@ -557,7 +557,7 @@ func TestTotalPenaltyMicros(t *testing.T) {
 
 // Only a "usd" saving is money (design §5.7a): a subscriptionEquivalent saving's dollars are
 // what the API would have charged, an unknown one's are unknown, and a saving with no basis
-// predates the accountant. Each adds 0 to TotalAvoidedUSD.
+// predates the accountant and is dollars.
 func TestTotalAvoidedUSD_CountsOnlyUSDBasis(t *testing.T) {
 	ev := Event{Avoided: []Saving{
 		{Component: "tool-prune", Basis: BasisUSD, USD: 0.25},
@@ -565,8 +565,12 @@ func TestTotalAvoidedUSD_CountsOnlyUSDBasis(t *testing.T) {
 		{Component: "tool-prune", Basis: BasisUnknown, USD: 2},
 		{Component: "tool-prune", USD: 4},
 	}}
-	if got := ev.TotalAvoidedUSD(); got != 0.25 {
-		t.Errorf("TotalAvoidedUSD = %v, want 0.25 from the usd saving alone", got)
+	// 0.25 + the legacy no-basis 4, which is dollars (EffectiveBasis).
+	if got := ev.TotalAvoidedUSD(); got != 4.25 {
+		t.Errorf("TotalAvoidedUSD = %v, want 4.25 from the usd and the legacy saving", got)
+	}
+	if (Saving{}).EffectiveBasis() != BasisUSD || (Saving{Basis: BasisUnknown}).EffectiveBasis() != BasisUnknown {
+		t.Error("EffectiveBasis does not read an empty basis as usd, or rewrites a set one")
 	}
 }
 

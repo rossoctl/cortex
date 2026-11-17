@@ -94,7 +94,7 @@ func (p *InferenceParser) settleCost(pctx *pipeline.Context) {
 	// accountant prices this request does not depend on whether a cost record is published.
 	// Every saving on the record is the accountant's (design §5.9); with accounting off there
 	// is none.
-	acct := p.accountant(pctx)
+	acct := p.accountant(pctx, settled)
 	avoided := acct.savings
 	// HasPrompt is checked separately from Priced, because the two really can differ: a
 	// table that prices every prompt tier but not a populated output tier yields a prompt

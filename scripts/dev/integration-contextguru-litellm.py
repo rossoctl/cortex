@@ -383,9 +383,10 @@ def run_matrix(cx, ports, ca, key, work, only_ids, static_model="", preset="xhig
                         "cacheWrite": (e.get("inference") or {}).get("cacheWriteTokens"), "output": (e.get("inference") or {}).get("outputTokens"),
                         "usd": (c or {}).get("cost_usd")} for e, (k, c) in zip(resp, costs)]
         av = [c.get("avoided") for c in priced if c.get("avoided")]
-        cg_av = [a for a in av if any((s or {}).get("component") == "context-guru" for s in a)]
+        # The accountant names each context-guru operator "context-guru.<op>" (one saving each).
+        cg_av = [a for a in av if any(str((s or {}).get("component", "")).startswith("context-guru") for s in a)]
         rec(did + "/K2-savings", "PASS" if cg_av else "GAP",
-            f"context-guru saving on {len(cg_av)}/{len(priced)} cost records" + ("" if cg_av else " (settle.savingComponents lists only tool-prune)"))
+            f"context-guru saving on {len(cg_av)}/{len(priced)} cost records" + ("" if cg_av else " (no context-guru.* saving: is accounting on, and did the plugin change the request?)"))
         calls = [l for l in log.splitlines() if sid in l and "cg.extract_llm.call" in l]
         if calls:
             f = dict(re.findall(r'(\w+)=("[^"]*"|\S+)', calls[-1]))

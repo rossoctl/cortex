@@ -415,21 +415,33 @@ type Saving struct {
 	Estimated bool `json:"estimated,omitempty"`
 }
 
-// TotalAvoidedUSD sums the gross USD of the APPLIED savings whose Basis is "usd", skipping
-// projected ones and every other basis.
+// EffectiveBasis is the saving's Basis, with an empty one read as BasisUSD. A saving with no
+// basis was written before the accountant, by settle.Avoided, which never set the field: those
+// figures were dollars and the ledger counted them as dollars. Reading them as anything else
+// would make a replayed ring, a re-folded archive or an older sidecar's events disagree with the
+// ledger rows written from the same records. Every reader of Basis goes through this.
+func (s Saving) EffectiveBasis() string {
+	if s.Basis == "" {
+		return BasisUSD
+	}
+	return s.Basis
+}
+
+// TotalAvoidedUSD sums the gross USD of the APPLIED savings whose EffectiveBasis is "usd",
+// skipping projected ones and every other basis.
 //
 // Provided so consumers do not each write the loop and disagree about whether
 // observe-mode figures count. They do not: a projected saving is money that WAS spent. Nor does
 // a subscriptionEquivalent or unknown saving: its dollars are what the API would have charged,
-// not money (design §5.7a), and a saving with no basis predates the accountant and says nothing
-// about how the request was billed.
+// not money (design §5.7a). A saving with no basis predates the accountant and is dollars
+// (EffectiveBasis).
 //
 // GROSS, NOT NET, and never floored: what the operators caused is TotalPenaltyUSD, kept beside
 // this figure so a net below zero stays visible as two figures.
 func (e Event) TotalAvoidedUSD() float64 {
 	var t float64
 	for _, s := range e.Avoided {
-		if !s.Projected && s.Basis == BasisUSD {
+		if !s.Projected && s.EffectiveBasis() == BasisUSD {
 			t += s.USD
 		}
 	}
@@ -440,7 +452,7 @@ func (e Event) TotalAvoidedUSD() float64 {
 func (e Event) TotalPenaltyUSD() float64 {
 	var t float64
 	for _, s := range e.Avoided {
-		if !s.Projected && s.Basis == BasisUSD {
+		if !s.Projected && s.EffectiveBasis() == BasisUSD {
 			t += s.PenaltyUSD
 		}
 	}
@@ -497,15 +509,15 @@ func (f Figures) IsZero() bool { return f == Figures{} }
 
 // Figures returns the record's savings and spends by basis. Each figure goes through
 // pricing.MicrosFromUSD (or MilliUnits) once, on the record's sum, and is zero when that sum will
-// not represent — TotalAvoidedMicros' rule. A spend or saving with no basis predates the
-// accountant and enters no field.
+// not represent — TotalAvoidedMicros' rule. A saving with no basis is usd (EffectiveBasis). A
+// spend with no basis enters no field: spends postdate the accountant, which always sets one.
 func (e Event) Figures() Figures {
 	var unitsSaved, unitsPen, equivSaved, unknownSaved float64
 	for _, s := range e.Avoided {
 		if s.Projected {
 			continue
 		}
-		switch s.Basis {
+		switch s.EffectiveBasis() {
 		case BasisSubscriptionEquivalent:
 			unitsSaved += s.Units
 			unitsPen += s.PenaltyUnits

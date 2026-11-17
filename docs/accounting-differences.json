@@ -75,11 +75,6 @@
       "id": "switch.accounting-off-no-saving",
       "kind": "differs",
       "reason": "Cortex design \u00a75.3: with accounting off (accounting.enabled false, or auto with no context operator in the outbound chain), no saving is recorded after the switch. Before it, settle.Avoided priced a tool-prune saving whether or not the accountant ran."
-    },
-    {
-      "id": "switch.legacy-saving-no-basis",
-      "kind": "differs",
-      "reason": "Cortex design \u00a75.7a (money totals count only basis usd). A saving recorded before the switch has no basis, so the totals folded from session events (the sessions list, a usage ring replayed from the session archive) no longer count it. Ledger rows written before the switch keep their avoidedMicros, and read penaltyMicros and the other new columns as 0."
     }
   ]
 }

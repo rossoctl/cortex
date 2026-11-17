@@ -3,6 +3,7 @@ package inferenceparser
 import (
 	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -39,9 +40,18 @@ func (p *InferenceParser) SetAccounting(h *accounting.Host) {
 // has usage (the Result prices the bill, so a pass with no usage has nothing for it), and keeps
 // the answer on the request for any later pass. The zero value — no figure — with accounting off
 // or before the usage arrives: with accounting off, no saving is recorded (design §5.3).
-func (p *InferenceParser) accountant(pctx *pipeline.Context) accounted {
+//
+// NOT ASKED WHEN SETTLE REFUSED THE COUNTS (settled.UsageRefused, or RejectedImplausibleUsage): the
+// accountant prices its savings from those same counters, so an impossible report would produce an
+// impossible saving — the old settle.Avoided measured 2,000,000 tokens avoided at $20 on a record
+// marked refused, and refused it for the same reason. Not latched, so a later pass with plausible
+// counts is still asked; Host.Compute refuses implausible counts on its own too.
+func (p *InferenceParser) accountant(pctx *pipeline.Context, settled settle.Settled) accounted {
 	inf := pctx.Extensions.Inference
 	if p.acct == nil || inf == nil || inf.InputTokens+inf.CacheReadTokens+inf.CacheWriteTokens == 0 {
+		return accounted{}
+	}
+	if settled.UsageRefused || settled.RejectedReason == event.RejectedImplausibleUsage {
 		return accounted{}
 	}
 	if st := pipeline.GetState[accounted](pctx, accountedKey); st != nil {

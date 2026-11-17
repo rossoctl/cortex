@@ -77,3 +77,12 @@ func TestRowSaving_NeverMixesAppliedAndProjected(t *testing.T) {
 		t.Errorf("projected = %+v, want the projected saving, marked", s)
 	}
 }
+
+// A saving from a proxy that predates the accountant has no basis, and is dollars: the row shows
+// it as the ledger counts it (event.Saving.EffectiveBasis).
+func TestRowSaving_ALegacySavingWithNoBasisIsMoney(t *testing.T) {
+	e := recordEvent(t, event.Event{Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 500, USD: 0.004}}})
+	if s, ok := rowSavingFor(e); !ok || s.USD != 0.004 || s.Basis != event.BasisUSD {
+		t.Errorf("saving = %+v ok=%v, want $0.004 as usd", s, ok)
+	}
+}

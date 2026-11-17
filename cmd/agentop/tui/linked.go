@@ -48,8 +48,9 @@ func foldedInto(s session.SessionSummary) string {
 
 // foldedFigure is what the buckets folded into one session add to its row.
 type foldedFigure struct {
-	cost, avoided, penalty int64
-	tokens                 int
+	cost, avoided, penalty             int64
+	units, penaltyUnits, apiEquivalent int64
+	tokens                             int
 }
 
 // foldedFigures is foldedFigure for every session some bucket folds into, keyed by session, in
@@ -65,6 +66,9 @@ func (m *model) foldedFigures() map[string]foldedFigure {
 			f := out[id]
 			f.cost, f.avoided, f.tokens = f.cost+s.CostMicros, f.avoided+s.AvoidedMicros, f.tokens+s.TotalTokens
 			f.penalty += s.PenaltyMicros
+			f.units += s.AvoidedUnits
+			f.penaltyUnits += s.PenaltyUnits
+			f.apiEquivalent += s.AvoidedAPIEquivalentMicros
 			out[id] = f
 		}
 	}

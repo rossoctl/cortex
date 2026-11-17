@@ -48,7 +48,8 @@ func pruneSavingFor(resp *pipeline.SessionEvent) (event.Saving, bool) {
 // the accountant priced (tool-prune, context-guru.*, the keeper, and any later one) — combined
 // into one figure for the TOKENS and COST cells.
 //
-// The dollar figure is each "usd" saving's USD minus its PenaltyUSD, summed and NOT floored: a
+// The dollar figure is each "usd" saving's (event.Saving.EffectiveBasis: an empty basis, from a
+// proxy that predates the accountant, is usd) USD minus its PenaltyUSD, summed and NOT floored: a
 // net below zero is shown as a cost the operators added (formatUSDWithSaving's "+"). Only a usd
 // saving is money (design §5.7a); a subscriptionEquivalent or unknown saving contributes its
 // tokens and no dollars, and Basis is "usd" only when some usd saving contributed. Tokens are not
@@ -75,11 +76,11 @@ func rowSavingFor(resp *pipeline.SessionEvent) (event.Saving, bool) {
 			anyApplied = true
 		}
 		dst.TokensAvoided += s.TokensAvoided
-		if s.Basis == event.BasisUSD {
+		if b := s.EffectiveBasis(); b == event.BasisUSD {
 			dst.USD += s.USD - s.PenaltyUSD
 			dst.Basis = event.BasisUSD
 		} else if dst.Basis == "" {
-			dst.Basis = s.Basis
+			dst.Basis = b
 		}
 		dst.Estimated = dst.Estimated || s.Estimated
 	}

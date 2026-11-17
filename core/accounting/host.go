@@ -407,6 +407,12 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 		h.release(pctx, "no_record")
 		return accountant.Result{}, false
 	}
+	// COUNTS NO REQUEST COULD HAVE REPORTED are refused, as settle refuses them: a negative or
+	// past-the-ceiling counter (pricing.PlausibleUsage) would be priced into an impossible saving.
+	if !pricing.PlausibleUsage(pricing.UsageFromInference(inf)) {
+		h.release(pctx, "usage_implausible")
+		return accountant.Result{}, false
+	}
 	// CacheWrite1h is the part of CacheWrite billed at the 1-hour rate, never an
 	// addition to it (accountant.Usage's own doc). Task 7 (2026-11-17
 	// accountant-integration): the 1h cache-write tier.
