@@ -272,6 +272,17 @@ rows carry `avoidedMicros` and, omitted rather than zero like every figure there
 latency figure. Plugin spend is not in `costMicros`. What each sums:
 [`docs/pricing.md`](docs/pricing.md#cost-records).
 
+**Two config blocks drive the accountant.** `accounting:` (`enabled: auto|true|false`,
+`subscription_weights`) decides whether `core/accounting`'s host runs and how a subscription
+saving is valued in units. `metrics_push:` (`enabled`, `url`, `token`, `interval`; env
+`METRICS_PUSH`, `METRICS_PUSH_URL`, `METRICS_PUSH_TOKEN`, `METRICS_PUSH_INTERVAL`) pushes the
+`llm.savings.*` counters over OTLP/HTTP (`core/accounting/push`). It has **no default URL**, so
+nothing leaves the machine until a user sets one. Its URL must be https, or http to loopback. The
+token is never logged. The pushed dollars come from the same `accounting.USD` as the ledger's,
+and `core/accounting.Components` (the `component` label allow-list) is a copy of context-guru's
+component names, guarded by `core/plugins/contextguru`'s `TestComponentsCoverTheRegistry`. Both
+blocks need a restart. User-facing details: [`docs/laptop-service.md`](docs/laptop-service.md#the-accounting-configuration).
+
 ## Config Hot-Reload (`:9093/reload/status`)
 
 The binary watches its config file (`/etc/authbridge/config.yaml`) via `core/reloader`
@@ -280,8 +291,9 @@ on the old pipeline.
 
 - **Reloads:** any plugin list change and any plugin `config:` subtree edit.
 - **Needs a restart:** `mode` and every field of `listener`, `session`, `cost_ledger`,
-  `mtls`, `tls_bridge`, `spiffe`, `memory`, `stats` and `praxis`, and `update.check_every`
-  (`validateReloadable` in `core/reloader/reloader.go`).
+  `mtls`, `tls_bridge`, `spiffe`, `memory`, `stats`, `praxis` and `metrics_push`,
+  `update.check_every`, and `accounting.enabled` (as resolved) and
+  `accounting.subscription_weights` (`validateReloadable` in `core/reloader/reloader.go`).
 - **Bad YAML stays safe:** the active pipeline keeps serving, and `/reload/status`
   shows the error with `reloads_failed` incremented.
 

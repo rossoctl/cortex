@@ -53,6 +53,13 @@ func Validate(cfg *Config) error {
 	if err := cfg.Accounting.Validate(); err != nil {
 		return err
 	}
+	// The block as written; the environment's overrides are checked again at boot, when the
+	// push starts (core/accounting/push.Start).
+	if cfg.MetricsPush != nil {
+		if err := cfg.MetricsPush.Validate(); err != nil {
+			return err
+		}
+	}
 	return validatePricing(cfg)
 }
 

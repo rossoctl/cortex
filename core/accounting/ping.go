@@ -100,6 +100,14 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 		h.putPing(sessionID, thread, facts)
 	}
 	h.recordPing(sessionID, client, host, p, info)
+	// A ping is not a request of the agent's: its Result is observed with no RequestID.
+	billing := h.ThreadBilling(sessionID, thread)
+	at := p.At
+	if at.IsZero() {
+		at = h.now()
+	}
+	h.observe(accountant.RequestMeta{Session: sessionID, Model: p.Model, At: at, Billing: billing},
+		p.Usage.Usage, res, host, p.Usage.Input+p.Usage.CacheRead+p.Usage.CacheWrite)
 	return res, true
 }
 

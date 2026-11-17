@@ -56,6 +56,9 @@ type Options struct {
 	// SubscriptionWeights value a saving on a subscription login in usage-limit units
 	// (accounting.subscription_weights). Nil means config.DefaultSubscriptionWeights.
 	SubscriptionWeights *config.SubscriptionWeights
+	// Sink receives each computed request's Result, once, and each keep-alive ping's, for the
+	// llm.savings.* counters (design §5.10). Nil means no metrics.
+	Sink *Sink
 }
 
 // Host is Cortex's accountant host: one per process, shared by every pipeline a reload builds,
@@ -71,6 +74,9 @@ type Host struct {
 	resolver pricing.Resolver
 	now      func() time.Time
 	weights  config.SubscriptionWeights
+	sink     *Sink
+	// observing counts the sink observations still running (observe); Close waits for them.
+	observing sync.WaitGroup
 
 	snapshotPath string
 	stop         chan struct{}
@@ -99,6 +105,8 @@ type Host struct {
 	metaHook    func(meta accountant.RequestMeta)
 	factsHook   func(f accountant.EntryFacts)
 	usageHook   func(u accountant.Usage)
+	// observeHook sees the RequestMeta of each observation, on its goroutine, before the sink.
+	observeHook func(meta accountant.RequestMeta)
 }
 
 // threadBillingKey keys Host.threadBilling: a thread id is only unique within its session.
@@ -126,6 +134,7 @@ func New(o Options) (*Host, error) {
 		recorders:    append([]session.Recorder(nil), o.CostRecorders...),
 		stop:         make(chan struct{}),
 		weights:      config.DefaultSubscriptionWeights(),
+		sink:         o.Sink,
 	}
 	if o.SubscriptionWeights != nil {
 		h.weights = *o.SubscriptionWeights
@@ -158,6 +167,9 @@ func (h *Host) Close() error {
 		return nil
 	}
 	h.closeOnce.Do(func() {
+		// The sink's observations first: they are in-memory adds, done in microseconds, and the
+		// caller flushes the metrics push after Close.
+		h.observing.Wait()
 		close(h.stop)
 		h.saver.Wait()
 		if h.snapshotPath != "" {
@@ -180,6 +192,8 @@ type pending struct {
 	ping       threadBillingKey
 	pingWindow string
 	pinged     bool
+	// meta is the RequestMeta the record was begun with, for the sink.
+	meta accountant.RequestMeta
 
 	computed bool
 	result   accountant.Result
@@ -249,7 +263,7 @@ func (h *Host) RequestEnd(pctx *pipeline.Context) {
 	if h.metaHook != nil {
 		h.metaHook(meta)
 	}
-	p := &pending{done: make(chan struct{})}
+	p := &pending{done: make(chan struct{}), meta: meta}
 	pipeline.SetState(pctx, pendingKey, p)
 	go h.end(p, format, meta, client, forwarded, ops, thread, facts.Classify(host, pctx.Path))
 }
@@ -429,6 +443,15 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	p.req = nil
 	if p.ok && p.pinged {
 		h.dropPing(p.ping.session, p.ping.thread, p.pingWindow)
+	}
+	if p.ok {
+		// Once per request: Compute is latched above. Priced at the endpoint and prompt total
+		// Host.Savings prices the ledger's figure at, so the two agree.
+		endpoint := pctx.Host
+		if _, redirected, ok := pctx.RedirectTarget(); ok {
+			endpoint = redirected
+		}
+		h.observe(p.meta, usage, p.result, endpoint, pricing.UsageFromInference(inf).PromptTotal())
 	}
 	return p.result, p.ok
 }

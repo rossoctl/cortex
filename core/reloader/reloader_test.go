@@ -1394,3 +1394,25 @@ func TestValidateReloadable_RefusesASubscriptionWeightsChange(t *testing.T) {
 		t.Errorf("the defaults spelled out were refused: %v", err)
 	}
 }
+
+// metrics_push.* is read once at boot, when the push starts, so an edit needs a restart — and
+// the refusal names the block, never the token.
+func TestValidateReloadable_RefusesMetricsPushEdit(t *testing.T) {
+	active := &config.Config{}
+	next := &config.Config{MetricsPush: &config.MetricsPushConfig{URL: "https://c.example", Token: "s3cret"}}
+	err := validateReloadable(active, next)
+	if err == nil {
+		t.Fatal("adding a metrics_push block was accepted")
+	}
+	if !strings.Contains(err.Error(), "metrics_push.*") || strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("error = %v, want metrics_push.* and no token", err)
+	}
+	same := &config.Config{MetricsPush: &config.MetricsPushConfig{URL: "https://c.example", Token: "s3cret"}}
+	if err := validateReloadable(next, same); err != nil {
+		t.Errorf("unchanged metrics_push block was refused: %v", err)
+	}
+	other := &config.Config{MetricsPush: &config.MetricsPushConfig{URL: "https://c.example", Token: "rotated"}}
+	if err := validateReloadable(next, other); err == nil {
+		t.Error("a token change was accepted")
+	}
+}

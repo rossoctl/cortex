@@ -685,6 +685,12 @@ func validateReloadable(active, next *config.Config) error {
 	if active.Accounting.Weights() != next.Accounting.Weights() {
 		diffs = append(diffs, "accounting.subscription_weights")
 	}
+	// metrics_push.* too: the push (core/accounting/push.Start) is started once at boot, with
+	// its URL, token and interval. Compared as written; the METRICS_PUSH_* overrides do not
+	// change under a running process. Only the block's name is reported, never the token.
+	if !reflect.DeepEqual(active.MetricsPush, next.MetricsPush) {
+		diffs = append(diffs, "metrics_push.*")
+	}
 	if len(diffs) > 0 {
 		return fmt.Errorf("unreloadable field changed, pod restart required: %v", diffs)
 	}

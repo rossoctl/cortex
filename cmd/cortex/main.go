@@ -546,6 +546,9 @@ func main() {
 	// to make or drop it.
 	var acctHost *accounting.Host
 	acctDecided := false
+	// stopMetricsPush flushes and stops the metrics push (core/accounting/push), started with
+	// the host: its counters are the accountant's. A no-op when nothing is pushed.
+	stopMetricsPush := func(context.Context) error { return nil }
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
 		c, err := config.Load(*configPath)
 		if err != nil {
@@ -589,7 +592,11 @@ func main() {
 		if !acctDecided {
 			acctDecided = true
 			if c.AccountingOn() {
-				acctHost = newAccountingHost(pricingRegistry, c.Accounting.Weights())
+				var sink *accounting.Sink
+				sink, stopMetricsPush = startMetricsPush(c, pricingRegistry)
+				acctHost = newAccountingHost(pricingRegistry, c.Accounting.Weights(), sink)
+			} else if c.MetricsPush.Resolve(os.Getenv).On() {
+				slog.Info("metrics push off — accounting is off, so there are no savings counters to push")
 			}
 		}
 		inDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: reverseproxy.Support(), LocalInstall: localInstall}
@@ -1426,6 +1433,20 @@ func main() {
 	if sessions != nil {
 		sessions.Close()
 	}
+
+	// The metrics push last: the accountant has stopped observing (acctHost.Close), so this
+	// flush carries every counter, and a collector that does not answer delays nothing above.
+	// 5s in a pod; 1s on a local install, whose whole stop must fit the supervisor's
+	// superviseStopGrace.
+	metricsBudget := 5 * time.Second
+	if !drain {
+		metricsBudget = time.Second
+	}
+	metricsCtx, metricsCancel := context.WithTimeout(context.Background(), metricsBudget)
+	if err := stopMetricsPush(metricsCtx); err != nil {
+		slog.Warn("metrics push: the final push failed", "error", err)
+	}
+	metricsCancel()
 	slog.Info("stopped", "took", time.Since(stopping).Round(time.Millisecond))
 }
 

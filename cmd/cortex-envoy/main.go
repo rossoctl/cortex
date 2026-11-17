@@ -34,6 +34,7 @@ import (
 	"google.golang.org/grpc/reflection"
 
 	"github.com/rossoctl/cortex/core/accounting"
+	"github.com/rossoctl/cortex/core/accounting/push"
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/bootstrap"
 	"github.com/rossoctl/cortex/core/config"
@@ -88,6 +89,10 @@ func warnCostLedgerInert(cfg *config.Config, logger *slog.Logger) {
 		"effect", "the whole cost_ledger block is ignored, including dir and retention_days",
 		"fix", "remove the cost_ledger block here; for durable local cost history run cortex --local, which does honour it")
 }
+
+// version is the cortex-envoy build version, sent as the metrics push's service.version.
+// Overridden at build time with -ldflags "-X main.version=<tag>"; "dev" for local builds.
+var version = "dev"
 
 func main() {
 	configPath := flag.String("config", "", "path to config YAML file")
@@ -168,6 +173,9 @@ func main() {
 	// Recorder either (see warnCostLedgerInert), so none is added.
 	var acctHost *accounting.Host
 	acctDecided := false
+	// stopMetricsPush flushes and stops the metrics push started with the host. The machine id
+	// is per process here: a pod keeps no ~/.cortex.
+	stopMetricsPush := func(context.Context) error { return nil }
 
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
 		c, err := config.Load(*configPath)
@@ -200,7 +208,14 @@ func main() {
 		if !acctDecided {
 			acctDecided = true
 			if c.AccountingOn() {
-				h, err := accounting.New(accounting.Options{Resolver: pricingRegistry})
+				var sink *accounting.Sink
+				mp, stop, perr := push.Start(c.MetricsPush.Resolve(os.Getenv), version, "")
+				if perr != nil {
+					slog.Warn("metrics push off — the metrics_push block was refused", "error", perr)
+				} else {
+					sink, stopMetricsPush = accounting.NewSink(mp, pricingRegistry), stop
+				}
+				h, err := accounting.New(accounting.Options{Resolver: pricingRegistry, Sink: sink})
 				if err != nil {
 					slog.Warn("accounting disabled — could not start the accountant", "error", err)
 				} else {
@@ -384,6 +399,14 @@ func main() {
 	if sessions != nil {
 		sessions.Close()
 	}
+
+	// The metrics push last, once the accountant has stopped observing: this flush carries
+	// every counter, and a collector that does not answer delays nothing above.
+	metricsCtx, metricsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := stopMetricsPush(metricsCtx); err != nil {
+		slog.Warn("metrics push: the final push failed", "error", err)
+	}
+	metricsCancel()
 }
 
 // newExtProcServer builds the ext_proc gRPC server: the ONLY grpc.NewServer

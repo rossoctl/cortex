@@ -727,6 +727,25 @@ coming — compaction, redaction, "what a cheaper model would have cost" — and
 `cost_usd` the record would become half-real and half-hypothetical, which is how someone
 eventually sums two fields that must never be summed.
 
+## Savings metrics
+
+The accountant's figures can also leave the machine as OpenTelemetry counters, pushed to a
+central collector by `metrics_push:` (configured in
+[laptop-service.md](laptop-service.md#the-metrics_push-configuration); off until you set a URL).
+
+**One pricing function.** `llm.savings.saved.usd` and `llm.savings.added.usd` are priced by
+the same function that prices `avoided[].usd` here (`core/accounting.USD`), at the same
+endpoint, model and prompt total, from the same rate table and the same `pricing:` overrides.
+For one request, the pushed saved dollars equal the ledger's to the micro-dollar. Two things
+differ by design. The counters split a saving by tier and component, where the ledger keeps one
+saving per operator. And an operator's own model call is priced at the request's prompt total
+in the counters, but at the call's own size in `spends[]`.
+
+**Only `basis: usd` is money here too.** A request on a subscription login, or with no
+credential Cortex can read, moves the token counters and `llm.savings.estimated`, never a
+dollar counter. Its usage-limit value comes from `accounting.subscription_weights`, and stays in
+the ledger's `avoidedUnits`.
+
 ## See also
 
 - [`plugin-catalog.md`](plugin-catalog.md) — the plugins that consume these rates:
