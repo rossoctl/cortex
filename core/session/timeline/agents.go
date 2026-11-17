@@ -99,12 +99,19 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 	agentTools := map[string]bool{}
 	seenReturn := map[string]bool{}
 	stopped := map[string]time.Time{} // agent → its latest <task-notification>: its run ended
-	var askedAt []time.Time           // per t.Tools entry: when the request that asked for it started
+	// A run that ends with SubagentHandback returns twice: its <agent-message> at once, and a
+	// <task-notification> that Claude Code sends later, often with the parent's next request.
+	// handedBack: the agent's latest response called SubagentHandback. delivered: that report
+	// then reached a parent. A later request of the agent clears both: it runs again.
+	handedBack, delivered := map[string]bool{}, map[string]bool{}
+	var askedAt []time.Time // per t.Tools entry: when the request that asked for it started
 	var spawns []*spawn
 	var calBytes, calTokens int64 // sums over the turns that set t.bytesPerToken
 
 	for _, c := range calls {
 		inf := c.req.Inference
+		delete(handedBack, c.agent)
+		delete(delivered, c.agent)
 		st, known := agents[c.agent]
 		if !known {
 			st = &agentState{first: c.req.At}
@@ -168,7 +175,15 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 						continue // a fork inherits its parent's history, deliveries included
 					}
 					seenReturn[key] = true
-					t.Returns = append(t.Returns, Return{Agent: from, Into: c.agent, At: c.req.At, Seq: c.req.Seq})
+					// The notification after a delivered hand-back is not a return: it came a median
+					// 22s and up to hours later, and riding on the user's next prompt it labelled the
+					// user's time as waiting on the subagent.
+					if re == agentMessageRe && handedBack[from] {
+						delivered[from] = true
+					}
+					if re == agentMessageRe || !delivered[from] {
+						t.Returns = append(t.Returns, Return{Agent: from, Into: c.agent, At: c.req.At, Seq: c.req.Seq})
+					}
 					// Only a notification says the run ended: an <agent-message> can arrive mid-run.
 					if re == taskIDRe && c.req.At.After(stopped[from]) {
 						stopped[from] = c.req.At
@@ -219,6 +234,9 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 			tool := Tool{Agent: c.agent, ID: tc.ID, Name: tc.Name, Start: end, Preview: preview(tc.Name, a), Seq: c.resp.Seq}
 			t.Tools = append(t.Tools, tool)
 			askedAt = append(askedAt, c.req.At)
+			if tc.Name == "SubagentHandback" {
+				handedBack[c.agent] = true
+			}
 			if tc.Name == "Agent" || tc.Name == "Task" {
 				agentTools[tc.ID] = true
 				spawns = append(spawns, &spawn{by: c.agent, turnAt: c.req.At, desc: a.Description, typ: a.SubagentType})
