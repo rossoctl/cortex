@@ -9,6 +9,11 @@ Supports three `on_exceed` modes:
 - `observe` — shadow mode: log without blocking, useful for calibrating limits
 - `pause` — HITL: POST to a webhook for approval before continuing
 
+Only requests that pass through the pipeline count. The context-guru plugin's
+own model calls and its keep-alive pings are not counted toward any budget,
+although the cost ledger records their spend (see
+[pricing.md](pricing.md#cost-records)).
+
 A "session" is the AuthBridge session ID (typically one A2A conversation
 or agent task invocation). Redis holds durable counters across pods; a
 local cache serves the hot path with zero I/O.

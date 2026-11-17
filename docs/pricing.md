@@ -699,6 +699,7 @@ comes out a release after the rename ships.
 | `avoided[]` | cost that was **not** incurred, one entry per context operator (`tool-prune`, `context-guru.*`, `keeper`), as the accountant priced it: `tokensAvoided`, `usd` (what it saved, gross), `penaltyUsd` (what it caused, priced: a rewrite inside the cached prefix, a cache break it owns), the `tier` with the largest saving, `basis`, `operator`, `opsVersion`, and two honesty flags: `estimated` (an estimated op or rate, and every basis but `usd`) and `projected` (measured but never applied — that money *was* spent). `basis` is `usd` for a request billed per token, `subscriptionEquivalent` for one on a subscription login (its `usd` is what the API would have charged, and `units`/`penaltyUnits` value it in usage-limit units), or `unknown` |
 | `spends[]` | the context operators' own model calls on this request (a context-guru summary call, for instance), one record each with its tokens, `usd` and `basis`. Not part of `cost_usd`: those calls do not pass through the proxy. `projected` marks the call of an operator under `on_error: observe` and `refused` one the accountant did not price: both stay visible here and are in no `pluginSpend*` total |
 | `purpose` | `keep-alive` on the record of a keep-alive ping's spend. Absent on the agent's own requests |
+| `basis`, `units`, `estimated` | on a keep-alive ping's record only. `basis` follows the billing mode of the thread's last request, because a ping uses the same credential: `usd` (an API key), `subscriptionEquivalent` (a subscription login: `cost_usd` is what the API would have charged, and `units` is the ping's tokens, output included, times the `accounting.subscription_weights`) or `unknown`. `estimated` is set on every basis but `usd`. A ping recorded before this field has no `basis` and reads as `usd` |
 | `thread`, `unattributed_break_usd` | the accountant thread the request belongs to, and the net cost of the cache effects no operator owns (shown, never charged to an operator) |
 | `daily_total_usd`, `daily_max_usd` | added by `litellm-budget-track` when it is in the pipeline; the budget's business, not the cost owner's |
 
@@ -716,8 +717,23 @@ presence.
 | `avoidedUnits`, `penaltyUnits` | the `units`/`penaltyUnits` of `subscriptionEquivalent` savings, in milli-units |
 | `avoidedApiEquivalentMicros` | the `usd` of those same savings: shown beside the units as "API equivalent", never in a money total |
 | `avoidedUnknownMicros` | the `usd` of savings with basis `unknown`: shown, never added |
-| `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` | `spends[]` by basis, without the `projected` and `refused` ones. **Not in `costMicros`**, so the existing spend figure keeps its meaning; spend in all is `costMicros + pluginSpendMicros + keepAliveMicros` |
-| `keepAliveMicros`, `keepAlivePings` | a `purpose: keep-alive` record's cost and count. A ping is in no other column: not `requests`, not `costMicros`, not the tokens, the coverage counters or the latency mean |
+| `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` | `spends[]` by basis, without the `projected` and `refused` ones. **Not in `costMicros`**, so the existing spend figure keeps its meaning |
+| `keepAliveMicros`, `keepAliveUnits`, `keepAliveApiEquivalentMicros`, `keepAliveUnknownMicros` | a `purpose: keep-alive` record's cost by its `basis`, like `pluginSpend*`: `keepAliveMicros` is the `usd` pings' `cost_usd` (money); `keepAliveUnits` the `subscriptionEquivalent` pings' `units`, in milli-units, with their `cost_usd` in `keepAliveApiEquivalentMicros` (shown as "API equivalent", never in a money total); `keepAliveUnknownMicros` the `unknown` pings' `cost_usd` (shown, never added). The metrics push books ping dollars on the same rule: only for an API key |
+| `keepAlivePings` | the number of keep-alive pings, of every basis. A ping is in no other column: not `requests`, not `costMicros`, not the tokens, the coverage counters or the latency mean |
+
+**Spend in all**, in money, is `costMicros + pluginSpendMicros + keepAliveMicros`. The
+subscription and unknown-billing parts of the plugin and keep-alive spend are beside it, never in
+it: `pluginSpendUnits` and `keepAliveUnits` in usage-limit units, `pluginSpendUnknownMicros` and
+`keepAliveUnknownMicros` in dollars that may or may not have been charged.
+
+**Budgets do not see plugin or keep-alive spend.** `session-budget` counts the tokens and calls
+of the requests that pass through the pipeline, and `litellm-budget-track` reads those requests'
+own cost. A keep-alive ping and a context operator's model call are sent by the context-guru
+plugin itself, not through the pipeline (see
+[context-guru-plugin.md](context-guru-plugin.md#where-its-own-model-calls-go)), and their spend is
+written to the ledger and the usage aggregator directly (pings) or into `spends[]` (model calls),
+never into the session store's figures. So neither counts toward a session budget or a
+`daily_total_usd`: a budget limits the agent's own requests.
 
 A ledger row written before these columns existed reads them as 0. A saving recorded before the
 accountant has no `basis`; it was priced in dollars, so every reader takes an empty `basis` as

@@ -58,3 +58,24 @@ func TestAccountantLines(t *testing.T) {
 		t.Errorf("no accountant figure, lines = %+v", got)
 	}
 }
+
+// Keep-alive spend is split like plugin spend: dollars only for pings on an API key, a
+// subscription's pings in usage-limit units with their API equivalent labelled, unknown billing
+// apart, and the count of every ping.
+func TestAccountantLines_KeepAliveByBasis(t *testing.T) {
+	c := usage.Counts{
+		KeepAliveMicros: 20_000, KeepAliveUnits: 186_000, KeepAliveAPIEquivalentMicros: 560_000,
+		KeepAliveUnknownMicros: 30_000, KeepAlivePings: 5,
+	}
+	want := []Line{{Label: "keep-alive",
+		Figure: "$0.02   186.0 units (API equivalent $0.56)   $0.03 unknown billing   5 pings"}}
+	if got := AccountantLines(c, ""); !reflect.DeepEqual(got, want) {
+		t.Errorf("AccountantLines =\n%+v\nwant\n%+v", got, want)
+	}
+	// Only subscription pings: no dollar figure is shown as money.
+	sub := usage.Counts{KeepAliveUnits: 1_500, KeepAliveAPIEquivalentMicros: 4_000, KeepAlivePings: 1}
+	want = []Line{{Label: "keep-alive", Figure: "1.5 units (API equivalent <$0.01)   1 ping"}}
+	if got := AccountantLines(sub, ""); !reflect.DeepEqual(got, want) {
+		t.Errorf("AccountantLines =\n%+v\nwant\n%+v", got, want)
+	}
+}

@@ -661,3 +661,25 @@ func TestAggregator_AKeepAlivePingTouchesNoSessionRing(t *testing.T) {
 		t.Errorf("a ping refreshed the session ring's lastSeen: %v -> %v", seen, after)
 	}
 }
+
+// The ring splits a ping's spend by basis exactly as the ledger does (event.Figures): a
+// subscription ping books units and no KeepAliveMicros.
+func TestAggregator_ASubscriptionPingBooksUnitsNotMoney(t *testing.T) {
+	a := New(WithPricing(nil))
+	raw, err := json.Marshal(event.Event{CostUSD: 0.002, Settled: true, Provenance: "configured",
+		Purpose: event.PurposeKeepAlive, Basis: event.BasisSubscriptionEquivalent, Units: 1.5, Estimated: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Record("s1", &pipeline.SessionEvent{
+		Phase: pipeline.SessionResponse, Host: "api.anthropic.com", RequestID: "keep-alive:s1:main:x",
+		Inference:  &pipeline.InferenceExtension{Model: "m", InputTokens: 3, CacheReadTokens: 20000, OutputTokens: 1},
+		Plugins:    map[string]json.RawMessage{event.Key: raw},
+		StatusCode: 200,
+	})
+	tot := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone).Totals
+	if tot.KeepAlivePings != 1 || tot.KeepAliveMicros != 0 || tot.KeepAliveUnits != 1500 || tot.KeepAliveAPIEquivalentMicros != 2000 {
+		t.Errorf("keep-alive = pings %d, micros %d, units %d, API equivalent %d; want 1, 0, 1500, 2000",
+			tot.KeepAlivePings, tot.KeepAliveMicros, tot.KeepAliveUnits, tot.KeepAliveAPIEquivalentMicros)
+	}
+}

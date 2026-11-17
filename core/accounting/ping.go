@@ -94,14 +94,15 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 		p.Host = host
 	}
 	thread := pingThread(p.ThreadID)
-	ops, facts := pingOps(p, h.ThreadBilling(sessionID, thread))
+	// One read, so the library, the cost record and the sink all see the same mode.
+	billing := h.ThreadBilling(sessionID, thread)
+	ops, facts := pingOps(p, billing)
 	res = computeStandalone(ops)
 	if !info.Manual {
 		h.putPing(sessionID, thread, facts)
 	}
-	h.recordPing(sessionID, client, host, p, info)
+	h.recordPing(sessionID, client, host, p, info, billing.Mode)
 	// A ping is not a request of the agent's: its Result is observed with no RequestID.
-	billing := h.ThreadBilling(sessionID, thread)
 	at := p.At
 	if at.IsZero() {
 		at = h.now()
@@ -122,7 +123,13 @@ func pingThread(id string) string {
 
 // recordPing writes the ping's cost to every cost recorder, priced with the process rate table
 // through settle.SettleInput, the same rule a proxied response is priced by.
-func (h *Host) recordPing(sessionID string, client *model.EventClient, host string, p accountant.Ping, info PingInfo) {
+//
+// The record carries the basis of mode, the thread's billing mode (design §5.7a), so the ledger
+// and /v1/usage book its dollars as money only on an API key — where the metrics sink moves its
+// USD counters too. A subscription ping also carries its tokens in usage-limit units (the
+// configured weights, output included); every non-usd ping is Estimated.
+func (h *Host) recordPing(sessionID string, client *model.EventClient, host string, p accountant.Ping, info PingInfo,
+	mode accountant.BillingMode) {
 	h.mu.Lock()
 	recs := append([]session.Recorder(nil), h.recorders...)
 	h.mu.Unlock()
@@ -144,6 +151,14 @@ func (h *Host) recordPing(sessionID string, client *model.EventClient, host stri
 	settled := settle.SettleInput(settle.Input{Host: host, Inference: inf}, h.resolver)
 	rec := settle.NewRecord(settled, nil)
 	rec.Purpose = PingPurpose
+	rec.Basis = BasisOf(mode)
+	rec.Estimated = rec.Basis != BasisUSD
+	if rec.Basis == BasisSubscriptionEquivalent {
+		u := p.Usage.Usage
+		tt := accountant.TierTokens{Input: u.Input, CacheWrite5m: u.CacheWrite - u.CacheWrite1h,
+			CacheWrite1h: u.CacheWrite1h, CacheRead: u.CacheRead}
+		rec.Units = Units(h.weights, tt, p.Usage.Output)
+	}
 	raw, err := json.Marshal(rec)
 	if err != nil {
 		slog.Debug("accounting: ping cost record not encoded", "error", err)

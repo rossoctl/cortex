@@ -592,18 +592,17 @@ func (w *Writer) row(e *model.SessionEvent) (minute time.Time, r Row, ok bool) {
 		// AFTER the token literal above, which assigns r.Counts wholesale: setting this before
 		// it would be silently overwritten for every inference row, which is all of them that
 		// can carry a saving.
-		r.AddFigures(figures)
 		if ev.IsKeepAlive() {
-			// A KEEP-ALIVE PING IS NOT THE AGENT'S REQUEST: its spend is KeepAliveMicros and its
-			// count KeepAlivePings, and it is in no request, token or coverage figure. See
-			// usage.Counts.KeepAliveMicros; the ring does the same.
+			// A KEEP-ALIVE PING IS NOT THE AGENT'S REQUEST: it counts in KeepAlivePings, its
+			// spend goes to the KeepAlive field its basis names (event.Figures: only a usd ping
+			// is money), and it is in no request, token or coverage figure. See
+			// usage.Counts.KeepAliveMicros; the ring does the same. The token literal above is
+			// replaced, not added to, so the figures are added once, after it.
 			r.Counts = usage.Counts{KeepAlivePings: 1}
 			r.AddFigures(figures)
-			if ev.Priced() {
-				r.KeepAliveMicros = ev.Micros()
-			}
 			return minute, r, true
 		}
+		r.AddFigures(figures)
 		if ev.Priced() {
 			r.CostMicros = ev.Micros()
 			r.PricedRequests = 1

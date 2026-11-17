@@ -1204,11 +1204,13 @@ func TestFoldInto_CarriesEveryCountsField(t *testing.T) {
 	// event's token report is plausible, so refusing it would be the bug. Its non-zero case
 	// is TestFoldInto_RefusesAnImplausibleTokenReportWhicheverFieldCarriesIt.
 	//
-	// KeepAliveMicros and KeepAlivePings are exempt because a request is not a ping: a ping's
-	// record moves only those two (TestAggregator_AKeepAlivePingIsNotARequest), so no one event
-	// sets them beside Requests.
+	// The KeepAlive* fields are exempt because a request is not a ping: a ping's record moves
+	// only those (TestAggregator_AKeepAlivePingIsNotARequest,
+	// TestAggregator_ASubscriptionPingBooksUnitsNotMoney), so no one event sets them beside
+	// Requests.
 	assertedAbsent := map[string]bool{"Saturated": true, "RefusedTokenRequests": true,
-		"KeepAliveMicros": true, "KeepAlivePings": true}
+		"KeepAliveMicros": true, "KeepAlivePings": true, "KeepAliveUnits": true,
+		"KeepAliveAPIEquivalentMicros": true, "KeepAliveUnknownMicros": true}
 	v := reflect.ValueOf(totals)
 	for i := 0; i < v.NumField(); i++ {
 		name := v.Type().Field(i).Name

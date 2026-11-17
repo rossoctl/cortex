@@ -239,13 +239,21 @@ type Counts struct {
 	PluginSpendMicros        int64 `json:"pluginSpendMicros,omitempty"`
 	PluginSpendUnits         int64 `json:"pluginSpendUnits,omitempty"`
 	PluginSpendUnknownMicros int64 `json:"pluginSpendUnknownMicros,omitempty"`
-	// KeepAliveMicros is what the keep-alive pings cost (a record with event.PurposeKeepAlive),
-	// and KeepAlivePings how many there were. A ping is not the agent's request: it is in
-	// neither Requests, Tokens, CostMicros, the coverage counters nor the latency mean, only
-	// here. Its rescue — the cache read it kept warm — is credited to the "keeper" operator on
-	// the next request, in AvoidedMicros.
-	KeepAliveMicros int64 `json:"keepAliveMicros,omitempty"`
-	KeepAlivePings  int64 `json:"keepAlivePings,omitempty"`
+	// KeepAliveMicros is what the keep-alive pings on an API key cost (a record with
+	// event.PurposeKeepAlive and basis "usd"), and KeepAlivePings how many pings there were, of
+	// every billing mode. Split like PluginSpend*: KeepAliveUnits is the subscriptionEquivalent
+	// pings' tokens in usage-limit milli-units (the configured subscription weights, output
+	// included), KeepAliveAPIEquivalentMicros those pings' dollars at API rates (NOT MONEY, shown
+	// beside the units), and KeepAliveUnknownMicros the pings whose billing mode was unknown
+	// (never added). Only KeepAliveMicros is money, which is where the metrics sink moves its
+	// USD counters too. A ping is not the agent's request: it is in neither Requests, Tokens,
+	// CostMicros, the coverage counters nor the latency mean, only here. Its rescue — the cache
+	// read it kept warm — is credited to the "keeper" operator on the next request.
+	KeepAliveMicros              int64 `json:"keepAliveMicros,omitempty"`
+	KeepAliveUnits               int64 `json:"keepAliveUnits,omitempty"`
+	KeepAliveAPIEquivalentMicros int64 `json:"keepAliveApiEquivalentMicros,omitempty"`
+	KeepAliveUnknownMicros       int64 `json:"keepAliveUnknownMicros,omitempty"`
+	KeepAlivePings               int64 `json:"keepAlivePings,omitempty"`
 	// PricedRequests counts the requests that actually produced a cost. Coverage
 	// is a counter rather than a flag because buckets are summed when a client
 	// asks for a coarser resolution, and because a deployment can price some of
@@ -397,6 +405,9 @@ func (c *Counts) Add(o Counts) {
 	c.addInto(&c.PluginSpendUnits, o.PluginSpendUnits)
 	c.addInto(&c.PluginSpendUnknownMicros, o.PluginSpendUnknownMicros)
 	c.addInto(&c.KeepAliveMicros, o.KeepAliveMicros)
+	c.addInto(&c.KeepAliveUnits, o.KeepAliveUnits)
+	c.addInto(&c.KeepAliveAPIEquivalentMicros, o.KeepAliveAPIEquivalentMicros)
+	c.addInto(&c.KeepAliveUnknownMicros, o.KeepAliveUnknownMicros)
 	c.addInto(&c.KeepAlivePings, o.KeepAlivePings)
 	c.addInto(&c.PricedRequests, o.PricedRequests)
 	// Summed alongside PricedRequests, never out of it: it is a subset disclosure, not a
@@ -453,6 +464,11 @@ func (c *Counts) AddFigures(f event.Figures) {
 		PluginSpendMicros:          f.PluginSpendMicros,
 		PluginSpendUnits:           f.PluginSpendUnits,
 		PluginSpendUnknownMicros:   f.PluginSpendUnknownMicros,
+		// Nonzero only on a keep-alive ping's record (event.Figures).
+		KeepAliveMicros:              f.KeepAliveMicros,
+		KeepAliveUnits:               f.KeepAliveUnits,
+		KeepAliveAPIEquivalentMicros: f.KeepAliveAPIEquivalentMicros,
+		KeepAliveUnknownMicros:       f.KeepAliveUnknownMicros,
 	})
 }
 
@@ -1356,11 +1372,11 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *m
 	}
 
 	if keepAlive {
-		// A KEEP-ALIVE PING IS NOT THE AGENT'S REQUEST (see Counts.KeepAliveMicros): its spend and
-		// its count go to their own two fields, and nothing else — no Requests, tokens, cost,
-		// coverage or latency. Labelled like any row, so a breakdown by model or endpoint shows
-		// where the pings went.
-		one := Counts{KeepAliveMicros: ec.micros, KeepAlivePings: 1}
+		// A KEEP-ALIVE PING IS NOT THE AGENT'S REQUEST (see Counts.KeepAliveMicros): its count and
+		// its spend go to their own fields, the spend split by basis by event.Figures exactly as
+		// the ledger splits it, and nothing else — no Requests, tokens, cost, coverage or latency.
+		// Labelled like any row, so a breakdown by model or endpoint shows where the pings went.
+		one := Counts{KeepAlivePings: 1}
 		one.AddFigures(avoided)
 		b.Counts.Add(one)
 		a.labelOne(b, sessionID, e, modelName, nil, one, ec, !avoided.IsZero() || ec.priced > 0)
