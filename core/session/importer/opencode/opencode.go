@@ -67,8 +67,8 @@ type group struct {
 }
 
 const sessionQuery = `select s.id, s.parent_id, s.fork_session_id, s.directory, s.version, s.time_created,
-  (select max(max(time_created, min(case when json_extract(data, '$.time.completed') > 0
-      then json_extract(data, '$.time.completed') else time_created end, time_updated)))
+  (select cast(max(max(time_created, min(case when json_extract(data, '$.time.completed') > 0
+      then json_extract(data, '$.time.completed') else time_created end, time_updated))) as integer)
     from session_message where session_id = s.id and type = 'assistant' and json_valid(data)
       and not (coalesce(json_type(data, '$.error'), 'null') != 'null'
         and coalesce(json_array_length(data, '$.content'), 0) = 0)) as last,

@@ -377,3 +377,31 @@ insert into session_message values ('msg_u2', 'ses_useronly', 'assistant', 2, 17
 		}
 	}
 }
+
+// TestSource_NonIntegerCompletedSkipsOnlyItsRow: data is free-form JSON, so time.completed can
+// be a REAL. That row is skipped, and the listing still decodes.
+func TestSource_NonIntegerCompletedSkipsOnlyItsRow(t *testing.T) {
+	for _, completed := range []string{"1763000006200.5", "1763000006200.0"} {
+		db := fixtureDB(t)
+		base := readAll(t, New(db), time.Time{})
+		if out, err := exec.Command(sqlitecli.Program, db, `insert into session_message values ('msg_p4', 'ses_plain', 'assistant', 4, 1763000006100, 1763000006300,
+  '{"model":{"id":"fledge-alpha-free"},"content":[{"type":"text","text":"more"}],"time":{"completed":`+completed+`}}');`).CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		all := readAll(t, New(db), time.Time{})
+		if len(all) != len(base) {
+			t.Fatalf("completed %s: sessions %v, want %v", completed, ids(all), ids(base))
+		}
+		s, b := sessionByID(t, all, "ses_plain"), sessionByID(t, base, "ses_plain")
+		if s.Skipped != b.Skipped+1 || len(s.Events) != len(b.Events) {
+			t.Errorf("completed %s: Skipped %d events %d, want %d and %d", completed, s.Skipped, len(s.Events), b.Skipped+1, len(b.Events))
+		}
+		for range New(db).Sessions(time.Time{}, func(id string, at time.Time) bool {
+			if id == "ses_plain" && at.Before(s.Updated) {
+				t.Errorf("completed %s: skip got %v, before Updated %v", completed, at, s.Updated)
+			}
+			return true
+		}, func(int, int) {}) {
+		}
+	}
+}
