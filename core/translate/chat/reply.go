@@ -56,6 +56,7 @@ type decoder struct {
 	next      int             // the next pivot block index
 	closed    map[int]bool    // chat tool-call indexes whose block ended
 	closedIDs map[string]bool // tool-call ids whose block ended
+	sawTool   bool            // a tool_use block was opened
 }
 
 // NewReplyDecoder makes a decoder for one upstream reply (decision 3).
@@ -134,6 +135,10 @@ func (d *decoder) finish() {
 		return
 	}
 	d.closeOpen()
+	// vLLM and OpenAI send finish_reason stop for a forced named tool.
+	if d.sawTool && d.stopReason == "end_turn" {
+		d.stopReason = "tool_use"
+	}
 	d.emit(pivot.Event{Kind: pivot.EventUsage, Usage: d.usage})
 	d.emit(pivot.Event{Kind: pivot.EventStop, StopReason: d.stopReason})
 	d.done = true
@@ -150,6 +155,7 @@ func (d *decoder) openBlock(k openKind, block pivot.BlockKind, toolIndex int, id
 	d.closeOpen()
 	d.emit(pivot.Event{Kind: pivot.EventBlockStart, Index: d.next, Block: block, ToolID: id, ToolName: name})
 	d.open, d.openIndex, d.openTool, d.openID = k, d.next, toolIndex, id
+	d.sawTool = d.sawTool || k == kindTool
 	d.next++
 }
 
@@ -349,11 +355,22 @@ func (d *decoder) whole(body []byte) {
 	}
 	m := r.Choices[0].Message
 	// Decision 7: check every tool input before any event goes out.
+	ids := map[string]bool{}
 	for _, tc := range m.ToolCalls {
 		if a := tc.Function.Arguments; a != "" && !json.Valid([]byte(a)) {
 			d.fail(http.StatusBadGateway, "api_error", "the inference server sent tool "+tc.Function.Name+" arguments that are not valid JSON")
 			return
 		}
+		// Rule 20a: the agent's tool_result finds its call by id.
+		if tc.ID == "" {
+			d.fail(http.StatusBadGateway, "api_error", "the inference server sent tool "+tc.Function.Name+" with no id")
+			return
+		}
+		if ids[tc.ID] {
+			d.fail(http.StatusBadGateway, "api_error", "the inference server sent tool call "+tc.ID+" twice")
+			return
+		}
+		ids[tc.ID] = true
 	}
 	d.start(r.ID, r.Model)
 	if len(m.ThinkingBlocks) > 0 {

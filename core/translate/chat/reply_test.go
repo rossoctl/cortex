@@ -329,3 +329,36 @@ func TestReplyDecoder_ClosedIDAgain(t *testing.T) {
 		apiError(502, "api_error", "the inference server sent tool call a again after that tool call ended"),
 	})
 }
+
+// A reply with a tool call stops with tool_use when finish_reason is stop:
+// vLLM and OpenAI send stop for a forced named tool. A length cut
+// stays max_tokens.
+func TestReplyDecoder_ToolCallWithStop(t *testing.T) {
+	call := chunk(`{"tool_calls":[{"id":"a","function":{"arguments":"{}","name":"A"},"type":"function","index":0}]}`)
+	for reason, want := range map[string]string{"stop": "tool_use", "length": "max_tokens"} {
+		checkEvents(t, 200, true, sse(call, finish(reason), "[DONE]"), []pivot.Event{
+			start(),
+			openTool(0, "a", "A"), delta(0, pivot.DeltaInputJSON, `{}`), closeBlock(0),
+			usage(pivot.Usage{}), stop(want),
+		})
+		body := `{"id":"chatcmpl-1","model":"claude","choices":[{"finish_reason":"` + reason + `","message":{` +
+			`"tool_calls":[{"id":"a","type":"function","function":{"name":"A","arguments":"{}"}}]}}]}`
+		checkEvents(t, 200, false, body, []pivot.Event{
+			start(),
+			openTool(0, "a", "A"), delta(0, pivot.DeltaInputJSON, `{}`), closeBlock(0),
+			usage(pivot.Usage{}), stop(want),
+		})
+	}
+}
+
+// A not-streamed reply refuses a tool call with no id or a repeated id
+// (rule 20a).
+func TestReplyDecoder_ToolCallIDsNotStream(t *testing.T) {
+	for calls, msg := range map[string]string{
+		`{"type":"function","function":{"name":"A","arguments":"{}"}}`:                                                                                "the inference server sent tool A with no id",
+		`{"id":"a","type":"function","function":{"name":"A","arguments":"{}"}},{"id":"a","type":"function","function":{"name":"B","arguments":"{}"}}`: "the inference server sent tool call a twice",
+	} {
+		body := `{"id":"chatcmpl-1","model":"claude","choices":[{"finish_reason":"tool_calls","message":{"content":"x","tool_calls":[` + calls + `]}}]}`
+		checkEvents(t, 200, false, body, []pivot.Event{apiError(502, "api_error", msg)})
+	}
+}
