@@ -134,3 +134,6 @@ replace (
 	github.com/rossoctl/cortex/core => ../../core
 	github.com/rossoctl/cortex/core/storage/redis => ../../core/storage/redis
 )
+
+// DEV ONLY — remove when accountant v0.3.0 is tagged.
+replace github.com/rossoctl/accountant => /Users/davidboaz/Documents/GitHub/accountant/.worktrees/billing-from

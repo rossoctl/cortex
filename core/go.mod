@@ -2,6 +2,9 @@ module github.com/rossoctl/cortex/core
 
 go 1.26.10
 
+// DEV ONLY — remove when accountant v0.3.0 is tagged.
+replace github.com/rossoctl/accountant => /Users/davidboaz/Documents/GitHub/accountant/.worktrees/billing-from
+
 require (
 	github.com/contextforge-org/cpex/go/cpex v0.3.1
 	github.com/envoyproxy/go-control-plane/envoy v1.40.0

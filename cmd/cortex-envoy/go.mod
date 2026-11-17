@@ -7,6 +7,9 @@ replace (
 	github.com/rossoctl/cortex/core/storage/redis => ../../core/storage/redis
 )
 
+// DEV ONLY — remove when accountant v0.3.0 is tagged.
+replace github.com/rossoctl/accountant => /Users/davidboaz/Documents/GitHub/accountant/.worktrees/billing-from
+
 require (
 	github.com/envoyproxy/go-control-plane/envoy v1.40.0
 	github.com/rossoctl/cortex/core v0.0.0

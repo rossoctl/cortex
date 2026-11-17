@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"runtime"
 	"strings"
 	"sync"
@@ -67,6 +68,25 @@ func (o *operator) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline
 	return pipeline.Action{Type: pipeline.Continue}
 }
 func (o *operator) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// headerRewriter is a request plugin that replaces a header after RequestStart has already run
+// — token-exchange's shape, and the reason BillingFrom must be read in RequestStart rather than
+// at RequestEnd (design §5.7).
+type headerRewriter struct {
+	name, value string
+}
+
+func (r *headerRewriter) Name() string { return "header-rewriter" }
+func (r *headerRewriter) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
+func (r *headerRewriter) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	pctx.Headers.Set(r.name, r.value)
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (r *headerRewriter) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
@@ -388,5 +408,83 @@ func TestHost_SurvivesReload(t *testing.T) {
 	if fresh := version(other); shared <= afterFirst || shared <= fresh {
 		t.Errorf("state version after the reload = %d (after build 1: %d, a fresh Host: %d): build 2 did not continue build 1's thread",
 			shared, afterFirst, fresh)
+	}
+}
+
+// TestHost_BillingFromClientHeaderBeforeRewrite checks that RequestMeta.Billing reflects the
+// CLIENT's credential, read in RequestStart before any plugin runs — not whatever credential
+// the request carries by the time the pipeline finishes. token-exchange replaces Authorization
+// on outbound requests, so a request that arrives on a subscription token but is rewritten to an
+// API key before it leaves must still bill as subscription (design §5.7).
+func TestHost_BillingFromClientHeaderBeforeRewrite(t *testing.T) {
+	h := newHost(t)
+	var meta accountant.RequestMeta
+	h.metaHook = func(m accountant.RequestMeta) { meta = m }
+	p, err := pipeline.New([]pipeline.Plugin{&headerRewriter{"Authorization", "Bearer sk-ant-api03-y"}}, pipeline.WithAccountant(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pctx := &pipeline.Context{
+		Host: "api.anthropic.com", Path: "/v1/messages", Method: "POST",
+		Body: clientBody("hi"), SessionID: "s1",
+		Headers: http.Header{"Authorization": []string{"Bearer sk-ant-oat01-x"}},
+	}
+	inf := coldUsage()
+	inf.Model = "claude-sonnet-4-5"
+	pctx.Extensions.Inference = &inf
+	if act := p.Run(context.Background(), pctx); act.Type != pipeline.Continue {
+		t.Fatalf("action = %v", act.Type)
+	}
+	if meta.Billing.Mode != accountant.BillingSubscription {
+		t.Errorf("RequestMeta.Billing.Mode = %q, want %q (the client's original credential, read before the plugin's rewrite)",
+			meta.Billing.Mode, accountant.BillingSubscription)
+	}
+	// The rewrite did happen, so this is really testing read-order and not a plugin that did
+	// nothing.
+	if got := pctx.Headers.Get("Authorization"); got != "Bearer sk-ant-api03-y" {
+		t.Fatalf("Authorization after the pipeline = %q, want the plugin's rewrite", got)
+	}
+}
+
+// TestHost_ThreadBillingIsLastRequests checks that ThreadBilling answers with the most recent
+// request's mode on that thread, and accountant.BillingUnknown for a thread that has made none.
+func TestHost_ThreadBillingIsLastRequests(t *testing.T) {
+	h := newHost(t)
+	if got := h.ThreadBilling("s1", "main"); got.Mode != accountant.BillingUnknown {
+		t.Errorf("ThreadBilling before any request = %q, want %q", got.Mode, accountant.BillingUnknown)
+	}
+
+	runWithAuth := func(session, auth string) {
+		t.Helper()
+		p, err := pipeline.New([]pipeline.Plugin{&operator{}}, pipeline.WithAccountant(h))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pctx := &pipeline.Context{
+			Host: "api.anthropic.com", Path: "/v1/messages", Method: "POST",
+			Body: clientBody("hi"), SessionID: session,
+			Headers: http.Header{"Authorization": []string{auth}},
+		}
+		inf := coldUsage()
+		inf.Model = "claude-sonnet-4-5"
+		pctx.Extensions.Inference = &inf
+		if act := p.Run(context.Background(), pctx); act.Type != pipeline.Continue {
+			t.Fatalf("action = %v", act.Type)
+		}
+	}
+
+	runWithAuth("s1", "Bearer sk-ant-oat01-x")
+	if got := h.ThreadBilling("s1", "main"); got.Mode != accountant.BillingSubscription {
+		t.Errorf("ThreadBilling after the first request = %q, want %q", got.Mode, accountant.BillingSubscription)
+	}
+	// A second request on the same thread, with a different credential, replaces the thread's
+	// remembered mode.
+	runWithAuth("s1", "Bearer sk-ant-api03-y")
+	if got := h.ThreadBilling("s1", "main"); got.Mode != accountant.BillingAPI {
+		t.Errorf("ThreadBilling after the second request = %q, want %q", got.Mode, accountant.BillingAPI)
+	}
+	// A different session's "main" thread is tracked separately.
+	if got := h.ThreadBilling("s2", "main"); got.Mode != accountant.BillingUnknown {
+		t.Errorf("ThreadBilling for an unrelated session = %q, want %q", got.Mode, accountant.BillingUnknown)
 	}
 }

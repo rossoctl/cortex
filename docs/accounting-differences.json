@@ -1,1 +1,1 @@
-{"host":"cortex","differences":[]}
+{"host":"cortex","differences":[{"id":"proxy.billing-mode-hardcoded","kind":"notCovered","reason":"The standalone context-guru proxy still hard-codes Billing{Mode: BillingAPI} for every request; it does not call accountant.BillingFrom yet (Cortex spec §5.7). Not a case in github.com/rossoctl/accountant/test/cases, so this is a documentation-only note rather than a skip for TestAccountantCases."}]}

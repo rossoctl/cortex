@@ -9,6 +9,9 @@ go 1.26.10
 // dependency once it has a tagged release.
 replace github.com/rossoctl/cortex/core => ../../core
 
+// DEV ONLY — remove when accountant v0.3.0 is tagged.
+replace github.com/rossoctl/accountant => /Users/davidboaz/Documents/GitHub/accountant/.worktrees/billing-from
+
 require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10

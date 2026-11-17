@@ -23,6 +23,11 @@ const computeWait = 2 * time.Second
 // pendingKey is the pctx state key RequestEnd stores a request's handle under, for Compute.
 const pendingKey = "accounting.pending"
 
+// billingKey is the pctx state key RequestStart stores the client's billing mode under, for
+// RequestEnd to read. Only the resulting mode is kept — never the header value it came from
+// (accountant R2, and the global constraint that accounting never logs or stores one).
+const billingKey = "accounting.billing"
+
 // Options configure a Host.
 type Options struct {
 	// Resolver is the process rate table. Held for pricing (a later task); Task 2 prices nothing.
@@ -44,7 +49,8 @@ type Options struct {
 //
 // It holds nothing per request beyond the handle it leaves on the request's own pctx, and
 // nothing per thread beyond what accountant.Trackers keeps (the library bounds that to 10,000
-// threads).
+// threads) plus one BillingMode per (session, thread) in threadBilling, for keep-alive pings
+// (design §5.7).
 type Host struct {
 	trackers *accountant.Trackers
 	resolver pricing.Resolver
@@ -56,14 +62,24 @@ type Host struct {
 	closeOnce    sync.Once
 	closeErr     error
 
-	mu        sync.Mutex
-	recorders []session.Recorder
+	mu            sync.Mutex
+	recorders     []session.Recorder
+	threadBilling map[threadBillingKey]accountant.BillingMode
 
 	// Test hooks. beforeEnd runs first on the record's goroutine, computeHook just before the
-	// library's Compute, onEnd with the ops the record was given. Nil outside tests.
+	// library's Compute, onEnd with the ops the record was given, metaHook with the
+	// RequestMeta RequestEnd built (synchronously, before the record's goroutine starts). Nil
+	// outside tests.
 	beforeEnd   func()
 	computeHook func()
 	onEnd       func(ops []accountant.Operation)
+	metaHook    func(meta accountant.RequestMeta)
+}
+
+// threadBillingKey keys Host.threadBilling: a thread id is only unique within its session.
+type threadBillingKey struct {
+	session string
+	thread  string
 }
 
 // New builds a Host. With a SnapshotPath it restores the saved Tracker state, when there is a
@@ -127,9 +143,20 @@ type pending struct {
 	ok       bool
 }
 
-// RequestStart implements pipeline.RequestAccountant. The pipeline has already kept the client
-// body; there is nothing else to do before the plugins, and the hook stays cheap on purpose.
-func (h *Host) RequestStart(*pipeline.Context) {}
+// RequestStart implements pipeline.RequestAccountant. It reads the client's upstream credential
+// header — pctx.Headers, as the listener filled it, before any plugin can rewrite it — and
+// stores the billing mode it implies for RequestEnd. token-exchange replaces Authorization on
+// outbound requests, so this has to run here and not in RequestEnd (design §5.7).
+//
+// accountant.BillingFrom reads only the credential's type and returns no part of the credential
+// itself (accountant R2); only the resulting mode is stored, never the header value.
+func (h *Host) RequestStart(pctx *pipeline.Context) {
+	if h == nil || pctx == nil {
+		return
+	}
+	billing := accountant.BillingFrom(pctx.Headers)
+	pipeline.SetState(pctx, billingKey, &billing)
+}
 
 // RequestEnd implements pipeline.RequestAccountant. It takes what the record needs from pctx and
 // starts the record on a goroutine of its own: the parse, BeginRequest, each op and EndRequest
@@ -163,16 +190,52 @@ func (h *Host) RequestEnd(pctx *pipeline.Context) {
 	if _, redirected, ok := pctx.RedirectTarget(); ok {
 		host = redirected
 	}
+	billing := accountant.Billing{Mode: accountant.BillingUnknown}
+	if b := pipeline.GetState[accountant.Billing](pctx, billingKey); b != nil {
+		billing = *b
+	}
 	meta := accountant.RequestMeta{
 		RequestID: pctx.RequestID(),
 		Session:   pctx.SessionID,
 		Model:     model,
 		At:        h.now(),
-		Billing:   accountant.Billing{Mode: accountant.BillingAPI},
+		Billing:   billing,
+	}
+	thread := ThreadOf(pctx)
+	h.setThreadBilling(pctx.SessionID, thread.ID, billing.Mode)
+	if h.metaHook != nil {
+		h.metaHook(meta)
 	}
 	p := &pending{done: make(chan struct{})}
 	pipeline.SetState(pctx, pendingKey, p)
-	go h.end(p, format, meta, client, forwarded, ops, ThreadOf(pctx), facts.Classify(host, pctx.Path))
+	go h.end(p, format, meta, client, forwarded, ops, thread, facts.Classify(host, pctx.Path))
+}
+
+// ThreadBilling returns the billing mode of the given thread's last request, for a keep-alive
+// ping on that thread: a ping uses the same credential as the request it pings for (design
+// §5.7). accountant.BillingUnknown if the thread has made no request yet.
+func (h *Host) ThreadBilling(session, thread string) accountant.Billing {
+	if h == nil {
+		return accountant.Billing{Mode: accountant.BillingUnknown}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	mode, ok := h.threadBilling[threadBillingKey{session: session, thread: thread}]
+	if !ok {
+		return accountant.Billing{Mode: accountant.BillingUnknown}
+	}
+	return accountant.Billing{Mode: mode}
+}
+
+// setThreadBilling records mode as thread's last-seen billing mode. Runs on the request
+// goroutine, inside RequestEnd.
+func (h *Host) setThreadBilling(session, thread string, mode accountant.BillingMode) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.threadBilling == nil {
+		h.threadBilling = map[threadBillingKey]accountant.BillingMode{}
+	}
+	h.threadBilling[threadBillingKey{session: session, thread: thread}] = mode
 }
 
 // end opens and ends the record. A panic here, on a hostile body or a library bug, costs this
