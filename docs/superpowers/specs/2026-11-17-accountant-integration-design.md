@@ -397,9 +397,16 @@ The fields follow W7.1.
 
 Each commit has a check that must pass before the next commit is written.
 
-- **Cache cases.** The `accountant/test/cases` JSON cases play through `core/accounting`, with
-  Cortex's own `wire.Parse`. Every case passes, or is listed in `docs/accounting-differences.json`
-  with a section reference (accountant testing §10.4). This is the main guard for G6.
+- **Cache cases.** The 160 `accountant/test/cases` cases (`cases.All()`) play through
+  `core/accounting`'s Begin, Add, End and Compute path and its facts conversion. Every case
+  passes, or is listed in `docs/accounting-differences.json` with a section reference (accountant
+  testing §10.4). The cases hold bodies that are already parsed (`accountant.Body`), so they do
+  not test `wire.Parse`.
+- **Wire parse.** Golden fixtures in `core/accounting/wire/testdata`: Anthropic Messages, OpenAI
+  Chat and OpenAI Responses bodies, with the expected positions, sizes and breakpoints. They cover
+  the W6.3 rules: hashing without `cache_control`, wire-byte sizes, and one breakpoint per
+  position with 1h winning. The proxy's `accParse` is the reference to port from. It is read, not
+  imported. Its equality with the proxy is proved by the cross-host harness below.
 - **Boundary.** The `go list -deps` test of section 5.2. A Cortex build without the context-guru
   plugin has accounting on, and the tool-prune saving still reaches the ledger.
 - **Shadow agreement.** In commit 5, `settle` logs the old figure, the new figure and the difference,
