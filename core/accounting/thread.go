@@ -10,11 +10,14 @@ import (
 // Parent set to the agent that started it. A subagent with no recorded parent forked from the
 // primary agent, so its parent is "main".
 //
-// This is the default rule with no context-guru plugin in the pipeline. Task 2 adds the plugin's
-// override (pctx.SetAccountingThread), which lets context-guru's own thread split — built from
-// prefix continuity inside the engine, not from the subagent header — take precedence where it
-// ran (design §5.4).
+// That is the default rule, with no context-guru plugin in the pipeline. A plugin that named a
+// thread with pctx.SetAccountingThread overrides it: context-guru's own thread split, built from
+// prefix continuity inside the engine rather than from the subagent header, takes precedence
+// where it ran (design §5.4).
 func ThreadOf(pctx *pipeline.Context) accountant.Thread {
+	if id, parent, ok := pctx.AccountingThread(); ok {
+		return accountant.Thread{ID: id, Parent: parent}
+	}
 	sub := pctx.Subagent()
 	if sub == "" {
 		return accountant.Thread{ID: "main"}

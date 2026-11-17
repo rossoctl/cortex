@@ -27,29 +27,52 @@ var allowedModules = []string{
 // it named, not just "not allowed".
 const forbiddenModule = "github.com/rossoctl/context-guru"
 
-// TestNoContextGuruDependency runs go list -deps over this package tree (accountant's own
-// boundary_test.go, TestImportsStandardLibraryOnly, uses the same -f trick to isolate
-// non-standard-library imports) and fails on anything outside allowedModules.
+// TestNoContextGuruDependency holds two lines. Every package core/accounting/... imports
+// DIRECTLY must be in allowedModules (or the standard library): that is the reviewed set. And
+// nothing in the whole dependency closure may be context-guru.
+//
+// The two are checked over different sets on purpose. The host needs core/cost/pricing and
+// core/session (Options.Resolver, Options.CostRecorders), and their own dependencies (gobwas/glob,
+// yaml.v3) are core's, already reviewed where core takes them; checking the closure against the
+// allowlist would make every dependency any core package ever adds fail here. Context-guru is the
+// one dependency forbidden at any depth, so the closure is checked for it alone.
 func TestNoContextGuruDependency(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("go toolchain not on PATH")
 	}
-	out, err := exec.Command("go", "list", "-deps", "-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", "./...").Output()
+	direct, err := exec.Command("go", "list", "-f", `{{join .Imports "\n"}}{{"\n"}}{{join .TestImports "\n"}}`, "./...").Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	std, err := exec.Command("go", "list", "std").Output()
+	if err != nil {
+		t.Fatalf("go list std: %v", err)
+	}
+	isStd := map[string]bool{}
+	for _, p := range strings.Fields(string(std)) {
+		isStd[p] = true
+	}
+	for _, line := range strings.Fields(string(direct)) {
+		if isStd[line] || forbidden(line) {
+			continue // forbidden ones are reported from the closure below
+		}
+		if !allowedModule(line) {
+			t.Errorf("core/accounting imports %q: not in the allowed set %v", line, allowedModules)
+		}
+	}
+	closure, err := exec.Command("go", "list", "-deps", "-test", "-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", "./...").Output()
 	if err != nil {
 		t.Fatalf("go list -deps: %v", err)
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
-			continue
-		}
-		if line == forbiddenModule || strings.HasPrefix(line, forbiddenModule+"/") {
+	for _, line := range strings.Fields(string(closure)) {
+		if forbidden(line) {
 			t.Errorf("core/accounting depends on %q: context-guru is the one dependency this boundary exists to forbid", line)
-			continue
-		}
-		if !allowedModule(line) {
-			t.Errorf("core/accounting depends on %q: not in the allowed set %v", line, allowedModules)
 		}
 	}
+}
+
+func forbidden(importPath string) bool {
+	return importPath == forbiddenModule || strings.HasPrefix(importPath, forbiddenModule+"/")
 }
 
 // allowedModule reports whether importPath is, or is under, one of allowedModules.

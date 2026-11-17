@@ -672,6 +672,15 @@ func validateReloadable(active, next *config.Config) error {
 	if !reflect.DeepEqual(active.Praxis, next.Praxis) {
 		diffs = append(diffs, "praxis.*")
 	}
+	// accounting.enabled, as RESOLVED, not as written: the accountant host is built once at
+	// boot (or not at all), and the listeners keep the client body only when it exists. Under
+	// auto the answer follows the outbound pipeline, so adding the first context operator flips
+	// it as surely as editing the block does, and an edit that resolves the same changes nothing.
+	// Comparing the block would refuse auto→true on a pipeline that is already on, and accept
+	// the first tool-prune under auto, which would then report to a host that does not exist.
+	if active.AccountingOn() != next.AccountingOn() {
+		diffs = append(diffs, fmt.Sprintf("accounting.enabled (resolved %v→%v)", active.AccountingOn(), next.AccountingOn()))
+	}
 	if len(diffs) > 0 {
 		return fmt.Errorf("unreloadable field changed, pod restart required: %v", diffs)
 	}

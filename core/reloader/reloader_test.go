@@ -1334,3 +1334,45 @@ func TestValidateReloadable_PraxisPolicyPathNeedsRestart(t *testing.T) {
 		t.Errorf("unchanged policy was refused: %v", err)
 	}
 }
+
+// Whether accounting is on is decided once, at boot: the process builds its accountant host then,
+// and the listeners keep the client body only when it exists. So a reload that would turn it on or
+// off is refused, like mtls.*. What is compared is the RESOLVED answer, not the block: under auto,
+// adding the first context operator flips it, and an edit that resolves the same is accepted.
+func TestValidateReloadable_RefusesAnAccountingFlip(t *testing.T) {
+	withOutbound := func(a *config.AccountingConfig, names ...string) *config.Config {
+		c := &config.Config{Accounting: a}
+		for _, n := range names {
+			c.Pipeline.Outbound.Plugins = append(c.Pipeline.Outbound.Plugins, config.PluginEntry{Name: n})
+		}
+		return c
+	}
+	refused := []struct {
+		name         string
+		active, next *config.Config
+	}{
+		{"auto: adding the first operator", withOutbound(nil, "inference-parser"), withOutbound(nil, "inference-parser", "tool-prune")},
+		{"auto: removing the last operator", withOutbound(nil, "tool-prune"), withOutbound(nil)},
+		{"auto to false with an operator", withOutbound(nil, "tool-prune"), withOutbound(&config.AccountingConfig{Enabled: "false"}, "tool-prune")},
+		{"false to true", withOutbound(&config.AccountingConfig{Enabled: "false"}), withOutbound(&config.AccountingConfig{Enabled: "true"})},
+	}
+	for _, c := range refused {
+		err := validateReloadable(c.active, c.next)
+		if err == nil || !strings.Contains(err.Error(), "accounting.enabled") {
+			t.Errorf("%s: err = %v, want a refusal naming accounting.enabled", c.name, err)
+		}
+	}
+	accepted := []struct {
+		name         string
+		active, next *config.Config
+	}{
+		{"auto to true with an operator", withOutbound(nil, "tool-prune"), withOutbound(&config.AccountingConfig{Enabled: "true"}, "tool-prune")},
+		{"a second operator", withOutbound(nil, "tool-prune"), withOutbound(nil, "tool-prune", "context-guru")},
+		{"false, operators come and go", withOutbound(&config.AccountingConfig{Enabled: "false"}), withOutbound(&config.AccountingConfig{Enabled: "false"}, "tool-prune")},
+	}
+	for _, c := range accepted {
+		if err := validateReloadable(c.active, c.next); err != nil {
+			t.Errorf("%s: refused: %v", c.name, err)
+		}
+	}
+}

@@ -33,6 +33,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/bootstrap"
 	"github.com/rossoctl/cortex/core/config"
@@ -161,6 +162,13 @@ func main() {
 	// See applyPricing below.
 	var pendingPricing *pricing.Table
 
+	// The process's accountant host, nil when accounting is off: one per process, made by the
+	// first build and handed to every later one, as in cmd/cortex. No snapshot: this binary is a
+	// Kubernetes shape, where a pod restart starts fresh (design §5.4). It wires no cost
+	// Recorder either (see warnCostLedgerInert), so none is added.
+	var acctHost *accounting.Host
+	acctDecided := false
+
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
 		c, err := config.Load(*configPath)
 		if err != nil {
@@ -189,12 +197,27 @@ func main() {
 		// instead of recording redirects that never happen. Plugins only store the
 		// resolver during Configure and never resolve through it, so building against
 		// the still-live previous table is safe.
+		if !acctDecided {
+			acctDecided = true
+			if c.AccountingOn() {
+				h, err := accounting.New(accounting.Options{Resolver: pricingRegistry})
+				if err != nil {
+					slog.Warn("accounting disabled — could not start the accountant", "error", err)
+				} else {
+					acctHost = h
+					slog.Info("accounting enabled — context savings are computed by the accountant")
+				}
+			}
+		}
 		deps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Listener: extproc.Support()}
 		in, err := plugins.BuildWithDeps(c.Pipeline.Inbound.Plugins, deps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)
 		}
-		out, err := plugins.BuildWithDeps(c.Pipeline.Outbound.Plugins, deps)
+		// The accountant on the outbound chain only: inference requests leave through it.
+		outDeps := deps
+		outDeps.Accounting = acctHost
+		out, err := plugins.BuildWithDeps(c.Pipeline.Outbound.Plugins, outDeps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("outbound: %w", err)
 		}
@@ -356,6 +379,7 @@ func main() {
 	}
 
 	rld.Close(shutdownCtx)
+	_ = acctHost.Close() // no snapshot here, so nothing to report
 
 	if sessions != nil {
 		sessions.Close()
