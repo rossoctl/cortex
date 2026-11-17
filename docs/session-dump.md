@@ -3,10 +3,10 @@
 > **On a laptop the proxy now keeps sessions itself.** A local install writes every
 > session to `~/.cortex/sessions` ([#901](https://github.com/rossoctl/cortex/issues/901);
 > see [the laptop guide](laptop-service.md#session-history-is-kept-in-cortexsessions)),
-> so a restart no longer loses them and agentop keeps listing them. What this script is
-> still for is getting sessions *out* as files — and it is the only way to keep anything
-> from a cluster sidecar, which has no archive. A whole dump covers the sessions in
-> memory; `--session <id>` also reaches one only the archive holds, because the
+> so a restart no longer loses them, and agentop keeps listing them. This script is still
+> how you get sessions *out* as files. It is also the only way to keep anything from a
+> cluster sidecar, which has no archive. A whole dump covers the sessions in memory.
+> `--session <id>` also reaches a session that only the archive holds, because the
 > endpoint it reads pages into the archive.
 
 Outside a local install Cortex keeps intercepted sessions **in memory only**, so a
@@ -14,21 +14,28 @@ proxy restart loses every session it was holding. `cortex-session-dump`
 walks the [Session Events API](session-api.md) and writes what is
 currently resident to files.
 
-Reach for it when you want to keep a session past a restart, hand traffic to
-someone who cannot reach the proxy, or analyse many sessions at once — anything
-beyond what the `agentop` TUI shows live.
+Use it for three things. Keep a session past a restart. Hand traffic to someone who
+cannot reach the proxy. Analyse many sessions at once. The `agentop` TUI shows none of
+these.
 
-Its limits follow from being a snapshot tool rather than storage: it captures
-only what the store still holds at the moment it runs, and it has to be run
-before the thing you want to keep is gone. On a laptop the session archive closes that
-gap; in a cluster it is still open.
+It is a snapshot tool, not storage. Two limits follow. It captures only what the store
+holds at the moment it runs. You must run it before the thing you want is gone. On a
+laptop the session archive closes that gap. In a cluster the gap is still open.
+
+A dump is the *content* — prompts, completions, tool results. When what you want is the
+*measurements* over a month of traffic, [`GET /v1/export`](session-export.md) writes the
+archive as content-free records instead: no prompts, completions or tool results, which
+is what makes it shareable where a dump is not. It is not anonymous, though — hosts,
+models, session ids and timestamps remain, and together they describe who talked to what
+and when. Read one before it goes anywhere the traffic pattern itself is sensitive.
 
 ## Install
 
-`scripts/install.sh` fetches it with the release, and `agentop setup` installs it
-alongside `agentop` and `cortex`, as `~/.local/bin/cortex-session-dump` — so any install
-from the first release after this change lands already has it. The fetch is never fatal:
-when it fails, the installer warns and installs the rest. `make dev-install` installs only
+`scripts/install.sh` fetches it with the release. `agentop setup` installs it next to
+`agentop` and `cortex`, as `~/.local/bin/cortex-session-dump`. Any install from the first
+release after this change therefore has it.
+
+The fetch is never fatal. If it fails, the installer warns you and installs the rest. `make dev-install` installs only
 the two binaries it builds, and `agentop uninstall` removes all three. Check with:
 
 ```sh
@@ -62,18 +69,19 @@ cortex-session-dump --session <id> --full    # one session, repeatable
 cortex-session-dump --out ~/cortex-snapshots/2026-09-30
 ```
 
-Each run wants its own `--out`. Writing into a directory that already holds a
-dump is refused, because a `--session` or `--active` run only writes its own
-selection — so reusing a previous full dump would leave session files this run
-did not produce, beside a `sessions.json` that no longer lists them. Pass
-`--reuse-dir` to override.
+Give each run its own `--out`. The script refuses a directory that already holds a dump.
+The reason: a `--session` or `--active` run writes only its own selection. Reusing a
+previous full dump would leave session files from that earlier run, next to a
+`sessions.json` that no longer lists them. Pass `--reuse-dir` to override the refusal.
 
-It exits nonzero if any selected session failed, so a partial dump is not
-mistaken for a complete one in a cron job or a `&&` chain. An id passed to
-`--session` that the index does not list counts as a failure too — naming an id
-is a claim that it exists, and a typo or a session evicted since you read it
-should not look like success. `--active` matching nothing is a legitimate empty
-result and exits 0.
+The script exits non-zero if any selected session failed. A cron job or a `&&` chain
+therefore cannot mistake a partial dump for a complete one.
+
+An id that the index does not list also counts as a failure. Naming an id is a claim that
+it exists. A typo must not look like success, and neither must a session that was evicted
+since you read the list.
+
+`--active` that matches nothing is a legitimate empty result. It exits 0.
 
 It finds the API itself, probing `127.0.0.1:47601` (what `cortex
 --local` pins) then `127.0.0.1:9094` (the mode presets' default). For anything
@@ -116,9 +124,9 @@ jq -s 'sort_by(-(.durationMs // 0)) | .[:10] | .[] | {durationMs, httpPath}' \
   cortex-dump/sessions/<id>.jsonl
 ```
 
-Events are ordered by `at`, then `seq`. `at` alone is not unique, and `seq`
-restarts at 1 if a session is evicted and later re-created under the same id,
-so it is not a stable sort key across a session's whole life.
+Events are ordered by `at`, then `seq`. `at` alone is not unique. `seq` restarts at 1 if
+Cortex evicts a session and then creates it again under the same id. `seq` is therefore
+not a stable sort key across the whole life of a session.
 
 For the per-field meaning of `inference`, `mcp`, `a2a`, `invocations` and
 `plugins`, see the event schema in [`session-api.md`](session-api.md#event-schema) and
@@ -131,11 +139,13 @@ decisions, HTTP method and path. With it you also get the message bodies — use
 prompts, LLM completions, tool arguments and results.
 
 That is usually the reason to dump at all, and it is also the reason to be careful.
-Expect a large multiple of the size, varying with how big the messages are: one
-65-event Claude Code session measured 58 KB summary against 3.9 MB full (**~68x**),
-while the server's own estimate in `core/sessionapi/server.go` is **~163x**, also
-from a live proxy but over conversations with larger message bodies. Treat either
-as an order of magnitude rather than a constant. Expect the output to contain
+Expect the file to be much larger. How much larger depends on the message sizes.
+
+Two measurements, both from a live proxy. One 65-event Claude Code session measured 58 KB
+as a summary against 3.9 MB as a full dump, which is **~68x**. The estimate in
+`core/sessionapi/server.go` is **~163x**, over conversations with larger message bodies.
+
+Treat either number as an order of magnitude, not as a constant. Expect the output to contain
 whatever went through the proxy: source code,
 customer data, credentials pasted into a prompt. A secret in a URL *path segment*
 survives too — the API strips query strings but not path segments.
@@ -147,41 +157,45 @@ So:
 - Treat a `--full` dump as you would the conversation itself before sharing it.
 - Prefer the default view when you only need cost, latency or model attribution.
 
-The API has no authentication of its own — it is expected to be bound to
-loopback or reached through a port-forward, and its payloads are readable by
-anything that can reach the port. Dumping to a file does not change that; it
-just makes a copy that outlives the process.
+The API has no authentication of its own. Bind it to loopback, or reach it through a port
+forward. Anything that can reach the port can read its payloads. A dump does not change
+that. It only makes a copy that outlives the process.
 
 ## For timings and tool names, use the timeline instead
 
 **A dump is the wrong tool for "how long did each tool take, and what did it run".**
-Without `--full` it asks the API for `view=summary`, which strips `toolCalls` — so you
-get `toolCallCount` but no tool names. With `--full` you get the names and arguments
-*and* every prompt, completion and tool result, which is usually more than the
-question needs.
 
-`GET /v1/sessions/{id}/timeline` answers it directly and carries no prompts: named
-tool spans with `start`, `end` and a `preview` of the tool's own argument (the Bash
-command, the file path, the URL), plus one span per model call. See
-[Reading timings out](session-api.md#reading-timings-out) for worked queries.
+Without `--full` the script asks the API for `view=summary`. That strips `toolCalls`, so
+you get `toolCallCount` but no tool names. With `--full` you get the names and the
+arguments. You also get every prompt, completion and tool result, which is usually more
+than the question needs.
+
+`GET /v1/sessions/{id}/timeline` answers it directly, and carries no prompts. It returns
+named tool spans. Each span has `start`, `end` and a `preview` of the tool's own argument:
+the Bash command, the file path, or the URL. It also returns one span per model call.
+
+See [Reading timings out](session-api.md#reading-timings-out) for worked queries.
 
 Reach for a dump when you want the session's *contents* as files, which is what it is
 for.
 
 ## What a dump does and does not capture
 
-A dump is a point-in-time copy of what the store still holds, which is not the
-same as everything that ever happened. With the default `session:` config,
-`max_sessions` is 100 and the least-recently-updated session is evicted past
-that; `max_events` and `ttl` are unlimited, so individual sessions are not
-trimmed. Tune those in your config (see `CLAUDE.md`) — a dump cannot recover what
-was already evicted, and nothing survives a restart.
+A dump is a point-in-time copy of what the store still holds. That is not everything
+that ever happened.
 
-For continuous capture rather than snapshots, the API also exposes an SSE stream
-(`GET /v1/events`) that a small consumer can append to a rolling file. That is
-not what this script does, and it is not the plan either —
-[#901](https://github.com/rossoctl/cortex/issues/901) proposes the proxy persist
-sessions itself, which removes the need for an external consumer altogether.
+The default `session:` config sets `max_sessions` to 100. Past that, Cortex evicts the
+least-recently-updated session. `max_events` and `ttl` are unlimited, so Cortex does not
+trim an individual session. Tune these values in your config; see `CLAUDE.md`.
+
+A dump cannot recover a session that was already evicted. Nothing survives a restart.
+
+For continuous capture, use the SSE stream at `GET /v1/events`. A small consumer can
+append it to a rolling file. This script does not do that.
+
+An external consumer is also not the plan.
+[#901](https://github.com/rossoctl/cortex/issues/901) proposes that the proxy persist
+sessions itself, which removes the need for one.
 
 ## Where the logs are
 
@@ -200,8 +214,8 @@ the session API's `47601` / `9094` split.
 
 ## Where the data comes from
 
-Read-only `GET`s against the Session Events API, paging backward from each
-session's newest event with `?before=<seq>`:
+The script makes read-only `GET` requests against the Session Events API. It pages
+backward from each session's newest event with `?before=<seq>`:
 
 | Endpoint | Written to |
 |---|---|
@@ -211,6 +225,6 @@ session's newest event with `?before=<seq>`:
 | `GET /v1/pipeline` | `pipeline.json` |
 | `GET /v1/plugins` | `plugins.json` |
 
-`GET /` on the same port returns a one-line-per-endpoint index, which is the
-quickest way to confirm you are talking to the session API at all. The endpoints
-are documented in full in [`session-api.md`](session-api.md).
+`GET /` on the same port returns an index, one line per endpoint. It is the quickest way
+to confirm that you reached the session API. [`session-api.md`](session-api.md) documents
+every endpoint in full.

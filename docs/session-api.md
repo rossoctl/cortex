@@ -27,6 +27,7 @@ through DNS rebinding. The stats server applies the same check.
 | `DELETE /v1/sessions` | `application/json` | Clear every session: the store, and the session archive where one runs. The cost ledger is kept |
 | `DELETE /v1/sessions/{id}` | `application/json` | Erase one session: the store's entry and, where the archive runs, its files (see below) |
 | `GET /v1/events` | `text/event-stream` | SSE stream of new events; `?session=<id>` filters to one session. Heartbeat every 30s |
+| `GET /v1/export` | `application/x-ndjson` | The session archive as content-free records, one per event — the export for offline analysis; `?session=<id>` and `?since=<duration>` select. A walk that dies past its first record resets the connection rather than ending the body cleanly, so a truncated export reaches a client as an error ([`session-export.md`](session-export.md)) |
 | `GET /v1/pipeline` | `application/json` | Active pipeline composition, per plugin: name, direction, position, capabilities, runtime `config`. `onError` is sent only when it is not the default — in practice `observe`, since an `on_error: off` plugin is not built. A plugin under observe runs and records, but its rejections, body writes and redirects are dropped (header writes still apply), so its `config` says what it would do. agentop renders this as the Pipeline pane (`P`) |
 | `GET /v1/plugins` | `application/json` | Catalog of every registered plugin, active or not. 404 when the binary built its session API without `WithCatalog`. agentop renders this as the Catalog pane (`C`) |
 | `GET /v1/usage` | `application/json` | Windowed usage aggregation — the aggregate behind `agentop cost`; parameters and semantics in [`pricing.md`](pricing.md#reading-usage-over-http) |
@@ -506,9 +507,9 @@ only another session of the same project made a row in that minute.
 - LAST 1H and the usage pane's hour windows show imported turns only after the
   next proxy restart. The import does not feed them.
 
-**Sources.** Claude Code (`claude-code`), Bob (`bob`), Codex (`codex`) and
-OpenCode (`opencode`) are supported now. #1875 adds `pi`. The proxy answers
-`pi` with an error that names the supported agents.
+**Sources.** Claude Code (`claude-code`), Bob (`bob`), Codex (`codex`),
+OpenCode (`opencode`) and Pi (`pi`) are supported. The proxy answers any other
+agent with an error that names the supported agents.
 
 The Claude Code source reads
 `~/.claude/projects/<project>/<uuid>.jsonl`, or the same path under
@@ -587,6 +588,24 @@ program. When the database does not exist, the source imports nothing.
   counts gets no cost.
 - OpenCode does not store its system prompt or its tool list, so an imported
   request has neither.
+
+The Pi source reads `~/.pi/agent/sessions/<dir>/<time>_<id>.jsonl`, or the
+same path under `$PI_CODING_AGENT_DIR/sessions/` when that variable is set in
+the proxy's environment.
+
+- One Pi session file is one session. The session id is the `id` of the
+  file's `session` header line. It is the same id that the extension from
+  `agentop configure pi` sends as `x-session-id`.
+- A file with no `session` header is counted as `unreadable`.
+- A fork (a header with `parentSession`) is its own session. The import does
+  not follow `parentSession`.
+- Each event has the `pi` client and the project of the header's `cwd`.
+- Each assistant message is one turn, error turns included. The request holds
+  the conversation that Pi sent: the turn's own branch of the entry tree, and
+  after a compaction the summary and the kept entries.
+- A Pi turn is priced at today's rates through the pricing table, by model id.
+  The import does not use Pi's own `usage.cost`. A turn with no token counts
+  (for example an error turn) has no cost.
 
 ## `POST /v1/ingest` — rows from cortex-gateway (praxis mode)
 

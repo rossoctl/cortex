@@ -56,6 +56,7 @@ func TestHandleIndex_ListsEveryRegisteredRoute(t *testing.T) {
 		"/v1/sessions/{id}",
 		"DELETE /v1/sessions/{id}",
 		"/v1/events",
+		"/v1/export",
 		"/v1/pipeline",
 		"/v1/plugins",
 		"/v1/usage",

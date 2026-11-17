@@ -789,12 +789,13 @@ agentop import --agent claude-code --since 30d
 agentop import --agent bob                      # Bob's tasks, from ~/.bob/db/bob.db
 agentop import --agent codex                    # Codex's rollouts, from ~/.codex/sessions
 agentop import --agent opencode                 # OpenCode, from ~/.local/share/opencode/opencode.db
+agentop import --agent pi                       # Pi's sessions, from ~/.pi/agent/sessions
 agentop import --since 2026-10-01 --dry-run     # count only, write nothing
 ```
 
 | Flag | Meaning |
 |---|---|
-| `--agent` | `claude-code`, `bob`, `codex`, `opencode` or `pi`. Only `claude-code`, `bob`, `codex` and `opencode` are supported now: the proxy answers `pi` with an error that names the supported agents. #1875 adds it. `bob` and `opencode` need the `sqlite3` program on `PATH` |
+| `--agent` | `claude-code`, `bob`, `codex`, `opencode` or `pi`. `bob` and `opencode` need the `sqlite3` program on `PATH` |
 | `--since` | skip a transcript file last changed before this time: `YYYY-MM-DD` (local midnight) or `<N>d` (N days ago) |
 | `--dry-run` | count what an import would do, and write nothing |
 | `--endpoint` | the session API, as for `agentop cost` |
