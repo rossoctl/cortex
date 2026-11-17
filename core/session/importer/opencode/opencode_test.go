@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -380,41 +381,6 @@ insert into session_message values ('msg_u2', 'ses_useronly', 'assistant', 2, 17
 
 // TestSource_NonIntegerCompletedSkipsOnlyItsRow: data is free-form JSON, so time.completed can
 // be a REAL. That row is skipped, and the listing still decodes.
-// A time column that holds a REAL or a TEXT value does not stop the import. A REAL time gives
-// the same sessions and events as its integer part.
-func TestSource_NonIntegerTimeColumns(t *testing.T) {
-	for _, c := range []struct {
-		update string
-		same   bool // the events equal those of the unchanged fixture
-	}{
-		{`update session_v2 set time_created = 1763000004000.5 where id = 'ses_fork'`, true},
-		{`update session_v2 set time_created = '2025-11-13' where id = 'ses_fork'`, false},
-		{`update session_message set time_updated = 1763000007700.5 where id = 'msg_t7'`, true},
-		{`update session_message set time_created = 1763000005000.5 where id = 'msg_f3'`, true},
-		{`update session_message set time_updated = '2025-11-13' where id = 'msg_f3'`, false},
-	} {
-		t.Run(c.update, func(t *testing.T) {
-			db := fixtureDB(t)
-			base := readAll(t, New(db), time.Time{})
-			if out, err := exec.Command(sqlitecli.Program, db, c.update+";").CombinedOutput(); err != nil {
-				t.Fatalf("%v: %s", err, out)
-			}
-			all := readAll(t, New(db), time.Time{})
-			if !slices.Equal(ids(all), ids(base)) {
-				t.Fatalf("%s: sessions %v, want %v", c.update, ids(all), ids(base))
-			}
-			for i, s := range all {
-				if s.Unreadable {
-					t.Errorf("%s: session %s is unreadable", c.update, s.ID)
-				}
-				if c.same && len(s.Events) != len(base[i].Events) {
-					t.Errorf("%s: session %s has %d events, want %d", c.update, s.ID, len(s.Events), len(base[i].Events))
-				}
-			}
-		})
-	}
-}
-
 func TestSource_NonIntegerCompletedSkipsOnlyItsRow(t *testing.T) {
 	for _, completed := range []string{"1763000006200.5", "1763000006200.0"} {
 		db := fixtureDB(t)
@@ -438,5 +404,61 @@ func TestSource_NonIntegerCompletedSkipsOnlyItsRow(t *testing.T) {
 			return true
 		}, func(int, int) {}) {
 		}
+	}
+}
+
+// A time column with a REAL value is read as its integer part. An assistant row whose time is
+// not a number gives no turn and is counted in Skipped, and so is a fork row whose time_created
+// is not a number. A user row does not need its times.
+func TestSource_NonIntegerTimeColumns(t *testing.T) {
+	for _, c := range []struct {
+		update string
+		drop   string // the request id whose turn is gone, or ""
+	}{
+		{`update session_v2 set time_created = 1763000004000.5 where id = 'ses_fork'`, ""},
+		{`update session_v2 set time_created = '2025-11-13' where id = 'ses_fork'`, "msg_f4"},
+		{`update session_message set time_updated = 1763000007700.5 where id = 'msg_t7'`, ""},
+		{`update session_message set time_created = 1763000005000.5 where id = 'msg_f3'`, ""},
+		{`update session_message set time_updated = '2025-11-13' where id = 'msg_f3'`, ""},
+		{`update session_message set time_created = '2025-11-13' where id = 'msg_f4'`, "msg_f4"},
+		{`update session_message set time_updated = 'abc' where id = 'msg_p2'`, "msg_p2"},
+	} {
+		t.Run(c.update, func(t *testing.T) {
+			sig := func(s importer.Session) []string {
+				var out []string
+				for _, e := range s.Events {
+					if e.RequestID != c.drop {
+						out = append(out, fmt.Sprint(e.RequestID, " ", e.Phase, " ", e.At.UnixMilli()))
+					}
+				}
+				return out
+			}
+			db := fixtureDB(t)
+			base := readAll(t, New(db), time.Time{})
+			if out, err := exec.Command(sqlitecli.Program, db, c.update+";").CombinedOutput(); err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			all := readAll(t, New(db), time.Time{})
+			if !slices.Equal(ids(all), ids(base)) {
+				t.Fatalf("sessions %v, want %v", ids(all), ids(base))
+			}
+			for i, s := range all {
+				b := base[i]
+				dropped := len(sig(b)) != len(b.Events)
+				if got, want := sig(s), sig(b); s.Unreadable || !slices.Equal(got, want) || len(got) != len(s.Events) {
+					t.Errorf("session %s: unreadable %v, events %v, want %v without %q", s.ID, s.Unreadable, got, want, c.drop)
+				}
+				if want := b.Skipped + map[bool]int{true: 1}[dropped]; s.Skipped != want {
+					t.Errorf("session %s: Skipped %d, want %d", s.ID, s.Skipped, want)
+				}
+			}
+			for range New(db).Sessions(time.Time{}, func(id string, at time.Time) bool {
+				if s := sessionByID(t, all, id); at.Before(s.Updated) {
+					t.Errorf("session %s: skip got %v, before Updated %v", id, at, s.Updated)
+				}
+				return true
+			}, func(int, int) {}) {
+			}
+		})
 	}
 }

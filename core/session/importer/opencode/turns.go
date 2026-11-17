@@ -130,7 +130,9 @@ func (p *parser) session(r *sessionRow, msgs []message) ([]model.SessionEvent, i
 			}
 			resp, said, results := blocks(d.Content)
 			// A fork's rows from before the fork are copies of its source's turns.
-			if !fork || m.TimeCreated >= r.TimeCreated {
+			if m.TimeCreated == 0 || m.TimeUpdated == 0 {
+				skipped++ // a time that is not a number
+			} else if !fork || m.TimeCreated >= r.TimeCreated {
 				if req, out := turn(d, conv, resp); req == nil {
 					skipped++
 				} else {

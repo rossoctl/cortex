@@ -66,10 +66,17 @@ type group struct {
 	messages int
 }
 
-const sessionQuery = `select s.id, s.parent_id, s.fork_session_id, s.directory, s.version,
-  cast(s.time_created as integer) as time_created,
-  (select cast(max(max(cast(time_created as integer), min(case when json_extract(data, '$.time.completed') > 0
-      then json_extract(data, '$.time.completed') else cast(time_created as integer) end, cast(time_updated as integer)))) as integer)
+// num gives the integer part of a REAL or INTEGER column, and NULL for any other value. NULL
+// decodes as 0, which is no time. min and max of a NULL give NULL, so last leaves out each row
+// that the parser skips for its time.
+func num(col string) string {
+	return "(case when typeof(" + col + ") in ('integer', 'real') then cast(" + col + " as integer) end)"
+}
+
+var sessionQuery = `select s.id, s.parent_id, s.fork_session_id, s.directory, s.version,
+  ` + num("s.time_created") + ` as time_created,
+  (select cast(max(max(` + num("time_created") + `, min(case when json_extract(data, '$.time.completed') > 0
+      then json_extract(data, '$.time.completed') else ` + num("time_created") + ` end, ` + num("time_updated") + `))) as integer)
     from session_message where session_id = s.id and type = 'assistant' and json_valid(data)
       and not (coalesce(json_type(data, '$.error'), 'null') != 'null'
         and coalesce(json_array_length(data, '$.content'), 0) = 0)) as last,
@@ -169,8 +176,14 @@ func (s source) read(db string, g *group, home string) importer.Session {
 	hasRoot := g.rows[0].ID == g.id
 	read := 0
 	for _, r := range g.rows {
+		if r.ForkID != nil && *r.ForkID != "" && r.TimeCreated == 0 {
+			// With no fork time, the copies of the source's turns cannot be told apart.
+			slog.Warn("importer: an OpenCode fork has no creation time", "session", r.ID)
+			sess.Skipped++
+			continue
+		}
 		var msgs []message
-		if err := sqlitecli.Query(s.prog, db, "select id, type, cast(time_created as integer) as time_created, cast(time_updated as integer) as time_updated, data from session_message where session_id = "+
+		if err := sqlitecli.Query(s.prog, db, "select id, type, "+num("time_created")+" as time_created, "+num("time_updated")+" as time_updated, data from session_message where session_id = "+
 			sqlitecli.Quote(r.ID)+" order by seq", &msgs); err != nil {
 			if r.ID == g.id {
 				slog.Warn("importer: cannot read an OpenCode session", "session", r.ID, "error", err)
