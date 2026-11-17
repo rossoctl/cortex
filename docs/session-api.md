@@ -507,9 +507,9 @@ only another session of the same project made a row in that minute.
 - LAST 1H and the usage pane's hour windows show imported turns only after the
   next proxy restart. The import does not feed them.
 
-**Sources.** Claude Code (`claude-code`), Bob (`bob`), Codex (`codex`) and Pi
-(`pi`) are supported now. #1874 adds the other agent (`opencode`). The
-proxy answers the others with an error that names the supported agents.
+**Sources.** Claude Code (`claude-code`), Bob (`bob`), Codex (`codex`),
+OpenCode (`opencode`) and Pi (`pi`) are supported. The proxy answers any other
+agent with an error that names the supported agents.
 
 The Claude Code source reads
 `~/.claude/projects/<project>/<uuid>.jsonl`, or the same path under
@@ -566,6 +566,28 @@ source imports nothing.
   turn, because some Codex versions write `token_count` after the tool
   results. A turn with no usage has no `cost` record and no ledger row. When a
   later import finds its usage, that import adds the row.
+
+The OpenCode source reads `$XDG_DATA_HOME/opencode/opencode.db`, or
+`~/.local/share/opencode/opencode.db` when `XDG_DATA_HOME` is not set. It
+runs `sqlite3 -readonly -json` as a subprocess, as the Bob source does. When
+`sqlite3` is not on `PATH`, the `opencode` result has an error that names the
+program. When the database does not exist, the source imports nothing.
+
+- The session id is the id that OpenCode sends as `X-Session-Id`:
+  `parent_id` for a subagent, `fork_session_id` for a fork, else the
+  session's own id.
+- A subagent's events are in the session of its parent, with `subagent` set
+  to the subagent's own id.
+- A fork's own turns are in the session of its source. The fork's copies of
+  the earlier messages of the source give no turns.
+- Each event has the `opencode` client with OpenCode's version, the model id
+  that OpenCode records, and the project of the session's directory.
+- Cortex prices each turn at today's rates, with the OpenCode Zen endpoint
+  (`opencode.ai`) for the rate lookup. A Zen `*-free` model prices as zero.
+  Output tokens include OpenCode's reasoning tokens. A turn with no token
+  counts gets no cost.
+- OpenCode does not store its system prompt or its tool list, so an imported
+  request has neither.
 
 The Pi source reads `~/.pi/agent/sessions/<dir>/<time>_<id>.jsonl`, or the
 same path under `$PI_CODING_AGENT_DIR/sessions/` when that variable is set in

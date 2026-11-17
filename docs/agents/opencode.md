@@ -355,6 +355,13 @@ the server, and sent again with the server's main model for the tool-carrying tu
 its helper for the title, before OpenCode saw a refusal; a file was written and read
 back.
 
+## Importing history
+
+`agentop import --agent opencode` adds the sessions that OpenCode keeps in
+`opencode.db` to Cortex's history and cost ledger. It needs the `sqlite3`
+program on `PATH`. Flags and output:
+[`agentop import`](../../cmd/agentop/README.md#importing-agent-history-agentop-import).
+
 ## Known issues
 
 - **One service holds several sessions.** The service's header-less traffic goes under
