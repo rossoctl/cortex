@@ -11,6 +11,7 @@ what Cortex holds in memory. The **archive** is what Cortex has written to disk.
 
 - [Step 1: confirm the proxy has an archive](#step-1-confirm-the-proxy-has-an-archive)
 - [Step 2: list what the archive holds](#step-2-list-what-the-archive-holds)
+  - [Find the id of the session you want](#find-the-id-of-the-session-you-want)
 - [Step 3: export it](#step-3-export-it)
 - [Step 4: select less than everything](#step-4-select-less-than-everything)
 - [Answer a question with the export](#answer-a-question-with-the-export)
@@ -65,6 +66,41 @@ The third column is `resident`:
 Cortex drops a session from the store when the store reaches its session limit, or when
 the session expires. The archive keeps the session after that. This is the reason to
 export: the archive holds history that memory has lost.
+
+### Find the id of the session you want
+
+`--session` takes a **session id**, and it matches that id exactly. It does not match a
+title, and it does not match a prefix.
+
+A session id is the value a client asserted. It is often a UUID. It can also be a plain
+word, such as `default`.
+
+An id alone does not tell you which session it is. List the ids with their titles:
+
+```sh
+curl -s 'http://localhost:47601/v1/sessions?archived=true' \
+  | jq -r '.sessions[] | select(.title) | "\(.id)  \(.title[0:60])"'
+```
+
+```
+849102c5-e59f-404c-8b2e-3dde35e052bb  please address the review comments
+59046505-b6f3-43f5-a2ef-9071c9a847a2  https://github.com/rossoctl/cortex/pull/1854
+24e624cb-b578-42c4-9c8b-9bfbe29341ab  please address Alek's comments
+17051bcc-5ae8-40eb-a975-48488242b93d  Our rossoctl org has several repos
+```
+
+Copy the id from the first column.
+
+> **A title is user content. An export is not.**
+>
+> Cortex derives a title from the session's own events: a `/rename`, else a user query,
+> else ordinary conversation. A title therefore contains prompt text.
+>
+> The export excludes prompt text by design. The command above does not. Use it in your
+> own terminal. Do not paste its output where you would paste an export.
+
+The export carries no title. A record identifies its session by `sessionId` only. To
+label a report, join the ids back to the titles yourself.
 
 ## Step 3: export it
 
@@ -128,18 +164,22 @@ Select by time:
 agentop export --since 7d
 ```
 
-Select by session:
+Select by session id. Get the id from
+[Step 2](#find-the-id-of-the-session-you-want):
 
 ```sh
-agentop export --session today-session
+agentop export --session 849102c5-e59f-404c-8b2e-3dde35e052bb
 ```
 
 Select more than one session. Repeat the flag, or separate the ids with commas:
 
 ```sh
-agentop export --session a --session b
-agentop export --session a,b
+agentop export --session 849102c5-… --session 59046505-…
+agentop export --session 849102c5-…,59046505-…
 ```
+
+An id that the archive does not hold is a refusal, not an empty result. See
+[Read the refusals](#read-the-refusals).
 
 `--since` accepts a day count (`7d`, `30d`) or a Go duration (`168h`, `90m`). It measures
 back from now.
@@ -210,6 +250,49 @@ duckdb -c "
   WHERE model IS NOT NULL
   GROUP BY model ORDER BY calls DESC"
 ```
+
+**See every request in one session, with its token split.** This is the per-request table,
+from one request and with no temporary files:
+
+```sh
+ID=849102c5-e59f-404c-8b2e-3dde35e052bb
+
+curl -s "http://localhost:47601/v1/export?session=$ID" \
+  | jq -r 'select(.phase=="response" and .inputTokens)
+           | [.seq, .durationMs, .ttfbMs, .inputTokens, .cacheReadTokens,
+              .cacheWriteTokens, .outputTokens, .toolCallCount] | @tsv' \
+  | (echo -e "SEQ\tMS\tTTFB\tINPUT\tCACHE_R\tCACHE_W\tOUTPUT\tTOOL_CALLS"; cat) \
+  | column -t
+```
+
+```
+SEQ  MS    TTFB  INPUT  CACHE_R  CACHE_W  OUTPUT  TOOL_CALLS
+6    4500  1020  1280   191800   520      74      2
+4    4250  960   1240   190900   510      67      2
+2    4000  900   1200   190000   500      60      2
+```
+
+Select `phase=="response"`. A request-phase record carries no token counts, because the
+model reports usage on the response.
+
+Remember [Trap 1](#three-traps): the `.inputTokens` test is what keeps non-inference
+records out of the table.
+
+**Do not use the timeline for token counts.** `GET /v1/sessions/{id}/timeline` carries
+`outputTokens` and `liveTokens` only. It has no `inputTokens` and no cache counts. The
+export has all four.
+
+Use each endpoint for what it holds:
+
+| You want | Use | Why |
+|---|---|---|
+| Token counts, latency, status | the export | It has all four token fields |
+| Tool names and spans | the timeline | The export has `toolCallCount`, never names |
+| Both at once | join them on `seq` | No single endpoint has both |
+
+The timeline's `tools` array holds tool spans: real tool traffic that passed through the
+proxy. It is not the list of `toolCalls` that a model asked for. A join on a model call's
+`seq` therefore finds no tool name. This is expected, and it is not a bug.
 
 **Load it into pandas:**
 
