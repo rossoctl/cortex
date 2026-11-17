@@ -175,6 +175,7 @@ func (s source) read(db string, g *group, home string) importer.Session {
 				slog.Warn("importer: cannot read an OpenCode session", "session", r.ID, "error", err)
 				return importer.Session{ID: g.id, Unreadable: true}
 			}
+			slog.Warn("importer: cannot read an OpenCode session", "session", r.ID, "error", err)
 			sess.Skipped++
 			continue
 		}
