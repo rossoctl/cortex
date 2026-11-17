@@ -141,18 +141,20 @@ func TestImport_RunsAndReports(t *testing.T) {
 }
 
 // With "progress": true, Progress lines come before the report line. The first line is
-// 0/total and the last is total/total. A line between them passes the rate limit only when
-// importProgressEvery went by, so the fast case does not assert it.
+// 0/total and the last is total/total. A line between them passes only when importProgressEvery
+// went by since the last line sent.
 func TestImport_ProgressLinesBeforeTheReport(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		gap     time.Duration
-		minimum int
+		name       string
+		every, gap time.Duration
+		want       int
 	}{
-		{"fast", 0, 2},
-		{"slow", importProgressEvery + 50*time.Millisecond, 3},
+		{"middle line dropped", time.Hour, 0, 2},
+		{"middle line sent", 50 * time.Millisecond, 100 * time.Millisecond, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			defer func(old time.Duration) { importProgressEvery = old }(importProgressEvery)
+			importProgressEvery = tc.every
 			ts := importServer(t, []importer.Source{&importSource{
 				sessions: []importer.Session{importSession("s1"), importSession("s2")}, gap: tc.gap}})
 			code, b := postImport(t, ts.URL, `{"progress":true}`)
@@ -169,8 +171,8 @@ func TestImport_ProgressLinesBeforeTheReport(t *testing.T) {
 				got = append(got, p.Progress)
 			}
 			first, last := importer.Progress{Agent: "claude-code", Done: 0, Total: 2}, importer.Progress{Agent: "claude-code", Done: 2, Total: 2}
-			if len(got) < tc.minimum || len(got) > 3 || got[0] != first || got[len(got)-1] != last {
-				t.Fatalf("progress = %+v, want %v first, %v last, %d to 3 lines", got, first, last, tc.minimum)
+			if len(got) != tc.want || got[0] != first || got[len(got)-1] != last {
+				t.Fatalf("progress = %+v, want %d lines, %v first, %v last", got, tc.want, first, last)
 			}
 			for i := 1; i < len(got); i++ {
 				if got[i].Done <= got[i-1].Done {

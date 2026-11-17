@@ -15,8 +15,8 @@ import (
 // importBodyCap is the largest POST /v1/import body.
 const importBodyCap = 4 << 10
 
-// importProgressEvery is the shortest time between two progress lines.
-const importProgressEvery = 250 * time.Millisecond
+// importProgressEvery is the shortest time between two progress lines. A var so tests can set it.
+var importProgressEvery = 250 * time.Millisecond
 
 // Import turns on POST /v1/import. The route exists only when the archive is on, the API is
 // loopback-only and Sources is not empty.
