@@ -1,5 +1,5 @@
 -- A scrubbed opencode.db: only the columns that the OpenCode source reads.
--- Times are milliseconds since the epoch. Group times (the newest time_updated of a group):
+-- Times are milliseconds since the epoch. Group times (the newest assistant time_updated of a group):
 -- ses_tools 1763000009000 (from its subagent ses_child), ses_plain 1763000006000 (from its
 -- fork ses_fork), ses_gone 1763000000200 (ses_orphan, whose parent row does not exist).
 -- ses_fork holds copies of the ses_plain rows, with new ids and the original times.

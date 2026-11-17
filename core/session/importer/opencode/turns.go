@@ -109,7 +109,7 @@ func (p *parser) session(r *sessionRow, msgs []message) ([]model.SessionEvent, i
 		role, subagent = model.AgentRoleSubagent, r.ID
 	}
 	proj := p.project(r.Directory)
-	fork := r.ForkID != nil && *r.ForkID != "" && subagent == ""
+	fork := r.ForkID != nil && *r.ForkID != ""
 	var events []model.SessionEvent
 	var skipped int
 	conv := []convMessage{}
@@ -131,25 +131,24 @@ func (p *parser) session(r *sessionRow, msgs []message) ([]model.SessionEvent, i
 			resp, said, results := blocks(d.Content)
 			// A fork's rows from before the fork are copies of its source's turns.
 			if !fork || m.TimeCreated >= r.TimeCreated {
-				req, out := turn(d, conv, resp)
-				if req == nil {
+				if req, out := turn(d, conv, resp); req == nil {
 					skipped++
-					continue
-				}
-				req.AgentRole, out.AgentRole = role, role
-				respAt := m.TimeCreated
-				if d.Time.Completed > 0 {
-					respAt = d.Time.Completed
-				}
-				respAt = min(respAt, m.TimeUpdated)
-				client := func() *model.EventClient { return &model.EventClient{Name: agentName, Version: r.Version} }
-				events = append(events,
-					model.SessionEvent{At: time.UnixMilli(m.TimeCreated), Direction: model.Outbound, Phase: model.SessionRequest,
-						RequestID: m.ID, Inference: req, Client: client(), Project: proj, Subagent: subagent},
-					model.SessionEvent{At: time.UnixMilli(respAt), Direction: model.Outbound, Phase: model.SessionResponse,
-						RequestID: m.ID, Inference: out, Client: client(), Project: proj, Subagent: subagent})
-				for i := len(events) - 2; i < len(events); i++ {
-					p.in.InternEvent(&events[i])
+				} else {
+					req.AgentRole, out.AgentRole = role, role
+					respAt := m.TimeCreated
+					if d.Time.Completed > 0 {
+						respAt = d.Time.Completed
+					}
+					respAt = min(respAt, m.TimeUpdated)
+					client := func() *model.EventClient { return &model.EventClient{Name: agentName, Version: r.Version} }
+					events = append(events,
+						model.SessionEvent{At: time.UnixMilli(m.TimeCreated), Direction: model.Outbound, Phase: model.SessionRequest,
+							RequestID: m.ID, Inference: req, Client: client(), Project: proj, Subagent: subagent},
+						model.SessionEvent{At: time.UnixMilli(respAt), Direction: model.Outbound, Phase: model.SessionResponse,
+							RequestID: m.ID, Inference: out, Client: client(), Project: proj, Subagent: subagent})
+					for i := len(events) - 2; i < len(events); i++ {
+						p.in.InternEvent(&events[i])
+					}
 				}
 			}
 			conv = append(conv, convMessage{Role: "assistant", Content: said})

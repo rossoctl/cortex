@@ -276,7 +276,7 @@ func TestSource_NewestFirstSinceAndSkip(t *testing.T) {
 
 func TestSource_UnreadableRoot(t *testing.T) {
 	db := fixtureDB(t)
-	if out, err := exec.Command(sqlitecli.Program, db, "alter table session_message rename column type to type_gone").CombinedOutput(); err != nil {
+	if out, err := exec.Command(sqlitecli.Program, db, "alter table session_message rename column data to data_gone").CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
 	sessions := readAll(t, New(db), time.Time{})
@@ -320,5 +320,48 @@ insert into session_message values ('msg_o9', 'ses_orphan2', 'user', 1, 17630000
 	tools := sessionByID(t, got, "ses_tools")
 	if len(tools.Events) == 0 || len(phase(tools, model.SessionRequest, "ses_child")) != 0 {
 		t.Errorf("ses_tools: events %d, want the root row's events and none from ses_child", len(tools.Events))
+	}
+}
+
+// TestSource_SubagentForkGivesNoCopies: a row with both a parent and a fork source holds copies
+// of the source's rows, with new ids. The copies give no turns, as for a fork with no parent.
+func TestSource_SubagentForkGivesNoCopies(t *testing.T) {
+	db := fixtureDB(t)
+	if out, err := exec.Command(sqlitecli.Program, db, `insert into session_v2 values ('ses_child2', 'ses_tools', 'ses_child', '/tmp/tools', '2.0.26', 1763000009500);
+insert into session_message values ('msg_d1', 'ses_child2', 'user', 1, 1763000008000, 1763000008000, '{"text":"go"}');
+insert into session_message values ('msg_d2', 'ses_child2', 'assistant', 2, 1763000008500, 1763000009000,
+  '{"model":{"id":"gpt-5"},"content":[{"type":"text","text":"child reply"}],"tokens":{"input":20,"output":2,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"completed":1763000009000}}');
+insert into session_message values ('msg_d3', 'ses_child2', 'user', 3, 1763000009600, 1763000009600, '{"text":"again"}');
+insert into session_message values ('msg_d4', 'ses_child2', 'assistant', 4, 1763000009700, 1763000009800,
+  '{"model":{"id":"gpt-5"},"content":[{"type":"text","text":"fork child reply"}],"tokens":{"input":30,"output":3,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"completed":1763000009800}}');`).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	s := sessionByID(t, readAll(t, New(db), time.Time{}), "ses_tools")
+	var got []string
+	for _, e := range phase(s, model.SessionRequest, "ses_child2") {
+		got = append(got, e.RequestID)
+	}
+	if !slices.Equal(got, []string{"msg_d4"}) {
+		t.Fatalf("ses_child2 requests %v, want only msg_d4 (msg_d2 is a copy)", got)
+	}
+}
+
+// TestSource_SkipTimeIsLastResponse: rows after the last response (a user row with no reply, an
+// idle row) do not move the time that Sessions gives skip. Else a session that was imported
+// would be parsed again on each run.
+func TestSource_SkipTimeIsLastResponse(t *testing.T) {
+	db := fixtureDB(t)
+	if out, err := exec.Command(sqlitecli.Program, db, `insert into session_message values ('msg_t8', 'ses_tools', 'user', 8, 1763000010000, 1763000010000, '{"text":"no reply yet"}');
+insert into session_message values ('msg_t9', 'ses_tools', 'idle', 9, 1763000010100, 1763000010100, '{}');`).CombinedOutput(); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	all := readAll(t, New(db), time.Time{})
+	skipAt := map[string]time.Time{}
+	for range New(db).Sessions(time.Time{}, func(id string, at time.Time) bool { skipAt[id] = at; return true }, func(int, int) {}) {
+	}
+	for _, s := range all {
+		if !skipAt[s.ID].Equal(s.Updated) {
+			t.Errorf("%s: skip got %v, want Updated %v", s.ID, skipAt[s.ID], s.Updated)
+		}
 	}
 }

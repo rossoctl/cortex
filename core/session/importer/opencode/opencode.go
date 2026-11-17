@@ -43,7 +43,7 @@ type sessionRow struct {
 	Directory   string  `json:"directory"`
 	Version     string  `json:"version"`
 	TimeCreated int64   `json:"time_created"`
-	Last        *int64  `json:"last"` // newest time_updated, in ms; nil when the session has no message
+	Last        *int64  `json:"last"` // newest assistant time_updated, in ms; nil when the session has no assistant message
 	Messages    int     `json:"messages"`
 }
 
@@ -67,7 +67,7 @@ type group struct {
 }
 
 const sessionQuery = `select s.id, s.parent_id, s.fork_session_id, s.directory, s.version, s.time_created,
-  (select max(time_updated) from session_message where session_id = s.id) as last,
+  (select max(time_updated) from session_message where session_id = s.id and type = 'assistant') as last,
   (select count(*) from session_message where session_id = s.id) as messages
 from session_v2 s`
 
