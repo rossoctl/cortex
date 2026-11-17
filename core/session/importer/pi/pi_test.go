@@ -221,8 +221,12 @@ func TestSource_CompactionKeepsFromFirstKept(t *testing.T) {
 	s := sessionByID(t, fixtures(t), treeID)
 	req, _ := turnByText(t, s, "a5")
 	summary := compactionPrefix + "S" + compactionSuffix
-	if got, want := contents(req), []string{summary, "u3", "a3", "u4", "u5"}; !slices.Equal(got, want) {
+	if got, want := contents(req), []string{"SYS", summary, "u3", "a3", "u4", "u5"}; !slices.Equal(got, want) {
 		t.Fatalf("a5 request = %q, want %q", got, want)
+	}
+	// The compaction carries the system message, so the tools stay after the cut.
+	if tools := req.Inference.Tools; len(tools) != 1 || tools[0].Name != "read" {
+		t.Errorf("a5 request Tools = %+v, want [read]", tools)
 	}
 }
 

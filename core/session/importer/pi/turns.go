@@ -36,8 +36,9 @@ type entry struct {
 	Timestamp time.Time `json:"timestamp"`
 	Message   *message  `json:"message"`
 	// compaction and branch_summary
-	Summary          string `json:"summary"`
-	FirstKeptEntryID string `json:"firstKeptEntryId"`
+	Summary          string   `json:"summary"`
+	FirstKeptEntryID string   `json:"firstKeptEntryId"`
+	SystemMessage    *message `json:"systemMessage"` // compaction: the system message at the time of the compaction
 	// context_edit: a JSON null Replacement is "null" and removes the target.
 	TargetID    string          `json:"targetId"`
 	Replacement json.RawMessage `json:"replacement"`
@@ -238,7 +239,15 @@ func request(modelName string, ctx []*entry) any {
 			msgs = append(msgs, convMessage{Role: role, Content: content})
 		}
 	}
-	for _, e := range ctx {
+	setSystem := func(m *message) {
+		var text string
+		_ = json.Unmarshal(m.Content, &text)
+		system, tools = text, nil
+		for _, t := range m.ToolsAdded {
+			tools = append(tools, anthropicTool{Name: t.Name, Description: t.Description, InputSchema: t.Parameters})
+		}
+	}
+	for i, e := range ctx {
 		switch e.Type {
 		case "message":
 			m := e.Message
@@ -254,12 +263,7 @@ func request(modelName string, ctx []*entry) any {
 			}
 			switch m.Role {
 			case "system":
-				var text string
-				_ = json.Unmarshal(m.Content, &text)
-				system, tools = text, nil
-				for _, t := range m.ToolsAdded {
-					tools = append(tools, anthropicTool{Name: t.Name, Description: t.Description, InputSchema: t.Parameters})
-				}
+				setSystem(m)
 			case "user":
 				if isString(content) {
 					add("user", content)
@@ -281,6 +285,12 @@ func request(modelName string, ctx []*entry) any {
 				add("user", textBlocks(branchPrefix+e.Summary+branchSuffix))
 			}
 		case "compaction":
+			if i > 0 {
+				continue // an older compaction in the kept range: Pi gives it no messages
+			}
+			if e.SystemMessage != nil {
+				setSystem(e.SystemMessage)
+			}
 			add("user", textBlocks(compactionPrefix+e.Summary+compactionSuffix))
 		}
 	}
