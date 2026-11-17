@@ -1,0 +1,2 @@
+dropped: context_management,metadata,prompt_cache_key,service_tier
+{"model":"claude-opus-5-5","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":1024}

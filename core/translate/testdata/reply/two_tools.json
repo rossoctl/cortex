@@ -1,0 +1,6 @@
+{"id":"chatcmpl-t2","model":"gpt-x","object":"chat.completion",
+ "choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"Two reads.",
+  "tool_calls":[
+   {"id":"call_a","type":"function","function":{"name":"Read","arguments":"{\"path\":\"a.go\"}"}},
+   {"id":"call_b","type":"function","function":{"name":"Read","arguments":"{\"path\":\"b.go\"}"}}]}}],
+ "usage":{"prompt_tokens":100,"completion_tokens":30,"total_tokens":130,"prompt_tokens_details":{"cached_tokens":64}}}

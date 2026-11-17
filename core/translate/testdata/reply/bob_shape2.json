@@ -1,0 +1,5 @@
+{"id":"chatcmpl-b2","created":1763337600,"model":"claude-opus-5-5","object":"chat.completion",
+ "choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"I will list the files.","reasoning":"",
+  "thinking_blocks":[{"type":"thinking","thinking":"","signature":"CAQSsig"}],
+  "tool_calls":[{"id":"tooluse_Zq1","type":"function","function":{"name":"execute_command","arguments":"{\"command\":\"ls\"}"}}]}}],
+ "usage":{"prompt_tokens":22333,"completion_tokens":216,"total_tokens":22549,"cache_read_input_tokens":21649,"cache_creation_input_tokens":682,"prompt_tokens_details":{"cached_tokens":21649},"completion_tokens_details":{"reasoning_tokens":0}}}

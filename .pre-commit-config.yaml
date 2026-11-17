@@ -4,8 +4,10 @@ repos:
     hooks:
       - id: trailing-whitespace
         # The plans embed unified diffs, whose blank context lines are a lone space.
-        exclude: ^docs/superpowers/plans/
+        # Golden files hold exact output bytes. A fixer must not change them.
+        exclude: ^docs/superpowers/plans/|\.golden$
       - id: end-of-file-fixer
+        exclude: \.golden$
       - id: check-added-large-files
         args: ['--maxkb=1024']
       - id: check-yaml

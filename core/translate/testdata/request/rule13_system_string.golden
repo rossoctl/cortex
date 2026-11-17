@@ -1,0 +1,2 @@
+dropped: 
+{"model":"claude-opus-5-5","messages":[{"role":"system","content":[{"type":"text","text":"You are a helpful agent."}]},{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":1024}

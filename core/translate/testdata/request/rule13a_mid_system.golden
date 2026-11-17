@@ -1,0 +1,2 @@
+dropped: 
+{"model":"claude-opus-5-5","messages":[{"role":"system","content":[{"type":"text","text":"sys"}]},{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","content":"hello"},{"role":"user","content":[{"type":"text","text":"<system-reminder>hook output</system-reminder>"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}],"max_tokens":1024}
