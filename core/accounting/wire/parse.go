@@ -54,10 +54,12 @@ func FormatOf(path string) (Format, bool) {
 // errNotJSON is wrapped into the error Parse returns for a body that is not valid JSON.
 var errNotJSON = errors.New("wire: body is not valid JSON")
 
-// sections are the top-level values Parse reads, found in one pass over the body. On the
-// Responses wire, instructions and input stand for system and messages (W6.3).
+// sections are the top-level values scan reads, found in one pass over the body. instructions and
+// input are the Responses wire's system and messages; responsesSections folds them in only when
+// the body has no messages array (W6.3), the same way the proxy's accSections does.
 type sections struct {
 	tools, system, messages gjson.Result
+	instructions, input     gjson.Result
 }
 
 // Parse splits raw into the sections accountant.NewBody wants, and lists its cache breakpoints.
@@ -68,11 +70,18 @@ type sections struct {
 // accountant#21): the provider's own cache key ignores the marks, and a client moves its marks
 // every turn, so a hash that included them would never find a common prefix with the previous
 // request.
+//
+// f is not used to pick which top-level fields are read: like the proxy's accScan and
+// responsesSections, Parse detects the body's own shape (does it have a messages array, or an
+// input array/string instead), not the endpoint it arrived on. A body whose shape does not match
+// the dialect its path would suggest is still read by its actual shape, which is what the
+// provider itself will read. f stays a parameter for symmetry with FormatOf and for a caller that
+// wants to record which endpoint this body came from.
 func Parse(f Format, raw []byte) (accountant.Body, []accountant.Breakpoint, error) {
 	if !json.Valid(raw) {
 		return accountant.Body{}, nil, fmt.Errorf("%w", errNotJSON)
 	}
-	sec := scan(f, raw)
+	sec := scan(raw)
 	if !sec.messages.IsArray() {
 		return accountant.NewBody(nil, nil, nil), nil, nil
 	}
@@ -102,70 +111,102 @@ func Parse(f Format, raw []byte) (accountant.Body, []accountant.Breakpoint, erro
 	return body, breakpointsOf(sec), nil
 }
 
-// scan reads the top-level sections of raw for format f. For FormatResponses it reads
-// instructions and input (W6.3); for the other two formats it reads tools, system and messages
-// directly — Anthropic has all three, and OpenAI Chat has no top-level system (its system prompt,
-// if any, is a {"role":"system"} entry inside messages, one position like any other).
-func scan(f Format, raw []byte) sections {
+// scan reads the five top-level fields a body may carry, in one pass, then folds the Responses
+// pair (instructions, input) into (system, messages) where that applies — ported field-for-field
+// from the proxy's accScan (proxy/accountant_savings_body.go). Like gjson.Get, the first key of a
+// name wins. The early-return condition only watches tools/system/messages, as accScan's does: a
+// body that has filled those three has nothing left for responsesSections to change anyway, since
+// it only acts when messages is NOT an array.
+func scan(raw []byte) sections {
+	var sec sections
 	root := gjson.ParseBytes(raw)
 	if !root.IsObject() {
-		return sections{}
+		return sec
 	}
-	if f == FormatResponses {
-		return responsesSections(root)
-	}
-	var sec sections
-	var seenTools, seenSystem, seenMessages bool
+	var seen [5]bool
 	root.ForEach(func(k, v gjson.Result) bool {
+		var i int
+		var dst *gjson.Result
 		switch k.String() {
 		case "tools":
-			if !seenTools {
-				seenTools, sec.tools = true, v
-			}
+			i, dst = 0, &sec.tools
 		case "system":
-			if !seenSystem {
-				seenSystem, sec.system = true, v
-			}
+			i, dst = 1, &sec.system
 		case "messages":
-			if !seenMessages {
-				seenMessages, sec.messages = true, v
-			}
+			i, dst = 2, &sec.messages
+		case "instructions":
+			i, dst = 3, &sec.instructions
+		case "input":
+			i, dst = 4, &sec.input
+		default:
+			return true
 		}
-		return !(seenTools && seenSystem && seenMessages)
+		if !seen[i] {
+			seen[i], *dst = true, v
+		}
+		return !(seen[0] && seen[1] && seen[2])
 	})
+	return sec.responsesSections()
+}
+
+// responsesSections reads a Responses body: with no messages array and an input (an array of
+// items, or one string), instructions is the system section and input the messages section. A
+// string input is one position, wrapped as a one-element array so it hashes like any other
+// message. system is preferred over instructions when a body states both (a hybrid gateway that
+// speaks both dialects at once): only an absent system falls back to instructions. Ported
+// verbatim from the proxy's (accSections).responsesSections.
+func (sec sections) responsesSections() sections {
+	if sec.messages.IsArray() || !(sec.input.IsArray() || sec.input.Type == gjson.String) {
+		return sec
+	}
+	if !sec.system.Exists() {
+		sec.system = sec.instructions
+	}
+	sec.messages = sec.input
+	if sec.input.Type == gjson.String {
+		sec.messages = gjson.Parse("[" + sec.input.Raw + "]")
+	}
 	return sec
 }
 
-// responsesSections reads the Responses wire: tools stays tools, instructions is the system
-// section and input is the messages section. A string input is one position, wrapped as a
-// one-element array so it hashes like any other message (W6.3).
-func responsesSections(root gjson.Result) sections {
-	var sec sections
-	var instructions, input gjson.Result
-	var seenTools, seenInstructions, seenInput bool
-	root.ForEach(func(k, v gjson.Result) bool {
-		switch k.String() {
-		case "tools":
-			if !seenTools {
-				seenTools, sec.tools = true, v
-			}
-		case "instructions":
-			if !seenInstructions {
-				seenInstructions, instructions = true, v
-			}
-		case "input":
-			if !seenInput {
-				seenInput, input = true, v
+// AllMarksAsk1h reports whether raw has at least one cache_control mark and every one of them
+// asks for the 1h tier — ported path-for-path from the context-guru proxy's
+// apply.AllBreakpointsAskExtendedTTL (apply/apply.go), which the keeper uses to decide a thread's
+// keep-alive schedule and which facts.For uses for the same "is this whole entry 1h" question
+// W6.4's entryFacts answers. It counts raw marks, not merged positions: a position with two marks
+// (a 5m one and a 1h one) counts as two separate cache_control occurrences here, unlike
+// breakpointsOf's one merged Breakpoint per position — that distinction is exactly why this
+// exists apart from the Breakpoint slice Parse returns: AllBreakpointsAskExtendedTTL must see a
+// lone 5m mark even when it shares a position with a 1h one and the merged Breakpoint says "1h".
+//
+// Anthropic-only in practice: the four gjson paths read messages/system/tools' own cache_control
+// objects, fields a Chat or Responses body does not carry, so this is always false on those
+// wires. No Format parameter is needed to gate that: a path that does not exist in the body
+// simply matches nothing.
+func AllMarksAsk1h(raw []byte) bool {
+	total, extended := 0, 0
+	var walk func(v gjson.Result)
+	walk = func(v gjson.Result) {
+		if v.IsArray() {
+			v.ForEach(func(_, vv gjson.Result) bool { walk(vv); return true })
+			return
+		}
+		if v.IsObject() {
+			total++
+			if v.Get("ttl").String() == "1h" {
+				extended++
 			}
 		}
-		return !(seenTools && seenInstructions && seenInput)
-	})
-	sec.system = instructions
-	sec.messages = input
-	if input.Type == gjson.String {
-		sec.messages = gjson.Parse("[" + input.Raw + "]")
 	}
-	return sec
+	for _, path := range []string{
+		"messages.#.content.#.cache_control",
+		"messages.#.cache_control",
+		"system.#.cache_control",
+		"tools.#.cache_control",
+	} {
+		walk(gjson.GetBytes(raw, path))
+	}
+	return total > 0 && total == extended
 }
 
 // withoutCacheMarks is one position's JSON without any cache_control: its own, the ones on its

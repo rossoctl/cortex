@@ -2,6 +2,7 @@ package wire
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -55,9 +56,16 @@ func TestParse_Golden(t *testing.T) {
 		{"chat_basic", FormatChat},
 		{"chat_system_msg", FormatChat},
 		{"responses_basic", FormatResponses},
+		// system is preferred over instructions when a body states both.
+		{"responses_system_over_instructions", FormatResponses},
+		// A body shaped like Responses (input, no messages) read with every OTHER format too:
+		// Parse goes by the body's own shape, not by f, exactly like the proxy's accScan.
+		{"responses_shape_ignores_path", FormatResponses},
+		{"responses_shape_ignores_path", FormatAnthropic},
+		{"responses_shape_ignores_path", FormatChat},
 	}
 	for _, c := range cases {
-		t.Run(c.file, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/fmt=%d", c.file, c.fmt), func(t *testing.T) {
 			raw, err := os.ReadFile(filepath.Join("testdata", c.file+".json"))
 			if err != nil {
 				t.Fatalf("read fixture: %v", err)
@@ -178,5 +186,53 @@ func TestFormatOf(t *testing.T) {
 		if ok != c.ok || (ok && got != c.want) {
 			t.Errorf("FormatOf(%q) = %v, %v; want %v, %v", c.path, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+// TestAllMarksAsk1h pins the W6.6/W6.4 "every raw mark, not merged positions" rule: a position
+// whose merged Breakpoint would read "1h" (because one of its marks does) must still make this
+// false when another mark at that same position asked "5m" — the question
+// apply.AllBreakpointsAskExtendedTTL answers for the proxy's keeper.
+func TestAllMarksAsk1h(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{
+			"every mark asks 1h",
+			`{"system":[{"type":"text","text":"a","cache_control":{"ttl":"1h"}}],"messages":[{"role":"user","content":"hi"}]}`,
+			true,
+		},
+		{
+			"one of two marks asks 1h",
+			`{"system":[{"type":"text","text":"a","cache_control":{"ttl":"5m"}},{"type":"text","text":"b","cache_control":{"ttl":"1h"}}],"messages":[{"role":"user","content":"hi"}]}`,
+			false,
+		},
+		{
+			"no marks at all",
+			`{"system":"a","messages":[{"role":"user","content":"hi"}]}`,
+			false,
+		},
+		{
+			// One message carries both its own 5m mark and a nested content-block 1h mark: the
+			// merged Breakpoint for this position would read "1h" (breakpointsOf's "1h wins"
+			// rule), but AllMarksAsk1h must still see the 5m mark and answer false.
+			"element mark and nested content mark disagree on one message",
+			`{"system":"a","messages":[{"role":"user","cache_control":{"ttl":"5m"},"content":[{"type":"text","text":"hi","cache_control":{"ttl":"1h"}}]}]}`,
+			false,
+		},
+		{
+			"an OpenAI-shaped body has no cache_control fields to find",
+			`{"model":"gpt-5","messages":[{"role":"user","content":"hi"}]}`,
+			false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := AllMarksAsk1h([]byte(c.raw)); got != c.want {
+				t.Errorf("AllMarksAsk1h(%s) = %v, want %v", c.name, got, c.want)
+			}
+		})
 	}
 }

@@ -18,7 +18,12 @@ func TestClassify(t *testing.T) {
 		// by its own hostname, because the dialect is what decides which provider's cache rules
 		// apply on the wire.
 		{"litellm anthropic dialect", "litellm.local:4000", "/v1/messages", ProviderAnthropic},
-		{"unknown", "gateway.example.com", "/v1/embeddings", ProviderUnknown},
+		{"unknown path", "gateway.example.com", "/v1/embeddings", ProviderUnknown},
+		// Classification is by path only (review round 1): a host whose name contains
+		// "anthropic" on a path this package does not recognize must still be Unknown, not
+		// Anthropic by a hostname guess.
+		{"anthropic-looking host, unrecognized path", "api.anthropic.com", "/v1/embeddings", ProviderUnknown},
+		{"openai-looking host, unrecognized path", "api.openai.com", "/v1/embeddings", ProviderUnknown},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -29,47 +34,41 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+// TestFor_Anthropic pins entryFacts' CacheLifetimeExact branch: only TTL and Lifetime are set,
+// never MinCacheable or Provider — the proxy's entryFacts does not set those fields either.
 func TestFor_Anthropic(t *testing.T) {
 	cases := []struct {
-		name         string
-		model        string
-		breakpoints  []accountant.Breakpoint
-		wantTTL      time.Duration
-		wantMinCache int
+		name          string
+		allMarksAsk1h bool
+		wantTTL       time.Duration
 	}{
-		{"sonnet, no breakpoints", "claude-sonnet-4-5", nil, 5 * time.Minute, minCacheableDefault},
-		{
-			"sonnet, 1h breakpoint", "claude-sonnet-4-5",
-			[]accountant.Breakpoint{{Pos: accountant.Position{Section: accountant.SectionSystem}, TTL: "1h"}},
-			time.Hour, minCacheableDefault,
-		},
-		{"haiku, no breakpoints", "claude-haiku-4-5", nil, 5 * time.Minute, minCacheableHaiku},
+		{"no marks ask 1h", false, 5 * time.Minute},
+		{"every mark asks 1h", true, time.Hour},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := For(ProviderAnthropic, c.model, c.breakpoints)
+			got := For(ProviderAnthropic, "claude-sonnet-4-5", c.allMarksAsk1h)
 			if got.TTL != c.wantTTL {
 				t.Errorf("TTL = %v, want %v", got.TTL, c.wantTTL)
 			}
 			if got.Lifetime != accountant.LifetimeExact {
 				t.Errorf("Lifetime = %v, want %v", got.Lifetime, accountant.LifetimeExact)
 			}
-			if got.MinCacheable != c.wantMinCache {
-				t.Errorf("MinCacheable = %d, want %d", got.MinCacheable, c.wantMinCache)
+			if got.MinCacheable != 0 {
+				t.Errorf("MinCacheable = %d, want 0 (the proxy's entryFacts never sets it)", got.MinCacheable)
 			}
-			if got.Provider.ReadGranularity != 1 {
-				t.Errorf("ReadGranularity = %d, want 1", got.Provider.ReadGranularity)
+			if got.Provider.ReadGranularity != 0 {
+				t.Errorf("Provider.ReadGranularity = %d, want 0", got.Provider.ReadGranularity)
 			}
-			wantTTLs := []string{"5m", "1h"}
-			if len(got.Provider.TTLs) != len(wantTTLs) || got.Provider.TTLs[0] != wantTTLs[0] || got.Provider.TTLs[1] != wantTTLs[1] {
-				t.Errorf("Provider.TTLs = %v, want %v", got.Provider.TTLs, wantTTLs)
+			if got.Provider.TTLs != nil {
+				t.Errorf("Provider.TTLs = %v, want nil", got.Provider.TTLs)
 			}
 		})
 	}
 }
 
 func TestFor_Unknown(t *testing.T) {
-	got := For(ProviderUnknown, "whatever-model", nil)
+	got := For(ProviderUnknown, "whatever-model", false)
 	if got.Lifetime != accountant.LifetimeUnknown {
 		t.Errorf("Lifetime = %v, want %v", got.Lifetime, accountant.LifetimeUnknown)
 	}
@@ -78,12 +77,38 @@ func TestFor_Unknown(t *testing.T) {
 	}
 }
 
+// TestFor_OpenAI pins modelinfo.OpenAI30MinuteCache's gate: GPT-5.6 and later get the documented
+// 30-minute minimum; everything else — including a model this table cannot parse at all — gets
+// the undocumented, unproven retention (LifetimeUnknown). Neither branch sets MinCacheable or
+// Provider, matching entryFacts.
 func TestFor_OpenAI(t *testing.T) {
-	got := For(ProviderOpenAI, "gpt-5", nil)
-	if got.Lifetime != accountant.LifetimeUnknown {
-		t.Errorf("Lifetime = %v, want %v", got.Lifetime, accountant.LifetimeUnknown)
+	cases := []struct {
+		name         string
+		model        string
+		wantLifetime accountant.LifetimeKind
+		wantTTL      time.Duration
+	}{
+		{"gpt-5.6, documented 30-minute minimum", "gpt-5.6", accountant.LifetimeMinimum, 30 * time.Minute},
+		{"gpt-5.6 with a routing prefix", "azure/gpt-5.6-luna", accountant.LifetimeMinimum, 30 * time.Minute},
+		{"gpt-6, also covered by the 5.6+ gate", "gpt-6", accountant.LifetimeMinimum, 30 * time.Minute},
+		{"gpt-5, older than the gate", "gpt-5", accountant.LifetimeUnknown, 5 * time.Minute},
+		{"an unknown model name", "mystery-model", accountant.LifetimeUnknown, 5 * time.Minute},
 	}
-	if got.Provider.ReadGranularity != 128 {
-		t.Errorf("ReadGranularity = %d, want 128", got.Provider.ReadGranularity)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := For(ProviderOpenAI, c.model, false)
+			if got.Lifetime != c.wantLifetime {
+				t.Errorf("Lifetime = %v, want %v", got.Lifetime, c.wantLifetime)
+			}
+			if got.TTL != c.wantTTL {
+				t.Errorf("TTL = %v, want %v", got.TTL, c.wantTTL)
+			}
+			if got.MinCacheable != 0 {
+				t.Errorf("MinCacheable = %d, want 0", got.MinCacheable)
+			}
+			if got.Provider.ReadGranularity != 0 {
+				t.Errorf("Provider.ReadGranularity = %d, want 0", got.Provider.ReadGranularity)
+			}
+		})
 	}
 }
