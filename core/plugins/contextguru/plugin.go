@@ -306,19 +306,8 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		Session:  sid,
 		Models:   models,
 	})
-	out, changed := res.Body, res.Changed
-	// Name the request's accounting thread from the engine's own thread split (design
-	// §5.4/§5.5). res.Trace.Thread.ID is empty with no Opts.ThreadOf wired (unchanged in
-	// this task), and SetAccountingThread's empty-id no-op then leaves
-	// core/accounting.ThreadOf's default rule ("main" for the primary agent) in place.
-	threadParent, _ := res.Trace.Thread.InheritsFrom()
-	pctx.SetAccountingThread(res.Trace.Thread.ID, threadParent)
+	out, changed := reportResult(pctx, res)
 	if changed && len(out) > 0 {
-		// The engine's own context operations (W5.1/W4.6): reported here regardless of
-		// whether the write below applies, because ReportOps itself stamps DryRun when
-		// this plugin runs under on_error: observe — the accountant still sees what the
-		// engine WOULD have sent.
-		pctx.ReportOps(res.Trace.Ops...)
 		// Per-request byte-level view (the engine's token-level view is logged by
 		// logEmitter.Run). The framework also emits a body-mutation session event.
 		// The message follows this plugin's own SetBody result, not BodyMutated: under
@@ -332,6 +321,31 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 			"bytesBefore", before, "bytesAfter", len(out), "pctSaved", pct(before, len(out)))
 	}
 	return cont
+}
+
+// reportResult reports one apply.BodyOpts result to the accountant and returns the body
+// to forward and whether it changed. Split out of OnRequest so the accounting side
+// (what gets reported, and when) is testable directly against a hand-built apply.Result,
+// without re-running the engine — a second apply.BodyOpts call against the same
+// session/store would observe state the first call already mutated, not reproduce it.
+//
+// Thread: names the request's accounting thread from the engine's own thread split
+// (design §5.4/§5.5). res.Trace.Thread.ID is empty with no Opts.ThreadOf wired (unchanged
+// in this task), and SetAccountingThread's empty-id no-op then leaves
+// core/accounting.ThreadOf's default rule ("main" for the primary agent) in place.
+//
+// Ops: reported only when the engine produced a rewrite (changed && non-empty out), and
+// regardless of whether the caller's subsequent SetBody actually applies it — ReportOps
+// itself stamps DryRun when the plugin runs under on_error: observe, so the accountant
+// still sees what the engine WOULD have sent (W5.1/W4.6).
+func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool) {
+	threadParent, _ := res.Trace.Thread.InheritsFrom()
+	pctx.SetAccountingThread(res.Trace.Thread.ID, threadParent)
+	out, changed = res.Body, res.Changed
+	if changed && len(out) > 0 {
+		pctx.ReportOps(res.Trace.Ops...)
+	}
+	return out, changed
 }
 
 // OnResponse is a pass-through in v1. The model-driven expand loop (resolve

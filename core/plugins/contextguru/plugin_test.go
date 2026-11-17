@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	bschemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/rossoctl/accountant"
+	"github.com/rossoctl/context-guru/apply"
 	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/llmclient"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -233,7 +235,9 @@ func TestOnRequest_LogsWhetherItsOwnRewriteApplied(t *testing.T) {
 
 // A request the engine compacts reports its context operations to the accountant, each still
 // carrying the "context-guru.<component>" operator the library itself stamps (so the framework's
-// ReportOps does not overwrite it with the plugin's own name).
+// ReportOps does not overwrite it with the plugin's own name). The collapse engine on this fixture
+// produces exactly one rewrite op; see TestReportResult_ForwardsOpsUnchanged for the general proof
+// that reportResult forwards Trace.Ops unchanged (this test only pins the end-to-end shape).
 func TestPlugin_ReportsEngineOps(t *testing.T) {
 	p := configured(t, collapseEngine)
 	body := chatBody(bigToolOutput())
@@ -245,12 +249,72 @@ func TestPlugin_ReportsEngineOps(t *testing.T) {
 		t.Fatal("expected the engine to compact this body")
 	}
 	ops := pctx.ReportedOps()
-	if len(ops) == 0 {
-		t.Fatal("expected pctx.ReportedOps() to carry the engine's context operations")
+	if len(ops) != 1 {
+		t.Fatalf("expected exactly one reported op for this fixture, got %d: %+v", len(ops), ops)
 	}
-	for _, op := range ops {
-		if !strings.HasPrefix(op.Operator, "context-guru.") {
-			t.Errorf("op %+v: want Operator prefixed %q", op, "context-guru.")
+	op := ops[0]
+	if !strings.HasPrefix(op.Operator, "context-guru.") {
+		t.Errorf("op %+v: want Operator prefixed %q", op, "context-guru.")
+	}
+	if op.Kind == accountant.KindRewrite && !(op.SizeBefore.Bytes > op.SizeAfter.Bytes) {
+		t.Errorf("rewrite op %+v: want SizeBefore.Bytes (%d) > SizeAfter.Bytes (%d)",
+			op, op.SizeBefore.Bytes, op.SizeAfter.Bytes)
+	}
+}
+
+// reportResult must forward the engine's ops to the accountant unchanged — same Kind, ChangeID,
+// At, Spans, SizeBefore, SizeAfter — not just "something with the right Operator prefix" per op.
+// Built against a hand-built apply.Result rather than a second apply.BodyOpts call: the engine's
+// store/session state is already mutated by the first call, so a second call would observe
+// different state rather than reproduce the same ops.
+func TestReportResult_ForwardsOpsUnchanged(t *testing.T) {
+	pctx := inferencePctx("/v1/chat/completions", nil)
+	pctx.SetCurrentPlugin("context-guru", pipeline.InvocationPhaseRequest)
+	defer pctx.ClearCurrentPlugin()
+
+	wantOps := []accountant.Operation{
+		{
+			Kind:     accountant.KindRewrite,
+			Operator: "context-guru.collapse",
+			ChangeID: "context-guru:collapse:aaaaaa",
+			At:       accountant.Position{Section: accountant.SectionMessages, Index: 1},
+			Spans: []accountant.Span{{
+				Section: accountant.SectionMessages, From: 1, To: 1,
+				SizeBefore: accountant.Size{Bytes: 500}, SizeAfter: accountant.Size{Bytes: 50},
+			}},
+			SizeBefore: accountant.Size{Bytes: 500},
+			SizeAfter:  accountant.Size{Bytes: 50},
+		},
+		{
+			Kind:       accountant.KindSetting,
+			Operator:   "context-guru.offload",
+			ChangeID:   "context-guru:offload:bbbbbb",
+			At:         accountant.Position{Section: accountant.SectionMessages, Index: 2},
+			SizeBefore: accountant.Size{Bytes: 300},
+			SizeAfter:  accountant.Size{Bytes: 0},
+		},
+	}
+	res := apply.Result{
+		Body:    []byte(`{"ok":true}`),
+		Changed: true,
+		Trace:   apply.Trace{Ops: append([]accountant.Operation(nil), wantOps...)},
+	}
+
+	out, changed := reportResult(pctx, res)
+	if !changed || string(out) != `{"ok":true}` {
+		t.Fatalf("reportResult = (%q, %v), want (%q, true)", out, changed, `{"ok":true}`)
+	}
+
+	gotOps := pctx.ReportedOps()
+	if len(gotOps) != 2 {
+		t.Fatalf("got %d ops, want 2: %+v", len(gotOps), gotOps)
+	}
+	if !reflect.DeepEqual(gotOps, wantOps) {
+		t.Fatalf("ReportedOps() = %+v, want %+v (forwarded unchanged)", gotOps, wantOps)
+	}
+	for _, op := range gotOps {
+		if op.Kind == accountant.KindRewrite && !(op.SizeBefore.Bytes > op.SizeAfter.Bytes) {
+			t.Errorf("rewrite op %+v: want SizeBefore.Bytes > SizeAfter.Bytes", op)
 		}
 	}
 }
@@ -327,6 +391,9 @@ func TestPlugin_ModelCallIsSpendOp(t *testing.T) {
 	}
 	if op.Call.Detached {
 		t.Error("Detached = true, want false")
+	}
+	if op.Operator != "context-guru" {
+		t.Errorf("Operator = %q, want %q", op.Operator, "context-guru")
 	}
 }
 
