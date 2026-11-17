@@ -284,9 +284,10 @@ has no spawn link: nothing on the wire names the call that started it.
   had not sent before.
 - A **job** is a background shell command, from the tool result that
   acknowledged it (`Command running in background with ID: …`) to the first
-  `<task-notification>` naming that id. Its tool call ends at the
+  `<task-notification>` naming that id, or to the `TaskStop` result that
+  stopped it (a stopped job gets no notification). Its tool call ends at the
   acknowledgement, so the job is what shows it still running. A job with no
-  `end` is one no notification named: still running, or never reported, as a
+  `end` is one no notification or `TaskStop` named: still running, or never reported, as a
   server left running when its agent exited is. A job whose agent was cut off
   ends where its tools do: at the first failed dial to a model host after the
   agent's last call. Absent when the session started none.
