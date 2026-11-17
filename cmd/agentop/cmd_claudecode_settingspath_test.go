@@ -177,15 +177,9 @@ func TestClaudeCodeEnable_LeavesAnOlderRelativeEntryToItsProject(t *testing.T) {
 
 // A relative --settings given again where an older enable recorded it finds
 // that entry, so disable takes it out and keeps every edit: one key edited
-// since, that key alone left, every key edited, and a record from before
-// Written.
+// since, and a record from before Written.
 func TestClaudeCodeDisable_FindsAnOlderRelativeEntry(t *testing.T) {
 	const corpCA = "/etc/corp-ca.pem"
-	everyKey := map[string]string{}
-	for _, k := range managedKeys {
-		everyKey[k] = corpCA
-	}
-	everyKey[envProxy] = "http://corp.example:3128"
 	for _, c := range []struct {
 		name string
 		want map[string]string // the env disable leaves
@@ -193,12 +187,6 @@ func TestClaudeCodeDisable_FindsAnOlderRelativeEntry(t *testing.T) {
 	}{
 		{"a key edited since", map[string]string{envCACerts: corpCA}, func(t *testing.T, proj, _ string) {
 			handEdit(t, proj, map[string]string{envCACerts: corpCA})
-		}},
-		{"only an edited key left", map[string]string{envCACerts: corpCA}, func(t *testing.T, proj, _ string) {
-			writeHomeFile(t, proj, `{"env":{"`+envCACerts+`":"`+corpCA+`"}}`)
-		}},
-		{"every key edited", everyKey, func(t *testing.T, proj, _ string) {
-			handEdit(t, proj, everyKey)
 		}},
 		{"a record from before Written", nil, func(t *testing.T, _, state string) {
 			st, _ := readState(state)
@@ -311,14 +299,14 @@ func TestClaudeCodeTakesAnOlderRelativeEntryWithAConfirmedChange(t *testing.T) {
 				edits[k] = "/etc/corp-ca.pem"
 			}
 			handEdit(t, proj, edits)
-		}, settingsRel, "run again with --yes", false},
+		}, settingsRel, "delete it from", false},
 		{"a disable with nothing to remove beside another file", "disable", func(t *testing.T, proj string) {
 			edits := map[string]string{}
 			for _, k := range managedKeys {
 				edits[k] = "/etc/corp-ca.pem"
 			}
 			handEdit(t, proj, edits)
-		}, settingsRel, "run again with --yes", true},
+		}, settingsRel, "delete it from", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sc := newUninstallScene(t)
@@ -360,6 +348,60 @@ func TestClaudeCodeTakesAnOlderRelativeEntryWithAConfirmedChange(t *testing.T) {
 			}
 			if !strings.Contains(out.String(), c.note) {
 				t.Errorf("the output does not say %q:\n%s", c.note, out.String())
+			}
+		})
+	}
+}
+
+// A disable with --yes that removes nothing keeps the older relative entry and
+// says how to delete it: in the project that holds it, with every key edited or
+// only an edited key left, and in another project holding only the user's own
+// key.
+func TestClaudeCodeKeepsAnOlderRelativeEntryWhenADisableRemovesNothing(t *testing.T) {
+	everyKey := map[string]string{envProxy: "http://corp.example:3128"}
+	for _, k := range managedKeys[1:] {
+		everyKey[k] = "/etc/corp-ca.pem"
+	}
+	for _, c := range []struct {
+		name string
+		dir  string // where disable runs, under home
+		env  map[string]string
+	}{
+		{"every key edited", "a", everyKey},
+		{"only an edited key left", "a", map[string]string{envCACerts: "/etc/corp-ca.pem"}},
+		{"another project with only its own key", "b", map[string]string{envCACerts: "/etc/b-corp.pem"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t)
+			a := filepath.Join(sc.home, "a", settingsRel)
+			writeHomeFile(t, a, "{}\n")
+			state := filepath.Join(sc.home, stateRel)
+			t.Chdir(filepath.Join(sc.home, "a"))
+			if code := claudeCodeEnable2(settingsRel, filepath.Join(sc.home, cortexCfgRel), state, true, io.Discard, io.Discard); code != 0 {
+				t.Fatalf("fixture: relative enable exit %d", code)
+			}
+			routed := readEnv(t, a)
+			file := filepath.Join(sc.home, c.dir, settingsRel)
+			writeHomeFile(t, file, `{"env":{}}`)
+			handEdit(t, file, c.env)
+
+			t.Chdir(filepath.Join(sc.home, c.dir))
+			var out, errb bytes.Buffer
+			if code := runClaudeCode([]string{"disable", "--yes", "--settings", settingsRel}, &out, &errb); code != 0 {
+				t.Fatalf("disable exit %d: %s", code, errb.String())
+			}
+			if env := readEnv(t, file); !maps.Equal(env, c.env) {
+				t.Errorf("env is %v, want %v kept", env, c.env)
+			}
+			if st, _ := readState(state); st == nil || st.Settings != settingsRel || len(st.OtherFiles) != 0 {
+				t.Errorf("the record is %+v, want the relative entry alone", st)
+			}
+			if !strings.Contains(out.String(), "delete it from "+state) {
+				t.Errorf("disable does not say how to delete the older entry:\n%s", out.String())
+			}
+			if c.dir == "b" && !maps.Equal(readEnv(t, a), routed) {
+				t.Errorf("a's settings changed: %v", readEnv(t, a))
 			}
 		})
 	}

@@ -183,8 +183,8 @@ func recordIndex(st *managedState, settingsPath string) int {
 // the relative path given again here, and returns a func that puts that entry
 // back as it was. The entry has no directory, and Cortex's values are the same
 // in every project, so runClaudeCode keeps the change only when the run succeeds
-// and either changes abs or has --yes. A file holding none of the keys Cortex
-// manages leaves the entry as it is, as does an entry abs already has.
+// and changes abs. A file holding none of the keys Cortex manages leaves the
+// entry as it is, as does an entry abs already has.
 func adoptRelativeEntry(statePath, rel, abs string, stdout io.Writer) (func() error, error) {
 	st, err := readState(statePath)
 	if err != nil || recordFor(st, abs) != nil {
@@ -210,7 +210,7 @@ func adoptRelativeEntry(statePath, rel, abs string, stdout io.Writer) (func() er
 		return nil, err
 	}
 	fmt.Fprintf(stdout, "The record's entry for %s is from an older agentop, which did not record\n"+
-		"its directory. A change confirmed here, or --yes, takes it as %s;\n"+
+		"its directory. A run that changes this file takes it as %s;\n"+
 		"give --settings as an absolute path to leave the entry as it is.\n\n", rel, abs)
 	was.Settings, was.OtherFiles = rel, nil
 	// The undo keeps every other entry as the record then holds it. An entry the
@@ -476,17 +476,17 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 	default:
 		return claudeCodeStatus(*settingsPath, stdout)
 	}
-	// An adopted entry stays when the run succeeded and the user confirmed it: by
-	// a change they agreed to, or by --yes.
+	// An adopted entry stays when the run succeeded and changed the file: a run
+	// that changes nothing, --yes or not, says nothing of whose file it is.
 	if undo != nil {
 		after, _ := os.ReadFile(*settingsPath)
-		if code != 0 || !yes && bytes.Equal(before, after) {
+		if code != 0 || bytes.Equal(before, after) {
 			if err := undo(); err != nil {
 				fmt.Fprintf(stderr, "agentop: could not put back %s (%v)\n", statePath, err)
 				return 1
 			}
 			if code == 0 {
-				fmt.Fprintf(stdout, "The older entry stays as it was; run again with --yes if it names %s.\n", *settingsPath)
+				fmt.Fprintf(stdout, "The older entry stays as it was. If it names %s, delete it from %s.\n", *settingsPath, statePath)
 			}
 		}
 	}

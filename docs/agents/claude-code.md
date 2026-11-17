@@ -52,6 +52,12 @@ whose value changed after `enable`, and it names each key it did not change. Eac
 settings file `enable` routed, such as a project's and the default one, has its own
 entry. `agentop uninstall` runs the same `disable` on each.
 
+An older `agentop` recorded a relative `--settings` as given, with no directory, so
+after an upgrade `enable` or `disable` with that relative path says the entry is
+from an older agentop. A run that changes the file takes the entry for it; a run
+that changes nothing leaves the entry and names the record to delete it from if it
+is this file's. An absolute `--settings` leaves the entry alone.
+
 `disable` restores every value, but not the file's text. For example, it sorts the keys, uses a
 2-space indent, puts each array item on its own line, and writes `&`, `<` and `>` as
 `\u0026`, `\u003c` and `\u003e`. `settings.json.bak` holds the file as it was before the
