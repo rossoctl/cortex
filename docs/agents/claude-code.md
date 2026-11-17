@@ -54,9 +54,10 @@ entry. `agentop uninstall` runs the same `disable` on each.
 
 An older `agentop` recorded a relative `--settings` as given, with no directory, so
 after an upgrade `enable` or `disable` with that relative path says the entry is
-from an older agentop. A run that changes the file takes the entry for it; a run
-that changes nothing leaves the entry and names the record to delete it from if it
-is this file's. An absolute `--settings` leaves the entry alone.
+from an older agentop. A run that changes the file takes the entry for it, so
+`disable` and then `enable` from the project moves the entry to its absolute path.
+A run that changes nothing leaves the entry as it was. An absolute `--settings`
+leaves the entry alone.
 
 `disable` restores every value, but not the file's text. For example, it sorts the keys, uses a
 2-space indent, puts each array item on its own line, and writes `&`, `<` and `>` as

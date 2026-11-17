@@ -407,6 +407,36 @@ func TestClaudeCodeKeepsAnOlderRelativeEntryWhenADisableRemovesNothing(t *testin
 	}
 }
 
+// An enable that changes nothing leaves the file routed, so its note keeps the
+// entry and names the runs that record it under the absolute path.
+func TestClaudeCodeEnableThatChangesNothingSaysHowToRecordTheOlderEntry(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t)
+	proj := filepath.Join(sc.home, "proj", settingsRel)
+	writeHomeFile(t, proj, "{}\n")
+	state := filepath.Join(sc.home, stateRel)
+	t.Chdir(filepath.Join(sc.home, "proj"))
+	if code := claudeCodeEnable2(settingsRel, filepath.Join(sc.home, cortexCfgRel), state, true, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("fixture: relative enable exit %d", code)
+	}
+
+	var out, errb bytes.Buffer
+	if code := runClaudeCode([]string{"enable", "--yes", "--settings", settingsRel}, &out, &errb); code != 0 {
+		t.Fatalf("enable exit %d: %s", code, errb.String())
+	}
+	if s := out.String(); !strings.Contains(s, "run disable and then enable") || strings.Contains(s, "delete it from") {
+		t.Errorf("the note after an enable that changes nothing is:\n%s", s)
+	}
+	for _, action := range []string{"disable", "enable"} {
+		if code := runClaudeCode([]string{action, "--yes", "--settings", settingsRel}, io.Discard, &errb); code != 0 {
+			t.Fatalf("%s exit %d: %s", action, code, errb.String())
+		}
+	}
+	if st, _ := readState(state); st == nil || st.Settings != proj || len(st.OtherFiles) != 0 {
+		t.Errorf("the record is %+v, want %s alone", st, proj)
+	}
+}
+
 // Putting the older entry back keeps what another run records while the prompt
 // waits: an entry for another file, and the disable of this one.
 func TestClaudeCodeKeepsWhatAnotherRunRecordsDuringThePrompt(t *testing.T) {

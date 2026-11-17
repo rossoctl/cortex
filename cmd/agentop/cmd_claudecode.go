@@ -485,7 +485,12 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 				fmt.Fprintf(stderr, "agentop: could not put back %s (%v)\n", statePath, err)
 				return 1
 			}
-			if code == 0 {
+			// After enable the file still routes, so the entry is what lets
+			// uninstall find it; disable and then enable record it under abs.
+			if code == 0 && action == "enable" {
+				fmt.Fprintf(stdout, "The older entry stays as it was. If it names %s,\n"+
+					"run disable and then enable with this --settings to record it there.\n", *settingsPath)
+			} else if code == 0 {
 				fmt.Fprintf(stdout, "The older entry stays as it was. If it names %s, delete it from %s.\n", *settingsPath, statePath)
 			}
 		}
