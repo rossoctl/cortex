@@ -66,9 +66,10 @@ type group struct {
 	messages int
 }
 
-const sessionQuery = `select s.id, s.parent_id, s.fork_session_id, s.directory, s.version, s.time_created,
-  (select cast(max(max(time_created, min(case when json_extract(data, '$.time.completed') > 0
-      then json_extract(data, '$.time.completed') else time_created end, time_updated))) as integer)
+const sessionQuery = `select s.id, s.parent_id, s.fork_session_id, s.directory, s.version,
+  cast(s.time_created as integer) as time_created,
+  (select cast(max(max(cast(time_created as integer), min(case when json_extract(data, '$.time.completed') > 0
+      then json_extract(data, '$.time.completed') else cast(time_created as integer) end, cast(time_updated as integer)))) as integer)
     from session_message where session_id = s.id and type = 'assistant' and json_valid(data)
       and not (coalesce(json_type(data, '$.error'), 'null') != 'null'
         and coalesce(json_array_length(data, '$.content'), 0) = 0)) as last,
@@ -169,7 +170,7 @@ func (s source) read(db string, g *group, home string) importer.Session {
 	read := 0
 	for _, r := range g.rows {
 		var msgs []message
-		if err := sqlitecli.Query(s.prog, db, "select id, type, time_created, time_updated, data from session_message where session_id = "+
+		if err := sqlitecli.Query(s.prog, db, "select id, type, cast(time_created as integer) as time_created, cast(time_updated as integer) as time_updated, data from session_message where session_id = "+
 			sqlitecli.Quote(r.ID)+" order by seq", &msgs); err != nil {
 			if r.ID == g.id {
 				slog.Warn("importer: cannot read an OpenCode session", "session", r.ID, "error", err)

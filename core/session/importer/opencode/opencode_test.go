@@ -380,6 +380,41 @@ insert into session_message values ('msg_u2', 'ses_useronly', 'assistant', 2, 17
 
 // TestSource_NonIntegerCompletedSkipsOnlyItsRow: data is free-form JSON, so time.completed can
 // be a REAL. That row is skipped, and the listing still decodes.
+// A time column that holds a REAL or a TEXT value does not stop the import. A REAL time gives
+// the same sessions and events as its integer part.
+func TestSource_NonIntegerTimeColumns(t *testing.T) {
+	for _, c := range []struct {
+		update string
+		same   bool // the events equal those of the unchanged fixture
+	}{
+		{`update session_v2 set time_created = 1763000004000.5 where id = 'ses_fork'`, true},
+		{`update session_v2 set time_created = '2025-11-13' where id = 'ses_fork'`, false},
+		{`update session_message set time_updated = 1763000007700.5 where id = 'msg_t7'`, true},
+		{`update session_message set time_created = 1763000005000.5 where id = 'msg_f3'`, true},
+		{`update session_message set time_updated = '2025-11-13' where id = 'msg_f3'`, false},
+	} {
+		t.Run(c.update, func(t *testing.T) {
+			db := fixtureDB(t)
+			base := readAll(t, New(db), time.Time{})
+			if out, err := exec.Command(sqlitecli.Program, db, c.update+";").CombinedOutput(); err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			all := readAll(t, New(db), time.Time{})
+			if !slices.Equal(ids(all), ids(base)) {
+				t.Fatalf("%s: sessions %v, want %v", c.update, ids(all), ids(base))
+			}
+			for i, s := range all {
+				if s.Unreadable {
+					t.Errorf("%s: session %s is unreadable", c.update, s.ID)
+				}
+				if c.same && len(s.Events) != len(base[i].Events) {
+					t.Errorf("%s: session %s has %d events, want %d", c.update, s.ID, len(s.Events), len(base[i].Events))
+				}
+			}
+		})
+	}
+}
+
 func TestSource_NonIntegerCompletedSkipsOnlyItsRow(t *testing.T) {
 	for _, completed := range []string{"1763000006200.5", "1763000006200.0"} {
 		db := fixtureDB(t)
