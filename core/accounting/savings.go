@@ -103,7 +103,9 @@ func Savings(res accountant.Result, price func(model, host string, tt accountant
 // An operator with only dry runs has only the projected saving.
 //
 // A spend op (an operator's own model call) is not a saving: it becomes one Extras.Spends record,
-// priced with spend, and the operator gets no Saving for it.
+// priced with spend, and the operator gets no Saving for it. The record is flagged Projected for
+// a dry run and Refused when res.Unpriced lists it; neither enters a spend total
+// (event.SpendRecord.Counted).
 //
 // A cache effect with InBaseline set is skipped: the client body has it too, so it is not part of
 // the bill difference. One no applied op owns goes to Extras.UnattributedBreakUSD. Only an applied
@@ -144,11 +146,23 @@ func SavingsBilled(res accountant.Result, price func(model, host string, tt acco
 		return price(model, host, tt)
 	}
 
+	// The ops the library refused to price, by OpID: their spend is recorded, flagged Refused,
+	// and counted in no total — the metrics sink books none of it either (docs/metrics.md rule 3).
+	refused := map[string]bool{}
+	for _, u := range res.Unpriced {
+		if u.OpID != "" {
+			refused[u.OpID] = true
+		}
+	}
 	owner := map[string]string{} // ChangeID -> operator, from applied ops; the first wins
 	for _, op := range res.Ops {
 		if op.Kind == accountant.KindSpend || op.Call != nil {
 			if op.Call != nil {
-				ex.Spends = append(ex.Spends, spendRecord(op, spend, reqHost, basis, w))
+				r := spendRecord(op, spend, reqHost, basis, w)
+				// A dry run's call is real spend that no total counts, by method (R12): kept,
+				// flagged, like a projected saving.
+				r.Projected, r.Refused = op.DryRun, refused[op.OpID]
+				ex.Spends = append(ex.Spends, r)
 			}
 			continue
 		}

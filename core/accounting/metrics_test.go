@@ -11,6 +11,7 @@ import (
 
 	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -389,6 +390,55 @@ func TestSink_NonAPIBillingMovesNoMoney(t *testing.T) {
 			}
 			if got := sum(t, rd, "llm.savings.estimated", nil); got != 1 {
 				t.Errorf("estimated = %v, want 1", got)
+			}
+		})
+	}
+}
+
+// A dry-run spend and one the library refused to price are recorded by the ledger, flagged
+// Projected or Refused, and add nothing to any total; the sink books neither. Both outputs say 0
+// for them, and an applied spend still counts in both.
+func TestSpends_DryRunAndRefusedCountInNeitherOutput(t *testing.T) {
+	applied := spendOp("ok", "m2", "other.example")
+	dry := spendOp("dry", "m3", "other.example")
+	dry.DryRun = true
+	refused := spendOp("no", "m4", "other.example")
+	res := accountant.Result{
+		Ops:      []accountant.PricedOp{applied, dry, refused},
+		Unpriced: []accountant.Unpriced{{OpID: "no", Reason: "call_model_unknown"}},
+	}
+	for _, mode := range []accountant.BillingMode{accountant.BillingAPI, accountant.BillingSubscription, accountant.BillingUnknown} {
+		t.Run(string(mode), func(t *testing.T) {
+			price := func(m, at string, tt accountant.TierTokens) (float64, bool) { return TierUSD(zone, at, m, 30000, tt) }
+			spend := func(c *accountant.ModelCall, at string) (float64, bool) { return CallUSD(zone, c, at) }
+			_, ex := SavingsBilled(res, price, spend, "m1", "api.example", mode, config.DefaultSubscriptionWeights())
+			if len(ex.Spends) != 3 {
+				t.Fatalf("spends = %+v, want all three recorded", ex.Spends)
+			}
+			flags := map[string][2]bool{}
+			for _, sp := range ex.Spends {
+				flags[sp.ChangeID+sp.Model] = [2]bool{sp.Projected, sp.Refused}
+			}
+			if flags["m2"] != [2]bool{false, false} || flags["m3"] != [2]bool{true, false} || flags["m4"] != [2]bool{false, true} {
+				t.Errorf("flags = %v, want m2 applied, m3 projected, m4 refused", flags)
+			}
+			only := event.Event{Spends: []event.SpendRecord{ex.Spends[0]}}
+			all := event.Event{Spends: ex.Spends}
+			if ex.Spends[0].Model != "m2" {
+				t.Fatalf("first spend is %q, want the applied m2", ex.Spends[0].Model)
+			}
+			if got, want := all.Figures(), only.Figures(); got != want || want.IsZero() {
+				t.Errorf("figures with the dry and refused spends = %+v, want the applied one's %+v alone", got, want)
+			}
+			if mode != accountant.BillingAPI {
+				return
+			}
+			mp, rd := manual(t)
+			NewSink(mp, zone).Observe(accountant.RequestMeta{Model: "m1", At: time.Now(), Billing: apiBilling},
+				accountant.Usage{Input: 30000}, res, "api.example", 30000)
+			got := sum(t, rd, "llm.savings.added.usd", map[string]string{"kind": "spend"})
+			if want := float64(all.Figures().PluginSpendMicros) / 1e6; !micro(got, want) {
+				t.Errorf("pushed spend usd = %.9f, ledger PluginSpendMicros = %.9f: they must agree", got, want)
 			}
 		})
 	}

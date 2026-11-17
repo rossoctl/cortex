@@ -348,7 +348,18 @@ type SpendRecord struct {
 	Units float64 `json:"units,omitempty"`
 	// Estimated marks a figure from a bundled or missing rate, and every non-usd basis.
 	Estimated bool `json:"estimated,omitempty"`
+	// Projected marks the call of an operator under on_error: observe (its op was a dry run).
+	// The call was made and billed, but by method a dry run is never counted in a total
+	// (accountant R12), so Figures leaves it out of every spend total. It stays here, visible.
+	Projected bool `json:"projected,omitempty"`
+	// Refused marks a call the accountant refused to price (its op is in Result.Unpriced). The
+	// metrics library books none of its usage (accountant docs/metrics.md, rule 3), and neither
+	// does Figures. It stays here, visible.
+	Refused bool `json:"refused,omitempty"`
 }
+
+// Counted reports whether the spend enters the spend totals: neither Projected nor Refused.
+func (s SpendRecord) Counted() bool { return !s.Projected && !s.Refused }
 
 // Saving is one component's contribution to cost that was not incurred.
 type Saving struct {
@@ -499,6 +510,7 @@ type Figures struct {
 	AvoidedUnknownMicros int64
 	// PluginSpendMicros is the USD of the usd-basis Spends; PluginSpendUnits the Units of the
 	// subscriptionEquivalent ones, in milli-units; PluginSpendUnknownMicros the USD of the rest.
+	// A Projected or Refused spend is in none of them (SpendRecord.Counted).
 	PluginSpendMicros        int64
 	PluginSpendUnits         int64
 	PluginSpendUnknownMicros int64
@@ -528,6 +540,9 @@ func (e Event) Figures() Figures {
 	}
 	var spendUSD, spendUnits, spendUnknown float64
 	for _, sp := range e.Spends {
+		if !sp.Counted() {
+			continue
+		}
 		switch sp.Basis {
 		case BasisUSD:
 			spendUSD += sp.USD

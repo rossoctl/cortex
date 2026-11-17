@@ -159,7 +159,7 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 		Spends: []SpendRecord{{
 			ChangeID: "s:1", Operator: "context-guru.extract_llm", Thread: "main", Model: "m", Host: "h",
 			Input: 8000, CacheWrite5m: 1, CacheWrite1h: 2, CacheRead: 3, Output: 1000,
-			USD: 0.04, Basis: "usd", Units: 7, Estimated: true,
+			USD: 0.04, Basis: "usd", Units: 7, Estimated: true, Projected: true, Refused: true,
 		}},
 	})
 	if err != nil {
@@ -177,7 +177,7 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 		`"penaltyUnits":4.5}],"purpose":"keep-alive","unattributed_break_usd":0.003,"thread":"main",` +
 		`"spends":[{"changeId":"s:1","operator":"context-guru.extract_llm","thread":"main","model":"m",` +
 		`"host":"h","input":8000,"cacheWrite5m":1,"cacheWrite1h":2,"cacheRead":3,"output":1000,` +
-		`"usd":0.04,"basis":"usd","units":7,"estimated":true}]}`
+		`"usd":0.04,"basis":"usd","units":7,"estimated":true,"projected":true,"refused":true}]}`
 	if string(b) != want {
 		t.Errorf("wire format changed:\n got %s\nwant %s", b, want)
 	}
@@ -589,6 +589,14 @@ func TestFigures_SplitsByBasis(t *testing.T) {
 			{Basis: BasisSubscriptionEquivalent, USD: 0.5, Units: 7},
 			{Basis: BasisUnknown, USD: 0.03},
 			{USD: 99},
+			// A dry run's call and a call the library refused to price stay visible as records,
+			// and enter no total (accountant R12; Cortex design, fix round 2).
+			{Basis: BasisUSD, USD: 5, Projected: true},
+			{Basis: BasisSubscriptionEquivalent, USD: 5, Units: 500, Projected: true},
+			{Basis: BasisUnknown, USD: 5, Projected: true},
+			{Basis: BasisUSD, USD: 6, Refused: true},
+			{Basis: BasisSubscriptionEquivalent, USD: 6, Units: 600, Refused: true},
+			{Basis: BasisUnknown, USD: 6, Refused: true},
 		},
 	}
 	want := Figures{

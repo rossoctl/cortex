@@ -697,7 +697,7 @@ comes out a release after the rename ships.
 | `prompt_usd` | the modelled cost of the prompt alone, tier-weighted. A breakdown, **not** a component of a sum: it is the table's figure even when `cost_usd` is the gateway's |
 | `output_usd` | the modelled cost of the generated tokens alone, at the output rate, resolved at the **request's** prompt size so a long-context premium reaches the completion too. The other half of the same breakdown, so a per-row UI can show what a response row cost rather than what the exchange cost. Priced from the table, **never** `cost_usd` − `prompt_usd`: that difference mixes a possibly-authoritative total with a modelled half, so it reports a gateway-vs-table delta as the completion's cost and can go negative. (`modelled` − `prompt_usd` would be sound; mixing sources is the problem, not subtraction.) `prompt_usd` + `output_usd` equals the modelled total to the micro |
 | `avoided[]` | cost that was **not** incurred, one entry per context operator (`tool-prune`, `context-guru.*`, `keeper`), as the accountant priced it: `tokensAvoided`, `usd` (what it saved, gross), `penaltyUsd` (what it caused, priced: a rewrite inside the cached prefix, a cache break it owns), the `tier` with the largest saving, `basis`, `operator`, `opsVersion`, and two honesty flags: `estimated` (an estimated op or rate, and every basis but `usd`) and `projected` (measured but never applied — that money *was* spent). `basis` is `usd` for a request billed per token, `subscriptionEquivalent` for one on a subscription login (its `usd` is what the API would have charged, and `units`/`penaltyUnits` value it in usage-limit units), or `unknown` |
-| `spends[]` | the context operators' own model calls on this request (a context-guru summary call, for instance), one record each with its tokens, `usd` and `basis`. Not part of `cost_usd`: those calls do not pass through the proxy |
+| `spends[]` | the context operators' own model calls on this request (a context-guru summary call, for instance), one record each with its tokens, `usd` and `basis`. Not part of `cost_usd`: those calls do not pass through the proxy. `projected` marks the call of an operator under `on_error: observe` and `refused` one the accountant did not price: both stay visible here and are in no `pluginSpend*` total |
 | `purpose` | `keep-alive` on the record of a keep-alive ping's spend. Absent on the agent's own requests |
 | `thread`, `unattributed_break_usd` | the accountant thread the request belongs to, and the net cost of the cache effects no operator owns (shown, never charged to an operator) |
 | `daily_total_usd`, `daily_max_usd` | added by `litellm-budget-track` when it is in the pipeline; the budget's business, not the cost owner's |
@@ -716,7 +716,7 @@ presence.
 | `avoidedUnits`, `penaltyUnits` | the `units`/`penaltyUnits` of `subscriptionEquivalent` savings, in milli-units |
 | `avoidedApiEquivalentMicros` | the `usd` of those same savings: shown beside the units as "API equivalent", never in a money total |
 | `avoidedUnknownMicros` | the `usd` of savings with basis `unknown`: shown, never added |
-| `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` | `spends[]` by basis. **Not in `costMicros`**, so the existing spend figure keeps its meaning; spend in all is `costMicros + pluginSpendMicros + keepAliveMicros` |
+| `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` | `spends[]` by basis, without the `projected` and `refused` ones. **Not in `costMicros`**, so the existing spend figure keeps its meaning; spend in all is `costMicros + pluginSpendMicros + keepAliveMicros` |
 | `keepAliveMicros`, `keepAlivePings` | a `purpose: keep-alive` record's cost and count. A ping is in no other column: not `requests`, not `costMicros`, not the tokens, the coverage counters or the latency mean |
 
 A ledger row written before these columns existed reads them as 0. A saving recorded before the
@@ -746,7 +746,7 @@ the same binding:
 For one request, the pushed saved dollars equal the ledger's savings, and the pushed spend
 dollars equal the ledger's spends, to the micro-dollar. The counters split a saving by tier and
 component, where the ledger keeps one saving per operator; that is a different grouping of the
-same dollars. Four differences remain:
+same dollars. Three differences remain:
 
 - **A stated cost.** When a call's response stated its cost (`CostUSD`), the ledger records that
   figure. The counters price the call's tokens instead, because the metrics library does not
@@ -754,12 +754,16 @@ same dollars. Four differences remain:
 - **A model collision.** The library asks for a rate by model alone, so each model has one
   binding per request. A spend on the request's own model with another host or prompt size, or
   two spends on one model with different bindings, are priced at the request's binding.
-- **Dry-run and refused spends.** The ledger records every operator call in `spends[]`. The
-  counters book none from an operator under `on_error: observe` (a dry run), and none the
-  library refused to price (listed in `Result.Unpriced`; it counts in `llm.savings.unpriced`).
 - **Attribution of cache effects.** The ledger charges a cache effect to the operator that owns
   it. The counters break effects down by `effect`, `cause` and `direction` instead, and never
   add them to saved or added.
+
+Both outputs leave out the same two kinds of spend. A model call made by an operator under
+`on_error: observe` is real spend, but its op is a dry run, and by method a dry run is never
+counted in a total (accountant R12). A call the accountant refused to price (it is listed in
+`llm.savings.unpriced`) has no figure to count. The ledger still records each one in
+`spends[]`, flagged `projected` or `refused`, so you can see it. No spend total and no counter
+includes either.
 
 **Only `basis: usd` is money here too.** A request on a subscription login, or with no
 credential Cortex can read, moves the token counters and `llm.savings.estimated`, never a
