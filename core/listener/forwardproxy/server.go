@@ -1316,6 +1316,10 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 			// A request that cannot be converted after the change is not sent again.
 			conv, convErr = tr.convert(pctx)
 			asked = convErr == nil
+			if !asked {
+				// The answer goes back for the request sent, so its row names that model.
+				pctx.Extensions.Inference = sent
+			}
 		}
 		if !asked {
 			resp.Body = struct {

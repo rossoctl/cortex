@@ -63,15 +63,17 @@ func (p *translator) OnResponse(context.Context, *pipeline.Context) pipeline.Act
 }
 
 // resendingTranslator is a translator that is also a Resender. When substitute is set,
-// each Resend sets the request's model to it.
+// each Resend sets the request's model to it. When body is set, each Resend then sets
+// the request body to it.
 type resendingTranslator struct {
 	*translator
 	substitute string
+	body       string
 }
 
 func (p resendingTranslator) Capabilities() pipeline.PluginCapabilities {
 	c := p.translator.Capabilities()
-	c.WritesRequestBody = p.substitute != ""
+	c.WritesRequestBody = p.substitute != "" || p.body != ""
 	return c
 }
 
@@ -83,6 +85,9 @@ func (p resendingTranslator) Resend(_ context.Context, pctx *pipeline.Context, _
 		if err := pctx.SetRequestModel(p.substitute); err != nil {
 			panic(err)
 		}
+	}
+	if p.body != "" {
+		pctx.SetBody([]byte(p.body))
 	}
 	return p.resend
 }
@@ -184,6 +189,37 @@ func translatedInvocation(store *session.Store) (*pipeline.SessionEvent, *pipeli
 		}
 	}
 	return nil, nil
+}
+
+// outboundRows are store's outbound rows of phase, in the order they were recorded.
+func outboundRows(store *session.Store, phase pipeline.SessionPhase) []pipeline.SessionEvent {
+	var out []pipeline.SessionEvent
+	for _, s := range store.ListSessions() {
+		v := store.View(s.ID)
+		if v == nil {
+			continue
+		}
+		for _, e := range v.Events {
+			if e.Direction == pipeline.Outbound && e.Phase == phase {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
+}
+
+// waitRows waits for n outbound rows of phase: the last response row can be recorded
+// after the client has read the reply.
+func waitRows(t *testing.T, store *session.Store, phase pipeline.SessionPhase, n int) []pipeline.SessionEvent {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rows := outboundRows(store, phase)
+		if len(rows) >= n || time.Now().After(deadline) {
+			return rows
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func newStore(t *testing.T) *session.Store {
@@ -418,6 +454,23 @@ func TestTranslate_DocumentRefused(t *testing.T) {
 	if n := len(up.got()); n != 0 {
 		t.Errorf("upstream got %d requests, want 0", n)
 	}
+	denied := waitRows(t, store, pipeline.SessionDenied, 1)
+	if len(denied) != 1 {
+		t.Fatalf("%d denied rows, want 1", len(denied))
+	}
+	d := denied[0]
+	if d.StatusCode != http.StatusBadRequest || d.Error == nil || d.Error.Code != "inference.translation_refused" {
+		t.Errorf("denied row = status %d error %+v, want 400 inference.translation_refused", d.StatusCode, d.Error)
+	}
+	var found bool
+	if d.Invocations != nil {
+		for _, inv := range d.Invocations.Outbound {
+			found = found || (inv.Plugin == "forward-proxy" && inv.Action == pipeline.ActionDeny && inv.Reason == "translation_refused")
+		}
+	}
+	if !found {
+		t.Errorf("denied row invocations = %+v, want forward-proxy deny/translation_refused", d.Invocations)
+	}
 }
 
 func TestTranslate_DroppedRecorded(t *testing.T) {
@@ -440,10 +493,12 @@ func TestTranslate_DroppedRecorded(t *testing.T) {
 	}
 }
 
-func TestTranslate_ResendSeesRawReply(t *testing.T) {
+// refusedThenAnswered serves a LiteLLM 403 to the first request and the chat reply to
+// every later one.
+func refusedThenAnswered(t *testing.T) *chatServer {
 	var calls int
 	var mu sync.Mutex
-	up := newChatServer(t, func(w http.ResponseWriter, _ *http.Request) {
+	return newChatServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		mu.Lock()
 		calls++
 		n := calls
@@ -456,9 +511,16 @@ func TestTranslate_ResendSeesRawReply(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, replyFixture(t, "bob_shape1.json"))
 	})
-	tr := &translator{target: up.URL, translate: true, resend: true}
-	proxy, rec := proxyWithCaptures(t, inferenceparser.NewInferenceParser(), resendingTranslator{tr, "claude-sonnet-5"})
-	resp := postAnthropic(t, proxy, anthropicRequest, nil)
+}
+
+func TestTranslate_ResendSeesRawReply(t *testing.T) {
+	up := refusedThenAnswered(t)
+	tr := &translator{target: up.URL, translate: true, resend: true, headers: http.Header{"User-Agent": {"bob-shell"}}}
+	store := newStore(t)
+	rec := &captures{}
+	store.AddRecorder(rec)
+	proxy := newRedirectProxy(t, store, nil, inferenceparser.NewInferenceParser(), resendingTranslator{translator: tr, substitute: "claude-sonnet-5"})
+	resp := postAnthropic(t, proxy, anthropicRequest, func(r *http.Request) { r.Header.Set("User-Agent", "claude-cli/2") })
 	body := replyText(t, resp)
 
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "391 is not prime") {
@@ -477,6 +539,10 @@ func TestTranslate_ResendSeesRawReply(t *testing.T) {
 	for i, r := range reqs {
 		if r.path != "/v1/chat/completions" || !bytes.Contains(r.body, []byte(`"messages":[{"role":"user","content":[`)) {
 			t.Errorf("upstream request %d = %s %s, want a chat body", i, r.path, r.body)
+		}
+		// The upstream headers go on the resent request too, after the header sync.
+		if got := r.header.Values("User-Agent"); len(got) != 1 || got[0] != "bob-shell" {
+			t.Errorf("upstream request %d User-Agent = %q, want only bob-shell", i, got)
 		}
 	}
 	// Each attempt's row holds the chat body that attempt sent: the refused row the
@@ -497,6 +563,53 @@ func TestTranslate_ResendSeesRawReply(t *testing.T) {
 	}
 	if !bytes.Contains(reqs[1].body, []byte(`"model":"claude-sonnet-5"`)) {
 		t.Errorf("resent body = %s, want the substitute model", reqs[1].body)
+	}
+	// Decision 19: the refused attempt's row has the refusal in the agent's protocol.
+	// The raw body's type is team_model_access_denied; Anthropic's for a 403 is
+	// permission_error.
+	rows := waitRows(t, store, pipeline.SessionResponse, 2)
+	if len(rows) != 2 {
+		t.Fatalf("%d response rows, want 2", len(rows))
+	}
+	refused := rows[0]
+	if refused.StatusCode != http.StatusForbidden || refused.Error == nil || refused.Error.Message != "permission_error" {
+		t.Errorf("refused row = status %d error %+v, want 403 with permission_error", refused.StatusCode, refused.Error)
+	}
+	if refused.Inference == nil || refused.Inference.Model != "claude-opus-5-5" {
+		t.Errorf("refused row inference = %+v, want the refused model claude-opus-5-5", refused.Inference)
+	}
+	if rows[1].StatusCode != http.StatusOK {
+		t.Errorf("resent row status = %d, want 200", rows[1].StatusCode)
+	}
+}
+
+// A Resender asks for a resend, but its change makes a request that cannot be
+// converted. The refused answer then goes to the agent, translated, and nothing is
+// sent again.
+func TestTranslate_ResendNotConvertible(t *testing.T) {
+	up := refusedThenAnswered(t)
+	doc := `{"model":"claude-sonnet-5","max_tokens":1024,"messages":[{"role":"user","content":[` +
+		`{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0="}}]}]}`
+	tr := &translator{target: up.URL, translate: true, resend: true}
+	store := newStore(t)
+	proxy := newRedirectProxy(t, store, nil, inferenceparser.NewInferenceParser(),
+		resendingTranslator{translator: tr, substitute: "claude-sonnet-5", body: doc})
+	resp := postAnthropic(t, proxy, anthropicRequest, nil)
+	body := replyText(t, resp)
+
+	if resp.StatusCode != http.StatusForbidden || !strings.Contains(body, `"permission_error"`) {
+		t.Errorf("reply = %d %q, want the 403 as an Anthropic permission_error", resp.StatusCode, body)
+	}
+	if n := len(up.got()); n != 1 {
+		t.Errorf("upstream got %d requests, want 1", n)
+	}
+	rows := waitRows(t, store, pipeline.SessionResponse, 1)
+	if len(rows) != 1 {
+		t.Fatalf("%d response rows, want 1", len(rows))
+	}
+	// The row names the model the upstream refused, not the Resender's change.
+	if r := rows[0]; r.StatusCode != http.StatusForbidden || r.Inference == nil || r.Inference.Model != "claude-opus-5-5" {
+		t.Errorf("response row = status %d inference %+v, want 403 for claude-opus-5-5", r.StatusCode, r.Inference)
 	}
 }
 
