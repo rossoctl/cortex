@@ -806,6 +806,15 @@ Otherwise agentop says that the proxy has no import route, and exits 1. Only one
 import runs at a time. A second one prints `agentop import: an import is already
 running` and exits 1.
 
+On a terminal, agentop shows a progress bar on stderr while the proxy works:
+
+```text
+importing claude-code [█████████░░░░░░░░░░░]  45%  837/1851 sessions
+```
+
+The bar counts sessions, skipped sessions too. Skipped sessions are fast, so
+the bar moves fast at first. With an older proxy, agentop shows a spinner.
+
 The output is one line for each agent:
 
 ```text
@@ -823,8 +832,8 @@ turns are counted as cost. A session that you erased with `x` or `X` comes back
 as an imported session while its transcript is still on disk. Its cost is not
 counted again, because the erase kept the ledger rows.
 
-An imported session has `imp` before its title in the sessions pane. When the
-terminal is too narrow for TITLE, `imp` is before its id.
+An imported session has `(*)` before its title in the sessions pane. When the
+terminal is too narrow for TITLE, `(*)` is before its id.
 Its events show `n/a` for status, duration, bytes, host and plugin, because the
 proxy did not see them. Tokens and cost show values. A Claude Code turn is priced
 at today's rates. A Bob turn shows Bob's own cost.

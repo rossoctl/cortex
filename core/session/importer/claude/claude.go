@@ -37,7 +37,7 @@ type subFile struct {
 	mod      time.Time
 }
 
-func (s source) Sessions(since time.Time, skip func(id string, updated time.Time) bool) iter.Seq2[importer.Session, error] {
+func (s source) Sessions(since time.Time, skip func(id string, updated time.Time) bool, progress func(done, total int)) iter.Seq2[importer.Session, error] {
 	return func(yield func(importer.Session, error) bool) {
 		dir := s.configDir
 		if dir == "" {
@@ -61,11 +61,23 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 			return cmp.Or(metas[b].mod.Compare(metas[a].mod), strings.Compare(a, b))
 		})
 		home, _ := os.UserHomeDir()
-		for _, id := range ids {
+		for i, id := range ids {
+			progress(i, len(ids))
 			m := metas[id]
 			subs := subagentFiles(filepath.Join(filepath.Dir(m.path), id, "subagents"))
 			if !since.IsZero() && m.mod.Before(since) &&
 				!slices.ContainsFunc(subs, func(f subFile) bool { return !f.mod.Before(since) }) {
+				continue
+			}
+			// No line is newer than its file, so the newest mtime is not before Session.Updated
+			// either. It lets skip drop a live or expired session without a read of its files.
+			mod := m.mod
+			for _, f := range subs {
+				if f.mod.After(mod) {
+					mod = f.mod
+				}
+			}
+			if skip(id, mod) {
 				continue
 			}
 			var sess importer.Session
@@ -80,6 +92,7 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 				return
 			}
 		}
+		progress(len(ids), len(ids))
 	}
 }
 

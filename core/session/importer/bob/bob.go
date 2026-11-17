@@ -64,7 +64,7 @@ from tasks t`
 // with no time.
 const createdAt = "case when typeof(created_at) = 'integer' then created_at end"
 
-func (s source) Sessions(since time.Time, skip func(id string, updated time.Time) bool) iter.Seq2[importer.Session, error] {
+func (s source) Sessions(since time.Time, skip func(id string, updated time.Time) bool, progress func(done, total int)) iter.Seq2[importer.Session, error] {
 	return func(yield func(importer.Session, error) bool) {
 		db := s.dbPath
 		if db == "" {
@@ -87,7 +87,9 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 			return
 		}
 		home, _ := os.UserHomeDir()
-		for _, tr := range trees(tasks) {
+		all := trees(tasks)
+		for i, tr := range all {
+			progress(i, len(all))
 			if tr.last == 0 {
 				slog.Warn("importer: no message of a Bob task tree has a time", "task", tr.root.ID)
 				if !yield(importer.Session{ID: tr.root.ID, Unreadable: true}, nil) {
@@ -106,6 +108,7 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 				return
 			}
 		}
+		progress(len(all), len(all))
 	}
 }
 

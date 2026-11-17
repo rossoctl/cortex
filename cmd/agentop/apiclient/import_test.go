@@ -29,7 +29,7 @@ func TestClientImport_PostsBodyAndDecodes(t *testing.T) {
 		w.Write([]byte(`{"dryRun":true,"agents":[{"agent":"claude-code","imported":2,"error":"bad\u001b[2J"}]}`))
 	}))
 	defer ts.Close()
-	rep, err := New(ts.URL).Import(context.Background(), want)
+	rep, err := New(ts.URL).Import(context.Background(), want, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,6 +39,28 @@ func TestClientImport_PostsBodyAndDecodes(t *testing.T) {
 	// A server string is printed to a terminal, so control runes go.
 	if rep.Agents[0].Error != "bad[2J" {
 		t.Errorf("Error = %q, want control runes stripped", rep.Agents[0].Error)
+	}
+}
+
+// An onProgress asks for progress and gets each Progress line. The last line is the report.
+func TestClientImport_ProgressLines(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got importer.Request
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil || !got.Progress {
+			t.Errorf("body = %+v, %v; want progress", got, err)
+		}
+		w.Write([]byte(`{"progress":{"agent":"claude-code","done":0,"total":2}}` + "\n" +
+			`{"progress":{"agent":"claude-code","done":2,"total":2}}` + "\n" +
+			`{"agents":[{"agent":"claude-code","imported":2}]}` + "\n"))
+	}))
+	defer ts.Close()
+	var got []importer.Progress
+	rep, err := New(ts.URL).Import(context.Background(), importer.Request{}, func(p importer.Progress) { got = append(got, p) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[1].Done != 2 || got[1].Total != 2 || len(rep.Agents) != 1 || rep.Agents[0].Imported != 2 {
+		t.Fatalf("progress = %+v, report = %+v", got, rep)
 	}
 }
 
@@ -57,7 +79,7 @@ func TestClientImport_StatusErrors(t *testing.T) {
 			w.WriteHeader(tc.code)
 			w.Write([]byte(tc.body))
 		}))
-		_, err := New(ts.URL).Import(context.Background(), importer.Request{})
+		_, err := New(ts.URL).Import(context.Background(), importer.Request{}, nil)
 		ts.Close()
 		if !errors.Is(err, tc.want) || !strings.Contains(err.Error(), tc.text) {
 			t.Errorf("%d: err = %v, want %v containing %q", tc.code, err, tc.want, tc.text)

@@ -19,7 +19,9 @@ type Source interface {
 	// sessions. A non-nil error stops the import of this agent only, and Run reports it.
 	// Before it parses a session, it calls skip with the session id and a time that is not
 	// before the parsed Updated. When skip gives true, it does not parse or yield the session.
-	Sessions(since time.Time, skip func(id string, updated time.Time) bool) iter.Seq2[Session, error]
+	// It calls progress (never nil) with the sessions done and the sessions found, before each
+	// session and once after the last.
+	Sessions(since time.Time, skip func(id string, updated time.Time) bool, progress func(done, total int)) iter.Seq2[Session, error]
 }
 
 // Session is one agent session that a Source read.
@@ -39,6 +41,16 @@ type Request struct {
 	Agent  string    `json:"agent,omitempty"` // "" = every registered source
 	Since  time.Time `json:"since,omitempty"`
 	DryRun bool      `json:"dryRun,omitempty"`
+	// Progress asks for Progress lines before the Report. See POST /v1/import.
+	Progress bool `json:"progress,omitempty"`
+}
+
+// Progress is one line of POST /v1/import with Request.Progress: Done of the Total sessions
+// that the source of Agent found.
+type Progress struct {
+	Agent string `json:"agent"`
+	Done  int    `json:"done"`
+	Total int    `json:"total"`
 }
 
 // AgentReport is the result of the import for one agent.

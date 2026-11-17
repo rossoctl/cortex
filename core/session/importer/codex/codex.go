@@ -86,7 +86,7 @@ func (s source) dir() (string, error) {
 	return filepath.Join(h, ".codex"), nil
 }
 
-func (s source) Sessions(since time.Time, skip func(id string, updated time.Time) bool) iter.Seq2[importer.Session, error] {
+func (s source) Sessions(since time.Time, skip func(id string, updated time.Time) bool, progress func(done, total int)) iter.Seq2[importer.Session, error] {
 	return func(yield func(importer.Session, error) bool) {
 		dir, err := s.dir()
 		if err != nil {
@@ -108,7 +108,8 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 			return cmp.Or(newest[b].Compare(newest[a]), strings.Compare(a, b))
 		})
 		home, _ := os.UserHomeDir()
-		for _, id := range sids {
+		for i, id := range sids {
+			progress(i, len(sids))
 			// Codex writes each line when it happens, so no line is newer than its file.
 			if !since.IsZero() && newest[id].Before(since) {
 				continue
@@ -120,6 +121,7 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 				return
 			}
 		}
+		progress(len(sids), len(sids))
 	}
 }
 

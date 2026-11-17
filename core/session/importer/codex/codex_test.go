@@ -73,11 +73,16 @@ func lastTimestamp(t *testing.T, path string) time.Time {
 func readAll(t *testing.T, src importer.Source, since time.Time) []importer.Session {
 	t.Helper()
 	var out []importer.Session
-	for s, err := range src.Sessions(since, func(string, time.Time) bool { return false }) {
+	done, total := -1, -1
+	progress := func(d, n int) { done, total = d, n }
+	for s, err := range src.Sessions(since, func(string, time.Time) bool { return false }, progress) {
 		if err != nil {
 			t.Fatal(err)
 		}
 		out = append(out, s)
+	}
+	if done != total || total < len(out) {
+		t.Fatalf("last progress = %d of %d, want all of at least %d", done, total, len(out))
 	}
 	return out
 }
@@ -283,7 +288,7 @@ func TestSource_NewestFirstSinceAndSkip(t *testing.T) {
 			return true
 		}
 		return false
-	}) {
+	}, func(int, int) {}) {
 		if err != nil {
 			t.Fatal(err)
 		}
