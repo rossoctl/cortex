@@ -284,15 +284,16 @@ func TestClaudeCodeKeepsAnOlderRelativeEntryUnlessTheRunConfirmsIt(t *testing.T)
 }
 
 // Without --yes, a change the user confirms takes the older relative entry for
-// the file, and a disable with nothing to remove keeps the entry and says how to
-// take it.
+// the file, and a disable with nothing to remove keeps the entry, alone or beside
+// the default file's, and says how to take it.
 func TestClaudeCodeTakesAnOlderRelativeEntryWithAConfirmedChange(t *testing.T) {
 	for _, c := range []struct {
 		name   string
 		action string
 		edit   func(t *testing.T, proj string)
-		want   string // the record's first entry afterwards; "" is proj itself
+		want   string // the entry the record holds afterwards; "" is proj itself
 		note   string
+		others bool // the default file is routed too
 	}{
 		{"a confirmed enable", "enable", func(t *testing.T, proj string) {
 			doc, err := readSettings(proj)
@@ -303,14 +304,21 @@ func TestClaudeCodeTakesAnOlderRelativeEntryWithAConfirmedChange(t *testing.T) {
 			if err := writeSettings(proj, doc); err != nil {
 				t.Fatal(err)
 			}
-		}, "", ""},
+		}, "", "", false},
 		{"a disable with nothing to remove", "disable", func(t *testing.T, proj string) {
 			edits := map[string]string{}
 			for _, k := range managedKeys {
 				edits[k] = "/etc/corp-ca.pem"
 			}
 			handEdit(t, proj, edits)
-		}, settingsRel, "run again with --yes"},
+		}, settingsRel, "run again with --yes", false},
+		{"a disable with nothing to remove beside another file", "disable", func(t *testing.T, proj string) {
+			edits := map[string]string{}
+			for _, k := range managedKeys {
+				edits[k] = "/etc/corp-ca.pem"
+			}
+			handEdit(t, proj, edits)
+		}, settingsRel, "run again with --yes", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sc := newUninstallScene(t)
@@ -322,9 +330,17 @@ func TestClaudeCodeTakesAnOlderRelativeEntryWithAConfirmedChange(t *testing.T) {
 			if code := claudeCodeEnable2(settingsRel, filepath.Join(sc.home, cortexCfgRel), state, true, io.Discard, io.Discard); code != 0 {
 				t.Fatalf("fixture: relative enable exit %d", code)
 			}
+			if c.others {
+				if code := claudeCodeEnable2(filepath.Join(sc.home, settingsRel), filepath.Join(sc.home, cortexCfgRel), state, true, io.Discard, io.Discard); code != 0 {
+					t.Fatalf("fixture: default enable exit %d", code)
+				}
+			}
 			c.edit(t, proj)
+			gone := settingsRel
 			if c.want == "" {
 				c.want = proj
+			} else {
+				gone = proj
 			}
 
 			answerPrompt(t, &claudeCodeConfirm, "y\n")
@@ -332,8 +348,15 @@ func TestClaudeCodeTakesAnOlderRelativeEntryWithAConfirmedChange(t *testing.T) {
 			if code := runClaudeCode([]string{c.action, "--settings", settingsRel}, &out, &errb); code != 0 {
 				t.Fatalf("%s exit %d: %s", c.action, code, errb.String())
 			}
-			if st, _ := readState(state); st == nil || st.Settings != c.want {
-				t.Errorf("the record is %+v, want its first entry %s", st, c.want)
+			var names []string
+			if st, _ := readState(state); st != nil {
+				names = append(names, st.Settings)
+				for _, o := range st.OtherFiles {
+					names = append(names, o.Settings)
+				}
+			}
+			if !slices.Contains(names, c.want) || slices.Contains(names, gone) || c.others && len(names) != 2 {
+				t.Errorf("the record names %q, want %s and not %s", names, c.want, gone)
 			}
 			if !strings.Contains(out.String(), c.note) {
 				t.Errorf("the output does not say %q:\n%s", c.note, out.String())
@@ -342,12 +365,126 @@ func TestClaudeCodeTakesAnOlderRelativeEntryWithAConfirmedChange(t *testing.T) {
 	}
 }
 
+// Putting the older entry back keeps what another run records while the prompt
+// waits: an entry for another file, and the disable of this one.
+func TestClaudeCodeKeepsWhatAnotherRunRecordsDuringThePrompt(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		other func(proj, other, cfg, state string) int
+		want  func(proj, other string) []string // the files the record names afterwards
+	}{
+		{"an enable on another file", func(_, other, cfg, state string) int {
+			return claudeCodeEnable2(other, cfg, state, true, io.Discard, io.Discard)
+		}, func(_, other string) []string { return []string{settingsRel, other} }},
+		{"a disable of this file", func(proj, _, _, state string) int {
+			return claudeCodeDisable2(proj, state, true, io.Discard, io.Discard)
+		}, func(string, string) []string { return nil }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t)
+			proj, other := filepath.Join(sc.home, "proj", settingsRel), filepath.Join(sc.home, "other", settingsRel)
+			writeHomeFile(t, proj, "{}\n")
+			writeHomeFile(t, other, "{}\n")
+			cfg, state := filepath.Join(sc.home, cortexCfgRel), filepath.Join(sc.home, stateRel)
+			t.Chdir(filepath.Join(sc.home, "proj"))
+			if code := claudeCodeEnable2(settingsRel, cfg, state, true, io.Discard, io.Discard); code != 0 {
+				t.Fatalf("fixture: relative enable exit %d", code)
+			}
+
+			saved := claudeCodeConfirm
+			t.Cleanup(func() { claudeCodeConfirm = saved })
+			claudeCodeConfirm = func(io.Writer) bool {
+				if code := c.other(proj, other, cfg, state); code != 0 {
+					t.Errorf("%s during the prompt exit %d", c.name, code)
+				}
+				return false
+			}
+			if code := runClaudeCode([]string{"disable", "--settings", settingsRel}, io.Discard, io.Discard); code != exitDeclined {
+				t.Fatalf("disable exit %d, want %d", code, exitDeclined)
+			}
+			var names []string
+			if st, _ := readState(state); st != nil {
+				names = append(names, st.Settings)
+				for _, o := range st.OtherFiles {
+					names = append(names, o.Settings)
+				}
+			}
+			if want := c.want(proj, other); !slices.Equal(names, want) {
+				t.Errorf("the record names %q, want %q", names, want)
+			}
+		})
+	}
+}
+
+// An enable that records its values and then cannot write the settings file
+// puts the older entry back as it was.
+func TestClaudeCodeEnable_PutsBackTheOlderEntryItFailedToApply(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t)
+	proj := filepath.Join(sc.home, "proj", settingsRel)
+	writeHomeFile(t, proj, "{}\n")
+	state := filepath.Join(sc.home, stateRel)
+	t.Chdir(filepath.Join(sc.home, "proj"))
+	if code := claudeCodeEnable2(settingsRel, filepath.Join(sc.home, cortexCfgRel), state, true, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("fixture: relative enable exit %d", code)
+	}
+	st, _ := readState(state)
+	st.Written[envProxy] = "http://127.0.0.1:47699"
+	if err := writeStateFile(state, *st); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := readSettings(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(envRaw(doc), envProxy)
+	if err := writeSettings(proj, doc); err != nil {
+		t.Fatal(err)
+	}
+	readOnlyDir(t, filepath.Dir(proj))
+
+	if code := runClaudeCode([]string{"enable", "--yes", "--settings", settingsRel}, io.Discard, io.Discard); code != 1 {
+		t.Fatalf("enable exit %d, want 1", code)
+	}
+	if got, _ := readState(state); got == nil || got.Settings != settingsRel || !maps.Equal(got.Written, st.Written) {
+		t.Errorf("the record is %+v, want the relative entry with Written %v", got, st.Written)
+	}
+}
+
+// A record that cannot take the older entry as absolute still lets a relative
+// disable restore what the entry recorded.
+func TestClaudeCodeDisable_RestoresWhenTheOlderEntryCannotBeRecorded(t *testing.T) {
+	const mine = "http://127.0.0.1:47699"
+	sc := newUninstallScene(t)
+	sc.setUp(t)
+	proj := filepath.Join(sc.home, "proj", settingsRel)
+	writeHomeFile(t, proj, `{"env":{"`+envProxy+`":"`+mine+`"}}`)
+	state := filepath.Join(sc.home, stateRel)
+	t.Chdir(filepath.Join(sc.home, "proj"))
+	if code := claudeCodeEnable2(settingsRel, filepath.Join(sc.home, cortexCfgRel), state, true, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("fixture: relative enable exit %d", code)
+	}
+	readOnlyDir(t, filepath.Dir(state))
+
+	var errb bytes.Buffer
+	if code := runClaudeCode([]string{"disable", "--yes", "--settings", settingsRel}, io.Discard, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	if env := readEnv(t, proj); !maps.Equal(env, map[string]string{envProxy: mine}) {
+		t.Errorf("env is %v, want only %s=%s restored", env, envProxy, mine)
+	}
+	if !strings.Contains(errb.String(), "could not record the older entry") {
+		t.Errorf("disable did not say it kept the relative path:\n%s", errb.String())
+	}
+}
+
 // An entry recorded under a symlink names the file it resolves to.
 func TestClaudeCodeRecordMatchesASymlinkedPath(t *testing.T) {
 	dir := t.TempDir()
 	link := filepath.Join(t.TempDir(), "link")
 	if err := os.Symlink(dir, link); err != nil {
-		t.Fatal(err)
+		t.Skip("symlinks unavailable: ", err)
 	}
 	st := &managedState{Settings: "/a", OtherFiles: []managedState{{Settings: filepath.Join(link, "settings.json")}}}
 	if got := recordIndex(st, filepath.Join(dir, "settings.json")); got != 1 {
@@ -356,12 +493,23 @@ func TestClaudeCodeRecordMatchesASymlinkedPath(t *testing.T) {
 }
 
 // One entry with no Prior makes the record unreadable, as a first entry with none
-// does.
+// does, with an error naming the entry. Such an entry is never written: the record
+// keeps the entries it had.
 func TestClaudeCodeRecordRefusesAnEntryWithNoPrior(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state.json")
 	writeHomeFile(t, state, `{"settings":"/a","prior":{},"other_files":[{"settings":"/b"}]}`)
-	if st, err := readState(state); err == nil {
-		t.Errorf("readState = %+v, want an error for the entry with no prior", st)
+	if st, err := readState(state); err == nil || !strings.Contains(err.Error(), `("/b"); fix or delete that entry by hand`) {
+		t.Errorf("readState = %+v (%v), want an error naming the entry with no prior and how to recover", st, err)
+	}
+
+	writeHomeFile(t, state, `{"settings":"/a","prior":{}}`)
+	for _, e := range []managedState{{Settings: "/b"}, {Prior: map[string]*string{}}} {
+		if err := writeClaudeCodeState(state, e); err == nil {
+			t.Errorf("writeClaudeCodeState(%+v) recorded an entry readState refuses", e)
+		}
+	}
+	if st, err := readState(state); err != nil || st.Settings != "/a" || len(st.OtherFiles) != 0 {
+		t.Errorf("the record is %+v (%v), want /a's entry alone", st, err)
 	}
 }
 

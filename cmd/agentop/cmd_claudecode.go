@@ -108,7 +108,7 @@ func readState(path string) (*managedState, error) {
 	// One bad entry makes the whole record untrusted, as a bad first entry does.
 	for _, o := range st.OtherFiles {
 		if o.Settings == "" || o.Prior == nil {
-			return nil, fmt.Errorf("%s has an entry with no settings file or prior-value record", path)
+			return nil, fmt.Errorf("%s has an entry with no settings file or prior-value record (%q); fix or delete that entry by hand", path, o.Settings)
 		}
 	}
 	return &st, nil
@@ -180,16 +180,12 @@ func recordIndex(st *managedState, settingsPath string) int {
 }
 
 // adoptRelativeEntry records as abs the entry an older enable recorded as rel,
-// the relative path given again here, and returns a func that puts the record
+// the relative path given again here, and returns a func that puts that entry
 // back as it was. The entry has no directory, and Cortex's values are the same
 // in every project, so runClaudeCode keeps the change only when the run succeeds
 // and either changes abs or has --yes. A file holding none of the keys Cortex
 // manages leaves the entry as it is, as does an entry abs already has.
 func adoptRelativeEntry(statePath, rel, abs string, stdout io.Writer) (func() error, error) {
-	orig, err := os.ReadFile(statePath)
-	if err != nil {
-		return nil, nil
-	}
 	st, err := readState(statePath)
 	if err != nil || recordFor(st, abs) != nil {
 		return nil, nil
@@ -208,14 +204,35 @@ func adoptRelativeEntry(statePath, rel, abs string, stdout io.Writer) (func() er
 			"manages, so the entry stays. If it names this file, delete it from %s.\n\n", rel, abs, statePath)
 		return nil, nil
 	}
-	fmt.Fprintf(stdout, "The record's entry for %s is from an older agentop, which did not record\n"+
-		"its directory. A change confirmed here, or --yes, takes it as %s;\n"+
-		"give --settings as an absolute path to leave the entry as it is.\n\n", rel, abs)
+	was := *e
 	e.Settings = abs
 	if err := writeStateFile(statePath, *st); err != nil {
 		return nil, err
 	}
-	return func() error { return writeFileAtomic(statePath, orig, 0o600) }, nil
+	fmt.Fprintf(stdout, "The record's entry for %s is from an older agentop, which did not record\n"+
+		"its directory. A change confirmed here, or --yes, takes it as %s;\n"+
+		"give --settings as an absolute path to leave the entry as it is.\n\n", rel, abs)
+	was.Settings, was.OtherFiles = rel, nil
+	// The undo keeps every other entry as the record then holds it. An entry the
+	// run took out comes back while abs still holds a key Cortex manages.
+	return func() error {
+		st, err := readState(statePath)
+		if err != nil {
+			return err
+		}
+		if cur := recordFor(st, abs); cur != nil && cur.Settings == abs {
+			cur.Settings, cur.Written = was.Settings, was.Written
+			return writeStateFile(statePath, *st)
+		}
+		if doc, err := readSettings(abs); err != nil || !holdsManagedKey(envStrings(doc)) {
+			return nil
+		}
+		if st == nil {
+			return writeStateFile(statePath, was)
+		}
+		st.OtherFiles = append(st.OtherFiles, was)
+		return writeStateFile(statePath, *st)
+	}, nil
 }
 
 // holdsManagedKey reports whether env sets a key Cortex manages or once wrote.
@@ -247,8 +264,12 @@ func recordFor(st *managedState, settingsPath string) *managedState {
 
 // writeClaudeCodeState is writeState for a record of several settings files: e
 // becomes its file's entry, and every other file's entry stays. An existing entry
-// keeps its Prior, by writeState's rule.
+// keeps its Prior, by writeState's rule. e needs a settings file and a Prior, as
+// readState needs of every entry.
 func writeClaudeCodeState(path string, e managedState) error {
+	if e.Settings == "" || e.Prior == nil {
+		return fmt.Errorf("refusing to record an entry with no settings file or prior-value record")
+	}
 	existing, err := readState(path)
 	if err != nil {
 		return fmt.Errorf("refusing to overwrite the existing record: %w", err)
@@ -429,13 +450,15 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 	}
 	statePath := filepath.Join(home, stateRel)
 	// Absolute, so the record names the file from any directory. status reads
-	// only the settings file, so it leaves the record as it is.
+	// only the settings file, so it leaves the record as it is. A record that
+	// cannot take the older entry as abs keeps the relative path for this run, so
+	// the run still finds that entry.
 	var undo func() error
 	if abs, err := filepath.Abs(*settingsPath); err == nil {
 		if action != "status" && !filepath.IsAbs(*settingsPath) {
 			if undo, err = adoptRelativeEntry(statePath, *settingsPath, abs, stdout); err != nil {
-				fmt.Fprintf(stderr, "agentop: %v\n", err)
-				return 1
+				fmt.Fprintf(stderr, "agentop: could not record the older entry as %s (%v); this run uses it as %s\n", abs, err, *settingsPath)
+				abs = *settingsPath
 			}
 		}
 		*settingsPath = abs
