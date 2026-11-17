@@ -14,7 +14,7 @@ require (
 	github.com/rossoctl/context-guru v0.7.3
 	github.com/spiffe/go-spiffe/v2 v2.9.0
 	github.com/tidwall/gjson v1.20.2
-	github.com/tidwall/sjson v1.2.7
+	github.com/tidwall/sjson v1.2.9
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.47.0
