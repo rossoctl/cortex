@@ -87,7 +87,8 @@ require (
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/redis/go-redis/v9 v9.23.0 // indirect
-	github.com/rossoctl/context-guru v0.6.7 // indirect
+	github.com/rossoctl/accountant v0.1.1-0.20261108152158-5181d50c1f98 // indirect
+	github.com/rossoctl/context-guru v0.7.3 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
