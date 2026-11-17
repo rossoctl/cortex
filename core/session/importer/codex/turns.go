@@ -188,6 +188,10 @@ func (p *parser) file(path, thread, subagent string, copied []usage, usagesOnly 
 					_ = json.Unmarshal(l.Payload, &c)
 					mdl, cwd = cmp.Or(c.Model, mdl), cmp.Or(c.Cwd, cwd)
 				case "response_item":
+					if !validItem(l.Payload) {
+						res.skipped++
+						break
+					}
 					var it struct {
 						Type string `json:"type"`
 						Role string `json:"role"`
@@ -234,7 +238,14 @@ func (p *parser) file(path, thread, subagent string, copied []usage, usagesOnly 
 						ReplacementHistory []json.RawMessage `json:"replacement_history"`
 					}
 					_ = json.Unmarshal(l.Payload, &c)
-					conv = append([]json.RawMessage{}, c.ReplacementHistory...)
+					conv = []json.RawMessage{}
+					for _, item := range c.ReplacementHistory {
+						if !validItem(item) {
+							res.skipped++
+							continue
+						}
+						conv = append(conv, item)
+					}
 				}
 			}
 		}
@@ -246,6 +257,12 @@ func (p *parser) file(path, thread, subagent string, copied []usage, usagesOnly 
 			return res, rerr
 		}
 	}
+}
+
+// validItem reports whether the live parser decodes item. It refuses a whole input array
+// for one item it cannot decode, so one such item in conv would cost every later turn.
+func validItem(item json.RawMessage) bool {
+	return inference.ParseRequest(responsesPath, nil, slices.Concat([]byte(`{"input":[`), item, []byte(`]}`))) != nil
 }
 
 // responsesUsage is the usage block of a Responses API response.

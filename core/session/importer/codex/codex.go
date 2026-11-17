@@ -94,11 +94,13 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 			yield(importer.Session{}, err)
 			return
 		}
-		groups := group(list(filepath.Join(dir, "sessions")))
+		files, unopened := list(filepath.Join(dir, "sessions"))
+		groups := group(files)
 		// A fork's parent can be archived. The source does not import an archived rollout, but
 		// the ledger can already hold its turns.
 		threads := map[string]rollout{}
-		for _, f := range list(filepath.Join(dir, "archived_sessions")) {
+		archived, _ := list(filepath.Join(dir, "archived_sessions"))
+		for _, f := range archived {
 			threads[f.thread] = f
 		}
 		for _, files := range groups {
@@ -119,9 +121,17 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 		slices.SortFunc(sids, func(a, b string) int {
 			return cmp.Or(newest[b].Compare(newest[a]), strings.Compare(a, b))
 		})
+		total := len(unopened) + len(sids)
+		// A rollout that cannot be opened names no session, so it is counted on its own.
+		for i, mod := range unopened {
+			progress(i, total)
+			if (since.IsZero() || !mod.Before(since)) && !yield(importer.Session{Unreadable: true}, nil) {
+				return
+			}
+		}
 		home, _ := os.UserHomeDir()
 		for i, id := range sids {
-			progress(i, len(sids))
+			progress(len(unopened)+i, total)
 			// Codex writes each line when it happens, so no line is newer than its file.
 			if !since.IsZero() && newest[id].Before(since) {
 				continue
@@ -133,14 +143,13 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 				return
 			}
 		}
-		progress(len(sids), len(sids))
+		progress(total, total)
 	}
 }
 
 // list finds the rollout files under dir at all depths and reads the first line of each.
-// A missing dir gives none.
-func list(dir string) []rollout {
-	var out []rollout
+// unopened is the mtime of each file that cannot be opened or read. A missing dir gives none.
+func list(dir string) (out []rollout, unopened []time.Time) {
 	// An error in one directory must not stop the others, so the walk ignores it.
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -161,13 +170,16 @@ func list(dir string) []rollout {
 		r, err := readMeta(path)
 		if err != nil {
 			slog.Warn("importer: cannot list a Codex rollout", "path", path, "error", err)
+			if !errors.Is(err, errNoMeta) && !errors.Is(err, io.EOF) {
+				unopened = append(unopened, fi.ModTime())
+			}
 			return nil
 		}
 		r.path, r.mod, r.size = path, fi.ModTime(), fi.Size()
 		out = append(out, r)
 		return nil
 	})
-	return out
+	return out, unopened
 }
 
 // errNoMeta is the error of a rollout whose first line is not a session_meta line.

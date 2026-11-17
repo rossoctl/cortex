@@ -349,10 +349,10 @@ func TestSource_UnlistableFileIsLeftOut(t *testing.T) {
 	dir := fixtures(t)
 	failOpens(t, func(path string, _ int) bool { return strings.Contains(path, plainID) })
 	all := readAll(t, New(dir), time.Time{})
-	if got := ids(all); !slices.Equal(got, []string{toolsID}) {
-		t.Fatalf("ids = %v", got)
+	if got := ids(all); !slices.Equal(got, []string{"", toolsID}) || !all[0].Unreadable {
+		t.Fatalf("ids = %v, want an unreadable entry then %s", got, toolsID)
 	}
-	if len(all[0].Events) != 6 {
-		t.Errorf("tools session has %d events, want 6", len(all[0].Events))
+	if len(all[1].Events) != 6 {
+		t.Errorf("tools session has %d events, want 6", len(all[1].Events))
 	}
 }

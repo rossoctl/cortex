@@ -174,3 +174,57 @@ func TestSource_ChildOnlySessionIsYielded(t *testing.T) {
 		t.Fatalf("session = %+v, want the 2 subagent events", s)
 	}
 }
+
+// An item that the live Responses decoder refuses costs that item, not the later turns.
+func TestSource_OffSpecItemIsSkipped(t *testing.T) {
+	item := func(sec int, payload string) string {
+		return `{"timestamp":"2026-11-04T08:00:` + pad(sec) + `Z","type":"response_item","payload":` + payload + `}`
+	}
+	compacted := func(sec int, history string) string {
+		return `{"timestamp":"2026-11-04T08:00:` + pad(sec) + `Z","type":"compacted","payload":{"replacement_history":[` + history + `]}}`
+	}
+	for name, bad := range map[string]string{
+		"string payload":  item(3, `"x"`),
+		"numeric call_id": item(3, `{"type":"function_call_output","call_id":7,"output":"x"}`),
+		"string tools":    item(3, `{"type":"message","role":"user","tools":"x","content":"x"}`),
+		"object role":     item(3, `{"type":"message","role":{"a":1},"content":"x"}`),
+		"compacted item":  compacted(3, `{"type":"message","role":"user","content":"kept"},{"type":"message","role":{"a":1},"content":"x"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			writeRollout(t, home, "rollout-a-"+plainID+".jsonl", time.Date(2026, 11, 4, 8, 1, 0, 0, time.UTC),
+				meta, ctx, user(2, "q1"), bad, assistant(4, "a1"), user(5, "q2"), assistant(6, "a2"), user(7, "q3"), assistant(8, "a3"))
+			s := sessionByID(t, home, plainID)
+			if r := phase(s, model.SessionResponse, ""); len(r) != 3 || r[2].Inference.Completion != "a3" {
+				t.Fatalf("got %d responses, want 3 ending in a3", len(r))
+			}
+			if s.Skipped != 1 {
+				t.Errorf("Skipped = %d, want 1", s.Skipped)
+			}
+		})
+	}
+}
+
+// A rollout that cannot be opened is in no session, but the report counts it. A file whose
+// first line is not session_meta, and a file older than since, are not counted.
+func TestSource_UnopenableFileIsCountedUnreadable(t *testing.T) {
+	home := t.TempDir()
+	mod := time.Date(2026, 11, 4, 8, 1, 0, 0, time.UTC)
+	writeRollout(t, home, "rollout-a-"+plainID+".jsonl", mod, meta, ctx, user(2, "q"), assistant(3, "a"))
+	writeRollout(t, home, "rollout-b-broken.jsonl", mod, ctx)
+	writeRollout(t, home, "rollout-c-broken.jsonl", mod.Add(-time.Hour), meta)
+	writeRollout(t, home, "rollout-d-broken.jsonl", mod, meta)
+	failOpens(t, func(path string, _ int) bool {
+		return strings.Contains(path, "-c-broken") || strings.Contains(path, "-d-broken")
+	})
+	all := readAll(t, New(home), mod.Add(-time.Minute))
+	unreadable := 0
+	for _, s := range all {
+		if s.Unreadable {
+			unreadable++
+		}
+	}
+	if unreadable != 1 || len(all) != 2 {
+		t.Fatalf("got %d sessions, %d unreadable; want 2 and 1", len(all), unreadable)
+	}
+}
