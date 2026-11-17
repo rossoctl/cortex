@@ -171,24 +171,45 @@ func TestClaudeCodeEnable_LeavesAnOlderRelativeEntryToItsProject(t *testing.T) {
 }
 
 // A relative --settings given again where an older enable recorded it finds
-// that entry, so disable takes it out.
+// that entry, so disable takes it out: after a key was edited since, which keeps
+// the edit, and in a record from before Written.
 func TestClaudeCodeDisable_FindsAnOlderRelativeEntry(t *testing.T) {
-	sc := newUninstallScene(t)
-	sc.setUp(t)
-	projDir := filepath.Join(sc.home, "proj")
-	writeHomeFile(t, filepath.Join(projDir, settingsRel), "{}\n")
-	state := filepath.Join(sc.home, stateRel)
-	t.Chdir(projDir)
-	if code := claudeCodeEnable2(settingsRel, filepath.Join(sc.home, cortexCfgRel), state, true, io.Discard, io.Discard); code != 0 {
-		t.Fatalf("fixture: relative enable exit %d", code)
-	}
+	const corpCA = "/etc/corp-ca.pem"
+	for _, c := range []struct {
+		name   string
+		edited bool
+	}{{"a key edited since", true}, {"a record from before Written", false}} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t)
+			proj := filepath.Join(sc.home, "proj", settingsRel)
+			writeHomeFile(t, proj, "{}\n")
+			state := filepath.Join(sc.home, stateRel)
+			t.Chdir(filepath.Join(sc.home, "proj"))
+			if code := claudeCodeEnable2(settingsRel, filepath.Join(sc.home, cortexCfgRel), state, true, io.Discard, io.Discard); code != 0 {
+				t.Fatalf("fixture: relative enable exit %d", code)
+			}
+			if c.edited {
+				handEdit(t, proj, map[string]string{envCACerts: corpCA})
+			} else {
+				st, _ := readState(state)
+				st.Written = nil
+				if err := writeStateFile(state, *st); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	var errb bytes.Buffer
-	if code := runClaudeCode([]string{"disable", "--yes", "--settings", settingsRel}, io.Discard, &errb); code != 0 {
-		t.Fatalf("disable exit %d: %s", code, errb.String())
-	}
-	if _, err := os.Stat(state); !os.IsNotExist(err) {
-		t.Errorf("the record outlived the disable of the file it names (%v)", err)
+			var errb bytes.Buffer
+			if code := runClaudeCode([]string{"disable", "--yes", "--settings", settingsRel}, io.Discard, &errb); code != 0 {
+				t.Fatalf("disable exit %d: %s", code, errb.String())
+			}
+			if _, err := os.Stat(state); !os.IsNotExist(err) {
+				t.Errorf("the record outlived the disable of the file it names (%v)", err)
+			}
+			if env := readEnv(t, proj); c.edited && (env[envCACerts] != corpCA || len(env) != 1) {
+				t.Errorf("env is %v, want only the edited %s=%s", env, envCACerts, corpCA)
+			}
+		})
 	}
 }
 
@@ -219,6 +240,9 @@ func TestClaudeCodeRecordRefusesAnEntryWithNoPrior(t *testing.T) {
 // there cannot be replaced.
 func readOnlyDir(t *testing.T, dir string) {
 	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through a read-only directory")
+	}
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}

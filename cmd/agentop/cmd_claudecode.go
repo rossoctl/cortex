@@ -180,9 +180,10 @@ func recordIndex(st *managedState, settingsPath string) int {
 
 // adoptRelativeEntry records as abs the entry an older enable recorded as rel,
 // the relative path given again here. The entry has no directory, so abs must
-// show it is the file: it holds every value the entry's Written records. An
-// entry abs already has stays as it is.
-func adoptRelativeEntry(statePath, rel, abs string, stderr io.Writer) error {
+// show Cortex routed it: it holds a value the entry's Written records, or, for a
+// record from before Written, one in want. A key edited since keeps its match.
+// An entry abs already has stays as it is.
+func adoptRelativeEntry(statePath, rel, abs string, want map[string]string, stderr io.Writer) error {
 	st, err := readState(statePath)
 	if err != nil || recordFor(st, abs) != nil {
 		return nil
@@ -191,16 +192,20 @@ func adoptRelativeEntry(statePath, rel, abs string, stderr io.Writer) error {
 	if e == nil {
 		return nil
 	}
+	ours := e.Written
+	if len(ours) == 0 {
+		ours = want
+	}
 	doc, err := readSettings(abs)
-	holds := err == nil && len(e.Written) > 0
-	for k, w := range e.Written {
-		if v, set := envStrings(doc)[k]; !set || v != w {
-			holds = false
+	holds := false
+	for k, w := range ours {
+		if v, set := envStrings(doc)[k]; err == nil && set && v == w {
+			holds = true
 		}
 	}
 	if !holds {
-		fmt.Fprintf(stderr, "agentop: the record's entry for %s is from an older enable in another\n"+
-			"  directory, so it is left as it is.\n", rel)
+		fmt.Fprintf(stderr, "agentop: %s holds none of the values the record's entry for %s\n"+
+			"  says Cortex wrote, so that entry is left as it is.\n", abs, rel)
 		return nil
 	}
 	e.Settings = abs
@@ -406,7 +411,8 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 	// only the settings file, so it leaves the record as it is.
 	if abs, err := filepath.Abs(*settingsPath); err == nil {
 		if action != "status" && !filepath.IsAbs(*settingsPath) {
-			if err := adoptRelativeEntry(statePath, *settingsPath, abs, stderr); err != nil {
+			want, _ := wanted(*cortexCfg)
+			if err := adoptRelativeEntry(statePath, *settingsPath, abs, want, stderr); err != nil {
 				fmt.Fprintf(stderr, "agentop: %v\n", err)
 				return 1
 			}
