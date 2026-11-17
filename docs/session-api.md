@@ -281,7 +281,9 @@ has no spawn link: nothing on the wire names the call that started it.
   proxy captured agent ids are one `subagents` agent.
 - A **return** is a subagent's result reaching another agent:
   `<agent-message from="…">` or `<task-notification>` in a message that agent
-  had not sent before.
+  had not sent before. A run that ends with `SubagentHandback` returns at its
+  `<agent-message>`. The `<task-notification>` that Claude Code sends after it
+  is not a return: it comes later, often with the user's next prompt.
 - A **job** is a background shell command, from the tool result that
   acknowledged it (`Command running in background with ID: …`) to the first
   `<task-notification>` naming that id, or to the `TaskStop` result that
