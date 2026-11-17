@@ -179,14 +179,28 @@ func recordIndex(st *managedState, settingsPath string) int {
 }
 
 // adoptRelativeEntry records as abs the entry an older enable recorded as rel,
-// the relative path given again here. An entry abs already has stays as it is.
-func adoptRelativeEntry(statePath, rel, abs string) error {
+// the relative path given again here. The entry has no directory, so abs must
+// show it is the file: it holds every value the entry's Written records. An
+// entry abs already has stays as it is.
+func adoptRelativeEntry(statePath, rel, abs string, stderr io.Writer) error {
 	st, err := readState(statePath)
 	if err != nil || recordFor(st, abs) != nil {
 		return nil
 	}
 	e := recordFor(st, rel)
 	if e == nil {
+		return nil
+	}
+	doc, err := readSettings(abs)
+	holds := err == nil && len(e.Written) > 0
+	for k, w := range e.Written {
+		if v, set := envStrings(doc)[k]; !set || v != w {
+			holds = false
+		}
+	}
+	if !holds {
+		fmt.Fprintf(stderr, "agentop: the record's entry for %s is from an older enable in another\n"+
+			"  directory, so it is left as it is.\n", rel)
 		return nil
 	}
 	e.Settings = abs
@@ -388,10 +402,11 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 		*cortexCfg = filepath.Join(home, cortexCfgRel)
 	}
 	statePath := filepath.Join(home, stateRel)
-	// Absolute, so the record names the file from any directory.
+	// Absolute, so the record names the file from any directory. status reads
+	// only the settings file, so it leaves the record as it is.
 	if abs, err := filepath.Abs(*settingsPath); err == nil {
 		if action != "status" && !filepath.IsAbs(*settingsPath) {
-			if err := adoptRelativeEntry(statePath, *settingsPath, abs); err != nil {
+			if err := adoptRelativeEntry(statePath, *settingsPath, abs, stderr); err != nil {
 				fmt.Fprintf(stderr, "agentop: %v\n", err)
 				return 1
 			}
@@ -915,7 +930,9 @@ func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr i
 	// place it would outlive every disable, and doctor would report Claude Code as
 	// routed for good.
 	if statePath != "" && (pl.st != nil || pl.stErr != nil) {
-		_ = dropRecord(statePath, pl.settingsPath)
+		if err := dropRecord(statePath, pl.settingsPath); err != nil {
+			warnEntryKept(stderr, statePath, pl.settingsPath, err)
+		}
 	}
 	return restored, nil
 }
@@ -960,9 +977,16 @@ func removeDisabledRecord(pl claudeCodeDisablePlan, statePath string, stderr io.
 		return
 	}
 	if err := dropRecord(statePath, pl.settingsPath); err != nil {
-		fmt.Fprintf(stderr, "agentop: could not remove %s (%v); `agentop doctor` will go on\n"+
-			"  reporting Claude Code as routed through Cortex. Delete it by hand.\n", statePath, err)
+		warnEntryKept(stderr, statePath, pl.settingsPath, err)
 	}
+}
+
+// warnEntryKept says a disable restored settingsPath but kept its entry in the
+// record. A disable run again takes the entry out, and keeps every other file's.
+func warnEntryKept(stderr io.Writer, statePath, settingsPath string, err error) {
+	fmt.Fprintf(stderr, "agentop: could not take %s out of %s (%v);\n"+
+		"  `agentop doctor` will go on reporting it as routed through Cortex. Run disable\n"+
+		"  again to retry.\n", settingsPath, statePath, err)
 }
 
 func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr io.Writer) int {

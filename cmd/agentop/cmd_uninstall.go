@@ -453,12 +453,16 @@ func unrouteClaudeCode(env *setupEnv, settings, state string) removal {
 				// good, a left key or not: it answers from the record's existence.
 				if state != "" {
 					// This file's entry, or a record that names no file whole.
-					drop := removeIfExists
+					drop, fix := removeIfExists, manual("rm "+env.shellPath(state))
 					if pl.st != nil {
 						drop = func(state string) error { return dropRecord(state, settings) }
 					}
+					if st, _ := readState(state); st != nil && len(st.OtherFiles) > 0 {
+						// rm would take the other files' entries, which their own rows' fixes need.
+						fix = remedy{agentop: disable.agentop, byHand: "in " + env.tilde(state) + ", delete the entry for " + env.tilde(settings)}
+					}
 					if err := drop(state); err != nil {
-						return "", []string{env.tilde(state)}, withFixes(err, manual("rm "+env.shellPath(state)))
+						return "", []string{env.tilde(state)}, withFixes(err, fix)
 					}
 				}
 				if len(pl.left) > 0 {

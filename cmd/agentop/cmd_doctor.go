@@ -172,17 +172,18 @@ func installShape(env *setupEnv) (claudeCode, noService bool, elsewhere []string
 		}
 		elsewhere = append(elsewhere, s)
 	}
-	return recorded || len(elsewhere) == 0 && claudeCodeRouted(env), backgroundOnly(env), elsewhere
+	return recorded || (len(elsewhere) == 0 && claudeCodeRouted(env)), backgroundOnly(env), elsewhere
 }
 
 // claudeCodeRouted reports whether Cortex routed Claude Code: enable's state
 // record is there, or settings.json's HTTPS_PROXY is the proxy enable would write
 // from the current config. Enable writes the record and every disable deletes its
 // file's entry, the record going with the last, including one that left a key
-// behind because its value changed since enable set it — the record's existence is read here as "Cortex routes this", so it must not
-// outlive the values it describes, or doctor reports a routing that is gone and
-// offers a fix that puts it back. Keeping it for a left key's sake would cost that
-// key its edit too — applyClaudeCodeDisable says why.
+// behind because its value changed since enable set it — the record's existence
+// is read here as "Cortex routes this", so it must not outlive the values it
+// describes, or doctor reports a routing that is gone and offers a fix that puts
+// it back. Keeping it for a left key's sake would cost that key its edit too —
+// applyClaudeCodeDisable says why.
 //
 // Any managed key being set is not enough: a corporate HTTPS_PROXY is the user's
 // own, and disable, with no record, would remove it. A settings file that cannot be

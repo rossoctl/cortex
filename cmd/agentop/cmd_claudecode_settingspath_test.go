@@ -5,7 +5,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +61,35 @@ func TestUninstallUnroutesEverySettingsFileCortexRouted(t *testing.T) {
 	}
 	if env := readEnv(t, filepath.Join(sc.home, settingsRel)); len(env) != 0 {
 		t.Errorf("the default settings still route: %v", env)
+	}
+}
+
+// The same relative --settings in another project names another file, so
+// disable and enable there leave the older entry to its own project.
+func TestClaudeCodeLeavesAnOlderRelativeEntryToTheProjectThatHoldsIt(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t)
+	a, b := filepath.Join(sc.home, "a"), filepath.Join(sc.home, "b")
+	writeHomeFile(t, filepath.Join(a, settingsRel), "{}\n")
+	writeHomeFile(t, filepath.Join(b, settingsRel), "{}\n")
+	state := filepath.Join(sc.home, stateRel)
+	t.Chdir(a)
+	if code := claudeCodeEnable2(settingsRel, filepath.Join(sc.home, cortexCfgRel), state, true, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("fixture: relative enable exit %d", code)
+	}
+
+	t.Chdir(b)
+	for _, action := range []string{"disable", "enable"} {
+		var errb bytes.Buffer
+		if code := runClaudeCode([]string{action, "--yes", "--settings", settingsRel}, io.Discard, &errb); code != 0 {
+			t.Fatalf("%s in b exit %d: %s", action, code, errb.String())
+		}
+		if st, err := readState(state); err != nil || st == nil || st.Settings != settingsRel {
+			t.Errorf("after %s in b the record is %+v (%v), want a's relative entry first", action, st, err)
+		}
+	}
+	if st, _ := readState(state); st == nil || len(st.OtherFiles) != 1 || st.OtherFiles[0].Settings != filepath.Join(b, settingsRel) {
+		t.Errorf("the record is %+v, want an entry of b's own beside a's", st)
 	}
 }
 
@@ -181,5 +212,60 @@ func TestClaudeCodeRecordRefusesAnEntryWithNoPrior(t *testing.T) {
 	writeHomeFile(t, state, `{"settings":"/a","prior":{},"other_files":[{"settings":"/b"}]}`)
 	if st, err := readState(state); err == nil {
 		t.Errorf("readState = %+v, want an error for the entry with no prior", st)
+	}
+}
+
+// readOnlyDir makes dir read-only for the rest of the test, so a record written
+// there cannot be replaced.
+func readOnlyDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+}
+
+// A disable that restores the file but cannot take its entry out says so, and
+// still succeeds.
+func TestClaudeCodeDisable_WarnsWhenItKeepsTheEntry(t *testing.T) {
+	first, cfg := fixture(t, "{}")
+	second := filepath.Join(t.TempDir(), "settings.json")
+	state := filepath.Join(t.TempDir(), "state.json")
+	for _, s := range []string{first, second} {
+		if code := claudeCodeEnable2(s, cfg, state, true, io.Discard, io.Discard); code != 0 {
+			t.Fatalf("fixture: enable on %s exit %d", s, code)
+		}
+	}
+	readOnlyDir(t, filepath.Dir(state))
+	var errb bytes.Buffer
+	if code := claudeCodeDisable2(first, state, true, io.Discard, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "could not take "+first+" out of "+state) {
+		t.Errorf("disable kept the entry and said nothing:\n%s", errb.String())
+	}
+}
+
+// When uninstall cannot take one file's entry out, its fix keeps the other
+// files' entries, which their own fixes read.
+func TestUninstallFixForAKeptEntryKeepsTheOthers(t *testing.T) {
+	home := t.TempDir()
+	env := &setupEnv{home: home, goos: runtime.GOOS}
+	state, proj := filepath.Join(home, stateRel), filepath.Join(home, "proj", settingsRel)
+	writeHomeFile(t, state, "")
+	if err := writeStateFile(state, managedState{Settings: proj, Prior: map[string]*string{},
+		OtherFiles: []managedState{{Settings: filepath.Join(home, settingsRel), Prior: map[string]*string{}}}}); err != nil {
+		t.Fatal(err)
+	}
+	readOnlyDir(t, filepath.Dir(state))
+
+	r := unrouteClaudeCode(env, proj, state)
+	_, _, err := r.run(nil)
+	if err == nil {
+		t.Fatal("the row took the entry out of a read-only record")
+	}
+	if fixes := r.fixesFor(err); len(fixes) != 1 || strings.HasPrefix(fixes[0].byHand, "rm ") ||
+		!strings.Contains(fixes[0].byHand, "delete the entry for ~/proj/"+settingsRel) {
+		t.Errorf("the fix is %+v, want one deleting only this file's entry", fixes)
 	}
 }
