@@ -4,12 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	bschemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/rossoctl/accountant"
+	"github.com/rossoctl/cortex/core/accounting"
+	"github.com/rossoctl/cortex/core/llmclient"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -223,5 +228,127 @@ func TestOnRequest_LogsWhetherItsOwnRewriteApplied(t *testing.T) {
 				t.Errorf("logs want %q and never %q:\n%s", tc.want, tc.never, out)
 			}
 		})
+	}
+}
+
+// A request the engine compacts reports its context operations to the accountant, each still
+// carrying the "context-guru.<component>" operator the library itself stamps (so the framework's
+// ReportOps does not overwrite it with the plugin's own name).
+func TestPlugin_ReportsEngineOps(t *testing.T) {
+	p := configured(t, collapseEngine)
+	body := chatBody(bigToolOutput())
+	pctx := inferencePctx("/v1/chat/completions", body)
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if !pctx.BodyMutated() {
+		t.Fatal("expected the engine to compact this body")
+	}
+	ops := pctx.ReportedOps()
+	if len(ops) == 0 {
+		t.Fatal("expected pctx.ReportedOps() to carry the engine's context operations")
+	}
+	for _, op := range ops {
+		if !strings.HasPrefix(op.Operator, "context-guru.") {
+			t.Errorf("op %+v: want Operator prefixed %q", op, "context-guru.")
+		}
+	}
+}
+
+// With no Opts.ThreadOf wired (unchanged in this task), the engine resolves no thread, so
+// res.Trace.Thread.ID is empty and SetAccountingThread's empty-id no-op leaves AccountingThread
+// unset. core/accounting.ThreadOf's own default rule then names the primary agent "main".
+func TestPlugin_SetsThread(t *testing.T) {
+	p := configured(t, collapseEngine)
+	body := chatBody(bigToolOutput())
+	pctx := inferencePctx("/v1/chat/completions", body)
+	if act := invokeReq(p, pctx); act.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", act.Type)
+	}
+	if _, _, ok := pctx.AccountingThread(); ok {
+		t.Fatal("expected no accounting thread override for the primary agent")
+	}
+	if got := accounting.ThreadOf(pctx); got.ID != "main" {
+		t.Fatalf("accounting.ThreadOf = %+v, want ID \"main\"", got)
+	}
+}
+
+// cgModel.Complete reports its own in-request model call as a KindSpend op: Input is PromptTokens
+// minus the cached part, CacheRead is the cached part, Output is CompletionTokens. The op carries
+// no ChangeID (it is not a replayed change) and Detached is false (it finished before the request
+// it served was answered).
+func TestPlugin_ModelCallIsSpendOp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],`+
+			`"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":40}}}`)
+	}))
+	defer srv.Close()
+
+	pctx := inferencePctx("/v1/chat/completions", nil)
+	pctx.SetCurrentPlugin("context-guru", pipeline.InvocationPhaseRequest)
+	defer pctx.ClearCurrentPlugin()
+
+	m := cgModel{
+		c:         llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "cheap-model"}),
+		maxTokens: 100,
+		model:     "cheap-model",
+		host:      "cheap-llm.svc",
+		pctx:      pctx,
+	}
+	if _, err := m.Complete(context.Background(), "summarize this"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	ops := pctx.ReportedOps()
+	if len(ops) != 1 {
+		t.Fatalf("expected exactly one reported op, got %d: %+v", len(ops), ops)
+	}
+	op := ops[0]
+	if op.Kind != accountant.KindSpend {
+		t.Fatalf("op.Kind = %v, want KindSpend", op.Kind)
+	}
+	if op.Call == nil {
+		t.Fatal("op.Call is nil")
+	}
+	if op.Call.Model != "cheap-model" {
+		t.Errorf("Call.Model = %q, want %q", op.Call.Model, "cheap-model")
+	}
+	if op.Call.Usage.Input != 60 {
+		t.Errorf("Call.Usage.Input = %d, want 60", op.Call.Usage.Input)
+	}
+	if op.Call.Usage.CacheRead != 40 {
+		t.Errorf("Call.Usage.CacheRead = %d, want 40", op.Call.Usage.CacheRead)
+	}
+	if op.Call.Usage.Output != 20 {
+		t.Errorf("Call.Usage.Output = %d, want 20", op.Call.Usage.Output)
+	}
+	if op.ChangeID != "" {
+		t.Errorf("ChangeID = %q, want empty", op.ChangeID)
+	}
+	if op.Call.Detached {
+		t.Error("Detached = true, want false")
+	}
+}
+
+// Under on_error: observe the plugin's writes are shadow (never sent), and the framework stamps
+// DryRun on every op a plugin reports while it runs under that policy — ReportOps, not the
+// plugin, is responsible for this, but the plugin must still call it so the accountant sees the
+// engine's would-be ops.
+func TestPlugin_ObserveModeOpsAreDryRun(t *testing.T) {
+	pl, err := pipeline.New([]pipeline.Plugin{configured(t, collapseEngine)}, pipeline.WithPolicies(pipeline.ErrorPolicyObserve))
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	pctx := inferencePctx("/v1/chat/completions", chatBody(bigToolOutput()))
+	pl.Run(context.Background(), pctx)
+
+	ops := pctx.ReportedOps()
+	if len(ops) == 0 {
+		t.Fatal("expected ops reported under observe mode too")
+	}
+	for _, op := range ops {
+		if !op.DryRun {
+			t.Errorf("op %+v: want DryRun under on_error: observe", op)
+		}
 	}
 }

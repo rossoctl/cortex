@@ -23,9 +23,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/cortex/core/llmclient"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
@@ -112,10 +114,17 @@ type contextGuruConfig struct {
 }
 
 // cgModel adapts an llmclient.Client to context-guru's components.Model interface
-// (single prompt in, text out).
+// (single prompt in, text out). model/host identify the call for accounting
+// (accountant.ModelCall.Model/Host); pctx, when set, is the request this call was made
+// for, and Complete reports the call to it as a KindSpend context operation (W4.6)
+// before returning. pctx is captured at call time because it is per-request while a
+// cgModel wrapping the plugin's static model is shared across requests.
 type cgModel struct {
 	c         *llmclient.Client
 	maxTokens int
+	model     string
+	host      string
+	pctx      *pipeline.Context
 }
 
 func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
@@ -127,21 +136,51 @@ func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if resp.Usage != nil && m.pctx != nil {
+		cached := resp.Usage.CachedTokens()
+		m.pctx.ReportOps(accountant.Operation{
+			Kind: accountant.KindSpend,
+			Call: &accountant.ModelCall{
+				Host:  m.host,
+				Model: m.model,
+				Usage: accountant.CallUsage{
+					Usage: accountant.Usage{
+						Input:     resp.Usage.PromptTokens - cached,
+						CacheRead: cached,
+					},
+					Output: resp.Usage.CompletionTokens,
+				},
+				Detached: false,
+			},
+		})
+	}
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("contextguru: model returned no choices")
 	}
 	return resp.Choices[0].Message.Content, nil
 }
 
+// hostOf extracts the host component of a base URL for accountant.ModelCall.Host (the
+// upstream the call went to). Falls back to the raw string when it does not parse as a
+// URL with a host (e.g. just "host:port" with no scheme).
+func hostOf(baseURL string) string {
+	if u, err := url.Parse(baseURL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return baseURL
+}
+
 // ContextGuru is the plugin. pipe/store are built once at Configure and shared
 // across requests (store is synchronized; the engine holds no mutable pipeline
-// state). static is the configured cheap model (nil when none).
+// state). static is the configured cheap model's template (nil when none); it
+// carries no pctx, since it is shared across requests — OnRequest copies it per
+// request with staticModelFor so Complete can report its spend op to the right one.
 type ContextGuru struct {
 	cfg      contextGuruConfig
 	pipe     *cgcomponents.Pipeline
 	store    cgstore.Store
 	sentinel string // unguessable value carried by our own LLM calls
-	static   cgcomponents.Model
+	static   *cgModel
 	modelTO  time.Duration
 	modelMax int
 }
@@ -214,7 +253,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 			// would silently disable the cheap model. Fail loud instead.
 			return fmt.Errorf("context-guru model config: base_url and model must both be set (got base_url=%q model=%q)", m.BaseURL, m.Model)
 		default:
-			p.static = cgModel{
+			p.static = &cgModel{
 				c: llmclient.New(llmclient.Options{
 					Endpoint:           m.BaseURL,
 					Model:              m.Model,
@@ -224,6 +263,8 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 					SentinelValue:      p.sentinel,
 				}),
 				maxTokens: p.modelMax,
+				model:     m.Model,
+				host:      hostOf(m.BaseURL),
 			}
 		}
 	}
@@ -255,12 +296,29 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	}
 	provider := providerFor(pctx.Path)
 	models := cgcomponents.ModelSpec{
-		Static:   p.static,
+		Static:   p.staticModelFor(pctx),
 		Incoming: p.incomingModel(pctx, provider),
 	}
 	before := len(pctx.Body)
-	out, changed := apply.BodyWithModel(ctx, p.pipe, p.store, provider, pctx.Body, sid, false, models)
+	res := apply.BodyOpts(ctx, p.pipe, p.store, apply.Opts{
+		Provider: provider,
+		Body:     pctx.Body,
+		Session:  sid,
+		Models:   models,
+	})
+	out, changed := res.Body, res.Changed
+	// Name the request's accounting thread from the engine's own thread split (design
+	// §5.4/§5.5). res.Trace.Thread.ID is empty with no Opts.ThreadOf wired (unchanged in
+	// this task), and SetAccountingThread's empty-id no-op then leaves
+	// core/accounting.ThreadOf's default rule ("main" for the primary agent) in place.
+	threadParent, _ := res.Trace.Thread.InheritsFrom()
+	pctx.SetAccountingThread(res.Trace.Thread.ID, threadParent)
 	if changed && len(out) > 0 {
+		// The engine's own context operations (W5.1/W4.6): reported here regardless of
+		// whether the write below applies, because ReportOps itself stamps DryRun when
+		// this plugin runs under on_error: observe — the accountant still sees what the
+		// engine WOULD have sent.
+		pctx.ReportOps(res.Trace.Ops...)
 		// Per-request byte-level view (the engine's token-level view is logged by
 		// logEmitter.Run). The framework also emits a body-mutation session event.
 		// The message follows this plugin's own SetBody result, not BodyMutated: under
@@ -291,6 +349,19 @@ func (p *ContextGuru) gated(path string) bool {
 		}
 	}
 	return false
+}
+
+// staticModelFor returns the configured cheap model for one request, carrying pctx so
+// cgModel.Complete can report that model call's spend op to the right request. p.static
+// is a template shared across requests (built once at Configure) and holds no pctx of
+// its own; nil when no static model is configured.
+func (p *ContextGuru) staticModelFor(pctx *pipeline.Context) cgcomponents.Model {
+	if p.static == nil {
+		return nil
+	}
+	m := *p.static
+	m.pctx = pctx
+	return m
 }
 
 // providerFor maps the request path to the bifrost provider dialect the engine
@@ -334,6 +405,9 @@ func (p *ContextGuru) incomingModel(pctx *pipeline.Context, provider bschemas.Mo
 			SentinelValue:      p.sentinel,
 		}),
 		maxTokens: p.modelMax,
+		model:     model,
+		host:      pctx.Host,
+		pctx:      pctx,
 	}
 }
 
