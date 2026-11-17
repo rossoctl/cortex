@@ -1920,10 +1920,13 @@ section: `↵` on it opens it. In it:
   them, and each image or document as `[image image/png 34.1kB]`.
 - `forwarded` says whether a plugin rewrote the body, and `forwardedBody` is what
   went upstream when one did.
-- `headers` and `query` are the request's, without credentials.
-- In the RESPONSE section, `response` has the status, the headers, the body (a
-  compressed one as `[gzip body 12.0kB]`) and `truncated` or `incomplete` when
-  either applies.
+- `query` is the request's.
+- In the RESPONSE section, `response` has the status, the body (a compressed one as
+  `[gzip body 12.0kB]`) and `truncated` or `incomplete` when either applies.
+
+The captured headers are in a closed `headers` node beside `raw`, not in it, so `↵`
+opens them without the bodies. A request's headers are without credentials. A search
+opens `headers` when it matches there.
 
 Each section has its own `raw`. Its capture comes with the fetch of that half, and
 agentop keeps it. A section has no `raw` when the archive has no capture for its

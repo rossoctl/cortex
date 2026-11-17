@@ -92,6 +92,27 @@ func TestDetailRaw_StartsClosedAndOpensWithEnter(t *testing.T) {
 	}
 }
 
+// The headers are beside raw, not in it: closed, but a reader opens them without the bodies.
+func TestDetailRaw_HeadersBesideRaw(t *testing.T) {
+	ev := &pipeline.SessionEvent{Seq: 3, Phase: pipeline.SessionRequest, Direction: pipeline.Outbound, Host: "h",
+		Inference: &pipeline.InferenceExtension{Model: "m"}}
+	m := detailModel(t, "s1", ev)
+	m.applyDetailEvent(detailEventLoadedMsg{sessionID: "s1", seq: 3, event: ev, raw: &pipeline.RawCapture{Request: rawRequest,
+		RequestHeaders: map[string][]string{"X-App": {"cli"}}}})
+	if out := stripANSI(strings.Join(lineTexts(m.detailLines), "\n")); strings.Contains(out, "X-App") {
+		t.Fatalf("headers start open:\n%s", out)
+	}
+	cursorTo(t, m, "headers")
+	press(m, tea.KeyEnter)
+	out := stripANSI(strings.Join(lineTexts(m.detailLines), "\n"))
+	if !strings.Contains(out, `"X-App": "cli"`) {
+		t.Fatalf("Enter did not open the headers:\n%s", out)
+	}
+	if strings.Contains(out, "read it whole") {
+		t.Fatalf("opening the headers opened the body:\n%s", out)
+	}
+}
+
 // A response's capture shows its status and flags, and a compressed body as its size.
 func TestDetailRaw_Response(t *testing.T) {
 	ev := &pipeline.SessionEvent{Seq: 4, Phase: pipeline.SessionResponse, Direction: pipeline.Outbound, Host: "h",
