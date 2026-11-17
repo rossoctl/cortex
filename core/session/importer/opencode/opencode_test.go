@@ -276,7 +276,7 @@ func TestSource_NewestFirstSinceAndSkip(t *testing.T) {
 
 func TestSource_UnreadableRoot(t *testing.T) {
 	db := fixtureDB(t)
-	if out, err := exec.Command(sqlitecli.Program, db, "alter table session_message rename column data to data_gone").CombinedOutput(); err != nil {
+	if out, err := exec.Command(sqlitecli.Program, db, "alter table session_message rename column seq to seq_gone").CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
 	sessions := readAll(t, New(db), time.Time{})
@@ -346,22 +346,34 @@ insert into session_message values ('msg_d4', 'ses_child2', 'assistant', 4, 1763
 	}
 }
 
-// TestSource_SkipTimeIsLastResponse: rows after the last response (a user row with no reply, an
-// idle row) do not move the time that Sessions gives skip. Else a session that was imported
-// would be parsed again on each run.
+// TestSource_SkipTimeIsLastResponse: the time that Sessions gives skip is the parsed Updated.
+// Rows after the last response (a user row with no reply, an idle row, a failed call) and a
+// time_updated after time.completed do not move it, and a group with no events gives the zero
+// time. Else a session that was imported would be parsed again on each run.
 func TestSource_SkipTimeIsLastResponse(t *testing.T) {
 	db := fixtureDB(t)
 	if out, err := exec.Command(sqlitecli.Program, db, `insert into session_message values ('msg_t8', 'ses_tools', 'user', 8, 1763000010000, 1763000010000, '{"text":"no reply yet"}');
-insert into session_message values ('msg_t9', 'ses_tools', 'idle', 9, 1763000010100, 1763000010100, '{}');`).CombinedOutput(); err != nil {
+insert into session_message values ('msg_t9', 'ses_tools', 'idle', 9, 1763000010100, 1763000010100, '{}');
+insert into session_message values ('msg_t10', 'ses_tools', 'assistant', 10, 1763000010200, 1763000010300,
+  '{"model":{"id":"gpt-5"},"content":[],"error":{"message":"overloaded"},"time":{"created":1763000010200}}');
+insert into session_message values ('msg_p4', 'ses_plain', 'user', 4, 1763000006100, 1763000006100, '{"text":"more"}');
+insert into session_message values ('msg_p5', 'ses_plain', 'assistant', 5, 1763000006200, 1763000006502,
+  '{"model":{"id":"fledge-alpha-free"},"content":[{"type":"text","text":"more"}],"time":{"completed":1763000006500}}');
+insert into session_v2 values ('ses_useronly', null, null, '/tmp/demo', '2.0.26', 1763000000010);
+insert into session_message values ('msg_u1', 'ses_useronly', 'user', 1, 1763000000020, 1763000000020, '{"text":"no reply"}');
+insert into session_message values ('msg_u2', 'ses_useronly', 'assistant', 2, 1763000000030, 1763000000030, '{"content":[');`).CombinedOutput(); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
 	all := readAll(t, New(db), time.Time{})
 	skipAt := map[string]time.Time{}
 	for range New(db).Sessions(time.Time{}, func(id string, at time.Time) bool { skipAt[id] = at; return true }, func(int, int) {}) {
 	}
+	if len(all) != 4 {
+		t.Fatalf("sessions %v, want ses_useronly too", ids(all))
+	}
 	for _, s := range all {
-		if !skipAt[s.ID].Equal(s.Updated) {
-			t.Errorf("%s: skip got %v, want Updated %v", s.ID, skipAt[s.ID], s.Updated)
+		if at, ok := skipAt[s.ID]; !ok || !at.Equal(s.Updated) {
+			t.Errorf("%s: skip got %v (called %v), want Updated %v", s.ID, at, ok, s.Updated)
 		}
 	}
 }

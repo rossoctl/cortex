@@ -43,7 +43,7 @@ type sessionRow struct {
 	Directory   string  `json:"directory"`
 	Version     string  `json:"version"`
 	TimeCreated int64   `json:"time_created"`
-	Last        *int64  `json:"last"` // newest assistant time_updated, in ms; nil when the session has no assistant message
+	Last        *int64  `json:"last"` // in ms; nil when no row gives an event time
 	Messages    int     `json:"messages"`
 }
 
@@ -67,7 +67,11 @@ type group struct {
 }
 
 const sessionQuery = `select s.id, s.parent_id, s.fork_session_id, s.directory, s.version, s.time_created,
-  (select max(time_updated) from session_message where session_id = s.id and type = 'assistant') as last,
+  (select max(max(time_created, min(case when json_extract(data, '$.time.completed') > 0
+      then json_extract(data, '$.time.completed') else time_created end, time_updated)))
+    from session_message where session_id = s.id and type = 'assistant' and json_valid(data)
+      and not (coalesce(json_type(data, '$.error'), 'null') != 'null'
+        and coalesce(json_array_length(data, '$.content'), 0) = 0)) as last,
   (select count(*) from session_message where session_id = s.id) as messages
 from session_v2 s`
 
@@ -101,7 +105,10 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 		all := groups(rows)
 		for i, g := range all {
 			progress(i, len(all))
-			at := time.UnixMilli(g.last)
+			var at time.Time // zero: no events
+			if g.last > 0 {
+				at = time.UnixMilli(g.last)
+			}
 			if !since.IsZero() && at.Before(since) {
 				continue
 			}
