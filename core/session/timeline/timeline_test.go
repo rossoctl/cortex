@@ -791,6 +791,20 @@ func TestBackgroundJobRunsUntilItsNotification(t *testing.T) {
 	}
 }
 
+// A job that TaskStop stops gets no notification: it ends at the TaskStop result.
+func TestBackgroundJobEndsAtTaskStop(t *testing.T) {
+	var r rec
+	h := []pipeline.InferenceMessage{user("go")}
+	r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Bash"})
+	r.turn("", 2, 1, h, []pipeline.InferenceToolResult{result("t1", "Command running in background with ID: bk42.")}, "tool_use", pipeline.InferenceToolCall{ID: "t2", Name: "TaskStop"})
+	r.turn("", 26, 1, h, []pipeline.InferenceToolResult{result("t2", `{"message":"Successfully stopped task: bk42 (llama-server --port 18090)","task_id":"bk42"}`)}, "end_turn")
+	r.turn("", 600, 1, h, nil, "end_turn")
+	tl := Build("s", r.events, at(900))
+	if len(tl.Jobs) != 1 || tl.Jobs[0].End == nil || !tl.Jobs[0].End.Equal(at(26)) {
+		t.Fatalf("jobs = %+v, want bk42 to end at 26s", tl.Jobs)
+	}
+}
+
 // A result that only quotes the acknowledgement, a file or diff read back, starts no job.
 func TestQuotedBackgroundMarkerStartsNoJob(t *testing.T) {
 	var r rec

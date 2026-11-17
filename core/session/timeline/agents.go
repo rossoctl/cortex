@@ -35,6 +35,9 @@ var (
 	// backgroundRe is Claude Code's result for a shell command it started in the background;
 	// the command's <task-notification> later names the same id.
 	backgroundRe = regexp.MustCompile(`^Command running in background with ID: ([A-Za-z0-9_-]+)`)
+	// stoppedRe is TaskStop's result. A stopped job gets no <task-notification>, so without it
+	// the job stays open and covers every later wait of its agent.
+	stoppedRe = regexp.MustCompile(`^\{"message":"Successfully stopped task: ([A-Za-z0-9_-]+)`)
 )
 
 // failedFinish are the finish reasons of a reply that did not complete: none at all, a refusal
@@ -124,6 +127,12 @@ func buildAgents(t *Timeline, events []model.SessionEvent) {
 					if _, dup := jobs[m[1]]; !dup {
 						jobs[m[1]] = len(t.Jobs)
 						t.Jobs = append(t.Jobs, Job{Agent: c.agent, ID: m[1], ToolUseID: r.ToolUseID, Start: c.req.At, Seq: c.req.Seq})
+					}
+				}
+				if m := stoppedRe.FindStringSubmatch(r.Content); m != nil {
+					if j, ok := jobs[m[1]]; ok && t.Jobs[j].End == nil {
+						at := c.req.At
+						t.Jobs[j].End = &at
 					}
 				}
 			}
