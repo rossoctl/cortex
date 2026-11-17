@@ -149,3 +149,27 @@ func TestJSON_NestedArrayRedaction(t *testing.T) {
 		t.Errorf("nested array url = %v, want https://a", obj["url"])
 	}
 }
+
+func TestJSON_RedactsHeadersValuesKeepsNames(t *testing.T) {
+	in := json.RawMessage(`{"servers":{"bob":{"headers":{"User-Agent":"bob-shell"}}},"session":{"id_headers":["X-Session"]},` +
+		`"cpex":{"delegated_credential_headers":["X-Cred"]},"script":{"remove_headers":["X-Drop"]}}`)
+	var m struct {
+		Servers map[string]struct {
+			Headers map[string]any `json:"headers"`
+		} `json:"servers"`
+		Session map[string]any `json:"session"`
+		Cpex    map[string]any `json:"cpex"`
+		Script  map[string]any `json:"script"`
+	}
+	if err := json.Unmarshal(JSON(in), &m); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Servers["bob"].Headers["User-Agent"]; got != "[REDACTED]" {
+		t.Errorf("headers.User-Agent = %v, want [REDACTED]", got)
+	}
+	for name, got := range map[string]any{"id_headers": m.Session["id_headers"], "delegated_credential_headers": m.Cpex["delegated_credential_headers"], "remove_headers": m.Script["remove_headers"]} {
+		if s, ok := got.([]any); !ok || len(s) != 1 {
+			t.Errorf("%s = %v, want it unchanged", name, got)
+		}
+	}
+}

@@ -47,6 +47,16 @@ func redactMap(m map[string]any) {
 			m[k] = "[REDACTED]"
 			continue
 		}
+		// A field named exactly "headers" (the inference router's fixed headers)
+		// holds values that can be secrets under names that are not. Keep the
+		// names. Matched exactly, not by suffix: id_headers and remove_headers
+		// hold header names, which must stay visible.
+		if h, ok := v.(map[string]any); ok && k == "headers" {
+			for name := range h {
+				h[name] = "[REDACTED]"
+			}
+			continue
+		}
 		switch val := v.(type) {
 		case map[string]any:
 			redactMap(val)
