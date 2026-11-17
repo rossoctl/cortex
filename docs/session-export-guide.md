@@ -312,8 +312,13 @@ The timeline's `tools` array holds the tool calls that each model response asked
 tool's `seq` is its **response's** `seq`, so join a tool to the export's
 `phase=="response"` record.
 
-A turn's `seq` is its **request's** seq, which is one lower. A join on a turn's `seq`, or
-on the export's request record, finds no tool.
+A turn's `seq` is its **request's** seq, not its response's, and the two are **not
+adjacent**. `seq` counts every event in the session, so tunnel rows, other hosts and the
+side calls the timeline drops take the numbers in between. A join on a turn's `seq`, or on
+the export's request record, finds no tool.
+
+To get from a request record to its response, match on `requestId`. That is the stable
+key, and it is what the timeline itself pairs on.
 
 **Load it into pandas:**
 
