@@ -219,7 +219,9 @@ Depends on: none
   `{"subagent":{"thread_spawn":{"parent_thread_id":"2222…","depth":1,"agent_role":"explorer"}}}`,
   `cwd` `/tmp/tools`); `turn_context`; user message; assistant `found`; `token_count` (100/0/10/0/110).
 - Timestamps: each line 1 s after the one before; the tools session's newest line is newest.
-  Tests set file mtimes with `os.Chtimes` on a copy in `t.TempDir()` when an order matters.
+  Git does not keep mtimes, so `fixtures(t)` sets the mtime of each copied file to the
+  `timestamp` of its last JSON line with `os.Chtimes`. Every test that uses `fixtures(t)`
+  gets these mtimes.
 
 - [ ] **Step 1: Write the failing tests** in `codex_test.go`. A helper `fixtures(t)` copies
   `testdata` into `t.TempDir()` and returns that home. A helper `readAll(t, src, since)`
@@ -244,7 +246,7 @@ Depends on: none
     with `Subagent == "3333…"` and `Inference.AgentRole == model.AgentRoleSubagent`, and
     their `Project` is the label of `/tmp/tools`.
   - `TestSource_NewestFirstSinceAndSkip`: ids in order are `2222…`, `1111…`; a `since`
-    after the plain file's mtime drops `1111…`; a `skip` that gives true for `2222…`
+    1 s after the plain file's mtime (and before the tools files' mtimes) drops `1111…`; a `skip` that gives true for `2222…`
     stops it, and the time it got is not before that session's `Updated` from a full read.
   - `TestSource_CompressedRollout`: replace the plain file in the copy with
     `<name>.zst` written by `zstd.NewWriter`; the session `1111…` equals the plain read
@@ -318,9 +320,11 @@ GOWORK=off go -C core vet ./... && GOWORK=off go -C core test -race ./session/im
 
 ## Gate check (run on the base, 2026-11-16)
 
-From the worktree root, on the unchanged base, these passed:
-`GOWORK=off go -C core vet ./session/...`, `GOWORK=off go -C core mod tidy -diff`,
-`GOWORK=off go -C cmd/cortex vet ./...`, `test -z "$(gofmt -l core/session/importer cmd/cortex)"`.
+From the worktree root, on the unchanged base (edd296580), each format and vet step of the
+gate was run alone, and each passed with no change to how it is called:
+`GOWORK=off go -C core vet ./...`, `GOWORK=off go -C cmd/cortex vet ./...`,
+`test -z "$(gofmt -l core/session/importer cmd/cortex)"`. The plan review did not run the
+test, build and `mod tidy -diff` steps.
 
 ## For a human after review
 
