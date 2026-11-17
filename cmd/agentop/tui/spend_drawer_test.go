@@ -2128,3 +2128,25 @@ func TestREADME_StatesTheCurrentTwoColumnThreshold(t *testing.T) {
 			"the drawer's documented width has drifted from the code", got, want)
 	}
 }
+
+// A drawer row shows the net saving when the operators caused a penalty, and the accountant's
+// other figures in its note: the gross and the penalty, usage-limit units with their API
+// equivalent, plugin spend and keep-alive, each named.
+func TestDrawerFigures_ShowTheAccountantsFigures(t *testing.T) {
+	r := drawerRow{label: "claude-opus-5", counts: usage.Counts{
+		Requests: 3, PricedRequests: 3, PriceableRequests: 3, CostMicros: 1_000_000,
+		AvoidedMicros: 10_000, PenaltyMicros: 30_000,
+		AvoidedUnits: 4_500, AvoidedAPIEquivalentMicros: 1_000_000,
+		PluginSpendMicros: 40_000, KeepAliveMicros: 20_000, KeepAlivePings: 2,
+	}}
+	var parts []string
+	for _, f := range drawerFigures(r) {
+		parts = append(parts, f.full)
+	}
+	got := strings.Join(parts, " | ")
+	for _, want := range []string{"net -$0.02", "penalty $0.03", "API equivalent $1.00", "plugin model calls $0.04", "keep-alive $0.02   2 pings"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("row = %q, missing %q", got, want)
+		}
+	}
+}

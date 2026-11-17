@@ -13,6 +13,7 @@ import (
 
 	"github.com/rossoctl/cortex/cmd/agentop/money"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
+	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session/timeline"
 )
@@ -1528,7 +1529,7 @@ func outputTokens(inf *pipeline.InferenceExtension) int {
 }
 
 // exchangeTokensCell renders an exchange's TOKENS as prompt → output, each compact, with what
-// tool-prune kept off the prompt in parentheses: "70.6k(−3.1k)→9" (#1681). The provider is
+// the context operators kept off the prompt in parentheses (rowSavingFor): "70.6k(−3.1k)→9" (#1681). The provider is
 // the only party that tokenizes, so both figures are on the response, and the cell is blank
 // until it arrives.
 func exchangeTokensCell(r eventRow) string {
@@ -1541,14 +1542,14 @@ func exchangeTokensCell(r eventRow) string {
 		return ""
 	}
 	cell := formatCompact(float64(prompt))
-	if s, ok := pruneSavingFor(resp); ok && s.TokensAvoided > 0 {
+	if s, ok := rowSavingFor(resp); ok && s.TokensAvoided > 0 {
 		cell += "(" + savingSign(s.Projected) + formatCompact(float64(s.TokensAvoided)) + ")"
 	}
 	return cell + "→" + formatCompact(float64(out))
 }
 
-// exchangeCostCell renders an exchange's COST: its total, with what tool-prune saved in
-// parentheses. Blank when no figure was published, which reads as "not reported".
+// exchangeCostCell renders an exchange's COST: its total, with what the context operators saved,
+// net of what they caused, in parentheses (rowSavingFor; a "+" when they added cost). Blank when no figure was published, which reads as "not reported".
 func exchangeCostCell(r eventRow) string {
 	resp := exchangeResp(r)
 	if resp == nil {
@@ -1560,7 +1561,7 @@ func exchangeCostCell(r eventRow) string {
 	}
 	var saved float64
 	var projected bool
-	if s, ok := pruneSavingFor(resp); ok {
+	if s, ok := rowSavingFor(resp); ok && s.Basis == event.BasisUSD {
 		saved, projected = s.USD, s.Projected
 	}
 	return money.Relabel(formatUSDWithSaving(usd, saved, projected), recordUnit(resp), 0)

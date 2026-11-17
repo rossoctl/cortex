@@ -19,6 +19,7 @@ package event
 
 import (
 	"encoding/json"
+	"math"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/model"
@@ -75,6 +76,18 @@ const (
 	// PurposeKeepAlive is a keep-alive ping the context-guru plugin sent to keep an idle
 	// session's prompt cache warm (core/accounting.Host.Ping). Not agent activity.
 	PurposeKeepAlive = "keep-alive"
+)
+
+// The values of Saving.Basis and SpendRecord.Basis (accountant design §7.1, Cortex design
+// §5.7a): what a dollar figure on the record may be summed with. Only BasisUSD is money.
+const (
+	// BasisUSD is a request billed per token (an API key): its dollar figures are money.
+	BasisUSD = "usd"
+	// BasisSubscriptionEquivalent is a request on a subscription login: its dollar figures are
+	// what the same tokens would have cost on the API, and its Units are the usage-limit value.
+	BasisSubscriptionEquivalent = "subscriptionEquivalent"
+	// BasisUnknown is a request whose billing mode could not be told. Shown, never summed.
+	BasisUnknown = "unknown"
 )
 
 // Reasons a producer REFUSED a cost figure that was on the wire. Carried in
@@ -282,8 +295,9 @@ type Event struct {
 	// SEPARATE FROM Source, deliberately. Source says how the cost was arrived at (the
 	// gateway's header, the token counts, a transcript), and that is as true of a ping as of
 	// any request; overwriting it with a purpose would lose it. ADDITIVE and omitempty: an
-	// older consumer decodes the record unchanged. No consumer splits on it yet — the ledger
-	// and /v1/usage fold a ping's spend into the same rows and totals as the agent's.
+	// older consumer decodes the record unchanged. The ledger and /v1/usage split on it
+	// (IsKeepAlive): a ping's spend is usage.Counts.KeepAliveMicros, never CostMicros, and a
+	// ping is counted in KeepAlivePings, never in Requests or the latency mean.
 	Purpose string `json:"purpose,omitempty"`
 
 	// UnattributedBreakUSD is the net cost of every cache effect this request had that no context
@@ -292,18 +306,19 @@ type Event struct {
 	// operation, so it is signed: an unowned effect that saved makes it smaller. The name is
 	// W7.1's. Shown, never charged to an operator, and never part of Avoided.
 	//
-	// ADDITIVE and omitempty. Read by nothing yet: core/accounting fills it, and the totals that
-	// will read it are later work.
+	// ADDITIVE and omitempty. core/accounting fills it; no total reads it yet.
 	UnattributedBreakUSD float64 `json:"unattributed_break_usd,omitempty"`
 
 	// Thread is the accountant thread this request's savings belong to: "main", a subagent id, or
 	// the id the context-guru plugin named (core/accounting.ThreadOf). A subagent's saving is kept
-	// apart from the main thread's (W7.1). ADDITIVE and omitempty; read by nothing yet.
+	// apart from the main thread's (W7.1). ADDITIVE and omitempty.
 	Thread string `json:"thread,omitempty"`
 
 	// Spends are the context operators' own model calls on this request, one record each
 	// (W7.1's Event.Spends). A spend is shown beside the savings, never inside a Saving, and it is
-	// not part of CostUSD. ADDITIVE and omitempty; read by nothing yet.
+	// not part of CostUSD: the ledger and /v1/usage sum it into usage.Counts.PluginSpendMicros
+	// (usd basis), PluginSpendUnits (subscriptionEquivalent) or PluginSpendUnknownMicros, so the
+	// existing spend totals keep their meaning. ADDITIVE and omitempty.
 	Spends []SpendRecord `json:"spends,omitempty"`
 }
 
@@ -337,17 +352,16 @@ type SpendRecord struct {
 
 // Saving is one component's contribution to cost that was not incurred.
 type Saving struct {
-	// Component is what avoided the cost, e.g. "tool-prune": a plugin on settle's
-	// fixed list of saving components, whose own published event reported the
-	// bytes it removed. The list is explicit, so a plugin cannot opt itself into
-	// the money record by naming a field. The tokens are calibrated on the body the
-	// request actually sent, after every request writer, not on the component's
-	// own figure.
+	// Component is the context operator that avoided the cost, e.g. "tool-prune" or
+	// "context-guru.mask": the accountant's operator name (core/accounting.SavingsBilled). The
+	// same as Operator on every saving the accountant computed.
 	Component string `json:"component"`
-	// TokensAvoided is the estimated prompt-token reduction.
+	// TokensAvoided is the sum of the operator's Saved tokens over every prompt tier: a size for
+	// display, never priced (the tiers differ by 12.5x).
 	TokensAvoided int `json:"tokensAvoided,omitempty"`
-	// USD is TokensAvoided priced at the tier the prompt actually landed in, through
-	// the same table, multiplier and provenance as CostUSD above.
+	// USD is the operator's Saved tokens priced tier by tier, plus every cache effect it owns
+	// that saved, through the same rate table as CostUSD above. Gross: what the operator caused
+	// is PenaltyUSD, never subtracted here.
 	USD float64 `json:"usd,omitempty"`
 	// Provenance is how trustworthy the dollar figure is: the rate table's level
 	// ("configured", "bundled", ...), or empty when no rate covered the tier.
@@ -374,8 +388,9 @@ type Saving struct {
 	// beside the saving, never inside it. Zero for a component that cannot cause one.
 	// Non-negative, like USD, so every money bound still holds.
 	//
-	// NOT YET NETTED anywhere: TotalAvoidedUSD still sums USD alone. Netting the totals is later
-	// work, and until then this field is on the record and read by nothing.
+	// NEVER FLOORED AGAINST USD: the net (USD - PenaltyUSD) may be negative, and is kept as two
+	// figures rather than clamped. TotalPenaltyUSD sums it beside TotalAvoidedUSD, and the
+	// ledger, /v1/usage and the sessions list carry it as penaltyMicros.
 	PenaltyUSD float64 `json:"penaltyUsd,omitempty"`
 	// Operator is the context operator's dotted name ("tool-prune", "context-guru.mask"), the
 	// same name as Component, kept as its own field so a reader can group by its first part
@@ -395,25 +410,147 @@ type Saving struct {
 	// basis.
 	Units        float64 `json:"units,omitempty"`
 	PenaltyUnits float64 `json:"penaltyUnits,omitempty"`
-	// Estimated marks TokensAvoided as derived from a bytes-to-tokens ratio rather
-	// than counted by a tokenizer. It is calibrated per request and therefore wrong
-	// when the removed span had a different token density from what remained — so a
-	// UI must not present the dollar figure as measured.
+	// Estimated marks a figure from an estimated op, effect or rate, and every saving whose
+	// basis is not "usd" — so a UI must not present the dollar figure as measured.
 	Estimated bool `json:"estimated,omitempty"`
 }
 
-// TotalAvoidedUSD sums the APPLIED savings, skipping projected ones.
+// TotalAvoidedUSD sums the gross USD of the APPLIED savings whose Basis is "usd", skipping
+// projected ones and every other basis.
 //
 // Provided so consumers do not each write the loop and disagree about whether
-// observe-mode figures count. They do not: a projected saving is money that WAS spent.
+// observe-mode figures count. They do not: a projected saving is money that WAS spent. Nor does
+// a subscriptionEquivalent or unknown saving: its dollars are what the API would have charged,
+// not money (design §5.7a), and a saving with no basis predates the accountant and says nothing
+// about how the request was billed.
+//
+// GROSS, NOT NET, and never floored: what the operators caused is TotalPenaltyUSD, kept beside
+// this figure so a net below zero stays visible as two figures.
 func (e Event) TotalAvoidedUSD() float64 {
 	var t float64
 	for _, s := range e.Avoided {
-		if !s.Projected {
+		if !s.Projected && s.Basis == BasisUSD {
 			t += s.USD
 		}
 	}
 	return t
+}
+
+// TotalPenaltyUSD sums PenaltyUSD over the savings TotalAvoidedUSD counts: applied, basis "usd".
+func (e Event) TotalPenaltyUSD() float64 {
+	var t float64
+	for _, s := range e.Avoided {
+		if !s.Projected && s.Basis == BasisUSD {
+			t += s.PenaltyUSD
+		}
+	}
+	return t
+}
+
+// TotalPenaltyMicros is TotalPenaltyUSD in micros, zero when it will not represent, by
+// TotalAvoidedMicros' rule.
+func (e Event) TotalPenaltyMicros() int64 {
+	m, ok := pricing.MicrosFromUSD(e.TotalPenaltyUSD())
+	if !ok {
+		return 0
+	}
+	return m
+}
+
+// IsKeepAlive reports whether the record is a keep-alive ping's spend (Purpose
+// PurposeKeepAlive), which the totals keep apart from the agent's own requests.
+func (e Event) IsKeepAlive() bool { return e.Purpose == PurposeKeepAlive }
+
+// Figures are one record's savings and plugin spends, split by basis (design §5.7a), in the
+// integer units the aggregates keep: micros for dollars, milli-units for usage-limit units. Each
+// field is the usage.Counts field of the same name, so the ring, the ledger and the session store
+// fold one function's answer.
+//
+// Only AvoidedMicros, PenaltyMicros and PluginSpendMicros are money. The Units fields value a
+// subscriptionEquivalent figure in usage-limit units, and AvoidedAPIEquivalentMicros is the same
+// savings' dollars at API rates — shown beside the units, labelled "API equivalent", never in a
+// money total. The Unknown fields hold a figure whose billing mode is unknown, shown beside the
+// totals and never added to them.
+type Figures struct {
+	// AvoidedMicros is TotalAvoidedMicros: applied usd savings, gross.
+	AvoidedMicros int64
+	// PenaltyMicros is TotalPenaltyMicros: what those operators caused.
+	PenaltyMicros int64
+	// AvoidedUnits and PenaltyUnits are the applied subscriptionEquivalent savings' Units and
+	// PenaltyUnits, in milli-units.
+	AvoidedUnits int64
+	PenaltyUnits int64
+	// AvoidedAPIEquivalentMicros is the gross USD of the same subscriptionEquivalent savings: what
+	// the tokens would have cost on the API. Not money.
+	AvoidedAPIEquivalentMicros int64
+	// AvoidedUnknownMicros is the gross USD of the applied savings with basis "unknown".
+	AvoidedUnknownMicros int64
+	// PluginSpendMicros is the USD of the usd-basis Spends; PluginSpendUnits the Units of the
+	// subscriptionEquivalent ones, in milli-units; PluginSpendUnknownMicros the USD of the rest.
+	PluginSpendMicros        int64
+	PluginSpendUnits         int64
+	PluginSpendUnknownMicros int64
+}
+
+// IsZero reports whether every figure is zero.
+func (f Figures) IsZero() bool { return f == Figures{} }
+
+// Figures returns the record's savings and spends by basis. Each figure goes through
+// pricing.MicrosFromUSD (or MilliUnits) once, on the record's sum, and is zero when that sum will
+// not represent — TotalAvoidedMicros' rule. A spend or saving with no basis predates the
+// accountant and enters no field.
+func (e Event) Figures() Figures {
+	var unitsSaved, unitsPen, equivSaved, unknownSaved float64
+	for _, s := range e.Avoided {
+		if s.Projected {
+			continue
+		}
+		switch s.Basis {
+		case BasisSubscriptionEquivalent:
+			unitsSaved += s.Units
+			unitsPen += s.PenaltyUnits
+			equivSaved += s.USD
+		case BasisUnknown:
+			unknownSaved += s.USD
+		}
+	}
+	var spendUSD, spendUnits, spendUnknown float64
+	for _, sp := range e.Spends {
+		switch sp.Basis {
+		case BasisUSD:
+			spendUSD += sp.USD
+		case BasisSubscriptionEquivalent:
+			spendUnits += sp.Units
+		case BasisUnknown:
+			spendUnknown += sp.USD
+		}
+	}
+	return Figures{
+		AvoidedMicros:              e.TotalAvoidedMicros(),
+		PenaltyMicros:              e.TotalPenaltyMicros(),
+		AvoidedUnits:               MilliUnits(unitsSaved),
+		PenaltyUnits:               MilliUnits(unitsPen),
+		AvoidedAPIEquivalentMicros: pricing.MicrosOrZero(equivSaved),
+		AvoidedUnknownMicros:       pricing.MicrosOrZero(unknownSaved),
+		PluginSpendMicros:          pricing.MicrosOrZero(spendUSD),
+		PluginSpendUnits:           MilliUnits(spendUnits),
+		PluginSpendUnknownMicros:   pricing.MicrosOrZero(spendUnknown),
+	}
+}
+
+// MilliUnits is a usage-limit figure in thousandths of a unit, rounded to nearest: the integer
+// unit the aggregates keep, for the reason they keep micros. Zero for a negative, NaN or
+// infinite figure, or one at or past pricing.MaxCostMicros — the micros bound, applied to this
+// unit too so a sum of these saturates no sooner than a sum of micros.
+func MilliUnits(units float64) int64 {
+	if units < 0 {
+		return 0
+	}
+	m := math.Round(units * 1000)
+	if math.IsNaN(m) || math.IsInf(m, 0) || m >= pricing.MaxCostMicros {
+		return 0
+	}
+	return int64(m)
 }
 
 // TotalAvoidedMicros is TotalAvoidedUSD in millionths of a dollar.

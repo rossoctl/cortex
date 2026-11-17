@@ -41,7 +41,7 @@ through DNS rebinding. The stats server applies the same check.
 {"sessions": [{
   "id": "…", "createdAt": "…", "updatedAt": "…", "eventCount": 42, "active": true,
   "title": "…", "agent": "claude-code", "totalTokens": 1186300, "costMicros": 254600,
-  "avoidedMicros": 3700, "promptContext": {"tokens": 16384, "stated": true,
+  "avoidedMicros": 3700, "penaltyMicros": 900, "promptContext": {"tokens": 16384, "stated": true,
   "at": "2026-10-15T20:01:02Z", "msgs": 12}, "inferenceHost": "api.anthropic.com",
   "procs": ["41963.1791718279766260000"], "lastRequestAt": "…"
 }, {
@@ -74,6 +74,16 @@ knowing by name:
   the inference-router keeps its pins in the plugin store
   (`~/.cortex/plugin-state.json`), which a restart keeps, so both of agentop's
   counts include such a resumed session.
+- **`avoidedMicros`** and **`penaltyMicros`** — what the session's context
+  operators saved and what they caused, priced by the accountant, basis `usd`
+  only. Net saved is the difference and may be negative. Beside them, absent at
+  zero like every figure here: `avoidedUnits`, `penaltyUnits` and
+  `avoidedApiEquivalentMicros` for savings on a subscription login (usage-limit
+  milli-units, and their API-equivalent dollars, which are not money),
+  `avoidedUnknownMicros` for savings whose billing mode is unknown, and
+  `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` for the
+  operators' own model calls, which are not in `costMicros`. See
+  [`pricing.md`](pricing.md#cost-records).
 - **`procs`** — the processes, `<pid>.<start>`, whose own session header named
   this session. Recorded from each request's `proc` and `sessionHeader`, and
   continued from the archive's fold like the other figures.

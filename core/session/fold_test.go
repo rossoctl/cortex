@@ -49,14 +49,14 @@ func foldFixture(t *testing.T) []pipeline.SessionEvent {
 	var evs []pipeline.SessionEvent
 	evs = append(evs, turn("fix the flaky test in the session store", 1200,
 		event.Event{CostUSD: 0.25, Settled: true, Provenance: "configured",
-			Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 100, USD: 0.01, Tier: "input"}}}, claude)...)
+			Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 100, USD: 0.01, Tier: "input"}}}, claude)...)
 	evs = append(evs, turn("now explain why it was flaky", 800,
 		event.Event{CostUSD: 0.03, Settled: true, Currency: "Bobcoins"}, bob)...)
 	evs = append(evs, pipeline.SessionEvent{Phase: pipeline.SessionDenied,
 		Plugins: costRecord(t, event.Event{CostUSD: 0.05, Settled: true, Provenance: "authoritative"})})
 	evs = append(evs, turn("and the third thing", 0,
 		event.Event{Source: event.SourceUsageFallback,
-			Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 200, USD: 0.02, Tier: "input"}}}, claude)...)
+			Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 200, USD: 0.02, Tier: "input"}}}, claude)...)
 	// A main-agent turn with a tool manifest, so the fixture carries a CTX figure.
 	evs = append(evs, pipeline.SessionEvent{Phase: pipeline.SessionResponse, Client: claude,
 		At: time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC),

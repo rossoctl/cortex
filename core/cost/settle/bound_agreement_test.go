@@ -482,10 +482,6 @@ func TestSettle_AHeaderKeepsItsFigureAndTheCountsAreStillRefused(t *testing.T) {
 		t.Errorf("record Priced = %v / Trust = %q, want true / %q: an impossible token report must not unprice a gateway's own figure",
 			rec.Priced(), rec.Trust(), event.TrustExact)
 	}
-	// AND NO SAVING IS CALIBRATED ON THE REFUSED COUNTS.
-	if avoided := Avoided(pctx, rates(t)); len(avoided) != 0 {
-		t.Errorf("avoided = %+v on a response whose counters were refused: the saving is a slice of those same counters", avoided)
-	}
 }
 
 // TestSettle_ARefusedWholeLeavesNoHalfStanding is the hole the pair guard left.

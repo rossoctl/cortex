@@ -71,6 +71,14 @@ Savings are reported per prompt-cache tier, never as one blended number: provide
 charge ~1.25x the input rate for a cache write and ~0.1x for a cache read, so
 identical saved bytes differ by more than 12x depending on cache state.
 
+The saving is Cortex's accountant figure: each removed tool is priced at the tier
+its position in the prompt landed in, and what a change caused (a re-written
+cached prefix) is a penalty beside it. agentop shows saved, penalty and net; the
+net can be negative. Only a request billed per token (an API key) is counted in
+dollars. A request on a subscription login is shown in usage-limit units, with
+the API-equivalent dollars beside them, labelled so. See
+[`pricing.md`](./pricing.md#cost-records).
+
 To make the figure accurate, set your own rates — per million tokens, the unit
 price lists use, and keyed by model family so a version bump needs no edit:
 

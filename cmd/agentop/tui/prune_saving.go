@@ -39,9 +39,58 @@ func savingFor(resp *pipeline.SessionEvent, component string) (event.Saving, boo
 	return event.Saving{}, false
 }
 
-// pruneSavingFor is the tool-prune saving specifically, which is the only one rendered today.
+// pruneSavingFor is the tool-prune saving specifically.
 func pruneSavingFor(resp *pipeline.SessionEvent) (event.Saving, bool) {
 	return savingFor(resp, "tool-prune")
+}
+
+// rowSavingFor is every saving the proxy attributed to one response — one per context operator
+// the accountant priced (tool-prune, context-guru.*, the keeper, and any later one) — combined
+// into one figure for the TOKENS and COST cells.
+//
+// The dollar figure is each "usd" saving's USD minus its PenaltyUSD, summed and NOT floored: a
+// net below zero is shown as a cost the operators added (formatUSDWithSaving's "+"). Only a usd
+// saving is money (design §5.7a); a subscriptionEquivalent or unknown saving contributes its
+// tokens and no dollars, and Basis is "usd" only when some usd saving contributed. Tokens are not
+// netted: a compaction that rewrote the cached prefix still removed those tokens.
+//
+// Applied and projected savings are never added: one is money not spent, the other money that
+// was spent. With any applied saving the row shows the applied ones; with only projected ones it
+// shows those, marked Projected.
+func rowSavingFor(resp *pipeline.SessionEvent) (event.Saving, bool) {
+	if resp == nil {
+		return event.Saving{}, false
+	}
+	ev, ok := event.Record(resp)
+	if !ok {
+		return event.Saving{}, false
+	}
+	var applied, projected event.Saving
+	var anyApplied, anyProjected bool
+	for _, s := range ev.Avoided {
+		dst := &applied
+		if s.Projected {
+			dst, anyProjected = &projected, true
+		} else {
+			anyApplied = true
+		}
+		dst.TokensAvoided += s.TokensAvoided
+		if s.Basis == event.BasisUSD {
+			dst.USD += s.USD - s.PenaltyUSD
+			dst.Basis = event.BasisUSD
+		} else if dst.Basis == "" {
+			dst.Basis = s.Basis
+		}
+		dst.Estimated = dst.Estimated || s.Estimated
+	}
+	switch {
+	case anyApplied:
+		return applied, true
+	case anyProjected:
+		projected.Projected = true
+		return projected, true
+	}
+	return event.Saving{}, false
 }
 
 // formatCompact renders a token count tersely enough for a table cell: 10577

@@ -178,7 +178,7 @@ func eventsAlignModel(t *testing.T, width int) *model {
 		},
 		Plugins: costRecord(t, event.Event{
 			CostUSD: 0.2481, Settled: true, PromptUSD: 0.2460, OutputUSD: 0.0221,
-			Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 10_300, USD: 0.0039}},
+			Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 10_300, USD: 0.0039}},
 		}),
 	}
 	req := pipeline.SessionEvent{

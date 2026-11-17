@@ -663,3 +663,25 @@ func TestSessionsRows_TruncateTheSessionID(t *testing.T) {
 // What states the scope instead is contrast. Every band cell names its own period — LAST 1H, TODAY,
 // 7 DAYS, MONTH — so the windowed figures are the labelled ones and the table is the one surface
 // with no window on it.
+
+// SAVED is the net of the penalty (design §5.9), and a net below zero renders with a minus sign
+// rather than as an empty cell: the operators cost more than they saved, which is a figure.
+func TestSessionsPicker_SavedIsNetAndCanBeNegative(t *testing.T) {
+	m := &model{width: 200}
+	m.sessionsTbl = newSessionsTable()
+	m.sessions = []session.SessionSummary{
+		{ID: "neg", UpdatedAt: time.Now(), EventCount: 3, TotalTokens: 1000, CostMicros: 1_000_000, AvoidedMicros: 100_000, PenaltyMicros: 350_000},
+		{ID: "pos", UpdatedAt: time.Now().Add(-time.Minute), EventCount: 3, TotalTokens: 1000, CostMicros: 1_000_000, AvoidedMicros: 500_000, PenaltyMicros: 120_000},
+	}
+	m.rebuildSessionsTable()
+	rows := m.sessionsTbl.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	if row := strings.Join(rows[0], " "); !strings.Contains(row, "-$0.25") {
+		t.Errorf("row %q, want the net -$0.25", row)
+	}
+	if row := strings.Join(rows[1], " "); !strings.Contains(row, "$0.38") || strings.Contains(row, "$0.50") {
+		t.Errorf("row %q, want the net $0.38 and not the gross $0.50", row)
+	}
+}

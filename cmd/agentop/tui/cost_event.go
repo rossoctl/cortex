@@ -72,7 +72,8 @@ func savingSign(projected bool) string {
 }
 
 // formatUSDWithSaving renders a cost with what was saved in parentheses: "$0.2546(−$0.0037)".
-// A bare total when there was no saving.
+// A bare total when there was no saving. A NEGATIVE saved — the operators caused more than they
+// saved (rowSavingFor's net, never floored) — is shown as what they added: "$0.2546(+$0.0012)".
 //
 // Both halves are rendered at a fixed 4 decimal places rather than through
 // formatUSD's variable precision. Stacked in one column, "$0.255" above
@@ -83,7 +84,12 @@ func formatUSDWithSaving(total float64, saved float64, projected bool) string {
 		return ""
 	}
 	cell := formatUSDCell(total)
-	if saved <= 0 {
+	switch {
+	case saved < 0 && projected:
+		return cell + "(~+" + formatUSDCell(-saved) + ")"
+	case saved < 0:
+		return cell + "(+" + formatUSDCell(-saved) + ")"
+	case saved == 0:
 		return cell
 	}
 	return cell + "(" + savingSign(projected) + formatUSDCell(saved) + ")"

@@ -1,11 +1,6 @@
 package inferenceparser
 
 import (
-	"context"
-	"log/slog"
-	"math"
-	"sync/atomic"
-
 	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -18,20 +13,16 @@ type accountingComputer interface {
 	Savings(pctx *pipeline.Context) ([]event.Saving, accounting.Extras, bool)
 }
 
-// accountedKey latches the accountant call for a request, apart from costSettledKey: the cost
-// latch is set only when a record is published, and the accountant is asked whether or not one is.
+// accountedKey holds the accountant's answer for a request, apart from costSettledKey: the cost
+// latch is set only when a record is published, and the accountant is asked whether or not one
+// is. A later settle pass reuses the answer rather than asking again.
 const accountedKey = "inference-parser.accounted"
 
-type accountedOnce struct{}
-
-// shadowTolerance is the difference, in dollars, below which the two figures agree: a micro-dollar,
-// the ledger's unit.
-const shadowTolerance = 0.000001
-
-// shadowCounts counts the requests whose figures were compared and those that differed, for the
-// plugin's metrics. Per process, reset on reload with the rest of the plugin.
-type shadowCounts struct {
-	compared, differed, newOnly atomic.Int64
+// accounted is the accountant's answer for one request. ok is false when it had no figure.
+type accounted struct {
+	savings []event.Saving
+	extras  accounting.Extras
+	ok      bool
 }
 
 // SetAccounting implements plugins.AccountingConsumer. Injected only on the outbound build, and
@@ -44,108 +35,32 @@ func (p *InferenceParser) SetAccounting(h *accounting.Host) {
 	p.acct = h
 }
 
-// shadow asks the accountant for this request's savings, once, at the first settle pass that has
-// usage (the Result prices the bill, so a pass with no usage has nothing for it), and compares
-// them with old, the figure settle.Avoided computed and the record still publishes (design §6,
-// shadow agreement). Nothing the accountant computed is written anywhere yet.
-//
-// A difference above shadowTolerance in any component's net figure (USD minus PenaltyUSD) is
-// logged as "accounting: shadow", one line per component: at INFO, counted as "differed", for a
-// component the old figure prices; at DEBUG, counted as "new-only", for one only the accountant
-// prices, which is expected. A component only the old figure has differs against 0. Projected savings are compared like applied
-// ones: both sides mark the same op the same way.
-func (p *InferenceParser) shadow(pctx *pipeline.Context, old []event.Saving) {
+// accountant asks the accountant for this request's savings, once, at the first settle pass that
+// has usage (the Result prices the bill, so a pass with no usage has nothing for it), and keeps
+// the answer on the request for any later pass. The zero value — no figure — with accounting off
+// or before the usage arrives: with accounting off, no saving is recorded (design §5.3).
+func (p *InferenceParser) accountant(pctx *pipeline.Context) accounted {
 	inf := pctx.Extensions.Inference
 	if p.acct == nil || inf == nil || inf.InputTokens+inf.CacheReadTokens+inf.CacheWriteTokens == 0 {
-		return
+		return accounted{}
 	}
-	if pipeline.GetState[accountedOnce](pctx, accountedKey) != nil {
-		return
+	if st := pipeline.GetState[accounted](pctx, accountedKey); st != nil {
+		return *st
 	}
-	pipeline.SetState(pctx, accountedKey, &accountedOnce{})
-	next, extras, ok := p.acct.Savings(pctx)
-	if !ok {
-		return
-	}
-	p.shadowCounts.compared.Add(1)
-
-	type pair struct {
-		old, new, penalty float64
-		inOld, inNew      bool
-	}
-	var order []string
-	pairs := map[string]*pair{}
-	at := func(c string) *pair {
-		if pp, ok := pairs[c]; ok {
-			return pp
-		}
-		pp := &pair{}
-		pairs[c] = pp
-		order = append(order, c)
-		return pp
-	}
-	for _, s := range old {
-		pp := at(s.Component)
-		pp.old += s.USD - s.PenaltyUSD
-		pp.inOld = true
-	}
-	for _, s := range next {
-		pp := at(s.Component)
-		pp.new += s.USD - s.PenaltyUSD
-		pp.penalty += s.PenaltyUSD
-		pp.inNew = true
-	}
-	differed, newOnly := false, false
-	for _, c := range order {
-		pp := pairs[c]
-		diff := pp.new - pp.old
-		if math.Abs(diff) <= shadowTolerance {
-			continue
-		}
-		// An operator the old figure never prices (every context-guru operator, the keeper) is an
-		// expected difference (docs/accounting-differences.json, shadow.operators-not-in-old-figure):
-		// logged at DEBUG and counted apart, so the INFO line and "differed" mean a real one.
-		level := slog.LevelInfo
-		if !pp.inOld {
-			level, newOnly = slog.LevelDebug, true
-		} else {
-			differed = true
-		}
-		slog.Log(context.Background(), level, "accounting: shadow",
-			"session", pctx.SessionID,
-			"requestId", pctx.RequestID(),
-			"thread", extras.Thread,
-			"component", c,
-			"oldUSD", pp.old,
-			"newUSD", pp.new,
-			"newPenaltyUSD", pp.penalty,
-			"diffUSD", diff,
-			"inOld", pp.inOld,
-			"inNew", pp.inNew,
-			"unattributedBreakUSD", extras.UnattributedBreakUSD,
-			"opsVersion", extras.OpsVersion)
-	}
-	if differed {
-		p.shadowCounts.differed.Add(1)
-	}
-	if newOnly {
-		p.shadowCounts.newOnly.Add(1)
-	}
+	var a accounted
+	a.savings, a.extras, a.ok = p.acct.Savings(pctx)
+	pipeline.SetState(pctx, accountedKey, &a)
+	return a
 }
 
-// Metrics implements pipeline.MetricsProvider: the shadow comparison's two counters, once the
-// accountant has priced a request. Nil before that, so a parser with accounting off shows none.
-func (p *InferenceParser) Metrics() []pipeline.Metric {
-	compared := p.shadowCounts.compared.Load()
-	if compared == 0 {
-		return nil
+// withAccountant writes the accountant's request-level figures on a cost record: the savings are
+// already its Avoided, and these are what belongs to no operator's saving (W7.1).
+func withAccountant(rec event.Event, a accounted) event.Event {
+	if !a.ok {
+		return rec
 	}
-	return []pipeline.Metric{
-		{Name: "accounting shadow compared", Value: float64(compared), Unit: "requests",
-			Note: "requests the accountant priced beside the current saving figure"},
-		{Name: "accounting shadow differed", Value: float64(p.shadowCounts.differed.Load()), Unit: "requests",
-			Note: "requests where a component both figures price differs by more than $0.000001; logged at INFO as accounting: shadow"},
-		{Name: "accounting shadow new-only", Value: float64(p.shadowCounts.newOnly.Load()), Unit: "requests",
-			Note: "requests with an operator only the accountant prices (context-guru, keeper); expected, logged at DEBUG"},
-	}
+	rec.UnattributedBreakUSD = a.extras.UnattributedBreakUSD
+	rec.Thread = a.extras.Thread
+	rec.Spends = a.extras.Spends
+	return rec
 }

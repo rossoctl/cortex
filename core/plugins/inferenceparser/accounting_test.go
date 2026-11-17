@@ -1,16 +1,18 @@
 package inferenceparser
 
 import (
-	"bytes"
-	"log/slog"
+	"context"
+	"encoding/json"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/cost/event"
-	"github.com/rossoctl/cortex/core/cost/settle"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins/toolprune"
 )
 
 // countingAccountant stands in for *accounting.Host.
@@ -23,33 +25,6 @@ type countingAccountant struct {
 func (c *countingAccountant) Savings(*pipeline.Context) ([]event.Saving, accounting.Extras, bool) {
 	c.calls++
 	return c.saving, c.extras, true
-}
-
-func captureLogs(t *testing.T, level slog.Level) *bytes.Buffer {
-	t.Helper()
-	var logs bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: level})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return &logs
-}
-
-func shadowMetrics(p *InferenceParser) map[string]float64 {
-	m := map[string]float64{}
-	for _, mm := range p.Metrics() {
-		m[mm.Name] = mm.Value
-	}
-	return m
-}
-
-// shadowCtx is a priced response whose request tool-prune shrank, so settle.Avoided has a figure.
-func shadowCtx() *pipeline.Context {
-	pctx := &pipeline.Context{Host: "api.anthropic.com", Path: "/v1/messages", SessionID: "s1", ResponseHeaders: http.Header{}}
-	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-sonnet-4-5", InputTokens: 100, CacheReadTokens: 9000, OutputTokens: 5}
-	pctx.Extensions.Custom = map[string]any{
-		"tool-prune" + pipeline.PluginEventSuffix: map[string]any{"bytesRemoved": 4000, "bodyBytesAfter": 36000},
-	}
-	return pctx
 }
 
 // settleCost runs on every finalization path, and a listener can repeat a terminal frame, so it
@@ -77,77 +52,96 @@ func TestSettleCost_CallsAccountingOnce(t *testing.T) {
 	}
 }
 
-// The shadow step (design §6): the record still publishes settle.Avoided's figure, and the
-// accountant's figure is only compared with it. A difference is logged at INFO with both
-// figures and counted in the plugin's metrics.
-func TestSettleCost_ShadowWritesOldFigure(t *testing.T) {
-	logs := captureLogs(t, slog.LevelDebug)
-	acc := &countingAccountant{
-		saving: []event.Saving{
-			{Component: "tool-prune", Operator: "tool-prune", USD: 0.5, PenaltyUSD: 0.1, Basis: accounting.BasisUSD},
-			{Component: "context-guru.mask", Operator: "context-guru.mask", USD: 0.2, Basis: accounting.BasisUSD},
-		},
-		extras: accounting.Extras{Thread: "main", OpsVersion: 1},
+// The switch (design §5.9): the record's savings are the accountant's, end to end. A request
+// tool-prune shrank, run through a pipeline with the accountant host attached, publishes
+// tool-prune's saving as the accountant priced it — TierUSD over the op's Saved tokens at the
+// request's model, host and prompt size — with basis "usd" for an API key.
+func TestSettleCost_PublishesAccountantSavings(t *testing.T) {
+	rates := bodylessRates(t)
+	h, err := accounting.New(accounting.Options{Resolver: rates})
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = h.Close() })
+	tp := toolprune.New()
+	if err := tp.Configure(json.RawMessage(`{"remove":["NotebookEdit"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	pipe, err := pipeline.New([]pipeline.Plugin{tp}, pipeline.WithAccountant(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"model":"claude-sonnet-4-5","max_tokens":10,"tools":[` +
+		`{"name":"Read","description":"read a file","input_schema":{"type":"object"}},` +
+		`{"name":"NotebookEdit","description":"` + strings.Repeat("edit a notebook ", 200) + `","input_schema":{"type":"object"}},` +
+		`{"name":"Bash","description":"run a command","input_schema":{"type":"object"}}` +
+		`],"messages":[{"role":"user","content":"` + strings.Repeat("lorem ipsum dolor ", 400) + `"}]}`
+	pctx := &pipeline.Context{
+		Host: "api.anthropic.com", Method: "POST", Path: "/v1/messages", SessionID: "s1",
+		Body: []byte(body), Headers: http.Header{"X-Api-Key": {"sk-ant-api03-test"}}, ResponseHeaders: http.Header{},
+	}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-sonnet-4-5",
+		Tools: []pipeline.InferenceTool{{Name: "Read"}, {Name: "NotebookEdit"}, {Name: "Bash"}}}
+	if act := pipe.Run(context.Background(), pctx); act.Type != pipeline.Continue {
+		t.Fatalf("action = %v", act.Type)
+	}
+	pctx.StatusCode = 200
+	pctx.Extensions.Inference.InputTokens = len(pctx.Body) / 4
+	pctx.Extensions.Inference.OutputTokens = 5
+
 	p := NewInferenceParser()
-	p.rates = bodylessRates(t)
-	p.acct = acc
-
-	pctx := shadowCtx()
-	old := settle.Avoided(pctx, p.rates)
-	if len(old) != 1 || old[0].USD <= 0 {
-		t.Fatalf("fixture: settle.Avoided = %+v, want one priced tool-prune saving", old)
-	}
-
+	p.rates = rates
+	p.SetAccounting(h)
 	p.settleCost(pctx)
 
-	ev, ok := pctx.Extensions.Custom[event.Key+pipeline.PluginEventSuffix].(event.Event)
+	ev, _ := publishedCost(t, pctx)
+	if len(ev.Avoided) == 0 {
+		t.Fatalf("no saving published: %+v", ev)
+	}
+	s := ev.Avoided[0]
+	if s.Component != "tool-prune" || s.Operator != "tool-prune" || s.Basis != event.BasisUSD || s.Projected || s.OpsVersion == 0 {
+		t.Errorf("saving = %+v, want tool-prune's, applied, basis usd, with the rules' version", s)
+	}
+	res, ok := h.Compute(pctx) // latched: the Result settleCost priced
 	if !ok {
-		t.Fatalf("no cost record published: %+v", pctx.Extensions.Custom)
+		t.Fatal("Compute has no Result")
 	}
-	if len(ev.Avoided) != 1 || ev.Avoided[0] != old[0] {
-		t.Errorf("published Avoided = %+v, want settle.Avoided's figure %+v unchanged", ev.Avoided, old)
-	}
-	out := logs.String()
-	// tool-prune differs for real: INFO. context-guru.mask is only in the new figure: DEBUG.
-	if n := strings.Count(out, "accounting: shadow"); n != 2 {
-		t.Fatalf("want one shadow line per differing component (2), got %d:\n%s", n, out)
-	}
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		switch {
-		case strings.Contains(line, "component=tool-prune"):
-			for _, want := range []string{"level=INFO", "session=s1", "newUSD=0.4", "newPenaltyUSD=0.1", "thread=main", "diffUSD=", "inOld=true"} {
-				if !strings.Contains(line, want) {
-					t.Errorf("tool-prune shadow line lacks %q: %s", want, line)
-				}
-			}
-		case strings.Contains(line, "component=context-guru.mask"):
-			if !strings.Contains(line, "level=DEBUG") || !strings.Contains(line, "inOld=false") {
-				t.Errorf("an operator only the accountant prices is not a DEBUG line: %s", line)
-			}
+	prompt := pricing.UsageFromInference(pctx.Extensions.Inference).PromptTotal()
+	for _, o := range res.Ops {
+		if o.Operator != "tool-prune" || o.DryRun {
+			continue
+		}
+		want, _ := accounting.TierUSD(rates, "api.anthropic.com", "claude-sonnet-4-5", prompt, o.Saved)
+		if want <= 0 || math.Abs(s.USD-want) > 1e-12 {
+			t.Errorf("USD = %v, want TierUSD of the op's Saved %+v = %v", s.USD, o.Saved, want)
 		}
 	}
-	m := shadowMetrics(p)
-	if m["accounting shadow compared"] != 1 || m["accounting shadow differed"] != 1 || m["accounting shadow new-only"] != 1 {
-		t.Errorf("metrics = %+v, want one compared, one differed, one new-only", m)
+	if got, want := ev.TotalAvoidedUSD(), s.USD; got != want {
+		t.Errorf("TotalAvoidedUSD = %v, want the usd saving %v", got, want)
+	}
+	if ev.Thread != "main" {
+		t.Errorf("Thread = %q, want main", ev.Thread)
 	}
 }
 
-// Two figures within a micro-dollar agree: no line.
-func TestSettleCost_ShadowAgreementLogsNothing(t *testing.T) {
-	logs := captureLogs(t, slog.LevelInfo)
-	p := NewInferenceParser()
-	p.rates = bodylessRates(t)
-	pctx := shadowCtx()
-	same := settle.Avoided(pctx, p.rates)[0]
-	same.USD += 0.0000004
-	p.acct = &countingAccountant{saving: []event.Saving{same}}
+// What belongs to no operator's saving is carried on the record too: the thread, the
+// unattributed break cost and each operator's own model call. A spend alone is reason to publish
+// a record, because no other record holds it.
+func TestSettleCost_PublishesTheAccountantsExtras(t *testing.T) {
+	spend := event.SpendRecord{Operator: "context-guru.extract_llm", Model: "m", USD: 0.02, Basis: event.BasisUSD}
+	p := NewInferenceParser() // no rates: nothing priced, so only the spend can publish
+	p.acct = &countingAccountant{extras: accounting.Extras{
+		Thread: "agent-1", UnattributedBreakUSD: 0.003, OpsVersion: 1, Spends: []event.SpendRecord{spend},
+	}}
+	pctx := &pipeline.Context{Path: "/v1/messages", ResponseHeaders: http.Header{}}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "unpriced", InputTokens: 10}
 	p.settleCost(pctx)
-	if strings.Contains(logs.String(), "accounting: shadow") {
-		t.Errorf("figures within $0.000001 were logged as different:\n%s", logs.String())
+	ev, _ := publishedCost(t, pctx)
+	if ev.Thread != "agent-1" || ev.UnattributedBreakUSD != 0.003 || len(ev.Spends) != 1 || ev.Spends[0] != spend {
+		t.Errorf("record = %+v, want the accountant's thread, unattributed break and spend", ev)
 	}
-	if m := shadowMetrics(p); m["accounting shadow compared"] != 1 || m["accounting shadow differed"] != 0 {
-		t.Errorf("metrics = %+v, want one compared, none differed", m)
+	if got := ev.Figures().PluginSpendMicros; got != 20_000 {
+		t.Errorf("PluginSpendMicros = %d, want 20000", got)
 	}
 }
 
@@ -159,28 +153,5 @@ func TestSettleCost_NoAccountantIsFine(t *testing.T) {
 	p.SetAccounting(nil)
 	if p.acct != nil {
 		t.Error("SetAccounting(nil) stored a typed nil, which would read as set")
-	}
-	if m := p.Metrics(); m != nil {
-		t.Errorf("Metrics = %+v with accounting off, want none", m)
-	}
-}
-
-// An operator only the accountant prices is an expected difference: it does not count as
-// "differed" and writes no INFO line.
-func TestSettleCost_ShadowNewOnlyIsNotADifference(t *testing.T) {
-	logs := captureLogs(t, slog.LevelInfo)
-	p := NewInferenceParser()
-	p.rates = bodylessRates(t)
-	pctx := shadowCtx()
-	same := settle.Avoided(pctx, p.rates)[0]
-	p.acct = &countingAccountant{saving: []event.Saving{same,
-		{Component: "context-guru.mask", Operator: "context-guru.mask", USD: 0.2},
-		{Component: accounting.KeeperOperator, Operator: accounting.KeeperOperator, USD: 0.1}}}
-	p.settleCost(pctx)
-	if strings.Contains(logs.String(), "accounting: shadow") {
-		t.Errorf("an INFO shadow line for operators only the accountant prices:\n%s", logs.String())
-	}
-	if m := shadowMetrics(p); m["accounting shadow differed"] != 0 || m["accounting shadow new-only"] != 1 {
-		t.Errorf("metrics = %+v, want none differed, one new-only", m)
 	}
 }

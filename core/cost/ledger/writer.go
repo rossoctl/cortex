@@ -400,7 +400,14 @@ func (w *Writer) row(e *model.SessionEvent) (minute time.Time, r Row, ok bool) {
 	// usage.PriceableRequest fails on a nil extension and the priced branch is not
 	// taken — so priced-versus-priceable is untouched and the "1/10 priced forever" failure
 	// stays closed. What it adds is one Requests, for a request that really happened.
-	avoidedCost := hasCost && ev.TotalAvoidedMicros() > 0
+	//
+	// ANY FIGURE OF event.Event.Figures admits the row, not only a usd saving: a plugin's own
+	// model call, or a subscription saving in units, is the same kind of fact.
+	var figures event.Figures
+	if hasCost {
+		figures = ev.Figures()
+	}
+	avoidedCost := !figures.IsZero()
 	if e.Inference == nil && !settledCost && !refusedCost && !avoidedCost {
 		// Non-inference traffic the proxy handled — MCP, health checks, tunnels.
 		// Recording it would put every proxied response in the cost denominator, the
@@ -585,7 +592,18 @@ func (w *Writer) row(e *model.SessionEvent) (minute time.Time, r Row, ok bool) {
 		// AFTER the token literal above, which assigns r.Counts wholesale: setting this before
 		// it would be silently overwritten for every inference row, which is all of them that
 		// can carry a saving.
-		r.AvoidedMicros = ev.TotalAvoidedMicros()
+		r.AddFigures(figures)
+		if ev.IsKeepAlive() {
+			// A KEEP-ALIVE PING IS NOT THE AGENT'S REQUEST: its spend is KeepAliveMicros and its
+			// count KeepAlivePings, and it is in no request, token or coverage figure. See
+			// usage.Counts.KeepAliveMicros; the ring does the same.
+			r.Counts = usage.Counts{KeepAlivePings: 1}
+			r.AddFigures(figures)
+			if ev.Priced() {
+				r.KeepAliveMicros = ev.Micros()
+			}
+			return minute, r, true
+		}
 		if ev.Priced() {
 			r.CostMicros = ev.Micros()
 			r.PricedRequests = 1

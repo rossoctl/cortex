@@ -493,7 +493,9 @@ def check_passthrough(events):
                    and isinstance(e["plugins"].get("context-guru"), dict)), None)
         resp = next((e for e in evs if e.get("phase") == "response"), None)
         cost = (resp or {}).get("plugins", {}).get("cost") if resp else None
-        saving = next((s for s in (find_key(cost, "avoided") or []) if s.get("component") == "context-guru"), None)
+        # Every saving the accountant attributed (one per operator: context-guru.*, tool-prune,
+        # keeper), or None when the response carried none.
+        saving = list(find_key(cost, "avoided") or []) or None
         if cg is None and saving is None:
             continue
         rows.append({"requestId": rid, "at": (resp or evs[0]).get("at"), "event": cg, "saving": saving,
@@ -515,18 +517,20 @@ def run_checks(ctx, final):
         + (f"; first differences: {bad[:3]}" if bad else "")
         + ("" if tok_rows else "; no accountant tokens on either side (is Cortex logging at debug?)"))
 
-    # P2 reads the figure the ledger writes today, settle.Avoided's: in this commit the accountant's
-    # figure is only compared with it (the "accounting: shadow" lines), not published.
+    # P2: the session total is the sum of the rows' accountant savings, by the ledger's rule (design
+    # §5.7a): applied savings of basis "usd" only, gross in avoidedMicros and the penalty beside it.
     rows = check_passthrough(final["A_events"])
-    total_usd = 0.0
+    total_usd = total_pen = 0.0
     for r in rows:
-        s = r["saving"]
-        if s is not None:
-            total_usd += max(0.0, float(s.get("usd", 0)) - float(s.get("penaltyUsd", 0)))
+        for s in r["saving"] or []:
+            if s.get("basis") == "usd" and not s.get("projected"):
+                total_usd += float(s.get("usd", 0))
+                total_pen += float(s.get("penaltyUsd", 0))
     sess = final["A_row"] or {}
-    am = int(sess.get("avoidedMicros", 0))
-    rec("P2-session-total", "PASS" if abs(am - round(total_usd * 1e6)) <= max(2, len(rows)) else "FAIL",
-        f"avoidedMicros={am} vs sum of row savings net of penalty={round(total_usd * 1e6)}")
+    am, pm = int(sess.get("avoidedMicros", 0)), int(sess.get("penaltyMicros", 0))
+    tol = max(2, len(rows))
+    rec("P2-session-total", "PASS" if abs(am - round(total_usd * 1e6)) <= tol and abs(pm - round(total_pen * 1e6)) <= tol else "FAIL",
+        f"avoidedMicros={am} penaltyMicros={pm} vs sum of row savings {round(total_usd * 1e6)} / penalties {round(total_pen * 1e6)}")
 
     b, c = final["B_row"] or {}, final["C_row"] or {}
     a_cost = int(sess.get("costMicros", 0)) / 1e6
@@ -540,9 +544,9 @@ def run_checks(ctx, final):
         f"baseline-cost ${float(b.get('baseline_cost_usd', 0)) - float(b.get('cost_usd', 0)):.4f}, "
         f"keepalive net ${b.get('keepalive_net_usd', 0):.4f} | measured C-A ${c_cost - a_cost - a_extra:.4f}, "
         f"C-B ${c_cost - b_cost:.4f}")
-    shadow = [r for r in log_lines(ctx["cx"]["A"].log(), "accounting: shadow") if r.get("session") == ctx["agents"]["A"].sid]
-    rec("X1-shadow", "INFO", f"{len(shadow)} component figures differed between settle.Avoided and the accountant"
-        + (f"; first: {[(r.get('component'), r.get('oldUSD'), r.get('newUSD')) for r in shadow[:3]]}" if shadow else ""))
+    rec("X1-figures", "INFO", f"A net ${(am - pm) / 1e6:.4f} (saved ${am / 1e6:.4f}, penalty ${pm / 1e6:.4f}), "
+        f"plugin spend ${int(sess.get('pluginSpendMicros', 0)) / 1e6:.4f}, "
+        f"usage-limit units saved {int(sess.get('avoidedUnits', 0)) / 1000:.1f}")
     rec("X1-tokens", "INFO", f"engine saved: A sum={sum(max(0, int((r['event'] or {}).get('tokensBefore', 0)) - int((r['event'] or {}).get('tokensAfter', 0))) for r in rows)} "
         f"| B saved={b.get('saved')} saved_unique={b.get('saved_unique')}")
 

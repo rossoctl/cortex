@@ -679,9 +679,9 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 	// so a window with no priced traffic and a real saving prints "cost unavailable" above this
 	// line and both are true.
 	//
-	// THREE WORDS OF CAVEAT, none of them optional. The figure is an ESTIMATE (a
-	// bytes-to-tokens ratio, not a tokenizer), it is GROSS (nothing subtracts the prompt-cache
-	// re-warm a list change costs), and it is NOT DEDUCTED from the total above (the invariant
+	// THREE WORDS OF CAVEAT, none of them optional. The figure is an ESTIMATE (the accountant's
+	// token counts and the rate table), it is GROSS (what the operators caused is the penalty
+	// beside it), and it is NOT DEDUCTED from the total above (the invariant
 	// on event.Event.Avoided forbids any consumer adding it to spend, in either direction).
 	// A reader who takes this as money in the bank has been misled by the line, not by the
 	// aggregate.
@@ -693,9 +693,25 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 	// AND SILENT WHEN THE WINDOW IS MIXED, for the reason the residual above is: a saving summed
 	// across units is not a figure either, and this one is already the most heavily qualified
 	// number on the surface without adding "in no particular currency" to the list.
-	if t.AvoidedMicros > 0 && labelled {
-		fmt.Fprintf(stdout, "  ~%-13s saved   estimate, gross of cache re-warm; not deducted above\n",
-			costIn(float64(t.AvoidedMicros)/1e6, unit))
+	//
+	// THE ACCOUNTANT'S FIGURES (design §5.7a, §5.9), one line each, from money.AccountantLines so
+	// the TUI says the same. The saved line carries the penalty and the net beside the gross figure;
+	// the net is not floored, so a negative one means the operators cost more than they saved. A
+	// subscription saving is in usage-limit units with its "API equivalent" labelled, an unknown
+	// one is never added, and the plugins' own model calls and keep-alive pings are spend that is
+	// NOT in the total above, each on its own line.
+	if labelled {
+		for _, l := range money.AccountantLines(t, unit) {
+			switch l.Label {
+			case "saved":
+				fmt.Fprintf(stdout, "  ~%-13s saved   penalty %s   net %s   estimate; gross, penalty beside it; not deducted above\n",
+					costIn(float64(t.AvoidedMicros)/1e6, unit), money.Signed(t.PenaltyMicros, unit), money.Signed(money.NetMicros(t), unit))
+			case "plugin model calls", "keep-alive":
+				fmt.Fprintf(stdout, "  %-18s %s   spend, not in the total above\n", l.Label, l.Figure)
+			default:
+				fmt.Fprintf(stdout, "  %-18s %s\n", l.Label, l.Figure)
+			}
+		}
 	}
 	// THE TOKEN CAVEAT SITS WITH THE TOKEN FIGURES, above the dollar caveats even though the
 	// clamp disclosure below is the more serious claim. That is moneyFigure's rule applied to

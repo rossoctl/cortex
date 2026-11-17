@@ -482,9 +482,8 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 		pctx.ReportOps(markMoveOp(raw, *markMove, !applied))
 	}
 	// The body as this plugin leaves it: the rewrite when it was applied, the body it
-	// was handed when it was only measured. A later writer may change it again, so
-	// settlement calibrates on the framework's record of what was sent, and reads
-	// this only when nothing was rewritten.
+	// was handed when it was only measured. A fact for the timeline; the saving's money
+	// comes from the accountant, over the ops reported above.
 	bodyAfter := len(out)
 	if !applied {
 		bodyAfter = len(body)
@@ -566,7 +565,14 @@ func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	}
 	// Projected travels with the figure: in observe mode the bytes went upstream and were
 	// billed, so this is money that WAS spent and must not join a realized total.
-	p.m.observeSaving(float64(sv.TokensAvoided), tier, sv.USD, prov, modelOf(pctx), sv.Projected)
+	//
+	// Only a "usd" saving is money (design §5.7a): a subscription saving's dollars are what the
+	// API would have charged, so its tokens are counted and its dollars are not.
+	usd := sv.USD
+	if sv.Basis != event.BasisUSD {
+		usd = 0
+	}
+	p.m.observeSaving(float64(sv.TokensAvoided), tier, usd, prov, modelOf(pctx), sv.Projected)
 }
 
 // savingFor pulls this plugin's entry out of the published cost record.

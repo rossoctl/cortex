@@ -206,8 +206,25 @@ func TestTotalAvoidedMicros_ReadsWhatTheProducerActuallyWrites(t *testing.T) {
 	if err := json.Unmarshal([]byte(wire), &ev); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+	// THAT RECORD PREDATES THE ACCOUNTANT and names no basis, so it is in no money total: only a
+	// "usd" saving is (design §5.7a). The same bytes as the accountant writes them, with its
+	// basis, count.
+	if got := ev.TotalAvoidedMicros(); got != 0 {
+		t.Errorf("TotalAvoidedMicros = %d for a saving with no basis, want 0", got)
+	}
+	const withBasis = `{"cost_usd":0.0526,"source":"usage-fallback","daily_total_usd":0,` +
+		`"daily_max_usd":0,"provenance":"bundled","settled":true,` +
+		`"avoided":[{"component":"tool-prune","tokensAvoided":10210,"usd":0.00388,` +
+		`"provenance":"bundled","tier":"cache_read","penaltyUsd":0.0005,"operator":"tool-prune",` +
+		`"opsVersion":1,"basis":"usd","estimated":true}]}`
+	if err := json.Unmarshal([]byte(withBasis), &ev); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if got, want := ev.TotalAvoidedMicros(), int64(3_880); got != want {
 		t.Errorf("TotalAvoidedMicros = %d, want %d", got, want)
+	}
+	if got, want := ev.TotalPenaltyMicros(), int64(500); got != want {
+		t.Errorf("TotalPenaltyMicros = %d, want %d", got, want)
 	}
 	// The record's own cost is untouched by the saving beside it, which is the invariant the
 	// aggregate rests on, asserted here at the record level where it starts.
@@ -515,4 +532,89 @@ func mustJSON(t *testing.T, ev Event) json.RawMessage {
 		t.Fatalf("marshal: %v", err)
 	}
 	return b
+}
+
+// Penalty sums beside the saving, applied usd savings only, and is never netted or floored: a
+// penalty larger than the saving is two figures, not a clamped zero.
+func TestTotalPenaltyMicros(t *testing.T) {
+	ev := Event{Avoided: []Saving{
+		{Component: "context-guru.mask", Basis: BasisUSD, USD: 0.01, PenaltyUSD: 0.03},
+		{Component: "tool-prune", Basis: BasisUSD, USD: 0.002, PenaltyUSD: 0.001},
+		{Component: "tool-prune", Basis: BasisUSD, USD: 5, PenaltyUSD: 7, Projected: true},
+		{Component: "context-guru.mask", Basis: BasisSubscriptionEquivalent, USD: 1, PenaltyUSD: 2},
+		{Component: "context-guru.mask", Basis: BasisUnknown, USD: 1, PenaltyUSD: 2},
+	}}
+	if got, want := ev.TotalPenaltyMicros(), int64(31_000); got != want {
+		t.Errorf("TotalPenaltyMicros = %d, want %d", got, want)
+	}
+	if got, want := ev.TotalAvoidedMicros(), int64(12_000); got != want {
+		t.Errorf("TotalAvoidedMicros = %d, want %d: gross, not net, not floored", got, want)
+	}
+	if (Event{}).TotalPenaltyMicros() != 0 {
+		t.Error("no saving, nonzero penalty")
+	}
+}
+
+// Only a "usd" saving is money (design §5.7a): a subscriptionEquivalent saving's dollars are
+// what the API would have charged, an unknown one's are unknown, and a saving with no basis
+// predates the accountant. Each adds 0 to TotalAvoidedUSD.
+func TestTotalAvoidedUSD_CountsOnlyUSDBasis(t *testing.T) {
+	ev := Event{Avoided: []Saving{
+		{Component: "tool-prune", Basis: BasisUSD, USD: 0.25},
+		{Component: "tool-prune", Basis: BasisSubscriptionEquivalent, USD: 1, Units: 40},
+		{Component: "tool-prune", Basis: BasisUnknown, USD: 2},
+		{Component: "tool-prune", USD: 4},
+	}}
+	if got := ev.TotalAvoidedUSD(); got != 0.25 {
+		t.Errorf("TotalAvoidedUSD = %v, want 0.25 from the usd saving alone", got)
+	}
+}
+
+// Figures splits a record's savings and spends by basis, each into its own field, and only
+// applied savings count.
+func TestFigures_SplitsByBasis(t *testing.T) {
+	ev := Event{
+		Avoided: []Saving{
+			{Basis: BasisUSD, USD: 0.25, PenaltyUSD: 0.05},
+			{Basis: BasisSubscriptionEquivalent, USD: 1, Units: 40.5, PenaltyUnits: 2.25},
+			{Basis: BasisSubscriptionEquivalent, USD: 9, Units: 900, Projected: true},
+			{Basis: BasisUnknown, USD: 2, PenaltyUSD: 1},
+		},
+		Spends: []SpendRecord{
+			{Basis: BasisUSD, USD: 0.01},
+			{Basis: BasisSubscriptionEquivalent, USD: 0.5, Units: 7},
+			{Basis: BasisUnknown, USD: 0.03},
+			{USD: 99},
+		},
+	}
+	want := Figures{
+		AvoidedMicros: 250_000, PenaltyMicros: 50_000,
+		AvoidedUnits: 40_500, PenaltyUnits: 2_250, AvoidedAPIEquivalentMicros: 1_000_000,
+		AvoidedUnknownMicros: 2_000_000,
+		PluginSpendMicros:    10_000, PluginSpendUnits: 7_000, PluginSpendUnknownMicros: 30_000,
+	}
+	if got := ev.Figures(); got != want {
+		t.Errorf("Figures = %+v\nwant %+v", got, want)
+	}
+	if !(Event{}).Figures().IsZero() {
+		t.Error("an empty record has figures")
+	}
+}
+
+func TestMilliUnits(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want int64
+	}{{0, 0}, {1.2345, 1235}, {-1, 0}, {math.NaN(), 0}, {math.Inf(1), 0}, {1e20, 0}} {
+		if got := MilliUnits(tc.in); got != tc.want {
+			t.Errorf("MilliUnits(%v) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A keep-alive ping's record is told apart by its Purpose.
+func TestIsKeepAlive(t *testing.T) {
+	if !(Event{Purpose: PurposeKeepAlive}).IsKeepAlive() || (Event{}).IsKeepAlive() {
+		t.Error("IsKeepAlive does not follow Purpose")
+	}
 }

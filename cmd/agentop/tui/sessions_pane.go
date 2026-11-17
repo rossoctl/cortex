@@ -11,6 +11,7 @@ import (
 
 	"github.com/rossoctl/cortex/cmd/agentop/money"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
+	"github.com/rossoctl/cortex/core/cost/usage"
 	coremodel "github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
@@ -344,13 +345,17 @@ func (m *model) rebuildSessionsTable() {
 		// The buckets folded into this session are its calls; their figures are its too.
 		if f, ok := folded[s.ID]; ok {
 			s.CostMicros, s.AvoidedMicros, s.TotalTokens = s.CostMicros+f.cost, s.AvoidedMicros+f.avoided, s.TotalTokens+f.tokens
+			s.PenaltyMicros += f.penalty
 		}
+		// SAVED is the net: what the context operators saved minus what they caused (design §5.9),
+		// usd basis only, and not floored — a negative net renders with a minus sign.
+		net := money.NetMicros(usage.Counts{AvoidedMicros: s.AvoidedMicros, PenaltyMicros: s.PenaltyMicros})
 		b.cell(padLeft(sessionTokens(s.TotalTokens, m.events[s.ID]), tokensW))
 		cost := func() string { return sessionMoneyCellIn(s.CostMicros, s.Saturated, noLimit, s.Currencies) }
-		saved := func() string { return sessionMoneyCellIn(s.AvoidedMicros, s.Saturated, noLimit, s.Currencies) }
+		saved := func() string { return sessionSavedCellIn(net, s.Saturated, noLimit, s.Currencies) }
 		if showMoney {
 			b.cut(padLeft(sessionMoneyCellIn(s.CostMicros, s.Saturated, costW, s.Currencies), costW), cost)
-			b.cut(padLeft(sessionMoneyCellIn(s.AvoidedMicros, s.Saturated, savedW, s.Currencies), savedW), saved)
+			b.cut(padLeft(sessionSavedCellIn(net, s.Saturated, savedW, s.Currencies), savedW), saved)
 		} else {
 			b.dropped(cost)
 			b.dropped(saved)
@@ -671,6 +676,27 @@ func sessionMoneyCell(micros int64, saturated bool, budget int) string {
 // dollars, rendered exactly as sessionMoneyCell always has; one foreign unit relabels each rung of
 // the same ladder (money.Relabel), so credits follow the dollar precision rule; two or more are a
 // cross-unit sum with no amount to show, so the cell says money.Mixed.
+// sessionSavedCellIn is sessionMoneyCellIn for the SAVED column's net figure, which may be
+// negative: the operators cost more than they saved. A negative net is the same cell with a
+// leading minus, fitted one column narrower.
+func sessionSavedCellIn(net int64, saturated bool, budget int, currencies []string) string {
+	if net >= 0 {
+		return sessionMoneyCellIn(net, saturated, budget, currencies)
+	}
+	if net == math.MinInt64 {
+		return emptyCell
+	}
+	b := budget
+	if b > 0 && b != noLimit {
+		b--
+	}
+	cell := sessionMoneyCellIn(-net, saturated, b, currencies)
+	if cell == emptyCell || cell == money.Mixed {
+		return cell
+	}
+	return "-" + cell
+}
+
 func sessionMoneyCellIn(micros int64, saturated bool, budget int, currencies []string) string {
 	if micros == 0 || negativeCost(micros) {
 		return emptyCell

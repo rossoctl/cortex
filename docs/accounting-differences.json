@@ -9,12 +9,12 @@
     {
       "id": "shadow.lower-penalty",
       "kind": "differs",
-      "reason": "Shadow (Cortex design \u00a76, accountant wiring W9 'expected differences'): the accountant's PenaltyUSD for a rewrite inside the cached prefix is the tokens the provider actually re-wrote, from the read extent. The figure it is compared with used the whole cache_write as an upper bound, so the new penalty is lower. On this branch the old figure (settle.Avoided) carries no penalty at all, so any new PenaltyUSD shows as a difference."
+      "reason": "Shadow (Cortex design \u00a76, accountant wiring W9 'expected differences'): the accountant's PenaltyUSD for a rewrite inside the cached prefix is the tokens the provider actually re-wrote, from the read extent. The figure it is compared with used the whole cache_write as an upper bound, so the new penalty is lower. The figure before the switch (settle.Avoided, removed in Task 9) carried no penalty at all, so the ledger's penaltyMicros starts from 0."
     },
     {
       "id": "shadow.per-position-tier",
       "kind": "differs",
-      "reason": "Shadow (W9; accountant design \u00a76.2): the tier of each change comes from its position against the cache boundary (cache read before B*, write or input after it). settle.Avoided prices tool-prune's saving by a byte-to-token ratio over the whole prompt and puts all of it in the one tier pricing.AvoidedUsage picks for the request. The two agree only when every removed tool sits on one side of the boundary."
+      "reason": "Shadow (W9; accountant design \u00a76.2): the tier of each change comes from its position against the cache boundary (cache read before B*, write or input after it). The figure before the switch (settle.Avoided, removed in Task 9) priced tool-prune's saving by a byte-to-token ratio over the whole prompt and put all of it in the one tier pricing.AvoidedUsage picks for the request. The two agree only when every removed tool sits on one side of the boundary."
     },
     {
       "id": "shadow.context-guru-expand-cost",
@@ -29,12 +29,12 @@
     {
       "id": "shadow.negative-keepalive-window",
       "kind": "differs",
-      "reason": "W9: a keep-alive window whose pings rescued nothing is a negative figure for its thread. In this commit the ping's spend is its own cost record (Purpose keep-alive, design \u00a75.8) and the keeper's event.Saving holds only the rescue, so the negative window appears only once Task 9 nets ping spend against the keeper's saving per thread. The figure compared with today keeps ping cost and saving in separate columns."
+      "reason": "W9: a keep-alive window whose pings rescued nothing is a negative figure for its thread. Cortex keeps a ping's spend in its own cost record (Purpose keep-alive, design \u00a75.8), which the ledger and /v1/usage count in keepAliveMicros and keepAlivePings, never in costMicros or requests; the keeper's event.Saving holds only the rescue, in avoidedMicros. The two are not netted per thread, so a window that rescued nothing shows as keep-alive spend with no keeper saving, not as one negative figure."
     },
     {
       "id": "shadow.operators-not-in-old-figure",
       "kind": "differs",
-      "reason": "Accountant wiring W7.1 (one Saving per operator) and W9 step 8; Cortex design \u00a76 (shadow agreement). Shadow: settle.Avoided prices tool-prune only (settle.savingComponents). Every context-guru operator (context-guru.*) and the keeper appear only in the accountant's figure, so each differs against 0. The shadow logs these at DEBUG (inOld=false) and counts them as \"accounting shadow new-only\", apart from the INFO lines and the \"differed\" counter, which mean a real difference. Expected until Task 9 switches the ledger to the accountant's figure."
+      "reason": "Accountant wiring W7.1 (one Saving per operator) and W9 step 8; Cortex design \u00a76 (shadow agreement, ledger before and after the switch). The figure before the switch (settle.Avoided, removed in Task 9) priced tool-prune only (settle.savingComponents). Every context-guru operator (context-guru.*) and the keeper appear only in the accountant's figure, so after the switch each adds to the ledger's avoidedMicros and penaltyMicros against 0 before it."
     },
     {
       "id": "cortex.threadof-not-wired",
@@ -60,6 +60,26 @@
       "id": "cortex.effects-by-changeid-owner",
       "kind": "differs",
       "reason": "Accountant wiring W7.1 (cache effects settled by Kind); accountant design \u00a74.4. Cortex books a split, ttlPremium, ttlRescue, markPremium or markPayback effect to the operator of the applied op with its ChangeID, as USD when its Net prices positive and PenaltyUSD when negative, and to UnattributedBreakUSD when no op owns it. The proxy books split and headttl effects in their own rows (SplitUSD, TTLUSD) and an unowned markPremium/markPayback to the tailbreakpoint row. Totals agree; the per-operator rows can differ."
+    },
+    {
+      "id": "cortex.tool-index-after-tool-prune",
+      "kind": "differs",
+      "reason": "Accountant wiring W6.4 (envelope changes); Cortex design \u00a76 (cross-host). When tool-prune runs before context-guru in the outbound chain, the context-guru plugin's envelope ops (core/plugins/contextguru/envelope.go) diff the body tool-prune left against the body it writes, so the tool indexes they name are post-tool-prune positions, while the accountant indexes ops against the client body. The context-guru proxy sees no tool-prune and indexes against the client body. The bytes and tokens of each op are the same; only the tier can differ, and only when the cache boundary B* falls inside the tools section, so that a shifted index lands on the other side of it."
+    },
+    {
+      "id": "switch.multi-round-unpriced",
+      "kind": "differs",
+      "reason": "Accountant wiring W6.1 (upstream_rounds); Cortex design \u00a75.9. A request that took more than one upstream round (the inference-router's resend) has no accountant figure, so after the switch it carries no saving; before it, settle.Avoided priced tool-prune's removal from the bytes removed. The context-guru proxy skips the same requests, so this is a difference from the old ledger, not from the proxy."
+    },
+    {
+      "id": "switch.accounting-off-no-saving",
+      "kind": "differs",
+      "reason": "Cortex design \u00a75.3: with accounting off (accounting.enabled false, or auto with no context operator in the outbound chain), no saving is recorded after the switch. Before it, settle.Avoided priced a tool-prune saving whether or not the accountant ran."
+    },
+    {
+      "id": "switch.legacy-saving-no-basis",
+      "kind": "differs",
+      "reason": "Cortex design \u00a75.7a (money totals count only basis usd). A saving recorded before the switch has no basis, so the totals folded from session events (the sessions list, a usage ring replayed from the session archive) no longer count it. Ledger rows written before the switch keep their avoidedMicros, and read penaltyMicros and the other new columns as 0."
     }
   ]
 }

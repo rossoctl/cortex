@@ -13,9 +13,9 @@ import (
 
 // The values of event.Saving.Basis (accountant design §7.1, Cortex design §5.7a).
 const (
-	BasisUSD                    = "usd"
-	BasisSubscriptionEquivalent = "subscriptionEquivalent"
-	BasisUnknown                = "unknown"
+	BasisUSD                    = event.BasisUSD
+	BasisSubscriptionEquivalent = event.BasisSubscriptionEquivalent
+	BasisUnknown                = event.BasisUnknown
 )
 
 // KeeperOperator is the operator a keep-alive rescue is credited to: the name accountant.PingOps
@@ -308,6 +308,18 @@ func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 		return usd + out, est || outEst
 	}
 	ss, ex := SavingsBilled(res, price, spend, model, host, mode, h.weights)
+	// The rate table's level for the request's own rates, on every saving that has a dollar
+	// figure: event.Saving.Provenance, which a reader (tool-prune's pane, agentop) uses to say
+	// whether the figure came from configured or bundled rates.
+	if h.resolver != nil {
+		if _, prov := h.resolver.Resolve(host, model, promptTotal); prov != pricing.ProvNone {
+			for i := range ss {
+				if ss[i].USD != 0 || ss[i].PenaltyUSD != 0 {
+					ss[i].Provenance = prov.String()
+				}
+			}
+		}
+	}
 	ex.Thread = ThreadOf(pctx).ID
 	for i := range ex.Spends {
 		ex.Spends[i].Thread = ex.Thread
