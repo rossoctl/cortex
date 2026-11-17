@@ -125,3 +125,29 @@ func TestMetricsPushConfig_ErrorsNeverQuoteURLCredentials(t *testing.T) {
 		t.Errorf("SafeURL = %q, want https://host/x", got)
 	}
 }
+
+// A credential in the URL's user info or query would be dropped on the way out (the exporter
+// posts to SafeURL), so the collector would answer 401 with nothing to say why. Validate refuses
+// such a URL and points to token, without quoting the credential.
+func TestMetricsPushConfig_ValidateRefusesCredentialsInTheURL(t *testing.T) {
+	for _, raw := range []string{
+		"https://u:p@collector.example.com/cortex",
+		"https://u@collector.example.com",
+		"https://collector.example.com/cortex?token=s3cret",
+		"http://u:p@localhost:4318",
+	} {
+		err := MetricsPushConfig{URL: raw}.Validate()
+		if err == nil {
+			t.Errorf("Validate(%q) accepted a URL carrying a credential", raw)
+			continue
+		}
+		if !strings.Contains(err.Error(), "token") {
+			t.Errorf("Validate(%q) = %q, want it to point to metrics_push.token", raw, err)
+		}
+		for _, secret := range []string{"u:p", "u@", "s3cret", raw} {
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("Validate(%q) = %q, quotes %q", raw, err, secret)
+			}
+		}
+	}
+}

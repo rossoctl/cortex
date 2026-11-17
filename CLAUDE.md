@@ -263,12 +263,24 @@ tunnel rows, `subagent`), the 5-value invocation `action` vocabulary, paging, an
 guards on the two `DELETE` routes. The producer-side contract is in
 [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events).
 
+**`DELETE /v1/sessions` and `DELETE /v1/sessions/{id}` do not clear the accountant's
+per-session state:** the Tracker state and `~/.cortex/accountant-state.json`, the
+per-thread billing mode and pending ping facts in `core/accounting.Host`, and the
+context-guru keeper's entries. These hold session and thread ids, content hashes and a billing
+mode, no content; the keeper also holds the caller's credential, masked. The keeper's entries
+go at `(max_pings + 1) × idle_seconds`. The rest has no time bound while the process runs: the
+in-memory maps keep at most 10,000 threads, dropping the oldest, and the snapshot (rewritten
+every 60s) holds what memory holds. A snapshot older than 1h is not restored. Details:
+[`docs/session-api.md`](docs/session-api.md#delete-v1sessions).
+
 **Savings are the accountant's figure, and only basis `usd` is money.** `GET /v1/sessions`
 rows carry `avoidedMicros` and, omitted rather than zero like every figure there,
 `penaltyMicros`, `avoidedUnits`, `penaltyUnits`, `avoidedApiEquivalentMicros`,
 `avoidedUnknownMicros`, `pluginSpendMicros`, `pluginSpendUnits` and
 `pluginSpendUnknownMicros`. `/v1/usage` totals and ledger rows carry the same fields plus
-`keepAliveMicros` and `keepAlivePings`: a keep-alive ping is in no request, token, cost or
+`keepAlivePings` and the pings' spend by the thread's billing basis (`keepAliveMicros` on an API
+key, `keepAliveUnits` and `keepAliveApiEquivalentMicros` on a subscription,
+`keepAliveUnknownMicros` otherwise): a keep-alive ping is in no request, token, cost or
 latency figure. Plugin spend is not in `costMicros`. What each sums:
 [`docs/pricing.md`](docs/pricing.md#cost-records).
 
@@ -277,7 +289,8 @@ latency figure. Plugin spend is not in `costMicros`. What each sums:
 saving is valued in units. `metrics_push:` (`enabled`, `url`, `token`, `interval`; env
 `METRICS_PUSH`, `METRICS_PUSH_URL`, `METRICS_PUSH_TOKEN`, `METRICS_PUSH_INTERVAL`) pushes the
 `llm.savings.*` counters over OTLP/HTTP (`core/accounting/push`). It has **no default URL**, so
-nothing leaves the machine until a user sets one. Its URL must be https, or http to loopback. The
+nothing leaves the machine until a user sets one. Its URL must be https, or http to loopback, and
+carry no user info or query string (neither is sent; the credential goes in `token`). The
 token is never logged. The pushed dollars come from the same `accounting.USD` as the ledger's,
 and `core/accounting.Components` (the `component` label allow-list) is a copy of context-guru's
 component names, guarded by `core/plugins/contextguru`'s `TestComponentsCoverTheRegistry`. Both

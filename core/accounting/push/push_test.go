@@ -420,35 +420,31 @@ func TestMachineID_NoPathIsPerProcess(t *testing.T) {
 	}
 }
 
-// A credential in the URL's user info or query never reaches a log line: not the "on" line, and
-// not the WARN of a failed export, whose error quotes the exporter's endpoint.
-func TestStart_LogsNeverQuoteURLCredentials(t *testing.T) {
+// A credential in the URL's user info or query is refused rather than silently dropped
+// (MetricsPushConfig.Validate): the exporter posts to SafeURL, so the collector would only answer
+// 401. That holds for METRICS_PUSH_URL too, which reaches only this check: Start returns the
+// error, which cmd/cortex logs as a WARN and runs without the push. The error never quotes the
+// credential.
+func TestStart_RefusesCredentialsInTheURL(t *testing.T) {
 	logs := captureLogs(t)
-	_, srv := newReceiver(t)
-	srv.Close()
-	host := strings.TrimPrefix(srv.URL, "http://") // a loopback address that refuses
-	raw := "http://u:p@" + host + "/x?token=t"
-	rd := withReader(t)
-	_, shutdown, err := Start(config.MetricsPushConfig{URL: raw, Interval: 20 * time.Millisecond}, "dev", "")
-	if err != nil {
-		t.Fatal(err)
+	raw := "http://u:p@127.0.0.1:4318/x?token=t"
+	cfg := (&config.MetricsPushConfig{}).Resolve(func(k string) string {
+		if k == "METRICS_PUSH_URL" {
+			return raw
+		}
+		return ""
+	})
+	mp, _, err := Start(cfg, "dev", "")
+	if err == nil || mp != nil {
+		t.Fatalf("Start = %v, %v, want a refusal", mp, err)
 	}
-	t.Cleanup(func() { _ = shutdown(context.Background()) })
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) && logs.count(slog.LevelWarn, "metrics push") == 0 {
-		time.Sleep(10 * time.Millisecond)
+	if !strings.Contains(err.Error(), "token") {
+		t.Errorf("error = %q, want it to point to metrics_push.token", err)
 	}
-	_ = collect(t, rd)
-	out := logs.all()
-	if logs.count(slog.LevelWarn, "metrics push") != 1 || logs.count(slog.LevelInfo, "metrics push on") != 1 {
-		t.Fatalf("want one INFO and one WARN:\n%s", out)
-	}
+	out := err.Error() + logs.all()
 	for _, secret := range []string{"u:p", "token=t", raw} {
 		if strings.Contains(out, secret) {
-			t.Errorf("the log quotes %q:\n%s", secret, out)
+			t.Errorf("the error or the log quotes %q:\n%s", secret, out)
 		}
-	}
-	if !strings.Contains(out, "http://"+host+"/x") {
-		t.Errorf("the log does not name the safe URL http://%s/x:\n%s", host, out)
 	}
 }

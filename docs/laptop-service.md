@@ -641,6 +641,13 @@ curl -X DELETE http://localhost:47601/v1/sessions/<id>
 # {"sessions":1,"archivedSessions":1,"bytes":18234567}, or a 404 when this Cortex holds no such session
 ```
 
+Neither erases the savings accountant's own per-session state: ids, content hashes and the
+billing mode, no content, in memory and in `~/.cortex/accountant-state.json`, plus the
+keep-alive keeper's masked credential. The keeper's entries go within about 13.5 minutes at
+its defaults. The rest stays until newer sessions push it out (at most 10,000 threads are
+kept), and a state file older than 1 hour is not read at startup (see
+[session-api.md](session-api.md#delete-v1sessions)).
+
 Either is refused — a 403 saying why — unless the request names a loopback host
 (`localhost`, `127.0.0.1` or `[::1]`), carries no `Origin` header, and reaches a proxy bound to
 loopback only, as a local install is. Those are the checks that keep a web page you visit from
@@ -731,7 +738,7 @@ metrics_push:
 | Field | Environment override | Default | Meaning |
 |---|---|---|---|
 | `enabled` | `METRICS_PUSH` | `true` | A value that is not a boolean turns the push off. |
-| `url` | `METRICS_PUSH_URL` | *(none)* | Must be `https`. `http` is allowed only to a loopback address. |
+| `url` | `METRICS_PUSH_URL` | *(none)* | Must be `https`. `http` is allowed only to a loopback address. A URL with user info (`https://user:pass@host`) or a query string is refused, because neither is sent: put the credential in `token`. In the file that fails startup; in `METRICS_PUSH_URL` it logs a WARN and turns the push off. |
 | `token` | `METRICS_PUSH_TOKEN` | *(none)* | Never logged. `/config` serves it redacted. |
 | `interval` | `METRICS_PUSH_INTERVAL` | `30s` | How often the counters are pushed. |
 

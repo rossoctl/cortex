@@ -241,7 +241,8 @@ func (m MetricsPushConfig) IsEnabled() bool { return m.Enabled == nil || *m.Enab
 // On reports whether anything is pushed: enabled, and a URL to push to.
 func (m MetricsPushConfig) On() bool { return m.IsEnabled() && m.URL != "" }
 
-// Validate refuses a URL that is not https, other than http to a loopback address, and a
+// Validate refuses a URL that is not https, other than http to a loopback address, a URL with
+// user info or a query string (neither is sent: the credential belongs in Token), and a
 // negative interval. An empty URL is valid: nothing is pushed. The error never quotes the token,
 // and quotes the URL only as SafeURL gives it.
 //
@@ -259,6 +260,12 @@ func (m MetricsPushConfig) Validate() error {
 	u, err := url.Parse(m.URL)
 	if err != nil || u.Host == "" {
 		return fmt.Errorf("metrics_push.url: %q is not an absolute URL", SafeURL(m.URL))
+	}
+	// The exporter posts to SafeURL(url), which drops both, so a credential there would be lost
+	// on the way out and the collector would answer 401 with nothing to say why.
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery {
+		return fmt.Errorf("metrics_push.url: %q carries user info or a query string, which are not sent; "+
+			"put the collector's credential in metrics_push.token (METRICS_PUSH_TOKEN)", SafeURL(m.URL))
 	}
 	switch u.Scheme {
 	case "https":

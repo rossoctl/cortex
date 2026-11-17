@@ -29,7 +29,7 @@
     {
       "id": "shadow.negative-keepalive-window",
       "kind": "differs",
-      "reason": "W9: a keep-alive window whose pings rescued nothing is a negative figure for its thread. Cortex keeps a ping's spend in its own cost record (Purpose keep-alive, design \u00a75.8), which the ledger and /v1/usage count in keepAliveMicros and keepAlivePings, never in costMicros or requests; the keeper's event.Saving holds only the rescue, in avoidedMicros. The two are not netted per thread, so a window that rescued nothing shows as keep-alive spend with no keeper saving, not as one negative figure."
+      "reason": "W9: a keep-alive window whose pings rescued nothing is a negative figure for its thread. Cortex keeps a ping's spend in its own cost record (Purpose keep-alive, design \u00a75.8), which the ledger and /v1/usage count in keepAlivePings and, by the thread's billing basis, keepAliveMicros, keepAliveUnits or keepAliveUnknownMicros, never in costMicros or requests; the keeper's event.Saving holds only the rescue, in avoidedMicros. The two are not netted per thread, so a window that rescued nothing shows as keep-alive spend with no keeper saving, not as one negative figure."
     },
     {
       "id": "shadow.operators-not-in-old-figure",
@@ -75,6 +75,11 @@
       "id": "switch.accounting-off-no-saving",
       "kind": "differs",
       "reason": "Cortex design \u00a75.3: with accounting off (accounting.enabled false, or auto with no context operator in the outbound chain), no saving is recorded after the switch. Before it, settle.Avoided priced a tool-prune saving whether or not the accountant ran."
+    },
+    {
+      "id": "cortex.billing-and-ping-facts-not-snapshotted",
+      "kind": "differs",
+      "reason": "Cortex design \u00a75.4 (persistence: only accountant.Trackers' Snapshot is written to ~/.cortex/accountant-state.json), \u00a75.7 (a ping uses the billing mode of the thread's last request) and \u00a75.8 (a ping's PingFacts are kept for the thread's next request). Host.threadBilling and Host.pingFacts live in memory only and are not in the snapshot, so a restart loses both. The first keep-alive ping on a thread after a restart, before that thread's next request, is therefore accounted as BillingUnknown (basis unknown: keepAliveUnknownMicros, no dollar counters), and a ping sent before the restart whose rescue had not yet been credited is lost: the thread's next request gets no rescue cache effect under the ping's ChangeID. The Tracker state itself survives (up to 1h). Not a case in github.com/rossoctl/accountant/test/cases, so this is a documentation-only note rather than a skip for TestAccountantCases."
     }
   ]
 }
