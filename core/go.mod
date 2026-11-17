@@ -11,6 +11,7 @@ require (
 	github.com/lestrrat-go/jwx/v2 v2.1.7
 	github.com/maximhq/bifrost/core v1.7.15
 	github.com/open-policy-agent/opa v1.22.4
+	github.com/rossoctl/accountant v0.2.0
 	github.com/rossoctl/context-guru v0.7.3
 	github.com/spiffe/go-spiffe/v2 v2.9.0
 	github.com/tidwall/gjson v1.20.2
@@ -92,7 +93,6 @@ require (
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
-	github.com/rossoctl/accountant v0.1.1-0.20261108152158-5181d50c1f98 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
