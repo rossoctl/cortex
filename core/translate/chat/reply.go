@@ -50,16 +50,17 @@ type decoder struct {
 	usage      pivot.Usage
 
 	open      openKind
-	openIndex int    // the pivot block index of the open block
-	openTool  int    // the chat tool-call index of the open tool_use block
-	openID    string // the tool-call id of the open tool_use block
-	next      int    // the next pivot block index
-	closed    map[int]bool
+	openIndex int             // the pivot block index of the open block
+	openTool  int             // the chat tool-call index of the open tool_use block
+	openID    string          // the tool-call id of the open tool_use block
+	next      int             // the next pivot block index
+	closed    map[int]bool    // chat tool-call indexes whose block ended
+	closedIDs map[string]bool // tool-call ids whose block ended
 }
 
 // NewReplyDecoder makes a decoder for one upstream reply (decision 3).
 func (Protocol) NewReplyDecoder(status int, stream bool) pivot.ReplyDecoder {
-	return &decoder{status: status, stream: stream, closed: map[int]bool{}}
+	return &decoder{status: status, stream: stream, closed: map[int]bool{}, closedIDs: map[string]bool{}}
 }
 
 func (d *decoder) ok() bool { return d.status >= 200 && d.status < 300 }
@@ -159,6 +160,7 @@ func (d *decoder) closeOpen() {
 	d.emit(pivot.Event{Kind: pivot.EventBlockStop, Index: d.openIndex})
 	if d.open == kindTool {
 		d.closed[d.openTool] = true
+		d.closedIDs[d.openID] = true
 	}
 	d.open = kindNone
 }
@@ -290,8 +292,10 @@ func (d *decoder) streamDelta(m replyMessage) {
 		// index is a new call, not more of the open one.
 		isOpen := d.open == kindTool && d.openTool == tc.Index && (tc.ID == "" || tc.ID == d.openID)
 		if tc.ID != "" && !isOpen {
-			if d.closed[tc.Index] {
-				d.fail(http.StatusBadGateway, "api_error", "the inference server sent tool call "+strconv.Itoa(tc.Index)+" again after that tool call ended")
+			// Key by id, not index: servers that put every call at index 0
+			// close that index once per call.
+			if d.closedIDs[tc.ID] {
+				d.fail(http.StatusBadGateway, "api_error", "the inference server sent tool call "+tc.ID+" again after that tool call ended")
 				return
 			}
 			// Rule 20a: the id goes to the agent byte-exact.

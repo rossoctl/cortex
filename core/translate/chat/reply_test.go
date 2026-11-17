@@ -293,3 +293,39 @@ func TestReplyDecoder_NewIDOnOpenIndex(t *testing.T) {
 		usage(pivot.Usage{}), stop("tool_use"),
 	})
 }
+
+// Three calls at index 0, each in its own chunk: closing a and b must not
+// refuse c.
+func TestReplyDecoder_ThreeNewIDsOnIndexZero(t *testing.T) {
+	body := sse(
+		chunk(`{"tool_calls":[{"id":"a","function":{"arguments":"{}","name":"A"},"type":"function","index":0}]}`),
+		chunk(`{"tool_calls":[{"id":"b","function":{"arguments":"{}","name":"B"},"type":"function","index":0}]}`),
+		chunk(`{"tool_calls":[{"id":"c","function":{"arguments":"{}","name":"C"},"type":"function","index":0}]}`),
+		finish("tool_calls"),
+		"[DONE]",
+	)
+	checkEvents(t, 200, true, body, []pivot.Event{
+		start(),
+		openTool(0, "a", "A"), delta(0, pivot.DeltaInputJSON, "{}"), closeBlock(0),
+		openTool(1, "b", "B"), delta(1, pivot.DeltaInputJSON, "{}"), closeBlock(1),
+		openTool(2, "c", "C"), delta(2, pivot.DeltaInputJSON, "{}"), closeBlock(2),
+		usage(pivot.Usage{}), stop("tool_use"),
+	})
+}
+
+// An id whose block ended comes back: refuse it.
+func TestReplyDecoder_ClosedIDAgain(t *testing.T) {
+	body := sse(
+		chunk(`{"tool_calls":[{"id":"a","function":{"arguments":"{}","name":"A"},"type":"function","index":0}]}`),
+		chunk(`{"tool_calls":[{"id":"b","function":{"arguments":"{}","name":"B"},"type":"function","index":1}]}`),
+		chunk(`{"tool_calls":[{"id":"a","function":{"arguments":"{}","name":"A"},"type":"function","index":0}]}`),
+		finish("tool_calls"),
+		"[DONE]",
+	)
+	checkEvents(t, 200, true, body, []pivot.Event{
+		start(),
+		openTool(0, "a", "A"), delta(0, pivot.DeltaInputJSON, "{}"), closeBlock(0),
+		openTool(1, "b", "B"), delta(1, pivot.DeltaInputJSON, "{}"),
+		apiError(502, "api_error", "the inference server sent tool call a again after that tool call ended"),
+	})
+}
