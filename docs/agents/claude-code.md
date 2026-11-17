@@ -230,6 +230,21 @@ output limit lowered. The agent's own view of the conversation is not changed. S
 model list, that request is routed like the rest, so the picker can show, say,
 `glm-5.3`. A name chosen there goes to the server as it is, like any other.
 
+## Import history
+
+`agentop import --agent claude-code` adds the Claude Code sessions from before
+Cortex to the session history and the cost ledger. It reads the transcripts
+under `~/.claude/projects`, or under `$CLAUDE_CONFIG_DIR/projects` when that variable is
+set in the proxy's environment.
+
+- One session transcript and its subagent transcripts make one session.
+- The import skips a session that Cortex captured live.
+- A turn is priced at today's rates.
+
+Flags and output:
+[`agentop import`](../../cmd/agentop/README.md#importing-agent-history-agentop-import).
+Rules: [`POST /v1/import`](../session-api.md#post-v1import--transcript-import-laptop-only).
+
 ## Verified depth
 
 Tested live on 2026-10-05 with Claude Code 2.1.286 on macOS 26.6.2 (arm64), Cortex built
