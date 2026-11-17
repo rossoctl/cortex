@@ -158,7 +158,9 @@ and 8 real session files (78 lines) under `~/.pi/agent/sessions/`.
 15. **Interning:** intern each event with one `session.Interner` per session as
     `claude/turns.go` does (`p.in.InternEvent`). Reason: each request holds the whole
     conversation.
-16. **Title** comes from the events. `importer.Session` has no `Title` field. Put this
+16. **SizeHint** = the size in bytes of the session file (`os.Stat` or the bytes read),
+    as `claude.go` sets it. Reason: `importer.Run` uses it for the archive size check.
+17. **Title** comes from the events. `importer.Session` has no `Title` field. Put this
     in the PR body.
 
 ## Review Focus
@@ -213,6 +215,10 @@ Depends on: none
   `responseId`), a `context_edit` (`targetId` `a4e`, `replacement` null), user `u5`,
   assistant `a5`.
 - Every assistant entry except `a4e` has a distinct `responseId`.
+- In every file, the first entry after the header has `parentId` null, and each other
+  entry has the entry on the line before it as `parentId`, unless the list above names
+  another parent. So in file 3: `u4`'s parent is the `compaction` entry, the
+  `context_edit`'s parent is `a4e`, and `u5`'s parent is the `context_edit`.
 
 - [ ] **Step 1: Write the failing tests** in `pi_test.go` (helpers as in
   `claude/claude_test.go`: `fixtures` copies `testdata` to `t.TempDir()`, `readAll`,
@@ -223,7 +229,7 @@ Depends on: none
     the label of `/tmp/demo`, `Client.Name == "pi"`, model `claude-sonnet-4-5`; turn 1
     `InputTokens == 100`, `CompletionTokens == 20`, `CacheReadTokens == 50`,
     `CacheWriteTokens == 10`; request 2 has 3 `Messages`; request `At` <= response `At`;
-    `RequestID` = the `responseId`.
+    `RequestID` = the `responseId`; `SizeHint` = the file size.
   - `TestSource_ToolCallsAndResults`: response 1 has 2 `ToolCalls` (`read`, `bash`) and
     `FinishReason` `tool_use`, and `ResponseThinking` counts 1 block; request 1 has 2
     `Tools`; request 2 has 2 `ToolResults` with the two call ids, in ONE user message.
@@ -243,8 +249,10 @@ Depends on: none
   - `TestSource_HonoursPiCodingAgentDir`: `t.Setenv("PI_CODING_AGENT_DIR", dir)` with
     `New("")` finds the fixtures.
   In `timeline_test.go`: `TestTimeline_ImportedSessionShowsTurnsAndTools`, as in
-  `claude/timeline_test.go`: set `Seq` and `Source = model.ImportedSource("pi")`, run
-  `timeline.Build`, check 3 main-agent turns and tools `read` and `bash`.
+  `claude/timeline_test.go`: take the session of file 2 (tools), set `Seq` and
+  `Source = model.ImportedSource("pi")`, run `timeline.Build`, check 2 main-agent turns
+  (`turns[timeline.MainAgent] == 2`, one for each assistant message) and tools `read`
+  and `bash`.
 - [ ] **Step 2:** Run `GOWORK=off go -C core test ./session/importer/pi/...`. Expect FAIL (no package).
 - [ ] **Step 3:** Write `pi.go` and `turns.go` by the Decisions above.
 - [ ] **Step 4:** Run the tests again. Expect PASS.
@@ -298,7 +306,8 @@ One PR: the total is under 2000 counted lines.
 
 ## Gate
 
-From the worktree root:
+From the worktree root. The plan review ran the vet and gofmt steps on the base
+(5392467be) on 2026-11-16, unchanged, and all passed:
 
 ```sh
 GOWORK=off go -C core vet ./... && GOWORK=off go -C core test -race ./session/importer/... ./sessionapi/... && GOWORK=off go -C cmd/cortex vet ./... && GOWORK=off go -C cmd/cortex build ./... && test -z "$(gofmt -l core/session/importer cmd/cortex)"
@@ -312,7 +321,7 @@ GOWORK=off go -C core vet ./... && GOWORK=off go -C core test -race ./session/im
   `01a1ac8e-7cac-7385-8291-bd9de8210c8b` in the Timeline and check its tool calls
   (`read`, `edit`, `bash`), project `/private/tmp/bt/c2/demo`, tokens and cost.
 - In the PR body: the id check result (header `id` = `getSessionId()`, from Pi 1.4.0
-  source), Decision 8 (pricing host `pi.dev`), Decision 16 (title from events), and
+  source), Decision 8 (pricing host `pi.dev`), Decision 17 (title from events), and
   that no real file has a branch or a compaction (those rules come from Pi's source).
 - PRs #1908 (Codex) and #1913 (OpenCode) edit the same `Sources` line in
   `cmd/cortex/main.go` and the same doc lines. The PR that merges last resolves the conflict.
