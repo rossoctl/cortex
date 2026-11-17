@@ -109,8 +109,8 @@ func (Protocol) EncodeRequest(req pivot.Request, h http.Header) ([]byte, []strin
 	if req.Stream {
 		out.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
-	if len(req.System) > 0 {
-		out.Messages = append(out.Messages, message{Role: "system", Content: e.textParts(req.System)})
+	if parts := e.textParts(req.System); len(parts) > 0 {
+		out.Messages = append(out.Messages, message{Role: "system", Content: parts})
 	}
 	for _, m := range req.Messages {
 		e.extra(m.Extra)
@@ -175,6 +175,10 @@ func (e *encoder) textParts(blocks []pivot.Block) []part {
 	parts := make([]part, 0, len(blocks))
 	for _, b := range blocks {
 		e.extra(b.Extra)
+		if b.Kind != pivot.BlockText {
+			e.dropped[string(b.Kind)] = true
+			continue
+		}
 		parts = append(parts, textPart(b.Text, b.CacheControl))
 	}
 	return parts

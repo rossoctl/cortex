@@ -1,0 +1,2 @@
+dropped: content,image,search_result,source,title
+{"model":"claude-opus-5-5","messages":[{"role":"system","content":[{"type":"text","text":"hi"}]},{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":1024}
