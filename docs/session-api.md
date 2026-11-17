@@ -559,7 +559,8 @@ source imports nothing.
 - Cortex prices a Codex turn at today's rates, from the usage of its
   `token_usage_record` or `token_count` line. A tool result does not end a
   turn, because some Codex versions write `token_count` after the tool
-  results. A turn with no usage has no `cost` record.
+  results. A turn with no usage has no `cost` record and no ledger row. When a
+  later import finds its usage, that import adds the row.
 
 ## `POST /v1/ingest` — rows from cortex-gateway (praxis mode)
 

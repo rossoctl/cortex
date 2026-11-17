@@ -198,6 +198,9 @@ func (p *parser) file(path, thread, subagent string, copied []usage, usagesOnly 
 					}
 					_ = json.Unmarshal(l.Payload, &it)
 					if outputTypes[it.Type] || (it.Type == "message" && it.Role == "assistant") {
+						if len(held) > 0 {
+							closeTurn(time.Time{}, nil)
+						}
 						if len(out) == 0 {
 							firstOutAt = l.Timestamp
 						}

@@ -133,6 +133,41 @@ func TestSource_TokenCountAfterToolResults(t *testing.T) {
 	}
 }
 
+// A provider that sends no usage writes token_count with info null. An output after held tool
+// results is the next model call, so it closes the open turn.
+func TestSource_OutputAfterToolResultsIsANewCall(t *testing.T) {
+	home := t.TempDir()
+	call := func(sec int, id string) string {
+		return `{"timestamp":"2026-11-04T08:00:` + pad(sec) + `Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{}","call_id":"` + id + `"}}`
+	}
+	result := func(sec int, id string) string {
+		return `{"timestamp":"2026-11-04T08:00:` + pad(sec) + `Z","type":"response_item","payload":{"type":"function_call_output","call_id":"` + id + `","output":"ok"}}`
+	}
+	noInfo := func(sec int) string {
+		return `{"timestamp":"2026-11-04T08:00:` + pad(sec) + `Z","type":"event_msg","payload":{"type":"token_count","info":null}}`
+	}
+	writeRollout(t, home, "rollout-a-"+plainID+".jsonl", time.Date(2026, 11, 4, 8, 1, 0, 0, time.UTC),
+		meta, ctx,
+		user(2, "q"),
+		call(3, "c1"), result(4, "c1"), noInfo(5),
+		call(6, "c2"), result(7, "c2"), noInfo(8),
+		assistant(9, "done"),
+	)
+	s := sessionByID(t, home, plainID)
+	reqs, resps := phase(s, model.SessionRequest, ""), phase(s, model.SessionResponse, "")
+	if len(reqs) != 3 || len(resps) != 3 {
+		t.Fatalf("%d requests, %d responses, want 3 and 3", len(reqs), len(resps))
+	}
+	for i, want := range []string{"c1", "c2"} {
+		if c := resps[i].Inference.ToolCalls; len(c) != 1 || c[0].ID != want {
+			t.Errorf("turn %d ToolCalls = %+v, want %s only", i+1, c, want)
+		}
+	}
+	if r := reqs[2].Inference.ToolResults; len(r) != 2 || r[1].ToolUseID != "c2" {
+		t.Errorf("turn 3 ToolResults = %+v, want c1 and c2 in order", r)
+	}
+}
+
 // Of two rollouts with one thread id, the newer mtime wins, whatever the path order.
 func TestSource_NewerRolloutOfAThreadWins(t *testing.T) {
 	home := t.TempDir()
