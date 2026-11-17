@@ -111,6 +111,7 @@ func TestSource_ForkDoesNotRepeatParentTurns(t *testing.T) {
 			dir := t.TempDir()
 			stampRollout(t, dir, tc.parentDir, parentID, time.Date(2026, 11, 4, 8, 0, 0, 0, time.UTC), parentLines)
 			writeFork(t, dir, tc.session, tc.copy)
+			sameNewest(t, dir)
 			fork := sessionByID(t, dir, tc.session)
 			resps := phase(fork, model.SessionResponse, tc.subagent)
 			if len(resps) != 1 || resps[0].Inference.Completion != "forked" {

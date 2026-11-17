@@ -338,7 +338,8 @@ func TestSource_CompressedRollout(t *testing.T) {
 
 func TestSource_UnreadableRootIsReported(t *testing.T) {
 	dir := fixtures(t)
-	failOpens(t, func(path string, n int) bool { return strings.Contains(path, toolsID) && n == 2 })
+	// The opens are the listing, the fast scan and the parse. Only the parse fails.
+	failOpens(t, func(path string, n int) bool { return strings.Contains(path, toolsID) && n == 3 })
 	s := sessionByID(t, dir, toolsID)
 	if !s.Unreadable {
 		t.Fatalf("session = %+v, want Unreadable", s)

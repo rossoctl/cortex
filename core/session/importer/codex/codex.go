@@ -139,6 +139,11 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 			if skip(id, newest[id]) {
 				continue
 			}
+			// The mtime is always after the newest event, so only this time lets Rule 2 skip an
+			// unchanged session before the slow parse.
+			if at, ok := newestAt(groups[id]); ok && skip(id, at) {
+				continue
+			}
 			if !yield(readSession(id, groups[id], threads, home), nil) {
 				return
 			}
@@ -210,6 +215,69 @@ func readMeta(path string) (rollout, error) {
 	}
 	// Codex sends session_id as the Session-Id header; when it is absent it reads it as id.
 	return rollout{thread: l.Payload.ID, session: cmp.Or(l.Payload.SessionID, l.Payload.ID), forkedFrom: l.Payload.ForkedFromID}, nil
+}
+
+// newestAt reads each rollout of a session fast and gives a time that is not before the At of
+// any event that the parse makes: the newest token record that closes an open turn, or the
+// newest model output. ok is false when a file cannot be read, so that the parse reports it.
+// shortcut: it trusts that the lines of a rollout are in time order, as Codex writes them.
+func newestAt(files []rollout) (newest time.Time, ok bool) {
+	for _, f := range files {
+		t, err := newestInFile(f.path)
+		if err != nil {
+			return time.Time{}, false
+		}
+		if t.After(newest) {
+			newest = t
+		}
+	}
+	return newest, true
+}
+
+func newestInFile(path string) (time.Time, error) {
+	f, err := openRollout(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer f.Close()
+	var newest time.Time
+	open := false // a model output came after the last close; see parser.file
+	r := bufio.NewReader(f)
+	for {
+		raw, rerr := r.ReadBytes('\n')
+		var l line
+		var it struct {
+			Type string          `json:"type"`
+			Role string          `json:"role"`
+			Info json.RawMessage `json:"info"`
+		}
+		if json.Unmarshal(raw, &l) == nil && json.Unmarshal(l.Payload, &it) == nil {
+			switch {
+			case l.Type == "response_item" && (outputTypes[it.Type] || (it.Type == "message" && it.Role == "assistant")):
+				open, newest = true, maxTime(newest, l.Timestamp)
+			case l.Type == "compacted",
+				// The parse skips an item that it refuses, and the turn stays open.
+				l.Type == "response_item" && open && !toolOutputTypes[it.Type] && validItem(l.Payload):
+				open = false
+			case open && (l.Type == "token_usage_record" ||
+				(l.Type == "event_msg" && it.Type == "token_count" && len(it.Info) > 0 && string(it.Info) != "null")):
+				open, newest = false, maxTime(newest, l.Timestamp)
+			}
+		}
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				return newest, nil
+			}
+			return time.Time{}, rerr
+		}
+	}
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 // group puts the rollouts by session id. Of two rollouts with one thread id the newer wins:

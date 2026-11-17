@@ -188,7 +188,8 @@ func TestSource_NewerRolloutOfAThreadWins(t *testing.T) {
 func TestSource_UnreadableChildIsSkipped(t *testing.T) {
 	dir := fixtures(t)
 	base := sessionByID(t, dir, toolsID)
-	failOpens(t, func(path string, n int) bool { return strings.Contains(path, subID) && n == 2 })
+	// The opens are the listing, the fast scan and the parse. Only the parse fails.
+	failOpens(t, func(path string, n int) bool { return strings.Contains(path, subID) && n == 3 })
 	s := sessionByID(t, dir, toolsID)
 	if s.Unreadable || s.Skipped != base.Skipped+1 {
 		t.Fatalf("Unreadable %v, Skipped %d, want false and %d", s.Unreadable, s.Skipped, base.Skipped+1)
