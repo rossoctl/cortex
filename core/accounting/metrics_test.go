@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/accountant"
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -253,5 +254,142 @@ func TestHost_ObservesAPing(t *testing.T) {
 	}
 	if got := sum(t, rd, "llm.savings.added.tokens", map[string]string{"component": "keeper", "tier": "cache_read"}); got != 1800 {
 		t.Errorf("keeper added cache_read tokens = %v, want 1800", got)
+	}
+}
+
+// zoneRates prices by endpoint and prompt size, so a token priced at the wrong binding shows:
+// every tier's rate is the endpoint's base, doubled past 10,000 prompt tokens. Stateless, so
+// safe from any goroutine.
+type zoneRates map[string]float64
+
+func (z zoneRates) Resolve(endpoint, _ string, promptTotal int) (pricing.Rates, pricing.Provenance) {
+	base := z[endpoint]
+	if promptTotal > 10000 {
+		base *= 2
+	}
+	var r pricing.Rates
+	for _, t := range []pricing.Tier{pricing.TierInput, pricing.TierCacheWrite, pricing.TierCacheRead, pricing.TierOutput} {
+		r.Base[t], r.Set[t] = base, true
+	}
+	return r, pricing.ProvConfigured
+}
+func (zoneRates) CurrencyFor(string, string) string { return "USD" }
+
+// ledgerSpends prices res's spends as Host.Savings does, for the comparison.
+func ledgerSpends(r pricing.Resolver, res accountant.Result, model, host string, promptTotal int) []float64 {
+	price := func(m, at string, tt accountant.TierTokens) (float64, bool) {
+		return TierUSD(r, at, m, promptTotal, tt)
+	}
+	spend := func(c *accountant.ModelCall, at string) (float64, bool) { return CallUSD(r, c, at) }
+	_, ex := SavingsBilled(res, price, spend, model, host, accountant.BillingAPI, config.DefaultSubscriptionWeights())
+	var out []float64
+	for _, s := range ex.Spends {
+		out = append(out, s.USD)
+	}
+	return out
+}
+
+func spendOp(id, model, host string) accountant.PricedOp {
+	return accountant.PricedOp{Kind: accountant.KindSpend, Operator: "context-guru.summarize", OpID: id,
+		Call: &accountant.ModelCall{Model: model, Host: host, Usage: accountant.CallUsage{
+			Usage:  accountant.Usage{Input: 50, CacheRead: 1000, CacheWrite: 200, CacheWrite1h: 100},
+			Output: 5,
+		}}}
+}
+
+var zone = zoneRates{"api.example": 1e-6, "other.example": 7e-6}
+
+// A spend on a model and host of its own is priced at the call's host and the call's own prompt
+// total, as the ledger's spends[] is: the pushed added.usd{kind=spend} equals it to the micro,
+// while the request's saving stays at the request's binding (a long-context prompt here).
+func TestSink_SpendMatchesTheLedgerToTheMicro(t *testing.T) {
+	mp, rd := manual(t)
+	s := NewSink(mp, zone)
+	res := maskResult()
+	res.Ops = append(res.Ops, spendOp("sp1", "m2", "other.example"))
+	meta := accountant.RequestMeta{Model: "m1", At: time.Now(), Billing: apiBilling}
+	s.Observe(meta, accountant.Usage{Input: 30000}, res, "api.example", 30000)
+
+	ledger := ledgerSpends(zone, res, "m1", "api.example", 30000)
+	got := sum(t, rd, "llm.savings.added.usd", map[string]string{"kind": "spend"})
+	if len(ledger) != 1 || ledger[0] <= 0 || !micro(got, ledger[0]) {
+		t.Errorf("pushed spend usd = %.9f, ledger spends = %v: they must agree", got, ledger)
+	}
+	wantSaved, _ := TierUSD(zone, "api.example", "m1", 30000, res.Ops[0].Saved)
+	if gotSaved := sum(t, rd, "llm.savings.saved.usd", map[string]string{"component": "mask"}); !micro(gotSaved, wantSaved) {
+		t.Errorf("saved usd = %.9f, want %.9f at the request's binding", gotSaved, wantSaved)
+	}
+}
+
+// requestBound prices a call at the request's binding: what a colliding spend is pushed at.
+func requestBound(c *accountant.ModelCall, model string) float64 {
+	cc := *c
+	cc.Model = model
+	tt := callTiers(&cc)
+	usd, _ := TierUSD(zone, "api.example", model, 30000, tt)
+	out, _ := USD(zone, "api.example", model, 30000, pricing.TierOutput, int64(cc.Usage.Output))
+	return usd + out
+}
+
+// COLLISIONS (documented in bindingsFor): the pricer sees only a model, so a spend on the
+// request's own model with another host, or two spends on one model with different hosts, are
+// priced at the request's binding — and differ from the ledger, which prices each call apart.
+func TestSink_SpendCollisionFallsBackToTheRequestBinding(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		ops   []accountant.PricedOp
+		model string
+	}{
+		{"spend on the request's model", []accountant.PricedOp{spendOp("a", "m1", "other.example")}, "m1"},
+		{"two spends on one model", []accountant.PricedOp{spendOp("a", "m2", "other.example"), spendOp("b", "m2", "")}, "m2"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			mp, rd := manual(t)
+			s := NewSink(mp, zone)
+			res := accountant.Result{Ops: c.ops}
+			s.Observe(accountant.RequestMeta{Model: "m1", At: time.Now(), Billing: apiBilling},
+				accountant.Usage{Input: 30000}, res, "api.example", 30000)
+			var want, ledgerTotal float64
+			for _, op := range c.ops {
+				want += requestBound(op.Call, c.model)
+			}
+			for _, v := range ledgerSpends(zone, res, "m1", "api.example", 30000) {
+				ledgerTotal += v
+			}
+			got := sum(t, rd, "llm.savings.added.usd", map[string]string{"kind": "spend"})
+			if !micro(got, want) {
+				t.Errorf("pushed spend usd = %.9f, want %.9f at the request's binding", got, want)
+			}
+			if micro(got, ledgerTotal) {
+				t.Errorf("the collision case agreed with the ledger (%.9f); the fixture no longer tests a fallback", got)
+			}
+		})
+	}
+}
+
+// Cortex's billing state decides the money: a request billed on a subscription, or with no
+// credential Cortex can read, moves the token counters and llm.savings.estimated, never a USD
+// counter.
+func TestSink_NonAPIBillingMovesNoMoney(t *testing.T) {
+	for _, mode := range []accountant.BillingMode{accountant.BillingSubscription, accountant.BillingUnknown} {
+		t.Run(string(mode), func(t *testing.T) {
+			mp, rd := manual(t)
+			s := NewSink(mp, zone)
+			res := maskResult()
+			res.Ops = append(res.Ops, spendOp("sp1", "m2", "other.example"))
+			s.Observe(accountant.RequestMeta{Model: "m1", At: time.Now(), Billing: accountant.Billing{Mode: mode}},
+				accountant.Usage{Input: 30000}, res, "api.example", 30000)
+			if got := sum(t, rd, "llm.savings.saved.tokens", map[string]string{"component": "mask", "tier": "input"}); got != 1200 {
+				t.Errorf("saved tokens = %v, want 1200", got)
+			}
+			for _, name := range []string{"llm.savings.saved.usd", "llm.savings.added.usd", "llm.savings.cache_effect.usd", "llm.savings.interaction.usd"} {
+				if got := sum(t, rd, name, nil); got != 0 {
+					t.Errorf("%s = %v, want 0 for billing %s", name, got, mode)
+				}
+			}
+			if got := sum(t, rd, "llm.savings.estimated", nil); got != 1 {
+				t.Errorf("estimated = %v, want 1", got)
+			}
+		})
 	}
 }

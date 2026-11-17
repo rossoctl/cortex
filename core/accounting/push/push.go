@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rossoctl/cortex/core/config"
@@ -68,6 +69,8 @@ func Start(cfg config.MetricsPushConfig, version, machineIDPath string) (metric.
 		slog.Info("metrics push off — no metrics_push.url (METRICS_PUSH_URL) is set; no metrics leave this process")
 		return nil, noop, nil
 	}
+	// The env-resolved block, checked again: config.Validate saw only the YAML. A refusal here
+	// is the caller's WARN, and the proxy runs without the push (see MetricsPushConfig.Validate).
 	if err := cfg.Validate(); err != nil {
 		return nil, noop, err
 	}
@@ -79,7 +82,7 @@ func Start(cfg config.MetricsPushConfig, version, machineIDPath string) (metric.
 	if err != nil {
 		return nil, noop, err
 	}
-	exp := &exporter{Exporter: inner, url: cfg.URL}
+	exp := &exporter{Exporter: inner, url: config.SafeURL(cfg.URL)}
 	res := resource.NewSchemaless(
 		attribute.String("service.instance.id", MachineID(machineIDPath)),
 		attribute.String("service.version", version),
@@ -104,8 +107,10 @@ func Start(cfg config.MetricsPushConfig, version, machineIDPath string) (metric.
 		_ = mp.Shutdown(context.Background())
 		return nil, noop, fmt.Errorf("metrics push: %w", err)
 	}
-	exp.failures = failures
-	slog.Info("metrics push on", "url", cfg.URL, "interval", interval, "token", cfg.Token != "")
+	// Stored after the reader has started: an export can run first, so the field is atomic.
+	// One that fails before the store is logged but not counted.
+	exp.failures.Store(&failures)
+	slog.Info("metrics push on", "url", config.SafeURL(cfg.URL), "interval", interval, "token", cfg.Token != "")
 	return mp, mp.Shutdown, nil
 }
 
@@ -113,7 +118,9 @@ func Start(cfg config.MetricsPushConfig, version, machineIDPath string) (metric.
 // exportTimeout, with the bearer token when there is one.
 func newExporter(cfg config.MetricsPushConfig) (sdkmetric.Exporter, error) {
 	opts := []otlpmetrichttp.Option{
-		otlpmetrichttp.WithEndpointURL(endpointURL(cfg.URL)),
+		// The safe form: the exporter's own errors quote its endpoint, and a credential in the
+		// URL's user info or query must not reach them. The token travels in the header.
+		otlpmetrichttp.WithEndpointURL(endpointURL(config.SafeURL(cfg.URL))),
 		otlpmetrichttp.WithTimeout(exportTimeout),
 		otlpmetrichttp.WithRetry(otlpmetrichttp.RetryConfig{Enabled: false}),
 		// Cumulative, whatever OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE says: the
@@ -147,7 +154,7 @@ func endpointURL(base string) string {
 type exporter struct {
 	sdkmetric.Exporter
 	url      string
-	failures metric.Int64Counter
+	failures atomic.Pointer[metric.Int64Counter]
 
 	mu       sync.Mutex
 	lastWarn time.Time
@@ -158,8 +165,8 @@ func (e *exporter) Export(ctx context.Context, rm *metricdata.ResourceMetrics) e
 	if err == nil {
 		return nil
 	}
-	if e.failures != nil {
-		e.failures.Add(context.Background(), 1)
+	if c := e.failures.Load(); c != nil {
+		(*c).Add(context.Background(), 1)
 	}
 	e.mu.Lock()
 	warn := e.lastWarn.IsZero() || time.Since(e.lastWarn) >= warnEvery

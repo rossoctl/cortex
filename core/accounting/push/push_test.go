@@ -419,3 +419,36 @@ func TestMachineID_NoPathIsPerProcess(t *testing.T) {
 		t.Errorf("mode %v, want 0600", fi.Mode().Perm())
 	}
 }
+
+// A credential in the URL's user info or query never reaches a log line: not the "on" line, and
+// not the WARN of a failed export, whose error quotes the exporter's endpoint.
+func TestStart_LogsNeverQuoteURLCredentials(t *testing.T) {
+	logs := captureLogs(t)
+	_, srv := newReceiver(t)
+	srv.Close()
+	host := strings.TrimPrefix(srv.URL, "http://") // a loopback address that refuses
+	raw := "http://u:p@" + host + "/x?token=t"
+	rd := withReader(t)
+	_, shutdown, err := Start(config.MetricsPushConfig{URL: raw, Interval: 20 * time.Millisecond}, "dev", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = shutdown(context.Background()) })
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && logs.count(slog.LevelWarn, "metrics push") == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = collect(t, rd)
+	out := logs.all()
+	if logs.count(slog.LevelWarn, "metrics push") != 1 || logs.count(slog.LevelInfo, "metrics push on") != 1 {
+		t.Fatalf("want one INFO and one WARN:\n%s", out)
+	}
+	for _, secret := range []string{"u:p", "token=t", raw} {
+		if strings.Contains(out, secret) {
+			t.Errorf("the log quotes %q:\n%s", secret, out)
+		}
+	}
+	if !strings.Contains(out, "http://"+host+"/x") {
+		t.Errorf("the log does not name the safe URL http://%s/x:\n%s", host, out)
+	}
+}

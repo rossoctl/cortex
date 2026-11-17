@@ -106,3 +106,22 @@ func TestMetricsPushConfig_TokenIsRedactedOnConfig(t *testing.T) {
 		t.Errorf("redacted /config still holds the token: %s", out)
 	}
 }
+
+// A credential in the URL's user info or query never reaches an error: Validate quotes the URL
+// only as SafeURL gives it.
+func TestMetricsPushConfig_ErrorsNeverQuoteURLCredentials(t *testing.T) {
+	for _, raw := range []string{"http://u:p@collector.example.com/x?token=t", "https://u:p@[bad/x?token=t"} {
+		err := MetricsPushConfig{URL: raw}.Validate()
+		if err == nil {
+			t.Fatalf("Validate(%q) accepted it", raw)
+		}
+		for _, secret := range []string{"u:p", "token=t", raw} {
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("Validate(%q) = %q, quotes %q", raw, err, secret)
+			}
+		}
+	}
+	if got := SafeURL("https://u:p@host/x?token=t#frag"); got != "https://host/x" {
+		t.Errorf("SafeURL = %q, want https://host/x", got)
+	}
+}

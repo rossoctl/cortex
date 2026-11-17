@@ -91,7 +91,12 @@ func warnCostLedgerInert(cfg *config.Config, logger *slog.Logger) {
 }
 
 // version is the cortex-envoy build version, sent as the metrics push's service.version.
-// Overridden at build time with -ldflags "-X main.version=<tag>"; "dev" for local builds.
+// Overridden at build time with -ldflags "-X main.version=<tag>"; "dev" otherwise.
+//
+// NOTHING SETS IT YET. cmd/cortex gets its version only from release-binaries.yaml, which does
+// not build this binary, and neither image Dockerfile (cmd/cortex, cmd/cortex-envoy) passes
+// -X main.version. So the authbridge-envoy image pushes service.version="dev". Fixing it means
+// a VERSION build-arg in the Dockerfile and build.yaml, for both images at once.
 var version = "dev"
 
 func main() {
@@ -210,6 +215,8 @@ func main() {
 			if c.AccountingOn() {
 				var sink *accounting.Sink
 				mp, stop, perr := push.Start(c.MetricsPush.Resolve(os.Getenv), version, "")
+				// config.Load already refused a bad YAML block; a refusal here comes from the
+				// METRICS_PUSH_* environment, which only WARNs and turns the push off.
 				if perr != nil {
 					slog.Warn("metrics push off — the metrics_push block was refused", "error", perr)
 				} else {

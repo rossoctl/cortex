@@ -242,7 +242,13 @@ func (m MetricsPushConfig) IsEnabled() bool { return m.Enabled == nil || *m.Enab
 func (m MetricsPushConfig) On() bool { return m.IsEnabled() && m.URL != "" }
 
 // Validate refuses a URL that is not https, other than http to a loopback address, and a
-// negative interval. An empty URL is valid: nothing is pushed. The error never quotes the token.
+// negative interval. An empty URL is valid: nothing is pushed. The error never quotes the token,
+// and quotes the URL only as SafeURL gives it.
+//
+// WHERE A BAD BLOCK IS CAUGHT: the block as written in the YAML is checked by config.Validate,
+// so a bad one fails config.Load like any other block. The METRICS_PUSH_* environment is applied
+// at runtime (Resolve) and checked again by push.Start; a bad METRICS_PUSH_URL only WARNs and
+// turns the push off, and the proxy runs (accounting fails open).
 func (m MetricsPushConfig) Validate() error {
 	if m.Interval < 0 {
 		return fmt.Errorf("metrics_push.interval: %v is negative", m.Interval)
@@ -252,7 +258,7 @@ func (m MetricsPushConfig) Validate() error {
 	}
 	u, err := url.Parse(m.URL)
 	if err != nil || u.Host == "" {
-		return fmt.Errorf("metrics_push.url: %q is not an absolute URL", m.URL)
+		return fmt.Errorf("metrics_push.url: %q is not an absolute URL", SafeURL(m.URL))
 	}
 	switch u.Scheme {
 	case "https":
@@ -261,9 +267,21 @@ func (m MetricsPushConfig) Validate() error {
 		if isLoopbackHost(u.Hostname()) {
 			return nil
 		}
-		return fmt.Errorf("metrics_push.url: %q is http to a non-loopback host; use https", m.URL)
+		return fmt.Errorf("metrics_push.url: %q is http to a non-loopback host; use https", SafeURL(m.URL))
 	}
 	return fmt.Errorf("metrics_push.url: scheme %q is not https", u.Scheme)
+}
+
+// SafeURL is u with no user info, query or fragment: scheme, host and path at most, the only
+// parts of a metrics_push.url that may reach an error or a log. A credential can hide in the
+// user info ("https://user:pass@host") or the query ("?token=..."). An unparseable URL gives a
+// placeholder, never the input.
+func SafeURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "<unparseable URL>"
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
 }
 
 // isLoopbackHost is true for localhost and for a loopback IP literal.

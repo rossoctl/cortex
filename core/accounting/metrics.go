@@ -47,10 +47,15 @@ var Components = []string{
 // MeterProvider's own reader (core/accounting/push), on its own goroutine.
 //
 // The library's Pricer has no endpoint and no prompt total (accountant/docs/metrics.md), and
-// Cortex's rates depend on both. So the pricer is bound to one request at a time: Observe holds
-// mu, sets the request's endpoint and prompt total on the pricer, calls the library's Observe,
-// and releases mu (design §5.6). The library's Observe only adds to in-memory counters, so the
-// lock is held for microseconds.
+// Cortex's rates depend on both. So the pricer is bound to one observation at a time: Observe
+// holds mu, sets that observation's bindings on the pricer, calls the library's Observe, and
+// releases mu (design §5.6). The library's Observe only adds to in-memory counters, so the lock
+// is held for microseconds.
+//
+// The pricer is given only a model, so the bindings are keyed by model (bindingsFor): the
+// request's model prices at the request's endpoint and prompt total, as the ledger's savings
+// do, and a spend call's model at the call's own host and prompt total, as the ledger's
+// spends[] do (CallUSD).
 type Sink struct {
 	mu     sync.Mutex
 	pricer *boundPricer
@@ -90,27 +95,86 @@ func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, res acco
 			slog.Error("accounting: the savings metrics panicked; this request books no metric", "panic", r)
 		}
 	}()
-	s.pricer.endpoint, s.pricer.promptTotal = endpoint, promptTotal
+	s.pricer.request = binding{endpoint: endpoint, promptTotal: promptTotal}
+	s.pricer.byModel = bindingsFor(meta.Model, s.pricer.request, res)
 	s.sink.Observe(acmetrics.Observation{Meta: meta, Usage: u, Result: res})
 }
 
-// boundPricer is the acmetrics.Pricer, bound to the request Sink.Observe is observing. Its
-// fields are written and read only under Sink.mu.
-type boundPricer struct {
-	resolver    pricing.Resolver
+// binding is where and at what prompt size a model's tokens are priced.
+type binding struct {
 	endpoint    string
 	promptTotal int
 }
 
-// Price is the rate of one token: USD for one token, at the bound endpoint and prompt total. The
-// same function prices the ledger's savings, so the two cannot price one token differently. An
-// unknown tier is unpriced and estimated.
+// bindingsFor maps each model the library will price for res onto its binding. The request's
+// model gets the request's binding. Each spend the library books — not a dry run, with a Call,
+// and not refused in res.Unpriced (accountant/docs/metrics.md, rules 1 and 3) — gets its call's
+// model (the request's model when the call names none, as the library prices it) bound to the
+// call's host (the request's endpoint when it names none) and the call's own prompt total.
+//
+// COLLISIONS FALL BACK TO THE REQUEST'S BINDING. The pricer sees a model and nothing else, so one
+// model can have only one binding per observation. When a spend's model is the request's own
+// model with a different binding, or two spends share a model with different bindings, that
+// model is priced at the request's binding, and the pushed spend dollars can differ from the
+// ledger's spends[] (which price each call apart). A spend on a model of its own, the common
+// case, agrees to the micro.
+func bindingsFor(reqModel string, req binding, res accountant.Result) map[string]binding {
+	out := map[string]binding{reqModel: req}
+	collided := map[string]bool{}
+	refused := map[string]bool{}
+	for _, u := range res.Unpriced {
+		if u.OpID != "" {
+			refused[u.OpID] = true
+		}
+	}
+	for _, op := range res.Ops {
+		if op.DryRun || op.Kind != accountant.KindSpend || op.Call == nil || refused[op.OpID] {
+			continue
+		}
+		model := op.Call.Model
+		if model == "" {
+			model = reqModel
+		}
+		b := binding{endpoint: op.Call.Host, promptTotal: callPromptTotal(op.Call)}
+		if b.endpoint == "" {
+			b.endpoint = req.endpoint
+		}
+		if model == reqModel || collided[model] {
+			continue // the request's own model keeps its binding; a collided one stays on it
+		}
+		if prev, ok := out[model]; ok && prev != b {
+			out[model] = req
+			collided[model] = true
+			continue
+		}
+		out[model] = b
+	}
+	return out
+}
+
+// boundPricer is the acmetrics.Pricer, bound to the observation Sink.Observe is making. Its
+// fields are written and read only under Sink.mu.
+type boundPricer struct {
+	resolver pricing.Resolver
+	request  binding
+	byModel  map[string]binding
+}
+
+// Price is the rate of one token: USD for one token, at the model's binding (bindingsFor), or
+// the request's for a model with none. The same function prices the ledger, so the two cannot
+// price one token differently.
 func (p *boundPricer) Price(model string, _ time.Time, t acmetrics.Tier) (float64, bool) {
 	tier, ok := pricingTier(t)
 	if !ok {
+		// An unknown tier has no rate: (0, true) is "no money, and estimated", which is what
+		// the Pricer contract asks for a rate the host does not know.
 		return 0, true
 	}
-	return USD(p.resolver, p.endpoint, model, p.promptTotal, tier, 1)
+	b, ok := p.byModel[model]
+	if !ok {
+		b = p.request
+	}
+	return USD(p.resolver, b.endpoint, model, b.promptTotal, tier, 1)
 }
 
 // pricingTier maps the library's metrics tier onto Cortex's rate table.

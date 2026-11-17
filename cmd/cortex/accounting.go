@@ -61,6 +61,8 @@ func startMetricsPush(c *config.Config, rates pricing.Resolver) (*accounting.Sin
 		}
 	}
 	mp, shutdown, err := push.Start(c.MetricsPush.Resolve(os.Getenv), version, idPath)
+	// The YAML block was already validated by config.Load, so a refusal here comes from the
+	// METRICS_PUSH_* environment: runtime input, so a WARN and no push, never a failed start.
 	if err != nil {
 		slog.Warn("metrics push off — the metrics_push block was refused", "error", err)
 		return nil, func(context.Context) error { return nil }

@@ -748,6 +748,12 @@ logged as a WARN at most once a minute, and retried by the next push. It never d
 a request. With no URL the proxy logs one line at startup, `metrics push off`, and opens no
 connection.
 
+A bad block in the config file fails the config load, like any other block: Cortex does not
+start, or a reload is refused. The `METRICS_PUSH*` variables are read at startup; a bad
+`METRICS_PUSH_URL` logs a WARN and turns the push off, and Cortex runs. No error or log line
+quotes the URL's user info or query string, so a credential put there does not leak into the
+log.
+
 The push starts with the accountant, so it needs `accounting` to be on. The block is read
 once at startup: a reload that changes it is refused, and `agentop service restart` applies
 it.

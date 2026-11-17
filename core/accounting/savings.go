@@ -247,6 +247,26 @@ func spendRecord(op accountant.PricedOp, spend SpendPrice, reqHost, basis string
 	return r
 }
 
+// CallUSD prices one operator's model call as the ledger's spends[] does: its prompt tiers and
+// its output at the call's own model, at host, and at the call's own prompt total
+// (callPromptTotal), so a small call never takes the request's long-context premium. The
+// metrics sink binds a spend's model to the same host and total (Sink.Observe), so the pushed
+// llm.savings.added.usd{kind="spend"} equals this figure. A CostUSD the call stated is the
+// ledger's business (spendRecord); this function never reads it.
+func CallUSD(r pricing.Resolver, c *accountant.ModelCall, host string) (float64, bool) {
+	tt := callTiers(c)
+	total := callPromptTotal(c)
+	usd, est := TierUSD(r, host, c.Model, total, tt)
+	out, outEst := USD(r, host, c.Model, total, pricing.TierOutput, int64(c.Usage.Output))
+	return usd + out, est || outEst
+}
+
+// callPromptTotal is the call's whole prompt: input, cache write and cache read.
+func callPromptTotal(c *accountant.ModelCall) int {
+	u := c.Usage.Usage
+	return u.Input + u.CacheWrite + u.CacheRead
+}
+
 // largestTier names the tier with the largest Saved, in pricing.Tier's spelling; "" when nothing
 // was saved. A tie goes to the earlier of input, cache write 5m, cache write 1h, cache read.
 func largestTier(t accountant.TierTokens) string {
@@ -301,11 +321,7 @@ func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 	// An operator's model call is a request of its own: its prompt tiers and its output price at
 	// its own prompt size, so a small call never takes the request's long-context premium.
 	spend := func(c *accountant.ModelCall, at string) (float64, bool) {
-		tt := callTiers(c)
-		total := tt.Input + tt.CacheWrite5m + tt.CacheWrite1h + tt.CacheRead
-		usd, est := TierUSD(h.resolver, at, c.Model, total, tt)
-		out, outEst := USD(h.resolver, at, c.Model, total, pricing.TierOutput, int64(c.Usage.Output))
-		return usd + out, est || outEst
+		return CallUSD(h.resolver, c, at)
 	}
 	ss, ex := SavingsBilled(res, price, spend, model, host, mode, h.weights)
 	// The rate table's level for the request's own rates, on every saving that has a dollar

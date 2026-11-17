@@ -733,13 +733,33 @@ The accountant's figures can also leave the machine as OpenTelemetry counters, p
 central collector by `metrics_push:` (configured in
 [laptop-service.md](laptop-service.md#the-metrics_push-configuration); off until you set a URL).
 
-**One pricing function.** `llm.savings.saved.usd` and `llm.savings.added.usd` are priced by
-the same function that prices `avoided[].usd` here (`core/accounting.USD`), at the same
-endpoint, model and prompt total, from the same rate table and the same `pricing:` overrides.
-For one request, the pushed saved dollars equal the ledger's to the micro-dollar. Two things
-differ by design. The counters split a saving by tier and component, where the ledger keeps one
-saving per operator. And an operator's own model call is priced at the request's prompt total
-in the counters, but at the call's own size in `spends[]`.
+**One pricing function.** `llm.savings.*.usd` is priced by the function that prices the
+ledger (`core/accounting.USD`), from the same rate table and the same `pricing:` overrides, at
+the same binding:
+
+- A request's own tokens (saved, added, cache effects, interaction) are priced at the request's
+  model, its endpoint (after any redirect) and its prompt total, as `avoided[].usd` is.
+- An operator's model call (`kind="spend"` on `llm.savings.added.*`) is priced at the call's
+  own model, its own host (the request's endpoint when it names none) and its own prompt total,
+  as `spends[].usd` is (`core/accounting.CallUSD`).
+
+For one request, the pushed saved dollars equal the ledger's savings, and the pushed spend
+dollars equal the ledger's spends, to the micro-dollar. The counters split a saving by tier and
+component, where the ledger keeps one saving per operator; that is a different grouping of the
+same dollars. Four differences remain:
+
+- **A stated cost.** When a call's response stated its cost (`CostUSD`), the ledger records that
+  figure. The counters price the call's tokens instead, because the metrics library does not
+  read `CostUSD`.
+- **A model collision.** The library asks for a rate by model alone, so each model has one
+  binding per request. A spend on the request's own model with another host or prompt size, or
+  two spends on one model with different bindings, are priced at the request's binding.
+- **Dry-run and refused spends.** The ledger records every operator call in `spends[]`. The
+  counters book none from an operator under `on_error: observe` (a dry run), and none the
+  library refused to price (listed in `Result.Unpriced`; it counts in `llm.savings.unpriced`).
+- **Attribution of cache effects.** The ledger charges a cache effect to the operator that owns
+  it. The counters break effects down by `effect`, `cause` and `direction` instead, and never
+  add them to saved or added.
 
 **Only `basis: usd` is money here too.** A request on a subscription login, or with no
 credential Cortex can read, moves the token counters and `llm.savings.estimated`, never a
