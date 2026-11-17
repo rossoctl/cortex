@@ -40,6 +40,7 @@ func (source) PricingHost() string { return "api.openai.com" }
 // rollout is one rollout file, from its session_meta line.
 type rollout struct {
 	path, thread, session string
+	forkedFrom            string // the thread id this rollout forks, or ""
 	mod                   time.Time
 	size                  int64
 }
@@ -94,6 +95,12 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 			return
 		}
 		groups := group(list(filepath.Join(dir, "sessions")))
+		threads := map[string]rollout{}
+		for _, files := range groups {
+			for _, f := range files {
+				threads[f.thread] = f
+			}
+		}
 		sids := make([]string, 0, len(groups))
 		newest := map[string]time.Time{}
 		for id, files := range groups {
@@ -117,7 +124,7 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 			if skip(id, newest[id]) {
 				continue
 			}
-			if !yield(readSession(id, groups[id], home), nil) {
+			if !yield(readSession(id, groups[id], threads, home), nil) {
 				return
 			}
 		}
@@ -146,12 +153,13 @@ func list(dir string) []rollout {
 		if err != nil {
 			return nil
 		}
-		thread, session, err := readMeta(path)
+		r, err := readMeta(path)
 		if err != nil {
 			slog.Warn("importer: cannot list a Codex rollout", "path", path, "error", err)
 			return nil
 		}
-		out = append(out, rollout{path: path, thread: thread, session: session, mod: fi.ModTime(), size: fi.Size()})
+		r.path, r.mod, r.size = path, fi.ModTime(), fi.Size()
+		out = append(out, r)
 		return nil
 	})
 	return out
@@ -160,29 +168,31 @@ func list(dir string) []rollout {
 // errNoMeta is the error of a rollout whose first line is not a session_meta line.
 var errNoMeta = errors.New("the first line is not a session_meta line")
 
-// readMeta gives the thread id and the session id from the first line of a rollout.
-func readMeta(path string) (thread, session string, err error) {
+// readMeta gives the thread id, the session id and the forked thread id from the first line
+// of a rollout.
+func readMeta(path string) (rollout, error) {
 	f, err := openRollout(path)
 	if err != nil {
-		return "", "", err
+		return rollout{}, err
 	}
 	defer f.Close()
 	raw, err := bufio.NewReader(f).ReadBytes('\n')
 	if err != nil && len(raw) == 0 {
-		return "", "", err
+		return rollout{}, err
 	}
 	var l struct {
 		Type    string `json:"type"`
 		Payload struct {
-			ID        string `json:"id"`
-			SessionID string `json:"session_id"`
+			ID           string `json:"id"`
+			SessionID    string `json:"session_id"`
+			ForkedFromID string `json:"forked_from_id"`
 		} `json:"payload"`
 	}
 	if json.Unmarshal(raw, &l) != nil || l.Type != "session_meta" || l.Payload.ID == "" {
-		return "", "", errNoMeta
+		return rollout{}, errNoMeta
 	}
 	// Codex sends session_id as the Session-Id header; when it is absent it reads it as id.
-	return l.Payload.ID, cmp.Or(l.Payload.SessionID, l.Payload.ID), nil
+	return rollout{thread: l.Payload.ID, session: cmp.Or(l.Payload.SessionID, l.Payload.ID), forkedFrom: l.Payload.ForkedFromID}, nil
 }
 
 // group puts the rollouts by session id. Of two rollouts with one thread id the newer wins:
@@ -215,8 +225,8 @@ func isChild(f rollout) int {
 	return 1
 }
 
-// readSession parses the rollouts of one session.
-func readSession(id string, files []rollout, home string) importer.Session {
+// readSession parses the rollouts of one session. threads gives a fork's parent rollout.
+func readSession(id string, files []rollout, threads map[string]rollout, home string) importer.Session {
 	p := parser{home: home, projects: map[string]string{}}
 	s := importer.Session{ID: id}
 	for _, f := range files {
@@ -224,7 +234,7 @@ func readSession(id string, files []rollout, home string) importer.Session {
 		if f.thread != id {
 			subagent = f.thread
 		}
-		r, err := p.file(f.path, f.thread, subagent)
+		r, err := p.file(f.path, f.thread, subagent, p.copied(f, threads), false)
 		if err != nil {
 			if subagent == "" {
 				slog.Warn("importer: cannot read a Codex rollout", "path", f.path, "error", err)
@@ -245,4 +255,19 @@ func readSession(id string, files []rollout, home string) importer.Session {
 		}
 	}
 	return s
+}
+
+// copied gives the turns of f's parent, which a fork's rollout starts with a copy of. It
+// gives none when f is not a fork or its parent rollout cannot be read: then f's turns are
+// the only copy.
+func (p *parser) copied(f rollout, threads map[string]rollout) []turnSig {
+	parent, ok := threads[f.forkedFrom]
+	if f.forkedFrom == "" || !ok {
+		return nil
+	}
+	r, err := p.file(parent.path, parent.thread, "", nil, true)
+	if err != nil {
+		return nil
+	}
+	return r.sigs
 }
