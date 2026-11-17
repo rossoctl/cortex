@@ -31,7 +31,7 @@ about 30 scalars projected from the event. It is never the event itself.
 
 ```json
 {"schema":1,"sessionId":"45fa31b2-…","seq":2077,"requestId":"a0-9e37cd",
- "at":"2026-11-05T10:52:26.102885-05:00","direction":"outbound","phase":"response",
+ "at":"2026-11-05T15:52:26.102885Z","direction":"outbound","phase":"response",
  "host":"litellm.cb.ete.res.ibm.com","httpMethod":"POST","statusCode":200,
  "durationMs":4279,"ttfbMs":3182,"bytesDown":3142,"client":"claude-code/2.1.270",
  "agentRole":"main","model":"rits/zai-org/glm-5-3","servedModel":"hosted_vllm/zai-org/GLM-5.3",

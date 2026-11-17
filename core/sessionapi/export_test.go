@@ -248,6 +248,15 @@ func TestHandleExport_UnknownSessionRefusalFitsAClientReadWhenIDsEscape(t *testi
 			archived:  func(i int) string { return strings.Repeat("&", 40) + fmt.Sprintf("-%02d", i) },
 			requested: []string{"typo"},
 		},
+		{
+			// The one shape truncateToEscaped's doc claims and no row exercised: a cut
+			// that must land on a RUNE boundary. validHeaderSessionID allows non-ASCII,
+			// so a client can send these. A cut mid-rune marshals the dangling bytes to
+			// U+FFFD, which is ugly and also spends three bytes off-budget.
+			name:      "multi-byte runes, so a cut must land on a boundary",
+			archived:  func(i int) string { return strings.Repeat("ż", 120) + fmt.Sprintf("-%02d", i) },
+			requested: []string{strings.Repeat("ż", 200), strings.Repeat("ż", 199) + "a"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -288,6 +297,11 @@ func TestHandleExport_UnknownSessionRefusalFitsAClientReadWhenIDsEscape(t *testi
 			}
 			if len(body) >= 512 {
 				t.Errorf("400 body is %d bytes; a client reading 512 cannot parse it: %s", len(body), body)
+			}
+			// A cut that lands mid-rune marshals the dangling bytes to U+FFFD: ugly in a
+			// terminal, and three bytes the budget did not account for.
+			if strings.Contains(string(body), "\ufffd") {
+				t.Errorf("message cut mid-rune (U+FFFD present): %s", body)
 			}
 			// The bound is only worth anything if the truncated body is still parseable at
 			// the cut: this is what agentop actually does with it.

@@ -151,6 +151,40 @@ func loadedEvent() *model.SessionEvent {
 // Checking the ENCODED BYTES rather than the struct's fields is the point: a field added to
 // Record later that happens to carry content fails here without anyone remembering this test
 // exists.
+// `at` IS ALWAYS UTC, whatever zone the proxy runs in. e.At carries the listener's local
+// offset, and an export that mixed offsets broke every obvious consumer: jq's
+// fromdateiso8601 errors on "+01:00", pandas raises "Mixed timezones detected" across a
+// DST change, and a lexical sort misorders the hour the clocks go back (#1830 review).
+//
+// The INSTANT must survive the conversion. A test that only checked the suffix would pass
+// for a record that silently shifted the event by the offset.
+func TestFromEvent_AtIsUTC(t *testing.T) {
+	warsaw := time.FixedZone("CET", 1*60*60)
+	newYork := time.FixedZone("EST", -5*60*60)
+	for _, loc := range []*time.Location{warsaw, newYork, time.UTC} {
+		at := time.Date(2026, 11, 8, 0, 34, 12, 102885000, loc)
+		r := FromEvent(&model.SessionEvent{Seq: 1, At: at,
+			Direction: model.Outbound, Phase: model.SessionRequest}, "s")
+		if r.At.Location() != time.UTC {
+			t.Errorf("%s: At is in %v, want UTC", loc, r.At.Location())
+		}
+		if !r.At.Equal(at) {
+			t.Errorf("%s: At = %v, want the same instant as %v", loc, r.At, at)
+		}
+		b, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The rendering is what a consumer parses, so assert on the wire form too. Each
+		// zone here is a DIFFERENT instant (the same wall clock, a different offset), so
+		// the expected string is derived rather than fixed: what matters is that it ends
+		// in Z and still names the instant the event carried.
+		if want := `"at":"` + at.UTC().Format(time.RFC3339Nano) + `"`; !strings.Contains(string(b), want) {
+			t.Errorf("%s: wire form is %s, want it to contain %s", loc, b, want)
+		}
+	}
+}
+
 func TestRecord_CarriesNoContent(t *testing.T) {
 	var buf bytes.Buffer
 	if err := NewWriter(&buf).WriteEvent(loadedEvent(), "sess-1"); err != nil {

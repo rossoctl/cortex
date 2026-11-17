@@ -187,6 +187,10 @@ func TestWalk_SessionFilter(t *testing.T) {
 func TestWalk_UnknownSessionErrorIsBoundedInBytes(t *testing.T) {
 	uuid := func(i int) string { return fmt.Sprintf("3f2504e0-4f89-11d3-9a0c-0305e82c33%02d", i) }
 	long := func(i int) string { return fmt.Sprintf("%s-%02d", strings.Repeat("x", 250), i) }
+	// Each "&" is six bytes once json.Marshal escapes it (\u0026), so 40 of them cost 240
+	// escaped bytes against 40 raw ones. A budget counted in raw bytes fits six of these
+	// ids and then overruns the client's read by 1000+ bytes.
+	amp := func(i int) string { return fmt.Sprintf("%s-%02d", strings.Repeat("&", 40), i) }
 
 	for _, tc := range []struct {
 		name               string
@@ -204,6 +208,16 @@ func TestWalk_UnknownSessionErrorIsBoundedInBytes(t *testing.T) {
 		{"every id at maximum length, on both sides",
 			[]string{long(1), long(2), long(3), long(4), long(5)},
 			[]string{long(6), long(7), long(8), long(9)}},
+		// THE ESCAPED-WIDTH CASES. Every row above is bytes that json.Marshal leaves
+		// alone, so all of them pass with escapedLen returning raw len(s) — the exact
+		// regression this budget exists to stop. Verified: mutating escapedLen to len(s)
+		// keeps this table green without the two rows below, and only the sessionapi
+		// test goes red. These make the invariant fail in the package that owns it.
+		{"ampersands in the archived ids, each 6 bytes escaped",
+			[]string{"typo"}, []string{amp(0), amp(1), amp(2), amp(3), amp(4), amp(5)}},
+		{"multi-byte runes, so a cut must land on a boundary",
+			[]string{strings.Repeat("ż", 200), "x"},
+			[]string{strings.Repeat("ż", 200) + "-a", strings.Repeat("ż", 200) + "-b"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			archived := tc.archive
@@ -221,6 +235,11 @@ func TestWalk_UnknownSessionErrorIsBoundedInBytes(t *testing.T) {
 			wrapped := len(`{"error":`) + len(body) + len(`}`)
 			if wrapped >= 512 {
 				t.Errorf("400 body is %d bytes; a client that reads 512 cannot parse it: %s", wrapped, err.Error())
+			}
+			// A cut that lands mid-rune marshals the dangling bytes to U+FFFD. That is ugly
+			// in a terminal, and it also spends three bytes the budget did not account for.
+			if strings.Contains(err.Error(), "\uFFFD") {
+				t.Errorf("message cut mid-rune (U+FFFD present): %s", err.Error())
 			}
 			// Bounded is not useful if it names nothing: the asker's first id must survive,
 			// at least as a recognisable prefix. The cap is on ESCAPED width, so ask the

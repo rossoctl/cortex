@@ -193,7 +193,13 @@ type flushWriter struct {
 
 func (f *flushWriter) Write(p []byte) (int, error) {
 	n, err := f.ResponseWriter.Write(p)
-	f.wrote = true
+	// n > 0, not an unconditional true: a FAILED first write that moved no bytes left the
+	// status line still ours to answer, so the handler should send its 500 rather than
+	// reset a client that has seen nothing. Setting the flag on a zero-byte failure sent a
+	// reset for a failure that happened before any byte reached the client.
+	if n > 0 {
+		f.wrote = true
+	}
 	if flusher, ok := f.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
