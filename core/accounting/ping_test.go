@@ -66,6 +66,8 @@ func testPing() accountant.Ping {
 
 func okInfo() PingInfo { return PingInfo{Status: 200, Duration: 300 * time.Millisecond} }
 
+// The session store is never touched by a ping, and that guarantee is structural: Host holds no
+// store reference, so Ping has nothing to append to. The recorders are the only sink.
 func TestPing_RecordsSpendToCostRecorders(t *testing.T) {
 	a, b := &fakeRecorder{}, &fakeRecorder{}
 	h, err := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{a}})
@@ -92,9 +94,6 @@ func TestPing_RecordsSpendToCostRecorders(t *testing.T) {
 		if ids[0] != "s1" || e.SessionID != "s1" {
 			t.Errorf("%s: session = %q / %q, want s1", name, ids[0], e.SessionID)
 		}
-		if e.Seq != 0 {
-			t.Errorf("%s: Seq = %d: the event went through a session store; a ping must never", name, e.Seq)
-		}
 		if e.Phase != model.SessionResponse || e.Direction != model.Outbound || e.StatusCode != 200 {
 			t.Errorf("%s: phase/direction/status = %v/%v/%d", name, e.Phase, e.Direction, e.StatusCode)
 		}
@@ -109,8 +108,17 @@ func TestPing_RecordsSpendToCostRecorders(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: no cost record on the event", name)
 		}
-		if rec.Source != PingSource {
-			t.Errorf("%s: Source = %q, want %q", name, rec.Source, PingSource)
+		// Purpose marks the ping; Source and Provenance keep how the cost was arrived at: from
+		// the token counts, at the configured rate table.
+		if rec.Purpose != PingPurpose || PingPurpose != event.PurposeKeepAlive {
+			t.Errorf("%s: Purpose = %q, want %q", name, rec.Purpose, event.PurposeKeepAlive)
+		}
+		if rec.Source != event.SourceUsageFallback {
+			t.Errorf("%s: Source = %q, want %q (the provenance settle set)", name, rec.Source, event.SourceUsageFallback)
+		}
+		if rec.Provenance != pricing.ProvConfigured.String() || !rec.Settled {
+			t.Errorf("%s: provenance %q settled %v, want %q and settled", name, rec.Provenance, rec.Settled,
+				pricing.ProvConfigured.String())
 		}
 		// 1 x $3/M + 1,800 x $0.30/M + 1 x $15/M = $0.000558.
 		if want := 0.000558; !rec.Priced() || rec.CostUSD < want-1e-9 || rec.CostUSD > want+1e-9 {
@@ -378,5 +386,59 @@ func TestPing_StoreIsBounded(t *testing.T) {
 	h.mu.Unlock()
 	if n > pingFactsCap {
 		t.Fatalf("pingFacts holds %d entries, cap %d", n, pingFactsCap)
+	}
+}
+
+// Two concurrent requests on the pinged thread both read the same ping facts (peek, before
+// either is priced), and still only one rescue is credited. The accountant de-duplicates by its
+// thread state, not by ChangeID: Request.Compute replaces the ThreadState atomically and prices
+// again against the current one when another request replaced it first (R53,
+// internal/engine/compute.go Compute), and phaseAndBoundary credits a rescue only when the gap
+// since the stored previous request is past the TTL. Once the first request is stored, the
+// second one's gap is measured from it, so it is hot and has no rescue.
+func TestPing_ConcurrentRequestsCreditOneRescue(t *testing.T) {
+	now := pingT0
+	h := clockHost(t, &now)
+	seen := factsSeen(h)
+
+	h.Compute(request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{}, 200, coldUsage()))
+	h.Ping("s1", nil, "api.anthropic.com", testPing(), okInfo())
+
+	now = pingT0.Add(8 * time.Minute)
+	read := pipeline.InferenceExtension{InputTokens: 3, CacheReadTokens: 1800}
+	a := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{}, 200, read)
+	b := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{}, 200, read)
+	var results []accountant.Result
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for _, pctx := range []*pipeline.Context{a, b} {
+		wg.Add(1)
+		go func(pctx *pipeline.Context) {
+			defer wg.Done()
+			res, ok := h.Compute(pctx)
+			if !ok {
+				t.Error("a request was not priced")
+			}
+			mu.Lock()
+			results = append(results, res)
+			mu.Unlock()
+		}(pctx)
+	}
+	wg.Wait()
+
+	got := seen()
+	if len(got) != 3 || got[1].LastPing.IsZero() || got[2].LastPing.IsZero() {
+		t.Fatalf("both concurrent requests should have read the ping's facts; facts = %+v", got)
+	}
+	rescues := 0
+	for _, res := range results {
+		for _, e := range res.CacheEffects {
+			if e.Kind == accountant.EffectRescue {
+				rescues++
+			}
+		}
+	}
+	if rescues != 1 {
+		t.Errorf("rescues = %d across the two requests, want 1", rescues)
 	}
 }

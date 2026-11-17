@@ -25,7 +25,6 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -211,8 +210,8 @@ type ContextGuru struct {
 	windows proxyapp.Resolver
 	// cgSessions maps a Cortex session id to the session key the engine derived for it
 	// (apply.Trace.Session), so OnFinish records billed input under the key OnRequest reads.
-	// One entry per session, overwritten on each request.
-	cgSessions sync.Map
+	// One entry per session, overwritten on each request, bounded by sessionKeysCap.
+	cgSessions sessionKeys
 
 	// Keep-alive, all nil/zero unless keep_alive.enabled. The keeper decides when to ping; disp
 	// only sends and holds the credential.
@@ -406,7 +405,7 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		WindowExact: exact,
 	})
 	if res.Trace.Session != "" {
-		p.cgSessions.Store(sid, res.Trace.Session)
+		p.cgSessions.set(sid, res.Trace.Session)
 	}
 	out, changed := reportResult(pctx, res)
 	if changed && len(out) > 0 {

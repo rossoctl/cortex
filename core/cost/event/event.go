@@ -69,6 +69,14 @@ const (
 	SourceTranscript = "transcript"
 )
 
+// Purposes a record's spend served, when it is not the agent's own request. Carried in
+// Event.Purpose. Empty is the agent's own request.
+const (
+	// PurposeKeepAlive is a keep-alive ping the context-guru plugin sent to keep an idle
+	// session's prompt cache warm (core/accounting.Host.Ping). Not agent activity.
+	PurposeKeepAlive = "keep-alive"
+)
+
 // Reasons a producer REFUSED a cost figure that was on the wire. Carried in
 // RejectedReason, which is the only evidence such a figure existed at all.
 //
@@ -267,6 +275,16 @@ type Event struct {
 	// to usage totals. A test in the usage package asserts the aggregator's totals are
 	// unchanged by their presence.
 	Avoided []Saving `json:"avoided,omitempty"`
+
+	// Purpose says what the spend served when it is not the agent's own request: one of the
+	// Purpose* constants, empty for the agent's own request.
+	//
+	// SEPARATE FROM Source, deliberately. Source says how the cost was arrived at (the
+	// gateway's header, the token counts, a transcript), and that is as true of a ping as of
+	// any request; overwriting it with a purpose would lose it. ADDITIVE and omitempty: an
+	// older consumer decodes the record unchanged. No consumer splits on it yet — the ledger
+	// and /v1/usage fold a ping's spend into the same rows and totals as the agent's.
+	Purpose string `json:"purpose,omitempty"`
 }
 
 // Saving is one component's contribution to cost that was not incurred.

@@ -22,8 +22,19 @@ type pingEmitter struct {
 }
 
 // pingEmitter is the emitter for the keep-alive entry pctx establishes.
+//
+// The ping is accounted under pctx.SessionID, not under sid: Host.RequestEnd keys a request's
+// thread billing and ping facts on pctx.SessionID, so that is the only key under which a ping
+// gets the thread's billing mode and its facts reach the thread's next request. sid can fall
+// back to the caller's identity (sessionID) when there is no session id; such a ping keeps
+// the cache warm as before, but it is only logged, because no request of the accountant's is
+// keyed on that identity.
 func (p *ContextGuru) pingEmitter(pctx *pipeline.Context, sid string) cgcomponents.Emitter {
-	return pingEmitter{acct: p.acct, session: sid, client: pctx.ClientInfo(), host: pctx.Host}
+	acct := p.acct
+	if pctx.SessionID == "" {
+		acct = nil
+	}
+	return pingEmitter{acct: acct, session: pctx.SessionID, client: pctx.ClientInfo(), host: pctx.Host}
 }
 
 // KeepAlivePing logs the ping and hands it to the accountant host, which refuses it, prices it,
@@ -31,14 +42,10 @@ func (p *ContextGuru) pingEmitter(pctx *pipeline.Context, sid string) cgcomponen
 // context-guru type, so the conversion happens here: core/accounting sees only accountant types.
 func (e pingEmitter) KeepAlivePing(r cgcomponents.KeepAliveReport) {
 	e.logEmitter.KeepAlivePing(r)
-	if e.acct == nil {
+	if e.acct == nil || e.session == "" {
 		return
 	}
-	sid := e.session
-	if sid == "" {
-		sid = r.Session
-	}
-	e.acct.Ping(sid, e.client, e.host, pingFromReport(r, e.host), accounting.PingInfo{
+	e.acct.Ping(e.session, e.client, e.host, pingFromReport(r, e.host), accounting.PingInfo{
 		Status:   r.Status,
 		Manual:   r.Manual,
 		Duration: time.Duration(r.DurationMs * float64(time.Millisecond)),

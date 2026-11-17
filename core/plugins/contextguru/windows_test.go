@@ -2,7 +2,9 @@ package contextguru
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 
@@ -50,12 +52,12 @@ func billedFor(t *testing.T, fin *pipeline.Context) (string, bool) {
 	t.Helper()
 	p := configured(t, `{`+offline+`}}`)
 	invokeReq(p, modelPctx("claude-sonnet-5"))
-	key, ok := p.cgSessions.Load("s1")
+	key, ok := p.cgSessions.get("s1")
 	if !ok {
 		t.Fatal("OnRequest did not record the engine's session key")
 	}
 	p.OnFinish(context.Background(), fin)
-	b, ok := p.store.Get(cgstore.BilledPrefix + key.(string))
+	b, ok := p.store.Get(cgstore.BilledPrefix + key)
 	return string(b), ok
 }
 
@@ -78,5 +80,27 @@ func TestOnFinish_SkipsSubagentAndFailedRequests(t *testing.T) {
 		if got, ok := billedFor(t, fin); ok {
 			t.Errorf("%s: recorded billed input %q, want nothing", name, got)
 		}
+	}
+}
+
+// cgSessions holds one entry per session for the life of the process; past sessionKeysCap the
+// sessions seen longest ago are dropped down to sessionKeysTrimTo, and the newest survive.
+func TestSessionKeysIsBounded(t *testing.T) {
+	var s sessionKeys
+	at := time.Unix(1_700_000_000, 0)
+	s.now = func() time.Time { return at }
+	for i := 0; i <= sessionKeysCap; i++ {
+		at = at.Add(time.Second)
+		s.set(fmt.Sprintf("s%d", i), fmt.Sprintf("k%d", i))
+	}
+	if n := s.len(); n != sessionKeysTrimTo {
+		t.Fatalf("sessionKeys holds %d after crossing the cap, want %d", n, sessionKeysTrimTo)
+	}
+	if _, ok := s.get("s0"); ok {
+		t.Error("the oldest session survived the trim")
+	}
+	newest := fmt.Sprintf("s%d", sessionKeysCap)
+	if k, ok := s.get(newest); !ok || k != fmt.Sprintf("k%d", sessionKeysCap) {
+		t.Errorf("the newest session = %q, %v; want kept", k, ok)
 	}
 }

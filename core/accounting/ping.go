@@ -13,9 +13,10 @@ import (
 	"github.com/rossoctl/cortex/core/session"
 )
 
-// PingSource is the cost record's Source for a keep-alive ping, so /v1/usage and agentop can
-// show ping spend apart from agent spend (design §5.8).
-const PingSource = "keep-alive"
+// PingPurpose is the cost record's Purpose for a keep-alive ping (event.PurposeKeepAlive), so a
+// later consumer can show ping spend apart from agent spend (design §5.8). The record's Source
+// stays what settle set: how the cost was arrived at.
+const PingPurpose = event.PurposeKeepAlive
 
 // pingFactsCap and pingFactsTrimTo bound Host.pingFacts the way threadBillingCap bounds
 // threadBilling: one entry per (session, thread) that was pinged and has not yet made its next
@@ -64,7 +65,7 @@ var (
 // request would credit the same write again (context-guru#768 B3).
 //
 // The ping's spend is written to the cost recorders (the ledger writer and the usage
-// aggregator) as a response event with Source PingSource. It never goes through the session
+// aggregator) as a response event whose cost record has Purpose PingPurpose. It never goes through the session
 // store: a ping is not agent activity, and counting it as activity would distort the idle
 // tracking keep-alive depends on.
 //
@@ -129,7 +130,7 @@ func (h *Host) recordPing(sessionID string, client *model.EventClient, host stri
 	}
 	settled := settle.SettleInput(settle.Input{Host: host, Inference: inf}, h.resolver)
 	rec := settle.NewRecord(settled, nil)
-	rec.Source = PingSource
+	rec.Purpose = PingPurpose
 	raw, err := json.Marshal(rec)
 	if err != nil {
 		slog.Debug("accounting: ping cost record not encoded", "error", err)

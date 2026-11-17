@@ -94,8 +94,8 @@ func TestPingEmitter_AccountsThroughTheHost(t *testing.T) {
 	if evs[0].Host != "api.anthropic.com" || evs[0].SessionID != "s1" {
 		t.Errorf("event host/session = %q/%q", evs[0].Host, evs[0].SessionID)
 	}
-	if r, ok := event.Record(evs[0]); !ok || r.Source != accounting.PingSource {
-		t.Errorf("cost record = %+v (present %v), want Source %q", r, ok, accounting.PingSource)
+	if r, ok := event.Record(evs[0]); !ok || r.Purpose != accounting.PingPurpose {
+		t.Errorf("cost record = %+v (present %v), want Purpose %q", r, ok, accounting.PingPurpose)
 	}
 
 	// A refused ping (no window) records nothing.
@@ -103,6 +103,40 @@ func TestPingEmitter_AccountsThroughTheHost(t *testing.T) {
 	if n := len(rec.events()); n != 1 {
 		t.Errorf("a ping with no window was recorded (%d events)", n)
 	}
+}
+
+// A request with no session id is tracked under the caller's identity (sessionID's fallback),
+// but Host.RequestEnd keys thread billing and ping facts on pctx.SessionID only. Accounting the
+// ping under the identity would give it BillingUnknown and facts no request ever reads, so it
+// is only logged; with a session id it is accounted under that id, the key RequestEnd uses.
+func TestPingEmitter_AccountsOnlyUnderTheRequestsSessionID(t *testing.T) {
+	rec := &costRecorder{}
+	p := New()
+	p.SetAccounting(acctHost(t, rec))
+	report := cgcomponents.KeepAliveReport{Session: "subject-x", Model: "claude-sonnet-5",
+		CacheRead: 48_000, Output: 1, Status: 200, TS: time.Now().UnixMilli(), Window: time.Now().Add(-5 * time.Minute)}
+
+	anon := finishedPctx(200, pipeline.AgentRoleMain)
+	anon.Session, anon.SessionID = nil, ""
+	p.pingEmitter(anon, "subject-x").(cgcomponents.KeepAliveEmitter).KeepAlivePing(report)
+	if n := len(rec.events()); n != 0 {
+		t.Fatalf("a ping for a request with no session id was accounted (%d events)", n)
+	}
+
+	named := finishedPctx(200, pipeline.AgentRoleMain) // SessionID "s1"
+	report.Session = "s1"
+	p.pingEmitter(named, sessionID(named)).(cgcomponents.KeepAliveEmitter).KeepAlivePing(report)
+	evs := rec.events()
+	if len(evs) != 1 || evs[0].SessionID != named.SessionID {
+		t.Fatalf("events = %d (session %q), want 1 under %q", len(evs), sessionOf(evs), named.SessionID)
+	}
+}
+
+func sessionOf(evs []*model.SessionEvent) string {
+	if len(evs) == 0 {
+		return ""
+	}
+	return evs[0].SessionID
 }
 
 func TestPingEmitter_NoHostLogsOnly(t *testing.T) {
@@ -154,8 +188,8 @@ func TestKeeperPingReachesTheCostRecorder(t *testing.T) {
 		t.Fatalf("cost recorder got %d events, want 1", len(evs))
 	}
 	r, ok := event.Record(evs[0])
-	if !ok || r.Source != accounting.PingSource {
-		t.Fatalf("cost record = %+v (present %v), want Source %q", r, ok, accounting.PingSource)
+	if !ok || r.Purpose != accounting.PingPurpose {
+		t.Fatalf("cost record = %+v (present %v), want Purpose %q", r, ok, accounting.PingPurpose)
 	}
 	if evs[0].Host != host || evs[0].Inference == nil || evs[0].Inference.CacheReadTokens != 48_000 {
 		t.Errorf("event host %q inference %+v", evs[0].Host, evs[0].Inference)

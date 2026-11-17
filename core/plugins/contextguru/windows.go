@@ -3,7 +3,9 @@ package contextguru
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rossoctl/context-guru/apply"
@@ -92,9 +94,73 @@ func (p *ContextGuru) recordBilled(pctx *pipeline.Context, sid string) {
 	}
 	// The key the pipeline derived on the request (Trace.Session), not one re-derived here: the
 	// engine scopes and validates the id, and the two must match for the next request to read it.
-	key, ok := p.cgSessions.Load(sid)
+	key, ok := p.cgSessions.get(sid)
 	if !ok {
 		return
 	}
-	apply.RecordBilledInput(p.store, key.(string), billed)
+	apply.RecordBilledInput(p.store, key, billed)
+}
+
+// sessionKeysCap and sessionKeysTrimTo bound sessionKeys the way core/accounting bounds its
+// per-thread maps (and accountant.Trackers its threads): past the cap, the sessions seen
+// longest ago are dropped down to the trim mark, so the sort runs once per 1,000 new sessions
+// rather than on every request. A dropped session only loses its billed-input record until its
+// next request sets the key again.
+const (
+	sessionKeysCap    = 10000
+	sessionKeysTrimTo = sessionKeysCap - sessionKeysCap/10
+)
+
+// sessionKeys is cgSessions: Cortex session id to the engine's session key, bounded. Safe for
+// concurrent use; the zero value is ready.
+type sessionKeys struct {
+	mu  sync.Mutex
+	m   map[string]sessionKey
+	now func() time.Time // nil: time.Now
+}
+
+type sessionKey struct {
+	key      string
+	lastSeen time.Time
+}
+
+func (s *sessionKeys) set(sid, key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.m == nil {
+		s.m = map[string]sessionKey{}
+	}
+	now := time.Now
+	if s.now != nil {
+		now = s.now
+	}
+	s.m[sid] = sessionKey{key: key, lastSeen: now()}
+	if len(s.m) <= sessionKeysCap {
+		return
+	}
+	type aged struct {
+		sid string
+		at  time.Time
+	}
+	all := make([]aged, 0, len(s.m))
+	for k, e := range s.m {
+		all = append(all, aged{k, e.lastSeen})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].at.Before(all[j].at) })
+	for _, a := range all[:len(s.m)-sessionKeysTrimTo] {
+		delete(s.m, a.sid)
+	}
+}
+
+func (s *sessionKeys) get(sid string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.m[sid]
+	return e.key, ok
+}
+
+func (s *sessionKeys) len() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.m)
 }
