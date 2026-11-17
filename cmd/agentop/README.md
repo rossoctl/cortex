@@ -786,12 +786,13 @@ ran before you installed Cortex, or that did not go through it.
 ```sh
 agentop import                                  # every supported agent
 agentop import --agent claude-code --since 30d
+agentop import --agent bob                      # Bob's tasks, from ~/.bob/db/bob.db
 agentop import --since 2026-10-01 --dry-run     # count only, write nothing
 ```
 
 | Flag | Meaning |
 |---|---|
-| `--agent` | `claude-code`, `bob`, `codex`, `opencode` or `pi`. Only `claude-code` is supported now: the proxy answers the others with an error that names the supported agents. #1872 to #1875 add them |
+| `--agent` | `claude-code`, `bob`, `codex`, `opencode` or `pi`. Only `claude-code` and `bob` are supported now: the proxy answers the others with an error that names the supported agents. #1873 to #1875 add them. `bob` needs the `sqlite3` program on `PATH` |
 | `--since` | skip a transcript file last changed before this time: `YYYY-MM-DD` (local midnight) or `<N>d` (N days ago) |
 | `--dry-run` | count what an import would do, and write nothing |
 | `--endpoint` | the session API, as for `agentop cost` |
@@ -824,7 +825,8 @@ counted again, because the erase kept the ledger rows.
 An imported session has `imp` before its title in the sessions pane. When the
 terminal is too narrow for TITLE, `imp` is before its id.
 Its events show `n/a` for status, duration, bytes, host and plugin, because the
-proxy did not see them. Tokens and cost show values, priced at today's rates.
+proxy did not see them. Tokens and cost show values. A Claude Code turn is priced
+at today's rates. A Bob turn shows Bob's own cost.
 
 ## Panes
 

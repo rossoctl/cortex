@@ -467,7 +467,8 @@ only another session of the same project made a row in that minute.
   `source`. The session summary has the mark only while all its events are
   imported.
 - The `cost` record of an imported turn has `source: "transcript"`. Cortex
-  prices it at today's rates. A turn with no usage has no `cost` record.
+  prices a Claude Code turn at today's rates. A Bob turn keeps Bob's own cost
+  (see **Sources**). A turn with no usage has no `cost` record.
 - The ledger row of an imported turn has `source: "transcript"`. A live row has
   no `source`.
 - A turn before the ledger's retention cutoff goes to the archive only.
@@ -483,13 +484,47 @@ only another session of the same project made a row in that minute.
 - LAST 1H and the usage pane's hour windows show imported turns only after the
   next proxy restart. The import does not feed them.
 
-**Sources.** Only Claude Code (`claude-code`) is supported now. #1872 to #1875
-add the other agents. The Claude Code source reads
+**Sources.** Claude Code (`claude-code`) and Bob (`bob`) are supported now.
+#1873 to #1875 add the other agents (`codex`, `opencode`, `pi`). The proxy
+answers the others with an error that names the supported agents.
+
+The Claude Code source reads
 `~/.claude/projects/<project>/<uuid>.jsonl`, or the same path under
 `CLAUDE_CONFIG_DIR` when that variable is set. Each event has the
 `claude-code` client and the project of the transcript's working directory.
 A `<synthetic>` assistant line is not a turn: Claude Code writes it itself, for
 an API error or "No response requested.".
+
+The Bob source reads `~/.bob/db/bob.db`. It runs `sqlite3 -readonly -json` as
+a subprocess, and adds no SQLite driver to Cortex. When `sqlite3` is not on
+`PATH`, the `bob` result has an error that names the program, and the other
+agents continue. When `bob.db` does not exist, the source imports nothing.
+
+- One Bob task is one session. The session id is the task id (`X-Task-Id`).
+- A subtask is in the session of its root task. Its events have `subagent`
+  set to the subtask's id and `subagentKind: "subtask"`.
+- Bob keeps a subagent's turns in the `messages` of the parent's
+  `spawn_subagent` tool row. They are in the session of the root task, with
+  `subagent` set to `_meta.subagentId` and `subagentKind: "subagent"`. A
+  nested message with no `_meta.timestamp` has the time of the message
+  before it, or of the parent's spawning turn. When the subagent's task has
+  its own rows, the import reads those rows and not the spawn row.
+- A message gives one turn per session. The spawn row of a resumed subagent
+  holds its earlier messages again, and they are context only.
+- The `messages` of a `start_subtask` tool row is a copy of the subtask's own
+  rows, and the import does not read it.
+- Each event has the `bob` client, the model alias that Bob records (for
+  example `premium-ide`), and the project of `tasks.directory`. When that is
+  empty, the project is the task's workspace.
+- The cost of a Bob turn is Bob's own figure (`_meta.spend.cost`), with
+  `source: "transcript"` and `provenance: "authoritative"`. Cortex does not
+  price Bob turns from its rate table. The rate table gives the unit only: the
+  record's `currency` is the unit of the Bob endpoint (`Bobcoins` on a local
+  install), and so is the ledger row's. `totalTokens` is Bob's `contextTokens`.
+  Bob records no split into input and output tokens.
+- Bob Shell and Bob IDE both write `bob.db`. The source does not read the older
+  `~/.bob/tmp/*/chats/*.json` files or the IDE's
+  `globalStorage/ibm.bob-code/tasks`.
 
 ## `POST /v1/ingest` — rows from cortex-gateway (praxis mode)
 
