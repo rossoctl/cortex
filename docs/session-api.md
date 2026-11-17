@@ -546,7 +546,7 @@ agents continue. When `bob.db` does not exist, the source imports nothing.
 
 The Codex source reads `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`, or the
 same path under `CODEX_HOME` when that variable is set. It also reads a
-rollout that Codex compressed to `.jsonl.zst`. It does not read
+rollout that Codex compressed to `.jsonl.zst`. It does not import a rollout from
 `archived_sessions/`. When the `sessions/` directory does not exist, the
 source imports nothing.
 
