@@ -217,6 +217,8 @@ type ContextGuru struct {
 	modelTO  time.Duration
 	modelMax int
 	rates    pricing.Resolver
+	// local is plugins.Deps.LocalInstall (SetLocalInstall).
+	local bool
 	// acct is the process's accountant host, nil when accounting is off. Keep-alive pings are
 	// accounted through it (ping.go).
 	acct *accounting.Host
@@ -256,6 +258,12 @@ func (p *ContextGuru) Metrics() []pipeline.Metric {
 // SetPricingResolver receives Cortex's rate table (plugins.Deps, before Configure). The
 // keep-alive dispatcher prices its pre-flight ceiling from it.
 func (p *ContextGuru) SetPricingResolver(r pricing.Resolver) { p.rates = r }
+
+// SetLocalInstall receives whether this is a laptop install (plugins.Deps, before Configure). It
+// picks two defaults: whether the plugin's model calls and keep-alive pings honour HTTPS_PROXY
+// (not on a local install, where it points at Cortex itself; modelTransport), and whether
+// context_window.model_info defaults to the LiteLLM map (only on a local install; buildWindows).
+func (p *ContextGuru) SetLocalInstall(local bool) { p.local = local }
 
 // SetAccounting receives the process's accountant host (plugins.Deps, before Configure).
 // Keep-alive pings are accounted through it; with none, a ping is only logged.
@@ -304,7 +312,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 	}
 	p.pipe = pipe
 	p.store = cfg.NewStore()
-	p.windows = buildWindows(p.cfg.ContextWindow)
+	p.windows = buildWindows(p.cfg.ContextWindow, p.local)
 	// Per-process random value, not a constant: outbound headers are the
 	// agent's own request, and a caller who can set headers must not be able
 	// to switch context-guru off by setting them.
@@ -321,7 +329,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 	}
 	if p.cfg.KeepAlive.Enabled {
 		p.kaPol = p.cfg.KeepAlive.policy()
-		p.disp = newCortexDispatcher(newPingClient())
+		p.disp = newCortexDispatcher(newPingClient(p.local))
 		p.disp.sentinel = p.sentinel
 		p.disp.rates = func() pricing.Resolver { return p.rates }
 		p.keeper = keepalive.New(keepalive.Options{Dispatcher: p.disp})
@@ -366,7 +374,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 					Timeout:            p.modelTO,
 					SentinelHeaderName: sentinelHeader,
 					SentinelValue:      p.sentinel,
-					HTTPClient:         modelHTTPClient(p.modelTO),
+					HTTPClient:         modelHTTPClient(p.modelTO, p.local),
 				}),
 				maxTokens: p.modelMax,
 				model:     m.Model,
@@ -647,7 +655,7 @@ func (p *ContextGuru) incomingModel(pctx *pipeline.Context, provider bschemas.Mo
 			Timeout:            p.modelTO,
 			SentinelHeaderName: sentinelHeader,
 			SentinelValue:      p.sentinel,
-			HTTPClient:         modelHTTPClient(p.modelTO),
+			HTTPClient:         modelHTTPClient(p.modelTO, p.local),
 		}),
 		maxTokens:   p.modelMax,
 		model:       model,
@@ -686,9 +694,9 @@ func sessionID(pctx *pipeline.Context) string {
 func (p *ContextGuru) ConfigSchema() []pipeline.FieldSchema {
 	return []pipeline.FieldSchema{
 		{Name: "paths", Type: "[]string", Description: "Inference request paths to compact (default: chat/completions, completions, messages)."},
-		{Name: "model", Type: "object", Description: "Optional static cheap model for LLM-backed components (summarize, extract:code)."},
+		{Name: "model", Type: "object", Description: "Optional static cheap model for LLM-backed components (summarize, extract:code). Its calls honour HTTPS_PROXY except on a local install, where it points at Cortex itself."},
 		{Name: "engine", Type: "object", Description: "Native context-guru config: preset / pipeline / per-component (marker_mode) / store."},
-		{Name: "context_window", Type: "object", Description: "Where model context windows come from, for fraction-of-window triggers (cache_aware_summarizer's 0.9): model_info (litellm | off, default litellm), model_info_url, windows (model id -> tokens, exact)."},
+		{Name: "context_window", Type: "object", Description: "Where model context windows come from, for fraction-of-window triggers (cache_aware_summarizer's 0.9): model_info (litellm | off; default litellm on a local install, off elsewhere, and litellm wherever model_info_url is set), model_info_url, windows (model id -> tokens, exact)."},
 		{Name: "keep_alive", Type: "object", Description: "Opt-in prompt-cache keep-alive: enabled, idle_seconds (270), max_pings (2), max_usd_per_ping (0.50), min_prefix_tokens (80000). Pings bill the caller's own credential; each is accounted through the accountant host where accounting is on (the cost ledger and /v1/usage book it as purpose keep-alive, apart from the agent's requests: keepAlivePings, and its spend by the thread's billing basis — keepAliveMicros on an API key, keepAliveUnits on a subscription, keepAliveUnknownMicros otherwise), and otherwise only logged."},
 	}
 }

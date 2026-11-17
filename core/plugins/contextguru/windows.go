@@ -18,11 +18,13 @@ import (
 // declines any such trigger unless the window is EXACT (Trigger.FracResolvable). Before this
 // existed the plugin passed no window at all, so those triggers could never fire in Cortex.
 type windowsConfig struct {
-	// ModelInfo is "litellm" (default: the LiteLLM public price/window map, fetched in the
-	// background and cached) or "off" (no network; only Windows and the engine's built-in
-	// table, which is never exact).
+	// ModelInfo is "litellm" (the LiteLLM public price/window map, fetched in the background
+	// and cached) or "off" (no network; only Windows and the engine's built-in table, which is
+	// never exact). Unset, it is "litellm" on a local install and "off" anywhere else, so a pod
+	// does not fetch from the public internet unless its config asks: see buildWindows.
 	ModelInfo string `json:"model_info"`
-	// ModelInfoURL overrides the map's URL. Empty means the public map.
+	// ModelInfoURL overrides the map's URL. Empty means the public map. Setting it with
+	// ModelInfo unset turns the map on everywhere: the operator pointed the plugin at one.
 	ModelInfoURL string `json:"model_info_url"`
 	// Windows maps a model id, as the request names it, to its window in tokens. Checked first,
 	// and treated as exact: the operator wrote it for this model.
@@ -42,9 +44,9 @@ func (f fixedWindows) WindowExact(ctx context.Context, model string) (int, bool,
 	return w, ok, ok
 }
 
-// buildWindows returns the resolver chain: the operator's table, then the LiteLLM map unless
-// turned off, then the engine's built-in table as an inexact last resort.
-func buildWindows(c windowsConfig) proxyapp.Resolver {
+// buildWindows returns the resolver chain: the operator's table, then the LiteLLM map when it is
+// on (modelInfoOn), then the engine's built-in table as an inexact last resort.
+func buildWindows(c windowsConfig, local bool) proxyapp.Resolver {
 	chain := proxyapp.Chain{}
 	if len(c.Windows) > 0 {
 		f := make(fixedWindows, len(c.Windows))
@@ -53,13 +55,28 @@ func buildWindows(c windowsConfig) proxyapp.Resolver {
 		}
 		chain = append(chain, f)
 	}
-	if !strings.EqualFold(strings.TrimSpace(c.ModelInfo), "off") {
+	if modelInfoOn(c, local) {
 		// A standalone client, not one routed back through this proxy. The map refreshes in the
 		// background, so a lookup never waits on the network; until the first fetch lands the
 		// chain falls through and the fraction triggers decline, which is the safe direction.
 		chain = append(chain, proxyapp.NewLiteLLM(c.ModelInfoURL, &http.Client{Timeout: 30 * time.Second}, 0))
 	}
 	return append(chain, proxyapp.DefaultStatic())
+}
+
+// modelInfoOn says whether the LiteLLM map is fetched. An explicit model_info wins: "off" turns it
+// off, anything else on. Unset, a model_info_url turns it on, and otherwise it is on only on a
+// local install: every pod fetching the public map on its first gated request (and again after
+// every hot reload) is network egress a cluster operator did not ask for.
+func modelInfoOn(c windowsConfig, local bool) bool {
+	switch v := strings.TrimSpace(c.ModelInfo); {
+	case v != "":
+		return !strings.EqualFold(v, "off")
+	case strings.TrimSpace(c.ModelInfoURL) != "":
+		return true
+	default:
+		return local
+	}
 }
 
 // windowFor resolves the request's model window. exact is false whenever the answer came from a

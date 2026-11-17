@@ -72,7 +72,7 @@ func TestCortexSubstitutesCacheAwareSummarizerForAPing(t *testing.T) {
 	offload.RegisterKeepAliveCandidateForTest(session, st, call, "messages", span, 1, "", 0)
 	t.Cleanup(func() { offload.ClearKeepAliveCandidate(session) })
 
-	d := newCortexDispatcher(newPingClient())
+	d := newCortexDispatcher(newPingClient(true))
 	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 	k := keepalive.New(keepalive.Options{Dispatcher: d, Now: func() time.Time { return now },
 		Go: func(f func()) { f() }})

@@ -45,15 +45,21 @@ type heldTarget struct {
 
 // newCortexDispatcher copies c and overrides CheckRedirect unconditionally, so refusing a
 // redirect is a property of this dispatcher rather than something every caller must remember by
-// passing newPingClient() — nothing else about c changes.
+// passing newPingClient(local) — nothing else about c changes.
 func newCortexDispatcher(c *http.Client) *cortexDispatcher {
 	cc := *c
 	cc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &cortexDispatcher{client: &cc, held: map[dispatch.Ref]heldTarget{}}
 }
 
-// newPingClient is a standalone client that never routes through HTTPS_PROXY — a ping sent back
-// into this proxy would be recorded as agent traffic. The sentinel header is the second guard.
+// newPingClient is a standalone client for keep-alive pings.
+//
+// On a local install it never routes through HTTPS_PROXY: there HTTPS_PROXY points at Cortex
+// itself, and a ping sent back into this proxy would be recorded as agent traffic. The sentinel
+// header is the second guard. Off a local install it keeps ProxyFromEnvironment, because
+// HTTPS_PROXY there is normally the cluster's own egress proxy (see modelTransport, which makes
+// the same choice for the plugin's model calls, and its caveat). Before this, PR #1412's
+// dispatcher pinned the proxy off everywhere.
 //
 // It never follows a redirect: Go's default client strips Authorization/Cookie on a cross-host
 // redirect, but not x-api-key / x-goog-api-key, so a 307/308 could carry a credential header to a
@@ -61,9 +67,13 @@ func newCortexDispatcher(c *http.Client) *cortexDispatcher {
 // IdleConnTimeout bounds how long an idle connection is kept around between pings, and
 // MaxIdleConnsPerHost lets one sweep's pings for many sessions on one upstream reuse
 // connections instead of paying a handshake each (Go's default keeps 2; #1546).
-func newPingClient() *http.Client {
+func newPingClient(local bool) *http.Client {
+	tr := &http.Transport{Proxy: http.ProxyFromEnvironment, IdleConnTimeout: 90 * time.Second, MaxIdleConnsPerHost: 16}
+	if local {
+		tr.Proxy = nil
+	}
 	return &http.Client{
-		Transport: &http.Transport{Proxy: nil, IdleConnTimeout: 90 * time.Second, MaxIdleConnsPerHost: 16},
+		Transport: tr,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

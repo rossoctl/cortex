@@ -156,7 +156,7 @@ func TestKeeperPingReachesTheCostRecorder(t *testing.T) {
 	p := New()
 	p.SetAccounting(acctHost(t, rec))
 
-	d := newCortexDispatcher(newPingClient())
+	d := newCortexDispatcher(newPingClient(true))
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	k := keepalive.New(keepalive.Options{Dispatcher: d, Now: func() time.Time { return now },
 		Go: func(f func()) { f() }})

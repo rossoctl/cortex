@@ -18,7 +18,7 @@ import (
 
 func TestCortexDispatcherMeetsTheContract(t *testing.T) {
 	dispatchtest.Contract(t, func(t *testing.T, upstreamURL string) dispatchtest.Harness {
-		d := newCortexDispatcher(newPingClient())
+		d := newCortexDispatcher(newPingClient(true))
 		return dispatchtest.Harness{D: d, Hold: func(h http.Header) dispatch.Ref {
 			return d.hold("http", stripScheme(upstreamURL), h)
 		}}
@@ -39,7 +39,7 @@ func TestDispatchSetsTheSentinel(t *testing.T) {
 	// A ping that transits this proxy must short-circuit OnRequest, not be recorded again.
 	var got http.Header
 	srv := newHeaderSink(t, &got)
-	d := newCortexDispatcher(newPingClient())
+	d := newCortexDispatcher(newPingClient(true))
 	// The plugin's per-process value: OnRequest recognises its own calls by equality with it.
 	d.sentinel = "per-process-secret"
 	ref := d.hold("http", stripScheme(srv.URL), http.Header{"Authorization": {"Bearer k"}})
@@ -62,8 +62,8 @@ func newHeaderSink(t *testing.T, got *http.Header) *httptest.Server {
 	return srv
 }
 
-func TestPingClientBypassesTheProxy(t *testing.T) {
-	c := newPingClient()
+func TestPingClientBypassesTheProxyOnALocalInstall(t *testing.T) {
+	c := newPingClient(true)
 	tr, ok := c.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("ping client transport is %T, want *http.Transport", c.Transport)
@@ -98,7 +98,7 @@ func TestPingClientDoesNotFollowRedirects(t *testing.T) {
 	}))
 	t.Cleanup(srv1.Close)
 
-	d := newCortexDispatcher(newPingClient())
+	d := newCortexDispatcher(newPingClient(true))
 	ref := d.hold("http", stripScheme(srv1.URL), http.Header{"x-api-key": {"secret"}})
 	resp, err := d.Do(context.Background(), dispatch.Request{Ref: ref, Path: "/v1/messages", Body: []byte(`{}`)})
 	if err != nil {
@@ -115,7 +115,7 @@ func TestPingClientDoesNotFollowRedirects(t *testing.T) {
 // Every path that drops a keep-alive entry releases its credential; Shutdown drops them all. After
 // it, the plugin must hold no caller credential at all.
 func TestShutdownReleasesEveryHeldRef(t *testing.T) {
-	d := newCortexDispatcher(newPingClient())
+	d := newCortexDispatcher(newPingClient(true))
 	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 	k := keepalive.New(keepalive.Options{Dispatcher: d, Now: func() time.Time { return now },
 		Go: func(f func()) { f() }})
@@ -234,7 +234,7 @@ func TestDoSetsContentLengthRatherThanChunking(t *testing.T) {
 		_, _ = w.Write([]byte(`{"usage":{"input_tokens":1,"output_tokens":1}}`))
 	}))
 	defer srv.Close()
-	d := newCortexDispatcher(newPingClient())
+	d := newCortexDispatcher(newPingClient(true))
 	ref := d.hold("http", stripScheme(srv.URL), http.Header{})
 	body := []byte(`{"model":"m","max_tokens":1,"stream":false}`)
 	if _, err := d.Do(context.Background(), dispatch.Request{Ref: ref, Path: "/v1/messages", Body: body}); err != nil {
@@ -294,7 +294,7 @@ func (c captureTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // newCortexDispatcher must refuse a redirect regardless of what client it is given — the no-
-// redirect rule is a property of this dispatcher, not of remembering to pass newPingClient().
+// redirect rule is a property of this dispatcher, not of remembering to pass newPingClient(true).
 // production always does (plugin.go), but nothing in the constructor enforced it, and a GetBody
 // (added above) is exactly what makes a bare *http.Client start following a POST redirect: Go's
 // client cannot resend the body without GetBody and silently stops at the redirect instead, which
@@ -321,5 +321,16 @@ func TestNewCortexDispatcherRefusesRedirectsEvenWithABareClient(t *testing.T) {
 	}
 	if srv2Hit {
 		t.Fatal("the dispatcher followed the redirect to the second host with a bare client; the credential header would leak there")
+	}
+}
+
+// Off a local install a ping honours the cluster's egress proxy: HTTPS_PROXY there is not Cortex.
+func TestPingClientUsesTheEnvironmentProxyOffALocalInstall(t *testing.T) {
+	tr, ok := newPingClient(false).Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("ping client transport is %T, want *http.Transport", newPingClient(false).Transport)
+	}
+	if !isEnvProxy(tr.Proxy) {
+		t.Fatal("ping client off a local install ignores HTTPS_PROXY; a mandatory egress proxy is bypassed")
 	}
 }

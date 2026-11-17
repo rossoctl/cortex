@@ -8,6 +8,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/pipeline"
 
+	"github.com/rossoctl/context-guru/proxyapp"
 	cgstore "github.com/rossoctl/context-guru/store"
 )
 
@@ -102,5 +103,55 @@ func TestSessionKeysIsBounded(t *testing.T) {
 	newest := fmt.Sprintf("s%d", sessionKeysCap)
 	if k, ok := s.get(newest); !ok || k != fmt.Sprintf("k%d", sessionKeysCap) {
 		t.Errorf("the newest session = %q, %v; want kept", k, ok)
+	}
+}
+
+func hasLiteLLM(r proxyapp.Resolver) bool {
+	chain, ok := r.(proxyapp.Chain)
+	if !ok {
+		return false
+	}
+	for _, c := range chain {
+		if _, ok := c.(*proxyapp.LiteLLM); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// The LiteLLM map is fetched from the public internet, so it is the default only on a local
+// install; a pod does not reach out unless its config says so. An explicit model_info always
+// wins, and so does a model_info_url: an operator who pointed the plugin at a map asked for it.
+func TestBuildWindows_ModelInfoDefaultFollowsLocalInstall(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cfg   windowsConfig
+		local bool
+		want  bool
+	}{
+		{"local default", windowsConfig{}, true, true},
+		{"cluster default", windowsConfig{}, false, false},
+		{"cluster explicit litellm", windowsConfig{ModelInfo: "litellm"}, false, true},
+		{"cluster explicit url", windowsConfig{ModelInfoURL: "https://maps.example/model_prices.json"}, false, true},
+		{"local explicit off", windowsConfig{ModelInfo: "off"}, true, false},
+		{"local explicit OFF", windowsConfig{ModelInfo: " OFF "}, true, false},
+	} {
+		if got := hasLiteLLM(buildWindows(tc.cfg, tc.local)); got != tc.want {
+			t.Errorf("%s: LiteLLM in chain = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The plugin's own default follows what BuildWithDeps told it.
+func TestPlugin_ModelInfoDefaultFollowsLocalInstall(t *testing.T) {
+	for _, local := range []bool{true, false} {
+		p := New()
+		p.SetLocalInstall(local)
+		if err := p.Configure([]byte(`{}`)); err != nil {
+			t.Fatal(err)
+		}
+		if got := hasLiteLLM(p.windows); got != local {
+			t.Errorf("local=%v: LiteLLM in chain = %v, want %v", local, got, local)
+		}
 	}
 }

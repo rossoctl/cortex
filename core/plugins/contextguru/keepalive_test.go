@@ -348,7 +348,7 @@ func TestOneCallersRefusedKeyDoesNotStopAnotherCallersPings(t *testing.T) {
 		_, _ = w.Write([]byte(`{"usage":{"input_tokens":1,"cache_read_input_tokens":48000,"output_tokens":1}}`))
 	}))
 	defer srv.Close()
-	d := newCortexDispatcher(newPingClient())
+	d := newCortexDispatcher(newPingClient(true))
 	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	k := keepalive.New(keepalive.Options{Dispatcher: d, Now: func() time.Time { return now },
 		Go: func(f func()) { f() }})

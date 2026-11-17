@@ -17,8 +17,8 @@ transitive dependency set.
   - `timeout_ms` — per-call timeout, default 150000.
 - `engine` (object) — native context-guru config (preset / pipeline / per-component / store), passed through verbatim. Default: `preset: balanced`.
 - `context_window` (object) — where model context windows come from, for the engine's fraction-of-window triggers (`cache_aware_summarizer`'s 0.9 among them). Those triggers fire only on an exact window.
-  - `model_info` — `litellm` (default: the LiteLLM public model map, fetched in the background and cached) or `off` (no network).
-  - `model_info_url` — overrides the map's URL.
+  - `model_info` — `litellm` (the LiteLLM public model map, fetched in the background and cached) or `off` (no network). The default depends on where Cortex runs: `litellm` on a local install, `off` anywhere else, so a pod does not fetch the map from the public internet on its first request (and again after every hot reload) unless its config asks. With `off`, only `windows` gives an exact window, so set `windows` or `model_info: litellm` in a cluster to let the fraction triggers fire. An explicit `model_info` always wins.
+  - `model_info_url` — overrides the map's URL. Setting it with `model_info` unset turns the map on, on any install.
   - `windows` — model id to window in tokens. Checked first, and treated as exact.
 - `keep_alive` (object) — opt-in. Pings an idle session's prompt cache before it expires, so the next turn is a cache hit instead of a full re-send. Off by default; every decision (whether to ping, how much, when to stop) stays inside the context-guru engine, not this plugin.
   - `enabled` (bool) — turn keep-alive on. Default: `false`.
@@ -36,3 +36,21 @@ transitive dependency set.
   **Credential retention:** Cortex keeps the caller's credential in memory, masked, for up to `(max_pings + 1) × idle_seconds` per tracked session — about 13.5 minutes at the defaults above. It is released on that session's next request, on plugin `Shutdown` or a config reload, or at that deadline, whichever comes first.
 
   **Hot-reload:** every config hot-reload tears down and rebuilds the pipeline, which drops all keep-alive tracking state. During the drain window, the outgoing instance may still send one more ping for a session the new instance no longer tracks.
+
+## Where its own model calls go
+
+The plugin sends two kinds of request itself, outside the pipeline: the `model` calls of the
+LLM-backed components (and an `incoming` model's calls), and the keep-alive pings. Whether they
+honour `HTTPS_PROXY` depends on the install:
+
+- **On a local install** they ignore `HTTPS_PROXY`. On a laptop it points at Cortex itself, and a
+  call sent back into Cortex's forward proxy would be priced as agent traffic (`costMicros`) and
+  also recorded as the plugin's spend (`pluginSpendMicros`): one call in two totals.
+- **Anywhere else** they use `HTTPS_PROXY` and `NO_PROXY` as any Go client does, because there
+  `HTTPS_PROXY` is normally the cluster's own egress proxy, and where egress is mandatory a call
+  that ignored it would fail.
+
+**Caveat:** a cluster that points a pod's `HTTPS_PROXY` at that pod's own Cortex sidecar gets the
+double count above for every plugin model call and every ping. Add the model and inference hosts
+to `NO_PROXY` there. Sent directly, these calls run no pipeline plugin, so `session-budget` and
+`litellm-budget-track` do not count them.
