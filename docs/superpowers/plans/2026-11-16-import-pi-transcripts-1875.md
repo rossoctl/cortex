@@ -109,10 +109,8 @@ and 8 real session files (78 lines) under `~/.pi/agent/sessions/`.
 6. **Wire shape: Anthropic Messages at `/v1/messages`.** Reason: Pi's `usage.input`
    excludes cached tokens, as Anthropic's `input_tokens` does, and Anthropic content
    blocks hold thinking, tool calls and tool results with no loss. Conversion:
-   - `system` message with non-empty `content` → request `system` (string). Its
-     `toolsAdded` → request `tools` as `{name, description, input_schema: parameters}`.
-     Use the last `system` message in the context. `sections` are not used (Pi joins them
-     itself, by rules that are internal to Pi).
+   - `system` messages → request `system` (string) and `tools`, replayed in order as
+     Pi's `getCurrentSystemMessage` does. Each tool is `{name, description, input_schema: parameters}`.
    - `user`: string stays a string. `text` → `{type:"text",text}`. `image` →
      `{type:"image",source:{type:"base64",media_type:mimeType,data}}`.
    - `assistant`: `text` → `text`. `thinking` → `{type:"thinking",thinking,signature:thinkingSignature}`.

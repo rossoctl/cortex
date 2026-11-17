@@ -62,3 +62,75 @@ func TestRequest_Messages(t *testing.T) {
 		})
 	}
 }
+
+// TestRequest_System checks that the request replays every system message in the context in
+// order, as getCurrentSystemMessage (Pi 1.4.0 pi-ai utils/transcript.js) does.
+func TestRequest_System(t *testing.T) {
+	line := func(s string) *entry {
+		var e entry
+		if err := json.Unmarshal([]byte(s), &e); err != nil {
+			t.Fatal(err)
+		}
+		return &e
+	}
+	sys := func(m string) *entry { return line(`{"type":"message","id":"s","message":` + m + `}`) }
+	tests := []struct {
+		name   string
+		ctx    []*entry
+		system string
+		tools  []string
+	}{{
+		name:   "prompt in sections, content empty",
+		ctx:    []*entry{sys(`{"role":"system","content":"","sections":{"preamble":"P","tools":"T","cwd":"C"},"toolsAdded":[{"name":"read"},{"name":"bash"}]}`)},
+		system: "P\n\nT\n\nC", tools: []string{"read", "bash"},
+	}, {
+		name: "a delta patches one section and removes one tool",
+		ctx: []*entry{
+			sys(`{"role":"system","content":"","sections":{"preamble":"P","tools":"T"},"toolsAdded":[{"name":"read"},{"name":"bash"}]}`),
+			sys(`{"role":"system","content":"","sections":{"skills":"S","preamble":"P2"},"toolsRemoved":[{"name":"bash"}]}`),
+		},
+		system: "P2\n\nT\n\nS", tools: []string{"read"},
+	}, {
+		name: "later content is appended and later tools are added",
+		ctx: []*entry{
+			sys(`{"role":"system","content":"BASE","toolsAdded":[{"name":"read"},{"name":"bash"}]}`),
+			sys(`{"role":"system","content":"","toolsAdded":[{"name":"write"}]}`),
+			sys(`{"role":"system","content":[{"type":"text","text":"MORE"},{"type":"image"}]}`),
+		},
+		system: "BASE\n\nMORE", tools: []string{"read", "bash", "write"},
+	}, {
+		name: "a null section is removed; a changed tool moves to the end",
+		ctx: []*entry{
+			sys(`{"role":"system","content":"","sections":{"a":"A","b":"B"},"toolsAdded":[{"name":"read"},{"name":"bash"}]}`),
+			sys(`{"role":"system","content":"","sections":{"a":null},"toolsRemoved":[{"name":"read"}],"toolsAdded":[{"name":"read"}]}`),
+		},
+		system: "B", tools: []string{"bash", "read"},
+	}, {
+		name: "the compaction's system message is the base of a later delta",
+		ctx: []*entry{
+			line(`{"type":"compaction","summary":"X","systemMessage":{"role":"system","content":"","sections":{"preamble":"P"},"toolsAdded":[{"name":"read"}]}}`),
+			sys(`{"role":"system","content":"","sections":{"skills":"S"},"toolsAdded":[{"name":"write"}]}`),
+		},
+		system: "P\n\nS", tools: []string{"read", "write"},
+	}}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got struct {
+				System string `json:"system"`
+				Tools  []struct {
+					Name string `json:"name"`
+				} `json:"tools"`
+			}
+			if err := json.Unmarshal(marshal(request("m", tc.ctx)), &got); err != nil {
+				t.Fatal(err)
+			}
+			var names []string
+			for _, tl := range got.Tools {
+				names = append(names, tl.Name)
+			}
+			if got.System != tc.system || !reflect.DeepEqual(names, tc.tools) {
+				t.Errorf("system = %q, tools = %v; want %q, %v", got.System, names, tc.system, tc.tools)
+			}
+		})
+	}
+}

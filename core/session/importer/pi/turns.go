@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/rossoctl/cortex/core/model"
@@ -47,16 +49,75 @@ type entry struct {
 }
 
 type message struct {
-	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content"`
-	ToolsAdded []piTool        `json:"toolsAdded"`
-	Model      string          `json:"model"`
-	Usage      usage           `json:"usage"`
-	StopReason string          `json:"stopReason"`
-	ResponseID string          `json:"responseId"`
-	Timestamp  int64           `json:"timestamp"` // ms since the epoch: the request start
-	ToolCallID string          `json:"toolCallId"`
-	IsError    bool            `json:"isError"`
+	Role         string          `json:"role"`
+	Content      json.RawMessage `json:"content"`
+	Sections     sections        `json:"sections"`
+	ToolsAdded   []piTool        `json:"toolsAdded"`
+	ToolsRemoved []piTool        `json:"toolsRemoved"`
+	Model        string          `json:"model"`
+	Usage        usage           `json:"usage"`
+	StopReason   string          `json:"stopReason"`
+	ResponseID   string          `json:"responseId"`
+	Timestamp    int64           `json:"timestamp"` // ms since the epoch: the request start
+	ToolCallID   string          `json:"toolCallId"`
+	IsError      bool            `json:"isError"`
+}
+
+// sections are the named parts of a Pi system prompt, in the key order of the JSON object.
+// A nil value is a JSON null: the section is removed.
+type sections []struct {
+	name  string
+	value *string
+}
+
+func (s *sections) UnmarshalJSON(b []byte) error {
+	*s = nil
+	d := json.NewDecoder(bytes.NewReader(b))
+	tok, err := d.Token()
+	if err != nil || tok == nil { // null
+		return err
+	}
+	if tok != json.Delim('{') {
+		return fmt.Errorf("sections: want an object, got %v", tok)
+	}
+	for d.More() {
+		k, err := d.Token()
+		if err != nil {
+			return err
+		}
+		var v *string
+		if err := d.Decode(&v); err != nil {
+			return err
+		}
+		*s = append(*s, struct {
+			name  string
+			value *string
+		}{k.(string), v})
+	}
+	return nil
+}
+
+// ordered is a map that keeps the order of first insertion, as a JavaScript Map does.
+type ordered[V any] struct {
+	keys []string
+	vals map[string]V
+}
+
+func (o *ordered[V]) set(k string, v V) {
+	if o.vals == nil {
+		o.vals = map[string]V{}
+	}
+	if _, ok := o.vals[k]; !ok {
+		o.keys = append(o.keys, k)
+	}
+	o.vals[k] = v
+}
+
+func (o *ordered[V]) del(k string) {
+	if _, ok := o.vals[k]; ok {
+		delete(o.vals, k)
+		o.keys = slices.DeleteFunc(o.keys, func(x string) bool { return x == k })
+	}
 }
 
 type piTool struct {
@@ -224,8 +285,9 @@ func request(modelName string, ctx []*entry) any {
 		}
 	}
 	var (
-		system  string
-		tools   []anthropicTool
+		sysText []string
+		secs    ordered[string]
+		tools   ordered[piTool]
 		msgs    = []convMessage{}
 		results []json.RawMessage
 	)
@@ -239,12 +301,24 @@ func request(modelName string, ctx []*entry) any {
 			msgs = append(msgs, convMessage{Role: role, Content: content})
 		}
 	}
-	setSystem := func(m *message) {
-		var text string
-		_ = json.Unmarshal(m.Content, &text)
-		system, tools = text, nil
+	// addSystem replays one system message, as getCurrentSystemMessage (Pi 1.4.0 pi-ai
+	// utils/transcript.js) does for a provider with no mid-conversation system messages.
+	addSystem := func(m *message) {
+		if t := contentText(m.Content); t != "" {
+			sysText = append(sysText, t)
+		}
+		for _, sec := range m.Sections {
+			if sec.value == nil {
+				secs.del(sec.name)
+			} else {
+				secs.set(sec.name, *sec.value)
+			}
+		}
+		for _, t := range m.ToolsRemoved {
+			tools.del(t.Name)
+		}
 		for _, t := range m.ToolsAdded {
-			tools = append(tools, anthropicTool{Name: t.Name, Description: t.Description, InputSchema: t.Parameters})
+			tools.set(t.Name, t)
 		}
 	}
 	for i, e := range ctx {
@@ -263,7 +337,7 @@ func request(modelName string, ctx []*entry) any {
 			}
 			switch m.Role {
 			case "system":
-				setSystem(m)
+				addSystem(m)
 			case "user":
 				if isString(content) {
 					add("user", content)
@@ -289,18 +363,29 @@ func request(modelName string, ctx []*entry) any {
 				continue // an older compaction in the kept range: Pi gives it no messages
 			}
 			if e.SystemMessage != nil {
-				setSystem(e.SystemMessage)
+				addSystem(e.SystemMessage)
 			}
 			add("user", textBlocks(compactionPrefix+e.Summary+compactionSuffix))
 		}
 	}
 	add("", nil)
+	// The text of the system prompt, as getSystemMessageText (pi-ai utils/text.js) renders it.
+	parts := []string{strings.Join(sysText, "\n\n")}
+	for _, k := range secs.keys {
+		parts = append(parts, secs.vals[k])
+	}
+	system := strings.Join(slices.DeleteFunc(parts, func(p string) bool { return p == "" }), "\n\n")
+	var atools []anthropicTool
+	for _, k := range tools.keys {
+		t := tools.vals[k]
+		atools = append(atools, anthropicTool{Name: t.Name, Description: t.Description, InputSchema: t.Parameters})
+	}
 	return struct {
 		Model    string          `json:"model"`
 		System   string          `json:"system,omitempty"`
 		Tools    []anthropicTool `json:"tools,omitempty"`
 		Messages []convMessage   `json:"messages"`
-	}{modelName, system, tools, msgs}
+	}{modelName, system, atools, msgs}
 }
 
 var stopReasons = map[string]string{"stop": "end_turn", "toolUse": "tool_use", "length": "max_tokens"}
@@ -370,6 +455,27 @@ func blocks(content json.RawMessage) []json.RawMessage {
 		}
 	}
 	return out
+}
+
+// contentText is the text of Pi content, as contentText (pi-ai utils/text.js) gives it.
+func contentText(raw json.RawMessage) string {
+	if isString(raw) {
+		var s string
+		_ = json.Unmarshal(raw, &s)
+		return s
+	}
+	var bs []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	_ = json.Unmarshal(raw, &bs)
+	var texts []string
+	for _, b := range bs {
+		if b.Type == "text" {
+			texts = append(texts, b.Text)
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 func textBlock(s string) json.RawMessage {
