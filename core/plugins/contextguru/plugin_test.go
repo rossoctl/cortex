@@ -10,11 +10,13 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	bschemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/context-guru/apply"
+	cgcomponents "github.com/rossoctl/context-guru/components"
 	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/llmclient"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -418,4 +420,162 @@ func TestPlugin_ObserveModeOpsAreDryRun(t *testing.T) {
 			t.Errorf("op %+v: want DryRun under on_error: observe", op)
 		}
 	}
+}
+
+// usageServer answers every chat call with the same usage, the shape cgModel reports a spend op for.
+func usageServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],`+
+			`"usage":{"prompt_tokens":100,"completion_tokens":20}}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// context-guru's engine calls Complete from several goroutines at once (its extract stage runs
+// six), while the request goroutine is still inside OnRequest. Every call's op must land, named
+// context-guru and carrying the dry-run state captured when the model was built. Run with -race.
+func TestCgModel_ConcurrentCompleteOnOneRequest(t *testing.T) {
+	srv := usageServer(t)
+	p := configured(t, `{"model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
+	pctx := inferencePctx("/v1/chat/completions", nil)
+	pctx.SetCurrentPlugin("context-guru", pipeline.InvocationPhaseRequest)
+	m := p.staticModelFor(pctx)
+	const n = 8
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := m.Complete(context.Background(), "summarize"); err != nil {
+				t.Errorf("Complete: %v", err)
+			}
+		}()
+	}
+	// The request goroutine keeps dispatching meanwhile: another plugin's stamp must not leak in.
+	pctx.ClearCurrentPlugin()
+	pctx.SetCurrentPlugin("someone-else", pipeline.InvocationPhaseRequest)
+	wg.Wait()
+	pctx.ClearCurrentPlugin()
+	ops := pctx.ReportedOps()
+	if len(ops) != n {
+		t.Fatalf("ops = %d, want %d", len(ops), n)
+	}
+	for _, op := range ops {
+		if op.Operator != "context-guru" || op.DryRun {
+			t.Errorf("op = {Operator:%q DryRun:%v}, want {context-guru false}", op.Operator, op.DryRun)
+		}
+	}
+}
+
+// A model built while the plugin runs under on_error: observe reports its calls as DryRun and as
+// context-guru's, from what was captured at construction, not from whatever is dispatched when the
+// call returns: here the call returns while a later plugin, under enforce, is dispatched.
+func TestCgModel_OperatorAndDryRunCapturedAtConstruction(t *testing.T) {
+	srv := usageServer(t)
+	p := configured(t, `{"model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
+	release, called := make(chan struct{}), make(chan struct{})
+	grab := &modelGrabber{p: p, after: func(m cgcomponents.Model) {
+		go func() {
+			<-release
+			_, _ = m.Complete(context.Background(), "summarize")
+			close(called)
+		}()
+	}}
+	waiter := &waitPlugin{onReq: func() { close(release); <-called }}
+	pl, err := pipeline.New([]pipeline.Plugin{grab, waiter},
+		pipeline.WithPolicies(pipeline.ErrorPolicyObserve, pipeline.ErrorPolicyEnforce))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pctx := inferencePctx("/v1/chat/completions", nil)
+	pl.Run(context.Background(), pctx)
+	ops := pctx.ReportedOps()
+	if len(ops) != 1 {
+		t.Fatalf("ops = %+v, want 1", ops)
+	}
+	if ops[0].Operator != "context-guru" || !ops[0].DryRun {
+		t.Errorf("op = {Operator:%q DryRun:%v}, want {context-guru true}", ops[0].Operator, ops[0].DryRun)
+	}
+}
+
+type waitPlugin struct{ onReq func() }
+
+func (w *waitPlugin) Name() string                              { return "waiter" }
+func (w *waitPlugin) Capabilities() pipeline.PluginCapabilities { return pipeline.PluginCapabilities{} }
+func (w *waitPlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Action {
+	w.onReq()
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (w *waitPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// A model call an engine detached from its request (summarize_async, cache_aware_async) can
+// return after Pipeline.Run handed the op list to the accountant. Its op is dropped and counted,
+// in the plugin's metrics and the pipeline's, and reading it races nothing. Run with -race.
+func TestCgModel_CompleteAfterRunIsDroppedAndCounted(t *testing.T) {
+	srv := usageServer(t)
+	p := configured(t, `{"model":{"base_url":"`+srv.URL+`","model":"cheap-model"}}`)
+	grab := &modelGrabber{p: p}
+	pl, err := pipeline.New([]pipeline.Plugin{grab})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pctx := inferencePctx("/v1/chat/completions", nil)
+	pl.Run(context.Background(), pctx)
+	if grab.m == nil {
+		t.Fatal("the plugin built no model")
+	}
+	before := pipeline.LateOpsDropped()
+	done := make(chan error)
+	go func() {
+		_, err := grab.m.Complete(context.Background(), "late")
+		done <- err
+	}()
+	if err := <-done; err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := len(pctx.ReportedOps()); got != 0 {
+		t.Errorf("ops = %d after a late call, want 0", got)
+	}
+	if got := pipeline.LateOpsDropped() - before; got != 1 {
+		t.Errorf("pipeline.LateOpsDropped grew by %d, want 1", got)
+	}
+	if got := metricValue(p.Metrics(), "late_model_calls_dropped"); got != 1 {
+		t.Errorf("late_model_calls_dropped = %v, want 1", got)
+	}
+}
+
+// modelGrabber builds context-guru's static model inside OnRequest, as OnRequest does, and keeps
+// it, so a test can call it after the request.
+type modelGrabber struct {
+	p     *ContextGuru
+	m     cgcomponents.Model
+	after func(cgcomponents.Model)
+}
+
+func (g *modelGrabber) Name() string { return "context-guru" }
+func (g *modelGrabber) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
+func (g *modelGrabber) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	g.m = g.p.staticModelFor(pctx)
+	if g.after != nil {
+		g.after(g.m)
+	}
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (g *modelGrabber) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+func metricValue(ms []pipeline.Metric, name string) float64 {
+	for _, m := range ms {
+		if m.Name == name {
+			return m.Value
+		}
+	}
+	return -1
 }

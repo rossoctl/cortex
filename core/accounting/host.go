@@ -409,6 +409,7 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	case <-timer.C:
 		slog.Warn("accounting: the record was not ended in time; the request is recorded with no saving",
 			"wait", computeWait)
+		h.release(pctx, "timeout")
 		return accountant.Result{}, false
 	}
 	in.ServerHeldHistory = p.serverHeld

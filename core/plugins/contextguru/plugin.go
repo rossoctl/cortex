@@ -137,13 +137,25 @@ type contextGuruConfig struct {
 // for, and Complete reports the call to it as a KindSpend context operation (W4.6)
 // before returning. pctx is captured at call time because it is per-request while a
 // cgModel wrapping the plugin's static model is shared across requests.
+//
+// The engine calls Complete concurrently (its extract stage runs six calls at once) and
+// sometimes after OnRequest returned (summarize_async, cache_aware_async). So Complete reads
+// nothing of pctx's dispatch state: dryRun is the plugin's on_error: observe state, captured
+// on the request goroutine when the model was built, and the op is reported with
+// pctx.ReportOpsAs under the plugin's own name. A call that returns after the request was
+// accounted has its op dropped by the pipeline and counted in lateDropped.
 type cgModel struct {
-	c         *llmclient.Client
-	maxTokens int
-	model     string
-	host      string
-	pctx      *pipeline.Context
+	c           *llmclient.Client
+	maxTokens   int
+	model       string
+	host        string
+	pctx        *pipeline.Context
+	dryRun      bool
+	lateDropped *atomic.Int64
 }
+
+// pluginName is the plugin's registered name, and the Operator of its model-call spend ops.
+const pluginName = "context-guru"
 
 func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
 	resp, err := m.c.CallRaw(ctx, &llmclient.ChatRequest{
@@ -156,7 +168,7 @@ func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
 	}
 	if resp.Usage != nil && m.pctx != nil {
 		cached := resp.Usage.CachedTokens()
-		m.pctx.ReportOps(accountant.Operation{
+		accepted := m.pctx.ReportOpsAs(pluginName, m.dryRun, accountant.Operation{
 			Kind: accountant.KindSpend,
 			Call: &accountant.ModelCall{
 				Host:  m.host,
@@ -171,6 +183,9 @@ func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
 				Detached: false,
 			},
 		})
+		if !accepted && m.lateDropped != nil {
+			m.lateDropped.Add(1)
+		}
 	}
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("contextguru: model returned no choices")
@@ -223,6 +238,19 @@ type ContextGuru struct {
 	// later. keepalive.Keeper.Record has no stopped check of its own, so without this flag that
 	// request would hold its credential again on a keeper whose sweep is gone.
 	stopped atomic.Bool
+	// lateModelCalls counts model calls whose spend op was dropped because the call returned
+	// after its request was accounted (cgModel). Reported by Metrics.
+	lateModelCalls atomic.Int64
+}
+
+// Metrics implements pipeline.MetricsProvider.
+func (p *ContextGuru) Metrics() []pipeline.Metric {
+	return []pipeline.Metric{{
+		Name:  "late_model_calls_dropped",
+		Value: float64(p.lateModelCalls.Load()),
+		Unit:  "count",
+		Note:  "model calls that returned after their request was accounted; their spend reaches no figure",
+	}}
 }
 
 // SetPricingResolver receives Cortex's rate table (plugins.Deps, before Configure). The
@@ -237,10 +265,10 @@ func (p *ContextGuru) SetAccounting(h *accounting.Host) { p.acct = h }
 func New() *ContextGuru { return &ContextGuru{} }
 
 func init() {
-	plugins.RegisterPlugin("context-guru", func() pipeline.Plugin { return New() })
+	plugins.RegisterPlugin(pluginName, func() pipeline.Plugin { return New() })
 }
 
-func (p *ContextGuru) Name() string { return "context-guru" }
+func (p *ContextGuru) Name() string { return pluginName }
 
 func (p *ContextGuru) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
@@ -575,6 +603,8 @@ func (p *ContextGuru) staticModelFor(pctx *pipeline.Context) cgcomponents.Model 
 	}
 	m := *p.static
 	m.pctx = pctx
+	m.dryRun = pctx.Observing()
+	m.lateDropped = &p.lateModelCalls
 	return m
 }
 
@@ -619,10 +649,12 @@ func (p *ContextGuru) incomingModel(pctx *pipeline.Context, provider bschemas.Mo
 			SentinelValue:      p.sentinel,
 			HTTPClient:         modelHTTPClient(p.modelTO),
 		}),
-		maxTokens: p.modelMax,
-		model:     model,
-		host:      pctx.Host,
-		pctx:      pctx,
+		maxTokens:   p.modelMax,
+		model:       model,
+		host:        pctx.Host,
+		pctx:        pctx,
+		dryRun:      pctx.Observing(),
+		lateDropped: &p.lateModelCalls,
 	}
 }
 

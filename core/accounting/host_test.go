@@ -252,6 +252,10 @@ func TestHost_ComputeTimesOut(t *testing.T) {
 	if d := time.Since(start); d > 2100*time.Millisecond {
 		t.Errorf("Compute took %v, want at most 2.1s", d)
 	}
+	// The handle is released, as on every other no-figure path.
+	if pipeline.GetState[pending](pctx, pendingKey) != nil {
+		t.Error("the pending handle was not released on a timeout")
+	}
 	// Latched: the second call does not wait again.
 	start = time.Now()
 	if _, ok := h.Compute(pctx); ok || time.Since(start) > 100*time.Millisecond {
