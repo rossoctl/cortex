@@ -286,12 +286,17 @@ func TestStaleClientCAWarning_SilentWithoutInputs(t *testing.T) {
 // core/tlsbridge (TestFingerprintSHA256_MatchesOpenSSL). It used to be duplicated
 // here against a local copy of the byte loop; both collapsed into the shared helper.
 
-// clientCAFromState reads the CA the client is configured with RIGHT NOW, which is
+// clientCAsFromState reads the CA the client is configured with RIGHT NOW, which is
 // the only value that can justify this warning. These tests pin why `prior` cannot:
 // agentop snapshots `prior` from the settings env block BEFORE overwriting it in the
 // same run (cmd_claudecode.go:468-478), so it is what agentop displaced, never what
 // the client holds. In the actual #1033 repro that makes it doubly wrong — the run
 // that put a foreign CA into `prior` also pointed the client at the correct one.
+
+// oneClientCA is clientCAsFromState for a record of one settings file.
+func oneClientCA(statePath string) string {
+	return strings.Join(clientCAsFromState(statePath), ",")
+}
 
 // writeStateAndSettings lays down agentop's two files: the state record naming a
 // settings path, and that settings file with the given current CA value. Passing
@@ -336,7 +341,7 @@ func TestClientCAFromState_ReadsTheCurrentValueNotPrior(t *testing.T) {
 		"/old/sandbox/.cortex/ca/ca.crt", // what agentop displaced
 		"/current/.cortex/ca/ca.crt")     // what the client actually loads now
 
-	got := clientCAFromState(statePath)
+	got := oneClientCA(statePath)
 
 	if got == "/old/sandbox/.cortex/ca/ca.crt" {
 		t.Fatal("read `prior` — agentop's record of what it DISPLACED. The same enable that " +
@@ -344,7 +349,7 @@ func TestClientCAFromState_ReadsTheCurrentValueNotPrior(t *testing.T) {
 			"client that is already correct, and can never go quiet")
 	}
 	if got != "/current/.cortex/ca/ca.crt" {
-		t.Errorf("clientCAFromState = %q, want the live NODE_EXTRA_CA_CERTS", got)
+		t.Errorf("oneClientCA = %q, want the live NODE_EXTRA_CA_CERTS", got)
 	}
 }
 
@@ -371,8 +376,8 @@ func TestClientCAFromState_ToleratesEveryFailure(t *testing.T) {
 	}
 	for name, p := range cases {
 		t.Run(name, func(t *testing.T) {
-			if got := clientCAFromState(p); got != "" {
-				t.Errorf("clientCAFromState(%s) = %q, want \"\"", name, got)
+			if got := oneClientCA(p); got != "" {
+				t.Errorf("oneClientCA(%s) = %q, want \"\"", name, got)
 			}
 		})
 	}
@@ -388,8 +393,8 @@ func TestClientCAFromState_ToleratesEveryFailure(t *testing.T) {
 			if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if got := clientCAFromState(p); got != "" {
-				t.Errorf("clientCAFromState(%s) = %q, want \"\"", name, got)
+			if got := oneClientCA(p); got != "" {
+				t.Errorf("oneClientCA(%s) = %q, want \"\"", name, got)
 			}
 		})
 	}
@@ -404,8 +409,8 @@ func TestClientCAFromState_ToleratesEveryFailure(t *testing.T) {
 	if err := os.WriteFile(p, st, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := clientCAFromState(p); got != "" {
-		t.Errorf("clientCAFromState with unparseable settings = %q, want \"\"", got)
+	if got := oneClientCA(p); got != "" {
+		t.Errorf("oneClientCA with unparseable settings = %q, want \"\"", got)
 	}
 }
 
@@ -422,13 +427,13 @@ func TestStaleClientCAWarning_GoesQuietAfterTheClientIsFixed(t *testing.T) {
 
 	// Misconfigured: settings point at another $HOME's bridge CA.
 	statePath := writeStateAndSettings(t, dir, "/whatever/prior.crt", otherCA)
-	if got := staleClientCAWarning("/current/.cortex/ca", clientCAFromState(statePath), inForce); got == nil {
+	if got := staleClientCAWarning("/current/.cortex/ca", oneClientCA(statePath), inForce); got == nil {
 		t.Fatal("no warning while the client is genuinely pointed at a different bridge CA")
 	}
 
 	// Fixed: settings now name the CA in force. `prior` is unchanged and still stale.
 	statePath = writeStateAndSettings(t, dir, "/whatever/prior.crt", currentCAPath)
-	if got := staleClientCAWarning("/current/.cortex/ca", clientCAFromState(statePath), inForce); got != nil {
+	if got := staleClientCAWarning("/current/.cortex/ca", oneClientCA(statePath), inForce); got != nil {
 		t.Errorf("still warning after the client was fixed — this is the every-boot-forever "+
 			"failure the comparison exists to avoid: %v", got)
 	}

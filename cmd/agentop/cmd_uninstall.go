@@ -389,7 +389,7 @@ func cortexDirNeededBy(rs []removal) []string {
 	return why
 }
 
-// planUnrouteClaudeCode is a removal for each settings file Cortex routed: the
+// planUnrouteClaudeCode is a removal for each settings file Cortex routed: each
 // one enable's record names, which --settings may have made a project's, and
 // ~/.claude/settings.json when its own HTTPS_PROXY is Cortex's. The record is read
 // now. A file the record does not name is unrouted only when its proxy is
@@ -399,14 +399,14 @@ func planUnrouteClaudeCode(env *setupEnv) []removal {
 	state, def := filepath.Join(env.home, stateRel), filepath.Join(env.home, settingsRel)
 	named := recordedSettings(env)
 	var rs []removal
-	if named != "" {
-		rs = append(rs, unrouteClaudeCode(env, named, state))
+	for _, s := range named {
+		rs = append(rs, unrouteClaudeCode(env, s, state))
 	}
-	if (named == "" || !samePath(named, def)) && cortexProxyIn(env, def) {
+	if !slices.ContainsFunc(named, func(s string) bool { return samePath(s, def) }) && cortexProxyIn(env, def) {
 		// Without a record of its own: it restores nothing, and leaves the record
 		// alone unless the record names no file, as one that cannot be read does.
 		record := ""
-		if named == "" {
+		if len(named) == 0 {
 			record = state
 		}
 		rs = append(rs, unrouteClaudeCode(env, def, record))
@@ -452,7 +452,12 @@ func unrouteClaudeCode(env *setupEnv, settings, state string) removal {
 				// have deleted goes here. Left, doctor reads Claude Code as routed for
 				// good, a left key or not: it answers from the record's existence.
 				if state != "" {
-					if err := removeIfExists(state); err != nil {
+					// This file's entry, or a record that names no file whole.
+					drop := removeIfExists
+					if pl.st != nil {
+						drop = func(state string) error { return dropRecord(state, settings) }
+					}
+					if err := drop(state); err != nil {
 						return "", []string{env.tilde(state)}, withFixes(err, manual("rm "+env.shellPath(state)))
 					}
 				}
@@ -579,7 +584,7 @@ func unrouteByHand(env *setupEnv, settings, state string, keys, left []string) s
 	}
 	var remove, restore []string
 	for _, k := range keys {
-		if st != nil && st.Settings == settings && st.Prior[k] != nil {
+		if e := recordFor(st, settings); e != nil && e.Prior[k] != nil {
 			restore = append(restore, k)
 		} else {
 			remove = append(remove, k)

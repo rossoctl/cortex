@@ -934,8 +934,10 @@ func main() {
 		// the comparison is on certificates, so ours must exist first. Skipped outside
 		// --local, where there is no agentop-managed client to reason about.
 		if localStatePath != "" {
-			if args := staleClientCAWarning(cfg.TLSBridge.CADir, clientCAFromState(localStatePath), src.CACertPEM()); args != nil {
-				slog.Warn("a client is configured against a different bridge CA than the one now in force", args...)
+			for _, ca := range clientCAsFromState(localStatePath) {
+				if args := staleClientCAWarning(cfg.TLSBridge.CADir, ca, src.CACertPEM()); args != nil {
+					slog.Warn("a client is configured against a different bridge CA than the one now in force", args...)
+				}
 			}
 		}
 		// Assemble the CA + platform-roots bundle for tools whose CA setting

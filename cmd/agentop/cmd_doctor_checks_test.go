@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -380,6 +381,32 @@ func TestDoctorFailsTheRecordedSettingsFileWhenItNoLongerRoutes(t *testing.T) {
 			wantLines(t, code, 1, out, "\n"+markLine("✗", "routed")+c.reason+"\n      fix: "+c.fix+"\n")
 			everyFailHasAFix(t, out)
 		})
+	}
+}
+
+// With the default file routed as well, doctor still checks the project file,
+// and update keeps --claude-code for the default one.
+func TestDoctorChecksTheProjectFileBesideTheDefaultOne(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	proj := routeProject(t, sc)
+	var errb bytes.Buffer
+	if code := claudeCodeEnable2(filepath.Join(sc.home, settingsRel), filepath.Join(sc.home, ".cortex", "config.yaml"),
+		filepath.Join(sc.home, stateRel), true, io.Discard, &errb); code != 0 {
+		t.Fatalf("fixture: enable on the default file exit %d: %s", code, errb.String())
+	}
+	writeHomeFile(t, proj, "{}\n")
+	code, out := sc.doctor(t)
+	wantLines(t, code, 1, out, "\n"+markLine("✗", "routed")+"Claude Code is not routed through Cortex in ~/proj/.claude/settings.json\n")
+	if strings.Contains(out, "is not routed;") {
+		t.Errorf("doctor reads the default file as unrouted:\n%s", out)
+	}
+	env, err := newSetupEnv(setupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags := updateFlags(env, "", false); !slices.Contains(flags, "--claude-code") {
+		t.Errorf("update flags %q, want --claude-code", flags)
 	}
 }
 

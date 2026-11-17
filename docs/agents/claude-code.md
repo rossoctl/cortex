@@ -45,10 +45,12 @@ The same goes after `disable`. While enabled, Claude Code needs Cortex running,
 because its requests go to the proxy: `disable` is the off switch, and `agentop
 service status` says whether the proxy is up.
 
-**The record.** The first `enable` records what each of the six keys held before, in
-`~/.cortex/claude-code-state.json`. `disable` removes only the keys `enable` added, and
-puts back any value it recorded. It does not change a key whose value changed after
-`enable`, and it names each key it did not change. `agentop uninstall` runs the same `disable`.
+**The record.** The first `enable` on each settings file records what each of the six
+keys held before, in `~/.cortex/claude-code-state.json`. `disable` removes only the
+keys `enable` added, and puts back any value it recorded. It does not change a key
+whose value changed after `enable`, and it names each key it did not change. Each
+settings file `enable` routed, such as a project's and the default one, has its own
+entry. `agentop uninstall` runs the same `disable` on each.
 
 `disable` restores every value, but not the file's text. For example, it sorts the keys, uses a
 2-space indent, puts each array item on its own line, and writes `&`, `<` and `>` as

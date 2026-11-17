@@ -351,29 +351,28 @@ func TestClaudeCodeDisable_RecordWithoutWrittenStillRemoves(t *testing.T) {
 	}
 }
 
-// A record naming another settings file belongs to another enable, and a disable
-// here must not take it away. planClaudeCodeDisable already refuses to *read* it —
+// Another settings file's entry belongs to another enable, and a disable here
+// must not take it away. planClaudeCodeDisable already refuses to *read* it —
 // pl.st stays nil unless the record names this file — but the removal at the end
 // ran on statePath alone, so `disable --settings` on a project file deleted the
 // default file's record. That strands the default file's Written, and the next
 // disable there has no ownership to check an edit against: #1289 again, reached
 // by way of a disable on a file that has nothing to do with it.
-func TestClaudeCodeDisable_KeepsARecordNamingAnotherSettingsFile(t *testing.T) {
+func TestClaudeCodeDisable_KeepsAnotherSettingsFilesEntry(t *testing.T) {
 	const corp = "http://corp.example:3128"
 	main, cfg := fixture(t, settingsWithSecret)
 	proj := filepath.Join(t.TempDir(), "settings.json")
 	state := filepath.Join(t.TempDir(), "state.json")
 	var out, errb bytes.Buffer
-	// The project file first, so the main file's enable is the one that replaces the
-	// record: it names whichever file enabled last.
+	// The project file first, so the main file's entry is the one disable promotes.
 	if code := claudeCodeEnable2(proj, cfg, state, true, &out, &errb); code != 0 {
 		t.Fatalf("enable on the project file failed: %s", errb.String())
 	}
 	if code := claudeCodeEnable2(main, cfg, state, true, &out, &errb); code != 0 {
 		t.Fatalf("enable on the main file failed: %s", errb.String())
 	}
-	if st, err := readState(state); err != nil || st == nil || st.Settings != main {
-		t.Fatalf("fixture: the record names %+v (err %v), want %s", st, err, main)
+	if st, err := readState(state); err != nil || recordFor(st, main) == nil || recordFor(st, proj) == nil {
+		t.Fatalf("fixture: the record is %+v (err %v), want entries for %s and %s", st, err, proj, main)
 	}
 
 	// The project file still holds Cortex's values, so this disable goes through
@@ -387,8 +386,8 @@ func TestClaudeCodeDisable_KeepsARecordNamingAnotherSettingsFile(t *testing.T) {
 	if err != nil || st == nil {
 		t.Fatalf("a disable on another settings file deleted the main file's record (err %v)", err)
 	}
-	if st.Settings != main {
-		t.Errorf("the record names %q, want %q", st.Settings, main)
+	if st.Settings != main || len(st.OtherFiles) != 0 {
+		t.Errorf("the record is %+v, want only the entry for %s", st, main)
 	}
 
 	// And what keeping it is for: the main file's Written is still there to check a

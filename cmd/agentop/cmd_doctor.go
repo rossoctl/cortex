@@ -57,7 +57,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
-	var elsewhere string
+	var elsewhere []string
 	env.opts.claudeCode, env.opts.noService, elsewhere = installShape(env)
 	fix := "agentop setup"
 	if env.opts.claudeCode {
@@ -87,12 +87,12 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		if _, ok := s.(serviceStep); !ok {
 			continue
 		}
-		switch {
-		case elsewhere != "":
-			if checkRoutedElsewhere(env, ui, elsewhere, fix) {
+		for _, f := range elsewhere {
+			if checkRoutedElsewhere(env, ui, f, fix) {
 				failed = true
 			}
-		case !env.opts.claudeCode:
+		}
+		if len(elsewhere) == 0 && !env.opts.claudeCode {
 			hint := "agentop setup --claude-code"
 			if env.opts.noService {
 				hint += " --no-service"
@@ -162,19 +162,24 @@ func wouldChange(p stepPlan) string {
 // a project's, is elsewhere and is checked on its own: setup's step writes only the
 // default file, so its plan would read that file as unrouted, and its fix would
 // route Claude Code globally.
-func installShape(env *setupEnv) (claudeCode, noService bool, elsewhere string) {
-	elsewhere = recordedSettings(env)
-	if elsewhere != "" && samePath(elsewhere, filepath.Join(env.home, settingsRel)) {
-		elsewhere = ""
+func installShape(env *setupEnv) (claudeCode, noService bool, elsewhere []string) {
+	def := filepath.Join(env.home, settingsRel)
+	recorded := false
+	for _, s := range recordedSettings(env) {
+		if samePath(s, def) {
+			recorded = true
+			continue
+		}
+		elsewhere = append(elsewhere, s)
 	}
-	return elsewhere == "" && claudeCodeRouted(env), backgroundOnly(env), elsewhere
+	return recorded || len(elsewhere) == 0 && claudeCodeRouted(env), backgroundOnly(env), elsewhere
 }
 
 // claudeCodeRouted reports whether Cortex routed Claude Code: enable's state
 // record is there, or settings.json's HTTPS_PROXY is the proxy enable would write
-// from the current config. Enable writes the record and every disable deletes it,
-// including one that left a key behind because its value changed since enable set
-// it — the record's existence is read here as "Cortex routes this", so it must not
+// from the current config. Enable writes the record and every disable deletes its
+// file's entry, the record going with the last, including one that left a key
+// behind because its value changed since enable set it — the record's existence is read here as "Cortex routes this", so it must not
 // outlive the values it describes, or doctor reports a routing that is gone and
 // offers a fix that puts it back. Keeping it for a left key's sake would cost that
 // key its edit too — applyClaudeCodeDisable says why.
@@ -187,16 +192,23 @@ func claudeCodeRouted(env *setupEnv) bool {
 	return fileExists(filepath.Join(env.home, stateRel)) || cortexProxyIn(env, filepath.Join(env.home, settingsRel))
 }
 
-// recordedSettings is the settings file enable's record names, which --settings
-// may have made a project's: the file doctor checks and uninstall unroutes. It
-// is "" when the record names none: there is no record, it cannot be read, or the
-// path in it is relative, as enable wrote it from where it ran, so it is a guess.
-func recordedSettings(env *setupEnv) string {
+// recordedSettings is each settings file enable's record names, which --settings
+// may have made a project's: the files doctor checks and uninstall unroutes. It
+// is empty when the record names none: there is no record or it cannot be read. A
+// relative path, as an older enable wrote it from where it ran, is a guess and is
+// left out, so a record of only those is empty too.
+func recordedSettings(env *setupEnv) []string {
 	st, err := readState(filepath.Join(env.home, stateRel))
-	if err != nil || st == nil || !filepath.IsAbs(st.Settings) {
-		return ""
+	if err != nil || st == nil {
+		return nil
 	}
-	return st.Settings
+	var files []string
+	for _, e := range append([]managedState{*st}, st.OtherFiles...) {
+		if filepath.IsAbs(e.Settings) {
+			files = append(files, e.Settings)
+		}
+	}
+	return files
 }
 
 // cortexProxyIn reports whether the settings file's HTTPS_PROXY is the proxy

@@ -192,3 +192,22 @@ func TestCurrentCA_EmptyOnEveryFailure(t *testing.T) {
 		})
 	}
 }
+
+// CurrentCAs reads each entry's settings file, so a stale CA in a second file is
+// seen too.
+func TestCurrentCAs_ReadsEverySettingsFile(t *testing.T) {
+	first := write(t, t.TempDir(), "", "/ca/first.crt")
+	second := write(t, t.TempDir(), "", "/ca/second.crt")
+	st, err := Load(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := Load(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.OtherFiles = []State{*other, {Settings: filepath.Join(t.TempDir(), "absent.json")}}
+	if got := st.CurrentCAs(); strings.Join(got, ",") != "/ca/first.crt,/ca/second.crt" {
+		t.Errorf("CurrentCAs() = %q, want both files' CAs", got)
+	}
+}
