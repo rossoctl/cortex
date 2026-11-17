@@ -30,7 +30,7 @@ type fakeSource struct {
 
 func (f *fakeSource) Agent() string       { return "claude-code" }
 func (f *fakeSource) PricingHost() string { return "api.anthropic.com" }
-func (f *fakeSource) Sessions(_ time.Time, skip func(string, time.Time) bool) iter.Seq2[Session, error] {
+func (f *fakeSource) Sessions(_ time.Time, skip func(string, time.Time) bool, _ func(int, int)) iter.Seq2[Session, error] {
 	return func(yield func(Session, error) bool) {
 		for _, s := range f.sessions {
 			if skip(s.ID, s.Updated) {

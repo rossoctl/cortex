@@ -1,6 +1,7 @@
 package apiclient
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -21,8 +22,12 @@ var ErrImportRunning = errors.New("an import is already running")
 //
 // The caller sets the deadline. The proxy sends the header before it starts the work, so the
 // transport's HeaderTimeout does not limit a long import.
-func (c *Client) Import(ctx context.Context, req importer.Request) (importer.Report, error) {
+//
+// A non-nil onProgress asks for progress, and gets each Progress line. A proxy without
+// progress lines sends only the report, and onProgress is never called.
+func (c *Client) Import(ctx context.Context, req importer.Request, onProgress func(importer.Progress)) (importer.Report, error) {
 	const path = "/v1/import"
+	req.Progress = onProgress != nil
 	body, err := json.Marshal(req)
 	if err != nil {
 		return importer.Report{}, err
@@ -40,13 +45,15 @@ func (c *Client) Import(ctx context.Context, req importer.Request) (importer.Rep
 		return importer.Report{}, err
 	}
 	defer resp.Body.Close()
-	// Bounded, as every body this client reads. A report is one short line per agent.
+	if resp.StatusCode == http.StatusOK {
+		return readImportStream(resp.Body, path, onProgress)
+	}
+	// Bounded, as every body this client reads.
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return importer.Report{}, err
 	}
 	switch resp.StatusCode {
-	case http.StatusOK:
 	case http.StatusConflict:
 		return importer.Report{}, ErrImportRunning
 	case http.StatusNotFound:
@@ -59,9 +66,38 @@ func (c *Client) Import(ctx context.Context, req importer.Request) (importer.Rep
 	default:
 		return importer.Report{}, fmt.Errorf("%s: unexpected status %d", path, resp.StatusCode)
 	}
+}
+
+// readImportStream reads the Progress lines and then the report of a 200. Each line is bounded,
+// as every body this client reads: a report is one short line per agent.
+func readImportStream(body io.Reader, path string, onProgress func(importer.Progress)) (importer.Report, error) {
+	sc := bufio.NewScanner(body)
+	sc.Buffer(make([]byte, 0, 4096), 1<<20)
 	var rep importer.Report
-	if err := json.Unmarshal(data, &rep); err != nil {
-		return importer.Report{}, fmt.Errorf("%s: decode: %w", path, err)
+	found := false
+	for sc.Scan() {
+		var line struct {
+			Progress *importer.Progress `json:"progress"`
+			importer.Report
+		}
+		if err := json.Unmarshal(sc.Bytes(), &line); err != nil {
+			return importer.Report{}, fmt.Errorf("%s: decode: %w", path, err)
+		}
+		if line.Progress == nil {
+			rep, found = line.Report, true
+			continue
+		}
+		if onProgress != nil {
+			p := *line.Progress
+			p.Agent = serverText(p.Agent) // printed to a terminal
+			onProgress(p)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return importer.Report{}, fmt.Errorf("%s: %w", path, err)
+	}
+	if !found {
+		return importer.Report{}, fmt.Errorf("%s: decode: no report", path)
 	}
 	// The caller prints these strings to a terminal.
 	for i := range rep.Agents {

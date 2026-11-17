@@ -40,7 +40,7 @@ func fixtureDB(t *testing.T) string {
 func readAll(t *testing.T, src importer.Source, since time.Time) []importer.Session {
 	t.Helper()
 	var out []importer.Session
-	for s, err := range src.Sessions(since, func(string, time.Time) bool { return false }) {
+	for s, err := range src.Sessions(since, func(string, time.Time) bool { return false }, func(int, int) {}) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -96,7 +96,7 @@ func TestSource_MissingSqlite3FailsWithItsName(t *testing.T) {
 	src := source{dbPath: fixtureDB(t), prog: "sqlite3-not-here-1872"}
 	var errs []error
 	var n int
-	for s, err := range src.Sessions(time.Time{}, func(string, time.Time) bool { return false }) {
+	for s, err := range src.Sessions(time.Time{}, func(string, time.Time) bool { return false }, func(int, int) {}) {
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -306,7 +306,7 @@ func TestSource_NewestFirstSinceAndSkip(t *testing.T) {
 			return true
 		}
 		return false
-	}) {
+	}, func(int, int) {}) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -367,5 +367,29 @@ func TestSource_BadTaskOrMessageValueKeepsTheImport(t *testing.T) {
 				t.Errorf("t-tools Skipped %d, events %d; want %d and %d (the bad row skipped and counted)", s.Skipped, len(s.Events), clean.Skipped+1, len(clean.Events))
 			}
 		})
+	}
+}
+
+// progress starts at 0, never goes down, and ends with done == total.
+func TestSource_Progress(t *testing.T) {
+	db := fixtureDB(t)
+	var got [][2]int
+	for _, err := range New(db).Sessions(time.Time{}, func(string, time.Time) bool { return false },
+		func(done, total int) { got = append(got, [2]int{done, total}) }) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) < 2 || got[0][0] != 0 {
+		t.Fatalf("progress = %v, want a first call with done 0", got)
+	}
+	last := got[len(got)-1]
+	if last[0] != last[1] || last[1] < 3 {
+		t.Errorf("last progress = %v, want done == total, total of 3 or more", last)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i][0] < got[i-1][0] {
+			t.Errorf("progress went down: %v", got)
+		}
 	}
 }

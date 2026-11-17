@@ -123,3 +123,20 @@ func TestRunImport_SinceForms(t *testing.T) {
 		}
 	}
 }
+
+func TestProgressBar(t *testing.T) {
+	for _, tc := range []struct {
+		p    importer.Progress
+		want string
+	}{
+		{importer.Progress{Agent: "claude-code", Done: 0, Total: 4}, "importing claude-code [░░░░░░░░░░░░░░░░░░░░]   0%  0/4 sessions"},
+		{importer.Progress{Agent: "claude-code", Done: 1, Total: 4}, "importing claude-code [█████░░░░░░░░░░░░░░░]  25%  1/4 sessions"},
+		{importer.Progress{Agent: "claude-code", Done: 4, Total: 4}, "importing claude-code [████████████████████] 100%  4/4 sessions"},
+		{importer.Progress{Agent: "claude-code"}, "importing claude-code [████████████████████] 100%  0/0 sessions"},
+		{importer.Progress{Agent: "claude-code", Done: 9, Total: 4}, "importing claude-code [████████████████████] 100%  9/4 sessions"},
+	} {
+		if got := progressBar(tc.p); got != tc.want {
+			t.Errorf("progressBar(%+v) =\n %q, want\n %q", tc.p, got, tc.want)
+		}
+	}
+}

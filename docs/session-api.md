@@ -30,7 +30,7 @@ through DNS rebinding. The stats server applies the same check.
 | `GET /v1/pipeline` | `application/json` | Active pipeline composition, per plugin: name, direction, position, capabilities, runtime `config`. `onError` is sent only when it is not the default — in practice `observe`, since an `on_error: off` plugin is not built. A plugin under observe runs and records, but its rejections, body writes and redirects are dropped (header writes still apply), so its `config` says what it would do. agentop renders this as the Pipeline pane (`P`) |
 | `GET /v1/plugins` | `application/json` | Catalog of every registered plugin, active or not. 404 when the binary built its session API without `WithCatalog`. agentop renders this as the Catalog pane (`C`) |
 | `GET /v1/usage` | `application/json` | Windowed usage aggregation — the aggregate behind `agentop cost`; parameters and semantics in [`pricing.md`](pricing.md#reading-usage-over-http) |
-| `POST /v1/import` | `application/json` | Laptop only: import agent transcripts from disk into the archive and the cost ledger (see below). 404 otherwise |
+| `POST /v1/import` | `application/json`, or `application/x-ndjson` with `progress` | Laptop only: import agent transcripts from disk into the archive and the cost ledger (see below). 404 otherwise |
 | `POST /v1/ingest` | NDJSON in, `204` out | Praxis mode only: rows that `cortex-gateway` records (see below). 404 otherwise |
 | `GET /v1/ingest/stats` | `application/json` | Praxis mode only: the ingestion counters (see below). 404 otherwise |
 | `GET /healthz` | text | Liveness probe |
@@ -405,6 +405,7 @@ The body is JSON, at most 4 KiB:
   400 that names the supported agents.
 - `since` (RFC 3339) skips a transcript file that was last changed before it.
 - `dryRun` counts what an import would do and writes nothing.
+- `progress` asks for progress lines before the report (see below).
 
 Bad JSON is a 400. **One import runs at a time:** a second request while one
 runs gets 409, and the first one continues. After these checks the route sends
@@ -419,6 +420,20 @@ the body, not in the status:
 
 `skippedExpired`, `unreadable`, `notImported`, `stopped` and `error` are sent
 only when they are set.
+
+**Progress.** With `"progress": true` the body is `application/x-ndjson`: one
+JSON object on each line. The report above is the last line. Before it, each
+agent sends progress lines, at most 4 a second:
+
+```json
+{"progress": {"agent": "claude-code", "done": 940, "total": 1805}}
+```
+
+`total` is the number of sessions that the source found, and `done` counts
+each session that the source finished, skipped sessions too. The first line has
+`done: 0`, and the last line of an agent has `done` equal to `total`. A skipped
+session is fast and a parsed session is slow, so `done` does not grow at a
+steady rate. An older proxy ignores `progress` and sends only the report.
 
 **Live sessions and re-import.** The import applies these rules to each
 session in order:
@@ -473,7 +488,9 @@ only another session of the same project made a row in that minute.
   no `source`.
 - A turn before the ledger's retention cutoff goes to the archive only.
 - An imported segment is kept for `retention_days` from its newest event. A
-  session older than that is skipped (`skippedExpired`).
+  session older than that is skipped (`skippedExpired`). The Claude Code source checks
+  this, and Rule 1, before it reads the files: a file's mtime is not older
+  than its newest line. So an old transcript with no turns counts here too.
 - The import stops before a session that would take the archive above 90% of
   `max_bytes`. Then `stopped` is `"archive full"`, and `notImported` counts the
   sessions left.

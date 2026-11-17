@@ -163,4 +163,4 @@ func contextGauge(promptTokens, width int) string {
 const cachedMarker = "cached"
 
 // importedMarker starts the TITLE cell of a session that an import wrote.
-const importedMarker = "imp "
+const importedMarker = "(*) "

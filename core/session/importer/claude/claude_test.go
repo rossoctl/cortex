@@ -28,7 +28,7 @@ func fixtures(t *testing.T) string {
 func readAll(t *testing.T, src importer.Source, since time.Time) []importer.Session {
 	t.Helper()
 	var out []importer.Session
-	for s, err := range src.Sessions(since, func(string, time.Time) bool { return false }) {
+	for s, err := range src.Sessions(since, func(string, time.Time) bool { return false }, func(int, int) {}) {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -347,7 +347,7 @@ func TestSessions_SkipBeforeTheParse(t *testing.T) {
 	for s, err := range New(dir).Sessions(time.Time{}, func(id string, updated time.Time) bool {
 		got[id] = updated
 		return true
-	}) {
+	}, func(int, int) {}) {
 		t.Fatalf("yielded %+v, %v after skip gave true", s.ID, err)
 	}
 	if len(got) != len(want) {
@@ -356,6 +356,25 @@ func TestSessions_SkipBeforeTheParse(t *testing.T) {
 	for id, u := range want {
 		if got[id].Before(u) {
 			t.Errorf("%s: skip got %v, before Updated %v", id, got[id], u)
+		}
+	}
+}
+
+// skip gets the file's mtime before any read, so a live or expired session costs no read. An
+// unreadable transcript that skip drops is not reported.
+func TestSessions_SkipBeforeTheRead(t *testing.T) {
+	dir := fixtures(t)
+	main := filepath.Join(dir, "projects", "-tmp-demo", plainID+".jsonl")
+	if err := os.Chmod(main, 0); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := os.Open(main); err == nil {
+		f.Close()
+		t.Skip("the file is readable without permission (root)")
+	}
+	for s, err := range New(dir).Sessions(time.Time{}, func(id string, _ time.Time) bool { return id == plainID }, func(int, int) {}) {
+		if err != nil || s.ID == plainID {
+			t.Fatalf("yielded %q (Unreadable %v), %v after skip gave true", s.ID, s.Unreadable, err)
 		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
@@ -90,9 +91,9 @@ Flags:
 
 	ctx, cancel := context.WithTimeout(context.Background(), importTimeout)
 	defer cancel()
-	stopSpin := startSpinner(stderr)
-	rep, err := apiclient.New(target).Import(ctx, req)
-	stopSpin()
+	onProgress, stopProgress := startProgress(stderr)
+	rep, err := apiclient.New(target).Import(ctx, req, onProgress)
+	stopProgress()
 	switch {
 	case errors.Is(err, apiclient.ErrImportRunning):
 		fmt.Fprintln(stderr, "agentop import: an import is already running")
@@ -145,12 +146,15 @@ func parseImportSince(s string, now time.Time) (time.Time, error) {
 	return t, nil
 }
 
-// startSpinner shows a spinner on w while an import runs, only when w is a terminal. The
-// returned func stops it and clears the line.
-func startSpinner(w io.Writer) func() {
+// startProgress shows the import's progress on w, only when w is a terminal: a spinner until
+// the proxy sends its first Progress line, and then a bar. onProgress is nil when w is not a
+// terminal, so the request asks for no progress. stop ends the display and clears the line.
+func startProgress(w io.Writer) (onProgress func(importer.Progress), stop func()) {
 	if !isTerminal(w) {
-		return func() {}
+		return nil, func() {}
 	}
+	var mu sync.Mutex
+	var last *importer.Progress
 	done := make(chan struct{})
 	stopped := make(chan struct{})
 	go func() {
@@ -159,7 +163,13 @@ func startSpinner(w io.Writer) func() {
 		tick := time.NewTicker(150 * time.Millisecond)
 		defer tick.Stop()
 		for i := 0; ; i++ {
-			fmt.Fprintf(w, "\rimporting %c", frames[i%len(frames)])
+			mu.Lock()
+			if last == nil {
+				fmt.Fprintf(w, "\rimporting %c", frames[i%len(frames)])
+			} else {
+				fmt.Fprintf(w, "\r\033[K%s", progressBar(*last))
+			}
+			mu.Unlock()
 			select {
 			case <-done:
 				fmt.Fprint(w, "\r\033[K")
@@ -168,8 +178,26 @@ func startSpinner(w io.Writer) func() {
 			}
 		}
 	}()
-	return func() {
-		close(done)
-		<-stopped
+	return func(p importer.Progress) {
+			mu.Lock()
+			last = &p
+			mu.Unlock()
+		}, func() {
+			close(done)
+			<-stopped
+		}
+}
+
+// progressBarWidth is the number of cells in the bar.
+const progressBarWidth = 20
+
+// progressBar is one line: "importing claude-code [█████░░░]  25%  1/4 sessions".
+func progressBar(p importer.Progress) string {
+	pct := 100
+	if p.Total > 0 {
+		pct = min(100, max(0, p.Done*100/p.Total))
 	}
+	full := pct * progressBarWidth / 100
+	return fmt.Sprintf("importing %s [%s%s] %3d%%  %d/%d sessions", p.Agent,
+		strings.Repeat("█", full), strings.Repeat("░", progressBarWidth-full), pct, p.Done, p.Total)
 }
