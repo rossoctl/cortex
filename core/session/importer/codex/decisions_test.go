@@ -97,6 +97,42 @@ func TestSource_TurnBoundaries(t *testing.T) {
 	}
 }
 
+// Codex 0.142.3 writes a turn's token_count after its tool results, and no token_usage_record.
+// The tool results do not close the turn, so the turn keeps its usage.
+func TestSource_TokenCountAfterToolResults(t *testing.T) {
+	home := t.TempDir()
+	tokenCount := func(sec, total int) string {
+		return `{"timestamp":"2026-11-04T08:00:` + pad(sec) + `Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":` +
+			fmt.Sprint(total-1) + `,"output_tokens":1,"total_tokens":` + fmt.Sprint(total) + `}}}}`
+	}
+	writeRollout(t, home, "rollout-a-"+plainID+".jsonl", time.Date(2026, 11, 4, 8, 1, 0, 0, time.UTC),
+		meta, ctx,
+		user(2, "q"),
+		`{"timestamp":"2026-11-04T08:00:03Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{}","call_id":"c1"}}`,
+		`{"timestamp":"2026-11-04T08:00:04Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"ok"}}`,
+		tokenCount(5, 100),
+		assistant(6, "done"),
+		tokenCount(7, 200),
+	)
+	s := sessionByID(t, home, plainID)
+	reqs, resps := phase(s, model.SessionRequest, ""), phase(s, model.SessionResponse, "")
+	if len(reqs) != 2 || len(resps) != 2 {
+		t.Fatalf("%d requests, %d responses, want 2 and 2", len(reqs), len(resps))
+	}
+	if n := len(resps[0].Inference.ToolCalls); n != 1 || resps[0].Inference.TotalTokens != 100 {
+		t.Errorf("turn 1 = %d tool calls, TotalTokens %d, want 1 and 100", n, resps[0].Inference.TotalTokens)
+	}
+	if r := reqs[1].Inference.ToolResults; len(r) != 1 || r[0].ToolUseID != "c1" {
+		t.Errorf("turn 2 ToolResults = %+v, want c1", r)
+	}
+	if !reqs[1].At.Equal(time.Date(2026, 11, 4, 8, 0, 5, 0, time.UTC)) {
+		t.Errorf("turn 2 request At = %v, want the end of turn 1", reqs[1].At)
+	}
+	if resps[1].Inference.TotalTokens != 200 {
+		t.Errorf("turn 2 TotalTokens = %d, want 200", resps[1].Inference.TotalTokens)
+	}
+}
+
 // Of two rollouts with one thread id, the newer mtime wins, whatever the path order.
 func TestSource_NewerRolloutOfAThreadWins(t *testing.T) {
 	home := t.TempDir()

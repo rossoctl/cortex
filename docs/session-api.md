@@ -556,8 +556,10 @@ source imports nothing.
   set to the subagent's thread id.
 - Each event has the `codex` client, the model of the turn
   (`turn_context.model`), and the project of the turn's working directory.
-- Cortex prices a Codex turn at today's rates, from its `token_count` usage.
-  A turn with no `token_count` has no `cost` record.
+- Cortex prices a Codex turn at today's rates, from the usage of its
+  `token_usage_record` or `token_count` line. A tool result does not end a
+  turn, because some Codex versions write `token_count` after the tool
+  results. A turn with no usage has no `cost` record.
 
 ## `POST /v1/ingest` — rows from cortex-gateway (praxis mode)
 

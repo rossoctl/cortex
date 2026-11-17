@@ -44,6 +44,13 @@ var outputTypes = map[string]bool{
 	"web_search_call": true, "tool_search_call": true, "image_generation_call": true,
 }
 
+// toolOutputTypes are the response_item types of a tool result. Codex 0.142.3 writes the
+// token_count of a turn after the results of its tool calls, and writes no token_usage_record.
+// So a tool result does not close an open turn: the turn waits for its usage.
+var toolOutputTypes = map[string]bool{
+	"function_call_output": true, "custom_tool_call_output": true, "tool_search_output": true,
+}
+
 type fileResult struct {
 	events  []model.SessionEvent
 	skipped int
@@ -77,9 +84,9 @@ func (p *parser) file(path, thread, subagent string, copied []usage, usagesOnly 
 	}
 
 	conv := []json.RawMessage{}
-	var out []json.RawMessage
+	var out, held []json.RawMessage // held: the tool results that came after out; see toolOutputTypes
 	var mdl, cwd, version string
-	var inAt, prevAt, firstOutAt, lastOutAt time.Time
+	var inAt, heldAt, prevAt, firstOutAt, lastOutAt time.Time
 	n := 1
 	matching := len(copied) > 0 // no turn so far is the fork's own
 
@@ -90,8 +97,16 @@ func (p *parser) file(path, thread, subagent string, copied []usage, usagesOnly 
 		if at.IsZero() {
 			at = lastOutAt
 		}
-		turnOut := out
-		out = nil
+		turnOut, turnHeld := out, held
+		out, held = nil, nil
+		// keep adds the turn to the conversation of the turns after it.
+		keep := func() {
+			conv = append(append(conv, turnOut...), turnHeld...)
+			if len(turnHeld) > 0 {
+				inAt = heldAt
+			}
+			n++
+		}
 		if u != nil {
 			res.usages = append(res.usages, *u)
 		}
@@ -103,8 +118,7 @@ func (p *parser) file(path, thread, subagent string, copied []usage, usagesOnly 
 			}
 		}
 		if usagesOnly || matching {
-			conv = append(conv, turnOut...)
-			n++
+			keep()
 			return
 		}
 		reqBody, _ := json.Marshal(struct {
@@ -147,8 +161,7 @@ func (p *parser) file(path, thread, subagent string, copied []usage, usagesOnly 
 			p.in.InternEvent(&res.events[i])
 		}
 		prevAt = at
-		conv = append(conv, turnOut...)
-		n++
+		keep()
 	}
 
 	r := bufio.NewReader(f)
@@ -186,6 +199,11 @@ func (p *parser) file(path, thread, subagent string, copied []usage, usagesOnly 
 						}
 						out = append(out, l.Payload)
 						lastOutAt = l.Timestamp
+						break
+					}
+					if len(out) > 0 && toolOutputTypes[it.Type] {
+						held = append(held, l.Payload)
+						heldAt = l.Timestamp
 						break
 					}
 					closeTurn(time.Time{}, nil)
