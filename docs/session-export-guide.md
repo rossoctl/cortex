@@ -83,7 +83,7 @@ An id alone does not tell you which session it is. List the ids with their title
 
 ```sh
 curl -s 'http://localhost:47601/v1/sessions?archived=true' \
-  | jq -r '.sessions[] | select(.title) | "\(.id)  \(.title[0:60])"'
+  | jq -r '.sessions[] | "\(.id)  \((.title // "(untitled)")[0:60])"'
 ```
 
 ```
@@ -91,7 +91,12 @@ curl -s 'http://localhost:47601/v1/sessions?archived=true' \
 59046505-b6f3-43f5-a2ef-9071c9a847a2  https://github.com/rossoctl/cortex/pull/1854
 24e624cb-b578-42c4-9c8b-9bfbe29341ab  please address Alek's comments
 17051bcc-5ae8-40eb-a975-48488242b93d  Our rossoctl org has several repos
+0e2f9a41-7c3d-4b18-9f52-6a1e4d7b2c90  (untitled)
 ```
+
+A session has no title until its events carry one: a `/rename`, a user query, or ordinary
+prose. Tunnel-only traffic and utility clients therefore stay untitled. Keep those rows —
+they are the ones you most need an id for.
 
 Copy the id from the first column.
 
@@ -264,8 +269,9 @@ ID=849102c5-e59f-404c-8b2e-3dde35e052bb
 curl -s "http://localhost:47601/v1/export?session=$ID" \
   | jq -r 'select(.phase=="response" and .inputTokens)
            | [.seq, .durationMs, .ttfbMs, .inputTokens, .cacheReadTokens,
-              .cacheWriteTokens, .outputTokens, .toolCallCount] | @tsv' \
-  | (echo -e "SEQ\tMS\tTTFB\tINPUT\tCACHE_R\tCACHE_W\tOUTPUT\tTOOL_CALLS"; cat) \
+              .cacheWriteTokens, .outputTokens, .toolCallCount]
+           | map(. // "-") | @tsv' \
+  | (printf 'SEQ\tMS\tTTFB\tINPUT\tCACHE_R\tCACHE_W\tOUTPUT\tTOOL_CALLS\n'; cat) \
   | column -t
 ```
 
@@ -278,6 +284,14 @@ SEQ  MS    TTFB  INPUT  CACHE_R  CACHE_W  OUTPUT  TOOL_CALLS
 
 Select `phase=="response"`. A request-phase record carries no token counts, because the
 model reports usage on the response.
+
+`map(. // "-")` is not cosmetic. An absent field writes an empty cell, and `column`
+merges adjacent blanks, so every later value moves one column left under the wrong
+header — with no error. A response with no `cacheWriteTokens` is ordinary, so this
+happens on real data. `-` makes the absence visible, which is also what Trap 1 asks for.
+
+`printf` rather than `echo -e`: under `dash`, which is `/bin/sh` on Debian and Ubuntu,
+`echo -e` prints a literal `-e`.
 
 Remember [Trap 1](#three-traps): the `.inputTokens` test is what keeps non-inference
 records out of the table.
@@ -294,9 +308,12 @@ Use each endpoint for what it holds:
 | Tool names and spans | the timeline | The export has `toolCallCount`, never names |
 | Both at once | join them on `seq` | No single endpoint has both |
 
-The timeline's `tools` array holds tool spans: real tool traffic that passed through the
-proxy. It is not the list of `toolCalls` that a model asked for. A join on a model call's
-`seq` therefore finds no tool name. This is expected, and it is not a bug.
+The timeline's `tools` array holds the tool calls that each model response asked for. A
+tool's `seq` is its **response's** `seq`, so join a tool to the export's
+`phase=="response"` record.
+
+A turn's `seq` is its **request's** seq, which is one lower. A join on a turn's `seq`, or
+on the export's request record, finds no tool.
 
 **Load it into pandas:**
 
