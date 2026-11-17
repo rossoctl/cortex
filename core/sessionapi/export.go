@@ -184,8 +184,12 @@ func parseSince(s string) (time.Duration, error) {
 // Flushing per record keeps a consumer piping this through jq or wc current as the walk
 // runs, rather than at the end of a response that can be a month of traffic; the walk
 // takes long enough on a large archive that a consumer tailing one live should not wait
-// for the buffer (how long exactly is unbenchmarked — see exportTimeout's note). The wrote flag is how the handler tells an error it may still answer
-// with a status from one that can only truncate.
+// for the buffer (how long exactly is unbenchmarked — see exportTimeout's note).
+//
+// The wrote flag records that Write was CALLED, which is the same thing as "the status
+// line is gone": net/http commits the 200 on entry to a write, whatever that write then
+// does. So the flag is how the handler tells an error it may still answer with a status
+// from one that can only truncate. See Write for why n is not consulted.
 type flushWriter struct {
 	http.ResponseWriter
 	wrote bool
@@ -193,13 +197,15 @@ type flushWriter struct {
 
 func (f *flushWriter) Write(p []byte) (int, error) {
 	n, err := f.ResponseWriter.Write(p)
-	// n > 0, not an unconditional true: a FAILED first write that moved no bytes left the
-	// status line still ours to answer, so the handler should send its 500 rather than
-	// reset a client that has seen nothing. Setting the flag on a zero-byte failure sent a
-	// reset for a failure that happened before any byte reached the client.
-	if n > 0 {
-		f.wrote = true
-	}
+	// UNCONDITIONAL, and n is deliberately not consulted. net/http's response.write calls
+	// WriteHeader(200) BEFORE it looks at len(p) or at any error, so ANY call here has
+	// already committed the status line — even a zero-length write, and even one that
+	// failed having moved nothing. Gating on n > 0 therefore does not preserve the 500
+	// path; it only makes the handler believe a status is still available when it is not,
+	// and the client then reads a clean 200 whose body is `{"error":"archive read
+	// failed"}` — the #1543 class this endpoint exists to avoid. The flag tracks "Write
+	// was called", which is the same thing as "the status line is gone" (#1830 review).
+	f.wrote = true
 	if flusher, ok := f.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/session"
@@ -215,9 +216,12 @@ func TestWalk_UnknownSessionErrorIsBoundedInBytes(t *testing.T) {
 		// test goes red. These make the invariant fail in the package that owns it.
 		{"ampersands in the archived ids, each 6 bytes escaped",
 			[]string{"typo"}, []string{amp(0), amp(1), amp(2), amp(3), amp(4), amp(5)}},
+		// A THREE-BYTE rune, deliberately. "ż" is two bytes and divides the budget evenly,
+		// so a raw-byte cut still lands on a boundary and the assert below cannot fail.
+		// "日" is three bytes and does not, which is what makes the invariant testable.
 		{"multi-byte runes, so a cut must land on a boundary",
-			[]string{strings.Repeat("ż", 200), "x"},
-			[]string{strings.Repeat("ż", 200) + "-a", strings.Repeat("ż", 200) + "-b"}},
+			[]string{strings.Repeat("日", 200), "x"},
+			[]string{strings.Repeat("日", 200) + "-a", strings.Repeat("日", 200) + "-b"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			archived := tc.archive
@@ -236,10 +240,13 @@ func TestWalk_UnknownSessionErrorIsBoundedInBytes(t *testing.T) {
 			if wrapped >= 512 {
 				t.Errorf("400 body is %d bytes; a client that reads 512 cannot parse it: %s", wrapped, err.Error())
 			}
-			// A cut that lands mid-rune marshals the dangling bytes to U+FFFD. That is ugly
-			// in a terminal, and it also spends three bytes the budget did not account for.
-			if strings.Contains(err.Error(), "\uFFFD") {
-				t.Errorf("message cut mid-rune (U+FFFD present): %s", err.Error())
+			// VALIDITY, NOT A U+FFFD SEARCH. err.Error() is the raw Go string, so a
+			// mid-rune cut leaves INVALID UTF-8 BYTES here; the replacement rune only
+			// appears later, when json.Marshal encodes them. A search for U+FFFD on this
+			// side therefore cannot fail, which is how the first version of this assert
+			// stayed green under a raw-byte cut (#1830 review).
+			if !utf8.ValidString(err.Error()) {
+				t.Errorf("message cut mid-rune (invalid UTF-8): %q", err.Error())
 			}
 			// Bounded is not useful if it names nothing: the asker's first id must survive,
 			// at least as a recognisable prefix. The cap is on ESCAPED width, so ask the

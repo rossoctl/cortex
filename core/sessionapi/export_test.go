@@ -254,8 +254,8 @@ func TestHandleExport_UnknownSessionRefusalFitsAClientReadWhenIDsEscape(t *testi
 			// so a client can send these. A cut mid-rune marshals the dangling bytes to
 			// U+FFFD, which is ugly and also spends three bytes off-budget.
 			name:      "multi-byte runes, so a cut must land on a boundary",
-			archived:  func(i int) string { return strings.Repeat("ż", 120) + fmt.Sprintf("-%02d", i) },
-			requested: []string{strings.Repeat("ż", 200), strings.Repeat("ż", 199) + "a"},
+			archived:  func(i int) string { return strings.Repeat("日", 120) + fmt.Sprintf("-%02d", i) },
+			requested: []string{strings.Repeat("日", 200), strings.Repeat("日", 199) + "a"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -298,10 +298,12 @@ func TestHandleExport_UnknownSessionRefusalFitsAClientReadWhenIDsEscape(t *testi
 			if len(body) >= 512 {
 				t.Errorf("400 body is %d bytes; a client reading 512 cannot parse it: %s", len(body), body)
 			}
-			// A cut that lands mid-rune marshals the dangling bytes to U+FFFD: ugly in a
-			// terminal, and three bytes the budget did not account for.
-			if strings.Contains(string(body), "\ufffd") {
-				t.Errorf("message cut mid-rune (U+FFFD present): %s", body)
+			// THE ESCAPE AS SENT, in a raw string literal. json.Marshal writes invalid
+			// bytes as the six characters \ufffd, never as the rune itself, so an
+			// interpreted "\ufffd" here searches for something the wire never carries
+			// and the assert cannot fail (#1830 review).
+			if strings.Contains(string(body), `\ufffd`) {
+				t.Errorf("message cut mid-rune (U+FFFD escape on the wire): %s", body)
 			}
 			// The bound is only worth anything if the truncated body is still parseable at
 			// the cut: this is what agentop actually does with it.

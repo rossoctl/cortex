@@ -145,12 +145,6 @@ func loadedEvent() *model.SessionEvent {
 	}
 }
 
-// TestRecord_CarriesNoContent is the privacy contract. It encodes a record projected from an
-// event whose every content field holds a planted secret and fails if any secret survives.
-//
-// Checking the ENCODED BYTES rather than the struct's fields is the point: a field added to
-// Record later that happens to carry content fails here without anyone remembering this test
-// exists.
 // `at` IS ALWAYS UTC, whatever zone the proxy runs in. e.At carries the listener's local
 // offset, and an export that mixed offsets broke every obvious consumer: jq's
 // fromdateiso8601 errors on "+01:00", pandas raises "Mixed timezones detected" across a
@@ -185,6 +179,12 @@ func TestFromEvent_AtIsUTC(t *testing.T) {
 	}
 }
 
+// TestRecord_CarriesNoContent is the privacy contract. It encodes a record projected from an
+// event whose every content field holds a planted secret and fails if any secret survives.
+//
+// Checking the ENCODED BYTES rather than the struct's fields is the point: a field added to
+// Record later that happens to carry content fails here without anyone remembering this test
+// exists.
 func TestRecord_CarriesNoContent(t *testing.T) {
 	var buf bytes.Buffer
 	if err := NewWriter(&buf).WriteEvent(loadedEvent(), "sess-1"); err != nil {
