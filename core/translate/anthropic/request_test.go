@@ -35,7 +35,7 @@ func TestDecodeRequest_Fields(t *testing.T) {
 		`{"type":"tool_use","id":"` + thoughtID + `","name":"Bash","input":{"command":"factor 391"}}]},` +
 		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"` + thoughtID + `","content":"391: 17 23","is_error":true},` +
 		`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBO"}},` +
-		`{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}},` +
+		`{"type":"image","source":{"type":"url","url":"https://example.com/a.png","foo":1}},` +
 		`{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBE"},"title":"a.pdf"},` +
 		`{"type":"text","text":"Go on.","cache_control":{"type":"ephemeral","ttl":"1h"}}],"turn":7}]}`
 
@@ -57,7 +57,8 @@ func TestDecodeRequest_Fields(t *testing.T) {
 				{Kind: pivot.BlockToolResult, ToolUseID: thoughtID, IsError: true,
 					Content: []pivot.Block{{Kind: pivot.BlockText, Text: "391: 17 23"}}},
 				{Kind: pivot.BlockImage, SourceType: "base64", MediaType: "image/png", Data: "iVBO"},
-				{Kind: pivot.BlockImage, SourceType: "url", URL: "https://example.com/a.png"},
+				{Kind: pivot.BlockImage, SourceType: "url", URL: "https://example.com/a.png",
+					Extra: pivot.Extra{"anthropic.source": raw(`{"foo":1}`)}},
 				{Kind: pivot.BlockDocument, SourceType: "base64", MediaType: "application/pdf", Data: "JVBE",
 					Extra: pivot.Extra{"anthropic.title": raw(`"a.pdf"`)}},
 				{Kind: pivot.BlockText, Text: "Go on.", CacheControl: raw(`{"type":"ephemeral","ttl":"1h"}`)},
