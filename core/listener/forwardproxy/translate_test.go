@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -60,13 +62,28 @@ func (p *translator) OnResponse(context.Context, *pipeline.Context) pipeline.Act
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
-// resendingTranslator is a translator that is also a Resender.
-type resendingTranslator struct{ *translator }
+// resendingTranslator is a translator that is also a Resender. When substitute is set,
+// each Resend sets the request's model to it.
+type resendingTranslator struct {
+	*translator
+	substitute string
+}
 
-func (p resendingTranslator) Resend(_ context.Context, _ *pipeline.Context, _ int, body []byte) bool {
+func (p resendingTranslator) Capabilities() pipeline.PluginCapabilities {
+	c := p.translator.Capabilities()
+	c.WritesRequestBody = p.substitute != ""
+	return c
+}
+
+func (p resendingTranslator) Resend(_ context.Context, pctx *pipeline.Context, _ int, body []byte) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.heads = append(p.heads, string(body))
+	if p.substitute != "" {
+		if err := pctx.SetRequestModel(p.substitute); err != nil {
+			panic(err)
+		}
+	}
 	return p.resend
 }
 
@@ -440,8 +457,7 @@ func TestTranslate_ResendSeesRawReply(t *testing.T) {
 		_, _ = io.WriteString(w, replyFixture(t, "bob_shape1.json"))
 	})
 	tr := &translator{target: up.URL, translate: true, resend: true}
-	store := newStore(t)
-	proxy := newRedirectProxy(t, store, nil, resendingTranslator{tr})
+	proxy, rec := proxyWithCaptures(t, inferenceparser.NewInferenceParser(), resendingTranslator{tr, "claude-sonnet-5"})
 	resp := postAnthropic(t, proxy, anthropicRequest, nil)
 	body := replyText(t, resp)
 
@@ -462,6 +478,25 @@ func TestTranslate_ResendSeesRawReply(t *testing.T) {
 		if r.path != "/v1/chat/completions" || !bytes.Contains(r.body, []byte(`"messages":[{"role":"user","content":[`)) {
 			t.Errorf("upstream request %d = %s %s, want a chat body", i, r.path, r.body)
 		}
+	}
+	// Each attempt's row holds the chat body that attempt sent: the refused row the
+	// first model, the resent row the substitute.
+	caps := rec.all()
+	if len(caps) != 2 {
+		t.Fatalf("%d request captures, want 2", len(caps))
+	}
+	var translated []string
+	for _, c := range caps {
+		translated = append(translated, string(c.Translated))
+	}
+	sort.Strings(translated)
+	want := []string{string(reqs[0].body), string(reqs[1].body)}
+	sort.Strings(want)
+	if !slices.Equal(translated, want) || want[0] == want[1] {
+		t.Errorf("Translated = %q, want the two chat bodies sent upstream, %q", translated, want)
+	}
+	if !bytes.Contains(reqs[1].body, []byte(`"model":"claude-sonnet-5"`)) {
+		t.Errorf("resent body = %s, want the substitute model", reqs[1].body)
 	}
 }
 
