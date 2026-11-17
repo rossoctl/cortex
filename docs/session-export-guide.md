@@ -11,7 +11,7 @@ request or response that Cortex captured. One event becomes one record. The **st
 what Cortex holds in memory. The **archive** is what Cortex has written to disk.
 
 - [What an export contains](#what-an-export-contains)
-- [Step 1: list the sessions you can export](#step-1-list-the-sessions-you-can-export)
+- [Step 1: list the sessions](#step-1-list-the-sessions)
 - [Step 2: export](#step-2-export)
 - [Step 3: select less than everything](#step-3-select-less-than-everything)
 - [Step 4: answer a question with the export](#step-4-answer-a-question-with-the-export)
@@ -22,15 +22,20 @@ what Cortex holds in memory. The **archive** is what Cortex has written to disk.
 
 ## What an export contains
 
-Cortex records the **shape** of your traffic. It does not record the content. An export
-tells you how much, how fast, how often, and to where. It cannot tell you what was said.
+An export carries the **shape** of your traffic. It omits the content. An export tells you
+how much, how fast, how often, and to where. It cannot tell you what was said.
+
+Cortex does record content. It holds it in the store and in the archive, and
+[`session-dump.md`](session-dump.md) is how you get it. The export is the path that leaves
+the content behind.
 
 Read this section before you export. It decides whether this is the right tool.
 
 ### What a record carries
 
-One record is one event. A record holds 36 fields. Every field is a number or a short
-label.
+One record is one event. A record holds 36 fields. Cortex caps each label at 96 bytes, so
+every field is a number or a short label. `sessionId` is the exception: see
+[One field is not short](#one-field-is-not-short).
 
 | Group | Fields |
 |---|---|
@@ -39,16 +44,31 @@ label.
 | Outcome | `statusCode`, `errorKind`, `errorCode`, `finishReason` |
 | Timing | `durationMs`, `ttfbMs` |
 | Volume | `bytesUp`, `bytesDown` |
-| Tokens | `inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`, `reasoningTokens` |
+| Tokens | `inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`, `reasoningTokens`, `presentKinds` |
 | Model | `model`, `requestedModel`, `servedModel`, `stream`, `streamedResponse` |
-| Counts | `messageCount`, `toolCount`, `toolCallCount`, `presentKinds` |
+| Counts | `messageCount`, `toolCount`, `toolCallCount` |
 | Caller | `client`, `agentRole` |
 | Transport | `direction`, `phase`, `tunnel`, `tunnelReason`, `schema` |
 
+`client` is the product label from the User-Agent header, such as `claude-cli`. It is not
+an authenticated client id. `agentRole` comes from the inference metadata. Neither one
+names an authenticated principal.
+
+### One field is not short
+
+`sessionId` is the value a client asserted. Cortex copies it through unchanged, up to 256
+bytes. The 96-byte label cap does not apply to it.
+
+A client is therefore free to use a sentence as its session id. If a client does that, the
+export carries that sentence.
+
+**Read the `sessionId` values before you share an export.** This is the one field where
+client text can reach a record.
+
 ### What a record never carries
 
-A record never contains the items below. Cortex does not remove them. Cortex never copies
-them in. A record is an allowlist: a field must be added on purpose to appear.
+A record never contains the content below. Cortex does not remove it. Cortex never copies
+it in. A record is an allowlist: a field must be added deliberately to appear.
 
 - Prompts and user queries
 - Model completions and reasoning text
@@ -60,8 +80,11 @@ them in. A record is an allowlist: a field must be added on purpose to appear.
 - URL paths
 
 A test holds this contract. `TestRecord_CarriesNoContent` puts 24 distinct secrets in the
-content-bearing fields of an event. It then encodes the record. The build fails if any
-secret reaches the encoded bytes.
+content-bearing fields of an event. It then encodes the record. The test fails if any
+secret reaches the encoded bytes, which fails CI.
+
+The count above is pinned. `TestDocGuideSecretCountMatchesAllSecrets` fails if this page
+and the test disagree.
 
 ### Questions an export answers
 
@@ -88,7 +111,7 @@ you send it somewhere.
 
 If you need any of the content above, use [`session-dump.md`](session-dump.md) instead.
 
-## Step 1: list the sessions you can export
+## Step 1: list the sessions
 
 Ask the proxy which sessions the archive holds:
 
@@ -96,14 +119,21 @@ Ask the proxy which sessions the archive holds:
 curl -s 'http://127.0.0.1:47601/v1/sessions?archived=true' \
   | jq -r '.sessions[]
            | [.id, .eventCount, (.resident != false), (.title // "(untitled)")[0:50]]
-           | @tsv'
+           | @tsv' \
+  | column -t -s $'\t'
 ```
 
 ```
 849102c5-e59f-404c-8b2e-3dde35e052bb  412  true   please address the review comments
 59046505-b6f3-43f5-a2ef-9071c9a847a2  188  false  https://github.com/rossoctl/cortex/pull/1854
-0e2f9a41-7c3d-4b18-9f52-6a1e4d7b2c90   24  false  (untitled)
+0e2f9a41-7c3d-4b18-9f52-6a1e4d7b2c90  24   false  (untitled)
 ```
+
+`column -t` aligns the columns. Without it `@tsv` separates the fields with tabs, and a
+short event count moves the later columns out of line.
+
+`-s $'\t'` is not optional. `column` splits on any whitespace by default, so a title with
+spaces becomes several columns.
 
 Each row is one session: its id, its event count, whether the store still holds it, and
 its title.
@@ -118,17 +148,37 @@ The values mean:
 - **`false`**: the store has dropped this session, and the archive supplied this row. The
   viewer no longer shows it. The export still carries it.
 
+A `resident` session is not always in the archive yet. Cortex writes to the archive a tick
+behind the store, so a session that started seconds ago can be listed here and still be
+absent from the export. Give it a moment and export again.
+
 Cortex drops a session from the store when the store reaches its session limit, or when
 the session expires. The archive keeps the session after that. This is the reason to
 export: the archive holds history that memory has lost.
 
-If the command returns no sessions, see
+A proxy with no archive still answers this command. It ignores `archived=true` and returns
+the store's sessions, each one `resident`. Check the `archive` key to tell the two apart:
+
+```sh
+curl -s 'http://127.0.0.1:47601/v1/sessions?archived=true' | jq '.archive'
+```
+
+A reply of `null` means this proxy has no archive. The rows above then come from memory
+only, and the export cannot read them. See
 [When the proxy has no archive](#when-the-proxy-has-no-archive).
 
 ### Copy the id you need
 
 `--session` takes a **session id**. It matches that id exactly. It does not match a title.
 It does not match a prefix.
+
+One exception: the flag splits its value at commas, because it accepts a comma-separated
+list. So `--session task,one` asks for two sessions, `task` and `one`. To export an id that
+contains a comma, call the endpoint directly. `?session=` reads the whole value as one id:
+
+```sh
+curl -s 'http://127.0.0.1:47601/v1/export?session=task%2Cone' > one.ndjson
+```
 
 A session id is the value a client asserted. It is often a UUID. It can also be a plain
 word, such as `default`.

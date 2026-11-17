@@ -28,8 +28,10 @@ layer behind anything else.
 
 ## What a record is
 
-One line is one event. A record is content-free by construction. It is an allowlist of
-about 30 scalars projected from the event. It is never the event itself.
+One line is one event. A record is content-free by construction. It is an allowlist of 36
+scalars projected from the event. It is never the event itself.
+[The guide tables them](session-export-guide.md#what-a-record-carries), and a test pins
+that count.
 
 ```json
 {"schema":1,"sessionId":"45fa31b2-…","seq":2077,"requestId":"a0-9e37cd",
@@ -77,8 +79,20 @@ external collector is where someone will treat it as identity.
   raw tool results therefore overcounts by about 272x on real traffic. `toolCallCount` is the
   count of calls the model emitted. It is exported, and this problem does not affect it.
 
-The doc comments on `core/sessionexport/record.go` are the full field list. They carry
-these rules per field. This page is the summary.
+Two fields need their own note:
+
+- **`presentKinds`** is a bitfield. It names which of the token counts the provider
+  actually reported. It is the one field that escapes the zero-means-absent rule above: a
+  set bit with a zero count means the provider reported zero, and an unset bit means the
+  provider does not expose that count. Bits are Input=1, CacheRead=2, CacheWrite=4,
+  Output=8, Reasoning=16.
+- **`reasoningTokens`** is a **subset** of `outputTokens`, not an addition to it. Do not add
+  the two together.
+
+[`record.go`](../core/sessionexport/record.go) is the full field list. Its doc comments
+carry the reading rules for each field, and
+[the guide tables every field by group](session-export-guide.md#what-a-record-carries).
+This page is the summary.
 
 ## Selection
 
