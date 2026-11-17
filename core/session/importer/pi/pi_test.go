@@ -1,6 +1,7 @@
 package pi
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -307,5 +308,68 @@ func TestSource_HonoursPiCodingAgentDir(t *testing.T) {
 	t.Setenv("PI_CODING_AGENT_DIR", fixtures(t))
 	if got := readAll(t, New(""), time.Time{}); len(got) != 3 {
 		t.Fatalf("got %v, want 3 sessions", ids(got))
+	}
+}
+
+// TestSource_OffSpecSystemFieldsKeepTheLine checks that a system message with a wrong-typed
+// sections or tools value is still a context entry: the later
+// turn keeps the earlier history, the prompt and the tools.
+func TestSource_OffSpecSystemFieldsKeepTheLine(t *testing.T) {
+	const lead = `{"role":"system","content":"","sections":{"preamble":"P"},"toolsAdded":[{"name":"read"},{"name":"bash"}]}`
+	for _, tc := range []struct{ name, lead, delta string }{
+		{"section value not a string", lead, `{"role":"system","content":"","sections":{"skills":5}}`},
+		{"sections not an object", lead, `{"role":"system","content":"","sections":[]}`},
+		{"toolsRemoved element not an object", lead, `{"role":"system","content":"","toolsRemoved":["bash"]}`},
+		{"toolsRemoved not an array", lead, `{"role":"system","content":"","toolsRemoved":{"name":"bash"}}`},
+		{"toolsAdded element not an object", lead, `{"role":"system","content":"","toolsAdded":["x"]}`},
+		{"leading section value not a string", `{"role":"system","content":"","sections":{"preamble":"P","cwd":1},"toolsAdded":[{"name":"read"},{"name":"bash"}]}`,
+			`{"role":"system","content":""}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			proj := filepath.Join(dir, "sessions", demoDir)
+			if err := os.MkdirAll(proj, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			const id = "bbbbbbbb-0000-4000-8000-00000000000a"
+			msg := func(n int, parent, m string) string {
+				p := `null`
+				if parent != "" {
+					p = `"` + parent + `"`
+				}
+				return fmt.Sprintf(`{"type":"message","id":"5000000%d","parentId":%s,"timestamp":"2026-11-01T13:00:0%d.000Z","message":%s}`, n, p, n, m) + "\n"
+			}
+			body := `{"type":"session","version":3,"id":"` + id + `","timestamp":"2026-11-01T13:00:00.000Z","cwd":"/tmp/demo"}` + "\n" +
+				msg(1, "", tc.lead) +
+				msg(2, "50000001", `{"role":"user","content":"u1"}`) +
+				msg(3, "50000002", `{"role":"assistant","content":[{"type":"text","text":"a1"}],"model":"m"}`) +
+				msg(4, "50000003", tc.delta) +
+				msg(5, "50000004", `{"role":"user","content":"u2"}`) +
+				msg(6, "50000005", `{"role":"assistant","content":[{"type":"text","text":"a2"}],"model":"m"}`)
+			if err := os.WriteFile(filepath.Join(proj, "2026-11-01T13-00-00-000Z_"+id+".jsonl"), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			s := sessionByID(t, dir, id)
+			if s.Skipped != 0 {
+				t.Errorf("Skipped = %d, want 0", s.Skipped)
+			}
+			req, _ := turnByText(t, s, "a2")
+			var roles, tools []string
+			for _, m := range req.Inference.Messages {
+				roles = append(roles, m.Role)
+			}
+			for _, tl := range req.Inference.Tools {
+				tools = append(tools, tl.Name)
+			}
+			if want := []string{"system", "user", "assistant", "user"}; !slices.Equal(roles, want) {
+				t.Errorf("roles = %v, want %v", roles, want)
+			}
+			if len(req.Inference.Messages) > 0 && req.Inference.Messages[0].Content != "P" {
+				t.Errorf("system = %q, want %q", req.Inference.Messages[0].Content, "P")
+			}
+			if want := []string{"read", "bash"}; !slices.Equal(tools, want) {
+				t.Errorf("tools = %v, want %v", tools, want)
+			}
+		})
 	}
 }

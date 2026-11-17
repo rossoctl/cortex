@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"slices"
@@ -52,8 +51,8 @@ type message struct {
 	Role         string          `json:"role"`
 	Content      json.RawMessage `json:"content"`
 	Sections     sections        `json:"sections"`
-	ToolsAdded   []piTool        `json:"toolsAdded"`
-	ToolsRemoved []piTool        `json:"toolsRemoved"`
+	ToolsAdded   piTools         `json:"toolsAdded"`
+	ToolsRemoved piTools         `json:"toolsRemoved"`
 	Model        string          `json:"model"`
 	Usage        usage           `json:"usage"`
 	StopReason   string          `json:"stopReason"`
@@ -70,29 +69,51 @@ type sections []struct {
 	value *string
 }
 
+// UnmarshalJSON never fails, so a bad value does not drop the whole line: Pi does not
+// validate session files. A value that is not a string or null is "".
 func (s *sections) UnmarshalJSON(b []byte) error {
 	*s = nil
+	var m map[string]json.RawMessage // first, check that b is a valid object
+	if json.Unmarshal(b, &m) != nil {
+		return nil
+	}
 	d := json.NewDecoder(bytes.NewReader(b))
-	tok, err := d.Token()
-	if err != nil || tok == nil { // null
-		return err
-	}
-	if tok != json.Delim('{') {
-		return fmt.Errorf("sections: want an object, got %v", tok)
-	}
+	_, _ = d.Token() // {
 	for d.More() {
-		k, err := d.Token()
-		if err != nil {
-			return err
-		}
+		k, _ := d.Token()
+		var raw json.RawMessage
+		_ = d.Decode(&raw)
 		var v *string
-		if err := d.Decode(&v); err != nil {
-			return err
+		if string(raw) != "null" {
+			v = new(string)
+			_ = json.Unmarshal(raw, v) // not a string: stays ""
 		}
 		*s = append(*s, struct {
 			name  string
 			value *string
 		}{k.(string), v})
+	}
+	return nil
+}
+
+// piTools is a list of Pi tools. UnmarshalJSON never fails: it skips an element with no
+// non-empty string name, and gives no tools for a value that is not an array. A wrong-typed
+// description is left out, and the tool is kept.
+type piTools []piTool
+
+func (ts *piTools) UnmarshalJSON(b []byte) error {
+	*ts = nil
+	var raws []json.RawMessage
+	_ = json.Unmarshal(b, &raws)
+	for _, raw := range raws {
+		var f map[string]json.RawMessage
+		var t piTool
+		if json.Unmarshal(raw, &f) != nil || json.Unmarshal(f["name"], &t.Name) != nil || t.Name == "" {
+			continue
+		}
+		_ = json.Unmarshal(f["description"], &t.Description)
+		t.Parameters = f["parameters"]
+		*ts = append(*ts, t)
 	}
 	return nil
 }

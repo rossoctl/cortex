@@ -106,6 +106,32 @@ func TestRequest_System(t *testing.T) {
 		},
 		system: "B", tools: []string{"bash", "read"},
 	}, {
+		name: "a section value that is not a string replaces the section with no text",
+		ctx: []*entry{
+			sys(`{"role":"system","content":"","sections":{"a":"A","s":"S"}}`),
+			sys(`{"role":"system","content":"","sections":{"s":5,"b":"B"}}`),
+		},
+		system: "A\n\nB",
+	}, {
+		name: "a tool element that is not an object is skipped",
+		ctx: []*entry{
+			sys(`{"role":"system","content":"S","toolsAdded":[{"name":"read"},"x"],"toolsRemoved":[7]}`),
+		},
+		system: "S", tools: []string{"read"},
+	}, {
+		name: "a tool with a wrong-typed field is kept; one with no name is skipped",
+		ctx: []*entry{
+			sys(`{"role":"system","content":"S","toolsAdded":[{"name":"read","description":5},null,{"name":""},{"name":null},{"description":"d"},{"name":"q"}]}`),
+		},
+		system: "S", tools: []string{"read", "q"},
+	}, {
+		name: "toolsRemoved uses only the name",
+		ctx: []*entry{
+			sys(`{"role":"system","content":"S","toolsAdded":[{"name":"read"},{"name":"q"}]}`),
+			sys(`{"role":"system","content":"","toolsRemoved":[{"name":"q","description":5}]}`),
+		},
+		system: "S", tools: []string{"read"},
+	}, {
 		name: "the compaction's system message is the base of a later delta",
 		ctx: []*entry{
 			line(`{"type":"compaction","summary":"X","systemMessage":{"role":"system","content":"","sections":{"preamble":"P"},"toolsAdded":[{"name":"read"}]}}`),
