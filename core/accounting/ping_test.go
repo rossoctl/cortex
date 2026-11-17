@@ -449,10 +449,33 @@ func TestPing_StoreIsBounded(t *testing.T) {
 func TestPing_ConcurrentRequestsCreditOneRescue(t *testing.T) {
 	now := pingT0
 	h := clockHost(t, &now)
-	seen := factsSeen(h)
 
 	h.Compute(request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{}, 200, coldUsage()))
 	h.Ping("s1", nil, "api.anthropic.com", testPing(), okInfo())
+
+	// A two-party barrier in factsHook, which runs on each record's goroutine right after its
+	// peek of the ping facts and before the record is ended. Compute cannot drop the facts
+	// before its record is ended, so with both goroutines held here neither request can be
+	// priced until both have read the same facts: the race this test is about, every run.
+	// The wait is bounded well under computeWait, so a broken barrier fails rather than hangs.
+	var (
+		mu      sync.Mutex
+		facts   []accountant.EntryFacts
+		release = make(chan struct{})
+	)
+	h.factsHook = func(f accountant.EntryFacts) {
+		mu.Lock()
+		facts = append(facts, f)
+		if len(facts) == 2 {
+			close(release)
+		}
+		mu.Unlock()
+		select {
+		case <-release:
+		case <-time.After(time.Second):
+			t.Error("the barrier was not reached by both records")
+		}
+	}
 
 	now = pingT0.Add(8 * time.Minute)
 	read := pipeline.InferenceExtension{InputTokens: 3, CacheReadTokens: 1800}
@@ -460,7 +483,6 @@ func TestPing_ConcurrentRequestsCreditOneRescue(t *testing.T) {
 	b := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{}, 200, read)
 	var results []accountant.Result
 	var wg sync.WaitGroup
-	var mu sync.Mutex
 	for _, pctx := range []*pipeline.Context{a, b} {
 		wg.Add(1)
 		go func(pctx *pipeline.Context) {
@@ -476,9 +498,8 @@ func TestPing_ConcurrentRequestsCreditOneRescue(t *testing.T) {
 	}
 	wg.Wait()
 
-	got := seen()
-	if len(got) != 3 || got[1].LastPing.IsZero() || got[2].LastPing.IsZero() {
-		t.Fatalf("both concurrent requests should have read the ping's facts; facts = %+v", got)
+	if len(facts) != 2 || facts[0].PingWindow == "" || facts[0].PingWindow != facts[1].PingWindow {
+		t.Fatalf("both concurrent requests should have read the same ping facts; facts = %+v", facts)
 	}
 	rescues := 0
 	for _, res := range results {
