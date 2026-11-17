@@ -1,0 +1,246 @@
+// Package codex is the importer source for Codex. It reads the rollout files under
+// <codex home>/sessions and makes one importer.Session from the root rollout of a session
+// and the rollouts of its subagents. It does not write a file.
+package codex
+
+import (
+	"bufio"
+	"cmp"
+	"encoding/json"
+	"errors"
+	"io"
+	"io/fs"
+	"iter"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/klauspost/compress/zstd"
+
+	"github.com/rossoctl/cortex/core/model"
+	"github.com/rossoctl/cortex/core/session/importer"
+)
+
+const agentName = "codex"
+
+type source struct{ home string }
+
+// New returns the source. home "" resolves $CODEX_HOME, else ~/.codex, when Sessions runs.
+func New(home string) importer.Source { return source{home: home} }
+
+func (source) Agent() string { return agentName }
+
+// PricingHost is the OpenAI host: the bundled table prices the GPT models under every host,
+// and a rollout does not say if Codex used an API key or a ChatGPT login.
+func (source) PricingHost() string { return "api.openai.com" }
+
+// rollout is one rollout file, from its session_meta line.
+type rollout struct {
+	path, thread, session string
+	mod                   time.Time
+	size                  int64
+}
+
+// openRollout opens a rollout file. The listing and the parse both use it, so a test can
+// make an open fail.
+var openRollout = openFile
+
+// openFile opens path, and reads it through zstd when its name ends with .zst.
+func openFile(path string) (io.ReadCloser, error) {
+	f, err := os.Open(path)
+	if err != nil || !strings.HasSuffix(path, ".zst") {
+		return f, err
+	}
+	d, err := zstd.NewReader(f)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return zstdFile{d, f}, nil
+}
+
+type zstdFile struct {
+	*zstd.Decoder
+	f *os.File
+}
+
+func (z zstdFile) Close() error {
+	z.Decoder.Close()
+	return z.f.Close()
+}
+
+func (s source) dir() (string, error) {
+	if s.home != "" {
+		return s.home, nil
+	}
+	if h := os.Getenv("CODEX_HOME"); h != "" {
+		return h, nil
+	}
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(h, ".codex"), nil
+}
+
+func (s source) Sessions(since time.Time, skip func(id string, updated time.Time) bool) iter.Seq2[importer.Session, error] {
+	return func(yield func(importer.Session, error) bool) {
+		dir, err := s.dir()
+		if err != nil {
+			yield(importer.Session{}, err)
+			return
+		}
+		groups := group(list(filepath.Join(dir, "sessions")))
+		sids := make([]string, 0, len(groups))
+		newest := map[string]time.Time{}
+		for id, files := range groups {
+			sids = append(sids, id)
+			for _, f := range files {
+				if f.mod.After(newest[id]) {
+					newest[id] = f.mod
+				}
+			}
+		}
+		slices.SortFunc(sids, func(a, b string) int {
+			return cmp.Or(newest[b].Compare(newest[a]), strings.Compare(a, b))
+		})
+		home, _ := os.UserHomeDir()
+		for _, id := range sids {
+			// Codex writes each line when it happens, so no line is newer than its file.
+			if !since.IsZero() && newest[id].Before(since) {
+				continue
+			}
+			if skip(id, newest[id]) {
+				continue
+			}
+			if !yield(readSession(id, groups[id], home), nil) {
+				return
+			}
+		}
+	}
+}
+
+// list finds the rollout files under dir at all depths and reads the first line of each.
+// A missing dir gives none.
+func list(dir string) []rollout {
+	var out []rollout
+	// An error in one directory must not stop the others, so the walk ignores it.
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() && path != dir {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if !d.Type().IsRegular() || !strings.HasPrefix(name, "rollout-") ||
+			!(strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, ".jsonl.zst")) {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		thread, session, err := readMeta(path)
+		if err != nil {
+			slog.Warn("importer: cannot list a Codex rollout", "path", path, "error", err)
+			return nil
+		}
+		out = append(out, rollout{path: path, thread: thread, session: session, mod: fi.ModTime(), size: fi.Size()})
+		return nil
+	})
+	return out
+}
+
+// errNoMeta is the error of a rollout whose first line is not a session_meta line.
+var errNoMeta = errors.New("the first line is not a session_meta line")
+
+// readMeta gives the thread id and the session id from the first line of a rollout.
+func readMeta(path string) (thread, session string, err error) {
+	f, err := openRollout(path)
+	if err != nil {
+		return "", "", err
+	}
+	defer f.Close()
+	raw, err := bufio.NewReader(f).ReadBytes('\n')
+	if err != nil && len(raw) == 0 {
+		return "", "", err
+	}
+	var l struct {
+		Type    string `json:"type"`
+		Payload struct {
+			ID        string `json:"id"`
+			SessionID string `json:"session_id"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(raw, &l) != nil || l.Type != "session_meta" || l.Payload.ID == "" {
+		return "", "", errNoMeta
+	}
+	// Codex sends session_id as the Session-Id header; when it is absent it reads it as id.
+	return l.Payload.ID, cmp.Or(l.Payload.SessionID, l.Payload.ID), nil
+}
+
+// group puts the rollouts by session id. Of two rollouts with one thread id the newer wins:
+// a reverted thread, or a .jsonl and its .jsonl.zst during compression.
+func group(files []rollout) map[string][]rollout {
+	byThread := map[string]rollout{}
+	for _, f := range files {
+		if prev, dup := byThread[f.thread]; dup && !f.mod.After(prev.mod) {
+			continue
+		}
+		byThread[f.thread] = f
+	}
+	out := map[string][]rollout{}
+	for _, f := range byThread {
+		out[f.session] = append(out[f.session], f)
+	}
+	for _, rs := range out {
+		// The root first, so that on a tie of At its events stay before the subagents' events.
+		slices.SortFunc(rs, func(a, b rollout) int {
+			return cmp.Or(cmp.Compare(isChild(a), isChild(b)), strings.Compare(a.path, b.path))
+		})
+	}
+	return out
+}
+
+func isChild(f rollout) int {
+	if f.thread == f.session {
+		return 0
+	}
+	return 1
+}
+
+// readSession parses the rollouts of one session.
+func readSession(id string, files []rollout, home string) importer.Session {
+	p := parser{home: home, projects: map[string]string{}}
+	s := importer.Session{ID: id}
+	for _, f := range files {
+		subagent := ""
+		if f.thread != id {
+			subagent = f.thread
+		}
+		r, err := p.file(f.path, f.thread, subagent)
+		if err != nil {
+			if subagent == "" {
+				slog.Warn("importer: cannot read a Codex rollout", "path", f.path, "error", err)
+				return importer.Session{ID: id, Unreadable: true}
+			}
+			s.Skipped++
+			continue
+		}
+		s.Events = append(s.Events, r.events...)
+		s.Skipped += r.skipped
+		s.SizeHint += f.size
+	}
+	// Stable: on a tie the root stays first, and a request stays before its response.
+	slices.SortStableFunc(s.Events, func(a, b model.SessionEvent) int { return a.At.Compare(b.At) })
+	for _, e := range s.Events {
+		if e.At.After(s.Updated) {
+			s.Updated = e.At
+		}
+	}
+	return s
+}
