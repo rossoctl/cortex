@@ -791,17 +791,23 @@ func TestBackgroundJobRunsUntilItsNotification(t *testing.T) {
 	}
 }
 
-// A job that TaskStop stops gets no notification: it ends at the TaskStop result.
+// A job that TaskStop stops gets no notification: it ends at the TaskStop result. A shell on
+// another host has its own result text.
 func TestBackgroundJobEndsAtTaskStop(t *testing.T) {
-	var r rec
-	h := []pipeline.InferenceMessage{user("go")}
-	r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Bash"})
-	r.turn("", 2, 1, h, []pipeline.InferenceToolResult{result("t1", "Command running in background with ID: bk42.")}, "tool_use", pipeline.InferenceToolCall{ID: "t2", Name: "TaskStop"})
-	r.turn("", 26, 1, h, []pipeline.InferenceToolResult{result("t2", `{"message":"Successfully stopped task: bk42 (llama-server --port 18090)","task_id":"bk42"}`)}, "end_turn")
-	r.turn("", 600, 1, h, nil, "end_turn")
-	tl := Build("s", r.events, at(900))
-	if len(tl.Jobs) != 1 || tl.Jobs[0].End == nil || !tl.Jobs[0].End.Equal(at(26)) {
-		t.Fatalf("jobs = %+v, want bk42 to end at 26s", tl.Jobs)
+	for _, stopped := range []string{
+		`{"message":"Successfully stopped task: bk42 (llama-server --port 18090)","task_id":"bk42"}`,
+		`{"message":"Successfully stopped background command bk42 on devbox","task_id":"bk42","task_type":"local_bash"}`,
+	} {
+		var r rec
+		h := []pipeline.InferenceMessage{user("go")}
+		r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Bash"})
+		r.turn("", 2, 1, h, []pipeline.InferenceToolResult{result("t1", "Command running in background with ID: bk42.")}, "tool_use", pipeline.InferenceToolCall{ID: "t2", Name: "TaskStop"})
+		r.turn("", 26, 1, h, []pipeline.InferenceToolResult{result("t2", stopped)}, "end_turn")
+		r.turn("", 600, 1, h, nil, "end_turn")
+		tl := Build("s", r.events, at(900))
+		if len(tl.Jobs) != 1 || tl.Jobs[0].End == nil || !tl.Jobs[0].End.Equal(at(26)) {
+			t.Fatalf("%s: jobs = %+v, want bk42 to end at 26s", stopped, tl.Jobs)
+		}
 	}
 }
 

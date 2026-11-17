@@ -37,7 +37,7 @@ var (
 	backgroundRe = regexp.MustCompile(`^Command running in background with ID: ([A-Za-z0-9_-]+)`)
 	// stoppedRe is TaskStop's result. A stopped job gets no <task-notification>, so without it
 	// the job stays open and covers every later wait of its agent.
-	stoppedRe = regexp.MustCompile(`^\{"message":"Successfully stopped task: ([A-Za-z0-9_-]+)`)
+	stoppedRe = regexp.MustCompile(`^\{"message":"Successfully stopped (?:task: |background command )([A-Za-z0-9_-]+)`)
 )
 
 // failedFinish are the finish reasons of a reply that did not complete: none at all, a refusal
