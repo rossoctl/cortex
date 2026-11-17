@@ -9,26 +9,26 @@ import (
 	"testing"
 )
 
-// TestDocExampleRecordMatchesWire pins that the record example in docs/session-export.md
+// TestDocExampleRecordMatchesWire pins that the record example in docs/session-export-reference.md
 // strict-decodes into Record. The doc once showed promptTokens and completionTokens —
 // fields Record deliberately has not, the very double count its own reading rules warn
 // about — so every jq written against the example came back null (#1830 review). The
 // strict decode is the pin: a field the projection does not emit fails here before it
 // ships again, the way sessionapi's TestDocExamplePromptContextMatchesWire holds its doc.
 func TestDocExampleRecordMatchesWire(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "session-export.md"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "session-export-reference.md"))
 	if err != nil {
-		t.Fatalf("read docs/session-export.md: %v", err)
+		t.Fatalf("read docs/session-export-reference.md: %v", err)
 	}
 	doc := string(raw)
 	start := strings.Index(doc, "```json\n")
 	if start < 0 {
-		t.Fatal("docs/session-export.md carries no json example")
+		t.Fatal("docs/session-export-reference.md carries no json example")
 	}
 	scope := doc[start+len("```json\n"):]
 	end := strings.Index(scope, "```")
 	if end < 0 {
-		t.Fatal("docs/session-export.md's json example is never closed")
+		t.Fatal("docs/session-export-reference.md's json example is never closed")
 	}
 	example := scope[:end]
 

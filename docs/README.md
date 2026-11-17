@@ -17,9 +17,9 @@ holds the repo-level pieces; this file is the index.
 | Run an agent on a local model, or switch inference servers | [`laptop-local-model.md`](laptop-local-model.md) |
 | Use the `agentop` TUI | [`cmd/agentop/README.md`](../cmd/agentop/README.md) |
 | Add your agent's sessions from before Cortex | [`agentop import`](../cmd/agentop/README.md#importing-agent-history-agentop-import) |
-| Export sessions to files | [`session-dump.md`](session-dump.md) |
-| Export the archive for offline analysis (content-free records) | [`session-export.md`](session-export.md) |
-| Walk through exporting and analysing it, with the traps | [`session-export-guide.md`](session-export-guide.md) |
+| **Without content:** measure traffic — tokens, latency, errors. Start here | [`session-export-guide.md`](session-export-guide.md) |
+| **Without content:** look up what a record field means | [`session-export-reference.md`](session-export-reference.md) |
+| **With content:** keep prompts, completions and tool results as files | [`session-dump.md`](session-dump.md) |
 
 ## Kubernetes and architecture
 

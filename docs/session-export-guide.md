@@ -1,7 +1,8 @@
 # Export your session data: a walkthrough
 
-[`session-export.md`](session-export.md) is the reference. It tells you what each field
-means. This page tells you how to get an export and how to read it correctly.
+This page tells you how to get an export and how to read it correctly.
+[`session-export-reference.md`](session-export-reference.md) is the reference. It tells
+you what each field means.
 
 Every command and every output on this page was run against a served archive.
 
@@ -9,56 +10,106 @@ Every command and every output on this page was run against a served archive.
 request or response that Cortex captured. One event becomes one record. The **store** is
 what Cortex holds in memory. The **archive** is what Cortex has written to disk.
 
-- [Step 1: confirm the proxy has an archive](#step-1-confirm-the-proxy-has-an-archive)
-- [Step 2: list what the archive holds](#step-2-list-what-the-archive-holds)
-  - [Find the id of the session you want](#find-the-id-of-the-session-you-want)
-- [Step 3: export it](#step-3-export-it)
-- [Step 4: select less than everything](#step-4-select-less-than-everything)
-- [Answer a question with the export](#answer-a-question-with-the-export)
+- [What an export contains](#what-an-export-contains)
+- [Step 1: list the sessions you can export](#step-1-list-the-sessions-you-can-export)
+- [Step 2: export](#step-2-export)
+- [Step 3: select less than everything](#step-3-select-less-than-everything)
+- [Step 4: answer a question with the export](#step-4-answer-a-question-with-the-export)
 - [Three traps](#three-traps)
-- [Export from a cluster sidecar](#export-from-a-cluster-sidecar)
+- [When the proxy has no archive](#when-the-proxy-has-no-archive)
 - [Use the export in a script](#use-the-export-in-a-script)
 - [Read the refusals](#read-the-refusals)
 
-## Step 1: confirm the proxy has an archive
+## What an export contains
 
-The export reads the archive on disk. It does not read the store in memory. A laptop
-install has an archive. Most other deployments do not.
+Cortex records the **shape** of your traffic. It does not record the content. An export
+tells you how much, how fast, how often, and to where. It cannot tell you what was said.
 
-Ask the proxy what its archive holds:
+Read this section before you export. It decides whether this is the right tool.
 
-```sh
-curl -s 'http://127.0.0.1:47601/v1/sessions?archived=true' | jq '.archive'
-```
+### What a record carries
 
-```json
-{
-  "bytes": 493,
-  "maxBytes": 2147483648,
-  "retentionDays": 30
-}
-```
+One record is one event. A record holds 36 fields. Every field is a number or a short
+label.
 
-`retentionDays` is how long the archive keeps a session. `maxBytes` is its size limit.
+| Group | Fields |
+|---|---|
+| Identity | `sessionId`, `seq`, `requestId`, `at` |
+| Destination | `host`, `requestedHost`, `httpMethod` |
+| Outcome | `statusCode`, `errorKind`, `errorCode`, `finishReason` |
+| Timing | `durationMs`, `ttfbMs` |
+| Volume | `bytesUp`, `bytesDown` |
+| Tokens | `inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`, `reasoningTokens` |
+| Model | `model`, `requestedModel`, `servedModel`, `stream`, `streamedResponse` |
+| Counts | `messageCount`, `toolCount`, `toolCallCount`, `presentKinds` |
+| Caller | `client`, `agentRole` |
+| Transport | `direction`, `phase`, `tunnel`, `tunnelReason`, `schema` |
 
-If the reply is `null`, this proxy has no archive. Go to
-[Export from a cluster sidecar](#export-from-a-cluster-sidecar).
+### What a record never carries
 
-## Step 2: list what the archive holds
+A record never contains the items below. Cortex does not remove them. Cortex never copies
+them in. A record is an allowlist: a field must be added on purpose to appear.
+
+- Prompts and user queries
+- Model completions and reasoning text
+- Tool arguments, such as a `Bash` command line
+- Tool results, and tool names
+- MCP parameters and results, and A2A message parts and artifacts
+- Request and response bodies, and request headers
+- Authenticated identity: subject, client id, agent id, scopes, SPIFFE id
+- URL paths
+
+A test holds this contract. `TestRecord_CarriesNoContent` puts 24 distinct secrets in the
+content-bearing fields of an event. It then encodes the record. The build fails if any
+secret reaches the encoded bytes.
+
+### Questions an export answers
+
+- Token spend per model
+- Latency percentiles, including time to first byte
+- Cache hit rates
+- Which hosts an agent reached
+- Error rates and refusal rates
+- Agent-version adoption
+- How traffic changed across a release
+
+### Questions an export cannot answer
+
+- What a user asked
+- What the model replied
+- Which file a tool touched
+- Why a request was made
+- Who the user was
+- Which tools ran. A record counts them in `toolCallCount`. It never names them.
+
+An export is **content-free**. It is **not anonymous**. It keeps hosts, models, session
+ids and timestamps. Together these show who called what, and when. Read an export before
+you send it somewhere.
+
+If you need any of the content above, use [`session-dump.md`](session-dump.md) instead.
+
+## Step 1: list the sessions you can export
+
+Ask the proxy which sessions the archive holds:
 
 ```sh
 curl -s 'http://127.0.0.1:47601/v1/sessions?archived=true' \
-  | jq -r '.sessions[] | [.id, .eventCount, (.resident != false)] | @tsv'
+  | jq -r '.sessions[]
+           | [.id, .eventCount, (.resident != false), (.title // "(untitled)")[0:50]]
+           | @tsv'
 ```
 
 ```
-old-session      3   false
-today-session    4   false
+849102c5-e59f-404c-8b2e-3dde35e052bb  412  true   please address the review comments
+59046505-b6f3-43f5-a2ef-9071c9a847a2  188  false  https://github.com/rossoctl/cortex/pull/1854
+0e2f9a41-7c3d-4b18-9f52-6a1e4d7b2c90   24  false  (untitled)
 ```
 
-The third column is `resident`. Test it with `!= false`, not with `// true`: in `jq` the
-`//` operator treats `false` as absent, so `// true` would report every session as
-resident.
+Each row is one session: its id, its event count, whether the store still holds it, and
+its title.
+
+The third column is `resident`. Test it with `!= false`, not with `// true`. In `jq` the
+`//` operator treats `false` as absent, so `// true` reports every session as resident.
 
 The values mean:
 
@@ -71,47 +122,33 @@ Cortex drops a session from the store when the store reaches its session limit, 
 the session expires. The archive keeps the session after that. This is the reason to
 export: the archive holds history that memory has lost.
 
-### Find the id of the session you want
+If the command returns no sessions, see
+[When the proxy has no archive](#when-the-proxy-has-no-archive).
 
-`--session` takes a **session id**, and it matches that id exactly. It does not match a
-title, and it does not match a prefix.
+### Copy the id you need
+
+`--session` takes a **session id**. It matches that id exactly. It does not match a title.
+It does not match a prefix.
 
 A session id is the value a client asserted. It is often a UUID. It can also be a plain
 word, such as `default`.
 
-An id alone does not tell you which session it is. List the ids with their titles:
-
-```sh
-curl -s 'http://localhost:47601/v1/sessions?archived=true' \
-  | jq -r '.sessions[] | "\(.id)  \((.title // "(untitled)")[0:60])"'
-```
-
-```
-849102c5-e59f-404c-8b2e-3dde35e052bb  please address the review comments
-59046505-b6f3-43f5-a2ef-9071c9a847a2  https://github.com/rossoctl/cortex/pull/1854
-24e624cb-b578-42c4-9c8b-9bfbe29341ab  please address Alek's comments
-17051bcc-5ae8-40eb-a975-48488242b93d  Our rossoctl org has several repos
-0e2f9a41-7c3d-4b18-9f52-6a1e4d7b2c90  (untitled)
-```
-
 A session has no title until its events carry one: a `/rename`, a user query, or ordinary
-prose. Tunnel-only traffic and utility clients therefore stay untitled. Keep those rows —
-they are the ones you most need an id for.
-
-Copy the id from the first column.
+prose. Tunnel-only traffic and utility clients therefore stay untitled. Keep those rows.
+They are the ones you most need an id for.
 
 > **A title is user content. An export is not.**
 >
 > Cortex derives a title from the session's own events: a `/rename`, else a user query,
 > else ordinary conversation. A title therefore contains prompt text.
 >
-> The export excludes prompt text by design. The command above does not. Use it in your
-> own terminal. Do not paste its output where you would paste an export.
+> The export excludes prompt text. The command above does not. Run it in your own
+> terminal. Do not paste its output where you would paste an export.
 
-The export carries no title. A record identifies its session by `sessionId` only. To
-label a report, join the ids back to the titles yourself.
+The export carries no title. A record identifies its session by `sessionId` only. To label
+a report, join the ids back to the titles yourself.
 
-## Step 3: export it
+## Step 2: export
 
 ```sh
 agentop export --out usage.ndjson
@@ -128,7 +165,7 @@ can be the export itself:
 agentop export | jq -r '.model // empty' | sort | uniq -c
 ```
 
-Each record is one event, reduced to about 30 numbers and short strings:
+Each record is one event, reduced to numbers and short labels:
 
 ```json
 {
@@ -149,12 +186,7 @@ Each record is one event, reduced to about 30 numbers and short strings:
 ```
 
 Look at what the record does not have. The source event held this message content:
-`"SECRET-PROMPT-DO-NOT-EXPORT"`. The record has `"messageCount": 1` in its place. The
-export carries no prompts, no completions and no tool arguments. This is why you can
-share an export where you cannot share the full events.
-
-An export is not anonymous. It keeps hosts, models, session ids and timestamps. Together
-these show who called what, and when. Read an export before you send it somewhere.
+`"SECRET-PROMPT-DO-NOT-EXPORT"`. The record has `"messageCount": 1` in its place.
 
 The command refuses to overwrite a file:
 
@@ -165,7 +197,7 @@ agentop export: usage.ndjson already exists; --force overwrites it
 
 Add `--force` to overwrite it.
 
-## Step 4: select less than everything
+## Step 3: select less than everything
 
 Select by time:
 
@@ -174,7 +206,7 @@ agentop export --since 7d
 ```
 
 Select by session id. Get the id from
-[Step 2](#find-the-id-of-the-session-you-want):
+[Step 1](#copy-the-id-you-need):
 
 ```sh
 agentop export --session 849102c5-e59f-404c-8b2e-3dde35e052bb
@@ -206,7 +238,7 @@ A session can appear in an export with fewer events than it has. Example: a sess
 started a month ago, and it ran again this morning. `--since 24h` carries this morning's
 events from it. `--since 24h` excludes its older events.
 
-## Answer a question with the export
+## Step 4: answer a question with the export
 
 The export is NDJSON. One record per line. `jq` reads it directly.
 
@@ -432,7 +464,28 @@ agentop export --session default \
 2026-11-16T23:08:45.84114Z  gap=191h
 ```
 
-## Export from a cluster sidecar
+## When the proxy has no archive
+
+The export reads the archive on disk. It does not read the store in memory. A laptop
+install has an archive. Most other deployments do not.
+
+Ask the proxy what its archive holds:
+
+```sh
+curl -s 'http://127.0.0.1:47601/v1/sessions?archived=true' | jq '.archive'
+```
+
+```json
+{
+  "bytes": 493,
+  "maxBytes": 2147483648,
+  "retentionDays": 30
+}
+```
+
+`retentionDays` is how long the archive keeps a session. `maxBytes` is its size limit.
+
+A reply of `null` means this proxy has no archive.
 
 An injected sidecar normally runs no archive. The endpoint then answers 404:
 
@@ -588,7 +641,7 @@ this error, because it escapes its own query. A hand-written `curl` can.
 
 ## See also
 
-- [`session-export.md`](session-export.md) — the fields of a record, and the full reading
+- [`session-export-reference.md`](session-export-reference.md) — the fields of a record, and the full reading
   rules
 - [`session-api.md`](session-api.md) — every endpoint, `GET /v1/export` included
 - [`session-dump.md`](session-dump.md) — use this when you want the content: prompts,

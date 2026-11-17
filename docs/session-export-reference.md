@@ -1,4 +1,9 @@
-# Export sessions for analysis
+# Export sessions for analysis: reference
+
+> **New to the export?** Start with
+> [`session-export-guide.md`](session-export-guide.md). It walks through one export, and
+> it lists the three traps that give a wrong answer with no error. This page is the field
+> reference. Use it to look something up.
 
 `GET /v1/export` writes the session archive as NDJSON. One line per archived event. It is
 on the [Session Events API](session-api.md).
@@ -20,9 +25,6 @@ records: latency percentiles, token spend per model, agent-version adoption, cac
 rates, tool failure rates. A live TUI cannot answer these.
 [`agentop cost`](pricing.md) answers a few of them inside the tool. This endpoint is the
 layer behind anything else.
-
-For a step-by-step walkthrough, see
-[`session-export-guide.md`](session-export-guide.md). This page is the reference.
 
 ## What a record is
 
