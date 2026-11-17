@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -179,37 +180,57 @@ func recordIndex(st *managedState, settingsPath string) int {
 }
 
 // adoptRelativeEntry records as abs the entry an older enable recorded as rel,
-// the relative path given again here. The entry has no directory, so abs must
-// show Cortex routed it: it holds a value the entry's Written records, or, for a
-// record from before Written, one in want. A key edited since keeps its match.
-// An entry abs already has stays as it is.
-func adoptRelativeEntry(statePath, rel, abs string, want map[string]string, stderr io.Writer) error {
+// the relative path given again here, and returns a func that puts the record
+// back as it was. The entry has no directory, and Cortex's values are the same
+// in every project, so runClaudeCode keeps the change only when the run succeeds
+// and either changes abs or has --yes. A file holding none of the keys Cortex
+// manages leaves the entry as it is, as does an entry abs already has.
+func adoptRelativeEntry(statePath, rel, abs string, stdout io.Writer) (func() error, error) {
+	orig, err := os.ReadFile(statePath)
+	if err != nil {
+		return nil, nil
+	}
 	st, err := readState(statePath)
 	if err != nil || recordFor(st, abs) != nil {
-		return nil
+		return nil, nil
 	}
 	e := recordFor(st, rel)
 	if e == nil {
-		return nil
-	}
-	ours := e.Written
-	if len(ours) == 0 {
-		ours = want
+		return nil, nil
 	}
 	doc, err := readSettings(abs)
-	holds := false
-	for k, w := range ours {
-		if v, set := envStrings(doc)[k]; err == nil && set && v == w {
-			holds = true
+	if err != nil {
+		return nil, nil
+	}
+	if !holdsManagedKey(envStrings(doc)) {
+		fmt.Fprintf(stdout, "The record's entry for %s is from an older agentop, which did not record\n"+
+			"its directory, and %s holds none of the keys Cortex\n"+
+			"manages, so the entry stays. If it names this file, delete it from %s.\n\n", rel, abs, statePath)
+		return nil, nil
+	}
+	fmt.Fprintf(stdout, "The record's entry for %s is from an older agentop, which did not record\n"+
+		"its directory. A change confirmed here, or --yes, takes it as %s;\n"+
+		"give --settings as an absolute path to leave the entry as it is.\n\n", rel, abs)
+	e.Settings = abs
+	if err := writeStateFile(statePath, *st); err != nil {
+		return nil, err
+	}
+	return func() error { return writeFileAtomic(statePath, orig, 0o600) }, nil
+}
+
+// holdsManagedKey reports whether env sets a key Cortex manages or once wrote.
+func holdsManagedKey(env map[string]string) bool {
+	for _, k := range managedKeys {
+		if _, set := env[k]; set {
+			return true
 		}
 	}
-	if !holds {
-		fmt.Fprintf(stderr, "agentop: %s holds none of the values the record's entry for %s\n"+
-			"  says Cortex wrote, so that entry is left as it is.\n", abs, rel)
-		return nil
+	for k := range retiredKeys {
+		if _, set := env[k]; set {
+			return true
+		}
 	}
-	e.Settings = abs
-	return writeStateFile(statePath, *st)
+	return false
 }
 
 // recordFor is the record's entry for settingsPath, nil when it has none.
@@ -409,25 +430,44 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 	statePath := filepath.Join(home, stateRel)
 	// Absolute, so the record names the file from any directory. status reads
 	// only the settings file, so it leaves the record as it is.
+	var undo func() error
 	if abs, err := filepath.Abs(*settingsPath); err == nil {
 		if action != "status" && !filepath.IsAbs(*settingsPath) {
-			want, _ := wanted(*cortexCfg)
-			if err := adoptRelativeEntry(statePath, *settingsPath, abs, want, stderr); err != nil {
+			if undo, err = adoptRelativeEntry(statePath, *settingsPath, abs, stdout); err != nil {
 				fmt.Fprintf(stderr, "agentop: %v\n", err)
 				return 1
 			}
 		}
 		*settingsPath = abs
 	}
+	var before []byte
+	if undo != nil {
+		before, _ = os.ReadFile(*settingsPath)
+	}
 
 	switch action {
 	case "enable":
-		return claudeCodeEnable2(*settingsPath, *cortexCfg, statePath, yes, stdout, stderr)
+		code = claudeCodeEnable2(*settingsPath, *cortexCfg, statePath, yes, stdout, stderr)
 	case "disable":
-		return claudeCodeDisable2(*settingsPath, statePath, yes, stdout, stderr)
+		code = claudeCodeDisable2(*settingsPath, statePath, yes, stdout, stderr)
 	default:
 		return claudeCodeStatus(*settingsPath, stdout)
 	}
+	// An adopted entry stays when the run succeeded and the user confirmed it: by
+	// a change they agreed to, or by --yes.
+	if undo != nil {
+		after, _ := os.ReadFile(*settingsPath)
+		if code != 0 || !yes && bytes.Equal(before, after) {
+			if err := undo(); err != nil {
+				fmt.Fprintf(stderr, "agentop: could not put back %s (%v)\n", statePath, err)
+				return 1
+			}
+			if code == 0 {
+				fmt.Fprintf(stdout, "The older entry stays as it was; run again with --yes if it names %s.\n", *settingsPath)
+			}
+		}
+	}
+	return code
 }
 
 // wanted derives the three values from the Cortex config, so they cannot drift

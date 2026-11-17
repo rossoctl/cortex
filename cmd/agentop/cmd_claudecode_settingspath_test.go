@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -65,7 +66,8 @@ func TestUninstallUnroutesEverySettingsFileCortexRouted(t *testing.T) {
 }
 
 // The same relative --settings in another project names another file, so
-// disable and enable there leave the older entry to its own project.
+// disable and enable there leave the older entry to its own project, and say
+// how to delete it.
 func TestClaudeCodeLeavesAnOlderRelativeEntryToTheProjectThatHoldsIt(t *testing.T) {
 	sc := newUninstallScene(t)
 	sc.setUp(t)
@@ -80,9 +82,12 @@ func TestClaudeCodeLeavesAnOlderRelativeEntryToTheProjectThatHoldsIt(t *testing.
 
 	t.Chdir(b)
 	for _, action := range []string{"disable", "enable"} {
-		var errb bytes.Buffer
-		if code := runClaudeCode([]string{action, "--yes", "--settings", settingsRel}, io.Discard, &errb); code != 0 {
+		var out, errb bytes.Buffer
+		if code := runClaudeCode([]string{action, "--yes", "--settings", settingsRel}, &out, &errb); code != 0 {
 			t.Fatalf("%s in b exit %d: %s", action, code, errb.String())
+		}
+		if action == "disable" && !strings.Contains(out.String(), "delete it from "+state) {
+			t.Errorf("disable in b does not say how to delete the older entry:\n%s", out.String())
 		}
 		if st, err := readState(state); err != nil || st == nil || st.Settings != settingsRel {
 			t.Errorf("after %s in b the record is %+v (%v), want a's relative entry first", action, st, err)
@@ -171,14 +176,38 @@ func TestClaudeCodeEnable_LeavesAnOlderRelativeEntryToItsProject(t *testing.T) {
 }
 
 // A relative --settings given again where an older enable recorded it finds
-// that entry, so disable takes it out: after a key was edited since, which keeps
-// the edit, and in a record from before Written.
+// that entry, so disable takes it out and keeps every edit: one key edited
+// since, that key alone left, every key edited, and a record from before
+// Written.
 func TestClaudeCodeDisable_FindsAnOlderRelativeEntry(t *testing.T) {
 	const corpCA = "/etc/corp-ca.pem"
+	everyKey := map[string]string{}
+	for _, k := range managedKeys {
+		everyKey[k] = corpCA
+	}
+	everyKey[envProxy] = "http://corp.example:3128"
 	for _, c := range []struct {
-		name   string
-		edited bool
-	}{{"a key edited since", true}, {"a record from before Written", false}} {
+		name string
+		want map[string]string // the env disable leaves
+		edit func(t *testing.T, proj, state string)
+	}{
+		{"a key edited since", map[string]string{envCACerts: corpCA}, func(t *testing.T, proj, _ string) {
+			handEdit(t, proj, map[string]string{envCACerts: corpCA})
+		}},
+		{"only an edited key left", map[string]string{envCACerts: corpCA}, func(t *testing.T, proj, _ string) {
+			writeHomeFile(t, proj, `{"env":{"`+envCACerts+`":"`+corpCA+`"}}`)
+		}},
+		{"every key edited", everyKey, func(t *testing.T, proj, _ string) {
+			handEdit(t, proj, everyKey)
+		}},
+		{"a record from before Written", nil, func(t *testing.T, _, state string) {
+			st, _ := readState(state)
+			st.Written = nil
+			if err := writeStateFile(state, *st); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
 		t.Run(c.name, func(t *testing.T) {
 			sc := newUninstallScene(t)
 			sc.setUp(t)
@@ -189,15 +218,7 @@ func TestClaudeCodeDisable_FindsAnOlderRelativeEntry(t *testing.T) {
 			if code := claudeCodeEnable2(settingsRel, filepath.Join(sc.home, cortexCfgRel), state, true, io.Discard, io.Discard); code != 0 {
 				t.Fatalf("fixture: relative enable exit %d", code)
 			}
-			if c.edited {
-				handEdit(t, proj, map[string]string{envCACerts: corpCA})
-			} else {
-				st, _ := readState(state)
-				st.Written = nil
-				if err := writeStateFile(state, *st); err != nil {
-					t.Fatal(err)
-				}
-			}
+			c.edit(t, proj, state)
 
 			var errb bytes.Buffer
 			if code := runClaudeCode([]string{"disable", "--yes", "--settings", settingsRel}, io.Discard, &errb); code != 0 {
@@ -206,8 +227,116 @@ func TestClaudeCodeDisable_FindsAnOlderRelativeEntry(t *testing.T) {
 			if _, err := os.Stat(state); !os.IsNotExist(err) {
 				t.Errorf("the record outlived the disable of the file it names (%v)", err)
 			}
-			if env := readEnv(t, proj); c.edited && (env[envCACerts] != corpCA || len(env) != 1) {
-				t.Errorf("env is %v, want only the edited %s=%s", env, envCACerts, corpCA)
+			if env := readEnv(t, proj); !maps.Equal(env, c.want) {
+				t.Errorf("env is %v, want %v", env, c.want)
+			}
+		})
+	}
+}
+
+// Another project's file can hold the same Cortex values, so a relative
+// --settings there keeps the older entry as it is unless the run confirms it:
+// a declined change, a run with nothing to change, and a failed enable all
+// leave it.
+func TestClaudeCodeKeepsAnOlderRelativeEntryUnlessTheRunConfirmsIt(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t)
+	a, b := filepath.Join(sc.home, "a"), filepath.Join(sc.home, "b")
+	writeHomeFile(t, filepath.Join(a, settingsRel), "{}\n")
+	state := filepath.Join(sc.home, stateRel)
+	t.Chdir(a)
+	if code := claudeCodeEnable2(settingsRel, filepath.Join(sc.home, cortexCfgRel), state, true, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("fixture: relative enable exit %d", code)
+	}
+	routed, err := os.ReadFile(filepath.Join(a, settingsRel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bFile := filepath.Join(b, settingsRel)
+	writeHomeFile(t, bFile, string(routed))
+
+	t.Chdir(b)
+	answerPrompt(t, &claudeCodeConfirm, "n\n")
+	for _, c := range []struct {
+		name string
+		args []string
+		edit map[string]string
+		code int
+	}{
+		{"a declined disable", []string{"disable"}, nil, exitDeclined},
+		{"an enable with nothing to change", []string{"enable"}, nil, 0},
+		{"a failed enable", []string{"enable", "--yes"}, map[string]string{envCACerts: "/etc/b-corp.pem"}, 1},
+	} {
+		if c.edit != nil {
+			handEdit(t, bFile, c.edit)
+		}
+		var out bytes.Buffer
+		if code := runClaudeCode(append(c.args, "--settings", settingsRel), &out, io.Discard); code != c.code {
+			t.Errorf("%s: exit %d, want %d", c.name, code, c.code)
+		}
+		if !strings.Contains(out.String(), "older agentop") {
+			t.Errorf("%s: no note on the older entry:\n%s", c.name, out.String())
+		}
+		if st, _ := readState(state); st == nil || st.Settings != settingsRel {
+			t.Errorf("after %s the record is %+v, want a's relative entry", c.name, st)
+		}
+	}
+}
+
+// Without --yes, a change the user confirms takes the older relative entry for
+// the file, and a disable with nothing to remove keeps the entry and says how to
+// take it.
+func TestClaudeCodeTakesAnOlderRelativeEntryWithAConfirmedChange(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		action string
+		edit   func(t *testing.T, proj string)
+		want   string // the record's first entry afterwards; "" is proj itself
+		note   string
+	}{
+		{"a confirmed enable", "enable", func(t *testing.T, proj string) {
+			doc, err := readSettings(proj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delete(envRaw(doc), envProxy)
+			if err := writeSettings(proj, doc); err != nil {
+				t.Fatal(err)
+			}
+		}, "", ""},
+		{"a disable with nothing to remove", "disable", func(t *testing.T, proj string) {
+			edits := map[string]string{}
+			for _, k := range managedKeys {
+				edits[k] = "/etc/corp-ca.pem"
+			}
+			handEdit(t, proj, edits)
+		}, settingsRel, "run again with --yes"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t)
+			proj := filepath.Join(sc.home, "proj", settingsRel)
+			writeHomeFile(t, proj, "{}\n")
+			state := filepath.Join(sc.home, stateRel)
+			t.Chdir(filepath.Join(sc.home, "proj"))
+			if code := claudeCodeEnable2(settingsRel, filepath.Join(sc.home, cortexCfgRel), state, true, io.Discard, io.Discard); code != 0 {
+				t.Fatalf("fixture: relative enable exit %d", code)
+			}
+			c.edit(t, proj)
+			if c.want == "" {
+				c.want = proj
+			}
+
+			answerPrompt(t, &claudeCodeConfirm, "y\n")
+			var out, errb bytes.Buffer
+			if code := runClaudeCode([]string{c.action, "--settings", settingsRel}, &out, &errb); code != 0 {
+				t.Fatalf("%s exit %d: %s", c.action, code, errb.String())
+			}
+			if st, _ := readState(state); st == nil || st.Settings != c.want {
+				t.Errorf("the record is %+v, want its first entry %s", st, c.want)
+			}
+			if !strings.Contains(out.String(), c.note) {
+				t.Errorf("the output does not say %q:\n%s", c.note, out.String())
 			}
 		})
 	}
