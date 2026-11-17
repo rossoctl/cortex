@@ -215,3 +215,31 @@ func TestDetailRaw_ReopenShowsTheHeldCapture(t *testing.T) {
 		t.Fatalf("the reopened row shows raw %+v, want the held capture", m.detailRow.raw)
 	}
 }
+
+// A translated request shows the body Cortex sent upstream, and its reply the server's reply
+// before translation, each with its own label: neither is a plugin's rewrite.
+func TestDetailRaw_ShowsTheTranslatedHop(t *testing.T) {
+	tr := `{"model":"c","messages":[{"role":"user","content":[{"type":"text","text":"translated text"}]}]}`
+	out := rawDetail(t, &pipeline.RawCapture{Request: `{"model":"m"}`, Translated: &tr})
+	for _, want := range []string{"sent upstream, translated by Cortex: 95B", "translatedBody", "translated text", "forwarded as sent"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("request detail lacks %q:\n%s", want, out)
+		}
+	}
+
+	ev := &pipeline.SessionEvent{Seq: 4, Phase: pipeline.SessionResponse, Direction: pipeline.Outbound, Host: "h",
+		Inference: &pipeline.InferenceExtension{Model: "m"}}
+	m := detailModel(t, "s1", ev)
+	up := `{"choices":[{"message":{"content":"chat reply"}}]}`
+	m.applyDetailEvent(detailEventLoadedMsg{sessionID: "s1", seq: 4, event: ev, raw: &pipeline.RawCapture{
+		Response: &pipeline.RawBody{Status: 200, Body: `{}`, Upstream: &up}}})
+	m.detailFolds = map[string]foldChoice{"response.raw": {open: true}, "response.raw.response": {open: true},
+		"response.raw.response.upstreamBody": {open: true}}
+	m.renderDetail()
+	got := stripANSI(strings.Join(lineTexts(m.detailLines), "\n"))
+	for _, want := range []string{"server's reply before translation: 50B", "upstreamBody"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("response detail lacks %q:\n%s", want, got)
+		}
+	}
+}

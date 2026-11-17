@@ -165,15 +165,19 @@ second or so before the archive flushes a new event. A request event's `raw`:
 |---|---|
 | `request` | the body as the agent sent it |
 | `forwarded` | the body as Cortex sent it upstream; absent when no plugin rewrote it |
+| `translated` | the body after Cortex converted it to the server's protocol, as sent upstream; absent when Cortex did not convert it. `forwarded`, or `request` when `forwarded` is absent, is the input of the conversion |
 | `requestHeaders` | the request headers, without credential headers |
 | `query` | the URL's raw query |
 
 A response event's `raw` has `response`: `{status, headers, body, decoded,
-truncated, incomplete}`. `body` is up to 10 MiB of the body as it came off the wire,
+truncated, incomplete, upstream, upstreamTruncated}`. `body` is up to 10 MiB of the body as it came off the wire,
 in its `Content-Encoding`, unless `decoded` says the proxy decompressed it to read it
 for a plugin. `truncated` means it was longer, and `incomplete` means it was not read
-to its end: the stream broke off, or the proxy, a plugin or the client stopped it. A body that is not valid UTF-8 — every compressed body — is in
-`requestBase64`, `forwardedBase64` or `bodyBase64` instead. An unknown `raw`
+to its end: the stream broke off, or the proxy, a plugin or the client stopped it.
+When Cortex converted the reply to the agent's protocol, `body` is the converted reply
+as the agent got it, and `upstream` is up to 10 MiB of the server's reply before the
+conversion (`upstreamTruncated` when it was longer). A body that is not valid UTF-8 — every compressed body — is in
+`requestBase64`, `forwardedBase64`, `translatedBase64`, `bodyBase64` or `upstreamBase64` instead. An unknown `raw`
 value is ignored, so an older proxy answers with the event alone.
 
 ## `GET /v1/sessions/{id}/timeline` — agents, tools and hosts on one time axis
@@ -637,9 +641,10 @@ there.
 ```json
 {"v":1, "schemaVersion":1, "op":"append", "requestId":"…", "startedAt":"<RFC 3339, ns, UTC>",
  "session":"<recording session>", "event":{ "...SessionEvent wire JSON..." },
- "capture":{"original":"<base64>", "forwarded":null, "header":{"Name":["v"]}, "query":"",
+ "capture":{"original":"<base64>", "forwarded":null, "translated":null, "header":{"Name":["v"]}, "query":"",
             "response":{"status":200, "header":{}, "body":"<base64>", "decoded":true,
-                        "truncated":false, "ended":true, "incomplete":false}},
+                        "truncated":false, "ended":true, "incomplete":false,
+                        "upstream":null, "upstreamTruncated":false}},
  "cost":{"headers":{"X-Litellm-Response-Cost":"0.01", "Content-Type":"application/json"}}}
 ```
 

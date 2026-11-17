@@ -678,6 +678,9 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			httpx.WriteRejectionForRequest(w, *refusal, pctx)
 			return
 		}
+		if tr != nil && capture != nil {
+			capture.Translated = tr.conv.Body
+		}
 	}
 
 	// A WebSocket upgrade is the one hop-by-hop request this proxy forwards
@@ -925,10 +928,18 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	}
 	defer resp.Body.Close()
 
+	// The session archive's capture of the response (#1494), only when the request was
+	// captured, so a response never outlives its pair: the request row keeps its capture
+	// only for inference (recordCapturedRequest).
+	var rc *pipeline.ResponseCapture
+	if capture != nil && pctx.Extensions.Inference != nil {
+		rc = &pipeline.ResponseCapture{Status: resp.StatusCode, Decoded: resp.Uncompressed}
+	}
+
 	// Before any reply plugin or recorder reads the body: they all see the reply in
 	// the agent's protocol. A hop's own 503 returned above and is not converted.
 	if tr != nil {
-		tr.wrapReply(resp)
+		tr.wrapReply(resp, rc)
 	}
 
 	// Response phase: populate pctx and run plugins in reverse order.
@@ -962,10 +973,9 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	//
 	// The same wrapper keeps the body for the session archive's capture (#1494): every arm
 	// reads through it, so what it keeps is the body as it came off the wire, whatever arm
-	// relays it. Only when the request was captured, so a response never outlives its pair: the
-	// request row keeps its capture only for inference (recordCapturedRequest).
-	if capture != nil && pctx.Extensions.Inference != nil {
-		rc := &pipeline.ResponseCapture{Status: resp.StatusCode, Header: redact.Headers(resp.Header), Decoded: resp.Uncompressed}
+	// relays it. For a translated reply that is the reply in the agent's protocol.
+	if rc != nil {
+		rc.Header = redact.Headers(resp.Header)
 		pctx.ResponseCapture = rc
 		resp.Body = bodycount.WrapCapture(resp.Body, &pctx.ResponseBytes, &rc.Body, &rc.Truncated, &rc.Ended, pipeline.MaxResponseCapture)
 	} else {
@@ -1333,6 +1343,12 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 			s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 			pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = 0, nil, resent
 			pctx.RenewRequestID()
+			if tr != nil && capture != nil {
+				// A copy: the refused attempt's row keeps the body it sent.
+				again := *capture
+				again.Translated = conv.Body
+				capture = &again
+			}
 			s.recordCapturedRequest(tl, pctx, pctx.OutboundSessionID, capture)
 		}
 		again := r.Clone(r.Context())

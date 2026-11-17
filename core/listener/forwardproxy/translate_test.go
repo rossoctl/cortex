@@ -477,3 +477,49 @@ func TestTranslate_NotTranslatedPassesBytes(t *testing.T) {
 		t.Fatalf("upstream requests = %+v, want the client body unchanged", reqs)
 	}
 }
+
+// Rule 8a: the capture of a translated request holds four bodies, so a conversion bug
+// can be found from the archive: what the agent sent, what the plugins made of it (the
+// input of the conversion), the chat body sent upstream, and the server's raw reply
+// beside the Anthropic reply that the agent got.
+func TestTranslate_CaptureHoldsFourBodies(t *testing.T) {
+	sse := replyFixture(t, "bob_shape1.sse")
+	up := newChatServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse)
+	})
+	rewritten := strings.Replace(anthropicStreamRequest, "391", "393", 1)
+	proxy, rec := proxyWithCaptures(t, inferenceparser.NewInferenceParser(),
+		&translator{target: up.URL, translate: true}, &bodyMutatorPlugin{newBody: []byte(rewritten)})
+
+	resp := postAnthropic(t, proxy, anthropicStreamRequest, nil)
+	reply := replyText(t, resp)
+	if !strings.Contains(reply, "event: message_stop") {
+		t.Fatalf("reply = %q, want an Anthropic stream", reply)
+	}
+
+	res := rec.responses()
+	reqs := rec.all()
+	if len(reqs) != 1 || len(res) != 1 {
+		t.Fatalf("%d request and %d response captures, want 1 and 1", len(reqs), len(res))
+	}
+	c := reqs[0]
+	if string(c.Original) != anthropicStreamRequest {
+		t.Errorf("Original = %q, want the agent's request", c.Original)
+	}
+	if string(c.Forwarded) != rewritten {
+		t.Errorf("Forwarded = %q, want the plugin's body", c.Forwarded)
+	}
+	sent := up.got()
+	if len(sent) != 1 || !bytes.Equal(c.Translated, sent[0].body) || !strings.Contains(string(c.Translated), "is 393 prime") {
+		t.Errorf("Translated = %q, want the chat body sent upstream", c.Translated)
+	}
+	for _, r := range res {
+		if string(r.Body) != reply {
+			t.Errorf("Response.Body = %q, want the Anthropic reply the agent got", r.Body)
+		}
+		if string(r.Upstream) != sse || r.UpstreamTruncated {
+			t.Errorf("Response.Upstream = %q (truncated %v), want the server's chat stream", r.Upstream, r.UpstreamTruncated)
+		}
+	}
+}

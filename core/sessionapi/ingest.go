@@ -245,22 +245,25 @@ type ingestCost struct {
 
 // ingestCapture is the wire form of model.RequestCapture, which has no JSON tags.
 type ingestCapture struct {
-	Original  []byte          `json:"original"`
-	Forwarded []byte          `json:"forwarded"`
-	Header    http.Header     `json:"header"`
-	Query     string          `json:"query"`
-	Response  *ingestResponse `json:"response"`
-	Dropped   bool            `json:"dropped"`
+	Original   []byte          `json:"original"`
+	Forwarded  []byte          `json:"forwarded"`
+	Translated []byte          `json:"translated"`
+	Header     http.Header     `json:"header"`
+	Query      string          `json:"query"`
+	Response   *ingestResponse `json:"response"`
+	Dropped    bool            `json:"dropped"`
 }
 
 type ingestResponse struct {
-	Status     int         `json:"status"`
-	Header     http.Header `json:"header"`
-	Body       []byte      `json:"body"`
-	Decoded    bool        `json:"decoded"`
-	Truncated  bool        `json:"truncated"`
-	Ended      bool        `json:"ended"`
-	Incomplete bool        `json:"incomplete"`
+	Status            int         `json:"status"`
+	Header            http.Header `json:"header"`
+	Body              []byte      `json:"body"`
+	Decoded           bool        `json:"decoded"`
+	Truncated         bool        `json:"truncated"`
+	Ended             bool        `json:"ended"`
+	Incomplete        bool        `json:"incomplete"`
+	Upstream          []byte      `json:"upstream"`
+	UpstreamTruncated bool        `json:"upstreamTruncated"`
 }
 
 // handleIngest is registered behind httpx.LoopbackOnly (see New), also when the rest of the
@@ -465,7 +468,7 @@ func (in *ingester) capture(l ingestLine, ev *model.SessionEvent) *model.Request
 	defer in.reqCapsMu.Unlock()
 	if c.Response == nil {
 		in.reqCaps[l.RequestID] = time.Now()
-		return &model.RequestCapture{Original: c.Original, Forwarded: c.Forwarded,
+		return &model.RequestCapture{Original: c.Original, Forwarded: c.Forwarded, Translated: c.Translated,
 			Header: redact.Headers(c.Header), Query: redact.Query(c.Query)}
 	}
 	in.sweepLocked(time.Now())
@@ -475,7 +478,8 @@ func (in *ingester) capture(l ingestLine, ev *model.SessionEvent) *model.Request
 	delete(in.reqCaps, l.RequestID)
 	res := c.Response
 	return &model.RequestCapture{Response: &model.ResponseCapture{Status: res.Status, Header: redact.Headers(res.Header),
-		Body: res.Body, Decoded: res.Decoded, Truncated: res.Truncated, Ended: res.Ended, Incomplete: res.Incomplete}}
+		Body: res.Body, Decoded: res.Decoded, Truncated: res.Truncated, Ended: res.Ended, Incomplete: res.Incomplete,
+		Upstream: res.Upstream, UpstreamTruncated: res.UpstreamTruncated}}
 }
 
 func (s *Server) handleIngestStats(w http.ResponseWriter, r *http.Request) {

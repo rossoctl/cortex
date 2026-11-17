@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/rossoctl/cortex/core/listener/httpx"
+	"github.com/rossoctl/cortex/core/listener/internal/bodycount"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/translate"
 	"github.com/rossoctl/cortex/core/translate/pivot"
@@ -115,8 +116,15 @@ func (t *translation) agentStream(status int) bool {
 }
 
 // wrapReply makes resp carry the reply in the agent's protocol, converted as it is
-// read (rule 10). Every later arm then reads the converted bytes.
-func (t *translation) wrapReply(resp *http.Response) {
+// read (rule 10). Every later arm then reads the converted bytes. When rc is not nil,
+// it keeps the server's reply before the conversion in rc.Upstream (rule 8a).
+func (t *translation) wrapReply(resp *http.Response, rc *pipeline.ResponseCapture) {
+	if rc != nil {
+		// The count and the end are the converted body's, which the caller's wrapper keeps.
+		var unused int64
+		var ended bool
+		resp.Body = bodycount.WrapCapture(resp.Body, &unused, &rc.Upstream, &rc.UpstreamTruncated, &ended, pipeline.MaxResponseCapture)
+	}
 	stream := t.agentStream(resp.StatusCode)
 	dec := t.dec.NewReplyDecoder(resp.StatusCode, httpx.IsEventStream(resp.Header.Get("Content-Type")))
 	enc := t.enc.NewReplyEncoder(stream)
