@@ -32,7 +32,7 @@ listener changes; `NeedsRequestBody()` returning true makes every listener buffe
 ## Global Constraints
 
 - Work only in `/Users/davidboaz/Documents/GitHub/cortex/.worktrees/accountant-integration`, branch
-  `feat/accountant-integration`. Do not push. Do not open a PR.
+  `feat/accountant-integration` — except Task 4, which works in the accountant worktree it names. Do not push. Do not tag. Do not open a PR.
 - Every commit: `git commit -s`, message ends with `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`.
   Never `Co-Authored-By`.
 - One commit per task, in task order. Each commit builds and its tests pass.
@@ -42,7 +42,8 @@ listener changes; `NeedsRequestBody()` returning true makes every listener buffe
 - `core/accounting/...` imports only the standard library, `github.com/rossoctl/accountant[/metrics]`, OTel,
   and `github.com/rossoctl/cortex/core/...`. Never `github.com/rossoctl/context-guru/...`.
 - `accountant` version: `v0.2.0`. context-guru (plugin only): `v0.7.4-beta.1`.
-- Billing mode: `accountant.Billing{Mode: accountant.BillingAPI}` for every request and ping.
+- Billing mode: `accountant.BillingFrom(<client request headers before any plugin>)` for every request (Task 5 on; Tasks 2-3 used `BillingAPI` as a placeholder); a ping uses its thread's last mode (`Host.ThreadBilling`).
+- `accountant` version: v0.2.0 until Task 5, then the local `feat/billing-from` branch via a dev-only `replace` (v0.3.0 when tagged). The PR cannot merge with that `replace`.
 - Accounting fails open: no panic, timeout or error in `core/accounting` may fail, delay past 2s, or alter
   a request or response.
 - Hashing (parse, `BeginRequest`, `EndRequest`) never runs on the request goroutine.
@@ -161,10 +162,46 @@ listener changes; `NeedsRequestBody()` returning true makes every listener buffe
 
 - [ ] **Step 1: Tests.** `TestPlugin_ReportsEngineOps` (a body the engine compacts → `pctx.ReportedOps()` equals `res.Trace.Ops`, operators prefixed `context-guru.`); `TestPlugin_SetsThread` (`AccountingThread()` returns `res.Trace.Thread`'s ID, primary → `"main"` by `ThreadOf`'s rule); `TestPlugin_ModelCallIsSpendOp` (fake llm server returns usage `{prompt_tokens:100, completion_tokens:20, prompt_tokens_details:{cached_tokens:40}}` → one `KindSpend` op, `Call.Model` = called model, `Call.Usage.Input==60`, `CacheRead==40`, `Output==20`, `ChangeID==""`, `Detached==false`); `TestPlugin_ObserveModeOpsAreDryRun`.
 - [ ] **Step 2: Run** → FAIL.
-- [ ] **Step 3: Implement.** Switch `apply.BodyWithModel` to `apply.BodyOpts` with the same inputs, keeping current behaviour; `pctx.ReportOps(res.Trace.Ops...)` only when the write applied (else rely on DryRun stamping); `pctx.SetAccountingThread(res.Trace.Thread.ID, parent)` where `parent, _ := res.Trace.Thread.InheritsFrom()` — `thread.Result` is in context-guru's `internal/thread`, so read its exported fields inline and never name the type in a variable, field or signature; `Inherits` is fork origin, not exactly `accountant.Thread.Parent`, so add a differences entry in Task 6; `cgModel` reads `ChatUsage` and reports the spend op via a pctx captured at call time (the call is in-request). Run → PASS.
+- [ ] **Step 3: Implement.** Switch `apply.BodyWithModel` to `apply.BodyOpts` with the same inputs, keeping current behaviour; `pctx.ReportOps(res.Trace.Ops...)` only when the write applied (else rely on DryRun stamping); `pctx.SetAccountingThread(res.Trace.Thread.ID, parent)` where `parent, _ := res.Trace.Thread.InheritsFrom()` — `thread.Result` is in context-guru's `internal/thread`, so read its exported fields inline and never name the type in a variable, field or signature; `Inherits` is fork origin, not exactly `accountant.Thread.Parent`, so add a differences entry in Task 8; `cgModel` reads `ChatUsage` and reports the spend op via a pctx captured at call time (the call is in-request). Run → PASS.
 - [ ] **Step 4: Verify and commit.** `go test ./plugins/contextguru/ ./llmclient/`, boundary test still passes. Commit `feat(contextguru): Report context operations and model-call spend to the accountant`.
 
-### Task 4: Keep-alive from PR #1412, accounted through `accountant`
+### Task 4: `BillingFrom` in the accountant repository
+
+**Repository:** `/Users/davidboaz/Documents/GitHub/accountant` — NOT Cortex. Create a worktree there:
+`git -C /Users/davidboaz/Documents/GitHub/accountant fetch origin main:refs/base/billing-from` then
+`git -C /Users/davidboaz/Documents/GitHub/accountant worktree add .worktrees/billing-from -b feat/billing-from refs/base/billing-from`.
+Follow that repository's CLAUDE.md (style, DCO, Assisted-By, its doc and case rules). Do not push, do not tag.
+
+**Files (in the accountant worktree):**
+- Modify: `accountant.go` (export `BillingFrom`), Create: `internal/engine/billing.go`, `internal/engine/billing_test.go`
+- Modify: `docs/design.md` §7.1 (remove "Not built yet"; state the rule and the prefixes), `docs/cortex-wiring.md` W6.6 if it says the function does not exist, README "Status" if relevant
+
+**Interfaces:**
+- Produces: `func accountant.BillingFrom(h http.Header) accountant.Billing` (stdlib `net/http` header type only; the module must stay stdlib-only, `boundary_test.go`).
+
+- [ ] **Step 1: Test table** `TestBillingFrom`: `x-api-key: sk-ant-api03-…` → `api`; `x-api-key` with any value → `api`; `Authorization: Bearer sk-ant-api03-…` → `api`; `Authorization: Bearer sk-ant-oat01-…` → `subscription`; `Authorization: Bearer sk-proj-…` and `sk-…` (OpenAI key) → `api`; `Authorization: Bearer <three base64url segments>` (a JWT, as a ChatGPT login sends) → `subscription`; `Authorization: Basic …` → `unknown`; no credential → `unknown`; header names case-insensitive. `TestBillingFrom_NeverReturnsCredential`: the returned `Billing` marshals to JSON with no substring of any input token.
+- [ ] **Step 2: Run** `go test ./internal/engine/ -run BillingFrom` → FAIL. **Step 3: Implement** (prefix checks only; never log). **Step 4: Run** `go vet ./... && go test ./...` → PASS (including `boundary_test.go`).
+- [ ] **Step 5: Docs** as listed. **Step 6: Commit** in the accountant worktree: `feat: Add BillingFrom, the billing mode from the client's credential type`.
+
+### Task 5: Cortex reads the billing mode with `BillingFrom`
+
+**Files:**
+- Modify: `core/go.mod`, `cmd/cortex/go.mod`, `cmd/cortex-envoy/go.mod`, `cmd/agentop/go.mod` (whichever require accountant): add
+  `// DEV ONLY — remove when accountant v0.3.0 is tagged.` and
+  `replace github.com/rossoctl/accountant => /Users/davidboaz/Documents/GitHub/accountant/.worktrees/billing-from`
+- Modify: `core/accounting/host.go` (RequestStart reads the mode; meta uses it; per-thread last mode), `core/accounting/host_test.go`
+- Create: `core/accounting/billing_contract_test.go`
+- Modify: `docs/accounting-differences.json` (the proxy hard-codes `BillingAPI`)
+
+**Interfaces:**
+- Consumes: `accountant.BillingFrom` (Task 4); `pipeline.RequestAccountant.RequestStart` (Task 2) runs before the first plugin.
+- Produces: `func (h *Host) ThreadBilling(session, thread string) accountant.Billing` (last mode seen for that thread; `unknown` if none). `RequestMeta.Billing` on every request is the client's mode.
+
+- [ ] **Step 1: Tests.** `TestHost_BillingFromClientHeaderBeforeRewrite`: a request with `Authorization: Bearer sk-ant-oat01-x` and a test plugin that replaces `Authorization` with `Bearer sk-ant-api03-y` → the Tracker's `RequestMeta.Billing.Mode == "subscription"` (assert through a test hook or the Result's request meta). `TestHost_ThreadBillingIsLastRequests`. `TestBillingContract` feeds the same header table as accountant's `TestBillingFrom` through `RequestStart` and expects the same modes.
+- [ ] **Step 2: Run** → FAIL. **Step 3: Implement**: in `RequestStart`, read `pctx` request headers (the field the listeners fill before `Run`; find it in `core/pipeline/context.go`) and store `accountant.BillingFrom(h)` under a pctx state key; `RequestEnd` uses it in `RequestMeta.Billing` and records it per thread. Never store or log the header value. **Step 4: Run** → PASS, `-race` on `./accounting/...`.
+- [ ] **Step 5: Commit** `feat(accounting): Take the billing mode from the client's credential type`.
+
+### Task 6: Keep-alive from PR #1412, accounted through `accountant`
 
 **Files:**
 - Modify: `core/go.mod`, `cmd/cortex/go.mod`, `cmd/cortex-envoy/go.mod` (context-guru `v0.7.4-beta.1`, no `replace`)
@@ -177,12 +214,12 @@ listener changes; `NeedsRequestBody()` returning true makes every listener buffe
 - Produces: `func (h *Host) Ping(session string, client *model.EventClient, host string, p accountant.Ping) (accountant.Result, bool)`.
 
 - [ ] **Step 1: Ping tests** (`ping_test.go`): `TestPing_RecordsSpendToCostRecorders` (fake `session.Recorder`s receive one `SessionEvent` whose cost record has `Source=="keep-alive"`, priced from the ping usage; the store is never touched); `TestPing_RefusesZeroWindowNon2xxZeroUsage`; `TestPing_FactsAppliedToNextRequest` (after a ping on thread `main`, the next request's `EntryFacts` has `LastPing` set, then cleared); `TestPing_RescueOnNextRequest` (ping then a request whose cache read covers the pinged prefix → `Result.CacheEffects` has a `rescue` with `ChangeID` prefix `ka:main:`); `TestPing_ManualKeepsNoFacts`.
-- [ ] **Step 2: Run** → FAIL. **Step 3: Implement `ping.go`** (port `PingSavings` minus dash): refusal rules, `accountant.PingOps(p, Billing{BillingAPI})`, `ComputeStandalone`, store `PingFacts` per `session+thread` (concurrency-safe map; applied with `PingFacts.Apply` in `RequestEnd`'s goroutine then deleted), build a `model.SessionEvent` the way `recordOutboundResponseEvent` builds its `Plugins["cost/event"]` (read `core/listener/forwardproxy/server.go:~1105`), and call each `CostRecorders[i].Record(session, ev)`. Never call the session store. Run → PASS.
+- [ ] **Step 2: Run** → FAIL. **Step 3: Implement `ping.go`** (port `PingSavings` minus dash): refusal rules, `accountant.PingOps(p, h.ThreadBilling(session, thread))`, `ComputeStandalone`, store `PingFacts` per `session+thread` (concurrency-safe map; applied with `PingFacts.Apply` in `RequestEnd`'s goroutine then deleted), build a `model.SessionEvent` the way `recordOutboundResponseEvent` builds its `Plugins["cost/event"]` (read `core/listener/forwardproxy/server.go:~1105`), and call each `CostRecorders[i].Record(session, ev)`. Never call the session store. Run → PASS.
 - [ ] **Step 4: Bring in the keeper.** Check out the listed files from `feat/contextguru-keepalive`, bump context-guru, `go mod tidy`. Replace every `spend.Charge`/`RecordCost` use with: the plugin's `KeepAliveEmitter.KeepAlivePing(r)` converts `r` to `accountant.Ping` (field table: wiring W4.6; reference `pingFromReport`) and calls `h.Ping(...)`. The conversion lives in `core/plugins/contextguru/ping.go`.
 - [ ] **Step 5: Fix `TestCortexSubstitutesCacheAwareSummarizerForAPing`** (fails against v0.7.4-beta.1 with `SummarySubstituted = 0, want 1`). Use superpowers:systematic-debugging; find which context-guru change moved the behaviour (`git -C <cg> log keeper-export..v0.7.4-beta.1 -- keepalive/substitute.go` or diff the API), adapt the test or the wiring. If it is a context-guru bug, skip the test with `t.Skip("context-guru#<n>: ...")` and record it in the task report — do not change context-guru.
 - [ ] **Step 6: Verify and commit.** Plugin tests, `scripts/dev/verify-contextguru-keepalive.sh` if it runs offline (else note it), boundary test, tidy in all three modules. Commit `feat(contextguru): Keep idle sessions' caches warm, accounted through the accountant`.
 
-### Task 5: The 1h cache-write tier
+### Task 7: The 1h cache-write tier
 
 **Files:**
 - Modify: `core/model/extensions.go:~300` (add `CacheWrite1hTokens int json:"cacheWrite1hTokens,omitempty"`, a subset of `CacheWriteTokens`), `core/parse/inference/anthropic.go` (parse `usage.cache_creation.ephemeral_1h_input_tokens`)
@@ -193,7 +230,7 @@ listener changes; `NeedsRequestBody()` returning true makes every listener buffe
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** Run → PASS; the settle and pricing suites pass except figures that intentionally change (update those tests' expectations, citing this task in a comment).
 - [ ] **Step 4: Commit** `fix(pricing): Price 1-hour cache writes at the 1-hour rate`.
 
-### Task 6: Pricing function, shadow figure, cross-host harness, differences file
+### Task 8: Pricing function, shadow figure, cross-host harness, differences file
 
 **Files:**
 - Create: `core/accounting/price.go`, `core/accounting/price_test.go`, `core/accounting/savings.go`, `core/accounting/savings_test.go`
@@ -208,28 +245,30 @@ listener changes; `NeedsRequestBody()` returning true makes every listener buffe
   - `type Extras struct{ UnattributedBreakUSD float64; Thread string; OpsVersion int }` (`Result.Version` is `int`; `event.Saving.OpsVersion` is `int` too)
   - `func Savings(res accountant.Result, price func(model, host string, tt accountant.TierTokens) (float64, bool), reqModel, reqHost string) ([]event.Saving, Extras)` — one `Saving` per operator, W7.1: `USD` = priced Saved of its ops + rescue effects on its ChangeIDs; `PenaltyUSD` = priced Caused + break effects on its ChangeIDs (`Net()` cost part); spend ops priced with `Call.Model`/`Call.Host`; `Tier` = tier with largest Saved; `Projected` = all its ops DryRun; `Estimated` = any op/effect/rate estimated; `TokensAvoided` = sum of Saved tiers; `InBaseline` effects skipped; breaks with no ChangeID → `UnattributedBreakUSD`.
   - `func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool)` — `Compute` then `Savings` with `TierUSD` bound to the request's endpoint and prompt total.
+  - Basis (spec §5.7a): `event.Saving.Basis` = `"usd"` for mode `api`, `"subscriptionEquivalent"` for `subscription`, `"unknown"` for `unknown`; every non-`usd` saving has `Estimated: true`. `event.Saving.Units` (usage-limit units, float) = Saved tokens × weights for a `subscriptionEquivalent` saving; `PenaltyUnits` likewise for Caused. `USD`/`PenaltyUSD` are still filled (the API-equivalent figure).
+  - `config.SubscriptionWeights{ Input, CacheWrite5m, CacheWrite1h, CacheRead, Output float64 }` under `accounting.subscription_weights`, defaults `1, 1.25, 2, 0.1, 5`; `func Units(w config.SubscriptionWeights, tt accountant.TierTokens, output int) float64`. Validation: every weight ≥ 0.
 
-- [ ] **Step 1: Tests.** `price_test.go`: one token per tier at a configured table → exact rates; bundled table → `estimated`. `savings_test.go` with hand-built `Result`s: two operators split correctly; a break with ChangeID charged to its operator; a break without → unattributed; a rescue credited to `keeper`; DryRun-only operator → `Projected`; a spend op priced with its own model; `InBaseline` ignored; negative net allowed (USD < PenaltyUSD both kept, no floor).
+- [ ] **Step 1: Tests.** `price_test.go`: one token per tier at a configured table → exact rates; bundled table → `estimated`. `savings_test.go` with hand-built `Result`s: two operators split correctly; a break with ChangeID charged to its operator; a break without → unattributed; a rescue credited to `keeper`; DryRun-only operator → `Projected`; a spend op priced with its own model; `InBaseline` ignored; negative net allowed (USD < PenaltyUSD both kept, no floor); a subscription result → `Basis "subscriptionEquivalent"`, `Estimated`, `Units` = tokens×default weights (e.g. 1000 cache-read tokens → 100 units); custom weights from config applied; `unknown` → `Basis "unknown"`.
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement.** Run → PASS.
 - [ ] **Step 4: Shadow.** `settleCost`: compute `old := settle.Avoided(...)` and `new, extras, ok := h.Savings(pctx)`; publish `old` as today; log at INFO `"accounting: shadow"` with session, per-component old/new USD and the difference, only when they differ by more than $0.000001. Add `TestSettleCost_ShadowWritesOldFigure`.
 - [ ] **Step 5: Harness.** Bring both scripts; change `compare-contextguru-savings.py` check P1 to compare the Cortex row's accountant tokens per operator against the proxy's dashboard tokens per component; keep X1 and K1. Do not run it in CI. If a LiteLLM key and both binaries are available, run it and save `checks.json` under `/tmp/accounting-harness/`; otherwise write in the task report that it was not run.
 - [ ] **Step 6: Differences.** Run Cortex locally against captured traffic if available (otherwise the harness output); for each shadow difference, add an entry to `docs/accounting-differences.json` with `{"id", "what", "why", "spec"}`; expected entries are the design §W9 list (lower penalty, per-position tier, `context_guru_expand` cost, break from read extent, negative keep-alive windows). Commit `feat(accounting): Price accountant results and compare them with the current figure`.
 
-### Task 7: Switch the ledger and agentop
+### Task 9: Switch the ledger and agentop
 
 **Files:**
 - Modify: `core/cost/event/event.go` (`Saving.PenaltyUSD` and `Saving.Operator`, `Saving.OpsVersion`; `Event.UnattributedBreakUSD`, `Event.Thread`; `TotalPenaltyMicros()`); take `PenaltyUSD` doc from #1412 but **no floor** — `TotalAvoidedUSD` stays gross
-- Modify: `core/cost/usage/usage.go:~217` (`PenaltyMicros`), `core/cost/ledger/row.go`, `core/cost/ledger/writer.go:~588`, `core/session/summary.go:~96,379`, `core/session/fold.go:~397` (`penaltyMicros`), `/v1/usage` response
+- Modify: `core/cost/usage/usage.go:~217` (`PenaltyMicros`, and per spec §5.7a `AvoidedUnits`, `PenaltyUnits` as int64 milli-units, `AvoidedUnknownMicros`; only `Basis=="usd"` enters `AvoidedMicros`/`PenaltyMicros`), `core/cost/ledger/row.go`, `core/cost/ledger/writer.go:~588`, `core/session/summary.go:~96,379`, `core/session/fold.go:~397` (`penaltyMicros`), `/v1/usage` response
 - Modify: `core/plugins/inferenceparser/cost.go` (publish accountant savings; remove shadow)
-- Modify: `cmd/agentop/tui/prune_saving.go` (take `rowSavingFor` from #1412, list = every component in the record, net = `USD-PenaltyUSD` without floor), `cmd/agentop/cmd_cost.go:~696`, `spend.go`, `spend_drawer.go`, `sessions_pane.go` (show saved, penalty, net)
+- Modify: `cmd/agentop/tui/prune_saving.go` (take `rowSavingFor` from #1412, list = every component in the record, net = `USD-PenaltyUSD` without floor), `cmd/agentop/cmd_cost.go:~696`, `spend.go`, `spend_drawer.go`, `sessions_pane.go` (show saved, penalty, net in money for `usd`; a usage-limit column for subscription savings with the API-equivalent dollars beside it, labelled "API equivalent"; `unknown` shown beside totals, never added)
 - Delete: tool-prune path of `core/cost/settle/avoided.go` (whole file if nothing remains), `pruneEvent`'s `bytesRemoved/bodyBytesAfter/projected` reliance in settle (keep the event fields agentop still reads), `pricing.EstimateTokensFromBytes` if unused; their tests.
 - Modify: docs `docs/pricing.md` (Cost records, avoided), `docs/tool-prune-plugin.md:152,340`, `docs/laptop-token-savings.md`, `docs/session-api.md:44`
 
-- [ ] **Step 1: Tests.** Event: `TestTotalPenaltyMicros`; usage: `TestAggregator_SumsPenalty` and the old `TotalsAreInvariantToAvoidedCost` still holds for penalty; ledger: `TestRow_PenaltyMicrosRoundTrip` and an old row without the field reads 0; session list `penaltyMicros` present when nonzero; agentop: `TestRowSaving_NetCanBeNegative`, `TestRowSaving_AnyComponent`; inferenceparser: `TestSettleCost_PublishesAccountantSavings` (a tool-prune request → `Avoided[0].Component=="tool-prune"`, USD from `TierUSD`).
+- [ ] **Step 1: Tests.** Event: `TestTotalPenaltyMicros`, `TestTotalAvoidedUSD_CountsOnlyUSDBasis` (a `subscriptionEquivalent` and an `unknown` saving add 0); usage: `TestAggregator_SumsPenalty` and the old `TotalsAreInvariantToAvoidedCost` still holds for penalty; ledger: `TestRow_PenaltyMicrosRoundTrip` and an old row without the field reads 0; session list `penaltyMicros` present when nonzero; agentop: `TestRowSaving_NetCanBeNegative`, `TestRowSaving_AnyComponent`; inferenceparser: `TestSettleCost_PublishesAccountantSavings` (a tool-prune request → `Avoided[0].Component=="tool-prune"`, USD from `TierUSD`).
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement** and delete the old path. Update tests that pinned old figures (list in spec research: settle `TestAvoided_*`, toolprune `TestMetrics_AttributesSavingToTheRightTier`, `TestPrune_SettlementCalibrates...`, forwardproxy `chainedwriters_test.go:118,278-301`, ledger/usage/event tests) to the accountant figure, or delete those that tested removed code.
 - [ ] **Step 4: Verify** all modules' tests, vet, gofmt, tidy (`go mod tidy -diff` everywhere — deletions can drop deps). Commit `feat(accounting): Record accountant savings in the ledger, /v1/usage and agentop`.
 
-### Task 8: Metrics push
+### Task 10: Metrics push
 
 **Files:**
 - Create: `core/accounting/metrics.go`, `core/accounting/metrics_test.go`, `core/accounting/push/push.go`, `core/accounting/push/push_test.go`

@@ -67,8 +67,7 @@ disagree.
   Cortex must do the same.
 - A failure in accounting that fails a request. Accounting fails open: a request is always
   forwarded and answered.
-- Two hosts that disagree on billing mode. Both use `BillingAPI` until `BillingFrom` exists
-  (section 5.7).
+- An API-equivalent dollar in a money total. Only `Basis = usd` enters a money total (section 5.7a).
 - Two numbers for one thing. After the switch, the ledger, `/v1/usage`, agentop and Prometheus all
   read one `Result`.
 
@@ -86,8 +85,8 @@ disagree.
     additive, so context-guru compiles against v0.2.0 under Go's minimum version selection. Cortex
     requires v0.2.0.
   - The `accountant/metrics` module has no tag. Cortex pins a pseudo-version, as context-guru does.
-- **No changes to other repos are assumed.** Everything in this design is built in Cortex with
-  the `accountant` API as it is at v0.2.0.
+- **One change to another repo, decided by the user:** `accountant.BillingFrom`, in a new
+  `accountant` release (v0.3.0). Nothing else in this design changes another repo.
 - **`core` is consumed outside this repo.** A new exported API in `core/pipeline` is a contract. Keep
   it small.
 - **The client body is not kept today.** `pctx.Body` is the forwarded body. The framework keeps only
@@ -282,16 +281,66 @@ including none.
   - This also corrects the current spend figure for 1h writes. That is a separate fix, and it gets
     its own commit (commit 4).
 
-### 5.7 Billing mode
+### 5.7 Billing mode: `BillingFrom`
 
-`BillingFrom` is not in `accountant`. The proxy hard-codes `BillingAPI`.
+**Decided by the user (2026-11-17, replaces the earlier `BillingAPI` decision):** the billing mode
+comes from `accountant.BillingFrom(headers)`, built **in the `accountant` repository** as
+accountant design §7.1 says, so that Cortex and the proxy can share one rule.
 
-**Decided by the user:** Cortex uses `BillingAPI` for every request and ping, as the proxy does, so
-that the two hosts agree. When `accountant` ships `BillingFrom(headers)` (design §7.1), both hosts
-adopt it.
+- **The function** (new in `accountant`, released as v0.3.0):
+  `func BillingFrom(h http.Header) Billing`. It reads only the credential **type**, and it never
+  returns or logs any part of the credential (accountant R2).
+  - `x-api-key` present → `api`.
+  - `Authorization: Bearer <token>`: an Anthropic API key (`sk-ant-api…`) or an OpenAI API key
+    (`sk-…`, not a JWT) → `api`. An Anthropic OAuth token from a subscription login
+    (`sk-ant-oat…`) or a ChatGPT login token (a JWT) → `subscription`.
+  - Anything else, or no credential → `unknown`.
+  - The exact prefixes and their sources are the `accountant` change's to pin, with a test table.
+- **Where Cortex reads it.** The **client's** credential header, as the request arrived, before any
+  plugin rewrites it. token-exchange replaces `Authorization`, so the read happens in
+  `RequestStart`, before the first plugin. The result is stored on the request, and the Host keeps
+  the last mode for each thread, for keep-alive pings.
+- **Pings** use the mode of the thread's last request, because a ping uses the same credential.
+- **Until `accountant` v0.3.0 is tagged,** Cortex's `go.mod` points at the local `accountant`
+  branch through a `replace` line marked dev-only. The PR cannot merge with that line.
+- **The proxy** still hard-codes `BillingAPI` until it adopts `BillingFrom`. That is listed in
+  `docs/accounting-differences.json`.
+- **A contract test** in Cortex feeds captured headers to `BillingFrom` through the Host, and
+  expects the same mode as the `accountant` test table.
 
-The known cost: a laptop user on a Claude subscription gets API-equivalent dollars in money
-counters. That is the same as the proxy today.
+### 5.7a Recording by billing basis (accountant design §7.1, in full)
+
+**Decided by the user: full §7.1 recording.**
+
+- `event.Saving` gains `Basis`: `usd` (mode `api`), `subscriptionEquivalent` (mode `subscription`)
+  or `unknown`. So does each accountant spend record (a ping, or a context-guru model call).
+- **Money totals count only `Basis = usd`.** These are `TotalAvoidedUSD`, the ledger's
+  `AvoidedMicros` and `PenaltyMicros`, `/v1/usage`, and the sessions list.
+- **A subscription saving is valued in usage-limit units:** tokens × the weights. The default
+  weights are the API rate ratios: input 1, cache write 5m 1.25, cache write 1h 2, cache read 0.1,
+  output 5. Every subscription figure is marked `Estimated`. The weights are configurable:
+
+  ```yaml
+  accounting:
+    subscription_weights:   # optional; defaults shown
+      input: 1
+      cache_write_5m: 1.25
+      cache_write_1h: 2
+      cache_read: 0.1
+      output: 5
+  ```
+
+- **The ledger** gains `AvoidedUnits` and `PenaltyUnits` (usage-limit units, as integer
+  milli-units), and `AvoidedUnknownMicros`, for figures whose basis is `unknown`. `/v1/usage` and
+  the sessions list carry the same fields.
+- **agentop** shows a usage-limit column for subscription savings, and the API-equivalent dollar
+  figure beside it, labelled "API equivalent". An `unknown` figure is shown beside the totals, never
+  added to them.
+- **Scope (my call):** §7.1 names `event.Saving` and `SpendRecord`, so `Basis` applies to savings
+  and to accountant spends. Cortex's existing per-request spend figure (`CostUSD`) is unchanged.
+  Moving subscription request spend out of money totals is a separate change.
+- **Metrics:** `accountant/metrics` already moves dollar counters only for `api`. The token
+  counters move for every mode.
 
 ### 5.8 Keep-alive
 
@@ -310,7 +359,8 @@ build. The builder decides which of #1412's commits those are. Its pricing of pi
    so the conversion stays in the plugin, and `core/accounting` sees only `accountant` types.
 3. `core/accounting` does the following:
    - It refuses a ping with a zero window, a non-2xx status or zero usage, as the proxy does.
-   - It calls `accountant.PingOps(ping, Billing{BillingAPI})`, then `ComputeStandalone`.
+   - It calls `accountant.PingOps(ping, billing)`, with the billing mode of the thread's last request
+     (section 5.7), then `ComputeStandalone`.
    - It keeps the `PingFacts` for that thread, unless the ping was manual, and applies them at the
      next `EndRequest` for the thread. Then it clears them.
    - It writes the ping's spend as a cost record (section 5.9).
@@ -439,10 +489,11 @@ order, so a reviewer can read it step by step and each commit builds and passes 
 | 1 | `core/accounting` host code (section 5.2): `wire`, `facts`, `skip`, `thread`, the boundary test, and the `accountant` cases played through it. Require `accountant` v0.2.0. No callers yet. |
 | 2 | Plumbing: the `accounting:` config, `pctx.ReportOps`, the client body and `Accounting.End` in all three listeners. tool-prune reports ops. `Compute` runs and is logged at debug level only. Persistence on the laptop. |
 | 3 | The context-guru plugin reports ops, spends and its thread (section 5.5). The spend usage comes from `llmclient`'s `ChatUsage`, taken from PR #1412. |
+| 3a | `BillingFrom` (section 5.7): the Host reads the client's credential type in `RequestStart`, sets `RequestMeta.Billing`, keeps the last mode per thread. Requires the local `accountant` branch with `BillingFrom` (dev-only `replace`). The `accountant` change itself is a separate branch in that repository. |
 | 3b | Keep-alive (section 5.8): bump context-guru to v0.7.4-beta.1 or later, bring in the keeper from #1412, `core/accounting.Ping`, and the ledger's standalone record path. Fix or explain the failing substitute test. |
 | 4 | The 1h tier: the rate and the usage parse. Spend figures for 1h writes change, and that is a fix. |
-| 5 | `core/accounting/price` (section 5.6), and `settle` computes the `accountant` figure beside the old one and logs the difference. Port the cross-host harness (`compare-contextguru-savings.py` from PR #1412) and add `docs/accounting-differences.json`. |
-| 6 | Switch: `settle` writes the `accountant` figure, with the new event fields and `PenaltyMicros`. Update the agentop readers, reusing `rowSavingFor` from PR #1412 without its floor at zero. Remove `avoided.go`'s tool-prune path, `pruneEvent`'s pricing fields and `EstimateTokensFromBytes` if nothing else uses it. Remove the shadow log from commit 5. |
+| 5 | `core/accounting/price` (section 5.6), the basis and the subscription weights (section 5.7a), and `settle` computes the `accountant` figure beside the old one and logs the difference. Port the cross-host harness (`compare-contextguru-savings.py` from PR #1412) and add `docs/accounting-differences.json`. |
+| 6 | Switch: `settle` writes the `accountant` figure, with the new event fields, `PenaltyMicros`, and the usage-limit and unknown columns (section 5.7a). Update the agentop readers, reusing `rowSavingFor` from PR #1412 without its floor at zero. Remove `avoided.go`'s tool-prune path, `pruneEvent`'s pricing fields and `EstimateTokensFromBytes` if nothing else uses it. Remove the shadow log from commit 5. |
 | 7 | Metrics: the sink, `core/accounting/push` and the `metrics_push` config. Update the docs (`docs/pricing.md`, `docs/laptop-service.md`, CLAUDE.md). |
 
 **The shadow check is a development gate.** Before commit 6 is written, commit 5 runs on captured
@@ -474,7 +525,7 @@ path in `avoided.go`, and its keep-alive pricer are replaced by this design and 
 
 2. `OpsEmitter` for detached calls, after context-guru adds it.
 3. Spends for `ibac`, `sparc` and other plugins that call `llmclient`.
-4. `BillingFrom`, in both hosts.
+4. The proxy adopts `BillingFrom`.
 7. Optional: a per-observation pricer in `accountant/metrics`, which removes the lock in section
    5.6.
 5. agentop's per-change view and `Changes []ChangeSaving`.
@@ -486,4 +537,5 @@ path in `avoided.go`, and its keep-alive pricer are replaced by this design and 
 - `accountant` is integrated without context-guru. There is no shared host package (section 5.2).
 - The whole integration is one PR, with ordered commits (section 7).
 - Keep-alive is in the PR (section 5.8).
-- Billing mode is `BillingAPI` (section 5.7).
+- Billing mode comes from `accountant.BillingFrom`, built in `accountant` (v0.3.0) (section 5.7).
+- Full §7.1 recording by billing basis (section 5.7a).
