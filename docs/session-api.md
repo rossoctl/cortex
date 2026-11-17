@@ -487,6 +487,10 @@ only another session of the same project made a row in that minute.
   record.
 - The ledger row of an imported turn has `source: "transcript"`. A live row has
   no `source`.
+- An imported turn with no `cost` record has no ledger row, from every source.
+  The live proxy records such a turn as one request at $0, so the request count
+  and the priced share of an import can be lower than those of live traffic.
+  When a later import finds the usage of the turn, that import adds the row.
 - A turn before the ledger's retention cutoff goes to the archive only.
 - An imported segment is kept for `retention_days` from its newest event. A
   session older than that is skipped (`skippedExpired`). The Claude Code source checks
