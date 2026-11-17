@@ -208,7 +208,10 @@ Decode `parent_id`, `fork_session_id` and `last` as pointers (`*string`, `*int64
    do not read it. After the loop, `progress(len, len)`.
 5. Read the rows of each session row. A failed messages query of the row whose `id`
    equals the group id → yield `Session{ID: id, Unreadable: true}` (with `slog.Warn`).
-   A failed query of another row → `Skipped++` and go on.
+   Do not read the other rows of that group. A failed query of another row →
+   `Skipped++` and go on. When the group has no row whose `id` equals the group id (the
+   parent was deleted) and the query of every row of the group fails → yield
+   `Session{ID: id, Unreadable: true}` too.
 6. Sort the events of the group stable by `At`. `Updated` = the max event `At`.
    `SizeHint` = the sum of `len(data)` of the rows read. `ID` = the group id.
    Intern every event with one `session.Interner` for the group (`InternEvent`), as
@@ -277,8 +280,10 @@ with only `id, parent_id, fork_session_id, directory, version, time_created`, an
     true for `ses_tools` stops its read and it is not yielded; the time `skip` got for each
     group is not before that group's `Updated` from a full read.
   - `TestSource_UnreadableRoot`: build the fixture, then run
-    `sqlite3 <db> "alter table session_message rename column type to type_gone"`. Every
-    group yields `Unreadable == true`, and the source gives no error. (The session query
+    `sqlite3 <db> "alter table session_message rename column type to type_gone"`. The
+    groups `ses_tools`, `ses_plain` and `ses_gone` each yield `Unreadable == true`
+    (`ses_gone` by the no-root rule of step 5), `ses_empty` is not yielded, and the
+    source gives no error. (The session query
     does not read `type`, so only the messages query fails.)
 - [ ] **Step 2:** In `timeline_test.go`, `TestTimeline_ImportedSessionShowsToolsAndSubagent`
   (copy the shape of `bob/timeline_test.go`): set `Seq = uint64(i + 1)` and
@@ -300,7 +305,9 @@ Depends on: none
   OpenCode paragraph after the Bob bullets, before `## POST /v1/ingest`)
 - Modify: `cmd/agentop/README.md` (the example block near line 787 and the `--agent` row near line 795)
 - Modify: `docs/laptop-service.md` ("Importing history from before Cortex", near line 599)
-- Modify: `docs/agents/opencode.md` (one short paragraph that points to `agentop import`)
+- Modify: `docs/agents/opencode.md` (a new section `## Importing history` just before
+  `## Known issues`: one short paragraph that points to `agentop import --agent opencode`
+  and to the `agentop import` section of `cmd/agentop/README.md`)
 
 Facts to write (all from this plan):
 - Supported sources now: `claude-code`, `bob` and `opencode`. Change "#1873 to #1875 add
@@ -346,6 +353,9 @@ From the worktree root:
 ```sh
 GOWORK=off go -C core vet ./... && GOWORK=off go -C core test -race ./session/importer/... ./sessionapi/... && GOWORK=off go -C cmd/cortex vet ./... && GOWORK=off go -C cmd/cortex build ./... && test -z "$(gofmt -l core/session/importer cmd/cortex)"
 ```
+
+Gate check (2026-11-16, on the unchanged base 5392467be): each `go vet` step and the
+`gofmt` step ran from the worktree root and passed. No step was changed.
 
 ## For a human after review
 
