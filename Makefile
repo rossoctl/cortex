@@ -28,6 +28,9 @@ fmt: ## Run formatters across all sub-projects
 	@# stops excluding root tests/ entirely.
 	ruff format . --exclude ./tests
 
+pre-commit: ## Install pre-commit hooks (including commit-msg)
+	pre-commit install --hook-type pre-commit --hook-type commit-msg
+
 ##@ Tests
 
 # Both run scripts/dev/go-coverage.sh over the Go modules that ship in a binary, with
@@ -43,11 +46,6 @@ test: ## Run the unit tests, -short by default (TEST_FLAGS= for the full suite)
 
 coverage: ## Run the unit tests and print the coverage of the CLI (agentop) and the proxy (cortex)
 	scripts/dev/go-coverage.sh -cover $(TEST_FLAGS)
-
-##@ Setup
-
-pre-commit: ## Install pre-commit hooks (including commit-msg)
-	pre-commit install --hook-type pre-commit --hook-type commit-msg
 
 ##@ Sub-project Targets
 

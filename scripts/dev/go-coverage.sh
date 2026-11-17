@@ -77,8 +77,24 @@ for entry in $modules; do
 		shard_args=()
 		[ -n "$race" ] && shard_args+=(-race)
 		[ -n "$short" ] && shard_args+=(-short)
-		if ! "$root/scripts/dev/go-test-shards.sh" ${shard_args[@]+"${shard_args[@]}"} "$root/$dir" ||
-			! (cd "$root/$dir" && GOWORK=off go test "${args[@]}" $(GOWORK=off go list ./... | grep -v 'agentop$')); then
+		# Both run even when the first fails, so one run reports every failure. The
+		# package list is read first, so a failing go list fails the run instead of
+		# leaving go test with no packages. A loop, not mapfile: macOS ships bash 3.2.
+		if ! "$root/scripts/dev/go-test-shards.sh" ${shard_args[@]+"${shard_args[@]}"} "$root/$dir"; then
+			failed=1
+		fi
+		if pkgs=$(cd "$root/$dir" && GOWORK=off go list ./...); then
+			subpkgs=()
+			while IFS= read -r pkg; do
+				case "$pkg" in
+				*/agentop) ;; # the root package, sharded above
+				*) subpkgs+=("$pkg") ;;
+				esac
+			done <<<"$pkgs"
+			if ! (cd "$root/$dir" && GOWORK=off go test "${args[@]}" "${subpkgs[@]}"); then
+				failed=1
+			fi
+		else
 			failed=1
 		fi
 		continue
