@@ -69,6 +69,48 @@ func fallbackUSD(input, output int) float64 {
 	return (float64(input)*tierMicros[pricing.TierInput] + float64(output)*tierMicros[pricing.TierOutput]) / 1e6
 }
 
+// TestModelledCost_Prices1hWrites: 600 of 1000 cache-write tokens were written
+// with a 1-hour TTL. The 5m portion (400) prices at the ordinary cache-write
+// rate; the 1h portion (600) prices at 2x input — Anthropic's documented 1h
+// premium, which modelledCost applies because the model name is a Claude one.
+// Task 7 (2026-11-17 accountant-integration).
+func TestModelledCost_Prices1hWrites(t *testing.T) {
+	const (
+		inputRate = 3.80e-6 // Sonnet rates, USD/token
+		cw5mRate  = 4.75e-6
+		cw1hRate  = inputRate * 2.0 // Anthropic's documented 1h premium
+	)
+	var r pricing.Rates
+	r.Base[pricing.TierInput], r.Set[pricing.TierInput] = inputRate, true
+	r.Base[pricing.TierCacheWrite], r.Set[pricing.TierCacheWrite] = cw5mRate, true
+	tab, err := pricing.NewTable([]pricing.Entry{{Host: "*", Model: "*", Rates: r, Prov: pricing.ProvConfigured}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := pricing.NewRegistry(tab)
+
+	u := pricing.Usage{CacheWrite: 1000, CacheWrite1h: 600}
+	micros, tiers, prov, ok, refusal := modelledCost(resolver, "gw.internal", "claude-sonnet-4-5", u, u.PromptTotal())
+	if !ok {
+		t.Fatalf("modelledCost refused: %v", refusal)
+	}
+	if prov != pricing.ProvConfigured {
+		t.Errorf("provenance = %v, want ProvConfigured", prov)
+	}
+
+	wantUSD := 400*cw5mRate + 600*cw1hRate
+	wantMicros, ok := pricing.MicrosFromUSD(wantUSD)
+	if !ok {
+		t.Fatal("test fixture produced an unrepresentable USD figure")
+	}
+	if micros != wantMicros {
+		t.Errorf("micros = %d, want %d (400*cw5m + 600*cw1h = %v USD)", micros, wantMicros, wantUSD)
+	}
+	if got := tiers[pricing.TierCacheWrite]; got != wantMicros {
+		t.Errorf("tiers[TierCacheWrite] = %d, want %d — the whole write cost should land on this tier", got, wantMicros)
+	}
+}
+
 func ctx(headers map[string]string, input, output int) *pipeline.Context {
 	h := http.Header{}
 	for k, v := range headers {

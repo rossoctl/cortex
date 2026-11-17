@@ -31,10 +31,11 @@ func UsageFromInference(inf *model.InferenceExtension) Usage {
 		return Usage{}
 	}
 	u := Usage{
-		Input:      inf.InputTokens,
-		CacheWrite: inf.CacheWriteTokens,
-		CacheRead:  inf.CacheReadTokens,
-		Output:     inf.OutputTokens,
+		Input:        inf.InputTokens,
+		CacheWrite:   inf.CacheWriteTokens,
+		CacheWrite1h: inf.CacheWrite1hTokens,
+		CacheRead:    inf.CacheReadTokens,
+		Output:       inf.OutputTokens,
 	}
 	if u.PromptTotal() == 0 && inf.PromptTokens > 0 {
 		u.Input = inf.PromptTokens

@@ -244,6 +244,16 @@ type anthropicUsage struct {
 	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
 
+	// CacheCreation splits CacheCreationInputTokens by TTL. ephemeral_1h_input_tokens
+	// is a SUBSET of CacheCreationInputTokens, never an addition to it — the object is
+	// a breakdown of the same total, as Anthropic's prompt-caching docs show. Absent
+	// on a request with no 1-hour breakpoints, so a pointer so that absence stays
+	// absent rather than reading as a reported zero.
+	CacheCreation *struct {
+		Ephemeral5mInputTokens *int `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1hInputTokens *int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
+
 	// OutputTokensDetails splits output_tokens by what generated it. Anthropic reports
 	// one sub-field, thinking_tokens: the share spent on internal reasoning, a SUBSET of
 	// OutputTokens rather than a sibling.
@@ -273,6 +283,11 @@ func (u anthropicUsage) toNeutral() parsercommon.TokenUsage {
 	if u.CacheCreationInputTokens != nil {
 		n.CacheWrite = *u.CacheCreationInputTokens
 		n.Present |= parsercommon.KindCacheWrite
+	}
+	// A SUBSET of CacheWrite above, never added to it. No Present bit of its own:
+	// it rides on KindCacheWrite, which the total already set.
+	if u.CacheCreation != nil && u.CacheCreation.Ephemeral1hInputTokens != nil {
+		n.CacheWrite1h = *u.CacheCreation.Ephemeral1hInputTokens
 	}
 	// BOTH POINTERS: a details object forwarded without the count inside it reports
 	// nothing, and must not set the bit.
@@ -576,6 +591,9 @@ func mergeAnthropicUsageMaxSeen(state *inferenceStreamState, incoming parsercomm
 	}
 	if incoming.CacheWrite > state.usage.CacheWrite {
 		state.usage.CacheWrite = incoming.CacheWrite
+	}
+	if incoming.CacheWrite1h > state.usage.CacheWrite1h {
+		state.usage.CacheWrite1h = incoming.CacheWrite1h
 	}
 }
 

@@ -414,3 +414,53 @@ func CostWithReason(r Rates, u Usage) (int64, bool, Refusal) {
 	_, micros, ok, refusal := CostByTier(r, u)
 	return micros, ok, refusal
 }
+
+// CacheWrite1hDeltaMicros is the additional cost owed because n cache-write tokens
+// were written with a 1-hour TTL. CostByTier/u.tokens() never sees Usage.CacheWrite1h
+// — it is a SUBSET of Usage.CacheWrite, which CostByTier already priced in full at
+// the 5-minute rate — so this is the DIFFERENCE between the 1h rate and the 5m rate
+// on just that subset, meant to be ADDED on top of CostByTier's own figure:
+//
+//	CostByTier(r, u) prices all of u.CacheWrite at the 5m rate: n_total * rate5m
+//	+ this delta:                                                n_1h * (rate1h - rate5m)
+//	= n_total * rate5m + n_1h*rate1h - n_1h*rate5m
+//	= (n_total - n_1h) * rate5m + n_1h * rate1h   <- the 5m and 1h portions at their own rates
+//
+// anthropicShaped is forwarded to Rates.CacheWrite1hRate unchanged — see that
+// method for what it decides. ok is false only when the 5m or 1h rate itself is
+// unusable (unset, negative, or non-finite); the caller then leaves the whole
+// CacheWrite tier priced at the 5m rate CostByTier already applied, rather than
+// refuse a request CostByTier itself accepted. A negative delta (a 1h rate
+// cheaper than 5m, which no real provider does) is also left unapplied rather
+// than credited back — see the n==0/usd<0 branch.
+//
+// Added for the 1h cache-write tier (2026-11-17 accountant-integration task 7).
+func CacheWrite1hDeltaMicros(r Rates, n int, anthropicShaped bool) (int64, bool) {
+	if n <= 0 {
+		return 0, true
+	}
+	rate5m, ok5m := r.For(TierCacheWrite)
+	rate1h, ok1h, _ := r.CacheWrite1hRate(anthropicShaped)
+	if !ok5m || !ok1h || !finiteNonNegative(rate5m) || !finiteNonNegative(rate1h) {
+		return 0, false
+	}
+	usd := float64(n) * (rate1h - rate5m)
+	if usd <= 0 {
+		// Zero: no premium to add. Negative: a 1h rate cheaper than the 5m one is
+		// not a shape any real table should produce; rather than credit money back,
+		// leave the tokens at the 5m rate CostByTier already priced them at.
+		return 0, true
+	}
+	m, ok := MicrosFromUSD(usd)
+	if !ok {
+		return 0, false
+	}
+	return m, true
+}
+
+// finiteNonNegative is the per-rate validity check CostByTier applies inline to
+// Base[i]; named here so CacheWrite1hDeltaMicros states the same rule rather than
+// re-deriving it.
+func finiteNonNegative(rate float64) bool {
+	return rate >= 0 && !math.IsNaN(rate) && !math.IsInf(rate, 0)
+}

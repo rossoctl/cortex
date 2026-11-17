@@ -83,12 +83,17 @@ type Host struct {
 	// Test hooks. beforeEnd runs first on the record's goroutine, computeHook just before the
 	// library's Compute, onEnd with the ops the record was given, metaHook with the
 	// RequestMeta RequestEnd built (synchronously, before the record's goroutine starts),
-	// factsHook with the EntryFacts the record is ended with. Nil outside tests.
+	// factsHook with the EntryFacts the record is ended with, usageHook with the
+	// accountant.Usage Compute built from pctx.Extensions.Inference, just before it is
+	// handed to the library (added for task 7's CacheWrite1h plumbing, 2026-11-17
+	// accountant-integration — Compute's own return carries no usage, only Ops/Checks/
+	// Unpriced, so a test asserting what was BUILT needs its own hook). Nil outside tests.
 	beforeEnd   func()
 	computeHook func()
 	onEnd       func(ops []accountant.Operation)
 	metaHook    func(meta accountant.RequestMeta)
 	factsHook   func(f accountant.EntryFacts)
+	usageHook   func(u accountant.Usage)
 }
 
 // threadBillingKey keys Host.threadBilling: a thread id is only unique within its session.
@@ -393,7 +398,18 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 		h.release(pctx, "no_record")
 		return accountant.Result{}, false
 	}
-	usage := accountant.Usage{Input: inf.InputTokens, CacheRead: inf.CacheReadTokens, CacheWrite: inf.CacheWriteTokens}
+	// CacheWrite1h is the part of CacheWrite billed at the 1-hour rate, never an
+	// addition to it (accountant.Usage's own doc). Task 7 (2026-11-17
+	// accountant-integration): the 1h cache-write tier.
+	usage := accountant.Usage{
+		Input:        inf.InputTokens,
+		CacheRead:    inf.CacheReadTokens,
+		CacheWrite:   inf.CacheWriteTokens,
+		CacheWrite1h: inf.CacheWrite1hTokens,
+	}
+	if h.usageHook != nil {
+		h.usageHook(usage)
+	}
 	p.result, p.ok = h.computeSafe(p.req, usage)
 	p.req = nil
 	if p.ok && p.pinged {

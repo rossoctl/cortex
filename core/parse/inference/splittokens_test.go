@@ -12,14 +12,43 @@ import (
 // mismatched counter is obvious.
 func checkSplit(t *testing.T, ext *model.InferenceExtension, want model.InferenceExtension) {
 	t.Helper()
-	got := fmt.Sprintf("input=%d cache_read=%d cache_write=%d output=%d reasoning=%d prompt=%d completion=%d total=%d",
-		ext.InputTokens, ext.CacheReadTokens, ext.CacheWriteTokens, ext.OutputTokens, ext.ReasoningTokens,
+	got := fmt.Sprintf("input=%d cache_read=%d cache_write=%d cache_write_1h=%d output=%d reasoning=%d prompt=%d completion=%d total=%d",
+		ext.InputTokens, ext.CacheReadTokens, ext.CacheWriteTokens, ext.CacheWrite1hTokens, ext.OutputTokens, ext.ReasoningTokens,
 		ext.PromptTokens, ext.CompletionTokens, ext.TotalTokens)
-	expected := fmt.Sprintf("input=%d cache_read=%d cache_write=%d output=%d reasoning=%d prompt=%d completion=%d total=%d",
-		want.InputTokens, want.CacheReadTokens, want.CacheWriteTokens, want.OutputTokens, want.ReasoningTokens,
+	expected := fmt.Sprintf("input=%d cache_read=%d cache_write=%d cache_write_1h=%d output=%d reasoning=%d prompt=%d completion=%d total=%d",
+		want.InputTokens, want.CacheReadTokens, want.CacheWriteTokens, want.CacheWrite1hTokens, want.OutputTokens, want.ReasoningTokens,
 		want.PromptTokens, want.CompletionTokens, want.TotalTokens)
 	if got != expected {
 		t.Errorf("split token counters mismatch\n got: %s\nwant: %s", got, expected)
+	}
+}
+
+// TestAnthropic_ParsesCacheWrite1h: cache_creation_input_tokens is the TOTAL write
+// (5m + 1h); cache_creation.ephemeral_1h_input_tokens is the 1h SUBSET of it, never
+// an addition. Task 7 (2026-11-17 accountant-integration): the 1h cache-write tier.
+func TestAnthropic_ParsesCacheWrite1h(t *testing.T) {
+	ext := &model.InferenceExtension{Model: "claude-sonnet-4-5"}
+	body := []byte(`{
+		"content": [{"type": "text", "text": "ok"}],
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 50,
+			"cache_creation_input_tokens": 1000,
+			"cache_creation": {
+				"ephemeral_5m_input_tokens": 400,
+				"ephemeral_1h_input_tokens": 600
+			},
+			"cache_read_input_tokens": 200,
+			"output_tokens": 25
+		}
+	}`)
+	parseAnthropicJSON(body, ext)
+
+	if ext.CacheWriteTokens != 1000 {
+		t.Errorf("CacheWriteTokens = %d, want 1000 (the total, not the 5m-only part)", ext.CacheWriteTokens)
+	}
+	if ext.CacheWrite1hTokens != 600 {
+		t.Errorf("CacheWrite1hTokens = %d, want 600", ext.CacheWrite1hTokens)
 	}
 }
 

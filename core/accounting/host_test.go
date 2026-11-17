@@ -131,6 +131,28 @@ func coldUsage() pipeline.InferenceExtension {
 	return pipeline.InferenceExtension{InputTokens: 3, CacheWriteTokens: 1800}
 }
 
+// TestHost_ComputeFillsCacheWrite1h: Compute must fill accountant.Usage.CacheWrite1h
+// from the extension's CacheWrite1hTokens — a subset of CacheWrite, never an
+// addition to it. Task 7 (2026-11-17 accountant-integration).
+func TestHost_ComputeFillsCacheWrite1h(t *testing.T) {
+	h := newHost(t)
+	var got accountant.Usage
+	h.usageHook = func(u accountant.Usage) { got = u }
+
+	usage := coldUsage()
+	usage.CacheWrite1hTokens = 600 // a subset of CacheWriteTokens (1800) above
+	pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{fwd: forwardedBody("hi")}, 200, usage)
+	if _, ok := h.Compute(pctx); !ok {
+		t.Fatal("Compute returned no Result")
+	}
+	if got.CacheWrite1h != 600 {
+		t.Errorf("accountant.Usage.CacheWrite1h = %d, want 600", got.CacheWrite1h)
+	}
+	if got.CacheWrite != 1800 {
+		t.Errorf("accountant.Usage.CacheWrite = %d, want 1800 (the total, unchanged by CacheWrite1h)", got.CacheWrite)
+	}
+}
+
 func TestHost_EndThenCompute(t *testing.T) {
 	h := newHost(t)
 	pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}, 200, coldUsage())

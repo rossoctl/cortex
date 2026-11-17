@@ -19,9 +19,14 @@ const (
 // normalize their wire format into these fields before publishing via
 // Fill, and set Present to name which sub-kinds the wire carried.
 type TokenUsage struct {
-	Input         int  // uncached prompt tokens
-	CacheRead     int  // prompt tokens served from cache
-	CacheWrite    int  // prompt tokens written to cache
+	Input      int // uncached prompt tokens
+	CacheRead  int // prompt tokens served from cache
+	CacheWrite int // prompt tokens written to cache
+	// CacheWrite1h is the part of CacheWrite written with a 1-hour TTL (Anthropic's
+	// cache_creation.ephemeral_1h_input_tokens), never an addition to CacheWrite.
+	// Zero means no 1h writes were reported; it carries no Present bit of its own
+	// because it is a subset of the KindCacheWrite bit CacheWrite already sets.
+	CacheWrite1h  int
 	Output        int  // generated completion tokens
 	Reasoning     int  // reasoning-only output (subset of Output)
 	ReportedTotal int  // provider's own total_tokens if reported, else 0
@@ -47,6 +52,7 @@ func (u TokenUsage) Fill(ext *model.InferenceExtension) {
 	ext.InputTokens = u.Input
 	ext.CacheReadTokens = u.CacheRead
 	ext.CacheWriteTokens = u.CacheWrite
+	ext.CacheWrite1hTokens = u.CacheWrite1h
 	ext.OutputTokens = u.Output
 	ext.ReasoningTokens = u.Reasoning
 	ext.PresentKinds = uint8(u.Present)

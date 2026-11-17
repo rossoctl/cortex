@@ -66,6 +66,56 @@ func testPing() accountant.Ping {
 
 func okInfo() PingInfo { return PingInfo{Status: 200, Duration: 300 * time.Millisecond} }
 
+// TestPing_Prices1hCacheWrite: a ping whose usage carries a 1-hour cache write must
+// have that subset priced at the 1h rate, not the 5m one — recordPing fills
+// InferenceExtension.CacheWrite1hTokens from p.Usage.CacheWrite1h, and
+// settle.SettleInput prices it through the same 1h-tier logic a real response
+// uses. Task 7 (2026-11-17 accountant-integration).
+func TestPing_Prices1hCacheWrite(t *testing.T) {
+	rec := &fakeRecorder{}
+	h, err := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{rec}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	p := accountant.Ping{
+		Session: "s1", ThreadID: "", Model: "claude-sonnet-4-5", Host: "api.anthropic.com",
+		Usage:  accountant.CallUsage{Usage: accountant.Usage{CacheWrite: 1000, CacheWrite1h: 600}},
+		At:     pingT0.Add(4 * time.Minute),
+		Window: pingT0,
+	}
+	if _, ok := h.Ping("s1", nil, "api.anthropic.com", p, okInfo()); !ok {
+		t.Fatal("ping refused")
+	}
+
+	_, evs := rec.got()
+	if len(evs) != 1 {
+		t.Fatalf("got %d events, want 1", len(evs))
+	}
+	e := evs[0]
+	if e.Inference == nil || e.Inference.CacheWriteTokens != 1000 || e.Inference.CacheWrite1hTokens != 600 {
+		t.Fatalf("inference = %+v, want CacheWriteTokens=1000 CacheWrite1hTokens=600", e.Inference)
+	}
+	recOut, ok := event.Record(e)
+	if !ok {
+		t.Fatal("no cost record on the event")
+	}
+	// pingRates: input 3e-6, cache write (5m) 3.75e-6. No explicit 1h rate, so the
+	// Anthropic-shaped fallback (model "claude-sonnet-4-5") derives 1h = input x 2 =
+	// 6e-6. 400 tokens stay at the 5m rate, 600 price at the 1h rate:
+	// 400*3.75e-6 + 600*6e-6 = 0.0051.
+	want := 400*3.75e-6 + 600*6e-6
+	if !recOut.Priced() || recOut.CostUSD < want-1e-9 || recOut.CostUSD > want+1e-9 {
+		t.Errorf("cost = %v (priced %v), want %v", recOut.CostUSD, recOut.Priced(), want)
+	}
+	// Priced strictly above what pricing every write token at the 5m rate would give
+	// (0.00375), so the test would fail if the 1h subset were silently ignored.
+	if flat := 1000 * 3.75e-6; recOut.CostUSD <= flat {
+		t.Errorf("cost = %v, want more than the all-5m figure %v (the 1h premium was not applied)", recOut.CostUSD, flat)
+	}
+}
+
 // The session store is never touched by a ping, and that guarantee is structural: Host holds no
 // store reference, so Ping has nothing to append to. The recorders are the only sink.
 func TestPing_RecordsSpendToCostRecorders(t *testing.T) {

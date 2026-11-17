@@ -126,7 +126,12 @@ func (h *Host) recordPing(sessionID string, client *model.EventClient, host stri
 		InputTokens:      p.Usage.Input,
 		CacheReadTokens:  p.Usage.CacheRead,
 		CacheWriteTokens: p.Usage.CacheWrite,
-		OutputTokens:     p.Usage.Output,
+		// CacheWrite1h is the part of CacheWrite billed at the 1-hour rate, never an
+		// addition to it (p.Usage embeds accountant.Usage, whose own doc says the
+		// same). Task 7 (2026-11-17 accountant-integration): the 1h cache-write
+		// tier — settle.SettleInput below prices this subset at the 1h rate.
+		CacheWrite1hTokens: p.Usage.CacheWrite1h,
+		OutputTokens:       p.Usage.Output,
 	}
 	settled := settle.SettleInput(settle.Input{Host: host, Inference: inf}, h.resolver)
 	rec := settle.NewRecord(settled, nil)

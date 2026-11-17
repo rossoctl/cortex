@@ -776,7 +776,38 @@ func modelledCost(rates pricing.Resolver, host, model string, u pricing.Usage, p
 	if !ok {
 		return 0, none, pricing.ProvNone, false, refusal
 	}
+	// u.CacheWrite1h is a SUBSET of u.CacheWrite, so CostByTier above already
+	// priced it once, at the 5m write rate — see pricing.Usage.CacheWrite1h. Add
+	// just the DIFFERENCE for the 1h subset, so the 5m portion keeps its own rate
+	// rather than re-resolving the whole request against a modified prompt total
+	// (the rule the comment on modelledCost above states for the prompt/output
+	// halves, and the same reason this is an addition here rather than another
+	// CostByTier call with CacheWrite zeroed). A delta pricing refuses to
+	// (CacheWrite1hDeltaMicros returning ok=false) leaves the tier at the 5m
+	// price CostByTier already applied, never the whole request refused over a
+	// rate CostByTier itself never required.
+	//
+	// Added for the 1h cache-write tier (2026-11-17 accountant-integration task 7).
+	if u.CacheWrite1h > 0 {
+		if delta, deltaOK := pricing.CacheWrite1hDeltaMicros(r, u.CacheWrite1h, isAnthropicModel(model)); deltaOK && delta > 0 {
+			micros += delta
+			tiers[pricing.TierCacheWrite] += delta
+		}
+	}
 	return micros, tiers, prov, true, pricing.RefusalNone
+}
+
+// isAnthropicModel reports whether model is on Anthropic's Claude family, the only
+// provider on a path Cortex runs whose 1-hour cache-write premium is documented
+// (2x input — see pricing.Rates.CacheWrite1hRate). modelledCost is the natural
+// place for this: it already has the model string, which pricing.Rates itself
+// carries no equivalent of (a Rates value names no provider).
+//
+// A substring match, not an exact one: bundled model names include dated and
+// provider-prefixed forms ("claude-sonnet-4-5-20250929", "anthropic/claude-opus-5",
+// Bedrock's "anthropic.claude-..."), all of which contain "claude".
+func isAnthropicModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "claude")
 }
 
 // StateKey is where the full Settled outcome is stashed for the rest of the request.
