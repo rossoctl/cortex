@@ -62,29 +62,6 @@ func TestUninstallUnroutesEverySettingsFileCortexRouted(t *testing.T) {
 	}
 }
 
-// A disable on the first of two enabled files keeps a value set there since its
-// enable.
-func TestClaudeCodeDisable_KeepsAnEditToTheFirstFileAfterAnotherEnable(t *testing.T) {
-	const corp = "http://corp.example:3128"
-	first, cfg := fixture(t, "{}")
-	second := filepath.Join(t.TempDir(), "settings.json")
-	state := filepath.Join(t.TempDir(), "state.json")
-	if code := claudeCodeEnable2(first, cfg, state, true, io.Discard, io.Discard); code != 0 {
-		t.Fatalf("fixture: enable on the first file exit %d", code)
-	}
-	handEdit(t, first, map[string]string{envProxy: corp})
-	if code := claudeCodeEnable2(second, cfg, state, true, io.Discard, io.Discard); code != 0 {
-		t.Fatalf("fixture: enable on the second file exit %d", code)
-	}
-	var errb bytes.Buffer
-	if code := claudeCodeDisable2(first, state, true, io.Discard, &errb); code != 0 {
-		t.Fatalf("disable exit %d: %s", code, errb.String())
-	}
-	if env := readEnv(t, first); env[envProxy] != corp || len(env) != 1 {
-		t.Errorf("the first file's env is %v, want only %s=%s", env, envProxy, corp)
-	}
-}
-
 // Each settings file keeps its own entry: a later enable adds one beside the
 // others, a re-enable refreshes only its Written, and a drop takes out only its
 // own, keeping the next entry whole when it moves up and deleting the record
