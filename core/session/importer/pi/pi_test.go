@@ -281,34 +281,25 @@ func TestSource_NewestFirstAndSince(t *testing.T) {
 	}
 }
 
-// skip gets a time that is not before the parsed Updated, and a true from it stops the parse.
+// skip gets the parsed Updated before the parse, from newestAt, and a true from it stops the
+// parse. The fixture mtimes are now, so only the newestAt call can match Updated.
 func TestSessions_SkipBeforeTheParse(t *testing.T) {
 	dir := fixtures(t)
 	want := map[string]time.Time{}
 	for _, s := range readAll(t, New(dir), time.Time{}) {
 		want[s.ID] = s.Updated
 	}
-	got := map[string]time.Time{}
 	var yielded []string
 	for s, err := range New(dir).Sessions(time.Time{}, func(id string, updated time.Time) bool {
-		got[id] = updated
-		return id == plainID
+		return id == plainID && updated.Equal(want[id])
 	}, func(int, int) {}) {
 		if err != nil {
 			t.Fatal(err)
 		}
 		yielded = append(yielded, s.ID)
 	}
-	if slices.Contains(yielded, plainID) || len(yielded) != 2 {
+	if slices.Contains(yielded, plainID) || len(yielded) != len(want)-1 {
 		t.Fatalf("yielded %v, want all but %s", yielded, plainID)
-	}
-	if len(got) != len(want) {
-		t.Fatalf("skip saw %d sessions, want %d", len(got), len(want))
-	}
-	for id, u := range want {
-		if got[id].Before(u) {
-			t.Errorf("%s: skip got %v last, before Updated %v", id, got[id], u)
-		}
 	}
 }
 
