@@ -135,7 +135,7 @@ func (p *parser) file(path, thread, subagent string, copied []usage, usagesOnly 
 			Model  string            `json:"model"`
 			Output []json.RawMessage `json:"output"`
 			Usage  *responsesUsage   `json:"usage,omitempty"`
-		}{mdl, turnOut, toResponsesUsage(u)})
+		}{mdl, slices.DeleteFunc(slices.Clone(turnOut), invalidOutput), toResponsesUsage(u)})
 		resp := *req
 		inference.ReadResponse(responsesPath, false, respBody, &resp)
 		if th := thinking(turnOut); th.Blocks > 0 {
@@ -266,6 +266,14 @@ func (p *parser) file(path, thread, subagent string, copied []usage, usagesOnly 
 // for one item it cannot decode, so one such item in conv would cost every later turn.
 func validItem(item json.RawMessage) bool {
 	return inference.ParseRequest(responsesPath, nil, slices.Concat([]byte(`{"input":[`), item, []byte(`]}`))) != nil
+}
+
+// invalidOutput reports whether the live parser refuses item as an output. It refuses a whole
+// response body for one such item, and the turn then loses its usage.
+func invalidOutput(item json.RawMessage) bool {
+	var ext model.InferenceExtension
+	inference.ReadResponse(responsesPath, false, slices.Concat([]byte(`{"status":"ok","output":[`), item, []byte(`]}`)), &ext)
+	return ext.FinishReason != "ok"
 }
 
 // responsesUsage is the usage block of a Responses API response.

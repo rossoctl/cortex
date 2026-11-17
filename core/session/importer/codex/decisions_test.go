@@ -133,6 +133,45 @@ func TestSource_TokenCountAfterToolResults(t *testing.T) {
 	}
 }
 
+// An output item that the response decoder refuses costs that item only: the turn keeps its
+// usage and its other outputs, and the next turn still has the item in its input.
+func TestSource_OffSpecOutputItemKeepsTheTurn(t *testing.T) {
+	tokenCount := func(sec, total int) string {
+		return `{"timestamp":"2026-11-04T08:00:` + pad(sec) + `Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":` +
+			fmt.Sprint(total-1) + `,"output_tokens":1,"total_tokens":` + fmt.Sprint(total) + `}}}}`
+	}
+	for name, bad := range map[string]string{
+		"tool_search_call object arguments": `{"type":"tool_search_call","call_id":"s1","execution":"client","arguments":{"query":"calendar create","limit":1}}`,
+		"custom_tool_call object input":     `{"type":"custom_tool_call","call_id":"s1","name":"apply_patch","input":{"a":1}}`,
+		"reasoning numeric id":              `{"type":"reasoning","id":7,"summary":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			writeRollout(t, home, "rollout-a-"+plainID+".jsonl", time.Date(2026, 11, 4, 8, 1, 0, 0, time.UTC),
+				meta, ctx,
+				user(2, "q"),
+				`{"timestamp":"2026-11-04T08:00:03Z","type":"response_item","payload":`+bad+`}`,
+				`{"timestamp":"2026-11-04T08:00:04Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{}","call_id":"c1"}}`,
+				`{"timestamp":"2026-11-04T08:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"ok"}}`,
+				tokenCount(6, 100),
+				assistant(7, "done"),
+				tokenCount(8, 200),
+			)
+			s := sessionByID(t, home, plainID)
+			reqs, resps := phase(s, model.SessionRequest, ""), phase(s, model.SessionResponse, "")
+			if len(reqs) != 2 || len(resps) != 2 {
+				t.Fatalf("%d requests, %d responses, want 2 and 2", len(reqs), len(resps))
+			}
+			if c := resps[0].Inference.ToolCalls; len(c) != 1 || c[0].ID != "c1" || resps[0].Inference.TotalTokens != 100 {
+				t.Errorf("turn 1 = tool calls %+v, TotalTokens %d; want c1 and 100", c, resps[0].Inference.TotalTokens)
+			}
+			if resps[1].Inference.TotalTokens != 200 || resps[1].Inference.Completion != "done" {
+				t.Errorf("turn 2 = TotalTokens %d, Completion %q", resps[1].Inference.TotalTokens, resps[1].Inference.Completion)
+			}
+		})
+	}
+}
+
 // A provider that sends no usage writes token_count with info null. An output after held tool
 // results is the next model call, so it closes the open turn.
 func TestSource_OutputAfterToolResultsIsANewCall(t *testing.T) {
