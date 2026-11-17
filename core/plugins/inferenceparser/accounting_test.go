@@ -81,7 +81,7 @@ func TestSettleCost_CallsAccountingOnce(t *testing.T) {
 // accountant's figure is only compared with it. A difference is logged at INFO with both
 // figures and counted in the plugin's metrics.
 func TestSettleCost_ShadowWritesOldFigure(t *testing.T) {
-	logs := captureLogs(t, slog.LevelInfo)
+	logs := captureLogs(t, slog.LevelDebug)
 	acc := &countingAccountant{
 		saving: []event.Saving{
 			{Component: "tool-prune", Operator: "tool-prune", USD: 0.5, PenaltyUSD: 0.1, Basis: accounting.BasisUSD},
@@ -109,17 +109,27 @@ func TestSettleCost_ShadowWritesOldFigure(t *testing.T) {
 		t.Errorf("published Avoided = %+v, want settle.Avoided's figure %+v unchanged", ev.Avoided, old)
 	}
 	out := logs.String()
+	// tool-prune differs for real: INFO. context-guru.mask is only in the new figure: DEBUG.
 	if n := strings.Count(out, "accounting: shadow"); n != 2 {
-		t.Fatalf("want one INFO shadow line per differing component (2), got %d:\n%s", n, out)
+		t.Fatalf("want one shadow line per differing component (2), got %d:\n%s", n, out)
 	}
-	for _, want := range []string{"level=INFO", "session=s1", "component=tool-prune", "newUSD=0.4", "newPenaltyUSD=0.1",
-		"component=context-guru.mask", "inOld=false", "thread=main", "diffUSD="} {
-		if !strings.Contains(out, want) {
-			t.Errorf("shadow log lacks %q:\n%s", want, out)
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		switch {
+		case strings.Contains(line, "component=tool-prune"):
+			for _, want := range []string{"level=INFO", "session=s1", "newUSD=0.4", "newPenaltyUSD=0.1", "thread=main", "diffUSD=", "inOld=true"} {
+				if !strings.Contains(line, want) {
+					t.Errorf("tool-prune shadow line lacks %q: %s", want, line)
+				}
+			}
+		case strings.Contains(line, "component=context-guru.mask"):
+			if !strings.Contains(line, "level=DEBUG") || !strings.Contains(line, "inOld=false") {
+				t.Errorf("an operator only the accountant prices is not a DEBUG line: %s", line)
+			}
 		}
 	}
-	if m := shadowMetrics(p); m["accounting shadow compared"] != 1 || m["accounting shadow differed"] != 1 {
-		t.Errorf("metrics = %+v, want one compared, one differed", m)
+	m := shadowMetrics(p)
+	if m["accounting shadow compared"] != 1 || m["accounting shadow differed"] != 1 || m["accounting shadow new-only"] != 1 {
+		t.Errorf("metrics = %+v, want one compared, one differed, one new-only", m)
 	}
 }
 
@@ -152,5 +162,25 @@ func TestSettleCost_NoAccountantIsFine(t *testing.T) {
 	}
 	if m := p.Metrics(); m != nil {
 		t.Errorf("Metrics = %+v with accounting off, want none", m)
+	}
+}
+
+// An operator only the accountant prices is an expected difference: it does not count as
+// "differed" and writes no INFO line.
+func TestSettleCost_ShadowNewOnlyIsNotADifference(t *testing.T) {
+	logs := captureLogs(t, slog.LevelInfo)
+	p := NewInferenceParser()
+	p.rates = bodylessRates(t)
+	pctx := shadowCtx()
+	same := settle.Avoided(pctx, p.rates)[0]
+	p.acct = &countingAccountant{saving: []event.Saving{same,
+		{Component: "context-guru.mask", Operator: "context-guru.mask", USD: 0.2},
+		{Component: accounting.KeeperOperator, Operator: accounting.KeeperOperator, USD: 0.1}}}
+	p.settleCost(pctx)
+	if strings.Contains(logs.String(), "accounting: shadow") {
+		t.Errorf("an INFO shadow line for operators only the accountant prices:\n%s", logs.String())
+	}
+	if m := shadowMetrics(p); m["accounting shadow differed"] != 0 || m["accounting shadow new-only"] != 1 {
+		t.Errorf("metrics = %+v, want none differed, one new-only", m)
 	}
 }

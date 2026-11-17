@@ -435,7 +435,8 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 // in this task), and SetAccountingThread's empty-id no-op then leaves
 // core/accounting.ThreadOf's default rule ("main" for the primary agent) in place.
 //
-// Ops: reported only when the engine produced a rewrite (changed && non-empty out), and
+// Ops: the engine's Trace.Ops plus the envelope ops (envelopeOps), reported only when the
+// engine produced a rewrite (changed && non-empty out), and
 // regardless of whether the caller's subsequent SetBody actually applies it — ReportOps
 // itself stamps DryRun when the plugin runs under on_error: observe, so the accountant
 // still sees what the engine WOULD have sent (W5.1/W4.6).
@@ -445,6 +446,10 @@ func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed
 	out, changed = res.Body, res.Changed
 	if changed && len(out) > 0 {
 		pctx.ReportOps(res.Trace.Ops...)
+		// The tools and system changes apply makes report no op of their own; they are found
+		// by diffing this plugin's input against its output (envelope.go). pctx.Body is still
+		// the input here: the caller sets the output after this returns.
+		pctx.ReportOps(envelopeOps(pctx.Body, out)...)
 	}
 	return out, changed
 }

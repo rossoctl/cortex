@@ -139,7 +139,6 @@ func TestSavings_DryRunOnlyOperatorIsProjected(t *testing.T) {
 	res := accountant.Result{Ops: []accountant.PricedOp{
 		{Kind: accountant.KindRewrite, Operator: "tool-prune", ChangeID: "a", DryRun: true, Saved: accountant.TierTokens{Input: 10}},
 		{Kind: accountant.KindRewrite, Operator: "tool-prune", ChangeID: "b", DryRun: true, Saved: accountant.TierTokens{Input: 20}},
-		{Kind: accountant.KindRewrite, Operator: "context-guru.mask", ChangeID: "c", DryRun: true, Saved: accountant.TierTokens{Input: 5}},
 		{Kind: accountant.KindRewrite, Operator: "context-guru.mask", ChangeID: "d", Saved: accountant.TierTokens{Input: 5}},
 	}}
 	got := byOperator(t, func() []event.Saving { s, _ := Savings(res, (&pricer{}).price, "m", "h"); return s }())
@@ -147,13 +146,17 @@ func TestSavings_DryRunOnlyOperatorIsProjected(t *testing.T) {
 		t.Error("an operator whose every op is a dry run is not projected")
 	}
 	if got["context-guru.mask"].Projected {
-		t.Error("an operator with an applied op is projected")
+		t.Error("an operator with only applied ops is projected")
+	}
+	if len(got) != 2 {
+		t.Errorf("savings = %+v, want one per operator: a single-kind operator gets one saving", got)
 	}
 }
 
-// A spend op (an operator's own model call) is priced with the call's model and host, not the
-// request's, and is a cost of its operator. A stated CostUSD is a fact and wins over the rates.
-func TestSavings_SpendOpPricedWithItsOwnModel(t *testing.T) {
+// A spend op (an operator's own model call) is not a saving (W7.1): it is one SpendRecord, priced
+// with the call's model and host, and its operator gets no Saving for it. A stated CostUSD is a
+// fact and wins over the rates.
+func TestSavings_SpendOpIsASpendRecordNotASaving(t *testing.T) {
 	res := accountant.Result{Ops: []accountant.PricedOp{
 		{Kind: accountant.KindSpend, Operator: "context-guru.summarize", ChangeID: "s:1",
 			Call: &accountant.ModelCall{Model: "half", Host: "other.example", Usage: accountant.CallUsage{Usage: accountant.Usage{Input: 1000}}}},
@@ -161,22 +164,67 @@ func TestSavings_SpendOpPricedWithItsOwnModel(t *testing.T) {
 			Call: &accountant.ModelCall{Model: "half", Usage: accountant.CallUsage{Usage: accountant.Usage{Input: 1000}, CostUSD: 0.5}}},
 	}}
 	p := &pricer{}
-	ss, _ := Savings(res, p.price, "claude-sonnet-4-5", "api.anthropic.com")
-	got := byOperator(t, ss)
-	if s := got["context-guru.summarize"]; !near(s.PenaltyUSD, 500e-6) || s.USD != 0 {
-		t.Errorf("summarize = %+v, want penalty 500e-6 (1000 input at half the rate)", s)
+	ss, ex := Savings(res, p.price, "claude-sonnet-4-5", "api.anthropic.com")
+	if len(ss) != 0 {
+		t.Errorf("savings = %+v, want none: a spend is never inside a Saving", ss)
 	}
-	if s := got["context-guru.judge"]; !near(s.PenaltyUSD, 0.5) {
-		t.Errorf("judge = %+v, want the stated cost 0.5", s)
+	if len(ex.Spends) != 2 {
+		t.Fatalf("spends = %+v, want one per spend op", ex.Spends)
 	}
-	var sawCall bool
-	for _, c := range p.calls {
-		if c == [2]string{"half", "other.example"} {
-			sawCall = true
+	sum, judge := ex.Spends[0], ex.Spends[1]
+	if sum.Operator != "context-guru.summarize" || sum.ChangeID != "s:1" || sum.Model != "half" ||
+		sum.Host != "other.example" || sum.Input != 1000 || !near(sum.USD, 500e-6) || sum.Basis != BasisUSD {
+		t.Errorf("summarize spend = %+v, want 1000 input at half the rate on other.example", sum)
+	}
+	if judge.Host != "api.anthropic.com" || !near(judge.USD, 0.5) || judge.Estimated {
+		t.Errorf("judge spend = %+v, want the stated cost 0.5 on the request's host, not estimated", judge)
+	}
+	if p.calls[0] != [2]string{"half", "other.example"} {
+		t.Errorf("price calls = %v, want the call's model and host", p.calls)
+	}
+}
+
+// A spend's Basis follows the billing mode, as a saving's does.
+func TestSavingsBilled_SpendBasisFollowsTheMode(t *testing.T) {
+	res := accountant.Result{Ops: []accountant.PricedOp{{Kind: accountant.KindSpend, Operator: "context-guru.summarize",
+		Call: &accountant.ModelCall{Model: "m", Usage: accountant.CallUsage{Usage: accountant.Usage{CacheRead: 1000}, Output: 10}}}}}
+	for mode, want := range map[accountant.BillingMode]string{
+		accountant.BillingAPI: BasisUSD, accountant.BillingSubscription: BasisSubscriptionEquivalent, accountant.BillingUnknown: BasisUnknown,
+	} {
+		_, ex := SavingsBilled(res, (&pricer{}).price, nil, "m", "h", mode, config.DefaultSubscriptionWeights())
+		if len(ex.Spends) != 1 || ex.Spends[0].Basis != want {
+			t.Errorf("%s: spends = %+v, want one with basis %s", mode, ex.Spends, want)
+			continue
+		}
+		sp := ex.Spends[0]
+		if want == BasisSubscriptionEquivalent {
+			if !near(sp.Units, 1000*0.1+10*5) || !sp.Estimated {
+				t.Errorf("subscription spend = %+v, want 150 units, estimated", sp)
+			}
+		} else if sp.Units != 0 {
+			t.Errorf("%s spend has units: %+v", mode, sp)
 		}
 	}
-	if !sawCall {
-		t.Errorf("price calls = %v, want one with the call's model and host", p.calls)
+}
+
+// An operator with applied and dry-run ops gets two savings: the applied figure, and a projected
+// one, so a "would have saved" amount never enters an applied figure.
+func TestSavings_DryRunAmountsStayOutOfTheAppliedFigure(t *testing.T) {
+	res := accountant.Result{Ops: []accountant.PricedOp{
+		{Kind: accountant.KindRewrite, Operator: "context-guru.mask", ChangeID: "a", Saved: accountant.TierTokens{Input: 100}},
+		{Kind: accountant.KindRewrite, Operator: "context-guru.mask", ChangeID: "b", DryRun: true,
+			Saved: accountant.TierTokens{Input: 40}, Caused: accountant.TierTokens{Input: 8}},
+	}}
+	ss, _ := Savings(res, (&pricer{}).price, "m", "h")
+	if len(ss) != 2 {
+		t.Fatalf("savings = %+v, want an applied and a projected one", ss)
+	}
+	applied, projected := ss[0], ss[1]
+	if applied.Projected || !near(applied.USD, 100e-6) || applied.PenaltyUSD != 0 || applied.TokensAvoided != 100 {
+		t.Errorf("applied = %+v, want USD 100e-6 and nothing from the dry run", applied)
+	}
+	if !projected.Projected || !near(projected.USD, 40e-6) || !near(projected.PenaltyUSD, 8e-6) || projected.Operator != "context-guru.mask" {
+		t.Errorf("projected = %+v, want the dry run's figure, projected", projected)
 	}
 }
 
@@ -211,7 +259,7 @@ func TestSavings_NegativeNetIsKept(t *testing.T) {
 func TestSavingsBilled_SubscriptionIsUnits(t *testing.T) {
 	res := accountant.Result{Version: 1, Ops: []accountant.PricedOp{{Kind: accountant.KindRewrite, Operator: "tool-prune", ChangeID: "tp",
 		Saved: accountant.TierTokens{CacheRead: 1000}, Caused: accountant.TierTokens{CacheWrite5m: 8}}}}
-	ss, _ := SavingsBilled(res, (&pricer{}).price, "m", "h", accountant.BillingSubscription, config.DefaultSubscriptionWeights())
+	ss, _ := SavingsBilled(res, (&pricer{}).price, nil, "m", "h", accountant.BillingSubscription, config.DefaultSubscriptionWeights())
 	s := byOperator(t, ss)["tool-prune"]
 	if s.Basis != BasisSubscriptionEquivalent || !s.Estimated {
 		t.Errorf("saving = %+v, want basis subscriptionEquivalent, estimated", s)
@@ -225,7 +273,7 @@ func TestSavingsBilled_SubscriptionIsUnits(t *testing.T) {
 	}
 
 	w := config.SubscriptionWeights{Input: 1, CacheWrite5m: 2, CacheWrite1h: 3, CacheRead: 0.5, Output: 4}
-	ss, _ = SavingsBilled(res, (&pricer{}).price, "m", "h", accountant.BillingSubscription, w)
+	ss, _ = SavingsBilled(res, (&pricer{}).price, nil, "m", "h", accountant.BillingSubscription, w)
 	s = byOperator(t, ss)["tool-prune"]
 	if !near(s.Units, 500) || !near(s.PenaltyUnits, 16) {
 		t.Errorf("custom weights: Units = %v, PenaltyUnits = %v; want 500 and 16", s.Units, s.PenaltyUnits)
@@ -235,12 +283,12 @@ func TestSavingsBilled_SubscriptionIsUnits(t *testing.T) {
 func TestSavingsBilled_UnknownBasis(t *testing.T) {
 	res := accountant.Result{Ops: []accountant.PricedOp{{Kind: accountant.KindRewrite, Operator: "tool-prune", ChangeID: "tp",
 		Saved: accountant.TierTokens{CacheRead: 1000}}}}
-	ss, _ := SavingsBilled(res, (&pricer{}).price, "m", "h", accountant.BillingUnknown, config.DefaultSubscriptionWeights())
+	ss, _ := SavingsBilled(res, (&pricer{}).price, nil, "m", "h", accountant.BillingUnknown, config.DefaultSubscriptionWeights())
 	s := byOperator(t, ss)["tool-prune"]
 	if s.Basis != BasisUnknown || !s.Estimated || s.Units != 0 {
 		t.Errorf("saving = %+v, want basis unknown, estimated, no units", s)
 	}
-	ss, _ = SavingsBilled(res, (&pricer{}).price, "m", "h", accountant.BillingAPI, config.DefaultSubscriptionWeights())
+	ss, _ = SavingsBilled(res, (&pricer{}).price, nil, "m", "h", accountant.BillingAPI, config.DefaultSubscriptionWeights())
 	if s := byOperator(t, ss)["tool-prune"]; s.Basis != BasisUSD || s.Estimated {
 		t.Errorf("api saving = %+v, want basis usd, not estimated", s)
 	}
@@ -356,3 +404,53 @@ func TestOperatorTokens(t *testing.T) {
 		t.Errorf("keeper = %+v", f)
 	}
 }
+
+// Host.Savings prices an operator's model call whole, output included, at the call's own prompt
+// size: an 8k-input, 1k-output call costs its input and its output, and is not estimated for want
+// of an output rate. A long-context premium of the request does not reach it.
+func TestHost_SavingsPricesSpendOutputAtTheCallsOwnSize(t *testing.T) {
+	rates := testRates(pricing.ProvConfigured)
+	// A long-context premium above 100k prompt tokens: input 10x. The request is above it, the
+	// call is not.
+	th := pricing.ContextThreshold{AbovePromptTokens: 100_000}
+	th.Rate[pricing.TierInput], th.Set[pricing.TierInput] = 3e-5, true
+	rates.rates.Thresholds = []pricing.ContextThreshold{th}
+	h, err := New(Options{Resolver: &atRates{rates}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	call := accountant.Operation{Kind: accountant.KindSpend, Operator: "context-guru.summarize", ChangeID: "s:1",
+		Call: &accountant.ModelCall{Model: "claude-haiku-4-5", Usage: accountant.CallUsage{Usage: accountant.Usage{Input: 8000}, Output: 1000}}}
+	usage := pipeline.InferenceExtension{InputTokens: 150_000, CacheWriteTokens: 1800}
+	pctx := requestWithHeaders(t, h, "s1", http.Header{"X-Api-Key": {"k"}}, clientBody("hi"),
+		&operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp(), call}}, 200, usage)
+	ss, ex, ok := h.Savings(pctx)
+	if !ok {
+		t.Fatal("no result")
+	}
+	if len(ex.Spends) != 1 {
+		t.Fatalf("spends = %+v, want one", ex.Spends)
+	}
+	sp := ex.Spends[0]
+	if want := 8000*3e-6 + 1000*1.5e-5; !near(sp.USD, want) || sp.Estimated {
+		t.Errorf("spend = %+v, want USD %v (input at the base rate plus output), not estimated", sp, want)
+	}
+	if sp.Thread != "main" || sp.Host != "api.anthropic.com" {
+		t.Errorf("spend = %+v, want thread main and the request's host", sp)
+	}
+	for _, s := range ss {
+		if s.Operator == "context-guru.summarize" {
+			t.Errorf("the call's operator has a saving: %+v", s)
+		}
+	}
+}
+
+// atRates flattens its rates for the prompt size it is asked about, as pricing.Table does.
+type atRates struct{ f *fixedRates }
+
+func (a *atRates) Resolve(endpoint, model string, promptTotal int) (pricing.Rates, pricing.Provenance) {
+	r, p := a.f.Resolve(endpoint, model, promptTotal)
+	return r.At(promptTotal), p
+}
+func (a *atRates) CurrencyFor(e, m string) string { return a.f.CurrencyFor(e, m) }

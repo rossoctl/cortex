@@ -286,10 +286,11 @@ type Event struct {
 	// and /v1/usage fold a ping's spend into the same rows and totals as the agent's.
 	Purpose string `json:"purpose,omitempty"`
 
-	// UnattributedBreakUSD is the net cost of the cache effects this request had that no context
-	// operator owns: a break whose change had already ended (no ChangeID), or one whose ChangeID no
-	// applied operation reported (accountant wiring W7.1). Shown, never charged to an operator, and
-	// never part of Avoided.
+	// UnattributedBreakUSD is the net cost of every cache effect this request had that no context
+	// operator owns: mostly breaks — one whose change had already ended (no ChangeID), or one whose
+	// ChangeID no applied operation reported — but also a split, TTL or mark effect with no owning
+	// operation, so it is signed: an unowned effect that saved makes it smaller. The name is
+	// W7.1's. Shown, never charged to an operator, and never part of Avoided.
 	//
 	// ADDITIVE and omitempty. Read by nothing yet: core/accounting fills it, and the totals that
 	// will read it are later work.
@@ -299,6 +300,39 @@ type Event struct {
 	// the id the context-guru plugin named (core/accounting.ThreadOf). A subagent's saving is kept
 	// apart from the main thread's (W7.1). ADDITIVE and omitempty; read by nothing yet.
 	Thread string `json:"thread,omitempty"`
+
+	// Spends are the context operators' own model calls on this request, one record each
+	// (W7.1's Event.Spends). A spend is shown beside the savings, never inside a Saving, and it is
+	// not part of CostUSD. ADDITIVE and omitempty; read by nothing yet.
+	Spends []SpendRecord `json:"spends,omitempty"`
+}
+
+// SpendRecord is one model call a context operator made for a request (accountant wiring W7.1,
+// design §5.7a): what it billed, by tier, and what that cost.
+type SpendRecord struct {
+	// ChangeID is the spend op's ChangeID; Operator its dotted operator name.
+	ChangeID string `json:"changeId,omitempty"`
+	Operator string `json:"operator,omitempty"`
+	// Thread is the accountant thread of the request the call served.
+	Thread string `json:"thread,omitempty"`
+	// Model and Host are the call's own, which price it: they need not be the request's.
+	Model string `json:"model,omitempty"`
+	Host  string `json:"host,omitempty"`
+	// The call's tokens by tier. CacheWrite5m and CacheWrite1h together are its cache writes.
+	Input        int `json:"input,omitempty"`
+	CacheWrite5m int `json:"cacheWrite5m,omitempty"`
+	CacheWrite1h int `json:"cacheWrite1h,omitempty"`
+	CacheRead    int `json:"cacheRead,omitempty"`
+	Output       int `json:"output,omitempty"`
+	// USD is the cost the call's response stated, or else its tokens priced at the call's own
+	// model, host and prompt size, output included.
+	USD float64 `json:"usd,omitempty"`
+	// Basis follows the request's billing mode, as Saving.Basis does: only "usd" is money.
+	Basis string `json:"basis,omitempty"`
+	// Units are the call's tokens in usage-limit units, on a subscriptionEquivalent record only.
+	Units float64 `json:"units,omitempty"`
+	// Estimated marks a figure from a bundled or missing rate, and every non-usd basis.
+	Estimated bool `json:"estimated,omitempty"`
 }
 
 // Saving is one component's contribution to cost that was not incurred.
@@ -335,9 +369,10 @@ type Saving struct {
 	// PenaltyUSD is cost the same component CAUSED on this request, which offsets USD: a
 	// compaction that rewrote a message inside the provider's cached prefix made the provider
 	// write, at the cache-write rate, tokens it would otherwise have read. With the accountant it
-	// is the priced Caused of the operator's operations, plus the net cost of each cache break
-	// attributed to it, plus what its own model calls cost (W7.1). Zero for a component that
-	// cannot cause one. Non-negative, like USD, so every money bound still holds.
+	// is the priced Caused of the operator's operations plus the net cost of each cache break
+	// attributed to it (W7.1). Its own model calls are not in it: they are Event.Spends, shown
+	// beside the saving, never inside it. Zero for a component that cannot cause one.
+	// Non-negative, like USD, so every money bound still holds.
 	//
 	// NOT YET NETTED anywhere: TotalAvoidedUSD still sums USD alone. Netting the totals is later
 	// work, and until then this field is on the record and read by nothing.

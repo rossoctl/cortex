@@ -34,7 +34,7 @@
     {
       "id": "shadow.operators-not-in-old-figure",
       "kind": "differs",
-      "reason": "Shadow: settle.Avoided prices tool-prune only (settle.savingComponents). Every context-guru operator (context-guru.*) and the keeper appear only in the accountant's figure, so each logs as a difference against 0 (inOld=false in the accounting: shadow line). Expected until Task 9 switches the ledger to the accountant's figure."
+      "reason": "Accountant wiring W7.1 (one Saving per operator) and W9 step 8; Cortex design \u00a76 (shadow agreement). Shadow: settle.Avoided prices tool-prune only (settle.savingComponents). Every context-guru operator (context-guru.*) and the keeper appear only in the accountant's figure, so each differs against 0. The shadow logs these at DEBUG (inOld=false) and counts them as \"accounting shadow new-only\", apart from the INFO lines and the \"differed\" counter, which mean a real difference. Expected until Task 9 switches the ledger to the accountant's figure."
     },
     {
       "id": "cortex.threadof-not-wired",
@@ -44,7 +44,7 @@
     {
       "id": "cortex.inherits-as-parent",
       "kind": "differs",
-      "reason": "The context-guru plugin passes the engine's fork origin (Trace.Thread.InheritsFrom, 'Inherits') as accountant.Thread.Parent; with no ThreadOf wired it is empty, and the default rule's Parent is the Claude Code parent subagent, else \"main\". The proxy's Parent comes from its own thread key. A forked thread's first request can therefore inherit a different parent's state in the two hosts."
+      "reason": "Accountant wiring W5.2 (threads); Cortex design \u00a75.4. The context-guru plugin passes the engine's fork origin (Trace.Thread.InheritsFrom, 'Inherits') as accountant.Thread.Parent; with no ThreadOf wired it is empty, and the default rule's Parent is the Claude Code parent subagent, else \"main\". The proxy's Parent comes from its own thread key. A forked thread's first request can therefore inherit a different parent's state in the two hosts."
     },
     {
       "id": "cortex.no-shared-warm",
@@ -52,19 +52,14 @@
       "reason": "Cortex does not compute EntryFacts.SharedWarm (it never calls accountant.SharedWarmFrom over sibling threads' forwarded bodies). The proxy does (proxy/accountant_savings.go, siblingStore). A thread whose first request reads a prefix another thread of the session warmed is therefore not marked shared-warm in Cortex, and the library may read its cache read as a different phase. Accountant design \u00a75.2 (shared warm) / check shared_warm."
     },
     {
-      "id": "cortex.envelope-ops-not-reported",
-      "kind": "notCovered",
-      "reason": "The context-guru proxy reports tools and system-section changes from a diff of the client and forwarded bodies (proxy/accountant_envelope.go: toolschema, toolfilter, cachesplit, headttl, the tail mark, expand). The Cortex plugin passes only apply.Result.Trace.Ops. A request on which apply changed the tools or system section without an op for it fails the library's sum check in Cortex and records no saving, where the proxy prices it. Expected to show in the cross-host harness (P1); fix by porting envelopeOps into the plugin."
-    },
-    {
       "id": "cortex.unattributed-break-composition",
       "kind": "differs",
-      "reason": "Cortex's Event.UnattributedBreakUSD (core/accounting.Savings) is the net cost of every non-InBaseline cache effect no applied op owns: a break with no ChangeID (a change that had ended) and one whose ChangeID only a dry run reported. InBaseline effects are skipped entirely. The proxy (dash/accountant_price.go) puts InBaseline and dry-run-owned breaks in its UnattributedBreakUSD (shown, not counted) and the ended-change break in EndedBreakUSD, which it counts in the request's delta. So the unattributed figures of the two hosts hold different breaks; the per-operator figures do not differ."
+      "reason": "Accountant wiring W7.1 (Event.UnattributedBreakUSD; a break with no ChangeID); accountant design \u00a76.3. Cortex's Event.UnattributedBreakUSD (core/accounting.Savings) is the net cost of every non-InBaseline cache effect no applied op owns: a break with no ChangeID (a change that had ended), one whose ChangeID only a dry run reported, and a split, TTL or mark effect with no owning op; the W7.1 name is kept although it holds more than breaks. InBaseline effects are skipped entirely. The proxy (dash/accountant_price.go) puts InBaseline and dry-run-owned breaks in its UnattributedBreakUSD (shown, not counted) and the ended-change break in EndedBreakUSD, which it counts in the request's delta. So the unattributed figures of the two hosts hold different breaks; the per-operator figures do not differ."
     },
     {
       "id": "cortex.effects-by-changeid-owner",
       "kind": "differs",
-      "reason": "Cortex books a split, ttlPremium, ttlRescue, markPremium or markPayback effect to the operator of the applied op with its ChangeID, as USD when its Net prices positive and PenaltyUSD when negative, and to UnattributedBreakUSD when no op owns it. The proxy books split and headttl effects in their own rows (SplitUSD, TTLUSD) and an unowned markPremium/markPayback to the tailbreakpoint row. Totals agree; the per-operator rows can differ."
+      "reason": "Accountant wiring W7.1 (cache effects settled by Kind); accountant design \u00a74.4. Cortex books a split, ttlPremium, ttlRescue, markPremium or markPayback effect to the operator of the applied op with its ChangeID, as USD when its Net prices positive and PenaltyUSD when negative, and to UnattributedBreakUSD when no op owns it. The proxy books split and headttl effects in their own rows (SplitUSD, TTLUSD) and an unowned markPremium/markPayback to the tailbreakpoint row. Totals agree; the per-operator rows can differ."
     }
   ]
 }

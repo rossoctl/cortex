@@ -1,6 +1,7 @@
 package inferenceparser
 
 import (
+	"context"
 	"log/slog"
 	"math"
 	"sync/atomic"
@@ -30,7 +31,7 @@ const shadowTolerance = 0.000001
 // shadowCounts counts the requests whose figures were compared and those that differed, for the
 // plugin's metrics. Per process, reset on reload with the rest of the plugin.
 type shadowCounts struct {
-	compared, differed atomic.Int64
+	compared, differed, newOnly atomic.Int64
 }
 
 // SetAccounting implements plugins.AccountingConsumer. Injected only on the outbound build, and
@@ -49,8 +50,9 @@ func (p *InferenceParser) SetAccounting(h *accounting.Host) {
 // shadow agreement). Nothing the accountant computed is written anywhere yet.
 //
 // A difference above shadowTolerance in any component's net figure (USD minus PenaltyUSD) is
-// logged at INFO as "accounting: shadow", one line per component, and counted. A component only
-// one side priced counts as a difference against 0. Projected savings are compared like applied
+// logged as "accounting: shadow", one line per component: at INFO, counted as "differed", for a
+// component the old figure prices; at DEBUG, counted as "new-only", for one only the accountant
+// prices, which is expected. A component only the old figure has differs against 0. Projected savings are compared like applied
 // ones: both sides mark the same op the same way.
 func (p *InferenceParser) shadow(pctx *pipeline.Context, old []event.Saving) {
 	inf := pctx.Extensions.Inference
@@ -93,15 +95,23 @@ func (p *InferenceParser) shadow(pctx *pipeline.Context, old []event.Saving) {
 		pp.penalty += s.PenaltyUSD
 		pp.inNew = true
 	}
-	differed := false
+	differed, newOnly := false, false
 	for _, c := range order {
 		pp := pairs[c]
 		diff := pp.new - pp.old
 		if math.Abs(diff) <= shadowTolerance {
 			continue
 		}
-		differed = true
-		slog.Info("accounting: shadow",
+		// An operator the old figure never prices (every context-guru operator, the keeper) is an
+		// expected difference (docs/accounting-differences.json, shadow.operators-not-in-old-figure):
+		// logged at DEBUG and counted apart, so the INFO line and "differed" mean a real one.
+		level := slog.LevelInfo
+		if !pp.inOld {
+			level, newOnly = slog.LevelDebug, true
+		} else {
+			differed = true
+		}
+		slog.Log(context.Background(), level, "accounting: shadow",
 			"session", pctx.SessionID,
 			"requestId", pctx.RequestID(),
 			"thread", extras.Thread,
@@ -118,6 +128,9 @@ func (p *InferenceParser) shadow(pctx *pipeline.Context, old []event.Saving) {
 	if differed {
 		p.shadowCounts.differed.Add(1)
 	}
+	if newOnly {
+		p.shadowCounts.newOnly.Add(1)
+	}
 }
 
 // Metrics implements pipeline.MetricsProvider: the shadow comparison's two counters, once the
@@ -131,6 +144,8 @@ func (p *InferenceParser) Metrics() []pipeline.Metric {
 		{Name: "accounting shadow compared", Value: float64(compared), Unit: "requests",
 			Note: "requests the accountant priced beside the current saving figure"},
 		{Name: "accounting shadow differed", Value: float64(p.shadowCounts.differed.Load()), Unit: "requests",
-			Note: "requests where the two figures differ by more than $0.000001; logged as accounting: shadow"},
+			Note: "requests where a component both figures price differs by more than $0.000001; logged at INFO as accounting: shadow"},
+		{Name: "accounting shadow new-only", Value: float64(p.shadowCounts.newOnly.Load()), Unit: "requests",
+			Note: "requests with an operator only the accountant prices (context-guru, keeper); expected, logged at DEBUG"},
 	}
 }

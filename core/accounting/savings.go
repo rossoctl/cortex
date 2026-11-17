@@ -23,19 +23,30 @@ const (
 // which no op of the request it lands on carries, so it is credited by kind, not by ChangeID.
 const KeeperOperator = "keeper"
 
-// Extras are the request-level figures of a Result that belong to no operator (W7.1).
+// Extras are the request-level figures of a Result that belong to no operator's saving (W7.1).
 type Extras struct {
-	// UnattributedBreakUSD is the net cost of the cache effects no applied op owns: a break with
-	// no ChangeID (a change that had already ended), or one whose ChangeID no applied op reported
-	// (a dry run's). Positive is a cost. InBaseline effects are not in it: the client body would
+	// UnattributedBreakUSD is the net cost of every cache effect no applied op owns — not only
+	// breaks, despite the name, which is kept to match W7.1's Event.UnattributedBreakUSD: a break
+	// with no ChangeID (a change that had already ended), an effect whose ChangeID only a dry run
+	// reported, and a split, TTL or mark effect with no owning op. Positive is a cost; an unowned
+	// effect that saved makes it smaller. InBaseline effects are not in it: the client body would
 	// have had them too.
 	UnattributedBreakUSD float64
 	// Thread is the accountant thread of the request. Savings leaves it empty: a Result does not
-	// name its thread. Host.Savings fills it.
+	// name its thread. Host.Savings fills it, here and on each Spends entry.
 	Thread string
 	// OpsVersion is Result.Version, the version of the accountant rules.
 	OpsVersion int
+	// Spends are the request's spend ops — an operator's own model calls — one record each,
+	// priced with the call's own model, host and prompt size. A spend is shown beside the savings,
+	// never inside a Saving (W7.1).
+	Spends []event.SpendRecord
 }
+
+// SpendPrice prices one model call an operator made: its whole bill, output included, at the
+// call's own model and host (host is the request's when the call names none) and its own prompt
+// size. estimated follows USD's rule.
+type SpendPrice func(c *accountant.ModelCall, host string) (usd float64, estimated bool)
 
 // BasisOf is event.Saving.Basis for a billing mode: "usd" for api, "subscriptionEquivalent" for
 // subscription, "unknown" for anything else.
@@ -58,10 +69,17 @@ func Units(w config.SubscriptionWeights, tt accountant.TierTokens, output int) f
 }
 
 // Savings converts a Result into one event.Saving per operator, priced with price, as for a
-// request billed per token (basis "usd"). It is SavingsBilled with accountant.BillingAPI.
+// request billed per token (basis "usd"). It is SavingsBilled with accountant.BillingAPI, the
+// default weights, and spend calls priced by price over their prompt tiers alone: price has no
+// output tier, so a call with output tokens and no stated cost is priced low and marked
+// estimated. Host.Savings prices the output.
 func Savings(res accountant.Result, price func(model, host string, tt accountant.TierTokens) (float64, bool),
 	reqModel, reqHost string) ([]event.Saving, Extras) {
-	return SavingsBilled(res, price, reqModel, reqHost, accountant.BillingAPI, config.DefaultSubscriptionWeights())
+	promptOnly := func(c *accountant.ModelCall, host string) (float64, bool) {
+		usd, est := price(c.Model, host, callTiers(c))
+		return usd, est || c.Usage.Output > 0
+	}
+	return SavingsBilled(res, price, promptOnly, reqModel, reqHost, accountant.BillingAPI, config.DefaultSubscriptionWeights())
 }
 
 // SavingsBilled converts a Result into one event.Saving per operator (accountant wiring W7.1),
@@ -72,44 +90,50 @@ func Savings(res accountant.Result, price func(model, host string, tt accountant
 //     Net under one of its ChangeIDs. A keep-alive rescue goes to KeeperOperator.
 //   - PenaltyUSD is the priced Caused of its ops, plus the cost of each cache effect with a
 //     negative Net under one of its ChangeIDs — a break is ONE net cost, Caused priced minus Saved
-//     priced, never a saving of its Saved —, plus what its own model calls (spend ops) cost.
-//     A spend op is priced with its Call's model and host, or its stated CostUSD when the response
-//     stated one.
+//     priced, never a saving of its Saved.
 //   - Neither is floored or netted against the other: a negative net is kept as two figures.
 //   - Tier is the tier with the largest Saved; TokensAvoided the sum of its Saved tiers, a size
 //     for display and never priced.
-//   - Projected is true when every one of its ops is a DryRun.
 //   - Estimated is true when any of its ops, its effects or the rates is estimated, and for every
 //     basis but "usd".
 //   - Units and PenaltyUnits are set only on a subscriptionEquivalent saving.
+//
+// An operator's dry-run ops are kept apart from its applied ones: they make a second saving for
+// the operator with Projected set, so a "would have saved" amount never enters an applied figure.
+// An operator with only dry runs has only the projected saving.
+//
+// A spend op (an operator's own model call) is not a saving: it becomes one Extras.Spends record,
+// priced with spend, and the operator gets no Saving for it.
 //
 // A cache effect with InBaseline set is skipped: the client body has it too, so it is not part of
 // the bill difference. One no applied op owns goes to Extras.UnattributedBreakUSD. Only an applied
 // (non-DryRun) op owns a ChangeID: a dry run changed nothing upstream, so it caused nothing.
 //
-// The saving list is in the order each operator first appears in res.Ops; KeeperOperator, which
-// has no op on the request, comes last.
+// The saving list is in the order each (operator, projected) pair first appears in res.Ops;
+// KeeperOperator, which has no op on the request, comes last.
 func SavingsBilled(res accountant.Result, price func(model, host string, tt accountant.TierTokens) (float64, bool),
-	reqModel, reqHost string, mode accountant.BillingMode, w config.SubscriptionWeights) ([]event.Saving, Extras) {
+	spend SpendPrice, reqModel, reqHost string, mode accountant.BillingMode, w config.SubscriptionWeights) ([]event.Saving, Extras) {
 	basis := BasisOf(mode)
 	ex := Extras{OpsVersion: res.Version}
+	type key struct {
+		op        string
+		projected bool
+	}
 	type acc struct {
 		saving    event.Saving
 		saved     accountant.TierTokens // Saved of the ops, for Tier and TokensAvoided
 		units     float64
 		penUnits  float64
-		ops       int
-		dryRuns   int
 		estimated bool
 	}
-	var order []string
-	byOp := map[string]*acc{}
-	get := func(op string) *acc {
-		a, ok := byOp[op]
+	var order []key
+	byKey := map[key]*acc{}
+	get := func(k key) *acc {
+		a, ok := byKey[k]
 		if !ok {
-			a = &acc{saving: event.Saving{Component: op, Operator: op, OpsVersion: res.Version, Basis: basis}}
-			byOp[op] = a
-			order = append(order, op)
+			a = &acc{saving: event.Saving{Component: k.op, Operator: k.op, OpsVersion: res.Version, Basis: basis, Projected: k.projected}}
+			byKey[k] = a
+			order = append(order, k)
 		}
 		return a
 	}
@@ -122,22 +146,19 @@ func SavingsBilled(res accountant.Result, price func(model, host string, tt acco
 
 	owner := map[string]string{} // ChangeID -> operator, from applied ops; the first wins
 	for _, op := range res.Ops {
-		a := get(op.Operator)
-		a.ops++
-		if op.DryRun {
-			a.dryRuns++
-		} else if op.ChangeID != "" {
+		if op.Kind == accountant.KindSpend || op.Call != nil {
+			if op.Call != nil {
+				ex.Spends = append(ex.Spends, spendRecord(op, spend, reqHost, basis, w))
+			}
+			continue
+		}
+		if !op.DryRun && op.ChangeID != "" {
 			if _, dup := owner[op.ChangeID]; !dup {
 				owner[op.ChangeID] = op.Operator
 			}
 		}
+		a := get(key{op.Operator, op.DryRun})
 		a.estimated = a.estimated || op.Estimated
-		if op.Call != nil {
-			usd, est, units := spendCost(op.Call, priceAt, reqHost, w)
-			a.saving.PenaltyUSD += usd
-			a.penUnits += units
-			a.estimated = a.estimated || est
-		}
 		saved, savedEst := priceAt(reqModel, reqHost, op.Saved)
 		caused, causedEst := priceAt(reqModel, reqHost, op.Caused)
 		a.saving.USD += saved
@@ -162,7 +183,7 @@ func SavingsBilled(res accountant.Result, price func(model, host string, tt acco
 			ex.UnattributedBreakUSD -= value
 			continue
 		}
-		a := get(op)
+		a := get(key{op, false})
 		a.estimated = a.estimated || ce.Estimated || est
 		if value >= 0 {
 			a.saving.USD += value
@@ -178,12 +199,11 @@ func SavingsBilled(res accountant.Result, price func(model, host string, tt acco
 	}
 
 	out := make([]event.Saving, 0, len(order))
-	for _, name := range order {
-		a := byOp[name]
+	for _, k := range order {
+		a := byKey[k]
 		s := a.saving
 		s.Tier = largestTier(a.saved)
 		s.TokensAvoided = a.saved.Input + a.saved.CacheWrite5m + a.saved.CacheWrite1h + a.saved.CacheRead
-		s.Projected = a.ops > 0 && a.dryRuns == a.ops
 		s.Estimated = a.estimated || basis != BasisUSD
 		if basis == BasisSubscriptionEquivalent {
 			s.Units, s.PenaltyUnits = a.units, a.penUnits
@@ -193,25 +213,38 @@ func SavingsBilled(res accountant.Result, price func(model, host string, tt acco
 	return out, ex
 }
 
-// spendCost is what one model call of an operator cost: the CostUSD its response stated, when it
-// stated one (a fact, R1), else its prompt tiers priced with the call's own model and host (the
-// request's host when the call names none). The price function has no output tier, so a call with
-// output tokens and no stated cost is priced without them and marked estimated. units are the
-// call's tokens, output included, in usage-limit units.
-func spendCost(c *accountant.ModelCall, price func(model, host string, tt accountant.TierTokens) (float64, bool),
-	reqHost string, w config.SubscriptionWeights) (usd float64, estimated bool, units float64) {
+// callTiers is a model call's prompt usage as the library's tiers (CacheWrite1h is a part of
+// CacheWrite, so the 5m tier is the rest).
+func callTiers(c *accountant.ModelCall) accountant.TierTokens {
 	u := c.Usage.Usage
-	tt := accountant.TierTokens{Input: u.Input, CacheWrite5m: u.CacheWrite - u.CacheWrite1h, CacheWrite1h: u.CacheWrite1h, CacheRead: u.CacheRead}
-	units = Units(w, tt, c.Usage.Output)
-	if c.Usage.CostUSD > 0 {
-		return c.Usage.CostUSD, false, units
-	}
+	return accountant.TierTokens{Input: u.Input, CacheWrite5m: u.CacheWrite - u.CacheWrite1h, CacheWrite1h: u.CacheWrite1h, CacheRead: u.CacheRead}
+}
+
+// spendRecord is one spend op's record: the CostUSD its response stated, when it stated one (a
+// fact, R1), else the call priced with spend. Units are its tokens, output included, in
+// usage-limit units, on a subscriptionEquivalent record only.
+func spendRecord(op accountant.PricedOp, spend SpendPrice, reqHost, basis string, w config.SubscriptionWeights) event.SpendRecord {
+	c := op.Call
+	tt := callTiers(c)
 	host := c.Host
 	if host == "" {
 		host = reqHost
 	}
-	usd, estimated = price(c.Model, host, tt)
-	return usd, estimated || c.Usage.Output > 0, units
+	r := event.SpendRecord{
+		ChangeID: op.ChangeID, Operator: op.Operator, Model: c.Model, Host: host,
+		Input: tt.Input, CacheWrite5m: tt.CacheWrite5m, CacheWrite1h: tt.CacheWrite1h, CacheRead: tt.CacheRead,
+		Output: c.Usage.Output, Basis: basis, Estimated: op.Estimated || basis != BasisUSD,
+	}
+	if c.Usage.CostUSD > 0 {
+		r.USD = c.Usage.CostUSD
+	} else if spend != nil {
+		usd, est := spend(c, host)
+		r.USD, r.Estimated = usd, r.Estimated || est
+	}
+	if basis == BasisSubscriptionEquivalent {
+		r.Units = Units(w, tt, c.Usage.Output)
+	}
+	return r
 }
 
 // largestTier names the tier with the largest Saved, in pricing.Tier's spelling; "" when nothing
@@ -261,16 +294,24 @@ func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 	if b := pipeline.GetState[accountant.Billing](pctx, billingKey); b != nil {
 		mode = b.Mode
 	}
+	// The request's own ops price at the request's prompt size, so its long-context tier applies.
 	price := func(m, at string, tt accountant.TierTokens) (float64, bool) {
-		total := promptTotal
-		// An operator's own model call is its own request: its long-context tier is its own size.
-		if m != model || at != host {
-			total = tt.Input + tt.CacheWrite5m + tt.CacheWrite1h + tt.CacheRead
-		}
-		return TierUSD(h.resolver, at, m, total, tt)
+		return TierUSD(h.resolver, at, m, promptTotal, tt)
 	}
-	ss, ex := SavingsBilled(res, price, model, host, mode, h.weights)
+	// An operator's model call is a request of its own: its prompt tiers and its output price at
+	// its own prompt size, so a small call never takes the request's long-context premium.
+	spend := func(c *accountant.ModelCall, at string) (float64, bool) {
+		tt := callTiers(c)
+		total := tt.Input + tt.CacheWrite5m + tt.CacheWrite1h + tt.CacheRead
+		usd, est := TierUSD(h.resolver, at, c.Model, total, tt)
+		out, outEst := USD(h.resolver, at, c.Model, total, pricing.TierOutput, int64(c.Usage.Output))
+		return usd + out, est || outEst
+	}
+	ss, ex := SavingsBilled(res, price, spend, model, host, mode, h.weights)
 	ex.Thread = ThreadOf(pctx).ID
+	for i := range ex.Spends {
+		ex.Spends[i].Thread = ex.Thread
+	}
 	if slog.Default().Enabled(context.Background(), slog.LevelDebug) {
 		logTokens(pctx, ex.Thread, res)
 	}
@@ -281,7 +322,7 @@ func (h *Host) Savings(pctx *pipeline.Context) ([]event.Saving, Extras, bool) {
 type tokenFlow struct{ saved, caused accountant.TierTokens }
 
 // operatorTokens is res in tokens by tier per operator, attributed by SavingsBilled's rule: the
-// Saved and Caused of each op, and both sides of each cache effect its applied ops own under a
+// Saved and Caused of each applied, non-spend op, and both sides of each cache effect its applied ops own under a
 // ChangeID, a rescue going to KeeperOperator. InBaseline and unowned effects are left out. It is
 // the form the context-guru proxy's dashboard stores per component (CompRow.Tokens), so the
 // cross-host harness can compare the two hosts token for token.
@@ -298,6 +339,12 @@ func operatorTokens(res accountant.Result) ([]string, map[string]tokenFlow) {
 	}
 	owner := map[string]string{}
 	for _, op := range res.Ops {
+		if op.Kind == accountant.KindSpend || op.Call != nil {
+			continue // a spend is not a saving, here as in SavingsBilled
+		}
+		if op.DryRun {
+			continue // a dry run is never in an applied figure; the proxy's dashboard skips it too
+		}
 		if !op.DryRun && op.ChangeID != "" {
 			if _, dup := owner[op.ChangeID]; !dup {
 				owner[op.ChangeID] = op.Operator
