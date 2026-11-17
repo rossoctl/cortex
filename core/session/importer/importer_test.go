@@ -390,6 +390,28 @@ func TestRun_LedgerGetsOnlyNewTurnsOnReplace(t *testing.T) {
 	}
 }
 
+// A turn that an import read before its usage was written (Codex writes the usage after the
+// tool results) gets its row from a later import.
+func TestRun_LedgerGetsTurnWhoseUsageCameLater(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	o := Options{Archive: a, Ledger: w, Rates: testRates(t)}
+	early := fakeSession("s1", start, 2)
+	early.Events[3].Inference = &model.InferenceExtension{Model: "claude-sonnet-4-5"}
+	Run(context.Background(), &fakeSource{sessions: []Session{early}}, o)
+	if req, _ := sumRows(ledgerRows(t, w)); req != 1 {
+		t.Fatalf("ledger has %d requests after the first import, want 1: a turn with no usage has no row", req)
+	}
+	later := fakeSession("s1", start, 2)
+	later.Updated = later.Updated.Add(time.Second)
+	if r := Run(context.Background(), &fakeSource{sessions: []Session{later}}, o); r.Replaced != 1 {
+		t.Fatalf("report = %+v, want 1 replaced", r)
+	}
+	if req, tok := sumRows(ledgerRows(t, w)); req != 2 || tok != 2200 {
+		t.Fatalf("ledger has %d requests, %d tokens; want 2, 2200", req, tok)
+	}
+}
+
 func TestRun_LedgerSkipsTurnsPastCutoff(t *testing.T) {
 	a := openArchive(t)
 	w := openLedger(t, ledger.WithRetentionDays(3))

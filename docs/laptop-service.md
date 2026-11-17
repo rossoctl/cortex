@@ -600,14 +600,16 @@ more than 256 MB of them waited for the writer.
 
 `agentop import` adds the sessions that Claude Code keeps in
 `~/.claude/projects` (or under `CLAUDE_CONFIG_DIR`), the tasks that Bob
-keeps in `~/.bob/db/bob.db`, and the sessions that OpenCode keeps in
-`~/.local/share/opencode/opencode.db` (or under `XDG_DATA_HOME`), to this
-history and to the cost ledger. Bob and OpenCode need the `sqlite3` program on
-`PATH`. Use it for the sessions that ran before you installed Cortex.
+keeps in `~/.bob/db/bob.db`, the sessions that Codex keeps in
+`~/.codex/sessions` (or under `CODEX_HOME`), and the sessions that OpenCode
+keeps in `~/.local/share/opencode/opencode.db` (or under `XDG_DATA_HOME`), to
+this history and to the cost ledger. Bob and OpenCode need the `sqlite3`
+program on `PATH`. Use it for the sessions that ran before you installed Cortex.
 `agentop import --since 30d --dry-run` counts first and writes nothing. The
 import skips every session that Cortex captured live, and never changes one.
-Each imported session is marked `(*)` in agentop. A Claude Code turn is priced
-at today's rates, and so is an OpenCode turn. A Bob turn keeps Bob's own cost. LAST 1H shows imported turns
+Each imported session is marked `(*)` in agentop. A Claude Code turn, a Codex
+turn and an OpenCode turn are priced at today's rates. A Bob turn keeps Bob's
+own cost. LAST 1H shows imported turns
 only after the next restart. The import stops at 90% of `max_bytes`. A session
 that you erased, or that a limit removed, comes back in full on the next import.
 Its forget record tells the import which turns the cost ledger already holds.

@@ -172,7 +172,8 @@ func count(r *AgentReport, replace bool) {
 }
 
 // priorTurns is what the archived copy of a replaced session holds: the request ids of its
-// responses, and the time of its oldest event.
+// priced responses, and the time of its oldest event. A response with no price is left out, so
+// that a later import records the turn when its usage is on disk.
 type priorTurns struct {
 	ids    map[string]bool
 	oldest time.Time
@@ -182,7 +183,7 @@ type priorTurns struct {
 func readPrior(ctx context.Context, a *archive.Archive, id string) (*priorTurns, error) {
 	p := &priorTurns{ids: map[string]bool{}}
 	_, _, _, err := a.Find(ctx, id, func(e *model.SessionEvent) bool {
-		if e.Phase == model.SessionResponse {
+		if _, priced := event.Record(e); priced && e.Phase == model.SessionResponse {
 			p.ids[e.RequestID] = true
 		}
 		if p.oldest.IsZero() || e.At.Before(p.oldest) {
@@ -193,8 +194,8 @@ func readPrior(ctx context.Context, a *archive.Archive, id string) (*priorTurns,
 	return p, err
 }
 
-// toLedger records each response of s that is not before the ledger's retention cutoff, and
-// whose request id is not in sent. It adds the ids it records to sent: a fork copies its
+// toLedger records each priced response of s that is not before the ledger's retention cutoff,
+// and whose request id is not in sent. It adds the ids it records to sent: a fork copies its
 // parent's turns with their request ids, and one run must count them one time.
 //
 // On a replace (prior not nil) it records only the responses whose request id is not in prior:
@@ -226,6 +227,9 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, prior *priorTurn
 			requestAt[e.RequestID] = e.At
 		case model.SessionResponse:
 			at, ok := requestAt[e.RequestID]
+			if _, priced := event.Record(e); !priced {
+				continue
+			}
 			if !ok || e.At.Before(cutoff) || (e.RequestID != "" && sent[e.RequestID]) {
 				continue
 			}
