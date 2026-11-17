@@ -95,7 +95,12 @@ func (s source) Sessions(since time.Time, skip func(id string, updated time.Time
 			return
 		}
 		groups := group(list(filepath.Join(dir, "sessions")))
+		// A fork's parent can be archived. The source does not import an archived rollout, but
+		// the ledger can already hold its turns.
 		threads := map[string]rollout{}
+		for _, f := range list(filepath.Join(dir, "archived_sessions")) {
+			threads[f.thread] = f
+		}
 		for _, files := range groups {
 			for _, f := range files {
 				threads[f.thread] = f
@@ -227,7 +232,7 @@ func isChild(f rollout) int {
 
 // readSession parses the rollouts of one session. threads gives a fork's parent rollout.
 func readSession(id string, files []rollout, threads map[string]rollout, home string) importer.Session {
-	p := parser{home: home, projects: map[string]string{}}
+	p := parser{home: home, projects: map[string]string{}, parents: map[string][]usage{}}
 	s := importer.Session{ID: id}
 	for _, f := range files {
 		subagent := ""
@@ -257,17 +262,20 @@ func readSession(id string, files []rollout, threads map[string]rollout, home st
 	return s
 }
 
-// copied gives the turns of f's parent, which a fork's rollout starts with a copy of. It
-// gives none when f is not a fork or its parent rollout cannot be read: then f's turns are
-// the only copy.
-func (p *parser) copied(f rollout, threads map[string]rollout) []turnSig {
+// copied gives the usages of the turns of f's parent, which a fork's rollout starts with a
+// copy of. It gives none when f is not a fork or its parent rollout cannot be read.
+func (p *parser) copied(f rollout, threads map[string]rollout) []usage {
 	parent, ok := threads[f.forkedFrom]
 	if f.forkedFrom == "" || !ok {
 		return nil
 	}
+	if u, done := p.parents[parent.path]; done {
+		return u
+	}
 	r, err := p.file(parent.path, parent.thread, "", nil, true)
 	if err != nil {
-		return nil
+		r.usages = nil
 	}
-	return r.sigs
+	p.parents[parent.path] = r.usages
+	return r.usages
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"slices"
 	"strconv"
 	"time"
 
@@ -46,28 +47,24 @@ var outputTypes = map[string]bool{
 type fileResult struct {
 	events  []model.SessionEvent
 	skipped int
-	sigs    []turnSig // every turn of the file, in order
-}
-
-// turnSig tells a turn from the turns next to it. Codex copies a parent's lines into a fork
-// with new timestamps, so the time is not part of it.
-type turnSig struct {
-	model   string
-	outputs int
-	usage   usage
+	usages  []usage // the usage of each turn of the file that has usage, in order
 }
 
 // parser holds what the rollouts of one session share.
 type parser struct {
 	home     string
-	projects map[string]string // cwd -> project label
-	in       session.Interner  // interns each event when it is made, as the claude source does
+	projects map[string]string  // cwd -> project label
+	in       session.Interner   // interns each event when it is made, as the claude source does
+	parents  map[string][]usage // parent rollout path -> its turns' usages; see copied
 }
 
 // file parses one rollout. thread is the file's thread id; subagent is "" for the root.
-// The file's first turns that match copied, in order, are a fork's copy of its parent's turns:
-// they are conversation and make no events. sigsOnly gives only the sigs.
-func (p *parser) file(path, thread, subagent string, copied []turnSig, sigsOnly bool) (fileResult, error) {
+// copied is the usages of the parent's turns when the file is a fork. The fork starts with a
+// copy of the parent's lines, with new timestamps and maybe without its tool calls, but with
+// its token_count lines. So while each turn with usage has the next usage of copied, in
+// order, the turns are the copy: they are conversation and make no events. A turn with no
+// usage there is the copy of a turn that was open at the fork. usagesOnly gives only usages.
+func (p *parser) file(path, thread, subagent string, copied []usage, usagesOnly bool) (fileResult, error) {
 	f, err := openRollout(path)
 	if err != nil {
 		return fileResult{}, err
@@ -84,7 +81,7 @@ func (p *parser) file(path, thread, subagent string, copied []turnSig, sigsOnly 
 	var mdl, cwd, version string
 	var inAt, prevAt, firstOutAt, lastOutAt time.Time
 	n := 1
-	matching := true // no turn so far differs from copied
+	matching := len(copied) > 0 // no turn so far is the fork's own
 
 	closeTurn := func(at time.Time, u *usage) {
 		if len(out) == 0 {
@@ -95,17 +92,21 @@ func (p *parser) file(path, thread, subagent string, copied []turnSig, sigsOnly 
 		}
 		turnOut := out
 		out = nil
-		sig := turnSig{model: mdl, outputs: len(turnOut)}
 		if u != nil {
-			sig.usage = *u
+			res.usages = append(res.usages, *u)
 		}
-		res.sigs = append(res.sigs, sig)
-		if k := len(res.sigs) - 1; sigsOnly || (matching && k < len(copied) && copied[k] == sig) {
+		if matching && u != nil {
+			if i := slices.Index(copied, *u); i >= 0 {
+				copied = copied[i+1:]
+			} else {
+				matching = false
+			}
+		}
+		if usagesOnly || matching {
 			conv = append(conv, turnOut...)
 			n++
 			return
 		}
-		matching = false
 		reqBody, _ := json.Marshal(struct {
 			Model string            `json:"model"`
 			Input []json.RawMessage `json:"input"`
