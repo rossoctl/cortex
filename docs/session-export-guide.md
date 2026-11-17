@@ -48,7 +48,7 @@ If the reply is `null`, this proxy has no archive. Go to
 
 ```sh
 curl -s 'http://127.0.0.1:47601/v1/sessions?archived=true' \
-  | jq -r '.sessions[] | [.id, .eventCount, (.resident // true)] | @tsv'
+  | jq -r '.sessions[] | [.id, .eventCount, (.resident != false)] | @tsv'
 ```
 
 ```
@@ -56,7 +56,11 @@ old-session      3   false
 today-session    4   false
 ```
 
-The third column is `resident`:
+The third column is `resident`. Test it with `!= false`, not with `// true`: in `jq` the
+`//` operator treats `false` as absent, so `// true` would report every session as
+resident.
+
+The values mean:
 
 - **`true`**, or the field is absent: the store still holds this session. You can read it
   in the `agentop` viewer.
@@ -230,7 +234,7 @@ agentop export | jq -r '.host // empty' | sort | uniq -c | sort -rn
 ```sh
 agentop export --since 7d | jq -r '.durationMs // empty' | sort -n \
   | awk '{a[NR]=$1} END {printf "n=%d p50=%dms p95=%dms max=%dms\n",
-          NR, a[int(NR*0.5)], a[int(NR*0.95)], a[NR]}'
+          NR, a[int((NR-1)*0.5)+1], a[int((NR-1)*0.95)+1], a[NR]}'
 ```
 
 ```
@@ -300,8 +304,9 @@ proxy. It is not the list of `toolCalls` that a model asked for. A join on a mod
 import pandas as pd
 
 df = pd.read_json("usage.ndjson", lines=True)
-df["at"] = pd.to_datetime(df["at"])
-# An absent field arrives as NaN, not 0. min_count=1 keeps it out of the sum.
+df["at"] = pd.to_datetime(df["at"], utc=True, format="ISO8601")
+# Do not fill with 0. An absent field means "not recorded", and min_count=1 keeps an
+# all-absent group as NaN instead of reporting it as zero.
 print(df.groupby("model")[["inputTokens", "outputTokens"]].sum(min_count=1))
 ```
 
@@ -351,11 +356,32 @@ happened.
 `at` alone is also not enough. A fast local proxy produces events that share a timestamp.
 `seq` breaks the tie inside one session.
 
-Sort by both:
+**Do not sort `at` as a string.** Go trims trailing zeros from the fraction. So
+`…:11Z`, `…:11.8Z` and `…:11.84114Z` are the same second in the wrong byte order. A
+string sort returns them backwards. That is exactly the tie `seq` exists to break.
+
+Sort on the parsed value, and use `seq` as the tiebreak:
+
+`at` always ends in `Z`, but the fraction width varies, and `fromdateiso8601` rejects a
+fraction. Strip it for the seconds, then add it back:
 
 ```sh
-agentop export | jq -r '[.at, (.seq|tostring), .sessionId] | @tsv' | sort -k1,1 -k2,2n
+agentop export \
+  | jq -rs 'def ts(s): (s | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601)
+                      + ((s | capture("\\.(?<f>[0-9]+)Z$") | .f // "0"
+                             | "0." + . | tonumber) // 0);
+            sort_by(ts(.at), .seq)[]
+            | [.at, (.seq|tostring), .sessionId] | @tsv'
 ```
+
+```
+2026-11-07T23:34:12Z           1   default
+2026-11-07T23:34:12.102885Z    3   default
+2026-11-07T23:34:12.8Z         2   default
+```
+
+Note the output order: `12Z`, then `12.102885Z`, then `12.8Z`. A string sort returns
+these as 3, 2, 1.
 
 ### Trap 3: a session id is not a unit of work
 
@@ -370,11 +396,12 @@ Cortex has no field for "one sitting" yet
 
 ```sh
 # A gap of more than 30 minutes starts a new sitting.
-# `at` has fractional seconds. fromdateiso8601 rejects them, so sub() removes them.
 agentop export --session default \
-  | jq -rs 'sort_by(.at) | . as $r | range(1; length) as $i
-            | (($r[$i].at | sub("\\.[0-9]+";"") | fromdateiso8601)
-               - ($r[$i-1].at | sub("\\.[0-9]+";"") | fromdateiso8601)) as $gap
+  | jq -rs 'def ts(s): (s | sub("\\.[0-9]+Z$";"Z") | fromdateiso8601)
+                      + ((s | capture("\\.(?<f>[0-9]+)Z$") | .f // "0"
+                             | "0." + . | tonumber) // 0);
+            sort_by(ts(.at)) | . as $r | range(1; length) as $i
+            | (ts($r[$i].at) - ts($r[$i-1].at)) as $gap
             | select($gap > 1800)
             | "\($r[$i].at)  gap=\(($gap/3600)|floor)h"'
 ```
@@ -385,7 +412,7 @@ agentop export --session default \
 
 ## Export from a cluster sidecar
 
-An injected sidecar runs no archive. The endpoint answers 404:
+An injected sidecar normally runs no archive. The endpoint then answers 404:
 
 ```sh
 $ agentop export --endpoint http://127.0.0.1:9094
@@ -504,7 +531,10 @@ The proxy refuses before it writes any record. A typo never creates your `--out`
 typo never truncates it either.
 
 A wide archive has more ids than the refusal can carry. The refusal then lists what fits
-and ends with a count of the rest. If no ids fit, the command tells you how to list them:
+and ends with a count of the rest. It always names at least one id.
+
+If the refusal is too long for the command to read, the command tells you how to list the
+ids instead:
 
 ```
   the proxy did not name the sessions it holds; list them with:
