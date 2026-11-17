@@ -401,10 +401,10 @@ Smaller pull requests are typically easier to review and merge. If your pull req
   `go test -race ./...`.
 - Apache 2.0 license header in all Go files
 
-### Python Code (keycloak_sync.py, sparc-service, demo scripts)
+### Python Code (keycloak_sync.py, sparc-service)
 - Python 3.12+ syntax (type hints with `str | None`)
-- Dependencies declared in `requirements.txt` — exact pins for the
-  langchain/pydantic stack, bounded ranges elsewhere
+- Dependencies of the root scripts go in `requirements.txt` as bounded
+  ranges. `sparc-service` declares its own in `deploy/sparc-service/pyproject.toml`
 
 ## Licensing
 
