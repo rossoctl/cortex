@@ -488,3 +488,44 @@ func TestHost_ThreadBillingIsLastRequests(t *testing.T) {
 		t.Errorf("ThreadBilling for an unrelated session = %q, want %q", got.Mode, accountant.BillingUnknown)
 	}
 }
+
+// TestHost_ThreadBillingIsBounded checks that threadBilling does not grow for the life of the
+// process: once it holds more than threadBillingCap (session, thread) pairs, the oldest are
+// dropped (mirroring accountant.Trackers' own 10,000-thread bound).
+func TestHost_ThreadBillingIsBounded(t *testing.T) {
+	var tick int64
+	h, err := New(Options{Now: func() time.Time {
+		tick++
+		return time.Unix(tick, 0)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	const n = threadBillingCap + 1 // one past the cap: forces exactly one trim
+	for i := 0; i < n; i++ {
+		h.setThreadBilling("s", fmt.Sprintf("t%d", i), accountant.BillingAPI)
+	}
+
+	h.mu.Lock()
+	size := len(h.threadBilling)
+	h.mu.Unlock()
+	if size > threadBillingCap {
+		t.Errorf("threadBilling size = %d, want <= %d", size, threadBillingCap)
+	}
+	if size != threadBillingTrimTo {
+		t.Errorf("threadBilling size = %d, want exactly %d after the one trim", size, threadBillingTrimTo)
+	}
+
+	// The most recently seen pair is kept.
+	if got := h.ThreadBilling("s", fmt.Sprintf("t%d", n-1)); got.Mode != accountant.BillingAPI {
+		t.Errorf("ThreadBilling for the most recent pair = %q, want %q (it should not have been trimmed)",
+			got.Mode, accountant.BillingAPI)
+	}
+	// The oldest pair was dropped.
+	if got := h.ThreadBilling("s", "t0"); got.Mode != accountant.BillingUnknown {
+		t.Errorf("ThreadBilling for the oldest pair = %q, want %q (it should have been trimmed)",
+			got.Mode, accountant.BillingUnknown)
+	}
+}

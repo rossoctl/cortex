@@ -3,6 +3,7 @@ package accounting
 import (
 	"bytes"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -22,6 +23,16 @@ const computeWait = 2 * time.Second
 
 // pendingKey is the pctx state key RequestEnd stores a request's handle under, for Compute.
 const pendingKey = "accounting.pending"
+
+// threadBillingCap and threadBillingTrimTo mirror accountant's own thread bound: the library's
+// Trackers (internal/engine/state.go:47-114, maxThreads = 10000) drops the threads seen longest
+// ago, down to maxThreads - maxThreads/10, once more than maxThreads are held. Host.threadBilling
+// is a second, independent map keyed the same way (session + thread), so it is bounded the same
+// way rather than growing for the life of the process.
+const (
+	threadBillingCap    = 10000
+	threadBillingTrimTo = threadBillingCap - threadBillingCap/10 // 9000
+)
 
 // billingKey is the pctx state key RequestStart stores the client's billing mode under, for
 // RequestEnd to read. Only the resulting mode is kept — never the header value it came from
@@ -50,7 +61,7 @@ type Options struct {
 // It holds nothing per request beyond the handle it leaves on the request's own pctx, and
 // nothing per thread beyond what accountant.Trackers keeps (the library bounds that to 10,000
 // threads) plus one BillingMode per (session, thread) in threadBilling, for keep-alive pings
-// (design §5.7).
+// (design §5.7) — threadBilling is bounded the same way (threadBillingCap/threadBillingTrimTo).
 type Host struct {
 	trackers *accountant.Trackers
 	resolver pricing.Resolver
@@ -64,7 +75,7 @@ type Host struct {
 
 	mu            sync.Mutex
 	recorders     []session.Recorder
-	threadBilling map[threadBillingKey]accountant.BillingMode
+	threadBilling map[threadBillingKey]threadBillingEntry
 
 	// Test hooks. beforeEnd runs first on the record's goroutine, computeHook just before the
 	// library's Compute, onEnd with the ops the record was given, metaHook with the
@@ -80,6 +91,14 @@ type Host struct {
 type threadBillingKey struct {
 	session string
 	thread  string
+}
+
+// threadBillingEntry is one Host.threadBilling value: the thread's last-seen billing mode, and
+// when it was recorded, so trimThreadBillingLocked can drop the oldest entries the way
+// accountant.Trackers.trim drops its oldest threads.
+type threadBillingEntry struct {
+	mode     accountant.BillingMode
+	lastSeen time.Time
 }
 
 // New builds a Host. With a SnapshotPath it restores the saved Tracker state, when there is a
@@ -220,22 +239,49 @@ func (h *Host) ThreadBilling(session, thread string) accountant.Billing {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	mode, ok := h.threadBilling[threadBillingKey{session: session, thread: thread}]
+	e, ok := h.threadBilling[threadBillingKey{session: session, thread: thread}]
 	if !ok {
 		return accountant.Billing{Mode: accountant.BillingUnknown}
 	}
-	return accountant.Billing{Mode: mode}
+	return accountant.Billing{Mode: e.mode}
 }
 
-// setThreadBilling records mode as thread's last-seen billing mode. Runs on the request
-// goroutine, inside RequestEnd.
+// setThreadBilling records mode as thread's last-seen billing mode, and trims the map if that
+// pushed it over threadBillingCap. Runs on the request goroutine, inside RequestEnd.
 func (h *Host) setThreadBilling(session, thread string, mode accountant.BillingMode) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.threadBilling == nil {
-		h.threadBilling = map[threadBillingKey]accountant.BillingMode{}
+		h.threadBilling = map[threadBillingKey]threadBillingEntry{}
 	}
-	h.threadBilling[threadBillingKey{session: session, thread: thread}] = mode
+	h.threadBilling[threadBillingKey{session: session, thread: thread}] = threadBillingEntry{
+		mode:     mode,
+		lastSeen: h.now(),
+	}
+	h.trimThreadBillingLocked()
+}
+
+// trimThreadBillingLocked drops the (session, thread) pairs seen longest ago, down to
+// threadBillingTrimTo, once threadBilling holds more than threadBillingCap — the same amortized
+// trim accountant.Trackers.trim uses for its own thread bound (library
+// internal/engine/state.go:84-114): the sort runs only on the call that crosses the cap, not on
+// every insert. Callers hold h.mu.
+func (h *Host) trimThreadBillingLocked() {
+	if len(h.threadBilling) <= threadBillingCap {
+		return
+	}
+	type aged struct {
+		key threadBillingKey
+		at  time.Time
+	}
+	all := make([]aged, 0, len(h.threadBilling))
+	for k, e := range h.threadBilling {
+		all = append(all, aged{k, e.lastSeen})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].at.Before(all[j].at) })
+	for _, a := range all[:len(h.threadBilling)-threadBillingTrimTo] {
+		delete(h.threadBilling, a.key)
+	}
 }
 
 // end opens and ends the record. A panic here, on a hostile body or a library bug, costs this
