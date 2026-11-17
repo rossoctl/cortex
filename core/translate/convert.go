@@ -10,7 +10,7 @@ import (
 // Converted is a request converted to the target protocol.
 type Converted struct {
 	Body    []byte
-	Dropped []string // the fields that the target could not carry (rule H4)
+	Dropped []string // the fields and blocks that the target could not carry (rule H4)
 	Stream  bool     // the agent asked for a stream (decision 4)
 }
 

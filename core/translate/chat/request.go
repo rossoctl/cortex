@@ -156,7 +156,7 @@ func (Protocol) EncodeRequest(req pivot.Request, h http.Header) ([]byte, []strin
 	return body, dropped, nil
 }
 
-// encoder collects the names of the dropped fields (decision 11).
+// encoder collects the names of the dropped fields and blocks (decision 11).
 type encoder struct {
 	dropped map[string]bool
 }

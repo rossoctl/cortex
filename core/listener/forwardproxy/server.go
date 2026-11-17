@@ -936,6 +936,8 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		rc = &pipeline.ResponseCapture{Status: resp.StatusCode, Decoded: resp.Uncompressed}
 	}
 
+	// Before the wrap: a not-streamed translated reply is read whole there.
+	headersAt := time.Now()
 	// Before any reply plugin or recorder reads the body: they all see the reply in
 	// the agent's protocol. A hop's own 503 returned above and is not converted.
 	if tr != nil {
@@ -952,7 +954,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// own flow — the moment the delivered response's headers are in hand —
 	// so ttfb means one thing wherever a row reports it. Stays zero on the
 	// error path above, where no headers ever arrived (#1251).
-	pctx.ResponseHeadersAt = time.Now()
+	pctx.ResponseHeadersAt = headersAt
 
 	// BytesDown for the response row (#1309), counted HERE and nowhere else. Every
 	// arm below reads this one body — buffered whole, relayed SSE block by block, relayed

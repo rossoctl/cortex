@@ -679,7 +679,8 @@ func TestTranslate_NotStreamedErrorStatus(t *testing.T) {
 	}{
 		{"error body at 200", replyFixture(t, "chunk_error.json"), http.StatusInternalServerError},
 		{"not JSON", "not json", http.StatusBadGateway},
-		{"over the limit", strings.Repeat("x", maxBodySize+1), http.StatusBadGateway},
+		// Valid JSON: only the limit makes it an error.
+		{"over the limit", replyFixture(t, "bob_shape1.json") + strings.Repeat(" ", maxBodySize), http.StatusBadGateway},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			up := newChatServer(t, func(w http.ResponseWriter, _ *http.Request) {
