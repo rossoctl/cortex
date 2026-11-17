@@ -163,11 +163,31 @@ decides:
   current server, unpinned, and so does one filed under a synthetic session — the
   `default` bucket or a `pending:<agent>` id — since each holds many conversations,
   not one.
+- **A renamed server keeps its sessions.** A pin keeps its server's host as well as
+  its name, and a host names one server at a time, so a pin follows its host first.
+  When the server on it has another name now — `agentop server rename`, or the same
+  edit by hand, made with the proxy running or stopped — the session stays on it,
+  under the new name and with its key, and that request's `modify/routed` carries
+  `renamed_from` with the old name. Host before name, because an old name can be
+  given to another server, or two names swapped, and the session must not follow its
+  old name there.
+  - A pin whose host no server has follows its name. That is how a server whose URL
+    was replaced under the same name (`agentop server add --yes`) keeps its
+    sessions; the pin takes the new host. So removing a server and adding one on its
+    host, under any name, carries the sessions pinned to it over.
+  - A pin that follows a rename takes the session's substitutes (see **Models**) and
+    its reasoning record (see **Reasoning**) to the new name. What the router learned
+    about the server itself — its model list, refusals and limits — is learned again
+    under the new name; until the new name's model list is first read, a refused
+    model with no substitute kept reaches the agent as `skip/no_substitute`.
+  - A pin saved before pins kept a host gets its server's on its session's next
+    request, whatever the once-a-day renewal says. One whose server is renamed before
+    that request is refused as below.
 - Not routed: `skip/not_routed`, and the request goes where the client sent it, its key
   untouched. Its body changes only for a moved session (see Reasoning).
-- Pinned to a server since removed: `deny/pinned_server_removed`, a 503 asking for
-  a new session. The router never moves the conversation on its own; a
-  `sessions:` entry can move it.
+- Pinned to a server since removed, so that no server has the pin's host or its name:
+  `deny/pinned_server_removed`, a 503 asking for a new session. The router never
+  moves the conversation on its own; a `sessions:` entry can move it.
 - Otherwise the request is redirected to the server, and the key is replaced only
   once the redirect has taken effect, so it goes to the server and nowhere else.
   Every routed request is redirected, even one that already names the server's
@@ -177,7 +197,8 @@ decides:
   `from` equal to `to` when the agent's base URL (`ANTHROPIC_BASE_URL`, for Claude
   Code) already names the server — followed by the router's `modify/routed` with
   `server` and `pin` (`new`, `existing`, `moved` or `none`; `moved` is a `sessions:`
-  entry moving a session that already held a pin).
+  entry moving a session that already held a pin), and `renamed_from` on the request
+  whose pin followed its server to a new name (above).
 - **Models.** A routed request goes with the model the agent asked for: the router
   does not read the server's list to judge it, because a LiteLLM server serves
   aliases it does not list. When the server refuses the model — LiteLLM's 403

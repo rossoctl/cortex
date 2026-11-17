@@ -92,6 +92,19 @@
 // its own agent's history and choice, and leaves the pin alone. Honouring the pin for
 // it would hand it the session's server and key.
 //
+// A pin names its server and keeps that server's host, so a renamed server keeps its
+// sessions. A server's name is the user's to change — agentop server rename, or a
+// hand edit, with the proxy running or not — and a host names one server at a time
+// (Decode refuses two on one), so a pin follows its host first: to the server on it
+// now, whatever that server is called. A pin whose host no server has follows its
+// name, which keeps a server whose URL was replaced under the same name; a pin saved
+// before pins kept a host gets its server's on its next request (decidePin). A pin
+// whose host and name no server has is to a removed server, and its session is
+// refused (pinned_server_removed) rather than moved. A pin that follows a renamed
+// server takes the session's substitutes and its moved-reasoning record to the new
+// name with it (followRename); what the router learned about the server itself —
+// its model list, refusals and limits — is learned again under the new name.
+//
 // The listener's synthetic sessions are never pinned: the default bucket, and the
 // pending:<agent> buckets an agent's calls collect in before its session is known.
 // Each holds many conversations rather than one, so a pin would hold every later
@@ -335,10 +348,10 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		if pin.state == pinMoved && pctx.Observing() {
 			pin.forgo()
 		} else {
-			pin.settle("")
+			pin.settle("", "")
 		}
 		p.keepOwnReasoning(pctx, addressed, pin.moving(), pin.movedFrom(addressed))
-		details := map[string]string{"pin": pin.state}
+		details := pin.details("")
 		if pin.turn != "" {
 			details["turn"] = pin.turn
 		}
@@ -346,12 +359,13 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		return cont
 	}
 	// Built where each record is made, since a failed redirect changes the pin.
-	details := func() map[string]string { return map[string]string{"server": name, "pin": pin.state} }
+	details := func() map[string]string { return pin.details(name) }
 	srv, ok := p.servers[name]
 	if !ok {
-		// Removed since the session was pinned, by agentop server remove or a hand edit.
-		// Moving the conversation to whatever the agent uses now is the switch this
-		// plugin exists to prevent.
+		// Removed since the session was pinned, by agentop server remove or a hand edit:
+		// no server has the pin's host or its name, so it followed no rename. Moving the
+		// conversation to whatever the agent uses now is the switch this plugin exists
+		// to prevent.
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: "pinned_server_removed", Details: details()})
 		return pipeline.Deny(codeUnavailable, fmt.Sprintf(
 			"this session is pinned to inference server %q, which is no longer configured; add it back, or start a new session", name))
@@ -392,7 +406,7 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	}
 	if !redirected {
 		if settle {
-			pin.settle("")
+			pin.settle("", "")
 		}
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionObserve, Reason: "would_route", Details: details()})
 		return cont
@@ -404,7 +418,7 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	p.keepOwnReasoning(pctx, name, pin.moving(), pin.movedFrom(addressed))
 	p.applyLimits(pctx, name, true)
 	if settle {
-		pin.settle(name)
+		pin.settle(name, srv.endpoint.Key())
 	}
 	if addressed != name {
 		dropProviderCredentials(pctx.Headers)
@@ -427,6 +441,10 @@ func (p *Router) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Act
 type pin struct {
 	agent  string
 	server string
+	// host is server's host when the pin was saved (routerconfig.Key), "" for not
+	// routed and for a pin saved before pins kept one. A host names one server at a
+	// time, so it is how the pin finds its server after a rename (decidePin).
+	host string
 }
 
 // belongsTo reports whether this pin is agent's. The stored spelling is folded
@@ -453,6 +471,22 @@ type pinning struct {
 	// server the session's pin named before it, "" for none or not routed.
 	override bool
 	from     string
+	// renamedFrom is the name the session's pin named before it followed its server to
+	// a new one on this request, "" when it did not (see decidePin).
+	renamedFrom string
+}
+
+// details is the router's record details for this request: the server it went to
+// ("" leaves it out), the pin's state, and the name a followed pin left.
+func (pn pinning) details(server string) map[string]string {
+	d := map[string]string{"pin": pn.state}
+	if server != "" {
+		d["server"] = server
+	}
+	if pn.renamedFrom != "" {
+		d["renamed_from"] = pn.renamedFrom
+	}
+	return d
 }
 
 // moving reports whether this request is the one an override moves its session
@@ -470,12 +504,12 @@ func (pn pinning) movedFrom(addressed string) string {
 	return addressed
 }
 
-// settle pins a session on its first request to where that request went: server
-// when it was redirected there, "" when it stayed where the client sent it. A
-// session already pinned keeps its pin, which serverFor renewed.
-func (pn *pinning) settle(server string) {
+// settle pins a session on its first request to where that request went: server,
+// on host, when it was redirected there, "" when it stayed where the client sent it.
+// A session already pinned keeps its pin, which serverFor renewed.
+func (pn *pinning) settle(server, host string) {
 	if pn.state == pinNew || pn.state == pinMoved {
-		pn.store.save(pn.key, pin{agent: pn.agent, server: server})
+		pn.store.save(pn.key, pin{agent: pn.agent, server: server, host: host})
 	}
 }
 
@@ -510,13 +544,56 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinni
 	key := pinPrefix + pctx.SessionID
 	over, overridden := p.overrideFor(pctx)
 	had, pinned := store.load(key)
+	// Before decideServer, so a pin that follows its renamed server is decided as the
+	// pin it is now: a sessions: entry naming the new name keeps it rather than moving
+	// it from the old one. Only the agent's own pin: another agent's request leaves it
+	// alone. Saved at once, past keep's once-a-day rule, so the next request reads the
+	// pin as it is now.
+	renamedFrom := ""
+	if pinned && had.belongsTo(agent) {
+		if now, changed := decidePin(had, p.hostOf, p.serverAt); changed {
+			if now.server != had.server {
+				renamedFrom = had.server
+				p.followRename(pctx, had.server, now.server)
+				slog.Info("inference-router: a session's pinned server was renamed, and its pin followed it",
+					"from", had.server, "to", now.server)
+			}
+			had = now
+			store.save(key, had)
+		}
+	}
 	server, pn, keep := decideServer(serverFacts{agent: agent, choice: choice, session: true,
 		over: over, overridden: overridden, had: had, pinned: pinned}, unpinned)
 	if keep {
 		p.keepPin(pctx, store, key, had)
 	}
-	pn.store, pn.key, pn.agent = store, key, agent
+	pn.store, pn.key, pn.agent, pn.renamedFrom = store, key, agent, renamedFrom
 	return server, pn
+}
+
+// hostOf is server name's host by the current config (routerconfig.Key), the one a
+// pin to it keeps.
+func (p *Router) hostOf(name string) (string, bool) {
+	r, ok := p.servers[name]
+	if !ok {
+		return "", false
+	}
+	return r.endpoint.Key(), true
+}
+
+// followRename carries pctx's session's own state from server oldName to newName when
+// its pin follows a renamed server: the substitutes it was given there, so its
+// conversation keeps its model, and its moved-reasoning record, so the reasoning
+// oldName wrote is still read as its destination's. A session that already has
+// substitutes under newName keeps them. The store deletes nothing, so the copies
+// under oldName lapse with their TTL.
+func (p *Router) followRename(pctx *pipeline.Context, oldName, newName string) {
+	if from, to := substituteKey(pctx, oldName), substituteKey(pctx, newName); from != "" {
+		if subs := p.substitutes(pctx, from); len(subs) > 0 && len(p.substitutes(pctx, to)) == 0 {
+			p.saveSubstitutes(pctx, to, subs)
+		}
+	}
+	p.renameInReasoning(pctx, oldName, newName)
 }
 
 // keepPin renews the session's pin and, with it, its reasoning record, which must

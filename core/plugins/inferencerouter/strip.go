@@ -198,6 +198,38 @@ func (p *Router) renewReasoning(pctx *pipeline.Context) {
 	}
 }
 
+// renameInReasoning rewrites server oldName to newName throughout pctx's session's
+// record, when its pin follows a renamed server: the record names servers, and an
+// artifact recorded as oldName's would otherwise read as another server's and be
+// dropped from every request the session sends to newName. A session that never moved
+// has no record, and nothing to rewrite.
+func (p *Router) renameInReasoning(pctx *pipeline.Context, oldName, newName string) {
+	key := reasoningKey(pctx)
+	if key == "" {
+		return
+	}
+	p.reasoningMu.Lock()
+	defer p.reasoningMu.Unlock()
+	rec, ok := p.loadReasoning(pctx, key)
+	if !ok {
+		return
+	}
+	changed := false
+	if rec.Base == oldName {
+		rec.Base, changed = newName, true
+	}
+	for _, m := range []map[string]string{rec.Writers, rec.Last} {
+		for k, s := range m {
+			if s == oldName {
+				m[k], changed = newName, true
+			}
+		}
+	}
+	if changed {
+		p.saveReasoning(pctx, key, rec)
+	}
+}
+
 // reasoningKey is the store key for pctx's session's record, "" when it has none a
 // record could name: a synthetic session holds many conversations.
 func reasoningKey(pctx *pipeline.Context) string {

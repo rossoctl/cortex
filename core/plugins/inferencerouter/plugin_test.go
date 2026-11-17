@@ -603,7 +603,7 @@ func TestRouter_ARunningSessionTheRouterHasNotSeenStaysWhereItWent(t *testing.T)
 	assertRouted(t, pctx, eteHost, "ete-key")
 	assertRedirectedTo(t, pctx, "https", eteHost)
 	assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "ete", "pin": pinNew})
-	if v, _ := store.Get(pinPrefix + "running"); v != (pin{agent: "claude-code", server: "ete"}) {
+	if v, _ := store.Get(pinPrefix + "running"); v != (pin{agent: "claude-code", server: "ete", host: "ete.example.com"}) {
 		t.Errorf("pin = %#v, want claude-code's session pinned to ete", v)
 	}
 
@@ -771,7 +771,7 @@ func TestRouter_APinHoldsOnlyForTheAgentItWasMadeFor(t *testing.T) {
 	run(t, both, anonymous)
 	assertUntouched(t, anonymous, eteHost)
 
-	if v, _ := store.Get(pinPrefix + "s1"); v != (pin{agent: "claude-code", server: "glm"}) {
+	if v, _ := store.Get(pinPrefix + "s1"); v != (pin{agent: "claude-code", server: "glm", host: "glm.example.com"}) {
 		t.Errorf("pin = %#v after other agents' requests, want claude-code's glm pin untouched", v)
 	}
 	owner := request(store, eteHost, claudeUA, "s1")

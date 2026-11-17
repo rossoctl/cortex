@@ -335,6 +335,11 @@ func (p *Router) keepSubstitute(pctx *pipeline.Context, server, requested, sub s
 		subs[k] = v
 	}
 	subs[substituteEntry(pctx.Extensions.Inference, requested)] = sub
+	p.saveSubstitutes(pctx, key, subs)
+}
+
+// saveSubstitutes keeps subs as the session's substitutes at key, for pinTTL.
+func (p *Router) saveSubstitutes(pctx *pipeline.Context, key string, subs map[string]string) {
 	if p.store != nil {
 		b, _ := json.Marshal(subs)
 		if err := p.store.Set(context.Background(), key, string(b), pinTTL); err != nil {

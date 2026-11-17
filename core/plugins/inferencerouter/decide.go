@@ -79,7 +79,8 @@ type serverFacts struct {
 //     server). A session that held no pin of its agent's is pinNew.
 //  2. A session its agent already pinned uses its pin, "not routed" included, so
 //     routing an agent later does not move the sessions it already has running. Every
-//     request renews the pin. A pin to a server no longer configured is still the
+//     request renews the pin. A pin to a renamed server has already followed it
+//     (decidePin, before this). A pin to a server no longer configured is still the
 //     answer: OnRequest denies the request rather than move the conversation.
 //  3. A pin that is another agent's is neither followed nor overwritten: the request
 //     goes where unpinned says, and pins nothing.
@@ -117,6 +118,45 @@ func decideServer(f serverFacts, unpinned func() (server, turn string, decides b
 		return server, pinning{state: pinNone, turn: turn}, false
 	}
 	return server, pinning{state: pinNew, turn: turn}, false
+}
+
+// decidePin is the pin a session's request goes by, from the pin it loaded, and
+// whether that differs from the loaded one, which the caller then saves. hostOf is a
+// configured server's host, serverAt the configured server on a host.
+//
+//  1. Not routed ("") stays as it is: it names no server to find.
+//  2. Its host first. A host names one server at a time, so the server on the pin's
+//     host is the one the session ran on, whatever it is called now: a rename, by
+//     agentop or by hand, keeps the session. Host before name, because a renamed
+//     server's old name can be given to another server, or two names swapped, and the
+//     session must not follow its old name there.
+//  3. Then its name, when no server has its host: the server's URL was replaced
+//     under the same name, which agentop server add says the sessions on it follow.
+//     The pin takes the new host. A pin saved before pins kept a host takes its
+//     server's here too.
+//  4. Neither: the server was removed, and the pin stays as it is for OnRequest to
+//     refuse.
+func decidePin(had pin, hostOf, serverAt func(string) (string, bool)) (pin, bool) {
+	if had.server == "" {
+		return had, false
+	}
+	if had.host != "" {
+		if s, ok := serverAt(had.host); ok {
+			if s == had.server {
+				return had, false
+			}
+			had.server = s
+			return had, true
+		}
+	}
+	if h, ok := hostOf(had.server); ok {
+		if h == had.host {
+			return had, false
+		}
+		had.host = h
+		return had, true
+	}
+	return had, false
 }
 
 // redirectOutcome is where a routed request's redirect left it.

@@ -54,6 +54,9 @@ func (m memPins) keep(key string, pn pin) bool { m.st.Put(key, pn, pinTTL); retu
 type pinRecord struct {
 	Agent  string `json:"agent"`
 	Server string `json:"server"` // "" for not routed
+	// Host is Server's host when the pin was saved. Absent from a record saved before
+	// pins kept one, which gets it on its session's next request (decidePin).
+	Host string `json:"host,omitempty"`
 	// Renewed is the Unix time, in seconds, the pin's TTL was last set.
 	Renewed int64 `json:"renewed"`
 }
@@ -88,11 +91,11 @@ func (d storedPins) record(key string) (pinRecord, bool) {
 
 func (d storedPins) load(key string) (pin, bool) {
 	rec, ok := d.record(key)
-	return pin{agent: rec.Agent, server: rec.Server}, ok
+	return pin{agent: rec.Agent, server: rec.Server, host: rec.Host}, ok
 }
 
 func (d storedPins) save(key string, pn pin) {
-	b, err := json.Marshal(pinRecord{Agent: pn.agent, Server: pn.server, Renewed: d.now().Unix()})
+	b, err := json.Marshal(pinRecord{Agent: pn.agent, Server: pn.server, Host: pn.host, Renewed: d.now().Unix()})
 	if err == nil {
 		err = d.st.Set(context.Background(), key, string(b), pinTTL)
 	}
