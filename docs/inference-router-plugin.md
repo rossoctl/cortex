@@ -14,9 +14,12 @@ at startup, and in-cluster use has not been examined.
 
 - `servers` (map, required) — inference servers by name: lowercase letters, digits, `.`, `_` and `-`. Each has:
   - `url` (string, required) — `scheme://host[:port]`, `http` or `https`, no path, query or fragment. A port must be 1–65535; the scheme's default is dropped, so `https://x:443` is `x`. No two servers may share a host, compared without case and, except on a loopback host such as `localhost`, without port, since one machine serves many things there: a session's server is named from the host its requests went to. A plain-`http` server on another machine logs a WARN at load, since routed requests would cross the network decrypted.
-  - `key` (string, required) — the API key sent to this server in place of the client's, in the header the client used: `X-Api-Key` when it sent one, `Authorization: Bearer` otherwise, both when it sent both. Printable ASCII, no spaces. `/config` and `/v1/pipeline` redact it.
+  - `key` (string, required) — the API key sent to this server in place of the client's, in the header the client used: `X-Api-Key` when it sent one, `Authorization: Bearer` otherwise, both when it sent both. `auth_header` and a translated request change this (see **Servers that serve another protocol**). Printable ASCII, no spaces. `/config` and `/v1/pipeline` redact it.
   - `main` (string, required) — a word naming this server's model for an agent's main work, a request that carries tools, sent in place of a model the server refuses (see **Models**). It resolves to the newest model on the server's list whose name, without its provider prefix, contains the word, case ignored: `opus` against `aws/claude-opus-5-5` and `claude-opus-4-8` is the first. No `/` and no whitespace. The fields `opus`, `sonnet` and `haiku` it replaced are refused by name.
   - `helper` (string, required) — the same for a request without tools, such as a title.
+  - `api` (map) — protocols the server serves, by protocol name, to the path it serves each at. Empty: requests go in the agent's protocol, to the agent's path. Valid keys: `anthropic-messages`, `chat-completions` and `responses`. Each path must be absolute, with no query, fragment or `..` segment. See **Servers that serve another protocol**.
+  - `auth_header` (string) — header that carries `key`. `authorization` sends `Bearer <key>`; any other name sends the raw key. Empty: the agent's header, or the target protocol's usual one for a translated request.
+  - `headers` (map) — fixed headers set on every request to this server after the plugins run. Values may use `${ENV_VAR}`.
 - `agents` (map) — agent name, as agentop shows it (`claude-code`, `opencode`), to a server name. Each value must name a listed server. `unknown`, the name for requests with no User-Agent, cannot be routed.
 - `sessions` (map) — session id to a server name, moving one running session to that server. Each value must name a listed server, or be `""` to stop routing that session. An entry beats the session's pin and every rule below, and the pin follows it, so removing the entry does not move the session back; `agentop server move` and the TUI's `S` on a session row write these; a `server move` from the shell also prunes an entry whose session is neither live nor archived. A synthetic id (`default`, `pending:<agent>`) is refused: it holds many conversations, not one to move.
 
@@ -254,3 +257,85 @@ server's host, and each event's `requestedHost` keeps the one asked for when it
 differs. The router also rewrites the request body to send a substitute, so the
 framework holds it after every body reader: a chain with a parser after the router
 is refused, at startup and on reload.
+
+## Servers that serve another protocol
+
+A server's `api` map says which protocols it serves, and at which path. DeepSeek
+serves two, at different paths:
+
+```yaml
+servers:
+  deepseek:
+    url: https://api.deepseek.com
+    key: sk-…
+    main: chat
+    helper: chat
+    api:
+      chat-completions: /chat/completions
+      anthropic-messages: /anthropic/v1/messages
+```
+
+The router uses the agent's protocol, from the request path, and these rules in
+this order:
+
+1. The map is empty: the request goes in the agent's protocol, to the agent's path,
+   as before.
+2. The request is `/v1/messages/count_tokens`, and the map has no
+   `anthropic-messages`: the proxy answers a 404 Anthropic `not_found_error` and
+   sends nothing upstream (`deny/count_tokens_local`). This applies only to a
+   `count_tokens` request that is routed to this server. The router does not
+   capture `count_tokens`, so when the agent sends it to another host, it goes there.
+3. The agent's protocol is a key of the map: the request goes to that key's path,
+   with no translation. Claude Code's `/v1/messages` goes to DeepSeek's
+   `/anthropic/v1/messages`.
+4. Cortex can read the agent's protocol (only `anthropic-messages` at this time):
+   Cortex translates the request. The target is the first of `chat-completions`,
+   `anthropic-messages`, `responses` that is in the map and that Cortex can write
+   (only `chat-completions` at this time). The request goes to the target's path,
+   with no query string. If no protocol in the map is a target, Cortex sends
+   nothing and answers a 502 Anthropic `api_error`
+   (`deny/cannot_translate`): "Cortex cannot translate anthropic-messages to
+   \<keys\> yet. Use a translation server for this pair". The message names each
+   map key, sorted, joined with " or ". For that pair, see
+   [`translation-server.md`](translation-server.md).
+5. Otherwise (a chat-completions or Responses request): the request goes as it is,
+   with no translation and no 502.
+
+**A translated request.** Every plugin, the session store, the timeline and the
+cost ledger see only the Anthropic side: the request as the agent sent it, and the
+reply as the agent gets it. The proxy converts the request after the last request
+plugin, and it converts the reply before a reply plugin reads it. Streams stay
+incremental. The request row carries the framework's `modify/translated` record,
+with `from`, `to`, `path` (the path sent upstream), and `dropped` when the
+conversion removed fields (for example `metadata,top_k`). A request that the target
+cannot carry, such as one with a PDF document, gets a 400 `invalid_request_error`
+(`deny/translation_refused`), and nothing goes upstream. The raw capture keeps the
+translated request and the server's reply before translation.
+
+**The auth header.** The sent request has only the header that this table picks.
+The router removes the agent's `Authorization`, `X-Api-Key` and `Api-Key` first,
+except in the first row:
+
+| `auth_header` | Request | Header sent |
+|---|---|---|
+| empty | not translated | as before: the header the agent used (see `key`) |
+| empty | translated to `chat-completions` | `Authorization: Bearer <key>` |
+| empty | translated to `anthropic-messages` | `X-Api-Key: <key>` |
+| `authorization` | each request | `Authorization: Bearer <key>` |
+| any other name | each request | that header, with the raw key |
+
+For example, Azure uses `api-key`. Bob accepts its key as `x-api-key`, and refuses
+it as Bearer.
+
+**Fixed headers.** `headers` values replace the agent's header of the same name,
+after the plugins run, on translated and not translated requests. The config load
+refuses these names: `Host`, `Content-Length`, the hop-by-hop headers
+(`Connection`, `Keep-Alive`, `Proxy-Connection`, `Transfer-Encoding`, `Upgrade`,
+`TE`, `Trailer`, `Proxy-Authenticate`, `Proxy-Authorization`), the auth headers
+(`Authorization`, `X-Api-Key`, `Api-Key`) and the server's own `auth_header`. It
+also refuses a value with CR, LF or NUL. `/config` and `/v1/pipeline` show the
+header names and hide the values, as they hide `key`. Bob needs
+`User-Agent: bob-shell`.
+
+`auth_header` and `headers` apply only to the requests that the router routes. The
+model-list fetch (`GET /v1/models`) still sends `Authorization: Bearer <key>` only.

@@ -15,6 +15,7 @@ holds the repo-level pieces; this file is the index.
 | Enforce policy on agent traffic in praxis mode | [`praxis-policy.md`](praxis-policy.md) |
 | Customize Cortex with a small Python or shell script | [`script-plugin.md`](script-plugin.md) |
 | Run an agent on a local model, or switch inference servers | [`laptop-local-model.md`](laptop-local-model.md) |
+| Use a server whose protocol Cortex cannot translate to | [`translation-server.md`](translation-server.md) |
 | Use the `agentop` TUI | [`cmd/agentop/README.md`](../cmd/agentop/README.md) |
 | Add your agent's sessions from before Cortex | [`agentop import`](../cmd/agentop/README.md#importing-agent-history-agentop-import) |
 | Export sessions to files | [`session-dump.md`](session-dump.md) |
