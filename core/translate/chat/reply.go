@@ -50,9 +50,10 @@ type decoder struct {
 	usage      pivot.Usage
 
 	open      openKind
-	openIndex int // the pivot block index of the open block
-	openTool  int // the chat tool-call index of the open tool_use block
-	next      int // the next pivot block index
+	openIndex int    // the pivot block index of the open block
+	openTool  int    // the chat tool-call index of the open tool_use block
+	openID    string // the tool-call id of the open tool_use block
+	next      int    // the next pivot block index
 	closed    map[int]bool
 }
 
@@ -147,7 +148,7 @@ func (d *decoder) start(id, model string) {
 func (d *decoder) openBlock(k openKind, block pivot.BlockKind, toolIndex int, id, name string) {
 	d.closeOpen()
 	d.emit(pivot.Event{Kind: pivot.EventBlockStart, Index: d.next, Block: block, ToolID: id, ToolName: name})
-	d.open, d.openIndex, d.openTool = k, d.next, toolIndex
+	d.open, d.openIndex, d.openTool, d.openID = k, d.next, toolIndex, id
 	d.next++
 }
 
@@ -285,7 +286,9 @@ func (d *decoder) streamDelta(m replyMessage) {
 		d.delta(pivot.DeltaText, m.Content)
 	}
 	for _, tc := range m.ToolCalls {
-		isOpen := d.open == kindTool && d.openTool == tc.Index
+		// Rule 20a: the id identifies the call, so a new id on the open
+		// index is a new call, not more of the open one.
+		isOpen := d.open == kindTool && d.openTool == tc.Index && (tc.ID == "" || tc.ID == d.openID)
 		if tc.ID != "" && !isOpen {
 			if d.closed[tc.Index] {
 				d.fail(http.StatusBadGateway, "api_error", "the inference server sent tool call "+strconv.Itoa(tc.Index)+" again after that tool call ended")

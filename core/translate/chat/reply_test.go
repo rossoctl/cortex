@@ -277,3 +277,19 @@ func TestEncodeError(t *testing.T) {
 		t.Errorf("got %s, want %s", got, want)
 	}
 }
+
+// Two whole tool calls at one index are two tool_use blocks (rule 20a).
+func TestReplyDecoder_NewIDOnOpenIndex(t *testing.T) {
+	body := sse(
+		chunk(`{"tool_calls":[{"id":"a","function":{"arguments":"{\"p\":1}","name":"A"},"type":"function","index":0},{"id":"b","function":{"arguments":"{\"q\":2}","name":"B"},"type":"function","index":0}]}`),
+		chunk(`{"tool_calls":[{"id":"b","function":{"arguments":""},"type":"function","index":0}]}`),
+		finish("tool_calls"),
+		"[DONE]",
+	)
+	checkEvents(t, 200, true, body, []pivot.Event{
+		start(),
+		openTool(0, "a", "A"), delta(0, pivot.DeltaInputJSON, `{"p":1}`), closeBlock(0),
+		openTool(1, "b", "B"), delta(1, pivot.DeltaInputJSON, `{"q":2}`), closeBlock(1),
+		usage(pivot.Usage{}), stop("tool_use"),
+	})
+}
