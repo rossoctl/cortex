@@ -162,6 +162,21 @@ Bob/User/settings.json`). Elsewhere `--settings PATH` is required rather than
 guessed — writing a proxy setting into a file nothing reads is a silent no-op,
 which is worse than a refusal that names the flag.
 
+## Import history
+
+`agentop import --agent bob` adds the Bob tasks from before Cortex to the
+session history and the cost ledger. It reads `~/.bob/db/bob.db` through the
+`sqlite3` program, so `sqlite3` must be on `PATH`. It covers Bob Shell and Bob
+IDE, and it does not write to the database.
+
+- One root task and its child tasks make one session.
+- The import skips a session that Cortex captured live.
+- A turn keeps Bob's own cost.
+
+Flags and output:
+[`agentop import`](../../cmd/agentop/README.md#importing-agent-history-agentop-import).
+Rules: [`POST /v1/import`](../session-api.md#post-v1import--transcript-import-laptop-only).
+
 ## Subagents and subtasks
 
 Bob can start child tasks. A subagent runs beside its parent. A subtask runs in

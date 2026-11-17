@@ -31,6 +31,10 @@ Setup asks once before changing anything. If something looks wrong, `agentop doc
 names the fix. To move to a newer release later, run `agentop update`. Can't reach
 rossoctl.dev? The same script is [in this repo](https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh).
 
+Used your agent before Cortex? `agentop import` adds its past sessions and their
+cost from the transcripts on disk. Run `agentop import --dry-run` first to count
+them. See [Importing agent history](./cmd/agentop/README.md#importing-agent-history-agentop-import).
+
 ## What you can do with it
 
 **See where your tokens go.** Every session's tokens, cost and context fill, live.

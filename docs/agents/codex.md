@@ -434,6 +434,22 @@ Worth knowing for anyone changing this: `tool-prune` and `inference-parser` keep
 **separate** suffix lists, and only the parser's recognises `/responses`. The drift is
 silent — the parser reads a Responses request that the pruner skips as "not inference".
 
+## Import history
+
+`agentop import --agent codex` adds the Codex sessions from before Cortex to the
+session history and the cost ledger. It reads the rollout files under
+`~/.codex/sessions`, or under `$CODEX_HOME/sessions` when that variable is set
+in the proxy's environment.
+
+- The root rollout of a session and the rollouts of its subagents make one
+  session.
+- The import skips a session that Cortex captured live.
+- A turn is priced at today's rates.
+
+Flags and output:
+[`agentop import`](../../cmd/agentop/README.md#importing-agent-history-agentop-import).
+Rules: [`POST /v1/import`](../session-api.md#post-v1import--transcript-import-laptop-only).
+
 ## Verified depth
 
 Tested live with Codex 0.160.1 on macOS 26.3 (arm64), against the real ChatGPT backend,

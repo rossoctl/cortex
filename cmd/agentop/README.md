@@ -837,8 +837,8 @@ counted again, because the erase kept the ledger rows.
 An imported session has `(*)` before its title in the sessions pane. When the
 terminal is too narrow for TITLE, `(*)` is before its id.
 Its events show `n/a` for status, duration, bytes, host and plugin, because the
-proxy did not see them. Tokens and cost show values. A Claude Code turn is priced
-at today's rates. A Bob turn shows Bob's own cost.
+proxy did not see them. Tokens and cost show values. A Claude Code, Codex,
+OpenCode or Pi turn is priced at today's rates. A Bob turn shows Bob's own cost.
 
 ## Panes
 
