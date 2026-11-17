@@ -589,7 +589,7 @@ func main() {
 		if !acctDecided {
 			acctDecided = true
 			if c.AccountingOn() {
-				acctHost = newAccountingHost(pricingRegistry)
+				acctHost = newAccountingHost(pricingRegistry, c.Accounting.Weights())
 			}
 		}
 		inDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: reverseproxy.Support(), LocalInstall: localInstall}

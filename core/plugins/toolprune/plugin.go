@@ -354,6 +354,9 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 
 	out := body
 	var err error
+	// markMove is set when the rewrite below carried a pruned tool's cache mark to the last
+	// survivor, for the op that reports that survivor's growth.
+	var markMove *movedMark
 	if len(victims) == len(raw) {
 		// Emptying the array is not safe — OpenAI rejects `tools: []`, and
 		// tool_choice without tools. Drop both keys instead.
@@ -417,6 +420,7 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 					slog.Warn("tool-prune: could not preserve cache_control, forwarding original", "err", err)
 					return action
 				}
+				markMove = &movedMark{index: i, before: survivor, after: len(patched)}
 				survivor = string(patched)
 				slog.Debug("tool-prune: moved cache_control to the last surviving tool", "index", i)
 			}
@@ -474,6 +478,9 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	// The accountant's view of the same change, one op per removed tool, reported only now
 	// that SetBody has said whether it applied: a write that did not is a dry run.
 	pctx.ReportOps(removalOps(raw, victims, names, !applied)...)
+	if markMove != nil {
+		pctx.ReportOps(markMoveOp(raw, *markMove, !applied))
+	}
 	// The body as this plugin leaves it: the rewrite when it was applied, the body it
 	// was handed when it was only measured. A later writer may change it again, so
 	// settlement calibrates on the framework's record of what was sent, and reads
@@ -627,6 +634,36 @@ func (p *ToolPrune) noteDrift(observed []pipeline.InferenceTool) {
 
 // Metrics implements pipeline.MetricsProvider.
 func (p *ToolPrune) Metrics() []pipeline.Metric { return p.m.snapshot() }
+
+// movedMark is a cache mark the rewrite carried from a pruned tool to the last survivor: the
+// survivor's index in the body this plugin was handed, its declaration as the client sent it, and
+// its size in bytes once the mark was added.
+type movedMark struct {
+	index  int
+	before string
+	after  int
+}
+
+// markMoveOp reports the moved mark as what it is on the wire: a rewrite in place of the survivor,
+// from its client bytes to its bytes with the mark. Without it the library's sum check fails — the
+// ops would remove more tools bytes than the bodies differ by — and the request is recorded with no
+// saving. It is the form the context-guru proxy's envelope reporter gives a declaration both bodies
+// carry with different bytes (proxy/accountant_envelope.go, toolsOps). The mark is not hashed
+// (W6.3), so the survivor's position still matches and the op books only the mark's few bytes.
+//
+// Its ChangeID names the survivor and hashes its client declaration, so the same move on the next
+// turn is the same change.
+func markMoveOp(raw []gjson.Result, m movedMark, dryRun bool) accountant.Operation {
+	sum := sha256.Sum256([]byte(m.before))
+	return accountant.Operation{
+		Kind:       accountant.KindRewrite,
+		DryRun:     dryRun,
+		At:         accountant.Position{Section: accountant.SectionTools, Index: m.index},
+		SizeBefore: accountant.Size{Bytes: len(m.before)},
+		SizeAfter:  accountant.Size{Bytes: m.after},
+		ChangeID:   "tool-prune:cache-mark:" + raw[m.index].Get("name").String() + ":" + hex.EncodeToString(sum[:6]),
+	}
+}
 
 // removalOps describes the prune to the accountant (design §5.5): one rewrite per removed tool,
 // at that tool's index in the body this plugin was handed, from its declaration's wire bytes to

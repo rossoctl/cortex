@@ -30,6 +30,8 @@ type InferenceParser struct {
 	// acct is the accountant host, injected by plugins.BuildWithDeps on the outbound build when
 	// accounting is on; nil otherwise. See accounting.go.
 	acct accountingComputer
+	// shadowCounts are the shadow comparison's counters (accounting.go).
+	shadowCounts shadowCounts
 }
 
 func NewInferenceParser() *InferenceParser { return &InferenceParser{} }

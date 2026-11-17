@@ -285,6 +285,20 @@ type Event struct {
 	// older consumer decodes the record unchanged. No consumer splits on it yet — the ledger
 	// and /v1/usage fold a ping's spend into the same rows and totals as the agent's.
 	Purpose string `json:"purpose,omitempty"`
+
+	// UnattributedBreakUSD is the net cost of the cache effects this request had that no context
+	// operator owns: a break whose change had already ended (no ChangeID), or one whose ChangeID no
+	// applied operation reported (accountant wiring W7.1). Shown, never charged to an operator, and
+	// never part of Avoided.
+	//
+	// ADDITIVE and omitempty. Read by nothing yet: core/accounting fills it, and the totals that
+	// will read it are later work.
+	UnattributedBreakUSD float64 `json:"unattributed_break_usd,omitempty"`
+
+	// Thread is the accountant thread this request's savings belong to: "main", a subagent id, or
+	// the id the context-guru plugin named (core/accounting.ThreadOf). A subagent's saving is kept
+	// apart from the main thread's (W7.1). ADDITIVE and omitempty; read by nothing yet.
+	Thread string `json:"thread,omitempty"`
 }
 
 // Saving is one component's contribution to cost that was not incurred.
@@ -318,6 +332,34 @@ type Saving struct {
 	// "would have saved", never as money already not spent, and must not add it to
 	// any total that includes applied savings.
 	Projected bool `json:"projected,omitempty"`
+	// PenaltyUSD is cost the same component CAUSED on this request, which offsets USD: a
+	// compaction that rewrote a message inside the provider's cached prefix made the provider
+	// write, at the cache-write rate, tokens it would otherwise have read. With the accountant it
+	// is the priced Caused of the operator's operations, plus the net cost of each cache break
+	// attributed to it, plus what its own model calls cost (W7.1). Zero for a component that
+	// cannot cause one. Non-negative, like USD, so every money bound still holds.
+	//
+	// NOT YET NETTED anywhere: TotalAvoidedUSD still sums USD alone. Netting the totals is later
+	// work, and until then this field is on the record and read by nothing.
+	PenaltyUSD float64 `json:"penaltyUsd,omitempty"`
+	// Operator is the context operator's dotted name ("tool-prune", "context-guru.mask"), the
+	// same name as Component, kept as its own field so a reader can group by its first part
+	// (W7.1). Empty on a saving the accountant did not compute.
+	Operator string `json:"operator,omitempty"`
+	// OpsVersion is the version of the accountant rules that computed this saving
+	// (accountant Result.Version, R46). Zero on a saving the accountant did not compute.
+	OpsVersion int `json:"opsVersion,omitempty"`
+	// Basis says what USD and PenaltyUSD may be summed with (accountant design §7.1): "usd" for a
+	// request billed per token (an API key), "subscriptionEquivalent" for one on a subscription
+	// login, whose dollar figures are what the same tokens would have cost on the API, and
+	// "unknown". Only "usd" belongs in a money total. Empty on a saving the accountant did not
+	// compute.
+	Basis string `json:"basis,omitempty"`
+	// Units and PenaltyUnits are a subscriptionEquivalent saving valued in usage-limit units:
+	// tokens times the configured weights (accounting.subscription_weights). Zero for any other
+	// basis.
+	Units        float64 `json:"units,omitempty"`
+	PenaltyUnits float64 `json:"penaltyUnits,omitempty"`
 	// Estimated marks TokensAvoided as derived from a bytes-to-tokens ratio rather
 	// than counted by a tokenizer. It is calibrated per request and therefore wrong
 	// when the removed span had a different token density from what remained — so a

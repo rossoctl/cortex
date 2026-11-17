@@ -146,8 +146,16 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 			TokensAvoided: 1200,
 			USD:           0.01,
 			Provenance:    "configured",
+			PenaltyUSD:    0.002,
+			Operator:      "tool-prune",
+			OpsVersion:    1,
+			Basis:         "subscriptionEquivalent",
+			Units:         120,
+			PenaltyUnits:  4.5,
 		}},
-		Purpose: PurposeKeepAlive,
+		Purpose:              PurposeKeepAlive,
+		UnattributedBreakUSD: 0.003,
+		Thread:               "main",
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -159,7 +167,9 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 		`"tiers":{"input":0.007,"cache_write":0.022,"cache_read":0.3,"output":0.46},` +
 		`"usage_refused":true,"rejected_reason":"implausible",` +
 		`"avoided":[{"component":"tool-prune",` +
-		`"tokensAvoided":1200,"usd":0.01,"provenance":"configured"}],"purpose":"keep-alive"}`
+		`"tokensAvoided":1200,"usd":0.01,"provenance":"configured","penaltyUsd":0.002,` +
+		`"operator":"tool-prune","opsVersion":1,"basis":"subscriptionEquivalent","units":120,` +
+		`"penaltyUnits":4.5}],"purpose":"keep-alive","unattributed_break_usd":0.003,"thread":"main"}`
 	if string(b) != want {
 		t.Errorf("wire format changed:\n got %s\nwant %s", b, want)
 	}
@@ -210,7 +220,7 @@ func TestTotalAvoidedMicros_ReadsWhatTheProducerActuallyWrites(t *testing.T) {
 // process.
 func TestEventWireCoversEveryField(t *testing.T) {
 	// Keep in step with the marshal in TestEventJSONTagsArePinned_EveryField.
-	const pinned = 18
+	const pinned = 20
 	if got := reflect.TypeOf(Event{}).NumField(); got != pinned {
 		t.Fatalf("Event has %d fields, %d are pinned on the wire.\n"+
 			"Add the new field to TestEventJSONTagsArePinned_EveryField's marshal AND its "+

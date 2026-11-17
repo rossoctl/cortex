@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/rossoctl/cortex/core/accounting"
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 )
 
@@ -14,8 +15,11 @@ const accountantStateFile = "accountant-state.json"
 // newAccountingHost builds the process's accountant host. The Tracker snapshot is a laptop
 // feature, decided by the same local-install test the session archive and the ledger use: a
 // pod restart starts fresh, and no provider cache outlives an hour anyway (design §5.4).
-func newAccountingHost(rates *pricing.Registry) *accounting.Host {
-	opts := accounting.Options{Resolver: rates}
+//
+// weights are accounting.subscription_weights, read once here: the reloader refuses a reload that
+// changes them.
+func newAccountingHost(rates *pricing.Registry, weights config.SubscriptionWeights) *accounting.Host {
+	opts := accounting.Options{Resolver: rates, SubscriptionWeights: &weights}
 	if localInstall {
 		if dir, err := defaultCortexDir(); err == nil {
 			opts.SnapshotPath = filepath.Join(dir, accountantStateFile)

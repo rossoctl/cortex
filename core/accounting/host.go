@@ -10,6 +10,7 @@ import (
 	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/cortex/core/accounting/facts"
 	"github.com/rossoctl/cortex/core/accounting/wire"
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
@@ -41,7 +42,7 @@ const billingKey = "accounting.billing"
 
 // Options configure a Host.
 type Options struct {
-	// Resolver is the process rate table. Held for pricing (a later task); Task 2 prices nothing.
+	// Resolver is the process rate table. Savings prices every Result with it (USD, TierUSD).
 	Resolver pricing.Resolver
 	// SnapshotPath is where the Tracker state is saved every 60s and on Close, and restored
 	// from at New. Empty means no snapshot: in a cluster a pod restart starts fresh (design §5.4).
@@ -52,6 +53,9 @@ type Options struct {
 	CostRecorders []session.Recorder
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
+	// SubscriptionWeights value a saving on a subscription login in usage-limit units
+	// (accounting.subscription_weights). Nil means config.DefaultSubscriptionWeights.
+	SubscriptionWeights *config.SubscriptionWeights
 }
 
 // Host is Cortex's accountant host: one per process, shared by every pipeline a reload builds,
@@ -66,6 +70,7 @@ type Host struct {
 	trackers *accountant.Trackers
 	resolver pricing.Resolver
 	now      func() time.Time
+	weights  config.SubscriptionWeights
 
 	snapshotPath string
 	stop         chan struct{}
@@ -120,6 +125,10 @@ func New(o Options) (*Host, error) {
 		snapshotPath: o.SnapshotPath,
 		recorders:    append([]session.Recorder(nil), o.CostRecorders...),
 		stop:         make(chan struct{}),
+		weights:      config.DefaultSubscriptionWeights(),
+	}
+	if o.SubscriptionWeights != nil {
+		h.weights = *o.SubscriptionWeights
 	}
 	if h.now == nil {
 		h.now = time.Now

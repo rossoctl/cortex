@@ -7,33 +7,56 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/accountant"
+	"github.com/rossoctl/cortex/core/accounting"
+	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // countingAccountant stands in for *accounting.Host.
 type countingAccountant struct {
-	calls int
-	res   accountant.Result
+	calls  int
+	saving []event.Saving
+	extras accounting.Extras
 }
 
-func (c *countingAccountant) Compute(*pipeline.Context) (accountant.Result, bool) {
+func (c *countingAccountant) Savings(*pipeline.Context) ([]event.Saving, accounting.Extras, bool) {
 	c.calls++
-	return c.res, true
+	return c.saving, c.extras, true
+}
+
+func captureLogs(t *testing.T, level slog.Level) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: level})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &logs
+}
+
+func shadowMetrics(p *InferenceParser) map[string]float64 {
+	m := map[string]float64{}
+	for _, mm := range p.Metrics() {
+		m[mm.Name] = mm.Value
+	}
+	return m
+}
+
+// shadowCtx is a priced response whose request tool-prune shrank, so settle.Avoided has a figure.
+func shadowCtx() *pipeline.Context {
+	pctx := &pipeline.Context{Host: "api.anthropic.com", Path: "/v1/messages", SessionID: "s1", ResponseHeaders: http.Header{}}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-sonnet-4-5", InputTokens: 100, CacheReadTokens: 9000, OutputTokens: 5}
+	pctx.Extensions.Custom = map[string]any{
+		"tool-prune" + pipeline.PluginEventSuffix: map[string]any{"bytesRemoved": 4000, "bodyBytesAfter": 36000},
+	}
+	return pctx
 }
 
 // settleCost runs on every finalization path, and a listener can repeat a terminal frame, so it
 // can run more than once for one request. The accountant is asked once, at the first pass with
-// usage, and its figure is only logged at DEBUG for now: nothing is written.
+// usage.
 func TestSettleCost_CallsAccountingOnce(t *testing.T) {
-	var logs bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-
-	acc := &countingAccountant{res: accountant.Result{Ops: []accountant.PricedOp{
-		{Saved: accountant.TierTokens{CacheWrite5m: 120, CacheRead: 7}},
-	}}}
+	acc := &countingAccountant{}
 	p := NewInferenceParser()
 	p.acct = acc
 
@@ -42,7 +65,7 @@ func TestSettleCost_CallsAccountingOnce(t *testing.T) {
 	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-sonnet-4-5"}
 	p.settleCost(pctx)
 	if acc.calls != 0 {
-		t.Fatalf("Compute called %d times before the usage arrived", acc.calls)
+		t.Fatalf("Savings called %d times before the usage arrived", acc.calls)
 	}
 
 	pctx.Extensions.Inference.InputTokens = 10
@@ -50,12 +73,71 @@ func TestSettleCost_CallsAccountingOnce(t *testing.T) {
 	p.settleCost(pctx)
 	p.settleCost(pctx)
 	if acc.calls != 1 {
-		t.Errorf("Compute called %d times, want 1", acc.calls)
+		t.Errorf("Savings called %d times, want 1", acc.calls)
+	}
+}
+
+// The shadow step (design §6): the record still publishes settle.Avoided's figure, and the
+// accountant's figure is only compared with it. A difference is logged at INFO with both
+// figures and counted in the plugin's metrics.
+func TestSettleCost_ShadowWritesOldFigure(t *testing.T) {
+	logs := captureLogs(t, slog.LevelInfo)
+	acc := &countingAccountant{
+		saving: []event.Saving{
+			{Component: "tool-prune", Operator: "tool-prune", USD: 0.5, PenaltyUSD: 0.1, Basis: accounting.BasisUSD},
+			{Component: "context-guru.mask", Operator: "context-guru.mask", USD: 0.2, Basis: accounting.BasisUSD},
+		},
+		extras: accounting.Extras{Thread: "main", OpsVersion: 1},
+	}
+	p := NewInferenceParser()
+	p.rates = bodylessRates(t)
+	p.acct = acc
+
+	pctx := shadowCtx()
+	old := settle.Avoided(pctx, p.rates)
+	if len(old) != 1 || old[0].USD <= 0 {
+		t.Fatalf("fixture: settle.Avoided = %+v, want one priced tool-prune saving", old)
+	}
+
+	p.settleCost(pctx)
+
+	ev, ok := pctx.Extensions.Custom[event.Key+pipeline.PluginEventSuffix].(event.Event)
+	if !ok {
+		t.Fatalf("no cost record published: %+v", pctx.Extensions.Custom)
+	}
+	if len(ev.Avoided) != 1 || ev.Avoided[0] != old[0] {
+		t.Errorf("published Avoided = %+v, want settle.Avoided's figure %+v unchanged", ev.Avoided, old)
 	}
 	out := logs.String()
-	if strings.Count(out, "accounting: computed") != 1 || !strings.Contains(out, "ops=1") ||
-		!strings.Contains(out, "savedCacheWrite5m=120") || !strings.Contains(out, "savedCacheRead=7") {
-		t.Errorf("want one DEBUG line with the op count and saved tokens per tier:\n%s", out)
+	if n := strings.Count(out, "accounting: shadow"); n != 2 {
+		t.Fatalf("want one INFO shadow line per differing component (2), got %d:\n%s", n, out)
+	}
+	for _, want := range []string{"level=INFO", "session=s1", "component=tool-prune", "newUSD=0.4", "newPenaltyUSD=0.1",
+		"component=context-guru.mask", "inOld=false", "thread=main", "diffUSD="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("shadow log lacks %q:\n%s", want, out)
+		}
+	}
+	if m := shadowMetrics(p); m["accounting shadow compared"] != 1 || m["accounting shadow differed"] != 1 {
+		t.Errorf("metrics = %+v, want one compared, one differed", m)
+	}
+}
+
+// Two figures within a micro-dollar agree: no line.
+func TestSettleCost_ShadowAgreementLogsNothing(t *testing.T) {
+	logs := captureLogs(t, slog.LevelInfo)
+	p := NewInferenceParser()
+	p.rates = bodylessRates(t)
+	pctx := shadowCtx()
+	same := settle.Avoided(pctx, p.rates)[0]
+	same.USD += 0.0000004
+	p.acct = &countingAccountant{saving: []event.Saving{same}}
+	p.settleCost(pctx)
+	if strings.Contains(logs.String(), "accounting: shadow") {
+		t.Errorf("figures within $0.000001 were logged as different:\n%s", logs.String())
+	}
+	if m := shadowMetrics(p); m["accounting shadow compared"] != 1 || m["accounting shadow differed"] != 0 {
+		t.Errorf("metrics = %+v, want one compared, none differed", m)
 	}
 }
 
@@ -67,5 +149,8 @@ func TestSettleCost_NoAccountantIsFine(t *testing.T) {
 	p.SetAccounting(nil)
 	if p.acct != nil {
 		t.Error("SetAccounting(nil) stored a typed nil, which would read as set")
+	}
+	if m := p.Metrics(); m != nil {
+		t.Errorf("Metrics = %+v with accounting off, want none", m)
 	}
 }

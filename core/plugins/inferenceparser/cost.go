@@ -72,10 +72,6 @@ func (p *InferenceParser) settleCost(pctx *pipeline.Context) {
 	// Every response path ends here exactly once, so the served model is decided here too.
 	inference.SettleServedModel(pctx.Extensions.Inference, pctx.ResponseHeaders)
 
-	// Before the publish gate, with a latch of its own: whether the accountant prices this
-	// request does not depend on whether a cost record is published.
-	p.account(pctx)
-
 	settled := settle.Settle(pctx, p.rates)
 	// Stored even when nothing priced, so a consumer can tell "no figure" from "this pass
 	// never ran" — and so the drift check can see both figures. Unconditional and BEFORE the
@@ -95,6 +91,10 @@ func (p *InferenceParser) settleCost(pctx *pipeline.Context) {
 	// operator which rate to add. event.Decode still reports such a record as
 	// unpriced, so no consumer counts it as spend; that is what Record/Priced separate.
 	avoided := settle.Avoided(pctx, p.rates)
+	// The accountant's figure beside it, before the publish gate and with a latch of its own:
+	// whether the accountant prices this request does not depend on whether a cost record is
+	// published. Compared and logged only; the record below still carries avoided.
+	p.shadow(pctx, avoided)
 	// HasPrompt is checked separately from Priced, because the two really can differ: a
 	// table that prices every prompt tier but not a populated output tier yields a prompt
 	// figure and no total. Dropping the record there would lose a figure a request row

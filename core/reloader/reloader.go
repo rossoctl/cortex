@@ -681,6 +681,10 @@ func validateReloadable(active, next *config.Config) error {
 	if active.AccountingOn() != next.AccountingOn() {
 		diffs = append(diffs, fmt.Sprintf("accounting.enabled (resolved %v→%v)", active.AccountingOn(), next.AccountingOn()))
 	}
+	// accounting.subscription_weights too, as resolved: the host reads them once, when it is built.
+	if active.Accounting.Weights() != next.Accounting.Weights() {
+		diffs = append(diffs, "accounting.subscription_weights")
+	}
 	if len(diffs) > 0 {
 		return fmt.Errorf("unreloadable field changed, pod restart required: %v", diffs)
 	}
