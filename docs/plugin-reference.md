@@ -767,12 +767,18 @@ the entry describes (its invocation carries `shadow: true`).
 ```go
 type PluginCapabilities struct {
     ReadsBody          bool // plugin reads pctx.Body / pctx.ResponseBody
+    ReadsResponseBody  bool // plugin reads pctx.ResponseBody of every response
     WritesRequestBody  bool // plugin may call pctx.SetBody and pctx.SetRequestModel
     WritesResponseBody bool // plugin may call pctx.SetResponseBody
 }
 ```
 
 - `ReadsBody`: listener buffers the body; plugin sees bytes.
+- `ReadsResponseBody`: listener buffers the response body, not the request body.
+  On the forward proxy, a response is buffered only when a parser claimed the
+  request (`Extensions.Inference`, `MCP` or `A2A` is set) or a plugin declares
+  this. Any other response — a download, an NDJSON stream — is relayed as it
+  arrives, at any size, with an empty `pctx.ResponseBody`.
 - `WritesRequestBody`: implies `ReadsBody`. Listener propagates `pctx.SetBody`
   rewrites to the upstream. Required by `pctx.SetRequestModel`, which refuses a
   plugin that does not declare it.
@@ -781,9 +787,10 @@ type PluginCapabilities struct {
 
 **Declare the direction you actually write.** The two flags are not
 interchangeable, and getting this wrong is silent: `WritesResponseBody` is the
-SSE streaming predicate. A plugin that declares it forces every response on
-that chain onto the buffered path, so a long completion arrives in one lump
-after a silent wait instead of appearing incrementally. Declaring
+SSE streaming predicate. A plugin that declares it stops SSE responses on that
+chain from streaming — on the forward proxy, those it buffers by the rule above —
+so a long completion arrives in one lump after a silent wait instead of
+appearing incrementally. Declaring
 `WritesRequestBody` costs nothing — requests arrive complete with a
 `Content-Length` and are read end to end before dispatch, so rewriting one says
 nothing about how the response may be relayed.
@@ -792,7 +799,7 @@ nothing about how the response may be relayed.
 |---|---|---|
 | request-only mutator (`tool-prune`, `context-guru`, `inference-router`) | `WritesRequestBody` | yes |
 | response mutator (`sparc`) | `WritesResponseBody` | no — buffered |
-| both (`cpex`) | both | no — buffered |
+| both (`cpex`) | both, plus `ReadsResponseBody` with response hooks | no — buffered |
 | pure reader (parsers) | `ReadsBody` | yes |
 
 **A configured instance may declare less than its ceiling.** What an

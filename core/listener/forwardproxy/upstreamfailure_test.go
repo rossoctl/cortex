@@ -386,7 +386,7 @@ type bodyReadingPlugin struct{}
 
 func (bodyReadingPlugin) Name() string { return "body-reader" }
 func (bodyReadingPlugin) Capabilities() pipeline.PluginCapabilities {
-	return pipeline.PluginCapabilities{ReadsBody: true}
+	return pipeline.PluginCapabilities{ReadsBody: true, ReadsResponseBody: true}
 }
 
 func (bodyReadingPlugin) OnRequest(context.Context, *pipeline.Context) pipeline.Action {

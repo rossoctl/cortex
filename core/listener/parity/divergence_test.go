@@ -11,6 +11,9 @@ package parity
 //	request body   1 MiB      1 MiB          32 MiB
 //	response body  1 MiB      1 MiB          10 MiB
 //
+// The forward proxy's response cap applies only to a response it buffers: one a
+// parser claimed, or any response for a ReadsResponseBody plugin.
+//
 // WHICH DEPLOYMENT SHAPE EACH LISTENER IS, because the axis is not the obvious
 // one. extproc is envoy-sidecar mode. BOTH proxies are proxy-sidecar mode —
 // which is the laptop install AND the Kubernetes default: the operator falls
@@ -587,6 +590,46 @@ func TestDivergence_OutboundResponseBodyCap(t *testing.T) {
 			eventStatusCode: 200,
 			pluginEvents: map[string]string{
 				spyPluginA + bodyRespDigestStrippedSuffix: digestJSON(big),
+			},
+		},
+	})
+}
+
+// TestDivergence_OutboundUnparsedResponseBody: a body reader on a response no
+// parser claimed. extproc buffers it for the reader; the forward proxy relays it
+// unread, so a download or a non-SSE stream reaches the agent at any size.
+func TestDivergence_OutboundUnparsedResponseBody(t *testing.T) {
+	body := []byte(`{"reply":"ok"}`)
+	f := fixture{
+		name:      "outbound-unparsed-response-body",
+		direction: pipeline.Outbound,
+		entries: []config.PluginEntry{spyEntry(spyPluginA, spyConfig{
+			ReadsBody:                true,
+			RecordResponseBodyDigest: true,
+			ParsedResponsesOnly:      true,
+		})},
+		method:         "GET",
+		path:           "/divergence/unparsed-response",
+		upstreamStatus: 200,
+		upstreamBody:   body,
+	}
+	assertDivergence(t, f, pipeline.SessionResponse, outboundListeners, map[string]divergentExpectation{
+		"extproc": {
+			why:             "a ReadsBody plugin puts every response in buffered body mode, so the plugin is handed the body",
+			pipelineRan:     true,
+			wireStatus:      0,
+			eventStatusCode: 200,
+			pluginEvents: map[string]string{
+				spyPluginA + bodyRespDigestStrippedSuffix: digestJSON(body),
+			},
+		},
+		"forwardproxy": {
+			why:             "no parser claimed the request and no plugin declares ReadsResponseBody, so the body is relayed as it arrives and the plugin is handed none",
+			pipelineRan:     true,
+			wireStatus:      200,
+			eventStatusCode: 200,
+			pluginEvents: map[string]string{
+				spyPluginA + bodyRespDigestStrippedSuffix: digestJSON(nil),
 			},
 		},
 	})

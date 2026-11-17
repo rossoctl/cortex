@@ -155,8 +155,10 @@ func (p *CPEX) Capabilities() pipeline.PluginCapabilities {
 		ReadsBody:          true,
 		WritesRequestBody:  true,
 		WritesResponseBody: true, // cmf_body / cmf_a2a / cmf_inference rewrite responses
-		RequiresAny:        []string{"mcp-parser", "inference-parser", "a2a-parser"},
-		Description:        "CPEX bridge: APL DSL + named CPEX plugins (Cedar, PII, audit, …) over a single chain step.",
+		// Response hooks judge every response, including one no parser claimed.
+		ReadsResponseBody: len(p.cfg.Hooks.OnResponse) > 0,
+		RequiresAny:       []string{"mcp-parser", "inference-parser", "a2a-parser"},
+		Description:       "CPEX bridge: APL DSL + named CPEX plugins (Cedar, PII, audit, …) over a single chain step.",
 	}
 }
 

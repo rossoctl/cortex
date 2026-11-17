@@ -765,8 +765,14 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// falls back to the current pipeline (Holder.ForPctx).
 	pinned := s.OutboundPipeline.ForPctx(pctx)
 
+	// The response is buffered when a parser claimed the request, or for a plugin
+	// that reads every response body. Anything else — a download, a stream that is
+	// not SSE — is relayed as it arrives, at any size.
+	parsed := pctx.Extensions.Inference != nil || pctx.Extensions.MCP != nil || pctx.Extensions.A2A != nil
+	bufferResponse := !skipped && pinned.NeedsResponseBody() && (parsed || pinned.ReadsEveryResponseBody())
+
 	// Hop branch point 3: the hop always owns the encoding.
-	ownEncoding := hopped || (!skipped && (pinned.NeedsResponseBody() || pinned.HasStreamingResponders()))
+	ownEncoding := hopped || bufferResponse || (!skipped && pinned.HasStreamingResponders())
 	stripForUpstream(r, ownEncoding, forwardUpgrade)
 
 	// Clear RequestURI — set by the server but must be empty for client requests
@@ -968,7 +974,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// once isKnownMislabeledSSE started matching every status, not just success.
 		mislabeled := resp.StatusCode/100 == 2 && isKnownMislabeledSSE(r.Host, r.URL.Path)
 		if (httpx.IsEventStream(resp.Header.Get("Content-Type")) || mislabeled) && resp.Body != nil {
-			if pinned.WritesResponseBody() {
+			if bufferResponse && pinned.WritesResponseBody() {
 				// A response mutator needs the whole response to rewrite it, so
 				// it can't stream — fall back to the buffered path with a warning.
 				// A request-only mutator does NOT land here: it never touches
@@ -1000,11 +1006,14 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 				// streamed body should implement StreamingResponder. Warn
 				// (mirroring the WritesRequestBody fallback above) so the
 				// misconfiguration surfaces instead of the plugin silently seeing
-				// no body. Reaching this branch only rules out WritesResponseBody and
-				// HasStreamingResponders — a request-only mutator can still be here —
-				// so ask about the response side specifically rather than asserting
-				// what NeedsBody implies.
-				if pinned.NeedsResponseBody() {
+				// no body. Reaching this branch rules out HasStreamingResponders — a
+				// request-only mutator can still be here — so ask about the response
+				// side specifically rather than asserting what NeedsBody implies. A
+				// WritesResponseBody plugin reaches it only on a response the listener
+				// does not buffer.
+				if pinned.WritesResponseBody() {
+					slog.Warn("forward-proxy: text/event-stream response no parser claimed, with a WritesResponseBody plugin — streaming byte-for-byte; its OnResponse will see an empty body (declare ReadsResponseBody to rewrite a response no parser claimed)", "host", pipeline.SanitizeLogValue(r.Host))
+				} else if pinned.NeedsResponseBody() {
 					slog.Warn("forward-proxy: text/event-stream response with a ReadsBody plugin that is not a StreamingResponder — streaming byte-for-byte; its OnResponse will see an empty body (implement StreamingResponder to inspect a streamed body)", "host", pipeline.SanitizeLogValue(r.Host))
 				}
 				s.streamPassthrough(w, r, resp, pctx)
@@ -1012,7 +1021,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			}
 		}
 
-		if pinned.NeedsResponseBody() && resp.Body != nil {
+		if bufferResponse && resp.Body != nil {
 			respBody, ok := s.bufferResponseBody(w, r, resp, pctx)
 			if !ok {
 				return
@@ -1074,12 +1083,12 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 
 	copyResponseHeaders(w, resp)
 	w.WriteHeader(resp.StatusCode)
-	// A skipped response of unknown length — an event stream, a long poll — is relayed as
-	// it arrives, as httputil.ReverseProxy does; buffered, its first bytes would wait for
-	// the next 4KB. skip_hosts never sent one here, but self-traffic does: OpenCode's TUI
-	// follows its service's event stream through this path.
+	// An unbuffered response of unknown length — an event stream, NDJSON, a long poll — is
+	// relayed as it arrives, as httputil.ReverseProxy does; otherwise its first bytes would
+	// wait for the next 4KB. Self-traffic takes this path too: OpenCode's TUI follows its
+	// service's event stream here.
 	var dst io.Writer = w
-	if f, ok := w.(http.Flusher); ok && skipped && (resp.ContentLength == -1 || httpx.IsEventStream(resp.Header.Get("Content-Type"))) {
+	if f, ok := w.(http.Flusher); ok && !bufferResponse && (resp.ContentLength == -1 || httpx.IsEventStream(resp.Header.Get("Content-Type"))) {
 		f.Flush()
 		dst = flushWriter{w: w, f: f}
 	}

@@ -122,6 +122,10 @@ type spyConfig struct {
 	// would be just as wrong and just as silent.
 	RecordResponseBodyDigest bool `json:"record_response_body_digest"`
 
+	// ParsedResponsesOnly withholds ReadsResponseBody, so the spy reads only the
+	// responses a listener buffers for its body readers.
+	ParsedResponsesOnly bool `json:"parsed_responses_only"`
+
 	// RequestInvocation is recorded via pctx.Record at OnRequest when
 	// non-nil, which is the only way a spy that does NOT deny appears in
 	// SessionEvent.Invocations at all: the deny branch below used to be
@@ -172,8 +176,10 @@ func (s *spyPlugin) Name() string { return s.name }
 
 func (s *spyPlugin) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
-		RequiresLater:     s.cfg.RequiresLater,
-		ReadsBody:         s.cfg.ReadsBody,
+		RequiresLater: s.cfg.RequiresLater,
+		ReadsBody:     s.cfg.ReadsBody,
+		// A spy reads the response of a request no parser claims, so it says so.
+		ReadsResponseBody: (s.cfg.RecordResponseFrames || s.cfg.RecordResponseBodyDigest) && !s.cfg.ParsedResponsesOnly,
 		WritesRequestBody: s.cfg.MutateRequestBody != nil,
 	}
 }
