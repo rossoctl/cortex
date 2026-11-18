@@ -16,7 +16,7 @@
 2. **Put `## Per-agent configure` where #1949 puts it.** That is the place of today's H2 "Typing `bob` instead of `agentop exec -- bob` ...", after "## Plugin dependencies". Reason: then both PRs change the same region the same way, and a rebase keeps one heading.
 3. **`laptop-service.md` needs no change.** Task 5 of the issue asks to check that `agentop uninstall` removes the Pi pieces. It does: `planRemovePiShell` and `planRemovePiExtension` in `cmd/agentop/cmd_uninstall.go` (line 362 runs them). `TestUninstall` at `cmd/agentop/cmd_uninstall_test.go:1635` pins it. `docs/laptop-service.md` → "Remove it" already says "the `bob` and `pi` shell functions and Pi's session extension". Reason: no edit, and no conflict with open PR #1951, which reorders that file.
 4. **Do not edit `.github/spellcheck/.wordlist.txt`.** The moved text is already in the repository, so its words already pass. Reason: three parallel tasks that append to one file make merge conflicts. If CI spellcheck fails, the PR fix round adds the word.
-5. **One PR.** The estimate is about 1,450 counted lines, under 2,000.
+5. **One PR.** The estimate is about 1,660 counted lines, under 2,000. Moved text counts twice (issue rule 8), and the task estimates include that.
 
 ## Global Constraints
 
@@ -110,7 +110,7 @@ The README text that T1, T2 and T3 merge is on the base. Read it with `git show 
 
 Depends on: none.
 
-Files: `docs/agents/bob.md`. Estimate: 600 counted lines.
+Files: `docs/agents/bob.md`. Estimate: 750 counted lines (297 base lines rewritten, plus about 150 README lines merged in).
 
 - [ ] **Step 1: Write the first paragraph.** At most 4 sentences. Facts: IBM Bob is a VS Code fork. `agentop configure bob` routes both the Bob editor and the `bob` shell command through Cortex. Cortex files every child task in its root task's session, so one Bob run shows as one session. `agentop import --agent bob` adds Bob tasks from before Cortex.
 
@@ -229,7 +229,7 @@ pre-commit run --files docs/agents/pi.md
 
 Depends on: none. (It removes text. T1-T3 read that text from the base commit, not from the worktree.)
 
-Files: `cmd/agentop/README.md`, `cmd/agentop/cmd_opencode_test.go`, `cmd/agentop/cmd_bobshell_test.go`. Estimate: 300 counted lines.
+Files: `cmd/agentop/README.md`, `cmd/agentop/cmd_opencode_test.go`, `cmd/agentop/cmd_bobshell_test.go`. Estimate: 360 counted lines (about 350 README lines deleted, 6 added, small Go edits).
 
 - [ ] **Step 1: Delete** the four README sections listed under "Files" (base lines 226-427 and 1975-2120), with all their H3s.
 
@@ -266,7 +266,7 @@ pre-commit run --files cmd/agentop/README.md cmd/agentop/cmd_opencode_test.go cm
 
 | PR | Title | Parent | Tasks | estLines |
 |---|---|---|---|---|
-| P1 | `docs: Put "Use it" first in the OpenCode, Bob and Pi guides` | none | T1, T2, T3, T4 | 1450 |
+| P1 | `docs: Put "Use it" first in the OpenCode, Bob and Pi guides` | none | T1, T2, T3, T4 | 1660 |
 
 The PR body lists the duplicates that the tasks removed (from the commit messages), and ends with `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`. It says that the PR conflicts with #1949 in `cmd/agentop/README.md`, and how to resolve it (below).
 
@@ -283,3 +283,7 @@ python3 scripts/dev/check-doc-links.py && pre-commit run --files docs/agents/bob
 ## For a human after review
 
 - **Merge order with #1949.** If #1949 merges first, rebase this branch on `main`. In `cmd/agentop/README.md`, keep one `## Per-agent configure` H2 at #1949's position, and replace everything under it with the three list lines from T4 step 2. Delete the moved Bob, OpenCode and Pi H3s and H4s that #1949 put there. Then run the gate. Needs: T4.
+
+## Gate check (plan review, 2026-11-17)
+
+On the unchanged base, `(cd cmd/agentop && GOWORK=off go vet ./... && test -z "$(gofmt -l .)")` passes. The gate command is unchanged.
