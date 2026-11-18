@@ -243,7 +243,24 @@ for a gateway that needs its own headers.
   newest model on the server's list whose name contains it.
 - It reads the server's model list and prints the model that each word picks.
   It refuses a word that names no model, and shows the list.
-- It writes `~/.cortex/config.yaml`, and the proxy reloads it.
+- It writes `~/.cortex/config.yaml`, and the proxy reloads it. For
+  example, the Bob entry:
+
+  ```yaml
+  - name: inference-router
+    config:
+      servers:
+        bob:
+          url: https://api.us-east.bob.ibm.com/inference
+          key: bob_prod_…
+          main: premium-ide
+          helper: fast
+          api:
+            chat-completions: /v1/chat/completions
+          auth_header: x-api-key
+          headers:
+            User-Agent: bob-shell
+  ```
 
 To change a key or a model, run the same `add` again.
 
