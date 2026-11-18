@@ -43,7 +43,7 @@ that removes it. The only values it replaces are Cortex's own, such as a proxy a
 older Cortex address. On macOS it also prints that Go tools (`go`, `gh`) use the
 keychain, not `SSL_CERT_FILE`, so unless macOS trusts Cortex's CA, Cortex passes them
 through unread; see
-[Go tools on macOS](../laptop-service.md#go-tools-on-macos-are-passed-through-unread).
+[Go tools on macOS](../troubleshooting.md#go-tools-on-macos-are-passed-through-unread).
 
 **The record.** The first `enable` records what the nine variables held in
 `~/.cortex/opencode-state.json`. Any value `enable` replaced was Cortex's, so the record
@@ -187,7 +187,7 @@ grep client-hung-up ~/.cortex/proxy.log
 For OpenCode Zen this finds a `WARN tls-bridge passthrough host=opencode.ai
 reason=client-hung-up` line; another provider shows its own host. The reason is
 `client-hung-up`, not the `client-rejected-ca` that
-[Everything shows as `tunnel`](../laptop-service.md#everything-shows-as-tunnel-and-no-plugin-ever-runs)
+[Everything shows as `tunnel`](../troubleshooting.md#everything-shows-as-tunnel-and-no-plugin-ever-runs)
 is written around. `client-hung-up` records a client that closed the connection
 mid-handshake without sending a TLS alert, which is what OpenCode does here. That page
 lists `client-hung-up` as usually needing no action. When it repeats for OpenCode's

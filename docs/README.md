@@ -3,41 +3,50 @@
 Cortex's documentation lives next to the code it describes. This directory
 holds the repo-level pieces; this file is the index.
 
-## Getting started (laptop)
+## New here
 
 | If you want to… | Read |
 |---|---|
-| Install and run Cortex on a laptop | [root README](../README.md) |
-| Route a specific agent through Cortex | [`agents/`](agents/) — one guide per agent: [claude-code](agents/claude-code.md), [codex](agents/codex.md), [opencode](agents/opencode.md), [IBM Bob](agents/bob.md), [Pi](agents/pi.md), [any other agent](agents/any-agent.md) |
-| Run the service, group sessions into sessions, troubleshoot | [`laptop-service.md`](laptop-service.md) |
-| Run Cortex on a remote machine and connect from anywhere | [`remote.md`](remote.md) |
-| Cut token cost with tool pruning | [`laptop-token-savings.md`](laptop-token-savings.md) |
-| Enforce policy on agent traffic in praxis mode | [`praxis-policy.md`](praxis-policy.md) |
-| Customize Cortex with a small Python or shell script | [`script-plugin.md`](script-plugin.md) |
-| Run an agent on a local model, or switch inference servers | [`laptop-local-model.md`](laptop-local-model.md) |
-| Use a server whose protocol Cortex cannot translate to | [`translation-server.md`](translation-server.md) |
-| Use the `agentop` TUI | [`cmd/agentop/README.md`](../cmd/agentop/README.md) |
-| Add your agent's sessions from before Cortex | [`agentop import`](../cmd/agentop/README.md#importing-agent-history-agentop-import) |
-| Export sessions to files | [`session-dump.md`](session-dump.md) |
-| Export the archive for offline analysis (content-free records) | [`session-export.md`](session-export.md) |
-| Walk through exporting and analysing it, with the traps | [`session-export-guide.md`](session-export-guide.md) |
+| Install Cortex, see it work, and undo it | [Getting started](getting-started.md) |
+| Route your agent through Cortex | [Claude Code](agents/claude-code.md), [Codex](agents/codex.md), [OpenCode](agents/opencode.md), [IBM Bob](agents/bob.md), [Pi](agents/pi.md), [any other agent](agents/any-agent.md) |
+| Read the `agentop` screen | [Using agentop](../cmd/agentop/README.md#panes) |
+| Fix a problem | [Troubleshooting](troubleshooting.md) |
 
-## Kubernetes and architecture
+## Daily use
+
+| If you want to… | Read |
+|---|---|
+| Use fewer tokens | [`laptop-token-savings.md`](laptop-token-savings.md) |
+| Use a local model, or change inference servers | [`laptop-local-model.md`](laptop-local-model.md) |
+| Use a server whose protocol Cortex cannot translate to | [`translation-server.md`](translation-server.md) |
+| Change Cortex with a small Python or shell script | [`script-plugin.md`](script-plugin.md) |
+| Run Cortex on a remote machine | [`remote.md`](remote.md) |
+| Add your agent's sessions from before Cortex | [`agentop import`](../cmd/agentop/README.md#importing-agent-history-agentop-import) |
+| Set model prices and gateway discounts | [`pricing.md`](pricing.md). To see the rates in effect, run `agentop pricing [--host <gateway>]` |
+| Run, stop or update the service | [`laptop-service.md`](laptop-service.md) |
+| Apply policy to agent traffic in praxis mode | [`praxis-policy.md`](praxis-policy.md) |
+| Export sessions | [`session-export.md`](session-export.md) (content-free records), [`session-export-guide.md`](session-export-guide.md) (a walk-through), [`session-dump.md`](session-dump.md) (session files) |
+
+## Reference
+
+### Kubernetes
 
 | If you want to… | Read |
 |---|---|
 | Move from a laptop to a cluster | [`kubernetes.md`](kubernetes.md) |
-| Understand the sidecar shapes and deployment | [`architecture.md`](architecture.md) |
-| Which binary pins which deployment shape | [`cmd/README.md`](../cmd/README.md) |
+| Learn the sidecar shapes | [`architecture.md`](architecture.md) |
+| Find which binary serves which deployment shape | [`cmd/README.md`](../cmd/README.md) |
 | Run a demo | [`cortex-demos/README.md`](https://github.com/rossoctl/cortex-demos/blob/main/README.md) |
 
-## Plugins
+### Plugins
 
 | If you want to… | Read |
 |---|---|
-| Configure a plugin | [`plugin-catalog.md`](plugin-catalog.md) — the index, one summary per plugin; each plugin's full reference is its own `<name>-plugin.md` in this directory |
-| Write a plugin | [`plugin-reference.md`](plugin-reference.md) and [`plugin-tutorial.md`](plugin-tutorial.md); for a quick one in Python or shell, [`script-plugin.md`](script-plugin.md) |
-| Understand the pipeline internals and hot-reload | [`framework-architecture.md`](framework-architecture.md) |
+| Find and configure a plugin | [`plugin-catalog.md`](plugin-catalog.md) |
+| Write your first plugin | [`plugin-tutorial.md`](plugin-tutorial.md) |
+| Read the plugin contract | [`plugin-reference.md`](plugin-reference.md) |
+| Write a plugin in Python or shell | [`script-plugin.md`](script-plugin.md) |
+| Learn the pipeline internals and hot-reload | [`framework-architecture.md`](framework-architecture.md) |
 
 Per-plugin reference docs: [a2a-parser](a2a-parser-plugin.md),
 [context-guru](context-guru-plugin.md), [cpex](cpex-plugin.md),
@@ -47,71 +56,27 @@ Per-plugin reference docs: [a2a-parser](a2a-parser-plugin.md),
 [lineage-telemetry](lineage-telemetry-plugin.md),
 [litellm-budget-track](litellm-budget-track-plugin.md),
 [mcp-parser](mcp-parser-plugin.md), [opa](opa-plugin.md),
+[script](script-plugin.md), [session-budget](session-budget-plugin.md),
 [sparc](sparc-plugin.md), [static-inject](static-inject-plugin.md),
-[session-budget](session-budget-plugin.md),
 [token-broker](token-broker-plugin.md),
 [token-exchange](token-exchange-plugin.md),
 [token-exchange-aiac](token-exchange-aiac-plugin.md),
 [tool-prune](tool-prune-plugin.md).
 
-## Operator reference
+### Configuration and APIs
 
 | If you want to… | Read |
 |---|---|
-| Set up model pricing and gateway discounts, or read the `cost` record | [`pricing.md`](pricing.md) |
-| Read sessions and events over HTTP — endpoints, event schema, SSE | [`session-api.md`](session-api.md) |
-| See what agentop and `install.sh` rely on in the local proxy — ports, endpoints, reload, command line, installer flags | [`proxy-contract.md`](proxy-contract.md) |
-| See the rates actually in effect | `agentop pricing [--host <gateway>]` |
-| See how many people install Cortex | [install stats](https://rossoctl.github.io/cortex/install-stats/) — estimated from GitHub's release-download counts, never from your machine. The page is explicit that the figures still include maintainers and contributors |
-| Implement an IdP plugin for token-exchange | [`idp-plugin-contract.md`](idp-plugin-contract.md) |
-| The lineage OTLP wire contract | [`lineage-wire-contract.md`](lineage-wire-contract.md) |
+| Find where each config section is documented | [`configuration.md`](configuration.md) |
+| Read sessions and events over HTTP | [`session-api.md`](session-api.md) |
+| See what agentop and `install.sh` need from the local proxy | [`proxy-contract.md`](proxy-contract.md) |
 
-## Configuration reference
+### Contracts for contributors and integrators
 
-The runtime config has eleven top-level sections. They are documented next to the
-subsystem each one drives rather than in one file, so this table is the index.
-
-**Plane** says what a section shapes. A "data plane" section shapes how the proxy
-handles requests. A "control plane" section shapes what Cortex records or serves
-about them. "Both" means the section holds settings of each kind.
-**On reload** says what a hot-reload does with an edit (`validateReloadable` in
-`core/reloader/reloader.go`).
-"Restart" means a hot-reload refuses the edit, and the running config stays in
-effect. The full contract is in [`proxy-contract.md`](proxy-contract.md#hot-reload).
-
-| Section | What it configures | Plane | On reload | Documented in |
-|---|---|---|---|---|
-| `mode:` | Which deployment shape the binary serves. It must match the binary | data plane | restart | [`cmd/README.md`](../cmd/README.md) |
-| `pipeline:` | The plugin composition, and each plugin's own `config:` | data plane | reloads | [`plugin-catalog.md`](plugin-catalog.md), [`plugin-reference.md`](plugin-reference.md) |
-| `pricing:` | Model rates, gateway discounts, resolution order | control plane | reloads | [`pricing.md`](pricing.md) |
-| `cost_ledger:` | The durable per-minute cost ledger | control plane | restart | [`laptop-service.md`](laptop-service.md) |
-| `session:` | Session store TTL, event/session caps, id headers | both | restart | [`framework-architecture.md`](framework-architecture.md#operator-configuration-session) |
-| `session.archive:` | The laptop's on-disk session history, its bounds, and clearing it | control plane | restart | [`laptop-service.md`](laptop-service.md#session-history-is-kept-in-cortexsessions) |
-| `stats:` | The diagnostic listener (`/stats`, `/config`, `/reload/status`, `/pricing/table`, `/tls-bridge/unread`), default `:9093` | control plane | restart | [`framework-architecture.md`](framework-architecture.md) |
-| `spiffe:` | SVID sourcing over the Workload API and the `/opt` file mirror | data plane | restart | [`architecture.md`](architecture.md#spiffe-configuration) |
-| `listener:` | Listener addresses, `roles`, interception mode, `skip_hosts`, `responses_websockets` | both | restart | [`cmd/README.md`](../cmd/README.md) (ports, roles), [`framework-architecture.md`](framework-architecture.md#skipping-infrastructure-hosts-listenerskip_hosts) (reload rules, `skip_hosts`), [`framework-architecture.md`](framework-architecture.md#responses-api-websockets-listenerresponses_websockets) (`responses_websockets`) |
-| `mtls:` | Transport mTLS on the listeners, both deployment shapes | data plane | restart | [`framework-architecture.md`](framework-architecture.md#8a-mtls-layer) |
-| `tls_bridge:` | The laptop TLS bridge and its CA | data plane | restart | [`laptop-service.md`](laptop-service.md#the-tls_bridge-configuration) |
-| `memory:` | The Go runtime's soft memory limit for the whole process | both | restart | [`laptop-service.md`](laptop-service.md#the-memory-configuration) |
-
-Two things no config file can answer, because the effective values come from the
-file *plus* compiled-in defaults: what rates are in effect (`agentop pricing --host
-<gateway>`) and what pipeline is running (`agentop pipeline get`, or `GET /v1/pipeline`).
-`GET /config` on the diagnostic listener reports the config in effect, not the file
-as written. That is the file after `${ENV_VAR}` expansion, with the defaults that
-`config.Load` fills in and the mode preset applied. On a local install it also shows
-the default script slot that `cortex` adds. It masks secret values. Defaults that are
-worked out at runtime do not show:
-- plugin defaults, which each plugin sets in its own `Configure`
-- the soft memory limit of a local install (`MemoryLimitBytes`)
-- whether an unset `cost_ledger.enabled` turns the ledger on (`ledgerDefaultOn` in
-  `cmd/cortex/main.go`)
-- the session store limits and whether the session archive runs
-
-A refused reload does not change `/config`. For example, a reload that changes
-`stats.*` is refused, and `/reload/status` reports the error. `/config` then still
-shows the address the stats server listens on, which it keeps until a restart
-([hot-reload](proxy-contract.md#hot-reload)).
+| If you want to… | Read |
+|---|---|
+| Write an IdP plugin for token-exchange | [`idp-plugin-contract.md`](idp-plugin-contract.md) |
+| Read the lineage OTLP wire contract | [`lineage-wire-contract.md`](lineage-wire-contract.md) |
 
 ## In this directory
 

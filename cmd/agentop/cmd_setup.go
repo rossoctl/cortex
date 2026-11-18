@@ -384,11 +384,12 @@ func printSetupEnding(env *setupEnv, ui *checklist.UI, took time.Duration) {
 	if !env.freshInstall && env.binOnPath {
 		return
 	}
-	cmd, comment := agentop, "watch your agent traffic live"
+	steps := []checklist.Step{{Cmd: agentop + " observe", Comment: "watch your agent traffic live"}}
 	if !env.opts.claudeCode {
-		cmd, comment = agentop+" exec -- <cmd>", "send an agent through Cortex"
+		steps = append([]checklist.Step{{Cmd: agentop + " configure claude-code enable",
+			Comment: "connect your agent (or opencode, codex, bob, pi)"}}, steps...)
 	}
-	ui.Next("Open a new terminal, then:", cmd, comment)
+	ui.Next("Open a new terminal, then:", steps...)
 	ui.Blank()
 	if env.startedBackground {
 		ui.Faint("Cortex runs without a supervisor here; stop it with: " + stopBackgroundByHand(env))

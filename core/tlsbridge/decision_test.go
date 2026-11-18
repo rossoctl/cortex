@@ -574,7 +574,7 @@ func TestProgramSkipSet_TransientFailuresDoNotCountTowardStopping(t *testing.T) 
 // A transient failure never adds to the count, but as a program's first failure it
 // starts the count at one, so a hang-up followed by two spaced rejections stops the
 // program — one rejection sooner than three would. The program-refused row in
-// docs/laptop-service.md says so; this pins it.
+// docs/troubleshooting.md says so; this pins it.
 func TestProgramSkipSet_AHangUpFirstStartsTheCount(t *testing.T) {
 	s := NewProgramSkipSet()
 	s.base, s.ttl = time.Millisecond, 4*time.Millisecond

@@ -29,7 +29,7 @@ func TestPlainLines(t *testing.T) {
 	u.Advise("PATH", "not on PATH", `export PATH="/h/.local/bin:$PATH"`)
 	u.Fail("started", "never answered", "see ~/.cortex/proxy.log")
 	u.Note("rolled back", "the changes above are undone")
-	u.Next("Open a new terminal, then:", "agentop", "watch your agent traffic live")
+	u.Next("Open a new terminal, then:", Step{"agentop configure claude-code enable", "connect your agent (or opencode, codex, bob, pi)"}, Step{"agentop observe", "watch your agent traffic live"})
 	u.Close()
 	want := strings.Join([]string{
 		"  rosso cortex · setup   dev · darwin/arm64",
@@ -46,7 +46,8 @@ func TestPlainLines(t *testing.T) {
 		"",
 		"  Open a new terminal, then:",
 		"",
-		"    agentop        # watch your agent traffic live",
+		"    agentop configure claude-code enable        # connect your agent (or opencode, codex, bob, pi)",
+		"    agentop observe" + strings.Repeat(" ", 21+8) + "# watch your agent traffic live",
 		"",
 	}, "\n")
 	if b.String() != want {
