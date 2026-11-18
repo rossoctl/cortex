@@ -268,11 +268,7 @@ func TestStartUsageReplay_ReturnsAtOnceAndMergesLater(t *testing.T) {
 	defer arch.Close()
 	live := usage.New()
 	done := startUsageReplay(arch, live)
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the replay did not finish")
-	}
+	<-done
 	if n := live.Snapshot(usage.MaxWindow, usage.MaxWindow, "", usage.GroupNone).Totals.Requests; n != 4 {
 		t.Fatalf("live ring holds %d requests after the replay, want 4", n)
 	}

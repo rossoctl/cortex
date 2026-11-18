@@ -48,8 +48,6 @@ import (
 // spinning silently or quitting. See portconflict.go for the other half: the child naming
 // the address and the process holding it.
 const (
-	// superviseRestartDelay is the pause after a child exits before starting another.
-	superviseRestartDelay = 2 * time.Second
 	// superviseMaxDelay caps the backoff when the child keeps dying immediately, so a
 	// config that cannot start does not spin.
 	superviseMaxDelay = 30 * time.Second
@@ -67,15 +65,21 @@ const (
 	// exit meets a briefly-held address and recovers on the next attempt; few enough
 	// that a genuinely held address slows down inside a minute.
 	superviseBlockedEscalate = 3
-	// superviseStopGrace is how long a stop waits for the proxy before killing it. It must
-	// fit inside launchd's exit timeout — 5s, pinned as ExitTimeOut in the plist agentop
-	// writes — because launchd SIGKILLs the supervisor when that runs out and only SIGTERMs
-	// the rest of the process group, which a proxy that has already taken its one SIGTERM
-	// ignores. Waiting 20s here is how a restart left the old proxy orphaned on its ports
-	// while the new one crash-looped on the bind. A local install's proxy stops in well
-	// under a second (it closes rather than drains), so this only ever ends a stuck one.
-	superviseStopGrace = 3 * time.Second
 )
+
+// superviseRestartDelay is the pause after a child exits before starting another. A var
+// so that the supervisor the restart tests run retries at once.
+var superviseRestartDelay = 2 * time.Second
+
+// superviseStopGrace is how long a stop waits for the proxy before killing it. It must
+// fit inside launchd's exit timeout — 5s, pinned as ExitTimeOut in the plist agentop
+// writes — because launchd SIGKILLs the supervisor when that runs out and only SIGTERMs
+// the rest of the process group, which a proxy that has already taken its one SIGTERM
+// ignores. Waiting 20s here is how a restart left the old proxy orphaned on its ports
+// while the new one crash-looped on the bind. A local install's proxy stops in well
+// under a second (it closes rather than drains), so this only ever ends a stuck one. A
+// var so that the supervisor the restart tests run kills a stuck child at once.
+var superviseStopGrace = 3 * time.Second
 
 // restartPolicy decides how long to wait before the next child, and how loudly to say
 // why. It is kept apart from the loop so those decisions can be tested without forking

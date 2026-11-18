@@ -1300,13 +1300,16 @@ func main() {
 
 	slog.Info("cortex starting", "version", version, "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
 
+	// Before the health server, so a process whose health server has logged or answered
+	// takes SIGTERM through the shutdown below.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
 	healthSrv := bootstrap.ServeHealthServer(inboundH, outboundH, listeners.take("health"))
 	if err := listeners.claimed(); err != nil {
 		fatalf("%v", err)
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
 	stopping := time.Now()
 	// A pod drains: endpoint removal propagates after SIGTERM, so callers are still routed

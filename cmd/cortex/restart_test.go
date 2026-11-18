@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -38,23 +39,28 @@ func TestMain(m *testing.M) {
 	}
 	switch os.Getenv(runMainEnv) {
 	case "main":
+		endWithTest()
 		main()
 		os.Exit(0)
 	case "stuck-child":
 		// The supervisor re-executes this binary without -supervise; that copy stands in for
 		// a proxy whose shutdown hangs, so the supervisor's own deadline is what ends it.
 		if slices.Contains(os.Args[1:], "-supervise") {
+			endWithTest()
+			superviseStopGrace = 0
 			main()
 			os.Exit(0)
 		}
 		signal.Ignore(syscall.SIGTERM, syscall.SIGINT)
 		fmt.Fprintln(os.Stderr, "stuck child: ignoring SIGTERM")
-		time.Sleep(time.Minute)
-		os.Exit(0)
+		blockForever()
 	case "idle-child":
 		// A proxy that starts at once and stops on SIGTERM, for the tests about the
-		// gateway beside it.
+		// gateway beside it. Its supervisor retries at once and logs each retry.
 		if slices.Contains(os.Args[1:], "-supervise") {
+			endWithTest()
+			superviseRestartDelay = time.Millisecond
+			slog.SetLogLoggerLevel(slog.LevelDebug)
 			main()
 			os.Exit(0)
 		}
@@ -65,6 +71,26 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+// endWithTest ends this process and its group once its stdin closes. startChildAt holds
+// the write end, so whatever ends the test binary also ends every process it started.
+func endWithTest() {
+	go func() {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		_ = syscall.Kill(0, syscall.SIGKILL)
+	}()
+}
+
+// blockForever parks the process until a signal ends it. A read on a pipe nothing writes
+// to, not select {}: with no other goroutine, select {} is a fatal deadlock.
+func blockForever() {
+	r, w, err := os.Pipe()
+	if err == nil {
+		defer w.Close()
+		_, _ = r.Read(make([]byte, 1))
+	}
+	os.Exit(1)
 }
 
 // fakeGateway stands in for cortex-gateway: it listens on the gateway listener of
@@ -102,6 +128,7 @@ func fakeGateway(args []string) {
 	fmt.Fprintf(os.Stderr, "fake gateway pid %d\n", os.Getpid())
 	if slices.Contains(args, "--exit-on-stdin-eof") {
 		_, _ = io.Copy(io.Discard, os.Stdin)
+		fmt.Fprintf(os.Stderr, "fake gateway pid %d: stdin closed, exiting\n", os.Getpid())
 		os.Exit(0)
 	}
 	// Block in Accept, not select {}: with no other goroutine, select {} is a fatal deadlock.
@@ -116,14 +143,29 @@ func fakeGateway(args []string) {
 
 // lockedBuffer collects a child's output while the test reads it.
 type lockedBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
+	mu   sync.Mutex
+	b    bytes.Buffer
+	grew chan struct{} // closed by the next Write
 }
 
 func (l *lockedBuffer) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.grew != nil {
+		close(l.grew)
+		l.grew = nil
+	}
 	return l.b.Write(p)
+}
+
+// snapshot returns the output so far and a channel that closes on the next Write.
+func (l *lockedBuffer) snapshot() (string, <-chan struct{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.grew == nil {
+		l.grew = make(chan struct{})
+	}
+	return l.b.String(), l.grew
 }
 
 func (l *lockedBuffer) String() string {
@@ -229,6 +271,10 @@ func startChildAt(t *testing.T, path, home, run string, args ...string) *child {
 	// Its own process group, as under launchd, so cleanup can end a supervisor's child too:
 	// one left behind would hold the output pipe open and keep Wait from returning.
 	c.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// The child's stdin, which endWithTest watches. Wait closes it.
+	if _, err := c.cmd.StdinPipe(); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -241,6 +287,35 @@ func startChildAt(t *testing.T, path, home, run string, args ...string) *child {
 		}
 	})
 	return c
+}
+
+// await waits until the child's output satisfies ok, and returns that output. It fails
+// when the child exits first.
+func (c *child) await(t *testing.T, what string, ok func(out string) bool) string {
+	t.Helper()
+	for {
+		out, grew := c.out.snapshot()
+		if ok(out) {
+			return out
+		}
+		select {
+		case <-grew:
+		case err := <-c.done:
+			c.done <- err
+			// Wait has returned, so the output is complete.
+			if out := c.out.String(); ok(out) {
+				return out
+			}
+			t.Fatalf("the child exited (%v) before its output showed %s:\n%s", err, what, c.out.String())
+		}
+	}
+}
+
+// wait waits for the child to exit and for every process sharing its output to close it.
+func (c *child) wait() error {
+	err := <-c.done
+	c.done <- err
+	return err
 }
 
 // proxy is a running child and the forward proxy address it bound.
@@ -258,70 +333,64 @@ var (
 func startProxy(t *testing.T, f proxyFixture) proxy {
 	t.Helper()
 	c := startChild(t, f.home, "main", "-config", f.config)
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		out := c.out.String()
-		if h, fw := healthListening.FindStringSubmatch(out), forwardListening.FindStringSubmatch(out); h != nil && fw != nil {
-			if resp, err := http.Get("http://" + h[1] + "/healthz"); err == nil {
-				resp.Body.Close()
-				if resp.StatusCode == http.StatusOK {
-					return proxy{child: c, forward: fw[1]}
-				}
-			}
-		}
-		select {
-		case err := <-c.done:
-			c.done <- err
-			t.Fatalf("proxy exited before it was healthy: %v", err)
-		case <-time.After(50 * time.Millisecond):
-		}
+	// Each server's listener is bound before it logs, so the addresses answer once logged.
+	// The health server starts after main's signal.Notify, so a SIGTERM from here on reaches
+	// the shutdown path.
+	out := c.await(t, "its health and forward-proxy addresses", func(out string) bool {
+		return healthListening.MatchString(out) && forwardListening.MatchString(out)
+	})
+	h, fw := healthListening.FindStringSubmatch(out), forwardListening.FindStringSubmatch(out)
+	resp, err := http.Get("http://" + h[1] + "/healthz")
+	if err != nil {
+		t.Fatalf("health check: %v", err)
 	}
-	t.Fatal("proxy did not become healthy")
-	return proxy{}
-}
-
-// waitExit returns how long the child took to exit after since, failing at within.
-func (c *child) waitExit(t *testing.T, since time.Time, within time.Duration) time.Duration {
-	t.Helper()
-	select {
-	case err := <-c.done:
-		c.done <- err
-		return time.Since(since)
-	case <-time.After(within - time.Since(since)):
-		t.Fatalf("did not exit within %s", within)
-		return 0
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("health check: status %d", resp.StatusCode)
 	}
+	return proxy{child: c, forward: fw[1]}
 }
 
 // hangThroughProxy sends a plain-HTTP request through the forward proxy to an upstream
-// that never answers, and returns once the upstream holds it — a request in flight.
-func hangThroughProxy(t *testing.T, forward string) {
+// that holds it until release is called, and returns once the upstream holds it — a
+// request in flight. result carries the request's outcome: nil for a 200.
+func hangThroughProxy(t *testing.T, forward string) (release func(), result <-chan error) {
 	t.Helper()
 	arrived := make(chan struct{}, 1)
-	release := make(chan struct{})
+	released := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(released) }) }
 	up := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		arrived <- struct{}{}
-		<-release
+		<-released
 	})}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	go func() { _ = up.Serve(ln) }()
-	t.Cleanup(func() { close(release); _ = up.Close() })
+	t.Cleanup(func() { release(); _ = up.Close() })
 
 	proxyURL, _ := url.Parse("http://" + forward)
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	res := make(chan error, 1)
 	go func() {
-		if resp, err := client.Get("http://" + ln.Addr().String() + "/hang"); err == nil {
+		resp, err := client.Get("http://" + ln.Addr().String() + "/hang")
+		if err == nil {
+			_, err = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
+			if err == nil && resp.StatusCode != http.StatusOK {
+				err = fmt.Errorf("status %d", resp.StatusCode)
+			}
 		}
+		res <- err
 	}()
 	select {
 	case <-arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the request never reached the upstream through the proxy")
+	case err := <-res:
+		t.Fatalf("the request never reached the upstream through the proxy: %v", err)
 	}
+	return release, res
 }
 
 // A second proxy started over a running one must give up on the ports BEFORE it touches
@@ -341,7 +410,7 @@ func TestSecondInstanceExitsBeforeOpeningData(t *testing.T) {
 	over := filepath.Join(filepath.Dir(f.config), "over.yaml")
 	writeProxyConfig(t, over, first.forward)
 	second := startChild(t, f.home, "main", "-config", over)
-	second.waitExit(t, time.Now(), 15*time.Second)
+	_ = second.wait()
 	out := second.out.String()
 	if second.cmd.ProcessState.Success() {
 		t.Fatalf("second proxy exited 0 over a running one")
@@ -363,16 +432,21 @@ func TestSecondInstanceExitsBeforeOpeningData(t *testing.T) {
 func TestLocalInstallStopsWithoutDraining(t *testing.T) {
 	f := newProxyFixture(t, true)
 	p := startProxy(t, f)
-	hangThroughProxy(t, p.forward)
+	_, result := hangThroughProxy(t, p.forward)
 
-	sent := time.Now()
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	took := p.waitExit(t, sent, 2*time.Second)
-	t.Logf("exited %s after SIGTERM with a request in flight", took.Round(time.Millisecond))
+	// The upstream holds the request until cleanup, so the proxy exits with it in flight.
+	_ = p.wait()
 	if !p.cmd.ProcessState.Success() {
 		t.Errorf("exit was not clean: %v", p.cmd.ProcessState)
+	}
+	if err := <-result; err == nil {
+		t.Error("the request in flight completed; a local install drops it with its connection")
+	}
+	if out := p.out.String(); !strings.Contains(out, "drain=false") {
+		t.Errorf("a local install's shutdown is not logged as drain=false:\n%s", out)
 	}
 }
 
@@ -381,16 +455,28 @@ func TestLocalInstallStopsWithoutDraining(t *testing.T) {
 func TestPodStillDrains(t *testing.T) {
 	f := newProxyFixture(t, false)
 	p := startProxy(t, f)
-	hangThroughProxy(t, p.forward)
+	release, result := hangThroughProxy(t, p.forward)
 
 	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
+	p.await(t, "a draining shutdown", func(out string) bool {
+		return strings.Contains(out, `msg="shutting down"`) && strings.Contains(out, "drain=true")
+	})
 	select {
 	case err := <-p.done:
 		p.done <- err
 		t.Fatalf("a pod's proxy exited at once with a request in flight: %v", err)
-	case <-time.After(time.Second):
+	default:
+	}
+	// The drain lets the request in flight finish, and then the proxy exits.
+	release()
+	if err := <-result; err != nil {
+		t.Errorf("the request in flight did not complete through the drain: %v", err)
+	}
+	_ = p.wait()
+	if !p.cmd.ProcessState.Success() {
+		t.Errorf("exit was not clean: %v", p.cmd.ProcessState)
 	}
 }
 
@@ -401,20 +487,15 @@ func TestPodStillDrains(t *testing.T) {
 func TestSupervisorEndsAStuckProxyInsideLaunchdsWindow(t *testing.T) {
 	home := t.TempDir()
 	sup := startChild(t, home, "stuck-child", "-supervise")
-	deadline := time.Now().Add(15 * time.Second)
-	for !strings.Contains(sup.out.String(), "stuck child: ignoring SIGTERM") {
-		if time.Now().After(deadline) {
-			t.Fatal("the supervised child never started")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	sup.await(t, "the supervised child starting", func(out string) bool {
+		return strings.Contains(out, "stuck child: ignoring SIGTERM")
+	})
 
-	sent := time.Now()
 	if err := sup.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	took := sup.waitExit(t, sent, 5*time.Second)
-	t.Logf("supervisor exited %s after SIGTERM", took.Round(time.Millisecond))
+	// The child ignores SIGTERM, so only the kill ends it, and Wait returns once it is gone.
+	_ = sup.wait()
 	if !strings.Contains(sup.out.String(), "killing it") {
 		t.Errorf("supervisor exited without killing the stuck proxy:\n%s", sup.out.String())
 	}
@@ -472,21 +553,15 @@ var (
 // pids waits until out holds at least n lines that re matches, and returns their pids.
 func (c *child) pids(t *testing.T, re *regexp.Regexp, n int) []int {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		var pids []int
-		for _, m := range re.FindAllStringSubmatch(c.out.String(), -1) {
-			p, _ := strconv.Atoi(m[1])
-			pids = append(pids, p)
-		}
-		if len(pids) >= n {
-			return pids
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("waited for %d lines matching %s:\n%s", n, re, c.out.String())
-		}
-		time.Sleep(20 * time.Millisecond)
+	out := c.await(t, fmt.Sprintf("%d lines matching %s", n, re), func(out string) bool {
+		return len(re.FindAllStringSubmatch(out, -1)) >= n
+	})
+	var pids []int
+	for _, m := range re.FindAllStringSubmatch(out, -1) {
+		p, _ := strconv.Atoi(m[1])
+		pids = append(pids, p)
 	}
+	return pids
 }
 
 // alive reports whether pid runs. A zombie has exited: in a container whose PID 1
@@ -499,17 +574,6 @@ func alive(pid int) bool {
 		}
 	}
 	return syscall.Kill(pid, 0) == nil
-}
-
-func waitGone(t *testing.T, pid int, within time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for alive(pid) {
-		if time.Now().After(deadline) {
-			t.Fatalf("pid %d still runs after %s", pid, within)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
 }
 
 // A cortex crash restarts cortex only: the gateway beside it keeps its pid.
@@ -529,14 +593,17 @@ func TestSupervisor_CortexRestartKeepsGateway(t *testing.T) {
 		t.Fatalf("the gateway changed after a cortex crash: pids %v, %d alive = %v", gws, gw, alive(gw))
 	}
 
-	sent := time.Now()
 	if err := sup.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	sup.waitExit(t, sent, 5*time.Second)
+	_ = sup.wait()
+	// The supervisor reaps both children before it exits.
 	newCortex := sup.pids(t, idleChildPid, 2)[1]
-	waitGone(t, newCortex, 5*time.Second-time.Since(sent))
-	waitGone(t, gw, 5*time.Second-time.Since(sent))
+	for _, pid := range []int{newCortex, gw} {
+		if alive(pid) {
+			t.Errorf("pid %d still runs after the supervisor stopped", pid)
+		}
+	}
 }
 
 // A SIGKILL of the supervisor closes the gateway's stdin, so the gateway exits.
@@ -549,7 +616,9 @@ func TestSupervisor_KillLeavesNoGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The idle cortex child is left behind; startChild's cleanup kills its group.
-	waitGone(t, gw, 5*time.Second)
+	sup.await(t, "the gateway seeing its stdin close", func(out string) bool {
+		return strings.Contains(out, fmt.Sprintf("fake gateway pid %d: stdin closed", gw))
+	})
 }
 
 // Direct mode starts no gateway and writes no gateway file, even with no
@@ -561,7 +630,11 @@ func TestSupervisor_DirectModeStartsNoGateway(t *testing.T) {
 	}
 	sup := r.supervise(t)
 	sup.pids(t, idleChildPid, 1)
-	time.Sleep(500 * time.Millisecond)
+	// Once the supervisor has exited, every child loop it ran has logged and returned.
+	if err := sup.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	_ = sup.wait()
 	if out := sup.out.String(); strings.Contains(out, gatewayBinary) {
 		t.Errorf("direct mode logged the gateway:\n%s", out)
 	}
@@ -582,8 +655,10 @@ func TestSupervisor_GatewayStartFailureKeepsCortex(t *testing.T) {
 	}
 	sup := r.supervise(t)
 	cortex := sup.pids(t, idleChildPid, 1)[0]
-	// Past the first retry (superviseRestartDelay), so a second failure has happened.
-	time.Sleep(superviseRestartDelay + time.Second)
+	// A second failure, logged at DEBUG, shows the retry.
+	sup.await(t, "a second failed gateway start", func(out string) bool {
+		return strings.Count(out, "cannot start the child") >= 2
+	})
 	if !alive(cortex) {
 		t.Fatalf("cortex pid %d stopped after the gateway failed to start:\n%s", cortex, sup.out.String())
 	}
@@ -597,10 +672,11 @@ func TestSupervisor_GatewayStartFailureKeepsCortex(t *testing.T) {
 		t.Fatalf("want one ERROR line that names %s, got %q:\n%s", gwPath, errLines, sup.out.String())
 	}
 
-	sent := time.Now()
 	if err := sup.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	sup.waitExit(t, sent, 5*time.Second)
-	waitGone(t, cortex, 5*time.Second-time.Since(sent))
+	_ = sup.wait()
+	if alive(cortex) {
+		t.Errorf("cortex pid %d still runs after the supervisor stopped", cortex)
+	}
 }

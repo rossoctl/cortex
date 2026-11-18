@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // The supervisor never parsed config before this, so it learns the address the same
@@ -148,11 +147,12 @@ func TestFallbackServer_GoClientSeesTheReasonPhrase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &http.Client{
-		Transport: &http.Transport{Proxy: http.ProxyURL(pu)},
-		Timeout:   5 * time.Second,
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://cortex.invalid/", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, err = c.Get("https://cortex.invalid/") //nolint:noctx // bounded by Timeout
+	_, err = c.Do(req)
 	if err == nil {
 		t.Fatal("the request succeeded; the fallback must refuse every connection")
 	}
@@ -166,12 +166,11 @@ func TestFallbackServer_GoClientSeesTheReasonPhrase(t *testing.T) {
 func TestFallbackServer_ConnectGetsTheBody(t *testing.T) {
 	addr := startFallback(t)
 
-	c, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = c.Close() }()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := c.Write([]byte("CONNECT api.anthropic.com:443 HTTP/1.1\r\nHost: api.anthropic.com:443\r\n\r\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -233,12 +232,11 @@ func TestFallbackServer_YieldsTheAddressToAChildAndTakesItBack(t *testing.T) {
 	fb.open(addr)
 	t.Cleanup(fb.close)
 
-	c, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("nothing is listening on %s after the child exited: %v", addr, err)
 	}
 	defer func() { _ = c.Close() }()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := c.Write([]byte("CONNECT x:443 HTTP/1.1\r\n\r\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -284,12 +282,11 @@ func TestRequestLineForLog(t *testing.T) {
 func TestFallbackServer_LargeRequestStillGetsTheResponse(t *testing.T) {
 	addr := startFallback(t)
 
-	c, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = c.Close() }()
-	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 
 	body := strings.Repeat("x", 4*fallbackMaxRequestLine)
 	req := "POST http://h/v1/messages HTTP/1.1\r\nHost: h\r\nContent-Length: " +
@@ -319,12 +316,12 @@ func TestFallbackServer_LargeRequestStillGetsTheResponse(t *testing.T) {
 // the cap the LimitReader hits EOF and the refusal goes out at once; without it
 // ReadString blocks for the whole of fallbackIOTimeout while bufio grows its buffer, and
 // the supervisor is the one process here that nothing restarts before the next login.
-// The two-second read deadline is what fails in that case -- deliberately far below the
-// five-second timeout it would otherwise wait out, so this is not a tight race.
+// The refusal then never arrives: the write after that timeout fails, and the read below
+// meets EOF.
 func TestFallbackServer_UnterminatedRequestIsCappedNotAwaited(t *testing.T) {
 	addr := startFallback(t)
 
-	c, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,10 +331,9 @@ func TestFallbackServer_UnterminatedRequestIsCappedNotAwaited(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	b := make([]byte, len(fallbackRefusal))
 	if _, err := io.ReadFull(c, b); err != nil {
-		t.Fatalf("no refusal within 2s of an unterminated request: %v — the read is waiting for a newline that is not coming", err)
+		t.Fatalf("no refusal to an unterminated request: %v — the read waited for a newline that is not coming", err)
 	}
 	if !strings.HasPrefix(string(b), "HTTP/1.1 502 "+fallbackReason) {
 		t.Errorf("response = %q, want the 502 and the reason phrase", string(b))
@@ -354,12 +350,11 @@ func TestFallbackServer_LogsNoQueryString(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(restore) })
 
 	addr := startFallback(t)
-	c, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = c.Close() }()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := c.Write([]byte("GET http://h/v1/m?api_key=sk-secret HTTP/1.1\r\nHost: h\r\n\r\n")); err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,6 @@ import (
 	"net"
 	"strings"
 	"testing"
-	"time"
 
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"google.golang.org/grpc"
@@ -90,9 +89,7 @@ func TestStartGRPCExtProcKeepsDefaultRecvLimit(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	stream, err := extprocv3.NewExternalProcessorClient(conn).Process(ctx, grpc.WaitForReady(true))
+	stream, err := extprocv3.NewExternalProcessorClient(conn).Process(t.Context(), grpc.WaitForReady(true))
 	if err != nil {
 		t.Fatalf("opening the Process stream: %v", err)
 	}
