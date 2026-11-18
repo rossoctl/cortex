@@ -69,9 +69,9 @@ refuses a word that names none of its models.
 Every change is written to ~/.cortex/config.yaml, or to --config PATH, and returns
 once the proxy has reloaded it. Nothing restarts. Flags go after the action.
 
-Setting up a local model server — installing it, picking a model, its context
-length — is walked at
-https://github.com/rossoctl/cortex/blob/main/docs/laptop-local-model.md
+Setting up a server — a gateway's key, or a local model's install, model and
+context length — is walked at
+https://github.com/rossoctl/cortex/blob/main/docs/inference-servers.md
 `
 
 // runServer handles the `server` subcommand. Returns the process exit code.

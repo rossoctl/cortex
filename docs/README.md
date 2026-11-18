@@ -16,7 +16,7 @@ holds the repo-level pieces; this file is the index.
 
 | If you want to… | Read |
 |---|---|
-| Use a local model, or change inference servers | [`laptop-local-model.md`](laptop-local-model.md) |
+| Change inference servers: ete-int, ete-ext, Bob or a local model | [`inference-servers.md`](inference-servers.md) |
 | Use a server whose protocol Cortex cannot translate to | [`translation-server.md`](translation-server.md) |
 | Change Cortex with a small Python or shell script | [`script-plugin.md`](script-plugin.md) |
 | Run Cortex on a remote machine | [`remote.md`](remote.md) |

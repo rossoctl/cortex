@@ -47,17 +47,20 @@ agentop observe
 agentop cost --window month --by agent
 ```
 
-**Switch model servers without touching your agent.** Provider down, or want the
-traffic to stay local? Send new sessions to a LiteLLM gateway or Ollama. For Ollama,
-pull the model and [raise its context length](./docs/laptop-local-model.md#context-length) first.
+**Switch any agent to another inference server.** Provider down, or your team
+has its own gateway? Point the agent at another server without changing the
+agent's settings: a LiteLLM gateway, a provider's API, or a model on your own
+machine.
 
 ```sh
-echo ollama | agentop server add ollama http://localhost:11434 \
-  --main granite4.2:8b --helper granite4.2:8b --key-stdin   # Ollama takes any key
-agentop server use ollama --agent claude-code
+agentop server add work https://llm.example.com --main opus --helper haiku   # once; asks for the key
+agentop server use work --agent claude-code                                  # new sessions go there
 ```
 
-Guides: [local models](./docs/laptop-local-model.md) · [pricing](./docs/pricing.md)
+After the `add`, you can also switch in `agentop observe`: press `A` for the
+agents, then `S` on one.
+
+Guides: [inference servers](./docs/inference-servers.md) · [pricing](./docs/pricing.md)
 
 ## How it works
 

@@ -122,19 +122,6 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop server add: %v\n", err)
 		return 2
 	}
-	// Bob's gateway takes its API key only as x-api-key, and refuses each request
-	// whose User-Agent does not start with bob-shell, the model list too.
-	if strings.HasSuffix(ep.Hostname, ".bob.ibm.com") {
-		if models.AuthHeader == "" {
-			models.AuthHeader = "x-api-key"
-		}
-		if !slices.ContainsFunc(slices.Collect(maps.Keys(models.Headers)), func(k string) bool { return strings.EqualFold(k, "User-Agent") }) {
-			if models.Headers == nil {
-				models.Headers = map[string]string{}
-			}
-			models.Headers["User-Agent"] = "bob-shell"
-		}
-	}
 	// Before anything is asked or read: --key-stdin reads stdin as typed, so on a
 	// terminal the key would echo, character by character, onto the screen and into
 	// any recording of it. The prompt without the flag reads it without echo.
