@@ -1,0 +1,1 @@
+{"model":"gpt-5.5","input":"hi","tools":[{"type":"function","name":"shell","parameters":{"type":"object"}}],"parallel_tool_calls":false}

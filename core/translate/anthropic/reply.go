@@ -54,12 +54,18 @@ type toolUseBlock struct {
 	Input json.RawMessage `json:"input"`
 }
 
+type redactedBlock struct {
+	Type string `json:"type"`
+	Data string `json:"data"`
+}
+
 type kindBlock struct {
 	Type string `json:"type"`
 }
 
-// block gives the Anthropic content block of one kind.
-func block(kind pivot.BlockKind, text, signature, id, name string, input json.RawMessage) any {
+// block gives the Anthropic content block of one kind. data is the data
+// of a redacted_thinking block.
+func block(kind pivot.BlockKind, text, signature, data, id, name string, input json.RawMessage) any {
 	switch kind {
 	case pivot.BlockText:
 		return textBlock{Type: "text", Text: text}
@@ -67,6 +73,8 @@ func block(kind pivot.BlockKind, text, signature, id, name string, input json.Ra
 		return thinkingBlock{Type: "thinking", Thinking: text, Signature: signature}
 	case pivot.BlockToolUse:
 		return toolUseBlock{Type: "tool_use", ID: id, Name: name, Input: input}
+	case pivot.BlockRedactedThinking:
+		return redactedBlock{Type: "redacted_thinking", Data: data}
 	}
 	return kindBlock{Type: string(kind)}
 }
@@ -146,6 +154,7 @@ type collected struct {
 	index                  int
 	kind                   pivot.BlockKind
 	text, signature, input string
+	data                   string // redacted_thinking
 	id, name               string
 }
 
@@ -159,10 +168,10 @@ type replyEncoder struct {
 	err       *pivot.Event
 }
 
-// NewReplyEncoder makes an encoder for one reply to the agent. With
-// stream, each event gives its SSE frames at once (rule 23). Without
-// stream, the events are collected and End gives one message.
-func (Protocol) NewReplyEncoder(stream bool) pivot.ReplyEncoder {
+// NewReplyEncoder makes an encoder for one reply to the agent. It does not
+// use req. With stream, each event gives its SSE frames at once (rule 23).
+// Without stream, the events are collected and End gives one message.
+func (Protocol) NewReplyEncoder(_ pivot.Request, stream bool) pivot.ReplyEncoder {
 	return &replyEncoder{stream: stream}
 }
 
@@ -186,7 +195,7 @@ func (e *replyEncoder) encodeStream(ev pivot.Event) []byte {
 		}})
 	case pivot.EventBlockStart:
 		return frame("content_block_start", blockStart{Type: "content_block_start", Index: ev.Index,
-			ContentBlock: block(ev.Block, "", "", ev.ToolID, ev.ToolName, json.RawMessage("{}"))})
+			ContentBlock: block(ev.Block, "", "", ev.Data, ev.ToolID, ev.ToolName, json.RawMessage("{}"))})
 	case pivot.EventDelta:
 		return frame("content_block_delta", blockDelta{Type: "content_block_delta", Index: ev.Index, Delta: delta(ev.Delta, ev.Value)})
 	case pivot.EventBlockStop:
@@ -213,7 +222,7 @@ func (e *replyEncoder) collect(ev pivot.Event) {
 	case pivot.EventStart:
 		e.id, e.model = ev.ID, ev.Model
 	case pivot.EventBlockStart:
-		e.blocks = append(e.blocks, &collected{index: ev.Index, kind: ev.Block, id: ev.ToolID, name: ev.ToolName})
+		e.blocks = append(e.blocks, &collected{index: ev.Index, kind: ev.Block, data: ev.Data, id: ev.ToolID, name: ev.ToolName})
 	case pivot.EventDelta:
 		b := e.block(ev.Index)
 		if b == nil {
@@ -265,7 +274,7 @@ func (e *replyEncoder) End() []byte {
 				return Protocol{}.EncodeError(502, "api_error", "the inference server sent tool "+b.name+" input that is not valid JSON")
 			}
 		}
-		content = append(content, block(b.kind, b.text, b.signature, b.id, b.name, input))
+		content = append(content, block(b.kind, b.text, b.signature, b.data, b.id, b.name, input))
 	}
 	msg := message{ID: e.id, Type: "message", Role: "assistant", Model: e.model, Content: content, Usage: usageOf(e.usage)}
 	if e.stop != "" {

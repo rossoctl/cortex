@@ -133,7 +133,7 @@ func (t *translation) wrapReply(resp *http.Response, rc *pipeline.ResponseCaptur
 	upstreamStream := httpx.IsEventStream(resp.Header.Get("Content-Type"))
 	if stream {
 		dec := t.dec.NewReplyDecoder(resp.StatusCode, upstreamStream)
-		resp.Body = translate.NewReplyReader(resp.Body, dec, t.enc.NewReplyEncoder(true))
+		resp.Body = translate.NewReplyReader(resp.Body, dec, t.enc.NewReplyEncoder(t.conv.Req, true))
 		resp.Header.Set("Content-Type", "text/event-stream")
 	} else {
 		t.convertWhole(resp, upstreamStream)
@@ -163,7 +163,7 @@ func (t *translation) convertWhole(resp *http.Response, upstreamStream bool) {
 		body = bytes.NewReader(translate.ErrorBody(t.source, http.StatusBadGateway, "api_error",
 			fmt.Sprintf("the inference server's reply is over the %d-byte buffer limit", maxBodySize)))
 	default:
-		status, out := translate.Reply(t.source, t.target, resp.StatusCode, upstreamStream, false, raw)
+		status, out := translate.Reply(t.source, t.target, t.conv.Req, resp.StatusCode, upstreamStream, false, raw)
 		resp.StatusCode = status
 		body = bytes.NewReader(out)
 	}
@@ -181,7 +181,7 @@ func (f *failedRead) Read([]byte) (int, error) { return 0, f.err }
 // replyBody converts a whole upstream body, for the row of a refused attempt
 // (decision 19).
 func (t *translation) replyBody(resp *http.Response, body []byte) []byte {
-	_, out := translate.Reply(t.source, t.target, resp.StatusCode,
+	_, out := translate.Reply(t.source, t.target, t.conv.Req, resp.StatusCode,
 		httpx.IsEventStream(resp.Header.Get("Content-Type")), t.agentStream(resp.StatusCode), body)
 	return out
 }

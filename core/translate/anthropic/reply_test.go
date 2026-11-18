@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/translate/pivot"
@@ -31,7 +32,7 @@ var replyEvents = []pivot.Event{
 // fails the test when a not-streamed encoder gives bytes before End.
 func encodeAll(t *testing.T, stream bool, events []pivot.Event) string {
 	t.Helper()
-	enc := Protocol{}.NewReplyEncoder(stream)
+	enc := Protocol{}.NewReplyEncoder(pivot.Request{}, stream)
 	var out []byte
 	for _, ev := range events {
 		b := enc.Encode(ev)
@@ -101,6 +102,24 @@ func TestReplyEncoder_NotStream(t *testing.T) {
 		`"usage":{"input_tokens":5,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"output_tokens":55}}`
 	if got := encodeAll(t, false, replyEvents); got != want {
 		t.Errorf("not stream:\ngot  %s\nwant %s", got, want)
+	}
+}
+
+// TestReplyEncoder_RedactedThinking checks rule R2b: a redacted_thinking
+// block carries the data of its block_start, streamed and not streamed.
+func TestReplyEncoder_RedactedThinking(t *testing.T) {
+	events := []pivot.Event{
+		{Kind: pivot.EventStart, ID: "msg_3", Model: "m"},
+		{Kind: pivot.EventBlockStart, Index: 0, Block: pivot.BlockRedactedThinking, Data: "cmVk"},
+		{Kind: pivot.EventBlockStop, Index: 0},
+		{Kind: pivot.EventStop, StopReason: "end_turn"},
+	}
+	block := `{"type":"redacted_thinking","data":"cmVk"}`
+	if got := encodeAll(t, true, events); !strings.Contains(got, `"content_block":`+block) {
+		t.Errorf("stream has no %s:\n%s", block, got)
+	}
+	if got := encodeAll(t, false, events); !strings.Contains(got, `"content":[`+block+`]`) {
+		t.Errorf("not stream has no %s:\n%s", block, got)
 	}
 }
 

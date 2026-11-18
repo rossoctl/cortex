@@ -1,0 +1,1 @@
+{"model":"gpt-5.5","input":"hi","include":["reasoning.encrypted_content"],"prompt_cache_key":"pck","service_tier":"auto","client_metadata":{"a":"b"},"store":false,"text":{"format":{"type":"text"},"verbosity":"low"},"reasoning":{"effort":"high","summary":"auto"},"metadata":{"k":"v"},"user":"u1","truncation":"auto","stream_options":{"include_obfuscation":false},"zzz_unknown":1}

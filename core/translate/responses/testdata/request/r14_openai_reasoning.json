@@ -1,0 +1,1 @@
+{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"Thinking"}],"encrypted_content":"gAAAAABpOpenAIsOwnBlob=="},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}

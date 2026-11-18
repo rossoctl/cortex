@@ -1,0 +1,1 @@
+{"model":"gpt-5.5","input":"hi","tools":[{"type":"namespace","name":"mcp__github","description":"GitHub.","tools":[{"type":"function","name":"create_issue","description":"Create an issue.","parameters":{"type":"object"}}]}],"tool_choice":{"type":"function","namespace":"mcp__github","name":"create_issue"}}

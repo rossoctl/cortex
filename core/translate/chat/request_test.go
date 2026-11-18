@@ -141,19 +141,6 @@ func TestEncodeRequest_RefusesServerTool(t *testing.T) {
 	wantRefusal(t, err, `this inference server cannot run the server tool "web_search" (type web_search_20250305)`)
 }
 
-func TestEncodeRequest_DeletesAnthropicHeaders(t *testing.T) {
-	h := http.Header{}
-	h.Set("Anthropic-Version", "2023-06-01")
-	h.Set("Anthropic-Beta", "x")
-	h.Set("X-Keep", "1")
-	if _, _, err := (Protocol{}).EncodeRequest(pivot.Request{Model: "m"}, h); err != nil {
-		t.Fatal(err)
-	}
-	if len(h) != 1 || h.Get("X-Keep") != "1" {
-		t.Errorf("headers = %v, want only X-Keep", h)
-	}
-}
-
 func TestEncodeRequest_Effort(t *testing.T) {
 	for _, tc := range []struct {
 		effort, thinking, want string
@@ -182,6 +169,19 @@ func TestEncodeRequest_Effort(t *testing.T) {
 		}
 		if string(body) != want {
 			t.Errorf("effort %q thinking %q: got %s, want %s", tc.effort, tc.thinking, body, want)
+		}
+	}
+}
+
+// R2c: a Chat server takes only low, medium and high, so none and
+// minimal go down to low and xhigh and max go up to high.
+func TestEffort(t *testing.T) {
+	for in, want := range map[string]string{
+		"none": "low", "minimal": "low", "low": "low", "medium": "medium",
+		"high": "high", "xhigh": "high", "max": "high", "": "",
+	} {
+		if got := effort(pivot.Request{Effort: in}); got != want {
+			t.Errorf("effort(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

@@ -1,0 +1,2 @@
+dropped: client_metadata,include,metadata,prompt_cache_key,reasoning.summary,service_tier,store,stream_options,text.verbosity,truncation,user,zzz_unknown
+{"model":"gpt-5.5","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"reasoning_effort":"high"}

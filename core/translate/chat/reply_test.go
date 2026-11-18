@@ -263,6 +263,32 @@ func TestReplyDecoder_NotStream(t *testing.T) {
 	})
 }
 
+// TestReplyDecoder_RedactedThinking checks rule R2b: a redacted_thinking
+// entry in thinking_blocks is a block whose block_start carries the data.
+func TestReplyDecoder_RedactedThinking(t *testing.T) {
+	redacted := pivot.Event{Kind: pivot.EventBlockStart, Index: 1, Block: pivot.BlockRedactedThinking, Data: "RD"}
+	checkEvents(t, 200, false, `{"id":"chatcmpl-1","model":"claude","choices":[{"finish_reason":"stop","message":{"content":"a",`+
+		`"thinking_blocks":[{"type":"thinking","thinking":"t","signature":"S"},{"type":"redacted_thinking","data":"RD"}]}}]}`, []pivot.Event{
+		start(),
+		open(0, pivot.BlockThinking), delta(0, pivot.DeltaThinking, "t"), delta(0, pivot.DeltaSignature, "S"), closeBlock(0),
+		redacted, closeBlock(1),
+		open(2, pivot.BlockText), delta(2, pivot.DeltaText, "a"), closeBlock(2),
+		usage(pivot.Usage{}), stop("end_turn"),
+	})
+	checkEvents(t, 200, true, sse(
+		chunk(`{"reasoning":"t"}`),
+		chunk(`{"thinking_blocks":[{"type":"thinking","thinking":"","signature":"S"}]}`),
+		chunk(`{"thinking_blocks":[{"type":"redacted_thinking","data":"RD"}]}`),
+		chunk(`{"content":"a"}`),
+		finish("stop"), "[DONE]"), []pivot.Event{
+		start(),
+		open(0, pivot.BlockThinking), delta(0, pivot.DeltaThinking, "t"), delta(0, pivot.DeltaSignature, "S"), closeBlock(0),
+		redacted, closeBlock(1),
+		open(2, pivot.BlockText), delta(2, pivot.DeltaText, "a"), closeBlock(2),
+		usage(pivot.Usage{}), stop("end_turn"),
+	})
+}
+
 func TestReplyDecoder_InvalidArgumentsNotStream(t *testing.T) {
 	body := `{"id":"chatcmpl-1","model":"claude","choices":[{"finish_reason":"tool_calls","message":{"content":"x",` +
 		`"tool_calls":[{"id":"c","type":"function","function":{"name":"Bash","arguments":"{\"command\":"}}]}}]}`

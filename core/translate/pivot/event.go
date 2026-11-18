@@ -40,4 +40,5 @@ type Event struct {
 	Status           int       // error
 	ErrorType        string    // error: Anthropic error type vocabulary
 	Message          string    // error
+	Data             string    // block_start of redacted_thinking
 }

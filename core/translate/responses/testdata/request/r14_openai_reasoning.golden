@@ -1,0 +1,2 @@
+dropped: reasoning
+{"model":"gpt-5.5","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","content":"hello"}]}

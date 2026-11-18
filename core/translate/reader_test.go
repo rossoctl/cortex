@@ -13,12 +13,13 @@ import (
 
 	"github.com/rossoctl/cortex/core/translate/anthropic"
 	"github.com/rossoctl/cortex/core/translate/chat"
+	"github.com/rossoctl/cortex/core/translate/pivot"
 )
 
 func newReader(r io.Reader, status int, upstreamStream, agentStream bool) io.ReadCloser {
 	return NewReplyReader(io.NopCloser(r),
 		chat.Protocol{}.NewReplyDecoder(status, upstreamStream),
-		anthropic.Protocol{}.NewReplyEncoder(agentStream))
+		anthropic.Protocol{}.NewReplyEncoder(pivot.Request{}, agentStream))
 }
 
 // TestReplyReader_EveryByteSplit reads each reply input one byte per
@@ -81,7 +82,7 @@ func TestReplyReader_ReadError(t *testing.T) {
 	up := io.MultiReader(strings.NewReader(`data: {"id":"c","model":"m","choices":[]}`+"\n\n"), iotest.ErrReader(boom))
 	closed := false
 	r := NewReplyReader(closer{up, &closed},
-		chat.Protocol{}.NewReplyDecoder(200, true), anthropic.Protocol{}.NewReplyEncoder(true))
+		chat.Protocol{}.NewReplyDecoder(200, true), anthropic.Protocol{}.NewReplyEncoder(pivot.Request{}, true))
 	got, err := io.ReadAll(r)
 	if !errors.Is(err, boom) {
 		t.Errorf("err = %v, want %v", err, boom)

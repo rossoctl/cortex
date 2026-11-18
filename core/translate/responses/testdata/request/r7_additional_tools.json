@@ -1,0 +1,1 @@
+{"model":"gpt-5.5","tools":[{"type":"function","name":"shell","parameters":{"type":"object"}}],"input":[{"type":"additional_tools","tools":[{"type":"function","name":"read_file","description":"Read.","parameters":{"type":"object"}},{"type":"web_search"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}

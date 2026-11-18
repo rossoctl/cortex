@@ -1,0 +1,1 @@
+error: 400 invalid_request_error: Cortex cannot send two tools with the same name "mcp__a__b": "mcp__a__b" and "mcp__a.b"

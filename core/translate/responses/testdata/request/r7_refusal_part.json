@@ -1,0 +1,1 @@
+{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"I cannot."},{"type":"output_text","text":"But here is a hint."}]}]}

@@ -51,11 +51,18 @@ type RequestDecoder interface {
 	DecodeRequest(body []byte) (Request, error)
 }
 
-// RequestEncoder converts a pivot request to a body of this protocol. It
-// removes the source protocol's own headers from h. It does not choose the
-// path or the auth header. dropped names each field that it could not send.
+// RequestEncoder converts a pivot request to a body of this protocol. h
+// is the outgoing header set, with the source protocol's own headers
+// already removed. It does not choose the path or the auth header.
+// dropped names each field that it could not send.
 type RequestEncoder interface {
 	EncodeRequest(req Request, h http.Header) (body []byte, dropped []string, err error)
+}
+
+// SourceHeaderRemover removes this protocol's own headers from h, when
+// the request goes to a server of another protocol (rule R3).
+type SourceHeaderRemover interface {
+	RemoveSourceHeaders(h http.Header)
 }
 
 // ReplyDecoding makes a decoder for one upstream reply. status is the
@@ -64,10 +71,10 @@ type ReplyDecoding interface {
 	NewReplyDecoder(status int, stream bool) ReplyDecoder
 }
 
-// ReplyEncoding makes an encoder for one reply to the agent. stream tells
-// if the agent asked for a stream.
+// ReplyEncoding makes an encoder for one reply to the agent. req is the
+// decoded request (rule R2). stream tells if the agent asked for a stream.
 type ReplyEncoding interface {
-	NewReplyEncoder(stream bool) ReplyEncoder
+	NewReplyEncoder(req Request, stream bool) ReplyEncoder
 }
 
 // ReplyDecoder converts the bytes of an upstream reply to events. It keeps
