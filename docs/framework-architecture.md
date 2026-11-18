@@ -986,7 +986,7 @@ unset — `true` as `decline`, `false` as `forward` — with a startup warning n
 key; setting both is refused. Restart to apply, like every `listener.*` field. The
 key goes in the runtime config: on a laptop, `~/.cortex/config.yaml`, then `agentop service
 restart`; in a cluster, the `authbridge-runtime-config` ConfigMap, then a pod restart. See
-[`agents/codex.md`](agents/codex.md#what-cortex-shows-for-it) for what Codex shows and the
+[`agents/codex.md`](agents/codex.md#what-you-see) for what Codex shows and the
 measured difference.
 
 #### Refusing private destinations (`listener.egress_guard`)
