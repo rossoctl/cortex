@@ -279,13 +279,16 @@ func routedRow(host, server string) pipeline.SessionEvent {
 func TestServerOf_SharedHost(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
+		agent         string
 		row           pipeline.SessionEvent
 		wantHost, key string
 	}{
-		{"routed to team-b", routedRow(gwHost, "team-b"), gwHost, "team-b-key"},
-		{"no routed record on the shared host: the agent's server", routedRow(gwHost, ""), gwHost, "team-a-key"},
-		{"routed to a removed server on the shared host: the agent's server", routedRow(gwHost, "gone"), gwHost, "team-a-key"},
-		{"routed to a removed server on a one-server host: that host's server", routedRow(eteHost, "gone"), eteHost, "ete-key"},
+		{"routed to team-b", "team-a", routedRow(gwHost, "team-b"), gwHost, "team-b-key"},
+		// The agent is on team-b, not team-a: team-a sorts first on gwHost, so a reader that
+		// falls back to the host's first server fails these two cases.
+		{"no routed record on the shared host: the agent's server", "team-b", routedRow(gwHost, ""), gwHost, "team-b-key"},
+		{"routed to a removed server on the shared host: the agent's server", "team-b", routedRow(gwHost, "gone"), gwHost, "team-b-key"},
+		{"routed to a removed server on a one-server host: that host's server", "team-a", routedRow(eteHost, "gone"), eteHost, "ete-key"},
 	} {
 		for _, reader := range []string{"view", "table"} {
 			t.Run(tc.name+"/"+reader, func(t *testing.T) {
@@ -302,7 +305,7 @@ func TestServerOf_SharedHost(t *testing.T) {
 					}
 					pctx.SetSessionFacts(pipeline.SessionFacts{InferenceHosts: table, HostsKnown: true})
 				}
-				run(t, build(t, sharedConfig(`"claude-code": "team-a"`)), pctx)
+				run(t, build(t, sharedConfig(`"claude-code": "`+tc.agent+`"`)), pctx)
 				assertRouted(t, pctx, tc.wantHost, tc.key)
 			})
 		}
