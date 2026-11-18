@@ -393,7 +393,9 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 				if !ok || (rest != "" && rest[0] != '/') {
 					rest = pctx.Path
 				}
-				pathErr = pctx.SetRedirectPath(srv.wirePath(rest))
+				if wp := srv.wirePath(rest); wp != pctx.Path {
+					pathErr = pctx.SetRedirectPath(wp)
+				}
 			}
 		}
 	}

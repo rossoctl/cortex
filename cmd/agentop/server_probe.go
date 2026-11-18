@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
@@ -70,15 +71,14 @@ func probeAPI(ctx context.Context, client *http.Client, s routerconfig.Server, m
 		if strings.EqualFold(first, "authorization") {
 			other = "x-api-key"
 		}
+		// Its own time, so a protocol whose paths hang leaves time for the next one.
+		pctx, cancel := context.WithTimeout(ctx, probeProtocolTime)
 		for _, path := range probePaths[p] {
-			r, err := probeOnce(ctx, client, ep.URL()+path, s, p, model, first)
+			r, err := probeOnce(pctx, client, ep.URL()+path, s, p, model, first)
 			if err == nil && !fixed && (r.status == http.StatusUnauthorized || r.status == http.StatusForbidden) {
-				r, err = probeOnce(ctx, client, ep.URL()+path, s, p, model, other)
+				r, err = probeOnce(pctx, client, ep.URL()+path, s, p, model, other)
 			}
 			if err != nil {
-				if ctx.Err() != nil {
-					return nil, "", err
-				}
 				reachErr = err
 				continue
 			}
@@ -88,6 +88,7 @@ func probeAPI(ctx context.Context, client *http.Client, s routerconfig.Server, m
 			}
 			failed = append(failed, r)
 		}
+		cancel()
 	}
 	if len(api) == 0 {
 		if reachErr != nil {
@@ -226,3 +227,6 @@ func servedShape(protocol string, body []byte) bool {
 	}
 	return false
 }
+
+// probeProtocolTime bounds the probe of one protocol. A var so tests can shorten it.
+var probeProtocolTime = 60 * time.Second

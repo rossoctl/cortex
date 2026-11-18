@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
 )
@@ -341,6 +342,47 @@ func TestProbe_DroppedPathIsNotTheEnd(t *testing.T) {
 	})
 	api, _, err := runProbe(t, srv, nil, "", false)
 	want := map[string]string{"anthropic-messages": "/messages", "chat-completions": "/v1/chat/completions"}
+	if err != nil || !maps.Equal(api, want) {
+		t.Errorf("api = %v, err = %v; want %v", api, err, want)
+	}
+}
+
+// hang answers only when the request is cancelled.
+func hang(r *http.Request) { <-r.Context().Done() }
+
+func TestProbe_HungProtocolLeavesTimeForTheNext(t *testing.T) {
+	old := probeProtocolTime
+	probeProtocolTime = 100 * time.Millisecond
+	t.Cleanup(func() { probeProtocolTime = old })
+	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, r *http.Request) {
+		switch {
+		case strings.HasSuffix(p.path, "messages"):
+			hang(r) // a Bob-like server: no anthropic path answers
+		case p.path == "/v1/chat/completions":
+			io.WriteString(w, chatOK)
+		default:
+			http.NotFound(w, nil)
+		}
+	})
+	api, _, err := runProbe(t, srv, nil, "", false)
+	want := map[string]string{"chat-completions": "/v1/chat/completions"}
+	if err != nil || !maps.Equal(api, want) {
+		t.Errorf("api = %v, err = %v; want %v", api, err, want)
+	}
+}
+
+func TestProbe_EndedContextKeepsWhatWasFound(t *testing.T) {
+	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, r *http.Request) {
+		if p.path == "/v1/messages" {
+			io.WriteString(w, anthropicOK)
+			return
+		}
+		hang(r)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	api, _, err := probeAPI(ctx, srv.Client(), routerconfig.Server{URL: srv.URL, Key: "k"}, "m", "", false)
+	want := map[string]string{"anthropic-messages": "/v1/messages"}
 	if err != nil || !maps.Equal(api, want) {
 		t.Errorf("api = %v, err = %v; want %v", api, err, want)
 	}
