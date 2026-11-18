@@ -82,7 +82,7 @@ require (
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/redis/go-redis/v9 v9.23.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/rossoctl/accountant v0.2.0 // indirect
+	github.com/rossoctl/accountant v0.3.0 // indirect
 	github.com/rossoctl/accountant/metrics v0.0.0-20261111151953-6085d4661624 // indirect
 	github.com/rossoctl/context-guru v0.7.4-beta.1 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
@@ -146,6 +146,3 @@ replace (
 	github.com/rossoctl/cortex/core => ../../core
 	github.com/rossoctl/cortex/core/storage/redis => ../../core/storage/redis
 )
-
-// DEV ONLY — remove when accountant v0.3.0 is tagged.
-replace github.com/rossoctl/accountant => /Users/davidboaz/Documents/GitHub/accountant/.worktrees/billing-from
