@@ -24,8 +24,10 @@ func (r *rewriter) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{WritesRequestBody: true}
 }
 func (r *rewriter) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
-	if out, changed := reportResult(pctx, r.res); changed {
-		pctx.SetBody(out)
+	if out, changed, ops := reportResult(pctx, r.res); changed {
+		applied := pctx.SetBody(out)
+		stampDryRun(ops, !applied)
+		pctx.ReportOps(ops...)
 	}
 	return pipeline.Action{Type: pipeline.Continue}
 }

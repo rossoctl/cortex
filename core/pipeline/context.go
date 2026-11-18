@@ -458,6 +458,12 @@ type Context struct {
 	accountingThread    string
 	accountingParent    string
 	accountingThreadSet bool
+	// billing and billingSet hold BillingSnapshot's answer, captured once by the FIRST
+	// Pipeline.Run call on this pctx (inbound or outbound, whichever runs first) — before any
+	// plugin, inbound or outbound, can rewrite the credential header accountant.BillingFrom
+	// reads (jwt-validation's placeholder_mode, token-exchange). See BillingSnapshot.
+	billing    accountant.Billing
+	billingSet bool
 }
 
 // ClientInfo returns the calling coding agent, parsed from this request's

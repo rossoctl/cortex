@@ -182,6 +182,14 @@ func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
 	if pctx.SessionID == "" && pctx.Session != nil {
 		pctx.SessionID = pctx.Session.ID
 	}
+	// Snapshot the billing mode before THIS Run's own plugins can rewrite the credential header
+	// it reads — unconditionally, on every direction's Pipeline, not only the one with an
+	// accountant attached. The accountant is outbound-only, but a listener runs its inbound
+	// Pipeline's Run first on the same pctx, and jwt-validation's placeholder_mode / token-exchange
+	// rewrite Authorization there; reading it fresh at outbound RequestStart time would see the
+	// rewrite instead of the client's own credential (BillingSnapshot's doc comment). Calling it
+	// here, on every Run, means the first one to run on this pctx wins the snapshot.
+	pctx.BillingSnapshot()
 	// The client body is kept before the first plugin can replace it, and only when an
 	// accountant will read it. RequestEnd runs only on the Continue return at the bottom: a
 	// Reject or a cancel returns before it, so a refused request starts no accounting work.

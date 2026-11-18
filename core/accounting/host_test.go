@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,6 +152,43 @@ func TestHost_ComputeFillsCacheWrite1h(t *testing.T) {
 	}
 	if got.CacheWrite != 1800 {
 		t.Errorf("accountant.Usage.CacheWrite = %d, want 1800 (the total, unchanged by CacheWrite1h)", got.CacheWrite)
+	}
+}
+
+// TestHost_ConcurrentComputeRunsOnce reproduces the review finding on the pending latch:
+// Compute's doc comment promises "a second call returns the first call's answer", unconditionally
+// — not only "when called from one goroutine at a time". Two goroutines calling Compute on the
+// SAME pctx at once must not both pass the once-check and both run computeSafe (double-counting
+// the saving, and racing the plain field writes that the pre-fix latch left unsynchronized — this
+// test is run under -race in CI specifically to catch that). Run with -race to catch the field
+// race the pre-fix version had.
+func TestHost_ConcurrentComputeRunsOnce(t *testing.T) {
+	h := newHost(t)
+	var calls int64
+	h.usageHook = func(accountant.Usage) { atomic.AddInt64(&calls, 1) }
+	pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{fwd: forwardedBody("hi")}, 200, coldUsage())
+
+	const n = 8
+	var wg sync.WaitGroup
+	results := make([]accountant.Result, n)
+	oks := make([]bool, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			results[i], oks[i] = h.Compute(pctx)
+		}(i)
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt64(&calls); got != 1 {
+		t.Errorf("computeSafe ran %d times via usageHook, want exactly 1 (double-counted otherwise)", got)
+	}
+	for i := 1; i < n; i++ {
+		if oks[i] != oks[0] || !reflect.DeepEqual(results[i], results[0]) {
+			t.Errorf("Compute()[%d] = (%+v, %v), want the same answer as [0] = (%+v, %v)",
+				i, results[i], oks[i], results[0], oks[0])
+		}
 	}
 }
 
@@ -469,6 +508,61 @@ func TestHost_BillingFromClientHeaderBeforeRewrite(t *testing.T) {
 	// nothing.
 	if got := pctx.Headers.Get("Authorization"); got != "Bearer sk-ant-api03-y" {
 		t.Fatalf("Authorization after the pipeline = %q, want the plugin's rewrite", got)
+	}
+}
+
+// TestHost_BillingSurvivesAnEarlierInboundRewrite reproduces the review finding on host.go:214:
+// the accountant is wired on the OUTBOUND pipeline only, and every listener runs its inbound
+// pipeline's own Run — with no accountant attached, so RequestStart never fires on it — on this
+// pctx BEFORE the outbound one. jwt-validation's placeholder_mode and token-exchange both rewrite
+// Authorization on the inbound chain. Reading pctx.Headers fresh at outbound RequestStart time
+// (the pre-fix behavior) would see that rewrite instead of the client's own credential, silently
+// reporting every saving on the request as basis "unknown" rather than "usd" or
+// "subscriptionEquivalent" — zeroing the headline dollar totals for exactly this (common,
+// supported) configuration. BillingSnapshot's fix is to capture the mode on the FIRST
+// Pipeline.Run call for this pctx, whichever direction that is.
+func TestHost_BillingSurvivesAnEarlierInboundRewrite(t *testing.T) {
+	h := newHost(t)
+	var meta accountant.RequestMeta
+	h.metaHook = func(m accountant.RequestMeta) { meta = m }
+
+	// The inbound pipeline: no accountant attached, exactly as cmd/cortex wires it. Its one
+	// plugin stands in for jwt-validation's placeholder_mode / token-exchange, replacing the
+	// client's subscription token with an opaque bearer that BillingFrom would read as unknown.
+	inbound, err := pipeline.New([]pipeline.Plugin{&headerRewriter{"Authorization", "Bearer opaque-placeholder"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outbound, err := pipeline.New(nil, pipeline.WithAccountant(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pctx := &pipeline.Context{
+		Host: "api.anthropic.com", Path: "/v1/messages", Method: "POST",
+		Body: clientBody("hi"), SessionID: "s1",
+		Headers: http.Header{"Authorization": []string{"Bearer sk-ant-oat01-x"}},
+	}
+	inf := coldUsage()
+	inf.Model = "claude-sonnet-4-5"
+	pctx.Extensions.Inference = &inf
+
+	// Inbound first, outbound second — the same pctx, the same order every listener runs them in.
+	if act := inbound.Run(context.Background(), pctx); act.Type != pipeline.Continue {
+		t.Fatalf("inbound action = %v", act.Type)
+	}
+	if act := outbound.Run(context.Background(), pctx); act.Type != pipeline.Continue {
+		t.Fatalf("outbound action = %v", act.Type)
+	}
+
+	if meta.Billing.Mode != accountant.BillingSubscription {
+		t.Errorf("RequestMeta.Billing.Mode = %q, want %q (the client's original credential, read before the INBOUND rewrite)",
+			meta.Billing.Mode, accountant.BillingSubscription)
+	}
+	// The rewrite did happen, so this is really testing read-order and not an inbound chain
+	// that did nothing.
+	if got := pctx.Headers.Get("Authorization"); got != "Bearer opaque-placeholder" {
+		t.Fatalf("Authorization after both pipelines = %q, want the inbound rewrite", got)
 	}
 }
 

@@ -444,14 +444,23 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	if res.Trace.Session != "" {
 		p.cgSessions.set(sid, res.Trace.Session)
 	}
-	out, changed := reportResult(pctx, res)
+	out, changed, ops := reportResult(pctx, res)
 	if changed && len(out) > 0 {
+		// SetBody decides whether this write actually applies (true unless a non-observe
+		// writer ahead of this plugin already enforced its own bytes — pipeline/plugin-reference.md's
+		// shadow-write case). Ops are stamped and reported AFTER this call, never before: reporting
+		// first would price a shadow write as a real saving, which can fail the library's
+		// client-vs-forwarded sum check and zero the whole request's figure, tool-prune's savings on
+		// it included (review finding on plugin.go:485). ReportOps's own DryRun stamp (on_error:
+		// observe) is a different, narrower case — see pipeline.Context.ReportOps's doc comment —
+		// and stampDryRun's OR leaves it untouched when it already applies.
+		applied := pctx.SetBody(out)
+		stampDryRun(ops, !applied)
+		pctx.ReportOps(ops...)
 		// Per-request byte-level view (the engine's token-level view is logged by
 		// logEmitter.Run). The framework also emits a body-mutation session event.
-		// The message follows this plugin's own SetBody result, not BodyMutated: under
-		// on_error: observe the write is a shadow and the client's body goes upstream.
 		msg := "context-guru rewrote request body"
-		if !pctx.SetBody(out) {
+		if !applied {
 			msg = "context-guru would rewrite request body (on_error: observe, not applied)"
 		}
 		slog.Info(msg,
@@ -461,34 +470,47 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	return cont
 }
 
-// reportResult reports one apply.BodyOpts result to the accountant and returns the body
-// to forward and whether it changed. Split out of OnRequest so the accounting side
-// (what gets reported, and when) is testable directly against a hand-built apply.Result,
-// without re-running the engine — a second apply.BodyOpts call against the same
-// session/store would observe state the first call already mutated, not reproduce it.
+// stampDryRun sets DryRun on every op whose DryRun is not already true. Called with dryRun=true
+// when the caller's SetBody did not apply the rewrite these ops describe, so a shadow write is
+// never priced as if it reached the wire.
+func stampDryRun(ops []accountant.Operation, dryRun bool) {
+	if !dryRun {
+		return
+	}
+	for i := range ops {
+		ops[i].DryRun = true
+	}
+}
+
+// reportResult turns one apply.BodyOpts result into the body to forward, whether it changed, and
+// the ops that describe it — WITHOUT reporting them. Split out of OnRequest so the accounting
+// side (what would be reported) is testable directly against a hand-built apply.Result, without
+// re-running the engine — a second apply.BodyOpts call against the same session/store would
+// observe state the first call already mutated, not reproduce it.
 //
 // Thread: names the request's accounting thread from the engine's own thread split
 // (design §5.4/§5.5). res.Trace.Thread.ID is empty with no Opts.ThreadOf wired (unchanged
 // in this task), and SetAccountingThread's empty-id no-op then leaves
 // core/accounting.ThreadOf's default rule ("main" for the primary agent) in place.
 //
-// Ops: the engine's Trace.Ops plus the envelope ops (envelopeOps), reported only when the
-// engine produced a rewrite (changed && non-empty out), and
-// regardless of whether the caller's subsequent SetBody actually applies it — ReportOps
-// itself stamps DryRun when the plugin runs under on_error: observe, so the accountant
-// still sees what the engine WOULD have sent (W5.1/W4.6).
-func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool) {
+// Ops: the engine's Trace.Ops plus the envelope ops (envelopeOps), built only when the engine
+// produced a rewrite (changed && non-empty out). The caller must call pctx.SetBody(out) BEFORE
+// reporting these — mirroring tool-prune's applied := pctx.SetBody(out); ReportOps(...!applied)
+// ordering — and stamp DryRun from whether that write actually applied, not from whether the
+// engine merely computed it: reporting here, before SetBody, would price a shadow write (an
+// earlier enforced writer's bytes already in effect) as a real saving.
+func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool, ops []accountant.Operation) {
 	threadParent, _ := res.Trace.Thread.InheritsFrom()
 	pctx.SetAccountingThread(res.Trace.Thread.ID, threadParent)
 	out, changed = res.Body, res.Changed
 	if changed && len(out) > 0 {
-		pctx.ReportOps(res.Trace.Ops...)
+		ops = append(ops, res.Trace.Ops...)
 		// The tools and system changes apply makes report no op of their own; they are found
 		// by diffing this plugin's input against its output (envelope.go). pctx.Body is still
 		// the input here: the caller sets the output after this returns.
-		pctx.ReportOps(envelopeOps(pctx.Body, out)...)
+		ops = append(ops, envelopeOps(pctx.Body, out)...)
 	}
-	return out, changed
+	return out, changed, ops
 }
 
 // OnResponse is a pass-through in v1. The model-driven expand loop (resolve

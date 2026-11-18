@@ -181,7 +181,13 @@ func (h *Host) Close() error {
 
 // pending is one request's record, from RequestEnd to Compute. The goroutine writes req,
 // serverHeld and failed, then closes done; Compute reads them only after done is closed. The
-// latch fields are Compute's own, on the request goroutine.
+// latch fields are Compute's own; computeMu guards them so a second concurrent Compute call
+// (today none exists — core/pipeline.SetState/GetState document pctx as single-goroutine per
+// request, and InferenceParser's own caller only ever calls Compute/Savings from the one response
+// pass — but the doc on Compute itself promises "a second call returns the first call's answer"
+// unconditionally) blocks on the first's full timeout-or-completion instead of racing it: both
+// running computeSafe, double-counting the saving, or reading result/ok mid-write (review
+// finding).
 type pending struct {
 	done       chan struct{}
 	req        *accountant.Request
@@ -195,15 +201,21 @@ type pending struct {
 	// meta is the RequestMeta the record was begun with, for the sink.
 	meta accountant.RequestMeta
 
-	computed bool
-	result   accountant.Result
-	ok       bool
+	computeMu sync.Mutex
+	computed  bool
+	result    accountant.Result
+	ok        bool
 }
 
-// RequestStart implements pipeline.RequestAccountant. It reads the client's upstream credential
-// header — pctx.Headers, as the listener filled it, before any plugin can rewrite it — and
-// stores the billing mode it implies for RequestEnd. token-exchange replaces Authorization on
-// outbound requests, so this has to run here and not in RequestEnd (design §5.7).
+// RequestStart implements pipeline.RequestAccountant. It reads pctx.BillingSnapshot() — captured
+// by the FIRST Pipeline.Run call on this pctx, before any plugin of either direction can rewrite
+// the credential header BillingFrom reads — and stores the billing mode it implies for
+// RequestEnd. It does NOT call accountant.BillingFrom itself: this hook runs on the outbound
+// Pipeline, which on every listener runs its Run AFTER the inbound chain's own Run on the same
+// pctx, so reading the header fresh here would see jwt-validation's placeholder_mode or
+// token-exchange's rewrite of Authorization instead of the client's own credential — silently
+// misclassifying the billing mode as "unknown" and zeroing every saving's dollar total for the
+// request (review finding). BillingSnapshot's own doc comment has the detail.
 //
 // accountant.BillingFrom reads only the credential's type and returns no part of the credential
 // itself (accountant R2); only the resulting mode is stored, never the header value.
@@ -211,7 +223,7 @@ func (h *Host) RequestStart(pctx *pipeline.Context) {
 	if h == nil || pctx == nil {
 		return
 	}
-	billing := accountant.BillingFrom(pctx.Headers)
+	billing := pctx.BillingSnapshot()
 	pipeline.SetState(pctx, billingKey, &billing)
 }
 
@@ -392,6 +404,11 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	if p == nil {
 		return accountant.Result{}, false
 	}
+	// Held for the whole call, not just the check-and-set: a concurrent second caller blocks
+	// here until the first finishes (up to computeWait) and then reads its cached answer,
+	// rather than both passing the check and racing into computeSafe (see pending's doc comment).
+	p.computeMu.Lock()
+	defer p.computeMu.Unlock()
 	if p.computed {
 		return p.result, p.ok
 	}
