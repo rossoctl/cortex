@@ -99,9 +99,11 @@ func TestUninstallLeavesAnOlderRelativeEntryAndSaysSo(t *testing.T) {
 	const mine = "http://127.0.0.1:47699"
 	const row = "kept the record's entry for .claude/settings.json: an older agentop recorded it without its directory"
 	leftBehind := "Left behind:\n    .claude/settings.json in the project an older agentop enabled it in\n"
-	// The project's file is unread, so the fix reads the entry, which names every key.
+	// The project's file is unread, so the fix reads the entry, which names every key:
+	// under "written", or for an entry from before it, under "prior".
+	written := `fix: in .claude/settings.json, remove each "env" key whose value is still the one under "written" in that entry, and keep any that differ` + "\n"
+	priorOnly := `fix: in .claude/settings.json, remove each "env" key whose "prior" in that entry is null, if it still points at Cortex's proxy or at ~/.cortex/ca` + "\n"
 	fix := []string{
-		`fix: in .claude/settings.json, remove each "env" key whose value is still the one under "written" in that entry, and keep any that differ` + "\n",
 		`fix: and restore each key whose "prior" in that entry is not null` + "\n",
 		"fix: then delete the record's entry for .claude/settings.json from ~/.cortex/claude-code-state.json\n",
 	}
@@ -111,10 +113,10 @@ func TestUninstallLeavesAnOlderRelativeEntryAndSaysSo(t *testing.T) {
 		others    string // "", "entries": a project's and the default file's, "bare": the default file routed with no entry
 		want      []string
 	}{
-		{"alone", true, "", []string{markLine("!", "unrouted") + row, leftBehind}},
-		{"beside a project and the default file", true, "entries", []string{markLine("!", "unrouted") + row, leftBehind}},
-		{"beside a default file with no entry of its own", true, "bare", []string{markLine("!", "unrouted") + row, leftBehind}},
-		{"with nothing else installed", false, "", []string{"Nothing to uninstall.\n", "K" + row[1:]}},
+		{"alone", true, "", []string{markLine("!", "unrouted") + row, written, leftBehind}},
+		{"beside a project and the default file", true, "entries", []string{markLine("!", "unrouted") + row, written, leftBehind}},
+		{"beside a default file with no entry of its own", true, "bare", []string{markLine("!", "unrouted") + row, written, leftBehind}},
+		{"from before written, with nothing else installed", false, "", []string{"Nothing to uninstall.\n", "K" + row[1:], priorOnly}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sc := newUninstallScene(t)
