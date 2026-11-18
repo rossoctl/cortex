@@ -288,8 +288,8 @@ this order:
 3. The agent's protocol is a key of the map: the request goes to that key's path,
    with no translation. Claude Code's `/v1/messages` goes to DeepSeek's
    `/anthropic/v1/messages`.
-4. Cortex can read the agent's protocol (`anthropic-messages` and `responses` at
-   this time): Cortex translates the request. The target is the first of
+4. Cortex can read the agent's protocol (`anthropic-messages`, `responses` and
+   `chat-completions` at this time): Cortex translates the request. The target is the first of
    `chat-completions`, `anthropic-messages`, `responses` that is in the map and that
    Cortex can write (`chat-completions`, then `anthropic-messages`, at this time). A
    map with both gets Chat Completions. Only a map that has `anthropic-messages` and
@@ -300,8 +300,9 @@ this order:
    protocol (`deny/cannot_translate`): "Cortex cannot translate \<source\> to
    \<keys\> yet. Use a translation server for this pair". The message names each
    map key, sorted, joined with " or ". For that pair, see
-   [`translation-server.md`](translation-server.md).
-5. Otherwise (a chat-completions request, or a path with no known protocol): the
+   [`translation-server.md`](translation-server.md). Cortex does not translate
+   `/v1/completions` (the legacy completions API).
+5. Otherwise (a `/v1/completions` request, or a path with no known protocol): the
    request goes as it is, with no translation and no 502.
 
 **A translated request.** Every plugin, the session store, the timeline and the
