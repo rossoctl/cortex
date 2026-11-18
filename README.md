@@ -47,23 +47,18 @@ agentop observe
 agentop cost --window month --by agent
 ```
 
-**Switch any agent to any inference server, without touching the agent.** Is
-your provider down or out of quota? Does your team have its own gateway? Add
-the server once, then choose it for an agent. The agent keeps its own settings.
-Cortex sends the agent's new sessions to that server, with that server's key. When
-Claude Code goes to a server that serves only chat completions, Cortex
-translates each request and its reply.
+**Switch any agent to another inference server.** Provider down, or your team
+has its own gateway? Point the agent at another server without changing the
+agent's settings: a LiteLLM gateway, a provider's API, or a model on your own
+machine.
 
 ```sh
-agentop server add team-gw https://llm.example.com --main opus --helper haiku   # asks for the key
-agentop server use team-gw --agent claude-code            # new Claude Code sessions → team-gw
-agentop server use team-gw --agent opencode               # and OpenCode's
-agentop server move <session-id> team-gw                  # one running session → team-gw
-agentop server reset --agent claude-code                  # back to Claude Code's own provider
+agentop server add work https://llm.example.com --main opus --helper haiku   # once; asks for the key
+agentop server use work --agent claude-code                                  # new sessions go there
 ```
 
-The server can be a LiteLLM gateway, a provider's API, or a model server on
-your own machine.
+After the `add`, you can also switch in `agentop observe`: press `A` for the
+agents, then `S` on one.
 
 Guides: [inference servers](./docs/inference-servers.md) · [pricing](./docs/pricing.md)
 
