@@ -6,6 +6,7 @@ import (
 	"github.com/rossoctl/cortex/core/translate/anthropic"
 	"github.com/rossoctl/cortex/core/translate/chat"
 	"github.com/rossoctl/cortex/core/translate/pivot"
+	"github.com/rossoctl/cortex/core/translate/responses"
 )
 
 // The registered protocol names.
@@ -20,22 +21,11 @@ const (
 var protocols = map[string]pivot.Protocol{
 	Anthropic: anthropic.Protocol{},
 	Chat:      chat.Protocol{},
-	Responses: responses{},
+	Responses: responses.Protocol{},
 }
 
 // preference is the order in which Target picks a protocol (decision 12).
 var preference = []string{Chat, Anthropic, Responses}
-
-// responses is registered with no directions, so that a server can say
-// that it serves Responses (rule C1).
-type responses struct{}
-
-func (responses) Name() string { return Responses }
-
-// EncodeError gives an error body in the OpenAI shape.
-func (responses) EncodeError(status int, errType, message string) []byte {
-	return chat.Protocol{}.EncodeError(status, errType, message)
-}
 
 // Lookup gives the protocol with this name.
 func Lookup(name string) (pivot.Protocol, bool) {

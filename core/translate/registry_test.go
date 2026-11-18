@@ -41,7 +41,7 @@ func TestTarget(t *testing.T) {
 }
 
 func TestDecodes(t *testing.T) {
-	for name, want := range map[string]bool{Anthropic: true, Chat: false, Responses: false, "unknown": false} {
+	for name, want := range map[string]bool{Anthropic: true, Chat: false, Responses: true, "unknown": false} {
 		if got := Decodes(name); got != want {
 			t.Errorf("Decodes(%q) = %v, want %v", name, got, want)
 		}

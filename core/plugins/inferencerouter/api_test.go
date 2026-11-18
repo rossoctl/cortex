@@ -41,6 +41,10 @@ func TestPlan(t *testing.T) {
 			apiPlan{kind: planCountTokens}},
 		{"count_tokens to an anthropic server", map[string]string{"anthropic-messages": "/v1/messages"}, "/v1/messages/count_tokens",
 			apiPlan{kind: planAsIs}},
+		{"codex to chat only", map[string]string{"chat-completions": "/v1/chat/completions"}, "/backend-api/codex/responses",
+			apiPlan{kind: planTranslate, source: "responses", target: "chat-completions", path: "/v1/chat/completions"}},
+		{"codex to responses", map[string]string{"responses": "/v1/responses"}, "/backend-api/codex/responses",
+			apiPlan{kind: planPath, path: "/v1/responses"}},
 		{"DeepSeek chat", map[string]string{"chat-completions": "/chat/completions", "anthropic-messages": "/anthropic/v1/messages"}, "/v1/chat/completions",
 			apiPlan{kind: planPath, path: "/chat/completions"}},
 	} {
@@ -141,6 +145,30 @@ func TestRouter_APathEntrySetsTheRedirectPath(t *testing.T) {
 	}
 	if _, _, _, ok := pctx.TranslateTarget(); ok {
 		t.Error("TranslateTarget is set, want no translation")
+	}
+}
+
+// Rule R4: a Codex request to a server that serves Responses goes to its path,
+// with its body not changed and no translation.
+func TestRouter_CodexToAResponsesServerKeepsItsBody(t *testing.T) {
+	p := build(t, `{
+		"servers": {"s": {"url": "https://s.example.com", "key": "s-key", "main": "gpt-5", "helper": "gpt-5-mini", "api": {"responses": "/v1/responses"}}},
+		"agents": {"codex": "s"}
+	}`)
+	pctx := request(newStore(t), "chatgpt.com", "codex-tui/0.162.1 (Mac OS 26.3.0; arm64) xterm-256color (codex-tui; 0.162.1)", "s1")
+	pctx.Path = "/backend-api/codex/responses"
+	body := []byte(`{"model":"gpt-5","stream":true,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"store":false}`)
+	pctx.Body = slices.Clone(body)
+	run(t, p, pctx)
+
+	if path, ok := pctx.RedirectPath(); !ok || path != "/v1/responses" {
+		t.Errorf("RedirectPath = %q %v, want /v1/responses", path, ok)
+	}
+	if _, _, _, ok := pctx.TranslateTarget(); ok {
+		t.Error("TranslateTarget is set, want no translation")
+	}
+	if pctx.BodyMutated() || string(pctx.Body) != string(body) {
+		t.Errorf("body = %s (mutated %v), want the agent's body", pctx.Body, pctx.BodyMutated())
 	}
 }
 
