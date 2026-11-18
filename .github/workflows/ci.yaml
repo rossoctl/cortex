@@ -565,6 +565,19 @@ jobs:
       - name: Run check-gateway-linkage.sh tests
         run: sh scripts/check-gateway-linkage_test.sh
 
+  # Static checks of the central metrics stack (deploy/central): Prometheus rules and their unit
+  # tests, the collector config, the generated dashboards, and the Kustomize render through
+  # kubeconform. The live smoke test needs the cluster and is not run here.
+  central-stack:
+    name: Central metrics stack checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run deploy/central/check.sh
+        run: sh deploy/central/check.sh
+
   # `go mod tidy -diff` on every module in the repo. GOWORK=off so
   # replace directives resolve as they do in build.yaml and
   # release-binaries.yaml.
