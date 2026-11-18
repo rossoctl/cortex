@@ -291,7 +291,9 @@ this order:
 4. Cortex can read the agent's protocol (`anthropic-messages` and `responses` at
    this time): Cortex translates the request. The target is the first of
    `chat-completions`, `anthropic-messages`, `responses` that is in the map and that
-   Cortex can write (only `chat-completions` at this time). The request goes to the
+   Cortex can write (`chat-completions`, then `anthropic-messages`, at this time). A
+   map with both gets Chat Completions. Only a map that has `anthropic-messages` and
+   no `chat-completions` gets Anthropic Messages. The request goes to the
    target's path, with no query string. Codex's `/backend-api/codex/responses` goes
    to a Chat-only server's `/chat/completions`. If no protocol in the map is a
    target, Cortex sends nothing and answers a 502 `api_error` in the agent's

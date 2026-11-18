@@ -29,7 +29,9 @@ func TestTarget(t *testing.T) {
 	}{
 		{[]string{"responses"}, "", false},
 		{[]string{"responses", "chat-completions"}, "chat-completions", true},
-		{[]string{"anthropic-messages", "responses"}, "", false},
+		{[]string{"anthropic-messages", "responses"}, "anthropic-messages", true},
+		{[]string{"anthropic-messages"}, "anthropic-messages", true},
+		{[]string{"anthropic-messages", "chat-completions"}, "chat-completions", true},
 		{nil, "", false},
 		{[]string{"unknown", "chat-completions"}, "chat-completions", true},
 	} {

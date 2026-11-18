@@ -1,0 +1,39 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"msg_01Tools","object":"response","model":"claude-opus-5-5","status":"in_progress"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_0","role":"assistant","status":"in_progress","content":[]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_0","output_index":0,"content_index":0,"delta":"I will read two files."}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","item_id":"msg_0","output_index":0,"content_index":0,"text":"I will read two files."}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_0","role":"assistant","status":"completed","content":[{"type":"output_text","text":"I will read two files.","annotations":[]}]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"toolu_01A","name":"Read","arguments":""}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":1,"delta":"{\"file_path\":"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":1,"delta":"\"/a.txt\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"toolu_01A","name":"Read","arguments":"{\"file_path\":\"/a.txt\"}"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"toolu_01B","name":"Read","arguments":""}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_2","output_index":2,"delta":"{\"file_path\":\"/b.txt\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"toolu_01B","name":"Read","arguments":"{\"file_path\":\"/b.txt\"}"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"msg_01Tools","object":"response","model":"claude-opus-5-5","status":"completed","output":[],"usage":{"input_tokens":2107,"input_tokens_details":{"cached_tokens":2000,"cache_write_tokens":100},"output_tokens":61,"total_tokens":2168}}}
+

@@ -105,8 +105,8 @@ func TestRouter_SetAuth(t *testing.T) {
 	}
 }
 
-// A request translated to Anthropic Messages gets the key in X-Api-Key only. No
-// protocol of this issue can be translated to it, so setAuth is called directly.
+// A request translated to Anthropic Messages gets the key in X-Api-Key only. A
+// Responses request can be translated to it. This test calls setAuth directly.
 func TestSetAuth_TranslatedToAnthropic(t *testing.T) {
 	pctx := &pipeline.Context{Headers: http.Header{"Authorization": {"Bearer client-key"}, "Api-Key": {"client-key"}}}
 	setAuth(pctx, route{key: "s-key"}, "anthropic-messages")

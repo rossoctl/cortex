@@ -1,0 +1,2 @@
+dropped: 
+{"model":"claude-opus-5-5","max_tokens":64000,"messages":[{"role":"user","content":[{"type":"text","text":"Read a.go."}]},{"role":"assistant","content":[{"type":"redacted_thinking","data":"cmVkYWN0ZWQ="},{"type":"text","text":"Reading it."}]},{"role":"user","content":[{"type":"text","text":"Go on."}]}],"stream":true,"cache_control":{"type":"ephemeral"}}
