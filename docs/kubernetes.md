@@ -125,6 +125,8 @@ deployment, and the operator does not inject it.
    kubectl logs <pod> -n <ns> -c authbridge-proxy
    ```
 
+   In envoy-sidecar mode, use `-c envoy-proxy`.
+
 3. Read the session API on `:9094`. The port-forward commands are in
    [session API quick examples](session-api.md#quick-examples).
 4. Read the reload status on `:9093`. The commands are in
@@ -138,8 +140,8 @@ deployment, and the operator does not inject it.
 |---|---|---|
 | The pod has no sidecar | The namespace does not have the label `rossoctl-enabled: "true"` | Add the label to the namespace, then restart the rollout |
 | The pod has no sidecar | The pod does not have the label `rossoctl.io/type: agent`, or it has `rossoctl.io/inject: disabled` | Correct the labels in the pod template |
-| The pod has no sidecar | The pod has `rossoctl.io/type: tool` and the feature gate `injectTools` is off | Set `injectTools: true` in `rossoctl-feature-gates` |
-| The pod has no sidecar | The feature gate `globalEnabled` is off | Set `globalEnabled: true` in `rossoctl-feature-gates` |
+| The pod has no sidecar | The pod has `rossoctl.io/type: tool` and the feature gate `injectTools` is off | Set `injectTools: true` in `rossoctl-feature-gates`, then restart the rollout |
+| The pod has no sidecar | The feature gate `globalEnabled` is off | Set `globalEnabled: true` in `rossoctl-feature-gates`, then restart the rollout |
 | The pod has no sidecar | The pod was created before you added the labels | `kubectl rollout restart deploy/<name> -n <ns>` |
 | The sidecar refuses a config reload | You changed a field that needs a restart, for example `mode` or a `listener` field | `/reload/status` names the error and `reloads_failed` increments. The old pipeline continues to serve. Restart the pod |
 | Lineage data is missing | See the lineage kit | [lineage troubleshooting](../deploy/lineage-attach/README.md#troubleshooting) |

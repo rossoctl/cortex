@@ -145,7 +145,8 @@ can be the export itself:
 agentop export | jq -r '.model // empty' | sort | uniq -c
 ```
 
-Each record is one event, reduced to about 30 numbers and short strings:
+Each record is one event, reduced to about 30 numbers and short strings. This record
+comes from a larger install than the 7-record archive above:
 
 ```json
 {"schema":1,"sessionId":"45fa31b2-…","seq":2077,"requestId":"a0-9e37cd",
@@ -582,7 +583,7 @@ agentop export: /v1/export?session=today-session&since=bogus: apiclient: bad req
 
 This refusal says nothing about sessions, because `--since` is the problem.
 
-Accepted forms are a day count (`7d`) or a Go duration (`168h`). Cortex refuses zero and
+The accepted forms are in the [flag table](#agentop-export). Cortex refuses zero and
 negative values. It also refuses a sign, so `+7d` is invalid.
 
 **A malformed query.** A query that Cortex cannot decode is a 400:

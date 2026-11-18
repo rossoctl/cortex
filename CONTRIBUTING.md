@@ -32,7 +32,7 @@ Setup installs the binaries into `~/.local/bin` and does not edit your shell pro
 It tells you when that directory is not on your `PATH`.
 
 Test `cmd/agentop` while you change code. `-short` skips the setup, service, doctor and
-uninstall scenes:
+uninstall scenes, so a run takes about 20 s:
 
 ```bash
 scripts/dev/go-test-shards.sh -short cmd/agentop
@@ -167,6 +167,9 @@ To build only the `proxy-init` image, from the repository root:
 ```bash
 make build-proxy-init
 ```
+
+This builds `proxy-init:latest`, not `:local`, and does not load it into Kind. To load
+it, run `make -C deploy/proxy-init load-image`.
 
 **3. Verify the platform came up.**
 
