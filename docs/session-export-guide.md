@@ -262,11 +262,20 @@ Select by session id. Get the id from
 agentop export --session 849102c5-e59f-404c-8b2e-3dde35e052bb
 ```
 
-Select more than one session. Repeat the flag, or separate the ids with commas:
+Select more than one session. Repeat the flag, or separate the ids with commas and no
+spaces:
 
 ```sh
 agentop export --session 849102c5-… --session 59046505-…
 agentop export --session 849102c5-…,59046505-…
+```
+
+A space after a comma needs quotes. Without them the shell splits the list, and the second
+id becomes a stray argument that the command refuses with exit 2:
+
+```sh
+agentop export --session 'a, b'     # two sessions
+agentop export --session a, b       # exit 2: unexpected argument "b"
 ```
 
 An id that the archive does not hold is a refusal, not an empty result. See
