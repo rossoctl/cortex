@@ -80,16 +80,16 @@ func (a *Archive) markLocked(sessionID string, from uint64) {
 	if ok {
 		return
 	}
+	// No session id in these lines: it comes from a client's request header (CodeQL
+	// go/clear-text-logging), and the line is about the queue, not the session.
 	if len(a.ops) >= cap(a.ops)-reserve {
-		slog.Warn("session archive: the queue is full; a session that asked not to be recorded is withheld in memory until its next event",
-			"session", sessionID)
+		slog.Warn("session archive: the queue is full; a session that asked not to be recorded is withheld in memory until its next event")
 		return
 	}
 	select {
 	case a.ops <- op{kind: opNoRecord, id: sessionID}:
 	default:
-		slog.Warn("session archive: the queue is full; a session that asked not to be recorded is withheld in memory until its next event",
-			"session", sessionID)
+		slog.Warn("session archive: the queue is full; a session that asked not to be recorded is withheld in memory until its next event")
 	}
 }
 
