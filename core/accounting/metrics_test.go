@@ -437,3 +437,70 @@ func TestSpends_DryRunAndRefusedCountInNeitherOutput(t *testing.T) {
 		})
 	}
 }
+
+// A ping must not be counted as an inference token/cost observation.
+func TestSink_PingCountsOnlyUnderKeepalive(t *testing.T) {
+	mp, rd := manual(t)
+	rates := testRates(pricing.ProvConfigured)
+	s := NewSink(mp, rates)
+	meta := accountant.RequestMeta{RequestID: "", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
+	u := accountant.Usage{Input: 100, CacheRead: 50}
+	s.Observe(meta, u, accountant.Result{}, "api.example.com", 150)
+
+	if got := sum(t, rd, "llm.inference.tokens", nil); got != 0 {
+		t.Errorf("ping counted under llm.inference.tokens: %v", got)
+	}
+	if got := sum(t, rd, "llm.keepalive.pings", nil); got != 1 {
+		t.Errorf("llm.keepalive.pings = %v, want 1", got)
+	}
+}
+
+// A non-ping request with no cache read is a cache miss, priced the same as the savings sink prices it.
+func TestSink_CacheMissCountsAndPrices(t *testing.T) {
+	mp, rd := manual(t)
+	rates := testRates(pricing.ProvConfigured)
+	s := NewSink(mp, rates)
+	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
+	u := accountant.Usage{Input: 100}
+	s.Observe(meta, u, accountant.Result{}, "api.example.com", 100)
+
+	if got := sum(t, rd, "llm.cache.misses", nil); got != 1 {
+		t.Errorf("llm.cache.misses = %v, want 1", got)
+	}
+	want, _ := USD(rates, "api.example.com", "claude-sonnet-4-5", 100, pricing.TierInput, 100)
+	if got := sum(t, rd, "llm.cache.miss_cost_usd", nil); !micro(got, want) {
+		t.Errorf("llm.cache.miss_cost_usd = %v, want %v", got, want)
+	}
+}
+
+// A request with a cache read is not a cache miss.
+func TestSink_CacheReadIsNotAMiss(t *testing.T) {
+	mp, rd := manual(t)
+	rates := testRates(pricing.ProvConfigured)
+	s := NewSink(mp, rates)
+	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
+	u := accountant.Usage{Input: 100, CacheRead: 50}
+	s.Observe(meta, u, accountant.Result{}, "api.example.com", 150)
+
+	if got := sum(t, rd, "llm.cache.misses", nil); got != 0 {
+		t.Errorf("llm.cache.misses = %v, want 0", got)
+	}
+}
+
+// An unpriced result's inference cost is estimated, not actual.
+func TestSink_UnpricedResultIsEstimated(t *testing.T) {
+	mp, rd := manual(t)
+	rates := testRates(pricing.ProvConfigured)
+	s := NewSink(mp, rates)
+	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
+	u := accountant.Usage{Input: 100, CacheRead: 50}
+	res := accountant.Result{Unpriced: []accountant.Unpriced{{OpID: "op1"}}}
+	s.Observe(meta, u, res, "api.example.com", 150)
+
+	if got := sum(t, rd, "llm.inference.estimated_cost_usd", nil); got <= 0 {
+		t.Errorf("llm.inference.estimated_cost_usd = %v, want > 0", got)
+	}
+	if got := sum(t, rd, "llm.inference.cost_usd", nil); got != 0 {
+		t.Errorf("llm.inference.cost_usd = %v, want 0 (should be counted as estimated, not actual)", got)
+	}
+}
