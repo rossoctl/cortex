@@ -225,7 +225,10 @@ var (
 		"llm.cache.misses": true, "llm.cache.miss_cost_usd": true,
 	}
 	allowedKeys = map[string]bool{"kind": true, "tier": true, "component": true, "effect": true, "cause": true,
-		"direction": true, "reason": true, "check": true, "result": true, "version": true}
+		"direction": true, "reason": true, "check": true, "result": true, "version": true,
+		// Tier 1's own instruments (core/accounting/metrics.go), not accountant/metrics': every
+		// llm.inference./llm.keepalive./llm.cache. counter carries the request's model.
+		"model": true}
 	allowedResource = map[string]bool{"service.instance.id": true, "service.version": true, "service.name": true}
 )
 

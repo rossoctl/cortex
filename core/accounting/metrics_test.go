@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -493,20 +494,100 @@ func TestSink_CacheReadIsNotAMiss(t *testing.T) {
 	}
 }
 
-// An unpriced result's inference cost is estimated, not actual.
-func TestSink_UnpricedResultIsEstimated(t *testing.T) {
+// A request priced at a bundled (fallback) rate is estimated even when the accountant Result
+// itself carries no Unpriced ops — the request's own price, not the accountant's savings
+// computation, is what "estimated" means here. (review finding 3)
+func TestSink_BundledRateIsEstimatedWithNoUnpricedOps(t *testing.T) {
+	mp, rd := manual(t)
+	rates := testRates(pricing.ProvBundled)
+	s := NewSink(mp, rates)
+	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
+	u := accountant.Usage{Input: 100, CacheRead: 50}
+	s.Observe(meta, u, accountant.Result{}, "api.example.com", 150) // no Unpriced ops
+
+	if got := sum(t, rd, "llm.inference.estimated_cost_usd", nil); got <= 0 {
+		t.Errorf("llm.inference.estimated_cost_usd = %v, want > 0 (bundled rate)", got)
+	}
+	if got := sum(t, rd, "llm.inference.cost_usd", nil); got != 0 {
+		t.Errorf("llm.inference.cost_usd = %v, want 0 (a bundled-rate price is estimated, not actual)", got)
+	}
+}
+
+// A request with no rate at all (ProvNone) is estimated at 0 cost, not counted as $0 of actual
+// cost — $0 "actual" would read as "this is free", not "this is unpriced".
+func TestSink_NoRateIsEstimatedNotActual(t *testing.T) {
+	mp, rd := manual(t)
+	rates := testRates(pricing.ProvNone)
+	s := NewSink(mp, rates)
+	meta := accountant.RequestMeta{RequestID: "r1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
+	u := accountant.Usage{Input: 100}
+	s.Observe(meta, u, accountant.Result{}, "api.example.com", 100)
+
+	if got := sum(t, rd, "llm.inference.cost_usd", nil); got != 0 {
+		t.Errorf("llm.inference.cost_usd = %v, want 0", got)
+	}
+	// 0 estimated dollars is still correctly reported: the point of this test is that the
+	// request never lands in cost_usd, not that estimated_cost_usd is non-zero here (ProvNone
+	// prices every tier at 0, per USD's own contract).
+}
+
+// A request with 1h cache-write tokens must not be priced twice: once as part of the raw
+// CacheWrite count (at the 5m rate) and again as CacheWrite1h (at the 1h rate). CacheWrite1h is
+// documented as "the part of CacheWrite billed at the one-hour rate, never an addition to it"
+// (accountant.Usage). (review finding 2, Critical)
+func TestSink_CacheWrite1hIsPricedOnce(t *testing.T) {
 	mp, rd := manual(t)
 	rates := testRates(pricing.ProvConfigured)
 	s := NewSink(mp, rates)
 	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
-	u := accountant.Usage{Input: 100, CacheRead: 50}
-	res := accountant.Result{Unpriced: []accountant.Unpriced{{OpID: "op1"}}}
-	s.Observe(meta, u, res, "api.example.com", 150)
+	u := accountant.Usage{CacheWrite: 1000, CacheWrite1h: 1000} // every write is a 1h write
+	s.Observe(meta, u, accountant.Result{}, "api.anthropic.com", 1000)
 
-	if got := sum(t, rd, "llm.inference.estimated_cost_usd", nil); got <= 0 {
-		t.Errorf("llm.inference.estimated_cost_usd = %v, want > 0", got)
+	want, _ := TierUSD(rates, "api.anthropic.com", "claude-sonnet-4-5", 1000, accountant.TierTokens{CacheWrite1h: 1000})
+	if got := sum(t, rd, "llm.inference.cost_usd", nil); !micro(got, want) {
+		t.Errorf("llm.inference.cost_usd = %v, want %v (TierUSD with CacheWrite5m=0, CacheWrite1h=1000)", got, want)
 	}
-	if got := sum(t, rd, "llm.inference.cost_usd", nil); got != 0 {
-		t.Errorf("llm.inference.cost_usd = %v, want 0 (should be counted as estimated, not actual)", got)
+	if got := sum(t, rd, "llm.inference.tokens", map[string]string{"tier": "cache_write_5m"}); got != 0 {
+		t.Errorf("tokens tier=cache_write_5m = %v, want 0 (all 1000 CacheWrite tokens are the 1h part)", got)
+	}
+	if got := sum(t, rd, "llm.inference.tokens", map[string]string{"tier": "cache_write_1h"}); got != 1000 {
+		t.Errorf("tokens tier=cache_write_1h = %v, want 1000", got)
+	}
+}
+
+// None of the dollar counters set an OTel unit of "USD": the Prometheus remote-write exporter
+// appends the unit to the series name, turning llm_inference_cost_usd_total into
+// llm_inference_cost_usd_USD_total, which no dashboard queries. (review finding 1, Critical)
+func TestSink_DollarCountersSetNoUnit(t *testing.T) {
+	mp, rd := manual(t)
+	rates := testRates(pricing.ProvConfigured)
+	s := NewSink(mp, rates)
+	meta := accountant.RequestMeta{RequestID: "r1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
+	s.Observe(meta, accountant.Usage{Input: 100}, accountant.Result{}, "api.example.com", 100)
+
+	var rm metricdata.ResourceMetrics
+	if err := rd.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if strings.Contains(m.Name, "cost_usd") && m.Unit != "" {
+				t.Errorf("metric %q has Unit %q, want \"\" (a counter unit of \"USD\" breaks the Prometheus series name)", m.Name, m.Unit)
+			}
+		}
+	}
+}
+
+// Tier 1's counters carry a model label, matching the dashboards' per-model panels.
+// (review finding 8)
+func TestSink_CountersCarryModelLabel(t *testing.T) {
+	mp, rd := manual(t)
+	rates := testRates(pricing.ProvConfigured)
+	s := NewSink(mp, rates)
+	meta := accountant.RequestMeta{RequestID: "r1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
+	s.Observe(meta, accountant.Usage{Input: 100}, accountant.Result{}, "api.example.com", 100)
+
+	if got := sum(t, rd, "llm.inference.cost_usd", map[string]string{"model": "claude-sonnet-4-5"}); got <= 0 {
+		t.Errorf("llm.inference.cost_usd with model label = %v, want > 0", got)
 	}
 }

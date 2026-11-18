@@ -23,6 +23,11 @@ import (
 // MeterName is the instrumentation scope these instruments are created under.
 const MeterName = "github.com/rossoctl/cortex/core/accounting/reqstats"
 
+// secondBuckets are the explicit histogram boundaries for duration_seconds and ttfb_seconds, in
+// seconds: 50ms up to 10 minutes, covering a fast cache hit through a long non-streamed
+// completion. The SDK's own default boundaries are sized for milliseconds, not seconds.
+var secondBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600}
+
 // recorder is the session.Recorder New returns. A zero-value recorder (every instrument nil) is
 // the no-op case: Record's early checks never reach a nil instrument, mirroring how
 // accounting.Sink's own nil case is reached before any instrument is used.
@@ -53,13 +58,18 @@ func New(mp metric.MeterProvider) session.Recorder {
 			return err
 		}},
 		{"llm.inference.duration_seconds", func() (err error) {
+			// Explicit boundaries, not the OTel SDK's millisecond-sized default (0, 5, 10,
+			// 25, ... 10000): recorded in seconds, that default puts almost every request in
+			// its first bucket and makes p50/p95/p99 meaningless.
 			r.duration, err = meter.Float64Histogram("llm.inference.duration_seconds",
-				metric.WithDescription("Wall-clock time from request entry to response recording."), metric.WithUnit("s"))
+				metric.WithDescription("Wall-clock time from request entry to response recording."), metric.WithUnit("s"),
+				metric.WithExplicitBucketBoundaries(secondBuckets...))
 			return err
 		}},
 		{"llm.inference.ttfb_seconds", func() (err error) {
 			r.ttfb, err = meter.Float64Histogram("llm.inference.ttfb_seconds",
-				metric.WithDescription("Wall-clock time from request entry to the upstream's response headers."), metric.WithUnit("s"))
+				metric.WithDescription("Wall-clock time from request entry to the upstream's response headers."), metric.WithUnit("s"),
+				metric.WithExplicitBucketBoundaries(secondBuckets...))
 			return err
 		}},
 		{"llm.inference.response_bytes", func() (err error) {
@@ -87,6 +97,11 @@ func New(mp metric.MeterProvider) session.Recorder {
 // and it carries no HTTP status or meaningful duration for these dashboards. A nil recorder
 // field (the no-op case from New) makes every branch below a no-op, since each checks its own
 // instrument before using it.
+//
+// model.SessionDenied (a policy denial — rate-limit, guardrail, egress-allow) is treated the same
+// as model.SessionResponse: it carries a real StatusCode and Duration (the request's terminal
+// event, model.SessionEvent doc), and the Requests dashboard wants a 4xx denial counted, not
+// silently absent from the total.
 func (r *recorder) Record(_ string, e *model.SessionEvent) {
 	if e == nil || e.Tunnel {
 		return
@@ -95,22 +110,34 @@ func (r *recorder) Record(_ string, e *model.SessionEvent) {
 	switch e.Phase {
 	case model.SessionRequest:
 		if r.requestBytes != nil {
-			r.requestBytes.Add(ctx, e.BytesUp)
+			r.requestBytes.Add(ctx, e.BytesUp, metric.WithAttributes(modelAttr(e)))
 		}
-	case model.SessionResponse:
+	case model.SessionResponse, model.SessionDenied:
+		attrs := metric.WithAttributes(modelAttr(e))
 		if r.requests != nil {
-			r.requests.Add(ctx, 1, metric.WithAttributes(attribute.String("status_class", statusClass(e.StatusCode))))
+			r.requests.Add(ctx, 1, metric.WithAttributes(modelAttr(e), attribute.String("status_class", statusClass(e.StatusCode))))
 		}
 		if r.duration != nil {
-			r.duration.Record(ctx, e.Duration.Seconds())
+			r.duration.Record(ctx, e.Duration.Seconds(), attrs)
 		}
 		if r.ttfb != nil && e.Ttfb > 0 {
-			r.ttfb.Record(ctx, e.Ttfb.Seconds())
+			r.ttfb.Record(ctx, e.Ttfb.Seconds(), attrs)
 		}
 		if r.responseBytes != nil {
-			r.responseBytes.Add(ctx, e.BytesDown)
+			r.responseBytes.Add(ctx, e.BytesDown, attrs)
 		}
 	}
+}
+
+// modelAttr is the "model" attribute for e: the inference model when e is an inference row
+// (e.Inference set), empty otherwise — a proxied non-inference request still counts, just under
+// an empty model label rather than being dropped.
+func modelAttr(e *model.SessionEvent) attribute.KeyValue {
+	m := ""
+	if e.Inference != nil {
+		m = e.Inference.Model
+	}
+	return attribute.String("model", m)
 }
 
 // statusClass buckets an HTTP status into "2xx"/"4xx"/"5xx", or "unknown" for 0 (not yet known —
