@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -444,7 +445,8 @@ func planUnrouteClaudeCode(env *setupEnv) []removal {
 // time the user reads it, so its fix is by hand. Uninstall cannot read that
 // file, so the fix reads the entry: "written" names each key and the value Cortex
 // set, so a key holding another value is kept. An entry from before v0.9.0 has no
-// "written", and its keys are Cortex's while they point at Cortex, as disable reads it.
+// "written", and its keys are Cortex's while they point at Cortex or hold the value
+// an older enable wrote for a retired key, as disable reads it.
 func keepOlderEntry(env *setupEnv, rel, state string) removal {
 	entry := "the record's entry for " + rel
 	remove := `remove each "env" key whose value is still the one under "written" in that entry, and keep any that differ`
@@ -452,6 +454,9 @@ func keepOlderEntry(env *setupEnv, rel, state string) removal {
 	if e := recordFor(st, rel); e != nil && e.Written == nil {
 		remove = `remove each "env" key whose "prior" in that entry is null, if it still points at Cortex's proxy or at ` +
 			env.tilde(filepath.Join(env.cortexDir, "ca"))
+		for _, k := range slices.Sorted(maps.Keys(retiredKeys)) {
+			remove += ", or is " + k + "=" + retiredKeys[k]
+		}
 	}
 	fix := []string{
 		"in " + rel + ", " + remove,
