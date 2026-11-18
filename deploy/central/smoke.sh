@@ -58,16 +58,17 @@ push() {
 }
 
 expect_2xx() { case "$2" in 2??) pass "$1 ($2)";; *) bad "$1: got $2, want 2xx";; esac; }
+expect_401() { if [ "$2" = 401 ]; then pass "$1 (401)"; else bad "$1: got $2, want 401"; fi; }
 
 code=$(push https /cortex "$work/h-cortex" "$run_id-cortex");     expect_2xx "cortex push with token" "$code"
 code=$(push https /context-guru "$work/h-cg" "$run_id-cg");       expect_2xx "context-guru push with token" "$code"
 
 code=$(push https /cortex - "$run_id-none")
-[ "$code" = 401 ] && pass "cortex push with no token (401)" || bad "cortex push with no token: got $code, want 401"
+expect_401 "cortex push with no token" "$code"
 code=$(push https /cortex "$work/h-wrong" "$run_id-wrong")
-[ "$code" = 401 ] && pass "cortex push with a wrong token (401)" || bad "cortex push with a wrong token: got $code, want 401"
+expect_401 "cortex push with a wrong token" "$code"
 code=$(push https /context-guru "$work/h-cortex" "$run_id-cross")
-[ "$code" = 401 ] && pass "context-guru push with the cortex token (401)" || bad "context-guru push with the cortex token: got $code, want 401"
+expect_401 "context-guru push with the cortex token" "$code"
 
 code=$(push http /cortex "$work/h-cortex" "$run_id-http")
 case "$code" in 2??) bad "plain-http push was accepted ($code)";; *) pass "plain-http push not accepted ($code)";; esac

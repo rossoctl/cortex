@@ -766,6 +766,8 @@ startup: a reload that changes `enabled` (as resolved) or a weight is refused, a
 
 Cortex can push the accountant's savings counters to a central OpenTelemetry collector. **It
 sends nothing until you set a URL.** `agentop setup` does not set one.
+The central collector, its URL and how to get a token are in
+[`deploy/central/README.md`](../deploy/central/README.md#point-a-proxy-at-it).
 
 ```yaml
 metrics_push:
