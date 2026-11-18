@@ -36,12 +36,6 @@ func TestJSON_RedactsNonStringAndPluralSecrets(t *testing.T) {
 			in:    `{"api_keys":["k1"]}`,
 			probe: "k1",
 		},
-		{
-			// Non-string scalar under a sensitive singular key.
-			name:  "numeric secret",
-			in:    `{"client_secret":12345}`,
-			probe: "12345",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

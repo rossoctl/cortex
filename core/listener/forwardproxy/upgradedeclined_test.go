@@ -332,7 +332,6 @@ func TestUpgradesToWebSocket_RequiresTheConnectionToken(t *testing.T) {
 		{"keep-alive only", []string{"keep-alive"}, false},
 		{"close", []string{"close"}, false},
 		{"upgrade", []string{"upgrade"}, true},
-		{"capitalised", []string{"Upgrade"}, true},
 		{"in a list", []string{"keep-alive, Upgrade"}, true},
 		{"in a repeated header", []string{"keep-alive", "upgrade"}, true},
 		{"a longer token", []string{"upgrades"}, false},

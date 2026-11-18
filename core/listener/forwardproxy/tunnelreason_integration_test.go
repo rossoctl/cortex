@@ -414,29 +414,6 @@ func TestHangUpAlsoSeedsTheSkip(t *testing.T) {
 	}
 }
 
-// TestPassthroughReasonNeverEmpty: the fallback must be the sentinel, never "".
-// An empty reason is how a BRIDGED row is marked, so an unmapped passthrough would
-// render as an em dash and read as "we decrypted this" — the opposite of the truth.
-func TestPassthroughReasonNeverEmpty(t *testing.T) {
-	// Every reason Classify can DECLINE with must map to something non-empty. "" is
-	// excluded on purpose: Classify pairs it with Terminate, so it is not a
-	// passthrough at all and empty is the right answer there — asserted separately
-	// below rather than lumped in here, which is what made this test contradict the
-	// behaviour it was written to protect.
-	for _, why := range append([]string{"a-reason-nobody-mapped"}, tlsbridge.ClassifyReasons...) {
-		if got := passthroughReason(why); got == "" {
-			t.Errorf("passthroughReason(%q) = %q; an empty reason renders as BRIDGED", why, got)
-		}
-	}
-	if got := passthroughReason(""); got != "" {
-		t.Errorf(`passthroughReason("") = %q, want "" — Classify pairs "" with Terminate, `+
-			"so the caller bridges and bridgeServe records the outcome", got)
-	}
-	if got := passthroughReason("a-reason-nobody-mapped"); got != pipeline.TunnelPassthroughUnknown {
-		t.Errorf("unmapped reason = %q, want the sentinel %q", got, pipeline.TunnelPassthroughUnknown)
-	}
-}
-
 // trustingClient is a real TLS client that DOES trust the bridge CA, so it completes
 // the forged handshake. It sends a request and reads the reply so ServeConn has
 // something to serve, then closes.

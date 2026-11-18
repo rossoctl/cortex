@@ -58,17 +58,6 @@ func TestDecision_DefaultPortsWhenNil(t *testing.T) {
 	}
 }
 
-func TestSkipSet_AutoSkip(t *testing.T) {
-	s := NewSkipSet()
-	if s.Contains("h") {
-		t.Fatal("empty set should not contain h")
-	}
-	s.Fail("h")
-	if !s.Contains("h") {
-		t.Error("Fail then Contains failed")
-	}
-}
-
 func TestSkipSet_TTLExpires(t *testing.T) {
 	s := NewSkipSet()
 	s.ttl = 20 * time.Millisecond // same-package test can tighten the CAP
@@ -130,6 +119,9 @@ func TestDefaultPassthrough_CoversTheToolsThatCannotBeConfigured(t *testing.T) {
 		// proxy.golang.org redirects module zips here; without it `go mod download`
 		// still failed on one host after every other Go host was skipped.
 		"storage.googleapis.com",
+		// The Claude Code updater's ~226MB binary: bridged, it hit the buffered
+		// response path's 10MB cap and `claude update` answered 502.
+		"downloads.claude.ai",
 	} {
 		if v, reason := d.Classify(host, 443, tlsHello); v != Passthrough || reason != "skip" {
 			t.Errorf("%s: got (%v,%q), want (Passthrough,\"skip\")", host, v, reason)
@@ -261,6 +253,9 @@ func window(t *testing.T, s *SkipSet, host string) time.Duration {
 // time, repeatedly.
 func TestSkipSet_SucceedClears(t *testing.T) {
 	s := NewSkipSet()
+	if s.Contains("h") {
+		t.Fatal("empty set should not contain h")
+	}
 	s.Fail("h")
 	if !s.Contains("h") {
 		t.Fatal("Fail did not skip the host")
@@ -463,28 +458,6 @@ func TestSkipSet_TransientDoesNotShortenAnEarnedWindow(t *testing.T) {
 	s.mu.RUnlock()
 	if n != 4 {
 		t.Errorf("failures = %d after a transient failure, want the earned 4", n)
-	}
-}
-
-// TestDefaultPassthrough_ClaudeCodeUpdater: the Claude Code updater fetches a
-// ~226MB binary from downloads.claude.ai, which belongs in the same category as
-// every other entry here — a developer tool pulling a large artifact that no
-// plugin can read. It is neither an inference nor a tool endpoint, so the
-// "NEVER add" rule above does not reach it.
-//
-// Bridging it was not merely wasteful: it put the download on the buffered
-// response path, where the 10MB cap answered 502 and `claude update` could not
-// succeed through the proxy at all.
-func TestDefaultPassthrough_ClaudeCodeUpdater(t *testing.T) {
-	d := mustDecision(t, DecisionOpts{}) // nil SkipHosts -> DefaultPassthroughHosts
-	tlsHello := []byte{0x16, 0x03, 0x01, 0x00, 0x05}
-	if v, reason := d.Classify("downloads.claude.ai", 443, tlsHello); v != Passthrough || reason != "skip" {
-		t.Errorf("downloads.claude.ai: got (%v,%q), want (%v,%q)", v, reason, Passthrough, "skip")
-	}
-	// The inference endpoint must stay bridged — that is where the parsers and
-	// the token accounting live.
-	if v, _ := d.Classify("api.anthropic.com", 443, tlsHello); v != Terminate {
-		t.Errorf("api.anthropic.com: got %v, want %v (must stay bridged)", v, Terminate)
 	}
 }
 

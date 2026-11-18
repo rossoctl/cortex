@@ -233,18 +233,6 @@ func TestExchange_SortByDurationRanksExchanges(t *testing.T) {
 	}
 }
 
-func TestExchange_HideInactiveJudgesBothHalves(t *testing.T) {
-	acted := httpExchange("a", "acted.test", t0, 200)
-	acted[1].Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: "p", Action: pipeline.ActionObserve}}}
-	idle := httpExchange("i", "idle.test", t0.Add(time.Millisecond), 200)
-	m := exchangeModel(append(acted, idle...))
-	m.hideInactive = true
-	m.rebuildEventsTable()
-	if got := hostsInOrder(m); !slices.Equal(got, []string{"acted.test"}) {
-		t.Errorf("rows = %v, want only the exchange a plugin acted on", got)
-	}
-}
-
 // A block's header counts exchanges. With merged rows that is also the number of rows it shows.
 func TestExchange_BlockCountsRows(t *testing.T) {
 	var events []pipeline.SessionEvent

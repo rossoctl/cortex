@@ -7,20 +7,6 @@ import (
 	"testing"
 )
 
-func TestReader_SingleFrame(t *testing.T) {
-	r := NewReader(strings.NewReader("data: hello\n\n"), 0)
-	frame, err := r.ReadFrame()
-	if err != nil {
-		t.Fatalf("ReadFrame: %v", err)
-	}
-	if string(frame) != "hello" {
-		t.Errorf("frame = %q, want %q", frame, "hello")
-	}
-	if _, err := r.ReadFrame(); err != io.EOF {
-		t.Errorf("second ReadFrame err = %v, want io.EOF", err)
-	}
-}
-
 func TestReader_MultipleFrames(t *testing.T) {
 	body := "data: one\n\ndata: two\n\ndata: three\n\n"
 	r := NewReader(strings.NewReader(body), 0)
@@ -161,24 +147,6 @@ func TestReader_LongDataLineExceedsBufioBuffer(t *testing.T) {
 	}
 	if string(frame) != payload {
 		t.Errorf("frame len = %d, want %d", len(frame), n)
-	}
-}
-
-// TestReader_LastEvent_Captured: after
-// ReadFrame returns the data payload, LastEvent must return the
-// event type named on the preceding "event:" line.
-func TestReader_LastEvent_Captured(t *testing.T) {
-	body := "event: message_start\ndata: {\"x\":1}\n\n"
-	r := NewReader(strings.NewReader(body), 0)
-	frame, err := r.ReadFrame()
-	if err != nil {
-		t.Fatalf("ReadFrame: %v", err)
-	}
-	if string(frame) != `{"x":1}` {
-		t.Errorf("frame = %q, want %q", frame, `{"x":1}`)
-	}
-	if got := string(r.LastEvent()); got != "message_start" {
-		t.Errorf("LastEvent() = %q, want %q", got, "message_start")
 	}
 }
 

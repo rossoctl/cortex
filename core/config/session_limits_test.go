@@ -17,12 +17,6 @@ func TestSessionLimits(t *testing.T) {
 		want SessionLimits
 	}{
 		{
-			// The default that matters most: an operator who has not set max_events gets
-			// a store that never evicts an event from a live session.
-			name: "unset",
-			want: SessionLimits{TTL: 0, MaxEvents: 0, MaxSessions: 100},
-		},
-		{
 			name: "max_events set is honoured verbatim",
 			in:   SessionConfig{MaxEvents: 250},
 			want: SessionLimits{MaxEvents: 250, MaxSessions: 100},
@@ -44,10 +38,12 @@ func TestSessionLimits(t *testing.T) {
 			// max_sessions: 0 is indistinguishable from unset on a plain int, so it
 			// resolves to the default rather than to the "unlimited" the store would
 			// apply if it were ever handed a zero. Honouring it would delete the default
-			// for everyone who left the field alone.
-			name: "max_sessions zero resolves to the default, not unlimited",
+			// for everyone who left the field alone. Unset max_events also passes through:
+			// an operator who has not set it gets a store that never evicts an event from a
+			// live session.
+			name: "unset, and max_sessions zero resolves to the default, not unlimited",
 			in:   SessionConfig{MaxSessions: 0},
-			want: SessionLimits{MaxSessions: 100},
+			want: SessionLimits{TTL: 0, MaxEvents: 0, MaxSessions: 100},
 		},
 		{
 			name: "negative max_sessions resolves to the default too",
@@ -98,22 +94,17 @@ func TestSessionLimits_LogAttrs(t *testing.T) {
 		want []any
 	}{
 		{
-			name: "defaults",
-			lim:  SessionLimits{MaxSessions: 100},
-			want: []any{"expiry", "never", "maxEvents", "unlimited", "maxSessions", "100"},
-		},
-		{
-			name: "all set",
-			lim:  SessionLimits{TTL: 30 * time.Minute, MaxEvents: 500, MaxSessions: 7},
-			want: []any{"expiry", "30m0s", "maxEvents", "500", "maxSessions", "7"},
-		},
-		{
 			// Only MaxEvents gets an "unlimited": Limits resolves every max_sessions
 			// <= 0 to 100, so a zero there cannot reach LogAttrs and is not rendered
 			// as anything.
 			name: "defaults, as Limits produces them",
 			lim:  SessionLimits{MaxEvents: 0, MaxSessions: 100},
 			want: []any{"expiry", "never", "maxEvents", "unlimited", "maxSessions", "100"},
+		},
+		{
+			name: "all set",
+			lim:  SessionLimits{TTL: 30 * time.Minute, MaxEvents: 500, MaxSessions: 7},
+			want: []any{"expiry", "30m0s", "maxEvents", "500", "maxSessions", "7"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

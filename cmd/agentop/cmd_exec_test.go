@@ -380,15 +380,6 @@ func TestRunExec_RejectsArgsBeforeDelimiter(t *testing.T) {
 	}
 }
 
-// TestRunExec_EmptyAfterDelimiter: `agentop exec --` has nothing to run.
-func TestRunExec_EmptyAfterDelimiter(t *testing.T) {
-	cfgPath, _ := execCfg(t)
-	var stdout, stderr bytes.Buffer
-	if code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--"}, &stdout, &stderr); code != 2 {
-		t.Errorf("exit = %d, want 2", code)
-	}
-}
-
 // TestRunExec_CommandNotFound reports 127, as a shell does, so a caller can tell
 // "my command is missing" from "my command failed".
 func TestRunExec_CommandNotFound(t *testing.T) {

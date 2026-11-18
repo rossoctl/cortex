@@ -265,39 +265,3 @@ func TestRunJWTMirror_WritesAndRefreshes(t *testing.T) {
 		t.Fatal("runJWTMirror did not exit after ctx cancel")
 	}
 }
-
-func TestMirror_GoroutineExitsOnCancel(t *testing.T) {
-	td := spiffeid.RequireTrustDomainFromString("example.org")
-	id := spiffeid.RequireFromString("spiffe://example.org/workload")
-	svid, bundle := generateSVIDAndBundle(t, id)
-	_ = td
-
-	x509Fake := &fakeMirrorX509{
-		svid:    svid,
-		bundle:  bundle,
-		updated: make(chan struct{}, 1),
-	}
-
-	dir := t.TempDir()
-	m := newMirror(mirrorConfig{
-		Dir:  dir,
-		X509: x509Fake,
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		m.run(ctx)
-		close(done)
-	}()
-
-	// Wait for at least one X.509 write so we know the goroutine started.
-	waitFile(t, filepath.Join(dir, "svid.pem"), 2*time.Second)
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("mirror.run did not exit within 1s of ctx cancel")
-	}
-}

@@ -66,11 +66,8 @@ func currentServiceFixture(t *testing.T, goos string) servicePaths {
 }
 
 // TestServiceIsCurrent_BothPlatforms exercises serviceIsCurrent's platform-dependent
-// clauses from either host. Before #1106 it read runtime.GOOS internally, so the
-// darwin --supervise clause could only be reached on a Mac and the supervisor clause
-// could only ever be driven through one platform's stub — the existing
-// TestServiceIsCurrent (cmd_service_restricted_test.go) skips its --supervise case
-// off darwin for exactly that reason.
+// clauses from either host: the darwin --supervise clause, the Linux praxis clause,
+// and the supervisor clause through each platform's own stub.
 func TestServiceIsCurrent_BothPlatforms(t *testing.T) {
 	// The baseline each case below perturbs. Asserted first, per platform, because a
 	// fixture that was not current to begin with would make every "not current"
@@ -184,13 +181,7 @@ func TestServiceIsCurrent_BothPlatforms(t *testing.T) {
 }
 
 // TestReportInstallSuccess_BothPlatforms pins what each platform's install prints,
-// from either host.
-//
-// TestReportInstallSuccess (cmd_service_recovery_test.go) already covers both
-// healthy outcomes, but only for the host it runs on: its crash-recovery assertion
-// is behind `runtime.GOOS == "darwin"` and its "no supervisor mentioned" assertion
-// behind the negation, so each run verifies one platform and takes the other on
-// faith. Here all four combinations run every time.
+// from either host: all four platform and health combinations run every time.
 func TestReportInstallSuccess_BothPlatforms(t *testing.T) {
 	for _, tc := range []struct {
 		goos    string
@@ -232,8 +223,8 @@ func TestReportInstallSuccess_BothPlatforms(t *testing.T) {
 			if tc.wantNote && !strings.Contains(got, crashRecoveryNote) {
 				t.Errorf("missing the crash-recovery note:\n%s", got)
 			}
-			if !tc.wantNote && strings.Contains(got, crashRecoveryNote) {
-				t.Errorf("prints a note about launchd's supervisor on a systemd host:\n%s", got)
+			if !tc.wantNote && strings.Contains(got, "supervisor") {
+				t.Errorf("mentions a supervisor on a systemd host:\n%s", got)
 			}
 		})
 	}

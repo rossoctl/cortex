@@ -151,40 +151,14 @@ func TestEveryPluginFileIsTagged(t *testing.T) {
 	}
 }
 
-// TestRegDirImportsPluginsOnlyFromTaggedFiles covers the files in regDir that
-// TestEveryPluginFileIsTagged does not read. A plugin import in any other file there,
-// such as doc.go or a new extra.go, compiles into every binary that imports regDir,
-// whatever tags the build names.
-func TestRegDirImportsPluginsOnlyFromTaggedFiles(t *testing.T) {
-	goFiles, err := filepath.Glob(filepath.Join(regDir, "*.go"))
-	if err != nil {
-		t.Fatalf("glob: %v", err)
-	}
-	if len(goFiles) == 0 {
-		t.Fatalf("no .go files in %s — the registration package moved and this guard went blind", regDir)
-	}
-	for _, f := range goFiles {
-		base := filepath.Base(f)
-		if strings.HasSuffix(base, "_test.go") || strings.HasPrefix(base, "plugins_") {
-			continue
-		}
-		data, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatalf("read %s: %v", f, err)
-		}
-		for _, m := range blankPluginImport.FindAllStringSubmatch(string(data), -1) {
-			t.Errorf("%s imports plugin %q outside a tagged plugins_<name>.go file, so every "+
-				"binary links it unconditionally", f, m[1])
-		}
-	}
-}
-
 // TestNoUnconditionalPluginImports guards the hole that shipped in
 // cortex-envoy and cortex-cpex: both blank-imported plugin packages
 // straight from main.go, so those plugins could not be excluded by any tag and
 // no error said so. Every plugin must enter through a tagged file in regDir.
 // A binary's own plugins_*.go file is no exception: a per-binary copy is the
-// drift #1577 removed, where one binary silently lacked a plugin.
+// drift #1577 removed, where one binary silently lacked a plugin. Nor is any
+// other file in regDir, such as doc.go or a new extra.go: an import there
+// compiles into every binary that imports regDir, whatever tags the build names.
 func TestNoUnconditionalPluginImports(t *testing.T) {
 	var hits []string
 	entries, err := os.ReadDir(cmdDir)

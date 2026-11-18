@@ -424,6 +424,9 @@ func TestFetchCmd_NoTemplatesWhenCatalogNil(t *testing.T) {
 	if msg.Err != nil {
 		t.Fatalf("FetchCmd err: %v", msg.Err)
 	}
+	if msg.Fetched == nil {
+		t.Fatal("FetchedMsg.Fetched is nil")
+	}
 	body, err := os.ReadFile(msg.TempPath)
 	if err != nil {
 		t.Fatalf("read tempfile: %v", err)

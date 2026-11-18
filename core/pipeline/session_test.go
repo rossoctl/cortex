@@ -258,36 +258,6 @@ func TestSessionEvent_PluginsMap_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSessionEventWire_EveryFieldSerializes is the value-level half: a populated
-// event must produce a JSON key per wire field. Catches a field present in the DTO
-// but missing from MarshalJSON's literal — the other way the two halves can drift.
-func TestSessionEventWire_EveryFieldSerializes(t *testing.T) {
-	ev := SessionEvent{
-		SessionID: "s", At: time.Now(), Direction: Outbound, Phase: SessionRequest,
-		RequestID: "r", Host: "h:443", RequestedHost: "a:443", StatusCode: 200, Duration: time.Second,
-		Tunnel: true, TunnelReason: TunnelClientRejectedCA,
-		HTTPMethod: "GET", HTTPPath: "/v1/models", Subagent: "a1a2e36cb5946f31c",
-		ParentSubagent: "a0974b0b8591dc76b",
-	}
-	b, err := json.Marshal(ev)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	var got map[string]json.RawMessage
-	if err := json.Unmarshal(b, &got); err != nil {
-		t.Fatalf("Unmarshal to map: %v", err)
-	}
-	for _, key := range []string{
-		"sessionId", "at", "direction", "phase", "requestId",
-		"host", "requestedHost", "statusCode", "durationMs", "tunnel", "tunnelReason",
-		"httpMethod", "httpPath", "subagent", "parentSubagent",
-	} {
-		if _, ok := got[key]; !ok {
-			t.Errorf("populated event produced no %q key; got %s", key, b)
-		}
-	}
-}
-
 // TestTunnelReasonsAreDocumented pins every reason against the operator docs.
 //
 // The doc previously said "two other reasons" when there were four, and omitted

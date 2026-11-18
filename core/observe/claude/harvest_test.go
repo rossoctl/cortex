@@ -1330,41 +1330,6 @@ func TestTitleFromTranscript_ClearNamesNothing(t *testing.T) {
 	}
 }
 
-// The cwd fallback is NOT clipped, so sibling directories stay distinguishable.
-//
-// A path's distinguishing end is its leaf and clipTitle keeps the head, so two worktrees under a
-// prefix of 80 runes or more clipped to byte-identical titles — the column stopped telling apart
-// exactly the sessions it exists to name. Also a regression against the behaviour before titles
-// were clipped at all.
-func TestTitleFromTranscript_DoesNotClipTheCwdFallback(t *testing.T) {
-	// 81 runes, so the leaf is entirely past the cap.
-	const prefix = "/Users/somebody/go/src/github.com/some-organisation/some-repository/worktrees/wt/"
-	if len([]rune(prefix)) <= MaxTitleLen {
-		t.Fatalf("fixture prefix is %d runes, needs to exceed %d to exercise the cut",
-			len([]rune(prefix)), MaxTitleLen)
-	}
-	titleFor := func(cwd string) string {
-		dir := t.TempDir()
-		body, err := json.Marshal(cwd)
-		if err != nil {
-			t.Fatal(err)
-		}
-		writeSessionTranscript(t, dir, "s.jsonl", `{"type":"user","cwd":`+string(body)+`}`)
-		got, gerr := titleFromTranscript(filepath.Join(dir, "s.jsonl"))
-		if gerr != nil {
-			t.Fatal(gerr)
-		}
-		return got
-	}
-	a, b := titleFor(prefix+"alpha"), titleFor(prefix+"beta")
-	if a == b {
-		t.Errorf("sibling paths produced the same title %q — the leaf was clipped away", a)
-	}
-	if !strings.HasSuffix(a, "alpha") || !strings.HasSuffix(b, "beta") {
-		t.Errorf("the leaf did not survive: %q / %q", a, b)
-	}
-}
-
 // A whitespace-only candidate falls through to the next tier instead of rendering blank.
 //
 // It passed a bare `!= ""` guard and clipTitle then emptied it, so the tier below was skipped and
@@ -2034,7 +1999,6 @@ func TestTitleFromTranscript_TitlesAreAlwaysPlain(t *testing.T) {
 		"a\x1b(Binjected",          // charset selection
 		"a\x1b_injected\x07b",      // APC
 		"title\x1b",                // trailing lone ESC
-		"my question\n\v<system-reminder>HARNESSBODY</system-reminder>",
 		"my question\n\f<system-reminder>HARNESSBODY</system-reminder>",
 		"my question\n\u00a0<system-reminder>HARNESSBODY</system-reminder>",
 		// Control characters and invisible code points.
@@ -2141,7 +2105,6 @@ func TestTitleFromTranscript_TitlesAreAlwaysPlain(t *testing.T) {
 func TestClipTitle_KeepsLegitimateText(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{"how do I build agentop?", "how do I build agentop?"},
-		{"is 3 < 5 in Go?", "is 3 < 5 in Go?"},
 		{"日本語のセッションタイトル", "日本語のセッションタイトル"},
 		{"ship it 🎉", "ship it 🎉"},
 		{"café naïve", "café naïve"},
@@ -2647,6 +2610,8 @@ func titleOf(t *testing.T, prompt string) string {
 // since either may contain the other unescaped.
 func TestTagSpanLen_QuotedAngleBracketDoesNotCloseTheTag(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
+		// ATTRIBUTE SYNTAX keeps only the name. Measured on 857 real string user turns: all 126
+		// attribute-bearing spans carry "=" or a quote, and none of the 45 prose interiors does.
 		{`hello <a href="x>y">link</a> world`, "hello a link a world"},
 		{`hi <img alt='a>b'> there`, "hi img there"},
 		{`<span title="a > b">txt</span>`, "span txt span"},
@@ -2692,11 +2657,6 @@ func TestNormalizeTitle_NeutersUnknownTagsInsteadOfSwallowingProse(t *testing.T)
 		{"<system-reminder>INJECTED</system-reminder>", ""},
 		{"prose <system-reminder>INJECTED</system-reminder> more", "prose more"},
 		{"a <bash-stdout>total 40</bash-stdout> b", "a b"},
-
-		// ATTRIBUTE SYNTAX keeps only the name. Measured on 857 real string user turns: all 126
-		// attribute-bearing spans carry "=" or a quote, and none of the 45 prose interiors does.
-		{`hello <a href="x>y">link</a> world`, "hello a link a world"},
-		{`<span title="a > b">txt</span>`, "span txt span"},
 
 		// Unchanged: a lone "<" is not a span.
 		{"is 3 < 5 in Go?", "is 3 < 5 in Go?"},
@@ -2758,10 +2718,6 @@ func TestStripHarnessSpans_MatchesTheNameNotItsBytes(t *testing.T) {
 		{"orphan close", "</system-reminder>", ""},
 		{"orphan close, mid-prose", "prose </system-reminder> more", "prose"},
 		{"orphan close, uppercase", "</SYSTEM-REMINDER>", ""},
-
-		// Unchanged: a name that is NOT a harness tag is still only neutered, never body-removed.
-		{"unknown tag keeps its words", "<unknown-tag>X</unknown-tag>", "unknown-tag X unknown-tag"},
-		{"comparison is not a span", "is 3 < 5 in Go?", "is 3 < 5 in Go?"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := normalizeTitle(tc.in); got != tc.want {

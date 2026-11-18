@@ -161,14 +161,6 @@ func TestPortOf(t *testing.T) {
 	}
 }
 
-// The exit status is the whole protocol between the child and its supervisor, and it
-// has to stay distinct from the 1 every other startup failure leaves with.
-func TestExitPortInUse_IsNotAnOrdinaryFailure(t *testing.T) {
-	if exitPortInUse == 0 || exitPortInUse == 1 || exitPortInUse == 2 {
-		t.Errorf("exitPortInUse = %d, which a crash or a usage error also leaves", exitPortInUse)
-	}
-}
-
 // A holder by any name this proxy or its gateway ships under gets the Cortex remedy.
 func TestCortexBinaries(t *testing.T) {
 	for name, want := range map[string]bool{

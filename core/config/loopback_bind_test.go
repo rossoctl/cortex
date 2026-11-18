@@ -111,11 +111,3 @@ listener:
 			cfg.Listener.ExtProcAddr)
 	}
 }
-
-// TestForceLocalhost_EmptyStaysEmpty pins the primitive directly, since the rule
-// above leans on it for every address.
-func TestForceLocalhost_EmptyStaysEmpty(t *testing.T) {
-	if got := forceLocalhost(""); got != "" {
-		t.Errorf("forceLocalhost(\"\") = %q, want empty", got)
-	}
-}

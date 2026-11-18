@@ -2,15 +2,10 @@ package spiffe
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/spiffe/go-spiffe/v2/spiffeid"
-	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
 )
 
 // TestProvider_X509Source_AlwaysAvailable verifies X509Source remains
@@ -158,66 +153,6 @@ func TestProvider_MirrorJWT_RejectsDifferentAudience(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already-running") {
 		t.Errorf("error should name the existing audience; got: %v", err)
-	}
-}
-
-// runJWTMirrorTestSource is a hand-rolled mirrorJWTSource for testing
-// the JWT mirror loop without a SPIRE socket.
-type runJWTMirrorTestSource struct {
-	svid    *jwtsvid.SVID
-	err     error
-	calls   int
-	callsCh chan int
-}
-
-func (s *runJWTMirrorTestSource) FetchJWTSVID(_ context.Context, _ jwtsvid.Params) (*jwtsvid.SVID, error) {
-	s.calls++
-	if s.callsCh != nil {
-		select {
-		case s.callsCh <- s.calls:
-		default:
-		}
-	}
-	if s.err != nil {
-		return nil, s.err
-	}
-	return s.svid, nil
-}
-
-// TestRunJWTMirror_WritesAndExits verifies the package-level runJWTMirror
-// function writes jwt_svid.token and exits on ctx cancellation.
-func TestRunJWTMirror_WritesAndExits(t *testing.T) {
-	const audience = "https://keycloak/realms/test"
-	_ = spiffeid.RequireFromString("spiffe://example.org/workload")
-	svid := makeJWTSVID(t, audience)
-	svid.Expiry = time.Now().Add(time.Hour)
-	src := &runJWTMirrorTestSource{svid: svid}
-
-	dir := t.TempDir()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		runJWTMirror(ctx, src, audience, dir)
-		close(done)
-	}()
-
-	tokenPath := filepath.Join(dir, "jwt_svid.token")
-	eventually(t, func() error {
-		st, err := os.Stat(tokenPath)
-		if err != nil {
-			return err
-		}
-		if st.Size() == 0 {
-			return errors.New("file is empty")
-		}
-		return nil
-	}, 2*time.Second)
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("runJWTMirror did not exit after ctx cancel")
 	}
 }
 

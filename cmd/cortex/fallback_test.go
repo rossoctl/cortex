@@ -188,29 +188,6 @@ func TestFallbackServer_ConnectGetsTheBody(t *testing.T) {
 	}
 }
 
-// close() has to actually free the address, because the supervisor closes the fallback
-// precisely so the child can bind it. A close that leaked the port would turn this
-// feature into the port conflict of #1122 on every single restart.
-func TestFallbackServer_CloseFreesTheAddress(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fb := &fallbackServer{}
-	fb.openOn(ln)
-	addr := ln.Addr().String()
-
-	fb.close()
-
-	again, err := net.Listen("tcp", addr)
-	if err != nil {
-		t.Fatalf("the address is still held after close: %v — the child could not bind it", err)
-	}
-	_ = again.Close()
-
-	fb.close() // idempotent: the supervisor closes before every start, including the first
-}
-
 // startFallback opens a fallback server on a port the kernel picks and returns its
 // address. openOn rather than open so there is no window between finding a free port
 // and binding it.

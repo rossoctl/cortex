@@ -107,27 +107,6 @@ func TestPrecisionRule_CentsWhereScannedFourDecimalsForOneRequest(t *testing.T) 
 	}
 }
 
-// The sessions table reads in cents too, through its own ladder rather than through moneyTotal.
-//
-// A SEPARATE ASSERTION because it is a separate code path: sessionMoneyCell formats from micros
-// directly, so nothing above would catch it drifting back to four decimals. The half-cent case is
-// the one that proves it goes through formatUSDTotalMicros rather than a "%.2f" of its own —
-// 1_005_000 micros is exactly $1.005 and the float form prints "$1.00".
-func TestPrecisionRule_TheSessionsTableReadsInCents(t *testing.T) {
-	for _, tc := range []struct {
-		micros int64
-		want   string
-	}{
-		{1_060_100, "$1.06"},
-		{1_005_000, "$1.01"},
-		{20, "<$0.01"},
-	} {
-		if got := sessionMoneyCell(tc.micros, false, sessionsMoneyWidth); got != tc.want {
-			t.Errorf("sessionMoneyCell(%d) = %q, want %q", tc.micros, got, tc.want)
-		}
-	}
-}
-
 // The markers ride on either precision, since they are a claim about the figure rather than a
 // part of it. Splitting formatting out of moneyAmount must not have dropped them.
 func TestMarkMoney_WrapsEitherPrecision(t *testing.T) {

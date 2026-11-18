@@ -23,7 +23,10 @@ func TestPassthroughReason(t *testing.T) {
 		{"port", pipeline.TunnelPassthroughPort},
 		{"non-tls", pipeline.TunnelPassthroughNonTLS},
 		{"skip", pipeline.TunnelPassthroughHost},
+		// Classify pairs "" with Terminate: not a passthrough, so no reason.
 		{"", ""},
+		// An unmapped reason is the sentinel, never "", which marks a BRIDGED row.
+		{"a-reason-nobody-mapped", pipeline.TunnelPassthroughUnknown},
 	} {
 		if got := passthroughReason(tc.why); got != tc.want {
 			t.Errorf("passthroughReason(%q) = %q, want %q", tc.why, got, tc.want)

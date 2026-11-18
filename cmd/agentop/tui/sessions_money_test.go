@@ -72,6 +72,7 @@ func TestSessionMoneyCell_NeverAssertsFreeOrARefund(t *testing.T) {
 		{name: "a negative micro is still a refund", micros: -1, want: emptyCell},
 		{name: "real cost", micros: 36_577_700, want: "$36.58"},
 		{name: "real saving", micros: 366_100, want: "$0.37"},
+		{name: "cents, not four decimals", micros: 1_060_100, want: "$1.06"},
 		// Sub-cent but real: formatUSDTotalMicros' floor, asserted here so a tiny charge cannot
 		// arrive in this column as "$0.00" and read as free. This is the case the cents move put
 		// most at risk — the rung it replaced had no floor of its own.

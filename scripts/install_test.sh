@@ -875,18 +875,15 @@ check "pid_exe_path: /proc/<pid>/exe is preferred (Linux truth)" \
 check "pid_exe_path: a deleted/replaced binary keeps its path, drops ' (deleted)'" \
 	"/home/u/.local/bin/cortex" \
 	"$(with_pid_exe_path '/home/u/.local/bin/cortex (deleted)' '' '')"
-check "pid_exe_path: no /proc -> lsof txt descriptor (the macOS path)" \
+# lsof ORs -p and -d unless -a is passed, so without it the query means "this pid
+# OR any txt descriptor on the system" and head -1 can take another process's
+# executable. On macOS this is the source pre_rename_proxy_running judges, so the
+# wrong path there hides a v0.7.0 proxy from --stop. The stub above emits a
+# foreign record first when -a is missing, so this check also fails if the flag
+# is ever dropped.
+check "pid_exe_path: no /proc -> lsof txt descriptor (the macOS path), ANDed with -a" \
 	"/Users/u/.local/bin/cortex" \
 	"$(with_pid_exe_path '' /Users/u/.local/bin/cortex /ps/path)"
-# Same case, stated as the bug it guards: lsof ORs -p and -d unless -a is passed,
-# so without it the query means "this pid OR any txt descriptor on the system" and
-# head -1 can take another process's executable. On macOS this is the source
-# pre_rename_proxy_running judges, so the wrong path there hides a v0.7.0 proxy
-# from --stop. The stub above emits a foreign record first when -a is
-# missing, so this check is what fails if the flag is ever dropped.
-check "pid_exe_path: the lsof query is ANDed with -a (not 'this pid OR any txt fd')" \
-	"/Users/u/.local/bin/cortex" \
-	"$(with_pid_exe_path '' /Users/u/.local/bin/cortex '')"
 # Belt and braces: pin the flag in the source too, so a refactor that rewrites the
 # invocation cannot quietly lose the conjunction while still passing the stub test.
 check "the lsof executable query passes -a" "1" \

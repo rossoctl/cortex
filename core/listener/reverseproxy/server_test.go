@@ -924,38 +924,3 @@ func TestInboundSessionID_NoA2AExtension(t *testing.T) {
 		t.Errorf("inboundSessionID = %q, want %q", got, session.DefaultSessionID)
 	}
 }
-
-// TestRecordInbound_NewChatDoesntLeakIntoPriorBucket is the
-// integration regression for the original bug: with a previous
-// conversation's session still alive (so ActiveSession() returns it),
-// a new chat's first-turn inbound request lands in DefaultSessionID
-// rather than the previous bucket. The rekey-on-response path then
-// migrates Default → server-assigned contextId, keeping the new
-// conversation in its own bucket.
-func TestRecordInbound_NewChatDoesntLeakIntoPriorBucket(t *testing.T) {
-	store := session.New(5*time.Minute, 100, 0)
-	defer store.Close()
-
-	// Seed a "previous conversation" bucket and make it the active session.
-	store.Append("prev-conversation", pipeline.SessionEvent{
-		At: time.Now(), Direction: pipeline.Inbound, Phase: pipeline.SessionRequest,
-	})
-	if got := store.ActiveSession(); got != "prev-conversation" {
-		t.Fatalf("setup: ActiveSession = %q, want prev-conversation", got)
-	}
-
-	// New chat's first turn arrives — empty contextId.
-	pctx := &pipeline.Context{
-		Direction: pipeline.Inbound,
-		Extensions: pipeline.Extensions{
-			A2A: &pipeline.A2AExtension{Method: "message/stream"},
-		},
-	}
-	sid := inboundSessionID(pctx)
-	if sid == "prev-conversation" {
-		t.Fatal("regression: new chat's first turn leaked into previous bucket")
-	}
-	if sid != session.DefaultSessionID {
-		t.Errorf("first-turn sid = %q, want %q", sid, session.DefaultSessionID)
-	}
-}

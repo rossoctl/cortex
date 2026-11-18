@@ -251,6 +251,13 @@ func TestDeriveError_2xx(t *testing.T) {
 	}
 }
 
+// The request phase has no status yet, and no status is no error.
+func TestDeriveError_NoStatus(t *testing.T) {
+	if got := DeriveError(&Context{}); got != nil {
+		t.Errorf("DeriveError(no status) = %+v, want nil", got)
+	}
+}
+
 func TestDeriveError_BlockedTakesPrecedenceOverStatusCode(t *testing.T) {
 	// A guardrail block returning 200 still produces a "blocked" error —
 	// the failure mode is policy, not the eventual HTTP status.

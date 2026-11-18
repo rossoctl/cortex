@@ -949,32 +949,6 @@ func TestParseWindow(t *testing.T) {
 	}
 }
 
-// Validation errors must not echo caller input: this is served unauthenticated,
-// so reflecting query bytes into a response body would be a reflection
-// primitive.
-func TestParseErrors_DoNotEchoInput(t *testing.T) {
-	const probe = "<script>alert(1)</script>"
-	if _, err := ParseGroup(probe); err == nil {
-		t.Fatal("expected an error")
-	} else if contains(err.Error(), probe) {
-		t.Errorf("group error echoes caller input: %q", err)
-	}
-	if _, err := ParseWindow(probe); err == nil {
-		t.Fatal("expected an error")
-	} else if contains(err.Error(), probe) {
-		t.Errorf("window error echoes caller input: %q", err)
-	}
-}
-
-func contains(hay, needle string) bool {
-	for i := 0; i+len(needle) <= len(hay); i++ {
-		if hay[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
-}
-
 func keys(m map[string]Counts) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

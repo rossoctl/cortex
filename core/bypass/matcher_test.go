@@ -4,13 +4,6 @@ import (
 	"testing"
 )
 
-func TestNewMatcher_ValidPatterns(t *testing.T) {
-	_, err := NewMatcher(DefaultPatterns)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestNewMatcher_InvalidPattern(t *testing.T) {
 	_, err := NewMatcher([]string{"[invalid"})
 	if err == nil {

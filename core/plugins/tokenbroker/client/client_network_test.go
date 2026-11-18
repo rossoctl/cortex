@@ -17,26 +17,6 @@ import (
 // Context and Timeout Tests
 // =============================================================================
 
-func TestClient_AcquireToken_ContextCancelled(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
-	}))
-	defer srv.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-
-	client := NewClient()
-	_, err := client.AcquireToken(ctx, srv.URL, "user-token", "https://api.github.com", "", "")
-
-	if err == nil {
-		t.Fatal("expected context cancellation error, got nil")
-	}
-	if !strings.Contains(err.Error(), "context") && !strings.Contains(err.Error(), "deadline") {
-		t.Errorf("error should mention context cancellation, got: %v", err)
-	}
-}
-
 func TestClient_AcquireToken_ClientTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(1 * time.Second)

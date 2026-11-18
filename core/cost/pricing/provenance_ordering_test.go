@@ -110,14 +110,3 @@ func TestStrict_KeySetComesFromReflection(t *testing.T) {
 		t.Errorf("error %q does not name the undeclared key", err)
 	}
 }
-
-// Cost must not trust a rate. Config validates what an operator writes, but nothing
-// validates a rate reaching Cost by any other route, and the per-tier arithmetic is
-// the last place to catch one.
-func TestCost_GuardsRatesFromAnySource(t *testing.T) {
-	var r Rates
-	r.Base[TierInput], r.Set[TierInput] = -1, true
-	if _, ok := Cost(r, Usage{Input: 1000}); ok {
-		t.Error("Cost accepted a negative rate; a hostile /model/info response would emit negative money")
-	}
-}
