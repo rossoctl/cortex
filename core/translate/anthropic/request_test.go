@@ -126,3 +126,74 @@ func TestDecodeRequest_BadJSON(t *testing.T) {
 		}
 	}
 }
+
+// TestDecodeRequest_KeepsRawBytes checks that raw members are not
+// changed: the encoders send them byte for byte.
+func TestDecodeRequest_KeepsRawBytes(t *testing.T) {
+	const odd = `{ "b":1, "a":[1, 2] }`
+	body := `{"model":"m","odd":` + odd + `,` +
+		`"tools":[{"name":"T","input_schema":` + odd + `,"cache_control":` + odd + `}],` +
+		`"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"T","input":` + odd +
+		`,"cache_control":` + odd + `,"odd":` + odd + `}]}]}`
+	got, err := Protocol{}.DecodeRequest([]byte(body))
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	b := got.Messages[0].Content[0]
+	tool := got.Tools[0]
+	for name, v := range map[string]json.RawMessage{
+		"input":               b.Input,
+		"block cache_control": b.CacheControl,
+		"block extra":         b.Extra["anthropic.odd"],
+		"input_schema":        tool.InputSchema,
+		"tool cache_control":  tool.CacheControl,
+		"request extra":       got.Extra["anthropic.odd"],
+	} {
+		if string(v) != odd {
+			t.Errorf("%s = %s, want %s", name, v, odd)
+		}
+	}
+}
+
+func TestDecodeRequest_Errors(t *testing.T) {
+	for _, body := range []string{
+		`{"model":`,
+		`[]`,
+		`null`,
+		`{"model":5}`,
+		`{"messages":[{"role":"user","content":5}]}`,
+		`{"messages":[{"role":"user","content":[{"text":"no type"}]}]}`,
+		`{"messages":[{"role":"user","content":[{"type":"text","text":5}]}]}`,
+		`{"messages":{}}`,
+		`{"model":"m"} x`,
+		`{"tools":[5]}`,
+	} {
+		_, err := Protocol{}.DecodeRequest([]byte(body))
+		var re *pivot.RequestError
+		if !errors.As(err, &re) {
+			t.Errorf("%s: err = %v, want *pivot.RequestError", body, err)
+			continue
+		}
+		if re.Status != 400 || re.Type != "invalid_request_error" {
+			t.Errorf("%s: got %d %s, want 400 invalid_request_error", body, re.Status, re.Type)
+		}
+	}
+}
+
+// TestDecodeRequest_TypeNotFirst checks a block whose type comes after
+// its other members: a member of another kind still goes to Extra.
+func TestDecodeRequest_TypeNotFirst(t *testing.T) {
+	body := `{"messages":[{"role":"assistant","content":[{"text":"hi","type":"text"},` +
+		`{"input":{"a":1},"text":"t","id":"x","type":"tool_use"}]}]}`
+	got, err := Protocol{}.DecodeRequest([]byte(body))
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	want := []pivot.Block{
+		{Kind: pivot.BlockText, Text: "hi"},
+		{Kind: pivot.BlockToolUse, ID: "x", Input: raw(`{"a":1}`), Extra: pivot.Extra{"anthropic.text": raw(`"t"`)}},
+	}
+	if !reflect.DeepEqual(got.Messages[0].Content, want) {
+		t.Errorf("content = %+v, want %+v", got.Messages[0].Content, want)
+	}
+}

@@ -1,9 +1,11 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/rossoctl/cortex/core/translate/pivot"
 )
@@ -24,13 +26,21 @@ func (Protocol) DecodeRequest(body []byte) (pivot.Request, error) {
 	return req, nil
 }
 
+// walker reads a JSON body in one pass (rule S16). Each member goes
+// straight to its Go field. A nested json.RawMessage layer scans the same
+// bytes again at each level, and a long session has many levels.
+type walker struct {
+	dec  *json.Decoder
+	body []byte
+}
+
+func newWalker(body []byte) *walker {
+	return &walker{dec: json.NewDecoder(bytes.NewReader(body)), body: body}
+}
+
 func decodeRequest(body []byte) (pivot.Request, error) {
-	m, err := object(body)
-	if err != nil {
-		return pivot.Request{}, err
-	}
+	w := newWalker(body)
 	var req pivot.Request
-	var system, messages, tools json.RawMessage
 	var choice *struct {
 		Type            string `json:"type"`
 		Name            string `json:"name"`
@@ -40,22 +50,54 @@ func decodeRequest(body []byte) (pivot.Request, error) {
 		Type         string `json:"type"`
 		BudgetTokens int    `json:"budget_tokens"`
 	}
-	err = errors.Join(
-		take(m, "model", &req.Model),
-		take(m, "system", &system),
-		take(m, "messages", &messages),
-		take(m, "tools", &tools),
-		take(m, "tool_choice", &choice),
-		take(m, "max_tokens", &req.MaxTokens),
-		take(m, "stop_sequences", &req.Stop),
-		take(m, "temperature", &req.Temperature),
-		take(m, "top_p", &req.TopP),
-		take(m, "stream", &req.Stream),
-		take(m, "thinking", &thinking),
-		takeEffort(m, &req.Effort),
-	)
+	err := w.object(false, func(key string) error {
+		switch key {
+		case "model":
+			return w.value(key, &req.Model)
+		case "system":
+			var err error
+			if req.System, err = w.content(); err != nil {
+				return fmt.Errorf("system: %w", err)
+			}
+			return nil
+		case "messages":
+			req.Messages = nil
+			return w.list(key, func() error {
+				msg, err := w.message()
+				req.Messages = append(req.Messages, msg)
+				return err
+			})
+		case "tools":
+			req.Tools = nil
+			return w.list(key, func() error {
+				t, err := w.tool()
+				req.Tools = append(req.Tools, t)
+				return err
+			})
+		case "tool_choice":
+			return w.value(key, &choice)
+		case "max_tokens":
+			return w.value(key, &req.MaxTokens)
+		case "stop_sequences":
+			return w.value(key, &req.Stop)
+		case "temperature":
+			return w.value(key, &req.Temperature)
+		case "top_p":
+			return w.value(key, &req.TopP)
+		case "stream":
+			return w.value(key, &req.Stream)
+		case "thinking":
+			return w.value(key, &thinking)
+		case "output_config":
+			return w.outputConfig(&req)
+		}
+		return w.extra(&req.Extra, key)
+	})
 	if err != nil {
 		return pivot.Request{}, err
+	}
+	if _, err := w.dec.Token(); err != io.EOF {
+		return pivot.Request{}, errors.New("data after the request object")
 	}
 	if choice != nil {
 		req.ToolChoice = &pivot.ToolChoice{Type: choice.Type, Name: choice.Name, DisableParallel: choice.DisableParallel}
@@ -63,229 +105,333 @@ func decodeRequest(body []byte) (pivot.Request, error) {
 	if thinking != nil {
 		req.Thinking = &pivot.Thinking{Type: thinking.Type, BudgetTokens: thinking.BudgetTokens}
 	}
-	if req.System, err = decodeContent(system); err != nil {
-		return pivot.Request{}, fmt.Errorf("system: %w", err)
-	}
-	if req.Messages, err = decodeMessages(messages); err != nil {
-		return pivot.Request{}, err
-	}
-	if req.Tools, err = decodeTools(tools); err != nil {
-		return pivot.Request{}, err
-	}
-	req.Extra = extra(m)
 	return req, nil
 }
 
-// takeEffort moves output_config.effort to effort. The other members of
-// output_config stay in m, so they go to Extra as anthropic.output_config.
-func takeEffort(m map[string]json.RawMessage, effort *string) error {
-	var cfg map[string]json.RawMessage
-	if err := take(m, "output_config", &cfg); err != nil || cfg == nil {
-		return err
-	}
-	if err := take(cfg, "effort", effort); err != nil {
+// outputConfig moves output_config.effort to effort. The other members of
+// output_config go to Extra as anthropic.output_config.
+func (w *walker) outputConfig(req *pivot.Request) error {
+	var rest map[string]json.RawMessage
+	err := w.object(true, func(key string) error {
+		if key == "effort" {
+			return w.value(key, &req.Effort)
+		}
+		return w.rest(&rest, key)
+	})
+	if err != nil {
 		return fmt.Errorf("output_config.%w", err)
 	}
-	if len(cfg) > 0 {
-		m["output_config"], _ = json.Marshal(cfg) // a map of raw JSON that was just parsed
-	}
+	setRest(&req.Extra, "output_config", rest)
 	return nil
 }
 
-func decodeMessages(raw json.RawMessage) ([]pivot.Message, error) {
-	var items []json.RawMessage
-	if err := json.Unmarshal(orNull(raw), &items); err != nil {
-		return nil, fmt.Errorf("messages: %w", err)
-	}
-	var out []pivot.Message
-	for i, item := range items {
-		m, err := object(item)
-		if err != nil {
-			return nil, fmt.Errorf("messages[%d]: %w", i, err)
+func (w *walker) message() (pivot.Message, error) {
+	var msg pivot.Message
+	err := w.object(false, func(key string) error {
+		switch key {
+		case "role":
+			return w.value(key, &msg.Role)
+		case "content":
+			var err error
+			if msg.Content, err = w.content(); err != nil {
+				return fmt.Errorf("content: %w", err)
+			}
+			return nil
 		}
-		var msg pivot.Message
-		var content json.RawMessage
-		if err := errors.Join(take(m, "role", &msg.Role), take(m, "content", &content)); err != nil {
-			return nil, fmt.Errorf("messages[%d]: %w", i, err)
-		}
-		if msg.Content, err = decodeContent(content); err != nil {
-			return nil, fmt.Errorf("messages[%d].content: %w", i, err)
-		}
-		msg.Extra = extra(m)
-		out = append(out, msg)
-	}
-	return out, nil
+		return w.extra(&msg.Extra, key)
+	})
+	return msg, err
 }
 
-// decodeContent reads content that is a string (one text block) or a list
-// of blocks.
-func decodeContent(raw json.RawMessage) ([]pivot.Block, error) {
-	if isNull(raw) {
-		return nil, nil
-	}
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return []pivot.Block{{Kind: pivot.BlockText, Text: s}}, nil
-	}
-	var items []json.RawMessage
-	if err := json.Unmarshal(raw, &items); err != nil {
-		return nil, errors.New("must be a string or a list of blocks")
-	}
-	out := make([]pivot.Block, 0, len(items))
-	for i, item := range items {
-		b, err := decodeBlock(item)
-		if err != nil {
-			return nil, fmt.Errorf("[%d]: %w", i, err)
-		}
-		out = append(out, b)
-	}
-	return out, nil
-}
-
-func decodeBlock(raw json.RawMessage) (pivot.Block, error) {
-	m, err := object(raw)
+// content reads content that is a string (one text block) or a list of
+// blocks.
+func (w *walker) content() ([]pivot.Block, error) {
+	t, err := w.dec.Token()
 	if err != nil {
-		return pivot.Block{}, err
+		return nil, err
 	}
+	switch t := t.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		return []pivot.Block{{Kind: pivot.BlockText, Text: t}}, nil
+	case json.Delim:
+		if t != '[' {
+			break
+		}
+		out := []pivot.Block{}
+		for i := 0; w.dec.More(); i++ {
+			b, err := w.block()
+			if err != nil {
+				return nil, fmt.Errorf("[%d]: %w", i, err)
+			}
+			out = append(out, b)
+		}
+		_, err := w.dec.Token()
+		return out, err
+	}
+	return nil, errors.New("must be a string or a list of blocks")
+}
+
+// block reads one content block. Which members a block has depends on its
+// type. When type is not the first member, the block is read once as raw
+// JSON to find its type, and then read again.
+func (w *walker) block() (pivot.Block, error) {
 	var b pivot.Block
 	var kind string
-	if err := errors.Join(take(m, "type", &kind), takeRaw(m, "cache_control", &b.CacheControl)); err != nil {
+	src := w
+	if !w.typeFirst() {
+		var raw json.RawMessage
+		if err := w.dec.Decode(&raw); err != nil {
+			return b, err
+		}
+		var head struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			return b, err
+		}
+		kind, src = head.Type, newWalker(raw)
+	}
+	err := src.object(false, func(key string) error {
+		switch key {
+		case "type":
+			return src.value(key, &kind)
+		case "cache_control":
+			return src.raw(&b.CacheControl)
+		}
+		ok, err := src.blockMember(&b, pivot.BlockKind(kind), key)
+		if !ok {
+			return src.extra(&b.Extra, key)
+		}
+		if err != nil {
+			return fmt.Errorf("%s block: %w", kind, err)
+		}
+		return nil
+	})
+	if err != nil {
 		return pivot.Block{}, err
 	}
 	if kind == "" {
 		return pivot.Block{}, errors.New("a block has no type")
 	}
 	b.Kind = pivot.BlockKind(kind)
-	switch b.Kind {
-	case pivot.BlockText:
-		err = take(m, "text", &b.Text)
-	case pivot.BlockImage, pivot.BlockDocument:
-		err = takeSource(m, &b)
-	case pivot.BlockToolUse:
-		err = errors.Join(take(m, "id", &b.ID), take(m, "name", &b.Name), takeRaw(m, "input", &b.Input))
-	case pivot.BlockToolResult:
-		var content json.RawMessage
-		err = errors.Join(take(m, "tool_use_id", &b.ToolUseID), take(m, "content", &content), take(m, "is_error", &b.IsError))
-		if err == nil {
-			b.Content, err = decodeContent(content)
-		}
-	case pivot.BlockThinking:
-		err = errors.Join(take(m, "thinking", &b.Text), take(m, "signature", &b.Signature))
-	case pivot.BlockRedactedThinking:
-		err = take(m, "data", &b.Data)
-	}
-	if err != nil {
-		return pivot.Block{}, fmt.Errorf("%s block: %w", kind, err)
-	}
-	b.Extra = extra(m)
 	return b, nil
 }
 
-// takeSource reads the source of an image or a document. The members of
-// source that the pivot has no place for stay in m as source.
-func takeSource(m map[string]json.RawMessage, b *pivot.Block) error {
-	var src map[string]json.RawMessage
-	if err := take(m, "source", &src); err != nil || src == nil {
-		return err
+// typeFirst tells if the next value is an object with type as its first
+// member. Every known client writes type first. A value that is not an
+// object also gives true: object then refuses it.
+func (w *walker) typeFirst() bool {
+	rest := bytes.TrimLeft(w.body[w.dec.InputOffset():], " \t\r\n,")
+	if len(rest) == 0 || rest[0] != '{' {
+		return true
 	}
-	if err := errors.Join(
-		take(src, "type", &b.SourceType),
-		take(src, "media_type", &b.MediaType),
-		take(src, "data", &b.Data),
-		take(src, "url", &b.URL),
-	); err != nil {
+	return bytes.HasPrefix(bytes.TrimLeft(rest[1:], " \t\r\n"), []byte(`"type"`))
+}
+
+// blockMember reads the member key of a block of this kind. It gives
+// false, and reads nothing, when the kind has no such member.
+func (w *walker) blockMember(b *pivot.Block, kind pivot.BlockKind, key string) (bool, error) {
+	switch kind {
+	case pivot.BlockText:
+		if key == "text" {
+			return true, w.value(key, &b.Text)
+		}
+	case pivot.BlockImage, pivot.BlockDocument:
+		if key == "source" {
+			return true, w.source(b)
+		}
+	case pivot.BlockToolUse:
+		switch key {
+		case "id":
+			return true, w.value(key, &b.ID)
+		case "name":
+			return true, w.value(key, &b.Name)
+		case "input":
+			return true, w.raw(&b.Input)
+		}
+	case pivot.BlockToolResult:
+		switch key {
+		case "tool_use_id":
+			return true, w.value(key, &b.ToolUseID)
+		case "is_error":
+			return true, w.value(key, &b.IsError)
+		case "content":
+			var err error
+			if b.Content, err = w.content(); err != nil {
+				return true, fmt.Errorf("content: %w", err)
+			}
+			return true, nil
+		}
+	case pivot.BlockThinking:
+		switch key {
+		case "thinking":
+			return true, w.value(key, &b.Text)
+		case "signature":
+			return true, w.value(key, &b.Signature)
+		}
+	case pivot.BlockRedactedThinking:
+		if key == "data" {
+			return true, w.value(key, &b.Data)
+		}
+	}
+	return false, nil
+}
+
+// source reads the source of an image or a document. The members of
+// source that the pivot has no place for go to Extra as
+// anthropic.source.
+func (w *walker) source(b *pivot.Block) error {
+	var rest map[string]json.RawMessage
+	err := w.object(true, func(key string) error {
+		switch key {
+		case "type":
+			return w.value(key, &b.SourceType)
+		case "media_type":
+			return w.value(key, &b.MediaType)
+		case "data":
+			return w.value(key, &b.Data)
+		case "url":
+			return w.value(key, &b.URL)
+		}
+		return w.rest(&rest, key)
+	})
+	if err != nil {
 		return fmt.Errorf("source.%w", err)
 	}
-	if len(src) > 0 {
-		m["source"], _ = json.Marshal(src) // a map of raw JSON that was just parsed
-	}
+	setRest(&b.Extra, "source", rest)
 	return nil
 }
 
-func decodeTools(raw json.RawMessage) ([]pivot.Tool, error) {
-	var items []json.RawMessage
-	if err := json.Unmarshal(orNull(raw), &items); err != nil {
-		return nil, fmt.Errorf("tools: %w", err)
+func (w *walker) tool() (pivot.Tool, error) {
+	var t pivot.Tool
+	err := w.object(false, func(key string) error {
+		switch key {
+		case "name":
+			return w.value(key, &t.Name)
+		case "description":
+			return w.value(key, &t.Description)
+		case "input_schema":
+			return w.raw(&t.InputSchema)
+		case "type":
+			return w.value(key, &t.Type)
+		case "cache_control":
+			return w.raw(&t.CacheControl)
+		}
+		return w.extra(&t.Extra, key)
+	})
+	if t.Type == "custom" { // Anthropic's name for a function tool
+		t.Type = ""
 	}
-	var out []pivot.Tool
-	for i, item := range items {
-		m, err := object(item)
-		if err != nil {
-			return nil, fmt.Errorf("tools[%d]: %w", i, err)
-		}
-		var t pivot.Tool
-		if err := errors.Join(
-			take(m, "name", &t.Name),
-			take(m, "description", &t.Description),
-			takeRaw(m, "input_schema", &t.InputSchema),
-			take(m, "type", &t.Type),
-			takeRaw(m, "cache_control", &t.CacheControl),
-		); err != nil {
-			return nil, fmt.Errorf("tools[%d]: %w", i, err)
-		}
-		if t.Type == "custom" { // Anthropic's name for a function tool
-			t.Type = ""
-		}
-		t.Extra = extra(m)
-		out = append(out, t)
-	}
-	return out, nil
+	return t, err
 }
 
-// object parses a JSON object into its members.
-func object(raw []byte) (map[string]json.RawMessage, error) {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil, err
+// object reads a JSON object and calls member with each member name.
+// member must read the value. A null is the same as an empty object when
+// nullOK is true, and an error when it is false.
+func (w *walker) object(nullOK bool, member func(key string) error) error {
+	t, err := w.dec.Token()
+	if err != nil {
+		return err
 	}
-	if m == nil {
-		return nil, errors.New("must be a JSON object")
-	}
-	return m, nil
-}
-
-// take parses the member key of m into dst and deletes it from m. A
-// missing member leaves dst unchanged.
-func take(m map[string]json.RawMessage, key string, dst any) error {
-	raw, ok := m[key]
-	if !ok {
+	if t == nil && nullOK {
 		return nil
 	}
-	delete(m, key)
-	if err := json.Unmarshal(raw, dst); err != nil {
+	if t != json.Delim('{') {
+		return errors.New("must be a JSON object")
+	}
+	for w.dec.More() {
+		t, err := w.dec.Token()
+		if err != nil {
+			return err
+		}
+		key, _ := t.(string) // a member name, as the object has no other tokens here
+		if err := member(key); err != nil {
+			return err
+		}
+	}
+	_, err = w.dec.Token()
+	return err
+}
+
+// list reads a JSON list, or a null, and calls item for each item. item
+// must read the item.
+func (w *walker) list(key string, item func() error) error {
+	t, err := w.dec.Token()
+	if err != nil {
+		return fmt.Errorf("%s: %w", key, err)
+	}
+	if t == nil {
+		return nil
+	}
+	if t != json.Delim('[') {
+		return fmt.Errorf("%s: must be a list", key)
+	}
+	for i := 0; w.dec.More(); i++ {
+		if err := item(); err != nil {
+			return fmt.Errorf("%s[%d]: %w", key, i, err)
+		}
+	}
+	_, err = w.dec.Token()
+	return err
+}
+
+// value reads the next value into dst. A null leaves dst unchanged.
+func (w *walker) value(key string, dst any) error {
+	if err := w.dec.Decode(dst); err != nil {
 		return fmt.Errorf("%s: %w", key, err)
 	}
 	return nil
 }
 
-// takeRaw moves the member key of m to dst as raw JSON. A null member
+// raw reads the next value into dst with its bytes unchanged. A null
 // gives nil.
-func takeRaw(m map[string]json.RawMessage, key string, dst *json.RawMessage) error {
-	raw, ok := m[key]
-	delete(m, key)
-	if ok && !isNull(raw) {
-		*dst = raw
+func (w *walker) raw(dst *json.RawMessage) error {
+	var r json.RawMessage
+	if err := w.dec.Decode(&r); err != nil {
+		return err
+	}
+	if string(r) != "null" {
+		*dst = r
 	}
 	return nil
 }
 
-// extra gives the members left in m as Extra keys, or nil when none.
-func extra(m map[string]json.RawMessage) pivot.Extra {
-	if len(m) == 0 {
-		return nil
+// extra reads the next value into e under anthropic.<key>.
+func (w *walker) extra(e *pivot.Extra, key string) error {
+	var r json.RawMessage
+	if err := w.dec.Decode(&r); err != nil {
+		return fmt.Errorf("%s: %w", key, err)
 	}
-	e := make(pivot.Extra, len(m))
-	for k, v := range m {
-		e[extraPrefix+k] = v
+	if *e == nil {
+		*e = pivot.Extra{}
 	}
-	return e
+	(*e)[extraPrefix+key] = r
+	return nil
 }
 
-func isNull(raw json.RawMessage) bool { return len(raw) == 0 || string(raw) == "null" }
-
-func orNull(raw json.RawMessage) json.RawMessage {
-	if len(raw) == 0 {
-		return json.RawMessage("null")
+// rest reads the next value into m under key.
+func (w *walker) rest(m *map[string]json.RawMessage, key string) error {
+	var r json.RawMessage
+	if err := w.dec.Decode(&r); err != nil {
+		return fmt.Errorf("%s: %w", key, err)
 	}
-	return raw
+	if *m == nil {
+		*m = map[string]json.RawMessage{}
+	}
+	(*m)[key] = r
+	return nil
+}
+
+// setRest puts the leftover members of a nested object in e as one JSON
+// object under anthropic.<key>.
+func setRest(e *pivot.Extra, key string, rest map[string]json.RawMessage) {
+	if len(rest) == 0 {
+		return
+	}
+	if *e == nil {
+		*e = pivot.Extra{}
+	}
+	(*e)[extraPrefix+key], _ = json.Marshal(rest) // a map of raw JSON that was just read
 }
