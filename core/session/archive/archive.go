@@ -337,10 +337,10 @@ func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *mode
 	if a.closed.Load() {
 		return
 	}
-	// A flagged event of a session the writer has not marked yet is never dropped (#1923): the
-	// writer's mark is the opt-out's only state, so losing the event would lose the opt-out.
-	// Read before a.mu, which the reader index never nests inside.
-	mustDeliver := e.NoRecord && session.IsConversation(sessionID) && !a.markedInIndex(sessionID)
+	// A flagged event of a conversation is never dropped (#1923): the writer's mark is the
+	// opt-out's only state, and a DELETE, CLEAR or prune still queued may be about to remove it,
+	// so no event may assume the session is already marked. See deliver.
+	mustDeliver := e.NoRecord && session.IsConversation(sessionID)
 	a.mu.Lock()
 	if e.Seq > a.lastSeq[sessionID] {
 		a.lastSeq[sessionID] = e.Seq
@@ -367,6 +367,15 @@ func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *mode
 	if starting && !st.queued {
 		o.after = st.after
 	}
+	if mustDeliver {
+		if starting && !st.queued {
+			st.queued = true
+			a.started[sessionID] = st
+		}
+		a.mu.Unlock()
+		a.deliver(o) // outside a.mu: it may wait for the writer, which takes a.mu
+		return
+	}
 	select {
 	case a.ops <- o:
 		if starting && !st.queued {
@@ -375,23 +384,9 @@ func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *mode
 		}
 		a.mu.Unlock()
 	default:
-		if !mustDeliver {
-			a.mu.Unlock()
-			a.dropped.Add(1)
-			a.releaseCapture(o.cap)
-			return
-		}
-		if starting && !st.queued {
-			st.queued = true
-			a.started[sessionID] = st
-		}
 		a.mu.Unlock()
-		// The queue is full, reserve included. Wait for the writer, outside a.mu: the writer
-		// takes a.mu and never the store's lock, so it always makes room. The store's write
-		// lock is held, so no other producer sends in between and the order holds. Privacy over
-		// latency: this waits at most once per opted-out session, and only while the archive is
-		// saturated.
-		a.deliver(o)
+		a.dropped.Add(1)
+		a.releaseCapture(o.cap)
 	}
 }
 
@@ -724,7 +719,12 @@ func (a *Archive) rename(oldID, newID string, after uint64) {
 	if _, err := os.Stat(newDir); err == nil {
 		slog.Warn("session archive: rename target directory exists; keeping history under the old id",
 			"from", oldID, "to", newID)
-		return // a directory the archive does not own: nothing is written into it
+		// newID's next event would build its state on that directory anyway (write), so mark it
+		// there now, as for a taken target: unflagged events under newID must not be recorded.
+		if marked {
+			a.withhold(newID, nil, a.now())
+		}
+		return
 	}
 	if after > 0 && a.renameEntry(s, oldID, newID, newDir, after) {
 		// The history stayed under oldID, whole or in part. If no part moved, newID has no state
@@ -836,6 +836,10 @@ func (a *Archive) renameEntry(s *sessionState, oldID, newID, newDir string, afte
 	}
 	// A CLONE: before was published, and the old id's live fold is Added to from here on.
 	s.meta.Segments, s.meta.Summary, s.meta.UpdatedAt = keep, before.Clone(), latestWrite(keep)
+	if noRec {
+		// before predates the opt-out, so it does not hold the mark; the old id keeps it (#1923).
+		s.meta.Summary.MarkNoRecord()
+	}
 	a.writeMeta(s)
 	if ns.metaDirty {
 		a.writeMeta(ns)

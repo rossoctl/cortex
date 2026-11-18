@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
 
@@ -105,6 +106,81 @@ func TestNoRecord_AFlaggedEventIsNeverDroppedWhileUnmarked(t *testing.T) {
 	if got := onDisk(t, root, "s1"); len(got) != 6 {
 		t.Fatalf("s1 holds %d events, want the 6 recorded before the flag", len(got))
 	}
+}
+
+// A DELETE still queued when a praxis Withhold arrives: the session was marked, but the delete is
+// about to remove the mark, so Withhold must not take "already marked" for granted. The rows
+// ingested after it are withheld.
+func TestNoRecord_WithholdWhileADeleteIsQueued(t *testing.T) {
+	root := t.TempDir()
+	a := openTest(t, root, newClock())
+	r := newRecorder(a)
+	r.record("s1", flagged(synthSession(340, 1, 512))...)
+	settle(a) // marked and published
+	a.gate = make(chan struct{})
+	a.Deleted("s1")                              // queued, not applied yet
+	a.Withhold("s1")                             // a hopped request withholds s1 again
+	r.record("s1", synthSession(341, 1, 512)...) // the gateway's rows, unflagged
+	close(a.gate)
+	if _, err := a.AwaitDelete("s1", 5*time.Second); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	a.Close()
+	if segs := segmentsIn(t, root, "s1"); len(segs) != 0 {
+		t.Fatalf("segments %v, want none: the rows after the delete were archived", segs)
+	}
+}
+
+// The same for a flagged event behind a queued CLEAR: it is delivered, and the session is marked
+// again after the clear.
+func TestNoRecord_FlaggedEventWhileAClearIsQueued(t *testing.T) {
+	root := t.TempDir()
+	a := openTest(t, root, newClock())
+	r := newRecorder(a)
+	r.record("s1", flagged(synthSession(342, 1, 512))...)
+	settle(a)
+	a.gate = make(chan struct{})
+	a.Cleared()
+	evs := synthSession(343, 1, 512)
+	r.record("s1", flagged(evs[:1])...)
+	r.record("s1", evs[1:]...)
+	close(a.gate)
+	if _, err := a.AwaitClear(5 * time.Second); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	a.Close()
+	if segs := segmentsIn(t, root, "s1"); len(segs) != 0 {
+		t.Fatalf("segments %v, want none: the opt-out after the clear was lost", segs)
+	}
+}
+
+// Flagged events wait below the reserve, never in it: the reserve stays for renames, deletes and
+// clears, which a burst of flagged events must not crowd out.
+func TestNoRecord_FlaggedEventsLeaveTheReserveAlone(t *testing.T) {
+	root := t.TempDir()
+	a := openTest(t, root, newClock(), WithQueueDepth(reserve+6))
+	a.gate = make(chan struct{})
+	r := newRecorder(a)
+	r.record("s1", synthSession(344, 2, 512)[:6]...) // up to the reserve
+	// More than the reserve holds, counting the slot the gated writer has already taken off
+	// the queue: if flagged events could use the reserve, they would fill it.
+	evs := make([]pipeline.SessionEvent, reserve+2)
+	for i := range evs {
+		evs[i].NoRecord = true
+	}
+	done := make(chan struct{})
+	go func() {
+		r.record("s2", evs...)
+		close(done)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	a.Rekeyed("s1", "s3") // must still find a reserve slot
+	if got := a.Stats().DroppedRenames; got != 0 {
+		t.Fatalf("dropped %d renames: flagged events took the reserve", got)
+	}
+	close(a.gate)
+	<-done
+	a.Close()
 }
 
 // A rename moves a marked session's mark inside the rename op, so a DELETE queued after it

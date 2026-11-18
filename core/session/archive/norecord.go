@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"log/slog"
 	"path/filepath"
 	"time"
 
@@ -11,8 +12,8 @@ import (
 // THE WRITER OWNS THE OPT-OUT (#1923). A session is withheld when its fold is marked noRecord,
 // and only the writer goroutine marks a fold, in the same FIFO as renames, deletes, clears and
 // prune, so they cannot reorder against it. There is no other copy of the state: RecordCapture
-// never drops a flagged event of a session the writer has not marked yet, and Withhold never
-// drops its op (deliver), so nothing has to be remembered elsewhere until the writer gets to it.
+// never drops a flagged event of a conversation, and Withhold never drops its op (deliver), so
+// nothing has to be remembered elsewhere until the writer gets to it.
 
 // withhold keeps session id out of the archive from now on. It runs on the writer goroutine for an
 // event that asked not to be recorded (SessionEvent.NoRecord, which listeners set only for a
@@ -61,37 +62,49 @@ func (a *Archive) withhold(id string, s *sessionState, now time.Time) {
 // queues is never dropped (deliver), and it precedes those rows in the FIFO, because the store
 // calls this before the request is hopped. It runs under the store's write lock.
 func (a *Archive) Withhold(sessionID string) {
-	if a.closed.Load() || !session.IsConversation(sessionID) || a.markedInIndex(sessionID) {
+	if a.closed.Load() || !session.IsConversation(sessionID) {
 		return
 	}
+	// Every time, also for a session the writer has marked already: a DELETE, CLEAR or prune
+	// still queued may be about to remove that mark. Withholding a marked session is cheap.
 	a.deliver(op{kind: opNoRecord, id: sessionID})
 }
 
-// deliver queues o and, when the queue is full, waits for the writer rather than drop it. Only
-// for the ops an opt-out depends on. The caller holds the store's write lock and must not hold
-// a.mu: the writer takes a.mu, and it never takes the store's lock, so it always makes room. It
-// gives up only when the archive closes.
+// deliver queues o, an op an opt-out depends on, and never drops it: when the queue has no room
+// below the reserve it waits for the writer. The reserve stays for renames, deletes and clears,
+// which must not be crowded out by flagged events.
+//
+// PRIVACY OVER LATENCY, a deliberate trade: while the archive is saturated (its writer a full
+// queue behind, e.g. on a stalled disk) a request of an opted-out session waits here, without
+// bound if the disk never recovers. An unsaturated archive never waits.
+//
+// No deadlock: the caller holds the store's write lock and must not hold a.mu. The writer takes
+// a.mu and never the store's lock, so it keeps draining, also while paused. Only producers that
+// hold the store's lock send, so once there is room below the reserve the send cannot block, and
+// the FIFO order of the store's appends holds. It gives up only when the archive closes, and
+// says so.
 func (a *Archive) deliver(o op) {
-	select {
-	case a.ops <- o:
-		return
-	default:
+	for len(a.ops) >= cap(a.ops)-reserve {
+		select {
+		case <-a.done:
+			a.undelivered(o)
+			return
+		case <-time.After(time.Millisecond):
+		}
 	}
 	select {
 	case a.ops <- o:
 	case <-a.done:
-		a.releaseCapture(o.cap)
+		a.undelivered(o)
 	}
 }
 
-// markedInIndex reports whether the writer has published id as withheld. A false answer can be
-// stale (a mark not published yet), which only makes the caller deliver an op it could have
-// dropped.
-func (a *Archive) markedInIndex(id string) bool {
-	a.idxMu.RLock()
-	defer a.idxMu.RUnlock()
-	e := a.index[id]
-	return e != nil && e.summary.NoRecord
+// undelivered counts and reports an opt-out op lost to the archive closing. No session id: it
+// comes from a client's request header.
+func (a *Archive) undelivered(o op) {
+	a.releaseCapture(o.cap)
+	a.dropped.Add(1)
+	slog.Warn("session archive: closed before a request that asked not to be recorded reached the writer; nothing of it was written")
 }
 
 // withheld reports whether e, an event of id, is to be withheld: it asks it, or the session is
