@@ -43,7 +43,7 @@ func TestTarget(t *testing.T) {
 }
 
 func TestDecodes(t *testing.T) {
-	for name, want := range map[string]bool{Anthropic: true, Chat: false, Responses: true, "unknown": false} {
+	for name, want := range map[string]bool{Anthropic: true, Chat: true, Responses: true, "unknown": false} {
 		if got := Decodes(name); got != want {
 			t.Errorf("Decodes(%q) = %v, want %v", name, got, want)
 		}
@@ -64,7 +64,7 @@ func TestErrorBody(t *testing.T) {
 }
 
 func TestRequest_NoDirection(t *testing.T) {
-	if _, err := Request(Chat, Anthropic, []byte(`{}`), nil); err == nil {
-		t.Error("Request(chat, anthropic) gave no error; neither direction exists")
+	if _, err := Request(Chat, Responses, []byte(`{}`), nil); err == nil {
+		t.Error("Request(chat, responses) gave no error; responses has no request encoder")
 	}
 }
