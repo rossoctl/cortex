@@ -111,7 +111,7 @@ The same binary also runs on a remote machine — a VM, a home server, a pod —
 
 ## Learn more
 
-[Getting started](./docs/getting-started.md) · [Using agentop](./cmd/agentop/README.md#panes) · [Troubleshooting](./docs/troubleshooting.md) · [All docs](./docs/README.md)
+[Getting started](./docs/getting-started.md) · [Using agentop](./docs/using-agentop.md) · [Troubleshooting](./docs/troubleshooting.md) · [All docs](./docs/README.md)
 
 [agentop reference](./cmd/agentop/README.md) ·
 [plugin catalog](./docs/plugin-catalog.md) · [script plugins](./docs/script-plugin.md) ·
