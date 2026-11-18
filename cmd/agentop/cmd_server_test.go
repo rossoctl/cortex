@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,24 +70,28 @@ var testModels = map[string][]string{
 var anyModels = []string{"claude-opus-5-5", "claude-haiku-4-5", "glm-5-3", "nemotron-3"}
 
 // stubServerModels has serverModels answer from lists for the rest of the test, and
-// for a host lists does not name with fallback, or a 401 when fallback is nil.
+// for a host lists does not name with fallback, or a 401 when fallback is nil. It
+// also has probeServer find nothing to write, so add writes only what it is given.
 func stubServerModels(t *testing.T, lists map[string][]string, fallback []string) {
 	t.Helper()
-	prev := serverModels
-	serverModels = func(s routerconfig.Server) ([]string, error) {
+	prev, prevProbe := serverModels, probeServer
+	serverModels = func(s routerconfig.Server) ([]string, string, error) {
 		ep, err := routerconfig.ParseURL(s.URL)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if ids, ok := lists[ep.Host]; ok {
-			return ids, nil
+			return ids, "", nil
 		}
 		if fallback != nil {
-			return fallback, nil
+			return fallback, "", nil
 		}
-		return nil, errors.New("the server answered 401 to its model list")
+		return nil, "", errors.New("the server answered 401 to its model list")
 	}
-	t.Cleanup(func() { serverModels = prev })
+	probeServer = func(context.Context, *http.Client, routerconfig.Server, string, string, bool) (map[string]string, string, error) {
+		return nil, "", nil
+	}
+	t.Cleanup(func() { serverModels, probeServer = prev, prevProbe })
 }
 
 // serverEnvWithSessions is serverEnv with the config's session API at sessionsAddr.

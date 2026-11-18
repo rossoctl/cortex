@@ -302,7 +302,7 @@ func protocolLines(s routerconfig.Server) []string {
 // list now, read with the server's own key, as the router resolves them. A server
 // whose list cannot be read says why rather than showing a model it may not name.
 func resolvedWords(s routerconfig.Server) string {
-	ids, err := serverModels(s)
+	ids, _, err := serverModels(s)
 	if err != nil {
 		return fmt.Sprintf("%s (model list unavailable: %v)", servers.Mapping(s), err)
 	}
@@ -315,17 +315,19 @@ func resolvedWords(s routerconfig.Server) string {
 	return "main " + named(s.Main) + " · helper " + named(s.Helper)
 }
 
-// serverModels is s's model list. A var so tests can stand in for a server.
-var serverModels = func(s routerconfig.Server) ([]string, error) {
+// serverModels is s's model list and the auth header that worked. A var so tests
+// can stand in for a server.
+var serverModels = fetchServerModels
+
+func fetchServerModels(s routerconfig.Server) ([]string, string, error) {
 	ep, err := routerconfig.ParseURL(s.URL)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ids, _, err := routerconfig.FetchModels(ctx, routerconfig.NewModelsClient(), ep,
+	return routerconfig.FetchModels(ctx, routerconfig.NewModelsClient(), ep,
 		routerconfig.Auth{Key: s.Key, Header: s.AuthHeader, Headers: routerconfig.HeaderOf(s.Headers)})
-	return ids, err
 }
 
 // printCheck writes one check as "  ✓ text", wrapped at 80 columns with the
