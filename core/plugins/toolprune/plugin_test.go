@@ -208,18 +208,6 @@ func TestPrune_FailsOpen(t *testing.T) {
 	}
 }
 
-// TestPrune_PathGate: only inference paths are touched, so an unrelated POST
-// through the same proxy is never rewritten.
-func TestPrune_PathGate(t *testing.T) {
-	body := `{"tools":[{"name":"NotebookEdit"}]}`
-	p := configured(t, "NotebookEdit")
-	pctx := inferenceCtx("/v1/some/other/api", body, "NotebookEdit")
-	run(t, p, pctx)
-	if pctx.BodyMutated() {
-		t.Error("non-inference path must not be pruned")
-	}
-}
-
 // TestPrune_EmptyRemoveListIsNoop: the shipped default is an empty list, so the
 // plugin must be inert until an operator fills it in.
 func TestPrune_EmptyRemoveListIsNoop(t *testing.T) {

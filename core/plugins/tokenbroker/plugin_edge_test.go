@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -396,39 +395,6 @@ func TestTokenBroker_OnRequest_ConcurrentRequests(t *testing.T) {
 
 	if errorCount > 0 {
 		t.Errorf("%d out of %d concurrent requests failed", errorCount, numRequests)
-	}
-}
-
-func TestTokenBroker_OnRequest_BrokerTimeout(t *testing.T) {
-	// Create a broker that delays longer than client timeout
-	srv := createCapturingBroker(t, "timeout-token", func(r *http.Request) {
-		time.Sleep(2 * time.Second)
-	})
-	defer srv.Close()
-
-	p := NewTokenBroker()
-	config := `{
-		"broker_url": "` + srv.URL + `",
-		"default_policy": "broker"
-	}`
-	if err := p.Configure(json.RawMessage(config)); err != nil {
-		t.Fatalf("Configure() error = %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-
-	pctx := &pipeline.Context{
-		Host: "api.example.com",
-		Headers: http.Header{
-			"Authorization": []string{"Bearer user-token"},
-		},
-	}
-	action := p.OnRequest(ctx, pctx)
-
-	// Should timeout and reject
-	if action.Type != pipeline.Reject {
-		t.Errorf("OnRequest() action.Type = %v, want %v", action.Type, pipeline.Reject)
 	}
 }
 

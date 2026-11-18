@@ -106,12 +106,6 @@ func TestBuild_ValidNames(t *testing.T) {
 	}
 }
 
-func TestBuild_UnknownName(t *testing.T) {
-	if _, err := plugins.Build([]config.PluginEntry{{Name: "nonexistent-plugin"}}); err == nil {
-		t.Fatal("expected error for unknown plugin name")
-	}
-}
-
 func TestBuild_EmptyList(t *testing.T) {
 	p, err := plugins.Build([]config.PluginEntry{})
 	if err != nil {

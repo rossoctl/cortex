@@ -38,28 +38,6 @@ func TestClient_AcquireToken_Unauthorized(t *testing.T) {
 	}
 }
 
-func TestClient_AcquireToken_Timeout(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusRequestTimeout)
-		w.Write([]byte(`{"error":"timeout","message":"user authorization timed out"}`))
-	}))
-	defer srv.Close()
-
-	client := NewClient()
-	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
-
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	brokerErr, ok := err.(*BrokerError)
-	if !ok {
-		t.Fatalf("expected *BrokerError, got %T", err)
-	}
-	if brokerErr.StatusCode != http.StatusRequestTimeout {
-		t.Errorf("status = %d, want 408", brokerErr.StatusCode)
-	}
-}
-
 func TestClient_AcquireToken_AdditionalStatusCodes(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -69,6 +47,7 @@ func TestClient_AcquireToken_AdditionalStatusCodes(t *testing.T) {
 		{"400 Bad Request", http.StatusBadRequest, true},
 		{"403 Forbidden", http.StatusForbidden, true},
 		{"404 Not Found", http.StatusNotFound, true},
+		{"408 Request Timeout", http.StatusRequestTimeout, true},
 		{"429 Too Many Requests", http.StatusTooManyRequests, true},
 		{"500 Internal Server Error", http.StatusInternalServerError, true},
 		{"502 Bad Gateway", http.StatusBadGateway, true},
@@ -97,18 +76,6 @@ func TestClient_AcquireToken_AdditionalStatusCodes(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestClient_AcquireToken_NetworkError(t *testing.T) {
-	client := NewClient()
-	_, err := client.AcquireToken(context.Background(), "http://invalid-host-that-does-not-exist:9999", "token", "https://api.github.com", "", "")
-
-	if err == nil {
-		t.Fatal("expected network error, got nil")
-	}
-	if !strings.Contains(err.Error(), "token broker request failed") {
-		t.Fatalf("error = %v, want wrapped broker request failure", err)
 	}
 }
 

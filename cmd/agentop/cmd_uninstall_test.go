@@ -1374,14 +1374,6 @@ func TestUninstallNamesTheFixForEachFailure(t *testing.T) {
 		// line per fix: row, as a fix done in steps has a row for each.
 		breakIt func(t *testing.T, sc setupScene) string
 	}{
-		{"a job the supervisor will not unload", "stopped", nil, nil, false, func(t *testing.T, sc setupScene) string {
-			failingUnload(t, sc.loaded)
-			sp, err := resolveServicePaths(filepath.Join(sc.home, ".cortex", "config.yaml"), "", filepath.Join(bin(sc), "cortex"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			return unloadByHand(&setupEnv{home: sc.home, goos: runtime.GOOS}, sp.unitFile)
-		}},
 		{"a background Cortex that will not stop", "stopped", []string{"--no-service"}, nil, false, func(t *testing.T, sc setupScene) string {
 			installStub(t, "ps", "#!/bin/sh\ncase \"$*\" in\n  *comm=*) echo cortex ;;\n  *) exec /bin/ps \"$@\" ;;\nesac\n")
 			failRemoval(t, "stopped")

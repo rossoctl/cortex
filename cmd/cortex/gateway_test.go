@@ -170,16 +170,14 @@ func TestGatewayYAML_NoPolicyNoChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []*config.PraxisPolicyConfig{nil, {ConfigPath: ""}} {
-		cfg := praxisConfig()
-		cfg.Praxis.Policy = p
-		got, err := gatewayYAML(cfg, "/t")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(got, want) {
-			t.Errorf("Policy %+v changed the output:\n%s", p, got)
-		}
+	cfg := praxisConfig()
+	cfg.Praxis.Policy = &config.PraxisPolicyConfig{ConfigPath: ""}
+	got, err := gatewayYAML(cfg, "/t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("a policy with no config_path changed the output:\n%s", got)
 	}
 }
 

@@ -30,6 +30,7 @@ func TestChooseEndpoint(t *testing.T) {
 		{"explicit wins over a live local", explicit, local, true, false, explicit},
 		{"explicit wins under --kubernetes", explicit, local, true, true, explicit},
 		{"live local is taken by default", "", local, true, false, local},
+		// An empty return is what wires up the picker (main sets opts.Lister only then).
 		{"live local is skipped under --kubernetes", "", local, true, true, ""},
 		{"dead local falls to the picker", "", local, false, false, ""},
 		{"dead local falls to the picker under --kubernetes", "", local, false, true, ""},
@@ -92,15 +93,5 @@ func TestObserveHelp_DoesNotAdvertiseATrueDefault(t *testing.T) {
 	}
 	if strings.Contains(out, "(default true)") {
 		t.Errorf("--help advertises a true default; --kubernetes must default to false:\n%s", out)
-	}
-}
-
-// An empty return is what wires up the picker (main sets opts.Lister only then), so
-// "offers the picker" and "chose no endpoint" are the same statement. Asserted
-// separately because that coupling is the flag's entire purpose and is easy to
-// break by making the empty case return a default address instead.
-func TestChooseEndpoint_EmptyMeansPicker(t *testing.T) {
-	if got := chooseEndpoint("", "http://localhost:47601", true, true); got != "" {
-		t.Errorf("a live local Cortex under --kubernetes must still yield the picker, got %q", got)
 	}
 }

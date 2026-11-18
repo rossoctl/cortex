@@ -13,7 +13,7 @@ import (
 // headerMutatorPlugin performs an arbitrary set / overwrite / delete on
 // pctx.Headers during OnRequest. It is the forwardproxy analog of the
 // ext_proc traceRewriterPlugin: the header names are deliberately
-// ordinary (x-api-key, x-drop-me) rather than Authorization, because the
+// ordinary (x-added, x-drop-me) rather than Authorization, because the
 // point of PR #760 is that EVERY plugin header mutation — not just the
 // old Authorization special case — must reach the upstream request. The
 // plugin declares no capabilities: a header write does not need
@@ -114,24 +114,6 @@ func (fx *headerMutatorFixture) do(t *testing.T, setup func(*http.Request)) http
 	return fx.headers()
 }
 
-// TestForwardProxy_ArbitraryHeaderReachesWire is the forwardproxy analog
-// of the ext_proc TestExtProc_Outbound_ArbitraryHeaderReachesWire: a
-// plugin that Sets a non-Authorization header must have that header reach
-// the upstream. Before PR #760, forwardproxy forwarded only Authorization,
-// silently dropping this injected header (e.g. static-inject's x-api-key).
-func TestForwardProxy_ArbitraryHeaderReachesWire(t *testing.T) {
-	fx, cleanup := newHeaderMutatorFixture(t, &headerMutatorPlugin{
-		set: map[string]string{"X-Api-Key": "secret-123"},
-	})
-	defer cleanup()
-
-	// The request carries no X-Api-Key; only the plugin injects it.
-	h := fx.do(t, nil)
-	if got := h.Get("X-Api-Key"); got != "secret-123" {
-		t.Errorf("backend X-Api-Key = %q, want secret-123 (plugin-injected header did not reach the wire)", got)
-	}
-}
-
 // TestForwardProxy_OverwrittenHeaderReachesWire asserts a plugin that
 // Sets an already-present header overwrites the client's value on the
 // forwarded request (set/replace, not append).
@@ -167,7 +149,8 @@ func TestForwardProxy_DeletedHeaderIsRemoved(t *testing.T) {
 // TestForwardProxy_UnchangedHeaderPreserved guards the other direction:
 // a header the client sent that NO plugin touches must still reach the
 // upstream unchanged. This pins that the delete loop only strips headers
-// the plugin actually removed, never a spurious drop of untouched ones.
+// the plugin actually removed, never a spurious drop of untouched ones,
+// and that a header only the plugin set reaches the upstream beside it.
 func TestForwardProxy_UnchangedHeaderPreserved(t *testing.T) {
 	// Plugin mutates an unrelated header so the pipeline runs, but leaves
 	// X-Keep alone.

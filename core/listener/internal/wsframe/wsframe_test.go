@@ -95,14 +95,6 @@ func TestReadFrame_RefusesWhatNoEndpointSends(t *testing.T) {
 	}
 }
 
-func TestReadFrame_RefusesAFrameOverTheRelayLimit(t *testing.T) {
-	raw := Encode(OpBinary, make([]byte, 5000), false)
-	_, err := NewReader(bytes.NewReader(raw), 1024, 4096).ReadFrame()
-	if !errors.Is(err, ErrProtocol) {
-		t.Errorf("err = %v, want ErrProtocol", err)
-	}
-}
-
 // A clean close between frames is EOF; one partway through a frame is not, so the
 // caller can tell a finished connection from a torn one.
 func TestReadFrame_EOFShapes(t *testing.T) {

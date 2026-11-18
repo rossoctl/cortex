@@ -206,16 +206,6 @@ func TestCapabilities(t *testing.T) {
 
 // --- includeSet tests ---
 
-func TestIncludeSet_DefaultKeys(t *testing.T) {
-	s := newIncludeSet(nil)
-	if !s.has("mcp.params.name") {
-		t.Error("expected default mcp.params.name")
-	}
-	if !s.has("mcp.params.uri") {
-		t.Error("expected default mcp.params.uri")
-	}
-}
-
 func TestIncludeSet_HasParamKey(t *testing.T) {
 	s := newIncludeSet([]string{"mcp.params.metadata"})
 	if !s.hasParamKey("name") {

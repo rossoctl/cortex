@@ -78,16 +78,6 @@ func TestResolve_FirstMatchWins(t *testing.T) {
 	}
 }
 
-func TestNewRouter_RejectsDuplicateHost(t *testing.T) {
-	_, err := NewRouter("passthrough", []Route{
-		{Host: "service", Audience: "first"},
-		{Host: "service", Audience: "second"},
-	})
-	if err == nil {
-		t.Error("expected error: the second route repeats a host and can never fire")
-	}
-}
-
 // TestNewRouter_RejectsShadowedRoute covers the hazard the unreachable-route
 // check exists for: resolution is first-match-wins, so a broad early pattern
 // silently swallows everything configured beneath it. A "***" typo or a bare
@@ -108,7 +98,8 @@ func TestNewRouter_RejectsShadowedRoute(t *testing.T) {
 		// in-cluster service name but NOT an FQDN — see
 		// TestNewRouter_AcceptsSingleStarBeforeFQDN.
 		{"*", "github-tool-mcp"},
-		// An earlier pattern that simply covers the later literal.
+		// An earlier pattern that simply covers the later literal, a repeated
+		// host included.
 		{"api.example.com", "api.example.com"},
 		{"*.example.com", "api.example.com"},
 	} {

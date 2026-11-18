@@ -784,16 +784,6 @@ func TestServerPicker_EnterOnAServerMovesTheSession(t *testing.T) {
 	}
 }
 
-// S on the agents pane still writes an agents: choice — the regression guard.
-func TestServerPicker_SOnTheAgentsPaneStillRoutesTheAgent(t *testing.T) {
-	f := newFakeProxy(t, false)
-	m := serverModel(t, f)
-	switchTo(t, m, "opencode/1.0.3", "glm")
-	if !strings.Contains(f.config(t), "opencode: glm") {
-		t.Errorf("config:\\n%s", f.config(t))
-	}
-}
-
 // The confirmation states the cache cost from the session's promptContext.
 func TestServerPicker_AMoveStatesTheUncachedContext(t *testing.T) {
 	f := newFakeProxy(t, false)

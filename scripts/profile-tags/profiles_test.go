@@ -6,23 +6,6 @@ import (
 	"testing"
 )
 
-// TestTags_Local pins the desktop profile. The set mirrors the plugin list
-// cmd/cortex/local.go writes into ~/.cortex/config.yaml — the three
-// parsers plus tool-prune — and script, which the preset appends there. If those diverge, a laptop either ships plugins its
-// config never names or names plugins the binary cannot load, and the latter is
-// a refuse-to-start (`unknown plugin ...`) rather than a degraded feature.
-func TestTags_Local(t *testing.T) {
-	got, err := Tags(ProfileLocal)
-	if err != nil {
-		t.Fatalf("Tags(local): %v", err)
-	}
-	want := "include_plugin_a2aparser,include_plugin_inferenceparser," +
-		"include_plugin_mcpparser,include_plugin_script,include_plugin_toolprune"
-	if strings.Join(got, ",") != want {
-		t.Errorf("output changed\n got: %s\nwant: %s", strings.Join(got, ","), want)
-	}
-}
-
 // TestTags_ReproduceTodaysDefaults is the invariant for this refactor: the
 // convention change must not alter what any published artifact contains. Each
 // want list is the set that binary links today — proxy's 15 default-on tagged

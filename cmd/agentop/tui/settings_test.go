@@ -50,35 +50,6 @@ func TestColumnSelection_AbsentColumnsDefaultOn(t *testing.T) {
 	}
 }
 
-// TestColumnSettings_EnablingAnOptInColumnPersists: turning ON a defaultOn:false column
-// is a deviation too, so it must be written and read back. Recording only the off-list
-// would make it unpersistable — the user would enable the column, close the picker, and
-// find it off again next launch.
-//
-// Exercised through a synthetic column because no real one is default-off any more:
-// BYTES was, until #1309 populated it for ordinary traffic and turned it on. The scheme
-// still has to carry such a column, so this keeps testing it rather than retiring with
-// the last real example.
-func TestColumnSettings_EnablingAnOptInColumnPersists(t *testing.T) {
-	prev := eventColumns
-	t.Cleanup(func() { eventColumns = prev })
-	eventColumns = []eventColumn{
-		{id: colTime, width: 12, defaultOn: true, cell: func(cellContext) string { return "" }},
-		{id: "OPTIONAL", width: 8, defaultOn: false, cell: func(cellContext) string { return "" }},
-	}
-
-	sel := defaultColumnSelection()
-	sel["OPTIONAL"] = true
-	written := columnSettingsFrom(sel)
-	if len(written) != 1 || written[0] != (ColumnSetting{Name: "OPTIONAL", Visible: true}) {
-		t.Fatalf("enabling OPTIONAL wrote %+v, want exactly [{OPTIONAL true}]", written)
-	}
-	back := UserSettings{Events: EventSettings{Columns: written}}.columnSelection()
-	if !back["OPTIONAL"] {
-		t.Error("OPTIONAL was enabled and saved, but reads back off")
-	}
-}
-
 // TestColumnSelection_EmptyConfigIsAllDefaults: the zero value (no file, or a file
 // with no columns key) must be exactly the built-in selection.
 func TestColumnSelection_EmptyConfigIsAllDefaults(t *testing.T) {
@@ -226,6 +197,9 @@ func TestColumnSelection_AbsentHonorsDefaultOn(t *testing.T) {
 // column is as much a deviation as turning a default one off, so it has to survive
 // a save/load. Recording only the off-list would make it unpersistable — the user
 // would enable the column, close the picker, and find it off again next launch.
+//
+// The column is synthetic because no real one is default-off any more; the scheme still
+// has to carry such a column.
 func TestColumnSettings_RoundTripsADefaultOffColumn(t *testing.T) {
 	prev := eventColumns
 	t.Cleanup(func() { eventColumns = prev })

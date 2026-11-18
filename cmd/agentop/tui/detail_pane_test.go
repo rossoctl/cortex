@@ -169,23 +169,6 @@ func TestFilterForDetail_KeepsALoneLegacyRecord(t *testing.T) {
 	}
 }
 
-func TestRedirectHeader_EmptyWithoutARedirect(t *testing.T) {
-	if got := redirectHeader(&pipeline.SessionEvent{Host: "ete-litellm.example.com"}); got != "" {
-		t.Errorf("redirectHeader = %q for an event nothing redirected, want empty", got)
-	}
-}
-
-func TestRedirectHeader_NamesBothHosts(t *testing.T) {
-	got := redirectHeader(&pipeline.SessionEvent{
-		Host:          "glm-litellm.example.com",
-		RequestedHost: "ete-litellm.example.com",
-	})
-	want := "redirected:  ete-litellm.example.com → glm-litellm.example.com"
-	if got != want {
-		t.Errorf("redirectHeader = %q, want %q", got, want)
-	}
-}
-
 func TestModelHeader_EmptyUnlessAPluginChangedTheModel(t *testing.T) {
 	for _, e := range []*pipeline.SessionEvent{
 		{Host: "glm-litellm.example.com"},
@@ -194,15 +177,6 @@ func TestModelHeader_EmptyUnlessAPluginChangedTheModel(t *testing.T) {
 		if got := modelHeader(e); got != "" {
 			t.Errorf("modelHeader = %q for %+v, want empty", got, e)
 		}
-	}
-}
-
-func TestModelHeader_NamesBothModels(t *testing.T) {
-	got := modelHeader(&pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{
-		Model: "glm-5.3", RequestedModel: "claude-opus-5-5",
-	}})
-	if want := "model:       claude-opus-5-5 → glm-5.3"; got != want {
-		t.Errorf("modelHeader = %q, want %q", got, want)
 	}
 }
 

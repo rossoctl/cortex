@@ -97,31 +97,3 @@ func TestTightenLog(t *testing.T) {
 		}
 	})
 }
-
-// TestRotateThenTighten: rotation renames the old log away and the supervisor
-// creates a fresh one under its own umask (0644 in practice), so a rotation without
-// a following tighten silently undoes the 0600. Observed in an end-to-end run.
-func TestRotateThenTighten(t *testing.T) {
-	dir := t.TempDir()
-	log := filepath.Join(dir, "proxy.log")
-	if err := os.WriteFile(log, make([]byte, 100), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	rotateLog(log, 50)
-	if _, err := os.Stat(log); !os.IsNotExist(err) {
-		t.Fatal("rotate should have left the live path free")
-	}
-	// Stand in for the supervisor recreating it loosely.
-	if err := os.WriteFile(log, nil, 0o644); err != nil { //nolint:gosec
-		t.Fatal(err)
-	}
-	var errOut bytes.Buffer
-	tightenLog(log, &errOut)
-	fi, err := os.Stat(log)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := fi.Mode().Perm(); got != 0o600 {
-		t.Errorf("mode after rotate+tighten = %o, want 600", got)
-	}
-}

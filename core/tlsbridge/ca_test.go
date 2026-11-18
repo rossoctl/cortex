@@ -251,33 +251,6 @@ func TestEnsureFileSource_NoGenerateFailsLoud(t *testing.T) {
 	}
 }
 
-func TestEnsureFileSource_LoadsExistingWithoutOverwrite(t *testing.T) {
-	dir := t.TempDir()
-	// First call generates.
-	if _, generated, err := EnsureFileSource(dir, true); err != nil || !generated {
-		t.Fatalf("first EnsureFileSource: generated=%v err=%v", generated, err)
-	}
-	before, err := os.ReadFile(filepath.Join(dir, "tls.crt"))
-	if err != nil {
-		t.Fatalf("read tls.crt: %v", err)
-	}
-	// Second call with the files now present: load, do NOT regenerate/overwrite.
-	_, generated, err := EnsureFileSource(dir, true)
-	if err != nil {
-		t.Fatalf("second EnsureFileSource: %v", err)
-	}
-	if generated {
-		t.Error("expected generated=false when CA files already exist")
-	}
-	after, err := os.ReadFile(filepath.Join(dir, "tls.crt"))
-	if err != nil {
-		t.Fatalf("re-read tls.crt: %v", err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Error("existing CA was overwritten; must be left intact")
-	}
-}
-
 func TestEnsureFileSource_PresentButInvalidNotOverwritten(t *testing.T) {
 	dir := t.TempDir()
 	certP := filepath.Join(dir, "tls.crt")

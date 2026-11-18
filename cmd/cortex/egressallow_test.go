@@ -32,9 +32,6 @@ func TestResolveEgressAllow(t *testing.T) {
 	if got := resolveEgressAllow(nil, env(envEgressAllow, "  ")); got != nil {
 		t.Errorf("blank env: got %v, want nil — off, not an empty-but-armed list", got)
 	}
-	if got := resolveEgressAllow(nil, env(envEgressAllow, "")); got != nil {
-		t.Errorf("unset env: got %v, want nil", got)
-	}
 	if got := resolveEgressAllow(nil, func(string) string { return "" }); got != nil {
 		t.Errorf("nothing configured: got %v, want nil", got)
 	}

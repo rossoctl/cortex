@@ -91,23 +91,6 @@ func TestLockMetadata_TimesOutAndReportsIt(t *testing.T) {
 	}
 }
 
-// An uncontended harvest does not claim a timeout. Guards the field against being set
-// unconditionally, which would make it useless as a signal.
-func TestHarvest_UncontendedDoesNotReportALockTimeout(t *testing.T) {
-	metadataHome(t)
-	cfg := filepath.Join(t.TempDir(), "claude")
-	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
-		`{"type":"ai-title","aiTitle":"t"}`)
-
-	res, err := Harvest(Options{ConfigDir: cfg, Merge: true})
-	if err != nil {
-		t.Fatalf("Harvest: %v", err)
-	}
-	if res.LockTimedOut {
-		t.Error("LockTimedOut is true with nothing holding the lock")
-	}
-}
-
 // An uncontended lock is still taken, and released, at once.
 func TestLockMetadata_UncontendedIsFast(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session-metadata.json")

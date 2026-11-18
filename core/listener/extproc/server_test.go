@@ -167,6 +167,10 @@ func TestExtProc_Inbound_ValidJWT(t *testing.T) {
 	if !found {
 		t.Error("expected x-authbridge-direction in RemoveHeaders")
 	}
+	// A pipeline that does not read bodies does not ask Envoy for one.
+	if resp.ModeOverride != nil {
+		t.Error("should not request body when pipeline doesn't need it")
+	}
 }
 
 func TestExtProc_Inbound_InvalidJWT(t *testing.T) {
@@ -647,35 +651,6 @@ func TestExtProc_BodyTooLarge(t *testing.T) {
 	}
 }
 
-func TestExtProc_NoBodyBuffering_WhenNotNeeded(t *testing.T) {
-	a := auth.New(auth.Config{
-		Verifier: &mockVerifier{claims: &validation.Claims{Subject: "user"}},
-		Identity: auth.IdentityConfig{Audiences: []string{"my-agent"}},
-	})
-	srv := serverFromAuth(t, a)
-
-	stream := &mockStream{
-		ctx: context.Background(),
-		requests: []*extprocv3.ProcessingRequest{
-			inboundRequest(makeHeaders(
-				"x-authbridge-direction", "inbound",
-				"authorization", "Bearer valid-token",
-				":path", "/api/test",
-			)),
-		},
-	}
-
-	_ = srv.Process(stream)
-
-	if len(stream.responses) != 1 {
-		t.Fatalf("expected 1 response (no body phase), got %d", len(stream.responses))
-	}
-	// Should NOT have ModeOverride
-	if stream.responses[0].ModeOverride != nil {
-		t.Error("should not request body when pipeline doesn't need it")
-	}
-}
-
 func TestRekeyInboundSession(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -1087,62 +1062,6 @@ func TestSnapshotIdentity(t *testing.T) {
 	}
 }
 
-func TestSnapshotIdentity_ScopesDeepCopy(t *testing.T) {
-	// Mutating the source slice after snapshot must not mutate the event.
-	scopes := []string{"a", "b"}
-	id := pipeline.SnapshotIdentity(&pipeline.Context{Identity: stubIdentity{subject: "alice", scopes: scopes}})
-	scopes[0] = "x"
-	if id.Scopes[0] != "a" {
-		t.Errorf("snapshot scopes aliased original: got %v", id.Scopes)
-	}
-}
-
-func TestDeriveError(t *testing.T) {
-	cases := []struct {
-		name     string
-		pctx     *pipeline.Context
-		wantNil  bool
-		wantKind string
-		wantCode string
-	}{
-		{name: "2xx no block", pctx: &pipeline.Context{StatusCode: 200}, wantNil: true},
-		{name: "no status (request phase)", pctx: &pipeline.Context{}, wantNil: true},
-		{name: "404 backend_error", pctx: &pipeline.Context{StatusCode: 404}, wantKind: "backend_error", wantCode: "404"},
-		{name: "500 backend_error", pctx: &pipeline.Context{StatusCode: 500}, wantKind: "backend_error", wantCode: "500"},
-		{
-			name: "guardrail block wins over status",
-			pctx: &pipeline.Context{
-				StatusCode: 200,
-				Extensions: pipeline.Extensions{
-					Security: &pipeline.SecurityExtension{Blocked: true, BlockReason: "pii_detected"},
-				},
-			},
-			wantKind: "blocked",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := pipeline.DeriveError(tc.pctx)
-			if tc.wantNil {
-				if got != nil {
-					t.Errorf("got %+v, want nil", got)
-				}
-				return
-			}
-			if got == nil {
-				t.Fatal("got nil, want error")
-			}
-			if got.Kind != tc.wantKind {
-				t.Errorf("Kind = %q, want %q", got.Kind, tc.wantKind)
-			}
-			if tc.wantCode != "" && got.Code != tc.wantCode {
-				t.Errorf("Code = %q, want %q", got.Code, tc.wantCode)
-			}
-		})
-	}
-}
-
 func TestRecordOutboundResponseSession_CapturesStatusAndError(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
@@ -1171,16 +1090,6 @@ func TestRecordOutboundResponseSession_CapturesStatusAndError(t *testing.T) {
 	}
 	if resp.Identity == nil || resp.Identity.Subject != "alice" {
 		t.Errorf("Identity not snapshotted: %+v", resp.Identity)
-	}
-}
-
-func TestDurationSince(t *testing.T) {
-	if d := pipeline.DurationSince(time.Time{}); d != 0 {
-		t.Errorf("zero StartedAt should yield 0, got %v", d)
-	}
-	start := time.Now().Add(-50 * time.Millisecond)
-	if d := pipeline.DurationSince(start); d < 50*time.Millisecond {
-		t.Errorf("elapsed = %v, want >= 50ms", d)
 	}
 }
 

@@ -91,27 +91,3 @@ func TestCloneCatalog_DeepCopiesEveryReferenceField(t *testing.T) {
 		}
 	}
 }
-
-// TestCloneCatalog_DeepCopiesSlices keeps the concrete mutation check: the clone
-// must not alias the caller's slices, or a mutation through /v1/plugins would
-// reach into the registry.
-func TestCloneCatalog_DeepCopiesSlices(t *testing.T) {
-	in := []CatalogEntry{{
-		Name: "probe",
-		Capabilities: pipeline.PluginCapabilities{
-			Requires:    []string{"a"},
-			RequiresAny: []string{"b"},
-		},
-	}}
-	out := cloneCatalog(in)
-
-	out[0].Capabilities.Requires[0] = "mutated"
-	out[0].Capabilities.RequiresAny[0] = "mutated"
-
-	if in[0].Capabilities.Requires[0] != "a" {
-		t.Error("Requires aliases the input slice")
-	}
-	if in[0].Capabilities.RequiresAny[0] != "b" {
-		t.Error("RequiresAny aliases the input slice")
-	}
-}

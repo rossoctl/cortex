@@ -50,12 +50,13 @@ func TestNew_ChainsRequestMutators(t *testing.T) {
 }
 
 // The reader rule is what the one-mutator rule protected, and it holds with any
-// number of mutators: a reader after either of them fails, naming the first.
+// number of mutators: a reader after any of them fails, naming the first.
 func TestNew_RejectsAReaderAfterAnyRequestMutator(t *testing.T) {
 	reader := &stubPlugin{name: "parser", caps: PluginCapabilities{ReadsBody: true}}
 	for name, chain := range map[string][]Plugin{
-		"after both":      {appender("first", "+a"), appender("second", "+b"), reader},
-		"between the two": {appender("first", "+a"), reader, appender("second", "+b")},
+		"after the only one": {appender("first", "+a"), reader},
+		"after both":         {appender("first", "+a"), appender("second", "+b"), reader},
+		"between the two":    {appender("first", "+a"), reader, appender("second", "+b")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := New(chain)

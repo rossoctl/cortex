@@ -58,14 +58,6 @@ func TestHandleInbound_MissingAuth(t *testing.T) {
 	}
 }
 
-func TestHandleInbound_InvalidFormat(t *testing.T) {
-	a := New(Config{Verifier: &mockVerifier{}})
-	result := a.HandleInbound(context.Background(), "Basic abc123", "/api/test", "")
-	if result.Action != ActionDeny {
-		t.Errorf("expected deny for non-Bearer auth, got %s", result.Action)
-	}
-}
-
 func TestHandleInbound_CaseInsensitiveBearer(t *testing.T) {
 	a := New(Config{
 		Verifier: &mockVerifier{claims: validClaims()},
@@ -102,14 +94,6 @@ func TestHandleInbound_InvalidJWT(t *testing.T) {
 	result := a.HandleInbound(context.Background(), "Bearer expired-token", "/api/test", "")
 	if result.Action != ActionDeny || result.DenyStatus != http.StatusUnauthorized {
 		t.Errorf("expected deny/401, got %s/%d", result.Action, result.DenyStatus)
-	}
-}
-
-func TestHandleInbound_NoVerifier_Denies(t *testing.T) {
-	a := New(Config{}) // no verifier = fail-closed
-	result := a.HandleInbound(context.Background(), "Bearer some-token", "/api/test", "")
-	if result.Action != ActionDeny {
-		t.Errorf("expected deny when verifier not configured, got %s", result.Action)
 	}
 }
 

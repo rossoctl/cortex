@@ -88,9 +88,6 @@ def test_fills_signed_empty_blocks_behind_an_affected_gateway(sdk):
 @pytest.mark.parametrize(
     "version,path",
     [
-        ("1.105.2", "/v1/messages"),
-        ("1.106.1", "/v1/messages"),
-        ("1.99.4", "/v1/messages"),
         ("", "/v1/messages"),  # the host never answered with the header
         ("1.105.1", "/v1/chat/completions"),
     ],

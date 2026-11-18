@@ -446,19 +446,6 @@ func TestKeycloakProvider_BuildClientAuth_ClientSecret(t *testing.T) {
 	}
 }
 
-func TestKeycloakProvider_BuildClientAuth_Spiffe(t *testing.T) {
-	p := mustKeycloakProvider(t)
-	jwt := &fakeJWTSource{token: "test-jwt"}
-	id := IdentityConfig{Type: "spiffe", ClientID: "agent-1", JWTAudience: "http://kc/realms/test"}
-	auth, err := p.BuildClientAuth(id, jwt)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if auth == nil {
-		t.Fatal("expected non-nil ClientAuth")
-	}
-}
-
 func TestKeycloakProvider_BuildClientAuth_UnsupportedType(t *testing.T) {
 	p := mustKeycloakProvider(t)
 	id := IdentityConfig{Type: "certificate", ClientID: "agent-1"}

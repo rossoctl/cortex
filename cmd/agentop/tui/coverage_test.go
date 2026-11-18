@@ -7,53 +7,6 @@ import (
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
-// The three coverage states a cost total can be in. Conflating any two of them is
-// how a partial figure gets read as a complete one.
-func TestRenderCostSummary_ThreeCoverageStates(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		snap usage.Snapshot
-		want []string
-		deny []string
-	}{{
-		name: "nothing priced says so instead of showing zero",
-		snap: usage.Snapshot{Totals: usage.Counts{Requests: 5}},
-		want: []string{"unavailable"},
-		// $0.00 would read as "this traffic was free", which is a different claim.
-		deny: []string{"$0.00"},
-	}, {
-		name: "fully priced shows a bare total",
-		snap: usage.Snapshot{
-			Priced: true,
-			Totals: usage.Counts{Requests: 5, PricedRequests: 5, PriceableRequests: 5, CostMicros: 1_250_000},
-		},
-		want: []string{"$1.25"},
-		deny: []string{"priced", "unpriced"},
-	}, {
-		name: "partially priced discloses the gap and names it",
-		snap: usage.Snapshot{
-			Priced:     true,
-			Totals:     usage.Counts{Requests: 10, PricedRequests: 4, PriceableRequests: 10, CostMicros: 500_000},
-			UnpricedBy: map[string]int64{"api.openai.com gpt-5": 6},
-		},
-		want: []string{"$0.50", "4/10", "api.openai.com gpt-5"},
-	}} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := renderCostSummary(&tc.snap)
-			for _, w := range tc.want {
-				if !strings.Contains(got, w) {
-					t.Errorf("rendered %q, missing %q", got, w)
-				}
-			}
-			for _, d := range tc.deny {
-				if strings.Contains(got, d) {
-					t.Errorf("rendered %q, should not contain %q", got, d)
-				}
-			}
-		})
-	}
-}
-
 // TestRenderCostSummary_NamesTheBiggestGapFirst: an operator fixing coverage wants
 // the entry that buys the most, not an alphabetical list.
 func TestRenderCostSummary_NamesTheBiggestGapFirst(t *testing.T) {

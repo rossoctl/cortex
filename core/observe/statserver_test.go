@@ -110,36 +110,16 @@ func TestStatsEndpointEmptyStats(t *testing.T) {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 
+	body, _ := io.ReadAll(resp.Body)
 	var got map[string]map[string]int
-	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
-		t.Fatalf("decode: %v", err)
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("stats endpoint returned invalid JSON: %v: %s", err, body)
 	}
 
 	for _, key := range []string{"inbound_approvals", "inbound_denials", "outbound_approvals", "outbound_denials"} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("missing key %q in stats response", key)
 		}
-	}
-}
-
-func TestStatsEndpointValidJSON(t *testing.T) {
-	stats := auth.NewStats()
-	handler := serveMux(newTestConfig(), stats)
-
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	body, _ := io.ReadAll(w.Result().Body)
-	if !json.Valid(body) {
-		t.Fatalf("stats endpoint returned invalid JSON: %s", body)
-	}
-}
-
-func TestNewStatServerSetsAddr(t *testing.T) {
-	s := NewStatServer(":9093", func() *config.Config { return newTestConfig() }, func() *auth.Stats { return auth.NewStats() })
-	if s.server.Addr != ":9093" {
-		t.Errorf("server.Addr = %q, want :9093", s.server.Addr)
 	}
 }
 

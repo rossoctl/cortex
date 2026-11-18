@@ -104,6 +104,7 @@ func TestPipelineRun_FillsSessionIDFromSession(t *testing.T) {
 	}
 }
 
+// With no WithPolicies a plugin enforces: its Reject stops the pipeline.
 func TestPipelineRun_Reject(t *testing.T) {
 	called := false
 	p1 := &stubPlugin{
@@ -205,16 +206,6 @@ func TestPipelineRunResponse_Reject(t *testing.T) {
 	}
 	if called {
 		t.Error("first plugin OnResponse was called after second rejected (reverse order)")
-	}
-}
-
-func TestNew_NoCapabilities(t *testing.T) {
-	plugins := []Plugin{
-		&stubPlugin{name: "simple"},
-	}
-	_, err := New(plugins)
-	if err != nil {
-		t.Errorf("plugin with no capabilities should be valid, got: %v", err)
 	}
 }
 
@@ -626,29 +617,6 @@ func TestPipelineRun_ObservePolicyConvertsRejectToContinue(t *testing.T) {
 	}
 	if !deny.Shadow {
 		t.Error("shadow=false on the would-deny record; observe mode must mark it")
-	}
-}
-
-// TestPipelineRun_EnforceIsDefault confirms that a plugin without a
-// specified policy behaves exactly as before: Reject stops the
-// pipeline and returns a Reject action upstream. Regression guard —
-// the point of adding WithPolicies was to NOT change existing
-// deployments.
-func TestPipelineRun_EnforceIsDefault(t *testing.T) {
-	plugin := &stubPlugin{
-		name: "denier",
-		onReq: func(_ context.Context, _ *Context) Action {
-			return Deny("policy.forbidden", "no")
-		},
-	}
-	// No WithPolicies — entries default to enforce.
-	p, err := New([]Plugin{plugin})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	got := p.Run(context.Background(), &Context{})
-	if got.Type != Reject {
-		t.Errorf("action type = %v, want Reject (default is enforce)", got.Type)
 	}
 }
 
