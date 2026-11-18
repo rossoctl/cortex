@@ -350,8 +350,9 @@ in this order. The first 200 wins. Each request carries the server's `headers`.
 A 200 with a body that is not a model list stops the fetch with an error. A
 configured `auth_header` is the only header that the fetch sends.
 
-**Bob.** IBM Bob's gateway takes Bob's `x-api-key` and `User-Agent: bob-shell`,
-and serves `chat-completions` under the `/inference` prefix. Use a static Bob API
+**Bob.** IBM Bob's gateway takes Bob's `x-api-key` and `User-Agent: bob-shell`.
+It is expected to serve `chat-completions` under the `/inference` prefix. Nobody
+has run the probe on a live Bob gateway. Use a static Bob API
 key from Bob's settings:
 
 ```sh
@@ -359,7 +360,7 @@ agentop server add bob https://api.us-east.bob.ibm.com/inference --main premium-
 agentop server use bob --agent claude-code
 ```
 
-`agentop server add` writes this entry (see
+`agentop server add` is expected to write this entry (see
 [`agentop server add`](../cmd/agentop/README.md#choosing-an-inference-server-agentop-server)):
 
 ```yaml

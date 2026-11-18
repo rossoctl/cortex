@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
 )
@@ -124,11 +125,22 @@ func noneServed(failed []probeReply, key string) error {
 		return errors.New("no path tried served a protocol; give the protocols with --api <protocol>=<path>")
 	}
 	return fmt.Errorf("every path answered %d: %s. The model or the key is wrong, not the path.",
-		failed[0].status, replyText(head(failed[0].body), key))
+		failed[0].status, cut(replyText(failed[0].body, key), 512))
 }
 
 // head is the first 512 bytes of b.
 func head(b []byte) []byte { return b[:min(len(b), 512)] }
+
+// cut is s up to n bytes, cut at a rune boundary.
+func cut(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
+}
 
 // replyText is b as one line safe to print: valid UTF-8, no control characters,
 // and the key, should the server repeat it, left out.
@@ -152,7 +164,7 @@ type probeMessage struct {
 
 type messagesProbe struct {
 	Model     string         `json:"model"`
-	MaxTokens int            `json:"max_tokens"`
+	MaxTokens int            `json:"max_tokens,omitempty"`
 	Messages  []probeMessage `json:"messages"`
 }
 
@@ -166,7 +178,11 @@ type responsesProbe struct {
 // is a request that got no answer. Its text quotes no part of the URL.
 func probeOnce(ctx context.Context, client *http.Client, u string, s routerconfig.Server, protocol, model, h string) (probeReply, error) {
 	var body any = messagesProbe{Model: model, MaxTokens: 1, Messages: []probeMessage{{Role: "user", Content: "ping"}}}
-	if protocol == "responses" {
+	switch protocol {
+	case "chat-completions":
+		// OpenAI's reasoning models refuse max_tokens here, and the field is optional.
+		body = messagesProbe{Model: model, Messages: []probeMessage{{Role: "user", Content: "ping"}}}
+	case "responses":
 		// Responses can refuse a max_output_tokens of 1.
 		body = responsesProbe{Model: model, MaxOutputTokens: 16, Input: "ping"}
 	}

@@ -1597,7 +1597,8 @@ refusal is believed for an hour, and a session keeps the model it was given.
 
   **The probe.** With no `--api`, `add` finds which protocols the server serves.
   It sends one small request for each candidate path, with the main model, the
-  text `ping` and `max_tokens: 1` (`max_output_tokens: 16` for `responses`):
+  text `ping`, and `max_tokens: 1` for `anthropic-messages`, no output limit for
+  `chat-completions`, and `max_output_tokens: 16` for `responses`:
 
   | Protocol | Candidate paths, in order |
   |---|---|
@@ -1631,8 +1632,8 @@ refusal is believed for an hour, and a session keeps the model it was given.
   agentop server use bob --agent claude-code
   ```
 
-  The probe finds `chat-completions` at `/v1/chat/completions`. The entry that
-  `add` writes is in
+  Nobody has run the probe on a live Bob gateway. It is expected to find
+  `chat-completions` at `/v1/chat/completions`. The expected entry is in
   [the router's doc](../../docs/inference-router-plugin.md#servers-that-serve-another-protocol).
 - **`use <name> --agent <agent>`** routes the agent's new sessions to the server,
   including an agent that has not run yet. **`reset --agent <agent>`** stops

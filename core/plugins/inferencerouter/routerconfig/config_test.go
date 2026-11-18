@@ -584,6 +584,23 @@ func TestFetchModels_KeepsAConfiguredHeader(t *testing.T) {
 	}
 }
 
+// A model_name that is not a string is not read, and the list still decodes.
+func TestFetchModels_NonStringModelName(t *testing.T) {
+	for _, body := range []string{
+		`{"data":[{"id":"a","model_name":7}]}`,
+		`{"data":[{"id":"a","model_name":{"x":1}}]}`,
+		`{"data":[{"id":"a","model_name":null},{"model_name":["b"]}]}`,
+	} {
+		var seen []string
+		srv := modelsRecorder(t, &seen, func(string, string, *http.Request) (int, string) { return 200, body })
+		ep, _ := ParseURL(srv.URL)
+		ids, _, err := FetchModels(context.Background(), srv.Client(), ep, Auth{Key: "k"})
+		if err != nil || fmt.Sprint(ids) != "[a]" {
+			t.Errorf("%s: ids %v, err %v", body, ids, err)
+		}
+	}
+}
+
 func TestFetchModels_BadBodyStops(t *testing.T) {
 	var seen []string
 	srv := modelsRecorder(t, &seen, func(string, string, *http.Request) (int, string) { return 200, "not json" })

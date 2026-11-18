@@ -82,7 +82,7 @@ func TestProbe_ServesAllThree(t *testing.T) {
 	}
 	for path, body := range map[string]string{
 		"/v1/messages":         `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`,
-		"/v1/chat/completions": `{"model":"m","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`,
+		"/v1/chat/completions": `{"model":"m","messages":[{"role":"user","content":"ping"}]}`,
 		"/v1/responses":        `{"model":"m","max_output_tokens":16,"input":"ping"}`,
 	} {
 		if bodies[path] != body {
@@ -294,6 +294,41 @@ func TestProbe_ReplyHidesKeyAndControls(t *testing.T) {
 	}
 	if !strings.Contains(msg, "bad key <key> [31m red") {
 		t.Errorf("err = %q, want the reply with <key>", msg)
+	}
+}
+
+// OpenAI's reasoning models refuse max_tokens on chat completions with a 400.
+func TestProbe_ChatWithoutAnOutputCap(t *testing.T) {
+	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, _ *http.Request) {
+		switch {
+		case p.path == "/v1/chat/completions" && strings.Contains(p.body, "max_tokens"):
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":{"message":"Unsupported parameter: 'max_tokens'"}}`)
+		case p.path == "/v1/chat/completions":
+			io.WriteString(w, chatOK)
+		case p.path == "/v1/responses":
+			io.WriteString(w, responsesOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	api, _, err := runProbe(t, srv, nil, "", false)
+	if err != nil || !maps.Equal(api, map[string]string{"chat-completions": "/v1/chat/completions", "responses": "/v1/responses"}) {
+		t.Errorf("api %v, err %v", api, err)
+	}
+}
+
+// A key that crosses the 512-byte cut of the reply leaves no part in the error.
+func TestProbe_KeyAtTheCutIsHidden(t *testing.T) {
+	const key = "sk-secret-123"
+	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, _ probeReq, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, strings.Repeat("x", 505)+key+" end")
+	})
+	s := routerconfig.Server{URL: srv.URL, Key: key}
+	_, _, err := probeAPI(context.Background(), srv.Client(), s, "m", "authorization", true)
+	if err == nil || strings.Contains(err.Error(), key[:7]) {
+		t.Errorf("err = %v", err)
 	}
 }
 
