@@ -105,6 +105,20 @@ and the test disagree.
 - Who the user was
 - Which tools ran. A record counts them in `toolCallCount`. It never names them.
 
+Tool names are not refused on privacy grounds. A name is low risk, unlike an argument: a
+`Bash` command line is a secret, and arguments stay out permanently. Two other reasons keep
+names out for now:
+
+- A record is a flat list of scalars. A name list would be the first array, which changes
+  the shape every consumer parses.
+- Names alone would not give per-tool latency. A tool result arrives in a later request,
+  and the key that pairs it with its call is the tool-use id, which no record carries. So a
+  name list says only which tools a response asked for.
+
+Use `GET /v1/sessions/{id}/timeline` for names today. It pairs each call with its result by
+tool-use id, and it returns named spans.
+[#1906](https://github.com/rossoctl/cortex/issues/1906) tracks adding names here.
+
 An export is **content-free**. It is **not anonymous**. It keeps hosts, models, session
 ids and timestamps. Together these show who called what, and when. Read an export before
 you send it somewhere.
