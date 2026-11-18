@@ -24,6 +24,12 @@ repos:
         entry: scripts/hooks/commit-msg
         language: script
         stages: [commit-msg]
+      - id: check-doc-links
+        name: Check relative Markdown links and anchors
+        entry: python3 scripts/dev/check-doc-links.py
+        language: system
+        files: \.md$
+        pass_filenames: false
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.10
