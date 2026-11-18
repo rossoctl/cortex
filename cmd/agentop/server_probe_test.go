@@ -350,10 +350,16 @@ func TestProbe_DroppedPathIsNotTheEnd(t *testing.T) {
 // hang answers only when the request is cancelled.
 func hang(r *http.Request) { <-r.Context().Done() }
 
+// probeWithTimeout probes srv as server add does, with per as each request's time.
+func probeWithTimeout(srv *httptest.Server, per time.Duration) (map[string]string, string, error) {
+	client := srv.Client()
+	client.Timeout = per
+	ctx, cancel := context.WithTimeout(context.Background(), probeTotal(per))
+	defer cancel()
+	return probeAPI(ctx, client, routerconfig.Server{URL: srv.URL, Key: "k"}, "m", "", false)
+}
+
 func TestProbe_HungProtocolLeavesTimeForTheNext(t *testing.T) {
-	old := probeProtocolTime
-	probeProtocolTime = 100 * time.Millisecond
-	t.Cleanup(func() { probeProtocolTime = old })
 	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, r *http.Request) {
 		switch {
 		case strings.HasSuffix(p.path, "messages"):
@@ -364,11 +370,26 @@ func TestProbe_HungProtocolLeavesTimeForTheNext(t *testing.T) {
 			http.NotFound(w, nil)
 		}
 	})
-	// A deadline, so the old code fails here and does not hang the suite.
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	api, _, err := probeAPI(ctx, srv.Client(), routerconfig.Server{URL: srv.URL, Key: "k"}, "m", "", false)
+	api, _, err := probeWithTimeout(srv, 100*time.Millisecond)
 	want := map[string]string{"chat-completions": "/v1/chat/completions"}
+	if err != nil || !maps.Equal(api, want) {
+		t.Errorf("api = %v, err = %v; want %v", api, err, want)
+	}
+}
+
+func TestProbe_HungPathLeavesTimeForItsProtocol(t *testing.T) {
+	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, r *http.Request) {
+		switch p.path {
+		case "/v1/messages":
+			hang(r)
+		case "/anthropic/v1/messages":
+			io.WriteString(w, anthropicOK)
+		default:
+			http.NotFound(w, nil)
+		}
+	})
+	api, _, err := probeWithTimeout(srv, 100*time.Millisecond)
+	want := map[string]string{"anthropic-messages": "/anthropic/v1/messages"}
 	if err != nil || !maps.Equal(api, want) {
 		t.Errorf("api = %v, err = %v; want %v", api, err, want)
 	}

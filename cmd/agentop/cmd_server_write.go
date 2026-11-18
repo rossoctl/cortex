@@ -211,9 +211,9 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// With no --api, the probe finds the protocols, and the auth header when it is
 	// not the usual one. A given --auth-header is fixed: the probe does not change it.
 	if len(models.API) == 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		client := routerconfig.NewModelsClient()
 		client.Timeout = 60 * time.Second // a local server can load the model at the first request
+		ctx, cancel := context.WithTimeout(context.Background(), probeTotal(client.Timeout))
 		api, auth, err := probeServer(ctx, client, models, routerconfig.Resolve(models.Main, ids),
 			models.AuthHeader, models.AuthHeader != "")
 		cancel()
