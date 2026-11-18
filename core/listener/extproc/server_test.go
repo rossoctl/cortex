@@ -139,6 +139,8 @@ func TestExtProc_Inbound_ValidJWT(t *testing.T) {
 				"x-authbridge-direction", "inbound",
 				"authorization", "Bearer valid-token",
 				":path", "/api/test",
+				":method", "POST",
+				"content-length", "2",
 			)),
 		},
 	}
