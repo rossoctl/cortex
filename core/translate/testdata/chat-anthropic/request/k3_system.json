@@ -1,0 +1,1 @@
+{"model":"claude-opus-5-5","messages":[{"role":"system","content":"You are OpenCode."},{"role":"developer","content":[{"type":"text","text":"Use tabs."},{"type":"text","text":"Be brief.","cache_control":{"type":"ephemeral"}}]},{"role":"user","content":"hi"}]}

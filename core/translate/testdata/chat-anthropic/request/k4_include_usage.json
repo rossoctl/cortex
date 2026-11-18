@@ -1,0 +1,1 @@
+{"model":"claude-opus-5-5","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]}
