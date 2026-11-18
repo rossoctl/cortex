@@ -796,7 +796,10 @@ metrics_push:
 | `interval` | `METRICS_PUSH_INTERVAL` | `30s` | How often the counters are pushed. |
 
 What is sent: the `llm.savings.*` counters (tokens saved and added by tier and component, their
-dollar value, cache effects, request and check counts) and `llm.proxy.export_failures`. The
+dollar value, cache effects, request and check counts), `llm.proxy.export_failures`, and
+`llm.proxy.info`: a gauge that is always 1, with the build's `version` as its label. It is sent
+on every push, also before the first request, so the central dashboards list an idle machine and
+the `MachineSilent` alert sees when a machine stops pushing. The
 resource carries `service.name=cortex`, `service.version` and `service.instance.id`: a random
 id kept in `~/.cortex/machine-id` (mode 0600), so the collector sees one machine across
 restarts. In a cluster the id is random per process. No prompt, path, host, session or key is
