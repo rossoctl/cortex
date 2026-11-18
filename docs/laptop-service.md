@@ -794,7 +794,7 @@ These sections tell how Cortex works inside. You do not need them for daily use.
 
 ### The supervisor
 
-That restart is the point, though, and it is worth seeing once:
+The proxy is supervised: a killed proxy is restarted within seconds. It is worth seeing once:
 
 ```sh
 kill -9 $(pgrep -f 'cortex --config')             # comes back within ~2s
