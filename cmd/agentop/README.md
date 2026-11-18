@@ -1347,18 +1347,40 @@ refusal is believed for an hour, and a session keeps the model it was given.
 
   The probe runs only in `add`: to probe again, run `add` again.
 
-  **IBM Bob.** For a host that ends in `.bob.ibm.com`, `add` sets
-  `auth_header: x-api-key` and the header `User-Agent: bob-shell`.
-  `--auth-header` replaces the first. A `--header User-Agent=...`, case ignored,
-  replaces the second. Use a static Bob API key from Bob's settings:
+  **A server that needs its own headers.** `add` has no defaults for a vendor.
+  It does not look at the host. When a gateway needs a given auth header or a
+  fixed header, give it with `--auth-header` and `--header`. Give them on the
+  first `add`, because the model list and the probe send them too. Without
+  them, the gateway can refuse each request. Then `add` stops at the model list:
+
+  ```
+  agentop server add: could not read bob's model list: the server answered 403, 403, 403, 403 to its model list. Check its URL and key.
+  ```
+
+  This message names the URL and the key, but a missing header gives it too.
+  Before you change the key, look up which headers the gateway needs.
+
+  **IBM Bob.** Bob's gateway needs two settings:
+
+  | Setting | Flag | Why |
+  |---|---|---|
+  | `auth_header: x-api-key` | `--auth-header x-api-key` | Bob takes its API key as `x-api-key`. It refuses the key as `Authorization: Bearer` with 401 `invalid jwt string`. |
+  | `User-Agent: bob-shell` | `--header User-Agent=bob-shell` | Bob's edge refuses a request whose User-Agent does not start with `bob-shell`. It sends back an HTML 403 page, not a Bob error. The model list request is refused too. |
+
+  Use a static Bob API key from Bob's settings. A Bob login token does not work:
+  it is a JWT that expires after 12 hours.
 
   ```sh
-  agentop server add bob https://api.us-east.bob.ibm.com/inference --main premium-ide --helper fast
+  agentop server add bob https://api.us-east.bob.ibm.com/inference \
+    --main premium-ide --helper fast \
+    --auth-header x-api-key --header User-Agent=bob-shell
   agentop server use bob --agent claude-code
   ```
 
-  Nobody has run the probe on a live Bob gateway. It is expected to find
-  `chat-completions` at `/v1/chat/completions`. The expected entry is in
+  When you give `--auth-header`, the probe does not try `Authorization`, and
+  `add` does not print an `auth_header →` line. Nobody has run the probe on a
+  live Bob gateway. It is expected to find `chat-completions` at
+  `/v1/chat/completions`. The expected entry is in
   [the router's doc](../../docs/inference-router-plugin.md#servers-that-serve-another-protocol).
 - **`use <name> --agent <agent>`** routes the agent's new sessions to the server,
   including an agent that has not run yet. **`reset --agent <agent>`** stops

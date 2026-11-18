@@ -1223,11 +1223,14 @@ func stubBob(t *testing.T) *bobStubs {
 	return got
 }
 
-func TestServerAdd_BobDefaults(t *testing.T) {
+// The Bob command the docs show: the flags reach the model list and the probe,
+// and the header stays fixed, so the probe does not try Bearer.
+func TestServerAdd_BobDocumentedCommand(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
 	got := stubBob(t)
 	code, out, errOut := runServerCmd(t, "sk-bob", "add", "bob", "https://api.us-east.bob.ibm.com/inference",
-		"--main", "premium-ide", "--helper", "fast", "--key-stdin", "--config", path)
+		"--main", "premium-ide", "--helper", "fast", "--auth-header", "x-api-key", "--header", "User-Agent=bob-shell",
+		"--key-stdin", "--config", path)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
@@ -1257,19 +1260,20 @@ func TestServerAdd_BobDefaults(t *testing.T) {
 	}
 }
 
-// Review Focus 2.
-func TestServerAdd_BobDefaultsKeepTheUsersFlags(t *testing.T) {
+// add has no per-vendor defaults: a Bob host without the flags gets no auth
+// header and no headers.
+func TestServerAdd_BobHostGetsNoHiddenDefaults(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
-	stubBob(t)
+	got := stubBob(t)
 	code, _, errOut := runServerCmd(t, "sk-bob", "add", "bob", "https://api.us-east.bob.ibm.com/inference",
-		"--main", "premium-ide", "--helper", "fast", "--auth-header", "authorization", "--header", "user-agent=mine",
-		"--key-stdin", "--config", path)
+		"--main", "premium-ide", "--helper", "fast", "--key-stdin", "--config", path)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
-	cfg := readConfig(t, path)
-	if !strings.HasSuffix(cfg, "              auth_header: authorization\n              headers:\n                user-agent: mine\n") ||
-		strings.Contains(cfg, "bob-shell") {
+	if got.models.AuthHeader != "" || len(got.models.Headers) != 0 || got.fixed || len(got.probe.Headers) != 0 {
+		t.Errorf("defaults were added: models %+v, probe header %q fixed %v", got.models, got.header, got.fixed)
+	}
+	if cfg := readConfig(t, path); strings.Contains(cfg, "bob-shell") || strings.Contains(cfg, "auth_header") {
 		t.Errorf("config:\n%s", cfg)
 	}
 }

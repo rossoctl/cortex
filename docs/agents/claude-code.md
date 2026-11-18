@@ -64,6 +64,10 @@ Code's **new** sessions use, with one Claude Code configuration and without
 restarting anything. A running conversation stays on
 the server it started on, with the exceptions below.
 See [Choosing an inference server](../../cmd/agentop/README.md#choosing-an-inference-server-agentop-server).
+To run Claude Code on IBM Bob's gateway, Cortex translates each request to
+chat completions. The `add` command for Bob needs two flags. See
+[IBM Bob](../../cmd/agentop/README.md#choosing-an-inference-server-agentop-server)
+under `add`.
 
 Claude Code keeps naming the model it asked for, so agentop is where the server
 shows: the sessions table's `SERVER` column names each session's server, the
