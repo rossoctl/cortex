@@ -1,26 +1,23 @@
 # cpex plugin
 
-> **Removed on a laptop.** `install.sh --cpex` and the laptop cpex build are
-> gone. Use praxis mode with
-> [`praxis.policy`](praxis-policy.md) instead. The
-> `authbridge-cpex` image and Kubernetes deployments are unaffected.
-
 > **The `authbridge-cpex` image is a build variant** of the AuthBridge
 > proxy-sidecar — `cortex` built with cgo and `-tags cpex` — deployed *in
 > place of* the `authbridge` image when CPEX policy enforcement is needed, not
-> as an additional sidecar. The laptop build of it is removed: `--cpex` now
-> exits with an error that names `--praxis` (see [On a laptop](#on-a-laptop)).
+> as an additional sidecar.
+
+**Where it runs:** Kubernetes, in the `authbridge-cpex` image. A laptop has no
+cpex build. See [On a laptop](#on-a-laptop).
 
 The `cpex` plugin embeds the [CPEX](https://github.com/contextforge-org/cpex)
-runtime inside AuthBridge so operators can drive policy with CPEX's
+runtime inside Cortex so operators can drive policy with CPEX's
 APL (Attribute Policy Language) DSL — and CPEX's built-in plugins (JWT
 and API-key identity, OAuth delegation, CIBA elicitation, and the Cedar,
 CEL and OPA decision points) — without writing Go. The pinned CPEX
 release is 0.3.1.
 
-A single AuthBridge plugin instance (`cpex`) wraps an entire CPEX
+A single Cortex plugin instance (`cpex`) wraps an entire CPEX
 `PolicyEngine`. Operators declare which CPEX hook names fire on each
-AuthBridge phase via the `hooks` block; CPEX's own YAML defines the
+pipeline phase via the `hooks` block; CPEX's own YAML defines the
 sub-plugins those hooks dispatch to.
 
 ```text
@@ -59,7 +56,7 @@ The cpex plugin is the right home for policy that:
 
 - **Combines multiple decision shapes**. APL's flat predicates
   (`require(role.hr)`) compose naturally with Cedar's principal-×-resource
-  rules and IdP-side delegation; expressing that in a single AuthBridge
+  rules and IdP-side delegation; expressing that in a single Cortex
   Go plugin would mean reimplementing each engine.
 - **Needs to be edited by non-developers**. The APL DSL + Cedar
   policies live in operator YAML; updates ship via ConfigMap reload
@@ -71,19 +68,21 @@ The cpex plugin is the right home for policy that:
 It is **not** the right home for:
 
 - Plugins whose only job is one stable Go decision (`jwt-validation`,
-  `token-exchange`) — those stay as AuthBridge-native plugins.
+  `token-exchange`) — those stay as Cortex-native plugins.
 - Policy that needs to run *before* any parser has classified the
   body. cpex requires at least one of `mcp-parser` /
   `inference-parser` / `a2a-parser` upstream in the chain.
 
 ## On a laptop
 
-The laptop build is gone. The installer no longer publishes or accepts a cpex
-build for a laptop: `install.sh --cpex` exits with an error, and `make
-cortex-cpex` is removed. That error names `--praxis` and
-`docs/praxis-policy.md`, which is the way to run laptop policy now. The
-`authbridge-cpex` image is unchanged: Kubernetes use of this plugin does not
-change. [The cpex build](laptop-service.md#the-cpex-build) states the same.
+The laptop cpex build is removed. `install.sh --cpex` exits with an error, and
+`make cortex-cpex` is removed. The error names `--praxis` and
+`docs/praxis-policy.md`. For laptop policy, use praxis mode with
+[`praxis.policy`](praxis-policy.md). A former cpex user reads
+[Move from the CPEX plugin](praxis-policy.md#move-from-the-cpex-plugin).
+The `authbridge-cpex` image does not change, so Kubernetes use of this plugin
+does not change. [The cpex build](laptop-service.md#the-cpex-build) tells how
+an existing laptop install moves to the default `cortex`.
 
 ## Architecture
 
@@ -94,16 +93,18 @@ The cpex plugin links `libcpex_ffi.a` via cgo. Only `cortex` built with
 it: `cpex` for the `authbridge-cpex` image, `fullcpex` for a cgo build of it.
 Every other build (the `authbridge`, `authbridge-lite` and `authbridge-envoy`
 images, the default `cortex` tarballs) stays pure-Go and never imports the
-plugin.
+plugin. These builds do not register `cpex`, so a config that names it fails at
+boot with an `unknown plugin "cpex"` error. It is not a silent no-op.
 
 The plugin's chassis (config decode, dispatch, Invocation recording)
 is tag-free; only the cgo adapter that talks to `cpex.PolicyEngine`
 is `//go:build cpex`. Unit tests run with `CGO_ENABLED=0` against a
-fake Manager.
+fake Manager. The commands are in the README's
+[Building and testing](../core/plugins/cpex/README.md#building-and-testing).
 
 ### Hook chains
 
-Each AuthBridge phase (`OnRequest`, `OnResponse`) dispatches an
+Each pipeline phase (`OnRequest`, `OnResponse`) dispatches an
 ordered list of CPEX hook names. Hooks fire one at a time; the chain
 short-circuits on the first sub-plugin that returns deny. A sub-plugin
 that returns `modify` records the Invocation, applies its modifications
@@ -119,10 +120,10 @@ chain continue. CPEX's standard hook names:
 
 ### Decision vocabulary
 
-CPEX sub-plugin verdicts map onto AuthBridge's 5-value
+CPEX sub-plugin verdicts map onto the 5-value
 `InvocationAction`:
 
-| CPEX | AuthBridge | Chain effect |
+| CPEX | Cortex | Chain effect |
 |---|---|---|
 | Allow | `allow` | Continue to next hook. Includes a result that only adds labels (`taint`) or returns the headers and payload as sent |
 | Deny  | `deny`  | **Stop chain**, return `pipeline.Reject` |
@@ -138,7 +139,7 @@ policy `deny` — it surfaces as `cpex.error` and respects the
 A `cpex` entry carries two kinds of configuration, and they live at
 different levels:
 
-- **AuthBridge-side fields** are the keys of the plugin's `config:`
+- **Cortex-side fields** are the keys of the plugin's `config:`
   block: which CPEX hooks fire on each phase, what happens when CPEX
   itself fails, and which traffic skips CPEX. The table below is the
   complete list. Any other key is rejected at boot with an
@@ -190,7 +191,8 @@ plugins:
 | `observe_codes` | `[]string` | empty | Policy violation codes recorded as `observe` instead of enforced; the request continues and the labels the denying step set stay. PPE 0.5.0 has no other conditional taint (a false CEL step always denies), so this lets an `llm:` route taint a session on content without blocking the request. Later steps of that route do not run, and a code shared with another step would silence that step's deny too, so Configure refuses a code that is not named by exactly one `deny('reason', 'code')` in the policy, sits outside a route's own `pre_invocation`/`post_invocation` list (in `global`, `global.defaults` or a group, the route's steps run after it), or is not the last entry of every list down to it (its step, its `on_deny`, its `when`/`do`). Codes the plugin emits itself (`principal_unavailable`, `delegation_unavailable`, `delegation_destination_mismatch`, `ambiguous_request`, `unnamed_entity`, `unparseable_request`) are refused. |
 
 A `cpex` entry with no hooks and no CPEX YAML is valid and inert, so the
-plugin can be installed before its policy ships.
+plugin can be installed before its policy ships. Configure succeeds, and both
+phases return continue.
 
 ### The CPEX runtime YAML
 
@@ -324,7 +326,8 @@ lists every change.
 
 ### Pipeline composition
 
-cpex declares `RequiresAny: [mcp-parser, inference-parser, a2a-parser]`.
+Place `cpex` after the protocol parsers and any content filters on the phase
+that you want to enforce. cpex declares `RequiresAny: [mcp-parser, inference-parser, a2a-parser]`.
 At least one must appear earlier in the chain so the parser has populated
 `pctx.Extensions.MCP` / `.Inference` / `.A2A` before cpex extracts CMF
 content. `Pipeline.Build` rejects misordered chains at boot.
@@ -351,6 +354,240 @@ plugins:
   - name: mcp-parser           # populate pctx.Extensions.MCP
   - name: cpex                 # APL/Cedar/CEL via CPEX
 ```
+
+The HR demo enforces on the outbound leg only. Its pipeline is in the README's
+[The HR demo pipeline](../core/plugins/cpex/README.md#the-hr-demo-pipeline).
+
+### Requests denied before CPEX
+
+A request a parser claimed is denied before CPEX sees it when its JSON body has
+an object with a repeated key or two keys equal under case folding
+(`cpex.ambiguous_request`): the parsers match keys case-insensitively and keep
+the last repeat, a server may not, and policy would judge a different request
+from the one the server runs. Case folding counts only in the objects the
+parsers decode into structs: the request envelope, JSON-RPC `params`, the A2A
+message and its parts, inference `messages[]` and content blocks, Responses
+`input[]` items, and tool definitions. It also counts at every depth under MCP
+`params.arguments`, which servers commonly bind into a struct with
+`encoding/json`; the body cannot tell a struct from a map, so a map-valued
+argument such as an `env` or `headers` map is denied too when two of its keys
+differ only in case. Everywhere else (tool schemas, A2A data parts, `metadata`,
+`response_format`, and inference tool calls, whose arguments are a JSON string
+or the model's earlier call) only exact repeats count. An MCP `tools/call` or `prompts/get` with no name, or a
+`resources/read` with no URI, is denied as `cpex.unnamed_entity` rather than
+taking the global identification. An outbound request to a host listed in
+`strict_hosts` (empty by default) whose body no parser claimed is denied as
+`cpex.unparseable_request` when that body is a JSON object the parsers cannot
+read: one in UTF-16 or UTF-32 or after a byte order mark, one whose first value
+`encoding/json` rejects (`NaN`, `Infinity`, a number out of float64 range, a
+truncated object), one whose keys collide, or one whose top-level `method` key,
+in any case, does not decode as a string. A parser declines such a body, so it
+would otherwise take the global identification, while a server may still run
+it as the tool call no route judged: Python's `json.loads` accepts `NaN`,
+`Infinity` and out-of-range numbers by default, and reads bytes in UTF-16 or
+UTF-32 and UTF-8 after a byte order mark (it rejects a byte order mark in a
+`str`, invalid UTF-8 and truncated JSON). Invalid UTF-8 inside a string is not
+refused: `encoding/json` replaces it with U+FFFD and parses the body. List the
+tool servers that read JSON leniently. The check is scoped by destination, not by the
+body's shape: a caller cannot avoid it by dropping or renaming `jsonrpc`, and
+traffic to every other host (a `{"loss": NaN}` metrics post, NDJSON uploads) is
+not checked. Only the first value is read, so trailing data and NDJSON are not
+refused on a strict host either. None of these denials is subject to
+`fail_open`.
+
+`strict_hosts` protects only the destinations it lists. An entry is a host glob
+(lowercased, matched without the port or a trailing dot), an IP address, or a
+CIDR such as `10.96.0.0/12` or `fd00:10:96::/112`. A request whose host reads as
+an address is matched against the addresses and CIDRs only, by its canonical
+address, port removed: an IP literal in any case or with leading zeros,
+bracketed or not, IPv4-mapped IPv6, with a zone (`%eth0`, `%25eth0`) or a
+trailing dot, or a numeric spelling `inet_aton` and so the system resolver
+accept (`0x0a.0x60.0.10`, `012.0140.0.012`, `10.6291466`, `174063626`). A
+name is matched against the globs only. A name list alone does not cover a tool
+server reached by its cluster IP or pod IP, so list those addresses or ranges
+too; a DNS name that resolves to a listed address is not caught, so list it by
+name. A request host that is neither a name nor an address (characters outside
+a host name, misused brackets, an all-numeric host `inet_aton` refuses such as
+`10.96.0.256`) is treated as strict, so an odd spelling fails closed.
+
+Configure classifies every entry as exactly one of a CIDR (contains `/`; no
+host bits set), a canonical IP address (an IPv6 one optionally in brackets), or
+a name glob (letters, digits, `-`, `_`, `.`, `*` and `?`, with at least one
+label that is not a number or a wildcard), and refuses anything else rather
+than keep an entry that would never match: `10.1`, `010.96.0.1`,
+`10.96.0.1/12`, `10.96.*.*`, `*.*`, `[10.96.0.1]`. It also refuses a CIDR
+covering every address (`0.0.0.0/0`, `::/0`) and an entry with a port or a
+zone.
+
+`delegated_credential_hosts` takes the same entries but matches the other way
+round, because it decides where a credential may go rather than what to check:
+an address entry matches a canonical IP literal only, so a numeric spelling the
+resolver alone would read as that address is not bound and the credential is
+withheld, a name entry never matches an address, and a host it cannot read
+matches nothing. The check runs
+before `bypass_hosts` and `bypass_paths`, so a destination on both lists is
+still checked. It is a backstop, not a substitute for a strict tool server:
+the server should also refuse what it cannot parse strictly, as the HR demo's
+`hr-mcp` does.
+
+### Plain egress as a tool call
+
+With `synthetic_egress: true`, an outbound request that names no tool, prompt,
+resource or model (plaintext HTTP or a bridged HTTPS request) is presented to
+CPEX as a call to the tool `http_egress`, on the request phase. That includes
+bodies a parser claimed as an MCP protocol method (`tools/list`, `initialize`)
+or an A2A message, so shaping a body as one does not route around the egress
+policy; a changed `http_egress` payload has no re-serializer and is an error
+that `fail_open` governs. Inbound requests are never egress. Its arguments:
+
+| Argument | Value |
+|---|---|
+| `method` | upper-case HTTP method |
+| `host` | lower-case host, port stripped |
+| `path` | URL path, never the query |
+| `body` | the first 8 KiB of the body, as UTF-8 |
+| `truncated` | whether the body was longer than the excerpt |
+| `content_encoding` | the lower-case `Content-Encoding`, empty when absent |
+
+An opaque `CONNECT` tunnel is presented with its method and host, an empty path
+and no body, so a host allowlist governs tunnels too. On a `tool:` route CEL
+reads the arguments as `args.<name>`:
+
+```yaml
+global:
+  pdp:
+    - kind: cel
+routes:
+  - tool: http_egress
+    authorization:
+      pre_invocation:
+        - cel:
+            expr: "args.host in allowed"
+            allowed: ["support.local", "github.com"]
+            on_deny: ["deny('host not allowed', 'egress_host')"]
+```
+
+The excerpt is policy input only. The invocation records its size and whether
+it was cut (`egress_excerpt_bytes`, `egress_truncated`), never its content. A
+policy that inspects bodies should deny when `truncated` is true or
+`content_encoding` is set, since it cannot see the rest.
+
+With or without `synthetic_egress`, plain egress is refused before CPEX sees it
+in one case only: an unreadable JSON object sent to a `strict_hosts` host
+(`cpex.unparseable_request`, above), such as a UTF-16 tool call or one with a
+`NaN` in its arguments. That check is not subject to `fail_open`. Bodies to
+any other host, JSON or not, reach the egress policy as they were sent.
+
+### Cortex-asserted principal
+
+`principal.token_file` lets Cortex assert who the caller is, for an agent that
+must not hold the credential. For requests presented as tool calls (MCP tools
+and `http_egress`) and for inference requests, the token is added under
+`principal.header` to the headers CPEX identity resolution reads, so an
+`identity/jwt` plugin configured with that `header:` resolves the subject, and a
+`taint` on an `llm:` route has one. Only outbound requests get it: an inbound
+caller is never asserted as the principal. The token is never written to the
+forwarded request, and a caller's own copy of the header reaches neither
+identity resolution nor the `http` extension. When the file cannot be read,
+Cortex logs a warning at startup and denies those requests with
+`cpex.principal_unavailable` until it can. The file is read again whenever
+its modification time or size changes, so a rotated token is picked up; a
+read that fails or finds the file empty keeps the previous token.
+
+### Cortex-asserted workload
+
+`workload.audience` does the same for the calling workload: on the same
+requests, Cortex fetches the pod's JWT-SVID for that audience from the
+in-process SPIFFE provider and adds it under `workload.header`, so an
+`identity/jwt` plugin with `role: caller_workload` resolves the agent as
+itself and `delegate(..., subject: caller_workload)` can present the SVID
+as a client assertion. The sidecar shares the pod with the agent, so the
+pod's SVID is the agent's identity. It needs the runtime config's
+`spiffe:` block. Without one, or when a fetch fails, nothing is added and
+routes that authenticate by it deny. The SVID is never written to the
+forwarded request, and a caller's own copy of the header reaches neither
+identity resolution nor the `http` extension.
+
+## Decisions and denials
+
+The plugin maps the CPEX outcome onto the five-value invocation
+vocabulary:
+
+- **allow**: all sub-plugins continued and the forwarded message is unchanged.
+  A result that only adds labels (`taint`) or runs a `delegate` step is an
+  allow, as is one returning the headers and payload as sent, which CPEX 0.3
+  does on every allowed call.
+- **deny**: a sub-plugin returned a policy violation with a `cpex.<code>` code
+  (`cpex.pii_detected`, `cpex.session_tainted_secret`, and so on). The plugin
+  emits a `Reject`; how it appears on the wire is the listener's call, not the
+  plugin's (see below). The response and the invocation carry only that code
+  and the message `request denied by policy`: the policy's own reason can quote
+  the request, so it goes to the debug log.
+- **modify**: policy changed the forwarded body or headers. Changes are
+  applied, the request continues. A body rewrite of an inference request is
+  supported on OpenAI chat requests with a `messages` array only, and of an
+  inference response on a single non-streaming OpenAI chat completion's text
+  only; one on any other dialect or shape, a stream, a changed tool result or tool call, or a removed
+  part is an error that `fail_open` governs. Request headers are written back as a diff against
+  those sent to CPEX, so an assertion can strip or replace a header. Headers
+  never sent (Cookie, API keys), the hop-by-hop and framing headers (`host`,
+  `content-length`, `transfer-encoding`, `connection`, `keep-alive`, `te`,
+  `trailer`, `upgrade`), `proxy-*`, `x-authbridge-*` and `principal.header`
+  are never written; such writes are dropped and logged by name. A returned
+  header name or value that is invalid on the wire (a CR or LF, say) is an
+  error that `fail_open` governs, and nothing is written.
+- **observe**: audit-only outcome, recorded, request continues.
+
+Some denials come from the plugin rather than from policy, and `fail_open`
+does not apply to them: `cpex.ambiguous_request`, `cpex.unnamed_entity` and
+`cpex.unparseable_request` (above), `cpex.principal_unavailable` (above),
+`cpex.delegation_destination_mismatch` (below), and
+`cpex.delegation_unavailable`. The last is returned when a `delegate(...)`
+step granted a token the plugin cannot forward: `delegated_credentials` is
+off (the engine then keeps the token), or a credential came back for a
+header outside `delegated_credential_headers`, or without its value.
+Forwarding would send the caller's own bearer where the policy asked for the
+delegated one.
+
+**Delegated credentials.** With `delegated_credentials: true` the engine
+returns each minted credential to the plugin, which writes it to the request
+as its header (default allowlist: `Authorization`), replacing the caller's
+value, after the header write-back. The value never enters the invocation,
+the session record or a log, and later CPEX calls on the same request do not
+see it. It needs CPEX 0.3.1 or later; a 0.3.0 library rejects the
+option, failing the plugin at startup.
+
+The agent picks the tool and the destination, so each credential is bound
+to the hosts it may reach. `delegated_credential_hosts` maps a delegation
+target (the `target:` of the `delegate(...)` step, else its audience) to
+`.`-delimited host globs, matched against the request's host without its
+port; it is required with `delegated_credentials`. A credential whose target
+is unbound, or bound elsewhere, denies the request (403,
+`cpex.delegation_destination_mismatch`) and nothing is written to it:
+
+```yaml
+delegated_credentials: true
+delegated_credential_hosts:
+  workday-api: [hr-mcp, hr-mcp.cpex-demo]
+```
+
+**A call waiting for approval.** A `require_approval(...)` step that has not
+been answered yet suspends the call rather than denying it. The client gets
+`cpex.elicitation_pending` with the JSON-RPC code `-32120` on an MCP frame (a
+403 otherwise), a static message, and `error.data.details.elicitation_id`
+(plus `approver` and `expires_at` when known). It retries the same call with
+`X-Policy-Elicitation-Id: <id>`; once the approver answers, the retry goes
+through or is denied. A retry that also sends `X-Policy-Elicitation-Peek: true`
+only reports an approval, as `cpex.elicitation_approved` (`-32121`), without
+running the tool. The session record keeps the approver, not the id.
+
+A CPEX policy `deny` is a normal outcome and is always honored. `fail_open` only
+governs CPEX-internal failures (an FFI error, an unreachable backend, a
+modification that cannot be applied): with `fail_open: false` those are rejected
+(rendered as [Status codes & reasons](#status-codes--reasons) says — an MCP error frame for MCP requests, otherwise HTTP 502);
+with `true` they log and continue. The default is fail-closed because a CPEX
+error usually means a misconfigured policy or an unreachable PDP, and silently
+allowing traffic in that state is rarely intended.
 
 ## Status codes & reasons
 
@@ -390,8 +627,11 @@ back:
 `{"jsonrpc":"2.0","id":<id>,"error":{"code":-32000,"message":<reason>,"data":{"error":"cpex.<code>","plugin":"cpex"}}}`.
 The caller's MCP client then surfaces a failed tool call rather than a
 transport break, and the `cpex.*` code rides in `error.data.error` (not
-the HTTP status). Non-MCP requests — and JSON-RPC notifications with no
-id — get the plain 403 / 502 in the table above. (See
+the HTTP status). The MCP frame covers a policy deny and a fail-closed internal error. The two
+differ in the frame's `message` and `data.error`, not in the HTTP status.
+Non-MCP requests — and JSON-RPC notifications with no
+id — get the plain 403 / 502 in the table above, with a
+`{"error":"cpex.<code>",...}` body. (See
 `core/listener/httpx/render.go`; the gRPC listener,
 extproc, doesn't use this renderer.)
 
@@ -407,6 +647,16 @@ Default `bypass_hosts` covers `keycloak.*`, `spire-server.*`,
 matching the IBAC plugin's default set. Default `bypass_paths` covers
 `/healthz`, `/readyz`, `/livez`, `/metrics`, `/.well-known/*` via
 `core/bypass.DefaultPatterns` — the same set jwt-validation uses.
+
+`bypass_hosts` is honored on the outbound phase only. On the inbound
+reverse-proxy phase the Host header is attacker-controlled and identity is
+resolved inside the bypassed chain, so a spoofed Host must not skip CPEX.
+`bypass_paths` applies on both phases, except that with `synthetic_egress` it
+applies inbound only: the outbound path is the caller's choice for any host. For
+the same reason `synthetic_egress` drops the default `bypass_hosts`, whose
+wildcards a caller can match with a host of its own (`keycloak.evil.example`);
+an explicit list is kept. Neither list accepts `*` or empty; to disable the
+plugin, remove it from the pipeline.
 
 Patterns that match everything (`"*"`, `""`, `"/*"`) are rejected at
 Configure time; that gesture is better expressed by removing the cpex
@@ -453,7 +703,7 @@ cross the FFI boundary.
 
 A fixed allowlist of sensitive header prefixes and exact names is
 stripped from the CMF payload before crossing the FFI boundary —
-CPEX sub-plugins may log the payload they receive, and the AuthBridge
+CPEX sub-plugins may log the payload they receive, and the Cortex
 session API has no auth on it.
 
 Stripped prefixes: `authorization`, `cookie`, `set-cookie`,
@@ -497,7 +747,7 @@ need to route background results separately from foreground logs.
   `PipelineResult` with a single `Violation`. The cpex plugin emits
   one aggregate Invocation per Invoke as a result. A CPEX-side
   change to expose `PipelineResult.SubPlugins[]` will let the
-  AuthBridge plugin emit one Invocation per sub-plugin.
+  plugin emit one Invocation per sub-plugin.
 - **A2A traffic** is not auto-classified into a CPEX hook. Operators
   configure a chain explicitly via `hooks.on_request: [<some hook>]`
   even for A2A; CPEX's own routing handles per-sub-plugin filtering.
@@ -506,7 +756,7 @@ need to route background results separately from foreground logs.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Pipeline build fails at boot: `cpex plugin: this binary was not built with -tags cpex` | Operator pointed `cortex` (no cgo) at a config containing a `cpex` plugin. | Use the `authbridge-cpex` image instead; or rebuild with `-tags cpex` against a downloaded `libcpex_ffi.a`. |
+| Pipeline build fails at boot: `unknown plugin "cpex"` | The `cortex` binary is not a cpex build, and the config names a `cpex` plugin. | Use the `authbridge-cpex` image. Or build with the `cpex` profile, `-tags cpex` and a downloaded `libcpex_ffi.a`. |
 | Pipeline build fails: `cpex bypass_paths: invalid bypass pattern` | An entry in `bypass_paths` has bad `path.Match` syntax. | Fix the glob pattern (`/api/*/v1`, `/static/**` etc.). |
 | Pipeline build fails: `cpex config: pattern "*" matches everything` | Operator wrote a wildcard pattern in `bypass_hosts` or `bypass_paths`. | If you want to disable cpex, remove it from the pipeline; don't bypass everything. |
 | All traffic is rejected with `cpex.error` (a 200 MCP error frame for MCP calls, else 502), JWKS errors in logs | A CPEX `identity/jwt` plugin can't fetch its JWKS from Keycloak. | Check that the plugin's `decoding_key.url` in the CPEX YAML is reachable from inside the pod, and that `bypass_hosts` still covers Keycloak (the default does). |

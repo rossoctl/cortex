@@ -18,11 +18,8 @@ API, Bedrock's native API — are not parsed.
 
 Costing lives here because this is the only component that knows when usage is *final*: it
 owns the three response-finalization paths and the assembled-usage handling (Claude Code's
-`?beta=true` path reports cache counts on `message_delta`, not `message_start`). It also means a
-priced request can no longer be missing its record: previously the figure came from
-`litellm-budget-track`, so a pipeline without that plugin showed tokens and no money, with
-the same field silently meaning "modelled" rather than "authoritative" depending on
-configuration.
+`?beta=true` path reports cache counts on `message_delta`, not `message_start`). So each
+priced request has its record, with or without `litellm-budget-track` in the pipeline.
 
 A record is not the same as a price. Where no rate resolves for the model, the record is
 still published — carrying the token counts, any avoided cost, and no dollar figure — and the

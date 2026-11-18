@@ -9,7 +9,7 @@ agent re-asks the user; the bad call never runs.
 SPARC is the `SPARCReflectionComponent` from the
 [`agent-lifecycle-toolkit`](https://pypi.org/project/agent-lifecycle-toolkit/) (ALTK) Python
 package, served over HTTP by the companion [SPARC reflection service](../deploy/sparc-service/README.md).
-Because AuthBridge plugins are Go, this plugin calls the service over HTTP (the same shape
+Because Cortex plugins are Go, this plugin calls the service over HTTP (the same shape
 `ibac` uses for its judge). All enforcement policy lives in the plugin; the service only
 returns SPARC's verdict.
 
@@ -154,11 +154,11 @@ explanations/corrections.
 
 ## Security / network posture
 
-The reflection service is an **in-cluster backend** — same trust model as the authbridge session
+The reflection service is an **in-cluster backend** — same trust model as the Cortex session
 API (`:9094`): no ingress, never exposed publicly. Its `/reflect` endpoint is unauthenticated by
 default and runs outside the agent-side ambient mesh (`rossoctl.io/inject: disabled`), so it makes
 its own egress to the LLM provider. Treat the cluster network boundary as the control: restrict
-who can reach it with a `NetworkPolicy` (allow only the authbridge sidecars), since any pod that
+who can reach it with a `NetworkPolicy` (allow only the AuthBridge sidecars), since any pod that
 can POST to `/reflect` can trigger LLM calls billed to the configured credentials. For an extra
 hop, set `reflector_bearer` on the plugin and terminate it at the service (or a sidecar). The
 service never echoes provider exception text back to callers; details stay in its logs.

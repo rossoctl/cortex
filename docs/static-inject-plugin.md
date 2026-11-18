@@ -96,23 +96,12 @@ does not change it.
 
 ### Deployments this refuses
 
-The refusal is the intended contract, but it is a behaviour change for
-anything that was relying on plaintext egress with a credential:
-
 | Shape | Effect |
 |---|---|
-| Forward-proxy egress, `http://` target **with** a credential | **Now 403.** The request must move to `https://`, or the host must stop having a credential. |
-| Forward-proxy egress, `http://` target without a credential | Unchanged (401 `unresolved-key`, as before). |
-| Forward-proxy egress, `http://` target with a credential, under `mtls: mode: strict` | **Now 403**, even though the hop is TLS on the wire. Strict mode dials every upstream TLS-or-fail (`mtlsDialer`), but the gate reads the request's scheme, not the dialer, so it cannot see that. Fail-closed, and rare (static-inject plus strict mesh mTLS); move the target to `https://` to inject. |
-| Inbound static-inject, plaintext front, any backend | Unchanged — the gate does not fire inbound (above). |
-
-Known downstream: **MOCA's AB2 leaf smoke** (`deploy/knative/leaf-smoke.sh`,
-the `H2-inject` allow-path claim) sends
-`curl -s http://echo-target/ -H "Authorization: Bearer $ECHO_CRED"`
-through the forward proxy to a host that has a credential. That request
-is refused by this gate. AB2 is pinned to an image predating it, so
-nothing breaks today, but the next image bump fails that check unless
-`echo-target` moves to TLS or the smoke is updated to expect the 403.
+| Forward-proxy egress, `http://` target **with** a credential | 403. Move the request to `https://`, or remove the credential for the host. |
+| Forward-proxy egress, `http://` target without a credential | 401 `unresolved-key`. |
+| Forward-proxy egress, `http://` target with a credential, under `mtls: mode: strict` | 403, although the hop is TLS on the wire. Strict mode dials every upstream TLS-or-fail (`mtlsDialer`), but the gate reads the request's scheme, not the dialer, so it cannot see that. To inject, move the target to `https://`. |
+| Inbound static-inject, plaintext front, any backend | No refusal. The gate does not run inbound (above). |
 
 One boundary worth naming: the gate judges the scheme the request
 *arrived* with. A `WritesDestination` plugin later in the chain can
