@@ -395,6 +395,28 @@ SEQ  MS    TTFB  INPUT  CACHE_R  CACHE_W  OUTPUT  TOOL_CALLS
 2    4000  900   1200   190000   500      60      2
 ```
 
+The columns are:
+
+| Column | Field | Meaning |
+|---|---|---|
+| `SEQ` | `seq` | The event's position in the session. Higher is later. |
+| `MS` | `durationMs` | The whole request, in milliseconds. |
+| `TTFB` | `ttfbMs` | Time to the first byte of the response. `MS` − `TTFB` is the time the body took. |
+| `INPUT` | `inputTokens` | Prompt tokens the model read fresh. |
+| `CACHE_R` | `cacheReadTokens` | Prompt tokens served from the cache, and far cheaper. |
+| `CACHE_W` | `cacheWriteTokens` | Prompt tokens written to the cache for a later turn. |
+| `OUTPUT` | `outputTokens` | Tokens the model generated. |
+| `TOOL_CALLS` | `toolCallCount` | Tool calls this response asked for. Never their names. |
+
+Two rules for reading the token columns:
+
+- **The three prompt columns are a split, not a total.** Add `INPUT` + `CACHE_R` +
+  `CACHE_W` to get the whole prompt. No field holds that sum, which stops a consumer
+  counting cached tokens twice.
+- **`CACHE_R` dwarfing `INPUT` is normal and good.** The rows above re-read about 190,000
+  cached tokens and paid for 1,200. A low `CACHE_R` on a long conversation is the problem
+  worth chasing.
+
 Select `phase=="response"`. A request-phase record carries no token counts, because the
 model reports usage on the response.
 
@@ -405,9 +427,6 @@ happens on real data. `-` makes the absence visible, which is also what Trap 1 a
 
 `printf` rather than `echo -e`: under `dash`, which is `/bin/sh` on Debian and Ubuntu,
 `echo -e` prints a literal `-e`.
-
-Remember [Trap 1](#three-traps): the `.inputTokens` test is what keeps non-inference
-records out of the table.
 
 **Do not use the timeline for token counts.** `GET /v1/sessions/{id}/timeline` carries
 `outputTokens` and `liveTokens` only. It has no `inputTokens` and no cache counts. The
