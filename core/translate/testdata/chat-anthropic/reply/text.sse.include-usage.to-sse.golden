@@ -1,0 +1,12 @@
+data: {"id":"msg_01Text","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"msg_01Text","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
+
+data: {"id":"msg_01Text","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"content":", <world> \"é\""},"finish_reason":null}]}
+
+data: {"id":"msg_01Text","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"msg_01Text","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[],"usage":{"prompt_tokens":55,"completion_tokens":5,"total_tokens":60,"prompt_tokens_details":{"cached_tokens":40},"cache_read_input_tokens":40,"cache_creation_input_tokens":3}}
+
+data: [DONE]
+

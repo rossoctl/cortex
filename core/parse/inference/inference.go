@@ -558,6 +558,9 @@ type inferenceUsage struct {
 	PromptTokens     *int `json:"prompt_tokens"`
 	CompletionTokens *int `json:"completion_tokens"`
 	TotalTokens      *int `json:"total_tokens"`
+	// LiteLLM adds these when its upstream is Anthropic.
+	CacheCreationInputTokens lenientCount `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     lenientCount `json:"cache_read_input_tokens"`
 
 	PromptTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens"`
@@ -567,18 +570,34 @@ type inferenceUsage struct {
 	} `json:"completion_tokens_details"`
 }
 
+// lenientCount decodes a JSON integer as itself and any other value as absent,
+// so a wrong-typed count does not fail the decode of the whole reply.
+// null is absent, as it is for *int.
+type lenientCount struct{ n *int }
+
+func (c *lenientCount) UnmarshalJSON(data []byte) error {
+	var n int
+	if string(data) != "null" && json.Unmarshal(data, &n) == nil {
+		c.n = &n
+	}
+	return nil
+}
+
 // hasAny reports whether any recognized field was on the wire. Call
 // sites gate toNeutral on this so an omitted or empty usage block
 // doesn't overwrite a prior chunk's state.
 func (u inferenceUsage) hasAny() bool {
 	return u.PromptTokens != nil || u.CompletionTokens != nil || u.TotalTokens != nil ||
-		u.PromptTokensDetails != nil || u.CompletionTokensDetails != nil
+		u.PromptTokensDetails != nil || u.CompletionTokensDetails != nil ||
+		u.CacheCreationInputTokens.n != nil || u.CacheReadInputTokens.n != nil
 }
 
 // toNeutral maps OpenAI's usage onto TokenUsage. prompt_tokens includes
-// cached_tokens on the wire — subtract to get uncached input and clamp
-// at 0 for malformed responses. CacheWrite stays absent (OpenAI bills
-// cache writes as ordinary input). Each Present bit is set only when
+// both cache counts on the wire — subtract them to get uncached input and
+// clamp at 0 for malformed responses. OpenAI sends no cache-write field.
+// LiteLLM's cache_creation_input_tokens and cache_read_input_tokens are
+// read when they are present; cached_tokens wins over
+// cache_read_input_tokens when both are on the wire. Each Present bit is set only when
 // its key was on the wire, so an absent key stays "not exposed"
 // (-1 sentinel) rather than "reported zero."
 func (u inferenceUsage) toNeutral() parsercommon.TokenUsage {
@@ -594,15 +613,21 @@ func (u inferenceUsage) toNeutral() parsercommon.TokenUsage {
 		usage.Output = *u.CompletionTokens
 		usage.Present |= parsercommon.KindOutput
 	}
+	read := u.CacheReadInputTokens.n
 	if u.PromptTokensDetails != nil {
-		cached := u.PromptTokensDetails.CachedTokens
-		usage.Input -= cached
-		if usage.Input < 0 {
-			usage.Input = 0
-		}
-		usage.CacheRead = cached
+		read = &u.PromptTokensDetails.CachedTokens
+	}
+	if read != nil {
+		usage.Input -= *read
+		usage.CacheRead = *read
 		usage.Present |= parsercommon.KindCacheRead
 	}
+	if write := u.CacheCreationInputTokens.n; write != nil {
+		usage.Input -= *write
+		usage.CacheWrite = *write
+		usage.Present |= parsercommon.KindCacheWrite
+	}
+	usage.Input = max(usage.Input, 0)
 	if u.CompletionTokensDetails != nil {
 		usage.Reasoning = u.CompletionTokensDetails.ReasoningTokens
 		usage.Present |= parsercommon.KindReasoning
