@@ -1,0 +1,56 @@
+# The collector. Stateless: proxies push cumulative totals, so a restart loses nothing (README.md).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  labels:
+    app.kubernetes.io/name: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otel-collector
+        app.kubernetes.io/part-of: cortex-central
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otel-collector
+          image: docker.io/otel/opentelemetry-collector-contrib:0.165.0
+          args: ["--config=/etc/otelcol/config.yml"]
+          ports:
+            - {name: otlp-cortex, containerPort: 4318}
+            - {name: otlp-cg, containerPort: 4319}
+            - {name: metrics, containerPort: 8888}
+            - {name: health, containerPort: 13133}
+          readinessProbe:
+            httpGet: {path: /, port: health}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: health}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            # Above the memory_limiter's limit_mib (512), so the limiter acts before the kernel does.
+            limits: {memory: 768Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/otelcol, readOnly: true}
+            - {name: tokens, mountPath: /etc/otelcol/tokens, readOnly: true}
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+        - name: tokens
+          secret:
+            secretName: collector-tokens
+            defaultMode: 0440
