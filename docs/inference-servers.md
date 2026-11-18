@@ -71,46 +71,154 @@ a 400 from Cortex. See
 
 ### Set up a local model
 
-1. Install [Ollama](https://ollama.com/download), and pull a model that can
-   call tools. With 64 GB of memory or more, use `granite4.2:8b`. With less,
-   use `granite4.2:3b`. Do not use `granite3.3`: it mixes its reasoning into
-   the answer.
+This section uses [Ollama](https://ollama.com) and IBM's Granite models. A
+local model is weaker than a frontier model. Expect more retries and wrong
+turns on hard work. It keeps you working. It does not replace your provider.
 
-   ```sh
-   ollama pull granite4.2:3b
-   ```
-
-2. Set the [context length](#context-length).
-3. Add the server. Ollama checks no key, but `add` needs one, so `echo ollama`
-   gives a placeholder. Give the full model tag.
+1. [Choose a model](#choose-a-model) for your machine's memory and your agent.
+2. [Install Ollama and pull the model](#install-ollama-and-pull-the-model).
+3. [Set the context length](#context-length).
+4. Add the server. Ollama checks no key, but `add` needs one, so
+   `echo ollama` gives a placeholder. Give the full tag: a bare `granite` picks
+   `granite3.3` if that is pulled too.
 
    ```sh
    echo ollama | agentop server add ollama http://localhost:11434 \
      --main granite4.2:3b --helper granite4.2:3b --key-stdin
    ```
 
-A local model is weaker than a frontier model. Expect more retries on hard
-work.
-
 #### Choose a model
 
-The window must hold the agent's largest prompt: 32k for Bob, 64k or more for
-Claude Code. A bigger window needs more memory. If the model does not fit in
-GPU memory, it is slow. Then use the smaller model.
+Pick the model by how much memory your Mac has. The model's own size is
+small. What grows is the cache that holds the context: the bigger the window,
+the more memory it takes. When it does not fit in GPU memory, the Mac swaps
+and everything slows down. A 36 GB Mac, for example, stalls on
+`granite4.2:8b` at a 128k window. At 64k the model fits, but a smaller chip
+makes the first word slow to arrive (see **Speed** below).
+
+| Your Mac's memory | Model |
+|---|---|
+| 64 GB or more | `granite4.2:8b` |
+| Under 64 GB | `granite4.2:3b` |
+
+Pick the window by agent. It must hold the agent's largest prompt. Anything
+bigger only costs memory and time.
+
+| Agent | Largest prompt seen | Window |
+|---|---|---|
+| Bob | about 21k tokens | 32k |
+| Claude Code | over 64k tokens | 64k or more |
+
+Ollama has one window for every agent that uses it. If more than one agent
+uses it, set the largest of their windows.
+
+**Memory each model uses**, in GiB:
+
+| Model | 32k | 64k | 128k |
+|---|---|---|---|
+| `granite4.2:8b` | 9.7 | 14.9 | 25.4 |
+| `granite4.2:3b` | 4.4 | 7.2 | 12.1 |
+| `granite4:tiny-h` | 4.4 | 4.9 | 5.8 |
+
+**Speed** on a 20k-token prompt, the size of a Bob prompt:
+
+| Model | Wait for the first word | Writing speed |
+|---|---|---|
+| `granite4.2:8b` | 48 s | 45 tokens/s |
+| `granite4.2:3b` | 23 s | 82 tokens/s |
+| `granite4:tiny-h` | 8.5 s | 124 tokens/s |
+
+You wait once, at the start of a conversation. Later turns start in about
+0.1 s. These numbers come from an M4 Max with Ollama 0.40.5. A smaller chip
+is slower.
+
+**What you give up:**
+
+| Model | Good | Not so good |
+|---|---|---|
+| `granite4.2:8b` | Best answers | Needs the most memory |
+| `granite4.2:3b` | Thinks before answering. Twice as fast as 8b | Weaker answers than 8b |
+| `granite4:tiny-h` | Fastest. Memory hardly grows with the window | Older Granite 4.0. Cannot think. Not yet tried with an agent end to end |
+
+Try `granite4:tiny-h` only if `granite4.2:3b` does not fit (see **Check what
+loaded** below). Ollama refuses a thinking request to it
+(`"granite4:tiny-h" does not support thinking`), and agents can send one.
+
+Do not use `granite3.3`. It mixes its reasoning into the answer, and the
+agent reads that as part of its work. Granite 4.2 keeps the two apart.
+
+#### Install Ollama and pull the model
+
+| | |
+|---|---|
+| macOS | the app from [ollama.com/download](https://ollama.com/download) |
+| Linux | `curl -fsSL https://ollama.com/install.sh \| sh` |
+
+The macOS app starts Ollama at login. On Linux the installer starts an
+`ollama` service. Without systemd, run `ollama serve`.
+
+Pull the model you chose:
+
+```sh
+ollama pull granite4.2:3b
+```
+
+Check that Ollama lists it:
+
+```sh
+curl -s localhost:11434/v1/models | jq -r '.data[].id'
+```
 
 #### Context length
 
-Ollama does not refuse a prompt that is too long. It cuts the prompt without
-an error, and the agent then behaves strangely. So set the window yourself:
+Set the window yourself. Ollama does not refuse a prompt that is too long. It
+cuts the prompt without an error. Then the agent behaves strangely, and nothing
+says why. A fresh install also picks a small window from your GPU memory,
+not the one your agent needs.
+
+Set it where the server starts. The examples use 32k (`32768`). Use the
+window you chose above.
 
 | Where Ollama runs | How to set it |
 |---|---|
-| macOS app | Settings → Context length |
-| Linux service | `sudo systemctl edit ollama.service`, add `Environment="OLLAMA_CONTEXT_LENGTH=32768"` under `[Service]`, then `sudo systemctl restart ollama` |
+| macOS app | Settings → Context length. The app restarts its server. Use the slider: once set, it overrides `OLLAMA_CONTEXT_LENGTH`. |
+| Linux service | `sudo systemctl edit ollama.service`, add the lines below, then `sudo systemctl restart ollama` |
 | From a shell | `OLLAMA_CONTEXT_LENGTH=32768 ollama serve` |
 
-After one prompt, `ollama ps` shows the window that you got in its `CONTEXT`
-column.
+```ini
+[Service]
+Environment="OLLAMA_CONTEXT_LENGTH=32768"
+```
+
+**Optional: a smaller cache.** `OLLAMA_KV_CACHE_TYPE=q8_0`, set the same way
+(the macOS app has no setting for it), cuts `granite4.2:8b` to 7.4 GiB at
+32k and 15.7 GiB at 128k. It does not make anything faster.
+
+**Check what loaded.** Send the model one prompt, then run `ollama ps`:
+
+```
+NAME             SIZE      PROCESSOR    CONTEXT
+granite4.2:3b    4.7 GB    100% GPU     32768
+```
+
+- **CONTEXT** is the window you really got, whatever was configured.
+- **PROCESSOR** should say `100% GPU`. Any CPU share means the model did not
+  fit and will be slow. Leave room for macOS, the agent and your editor.
+  If it says `100% GPU` and is still too slow, the chip is the limit: use a
+  smaller model.
+
+#### Trying another local model
+
+Check any local model the same way before you rely on it:
+
+| Check | How |
+|---|---|
+| Calls tools | `ollama show <model>` lists `tools` under capabilities. A model that cannot call tools cannot drive a coding agent. |
+| Keeps thinking apart from the answer | Ask it something small. The thinking should arrive in its own field (`thinking` blocks or `reasoning`), not in the answer. |
+| Window fits the agent | See [Choose a model](#choose-a-model). |
+| Fits in memory | `ollama ps` shows the real size and `100% GPU`. The download size is only the weights. |
+
+Then give it a small real task through the agent before a large one.
 
 ### Another server
 
