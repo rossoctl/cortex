@@ -10,6 +10,7 @@ import (
 	"github.com/rossoctl/cortex/core/accounting/push"
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/pricing"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // accountantStateFile is the accountant's Tracker snapshot, under ~/.cortex.
@@ -45,15 +46,16 @@ func newAccountingHost(rates *pricing.Registry, weights config.SubscriptionWeigh
 }
 
 // startMetricsPush starts the metrics push from c's metrics_push block, with the METRICS_PUSH_*
-// environment applied, and returns the sink the accountant host observes into and the function
-// that flushes and stops the push. Both are no-ops when nothing is pushed: no URL, disabled, or a
-// block push.Start refuses — accounting fails open, so a bad URL costs the metrics, not the
-// process.
+// environment applied, and returns the sink the accountant host observes into, the raw
+// MeterProvider (for any other recorder that pushes through the same provider — see
+// core/accounting/reqstats), and the function that flushes and stops the push. All three are
+// no-ops/nil when nothing is pushed: no URL, disabled, or a block push.Start refuses — accounting
+// fails open, so a bad URL costs the metrics, not the process.
 //
 // The machine id is kept in ~/.cortex/machine-id on a local install (the same local-install test
 // the Tracker snapshot uses). In a cluster it is per process: a pod has no home to keep it in,
 // and a restarted pod is a new instance to the collector.
-func startMetricsPush(c *config.Config, rates pricing.Resolver) (*accounting.Sink, func(context.Context) error) {
+func startMetricsPush(c *config.Config, rates pricing.Resolver) (*accounting.Sink, metric.MeterProvider, func(context.Context) error) {
 	idPath := ""
 	if localInstall {
 		if dir, err := defaultCortexDir(); err == nil {
@@ -65,7 +67,7 @@ func startMetricsPush(c *config.Config, rates pricing.Resolver) (*accounting.Sin
 	// METRICS_PUSH_* environment: runtime input, so a WARN and no push, never a failed start.
 	if err != nil {
 		slog.Warn("metrics push off — the metrics_push block was refused", "error", err)
-		return nil, func(context.Context) error { return nil }
+		return nil, nil, func(context.Context) error { return nil }
 	}
-	return accounting.NewSink(mp, rates), shutdown
+	return accounting.NewSink(mp, rates), mp, shutdown
 }
