@@ -1,6 +1,6 @@
 # pipeline — Framework Architecture Reference
 
-Framework-level reference for AuthBridge's plugin pipeline: types, composition, lifecycle, shared state, and the boundary with listeners. Pair this with the plugin-author docs:
+Framework-level reference for Cortex's plugin pipeline: types, composition, lifecycle, shared state, and the boundary with listeners. Pair this with the plugin-author docs:
 
 - **Tutorial** — [`plugin-tutorial.md`](./plugin-tutorial.md). Writing a plugin from scratch with runnable examples.
 - **Plugin author reference** — [`plugin-reference.md`](./plugin-reference.md). Config patterns, invocation emission contract, registration rules.
@@ -22,7 +22,7 @@ For step-by-step "how do I write a plugin?" content, see [`plugin-tutorial.md`](
 
 ## 1. Mental model
 
-AuthBridge intercepts HTTP traffic in two directions and runs a **separate plugin chain** for each. Each chain has two **phases** — request (headers/body going to the upstream) and response (headers/body coming back).
+Cortex intercepts HTTP traffic in two directions and runs a **separate plugin chain** for each. Each chain has two **phases** — request (headers/body going to the upstream) and response (headers/body coming back).
 
 ```
           Inbound (caller → this agent)
@@ -1057,7 +1057,7 @@ This document stays focused on the pipeline framework internals — how plugins 
 
 ## 12. Versioning
 
-The plugin interface is **not** semver-stable yet (AuthBridge is pre-1.0). Changes since the initial release:
+The plugin interface is **not** semver-stable yet (Cortex is pre-1.0). Changes since the initial release:
 - Added `BodyAccess` to `PluginCapabilities`.
 - Added `WithSlots` to `New` for bridge-plugin slot registration.
 - Added `GetState[T]` / `SetState[T]` generic helpers.

@@ -15,11 +15,11 @@ env var:
 `init-iptables.sh` writes iptables rules that:
 
 - **Outbound** — Redirect traffic leaving the workload container to
-  AuthBridge's outbound listener (port 15123). Adds an exclusion for
+  Envoy's outbound listener (port 15123). Adds an exclusion for
   the AuthBridge sidecar's own UID (1337) so its traffic doesn't loop
   back into itself.
 - **Inbound** — Redirect traffic arriving at the workload container's
-  service port to AuthBridge's inbound listener (port 15124).
+  service port to Envoy's inbound listener (port 15124).
 - **Istio ambient coexistence** — Cooperates with ztunnel by
   preserving the Istio fwmark (0x539) and respecting the HBONE port
   (15008). Designed to work alongside `istio.io/dataplane-mode:
