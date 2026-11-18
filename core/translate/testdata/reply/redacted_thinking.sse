@@ -9,4 +9,3 @@ data: {"id":"chatcmpl-r1","model":"claude-opus-5-5","object":"chat.completion.ch
 data: {"id":"chatcmpl-r1","model":"claude-opus-5-5","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":5,"total_tokens":25}}
 
 data: [DONE]
-
