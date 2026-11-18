@@ -218,6 +218,11 @@ var (
 		"llm.savings.requests": true, "llm.savings.unpriced": true,
 		"llm.savings.check_failures": true, "llm.savings.estimated": true,
 		"llm.proxy.export_failures": true, "llm.proxy.info": true,
+		// Tier 1 (core/accounting/metrics.go's own instruments, not accountant/metrics'):
+		// llm.inference.*, llm.keepalive.*, llm.cache.*.
+		"llm.inference.tokens": true, "llm.inference.cost_usd": true, "llm.inference.estimated_cost_usd": true,
+		"llm.keepalive.pings": true, "llm.keepalive.cost_usd": true, "llm.keepalive.estimated_cost_usd": true,
+		"llm.cache.misses": true, "llm.cache.miss_cost_usd": true,
 	}
 	allowedKeys = map[string]bool{"kind": true, "tier": true, "component": true, "effect": true, "cause": true,
 		"direction": true, "reason": true, "check": true, "result": true, "version": true}

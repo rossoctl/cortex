@@ -1,6 +1,7 @@
 package accounting
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/rossoctl/accountant"
 	acmetrics "github.com/rossoctl/accountant/metrics"
 	"github.com/rossoctl/cortex/core/cost/pricing"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -60,22 +62,90 @@ type Sink struct {
 	mu     sync.Mutex
 	pricer *boundPricer
 	sink   *acmetrics.Sink
+
+	// Tier 1 instruments: llm.inference.*, llm.keepalive.*, llm.cache.* — pushed alongside
+	// llm.savings.* on the same meter, read directly from the request's accountant.Usage and
+	// accountant.Result rather than through the acmetrics library (which only knows savings).
+	inferenceTokens       metric.Int64Counter
+	inferenceCostUSD      metric.Float64Counter
+	inferenceEstimatedUSD metric.Float64Counter
+	keepalivePings        metric.Int64Counter
+	keepaliveCostUSD      metric.Float64Counter
+	keepaliveEstimatedUSD metric.Float64Counter
+	cacheMisses           metric.Int64Counter
+	cacheMissCostUSD      metric.Float64Counter
 }
 
 // NewSink builds the sink on mp, priced with r through USD, the function the ledger prices with.
 // It returns nil, a no-op sink, when mp is nil (no push configured) or the meter refuses an
-// instrument.
+// instrument. Every instrument must be created or none is: a Sink with some Tier 1 counters
+// missing would make Observe branch on which fields are non-nil instead of failing closed like
+// the rest of this constructor.
 func NewSink(mp metric.MeterProvider, r pricing.Resolver) *Sink {
 	if mp == nil {
 		return nil
 	}
 	p := &boundPricer{resolver: r}
-	s, err := acmetrics.New(mp.Meter(MeterName), p, acmetrics.WithComponents(Components...))
+	sink, err := acmetrics.New(mp.Meter(MeterName), p, acmetrics.WithComponents(Components...))
 	if err != nil {
 		slog.Warn("accounting: the savings counters could not be created; no savings metrics are pushed", "error", err)
 		return nil
 	}
-	return &Sink{pricer: p, sink: s}
+	meter := mp.Meter(MeterName)
+	s := &Sink{pricer: p, sink: sink}
+	instruments := []struct {
+		name string
+		new  func() error
+	}{
+		{"llm.inference.tokens", func() (err error) {
+			s.inferenceTokens, err = meter.Int64Counter("llm.inference.tokens",
+				metric.WithDescription("Billed prompt tokens per tier, for non-ping inference requests."))
+			return err
+		}},
+		{"llm.inference.cost_usd", func() (err error) {
+			s.inferenceCostUSD, err = meter.Float64Counter("llm.inference.cost_usd",
+				metric.WithDescription("Actual priced USD of non-ping inference requests."), metric.WithUnit("USD"))
+			return err
+		}},
+		{"llm.inference.estimated_cost_usd", func() (err error) {
+			s.inferenceEstimatedUSD, err = meter.Float64Counter("llm.inference.estimated_cost_usd",
+				metric.WithDescription("Estimated (unpriced) USD of non-ping inference requests."), metric.WithUnit("USD"))
+			return err
+		}},
+		{"llm.keepalive.pings", func() (err error) {
+			s.keepalivePings, err = meter.Int64Counter("llm.keepalive.pings",
+				metric.WithDescription("Keep-alive pings observed."))
+			return err
+		}},
+		{"llm.keepalive.cost_usd", func() (err error) {
+			s.keepaliveCostUSD, err = meter.Float64Counter("llm.keepalive.cost_usd",
+				metric.WithDescription("Actual priced USD of keep-alive pings."), metric.WithUnit("USD"))
+			return err
+		}},
+		{"llm.keepalive.estimated_cost_usd", func() (err error) {
+			s.keepaliveEstimatedUSD, err = meter.Float64Counter("llm.keepalive.estimated_cost_usd",
+				metric.WithDescription("Estimated (unpriced) USD of keep-alive pings."), metric.WithUnit("USD"))
+			return err
+		}},
+		{"llm.cache.misses", func() (err error) {
+			s.cacheMisses, err = meter.Int64Counter("llm.cache.misses",
+				metric.WithDescription("Non-ping inference requests with no cache-read tokens."))
+			return err
+		}},
+		{"llm.cache.miss_cost_usd", func() (err error) {
+			s.cacheMissCostUSD, err = meter.Float64Counter("llm.cache.miss_cost_usd",
+				metric.WithDescription("Actual priced USD of cache-miss requests."), metric.WithUnit("USD"))
+			return err
+		}},
+	}
+	for _, inst := range instruments {
+		if err := inst.new(); err != nil {
+			slog.Warn("accounting: an inference metric could not be created; no inference metrics are pushed",
+				"instrument", inst.name, "error", err)
+			return nil
+		}
+	}
+	return s
 }
 
 // Observe adds one computed request, or one ping (an empty RequestID), to the counters. endpoint
@@ -98,6 +168,67 @@ func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, res acco
 	s.pricer.request = binding{endpoint: endpoint, promptTotal: promptTotal}
 	s.pricer.byModel = bindingsFor(meta.Model, s.pricer.request, res)
 	s.sink.Observe(acmetrics.Observation{Meta: meta, Usage: u, Result: res})
+	s.observeInferenceMetrics(meta, u, res)
+}
+
+// observeInferenceMetrics adds one observation to the Tier 1 counters: llm.inference.* for a
+// non-ping request, llm.keepalive.* for a ping (meta.RequestID == ""). Called under s.mu, after
+// s.pricer.request/byModel are set for this observation, so priceUsage prices at the same
+// endpoint and prompt total the ledger and llm.savings.* use.
+//
+// res.Unpriced non-empty is the estimated signal (the library's own "this could not be priced"
+// marker, acmetrics.Observation's counterpart for llm.savings.unpriced.total): an estimated
+// observation's dollars go to the *_estimated_cost_usd counter instead of the actual one, never
+// both, so a reader summing "all inference cost" across the two never double-counts.
+func (s *Sink) observeInferenceMetrics(meta accountant.RequestMeta, u accountant.Usage, res accountant.Result) {
+	ctx := context.Background()
+	estimated := len(res.Unpriced) > 0
+	cost := s.priceUsage(meta.Model, u)
+
+	if meta.RequestID == "" {
+		s.keepalivePings.Add(ctx, 1)
+		if estimated {
+			s.keepaliveEstimatedUSD.Add(ctx, cost)
+		} else {
+			s.keepaliveCostUSD.Add(ctx, cost)
+		}
+		return
+	}
+
+	tiers := [...]struct {
+		name string
+		n    int
+	}{
+		{"input", u.Input}, {"cache_read", u.CacheRead}, {"cache_write", u.CacheWrite}, {"cache_write_1h", u.CacheWrite1h},
+	}
+	for _, t := range tiers {
+		if t.n > 0 {
+			s.inferenceTokens.Add(ctx, int64(t.n), metric.WithAttributes(attribute.String("tier", t.name)))
+		}
+	}
+	if estimated {
+		s.inferenceEstimatedUSD.Add(ctx, cost)
+	} else {
+		s.inferenceCostUSD.Add(ctx, cost)
+	}
+	if u.CacheRead == 0 {
+		s.cacheMisses.Add(ctx, 1)
+		s.cacheMissCostUSD.Add(ctx, cost)
+	}
+}
+
+// priceUsage prices u's four tiers at s.pricer's current binding (endpoint, promptTotal) for
+// model, with the same USD function the ledger and llm.savings.* price with.
+func (s *Sink) priceUsage(model string, u accountant.Usage) float64 {
+	price := func(t pricing.Tier, n int) float64 {
+		if n <= 0 {
+			return 0
+		}
+		v, _ := USD(s.pricer.resolver, s.pricer.request.endpoint, model, s.pricer.request.promptTotal, t, int64(n))
+		return v
+	}
+	return price(pricing.TierInput, u.Input) + price(pricing.TierCacheRead, u.CacheRead) +
+		price(pricing.TierCacheWrite, u.CacheWrite) + price(pricing.TierCacheWrite1h, u.CacheWrite1h)
 }
 
 // binding is where and at what prompt size a model's tokens are priced.
