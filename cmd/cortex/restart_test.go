@@ -334,7 +334,7 @@ func startProxy(t *testing.T, f proxyFixture) proxy {
 	t.Helper()
 	c := startChild(t, f.home, "main", "-config", f.config)
 	// Each server's listener is bound before it logs, so the addresses answer once logged.
-	// The health server starts after main's signal.Notify, so a SIGTERM from here on reaches
+	// Both servers start after main's signal.Notify, so a SIGTERM from here on reaches
 	// the shutdown path.
 	out := c.await(t, "its health and forward-proxy addresses", func(out string) bool {
 		return healthListening.MatchString(out) && forwardListening.MatchString(out)
@@ -438,7 +438,14 @@ func TestLocalInstallStopsWithoutDraining(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The upstream holds the request until cleanup, so the proxy exits with it in flight.
-	_ = p.wait()
+	// Stopping at once is the property under test, so this wait has a bound: 4s, inside
+	// launchd's 5s window and well above the 1s budget of a stop without a drain.
+	select {
+	case err := <-p.done:
+		p.done <- err
+	case <-time.After(4 * time.Second):
+		t.Fatal("the proxy is still running 4s after SIGTERM; a local install stops at once rather than draining")
+	}
 	if !p.cmd.ProcessState.Success() {
 		t.Errorf("exit was not clean: %v", p.cmd.ProcessState)
 	}
@@ -484,6 +491,7 @@ func TestPodStillDrains(t *testing.T) {
 // as ExitTimeOut in the plist agentop writes). Waiting longer is what let launchd SIGKILL
 // the supervisor mid-wait: launchd only SIGTERMs the rest of the process group, which a
 // proxy that has already taken its one SIGTERM ignores, so it lived on holding its ports.
+// The bound itself is checked in TestSuperviseDelays_AreOrdered; here the grace is 0.
 func TestSupervisorEndsAStuckProxyInsideLaunchdsWindow(t *testing.T) {
 	home := t.TempDir()
 	sup := startChild(t, home, "stuck-child", "-supervise")

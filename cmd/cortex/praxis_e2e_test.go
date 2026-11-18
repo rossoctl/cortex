@@ -119,6 +119,7 @@ type chain struct {
 	cfg    *config.Config
 	hop    *forwardproxy.Hop // nil in direct mode
 	ready  <-chan struct{}   // closes when the hop is ready; nil in direct mode
+	exited <-chan struct{}   // closes when cortex-gateway exits
 	events <-chan model.SessionEvent
 	// startGateway starts cortex-gateway. newPraxisChain calls it unless noGateway is set.
 	startGateway func()
@@ -264,9 +265,12 @@ func newPraxisChain(t *testing.T, origin *mockOrigin, opts chainOpts) *chain {
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
+		exited := make(chan struct{})
+		go func() { _ = cmd.Wait(); close(exited) }()
+		c.exited = exited
 		t.Cleanup(func() {
 			stdin.Close()
-			_ = cmd.Wait()
+			<-exited
 			if t.Failed() {
 				t.Logf("cortex-gateway output:\n%s", out.String())
 			}
@@ -279,10 +283,14 @@ func newPraxisChain(t *testing.T, origin *mockOrigin, opts chainOpts) *chain {
 	return c
 }
 
-// waitReady waits for the hop's probe to pass.
+// waitReady waits for the hop's probe to pass, and fails if cortex-gateway exits first.
 func (c *chain) waitReady(t *testing.T) {
 	t.Helper()
-	<-c.ready
+	select {
+	case <-c.ready:
+	case <-c.exited:
+		t.Fatal("cortex-gateway exited before the hop was ready")
+	}
 	if !c.hop.Ready() {
 		t.Fatal("the hop logged that it is ready, but Ready() is false")
 	}

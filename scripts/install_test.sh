@@ -1124,7 +1124,9 @@ chmod +x "${TMP}/unamebin/uname"
 #         and log how many marks it saw. Downloading at once, both meet, and each sees
 #         2; one after the other, the first waits for the other forever.
 #   slow  wait for the stub sleep's third call to write to slow.<kind>, so the download
-#         outlasts a few polls; with T_HEAD=hang, also for its HEAD's hheld.<kind>
+#         outlasts a few polls; on a terminal with a bar, also for its HEAD's
+#         asked.<kind>, which the HEAD writes once it has logged its request; with
+#         T_HEAD=hang, also for its HEAD's hheld.<kind>
 #   hold  write a line to held.<kind>, then hold until killed, and log the kill. It
 #         takes 0.3s to stop, so a script that does not wait for it exits before the
 #         log says so
@@ -1148,6 +1150,8 @@ _k="${_n%%_*}" # the archive's kind
 if [ -n "${_head}" ]; then
 	printf 'HEAD %s\n' "${_u}" >>"${T_URLS}"
 	printf 'head-args %s\n' "$*" >>"${T_MEET}/log"
+	[ "${T_HEAD:-}" != wait ] || printf 'head-answers' >/dev/tty
+	[ -z "${T_ASKED:-}" ] || echo >"${T_MEET}/asked.${_k}"
 	if [ "${T_HEAD:-}" = hang ]; then
 		# HUP ignored, here and in the hold: script(1) hangs its pty up when the run
 		# ends, and that HUP would kill a HEAD install.sh left running, hiding the leak.
@@ -1162,7 +1166,6 @@ if [ -n "${_head}" ]; then
 		wait "${_sp}"
 		printf 'head finished\n' >>"${T_MEET}/log"
 	fi
-	[ "${T_HEAD:-}" != wait ] || printf 'head-answers' >/dev/tty
 	if [ -f "${_f}" ] && [ "${T_HEAD:-}" != none ]; then
 		printf 'HTTP/2 302 \r\ncontent-length: 0\r\n\r\nHTTP/2 200 \r\ncontent-length: %s\r\n\r\n' \
 			"$(wc -c <"${_f}" | tr -d ' ')"
@@ -1185,6 +1188,7 @@ case "${T_CURL:-}:${_n}" in
 		;;
 	slow:agentop_*.tar.gz | slow:cortex_*.tar.gz)
 		read -r _ <>"${T_MEET}/slow.${_k}"
+		[ -z "${T_ASKED:-}" ] || read -r _ <>"${T_MEET}/asked.${_k}"
 		[ "${T_HEAD:-}" != hang ] || read -r _ <>"${T_MEET}/hheld.${_k}"
 		;;
 	hold:agentop_*.tar.gz | hold:cortex_*.tar.gz)
@@ -1362,9 +1366,12 @@ run_install() {
 	mkfifo "${T_RUN}/meet/never" "${T_RUN}/meet/polled" "${T_RUN}/gone"
 	for _ri_k in agentop cortex; do
 		mkfifo "${T_RUN}/meet/meet.${_ri_k}" "${T_RUN}/meet/slow.${_ri_k}" \
-			"${T_RUN}/meet/held.${_ri_k}" "${T_RUN}/meet/hheld.${_ri_k}"
+			"${T_RUN}/meet/held.${_ri_k}" "${T_RUN}/meet/hheld.${_ri_k}" "${T_RUN}/meet/asked.${_ri_k}"
 	done
 	case "${T_SLEEP}:${T_CURL}" in :slow | :hold) T_SLEEP=frac ;; esac
+	# The terminals that draw a bar, and so ask for the sizes.
+	_ri_asked=""
+	case "${T_CURL}:${T_PTY}" in slow:yes | slow:mid) _ri_asked=1 ;; esac
 	_ri_path="${TMP}/tbin:${PATH}"
 	[ -z "${T_SLEEP}" ] || _ri_path="${TMP}/sleepbin:${_ri_path}"
 	[ -z "${T_UNAME}" ] || _ri_path="${TMP}/unamebin:${_ri_path}"
@@ -1393,7 +1400,7 @@ run_install() {
 		HOME="${T_RUN}/home" TMPDIR="${T_RUN}/tmp" PATH="${_ri_path}" \
 		AUTHBRIDGE_SKIP_DOWNLOAD="${_ri_skip}" \
 		T_REL="${T_REL:-}" T_URLS="${T_RUN}/urls" T_LOG="${T_RUN}/log" T_PROBE="${_ri_probe}" \
-		T_CURL="${T_CURL}" T_HEAD="${T_HEAD}" T_MEET="${T_RUN}/meet" \
+		T_CURL="${T_CURL}" T_HEAD="${T_HEAD}" T_ASKED="${_ri_asked}" T_MEET="${T_RUN}/meet" \
 		T_REAL_SLEEP="${T_REAL_SLEEP}" T_UNAME="${T_UNAME}" \
 		T_SLEEPS="${T_RUN}/sleeps" T_SLEEP_NOFRAC="$([ "${T_SLEEP}" != nofrac ] || echo 1)" \
 		${T_ENV} sh "$@"

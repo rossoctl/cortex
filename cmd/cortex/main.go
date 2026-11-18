@@ -1025,6 +1025,11 @@ func main() {
 		slog.Info("tls-bridge enabled", "ca_dir", cfg.TLSBridge.CADir, "fail_closed", cfg.TLSBridge.FailClosed)
 	}
 
+	// Before any server starts, so a process that serves takes SIGTERM through the
+	// shutdown below, which flushes the cost ledger and the session archive.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
 	// Proxy-sidecar: reverse proxy (inbound) and/or forward proxy (outbound),
 	// selected by listener.roles (empty => both). sharedStore is created up
 	// front so whichever proxies run share one session store.
@@ -1299,11 +1304,6 @@ func main() {
 	}
 
 	slog.Info("cortex starting", "version", version, "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
-
-	// Before the health server, so a process whose health server has logged or answered
-	// takes SIGTERM through the shutdown below.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	healthSrv := bootstrap.ServeHealthServer(inboundH, outboundH, listeners.take("health"))
 	if err := listeners.claimed(); err != nil {
