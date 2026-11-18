@@ -447,14 +447,14 @@ type SessionEvent struct {
 	// Use ImportedSource to make the value and Imported to test it.
 	Source string
 
-	// NoRecord is true when the request asked not to be recorded: it carried
-	// RecordHeader with the value RecordOff (#1923). Read by Context.NoRecord, pinned
-	// before any plugin runs. The proxy still forwards the request and runs its plugins;
-	// the session archive keeps none of the session's events.
+	// NoRecord is true when the request withholds its own session from the archive: it
+	// carried RecordHeader with the value RecordOff and named its session with a session-id
+	// header (#1923; Context.WithholdsSession, pinned before any plugin runs). The proxy
+	// still forwards the request and runs its plugins. The archive keeps none of the
+	// session's events from then on; what it held before the opt-out stays.
 	//
-	// Client-asserted, with the same caveat as Client above. It can only withhold a
-	// session from the archive, never put one there, so a forged value costs its sender
-	// their own recording.
+	// Client-asserted, with the same caveat as Client above. It can stop a session's
+	// recording, never put one there or erase what is recorded.
 	NoRecord bool
 
 	// SubagentKind is the kind of a Bob child task, from Context.SubagentKind:

@@ -215,9 +215,10 @@ type SessionSummary struct {
 	// Source is "imported:<agent>" while every event of the session is imported, and ""
 	// otherwise. Only the archive's fold sets it: store entries are live.
 	Source string `json:"source,omitempty"`
-	// NoRecord is true when the session asked not to be recorded (#1923): the archive keeps
-	// none of its events, only a marker that it opted out. A live session shows it from its
-	// first flagged request.
+	// NoRecord is true when the session asked not to be recorded (#1923): the archive keeps none
+	// of its events from then on, and what it held before stays. A session with nothing before
+	// is only a marker that it opted out. A live session shows it from its first flagged request,
+	// and after a restart from the archive's mark.
 	NoRecord bool `json:"noRecord,omitempty"`
 	// LinkedTo, on a pending bucket, is the sessions its process named that OwnerAt gives a
 	// call of the bucket, each with the span of its naming requests (Link says how close that

@@ -49,7 +49,12 @@ func noRecordProxy(t *testing.T) (proxy *httptest.Server, backendURL string, rec
 	var mu sync.Mutex
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		got = append(got, r.Header.Get(model.RecordHeader))
+		// "<absent>" when the header is not there at all, not just empty.
+		v := "<absent>"
+		if vs := r.Header.Values(model.RecordHeader); len(vs) > 0 {
+			v = strings.Join(vs, ",")
+		}
+		got = append(got, v)
 		mu.Unlock()
 	}))
 	t.Cleanup(backend.Close)
@@ -76,7 +81,7 @@ func TestNoRecord_OwnSessionIsWithheldAndHeaderStripped(t *testing.T) {
 		model.RecordHeader:              {"off"},
 		session.ClaudeCodeSessionHeader: {"11111111-2222-3333-4444-555555555555"},
 	})
-	if len(*seen) != 1 || (*seen)[0] != "" {
+	if len(*seen) != 1 || (*seen)[0] != "<absent>" {
 		t.Fatalf("upstream saw %s = %q, want it stripped", model.RecordHeader, *seen)
 	}
 	got := rec.take()
@@ -96,7 +101,7 @@ func TestNoRecord_OwnSessionIsWithheldAndHeaderStripped(t *testing.T) {
 func TestNoRecord_FallbackFiledRequestIsRecorded(t *testing.T) {
 	proxy, backend, rec, seen := noRecordProxy(t)
 	postThrough(t, proxy, backend+"/v1/messages", `{}`, http.Header{model.RecordHeader: {"off"}})
-	if len(*seen) != 1 || (*seen)[0] != "" {
+	if len(*seen) != 1 || (*seen)[0] != "<absent>" {
 		t.Fatalf("upstream saw %s = %q, want it stripped", model.RecordHeader, *seen)
 	}
 	got := rec.take()

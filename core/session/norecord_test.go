@@ -100,9 +100,14 @@ func TestNoRecord_FoldRoundTrips(t *testing.T) {
 	if !back.NoRecord() || !back.Summary("s1").NoRecord {
 		t.Fatalf("NoRecord lost through %s", b)
 	}
-	plain, _ := NewSummaryFold().MarshalJSON()
+	plain, err := NewSummaryFold().MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var p SummaryFold
-	_ = p.UnmarshalJSON(plain)
+	if err := p.UnmarshalJSON(plain); err != nil {
+		t.Fatal(err)
+	}
 	if p.NoRecord() {
 		t.Fatal("an unmarked fold decodes as NoRecord")
 	}

@@ -3,8 +3,9 @@ package pipeline
 import "github.com/rossoctl/cortex/core/model"
 
 // NoRecord reports whether the request asked not to be recorded (#1923): it carried
-// model.RecordHeader set to model.RecordOff. Recorded as SessionEvent.NoRecord on every row
-// the request produces, and the session archive keeps none of that session's events.
+// model.RecordHeader set to model.RecordOff. With an own session id (WithholdsSession), it is
+// recorded as SessionEvent.NoRecord on the request's rows, and the archive keeps none of that
+// session's events from then on; what it held before stays.
 //
 // The first call also deletes model.RecordHeader from Headers. The header is for Cortex
 // only: plugins never see it, and the listeners that send the request on from Headers

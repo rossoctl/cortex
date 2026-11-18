@@ -49,9 +49,11 @@ func TestNoRecord_ExtProcSkipHostRemovesTheHeader(t *testing.T) {
 
 	stream := &mockStream{ctx: context.Background(), requests: []*extprocv3.ProcessingRequest{outboundRequest(hdrs())}}
 	_ = srv.Process(stream)
-	if len(stream.responses) != 1 || !slices.Contains(removed(t, stream.responses[0]), "x-cortex-record") {
-		t.Fatalf("headers phase: responses %d, RemoveHeaders %v, want x-cortex-record removed",
-			len(stream.responses), removed(t, stream.responses[0]))
+	if len(stream.responses) != 1 {
+		t.Fatalf("headers phase: %d responses, want 1", len(stream.responses))
+	}
+	if got := removed(t, stream.responses[0]); !slices.Contains(got, "x-cortex-record") {
+		t.Fatalf("headers phase: RemoveHeaders %v, want x-cortex-record removed", got)
 	}
 
 	resp, pctx := srv.handleOutboundBody(&mockStream{ctx: context.Background()}, hdrs(), []byte(`{}`))

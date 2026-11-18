@@ -971,7 +971,9 @@ func withHeaderMutation(resp *extprocv3.ProcessingResponse, pctx *pipeline.Conte
 	var set []*corev3.HeaderValueOption
 	var del []string
 	for k, vv := range pctx.Headers {
-		if skip(k) || slices.Equal(orig[k], vv) {
+		// Never forward X-Cortex-Record (#1923), also when a plugin wrote it back: it is removed
+		// below, and a set beside the remove would leave the outcome to Envoy's ordering.
+		if skip(k) || slices.Equal(orig[k], vv) || strings.EqualFold(k, model.RecordHeader) {
 			continue
 		}
 		if len(vv) == 0 {

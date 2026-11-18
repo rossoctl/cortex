@@ -15,11 +15,13 @@ func TestNoRecord_PinnedAndStripped(t *testing.T) {
 	h.Set("User-Agent", "claude-cli/2.1.266 (external, cli)")
 	c := &Context{Headers: h}
 	c.ResolveClient()
-	if !c.NoRecord() {
-		t.Fatal("NoRecord = false for X-Cortex-Record: off")
-	}
+	// Before calling NoRecord here: its first call would remove the header itself, so this
+	// checks that ResolveClient made it.
 	if _, ok := c.Headers[http.CanonicalHeaderKey(model.RecordHeader)]; ok {
 		t.Fatal("the header is still in Headers after ResolveClient")
+	}
+	if !c.NoRecord() {
+		t.Fatal("NoRecord = false for X-Cortex-Record: off")
 	}
 	// A plugin that adds it back later changes nothing: the answer was pinned.
 	c.Headers.Set(model.RecordHeader, "on")
