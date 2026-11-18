@@ -1,15 +1,22 @@
 # agentop
 
-Interactive terminal UI for inspecting AuthBridge's in-memory session store.
-`agentop` connects to the [session API](../../docs/session-api.md) exposed by
-an AuthBridge sidecar (default `http://localhost:9094`, typically reached via
-`kubectl port-forward`) and lets you browse active sessions, follow a
-session's event stream live, and read individual events as pretty-printed
-JSON.
+Reference for `agentop`. For a first tour, read [Using agentop](../../docs/using-agentop.md).
+
+`agentop` works with the local Cortex on a laptop, and with an AuthBridge sidecar in a cluster.
+It reads the proxy's [session API](../../docs/session-api.md).
+It shows the sessions, the live event stream of each session, and each event as JSON.
 
 ## Install
 
-Download a prebuilt `agentop` for your platform (linux/macOS, amd64/arm64) from the
+Run the installer. It puts `agentop` and `cortex` in `~/.local/bin`:
+
+```sh
+curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh
+```
+
+[Getting started](../../docs/getting-started.md#install) tells what else the installer changes.
+
+Or download a prebuilt `agentop` for your platform (linux/macOS, amd64/arm64) from the
 [Releases page](https://github.com/rossoctl/cortex/releases) — see
 [Download prebuilt binaries](../../CONTRIBUTING.md#prebuilt-release-binaries) for the download,
 checksum-verify, and macOS quarantine steps — and drop it on your PATH.
@@ -40,8 +47,9 @@ The title bar shows one of these notices. When more than one applies, it shows t
 
 ## Run
 
-`agentop observe` discovers AuthBridge agents in your current `kubectl`
-context and lets you pick one:
+`agentop observe` connects to the Cortex on this machine. With no local Cortex, it opens
+a picker of the AuthBridge agents in your current `kubectl` context. See
+[Choosing between a cluster and a local Cortex](#choosing-between-a-cluster-and-a-local-cortex---kubernetes):
 
 ```sh
 ./agentop observe
@@ -63,15 +71,6 @@ session content it is displaying. Requests carrying a browser `Origin`, or a
 `Host` other than `localhost` / `127.0.0.1` / `::1`, are refused — and so is a
 bind that does not land on loopback (`:47603`, `0.0.0.0:47603`), since those
 guards stop browsers, not a curl that names a loopback `Host`.
-
-You'll see a Namespaces pane listing each namespace that contains an
-AuthBridge agent. Enter drills into the Pods pane for that namespace;
-Enter on a pod starts a `kubectl port-forward` automatically and drops
-you into the session-events view. Esc backs out. `q` (or Ctrl+C) quits
-and tears the port-forward down.
-
-The picker shells out to `kubectl` — whatever context you're in is the
-context agentop uses. There's no separate auth.
 
 ### Connecting to an existing port-forward
 
@@ -143,6 +142,15 @@ wins. Resolution in full:
 | — | yes | absent (default) | the local Cortex |
 | — | yes | passed | Namespaces picker |
 | — | no | either | Namespaces picker |
+
+You'll see a Namespaces pane listing each namespace that contains an
+AuthBridge agent. Enter drills into the Pods pane for that namespace;
+Enter on a pod starts a `kubectl port-forward` automatically and drops
+you into the session-events view. Esc backs out. `q` (or Ctrl+C) quits
+and tears the port-forward down.
+
+The picker shells out to `kubectl` — whatever context you're in is the
+context agentop uses. There's no separate auth.
 
 ### Naming sessions from Claude Code (`--skip-claude-metadata`)
 
@@ -223,216 +231,14 @@ session still gets whatever title was found before the stop, which may be an old
 the background scan has nowhere to say so once the viewer owns the screen — so re-run the
 subcommand if a title looks wrong.
 
-## Routing the IBM Bob editor through Cortex (`agentop configure bob`)
-
-This is the editor half of `configure bob`; the shell half has its own section
-below. IBM Bob is a VS Code fork, so it reads the VS Code proxy setting. `agentop
-configure bob enable` writes it as a flat, top-level key in Bob's user settings,
-and on macOS one more key beside it:
-```json
-{
-  "http.proxy": "http://127.0.0.1:47600",
-  "http.systemCertificates": false
-}
-```
-
-Flat and dotted, not nested under an `"http"` object — that is the shape VS Code
-reads, and the shape difference from `configure claude-code`, which writes a
-nested `"env"` block. The address is read from `listener.forward_proxy_addr` in
-`~/.cortex/config.yaml` on every run, so a moved port or an IPv6 loopback
-produces the right value rather than a hardcoded 47600.
-
-Nothing else in the file changes, and that is meant literally: the keys are spliced
-into the existing bytes rather than re-serialized from a parsed document, so your
-key order, your indent width, your inline arrays and your blank lines between
-groups all survive untouched. A settings.json is hand-curated and often lives in
-a dotfiles repo, where a diff that alphabetizes and reflows the whole file is
-worse than the setting is worth. `disable` takes the lines back out the same way,
-so enable-then-disable returns the file byte-for-byte.
-
-```sh
-agentop configure bob enable      # write the settings (and, on macOS, the shell block)
-agentop configure bob disable     # remove what enable wrote
-agentop configure bob status      # report, and act on nothing
-```
-
-`enable` and `disable` show every change and ask once before writing, keep a
-`.bak` of the settings file as it was first found, and take `--yes` for unattended
-use. Declined — or with no terminal to ask on — they write nothing and exit **3**,
-the same convention as `configure claude-code`. `--settings
-PATH` and `--config PATH` override either file. Restart Bob afterwards: whether
-it re-reads a proxy change live is unverified, so the message says restart rather
-than guess.
-### Trusting Cortex's CA without the keychain (macOS)
-
-The proxy terminates TLS with a forged leaf, so Bob has to trust Cortex's bridge
-CA or Cortex cannot read its requests. Bob's model calls leave from its extension
-host's `fetch`, which is Node, and Node trusts `NODE_EXTRA_CA_CERTS` — but VS
-Code's proxy layer hands that `fetch` an explicit CA list (Node's bundled roots
-plus the keychain) whenever `http.systemCertificates` is on, and an explicit list
-*replaces* Node's default store, dropping `NODE_EXTRA_CA_CERTS` with it. So on
-macOS `enable` makes two changes, and neither touches the keychain:
-
-- **`"http.systemCertificates": false`**, which leaves `fetch` on Node's default
-  store. `enable` adds it only when the key is absent, and records that it did in
-  `~/.cortex/bob-state.json`; a `true`, or any value you chose, is refused rather
-  than overwritten. `disable` removes it only when that record says agentop added
-  it and it is still `false`, so a `false` you set yourself is never taken out.
-- **A block in your shell's rc file** that exports `NODE_EXTRA_CA_CERTS` for IBM
-  Bob only. Started from the Dock or Spotlight, Bob has no terminal to inherit
-  from, so it runs your login shell once (`$SHELL -i -l -c`) with
-  `VSCODE_RESOLVING_ENVIRONMENT=1` set and copies that shell's environment into
-  its extension host. The block tests that variable *and* Bob's bundle id, so a
-  terminal, or another VS Code fork resolving its own environment, never sees it:
-
-  ```sh
-  # >>> cortex agentop (bob) >>>
-  # IBM Bob reads this when it starts from the Dock or Spotlight, so it trusts Cortex.
-  if [ "$VSCODE_RESOLVING_ENVIRONMENT" = 1 ] && [ "$__CFBundleIdentifier" = com.ibm.software.bob ]; then
-    export NODE_EXTRA_CA_CERTS=/Users/you/.cortex/ca/ca.crt
-  fi
-  # <<< cortex agentop (bob) <<<
-  ```
-
-  The file, and every rule for editing it, is the shell half of `configure
-  bob`'s: `~/.zshrc` for zsh, `~/.bashrc` for bash, followed through one symlink,
-  written atomically, and removed by `disable` only when it is exactly what
-  `enable` wrote. Any other shell, a dangling link, or a deeper chain gets the
-  block printed to place yourself.
-
-A block in a file your login shell never reads fails silently — Bob just goes back
-to being passed through unread — so `enable` then starts your shell the way Bob
-does and says what it found. The usual miss is bash: its login shell reads
-`~/.bash_profile`, not `~/.bashrc`, and the fix is to source one from the other.
-`status` reports both changes from the files alone and runs nothing.
-
-Quit Bob and reopen it from the Dock or Spotlight afterwards. A Bob started from a
-terminal (`bobide`) takes that terminal's environment instead and never runs the
-block.
-
-The cost of `http.systemCertificates: false` is that Bob's extensions stop reading
-the keychain. Everything Cortex decrypts is unaffected — Cortex presents its own
-certificate — but a host Cortex passes through unread whose certificate chains to
-a root trusted *only* in the keychain (some company-internal CAs) fails from Bob's
-extensions. Bob's own UI and webviews are Chromium, trust only the keychain, and
-are not affected by any of this: they stay passed through unread.
-
-Earlier versions of `enable` printed a `sudo security add-trusted-cert` command
-for the System keychain instead. `disable` still prints its undo — two commands,
-because `delete-certificate` alone leaves the admin-domain trust settings the add
-wrote:
-
-```sh
-sudo security remove-trusted-cert -d ~/.cortex/ca/ca.crt
-sudo security delete-certificate -c authbridge-tls-bridge-ca \
-  -t /Library/Keychains/System.keychain
-```
-
-Off macOS, `enable` prints how to add `ca.crt` to the system trust store — the
-usual Debian and Fedora routes, saying plainly that the step depends on the
-distribution — because that needs `sudo` and agentop does not escalate on its own.
-It is `ca.crt`, the single bridge CA, and deliberately **not** the `bundle.crt`
-beside it, which holds every platform root as well.
-
-### What it knows, and what it does not
-
-"Enabled" means the value's **host and port both match** `listener.forward_proxy_addr`
-from `~/.cortex/config.yaml` — the address this machine's Cortex actually listens
-on, not a port range. Compared whole via `url.Parse`, so neither a path
-(`http://corp.example.com/?next=127.0.0.1:47600`) nor a suffixed host
-(`localhost:47600.evil.com`) can pass as ours; only `http` counts, since it is the
-only scheme `enable` writes. The loopback spellings are folded together
-(`localhost` / `127.0.0.1` / `::1`) because `forward_proxy_addr` may bind `0.0.0.0`
-while the settings file names `127.0.0.1`, and a hand-typed address must not be
-called someone else's proxy.
-
-That is not a record agentop keeps: ownership of `http.proxy` is re-decided from
-the value each time. `http.systemCertificates` is the exception — see below.
-
-Ownership has three answers, not two. A value that matches is **ours**; a
-corporate proxy, or a non-string value, is **not ours** and is left alone by both
-verbs. The third is **cannot tell**: when there is no address to compare against
-— the config is missing or unreadable — any loopback `http` proxy could be this
-one, and a bool would have to guess. Guessing "not ours" toward a `delete` is the
-dangerous direction, so it is not a bool. `status` reports "cannot tell" in those
-words rather than ruling on it. `disable` asks before removing such a value and
-refuses under `--yes`, since `--yes` means "do not ask me", not "decide for me".
-`enable` refuses rather than overwriting anything it does not own. Either verb
-prints exactly what it will do to the file, and what it will leave beside it,
-before it does it.
-
-**Whether anything is listening is a separate question**, reported on its own
-line. A stopped Cortex is the normal state of a laptop and is not a verdict on the
-setting: the setting is right either way, and the answer to "nothing is listening"
-is `agentop service start`, not an edit here.
-
-`http.proxy` governs VS Code's core networking and its extension host. An
-extension that bundles its own HTTP client can still go around it; this is the
-documented lever, not a guarantee of coverage.
-
-A settings file with comments in it is refused, not rewritten. VS Code permits
-them; the strict JSON reader here does not, and silently stripping a user's
-comments to add one key is the wrong trade.
-
-A missing `settings.json` is normal. Bob writes the file only the first time a
-setting changes, so a Bob still on its defaults has none. What says Bob has run is
-its `User` directory, which it creates on first launch: with the directory there,
-`enable` creates the file and `status` reports Bob as not configured. With the
-directory missing too — a `--settings` typo, or the wrong machine — `enable`
-refuses and names the flag, and `status` reports the Cortex status as unknown. A
-file holding only `null` is refused the same way. `disable` never fails on any of
-these: there is simply nothing to remove from that file.
-
-Only macOS's settings location is known (`~/Library/Application Support/IBM
-Bob/User/settings.json`). Elsewhere `--settings PATH` is required rather than
-guessed — writing a proxy setting into a file nothing reads is a silent no-op,
-which is worse than a refusal that names the flag.
-
-The full guide — both halves, the CA-trust flow, the record files, verified
-depth, known issues — is in [bob.md](../../docs/agents/bob.md).
-
-## Routing OpenCode through Cortex (`agentop configure opencode`)
-
-```sh
-agentop configure opencode enable    # set the nine variables in the service's environment
-agentop configure opencode disable   # remove them again
-agentop configure opencode status    # the nine, and the running service
-```
-
-OpenCode's traffic leaves from a per-user background service, `opencode serve
---service`, whose own environment `enable` edits through the OpenCode CLI.
-`enable` and `disable` take `[--yes] [--config PATH] [--opencode BIN]`; `status`
-takes `[--config PATH] [--opencode BIN]`. Changing the service's environment
-restarts it, which interrupts every OpenCode session using it — the commands
-say so and ask first. A restart that fails is reported: the service may be
-stopped, or running with its old environment, and `opencode service restart`
-applies the change. Everything else — undo by hand, CA trust, the record
-file, verified depth, known issues — is in
-[opencode.md](../../docs/agents/opencode.md).
-
-## Routing Pi through Cortex (`agentop configure pi`)
-
-```sh
-agentop configure pi enable    # a pi shell function, plus Pi's session extension
-agentop configure pi disable   # remove both
-agentop configure pi status    # which of the two is in place
-```
-
-The shell function runs `agentop exec -- pi`, because Pi reads the bridge CA only
-from `NODE_EXTRA_CA_CERTS` at startup. The extension,
-`~/.pi/agent/extensions/cortex-session.ts`, sends Pi's session id as `x-session-id`,
-which Pi does not send on its own. `enable` and `disable` take `[--yes]`. Both
-pieces are fixed text, so a file or block agentop did not write is left alone and
-reported. Everything else is in [pi.md](../../docs/agents/pi.md).
-
 ## Panes
 
 The UI has these panes. `Enter` drills in; `Esc` backs out.
 
 **Sessions is the only pane you land on.** Pipeline (`P`), Usage (`u`), Timeline
-(`T`) and the plugin catalog (`C`) are each opened by a key from the session views
+(`T`), Agents (`A`) and the plugin catalog (`C`) are each opened by a key from the session views
 and return to the pane you pressed it on. There is no tab strip: Sessions is what
-agentop is for, and the other four are surfaces you visit and leave.
+agentop is for, and the others are surfaces you visit and leave.
 
 - **Sessions** (default): table of active sessions in the store, most
   recently updated first. Columns: session (truncated), title, updated
@@ -473,75 +279,8 @@ agentop is for, and the other four are surfaces you visit and leave.
   process the calls came from. Headers keep the full id, which is still what the
   API and `/` match on.
 
-  `CTX(1M)` is a gauge, not a figure: how full the **conversation's**
-  context was on its latest turn, against a fixed one-million-token window. The
-  brackets are the scale, drawn on every row, so a nearly-empty session reads
-  as empty-out-of-something rather than as a blank cell — and an em dash, which
-  means *no context known*, stays distinguishable from the sliver a barely-used
-  session gets.
-
-  **A session is three kinds of caller, not one conversation.** Claude Code
-  sends your conversation, the subagents it spawns, and its own one-shot
-  completions — title generation, the permission security monitor, the auto-mode
-  classifier — under one session id. Two facts sort them out, and the gauge
-  needs both:
-
-  | | tool manifest | `agentRole` |
-  |---|---|---|
-  | your conversation | present | `main` |
-  | a subagent | present | `subagent` |
-  | a one-shot | **absent** | `main` |
-
-  The manifest excludes the one-shots. Measured across 115 responses in three
-  live sessions they carry *no tools* and 2–3 messages, while every conversation
-  turn carried 27–31 tools and 63–1572 messages. They are not small, which is
-  why size is not the filter: one measured 295k and another 421,220 against a
-  true context of 998,334. And they declare themselves `main`, because the CLI
-  issues them rather than a subagent.
-
-  The role excludes the subagents, which Claude Code states on every request.
-  The message count only approximated it — subagent turns reached 177 and 186
-  messages against main threads at 188 and 288 — and it cannot see a compaction,
-  which restarts your conversation at a low count while leaving the role alone.
-
-  Among what is left, the **latest** turn wins. There is deliberately no recency
-  window: your conversation goes silent while a subagent runs, and that silence
-  is structural, so a last-N-requests window can fill with the subagent's
-  traffic and hand the gauge to it. Both filters are exact, so none of that
-  traffic is a candidate in the first place.
-
-  Three things worth knowing. The denominator is fixed at 1M, the largest
-  window on any path the proxy sees, so a model with a smaller window reads
-  lower than it really is.
-
-  The figure comes from agentop's own event cache, filled by the live stream or
-  by drilling into a session. The timeline fetch asks for `view=summary`, and
-  that projection drops the slices this rule used to read, so it records their
-  **lengths** before dropping them (`messageCount` / `toolCount`) and the gauge
-  reads either shape. Without that a delivered row could not be read at all, and
-  an idle session showed a dash however long you looked at it. `agentRole` needs
-  none of that: it is a scalar the projection copies as-is.
-
-  Against a proxy older than those fields, an idle row still shows the dash
-  until traffic arrives or you open one of its events — the one request that
-  returns an event in full. Once a figure is established it is kept, so a
-  projection that says nothing cannot erase it.
-
-  **Against a proxy that publishes no `agentRole`**, the gauge falls back to the
-  old rule — tool-carrying requests, the one with the most messages — and pays
-  what that costs. After a compaction it can stay on the pre-compaction context
-  for the rest of the session, because the older, longer request still holds the
-  most messages: measured at 999,623 against a true 400,249, a bar at 98.6% for
-  a session with 600k of headroom. A stale figure is still preferred to one that
-  flips to a subagent's. With the role published there is nothing to wait for —
-  the column follows the compaction on the next turn.
-
-  Since the figure outlives the events it was read from, the way to clear one you
-  do not believe is `Esc` back to the Pods pane and re-enter: a different pod is
-  the one thing that discards it, and re-attaching starts the column from
-  whatever streams next. That reset only exists in picker mode — under
-  `--endpoint` there is no Pods pane to back out to, so restarting agentop is the
-  equivalent.
+  `CTX(1M)` shows how full the conversation's context was on its latest turn.
+  [How CTX is derived](#how-ctx-is-derived) tells how agentop calculates it.
 
   It replaced an `ACTIVE` column whose `●` nobody acted on — `UPDATED` already
   answers "is this live", in seconds rather than as a dot. The `cached` marker
@@ -571,23 +310,7 @@ agentop is for, and the other four are surfaces you visit and leave.
   and survives restarts. `[?]` states both facts; the title deliberately does
   not, since no single span is true of every row.
 
-  Rendered at 100 columns, where every column has its declared width; 93 is the
-  narrowest terminal that carries them all at once:
-
-  ```
-  agentop · http://localhost:9094
-  LAST 1H    TODAY   7 DAYS    MONTH
-    $4.04   $18.80  $216.44  $703.18
-  ────────────────────────────────────────────────────────────────────────────────────────────────────
-   SESSION         TITLE        UPDATED           EVENTS      TOKENS        COST      SAVED~  CTX(1M)
-   ctx-abc-123-4…  …pend-spans  3s ago                42       48.2k       $0.12       $0.01  ▕████ ▏
-   ctx-def-567-4…  weather-ag…  18m ago               15        1.2k      <$0.01           —  ▕▏    ▏
-   ctx-ghi-901-4…               42m ago                7        2.9k           —           —  ▕██   ▏
-   default                      1h ago                 8           —           —           —        —
-
-  ● connected  2.1 events/sec   feedback: https://github.com/rossoctl/cortex/issues/new/choose
-  [↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] plugins  [?] keys  [q] quit
-  ```
+  The screen is shown in [Using agentop](../../docs/using-agentop.md#the-screen).
 
   The two money columns are dropped entirely on a terminal too narrow to show a
   sub-cent charge honestly — below 93 columns — rather than rounded to `$0.00`
@@ -1040,7 +763,7 @@ agentop is for, and the other four are surfaces you visit and leave.
   result. Sessions recorded before the proxy captured agent ids show their
   subagents as one row; other agents show host rows alone. A proxy too old to
   serve the endpoint gets a line saying so.
-- **Catalog**: registered-plugin browser, opened by `P` from any
+- **Catalog**: registered-plugin browser, opened by `C` from any
   session-view pane. Lists every plugin the running binary knows how to
   construct, including ones not in the active pipeline. Useful for
   discovering what's available before adding to the pipeline. Sourced
@@ -1463,7 +1186,9 @@ preference does not apply at all: there "an end" is the largest or smallest valu
 rather than the oldest or newest event, so the cursor stays pinned to the event you
 were reading instead.
 
-## Which harnesses are wired into Cortex (`agentop configure status`)
+## Commands
+
+### Which harnesses are wired into Cortex (`agentop configure status`)
 
 Each section below covers one harness. To see all of them at once — without running
 five `agentop configure <harness> status` commands and comparing five different output
@@ -1496,7 +1221,7 @@ overrides (`--settings`, `--env`, `--config`, `--opencode`) do not compose into 
 flag set, and anyone who needs a non-default path wants one harness's `status`, which
 already takes it. Exit status is 0 whatever the rows say.
 
-## Running one command through Cortex (`agentop exec`)
+### Running one command through Cortex (`agentop exec`)
 
 `agentop exec -- <command>` scopes Cortex routing to a single child process:
 the nine proxy/CA variables in its environment, nothing written anywhere.
@@ -1512,7 +1237,7 @@ and requires an enabled TLS bridge. The full contract — which variable gets
 which CA file and why, `--print`'s rules, what happens before Cortex's first
 start — is in [any-agent.md](../../docs/agents/any-agent.md).
 
-## Choosing an inference server (`agentop server`)
+### Choosing an inference server (`agentop server`)
 
 With several inference servers — LiteLLM gateways or local model servers — each
 with its own URL and key, `agentop server`
@@ -1632,7 +1357,7 @@ second Cortex without touching the one every session uses. Flags go after the
 action. Exit codes: 0 done, or nothing to do; 1 refused or failed; 2 a usage error,
 a malformed name, agent or URL included; 3 a replacement declined.
 
-### Local model servers
+#### Local model servers
 
 Ollama, vLLM and llama.cpp's `llama-server` are added like any other server. None
 of them checks the key unless started with one, but `add` needs one, so give any word.
@@ -1660,7 +1385,7 @@ rather than refused, so set its context length above the agent's prompts: Claude
 Code's opening turn can pass 64k tokens, Bob's reach about 21k. On a Mac with
 less than 64 GB, see [Choose a model](../../docs/laptop-local-model.md#choose-a-model).
 
-## Importing agent history (`agentop import`)
+### Importing agent history (`agentop import`)
 
 `agentop import` reads the transcripts that an agent keeps on disk, and adds
 them to Cortex's session history and cost ledger. Use it for the sessions that
@@ -1723,7 +1448,7 @@ Its events show `n/a` for status, duration, bytes, host and plugin, because the
 proxy did not see them. Tokens and cost show values. A Claude Code, Codex,
 OpenCode or Pi turn is priced at today's rates. A Bob turn shows Bob's own cost.
 
-## Installing a bundled script plugin (`agentop script`)
+### Installing a bundled script plugin (`agentop script`)
 
 Cortex ships some [script plugins](../../docs/script-plugin.md#bundled-scripts)
 inside agentop. `agentop script` installs one in a single step:
@@ -1745,7 +1470,52 @@ inside agentop. `agentop script` installs one in a single step:
 
 `--config PATH` names another Cortex config, as for `agentop server`.
 
-## Editing the pipeline
+### What your agents have spent (`agentop cost`)
+
+`agentop cost` prints what your agents spent in a window. With no flag, it prints
+the total for today. The flags:
+
+- `--window`: `today` (the default, from local midnight), `month` (from the 1st), `7d` (the last seven days, rolling), or a duration such as `1h` or `6h` (from the in-memory ring).
+- `--by <axis>`: one row for each label, costliest first. The axes are agent, project, model, endpoint, currency, session, status, plugin and host.
+- `--agent <name>`: only this agent, spelled as the Agents pane shows it (for example `bob`).
+- `--json`: the totals as JSON.
+- `--endpoint <URL>`: ask this proxy. The default is the Cortex on this machine.
+
+The ledger windows (`today`, `month` and `7d`) serve only the agent, project,
+model, endpoint and currency axes. The other axes need a duration window.
+
+`today`, `month` and `7d` come from the cost ledger. The ledger is on for a local
+install and off in Kubernetes. When it is off, the command prints the window that
+the proxy holds, not the window that you asked for.
+
+```sh
+agentop cost --window month --by agent
+agentop cost --by model
+agentop cost --json
+```
+
+[Pricing](../../docs/pricing.md) tells how Cortex calculates a cost.
+
+### The pipeline that runs (`agentop pipeline get`)
+
+`agentop pipeline get` prints the active plugin pipeline as a table. The table
+shows the inbound chain, then the application, then the outbound chain. This is
+the same composition as the Pipeline pane (`P`).
+
+DESCRIPTION is the last column. The table has no EVENTS column and no DEPS column.
+`--json` prints the shape of `/v1/pipeline`, with `requires` and `requiresAny`.
+`--endpoint <URL>` asks this proxy, as for `agentop cost`.
+
+```sh
+agentop pipeline get
+agentop pipeline get --json
+```
+
+Use it to see the pipeline that runs. The config file alone does not show the
+defaults. To change the pipeline, see [Editing the pipeline](#editing-the-pipeline).
+
+
+### Editing the pipeline
 
 Press `e` on the Pipeline pane to edit the runtime `pipeline:` subtree in
 `$EDITOR` (or `vi` if unset). On save, agentop shows a diff and asks
@@ -1824,7 +1594,7 @@ pod identity to resolve a ConfigMap from and no local config file to write, so
 pressing `e` flashes a hint naming the remedy instead of opening an edit it
 cannot finish.
 
-### Pre-apply validation
+#### Pre-apply validation
 
 After save, agentop runs the same Requires/RequiresAny/RequiresLater
 checks the framework runs at reload-time, against the cached
@@ -1845,7 +1615,7 @@ Validation is silently skipped when the catalog isn't loaded
 (operator hasn't pressed `P` yet). Visit the catalog pane once to
 populate it for the rest of the session.
 
-### Agent-name resolution
+#### Agent-name resolution
 
 Cluster path only — a local edit has no agent and skips all of this.
 
@@ -1855,7 +1625,7 @@ label (operator sets this). If the label is absent, agentop
 falls back to stripping the last two dash-separated segments of the
 pod name (the ReplicaSet hash + pod suffix).
 
-### Auto-rollback on reload failure
+#### Auto-rollback on reload failure
 
 If the write succeeds but the reload fails (unknown plugin name, malformed
 config, validation error), the framework keeps the previous in-memory pipeline
@@ -1877,7 +1647,7 @@ guarded by the staleness check described above, but the rollback deliberately is
 not — it runs *because* the file changed, so checking would refuse every
 rollback. The running pipeline is unaffected either way.
 
-### Backgrounding the watch
+#### Backgrounding the watch
 
 Pressing `Esc` while waiting for hot-reload (or during rollback)
 moves the watch to the background instead of aborting it. The
@@ -1895,14 +1665,14 @@ Flashes auto-dismiss after a few seconds; if you miss one, query
 `/reload/status` directly — through the port-forward for a pod, or at the
 `stats.address` in `~/.cortex/config.yaml` for a local Cortex.
 
-### Permissions
+#### Permissions
 
 agentop shells out to `kubectl`; kubectl uses your kubeconfig. Editing
 requires `update` on `configmaps` in the agent's namespace (in
 addition to `get pods` which the picker already needs). RBAC denial
 surfaces verbatim in the overlay.
 
-### Tempfile lifecycle
+#### Tempfile lifecycle
 
 agentop writes the editable pipeline subtree to `$TMPDIR/agentop-pipeline-*.yaml`
 on every edit. The tempfile is **left in place on every exit path**
@@ -1910,7 +1680,7 @@ on every edit. The tempfile is **left in place on every exit path**
 agentop launch, files older than 24h in this glob are swept
 automatically — no manual cleanup needed.
 
-### Hot-reload window
+#### Hot-reload window
 
 The framework reloads via a config-file watcher, so how long the wait is depends
 on how the edit reaches that file. In a cluster, kubelet syncs ConfigMap edits
@@ -1945,7 +1715,7 @@ The proxy's half of this rule is in [`proxy-contract.md`](../../docs/proxy-contr
 That page also lists the ports, endpoints and command lines that agentop uses in a
 local Cortex.
 
-## Plugin dependencies
+### Plugin dependencies
 
 Plugins declare dependencies in their `Capabilities()`:
 
@@ -1972,11 +1742,13 @@ agentop surfaces these in three places:
 The framework's own validateRelationships is the source of truth and
 runs at every reload. agentop's checks are the fast-feedback layer.
 
-## Typing `bob` instead of `agentop exec -- bob` (the shell half of `agentop configure bob`)
+## Per-agent configure
+
+### Typing `bob` instead of `agentop exec -- bob` (the shell half of `agentop configure bob`)
 
 `agentop exec -- bob` routes one invocation. `agentop configure bob enable`
 makes that the meaning of `bob` in every new shell, by appending a delimited
-block to your rc file — the same command configures the editor above, and does
+block to your rc file — the same command configures the editor below, and does
 both:
 
 ```sh
@@ -2010,7 +1782,7 @@ silent one. Scripted callers should pass `--yes`.
 
 Bob is one agent with two faces, and `configure bob` configures both: the IBM Bob
 **editor** — a VS Code fork, so the lever is `http.proxy` in its `settings.json`
-(above) — and the **shell integration**, a `bob` function in your rc file so
+(below) — and the **shell integration**, a `bob` function in your rc file so
 typing `bob` at a prompt runs through Cortex. Both halves' changes are listed
 under ONE preview and confirmed by ONE prompt, and a write failure in one half
 does not stop the other; a declined prompt declines both.
@@ -2050,7 +1822,7 @@ the real binary past the function. `agentop exec` runs the `bob` binary as a chi
 process, and that process never reads your rc file, so the `bob` inside the body
 is always the one on `PATH`.
 
-### Which file it writes
+#### Which file it writes
 
 The basename of `$SHELL` picks it, and only these two:
 
@@ -2071,7 +1843,7 @@ function does not appear in a new window, either source `~/.bashrc` from
 `~/.bash_profile` — the usual arrangement — or move the block there yourself.
 `enable` always prints the path it wrote, so you can see where it went.
 
-### Symlinks
+#### Symlinks
 
 A `~/.zshrc` symlinked into a dotfiles repo is followed, and the block lands in
 the real file: writing the link itself would replace it with a regular file and
@@ -2090,7 +1862,7 @@ The write is temp-file-then-rename, so a failure part way through leaves your
 rc file as it was rather than half-written. An existing file keeps its own
 permissions; a new one is created `0644`.
 
-### What `status` does and does not know
+#### What `status` does and does not know
 
 It reports whether `CORTEX_BOBSHELL` is set in the environment, and it reads no
 files. So it says `not enabled` in the very shell that just ran `enable`, until
@@ -2118,6 +1890,208 @@ bash, zsh and dash alike. (`mise doctor` splits `activated:` from
 
 Both answers exit 0: "not enabled" is a report, not a failure.
 
+### Routing the IBM Bob editor through Cortex (`agentop configure bob`)
+
+This is the editor half of `configure bob`; the shell half has its own section
+above. IBM Bob is a VS Code fork, so it reads the VS Code proxy setting. `agentop
+configure bob enable` writes it as a flat, top-level key in Bob's user settings,
+and on macOS one more key beside it:
+```json
+{
+  "http.proxy": "http://127.0.0.1:47600",
+  "http.systemCertificates": false
+}
+```
+
+Flat and dotted, not nested under an `"http"` object — that is the shape VS Code
+reads, and the shape difference from `configure claude-code`, which writes a
+nested `"env"` block. The address is read from `listener.forward_proxy_addr` in
+`~/.cortex/config.yaml` on every run, so a moved port or an IPv6 loopback
+produces the right value rather than a hardcoded 47600.
+
+Nothing else in the file changes, and that is meant literally: the keys are spliced
+into the existing bytes rather than re-serialized from a parsed document, so your
+key order, your indent width, your inline arrays and your blank lines between
+groups all survive untouched. A settings.json is hand-curated and often lives in
+a dotfiles repo, where a diff that alphabetizes and reflows the whole file is
+worse than the setting is worth. `disable` takes the lines back out the same way,
+so enable-then-disable returns the file byte-for-byte.
+
+```sh
+agentop configure bob enable      # write the settings (and, on macOS, the shell block)
+agentop configure bob disable     # remove what enable wrote
+agentop configure bob status      # report, and act on nothing
+```
+
+`enable` and `disable` show every change and ask once before writing, keep a
+`.bak` of the settings file as it was first found, and take `--yes` for unattended
+use. Declined — or with no terminal to ask on — they write nothing and exit **3**,
+the same convention as `configure claude-code`. `--settings
+PATH` and `--config PATH` override either file. Restart Bob afterwards: whether
+it re-reads a proxy change live is unverified, so the message says restart rather
+than guess.
+#### Trusting Cortex's CA without the keychain (macOS)
+
+The proxy terminates TLS with a forged leaf, so Bob has to trust Cortex's bridge
+CA or Cortex cannot read its requests. Bob's model calls leave from its extension
+host's `fetch`, which is Node, and Node trusts `NODE_EXTRA_CA_CERTS` — but VS
+Code's proxy layer hands that `fetch` an explicit CA list (Node's bundled roots
+plus the keychain) whenever `http.systemCertificates` is on, and an explicit list
+*replaces* Node's default store, dropping `NODE_EXTRA_CA_CERTS` with it. So on
+macOS `enable` makes two changes, and neither touches the keychain:
+
+- **`"http.systemCertificates": false`**, which leaves `fetch` on Node's default
+  store. `enable` adds it only when the key is absent, and records that it did in
+  `~/.cortex/bob-state.json`; a `true`, or any value you chose, is refused rather
+  than overwritten. `disable` removes it only when that record says agentop added
+  it and it is still `false`, so a `false` you set yourself is never taken out.
+- **A block in your shell's rc file** that exports `NODE_EXTRA_CA_CERTS` for IBM
+  Bob only. Started from the Dock or Spotlight, Bob has no terminal to inherit
+  from, so it runs your login shell once (`$SHELL -i -l -c`) with
+  `VSCODE_RESOLVING_ENVIRONMENT=1` set and copies that shell's environment into
+  its extension host. The block tests that variable *and* Bob's bundle id, so a
+  terminal, or another VS Code fork resolving its own environment, never sees it:
+
+  ```sh
+  # >>> cortex agentop (bob) >>>
+  # IBM Bob reads this when it starts from the Dock or Spotlight, so it trusts Cortex.
+  if [ "$VSCODE_RESOLVING_ENVIRONMENT" = 1 ] && [ "$__CFBundleIdentifier" = com.ibm.software.bob ]; then
+    export NODE_EXTRA_CA_CERTS=/Users/you/.cortex/ca/ca.crt
+  fi
+  # <<< cortex agentop (bob) <<<
+  ```
+
+  The file, and every rule for editing it, is the shell half of `configure
+  bob`'s: `~/.zshrc` for zsh, `~/.bashrc` for bash, followed through one symlink,
+  written atomically, and removed by `disable` only when it is exactly what
+  `enable` wrote. Any other shell, a dangling link, or a deeper chain gets the
+  block printed to place yourself.
+
+A block in a file your login shell never reads fails silently — Bob just goes back
+to being passed through unread — so `enable` then starts your shell the way Bob
+does and says what it found. The usual miss is bash: its login shell reads
+`~/.bash_profile`, not `~/.bashrc`, and the fix is to source one from the other.
+`status` reports both changes from the files alone and runs nothing.
+
+Quit Bob and reopen it from the Dock or Spotlight afterwards. A Bob started from a
+terminal (`bobide`) takes that terminal's environment instead and never runs the
+block.
+
+The cost of `http.systemCertificates: false` is that Bob's extensions stop reading
+the keychain. Everything Cortex decrypts is unaffected — Cortex presents its own
+certificate — but a host Cortex passes through unread whose certificate chains to
+a root trusted *only* in the keychain (some company-internal CAs) fails from Bob's
+extensions. Bob's own UI and webviews are Chromium, trust only the keychain, and
+are not affected by any of this: they stay passed through unread.
+
+Earlier versions of `enable` printed a `sudo security add-trusted-cert` command
+for the System keychain instead. `disable` still prints its undo — two commands,
+because `delete-certificate` alone leaves the admin-domain trust settings the add
+wrote:
+
+```sh
+sudo security remove-trusted-cert -d ~/.cortex/ca/ca.crt
+sudo security delete-certificate -c authbridge-tls-bridge-ca \
+  -t /Library/Keychains/System.keychain
+```
+
+Off macOS, `enable` prints how to add `ca.crt` to the system trust store — the
+usual Debian and Fedora routes, saying plainly that the step depends on the
+distribution — because that needs `sudo` and agentop does not escalate on its own.
+It is `ca.crt`, the single bridge CA, and deliberately **not** the `bundle.crt`
+beside it, which holds every platform root as well.
+
+#### What it knows, and what it does not
+
+"Enabled" means the value's **host and port both match** `listener.forward_proxy_addr`
+from `~/.cortex/config.yaml` — the address this machine's Cortex actually listens
+on, not a port range. Compared whole via `url.Parse`, so neither a path
+(`http://corp.example.com/?next=127.0.0.1:47600`) nor a suffixed host
+(`localhost:47600.evil.com`) can pass as ours; only `http` counts, since it is the
+only scheme `enable` writes. The loopback spellings are folded together
+(`localhost` / `127.0.0.1` / `::1`) because `forward_proxy_addr` may bind `0.0.0.0`
+while the settings file names `127.0.0.1`, and a hand-typed address must not be
+called someone else's proxy.
+
+That is not a record agentop keeps: ownership of `http.proxy` is re-decided from
+the value each time. `http.systemCertificates` is the exception — see below.
+
+Ownership has three answers, not two. A value that matches is **ours**; a
+corporate proxy, or a non-string value, is **not ours** and is left alone by both
+verbs. The third is **cannot tell**: when there is no address to compare against
+— the config is missing or unreadable — any loopback `http` proxy could be this
+one, and a bool would have to guess. Guessing "not ours" toward a `delete` is the
+dangerous direction, so it is not a bool. `status` reports "cannot tell" in those
+words rather than ruling on it. `disable` asks before removing such a value and
+refuses under `--yes`, since `--yes` means "do not ask me", not "decide for me".
+`enable` refuses rather than overwriting anything it does not own. Either verb
+prints exactly what it will do to the file, and what it will leave beside it,
+before it does it.
+
+**Whether anything is listening is a separate question**, reported on its own
+line. A stopped Cortex is the normal state of a laptop and is not a verdict on the
+setting: the setting is right either way, and the answer to "nothing is listening"
+is `agentop service start`, not an edit here.
+
+`http.proxy` governs VS Code's core networking and its extension host. An
+extension that bundles its own HTTP client can still go around it; this is the
+documented lever, not a guarantee of coverage.
+
+A settings file with comments in it is refused, not rewritten. VS Code permits
+them; the strict JSON reader here does not, and silently stripping a user's
+comments to add one key is the wrong trade.
+
+A missing `settings.json` is normal. Bob writes the file only the first time a
+setting changes, so a Bob still on its defaults has none. What says Bob has run is
+its `User` directory, which it creates on first launch: with the directory there,
+`enable` creates the file and `status` reports Bob as not configured. With the
+directory missing too — a `--settings` typo, or the wrong machine — `enable`
+refuses and names the flag, and `status` reports the Cortex status as unknown. A
+file holding only `null` is refused the same way. `disable` never fails on any of
+these: there is simply nothing to remove from that file.
+
+Only macOS's settings location is known (`~/Library/Application Support/IBM
+Bob/User/settings.json`). Elsewhere `--settings PATH` is required rather than
+guessed — writing a proxy setting into a file nothing reads is a silent no-op,
+which is worse than a refusal that names the flag.
+
+The full guide — both halves, the CA-trust flow, the record files, verified
+depth, known issues — is in [bob.md](../../docs/agents/bob.md).
+
+### Routing OpenCode through Cortex (`agentop configure opencode`)
+
+```sh
+agentop configure opencode enable    # set the nine variables in the service's environment
+agentop configure opencode disable   # remove them again
+agentop configure opencode status    # the nine, and the running service
+```
+
+OpenCode's traffic leaves from a per-user background service, `opencode serve
+--service`, whose own environment `enable` edits through the OpenCode CLI.
+`enable` and `disable` take `[--yes] [--config PATH] [--opencode BIN]`; `status`
+takes `[--config PATH] [--opencode BIN]`. Changing the service's environment
+restarts it, which interrupts every OpenCode session using it — the commands
+say so and ask first. A restart that fails is reported: the service may be
+stopped, or running with its old environment, and `opencode service restart`
+applies the change. Everything else — undo by hand, CA trust, the record
+file, verified depth, known issues — is in
+[opencode.md](../../docs/agents/opencode.md).
+
+### Routing Pi through Cortex (`agentop configure pi`)
+
+```sh
+agentop configure pi enable    # a pi shell function, plus Pi's session extension
+agentop configure pi disable   # remove both
+agentop configure pi status    # which of the two is in place
+```
+
+The shell function runs `agentop exec -- pi`, because Pi reads the bridge CA only
+from `NODE_EXTRA_CA_CERTS` at startup. The extension,
+`~/.pi/agent/extensions/cortex-session.ts`, sends Pi's session id as `x-session-id`,
+which Pi does not send on its own. `enable` and `disable` take `[--yes]`. Both
+pieces are fixed text, so a file or block agentop did not write is left alone and
+reported. Everything else is in [pi.md](../../docs/agents/pi.md).
+
 ## Trust model
 
 `agentop` does no authentication — same as the server. Use only against
@@ -2125,7 +2099,9 @@ sidecars reachable via in-cluster networking or a local port-forward.
 Session events contain raw user messages, LLM completions, and tool
 results; treat the output accordingly.
 
-## How a timeline is fetched
+## Internals
+
+### How a timeline is fetched
 
 The events table renders no message body, so it does not ask for one. Each fetch
 sends `?view=summary`, which drops the conversation payloads and keeps everything
@@ -2184,10 +2160,82 @@ it. A row opened from a details search that matches only in a capture opens with
 that half's `raw` open. A row opened from a details search shows its first match, also
 when the match arrives with the fetch. `y` writes the half without its capture.
 
-## Architecture
+### Architecture
 
 - `apiclient/` — HTTP + SSE client. Sole owner of the `:9094` wire format.
   Auto-reconnects with exponential backoff (1s → 30s, capped, indefinite).
 - `tui/` — Bubble Tea model/update/view. All state mutation runs on the
   Tea event loop; the SSE goroutine produces messages the loop consumes.
 - `main.go` — flag parsing, signal handling, wires `tui.Run`.
+
+### How CTX is derived
+
+`CTX(1M)` is a gauge, not a figure: how full the **conversation's**
+context was on its latest turn, against a fixed one-million-token window. The
+brackets are the scale, drawn on every row, so a nearly-empty session reads
+as empty-out-of-something rather than as a blank cell — and an em dash, which
+means *no context known*, stays distinguishable from the sliver a barely-used
+session gets.
+
+**A session is three kinds of caller, not one conversation.** Claude Code
+sends your conversation, the subagents it spawns, and its own one-shot
+completions — title generation, the permission security monitor, the auto-mode
+classifier — under one session id. Two facts sort them out, and the gauge
+needs both:
+
+| | tool manifest | `agentRole` |
+|---|---|---|
+| your conversation | present | `main` |
+| a subagent | present | `subagent` |
+| a one-shot | **absent** | `main` |
+
+The manifest excludes the one-shots. Measured across 115 responses in three
+live sessions they carry *no tools* and 2–3 messages, while every conversation
+turn carried 27–31 tools and 63–1572 messages. They are not small, which is
+why size is not the filter: one measured 295k and another 421,220 against a
+true context of 998,334. And they declare themselves `main`, because the CLI
+issues them rather than a subagent.
+
+The role excludes the subagents, which Claude Code states on every request.
+The message count only approximated it — subagent turns reached 177 and 186
+messages against main threads at 188 and 288 — and it cannot see a compaction,
+which restarts your conversation at a low count while leaving the role alone.
+
+Among what is left, the **latest** turn wins. There is deliberately no recency
+window: your conversation goes silent while a subagent runs, and that silence
+is structural, so a last-N-requests window can fill with the subagent's
+traffic and hand the gauge to it. Both filters are exact, so none of that
+traffic is a candidate in the first place.
+
+Three things worth knowing. The denominator is fixed at 1M, the largest
+window on any path the proxy sees, so a model with a smaller window reads
+lower than it really is.
+
+The figure comes from agentop's own event cache, filled by the live stream or
+by drilling into a session. The timeline fetch asks for `view=summary`, and
+that projection drops the slices this rule used to read, so it records their
+**lengths** before dropping them (`messageCount` / `toolCount`) and the gauge
+reads either shape. Without that a delivered row could not be read at all, and
+an idle session showed a dash however long you looked at it. `agentRole` needs
+none of that: it is a scalar the projection copies as-is.
+
+Against a proxy older than those fields, an idle row still shows the dash
+until traffic arrives or you open one of its events — the one request that
+returns an event in full. Once a figure is established it is kept, so a
+projection that says nothing cannot erase it.
+
+**Against a proxy that publishes no `agentRole`**, the gauge falls back to the
+old rule — tool-carrying requests, the one with the most messages — and pays
+what that costs. After a compaction it can stay on the pre-compaction context
+for the rest of the session, because the older, longer request still holds the
+most messages: measured at 999,623 against a true 400,249, a bar at 98.6% for
+a session with 600k of headroom. A stale figure is still preferred to one that
+flips to a subagent's. With the role published there is nothing to wait for —
+the column follows the compaction on the next turn.
+
+The figure stays after the events that it came from. In a cluster, to clear a
+figure that you do not trust, press `Esc` to go back to the Pods pane and enter
+the pod again. A different pod is the only thing that discards the figure.
+Re-attaching starts the column from the next event that streams. This reset is
+for the cluster picker only. On a laptop and under `--endpoint`, there is no
+Pods pane, so restart agentop.
