@@ -213,3 +213,58 @@ func TestRouter_AnswersCountTokensLocally(t *testing.T) {
 	}
 	assertRecord(t, pctx, pipeline.ActionDeny, "count_tokens_local", map[string]string{"server": "s"})
 }
+
+// bobConfig is one server, "bob", at a URL with a path prefix, with the extra server
+// fields given, and claude-code routed to it.
+func bobConfig(fields string) string {
+	return `{
+		"servers": {"bob": {"url": "https://api.us-east.bob.ibm.com/inference", "key": "b-key", "main": "opus", "helper": "haiku"` + fields + `}},
+		"agents": {"claude-code": "bob"}
+	}`
+}
+
+// Rule 1: a captured request goes to the prefix and then the agent's path.
+func TestRoute_PrefixOnACapturedRequest(t *testing.T) {
+	p := build(t, bobConfig(""))
+	pctx := request(newStore(t), "api.anthropic.com", claudeUA, "s1")
+	run(t, p, pctx)
+
+	if path, ok := pctx.RedirectPath(); !ok || path != "/inference/v1/messages" {
+		t.Errorf("RedirectPath = %q %v, want /inference/v1/messages", path, ok)
+	}
+}
+
+func TestRoute_PrefixOnATranslatedRequest(t *testing.T) {
+	p := build(t, bobConfig(chatAPI))
+	pctx := request(newStore(t), "api.anthropic.com", claudeUA, "s1")
+	run(t, p, pctx)
+
+	if _, _, path, ok := pctx.TranslateTarget(); !ok || path != "/inference/v1/chat/completions" {
+		t.Errorf("TranslateTarget path = %q %v, want /inference/v1/chat/completions", path, ok)
+	}
+}
+
+func TestRoute_PrefixOnAnAPIPath(t *testing.T) {
+	p := build(t, bobConfig(`, "api": {"anthropic-messages": "/v1/messages"}`))
+	pctx := request(newStore(t), "api.anthropic.com", claudeUA, "s1")
+	run(t, p, pctx)
+
+	if path, ok := pctx.RedirectPath(); !ok || path != "/inference/v1/messages" {
+		t.Errorf("RedirectPath = %q %v, want /inference/v1/messages", path, ok)
+	}
+}
+
+// Review focus 1: a request that names the server's host already has the prefix.
+func TestRoute_PrefixNotAddedToAnAddressedRequest(t *testing.T) {
+	p := build(t, bobConfig(""))
+	pctx := request(newStore(t), "api.us-east.bob.ibm.com", claudeUA, "s1")
+	pctx.Path = "/inference/v1/chat/completions"
+	run(t, p, pctx)
+
+	if path, ok := pctx.RedirectPath(); ok {
+		t.Errorf("RedirectPath = %q, want none for an addressed request", path)
+	}
+	if pctx.Path != "/inference/v1/chat/completions" {
+		t.Errorf("Path = %q, want /inference/v1/chat/completions", pctx.Path)
+	}
+}
