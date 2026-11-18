@@ -185,18 +185,31 @@ func (w *walker) block() (pivot.Block, error) {
 		if err := w.dec.Decode(&raw); err != nil {
 			return b, err
 		}
-		var head struct {
-			Type string `json:"type"`
-		}
+		// A map, not a struct: struct decoding matches "Type" or "TYPE" too.
+		var head map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &head); err != nil {
 			return b, err
 		}
-		kind, src = head.Type, newWalker(raw)
+		if t, ok := head["type"]; ok {
+			if err := json.Unmarshal(t, &kind); err != nil {
+				return b, fmt.Errorf("type: %w", err)
+			}
+		}
+		src = newWalker(raw)
 	}
 	err := src.object(false, func(key string) error {
 		switch key {
 		case "type":
-			return src.value(key, &kind)
+			var t string
+			if err := src.value(key, &t); err != nil {
+				return err
+			}
+			// A second type that differs would leave members read for the wrong kind.
+			if kind != "" && t != kind {
+				return fmt.Errorf("type %q differs from type %q", t, kind)
+			}
+			kind = t
+			return nil
 		case "cache_control":
 			return src.raw(&b.CacheControl)
 		}

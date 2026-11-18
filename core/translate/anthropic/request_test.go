@@ -197,3 +197,31 @@ func TestDecodeRequest_TypeNotFirst(t *testing.T) {
 		t.Errorf("content = %+v, want %+v", got.Messages[0].Content, want)
 	}
 }
+
+// TestDecodeRequest_TypeExactName checks that only the exact member name
+// "type" gives a block its kind, and that a block with two different
+// types is refused.
+func TestDecodeRequest_TypeExactName(t *testing.T) {
+	for _, block := range []string{
+		`{"text":"x","TYPE":"text"}`,
+		`{"text":"x","type":"tool_use","Type":"text","type":"text"}`,
+		`{"type":"text","text":"x","type":"tool_use"}`,
+		`{"text":"x","type":"text","type":"tool_use"}`,
+	} {
+		body := `{"messages":[{"role":"user","content":[` + block + `]}]}`
+		if _, err := (Protocol{}).DecodeRequest([]byte(body)); err == nil {
+			t.Errorf("%s: DecodeRequest accepted it", block)
+		}
+	}
+	// Type is a different member: it goes to Extra, and text stays an
+	// unknown member of a tool_use block.
+	body := `{"messages":[{"role":"assistant","content":[{"text":"x","type":"tool_use","Type":"text","id":"i"}]}]}`
+	got, err := Protocol{}.DecodeRequest([]byte(body))
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	b := got.Messages[0].Content[0]
+	if b.Kind != pivot.BlockToolUse || b.Text != "" || b.Extra["anthropic.text"] == nil || b.Extra["anthropic.Type"] == nil {
+		t.Errorf("block = %+v", b)
+	}
+}
