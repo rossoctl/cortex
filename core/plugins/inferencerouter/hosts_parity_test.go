@@ -11,18 +11,25 @@ import (
 )
 
 // TestRouter_HostsAgreeWithWentTo holds the session's InferenceHosts table to wentToView. For random
-// sessions with no archive, LastServer over the session's fold gives the same (server, ok) as
-// wentToView's scan of the view, for each agent.
+// sessions with no archive, LastNamedServer over the session's fold gives the same (server, ok)
+// as wentToView's scan of the view, for each agent. glm and glm2 share glmHost, so a row there
+// names its server only by its routed record.
 //
 // The mutant rows change the table rule in one known way each. The test must find a session
 // where the mutant and wentToView disagree. If it does not, the random sessions are too weak to
 // hold the rule.
 func TestRouter_HostsAgreeWithWentTo(t *testing.T) {
 	r := New()
-	if err := r.Configure(json.RawMessage(routerConfig(`"claude-code": "glm", "opencode": "ete"`))); err != nil {
+	if err := r.Configure(json.RawMessage(`{
+		"servers": {
+			"ete":  {"url": "https://ete.example.com", "key": "ete-key", "main": "opus", "helper": "haiku"},
+			"glm":  {"url": "https://glm.example.com:8443", "key": "glm-key", "main": "opus", "helper": "haiku"},
+			"glm2": {"url": "https://glm.example.com:8443", "key": "glm2-key", "main": "opus", "helper": "haiku"}
+		},
+		"agents": {"claude-code": "glm", "opencode": "ete"}
+	}`)); err != nil {
 		t.Fatal(err)
 	}
-	serverAt := r.serverAt
 
 	cases := []struct {
 		name   string
@@ -36,6 +43,11 @@ func TestRouter_HostsAgreeWithWentTo(t *testing.T) {
 		{name: "mutant: LastUnrouted is ignored", table: func(h pipeline.InferenceHosts) {
 			for i := range h {
 				h[i].LastUnrouted = 0
+			}
+		}},
+		{name: "mutant: the table ignores Server", table: func(h pipeline.InferenceHosts) {
+			for i := range h {
+				h[i].Server = ""
 			}
 		}},
 	}
@@ -62,7 +74,7 @@ func TestRouter_HostsAgreeWithWentTo(t *testing.T) {
 				}
 				for _, agent := range []string{"claude-code", "opencode", "curl", ""} {
 					ws, wok := r.wentToView(&pipeline.SessionView{ID: "s", Events: evs}, agent)
-					gs, gok := table.LastServer(agent, serverAt)
+					gs, gok := table.LastNamedServer(agent, r.hasServer, r.serverAt)
 					if ws == gs && wok == gok {
 						continue
 					}
@@ -82,7 +94,8 @@ func TestRouter_HostsAgreeWithWentTo(t *testing.T) {
 
 // randomSession is up to 11 events. Each one is a request, a response, a denial or an inbound
 // row, with or without an inference parse, from one of 4 clients, to a server host in one of
-// two forms or to another host, with or without a captured path and a RequestedHost.
+// two forms or to another host, with or without a captured path and a RequestedHost. About half
+// of the rows carry a routed record for ete, glm, glm2 or a server not in the config.
 func randomSession(rnd *rand.Rand) []pipeline.SessionEvent {
 	hosts := []string{eteHost, glmHost, "ETE.example.com:443", "GLM.example.com:8443", "opencode.ai", "api.anthropic.com", "127.0.0.1:11434"}
 	uas := []string{claudeUA, opencodeUA, "curl/8.7.1", ""}
@@ -98,6 +111,11 @@ func randomSession(rnd *rand.Rand) []pipeline.SessionEvent {
 		}
 		if rnd.Intn(3) == 0 {
 			e.RequestedHost = hosts[rnd.Intn(len(hosts))]
+		}
+		if rnd.Intn(2) == 0 {
+			server := []string{"ete", "glm", "glm2", "gone"}[rnd.Intn(4)]
+			e.Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: Name, Action: pipeline.ActionModify,
+				Reason: "routed", Phase: pipeline.InvocationPhaseRequest, Details: map[string]string{"server": server}}}}
 		}
 		switch rnd.Intn(8) {
 		case 0:

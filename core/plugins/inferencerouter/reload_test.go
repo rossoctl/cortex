@@ -52,3 +52,13 @@ func TestPinsSurviveAReload(t *testing.T) {
 	run(t, after, fresh)
 	assertRouted(t, fresh, glmHost, "glm-key")
 }
+
+// A reload from one server to two on one URL is accepted.
+func TestReload_SharedHost(t *testing.T) {
+	store := newStore(t)
+	run(t, reloadBuild(t, routerConfig(`"claude-code": "glm"`)), request(store, eteHost, claudeUA, "s1"))
+	after := reloadBuild(t, sharedConfig(`"claude-code": "team-b"`))
+	fresh := request(store, gwHost, claudeUA, "s2")
+	run(t, after, fresh)
+	assertRouted(t, fresh, gwHost, "team-b-key")
+}

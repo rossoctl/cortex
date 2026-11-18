@@ -132,6 +132,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -203,9 +204,9 @@ func (r route) target() *url.URL {
 
 // Router is the plugin. Built by Configure; the zero value routes nothing.
 type Router struct {
-	servers map[string]route  // by server name
-	byHost  map[string]string // every server's Endpoint.Key, to its name
-	agents  map[string]string // agent name to server name
+	servers map[string]route    // by server name
+	byHost  map[string][]string // every server's Endpoint.Key, to the sorted names of its servers
+	agents  map[string]string   // agent name to server name
 	// sessions is the config's sessions: map, a session id to the server the user
 	// moved it to ("" to stop routing it). It beats the pin and every unpinned rule.
 	sessions map[string]string
@@ -275,7 +276,7 @@ func (p *Router) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("inference-router config: %w", err)
 	}
 	servers := make(map[string]route, len(c.Servers))
-	byHost := make(map[string]string, len(c.Servers)) // one name per host: Decode refuses two servers on one
+	byHost := make(map[string][]string, len(c.Servers)) // a host can have more than one server
 	for name, s := range c.Servers {
 		ep, err := routerconfig.ParseURL(s.URL)
 		if err != nil { // Decode already accepted it; kept so a drift between the two fails here
@@ -288,7 +289,10 @@ func (p *Router) Configure(raw json.RawMessage) error {
 		}
 		servers[name] = route{endpoint: ep, key: s.Key, main: s.Main, helper: s.Helper,
 			api: s.API, authHeader: s.AuthHeader, headers: routerconfig.HeaderOf(s.Headers)}
-		byHost[ep.Key()] = name
+		byHost[ep.Key()] = append(byHost[ep.Key()], name)
+	}
+	for _, names := range byHost {
+		slices.Sort(names)
 	}
 	// p.agents is keyed by CANONICAL agent name, folded from whatever spelling the
 	// config named: pipeline.CanonicalAgent maps retired spellings ("bob-shell",
@@ -316,8 +320,12 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	// to any other host is captured when it is a routed agent's inference request,
 	// and sent to the server's path for its API format.
 	captured := ""
-	addressed := p.byHost[routerconfig.Key(pctx.Host)] // the server the request named, "" for none
-	if _, ok := p.byHost[routerconfig.Key(pctx.Host)]; !ok {
+	names := p.byHost[routerconfig.Key(pctx.Host)] // the servers on the request's host
+	addressed := ""                                // the server the request named, "" for none
+	if len(names) == 1 {
+		addressed = names[0]
+	}
+	if len(names) == 0 {
 		path, ok := capture(pctx)
 		// A sessions: override admits the capture too: the move is the user's
 		// instruction, and it must reach a session whose agent is not routed and
@@ -333,6 +341,13 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	}
 
 	name, pin := p.serverFor(pctx, captured != "")
+	if len(names) > 1 {
+		// A shared host names no one server: the request named the chosen server if it is on the host.
+		addressed = ""
+		if slices.Contains(names, name) {
+			addressed = name
+		}
+	}
 	if name == "" {
 		// Not routed: the request, its key included, goes where the client sent it.
 		// An own ("") override that cannot take effect — the router is observing, so
@@ -386,6 +401,13 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		case planAsIs:
 			if captured != "" {
 				pathErr = pctx.SetRedirectPath(srv.wirePath(captured))
+			} else if len(names) > 1 {
+				// On a shared host the servers can have different paths: the longest one that
+				// the request path starts with off, this server's on.
+				rest := strings.TrimPrefix(pctx.Path, sharedPrefix(p.servers, names, pctx.Path))
+				if wp := srv.wirePath(rest); wp != pctx.Path {
+					pathErr = pctx.SetRedirectPath(wp)
+				}
 			} else if addressed != name {
 				// Moved off the server its host names: that server's prefix off, this one's on.
 				own := p.servers[addressed].endpoint.Path
@@ -619,15 +641,39 @@ func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string, captured
 // and the archive.
 func (p *Router) wentTo(pctx *pipeline.Context, agent string) (server string, ok bool) {
 	if hosts, known := pctx.InferenceHosts(); known {
-		return hosts.LastServer(agent, p.serverAt)
+		return hosts.LastNamedServer(agent, p.hasServer, p.serverAt)
 	}
 	return p.wentToView(pctx.Session, agent)
 }
 
-// serverAt is the server on host by the current config, as serverOf maps a row's Host.
-func (p *Router) serverAt(host string) (string, bool) {
-	server, ok := p.byHost[routerconfig.Key(host)]
-	return server, ok
+// serverAt is the server on host by the current config, as serverOf maps a row's Host. known
+// is true when the host has at least one server, and server is "" when it has more than one.
+func (p *Router) serverAt(host string) (server string, known bool) {
+	names := p.byHost[routerconfig.Key(host)]
+	if len(names) == 1 {
+		return names[0], true
+	}
+	return "", len(names) > 0
+}
+
+// hasServer reports whether name is a server of the current config.
+func (p *Router) hasServer(name string) bool {
+	_, ok := p.servers[name]
+	return ok
+}
+
+// sharedPrefix is the longest endpoint path of the servers names that is a segment prefix of
+// path, "" when none is.
+func sharedPrefix(servers map[string]route, names []string, path string) string {
+	best := ""
+	for _, n := range names {
+		own := servers[n].endpoint.Path
+		rest, ok := strings.CutPrefix(path, own)
+		if ok && (rest == "" || rest[0] == '/') && len(own) > len(best) {
+			best = own
+		}
+	}
+	return best
 }
 
 // wentToView is the server the latest earlier inference request agent sent in the
@@ -688,8 +734,13 @@ func (p *Router) serverOf(e *pipeline.SessionEvent, agent string) (server string
 		session.TurnOf(e.Inference) == turnAside || pipeline.AgentName(e.Client.Label()) != agent {
 		return "", false
 	}
-	if server, ok = p.byHost[routerconfig.Key(e.Host)]; ok {
+	// The routed record names the server. Else the host names it, when one server has the
+	// host. A host that several servers share names none, so the row is no evidence.
+	if server = pipeline.RoutedServer(e.Invocations); server != "" && p.hasServer(server) {
 		return server, true
+	}
+	if server, known := p.serverAt(e.Host); known {
+		return server, server != ""
 	}
 	// A request the router captures from a routed agent is recorded under its
 	// server's host. One recorded where the agent sent it was made while the router

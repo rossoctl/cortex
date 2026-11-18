@@ -1081,3 +1081,50 @@ func TestResend_ALocalServersRefusalIsAnsweredFromItsOwnList(t *testing.T) {
 		t.Errorf("model = %q, want ollama's granite3.3:8b", got)
 	}
 }
+
+// On a host two servers share, Resend reads the server from the routed record, not from the
+// host: a limit and a model refusal are kept under the server the request went to.
+func TestResend_SharedHost(t *testing.T) {
+	const shared = `{
+		"servers": {
+			"team-a": {"url": "https://gw.example.com/litellm", "key": "team-a-key", "main": "glm", "helper": "nemotron"},
+			"team-b": {"url": "https://gw.example.com/litellm", "key": "team-b-key", "main": "glm", "helper": "nemotron"}
+		},
+		"agents": {"opencode": "team-b"}
+	}`
+	ask := func(t *testing.T) (*Router, *pipeline.Pipeline, *pipeline.Context) {
+		r, p := buildRouter(t, shared)
+		r.catalogs.set("team-a", glmModels)
+		r.catalogs.set("team-b", glmModels)
+		pctx := chat(newStore(t), "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", glmMain, true)
+		return r, p, pctx
+	}
+	t.Run("limit", func(t *testing.T) {
+		r, p, pctx := ask(t)
+		withOutput(t, pctx, 256000)
+		run(t, p, pctx)
+		if !resend(p, pctx, http.StatusBadRequest, bedrockCap) {
+			t.Fatal("Resend = false for a stated output cap")
+		}
+		assertRecord(t, pctx, pipeline.ActionModify, "resent", map[string]string{"server": "team-b", "limit": "output"})
+		if got := r.loadLimits(pctx, "team-b", glmMain); got.Output != 128000 {
+			t.Errorf("team-b limits = %+v, want Output 128000", got)
+		}
+		if got := r.loadLimits(pctx, "team-a", glmMain); got != (limits{}) {
+			t.Errorf("team-a limits = %+v, want none", got)
+		}
+	})
+	t.Run("model", func(t *testing.T) {
+		r, p, pctx := ask(t)
+		pctx.Body = []byte(`{"model":"exo-free","messages":[{"role":"user","content":"hi"}]}`)
+		pctx.Extensions.Inference.Model = "exo-free"
+		run(t, p, pctx)
+		if !resend(p, pctx, http.StatusForbidden, refusal) {
+			t.Fatal("Resend = false for a refused model")
+		}
+		assertRecord(t, pctx, pipeline.ActionModify, "resent", map[string]string{"server": "team-b", "model": "exo-free"})
+		if !r.isRefused(pctx, "team-b", "exo-free") || r.isRefused(pctx, "team-a", "exo-free") {
+			t.Error("the refusal is not kept under team-b alone")
+		}
+	})
+}

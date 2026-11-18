@@ -209,23 +209,14 @@ func (c Config) Validate() error {
 	if len(c.Servers) == 0 {
 		return errors.New("servers: at least one server is required")
 	}
-	byHost := map[string]string{}
 	for _, name := range slices.Sorted(maps.Keys(c.Servers)) {
 		s := c.Servers[name]
 		if err := CheckName(name); err != nil {
 			return fmt.Errorf("servers: %w", err)
 		}
-		ep, err := ParseURL(s.URL)
-		if err != nil {
+		if _, err := ParseURL(s.URL); err != nil {
 			return fmt.Errorf("servers.%s.url: %w", name, err)
 		}
-		// agentop names a session's server from the host its requests went to, and two
-		// servers on one host would make that ambiguous.
-		if other, ok := byHost[ep.Key()]; ok {
-			return fmt.Errorf("servers %q and %q are both on %s: each server needs a host of its own, "+
-				"because a session's server is named from the host its requests went to", other, name, ep.Key())
-		}
-		byHost[ep.Key()] = name
 		if err := CheckKey(s.Key); err != nil {
 			return fmt.Errorf("servers.%s.key: %w", name, err)
 		}
