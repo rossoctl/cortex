@@ -2,7 +2,170 @@
 
 [OpenCode](https://opencode.ai/) is a supported agent. Cortex recognises its User-Agent,
 groups its traffic by OpenCode's session id and parses its inference.
-`agentop configure opencode` routes it through Cortex and takes that out again.
+Its traffic leaves from one per-user background service, `opencode serve --service`,
+and not from the `opencode` you run. `agentop configure opencode` routes that service
+through Cortex and takes that out again.
+
+## Use it
+
+1. Enable: `agentop configure opencode enable`. It writes the proxy and CA variables
+   into the service's own environment (`service.json`) through the OpenCode CLI. It
+   shows the changes and asks first. `--yes` skips the question. If the service runs,
+   `enable` restarts it once with `opencode service restart`. That interrupts every
+   OpenCode session that uses it, so `enable` says so before it asks. If the restart
+   fails, run `opencode service restart`.
+2. Start the agent: run `opencode` as usual. If the service is stopped, this starts it
+   with the new environment.
+3. Check: run `agentop observe`, send one prompt, and see a row for OpenCode.
+   `agentop configure opencode status` shows what is set and what the running service
+   uses.
+4. Undo: `agentop configure opencode disable`. The same restart rule applies.
+
+## What you see
+
+**Its own agent.** OpenCode's TUI, its service and its inference client all send the
+same User-Agent, `opencode/<channel>/<version>/<client>` (for example
+`opencode/latest/2.0.21/cli`). Cortex recognises it as `opencode` and takes the version
+from the field after the channel. OpenCode therefore gets its own row in agentop's
+agents pane instead of sharing `Other`.
+
+**Its own sessions.** On its inference requests the service sends a session id
+(`ses_…`, the form that appears in the TUI's URLs) in `X-Session-Id`, and on a laptop
+install Cortex groups by it. OpenCode sends its session's affinity id there: the parent
+session's id for a subagent, the source session's for a fork, and otherwise the
+session's own. So a
+subagent or a fork is filed under the session it belongs to, with one row and one cost,
+as Claude Code's subagents are. OpenCode also sends `X-Opencode-Session-Id`, the
+session's own id, and Cortex does not read it. On a laptop install `X-Session-Id` is
+read by default: it is in the list the laptop installer writes, and in the built-in
+`session.id_headers` wherever every listener binds loopback (`listener.bind_loopback_only`).
+A cluster deployment's default does not read it, because the name is generic: the IBAC
+demo agent sends it with an id it minted. If you set that list yourself, include
+`X-Session-Id`, because naming any header replaces the built-in list.
+
+**Typed inference.** OpenCode Zen serves each model on the endpoint of the SDK it speaks,
+and Cortex parses two of them, under both the `/zen` prefix and the `/zen/go` prefix of
+OpenCode's Go plan:
+
+- the OpenAI dialect (model, messages, tools and the response) on
+  `/zen/v1/chat/completions`;
+- the Anthropic dialect on `/zen/v1/messages`, where Zen serves its Claude models and
+  most of its Qwen ones.
+
+Cortex picks the dialect from how the path ends, not from the provider: a path ending in
+`/completions` is read as OpenAI and one ending in `/v1/messages` as Anthropic, under any
+prefix. A provider OpenCode is pointed at that speaks either one is parsed the same way:
+Anthropic's own API, LiteLLM, OpenRouter, Groq. The body must also carry a
+`messages` array, or a `prompt` for legacy completions. Zen's `/zen/v1/responses` (its GPT
+and Grok models) and `/zen/v1/models/<id>` (its Gemini models) are other dialects, and are
+recorded with their method and path but not parsed.
+
+**Tokens and cost.** Token counts come from the usage block in the response. A streamed
+OpenAI-dialect response includes one only when the request asked for it
+(`stream_options.include_usage`). Whether OpenCode asks every provider for it was not
+checked. Cost needs either a reported figure or a rate. A LiteLLM gateway's
+`X-Litellm-Response-Cost` header is used as the figure. Otherwise the tokens are priced
+at a rate:
+
+- **Zen's free models** — those whose id ends in `-free`, and `big-pickle` — are priced
+  at zero, a rate Cortex ships for `opencode.ai` only. A call to one counts as priced,
+  but its cost cells in the events and sessions panes are blank: there is no amount to
+  show.
+- **Claude models**, Zen's included, are priced at the bundled Anthropic list rates.
+  For the model checked, Claude Sonnet 4.6 at $3 in and $15 out per million tokens, that
+  is what Zen charges.
+- **GPT models** also resolve to a bundled rate, because the shipped table carries
+  first-party OpenAI list prices as well. ⚠️ Unlike the Claude row above, that was **not**
+  checked against what Zen charges — Zen resells, and a reseller's price is its own. Treat
+  a GPT figure on `opencode.ai` as OpenAI list until you have verified it, and pin the
+  model if it disagrees.
+- **Any other model** is reported unpriced until you add a `pricing:` entry for it.
+  [Finding traffic that is not priced](../pricing.md#finding-traffic-that-is-not-priced)
+  shows how to find the endpoint and model to add. Name the model rather than writing
+  `"*"` for `opencode.ai`: a configured entry outranks a shipped one, so a catch-all would
+  also replace the free models' zero.
+
+**Tool pruning is unsupported.** The `tool-prune` plugin acts on any request whose path
+ends in `/v1/chat/completions` or `/v1/messages`, Zen's included, and removes the tools
+named in its `remove` list. That list comes from `agentop tools scan`, which reads only
+Claude Code's transcripts and proposes only Claude Code's built-in tool names, so nothing
+builds a list for OpenCode. A list written by hand would be applied to OpenCode's
+requests; that was not tested.
+
+**Header-less traffic.** On a laptop, `session.process_attribution` is on by default,
+and a request with no session header is filed by the process that sent it. The
+service's own header-less requests and tunnels, and those of the commands it runs, are
+filed under its sessions; [Known issues](#known-issues) says which one. When
+OpenCode's TUI talks to the service through Cortex, those requests are forwarded
+without being recorded once the service has named a session. Before that, they are
+recorded. See
+[How traffic is grouped into sessions](../laptop-service.md#how-traffic-is-grouped-into-sessions).
+
+**Switching inference servers.** `agentop server use <name> --agent opencode`
+sends OpenCode's new sessions to that server, whatever provider is picked in
+OpenCode: its requests to OpenCode Zen (`/zen/v1/chat/completions`, `/messages`
+and `/responses`) or to any other provider are captured and sent to the server, so
+nothing in `opencode.json` needs to change. OpenCode's own model choice goes first;
+a name the server refuses — every one of Zen's own, such as
+`nemotron-3.5-lightning-free` — is sent again, before OpenCode sees the refusal,
+with the server's `main` model for a request with tools and its `helper` model for
+one without, such as a title. OpenCode keeps showing the name it picked; agentop's
+detail pane shows the model that answered. On a routed request the router puts the
+server's key in the `X-Api-Key` or `Authorization` header OpenCode sent, and adds
+`Authorization: Bearer <key>` when it sent neither. Zen's paid models are only
+offered by OpenCode once it has a Zen key: any value in `OPENCODE_API_KEY` will
+do, since the router replaces it. A session already running on Zen when OpenCode
+is routed stays on Zen. A local model server such as Ollama works the same
+way, and [Local model with Ollama](../inference-servers.md#local-model-with-ollama) walks
+setting one up.
+
+If the server's model has a smaller output limit or context window than the model
+the agent asked for, the router lowers the request's output limit (unless that would
+not leave it above an extended-thinking budget) and, near the window, drops the oldest
+turns, keeping the task and the recent turns. Turns are dropped from Anthropic messages
+and OpenAI chat-completions requests only; a responses-format request has only its
+output limit lowered. The agent's own view of the conversation is not changed. See the inference-router's Limits rule in
+`docs/plugin-catalog.md`.
+
+## Import history
+
+`agentop import --agent opencode` adds the sessions that OpenCode keeps in
+`opencode.db` to Cortex's history and cost ledger. It needs the `sqlite3`
+program on `PATH`. Flags and output:
+[`agentop import`](../../cmd/agentop/README.md#importing-agent-history-agentop-import).
+
+## Known issues
+
+- **One service holds several sessions.** The service's header-less traffic goes under
+  the session its own requests named last. Two sessions whose tool calls overlap can
+  take each other's rows. A new session's header-less traffic goes under the previous
+  session until the new session's first request names it.
+- **Before the service names its first session**, its requests go to a pending bucket,
+  `pending:opencode@<pid>.<start>`, once one of them has identified the process as
+  OpenCode by its User-Agent. The bucket is named for the topmost OpenCode process in
+  the service's chain of parents, usually the service itself. The first session the
+  service names is linked to the bucket when the list is read, and agentop shows the
+  bucket's calls inside that session; the bucket itself is never renamed.
+- **Changing the service environment restarts the service.** When `enable` or `disable`
+  changes it and the service is running, they restart it once, which interrupts every
+  OpenCode session using it; an open OpenCode reconnects to it. Both say so first, and
+  ask unless given `--yes`. `agentop exec -- opencode` reaches the service only when
+  that command starts it, because the service keeps the environment it started with
+  ([Enable and revert](#enable-and-revert)).
+- **Probes of local model servers that are not running.** The service probes local model
+  servers on every cycle; on 2.0.21 these included `:1234` (LM Studio's port) and
+  `:8000`. With nothing listening there, each probe is recorded in the service's session
+  as a `502` response row with `error.kind: upstream_refused`, every cycle — the proxy
+  synthesizes that 502 when the call to the upstream fails
+  ([#1223](https://github.com/rossoctl/cortex/pull/1223)) — and these count in
+  `/v1/usage`'s errors.
+- **`X-Session-Id` is a generic name.** Where it is read, by default on a laptop install,
+  traffic from any client that sends it is grouped under its value, Pi (through the
+  extension `agentop configure pi` installs) and similar frameworks among them.
+- **Rows recorded by a Cortex release that does not recognise OpenCode** keep the raw
+  label `opencode/latest/2.0.21/cli` and show under `Other` until they age out.
+
+## How it works (for developers)
 
 One fact shapes all of it: OpenCode's traffic does not leave from the `opencode` you run.
 The first client starts one background service per user, `opencode serve --service`,
@@ -11,7 +174,7 @@ it, and it outlives them. It keeps the environment it started with. So proxy var
 in your shell, or `agentop exec -- opencode`, reach it only when that command is the one
 that starts it.
 
-## Enable and revert
+### Enable and revert
 
 ```sh
 agentop configure opencode enable    # route OpenCode's service through Cortex
@@ -113,7 +276,7 @@ the change lands, and then it comes back with the environment it had. That is wh
 skips the question, but not the line about the service. If you decline, or there is no
 terminal to ask on, they change nothing and exit 3. `--config PATH` reads a different
 Cortex config. `--opencode BIN` names the CLI when it is neither on `PATH` nor in
-`~/.opencode/bin`.
+`~/.opencode/bin`. `status` takes `--config PATH` and `--opencode BIN` too.
 
 **`agentop exec -- opencode` instead.** This routes OpenCode only when it is the command
 that starts the service. The service then keeps `exec`'s environment, so later clients
@@ -160,7 +323,7 @@ opencode service restart   # if the service was running
 rm -f ~/.cortex/opencode-state.json
 ```
 
-## CA trust
+### CA trust
 
 Cortex's TLS bridge decrypts OpenCode's HTTPS using certificates it forges from its own
 CA, so the service has to trust that CA. This was tested on OpenCode 2.0.21 on macOS,
@@ -195,113 +358,7 @@ inference host, missing trust is the likely cause. The fix is to put the CA vari
 the environment the service starts with: run `enable`. If the service is running,
 `enable` restarts it once the variables are set, so it comes back trusting the CA.
 
-## What Cortex shows for it
-
-**Its own agent.** OpenCode's TUI, its service and its inference client all send the
-same User-Agent, `opencode/<channel>/<version>/<client>` (for example
-`opencode/latest/2.0.21/cli`). Cortex recognises it as `opencode` and takes the version
-from the field after the channel. OpenCode therefore gets its own row in agentop's
-agents pane instead of sharing `Other`.
-
-**Its own sessions.** On its inference requests the service sends a session id
-(`ses_…`, the form that appears in the TUI's URLs) in `X-Session-Id`, and on a laptop
-install Cortex groups by it. OpenCode sends its session's affinity id there: the parent
-session's id for a subagent, the source session's for a fork, and otherwise the
-session's own. So a
-subagent or a fork is filed under the session it belongs to, with one row and one cost,
-as Claude Code's subagents are. OpenCode also sends `X-Opencode-Session-Id`, the
-session's own id, and Cortex does not read it. On a laptop install `X-Session-Id` is
-read by default: it is in the list the laptop installer writes, and in the built-in
-`session.id_headers` wherever every listener binds loopback (`listener.bind_loopback_only`).
-A cluster deployment's default does not read it, because the name is generic: the IBAC
-demo agent sends it with an id it minted. If you set that list yourself, include
-`X-Session-Id`, because naming any header replaces the built-in list.
-
-**Typed inference.** OpenCode Zen serves each model on the endpoint of the SDK it speaks,
-and Cortex parses two of them, under both the `/zen` prefix and the `/zen/go` prefix of
-OpenCode's Go plan:
-
-- the OpenAI dialect (model, messages, tools and the response) on
-  `/zen/v1/chat/completions`;
-- the Anthropic dialect on `/zen/v1/messages`, where Zen serves its Claude models and
-  most of its Qwen ones.
-
-Cortex picks the dialect from how the path ends, not from the provider: a path ending in
-`/completions` is read as OpenAI and one ending in `/v1/messages` as Anthropic, under any
-prefix. A provider OpenCode is pointed at that speaks either one is parsed the same way:
-Anthropic's own API, LiteLLM, OpenRouter, Groq. The body must also carry a
-`messages` array, or a `prompt` for legacy completions. Zen's `/zen/v1/responses` (its GPT
-and Grok models) and `/zen/v1/models/<id>` (its Gemini models) are other dialects, and are
-recorded with their method and path but not parsed.
-
-**Tokens and cost.** Token counts come from the usage block in the response. A streamed
-OpenAI-dialect response includes one only when the request asked for it
-(`stream_options.include_usage`). Whether OpenCode asks every provider for it was not
-checked. Cost needs either a reported figure or a rate. A LiteLLM gateway's
-`X-Litellm-Response-Cost` header is used as the figure. Otherwise the tokens are priced
-at a rate:
-
-- **Zen's free models** — those whose id ends in `-free`, and `big-pickle` — are priced
-  at zero, a rate Cortex ships for `opencode.ai` only. A call to one counts as priced,
-  but its cost cells in the events and sessions panes are blank: there is no amount to
-  show.
-- **Claude models**, Zen's included, are priced at the bundled Anthropic list rates.
-  For the model checked, Claude Sonnet 4.6 at $3 in and $15 out per million tokens, that
-  is what Zen charges.
-- **GPT models** now also resolve to a bundled rate, because the shipped table carries
-  first-party OpenAI list prices as well. ⚠️ Unlike the Claude row above, that was **not**
-  checked against what Zen charges — Zen resells, and a reseller's price is its own. Treat
-  a GPT figure on `opencode.ai` as OpenAI list until you have verified it, and pin the
-  model if it disagrees.
-- **Any other model** is reported unpriced until you add a `pricing:` entry for it.
-  [Finding traffic that is not priced](../pricing.md#finding-traffic-that-is-not-priced)
-  shows how to find the endpoint and model to add. Name the model rather than writing
-  `"*"` for `opencode.ai`: a configured entry outranks a shipped one, so a catch-all would
-  also replace the free models' zero.
-
-**Tool pruning is unsupported.** The `tool-prune` plugin acts on any request whose path
-ends in `/v1/chat/completions` or `/v1/messages`, Zen's included, and removes the tools
-named in its `remove` list. That list comes from `agentop tools scan`, which reads only
-Claude Code's transcripts and proposes only Claude Code's built-in tool names, so nothing
-builds a list for OpenCode. A list written by hand would be applied to OpenCode's
-requests; that was not tested.
-
-**Header-less traffic.** On a laptop, `session.process_attribution` is on by default,
-and a request with no session header is filed by the process that sent it. The
-service's own header-less requests and tunnels, and those of the commands it runs, are
-filed under its sessions; [Known issues](#known-issues) says which one. When
-OpenCode's TUI talks to the service through Cortex, those requests are forwarded
-without being recorded once the service has named a session. Before that, they are
-recorded. See
-[How traffic is grouped into sessions](../laptop-service.md#how-traffic-is-grouped-into-sessions).
-
-**Switching inference servers.** `agentop server use <name> --agent opencode`
-sends OpenCode's new sessions to that server, whatever provider is picked in
-OpenCode: its requests to OpenCode Zen (`/zen/v1/chat/completions`, `/messages`
-and `/responses`) or to any other provider are captured and sent to the server, so
-nothing in `opencode.json` needs to change. OpenCode's own model choice goes first;
-a name the server refuses — every one of Zen's own, such as
-`nemotron-3.5-lightning-free` — is sent again, before OpenCode sees the refusal,
-with the server's `main` model for a request with tools and its `helper` model for
-one without, such as a title. OpenCode keeps showing the name it picked; agentop's
-detail pane shows the model that answered. On a routed request the router puts the
-server's key in the `X-Api-Key` or `Authorization` header OpenCode sent, and adds
-`Authorization: Bearer <key>` when it sent neither. Zen's paid models are only
-offered by OpenCode once it has a Zen key: any value in `OPENCODE_API_KEY` will
-do, since the router replaces it. A session already running on Zen when OpenCode
-is routed stays on Zen. A local model server such as Ollama works the same
-way, and [Run an agent on a local model](../laptop-local-model.md) walks
-setting one up.
-
-If the server's model has a smaller output limit or context window than the model
-the agent asked for, the router lowers the request's output limit (unless that would
-not leave it above an extended-thinking budget) and, near the window, drops the oldest
-turns, keeping the task and the recent turns. Turns are dropped from Anthropic messages
-and OpenAI chat-completions requests only; a responses-format request has only its
-output limit lowered. The agent's own view of the conversation is not changed. See the inference-router's Limits rule in
-`docs/plugin-catalog.md`.
-
-## Verified depth
+### Verified depth
 
 Tested live with OpenCode 2.0.21 on macOS 26.6 (arm64) and Cortex built from the change
 that added this page, using OpenCode Zen's models, which ran without a key. This was
@@ -354,41 +411,3 @@ server: Zen's `nemotron-3.5-lightning-free` was captured from `opencode.ai`, ref
 the server, and sent again with the server's main model for the tool-carrying turns and
 its helper for the title, before OpenCode saw a refusal; a file was written and read
 back.
-
-## Importing history
-
-`agentop import --agent opencode` adds the sessions that OpenCode keeps in
-`opencode.db` to Cortex's history and cost ledger. It needs the `sqlite3`
-program on `PATH`. Flags and output:
-[`agentop import`](../../cmd/agentop/README.md#importing-agent-history-agentop-import).
-
-## Known issues
-
-- **One service holds several sessions.** The service's header-less traffic goes under
-  the session its own requests named last. Two sessions whose tool calls overlap can
-  take each other's rows. A new session's header-less traffic goes under the previous
-  session until the new session's first request names it.
-- **Before the service names its first session**, its requests go to a pending bucket,
-  `pending:opencode@<pid>.<start>`, once one of them has identified the process as
-  OpenCode by its User-Agent. The bucket is named for the topmost OpenCode process in
-  the service's chain of parents, usually the service itself. The first session the
-  service names is linked to the bucket when the list is read, and agentop shows the
-  bucket's calls inside that session; the bucket itself is never renamed.
-- **Changing the service environment restarts the service.** When `enable` or `disable`
-  changes it and the service is running, they restart it once, which interrupts every
-  OpenCode session using it; an open OpenCode reconnects to it. Both say so first, and
-  ask unless given `--yes`. `agentop exec -- opencode` reaches the service only when
-  that command starts it, because the service keeps the environment it started with
-  ([Enable and revert](#enable-and-revert)).
-- **Probes of local model servers that are not running.** The service probes local model
-  servers on every cycle; on 2.0.21 these included `:1234` (LM Studio's port) and
-  `:8000`. With nothing listening there, each probe is recorded in the service's session
-  as a `502` response row with `error.kind: upstream_refused`, every cycle — the proxy
-  synthesizes that 502 when the call to the upstream fails
-  ([#1223](https://github.com/rossoctl/cortex/pull/1223)) — and these count in
-  `/v1/usage`'s errors.
-- **`X-Session-Id` is a generic name.** Where it is read, by default on a laptop install,
-  traffic from any client that sends it is grouped under its value, Pi (through the
-  extension `agentop configure pi` installs) and similar frameworks among them.
-- **Rows recorded before this release** keep the raw label `opencode/latest/2.0.21/cli`
-  and show under `Other` until they age out.

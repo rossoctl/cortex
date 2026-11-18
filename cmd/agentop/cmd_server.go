@@ -69,9 +69,9 @@ refuses a word that names none of its models.
 Every change is written to ~/.cortex/config.yaml, or to --config PATH, and returns
 once the proxy has reloaded it. Nothing restarts. Flags go after the action.
 
-Setting up a local model server — installing it, picking a model, its context
-length — is walked at
-https://github.com/rossoctl/cortex/blob/main/docs/laptop-local-model.md
+Setting up a server — a gateway's key, or a local model's install, model and
+context length — is walked at
+https://github.com/rossoctl/cortex/blob/main/docs/inference-servers.md
 `
 
 // runServer handles the `server` subcommand. Returns the process exit code.
@@ -302,7 +302,7 @@ func protocolLines(s routerconfig.Server) []string {
 // list now, read with the server's own key, as the router resolves them. A server
 // whose list cannot be read says why rather than showing a model it may not name.
 func resolvedWords(s routerconfig.Server) string {
-	ids, err := serverModels(s)
+	ids, _, err := serverModels(s)
 	if err != nil {
 		return fmt.Sprintf("%s (model list unavailable: %v)", servers.Mapping(s), err)
 	}
@@ -315,15 +315,19 @@ func resolvedWords(s routerconfig.Server) string {
 	return "main " + named(s.Main) + " · helper " + named(s.Helper)
 }
 
-// serverModels is s's model list. A var so tests can stand in for a server.
-var serverModels = func(s routerconfig.Server) ([]string, error) {
+// serverModels is s's model list and the auth header that worked. A var so tests
+// can stand in for a server.
+var serverModels = fetchServerModels
+
+func fetchServerModels(s routerconfig.Server) ([]string, string, error) {
 	ep, err := routerconfig.ParseURL(s.URL)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return routerconfig.FetchModels(ctx, routerconfig.NewModelsClient(), ep, s.Key)
+	return routerconfig.FetchModels(ctx, routerconfig.NewModelsClient(), ep,
+		routerconfig.Auth{Key: s.Key, Header: s.AuthHeader, Headers: routerconfig.HeaderOf(s.Headers)})
 }
 
 // printCheck writes one check as "  ✓ text", wrapped at 80 columns with the

@@ -13,7 +13,7 @@ honors a redirect, so `cortex-envoy` and a config with an `mtls:` block refuse i
 at startup, and in-cluster use has not been examined.
 
 - `servers` (map, required) — inference servers by name: lowercase letters, digits, `.`, `_` and `-`. Each has:
-  - `url` (string, required) — `scheme://host[:port]`, `http` or `https`, no path, query or fragment. A port must be 1–65535; the scheme's default is dropped, so `https://x:443` is `x`. No two servers may share a host, compared without case and, except on a loopback host such as `localhost`, without port, since one machine serves many things there: a session's server is named from the host its requests went to. A plain-`http` server on another machine logs a WARN at load, since routed requests would cross the network decrypted.
+  - `url` (string, required) — `scheme://host[:port][/path]`, `http` or `https`, no query, fragment or user info. A path is a prefix: the router puts it before each path it builds, which is a captured request's path, a path from `api`, or the path of a request moved off another server's host with that server's prefix taken off. A request sent to the server's own host and routed there keeps its own path, so the router never adds the prefix two times. One trailing `/` is dropped, so `https://h/inference/` is `https://h/inference`. A `.`, `..`, empty or escaped path segment is refused. The server's identity stays the host, with no path. A port must be 1–65535; the scheme's default is dropped, so `https://x:443` is `x`. No two servers may share a host, compared without case and, except on a loopback host such as `localhost`, without port, since one machine serves many things there: a session's server is named from the host its requests went to. A plain-`http` server on another machine logs a WARN at load, since routed requests would cross the network decrypted.
   - `key` (string, required) — the API key sent to this server in place of the client's, in the header the client used: `X-Api-Key` when it sent one, `Authorization: Bearer` otherwise, both when it sent both. `auth_header` and a translated request change this (see **Servers that serve another protocol**). Printable ASCII, no spaces. `/config` and `/v1/pipeline` redact it.
   - `main` (string, required) — a word naming this server's model for an agent's main work, a request that carries tools, sent in place of a model the server refuses (see **Models**). It resolves to the newest model on the server's list whose name, without its provider prefix, contains the word, case ignored: `opus` against `aws/claude-opus-5-5` and `claude-opus-4-8` is the first. No `/` and no whitespace. The fields `opus`, `sonnet` and `haiku` it replaced are refused by name.
   - `helper` (string, required) — the same for a request without tools, such as a title.
@@ -52,7 +52,7 @@ transparently redirected connection is dialed where the client chose, and is
 **captured** when it is a routed agent's `POST` that `inference-parser` read as
 inference, with a path ending in `/chat/completions`, `/v1/messages` or
 `/responses`: it is sent to the agent's server at `/v1/chat/completions`,
-`/v1/messages` or `/v1/responses`, the query string kept, and its `modify/routed`
+`/v1/messages` or `/v1/responses`, after the prefix of the server's `url`, the query string kept, and its `modify/routed`
 carries `captured` with that path. The parse is required, not just the path: an
 agent's own tools can `POST` to any API whose path ends the same way. Anything else
 to a host no server has is `skip/not_an_inference_server`. Then the session
@@ -337,5 +337,47 @@ also refuses a value with CR, LF or NUL. `/config` and `/v1/pipeline` show the
 header names and hide the values, as they hide `key`. Bob needs
 `User-Agent: bob-shell`.
 
-`auth_header` and `headers` apply only to the requests that the router routes. The
-model-list fetch (`GET /v1/models`) still sends `Authorization: Bearer <key>` only.
+**The model list.** The router reads each server's model list with these requests,
+in this order. The first 200 wins. Each request carries the server's `headers`.
+
+1. `GET <url>/v1/models`, with `auth_header`, or with `Authorization: Bearer <key>`
+   when `auth_header` is empty.
+2. Only when step 1 gives 403 or 404: `GET <url>/v1/model/info`. The router reads
+   the model names from `data[].model_name`. This is LiteLLM's model list.
+3. Only when `auth_header` is empty and steps 1 and 2 gave 401 or 403: steps 1 and
+   2 again, with `X-Api-Key: <key>`.
+
+A 200 with a body that is not a model list stops the fetch with an error. A
+configured `auth_header` is the only header that the fetch sends.
+
+**Bob.** IBM Bob's gateway needs `auth_header: x-api-key` and the header
+`User-Agent: bob-shell`. Neither the router nor `agentop server add` sets them
+for a Bob host. Give both on the command line. Without the User-Agent, Bob's
+edge refuses each request with an HTML 403, the model list included. It is
+expected to serve `chat-completions` under the `/inference` prefix. Nobody has
+run the probe on a live Bob gateway. Use a static Bob API key from Bob's
+settings:
+
+```sh
+agentop server add bob https://api.us-east.bob.ibm.com/inference \
+  --main premium-ide --helper fast \
+  --auth-header x-api-key --header User-Agent=bob-shell
+agentop server use bob --agent claude-code
+```
+
+`agentop server add` is expected to write this entry (see
+[`agentop server add`](../cmd/agentop/README.md#choosing-an-inference-server-agentop-server)):
+
+```yaml
+servers:
+  bob:
+    url: https://api.us-east.bob.ibm.com/inference
+    key: …
+    main: premium-ide
+    helper: fast
+    api:
+      chat-completions: /v1/chat/completions
+    auth_header: x-api-key
+    headers:
+      User-Agent: bob-shell
+```

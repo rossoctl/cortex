@@ -1,18 +1,20 @@
 # Writing a Plugin
 
-**Audience:** someone building their first authbridge plugin. Walks
-from an empty file to a fully-registered plugin with config, recording,
-body access, and tests.
+**Audience:** someone who writes a first Cortex plugin in Go. This tutorial
+starts with an empty file. It ends with a plugin that registers, with config,
+recording, body access and tests.
 
-**See also:**
-- [`plugin-reference.md`](./plugin-reference.md) — field-level reference for config,
-  invocation recording, and the registration contract.
-- [`framework-architecture.md`](./framework-architecture.md) — how the pipeline
-  composes plugins and the lifecycle of a request.
+**Which doc to read when:**
+1. Read this tutorial first.
+2. Then read [`plugin-reference.md`](./plugin-reference.md). It is the
+   reference for config, invocation recording and the registration contract.
+3. For a quick plugin with no Go and no rebuild, read
+   [`script-plugin.md`](./script-plugin.md).
 
-A step-by-step guide to building a new authbridge plugin. For reference-style
-detail on config, registration, and invocation recording, see
-[`plugin-reference.md`](./plugin-reference.md).
+The list of plugin packages is in
+[`core/plugins/README.md`](../core/plugins/README.md).
+[`framework-architecture.md`](./framework-architecture.md) tells how the
+pipeline composes plugins and the lifecycle of a request.
 
 ## What a plugin is
 
@@ -65,17 +67,62 @@ func init() {
 }
 ```
 
-That's a complete plugin. Operator YAML adds it to a pipeline:
+That is a complete plugin. This YAML adds it to the outbound pipeline:
 
 ```yaml
 pipeline:
-  inbound:
+  outbound:
     plugins:
-      - name: jwt-validation
       - name: hello-log
 ```
 
-## Step 2 — Record what your plugin did
+An inbound pipeline takes the plugin the same way, under `inbound:`.
+
+## Step 2 — Register the plugin with the build
+
+The `init()` function runs only when a binary links the package. Every plugin
+is opt-in at build time, so you must do these four things:
+
+1. Create `core/plugins/all/plugins_hellolog.go`. It is the side-effect import,
+   gated by the plugin's build tag:
+
+   ```go
+   //go:build include_plugin_hellolog
+
+   package all
+
+   import _ "github.com/rossoctl/cortex/core/plugins/hellolog"
+   ```
+
+2. Add an entry to the `membership` map in
+   [`scripts/profile-tags/profiles.go`](../scripts/profile-tags/profiles.go):
+
+   ```go
+   "hellolog": {},
+   ```
+
+   An entry with no profile means that no shipped artifact carries the plugin.
+
+3. Record that decision in the guard tests. Add this line to the `want` map of
+   `TestOptionalSetIsExplicit` in `scripts/profile-tags/guards_test.go`:
+
+   ```go
+   "hellolog": true,
+   ```
+
+   Run `go -C scripts/profile-tags test ./...`. The guard tests fail if the
+   registration file, the `membership` entry or the `want` line is missing.
+
+4. Build with the tag of a profile, plus the plugin's own tag:
+
+   ```sh
+   cd cmd/cortex && go build -tags "$(go -C ../../scripts/profile-tags run . local),include_plugin_hellolog" -o ../../bin/cortex .
+   ```
+
+Without the tag, the build registers no `hello-log`. Cortex then rejects a
+config that names it, with the error `unknown plugin "hello-log"`.
+
+## Step 3 — Record what your plugin did
 
 Every plugin should tell the operator what it did on each message.
 The pipeline fills in `Plugin`, `Phase`, and `Path` automatically — you
@@ -105,7 +152,7 @@ pctx.Record(pipeline.Invocation{
 See [`plugin-reference.md`](./plugin-reference.md#emitting-session-events) for the
 full field set and the 5-value action vocabulary.
 
-## Step 3 — Reject a request
+## Step 4 — Reject a request
 
 Return a `Reject` action when your plugin should stop the pipeline:
 
@@ -151,7 +198,7 @@ acceptable false-positive threshold, then flip to `enforce`. See
 [`plugin-reference.md`](./plugin-reference.md#on_error-policy) for
 full semantics.
 
-## Step 4 — Add config
+## Step 5 — Add config
 
 If your plugin needs configurable knobs, implement
 `pipeline.Configurable`:
@@ -193,7 +240,7 @@ Operator YAML:
 See [`plugin-reference.md`](./plugin-reference.md#the-four-step-configure-pattern)
 for the strict-decode / defaults / validate / construct pattern.
 
-## Step 5 — Body access
+## Step 6 — Body access
 
 If your plugin needs to read the request or response body (e.g., to
 parse JSON, scan for credentials), declare `ReadsBody`:
@@ -255,7 +302,7 @@ See [`framework-architecture.md` §6, "Body mutation"](./framework-architecture.
 for the full lifecycle, per-listener wire details, and content-encoding
 policy.
 
-## Step 6 — Out-of-tree plugins
+## Step 7 — Out-of-tree plugins
 
 A plugin living in another Go module follows the same pattern, but
 imports the registry instead of sharing its package:
@@ -279,19 +326,31 @@ func init() {
 }
 ```
 
-The binary's build picks it up with a single side-effect
-import:
+To link it, make the same edits as in Step 2, in this repository (a fork or
+an upstream pull request):
 
-```go
-// cmd/cortex/plugins_extra.go
-package main
+1. Create `core/plugins/all/plugins_myplugin.go`:
 
-import _ "github.com/acme/my-plugin"
-```
+   ```go
+   //go:build include_plugin_myplugin
 
-No fork of cortex required.
+   package all
 
-## Step 7 — Test your plugin
+   import _ "github.com/acme/my-plugin"
+   ```
+
+2. Add `"myplugin": {},` to the `membership` map in
+   `scripts/profile-tags/profiles.go`.
+3. Add `"myplugin": true,` to the `want` map of `TestOptionalSetIsExplicit` in
+   `scripts/profile-tags/guards_test.go`.
+4. In `core`, `cmd/cortex` and `cmd/cortex-envoy`, run
+   `go get github.com/acme/my-plugin@<version>`, then `go mod tidy`. Each module
+   that imports `core/plugins/all` must list the plugin module. Otherwise a
+   `GOWORK=off` build, which `make`, the Dockerfile and CI use, fails with
+   `missing go.sum entry`.
+5. Build with `include_plugin_myplugin` added to the tags, as in Step 2.
+
+## Step 8 — Test your plugin
 
 Tests that call `OnRequest` / `OnResponse` directly need to set the
 framework attribution fields on `pctx` so `Record` fills `Plugin` and
@@ -328,7 +387,7 @@ func TestScenario(t *testing.T) {
 }
 ```
 
-## Step 8 — Expose content to guardrails (parser plugins)
+## Step 9 — Expose content to guardrails (parser plugins)
 
 If your plugin is a **parser** whose extension carries user-visible
 text, implement [`capabilities.ContentSource`](../core/capabilities/content.go)
@@ -377,7 +436,7 @@ Beyond the four required methods, plugins may implement:
 
 | Interface | When |
 |---|---|
-| `pipeline.Configurable` | Takes YAML config. See Step 4. |
+| `pipeline.Configurable` | Takes YAML config. See Step 5. |
 | `pipeline.Initializer` | Needs one-time setup before serving (load a model, warm a cache, spawn a goroutine). |
 | `pipeline.Shutdowner` | Needs graceful cleanup on pod termination (flush audit events, close connections). |
 | `pipeline.Readier` | Has deferred initialization that affects `/readyz` (e.g., waiting on a credential file). |

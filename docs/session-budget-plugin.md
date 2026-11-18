@@ -9,7 +9,7 @@ Supports three `on_exceed` modes:
 - `observe` — shadow mode: log without blocking, useful for calibrating limits
 - `pause` — HITL: POST to a webhook for approval before continuing
 
-A "session" is the AuthBridge session ID (typically one A2A conversation
+A "session" is the Cortex session ID (typically one A2A conversation
 or agent task invocation). Redis holds durable counters across pods; a
 local cache serves the hot path with zero I/O.
 
@@ -63,7 +63,7 @@ pipeline:
 | `redis_unavailable` | `fail_open` | Only `fail_open` supported today |
 | `default_session_fallback` | `false` | Pool sessionless traffic into a shared `"default"` bucket. Single-workload only — one caller exhausting the budget denies the rest. Under `max_duration_seconds`, continuous traffic refreshes the TTL, so once elapsed exceeds the limit requests stay denied until the key expires or is deleted. |
 
-At least one of `max_tokens`, `max_input_tokens`, `max_cache_read_tokens`, `max_cache_write_tokens`, `max_output_tokens`, `max_reasoning_tokens`, `max_calls`, `max_duration_seconds` must be > 0.
+At least one of `max_tokens`, `max_input_tokens`, `max_cache_read_tokens`, `max_cache_write_tokens`, `max_output_tokens`, `max_reasoning_tokens`, `max_calls`, `max_duration_seconds` must be > 0. Otherwise, `Configure` fails.
 
 **`max_reasoning_tokens` was inert on Anthropic traffic, and is not any more.**
 `inference-parser` did not read Anthropic's
@@ -137,7 +137,7 @@ responds or `pause_timeout` fires.
 The webhook is any HTTP endpoint you build that speaks the contract
 below — an in-cluster Service, a workflow entrypoint (Temporal, Argo,
 Slack middleware), or a local stub. It must be reachable from the
-AuthBridge pod and respond within `pause_timeout` (default `30s`), or
+AuthBridge sidecar and respond within `pause_timeout` (default `30s`), or
 the plugin falls back to `pause_timeout_action`.
 
 **Contract:**

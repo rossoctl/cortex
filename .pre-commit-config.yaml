@@ -30,6 +30,7 @@ repos:
         language: system
         files: \.md$
         pass_filenames: false
+        always_run: true
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.10

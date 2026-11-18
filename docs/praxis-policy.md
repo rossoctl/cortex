@@ -2,6 +2,7 @@
 
 In praxis mode, the policy filter runs inside `cortex-gateway`. It uses PPE, the
 Praxis policy engine. `praxis.policy` is the replacement for the laptop CPEX build.
+To build and test `cortex-gateway`, read [`praxis/README.md`](../praxis/README.md).
 
 ## Turn policy on
 

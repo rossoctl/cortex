@@ -70,7 +70,7 @@ which is what makes it shareable where the full events are not. It is not anonym
 though: hosts, models, session ids and timestamps remain, and together they describe who
 talked to what and when. A month of traffic is about 12MB. The reading rules that keep a
 consumer from misinterpreting the fields (zero means "not recorded", never a real zero;
-order by "at" then "seq") are in Cortex's docs/session-export-reference.md.
+order by "at" then "seq") are in Cortex's docs/session-export.md.
 
 The export reads the durable archive, not memory: a session with nothing flushed yet
 does not appear, and the live tail is /v1/events, not this.

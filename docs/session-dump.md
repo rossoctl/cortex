@@ -23,7 +23,7 @@ holds at the moment it runs. You must run it before the thing you want is gone. 
 laptop the session archive closes that gap. In a cluster the gap is still open.
 
 A dump is the *content* — prompts, completions, tool results. When what you want is the
-*measurements* over a month of traffic, [`GET /v1/export`](session-export-reference.md) writes the
+*measurements* over a month of traffic, [`GET /v1/export`](session-export.md) writes the
 archive as content-free records instead: no prompts, completions or tool results, which
 is what makes it shareable where a dump is not. It is not anonymous, though — hosts,
 models, session ids and timestamps remain, and together they describe who talked to what

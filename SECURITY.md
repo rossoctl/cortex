@@ -33,7 +33,7 @@ This project implements several security controls:
 - **CI Security Scans**: Dependency Review, Trivy (filesystem + IaC), Bandit (Python), Hadolint (Dockerfiles), Shellcheck, YAML Lint
 - **OpenSSF Scorecard**: Automated security health metrics
 - **Dependency Updates**: Dependabot for GitHub Actions dependencies
-- **Pre-commit Hooks**: Trailing whitespace, go fmt/vet, Helm lint
+- **Pre-commit Hooks**: `trailing-whitespace`, `end-of-file-fixer`, `check-added-large-files`, `check-yaml`, `check-json`, `check-merge-conflict`, `mixed-line-ending`, `ai-assisted-by-trailer` (commit-msg stage), `check-doc-links`, `ruff`, `ruff-format`
 - **PR Verification**: Conventional commit enforcement via pr-verifier
 
 ## Security-Related Configuration

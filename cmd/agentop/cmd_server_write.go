@@ -182,7 +182,7 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// given, so a word naming none of its models is refused before it is written,
 	// and a wrong key or URL is caught here rather than on the first routed request.
 	models.URL, models.Key = ep.URL(), key
-	ids, err := serverModels(models)
+	ids, _, err := serverModels(models)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server add: could not read %s's model list: %v. Check its URL and key.\n", name, err)
 		return 1
@@ -194,6 +194,28 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return 1
 		}
 		fmt.Fprintf(stdout, "%s %s → %s\n", strings.TrimPrefix(w.flag, "--"), w.word, m)
+	}
+	// With no --api, the probe finds the protocols, and the auth header when it is
+	// not the usual one. A given --auth-header is fixed: the probe does not change it.
+	if len(models.API) == 0 {
+		client := routerconfig.NewModelsClient()
+		client.Timeout = 60 * time.Second // a local server can load the model at the first request
+		ctx, cancel := context.WithTimeout(context.Background(), probeTotal(client.Timeout))
+		api, auth, err := probeServer(ctx, client, models, routerconfig.Resolve(models.Main, ids),
+			models.AuthHeader, models.AuthHeader != "")
+		cancel()
+		if err != nil {
+			fmt.Fprintf(stderr, "agentop server add: could not find which protocols %s serves: %v\n", name, err)
+			return 1
+		}
+		for _, p := range slices.Sorted(maps.Keys(api)) {
+			fmt.Fprintf(stdout, "api %s → %s\n", p, api[p])
+		}
+		if auth != "" && auth != models.AuthHeader {
+			fmt.Fprintf(stdout, "auth_header → %s\n", auth)
+			models.AuthHeader = auth
+		}
+		models.API = api
 	}
 
 	value := edit.MapValue("url", ep.URL(), "key", key, "main", models.Main, "helper", models.Helper)

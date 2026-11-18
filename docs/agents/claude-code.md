@@ -1,94 +1,26 @@
 # Claude Code
 
 Claude Code is a supported agent, and the one Cortex is built and tested against first.
-Cortex recognises its User-Agent, groups its traffic by Claude Code's own session id,
-parses its inference, and can prune the tools it never calls.
-`agentop configure claude-code` routes it through Cortex and takes that out again.
+Cortex recognises its User-Agent and groups its traffic by Claude Code's own session id.
+It also parses Claude Code's inference.
+`agentop configure claude-code` routes Claude Code through Cortex and removes that routing again.
 
-## Enable and revert
+## Use it
 
-```sh
-agentop configure claude-code enable    # route every Claude Code session through Cortex
-agentop configure claude-code status    # what is set
-agentop configure claude-code disable   # take it out again
-```
+1. Enable: `agentop configure claude-code enable`.
+   The installer's `--claude-code` flag runs the same step.
+2. Start `claude` as usual, with no flags and no environment variables.
+   Claude Code reads its `env` block only when it starts.
+   Thus, restart each `claude` that runs already.
+   `claude --resume` continues the conversation.
+   Every session goes through Cortex until you disable it.
+   While enabled, Claude Code needs Cortex to run, because its requests go to the proxy.
+   `agentop service status` shows if the proxy is up.
+3. Check: run `agentop observe`, send one prompt, and find a `claude-code` row.
+   `agentop configure claude-code status` shows what is set.
+4. Undo: `agentop configure claude-code disable`, then restart each `claude` again.
 
-After `enable`, run `claude` the way you always do, with no flags and no environment
-variables. Every session goes through Cortex until you `disable` it. The installer's
-`--claude-code` flag runs the same `enable` as one of setup's steps.
-
-**What `enable` writes.** The keys in the table below, in the `env` block of `~/.claude/settings.json`.
-Claude Code applies that block to every session on the machine, including background
-agents, so nothing needs exporting in a shell. The addresses come from
-`~/.cortex/config.yaml`, so they match the running proxy:
-
-| Variable | Value |
-|---|---|
-| `HTTPS_PROXY` | `http://127.0.0.1:47600`, the forward proxy |
-| `NODE_EXTRA_CA_CERTS` | `~/.cortex/ca/ca.crt`, the bridge CA |
-| `SSL_CERT_FILE` | `~/.cortex/ca/bundle.crt`, the CA plus platform roots |
-| `GIT_SSL_CAINFO` | `~/.cortex/ca/bundle.crt` |
-| `REQUESTS_CA_BUNDLE` | `~/.cortex/ca/bundle.crt` |
-| `CURL_CA_BUNDLE` | `~/.cortex/ca/bundle.crt` |
-
-Every other setting is left as it was, including any other `env` entry, such as
-`ANTHROPIC_BASE_URL` or an auth token. `enable` refuses to overwrite a value someone
-else set, such as a corporate proxy; the only values it replaces are Cortex's own, such
-as a proxy at an older Cortex port. The first run copies the original file to
-`settings.json.bak` and never overwrites that copy. `enable` and `disable` ask before
-writing; `--yes` skips the question. `--settings` and `--config` point them at other
-files.
-
-**When it takes effect.** Claude Code applies its `env` block when it starts, so restart
-any `claude` that is already running; `claude --resume` picks the conversation back up.
-The same goes after `disable`. While enabled, Claude Code needs Cortex running,
-because its requests go to the proxy: `disable` is the off switch, and `agentop
-service status` says whether the proxy is up.
-
-**The record.** The first `enable` records what each of these keys held before, in
-`~/.cortex/claude-code-state.json`. `disable` removes only the keys `enable` added, and
-puts back any value it recorded. It does not change a key whose value changed after
-`enable`, and it names each key it did not change. `agentop uninstall` runs the same `disable`.
-
-`disable` restores every value, but not the file's text. For example, it sorts the keys, uses a
-2-space indent, puts each array item on its own line, and writes `&`, `<` and `>` as
-`\u0026`, `\u003c` and `\u003e`. `settings.json.bak` holds the file as it was before the
-first `enable`. It does not hold a change you made after that.
-
-### Undoing it by hand
-
-If `agentop` is already gone, delete the keys in the table above from the `env` block of
-`~/.claude/settings.json` yourself, **before** deleting `~/.cortex`. The four that point
-at `bundle.crt` replace their tools' trust stores, so with the file gone git, curl and
-Python fail every TLS call, including ones that never touch Cortex.
-[If `agentop` is already gone](../laptop-service.md#if-agentop-is-already-gone) has the
-full procedure.
-
-## CA trust
-
-Claude Code reads `NODE_EXTRA_CA_CERTS`, which adds the bridge CA to its built-in roots,
-so Claude Code itself needs nothing more.
-
-The other four variables are for the tools Claude Code runs. They inherit
-`HTTPS_PROXY`, so they must be able to verify the bridge too. Each of those variables
-*replaces* its tool's trust store rather than adding to it, which is why they get
-`bundle.crt` and not `ca.crt`: `ca.crt` alone would leave git, curl or Python trusting
-one private CA and nothing else. On macOS, Go tools (`go`, `gh`) ignore `SSL_CERT_FILE`
-and use the keychain, so unless macOS trusts Cortex's CA, Cortex passes them through
-unread; `enable` prints the `security add-trusted-cert` command that has Cortex read
-them, and
-[Go tools on macOS](../troubleshooting.md#go-tools-on-macos-are-passed-through-unread)
-explains it.
-
-**The symptom when trust fails.** `agentop observe` shows Claude Code's requests as
-`tunnel` rows with `client-rejected-ca`, and no plugin runs on them. Traffic still
-flows; it just is not decrypted. The usual cause is a `claude` that started before the
-CA existed: before the first install, or before `~/.cortex` was deleted and recreated.
-Restart it.
-[Everything shows as `tunnel`](../troubleshooting.md#everything-shows-as-tunnel-and-no-plugin-ever-runs)
-covers the other cause.
-
-## What Cortex shows for it
+## What you see
 
 **Its own agent.** Claude Code sends a User-Agent of the form
 `claude-cli/<version> (external, cli)`. Cortex recognises it as `claude-code`, so Claude
@@ -104,24 +36,7 @@ deployment by default.
 each session's title and directory. `--skip-claude-metadata` turns that off; see
 [Naming sessions from Claude Code](../../cmd/agentop/README.md#naming-sessions-from-claude-code---skip-claude-metadata).
 
-**Subagents.** Claude Code sends a subagent's requests under the session id of the
-conversation that started it, so they are filed in that session and counted in its cost.
-Cortex tags each one as a subagent, from the marker Claude Code writes on the first line
-of a subagent's system prompt, and agentop's context gauge uses the tag to follow the
-main conversation rather than a subagent's. A subagent's requests, and an agent-team
-teammate's, also carry `X-Claude-Code-Agent-Id`, which Cortex records on the event as
-`subagent`. For a subagent it is the id that names its
-`<session>/subagents/agent-<id>.meta.json`, which holds its type and description. A
-teammate's rows carry it too but are not tagged as a subagent's, because Claude Code writes
-the marker only for subagents; the tag, not this id, is what says a row is a subagent's.
-An agent that another agent started also carries `X-Claude-Code-Parent-Agent-Id`, recorded
-as `parentSubagent`; one the conversation started has none. In agentop's events pane each
-subagent's rows group under a collapsible header — the subagent's description from its
-`meta.json`, which `agentop observe` harvests alongside the session titles, or its raw id
-when nothing names it — so the fan-out can be collapsed to one line and opened to
-troubleshoot a slow or costly subagent; see the
-[events pane](../../cmd/agentop/README.md#panes). That closes
-[#1047](https://github.com/rossoctl/cortex/issues/1047).
+agentop groups each subagent's rows under a collapsible header. See [Subagent headers](#subagent-headers).
 
 **Typed inference.** Requests to a path ending in `/v1/messages` are parsed as the
 Anthropic Messages API, whoever serves it: Anthropic's own API or a gateway such as
@@ -143,36 +58,15 @@ list. Claude Code is the only agent it can build a list for. See
 ## Switching inference servers
 
 With more than one inference server — a LiteLLM gateway, or a local model
-server such as Ollama ([setting one up](../laptop-local-model.md)) —
+server such as Ollama ([setting one up](../inference-servers.md#local-model-with-ollama)) —
 `agentop server` — or `S` on agentop's agents pane — chooses which one Claude
 Code's **new** sessions use, with one Claude Code configuration and without
 restarting anything. A running conversation stays on
 the server it started on, with the exceptions below.
 See [Choosing an inference server](../../cmd/agentop/README.md#choosing-an-inference-server-agentop-server).
-
-Claude Code needs no setting of its own for this beyond going through Cortex.
-Its inference is captured wherever `ANTHROPIC_BASE_URL` points — Anthropic
-itself, or a gateway — and sent to its server. An `https` base URL is captured
-only when the TLS bridge decrypts it, which needs its port in `tls_bridge.ports`,
-443 and 8443 unless set: on another port, such as `:4000`, the request stays an
-opaque `CONNECT` tunnel and is not routed. An `http` base URL reaches the router
-only if Claude Code sends it through the proxy, and `agentop configure claude-code
-enable` sets `HTTPS_PROXY` only. The host Claude Code names must be up even for
-sessions routed elsewhere: the proxy dials the `CONNECT` target before it sees the
-request inside.
-
-Claude Code's own model names go first, the conversation's, auto mode's
-classifier's and the background calls' each as it chose them, so `/model` and
-Claude Code's model settings keep working wherever the server serves those names.
-A name the server refuses is sent again, before Claude Code sees the refusal, with
-the server's own model: its `main` for a request with tools, the conversation, and
-its `helper` for one without, such as the title. A GLM server behind LiteLLM, say,
-is added with `agentop server add glm <url> --main glm --helper nemotron`.
-
-The key is the server's: on a routed request the router puts the configured
-server's key in the header Claude Code sent its own in, `X-Api-Key` for
-`ANTHROPIC_API_KEY` and `Authorization` for `ANTHROPIC_AUTH_TOKEN`, so either can
-stay as it is.
+To use IBM's servers (ete-int, ete-ext and Bob), see
+[Route an agent to another inference server](../inference-servers.md).
+On Bob, Cortex translates each request to chat completions.
 
 Claude Code keeps naming the model it asked for, so agentop is where the server
 shows: the sessions table's `SERVER` column names each session's server, the
@@ -205,30 +99,15 @@ thinking, whose text is empty (encrypted); the readable reasoning text, when the
 old server was GLM or Ollama. Claude Code notices nothing: its own transcript is unchanged, and it keeps naming the model it
 asked for.
 
-A conversation carried to a new session id is one Cortex did not see begin, so it
-goes where Claude Code sends it, and one routed to another server moves back; see
-[Known issues](#known-issues). That happens in three ways: Claude Code's
-continued-in hand-off copies a live conversation to a new id; `claude daemon`
-starts background jobs with `--session-id <new> --fork-session --resume <parent>`;
-and `/clear` with background subagents running moves their traffic to the new id,
-where it goes where Claude Code sends it until the new conversation's opening turn
-pins the session.
-
 Nothing fails over. When a session's server is down its requests fail, with a 502
 from the proxy when the server cannot be reached; route the agent to another
 server, and start a new session there.
 
-If the server's model has a smaller output limit or context window than the model
-the agent asked for, the router lowers the request's output limit (unless that would
-not leave it above an extended-thinking budget) and, near the window, drops the oldest
-turns, keeping the task and the recent turns. Turns are dropped from Anthropic messages
-and OpenAI chat-completions requests only; a responses-format request has only its
-output limit lowered. The agent's own view of the conversation is not changed. See the inference-router's Limits rule in
-`docs/plugin-catalog.md`.
-
 **`/model` may list a server's own names.** If Claude Code asks the gateway for its
 model list, that request is routed like the rest, so the picker can show, say,
 `glm-5.3`. A name chosen there goes to the server as it is, like any other.
+
+How the router handles names, keys and limits: [Router behavior](#router-behavior).
 
 ## Import history
 
@@ -245,7 +124,164 @@ Flags and output:
 [`agentop import`](../../cmd/agentop/README.md#importing-agent-history-agentop-import).
 Rules: [`POST /v1/import`](../session-api.md#post-v1import--transcript-import-laptop-only).
 
-## Verified depth
+## Known issues
+
+- **Requests show as `tunnel` rows with `client-rejected-ca`.**
+  `agentop observe` shows Claude Code's requests as
+  `tunnel` rows with `client-rejected-ca`, and no plugin runs on them. Traffic still
+  flows; it just is not decrypted. The usual cause is a `claude` that started before the
+  CA existed: before the first install, or before `~/.cortex` was deleted and recreated.
+  Restart it.
+  [Everything shows as `tunnel`](../troubleshooting.md#everything-shows-as-tunnel-and-no-plugin-ever-runs)
+  covers the other cause.
+- **Older versions turned off auto-updates.** Before
+  [#1729](https://github.com/rossoctl/cortex/issues/1729), `enable` also set
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. That variable stops Claude Code's
+  auto-updates and feature flags, as well as its telemetry. Cortex does not need it: it
+  tunnels the updater's downloads from `downloads.claude.ai`. `enable`, `disable` and
+  `agentop setup` remove the key when the record shows that Cortex wrote it. With no
+  record, they cannot tell it from a value you set, so they leave it: delete it by hand
+  if you did not set it.
+- **A conversation moved to a new session id leaves its server.** Cortex keeps a
+  conversation on its server by its session id's pin, and Claude Code's
+  continued-in hand-off and `claude daemon`'s forked background jobs carry a
+  conversation to a new id, which no pin follows. Cortex then sees a conversation
+  it did not see begin and sends it where Claude Code sends it, so one routed to
+  another server moves back to the server `ANTHROPIC_BASE_URL` names,
+  mid-conversation.
+- **A continued conversation can show twice.** Claude Code sometimes moves a live
+  conversation to a new session id. agentop then shows two rows with the same title, and
+  the older row keeps the copied title. Cortex does not yet read Claude Code's record of
+  the move.
+
+## How it works (for developers)
+
+### What enable writes
+
+`enable` writes the keys in the table below to the `env` block of `~/.claude/settings.json`.
+Claude Code applies that block to every session on the machine, including background
+agents, so nothing needs exporting in a shell. The addresses come from
+`~/.cortex/config.yaml`, so they match the running proxy:
+
+| Variable | Value |
+|---|---|
+| `HTTPS_PROXY` | `http://127.0.0.1:47600`, the forward proxy |
+| `NODE_EXTRA_CA_CERTS` | `~/.cortex/ca/ca.crt`, the bridge CA |
+| `SSL_CERT_FILE` | `~/.cortex/ca/bundle.crt`, the CA plus platform roots |
+| `GIT_SSL_CAINFO` | `~/.cortex/ca/bundle.crt` |
+| `REQUESTS_CA_BUNDLE` | `~/.cortex/ca/bundle.crt` |
+| `CURL_CA_BUNDLE` | `~/.cortex/ca/bundle.crt` |
+
+Every other setting is left as it was, including any other `env` entry, such as
+`ANTHROPIC_BASE_URL` or an auth token. `enable` refuses to overwrite a value someone
+else set, such as a corporate proxy; the only values it replaces are Cortex's own, such
+as a proxy at an older Cortex port. The first run copies the original file to
+`settings.json.bak` and never overwrites that copy. `enable` and `disable` ask before
+writing; `--yes` skips the question. `--settings` and `--config` point them at other
+files.
+
+### The record
+
+The first `enable` records what each of these keys held before, in
+`~/.cortex/claude-code-state.json`. `disable` removes only the keys `enable` added, and
+puts back any value it recorded. It does not change a key whose value changed after
+`enable`, and it names each key it did not change. `agentop uninstall` runs the same `disable`.
+
+`disable` restores every value, but not the file's text. For example, it sorts the keys, uses a
+2-space indent, puts each array item on its own line, and writes `&`, `<` and `>` as
+`\u0026`, `\u003c` and `\u003e`. `settings.json.bak` holds the file as it was before the
+first `enable`. It does not hold a change you made after that.
+
+### Undoing it by hand
+
+If `agentop` is already gone, delete the keys in the table above from the `env` block of
+`~/.claude/settings.json` yourself, **before** deleting `~/.cortex`. The four that point
+at `bundle.crt` replace their tools' trust stores, so with the file gone git, curl and
+Python fail every TLS call, including ones that never touch Cortex.
+[If `agentop` is already gone](../laptop-service.md#if-agentop-is-already-gone) has the
+full procedure.
+
+### CA trust
+
+Claude Code reads `NODE_EXTRA_CA_CERTS`, which adds the bridge CA to its built-in roots,
+so Claude Code itself needs nothing more.
+
+The other four variables are for the tools Claude Code runs. They inherit
+`HTTPS_PROXY`, so they must be able to verify the bridge too. Each of those variables
+replaces its tool's trust store, so it gets `bundle.crt` and not `ca.crt`
+([CA variables: extend or replace](any-agent.md#ca-variables-extend-or-replace)).
+On macOS, Go tools (`go`, `gh`) ignore `SSL_CERT_FILE`
+and use the keychain, so unless macOS trusts Cortex's CA, Cortex passes them through
+unread; `enable` prints the `security add-trusted-cert` command that has Cortex read
+them, and
+[Go tools on macOS](../troubleshooting.md#go-tools-on-macos-are-passed-through-unread)
+explains it.
+
+### Subagent headers
+
+Claude Code sends a subagent's requests under the session id of the
+conversation that started it, so they are filed in that session and counted in its cost.
+Cortex tags each one as a subagent, from the marker Claude Code writes on the first line
+of a subagent's system prompt, and agentop's context gauge uses the tag to follow the
+main conversation rather than a subagent's. A subagent's requests, and an agent-team
+teammate's, also carry `X-Claude-Code-Agent-Id`, which Cortex records on the event as
+`subagent`. For a subagent it is the id that names its
+`<session>/subagents/agent-<id>.meta.json`, which holds its type and description. A
+teammate's rows carry it too but are not tagged as a subagent's, because Claude Code writes
+the marker only for subagents; the tag, not this id, is what says a row is a subagent's.
+An agent that another agent started also carries `X-Claude-Code-Parent-Agent-Id`, recorded
+as `parentSubagent`; one the conversation started has none. In agentop's events pane each
+subagent's rows group under a collapsible header — the subagent's description from its
+`meta.json`, which `agentop observe` harvests alongside the session titles, or its raw id
+when nothing names it — so the fan-out can be collapsed to one line and opened to
+troubleshoot a slow or costly subagent; see the
+[events pane](../../cmd/agentop/README.md#panes). That closes
+[#1047](https://github.com/rossoctl/cortex/issues/1047).
+
+### Router behavior
+
+Claude Code needs no setting of its own for this beyond going through Cortex.
+Its inference is captured wherever `ANTHROPIC_BASE_URL` points — Anthropic
+itself, or a gateway — and sent to its server. An `https` base URL is captured
+only when the TLS bridge decrypts it, which needs its port in `tls_bridge.ports`,
+443 and 8443 unless set: on another port, such as `:4000`, the request stays an
+opaque `CONNECT` tunnel and is not routed. An `http` base URL reaches the router
+only if Claude Code sends it through the proxy, and `agentop configure claude-code
+enable` sets `HTTPS_PROXY` only. The host Claude Code names must be up even for
+sessions routed elsewhere: the proxy dials the `CONNECT` target before it sees the
+request inside.
+
+Claude Code's own model names go first, the conversation's, auto mode's
+classifier's and the background calls' each as it chose them, so `/model` and
+Claude Code's model settings keep working wherever the server serves those names.
+A name the server refuses is sent again, before Claude Code sees the refusal, with
+the server's own model: its `main` for a request with tools, the conversation, and
+its `helper` for one without, such as the title. A GLM server behind LiteLLM, say,
+is added with `agentop server add glm <url> --main glm --helper nemotron`.
+
+The key is the server's: on a routed request the router puts the configured
+server's key in the header Claude Code sent its own in, `X-Api-Key` for
+`ANTHROPIC_API_KEY` and `Authorization` for `ANTHROPIC_AUTH_TOKEN`, so either can
+stay as it is.
+
+A conversation carried to a new session id is one Cortex did not see begin, so it
+goes where Claude Code sends it, and one routed to another server moves back; see
+[Known issues](#known-issues). That happens in three ways: Claude Code's
+continued-in hand-off copies a live conversation to a new id; `claude daemon`
+starts background jobs with `--session-id <new> --fork-session --resume <parent>`;
+and `/clear` with background subagents running moves their traffic to the new id,
+where it goes where Claude Code sends it until the new conversation's opening turn
+pins the session.
+
+If the server's model has a smaller output limit or context window than the model
+the agent asked for, the router lowers the request's output limit (unless that would
+not leave it above an extended-thinking budget) and, near the window, drops the oldest
+turns, keeping the task and the recent turns. Turns are dropped from Anthropic messages
+and OpenAI chat-completions requests only; a responses-format request has only its
+output limit lowered. The agent's own view of the conversation is not changed. See the inference-router's Limits rule in
+`docs/plugin-catalog.md`.
+
+### Verified depth
 
 Tested live on 2026-10-05 with Claude Code 2.1.286 on macOS 26.6.2 (arm64), Cortex built
 from `main` at `1fd69b75`, through a LiteLLM gateway serving Claude Opus 5.5, Claude
@@ -273,25 +309,3 @@ Cortex: its requests to `api.anthropic.com` were captured and sent to the server
 GLM server `claude-opus-5-5` was refused once and sent again with the server's main
 model, then sent with it from the start; on a server that serves Claude's names it went
 as Claude Code asked. A file was written and read back on each.
-
-## Known issues
-
-- **Older versions turned off auto-updates.** Before
-  [#1729](https://github.com/rossoctl/cortex/issues/1729), `enable` also set
-  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. That variable stops Claude Code's
-  auto-updates and feature flags, as well as its telemetry. Cortex does not need it: it
-  tunnels the updater's downloads from `downloads.claude.ai`. `enable`, `disable` and
-  `agentop setup` remove the key when the record shows that Cortex wrote it. With no
-  record, they cannot tell it from a value you set, so they leave it: delete it by hand
-  if you did not set it.
-- **A conversation moved to a new session id leaves its server.** Cortex keeps a
-  conversation on its server by its session id's pin, and Claude Code's
-  continued-in hand-off and `claude daemon`'s forked background jobs carry a
-  conversation to a new id, which no pin follows. Cortex then sees a conversation
-  it did not see begin and sends it where Claude Code sends it, so one routed to
-  another server moves back to the server `ANTHROPIC_BASE_URL` names,
-  mid-conversation.
-- **A continued conversation can show twice.** Claude Code sometimes moves a live
-  conversation to a new session id. agentop then shows two rows with the same title, and
-  the older row keeps the copied title. Cortex does not yet read Claude Code's record of
-  the move.

@@ -1,6 +1,6 @@
 # opa
 
-OPA (Open Policy Agent) plugin for AuthBridge. Downloads policy bundles from a
+OPA (Open Policy Agent) plugin for Cortex. Downloads policy bundles from a
 Rossoctl Bundle Server based on the agent's identity and evaluates requests and
 responses against the loaded policy using four fixed decision paths.
 
@@ -39,42 +39,10 @@ only define `authbridge/inbound/request`.
 
 ## Configuration
 
-### Default configuration
-
-Most deployments only need `bundle_url`. The lean default input is sufficient
-for tool-access-control and model-restriction policies:
-
-```yaml
-pipeline:
-  inbound:
-    plugins:
-      - name: jwt-validation
-        config: { ... }
-      - name: opa
-        config:
-          bundle_url: "http://bundle-server.rossoctl.svc:8080"
-  outbound:
-    plugins:
-      - name: token-exchange
-        config: { ... }
-      - name: opa
-        config:
-          bundle_url: "http://bundle-server.rossoctl.svc:8080"
-```
-
-With this config, policies can decide based on caller identity, tool names,
-model names, hosts, and methods — without any bulk content crossing the OPA
-evaluation boundary.
-
-> **Outbound ordering matters.** Place `opa` *after* `token-exchange` on the
-> outbound leg. `token-exchange` records the target audience and granted
-> scopes of the token it mints into the delegation chain, which OPA then
-> exposes as both `input.delegation` and a synthesized `input.identity` (see
-> below). If `opa` runs first, that signal is not yet populated. On inbound,
-> `input.identity` comes from a validated JWT; on outbound no JWT is validated,
-> so `input.identity` is synthesized from the delegation hop — letting policies
-> branch on `input.identity` on either leg — while `input.delegation` remains
-> available for full-chain detail.
+The config fields, the default configuration, the outbound ordering and the
+bundle server transport are on the operator page,
+[`docs/opa-plugin.md`](../../../docs/opa-plugin.md). The examples below show
+how `include` adds content for a policy.
 
 ### Example: content-filtering policy
 
@@ -107,25 +75,6 @@ the full conversation history:
       - "inference.messages"    # full conversation history
       - "inference.tools.detail" # tool descriptions and JSON schemas
 ```
-
-### Bundle server transport
-
-The current implementation fetches bundles over plaintext HTTP with no client
-authentication. This is suitable for deployments where the bundle server is
-co-located in the same Kubernetes cluster and in-cluster HTTP is considered
-sufficient. A future enhancement will add mTLS support with SPIFFE certificate.
-Additionally a future enhancement will add TLS with service account token.
-
-### Config fields
-
-| Field | Required | Default | Description |
-|---|---|---|---|
-| `bundle_url` | yes | | Base URL of the Rossoctl Bundle Server (HTTP, in-cluster) |
-| `agent_id_file` | no | `/shared/client-id.txt` | Path to the file containing the agent's client ID |
-| `agent_id` | no | | Inline agent ID; when set, `agent_id_file` is ignored |
-| `polling_min_delay` | no | `10` | Minimum bundle polling interval in seconds |
-| `polling_max_delay` | no | `120` | Maximum bundle polling interval in seconds |
-| `include` | no | `[]` | List of optional field groups to expose in the OPA input (see below) |
 
 ### The `include` mechanism
 
@@ -331,7 +280,8 @@ the token it uses as the RFC 8693 `subject_token` — **without** signature
 verification, purely to enrich policy input. It falls back to empty when no
 usable bearer is present. The `audience` / `scopes` / `strategy` / `from_cache`
 fields are always known from the exchange result. Requires `opa` to run
-**after** `token-exchange` (see the ordering note above); a host that matches
+**after** `token-exchange` (see
+[Outbound ordering](../../../docs/opa-plugin.md#outbound-ordering)); a host that matches
 no route carries no hop, so both `input.delegation` and the synthesized
 `input.identity` are absent for passthrough traffic.
 
