@@ -335,7 +335,9 @@ Some limitations worth knowing:
   every session. It matters where telemetry attribution is a trust boundary rather than a
   convenience, and `session.id_headers: []` is the way to opt out there.
 
-Moved to [Troubleshooting](troubleshooting.md).
+## Why traffic disappears from `agentop`
+
+Moved to [Troubleshooting](troubleshooting.md#why-traffic-disappears-from-agentop).
 
 ## Cost history is written to `~/.cortex/cost`
 
@@ -672,7 +674,18 @@ With `mode: enabled`, the session API's bind is pinned to loopback whatever
 response bodies, and it is unauthenticated. `kubectl port-forward` and
 agentop still reach it through the pod's loopback.
 
-Moved to [Troubleshooting](troubleshooting.md).
+## Install and TLS bridge problems
+
+These sections moved to [Troubleshooting](troubleshooting.md):
+
+- [`agentop: command not found`](troubleshooting.md#agentop-command-not-found)
+- [Restricted environments (sandboxes, no launchd session)](troubleshooting.md#restricted-environments-sandboxes-no-launchd-session)
+- [`502 Cortex proxy is not serving`](troubleshooting.md#502-cortex-proxy-is-not-serving)
+- [Everything shows as `tunnel` and no plugin ever runs](troubleshooting.md#everything-shows-as-tunnel-and-no-plugin-ever-runs)
+- [A request gets `421 Misdirected Request`](troubleshooting.md#a-request-gets-421-misdirected-request)
+- [Developer tooling is not intercepted at all](troubleshooting.md#developer-tooling-is-not-intercepted-at-all)
+- [Failing closed](troubleshooting.md#failing-closed)
+- [Go tools on macOS are passed through unread](troubleshooting.md#go-tools-on-macos-are-passed-through-unread)
 
 ## Is it working?
 
@@ -786,8 +799,6 @@ the same file: `NODE_EXTRA_CA_CERTS` **extends** Node's trust store, so it gets
 followed by this machine's public roots. Pointing a replacing variable at `ca.crt`
 would leave that tool trusting one private CA and nothing else, which breaks every
 direct TLS call it makes.
-
-Moved to [Troubleshooting](troubleshooting.md).
 
 ### Remove it
 
