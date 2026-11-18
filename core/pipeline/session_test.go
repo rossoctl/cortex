@@ -299,9 +299,9 @@ func TestTunnelReasonsAreDocumented(t *testing.T) {
 	// reports success. go test runs in the package directory, so this path resolves for
 	// every invocation from anywhere in the repo; if it ever does not, the doc has moved or
 	// been deleted and the reason this test exists has moved with it.
-	doc, err := os.ReadFile("../../docs/laptop-service.md")
+	doc, err := os.ReadFile("../../docs/troubleshooting.md")
 	if err != nil {
-		t.Fatalf("read ../../docs/laptop-service.md: %v — this test's whole subject is that "+
+		t.Fatalf("read ../../docs/troubleshooting.md: %v — this test's whole subject is that "+
 			"every tunnel reason is documented there; if the file moved, point this at its new "+
 			"home rather than letting the check disappear", err)
 	}
@@ -313,7 +313,7 @@ func TestTunnelReasonsAreDocumented(t *testing.T) {
 		TunnelDialFailed, TunnelSNIMismatch, TunnelRefusedNonTLS,
 	} {
 		if !strings.Contains(string(doc), string(reason)) {
-			t.Errorf("tunnel reason %q is not in laptop-service.md; an operator who sees "+
+			t.Errorf("tunnel reason %q is not in troubleshooting.md; an operator who sees "+
 				"it in the timeline has nowhere to look it up", reason)
 		}
 	}

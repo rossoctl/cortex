@@ -257,9 +257,7 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 		// about trust — and a minting failure on our own side is the worst case for
 		// that, since nothing they do to the client can fix it.
 		if reason == pipeline.TunnelClientRejectedCA {
-			// Short enough to read unwrapped. The lsof recipe for mapping the client
-			// port to a process lives in docs/laptop-service.md rather than being
-			// repeated on every occurrence of this line.
+			// Short enough to read unwrapped.
 			//
 			// The fingerprint and the file are what make a MOVED CA diagnosable:
 			// ca_not_before alone reads as recent for a client holding a different

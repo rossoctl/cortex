@@ -223,201 +223,6 @@ session still gets whatever title was found before the stop, which may be an old
 the background scan has nowhere to say so once the viewer owns the screen — so re-run the
 subcommand if a title looks wrong.
 
-## Which harnesses are wired into Cortex (`agentop configure status`)
-
-Each section below covers one harness. To see all of them at once — without running
-five `agentop configure <harness> status` commands and comparing five different output
-shapes — run it with no harness name:
-
-```console
-$ agentop configure status
-HARNESS       STATUS        DETAIL
-claude-code   enabled       ~/.claude/settings.json
-bob           uncertain     editor: ~/Library/.../IBM Bob/User does not exist, so IBM Bob has not run here; shell: CORTEX_BOBSHELL is unset in this shell
-opencode      uncertain     opencode not found on PATH or in ~/.opencode/bin
-codex         not enabled   no Cortex values in ~/.codex/.env
-pi            not enabled   extension: missing; shell: no pi function in ~/.zshrc
-
-For the detail on one of them: agentop configure <harness> status
-```
-
-Four verdicts, not two, because a boolean would be a lie for several of these:
-
-| STATUS | Means |
-|---|---|
-| `enabled` | Fully routed through Cortex, by that harness's own definition of fully. |
-| `not enabled` | agentop looked and the harness is not routed — a place to look, and nothing in it. |
-| `partly enabled` | Some of it is in place: N of M keys set, or a value pointing at a loopback proxy that is not this machine's Cortex. `enable` has something left to do. |
-| `uncertain` | agentop could not establish an answer — a file it cannot read or parse, a key defined twice, or no configuration to read at all (bob with no settings directory, opencode with no binary). |
-
-The distinction that matters is `uncertain` against `not enabled`: the first is "I
-could not tell", the second is a finding. The table takes no flags — the per-harness
-overrides (`--settings`, `--env`, `--config`, `--opencode`) do not compose into one
-flag set, and anyone who needs a non-default path wants one harness's `status`, which
-already takes it. Exit status is 0 whatever the rows say.
-
-## Running one command through Cortex (`agentop exec`)
-
-`agentop exec -- <command>` scopes Cortex routing to a single child process:
-the nine proxy/CA variables in its environment, nothing written anywhere.
-
-```sh
-agentop exec -- curl -sv https://api.anthropic.com/v1/messages
-agentop exec -- claude --dangerously-skip-permissions
-agentop exec --print              # the nine variables as export lines, runs nothing
-```
-
-It exits with the child's status, relays signals aimed at agentop to the child,
-and requires an enabled TLS bridge. The full contract — which variable gets
-which CA file and why, `--print`'s rules, what happens before Cortex's first
-start — is in [any-agent.md](../../docs/agents/any-agent.md).
-
-## Typing `bob` instead of `agentop exec -- bob` (the shell half of `agentop configure bob`)
-
-`agentop exec -- bob` routes one invocation. `agentop configure bob enable`
-makes that the meaning of `bob` in every new shell, by appending a delimited
-block to your rc file — the same command configures the editor above, and does
-both:
-
-```sh
-# >>> cortex agentop (bobshell) >>>
-bob() {
-  agentop exec -- bob "$@"
-}
-export CORTEX_BOBSHELL=1
-# <<< cortex agentop (bobshell) <<<
-```
-
-```sh
-agentop configure bob enable    # append the block (and set the editor's proxy)
-agentop configure bob disable   # remove exactly that block (and the editor's key)
-agentop configure bob status    # the verdict, then one line per half
-```
-
-Both `enable` and `disable` ask before writing, and `--yes` skips the question:
-
-```sh
-agentop configure bob enable --yes    # no prompt
-```
-
-With no terminal to ask on — CI, a container, a Dockerfile `RUN` — they decline
-rather than prompt, print `Re-run with --yes to apply`, write nothing and exit
-**3**. Not 0: a decline is not a failure, but it is also not an applied change,
-and 3 is what lets an unattended caller tell the two apart — the same code
-`configure claude-code` and `service` return when they are declined. An
-unattended caller that omits `--yes` is still a no-op; it is just no longer a
-silent one. Scripted callers should pass `--yes`.
-
-Bob is one agent with two faces, and `configure bob` configures both: the IBM Bob
-**editor** — a VS Code fork, so the lever is `http.proxy` in its `settings.json`
-(above) — and the **shell integration**, a `bob` function in your rc file so
-typing `bob` at a prompt runs through Cortex. Both halves' changes are listed
-under ONE preview and confirmed by ONE prompt, and a write failure in one half
-does not stop the other; a declined prompt declines both.
-
-The two were separate commands (`configure bob` and `configure bobshell`) until
-2026-10-15, when the agent converged on one name and one row in `agentop
-observe`; `bobshell` is no longer a command. The editor half briefly did not
-exist at all before that — it was removed on the reasoning that "IBM Bob itself
-needs no configuring", which was right about the binary and wrong about the
-editor.
-
-Let `enable` write it rather than pasting the block above. What `enable` appends
-begins with a blank line, which the fence cannot show you: it is invisible when
-rendered, and formatters strip a leading blank line inside a fence anyway. That
-newline is part of the block rather than something added to your content, so the
-block starts on a line of its own even after a file whose last line has no
-newline of its own, and `disable` takes the separator away with the rest of it.
-Paste the fence's text verbatim at the top of a file and `disable` will report a
-block "edited since it was written" and decline — it matches the whole constant,
-leading newline included. It declines rather than guessing, so nothing is lost,
-but the block is then yours to remove by hand.
-
-Letting `enable` write it is also why nothing else in the file is touched and the
-file comes back byte-for-byte — a round-trip test asserts exactly that,
-including on a file with no trailing newline, so the two halves cannot drift
-apart.
-Run `enable` twice and the second run is a no-op. If the block is there but
-hand-edited, or there twice over, both verbs decline and say so rather than
-guess which copy you meant.
-
-A shell function, not an alias: bash does not expand aliases in
-non-interactive shells unless `expand_aliases` is set, and `"$@"` forwards
-arguments explicitly, so `bob "two words"` stays one argument.
-
-It cannot recurse into itself, which is why there is no machinery to resolve
-the real binary past the function. `agentop exec` runs the `bob` binary as a child
-process, and that process never reads your rc file, so the `bob` inside the body
-is always the one on `PATH`.
-
-### Which file it writes
-
-The basename of `$SHELL` picks it, and only these two:
-
-| `$SHELL` | File |
-|---|---|
-| …`/zsh` | `~/.zshrc` |
-| …`/bash` | `~/.bashrc` |
-| anything else, or unset | nothing is written — `enable` prints the block for you to place, `disable` tells you which block to delete |
-
-That is the whole rule. `agentop` does not work out whether your shell will be a
-login or a non-login shell, or which of zsh's four startup files you meant,
-because being wrong about it writes a block into a file nothing reads and
-leaves you with no reason to look there.
-
-**bash on macOS is the case to know about.** Terminal.app starts bash as a
-*login* shell, which reads `~/.bash_profile` and not `~/.bashrc`. If the
-function does not appear in a new window, either source `~/.bashrc` from
-`~/.bash_profile` — the usual arrangement — or move the block there yourself.
-`enable` always prints the path it wrote, so you can see where it went.
-
-### Symlinks
-
-A `~/.zshrc` symlinked into a dotfiles repo is followed, and the block lands in
-the real file: writing the link itself would replace it with a regular file and
-silently detach it from the repo, leaving the tracked copy stale with nothing
-in `git status` to show it. Two or more links deep, or a dangling link, and
-both verbs decline to write — a chain that long is somebody's deliberate
-arrangement, and a write through it is more likely to surprise than to help.
-
-What they print instead follows the verb, as it does for an unrecognised
-`$SHELL`: `enable` gives you the block to paste, and `disable` names the markers
-to delete between, because you already have the block — it is in your file — and
-printing it at someone removing the integration reads as an instruction to put
-it back.
-
-The write is temp-file-then-rename, so a failure part way through leaves your
-rc file as it was rather than half-written. An existing file keeps its own
-permissions; a new one is created `0644`.
-
-### What `status` does and does not know
-
-It reports whether `CORTEX_BOBSHELL` is set in the environment, and it reads no
-files. So it says `not enabled` in the very shell that just ran `enable`, until
-you open a new terminal or source the file — recognising the block inside a
-startup script would mean parsing shell, which is the thing this command
-deliberately does not do.
-
-What the variable proves is narrower than "`bob` is routed", which is why the
-report separates the two. The variable is exported, so every child process inherits
-it — including a **non-interactive** subshell or a script, which does not read
-your startup file and therefore has no `bob` function at all. There, `bob` is the
-plain binary and Cortex is not in the path of the call, while the variable still
-says `1`. `status` cannot tell the two apart: the shell's function table lives in
-that shell's memory and is never exported, so `agentop`, as a child process, cannot
-see it. To settle it in a particular shell, ask that shell: `type bob` says
-`bob is a function` when the function is live, and names a file when it is not.
-
-Use `type`, not `which`. In bash, `which` is `/usr/bin/which` — a separate
-process, which cannot see its parent shell's functions, so with the function live
-it reports the `bob` binary's path and looks like a definitive "not routed". zsh's
-`which` is a builtin and does report the function, so the wrong advice works in
-one of the two shells this writes a file for. `type` is a shell builtin in sh,
-bash, zsh and dash alike. (`mise doctor` splits `activated:` from
-`shims_on_path:` for the same reason.)
-
-Both answers exit 0: "not enabled" is a report, not a failure.
-
 ## Routing the IBM Bob editor through Cortex (`agentop configure bob`)
 
 This is the editor half of `configure bob`; the shell half has its own section
@@ -619,286 +424,6 @@ from `NODE_EXTRA_CA_CERTS` at startup. The extension,
 which Pi does not send on its own. `enable` and `disable` take `[--yes]`. Both
 pieces are fixed text, so a file or block agentop did not write is left alone and
 reported. Everything else is in [pi.md](../../docs/agents/pi.md).
-
-## Installing a bundled script plugin (`agentop script`)
-
-Cortex ships some [script plugins](../../docs/script-plugin.md#bundled-scripts)
-inside agentop. `agentop script` installs one in a single step:
-
-    agentop script list                  every bundled plugin and its state
-    agentop script install <name>        copy it and add its slot
-    agentop script remove <name>         take both back out
-
-- **`install`** copies the plugin's folder to `~/.cortex/plugins/<name>/` and
-  adds a `script` slot for it to `~/.cortex/config.yaml`. It then waits for
-  Cortex to load the slot and checks every script in it started. If one did not,
-  it takes back what it added and says why.
-- **Run again,** it updates a copy from an earlier release and leaves a current
-  one alone. A copy you edited is refused: `remove` it first.
-- **`remove`** refuses a folder holding a file `install` did not write.
-- **`list --json`** is for other programs, such as moca. Its fields are `name`,
-  `description`, `state`, `failClosed`, `scripts` and, with Cortex running,
-  `loaded` and `notStarted`.
-
-`--config PATH` names another Cortex config, as for `agentop server`.
-
-## Choosing an inference server (`agentop server`)
-
-With several inference servers — LiteLLM gateways or local model servers — each
-with its own URL and key, `agentop server`
-chooses which one an agent's **new** sessions use, through the
-[`inference-router`](../../docs/plugin-catalog.md#inference-router) plugin. A
-session stays on the server it started on, including one already running when its
-agent is first routed, until you move it with `agentop server move` or `S` on the
-sessions pane. Routing is opt-in per agent: until an agent is given
-a server, its traffic goes where the agent sends it. Once it is given one, its
-inference goes to that server wherever the agent addressed it — Anthropic,
-OpenCode Zen, Bob's gateway, or another server — so the agent needs no setting of
-its own beyond going through Cortex.
-
-```sh
-agentop server add ete https://ete-litellm.example.com     --main opus --helper haiku                            # asks for the key; it does not echo
-agentop server add glm https://glm-litellm.example.com     --main glm --helper nemotron
-agentop server use glm --agent opencode                   # new opencode sessions → glm
-agentop server move <session-id> glm                      # move one running session → glm
-agentop server                                            # the servers, their models, their agents
-agentop server reset --agent opencode                     # stop routing opencode
-agentop server remove glm                                 # refused while an agent uses it
-```
-
-In the TUI, `S` on the agents pane does what `use` and `reset` do, for an agent
-the pane lists; see [Choosing an agent's server](#choosing-an-agents-server-s).
-On the sessions pane, `S` moves the highlighted session to a server (or to its own
-provider), confirming what the move costs first: the session's context is re-sent
-uncached on its first turn at the new server. A `server move` from the shell also
-prunes the config's `sessions:` entries for sessions that are neither live nor
-archived; the TUI's move does not.
-
-The listing after `use` reads:
-
-```
-  ete   ete-litellm.example.com   main opus → aws/claude-opus-5-5 · helper haiku → aws/claude-haiku-4-5
-  glm   glm-litellm.example.com   main glm → rits/zai-org/glm-5-3 · helper nemotron → rits/nvidia/nemotron-3   opencode
-```
-
-**Models.** A routed request goes with the model the agent asked for, so an agent
-keeps choosing its own models wherever the server serves them. Only when the
-server refuses the name is the
-request sent again, once and before the agent sees the refusal, with one of the
-server's own models: the one `--main` names for a request with tools, the agent's
-main work, and the one `--helper` names for a request without, such as a title.
-Each is a word, not a full name: the newest model on the server's list whose name
-contains it, so a newer model the server adds is used without an edit. The
-refusal is believed for an hour, and a session keeps the model it was given.
-
-- **`add <name> <url> --main <word> --helper <word>`** reads the key at a prompt
-  that does not echo, or from stdin with `--key-stdin`, which is refused when
-  stdin is a terminal, where the key would echo as typed. It is never an argument,
-  so it never reaches shell history. It then reads the server's model list with
-  that key and refuses a word that names none of its models, listing them, so a
-  wrong URL or key is caught here; it prints what each word names now. A name that
-  exists is replaced only after a yes (`--yes` skips the question), which is how a
-  key is rotated; with no terminal to ask on, nothing is written. A server on a
-  host another server already has, on any port, is refused, except on a loopback
-  host such as `localhost`, where each port is a host of its own. The first `add`
-  creates the plugin's entry, last in the outbound pipeline. A key or a word
-  containing `$` is refused: the config loader would read it as an environment
-  variable.
-  - `--api <protocol>=<path>` (repeatable) names a protocol the server serves and
-    the path it serves it at: `anthropic-messages`, `chat-completions` or
-    `responses`. A second `--api` for one protocol replaces the first. `--api`
-    skips the probe (see below).
-  - `--auth-header <name>` names the header that carries the key: `authorization`
-    sends `Bearer <key>`, any other name sends the raw key. A given header is
-    fixed: the model list and the probe do not try the other header.
-  - `--header <name>=<value>` (repeatable) sets a fixed header on every request to
-    the server. A value with `$` is refused, as a key is: write
-    `headers: {<name>: ${NAME}}` by hand. The key headers and the hop-by-hop
-    headers are refused.
-
-  `agentop server` shows these under the server: its `api`, its auth header, and
-  the header names, never their values.
-
-  The URL can have a path, such as `https://h.example.com/inference`. The router
-  puts this prefix before each path it builds (see
-  [`url`](../../docs/inference-router-plugin.md)). The model list is read from
-  `/v1/models`, or from LiteLLM's `/v1/model/info` when `/v1/models` gives 403 or
-  404, after the prefix.
-
-  **The probe.** With no `--api`, `add` finds which protocols the server serves.
-  It sends one small request for each candidate path, with the main model, the
-  text `ping` and `max_tokens: 1` (`max_output_tokens: 16` for `responses`):
-
-  | Protocol | Candidate paths, in order |
-  |---|---|
-  | `anthropic-messages` | `/v1/messages`, `/messages`, `/anthropic/v1/messages` |
-  | `chat-completions` | `/v1/chat/completions`, `/chat/completions` |
-  | `responses` | `/v1/responses`, `/responses` |
-
-  - A path is served only when the reply is 2xx and its body has the protocol's
-    shape. A 200 with an error body is not served.
-  - `add` writes the first served path of each protocol to `api`, and prints
-    `api <protocol> → <path>`.
-  - On 401 or 403, the probe sends the request once more with the other auth
-    header (`authorization` or `x-api-key`), unless the header is fixed.
-  - `add` writes `auth_header` only when a protocol needed a header that is not
-    its usual one, and prints `auth_header → <name>`. The usual header is
-    `x-api-key` for `anthropic-messages` and `authorization` for the other two.
-  - When no path serves, `add` exits 1 and writes nothing. When every path gave
-    the same reply, the message shows it: then the model or the key is wrong,
-    not the path.
-
-  Each probe request costs a few tokens. The probe runs only in `add`: to probe
-  again, run `add` again.
-
-  **IBM Bob.** For a host that ends in `.bob.ibm.com`, `add` sets
-  `auth_header: x-api-key` and the header `User-Agent: bob-shell`.
-  `--auth-header` replaces the first. A `--header User-Agent=...`, case ignored,
-  replaces the second. Use a static Bob API key from Bob's settings:
-
-  ```sh
-  agentop server add bob https://api.us-east.bob.ibm.com/inference --main premium-ide --helper fast
-  agentop server use bob --agent claude-code
-  ```
-
-  The probe finds `chat-completions` at `/v1/chat/completions`. The entry that
-  `add` writes is in
-  [the router's doc](../../docs/inference-router-plugin.md#servers-that-serve-another-protocol).
-- **`use <name> --agent <agent>`** routes the agent's new sessions to the server,
-  including an agent that has not run yet. **`reset --agent <agent>`** stops
-  routing it. Either way a session already running stays where it is: its pin holds
-  it, kept in `~/.cortex/plugin-state.json` so a proxy restart forgets none.
-  **`move <session-id> <name>`** moves one running session; `own` sends it back to
-  its agent's own provider.
-- **`remove <name>`** refuses while an agent is routed to the server, and names
-  the command that takes the agent off it; it also refuses the last server. A
-  session that started on a removed server gets a 503 asking for a new session
-  until the server is added back or the session is moved. So when
-  sessions the proxy is running last sent their inference to the server, `remove`
-  warns how many before it goes ahead. It leaves
-  out the default and `pending:` buckets, which the router never pins.
-- **`agentop server`** lists each server's host (its whole URL when it is plain
-  `http`), what its main and helper words name on its list now, read with its own
-  key, and the agents routed to it. A server whose list cannot be read shows its
-  words and why. When the router's entry has `on_error: observe`, which records
-  what it would route and routes nothing, or `on_error: off`, which stops it
-  running, the listing says so first, and `use` and `add` say so too.
-
-The router routes only requests it can read: a plain `http` request sent through
-the proxy, or an `https` one the TLS bridge decrypts, which needs the bridge on
-and the port the agent connects to in `tls_bridge.ports`, 443 and 8443 unless set.
-An agent whose provider is `https` on another port, such as `:4000`, reaches the
-proxy as an opaque `CONNECT` tunnel and is never routed.
-
-Every change is written to `~/.cortex/config.yaml`, keeping its comments except
-those on the lines the change replaces or removes, every line of a removed block
-among them, and returns once the proxy has reloaded it; nothing restarts. If the
-proxy refuses the reload, the command puts the file back as it was, prints the
-proxy's error and exits 1, and the proxy keeps the configuration it had. If the
-proxy stops answering before it reports the reload, the command puts the file back
-the same way, says the proxy stopped answering, and exits 1. A file someone edited
-while the proxy was reloading is not put back but left as found, with an error
-saying so. If the proxy reports neither a reload nor a refusal within 30 seconds,
-the command exits 1 and leaves the file as written. With no proxy running the file is still written, and the change applies at
-the next start. Nothing is written unless the result loads as a Cortex config and
-passes the router's own rules; what only the running proxy can check, such as
-whether its build includes the router, is what a refused reload reports. A change
-that changes nothing writes nothing. `--config PATH` points every form at another
-config, with the stats address read from it: that is how to try this against a
-second Cortex without touching the one every session uses. Flags go after the
-action. Exit codes: 0 done, or nothing to do; 1 refused or failed; 2 a usage error,
-a malformed name, agent or URL included; 3 a replacement declined.
-
-### Local model servers
-
-Ollama, vLLM and llama.cpp's `llama-server` are added like any other server. None
-of them checks the key unless started with one, but `add` needs one, so give any word.
-Setting the server itself up — installing it, picking a model, the context
-length — is walked in [Run an agent on a local
-model](../../docs/laptop-local-model.md). An agent keeps asking for its own
-model names, which a local server does not have;
-the server's refusal is answered with the `--main` or `--helper` model, as a
-LiteLLM refusal is:
-
-```sh
-echo ollama | agentop server add ollama http://localhost:11434 \
-  --main granite4.2:8b --helper granite4.2:8b --key-stdin
-agentop server use ollama --agent bob
-```
-
-The refusals recognised are Ollama 0.40.4's and 0.7.0's, vLLM 0.31.0's and
-llama.cpp b11429's serving several models (`--models-dir`); the two Ollama
-versions word theirs differently, and both readings are matched. llama.cpp serving
-one model (`-m`) and LM Studio with a model loaded answer any name with that model,
-so their `--main` and
-`--helper` never come into play; LM Studio with nothing loaded refuses in words the
-router does not read. A prompt larger than the server's window is trimmed by Ollama
-rather than refused, so set its context length above the agent's prompts: Claude
-Code's opening turn can pass 64k tokens, Bob's reach about 21k. On a Mac with
-less than 64 GB, see [Choose a model](../../docs/laptop-local-model.md#choose-a-model).
-
-## Importing agent history (`agentop import`)
-
-`agentop import` reads the transcripts that an agent keeps on disk, and adds
-them to Cortex's session history and cost ledger. Use it for the sessions that
-ran before you installed Cortex, or that did not go through it.
-
-```sh
-agentop import                                  # every supported agent
-agentop import --agent claude-code --since 30d
-agentop import --agent bob                      # Bob's tasks, from ~/.bob/db/bob.db
-agentop import --agent codex                    # Codex's rollouts, from ~/.codex/sessions
-agentop import --agent opencode                 # OpenCode, from ~/.local/share/opencode/opencode.db
-agentop import --agent pi                       # Pi's sessions, from ~/.pi/agent/sessions
-agentop import --since 2026-10-01 --dry-run     # count only, write nothing
-```
-
-| Flag | Meaning |
-|---|---|
-| `--agent` | `claude-code`, `bob`, `codex`, `opencode` or `pi`. `bob` and `opencode` need the `sqlite3` program on `PATH` |
-| `--since` | skip a transcript file last changed before this time: `YYYY-MM-DD` (local midnight) or `<N>d` (N days ago) |
-| `--dry-run` | count what an import would do, and write nothing |
-| `--endpoint` | the session API, as for `agentop cost` |
-
-The proxy does the work in
-[`POST /v1/import`](../../docs/session-api.md#post-v1import--transcript-import-laptop-only).
-agentop does not open the archive or the ledger. The route exists only on a
-local install: the archive is on and the session API is loopback-only.
-Otherwise agentop says that the proxy has no import route, and exits 1. Only one
-import runs at a time. A second one prints `agentop import: an import is already
-running` and exits 1.
-
-On a terminal, agentop shows a progress bar on stderr while the proxy works:
-
-```text
-importing claude-code [█████████░░░░░░░░░░░]  45%  837/1851 sessions
-```
-
-The bar counts sessions, skipped sessions too. Skipped sessions are fast, so
-the bar moves fast at first. With an older proxy, agentop shows a spinner.
-
-The output is one line for each agent:
-
-```text
-claude-code: 12 imported, 3 replaced, 40 skipped (live), 7 skipped (current), 1 skipped (expired), 2 lines not recognized
-```
-
-`--dry-run` puts `dry run: ` before each line. A `stopped:` line follows when the
-archive got full, and an `error:` line when the agent failed. The exit status is
-1 when an agent has an error.
-
-**What it does not change.** A session that Cortex captured live is skipped, and
-the import never changes it. An imported copy that is as new as its transcript
-is skipped. A newer transcript replaces the imported copy, and only its new
-turns are counted as cost. A session that you erased with `x` or `X` comes back
-as an imported session while its transcript is still on disk. Its cost is not
-counted again, because the erase kept the ledger rows.
-
-An imported session has `(*)` before its title in the sessions pane. When the
-terminal is too narrow for TITLE, `(*)` is before its id.
-Its events show `n/a` for status, duration, bytes, host and plugin, because the
-proxy did not see them. Tokens and cost show values. A Claude Code, Codex,
-OpenCode or Pi turn is priced at today's rates. A Bob turn shows Bob's own cost.
 
 ## Panes
 
@@ -1938,64 +1463,334 @@ preference does not apply at all: there "an end" is the largest or smallest valu
 rather than the oldest or newest event, so the cursor stays pinned to the event you
 were reading instead.
 
-## How a timeline is fetched
+## Which harnesses are wired into Cortex (`agentop configure status`)
 
-The events table renders no message body, so it does not ask for one. Each fetch
-sends `?view=summary`, which drops the conversation payloads and keeps everything
-the table shows — measured at ~163x smaller, and the
-difference between a session that opens in milliseconds and one that takes seconds.
+Each section below covers one harness. To see all of them at once — without running
+five `agentop configure <harness> status` commands and comparing five different output
+shapes — run it with no harness name:
 
-The summary keeps completion and A2A message text, which the table does not show,
-because the `details` search reads them: agentop checks the summary rows it holds,
-and the proxy checks only what the summary drops (`GET /v1/sessions/{id}/search`).
-So the search fetches no event. Dropping those fields as well would be ~299x instead
-of ~163x, and the proxy would then have to check them too.
+```console
+$ agentop configure status
+HARNESS       STATUS        DETAIL
+claude-code   enabled       ~/.claude/settings.json
+bob           uncertain     editor: ~/Library/.../IBM Bob/User does not exist, so IBM Bob has not run here; shell: CORTEX_BOBSHELL is unset in this shell
+opencode      uncertain     opencode not found on PATH or in ~/.opencode/bin
+codex         not enabled   no Cortex values in ~/.codex/.env
+pi            not enabled   extension: missing; shell: no pi function in ~/.zshrc
 
-The consequence is worth knowing: the first `↵` on a row fetches each half of the
-exchange whose bodies are not loaded yet, in full, from
-`/v1/sessions/{id}/events/{seq}`. The detail pane renders the summary
-immediately and the bodies appear when they arrive, so there is no loading screen —
-but on a slow link the message text lands a moment after the rest. Re-opening the
-same row is free; the bodies are kept. If the fetch fails, the pane keeps what it
-has and the error goes to the footer.
+For the detail on one of them: agentop configure <harness> status
+```
 
-`y` yanks the half the cursor is in. While that half's bodies are still in flight —
-or after a failed fetch — it says so in the flash rather than handing you a
-body-less event that looks complete.
+Four verdicts, not two, because a boolean would be a lie for several of these:
 
-Because a projected event is ~1KB rather than ~200KB, agentop asks for the server's
-full 2000-event ceiling instead of the old 500. A normal session therefore arrives
-whole, and the `▲ press Enter to load N older events` row appears only for genuinely long ones.
+| STATUS | Means |
+|---|---|
+| `enabled` | Fully routed through Cortex, by that harness's own definition of fully. |
+| `not enabled` | agentop looked and the harness is not routed — a place to look, and nothing in it. |
+| `partly enabled` | Some of it is in place: N of M keys set, or a value pointing at a loopback proxy that is not this machine's Cortex. `enable` has something left to do. |
+| `uncertain` | agentop could not establish an answer — a file it cannot read or parse, a key defined twice, or no configuration to read at all (bob with no settings directory, opencode with no binary). |
 
-Against a proxy that predates `?view=summary` this still works — that server
-ignores the parameter and returns full events, so the timeline is correct and as
-slow as it used to be.
+The distinction that matters is `uncertain` against `not enabled`: the first is "I
+could not tell", the second is a finding. The table takes no flags — the per-harness
+overrides (`--settings`, `--env`, `--config`, `--opencode`) do not compose into one
+flag set, and anyone who needs a non-default path wants one harness's `status`, which
+already takes it. Exit status is 0 whatever the rows say.
 
-**The exact request and response.** On a laptop install the session archive keeps
-each request exactly as it crossed the proxy, and each response as the origin sent
-it. The detail pane fetches that capture too, and shows it under a closed `raw`
-section: `↵` on it opens it. In it:
+## Running one command through Cortex (`agentop exec`)
 
-- `request` is the body the agent sent, with thinking blocks where the model wrote
-  them, and each image or document as `[image image/png 34.1kB]`.
-- `forwarded` says whether a plugin rewrote the body, and `forwardedBody` is what
-  went upstream when one did.
-- `query` is the request's.
-- In the RESPONSE section, `response` has the status, the body (a compressed one as
-  `[gzip body 12.0kB]`) and `truncated` or `incomplete` when either applies.
+`agentop exec -- <command>` scopes Cortex routing to a single child process:
+the nine proxy/CA variables in its environment, nothing written anywhere.
 
-The captured headers are in a closed `headers` node beside `raw`, not in it, so `↵`
-opens them without the bodies. A request's headers are without credentials. A search
-opens `headers` when it matches there.
+```sh
+agentop exec -- curl -sv https://api.anthropic.com/v1/messages
+agentop exec -- claude --dangerously-skip-permissions
+agentop exec --print              # the nine variables as export lines, runs nothing
+```
 
-Each section has its own `raw`. Its capture comes with the fetch of that half, and
-agentop keeps it. A section has no `raw` when the archive has no capture for its
-half: an older proxy, an event written before capture, or one recorded in the last
-second. A search does not open
-`raw`, because it repeats the whole conversation; open it with `↵` to search inside
-it. A row opened from a details search that matches only in a capture opens with
-that half's `raw` open. A row opened from a details search shows its first match, also
-when the match arrives with the fetch. `y` writes the half without its capture.
+It exits with the child's status, relays signals aimed at agentop to the child,
+and requires an enabled TLS bridge. The full contract — which variable gets
+which CA file and why, `--print`'s rules, what happens before Cortex's first
+start — is in [any-agent.md](../../docs/agents/any-agent.md).
+
+## Choosing an inference server (`agentop server`)
+
+With several inference servers — LiteLLM gateways or local model servers — each
+with its own URL and key, `agentop server`
+chooses which one an agent's **new** sessions use, through the
+[`inference-router`](../../docs/plugin-catalog.md#inference-router) plugin. A
+session stays on the server it started on, including one already running when its
+agent is first routed, until you move it with `agentop server move` or `S` on the
+sessions pane. Routing is opt-in per agent: until an agent is given
+a server, its traffic goes where the agent sends it. Once it is given one, its
+inference goes to that server wherever the agent addressed it — Anthropic,
+OpenCode Zen, Bob's gateway, or another server — so the agent needs no setting of
+its own beyond going through Cortex.
+
+```sh
+agentop server add ete https://ete-litellm.example.com     --main opus --helper haiku                            # asks for the key; it does not echo
+agentop server add glm https://glm-litellm.example.com     --main glm --helper nemotron
+agentop server use glm --agent opencode                   # new opencode sessions → glm
+agentop server move <session-id> glm                      # move one running session → glm
+agentop server                                            # the servers, their models, their agents
+agentop server reset --agent opencode                     # stop routing opencode
+agentop server remove glm                                 # refused while an agent uses it
+```
+
+In the TUI, `S` on the agents pane does what `use` and `reset` do, for an agent
+the pane lists; see [Choosing an agent's server](#choosing-an-agents-server-s).
+On the sessions pane, `S` moves the highlighted session to a server (or to its own
+provider), confirming what the move costs first: the session's context is re-sent
+uncached on its first turn at the new server. A `server move` from the shell also
+prunes the config's `sessions:` entries for sessions that are neither live nor
+archived; the TUI's move does not.
+
+The listing after `use` reads:
+
+```
+  ete   ete-litellm.example.com   main opus → aws/claude-opus-5-5 · helper haiku → aws/claude-haiku-4-5
+  glm   glm-litellm.example.com   main glm → rits/zai-org/glm-5-3 · helper nemotron → rits/nvidia/nemotron-3   opencode
+```
+
+**Models.** A routed request goes with the model the agent asked for, so an agent
+keeps choosing its own models wherever the server serves them. Only when the
+server refuses the name is the
+request sent again, once and before the agent sees the refusal, with one of the
+server's own models: the one `--main` names for a request with tools, the agent's
+main work, and the one `--helper` names for a request without, such as a title.
+Each is a word, not a full name: the newest model on the server's list whose name
+contains it, so a newer model the server adds is used without an edit. The
+refusal is believed for an hour, and a session keeps the model it was given.
+
+- **`add <name> <url> --main <word> --helper <word>`** reads the key at a prompt
+  that does not echo, or from stdin with `--key-stdin`, which is refused when
+  stdin is a terminal, where the key would echo as typed. It is never an argument,
+  so it never reaches shell history. It then reads the server's model list with
+  that key and refuses a word that names none of its models, listing them, so a
+  wrong URL or key is caught here; it prints what each word names now. A name that
+  exists is replaced only after a yes (`--yes` skips the question), which is how a
+  key is rotated; with no terminal to ask on, nothing is written. A server on a
+  host another server already has, on any port, is refused, except on a loopback
+  host such as `localhost`, where each port is a host of its own. The first `add`
+  creates the plugin's entry, last in the outbound pipeline. A key or a word
+  containing `$` is refused: the config loader would read it as an environment
+  variable.
+  - `--api <protocol>=<path>` (repeatable) names a protocol the server serves and
+    the path it serves it at: `anthropic-messages`, `chat-completions` or
+    `responses`. A second `--api` for one protocol replaces the first. `--api`
+    skips the probe (see below).
+  - `--auth-header <name>` names the header that carries the key: `authorization`
+    sends `Bearer <key>`, any other name sends the raw key. A given header is
+    fixed: the model list and the probe do not try the other header.
+  - `--header <name>=<value>` (repeatable) sets a fixed header on every request to
+    the server. A value with `$` is refused, as a key is: write
+    `headers: {<name>: ${NAME}}` by hand. The key headers and the hop-by-hop
+    headers are refused.
+
+  `agentop server` shows these under the server: its `api`, its auth header, and
+  the header names, never their values.
+
+  The URL can have a path, such as `https://h.example.com/inference`. The router
+  puts this prefix before each path it builds (see
+  [`url`](../../docs/inference-router-plugin.md)). The model list is read from
+  `/v1/models`, or from LiteLLM's `/v1/model/info` when `/v1/models` gives 403 or
+  404, after the prefix.
+
+  **The probe.** With no `--api`, `add` finds which protocols the server serves.
+  It sends one small request for each candidate path, with the main model, the
+  text `ping` and `max_tokens: 1` (`max_output_tokens: 16` for `responses`):
+
+  | Protocol | Candidate paths, in order |
+  |---|---|
+  | `anthropic-messages` | `/v1/messages`, `/messages`, `/anthropic/v1/messages` |
+  | `chat-completions` | `/v1/chat/completions`, `/chat/completions` |
+  | `responses` | `/v1/responses`, `/responses` |
+
+  - A path is served only when the reply is 2xx and its body has the protocol's
+    shape. A 200 with an error body is not served.
+  - `add` writes the first served path of each protocol to `api`, and prints
+    `api <protocol> → <path>`.
+  - On 401 or 403, the probe sends the request once more with the other auth
+    header (`authorization` or `x-api-key`), unless the header is fixed.
+  - `add` writes `auth_header` only when a protocol needed a header that is not
+    its usual one, and prints `auth_header → <name>`. The usual header is
+    `x-api-key` for `anthropic-messages` and `authorization` for the other two.
+  - When no path serves, `add` exits 1 and writes nothing. When every path gave
+    the same reply, the message shows it: then the model or the key is wrong,
+    not the path.
+
+  Each probe request costs a few tokens. The probe runs only in `add`: to probe
+  again, run `add` again.
+
+  **IBM Bob.** For a host that ends in `.bob.ibm.com`, `add` sets
+  `auth_header: x-api-key` and the header `User-Agent: bob-shell`.
+  `--auth-header` replaces the first. A `--header User-Agent=...`, case ignored,
+  replaces the second. Use a static Bob API key from Bob's settings:
+
+  ```sh
+  agentop server add bob https://api.us-east.bob.ibm.com/inference --main premium-ide --helper fast
+  agentop server use bob --agent claude-code
+  ```
+
+  The probe finds `chat-completions` at `/v1/chat/completions`. The entry that
+  `add` writes is in
+  [the router's doc](../../docs/inference-router-plugin.md#servers-that-serve-another-protocol).
+- **`use <name> --agent <agent>`** routes the agent's new sessions to the server,
+  including an agent that has not run yet. **`reset --agent <agent>`** stops
+  routing it. Either way a session already running stays where it is: its pin holds
+  it, kept in `~/.cortex/plugin-state.json` so a proxy restart forgets none.
+  **`move <session-id> <name>`** moves one running session; `own` sends it back to
+  its agent's own provider.
+- **`remove <name>`** refuses while an agent is routed to the server, and names
+  the command that takes the agent off it; it also refuses the last server. A
+  session that started on a removed server gets a 503 asking for a new session
+  until the server is added back or the session is moved. So when
+  sessions the proxy is running last sent their inference to the server, `remove`
+  warns how many before it goes ahead. It leaves
+  out the default and `pending:` buckets, which the router never pins.
+- **`agentop server`** lists each server's host (its whole URL when it is plain
+  `http`), what its main and helper words name on its list now, read with its own
+  key, and the agents routed to it. A server whose list cannot be read shows its
+  words and why. When the router's entry has `on_error: observe`, which records
+  what it would route and routes nothing, or `on_error: off`, which stops it
+  running, the listing says so first, and `use` and `add` say so too.
+
+The router routes only requests it can read: a plain `http` request sent through
+the proxy, or an `https` one the TLS bridge decrypts, which needs the bridge on
+and the port the agent connects to in `tls_bridge.ports`, 443 and 8443 unless set.
+An agent whose provider is `https` on another port, such as `:4000`, reaches the
+proxy as an opaque `CONNECT` tunnel and is never routed.
+
+Every change is written to `~/.cortex/config.yaml`, keeping its comments except
+those on the lines the change replaces or removes, every line of a removed block
+among them, and returns once the proxy has reloaded it; nothing restarts. If the
+proxy refuses the reload, the command puts the file back as it was, prints the
+proxy's error and exits 1, and the proxy keeps the configuration it had. If the
+proxy stops answering before it reports the reload, the command puts the file back
+the same way, says the proxy stopped answering, and exits 1. A file someone edited
+while the proxy was reloading is not put back but left as found, with an error
+saying so. If the proxy reports neither a reload nor a refusal within 30 seconds,
+the command exits 1 and leaves the file as written. With no proxy running the file is still written, and the change applies at
+the next start. Nothing is written unless the result loads as a Cortex config and
+passes the router's own rules; what only the running proxy can check, such as
+whether its build includes the router, is what a refused reload reports. A change
+that changes nothing writes nothing. `--config PATH` points every form at another
+config, with the stats address read from it: that is how to try this against a
+second Cortex without touching the one every session uses. Flags go after the
+action. Exit codes: 0 done, or nothing to do; 1 refused or failed; 2 a usage error,
+a malformed name, agent or URL included; 3 a replacement declined.
+
+### Local model servers
+
+Ollama, vLLM and llama.cpp's `llama-server` are added like any other server. None
+of them checks the key unless started with one, but `add` needs one, so give any word.
+Setting the server itself up — installing it, picking a model, the context
+length — is walked in [Run an agent on a local
+model](../../docs/laptop-local-model.md). An agent keeps asking for its own
+model names, which a local server does not have;
+the server's refusal is answered with the `--main` or `--helper` model, as a
+LiteLLM refusal is:
+
+```sh
+echo ollama | agentop server add ollama http://localhost:11434 \
+  --main granite4.2:8b --helper granite4.2:8b --key-stdin
+agentop server use ollama --agent bob
+```
+
+The refusals recognised are Ollama 0.40.4's and 0.7.0's, vLLM 0.31.0's and
+llama.cpp b11429's serving several models (`--models-dir`); the two Ollama
+versions word theirs differently, and both readings are matched. llama.cpp serving
+one model (`-m`) and LM Studio with a model loaded answer any name with that model,
+so their `--main` and
+`--helper` never come into play; LM Studio with nothing loaded refuses in words the
+router does not read. A prompt larger than the server's window is trimmed by Ollama
+rather than refused, so set its context length above the agent's prompts: Claude
+Code's opening turn can pass 64k tokens, Bob's reach about 21k. On a Mac with
+less than 64 GB, see [Choose a model](../../docs/laptop-local-model.md#choose-a-model).
+
+## Importing agent history (`agentop import`)
+
+`agentop import` reads the transcripts that an agent keeps on disk, and adds
+them to Cortex's session history and cost ledger. Use it for the sessions that
+ran before you installed Cortex, or that did not go through it.
+
+```sh
+agentop import                                  # every supported agent
+agentop import --agent claude-code --since 30d
+agentop import --agent bob                      # Bob's tasks, from ~/.bob/db/bob.db
+agentop import --agent codex                    # Codex's rollouts, from ~/.codex/sessions
+agentop import --agent opencode                 # OpenCode, from ~/.local/share/opencode/opencode.db
+agentop import --agent pi                       # Pi's sessions, from ~/.pi/agent/sessions
+agentop import --since 2026-10-01 --dry-run     # count only, write nothing
+```
+
+| Flag | Meaning |
+|---|---|
+| `--agent` | `claude-code`, `bob`, `codex`, `opencode` or `pi`. `bob` and `opencode` need the `sqlite3` program on `PATH` |
+| `--since` | skip a transcript file last changed before this time: `YYYY-MM-DD` (local midnight) or `<N>d` (N days ago) |
+| `--dry-run` | count what an import would do, and write nothing |
+| `--endpoint` | the session API, as for `agentop cost` |
+
+The proxy does the work in
+[`POST /v1/import`](../../docs/session-api.md#post-v1import--transcript-import-laptop-only).
+agentop does not open the archive or the ledger. The route exists only on a
+local install: the archive is on and the session API is loopback-only.
+Otherwise agentop says that the proxy has no import route, and exits 1. Only one
+import runs at a time. A second one prints `agentop import: an import is already
+running` and exits 1.
+
+On a terminal, agentop shows a progress bar on stderr while the proxy works:
+
+```text
+importing claude-code [█████████░░░░░░░░░░░]  45%  837/1851 sessions
+```
+
+The bar counts sessions, skipped sessions too. Skipped sessions are fast, so
+the bar moves fast at first. With an older proxy, agentop shows a spinner.
+
+The output is one line for each agent:
+
+```text
+claude-code: 12 imported, 3 replaced, 40 skipped (live), 7 skipped (current), 1 skipped (expired), 2 lines not recognized
+```
+
+`--dry-run` puts `dry run: ` before each line. A `stopped:` line follows when the
+archive got full, and an `error:` line when the agent failed. The exit status is
+1 when an agent has an error.
+
+**What it does not change.** A session that Cortex captured live is skipped, and
+the import never changes it. An imported copy that is as new as its transcript
+is skipped. A newer transcript replaces the imported copy, and only its new
+turns are counted as cost. A session that you erased with `x` or `X` comes back
+as an imported session while its transcript is still on disk. Its cost is not
+counted again, because the erase kept the ledger rows.
+
+An imported session has `(*)` before its title in the sessions pane. When the
+terminal is too narrow for TITLE, `(*)` is before its id.
+Its events show `n/a` for status, duration, bytes, host and plugin, because the
+proxy did not see them. Tokens and cost show values. A Claude Code, Codex,
+OpenCode or Pi turn is priced at today's rates. A Bob turn shows Bob's own cost.
+
+## Installing a bundled script plugin (`agentop script`)
+
+Cortex ships some [script plugins](../../docs/script-plugin.md#bundled-scripts)
+inside agentop. `agentop script` installs one in a single step:
+
+    agentop script list                  every bundled plugin and its state
+    agentop script install <name>        copy it and add its slot
+    agentop script remove <name>         take both back out
+
+- **`install`** copies the plugin's folder to `~/.cortex/plugins/<name>/` and
+  adds a `script` slot for it to `~/.cortex/config.yaml`. It then waits for
+  Cortex to load the slot and checks every script in it started. If one did not,
+  it takes back what it added and says why.
+- **Run again,** it updates a copy from an earlier release and leaves a current
+  one alone. A copy you edited is refused: `remove` it first.
+- **`remove`** refuses a folder holding a file `install` did not write.
+- **`list --json`** is for other programs, such as moca. Its fields are `name`,
+  `description`, `state`, `failClosed`, `scripts` and, with Cortex running,
+  `loaded` and `notStarted`.
+
+`--config PATH` names another Cortex config, as for `agentop server`.
 
 ## Editing the pipeline
 
@@ -2224,12 +2019,217 @@ agentop surfaces these in three places:
 The framework's own validateRelationships is the source of truth and
 runs at every reload. agentop's checks are the fast-feedback layer.
 
+## Typing `bob` instead of `agentop exec -- bob` (the shell half of `agentop configure bob`)
+
+`agentop exec -- bob` routes one invocation. `agentop configure bob enable`
+makes that the meaning of `bob` in every new shell, by appending a delimited
+block to your rc file — the same command configures the editor above, and does
+both:
+
+```sh
+# >>> cortex agentop (bobshell) >>>
+bob() {
+  agentop exec -- bob "$@"
+}
+export CORTEX_BOBSHELL=1
+# <<< cortex agentop (bobshell) <<<
+```
+
+```sh
+agentop configure bob enable    # append the block (and set the editor's proxy)
+agentop configure bob disable   # remove exactly that block (and the editor's key)
+agentop configure bob status    # the verdict, then one line per half
+```
+
+Both `enable` and `disable` ask before writing, and `--yes` skips the question:
+
+```sh
+agentop configure bob enable --yes    # no prompt
+```
+
+With no terminal to ask on — CI, a container, a Dockerfile `RUN` — they decline
+rather than prompt, print `Re-run with --yes to apply`, write nothing and exit
+**3**. Not 0: a decline is not a failure, but it is also not an applied change,
+and 3 is what lets an unattended caller tell the two apart — the same code
+`configure claude-code` and `service` return when they are declined. An
+unattended caller that omits `--yes` is still a no-op; it is just no longer a
+silent one. Scripted callers should pass `--yes`.
+
+Bob is one agent with two faces, and `configure bob` configures both: the IBM Bob
+**editor** — a VS Code fork, so the lever is `http.proxy` in its `settings.json`
+(above) — and the **shell integration**, a `bob` function in your rc file so
+typing `bob` at a prompt runs through Cortex. Both halves' changes are listed
+under ONE preview and confirmed by ONE prompt, and a write failure in one half
+does not stop the other; a declined prompt declines both.
+
+The two were separate commands (`configure bob` and `configure bobshell`) until
+2026-10-15, when the agent converged on one name and one row in `agentop
+observe`; `bobshell` is no longer a command. The editor half briefly did not
+exist at all before that — it was removed on the reasoning that "IBM Bob itself
+needs no configuring", which was right about the binary and wrong about the
+editor.
+
+Let `enable` write it rather than pasting the block above. What `enable` appends
+begins with a blank line, which the fence cannot show you: it is invisible when
+rendered, and formatters strip a leading blank line inside a fence anyway. That
+newline is part of the block rather than something added to your content, so the
+block starts on a line of its own even after a file whose last line has no
+newline of its own, and `disable` takes the separator away with the rest of it.
+Paste the fence's text verbatim at the top of a file and `disable` will report a
+block "edited since it was written" and decline — it matches the whole constant,
+leading newline included. It declines rather than guessing, so nothing is lost,
+but the block is then yours to remove by hand.
+
+Letting `enable` write it is also why nothing else in the file is touched and the
+file comes back byte-for-byte — a round-trip test asserts exactly that,
+including on a file with no trailing newline, so the two halves cannot drift
+apart.
+Run `enable` twice and the second run is a no-op. If the block is there but
+hand-edited, or there twice over, both verbs decline and say so rather than
+guess which copy you meant.
+
+A shell function, not an alias: bash does not expand aliases in
+non-interactive shells unless `expand_aliases` is set, and `"$@"` forwards
+arguments explicitly, so `bob "two words"` stays one argument.
+
+It cannot recurse into itself, which is why there is no machinery to resolve
+the real binary past the function. `agentop exec` runs the `bob` binary as a child
+process, and that process never reads your rc file, so the `bob` inside the body
+is always the one on `PATH`.
+
+### Which file it writes
+
+The basename of `$SHELL` picks it, and only these two:
+
+| `$SHELL` | File |
+|---|---|
+| …`/zsh` | `~/.zshrc` |
+| …`/bash` | `~/.bashrc` |
+| anything else, or unset | nothing is written — `enable` prints the block for you to place, `disable` tells you which block to delete |
+
+That is the whole rule. `agentop` does not work out whether your shell will be a
+login or a non-login shell, or which of zsh's four startup files you meant,
+because being wrong about it writes a block into a file nothing reads and
+leaves you with no reason to look there.
+
+**bash on macOS is the case to know about.** Terminal.app starts bash as a
+*login* shell, which reads `~/.bash_profile` and not `~/.bashrc`. If the
+function does not appear in a new window, either source `~/.bashrc` from
+`~/.bash_profile` — the usual arrangement — or move the block there yourself.
+`enable` always prints the path it wrote, so you can see where it went.
+
+### Symlinks
+
+A `~/.zshrc` symlinked into a dotfiles repo is followed, and the block lands in
+the real file: writing the link itself would replace it with a regular file and
+silently detach it from the repo, leaving the tracked copy stale with nothing
+in `git status` to show it. Two or more links deep, or a dangling link, and
+both verbs decline to write — a chain that long is somebody's deliberate
+arrangement, and a write through it is more likely to surprise than to help.
+
+What they print instead follows the verb, as it does for an unrecognised
+`$SHELL`: `enable` gives you the block to paste, and `disable` names the markers
+to delete between, because you already have the block — it is in your file — and
+printing it at someone removing the integration reads as an instruction to put
+it back.
+
+The write is temp-file-then-rename, so a failure part way through leaves your
+rc file as it was rather than half-written. An existing file keeps its own
+permissions; a new one is created `0644`.
+
+### What `status` does and does not know
+
+It reports whether `CORTEX_BOBSHELL` is set in the environment, and it reads no
+files. So it says `not enabled` in the very shell that just ran `enable`, until
+you open a new terminal or source the file — recognising the block inside a
+startup script would mean parsing shell, which is the thing this command
+deliberately does not do.
+
+What the variable proves is narrower than "`bob` is routed", which is why the
+report separates the two. The variable is exported, so every child process inherits
+it — including a **non-interactive** subshell or a script, which does not read
+your startup file and therefore has no `bob` function at all. There, `bob` is the
+plain binary and Cortex is not in the path of the call, while the variable still
+says `1`. `status` cannot tell the two apart: the shell's function table lives in
+that shell's memory and is never exported, so `agentop`, as a child process, cannot
+see it. To settle it in a particular shell, ask that shell: `type bob` says
+`bob is a function` when the function is live, and names a file when it is not.
+
+Use `type`, not `which`. In bash, `which` is `/usr/bin/which` — a separate
+process, which cannot see its parent shell's functions, so with the function live
+it reports the `bob` binary's path and looks like a definitive "not routed". zsh's
+`which` is a builtin and does report the function, so the wrong advice works in
+one of the two shells this writes a file for. `type` is a shell builtin in sh,
+bash, zsh and dash alike. (`mise doctor` splits `activated:` from
+`shims_on_path:` for the same reason.)
+
+Both answers exit 0: "not enabled" is a report, not a failure.
+
 ## Trust model
 
 `agentop` does no authentication — same as the server. Use only against
 sidecars reachable via in-cluster networking or a local port-forward.
 Session events contain raw user messages, LLM completions, and tool
 results; treat the output accordingly.
+
+## How a timeline is fetched
+
+The events table renders no message body, so it does not ask for one. Each fetch
+sends `?view=summary`, which drops the conversation payloads and keeps everything
+the table shows — measured at ~163x smaller, and the
+difference between a session that opens in milliseconds and one that takes seconds.
+
+The summary keeps completion and A2A message text, which the table does not show,
+because the `details` search reads them: agentop checks the summary rows it holds,
+and the proxy checks only what the summary drops (`GET /v1/sessions/{id}/search`).
+So the search fetches no event. Dropping those fields as well would be ~299x instead
+of ~163x, and the proxy would then have to check them too.
+
+The consequence is worth knowing: the first `↵` on a row fetches each half of the
+exchange whose bodies are not loaded yet, in full, from
+`/v1/sessions/{id}/events/{seq}`. The detail pane renders the summary
+immediately and the bodies appear when they arrive, so there is no loading screen —
+but on a slow link the message text lands a moment after the rest. Re-opening the
+same row is free; the bodies are kept. If the fetch fails, the pane keeps what it
+has and the error goes to the footer.
+
+`y` yanks the half the cursor is in. While that half's bodies are still in flight —
+or after a failed fetch — it says so in the flash rather than handing you a
+body-less event that looks complete.
+
+Because a projected event is ~1KB rather than ~200KB, agentop asks for the server's
+full 2000-event ceiling instead of the old 500. A normal session therefore arrives
+whole, and the `▲ press Enter to load N older events` row appears only for genuinely long ones.
+
+Against a proxy that predates `?view=summary` this still works — that server
+ignores the parameter and returns full events, so the timeline is correct and as
+slow as it used to be.
+
+**The exact request and response.** On a laptop install the session archive keeps
+each request exactly as it crossed the proxy, and each response as the origin sent
+it. The detail pane fetches that capture too, and shows it under a closed `raw`
+section: `↵` on it opens it. In it:
+
+- `request` is the body the agent sent, with thinking blocks where the model wrote
+  them, and each image or document as `[image image/png 34.1kB]`.
+- `forwarded` says whether a plugin rewrote the body, and `forwardedBody` is what
+  went upstream when one did.
+- `query` is the request's.
+- In the RESPONSE section, `response` has the status, the body (a compressed one as
+  `[gzip body 12.0kB]`) and `truncated` or `incomplete` when either applies.
+
+The captured headers are in a closed `headers` node beside `raw`, not in it, so `↵`
+opens them without the bodies. A request's headers are without credentials. A search
+opens `headers` when it matches there.
+
+Each section has its own `raw`. Its capture comes with the fetch of that half, and
+agentop keeps it. A section has no `raw` when the archive has no capture for its
+half: an older proxy, an event written before capture, or one recorded in the last
+second. A search does not open
+`raw`, because it repeats the whole conversation; open it with `↵` to search inside
+it. A row opened from a details search that matches only in a capture opens with
+that half's `raw` open. A row opened from a details search shows its first match, also
+when the match arrives with the fetch. `y` writes the half without its capture.
 
 ## Architecture
 
