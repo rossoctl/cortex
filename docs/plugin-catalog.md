@@ -51,7 +51,7 @@ sends to a callee). "Both" means that the plugin runs on the two pipelines.
 
 | Name | Description | Where | Direction |
 |------|-------------|-------|-----------|
-| [`a2a-parser`](#a2a-parser) | Reads A2A messages into `pctx.Extensions.A2A` for the plugins after it. | Both | Inbound |
+| [`a2a-parser`](#a2a-parser) | Reads A2A messages into `pctx.Extensions.A2A` for the plugins after it. | Both | Both |
 | [`context-guru`](#context-guru) | Makes the outbound LLM request context smaller before Cortex sends it. | Both | Outbound |
 | [`cpex`](#cpex) | Runs [CPEX](https://github.com/contextforge-org/cpex) 0.3 policy plugins (JWT identity, OAuth delegation, Cedar, CEL, OPA) as one pipeline step. | Kubernetes | Outbound |
 | [`ibac`](#ibac) | An LLM judge compares each outbound tool call with the user's intent. | Kubernetes | Outbound |

@@ -343,7 +343,11 @@ an upstream pull request):
    `scripts/profile-tags/profiles.go`.
 3. Add `"myplugin": true,` to the `want` map of `TestOptionalSetIsExplicit` in
    `scripts/profile-tags/guards_test.go`.
-4. Add a `require github.com/acme/my-plugin <version>` line to `core/go.mod`.
+4. In `core`, `cmd/cortex` and `cmd/cortex-envoy`, run
+   `go get github.com/acme/my-plugin@<version>`, then `go mod tidy`. Each module
+   that imports `core/plugins/all` must list the plugin module. Otherwise a
+   `GOWORK=off` build, which `make`, the Dockerfile and CI use, fails with
+   `missing go.sum entry`.
 5. Build with `include_plugin_myplugin` added to the tags, as in Step 2.
 
 ## Step 8 — Test your plugin

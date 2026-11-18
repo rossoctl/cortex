@@ -10,8 +10,9 @@ Built-in plugins and the open plugin registry. Plugin authoring docs live under
 ## Built-in plugins
 
 Each plugin package in this directory is in the table below.
-[`docs/plugin-catalog.md`](../../docs/plugin-catalog.md) gives the config and
-behavior of each one. Each plugin also has its own doc, `docs/<name>-plugin.md`.
+[`docs/plugin-catalog.md`](../../docs/plugin-catalog.md) gives a short summary
+of each one. Each plugin's config and behavior are in its own doc,
+`docs/<name>-plugin.md`.
 
 | Name | Purpose |
 |---|---|
