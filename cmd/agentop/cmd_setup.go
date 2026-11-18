@@ -384,7 +384,10 @@ func printSetupEnding(env *setupEnv, ui *checklist.UI, took time.Duration) {
 	if !env.freshInstall && env.binOnPath {
 		return
 	}
-	steps := []checklist.Step{{Cmd: agentop + " observe", Comment: "watch your agent traffic live"}}
+	steps := []checklist.Step{
+		{Cmd: "claude", Comment: "start (or restart) your agent as you always do"},
+		{Cmd: agentop + " observe", Comment: "watch your agent traffic live"},
+	}
 	if !env.opts.claudeCode {
 		steps = append([]checklist.Step{{Cmd: agentop + " configure claude-code enable",
 			Comment: "connect your agent (or opencode, codex, bob, pi)"}}, steps...)
