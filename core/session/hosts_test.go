@@ -37,6 +37,15 @@ func inferenceTo(host, ua string) pipeline.SessionEvent {
 		Client: pipeline.ParseUserAgent(ua), Inference: &pipeline.InferenceExtension{Model: "m"}}
 }
 
+// routedTo is inferenceTo that the inference-router routed to server.
+func routedTo(host, ua, server string) pipeline.SessionEvent {
+	e := inferenceTo(host, ua)
+	e.Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: "inference-router",
+		Action: pipeline.ActionModify, Reason: "routed", Phase: pipeline.InvocationPhaseRequest,
+		Details: map[string]string{"server": server}}}}
+	return e
+}
+
 func seen(agent, host string, last, unrouted uint64) model.InferenceHostSeen {
 	return model.InferenceHostSeen{Agent: agent, Host: host, Last: last, LastUnrouted: unrouted}
 }
@@ -213,7 +222,7 @@ func roundTrip(t *testing.T, f *SummaryFold) *SummaryFold {
 func TestSummaryFold_HostsOfALegacyOrOtherVersionDocAreUnknown(t *testing.T) {
 	for name, doc := range map[string]string{
 		"no table":        `{"eventCount":3}`,
-		"a later version": `{"eventCount":3,"inferenceHosts":{"v":2,"hosts":[{"agent":"claude-code","host":"h","last":1}]}}`,
+		"a later version": `{"eventCount":3,"inferenceHosts":{"v":3,"hosts":[{"agent":"claude-code","host":"h","last":1}]}}`,
 		"no version":      `{"eventCount":3,"inferenceHosts":{"hosts":[{"agent":"claude-code","host":"h","last":1}]}}`,
 		"hosts reshaped":  `{"eventCount":3,"inferenceHosts":{"v":2,"hosts":{"claude-code":{"host":"h","last":1}}}}`,
 		"a string last":   `{"eventCount":3,"inferenceHosts":{"v":1,"hosts":[{"agent":"claude-code","host":"h","last":"1"}]}}`,
@@ -247,7 +256,7 @@ func TestSummaryFold_HostsOfALegacyOrOtherVersionDocAreUnknown(t *testing.T) {
 // two spellings of one agent merge into one entry.
 func TestSummaryFold_HostsFoldRetiredAgentSpellings(t *testing.T) {
 	f := NewSummaryFold()
-	doc := `{"inferenceHosts":{"v":1,"hosts":[{"agent":"bob-shell","host":"h","last":3,"lastUnrouted":3},{"agent":"bob","host":"h","last":5}]}}`
+	doc := `{"inferenceHosts":{"v":2,"hosts":[{"agent":"bob-shell","host":"h","last":3,"lastUnrouted":3},{"agent":"bob","host":"h","last":5}]}}`
 	if err := json.Unmarshal([]byte(doc), f); err != nil {
 		t.Fatal(err)
 	}
@@ -309,6 +318,7 @@ func hostRuleFixture() []pipeline.SessionEvent {
 		unrouted("127.0.0.1:11434", "curl/8.7.1", http.MethodPost, "/v1/messages/count_tokens"),
 		response, inbound, tunnelRow(), noClient,
 		inferenceTo("glm.example.com:8443", "bob/2.0.5"),
+		routedTo("glm.example.com:8443", "bob/2.0.5", "team-b"), // a second server on one host
 	}
 	for i := range evs {
 		evs[i].Seq = uint64(i + 1)
@@ -342,5 +352,80 @@ func TestHostRule_Golden(t *testing.T) {
 		// Printed with the NEXT version, so a paste of it passes only after the bump.
 		next, _ := json.MarshalIndent(hostsDoc{V: hostRuleVersion + 1, Hosts: h}, "", "  ")
 		t.Fatalf("the host rule changed: bump hostRuleVersion to %d, then write this to %s:\n%s", hostRuleVersion+1, path, next)
+	}
+}
+
+// Two servers on one host are two entries: the table key is (agent, host, server).
+func TestHostEvidence_RecordsRoutedServer(t *testing.T) {
+	f := NewSummaryFold()
+	for i, server := range []string{"team-a", "team-b", "team-a"} {
+		e := routedTo("gw", claudeUA, server)
+		e.Seq = uint64(i + 1)
+		f.Add("s1", &e)
+	}
+	h, _ := f.InferenceHosts()
+	want := model.InferenceHosts{
+		{Agent: "claude-code", Host: "gw", Server: "team-a", Last: 3},
+		{Agent: "claude-code", Host: "gw", Server: "team-b", Last: 2},
+	}
+	if !reflect.DeepEqual(h, want) {
+		t.Fatalf("hosts %+v, want %+v", h, want)
+	}
+}
+
+// InferenceServer moves with InferenceHost, in the store and in the fold: a routed request sets
+// both, an unrouted one sets the server to "", and no other event changes either.
+func TestSummary_InferenceServer(t *testing.T) {
+	s := New(0, 0, 0)
+	defer s.Close()
+	f := NewSummaryFold()
+	check := func(step, host, server string) {
+		t.Helper()
+		for src, sum := range map[string]SessionSummary{"store": summaryOf(t, s, "s1"), "fold": f.Summary("s1")} {
+			if sum.InferenceHost != host || sum.InferenceServer != server {
+				t.Errorf("%s, %s: host %q server %q, want %q %q", step, src, sum.InferenceHost, sum.InferenceServer, host, server)
+			}
+		}
+	}
+	add := func(e pipeline.SessionEvent) { s.Append("s1", e); f.Add("s1", &e) }
+	add(routedTo("gw", claudeUA, "team-b"))
+	check("routed", "gw", "team-b")
+	add(inferenceTo("other.example.com", claudeUA))
+	check("unrouted", "other.example.com", "")
+	add(routedTo("gw", claudeUA, "team-a"))
+	tunnel := tunnelRow()
+	tunnel.Host = "elsewhere"
+	add(tunnel)
+	resp := routedTo("gw2", claudeUA, "team-c")
+	resp.Phase = pipeline.SessionResponse
+	add(resp)
+	check("tunnel and response after a routed request", "gw", "team-a")
+}
+
+func TestSummaryFold_JSONRoundTripKeepsInferenceServer(t *testing.T) {
+	f := NewSummaryFold()
+	e := routedTo("gw", claudeUA, "team-b")
+	f.Add("s1", &e)
+	if got := roundTrip(t, f).Summary("s1").InferenceServer; got != "team-b" {
+		t.Fatalf("InferenceServer after a round trip = %q, want team-b", got)
+	}
+	old := NewSummaryFold()
+	if err := json.Unmarshal([]byte(`{"eventCount":3}`), old); err != nil {
+		t.Fatal(err)
+	}
+	if got := old.Summary("s1").InferenceServer; got != "" {
+		t.Fatalf("InferenceServer of an old document = %q, want empty", got)
+	}
+}
+
+// A table written by rule version 1 has no server names, so it decodes as unknown.
+func TestSummaryFold_OldHostTableUnknown(t *testing.T) {
+	f := NewSummaryFold()
+	doc := `{"eventCount":3,"inferenceHosts":{"v":1,"hosts":[{"agent":"claude-code","host":"gw","last":1}]}}`
+	if err := json.Unmarshal([]byte(doc), f); err != nil {
+		t.Fatal(err)
+	}
+	if _, known := f.InferenceHosts(); known {
+		t.Fatal("a version 1 table decoded as known")
 	}
 }

@@ -37,6 +37,9 @@ func foldFixture(t *testing.T) []pipeline.SessionEvent {
 		// latest turns are both claude-code's, so a first-wins fold would pass here too. That
 		// rule is pinned in inference_host_test.go.
 		req.Host = c.Name + ".example.com"
+		req.Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: "inference-router",
+			Action: pipeline.ActionModify, Reason: "routed", Phase: pipeline.InvocationPhaseRequest,
+			Details: map[string]string{"server": c.Name + "-server"}}}}
 		tunnel := pipeline.SessionEvent{Phase: pipeline.SessionRequest, Tunnel: true, HTTPMethod: "CONNECT"}
 		resp := pipeline.SessionEvent{
 			Phase:     pipeline.SessionResponse,
@@ -85,11 +88,12 @@ func TestSummaryFold_AgreesWithListSessions(t *testing.T) {
 		got.TotalTokens != want.TotalTokens || got.CostMicros != want.CostMicros ||
 		got.AvoidedMicros != want.AvoidedMicros || got.Saturated != want.Saturated ||
 		!slices.Equal(got.Currencies, want.Currencies) || !sameContext(got.PromptContext, want.PromptContext) ||
-		got.InferenceHost != want.InferenceHost {
+		got.InferenceHost != want.InferenceHost || got.InferenceServer != want.InferenceServer {
 		t.Fatalf("fold  = %+v\nstore = %+v", got, want)
 	}
 	if want.CostMicros == 0 || want.AvoidedMicros == 0 || want.Title == "" || want.Agent == "" ||
-		len(want.Currencies) != 2 || want.PromptContext == nil || want.InferenceHost != "claude-code.example.com" {
+		len(want.Currencies) != 2 || want.PromptContext == nil || want.InferenceHost != "claude-code.example.com" ||
+		want.InferenceServer != "claude-code-server" {
 		t.Fatalf("fixture no longer exercises every figure: %+v", want)
 	}
 }
