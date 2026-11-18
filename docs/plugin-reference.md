@@ -4,6 +4,9 @@
 contract — field names, invariants, error behaviour, the rules that the
 framework enforces at startup.
 
+Read [`plugin-tutorial.md`](./plugin-tutorial.md) first. For a plugin with no
+Go code, read [`script-plugin.md`](./script-plugin.md).
+
 **See also:**
 - [`plugin-catalog.md`](./plugin-catalog.md) — catalog of implemented plugins.
 - [`plugin-tutorial.md`](./plugin-tutorial.md) — step-by-step tutorial for writing a new plugin.
@@ -57,51 +60,8 @@ pipeline:
   The framework does not interpret it; it's captured as `json.RawMessage`
   and handed to `Configure`.
 
-### `jwt-validation`: `allowed_audiences` (optional, transitional)
-
-The `jwt-validation` plugin accepts an optional JSON array field
-`allowed_audiences` (YAML under `config:`). Each entry is an additional
-**expected** inbound JWT `aud` value. The plugin **union**s these with
-the primary audience from `audience` / `audience_file` (deduplicated,
-order preserved). Inbound verification succeeds if the token's `aud`
-claim (RFC 7519 — string **or** array) contains **any** configured value.
-
-Use this as a **short-term bridge** when legitimate tokens carry
-multiple audiences (for example a public UI client plus `account`) and
-the workload must accept more than the SPIFFE / client ID read from
-`audience_file` alone. Prefer aligning IdP audience policy and
-application token exchange long-term; see team design discussions linked
-from release notes.
-
-When `allowed_audiences` is non-empty, the default
-`/shared/client-id.txt` `audience_file` is **not** auto-added unless you
-still omit `audience`, `audience_file`, and `allowed_audiences` entirely
-— i.e. you can run with **only** `allowed_audiences` for static mode.
-
-**Session / log migration:** jwt-validation deny-path `Details` used a
-single key `expected_audience` (string). It now emits
-`expected_audiences` (comma-joined list of configured inbound audiences).
-Update saved queries and dashboards that filtered on the old
-key.
-
-### `jwt-validation`: `placeholder_mode` / `placeholder_ttl` (optional, off by default)
-
-Two fields enable the **mint** half of [credential placeholder
-swap](token-exchange-plugin.md#credential-placeholder-swap) (read that section for the full
-model — these are the field-level reference).
-
-- **`placeholder_mode`** — bool, default `false`. After validating the
-  inbound token, replace it with an opaque `abph_`-prefixed placeholder
-  before forwarding to the agent. The real token is held in the
-  process-scoped shared store for the outbound path to resolve. Requires
-  `token-exchange` with `resolve_placeholders: true` on the outbound
-  chain to be coherent (see the matched-pair note below).
-- **`placeholder_ttl`** — Go duration string (e.g. `30m`, `1h`), default
-  `1h`. How long the real token is retained for outbound resolution.
-
-Mint requires `pctx.Shared` to be wired by the listener; if it is nil
-when `placeholder_mode` is on, the plugin fails fast at init (a deploy
-error) rather than silently forwarding the real token.
+The `jwt-validation` fields `allowed_audiences`, `placeholder_mode` and
+`placeholder_ttl` are in [`jwt-validation-plugin.md`](jwt-validation-plugin.md).
 
 ## `on_error` policy
 

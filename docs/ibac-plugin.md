@@ -5,6 +5,9 @@ against the user's most-recent declared intent (extracted from inbound A2A
 messages by `a2a-parser`) and denies misaligned requests via a configurable
 LLM judge.
 
+The judge is any OpenAI-compatible chat-completions endpoint, for example a
+local Ollama or vLLM, or a hosted provider. Cortex ships no judge of its own.
+
 It addresses a class of attack that traditional auth gates can't catch:
 prompt-injection in untrusted data causing the agent's tool-calling LLM to
 emit outbound requests the user never asked for. JWT validation, token
