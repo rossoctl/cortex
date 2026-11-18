@@ -1,0 +1,13 @@
+# The central metrics stack on OpenShift (cluster epoc001). Deploy with
+#   oc apply -k deploy/central/overlays/openshift
+# after creating the two Secrets (../../README.md). The namespace must exist; this overlay does not
+# create it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cortex-central
+
+resources:
+  - ../../base
+  - routes.yaml
+  - networkpolicy.yaml
