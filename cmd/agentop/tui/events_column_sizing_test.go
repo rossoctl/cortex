@@ -23,8 +23,8 @@ import (
 // ("−12.3k"), so the two must size TOKENS alike.
 var (
 	// estimatedSaving is how every saving published today arrives.
-	estimatedSaving = &event.Saving{Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037, Estimated: true}
-	countedSaving   = &event.Saving{Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037}
+	estimatedSaving = &event.Saving{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037, Estimated: true}
+	countedSaving   = &event.Saving{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037}
 )
 
 // sizingExchange is one inference exchange on host: a request, and the response carrying

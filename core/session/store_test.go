@@ -661,14 +661,14 @@ func TestSumCost(t *testing.T) {
 		{
 			Phase: pipeline.SessionResponse,
 			Plugins: costRecord(t, event.Event{CostUSD: 0.25, Settled: true, Provenance: "configured",
-				Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 100, USD: 0.01, Tier: "input"}}}),
+				Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 100, USD: 0.01, Tier: "input"}}}),
 		},
 		// UNPRICED, and carrying a saving. No dollars, and the saving still counts: the
 		// prompt was pruned whether or not anything managed to price the response.
 		{
 			Phase: pipeline.SessionResponse,
 			Plugins: costRecord(t, event.Event{Source: event.SourceUsageFallback,
-				Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 200, USD: 0.02, Tier: "input"}}}),
+				Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 200, USD: 0.02, Tier: "input"}}}),
 		},
 		// A DENIAL carrying a settled figure — the proxy charges for a response whose body
 		// never arrived. Counted, which is why this is not restricted to SessionResponse.
@@ -687,7 +687,7 @@ func TestSumCost(t *testing.T) {
 		{
 			Phase: pipeline.SessionResponse,
 			Plugins: costRecord(t, event.Event{Source: event.SourceUsageFallback,
-				Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 5000, USD: 5, Tier: "input", Projected: true}}}),
+				Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 5000, USD: 5, Tier: "input", Projected: true}}}),
 		},
 		// A response with no cost record at all — the common case for non-inference traffic.
 		{Phase: pipeline.SessionResponse, MCP: &pipeline.MCPExtension{Method: "tools/call"}},
@@ -702,17 +702,17 @@ func TestSumCost(t *testing.T) {
 	// 0.01 + 0.02, the priced and the unpriced request alike. 30_000 with the $5 projected
 	// entry excluded — 5_030_000 would mean observe-mode figures are being reported as
 	// savings.
-	if want := int64(30_000); avoided.Micros != want {
-		t.Errorf("avoided = %d, want %d", avoided.Micros, want)
+	if want := int64(30_000); avoided.Figures.AvoidedMicros != want {
+		t.Errorf("avoided = %d, want %d", avoided.Figures.AvoidedMicros, want)
 	}
 	// Nothing here is anywhere near the ceiling, so neither figure may claim to be a bound.
 	if cost.Saturated || avoided.Saturated {
 		t.Errorf("Saturated set on ordinary figures (%d, %d): every row would render as a floor",
-			cost.Micros, avoided.Micros)
+			cost.Micros, avoided.Figures.AvoidedMicros)
 	}
 
-	if c, a := sumCost(nil); c.Micros != 0 || a.Micros != 0 {
-		t.Errorf("sumCost(nil) = %d, %d; want 0, 0", c.Micros, a.Micros)
+	if c, a := sumCost(nil); c.Micros != 0 || !a.Figures.IsZero() {
+		t.Errorf("sumCost(nil) = %d, %d; want 0, 0", c.Micros, a.Figures.AvoidedMicros)
 	}
 }
 
@@ -763,7 +763,7 @@ func TestSumCost_SaturatesRatherThanWrapping(t *testing.T) {
 // re-deriving the dropped set would subtract the wrong events.
 func TestAppend_RunningTotalsMatchAFullRecomputation(t *testing.T) {
 	priced := costRecord(t, event.Event{CostUSD: 0.25, Settled: true, Provenance: "configured",
-		Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 100, USD: 0.01, Tier: "input"}}})
+		Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 100, USD: 0.01, Tier: "input"}}})
 
 	for _, tc := range []struct {
 		name      string
@@ -831,9 +831,9 @@ func TestAppend_RunningTotalsMatchAFullRecomputation(t *testing.T) {
 					"increment and the events have parted company",
 					gotCost.Micros, held, wantCost.Micros)
 			}
-			if gotAvoided.Micros != wantAvoided.Micros {
+			if gotAvoided.Figures.AvoidedMicros != wantAvoided.Figures.AvoidedMicros {
 				t.Errorf("running avoided = %d, full walk says %d",
-					gotAvoided.Micros, wantAvoided.Micros)
+					gotAvoided.Figures.AvoidedMicros, wantAvoided.Figures.AvoidedMicros)
 			}
 			// And the fixture really did trim, or the trimming cases prove nothing.
 			if tc.maxEvents > 0 && held != tc.maxEvents {
@@ -1553,4 +1553,47 @@ func TestAppend_TitleFoldKeepsFirstPromptOverArgs(t *testing.T) {
 			t.Errorf("got %q, want %q", got, "jons/ONS_084.md")
 		}
 	})
+}
+
+// The sessions list carries the accountant's figures beside avoidedMicros (design §5.9): the
+// penalty and the other figures by basis, present when nonzero and absent rather than zero.
+func TestListSessions_CarriesPenaltyAndFiguresByBasis(t *testing.T) {
+	st := New(5*time.Minute, 0, 0)
+	defer st.Close()
+	st.Append("s1", pipeline.SessionEvent{Phase: pipeline.SessionResponse, Plugins: costRecord(t, event.Event{
+		CostUSD: 0.25, Settled: true, Provenance: "configured",
+		Avoided: []event.Saving{
+			{Basis: event.BasisUSD, Component: "context-guru.mask", USD: 0.01, PenaltyUSD: 0.02},
+			{Basis: event.BasisSubscriptionEquivalent, Component: "tool-prune", USD: 1, Units: 3},
+		},
+		Spends: []event.SpendRecord{{Basis: event.BasisUSD, USD: 0.005}},
+	})})
+	st.Append("s2", pipeline.SessionEvent{Phase: pipeline.SessionResponse, Plugins: costRecord(t, event.Event{
+		CostUSD: 0.25, Settled: true, Provenance: "configured",
+	})})
+	byID := map[string]SessionSummary{}
+	for _, s := range st.ListSessions() {
+		byID[s.ID] = s
+	}
+	s1 := byID["s1"]
+	if s1.AvoidedMicros != 10_000 || s1.PenaltyMicros != 20_000 || s1.AvoidedUnits != 3_000 || s1.PluginSpendMicros != 5_000 {
+		t.Errorf("s1 = avoided %d, penalty %d, units %d, plugin spend %d; want 10000, 20000, 3000, 5000",
+			s1.AvoidedMicros, s1.PenaltyMicros, s1.AvoidedUnits, s1.PluginSpendMicros)
+	}
+	raw, err := json.Marshal(s1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"penaltyMicros":20000`) || !strings.Contains(string(raw), `"avoidedUnits":3000`) {
+		t.Errorf("s1 on the wire = %s, want penaltyMicros and avoidedUnits", raw)
+	}
+	raw, err = json.Marshal(byID["s2"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"penaltyMicros", "avoidedUnits", "pluginSpendMicros", "avoidedUnknownMicros"} {
+		if strings.Contains(string(raw), f) {
+			t.Errorf("s2 on the wire = %s: %s is present at zero", raw, f)
+		}
+	}
 }

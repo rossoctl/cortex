@@ -33,6 +33,8 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/rossoctl/cortex/core/accounting"
+	"github.com/rossoctl/cortex/core/accounting/push"
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/bootstrap"
 	"github.com/rossoctl/cortex/core/config"
@@ -87,6 +89,12 @@ func warnCostLedgerInert(cfg *config.Config, logger *slog.Logger) {
 		"effect", "the whole cost_ledger block is ignored, including dir and retention_days",
 		"fix", "remove the cost_ledger block here; for durable local cost history run cortex --local, which does honour it")
 }
+
+// version is the cortex-envoy build version, sent as the metrics push's service.version.
+// Set at build time with -ldflags "-X main.version=<tag>": cmd/cortex-envoy/Dockerfile does it
+// from the VERSION build-arg, which .github/workflows/build.yaml sets to the image tag. "dev" in a
+// plain go build.
+var version = "dev"
 
 func main() {
 	configPath := flag.String("config", "", "path to config YAML file")
@@ -161,6 +169,16 @@ func main() {
 	// See applyPricing below.
 	var pendingPricing *pricing.Table
 
+	// The process's accountant host, nil when accounting is off: one per process, made by the
+	// first build and handed to every later one, as in cmd/cortex. No snapshot: this binary is a
+	// Kubernetes shape, where a pod restart starts fresh (design §5.4). It wires no cost
+	// Recorder either (see warnCostLedgerInert), so none is added.
+	var acctHost *accounting.Host
+	acctDecided := false
+	// stopMetricsPush flushes and stops the metrics push started with the host. The machine id
+	// is per process here: a pod keeps no ~/.cortex.
+	stopMetricsPush := func(context.Context) error { return nil }
+
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
 		c, err := config.Load(*configPath)
 		if err != nil {
@@ -189,12 +207,35 @@ func main() {
 		// instead of recording redirects that never happen. Plugins only store the
 		// resolver during Configure and never resolve through it, so building against
 		// the still-live previous table is safe.
+		if !acctDecided {
+			acctDecided = true
+			if c.AccountingOn() {
+				var sink *accounting.Sink
+				mp, stop, perr := push.Start(c.MetricsPush.Resolve(os.Getenv), version, "")
+				// config.Load already refused a bad YAML block; a refusal here comes from the
+				// METRICS_PUSH_* environment, which only WARNs and turns the push off.
+				if perr != nil {
+					slog.Warn("metrics push off — the metrics_push block was refused", "error", perr)
+				} else {
+					sink, stopMetricsPush = accounting.NewSink(mp, pricingRegistry), stop
+				}
+				acctHost = accounting.New(accounting.OptionsFrom(c, pricingRegistry, sink))
+				slog.Info("accounting enabled — context savings are computed by the accountant")
+			}
+		}
 		deps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Listener: extproc.Support()}
 		in, err := plugins.BuildWithDeps(c.Pipeline.Inbound.Plugins, deps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)
 		}
-		out, err := plugins.BuildWithDeps(c.Pipeline.Outbound.Plugins, deps)
+		// The accountant on the outbound chain only: inference requests leave through it.
+		outDeps := deps
+		// Only while this config resolves accounting on: a reload may turn it off, and the host
+		// then stays idle until a later reload turns it back on (reloader.validateAccounting).
+		if c.AccountingOn() {
+			outDeps.Accounting = acctHost
+		}
+		out, err := plugins.BuildWithDeps(c.Pipeline.Outbound.Plugins, outDeps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("outbound: %w", err)
 		}
@@ -356,10 +397,19 @@ func main() {
 	}
 
 	rld.Close(shutdownCtx)
+	_ = acctHost.Close() // no snapshot here, so nothing to report
 
 	if sessions != nil {
 		sessions.Close()
 	}
+
+	// The metrics push last, once the accountant has stopped observing: this flush carries
+	// every counter, and a collector that does not answer delays nothing above.
+	metricsCtx, metricsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := stopMetricsPush(metricsCtx); err != nil {
+		slog.Warn("metrics push: the final push failed", "error", err)
+	}
+	metricsCancel()
 }
 
 // newExtProcServer builds the ext_proc gRPC server: the ONLY grpc.NewServer

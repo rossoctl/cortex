@@ -90,7 +90,12 @@ func (p *InferenceParser) settleCost(pctx *pipeline.Context) {
 	// rate table cannot price, and the unpriced-model tally is precisely what tells an
 	// operator which rate to add. event.Decode still reports such a record as
 	// unpriced, so no consumer counts it as spend; that is what Record/Priced separate.
-	avoided := settle.Avoided(pctx, p.rates)
+	// The accountant's figure, before the publish gate and with a latch of its own: whether the
+	// accountant prices this request does not depend on whether a cost record is published.
+	// Every saving on the record is the accountant's (design §5.9); with accounting off there
+	// is none.
+	acct := p.accountant(pctx, settled)
+	avoided := acct.savings
 	// HasPrompt is checked separately from Priced, because the two really can differ: a
 	// table that prices every prompt tier but not a populated output tier yields a prompt
 	// figure and no total. Dropping the record there would lose a figure a request row
@@ -100,7 +105,9 @@ func (p *InferenceParser) settleCost(pctx *pipeline.Context) {
 	// a response that reported no cost, hiding both the misconfiguration and the forgery. The
 	// record is unpriced — event.Priced returns false on a set RejectedReason, which is what
 	// the aggregator's Decode and the ledger's admission guard both ask.
-	if !settled.Priced && !settled.HasPrompt && settled.RejectedReason == "" && len(avoided) == 0 {
+	// An operator's own model call (Extras.Spends) is something to say too: it reaches no other
+	// record, because it did not pass through the proxy.
+	if !settled.Priced && !settled.HasPrompt && settled.RejectedReason == "" && len(avoided) == 0 && len(acct.extras.Spends) == 0 {
 		// NOT LATCHED, as litellm-budget-track's bill() is not when settle.Load finds nothing
 		// priced. Nothing was published, so there is nothing to charge twice — and latching anyway
 		// would lock this request out of a LATER pass that does have a figure. The latch protects
@@ -112,7 +119,7 @@ func (p *InferenceParser) settleCost(pctx *pipeline.Context) {
 	// publish. Publish itself cannot fail — it assigns two map keys — so there is no
 	// window here in which the latch is set and the figure is not out.
 	pipeline.SetState(pctx, costSettledKey, &settledOnce{})
-	settle.Publish(pctx, settle.NewRecord(settled, avoided))
+	settle.Publish(pctx, withAccountant(settle.NewRecord(settled, avoided), acct))
 }
 
 // costSettledKey and settledOnce mark this request as already priced.

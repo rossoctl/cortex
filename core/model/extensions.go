@@ -298,8 +298,15 @@ type InferenceExtension struct {
 	InputTokens      int `json:"inputTokens,omitempty"`      // uncached prompt tokens
 	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`  // served from cache
 	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"` // written to cache
-	OutputTokens     int `json:"outputTokens,omitempty"`     // generated tokens
-	ReasoningTokens  int `json:"reasoningTokens,omitempty"`  // reasoning-only output
+	// CacheWrite1hTokens is the part of CacheWriteTokens written with a 1-hour TTL
+	// (Anthropic's usage.cache_creation.ephemeral_1h_input_tokens), never an addition
+	// to it. Zero means either no 1h writes or a provider that does not report the
+	// split; CacheWriteTokens still carries the true total either way. Added for the
+	// 1h cache-write tier (2026-11-17 accountant-integration task 7), so settle can
+	// price that subset at its own rate and accountant.Usage.CacheWrite1h can be filled.
+	CacheWrite1hTokens int `json:"cacheWrite1hTokens,omitempty"`
+	OutputTokens       int `json:"outputTokens,omitempty"`    // generated tokens
+	ReasoningTokens    int `json:"reasoningTokens,omitempty"` // reasoning-only output
 
 	// PresentKinds names which split sub-kinds the provider populated.
 	// Zero on a set bit means "reported zero"; zero on an unset bit

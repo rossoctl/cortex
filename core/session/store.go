@@ -78,8 +78,10 @@ type entry struct {
 	// the COST column scoped exactly like the TOKENS column beside it, which is the claim
 	// SessionSummary.CostMicros makes. ListSessions adds the history before this entry on top
 	// where a PriorKeeper has it (withPriorLocked); these running totals stay the entry's own.
-	cost    event.CostSum
-	avoided event.CostSum
+	cost event.CostSum
+	// avoided is the running total of the events' savings and plugin spends (event.Figures),
+	// by the same rules as cost.
+	avoided figureSum
 	// units counts the priced events behind cost by the unit they were priced in, "" for USD.
 	// Maintained with cost, on append and on trim, and read by SessionSummary.Currencies — a
 	// count rather than a set because a trim has to know when the LAST event in a unit leaves.
@@ -510,7 +512,7 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event model.SessionEve
 	sess.money = append(sess.money, money)
 	sess.cost.Add(money.cost)
 	sess.avoided.Add(money.avoided)
-	if money.priced || money.avoided > 0 {
+	if money.priced || !money.avoided.IsZero() {
 		if sess.units == nil {
 			sess.units = make(map[string]int, 1)
 		}
@@ -608,7 +610,7 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event model.SessionEve
 			}
 			sess.cost.Sub(m.cost)
 			sess.avoided.Sub(m.avoided)
-			if m.priced || m.avoided > 0 {
+			if m.priced || !m.avoided.IsZero() {
 				if sess.units[m.unit]--; sess.units[m.unit] <= 0 {
 					delete(sess.units, m.unit)
 				}

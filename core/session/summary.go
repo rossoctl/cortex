@@ -94,6 +94,21 @@ type SessionSummary struct {
 	// invariant on event.Event.Avoided. Reported beside it because the two answer
 	// different questions about the same session.
 	AvoidedMicros int64 `json:"avoidedMicros,omitempty"`
+	// PenaltyMicros is what the operators behind AvoidedMicros caused on this session's
+	// requests, same unit, basis "usd" only: usage.Counts.PenaltyMicros. Net saved is
+	// AvoidedMicros minus PenaltyMicros, and may be negative.
+	PenaltyMicros int64 `json:"penaltyMicros,omitempty"`
+	// AvoidedUnits, PenaltyUnits, AvoidedAPIEquivalentMicros, AvoidedUnknownMicros,
+	// PluginSpendMicros, PluginSpendUnits and PluginSpendUnknownMicros are the usage.Counts
+	// fields of the same names, summed over this session's records (event.Event.Figures). Only
+	// PluginSpendMicros is money; see usage.Counts. Absent rather than zero, like every figure.
+	AvoidedUnits               int64 `json:"avoidedUnits,omitempty"`
+	PenaltyUnits               int64 `json:"penaltyUnits,omitempty"`
+	AvoidedAPIEquivalentMicros int64 `json:"avoidedApiEquivalentMicros,omitempty"`
+	AvoidedUnknownMicros       int64 `json:"avoidedUnknownMicros,omitempty"`
+	PluginSpendMicros          int64 `json:"pluginSpendMicros,omitempty"`
+	PluginSpendUnits           int64 `json:"pluginSpendUnits,omitempty"`
+	PluginSpendUnknownMicros   int64 `json:"pluginSpendUnknownMicros,omitempty"`
 	// Currencies names the units CostMicros and AvoidedMicros are in, sorted, dollars spelled
 	// "USD" — and is ABSENT when every priced event was in dollars, which is every deployment
 	// with no pricing unit configured, so those serve the bytes they always have.
@@ -279,9 +294,8 @@ func (s *Store) ListSessions() []SessionSummary {
 			// with no allocation, where the money figures below needed a JSON unmarshal.
 			TotalTokens: sumTokens(sess.Events),
 			// Read, not computed. Append maintains these; see entry.cost.
-			CostMicros:    sess.cost.Micros,
-			AvoidedMicros: sess.avoided.Micros,
-			Currencies:    currenciesOf(sess.units),
+			CostMicros: sess.cost.Micros,
+			Currencies: currenciesOf(sess.units),
 			// Either total having clamped makes BOTH figures on this row bounds rather than
 			// sums, which is why one flag covers them — the same reasoning
 			// usage.Counts.Saturated gives for covering every money field in a Counts.
@@ -298,6 +312,7 @@ func (s *Store) ListSessions() []SessionSummary {
 			procSpans:     maps.Clone(sess.procs),
 			LastRequestAt: sess.lastRequestAt,
 		}
+		sess.avoided.setOn(&sum)
 		s.withPriorLocked(&sum, id, sess)
 		out = append(out, sum)
 	}
@@ -331,7 +346,7 @@ func sumTokens(events []model.SessionEvent) int {
 // entry.cost for what holds the result.
 type eventMoney struct {
 	cost    int64
-	avoided int64
+	avoided event.Figures
 	// priced says cost is a figure, including a settled zero, and unit is what it is in ("" for
 	// USD). Carried so a trim can shed the unit with the figure; see entry.units.
 	priced bool
@@ -376,7 +391,7 @@ func moneyOf(e *model.SessionEvent) eventMoney {
 		m.priced = true
 	}
 	m.unit = ev.Currency
-	m.avoided = ev.TotalAvoidedMicros()
+	m.avoided = ev.Figures()
 	return m
 }
 
@@ -387,7 +402,7 @@ func moneyOf(e *model.SessionEvent) eventMoney {
 // only as good as the full recomputation it claims to equal, and
 // TestAppend_RunningTotalsMatchAFullRecomputation asserts exactly that after appends, trims
 // and evictions. Deleting it would leave the increments with nothing to check them against.
-func sumCost(events []model.SessionEvent) (cost, avoided event.CostSum) {
+func sumCost(events []model.SessionEvent) (cost event.CostSum, avoided figureSum) {
 	for i := range events {
 		m := moneyOf(&events[i])
 		cost.Add(m.cost)

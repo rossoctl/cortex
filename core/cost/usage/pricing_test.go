@@ -473,7 +473,7 @@ func TestAggregator_TotalsAreInvariantToAvoidedCost(t *testing.T) {
 
 	without := snapshotWith(t, nil)
 	with := snapshotWith(t, []event.Saving{
-		{Component: "tool-prune", TokensAvoided: 500_000, USD: 999.99, Tier: "cache_write", Estimated: true},
+		{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 500_000, USD: 999.99, PenaltyUSD: 777.77, Tier: "cache_write", Estimated: true},
 		{Component: "some-future-plugin", TokensAvoided: 1_000, USD: 42, Tier: "input", Projected: true},
 	})
 
@@ -508,6 +508,73 @@ func TestAggregator_TotalsAreInvariantToAvoidedCost(t *testing.T) {
 		t.Errorf("AvoidedMicros = %d, want %d — the applied saving and only it (1041990000 "+
 			"would mean the projected $42 was counted as money not spent)", got, want)
 	}
+	// THE PENALTY HOLDS THE SAME LINE: it sits beside the saving, never in spend, and is not
+	// netted into AvoidedMicros.
+	if got, want := with.Totals.PenaltyMicros, int64(777_770_000); got != want {
+		t.Errorf("PenaltyMicros = %d, want %d", got, want)
+	}
+	if without.Totals.PenaltyMicros != 0 {
+		t.Errorf("PenaltyMicros = %d with no savings, want 0", without.Totals.PenaltyMicros)
+	}
+}
+
+// The aggregator sums the penalty across requests, and keeps a net below zero as two figures:
+// a context operator that cost more than it saved shows a penalty larger than its saving.
+func TestAggregator_SumsPenalty(t *testing.T) {
+	a := New(WithPricing(nil))
+	for i, sv := range []event.Saving{
+		{Basis: event.BasisUSD, Component: "context-guru.mask", USD: 0.01, PenaltyUSD: 0.04},
+		{Basis: event.BasisUSD, Component: "tool-prune", USD: 0.02, PenaltyUSD: 0.005},
+		{Basis: event.BasisSubscriptionEquivalent, Component: "tool-prune", USD: 5, PenaltyUSD: 5, Units: 10, PenaltyUnits: 2},
+	} {
+		raw, err := json.Marshal(event.Event{CostUSD: 0.1, Settled: true, Provenance: "configured", Avoided: []event.Saving{sv}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.Record("s1", &pipeline.SessionEvent{
+			Phase: pipeline.SessionResponse, Host: "gw", RequestID: string(rune('a' + i)),
+			Inference: &pipeline.InferenceExtension{Model: "m", InputTokens: 10},
+			Plugins:   map[string]json.RawMessage{event.Key: raw},
+		})
+	}
+	tot := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone).Totals
+	if tot.AvoidedMicros != 30_000 || tot.PenaltyMicros != 45_000 {
+		t.Errorf("avoided/penalty = %d/%d, want 30000/45000 (usd only, net -15000 kept as two figures)",
+			tot.AvoidedMicros, tot.PenaltyMicros)
+	}
+	if tot.AvoidedUnits != 10_000 || tot.PenaltyUnits != 2_000 {
+		t.Errorf("units = %d/%d, want 10000/2000 milli-units from the subscription saving", tot.AvoidedUnits, tot.PenaltyUnits)
+	}
+}
+
+// A keep-alive ping's record is not the agent's request: its spend is KeepAliveMicros and it
+// counts in KeepAlivePings, and in no request, token, cost or latency figure.
+func TestAggregator_AKeepAlivePingIsNotARequest(t *testing.T) {
+	a := New(WithPricing(nil))
+	raw, err := json.Marshal(event.Event{CostUSD: 0.002, Settled: true, Provenance: "configured", Purpose: event.PurposeKeepAlive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Record("s1", &pipeline.SessionEvent{
+		Phase: pipeline.SessionResponse, Host: "api.anthropic.com", RequestID: "keep-alive:s1:main:x",
+		Inference:  &pipeline.InferenceExtension{Model: "m", InputTokens: 3, CacheReadTokens: 20000, OutputTokens: 1},
+		Plugins:    map[string]json.RawMessage{event.Key: raw},
+		Duration:   9 * time.Second,
+		StatusCode: 200,
+	})
+	snap := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone)
+	tot := snap.Totals
+	if tot.KeepAlivePings != 1 || tot.KeepAliveMicros != 2_000 {
+		t.Errorf("keep-alive = %d pings, %d micros; want 1 and 2000", tot.KeepAlivePings, tot.KeepAliveMicros)
+	}
+	if tot.Requests != 0 || tot.CostMicros != 0 || tot.Tokens != 0 || tot.PricedRequests != 0 || tot.PriceableRequests != 0 {
+		t.Errorf("a ping reached the request figures: %+v", tot)
+	}
+	for _, b := range snap.Buckets {
+		if b.LatSamples != 0 {
+			t.Errorf("a ping's duration entered the latency mean: %+v", b)
+		}
+	}
 }
 
 // A saving on a request NOTHING COULD PRICE must still be counted, which is the case
@@ -524,7 +591,7 @@ func TestAggregator_CountsASavingOnAnUnpricedRequest(t *testing.T) {
 		// No CostUSD, not settled: unpriced, and deliberately so.
 		Source: event.SourceUsageFallback,
 		Avoided: []event.Saving{
-			{Component: "tool-prune", TokensAvoided: 2_000, USD: 0.5, Tier: "input", Estimated: true},
+			{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 2_000, USD: 0.5, Tier: "input", Estimated: true},
 		},
 	})
 	if err != nil {
@@ -549,5 +616,70 @@ func TestAggregator_CountsASavingOnAnUnpricedRequest(t *testing.T) {
 		t.Errorf("CostMicros = %d, PricedRequests = %d; want both zero — the record carries no "+
 			"price, so this test would otherwise be exercising the priced path",
 			totals.CostMicros, totals.PricedRequests)
+	}
+}
+
+// A keep-alive ping is not agent activity: it creates no per-session ring, refreshes none, and so
+// cannot evict a real session's ring at the cap. It still counts in the all-sessions totals.
+func TestAggregator_AKeepAlivePingTouchesNoSessionRing(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	clock := now
+	a := New(WithPricing(nil), WithMaxSessions(1), WithClock(func() time.Time { return clock }))
+	ping, err := json.Marshal(event.Event{CostUSD: 0.002, Settled: true, Provenance: "configured", Purpose: event.PurposeKeepAlive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pingEv := func(sess string) *pipeline.SessionEvent {
+		return &pipeline.SessionEvent{
+			At: clock, Phase: pipeline.SessionResponse, Host: "api.anthropic.com", RequestID: "keep-alive:" + sess,
+			Inference: &pipeline.InferenceExtension{Model: "m", InputTokens: 3}, StatusCode: 200,
+			Plugins: map[string]json.RawMessage{event.Key: ping},
+		}
+	}
+	a.Record("real", &pipeline.SessionEvent{At: clock, Phase: pipeline.SessionResponse, Host: "h", RequestID: "r1",
+		Inference: &pipeline.InferenceExtension{Model: "m", InputTokens: 10}, StatusCode: 200})
+	clock = clock.Add(time.Second)
+	a.Record("idle", pingEv("idle")) // a ping for another session, at the cap of one ring
+	if got := a.Snapshot(10*BucketWidth, BucketWidth, "real", GroupNone).Totals.Requests; got != 1 {
+		t.Errorf("real session's ring has %d requests, want 1: a ping evicted it", got)
+	}
+	if got := a.Snapshot(10*BucketWidth, BucketWidth, "idle", GroupNone).Totals.KeepAlivePings; got != 0 {
+		t.Errorf("the ping made a ring for its session (%d pings there)", got)
+	}
+	if got := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone).Totals.KeepAlivePings; got != 1 {
+		t.Errorf("all-sessions KeepAlivePings = %d, want 1", got)
+	}
+	a.mu.Lock()
+	seen := a.sessions["real"].lastSeen
+	a.mu.Unlock()
+	clock = clock.Add(time.Second)
+	a.Record("real", pingEv("real"))
+	a.mu.Lock()
+	after := a.sessions["real"].lastSeen
+	a.mu.Unlock()
+	if !after.Equal(seen) {
+		t.Errorf("a ping refreshed the session ring's lastSeen: %v -> %v", seen, after)
+	}
+}
+
+// The ring splits a ping's spend by basis exactly as the ledger does (event.Figures): a
+// subscription ping books units and no KeepAliveMicros.
+func TestAggregator_ASubscriptionPingBooksUnitsNotMoney(t *testing.T) {
+	a := New(WithPricing(nil))
+	raw, err := json.Marshal(event.Event{CostUSD: 0.002, Settled: true, Provenance: "configured",
+		Purpose: event.PurposeKeepAlive, Basis: event.BasisSubscriptionEquivalent, Units: 1.5, Estimated: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Record("s1", &pipeline.SessionEvent{
+		Phase: pipeline.SessionResponse, Host: "api.anthropic.com", RequestID: "keep-alive:s1:main:x",
+		Inference:  &pipeline.InferenceExtension{Model: "m", InputTokens: 3, CacheReadTokens: 20000, OutputTokens: 1},
+		Plugins:    map[string]json.RawMessage{event.Key: raw},
+		StatusCode: 200,
+	})
+	tot := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone).Totals
+	if tot.KeepAlivePings != 1 || tot.KeepAliveMicros != 0 || tot.KeepAliveUnits != 1500 || tot.KeepAliveAPIEquivalentMicros != 2000 {
+		t.Errorf("keep-alive = pings %d, micros %d, units %d, API equivalent %d; want 1, 0, 1500, 2000",
+			tot.KeepAlivePings, tot.KeepAliveMicros, tot.KeepAliveUnits, tot.KeepAliveAPIEquivalentMicros)
 	}
 }

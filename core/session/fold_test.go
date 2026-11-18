@@ -49,14 +49,14 @@ func foldFixture(t *testing.T) []pipeline.SessionEvent {
 	var evs []pipeline.SessionEvent
 	evs = append(evs, turn("fix the flaky test in the session store", 1200,
 		event.Event{CostUSD: 0.25, Settled: true, Provenance: "configured",
-			Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 100, USD: 0.01, Tier: "input"}}}, claude)...)
+			Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 100, USD: 0.01, Tier: "input"}}}, claude)...)
 	evs = append(evs, turn("now explain why it was flaky", 800,
 		event.Event{CostUSD: 0.03, Settled: true, Currency: "Bobcoins"}, bob)...)
 	evs = append(evs, pipeline.SessionEvent{Phase: pipeline.SessionDenied,
 		Plugins: costRecord(t, event.Event{CostUSD: 0.05, Settled: true, Provenance: "authoritative"})})
 	evs = append(evs, turn("and the third thing", 0,
 		event.Event{Source: event.SourceUsageFallback,
-			Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 200, USD: 0.02, Tier: "input"}}}, claude)...)
+			Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 200, USD: 0.02, Tier: "input"}}}, claude)...)
 	// A main-agent turn with a tool manifest, so the fixture carries a CTX figure.
 	evs = append(evs, pipeline.SessionEvent{Phase: pipeline.SessionResponse, Client: claude,
 		At: time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC),
@@ -241,5 +241,19 @@ func TestSummaryFold_UnmarshalFoldsRetiredAgentSpellings(t *testing.T) {
 				t.Errorf("agent %q: label = %q, want it unchanged", a.name, a.label)
 			}
 		}
+	}
+}
+
+// The archive re-folds a session's history from its segments (foldSegments → SummaryFold.Add).
+// A saving archived before the accountant has no basis, and is dollars: the re-fold counts it as
+// the ledger does.
+func TestSummaryFold_CountsALegacySavingWithNoBasis(t *testing.T) {
+	f := NewSummaryFold()
+	f.Add("s1", &pipeline.SessionEvent{Phase: pipeline.SessionResponse, Plugins: map[string]json.RawMessage{
+		event.Key: json.RawMessage(`{"cost_usd":0.05,"settled":true,"avoided":[{"component":"tool-prune",` +
+			`"tokensAvoided":10210,"usd":0.00388,"tier":"cache_read","estimated":true}]}`),
+	}})
+	if got := f.Summary("s1").AvoidedMicros; got != 3_880 {
+		t.Errorf("AvoidedMicros = %d, want 3880 from the legacy saving", got)
 	}
 }

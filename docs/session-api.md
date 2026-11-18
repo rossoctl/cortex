@@ -42,7 +42,7 @@ through DNS rebinding. The stats server applies the same check.
 {"sessions": [{
   "id": "…", "createdAt": "…", "updatedAt": "…", "eventCount": 42, "active": true,
   "title": "…", "agent": "claude-code", "totalTokens": 1186300, "costMicros": 254600,
-  "avoidedMicros": 3700, "promptContext": {"tokens": 16384, "stated": true,
+  "avoidedMicros": 3700, "penaltyMicros": 900, "promptContext": {"tokens": 16384, "stated": true,
   "at": "2026-10-15T20:01:02Z", "msgs": 12}, "inferenceHost": "api.anthropic.com",
   "procs": ["41963.1791718279766260000"], "lastRequestAt": "…"
 }, {
@@ -75,6 +75,16 @@ knowing by name:
   the inference-router keeps its pins in the plugin store
   (`~/.cortex/plugin-state.json`), which a restart keeps, so both of agentop's
   counts include such a resumed session.
+- **`avoidedMicros`** and **`penaltyMicros`** — what the session's context
+  operators saved and what they caused, priced by the accountant, basis `usd`
+  only. Net saved is the difference and may be negative. Beside them, absent at
+  zero like every figure here: `avoidedUnits`, `penaltyUnits` and
+  `avoidedApiEquivalentMicros` for savings on a subscription login (usage-limit
+  milli-units, and their API-equivalent dollars, which are not money),
+  `avoidedUnknownMicros` for savings whose billing mode is unknown, and
+  `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` for the
+  operators' own model calls, which are not in `costMicros`. See
+  [`pricing.md`](pricing.md#cost-records).
 - **`procs`** — the processes, `<pid>.<start>`, whose own session header named
   this session. Recorded from each request's `proc` and `sessionHeader`, and
   continued from the archive's fold like the other figures.
@@ -369,6 +379,29 @@ the server must have been built with clearing allowed
 (`listener.bind_loopback_only` on a local install). A refusal is a 403
 `{"error": ...}`. Each guard is pinned by its own test in
 `core/sessionapi/clear_test.go`. agentop's `X` drives it.
+
+**The accountant's per-session state is not cleared** by either `DELETE` route.
+That is the Tracker state (in memory, and in `~/.cortex/accountant-state.json` on
+a local install), the billing mode of each thread's last request and any keep-alive
+ping facts not yet credited (both in `core/accounting.Host`), and the context-guru
+keeper's entries. They hold session and thread ids, content hashes and a billing
+mode, never content; a keeper entry also holds the caller's credential, masked.
+A keeper entry is released at `(max_pings + 1) × idle_seconds` (about 13.5 minutes
+at the defaults); until then it can still ping the erased session, and that spend
+goes to the cost ledger, which the erase keeps anyway. The rest has no time bound
+while the process runs: the in-memory maps keep at most 10,000 threads and drop the
+oldest, and the snapshot file, rewritten every 60s, holds what memory holds. A
+snapshot older than 1h is not restored at startup, so a proxy stopped for more than
+an hour starts without it. This applies to both `DELETE` routes.
+
+**The context-guru plugin's session state is not cleared either, and it holds content.**
+Where the plugin runs, its state is kept in `~/.cortex/context-guru-state.db` on a local
+install (see [context-guru-plugin.md](context-guru-plugin.md)): the summary checkpoint and
+other text the plugin made from the conversation, plus counts and ids. Neither `DELETE` route
+touches it, so an erased session's summary stays in the file until its rows expire, 30 days
+after their last write. To remove it now, stop the proxy and delete the file
+(`agentop service stop`, then `rm ~/.cortex/context-guru-state.db*`); the plugin creates a new
+one at the next start. This applies to both `DELETE` routes.
 
 An erased session comes back on the next `agentop import` while its transcript
 is still on disk. It comes back as an imported session. The erase keeps a
@@ -1134,6 +1167,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `inference.reasoningTokens` — on a response row: the token counts that the
   provider reported, by kind. `inputTokens` are the uncached prompt tokens.
   `reasoningTokens` are a part of `outputTokens`.
+- `inference.cacheWrite1hTokens` — on a response row: the part of
+  `cacheWriteTokens` written with a 1-hour TTL (Anthropic's
+  `cache_creation.ephemeral_1h_input_tokens`). A part of `cacheWriteTokens`,
+  never an addition to it.
 - `inference.presentKinds` — a bitmask of the token kinds that the provider
   reported: input 1, cache read 2, cache write 4, output 8, reasoning 16. A
   zero count with its bit set means that the provider reported zero. A zero

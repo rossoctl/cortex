@@ -268,6 +268,23 @@ func TestReloader_RefusesModeChange(t *testing.T) {
 	}
 }
 
+// The reload path applies validateAccounting against the BOOT config: this process booted with no
+// context operator (accounting off under auto), so a reload that adds tool-prune would report to
+// a host that was never built, and is refused.
+func TestReloader_RefusesTurningAccountingOnAfterBoot(t *testing.T) {
+	r, b, cfgPath, _, _ := setup(t)
+	next := &config.Config{Mode: "envoy-sidecar"}
+	next.Pipeline.Outbound.Plugins = []config.PluginEntry{{Name: "tool-prune"}}
+	b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: next})
+
+	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# tool-prune added\n")
+
+	waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsFailed >= 1 }, "reload to fail")
+	if !contains(r.Status().LastError, "accounting.enabled") {
+		t.Errorf("error should name accounting.enabled, got %q", r.Status().LastError)
+	}
+}
+
 // Listener address change is unreloadable.
 func TestReloader_RefusesListenerChange(t *testing.T) {
 	r, b, cfgPath, inH, _ := setup(t)
@@ -1332,5 +1349,88 @@ func TestValidateReloadable_PraxisPolicyPathNeedsRestart(t *testing.T) {
 	}
 	if err := validateReloadable(praxis("/a.yaml"), praxis("/a.yaml")); err != nil {
 		t.Errorf("unchanged policy was refused: %v", err)
+	}
+}
+
+// Whether the accountant host exists is decided once, at boot. So a reload that turns accounting
+// ON is refused when the process booted with it off: there is no host to hand the plugins. Every
+// other reload is accepted, including one that turns it off (on_error: off on the only context
+// operator is a kill-switch without a redeploy) and one that turns it back on. What is compared is
+// the RESOLVED answer, not the block.
+func TestValidateAccounting(t *testing.T) {
+	withOutbound := func(a *config.AccountingConfig, names ...string) *config.Config {
+		c := &config.Config{Accounting: a}
+		for _, n := range names {
+			c.Pipeline.Outbound.Plugins = append(c.Pipeline.Outbound.Plugins, config.PluginEntry{Name: n})
+		}
+		return c
+	}
+	off := &config.AccountingConfig{Enabled: "false"}
+	on := &config.AccountingConfig{Enabled: "true"}
+	tpOff := &config.Config{}
+	tpOff.Pipeline.Outbound.Plugins = []config.PluginEntry{{Name: "tool-prune", OnError: pipeline.ErrorPolicyOff}}
+	cases := []struct {
+		name    string
+		boot    *config.Config
+		next    *config.Config
+		refused bool
+	}{
+		{"booted off, auto adds the first operator", withOutbound(nil, "inference-parser"), withOutbound(nil, "inference-parser", "tool-prune"), true},
+		{"booted off, false to true", withOutbound(off), withOutbound(on), true},
+		{"booted on, the only operator set to on_error: off", withOutbound(nil, "tool-prune"), tpOff, false},
+		{"booted on, the last operator removed", withOutbound(nil, "tool-prune"), withOutbound(nil), false},
+		{"booted on, auto to false", withOutbound(nil, "tool-prune"), withOutbound(off, "tool-prune"), false},
+		{"booted on, back on after a reload turned it off", withOutbound(nil, "tool-prune"), withOutbound(nil, "tool-prune"), false},
+		{"booted on, auto to true", withOutbound(nil, "tool-prune"), withOutbound(on, "tool-prune"), false},
+		{"booted off, operators come and go under false", withOutbound(off), withOutbound(off, "tool-prune"), false},
+	}
+	for _, c := range cases {
+		err := validateAccounting(c.boot.AccountingOn(), c.next)
+		if c.refused && (err == nil || !strings.Contains(err.Error(), "accounting.enabled")) {
+			t.Errorf("%s: err = %v, want a refusal naming accounting.enabled", c.name, err)
+		}
+		if !c.refused && err != nil {
+			t.Errorf("%s: refused: %v", c.name, err)
+		}
+	}
+}
+
+// accounting.subscription_weights are read once, when the accountant host is built, so a reload
+// that changes them is refused rather than accepted and not applied. Compared as resolved: an
+// absent block and one spelling out the defaults are the same weights.
+func TestValidateReloadable_RefusesASubscriptionWeightsChange(t *testing.T) {
+	with := func(w *config.SubscriptionWeights) *config.Config {
+		return &config.Config{Accounting: &config.AccountingConfig{Enabled: "true", SubscriptionWeights: w}}
+	}
+	changed := config.DefaultSubscriptionWeights()
+	changed.Output = 4
+	if err := validateReloadable(with(nil), with(&changed)); err == nil || !strings.Contains(err.Error(), "accounting.subscription_weights") {
+		t.Errorf("changed weights: err = %v, want a refusal naming accounting.subscription_weights", err)
+	}
+	same := config.DefaultSubscriptionWeights()
+	if err := validateReloadable(with(nil), with(&same)); err != nil {
+		t.Errorf("the defaults spelled out were refused: %v", err)
+	}
+}
+
+// metrics_push.* is read once at boot, when the push starts, so an edit needs a restart — and
+// the refusal names the block, never the token.
+func TestValidateReloadable_RefusesMetricsPushEdit(t *testing.T) {
+	active := &config.Config{}
+	next := &config.Config{MetricsPush: &config.MetricsPushConfig{URL: "https://c.example", Token: "s3cret"}}
+	err := validateReloadable(active, next)
+	if err == nil {
+		t.Fatal("adding a metrics_push block was accepted")
+	}
+	if !strings.Contains(err.Error(), "metrics_push.*") || strings.Contains(err.Error(), "s3cret") {
+		t.Errorf("error = %v, want metrics_push.* and no token", err)
+	}
+	same := &config.Config{MetricsPush: &config.MetricsPushConfig{URL: "https://c.example", Token: "s3cret"}}
+	if err := validateReloadable(next, same); err != nil {
+		t.Errorf("unchanged metrics_push block was refused: %v", err)
+	}
+	other := &config.Config{MetricsPush: &config.MetricsPushConfig{URL: "https://c.example", Token: "rotated"}}
+	if err := validateReloadable(next, other); err == nil {
+		t.Error("a token change was accepted")
 	}
 }

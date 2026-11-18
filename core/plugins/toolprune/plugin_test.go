@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/settle"
@@ -313,8 +315,8 @@ func finish(t *testing.T, p *pricedPrune, pctx *pipeline.Context, input, cacheRe
 
 func pruneOnce(t *testing.T, p *pricedPrune) *pipeline.Context {
 	t.Helper()
-	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
-	run(t, p.ToolPrune, pctx)
+	pctx := inferenceCtx("/v1/messages", pricedBody, "Read", "NotebookEdit", "Bash")
+	p.run(t, pctx)
 	if !pctx.BodyMutated() {
 		t.Fatal("expected a prune")
 	}
@@ -351,7 +353,14 @@ func TestMetrics_AttributesSavingToTheRightTier(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			p := withRates(t, configured(t, "NotebookEdit"))
-			pctx := pruneOnce(t, p)
+			// The accountant places a saving by its position against the cache marks the body
+			// carries (accountant design §6.2), so a request with no caching is one with no mark.
+			body := pricedBody
+			if tc.cacheRead+tc.cacheWrite == 0 {
+				body = strings.Replace(body, `,"cache_control":{"type":"ephemeral"}`, "", 1)
+			}
+			pctx := inferenceCtx("/v1/messages", body, "Read", "NotebookEdit", "Bash")
+			p.run(t, pctx)
 			finish(t, p, pctx, tc.input, tc.cacheRead, tc.cacheWrite)
 
 			ms := p.Metrics()
@@ -674,9 +683,14 @@ func TestPrune_PathMismatchRecordsThePath(t *testing.T) {
 // The plugin has no resolver any more: it publishes what it removed and reads the priced
 // figure back off the record. So a test that wants a dollar figure has to do what the
 // pipeline does — let the cost owner settle first.
+//
+// The saving on the record is the accountant's (design §5.9), so the pricedPrune also holds the
+// process's accountant host, and its pipelines run with it: the host keeps the client body and
+// receives the ops tool-prune reports, as in production.
 type pricedPrune struct {
 	*ToolPrune
 	rates pricing.Resolver
+	acct  *accounting.Host
 }
 
 func withRates(t *testing.T, p *ToolPrune, entries ...pricing.Entry) *pricedPrune {
@@ -685,15 +699,71 @@ func withRates(t *testing.T, p *ToolPrune, entries ...pricing.Entry) *pricedPrun
 	if err != nil {
 		t.Fatalf("pricing.NewTable: %v", err)
 	}
-	return &pricedPrune{ToolPrune: p, rates: pricing.NewRegistry(tab)}
+	rates := pricing.NewRegistry(tab)
+	h := accounting.New(accounting.Options{Resolver: rates})
+	t.Cleanup(func() { _ = h.Close() })
+	return &pricedPrune{ToolPrune: p, rates: rates, acct: h}
+}
+
+// pricedBody is a request the accountant can price: anthropicBody's tools, the last carrying
+// Claude Code's cache mark, and a user message large enough that the 24,701 prompt tokens the
+// pricing tests bill are a plausible count for its bytes (the library's ratio check).
+var pricedBody = `{"model":"claude-opus-5","tools":[` +
+	`{"name":"Read","description":"read a file","input_schema":{"type":"object"}},` +
+	`{"name":"NotebookEdit","description":"` + strings.Repeat("edit a notebook ", 40) + `","input_schema":{"type":"object"}},` +
+	`{"name":"Bash","description":"run a command","input_schema":{"type":"object"},"cache_control":{"type":"ephemeral"}}` +
+	`],"messages":[{"role":"user","content":"` + strings.Repeat("please summarise this ", 4490) + `"}],"max_tokens":1024}`
+
+// apiKey makes a request billed per token (accountant.BillingFrom), so its saving is basis "usd".
+func apiKey(pctx *pipeline.Context) {
+	if pctx.Headers == nil {
+		pctx.Headers = http.Header{}
+	}
+	pctx.Headers.Set("x-api-key", "sk-ant-api03-test")
+	if pctx.SessionID == "" {
+		pctx.SessionID = "s1"
+	}
+	if pctx.Host == "" {
+		pctx.Host = "api.anthropic.com"
+	}
+}
+
+// run is the package's run with the accountant attached.
+func (p *pricedPrune) run(t *testing.T, pctx *pipeline.Context, policies ...pipeline.ErrorPolicy) {
+	t.Helper()
+	p.runChain(t, pctx, policies, p.ToolPrune)
+}
+
+// runChain is the package's runChain with the accountant attached.
+func (p *pricedPrune) runChain(t *testing.T, pctx *pipeline.Context, policies []pipeline.ErrorPolicy, ps ...pipeline.Plugin) {
+	t.Helper()
+	apiKey(pctx)
+	opts := []pipeline.Option{pipeline.WithAccountant(p.acct)}
+	if len(policies) > 0 {
+		opts = append(opts, pipeline.WithPolicies(policies...))
+	}
+	pipe, err := pipeline.New(ps, opts...)
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	if act := pipe.Run(context.Background(), pctx); act.Type != pipeline.Continue {
+		t.Fatalf("action = %v, want Continue", act.Type)
+	}
 }
 
 // settle stands in for inference-parser: price the response and publish the record,
-// including the saving attributed to this plugin.
+// including the accountant's saving attributed to this plugin.
 func (p *pricedPrune) settle(pctx *pipeline.Context) {
 	s := settle.Settle(pctx, p.rates)
 	settle.Store(pctx, s)
-	settle.Publish(pctx, settle.NewRecord(s, settle.Avoided(pctx, p.rates)))
+	avoided, _, _ := p.acct.Savings(pctx)
+	settle.Publish(pctx, settle.NewRecord(s, avoided))
+}
+
+// avoided is the accountant's savings for pctx, as settle publishes them.
+func (p *pricedPrune) avoided(pctx *pipeline.Context) []event.Saving {
+	ss, _, _ := p.acct.Savings(pctx)
+	return ss
 }
 
 // tierRates builds prompt-tier rates from per-token values. Zero means "no rate
@@ -731,8 +801,8 @@ func configuredJSON(t *testing.T, raw string) *ToolPrune {
 // cache-write split (the cache-miss shape).
 func pruneWithModel(t *testing.T, p *pricedPrune, model string) {
 	t.Helper()
-	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
-	run(t, p.ToolPrune, pctx)
+	pctx := inferenceCtx("/v1/messages", pricedBody, "Read", "NotebookEdit", "Bash")
+	p.run(t, pctx)
 	pctx.Extensions.Inference.Model = model
 	pctx.Extensions.Inference.CacheWriteTokens = 24701
 	// The cost owner runs between the request and OnFinish, exactly as the pipeline
@@ -1024,7 +1094,7 @@ func TestEvent_FieldNamesCostingDependsOn(t *testing.T) {
 	pctx.Extensions.Inference.Model = "claude-opus-5"
 	pctx.Extensions.Inference.CacheWriteTokens = 24701
 
-	got := settle.Avoided(pctx, p.rates)
+	got := p.avoided(pctx)
 	if len(got) != 1 {
 		t.Fatalf("cost/settle found %d savings, want 1 — the event's field names have drifted: %+v", len(got), got)
 	}
@@ -1052,12 +1122,12 @@ func TestEvent_ObserveModeSavingIsProjected(t *testing.T) {
 	// observe is a PIPELINE policy, not plugin config: the plugin measures and skips
 	// SetBody, so the original bytes go upstream and get billed.
 	p := withRates(t, configured(t, "NotebookEdit"), anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
-	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
-	run(t, p.ToolPrune, pctx, pipeline.ErrorPolicyObserve)
+	pctx := inferenceCtx("/v1/messages", pricedBody, "Read", "NotebookEdit", "Bash")
+	p.run(t, pctx, pipeline.ErrorPolicyObserve)
 	pctx.Extensions.Inference.Model = "claude-opus-5"
 	pctx.Extensions.Inference.CacheWriteTokens = 24701
 
-	got := settle.Avoided(pctx, p.rates)
+	got := p.avoided(pctx)
 	if len(got) != 1 {
 		t.Fatalf("no saving reported in observe mode: %+v", got)
 	}
@@ -1071,8 +1141,8 @@ func TestEvent_ObserveModeSavingIsProjected(t *testing.T) {
 // is the one place an operator reads this as money.
 func TestMetrics_ObserveModeDollarsAreNotRealized(t *testing.T) {
 	p := withRates(t, configured(t, "NotebookEdit"), anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
-	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
-	run(t, p.ToolPrune, pctx, pipeline.ErrorPolicyObserve)
+	pctx := inferenceCtx("/v1/messages", pricedBody, "Read", "NotebookEdit", "Bash")
+	p.run(t, pctx, pipeline.ErrorPolicyObserve)
 	pctx.Extensions.Inference.Model = "claude-opus-5"
 	pctx.Extensions.Inference.CacheWriteTokens = 24701
 	p.settle(pctx)
@@ -1179,11 +1249,11 @@ func publishedPrune(t *testing.T, pctx *pipeline.Context) pruneEvent {
 // not spent. SetBody's own answer is what says the prune did not apply.
 func TestPrune_ObservedAfterAnotherWriterIsStillProjected(t *testing.T) {
 	p := withRates(t, configured(t, "NotebookEdit"), anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
-	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
+	pctx := inferenceCtx("/v1/messages", pricedBody, "Read", "NotebookEdit", "Bash")
 	enforced := &bodyWriter{name: "enforced", rewrite: func(b []byte) []byte {
 		return []byte(strings.Replace(string(b), "run a command", "run a shell command", 1))
 	}}
-	runChain(t, pctx, []pipeline.ErrorPolicy{pipeline.ErrorPolicyEnforce, pipeline.ErrorPolicyObserve},
+	p.runChain(t, pctx, []pipeline.ErrorPolicy{pipeline.ErrorPolicyEnforce, pipeline.ErrorPolicyObserve},
 		enforced, p.ToolPrune)
 
 	if !strings.Contains(string(pctx.Body), "NotebookEdit") {
@@ -1204,7 +1274,7 @@ func TestPrune_ObservedAfterAnotherWriterIsStillProjected(t *testing.T) {
 
 	pctx.Extensions.Inference.Model = "claude-opus-5"
 	pctx.Extensions.Inference.CacheWriteTokens = 24701
-	avoided := settle.Avoided(pctx, p.rates)
+	avoided := p.avoided(pctx)
 	if len(avoided) == 0 {
 		t.Fatal("settlement priced no saving at all; the projection should still be reported")
 	}
@@ -1219,39 +1289,6 @@ func TestPrune_ObservedAfterAnotherWriterIsStillProjected(t *testing.T) {
 		if m.Name == "$ saved" {
 			t.Errorf("$ saved = %v; the saving was only measured", m.Value)
 		}
-	}
-}
-
-// A later writer that shrinks the body further leaves tool-prune's own BodyBytesAfter
-// describing a body that never went upstream. Settlement calibrates tokens-per-byte on
-// the bytes the request actually sent, so the saving is not understated by the ratio
-// of the two sizes.
-func TestPrune_SettlementCalibratesOnTheBytesALaterWriterSent(t *testing.T) {
-	p := withRates(t, configured(t, "NotebookEdit"), anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
-	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
-	shrinker := &bodyWriter{name: "shrinker", rewrite: func(b []byte) []byte {
-		return []byte(strings.Replace(string(b), `"description":"run a command",`, "", 1))
-	}}
-	runChain(t, pctx, []pipeline.ErrorPolicy{pipeline.ErrorPolicyEnforce, pipeline.ErrorPolicyEnforce},
-		p.ToolPrune, shrinker)
-
-	ev := publishedPrune(t, pctx)
-	if ev.Projected || ev.BodyBytesAfter <= len(pctx.Body) {
-		t.Fatalf("event = %+v with %d bytes sent; want an applied prune that the shrinker then cut further",
-			ev, len(pctx.Body))
-	}
-	pctx.Extensions.Inference.Model = "claude-opus-5"
-	pctx.Extensions.Inference.CacheWriteTokens = 24701
-	got := settle.Avoided(pctx, p.rates)
-	if len(got) != 1 {
-		t.Fatalf("settlement found %d savings, want 1: %+v", len(got), got)
-	}
-	prompt := pricing.UsageFromInference(pctx.Extensions.Inference).PromptTotal()
-	want := pricing.EstimateTokensFromBytes(ev.BytesRemoved, prompt, len(pctx.Body))
-	if got[0].TokensAvoided != want {
-		t.Errorf("TokensAvoided = %d, want %d calibrated on the %d bytes sent; tool-prune's own "+
-			"%d-byte figure gives %d", got[0].TokensAvoided, want, len(pctx.Body), ev.BodyBytesAfter,
-			pricing.EstimateTokensFromBytes(ev.BytesRemoved, prompt, ev.BodyBytesAfter))
 	}
 }
 

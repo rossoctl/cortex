@@ -50,7 +50,10 @@ it:
 agentop tools scan --write ~/.cortex/config.yaml
 ```
 
-The config is hot-reloaded, so no restart. A reload does rebuild the plugin and
+The config is hot-reloaded, so no restart — unless this adds the first context operator to a
+proxy that started without one. Under `accounting.enabled: auto` that turns accounting on,
+and the reload is refused until `agentop service restart` (the accountant is built at
+startup). A reload does rebuild the plugin and
 therefore **resets its counters** — the same as a process restart.
 
 ### Measure instead of enforce, when you want to
@@ -121,12 +124,14 @@ miss writes the manifest to cache (~1.25x the input rate), a hit reads it (~0.1x
 An aggregate averages the two into a number that describes neither, which is why
 this is per row.
 
-The plugin publishes the byte saving and the applicable rates on the request
-event; the paired response supplies the prompt token total behind the
-bytes-to-tokens ratio and the tier that picks the rate, so `agentop` finishes the
-arithmetic. Pairing is exact, on the proxy-stamped request id. A model with no
-rate shows the token saving with no dollar figure rather than one priced at
-another model's rate.
+The plugin reports each removed tool to Cortex's accountant as an operation
+(`pctx.ReportOps`). Once the response's usage is in, the accountant prices the
+change — its tokens by tier, from where the tool sat against the cache boundary
+— and `inference-parser` publishes the figure in the cost record's `avoided[]`
+(see [`pricing.md`](pricing.md#cost-records)). `agentop` only reads it. A model
+with no rate shows the token saving with no dollar figure rather than one priced
+at another model's rate. With accounting off (`accounting.enabled: false`) no
+saving is recorded.
 
 ### Why tokens are reported per tier and never summed
 
@@ -144,12 +149,11 @@ saves cache-*write* tokens and a hit saves cache-*read* tokens. Traffic that
 alternates shows both rows, and the honest headline is a range rather than a
 point.
 
-The bytes-to-tokens ratio is calibrated on your own traffic — prompt tokens over
-request bytes for the same request, both counted on the body actually sent so
-the two sides agree (after every request writer, not just tool-prune) — rather
-than bundling a tokenizer or assuming a constant.
+The tier comes from the tool's position, not from the request as a whole: a tool
+before the cache boundary saved cache-read (or cache-write, on a cold prefix)
+tokens, one after it saved input tokens.
 
-### The figure is gross, not net
+### The figure is gross; the penalty is beside it
 
 Changing the `remove` list changes the cached prompt prefix, so the first request
 after a change re-writes the whole prefix at the cache-**write** rate (~1.25x
@@ -161,8 +165,11 @@ change.**
 
 Two consequences worth being blunt about:
 
-- **`$ saved` is gross.** It counts what the removed definitions would have cost
-  and subtracts nothing for the re-warm. The row says so.
+- **`$ saved` is gross.** It counts what the removed definitions would have cost.
+  What the change caused — the re-written prefix after a list change — is the
+  accountant's penalty, carried beside it as `penaltyUsd` on the record and
+  `penaltyMicros` in the totals, and never subtracted from it. agentop shows the
+  net (saved minus penalty), which may be negative.
 - **The re-warm is invisible exactly when it is paid.** Applying a list change
   hot-reloads the config, which rebuilds the plugin and resets its counters — so
   the run that incurs the cost starts from zero.
@@ -187,7 +194,10 @@ aggregate:
   deliberately no tokens-avoided aggregate.
 - **Applied only.** Observe-mode projections are excluded, not counted separately — under
   `on_error: observe` every byte stayed on the wire, so the money was spent.
-- **Gross, not net.** Nothing subtracts the cache re-warm, exactly as for `$ saved`.
+- **Gross, with the penalty beside it.** `penaltyMicros` sums what the operators
+  caused; net is `avoidedMicros − penaltyMicros`, and is not floored.
+- **`basis: usd` only.** A request on a subscription login is valued in
+  usage-limit units (`avoidedUnits`), not dollars; see [`pricing.md`](pricing.md#cost-records).
 - **Never added to spend.** It is its own column everywhere it appears, and no surface may
   fold it into a cost total or a budget. A test in `core/cost/usage` asserts that the spend
   totals are unchanged by a saving's presence and that the saving still lands.

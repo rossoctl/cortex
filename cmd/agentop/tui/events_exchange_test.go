@@ -167,7 +167,7 @@ func TestExchange_OpaqueTunnelIsOneRow(t *testing.T) {
 }
 
 func TestExchange_TokensAndCost(t *testing.T) {
-	saving := &event.Saving{Component: "tool-prune", TokensAvoided: 3100, USD: 0.0037, Estimated: true}
+	saving := &event.Saving{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 3100, USD: 0.0037, Estimated: true}
 	m := sizingModel(t, 200, sizingExchange(t, "x", "api.test", t0, 70_600, saving))
 	if got := trimmedCell(t, m, 0, colTokens); got != "70.6k(−3.1k)→208" {
 		t.Errorf("TOKENS = %q, want prompt(saving)→output", got)
@@ -180,7 +180,7 @@ func TestExchange_TokensAndCost(t *testing.T) {
 // The widest merged TOKENS cell measured on real traffic is 20 wide. It must render whole.
 func TestExchange_WidestTokensCellFits(t *testing.T) {
 	ex := sizingExchange(t, "w", "api.test", t0, 100_000,
-		&event.Saving{Component: "tool-prune", TokensAvoided: 10_300, Estimated: true})
+		&event.Saving{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 10_300, Estimated: true})
 	ex[1].Inference.OutputTokens = 99_900
 	m := sizingModel(t, 200, ex)
 	const want = "100.0k(−10.3k)→99.9k"

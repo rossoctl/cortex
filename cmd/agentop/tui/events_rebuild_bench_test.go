@@ -52,7 +52,7 @@ func rebuildBenchModel(b *testing.B, n int) *model {
 		b.Fatal(err)
 	}
 	saved, err := json.Marshal(event.Event{CostUSD: 0.2767, Settled: true, PromptUSD: 0.2546, OutputUSD: 0.0221,
-		Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037, Estimated: true}}})
+		Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 12_300, USD: 0.0037, Estimated: true}}})
 	if err != nil {
 		b.Fatal(err)
 	}

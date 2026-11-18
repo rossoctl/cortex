@@ -29,8 +29,10 @@ RUN test -n "${GO_BUILD_TAGS}" || { \
       echo "GO_BUILD_TAGS is required: plugins are opt-in and an untagged build registers none." >&2; \
       echo "Pass a profile, e.g. --build-arg GO_BUILD_TAGS=\"\$(go -C scripts/profile-tags run . envoy)\"" >&2; \
       exit 1; }
+# VERSION is the image tag (build.yaml passes it): the metrics push sends it as service.version.
+ARG VERSION=dev
 ENV GOWORK=off
-RUN cd cmd/cortex-envoy && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /cortex-envoy .
+RUN cd cmd/cortex-envoy && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w -X main.version=${VERSION}" -o /cortex-envoy .
 
 # Stage 2: Get Envoy binary. Already stripped upstream; nothing to do.
 FROM docker.io/envoyproxy/envoy:v1.37.1@sha256:29496a88fba9c4c9cdef4afe8fec70f536c5ba111b1c2bddbc5436b091ceca33 AS envoy-source

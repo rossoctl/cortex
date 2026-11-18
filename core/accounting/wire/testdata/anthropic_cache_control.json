@@ -1,0 +1,1 @@
+{"model":"claude-sonnet-4-5","tools":[{"name":"t1","description":"d1"}],"system":[{"type":"text","text":"sys-prompt","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"}]}

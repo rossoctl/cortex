@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sort"
 
+	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -50,6 +51,19 @@ type Deps struct {
 	// it. The zero value is false, so a binary that has not decided is treated as a
 	// shared deployment, where a plugin that runs the user's own programs must not.
 	LocalInstall bool
+
+	// Accounting is the process's accountant host, nil when accounting is off. Set it on the
+	// OUTBOUND build only: inference requests leave through that chain. With it set, the
+	// pipeline is built with pipeline.WithAccountant, and it is injected into plugins
+	// implementing AccountingConsumer. Long-lived like Pricing: every build a reload makes gets
+	// the same Host, so its Tracker state survives the reload.
+	Accounting *accounting.Host
+}
+
+// AccountingConsumer is implemented by plugins that read the accountant's figures: the
+// inference parser, which asks for a request's Result when it settles the cost.
+type AccountingConsumer interface {
+	SetAccounting(*accounting.Host)
 }
 
 // LocalInstallConsumer is implemented by plugins that behave differently on a
@@ -121,6 +135,9 @@ func BuildWithDeps(entries []config.PluginEntry, deps Deps, opts ...pipeline.Opt
 		if c, ok := p.(LocalInstallConsumer); ok {
 			c.SetLocalInstall(deps.LocalInstall)
 		}
+		if c, ok := p.(AccountingConsumer); ok && deps.Accounting != nil {
+			c.SetAccounting(deps.Accounting)
+		}
 
 		if c, ok := p.(pipeline.Configurable); ok {
 			if err := c.Configure(e.Config); err != nil {
@@ -151,6 +168,11 @@ func BuildWithDeps(entries []config.PluginEntry, deps Deps, opts ...pipeline.Opt
 		return nil, err
 	}
 	opts = append(opts, pipeline.WithPolicies(policies...))
+	// Checked on the pointer: a nil *Host wrapped in the interface would look set to the
+	// pipeline and every hook call would go to a nil receiver.
+	if deps.Accounting != nil {
+		opts = append(opts, pipeline.WithAccountant(deps.Accounting))
+	}
 	return pipeline.New(ps, opts...)
 }
 

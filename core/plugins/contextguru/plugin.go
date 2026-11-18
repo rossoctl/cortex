@@ -23,9 +23,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/rossoctl/accountant"
+	"github.com/rossoctl/cortex/core/accounting"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/llmclient"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
@@ -36,6 +41,9 @@ import (
 	_ "github.com/rossoctl/context-guru/components/offload"  // register offload components
 	_ "github.com/rossoctl/context-guru/components/reformat" // register reformat components
 	cgconfig "github.com/rossoctl/context-guru/config"
+	"github.com/rossoctl/context-guru/dispatch"
+	"github.com/rossoctl/context-guru/keepalive"
+	"github.com/rossoctl/context-guru/proxyapp"
 	cgstore "github.com/rossoctl/context-guru/store"
 )
 
@@ -94,6 +102,14 @@ func (logEmitter) Run(r cgcomponents.RunReport) {
 		"tokensSaved", r.Saved(), "pctSaved", pct(r.TokensBefore, r.TokensAfter), "components", fired)
 }
 
+// KeepAlivePing logs each ping. It carries no header and no body. pingEmitter adds the
+// accountant's record (ping.go); with no accountant host wired this line is the only record.
+func (logEmitter) KeepAlivePing(r cgcomponents.KeepAliveReport) {
+	slog.Info("context-guru keep-alive ping", "session", r.Session, "model", r.Model,
+		"ping", r.Pings, "cacheRead", r.CacheRead, "cacheWrite", r.CacheWrite,
+		"output", r.Output, "costUSD", r.CostUSD, "status", r.Status, "ms", r.DurationMs)
+}
+
 func pct(before, after int) string {
 	if before <= 0 {
 		return "0%"
@@ -109,14 +125,37 @@ type contextGuruConfig struct {
 	Paths  []string        `json:"paths"`
 	Model  *modelConfig    `json:"model"`
 	Engine json.RawMessage `json:"engine"`
+	// KeepAlive is the opt-in prompt-cache keep-alive. Off unless enabled: true.
+	KeepAlive keepAliveConfig `json:"keep_alive"`
+	// ContextWindow says where model windows come from, for the engine's fraction triggers.
+	ContextWindow windowsConfig `json:"context_window"`
 }
 
 // cgModel adapts an llmclient.Client to context-guru's components.Model interface
-// (single prompt in, text out).
+// (single prompt in, text out). model/host identify the call for accounting
+// (accountant.ModelCall.Model/Host); pctx, when set, is the request this call was made
+// for, and Complete reports the call to it as a KindSpend context operation (W4.6)
+// before returning. pctx is captured at call time because it is per-request while a
+// cgModel wrapping the plugin's static model is shared across requests.
+//
+// The engine calls Complete concurrently (its extract stage runs six calls at once) and
+// sometimes after OnRequest returned (summarize_async, cache_aware_async). So Complete reads
+// nothing of pctx's dispatch state: dryRun is the plugin's on_error: observe state, captured
+// on the request goroutine when the model was built, and the op is reported with
+// pctx.ReportOpsAs under the plugin's own name. A call that returns after the request was
+// accounted has its op dropped by the pipeline and counted in lateDropped.
 type cgModel struct {
-	c         *llmclient.Client
-	maxTokens int
+	c           *llmclient.Client
+	maxTokens   int
+	model       string
+	host        string
+	pctx        *pipeline.Context
+	dryRun      bool
+	lateDropped *atomic.Int64
 }
+
+// pluginName is the plugin's registered name, and the Operator of its model-call spend ops.
+const pluginName = "context-guru"
 
 func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
 	resp, err := m.c.CallRaw(ctx, &llmclient.ChatRequest{
@@ -127,33 +166,120 @@ func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if resp.Usage != nil && m.pctx != nil {
+		cached := resp.Usage.CachedTokens()
+		accepted := m.pctx.ReportOpsAs(pluginName, m.dryRun, accountant.Operation{
+			Kind: accountant.KindSpend,
+			Call: &accountant.ModelCall{
+				Host:  m.host,
+				Model: m.model,
+				Usage: accountant.CallUsage{
+					Usage: accountant.Usage{
+						Input:     resp.Usage.PromptTokens - cached,
+						CacheRead: cached,
+					},
+					Output: resp.Usage.CompletionTokens,
+				},
+				Detached: false,
+			},
+		})
+		if !accepted && m.lateDropped != nil {
+			m.lateDropped.Add(1)
+		}
+	}
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("contextguru: model returned no choices")
 	}
 	return resp.Choices[0].Message.Content, nil
 }
 
+// hostOf extracts the host component of a base URL for accountant.ModelCall.Host (the
+// upstream the call went to). Falls back to the raw string when it does not parse as a
+// URL with a host (e.g. just "host:port" with no scheme).
+func hostOf(baseURL string) string {
+	if u, err := url.Parse(baseURL); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return baseURL
+}
+
 // ContextGuru is the plugin. pipe/store are built once at Configure and shared
 // across requests (store is synchronized; the engine holds no mutable pipeline
-// state). static is the configured cheap model (nil when none).
+// state). static is the configured cheap model's template (nil when none); it
+// carries no pctx, since it is shared across requests — OnRequest copies it per
+// request with staticModelFor so Complete can report its spend op to the right one.
 type ContextGuru struct {
-	cfg      contextGuruConfig
-	pipe     *cgcomponents.Pipeline
-	store    cgstore.Store
-	sentinel string // unguessable value carried by our own LLM calls
-	static   cgcomponents.Model
-	modelTO  time.Duration
-	modelMax int
+	cfg   contextGuruConfig
+	pipe  *cgcomponents.Pipeline
+	store cgstore.Store
+	// stateDisk is the store's disk copy (attachStateDB), nil when the state is in memory only.
+	// Shutdown closes it, which flushes the pending writes.
+	stateDisk *cgstore.Disk
+	sentinel  string // unguessable value carried by our own LLM calls
+	static    *cgModel
+	modelTO   time.Duration
+	modelMax  int
+	rates     pricing.Resolver
+	// local is plugins.Deps.LocalInstall (SetLocalInstall).
+	local bool
+	// acct is the process's accountant host, nil when accounting is off. Keep-alive pings are
+	// accounted through it (ping.go).
+	acct *accounting.Host
+
+	// windows resolves a model's context window; see windows.go.
+	windows proxyapp.Resolver
+	// cgSessions maps a Cortex session id to the session key the engine derived for it
+	// (apply.Trace.Session), so OnFinish records billed input under the key OnRequest reads.
+	// One entry per session, overwritten on each request, bounded by sessionKeysCap.
+	cgSessions sessionKeys
+
+	// Keep-alive, all nil/zero unless keep_alive.enabled. The keeper decides when to ping; disp
+	// only sends and holds the credential.
+	keeper *keepalive.Keeper
+	disp   *cortexDispatcher
+	kaPol  keepalive.Policy
+	// stopped is set at the start of Shutdown. After a hot-reload the old pipeline is shut down
+	// once its drain window ends, and a long streaming request still on it reaches OnFinish
+	// later. keepalive.Keeper.Record has no stopped check of its own, so without this flag that
+	// request would hold its credential again on a keeper whose sweep is gone.
+	stopped atomic.Bool
+	// lateModelCalls counts model calls whose spend op was dropped because the call returned
+	// after its request was accounted (cgModel). Reported by Metrics.
+	lateModelCalls atomic.Int64
 }
+
+// Metrics implements pipeline.MetricsProvider.
+func (p *ContextGuru) Metrics() []pipeline.Metric {
+	return []pipeline.Metric{{
+		Name:  "late_model_calls_dropped",
+		Value: float64(p.lateModelCalls.Load()),
+		Unit:  "count",
+		Note:  "model calls that returned after their request was accounted; their spend reaches no figure",
+	}}
+}
+
+// SetPricingResolver receives Cortex's rate table (plugins.Deps, before Configure). The
+// keep-alive dispatcher prices its pre-flight ceiling from it.
+func (p *ContextGuru) SetPricingResolver(r pricing.Resolver) { p.rates = r }
+
+// SetLocalInstall receives whether this is a laptop install (plugins.Deps, before Configure). It
+// picks two defaults: whether the plugin's model calls and keep-alive pings honour HTTPS_PROXY
+// (not on a local install, where it points at Cortex itself; modelTransport), and whether
+// context_window.model_info defaults to the LiteLLM map (only on a local install; buildWindows).
+func (p *ContextGuru) SetLocalInstall(local bool) { p.local = local }
+
+// SetAccounting receives the process's accountant host (plugins.Deps, before Configure).
+// Keep-alive pings are accounted through it; with none, a ping is only logged.
+func (p *ContextGuru) SetAccounting(h *accounting.Host) { p.acct = h }
 
 // New returns an unconfigured plugin instance.
 func New() *ContextGuru { return &ContextGuru{} }
 
 func init() {
-	plugins.RegisterPlugin("context-guru", func() pipeline.Plugin { return New() })
+	plugins.RegisterPlugin(pluginName, func() pipeline.Plugin { return New() })
 }
 
-func (p *ContextGuru) Name() string { return "context-guru" }
+func (p *ContextGuru) Name() string { return pluginName }
 
 func (p *ContextGuru) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
@@ -188,11 +314,46 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("context-guru build pipeline: %w", err)
 	}
 	p.pipe = pipe
+	// The state keys live a day in memory when a database backs them, as in context-guru's own
+	// proxy: a session that returns later is loaded from the database. An explicit
+	// store.state_ttl_seconds wins.
+	if (cfg.Store.Enabled == nil || *cfg.Store.Enabled) && cfg.Store.StateTTLSeconds == 0 {
+		cfg.Store.StateTTLSeconds = int(stateTTLDefault / time.Second)
+	}
 	p.store = cfg.NewStore()
+	p.windows = buildWindows(p.cfg.ContextWindow, p.local)
 	// Per-process random value, not a constant: outbound headers are the
 	// agent's own request, and a caller who can set headers must not be able
 	// to switch context-guru off by setting them.
 	p.sentinel = llmclient.NewSentinelValue()
+
+	// A keeper built here stays unstarted until Init runs. The normal lifecycle is Configure, then
+	// Init, on a fresh instance; a Configure after Init does not happen there, and a keeper it
+	// built would not sweep until Init is called again.
+	if p.keeper != nil {
+		// A second Configure on one instance must not orphan the first keeper's holds.
+		p.keeper.Shutdown()
+		p.disp.Close()
+		p.keeper, p.disp, p.kaPol = nil, nil, keepalive.Policy{}
+	}
+	if p.cfg.KeepAlive.Enabled {
+		p.kaPol = p.cfg.KeepAlive.policy()
+		p.disp = newCortexDispatcher(newPingClient(p.local))
+		p.disp.sentinel = p.sentinel
+		p.disp.rates = func() pricing.Resolver { return p.rates }
+		p.keeper = keepalive.New(keepalive.Options{Dispatcher: p.disp})
+		args := []any{"idle", p.kaPol.Idle, "maxPings", p.kaPol.MaxPings, "maxUSDPerPing", p.kaPol.MaxUSDPerPing,
+			"minPrefixTokens", p.kaPol.MinPrefixTokens}
+		if p.acct == nil {
+			// A WARN, not a refusal: refusing would turn keep-alive off wherever accounting is off.
+			slog.Warn("context-guru keep-alive enabled: idle sessions are pinged on the caller's own "+
+				"credential, and with no accountant host wired that spend is logged but does not reach "+
+				"Cortex's cost ledger", args...)
+		} else {
+			slog.Info("context-guru keep-alive enabled: idle sessions are pinged on the caller's own "+
+				"credential, and that spend is accounted through the accountant host", args...)
+		}
+	}
 
 	// Model timeouts / caps (shared by static + incoming clients).
 	p.modelTO = defaultModelTimeout
@@ -214,7 +375,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 			// would silently disable the cheap model. Fail loud instead.
 			return fmt.Errorf("context-guru model config: base_url and model must both be set (got base_url=%q model=%q)", m.BaseURL, m.Model)
 		default:
-			p.static = cgModel{
+			p.static = &cgModel{
 				c: llmclient.New(llmclient.Options{
 					Endpoint:           m.BaseURL,
 					Model:              m.Model,
@@ -222,14 +383,23 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 					Timeout:            p.modelTO,
 					SentinelHeaderName: sentinelHeader,
 					SentinelValue:      p.sentinel,
+					HTTPClient:         modelHTTPClient(p.modelTO, p.local),
 				}),
 				maxTokens: p.modelMax,
+				model:     m.Model,
+				host:      hostOf(m.BaseURL),
 			}
 		}
 	}
+	// Last, once nothing above can fail: a Configure that returns an error leaves no disk flusher
+	// running. A second Configure on one instance flushes the first one's first.
+	if p.stateDisk != nil {
+		_ = p.stateDisk.Close()
+	}
+	p.stateDisk = attachStateDB(p.store, p.local)
 	slog.Info("context-guru configured",
 		"paths", p.cfg.Paths, "modelConfigured", p.static != nil,
-		"engineBytes", len(engine))
+		"engineBytes", len(engine), "stateOnDisk", p.stateDisk != nil)
 	return nil
 }
 
@@ -238,35 +408,81 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	// The plugin's own LLM calls carry the sentinel; never recurse into them.
 	// Equality with the per-process secret, not mere presence: a caller
 	// setting the header to any guessed value skips nothing.
-	if pctx.Headers != nil && pctx.Headers.Get(sentinelHeader) == p.sentinel {
+	if p.selfCall(pctx) {
 		pctx.Skip("self_call")
 		return cont
 	}
-	if p.pipe == nil || len(pctx.Body) == 0 || !p.gated(pctx.Path) {
+	if !p.gated(pctx.Path) {
+		return cont
+	}
+	sid := sessionID(pctx)
+	// A real request on this session ends its idle span: the keeper drops the entry (and the
+	// credential it held) before this request goes upstream, so no ping races it. A subagent's
+	// request says nothing about whether the main thread is idle, and the main thread is the only
+	// one recorded, so it leaves the main thread's entry alone.
+	//
+	// isSubagent is checked with whatever Extensions.Inference holds right now — nil when, as
+	// here, this plugin runs before inference-parser's own OnRequest. A request that only turns
+	// out to be a subagent's once inference-parser has run still opens an arrival here, and
+	// OnFinish's own isSubagent check (via recordFor) can then disagree with this one. The
+	// kaArrived marker records what THIS call decided, so OnFinish departs exactly the arrivals
+	// this call made — never fewer, never (on a session a concurrent request shares) one too many.
+	//
+	// UNDER on_error: observe NOTHING IS HELD: a held turn is pinged upstream with the caller's own
+	// credential, and that ping is real, billed spend — the opposite of a shadow run, where
+	// nothing the plugin does takes effect (review finding). The marker tells OnFinish, which
+	// runs with no policy of its own, to record nothing for this request.
+	if p.keeper != nil && pctx.Observing() {
+		pipeline.SetState(pctx, kaShadowStateKey, &kaShadow{})
+	} else if p.keeper != nil && !p.stopped.Load() && sid != "" && !isSubagent(pctx) {
+		p.keeper.Arrive(keepalive.Key{Session: sid})
+		pipeline.SetState(pctx, kaArrivedStateKey, &kaArrived{})
+	}
+	if p.pipe == nil || len(pctx.Body) == 0 {
 		return cont
 	}
 	// The engine Store is keyed by session for per-caller isolation. With no
 	// session identity every such request would share one empty key and bleed
 	// compaction state across unrelated callers, so skip compaction entirely.
-	sid := sessionID(pctx)
 	if sid == "" {
 		slog.Debug("context-guru skipped request with no session identity", "path", pipeline.SanitizeLogValue(pctx.Path))
 		return cont
 	}
 	provider := providerFor(pctx.Path)
 	models := cgcomponents.ModelSpec{
-		Static:   p.static,
+		Static:   p.staticModelFor(pctx),
 		Incoming: p.incomingModel(pctx, provider),
 	}
 	before := len(pctx.Body)
-	out, changed := apply.BodyWithModel(ctx, p.pipe, p.store, provider, pctx.Body, sid, false, models)
+	window, exact := p.windowFor(ctx, pctx)
+	res := apply.BodyOpts(ctx, p.pipe, p.store, apply.Opts{
+		Provider:    provider,
+		Body:        pctx.Body,
+		Session:     sid,
+		Models:      models,
+		Window:      window,
+		WindowExact: exact,
+	})
+	if res.Trace.Session != "" {
+		p.cgSessions.set(sid, res.Trace.Session)
+	}
+	out, changed, ops := reportResult(pctx, res)
 	if changed && len(out) > 0 {
+		// SetBody decides whether this write actually applies (true unless a non-observe
+		// writer ahead of this plugin already enforced its own bytes — pipeline/plugin-reference.md's
+		// shadow-write case). Ops are stamped and reported AFTER this call, never before: reporting
+		// first would price a shadow write as a real saving, which can fail the library's
+		// client-vs-forwarded sum check and zero the whole request's figure, tool-prune's savings on
+		// it included (review finding on plugin.go:485). ReportOps's own DryRun stamp (on_error:
+		// observe) is a different, narrower case — see pipeline.Context.ReportOps's doc comment —
+		// and stampDryRun's OR leaves it untouched when it already applies.
+		applied := pctx.SetBody(out)
+		stampDryRun(ops, !applied)
+		pctx.ReportOps(ops...)
 		// Per-request byte-level view (the engine's token-level view is logged by
 		// logEmitter.Run). The framework also emits a body-mutation session event.
-		// The message follows this plugin's own SetBody result, not BodyMutated: under
-		// on_error: observe the write is a shadow and the client's body goes upstream.
 		msg := "context-guru rewrote request body"
-		if !pctx.SetBody(out) {
+		if !applied {
 			msg = "context-guru would rewrite request body (on_error: observe, not applied)"
 		}
 		slog.Info(msg,
@@ -276,11 +492,157 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	return cont
 }
 
+// stampDryRun sets DryRun on every op whose DryRun is not already true. Called with dryRun=true
+// when the caller's SetBody did not apply the rewrite these ops describe, so a shadow write is
+// never priced as if it reached the wire.
+func stampDryRun(ops []accountant.Operation, dryRun bool) {
+	if !dryRun {
+		return
+	}
+	for i := range ops {
+		ops[i].DryRun = true
+	}
+}
+
+// reportResult turns one apply.BodyOpts result into the body to forward, whether it changed, and
+// the ops that describe it — WITHOUT reporting them. Split out of OnRequest so the accounting
+// side (what would be reported) is testable directly against a hand-built apply.Result, without
+// re-running the engine — a second apply.BodyOpts call against the same session/store would
+// observe state the first call already mutated, not reproduce it.
+//
+// Thread: names the request's accounting thread from the engine's own thread split
+// (design §5.4/§5.5). res.Trace.Thread.ID is empty with no Opts.ThreadOf wired (unchanged
+// in this task), and SetAccountingThread's empty-id no-op then leaves
+// core/accounting.ThreadOf's default rule ("main" for the primary agent) in place.
+//
+// Ops: the engine's Trace.Ops plus the envelope ops (envelopeOps), built only when the engine
+// produced a rewrite (changed && non-empty out). The caller must call pctx.SetBody(out) BEFORE
+// reporting these — mirroring tool-prune's applied := pctx.SetBody(out); ReportOps(...!applied)
+// ordering — and stamp DryRun from whether that write actually applied, not from whether the
+// engine merely computed it: reporting here, before SetBody, would price a shadow write (an
+// earlier enforced writer's bytes already in effect) as a real saving.
+func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed bool, ops []accountant.Operation) {
+	threadParent, _ := res.Trace.Thread.InheritsFrom()
+	pctx.SetAccountingThread(res.Trace.Thread.ID, threadParent)
+	out, changed = res.Body, res.Changed
+	if changed && len(out) > 0 {
+		ops = append(ops, res.Trace.Ops...)
+		// The tools and system changes apply makes report no op of their own; they are found
+		// by diffing this plugin's input against its output (envelope.go). pctx.Body is still
+		// the input here: the caller sets the output after this returns.
+		ops = append(ops, envelopeOps(pctx.Body, out)...)
+	}
+	return out, changed, ops
+}
+
 // OnResponse is a pass-through in v1. The model-driven expand loop (resolve
 // markers from the Store + re-invoke upstream via llmclient) would live here in a
 // later integration; the Store + session key are already threaded for it.
 func (p *ContextGuru) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// selfCall reports whether pctx is one of the plugin's own calls (an engine model call or a
+// keep-alive ping), by equality with the per-process sentinel: a caller setting the header to
+// any guessed value skips nothing.
+func (p *ContextGuru) selfCall(pctx *pipeline.Context) bool {
+	return pctx.Headers != nil && p.sentinel != "" && pctx.Headers.Get(sentinelHeader) == p.sentinel
+}
+
+// Init starts the keep-alive sweep. Nothing to start when keep_alive is off.
+func (p *ContextGuru) Init(context.Context) error {
+	if p.keeper != nil {
+		p.keeper.Start()
+	}
+	return nil
+}
+
+// Shutdown stops the sweep and releases every held credential before returning: on a hot-reload
+// this instance is the old one, and its holds must not outlive it.
+func (p *ContextGuru) Shutdown(context.Context) error {
+	p.stopped.Store(true)
+	if p.keeper != nil {
+		p.keeper.Shutdown()
+	}
+	if p.disp != nil {
+		p.disp.Close()
+	}
+	if p.stateDisk != nil {
+		_ = p.stateDisk.Close()
+	}
+	return nil
+}
+
+// kaArrived marks, on pctx, that THIS request's OnRequest opened a keep-alive arrival — set only
+// when the Arrive gate there passed (see OnRequest). Record itself departs on every path, via its
+// own deferred Keeper.Depart; what it does not cover is a path that never reaches Record at all.
+// OnFinish checks this marker in a deferred call and, when set and Record was not reached, calls
+// Depart with the same key Arrive used — otherwise that arrival stays open on its thread's key
+// forever (until Forget or a restart), which the keeper's sweep reads as a request still in
+// flight and never pings again.
+type kaArrived struct{}
+
+// kaArrivedStateKey is this plugin's own key into pctx.Extensions.Custom (see pipeline.SetState) —
+// per-request, so it cannot be confused with another request sharing the same session.
+const kaArrivedStateKey = "context-guru-keepalive-arrived"
+
+// kaShadow marks a request this plugin saw under on_error: observe: the keeper holds nothing
+// for it, so no keep-alive ping is ever sent on the caller's credential in shadow mode.
+type kaShadow struct{}
+
+// kaShadowStateKey is this plugin's key for kaShadow.
+const kaShadowStateKey = "context-guru-keepalive-shadow"
+
+// OnFinish hands the finished request to the keeper. Here and not in OnResponse: inference-parser
+// settles token counts after this plugin's response hook, and by OnFinish they are final and
+// pctx.Body still holds the compacted bytes that went upstream. A mapping and one Record call —
+// no I/O — so it stays far inside the finish timeout and cannot change the outcome.
+func (p *ContextGuru) OnFinish(_ context.Context, pctx *pipeline.Context) {
+	sid := sessionID(pctx)
+	arrived := pipeline.GetState[kaArrived](pctx, kaArrivedStateKey) != nil
+	// Depart this request's arrival on every path that does not reach Record — the early returns
+	// below, and a panic in recordBilled or recordFor, which the pipeline's dispatchFinish
+	// recovers (without this the arrival would stay open until a restart). Not unconditional:
+	// Record departs for itself, and a second Depart would release a CONCURRENT request's count
+	// on the same thread. `recorded` is set immediately before Record.
+	//
+	// That covers a request that finishes after Shutdown (one still draining on the old pipeline
+	// after a hot-reload), which must hold nothing: no sweep would ever ping it, and Shutdown's
+	// sweep over the live entries does not touch the inflight count. It also covers what
+	// recordFor skips — a subagent request and one with no inference parse.
+	recorded := false
+	defer func() {
+		if arrived && !recorded {
+			p.keeper.Depart(keepalive.Key{Session: sid})
+		}
+	}()
+	if p.stopped.Load() {
+		return
+	}
+	if p.selfCall(pctx) || !p.gated(pctx.Path) {
+		return
+	}
+	if sid != "" {
+		p.recordBilled(pctx, sid)
+	}
+	if p.keeper == nil || pipeline.GetState[kaShadow](pctx, kaShadowStateKey) != nil {
+		return
+	}
+	hdr := pctx.Headers
+	scheme, host := pctx.Scheme, pctx.Host
+	disp := p.disp
+	r, ok := recordFor(pctx, sid, p.kaPol, func() dispatch.Ref { return disp.hold(scheme, host, hdr) },
+		p.pingEmitter(pctx, sid))
+	if !ok {
+		return
+	}
+	recorded = true
+	p.keeper.Record(r)
+}
+
+func isSubagent(pctx *pipeline.Context) bool {
+	inf := pctx.Extensions.Inference
+	return inf != nil && inf.AgentRole == pipeline.AgentRoleSubagent
 }
 
 // gated reports whether the request path is an inference path the plugin acts on.
@@ -291,6 +653,21 @@ func (p *ContextGuru) gated(path string) bool {
 		}
 	}
 	return false
+}
+
+// staticModelFor returns the configured cheap model for one request, carrying pctx so
+// cgModel.Complete can report that model call's spend op to the right request. p.static
+// is a template shared across requests (built once at Configure) and holds no pctx of
+// its own; nil when no static model is configured.
+func (p *ContextGuru) staticModelFor(pctx *pipeline.Context) cgcomponents.Model {
+	if p.static == nil {
+		return nil
+	}
+	m := *p.static
+	m.pctx = pctx
+	m.dryRun = pctx.Observing()
+	m.lateDropped = &p.lateModelCalls
+	return m
 }
 
 // providerFor maps the request path to the bifrost provider dialect the engine
@@ -332,8 +709,14 @@ func (p *ContextGuru) incomingModel(pctx *pipeline.Context, provider bschemas.Mo
 			Timeout:            p.modelTO,
 			SentinelHeaderName: sentinelHeader,
 			SentinelValue:      p.sentinel,
+			HTTPClient:         modelHTTPClient(p.modelTO, p.local),
 		}),
-		maxTokens: p.modelMax,
+		maxTokens:   p.modelMax,
+		model:       model,
+		host:        pctx.Host,
+		pctx:        pctx,
+		dryRun:      pctx.Observing(),
+		lateDropped: &p.lateModelCalls,
 	}
 }
 
@@ -365,13 +748,22 @@ func sessionID(pctx *pipeline.Context) string {
 func (p *ContextGuru) ConfigSchema() []pipeline.FieldSchema {
 	return []pipeline.FieldSchema{
 		{Name: "paths", Type: "[]string", Description: "Inference request paths to compact (default: chat/completions, completions, messages)."},
-		{Name: "model", Type: "object", Description: "Optional static cheap model for LLM-backed components (summarize, extract:code)."},
+		{Name: "model", Type: "object", Description: "Optional static cheap model for LLM-backed components (summarize, extract:code). Its calls honour HTTPS_PROXY except on a local install, where it points at Cortex itself."},
 		{Name: "engine", Type: "object", Description: "Native context-guru config: preset / pipeline / per-component (marker_mode) / store."},
+		{Name: "context_window", Type: "object", Description: "Where model context windows come from, for fraction-of-window triggers (cache_aware_summarizer's 0.9): model_info (litellm | off; default litellm on a local install, off elsewhere, and litellm wherever model_info_url is set), model_info_url, windows (model id -> tokens, exact)."},
+		{Name: "keep_alive", Type: "object", Description: "Opt-in prompt-cache keep-alive: enabled, idle_seconds (270), max_pings (2), max_usd_per_ping (0.50), min_prefix_tokens (80000). Pings bill the caller's own credential; each is accounted through the accountant host where accounting is on (the cost ledger and /v1/usage book it as purpose keep-alive, apart from the agent's requests: keepAlivePings, and its spend by the thread's billing basis — keepAliveMicros on an API key, keepAliveUnits on a subscription, keepAliveUnknownMicros otherwise), and otherwise only logged."},
 	}
 }
 
 var (
-	_ pipeline.Plugin         = (*ContextGuru)(nil)
-	_ pipeline.Configurable   = (*ContextGuru)(nil)
-	_ pipeline.SchemaProvider = (*ContextGuru)(nil)
+	_ pipeline.Plugin               = (*ContextGuru)(nil)
+	_ pipeline.Configurable         = (*ContextGuru)(nil)
+	_ pipeline.SchemaProvider       = (*ContextGuru)(nil)
+	_ pricing.ResolverConsumer      = (*ContextGuru)(nil)
+	_ plugins.AccountingConsumer    = (*ContextGuru)(nil)
+	_ pipeline.Initializer          = (*ContextGuru)(nil)
+	_ pipeline.Shutdowner           = (*ContextGuru)(nil)
+	_ pipeline.Finisher             = (*ContextGuru)(nil)
+	_ cgcomponents.KeepAliveEmitter = logEmitter{}
+	_ cgcomponents.KeepAliveEmitter = pingEmitter{}
 )
