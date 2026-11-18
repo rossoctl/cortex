@@ -174,13 +174,18 @@ func (w *walker) content() ([]pivot.Block, error) {
 }
 
 // block reads one content block. Which members a block has depends on its
-// type. When type is not the first member, the block is read once as raw
-// JSON to find its type, and then read again.
+// type, so a byte scan finds the type before the walk. Only when the scan
+// finds no "type" name in plain letters is the block read once as raw JSON
+// to find its type, and then read again.
 func (w *walker) block() (pivot.Block, error) {
 	var b pivot.Block
 	var kind string
 	src := w
-	if !w.typeFirst() {
+	if t, ok := w.scanType(); ok {
+		if err := json.Unmarshal(t, &kind); err != nil {
+			return b, fmt.Errorf("type: %w", err)
+		}
+	} else {
 		var raw json.RawMessage
 		if err := w.dec.Decode(&raw); err != nil {
 			return b, err
@@ -232,15 +237,69 @@ func (w *walker) block() (pivot.Block, error) {
 	return b, nil
 }
 
-// typeFirst tells if the next value is an object with type as its first
-// member. Every known client writes type first. A value that is not an
-// object also gives true: object then refuses it.
-func (w *walker) typeFirst() bool {
+// scanType finds the first member named "type" in the object that is the
+// next value, at the top level of that object, and gives its value when
+// that value is a JSON string. It decodes nothing. It gives false when the
+// next value is not an object, when no member name is "type" in plain
+// letters, when the value is not a string, or when the bytes end first.
+func (w *walker) scanType() ([]byte, bool) {
 	rest := bytes.TrimLeft(w.body[w.dec.InputOffset():], " \t\r\n,")
 	if len(rest) == 0 || rest[0] != '{' {
-		return true
+		return nil, false
 	}
-	return bytes.HasPrefix(bytes.TrimLeft(rest[1:], " \t\r\n"), []byte(`"type"`))
+	depth, name := 1, true // name: the next string at depth 1 is a member name
+	for i := 1; i < len(rest); i++ {
+		switch rest[i] {
+		case '"':
+			end := stringEnd(rest, i)
+			if end < 0 {
+				return nil, false
+			}
+			if depth == 1 && name {
+				if string(rest[i:end]) == `"type"` {
+					v := bytes.TrimLeft(rest[end:], " \t\r\n")
+					if len(v) == 0 || v[0] != ':' {
+						return nil, false
+					}
+					v = bytes.TrimLeft(v[1:], " \t\r\n")
+					if len(v) == 0 || v[0] != '"' {
+						return nil, false
+					}
+					if e := stringEnd(v, 0); e > 0 {
+						return v[:e], true
+					}
+					return nil, false
+				}
+				name = false
+			}
+			i = end - 1
+		case '{', '[':
+			depth++
+		case '}', ']':
+			if depth--; depth == 0 {
+				return nil, false
+			}
+		case ',':
+			if depth == 1 {
+				name = true
+			}
+		}
+	}
+	return nil, false
+}
+
+// stringEnd gives the index after the closing quote of the JSON string
+// that starts at b[i], or -1 when b ends first.
+func stringEnd(b []byte, i int) int {
+	for j := i + 1; j < len(b); j++ {
+		switch b[j] {
+		case '\\':
+			j++
+		case '"':
+			return j + 1
+		}
+	}
+	return -1
 }
 
 // blockMember reads the member key of a block of this kind. It gives

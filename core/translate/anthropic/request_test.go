@@ -225,3 +225,60 @@ func TestDecodeRequest_TypeExactName(t *testing.T) {
 		t.Errorf("block = %+v", b)
 	}
 }
+
+// TestDecodeRequest_TypeLastOnePass checks that a block with type as its
+// last member costs no more to read than one with type first. The official
+// SDKs write type last: the Go SDK by struct order, the Python SDK by
+// sorted names. Nested blocks of a tool_result are in the count too.
+func TestDecodeRequest_TypeLastOnePass(t *testing.T) {
+	first := []byte(`{"messages":[{"role":"assistant","content":[` +
+		`{"type":"thinking","thinking":"t","signature":"s"},{"type":"text","text":"hi"},` +
+		`{"type":"tool_use","id":"i","name":"n","input":{"a":1}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"i","content":[{"type":"text","text":"r"}]}]}]}`)
+	var v any
+	if err := json.Unmarshal(first, &v); err != nil {
+		t.Fatal(err)
+	}
+	last, _ := json.Marshal(v) // sorted names put type last in each block
+	decode := func(body []byte) func() {
+		return func() {
+			if _, err := (Protocol{}).DecodeRequest(body); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	a, b := testing.AllocsPerRun(50, decode(first)), testing.AllocsPerRun(50, decode(last))
+	if b > a*1.1 {
+		t.Errorf("type last: %v allocations, type first: %v", b, a)
+	}
+	gotFirst, _ := Protocol{}.DecodeRequest(first)
+	gotLast, _ := Protocol{}.DecodeRequest(last)
+	if !reflect.DeepEqual(gotFirst, gotLast) {
+		t.Errorf("type last = %+v, want %+v", gotLast, gotFirst)
+	}
+}
+
+// TestDecodeRequest_TypeScan checks blocks that could fool a scan for the
+// type member: a nested type, a value that reads "type", escaped quotes
+// and an escaped member name.
+func TestDecodeRequest_TypeScan(t *testing.T) {
+	for _, tc := range []struct{ block, want string }{
+		{`{"input":{"type":"text"},"id":"i","type":"tool_use"}`, `{"type":"tool_use","id":"i","input":{"type":"text"}}`},
+		{`{"input":[{"type":"text"}],"type":"tool_use"}`, `{"type":"tool_use","input":[{"type":"text"}]}`},
+		{`{"text":"type","type":"text"}`, `{"type":"text","text":"type"}`},
+		{`{"text":"a\"type\":\"image","type":"text"}`, `{"type":"text","text":"a\"type\":\"image"}`},
+		{`{"text":"a\\","type" : "text"}`, `{"type":"text","text":"a\\"}`},
+		{`{"text":"x","\u0074ype":"text"}`, `{"type":"text","text":"x"}`},
+	} {
+		dec := func(block string) []pivot.Block {
+			got, err := Protocol{}.DecodeRequest([]byte(`{"messages":[{"role":"user","content":[` + block + `]}]}`))
+			if err != nil {
+				t.Fatalf("%s: DecodeRequest: %v", block, err)
+			}
+			return got.Messages[0].Content
+		}
+		if got, want := dec(tc.block), dec(tc.want); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %+v, want %+v", tc.block, got, want)
+		}
+	}
+}

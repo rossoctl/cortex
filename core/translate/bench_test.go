@@ -58,6 +58,26 @@ func BenchmarkAnthropicDecodeRequest(b *testing.B) {
 	}
 }
 
+// BenchmarkAnthropicDecodeRequestTypeLast measures the same body with
+// sorted member names, as the Python SDK writes it: type comes last in
+// each block. It has the same budget of 15 ms.
+func BenchmarkAnthropicDecodeRequestTypeLast(b *testing.B) {
+	var v any
+	if err := json.Unmarshal(claudeCodeBody(), &v); err != nil {
+		b.Fatal(err)
+	}
+	body, err := json.Marshal(v)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(body)))
+	for b.Loop() {
+		if _, err := (anthropic.Protocol{}).DecodeRequest(body); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkRequestAnthropicToChat measures the full conversion. It has no
 // budget.
 func BenchmarkRequestAnthropicToChat(b *testing.B) {
