@@ -19,6 +19,44 @@ Codex's dotenv file, and removes it again.
    `agentop configure codex status` shows what is set, and if the daemon uses Cortex.
 4. Undo: `agentop configure codex disable`. It restarts the daemon in the same way.
 
+## On a Chat Completions server
+
+Codex can use a server that serves only Chat Completions, such as Ollama or
+llama-server. Add the server with `--api chat-completions=<path>`, and send Codex to
+it:
+
+```sh
+agentop server add ollama http://127.0.0.1:11434 --main <model> --helper <model> \
+  --api chat-completions=/v1/chat/completions
+agentop server use ollama --agent codex
+```
+
+The [inference router](../inference-router-plugin.md#servers-that-serve-another-protocol)
+then translates each Responses request to Chat Completions, and each reply back to
+Responses events. Plugins, the session store and the timeline see the Responses side.
+The router sends the key as `Authorization: Bearer`. It removes Codex's OpenAI
+headers (`OpenAI-Beta`, `OpenAI-Organization`, `OpenAI-Project`, `ChatGPT-Account-Id`,
+`Originator`, and each `X-Codex-*` and `X-OpenAI-*` header) before the request goes
+to the server. Codex's WebSocket is declined with a 426 (see
+[WebSocket, carried and parsed](#what-you-see)), so Codex uses HTTPS.
+
+The request row's `modify/translated` record names in `dropped` what the server
+cannot carry. Examples: OpenAI's own `reasoning` items, `web_search_call` and
+`local_shell_call` items, and fields such as `store` and `include`. The thinking
+that a Chat server gives goes back to Codex in a reasoning item, and the next
+request gives it to the server again.
+
+Cortex refuses these requests with a 400 `invalid_request_error`, and sends nothing
+to the server:
+
+| Request | Message |
+|---|---|
+| has `previous_response_id` | Cortex cannot translate a Responses request that refers to server state (previous_response_id). Send the full conversation. |
+| has `text.format` (structured output) | Cortex cannot translate structured output (text.format) yet. |
+| has an `input_file` part, or an image by `file_id` | this inference server cannot read files |
+| has a session that OpenAI compacted | This Codex session was compacted by OpenAI. Cortex cannot send it to another server. Start a new Codex session. |
+| is a `/compact` | Cortex cannot compact a Codex conversation on this server. Start a new Codex session, or move this agent to an OpenAI server with agentop server use. |
+
 ## What you see
 
 **Its own agent.** Codex sends four product tokens, all folded to the canonical agent name

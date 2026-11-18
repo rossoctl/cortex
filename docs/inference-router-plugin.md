@@ -288,29 +288,33 @@ this order:
 3. The agent's protocol is a key of the map: the request goes to that key's path,
    with no translation. Claude Code's `/v1/messages` goes to DeepSeek's
    `/anthropic/v1/messages`.
-4. Cortex can read the agent's protocol (only `anthropic-messages` at this time):
-   Cortex translates the request. The target is the first of `chat-completions`,
-   `anthropic-messages`, `responses` that is in the map and that Cortex can write
-   (only `chat-completions` at this time). The request goes to the target's path,
-   with no query string. If no protocol in the map is a target, Cortex sends
-   nothing and answers a 502 Anthropic `api_error`
-   (`deny/cannot_translate`): "Cortex cannot translate anthropic-messages to
+4. Cortex can read the agent's protocol (`anthropic-messages` and `responses` at
+   this time): Cortex translates the request. The target is the first of
+   `chat-completions`, `anthropic-messages`, `responses` that is in the map and that
+   Cortex can write (only `chat-completions` at this time). The request goes to the
+   target's path, with no query string. Codex's `/backend-api/codex/responses` goes
+   to a Chat-only server's `/chat/completions`. If no protocol in the map is a
+   target, Cortex sends nothing and answers a 502 `api_error` in the agent's
+   protocol (`deny/cannot_translate`): "Cortex cannot translate \<source\> to
    \<keys\> yet. Use a translation server for this pair". The message names each
    map key, sorted, joined with " or ". For that pair, see
    [`translation-server.md`](translation-server.md).
-5. Otherwise (a chat-completions or Responses request): the request goes as it is,
-   with no translation and no 502.
+5. Otherwise (a chat-completions request, or a path with no known protocol): the
+   request goes as it is, with no translation and no 502.
 
 **A translated request.** Every plugin, the session store, the timeline and the
-cost ledger see only the Anthropic side: the request as the agent sent it, and the
-reply as the agent gets it. The proxy converts the request after the last request
-plugin, and it converts the reply before a reply plugin reads it. Streams stay
-incremental. The request row carries the framework's `modify/translated` record,
-with `from`, `to`, `path` (the path sent upstream), and `dropped` when the
-conversion removed fields (for example `metadata,top_k`). A request that the target
-cannot carry, such as one with a PDF document, gets a 400 `invalid_request_error`
-(`deny/translation_refused`), and nothing goes upstream. The raw capture keeps the
-translated request and the server's reply before translation.
+cost ledger see only the agent's side: the request as the agent sent it (Anthropic
+Messages or Responses), and the reply as the agent gets it. The proxy converts the
+request after the last request plugin, and it converts the reply before a reply
+plugin reads it. Streams stay incremental. The request row carries the framework's
+`modify/translated` record, with `from`, `to`, `path` (the path sent upstream), and
+`dropped` when the conversion removed fields (for example `metadata,top_k`). A
+request that the target cannot carry gets a 400 `invalid_request_error` in the
+agent's protocol (`deny/translation_refused`), and nothing goes upstream. Examples:
+an Anthropic request with a PDF document, and the Codex requests in
+[Codex on a Chat Completions server](agents/codex.md#on-a-chat-completions-server).
+The raw capture keeps the translated request and the server's reply before
+translation.
 
 **The auth header.** The sent request has only the header that this table picks.
 The router removes the agent's `Authorization`, `X-Api-Key` and `Api-Key` first,
