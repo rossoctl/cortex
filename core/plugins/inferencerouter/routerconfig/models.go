@@ -182,7 +182,7 @@ func fetchModelList(ctx context.Context, client *http.Client, u string, a Auth, 
 	var list struct {
 		Data []struct {
 			ID        string          `json:"id"`
-			ModelName json.RawMessage `json:"model_name"` // not a string on some /v1/models servers
+			ModelName json.RawMessage `json:"model_name"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxModelList)).Decode(&list); err != nil {

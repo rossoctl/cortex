@@ -1619,8 +1619,7 @@ refusal is believed for an hour, and a session keeps the model it was given.
     the same reply, the message shows it: then the model or the key is wrong,
     not the path.
 
-  Each probe request costs a few tokens. The probe runs only in `add`: to probe
-  again, run `add` again.
+  The probe runs only in `add`: to probe again, run `add` again.
 
   **IBM Bob.** For a host that ends in `.bob.ibm.com`, `add` sets
   `auth_header: x-api-key` and the header `User-Agent: bob-shell`.
