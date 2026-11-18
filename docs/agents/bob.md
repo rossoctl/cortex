@@ -9,13 +9,15 @@ adds Bob tasks from before Cortex.
 
 1. Run `agentop configure bob enable`. One command does both halves: the editor's
    `settings.json`, and a `bob` function in `~/.zshrc` or `~/.bashrc`. It shows
-   every change and asks once. `--yes` skips the question.
+   every change and asks once. `--yes` skips the question. Off macOS, add
+   `--settings PATH` with the path of Bob's `settings.json` to every
+   `configure bob` command, `disable` and `status` too. Without it, the command
+   skips the editor half and exits 1. Off macOS, `enable` also prints how to add
+   the CA to the system trust store. That step needs `sudo`, so run it yourself
+   before you restart Bob.
 2. Restart the editor. On macOS, quit IBM Bob and reopen it from the Dock or
    Spotlight. A Bob that starts from a terminal takes that terminal's environment
-   and does not read the CA block. On other platforms, add `--settings PATH` with
-   the path of Bob's `settings.json`. Without it, `enable` skips the editor half
-   and exits 1. Then restart Bob. `enable` prints how to add the CA to the system
-   trust store. That step needs `sudo`, so you run it yourself.
+   and does not read the CA block.
 3. Open a new terminal and run `bob`. A terminal that was open before `enable`
    does not have the function.
 4. Check: run `agentop observe`, send one prompt, and see a row for Bob.
@@ -107,6 +109,8 @@ Rules: [`POST /v1/import`](../session-api.md#post-v1import--transcript-import-la
 - **`enable` refuses `settings.json`.** It refuses a file with comments, a proxy
   that it does not own, a file that holds only `null`, and a missing `User`
   directory. See [What it knows, and what it does not](#what-it-knows-and-what-it-does-not).
+  On macOS it also refuses an `http.systemCertificates` value that you set. See
+  [Trusting Cortex's CA without the keychain (macOS)](#trusting-cortexs-ca-without-the-keychain-macos).
 - **`status` says "cannot tell".** `~/.cortex/config.yaml` is missing or not
   readable. See [What it knows, and what it does not](#what-it-knows-and-what-it-does-not).
 - **An extension's traffic does not go through Cortex.** An extension with its own
@@ -145,7 +149,7 @@ worse than the setting is worth. `disable` takes the lines back out the same way
 so enable-then-disable returns the file byte-for-byte.
 
 ```sh
-agentop configure bob enable      # write the settings (and, on macOS, the shell block)
+agentop configure bob enable      # write the settings and the bob function (on macOS, also the CA block)
 agentop configure bob disable     # remove what enable wrote
 agentop configure bob status      # report, and act on nothing: the verdict, then one line per half
 ```
@@ -300,9 +304,7 @@ which is worse than a refusal that names the flag.
 
 `agentop exec -- bob` routes one invocation. `agentop configure bob enable`
 makes that the meaning of `bob` in every new shell, by appending a delimited
-block to your rc file. The same command configures
-[the editor](#routing-the-ibm-bob-editor-through-cortex-agentop-configure-bob),
-and does both:
+block to your rc file:
 
 ```sh
 # >>> cortex agentop (bobshell) >>>

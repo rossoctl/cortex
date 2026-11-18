@@ -1192,9 +1192,8 @@ were reading instead.
 
 Each harness has its own `agentop configure <harness>` command. The guides for Bob,
 OpenCode and Pi are listed in [Per-agent configure](#per-agent-configure).
-To see all of them at once — without running
-five `agentop configure <harness> status` commands and comparing five different output
-shapes — run it with no harness name:
+To see all of them at once — without running five `agentop configure <harness> status`
+commands and comparing five different output shapes — run it with no harness name:
 
 ```console
 $ agentop configure status

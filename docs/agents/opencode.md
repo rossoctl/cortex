@@ -10,12 +10,12 @@ through Cortex and takes that out again.
 
 1. Enable: `agentop configure opencode enable`. It writes the proxy and CA variables
    into the service's own environment (`service.json`) through the OpenCode CLI. It
-   shows the changes and asks first. `--yes` skips the question.
-2. Start the agent: run `opencode` as usual. If the service runs, `enable` restarts it
-   once with `opencode service restart`. That interrupts every OpenCode session that
-   uses it, so `enable` says so before it asks. If the service is stopped, the next
-   `opencode` starts it with the new environment. If the restart fails, run
-   `opencode service restart`.
+   shows the changes and asks first. `--yes` skips the question. If the service runs,
+   `enable` restarts it once with `opencode service restart`. That interrupts every
+   OpenCode session that uses it, so `enable` says so before it asks. If the restart
+   fails, run `opencode service restart`.
+2. Start the agent: run `opencode` as usual. If the service is stopped, this starts it
+   with the new environment.
 3. Check: run `agentop observe`, send one prompt, and see a row for OpenCode.
    `agentop configure opencode status` shows what is set and what the running service
    uses.

@@ -227,7 +227,7 @@ pre-commit run --files docs/agents/pi.md
 
 ### Task T4: Replace the README's per-agent sections with one-line links
 
-Depends on: none. (It removes text. T1-T3 read that text from the base commit, not from the worktree.)
+Depends on: T1. (T4 alone keeps the old `docs/agents/bob.md` link to the README's bob section, which T1 fixes. T1-T3 read the removed text from the base commit, not from the worktree.)
 
 Files: `cmd/agentop/README.md`, `cmd/agentop/cmd_opencode_test.go`, `cmd/agentop/cmd_bobshell_test.go`. Estimate: 360 counted lines (about 350 README lines deleted, 6 added, small Go edits).
 
