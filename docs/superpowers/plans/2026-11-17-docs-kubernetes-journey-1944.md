@@ -78,7 +78,7 @@ Checked on 2026-11-17. Use these values. Do not look them up again.
   2. Deploy an agent: link the Weather Agent walkthrough (`https://github.com/rossoctl/cortex-demos/blob/main/weather-agent/demo-ui.md`).
   3. Opt a workload in: link `#opt-a-workload-in`.
   4. Verify: link `#verify-the-sidecar`.
-  5. Configure plugins: link `framework-architecture.md#example`, `framework-architecture.md#9-config-hot-reload` and `plugin-catalog.md`.
+  5. Configure plugins: name the ConfigMap `authbridge-config-<agent>` (mounted at `/etc/authbridge/config.yaml`, edit with `kubectl edit configmap authbridge-config-<agent> -n <ns>`, kubelet syncs it in about 60 s). Link `framework-architecture.md#example`, `framework-architecture.md#9-config-hot-reload` and `plugin-catalog.md`.
   6. Troubleshoot: link `#troubleshooting`.
   Merge the old "Getting a cluster" and "Start here" text into this table and the topic table. Do not keep both.
 - [ ] **Step 2:** Add `## Opt a workload in` with the operator facts above: namespace label, workload label, opt-out label, `injectTools`, `globalEnabled`, pod CREATE only, mode chain, mode values. Put this HTML comment at the top of the section: `<!-- Checked against rossoctl/operator e9a2c225: operator/internal/webhook/injector/pod_mutator.go (InjectAuthBridge), constants.go, charts/operator/templates/webhook/webhooks.yaml. -->`. Give this minimal example:
@@ -131,6 +131,7 @@ Estimated counted lines: 150.
   - Replace both tables, the "only these two modes" paragraph and the mode-chain sentence in "Deployment Modes" with two lines: images and modes are in `../cmd/README.md`, and how the operator picks a mode is in `kubernetes.md`. Link `kubernetes.md` with no anchor (T1 adds the anchors at the same time).
   - Replace "Prerequisites" and "Quick Setup" with one line that links `kubernetes.md`.
   - In the profile table, replace `all fourteen` with a link to `../scripts/profile-tags/profiles.go`.
+  - Keep the headings `## Deployment Modes`, `### \`spiffe:\` configuration` and `## Build-tag plugin selection` with their text unchanged: `CONTRIBUTING.md`, `core/plugins/README.md` and `docs/configuration.md` link the anchors `#build-tag-plugin-selection` and `#spiffe-configuration`.
   - Replace "Component Documentation" with one line that links `../cmd/README.md` and `../core/README.md`. Keep the ClientRegistrationReconciler sentence only once in the file.
 - [ ] **Step 2:** `cmd/README.md`: title `# Cortex binaries`. First sentence: "Two sidecar binaries, `cortex` and `cortex-envoy`, plus the `agentop` TUI." Replace the `../CLAUDE.md#config-hot-reload-9093reloadstatus` link with `../docs/framework-architecture.md#9-config-hot-reload`.
 - [ ] **Step 3:** `core/README.md`: line 62's `CLAUDE.md` link becomes `../docs/framework-architecture.md#operator-configuration-session`. Keep line 25's link (no user doc holds the frozen-name table).
@@ -206,15 +207,15 @@ Estimated counted lines: 110.
 - [ ] **Step 5:** Run `grep -rn 'session-export-guide' --include='*.md' --include='*.go' --include='*.sh' --exclude-dir=superpowers --exclude-dir=.claude .`. Expected: no output. Run `python3 scripts/dev/check-doc-links.py`. Expected: exit 0. Run `(cd core && GOWORK=off go test -run TestDocExampleRecordMatchesWire ./sessionexport/)`. Expected: `ok`.
 - [ ] **Step 6:** Commit `docs: Merge the export walkthrough into session-export.md`.
 
-Estimated counted lines: 1050 (596 deleted from the guide, about 450 net added to `session-export.md`).
+Estimated counted lines: 1360 (596 deleted with the guide, about 160 removed and 600 added in the rewrite of `session-export.md`).
 
 ## PRs
 
-Total estimated counted lines: about 1420. That is at most 2000, so there is one PR.
+Total estimated counted lines: about 1730. That is at most 2000, so there is one PR.
 
 | PR | Title | Parent | Tasks | estLines |
 |---|---|---|---|---|
-| P1 | `docs: Add the Kubernetes journey and clean up the contributor docs` | none | T1, T2, T3, T4, T5 | 1420 |
+| P1 | `docs: Add the Kubernetes journey and clean up the contributor docs` | none | T1, T2, T3, T4, T5 | 1730 |
 
 ## Gate
 
@@ -223,6 +224,8 @@ Run from the worktree root:
 ```sh
 python3 scripts/dev/check-doc-links.py && pre-commit run --all-files && (cd core && GOWORK=off go test ./sessionexport/) && test ! -e docs/session-export-guide.md && ! grep -rn 'session-export-guide' --include='*.md' --include='*.go' --include='*.sh' --exclude-dir=superpowers --exclude-dir=.claude . && grep -q 'rossoctl.io/inject: disabled' docs/kubernetes.md && grep -q 'rossoctl-enabled' docs/kubernetes.md && python3 -c "import re,pathlib as P;R=P.Path('.').resolve();S={'.git','.claude','node_modules','testdata'};M=[p for p in R.rglob('*.md') if not S&set(p.relative_to(R).parts) and not str(p.relative_to(R)).startswith('docs/superpowers')];L={(p.parent/t.split('#')[0]).resolve() for p in M for t in re.findall(r'\]\(([^)\s#]+)',p.read_text(errors='ignore')) if '://' not in t};L|={q/'README.md' for q in L if q.is_dir()};O=[str(p.relative_to(R)) for p in M if p.resolve() not in L and not re.match(r'core/(pipeline|plugins)/README.md|docs/proposals/',str(p.relative_to(R)))];print(*O,sep='\n');raise SystemExit(bool(O))"
 ```
+
+The gate has no format or vet step: no task changes Go, Rust or Python code. On the unchanged base (checked 2026-11-17), `check-doc-links.py` exits 0. The orphan check exits 1 and lists the three base orphans named in "Facts checked". T3 and T4 link them. This is a fault in the base docs, not in how the step is called.
 
 The orphan check lists each `.md` file outside `docs/superpowers/` that no other `.md` file links, except `core/pipeline/README.md`, `core/plugins/README.md` and `docs/proposals/`. It exits 1 when it finds one. The spellcheck job (pyspelling) runs only in CI. Add any word it rejects to `.github/spellcheck/.wordlist.txt`.
 
