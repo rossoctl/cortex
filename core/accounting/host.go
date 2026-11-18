@@ -88,9 +88,13 @@ type Host struct {
 	// dirty is set when a record changes the Tracker state (EndRequest, Compute), and cleared by
 	// a periodic save. The library's Snapshot holds its tracker lock for the whole marshal,
 	// which blocks every BeginRequest meanwhile, so an idle process does not take it at all.
-	dirty     atomic.Bool
-	closeOnce sync.Once
-	closeErr  error
+	dirty atomic.Bool
+	// snapshotTooBig is true while the state is over snapshotMaxBytes, so save WARNs once per
+	// crossing. Only save touches it, and saves are serialized: the saveLoop goroutine, then
+	// Close after saver.Wait.
+	snapshotTooBig bool
+	closeOnce      sync.Once
+	closeErr       error
 
 	mu sync.Mutex
 	// closed is set under mu by Close, before it calls observing.Wait(): observe's own Add(1)

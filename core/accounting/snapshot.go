@@ -18,6 +18,14 @@ const snapshotEvery = 60 * time.Second
 // same).
 const snapshotMaxAge = time.Hour
 
+// snapshotMaxBytes caps the saved state. The library writes every thread it holds, up to its
+// 10,000-thread cap and with no age limit, so on a laptop the file grows for weeks; at the cap it
+// can pass 300 MB, rewritten and synced on every save (rossoctl/accountant#88 asks for a cutoff).
+// Past this size the state is not saved, and the old file is removed so a restart does not load
+// state that is out of date: a restart then starts fresh, which costs the figures of caches that
+// were still warm, nothing more. A var so a test can lower it.
+var snapshotMaxBytes = 20 << 20 // 20 MiB
+
 // snapshotFile is the file's form. State is accountant.Trackers.Snapshot's JSON, which encoding/json
 // writes as base64 for a []byte. SavedAt is checked, not the file's mtime: a copy or a restore
 // from backup changes the mtime and leaves the content's age as it was.
@@ -56,6 +64,19 @@ func (h *Host) save() error {
 	if err != nil {
 		return err
 	}
+	if len(state) > snapshotMaxBytes {
+		// WARN once per crossing, not on every save: the periodic save runs every minute.
+		if !h.snapshotTooBig {
+			h.snapshotTooBig = true
+			slog.Warn("accounting: the accountant state is too large to save; a restart will start fresh",
+				"path", h.snapshotPath, "bytes", len(state), "limit", snapshotMaxBytes)
+		}
+		if err := os.Remove(h.snapshotPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	h.snapshotTooBig = false
 	data, err := json.Marshal(snapshotFile{SavedAt: h.now().UTC(), State: state})
 	if err != nil {
 		return err

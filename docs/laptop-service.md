@@ -758,7 +758,9 @@ accounting:
 | `subscription_weights` | the API rate ratios | How much of a subscription's usage limit one token of each tier uses. A saving on a subscription login is valued in these units (`units`, `penaltyUnits`), never in dollars. A key you leave out keeps its default; an explicit `0` stays `0`; a negative weight is refused. |
 
 On a local install the accountant keeps its state in `~/.cortex/accountant-state.json`, so
-a restart does not forget which prefix the provider has cached. Both fields are read once at
+a restart does not forget which prefix the provider has cached. The file holds hashes and sizes,
+never prompt text. If the state passes 20 MiB, Cortex stops saving it, removes the file and
+logs one WARN (`too large to save`); a restart then starts fresh. Both fields are read once at
 startup. A reload that changes a weight is refused, and so is a reload that turns accounting
 on (as resolved) when the proxy started with it off; `agentop service restart` applies either.
 A reload that turns it off is accepted: the accountant stays idle until a later reload turns

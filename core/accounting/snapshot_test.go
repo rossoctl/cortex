@@ -145,3 +145,40 @@ func TestSnapshot_OnlyARecordMarksTheStateChanged(t *testing.T) {
 		t.Error("a priced request did not mark the state changed")
 	}
 }
+
+// Over snapshotMaxBytes the state is not saved: the old file goes, so a restart starts fresh
+// rather than loading out-of-date state, with one WARN per crossing. Back under, saving resumes.
+func TestSnapshot_TooLargeIsNotSaved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accountant-state.json")
+	h := hostWithState(t, path, time.Now)
+	if err := h.save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("no file after a normal save: %v", err)
+	}
+
+	logs := captureWarn(t)
+	prev := snapshotMaxBytes
+	snapshotMaxBytes = 10
+	t.Cleanup(func() { snapshotMaxBytes = prev })
+	for i := 0; i < 3; i++ {
+		if err := h.save(); err != nil {
+			t.Fatalf("save over the cap: %v", err)
+		}
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the old file is still there (err %v), want it removed", err)
+	}
+	if n := strings.Count(logs.String(), "too large to save"); n != 1 {
+		t.Errorf("%d WARNs for three saves over the cap, want 1:\n%s", n, logs)
+	}
+
+	snapshotMaxBytes = prev
+	if err := h.save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("no file after the state fits again: %v", err)
+	}
+}
