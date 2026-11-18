@@ -25,7 +25,9 @@ KEPT_PATHS = [
         "cmd/agentop/cmd_update.go, cmd/agentop/setup_step_binaries.go, cmd/cortex/praxis.go, scripts/install.sh",
     ),
     ("docs/session-export.md", "", "cmd/agentop/cmd_export.go"),
-    ("docs/laptop-local-model.md", "", "cmd/agentop/cmd_server.go"),
+    ("docs/inference-servers.md", "", "cmd/agentop/cmd_server.go"),
+    # Released agentop binaries print this path.
+    ("docs/laptop-local-model.md", "", "agentop server --help in released binaries"),
     (
         "docs/laptop-service.md",
         "",

@@ -116,7 +116,7 @@ server's key in the `X-Api-Key` or `Authorization` header OpenCode sent, and add
 offered by OpenCode once it has a Zen key: any value in `OPENCODE_API_KEY` will
 do, since the router replaces it. A session already running on Zen when OpenCode
 is routed stays on Zen. A local model server such as Ollama works the same
-way, and [Run an agent on a local model](../laptop-local-model.md) walks
+way, and [Set up a local model](../inference-servers.md#set-up-a-local-model) walks
 setting one up.
 
 If the server's model has a smaller output limit or context window than the model

@@ -49,7 +49,7 @@ agentop cost --window month --by agent
 
 **Switch model servers without touching your agent.** Provider down, or want the
 traffic to stay local? Send new sessions to a LiteLLM gateway or Ollama. For Ollama,
-pull the model and [raise its context length](./docs/laptop-local-model.md#context-length) first.
+pull the model and [raise its context length](./docs/inference-servers.md#context-length) first.
 
 ```sh
 echo ollama | agentop server add ollama http://localhost:11434 \
@@ -57,7 +57,7 @@ echo ollama | agentop server add ollama http://localhost:11434 \
 agentop server use ollama --agent claude-code
 ```
 
-Guides: [local models](./docs/laptop-local-model.md) · [IBM servers](./docs/laptop-ibm-inference-servers.md) · [pricing](./docs/pricing.md)
+Guides: [inference servers](./docs/inference-servers.md) · [pricing](./docs/pricing.md)
 
 ## How it works
 

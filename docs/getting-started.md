@@ -113,7 +113,7 @@ More: [Using agentop](using-agentop.md).
 ## Next steps
 
 - Add the history from before Cortex: `agentop import --dry-run`, then `agentop import`. Read [Importing agent history](../cmd/agentop/README.md#importing-agent-history-agentop-import).
-- Change the model server: `agentop server`. Read [laptop-local-model.md](laptop-local-model.md).
+- Change the model server: `agentop server`. Read [inference-servers.md](inference-servers.md).
 - See the cost: `agentop cost --window month --by agent`. Read [pricing.md](pricing.md).
 
 ## Undo it

@@ -58,14 +58,14 @@ list. Claude Code is the only agent it can build a list for. See
 ## Switching inference servers
 
 With more than one inference server — a LiteLLM gateway, or a local model
-server such as Ollama ([setting one up](../laptop-local-model.md)) —
+server such as Ollama ([setting one up](../inference-servers.md#set-up-a-local-model)) —
 `agentop server` — or `S` on agentop's agents pane — chooses which one Claude
 Code's **new** sessions use, with one Claude Code configuration and without
 restarting anything. A running conversation stays on
 the server it started on, with the exceptions below.
 See [Choosing an inference server](../../cmd/agentop/README.md#choosing-an-inference-server-agentop-server).
 To use IBM's servers (ete-int, ete-ext and Bob), see
-[Route an agent to IBM's inference servers](../laptop-ibm-inference-servers.md).
+[Route an agent to another inference server](../inference-servers.md).
 On Bob, Cortex translates each request to chat completions.
 
 Claude Code keeps naming the model it asked for, so agentop is where the server

@@ -1433,7 +1433,7 @@ Ollama, vLLM and llama.cpp's `llama-server` are added like any other server. Non
 of them checks the key unless started with one, but `add` needs one, so give any word.
 Setting the server itself up — installing it, picking a model, the context
 length — is walked in [Run an agent on a local
-model](../../docs/laptop-local-model.md). An agent keeps asking for its own
+model](../../docs/inference-servers.md#set-up-a-local-model). An agent keeps asking for its own
 model names, which a local server does not have;
 the server's refusal is answered with the `--main` or `--helper` model, as a
 LiteLLM refusal is:
@@ -1453,7 +1453,7 @@ so their `--main` and
 router does not read. A prompt larger than the server's window is trimmed by Ollama
 rather than refused, so set its context length above the agent's prompts: Claude
 Code's opening turn can pass 64k tokens, Bob's reach about 21k. On a Mac with
-less than 64 GB, see [Choose a model](../../docs/laptop-local-model.md#choose-a-model).
+less than 64 GB, see [Choose a model](../../docs/inference-servers.md#choose-a-model).
 
 ### Importing agent history (`agentop import`)
 
