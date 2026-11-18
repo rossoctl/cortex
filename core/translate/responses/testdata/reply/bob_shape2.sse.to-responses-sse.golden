@@ -1,0 +1,33 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"chatcmpl-b2","object":"response","model":"claude-opus-5-5","status":"in_progress"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_0","summary":[]}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_0","summary":[],"encrypted_content":"cortex1:eyJrIjoidGhpbmtpbmciLCJzIjoiQ0FRU3NpZyJ9"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress","content":[]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_1","output_index":1,"content_index":0,"delta":"I will list the files."}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","item_id":"msg_1","output_index":1,"content_index":0,"text":"I will list the files."}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"I will list the files.","annotations":[]}]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"tooluse_Zq1","name":"execute_command","arguments":""}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_2","output_index":2,"delta":"{\"command\":\"ls\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"tooluse_Zq1","name":"execute_command","arguments":"{\"command\":\"ls\"}"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"chatcmpl-b2","object":"response","model":"claude-opus-5-5","status":"completed","output":[],"usage":{"input_tokens":22333,"input_tokens_details":{"cached_tokens":21649,"cache_write_tokens":682},"output_tokens":216,"total_tokens":22549}}}
+

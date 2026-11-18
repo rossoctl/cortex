@@ -51,3 +51,25 @@ func BenchmarkDecodeRequest(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkEncodeReplyStream measures rule R15 on the reply side: a stream
+// of 2,000 pivot events, text and tool-input deltas.
+func BenchmarkEncodeReplyStream(b *testing.B) {
+	evs := []pivot.Event{start(), open(0, pivot.BlockText)}
+	for range 1000 {
+		evs = append(evs, delta(0, pivot.DeltaText, "some words of text "))
+	}
+	evs = append(evs, closeBlock(0), openTool(1, "call_1", "shell"))
+	for range 994 {
+		evs = append(evs, delta(1, pivot.DeltaInputJSON, `"piece",`))
+	}
+	evs = append(evs, closeBlock(1), usage(usageCache), stop("tool_use"))
+	req := codexReq(b)
+	for b.Loop() {
+		enc := Protocol{}.NewReplyEncoder(req, true)
+		for _, ev := range evs {
+			enc.Encode(ev)
+		}
+		enc.End()
+	}
+}

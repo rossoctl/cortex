@@ -1,0 +1,1 @@
+{"error":{"message":"the inference server sent input for the tool \"apply_patch\" that is not a JSON object with a string input","type":"api_error","code":"api_error"}}

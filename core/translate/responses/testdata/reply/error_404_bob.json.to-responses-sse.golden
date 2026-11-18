@@ -1,0 +1,3 @@
+event: response.failed
+data: {"type":"response.failed","response":{"id":"","object":"response","model":"claude","status":"failed","output":[],"error":{"code":"not_found_error","message":"model \"claude-opus-5-5\" not found or not accessible"}}}
+
