@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -139,17 +140,11 @@ func (c *Context) RedirectTarget() (scheme, host string, ok bool) {
 // went to, and the path the client named is kept in the modify/path_rewritten record.
 // The listener applies the copy RedirectPath reports.
 func (c *Context) SetRedirectPath(path string) error {
-	switch {
-	case c.inFinish:
-		return errors.New("pipeline: SetRedirectPath refused in OnFinish: the request has already been sent")
-	case c.currentPhase != InvocationPhaseRequest:
-		return fmt.Errorf("pipeline: SetRedirectPath refused in phase %q: it is accepted only from OnRequest", c.currentPhase)
-	case !c.currentMayRedirect:
-		return fmt.Errorf("pipeline: plugin %q called SetRedirectPath without declaring WritesDestination", c.currentPlugin)
-	case !c.redirected:
-		return errors.New("pipeline: SetRedirectPath refused: no Redirect has taken effect on this request")
-	case !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") || slices.Contains(strings.Split(path, "/"), ".."):
-		return errors.New("pipeline: SetRedirectPath path must be absolute, with no query, fragment or \"..\" segment")
+	if err := c.redirectedGate("SetRedirectPath"); err != nil {
+		return err
+	}
+	if err := checkRedirectPath("SetRedirectPath", path); err != nil {
+		return err
 	}
 	from := c.Path
 	c.redirectPath, c.Path = path, path
@@ -162,6 +157,85 @@ func (c *Context) SetRedirectPath(path string) error {
 // Path, for the reason RedirectTarget gives.
 func (c *Context) RedirectPath() (string, bool) {
 	return c.redirectPath, c.redirected && c.redirectPath != ""
+}
+
+// Translate asks the listener to convert this redirected request from the source
+// protocol to the target protocol and send it to path, with no query string. It does
+// not change Path: the request row keeps the path the client named.
+//
+// Gates as SetRedirectPath: OnRequest only, a plugin that declares WritesDestination,
+// a Redirect took effect, and path absolute with no query, fragment or ".." segment.
+// Also source and target must be non-empty and different. It records nothing: only the
+// listener knows what the conversion dropped, so the listener records
+// modify/translated. A second call replaces the first.
+func (c *Context) Translate(source, target, path string) error {
+	if err := c.redirectedGate("Translate"); err != nil {
+		return err
+	}
+	if err := checkRedirectPath("Translate", path); err != nil {
+		return err
+	}
+	if source == "" || target == "" || source == target {
+		return errors.New("pipeline: Translate needs a source and a target protocol that are not empty and not the same")
+	}
+	c.translateSource, c.translateTarget, c.translatePath = source, target, path
+	return nil
+}
+
+// TranslateTarget is what the last accepted Translate set, with ok only when one was
+// accepted on a request a Redirect moved. The listener applies it.
+func (c *Context) TranslateTarget() (source, target, path string, ok bool) {
+	if !c.redirected || c.translateTarget == "" {
+		return "", "", "", false
+	}
+	return c.translateSource, c.translateTarget, c.translatePath, true
+}
+
+// SetUpstreamHeaders gives headers that the listener sets on the upstream request
+// after every plugin has run, each one replacing a header of the same name. A plugin
+// cannot do this through Headers, because a later plugin can change those. Gates as
+// SetRedirectPath, without the path. It keeps a clone of h, so a later change to h
+// does not show. A second call replaces the first.
+func (c *Context) SetUpstreamHeaders(h http.Header) error {
+	if err := c.redirectedGate("SetUpstreamHeaders"); err != nil {
+		return err
+	}
+	c.upstreamHeaders = h.Clone()
+	return nil
+}
+
+// UpstreamHeaders is what the last accepted SetUpstreamHeaders set, and nil unless a
+// Redirect took effect.
+func (c *Context) UpstreamHeaders() http.Header {
+	if !c.redirected {
+		return nil
+	}
+	return c.upstreamHeaders
+}
+
+// redirectedGate refuses a call that only a WritesDestination plugin may make from
+// OnRequest, after a Redirect took effect. call names the method in the error.
+func (c *Context) redirectedGate(call string) error {
+	switch {
+	case c.inFinish:
+		return fmt.Errorf("pipeline: %s refused in OnFinish: the request has already been sent", call)
+	case c.currentPhase != InvocationPhaseRequest:
+		return fmt.Errorf("pipeline: %s refused in phase %q: it is accepted only from OnRequest", call, c.currentPhase)
+	case !c.currentMayRedirect:
+		return fmt.Errorf("pipeline: plugin %q called %s without declaring WritesDestination", c.currentPlugin, call)
+	case !c.redirected:
+		return fmt.Errorf("pipeline: %s refused: no Redirect has taken effect on this request", call)
+	}
+	return nil
+}
+
+// checkRedirectPath refuses a path that is not absolute, or that has a query, a
+// fragment or a ".." segment. The error quotes no part of path.
+func checkRedirectPath(call, path string) error {
+	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") || slices.Contains(strings.Split(path, "/"), "..") {
+		return fmt.Errorf("pipeline: %s path must be absolute, with no query, fragment or \"..\" segment", call)
+	}
+	return nil
 }
 
 // RequestedHost is the host the client named when a redirect sent the request

@@ -1,0 +1,3 @@
+data: {"id":"chatcmpl-e1","model":"claude-opus-5-5","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Starting"},"finish_reason":null}]}
+
+data: {"error":{"message":"litellm.InternalServerError: the upstream connection was reset","type":"None","code":"500"}}

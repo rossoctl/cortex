@@ -1058,3 +1058,64 @@ func TestServerMove_AnEmptyListingPrunesNothing(t *testing.T) {
 		t.Errorf("config:\n%s", cfg)
 	}
 }
+
+// Rule C4: the three fields are written under the server, the maps sorted, and a
+// second --api for one protocol replaces the first.
+func TestServerAdd_WritesTheAPIAuthHeaderAndHeaders(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	code, _, errOut := runServerCmd(t, "sk-bob", "add", "bob", "https://bob.example.com", "--main", "opus", "--helper", "haiku",
+		"--api", "chat-completions=/x", "--api", "chat-completions=/v1/chat/completions", "--api", "anthropic-messages=/v1/messages",
+		"--auth-header", "x-api-key", "--header", "User-Agent=bob-shell", "--header", "X-Client=cortex",
+		"--key-stdin", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	want := `            bob:
+              url: https://bob.example.com
+              key: sk-bob
+              main: opus
+              helper: haiku
+              api:
+                anthropic-messages: /v1/messages
+                chat-completions: /v1/chat/completions
+              auth_header: x-api-key
+              headers:
+                User-Agent: bob-shell
+                X-Client: cortex
+`
+	if got := readConfig(t, path); !strings.HasSuffix(got, want) {
+		t.Errorf("config does not end with the new entry:\n%s", got)
+	}
+}
+
+// Each bad flag is refused with exit 2 before the key is asked for, and the file is
+// not written.
+func TestServerAdd_RefusesABadAPIOrHeaderFlagBeforeAskingForAKey(t *testing.T) {
+	asked := stubKeyPrompt(t, "sk")
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	before := readConfig(t, path)
+	for _, tc := range []struct {
+		flags []string
+		want  string
+	}{
+		{[]string{"--api", "bogus=/x"}, "valid protocols: anthropic-messages, chat-completions, responses"},
+		{[]string{"--api", "chat-completions"}, "want <protocol>=<path>"},
+		{[]string{"--api", "chat-completions=v1"}, "must be absolute"},
+		{[]string{"--auth-header", "Host"}, "cannot carry the key"},
+		{[]string{"--header", "X-A=$HOME"}, "--header X-A: the value contains $"},
+		{[]string{"--header", "Authorization=x"}, `"Authorization" cannot be set here`},
+		{[]string{"--header", "X-A"}, "want <name>=<value>"},
+	} {
+		args := append([]string{"add", "bob", "https://bob.example.com", "--main", "opus", "--helper", "haiku", "--config", path}, tc.flags...)
+		code, _, errOut := runServerCmd(t, "", args...)
+		if code != 2 || !strings.Contains(errOut, tc.want) {
+			t.Errorf("%v: exit %d, stderr:\n%s", tc.flags, code, errOut)
+		}
+		if strings.Contains(errOut, "$HOME") {
+			t.Errorf("%v: stderr repeats the header value:\n%s", tc.flags, errOut)
+		}
+	}
+	if *asked != "" || readConfig(t, path) != before {
+		t.Error("a bad flag asked for a key or wrote the file")
+	}
+}

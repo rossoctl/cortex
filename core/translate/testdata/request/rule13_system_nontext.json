@@ -1,0 +1,3 @@
+{"model":"claude-opus-5-5","max_tokens":1024,
+ "system":[{"type":"text","text":"hi"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}},{"type":"search_result","source":"https://example.com","title":"t","content":[{"type":"text","text":"r"}]}],
+ "messages":[{"role":"user","content":"hi"}]}

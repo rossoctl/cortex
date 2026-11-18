@@ -373,3 +373,93 @@ func TestDecode_Sessions(t *testing.T) {
 		})
 	}
 }
+func TestCheckAPI(t *testing.T) {
+	for _, api := range []map[string]string{
+		nil,
+		{"chat-completions": "/v1/chat/completions"},
+		{"chat-completions": "/chat/completions", "anthropic-messages": "/anthropic/v1/messages"},
+		{"responses": "/v1/responses"},
+	} {
+		if err := CheckAPI(api); err != nil {
+			t.Errorf("CheckAPI(%v) = %v, want nil", api, err)
+		}
+	}
+	for api, want := range map[string]string{
+		`{"chat": "/v1/chat/completions"}`:                     `unknown protocol "chat"; valid protocols: anthropic-messages, chat-completions, responses`,
+		`{"chat-completions": "v1/chat/completions"}`:          `api.chat-completions: path "v1/chat/completions" must be absolute, with no query, fragment or ".." segment`,
+		`{"chat-completions": "/v1/chat/completions?x=1"}`:     `api.chat-completions: path "/v1/chat/completions?x=1" must be absolute`,
+		`{"chat-completions": "/v1/../chat/completions"}`:      `".." segment`,
+		`{"chat-completions": "/v1/chat#x"}`:                   `must be absolute`,
+		`{"anthropic-messages": "x", "chat-completions": "y"}`: `api.anthropic-messages:`, // sorted: first key first
+	} {
+		var m map[string]string
+		if err := json.Unmarshal([]byte(api), &m); err != nil {
+			t.Fatal(err)
+		}
+		err := CheckAPI(m)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("CheckAPI(%s) = %v, want %q", api, err, want)
+		}
+	}
+}
+
+func TestCheckAuthHeader(t *testing.T) {
+	for _, name := range []string{"", "authorization", "x-api-key", "api-key", "Authorization"} {
+		if err := CheckAuthHeader(name); err != nil {
+			t.Errorf("CheckAuthHeader(%q) = %v, want nil", name, err)
+		}
+	}
+	for _, name := range []string{"Host", "Connection", "content-length", "Transfer-Encoding", "TE", "Proxy-Authorization", "bad header", "x:y"} {
+		if err := CheckAuthHeader(name); err == nil {
+			t.Errorf("CheckAuthHeader(%q) = nil, want an error", name)
+		}
+	}
+}
+
+func TestCheckHeaders(t *testing.T) {
+	if err := CheckHeaders(map[string]string{"User-Agent": "bob-shell", "X-Team": "a b"}, ""); err != nil {
+		t.Errorf("CheckHeaders = %v, want nil", err)
+	}
+	for name, want := range map[string]string{
+		"Authorization":     `headers: "Authorization" cannot be set here: Cortex sets it`,
+		"X-Api-Key":         `headers: "X-Api-Key" cannot be set here: Cortex sets it`,
+		"api-key":           `Cortex sets it`,
+		"Content-Length":    `headers: "Content-Length" cannot be set here: it is a hop-by-hop or framing header`,
+		"Transfer-Encoding": `it is a hop-by-hop or framing header`,
+		"host":              `it is a hop-by-hop or framing header`,
+		"X-Key":             `Cortex sets it`, // the server's own auth_header
+		"bad name":          `not a valid header name`,
+	} {
+		err := CheckHeaders(map[string]string{name: "v"}, "x-key")
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("CheckHeaders(%q) = %v, want %q", name, err, want)
+		}
+	}
+	for _, v := range []string{"a\nb", "a\rb", "a\x00b"} {
+		if err := CheckHeaders(map[string]string{"User-Agent": v}, ""); err == nil {
+			t.Errorf("CheckHeaders(value %q) = nil, want an error", v)
+		}
+	}
+}
+
+func TestDecode_APIAuthHeaderHeaders(t *testing.T) {
+	c, err := Decode(json.RawMessage(`{"servers": {"bob": {"url": "https://bob.example.com", "key": "k", "main": "m", "helper": "h",
+		"api": {"chat-completions": "/v1/chat/completions"}, "auth_header": "x-api-key", "headers": {"User-Agent": "bob-shell"}}}}`))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	s := c.Servers["bob"]
+	if s.API["chat-completions"] != "/v1/chat/completions" || s.AuthHeader != "x-api-key" || s.Headers["User-Agent"] != "bob-shell" {
+		t.Errorf("decoded %+v", s)
+	}
+	for field, want := range map[string]string{
+		`"api": {"chat": "/x"}`:                    "servers.bob.api: unknown protocol",
+		`"auth_header": "Host"`:                    "servers.bob.auth_header:",
+		`"headers": {"Authorization": "Bearer x"}`: "servers.bob.headers: \"Authorization\" cannot be set here",
+	} {
+		_, err := Decode(json.RawMessage(`{"servers": {"bob": {"url": "https://bob.example.com", "key": "k", "main": "m", "helper": "h", ` + field + `}}}`))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("Decode(%s) = %v, want %q", field, err, want)
+		}
+	}
+}

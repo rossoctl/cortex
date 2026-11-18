@@ -1,0 +1,3 @@
+event: error
+data: {"type":"error","error":{"type":"not_found_error","message":"model \"claude-opus-5-5\" not found or not accessible"}}
+

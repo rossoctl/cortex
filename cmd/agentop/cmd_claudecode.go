@@ -208,7 +208,7 @@ var bundleKeys = []string{envSSLCert, envGitCA, envRequestsCA, envCurlCA}
 // Said only when enable is about to change the settings, not on the "Already
 // enabled" re-run that install.sh --claude-code makes on every upgrade: repeated
 // there, a note about a case that needs nothing doing was most of the upgrade's
-// output. Short for the same reason; docs/laptop-service.md ("Go tools on macOS
+// output. Short for the same reason; docs/troubleshooting.md ("Go tools on macOS
 // are passed through unread") carries the why.
 func darwinGoNote(caPath string) string {
 	return "Note: on macOS, Go tools (go, gh, helm) trust only the keychain, so unless\n" +

@@ -27,6 +27,8 @@ claude                                  # start (or restart) your agent as you a
 agentop observe                         # in another terminal: watch it live
 ```
 
+**Next: [Getting started](./docs/getting-started.md)**. It shows what you should see, how to read the screen, and how to undo it.
+
 Setup asks once before changing anything. If something looks wrong, `agentop doctor`
 names the fix. To move to a newer release later, run `agentop update`. Can't reach
 rossoctl.dev? The same script is [in this repo](https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh).
@@ -117,10 +119,11 @@ The same binary also runs on a remote machine — a VM, a home server, a pod —
 
 ## Learn more
 
-[All docs](./docs/README.md) · [agentop reference](./cmd/agentop/README.md) ·
+[Getting started](./docs/getting-started.md) · [Using agentop](./cmd/agentop/README.md#panes) · [Troubleshooting](./docs/troubleshooting.md) · [All docs](./docs/README.md)
+
+[agentop reference](./cmd/agentop/README.md) ·
 [plugin catalog](./docs/plugin-catalog.md) · [script plugins](./docs/script-plugin.md) ·
 [policy in praxis mode](./docs/praxis-policy.md) ·
-[full install guide](https://www.rossoctl.dev/docs/dev/get-started/laptop) ·
 [install stats](https://rossoctl.github.io/cortex/install-stats/) (from GitHub's download counts, no telemetry)
 
 Something broke? Tell us with the **Laptop feedback** form under

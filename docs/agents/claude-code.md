@@ -17,7 +17,7 @@ After `enable`, run `claude` the way you always do, with no flags and no environ
 variables. Every session goes through Cortex until you `disable` it. The installer's
 `--claude-code` flag runs the same `enable` as one of setup's steps.
 
-**What `enable` writes.** Seven keys in the `env` block of `~/.claude/settings.json`.
+**What `enable` writes.** The keys in the table below, in the `env` block of `~/.claude/settings.json`.
 Claude Code applies that block to every session on the machine, including background
 agents, so nothing needs exporting in a shell. The addresses come from
 `~/.cortex/config.yaml`, so they match the running proxy:
@@ -45,7 +45,7 @@ The same goes after `disable`. While enabled, Claude Code needs Cortex running,
 because its requests go to the proxy: `disable` is the off switch, and `agentop
 service status` says whether the proxy is up.
 
-**The record.** The first `enable` records what each of the six keys held before, in
+**The record.** The first `enable` records what each of these keys held before, in
 `~/.cortex/claude-code-state.json`. `disable` removes only the keys `enable` added, and
 puts back any value it recorded. It does not change a key whose value changed after
 `enable`, and it names each key it did not change. `agentop uninstall` runs the same `disable`.
@@ -57,7 +57,7 @@ first `enable`. It does not hold a change you made after that.
 
 ### Undoing it by hand
 
-If `agentop` is already gone, delete the six keys from the `env` block of
+If `agentop` is already gone, delete the keys in the table above from the `env` block of
 `~/.claude/settings.json` yourself, **before** deleting `~/.cortex`. The four that point
 at `bundle.crt` replace their tools' trust stores, so with the file gone git, curl and
 Python fail every TLS call, including ones that never touch Cortex.
@@ -77,7 +77,7 @@ one private CA and nothing else. On macOS, Go tools (`go`, `gh`) ignore `SSL_CER
 and use the keychain, so unless macOS trusts Cortex's CA, Cortex passes them through
 unread; `enable` prints the `security add-trusted-cert` command that has Cortex read
 them, and
-[Go tools on macOS](../laptop-service.md#go-tools-on-macos-are-passed-through-unread)
+[Go tools on macOS](../troubleshooting.md#go-tools-on-macos-are-passed-through-unread)
 explains it.
 
 **The symptom when trust fails.** `agentop observe` shows Claude Code's requests as
@@ -85,7 +85,7 @@ explains it.
 flows; it just is not decrypted. The usual cause is a `claude` that started before the
 CA existed: before the first install, or before `~/.cortex` was deleted and recreated.
 Restart it.
-[Everything shows as `tunnel`](../laptop-service.md#everything-shows-as-tunnel-and-no-plugin-ever-runs)
+[Everything shows as `tunnel`](../troubleshooting.md#everything-shows-as-tunnel-and-no-plugin-ever-runs)
 covers the other cause.
 
 ## What Cortex shows for it
@@ -252,7 +252,7 @@ from `main` at `1fd69b75`, through a LiteLLM gateway serving Claude Opus 5.5, Cl
 Sonnet 5 and Claude Haiku 4.5. This was exercised:
 
 - `enable --yes`, `status` and `disable --yes` against a scratch `HOME`: `enable` wrote
-  the seven keys, `status` listed them, and `disable` left the file as it started.
+  the keys, `status` listed them, and `disable` left the file as it started.
   Deleting `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` by hand in between made `status`
   report 6 of 7, and `disable` still cleaned up;
 - a working session through Cortex, recorded under the `claude-code` agent and Claude

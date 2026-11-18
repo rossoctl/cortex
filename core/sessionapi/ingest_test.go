@@ -623,3 +623,52 @@ func TestIngest_NonStringSourceKeepsTheRow(t *testing.T) {
 		}
 	}
 }
+
+// Rule 8a of #1911: an ingested capture keeps a translated request's converted body and the
+// server's raw reply.
+func TestIngest_CaptureKeepsTheTranslatedHop(t *testing.T) {
+	r := newIngestRig(t)
+	r.post(t, nil,
+		line(t, map[string]any{"capture": map[string]any{
+			"original": []byte(`{"a":1}`), "translated": []byte(`{"b":2}`),
+		}}),
+		line(t, map[string]any{"event": responseEvent(nil), "capture": map[string]any{
+			"response": map[string]any{"status": 200, "body": []byte("{}"), "upstream": []byte("data: [DONE]\n\n"),
+				"upstreamTruncated": true, "ended": true},
+		}}),
+	)
+	req, res := r.caps.get("r1")
+	if req == nil || res == nil {
+		t.Fatalf("captures: request %v, response %v", req, res)
+	}
+	if string(req.Translated) != `{"b":2}` {
+		t.Errorf("translated = %q", req.Translated)
+	}
+	if string(res.Upstream) != "data: [DONE]\n\n" || !res.UpstreamTruncated {
+		t.Errorf("upstream = %q, truncated %v", res.Upstream, res.UpstreamTruncated)
+	}
+}
+
+// A wrong JSON type in a translated-hop key drops that key, not the line.
+func TestIngest_BadTranslatedHopKeysKeepTheRow(t *testing.T) {
+	for _, bad := range []any{123, "{not base64}", map[string]any{"a": 1}, true} {
+		r := newIngestRig(t)
+		r.post(t, nil,
+			line(t, map[string]any{"capture": map[string]any{"original": []byte(`{"a":1}`), "translated": bad}}),
+			line(t, map[string]any{"event": responseEvent(nil), "capture": map[string]any{
+				"response": map[string]any{"status": 200, "upstream": bad, "upstreamTruncated": bad, "ended": true},
+			}}),
+		)
+		if evs := r.events("s1"); len(evs) != 2 {
+			t.Errorf("value %v: stored %d events, want 2", bad, len(evs))
+			continue
+		}
+		req, res := r.caps.get("r1")
+		if req == nil || res == nil {
+			t.Fatalf("value %v: captures: request %v, response %v", bad, req, res)
+		}
+		if wantTrunc := bad == true; req.Translated != nil || res.Upstream != nil || res.UpstreamTruncated != wantTrunc {
+			t.Errorf("value %v: translated %q, upstream %q, truncated %v; want empty, empty, %v", bad, req.Translated, res.Upstream, res.UpstreamTruncated, wantTrunc)
+		}
+	}
+}
