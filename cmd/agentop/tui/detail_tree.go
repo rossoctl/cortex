@@ -151,6 +151,15 @@ func buildTree(v any, path, key string, hasKey bool) *node {
 	case int, int64, int32:
 		scalar(strconv.FormatInt(toInt64(x), 10), styleJSONNumber.Render)
 	case string:
+		// A tool call's arguments are a JSON object sent as a string: show the object.
+		if key == "arguments" && strings.HasPrefix(x, "{") {
+			dec := json.NewDecoder(strings.NewReader(x))
+			dec.UseNumber()
+			var obj map[string]any
+			if dec.Decode(&obj) == nil && !dec.More() {
+				return buildTree(obj, path, key, hasKey)
+			}
+		}
 		n.kind, n.plain, n.size = kindString, x, len(x)+2
 		n.fold = strings.Count(x, "\n") >= clipLines || len(x) > clipBytes
 	case []any:

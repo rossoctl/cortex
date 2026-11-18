@@ -240,3 +240,18 @@ func TestParentPath(t *testing.T) {
 		}
 	}
 }
+
+// A tool call's arguments string shows as its object, so a command's lines are lines.
+// A string that is not one JSON object stays a string.
+func TestRenderTree_ArgumentsStringIsAnObject(t *testing.T) {
+	got := treeText(t, `{"arguments":"{\"command\":\"cd x\\ncat y\"}","other":"{\"a\":1}"}`, foldState{all: true})
+	want := []string{"{", `  "arguments": {`, `    "command": │`, "      cd x", "      cat y", "  },", `  "other": "{\"a\":1}"`, "}"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	for _, bad := range []string{`{"arguments":"{bad"}`, `{"arguments":"{} {}"}`} {
+		if l := treeText(t, bad, foldState{all: true}); len(l) != 3 {
+			t.Errorf("%s: got %q, want the string kept", bad, l)
+		}
+	}
+}
