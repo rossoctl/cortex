@@ -47,15 +47,23 @@ agentop observe
 agentop cost --window month --by agent
 ```
 
-**Switch model servers without touching your agent.** Provider down, or want the
-traffic to stay local? Send new sessions to a LiteLLM gateway or Ollama. For Ollama,
-pull the model and [raise its context length](./docs/inference-servers.md#context-length) first.
+**Switch any agent to any inference server, without touching the agent.** Is
+your provider down or out of quota? Does your team have its own gateway? Add
+the server once, then choose it for an agent. The agent keeps its own settings.
+Cortex sends the agent's new sessions to that server, with that server's key. When
+Claude Code goes to a server that serves only chat completions, Cortex
+translates each request and its reply.
 
 ```sh
-echo ollama | agentop server add ollama http://localhost:11434 \
-  --main granite4.2:8b --helper granite4.2:8b --key-stdin   # Ollama takes any key
-agentop server use ollama --agent claude-code
+agentop server add team-gw https://llm.example.com --main opus --helper haiku   # asks for the key
+agentop server use team-gw --agent claude-code            # new Claude Code sessions → team-gw
+agentop server use team-gw --agent opencode               # and OpenCode's
+agentop server move <session-id> team-gw                  # one running session → team-gw
+agentop server reset --agent claude-code                  # back to Claude Code's own provider
 ```
+
+The server can be a LiteLLM gateway, a provider's API, or a model server on
+your own machine.
 
 Guides: [inference servers](./docs/inference-servers.md) · [pricing](./docs/pricing.md)
 
