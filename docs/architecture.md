@@ -1,29 +1,15 @@
-# Cortex
+# Cortex in Kubernetes: sidecar architecture
 
-Cortex provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`core/`](../core/); the sidecar binaries live under [`cmd/`](../cmd/) (see [`cmd/README.md`](../cmd/README.md) for which pins which mode). Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
+This page is for operators and contributors who run Cortex as the AuthBridge sidecar.
+
+The AuthBridge sidecar gives each Kubernetes workload **secure, transparent token management**. The shared library is at [`core/`](../core/); the sidecar binaries live under [`cmd/`](../cmd/) (see [`cmd/README.md`](../cmd/README.md) for which pins which mode). Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
 
 > **📘 Looking to run the demo?** See the [Weather Agent](https://github.com/rossoctl/cortex-demos/blob/main/weather-agent/demo-ui.md) or [GitHub Issue Agent](https://github.com/rossoctl/cortex-demos/blob/main/github-issue/demo.md) demos for step-by-step instructions, and [Token-Exchange Routes](https://github.com/rossoctl/cortex-demos/blob/main/token-exchange-routes/README.md) for route configuration.
 
 ## Deployment Modes
 
-Sidecar container images:
-
-| Image | Contents |
-|-------|----------|
-| `authbridge` | proxy-sidecar: the cortex binary |
-| `authbridge-envoy` | envoy-sidecar combined: Envoy + ext_proc |
-| `authbridge-lite` | `cortex` built with the `lite` profile (see `scripts/profile-tags`), a sidecar minimum. A build variant, not a separate binary |
-
-| Mode | Image | Use Case | How It Works |
-|------|-------|----------|-------------|
-| `proxy-sidecar` (default) | `authbridge` | HTTP_PROXY-based forward + reverse proxies | Agent routes outbound traffic through forward proxy; reverse proxy validates inbound JWTs |
-| `envoy-sidecar` | `authbridge-envoy` | Transparent interception via iptables | Envoy intercepts all traffic, delegates auth to authbridge via ext_proc gRPC |
-
-There are only these two modes. `lite` is a build *profile*, not a mode: the
-`authbridge-lite` image runs the `cortex` binary in `proxy-sidecar`
-mode with a trimmed plugin set (see the profile table below).
-
-The operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `rossoctl.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See operator#361.
+Images and modes: see [`cmd/README.md`](../cmd/README.md).
+How the operator picks a mode for a workload: see [`kubernetes.md`](kubernetes.md).
 
 The runtime library at [`core/`](../core/) holds the plugin framework, every listener (the Envoy ext_proc server and the HTTP proxies), the cost pipeline, the session store, and the auth primitives — auth being about 1% of its non-test lines. It is not protocol-free: `listener/extproc` depends on gRPC and `envoyproxy/go-control-plane`. See [`core/README.md`](../core/README.md) for the package reference and the measured breakdown.
 
@@ -376,14 +362,7 @@ sequenceDiagram
 
 ## Prerequisites
 
-- Kubernetes cluster (Kind recommended for local development)
-- SPIRE installed and running (server + agent) - for SPIFFE version
-- Keycloak deployed
-- Docker/Podman for building images
-
-### Quick Setup
-
-The easiest way to get all prerequisites is to use the [Rossoctl Quickstart](https://www.rossoctl.dev/docs/get-started/kubernetes/).
+For the platform install and how to select a workload for injection, see [`kubernetes.md`](kubernetes.md).
 
 ## Getting Started
 
@@ -430,7 +409,7 @@ declarative profile per shipped artifact and emits its tags:
 | Profile | Artifact | Plugins |
 |---------|----------|---------|
 | `local` | desktop `cortex` | the three parsers + `tool-prune` |
-| `full` | `authbridge` image, Kubernetes proxy-sidecar | all fourteen |
+| `full` | `authbridge` image, Kubernetes proxy-sidecar | every plugin in [`profiles.go`](../scripts/profile-tags/profiles.go) |
 | `lite` | `authbridge-lite` image | sidecar minimum: jwt-validation, token-exchange, litellm-budget-track, static-inject |
 | `envoy` | `authbridge-envoy` image | envoy-sidecar set |
 | `cpex` | `authbridge-cpex` image | cpex set |
@@ -497,14 +476,7 @@ when `-tags include_plugin_<name>` is passed.
 
 ## Component Documentation
 
-- [core](../core/README.md) — The runtime library: framework, listeners, cost, session store, auth (Go module)
-- [cmd/cortex](../cmd/cortex/) — proxy-sidecar binary (default mode, full plugin set)
-- [cmd/cortex-envoy](../cmd/cortex-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
-- `authbridge-lite` image — `cmd/cortex` built with the `lite` profile (see `scripts/profile-tags`); a build variant, not a separate binary
-- [proxy-init](../deploy/proxy-init/README.md) — iptables init container (traffic interception in envoy-sidecar mode, `enforce-redirect` egress guard in proxy-sidecar/lite)
-- [docs/](./) — framework architecture and plugin author references
-
-Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler`, not by an in-pod sidecar.
+Binaries and images: [`cmd/README.md`](../cmd/README.md). Runtime library: [`core/README.md`](../core/README.md).
 
 ## References
 

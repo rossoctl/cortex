@@ -9,14 +9,13 @@ holds the repo-level pieces; this file is the index.
 |---|---|
 | Install Cortex, see it work, and undo it | [Getting started](getting-started.md) |
 | Route your agent through Cortex | [Claude Code](agents/claude-code.md), [Codex](agents/codex.md), [OpenCode](agents/opencode.md), [IBM Bob](agents/bob.md), [Pi](agents/pi.md), [any other agent](agents/any-agent.md) |
-| Read the `agentop` screen | [Using agentop](../cmd/agentop/README.md#panes) |
+| Read the `agentop` screen | [Using agentop](using-agentop.md) |
 | Fix a problem | [Troubleshooting](troubleshooting.md) |
 
 ## Daily use
 
 | If you want to… | Read |
 |---|---|
-| Use fewer tokens | [`laptop-token-savings.md`](laptop-token-savings.md) |
 | Use a local model, or change inference servers | [`laptop-local-model.md`](laptop-local-model.md) |
 | Use a server whose protocol Cortex cannot translate to | [`translation-server.md`](translation-server.md) |
 | Change Cortex with a small Python or shell script | [`script-plugin.md`](script-plugin.md) |
@@ -25,7 +24,7 @@ holds the repo-level pieces; this file is the index.
 | Set model prices and gateway discounts | [`pricing.md`](pricing.md). To see the rates in effect, run `agentop pricing [--host <gateway>]` |
 | Run, stop or update the service | [`laptop-service.md`](laptop-service.md) |
 | Apply policy to agent traffic in praxis mode | [`praxis-policy.md`](praxis-policy.md) |
-| Export sessions | [`session-export.md`](session-export.md) (content-free records), [`session-export-guide.md`](session-export-guide.md) (a walk-through), [`session-dump.md`](session-dump.md) (session files) |
+| Export sessions | [`session-export.md`](session-export.md) |
 
 ## Reference
 
@@ -36,6 +35,7 @@ holds the repo-level pieces; this file is the index.
 | Move from a laptop to a cluster | [`kubernetes.md`](kubernetes.md) |
 | Learn the sidecar shapes | [`architecture.md`](architecture.md) |
 | Find which binary serves which deployment shape | [`cmd/README.md`](../cmd/README.md) |
+| Keep whole sessions from a cluster as files | [`session-dump.md`](session-dump.md) |
 | Run a demo | [`cortex-demos/README.md`](https://github.com/rossoctl/cortex-demos/blob/main/README.md) |
 
 ### Plugins
@@ -43,9 +43,10 @@ holds the repo-level pieces; this file is the index.
 | If you want to… | Read |
 |---|---|
 | Find and configure a plugin | [`plugin-catalog.md`](plugin-catalog.md) |
+| Remove the tools an agent never calls from its prompts | [`laptop-token-savings.md`](laptop-token-savings.md) |
 | Write your first plugin | [`plugin-tutorial.md`](plugin-tutorial.md) |
-| Read the plugin contract | [`plugin-reference.md`](plugin-reference.md) |
 | Write a plugin in Python or shell | [`script-plugin.md`](script-plugin.md) |
+| Read the plugin contract | [`plugin-reference.md`](plugin-reference.md) |
 | Learn the pipeline internals and hot-reload | [`framework-architecture.md`](framework-architecture.md) |
 
 Per-plugin reference docs: [a2a-parser](a2a-parser-plugin.md),

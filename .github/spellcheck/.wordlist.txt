@@ -1,5 +1,6 @@
 AgentPod
 Agentic
+agentop
 Ansible
 APIs
 Args
@@ -27,6 +28,7 @@ CRDs
 Cryptographic
 CustomResourceDefinition
 creds
+CTX
 DaemonSet
 DefaultMode
 Dockerfile
@@ -315,6 +317,7 @@ mutualTLS
 namespace
 namespaced
 namespaces
+NDJSON
 netrc
 netshoot
 nodePort
@@ -433,6 +436,7 @@ tiff
 tls
 tmp
 tornjak
+TUI
 txt
 ua
 ubuntu

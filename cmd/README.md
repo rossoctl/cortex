@@ -1,7 +1,7 @@
-# AuthBridge Binaries
+# Cortex binaries
 
-Two authbridge binaries (proxy, envoy) plus the
-`agentop` TUI — see the table below for which are published.
+Two sidecar binaries, `cortex` and `cortex-envoy`, plus the `agentop` TUI.
+The table below shows which are published.
 Proxy and envoy each pin one deployment shape and refuse a mismatching
 `mode:` at boot. Mode is selected at
 build time by which binary you run, not at runtime via a flag. The `authbridge-lite`
@@ -39,7 +39,7 @@ options are documented in
 [`../docs/plugin-reference.md`](../docs/plugin-reference.md).
 The session-events API at `:9094` is documented in
 [`../docs/session-api.md`](../docs/session-api.md), hot-reload in
-[`../CLAUDE.md`](../CLAUDE.md#config-hot-reload-9093reloadstatus), and the supporting
+[`../docs/framework-architecture.md`](../docs/framework-architecture.md#9-config-hot-reload), and the supporting
 ConfigMap contracts in
 [`cortex-demos/CLAUDE.md`](https://github.com/rossoctl/cortex-demos/blob/main/CLAUDE.md#configmaps-and-secrets-expected-at-runtime).
 

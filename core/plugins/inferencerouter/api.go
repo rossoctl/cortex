@@ -54,6 +54,10 @@ func (r route) plan(path string) apiPlan {
 	return apiPlan{kind: planAsIs}
 }
 
+// wirePath is p after the server URL's path prefix: the path that a request the
+// router builds goes to.
+func (r route) wirePath(p string) string { return r.endpoint.Path + p }
+
 // apiKeys are the protocols of r's api map, sorted.
 func apiKeys(r route) []string {
 	keys := make([]string, 0, len(r.api))

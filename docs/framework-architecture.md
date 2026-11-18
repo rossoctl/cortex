@@ -1,6 +1,6 @@
 # pipeline — Framework Architecture Reference
 
-Framework-level reference for AuthBridge's plugin pipeline: types, composition, lifecycle, shared state, and the boundary with listeners. Pair this with the plugin-author docs:
+Framework-level reference for Cortex's plugin pipeline: types, composition, lifecycle, shared state, and the boundary with listeners. Pair this with the plugin-author docs:
 
 - **Tutorial** — [`plugin-tutorial.md`](./plugin-tutorial.md). Writing a plugin from scratch with runnable examples.
 - **Plugin author reference** — [`plugin-reference.md`](./plugin-reference.md). Config patterns, invocation emission contract, registration rules.
@@ -22,7 +22,7 @@ For step-by-step "how do I write a plugin?" content, see [`plugin-tutorial.md`](
 
 ## 1. Mental model
 
-AuthBridge intercepts HTTP traffic in two directions and runs a **separate plugin chain** for each. Each chain has two **phases** — request (headers/body going to the upstream) and response (headers/body coming back).
+Cortex intercepts HTTP traffic in two directions and runs a **separate plugin chain** for each. Each chain has two **phases** — request (headers/body going to the upstream) and response (headers/body coming back).
 
 ```
           Inbound (caller → this agent)
@@ -986,7 +986,7 @@ unset — `true` as `decline`, `false` as `forward` — with a startup warning n
 key; setting both is refused. Restart to apply, like every `listener.*` field. The
 key goes in the runtime config: on a laptop, `~/.cortex/config.yaml`, then `agentop service
 restart`; in a cluster, the `authbridge-runtime-config` ConfigMap, then a pod restart. See
-[`agents/codex.md`](agents/codex.md#what-cortex-shows-for-it) for what Codex shows and the
+[`agents/codex.md`](agents/codex.md#what-you-see) for what Codex shows and the
 measured difference.
 
 #### Refusing private destinations (`listener.egress_guard`)
@@ -1057,7 +1057,7 @@ This document stays focused on the pipeline framework internals — how plugins 
 
 ## 12. Versioning
 
-The plugin interface is **not** semver-stable yet (AuthBridge is pre-1.0). Changes since the initial release:
+The plugin interface is **not** semver-stable yet (Cortex is pre-1.0). Changes since the initial release:
 - Added `BodyAccess` to `PluginCapabilities`.
 - Added `WithSlots` to `New` for bridge-plugin slot registration.
 - Added `GetState[T]` / `SetState[T]` generic helpers.

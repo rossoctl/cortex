@@ -79,46 +79,124 @@ func version(name string) []int {
 // maxModelList bounds the model list FetchModels reads.
 const maxModelList = 4 << 20
 
-// FetchModels is the model list a server serves to key: the ids its
-// GET /v1/models answers with. Its errors quote no part of the URL or the key.
+// Auth is how FetchModels sends a server its key.
+type Auth struct {
+	// Key is the server's key.
+	Key string
+	// Header is the server's auth_header. With "", FetchModels tries
+	// authorization, then x-api-key.
+	Header string
+	// Headers are the server's headers, sent on each request.
+	Headers http.Header
+}
+
+// SetAuth puts key on h in the header name: "" or authorization (case ignored)
+// gives Authorization: Bearer <key>, any other name gives <name>: <key>.
+func SetAuth(h http.Header, name, key string) {
+	if name == "" || strings.EqualFold(name, "authorization") {
+		h.Set("Authorization", "Bearer "+key)
+		return
+	}
+	h.Set(name, key)
+}
+
+// HeaderOf is m as an http.Header, each pair through Header.Set, and nil for an
+// empty m.
+func HeaderOf(m map[string]string) http.Header {
+	if len(m) == 0 {
+		return nil
+	}
+	h := make(http.Header, len(m))
+	for k, v := range m {
+		h.Set(k, v)
+	}
+	return h
+}
+
+// FetchModels is the model list a server serves to a.Key, and the auth header
+// that worked. Its errors quote no part of the URL or the key.
+//
+// It asks GET /v1/models, and on 403 or 404 GET /v1/model/info (LiteLLM's list,
+// read from data[].model_name), with a.Header or authorization. When a.Header is ""
+// and each answer was 401 or 403, it asks the two again with x-api-key. The first
+// 200 wins.
 //
 // The list is a lower bound. A LiteLLM server also serves names it does not list,
 // aliases of listed models, so it is good for resolving a main or helper word and
 // for showing what a server offers, and not for judging whether a name the agent
 // asked for is served. The router lets the server's own answer judge that.
-func FetchModels(ctx context.Context, client *http.Client, ep Endpoint, key string) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ep.URL()+"/v1/models", nil)
-	if err != nil {
-		return nil, errors.New("could not build the request for the server's model list")
+func FetchModels(ctx context.Context, client *http.Client, ep Endpoint, a Auth) (ids []string, header string, err error) {
+	headers := []string{a.Header}
+	if a.Header == "" {
+		headers = []string{"authorization", "x-api-key"}
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
+	var statuses []string
+	for _, h := range headers {
+		refused := true // each answer of this round was 401 or 403
+		for _, path := range []string{"/v1/models", "/v1/model/info"} {
+			status, ids, err := fetchModelList(ctx, client, ep.URL()+path, a, h)
+			if err != nil {
+				return nil, "", err
+			}
+			if status == http.StatusOK {
+				return ids, h, nil
+			}
+			statuses = append(statuses, strconv.Itoa(status))
+			refused = refused && (status == http.StatusUnauthorized || status == http.StatusForbidden)
+			if status != http.StatusForbidden && status != http.StatusNotFound {
+				break
+			}
+		}
+		if !refused {
+			break
+		}
+	}
+	return nil, "", fmt.Errorf("the server answered %s to its model list", strings.Join(statuses, ", "))
+}
+
+// fetchModelList asks u for a model list with the key in header h. It returns the
+// status, and the ids when the status is 200. An error is a request that got no
+// answer, or a 200 whose body is not a model list.
+func fetchModelList(ctx context.Context, client *http.Client, u string, a Auth, h string) (int, []string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return 0, nil, errors.New("could not build the request for the server's model list")
+	}
+	for k, v := range a.Headers {
+		req.Header[k] = v
+	}
+	SetAuth(req.Header, h, a.Key)
 	resp, err := client.Do(req)
 	if err != nil {
 		var ue *url.Error
 		if errors.As(err, &ue) {
 			err = ue.Err // its text quotes the URL
 		}
-		return nil, fmt.Errorf("could not reach the server: %v", err)
+		return 0, nil, fmt.Errorf("could not reach the server: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("the server answered %d to its model list", resp.StatusCode)
+		return resp.StatusCode, nil, nil
 	}
+	// /v1/models names each model in id, /v1/model/info in model_name.
 	var list struct {
 		Data []struct {
-			ID string `json:"id"`
+			ID        string          `json:"id"`
+			ModelName json.RawMessage `json:"model_name"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxModelList)).Decode(&list); err != nil {
-		return nil, errors.New("the server's model list is not an OpenAI-style list of models")
+		return 0, nil, errors.New("the server's model list is not an OpenAI-style list of models")
 	}
 	ids := make([]string, 0, len(list.Data))
 	for _, m := range list.Data {
-		if m.ID != "" {
-			ids = append(ids, m.ID)
+		var name string
+		_ = json.Unmarshal(m.ModelName, &name)
+		if id := cmp.Or(m.ID, name); id != "" && !slices.Contains(ids, id) {
+			ids = append(ids, id)
 		}
 	}
-	return ids, nil
+	return http.StatusOK, ids, nil
 }
 
 // NewModelsClient is the client FetchModels is meant to be given: the system's

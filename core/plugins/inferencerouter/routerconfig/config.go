@@ -42,7 +42,7 @@ type Config struct {
 
 // Server is one inference server.
 type Server struct {
-	URL        string            `json:"url" required:"true" description:"scheme://host[:port] of the server; no path."`
+	URL        string            `json:"url" required:"true" description:"scheme://host[:port][/path] of the server. A path is a prefix that the router puts before each path it builds."`
 	Key        string            `json:"key" required:"true" description:"API key sent to this server in place of the client's."`
 	Main       string            `json:"main" required:"true" description:"A word naming this server's model for an agent's main work, a request with tools, sent when the server refuses the model the agent asked for. The newest listed model whose name contains it."`
 	Helper     string            `json:"helper" required:"true" description:"A word naming this server's model for an agent's helper calls, a request without tools. Resolved as main is."`
@@ -338,10 +338,12 @@ type Endpoint struct {
 	Host string
 	// Hostname is the lowercased host without any port.
 	Hostname string
+	// Path is the URL's path prefix with no trailing "/", or "" for none.
+	Path string
 }
 
-// URL is the endpoint as scheme://host, the form agentop writes.
-func (e Endpoint) URL() string { return e.Scheme + "://" + e.Host }
+// URL is the endpoint as scheme://host[/path], the form agentop writes.
+func (e Endpoint) URL() string { return e.Scheme + "://" + e.Host + e.Path }
 
 // Key is what a request is matched to this endpoint by: Key of its Host.
 func (e Endpoint) Key() string { return Key(e.Host) }
@@ -357,8 +359,9 @@ func (e Endpoint) PlaintextRemote() bool {
 }
 
 // ParseURL validates a server URL and returns its Endpoint. It accepts what
-// pipeline.Context.Redirect accepts — http or https, a host, no user info, no path
-// beyond "/", no query or fragment — and two things more: a port must be a number
+// pipeline.Context.Redirect accepts — http or https, a host, no user info, no query
+// or fragment — and a path prefix of plain segments, with one trailing "/" dropped.
+// It also checks two things more: a port must be a number
 // from 1 to 65535, and the scheme's default port is dropped, so a server at
 // https://x:443 is the host a request for x names, and the redirect a routed request
 // for x still gets records no requested host.
@@ -381,8 +384,8 @@ func ParseURL(raw string) (Endpoint, error) {
 		return Endpoint{}, errors.New("the URL has no host")
 	case u.User != nil:
 		return Endpoint{}, errors.New("the URL carries user info; the key is given separately, never in the URL")
-	case u.Path != "" && u.Path != "/":
-		return Endpoint{}, errors.New("the URL has a path; give scheme://host[:port] only, since a routed request keeps its own path")
+	case !plainPath(u):
+		return Endpoint{}, errors.New(`the URL's path must be plain segments, with no ".", "..", empty or escaped segment`)
 	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
 		return Endpoint{}, errors.New("the URL has a query or fragment")
 	}
@@ -395,7 +398,29 @@ func ParseURL(raw string) (Endpoint, error) {
 		port = strconv.Itoa(n)
 	}
 	hostname := strings.ToLower(u.Hostname())
-	return Endpoint{Scheme: u.Scheme, Host: joinHost(hostname, withoutDefault(u.Scheme, port)), Hostname: hostname}, nil
+	return Endpoint{Scheme: u.Scheme, Host: joinHost(hostname, withoutDefault(u.Scheme, port)), Hostname: hostname,
+		Path: strings.TrimSuffix(u.Path, "/")}, nil
+}
+
+// plainPath reports whether u's path, one trailing "/" dropped, is "" or plain
+// segments: none empty, ".", ".." or escaped, and no "@". A joined path must pass
+// the redirect's own check, which refuses "..". An "@" is user info whose key had
+// a "/", so url.Parse took the key for the host.
+func plainPath(u *url.URL) bool {
+	p := strings.TrimSuffix(u.Path, "/")
+	if p == "" {
+		return true
+	}
+	// EscapedPath differs from Path when any byte needs escaping or was escaped.
+	if u.EscapedPath() != u.Path || strings.Contains(p, "@") {
+		return false
+	}
+	for _, seg := range strings.Split(p[1:], "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // Hostname is a request's host[:port], lowercased and without the port.

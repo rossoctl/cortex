@@ -1,7 +1,7 @@
 # Cortex
 
 **`top` for your coding agent.** Watch every model call, tool call and dollar your
-agent spends, live — then cut the waste.
+agent spends, live.
 
 Claude Code · OpenCode · Codex · IBM Bob · Pi · any agent that can use an HTTPS proxy.
 One binary on macOS or Linux. No Kubernetes, no account.
@@ -47,13 +47,6 @@ agentop observe
 agentop cost --window month --by agent
 ```
 
-**Trim 4–20% off Claude Code's prompts** (median 6% in our measurement). Cortex
-strips the tool definitions you never call.
-
-```sh
-agentop tools scan --write ~/.cortex/config.yaml
-```
-
 **Switch model servers without touching your agent.** Provider down, or want the
 traffic to stay local? Send new sessions to a LiteLLM gateway or Ollama. For Ollama,
 pull the model and [raise its context length](./docs/laptop-local-model.md#context-length) first.
@@ -64,8 +57,7 @@ echo ollama | agentop server add ollama http://localhost:11434 \
 agentop server use ollama --agent claude-code
 ```
 
-Guides: [token savings](./docs/laptop-token-savings.md) ·
-[local models](./docs/laptop-local-model.md) · [pricing](./docs/pricing.md)
+Guides: [local models](./docs/laptop-local-model.md) · [pricing](./docs/pricing.md)
 
 ## How it works
 
@@ -119,7 +111,7 @@ The same binary also runs on a remote machine — a VM, a home server, a pod —
 
 ## Learn more
 
-[Getting started](./docs/getting-started.md) · [Using agentop](./cmd/agentop/README.md#panes) · [Troubleshooting](./docs/troubleshooting.md) · [All docs](./docs/README.md)
+[Getting started](./docs/getting-started.md) · [Using agentop](./docs/using-agentop.md) · [Troubleshooting](./docs/troubleshooting.md) · [All docs](./docs/README.md)
 
 [agentop reference](./cmd/agentop/README.md) ·
 [plugin catalog](./docs/plugin-catalog.md) · [script plugins](./docs/script-plugin.md) ·

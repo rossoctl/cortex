@@ -51,7 +51,7 @@ def prose_lines(path):
                 fence = m.group(1)
                 continue
             yield line
-        elif m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+        elif m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line[m.end() :].strip():
             fence = None
 
 
@@ -138,6 +138,9 @@ def selftest():
             "`[code](ignored.md)`\n"
         )
         (root / "b.md").write_text('## Real Heading\n\n<a id="custom"></a>\n\n[c](#custom)\n')
+        # A fence marker with text after it cannot close a fence, so the link inside stays code
+        # and the link after the real closing fence is still checked.
+        (root / "c.md").write_text("```\n```text\n[inside](gone-inside.md)\n```\n[after](gone-after.md)\n")
         (root / "sub").mkdir()
         (root / "sub" / "x.md").write_text("")
         got = sorted(check_links(root))
@@ -146,6 +149,7 @@ def selftest():
                 "a.md: missing.md (missing file)",
                 "a.md: b.md#nope (missing anchor)",
                 "a.md: #not-a-heading (missing anchor)",
+                "c.md: gone-after.md (missing file)",
             ]
         )
         if got != want:
