@@ -60,3 +60,25 @@ func dialectFor(path string) dialect {
 	}
 	return dialectNone
 }
+
+// chatCompletionsSuffix ends a chat-completions path. The OpenAI dialect also reads
+// legacy completions, which have no translation protocol.
+const chatCompletionsSuffix = "/chat/completions"
+
+// ProtocolFor names the translation protocol of path, by the same rule as dialectFor,
+// so that the parser and the translator cannot disagree: "anthropic-messages",
+// "chat-completions", "responses", or "" for a path with no protocol (legacy
+// completions included).
+func ProtocolFor(path string) string {
+	switch dialectFor(path) {
+	case dialectAnthropic:
+		return "anthropic-messages"
+	case dialectOpenAI:
+		if strings.HasSuffix(path, chatCompletionsSuffix) {
+			return "chat-completions"
+		}
+	case dialectResponses:
+		return "responses"
+	}
+	return ""
+}
