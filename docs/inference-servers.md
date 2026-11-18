@@ -12,7 +12,8 @@ This guide covers these servers:
 | Server | URL | Network | Protocol |
 |---|---|---|---|
 | `ete-int` | `https://ete-litellm.ai-models.vpc-int.res.ibm.com` | IBM network or VPN only | LiteLLM: Anthropic and chat completions |
-| `ete-ext` | `https://ete-litellm.ai-models.vpc.res.ibm.com` | Internet | LiteLLM: Anthropic and chat completions |
+| `ete-ext` | `https://ete-litellm.ai-models.vpc.res.ibm.com` | IBM network or VPN only | LiteLLM: Anthropic and chat completions |
+| `cb` | `https://litellm.cb.ete.res.ibm.com` | IBM network or VPN only | LiteLLM: Anthropic and chat completions |
 | `bob` | `https://api.us-east.bob.ibm.com/inference` | Internet | Chat completions only |
 | `ollama` | `http://localhost:11434` | Your machine | Anthropic and chat completions |
 
@@ -52,14 +53,15 @@ Make a key on each server's own key page.
 |---|---|
 | `ete-int` | <https://ete-litellm.ai-models.vpc-int.res.ibm.com/ui/api-keys/> |
 | `ete-ext` | <https://ete-litellm.ai-models.vpc.res.ibm.com/ui/api-keys/> |
+| `cb` | <https://litellm.cb.ete.res.ibm.com/ui/api-keys/> |
 | `bob` | <https://bob.ibm.com/admin/apikeys> |
 
-- **ete:** before you can make a key, ETE must give you access. Request
+- **ete-int and ete-ext:** before you can make a key, ETE must give you access. Request
   [Research managed non open source models](https://data-forms.apps.res.ibm.com/user/form?type=ROAI)
   and name the Claude models that you need. ETE sends an email when your team
   has access.
-- **ete-int:** connect to the IBM network or VPN. Its name resolves to an
-  address in `9.0.0.0/8`, which is not on the internet.
+- **ete-int, ete-ext and cb:** connect to the IBM network or VPN, before you
+  make the key and while you use the server.
 - **Bob:** make a static API key. Do not use Bob's login token. That token is a
   JWT, and it expires after 12 hours.
 
@@ -206,6 +208,9 @@ agentop server add ete-int https://ete-litellm.ai-models.vpc-int.res.ibm.com \
 agentop server add ete-ext https://ete-litellm.ai-models.vpc.res.ibm.com \
   --main claude-opus-4-6 --helper claude-sonnet-4-6
 
+agentop server add cb https://litellm.cb.ete.res.ibm.com \
+  --main glm --helper NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
+
 agentop server add bob https://api.us-east.bob.ibm.com/inference \
   --main premium-ide --helper fast \
   --auth-header x-api-key --header User-Agent=bob-shell
@@ -221,8 +226,9 @@ echo ollama | agentop server add ollama http://localhost:11434 \
   name, as above, usually picks that model. A short word, such as `opus`,
   picks the newest Opus, also one that the server adds later. For Ollama, give
   the full tag: a bare `granite` picks `granite3.3` if that is pulled too.
-- **The models above:** on 2026-11-18, the `ete-ext` and `bob` words picked
-  these models. Nobody checked the `ete-int` list on that day. `add` reads the
+- **The models above:** on 2026-11-18, the `ete-ext`, `cb` and `bob` words
+  picked these models. On `cb`, the names carry a `rits/…/` prefix, and
+  `glm` picked `rits/zai-org/glm-5-3`. Nobody checked the `ete-int` list on that day. `add` reads the
   server's list and prints the model that each word picks. It refuses a word
   that names no model, and it shows the list. Use that list to choose again.
 - **Bob's two flags:** Bob takes its key only as `x-api-key`. Bob's edge refuses
@@ -271,7 +277,7 @@ the new model.
 
 | Message | Cause | What to do |
 |---|---|---|
-| `could not reach the server: context deadline exceeded` | For `ete-int`: you are not on the IBM network. | Connect to the IBM network or VPN. Then run `add` again. |
+| `could not reach the server: context deadline exceeded` | For `ete-int`, `ete-ext` or `cb`: you are not on the IBM network. | Connect to the IBM network or VPN. Then run `add` again. |
 | `could not reach the server: … connection refused` | For Ollama: the server is not running. | Start Ollama. Then run `add` again. |
 | `the server answered 401, …` | The key is wrong, or it is a key for another server. | Make a key on the server's own key page. |
 | `the server answered 403, 403, 403, 403` for Bob | The two Bob flags are missing. | Run `add` again with `--auth-header x-api-key --header User-Agent=bob-shell`. |
@@ -317,6 +323,7 @@ never shows a key.
       api: chat-completions=/v1/chat/completions
       auth header: x-api-key
       headers: User-Agent
+  cb        litellm.cb.ete.res.ibm.com                  main glm → rits/zai-org/glm-5-3 · helper NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4 → rits/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
   ete-ext   ete-litellm.ai-models.vpc.res.ibm.com       main claude-opus-4-6 → claude-opus-4-6 · helper claude-sonnet-4-6 → claude-sonnet-4-6   claude-code
   ete-int   ete-litellm.ai-models.vpc-int.res.ibm.com   main claude-opus-5-5 · helper claude-sonnet-5-5 (model list unavailable: could not reach the server: context deadline exceeded)
   ollama    http://localhost:11434                      main granite4.2:8b → granite4.2:8b · helper granite4.2:8b → granite4.2:8b
@@ -324,7 +331,7 @@ never shows a key.
 
 - The last column names the agents that each server gets.
 - `model list unavailable` means that agentop cannot reach the server. On
-  `ete-int`, you are not on the IBM network. Requests routed there fail until
+  `ete-int`, `ete-ext` or `cb`, you are not on the IBM network. Requests routed there fail until
   the server answers again.
 
 Then start a new session in the agent. In `agentop`, the sessions table's
@@ -335,6 +342,7 @@ Then start a new session in the agent. In `agentop`, the sessions table's
 | Server | How Cortex prices it |
 |---|---|
 | `ete-int`, `ete-ext` | In dollars. LiteLLM sends the cost of a request that does not stream. For other requests, Cortex uses its price list. See [pricing](pricing.md). |
+| `cb` | In dollars when LiteLLM sends the cost of the request. Cortex's price list has no rate for the `cb` models, so the other requests show as unpriced until you give them a rate. See [pricing](pricing.md). |
 | `bob` | In Bobcoins, at a flat 2 Bobcoins for each million tokens. Input, output and cache reads cost the same. A local install has this rate in `~/.cortex/config.yaml`. agentop shows Bobcoins apart from dollars, and never adds the two. |
 | `ollama` | Cortex counts the tokens, but shows the model as unpriced until you give it a rate. See [pricing](pricing.md). |
 
