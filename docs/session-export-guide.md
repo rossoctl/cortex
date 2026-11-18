@@ -337,6 +337,28 @@ agentop export --since 7d | jq -r '.durationMs // empty' | sort -n \
 n=4 p50=1237ms p95=1274ms max=1311ms
 ```
 
+**p50** is the median: half the requests were faster, half slower. **p95** means 95% of
+requests were faster than this value. **max** is the slowest single request.
+
+Read the gap between p50 and p95, not either one alone. `p50=200ms p95=240ms` is a
+consistent system. `p50=200ms p95=9000ms` is a system that stalls. Both can have the same
+average, which is why this recipe does not report one: a single timeout moves an average
+and tells you nothing about the typical request.
+
+The command works in four steps:
+
+- `.durationMs // empty` takes the duration and drops a record that has none. A dropped
+  record is not a zero. See [Trap 1](#trap-1-an-absent-field-is-not-a-zero).
+- `sort -n` sorts numerically. Plain `sort` is alphabetical, which puts `1000` before `9`.
+- `a[NR]=$1` stores each value in order. `NR` is awk's line number, so the array runs from
+  1 to the number of values.
+- `int((NR-1)*0.95)+1` is the index of the p95 value.
+
+That index arithmetic is awkward because the array starts at 1. For 100 values,
+`int(99*0.95)+1` is index 95. Without the `+1` you read the value one place too low, and at
+`n=1` you read `a[0]`, which is unset. awk prints that as `0`, so the recipe would report
+`p50=0ms` with no error.
+
 **Query it with SQL.** DuckDB reads NDJSON directly:
 
 ```sh
