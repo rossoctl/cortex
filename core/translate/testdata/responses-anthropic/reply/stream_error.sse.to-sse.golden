@@ -1,0 +1,12 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"msg_01Err","object":"response","model":"claude-opus-5-5","status":"in_progress"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_0","role":"assistant","status":"in_progress","content":[]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_0","output_index":0,"content_index":0,"delta":"Partial"}
+
+event: response.failed
+data: {"type":"response.failed","response":{"id":"msg_01Err","object":"response","model":"claude-opus-5-5","status":"failed","output":[],"error":{"code":"server_is_overloaded","message":"Overloaded"}}}
+

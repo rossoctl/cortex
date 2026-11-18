@@ -1,0 +1,1 @@
+{"model":"claude-opus-5-5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}],"tools":[{"type":"function","name":"shell","parameters":{"type":"object"}}],"tool_choice":{"type":"function","name":"shell"},"stream":true}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -410,7 +411,7 @@ func sent(up *chatServer) []upstreamRequest {
 }
 
 // routedProxy is a forward proxy with inference-parser and an inference router that
-// sends claude-code and opencode to up, a server with the extra fields given. The
+// sends claude-code, opencode and codex to up, a server with the extra fields given. The
 // router's model list for up is claude-sonnet-5 from the start, so that a resend has
 // a substitute.
 func routedProxy(t *testing.T, up *chatServer, fields string) (*httptest.Server, *session.Store) {
@@ -425,7 +426,7 @@ func routedProxy(t *testing.T, up *chatServer, fields string) (*httptest.Server,
 	router.SetStore(st)
 	if err := router.Configure(json.RawMessage(`{
 		"servers": {"s": {"url": "` + up.URL + `", "key": "` + routedKey + `", "main": "sonnet", "helper": "sonnet"` + fields + `}},
-		"agents": {"claude-code": "s", "opencode": "s"}
+		"agents": {"claude-code": "s", "opencode": "s", "codex": "s"}
 	}`)); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -488,6 +489,62 @@ func TestRouterAPI_ChatServerGetsBearerAndAChatBody(t *testing.T) {
 		if got := r.header.Values(h); len(got) != 0 {
 			t.Errorf("%s = %q, want none", h, got)
 		}
+	}
+}
+
+// Rules S2, S3 and S12 end to end: a Codex request goes to a server that serves only
+// Anthropic Messages, with the router's key in X-Api-Key and no Codex header, and the
+// Anthropic stream comes back to Codex as a Responses stream.
+func TestRouterAPI_CodexToAnthropicServer(t *testing.T) {
+	sse, err := os.ReadFile("../../translate/testdata/responses-anthropic/reply/two_tools.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := routedServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(sse)
+	})
+	proxy, _ := routedProxy(t, up, `, "api": {"anthropic-messages": "/v1/messages"}`)
+	req, _ := http.NewRequest(http.MethodPost, "http://chatgpt.example/backend-api/codex/responses?x=1", strings.NewReader(codexRequest))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "codex-tui/0.162.1 (Mac OS 26.3.0; arm64) xterm-256color (codex-tui; 0.162.1)")
+	for _, h := range codexHeaders {
+		req.Header.Set(h, "v")
+	}
+	req.Header.Set("Authorization", "Bearer client-key")
+	resp, err := proxyClient(proxy, nil).Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	body := replyText(t, resp)
+
+	reqs := sent(up)
+	if len(reqs) != 1 {
+		t.Fatalf("upstream got %d requests, want 1", len(reqs))
+	}
+	r := reqs[0]
+	if r.path != "/v1/messages" || r.rawQuery != "" {
+		t.Errorf("upstream got path %q query %q, want /v1/messages and no query", r.path, r.rawQuery)
+	}
+	if got := r.header.Values("X-Api-Key"); len(got) != 1 || got[0] != routedKey {
+		t.Errorf("X-Api-Key = %q, want only %s", got, routedKey)
+	}
+	if got := r.header.Get("Anthropic-Version"); got != "2023-06-01" {
+		t.Errorf("Anthropic-Version = %q, want 2023-06-01", got)
+	}
+	for _, h := range append([]string{"Authorization"}, codexHeaders...) {
+		if got := r.header.Values(h); len(got) != 0 {
+			t.Errorf("upstream saw %s: %q", h, got)
+		}
+	}
+	if !bytes.Contains(r.body, []byte(`"messages":[{"role":"user"`)) ||
+		!bytes.HasSuffix(r.body, []byte(`,"cache_control":{"type":"ephemeral"}}`)) {
+		t.Errorf("upstream body is not an Anthropic body with the top-level cache marker: %s", r.body)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(body, "event: response.created\n") ||
+		!strings.Contains(body, "event: response.completed\n") {
+		t.Errorf("reply = %d %s, want a Responses stream", resp.StatusCode, body)
 	}
 }
 

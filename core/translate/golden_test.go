@@ -115,8 +115,7 @@ func TestDeterministic(t *testing.T) {
 	}
 }
 
-// replyCase is one hand-written chat-completions reply in testdata/reply.
-// A .sse input is a stream. The status is 200, or N for a name that
+// replyCase is one hand-written reply in a reply directory. A .sse input is a stream. The status is 200, or N for a name that
 // starts with "error_N_".
 type replyCase struct {
 	path   string
@@ -124,10 +123,10 @@ type replyCase struct {
 	stream bool
 }
 
-func replyCases(t *testing.T) []replyCase {
+func replyCases(t *testing.T, dir string) []replyCase {
 	t.Helper()
-	inputs, _ := filepath.Glob("testdata/reply/*.sse")
-	more, _ := filepath.Glob("testdata/reply/*.json")
+	inputs, _ := filepath.Glob(filepath.Join(dir, "*.sse"))
+	more, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	inputs = append(inputs, more...)
 	if len(inputs) == 0 {
 		t.Fatal("no reply inputs")
@@ -166,7 +165,7 @@ func goldenName(c replyCase, agentStream bool) string {
 // TestReplyGolden converts each chat-completions reply to the Anthropic
 // reply (rules 20-24).
 func TestReplyGolden(t *testing.T) {
-	for _, c := range replyCases(t) {
+	for _, c := range replyCases(t, "testdata/reply") {
 		body, err := os.ReadFile(c.path)
 		if err != nil {
 			t.Fatal(err)

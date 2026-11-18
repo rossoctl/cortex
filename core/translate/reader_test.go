@@ -26,7 +26,7 @@ func newReader(r io.Reader, status int, upstreamStream, agentStream bool) io.Rea
 // Read, so the input splits at every byte boundary. The output must equal
 // the golden.
 func TestReplyReader_EveryByteSplit(t *testing.T) {
-	for _, c := range replyCases(t) {
+	for _, c := range replyCases(t, "testdata/reply") {
 		body, err := os.ReadFile(c.path)
 		if err != nil {
 			t.Fatal(err)
