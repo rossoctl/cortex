@@ -289,6 +289,8 @@ occurrences would inflate heavily-resumed sessions), and windows to the last
 `--days` (30 by default). Without `--write` it prints the YAML block; with
 `--write` it patches the `remove:` list of the `tool-prune` entry in place,
 idempotently and without reformatting the rest of the file.
+With `--write` it refuses to write when the scan observed no tool calls,
+because then each tool that it knows would look unused.
 
 `--all` drops the window entirely: every call in every transcript counts as use.
 Widening is the cautious direction — a longer window can only find more tools in
@@ -356,7 +358,7 @@ happens downstream. This is the first place anyone looks, so it is worth stating
 plainly: proxy-side pruning saves money but does not return context window. The
 client still believes it sent the full manifest, so auto-compact triggers at the
 same point. Recovering headroom needs client-side configuration
-(`--allowedTools`, disabling unused MCP servers). AuthBridge's advantage is the
+(`--allowedTools`, disabling unused MCP servers). Cortex's advantage is the
 complement — it applies to every agent behind it with no per-client change, and
 it measures.
 

@@ -11,7 +11,7 @@ Note: This plugin is an alternative to token-exchange, not a complement — a gi
 
 ```
 ┌─────────────┐         ┌──────────────┐         ┌──────────────┐
-│   Client    │────────▶│  AuthBridge  │────────▶│ Token Broker │
+│   Client    │────────▶│    Cortex    │────────▶│ Token Broker │
 │             │  JWT    │              │  JWT +  │   Service    │
 │             │         │              │  Server │              │
 └─────────────┘         └──────────────┘   URL   └──────────────┘
@@ -27,11 +27,11 @@ Note: This plugin is an alternative to token-exchange, not a complement — a gi
 ```
 
 **Flow**:
-1. Client sends request with JWT to AuthBridge
-2. AuthBridge extracts the bearer token and derives the target server URL from the outbound host
-3. AuthBridge calls Token Broker with the bearer token and target server URL
+1. Client sends request with JWT to Cortex
+2. Cortex extracts the bearer token and derives the target server URL from the outbound host
+3. Cortex calls Token Broker with the bearer token and target server URL
 4. Token Broker acquires token (may block waiting for user authorization)
-5. AuthBridge replaces JWT with acquired token and forwards to target
+5. Cortex replaces JWT with acquired token and forwards to target
 
 ## Use Case
 
@@ -39,7 +39,7 @@ Human-in-the-loop OAuth flows where the broker manages user consent and token
 caching. The plugin blocks until the broker returns a token (up to 300s to
 allow for interactive user login).
 
-AuthBridge does **not** cache brokered tokens locally. It sends a broker request
+Cortex does **not** cache brokered tokens locally. It sends a broker request
 for each outbound request that matches a `broker` route. The Token Broker service
 is therefore expected to cache and reuse tokens when appropriate (for example,
 using the same subject token, target server, and scope inputs to avoid repeated
@@ -167,7 +167,7 @@ endpoints for the target service.
 
 ### Error Responses
 
-| Status | Meaning | AuthBridge Action |
+| Status | Meaning | Cortex Action |
 |--------|---------|-------------------|
 | 401 | Invalid/expired JWT | Returns 401 to client |
 | 403 | User denied authorization | Returns 403 to client |
@@ -177,19 +177,19 @@ endpoints for the target service.
 ### Timeout Behavior
 
 - **Token Broker timeout**: 300 seconds (5 minutes) — allows for user login
-- **AuthBridge client timeout**: 310 seconds (broker times out first)
+- **Cortex client timeout**: 310 seconds (broker times out first)
 - Broker blocks until token is available or timeout occurs
 
 ### Caching Responsibility
 
 Caching is intentionally delegated to the Token Broker service rather than
-implemented in the plugin. This keeps AuthBridge stateless for brokered token
+implemented in the plugin. This keeps Cortex stateless for brokered token
 acquisition while allowing the broker to apply the correct reuse policy for
 interactive OAuth tokens.
 
 Operationally, this means:
 
-- AuthBridge will call `POST /sessions/token` on every matching outbound request
+- Cortex will call `POST /sessions/token` on every matching outbound request
 - The broker should cache and reuse valid tokens whenever safe to do so
 - The broker should avoid re-triggering user authorization flows when an
   existing valid token can be returned

@@ -13,7 +13,8 @@ import (
 // and searches as one more node of the tree. The bodies are decoded into JSON where they are
 // JSON, which puts thinking blocks in place among the messages, and every image or document
 // becomes "[type size]" rather than its base64. An imported event e has no capture, so its
-// "raw" node says so.
+// "raw" node says so. The headers go beside "raw", not in it, so a reader sees them without
+// opening the bodies.
 func withRaw(data []byte, raw *pipeline.RawCapture, e *pipeline.SessionEvent) []byte {
 	if raw == nil && !e.Imported() {
 		return data
@@ -34,7 +35,7 @@ func withRaw(data []byte, raw *pipeline.RawCapture, e *pipeline.SessionEvent) []
 		p := raw.Response
 		resp := map[string]any{"status": p.Status}
 		if len(p.Headers) > 0 {
-			resp["headers"] = flatHeaders(p.Headers)
+			m["headers"] = flatHeaders(p.Headers)
 		}
 		if p.Truncated {
 			resp["truncated"] = true
@@ -55,6 +56,17 @@ func withRaw(data []byte, raw *pipeline.RawCapture, e *pipeline.SessionEvent) []
 		case p.Body != "":
 			resp["body"] = bodyView(p.Body, nil)
 		}
+		if p.Upstream != nil || p.UpstreamBase64 != nil {
+			text := ""
+			if p.Upstream != nil {
+				text = *p.Upstream
+			}
+			resp["upstream"] = "server's reply before translation: " + formatBytes(int64(len(text)+len(p.UpstreamBase64)))
+			resp["upstreamBody"] = bodyView(text, p.UpstreamBase64)
+			if p.UpstreamTruncated {
+				resp["upstreamTruncated"] = true
+			}
+		}
 		r["response"] = resp
 	} else {
 		r["request"] = bodyView(raw.Request, raw.RequestBase64)
@@ -68,8 +80,16 @@ func withRaw(data []byte, raw *pipeline.RawCapture, e *pipeline.SessionEvent) []
 		default:
 			r["forwarded"] = "forwarded as sent"
 		}
+		if raw.Translated != nil || raw.TranslatedBase64 != nil {
+			text := ""
+			if raw.Translated != nil {
+				text = *raw.Translated
+			}
+			r["translated"] = "sent upstream, translated by Cortex: " + formatBytes(int64(len(text)+len(raw.TranslatedBase64)))
+			r["translatedBody"] = bodyView(text, raw.TranslatedBase64)
+		}
 		if len(raw.RequestHeaders) > 0 {
-			r["headers"] = flatHeaders(raw.RequestHeaders)
+			m["headers"] = flatHeaders(raw.RequestHeaders)
 		}
 		if raw.Query != "" {
 			r["query"] = raw.Query

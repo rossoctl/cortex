@@ -1,6 +1,6 @@
 # litellm-budget-track Plugin
 
-Design document for the `litellm-budget-track` AuthBridge pipeline plugin.
+This page is the reference for the `litellm-budget-track` Cortex pipeline plugin.
 
 **Issue:** https://github.com/rossoctl/rossoctl/issues/2177
 
@@ -19,7 +19,7 @@ When running AI agents through Cortex (local budget proxy), each agent needs
 a spending cap. LiteLLM returns the cost of each completion in the
 `x-litellm-response-cost` response header, which `inference-parser` settles
 into a per-request cost record. This plugin accumulates that record in the
-AuthBridge pipeline that carries the LLM traffic (see [Pipeline placement](#pipeline-placement)),
+Cortex pipeline that carries the LLM traffic (see [Pipeline placement](#pipeline-placement)),
 tracks cumulative daily spend in a JSON ledger file, and blocks further requests
 once the budget is exhausted.
 
@@ -93,7 +93,7 @@ The cost is settled **once**, on the terminal frame, from one of two sources:
 
 ## Plugin Configuration
 
-In the AuthBridge `config.yaml` pipeline section:
+In the Cortex `config.yaml` pipeline section:
 
 ```yaml
 pipeline:
@@ -124,13 +124,10 @@ inbound pipeline, so a plugin left under `inbound:` there records `$0` — use `
 | `spend_file` | string | yes | Path to the JSON ledger file (created if missing) |
 | `max_budget` | float | yes | Daily budget in USD (must be > 0) |
 
-**Rates are no longer options here.** The four `*_cost_per_token` fields were
-removed; they now live in the top-level `pricing:` section. A config still carrying
-them fails to start with the offending field named, rather than dropping them
-silently and switching the deployment to vendor-list rates. The old
-"cache rates default to `input_cost_per_token`" rule is gone too — a tier with no
-rate makes the request *unpriced*, because that default overstated a cache read by
-10x while still counting the request as priced.
+**Rates are not options here.** They are in the top-level `pricing:` section. A
+config that has a `*_cost_per_token` field fails to start, and the error names the
+field. A cache tier with no rate makes the request *unpriced*. See
+[Rates and ordering](#rates-and-ordering).
 
 ## Ledger Format
 
@@ -182,8 +179,7 @@ Each priced response surfaces on the session-event stream at
 per-response cost without duplicating the pricing math or reading the file
 ledger.
 
-**A zero-cost cache hit now DOES produce an event** — this line previously said the
-opposite, and it was the one case that mattered. A gateway that reports a parsed,
+**A zero-cost cache hit produces an event.** A gateway that reports a parsed,
 finite, exactly-zero cost on a non-streamed response is *declaring the call free*,
 which is a different answer from nobody having priced it. The event carries
 `settled: true` so the usage aggregator does not fall through to its rate table and
@@ -206,8 +202,7 @@ when headers are sent.
 | `provenance` | string | Where the figure came from: `"authoritative"` (the gateway reported it), or the rate table's level — `"configured"`, `"discovered"`, `"bundled"`. Omitted when absent. |
 | `settled` | bool | `true` when the producer settled this figure deliberately, **including a zero**. Distinguishes "this call was free" from "nobody priced this", which a bare `cost_usd: 0` cannot. Omitted when false. |
 
-Both trailing fields are **additive**: the four above them are unchanged, and a
-consumer that knows only those four decodes an event from either version unaltered.
+A consumer that knows only the first four fields can decode each event.
 
 See [`plugin-reference.md#emitting-session-events`](./plugin-reference.md#emitting-session-events)
 for how the listener promotes `pctx.Extensions.Custom` entries to
@@ -304,29 +299,19 @@ go build ./cmd/cortex/
 # Send requests with x-litellm-response-cost header in responses
 ```
 
-## Future Work
+## Rates and ordering
 
-- Per-agent budget tracking (separate ledger files per agent identity)
-- Budget alerts at configurable thresholds (e.g., 80% warning)
-- Weekly/monthly budget periods (not just daily)
-- Integration with cortex control API for real-time budget queries
+The plugin prices the per-tier token counts that `inference-parser` publishes,
+through the top-level `pricing:` section. It has no SSE token parser of its own:
+one parser and one rate table turn tokens into dollars.
 
+**`inference-parser` must come AFTER this plugin in the chain.**
 
-## Rates and ordering (changed)
-
-Rates are no longer plugin options. The four `*_cost_per_token` knobs are gone; the
-plugin prices the per-tier token counts `inference-parser` publishes, through the
-top-level `pricing:` section. Its own SSE token parser is gone with them — one
-parser, one rate table, one place tokens become dollars.
-
-**BREAKING — `inference-parser` must appear AFTER this plugin in the chain.**
-
-That reads backwards and is not a typo. The response passes walk the chain in
+That is correct, and it is not a typo. The response passes walk the chain in
 reverse (`pipeline.RunResponseFrame`), so the parser needs a *higher* index to fold
-each frame before this plugin settles the cost on the terminal one. The requirement
-is declared as `RequiresLater`, and a chain that gets it wrong now fails to build.
-Before that check existed, the wrong order built cleanly and silently unpriced every
-streamed response — the counts simply were not there yet.
+each frame before this plugin settles the cost on the terminal one. The plugin
+declares the requirement as `RequiresLater`, so a chain with the wrong order fails
+to build.
 
 ```yaml
 pipeline:
@@ -336,22 +321,14 @@ pipeline:
       - name: inference-parser       # folds token counts FIRST on the response pass
 ```
 
-Two further behaviour changes:
-
-- **Cache tiers with no rate are unpriced, not defaulted.** The old default charged
-  them at the uncached input rate, overstating a cache read by 10x while still
-  counting the request as priced — so the error was invisible. A tier that carried
-  tokens without a rate now makes the request unpriced, which is a visible gap.
+- **A cache tier with no rate is unpriced.** When a tier carries tokens and has no
+  rate, the request is unpriced, which is a visible gap.
 - **The ledger quantizes to micros**, because `pricing.Cost` returns integer
   millionths so bucket addition stays exact. It costs a millionth of a dollar per
   request and makes the ledger agree with `/v1/usage` to the last digit.
-
-The cost event gained a `provenance` field, **additively**: the original
-`cost_usd` / `source` / `daily_total_usd` / `daily_max_usd` tags are unchanged and a
-consumer that knows only those four still decodes. `source` is retained rather than
-replaced — it says which *path* priced the request (gateway header vs token counts),
-where `provenance` says how much to trust the rates.
-
+- **`source` and `provenance` are two fields.** `source` says which *path* priced
+  the request (gateway header or token counts). `provenance` says how much to trust
+  the rates.
 
 ## Drift detection
 
@@ -378,3 +355,18 @@ per-request warning would bury every other line in the log.
 
 The ledger always uses the authoritative figure. Drift is a diagnostic about the rate
 table, never a reason to distrust the gateway's own number.
+
+## History
+
+- The plugin had four `*_cost_per_token` options and its own SSE token parser.
+  The options moved to the top-level `pricing:` section.
+- A cache tier with no rate was charged at `input_cost_per_token`. That overstated
+  a cache read by 10x, and still counted the request as priced.
+- A chain with `inference-parser` before this plugin built, and every streamed
+  response was unpriced. The `RequiresLater` check now refuses that chain.
+- The cost event added `provenance` and `settled` after the first four fields.
+- Ideas that are not done:
+  - Per-agent budget tracking (separate ledger files per agent identity)
+  - Budget alerts at configurable thresholds (e.g., 80% warning)
+  - Weekly/monthly budget periods (not just daily)
+  - Integration with cortex control API for real-time budget queries

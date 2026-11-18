@@ -258,11 +258,18 @@ func FromEvent(e *model.SessionEvent, sessionID string) Record {
 		return Record{Schema: SchemaVersion}
 	}
 	r := Record{
-		Schema:        SchemaVersion,
-		SessionID:     e.SessionID,
-		Seq:           e.Seq,
-		RequestID:     e.RequestID,
-		At:            e.At,
+		Schema:    SchemaVersion,
+		SessionID: e.SessionID,
+		Seq:       e.Seq,
+		RequestID: e.RequestID,
+		// UTC, NOT THE PROXY'S LOCAL ZONE. e.At is the listener's time.Now(), so it carries
+		// whatever offset the host runs in. That made an export unreadable to the obvious
+		// tools: jq's fromdateiso8601 is a strict `...Z` parser and errors on "+01:00",
+		// pandas raises "Mixed timezones detected" for a window that spans a DST change,
+		// and a lexical sort of mixed offsets misorders the hour the clocks go back
+		// (#1830 review). The instant is unchanged; only its rendering is now uniform, so
+		// every `at` ends in Z and sorts and parses as one.
+		At:            e.At.UTC(),
 		Direction:     e.Direction.String(),
 		Phase:         e.Phase.String(),
 		Host:          exportLabel(e.Host),

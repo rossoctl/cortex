@@ -1,214 +1,25 @@
 # Codex
 
 [Codex](https://learn.chatgpt.com/docs/codex/cli) is a supported agent. Cortex recognises
-its User-Agent and parses its inference. `agentop configure codex` routes it through Cortex
-and takes that out again.
+its User-Agent and parses its inference. `agentop configure codex` writes the routing into
+Codex's dotenv file, and removes it again.
 
-One fact shapes it: Codex loads a dotenv file — `$CODEX_HOME/.env` when `CODEX_HOME` is set,
-otherwise `~/.codex/.env` — itself at process start,
-confirmed against the real Codex CLI (writing a dead proxy address there and running bare
-`codex exec`, with no `agentop` wrapper at all, broke both its websocket and its HTTPS
-fallback transport). There is no settings JSON, so the routing goes into that file
-directly. **Every Codex process reads it once, when it starts** — and that includes
-Codex's own background server, which outlives the windows you type into; see
-[Codex's background app-server](#codexs-background-app-server).
+## Use it
 
-## Enable and revert
+1. Enable: `agentop configure codex enable`. It shows what it will change and asks first.
+   `--yes` skips the question.
+2. Start Codex with `codex`. `enable` restarts a running background daemon for you. If it
+   says that the restart failed, run `codex app-server daemon restart`. A restart
+   interrupts running turns, and Codex resumes them. See
+   [Codex's background app-server](#codexs-background-app-server).
+   If `enable` prints a `kill <pid> && codex app-server daemon restart` line for the
+   auto-updater, run that line.
+3. Check: run `agentop observe`, send one prompt, and see a `codex` row with tokens. A
+   `pending:codex@…` bucket with no tokens means that the daemon did not restart.
+   `agentop configure codex status` shows what is set, and if the daemon uses Cortex.
+4. Undo: `agentop configure codex disable`. It restarts the daemon in the same way.
 
-```sh
-agentop configure codex enable    # route Codex through Cortex
-agentop configure codex status    # what is set
-agentop configure codex disable   # take it out again
-```
-
-**What `enable` writes.** Five variables, read from `~/.cortex/config.yaml` so they always
-match the running proxy:
-
-| Variable | Value |
-|---|---|
-| `HTTP_PROXY` `HTTPS_PROXY` `http_proxy` `https_proxy` | Cortex's forward proxy URL |
-| `SSL_CERT_FILE` | `bundle.crt`, the bridge CA plus the platform roots |
-
-**The CA goes in `SSL_CERT_FILE`, not Codex's own `CODEX_CA_CERTIFICATE`** — which its HTTP
-client would otherwise prefer, and which an earlier version of this page recommended. Codex's
-dotenv loader discards every key whose name starts with `CODEX_`, on purpose, so that a `.env`
-cannot reconfigure Codex itself. A CA written under that name is one Codex never reads.
-`SSL_CERT_FILE` survives the filter and is the next name Codex checks. If some other tool
-already has its own `SSL_CERT_FILE` in this file, `enable` refuses rather than overwrite it.
-
-That mistake is worth knowing about because **its symptom is success.** With no CA it can
-read, Codex rejects the bridge's forged certificate, Cortex falls back to tunnelling the
-bytes opaquely, and the request still completes — Codex answers normally and nothing
-reports an error. What is lost is the observation: Cortex sees an opaque tunnel instead of
-the request. So "did Codex reply?" cannot tell a working CA from a broken one. The check
-that can is whether the bridge **terminated**: `~/.cortex/proxy.log` carries
-`tls-bridge passthrough … reason=client-hung-up` lines for every connection it could not
-terminate, and none when the CA is working.
-
-`enable` scans the **whole file** for an existing definition of each of the five keys, not
-only a block it wrote itself. Codex parses this file with
-[dotenvy](https://github.com/allan2/dotenvy), so `KEY=VALUE`, `export KEY=VALUE`, an
-indented line and spaces around the `=` all count as definitions and all are seen; a
-commented `#KEY=VALUE` does not. A key defined on more than one line is refused outright
-rather than guessed at — dotenvy resolves a duplicate **last-wins**, so appending would
-quietly beat an earlier definition, including a corporate proxy someone set deliberately.
-For the same reason `enable` refuses to overwrite any value that is not Cortex's own,
-naming it and asking you to remove it by hand first. The
-only values it replaces are Cortex's own, such as a proxy at an older Cortex address. It
-refuses outright when the TLS bridge is disabled or has no `ca_dir`, because Codex would
-then have no CA to trust — there is no partial "proxy only" state. The first run copies the
-original file to `.env.bak` and never overwrites that copy; everything else in the file,
-including blank lines and comments, is left exactly as it was. A short comment marks the
-newly-added lines the first time any are appended.
-
-**The record, and why it is always empty today.** The first `enable` records what the five
-variables held in `~/.cortex/codex-state.json`. In practice that record contains nothing to
-restore, and the reason is worth stating plainly rather than leaving as a surprise:
-`enable` **refuses** whenever one of the five holds a value that is not Cortex's own, and
-a value that *is* Cortex's own is recorded as absent (so `disable` removes it rather than
-putting back a stale Cortex address). Those two rules are exact opposites, so every value
-that reaches the record is stored as "was not set". The file, and `disable`'s restore
-branch, exist to keep Codex's state shape identical to claude-code's and OpenCode's.
-
-**What `disable` does.** It removes the five variables, removes the
-`# Added by agentop configure codex enable` marker if it is still exactly as written, and
-deletes the record — so an `enable` / `disable` cycle is a round trip that leaves the file
-as it found it. It would restore a recorded prior value if one existed, which per the
-paragraph above does not happen today; if you hand-edit one of the five variables after
-`enable`, `disable` simply removes it. Unlike Claude Code's `disable`, it does not check
-whether a value changed since `enable`.
-
-**What `status` says.** It prints the five variables as the file currently holds them, a
-warning if any is defined more than once, then `enabled` if every one matches what `enable`
-would write right now, or `not fully enabled (N of 5 set)` otherwise. Last, whether Codex's
-running background app-server uses Cortex — see below. It changes nothing.
-
-`enable` and `disable` both show what they will change and ask before doing it. `--yes`
-skips the question. If you decline, or there is no terminal to ask on, they change nothing
-and exit 3. `--env PATH` points at a different dotenv file; `--config PATH` reads a
-different Cortex config.
-
-### Codex's background app-server
-
-**The file alone does not reach a Codex that is already running.** Codex runs a
-long-lived background server, its app-server daemon (`codex app-server --managed-daemon`),
-and the `codex` you type into is only a screen that hands it each prompt: the daemon makes
-the model calls. It reads the dotenv file when it starts and never again, and it is shared
-by every Codex window, so it is often days old. A daemon started before `enable` keeps
-calling OpenAI directly — the window's own startup checks and telemetry reach Cortex, its
-prompts do not, and agentop shows Codex only as a small `pending:codex@…` bucket under
-**codex**, with no tokens. `disable` has the mirror problem: the daemon keeps routing
-through Cortex, and Codex stops working if Cortex is then stopped.
-
-**So `enable` and `disable` restart a running daemon**, once, after writing the file, with
-Codex's own `codex app-server daemon restart`. They say so before asking, naming its pid and
-when it started, and `--yes` skips the question but not that line. Then they check the new
-daemon's environment and say whether it uses Cortex — or, if its proxy is still not what the
-file says, where else it could be coming from. With no daemon running there is nothing to
-restart: the next `codex` starts one that reads the new file. An `enable` that finds nothing
-to change does not restart; it says whether the running daemon uses Cortex, and how to
-restart it if not.
-
-**The auto-updater is restarted too.** An auto-updatable install runs a second background
-process, `codex app-server daemon pid-update-loop`, which also reads the dotenv file only when
-it starts. After installing an update it starts a new daemon, and that daemon inherits the
-updater's environment, but `codex app-server daemon restart` leaves a running updater alone.
-So `enable` and `disable` stop the updater first, and the restart starts a fresh one that has
-read the new file. Comparing `ps` before and after, both processes change. Without this, a
-`disable` came undone at the next Codex update, with the daemon back on Cortex's proxy. If the
-updater will not stop, they name it and the command that replaces it.
-
-The updater is stopped only when it is the process Codex recorded. A pid file can outlive
-the updater that wrote it, and its pid can be reused by an unrelated process, so agentop
-first checks the process the same way Codex does. Current Codex records a
-`processIdentity` in `app-server-daemon/daemon-updater.pid` (the boot ID, plus the
-kernel's start time and, on macOS, its unique process ID), and agentop compares that.
-Time zone and language settings don't affect it, and a record from before a reboot never
-matches. A file from an older Codex has only `processStartTime`, the start time as text;
-there a time zone or language change can make the real updater look different, so a
-mismatch counts as "can't tell" rather than "another process".
-
-- **The updater:** agentop stops it, and the restart starts a fresh one.
-- **Another process:** agentop leaves it alone. Codex's restart makes the same check,
-  finds the record out of date, and starts a fresh updater.
-- **Can't tell:** agentop leaves the process alone and says it could not confirm the
-  updater picked up the change. It does not name the process or suggest stopping it,
-  since it could not tell what that process is. If `agentop configure codex status`
-  later shows the app-server back on its old settings, restarting the computer fixes it:
-  that ends the old updater, and the fresh one Codex starts reads the new settings.
-  Running agentop again would not help, because it would make the same check.
-
-**What a restart does to Codex sessions**, from Codex's source (0.163.0 and 0.164.0), not
-measured here: the old daemon stops taking new turns, gives running ones its shutdown grace — 60
-seconds by default, configurable up to 5 minutes — to finish, and saves its threads. The new daemon restores them and
-continues a local turn the grace cut off, saying "Resuming interrupted work". An open
-`codex` window shows that it is reconnecting and rejoins its thread on its own. So a restart
-interrupts Codex rather than ending it, and `enable` or `disable` can take as long as that grace
-when a turn is running.
-
-If the restart fails, the file is still changed and the command still exits 0; it prints the
-error and the command to run yourself:
-
-```sh
-codex app-server daemon restart
-```
-
-To check the daemon by hand, its connections should be to `127.0.0.1:47600` rather than to
-OpenAI:
-
-```sh
-lsof -nP -a -p "$(pgrep -f 'codex app-server --listen')" -iTCP -sTCP:ESTABLISHED
-```
-
-### Undoing it by hand
-
-Without `agentop`: open `$CODEX_HOME/.env` (or `~/.codex/.env`) and remove the lines for the five variables above,
-if they point at Cortex (a proxy on `localhost:476…`/`127.0.0.1:476…`, or a CA path under
-`~/.cortex/ca` unless you moved its `ca_dir`). Leave any that point elsewhere — they are not
-Cortex's. Then delete the record, and restart Codex's background server so it stops using
-the proxy.
-
-```sh
-# Remove only lines matching these five keys, and only if they point at Cortex:
-#   HTTP_PROXY  HTTPS_PROXY  http_proxy  https_proxy  SSL_CERT_FILE
-$EDITOR ~/.codex/.env
-rm -f ~/.cortex/codex-state.json
-codex app-server daemon restart
-```
-
-## CA trust
-
-Cortex's TLS bridge decrypts Codex's HTTPS using certificates it forges from its own CA, so
-Codex has to trust that CA. Codex's HTTP client (`codex_http_client::custom_ca`) checks
-`CODEX_CA_CERTIFICATE` first, then `SSL_CERT_FILE`, then falls back to the platform's own
-root store with neither set — but it only ever sees the **process environment**, and
-Codex's dotenv loader strips every `CODEX_`-prefixed key before that. Hence
-`SSL_CERT_FILE`; see [Enable and revert](#enable-and-revert) above. Unlike the bundle
-variables claude-code's and OpenCode's integrations set, Codex's custom CA is **additive** —
-it is loaded on top of the platform roots rather than replacing them. `bundle.crt` (the
-bridge CA plus the platform roots) is still the right value, it just is not load-bearing
-for reaching hosts the bridge does not terminate.
-
-**Verified live** with the inherited CA variables stripped from the environment
-(`env -u SSL_CERT_FILE -u CURL_CA_BUNDLE -u REQUESTS_CA_BUNDLE -u GIT_SSL_CAINFO`), so that
-the `.env` file was the only possible source of trust, and judged on whether the bridge
-**terminated** rather than on whether Codex replied:
-
-| `.env` holds | Bridge outcome |
-|---|---|
-| `SSL_CERT_FILE` | **terminates** — no `tls-bridge passthrough` lines |
-| `CODEX_CA_CERTIFICATE` | passthrough; Codex rejected the forged cert |
-| no CA variable at all | passthrough — *identical to the row above* |
-
-That last pair is the whole reason this page labours the point: the `CODEX_`-prefixed name
-is indistinguishable from writing nothing, and both still answer the prompt.
-
-⚠️ **If you have already trusted the bridge CA in your OS keychain, or exported
-`SSL_CERT_FILE` in your shell, Codex will work regardless of what this file says** — and a
-test of this feature done in that environment proves nothing about the file. That is exactly
-how the `CODEX_CA_CERTIFICATE` mistake survived its first review.
-
-## What Cortex shows for it
+## What you see
 
 **Its own agent.** Codex sends four product tokens, all folded to the canonical agent name
 `codex`, so its traffic gets its own row in agentop's agents pane instead of sharing
@@ -257,15 +68,16 @@ the session holding its user's intent.
 
 ⚠️ **An existing `~/.cortex/config.yaml` may need one line added.** The laptop config
 writes `session.id_headers` out explicitly, and an explicit list is used exactly as
-written rather than merged with the built-in default — so a Cortex installed before this
-shipped keeps the old three names and will not read Codex's. Check with
+written rather than merged with the built-in default — so a config that an older Cortex
+wrote keeps only the three older names and does not read Codex's. Check with
 `grep -A5 id_headers ~/.cortex/config.yaml`: if the list is there and has no
 `"Session-Id"`, add it as the last entry, or delete the whole `id_headers:` block to fall
 back to the current default. A config that never had the block is already fine.
 
-Before this, Codex's traffic landed in a per-process bucket (`pending:codex@<pid>.<start>`)
-and stayed there — one bucket per process rather than per conversation, so two
-conversations in one long-lived process merged and one spanning a restart split in two.
+Without `Session-Id` in that list, Codex's traffic lands in a per-process bucket
+(`pending:codex@<pid>.<start>`) and stays there — one bucket per process rather than per
+conversation, so two conversations in one long-lived process merge and one spanning a
+restart splits in two.
 
 **Typed inference.** Codex speaks OpenAI's Responses API, which `inference-parser` reads
 (model, messages, tools, completion, token counts) on any path ending in `/responses` —
@@ -337,11 +149,11 @@ timeline then shows a 426 with `error.kind: "upgrade_declined"`, and Codex print
 harmless `failed to connect to websocket: HTTP error: 426 Upgrade Required` line before
 carrying on over HTTPS.
 
-Before Cortex handled the socket at all, the proxy forwarded the handshake with `Upgrade`
-stripped — it is a hop-by-hop header — and chatgpt.com answered the bare `GET` with
-**405**. Codex treats a 405 as transient: it retried five times on a doubling backoff,
-printing `Reconnecting… n/5`, before falling back. Measured on Codex 0.163.0, a one-word
-`codex exec` turn took a median **11.0s** that way, against **~3s** with the socket carried
+A proxy that forwards the handshake with `Upgrade` stripped — it is a hop-by-hop header —
+gets **405** from chatgpt.com for the bare `GET`. Codex treats a 405 as transient: it
+retries five times on a doubling backoff, printing `Reconnecting… n/5`, before it falls
+back. Measured on Codex 0.163.0, a one-word `codex exec` turn took a median **11.0s** that
+way, against **~3s** with the socket carried
 or declined. There is no supported Codex setting to skip the WebSocket attempt: the
 built-in `openai` provider hardcodes `supports_websockets = true`, and Codex refuses a
 config that overrides a built-in provider.
@@ -363,9 +175,9 @@ the socket ends. Then restart the proxy with `agentop service restart`. Unlike m
 that file, a `listener:` edit is not picked up live, and the restart briefly disconnects
 every agent routed through Cortex.
 
-The setting was a boolean, `decline_responses_websockets`, in v0.9.4. A config that still
-sets it keeps working — `true` is `decline` and `false` is `forward` — and Cortex logs a
-warning at startup naming the key to use instead. Setting both is refused.
+The v0.9.4 boolean key, `decline_responses_websockets`, also works — `true` is `decline`
+and `false` is `forward` — and Cortex logs a warning at startup naming the key to use
+instead. Setting both is refused.
 
 **Tokens always; cost on a laptop once the price list downloads, or wherever you
 configure a rate.** Token counts come from the Responses
@@ -434,7 +246,271 @@ Worth knowing for anyone changing this: `tool-prune` and `inference-parser` keep
 **separate** suffix lists, and only the parser's recognises `/responses`. The drift is
 silent — the parser reads a Responses request that the pruner skips as "not inference".
 
-## Verified depth
+## Import history
+
+`agentop import --agent codex` adds the Codex sessions from before Cortex to the
+session history and the cost ledger. It reads the rollout files under
+`~/.codex/sessions`, or under `$CODEX_HOME/sessions` when that variable is set
+in the proxy's environment.
+
+- The root rollout of a session and the rollouts of its subagents make one
+  session.
+- The import skips a session that Cortex captured live.
+- A turn is priced at today's rates.
+
+Flags and output:
+[`agentop import`](../../cmd/agentop/README.md#importing-agent-history-agentop-import).
+Rules: [`POST /v1/import`](../session-api.md#post-v1import--transcript-import-laptop-only).
+
+## Known issues
+
+- **Changing the routing restarts Codex's background server.** `enable` and `disable`
+  change a file Codex's app-server daemon and auto-updater read only when they start, so
+  they restart both when they are running, which interrupts running Codex turns for up to
+  the daemon's shutdown grace (a minute by default). Changing
+  the file any other way — by hand, or with an older agentop — does not reach a
+  running daemon until `codex app-server daemon restart`. See
+  [Codex's background app-server](#codexs-background-app-server).
+- **Cost is blank where no list price reaches the model.** Two cases, and neither is
+  Codex-specific: a **sidecar** keeps the compiled-in table and makes no download, so a
+  model newer than the pinned commit has no rate there; and `bundled: false` turns the
+  shipped table *and* the download off together. On a laptop with defaults the rate arrives
+  with the first hourly fetch. See
+  [What you see](#what-you-see).
+- **Chatty non-inference traffic.** A single one-turn `codex exec` produced ~100 recorded
+  events, most of them not inference: repeated polling of
+  `/backend-api/ps/plugins/list` and friends, plus an MCP handshake. The inference is a
+  small fraction of a Codex session's rows.
+- **Tool calls carry non-JSON arguments.** `custom_tool_call` arguments are freeform text,
+  and the two plugins that forward them differ in what that costs. `sparc` sends the value
+  on to its reflection service, whose own parsing falls back to the raw string on a
+  `JSONDecodeError`, so it is tolerated. `opa` puts the value into
+  `input.inference.tool_calls[_].arguments` as a plain string, which is fine until a
+  policy calls `json.unmarshal` on it — that is the author's to handle, and nothing in
+  Cortex handles it for them.
+- **`CODEX_HOME` has to be set where `agentop` runs, not only where Codex runs.** agentop
+  reads it from its own process environment, the same way Codex does, so the two agree
+  whenever both are launched from the same shell — the normal case. They come apart if you
+  set it only for Codex, say in a wrapper script: agentop then writes `~/.codex/.env`,
+  Codex reads `$CODEX_HOME/.env`, and `status` reports `enabled` because it is reading the
+  same wrong file `enable` wrote. Nothing can detect that from outside — there is no signal
+  distinguishing "`CODEX_HOME` is not in use" from "it is in use somewhere agentop cannot
+  see". Pass `--env $CODEX_HOME/.env` explicitly if your setup is shaped that way.
+- **Rows that a Cortex with no Codex recognition recorded** keep the raw User-Agent as
+  their label and show under `Other` until they age out.
+
+## How it works (for developers)
+
+### What enable writes
+
+Codex loads a dotenv file — `$CODEX_HOME/.env` when `CODEX_HOME` is set,
+otherwise `~/.codex/.env` — itself at process start,
+confirmed against the real Codex CLI (writing a dead proxy address there and running bare
+`codex exec`, with no `agentop` wrapper at all, broke both its websocket and its HTTPS
+fallback transport). There is no settings JSON, so the routing goes into that file
+directly. **Every Codex process reads it once, when it starts** — and that includes
+Codex's own background server, which outlives the windows you type into; see
+[Codex's background app-server](#codexs-background-app-server).
+
+Five variables, read from `~/.cortex/config.yaml` so they always
+match the running proxy:
+
+| Variable | Value |
+|---|---|
+| `HTTP_PROXY` `HTTPS_PROXY` `http_proxy` `https_proxy` | Cortex's forward proxy URL |
+| `SSL_CERT_FILE` | `bundle.crt`, the bridge CA plus the platform roots |
+
+`enable` and `disable` both show what they will change and ask before doing it. `--yes`
+skips the question. If you decline, or there is no terminal to ask on, they change nothing
+and exit 3. `--env PATH` points at a different dotenv file; `--config PATH` reads a
+different Cortex config.
+
+### The CA goes in SSL_CERT_FILE
+
+**The CA goes in `SSL_CERT_FILE`, not Codex's own `CODEX_CA_CERTIFICATE`**, although its
+HTTP client would otherwise prefer `CODEX_CA_CERTIFICATE`. Codex's
+dotenv loader discards every key whose name starts with `CODEX_`, on purpose, so that a `.env`
+cannot reconfigure Codex itself. A CA written under that name is one Codex never reads.
+`SSL_CERT_FILE` survives the filter and is the next name Codex checks. If some other tool
+already has its own `SSL_CERT_FILE` in this file, `enable` refuses rather than overwrite it.
+
+Writing the CA under the `CODEX_` name is a mistake worth knowing about because **its symptom is success.** With no CA it can
+read, Codex rejects the bridge's forged certificate, Cortex falls back to tunnelling the
+bytes opaquely, and the request still completes — Codex answers normally and nothing
+reports an error. What is lost is the observation: Cortex sees an opaque tunnel instead of
+the request. So "did Codex reply?" cannot tell a working CA from a broken one. The check
+that can is whether the bridge **terminated**: `~/.cortex/proxy.log` carries
+`tls-bridge passthrough … reason=client-hung-up` lines for every connection it could not
+terminate, and none when the CA is working.
+
+### How enable reads the file
+
+`enable` scans the **whole file** for an existing definition of each of the five keys, not
+only a block it wrote itself. Codex parses this file with
+[dotenvy](https://github.com/allan2/dotenvy), so `KEY=VALUE`, `export KEY=VALUE`, an
+indented line and spaces around the `=` all count as definitions and all are seen; a
+commented `#KEY=VALUE` does not. A key defined on more than one line is refused outright
+rather than guessed at — dotenvy resolves a duplicate **last-wins**, so appending would
+quietly beat an earlier definition, including a corporate proxy someone set deliberately.
+For the same reason `enable` refuses to overwrite any value that is not Cortex's own,
+naming it and asking you to remove it by hand first. The
+only values it replaces are Cortex's own, such as a proxy at an older Cortex address. It
+refuses outright when the TLS bridge is disabled or has no `ca_dir`, because Codex would
+then have no CA to trust — there is no partial "proxy only" state. The first run copies the
+original file to `.env.bak` and never overwrites that copy; everything else in the file,
+including blank lines and comments, is left exactly as it was. A short comment marks the
+newly-added lines the first time any are appended.
+
+### The record
+
+The record is always empty today. The first `enable` records what the five
+variables held in `~/.cortex/codex-state.json`. In practice that record contains nothing to
+restore, and the reason is worth stating plainly rather than leaving as a surprise:
+`enable` **refuses** whenever one of the five holds a value that is not Cortex's own, and
+a value that *is* Cortex's own is recorded as absent (so `disable` removes it rather than
+putting back a stale Cortex address). Those two rules are exact opposites, so every value
+that reaches the record is stored as "was not set". The file, and `disable`'s restore
+branch, exist to keep Codex's state shape identical to claude-code's and OpenCode's.
+
+### What disable does
+
+`disable` removes the five variables, removes the
+`# Added by agentop configure codex enable` marker if it is still exactly as written, and
+deletes the record — so an `enable` / `disable` cycle is a round trip that leaves the file
+as it found it. It would restore a recorded prior value if one existed, which per the
+paragraph above does not happen today; if you hand-edit one of the five variables after
+`enable`, `disable` simply removes it. Unlike Claude Code's `disable`, it does not check
+whether a value changed since `enable`.
+
+### What status says
+
+`status` prints the five variables as the file currently holds them, a
+warning if any is defined more than once, then `enabled` if every one matches what `enable`
+would write right now, or `not fully enabled (N of 5 set)` otherwise. Last, whether Codex's
+running background app-server uses Cortex — see
+[Codex's background app-server](#codexs-background-app-server). It changes nothing.
+
+### Codex's background app-server
+
+**The file alone does not reach a Codex that is already running.** Codex runs a
+long-lived background server, its app-server daemon (`codex app-server --managed-daemon`),
+and the `codex` you type into is only a screen that hands it each prompt: the daemon makes
+the model calls. It reads the dotenv file when it starts and never again, and it is shared
+by every Codex window, so it is often days old. A daemon started before `enable` keeps
+calling OpenAI directly — the window's own startup checks and telemetry reach Cortex, its
+prompts do not, and agentop shows Codex only as a small `pending:codex@…` bucket under
+**codex**, with no tokens. `disable` has the mirror problem: the daemon keeps routing
+through Cortex, and Codex stops working if Cortex is then stopped.
+
+**So `enable` and `disable` restart a running daemon**, once, after writing the file, with
+Codex's own `codex app-server daemon restart`. They say so before asking, naming its pid and
+when it started, and `--yes` skips the question but not that line. Then they check the new
+daemon's environment and say whether it uses Cortex — or, if its proxy is still not what the
+file says, where else it could be coming from. With no daemon running there is nothing to
+restart: the next `codex` starts one that reads the new file. An `enable` that finds nothing
+to change does not restart; it says whether the running daemon uses Cortex, and how to
+restart it if not.
+
+**The auto-updater is restarted too.** An auto-updatable install runs a second background
+process, `codex app-server daemon pid-update-loop`, which also reads the dotenv file only when
+it starts. After installing an update it starts a new daemon, and that daemon inherits the
+updater's environment, but `codex app-server daemon restart` leaves a running updater alone.
+So `enable` and `disable` stop the updater first, and the restart starts a fresh one that has
+read the new file. Comparing `ps` before and after, both processes change. Without this, a
+`disable` would come undone at the next Codex update, with the daemon back on Cortex's proxy. If the
+updater will not stop, they name it and the command that replaces it.
+
+The updater is stopped only when it is the process Codex recorded. A pid file can outlive
+the updater that wrote it, and its pid can be reused by an unrelated process, so agentop
+first checks the process the same way Codex does. Current Codex records a
+`processIdentity` in `app-server-daemon/daemon-updater.pid` (the boot ID, plus the
+kernel's start time and, on macOS, its unique process ID), and agentop compares that.
+Time zone and language settings don't affect it, and a record from before a reboot never
+matches. A file from an older Codex has only `processStartTime`, the start time as text;
+there a time zone or language change can make the real updater look different, so a
+mismatch counts as "can't tell" rather than "another process".
+
+- **The updater:** agentop stops it, and the restart starts a fresh one.
+- **Another process:** agentop leaves it alone. Codex's restart makes the same check,
+  finds the record out of date, and starts a fresh updater.
+- **Can't tell:** agentop leaves the process alone and says it could not confirm the
+  updater picked up the change. It does not name the process or suggest stopping it,
+  since it could not tell what that process is. If `agentop configure codex status`
+  later shows the app-server back on its old settings, restarting the computer fixes it:
+  that ends the old updater, and the fresh one Codex starts reads the new settings.
+  Running agentop again would not help, because it would make the same check.
+
+**What a restart does to Codex sessions**, from Codex's source (0.163.0 and 0.164.0), not
+measured here: the old daemon stops taking new turns, gives running ones its shutdown grace — 60
+seconds by default, configurable up to 5 minutes — to finish, and saves its threads. The new daemon restores them and
+continues a local turn the grace cut off, saying "Resuming interrupted work". An open
+`codex` window shows that it is reconnecting and rejoins its thread on its own. So a restart
+interrupts Codex rather than ending it, and `enable` or `disable` can take as long as that grace
+when a turn is running.
+
+If the restart fails, the file is still changed and the command still exits 0; it prints the
+error and the command to run yourself:
+
+```sh
+codex app-server daemon restart
+```
+
+To check the daemon by hand, its connections should be to `127.0.0.1:47600` rather than to
+OpenAI:
+
+```sh
+lsof -nP -a -p "$(pgrep -f 'codex app-server --listen')" -iTCP -sTCP:ESTABLISHED
+```
+
+### Undoing it by hand
+
+Without `agentop`: open `$CODEX_HOME/.env` (or `~/.codex/.env`) and remove the lines for the five variables above,
+if they point at Cortex (a proxy on `localhost:476…`/`127.0.0.1:476…`, or a CA path under
+`~/.cortex/ca` unless you moved its `ca_dir`). Leave any that point elsewhere — they are not
+Cortex's. Then delete the record, and restart Codex's background server so it stops using
+the proxy.
+
+```sh
+# Remove only lines matching these five keys, and only if they point at Cortex:
+#   HTTP_PROXY  HTTPS_PROXY  http_proxy  https_proxy  SSL_CERT_FILE
+$EDITOR ~/.codex/.env
+rm -f ~/.cortex/codex-state.json
+codex app-server daemon restart
+```
+
+### CA trust
+
+Cortex's TLS bridge decrypts Codex's HTTPS using certificates it forges from its own CA, so
+Codex has to trust that CA. Codex's HTTP client (`codex_http_client::custom_ca`) checks
+`CODEX_CA_CERTIFICATE` first, then `SSL_CERT_FILE`, then falls back to the platform's own
+root store with neither set — but it only ever sees the **process environment**, and
+Codex's dotenv loader strips every `CODEX_`-prefixed key before that. Hence
+`SSL_CERT_FILE`; see [The CA goes in SSL_CERT_FILE](#the-ca-goes-in-ssl_cert_file). Unlike the bundle
+variables claude-code's and OpenCode's integrations set, Codex's custom CA is **additive** —
+it is loaded on top of the platform roots rather than replacing them. `bundle.crt` (the
+bridge CA plus the platform roots) is still the right value, it just is not load-bearing
+for reaching hosts the bridge does not terminate.
+
+**Verified live** with the inherited CA variables stripped from the environment
+(`env -u SSL_CERT_FILE -u CURL_CA_BUNDLE -u REQUESTS_CA_BUNDLE -u GIT_SSL_CAINFO`), so that
+the `.env` file was the only possible source of trust, and judged on whether the bridge
+**terminated** rather than on whether Codex replied:
+
+| `.env` holds | Bridge outcome |
+|---|---|
+| `SSL_CERT_FILE` | **terminates** — no `tls-bridge passthrough` lines |
+| `CODEX_CA_CERTIFICATE` | passthrough; Codex rejected the forged cert |
+| no CA variable at all | passthrough — *identical to the row above* |
+
+That last pair is the whole reason this page labours the point: the `CODEX_`-prefixed name
+is indistinguishable from writing nothing, and both still answer the prompt.
+
+⚠️ **If you have already trusted the bridge CA in your OS keychain, or exported
+`SSL_CERT_FILE` in your shell, Codex will work regardless of what this file says** — and a
+test of this feature done in that environment proves nothing about the file. That is exactly
+how the `CODEX_CA_CERTIFICATE` mistake survived its first review.
+
+### Verified depth
 
 Tested live with Codex 0.160.1 on macOS 26.3 (arm64), against the real ChatGPT backend,
 with Cortex built from the change that added this page. This was exercised:
@@ -500,40 +576,3 @@ Not tested:
 - **A `function_call` tool call.** Codex's own `exec` tool is a `custom_tool_call`; the
   `function_call` shape is modelled from the documented schema.
 - **Tool pruning**, which is unsupported above rather than merely untested.
-
-## Known issues
-
-- **Changing the routing restarts Codex's background server.** `enable` and `disable`
-  change a file Codex's app-server daemon and auto-updater read only when they start, so
-  they restart both when they are running, which interrupts running Codex turns for up to
-  the daemon's shutdown grace (a minute by default). Changing
-  the file any other way — by hand, or with an agentop older than this — does not reach a
-  running daemon until `codex app-server daemon restart`. See
-  [Codex's background app-server](#codexs-background-app-server).
-- **Cost is blank where no list price reaches the model.** Two cases, and neither is
-  Codex-specific: a **sidecar** keeps the compiled-in table and makes no download, so a
-  model newer than the pinned commit has no rate there; and `bundled: false` turns the
-  shipped table *and* the download off together. On a laptop with defaults the rate arrives
-  with the first hourly fetch. See
-  [What Cortex shows for it](#what-cortex-shows-for-it).
-- **Chatty non-inference traffic.** A single one-turn `codex exec` produced ~100 recorded
-  events, most of them not inference: repeated polling of
-  `/backend-api/ps/plugins/list` and friends, plus an MCP handshake. The inference is a
-  small fraction of a Codex session's rows.
-- **Tool calls carry non-JSON arguments.** `custom_tool_call` arguments are freeform text,
-  and the two plugins that forward them differ in what that costs. `sparc` sends the value
-  on to its reflection service, whose own parsing falls back to the raw string on a
-  `JSONDecodeError`, so it is tolerated. `opa` puts the value into
-  `input.inference.tool_calls[_].arguments` as a plain string, which is fine until a
-  policy calls `json.unmarshal` on it — that is the author's to handle, and nothing in
-  Cortex handles it for them.
-- **`CODEX_HOME` has to be set where `agentop` runs, not only where Codex runs.** agentop
-  reads it from its own process environment, the same way Codex does, so the two agree
-  whenever both are launched from the same shell — the normal case. They come apart if you
-  set it only for Codex, say in a wrapper script: agentop then writes `~/.codex/.env`,
-  Codex reads `$CODEX_HOME/.env`, and `status` reports `enabled` because it is reading the
-  same wrong file `enable` wrote. Nothing can detect that from outside — there is no signal
-  distinguishing "`CODEX_HOME` is not in use" from "it is in use somewhere agentop cannot
-  see". Pass `--env $CODEX_HOME/.env` explicitly if your setup is shaped that way.
-- **Rows recorded before this release** keep the raw User-Agent as their label and show
-  under `Other` until they age out.

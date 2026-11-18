@@ -92,18 +92,18 @@ func TestCheckUnread_AdviceSaysAGoAgentIsNotPricedAndPromisesOnlyInterceptedHost
 
 // The docs paragraph on Go programs that trusting the CA does not have read makes the
 // same warning as doctor, and must not bound the failures either.
-func TestLaptopServiceDoc_GoProgramsTrustingTheCADoesNotReadStateNoFailureBound(t *testing.T) {
-	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "laptop-service.md"))
+func TestTroubleshootingDoc_GoProgramsTrustingTheCADoesNotReadStateNoFailureBound(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "troubleshooting.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	const start = "Trusting the CA does not have every Go program read."
 	_, para, ok := strings.Cut(string(doc), start)
 	if !ok {
-		t.Fatalf("laptop-service.md has no paragraph starting %q", start)
+		t.Fatalf("troubleshooting.md has no paragraph starting %q", start)
 	}
 	para, _, _ = strings.Cut(para, "\n\n")
-	assertNoFailureBound(t, "laptop-service.md", start+para)
+	assertNoFailureBound(t, "troubleshooting.md", start+para)
 }
 
 // assertNoFailureBound fails when text bounds how often a program shown Cortex's

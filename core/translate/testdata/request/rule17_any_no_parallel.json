@@ -1,0 +1,1 @@
+{"model":"claude-opus-5-5","max_tokens":1024,"tools":[{"name":"Bash","input_schema":{"type":"object"}}],"tool_choice":{"type":"any","disable_parallel_tool_use":true},"messages":[{"role":"user","content":"hi"}]}

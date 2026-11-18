@@ -42,10 +42,94 @@ type Config struct {
 
 // Server is one inference server.
 type Server struct {
-	URL    string `json:"url" required:"true" description:"scheme://host[:port] of the server; no path."`
-	Key    string `json:"key" required:"true" description:"API key sent to this server in place of the client's."`
-	Main   string `json:"main" required:"true" description:"A word naming this server's model for an agent's main work, a request with tools, sent when the server refuses the model the agent asked for. The newest listed model whose name contains it."`
-	Helper string `json:"helper" required:"true" description:"A word naming this server's model for an agent's helper calls, a request without tools. Resolved as main is."`
+	URL        string            `json:"url" required:"true" description:"scheme://host[:port][/path] of the server. A path is a prefix that the router puts before each path it builds."`
+	Key        string            `json:"key" required:"true" description:"API key sent to this server in place of the client's."`
+	Main       string            `json:"main" required:"true" description:"A word naming this server's model for an agent's main work, a request with tools, sent when the server refuses the model the agent asked for. The newest listed model whose name contains it."`
+	Helper     string            `json:"helper" required:"true" description:"A word naming this server's model for an agent's helper calls, a request without tools. Resolved as main is."`
+	API        map[string]string `json:"api" description:"Protocols the server serves, by protocol name, to the path it serves each at. Empty: requests go in the agent's protocol, to the agent's path."`
+	AuthHeader string            `json:"auth_header" description:"Header that carries key. authorization sends Bearer <key>; any other name sends the raw key. Empty: the agent's header, or the target protocol's usual one for a translated request."`
+	Headers    map[string]string `json:"headers" description:"Fixed headers set on every request to this server after the plugins run. Values may use ${ENV_VAR}."`
+}
+
+// APIProtocols are the protocol names an api key can have. It is translate.Names(),
+// copied rather than imported to keep this package free of core/translate; a test in
+// the plugin package holds the two equal.
+var APIProtocols = []string{"anthropic-messages", "chat-completions", "responses"}
+
+// CheckAPI reports whether api maps known protocols to paths a request can be sent
+// to. Keys are checked in sorted order, so the same map always gives the same first
+// error. Each error starts with "api". The path rule is pipeline.Context.SetRedirectPath's.
+func CheckAPI(api map[string]string) error {
+	for _, k := range slices.Sorted(maps.Keys(api)) {
+		if !slices.Contains(APIProtocols, k) {
+			return fmt.Errorf("api: unknown protocol %q; valid protocols: %s", k, strings.Join(APIProtocols, ", "))
+		}
+		p := api[k]
+		if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "?#") || slices.Contains(strings.Split(p, "/"), "..") {
+			return fmt.Errorf("api.%s: path %q must be absolute, with no query, fragment or \"..\" segment", k, p)
+		}
+	}
+	return nil
+}
+
+// framingHeaders are the headers neither auth_header nor headers can name: the
+// transport sets them, and a fixed value would break the request's framing.
+var framingHeaders = []string{
+	"host", "content-length",
+	"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade", "te", "trailer",
+	"proxy-authenticate", "proxy-authorization",
+}
+
+// authHeaders are the headers the router puts the key in. headers cannot name them.
+var authHeaders = []string{"authorization", "x-api-key", "api-key"}
+
+// CheckAuthHeader reports whether name can carry a server's key. "" is valid: it
+// means the agent's header, or the target protocol's usual one.
+func CheckAuthHeader(name string) error {
+	if name == "" {
+		return nil
+	}
+	if !validHeaderName(name) {
+		return fmt.Errorf("%q is not a valid header name", name)
+	}
+	if slices.Contains(framingHeaders, strings.ToLower(name)) {
+		return fmt.Errorf("%q cannot carry the key: it is a hop-by-hop or framing header", name)
+	}
+	return nil
+}
+
+// CheckHeaders reports whether h can be set on every request to a server whose
+// auth_header is authHeader. Names are checked in sorted order for a stable first
+// error. The errors never repeat a value.
+func CheckHeaders(h map[string]string, authHeader string) error {
+	for _, name := range slices.Sorted(maps.Keys(h)) {
+		lower := strings.ToLower(name)
+		switch {
+		case !validHeaderName(name):
+			return fmt.Errorf("headers: %q is not a valid header name", name)
+		case slices.Contains(authHeaders, lower) || (authHeader != "" && lower == strings.ToLower(authHeader)):
+			return fmt.Errorf("headers: %q cannot be set here: Cortex sets it", name)
+		case slices.Contains(framingHeaders, lower):
+			return fmt.Errorf("headers: %q cannot be set here: it is a hop-by-hop or framing header", name)
+		case strings.ContainsAny(h[name], "\r\n\x00"):
+			return fmt.Errorf("headers: the value of %q has a CR, LF or NUL", name)
+		}
+	}
+	return nil
+}
+
+// validHeaderName reports whether name is an RFC 9110 token.
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0) {
+			return false
+		}
+	}
+	return true
 }
 
 // CheckWord reports whether word can name a server's main or helper model. A word is
@@ -151,6 +235,15 @@ func (c Config) Validate() error {
 		if err := CheckWord(s.Helper); err != nil {
 			return fmt.Errorf("servers.%s.helper: %w", name, err)
 		}
+		if err := CheckAPI(s.API); err != nil {
+			return fmt.Errorf("servers.%s.%w", name, err)
+		}
+		if err := CheckAuthHeader(s.AuthHeader); err != nil {
+			return fmt.Errorf("servers.%s.auth_header: %w", name, err)
+		}
+		if err := CheckHeaders(s.Headers, s.AuthHeader); err != nil {
+			return fmt.Errorf("servers.%s.%w", name, err)
+		}
 	}
 	for _, agent := range slices.Sorted(maps.Keys(c.Agents)) {
 		if err := CheckAgent(agent); err != nil {
@@ -245,10 +338,12 @@ type Endpoint struct {
 	Host string
 	// Hostname is the lowercased host without any port.
 	Hostname string
+	// Path is the URL's path prefix with no trailing "/", or "" for none.
+	Path string
 }
 
-// URL is the endpoint as scheme://host, the form agentop writes.
-func (e Endpoint) URL() string { return e.Scheme + "://" + e.Host }
+// URL is the endpoint as scheme://host[/path], the form agentop writes.
+func (e Endpoint) URL() string { return e.Scheme + "://" + e.Host + e.Path }
 
 // Key is what a request is matched to this endpoint by: Key of its Host.
 func (e Endpoint) Key() string { return Key(e.Host) }
@@ -264,8 +359,9 @@ func (e Endpoint) PlaintextRemote() bool {
 }
 
 // ParseURL validates a server URL and returns its Endpoint. It accepts what
-// pipeline.Context.Redirect accepts — http or https, a host, no user info, no path
-// beyond "/", no query or fragment — and two things more: a port must be a number
+// pipeline.Context.Redirect accepts — http or https, a host, no user info, no query
+// or fragment — and a path prefix of plain segments, with one trailing "/" dropped.
+// It also checks two things more: a port must be a number
 // from 1 to 65535, and the scheme's default port is dropped, so a server at
 // https://x:443 is the host a request for x names, and the redirect a routed request
 // for x still gets records no requested host.
@@ -288,8 +384,8 @@ func ParseURL(raw string) (Endpoint, error) {
 		return Endpoint{}, errors.New("the URL has no host")
 	case u.User != nil:
 		return Endpoint{}, errors.New("the URL carries user info; the key is given separately, never in the URL")
-	case u.Path != "" && u.Path != "/":
-		return Endpoint{}, errors.New("the URL has a path; give scheme://host[:port] only, since a routed request keeps its own path")
+	case !plainPath(u):
+		return Endpoint{}, errors.New(`the URL's path must be plain segments, with no ".", "..", empty or escaped segment`)
 	case u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
 		return Endpoint{}, errors.New("the URL has a query or fragment")
 	}
@@ -302,7 +398,29 @@ func ParseURL(raw string) (Endpoint, error) {
 		port = strconv.Itoa(n)
 	}
 	hostname := strings.ToLower(u.Hostname())
-	return Endpoint{Scheme: u.Scheme, Host: joinHost(hostname, withoutDefault(u.Scheme, port)), Hostname: hostname}, nil
+	return Endpoint{Scheme: u.Scheme, Host: joinHost(hostname, withoutDefault(u.Scheme, port)), Hostname: hostname,
+		Path: strings.TrimSuffix(u.Path, "/")}, nil
+}
+
+// plainPath reports whether u's path, one trailing "/" dropped, is "" or plain
+// segments: none empty, ".", ".." or escaped, and no "@". A joined path must pass
+// the redirect's own check, which refuses "..". An "@" is user info whose key had
+// a "/", so url.Parse took the key for the host.
+func plainPath(u *url.URL) bool {
+	p := strings.TrimSuffix(u.Path, "/")
+	if p == "" {
+		return true
+	}
+	// EscapedPath differs from Path when any byte needs escaping or was escaped.
+	if u.EscapedPath() != u.Path || strings.Contains(p, "@") {
+		return false
+	}
+	for _, seg := range strings.Split(p[1:], "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // Hostname is a request's host[:port], lowercased and without the port.

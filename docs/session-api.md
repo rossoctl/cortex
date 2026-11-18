@@ -27,6 +27,7 @@ through DNS rebinding. The stats server applies the same check.
 | `DELETE /v1/sessions` | `application/json` | Clear every session: the store, and the session archive where one runs. The cost ledger is kept |
 | `DELETE /v1/sessions/{id}` | `application/json` | Erase one session: the store's entry and, where the archive runs, its files (see below) |
 | `GET /v1/events` | `text/event-stream` | SSE stream of new events; `?session=<id>` filters to one session. Heartbeat every 30s |
+| `GET /v1/export` | `application/x-ndjson` | The session archive as content-free records, one per event — the export for offline analysis; `?session=<id>` and `?since=<duration>` select. A walk that dies past its first record resets the connection rather than ending the body cleanly, so a truncated export reaches a client as an error ([`session-export.md`](session-export.md)) |
 | `GET /v1/pipeline` | `application/json` | Active pipeline composition, per plugin: name, direction, position, capabilities, runtime `config`. `onError` is sent only when it is not the default — in practice `observe`, since an `on_error: off` plugin is not built. A plugin under observe runs and records, but its rejections, body writes and redirects are dropped (header writes still apply), so its `config` says what it would do. agentop renders this as the Pipeline pane (`P`) |
 | `GET /v1/plugins` | `application/json` | Catalog of every registered plugin, active or not. 404 when the binary built its session API without `WithCatalog`. agentop renders this as the Catalog pane (`C`) |
 | `GET /v1/usage` | `application/json` | Windowed usage aggregation — the aggregate behind `agentop cost`; parameters and semantics in [`pricing.md`](pricing.md#reading-usage-over-http) |
@@ -174,15 +175,19 @@ second or so before the archive flushes a new event. A request event's `raw`:
 |---|---|
 | `request` | the body as the agent sent it |
 | `forwarded` | the body as Cortex sent it upstream; absent when no plugin rewrote it |
+| `translated` | the body after Cortex converted it to the server's protocol, as sent upstream; absent when Cortex did not convert it. `forwarded`, or `request` when `forwarded` is absent, is the input of the conversion |
 | `requestHeaders` | the request headers, without credential headers |
 | `query` | the URL's raw query |
 
 A response event's `raw` has `response`: `{status, headers, body, decoded,
-truncated, incomplete}`. `body` is up to 10 MiB of the body as it came off the wire,
+truncated, incomplete, upstream, upstreamTruncated}`. `body` is up to 10 MiB of the body as it came off the wire,
 in its `Content-Encoding`, unless `decoded` says the proxy decompressed it to read it
 for a plugin. `truncated` means it was longer, and `incomplete` means it was not read
-to its end: the stream broke off, or the proxy, a plugin or the client stopped it. A body that is not valid UTF-8 — every compressed body — is in
-`requestBase64`, `forwardedBase64` or `bodyBase64` instead. An unknown `raw`
+to its end: the stream broke off, or the proxy, a plugin or the client stopped it.
+When Cortex converted the reply to the agent's protocol, `body` is the converted reply
+as the agent got it, and `upstream` is up to 10 MiB of the server's reply before the
+conversion (`upstreamTruncated` when it was longer). A body that is not valid UTF-8 — every compressed body — is in
+`requestBase64`, `forwardedBase64`, `translatedBase64`, `bodyBase64` or `upstreamBase64` instead. An unknown `raw`
 value is ignored, so an older proxy answers with the event alone.
 
 ## `GET /v1/sessions/{id}/timeline` — agents, tools and hosts on one time axis
@@ -290,12 +295,15 @@ has no spawn link: nothing on the wire names the call that started it.
   proxy captured agent ids are one `subagents` agent.
 - A **return** is a subagent's result reaching another agent:
   `<agent-message from="…">` or `<task-notification>` in a message that agent
-  had not sent before.
+  had not sent before. A run that ends with `SubagentHandback` returns at its
+  `<agent-message>`. The `<task-notification>` that Claude Code sends after it
+  is not a return: it comes later, often with the user's next prompt.
 - A **job** is a background shell command, from the tool result that
   acknowledged it (`Command running in background with ID: …`) to the first
-  `<task-notification>` naming that id. Its tool call ends at the
+  `<task-notification>` naming that id, or to the `TaskStop` result that
+  stopped it (a stopped job gets no notification). Its tool call ends at the
   acknowledgement, so the job is what shows it still running. A job with no
-  `end` is one no notification named: still running, or never reported, as a
+  `end` is one no notification or `TaskStop` named: still running, or never reported, as a
   server left running when its agent exited is. A job whose agent was cut off
   ends where its tools do: at the first failed dial to a model host after the
   agent's last call. Absent when the session started none.
@@ -530,9 +538,9 @@ only another session of the same project made a row in that minute.
 - LAST 1H and the usage pane's hour windows show imported turns only after the
   next proxy restart. The import does not feed them.
 
-**Sources.** Claude Code (`claude-code`), Bob (`bob`) and Codex (`codex`) are
-supported now. #1874 and #1875 add the other agents (`opencode`, `pi`). The
-proxy answers the others with an error that names the supported agents.
+**Sources.** Claude Code (`claude-code`), Bob (`bob`), Codex (`codex`),
+OpenCode (`opencode`) and Pi (`pi`) are supported. The proxy answers any other
+agent with an error that names the supported agents.
 
 The Claude Code source reads
 `~/.claude/projects/<project>/<uuid>.jsonl`, or the same path under
@@ -590,6 +598,46 @@ source imports nothing.
   results. A turn with no usage has no `cost` record and no ledger row. When a
   later import finds its usage, that import adds the row.
 
+The OpenCode source reads `$XDG_DATA_HOME/opencode/opencode.db`, or
+`~/.local/share/opencode/opencode.db` when `XDG_DATA_HOME` is not set. It
+runs `sqlite3 -readonly -json` as a subprocess, as the Bob source does. When
+`sqlite3` is not on `PATH`, the `opencode` result has an error that names the
+program. When the database does not exist, the source imports nothing.
+
+- The session id is the id that OpenCode sends as `X-Session-Id`:
+  `parent_id` for a subagent, `fork_session_id` for a fork, else the
+  session's own id.
+- A subagent's events are in the session of its parent, with `subagent` set
+  to the subagent's own id.
+- A fork's own turns are in the session of its source. The fork's copies of
+  the earlier messages of the source give no turns.
+- Each event has the `opencode` client with OpenCode's version, the model id
+  that OpenCode records, and the project of the session's directory.
+- Cortex prices each turn at today's rates, with the OpenCode Zen endpoint
+  (`opencode.ai`) for the rate lookup. A Zen `*-free` model prices as zero.
+  Output tokens include OpenCode's reasoning tokens. A turn with no token
+  counts gets no cost.
+- OpenCode does not store its system prompt or its tool list, so an imported
+  request has neither.
+
+The Pi source reads `~/.pi/agent/sessions/<dir>/<time>_<id>.jsonl`, or the
+same path under `$PI_CODING_AGENT_DIR/sessions/` when that variable is set in
+the proxy's environment.
+
+- One Pi session file is one session. The session id is the `id` of the
+  file's `session` header line. It is the same id that the extension from
+  `agentop configure pi` sends as `x-session-id`.
+- A file with no `session` header is counted as `unreadable`.
+- A fork (a header with `parentSession`) is its own session. The import does
+  not follow `parentSession`.
+- Each event has the `pi` client and the project of the header's `cwd`.
+- Each assistant message is one turn, error turns included. The request holds
+  the conversation that Pi sent: the turn's own branch of the entry tree, and
+  after a compaction the summary and the kept entries.
+- A Pi turn is priced at today's rates through the pricing table, by model id.
+  The import does not use Pi's own `usage.cost`. A turn with no token counts
+  (for example an error turn) has no cost.
+
 ## `POST /v1/ingest` — rows from cortex-gateway (praxis mode)
 
 Registered only when `praxis.enabled` and `listener.bind_loopback_only` are
@@ -617,9 +665,10 @@ there.
 ```json
 {"v":1, "schemaVersion":1, "op":"append", "requestId":"…", "startedAt":"<RFC 3339, ns, UTC>",
  "session":"<recording session>", "event":{ "...SessionEvent wire JSON..." },
- "capture":{"original":"<base64>", "forwarded":null, "header":{"Name":["v"]}, "query":"",
+ "capture":{"original":"<base64>", "forwarded":null, "translated":null, "header":{"Name":["v"]}, "query":"",
             "response":{"status":200, "header":{}, "body":"<base64>", "decoded":true,
-                        "truncated":false, "ended":true, "incomplete":false}},
+                        "truncated":false, "ended":true, "incomplete":false,
+                        "upstream":null, "upstreamTruncated":false}},
  "cost":{"headers":{"X-Litellm-Response-Cost":"0.01", "Content-Type":"application/json"}}}
 ```
 

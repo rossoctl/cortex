@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,24 +70,28 @@ var testModels = map[string][]string{
 var anyModels = []string{"claude-opus-5-5", "claude-haiku-4-5", "glm-5-3", "nemotron-3"}
 
 // stubServerModels has serverModels answer from lists for the rest of the test, and
-// for a host lists does not name with fallback, or a 401 when fallback is nil.
+// for a host lists does not name with fallback, or a 401 when fallback is nil. It
+// also has probeServer find nothing to write, so add writes only what it is given.
 func stubServerModels(t *testing.T, lists map[string][]string, fallback []string) {
 	t.Helper()
-	prev := serverModels
-	serverModels = func(s routerconfig.Server) ([]string, error) {
+	prev, prevProbe := serverModels, probeServer
+	serverModels = func(s routerconfig.Server) ([]string, string, error) {
 		ep, err := routerconfig.ParseURL(s.URL)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if ids, ok := lists[ep.Host]; ok {
-			return ids, nil
+			return ids, "", nil
 		}
 		if fallback != nil {
-			return fallback, nil
+			return fallback, "", nil
 		}
-		return nil, errors.New("the server answered 401 to its model list")
+		return nil, "", errors.New("the server answered 401 to its model list")
 	}
-	t.Cleanup(func() { serverModels = prev })
+	probeServer = func(context.Context, *http.Client, routerconfig.Server, string, string, bool) (map[string]string, string, error) {
+		return nil, "", nil
+	}
+	t.Cleanup(func() { serverModels, probeServer = prev, prevProbe })
 }
 
 // serverEnvWithSessions is serverEnv with the config's session API at sessionsAddr.
@@ -293,5 +299,43 @@ func TestServer_SaysWhenAServersModelListIsUnavailable(t *testing.T) {
 	}
 	if strings.Contains(out, "sk-ete") {
 		t.Errorf("the listing prints a key:\n%s", out)
+	}
+}
+
+// Rule C4: the listing shows api, auth_header and the header names, never a header value.
+func TestServer_ListsTheAPIAuthHeaderAndHeaderNames(t *testing.T) {
+	block := strings.Replace(routerBlock, "              helper: haiku\n", `              helper: haiku
+              api:
+                chat-completions: /v1/chat/completions
+                anthropic-messages: /v1/messages
+              auth_header: x-api-key
+              headers:
+                X-Client: cortex
+                User-Agent: bob-shell
+`, 1)
+	path := serverEnv(t, closedAddr(t), block)
+	code, out, errOut := runServerCmd(t, "", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	lines := strings.Split(out, "\n")
+	want := []string{
+		"api: anthropic-messages=/v1/messages, chat-completions=/v1/chat/completions",
+		"auth header: x-api-key",
+		"headers: User-Agent, X-Client",
+	}
+	if len(lines) < 5 || !strings.HasPrefix(flat(lines[0]), "ete ") || !strings.HasPrefix(flat(lines[4]), "glm ") {
+		t.Fatalf("the detail lines are not under ete:\n%s", out)
+	}
+	for i, w := range want {
+		if got := flat(lines[i+1]); got != w {
+			t.Errorf("line %d = %q, want %q", i+2, got, w)
+		}
+	}
+	if strings.Index(lines[0], "main") != strings.Index(lines[4], "main") {
+		t.Errorf("columns do not line up:\n%s", out)
+	}
+	if strings.Contains(out, "bob-shell") || strings.Contains(out, "cortex\n") {
+		t.Errorf("the listing shows a header value:\n%s", out)
 	}
 }

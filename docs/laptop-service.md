@@ -1,5 +1,7 @@
 # Running Cortex: start, stop, and remove it
 
+New to Cortex? Start with [Getting started](getting-started.md). For problems, see [Troubleshooting](troubleshooting.md).
+
 Cortex runs as a service, so there is nothing to launch by hand and nothing to keep
 in a terminal. Everything below is `agentop service`; run it with no action to see the
 list.
@@ -24,105 +26,245 @@ routing — and ends each problem with the command that fixes it, usually `agent
 it restarted within a couple of seconds, which looks like a process refusing to die.
 `agentop service stop` is the stop that works.
 
-That restart is the point, though, and it is worth seeing once:
+## Is it working?
 
 ```sh
-kill -9 $(pgrep -f 'cortex --config')             # comes back within ~2s
-agentop service status                            # healthy again
+agentop service status
 ```
 
-On macOS you will see **two** `cortex` processes: a supervisor (the one
-launchd starts, holding no ports) and the proxy itself. launchd does not restart user
-agents added mid-session — verified across `KeepAlive`, `StartInterval` and
-`RunAtLoad` — so the supervisor is what makes crash recovery work. On Linux there is
-one process; systemd handles it.
+`installed:` names the unit file, `Cortex is healthy according to` names the endpoint
+that answered. If it says `Cortex is NOT answering`, the proxy is loaded but not
+serving — check `~/.cortex/proxy.log`.
 
-In praxis mode (`praxis.enabled: true`), the supervisor has a second child,
-`cortex-gateway`, so you see three processes. At each start the supervisor writes
-`~/.cortex/gateway.token` and `~/.cortex/gateway.yaml`. A restart of the proxy does
-not restart the gateway. When the supervisor exits, the gateway exits too. The
-supervisor reads `praxis.*` only when it starts, so after you change `praxis.*`, run
-`agentop service restart`. Until then, the next restart of the proxy fails at each
-try.
+On Linux, when nothing answers, status asks systemd why, and says which of these it is:
 
-On Linux, the systemd unit runs `cortex --supervise` in praxis mode, so you also see
-the supervisor, the proxy and the gateway. In direct mode the unit does not use
-`--supervise`, and systemd restarts the proxy itself. `agentop service install` writes
-the unit again when it does not agree with `praxis.enabled` in the config file.
+| Status says | What happened | Exit |
+|---|---|---|
+| `Cortex is stopped, and stays stopped` | Stopped and disabled, as `agentop service stop` leaves it. It stays stopped across logins and reboots until `agentop service start` | 0 |
+| `Cortex is stopped, but still enabled` | Stopped some other way, such as `systemctl --user stop`; it starts again at the next login or boot | 1 |
+| `it exited … and systemd is restarting it` | It crashed, and systemd brings it back within 10 seconds | 1 |
+| `systemd stopped restarting it` | It crashed five times in five minutes, so systemd gave up. Fix the cause in the log, then `agentop service restart` | 1 |
 
-To turn praxis mode on, run the installer with `--praxis`. It installs
-`cortex-gateway` and adds `praxis: {enabled: true}` to the config. It changes nothing
-else in the file:
+A stopped Cortex exits 0, like a healthy one, because a stop is not a failure. So in a
+script, the exit code alone does not say Cortex is serving: check for
+`Cortex is healthy according to` in the output as well. Before, a stopped Cortex
+exited 1. On macOS it still does.
+
+`service start`, `service restart` and `service install` clear systemd's record of the
+crashes first, so they can start a unit systemd had given up on without waiting out
+its five-minute window. `service stop` clears it after, so stopping a unit systemd had
+given up on reads as stopped, not as a crash.
+
+If it says `config: … will not load`, an edit to `~/.cortex/config.yaml` broke it
+(`config: no config at …` means the file is gone). A proxy that was already running
+rejected that edit and keeps serving the config it last loaded. Status looks for one on
+the built-in health address, `127.0.0.1:47604`, since the file that names the real one
+cannot be read; if your config had moved `health_addr`, silence there does not mean
+Cortex is stopped. Nothing can start from the file until it loads again, so
+`service start` and `service restart` refuse until then, as `service install` and
+`agentop setup` do. Status exits 1 while the file is broken, even if a proxy is serving.
+
+To see traffic rather than status, run `agentop observe`.
+
+## Start and stop
 
 ```sh
-curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --praxis
+agentop service start
+agentop service stop
 ```
 
-`--praxis` needs a release that carries `cortex-gateway`. If the installer stops with
-`release … has no cortex-gateway build for <os>/<arch>`, add `--ref=main` to install
-the channel build, which has the gateway, or build it from source as below.
+A stop persists: Cortex stays down across logouts and reboots until you start it
+again. That is deliberate — a stop that quietly undoes itself at your next login is
+worse than none.
 
-To put a policy in the gateway, read
-[policy in praxis mode](praxis-policy.md).
+`stop` also reports how many connections it cut, because until Cortex is back those
+clients have nowhere to go: `HTTPS_PROXY` is fixed in each one's environment when it
+starts, so none of them can fall back to a direct connection. Run `agentop service start`
+and they reconnect on their next request — the sessions themselves do not need
+restarting.
 
-When you change `praxis.enabled` by hand in either direction, run
-`agentop service install --restart`. To turn praxis mode off, set
-`praxis.enabled: false` in `~/.cortex/config.yaml` first. `restart` alone does not
-write the unit again, and on Linux the unit has `--supervise` only in praxis mode.
-`install` without `--restart` can report "Already current" and not restart.
+## Three ways to turn it off
 
-From a source tree, build the gateway and give it to setup:
+They are different, so pick deliberately:
+
+### Pause it
 
 ```sh
-cargo build --release -p cortex-gateway --manifest-path praxis/Cargo.toml
-cp praxis/target/release/cortex-gateway bin/
-bin/agentop setup --from bin --yes --no-modify-path --restart --praxis
+agentop service stop
 ```
 
-## Linux: staying up after you log out
+Claude Code fails while Cortex is stopped, because its settings still point at the
+proxy. So does OpenCode once `agentop configure opencode enable` has configured it,
+because its background service's environment points there too. Either start Cortex
+again or unwire them: Claude Code as below, OpenCode with
+`agentop configure opencode disable`.
 
-On Linux, Cortex is a systemd **user** unit, which runs under your own systemd
-manager. That manager normally starts at login and stops when your last session ends,
-taking Cortex with it. **Lingering** keeps it running with nobody logged in, and
-starts it at boot. Setup turns it on for you, which on a headless or SSH-only box is
-what keeps Cortex up between logins.
+**A running session cannot route around a stopped Cortex.** `HTTPS_PROXY` is fixed in
+its environment when it starts, so it has no way to fall back to a direct connection,
+and `agentop configure claude-code disable` cannot reach it — that only affects
+sessions started afterwards. What it needs is Cortex back: `agentop service start`,
+after which it reconnects on its next request without being restarted. `service
+stop` tells you how many connections it cut, for exactly this reason.
 
-Turning lingering on for yourself needs **polkit**. logind asks polkit whether you
-may, and systemd's own policy says yes, with no password. But that policy is applied
-by `polkitd`, a separate package, and a minimal install can lack it — Debian with
-only the SSH server, for one. Without it logind has no one to ask and refuses, and
-setup says so:
+Use `agentop service stop`, not `kill` or `pkill` — the supervisor restarts the
+process within seconds, which looks like it refusing to die.
 
-```text
-loaded, but lingering could not be turned on: Cortex will stop when you log out.
-  loginctl enable-linger: Could not enable linger: Access denied
-  polkit is not installed, and logind needs it to let a user turn lingering on.
-```
-
-Cortex is still installed and running; it just stops at your next logout. Either fix
-works, and neither needs Cortex reinstalled:
+### Unwire Claude Code
 
 ```sh
-# Install polkit, then turn lingering on for yourself
-sudo apt install polkitd      # Debian and Ubuntu; on Fedora, Arch and others the package is polkit
-loginctl enable-linger
-
-# Or turn it on directly, as root
-sudo loginctl enable-linger "$(id -un)"
+agentop configure claude-code disable
 ```
 
-Re-running `agentop setup` after installing polkit is not enough: setup finds Cortex
-installed and healthy, changes nothing, and does not retry lingering.
+This removes only the keys Cortex added to `~/.claude/settings.json`
+(`HTTPS_PROXY` and the CA variables
+`NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` / `GIT_SSL_CAINFO` / `REQUESTS_CA_BUNDLE` /
+`CURL_CA_BUNDLE`) and leaves anything else in that file alone. Claude Code goes
+straight to the API again. Restart `claude` to pick it up.
 
-When polkit *is* installed and still refuses, the system's policy has decided users may
-not keep services running, and setup says that instead; only the root fix applies. Any
-other failure, after polkit has said yes, is shown in loginctl's own words, again with
-only the root fix. Check where you stand with
-`loginctl show-user "$(id -un)" --property=Linger`.
+[The Claude Code guide](agents/claude-code.md) tells which keys `disable` leaves, and why.
 
-Setup records that it turned lingering on, and `agentop uninstall` turns it back off
-only then. Lingering you turned on yourself, by either fix above, is left on when you
-uninstall: turn it off with `loginctl disable-linger` if you no longer want it.
+Cortex keeps running; nothing sends traffic to it. `agentop configure claude-code
+enable` puts it back.
+
+[Running one command through Cortex](agents/any-agent.md#running-one-command-through-cortex-agentop-exec) tells why `NODE_EXTRA_CA_CERTS` gets `ca.crt` and the other CA variables get `bundle.crt`.
+
+The third way is to remove Cortex, as [Remove it](#remove-it) says.
+
+## Remove it
+
+```sh
+agentop uninstall --purge
+```
+
+`agentop uninstall` lists what it will remove and asks once; `--yes` skips the question.
+It unroutes Claude Code, OpenCode, IBM Bob, the `bob` and `pi` shell functions and Pi's
+session extension where Cortex routed them, restarting OpenCode's background service when it finds it running. It
+stops and removes the service, or the background proxy. It removes the PATH lines setup
+added, unless other tools in `~/.local/bin` still need them, and removes `agentop`,
+`cortex`, `cortex-session-dump` and `cortex-gateway` from `~/.local/bin`. A step that fails is reported
+with its fix, the rest still run, and the end lists what was left behind.
+
+It does not unroute Codex. Run `agentop configure codex disable` before you uninstall.
+
+`--purge` also deletes `~/.cortex`: config, CA, logs, cost history, session history,
+agentop's UI settings. It goes last, and only when every removal before it worked: after a failed
+one `~/.cortex` stays, and the end lists it, with the `rm -rf` to run once the fixes
+above are done. Without `--purge` `~/.cortex` stays too, so a later install picks up
+where you left off, and a run where every removal worked ends by saying how to delete
+it yourself.
+
+Restart any `claude` that was already running: it read its settings when it started, so
+it still points at Cortex. `claude --resume` picks the conversation back up. IBM Bob
+needs a restart too; OpenCode's service is restarted for you. A later install routes no
+agent by itself, so run each agent's `agentop configure <agent> enable` again, or pass
+`--claude-code` to the installer for Claude Code.
+
+### Check nothing is left
+
+```sh
+opencode service get env             # if you use OpenCode: none of it should point at Cortex
+grep '\.cortex/' ~/.claude/settings.json # should print nothing: Cortex's CA variables are gone
+ls ~/.local/bin/agentop ~/.local/bin/cortex 2>/dev/null # should print nothing
+pgrep -lx cortex                     # should print nothing
+ls ~/.cortex 2>/dev/null             # should print nothing, after --purge
+```
+
+The CA that `--purge` removes was only ever trusted through the CA variables in
+`~/.claude/settings.json` — *Cortex* never adds it to the system or login keychain.
+`bundle.crt` lives in the same directory and is derived from `ca.crt` plus a copy of
+the public roots, so removing `~/.cortex` takes it with them; it holds no private
+key and grants nothing on its own.
+
+**On macOS, if you followed [Go tools on macOS](troubleshooting.md#go-tools-on-macos-are-passed-through-unread)** and ran
+`security add-trusted-cert` yourself, that trust setting is the one thing outside
+`~/.cortex` and outside `~/.claude/settings.json`, so it outlives both. Deleting the
+CA file does not withdraw it — the keychain holds its own copy. Remove it too:
+
+```sh
+security delete-certificate -c authbridge-tls-bridge-ca \
+  ~/Library/Keychains/login.keychain-db
+```
+
+Check whether it is there at all with:
+
+```sh
+security find-certificate -c authbridge-tls-bridge-ca ~/Library/Keychains/login.keychain-db
+```
+
+Leaving it behind means a CA whose private key you have deleted stays trusted for
+TLS — harmless in itself, since nothing can sign with it any more, but it is trust
+you did not intend to keep.
+
+### If you reinstall afterwards, restart your agents
+
+Deleting `~/.cortex` deletes the CA, so a later install mints a **new** one. Every
+agent that is already running still trusts the old CA — a client reads its CA file
+once, at startup — and will refuse the new certificates.
+
+That failure is quiet. Cortex falls back to tunnelling rather than breaking the
+connection, so the traffic keeps flowing and nothing on the agent's side complains;
+it simply stops being parsed, which shows up as `tunnel` rows in `agentop observe`.
+Restart those agents and they are visible again.
+
+An ordinary upgrade is unaffected — it keeps the existing CA. This only applies when
+`~/.cortex` has been deleted, or on a first install with agents already running.
+
+### If `agentop` is already gone
+
+The service can be removed by hand:
+
+```sh
+# macOS
+launchctl bootout "gui/$(id -u)/io.rossoctl.cortex"
+rm -f ~/Library/LaunchAgents/io.rossoctl.cortex.plist
+
+# Linux
+systemctl --user disable --now cortex.service
+rm -f ~/.config/systemd/user/cortex.service
+```
+
+Then delete the Cortex keys from the `env` block of `~/.claude/settings.json`
+yourself. Delete these keys:
+
+```
+HTTPS_PROXY
+NODE_EXTRA_CA_CERTS
+SSL_CERT_FILE
+GIT_SSL_CAINFO
+REQUESTS_CA_BUNDLE
+CURL_CA_BUNDLE
+```
+
+An older Cortex also set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which stops
+Claude Code's auto-updates. Delete it too, unless you set it yourself.
+
+**Remove all of these keys, and do it before `rm -rf ~/.cortex`.** The middle four point at
+`~/.cortex/ca/bundle.crt`, and unlike `NODE_EXTRA_CA_CERTS` each of them *replaces*
+its tool's trust store rather than adding to it. Leave them behind with the file
+deleted and git, curl and Python fail **every** TLS call — including calls that have
+nothing to do with Cortex — with `error setting certificate verify locations`, on a
+machine you believe you have just cleaned. `agentop uninstall` removes these keys first,
+as `agentop configure claude-code disable` does, and `--purge` deletes `~/.cortex` last,
+and not at all if a removal before it failed; this list is only for when that binary is
+already gone.
+
+Both of them skip a key whose value you have **changed since enable set it** — that
+edit is yours to keep or drop — and say which under *Left behind*. `--purge` then keeps
+`~/.cortex` rather than walking into the hazard above: if any key is still going to name
+a file inside the directory once it has finished, the whole directory stays, and the
+`purged` row says which key. That covers a key it left behind *and* one it put back,
+because a value of your own under `~/.cortex` — a CA file you keep there yourself — is
+one enable adopts as Cortex's and uninstall hands back to you. Delete the directory
+yourself once nothing points into it. Doing the removal by hand, as this section does,
+there is nothing to do that for you — check the keys you changed before you `rm -rf`.
+
+If you configured OpenCode, its background service's environment holds the same kind of
+variables. Remove the ones that point at Cortex with the `opencode` CLI, as
+[Undoing it by hand](agents/opencode.md#undoing-it-by-hand) shows, also before
+`rm -rf ~/.cortex`.
+
+Last, the files setup installed: `rm -f ~/.local/bin/cortex ~/.local/bin/cortex-session-dump ~/.local/bin/cortex-gateway`,
+and the two lines it marked in your shell profile, the first starting `# added by Cortex`.
 
 ## Re-running the installer is safe
 
@@ -227,167 +369,56 @@ Where to look:
 
 `agentop update` by hand still installs at once, with no wait.
 
-## The cpex build
+## Linux: staying up after you log out
 
-The laptop cpex build is removed, and `install.sh --cpex` exits with an error. That error says to run the
-installer again without `--cpex`, which installs the default `cortex`. It also
-names `--praxis` and `docs/praxis-policy.md`, which is the way to run laptop
-policy now. `make
-cortex-cpex` is gone too. An install that runs a cpex build moves to the default
-`cortex` on `agentop update`, which prints one line that says so.
+On Linux, Cortex is a systemd **user** unit, which runs under your own systemd
+manager. That manager normally starts at login and stops when your last session ends,
+taking Cortex with it. **Lingering** keeps it running with nobody logged in, and
+starts it at boot. Setup turns it on for you, which on a headless or SSH-only box is
+what keeps Cortex up between logins.
 
-The default `cortex` has no cpex plugin, and it does not start on a config that names
-`cpex`. So when `~/.cortex/config.yaml` has a `cpex` entry under `pipeline`,
-`agentop update`, the automatic update and the one-liner stop before they download.
-Remove the entry first, as [Move from the CPEX plugin](praxis-policy.md#move-from-the-cpex-plugin)
-says.
+Turning lingering on for yourself needs **polkit**. logind asks polkit whether you
+may, and systemd's own policy says yes, with no password. But that policy is applied
+by `polkitd`, a separate package, and a minimal install can lack it — Debian with
+only the SSH server, for one. Without it logind has no one to ask and refuses, and
+setup says so:
 
-An `agentop` from before the removal asks the release for the cpex tarball. So each
-release still publishes `cortex-cpex_<ver>_<os>_<arch>.tar.gz`, as a copy of the
-default `cortex` tarball, and that older update moves the install too. It does not
-check the config first: when the config names `cpex`, setup rolls back and the
-update fails. Remove the entry, then update again.
+```text
+loaded, but lingering could not be turned on: Cortex will stop when you log out.
+  loginctl enable-linger: Could not enable linger: Access denied
+  polkit is not installed, and logind needs it to let a user turn lingering on.
+```
 
-Kubernetes use does not change: the `authbridge-cpex` image, the `cpex` and `fullcpex`
-build profiles, `core/plugins/cpex/` and the `go-ci-cpex` CI job stay. See
-[cpex-plugin.md](cpex-plugin.md).
+Cortex is still installed and running; it just stops at your next logout. Either fix
+works, and neither needs Cortex reinstalled:
 
-Every release tarball carries build provenance as well as its `checksums.txt` entry:
-`gh attestation verify <tarball> --repo rossoctl/cortex`.
+```sh
+# Install polkit, then turn lingering on for yourself
+sudo apt install polkitd      # Debian and Ubuntu; on Fedora, Arch and others the package is polkit
+loginctl enable-linger
 
-## How traffic is grouped into sessions
+# Or turn it on directly, as root
+sudo loginctl enable-linger "$(id -un)"
+```
 
-Each Claude Code session gets its own bucket, named with that session's id — the same
-UUID Claude Code uses for its own transcript, so `agentop` and
-`~/.claude/projects/<project>/<id>.jsonl` agree on what a session is. Two windows open in
-different repos are two buckets, and resuming a session (`claude --resume`) files back
-into the original one rather than starting a new one.
+Re-running `agentop setup` after installing polkit is not enough: setup finds Cortex
+installed and healthy, changes nothing, and does not retry lingering.
 
-This works because Claude Code puts `X-Claude-Code-Session-Id` on every inference
-request. Bob, our internal coding agent (not the `bob` demo user), is grouped the same
-way, by the `X-Task-Id` it sets, but its buckets are named with a task id rather than a
-session uuid, so one bucket covers however long Bob reuses that task. Note that
-`X-Task-Id` is a generic name: traffic from anything else that sends it will be grouped
-under its value too. [OpenCode](agents/opencode.md) is grouped by the `X-Session-Id` its
-background service sets, and its buckets are named with OpenCode's `ses_…` session ids.
-OpenCode puts its session's affinity id there: the parent session's id for a subagent
-and the source session's for a fork, so a subagent or fork is filed under the session it
-belongs to, as Claude Code's subagents are. Cortex reads `X-Session-Id` on a laptop
-install: it is in the list the installer writes, and in the built-in default wherever
-every listener binds loopback (`listener.bind_loopback_only`). A cluster deployment's
-default does not read it, because it is a generic name as well, which Pi (through the
-extension `agentop configure pi` installs) and similar frameworks send too. OpenCode also sends `X-Opencode-Session-Id`, the
-session's own id, which is not read. Traffic that carries no such header is filed by the
-process that sent it (see below), and where that has no answer falls back to the previous
-behavior — the most recently active session, or the `default` bucket. In practice
-`default` collects Claude Code's own connectivity probe (`HEAD /api/hello`) and anything
-else that egresses through the proxy without announcing a session.
+When polkit *is* installed and still refuses, the system's policy has decided users may
+not keep services running, and setup says that instead; only the root fix applies. Any
+other failure, after polkit has said yes, is shown in loginctl's own words, again with
+only the root fix. Check where you stand with
+`loginctl show-user "$(id -un)" --property=Linger`.
 
-Some limitations worth knowing:
+Setup records that it turned lingering on, and `agentop uninstall` turns it back off
+only then. Lingering you turned on yourself, by either fix above, is left on when you
+uninstall: turn it off with `loginctl disable-linger` if you no longer want it.
 
-- **Where the process lookup has no answer, header-less requests go by agent.** MCP tool calls,
-  Claude Code's WebFetch, and Bob's startup probes and task-classifier completions carry
-  no session header. Filed by timing alone — under whichever session was most recently
-  active — they are right when sessions take turns and wrong when two agents run side by
-  side: Bob's classifier completions — real inference, with tokens and cost — land in
-  Claude Code's session, and Claude Code's WebFetch in Bob's. Inference is exact only
-  where it carries the header.
+## Where your data lives
 
-  Client affinity (`session.client_affinity`) files a header-less request under the newest
-  session of the same agent (by `User-Agent`). An agent's calls before its first header wait in a
-  `pending:<agent>` bucket that its first session then absorbs, and a request from no
-  known agent goes to `default` while two agents have both sent traffic in the last five
-  minutes (a bridged tunnel's own row goes wherever its first decrypted request goes, directly before
-  it; an opaque tunnel's row keeps today's attribution). Two sessions of the SAME agent
-  still share by timing. It is on by default, including for a `~/.cortex/config.yaml`
-  written before the setting existed; `session.client_affinity: false` turns it off and
-  puts every header-less request back on timing. It is not hot-reloadable — restart the
-  proxy after changing it.
-- **On a laptop, header-less requests are attributed by process.** Cortex asks the
-  kernel which process opened each connection, and files a request with no session
-  header under the session of that process or of its nearest ancestor that named one —
-  so `gh`, `git` and `curl` run by an agent's shell, its `WebFetch` and its MCP calls land
-  in the agent's session, including opaque tunnels that cannot be decrypted. A process of
-  no agent (your own terminal's `curl`, an IDE's update check) lands in `default`, even
-  while no agent is talking. Before, it went to the most recently active session once no
-  agent had named a session for five minutes. So an idle laptop filed every background
-  poll under the last session to speak. Which process named which session survives a
-  restart through the session archive. So a process that keeps running, such as Bob's
-  plugin host, keeps its session before it sends its session header again. An
-  agent talking to its own service on this machine — OpenCode's TUI and its background
-  service — is forwarded without being recorded when the service runs the agent's own
-  executable and is either the agent's direct child or has named a session. OpenCode
-  starts its service as the TUI's child, so its polling stays out of the timeline from
-  the first request, including after a proxy restart. The first time it is skipped
-  Cortex logs which program and service. It is `session.process_attribution`: `auto` (the default) means on for this
-  loopback-only install and off in a cluster; `on` and `off` force it. Where the lookup is
-  unavailable it logs one warning at startup and client affinity applies. Not
-  hot-reloadable.
-- **Agents other than Claude Code, Bob and OpenCode need to be named.** Set
-  `session.id_headers` to a list of headers to consult in precedence order if you run a
-  client with its own session header; naming any replaces the built-in list rather than
-  adding to it. An explicit empty list (`session.id_headers: []`) turns grouping off and
-  puts everything back in one bucket.
-- **Bucket names are taken on trust.** The id comes from the client's own header and is
-  not authenticated, so a client can name any bucket — including another session's, or a
-  stream of ids nobody owns, which evicts real buckets once there are more than
-  `session.max_sessions` of them (see below). On a laptop that is a non-issue: you own
-  every session. It matters where telemetry attribution is a trust boundary rather than a
-  convenience, and `session.id_headers: []` is the way to opt out there.
+These sections tell which data Cortex keeps on your disk.
 
-## Why traffic disappears from `agentop`
-
-One limit by default, and it is not a clock:
-
-| Limit | Default | Effect |
-|---|---|---|
-| `session.max_events` | **unset — unlimited** | when set: oldest events drop, the session stays |
-| `session.max_sessions` | 100 | whole sessions evicted, least-recently-used first |
-
-- `max_events` no longer defaults to a cap at all, so a session does not lose its oldest
-  rows while it is alive. It used to trim to 500 per bucket, which made the store lossy on
-  exactly the sessions worth reading — a long run dropped the beginning of its own story,
-  and the trim point was invisible from the timeline. Set it, and it is **per bucket**: each
-  session gets its own allowance rather than sharing one ring with every other session on
-  the machine.
-- With `max_events` unset, `max_sessions` bounds how many sessions are kept and nothing
-  about how large one gets. A single session that never ends grows until the process does;
-  that is the case to set `max_events` (or a `session.ttl`) for. Repeated message text is
-  stored once per session rather than once per turn, which cut heap by 10.4x on a
-  300-turn measurement — so "5000 events" costs far less than multiplying by a request
-  size suggests, but it is not free.
-- `agentop` fetches the **most recent** 500 events of a session, not all of them, and says
-  so in the events footer (`· N older not fetched`). A session's whole history can be a
-  gigabyte of JSON; asking for it took 17s and timed out at 10, which showed up as an
-  events pane holding only what arrived after you opened it.
-- Opening a session no longer costs the proxy memory. The snapshot response is written one
-  event at a time, so serving it takes heap proportional to a single event; it used to be
-  encoded whole before the first byte went out, which meant a couple hundred megabytes of
-  resident memory per session you opened, kept for the life of the process. If you are
-  looking at an older build and wondering why RSS climbs in steps as you browse rather
-  than as traffic arrives, that is why — one step per <kbd>Enter</kbd>.
-- `max_sessions` is **reachable in normal use**, which it effectively was not before.
-  Every `claude` invocation mints a new bucket, so the 101st session on a busy machine
-  evicts the least-recently-updated one — whole session and all. If an older session has
-  vanished from `agentop` entirely rather than just losing its oldest rows, this is why.
-  Raise `session.max_sessions` if you work across many sessions and want them to stay.
-
-  This cap is also the only thing bounding the churn described above: because bucket names
-  are unauthenticated, anything sending unfamiliar ids consumes the same 100 slots and
-  evicts real sessions. Raising the cap trades eviction for memory; it does not remove the
-  effect. On a laptop the only thing minting ids is your own tooling, so in practice this
-  reads as a capacity setting — it stops reading that way on a proxy several clients share.
-
-Sessions do **not** expire on time. They used to, after 30 minutes idle, which read as
-data loss — traffic vanished because you stepped away, not because anything overflowed.
-Set `session.ttl` (e.g. `30m`) if you would rather raw prompts not sit in memory
-indefinitely.
-
-The store is in memory only, so a restart clears it regardless. Both `session.*` limits
-need a restart to change — they are not hot-reloaded. Cost totals survive a restart, and on a
-local install so do the sessions themselves, in the session archive; see below for both.
-
-## Cost history is written to `~/.cortex/cost`
+### Cost history is written to `~/.cortex/cost`
 
 **A local install keeps a cost ledger on disk, on by default.** Sessions themselves —
 prompts, completions, tool arguments and results — are kept by the [session
@@ -496,7 +527,7 @@ Two other knobs, same restart rule:
 | `cost_ledger.dir` | `~/.cortex/cost` | Must be an absolute path. A relative one is refused, because it would resolve against whatever directory the proxy started from |
 | `cost_ledger.retention_days` | 31 | The longest month, so `window=month` is answerable in full on the 31st; a shorter value makes that total a partial one and it is marked as such. Minimum **9** when set. `window=7d` is a rolling 7×24h, not seven calendar days, so it can open **nine** local day files: one extra because a rolling span starts part-way through a date, and one more because a spring-forward week is 167 hours, so the span reaches an hour further back. A retention shorter than the window is disclosed rather than silent — `DaysOutsideRetention` counts the days asked for beyond the setting, the band marks the total as a floor and `agentop cost` prints a coverage line. The floor of 9 is exactly `window=7d`'s worst case, so a legal setting can never answer *that* window short; a `month` asked of a 9-day ledger can |
 
-## Session history is kept in `~/.cortex/sessions`
+### Session history is kept in `~/.cortex/sessions`
 
 **A local install keeps every session on disk, on by default.** Each event the session store
 records is also written to `~/.cortex/sessions`, so a session outlives a restart and the store's
@@ -596,17 +627,22 @@ unclean kill loses at most the last second.
 reading has gaps. `droppedCaptures` counts requests kept without their exact bytes, because
 more than 256 MB of them waited for the writer.
 
-### Importing history from before Cortex
+#### Importing history from before Cortex
 
 `agentop import` adds the sessions that Claude Code keeps in
 `~/.claude/projects` (or under `CLAUDE_CONFIG_DIR`), the tasks that Bob
-keeps in `~/.bob/db/bob.db`, and the sessions that Codex keeps in
-`~/.codex/sessions` (or under `CODEX_HOME`), to this history and to the cost ledger. Bob needs
-the `sqlite3` program on `PATH`. Use it for the sessions that ran before you installed Cortex.
+keeps in `~/.bob/db/bob.db`, the sessions that Codex keeps in
+`~/.codex/sessions` (or under `CODEX_HOME`), the sessions that OpenCode
+keeps in `~/.local/share/opencode/opencode.db` (or under `XDG_DATA_HOME`), and
+the sessions that Pi keeps in `~/.pi/agent/sessions` (or under
+`PI_CODING_AGENT_DIR`), to this history and to the cost ledger. Bob and
+OpenCode need the `sqlite3` program on `PATH`. Use it for the sessions that ran
+before you installed Cortex.
 `agentop import --since 30d --dry-run` counts first and writes nothing. The
 import skips every session that Cortex captured live, and never changes one.
-Each imported session is marked `(*)` in agentop. A Claude Code turn and a Codex
-turn are priced at today's rates. A Bob turn keeps Bob's own cost. LAST 1H shows imported turns
+Each imported session is marked `(*)` in agentop. A Claude Code turn, a Codex
+turn, an OpenCode turn and a Pi turn are priced at today's rates. A Bob turn
+keeps Bob's own cost. LAST 1H shows imported turns
 only after the next restart. The import stops at 90% of `max_bytes`. A session
 that you erased, or that a limit removed, comes back in full on the next import.
 Its forget record tells the import which turns the cost ledger already holds.
@@ -617,7 +653,7 @@ and output:
 [`agentop import`](../cmd/agentop/README.md#importing-agent-history-agentop-import).
 Rules: [`POST /v1/import`](session-api.md#post-v1import--transcript-import-laptop-only).
 
-### Clearing it
+#### Clearing it
 
 A restart used to be a reset; with history on disk it is not, so clearing is one action of its
 own. **`X` on agentop's sessions pane** asks first — *Erase all N sessions from this Cortex, in
@@ -668,7 +704,7 @@ session:
 That stops new writes and leaves what is on disk; clear first with `X` if you want it gone, or
 `rm -rf ~/.cortex/sessions` with the proxy stopped.
 
-## Plugin state is kept in `~/.cortex/plugin-state.json`
+### Plugin state is kept in `~/.cortex/plugin-state.json`
 
 Plugins that need state to outlive a restart keep it here. Today that is the inference router:
 which server each session is on, as its session id, its agent's name and the server's name — plus,
@@ -677,7 +713,11 @@ by a fingerprint of the block — never the reasoning itself. It holds no prompt
 does not clear it. The proxy saves changes within two seconds and on stop, and sets aside a file it
 cannot read as `plugin-state.json.corrupt` and starts empty.
 
-## The `memory:` configuration
+## Configuration
+
+These sections tell how to set parts of `~/.cortex/config.yaml`.
+
+### The `memory:` configuration
 
 The Go runtime sizes its heap to roughly twice the live heap by default, and
 reading sessions leaves the memory the encoder expanded from the store's
@@ -695,7 +735,7 @@ process keeps allocating and growing exactly as it would without one — nothing
 fails, nothing crashes. Setting it too low costs speed, not availability. Set
 it explicitly to change the default; `agentop service restart` applies it.
 
-## The `accounting:` configuration
+### The `accounting:` configuration
 
 The accountant prices what the context operators (`context-guru`, `tool-prune`) saved, and
 what the keep-alive pings cost. Its figures land in the cost records' `avoided[]` and `spends[]`
@@ -722,7 +762,7 @@ a restart does not forget which prefix the provider has cached. Both fields are 
 startup: a reload that changes `enabled` (as resolved) or a weight is refused, and
 `agentop service restart` applies it.
 
-## The `metrics_push:` configuration
+### The `metrics_push:` configuration
 
 Cortex can push the accountant's savings counters to a central OpenTelemetry collector. **It
 sends nothing until you set a URL.** `agentop setup` does not set one.
@@ -765,7 +805,7 @@ The push starts with the accountant, so it needs `accounting` to be on. The bloc
 once at startup: a reload that changes it is refused, and `agentop service restart` applies
 it.
 
-## The `tls_bridge:` configuration
+### The `tls_bridge:` configuration
 
 The TLS bridge terminates agent egress so the outbound plugin pipeline sees
 decrypted HTTPS. It is configured under the top-level `tls_bridge:` block in
@@ -778,8 +818,8 @@ decrypted HTTPS. It is configured under the top-level `tls_bridge:` block in
 | `generate_ca` | `false` | Mint and persist a self-signed CA into `ca_dir` when those files are absent, instead of failing at startup. For standalone/demo use only — in-cluster the CA is a mounted Secret and this stays false so a missing Secret fails loudly. `ca_dir` should persist across restarts: on ephemeral storage a fresh CA is minted each boot, and clients must re-trust the new `ca.crt`. |
 | `upstream_ca_bundle` | *(system roots)* | Extra-roots PEM file for re-origination, for private-CA origins the agent trusts. Empty means system roots only. |
 | `upstream_insecure` | `false` | Disable origin cert verification on re-origination, for internal/self-signed upstreams whose CA is unavailable. Prefer `upstream_ca_bundle` when possible. |
-| `passthrough_hosts` | *(see below)* | Hosts to tunnel, never intercept. Distinct from `listener.skip_hosts`, which bypasses the whole pipeline: these still run the egress gate, they just aren't TLS-terminated. See [Developer tooling is not intercepted at all](#developer-tooling-is-not-intercepted-at-all). |
-| `fail_closed` | `false` | Bridge or refuse every connection the bridge intercepts, never tunnel it. Needs `mode: enabled`. See [Failing closed](#failing-closed). |
+| `passthrough_hosts` | *(a default list)* | Hosts to tunnel, never intercept. Distinct from `listener.skip_hosts`, which bypasses the whole pipeline: these still run the egress gate, they just aren't TLS-terminated. See [Developer tooling is not intercepted at all](troubleshooting.md#developer-tooling-is-not-intercepted-at-all). |
+| `fail_closed` | `false` | Bridge or refuse every connection the bridge intercepts, never tunnel it. Needs `mode: enabled`. See [Failing closed](troubleshooting.md#failing-closed). |
 | `ports` | `{443, 8443}` | TCP ports to intercept as TLS. Only HTTP(S)-bearing ports belong here — the bridge serves the decrypted stream as HTTP/1.1 or h2, so terminating a non-HTTP TLS protocol (LDAPS, SMTPS, DB-over-TLS, …) would break it. |
 
 The bridge is built once at startup, so changing any `tls_bridge:` field takes
@@ -794,581 +834,190 @@ With `mode: enabled`, the session API's bind is pinned to loopback whatever
 response bodies, and it is unauthenticated. `kubectl port-forward` and
 agentop still reach it through the pod's loopback.
 
-## `agentop: command not found`
+### Praxis mode
 
-Setup puts both binaries in `~/.local/bin`. If that is not on your PATH, adding it to
-your shell profile is one of the changes its consent screen lists: `~/.zshrc` for zsh,
-and for bash the first of `~/.bash_profile`, `~/.bashrc` and `~/.profile` that exists
-(a new `~/.bash_profile` if none does). New terminals pick it up, and for the one you
-are in:
+To turn praxis mode on, run the installer with `--praxis`. It installs
+`cortex-gateway` and adds `praxis: {enabled: true}` to the config. It changes nothing
+else in the file:
 
 ```sh
-export PATH="$HOME/.local/bin:$PATH"
+curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --praxis
 ```
 
-With `--no-modify-path`, or a shell it has no profile for (fish, sh), setup edits
-nothing and prints an `export PATH=` line for you to add yourself.
+`--praxis` needs a release that carries `cortex-gateway`. If the installer stops with
+`release … has no cortex-gateway build for <os>/<arch>`, add `--ref=main` to install
+the channel build, which has the gateway, or build it from source as below.
 
-To undo, delete the two lines setup marked in your profile (the first starts
-`# added by Cortex`). `agentop uninstall` removes them too, unless other tools in
-`~/.local/bin` still need them.
+To put a policy in the gateway, read
+[policy in praxis mode](praxis-policy.md).
 
-## Restricted environments (sandboxes, no launchd session)
+When you change `praxis.enabled` by hand in either direction, run
+`agentop service install --restart`. To turn praxis mode off, set
+`praxis.enabled: false` in `~/.cortex/config.yaml` first. `restart` alone does not
+write the unit again, and on Linux the unit has `--supervise` only in praxis mode.
+`install` without `--restart` can report "Already current" and not restart.
 
-Some environments cannot manage services at all — a sandboxed shell, a session without
-a usable launchd domain, CI. Setup asks the supervisor before it changes anything, and
-where it cannot be used, runs the proxy in the background instead, as
-`cortex --local --supervise`. Its consent screen says so:
-`unsupervised · won't restart after a reboot — launchd can't be used here`.
-`--no-service` makes the same choice on purpose. The `--supervise` parent restarts the
-proxy after a crash, but nothing brings it back at login. Setup's last lines name the
-stop command, `kill $(cat ~/.cortex/proxy.pid)`, and `agentop uninstall` stops it too.
-
-`agentop service install`, run there by hand, detects this before writing anything and
-tells you so, rather than failing at `launchctl bootstrap` with `Input/output error`.
-
-You can also run Cortex in a terminal of its own, unsupervised:
+From a source tree, build the gateway and give it to setup:
 
 ```sh
-cortex --local               # in its own terminal, or backgrounded
-agentop                      # the viewer, as usual
+cargo build --release -p cortex-gateway --manifest-path praxis/Cargo.toml
+cp praxis/target/release/cortex-gateway bin/
+bin/agentop setup --from bin --yes --no-modify-path --restart --praxis
 ```
 
-What you give up that way: no restart after a crash, and nothing brings it back at
-login. Stop it with `kill $(pgrep -x cortex)` — there is no service to stop.
+## How it works
 
-Two assumptions that do not hold in such environments, and what happens:
+These sections tell how Cortex works inside. You do not need them for daily use.
 
-| Assumption | If it does not hold |
-|---|---|
-| `launchctl` can manage the user domain | Setup runs the proxy in the background, as above. `service install` stops early and prints the command above |
-| `$HOME` is your login home | launchd never scans `$HOME/Library/LaunchAgents`, so the service cannot start at login. `service install`, and setup through it, warn and continue; crash recovery still works while you are logged in |
+### The supervisor
 
-## Is it working?
+The proxy is supervised: a killed proxy is restarted within seconds. It is worth seeing once:
 
 ```sh
-agentop service status
+kill -9 $(pgrep -f 'cortex --config')             # comes back within ~2s
+agentop service status                            # healthy again
 ```
 
-`installed:` names the unit file, `Cortex is healthy according to` names the endpoint
-that answered. If it says `Cortex is NOT answering`, the proxy is loaded but not
-serving — check `~/.cortex/proxy.log`.
-
-On Linux, when nothing answers, status asks systemd why, and says which of these it is:
-
-| Status says | What happened | Exit |
-|---|---|---|
-| `Cortex is stopped, and stays stopped` | Stopped and disabled, as `agentop service stop` leaves it. It stays stopped across logins and reboots until `agentop service start` | 0 |
-| `Cortex is stopped, but still enabled` | Stopped some other way, such as `systemctl --user stop`; it starts again at the next login or boot | 1 |
-| `it exited … and systemd is restarting it` | It crashed, and systemd brings it back within 10 seconds | 1 |
-| `systemd stopped restarting it` | It crashed five times in five minutes, so systemd gave up. Fix the cause in the log, then `agentop service restart` | 1 |
-
-A stopped Cortex exits 0, like a healthy one, because a stop is not a failure. So in a
-script, the exit code alone does not say Cortex is serving: check for
-`Cortex is healthy according to` in the output as well. Before, a stopped Cortex
-exited 1. On macOS it still does.
-
-`service start`, `service restart` and `service install` clear systemd's record of the
-crashes first, so they can start a unit systemd had given up on without waiting out
-its five-minute window. `service stop` clears it after, so stopping a unit systemd had
-given up on reads as stopped, not as a crash.
-
-If it says `config: … will not load`, an edit to `~/.cortex/config.yaml` broke it
-(`config: no config at …` means the file is gone). A proxy that was already running
-rejected that edit and keeps serving the config it last loaded. Status looks for one on
-the built-in health address, `127.0.0.1:47604`, since the file that names the real one
-cannot be read; if your config had moved `health_addr`, silence there does not mean
-Cortex is stopped. Nothing can start from the file until it loads again, so
-`service start` and `service restart` refuse until then, as `service install` and
-`agentop setup` do. Status exits 1 while the file is broken, even if a proxy is serving.
-
-To see traffic rather than status, run `agentop` with no arguments.
-
-## Start and stop
-
-```sh
-agentop service start
-agentop service stop
-```
-
-A stop persists: Cortex stays down across logouts and reboots until you start it
-again. That is deliberate — a stop that quietly undoes itself at your next login is
-worse than none.
-
-`stop` also reports how many connections it cut, because until Cortex is back those
-clients have nowhere to go: `HTTPS_PROXY` is fixed in each one's environment when it
-starts, so none of them can fall back to a direct connection. Run `agentop service start`
-and they reconnect on their next request — the sessions themselves do not need
-restarting.
-
-## Three ways to turn it off
-
-They are different, so pick deliberately:
-
-### Pause it
-
-```sh
-agentop service stop
-```
-
-Claude Code fails while Cortex is stopped, because its settings still point at the
-proxy. So does OpenCode once `agentop configure opencode enable` has configured it,
-because its background service's environment points there too. Either start Cortex
-again or unwire them: Claude Code as below, OpenCode with
-`agentop configure opencode disable`.
-
-**A running session cannot route around a stopped Cortex.** `HTTPS_PROXY` is fixed in
-its environment when it starts, so it has no way to fall back to a direct connection,
-and `agentop configure claude-code disable` cannot reach it — that only affects
-sessions started afterwards. What it needs is Cortex back: `agentop service start`,
-after which it reconnects on its next request without being restarted. `service
-stop` tells you how many connections it cut, for exactly this reason.
-
-Use `agentop service stop`, not `kill` or `pkill` — the supervisor restarts the
-process within seconds, which looks like it refusing to die.
-
-### Unwire Claude Code
-
-```sh
-agentop configure claude-code disable
-```
-
-This removes only the keys Cortex added to `~/.claude/settings.json`
-(`HTTPS_PROXY` and the CA variables
-`NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` / `GIT_SSL_CAINFO` / `REQUESTS_CA_BUNDLE` /
-`CURL_CA_BUNDLE`) and leaves anything else in that file alone. Claude Code goes
-straight to the API again. Restart `claude` to pick it up.
-
-It also leaves alone any one of those keys whose value you have **changed since
-enable set it**, and says which: that edit is yours, and restoring what preceded
-Cortex over it would throw it away silently. Those keys are the one case where
-disable does not leave Claude Code fully unwired — a `HTTPS_PROXY` you pointed
-somewhere else still points there. Edit `~/.claude/settings.json` by hand if you
-want them gone.
-
-Cortex keeps running; nothing sends traffic to it. `agentop configure claude-code
-enable` puts it back.
-
-There are several CA variables because anything Claude Code spawns inherits
-`HTTPS_PROXY` and so must also be able to verify the bridge. They do not all get
-the same file: `NODE_EXTRA_CA_CERTS` **extends** Node's trust store, so it gets
-`ca.crt`, while the rest **replace** the trust store and get `bundle.crt` — the CA
-followed by this machine's public roots. Pointing a replacing variable at `ca.crt`
-would leave that tool trusting one private CA and nothing else, which breaks every
-direct TLS call it makes.
-
-### `502 Cortex proxy is not serving`
-
-An agent routed through Cortex shows this when the proxy is installed and routed but
-not currently serving — a config it cannot load, a crash it is restarting from, or one
-of its other ports held by another process (a local install pins them: 47601 for the
-session API, 47602 for stats, 47604 for health). The supervisor answers
-on the proxy's address while no proxy is running, so that you get this message instead
-of a bare connection error that names nothing:
-
-```
-API Error: 502 Cortex is routed in this environment (HTTPS_PROXY) but is not serving — run: agentop service start
-```
-
-(One line; wrapped here only if your terminal is narrow.)
-
-**The one case this cannot cover is a conflict on the forward address itself** — 47600,
-or whatever `listener.forward_proxy_addr` names. The supervisor holds that address only
-while it is free, so if another process has it, neither the proxy nor this message can
-get there and you are back to a bare connection error. `~/.cortex/proxy.log` is where to
-look: the proxy says `cannot start: another process already holds this address` on every
-start attempt, and names the holder's pid and executable where the kernel will say. Where
-it could not, the same line hands you the `lsof` to find it yourself:
-
-```sh
-lsof -nP -iTCP:47600 -sTCP:LISTEN
-```
-
-The fix is the one in the message. If `agentop service start` does not take, run
-`agentop doctor`, which names the reason, and read `~/.cortex/proxy.log` for what the
-proxy said as it failed.
-
-No single response field reaches every client, so the response sets two: the reason
-phrase (`Cortex proxy is not serving`) and the body above. What you actually see
-depends on which client you are reading this from:
-
-| Client | What it shows |
-|---|---|
-| `curl` 8.7.1 | `curl: (56) CONNECT tunnel failed, response 502` — neither the reason phrase nor the body |
-| Go `net/http` | the reason phrase, as the error text |
-| Claude Code | the body, inside its own `API Error: 502 ...` framing |
-
-Two things to expect, neither of them fast. Requests **fail** rather than going out
-unobserved, which is deliberate: Cortex does not let traffic past unseen just because
-it is down — failing closed buys legibility, not speed. And the message is not
-prompt: against Claude Code it took three retries and over two minutes before this
-surfaced, so allow a couple of minutes before concluding the fix did not work.
-
-This does **not** appear after `agentop service stop`, which stops the supervisor
-too — nothing is left to answer on the address, so a stopped Cortex still looks like
-a bare connection error, and `stop` already tells you how many connections it cut.
-
-The supervisor reads the address once, at its own start. If you edit
-`listener.forward_proxy_addr`, restart the service rather than only the proxy — the same
-rule every other `listener.*` field follows.
-
-**macOS only, in practice.** The supervisor exists only where `agentop` installs it
-with `--supervise`, which is the launchd path. The systemd unit deliberately does not
-pass `--supervise` — it relies on `Restart=on-failure` instead — so on Linux there is
-no supervisor to hold the address, and a Linux local install still gets a bare
-connection-refused in this situation.
-
-### Everything shows as `tunnel` and no plugin ever runs
-
-`agentop observe` shows rows like this, with `tunnel` in ACTION and no method:
-
-```
-18:00:02  out  req  tunnel  client-rejected-ca   ete-litellm.example.com
-```
-
-The reason is in the PLUGIN column. `client-rejected-ca` means that client refused
-the bridge certificate, so nothing downstream can read the traffic. There are two
-causes, and they need different fixes.
-
-**The usual one: the client started before the CA existed.** CA files are read once
-at startup, so an agent already running when Cortex was first installed — or when
-`~/.cortex` was deleted and recreated — is holding a different CA, or none.
-
-The proxy log names the offender, the cutoff, and which CA is actually in force:
-
-```sh
-grep 'client-rejected-ca' ~/.cortex/proxy.log
-# ... client=127.0.0.1:58041 ca_not_before=2026-09-09T17:11:39-04:00
-#     ca_fingerprint=CD:19:CD:2C:... ca_file=/Users/you/.cortex/ca/ca.crt ...
-```
-
-Map that client port to a process, then restart it:
-
-```sh
-lsof -nP -iTCP:58041          # -> COMMAND / PID
-ps -o lstart= -p <pid>        # started before ca_not_before? restart it
-```
-
-The port has to come from the log rather than a later `lsof` sweep: the connection
-is gone by the time you look, so nothing after the fact can attribute it.
-
-**The other one: the client trusts a different CA of the same name.** If the process
-started *after* `ca_not_before` and still gets rejected, compare fingerprints —
-this is what `ca_fingerprint` is for:
-
-```sh
-openssl x509 -in "$NODE_EXTRA_CA_CERTS" -noout -fingerprint -sha256
-```
-
-A mismatch against the `ca_fingerprint` in the log means the client is pointed at a
-*different* CA file, not a stale one, and restarting it will not help. Every
-generated CA is named `CN=authbridge-tls-bridge-ca` and lives at `~/.cortex/ca`, so
-nothing but the fingerprint distinguishes them.
-
-This happens whenever `$HOME` differs between the proxy and the client, because
-`--local` derives the CA directory from `$HOME`: sandboxes, per-project homes, and
-wrappers that set `HOME=$PWD` each get their own CA. Point every environment at one
-CA instead:
-
-```sh
-cortex --local --ca-dir /Users/you/.cortex/ca
-```
-
-`--ca-dir` moves only the CA; the config stays at its usual path. On startup the
-proxy also warns on its own when a client's recorded CA file is a bridge CA whose
-fingerprint differs from the one in force.
-
-**A third cause, once a year: the CA was renewed under you.** The generated CA is
-valid for 365 days, and the proxy replaces it about a month before it expires. That
-is a new CA, so — exactly as on a first install — every client has to restart to
-pick it up. It is the one case nobody expects, because nothing else changed on that
-boot. The startup log says so plainly (`tls-bridge: generated self-signed CA`, with
-`restart_clients`), and the rejection that follows carries a `ca_not_before` of
-minutes ago rather than a year back, so the restart advice is the right advice.
-
-The other reasons you may see, and what each one asks of you:
-
-| Reason | Meaning | Act? |
-| --- | --- | --- |
-| `passthrough-host` | A host Cortex deliberately does not intercept (GitHub, module proxies, package registries). | no |
-| `passthrough-port` | Not a port the bridge watches. | no |
-| `passthrough-nontls` | The bytes were not a TLS handshake, so there was nothing to terminate. | no |
-| `skip-cached` | An earlier handshake for this host failed, so it is not intercepted for a short window. This applies only to a connection whose program Cortex cannot name — a failed process lookup, or `session.process_attribution: off`; when it can name the program, that program's own record decides instead (`program-refused`). Any failed handshake seeds this, not only a CA rejection — the seeding failure logged its own reason. The window starts at 30s and lengthens only if **rejections** keep coming — a hang-up or a cipher mismatch seeds it but never escalates it; the first client that *does* trust the CA clears it immediately. | find the earlier failure in `proxy.log` and fix that client |
-| `program-refused` | An earlier handshake by the program that opened this connection failed, so Cortex did not try to read this one. Only that program is affected: another program talking to the same host is still read. Usually the earlier failure was a CA rejection, but any failed handshake seeds this — the `proxy.log` line for that failure names the program (`program=`, and `agent=` when it runs under one) and logged its own reason. Cortex tries again after a window that starts at 30s and lengthens only if **rejections** keep coming — a hang-up or a cipher mismatch never adds to the count or lengthens the window, and nor does a rejection arriving while the window is still open. After three rejections in a row, each after a window, Cortex stops trying for that program **until Cortex restarts**. A hang-up or a cipher mismatch that is the program's first failure does start the count at one, so a hang-up followed by two such rejections stops it too. A process that started before Cortex's CA (`ca_not_before`) is remembered on its own instead, not as its program: it cannot have loaded that CA, so restarting that process is enough, and a newly started copy of the program is read meanwhile. | find the earlier failure in `proxy.log`; if it was `client-rejected-ca`, restart the client if it started before `ca_not_before`, otherwise point it at the CA, then restart Cortex |
-| `os-trust-only` | A Go program on macOS, while macOS does not trust Cortex's CA. Such a program reads no CA file and trusts only the keychain, so showing it Cortex's certificate could only fail; Cortex passes it through from its first connection instead. See [Go tools on macOS](#go-tools-on-macos-are-passed-through-unread). | only if you want it read: trust the CA in your keychain |
-| `bridge-disabled` | No TLS bridge is configured. | only if you wanted one |
-| `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. OpenCode hangs up rather than rejecting the CA; see [its page](agents/opencode.md#ca-trust). | usually no |
-| `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |
-| `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. Under `fail_closed` the CONNECT is answered `502` `upstream_unverified` instead, and nothing is tunnelled. The first failure for each host logs a WARN (`reason=upstream-verify`). Later failures for that host log at INFO. | investigate the destination |
-| `sni-mismatch` | Under `fail_closed`, the client's TLS SNI named a host other than the CONNECT target, so the handshake was refused. The close row carries `421` and `error.kind: misdirected_request`. | check what the client is connecting to |
-| `refused-non-tls` | Under `fail_closed`, a connection to a host the bridge intercepts sent bytes that are not a TLS handshake, so it was closed. The close row carries `error.kind: not_tls`. | add the host to `passthrough_hosts` if it should be tunnelled |
-| `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout. Without the TLS bridge the CONNECT is answered `502` and no tunnel opened. With the bridge on (this install's default) the CONNECT is answered `200` first, because a redirect can still send the request to a live server; when nothing rescued it, the close row carries that `200` with the dial error in `error`. The TCP dial is bounded at 10s, so a destination that silently drops the SYN (off the VPN that reaches it, a dead NAT) fails within that rather than hanging the agent for longer. | check the destination and the network path to it |
-
-Only a CA rejection asks you to restart anything: `client-rejected-ca` itself, and
-`program-refused` when the earlier failure it remembers was one. The others are either
-working as intended or point somewhere other than your agents — which is why the reason
-is worth reading before acting on it.
-
-`program-refused` and `os-trust-only` are about a program rather than a host, so Cortex
-also keeps them as a list, which `agentop doctor` prints and the stats listener serves:
-
-```sh
-curl -s http://127.0.0.1:47602/tls-bridge/unread
-```
-
-The stats port also serves Go's pprof profiles under `/debug/pprof/` — this answers
-"what is the proxy holding in memory", which `ps` RSS cannot (freed pages the kernel
-has not reclaimed still count as resident on macOS):
-
-```sh
-curl -s --noproxy '*' http://127.0.0.1:47602/debug/pprof/heap -o /tmp/heap.pb.gz
-go tool pprof -top -inuse_space /tmp/heap.pb.gz
-```
-
-`go tool pprof` cannot read the profile from a pipe, so the two-step form it is. The
-`--noproxy '*'` matters on this machine: the shell's proxy env points at cortex itself.
-The profiles expose stack traces and argv rather than object contents, but are served
-only when `listener.bind_loopback_only` is true (the local install's default), and the
-endpoints refuse a non-loopback Host or any browser Origin.
-
-`programs` has one entry per program Cortex is not reading: `program` and `agent` (the
-executables), `reason`, `connections` (how many of the program's connections Cortex has
-passed through unread since Cortex started), `failures` and `stopped` (on `program-refused`),
-and `lastHost`. `pid` appears on an entry kept for one process that started before Cortex's
-CA. `hosts` is the host memory behind `skip-cached`: the hosts passed through for clients
-whose program cannot be named. On macOS, `osTrustsCA` is whether macOS trusted Cortex's CA
-when it last checked.
-
-### A request gets `421 Misdirected Request`
-
-Inside a bridged tunnel, every decrypted request must name the tunnel's own destination
-in its `Host` header — same host, compared without case or a trailing dot, and the same
-port, `443` when none is given. One that names another host or port is refused with a
-421 before any plugin runs and is never sent anywhere, because the proxy would dial the
-CONNECT target while every host-based policy judged the `Host` header. The timeline shows
-it as a 421 with `error.kind: "misdirected_request"` under the CONNECT target's host. A
-plaintext proxied request has no such gap: its destination is the request line's, and
-the `Host` header is ignored.
-
-### Developer tooling is not intercepted at all
-
-`gh`, `go`, `pip` and `npm` work out of the box, without trusting anything. The
-bridge ships a default `passthrough_hosts` list — GitHub, the Go module proxy and
-checksum DB, the package registries — and tunnels them rather than forging a leaf.
-
-That costs nothing. `inference-parser`, the MCP/A2A parsers and `tool-prune` all act
-on agent↔LLM and agent↔tool messages; none of them has anything to say about a
-module download. Intercepting those hosts produced no observability and broke every
-Go tool, which is the worst of both.
-
-To see the list, or to override it, set `tls_bridge.passthrough_hosts` in
-`~/.cortex/config.yaml`. An explicit list **replaces** the default rather than adding
-to it, and `passthrough_hosts: []` intercepts everything. Never list an inference
-endpoint there: it would silently remove the parsing and the token savings, with no
-error anywhere to notice it by.
-
-### Failing closed
-
-By default the bridge falls open: a connection it cannot read is tunnelled, so the
-agent's call still works. `tls_bridge.fail_closed: true` instead bridges or refuses
-every connection the bridge intercepts, so policy judged on a host covers every byte
-sent to it:
-
-- An origin that fails verification is refused on the CONNECT: `502` with
-  `X-Moca-Egress-Error: upstream_unverified`. The check is a `HEAD` bounded at 10s,
-  so a timeout or reset is refused the same way; `error.message` says which. An
-  origin that could not be dialled still gets a `200`, and each request is verified
-  when sent.
-- An SNI that names another host than the CONNECT target is refused (`sni-mismatch`,
-  `421`). The comparison is textual, so CONNECT by name, not IP.
-- A client that rejects Cortex's CA is refused every time, and nothing is
-  remembered. Go tools on macOS need the CA in the keychain.
-- Bytes that are not a TLS handshake are refused (`refused-non-tls`).
-
-The default `passthrough_hosts` list is dropped; an explicit list is still
-tunnelled. `listener.skip_hosts` destinations are verified too, so give a private-CA
-origin `upstream_ca_bundle`. `fail_closed` cannot be combined with
-`upstream_insecure`.
-
-On the transparent listener, `passthrough_hosts` is judged by the dialled address,
-so only IP entries apply. The sniffed SNI is the host, so `sni-mismatch` fires only
-when the SNI could not be sniffed, such as a ClientHello over 8 KiB. Refusals there
-are close rows, since there is no CONNECT to answer.
-
-### Go tools on macOS are passed through unread
-
-`SSL_CERT_FILE` — the Go one, covering `go`, `gh`, `helm` and `agentop` itself — **does
-nothing on macOS**. Go's `crypto/x509` honours it only in `root_unix.go`, which is built
-for `linux || freebsd || …` and excludes darwin; on darwin verification is handed to
-Security.framework, which consults the keychain alone. No environment variable can change
-that.
-
-So on a Mac, Cortex shows a Go program its certificate only when macOS trusts Cortex's
-CA. It recognises a Go program from the executable's build information, asks macOS —
-reading, never writing — whether it trusts Cortex's CA, and when it does not, passes the
-program's HTTPS through unread. The row says `os-trust-only`. The program works exactly
-as it does without Cortex, from its first connection; Cortex records the host and the
-bytes, as for any tunnel, but not the content.
-
-To have Cortex read those programs too, trust the CA in your login keychain:
-
-```sh
-security add-trusted-cert -k ~/Library/Keychains/login.keychain-db \
-  -p ssl ~/.cortex/ca/ca.crt
-```
-
-Cortex notices within a minute, without a restart. Undo with:
-
-```sh
-security delete-certificate -c authbridge-tls-bridge-ca \
-  ~/Library/Keychains/login.keychain-db
-```
-
-Trusting the CA does not have every Go program read. One that relays another system's
-traffic — `gvproxy`, which carries the podman VM's, whose clients trust their own CAs — or
-that trusts a CA list of its own without Cortex's CA in it (`helm --ca-file` naming another
-CA, say) is shown Cortex's certificate once macOS trusts it, and refuses it. That
-connection fails, and Cortex passes the program through as `program-refused` for a window.
-
-`git`, `curl` and Python are **not** affected on macOS — they read their bundles
-through OpenSSL/LibreSSL, which honours the variables on every platform. On Linux
-`SSL_CERT_FILE` works normally, so a Go program there is read like any other.
-`agentop configure claude-code enable` prints a short form of this note on macOS
-when it changes your settings (not on a re-run that finds them already enabled).
-Setup does not print it. `agentop doctor` lists every program Cortex is passing through
-unread, and why, from the proxy's `/tls-bridge/unread` report; on macOS it adds the
-command above when Go programs are among them.
-
-### Remove it
-
-```sh
-agentop uninstall --purge
-```
-
-`agentop uninstall` lists what it will remove and asks once; `--yes` skips the question.
-It unroutes Claude Code, OpenCode, IBM Bob and the bob shell function where Cortex
-routed them, restarting OpenCode's background service when it finds it running. It
-stops and removes the service, or the background proxy. It removes the PATH lines setup
-added, unless other tools in `~/.local/bin` still need them, and removes `agentop`,
-`cortex`, `cortex-session-dump` and `cortex-gateway` from `~/.local/bin`. A step that fails is reported
-with its fix, the rest still run, and the end lists what was left behind.
-
-`--purge` also deletes `~/.cortex`: config, CA, logs, cost history, session history,
-agentop's UI settings. It goes last, and only when every removal before it worked: after a failed
-one `~/.cortex` stays, and the end lists it, with the `rm -rf` to run once the fixes
-above are done. Without `--purge` `~/.cortex` stays too, so a later install picks up
-where you left off, and a run where every removal worked ends by saying how to delete
-it yourself.
-
-Restart any `claude` that was already running: it read its settings when it started, so
-it still points at Cortex. `claude --resume` picks the conversation back up. IBM Bob
-needs a restart too; OpenCode's service is restarted for you. A later install routes no
-agent by itself, so run each agent's `agentop configure <agent> enable` again, or pass
-`--claude-code` to the installer for Claude Code.
-
-#### Check nothing is left
-
-```sh
-opencode service get env             # if you use OpenCode: none of it should point at Cortex
-grep '\.cortex/' ~/.claude/settings.json # should print nothing: Cortex's CA variables are gone
-ls ~/.local/bin/agentop ~/.local/bin/cortex 2>/dev/null # should print nothing
-pgrep -lx cortex                     # should print nothing
-ls ~/.cortex 2>/dev/null             # should print nothing, after --purge
-```
-
-The CA that `--purge` removes was only ever trusted through the CA variables in
-`~/.claude/settings.json` — *Cortex* never adds it to the system or login keychain.
-`bundle.crt` lives in the same directory and is derived from `ca.crt` plus a copy of
-the public roots, so removing `~/.cortex` takes it with them; it holds no private
-key and grants nothing on its own.
-
-**On macOS, if you followed the Go-tools step above** and ran
-`security add-trusted-cert` yourself, that trust setting is the one thing outside
-`~/.cortex` and outside `~/.claude/settings.json`, so it outlives both. Deleting the
-CA file does not withdraw it — the keychain holds its own copy. Remove it too:
-
-```sh
-security delete-certificate -c authbridge-tls-bridge-ca \
-  ~/Library/Keychains/login.keychain-db
-```
-
-Check whether it is there at all with:
-
-```sh
-security find-certificate -c authbridge-tls-bridge-ca ~/Library/Keychains/login.keychain-db
-```
-
-Leaving it behind means a CA whose private key you have deleted stays trusted for
-TLS — harmless in itself, since nothing can sign with it any more, but it is trust
-you did not intend to keep.
-
-#### If you reinstall afterwards, restart your agents
-
-Deleting `~/.cortex` deletes the CA, so a later install mints a **new** one. Every
-agent that is already running still trusts the old CA — a client reads its CA file
-once, at startup — and will refuse the new certificates.
-
-That failure is quiet. Cortex falls back to tunnelling rather than breaking the
-connection, so the traffic keeps flowing and nothing on the agent's side complains;
-it simply stops being parsed, which shows up as `tunnel` rows in `agentop observe`.
-Restart those agents and they are visible again.
-
-An ordinary upgrade is unaffected — it keeps the existing CA. This only applies when
-`~/.cortex` has been deleted, or on a first install with agents already running.
-
-#### If `agentop` is already gone
-
-The service can be removed by hand:
-
-```sh
-# macOS
-launchctl bootout "gui/$(id -u)/io.rossoctl.cortex"
-rm -f ~/Library/LaunchAgents/io.rossoctl.cortex.plist
-
-# Linux
-systemctl --user disable --now cortex.service
-rm -f ~/.config/systemd/user/cortex.service
-```
-
-Then delete the Cortex keys from the `env` block of `~/.claude/settings.json`
-yourself. There are **six**:
-
-```
-HTTPS_PROXY
-NODE_EXTRA_CA_CERTS
-SSL_CERT_FILE
-GIT_SSL_CAINFO
-REQUESTS_CA_BUNDLE
-CURL_CA_BUNDLE
-```
-
-An older Cortex also set `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, which stops
-Claude Code's auto-updates. Delete it too, unless you set it yourself.
-
-**Remove all six, and do it before `rm -rf ~/.cortex`.** The middle four point at
-`~/.cortex/ca/bundle.crt`, and unlike `NODE_EXTRA_CA_CERTS` each of them *replaces*
-its tool's trust store rather than adding to it. Leave them behind with the file
-deleted and git, curl and Python fail **every** TLS call — including calls that have
-nothing to do with Cortex — with `error setting certificate verify locations`, on a
-machine you believe you have just cleaned. `agentop uninstall` removes all six first,
-as `agentop configure claude-code disable` does, and `--purge` deletes `~/.cortex` last,
-and not at all if a removal before it failed; this list is only for when that binary is
-already gone.
-
-Both of them skip a key whose value you have **changed since enable set it** — that
-edit is yours to keep or drop — and say which under *Left behind*. `--purge` then keeps
-`~/.cortex` rather than walking into the hazard above: if any key is still going to name
-a file inside the directory once it has finished, the whole directory stays, and the
-`purged` row says which key. That covers a key it left behind *and* one it put back,
-because a value of your own under `~/.cortex` — a CA file you keep there yourself — is
-one enable adopts as Cortex's and uninstall hands back to you. Delete the directory
-yourself once nothing points into it. Doing the removal by hand, as this section does,
-there is nothing to do that for you — check the keys you changed before you `rm -rf`.
-
-If you configured OpenCode, its background service's environment holds the same kind of
-variables. Remove the ones that point at Cortex with the `opencode` CLI, as
-[Undoing it by hand](agents/opencode.md#undoing-it-by-hand) shows, also before
-`rm -rf ~/.cortex`.
-
-Last, the files setup installed: `rm -f ~/.local/bin/cortex ~/.local/bin/cortex-session-dump ~/.local/bin/cortex-gateway`,
-and the two lines it marked in your shell profile, the first starting `# added by Cortex`.
+On macOS you will see **two** `cortex` processes: a supervisor (the one
+launchd starts, holding no ports) and the proxy itself. launchd does not restart user
+agents added mid-session — verified across `KeepAlive`, `StartInterval` and
+`RunAtLoad` — so the supervisor is what makes crash recovery work. On Linux there is
+one process; systemd handles it.
+
+In praxis mode (`praxis.enabled: true`), the supervisor has a second child,
+`cortex-gateway`, so you see three processes. At each start the supervisor writes
+`~/.cortex/gateway.token` and `~/.cortex/gateway.yaml`. A restart of the proxy does
+not restart the gateway. When the supervisor exits, the gateway exits too. The
+supervisor reads `praxis.*` only when it starts, so after you change `praxis.*`, run
+`agentop service restart`. Until then, the next restart of the proxy fails at each
+try.
+
+On Linux, the systemd unit runs `cortex --supervise` in praxis mode, so you also see
+the supervisor, the proxy and the gateway. In direct mode the unit does not use
+`--supervise`, and systemd restarts the proxy itself. `agentop service install` writes
+the unit again when it does not agree with `praxis.enabled` in the config file.
+
+### How traffic is grouped into sessions
+
+Each Claude Code session gets its own bucket, named with that session's id — the same
+UUID Claude Code uses for its own transcript, so `agentop` and
+`~/.claude/projects/<project>/<id>.jsonl` agree on what a session is. Two windows open in
+different repos are two buckets, and resuming a session (`claude --resume`) files back
+into the original one rather than starting a new one.
+
+This works because Claude Code puts `X-Claude-Code-Session-Id` on every inference
+request. IBM Bob (the editor and the `bob` shell command) is grouped the same
+way, by the `X-Task-Id` it sets, but its buckets are named with a task id rather than a
+session uuid, so one bucket covers however long Bob reuses that task. Note that
+`X-Task-Id` is a generic name: traffic from anything else that sends it will be grouped
+under its value too. [OpenCode](agents/opencode.md) is grouped by the `X-Session-Id` its
+background service sets, and its buckets are named with OpenCode's `ses_…` session ids.
+OpenCode puts its session's affinity id there: the parent session's id for a subagent
+and the source session's for a fork, so a subagent or fork is filed under the session it
+belongs to, as Claude Code's subagents are. Cortex reads `X-Session-Id` on a laptop
+install: it is in the list the installer writes, and in the built-in default wherever
+every listener binds loopback (`listener.bind_loopback_only`). A cluster deployment's
+default does not read it, because it is a generic name as well, which Pi (through the
+extension `agentop configure pi` installs) and similar frameworks send too. OpenCode also sends `X-Opencode-Session-Id`, the
+session's own id, which is not read. Traffic that carries no such header is filed by the
+process that sent it (see below), and where that has no answer falls back to the previous
+behavior — the most recently active session, or the `default` bucket. In practice
+`default` collects Claude Code's own connectivity probe (`HEAD /api/hello`) and anything
+else that egresses through the proxy without announcing a session.
+
+Some limitations worth knowing:
+
+- **Where the process lookup has no answer, header-less requests go by agent.** MCP tool calls,
+  Claude Code's WebFetch, and Bob's startup probes and task-classifier completions carry
+  no session header. Filed by timing alone — under whichever session was most recently
+  active — they are right when sessions take turns and wrong when two agents run side by
+  side: Bob's classifier completions — real inference, with tokens and cost — land in
+  Claude Code's session, and Claude Code's WebFetch in Bob's. Inference is exact only
+  where it carries the header.
+
+  Client affinity (`session.client_affinity`) files a header-less request under the newest
+  session of the same agent (by `User-Agent`). An agent's calls before its first header wait in a
+  `pending:<agent>` bucket that its first session then absorbs, and a request from no
+  known agent goes to `default` while two agents have both sent traffic in the last five
+  minutes (a bridged tunnel's own row goes wherever its first decrypted request goes, directly before
+  it; an opaque tunnel's row keeps today's attribution). Two sessions of the SAME agent
+  still share by timing. It is on by default, including for a `~/.cortex/config.yaml`
+  written before the setting existed; `session.client_affinity: false` turns it off and
+  puts every header-less request back on timing. It is not hot-reloadable — restart the
+  proxy after changing it.
+- **On a laptop, header-less requests are attributed by process.** Cortex asks the
+  kernel which process opened each connection, and files a request with no session
+  header under the session of that process or of its nearest ancestor that named one —
+  so `gh`, `git` and `curl` run by an agent's shell, its `WebFetch` and its MCP calls land
+  in the agent's session, including opaque tunnels that cannot be decrypted. A process of
+  no agent (your own terminal's `curl`, an IDE's update check) lands in `default`, even
+  while no agent is talking. Before, it went to the most recently active session once no
+  agent had named a session for five minutes. So an idle laptop filed every background
+  poll under the last session to speak. Which process named which session survives a
+  restart through the session archive. So a process that keeps running, such as Bob's
+  plugin host, keeps its session before it sends its session header again. An
+  agent talking to its own service on this machine — OpenCode's TUI and its background
+  service — is forwarded without being recorded when the service runs the agent's own
+  executable and is either the agent's direct child or has named a session. OpenCode
+  starts its service as the TUI's child, so its polling stays out of the timeline from
+  the first request, including after a proxy restart. The first time it is skipped
+  Cortex logs which program and service. It is `session.process_attribution`: `auto` (the default) means on for this
+  loopback-only install and off in a cluster; `on` and `off` force it. Where the lookup is
+  unavailable it logs one warning at startup and client affinity applies. Not
+  hot-reloadable.
+- **Agents other than Claude Code, Bob and OpenCode need to be named.** Set
+  `session.id_headers` to a list of headers to consult in precedence order if you run a
+  client with its own session header; naming any replaces the built-in list rather than
+  adding to it. An explicit empty list (`session.id_headers: []`) turns grouping off and
+  puts everything back in one bucket.
+- **Bucket names are taken on trust.** The id comes from the client's own header and is
+  not authenticated, so a client can name any bucket — including another session's, or a
+  stream of ids nobody owns, which evicts real buckets once there are more than
+  `session.max_sessions` of them ([Session history](#session-history-is-kept-in-cortexsessions)). On a laptop that is a non-issue: you own
+  every session. It matters where telemetry attribution is a trust boundary rather than a
+  convenience, and `session.id_headers: []` is the way to opt out there.
+
+### The cpex build
+
+The laptop cpex build is removed, and `install.sh --cpex` exits with an error. That error says to run the
+installer again without `--cpex`, which installs the default `cortex`. It also
+names `--praxis` and `docs/praxis-policy.md`, which is the way to run laptop
+policy now. `make
+cortex-cpex` is gone too. An install that runs a cpex build moves to the default
+`cortex` on `agentop update`, which prints one line that says so.
+
+The default `cortex` has no cpex plugin, and it does not start on a config that names
+`cpex`. So when `~/.cortex/config.yaml` has a `cpex` entry under `pipeline`,
+`agentop update`, the automatic update and the one-liner stop before they download.
+Remove the entry first, as [Move from the CPEX plugin](praxis-policy.md#move-from-the-cpex-plugin)
+says.
+
+An `agentop` from before the removal asks the release for the cpex tarball. So each
+release still publishes `cortex-cpex_<ver>_<os>_<arch>.tar.gz`, as a copy of the
+default `cortex` tarball, and that older update moves the install too. It does not
+check the config first: when the config names `cpex`, setup rolls back and the
+update fails. Remove the entry, then update again.
+
+Kubernetes use does not change: the `authbridge-cpex` image, the `cpex` and `fullcpex`
+build profiles, `core/plugins/cpex/` and the `go-ci-cpex` CI job stay. See
+[cpex-plugin.md](cpex-plugin.md).
+
+Every release tarball carries build provenance as well as its `checksums.txt` entry:
+`gh attestation verify <tarball> --repo rossoctl/cortex`.
+
+## Why traffic disappears from `agentop`
+
+Moved to [Troubleshooting](troubleshooting.md#why-traffic-disappears-from-agentop).
+
+## Install and TLS bridge problems
+
+These sections moved to [Troubleshooting](troubleshooting.md):
+
+- [`agentop: command not found`](troubleshooting.md#agentop-command-not-found)
+- [Restricted environments (sandboxes, no launchd session)](troubleshooting.md#restricted-environments-sandboxes-no-launchd-session)
+- [`502 Cortex proxy is not serving`](troubleshooting.md#502-cortex-proxy-is-not-serving)
+- [Everything shows as `tunnel` and no plugin ever runs](troubleshooting.md#everything-shows-as-tunnel-and-no-plugin-ever-runs)
+- [A request gets `421 Misdirected Request`](troubleshooting.md#a-request-gets-421-misdirected-request)
+- [Developer tooling is not intercepted at all](troubleshooting.md#developer-tooling-is-not-intercepted-at-all)
+- [Failing closed](troubleshooting.md#failing-closed)
+- [Go tools on macOS are passed through unread](troubleshooting.md#go-tools-on-macos-are-passed-through-unread)

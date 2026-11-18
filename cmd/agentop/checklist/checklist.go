@@ -230,12 +230,23 @@ func (u *UI) Logo(below string) {
 	u.println("    " + below)
 }
 
-// Next ends the screen on the one command to type.
-func (u *UI) Next(intro, cmd, comment string) {
+// Step is one command for Next to print, with its comment.
+type Step struct{ Cmd, Comment string }
+
+// Next ends the screen on the commands to type: intro, then each step as
+// "    <Cmd padded to the longest Cmd>        # <Comment>". Commands are ASCII, so
+// len is their width.
+func (u *UI) Next(intro string, steps ...Step) {
+	w := 0
+	for _, s := range steps {
+		w = max(w, len(s.Cmd))
+	}
 	u.println("")
 	u.println("  " + intro)
 	u.println("")
-	u.println("    " + cmd + "        " + u.faint.Render("# "+comment))
+	for _, s := range steps {
+		u.println("    " + s.Cmd + strings.Repeat(" ", w-len(s.Cmd)+8) + u.faint.Render("# "+s.Comment))
+	}
 }
 
 // Running is a step in progress. Off a terminal it prints nothing until it ends.

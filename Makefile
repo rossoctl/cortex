@@ -1,7 +1,7 @@
 # Root Makefile for cortex monorepo
 # Orchestrates linting and formatting across all sub-projects
 
-.PHONY: lint fmt pre-commit build-proxy-init pricing-table agentop cortex dev-install help
+.PHONY: lint fmt test coverage pre-commit build-proxy-init pricing-table agentop cortex dev-install help
 
 BIN_DIR := $(CURDIR)/bin
 
@@ -30,6 +30,22 @@ fmt: ## Run formatters across all sub-projects
 
 pre-commit: ## Install pre-commit hooks (including commit-msg)
 	pre-commit install --hook-type pre-commit --hook-type commit-msg
+
+##@ Tests
+
+# Both run scripts/dev/go-coverage.sh over the Go modules that ship in a binary, with
+# -short: it skips cmd/agentop's setup, service, doctor and uninstall scenes, and a
+# run takes about 2 minutes instead of 7. `make test` also shards agentop's root
+# package (scripts/dev/go-test-shards.sh); `make coverage` does not, because that
+# script writes no profile. CI runs the full suite. For the same here, clear the flags:
+# `make test TEST_FLAGS=`. To add the race detector: `TEST_FLAGS="-short -race"`.
+TEST_FLAGS ?= -short
+
+test: ## Run the unit tests, -short by default (TEST_FLAGS= for the full suite)
+	scripts/dev/go-coverage.sh $(TEST_FLAGS)
+
+coverage: ## Run the unit tests and print the coverage of the CLI (agentop) and the proxy (cortex)
+	scripts/dev/go-coverage.sh -cover $(TEST_FLAGS)
 
 ##@ Sub-project Targets
 

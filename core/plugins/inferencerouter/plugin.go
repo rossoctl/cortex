@@ -5,8 +5,8 @@
 // The agent needs no setting of its own for that beyond going through the proxy. A
 // request addressed to a server's host is routed, and so is a routed agent's
 // inference request addressed anywhere else — its provider, Anthropic, OpenCode Zen,
-// Bob's gateway — which is captured: sent to the agent's server at the server's path
-// for its API format (see session.CapturePath), by how the path the agent named
+// Bob's gateway — which is captured: sent to the agent's server at the server URL's
+// path prefix, then the server's path for its API format (see session.CapturePath), by how the path the agent named
 // ends. Only a POST inference-parser read as inference is captured, since an agent's
 // own tools can POST to an API whose path happens to end the same way.
 //
@@ -132,6 +132,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -187,6 +188,11 @@ type route struct {
 	// main and helper are the words naming the server's substitute models, resolved
 	// against its model list when one is needed (see substitute).
 	main, helper string
+	// api, authHeader and headers are the server's api, auth_header and headers
+	// fields (rules C1 to C3). headers is nil when the server has none.
+	api        map[string]string
+	authHeader string
+	headers    http.Header
 }
 
 // target is the server's own scheme and host, where every request routed to it is
@@ -278,9 +284,10 @@ func (p *Router) Configure(raw json.RawMessage) error {
 		if ep.PlaintextRemote() {
 			slog.Warn("inference-router: server is plain http on another machine, so every request routed to it "+
 				"crosses the network decrypted, its key and prompt included; use https unless the network is trusted",
-				"server", name, "url", ep.URL())
+				"server", name, "url", (route{endpoint: ep}).target().String()) // not ep.URL(): a key pasted as a path segment stays out of the log
 		}
-		servers[name] = route{endpoint: ep, key: s.Key, main: s.Main, helper: s.Helper}
+		servers[name] = route{endpoint: ep, key: s.Key, main: s.Main, helper: s.Helper,
+			api: s.API, authHeader: s.AuthHeader, headers: routerconfig.HeaderOf(s.Headers)}
 		byHost[ep.Key()] = name
 	}
 	// p.agents is keyed by CANONICAL agent name, folded from whatever spelling the
@@ -366,11 +373,31 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	// sent it. Redirected is the signal that it moved, and it is this router's
 	// redirect: a pipeline admits one WritesDestination plugin.
 	redirected := redirectErr == nil && pctx.Redirected()
+	var pl apiPlan
 	var pathErr error
-	if redirected && captured != "" {
-		// The table's paths are absolute with no query, so this is refused only by a
-		// drift between the table and SetRedirectPath's rule.
-		pathErr = pctx.SetRedirectPath(captured)
+	if redirected {
+		// The paths of the table and of the api map are absolute with no query, so
+		// these are refused only by a drift between the checks and the pipeline's.
+		switch pl = srv.plan(pctx.Path); pl.kind {
+		case planPath:
+			pathErr = pctx.SetRedirectPath(srv.wirePath(pl.path))
+		case planTranslate:
+			pathErr = pctx.Translate(pl.source, pl.target, srv.wirePath(pl.path))
+		case planAsIs:
+			if captured != "" {
+				pathErr = pctx.SetRedirectPath(srv.wirePath(captured))
+			} else if addressed != name {
+				// Moved off the server its host names: that server's prefix off, this one's on.
+				own := p.servers[addressed].endpoint.Path
+				rest, ok := strings.CutPrefix(pctx.Path, own)
+				if !ok || (rest != "" && rest[0] != '/') {
+					rest = pctx.Path
+				}
+				if wp := srv.wirePath(rest); wp != pctx.Path {
+					pathErr = pctx.SetRedirectPath(wp)
+				}
+			}
+		}
 	}
 	err := cmp.Or(redirectErr, pathErr)
 	outcome := redirectMoved
@@ -397,6 +424,13 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionObserve, Reason: "would_route", Details: details()})
 		return cont
 	}
+	if pl.kind == planRefuse || pl.kind == planCountTokens {
+		// The session is on this server; only this request is answered here.
+		if settle {
+			pin.settle(name)
+		}
+		return refusePlan(pctx, srv, pl, details())
+	}
 	// The model is chosen only once the request has moved, so an observed router
 	// changes nothing.
 	p.chooseModel(pctx, name)
@@ -409,7 +443,17 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	if addressed != name {
 		dropProviderCredentials(pctx.Headers)
 	}
-	setKey(pctx, srv.key)
+	translatedTo := ""
+	if pl.kind == planTranslate {
+		translatedTo = pl.target
+	}
+	setAuth(pctx, srv, translatedTo)
+	if len(srv.headers) > 0 {
+		if err := pctx.SetUpstreamHeaders(srv.headers); err != nil {
+			pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: "redirect_failed", Details: details()})
+			return pipeline.Deny(codeUnavailable, fmt.Sprintf("inference-router could not send this request to %q: %v", name, err))
+		}
+	}
 	d := details()
 	if captured != "" {
 		d["captured"] = captured

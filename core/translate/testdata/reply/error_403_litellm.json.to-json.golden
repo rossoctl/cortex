@@ -1,0 +1,1 @@
+{"type":"error","error":{"type":"permission_error","message":"team not allowed to access model. This team can only access models=['granite-4']. Tried to access claude-opus-5-5"}}

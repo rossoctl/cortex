@@ -481,3 +481,15 @@ func TestAgentsPane_TheAgentsNameSurvivesTheServerColumnAt80(t *testing.T) {
 		t.Errorf("the row does not show the agent's name:\n%s", view)
 	}
 }
+
+func TestSameRouter_SeesAHeadersChange(t *testing.T) {
+	cfg := func(ua string) routerconfig.Config {
+		return routerconfig.Config{Servers: map[string]routerconfig.Server{"bob": {URL: "https://bob.example.com", Headers: map[string]string{"User-Agent": ua}}}}
+	}
+	if !sameRouter(cfg("bob-shell"), cfg("bob-shell")) {
+		t.Error("sameRouter = false for equal configs")
+	}
+	if sameRouter(cfg("bob-shell"), cfg("other")) {
+		t.Error("sameRouter = true for configs with different headers")
+	}
+}

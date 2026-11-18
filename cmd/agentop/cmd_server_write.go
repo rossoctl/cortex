@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/term"
+	"gopkg.in/yaml.v3"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
@@ -82,6 +83,10 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var models routerconfig.Server
 	flags.StringVar(&models.Main, "main", "", "a word naming the server's model for an agent's main work, such as opus or glm")
 	flags.StringVar(&models.Helper, "helper", "", "a word naming the server's model for an agent's helper calls, such as haiku")
+	api, headers := pairFlag{flag: "--api", want: "<protocol>=<path>"}, pairFlag{flag: "--header", want: "<name>=<value>"}
+	flags.Var(&api, "api", "a protocol the server serves and its path, such as chat-completions=/v1/chat/completions (repeatable)")
+	flags.StringVar(&models.AuthHeader, "auth-header", "", "the header that carries the key, such as x-api-key (default: the agent's)")
+	flags.Var(&headers, "header", "a fixed header set on every request to the server, as <name>=<value> (repeatable)")
 	pos, code, ok := serverFlags(flags, args, stdout, stderr)
 	if !ok {
 		return code
@@ -111,6 +116,24 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err := checkWordFlags(models); err != nil {
 		fmt.Fprintf(stderr, "agentop server add: %v\n", err)
 		return 2
+	}
+	models.API, models.Headers = api.m, headers.m
+	if err := checkProtocolFlags(models); err != nil {
+		fmt.Fprintf(stderr, "agentop server add: %v\n", err)
+		return 2
+	}
+	// Bob's gateway takes its API key only as x-api-key, and refuses each request
+	// whose User-Agent does not start with bob-shell, the model list too.
+	if strings.HasSuffix(ep.Hostname, ".bob.ibm.com") {
+		if models.AuthHeader == "" {
+			models.AuthHeader = "x-api-key"
+		}
+		if !slices.ContainsFunc(slices.Collect(maps.Keys(models.Headers)), func(k string) bool { return strings.EqualFold(k, "User-Agent") }) {
+			if models.Headers == nil {
+				models.Headers = map[string]string{}
+			}
+			models.Headers["User-Agent"] = "bob-shell"
+		}
 	}
 	// Before anything is asked or read: --key-stdin reads stdin as typed, so on a
 	// terminal the key would echo, character by character, onto the screen and into
@@ -172,7 +195,7 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// given, so a word naming none of its models is refused before it is written,
 	// and a wrong key or URL is caught here rather than on the first routed request.
 	models.URL, models.Key = ep.URL(), key
-	ids, err := serverModels(models)
+	ids, _, err := serverModels(models)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server add: could not read %s's model list: %v. Check its URL and key.\n", name, err)
 		return 1
@@ -185,10 +208,41 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "%s %s → %s\n", strings.TrimPrefix(w.flag, "--"), w.word, m)
 	}
+	// With no --api, the probe finds the protocols, and the auth header when it is
+	// not the usual one. A given --auth-header is fixed: the probe does not change it.
+	if len(models.API) == 0 {
+		client := routerconfig.NewModelsClient()
+		client.Timeout = 60 * time.Second // a local server can load the model at the first request
+		ctx, cancel := context.WithTimeout(context.Background(), probeTotal(client.Timeout))
+		api, auth, err := probeServer(ctx, client, models, routerconfig.Resolve(models.Main, ids),
+			models.AuthHeader, models.AuthHeader != "")
+		cancel()
+		if err != nil {
+			fmt.Fprintf(stderr, "agentop server add: could not find which protocols %s serves: %v\n", name, err)
+			return 1
+		}
+		for _, p := range slices.Sorted(maps.Keys(api)) {
+			fmt.Fprintf(stdout, "api %s → %s\n", p, api[p])
+		}
+		if auth != "" && auth != models.AuthHeader {
+			fmt.Fprintf(stdout, "auth_header → %s\n", auth)
+			models.AuthHeader = auth
+		}
+		models.API = api
+	}
 
-	pairs := []string{"url", ep.URL(), "key", key, "main", models.Main, "helper", models.Helper}
+	value := edit.MapValue("url", ep.URL(), "key", key, "main", models.Main, "helper", models.Helper)
+	if len(models.API) > 0 {
+		value.Content = append(value.Content, edit.ScalarValue("api"), sortedMap(models.API))
+	}
+	if models.AuthHeader != "" {
+		value.Content = append(value.Content, edit.ScalarValue("auth_header"), edit.ScalarValue(models.AuthHeader))
+	}
+	if len(models.Headers) > 0 {
+		value.Content = append(value.Content, edit.ScalarValue("headers"), sortedMap(models.Headers))
+	}
 	ch := edit.ConfigChange{Chain: "outbound", Plugin: routerName, Path: []string{"servers", name},
-		Value: edit.MapValue(pairs...), CreatePlugin: true}
+		Value: value, CreatePlugin: true}
 	done := "Added " + name + "."
 	if replacing {
 		done = "Replaced " + name + "."
@@ -215,6 +269,57 @@ func checkWordFlags(models routerconfig.Server) error {
 		}
 	}
 	return nil
+}
+
+// pairFlag is a repeatable <key>=<value> flag. A second value for one key replaces the first.
+type pairFlag struct {
+	flag, want string
+	m          map[string]string
+}
+
+func (f *pairFlag) String() string { return "" }
+
+func (f *pairFlag) Set(s string) error {
+	k, v, ok := strings.Cut(s, "=")
+	if !ok || k == "" {
+		return fmt.Errorf("want %s", f.want)
+	}
+	if f.m == nil {
+		f.m = map[string]string{}
+	}
+	f.m[k] = v
+	return nil
+}
+
+// checkProtocolFlags checks add's --api, --auth-header and --header with the rules the
+// router loads them by, and refuses a header value with $, which config.Load would expand.
+// The errors never repeat a header value.
+func checkProtocolFlags(s routerconfig.Server) error {
+	if err := routerconfig.CheckAPI(s.API); err != nil {
+		return fmt.Errorf("--%w", err)
+	}
+	if err := routerconfig.CheckAuthHeader(s.AuthHeader); err != nil {
+		return fmt.Errorf("--auth-header: %w", err)
+	}
+	if err := routerconfig.CheckHeaders(s.Headers, s.AuthHeader); err != nil {
+		return fmt.Errorf("--header: %w", err)
+	}
+	for _, name := range slices.Sorted(maps.Keys(s.Headers)) {
+		if strings.Contains(s.Headers[name], "$") {
+			return fmt.Errorf("--header %s: the value contains $, which Cortex reads as an environment variable when it "+
+				"loads the config; write headers: {%s: ${NAME}} by hand", name, name)
+		}
+	}
+	return nil
+}
+
+// sortedMap is m as a YAML mapping, its keys sorted, so the same flags write the same file.
+func sortedMap(m map[string]string) *yaml.Node {
+	var pairs []string
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		pairs = append(pairs, k, m[k])
+	}
+	return edit.MapValue(pairs...)
 }
 
 func serverRemove(args []string, stdout, stderr io.Writer) int {

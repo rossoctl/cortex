@@ -71,7 +71,7 @@ func displayVersionOf(version, revision string) string {
 // The deprecated "claude-code" alias still dispatches (its case stays in main)
 // but is intentionally omitted here: it is no longer advertised in the usage
 // block or the unknown-subcommand hint. Use "configure claude-code" instead.
-var dispatchableSubcommands = []string{"observe", "setup", "doctor", "uninstall", "update", "service", "configure", "exec", "server", "script", "tools", "pipeline", "pricing", "cost", "import", "experimental"}
+var dispatchableSubcommands = []string{"observe", "setup", "doctor", "uninstall", "update", "service", "configure", "exec", "server", "script", "tools", "pipeline", "pricing", "cost", "export", "import", "experimental"}
 
 // unknownSubcommandMessage is the error for an unrecognised first argument.
 func unknownSubcommandMessage(name string) string {
@@ -95,7 +95,7 @@ Usage:
   agentop service <action>     run Cortex as a service: install, uninstall,
                                status, stop, start, restart
   agentop configure <agent>    point a coding agent (claude-code, bob, codex,
-                               opencode) at Cortex: enable, disable, status
+                               opencode, pi) at Cortex: enable, disable, status
   agentop exec -- CMD [ARG...] run CMD with Cortex's proxy and CA in its
                                environment, for tools with no settings file
   agentop server [<action>]    the inference server each agent's new sessions
@@ -106,6 +106,8 @@ Usage:
   agentop pipeline <action>    the plugin pipeline in effect: get
   agentop pricing              show the model rates in effect (--host <gateway>)
   agentop cost                 what your agents have spent (--window today|month|7d|1h)
+  agentop export               the archive as content-free NDJSON (--out, --session,
+                               --since)
   agentop import               import agent transcripts into Cortex (--help)
   agentop experimental <action>
                                unstable helpers: read-claude-sessions
@@ -138,6 +140,8 @@ func main() {
 			os.Exit(runPricing(os.Args[2:], os.Stdout, os.Stderr))
 		case "cost":
 			os.Exit(runCost(os.Args[2:], os.Stdout, os.Stderr))
+		case "export":
+			os.Exit(runExport(os.Args[2:], os.Stdout, os.Stderr))
 		case "import":
 			os.Exit(runImport(os.Args[2:], os.Stdout, os.Stderr))
 		case "configure":

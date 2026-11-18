@@ -666,3 +666,43 @@ func TestCapture_EventReadsSkipResponseBodies(t *testing.T) {
 		t.Fatalf("got %+v, err %v", got, err)
 	}
 }
+
+// Rule 8a of #1911: a translated request's converted body and the server's raw reply come back
+// byte for byte beside the bodies they were converted from and to, and count in the queue's size.
+func TestCapture_TranslatedAndUpstreamRoundTrip(t *testing.T) {
+	long := strings.Repeat("x", 600)
+	req := &pipeline.RequestCapture{Original: []byte(`{"model":"m","system":"` + long + `"}`),
+		Translated: []byte(`{"model":"m","messages":[{"role":"system","content":[{"type":"text","text":"` + long + `"}]}]}`)}
+	res := &pipeline.RequestCapture{Response: &pipeline.ResponseCapture{Status: 200, Body: []byte(`event: message_stop` + "\n\n"),
+		Upstream: []byte("data: \xff[DONE]\n\n"), UpstreamTruncated: true}}
+	plain := &pipeline.RequestCapture{Response: &pipeline.ResponseCapture{Status: 200, Body: []byte(`{}`)}}
+	w, err := createSegment(filepath.Join(t.TempDir(), "sess"), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range []*pipeline.RequestCapture{req, res, plain} {
+		if err := w.appendCapture(pipeline.SessionEvent{Seq: uint64(i + 1)}, c, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.close()
+	path := filepath.Join(filepath.Dir(w.f.Name()), w.info().File)
+	got, err := readCapture(path, 1)
+	if err != nil || got == nil || !bytes.Equal(got.Original, req.Original) || !bytes.Equal(got.Translated, req.Translated) || got.Forwarded != nil {
+		t.Fatalf("request: got %v, err %v, want the original and translated bodies", got != nil, err)
+	}
+	got, err = readCapture(path, 2)
+	if err != nil || got == nil || got.Response == nil || !bytes.Equal(got.Response.Body, res.Response.Body) ||
+		!bytes.Equal(got.Response.Upstream, res.Response.Upstream) || !got.Response.UpstreamTruncated {
+		t.Fatalf("response: got %v, err %v, want the body and the upstream body", got != nil, err)
+	}
+	if got, err = readCapture(path, 3); err != nil || got.Response.Upstream != nil || got.Response.UpstreamTruncated {
+		t.Fatalf("a reply that was not converted: got %+v, err %v, want no upstream", got, err)
+	}
+	if n := captureSize(req); n != int64(len(req.Original)+len(req.Translated)) {
+		t.Errorf("captureSize(request) = %d, want the translated body counted", n)
+	}
+	if n := captureSize(res); n != int64(len(res.Response.Body)+len(res.Response.Upstream)) {
+		t.Errorf("captureSize(response) = %d, want the upstream body counted", n)
+	}
+}

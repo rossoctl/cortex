@@ -1,0 +1,15 @@
+data: {"id":"chatcmpl-b2","created":1763337600,"model":"claude-opus-5-5","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning":"","thinking_blocks":[{"type":"thinking","thinking":""}],"content":"","role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-b2","created":1763337600,"model":"claude-opus-5-5","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning":"","thinking_blocks":[{"type":"thinking","thinking":"","signature":"CAQSsig"}],"content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-b2","created":1763337600,"model":"claude-opus-5-5","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"I will list the files."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-b2","created":1763337600,"model":"claude-opus-5-5","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"id":"tooluse_Zq1","function":{"arguments":"","name":"execute_command"},"type":"function","index":0}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-b2","created":1763337600,"model":"claude-opus-5-5","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"{\"command\":\"ls\"}"},"type":"function","index":0}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-b2","created":1763337600,"model":"claude-opus-5-5","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: {"id":"chatcmpl-b2","created":1763337600,"model":"claude-opus-5-5","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":22333,"completion_tokens":216,"total_tokens":22549,"cache_read_input_tokens":21649,"cache_creation_input_tokens":682,"prompt_tokens_details":{"cached_tokens":21649},"completion_tokens_details":{"reasoning_tokens":0}}}
+
+data: [DONE]

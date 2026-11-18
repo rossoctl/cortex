@@ -27,15 +27,17 @@ import (
 // construction. The SHA-256 of the original is stored too, and a rebuild that does not match it
 // is refused. Exact bytes matter: the prompt cache and thinking signatures are sensitive to them.
 
-// captureRec is a request capture on its event record: the skeletons of the original and the
-// forwarded body, and the request's headers and query. Old readers ignore the key.
+// captureRec is a request capture on its event record: the skeletons of the original, the
+// forwarded and the translated body, and the request's headers and query. Old readers ignore the key.
 //
 // Headers and the query are not hashed, so they must be exact by construction. JSON strings
 // cannot hold invalid UTF-8, which Go's server accepts in a header value, so a header set or
 // query that holds any is written as bytes instead: HX and QX, base64 on disk.
 type captureRec struct {
-	O  *bodyRec            `json:"o,omitempty"`
-	W  *bodyRec            `json:"w,omitempty"`
+	O *bodyRec `json:"o,omitempty"`
+	W *bodyRec `json:"w,omitempty"`
+	// X is the translated body (#1911): the request after Cortex converted it to the server's protocol.
+	X  *bodyRec            `json:"x,omitempty"`
 	H  http.Header         `json:"h,omitempty"`
 	HX map[string][][]byte `json:"hx,omitempty"`
 	Q  string              `json:"q,omitempty"`
@@ -47,7 +49,8 @@ type captureRec struct {
 }
 
 // responseRec is a ResponseCapture on disk. B is the key of the block holding the body, empty for
-// an empty body; S is the hex SHA-256 of the body, checked on read.
+// an empty body; S is the hex SHA-256 of the body, checked on read. UB, US and UT are the same
+// for the server's reply before translation (#1911); US is empty when there is none.
 type responseRec struct {
 	C  int                 `json:"c"`
 	H  http.Header         `json:"h,omitempty"`
@@ -57,6 +60,9 @@ type responseRec struct {
 	T  bool                `json:"t,omitempty"`
 	IC bool                `json:"ic,omitempty"`
 	D  bool                `json:"d,omitempty"`
+	UB string              `json:"ub,omitempty"`
+	US string              `json:"us,omitempty"`
+	UT bool                `json:"ut,omitempty"`
 }
 
 // bodyRec is one body's skeleton. P alternates literal bytes and block references, starting and
@@ -184,13 +190,11 @@ func splitCapture(c *model.RequestCapture, seen map[string]struct{}) (*captureRe
 			T: r.Truncated, IC: r.Incomplete, D: r.Decoded}}
 		rec.R.H, rec.R.HX = headerRec(r.Header)
 		var fresh []stringRec
-		if len(r.Body) > 0 {
-			v := string(r.Body)
-			rec.R.B = hashOf(v)
-			if _, ok := seen[rec.R.B]; !ok {
-				seen[rec.R.B] = struct{}{}
-				fresh = append(fresh, stringRec{h: rec.R.B, v: v})
-			}
+		rec.R.B, fresh = wholeBlock(r.Body, seen, fresh)
+		if r.Upstream != nil {
+			sum := sha256.Sum256(r.Upstream)
+			rec.R.US, rec.R.UT = hex.EncodeToString(sum[:]), r.UpstreamTruncated
+			rec.R.UB, fresh = wholeBlock(r.Upstream, seen, fresh)
 		}
 		return rec, fresh
 	}
@@ -205,7 +209,27 @@ func splitCapture(c *model.RequestCapture, seen map[string]struct{}) (*captureRe
 		f.W, more = splitBody(c.Forwarded, seen)
 		fresh = append(fresh, more...)
 	}
+	if c.Translated != nil {
+		var more []stringRec
+		f.X, more = splitBody(c.Translated, seen)
+		fresh = append(fresh, more...)
+	}
 	return f, fresh
+}
+
+// wholeBlock is the key of the one block that holds body, empty for an empty body. It adds the
+// block to fresh when seen does not have it yet.
+func wholeBlock(body []byte, seen map[string]struct{}, fresh []stringRec) (string, []stringRec) {
+	if len(body) == 0 {
+		return "", fresh
+	}
+	v := string(body)
+	h := hashOf(v)
+	if _, ok := seen[h]; !ok {
+		seen[h] = struct{}{}
+		fresh = append(fresh, stringRec{h: h, v: v})
+	}
+	return h, fresh
 }
 
 // headerRec is h as a capture record holds it: as is, or as bytes in hx when a value is not valid
@@ -283,17 +307,18 @@ func readCapture(path string, seq uint64) (*model.RequestCapture, error) {
 		return nil, errors.New("archive: capture record has no body")
 	}
 	want := map[string]struct{}{}
-	if f.R != nil && f.R.B != "" {
-		want[f.R.B] = struct{}{}
-	}
-	if f.O != nil {
-		for _, h := range f.O.refs() {
-			want[h] = struct{}{}
+	if f.R != nil {
+		for _, h := range []string{f.R.B, f.R.UB} {
+			if h != "" {
+				want[h] = struct{}{}
+			}
 		}
 	}
-	if f.W != nil {
-		for _, h := range f.W.refs() {
-			want[h] = struct{}{}
+	for _, b := range []*bodyRec{f.O, f.W, f.X} {
+		if b != nil {
+			for _, h := range b.refs() {
+				want[h] = struct{}{}
+			}
 		}
 	}
 	blocks := map[string]string{}
@@ -310,8 +335,18 @@ func readCapture(path string, seq uint64) (*model.RequestCapture, error) {
 		if hex.EncodeToString(sum[:]) != r.S {
 			return nil, errors.New("archive: response body does not match the captured hash")
 		}
-		return &model.RequestCapture{Response: &model.ResponseCapture{Status: r.C, Header: headerOf(r.H, r.HX),
-			Body: body, Truncated: r.T, Incomplete: r.IC, Decoded: r.D}}, nil
+		rc := &model.ResponseCapture{Status: r.C, Header: headerOf(r.H, r.HX),
+			Body: body, Truncated: r.T, Incomplete: r.IC, Decoded: r.D}
+		if r.US != "" {
+			// Never nil: an empty reply from the server is not "no translation".
+			rc.Upstream = append([]byte{}, blocks[r.UB]...)
+			sum := sha256.Sum256(rc.Upstream)
+			if hex.EncodeToString(sum[:]) != r.US {
+				return nil, errors.New("archive: upstream response body does not match the captured hash")
+			}
+			rc.UpstreamTruncated = r.UT
+		}
+		return &model.RequestCapture{Response: rc}, nil
 	}
 	c := &model.RequestCapture{Header: headerOf(f.H, f.HX), Query: f.Q}
 	if f.QX != nil {
@@ -323,6 +358,11 @@ func readCapture(path string, seq uint64) (*model.RequestCapture, error) {
 	}
 	if f.W != nil {
 		if c.Forwarded, err = f.W.rebuild(blocks); err != nil {
+			return nil, err
+		}
+	}
+	if f.X != nil {
+		if c.Translated, err = f.X.rebuild(blocks); err != nil {
 			return nil, err
 		}
 	}
