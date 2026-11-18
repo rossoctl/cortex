@@ -16,6 +16,23 @@ transitive dependency set.
   - `max_tokens` — completion cap, default 4096.
   - `timeout_ms` — per-call timeout, default 150000.
 - `engine` (object) — native context-guru config (preset / pipeline / per-component / store), passed through verbatim. Default: `preset: balanced`.
+
+**Session state is kept on disk.** The plugin keeps the state a session needs between turns
+(the summary checkpoint, the last billed input, freeze decisions and similar) in context-guru's
+`session_state` table, in a SQLite file. It is always on while the plugin is on; there is no
+setting for it. So the state survives a restart and a config reload, and the prompt prefix the
+provider has cached stays the same.
+
+- Where: `~/.cortex/context-guru-state.db` on a local install. Otherwise
+  `<user cache dir>/cortex/context-guru-state.db` (`$XDG_CACHE_HOME`, or `~/.cache` on Linux).
+  In a pod the file goes with the pod's filesystem.
+- What: everything the state holds, including text the plugin made from the conversation (the
+  summary, extract rewrites, frozen replacements). Mode 0600 in a 0700 directory.
+- How long: a key stays 24 hours in memory (`store.state_ttl_seconds` overrides this), and a
+  row stays 30 days on disk after its last write. Writes are batched once a second, off the
+  request path.
+- Fails open: with no usable file, the plugin logs one WARN and keeps the state in memory only.
+  With `store.enabled: false` there is no state and no file.
 - `context_window` (object) — where model context windows come from, for the engine's fraction-of-window triggers (`cache_aware_summarizer`'s 0.9 among them). Those triggers fire only on an exact window.
   - `model_info` — `litellm` (the LiteLLM public model map, fetched in the background and cached) or `off` (no network). The default depends on where Cortex runs: `litellm` on a local install, `off` anywhere else, so a pod does not fetch the map from the public internet on its first request (and again after every hot reload) unless its config asks. With `off`, only `windows` gives an exact window, so set `windows` or `model_info: litellm` in a cluster to let the fraction triggers fire. An explicit `model_info` always wins.
   - `model_info_url` — overrides the map's URL. Setting it with `model_info` unset turns the map on, on any install.

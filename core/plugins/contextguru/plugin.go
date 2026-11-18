@@ -209,14 +209,17 @@ func hostOf(baseURL string) string {
 // carries no pctx, since it is shared across requests — OnRequest copies it per
 // request with staticModelFor so Complete can report its spend op to the right one.
 type ContextGuru struct {
-	cfg      contextGuruConfig
-	pipe     *cgcomponents.Pipeline
-	store    cgstore.Store
-	sentinel string // unguessable value carried by our own LLM calls
-	static   *cgModel
-	modelTO  time.Duration
-	modelMax int
-	rates    pricing.Resolver
+	cfg   contextGuruConfig
+	pipe  *cgcomponents.Pipeline
+	store cgstore.Store
+	// stateDisk is the store's disk copy (attachStateDB), nil when the state is in memory only.
+	// Shutdown closes it, which flushes the pending writes.
+	stateDisk *cgstore.Disk
+	sentinel  string // unguessable value carried by our own LLM calls
+	static    *cgModel
+	modelTO   time.Duration
+	modelMax  int
+	rates     pricing.Resolver
 	// local is plugins.Deps.LocalInstall (SetLocalInstall).
 	local bool
 	// acct is the process's accountant host, nil when accounting is off. Keep-alive pings are
@@ -311,6 +314,12 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("context-guru build pipeline: %w", err)
 	}
 	p.pipe = pipe
+	// The state keys live a day in memory when a database backs them, as in context-guru's own
+	// proxy: a session that returns later is loaded from the database. An explicit
+	// store.state_ttl_seconds wins.
+	if (cfg.Store.Enabled == nil || *cfg.Store.Enabled) && cfg.Store.StateTTLSeconds == 0 {
+		cfg.Store.StateTTLSeconds = int(stateTTLDefault / time.Second)
+	}
 	p.store = cfg.NewStore()
 	p.windows = buildWindows(p.cfg.ContextWindow, p.local)
 	// Per-process random value, not a constant: outbound headers are the
@@ -382,9 +391,15 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 			}
 		}
 	}
+	// Last, once nothing above can fail: a Configure that returns an error leaves no disk flusher
+	// running. A second Configure on one instance flushes the first one's first.
+	if p.stateDisk != nil {
+		_ = p.stateDisk.Close()
+	}
+	p.stateDisk = attachStateDB(p.store, p.local)
 	slog.Info("context-guru configured",
 		"paths", p.cfg.Paths, "modelConfigured", p.static != nil,
-		"engineBytes", len(engine))
+		"engineBytes", len(engine), "stateOnDisk", p.stateDisk != nil)
 	return nil
 }
 
@@ -551,6 +566,9 @@ func (p *ContextGuru) Shutdown(context.Context) error {
 	}
 	if p.disp != nil {
 		p.disp.Close()
+	}
+	if p.stateDisk != nil {
+		_ = p.stateDisk.Close()
 	}
 	return nil
 }
