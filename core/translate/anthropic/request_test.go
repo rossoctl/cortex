@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/translate/pivot"
@@ -280,5 +281,30 @@ func TestDecodeRequest_TypeScan(t *testing.T) {
 		if got, want := dec(tc.block), dec(tc.want); !reflect.DeepEqual(got, want) {
 			t.Errorf("%s = %+v, want %+v", tc.block, got, want)
 		}
+	}
+}
+
+// TestDecodeRequest_DeepContent checks that content nested too deeply is
+// refused with a 400, with type first and with type last. One nested
+// tool_result is still accepted.
+func TestDecodeRequest_DeepContent(t *testing.T) {
+	nest := func(n int, open, end string) []byte {
+		s := `{"model":"m","messages":[{"role":"user","content":[` +
+			strings.Repeat(open, n) + `{"type":"text","text":"x"}` + strings.Repeat(end, n) + `]}]}`
+		return []byte(s)
+	}
+	for name, body := range map[string][]byte{
+		"type first":   nest(300, `{"type":"tool_result","content":[`, `]}`),
+		"type last":    nest(300, `{"content":[`, `],"type":"tool_result"}`),
+		"escaped type": nest(300, `{"content":[`, `],"\u0074ype":"tool_result"}`),
+	} {
+		_, err := Protocol{}.DecodeRequest(body)
+		var re *pivot.RequestError
+		if !errors.As(err, &re) || re.Status != 400 {
+			t.Errorf("%s: err = %v, want a 400", name, err)
+		}
+	}
+	if _, err := (Protocol{}).DecodeRequest(nest(1, `{"content":[`, `],"type":"tool_result"}`)); err != nil {
+		t.Errorf("one tool_result: %v", err)
 	}
 }

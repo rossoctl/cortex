@@ -30,9 +30,15 @@ func (Protocol) DecodeRequest(body []byte) (pivot.Request, error) {
 // straight to its Go field. A nested json.RawMessage layer scans the same
 // bytes again at each level, and a long session has many levels.
 type walker struct {
-	dec  *json.Decoder
-	body []byte
+	dec   *json.Decoder
+	body  []byte
+	depth int // content levels open now
 }
+
+// maxContentDepth is the deepest content that the walk reads. The walk
+// recurses once per level, so the limit keeps one deep body from
+// overflowing the stack.
+const maxContentDepth = 32
 
 func newWalker(body []byte) *walker {
 	return &walker{dec: json.NewDecoder(bytes.NewReader(body)), body: body}
@@ -146,6 +152,10 @@ func (w *walker) message() (pivot.Message, error) {
 // content reads content that is a string (one text block) or a list of
 // blocks.
 func (w *walker) content() ([]pivot.Block, error) {
+	if w.depth++; w.depth > maxContentDepth {
+		return nil, errors.New("content is nested too deeply")
+	}
+	defer func() { w.depth-- }()
 	t, err := w.dec.Token()
 	if err != nil {
 		return nil, err
@@ -201,6 +211,7 @@ func (w *walker) block() (pivot.Block, error) {
 			}
 		}
 		src = newWalker(raw)
+		src.depth = w.depth
 	}
 	err := src.object(false, func(key string) error {
 		switch key {
