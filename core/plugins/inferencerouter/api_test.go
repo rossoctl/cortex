@@ -268,3 +268,28 @@ func TestRoute_PrefixNotAddedToAnAddressedRequest(t *testing.T) {
 		t.Errorf("Path = %q, want /inference/v1/chat/completions", pctx.Path)
 	}
 }
+
+// A request moved off the server its host names goes to the routed server's prefix,
+// not to the named server's.
+func TestRoute_PrefixOnAMovedAddressedRequest(t *testing.T) {
+	cfg := `{
+		"servers": {
+			"bob":  {"url": "https://api.us-east.bob.ibm.com/inference", "key": "b-key", "main": "opus", "helper": "haiku"},
+			"lite": {"url": "http://localhost:4000", "key": "l-key", "main": "opus", "helper": "haiku"}
+		},
+		"sessions": {"s1": %q}
+	}`
+	for _, tc := range []struct{ to, host, path, want string }{
+		{"bob", "localhost:4000", "/v1/messages", "/inference/v1/messages"},
+		{"lite", "api.us-east.bob.ibm.com", "/inference/v1/messages", "/v1/messages"},
+	} {
+		p := build(t, strings.Replace(cfg, "%q", `"`+tc.to+`"`, 1))
+		pctx := request(newStore(t), tc.host, claudeUA, "s1")
+		pctx.Path = tc.path
+		run(t, p, pctx)
+
+		if path, ok := pctx.RedirectPath(); !ok || path != tc.want {
+			t.Errorf("%s%s moved to %s: RedirectPath = %q %v, want %s", tc.host, tc.path, tc.to, path, ok, tc.want)
+		}
+	}
+}

@@ -72,7 +72,7 @@ func TestProbe_ServesAllThree(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]string{"anthropic-messages": "/v1/messages", "chat-completions": "/v1/chat/completions", "responses": "/v1/responses"}
-	if !maps.Equal(api, want) || auth != "authorization" {
+	if !maps.Equal(api, want) || auth != "" {
 		t.Errorf("api %v, auth_header %q", api, auth)
 	}
 	bodies := map[string]string{}
@@ -293,5 +293,55 @@ func TestProbe_ReplyHidesKeyAndControls(t *testing.T) {
 	}
 	if !strings.Contains(msg, "bad key <key> [31m red") {
 		t.Errorf("err = %q, want the reply with <key>", msg)
+	}
+}
+
+// A server that takes both headers gets each protocol's usual one, so no auth_header
+// is written, whatever header the model list worked with.
+func TestProbe_UsualHeaderFirst(t *testing.T) {
+	srv, seen := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, _ *http.Request) {
+		switch p.path {
+		case "/v1/messages":
+			io.WriteString(w, anthropicOK)
+		case "/v1/chat/completions":
+			io.WriteString(w, chatOK)
+		case "/v1/responses":
+			io.WriteString(w, responsesOK)
+		default:
+			http.NotFound(w, nil)
+		}
+	})
+	for _, h := range []string{"authorization", "x-api-key"} {
+		_, auth, err := runProbe(t, srv, nil, h, false)
+		if err != nil || auth != "" {
+			t.Errorf("model list with %s: auth = %q, err = %v; want no auth_header", h, auth, err)
+		}
+	}
+	for _, r := range seen.reqs {
+		if (r.path == "/v1/messages") != (r.apiKey != "") {
+			t.Errorf("%s sent bearer=%q x-api-key=%q; want its usual header only", r.path, r.bearer, r.apiKey)
+		}
+	}
+}
+
+// A path that drops the connection is one path that did not serve; the probe goes on.
+func TestProbe_DroppedPathIsNotTheEnd(t *testing.T) {
+	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, _ *http.Request) {
+		switch p.path {
+		case "/v1/messages":
+			c, _, _ := w.(http.Hijacker).Hijack()
+			c.Close()
+		case "/messages":
+			io.WriteString(w, anthropicOK)
+		case "/v1/chat/completions":
+			io.WriteString(w, chatOK)
+		default:
+			http.NotFound(w, nil)
+		}
+	})
+	api, _, err := runProbe(t, srv, nil, "", false)
+	want := map[string]string{"anthropic-messages": "/messages", "chat-completions": "/v1/chat/completions"}
+	if err != nil || !maps.Equal(api, want) {
+		t.Errorf("api = %v, err = %v; want %v", api, err, want)
 	}
 }

@@ -132,6 +132,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -385,6 +386,14 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		case planAsIs:
 			if captured != "" {
 				pathErr = pctx.SetRedirectPath(srv.wirePath(captured))
+			} else if addressed != name {
+				// Moved off the server its host names: that server's prefix off, this one's on.
+				own := p.servers[addressed].endpoint.Path
+				rest, ok := strings.CutPrefix(pctx.Path, own)
+				if !ok || (rest != "" && rest[0] != '/') {
+					rest = pctx.Path
+				}
+				pathErr = pctx.SetRedirectPath(srv.wirePath(rest))
 			}
 		}
 	}

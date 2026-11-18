@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,8 +47,8 @@ type probeReply struct {
 // probeAPI finds which protocols the server s serves, and on which paths. It sends
 // one small request with model to each candidate path, and a path is served only
 // when the reply is 2xx and its body has the protocol's success shape. The key goes
-// first in header. On 401 or 403, when fixed is false, it sends the request once
-// more with the other header (authorization or x-api-key).
+// in header when fixed, else first in the protocol's usual header and, on 401 or
+// 403, once more in the other one (authorization or x-api-key).
 //
 // It returns the served protocols with their paths, and the auth_header to write:
 // header when fixed, else "" when each protocol worked with its usual header, else
@@ -59,21 +58,29 @@ func probeAPI(ctx context.Context, client *http.Client, s routerconfig.Server, m
 	if err != nil {
 		return nil, "", err
 	}
-	first := cmp.Or(header, "authorization")
-	other := "authorization"
-	if strings.EqualFold(first, "authorization") {
-		other = "x-api-key"
-	}
 	api, worked := map[string]string{}, map[string]string{}
 	var failed []probeReply
+	var reachErr error
 	for _, p := range routerconfig.APIProtocols {
+		first := header
+		if !fixed {
+			first = usualHeader(p)
+		}
+		other := "authorization"
+		if strings.EqualFold(first, "authorization") {
+			other = "x-api-key"
+		}
 		for _, path := range probePaths[p] {
 			r, err := probeOnce(ctx, client, ep.URL()+path, s, p, model, first)
 			if err == nil && !fixed && (r.status == http.StatusUnauthorized || r.status == http.StatusForbidden) {
 				r, err = probeOnce(ctx, client, ep.URL()+path, s, p, model, other)
 			}
 			if err != nil {
-				return nil, "", err
+				if ctx.Err() != nil {
+					return nil, "", err
+				}
+				reachErr = err
+				continue
 			}
 			if r.served {
 				api[p], worked[p] = path, r.header
@@ -83,6 +90,9 @@ func probeAPI(ctx context.Context, client *http.Client, s routerconfig.Server, m
 		}
 	}
 	if len(api) == 0 {
+		if reachErr != nil {
+			return nil, "", reachErr
+		}
 		return nil, "", noneServed(failed, s.Key)
 	}
 	if fixed {

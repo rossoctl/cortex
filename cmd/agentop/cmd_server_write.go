@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -196,7 +195,7 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// given, so a word naming none of its models is refused before it is written,
 	// and a wrong key or URL is caught here rather than on the first routed request.
 	models.URL, models.Key = ep.URL(), key
-	ids, header, err := serverModels(models)
+	ids, _, err := serverModels(models)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server add: could not read %s's model list: %v. Check its URL and key.\n", name, err)
 		return 1
@@ -216,7 +215,7 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		client := routerconfig.NewModelsClient()
 		client.Timeout = 60 * time.Second // a local server can load the model at the first request
 		api, auth, err := probeServer(ctx, client, models, routerconfig.Resolve(models.Main, ids),
-			cmp.Or(models.AuthHeader, header), models.AuthHeader != "")
+			models.AuthHeader, models.AuthHeader != "")
 		cancel()
 		if err != nil {
 			fmt.Fprintf(stderr, "agentop server add: could not find which protocols %s serves: %v\n", name, err)
