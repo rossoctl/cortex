@@ -1,0 +1,5 @@
+{"model":"claude-opus-5-5","max_tokens":1024,
+ "tools":[
+  {"name":"Bash","description":"Run a shell command.","input_schema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}},
+  {"name":"Read","description":"Read a file.","input_schema":{"type":"object","properties":{"path":{"type":"string"}}},"cache_control":{"type":"ephemeral"}}],
+ "messages":[{"role":"user","content":"hi"}]}

@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/rossoctl/cortex/cmd/agentop/servers"
@@ -88,7 +89,9 @@ func homeTilde(path string) string {
 // sameRouter reports whether two router configs route alike, so a pipeline refetch repaints the
 // SERVER columns only when what they show has changed.
 func sameRouter(a, b routerconfig.Config) bool {
-	return maps.Equal(a.Servers, b.Servers) && maps.Equal(a.Agents, b.Agents)
+	// DeepEqual: a Server holds maps (api, headers), so it is not comparable.
+	return maps.EqualFunc(a.Servers, b.Servers, func(x, y routerconfig.Server) bool { return reflect.DeepEqual(x, y) }) &&
+		maps.Equal(a.Agents, b.Agents)
 }
 
 // localCortexTarget is the config file and stats URL of the Cortex on this machine, when the

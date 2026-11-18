@@ -194,10 +194,9 @@ Undo any time:
 After installing, to cut Claude Code's token cost:
   agentop tools scan --write ~/.cortex/config.yaml   (proposes which tools to prune)
 Then watch the $ saved on every prompt Claude Code sends, live in:
-  agentop
+  agentop observe
 
-The session store is memory-only. To write it to files before it is lost:
-  cortex-session-dump --out ./cortex-dump
+History is kept in ~/.cortex/sessions. agentop import adds sessions from before Cortex.
 USAGE
 }
 

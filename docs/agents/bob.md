@@ -34,7 +34,7 @@ agentop configure bob status      # report, and act on nothing
 `enable` and `disable` show every change and ask once before writing, keep a
 `.bak` of the settings file as it was first found, and take `--yes` for unattended
 use. Declined — or with no terminal to ask on — they write nothing and exit **3**,
-the same convention as `configure claude-code` and `configure bobshell`.
+the same convention as `configure claude-code`.
 `--settings PATH` and `--config PATH` override either file.
 
 ### Trusting Cortex's CA without the keychain (macOS)
@@ -68,7 +68,7 @@ macOS `enable` makes two changes, and neither touches the keychain:
   # <<< cortex agentop (bob) <<<
   ```
 
-  The file, and every rule for editing it, is `configure bobshell`'s: `~/.zshrc`
+  The file, and every rule for editing it, is in [The shell half](#the-shell-half-the-rc-file-block): `~/.zshrc`
   for zsh, `~/.bashrc` for bash, followed through one symlink, written
   atomically, and removed by `disable` only when it is exactly what `enable`
   wrote. Any other shell, a dangling link, or a deeper chain gets the block

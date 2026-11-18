@@ -4,8 +4,10 @@ repos:
     hooks:
       - id: trailing-whitespace
         # The plans embed unified diffs, whose blank context lines are a lone space.
-        exclude: ^docs/superpowers/plans/
+        # Golden files hold exact output bytes. A fixer must not change them.
+        exclude: ^docs/superpowers/plans/|\.golden$
       - id: end-of-file-fixer
+        exclude: \.golden$
       - id: check-added-large-files
         args: ['--maxkb=1024']
       - id: check-yaml
@@ -22,6 +24,12 @@ repos:
         entry: scripts/hooks/commit-msg
         language: script
         stages: [commit-msg]
+      - id: check-doc-links
+        name: Check relative Markdown links and anchors
+        entry: python3 scripts/dev/check-doc-links.py
+        language: system
+        files: \.md$
+        pass_filenames: false
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.10

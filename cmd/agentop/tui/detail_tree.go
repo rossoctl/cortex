@@ -231,6 +231,10 @@ func foldDefaults(root *node) {
 	if raw := root.child("raw"); raw != nil && raw.fold {
 		raw.defOpen, raw.noQueryOpen = false, true
 	}
+	// The captured headers: 20 to 30 lines on real traffic. A search opens them.
+	if h := root.child("headers"); h != nil && h.fold {
+		h.defOpen = false
+	}
 	// Every plugin's invocation, skips included, was half of a short request (#1681). The
 	// section title names the plugins that acted, so the full list starts closed.
 	if inv := root.child("invocations"); inv != nil && inv.fold {

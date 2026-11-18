@@ -1,0 +1,5 @@
+{"model":"premium-ide","max_tokens":1024,
+ "messages":[
+  {"role":"user","content":"spawn a helper"},
+  {"role":"assistant","content":[{"type":"tool_use","id":"call_3833__thought__AY89a1+8zd/x=","name":"spawn_subagent","input":{"task":"look"}}]},
+  {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_3833__thought__AY89a1+8zd/x=","content":"done"}]}]}

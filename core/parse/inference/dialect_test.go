@@ -47,3 +47,21 @@ func TestDialectFor(t *testing.T) {
 		}
 	}
 }
+
+// ProtocolFor names the protocol of a path with the rule that dialectFor uses
+// (decision 14). Legacy completions and count_tokens have no protocol.
+func TestProtocolFor(t *testing.T) {
+	for path, want := range map[string]string{
+		"/v1/messages":              "anthropic-messages",
+		"/anthropic/v1/messages":    "anthropic-messages",
+		"/v1/chat/completions":      "chat-completions",
+		"/v1/completions":           "",
+		"/v1/responses":             "responses",
+		"/v1/messages/count_tokens": "",
+		"/v1/models":                "",
+	} {
+		if got := ProtocolFor(path); got != want {
+			t.Errorf("ProtocolFor(%q) = %q, want %q", path, got, want)
+		}
+	}
+}

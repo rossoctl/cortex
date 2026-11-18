@@ -14,7 +14,7 @@ func TestDetailKeys(t *testing.T) {
 		has      []string
 		hasNot   []string
 	}{
-		{"inference", false, []string{"messages", "tools", "toolResults", "historyToolCalls"}, []string{"completion", "toolCalls"}},
+		{"inference", false, []string{"messages", "tools", "toolResults", "historyToolCalls", "effort", "thinkingType"}, []string{"completion", "toolCalls"}},
 		{"inference", true, []string{"completion", "toolCalls", "reasoningTokens"}, []string{"messages", "tools"}},
 		{"mcp", false, []string{"params"}, []string{"result"}},
 		{"mcp", true, []string{"result", "error"}, []string{"params"}},

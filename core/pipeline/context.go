@@ -359,6 +359,11 @@ type Context struct {
 	redirectHost   string
 	// redirectPath is the path SetRedirectPath set, "" to keep the client's.
 	redirectPath string
+	// translateSource, translateTarget and translatePath are what Translate set;
+	// translateTarget is "" when no Translate was accepted.
+	translateSource, translateTarget, translatePath string
+	// upstreamHeaders is the clone SetUpstreamHeaders kept. See UpstreamHeaders.
+	upstreamHeaders http.Header
 
 	// bodyMutated / responseBodyMutated flag that some plugin's
 	// SetBody / SetResponseBody took effect on this context. Listeners read

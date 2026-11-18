@@ -1,0 +1,12 @@
+{"model":"claude-opus-5-5","max_tokens":1024,
+ "messages":[
+  {"role":"user","content":"Is 391 prime?"},
+  {"role":"assistant","content":[
+   {"type":"thinking","thinking":"391 = 17 x 23.","signature":"EvkBsig"},
+   {"type":"redacted_thinking","data":"RDdata"},
+   {"type":"thinking","thinking":"no signature"},
+   {"type":"text","text":"391 is "},
+   {"type":"text","text":"not prime."},
+   {"type":"tool_use","id":"tooluse_9nf","name":"Bash","input":{"command":"echo done"}}]},
+  {"role":"assistant","content":[{"type":"tool_use","id":"tooluse_x","name":"Read","input":{}}]},
+  {"role":"user","content":[{"type":"tool_result","tool_use_id":"tooluse_9nf","content":"done"},{"type":"tool_result","tool_use_id":"tooluse_x","content":"ok"}]}]}
