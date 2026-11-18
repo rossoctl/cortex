@@ -492,6 +492,18 @@ these as 3, 2, 1.
 A client can reuse one session id for as long as it likes. The id `default` can cover
 weeks of unrelated work.
 
+Two ids are never one unit of work. `default` is the shared bucket. An id starting with
+`pending:` is a holding bucket: an agent's calls from before its process named a session.
+`codex exec` leaves one on every run. Exclude both from an aggregate, or a run's startup
+counts twice — once here, once in the session it named:
+
+```sh
+agentop export | jq -c 'select(.sessionId | startswith("pending:") or . == "default" | not)'
+```
+
+[`session-api.md`](session-api.md#event-schema) explains how a bucket links to the session
+it named.
+
 Do not group by `sessionId` and call the result a task. The average covers unrelated work.
 
 Cortex has no field for "one sitting" yet
