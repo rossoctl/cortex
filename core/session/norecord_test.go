@@ -41,10 +41,17 @@ func TestNoRecord_MarkNoRecordTellsTheArchive(t *testing.T) {
 	if want := []string{"s1", "s2"}; !slices.Equal(w.ids, want) {
 		t.Fatalf("Withhold calls %v, want %v", w.ids, want)
 	}
+	found := false
 	for _, sum := range s.ListSessions() {
-		if sum.ID == "s1" && !sum.NoRecord {
-			t.Fatal("s1's live summary is not marked")
+		if sum.ID == "s1" {
+			found = true
+			if !sum.NoRecord {
+				t.Fatal("s1's live summary is not marked")
+			}
 		}
+	}
+	if !found {
+		t.Fatal("s1 is not in the session list")
 	}
 }
 

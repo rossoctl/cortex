@@ -2,6 +2,8 @@ package archive
 
 import (
 	"errors"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,19 +170,73 @@ func TestNoRecord_FlaggedEventsLeaveTheReserveAlone(t *testing.T) {
 	for i := range evs {
 		evs[i].NoRecord = true
 	}
+	waiting := make(chan struct{})
+	var once sync.Once
+	a.deliverWait = func() { once.Do(func() { close(waiting) }) }
 	done := make(chan struct{})
 	go func() {
 		r.record("s2", evs...)
 		close(done)
 	}()
-	time.Sleep(200 * time.Millisecond)
-	a.Rekeyed("s1", "s3") // must still find a reserve slot
+	select {
+	case <-waiting: // a flagged event reached the wait for room
+	case <-done:
+		// Every flagged event was queued without waiting: they took the reserve.
+	case <-time.After(10 * time.Second):
+		t.Fatal("the flagged producer never reached deliver's wait")
+	}
+	a.Rekeyed("s1", "s3") // with the writer still gated: must still find a reserve slot
 	if got := a.Stats().DroppedRenames; got != 0 {
 		t.Fatalf("dropped %d renames: flagged events took the reserve", got)
 	}
 	close(a.gate)
 	<-done
 	a.Close()
+}
+
+// Review: when retention expires the last segment of a withheld session, the marker it keeps
+// holds only the mark, not the expired history's title and counts.
+func TestNoRecord_AnExpiredHistoryLeavesOnlyTheMark(t *testing.T) {
+	root := t.TempDir()
+	clk := newClock()
+	a := openTest(t, root, clk, WithRetentionDays(1))
+	r := newRecorder(a)
+	evs := synthSession(345, 1, 512)
+	r.record("s1", evs[:2]...) // history before the opt-out, with a title
+	settle(a)
+	clk.advance(30 * time.Hour)         // past retention for the segment
+	r.record("s1", flagged(evs[2:])...) // the opt-out, today
+	settle(a)
+	a.inWriter(func() { a.prune(clk.now()) })
+	a.Close()
+	m, err := readMeta(filepath.Join(root, dataDirName, dirName("s1")))
+	if err != nil {
+		t.Fatalf("the marker is gone: %v", err)
+	}
+	if sum := m.Summary.Summary("s1"); !sum.NoRecord || sum.EventCount != 0 || sum.Title != "" || len(m.Segments) != 0 {
+		t.Fatalf("after retention: %+v with %d segments, want only the mark", sum, len(m.Segments))
+	}
+}
+
+// Review: an op that reaches deliver after the writer stopped reading the queue for Close is
+// refused and counted, never queued where nothing reads it.
+func TestNoRecord_DeliverRefusesAfterTheWriterStopped(t *testing.T) {
+	a := openTest(t, t.TempDir(), newClock())
+	defer a.Close()
+	a.mu.Lock()
+	a.stopped = true // as the writer sets it after its drain for Close
+	a.mu.Unlock()
+	before := a.Stats().DroppedEvents
+	a.Withhold("s1")
+	if got := a.Stats().DroppedEvents; got != before+1 {
+		t.Fatalf("dropped %d → %d, want the op counted as undelivered", before, got)
+	}
+	if n := len(a.ops); n != 0 {
+		t.Fatalf("%d ops queued after the writer stopped, want none", n)
+	}
+	a.mu.Lock()
+	a.stopped = false
+	a.mu.Unlock()
 }
 
 // A rename moves a marked session's mark inside the rename op, so a DELETE queued after it

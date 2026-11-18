@@ -115,9 +115,11 @@ type Archive struct {
 	maxOpen    int
 	tickEvery  time.Duration
 
-	// Test seams: gate holds the writer before each op; segHook sees each new segment writer.
-	gate    chan struct{}
-	segHook func(*segmentWriter)
+	// Test seams: gate holds the writer before each op; segHook sees each new segment writer;
+	// deliverWait is called while deliver waits for room.
+	gate        chan struct{}
+	segHook     func(*segmentWriter)
+	deliverWait func()
 
 	ops       chan op
 	stop      chan struct{}
@@ -131,6 +133,9 @@ type Archive struct {
 	// recent clear, for AwaitClear; see clear.go.
 	mu      sync.Mutex
 	lastSeq map[string]uint64
+	// stopped is set by the writer once it has drained for Close: deliver then refuses an
+	// opt-out op rather than queue one nothing will read. Under mu.
+	stopped bool
 	pending *pendingClear
 	// deletes is the most recent delete per session id, for AwaitDelete; see delete.go. nil
 	// until the first.
@@ -507,15 +512,26 @@ func (a *Archive) run() {
 		case <-t.C:
 			a.tick()
 		case <-a.stop:
-			for drained := false; !drained; {
-				select {
-				case o := <-a.ops:
-					a.take(o)
-				default:
-					drained = true
-				}
-			}
+			a.drain()
+			// From here no opt-out op is accepted (deliver checks stopped under a.mu), so one
+			// more drain takes every op that was (#1923).
+			a.mu.Lock()
+			a.stopped = true
+			a.mu.Unlock()
+			a.drain()
 			a.closeErr = a.shutdown()
+			return
+		}
+	}
+}
+
+// drain takes every op queued now, without waiting for more.
+func (a *Archive) drain() {
+	for {
+		select {
+		case o := <-a.ops:
+			a.take(o)
+		default:
 			return
 		}
 	}
@@ -736,6 +752,8 @@ func (a *Archive) rename(oldID, newID string, after uint64) {
 	}
 	a.closeWriterBeforeRename(s) // a no-op except on Windows: see rename_windows.go
 	s.meta.ID = newID
+	// Dirty before the write: a failure is retried, and Close reports a withheld session's (#1923).
+	s.metaDirty = true
 	a.writeMeta(s)
 	if err := os.Rename(s.dir, newDir); err != nil {
 		slog.Warn("session archive: could not move a renamed session's directory; it will be moved at the next start",
@@ -810,8 +828,12 @@ func (a *Archive) renameEntry(s *sessionState, oldID, newID, newDir string, afte
 		meta:      &sessionMeta{ID: newID, CreatedAt: createdAt, UpdatedAt: latestWrite(move), Summary: since, Segments: move},
 		lastWrite: s.lastWrite,
 	}
+	renewed := s.meta.UpdatedAt // a withheld session's last event, which wrote no segment
 	if noRec {
 		ns.meta.Summary.MarkNoRecord()
+		// The marker lives retainDays after the session's last event (keepMarker), not after its
+		// last segment.
+		ns.meta.UpdatedAt = later(ns.meta.UpdatedAt, renewed)
 	}
 	// session.json first: a crash before a segment moves leaves it listed where it is not, which
 	// reconcile drops, rather than a directory loadMetas cannot read.
@@ -837,8 +859,10 @@ func (a *Archive) renameEntry(s *sessionState, oldID, newID, newDir string, afte
 	// A CLONE: before was published, and the old id's live fold is Added to from here on.
 	s.meta.Segments, s.meta.Summary, s.meta.UpdatedAt = keep, before.Clone(), latestWrite(keep)
 	if noRec {
-		// before predates the opt-out, so it does not hold the mark; the old id keeps it (#1923).
+		// before predates the opt-out, so it does not hold the mark; the old id keeps it (#1923),
+		// and the renewal time with it.
 		s.meta.Summary.MarkNoRecord()
+		s.meta.UpdatedAt = later(s.meta.UpdatedAt, renewed)
 	}
 	a.writeMeta(s)
 	if ns.metaDirty {
@@ -959,9 +983,14 @@ func (a *Archive) prune(now time.Time) {
 	}
 	var gone []*sessionState
 	for _, s := range a.sessions {
-		if s.w == nil && len(s.meta.Segments) == 0 && !keepMarker(s, now, a.retainDays) {
-			gone = append(gone, s)
+		if s.w != nil || len(s.meta.Segments) > 0 {
+			continue
 		}
+		if keepMarker(s, now, a.retainDays) {
+			a.markerOnly(s) // its history expired: keep the mark, not the history's fold
+			continue
+		}
+		gone = append(gone, s)
 	}
 	a.forget(gone)
 	for _, s := range gone {

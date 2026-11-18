@@ -85,6 +85,9 @@ func (a *Archive) Withhold(sessionID string) {
 // says so.
 func (a *Archive) deliver(o op) {
 	for len(a.ops) >= cap(a.ops)-reserve {
+		if a.deliverWait != nil {
+			a.deliverWait() // tests: the producer is waiting for room
+		}
 		select {
 		case <-a.done:
 			a.undelivered(o)
@@ -92,9 +95,20 @@ func (a *Archive) deliver(o op) {
 		case <-time.After(time.Millisecond):
 		}
 	}
+	// The send and the writer's stop are ordered by a.mu: an op is either queued before the
+	// writer's last drain, and taken by it, or refused here and counted. Non-blocking: there is
+	// room below the reserve, and no other producer sends while the store's lock is held.
+	a.mu.Lock()
+	if a.stopped {
+		a.mu.Unlock()
+		a.undelivered(o)
+		return
+	}
 	select {
 	case a.ops <- o:
-	case <-a.done:
+		a.mu.Unlock()
+	default:
+		a.mu.Unlock()
 		a.undelivered(o)
 	}
 }
@@ -115,6 +129,28 @@ func (a *Archive) withheld(id string, s *sessionState, e *model.SessionEvent) bo
 		return false
 	}
 	return e.NoRecord || (s != nil && s.meta.Summary.NoRecord())
+}
+
+// later returns the later of a and b.
+func later(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
+// markerOnly reduces s, a withheld session that has nothing left on disk, to its marker: the
+// fold drops what the expired segments contributed (title, counts, projects), so nothing
+// derived from the prompt outlives them, and keeps only the mark. prune calls it for a marker it
+// keeps.
+func (a *Archive) markerOnly(s *sessionState) {
+	if sum := s.meta.Summary.Summary(s.meta.ID); sum.EventCount == 0 && sum.Title == "" {
+		return // already only a marker: no rewrite on every prune
+	}
+	fold := session.NewSummaryFold()
+	fold.MarkNoRecord()
+	s.meta.Summary, s.metaDirty = fold, true
+	a.publish(s)
 }
 
 // keepMarker reports whether prune keeps s, a session with nothing on disk, because it marks a

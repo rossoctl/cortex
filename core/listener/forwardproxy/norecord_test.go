@@ -1,7 +1,10 @@
 package forwardproxy
 
 import (
+	"bufio"
+	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -125,6 +128,9 @@ func TestNoRecord_BridgedRequestLeavesNoSegment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Closed explicitly below before the scan; this covers an early exit. A second Close is a
+	// no-op.
+	t.Cleanup(func() { _ = arch.Close() })
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
 	store.AddRecorder(arch)
@@ -151,14 +157,88 @@ func TestNoRecord_BridgedRequestLeavesNoSegment(t *testing.T) {
 		t.Fatal(err)
 	}
 	var segs []string
-	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && strings.HasSuffix(p, ".jsonl.zst") {
+	if err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err // an unread subtree must fail the test, not pass it
+		}
+		if strings.HasSuffix(p, ".jsonl.zst") {
 			segs = append(segs, p)
 		}
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("scan %s: %v", root, err)
+	}
 	if len(segs) != 0 {
 		t.Fatalf("segments on disk %v, want none", segs)
+	}
+}
+
+// sendConnectWith is sendConnect with extra request headers on the CONNECT.
+func sendConnectWith(t *testing.T, proxyAddr, target string, h http.Header) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	raw, err := net.Dial("tcp", proxyAddr)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = raw.Close() })
+	_ = raw.SetDeadline(time.Now().Add(10 * time.Second))
+	var b strings.Builder
+	fmt.Fprintf(&b, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n", target, target)
+	for k, vs := range h {
+		for _, v := range vs {
+			fmt.Fprintf(&b, "%s: %s\r\n", k, v)
+		}
+	}
+	b.WriteString("\r\n")
+	if _, err := raw.Write([]byte(b.String())); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+	br := bufio.NewReader(raw)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 200", resp.StatusCode)
+	}
+	return raw, br
+}
+
+// An opaque (not bridged) CONNECT that names its own session and sends off withholds that
+// session: its open row files under the named session at once, so it carries the flag. When the
+// row files under another session (the active one, with no pin), it carries none, so no other
+// session is stopped.
+func TestNoRecord_OpaqueConnectWithholdsOnlyItsOwnSession(t *testing.T) {
+	const own = "11111111-2222-3333-4444-555555555555"
+	hdr := http.Header{session.ClaudeCodeSessionHeader: {own}, model.RecordHeader: {"off"}}
+	for _, tc := range []struct {
+		name     string
+		affinity bool   // pins the row to the session the CONNECT names
+		active   string // a session active before the CONNECT, or ""
+		filed    string // where the open row files
+		want     bool
+	}{
+		{"files under its own session", true, "", own, true},
+		{"files under another session", false, "sess-A", "sess-A", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := session.New(5*time.Minute, 100, 0)
+			defer store.Close()
+			if tc.active != "" {
+				store.Append(tc.active, pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
+			}
+			s := connectServer(t, store, nil) // no bridge: an opaque tunnel
+			s.SessionIDHeaders = []string{session.ClaudeCodeSessionHeader}
+			s.ClientAffinity = tc.affinity
+			proxyAddr, done := connectProxy(t, s)
+			raw, br := sendConnectWith(t, proxyAddr, pingPongOrigin(t), hdr)
+			pingPong(t, raw, br)
+			waitDone(t, done)
+			open, _ := onePair(t, store, tc.filed)
+			if open.NoRecord != tc.want {
+				t.Fatalf("open row under %s: NoRecord=%v, want %v", tc.filed, open.NoRecord, tc.want)
+			}
+		})
 	}
 }
 
