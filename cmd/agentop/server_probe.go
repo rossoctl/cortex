@@ -225,8 +225,7 @@ func servedShape(protocol string, body []byte) bool {
 	return false
 }
 
-// probeTotal is the probe's whole time: perRequest for each candidate path, so a
-// path that hangs leaves the others their time.
+// probeTotal is the probe's whole time: perRequest for each candidate path.
 func probeTotal(perRequest time.Duration) time.Duration {
 	n := 0
 	for _, paths := range probePaths {
