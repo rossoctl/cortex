@@ -43,8 +43,11 @@ to the server. Codex's WebSocket is declined with a 426 (see
 The request row's `modify/translated` record names in `dropped` what the server
 cannot carry. Examples: OpenAI's own `reasoning` items, `web_search_call` and
 `local_shell_call` items, and fields such as `store` and `include`. The thinking
-that a Chat server gives goes back to Codex in a reasoning item, and the next
-request gives it to the server again.
+that a Chat server gives goes back to Codex in a reasoning item. Only signed
+thinking (`thinking_blocks` with a signature, for example from a LiteLLM or Bob
+gateway in front of Anthropic) and redacted thinking go to the server again on the
+next request. Ollama and llama-server send thinking with no signature: Codex gets
+it only as a summary, and the next request drops it (`dropped` names `reasoning`).
 
 Cortex refuses these requests with a 400 `invalid_request_error`, and sends nothing
 to the server:
