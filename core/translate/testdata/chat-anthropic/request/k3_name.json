@@ -1,0 +1,1 @@
+{"model":"claude-opus-5-5","messages":[{"role":"system","name":"boss","content":"Be brief."},{"role":"user","name":"hai","content":"hi"},{"role":"assistant","name":"bot","content":"Hello."},{"role":"user","content":"again"}]}

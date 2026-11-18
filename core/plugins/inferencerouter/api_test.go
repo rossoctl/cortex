@@ -34,8 +34,9 @@ func TestPlan(t *testing.T) {
 			apiPlan{kind: planPath, path: "/anthropic/v1/messages"}},
 		{"responses only", map[string]string{"responses": "/v1/responses"}, "/v1/messages",
 			apiPlan{kind: planRefuse, source: "anthropic-messages"}},
-		// Rule 7: a chat request cannot be decoded, so it is not translated.
-		{"no decoder", map[string]string{"anthropic-messages": "/v1/messages", "responses": "/v1/responses"}, "/v1/chat/completions",
+		{"chat to an anthropic server", map[string]string{"anthropic-messages": "/v1/messages", "responses": "/v1/responses"}, "/v1/chat/completions",
+			apiPlan{kind: planTranslate, source: "chat-completions", target: "anthropic-messages", path: "/v1/messages"}},
+		{"legacy completions", map[string]string{"anthropic-messages": "/v1/messages"}, "/v1/completions",
 			apiPlan{kind: planAsIs}},
 		{"count_tokens to a chat server", map[string]string{"chat-completions": "/v1/chat/completions"}, "/v1/messages/count_tokens",
 			apiPlan{kind: planCountTokens}},
@@ -106,7 +107,7 @@ func TestRouter_SetAuth(t *testing.T) {
 }
 
 // A request translated to Anthropic Messages gets the key in X-Api-Key only. A
-// Responses request can be translated to it. This test calls setAuth directly.
+// Responses or a Chat Completions request can be translated to it. This test calls setAuth directly.
 func TestSetAuth_TranslatedToAnthropic(t *testing.T) {
 	pctx := &pipeline.Context{Headers: http.Header{"Authorization": {"Bearer client-key"}, "Api-Key": {"client-key"}}}
 	setAuth(pctx, route{key: "s-key"}, "anthropic-messages")

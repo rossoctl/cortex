@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strings"
 	"testing"
 	"testing/iotest"
 
@@ -91,5 +94,102 @@ func TestChatToAnthropicReplyEveryByte(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// chatAnthropicGolden gives the golden form of one Chat request sent to an
+// Anthropic server: the first line names the dropped fields, the second
+// line is the body. A refusal gives one "error:" line.
+func chatAnthropicGolden(in []byte) []byte {
+	c, err := Request(Chat, Anthropic, in, nil)
+	if err != nil {
+		return []byte("error: " + err.Error() + "\n")
+	}
+	return []byte("dropped: " + strings.Join(c.Dropped, ",") + "\n" + string(c.Body) + "\n")
+}
+
+// TestChatToAnthropicRequestGolden converts each hand-written Chat request
+// to an Anthropic Messages body (rules K3 and K4).
+func TestChatToAnthropicRequestGolden(t *testing.T) {
+	inputs, _ := filepath.Glob(chatAnthropicDir + "/request/*.json")
+	if len(inputs) == 0 {
+		t.Fatal("no request inputs")
+	}
+	for _, in := range inputs {
+		t.Run(filepath.Base(in), func(t *testing.T) {
+			body, err := os.ReadFile(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkGolden(t, strings.TrimSuffix(in, ".json")+".golden", chatAnthropicGolden(body))
+		})
+	}
+}
+
+func encodeChatToAnthropic(t *testing.T, in []byte) string {
+	t.Helper()
+	c, err := Request(Chat, Anthropic, in, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(c.Body)
+}
+
+// TestChatToAnthropicDeterministic checks rule 9a of #1911 for the Chat
+// decoder: the same request gives the same bytes, and one more turn keeps
+// the old bytes.
+func TestChatToAnthropicDeterministic(t *testing.T) {
+	in, err := os.ReadFile(chatAnthropicDir + "/request/full_multiturn.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := encodeChatToAnthropic(t, in)
+	if again := encodeChatToAnthropic(t, in); again != first {
+		t.Fatalf("two encodings differ:\n%s\n%s", first, again)
+	}
+
+	const lastOut = `{"role":"user","content":[{"type":"text","text":"Thanks. Now run the tests."}]}`
+	end := strings.Index(first, lastOut)
+	if end < 0 {
+		t.Fatalf("the last old message is not in the output:\n%s", first)
+	}
+	end += len(lastOut)
+	const lastIn = `{"role":"user","content":"Thanks. Now run the tests."}`
+	longer := bytes.Replace(in, []byte(lastIn), []byte(lastIn+
+		`,{"role":"assistant","content":"Done."},{"role":"user","content":"And the linter."}`), 1)
+	if bytes.Equal(longer, in) {
+		t.Fatal("the fixture does not hold the last user turn")
+	}
+	grown := encodeChatToAnthropic(t, longer)
+	if grown == first {
+		t.Fatal("the new turn is not in the output")
+	}
+	if !strings.HasPrefix(grown, first[:end]) {
+		t.Errorf("one more turn changed the old bytes:\n old %s\n new %s", first[:end], grown)
+	}
+}
+
+// TestChatToAnthropicHeaders checks rule K2 and S2: only the headers that
+// an Anthropic server reads stay.
+func TestChatToAnthropicHeaders(t *testing.T) {
+	in, err := os.ReadFile(chatAnthropicDir + "/request/k3_user_text.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := http.Header{}
+	for _, k := range []string{"OpenAI-Beta", "OpenAI-Organization", "OpenAI-Project", "Anthropic-Beta", "X-Keep"} {
+		h.Set(k, "v")
+	}
+	if _, err := Request(Chat, Anthropic, in, h); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	for k := range h {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	if !slices.Equal(keys, []string{"Anthropic-Version", "X-Keep"}) ||
+		h.Get("Anthropic-Version") != "2023-06-01" || h.Get("X-Keep") != "v" {
+		t.Errorf("headers after = %v, want only Anthropic-Version: 2023-06-01 and X-Keep", h)
 	}
 }

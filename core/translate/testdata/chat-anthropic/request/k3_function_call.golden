@@ -1,0 +1,1 @@
+error: 400 invalid_request_error: Cortex cannot translate legacy function_call messages. Use tool_calls.

@@ -1,9 +1,10 @@
 # Use a translation server
 
 The [inference router](inference-router-plugin.md#servers-that-serve-another-protocol)
-can translate three protocol pairs: Anthropic Messages (Claude Code's request) to chat
-completions (the server), OpenAI Responses (Codex's request) to chat completions, and
-OpenAI Responses to Anthropic Messages.
+can translate four protocol pairs: Anthropic Messages (Claude Code's request) to chat
+completions (the server), OpenAI Responses (Codex's request) to chat completions,
+OpenAI Responses to Anthropic Messages, and chat completions (the request of OpenCode,
+Pi, Bob IDE and other Chat agents) to Anthropic Messages.
 For each other pair, Cortex does not send the
 request. It answers with a 502 in the agent's protocol:
 

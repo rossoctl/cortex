@@ -590,13 +590,13 @@ func TestRouterAPI_AnthropicPathEntry(t *testing.T) {
 	}
 }
 
-// Rule 7: a chat request cannot be decoded, so it is not translated and gets no 502.
-func TestRouterAPI_AChatRequestIsNotTranslated(t *testing.T) {
+// Rule C1 of #1911: a server that serves Chat gets a Chat request as it is.
+func TestRouterAPI_AChatServerGetsTheChatBodyUnchanged(t *testing.T) {
 	up := routedServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, replyFixture(t, "bob_shape1.json"))
 	})
-	proxy, _ := routedProxy(t, up, `, "api": {"anthropic-messages": "/v1/messages"}`)
+	proxy, _ := routedProxy(t, up, `, "api": {"chat-completions": "/v1/chat/completions"}`)
 	const chatBody = `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}]}`
 	req, _ := http.NewRequest(http.MethodPost, "http://api.openai.example/v1/chat/completions", strings.NewReader(chatBody))
 	req.Header.Set("Content-Type", "application/json")
@@ -614,6 +614,94 @@ func TestRouterAPI_AChatRequestIsNotTranslated(t *testing.T) {
 	reqs := sent(up)
 	if len(reqs) != 1 || reqs[0].path != "/v1/chat/completions" || string(reqs[0].body) != chatBody {
 		t.Errorf("upstream got %+v, want the chat body unchanged at /v1/chat/completions", reqs)
+	}
+}
+
+// Review Focus 5 of #1966: a Chat request goes to a server that serves only Anthropic
+// Messages, with the router's key in X-Api-Key and no OpenAI header, and the Anthropic
+// stream comes back to the agent as a Chat stream.
+func TestRouterAPI_ChatToAnthropicServer(t *testing.T) {
+	sse, err := os.ReadFile("../../translate/testdata/responses-anthropic/reply/two_tools.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := routedServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write(sse)
+	})
+	proxy, _ := routedProxy(t, up, `, "api": {"anthropic-messages": "/v1/messages"}`)
+	const chatBody = `{"model":"claude-opus-5-5","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]}`
+	req, _ := http.NewRequest(http.MethodPost, "http://api.openai.example/v1/chat/completions", strings.NewReader(chatBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "opencode/latest/2.0.21/cli")
+	req.Header.Set("Authorization", "Bearer client-key")
+	req.Header.Set("OpenAI-Beta", "v")
+	resp, err := proxyClient(proxy, nil).Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	body := replyText(t, resp)
+
+	reqs := sent(up)
+	if len(reqs) != 1 {
+		t.Fatalf("upstream got %d requests, want 1", len(reqs))
+	}
+	r := reqs[0]
+	if r.path != "/v1/messages" {
+		t.Errorf("upstream got path %q, want /v1/messages", r.path)
+	}
+	if got := r.header.Values("X-Api-Key"); len(got) != 1 || got[0] != routedKey {
+		t.Errorf("X-Api-Key = %q, want only %s", got, routedKey)
+	}
+	if got := r.header.Get("Anthropic-Version"); got != "2023-06-01" {
+		t.Errorf("Anthropic-Version = %q, want 2023-06-01", got)
+	}
+	for _, h := range []string{"Authorization", "OpenAI-Beta"} {
+		if got := r.header.Values(h); len(got) != 0 {
+			t.Errorf("upstream saw %s: %q", h, got)
+		}
+	}
+	if !bytes.Contains(r.body, []byte(`"messages":[{"role":"user"`)) {
+		t.Errorf("upstream body is not an Anthropic body: %s", r.body)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	for _, want := range []string{`"object":"chat.completion.chunk"`, `"finish_reason":"tool_calls"`, `"choices":[]`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("reply has no %s:\n%s", want, body)
+		}
+	}
+	if !strings.HasPrefix(body, `data: {"id":`) || !strings.HasSuffix(body, "data: [DONE]\n\n") {
+		t.Errorf("reply is not a Chat stream that ends with [DONE]:\n%s", body)
+	}
+}
+
+// #1966: the legacy completions API has no protocol, so it is not translated, also to a server
+// that serves only Anthropic Messages. The request names the server's host: the router
+// does not capture a legacy completions request to another host.
+func TestRouterAPI_LegacyCompletionsIsNotTranslated(t *testing.T) {
+	up := routedServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"c","choices":[{"text":"ok"}]}`)
+	})
+	proxy, _ := routedProxy(t, up, `, "api": {"anthropic-messages": "/v1/messages"}`)
+	const body = `{"model":"claude-opus-5-5","prompt":"hi"}`
+	req, _ := http.NewRequest(http.MethodPost, up.URL+"/v1/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "opencode/latest/2.0.21/cli")
+	resp, err := proxyClient(proxy, nil).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+
+	reqs := sent(up)
+	if len(reqs) != 1 || reqs[0].path != "/v1/completions" || string(reqs[0].body) != body {
+		t.Errorf("upstream got %+v, want the body unchanged at /v1/completions", reqs)
 	}
 }
 
