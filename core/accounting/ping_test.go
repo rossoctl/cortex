@@ -210,6 +210,36 @@ func TestPing_RefusesZeroWindowNon2xxZeroUsage(t *testing.T) {
 	}
 }
 
+// TestPing_RefusesImplausibleUsage reproduces the review finding that Ping's only usage gate was
+// u.Input+u.CacheRead+u.CacheWrite+u.Output == 0 — mixed-sign counters that sum to zero (or an
+// outright negative count) passed it, and computeStandalone/Units/observe would then book
+// negative spend or savings from a count no provider could actually have sent. Compute already
+// refuses this via pricing.PlausibleUsage; Ping must too.
+func TestPing_RefusesImplausibleUsage(t *testing.T) {
+	rec := &fakeRecorder{}
+	h, err := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{rec}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	negative := testPing()
+	negative.Usage = accountant.CallUsage{Usage: accountant.Usage{Input: 1800, CacheRead: -1800}} // sums to 0, not actually 0 usage
+	badTTLSubset := testPing()
+	badTTLSubset.Usage = accountant.CallUsage{Usage: accountant.Usage{Input: 1, CacheWrite: 100, CacheWrite1h: 200}} // 1h > CacheWrite
+	for name, p := range map[string]accountant.Ping{
+		"mixed-sign sums to zero":         negative,
+		"CacheWrite1h exceeds CacheWrite": badTTLSubset,
+	} {
+		if _, ok := h.Ping("s1", nil, "api.anthropic.com", p, okInfo()); ok {
+			t.Errorf("%s: the ping was accepted", name)
+		}
+	}
+	if _, evs := rec.got(); len(evs) != 0 {
+		t.Errorf("refused pings recorded %d cost events, want 0", len(evs))
+	}
+}
+
 // factsSeen collects the EntryFacts each record ends with.
 func factsSeen(h *Host) func() []accountant.EntryFacts {
 	var mu sync.Mutex

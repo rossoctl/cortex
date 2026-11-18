@@ -8,6 +8,7 @@ import (
 
 	"github.com/rossoctl/accountant"
 	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/settle"
 	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/session"
@@ -84,6 +85,16 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 	u := p.Usage
 	if p.Window.IsZero() || info.Status < 200 || info.Status > 299 ||
 		u.Input+u.CacheRead+u.CacheWrite+u.Output == 0 {
+		return accountant.Result{}, false
+	}
+	// The zero check above lets mixed-sign counters that sum to zero (or an outright negative
+	// count) through; Compute refuses those via pricing.PlausibleUsage, and a ping must too
+	// (review finding) — otherwise computeStandalone/Units/observe below can book negative spend
+	// or savings from a count no provider could actually have sent.
+	if !pricing.PlausibleUsage(pricing.Usage{
+		Input: u.Input, CacheWrite: u.CacheWrite, CacheRead: u.CacheRead, Output: u.Output,
+		CacheWrite1h: u.CacheWrite1h,
+	}) {
 		return accountant.Result{}, false
 	}
 	if sessionID == "" {
