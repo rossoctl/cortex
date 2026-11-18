@@ -102,8 +102,12 @@ func Start(cfg config.MetricsPushConfig, version, machineIDPath string) (metric.
 		mpOpts = append(mpOpts, sdkmetric.WithReader(r))
 	}
 	mp := sdkmetric.NewMeterProvider(mpOpts...)
-	failures, err := mp.Meter("github.com/rossoctl/cortex/core/accounting/push").Int64Counter(
+	meter := mp.Meter("github.com/rossoctl/cortex/core/accounting/push")
+	failures, err := meter.Int64Counter(
 		"llm.proxy.export_failures", metric.WithDescription("Metric pushes the collector did not accept."))
+	if err == nil {
+		err = registerProxyInfo(meter, version)
+	}
 	if err != nil {
 		_ = mp.Shutdown(context.Background())
 		return nil, noop, fmt.Errorf("metrics push: %w", err)
@@ -113,6 +117,24 @@ func Start(cfg config.MetricsPushConfig, version, machineIDPath string) (metric.
 	exp.failures.Store(&failures)
 	slog.Info("metrics push on", "url", config.SafeURL(cfg.URL), "interval", interval, "token", cfg.Token != "")
 	return mp, mp.Shutdown, nil
+}
+
+// registerProxyInfo adds llm.proxy.info: a gauge that is always 1, with the build's version as its
+// one label. context-guru sends the same gauge (proxyapp/metricspush.go registerProxyInfo), with a
+// preset label that Cortex does not have. The central dashboards list proxies and machines from it,
+// and the MachineSilent alert fires when it stops, so it is observed on every push, also before
+// the first request.
+func registerProxyInfo(m metric.Meter, version string) error {
+	g, err := m.Int64ObservableGauge("llm.proxy.info", metric.WithDescription("Always 1. Shows the build."))
+	if err != nil {
+		return err
+	}
+	attrs := metric.WithAttributes(attribute.String("version", version))
+	_, err = m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		o.ObserveInt64(g, 1, attrs)
+		return nil
+	}, g)
+	return err
 }
 
 // newExporter is the OTLP/HTTP exporter for cfg: cumulative, no retries, bounded by
