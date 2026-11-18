@@ -543,7 +543,7 @@ specific events through the `Custom` escape-hatch map.
 
 > For a tutorial on emitting Invocations — the `pctx.Record` / `Allow`
 > / `Skip` / `Observe` / `Modify` / `DenyAndRecord` helpers with
-> runnable examples — see [`plugin-tutorial.md` Step 2](./plugin-tutorial.md#step-2--record-what-your-plugin-did).
+> runnable examples — see [`plugin-tutorial.md` Step 3](./plugin-tutorial.md#step-3--record-what-your-plugin-did).
 > This section is the field-level reference for the `Invocation`
 > struct, the 5-value action vocabulary, and the rules around the
 > Custom escape-hatch map.
@@ -1386,7 +1386,7 @@ lives in this module. The pattern mirrors `database/sql` drivers and
 
 > For a step-by-step walkthrough (in-tree file layout, out-of-tree
 > module + side-effect import, operator YAML wiring), see
-> [`plugin-tutorial.md` Step 6](./plugin-tutorial.md#step-6--out-of-tree-plugins). This
+> [`plugin-tutorial.md` Step 7](./plugin-tutorial.md#step-7--out-of-tree-plugins). This
 > section is the field-level reference: the factory shape and the
 > panic-on-misuse guarantees that define the registry's contract.
 

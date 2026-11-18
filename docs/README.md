@@ -44,8 +44,8 @@ holds the repo-level pieces; this file is the index.
 | Find and configure a plugin | [`plugin-catalog.md`](plugin-catalog.md) |
 | Remove the tools an agent never calls from its prompts | [`laptop-token-savings.md`](laptop-token-savings.md) |
 | Write your first plugin | [`plugin-tutorial.md`](plugin-tutorial.md) |
-| Read the plugin contract | [`plugin-reference.md`](plugin-reference.md) |
 | Write a plugin in Python or shell | [`script-plugin.md`](script-plugin.md) |
+| Read the plugin contract | [`plugin-reference.md`](plugin-reference.md) |
 | Learn the pipeline internals and hot-reload | [`framework-architecture.md`](framework-architecture.md) |
 
 Per-plugin reference docs: [a2a-parser](a2a-parser-plugin.md),
