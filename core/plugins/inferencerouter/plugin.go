@@ -403,9 +403,10 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 				pathErr = pctx.SetRedirectPath(srv.wirePath(captured))
 			} else if len(names) > 1 {
 				// On a shared host the servers can have different paths: the longest one that
-				// the request path starts with off, this server's on.
-				rest := strings.TrimPrefix(pctx.Path, sharedPrefix(p.servers, names, pctx.Path))
-				if wp := srv.wirePath(rest); wp != pctx.Path {
+				// the request path starts with off, this server's on. A request that starts with
+				// no prefix and stays on its host keeps its path, as on a host with one server.
+				pre := sharedPrefix(p.servers, names, pctx.Path)
+				if wp := srv.wirePath(strings.TrimPrefix(pctx.Path, pre)); wp != pctx.Path && (pre != "" || addressed != name) {
 					pathErr = pctx.SetRedirectPath(wp)
 				}
 			} else if addressed != name {

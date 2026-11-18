@@ -1280,6 +1280,9 @@ func TestRouter_SharedURLPathPrefix(t *testing.T) {
 			eteHost, "/v1/messages", "ete-key", false},
 		{"one host, two paths", twoPaths, "gw2.example.com", "/a/v1/messages",
 			"gw2.example.com", "/b/v1/messages", "pb-key", true},
+		// As on a host with one server: adding a second server must not change this path.
+		{"no prefix, stays on the URL", sharedConfig(`"claude-code": "team-b"`), gwHost, "/v1/messages",
+			gwHost, "/v1/messages", "team-b-key", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pctx := request(newStore(t), tc.host, claudeUA, "s1")
