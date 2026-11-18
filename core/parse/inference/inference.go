@@ -559,8 +559,8 @@ type inferenceUsage struct {
 	CompletionTokens *int `json:"completion_tokens"`
 	TotalTokens      *int `json:"total_tokens"`
 	// LiteLLM adds these when its upstream is Anthropic.
-	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens lenientCount `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     lenientCount `json:"cache_read_input_tokens"`
 
 	PromptTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens"`
@@ -570,13 +570,26 @@ type inferenceUsage struct {
 	} `json:"completion_tokens_details"`
 }
 
+// lenientCount decodes a JSON integer as itself and any other value as absent,
+// so a wrong-typed count does not fail the decode of the whole reply.
+// null is absent, as it is for *int.
+type lenientCount struct{ n *int }
+
+func (c *lenientCount) UnmarshalJSON(data []byte) error {
+	var n int
+	if string(data) != "null" && json.Unmarshal(data, &n) == nil {
+		c.n = &n
+	}
+	return nil
+}
+
 // hasAny reports whether any recognized field was on the wire. Call
 // sites gate toNeutral on this so an omitted or empty usage block
 // doesn't overwrite a prior chunk's state.
 func (u inferenceUsage) hasAny() bool {
 	return u.PromptTokens != nil || u.CompletionTokens != nil || u.TotalTokens != nil ||
 		u.PromptTokensDetails != nil || u.CompletionTokensDetails != nil ||
-		u.CacheCreationInputTokens != nil || u.CacheReadInputTokens != nil
+		u.CacheCreationInputTokens.n != nil || u.CacheReadInputTokens.n != nil
 }
 
 // toNeutral maps OpenAI's usage onto TokenUsage. prompt_tokens includes
@@ -600,7 +613,7 @@ func (u inferenceUsage) toNeutral() parsercommon.TokenUsage {
 		usage.Output = *u.CompletionTokens
 		usage.Present |= parsercommon.KindOutput
 	}
-	read := u.CacheReadInputTokens
+	read := u.CacheReadInputTokens.n
 	if u.PromptTokensDetails != nil {
 		read = &u.PromptTokensDetails.CachedTokens
 	}
@@ -609,9 +622,9 @@ func (u inferenceUsage) toNeutral() parsercommon.TokenUsage {
 		usage.CacheRead = *read
 		usage.Present |= parsercommon.KindCacheRead
 	}
-	if u.CacheCreationInputTokens != nil {
-		usage.Input -= *u.CacheCreationInputTokens
-		usage.CacheWrite = *u.CacheCreationInputTokens
+	if write := u.CacheCreationInputTokens.n; write != nil {
+		usage.Input -= *write
+		usage.CacheWrite = *write
 		usage.Present |= parsercommon.KindCacheWrite
 	}
 	usage.Input = max(usage.Input, 0)

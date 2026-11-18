@@ -388,3 +388,41 @@ func TestChatUsage_CacheWriteSSE(t *testing.T) {
 		t.Errorf("KindCacheWrite cleared, want set")
 	}
 }
+
+// A wrong-typed LiteLLM cache count drops only that count: the reply and the other usage still read.
+func TestChatUsage_WrongTypeCacheCountKeepsReply(t *testing.T) {
+	for _, field := range []string{"cache_creation_input_tokens", "cache_read_input_tokens"} {
+		for _, bad := range []string{`null`, `"12"`, `{}`, `[]`, `true`, `12.5`, `12.0`} {
+			usage := `{"prompt_tokens":100,"completion_tokens":2,"` + field + `":` + bad + `}`
+			check := func(path string, ext *model.InferenceExtension) {
+				t.Helper()
+				if ext.Completion != "hi" || ext.FinishReason != "stop" || ext.PromptTokens != 100 ||
+					ext.InputTokens != 100 || ext.OutputTokens != 2 || ext.CacheReadTokens != 0 || ext.CacheWriteTokens != 0 {
+					t.Errorf("%s %s=%s: completion=%q finish=%q prompt=%d input=%d output=%d read=%d write=%d",
+						path, field, bad, ext.Completion, ext.FinishReason, ext.PromptTokens,
+						ext.InputTokens, ext.OutputTokens, ext.CacheReadTokens, ext.CacheWriteTokens)
+				}
+				if ext.PresentKinds&uint8(parsercommon.KindCacheRead|parsercommon.KindCacheWrite) != 0 {
+					t.Errorf("%s %s=%s: PresentKinds = %b, want no cache kinds", path, field, bad, ext.PresentKinds)
+				}
+			}
+
+			ext := &model.InferenceExtension{}
+			parseInferenceJSON([]byte(`{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}],"usage":`+usage+`}`), ext)
+			check("json", ext)
+
+			frame := `{"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":` + usage + `}`
+			ext = &model.InferenceExtension{Stream: true}
+			parseInferenceSSE([]byte("data: "+frame+"\ndata: [DONE]\n"), ext)
+			check("sse", ext)
+
+			ext = &model.InferenceExtension{Stream: true}
+			state := &inferenceStreamState{}
+			foldOpenAIFrame([]byte(frame), state, ext)
+			if state.completion.String() != "hi" || ext.FinishReason != "stop" || !state.hasUsage || state.usage.Input != 100 {
+				t.Errorf("frame %s=%s: completion=%q finish=%q hasUsage=%v input=%d",
+					field, bad, state.completion.String(), ext.FinishReason, state.hasUsage, state.usage.Input)
+			}
+		}
+	}
+}
