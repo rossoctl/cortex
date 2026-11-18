@@ -84,7 +84,12 @@ type Host struct {
 	closeOnce    sync.Once
 	closeErr     error
 
-	mu            sync.Mutex
+	mu sync.Mutex
+	// closed is set under mu by Close, before it calls observing.Wait(): observe's own Add(1)
+	// is also under mu, so the two can never interleave, and no Add can land after Wait has
+	// started (review finding — Add concurrent with Wait on a zero-count WaitGroup is
+	// documented misuse, which a keeper Ping or an in-flight observe racing shutdown could hit).
+	closed        bool
 	recorders     []session.Recorder
 	threadBilling map[threadBillingKey]threadBillingEntry
 	// pingFacts holds the latest keep-alive ping's facts per (session, thread), until the
@@ -167,6 +172,11 @@ func (h *Host) Close() error {
 		return nil
 	}
 	h.closeOnce.Do(func() {
+		// Set before Wait, under the same lock observe's Add(1) takes: no observe call started
+		// after this point can race Wait below (see Host.closed's doc comment).
+		h.mu.Lock()
+		h.closed = true
+		h.mu.Unlock()
 		// The sink's observations first: they are in-memory adds, done in microseconds, and the
 		// caller flushes the metrics push after Close.
 		h.observing.Wait()

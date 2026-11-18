@@ -200,7 +200,13 @@ func (h *Host) observe(meta accountant.RequestMeta, u accountant.Usage, res acco
 	if h.sink == nil && h.observeHook == nil {
 		return
 	}
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return
+	}
 	h.observing.Add(1)
+	h.mu.Unlock()
 	go func() {
 		defer h.observing.Done()
 		defer func() {

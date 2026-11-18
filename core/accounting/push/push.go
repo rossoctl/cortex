@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,6 +127,18 @@ func newExporter(cfg config.MetricsPushConfig) (sdkmetric.Exporter, error) {
 		// Cumulative, whatever OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE says: the
 		// collector reads totals.
 		otlpmetrichttp.WithTemporalitySelector(sdkmetric.DefaultTemporalitySelector),
+		// Treat any redirect as a failed export rather than following it (review finding): the
+		// default OTel HTTP client has no CheckRedirect, so a compromised or misbehaving
+		// collector could move the push to an arbitrary destination, and Go's net/http keeps the
+		// Authorization header on a same-host redirect — including an https-to-http downgrade —
+		// sending the token in cleartext. Validate() only checks the CONFIGURED URL; this covers
+		// the EFFECTIVE one.
+		otlpmetrichttp.WithHTTPClient(&http.Client{
+			Timeout: exportTimeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}),
 	}
 	if cfg.Token != "" {
 		opts = append(opts, otlpmetrichttp.WithHeaders(map[string]string{"Authorization": "Bearer " + cfg.Token}))

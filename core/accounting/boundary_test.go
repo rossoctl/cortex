@@ -38,7 +38,10 @@ const forbiddenModule = "github.com/rossoctl/context-guru"
 // one dependency forbidden at any depth, so the closure is checked for it alone.
 func TestNoContextGuruDependency(t *testing.T) {
 	if _, err := exec.LookPath("go"); err != nil {
-		t.Skip("go toolchain not on PATH")
+		// Fatal, not Skip (review finding): this test enforces the PR's headline boundary claim
+		// (core/accounting never imports context-guru), and a silent skip would let that
+		// invariant vanish in a toolchain-less environment without anyone noticing.
+		t.Fatalf("go toolchain not on PATH: %v", err)
 	}
 	direct, err := exec.Command("go", "list", "-f", `{{join .Imports "\n"}}{{"\n"}}{{join .TestImports "\n"}}`, "./...").Output()
 	if err != nil {
