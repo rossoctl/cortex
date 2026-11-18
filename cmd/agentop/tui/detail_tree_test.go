@@ -255,3 +255,14 @@ func TestRenderTree_ArgumentsStringIsAnObject(t *testing.T) {
 		}
 	}
 }
+
+// A tool's one-line JSON output shows as its value. Output with line breaks, and a content
+// key outside toolResults, stay strings.
+func TestRenderTree_ToolResultJSONIsAValue(t *testing.T) {
+	got := treeText(t, `{"toolResults":[{"content":"[1,{\"a\":2}]"},{"content":"{\n\"a\": 1}"}],"content":"{\"b\":3}"}`, foldState{all: true})
+	want := []string{"{", `  "content": "{\"b\":3}",`, `  "toolResults": [`, "    {", `      "content": [`, "        1,", "        {",
+		`          "a": 2`, "        }", "      ]", "    },", "    {", `      "content": │`, "        {", `        "a": 1}`, "    }", "  ]", "}"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}

@@ -151,13 +151,17 @@ func buildTree(v any, path, key string, hasKey bool) *node {
 	case int, int64, int32:
 		scalar(strconv.FormatInt(toInt64(x), 10), styleJSONNumber.Render)
 	case string:
-		// A tool call's arguments are a JSON object sent as a string: show the object.
-		if key == "arguments" && strings.HasPrefix(x, "{") {
+		// A tool call's arguments are a JSON object sent as a string, and a tool's output is
+		// often compact JSON: show the value. Output with line breaks already reads well.
+		args := key == "arguments" && strings.HasPrefix(x, "{")
+		output := key == "content" && strings.Contains(path, "toolResults[") &&
+			(strings.HasPrefix(x, "{") || strings.HasPrefix(x, "[")) && !strings.Contains(x, "\n")
+		if args || output {
 			dec := json.NewDecoder(strings.NewReader(x))
 			dec.UseNumber()
-			var obj map[string]any
-			if dec.Decode(&obj) == nil && !dec.More() {
-				return buildTree(obj, path, key, hasKey)
+			var val any
+			if dec.Decode(&val) == nil && !dec.More() {
+				return buildTree(val, path, key, hasKey)
 			}
 		}
 		n.kind, n.plain, n.size = kindString, x, len(x)+2
