@@ -108,6 +108,7 @@ LAST 1H    TODAY   7 DAYS    MONTH
 
 Press `?` for every key.
 For more detail, read [Keybindings](../cmd/agentop/README.md#keybindings).
+More: [Using agentop](using-agentop.md).
 
 ## Next steps
 
