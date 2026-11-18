@@ -1514,7 +1514,6 @@ agentop pipeline get --json
 Use it to see the pipeline that runs. The config file alone does not show the
 defaults. To change the pipeline, see [Editing the pipeline](#editing-the-pipeline).
 
-
 ### Editing the pipeline
 
 Press `e` on the Pipeline pane to edit the runtime `pipeline:` subtree in
