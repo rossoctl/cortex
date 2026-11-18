@@ -65,31 +65,31 @@ Prometheus v3.2.1, Alertmanager v0.28.1, Grafana 11.6.0, kubeconform, POSIX sh.
   `deploy/central/base/grafana/dashboards/*.json`, `deploy/central/base/grafana/gen_dashboards.py`
 - Create: `deploy/central/check.sh`
 
-- [ ] **Step 1:** Write `check.sh` (POSIX sh, `set -eu`, runs from any cwd, uses `docker` or `podman`):
+- [x] **Step 1:** Write `check.sh` (POSIX sh, `set -eu`, runs from any cwd, uses `docker` or `podman`):
   `promtool check rules`, `promtool test rules` (entrypoint `promtool` in the Prometheus image, the
   `tests/` file's `rule_files` paths must resolve inside the mount), `otelcol-contrib validate`,
   `python3 gen_dashboards.py --check`, and — once `base/kustomization.yaml` exists —
   `kubectl kustomize` (or `oc kustomize`) of the overlay piped to `kubeconform -strict -summary
   -ignore-missing-schemas`.
-- [ ] **Step 2:** Run `sh deploy/central/check.sh`. Expected: FAIL, files missing.
-- [ ] **Step 3:** Copy the files with `git show <sha>:deploy/central/<path>`. Fix only paths the move
+- [x] **Step 2:** Run `sh deploy/central/check.sh`. Expected: FAIL, files missing.
+- [x] **Step 3:** Copy the files with `git show <sha>:deploy/central/<path>`. Fix only paths the move
   breaks (the test file's `rule_files`; `gen_dashboards.py`'s output directory if it is relative to
   its own location — it is, so no change).
-- [ ] **Step 4:** Run `check.sh`. Expected: rules OK, rule tests PASS, collector config valid, dashboards
+- [x] **Step 4:** Run `check.sh`. Expected: rules OK, rule tests PASS, collector config valid, dashboards
   up to date.
-- [ ] **Step 5:** Commit `feat(central): Port the central stack config from context-guru`.
+- [x] **Step 5:** Commit `feat(central): Port the central stack config from context-guru`.
 
 ### Task 2: Turn on bearer-token authentication in the collector
 
 **Files:** Modify `deploy/central/base/otel-collector/otel-collector.yml`
 
-- [ ] **Step 1:** Uncomment the two `bearertokenauth` extensions, the two receiver `auth:` lines, and add
+- [x] **Step 1:** Uncomment the two `bearertokenauth` extensions, the two receiver `auth:` lines, and add
   both names to `service.extensions`. Replace the header comment's "AUTHENTICATION IS OFF" paragraph
   with: one token per proxy kind, read from `/etc/otelcol/tokens/<kind>.txt` (Secret
   `collector-tokens`), read once at start.
-- [ ] **Step 2:** Run `check.sh`. Expected: `otelcol-contrib validate` passes. (The validate container
+- [x] **Step 2:** Run `check.sh`. Expected: `otelcol-contrib validate` passes. (The validate container
   needs the token files; `check.sh` mounts two dummy files at `/etc/otelcol/tokens/`.)
-- [ ] **Step 3:** Commit `feat(central): Require a bearer token on both receivers`.
+- [x] **Step 3:** Commit `feat(central): Require a bearer token on both receivers`.
 
 ### Task 3: Base manifests
 
@@ -102,7 +102,7 @@ Prometheus v3.2.1, Alertmanager v0.28.1, Grafana 11.6.0, kubeconform, POSIX sh.
   `grafana-dashboards`; labels `app.kubernetes.io/part-of: cortex-central`,
   `app.kubernetes.io/name: <service name>`.
 
-- [ ] **Step 1:** Write the manifests to the Global Constraints. Mounts: collector config at
+- [x] **Step 1:** Write the manifests to the Global Constraints. Mounts: collector config at
   `/etc/otelcol/config.yml` (args `--config=/etc/otelcol/config.yml`), tokens Secret at
   `/etc/otelcol/tokens` (readOnly); Prometheus config at `/etc/prometheus/prometheus.yml`, rules at
   `/etc/prometheus/rules`, PVC at `/prometheus`; Alertmanager config at
@@ -113,29 +113,29 @@ Prometheus v3.2.1, Alertmanager v0.28.1, Grafana 11.6.0, kubeconform, POSIX sh.
   `GF_SECURITY_ADMIN_PASSWORD` from Secret `grafana-admin`/`password`. Probes per spec §5.2. Collector
   memory limit 768Mi.
   Note: the dashboards ConfigMap must stay under 1 MiB; check its size.
-- [ ] **Step 2:** Run `check.sh`. Expected: kustomize renders, kubeconform reports 0 invalid, every
+- [x] **Step 2:** Run `check.sh`. Expected: kustomize renders, kubeconform reports 0 invalid, every
   generated ConfigMap name ends in a hash suffix.
-- [ ] **Step 3:** Commit `feat(central): Add the base manifests`.
+- [x] **Step 3:** Commit `feat(central): Add the base manifests`.
 
 ### Task 4: OpenShift overlay
 
 **Files:** Create `deploy/central/overlays/openshift/kustomization.yaml`, `routes.yaml`,
 `networkpolicy.yaml`; `deploy/central/components/README.md` (names `events/` as the next component).
 
-- [ ] **Step 1:** Overlay: `namespace: cortex-central`, `resources: [../../base, routes.yaml,
+- [x] **Step 1:** Overlay: `namespace: cortex-central`, `resources: [../../base, routes.yaml,
   networkpolicy.yaml]`. Routes per Global Constraints. NetworkPolicy: Prometheus accepts ingress only
   from pods in the namespace; Alertmanager likewise; collector and Grafana accept ingress from the
   router (`policy-group.network.openshift.io/ingress: ""` namespace label) and from the namespace.
-- [ ] **Step 2:** Run `check.sh`. Expected: render + kubeconform OK.
-- [ ] **Step 3:** Run `oc apply -k deploy/central/overlays/openshift --dry-run=server`. Expected: every
+- [x] **Step 2:** Run `check.sh`. Expected: render + kubeconform OK.
+- [x] **Step 3:** Run `oc apply -k deploy/central/overlays/openshift --dry-run=server`. Expected: every
   object "created (server dry run)".
-- [ ] **Step 4:** Commit `feat(central): Add the OpenShift overlay`.
+- [x] **Step 4:** Commit `feat(central): Add the OpenShift overlay`.
 
 ### Task 5: Deploy and smoke test on epoc001
 
 **Files:** Create `deploy/central/smoke.sh`
 
-- [ ] **Step 1:** Write `smoke.sh HOST TOKEN_CORTEX TOKEN_CG`. It POSTs an OTLP/JSON sum
+- [x] **Step 1:** Write `smoke.sh HOST TOKEN_CORTEX TOKEN_CG`. It POSTs an OTLP/JSON sum
   (`smoke_test_total`, cumulative, monotonic) with resource attributes `service.instance.id=smoke-<ts>`,
   `proxy=evil`, `extra=x` to `https://HOST/cortex/v1/metrics` and `/context-guru/v1/metrics`, and checks:
   each 2xx; no-token and wrong-token pushes give 401; `http://HOST/cortex/v1/metrics` is not 2xx. Then it
@@ -143,16 +143,16 @@ Prometheus v3.2.1, Alertmanager v0.28.1, Grafana 11.6.0, kubeconform, POSIX sh.
   until `smoke_test_total{machine="smoke-<ts>"}` appears (≤ 60 s), and asserts the label set is exactly
   `__name__, machine, proxy, job?/instance?` per the collector's kept set, with `proxy` = `cortex` and
   `context-guru` respectively (not `evil`), and no `extra`.
-- [ ] **Step 2:** Create the two Secrets (user runs the commands from the README), `oc apply -k`. Wait for
+- [x] **Step 2:** Create the two Secrets (user runs the commands from the README), `oc apply -k`. Wait for
   4/4 pods Ready.
-- [ ] **Step 3:** Run `smoke.sh`. Expected: all checks PASS.
-- [ ] **Step 4:** Restart: `oc delete pod -l app.kubernetes.io/part-of=cortex-central`; wait Ready; re-query
+- [x] **Step 3:** Run `smoke.sh`. Expected: all checks PASS.
+- [x] **Step 4:** Restart: `oc delete pod -l app.kubernetes.io/part-of=cortex-central`; wait Ready; re-query
   the smoke series. Expected: still present. Grafana login with the admin password still works.
-- [ ] **Step 5:** Real Cortex push: run a local Cortex with `metrics_push.url:
+- [x] **Step 5:** Real Cortex push: run a local Cortex with `metrics_push.url:
   https://cortex-central.apps.epoc001.ete14.res.ibm.com/cortex`, the token, `interval: 10s`, send one
   request; expect `llm_savings_requests_total{proxy="cortex"}` (or `llm_proxy_export_failures_total`
   staying 0) in Prometheus. If TLS fails, record it and fix per spec §5.3.
-- [ ] **Step 6:** Commit `test(central): Add the smoke test`.
+- [x] **Step 6:** Commit `test(central): Add the smoke test`.
 
 ### Task 6: Docs and CI
 
@@ -161,8 +161,8 @@ Prometheus v3.2.1, Alertmanager v0.28.1, Grafana 11.6.0, kubeconform, POSIX sh.
 `.github/workflows/ci.yaml` (job `central-stack`: checkout, `sh deploy/central/check.sh`, timeout 10 min,
 ubuntu-latest has docker and kubectl).
 
-- [ ] **Step 1:** README per spec §5.6: what it is, layout, prerequisites (Secrets commands), deploy,
+- [x] **Step 1:** README per spec §5.6: what it is, layout, prerequisites (Secrets commands), deploy,
   status, proxy URLs + token settings, token rotation, what is stored, failure table, Grafana users,
   alert delivery, tests (`check.sh`, `smoke.sh`), pinned source commit, events as the next component.
-- [ ] **Step 2:** Run `check.sh` and `pre-commit run --files <changed>`. Expected: PASS.
-- [ ] **Step 3:** Commit `docs(central): Document the OpenShift central stack`.
+- [x] **Step 2:** Run `check.sh` and `pre-commit run --files <changed>`. Expected: PASS.
+- [x] **Step 3:** Commit `docs(central): Document the OpenShift central stack`.

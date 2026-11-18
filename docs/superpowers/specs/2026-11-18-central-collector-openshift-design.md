@@ -107,6 +107,14 @@ Files ported from context-guru `deploy/central/` at a pinned commit (record the 
 `grafana/gen_dashboards.py`. Not ported: `install.sh`, `deploy.sh`, `nginx.example.conf`,
 `central-proxy.inc`, `compose.yaml` (their jobs are done by the manifests and Routes).
 
+Two deviations from this layout were made on purpose:
+
+- No `base/namespace.yaml`. The namespace already exists, and creating a Namespace needs rights
+  the deployer does not have (§8, G5). The overlay sets `namespace: cortex-central`.
+- No `overlays/openshift/patches/`. There is one environment, so the Route host is in
+  `routes.yaml`, images are in `base/`, and storage uses the cluster default (§8). Add the
+  patches when a second environment needs different values.
+
 ### 5.2 Components
 
 | Component | Image (same pins as the VM) | Service ports | Storage | Route |
