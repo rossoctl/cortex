@@ -558,6 +558,9 @@ type inferenceUsage struct {
 	PromptTokens     *int `json:"prompt_tokens"`
 	CompletionTokens *int `json:"completion_tokens"`
 	TotalTokens      *int `json:"total_tokens"`
+	// LiteLLM adds these when its upstream is Anthropic.
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
 
 	PromptTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens"`
@@ -572,13 +575,16 @@ type inferenceUsage struct {
 // doesn't overwrite a prior chunk's state.
 func (u inferenceUsage) hasAny() bool {
 	return u.PromptTokens != nil || u.CompletionTokens != nil || u.TotalTokens != nil ||
-		u.PromptTokensDetails != nil || u.CompletionTokensDetails != nil
+		u.PromptTokensDetails != nil || u.CompletionTokensDetails != nil ||
+		u.CacheCreationInputTokens != nil || u.CacheReadInputTokens != nil
 }
 
 // toNeutral maps OpenAI's usage onto TokenUsage. prompt_tokens includes
-// cached_tokens on the wire — subtract to get uncached input and clamp
-// at 0 for malformed responses. CacheWrite stays absent (OpenAI bills
-// cache writes as ordinary input). Each Present bit is set only when
+// both cache counts on the wire — subtract them to get uncached input and
+// clamp at 0 for malformed responses. OpenAI sends no cache-write field.
+// LiteLLM's cache_creation_input_tokens and cache_read_input_tokens are
+// read when they are present; cached_tokens wins over
+// cache_read_input_tokens when both are on the wire. Each Present bit is set only when
 // its key was on the wire, so an absent key stays "not exposed"
 // (-1 sentinel) rather than "reported zero."
 func (u inferenceUsage) toNeutral() parsercommon.TokenUsage {
@@ -594,15 +600,21 @@ func (u inferenceUsage) toNeutral() parsercommon.TokenUsage {
 		usage.Output = *u.CompletionTokens
 		usage.Present |= parsercommon.KindOutput
 	}
+	read := u.CacheReadInputTokens
 	if u.PromptTokensDetails != nil {
-		cached := u.PromptTokensDetails.CachedTokens
-		usage.Input -= cached
-		if usage.Input < 0 {
-			usage.Input = 0
-		}
-		usage.CacheRead = cached
+		read = &u.PromptTokensDetails.CachedTokens
+	}
+	if read != nil {
+		usage.Input -= *read
+		usage.CacheRead = *read
 		usage.Present |= parsercommon.KindCacheRead
 	}
+	if u.CacheCreationInputTokens != nil {
+		usage.Input -= *u.CacheCreationInputTokens
+		usage.CacheWrite = *u.CacheCreationInputTokens
+		usage.Present |= parsercommon.KindCacheWrite
+	}
+	usage.Input = max(usage.Input, 0)
 	if u.CompletionTokensDetails != nil {
 		usage.Reasoning = u.CompletionTokensDetails.ReasoningTokens
 		usage.Present |= parsercommon.KindReasoning
