@@ -1,0 +1,1 @@
+{"type":"error","error":{"type":"api_error","message":"litellm.InternalServerError: the upstream connection was reset"}}

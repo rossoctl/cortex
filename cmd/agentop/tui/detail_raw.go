@@ -56,6 +56,17 @@ func withRaw(data []byte, raw *pipeline.RawCapture, e *pipeline.SessionEvent) []
 		case p.Body != "":
 			resp["body"] = bodyView(p.Body, nil)
 		}
+		if p.Upstream != nil || p.UpstreamBase64 != nil {
+			text := ""
+			if p.Upstream != nil {
+				text = *p.Upstream
+			}
+			resp["upstream"] = "server's reply before translation: " + formatBytes(int64(len(text)+len(p.UpstreamBase64)))
+			resp["upstreamBody"] = bodyView(text, p.UpstreamBase64)
+			if p.UpstreamTruncated {
+				resp["upstreamTruncated"] = true
+			}
+		}
 		r["response"] = resp
 	} else {
 		r["request"] = bodyView(raw.Request, raw.RequestBase64)
@@ -68,6 +79,14 @@ func withRaw(data []byte, raw *pipeline.RawCapture, e *pipeline.SessionEvent) []
 			r["forwarded"] = fmt.Sprintf("rewritten by a plugin: %s", formatBytes(int64(len(raw.ForwardedBase64))))
 		default:
 			r["forwarded"] = "forwarded as sent"
+		}
+		if raw.Translated != nil || raw.TranslatedBase64 != nil {
+			text := ""
+			if raw.Translated != nil {
+				text = *raw.Translated
+			}
+			r["translated"] = "sent upstream, translated by Cortex: " + formatBytes(int64(len(text)+len(raw.TranslatedBase64)))
+			r["translatedBody"] = bodyView(text, raw.TranslatedBase64)
 		}
 		if len(raw.RequestHeaders) > 0 {
 			m["headers"] = flatHeaders(raw.RequestHeaders)

@@ -1,0 +1,2 @@
+dropped: 
+{"model":"claude-opus-5-5","messages":[{"role":"system","content":[{"type":"text","text":"You are Claude Code."},{"type":"text","text":"Long instructions.","cache_control":{"type":"ephemeral","ttl":"1h"}}]},{"role":"user","content":[{"type":"text","text":"hi"}]}],"max_tokens":1024}

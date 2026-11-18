@@ -347,3 +347,46 @@ func TestHandleGetEvent_RawAddsTheCapture(t *testing.T) {
 		}
 	}
 }
+
+// Rule 8a of #1911: GET raw serves a translated request's converted body and the server's raw
+// reply, each as text when it is UTF-8 and as base64 otherwise.
+func TestHandleGetEvent_RawAddsTheTranslatedHop(t *testing.T) {
+	root := t.TempDir()
+	a, err := archive.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := session.New(0, 0, 0)
+	store.AddRecorder(a)
+	store.AppendCapture("s1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest},
+		&pipeline.RequestCapture{Original: []byte(`{"model":"m"}`), Translated: []byte(`{"model":"c"}`)})
+	raw := []byte("data: \xff\n\n")
+	store.AppendCapture("s1", pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionResponse},
+		&pipeline.RequestCapture{Response: &pipeline.ResponseCapture{Status: 200, Body: []byte(`{}`), Upstream: raw, UpstreamTruncated: true}})
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if a, err = archive.Open(root); err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	ts := httptest.NewServer(New(":0", store, WithArchive(a)).server.Handler)
+	defer ts.Close()
+
+	var got struct {
+		Raw *pipeline.RawCapture `json:"raw"`
+	}
+	code, body := getBody(t, ts.URL+"/v1/sessions/s1/events/1?raw=1")
+	if code != http.StatusOK || json.Unmarshal(body, &got) != nil || got.Raw == nil ||
+		got.Raw.Translated == nil || *got.Raw.Translated != `{"model":"c"}` || got.Raw.TranslatedBase64 != nil {
+		t.Fatalf("GET events/1?raw=1 = %d %s, want the translated body as text", code, body)
+	}
+	got.Raw = nil
+	code, body = getBody(t, ts.URL+"/v1/sessions/s1/events/2?raw=1")
+	if code != http.StatusOK || json.Unmarshal(body, &got) != nil || got.Raw == nil || got.Raw.Response == nil {
+		t.Fatalf("GET events/2?raw=1 = %d %s", code, body)
+	}
+	if r := got.Raw.Response; r.Body != `{}` || r.Upstream != nil || !bytes.Equal(r.UpstreamBase64, raw) || !r.UpstreamTruncated {
+		t.Fatalf("response = %+v, want the non-UTF-8 upstream body as base64", r)
+	}
+}

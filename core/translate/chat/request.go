@@ -109,8 +109,8 @@ func (Protocol) EncodeRequest(req pivot.Request, h http.Header) ([]byte, []strin
 	if req.Stream {
 		out.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
-	if len(req.System) > 0 {
-		out.Messages = append(out.Messages, message{Role: "system", Content: e.textParts(req.System)})
+	if parts := e.textParts(req.System); len(parts) > 0 {
+		out.Messages = append(out.Messages, message{Role: "system", Content: parts})
 	}
 	for _, m := range req.Messages {
 		e.extra(m.Extra)
@@ -156,7 +156,7 @@ func (Protocol) EncodeRequest(req pivot.Request, h http.Header) ([]byte, []strin
 	return body, dropped, nil
 }
 
-// encoder collects the names of the dropped fields (decision 11).
+// encoder collects the names of the dropped fields and blocks (decision 11).
 type encoder struct {
 	dropped map[string]bool
 }
@@ -175,6 +175,10 @@ func (e *encoder) textParts(blocks []pivot.Block) []part {
 	parts := make([]part, 0, len(blocks))
 	for _, b := range blocks {
 		e.extra(b.Extra)
+		if b.Kind != pivot.BlockText {
+			e.dropped[string(b.Kind)] = true
+			continue
+		}
 		parts = append(parts, textPart(b.Text, b.CacheControl))
 	}
 	return parts
@@ -221,6 +225,8 @@ func (e *encoder) user(blocks []pivot.Block) ([]message, error) {
 					toolImages = append(toolImages, imagePart(c))
 				case pivot.BlockDocument:
 					return nil, errDocument
+				default:
+					e.dropped[string(c.Kind)] = true
 				}
 			}
 			if len(text) == 0 {
@@ -230,6 +236,8 @@ func (e *encoder) user(blocks []pivot.Block) ([]message, error) {
 			}
 			text[len(text)-1].CacheControl = b.CacheControl
 			msgs = append(msgs, message{Role: "tool", Content: text, ToolCallID: b.ToolUseID})
+		default:
+			e.dropped[string(b.Kind)] = true
 		}
 	}
 	if len(toolImages) > 0 {
@@ -266,6 +274,8 @@ func (e *encoder) assistant(blocks []pivot.Block) message {
 			m.ThinkingBlocks = append(m.ThinkingBlocks, thinkingBlock{Type: "thinking", Thinking: &t, Signature: b.Signature})
 		case pivot.BlockRedactedThinking:
 			m.ThinkingBlocks = append(m.ThinkingBlocks, thinkingBlock{Type: "redacted_thinking", Data: b.Data})
+		default:
+			e.dropped[string(b.Kind)] = true
 		}
 	}
 	if text.Len() > 0 {

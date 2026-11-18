@@ -1,0 +1,5 @@
+{"id":"chatcmpl-b3","created":1763337600,"model":"premium-ide","object":"chat.completion",
+ "choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,
+  "provider_specific_fields":{"thought_signatures":["AY89a1+8zd/x="]},
+  "tool_calls":[{"id":"call_3833__thought__AY89a1+8zd/x=","type":"function","function":{"name":"spawn_subagent","arguments":"{\"task\":\"look\"}"}}]}}],
+ "usage":{"prompt_tokens":13314,"completion_tokens":296,"total_tokens":13610,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"completion_tokens_details":{"reasoning_tokens":249}}}

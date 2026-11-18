@@ -362,3 +362,26 @@ func TestReplyDecoder_ToolCallIDsNotStream(t *testing.T) {
 		checkEvents(t, 200, false, body, []pivot.Event{apiError(502, "api_error", msg)})
 	}
 }
+
+func TestReplyDecoder_OverLimit(t *testing.T) {
+	// Valid JSON, so only the limit makes it an error.
+	body := `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"hi"}}]}` + strings.Repeat(" ", maxReplyBuffer)
+	d := Protocol{}.NewReplyDecoder(200, false)
+	evs := append(d.Feed([]byte(body)), d.End()...)
+	if len(evs) != 1 || evs[0].Kind != pivot.EventError || evs[0].Status != 502 {
+		t.Errorf("not streamed: events = %+v, want one 502 error", evs)
+	}
+	// Bytes after [DONE] are not read, so they give no error.
+	d = Protocol{}.NewReplyDecoder(200, true)
+	evs = d.Feed([]byte(sse(chunk(`{"content":"a"}`), finish("stop"), "[DONE]") + strings.Repeat("x", maxReplyBuffer+1)))
+	for _, ev := range evs {
+		if ev.Kind == pivot.EventError {
+			t.Errorf("stream: events = %+v, want no error after [DONE]", evs)
+		}
+	}
+	d = Protocol{}.NewReplyDecoder(200, true)
+	evs = d.Feed([]byte("data: " + strings.Repeat("x", maxReplyBuffer)))
+	if len(evs) != 1 || evs[0].Kind != pivot.EventError || evs[0].Status != 502 {
+		t.Errorf("stream line: events = %+v, want one 502 error", evs)
+	}
+}

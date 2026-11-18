@@ -1,0 +1,1 @@
+{"id":"chatcmpl-b3","type":"message","role":"assistant","model":"premium-ide","content":[{"type":"tool_use","id":"call_3833__thought__AY89a1+8zd/x=","name":"spawn_subagent","input":{"task":"look"}}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":13314,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":296}}

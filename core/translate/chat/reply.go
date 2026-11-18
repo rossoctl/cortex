@@ -14,6 +14,10 @@ import (
 // maxErrorBody is the most of a non-2xx body that the decoder keeps.
 const maxErrorBody = 1 << 20
 
+// maxReplyBuffer is the most of a 2xx reply that the decoder keeps: a whole
+// not-streamed body, or one stream line. It is the forward proxy's body limit.
+const maxReplyBuffer = 10 << 20
+
 // maxErrorMessage is the most of a non-JSON error body that goes into the
 // error message (Review Focus 4).
 const maxErrorMessage = 512
@@ -79,6 +83,11 @@ func (d *decoder) Feed(p []byte) []pivot.Event {
 	}
 	d.buf = append(d.buf, p...)
 	if !d.stream {
+		if len(d.buf) > maxReplyBuffer {
+			d.out = nil
+			d.overLimit()
+			return d.out
+		}
 		return nil
 	}
 	d.out = nil
@@ -90,6 +99,10 @@ func (d *decoder) Feed(p []byte) []pivot.Event {
 		}
 		d.line(rest[:i])
 		rest = rest[i+1:]
+	}
+	if !d.done && len(rest) > maxReplyBuffer {
+		d.overLimit()
+		return d.out
 	}
 	// Keep only the partial line, in a new array, so that the stream
 	// read so far is not held (rule 10).
@@ -123,6 +136,12 @@ func (d *decoder) emit(ev pivot.Event) { d.out = append(d.out, ev) }
 func (d *decoder) fail(status int, errType, msg string) {
 	d.emit(pivot.Event{Kind: pivot.EventError, Status: status, ErrorType: errType, Message: msg})
 	d.done = true
+}
+
+// overLimit ends a reply that is longer than the decoder keeps.
+func (d *decoder) overLimit() {
+	d.fail(http.StatusBadGateway, "api_error", "the inference server's reply is over the "+strconv.Itoa(maxReplyBuffer)+"-byte buffer limit")
+	d.buf = nil
 }
 
 // finish ends a stream at [DONE] or at the end of the body (decision 5).
