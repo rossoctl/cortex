@@ -33,6 +33,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rossoctl/cortex/core/accounting"
+	"github.com/rossoctl/cortex/core/accounting/reqstats"
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/bootstrap"
 	"github.com/rossoctl/cortex/core/clientstate"
@@ -59,6 +61,7 @@ import (
 	"github.com/rossoctl/cortex/core/spiffe"
 	"github.com/rossoctl/cortex/core/tlsbridge"
 	authtls "github.com/rossoctl/cortex/core/tlsconfig"
+	"go.opentelemetry.io/otel/metric"
 
 	// Only HTTP listeners are compiled in: no extproc
 	// (no gRPC, no envoy types).
@@ -540,6 +543,20 @@ func main() {
 	// pendingPricing carries a rate table from a build to the commit that accepts it. See
 	// buildPipelines and applyPricing.
 	var pendingPricing *pricing.Table
+	// acctHost is the process's accountant host (core/accounting), nil when accounting is off.
+	// ONE per process, made by the first build and handed to every later one, so a reload keeps
+	// its Tracker state. Whether it exists is decided once: the reloader refuses a reload whose
+	// resolved accounting.enabled differs (reloader.validateReloadable), so no later build needs
+	// to make or drop it.
+	var acctHost *accounting.Host
+	acctDecided := false
+	// stopMetricsPush flushes and stops the metrics push (core/accounting/push), started with
+	// the host: its counters are the accountant's. A no-op when nothing is pushed.
+	stopMetricsPush := func(context.Context) error { return nil }
+	// pushMP is the raw MeterProvider startMetricsPush builds, shared by acctHost's Sink and by
+	// reqStats below (core/accounting/reqstats) so both tiers push through the same provider. Nil
+	// on every no-push path, same as stopMetricsPush being a no-op on those paths.
+	var pushMP metric.MeterProvider
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
 		c, err := config.Load(*configPath)
 		if err != nil {
@@ -580,8 +597,19 @@ func main() {
 		// cannot honor fails here — on startup and on every reload — instead of
 		// running to no effect. The reverse proxy honors no redirect, which is what
 		// keeps a WritesDestination plugin off the inbound chain.
+		if !acctDecided {
+			acctDecided = true
+			if c.AccountingOn() {
+				var sink *accounting.Sink
+				sink, pushMP, stopMetricsPush = startMetricsPush(c, pricingRegistry)
+				acctHost = newAccountingHost(pricingRegistry, c.Accounting.Weights(), sink)
+			} else if c.MetricsPush.Resolve(os.Getenv).On() {
+				slog.Info("metrics push off — accounting is off, so there are no savings counters to push")
+			}
+		}
 		inDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: reverseproxy.Support(), LocalInstall: localInstall}
-		outDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: forwardproxy.Support(c.MTLS != nil), LocalInstall: localInstall}
+		// The accountant on the outbound chain only: inference requests leave through it.
+		outDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: forwardproxy.Support(c.MTLS != nil), LocalInstall: localInstall, Accounting: acctHost}
 		in, err := plugins.BuildWithDeps(c.Pipeline.Inbound.Plugins, inDeps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)
@@ -722,6 +750,14 @@ func main() {
 		// long-lived one the plugins hold, so a config reload moves both together.
 		usageAgg = usage.New(usage.WithMaxSessions(lim.MaxSessions), usage.WithPricing(pricingRegistry))
 		sessions.AddRecorder(usageAgg)
+		// Every Recorder that keeps cost is also the accountant's, for spend it makes outside a
+		// request (the keep-alive ping), which never passes through the session store.
+		acctHost.AddCostRecorder(usageAgg)
+		// reqStats pushes the Tier 2 transport metrics (llm.inference.requests/duration_seconds/
+		// ttfb_seconds/request_bytes/response_bytes) through the same MeterProvider acctHost's
+		// Sink uses. Unconditional: reqstats.New(nil) is a safe no-op when nothing is pushed.
+		reqStats := reqstats.New(pushMP)
+		sessions.AddRecorder(reqStats)
 
 		// The durable cost ledger is a SECOND Recorder alongside the aggregator, not a
 		// reader of it: the aggregator keeps independent marginals (by-model,
@@ -771,6 +807,7 @@ func main() {
 						}
 					}
 					sessions.AddRecorder(costLedger)
+					acctHost.AddCostRecorder(costLedger)
 					slog.Info("cost ledger enabled — durable cost history for window=today, window=month and window=7d",
 						// THE RESOLVED VALUE, not the configured one: `retention` is 0 on a
 						// default install and the store turns that into its default, so logging
@@ -1364,6 +1401,12 @@ func main() {
 	}
 	rld.Close(shutdownCtx)
 
+	// The accountant once no pipeline can still end a request record, and before the ledger,
+	// which its spend records reach. Close writes the final Tracker snapshot on a local install.
+	if err := acctHost.Close(); err != nil {
+		slog.Warn("accounting: final snapshot failed; the next start prices from a fresh state", "error", err)
+	}
+
 	// Flushed AFTER rld.Close (every pipeline stopped, or the shutdown budget spent)
 	// and before the store closes, so the final minute includes every event a
 	// draining request still produced. Any earlier
@@ -1403,6 +1446,20 @@ func main() {
 	if sessions != nil {
 		sessions.Close()
 	}
+
+	// The metrics push last: the accountant has stopped observing (acctHost.Close), so this
+	// flush carries every counter, and a collector that does not answer delays nothing above.
+	// 5s in a pod; 1s on a local install, whose whole stop must fit the supervisor's
+	// superviseStopGrace.
+	metricsBudget := 5 * time.Second
+	if !drain {
+		metricsBudget = time.Second
+	}
+	metricsCtx, metricsCancel := context.WithTimeout(context.Background(), metricsBudget)
+	if err := stopMetricsPush(metricsCtx); err != nil {
+		slog.Warn("metrics push: the final push failed", "error", err)
+	}
+	metricsCancel()
 	slog.Info("stopped", "took", time.Since(stopping).Round(time.Millisecond))
 }
 

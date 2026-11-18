@@ -677,6 +677,13 @@ curl -X DELETE http://localhost:47601/v1/sessions/<id>
 # {"sessions":1,"archivedSessions":1,"bytes":18234567}, or a 404 when this Cortex holds no such session
 ```
 
+Neither erases the savings accountant's own per-session state: ids, content hashes and the
+billing mode, no content, in memory and in `~/.cortex/accountant-state.json`, plus the
+keep-alive keeper's masked credential. The keeper's entries go within about 13.5 minutes at
+its defaults. The rest stays until newer sessions push it out (at most 10,000 threads are
+kept), and a state file older than 1 hour is not read at startup (see
+[session-api.md](session-api.md#delete-v1sessions)).
+
 Either is refused — a 403 saying why — unless the request names a loopback host
 (`localhost`, `127.0.0.1` or `[::1]`), carries no `Origin` header, and reaches a proxy bound to
 loopback only, as a local install is. Those are the checks that keep a web page you visit from
@@ -727,6 +734,81 @@ CPU for the memory), and if the sessions genuinely need more than the limit the
 process keeps allocating and growing exactly as it would without one — nothing
 fails, nothing crashes. Setting it too low costs speed, not availability. Set
 it explicitly to change the default; `agentop service restart` applies it.
+
+### The `accounting:` configuration
+
+The accountant prices what the context operators (`context-guru`, `tool-prune`) saved, and
+what the keep-alive pings cost. Its figures land in the cost records' `avoided[]` and `spends[]`
+(see [pricing.md](pricing.md#cost-records)). The block is the same on a laptop and in a cluster.
+
+```yaml
+accounting:
+  enabled: auto          # auto | true | false
+  subscription_weights:  # optional; the defaults are shown
+    input: 1
+    cache_write_5m: 1.25
+    cache_write_1h: 2
+    cache_read: 0.1
+    output: 5
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `auto` | `auto` runs the accountant when the outbound pipeline has a context operator. `true` runs it without one, for the cache figures alone. `false` turns it off. |
+| `subscription_weights` | the API rate ratios | How much of a subscription's usage limit one token of each tier uses. A saving on a subscription login is valued in these units (`units`, `penaltyUnits`), never in dollars. A key you leave out keeps its default; an explicit `0` stays `0`; a negative weight is refused. |
+
+On a local install the accountant keeps its state in `~/.cortex/accountant-state.json`, so
+a restart does not forget which prefix the provider has cached. Both fields are read once at
+startup: a reload that changes `enabled` (as resolved) or a weight is refused, and
+`agentop service restart` applies it.
+
+### The `metrics_push:` configuration
+
+Cortex can push the accountant's savings counters to a central OpenTelemetry collector. **It
+sends nothing until you set a URL.** `agentop setup` does not set one.
+The central collector, its URL and how to get a token are in
+[`deploy/central/README.md`](../deploy/central/README.md#point-a-proxy-at-it).
+
+```yaml
+metrics_push:
+  enabled: true     # default true, but with no URL nothing is sent
+  url: ""           # the collector's base URL; Cortex posts to <url>/v1/metrics
+  token: ""         # sent as Authorization: Bearer <token>
+  interval: 30s
+```
+
+| Field | Environment override | Default | Meaning |
+|---|---|---|---|
+| `enabled` | `METRICS_PUSH` | `true` | A value that is not a boolean turns the push off. |
+| `url` | `METRICS_PUSH_URL` | *(none)* | Must be `https`. `http` is allowed only to a loopback address. A URL with user info (`https://user:pass@host`) or a query string is refused, because neither is sent: put the credential in `token`. In the file that fails startup; in `METRICS_PUSH_URL` it logs a WARN and turns the push off. |
+| `token` | `METRICS_PUSH_TOKEN` | *(none)* | Never logged. `/config` serves it redacted. |
+| `interval` | `METRICS_PUSH_INTERVAL` | `30s` | How often the counters are pushed. |
+
+What is sent: the `llm.savings.*` counters (tokens saved and added by tier and component, their
+dollar value, cache effects, request and check counts), `llm.proxy.export_failures`, and
+`llm.proxy.info`: a gauge that is always 1, with the build's `version` as its label. It is sent
+on every push, also before the first request, so the central dashboards list an idle machine and
+the `MachineSilent` alert sees when a machine stops pushing. The
+resource carries `service.name=cortex`, `service.version` and `service.instance.id`: a random
+id kept in `~/.cortex/machine-id` (mode 0600), so the collector sees one machine across
+restarts. In a cluster the id is random per process. No prompt, path, host, session or key is
+sent. Dollar counters move only for requests billed per token (an API key); a subscription
+login moves the token counters alone.
+
+The counters are cumulative. A push that fails is counted in `llm.proxy.export_failures`,
+logged as a WARN at most once a minute, and retried by the next push. It never delays or fails
+a request. With no URL the proxy logs one line at startup, `metrics push off`, and opens no
+connection.
+
+A bad block in the config file fails the config load, like any other block: Cortex does not
+start, or a reload is refused. The `METRICS_PUSH*` variables are read at startup; a bad
+`METRICS_PUSH_URL` logs a WARN and turns the push off, and Cortex runs. No error or log line
+quotes the URL's user info or query string, so a credential put there does not leak into the
+log.
+
+The push starts with the accountant, so it needs `accounting` to be on. The block is read
+once at startup: a reload that changes it is refused, and `agentop service restart` applies
+it.
 
 ### The `tls_bridge:` configuration
 

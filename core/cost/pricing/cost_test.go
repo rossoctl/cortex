@@ -153,6 +153,32 @@ func TestCost_NegativeTokensRefused(t *testing.T) {
 	}
 }
 
+// TestCost_CacheWrite1hAboveCacheWriteRefused: CacheWrite1h is a SUBSET of
+// CacheWrite, so a report with more 1h writes than writes altogether is an
+// impossible count — the same class of refusal as a negative or
+// past-maxPlausibleTokens counter, just shaped as a relationship between two
+// counters. u.tokens() never includes CacheWrite1h (it is not one of the four
+// tiers Cost sums over), so without this check PlausibleUsage never looked at
+// it at all. Added in review of the 1h cache-write tier (2026-11-17
+// accountant-integration task 7).
+func TestCost_CacheWrite1hAboveCacheWriteRefused(t *testing.T) {
+	if !PlausibleUsage(Usage{CacheWrite: 1000, CacheWrite1h: 1000}) {
+		t.Error("CacheWrite1h == CacheWrite should be plausible (the whole write was 1h)")
+	}
+	if PlausibleUsage(Usage{CacheWrite: 1000, CacheWrite1h: 1001}) {
+		t.Error("CacheWrite1h > CacheWrite should be refused: it cannot be a subset of a smaller total")
+	}
+	if PlausibleUsage(Usage{CacheWrite: 0, CacheWrite1h: 1}) {
+		t.Error("CacheWrite1h > 0 with CacheWrite == 0 should be refused, for the same reason")
+	}
+	if PlausibleUsage(Usage{CacheWrite: 1000, CacheWrite1h: -1}) {
+		t.Error("a negative CacheWrite1h should be refused")
+	}
+	if _, ok := Cost(claudeOpus(), Usage{CacheWrite: 1000, CacheWrite1h: 1001, Output: 10}); ok {
+		t.Error("Cost priced a request whose CacheWrite1h exceeds its CacheWrite")
+	}
+}
+
 func TestCost_UnpricedModelIsUnpriced(t *testing.T) {
 	if _, ok := Cost(Rates{}, Usage{Input: 1000}); ok {
 		t.Error("empty Rates reported priced")

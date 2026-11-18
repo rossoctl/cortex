@@ -38,6 +38,9 @@ type Pipeline struct {
 	held atomic.Int64
 	// drain is set by Drained and closed by the release that brings held to zero.
 	drain atomic.Pointer[drainSignal]
+	// accountant is the process's accountant host, nil when accounting is off. See
+	// WithAccountant.
+	accountant RequestAccountant
 }
 
 type drainSignal struct {
@@ -99,6 +102,7 @@ type Option func(*options)
 type options struct {
 	policies      []ErrorPolicy
 	finishTimeout time.Duration
+	accountant    RequestAccountant
 }
 
 // WithFinishTimeout overrides the per-plugin OnFinish timeout. Each
@@ -151,7 +155,7 @@ func New(plugins []Plugin, opts ...Option) (*Pipeline, error) {
 		requestWriters[i] = caps.WritesRequestBody
 	}
 	return &Pipeline{plugins: plugins, policies: policies, finishTimeout: finishTimeout,
-		redirects: redirects, requestWriters: requestWriters}, nil
+		redirects: redirects, requestWriters: requestWriters, accountant: o.accountant}, nil
 }
 
 // Run executes the request phase of the pipeline sequentially.
@@ -177,6 +181,21 @@ func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
 	// A listener outside this repo can set only Session. Without SessionID, session-keyed plugins such as session-budget fail open.
 	if pctx.SessionID == "" && pctx.Session != nil {
 		pctx.SessionID = pctx.Session.ID
+	}
+	// Snapshot the billing mode before THIS Run's own plugins can rewrite the credential header
+	// it reads — unconditionally, on every direction's Pipeline, not only the one with an
+	// accountant attached. The accountant is outbound-only, but a listener runs its inbound
+	// Pipeline's Run first on the same pctx, and jwt-validation's placeholder_mode / token-exchange
+	// rewrite Authorization there; reading it fresh at outbound RequestStart time would see the
+	// rewrite instead of the client's own credential (BillingSnapshot's doc comment). Calling it
+	// here, on every Run, means the first one to run on this pctx wins the snapshot.
+	pctx.BillingSnapshot()
+	// The client body is kept before the first plugin can replace it, and only when an
+	// accountant will read it. RequestEnd runs only on the Continue return at the bottom: a
+	// Reject or a cancel returns before it, so a refused request starts no accounting work.
+	if p.accountant != nil {
+		pctx.clientBody = pctx.Body
+		p.accountant.RequestStart(pctx)
 	}
 	for i, plugin := range p.plugins {
 		policy := p.PolicyAt(i)
@@ -205,6 +224,12 @@ func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
 			return action
 		}
 		slog.Debug("pipeline: plugin completed", "plugin", plugin.Name())
+	}
+	// Sealed whether or not an accountant reads the list: a model call an engine detached
+	// from this request must not grow it for the life of the pctx.
+	pctx.sealOps()
+	if p.accountant != nil {
+		p.accountant.RequestEnd(pctx)
 	}
 	return Action{Type: Continue}
 }
@@ -479,6 +504,11 @@ func (p *Pipeline) NeedsBody() bool {
 // ReadsBody still counts toward both, and deliberately: it is itself undirected
 // ("reads pctx.Body and/or pctx.ResponseBody").
 func (p *Pipeline) NeedsRequestBody() bool {
+	// The accountant reads the client body and the forwarded one, so it needs the body
+	// buffered even on a chain whose plugins would not.
+	if p.accountant != nil {
+		return true
+	}
 	for _, plugin := range p.plugins {
 		// RAW capabilities, not Normalize(). The ReadsBody promotion means "you
 		// may read the body you write", which is inherently directional — so

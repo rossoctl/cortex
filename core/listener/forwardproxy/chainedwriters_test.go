@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/accounting"
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/pricing"
@@ -111,10 +111,8 @@ func reasonsOf(inv *pipeline.Invocations, plugin string) []string {
 // request-body writers the framework refused. One Claude Code request carrying a
 // tool nobody needs, sent to ete for claude-opus-5-5, is pruned, then routed to
 // glm and sent for glm's opus model with glm's key. The session records each
-// writer's rewrite and the body-mutation record names both. And tool-prune's
-// saving is recorded once, as applied, calibrated on the body actually sent and
-// priced at the model the request was sent for — not at Claude Code's name, which
-// glm never served.
+// writer's rewrite and the body-mutation record names both. The request took two
+// upstream rounds, so the accountant records no saving for it.
 func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 	// About four bytes a token, as English prose runs, so the calibration is a
 	// realistic one.
@@ -147,10 +145,17 @@ func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 			"agents": {"claude-code": "glm"}
 		}`)},
 	}
+	rates := inputRates(t, map[string]float64{"glm-big": glmRate, "claude-opus-5-5": claudeRate})
+	acct, err := accounting.New(accounting.Options{Resolver: rates})
+	if err != nil {
+		t.Fatalf("accounting.New: %v", err)
+	}
+	defer acct.Close()
 	p, err := plugins.BuildWithDeps(chain, plugins.Deps{
-		Pricing:  inputRates(t, map[string]float64{"glm-big": glmRate, "claude-opus-5-5": claudeRate}),
-		Listener: pipeline.ListenerSupport{Listener: "forward proxy", Destination: true},
-		Store:    st,
+		Pricing:    rates,
+		Listener:   pipeline.ListenerSupport{Listener: "forward proxy", Destination: true},
+		Store:      st,
+		Accounting: acct,
 	})
 	if err != nil {
 		t.Fatalf("BuildWithDeps: %v", err)
@@ -271,17 +276,7 @@ func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 			ext.Model, ext.RequestedModel)
 	}
 
-	// The saving: once, applied, calibrated on the bytes sent, priced at glm-big.
-	var savings []event.Saving
-	for i := range v.Events {
-		if rec, ok := event.Record(&v.Events[i]); ok {
-			savings = append(savings, rec.Avoided...)
-		}
-	}
-	if len(savings) != 1 {
-		t.Fatalf("savings across the session = %+v, want exactly one", savings)
-	}
-	s := savings[0]
+	// tool-prune's change, as the session holds it.
 	var pruned struct {
 		BytesRemoved int  `json:"bytesRemoved"`
 		Projected    bool `json:"projected"`
@@ -289,15 +284,17 @@ func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 	if err := json.Unmarshal(reqEv.Plugins["tool-prune"], &pruned); err != nil {
 		t.Fatalf("tool-prune's record %s: %v", reqEv.Plugins["tool-prune"], err)
 	}
-	if wantRemoved := len(unused) + len(","); pruned.BytesRemoved != wantRemoved {
-		t.Errorf("tool-prune removed %d bytes, want %d", pruned.BytesRemoved, wantRemoved)
+	if wantRemoved := len(unused) + len(","); pruned.BytesRemoved != wantRemoved || pruned.Projected {
+		t.Errorf("tool-prune removed %d bytes (projected %v), want %d applied", pruned.BytesRemoved, pruned.Projected, wantRemoved)
 	}
-	wantTokens := pricing.EstimateTokensFromBytes(pruned.BytesRemoved, 1300, len(want))
-	if s.Component != "tool-prune" || s.Projected || pruned.Projected || s.TokensAvoided != wantTokens {
-		t.Errorf("saving = %+v; want tool-prune's, applied, %d tokens calibrated on the %d bytes sent", s, wantTokens, len(want))
-	}
-	if wantUSD := float64(wantTokens) * glmRate; s.Tier != pricing.TierInput.String() || math.Abs(s.USD-wantUSD) > 1e-9 {
-		t.Errorf("saving priced at $%g in tier %q, want $%g in input: glm-big's rate, not claude-opus-5-5's ($%g)",
-			s.USD, s.Tier, wantUSD, float64(wantTokens)*claudeRate)
+	// NO SAVING, because the saving is the accountant's (design §5.9) and the accountant does not
+	// price a request that took two upstream rounds: one usage object does not describe one
+	// forwarded body (accountant wiring W6.1, "upstream_rounds"; the context-guru proxy skips it
+	// too). The router's resend is that case. Before the switch settle.Avoided priced it from the
+	// bytes removed (docs/accounting-differences.json, switch.multi-round-unpriced).
+	for i := range v.Events {
+		if rec, ok := event.Record(&v.Events[i]); ok && len(rec.Avoided) != 0 {
+			t.Errorf("event %d carries savings %+v; a resent request has no accountant figure", i, rec.Avoided)
+		}
 	}
 }

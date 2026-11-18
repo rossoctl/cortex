@@ -2994,3 +2994,30 @@ func TestRunCost_AgentJSONOmitsAResidualInAnotherUnit(t *testing.T) {
 		t.Errorf("a mixed window's residual was emitted beside the agent's currencies [USD]:\n%s", got)
 	}
 }
+
+// The accountant's figures (design §5.7a, §5.9): saved, penalty and a net that may be negative;
+// subscription savings in usage-limit units with their API equivalent labelled; an unknown figure
+// apart; and the plugins' own model calls and keep-alive pings as spend outside the total.
+func TestRunCost_ReportsTheAccountantsFigures(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","totals":{"requests":10,"costMicros":4170000,`+
+		`"avoidedMicros":10000,"penaltyMicros":30000,"avoidedUnits":4500,"penaltyUnits":500,`+
+		`"avoidedApiEquivalentMicros":1000000,"avoidedUnknownMicros":200000,"pluginSpendMicros":40000,`+
+		`"keepAliveMicros":20000,"keepAlivePings":3,"pricedRequests":10,"priceableRequests":10},"priced":true}`)
+	defer srv.Close()
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"~$0.01", "penalty $0.03", "net -$0.02",
+		"usage-limit units", "4.5 saved", "API equivalent $1.00",
+		"unknown billing", "$0.20 saved, not in any total",
+		"plugin model calls", "$0.04", "keep-alive", "3 pings", "spend, not in the total above",
+		"$4.17",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}

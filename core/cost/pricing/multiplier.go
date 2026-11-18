@@ -79,6 +79,13 @@ func (r Rates) scale(f float64) Rates {
 	for i := range r.Base {
 		out.Base[i] = r.Base[i] * f
 	}
+	// CacheWrite1hSet carries the same reasoning as Base above: an explicit 1h rate
+	// is itself a rate and must scale with everything else, or a discounted gateway's
+	// 1h writes would price at list while its 5m writes price at the discount.
+	// Added for the 1h cache-write tier (2026-11-17 accountant-integration task 7).
+	if r.CacheWrite1hSet {
+		out.CacheWrite1h, out.CacheWrite1hSet = r.CacheWrite1h*f, true
+	}
 	if len(r.Thresholds) > 0 {
 		out.Thresholds = make([]ContextThreshold, len(r.Thresholds))
 		for i, th := range r.Thresholds {

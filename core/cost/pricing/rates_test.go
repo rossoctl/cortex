@@ -42,6 +42,50 @@ func base() Rates {
 	}
 }
 
+// TestRates_CacheWrite1hFallback: with no explicit TierCacheWrite1h rate, an
+// Anthropic-shaped table (anthropicShaped=true) derives the 1h rate as 2x input —
+// Anthropic's documented premium — and it is NOT marked estimated, since that is a
+// known fact rather than a guess. Any other table falls back to the 5m write rate
+// and IS marked estimated. Task 7 (2026-11-17 accountant-integration).
+func TestRates_CacheWrite1hFallback(t *testing.T) {
+	r := base() // Sonnet-shaped: input 3.80/Mtok, cache write (5m) 4.75/Mtok
+
+	rate, ok, estimated := r.CacheWrite1hRate(true)
+	if !ok || estimated {
+		t.Fatalf("anthropicShaped: ok=%v estimated=%v, want ok=true estimated=false", ok, estimated)
+	}
+	if want := 3.80 / perMillion * 2.0; rate != want {
+		t.Errorf("anthropicShaped rate = %v, want input x 2.0 = %v", rate, want)
+	}
+
+	rate, ok, estimated = r.CacheWrite1hRate(false)
+	if !ok || !estimated {
+		t.Fatalf("non-Anthropic: ok=%v estimated=%v, want ok=true estimated=true", ok, estimated)
+	}
+	if want := 4.75 / perMillion; rate != want {
+		t.Errorf("non-Anthropic rate = %v, want the 5m write rate %v", rate, want)
+	}
+
+	// An explicit 1h rate always wins, over either case, and is never estimated.
+	r.CacheWrite1h, r.CacheWrite1hSet = 9.50/perMillion, true
+	for _, anthropicShaped := range []bool{true, false} {
+		rate, ok, estimated = r.CacheWrite1hRate(anthropicShaped)
+		if !ok || estimated || rate != 9.50/perMillion {
+			t.Errorf("explicit rate (anthropicShaped=%v): rate=%v ok=%v estimated=%v, want %v/true/false",
+				anthropicShaped, rate, ok, estimated, 9.50/perMillion)
+		}
+	}
+
+	// Rates.For(TierCacheWrite1h) falls back the same way a generic caller (no
+	// model name, no provider knowledge) would: to the 5m rate, with no attempt at
+	// the Anthropic premium.
+	plain := base()
+	got, ok := plain.For(TierCacheWrite1h)
+	if !ok || got != 4.75/perMillion {
+		t.Errorf("For(TierCacheWrite1h) = %v, %v; want the 5m write rate %v, true", got, ok, 4.75/perMillion)
+	}
+}
+
 func TestRatesAt_ThresholdIsStrictlyExceeded(t *testing.T) {
 	r := base()
 	r.Thresholds = []ContextThreshold{{

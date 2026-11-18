@@ -20,10 +20,14 @@ package pricing
 // 1.25x input and a cache read 0.1x, so one flat rate misprices cache-heavy
 // traffic (Claude Code) by up to ~10x.
 //
-// Deliberately absent: service-tier variants (flex / priority / ultrafast) and
-// the 1-hour-TTL cache-write premium. Both are real fields in LiteLLM's
-// ModelInfoBase, neither is on a path we run, and an unpopulated tier is an
-// untested tier. Adding one later is a field plus a threshold row, not a reshape.
+// Deliberately absent: service-tier variants (flex / priority / ultrafast). A real
+// field in LiteLLM's ModelInfoBase, not on a path we run, and an unpopulated tier is
+// an untested tier.
+//
+// The 1-hour-TTL cache-write premium is NOT absent (2026-11-17
+// accountant-integration task 7 added TierCacheWrite1h) — this paragraph used to
+// call it out alongside service tiers, and that line is now wrong rather than
+// merely stale.
 type Tier int
 
 const (
@@ -31,6 +35,16 @@ const (
 	TierCacheWrite
 	TierCacheRead
 	TierOutput
+
+	// TierCacheWrite1h addresses the 1-hour cache-write premium through Rates.For
+	// and Rates.CacheWrite1hRate. Deliberately NOT one of the numTiers slots Cost
+	// sums over: CacheWrite1h tokens are already counted once inside Usage.CacheWrite
+	// (see Usage.CacheWrite1h), so folding this into the generic per-tier loop would
+	// double-bill them. settle.modelledCost re-prices just the 1h subset at the 1h
+	// rate and adds the DIFFERENCE from the 5m rate CostByTier already applied.
+	// Added for the 1h cache-write tier (2026-11-17 accountant-integration task 7) —
+	// the doc above calling it "deliberately absent" predates this.
+	TierCacheWrite1h
 )
 
 // numTiers sizes the per-tier arrays. Arrays rather than named fields so the
@@ -57,6 +71,13 @@ type Usage struct {
 	CacheWrite int // prompt tokens written to cache
 	CacheRead  int // prompt tokens served from cache
 	Output     int // generated completion tokens
+	// CacheWrite1h is the part of CacheWrite written with a 1-hour TTL, never an
+	// addition to it — mirrors model.InferenceExtension.CacheWrite1hTokens.
+	// Deliberately NOT read by tokens()/CostByTier's generic per-tier loop: those
+	// tokens are already counted once inside CacheWrite, and settle.modelledCost
+	// re-prices just this subset at the 1h rate on top (Rates.CacheWrite1hRate).
+	// Added for the 1h cache-write tier (2026-11-17 accountant-integration task 7).
+	CacheWrite1h int
 }
 
 // PromptTotal is the prompt-side total, which is what a context threshold is
@@ -96,6 +117,14 @@ type Rates struct {
 	Base       [numTiers]float64
 	Set        [numTiers]bool
 	Thresholds []ContextThreshold
+	// CacheWrite1h and CacheWrite1hSet are an EXPLICIT 1-hour cache-write rate, kept
+	// outside the Base/Set arrays because TierCacheWrite1h is not one of the numTiers
+	// slots Cost sums over (see TierCacheWrite1h). Unset on every table this package
+	// ships today — no bundled or configured entry names one yet — which is exactly
+	// the case Rates.For and Rates.CacheWrite1hRate fall back for. Added for the 1h
+	// cache-write tier (2026-11-17 accountant-integration task 7).
+	CacheWrite1h    float64
+	CacheWrite1hSet bool
 }
 
 // At flattens Rates for a prompt of promptTotal tokens: the highest threshold
@@ -112,7 +141,11 @@ type Rates struct {
 // Idempotent: the result carries no thresholds, so flattening it again returns it
 // unchanged. Resolve hands out flattened rates and Cost flattens again.
 func (r Rates) At(promptTotal int) Rates {
-	out := Rates{Base: r.Base, Set: r.Set}
+	// CacheWrite1h/CacheWrite1hSet carried forward: a threshold row never sets them
+	// (ContextThreshold has no slot for TierCacheWrite1h — it is not in Base/Set),
+	// so there is nothing for the loop below to overlay, but the flattened result
+	// must still answer the explicit rate a caller configured.
+	out := Rates{Base: r.Base, Set: r.Set, CacheWrite1h: r.CacheWrite1h, CacheWrite1hSet: r.CacheWrite1hSet}
 	best := -1
 	var pick *ContextThreshold
 	for i := range r.Thresholds {
@@ -145,10 +178,56 @@ func (r Rates) At(promptTotal int) Rates {
 // thresholds — correct for "what is this model's list rate", wrong for pricing a
 // specific request.
 func (r Rates) For(t Tier) (float64, bool) {
+	if t == TierCacheWrite1h {
+		// FALLS BACK, as the type's own doc promises: with no explicit 1h rate this
+		// has no provider knowledge to reach for (CacheWrite1hRate is where that
+		// lives, for a caller that has a model name to test), so the only answer
+		// For can give is the 5-minute write rate — the SAME number
+		// CostByTier's generic loop already prices these tokens at, since they are
+		// counted once inside CacheWrite. A caller pricing TierCacheWrite1h through
+		// this method alone therefore sees no 1h premium at all; settle.modelledCost
+		// is what applies one, via CacheWrite1hRate.
+		rate, ok := r.For(TierCacheWrite)
+		if r.CacheWrite1hSet {
+			return r.CacheWrite1h, true
+		}
+		return rate, ok
+	}
 	if int(t) < 0 || int(t) >= numTiers {
 		return 0, false
 	}
 	return r.Base[t], r.Set[t]
+}
+
+// CacheWrite1hRate derives the per-token rate for a cache write made with a 1-hour
+// TTL, three ways in order:
+//
+//  1. An EXPLICIT 1h rate (CacheWrite1hSet) always wins and is never estimated —
+//     an operator or a future table row that names one has told us the real figure.
+//  2. anthropicShaped, for a table with no explicit rate: Anthropic documents its
+//     1-hour cache-write premium as exactly 2x the input rate (platform.claude.com,
+//     prompt-caching § cache duration), so this derivation is not a guess either —
+//     estimated is false. The caller passes this rather than Rates detecting it
+//     itself: Rates carries no provider or model name, and settle.modelledCost
+//     already has the model string Cost does not.
+//  3. Otherwise: the 5-minute write rate, the same fallback Rates.For(TierCacheWrite1h)
+//     uses — and estimated is true, because nothing here says what a non-Anthropic
+//     provider's 1h premium actually is.
+//
+// ok is false only when even the 5m write rate is unset, which is Cost's existing
+// RefusalNoRate case: a table that cannot price ordinary cache writes cannot price
+// 1-hour ones either.
+func (r Rates) CacheWrite1hRate(anthropicShaped bool) (rate float64, ok, estimated bool) {
+	if r.CacheWrite1hSet {
+		return r.CacheWrite1h, true, false
+	}
+	if anthropicShaped {
+		if in, inSet := r.For(TierInput); inSet {
+			return in * 2.0, true, false
+		}
+	}
+	cw, cwSet := r.For(TierCacheWrite)
+	return cw, cwSet, cwSet
 }
 
 // free reports whether these rates price every tier at zero, with no long-context
@@ -172,6 +251,9 @@ func (r Rates) free() bool {
 // traffic and then resolve it as unpriced, which is indistinguishable from having
 // no row and hides the typo that produced it.
 func (r Rates) any() bool {
+	if r.CacheWrite1hSet {
+		return true
+	}
 	for _, s := range r.Set {
 		if s {
 			return true
@@ -226,6 +308,8 @@ func (t Tier) String() string {
 		return "cache_read"
 	case TierOutput:
 		return "output"
+	case TierCacheWrite1h:
+		return "cache_write_1h"
 	}
 	return "unknown"
 }
@@ -245,6 +329,8 @@ func TierFromString(s string) (Tier, bool) {
 		return TierCacheRead, true
 	case "output":
 		return TierOutput, true
+	case "cache_write_1h":
+		return TierCacheWrite1h, true
 	}
 	return TierInput, false
 }

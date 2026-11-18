@@ -178,8 +178,10 @@ type Counts struct {
 	CacheWriteCostMicros int64 `json:"cacheWriteCostMicros,omitempty"`
 	CacheReadCostMicros  int64 `json:"cacheReadCostMicros,omitempty"`
 	OutputCostMicros     int64 `json:"outputCostMicros,omitempty"`
-	// AvoidedMicros is cost that was NOT INCURRED — tool-prune's removed prompt tokens
-	// priced at the tier they would have landed in — in the same unit as CostMicros.
+	// AvoidedMicros is cost that was NOT INCURRED — what the context operators (tool-prune,
+	// context-guru, the keeper) saved, as the accountant priced it, tier by tier — in the same
+	// unit as CostMicros. ONLY BASIS "usd": a subscriptionEquivalent saving is in AvoidedUnits
+	// and an unknown one in AvoidedUnknownMicros (design §5.7a). See event.Event.Figures.
 	//
 	// A COUNTERFACTUAL SITTING BESIDE A MEASUREMENT, and the adjacency is deliberate: the
 	// invariant on event.Event.Avoided forbids adding any of this to spend, to a budget
@@ -196,17 +198,14 @@ type Counts struct {
 	// and event.Record's own doc names that as the interesting case; deriving this from
 	// the priced record would silently drop it.
 	//
-	// ESTIMATED, usually. Saving.Estimated marks a figure derived from a bytes-to-tokens
-	// ratio rather than a tokenizer, and the per-request flag does not survive summation —
-	// so a client must present this as approximate unconditionally rather than inferring
-	// exactness from its absence here.
+	// ESTIMATED, sometimes. Saving.Estimated marks a figure from an estimated op or rate, and
+	// the per-request flag does not survive summation — so a client must present this as
+	// approximate unconditionally rather than inferring exactness from its absence here.
 	//
-	// GROSS, NOT NET, which is the caveat most likely to be dropped on the way to a screen.
-	// tool-prune's own doc is explicit: changing the remove list re-writes the cached prompt
-	// prefix at the cache-WRITE rate while the recurring saving accrues at the cache-READ
-	// rate, tens of requests apart, and nothing subtracts the re-warm from these dollars. A
-	// short window just after a config change therefore reads optimistically; a long steady
-	// one converges. See docs/tool-prune-plugin.md, "The figure is gross, not net".
+	// GROSS, NOT NET, which is the caveat most likely to be dropped on the way to a screen. What
+	// the same operators CAUSED — a rewrite inside the cached prefix, a cache break — is
+	// PenaltyMicros, beside it and never subtracted from it here. Net is AvoidedMicros minus
+	// PenaltyMicros, and may be negative.
 	//
 	// SUMMABLE BECAUSE IT IS DOLLARS. The same doc refuses to publish one "tokens saved"
 	// figure, because prompt tiers differ by up to 12.5x and a single token count invites
@@ -215,6 +214,46 @@ type Counts struct {
 	// actually came out of BEFORE reaching this counter, so the sum is tier-correct by
 	// construction. A tokens-avoided aggregate would not be, and is deliberately not offered.
 	AvoidedMicros int64 `json:"avoidedMicros,omitempty"`
+	// PenaltyMicros is what the operators behind AvoidedMicros caused on the same requests,
+	// priced: event.Event.TotalPenaltyMicros, basis "usd" only. Never netted into AvoidedMicros
+	// and never floored: a net below zero is the two figures, read together.
+	PenaltyMicros int64 `json:"penaltyMicros,omitempty"`
+	// AvoidedUnits and PenaltyUnits are AvoidedMicros and PenaltyMicros for requests on a
+	// subscription login (basis "subscriptionEquivalent"), in usage-limit units — tokens times
+	// accounting.subscription_weights — as integer MILLI-units. Not money, and estimated.
+	AvoidedUnits int64 `json:"avoidedUnits,omitempty"`
+	PenaltyUnits int64 `json:"penaltyUnits,omitempty"`
+	// AvoidedAPIEquivalentMicros is what the savings in AvoidedUnits would have been worth at API
+	// rates, gross: the "API equivalent" a reader shows beside the units. NOT MONEY — the request
+	// was on a subscription — so it is in no dollar total.
+	AvoidedAPIEquivalentMicros int64 `json:"avoidedApiEquivalentMicros,omitempty"`
+	// AvoidedUnknownMicros is the gross saved dollars of savings whose billing mode was unknown
+	// (basis "unknown"). Shown beside the money totals, never added to them.
+	AvoidedUnknownMicros int64 `json:"avoidedUnknownMicros,omitempty"`
+	// PluginSpendMicros is what the context operators' own model calls cost (event.Event.Spends,
+	// basis "usd"): a context-guru summary call, for instance. Those calls do not pass through
+	// the proxy, so this is the only figure that holds them. KEPT OUT OF CostMicros so the
+	// existing spend totals keep their meaning; spend in all is CostMicros + PluginSpendMicros +
+	// KeepAliveMicros. PluginSpendUnits is the subscriptionEquivalent calls in milli-units, and
+	// PluginSpendUnknownMicros the calls whose billing mode was unknown (never added).
+	PluginSpendMicros        int64 `json:"pluginSpendMicros,omitempty"`
+	PluginSpendUnits         int64 `json:"pluginSpendUnits,omitempty"`
+	PluginSpendUnknownMicros int64 `json:"pluginSpendUnknownMicros,omitempty"`
+	// KeepAliveMicros is what the keep-alive pings on an API key cost (a record with
+	// event.PurposeKeepAlive and basis "usd"), and KeepAlivePings how many pings there were, of
+	// every billing mode. Split like PluginSpend*: KeepAliveUnits is the subscriptionEquivalent
+	// pings' tokens in usage-limit milli-units (the configured subscription weights, output
+	// included), KeepAliveAPIEquivalentMicros those pings' dollars at API rates (NOT MONEY, shown
+	// beside the units), and KeepAliveUnknownMicros the pings whose billing mode was unknown
+	// (never added). Only KeepAliveMicros is money, which is where the metrics sink moves its
+	// USD counters too. A ping is not the agent's request: it is in neither Requests, Tokens,
+	// CostMicros, the coverage counters nor the latency mean, only here. Its rescue — the cache
+	// read it kept warm — is credited to the "keeper" operator on the next request.
+	KeepAliveMicros              int64 `json:"keepAliveMicros,omitempty"`
+	KeepAliveUnits               int64 `json:"keepAliveUnits,omitempty"`
+	KeepAliveAPIEquivalentMicros int64 `json:"keepAliveApiEquivalentMicros,omitempty"`
+	KeepAliveUnknownMicros       int64 `json:"keepAliveUnknownMicros,omitempty"`
+	KeepAlivePings               int64 `json:"keepAlivePings,omitempty"`
 	// PricedRequests counts the requests that actually produced a cost. Coverage
 	// is a counter rather than a flag because buckets are summed when a client
 	// asks for a coarser resolution, and because a deployment can price some of
@@ -357,6 +396,19 @@ func (c *Counts) Add(o Counts) {
 	// one is money; see the field. Checked like the rest because a saving is modelled from
 	// the same table as a cost and inherits its range.
 	c.addInto(&c.AvoidedMicros, o.AvoidedMicros)
+	c.addInto(&c.PenaltyMicros, o.PenaltyMicros)
+	c.addInto(&c.AvoidedUnits, o.AvoidedUnits)
+	c.addInto(&c.PenaltyUnits, o.PenaltyUnits)
+	c.addInto(&c.AvoidedAPIEquivalentMicros, o.AvoidedAPIEquivalentMicros)
+	c.addInto(&c.AvoidedUnknownMicros, o.AvoidedUnknownMicros)
+	c.addInto(&c.PluginSpendMicros, o.PluginSpendMicros)
+	c.addInto(&c.PluginSpendUnits, o.PluginSpendUnits)
+	c.addInto(&c.PluginSpendUnknownMicros, o.PluginSpendUnknownMicros)
+	c.addInto(&c.KeepAliveMicros, o.KeepAliveMicros)
+	c.addInto(&c.KeepAliveUnits, o.KeepAliveUnits)
+	c.addInto(&c.KeepAliveAPIEquivalentMicros, o.KeepAliveAPIEquivalentMicros)
+	c.addInto(&c.KeepAliveUnknownMicros, o.KeepAliveUnknownMicros)
+	c.addInto(&c.KeepAlivePings, o.KeepAlivePings)
 	c.addInto(&c.PricedRequests, o.PricedRequests)
 	// Summed alongside PricedRequests, never out of it: it is a subset disclosure, not a
 	// deduction. See the field's own comment for why the aggregate discloses rather than
@@ -396,6 +448,28 @@ func (c *Counts) addInto(dst *int64, v int64) {
 	if saturated {
 		c.Saturated = true
 	}
+}
+
+// AddFigures accumulates one record's savings and plugin spends (event.Event.Figures) into c,
+// each into its field of the same name. The ledger and the ring both call it, so the two put the
+// same figure in the same field.
+func (c *Counts) AddFigures(f event.Figures) {
+	c.Add(Counts{
+		AvoidedMicros:              f.AvoidedMicros,
+		PenaltyMicros:              f.PenaltyMicros,
+		AvoidedUnits:               f.AvoidedUnits,
+		PenaltyUnits:               f.PenaltyUnits,
+		AvoidedAPIEquivalentMicros: f.AvoidedAPIEquivalentMicros,
+		AvoidedUnknownMicros:       f.AvoidedUnknownMicros,
+		PluginSpendMicros:          f.PluginSpendMicros,
+		PluginSpendUnits:           f.PluginSpendUnits,
+		PluginSpendUnknownMicros:   f.PluginSpendUnknownMicros,
+		// Nonzero only on a keep-alive ping's record (event.Figures).
+		KeepAliveMicros:              f.KeepAliveMicros,
+		KeepAliveUnits:               f.KeepAliveUnits,
+		KeepAliveAPIEquivalentMicros: f.KeepAliveAPIEquivalentMicros,
+		KeepAliveUnknownMicros:       f.KeepAliveUnknownMicros,
+	})
 }
 
 // maxPlausibleRequestTokens is the largest token count one request could report, per field.
@@ -1027,7 +1101,8 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 	// avoided rides BESIDE ec rather than inside it, so the counterfactual and the measured
 	// figure travel on separate wires and no expression can add one to the other by
 	// resembling it. See Counts.AvoidedMicros.
-	var avoided int64
+	var avoided event.Figures
+	var keepAlive bool
 	if e.Phase != model.SessionRequest {
 		// ONE unmarshal, feeding both. costOf wants the record only when it priced
 		// something and this wants it either way, so each calling cost/event for itself
@@ -1047,7 +1122,8 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 			ec.unit = rec.Currency
 		}
 		if haveRec {
-			avoided = rec.TotalAvoidedMicros()
+			avoided = rec.Figures()
+			keepAlive = rec.IsKeepAlive()
 		}
 	}
 
@@ -1072,7 +1148,7 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 	}
 
 	t := at.Truncate(BucketWidth)
-	a.foldInto(a.all, t, sessionID, e, requestPlugins, ec, avoided)
+	a.foldInto(a.all, t, sessionID, e, requestPlugins, ec, avoided, keepAlive)
 
 	// BEFORE the session ring, whose branch below returns early on both of its paths. See the
 	// agents field for why only a recognised agent gets a ring.
@@ -1082,12 +1158,18 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 			ring = make([]bucket, NumBuckets)
 			a.agents[agent] = ring
 		}
-		a.foldInto(ring, t, sessionID, e, requestPlugins, ec, avoided)
+		a.foldInto(ring, t, sessionID, e, requestPlugins, ec, avoided, keepAlive)
 	}
 
+	// A KEEP-ALIVE PING IS NOT AGENT ACTIVITY, so it neither creates a session ring nor refreshes
+	// one: its lastSeen would keep an idle session's ring warm, and a new ring at the cap would
+	// evict a real session's. It is in the all-sessions and agent rings above.
+	if keepAlive {
+		return
+	}
 	if ring, ok := a.sessions[sessionID]; ok {
 		ring.lastSeen = at
-		a.foldInto(ring.buckets, t, sessionID, e, requestPlugins, ec, avoided)
+		a.foldInto(ring.buckets, t, sessionID, e, requestPlugins, ec, avoided, keepAlive)
 		return
 	}
 	// maxSess == 0 means no per-session rings at all — see WithMaxSessions. The
@@ -1105,7 +1187,7 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 	}
 	ring := &sessionRing{buckets: make([]bucket, NumBuckets), lastSeen: at}
 	a.sessions[sessionID] = ring
-	a.foldInto(ring.buckets, t, sessionID, e, requestPlugins, ec, avoided)
+	a.foldInto(ring.buckets, t, sessionID, e, requestPlugins, ec, avoided, keepAlive)
 }
 
 // holdRequestPluginsLocked stashes a request event's plugin names until its
@@ -1252,7 +1334,7 @@ func PriceableRequest(e *model.SessionEvent) bool {
 // which session it belongs to: a.all is shared and a sessionRing holds only
 // buckets. Both call sites pass the same id, which is what lets the bySession
 // label be recorded uniformly instead of only on the all-sessions ring.
-func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *model.SessionEvent, requestPlugins []string, ec eventCost, avoided int64) {
+func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *model.SessionEvent, requestPlugins []string, ec eventCost, avoided event.Figures, keepAlive bool) {
 	b := &ring[slot(t)]
 	if !b.start.Equal(t) {
 		*b = bucket{start: t} // stale lap: reset rather than accumulate onto old data
@@ -1289,11 +1371,21 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *m
 		}
 	}
 
+	if keepAlive {
+		// A KEEP-ALIVE PING IS NOT THE AGENT'S REQUEST (see Counts.KeepAliveMicros): its count and
+		// its spend go to their own fields, the spend split by basis by event.Figures exactly as
+		// the ledger splits it, and nothing else — no Requests, tokens, cost, coverage or latency.
+		// Labelled like any row, so a breakdown by model or endpoint shows where the pings went.
+		one := Counts{KeepAlivePings: 1}
+		one.AddFigures(avoided)
+		b.Counts.Add(one)
+		a.labelOne(b, sessionID, e, modelName, nil, one, ec, !avoided.IsZero() || ec.priced > 0)
+		return
+	}
 	one := Counts{
 		Requests:             1,
 		Tokens:               tokens,
 		CostMicros:           ec.micros,
-		AvoidedMicros:        avoided,
 		InputCostMicros:      ec.tierMicros[pricing.TierInput],
 		CacheWriteCostMicros: ec.tierMicros[pricing.TierCacheWrite],
 		CacheReadCostMicros:  ec.tierMicros[pricing.TierCacheRead],
@@ -1312,6 +1404,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *m
 	// token counters above, so every other field is zero on one side of Add's `+=`, and
 	// PresentKinds is `0 | x`. Errors is set below and so is unaffected by the order.
 	one.Add(split)
+	one.AddFigures(avoided)
 	if ec.unpricedKey != "" {
 		addLabel(&b.byUnpriced, ringLabel(ec.unpricedKey), Counts{Requests: 1})
 	}
@@ -1339,12 +1432,19 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *m
 		b.latN++
 	}
 
+	a.labelOne(b, sessionID, e, modelName, requestPlugins, one, ec, ec.priced > 0 || !avoided.IsZero())
+}
+
+// labelOne folds one event's Counts into each of the bucket's label breakdowns. hasMoney says
+// the event carries a figure in a unit, so its unit is noted on the model, endpoint, agent and
+// project series.
+func (a *Aggregator) labelOne(b *bucket, sessionID string, e *model.SessionEvent, modelName string, requestPlugins []string, one Counts, ec eventCost, hasMoney bool) {
 	unit := pricing.CurrencyUSD
 	if ec.unit != "" {
 		unit = ringLabel(ec.unit)
 	}
 	addLabel(&b.byCurrency, unit, one)
-	if ec.priced == 0 && avoided == 0 {
+	if !hasMoney {
 		unit = ""
 	}
 	if modelName != "" {
