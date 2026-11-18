@@ -266,3 +266,35 @@ func TestRenderTree_ToolResultJSONIsAValue(t *testing.T) {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
 }
+
+// A string with bytes after its JSON value stays a string, in arguments and in tool output.
+func TestRenderTree_JSONStringWithTrailingBytesStaysAString(t *testing.T) {
+	for _, s := range []string{`{}]`, `{\"a\":1}}`, `{\"a\":1}]`, `{\"a\":1}x`} {
+		for _, doc := range []string{`{"arguments":"` + s + `"}`, `{"toolResults":[{"content":"` + s + `"}]}`} {
+			if got := strings.Join(treeText(t, doc, foldState{all: true}), "\n"); !strings.Contains(got, `"`+s+`"`) {
+				t.Errorf("%s: got %q, want the string kept", doc, got)
+			}
+		}
+	}
+}
+
+// The exact capture shows the body as the client sent it: arguments and tool output stay strings.
+func TestRenderTree_JSONStringInRawStaysAString(t *testing.T) {
+	body := `{"raw":{"arguments":"{\"a\":1}","toolResults":[{"content":"[1]"}]},"inference":{"arguments":"{\"a\":1}"}}`
+	for _, path := range []string{"", "request", "response"} {
+		sec, err := sectionTree(path, "━━ S", nil, []byte(body), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var args, out, inf bool
+		for _, l := range renderTree(sec, foldState{all: true}) {
+			s := strings.TrimSpace(stripANSI(l.text))
+			args = args || strings.HasPrefix(s, `"arguments": "{\"a\":1}"`)
+			out = out || s == `"content": "[1]"`
+			inf = inf || s == `"arguments": {`
+		}
+		if !args || !out || !inf {
+			t.Errorf("path %q: raw arguments kept %v, raw output kept %v, inference object %v", path, args, out, inf)
+		}
+	}
+}

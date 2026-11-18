@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -134,6 +135,14 @@ func sectionOf(path string) string {
 	return "request"
 }
 
+// inCapture reports whether path is in an event's exact capture: the "raw" child of its root.
+func inCapture(path string) bool {
+	if s := sectionOf(path); strings.HasPrefix(path, s+".") {
+		path = path[len(s)+1:]
+	}
+	return path == "raw" || strings.HasPrefix(path, "raw.") || strings.HasPrefix(path, "raw[")
+}
+
 func buildTree(v any, path, key string, hasKey bool) *node {
 	n := &node{path: path, key: key, hasKey: hasKey}
 	scalar := func(s string, style func(...string) string) {
@@ -156,12 +165,14 @@ func buildTree(v any, path, key string, hasKey bool) *node {
 		args := key == "arguments" && strings.HasPrefix(x, "{")
 		output := key == "content" && strings.Contains(path, "toolResults[") &&
 			(strings.HasPrefix(x, "{") || strings.HasPrefix(x, "[")) && !strings.Contains(x, "\n")
-		if args || output {
+		if (args || output) && !inCapture(path) {
 			dec := json.NewDecoder(strings.NewReader(x))
 			dec.UseNumber()
 			var val any
-			if dec.Decode(&val) == nil && !dec.More() {
-				return buildTree(val, path, key, hasKey)
+			if dec.Decode(&val) == nil {
+				if _, err := dec.Token(); err == io.EOF {
+					return buildTree(val, path, key, hasKey)
+				}
 			}
 		}
 		n.kind, n.plain, n.size = kindString, x, len(x)+2
