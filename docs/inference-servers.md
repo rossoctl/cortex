@@ -287,22 +287,54 @@ To change the API key or a model, run the same `add` command again.
 
 ## Choose the server for an agent
 
-```sh
-agentop server use ete-ext --agent claude-code   # new Claude Code sessions → ete-ext
-agentop server move <session-id> bob             # one running session → bob
-agentop server reset --agent claude-code         # back to Claude Code's own provider
-```
+You can choose a server in agentop or from the command line. Both ways write
+the same change to `~/.cortex/config.yaml`.
 
-- `--agent` takes the agent's name as agentop shows it, such as `claude-code`
-  or `bob`.
-- In `agentop observe`, you can do the same: press `A` to show the agents,
-  then press `S` on an agent.
 - New sessions go to the chosen server. A running session stays on its server
   until you move it.
 - The first turn after a move sends the whole conversation again with no
   cache, so it is slow. Start a new session when you can.
 - If the server stops, its sessions' requests fail. Nothing fails over on its
   own.
+
+### In agentop
+
+Run `agentop observe`.
+
+**To choose the server for an agent's new sessions:**
+
+1. Press `A` to show the agents pane.
+2. Move the cursor to the agent, and press `S`.
+3. Select a server, or *its own choice (not routed)* to stop routing the
+   agent. Press `↵`. Press `Esc` to close the picker with no change.
+
+The footer then shows the result, for example:
+
+```
+New claude-code sessions → ete-ext. 3 running sessions stay where they are.
+```
+
+The agents pane's `SERVER` column shows the server of each agent.
+
+**To move one running session:**
+
+1. In the sessions list, move the cursor to the session, and press `S`.
+2. Select a server, or the agent's own provider. agentop tells you what the
+   move costs before it moves the session.
+
+When you have more than one server, the sessions table's `SERVER` column shows
+the server of each session.
+
+### From the command line
+
+```sh
+agentop server use ete-ext --agent claude-code   # new Claude Code sessions → ete-ext
+agentop server move <session-id> bob             # one running session → bob
+agentop server reset --agent claude-code         # back to Claude Code's own provider
+```
+
+`--agent` takes the agent's name as agentop shows it, such as `claude-code` or
+`bob`.
 
 For every form of the command, see
 [Choosing an inference server](../cmd/agentop/README.md#choosing-an-inference-server-agentop-server).
