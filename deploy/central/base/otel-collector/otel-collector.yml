@@ -8,25 +8,23 @@
 #   2. which labels exist. Only machine, preset, service_version and proxy are kept (metrics spec
 #      5.6). A sender cannot add a label.
 #
-# AUTHENTICATION IS OFF. The receivers accept any push that reaches them. The only protection is that
-# the receivers sit behind the TLS front end on a private network. A proxy may still send an
-# Authorization header; it is ignored. The design for real authentication (tokens for each install,
-# binding a token to a machine, mutual TLS, and how a consumer is given its credential) is tracked in
-# the issue named in README.md. The token blocks are kept below, switched off, so that work can reuse
-# them.
+# AUTHENTICATION IS ON. Each receiver requires `Authorization: Bearer <token>`. There is one token for
+# each proxy kind, shared by every install of that kind, read from /etc/otelcol/tokens/<kind>.txt
+# (Secret `collector-tokens`). The collector reads the files once, at start: after a token change, run
+# `oc rollout restart deploy/otel-collector`. A token proves "a Cortex install" (or "a context-guru
+# install"), not which one: `machine` is still the sender's claim. Tokens for each install, binding a
+# token to a machine and mutual TLS are tracked in rossoctl/context-guru#1130.
 #
-# TLS is terminated in front of this (the receivers listen on plain HTTP inside the private
-# network). See README.md.
+# TLS is terminated in front of this, by the OpenShift router (edge Routes). The receivers listen on
+# plain HTTP inside the cluster. See README.md.
 
 extensions:
-  # --- authentication, switched off. To switch it on again, uncomment these two blocks, the `auth:`
-  # --- lines in the receivers, and the two names in service.extensions, and use `install.sh token`.
-  # bearertokenauth/cortex:
-  #   scheme: Bearer
-  #   filename: /etc/otelcol/tokens/cortex.txt
-  # bearertokenauth/contextguru:
-  #   scheme: Bearer
-  #   filename: /etc/otelcol/tokens/context-guru.txt
+  bearertokenauth/cortex:
+    scheme: Bearer
+    filename: /etc/otelcol/tokens/cortex.txt
+  bearertokenauth/contextguru:
+    scheme: Bearer
+    filename: /etc/otelcol/tokens/context-guru.txt
   health_check:
     endpoint: 0.0.0.0:13133
 
@@ -35,14 +33,14 @@ receivers:
     protocols:
       http:
         endpoint: 0.0.0.0:4318
-        # auth:
-        #   authenticator: bearertokenauth/cortex
+        auth:
+          authenticator: bearertokenauth/cortex
   otlp/contextguru:
     protocols:
       http:
         endpoint: 0.0.0.0:4319
-        # auth:
-        #   authenticator: bearertokenauth/contextguru
+        auth:
+          authenticator: bearertokenauth/contextguru
 
 processors:
   # First in the chain: a burst from many machines must not stop the collector.
@@ -85,7 +83,7 @@ exporters:
       enabled: true
 
 service:
-  extensions: [health_check]   # + bearertokenauth/cortex, bearertokenauth/contextguru when authentication is on
+  extensions: [health_check, bearertokenauth/cortex, bearertokenauth/contextguru]
   pipelines:
     metrics/cortex:
       receivers: [otlp/cortex]
