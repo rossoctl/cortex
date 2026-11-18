@@ -132,23 +132,20 @@ causes, and they need different fixes.
 at startup, so an agent already running when Cortex was first installed — or when
 `~/.cortex` was deleted and recreated — is holding a different CA, or none.
 
-The proxy log names the offender, the cutoff, and which CA is actually in force:
+The proxy log names the offender, the cutoff, and which CA is actually in force. When
+Cortex knows which program opened the connection, the line also has `program=`, its
+executable. When that program runs under an agent, `agent=` names the agent's executable:
 
 ```sh
 grep 'client-rejected-ca' ~/.cortex/proxy.log
-# ... client=127.0.0.1:58041 ca_not_before=2026-09-09T17:11:39-04:00
+# ... client=127.0.0.1:58041 program=/usr/bin/python3 agent=/Users/you/.local/bin/claude
+#     ca_not_before=2026-09-09T17:11:39-04:00
 #     ca_fingerprint=CD:19:CD:2C:... ca_file=/Users/you/.cortex/ca/ca.crt ...
 ```
 
-Map that client port to a process, then restart it:
-
-```sh
-lsof -nP -iTCP:58041          # -> COMMAND / PID
-ps -o lstart= -p <pid>        # started before ca_not_before? restart it
-```
-
-The port has to come from the log rather than a later `lsof` sweep: the connection
-is gone by the time you look, so nothing after the fact can attribute it.
+Restart that program if it started before `ca_not_before`. When the line has no
+`program=`, nothing can name the client after the fact: the connection is gone by the
+time you read the log. Restart each agent that started before `ca_not_before`.
 
 **The other one: the client trusts a different CA of the same name.** If the process
 started *after* `ca_not_before` and still gets rejected, compare fingerprints —

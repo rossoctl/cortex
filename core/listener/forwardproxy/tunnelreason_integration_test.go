@@ -160,9 +160,8 @@ func TestClientRejectedCA_WarnsEvenAfterOtherTrafficBridged(t *testing.T) {
 		t.Errorf("warning did not state the CA cutoff, which is what makes it actionable:\n%s", got)
 	}
 	// The lsof recipe deliberately does NOT appear here: review asked for a log line
-	// short enough to read unwrapped, so mapping a client port to a process lives in
-	// docs/troubleshooting.md instead of being repeated on every occurrence. What the
-	// line must still carry is the client and the cutoff, asserted above.
+	// short enough to read unwrapped. What the line must still carry is the client
+	// and the cutoff, asserted above.
 	if strings.Contains(got, "lsof") {
 		t.Errorf("the warning re-grew the lsof recipe; it belongs in the docs:\n%s", got)
 	}
