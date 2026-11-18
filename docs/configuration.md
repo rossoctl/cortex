@@ -1,7 +1,8 @@
 # Configuration reference
 
-The runtime config has eleven top-level sections. They are documented next to the
-subsystem each one drives rather than in one file, so this table is the index.
+The runtime config has the top-level sections below (`Config` in `core/config/config.go`).
+Each one is documented next to the subsystem it drives rather than in one file, so this
+table is the index.
 
 **Plane** says what a section shapes. A "data plane" section shapes how the proxy
 handles requests. A "control plane" section shapes what Cortex records or serves
@@ -22,9 +23,11 @@ effect. The full contract is in [`proxy-contract.md`](proxy-contract.md#hot-relo
 | `stats:` | The diagnostic listener (`/stats`, `/config`, `/reload/status`, `/pricing/table`, `/tls-bridge/unread`), default `:9093` | control plane | restart | [`framework-architecture.md`](framework-architecture.md) |
 | `spiffe:` | SVID sourcing over the Workload API and the `/opt` file mirror | data plane | restart | [`architecture.md`](architecture.md#spiffe-configuration) |
 | `listener:` | Listener addresses, `roles`, interception mode, `skip_hosts`, `responses_websockets` | both | restart | [`cmd/README.md`](../cmd/README.md) (ports, roles), [`framework-architecture.md`](framework-architecture.md#skipping-infrastructure-hosts-listenerskip_hosts) (reload rules, `skip_hosts`), [`framework-architecture.md`](framework-architecture.md#responses-api-websockets-listenerresponses_websockets) (`responses_websockets`) |
-| `mtls:` | Transport mTLS on the listeners, both deployment shapes | data plane | restart | [`framework-architecture.md`](framework-architecture.md#8a-mtls-layer) |
+| `mtls:` | Transport mTLS on the proxy-sidecar listeners. In envoy-sidecar mode it has no effect, because Envoy does mTLS | data plane | restart | [`framework-architecture.md`](framework-architecture.md#8a-mtls-layer) |
 | `tls_bridge:` | The laptop TLS bridge and its CA | data plane | restart | [`laptop-service.md`](laptop-service.md#the-tls_bridge-configuration) |
 | `memory:` | The Go runtime's soft memory limit for the whole process | both | restart | [`laptop-service.md`](laptop-service.md#the-memory-configuration) |
+| `praxis:` | Praxis mode: the `cortex-gateway` process and its `policy` | data plane | restart | [`praxis-policy.md`](praxis-policy.md) |
+| `update:` | Automatic updates: `auto`, `wait`, `check_every` | control plane | `check_every`: restart. agentop reads `auto` and `wait` each time it runs | [`laptop-service.md`](laptop-service.md#automatic-updates) |
 
 Two things no config file can answer, because the effective values come from the
 file *plus* compiled-in defaults: what rates are in effect (`agentop pricing --host
