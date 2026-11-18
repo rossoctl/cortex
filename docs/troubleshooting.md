@@ -138,14 +138,15 @@ executable. When that program runs under an agent, `agent=` names the agent's ex
 
 ```sh
 grep 'client-rejected-ca' ~/.cortex/proxy.log
-# ... client=127.0.0.1:58041 program=/usr/bin/python3 agent=/Users/you/.local/bin/claude
+# ... client=127.0.0.1:58041 ... program=/usr/bin/python3 agent=/Users/you/.local/bin/claude
 #     ca_not_before=2026-09-09T17:11:39-04:00
 #     ca_fingerprint=CD:19:CD:2C:... ca_file=/Users/you/.cortex/ca/ca.crt ...
 ```
 
-Restart that program if it started before `ca_not_before`. When the line has no
-`program=`, nothing can name the client after the fact: the connection is gone by the
-time you read the log. Restart each agent that started before `ca_not_before`.
+Restart the program that `agent=` names if it started before `ca_not_before`. When the
+line has no `agent=`, restart the `program=` executable. When it has no `program=`,
+nothing can name the client after the fact: the connection is gone by the time you
+read the log. Restart each agent that started before `ca_not_before`.
 
 **The other one: the client trusts a different CA of the same name.** If the process
 started *after* `ca_not_before` and still gets rejected, compare fingerprints —
@@ -248,8 +249,8 @@ Go tool, which is the worst of both.
 To see the list, or to override it, set `tls_bridge.passthrough_hosts` in
 `~/.cortex/config.yaml`. An explicit list **replaces** the default rather than adding
 to it, and `passthrough_hosts: []` intercepts everything. Never list an inference
-endpoint there: it would silently stop every plugin on that traffic, with no error anywhere to
-notice it by.
+endpoint there: it would silently stop every plugin on that traffic, with no error
+anywhere to notice it by.
 
 ### Go tools on macOS are passed through unread
 

@@ -163,7 +163,7 @@ func TestClientRejectedCA_WarnsEvenAfterOtherTrafficBridged(t *testing.T) {
 	// short enough to read unwrapped. What the line must still carry is the client
 	// and the cutoff, asserted above.
 	if strings.Contains(got, "lsof") {
-		t.Errorf("the warning re-grew the lsof recipe; it belongs in the docs:\n%s", got)
+		t.Errorf("the warning re-grew the lsof recipe:\n%s", got)
 	}
 
 	// And the timeline carries it, so this is visible without reading a log file.

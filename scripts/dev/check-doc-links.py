@@ -51,7 +51,7 @@ def prose_lines(path):
                 fence = m.group(1)
                 continue
             yield line
-        elif m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line[m.end():].strip():
+        elif m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line[m.end() :].strip():
             fence = None
 
 

@@ -191,7 +191,7 @@ Options:
 Undo any time:
   agentop uninstall
 
-Then watch your agent live:
+After installing, watch your agent live:
   agentop observe
 
 History is kept in ~/.cortex/sessions. agentop import adds sessions from before Cortex.
