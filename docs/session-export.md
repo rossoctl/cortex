@@ -259,19 +259,26 @@ Each record is one event, reduced to numbers and short labels:
 {
   "schema": 1,
   "sessionId": "today-session",
-  "seq": 4,
+  "seq": 5,
+  "requestId": "a0-9e37cd",
   "at": "2026-11-16T23:08:45.84114Z",
   "direction": "outbound",
-  "phase": "request",
+  "phase": "response",
   "host": "api.anthropic.com",
   "httpMethod": "POST",
+  "statusCode": 200,
   "durationMs": 1311,
+  "ttfbMs": 402,
   "model": "claude-opus-5",
   "inputTokens": 1230,
   "outputTokens": 51,
   "messageCount": 1
 }
 ```
+
+This is a **response**-phase record. Only a response carries token counts and a duration,
+because the model reports usage when it answers. Its request arrived as a separate record,
+with the same `requestId` and the previous `seq`.
 
 Look at what the record does not have. The source event held this message content:
 `"SECRET-PROMPT-DO-NOT-EXPORT"`. The record has `"messageCount": 1` in its place.
