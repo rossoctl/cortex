@@ -60,6 +60,43 @@ to the server:
 | has a session that OpenAI compacted | This Codex session was compacted by OpenAI. Cortex cannot send it to another server. Start a new Codex session. |
 | is a `/compact` | Cortex cannot compact a Codex conversation on this server. Start a new Codex session, or move this agent to an OpenAI server with agentop server use. |
 
+## On an Anthropic Messages server
+
+Codex can also use a server that serves only Anthropic Messages, such as
+`https://api.anthropic.com`. Add the server with `--api anthropic-messages=<path>`,
+and send Codex to it:
+
+```sh
+agentop server add anthropic https://api.anthropic.com --main <model> --helper <model> \
+  --api anthropic-messages=/v1/messages
+agentop server use anthropic --agent codex
+```
+
+The router translates each Responses request to Anthropic Messages, and each reply
+back to Responses events. When the server's `api` map also has `chat-completions`,
+the router sends Chat Completions (see
+[On a Chat Completions server](#on-a-chat-completions-server)). The router sends the
+key as `X-Api-Key` (when `auth_header` is empty), the header
+`Anthropic-Version: 2023-06-01`, and no `Anthropic-Beta`. It removes Codex's OpenAI
+headers, as for a Chat server.
+
+What changes in the request:
+
+- When Codex sends no `max_output_tokens`, `max_tokens` is 64,000 for a stream and
+  16,000 for a request that is not streamed.
+- `temperature`, `top_p` and Codex's thinking setting are not sent. `dropped` names
+  them. Codex's reasoning effort goes as `output_config.effort`: `none`, `minimal`
+  and `low` give `low`. `medium`, `high`, `xhigh` and `max` keep their value.
+- Codex sends no `cache_control` marker, so the router adds the top-level
+  `cache_control: {"type": "ephemeral"}`. Anthropic then caches the conversation as
+  it grows.
+- A tool call id with characters other than `a-z`, `A-Z`, `0-9`, `_` and `-` goes to
+  Anthropic as `cx_` and the id's base64url form.
+- Server tools (for example `web_search`) are not sent. Server-tool blocks in the
+  reply do not go to Codex. The raw capture keeps them.
+
+Cortex refuses the same requests as for a Chat server (see the table above).
+
 ## What you see
 
 **Its own agent.** Codex sends four product tokens, all folded to the canonical agent name
