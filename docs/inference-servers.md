@@ -51,10 +51,6 @@ agentop server add cb https://litellm.cb.ete.res.ibm.com \
   --main glm --helper NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
 ```
 
-**Cost:** in dollars. The `cb` models have no rate in Cortex's price list. A
-`cb` request whose cost LiteLLM does not send shows as unpriced until you give
-the model a rate. See [pricing](pricing.md).
-
 ### IBM Bob
 
 Make a static API key at <https://bob.ibm.com/admin/apikeys>, then run:
@@ -72,9 +68,6 @@ Bob serves chat completions only, so Cortex translates each Anthropic request,
 such as one from Claude Code, and its reply. A request with a PDF document gets
 a 400 from Cortex. See
 [Servers that serve another protocol](inference-router-plugin.md#servers-that-serve-another-protocol).
-
-**Cost:** in Bobcoins, at a flat 2 for each million tokens. agentop shows
-Bobcoins apart from dollars.
 
 ### Set up a local model
 
@@ -98,9 +91,6 @@ Bobcoins apart from dollars.
 
 A local model is weaker than a frontier model. Expect more retries on hard
 work.
-
-**Cost:** Cortex counts the tokens, but shows the model as unpriced until you
-give it a rate. See [pricing](pricing.md).
 
 #### Choose a model
 
