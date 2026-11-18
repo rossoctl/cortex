@@ -91,6 +91,7 @@ func docCount(t *testing.T, doc, pattern string) int {
 // Neither existing pin covers this. TestDocExampleRecordMatchesWire pins the REFERENCE
 // page's json example, and TestRecord_EveryFieldIsPopulated pins that FromEvent sets every
 // field. Neither counts them.
+//
 // Three places state the field count: the guide's table, the reference's one-line
 // summary, and `agentop export --help`. Before #1931 the guide said 36 while the other
 // two said "about 30", which is how a hand-maintained count drifts.
@@ -114,6 +115,49 @@ func TestDocGuideFieldCountMatchesRecord(t *testing.T) {
 			t.Errorf("%s says %d fields, Record has %d — add the new field to the guide's "+
 				"\"What a record carries\" table, or to \"What a record never carries\" if it "+
 				"must not be exported, and fix all three counts", c.where, got, want)
+		}
+	}
+}
+
+// TestDocGuideFieldNamesMatchRecord pins the guide's table to Record field by field.
+//
+// The count alone is not enough: a rename (ttfbMs → ttfb) or a swap (one field added, one
+// removed) keeps the count at 36 and leaves the table wrong (#1931 review). This compares
+// the SET, so it names what drifted rather than reporting a number that still agrees.
+func TestDocGuideFieldNamesMatchRecord(t *testing.T) {
+	want := map[string]bool{}
+	rt := reflect.TypeOf(Record{})
+	for i := range rt.NumField() {
+		tag, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ",")
+		if tag != "" && tag != "-" {
+			want[tag] = true
+		}
+	}
+
+	doc := readGuide(t)
+	const open, close = "| Group | Fields |", "### Two fields are not short"
+	i, j := strings.Index(doc, open), strings.Index(doc, close)
+	if i < 0 || j < i {
+		t.Fatal("the guide's field table is no longer between its heading and " +
+			`"Two fields are not short" — retarget this pin`)
+	}
+	got := map[string]bool{}
+	for _, m := range regexp.MustCompile("`([a-zA-Z]+)`").FindAllStringSubmatch(doc[i:j], -1) {
+		got[m[1]] = true
+	}
+
+	for name := range want {
+		if !got[name] {
+			t.Errorf("Record has %q, the guide's \"What a record carries\" table does not — "+
+				"add it to the table, or to \"What a record never carries\" if it must not "+
+				"be exported", name)
+		}
+	}
+	for name := range got {
+		if !want[name] {
+			t.Errorf("the guide's table names %q, Record has no such json field — "+
+				"a renamed or removed field leaves the table describing an export that "+
+				"does not exist", name)
 		}
 	}
 }

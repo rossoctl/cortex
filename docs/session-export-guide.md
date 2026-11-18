@@ -34,8 +34,8 @@ Read this section before you export. It decides whether this is the right tool.
 ### What a record carries
 
 One record is one event. A record holds 36 fields. Cortex caps each label at 96 bytes, so
-every field is a number or a short label. `sessionId` is the exception: see
-[One field is not short](#one-field-is-not-short).
+nearly every field is a number or a short label. `sessionId` and `requestId` are the
+exceptions: see [Two fields are not short](#two-fields-are-not-short).
 
 | Group | Fields |
 |---|---|
@@ -50,20 +50,28 @@ every field is a number or a short label. `sessionId` is the exception: see
 | Caller | `client`, `agentRole` |
 | Transport | `direction`, `phase`, `tunnel`, `tunnelReason`, `schema` |
 
-`client` is the product label from the User-Agent header, such as `claude-cli`. It is not
-an authenticated client id. `agentRole` comes from the inference metadata. Neither one
+`client` is the coding agent Cortex recognised from the User-Agent, such as
+`claude-code/2.1.270`. Cortex never copies the header's text: the name comes from a closed
+list, and the version is kept only when it has the expected shape. So `client` is not an
+authenticated client id, and `agentRole` comes from the inference metadata. Neither one
 names an authenticated principal.
 
-### One field is not short
+### Two fields are not short
 
 `sessionId` is the value a client asserted. Cortex copies it through unchanged, up to 256
-bytes. The 96-byte label cap does not apply to it.
+bytes. The 96-byte label cap does not apply to it. A client is therefore free to use a
+sentence as its session id, and the export then carries that sentence.
 
-A client is therefore free to use a sentence as its session id. If a client does that, the
-export carries that sentence.
+`requestId` is uncapped too. Cortex mints it on live traffic, such as `a0-9e37cd`, so it
+holds no client text. On an imported session it comes from the transcript, and one importer
+builds it as `<session id>/<entry id>` — which repeats whatever the session id holds.
 
-**Read the `sessionId` values before you share an export.** This is the one field where
-client text can reach a record.
+Other fields carry client text as well, but capped at 96 bytes. `model`, `requestedModel`
+and `servedModel` are whatever the request body and the response named. `host` is whatever
+the client connected to.
+
+**Read these values before you share an export.** `sessionId` and `requestId` are the two
+that can be long.
 
 ### What a record never carries
 
@@ -556,17 +564,22 @@ these as 3, 2, 1.
 A client can reuse one session id for as long as it likes. The id `default` can cover
 weeks of unrelated work.
 
-Two ids are never one unit of work. `default` is the shared bucket. An id starting with
+Two ids are not units of work at all. `default` is the shared bucket. An id starting with
 `pending:` is a holding bucket: an agent's calls from before its process named a session.
-`codex exec` leaves one on every run. Exclude both from an aggregate, or a run's startup
-counts twice — once here, once in the session it named:
+`codex exec` leaves one on every run.
+
+Exclude both when you compute a figure per session. Neither one is a session:
 
 ```sh
 agentop export | jq -c 'select(.sessionId | startswith("pending:") or . == "default" | not)'
 ```
 
-[`session-api.md`](session-api.md#event-schema) explains how a bucket links to the session
-it named.
+Keep them when you compute a total. The export does not link a bucket to the session it
+named, so a bucket's calls are in the bucket only. Drop them and the total is too low.
+
+[`session-api.md`](session-api.md#get-v1sessions) explains how the **list** links a bucket
+to the session it named. That link is a property of the list, not of the export. No record
+carries it.
 
 Do not group by `sessionId` and call the result a task. The average covers unrelated work.
 
