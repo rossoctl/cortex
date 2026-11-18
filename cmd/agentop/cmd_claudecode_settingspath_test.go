@@ -98,18 +98,23 @@ func TestUninstallUnroutesEverySettingsFileCortexRouted(t *testing.T) {
 func TestUninstallLeavesAnOlderRelativeEntryAndSaysSo(t *testing.T) {
 	const mine = "http://127.0.0.1:47699"
 	const row = "kept the record's entry for .claude/settings.json: an older agentop recorded it without its directory"
-	restore := "fix: and restore " + envProxy + " — your earlier values are in ~/.cortex/claude-code-state.json\n"
 	leftBehind := "Left behind:\n    .claude/settings.json in the project an older agentop enabled it in\n"
+	// The project's file is unread, so the fix reads the entry, which names every key.
+	fix := []string{
+		`fix: in .claude/settings.json, remove each "env" key whose value is still the one under "written" in that entry, and keep any that differ` + "\n",
+		`fix: and restore each key whose "prior" in that entry is not null` + "\n",
+		"fix: then delete the record's entry for .claude/settings.json from ~/.cortex/claude-code-state.json\n",
+	}
 	for _, c := range []struct {
 		name      string
 		installed bool
 		others    string // "", "entries": a project's and the default file's, "bare": the default file routed with no entry
 		want      []string
 	}{
-		{"alone", true, "", []string{markLine("!", "unrouted") + row, restore, leftBehind}},
-		{"beside a project and the default file", true, "entries", []string{markLine("!", "unrouted") + row, restore, leftBehind}},
+		{"alone", true, "", []string{markLine("!", "unrouted") + row, leftBehind}},
+		{"beside a project and the default file", true, "entries", []string{markLine("!", "unrouted") + row, leftBehind}},
 		{"beside a default file with no entry of its own", true, "bare", []string{markLine("!", "unrouted") + row, leftBehind}},
-		{"with nothing else installed", false, "", []string{"Nothing to uninstall.\n", "K" + row[1:], restore}},
+		{"with nothing else installed", false, "", []string{"Nothing to uninstall.\n", "K" + row[1:]}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			sc := newUninstallScene(t)
@@ -148,7 +153,7 @@ func TestUninstallLeavesAnOlderRelativeEntryAndSaysSo(t *testing.T) {
 			t.Chdir(sc.home)
 
 			code, out := sc.uninstall(t, "--yes", "--purge")
-			wantLines(t, code, 1, out, c.want...)
+			wantLines(t, code, 1, out, append(c.want, fix...)...)
 			if after, _ := os.ReadFile(proj); !bytes.Equal(after, routed) {
 				t.Errorf("the project's file changed:\n%s", after)
 			}

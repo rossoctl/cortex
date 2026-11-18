@@ -441,11 +441,16 @@ func planUnrouteClaudeCode(env *setupEnv) []removal {
 }
 
 // keepOlderEntry is the row for an older relative entry. agentop is gone by the
-// time the user reads it, so its fix is by hand.
+// time the user reads it, so its fix is by hand. Uninstall cannot read that
+// file, so the fix reads the entry: "written" names each key and the value Cortex
+// set, so a key holding another value is kept.
 func keepOlderEntry(env *setupEnv, rel, state string) removal {
 	entry := "the record's entry for " + rel
-	fix := strings.Split(unrouteByHand(env, rel, state, managedKeys, nil), "\n")
-	fix = append(fix, "then delete "+entry+" from "+env.tilde(state))
+	fix := []string{
+		"in " + rel + `, remove each "env" key whose value is still the one under "written" in that entry, and keep any that differ`,
+		`and restore each key whose "prior" in that entry is not null`,
+		"then delete " + entry + " from " + env.tilde(state),
+	}
 	return removal{
 		label: "unrouted",
 		keep: &kept{
