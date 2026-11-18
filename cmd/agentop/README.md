@@ -1432,8 +1432,8 @@ a malformed name, agent or URL included; 3 a replacement declined.
 Ollama, vLLM and llama.cpp's `llama-server` are added like any other server. None
 of them checks the key unless started with one, but `add` needs one, so give any word.
 Setting the server itself up — installing it, picking a model, the context
-length — is walked in [Set up a local
-model](../../docs/inference-servers.md#set-up-a-local-model). An agent keeps asking for its own
+length — is walked in [Local model with
+Ollama](../../docs/inference-servers.md#local-model-with-ollama). An agent keeps asking for its own
 model names, which a local server does not have;
 the server's refusal is answered with the `--main` or `--helper` model, as a
 LiteLLM refusal is:

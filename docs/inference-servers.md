@@ -1,44 +1,45 @@
 # Route an agent to another inference server
 
-Cortex can send an agent's inference to a server that you choose. You do not
-change the agent's own settings. You need only one server. It takes three
-steps:
+Cortex can send an agent's inference requests to an inference server that
+you choose, with no change to the agent's own settings. One server is enough.
 
 1. **Set up the server.** Follow the section for your server in
-   [Pick a server](#pick-a-server). It ends with one `agentop server add`
-   command.
-2. **Choose it for an agent.** See
+   [Pick a server](#pick-a-server). Each section ends with an
+   `agentop server add` command. [What `add` does](#what-add-does) explains
+   its flags.
+2. **Choose the server for an agent.** See
    [Choose the server for an agent](#choose-the-server-for-an-agent).
-3. **Check that it works.** See [Check it works](#check-it-works).
+3. **Check that it works.** See [Check that it works](#check-that-it-works).
 
-Before you start, install Cortex and route the agent through it. See
-[getting started](getting-started.md). Nothing restarts when you add or choose
-a server.
+Before you start, install Cortex and route the agent through it, as
+[Getting started](getting-started.md) shows. Cortex does not restart when you
+add or choose a server.
 
 ## Pick a server
 
-| Server | Setup |
-|---|---|
-| `ete-int`, `ete-ext` or `cb`: IBM's LiteLLM gateways | [IBM's LiteLLM gateways](#ibms-litellm-gateways) |
-| `bob`: IBM Bob's gateway | [IBM Bob](#ibm-bob) |
-| A model on your own machine, with Ollama | [Set up a local model](#set-up-a-local-model) |
-| Any other gateway or model server | [Another server](#another-server) |
+| Server | Description | Setup |
+|---|---|---|
+| `ete-int`, `ete-ext`, `cb` | IBM LiteLLM gateways | [IBM LiteLLM gateways](#ibm-litellm-gateways) |
+| `bob` | IBM Bob's gateway | [IBM Bob](#ibm-bob) |
+| `ollama` | A model on your own machine | [Local model with Ollama](#local-model-with-ollama) |
+| A name you choose | Any other gateway or model server | [Other servers](#other-servers) |
 
 Follow only the section for your server. To add more than one server, follow
-each section. The names, such as `ete-int`, are only names. You can use other
-names.
+each section that applies. The first argument of `agentop server add` is a
+name that you choose. This guide uses the names in the first column.
 
-### IBM's LiteLLM gateways
+### IBM LiteLLM gateways
 
-All three need the IBM network or VPN.
+These three gateways are available only on the IBM network or VPN.
 
-| Server | URL | Where to make the key |
+| Server | URL | API key page |
 |---|---|---|
 | `ete-int` | `https://ete-litellm.ai-models.vpc-int.res.ibm.com` | <https://ete-litellm.ai-models.vpc-int.res.ibm.com/ui/api-keys/> |
 | `ete-ext` | `https://ete-litellm.ai-models.vpc.res.ibm.com` | <https://ete-litellm.ai-models.vpc.res.ibm.com/ui/api-keys/> |
 | `cb` | `https://litellm.cb.ete.res.ibm.com` | <https://litellm.cb.ete.res.ibm.com/ui/api-keys/> |
 
-Make a key, then run the line for your server:
+Create an API key on the server's key page. Then run the command for that
+server:
 
 ```sh
 agentop server add ete-int https://ete-litellm.ai-models.vpc-int.res.ibm.com \
@@ -53,7 +54,7 @@ agentop server add cb https://litellm.cb.ete.res.ibm.com \
 
 ### IBM Bob
 
-Make a static API key at <https://bob.ibm.com/admin/apikeys>, then run:
+Create a static API key at <https://bob.ibm.com/admin/apikeys>. Then run:
 
 ```sh
 agentop server add bob https://api.us-east.bob.ibm.com/inference \
@@ -61,15 +62,19 @@ agentop server add bob https://api.us-east.bob.ibm.com/inference \
   --auth-header x-api-key --header User-Agent=bob-shell
 ```
 
-Bob needs the last two flags: it takes its key only as `x-api-key`, and it
-refuses a request whose User-Agent does not start with `bob-shell`.
+Bob requires the last two flags:
 
-Bob serves chat completions only, so Cortex translates each Anthropic request,
-such as one from Claude Code, and its reply. A request with a PDF document gets
-a 400 from Cortex. See
+- `--auth-header x-api-key`: Bob accepts the API key only in the `x-api-key`
+  header.
+- `--header User-Agent=bob-shell`: Bob refuses each request whose User-Agent
+  does not start with `bob-shell`.
+
+Bob serves only the chat completions API. Cortex translates each Anthropic
+request, such as a request from Claude Code, and the reply. If a request
+contains a PDF document, Cortex refuses it with a 400 error. See
 [Servers that serve another protocol](inference-router-plugin.md#servers-that-serve-another-protocol).
 
-### Set up a local model
+### Local model with Ollama
 
 This section uses [Ollama](https://ollama.com) and IBM's Granite models. A
 local model is weaker than a frontier model. Expect more retries and wrong
@@ -77,10 +82,10 @@ turns on hard work. It keeps you working. It does not replace your provider.
 
 1. [Choose a model](#choose-a-model) for your machine's memory and your agent.
 2. [Install Ollama and pull the model](#install-ollama-and-pull-the-model).
-3. [Set the context length](#context-length).
-4. Add the server. Ollama checks no key, but `add` needs one, so
-   `echo ollama` gives a placeholder. Give the full tag: a bare `granite` picks
-   `granite3.3` if that is pulled too.
+3. [Set the context length](#set-the-context-length).
+4. Add the server. Ollama does not check API keys, but `add` requires one, so
+   `echo ollama` supplies a placeholder. Give the full model tag. A bare
+   `granite` can pick `granite3.3` if you pulled that model too.
 
    ```sh
    echo ollama | agentop server add ollama http://localhost:11434 \
@@ -169,7 +174,7 @@ Check that Ollama lists it:
 curl -s localhost:11434/v1/models | jq -r '.data[].id'
 ```
 
-#### Context length
+#### Set the context length
 
 Set the window yourself. Ollama does not refuse a prompt that is too long. It
 cuts the prompt without an error. Then the agent behaves strangely, and nothing
@@ -207,7 +212,7 @@ granite4.2:3b    4.7 GB    100% GPU     32768
   If it says `100% GPU` and is still too slow, the chip is the limit: use a
   smaller model.
 
-#### Trying another local model
+#### Try another local model
 
 Check any local model the same way before you rely on it:
 
@@ -220,30 +225,36 @@ Check any local model the same way before you rely on it:
 
 Then give it a small real task through the agent before a large one.
 
-### Another server
+### Other servers
 
-Any other LiteLLM gateway, provider API or local model server, such as LM
-Studio, llama.cpp's `llama-server` or vLLM, works the same way:
+Any other LiteLLM gateway, provider API or local model server works the same
+way. Examples are LM Studio, llama.cpp's `llama-server` and vLLM. For example,
+for a LiteLLM gateway at `https://litellm.example.com` that serves Claude
+models:
 
 ```sh
-agentop server add <name> <url> --main <word> --helper <word>
+agentop server add team-gateway https://litellm.example.com \
+  --main claude-opus --helper claude-haiku
 ```
 
-See [Local model servers](../cmd/agentop/README.md#local-model-servers), and
-`--auth-header` and `--header` under
-[`add`](../cmd/agentop/README.md#choosing-an-inference-server-agentop-server)
-for a gateway that needs its own headers.
+- For a local model server, see
+  [Local model servers](../cmd/agentop/README.md#local-model-servers).
+- For a gateway that needs its own headers, see `--auth-header` and `--header`
+  in the
+  [`add` reference](../cmd/agentop/README.md#choosing-an-inference-server-agentop-server).
 
 ## What `add` does
 
-- It asks for the key at a prompt that does not echo.
-- `--main` and `--helper` name the model for the agent's main work, and the
-  model for side requests such as titles. Cortex uses them only when the server
-  refuses the model that the agent asked for. Each is a word: `add` picks the
-  newest model on the server's list whose name contains it.
-- It reads the server's model list and prints the model that each word picks.
-  It refuses a word that names no model, and shows the list.
-- It writes `~/.cortex/config.yaml`, and the proxy reloads it. For
+- **It asks for the API key** at a prompt that does not echo.
+- **It sets the fallback models.** `--main` names the model for the agent's
+  main work. `--helper` names the model for side requests, such as titles.
+  Cortex uses them only when the server refuses the model that the agent asked
+  for. Each value is a model name or part of one. `add` picks the newest model
+  on the server's list whose name contains the value.
+- **It checks the server.** `add` reads the server's model list with the API
+  key, and prints the model that each value picks. If a value matches no
+  model, `add` stops and shows the list.
+- **It writes `~/.cortex/config.yaml`,** and Cortex reloads the file. For
   example, the Bob entry:
 
   ```yaml
@@ -262,7 +273,7 @@ for a gateway that needs its own headers.
             User-Agent: bob-shell
   ```
 
-To change a key or a model, run the same `add` again.
+To change the API key or a model, run the same `add` command again.
 
 ### When `add` fails
 
@@ -270,9 +281,9 @@ To change a key or a model, run the same `add` again.
 |---|---|---|
 | `could not reach the server: context deadline exceeded` | For `ete-int`, `ete-ext` or `cb`: you are not on the IBM network. | Connect to the IBM network or VPN. |
 | `could not reach the server: … connection refused` | For Ollama: the server is not running. | Start Ollama. |
-| `the server answered 401, …` | The key is wrong. | Make a new key on the server's key page. |
+| `the server answered 401, …` | The API key is wrong. | Create a new API key on the server's key page. |
 | `the server answered 403, 403, 403, 403` for Bob | The two Bob flags are missing. | Add `--auth-header x-api-key --header User-Agent=bob-shell`. |
-| `--main … names none of …'s models` | The server does not serve a model with that word. | Choose a word from the list that the message shows. |
+| `--main … names none of …'s models` | No model on the server matches the value. | Choose a value from the list that the message shows. |
 
 ## Choose the server for an agent
 
@@ -282,11 +293,12 @@ agentop server move <session-id> bob             # one running session → bob
 agentop server reset --agent claude-code         # back to Claude Code's own provider
 ```
 
-- `--agent` is the agent's name as agentop shows it, such as `claude-code` or
-  `bob`. In `agentop observe`, press `A` for the agents, then `S` on one to do
-  the same.
-- New sessions go to the server. Running sessions stay where they started
-  until you move them.
+- `--agent` takes the agent's name as agentop shows it, such as `claude-code`
+  or `bob`.
+- In `agentop observe`, you can do the same: press `A` to show the agents,
+  then press `S` on an agent.
+- New sessions go to the chosen server. A running session stays on its server
+  until you move it.
 - The first turn after a move sends the whole conversation again with no
   cache, so it is slow. Start a new session when you can.
 - If the server stops, its sessions' requests fail. Nothing fails over on its
@@ -295,17 +307,20 @@ agentop server reset --agent claude-code         # back to Claude Code's own pro
 For every form of the command, see
 [Choosing an inference server](../cmd/agentop/README.md#choosing-an-inference-server-agentop-server).
 
-## Check it works
+## Check that it works
 
-Run `agentop server`. It lists each server, the model that each word picks,
-and the agents that each server gets. It never shows a key.
+1. Run `agentop server`. It lists each server, the model that each value
+   picks, and the agents that use each server. It never shows an API key.
 
-```
-  bob       api.us-east.bob.ibm.com                     main premium-ide → premium-ide · helper fast → fast
-  ete-ext   ete-litellm.ai-models.vpc.res.ibm.com       main claude-opus-4-6 → claude-opus-4-6 · helper claude-sonnet-4-6 → claude-sonnet-4-6   claude-code
-  ete-int   ete-litellm.ai-models.vpc-int.res.ibm.com   main claude-opus-5-5 · helper claude-sonnet-5-5 (model list unavailable: could not reach the server: context deadline exceeded)
-```
+   ```
+     bob       api.us-east.bob.ibm.com                     main premium-ide → premium-ide · helper fast → fast
+     ete-ext   ete-litellm.ai-models.vpc.res.ibm.com       main claude-opus-4-6 → claude-opus-4-6 · helper claude-sonnet-4-6 → claude-sonnet-4-6   claude-code
+     ete-int   ete-litellm.ai-models.vpc-int.res.ibm.com   main claude-opus-5-5 · helper claude-sonnet-5-5 (model list unavailable: could not reach the server: context deadline exceeded)
+   ```
 
-`model list unavailable` means that agentop cannot reach the server. Then start
-a new session in the agent. With more than one server, the sessions table in
-`agentop observe` has a `SERVER` column that names each session's server.
+   `model list unavailable` means that agentop cannot reach the server.
+
+2. Start a new session in the agent.
+3. In `agentop observe`, find the session. When you have more than one
+   server, the sessions table has a `SERVER` column that names the server of
+   each session.
