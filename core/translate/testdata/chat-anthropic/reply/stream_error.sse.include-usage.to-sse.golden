@@ -1,0 +1,6 @@
+data: {"id":"msg_01Err","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"msg_01Err","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"content":"Partial"},"finish_reason":null}]}
+
+data: {"error":{"message":"Overloaded","type":"overloaded_error","code":null}}
+

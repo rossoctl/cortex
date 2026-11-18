@@ -1,0 +1,12 @@
+data: {"id":"msg_01Think","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"msg_01Think","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"thinking_blocks":[{"type":"thinking","thinking":"","signature":"EqQBCkYIBRgCKkBx+/Sig=="}]},"finish_reason":null}]}
+
+data: {"id":"msg_01Think","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"content":"391 is 17 times 23."},"finish_reason":null}]}
+
+data: {"id":"msg_01Think","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"msg_01Think","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[],"usage":{"prompt_tokens":20,"completion_tokens":90,"total_tokens":110,"prompt_tokens_details":{"cached_tokens":0},"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}
+
+data: [DONE]
+
