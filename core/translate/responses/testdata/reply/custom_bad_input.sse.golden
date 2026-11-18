@@ -1,0 +1,9 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp-1","object":"response","model":"claude","status":"in_progress"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_0","call_id":"call_4","name":"apply_patch","input":""}}
+
+event: response.failed
+data: {"type":"response.failed","response":{"id":"resp-1","object":"response","model":"claude","status":"failed","output":[],"error":{"code":"api_error","message":"the inference server sent input for the tool \"apply_patch\" that is not a JSON object with a string input"}}}
+

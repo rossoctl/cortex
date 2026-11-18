@@ -1,0 +1,1 @@
+{"id":"chatcmpl-b3","object":"response","model":"premium-ide","status":"completed","output":[{"type":"function_call","id":"fc_0","call_id":"call_3833__thought__AY89a1+8zd/x=","name":"spawn_subagent","arguments":"{\"task\":\"look\"}"}],"usage":{"input_tokens":13314,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens":296,"total_tokens":13610}}

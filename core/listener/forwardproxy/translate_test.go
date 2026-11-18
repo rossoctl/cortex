@@ -24,11 +24,12 @@ import (
 )
 
 // translator redirects every request to target and asks the listener to translate
-// it from Anthropic Messages to chat completions, as the inference router does. When
-// translate is false it only redirects. headers, when set, go to SetUpstreamHeaders.
+// it from source (Anthropic Messages when empty) to chat completions, as the
+// inference router does. When translate is false it only redirects. headers, when set, go to SetUpstreamHeaders.
 // resend, when set, is the answer to each Resend, and heads keeps what it was shown.
 type translator struct {
 	target    string
+	source    string
 	translate bool
 	headers   http.Header
 	resend    bool
@@ -47,7 +48,11 @@ func (p *translator) OnRequest(_ context.Context, pctx *pipeline.Context) pipeli
 		panic(err)
 	}
 	if p.translate {
-		if err := pctx.Translate("anthropic-messages", "chat-completions", "/v1/chat/completions"); err != nil {
+		src := p.source
+		if src == "" {
+			src = "anthropic-messages"
+		}
+		if err := pctx.Translate(src, "chat-completions", "/v1/chat/completions"); err != nil {
 			panic(err)
 		}
 	}
@@ -718,4 +723,130 @@ func TestTranslate_EmptyReplyCapturesUpstream(t *testing.T) {
 			t.Errorf("Upstream is nil, want an empty capture of the server's reply")
 		}
 	}
+}
+
+// codexHeaders are headers that Codex sends and that only an OpenAI server reads
+// (rule R3).
+var codexHeaders = []string{"OpenAI-Beta", "Originator", "ChatGPT-Account-Id", "X-Codex-Turn"}
+
+// postCodex sends a Codex-shaped Responses request through proxy to chatgpt.com.
+func postCodex(t *testing.T, proxy *httptest.Server, body string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, "http://chatgpt.example/backend-api/codex/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "codex-tui/0.162.1 (Mac OS 26.3.0; arm64) xterm-256color (codex-tui; 0.162.1)")
+	for _, h := range codexHeaders {
+		req.Header.Set(h, "v")
+	}
+	resp, err := proxyClient(proxy, nil).Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+const codexRequest = `{"model":"gpt-5","instructions":"be brief","stream":true,"store":false,` +
+	`"tools":[{"type":"function","name":"Bash","description":"run","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}],` +
+	`"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"is 391 prime?"}]}]}`
+
+// Rules R1, R3 and R11 end to end: a Codex request to a Chat server.
+func TestTranslate_CodexToChat(t *testing.T) {
+	// bob_shape1 is text and one Bash call. Its usage line is replaced with one that
+	// carries cached_tokens and cache_creation_input_tokens.
+	var sse []string
+	for _, chunk := range strings.SplitAfter(replyFixture(t, "bob_shape1.sse"), "\n\n") {
+		if strings.Contains(chunk, `"usage"`) {
+			chunk = `data: {"id":"chatcmpl-b1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":450,"completion_tokens":20,` +
+				`"total_tokens":470,"cache_creation_input_tokens":50,"prompt_tokens_details":{"cached_tokens":300}}}` + "\n\n"
+		}
+		sse = append(sse, chunk)
+	}
+	up := newChatServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, strings.Join(sse, ""))
+	})
+	store := newStore(t)
+	proxy := newRedirectProxy(t, store, nil, inferenceparser.NewInferenceParser(),
+		&translator{target: up.URL, source: "responses", translate: true})
+
+	resp := postCodex(t, proxy, codexRequest)
+	body := replyText(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body %s", resp.StatusCode, body)
+	}
+	created, completed := strings.Index(body, "event: response.created\n"), strings.Index(body, "event: response.completed\n")
+	if created != 0 || completed < 0 {
+		t.Errorf("reply does not go from response.created to response.completed:\n%s", body)
+	}
+
+	reqs := up.got()
+	if len(reqs) != 1 || reqs[0].path != "/v1/chat/completions" {
+		t.Fatalf("upstream requests = %+v, want one to /v1/chat/completions", reqs)
+	}
+	for _, h := range codexHeaders {
+		if v := reqs[0].header.Values(h); len(v) != 0 {
+			t.Errorf("upstream saw %s: %q", h, v)
+		}
+	}
+	var chatBody struct {
+		Messages []struct {
+			Role string `json:"role"`
+		} `json:"messages"`
+		Tools []json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(reqs[0].body, &chatBody); err != nil || len(chatBody.Messages) != 2 ||
+		chatBody.Messages[0].Role != "system" || chatBody.Messages[1].Role != "user" || len(chatBody.Tools) != 1 {
+		t.Errorf("upstream body is not the chat request: %s", reqs[0].body)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var inf *pipeline.InferenceExtension
+	for time.Now().Before(deadline) {
+		if inf = lastInferenceResponse(t, store); inf != nil && inf.OutputTokens != 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if inf == nil {
+		t.Fatal("no response inference")
+	}
+	if inf.Completion != "391 is not prime" || len(inf.ToolCalls) != 1 || inf.ToolCalls[0].Name != "Bash" {
+		t.Errorf("response inference: completion %q, tool calls %+v; want the text and one Bash", inf.Completion, inf.ToolCalls)
+	}
+	if inf.InputTokens != 100 || inf.CacheReadTokens != 300 || inf.CacheWriteTokens != 50 || inf.OutputTokens != 20 {
+		t.Errorf("tokens: input %d, cache read %d, cache write %d, output %d; want 100, 300, 50, 20",
+			inf.InputTokens, inf.CacheReadTokens, inf.CacheWriteTokens, inf.OutputTokens)
+	}
+}
+
+// assertCodexRefused checks a rule R5 or R10 refusal: 400, the OpenAI error body
+// with the exact text, and nothing upstream.
+func assertCodexRefused(t *testing.T, req, msg string) {
+	t.Helper()
+	up := newChatServer(t, func(w http.ResponseWriter, _ *http.Request) {})
+	proxy := newRedirectProxy(t, newStore(t), nil, &translator{target: up.URL, source: "responses", translate: true})
+	resp := postCodex(t, proxy, req)
+	body := replyText(t, resp)
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+	want, _ := json.Marshal(msg)
+	if body != `{"error":{"message":`+string(want)+`,"type":"invalid_request_error","code":null}}` {
+		t.Errorf("reply = %s", body)
+	}
+	if n := len(up.got()); n != 0 {
+		t.Errorf("upstream got %d requests, want 0", n)
+	}
+}
+
+func TestTranslate_CodexStateRefused(t *testing.T) {
+	assertCodexRefused(t, `{"model":"gpt-5","previous_response_id":"resp_1","input":[]}`,
+		"Cortex cannot translate a Responses request that refers to server state (previous_response_id). Send the full conversation.")
+}
+
+func TestTranslate_CodexCompactRefused(t *testing.T) {
+	assertCodexRefused(t, `{"model":"gpt-5","input":[{"type":"message","role":"user","content":"hi"},{"type":"compaction_trigger"}]}`,
+		"Cortex cannot compact a Codex conversation on this server. Start a new Codex session, or move this agent to an OpenAI server with agentop server use.")
 }
