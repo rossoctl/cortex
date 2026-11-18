@@ -1302,10 +1302,11 @@ refusal is believed for an hour, and a session keeps the model it was given.
   variable.
   - `--api <protocol>=<path>` (repeatable) names a protocol the server serves and
     the path it serves it at: `anthropic-messages`, `chat-completions` or
-    `responses`. A second `--api` for one protocol replaces the first. With no
-    `--api`, requests go in the agent's protocol to the agent's path.
+    `responses`. A second `--api` for one protocol replaces the first. `--api`
+    skips the probe (see below).
   - `--auth-header <name>` names the header that carries the key: `authorization`
-    sends `Bearer <key>`, any other name sends the raw key.
+    sends `Bearer <key>`, any other name sends the raw key. A given header is
+    fixed: the model list and the probe do not try the other header.
   - `--header <name>=<value>` (repeatable) sets a fixed header on every request to
     the server. A value with `$` is refused, as a key is: write
     `headers: {<name>: ${NAME}}` by hand. The key headers and the hop-by-hop
@@ -1313,6 +1314,52 @@ refusal is believed for an hour, and a session keeps the model it was given.
 
   `agentop server` shows these under the server: its `api`, its auth header, and
   the header names, never their values.
+
+  The URL can have a path, such as `https://h.example.com/inference`. The router
+  puts this prefix before each path it builds (see
+  [`url`](../../docs/inference-router-plugin.md)). The model list is read from
+  `/v1/models`, or from LiteLLM's `/v1/model/info` when `/v1/models` gives 403 or
+  404, after the prefix.
+
+  **The probe.** With no `--api`, `add` finds which protocols the server serves.
+  It sends one small request for each candidate path, with the main model, the
+  text `ping`, and `max_tokens: 1` for `anthropic-messages`, no output limit for
+  `chat-completions`, and `max_output_tokens: 16` for `responses`:
+
+  | Protocol | Candidate paths, in order |
+  |---|---|
+  | `anthropic-messages` | `/v1/messages`, `/messages`, `/anthropic/v1/messages` |
+  | `chat-completions` | `/v1/chat/completions`, `/chat/completions` |
+  | `responses` | `/v1/responses`, `/responses` |
+
+  - A path is served only when the reply is 2xx and its body has the protocol's
+    shape. A 200 with an error body is not served.
+  - `add` writes the first served path of each protocol to `api`, and prints
+    `api <protocol> → <path>`.
+  - On 401 or 403, the probe sends the request once more with the other auth
+    header (`authorization` or `x-api-key`), unless the header is fixed.
+  - `add` writes `auth_header` only when a protocol needed a header that is not
+    its usual one, and prints `auth_header → <name>`. The usual header is
+    `x-api-key` for `anthropic-messages` and `authorization` for the other two.
+  - When no path serves, `add` exits 1 and writes nothing. When every path gave
+    the same reply, the message shows it: then the model or the key is wrong,
+    not the path.
+
+  The probe runs only in `add`: to probe again, run `add` again.
+
+  **IBM Bob.** For a host that ends in `.bob.ibm.com`, `add` sets
+  `auth_header: x-api-key` and the header `User-Agent: bob-shell`.
+  `--auth-header` replaces the first. A `--header User-Agent=...`, case ignored,
+  replaces the second. Use a static Bob API key from Bob's settings:
+
+  ```sh
+  agentop server add bob https://api.us-east.bob.ibm.com/inference --main premium-ide --helper fast
+  agentop server use bob --agent claude-code
+  ```
+
+  Nobody has run the probe on a live Bob gateway. It is expected to find
+  `chat-completions` at `/v1/chat/completions`. The expected entry is in
+  [the router's doc](../../docs/inference-router-plugin.md#servers-that-serve-another-protocol).
 - **`use <name> --agent <agent>`** routes the agent's new sessions to the server,
   including an agent that has not run yet. **`reset --agent <agent>`** stops
   routing it. Either way a session already running stays where it is: its pin holds

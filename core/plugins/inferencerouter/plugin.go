@@ -5,8 +5,8 @@
 // The agent needs no setting of its own for that beyond going through the proxy. A
 // request addressed to a server's host is routed, and so is a routed agent's
 // inference request addressed anywhere else — its provider, Anthropic, OpenCode Zen,
-// Bob's gateway — which is captured: sent to the agent's server at the server's path
-// for its API format (see session.CapturePath), by how the path the agent named
+// Bob's gateway — which is captured: sent to the agent's server at the server URL's
+// path prefix, then the server's path for its API format (see session.CapturePath), by how the path the agent named
 // ends. Only a POST inference-parser read as inference is captured, since an agent's
 // own tools can POST to an API whose path happens to end the same way.
 //
@@ -132,6 +132,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -283,17 +284,10 @@ func (p *Router) Configure(raw json.RawMessage) error {
 		if ep.PlaintextRemote() {
 			slog.Warn("inference-router: server is plain http on another machine, so every request routed to it "+
 				"crosses the network decrypted, its key and prompt included; use https unless the network is trusted",
-				"server", name, "url", ep.URL())
-		}
-		var headers http.Header
-		for k, v := range s.Headers {
-			if headers == nil {
-				headers = http.Header{}
-			}
-			headers.Set(k, v)
+				"server", name, "url", (route{endpoint: ep}).target().String()) // not ep.URL(): a key pasted as a path segment stays out of the log
 		}
 		servers[name] = route{endpoint: ep, key: s.Key, main: s.Main, helper: s.Helper,
-			api: s.API, authHeader: s.AuthHeader, headers: headers}
+			api: s.API, authHeader: s.AuthHeader, headers: routerconfig.HeaderOf(s.Headers)}
 		byHost[ep.Key()] = name
 	}
 	// p.agents is keyed by CANONICAL agent name, folded from whatever spelling the
@@ -386,12 +380,22 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		// these are refused only by a drift between the checks and the pipeline's.
 		switch pl = srv.plan(pctx.Path); pl.kind {
 		case planPath:
-			pathErr = pctx.SetRedirectPath(pl.path)
+			pathErr = pctx.SetRedirectPath(srv.wirePath(pl.path))
 		case planTranslate:
-			pathErr = pctx.Translate(pl.source, pl.target, pl.path)
+			pathErr = pctx.Translate(pl.source, pl.target, srv.wirePath(pl.path))
 		case planAsIs:
 			if captured != "" {
-				pathErr = pctx.SetRedirectPath(captured)
+				pathErr = pctx.SetRedirectPath(srv.wirePath(captured))
+			} else if addressed != name {
+				// Moved off the server its host names: that server's prefix off, this one's on.
+				own := p.servers[addressed].endpoint.Path
+				rest, ok := strings.CutPrefix(pctx.Path, own)
+				if !ok || (rest != "" && rest[0] != '/') {
+					rest = pctx.Path
+				}
+				if wp := srv.wirePath(rest); wp != pctx.Path {
+					pathErr = pctx.SetRedirectPath(wp)
+				}
 			}
 		}
 	}

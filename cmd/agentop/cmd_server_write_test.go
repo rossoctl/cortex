@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/sessionapi"
 )
@@ -170,7 +172,7 @@ func TestServerAdd_RefusesABadNameOrURLBeforeAskingForAKey(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
 	for _, args := range [][]string{
 		{"add", "ETE", "https://ete.example.com"},
-		{"add", "ete", "https://ete.example.com/v1"},
+		{"add", "ete", "https://ete.example.com/v1/../x"},
 		{"add", "ete", "https://ete.example.com:99999"},
 		{"add", "ete"},
 	} {
@@ -1117,5 +1119,157 @@ func TestServerAdd_RefusesABadAPIOrHeaderFlagBeforeAskingForAKey(t *testing.T) {
 	}
 	if *asked != "" || readConfig(t, path) != before {
 		t.Error("a bad flag asked for a key or wrote the file")
+	}
+}
+
+// realServerFuncs puts back the real serverModels and probeServer for the rest of
+// the test, so that serverAdd talks to a fake server on loopback.
+func realServerFuncs(t *testing.T, models func(routerconfig.Server) ([]string, string, error)) {
+	t.Helper()
+	prevModels, prevProbe := serverModels, probeServer
+	serverModels, probeServer = models, probeAPI
+	t.Cleanup(func() { serverModels, probeServer = prevModels, prevProbe })
+}
+
+func TestServerAdd_ProbesAndWritesTheAuthHeader(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	realServerFuncs(t, fetchServerModels)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Header.Get("X-Api-Key") != "sk-k":
+			w.WriteHeader(http.StatusUnauthorized)
+		case r.URL.Path == "/v1/models":
+			io.WriteString(w, `{"data":[{"id":"glm-5-3"}]}`)
+		case r.URL.Path == "/v1/chat/completions":
+			io.WriteString(w, `{"choices":[{"message":{"content":"p"}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	code, out, errOut := runServerCmd(t, "sk-k", "add", "loc", srv.URL, "--main", "glm", "--helper", "glm", "--key-stdin", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "api chat-completions → /v1/chat/completions\n") || !strings.Contains(out, "auth_header → x-api-key\n") {
+		t.Errorf("stdout:\n%s", out)
+	}
+	want := `              api:
+                chat-completions: /v1/chat/completions
+              auth_header: x-api-key
+`
+	if got := readConfig(t, path); !strings.HasSuffix(got, want) {
+		t.Errorf("config does not end with the probed fields:\n%s", got)
+	}
+}
+
+func TestServerAdd_ProbeFailureWritesNothing(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	realServerFuncs(t, fetchServerModels)
+	before := readConfig(t, path)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			io.WriteString(w, `{"data":[{"id":"glm-5-3"}]}`)
+			return
+		}
+		io.WriteString(w, `{"error":{}}`)
+	}))
+	t.Cleanup(srv.Close)
+	code, _, errOut := runServerCmd(t, "sk-k", "add", "loc", srv.URL, "--main", "glm", "--helper", "glm", "--key-stdin", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "agentop server add: could not find which protocols loc serves: ") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+	if readConfig(t, path) != before {
+		t.Error("a failed probe wrote the config")
+	}
+}
+
+func TestServerAdd_APIFlagSkipsTheProbe(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	prev := probeServer
+	probeServer = func(context.Context, *http.Client, routerconfig.Server, string, string, bool) (map[string]string, string, error) {
+		t.Error("the probe ran with --api")
+		return nil, "", nil
+	}
+	t.Cleanup(func() { probeServer = prev })
+	code, _, errOut := runServerCmd(t, "sk-k", "add", "loc", "https://loc.example.com", "--main", "glm", "--helper", "glm",
+		"--api", "chat-completions=/v1/chat/completions", "--key-stdin", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+}
+
+// bobStubs records what serverModels and probeServer see, and answers as Bob does.
+type bobStubs struct {
+	models routerconfig.Server
+	probe  routerconfig.Server
+	header string
+	fixed  bool
+}
+
+func stubBob(t *testing.T) *bobStubs {
+	t.Helper()
+	got := &bobStubs{}
+	prevModels, prevProbe := serverModels, probeServer
+	serverModels = func(s routerconfig.Server) ([]string, string, error) {
+		got.models = s
+		return []string{"premium-ide", "fast"}, s.AuthHeader, nil
+	}
+	probeServer = func(_ context.Context, _ *http.Client, s routerconfig.Server, _, header string, fixed bool) (map[string]string, string, error) {
+		got.probe, got.header, got.fixed = s, header, fixed
+		return map[string]string{"chat-completions": "/v1/chat/completions"}, header, nil
+	}
+	t.Cleanup(func() { serverModels, probeServer = prevModels, prevProbe })
+	return got
+}
+
+func TestServerAdd_BobDefaults(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	got := stubBob(t)
+	code, out, errOut := runServerCmd(t, "sk-bob", "add", "bob", "https://api.us-east.bob.ibm.com/inference",
+		"--main", "premium-ide", "--helper", "fast", "--key-stdin", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	ua := map[string]string{"User-Agent": "bob-shell"}
+	if got.models.AuthHeader != "x-api-key" || !maps.Equal(got.models.Headers, ua) {
+		t.Errorf("serverModels saw auth_header %q, headers %v", got.models.AuthHeader, got.models.Headers)
+	}
+	if !got.fixed || got.header != "x-api-key" || !maps.Equal(got.probe.Headers, ua) {
+		t.Errorf("probe saw header %q, fixed %v, headers %v", got.header, got.fixed, got.probe.Headers)
+	}
+	if strings.Contains(out, "auth_header →") {
+		t.Errorf("a fixed header was shown as found by the probe:\n%s", out)
+	}
+	want := `            bob:
+              url: https://api.us-east.bob.ibm.com/inference
+              key: sk-bob
+              main: premium-ide
+              helper: fast
+              api:
+                chat-completions: /v1/chat/completions
+              auth_header: x-api-key
+              headers:
+                User-Agent: bob-shell
+`
+	if cfg := readConfig(t, path); !strings.HasSuffix(cfg, want) {
+		t.Errorf("config does not end with the Bob entry:\n%s", cfg)
+	}
+}
+
+// Review Focus 2.
+func TestServerAdd_BobDefaultsKeepTheUsersFlags(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	stubBob(t)
+	code, _, errOut := runServerCmd(t, "sk-bob", "add", "bob", "https://api.us-east.bob.ibm.com/inference",
+		"--main", "premium-ide", "--helper", "fast", "--auth-header", "authorization", "--header", "user-agent=mine",
+		"--key-stdin", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	cfg := readConfig(t, path)
+	if !strings.HasSuffix(cfg, "              auth_header: authorization\n              headers:\n                user-agent: mine\n") ||
+		strings.Contains(cfg, "bob-shell") {
+		t.Errorf("config:\n%s", cfg)
 	}
 }
