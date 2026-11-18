@@ -364,7 +364,10 @@ func TestProbe_HungProtocolLeavesTimeForTheNext(t *testing.T) {
 			http.NotFound(w, nil)
 		}
 	})
-	api, _, err := runProbe(t, srv, nil, "", false)
+	// A deadline, so the old code fails here and does not hang the suite.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	api, _, err := probeAPI(ctx, srv.Client(), routerconfig.Server{URL: srv.URL, Key: "k"}, "m", "", false)
 	want := map[string]string{"chat-completions": "/v1/chat/completions"}
 	if err != nil || !maps.Equal(api, want) {
 		t.Errorf("api = %v, err = %v; want %v", api, err, want)
