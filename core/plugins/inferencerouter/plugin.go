@@ -285,15 +285,8 @@ func (p *Router) Configure(raw json.RawMessage) error {
 				"crosses the network decrypted, its key and prompt included; use https unless the network is trusted",
 				"server", name, "url", ep.URL())
 		}
-		var headers http.Header
-		for k, v := range s.Headers {
-			if headers == nil {
-				headers = http.Header{}
-			}
-			headers.Set(k, v)
-		}
 		servers[name] = route{endpoint: ep, key: s.Key, main: s.Main, helper: s.Helper,
-			api: s.API, authHeader: s.AuthHeader, headers: headers}
+			api: s.API, authHeader: s.AuthHeader, headers: routerconfig.HeaderOf(s.Headers)}
 		byHost[ep.Key()] = name
 	}
 	// p.agents is keyed by CANONICAL agent name, folded from whatever spelling the

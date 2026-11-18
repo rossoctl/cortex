@@ -323,7 +323,9 @@ var serverModels = func(s routerconfig.Server) ([]string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return routerconfig.FetchModels(ctx, routerconfig.NewModelsClient(), ep, s.Key)
+	ids, _, err := routerconfig.FetchModels(ctx, routerconfig.NewModelsClient(), ep,
+		routerconfig.Auth{Key: s.Key, Header: s.AuthHeader, Headers: routerconfig.HeaderOf(s.Headers)})
+	return ids, err
 }
 
 // printCheck writes one check as "  ✓ text", wrapped at 80 columns with the

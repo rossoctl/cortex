@@ -170,7 +170,7 @@ func TestServerAdd_RefusesABadNameOrURLBeforeAskingForAKey(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
 	for _, args := range [][]string{
 		{"add", "ETE", "https://ete.example.com"},
-		{"add", "ete", "https://ete.example.com/v1"},
+		{"add", "ete", "https://ete.example.com/v1/../x"},
 		{"add", "ete", "https://ete.example.com:99999"},
 		{"add", "ete"},
 	} {

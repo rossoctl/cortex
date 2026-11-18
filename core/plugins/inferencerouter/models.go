@@ -389,7 +389,8 @@ func (p *Router) fetchCatalogs(ctx context.Context) {
 		client = routerconfig.NewModelsClient()
 	}
 	for name, srv := range p.servers {
-		ids, err := routerconfig.FetchModels(ctx, client, srv.endpoint, srv.key)
+		ids, _, err := routerconfig.FetchModels(ctx, client, srv.endpoint,
+			routerconfig.Auth{Key: srv.key, Header: srv.authHeader, Headers: srv.headers})
 		if err != nil {
 			if ctx.Err() == nil {
 				slog.Warn("inference-router: could not fetch a server's model list; its main and helper resolve against the last one",
