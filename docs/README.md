@@ -16,7 +16,6 @@ holds the repo-level pieces; this file is the index.
 
 | If you want to… | Read |
 |---|---|
-| Use fewer tokens | [`laptop-token-savings.md`](laptop-token-savings.md) |
 | Use a local model, or change inference servers | [`laptop-local-model.md`](laptop-local-model.md) |
 | Use a server whose protocol Cortex cannot translate to | [`translation-server.md`](translation-server.md) |
 | Change Cortex with a small Python or shell script | [`script-plugin.md`](script-plugin.md) |
@@ -43,6 +42,7 @@ holds the repo-level pieces; this file is the index.
 | If you want to… | Read |
 |---|---|
 | Find and configure a plugin | [`plugin-catalog.md`](plugin-catalog.md) |
+| Remove the tools an agent never calls from its prompts | [`laptop-token-savings.md`](laptop-token-savings.md) |
 | Write your first plugin | [`plugin-tutorial.md`](plugin-tutorial.md) |
 | Read the plugin contract | [`plugin-reference.md`](plugin-reference.md) |
 | Write a plugin in Python or shell | [`script-plugin.md`](script-plugin.md) |
