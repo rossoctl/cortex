@@ -22,8 +22,8 @@
 
 ## Decisions made for this plan (with reasons)
 
-1. **Two PRs, not one.** The issue asks for one PR under 2,000 counted lines. The estimate is about 2,400 counted lines: the S16 rewrite counts its removed lines too, and tests and input fixtures count. The workflow limit is 2,000. The S16 decoder fix shares no code with the server side, so it goes in its own PR, P1, with no parent. P2 also has no parent. The two PRs run and are reviewed at the same time.
-2. **The two PRs must not collide in `core/translate/anthropic/`.** P1 changes only `anthropic/request.go`, `anthropic/request_test.go` and adds `core/translate/bench_test.go`. P2 must not call any helper that `anthropic/request.go` defines today (`object`, `take`, `takeRaw`, `extra`, `isNull`, `orNull`, `takeEffort`, `takeSource`, `decodeContent`, ...), because P1 can remove or rename them. P2 can use `marshal` (`error.go`), `errorBody`, `errorDetail` (`error.go`), and `Name`, `extraPrefix` (`protocol.go`). P1 must not change `error.go`, `protocol.go`, `reply.go` or `reply_test.go`.
+1. **Three PRs, not one.** The issue asks for one PR under 2,000 counted lines. The estimate is about 3,200 counted lines: the S16 rewrite counts its removed lines too, and tests and input fixtures count. Per task: T1 800, T2 800, T3 950, T4 500, T5 80, T6 50. (For scale: the #1964 Responses decoder and the Responses reply encoder were each about 1,000 counted lines with their tests.) The workflow limit is 2,000 per PR, and T2-T6 (about 2,400) do not fit in one PR. The S16 decoder fix shares no code with the server side, so it goes in its own PR, P1, with no parent. P2 has T3 (the reply decoder) and no parent. P3 has T2, T4, T5 and T6, with parent P2. Reason for this order: `translate.Target` (`core/translate/registry.go`) picks a protocol when it has a `RequestEncoder`, and does not check for a reply decoder. So the encoder (T2) must not merge before the reply decoder (T3): with the encoder alone, the router sends Codex to an Anthropic server and cannot read the reply. The reply decoder alone changes no route. T5 goes in P3 because its S4 test needs the encoder. P1 and P2 run and are reviewed at the same time.
+2. **P1 must not collide with P2 and P3 in `core/translate/anthropic/`.** P1 changes only `anthropic/request.go`, `anthropic/request_test.go` and adds `core/translate/bench_test.go`. P2 and P3 must not call any helper that `anthropic/request.go` defines today (`object`, `take`, `takeRaw`, `extra`, `isNull`, `orNull`, `takeEffort`, `takeSource`, `decodeContent`, ...), because P1 can remove or rename them. P2 and P3 can use `marshal` (`error.go`), `errorBody`, `errorDetail` (`error.go`), and `Name`, `extraPrefix` (`protocol.go`). P1 must not change `error.go`, `protocol.go`, `reply.go` or `reply_test.go`.
 3. **S16 budget applies to `anthropic.Protocol{}.DecodeRequest`**, measured by `BenchmarkAnthropicDecodeRequest` in `core/translate/bench_test.go`. The same file also has `BenchmarkRequestAnthropicToChat` (the whole `translate.Request(Anthropic, Chat, …)`), which reports a number but has no budget. Reason: S16 is the decoder fix, and part 1 put its budget on its decoder in the same way (#1964 plan decision 13). The 1963 table shows about 22 ms of the 65 ms outside the decoder, so the full conversion can stay over 15 ms after the fix. The P1 PR body gives both `ns/op` values. If the full conversion is over 15 ms, the PR body says so. A benchmark, not a timed test: a timed test fails at random on a busy CI host.
 4. **S16 technique (recommended, not required):** walk the JSON with one `json.Decoder` and its `Token` method, as `members` in `core/translate/responses/request.go` does. Decode each known member straight into its Go field with `dec.Decode`. Decode each unknown member into a `json.RawMessage` for `Extra`. Decode `input`, `input_schema` and `cache_control` into `json.RawMessage` so that their bytes do not change. Reason: a nested `json.RawMessage` layer scans the same bytes again at each level, and that is the measured cost. Any technique is good if the tests of T1 pass and the benchmark meets the budget.
 5. **Usage comes before stop in the pivot events.** The issue says `message_delta` gives `stop` and `message_stop` gives `usage`. But every reply encoder (`anthropic/reply.go`, `responses/reply.go`) ends the reply at `EventStop` and reads the usage that came before it. So the decoder keeps the stop reason from `message_delta`, and at `message_stop` it emits `EventUsage`, then `EventStop`. The Chat decoder uses the same order (`chat/reply.go` `finish`).
@@ -44,7 +44,7 @@
 20. **A server tool** (S8) is named in `dropped` by its `Type`, for example `web_search_20250305`.
 21. **`Extra` keys of every protocol** are named in `dropped`, also the `anthropic.` keys (the part after the first `.`). Reason: S3 sends only the fixed field list, so nothing in `Extra` is sent.
 22. **S15 Anthropic 404 match:** `refusesModel` returns true when the status is 404, `error.type` is `not_found_error`, and `errorMessage(body)` is exactly `"model: " + model`. Reason: today's `modelNotFound` phrases need quotes around the name, and Anthropic's message has none. An exact match cannot match a longer name: `model: claude-opus-5-5` is not a refusal of `claude`.
-23. **S4 and the router's output cap.** `capOutput` (`core/plugins/inferencerouter/fit.go:207`) leaves an absent output field alone, and `resendForLimit` (`models.go:184`) records `limit_not_fitted` and does not resend when `applyLimits` changes nothing. Codex usually sends no `max_output_tokens`. So for a translated Codex request, the encoder fills 64,000, and when the server refuses it, the refusal goes to Codex (inferred from the code, checked by the T5 test). The issue asks only for a report: the P2 PR body says this. The plan does not change `fit.go`.
+23. **S4 and the router's output cap.** `capOutput` (`core/plugins/inferencerouter/fit.go:207`) leaves an absent output field alone, and `resendForLimit` (`models.go:184`) records `limit_not_fitted` and does not resend when `applyLimits` changes nothing. Codex usually sends no `max_output_tokens`. So for a translated Codex request, the encoder fills 64,000, and when the server refuses it, the refusal goes to Codex (inferred from the code, checked by the T5 test). The issue asks only for a report: the P3 PR body says this. The plan does not change `fit.go`.
 24. **Test layout (H6):** the Responses → Anthropic pair has its own directory, `core/translate/testdata/responses-anthropic/` with `request/` and `reply/`. Its golden tests live in package `translate` (the protocols are registered, so `translate.Request` and `translate.Reply` work). The S17 round-trip test also lives in package `translate` and reads `testdata/request/*.json`.
 
 ## Review Focus
@@ -62,7 +62,7 @@
 | `core/translate/anthropic/request.go` | T1 | `DecodeRequest` in one pass (S16) |
 | `core/translate/anthropic/request_test.go` | T1 | more decoder cases |
 | `core/translate/bench_test.go` | T1 | `BenchmarkAnthropicDecodeRequest`, `BenchmarkRequestAnthropicToChat` |
-| `core/translate/anthropic/protocol.go` | T2, T3 | interface assertions, package doc |
+| `core/translate/anthropic/protocol.go` | T3, T2 | interface assertions, package doc |
 | `core/translate/anthropic/encode.go` | T2 | `EncodeRequest` (S2-S12) |
 | `core/translate/anthropic/encode_test.go` | T2 | encoder unit tests |
 | `core/translate/anthropic/decode_reply.go` | T3 | `NewReplyDecoder` (S13-S15) |
@@ -81,8 +81,9 @@
 
 | PR | Title | Parent | Tasks | estLines |
 |---|---|---|---|---|
-| P1 | `perf: Decode Anthropic Messages requests in one pass` | "" | T1 | 600 |
-| P2 | `feat: Encode Anthropic Messages requests and decode Anthropic replies, so Codex can use the Anthropic API` | "" | T2, T3, T4, T5, T6 | 1800 |
+| P1 | `perf: Decode Anthropic Messages requests in one pass` | "" | T1 | 800 |
+| P2 | `feat: Decode Anthropic Messages replies to pivot events` | "" | T3 | 950 |
+| P3 | `feat: Encode Anthropic Messages requests, so Codex can use the Anthropic API` | P2 | T2, T4, T5, T6 | 1430 |
 
 ## Gate
 
@@ -121,13 +122,48 @@ Depends on: none.
 
 ## PR P2
 
+### Task T3: The Anthropic reply decoder (S13-S15)
+
+Depends on: none.
+
+**Files:**
+- Create: `core/translate/anthropic/decode_reply.go`, `core/translate/anthropic/decode_reply_test.go`
+- Modify: `core/translate/anthropic/protocol.go` (add `_ pivot.ReplyDecoding = Protocol{}`, and say in the package doc that it also decodes replies)
+- Create the reply input fixtures in `core/translate/testdata/responses-anthropic/reply/`: `text.sse`, `text.json`, `thinking_signature.sse`, `thinking_signature.json` (thinking with `""` text and a signature, then text), `redacted_thinking.sse`, `redacted_thinking.json`, `two_tools.sse`, `two_tools.json`, `server_tool.sse`, `server_tool.json` (a `server_tool_use` block and a `web_search_tool_result` block between two text blocks), `max_tokens.sse`, `max_tokens.json`, `refusal.sse`, `refusal.json`, `stream_error.sse` (a `message_start`, one text delta, then an `error` event with `overloaded_error`), `error_429_rate_limit.json`, `error_529_overloaded.json`. Each `.sse` uses Anthropic's real frame shape: `event: <type>\ndata: <json>\n\n`, with one `ping` event after `message_start`. `message_start` usage has `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` and `output_tokens`. `message_delta` usage has `output_tokens`.
+
+**Interfaces:**
+- Consumes: `pivot.Event`, `pivot.ReplyDecoder`, `pivot.ErrorType` (`core/translate/pivot`).
+- Produces: `func (Protocol) NewReplyDecoder(status int, stream bool) pivot.ReplyDecoder`. The event order is: `EventStart`, then for each kept block `EventBlockStart`, its `EventDelta`s, `EventBlockStop`, then `EventUsage`, then `EventStop` (decision 5). An error gives one `EventError` and nothing after it.
+
+- [ ] **Step 1: Write the failing tests** in `decode_reply_test.go` (package `anthropic`). Add `decodeAll` and `decodeBytewise` helpers in the style of `chat/reply_test.go`.
+  - `TestDecodeReply_Stream`: `two_tools.sse` gives exactly: start (`id`, `model`), text block 0 with its text delta, tool_use block 1 (`ToolID`, `ToolName`) with its `DeltaInputJSON` pieces, tool_use block 2, usage (`Input`, `CacheRead`, `CacheCreation` from `message_start`, `Output` from `message_delta`), stop `tool_use`.
+  - `TestDecodeReply_ThinkingSignature`: a thinking block with no thinking delta and one `DeltaSignature` is passed on (S13 last bullet).
+  - `TestDecodeReply_Redacted`: the `redacted_thinking` start gives `EventBlockStart{Block: BlockRedactedThinking, Data: <data>}`.
+  - `TestDecodeReply_SkippedBlockUsesNoIndex` (Review Focus 3): `server_tool.sse` gives text blocks with pivot index 0 and 1, and no event for the server-tool blocks or their deltas.
+  - `TestDecodeReply_Whole`: each `.json` fixture gives the same events as its `.sse` twin, except the split of the deltas: one delta for each block (thinking: one `DeltaThinking` when the text is not empty, then one `DeltaSignature`; tool_use: one `DeltaInputJSON` with the raw `input` bytes).
+  - `TestDecodeReply_EveryByteBoundary`: for each `.sse` fixture and each `i` from 0 to `len(body)`, `Feed(body[:i])`, `Feed(body[i:])`, `End()` gives the same events as one `Feed`. `decodeBytewise` also gives the same events.
+  - `TestDecodeReply_StreamError`: `stream_error.sse` gives start, text block start, delta, then `EventError{Status: 529, ErrorType: "overloaded_error", Message: <message>}` (decision 9), and nothing after it.
+  - `TestDecodeReply_HTTPError`: status 429 with `error_429_rate_limit.json` → `EventError{Status: 429, ErrorType: "rate_limit_error", Message: <message>}`. Status 529 → `overloaded_error`. Status 404 with `{"type":"error","error":{"type":"not_found_error","message":"model: claude-nope"}}` → `not_found_error` and `model: claude-nope`.
+  - `TestDecodeReply_NonJSONErrorCut` (Review Focus 4): status 502 with an HTML body of 300 bytes with a 3-byte character at bytes 199-201 → `ErrorType` `api_error`, message is the first 199 bytes. An empty body → `http.StatusText(502)`.
+  - `TestDecodeReply_StreamEndsEarly` (Review Focus 1): `two_tools.sse` cut before `message_stop` → the last event is the error of decision 8.
+  - `TestDecodeReply_OverLimit`: a not-streamed 2xx body over 10 MiB → the error of decision 10.
+  - `TestDecodeReply_StopReasons`: `max_tokens.sse` → stop `max_tokens`. `refusal.sse` → stop `refusal`.
+- [ ] **Step 2: Run** `cd core && GOWORK=off go test ./translate/anthropic/ -run DecodeReply`. Expected: FAIL (`NewReplyDecoder` is not defined).
+- [ ] **Step 3: Implement** `decode_reply.go`. Keep only the partial line between `Feed` calls, in a new array, so that the stream read so far is not held (#1911 rule 10). Use decisions 5-13. Do not call any helper of `request.go` (decision 2).
+- [ ] **Step 4: Run** `cd core && GOWORK=off go test ./translate/anthropic/`. Expected: PASS.
+- [ ] **Step 5: Commit** `feat: Decode Anthropic Messages replies to pivot events`.
+
+---
+
+## PR P3
+
 ### Task T2: The Anthropic request encoder (S1, S2-S12)
 
 Depends on: none.
 
 **Files:**
 - Create: `core/translate/anthropic/encode.go`, `core/translate/anthropic/encode_test.go`
-- Modify: `core/translate/anthropic/protocol.go` (add `_ pivot.RequestEncoder = Protocol{}`, and say in the package doc that it also encodes requests and decodes replies)
+- Modify: `core/translate/anthropic/protocol.go` (add `_ pivot.RequestEncoder = Protocol{}`, and say in the package doc that it also encodes requests. P2 (T3) already added the reply decoder to the doc)
 - Modify: `core/translate/registry_test.go` (`TestTarget`: `{"anthropic-messages","responses"}` → `"anthropic-messages", true`. Add `{"anthropic-messages"}` → `"anthropic-messages", true` and `{"anthropic-messages","chat-completions"}` → `"chat-completions", true`.)
 
 **Interfaces:**
@@ -153,37 +189,6 @@ Depends on: none.
 - [ ] **Step 4: Run** `cd core && GOWORK=off go test ./translate/... ./plugins/inferencerouter/...`. Expected: PASS, with the `TestTarget` change above.
 - [ ] **Step 5: Commit** `feat: Encode Anthropic Messages requests from the pivot form`.
 
-### Task T3: The Anthropic reply decoder (S13-S15)
-
-Depends on: none.
-
-**Files:**
-- Create: `core/translate/anthropic/decode_reply.go`, `core/translate/anthropic/decode_reply_test.go`
-- Modify: `core/translate/anthropic/protocol.go` (add `_ pivot.ReplyDecoding = Protocol{}`)
-- Create the reply input fixtures in `core/translate/testdata/responses-anthropic/reply/`: `text.sse`, `text.json`, `thinking_signature.sse`, `thinking_signature.json` (thinking with `""` text and a signature, then text), `redacted_thinking.sse`, `redacted_thinking.json`, `two_tools.sse`, `two_tools.json`, `server_tool.sse`, `server_tool.json` (a `server_tool_use` block and a `web_search_tool_result` block between two text blocks), `max_tokens.sse`, `max_tokens.json`, `refusal.sse`, `refusal.json`, `stream_error.sse` (a `message_start`, one text delta, then an `error` event with `overloaded_error`), `error_429_rate_limit.json`, `error_529_overloaded.json`. Each `.sse` uses Anthropic's real frame shape: `event: <type>\ndata: <json>\n\n`, with one `ping` event after `message_start`. `message_start` usage has `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` and `output_tokens`. `message_delta` usage has `output_tokens`.
-
-**Interfaces:**
-- Consumes: `pivot.Event`, `pivot.ReplyDecoder`, `pivot.ErrorType` (`core/translate/pivot`).
-- Produces: `func (Protocol) NewReplyDecoder(status int, stream bool) pivot.ReplyDecoder`. The event order is: `EventStart`, then for each kept block `EventBlockStart`, its `EventDelta`s, `EventBlockStop`, then `EventUsage`, then `EventStop` (decision 5). An error gives one `EventError` and nothing after it.
-
-- [ ] **Step 1: Write the failing tests** in `decode_reply_test.go` (package `anthropic`). Add `decodeAll` and `decodeBytewise` helpers in the style of `chat/reply_test.go`.
-  - `TestDecodeReply_Stream`: `two_tools.sse` gives exactly: start (`id`, `model`), text block 0 with its text delta, tool_use block 1 (`ToolID`, `ToolName`) with its `DeltaInputJSON` pieces, tool_use block 2, usage (`Input`, `CacheRead`, `CacheCreation` from `message_start`, `Output` from `message_delta`), stop `tool_use`.
-  - `TestDecodeReply_ThinkingSignature`: a thinking block with no thinking delta and one `DeltaSignature` is passed on (S13 last bullet).
-  - `TestDecodeReply_Redacted`: the `redacted_thinking` start gives `EventBlockStart{Block: BlockRedactedThinking, Data: <data>}`.
-  - `TestDecodeReply_SkippedBlockUsesNoIndex` (Review Focus 3): `server_tool.sse` gives text blocks with pivot index 0 and 1, and no event for the server-tool blocks or their deltas.
-  - `TestDecodeReply_Whole`: each `.json` fixture gives the same events as its `.sse` twin, except the split of the deltas: one delta for each block (thinking: one `DeltaThinking` when the text is not empty, then one `DeltaSignature`; tool_use: one `DeltaInputJSON` with the raw `input` bytes).
-  - `TestDecodeReply_EveryByteBoundary`: for each `.sse` fixture and each `i` from 0 to `len(body)`, `Feed(body[:i])`, `Feed(body[i:])`, `End()` gives the same events as one `Feed`. `decodeBytewise` also gives the same events.
-  - `TestDecodeReply_StreamError`: `stream_error.sse` gives start, text block start, delta, then `EventError{Status: 529, ErrorType: "overloaded_error", Message: <message>}` (decision 9), and nothing after it.
-  - `TestDecodeReply_HTTPError`: status 429 with `error_429_rate_limit.json` → `EventError{Status: 429, ErrorType: "rate_limit_error", Message: <message>}`. Status 529 → `overloaded_error`. Status 404 with `{"type":"error","error":{"type":"not_found_error","message":"model: claude-nope"}}` → `not_found_error` and `model: claude-nope`.
-  - `TestDecodeReply_NonJSONErrorCut` (Review Focus 4): status 502 with an HTML body of 300 bytes with a 3-byte character at bytes 199-201 → `ErrorType` `api_error`, message is the first 199 bytes. An empty body → `http.StatusText(502)`.
-  - `TestDecodeReply_StreamEndsEarly` (Review Focus 1): `two_tools.sse` cut before `message_stop` → the last event is the error of decision 8.
-  - `TestDecodeReply_OverLimit`: a not-streamed 2xx body over 10 MiB → the error of decision 10.
-  - `TestDecodeReply_StopReasons`: `max_tokens.sse` → stop `max_tokens`. `refusal.sse` → stop `refusal`.
-- [ ] **Step 2: Run** `cd core && GOWORK=off go test ./translate/anthropic/ -run DecodeReply`. Expected: FAIL (`NewReplyDecoder` is not defined).
-- [ ] **Step 3: Implement** `decode_reply.go`. Keep only the partial line between `Feed` calls, in a new array, so that the stream read so far is not held (#1911 rule 10). Use decisions 5-13. Do not call any helper of `request.go` (decision 2).
-- [ ] **Step 4: Run** `cd core && GOWORK=off go test ./translate/anthropic/`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat: Decode Anthropic Messages replies to pivot events`.
-
 ### Task T4: Goldens, round trip and the listener test (S12, S17, tests section)
 
 Depends on: T2, T3.
@@ -193,7 +198,7 @@ Depends on: T2, T3.
   `s3_unknown_fields.json` (`store`, `include`, `prompt_cache_key`, `service_tier`, `zzz_unknown`), `s4_max_tokens_stream.json`, `s4_max_tokens_not_streamed.json`, `s4_max_tokens_set.json` (`max_output_tokens` 2000), `s5_developer_messages.json` (`instructions`, a leading developer message, a developer message after a tool output), `s6_blocks.json` (text, an image as a data URL, an image as an https URL, a function call and its output, a custom tool call and its output), `s6_unsigned_thinking.json` (a `cortex1:` reasoning item with text and no signature), `s6_redacted.json` (a `cortex1:` redacted reasoning item), `s6_first_assistant.json` (refusal, decision 18), `s7_tool_ids.json` (one call id with `+`, `/` and `=`, one valid id), `s8_tools.json` (a function tool, a custom tool, a namespaced tool, `web_search`), `s9_tool_choice_auto.json`, `s9_tool_choice_required.json`, `s9_tool_choice_function.json`, `s9_tool_choice_none.json`, `s9_parallel_false.json`, `s10_sampling.json` (`temperature`, `top_p`), `s11_effort_minimal.json`, `s11_effort_xhigh.json`, `s11_no_effort.json`, `s12_no_marker.json`, and `full_multiturn.json` (a system message, a mid-conversation developer message, an image, function and custom tool calls with results, a `cortex1:` reasoning payload with a signature, and a tool id with `+`, `/` and `=`). Make the `cortex1:` payloads with `encodeReasoning` in `core/translate/responses/reasoning.go`, as the existing fixtures in `core/translate/responses/testdata/request/` were made.
 - Create: `core/translate/responses_anthropic_test.go`, `core/translate/roundtrip_test.go`
 - Modify: `core/translate/golden_test.go` (`replyCases(t, dir string)`; the old caller passes `"testdata/reply"`)
-- Modify: `core/listener/forwardproxy/inferencerouter_test.go` (`routedProxy` agents: add `"codex": "s"`)
+- Modify: `core/listener/forwardproxy/inferencerouter_test.go` (`routedProxy` agents: add `"codex": "s"`, and add codex to its doc comment)
 - Modify: `core/plugins/inferencerouter/api_test.go` (the comment of `TestSetAuth_TranslatedToAnthropic` says that no protocol can be translated to Anthropic. Change it: Responses can now be translated to it.)
 
 **Interfaces:**
@@ -202,17 +207,17 @@ Depends on: T2, T3.
 
 - [ ] **Step 1: Write the tests.**
   - `TestResponsesToAnthropicRequestGolden`: for each `testdata/responses-anthropic/request/*.json`, the golden `<name>.golden` is `dropped: <list>\n<body>\n` from `Request(Responses, Anthropic, body, nil)`, or one `error: <err>` line. Run with `-update`, then read each golden and check it against its rule: S4 gives 64000, 16000 and 2000. S5 gives `user` messages for the developer messages and a `system` list for `instructions`. S7 gives `cx_…` for the id with `+`, `/`, `=` on the `tool_use` and on its `tool_result`, and the valid id unchanged. S10 `dropped` has `temperature,top_p`. S11 gives `"output_config":{"effort":"low"}`, `{"effort":"xhigh"}`, and none. S12: every golden ends with the top-level `cache_control`.
-  - `TestResponsesToAnthropicReplyGolden`: for each case of `replyCases(t, "testdata/responses-anthropic/reply")` and each `agentForms()` value, `Reply(Responses, Anthropic, pivot.Request{}, c.status, c.stream, agentStream, body)` against `<input>.to-responses-sse.golden` or `<input>.to-responses-json.golden`. Read the goldens: the thinking with empty text and a signature gives a reasoning item, the server-tool blocks are not in the output, 429 and 529 give Responses errors.
+  - `TestResponsesToAnthropicReplyGolden`: for each case of `replyCases(t, "testdata/responses-anthropic/reply")` and each `agentForms()` value, `Reply(Responses, Anthropic, pivot.Request{}, c.status, c.stream, agentStream, body)` against the golden that `goldenName(c, agentStream)` in `golden_test.go` gives (`<input>.to-sse.golden` or `<input>.to-json.golden`; the separate directory keeps these names apart from the #1911 goldens). Read the goldens: the thinking with empty text and a signature gives a reasoning item, the server-tool blocks are not in the output, 429 and 529 give Responses errors.
   - `TestResponsesToAnthropicDeterministic` (#1911 rule 9a, S12): encode `full_multiturn.json` two times: same bytes. Append one user message item to `input`: the output bytes up to the end of the old last message do not change, and both outputs end with the same top-level `cache_control` bytes.
   - `TestHeaders`: `Request(Responses, Anthropic, body, h)` with `OpenAI-Beta`, `Anthropic-Beta` and `X-Keep` in `h` → after: `Anthropic-Version: 2023-06-01`, `X-Keep`, and nothing else.
   - `TestAnthropicRoundTrip` (S17, H5) in `roundtrip_test.go`: for each `testdata/request/*.json`, `want := DecodeRequest(f)`, `body, dropped := EncodeRequest(want)`, `got := DecodeRequest(body)`. A refusal from `EncodeRequest` fails the test. Normalize `want` by only the allowed differences: remove what `dropped` names (Extra keys, `temperature`, `top_p`, `thinking`, unsigned thinking blocks, server tools, other dropped kinds); fill `MaxTokens` by S4; change role `system` to `user` (S5); map each tool id with `toolID` rule S7 (use the same pattern and `cx_` + base64url in the test, the function is not exported); map `Effort` by S11; set `Thinking` to nil. Remove `anthropic.cache_control` from `got.Extra`. Remove `Extra` maps that are empty after that (set them to nil). Then `reflect.DeepEqual(got, want)`. On a failure, print both as indented JSON.
-  - `TestRouterAPI_CodexToAnthropicServer` in `core/listener/forwardproxy/inferencerouter_test.go`: `routedProxy(t, up, `, "api": {"anthropic-messages": "/v1/messages"}`)`. `up` answers `testdata/responses-anthropic/reply/two_tools.sse` with `Content-Type: text/event-stream` (read it with a path relative to the package, `../../translate/testdata/responses-anthropic/reply/two_tools.sse`). Send `codexRequest` to `http://chatgpt.example/backend-api/codex/responses?x=1` with the Codex `User-Agent` of `postCodex` and `Authorization: Bearer client-key`. Check: one upstream request, path `/v1/messages`, `rawQuery` empty, `X-Api-Key` is exactly `routedKey`, `Anthropic-Version` is `2023-06-01`, no `Authorization` header, no header of `codexHeaders`. The upstream body has `"messages":[{"role":"user"` and the top-level `cache_control`. The reply to the agent has status 200, starts with `event: response.created\n` and has `event: response.completed\n`.
+  - `TestRouterAPI_CodexToAnthropicServer` in `core/listener/forwardproxy/inferencerouter_test.go`: `routedProxy(t, up, `, "api": {"anthropic-messages": "/v1/messages"}`)`. `up := routedServer(t, …)` (it also answers `/v1/models`) answers `testdata/responses-anthropic/reply/two_tools.sse` with `Content-Type: text/event-stream` (read it with a path relative to the package, `../../translate/testdata/responses-anthropic/reply/two_tools.sse`). Send `codexRequest` to `http://chatgpt.example/backend-api/codex/responses?x=1`. `postCodex` (`translate_test.go`) has a fixed URL and sets no `Authorization`, so build the request in the test with the same lines as `postCodex` (the `Content-Type`, the Codex `User-Agent`, each header of `codexHeaders`), plus `Authorization: Bearer client-key`, and send it with `proxyClient(proxy, nil).Do`. Check with `sent(up)`: one upstream request, path `/v1/messages`, `rawQuery` empty, `X-Api-Key` is exactly `routedKey`, `Anthropic-Version` is `2023-06-01`, no `Authorization` header, no header of `codexHeaders`. The upstream body has `"messages":[{"role":"user"` and the top-level `cache_control`. The reply to the agent has status 200, starts with `event: response.created\n` and has `event: response.completed\n`.
 - [ ] **Step 2: Run** `cd core && GOWORK=off go test ./translate/ -update -run 'ResponsesToAnthropic'` once, read every new golden as Step 1 says, then run `cd core && GOWORK=off go test ./translate/... ./listener/forwardproxy/ ./plugins/inferencerouter/...`. Expected: PASS. `git status` shows no change to an existing golden.
 - [ ] **Step 3: Commit** `test: Pin the Responses to Anthropic translation with goldens, a round trip and a listener test`.
 
 ### Task T5: Anthropic's 404 for the resend, and the S4 check (S15, S4)
 
-Depends on: none.
+Depends on: T2 (the S4 test sends a Codex request that the router translates to Anthropic, and `translate.Target` gives `anthropic-messages` only when `EncodeRequest` exists).
 
 **Files:**
 - Modify: `core/plugins/inferencerouter/models.go` (`refusesModel`, its doc comment)
@@ -226,7 +231,7 @@ Depends on: none.
   - `TestRefusesModel_ReadsEachLocalServersWording`: add `{"anthropic messages api", 404, "claude-nope", `{"type":"error","error":{"type":"not_found_error","message":"model: claude-nope"}}`}`.
   - `TestRefusesModel_OtherAnswersAreNotRefusals` (Review Focus 5): add `{"anthropic, a name the refused one starts with", 404, "claude", `{"type":"error","error":{"type":"not_found_error","message":"model: claude-opus-5-5"}}`}` and `{"anthropic's message at 400", 400, "claude-nope", <the same body with claude-nope>}`.
   - `TestResend_TreatsAnthropicsMissingModelAsARefusal`: the template test with Anthropic's 404 body. `Resend` gives true, and the resent model is the substitute.
-  - `TestResend_ALimitRefusalOfATranslatedCodexRequestWithNoOutputField` (decision 23): a Codex request routed to a server with `"api": {"anthropic-messages": "/v1/messages"}`, with no `max_output_tokens`, and `Resend` with status 400 and `{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: 64000 > 32000, which is the maximum allowed number of output tokens for claude-sonnet-5"}}`. Assert what the code does. Decision 23 expects `Resend` false and a `limit_not_fitted` record. If the code does something else, assert what it does, and change decision 23's text in the P2 PR body to match.
+  - `TestResend_ALimitRefusalOfATranslatedCodexRequestWithNoOutputField` (decision 23): a Codex request routed to a server with `"api": {"anthropic-messages": "/v1/messages"}`, with no `max_output_tokens`, and `Resend` with status 400 and `{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: 64000 > 32000, which is the maximum allowed number of output tokens for claude-sonnet-5"}}`. Assert what the code does. Decision 23 expects `Resend` false and a `limit_not_fitted` record. If the code does something else, assert what it does, and change decision 23's text in the P3 PR body to match.
 - [ ] **Step 2: Run** `cd core && GOWORK=off go test ./plugins/inferencerouter/ -run 'RefusesModel|Resend_TreatsAnthropics|Resend_ALimitRefusalOfATranslated'`. Expected: FAIL for the Anthropic cases.
 - [ ] **Step 3: Implement** decision 22 in `refusesModel`: before the `modelNotFound` loop, return true when `status == http.StatusNotFound`, `gjson.GetBytes(body, "error.type").String() == "not_found_error"` and `errorMessage(body) == "model: "+model`. Add one line to the doc comment.
 - [ ] **Step 4: Run** `cd core && GOWORK=off go test ./plugins/inferencerouter/...`. Expected: PASS.
@@ -260,9 +265,9 @@ Facts for the docs (from this plan and the base code):
 
 ## For a human after review
 
-These steps need a real Anthropic API key and a live Codex session. They need P2 (all of T2-T6) merged or checked out and installed. Do not run them in this workflow.
+These steps need a real Anthropic API key and a live Codex session. They need P2 and P3 (all of T2-T6) merged or checked out and installed. Do not run them in this workflow.
 
 1. Configure a server with only `api: {anthropic-messages: /v1/messages}` for `https://api.anthropic.com`, and route Codex to it (`agentop server use <name> --agent codex`).
-2. Run Codex for at least 3 turns with tool calls. Put the session id and the turn count in the P2 PR body.
+2. Run Codex for at least 3 turns with tool calls. Put the session id and the turn count in the P3 PR body.
 3. In that session, check that `cache_read_input_tokens` is above 0 from turn 2 (S12). If it stays at 0, report it in the PR.
 4. Check that turn 2 and later get no 400 about thinking blocks (#1964 R14 and S6). If they do, report the error message in the PR.
