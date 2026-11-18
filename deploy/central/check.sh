@@ -1,6 +1,7 @@
 #!/bin/sh
 # Static checks for the central metrics stack. Needs docker or podman; uses kubectl or oc for the
-# Kustomize render when one is installed, else a Kustomize container.
+# Kustomize render when one is installed, else a Kustomize container; uses a kubeconform binary on
+# PATH when there is one, else the kubeconform container.
 #
 #   sh deploy/central/check.sh
 #
@@ -61,7 +62,8 @@ elif command -v oc >/dev/null 2>&1; then oc kustomize "$overlay" > "$rendered"
 else $run run --rm -v "$here:/c:ro" "$KUSTOMIZE_IMAGE" build /c/overlays/openshift > "$rendered"
 fi
 # Route has no schema in the default catalog; the CRDs-catalog has OpenShift's.
-$run run --rm -i "$KUBECONFORM_IMAGE" -strict -summary \
+if command -v kubeconform >/dev/null 2>&1; then kc=kubeconform; else kc="$run run --rm -i $KUBECONFORM_IMAGE"; fi
+$kc -strict -summary \
   -schema-location default \
   -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
   - < "$rendered"

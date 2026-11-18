@@ -1,0 +1,56 @@
+# Base of the central metrics stack: the OTel Collector, Prometheus, Alertmanager and Grafana.
+# Environment-specific parts (namespace, Routes, NetworkPolicy) are in overlays/. Render with
+# `oc kustomize overlays/openshift`; see ../README.md.
+#
+# Every config file is a generated ConfigMap. Kustomize appends a content hash to the name, so an
+# edit to a file rolls the pods that mount it. Secrets are not generated here: the operator creates
+# `collector-tokens` and `grafana-admin` (README.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: cortex-central
+    includeSelectors: false
+
+resources:
+  - otel-collector/deployment.yaml
+  - otel-collector/service.yaml
+  - prometheus/deployment.yaml
+  - prometheus/service.yaml
+  - prometheus/pvc.yaml
+  - alertmanager/deployment.yaml
+  - alertmanager/service.yaml
+  - alertmanager/pvc.yaml
+  - grafana/deployment.yaml
+  - grafana/service.yaml
+  - grafana/pvc.yaml
+
+configMapGenerator:
+  - name: otel-collector-config
+    files:
+      - config.yml=otel-collector/otel-collector.yml
+  - name: prometheus-config
+    files:
+      - prometheus.yml=prometheus/prometheus.yml
+  - name: prometheus-rules
+    files:
+      - prometheus/rules/recording.yml
+      - prometheus/rules/alerts.yml
+  - name: alertmanager-config
+    files:
+      - alertmanager.yml=alertmanager/alertmanager.yml
+  - name: grafana-provisioning-datasources
+    files:
+      - central.yml=grafana/provisioning/datasources/central.yml
+  - name: grafana-provisioning-dashboards
+    files:
+      - central.yml=grafana/provisioning/dashboards/central.yml
+  - name: grafana-dashboards
+    files:
+      - grafana/dashboards/cache.json
+      - grafana/dashboards/fleet.json
+      - grafana/dashboards/inference.json
+      - grafana/dashboards/machines.json
+      - grafana/dashboards/requests.json
+      - grafana/dashboards/savings.json
