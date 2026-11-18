@@ -382,7 +382,7 @@ func TestSummary_InferenceServer(t *testing.T) {
 	check := func(step, host, server string) {
 		t.Helper()
 		for src, sum := range map[string]SessionSummary{"store": summaryOf(t, s, "s1"), "fold": f.Summary("s1")} {
-			if sum.InferenceHost != host || sum.InferenceServer != server {
+			if sum.InferenceHost != host || string(sum.InferenceServer) != server {
 				t.Errorf("%s, %s: host %q server %q, want %q %q", step, src, sum.InferenceHost, sum.InferenceServer, host, server)
 			}
 		}
@@ -427,5 +427,24 @@ func TestSummaryFold_OldHostTableUnknown(t *testing.T) {
 	}
 	if _, known := f.InferenceHosts(); known {
 		t.Fatal("a version 1 table decoded as known")
+	}
+}
+
+// A non-string inferenceServer, from a Cortex of another version, decodes as "" and leaves the
+// rest of the session.json or session list readable.
+func TestInferenceServer_NonStringDecodesAsEmpty(t *testing.T) {
+	for _, v := range []string{`5`, `1.5`, `{"a":1}`, `["x"]`, `true`, `null`} {
+		var f SummaryFold
+		if err := json.Unmarshal([]byte(`{"eventCount":3,"inferenceHost":"h","inferenceServer":`+v+`}`), &f); err != nil {
+			t.Errorf("fold %s: %v", v, err)
+		} else if sum := f.Summary("s1"); sum.InferenceHost != "h" || sum.InferenceServer != "" {
+			t.Errorf("fold %s: host %q server %q", v, sum.InferenceHost, sum.InferenceServer)
+		}
+		var rows []SessionSummary
+		if err := json.Unmarshal([]byte(`[{"id":"a","inferenceServer":`+v+`},{"id":"b","inferenceServer":"team-b"}]`), &rows); err != nil {
+			t.Errorf("list %s: %v", v, err)
+		} else if len(rows) != 2 || rows[0].InferenceServer != "" || rows[1].InferenceServer != "team-b" {
+			t.Errorf("list %s: %+v", v, rows)
+		}
 	}
 }

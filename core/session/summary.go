@@ -185,7 +185,7 @@ type SessionSummary struct {
 	// InferenceServer is the server name from the routed invocation of the request that set
 	// InferenceHost (model.RoutedServer), and "" when that request was not routed. It moves with
 	// InferenceHost, and InferenceHostFromHistory covers it too.
-	InferenceServer string `json:"inferenceServer,omitempty"`
+	InferenceServer model.LenientString `json:"inferenceServer,omitempty"`
 
 	// InferenceHostFromHistory is true when InferenceHost came from the session's history before
 	// this store entry — the archive's fold — because no request the entry holds has set it: a
@@ -299,7 +299,7 @@ func (s *Store) ListSessions() []SessionSummary {
 			PromptContext: sess.context.Publish(),
 			// Read, not computed, like Title: Append folds it.
 			InferenceHost:   sess.inferenceHost,
-			InferenceServer: sess.inferenceServer,
+			InferenceServer: model.LenientString(sess.inferenceServer),
 			Procs:           procsList(sess.procs),
 			procSpans:       maps.Clone(sess.procs),
 			LastRequestAt:   sess.lastRequestAt,

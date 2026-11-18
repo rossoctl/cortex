@@ -371,7 +371,7 @@ func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 		Saturated:       f.cost.Saturated || f.avoided.Saturated,
 		PromptContext:   f.promptContext(),
 		InferenceHost:   f.inferenceHost,
-		InferenceServer: f.inferenceServer,
+		InferenceServer: model.LenientString(f.inferenceServer),
 		Procs:           procsList(f.procs),
 		procSpans:       maps.Clone(f.procs),
 		LastRequestAt:   f.lastRequestAt,
@@ -408,7 +408,7 @@ type foldJSON struct {
 	// a Cortex that did not record where it went. The session's next inference request sets it.
 	InferenceHost string `json:"inferenceHost,omitempty"`
 	// InferenceServer moves with InferenceHost. A session.json written before it existed decodes to "".
-	InferenceServer string `json:"inferenceServer,omitempty"`
+	InferenceServer model.LenientString `json:"inferenceServer,omitempty"`
 	// Procs, Owner and LastRequestAt are absent from a session.json written before they
 	// existed: that history names no process, links nothing, and its agent is picked by label.
 	Procs         map[string]ProcSpan `json:"procs,omitempty"`
@@ -468,7 +468,7 @@ func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 		Units:            f.units,
 		PromptContext:    f.promptContext(),
 		InferenceHost:    f.inferenceHost,
-		InferenceServer:  f.inferenceServer,
+		InferenceServer:  model.LenientString(f.inferenceServer),
 		Procs:            f.procs,
 		Owner:            f.owner,
 		LastRequestAt:    f.lastRequestAt,
@@ -501,7 +501,7 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		title:           j.Title,
 		restoredContext: j.PromptContext,
 		inferenceHost:   j.InferenceHost,
-		inferenceServer: j.InferenceServer,
+		inferenceServer: string(j.InferenceServer),
 		procs:           j.Procs,
 		owner:           model.CanonicalAgent(j.Owner),
 		lastRequestAt:   j.LastRequestAt,
