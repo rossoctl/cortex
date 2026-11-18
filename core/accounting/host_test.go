@@ -94,10 +94,7 @@ func (r *headerRewriter) OnResponse(context.Context, *pipeline.Context) pipeline
 
 func newHost(t *testing.T) *Host {
 	t.Helper()
-	h, err := New(Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{})
 	t.Cleanup(func() { _ = h.Close() })
 	return h
 }
@@ -192,6 +189,40 @@ func TestHost_ConcurrentComputeRunsOnce(t *testing.T) {
 	}
 }
 
+// Concurrent Compute calls on a request a W6.1 rule skips: the skip path must not write the pctx
+// map that the other callers read (review finding: a map read racing a map write under -race,
+// and a fatal error in production).
+func TestHost_ConcurrentComputeOnSkip(t *testing.T) {
+	h := newHost(t)
+	pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{fwd: forwardedBody("hi")}, 500, coldUsage())
+	const n = 8
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			if _, ok := h.Compute(pctx); ok {
+				t.Error("Compute gave a Result for a skipped request")
+			}
+		}()
+	}
+	wg.Wait()
+	if !released(pctx) {
+		t.Error("the pending handle was not released")
+	}
+}
+
+// released reports whether Compute gave up on pctx's request.
+func released(pctx *pipeline.Context) bool {
+	p := pipeline.GetState[pending](pctx, pendingKey)
+	if p == nil {
+		return false
+	}
+	p.computeMu.Lock()
+	defer p.computeMu.Unlock()
+	return p.released
+}
+
 func TestHost_EndThenCompute(t *testing.T) {
 	h := newHost(t)
 	pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}, 200, coldUsage())
@@ -264,7 +295,7 @@ func TestHost_SkipReleasesHandle(t *testing.T) {
 		if _, ok := h.Compute(pctx); ok {
 			t.Errorf("status %d: Compute gave a Result", status)
 		}
-		if pipeline.GetState[pending](pctx, pendingKey) != nil {
+		if !released(pctx) {
 			t.Errorf("status %d: the pending handle was not released", status)
 		}
 	}
@@ -292,7 +323,7 @@ func TestHost_ComputeTimesOut(t *testing.T) {
 		t.Errorf("Compute took %v, want at most 2.1s", d)
 	}
 	// The handle is released, as on every other no-figure path.
-	if pipeline.GetState[pending](pctx, pendingKey) != nil {
+	if !released(pctx) {
 		t.Error("the pending handle was not released on a timeout")
 	}
 	// Latched: the second call does not wait again.
@@ -330,6 +361,10 @@ func TestHost_PanicInComputeFailsOpen(t *testing.T) {
 // subagents send them). Run under -race.
 func TestHost_ConcurrentSessions(t *testing.T) {
 	h := newHost(t)
+	// 640 requests under -race on a loaded CI runner can take past the production 2s bound to end
+	// a record; this test is about isolation between sessions, not the bound (TestHost_ComputeTimesOut
+	// covers that), so it waits longer (review finding: 2-6 of 640 timed out under load).
+	h.computeWait = 30 * time.Second
 	p, err := pipeline.New([]pipeline.Plugin{&operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}}, pipeline.WithAccountant(h))
 	if err != nil {
 		t.Fatal(err)
@@ -614,13 +649,10 @@ func TestHost_ThreadBillingIsLastRequests(t *testing.T) {
 // dropped (mirroring accountant.Trackers' own 10,000-thread bound).
 func TestHost_ThreadBillingIsBounded(t *testing.T) {
 	var tick int64
-	h, err := New(Options{Now: func() time.Time {
+	h := New(Options{Now: func() time.Time {
 		tick++
 		return time.Unix(tick, 0)
 	}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	t.Cleanup(func() { _ = h.Close() })
 
 	const n = threadBillingCap + 1 // one past the cap: forces exactly one trim

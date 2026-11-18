@@ -35,10 +35,7 @@ func TestBuildWithDeps_Accounting(t *testing.T) {
 	p := &accountingPlugin{}
 	RegisterPlugin("test-accounting", func() pipeline.Plugin { return p })
 	t.Cleanup(func() { UnregisterPlugin("test-accounting") })
-	h, err := accounting.New(accounting.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := accounting.New(accounting.Options{})
 	t.Cleanup(func() { _ = h.Close() })
 
 	with, err := BuildWithDeps(entriesFor("test-accounting"), Deps{Accounting: h})

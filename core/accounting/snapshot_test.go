@@ -26,10 +26,7 @@ func captureWarn(t *testing.T) *bytes.Buffer {
 // hostWithState is a Host at path whose Trackers hold one thread with an active change.
 func hostWithState(t *testing.T, path string, now func() time.Time) *Host {
 	t.Helper()
-	h, err := New(Options{SnapshotPath: path, Now: now})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{SnapshotPath: path, Now: now})
 	pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}, 200, coldUsage())
 	if _, ok := h.Compute(pctx); !ok {
 		t.Fatal("no Result")
@@ -63,10 +60,7 @@ func TestSnapshot_RoundTrip(t *testing.T) {
 		t.Errorf("savedAt is not RFC3339: %v", err)
 	}
 
-	again, err := New(Options{SnapshotPath: path})
-	if err != nil {
-		t.Fatal(err)
-	}
+	again := New(Options{SnapshotPath: path})
 	t.Cleanup(func() { _ = again.Close() })
 	got, err := again.trackers.Snapshot()
 	if err != nil {
@@ -89,10 +83,7 @@ func TestSnapshot_OlderThanHourIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	logs := captureWarn(t)
-	fresh, err := New(Options{SnapshotPath: path})
-	if err != nil {
-		t.Fatal(err)
-	}
+	fresh := New(Options{SnapshotPath: path})
 	t.Cleanup(func() { _ = fresh.Close() })
 	state, _ := fresh.trackers.Snapshot()
 	if strings.Contains(string(state), "test:big") {
@@ -116,10 +107,7 @@ func TestSnapshot_CorruptIgnored(t *testing.T) {
 				t.Fatal(err)
 			}
 			logs := captureWarn(t)
-			h, err := New(Options{SnapshotPath: path})
-			if err != nil {
-				t.Fatalf("New: %v", err)
-			}
+			h := New(Options{SnapshotPath: path})
 			t.Cleanup(func() { _ = h.Close() })
 			if n := strings.Count(logs.String(), "level=WARN"); n != 1 {
 				t.Errorf("WARN lines = %d, want 1:\n%s", n, logs)
@@ -134,10 +122,7 @@ func TestSnapshot_CorruptIgnored(t *testing.T) {
 
 func TestSnapshot_MissingFileIsSilent(t *testing.T) {
 	logs := captureWarn(t)
-	h, err := New(Options{SnapshotPath: filepath.Join(t.TempDir(), "accountant-state.json")})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{SnapshotPath: filepath.Join(t.TempDir(), "accountant-state.json")})
 	t.Cleanup(func() { _ = h.Close() })
 	if logs.Len() != 0 {
 		t.Errorf("a first start logged:\n%s", logs)

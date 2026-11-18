@@ -38,10 +38,7 @@ func (r *costRecorder) events() []*model.SessionEvent {
 
 func acctHost(t *testing.T, recs ...session.Recorder) *accounting.Host {
 	t.Helper()
-	h, err := accounting.New(accounting.Options{CostRecorders: recs})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := accounting.New(accounting.Options{CostRecorders: recs})
 	t.Cleanup(func() { _ = h.Close() })
 	return h
 }

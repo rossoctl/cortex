@@ -222,13 +222,8 @@ func main() {
 				} else {
 					sink, stopMetricsPush = accounting.NewSink(mp, pricingRegistry), stop
 				}
-				h, err := accounting.New(accounting.Options{Resolver: pricingRegistry, Sink: sink})
-				if err != nil {
-					slog.Warn("accounting disabled — could not start the accountant", "error", err)
-				} else {
-					acctHost = h
-					slog.Info("accounting enabled — context savings are computed by the accountant")
-				}
+				acctHost = accounting.New(accounting.OptionsFrom(c, pricingRegistry, sink))
+				slog.Info("accounting enabled — context savings are computed by the accountant")
 			}
 		}
 		deps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Listener: extproc.Support()}

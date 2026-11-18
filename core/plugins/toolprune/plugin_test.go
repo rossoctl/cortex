@@ -700,10 +700,7 @@ func withRates(t *testing.T, p *ToolPrune, entries ...pricing.Entry) *pricedPrun
 		t.Fatalf("pricing.NewTable: %v", err)
 	}
 	rates := pricing.NewRegistry(tab)
-	h, err := accounting.New(accounting.Options{Resolver: rates})
-	if err != nil {
-		t.Fatalf("accounting.New: %v", err)
-	}
+	h := accounting.New(accounting.Options{Resolver: rates})
 	t.Cleanup(func() { _ = h.Close() })
 	return &pricedPrune{ToolPrune: p, rates: rates, acct: h}
 }

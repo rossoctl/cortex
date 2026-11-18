@@ -59,10 +59,7 @@ func TestSettleCost_CallsAccountingOnce(t *testing.T) {
 // request's model, host and prompt size — with basis "usd" for an API key.
 func TestSettleCost_PublishesAccountantSavings(t *testing.T) {
 	rates := bodylessRates(t)
-	h, err := accounting.New(accounting.Options{Resolver: rates})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := accounting.New(accounting.Options{Resolver: rates})
 	t.Cleanup(func() { _ = h.Close() })
 	tp := toolprune.New()
 	if err := tp.Configure(json.RawMessage(`{"remove":["NotebookEdit"]}`)); err != nil {

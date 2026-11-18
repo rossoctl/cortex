@@ -317,10 +317,7 @@ func TestHost_Savings(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			rates := testRates(pricing.ProvConfigured)
-			h, err := New(Options{Resolver: rates})
-			if err != nil {
-				t.Fatal(err)
-			}
+			h := New(Options{Resolver: rates})
 			t.Cleanup(func() { _ = h.Close() })
 			pctx := requestWithHeaders(t, h, "s1", c.header, clientBody("hi"),
 				&operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}, 200, coldUsage())
@@ -415,10 +412,7 @@ func TestHost_SavingsPricesSpendOutputAtTheCallsOwnSize(t *testing.T) {
 	th := pricing.ContextThreshold{AbovePromptTokens: 100_000}
 	th.Rate[pricing.TierInput], th.Set[pricing.TierInput] = 3e-5, true
 	rates.rates.Thresholds = []pricing.ContextThreshold{th}
-	h, err := New(Options{Resolver: &atRates{rates}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{Resolver: &atRates{rates}})
 	t.Cleanup(func() { _ = h.Close() })
 	call := accountant.Operation{Kind: accountant.KindSpend, Operator: "context-guru.summarize", ChangeID: "s:1",
 		Call: &accountant.ModelCall{Model: "claude-haiku-4-5", Usage: accountant.CallUsage{Usage: accountant.Usage{Input: 8000}, Output: 1000}}}

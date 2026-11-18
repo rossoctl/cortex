@@ -51,10 +51,7 @@ func body(tools, system string) []byte {
 // and the ops reported.
 func priced(t *testing.T, client, forwarded []byte) (accountant.Result, []accountant.Operation) {
 	t.Helper()
-	h, err := accounting.New(accounting.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := accounting.New(accounting.Options{})
 	t.Cleanup(func() { _ = h.Close() })
 	pipe, err := pipeline.New([]pipeline.Plugin{&rewriter{res: apply.Result{Body: forwarded, Changed: true}}},
 		pipeline.WithAccountant(h))

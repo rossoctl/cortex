@@ -193,10 +193,7 @@ func TestHost_ObservesEachComputedRequestOnce(t *testing.T) {
 	var mu sync.Mutex
 	// The sink gets its own copy of the same rates: fixedRates records its last call unlocked,
 	// and the sink prices on its own goroutine.
-	h, err := New(Options{Resolver: rates, Sink: NewSink(mp, testRates(pricing.ProvConfigured))})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{Resolver: rates, Sink: NewSink(mp, testRates(pricing.ProvConfigured))})
 	t.Cleanup(func() { _ = h.Close() })
 	h.observeHook = func(m accountant.RequestMeta) { mu.Lock(); metas = append(metas, m); mu.Unlock() }
 
@@ -239,10 +236,7 @@ func TestHost_ObservesEachComputedRequestOnce(t *testing.T) {
 func TestHost_ObservesAPing(t *testing.T) {
 	mp, rd := manual(t)
 	rates := pingRates(t)
-	h, err := New(Options{Resolver: rates, Sink: NewSink(mp, rates)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{Resolver: rates, Sink: NewSink(mp, rates)})
 	t.Cleanup(func() { _ = h.Close() })
 	var metas []accountant.RequestMeta
 	h.observeHook = func(m accountant.RequestMeta) { metas = append(metas, m) }

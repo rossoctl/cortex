@@ -146,10 +146,7 @@ func TestForwardProxy_ToolPruneAndTheRouterChain(t *testing.T) {
 		}`)},
 	}
 	rates := inputRates(t, map[string]float64{"glm-big": glmRate, "claude-opus-5-5": claudeRate})
-	acct, err := accounting.New(accounting.Options{Resolver: rates})
-	if err != nil {
-		t.Fatalf("accounting.New: %v", err)
-	}
+	acct := accounting.New(accounting.Options{Resolver: rates})
 	defer acct.Close()
 	p, err := plugins.BuildWithDeps(chain, plugins.Deps{
 		Pricing:    rates,

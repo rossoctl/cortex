@@ -596,7 +596,7 @@ func main() {
 			if c.AccountingOn() {
 				var sink *accounting.Sink
 				sink, stopMetricsPush = startMetricsPush(c, pricingRegistry)
-				acctHost = newAccountingHost(pricingRegistry, c.Accounting.Weights(), sink)
+				acctHost = newAccountingHost(c, pricingRegistry, sink)
 			} else if c.MetricsPush.Resolve(os.Getenv).On() {
 				slog.Info("metrics push off — accounting is off, so there are no savings counters to push")
 			}

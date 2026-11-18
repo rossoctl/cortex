@@ -40,10 +40,7 @@ func TestPing_BasisFollowsTheThreadsBilling_LedgerAndSinkAgree(t *testing.T) {
 			rates := pingRates(t)
 			ring := usage.New(usage.WithPricing(rates))
 			rec := &fakeRecorder{}
-			h, err := New(Options{Resolver: rates, Sink: NewSink(mp, rates), CostRecorders: []session.Recorder{ring, rec}})
-			if err != nil {
-				t.Fatal(err)
-			}
+			h := New(Options{Resolver: rates, Sink: NewSink(mp, rates), CostRecorders: []session.Recorder{ring, rec}})
 			t.Cleanup(func() { _ = h.Close() })
 			h.setThreadBilling("s1", "main", tc.mode)
 			// At now, so the ring's window holds it.

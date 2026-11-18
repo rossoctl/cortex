@@ -73,10 +73,7 @@ func okInfo() PingInfo { return PingInfo{Status: 200, Duration: 300 * time.Milli
 // uses. Task 7 (2026-11-17 accountant-integration).
 func TestPing_Prices1hCacheWrite(t *testing.T) {
 	rec := &fakeRecorder{}
-	h, err := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{rec}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{rec}})
 	t.Cleanup(func() { _ = h.Close() })
 
 	p := accountant.Ping{
@@ -120,10 +117,7 @@ func TestPing_Prices1hCacheWrite(t *testing.T) {
 // store reference, so Ping has nothing to append to. The recorders are the only sink.
 func TestPing_RecordsSpendToCostRecorders(t *testing.T) {
 	a, b := &fakeRecorder{}, &fakeRecorder{}
-	h, err := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{a}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{a}})
 	t.Cleanup(func() { _ = h.Close() })
 	h.AddCostRecorder(b) // registered after New, as cmd/cortex does
 
@@ -179,10 +173,7 @@ func TestPing_RecordsSpendToCostRecorders(t *testing.T) {
 
 func TestPing_RefusesZeroWindowNon2xxZeroUsage(t *testing.T) {
 	rec := &fakeRecorder{}
-	h, err := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{rec}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{rec}})
 	t.Cleanup(func() { _ = h.Close() })
 
 	noWindow := testPing()
@@ -217,10 +208,7 @@ func TestPing_RefusesZeroWindowNon2xxZeroUsage(t *testing.T) {
 // refuses this via pricing.PlausibleUsage; Ping must too.
 func TestPing_RefusesImplausibleUsage(t *testing.T) {
 	rec := &fakeRecorder{}
-	h, err := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{rec}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{rec}})
 	t.Cleanup(func() { _ = h.Close() })
 
 	negative := testPing()
@@ -259,10 +247,7 @@ func factsSeen(h *Host) func() []accountant.EntryFacts {
 // clockHost is a Host on a settable clock.
 func clockHost(t *testing.T, at *time.Time) *Host {
 	t.Helper()
-	h, err := New(Options{Resolver: pingRates(t), Now: func() time.Time { return *at }})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{Resolver: pingRates(t), Now: func() time.Time { return *at }})
 	t.Cleanup(func() { _ = h.Close() })
 	return h
 }
@@ -388,10 +373,7 @@ func TestPing_RescueOnNextRequest(t *testing.T) {
 // (context-guru#768 B3).
 func TestPing_ManualKeepsNoFacts(t *testing.T) {
 	rec := &fakeRecorder{}
-	h, err := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{rec}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{rec}})
 	t.Cleanup(func() { _ = h.Close() })
 	info := okInfo()
 	info.Manual = true
@@ -429,10 +411,7 @@ func TestPing_UsesTheThreadsBilling(t *testing.T) {
 // emitter on its own goroutine, where an unrecovered panic would end the process.
 func TestPing_PanicIsRecovered(t *testing.T) {
 	rec := &fakeRecorder{}
-	h, err := New(Options{CostRecorders: []session.Recorder{rec}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := New(Options{CostRecorders: []session.Recorder{rec}})
 	t.Cleanup(func() { _ = h.Close() })
 	orig := pingOps
 	t.Cleanup(func() { pingOps = orig })

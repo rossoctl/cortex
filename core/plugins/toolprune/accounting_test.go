@@ -27,10 +27,7 @@ func TestPrune_MovedCacheMarkKeepsTheRequestPriced(t *testing.T) {
 		`],"messages":[{"role":"user","content":[{"type":"text","text":"hi` + strings.Repeat(" lorem ipsum dolor", 400) +
 		`","cache_control":{"type":"ephemeral"}}]}]}`
 
-	h, err := accounting.New(accounting.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := accounting.New(accounting.Options{})
 	t.Cleanup(func() { _ = h.Close() })
 	pipe, err := pipeline.New([]pipeline.Plugin{configured(t, "NotebookEdit")}, pipeline.WithAccountant(h))
 	if err != nil {

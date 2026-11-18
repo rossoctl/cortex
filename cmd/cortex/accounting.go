@@ -22,23 +22,19 @@ const machineIDFile = "machine-id"
 // feature, decided by the same local-install test the session archive and the ledger use: a
 // pod restart starts fresh, and no provider cache outlives an hour anyway (design §5.4).
 //
-// weights are accounting.subscription_weights, read once here: the reloader refuses a reload that
-// changes them.
+// The options come from accounting.OptionsFrom, the same constructor cmd/cortex-envoy uses, so
+// accounting.subscription_weights is read once here (the reloader refuses a reload that changes
+// them) the same way in both binaries.
 //
 // sink receives each computed Result for the llm.savings.* counters; nil when nothing is pushed.
-func newAccountingHost(rates *pricing.Registry, weights config.SubscriptionWeights, sink *accounting.Sink) *accounting.Host {
-	opts := accounting.Options{Resolver: rates, SubscriptionWeights: &weights, Sink: sink}
+func newAccountingHost(c *config.Config, rates *pricing.Registry, sink *accounting.Sink) *accounting.Host {
+	opts := accounting.OptionsFrom(c, rates, sink)
 	if localInstall {
 		if dir, err := defaultCortexDir(); err == nil {
 			opts.SnapshotPath = filepath.Join(dir, accountantStateFile)
 		}
 	}
-	h, err := accounting.New(opts)
-	if err != nil {
-		// Not fatal: accounting is a side figure and fails open.
-		slog.Warn("accounting disabled — could not start the accountant", "error", err)
-		return nil
-	}
+	h := accounting.New(opts)
 	slog.Info("accounting enabled — context savings are computed by the accountant",
 		"snapshot", opts.SnapshotPath)
 	return h

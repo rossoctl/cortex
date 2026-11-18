@@ -106,6 +106,9 @@ type Host struct {
 	// Unpriced, so a test asserting what was BUILT needs its own hook). Nil outside tests.
 	beforeEnd   func()
 	computeHook func()
+	// computeWait overrides the package computeWait when positive. Tests only: a test that runs
+	// hundreds of concurrent requests under -race needs more than the production bound.
+	computeWait time.Duration
 	onEnd       func(ops []accountant.Operation)
 	metaHook    func(meta accountant.RequestMeta)
 	factsHook   func(f accountant.EntryFacts)
@@ -130,7 +133,11 @@ type threadBillingEntry struct {
 
 // New builds a Host. With a SnapshotPath it restores the saved Tracker state, when there is a
 // usable one, and starts saving it every 60s.
-func New(o Options) (*Host, error) {
+//
+// New cannot fail: a snapshot that cannot be read only WARNs and starts fresh, because accounting
+// fails open. So it returns no error, and a caller has no "accounting could not start" branch to
+// get wrong (review finding: the error result was always nil).
+func New(o Options) *Host {
 	h := &Host{
 		trackers:     accountant.NewTrackers(),
 		resolver:     o.Resolver,
@@ -152,7 +159,7 @@ func New(o Options) (*Host, error) {
 		h.saver.Add(1)
 		go h.saveLoop()
 	}
-	return h, nil
+	return h
 }
 
 // AddCostRecorder adds a Recorder after New. cmd/cortex needs it: the Host must exist before the
@@ -213,8 +220,11 @@ type pending struct {
 
 	computeMu sync.Mutex
 	computed  bool
-	result    accountant.Result
-	ok        bool
+	// released is set when Compute gave up on the request (a skip, a timeout, no record): the
+	// answer is "no figure" and stays so.
+	released bool
+	result   accountant.Result
+	ok       bool
 }
 
 // RequestStart implements pipeline.RequestAccountant. It reads pctx.BillingSnapshot() — captured
@@ -426,33 +436,37 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 
 	in := SkipInput{Status: pctx.StatusCode, Rounds: 1 + len(pctx.ResendReasons()), SessionID: pctx.SessionID}
 	if why := SkipReason(in); why != "" {
-		h.release(pctx, why)
+		h.release(p, why)
 		return accountant.Result{}, false
 	}
-	timer := time.NewTimer(computeWait)
+	wait := h.computeWait
+	if wait <= 0 {
+		wait = computeWait
+	}
+	timer := time.NewTimer(wait)
 	select {
 	case <-p.done:
 		timer.Stop()
 	case <-timer.C:
 		slog.Warn("accounting: the record was not ended in time; the request is recorded with no saving",
-			"wait", computeWait)
-		h.release(pctx, "timeout")
+			"wait", wait)
+		h.release(p, "timeout")
 		return accountant.Result{}, false
 	}
 	in.ServerHeldHistory = p.serverHeld
 	if why := SkipReason(in); why != "" {
-		h.release(pctx, why)
+		h.release(p, why)
 		return accountant.Result{}, false
 	}
 	inf := pctx.Extensions.Inference
 	if p.req == nil || inf == nil {
-		h.release(pctx, "no_record")
+		h.release(p, "no_record")
 		return accountant.Result{}, false
 	}
 	// COUNTS NO REQUEST COULD HAVE REPORTED are refused, as settle refuses them: a negative or
 	// past-the-ceiling counter (pricing.PlausibleUsage) would be priced into an impossible saving.
 	if !pricing.PlausibleUsage(pricing.UsageFromInference(inf)) {
-		h.release(pctx, "usage_implausible")
+		h.release(p, "usage_implausible")
 		return accountant.Result{}, false
 	}
 	// CacheWrite1h is the part of CacheWrite billed at the 1-hour rate, never an
@@ -484,11 +498,17 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	return p.result, p.ok
 }
 
-// release drops a request's handle and its library record: Compute will not run for it.
-func (h *Host) release(pctx *pipeline.Context, why string) {
+// release marks a request's handle released: Compute will not run for it. Callers hold
+// p.computeMu.
+func (h *Host) release(p *pending, why string) {
 	// Only the handle goes: the record's goroutine may still be running, and it ends on its own.
 	// Once it has, nothing references the library record.
-	delete(pctx.Extensions.Custom, pendingKey)
+	//
+	// The pctx map is NOT written here. Compute reads pendingKey before it takes computeMu, so a
+	// delete from a concurrent caller's skip path would be a map read racing a map write — a fatal
+	// error in Go, not just a -race report (review finding). The handle stays in the map; the
+	// computed latch (set before any release) answers every later call with "no figure".
+	p.released = true
 	slog.Debug("accounting: no figure for this request", "reason", why)
 }
 
