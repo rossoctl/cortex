@@ -90,6 +90,7 @@ func TestDecodeRequest_Refusals(t *testing.T) {
 		{"not pdf", user(`{"type":"file","file":{"file_data":"data:text/plain;base64,aGk="}}`), "Cortex can translate only PDF files (file_data as a data:application/pdf;base64 URL)."},
 		{"role bot", `{"messages":[{"role":"bot","content":"x"}]}`, invalid + `a message has the role "bot"`},
 		{"array body", `[]`, invalid + "must be a JSON object"},
+		{"part with no type", user(`{"text":"x"}`), invalid + "a content part has no type"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Protocol{}.DecodeRequest([]byte(tc.body))
@@ -223,6 +224,38 @@ func TestDecodeRequest_Extra(t *testing.T) {
 	wantMsg := pivot.Message{Role: "user", Content: []pivot.Block{textOnly("hi")}, Extra: pivot.Extra{"chat-completions.name": json.RawMessage(`"bob"`)}}
 	if !reflect.DeepEqual(got.Messages, []pivot.Message{wantMsg}) {
 		t.Errorf("Messages = %+v, want %+v", got.Messages, wantMsg)
+	}
+}
+
+// TestDecodeRequest_Edges pins one branch of the decoder in each case.
+func TestDecodeRequest_Edges(t *testing.T) {
+	use := pivot.Block{Kind: pivot.BlockToolUse, ID: "c1", Name: "Bash", Input: json.RawMessage(`{}`)}
+	call := `"tool_calls":[{"id":"c1","type":"function","function":{"name":"Bash","arguments":"{}"}}]`
+	for _, tc := range []struct {
+		name, body string
+		want       pivot.Request
+	}{
+		{"empty assistant text is left out", `{"messages":[{"role":"assistant","content":[{"type":"text","text":""}],` + call + `}]}`,
+			pivot.Request{Messages: []pivot.Message{{Role: "assistant", Content: []pivot.Block{use}}}}},
+		{"empty tool content gives a result with no content", `{"messages":[{"role":"tool","tool_call_id":"c1","content":""}]}`,
+			pivot.Request{Messages: []pivot.Message{{Role: "user", Content: []pivot.Block{{Kind: pivot.BlockToolResult, ToolUseID: "c1"}}}}}},
+		{"n below 1 goes to Extra", `{"messages":[],"n":0}`,
+			pivot.Request{Extra: pivot.Extra{"chat-completions.n": json.RawMessage("0")}}},
+		{"other cache_control has sorted keys", `{"messages":[{"role":"user","content":[{"type":"text","text":"t","cache_control":{"type":"ephemeral","scope":"g","a":1}}]}]}`,
+			pivot.Request{Messages: []pivot.Message{{Role: "user", Content: []pivot.Block{
+				{Kind: pivot.BlockText, Text: "t", CacheControl: json.RawMessage(`{"a":1,"scope":"g","type":"ephemeral"}`)}}}}}},
+		{"image in a leading system message", `{"messages":[{"role":"system","content":[{"type":"text","text":"s"},{"type":"image_url","image_url":"https://x.example/y.png"}]}]}`,
+			pivot.Request{System: []pivot.Block{textOnly("s")}, Extra: pivot.Extra{"chat-completions.image": yes}}},
+		{"non-string reasoning_content and reasoning", `{"messages":[{"role":"assistant","content":"a","reasoning_content":5,"reasoning":{}}]}`,
+			pivot.Request{Messages: []pivot.Message{{Role: "assistant", Content: []pivot.Block{textOnly("a")},
+				Extra: pivot.Extra{"chat-completions.reasoning_content": yes, "chat-completions.reasoning": yes}}}}},
+		{"unknown thinking_blocks type", `{"messages":[{"role":"assistant","content":"a","thinking_blocks":[{"type":"other"}]}]}`,
+			pivot.Request{Messages: []pivot.Message{{Role: "assistant", Content: []pivot.Block{textOnly("a")},
+				Extra: pivot.Extra{"chat-completions.thinking_blocks": yes}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wantRequest(t, decodeOK(t, tc.body), tc.want)
+		})
 	}
 }
 
