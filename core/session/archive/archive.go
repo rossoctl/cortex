@@ -131,7 +131,12 @@ type Archive struct {
 	// recent clear, for AwaitClear; see clear.go.
 	mu      sync.Mutex
 	lastSeq map[string]uint64
-	pending *pendingClear
+	// noRecord holds, for each id a flagged event named (SessionEvent.NoRecord), the lowest Seq
+	// it carried. RecordCapture sets it before the event can be dropped, so the session is
+	// withheld even when that event never reaches the writer, and from that Seq on only: events
+	// queued before it are still written. See withhold. Under mu.
+	noRecord map[string]uint64
+	pending  *pendingClear
 	// deletes is the most recent delete per session id, for AwaitDelete; see delete.go. nil
 	// until the first.
 	deletes map[string]*pendingClear
@@ -203,6 +208,8 @@ const (
 	opClear
 	opDelete
 	opFunc
+	// opNoRecord marks a session as withheld (#1923), queued with its first flagged event.
+	opNoRecord
 )
 
 // op is one unit of work for the writer goroutine. Events and renames share one FIFO, so a
@@ -234,6 +241,7 @@ func Open(root string, opts ...Option) (*Archive, error) {
 		maxOpen:       defaultMaxOpen,
 		tickEvery:     defaultTickEvery,
 		lastSeq:       map[string]uint64{},
+		noRecord:      map[string]uint64{},
 		started:       map[string]entryStart{},
 		sessions:      map[string]*sessionState{},
 		index:         map[string]*indexEntry{},
@@ -340,6 +348,9 @@ func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *mode
 	if e.Seq > a.lastSeq[sessionID] {
 		a.lastSeq[sessionID] = e.Seq
 	}
+	if e.NoRecord {
+		a.markLocked(sessionID, e.Seq)
+	}
 	// Every send happens under the store's write lock, so this check and the send below cannot
 	// race another producer; the writer only ever makes room.
 	if len(a.ops) >= cap(a.ops)-reserve {
@@ -347,7 +358,9 @@ func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *mode
 		return
 	}
 	o := op{kind: opEvent, id: sessionID, ev: *e}
-	if c != nil {
+	// A request that asked not to be recorded queues no bodies: the writer withholds its
+	// session anyway (withhold), so the copy would only take capture budget from others.
+	if c != nil && !e.NoRecord {
 		if n := captureSize(c); a.captureBytes.Load()+n <= a.captureBudget {
 			a.captureBytes.Add(n)
 			o.cap = c
@@ -525,6 +538,10 @@ func (a *Archive) take(o op) {
 	case opFunc:
 		o.f()
 		close(o.done)
+	case opNoRecord:
+		// Also while paused: the mark is one small session.json, and it is what keeps the
+		// session out after a restart.
+		a.withhold(o.id, a.sessions[o.id], a.now())
 	}
 }
 
@@ -555,6 +572,10 @@ func (a *Archive) write(id string, e *model.SessionEvent, c *model.RequestCaptur
 	}
 	now := a.now()
 	s := a.sessions[id]
+	if a.withheld(id, s, e) {
+		a.withhold(id, s, now)
+		return
+	}
 	fresh := s == nil
 	if fresh {
 		s = &sessionState{
@@ -670,6 +691,16 @@ func (a *Archive) writeFailed(s *sessionState, err error) {
 // id under the old directory, which adopt finishes at the next start.
 func (a *Archive) rename(oldID, newID string, after uint64) {
 	s := a.sessions[oldID]
+	// A withheld session stays withheld under its new id (#1923), on every path below, the early
+	// returns included: the store's entry moves to newID whatever happens to the files here.
+	a.mu.Lock()
+	_, flaggedOld := a.noRecord[oldID]
+	marked := flaggedOld || (s != nil && s.meta.Summary.NoRecord())
+	delete(a.noRecord, oldID)
+	if marked {
+		a.markLocked(newID, 0) // every event under the new id
+	}
+	a.mu.Unlock()
 	if s == nil {
 		return
 	}
@@ -683,6 +714,10 @@ func (a *Archive) rename(oldID, newID string, after uint64) {
 		slog.Warn("session archive: rename target directory exists; keeping history under the old id",
 			"from", oldID, "to", newID)
 		return
+	}
+	if marked {
+		// A flag only in memory (its event not written yet) moves with the session's files too.
+		s.meta.Summary.MarkNoRecord()
 	}
 	if after > 0 && a.renameEntry(s, oldID, newID, newDir, after) {
 		return
@@ -719,10 +754,15 @@ func (a *Archive) renameEntry(s *sessionState, oldID, newID, newDir string, afte
 	}
 	startAfter, before := s.startAfter, s.before
 	s.startAfter, s.before = 0, nil
+	// Both folds below are rebuilt from segments, which do not hold the mark (#1923).
+	noRec := s.meta.Summary.NoRecord()
 	if entry == len(segs) {
 		if startAfter == after {
 			a.closeWriter(s)
 			s.meta.Summary, _ = foldSegments(s.dir, s.meta.Segments, oldID)
+			if noRec {
+				s.meta.Summary.MarkNoRecord()
+			}
 		} else {
 			// The fold also holds the history's events, which stay under oldID. The new id must
 			// not take the history's hosts as its own.
@@ -757,6 +797,9 @@ func (a *Archive) renameEntry(s *sessionState, oldID, newID, newDir string, afte
 		dir:       newDir,
 		meta:      &sessionMeta{ID: newID, CreatedAt: createdAt, UpdatedAt: latestWrite(move), Summary: since, Segments: move},
 		lastWrite: s.lastWrite,
+	}
+	if noRec {
+		ns.meta.Summary.MarkNoRecord()
 	}
 	// session.json first: a crash before a segment moves leaves it listed where it is not, which
 	// reconcile drops, rather than a directory loadMetas cannot read.
@@ -900,7 +943,7 @@ func (a *Archive) prune(now time.Time) {
 	}
 	var gone []*sessionState
 	for _, s := range a.sessions {
-		if s.w == nil && len(s.meta.Segments) == 0 {
+		if s.w == nil && len(s.meta.Segments) == 0 && !keepMarker(s, now, a.retainDays) {
 			gone = append(gone, s)
 		}
 	}
@@ -919,6 +962,7 @@ func (a *Archive) prune(now time.Time) {
 		if a.lastSeq[id] <= lastBefore[s] {
 			delete(a.lastSeq, id)
 		}
+		delete(a.noRecord, id) // an expired marker, or a session whose history expired
 		a.mu.Unlock()
 	}
 	for _, s := range a.sessions {

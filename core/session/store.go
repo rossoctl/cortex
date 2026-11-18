@@ -85,6 +85,11 @@ type entry struct {
 	// count rather than a set because a trim has to know when the LAST event in a unit leaves.
 	units map[string]int
 
+	// noRecord is true once an event of this entry asked not to be recorded
+	// (SessionEvent.NoRecord, #1923). Sticky, and read by ListSessions as
+	// SessionSummary.NoRecord. The archive keeps its own sticky mark, which survives a restart.
+	noRecord bool
+
 	// money is each event's decoded contribution, PARALLEL TO Events: same length, same
 	// order, same trim.
 	//
@@ -225,6 +230,10 @@ type Store struct {
 	// AddRecorder, before the store serves traffic.
 	recorders []Recorder
 
+	// noRecord holds the session ids MarkNoRecord named: every event appended to one of them
+	// is stamped SessionEvent.NoRecord before the recorders see it (#1923). Protected by mu.
+	noRecord map[string]bool
+
 	// streams holds the live byte counter of each open inference response, by
 	// request ID (see TrackStream). It has its own lock so that the hot path
 	// does not take mu.
@@ -307,6 +316,39 @@ func (s *Store) backgroundCleanup() {
 			s.Cleanup()
 		}
 	}
+}
+
+// MarkNoRecord stamps SessionEvent.NoRecord on every event appended to sessionID from now on, so
+// the session archive withholds them (#1923). For a request whose rows the listener does not
+// build itself: in praxis mode the gateway records a hopped request and its rows come back
+// through /v1/ingest without the flag, the header having been stripped before the hop.
+//
+// The caller must have checked pipeline.Context.WithholdsSession: the request named sessionID
+// with its own session-id header. Never for a fallback bucket.
+func (s *Store) MarkNoRecord(sessionID string) {
+	if !IsConversation(sessionID) { // see appendLocked
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.noRecord == nil {
+		s.noRecord = map[string]bool{}
+	}
+	s.noRecord[sessionID] = true
+	// The archive marks it too, at once: this store mark goes when the entry is evicted, and a
+	// row ingested after that would carry no flag.
+	for _, r := range s.recorders {
+		if w, ok := r.(Withholder); ok {
+			w.Withhold(sessionID)
+		}
+	}
+}
+
+// Withholder is optionally implemented by a Recorder that keeps a session's events (the
+// session archive): Withhold tells it, from now on, to keep none of sessionID's (#1923). Called
+// under the store's write lock, so it must not block or call back into the store.
+type Withholder interface {
+	Withhold(sessionID string)
 }
 
 // Append adds an event to the named session. Creates the session if it
@@ -491,6 +533,19 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event model.SessionEve
 	// without needing to know which session it was appended to — critical for
 	// outbound events that have no protocol-native session field.
 	event.SessionID = sessionID
+	if s.noRecord[sessionID] {
+		event.NoRecord = true
+	}
+	// Only one conversation's own session can opt out (#1923). The default bucket and a pending
+	// bucket hold many clients' calls, and a header can name them ("default" passes the
+	// session-id rules): a flag there would withhold everyone filed to it, and a pending mark
+	// would follow an Adopt onto a session that never asked. Such an event records as usual.
+	if event.NoRecord && !IsConversation(sessionID) {
+		event.NoRecord = false
+	}
+	if event.NoRecord {
+		sess.noRecord = true
+	}
 
 	// Stamp the cursor before publishLocked below, so a subscriber streaming events
 	// live sees the same Seq a paging client would get for that event. If this were
@@ -974,6 +1029,10 @@ func (s *Store) rekeyLocked(oldID, newID string) bool {
 	sess.ID = newID
 	s.sessions[newID] = sess
 	delete(s.sessions, oldID)
+	if s.noRecord[oldID] { // the mark follows the session (#1923)
+		delete(s.noRecord, oldID)
+		s.noRecord[newID] = true
+	}
 	if s.activeID == oldID {
 		s.activeID = newID
 	}
@@ -1000,6 +1059,8 @@ func (s *Store) rekeyLocked(oldID, newID string) bool {
 // held.
 func (s *Store) removeLocked(id string) {
 	delete(s.sessions, id)
+	// The archive's own mark withholds the session from here on (#1923).
+	delete(s.noRecord, id)
 	if s.activeID == id {
 		s.activeID = ""
 	}

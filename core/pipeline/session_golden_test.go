@@ -84,6 +84,7 @@ func goldenEvent() SessionEvent {
 		ClientProc:      "/bin/zsh",
 		Project:         "~/src/app",
 		Source:          "imported:claude-code",
+		NoRecord:        true,
 		SessionHeader:   "x-session-id",
 		DialAddr:        "203.0.113.7:443",
 	}

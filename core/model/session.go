@@ -447,6 +447,16 @@ type SessionEvent struct {
 	// Use ImportedSource to make the value and Imported to test it.
 	Source string
 
+	// NoRecord is true when the request asked not to be recorded: it carried
+	// RecordHeader with the value RecordOff (#1923). Read by Context.NoRecord, pinned
+	// before any plugin runs. The proxy still forwards the request and runs its plugins;
+	// the session archive keeps none of the session's events.
+	//
+	// Client-asserted, with the same caveat as Client above. It can only withhold a
+	// session from the archive, never put one there, so a forged value costs its sender
+	// their own recording.
+	NoRecord bool
+
 	// SubagentKind is the kind of a Bob child task, from Context.SubagentKind:
 	// SubagentKindSubtask or SubagentKindSubagent. Set only on a Bob child's rows, and
 	// empty everywhere else, Claude Code rows included (read Inference.AgentRole there).
@@ -715,6 +725,8 @@ type sessionEventWire struct {
 	ParentSubagent string `json:"parentSubagent,omitempty"`
 	// omitempty: absent on every live event.
 	Source LenientString `json:"source,omitempty"`
+	// omitempty: absent on every recorded row, which is every row the archive keeps.
+	NoRecord bool `json:"noRecord,omitempty"`
 	// omitempty: absent on every row but a Bob child task's.
 	SubagentKind string `json:"subagentKind,omitempty"`
 	// omitempty: absent wherever the listener could not name the client's process, and on
@@ -761,6 +773,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Subagent:        e.Subagent,
 		ParentSubagent:  e.ParentSubagent,
 		Source:          LenientString(e.Source),
+		NoRecord:        e.NoRecord,
 		SubagentKind:    e.SubagentKind,
 		Proc:            e.Proc,
 		ClientProc:      e.ClientProc,
@@ -809,6 +822,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Subagent:        w.Subagent,
 		ParentSubagent:  w.ParentSubagent,
 		Source:          string(w.Source),
+		NoRecord:        w.NoRecord,
 		SubagentKind:    w.SubagentKind,
 		Proc:            w.Proc,
 		ClientProc:      w.ClientProc,

@@ -733,6 +733,11 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// carries StatusCode). skip_hosts traffic never reaches here (the
 		// !skipped guard above), so it stays suppressed by design.
 		if hopped {
+			// The gateway records this request and its rows come back through /v1/ingest
+			// without the flag (#1923), so the store stamps them.
+			if pctx.WithholdsSession() {
+				s.Sessions.MarkNoRecord(sid)
+			}
 			s.Hop.own(pctx, hopWire(pctx, r.Header, sid))
 			defer s.Hop.release(pctx)
 		} else {

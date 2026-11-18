@@ -100,6 +100,7 @@ func (s *Store) Clear() int {
 	n := len(s.sessions)
 	s.sessions = make(map[string]*entry)
 	s.activeID = ""
+	s.noRecord = nil
 	// nil, as a store nothing has claimed from holds them; every writer allocates on first use.
 	for _, r := range s.recorders {
 		if c, ok := r.(Clearer); ok {

@@ -99,6 +99,7 @@ func fullEvent() pipeline.SessionEvent {
 		SessionHeader: "X-Claude-Code-Session-Id",
 		Project:       "~/src/app",
 		Source:        "imported:claude-code",
+		NoRecord:      true,
 	}
 }
 
@@ -234,6 +235,11 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 	// source is kept: a short scalar that marks an imported row in the timeline.
 	if got.Source != full.Source {
 		t.Errorf("source = %q, want %q", got.Source, full.Source)
+	}
+	// noRecord is kept for the same reason: a bool that marks a row of a session the archive
+	// withholds (#1923).
+	if got.NoRecord != full.NoRecord {
+		t.Errorf("noRecord = %v, want %v", got.NoRecord, full.NoRecord)
 	}
 	if got.Direction != full.Direction || got.Phase != full.Phase {
 		t.Error("direction/phase did not survive")
@@ -444,7 +450,9 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// so the struct copy keeps it; asserted above.
 		// 36 since Source, TIMELINE data: agentop marks an imported row by it (#1871). A
 		// scalar, so the struct copy keeps it; asserted above.
-		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 36},
+		// 37 since NoRecord, TIMELINE data: it marks a row of a withheld session (#1923). A
+		// scalar, so the struct copy keeps it; asserted above.
+		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 37},
 		// 25 since AgentRole, which is TIMELINE data: agentop's CONTEXT gauge reads it on every
 		// row the timeline serves. It needs no assertion of its own in the projection test
 		// beyond the equality one there — a scalar survives the struct copy, unlike the two

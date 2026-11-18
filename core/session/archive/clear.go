@@ -53,6 +53,7 @@ func (a *Archive) Cleared() {
 	a.mu.Lock()
 	p.seqs = maps.Clone(a.lastSeq)
 	a.pending = p
+	clear(a.noRecord)
 	a.mu.Unlock()
 	if a.closed.Load() {
 		p.finish(ClearResult{}, errors.New("the session archive is closed"))
