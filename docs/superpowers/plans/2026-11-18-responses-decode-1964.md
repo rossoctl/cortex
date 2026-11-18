@@ -74,7 +74,7 @@
 
 ## Gate
 
-From the worktree root:
+From the worktree root. The plan review ran each vet and format step on the unchanged base (58b0930cc plus the plan commit): `core` vet, `core` gofmt, `cmd/cortex` vet and `cmd/cortex-envoy` vet all pass. No change to how the gate is called.
 
 ```sh
 (cd core && GOWORK=off go vet ./... && test -z "$(gofmt -l .)" && GOWORK=off go test ./translate/... ./parse/... ./plugins/inferencerouter/... ./listener/... ./pipeline/... && GOWORK=off go test -run '^$' -bench . -benchtime 1x ./translate/... && GOWORK=off go mod tidy -diff) && (cd cmd/cortex && GOWORK=off go vet ./...) && (cd cmd/cortex-envoy && GOWORK=off go vet ./...)
@@ -117,7 +117,7 @@ Depends on: none.
 - Modify: `core/translate/chat/request.go:311-318` (`effort`)
 - Test: `core/translate/chat/request_test.go`, create `core/translate/testdata/request/r2c_effort_minimal.json`
 
-- [ ] **Step 1: Write the failing test.** `TestEffort` table: `none`→`low`, `minimal`→`low`, `low`→`low`, `medium`→`medium`, `high`→`high`, `xhigh`→`high`, `max`→`high`, `""` with no thinking → `""`. Add the input fixture `r2c_effort_minimal.json`: an Anthropic request with `"output_config":{"effort":"minimal"}` (use the field that `anthropic/request.go` reads for effort; read it first). Run `TestRequestGolden -update` once and check that the golden holds `"reasoning_effort":"low"`.
+- [ ] **Step 1: Write the failing test.** `TestEffort` table: `none`→`low`, `minimal`→`low`, `low`→`low`, `medium`→`medium`, `high`→`high`, `xhigh`→`high`, `max`→`high`, `""` with no thinking → `""`. Add the input fixture `r2c_effort_minimal.json`: an Anthropic request with `"output_config":{"effort":"minimal"}` (`anthropic/request.go` `takeEffort` reads `output_config.effort`). Run `TestRequestGolden -update` once and check that the golden holds `"reasoning_effort":"low"`.
 - [ ] **Step 2: Run** `cd core && GOWORK=off go test ./translate/chat/ -run TestEffort`. Expected: FAIL for `none` and `minimal`.
 - [ ] **Step 3: Implement.** Add `case "none", "minimal": return "low"` to `effort`.
 - [ ] **Step 4: Run** `cd core && GOWORK=off go test ./translate/...`. Expected: PASS, and no existing golden changed.
@@ -168,7 +168,7 @@ Depends on: T1, T3.
 - Consumes: `origin`, `toolRef`, `encodeReasoning` (T3). `NewReplyEncoder(req pivot.Request, stream bool)`, `Event.Data` (T1).
 - Produces: `func (Protocol) NewReplyEncoder(req pivot.Request, stream bool) pivot.ReplyEncoder`.
 
-- [ ] **Step 1: Write the failing tests.**
+- [ ] **Step 1: Write the failing tests.** Use the `update` flag that T3's `golden_test.go` declares. Do not declare it a second time in the package.
   - `reply_test.go`, `TestReplyGolden`: a table of hand-written `[]pivot.Event` cases, each encoded streamed (`<name>.sse.golden`) and not streamed (`<name>.json.golden`): `text_only`, `thinking_signature`, `redacted_thinking`, `function_call`, `namespaced_function_call` (the request's `Origin` comes from decoding a request that has a namespaced tool), `custom_tool_call`, `custom_bad_input` (gives `response.failed` naming the tool), `max_tokens`, `refusal`, `error_event` (status 429 → code `rate_limit_exceeded`), `error_overloaded` (529 → `server_is_overloaded`), `error_context` (message "prompt is too long" → `context_length_exceeded`), `usage_cache`.
   - `TestChatRepliesAsResponses`: each `../testdata/reply/bob_shape*` and `error_*` file, decoded by `chat.Protocol{}.NewReplyDecoder` and encoded by this encoder. Goldens in `testdata/reply/<base>.to-responses-{sse,json}.golden`. A non-2xx case checks the status and the OpenAI error body (R12).
   - `TestSplitAtEveryByte`: for each `bob_shape*.sse`, feed the Chat SSE split at each byte boundary; the output equals the output of one whole feed.
@@ -185,7 +185,7 @@ Depends on: T1, T3.
 
 ### Task T5: Register `responses`, and test the router and the listener (R1, R3, R4, R5, R10 end to end)
 
-Depends on: T3, T4.
+Depends on: T1, T3, T4.
 
 **Files:**
 - Modify: `core/translate/registry.go` (register `responses.Protocol{}`, delete the stub type and its `chat` import if unused), `core/translate/registry_test.go`
