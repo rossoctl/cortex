@@ -158,8 +158,8 @@ func TestProbe_SameModelErrorEverywhere(t *testing.T) {
 
 func TestProbe_FixedHeaderNoRetry(t *testing.T) {
 	srv, seen := fakeProbeServer(t, bearerRefused)
-	if _, _, err := runProbe(t, srv, nil, "authorization", true); err == nil {
-		t.Error("a fixed header that the server refuses gave no error")
+	if _, _, err := runProbe(t, srv, nil, "authorization", true); err == nil || !strings.Contains(err.Error(), "every path answered 401") {
+		t.Errorf("a fixed header that the server refuses: err = %v", err)
 	}
 	for _, r := range seen.reqs {
 		if r.apiKey != "" {
@@ -186,5 +186,87 @@ func TestProbe_SendsTheServersHeaders(t *testing.T) {
 	}
 	if api["chat-completions"] != "/v1/chat/completions" {
 		t.Errorf("api %v", api)
+	}
+}
+
+// Anthropic is served only with Bearer and chat only with x-api-key: neither is the
+// protocol's usual header, and they differ, so no one auth_header fits (decision 14).
+func TestProbe_DifferentHeaderPerProtocol(t *testing.T) {
+	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, _ *http.Request) {
+		switch {
+		case p.path == "/v1/messages" && p.bearer == "Bearer k":
+			io.WriteString(w, anthropicOK)
+		case p.path == "/v1/chat/completions" && p.apiKey == "k":
+			io.WriteString(w, chatOK)
+		case p.path == "/v1/messages" || p.path == "/v1/chat/completions":
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			http.NotFound(w, nil)
+		}
+	})
+	_, _, err := runProbe(t, srv, nil, "authorization", false)
+	if err == nil || err.Error() != "the server takes a different auth header for each protocol; give --auth-header and --api" {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// Anthropic works with its usual x-api-key and chat with the same x-api-key, which
+// is not its usual header: the one shared header is written.
+func TestProbe_UsualAndSharedHeader(t *testing.T) {
+	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, _ *http.Request) {
+		switch {
+		case p.apiKey != "k":
+			w.WriteHeader(http.StatusUnauthorized)
+		case p.path == "/v1/messages":
+			io.WriteString(w, anthropicOK)
+		case p.path == "/v1/chat/completions":
+			io.WriteString(w, chatOK)
+		default:
+			http.NotFound(w, nil)
+		}
+	})
+	api, auth, err := runProbe(t, srv, nil, "authorization", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"anthropic-messages": "/v1/messages", "chat-completions": "/v1/chat/completions"}
+	if !maps.Equal(api, want) || auth != "x-api-key" {
+		t.Errorf("api %v, auth_header %q", api, auth)
+	}
+}
+
+// Different replies on different paths say the path is wrong, not the model or key.
+func TestProbe_MixedRepliesNoPath(t *testing.T) {
+	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, _ *http.Request) {
+		if strings.HasPrefix(p.path, "/v1/") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		http.NotFound(w, nil)
+	})
+	_, _, err := runProbe(t, srv, nil, "authorization", false)
+	if err == nil || err.Error() != "no path tried served a protocol; give the protocols with --api <protocol>=<path>" {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// A reply that repeats the key, or holds control characters, is printed without them.
+func TestProbe_ReplyHidesKeyAndControls(t *testing.T) {
+	const key = "sk-secret-123" // "k" is in the error's own words, so a longer key
+	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, _ probeReq, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, "bad key "+key+"\x1b[31m\r\nred\x07")
+	})
+	s := routerconfig.Server{URL: srv.URL, Key: key}
+	_, _, err := probeAPI(context.Background(), srv.Client(), s, "m", "authorization", true)
+	if err == nil {
+		t.Fatal("no error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, key) || strings.ContainsAny(msg, "\x1b\r\n\x07") {
+		t.Errorf("err = %q", msg)
+	}
+	if !strings.Contains(msg, "bad key <key> [31m red") {
+		t.Errorf("err = %q, want the reply with <key>", msg)
 	}
 }
