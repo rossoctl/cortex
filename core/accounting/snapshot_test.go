@@ -3,6 +3,7 @@ package accounting
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -146,39 +147,104 @@ func TestSnapshot_OnlyARecordMarksTheStateChanged(t *testing.T) {
 	}
 }
 
-// Over snapshotMaxBytes the state is not saved: the old file goes, so a restart starts fresh
-// rather than loading out-of-date state, with one WARN per crossing. Back under, saving resumes.
-func TestSnapshot_TooLargeIsNotSaved(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "accountant-state.json")
-	h := hostWithState(t, path, time.Now)
-	if err := h.save(); err != nil {
-		t.Fatal(err)
+// hostWithThreads is a Host at path with one priced request on each session, each a minute
+// after the one before, so the sessions' threads are ordered oldest to newest.
+func hostWithThreads(t *testing.T, path string, sessions ...string) *Host {
+	t.Helper()
+	at := time.Now().Add(-time.Hour)
+	h := New(Options{SnapshotPath: path, Now: func() time.Time { return at }})
+	t.Cleanup(func() { _ = h.Close() })
+	for _, s := range sessions {
+		at = at.Add(time.Minute)
+		pctx := request(t, h, s, "/v1/messages", clientBody("hi"), &operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}, 200, coldUsage())
+		if _, ok := h.Compute(pctx); !ok {
+			t.Fatalf("%s: no Result", s)
+		}
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("no file after a normal save: %v", err)
+	return h
+}
+
+// Over snapshotMaxBytes the threads seen longest ago are left out of the file, and what is kept is
+// a snapshot the library itself restores. One WARN per crossing.
+func TestSnapshot_OverTheCapDropsTheOldestThreads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accountant-state.json")
+	h := hostWithThreads(t, path, "s-old", "s-mid", "s-new")
+	full, err := h.trackers.Snapshot()
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	logs := captureWarn(t)
 	prev := snapshotMaxBytes
-	snapshotMaxBytes = 10
+	snapshotMaxBytes = len(full) - 1 // one thread too many
 	t.Cleanup(func() { snapshotMaxBytes = prev })
 	for i := 0; i < 3; i++ {
 		if err := h.save(); err != nil {
 			t.Fatalf("save over the cap: %v", err)
 		}
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("the old file is still there (err %v), want it removed", err)
-	}
-	if n := strings.Count(logs.String(), "too large to save"); n != 1 {
+	if n := strings.Count(logs.String(), "over its size limit"); n != 1 {
 		t.Errorf("%d WARNs for three saves over the cap, want 1:\n%s", n, logs)
 	}
 
-	snapshotMaxBytes = prev
+	again := New(Options{SnapshotPath: path}) // restores through the library's own Restore
+	t.Cleanup(func() { _ = again.Close() })
+	if strings.Contains(logs.String(), "not usable") {
+		t.Fatalf("the trimmed file did not restore:\n%s", logs)
+	}
+	state, err := again.trackers.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state) > snapshotMaxBytes {
+		t.Errorf("restored state is %d bytes, over the %d cap", len(state), snapshotMaxBytes)
+	}
+	if strings.Contains(string(state), "s-old") {
+		t.Error("the oldest thread was kept")
+	}
+	for _, s := range []string{"s-mid", "s-new"} {
+		if !strings.Contains(string(state), s) {
+			t.Errorf("thread %s was dropped, want it kept", s)
+		}
+	}
+	// The host's memory still holds every thread: only the file was trimmed.
+	if mem, _ := h.trackers.Snapshot(); !strings.Contains(string(mem), "s-old") {
+		t.Error("the oldest thread left memory too")
+	}
+}
+
+// A snapshot format this code does not know is never trimmed by guessing: the file is removed, so
+// a restart starts fresh.
+func TestTrimSnapshot_UnknownVersionIsRefused(t *testing.T) {
+	for _, in := range []string{`{"version":2,"threads":[]}`, `{"version":1}`, `not json`, `{"version":1,"threads":[1]}`} {
+		if _, _, err := trimSnapshot([]byte(in), 1<<20); err == nil {
+			t.Errorf("trimSnapshot(%s) = no error, want a refusal", in)
+		}
+	}
+}
+
+func TestSnapshot_UntrimmableOverTheCapRemovesTheFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accountant-state.json")
+	h := hostWithThreads(t, path, "s1")
 	if err := h.save(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("no file after the state fits again: %v", err)
+	logs := captureWarn(t)
+	prevMax, prevTrim := snapshotMaxBytes, trimSnapshotFn
+	snapshotMaxBytes = 10
+	trimSnapshotFn = func([]byte, int) ([]byte, int, error) {
+		return nil, 0, fmt.Errorf("snapshot version 2, can trim only 1")
+	}
+	t.Cleanup(func() { snapshotMaxBytes, trimSnapshotFn = prevMax, prevTrim })
+	for i := 0; i < 2; i++ {
+		if err := h.save(); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the old file is still there (err %v), want it removed", err)
+	}
+	if n := strings.Count(logs.String(), "could not be trimmed"); n != 1 {
+		t.Errorf("%d WARNs for two saves, want 1:\n%s", n, logs)
 	}
 }

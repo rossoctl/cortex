@@ -759,8 +759,10 @@ accounting:
 
 On a local install the accountant keeps its state in `~/.cortex/accountant-state.json`, so
 a restart does not forget which prefix the provider has cached. The file holds hashes and sizes,
-never prompt text. If the state passes 20 MiB, Cortex stops saving it, removes the file and
-logs one WARN (`too large to save`); a restart then starts fresh. Both fields are read once at
+never prompt text. If the state passes 20 MiB, Cortex leaves the threads seen longest ago out of
+the file, so it stays under 20 MiB, and logs one WARN (`over its size limit`). Those threads stay
+in memory; only a restart forgets them. If Cortex does not know the file's format (a newer
+accountant), it removes the file instead and a restart starts fresh. Both fields are read once at
 startup. A reload that changes a weight is refused, and so is a reload that turns accounting
 on (as resolved) when the proxy started with it off; `agentop service restart` applies either.
 A reload that turns it off is accepted: the accountant stays idle until a later reload turns

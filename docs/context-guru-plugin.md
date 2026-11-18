@@ -25,7 +25,12 @@ provider has cached stays the same.
 
 - Where: `~/.cortex/context-guru-state.db` on a local install. Otherwise
   `<user cache dir>/cortex/context-guru-state.db` (`$XDG_CACHE_HOME`, or `~/.cache` on Linux).
-  In a pod the file goes with the pod's filesystem.
+- In a cluster: the file is lost when the pod's filesystem is replaced (a reschedule, a
+  rollout, a pod delete). It survives config reloads, which run inside the same process. A
+  container restart (the process exited) also gets a new writable layer, so the file survives
+  that only when the cache directory is on a volume that outlives the container, such as an
+  `emptyDir` mounted at `$XDG_CACHE_HOME`. Nothing is shared between pods: each pod keeps its
+  own state.
 - What: everything the state holds, including text the plugin made from the conversation (the
   summary, extract rewrites, frozen replacements). Mode 0600 in a 0700 directory.
 - How long: a key stays 24 hours in memory (`store.state_ttl_seconds` overrides this), and a
