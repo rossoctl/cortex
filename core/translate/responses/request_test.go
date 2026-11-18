@@ -248,3 +248,39 @@ func TestDecode_BadBodies(t *testing.T) {
 		}
 	}
 }
+
+// TestDecode_ImageRefusals checks the two input_image refusals of rule R7.
+func TestDecode_ImageRefusals(t *testing.T) {
+	for url, want := range map[string]string{
+		"data:image/png,AAAA": "must be base64",
+		"ftp://example.com/a": "must have a data URL or an http(s) URL",
+	} {
+		_, err := Protocol{}.DecodeRequest([]byte(`{"model":"m","input":[{"type":"message","role":"user","content":[{"type":"input_image","image_url":"` + url + `"}]}]}`))
+		var re *pivot.RequestError
+		if !errors.As(err, &re) || re.Status != 400 || !strings.Contains(re.Message, want) {
+			t.Errorf("%s: got %v, want a 400 with %q", url, err, want)
+		}
+	}
+}
+
+// TestDecode_Drops checks the tool_choice drops of rule R6 and the drop
+// of a namespace inside a namespace (rule R8).
+func TestDecode_Drops(t *testing.T) {
+	const tools = `"tools":[{"type":"function","name":"shell","parameters":{}}]`
+	for _, c := range []struct{ body, key string }{
+		{`{"model":"m","input":"hi",` + tools + `,"tool_choice":"sometimes"}`, "tool_choice"},
+		{`{"model":"m","input":"hi",` + tools + `,"tool_choice":{"type":"allowed_tools","mode":"auto","tools":[]}}`, "tool_choice"},
+		{`{"model":"m","input":"hi","tools":[{"type":"namespace","name":"a","tools":[{"type":"namespace","name":"b","tools":[{"type":"function","name":"f"}]}]}]}`, "namespace"},
+	} {
+		req := decode(t, c.body)
+		if _, ok := req.Extra[extraPrefix+c.key]; !ok {
+			t.Errorf("%s: %s is not dropped: %v", c.body, c.key, req.Extra)
+		}
+		if c.key == "tool_choice" && req.ToolChoice != nil {
+			t.Errorf("%s: ToolChoice is %+v, want nil", c.body, req.ToolChoice)
+		}
+		if c.key == "namespace" && len(req.Tools) != 0 {
+			t.Errorf("%s: Tools is %+v, want none", c.body, req.Tools)
+		}
+	}
+}
