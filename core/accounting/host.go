@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rossoctl/accountant"
@@ -21,6 +22,9 @@ import (
 // parse and two hashes, normally a few milliseconds; past this the request is recorded with no
 // saving rather than held (global constraint: accounting never delays past 2s).
 const computeWait = 2 * time.Second
+
+// closeObserveWait bounds how long Close waits for the sink's in-flight observations.
+const closeObserveWait = 2 * time.Second
 
 // pendingKey is the pctx state key RequestEnd stores a request's handle under, for Compute.
 const pendingKey = "accounting.pending"
@@ -81,8 +85,12 @@ type Host struct {
 	snapshotPath string
 	stop         chan struct{}
 	saver        sync.WaitGroup
-	closeOnce    sync.Once
-	closeErr     error
+	// dirty is set when a record changes the Tracker state (EndRequest, Compute), and cleared by
+	// a periodic save. The library's Snapshot holds its tracker lock for the whole marshal,
+	// which blocks every BeginRequest meanwhile, so an idle process does not take it at all.
+	dirty     atomic.Bool
+	closeOnce sync.Once
+	closeErr  error
 
 	mu sync.Mutex
 	// closed is set under mu by Close, before it calls observing.Wait(): observe's own Add(1)
@@ -185,8 +193,18 @@ func (h *Host) Close() error {
 		h.closed = true
 		h.mu.Unlock()
 		// The sink's observations first: they are in-memory adds, done in microseconds, and the
-		// caller flushes the metrics push after Close.
-		h.observing.Wait()
+		// caller flushes the metrics push after Close. BOUNDED: a wedged Sink.Observe must not
+		// hold process shutdown past the supervisor's stop grace (review finding). Past
+		// closeObserveWait the observations still running are abandoned, and their counts are
+		// not in the final push.
+		observed := make(chan struct{})
+		go func() { h.observing.Wait(); close(observed) }()
+		select {
+		case <-observed:
+		case <-time.After(closeObserveWait):
+			slog.Warn("accounting: observations still running at shutdown were abandoned; the final metrics push is short",
+				"wait", closeObserveWait)
+		}
 		close(h.stop)
 		h.saver.Wait()
 		if h.snapshotPath != "" {
@@ -405,6 +423,7 @@ func (h *Host) end(p *pending, format wire.Format, meta accountant.RequestMeta, 
 		h.factsHook(f)
 	}
 	req.EndRequest(thread, fwdBody, fwdBPs, f)
+	h.dirty.Store(true)
 	if h.onEnd != nil {
 		h.onEnd(ops)
 	}
@@ -482,6 +501,7 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 		h.usageHook(usage)
 	}
 	p.result, p.ok = h.computeSafe(p.req, usage)
+	h.dirty.Store(true)
 	p.req = nil
 	if p.ok && p.pinged {
 		h.dropPing(p.ping.session, p.ping.thread, p.pingWindow)

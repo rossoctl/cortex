@@ -40,8 +40,8 @@ func TestAccountantLines(t *testing.T) {
 	}
 	want := []Line{
 		{Label: "saved", Figure: "$0.01   penalty $0.03   net -$0.02"},
-		{Label: "usage-limit units", Figure: "4.5 saved   penalty 0.5   net 4.0   API equivalent $1.00"},
-		{Label: "unknown billing", Figure: "$0.20 saved, not in any total"},
+		{Label: "usage-limit units", Figure: "4.5 saved   penalty 0.5   net 4.0   API equivalent net $1.00"},
+		{Label: "unknown billing", Figure: "$0.20 net, not in any total"},
 		{Label: "plugin model calls", Figure: "<$0.01   2.0 units   $0.05 unknown billing"},
 		{Label: "keep-alive", Figure: "$0.02   3 pings"},
 	}

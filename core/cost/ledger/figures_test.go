@@ -97,6 +97,35 @@ func TestRow_AKeepAlivePingIsItsOwnColumn(t *testing.T) {
 	}
 }
 
+// A keep-alive ping that priced nothing still counts as a ping, as it does in the ring: dropping
+// it made window=today read fewer pings than window=1h (review finding).
+func TestRow_AnUnpricedKeepAlivePingIsCounted(t *testing.T) {
+	dir := t.TempDir()
+	w := newTestWriter(t, dir, func() time.Time { return at })
+	rec, err := json.Marshal(event.Event{Purpose: event.PurposeKeepAlive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Record("s1", &pipeline.SessionEvent{
+		At: at, Phase: pipeline.SessionResponse, StatusCode: 200, Host: "api.anthropic.com",
+		Plugins: map[string]json.RawMessage{event.Key: rec},
+	})
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	rows := readAllRows(t, dir)
+	if len(rows) != 1 {
+		t.Fatalf("%d rows, want 1", len(rows))
+	}
+	r := rows[0]
+	if r.KeepAlivePings != 1 || r.KeepAliveMicros != 0 {
+		t.Errorf("keep-alive = %d pings, %d micros; want 1 and 0", r.KeepAlivePings, r.KeepAliveMicros)
+	}
+	if r.Requests != 0 || r.PricedRequests != 0 || r.PriceableRequests != 0 {
+		t.Errorf("an unpriced ping reached the request figures: %+v", r.Counts)
+	}
+}
+
 // A keep-alive ping on a subscription login is not money: its row books the ping and its
 // usage-limit units, with the API-equivalent dollars beside them, and nothing in KeepAliveMicros.
 // An unknown-billing ping is shown apart. Both still count in KeepAlivePings.

@@ -412,7 +412,14 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 	// OnFinish's own isSubagent check (via recordFor) can then disagree with this one. The
 	// kaArrived marker records what THIS call decided, so OnFinish departs exactly the arrivals
 	// this call made — never fewer, never (on a session a concurrent request shares) one too many.
-	if p.keeper != nil && !p.stopped.Load() && sid != "" && !isSubagent(pctx) {
+	//
+	// UNDER on_error: observe NOTHING IS HELD: a held turn is pinged upstream with the caller's own
+	// credential, and that ping is real, billed spend — the opposite of a shadow run, where
+	// nothing the plugin does takes effect (review finding). The marker tells OnFinish, which
+	// runs with no policy of its own, to record nothing for this request.
+	if p.keeper != nil && pctx.Observing() {
+		pipeline.SetState(pctx, kaShadowStateKey, &kaShadow{})
+	} else if p.keeper != nil && !p.stopped.Load() && sid != "" && !isSubagent(pctx) {
 		p.keeper.Arrive(keepalive.Key{Session: sid})
 		pipeline.SetState(pctx, kaArrivedStateKey, &kaArrived{})
 	}
@@ -561,6 +568,13 @@ type kaArrived struct{}
 // per-request, so it cannot be confused with another request sharing the same session.
 const kaArrivedStateKey = "context-guru-keepalive-arrived"
 
+// kaShadow marks a request this plugin saw under on_error: observe: the keeper holds nothing
+// for it, so no keep-alive ping is ever sent on the caller's credential in shadow mode.
+type kaShadow struct{}
+
+// kaShadowStateKey is this plugin's key for kaShadow.
+const kaShadowStateKey = "context-guru-keepalive-shadow"
+
 // OnFinish hands the finished request to the keeper. Here and not in OnResponse: inference-parser
 // settles token counts after this plugin's response hook, and by OnFinish they are final and
 // pctx.Body still holds the compacted bytes that went upstream. A mapping and one Record call —
@@ -593,7 +607,7 @@ func (p *ContextGuru) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	if sid != "" {
 		p.recordBilled(pctx, sid)
 	}
-	if p.keeper == nil {
+	if p.keeper == nil || pipeline.GetState[kaShadow](pctx, kaShadowStateKey) != nil {
 		return
 	}
 	hdr := pctx.Headers

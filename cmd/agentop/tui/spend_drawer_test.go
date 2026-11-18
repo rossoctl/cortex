@@ -2144,7 +2144,7 @@ func TestDrawerFigures_ShowTheAccountantsFigures(t *testing.T) {
 		parts = append(parts, f.full)
 	}
 	got := strings.Join(parts, " | ")
-	for _, want := range []string{"net -$0.02", "penalty $0.03", "API equivalent $1.00", "plugin model calls $0.04", "keep-alive $0.02   2 pings"} {
+	for _, want := range []string{"net -$0.02", "penalty $0.03", "API equivalent net $1.00", "plugin model calls $0.04", "keep-alive $0.02   2 pings"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("row = %q, missing %q", got, want)
 		}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -394,6 +395,40 @@ func TestStart_ExportFailureWarnsOnceAndCounts(t *testing.T) {
 	}
 	if strings.Contains(logs.all(), "s3cret") {
 		t.Errorf("the token reached the log:\n%s", logs.all())
+	}
+}
+
+// A redirect is a failed export, never followed: a collector cannot move the push, or its bearer
+// token, to another destination (review finding).
+func TestStart_RedirectIsNotFollowed(t *testing.T) {
+	var moved, asked atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		moved.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirector.Close)
+	_ = withReader(t)
+	mp, shutdown, err := Start(config.MetricsPushConfig{URL: redirector.URL, Token: "s3cret", Interval: 20 * time.Millisecond}, "dev", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = shutdown(context.Background()) })
+	sink := accounting.NewSink(mp, rates())
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && asked.Load() < 2 {
+		observe(sink)
+		time.Sleep(20 * time.Millisecond)
+	}
+	if asked.Load() < 2 {
+		t.Fatalf("the collector was asked %d times, want at least 2", asked.Load())
+	}
+	if n := moved.Load(); n != 0 {
+		t.Errorf("the redirect target got %d requests, want none", n)
 	}
 }
 

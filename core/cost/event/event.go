@@ -519,10 +519,12 @@ type Figures struct {
 	// PenaltyUnits, in milli-units.
 	AvoidedUnits int64
 	PenaltyUnits int64
-	// AvoidedAPIEquivalentMicros is the gross USD of the same subscriptionEquivalent savings: what
-	// the tokens would have cost on the API. Not money.
+	// AvoidedAPIEquivalentMicros is the net USD (saved minus penalty) of the same
+	// subscriptionEquivalent savings: what the tokens would have cost on the API. Not money. May
+	// be negative.
 	AvoidedAPIEquivalentMicros int64
-	// AvoidedUnknownMicros is the gross USD of the applied savings with basis "unknown".
+	// AvoidedUnknownMicros is the net USD (saved minus penalty) of the applied savings with basis
+	// "unknown". May be negative.
 	AvoidedUnknownMicros int64
 	// PluginSpendMicros is the USD of the usd-basis Spends; PluginSpendUnits the Units of the
 	// subscriptionEquivalent ones, in milli-units; PluginSpendUnknownMicros the USD of the rest.
@@ -558,9 +560,12 @@ func (e Event) Figures() Figures {
 		case BasisSubscriptionEquivalent:
 			unitsSaved += s.Units
 			unitsPen += s.PenaltyUnits
-			equivSaved += s.USD
+			// Net, like the units beside it: a gross figure here sat beside net units.
+			equivSaved += s.USD - s.PenaltyUSD
 		case BasisUnknown:
-			unknownSaved += s.USD
+			// Net: the penalty went nowhere, so a saving that cost more than it saved read as
+			// a gain (review finding).
+			unknownSaved += s.USD - s.PenaltyUSD
 		}
 	}
 	var spendUSD, spendUnits, spendUnknown float64

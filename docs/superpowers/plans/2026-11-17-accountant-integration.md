@@ -12,7 +12,7 @@ surface (`ReportOps`, the client body, a request-start/end hook set by a pipelin
 changes. `inferenceparser` replaces `settle.Avoided` with `accounting.Host.Savings`. `core/accounting` never
 imports context-guru.
 
-**Tech Stack:** Go 1.26.5, `github.com/rossoctl/accountant` v0.2.0, `github.com/rossoctl/accountant/metrics`
+**Tech Stack:** Go 1.26.5, `github.com/rossoctl/accountant` v0.3.0 (v0.2.0 when this plan was written), `github.com/rossoctl/accountant/metrics`
 (pseudo-version), OTel SDK metric + `otlpmetrichttp`, context-guru v0.7.4-beta.1 (plugin only).
 
 **Spec:** `docs/superpowers/specs/2026-11-17-accountant-integration-design.md`. Read it first. The method

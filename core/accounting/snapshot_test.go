@@ -128,3 +128,20 @@ func TestSnapshot_MissingFileIsSilent(t *testing.T) {
 		t.Errorf("a first start logged:\n%s", logs)
 	}
 }
+
+// The periodic save is skipped when nothing changed: the library's Snapshot holds its tracker
+// lock for the whole marshal. A record marks the state changed; an idle host does not.
+func TestSnapshot_OnlyARecordMarksTheStateChanged(t *testing.T) {
+	h := New(Options{})
+	t.Cleanup(func() { _ = h.Close() })
+	if h.dirty.Load() {
+		t.Fatal("a new host is marked changed")
+	}
+	pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{fwd: forwardedBody("hi")}, 200, coldUsage())
+	if _, ok := h.Compute(pctx); !ok {
+		t.Fatal("no Result")
+	}
+	if !h.dirty.Load() {
+		t.Error("a priced request did not mark the state changed")
+	}
+}

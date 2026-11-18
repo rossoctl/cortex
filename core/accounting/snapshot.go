@@ -36,7 +36,13 @@ func (h *Host) saveLoop() {
 		case <-h.stop:
 			return
 		case <-t.C:
+			// Nothing changed since the last save: skip it, and the tracker lock with it (the
+			// library holds that lock for the whole marshal; review finding).
+			if !h.dirty.Swap(false) {
+				continue
+			}
 			if err := h.save(); err != nil {
+				h.dirty.Store(true) // try again next tick
 				slog.Warn("accounting: could not save the accountant state", "path", h.snapshotPath, "error", err)
 			}
 		}

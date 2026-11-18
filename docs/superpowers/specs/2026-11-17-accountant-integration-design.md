@@ -83,7 +83,8 @@ disagree.
     before merge.
   - context-guru pins `accountant` v0.1.2. The latest tag is v0.2.0, and its API change is only
     additive, so context-guru compiles against v0.2.0 under Go's minimum version selection. Cortex
-    requires v0.2.0.
+    requires v0.3.0, the first tag with `accountant.BillingFrom` (all five modules, including
+    `scripts/readme-demo`).
   - The `accountant/metrics` module has no tag. Cortex pins a pseudo-version, as context-guru does.
 - **One change to another repo, decided by the user:** `accountant.BillingFrom`, in a new
   `accountant` release (v0.3.0). Nothing else in this design changes another repo.

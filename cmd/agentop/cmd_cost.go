@@ -704,8 +704,16 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 		for _, l := range money.AccountantLines(t, unit) {
 			switch l.Label {
 			case "saved":
+				// Formatted with money.Signed, as AccountantLines formats the same figures, so this
+				// line cannot drift from the TUI's. With no gross saving there is nothing to put
+				// "~$0.00 saved" in front of: the operators only added cost.
+				if t.AvoidedMicros == 0 {
+					fmt.Fprintf(stdout, "  ~%-13s penalty %s   net %s   estimate; no saving, only a penalty; not deducted above\n",
+						"no saving", money.Signed(t.PenaltyMicros, unit), money.Signed(money.NetMicros(t), unit))
+					continue
+				}
 				fmt.Fprintf(stdout, "  ~%-13s saved   penalty %s   net %s   estimate; gross, penalty beside it; not deducted above\n",
-					costIn(float64(t.AvoidedMicros)/1e6, unit), money.Signed(t.PenaltyMicros, unit), money.Signed(money.NetMicros(t), unit))
+					money.Signed(t.AvoidedMicros, unit), money.Signed(t.PenaltyMicros, unit), money.Signed(money.NetMicros(t), unit))
 			case "plugin model calls", "keep-alive":
 				fmt.Fprintf(stdout, "  %-18s %s   spend, not in the total above\n", l.Label, l.Figure)
 			default:

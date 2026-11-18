@@ -224,11 +224,11 @@ type Counts struct {
 	AvoidedUnits int64 `json:"avoidedUnits,omitempty"`
 	PenaltyUnits int64 `json:"penaltyUnits,omitempty"`
 	// AvoidedAPIEquivalentMicros is what the savings in AvoidedUnits would have been worth at API
-	// rates, gross: the "API equivalent" a reader shows beside the units. NOT MONEY — the request
+	// rates, net of their penalty like the units: the "API equivalent" a reader shows beside them. NOT MONEY — the request
 	// was on a subscription — so it is in no dollar total.
 	AvoidedAPIEquivalentMicros int64 `json:"avoidedApiEquivalentMicros,omitempty"`
-	// AvoidedUnknownMicros is the gross saved dollars of savings whose billing mode was unknown
-	// (basis "unknown"). Shown beside the money totals, never added to them.
+	// AvoidedUnknownMicros is the net saved dollars (saved minus penalty, may be negative) of
+	// savings whose billing mode was unknown (basis "unknown"). Shown beside the money totals, never added to them.
 	AvoidedUnknownMicros int64 `json:"avoidedUnknownMicros,omitempty"`
 	// PluginSpendMicros is what the context operators' own model calls cost (event.Event.Spends,
 	// basis "usd"): a context-guru summary call, for instance. Those calls do not pass through

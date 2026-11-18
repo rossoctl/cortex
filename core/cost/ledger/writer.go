@@ -408,7 +408,13 @@ func (w *Writer) row(e *model.SessionEvent) (minute time.Time, r Row, ok bool) {
 		figures = ev.Figures()
 	}
 	avoidedCost := !figures.IsZero()
-	if e.Inference == nil && !settledCost && !refusedCost && !avoidedCost {
+	// A KEEP-ALIVE PING, priced or not. usage.Counts.KeepAlivePings counts every ping of every
+	// billing mode, and the ring counts one whose cost could not be represented too; without
+	// this a ping with all-zero Figures was dropped here, and window=today read fewer pings
+	// than window=1h (review finding). Like avoidedCost it cannot move the coverage ratio:
+	// the keep-alive branch below sets KeepAlivePings alone.
+	keepAlive := hasCost && ev.IsKeepAlive()
+	if e.Inference == nil && !settledCost && !refusedCost && !avoidedCost && !keepAlive {
 		// Non-inference traffic the proxy handled — MCP, health checks, tunnels.
 		// Recording it would put every proxied response in the cost denominator, the
 		// mistake that makes a correct deployment read "1/10 priced" forever.

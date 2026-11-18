@@ -54,12 +54,12 @@ func AccountantLines(c usage.Counts, unit string) []Line {
 			"   net " + unitsOf(c.AvoidedUnits-c.PenaltyUnits)
 		if c.AvoidedAPIEquivalentMicros != 0 {
 			// Dollars at API rates for traffic billed on a subscription: labelled, never summed.
-			f += "   API equivalent " + Signed(c.AvoidedAPIEquivalentMicros, unit)
+			f += "   API equivalent net " + Signed(c.AvoidedAPIEquivalentMicros, unit)
 		}
 		out = append(out, Line{"usage-limit units", f})
 	}
 	if c.AvoidedUnknownMicros != 0 {
-		out = append(out, Line{"unknown billing", Signed(c.AvoidedUnknownMicros, unit) + " saved, not in any total"})
+		out = append(out, Line{"unknown billing", Signed(c.AvoidedUnknownMicros, unit) + " net, not in any total"})
 	}
 	if c.PluginSpendMicros != 0 || c.PluginSpendUnits != 0 || c.PluginSpendUnknownMicros != 0 {
 		var parts []string

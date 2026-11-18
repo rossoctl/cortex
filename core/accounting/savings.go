@@ -199,12 +199,19 @@ func SavingsBilled(res accountant.Result, price func(model, host string, tt acco
 		}
 		a := get(key{op, false})
 		a.estimated = a.estimated || ce.Estimated || est
+		// Each side by its own sign: a model with no rate prices every break at 0, and a rate
+		// table whose ratios differ from the weights can price a net saving in dollars that
+		// is a net cost in units. Branching the units on the dollar sign booked such a break
+		// as a negative saving (review finding).
 		if value >= 0 {
 			a.saving.USD += value
-			a.units += Units(w, net, 0)
 		} else {
 			a.saving.PenaltyUSD -= value
-			a.penUnits -= Units(w, net, 0)
+		}
+		if u := Units(w, net, 0); u >= 0 {
+			a.units += u
+		} else {
+			a.penUnits -= u
 		}
 		if ce.Kind == accountant.EffectRescue {
 			// The keeper has no op on this request, so its Tier comes from what the rescue saved.

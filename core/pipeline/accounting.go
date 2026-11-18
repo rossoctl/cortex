@@ -150,15 +150,16 @@ func (c *Context) AccountingThread() (id, parent string, ok bool) {
 // before any Run (a test, or a listener that reads it itself) still gets a stable answer: once
 // taken, the snapshot never changes, even if Headers does later.
 //
-// Why it has to be this early: the accountant is wired on the outbound chain only
-// (core/accounting.Host.RequestStart), which on every listener runs its Pipeline.Run AFTER the
-// inbound chain's own Run on the same pctx. jwt-validation's placeholder_mode and token-exchange
-// both rewrite Authorization on the inbound chain, so reading it fresh at outbound-RequestStart
-// time sees the rewrite, not the client's own credential — silently misclassifying the billing
-// mode as "unknown" and zeroing every saving's dollar total for that request (review finding on
-// host.go:214). Pipeline.Run calls this unconditionally, on every direction's Pipeline object,
-// specifically so the FIRST one to run — inbound when the listener runs it first, as every
-// shipped listener does — wins the snapshot.
+// Why it has to be this early: what BillingFrom must see is the CLIENT's credential, and the
+// outbound chain's own plugins replace it before the request leaves — token-exchange, tokenbroker,
+// inference-router's setKey and staticinject all rewrite Authorization. Read after them, the mode
+// would be misclassified (often as "unknown", which drops every saving out of the dollar totals).
+//
+// No shipped listener shares one pctx between chains: extproc builds a fresh one in each of
+// handleInbound, handleInboundBody, handleOutbound and handleOutboundBody; reverseproxy runs only
+// the inbound chain and forwardproxy only the outbound one. Pipeline.Run still calls this on every
+// direction's Pipeline, so a listener that did run both chains on one pctx would get the
+// snapshot from the first Run, before an inbound rewrite (jwt-validation's placeholder_mode) too.
 func (c *Context) BillingSnapshot() accountant.Billing {
 	if !c.billingSet {
 		c.billing, c.billingSet = accountant.BillingFrom(c.Headers), true

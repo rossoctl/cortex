@@ -55,6 +55,38 @@ func loadDifferences(t *testing.T) map[string]difference {
 	return out
 }
 
+// skipDifference reports whether case id is a documented difference to skip, and runs the skip as
+// its own subtest so it shows in the test output. Only kind "differs" is skipped. A "notCovered"
+// entry is a documentation-only note about a behaviour no case exercises, so the same id showing up
+// as a real case fails: the note would otherwise silently skip a case it says should run (review
+// finding). skipped collects the skipped ids for the summary the caller logs.
+func skipDifference(t *testing.T, diffs map[string]difference, id string, skipped *[]string) bool {
+	t.Helper()
+	d, ok := diffs[id]
+	if !ok {
+		return false
+	}
+	if d.Kind != "differs" {
+		t.Errorf("%s lists %q as %s, but it is a case in github.com/rossoctl/accountant/test/cases: "+
+			"make it a \"differs\" entry or delete it", differencesFile, id, d.Kind)
+		return false
+	}
+	*skipped = append(*skipped, id)
+	t.Run(id, func(t *testing.T) {
+		t.Skipf("listed in %s: %s (%s)", differencesFile, d.Reason, d.Kind)
+	})
+	return true
+}
+
+// logSkipped writes how many cases ran and which were skipped as documented differences, so a
+// passing run does not read as full parity.
+func logSkipped(t *testing.T, total int, skipped []string) {
+	t.Helper()
+	if len(skipped) > 0 {
+		t.Logf("%d of %d cases skipped as differences documented in %s: %v", len(skipped), total, differencesFile, skipped)
+	}
+}
+
 // TestAccountantCases plays every case in github.com/rossoctl/accountant/test/cases through the
 // library exactly as a host does: BeginRequest, Add, EndRequest, Compute (or ComputeStandalone
 // for a keep-alive-ping step), and compares the Result to the case's Expected, the way the
@@ -70,12 +102,11 @@ func TestAccountantCases(t *testing.T) {
 	if len(all) == 0 {
 		t.Fatal("no cases: github.com/rossoctl/accountant/test/cases returned none")
 	}
+	var skipped []string
+	defer func() { logSkipped(t, len(all), skipped) }()
 	for _, c := range all {
 		c := c
-		if d, ok := diffs[c.ID]; ok {
-			t.Run(c.ID, func(t *testing.T) {
-				t.Skipf("listed in %s: %s (%s)", differencesFile, d.Reason, d.Kind)
-			})
+		if skipDifference(t, diffs, c.ID, &skipped) {
 			continue
 		}
 		t.Run(c.ID, func(t *testing.T) {

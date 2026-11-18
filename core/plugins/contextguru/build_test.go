@@ -183,3 +183,38 @@ func TestBuild_KeepAliveThroughPipeline(t *testing.T) {
 		t.Fatalf("expected 0 live keep-alive entries after Stop, got %d (%v)", len(keys), keys)
 	}
 }
+
+// Under on_error: observe the keeper holds nothing: a held turn would be pinged upstream on the
+// caller's own credential, which is real spend in a mode where nothing the plugin does takes
+// effect (review finding).
+func TestBuild_KeepAliveHoldsNothingUnderObserve(t *testing.T) {
+	pipe, err := plugins.Build([]config.PluginEntry{
+		{Name: "inference-parser"},
+		{Name: "context-guru", OnError: pipeline.ErrorPolicyObserve,
+			Config: json.RawMessage(`{"keep_alive":{"enabled":true,"min_prefix_tokens":1}}`)},
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	var cg *ContextGuru
+	for _, pl := range pipe.Plugins() {
+		if g, ok := unwrapConfigured(pl).(*ContextGuru); ok {
+			cg = g
+		}
+	}
+	if cg == nil || cg.keeper == nil {
+		t.Fatal("context-guru with a keeper not found in the built pipeline")
+	}
+	ctx := context.Background()
+	if err := pipe.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer pipe.Stop(ctx)
+
+	runFinishedAnthropicRequest(t, pipe, "s-shadow")
+	runFinishedAnthropicRequest(t, pipe, "s-shadow")
+
+	if keys := cg.keeper.LiveSessionKeys(); len(keys) != 0 {
+		t.Fatalf("observe held %d keep-alive entries (%v), want none", len(keys), keys)
+	}
+}

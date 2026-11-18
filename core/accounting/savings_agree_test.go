@@ -96,12 +96,11 @@ func TestSavingsAgreesWithTheAccountantCases(t *testing.T) {
 	if len(all) == 0 {
 		t.Fatal("no cases: github.com/rossoctl/accountant/test/cases returned none")
 	}
+	var skipped []string
+	defer func() { logSkipped(t, len(all), skipped) }()
 	for _, c := range all {
 		c := c
-		if d, ok := diffs[c.ID]; ok {
-			t.Run(c.ID, func(t *testing.T) {
-				t.Skipf("listed in %s: %s (%s)", differencesFile, d.Reason, d.Kind)
-			})
+		if skipDifference(t, diffs, c.ID, &skipped) {
 			continue
 		}
 		t.Run(c.ID, func(t *testing.T) {

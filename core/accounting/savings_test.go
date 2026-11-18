@@ -280,6 +280,23 @@ func TestSavingsBilled_SubscriptionIsUnits(t *testing.T) {
 	}
 }
 
+// A break's units are booked by the units' own sign, not the dollars': with no rate for the model
+// every break prices at $0, and a net cost in units must still be a penalty, not a negative
+// saving (review finding: Units=-1150, PenaltyUnits=0).
+func TestSavingsBilled_BreakUnitsFollowTheirOwnSign(t *testing.T) {
+	res := accountant.Result{
+		Ops: []accountant.PricedOp{{Kind: accountant.KindRewrite, Operator: "tool-prune", ChangeID: "tp"}},
+		CacheEffects: []accountant.CacheEffect{{Kind: accountant.EffectBreak, ChangeID: "tp",
+			Saved: accountant.TierTokens{CacheRead: 1000}, Caused: accountant.TierTokens{CacheWrite5m: 1000}}},
+	}
+	noRate := func(string, string, accountant.TierTokens) (float64, bool) { return 0, true }
+	ss, _ := SavingsBilled(res, noRate, nil, "m", "h", accountant.BillingSubscription, config.DefaultSubscriptionWeights())
+	s := byOperator(t, ss)["tool-prune"]
+	if !near(s.Units, 0) || !near(s.PenaltyUnits, 1150) {
+		t.Errorf("Units = %v, PenaltyUnits = %v; want 0 and 1150 (1000 x 1.25 - 1000 x 0.1)", s.Units, s.PenaltyUnits)
+	}
+}
+
 func TestSavingsBilled_UnknownBasis(t *testing.T) {
 	res := accountant.Result{Ops: []accountant.PricedOp{{Kind: accountant.KindRewrite, Operator: "tool-prune", ChangeID: "tp",
 		Saved: accountant.TierTokens{CacheRead: 1000}}}}

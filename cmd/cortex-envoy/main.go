@@ -91,12 +91,9 @@ func warnCostLedgerInert(cfg *config.Config, logger *slog.Logger) {
 }
 
 // version is the cortex-envoy build version, sent as the metrics push's service.version.
-// Overridden at build time with -ldflags "-X main.version=<tag>"; "dev" otherwise.
-//
-// NOTHING SETS IT YET. cmd/cortex gets its version only from release-binaries.yaml, which does
-// not build this binary, and neither image Dockerfile (cmd/cortex, cmd/cortex-envoy) passes
-// -X main.version. So the authbridge-envoy image pushes service.version="dev". Fixing it means
-// a VERSION build-arg in the Dockerfile and build.yaml, for both images at once.
+// Set at build time with -ldflags "-X main.version=<tag>": cmd/cortex-envoy/Dockerfile does it
+// from the VERSION build-arg, which .github/workflows/build.yaml sets to the image tag. "dev" in a
+// plain go build.
 var version = "dev"
 
 func main() {

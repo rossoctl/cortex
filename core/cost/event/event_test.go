@@ -605,7 +605,8 @@ func TestFigures_SplitsByBasis(t *testing.T) {
 	want := Figures{
 		AvoidedMicros: 250_000, PenaltyMicros: 50_000,
 		AvoidedUnits: 40_500, PenaltyUnits: 2_250, AvoidedAPIEquivalentMicros: 1_000_000,
-		AvoidedUnknownMicros: 2_000_000,
+		// Net of its penalty, 2 - 1: an unknown-basis penalty went nowhere when this was gross.
+		AvoidedUnknownMicros: 1_000_000,
 		PluginSpendMicros:    10_000, PluginSpendUnits: 7_000, PluginSpendUnknownMicros: 30_000,
 	}
 	if got := ev.Figures(); got != want {
