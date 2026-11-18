@@ -121,7 +121,7 @@ func TestSetupFreshInstallEndToEnd(t *testing.T) {
 		"  ✓ started      " + supervisorName(runtimeGOOS()) + " · healthy on 127.0.0.1:47600\n",
 		"  ✓ routed       Claude Code → Cortex\n",
 		"  cortex v9.9.9 ready.\n", // the staged agentop's version
-		"    agentop        # watch your agent traffic live\n",
+		"    agentop observe        # watch your agent traffic live\n",
 		"  Undo any time: agentop uninstall\n",
 	} {
 		if !strings.Contains(out, want) {
@@ -354,7 +354,7 @@ func TestSetupWithNothingToChangeSaysOnlyWhatItChecked(t *testing.T) {
 func TestSetupWithoutAPathEditSpellsOutTheCommand(t *testing.T) {
 	sc := newSetupScene(t, ok200)
 	code, out := sc.run(t, "--from", sc.stage, "--yes", "--no-modify-path")
-	if code != 0 || !strings.Contains(out, "\n    ~/.local/bin/agentop exec -- <cmd>        # send an agent through Cortex\n") {
+	if code != 0 || !strings.Contains(out, "\n    ~/.local/bin/agentop configure claude-code enable        # connect your agent (or opencode, codex, bob, pi)\n    ~/.local/bin/agentop observe"+strings.Repeat(" ", 29)+"# watch your agent traffic live\n") {
 		t.Errorf("fresh install exit %d, want the command from ~:\n%s", code, out)
 	}
 	code, out = sc.run(t, "--from", sc.stage, "--yes", "--no-modify-path")
