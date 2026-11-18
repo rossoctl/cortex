@@ -24,7 +24,7 @@ holds the repo-level pieces; this file is the index.
 | Set model prices and gateway discounts | [`pricing.md`](pricing.md). To see the rates in effect, run `agentop pricing [--host <gateway>]` |
 | Run, stop or update the service | [`laptop-service.md`](laptop-service.md) |
 | Apply policy to agent traffic in praxis mode | [`praxis-policy.md`](praxis-policy.md) |
-| Export sessions | [`session-export.md`](session-export.md) (content-free records), [`session-export-guide.md`](session-export-guide.md) (a walk-through), [`session-dump.md`](session-dump.md) (session files) |
+| Export sessions | [`session-export.md`](session-export.md) |
 
 ## Reference
 
@@ -35,6 +35,7 @@ holds the repo-level pieces; this file is the index.
 | Move from a laptop to a cluster | [`kubernetes.md`](kubernetes.md) |
 | Learn the sidecar shapes | [`architecture.md`](architecture.md) |
 | Find which binary serves which deployment shape | [`cmd/README.md`](../cmd/README.md) |
+| Keep whole sessions from a cluster as files | [`session-dump.md`](session-dump.md) |
 | Run a demo | [`cortex-demos/README.md`](https://github.com/rossoctl/cortex-demos/blob/main/README.md) |
 
 ### Plugins
