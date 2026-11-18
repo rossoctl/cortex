@@ -1129,7 +1129,8 @@ chmod +x "${TMP}/unamebin/uname"
 #         T_HEAD=hang, also for its HEAD's hheld.<kind>
 #   hold  write a line to held.<kind>, then hold until killed, and log the kill. It
 #         takes 0.3s to stop, so a script that does not wait for it exits before the
-#         log says so
+#         log says so; with T_STOPPED=1 in T_ENV, it stops once the test writes to
+#         release.<kind>, after writing to stopped.<kind>
 # Its own wait uses the real sleep, by path, so a stub sleep on PATH never sees it.
 T_REAL_SLEEP=$(command -v sleep)
 mkdir -p "${TMP}/tbin"
@@ -1196,9 +1197,20 @@ case "${T_CURL:-}:${_n}" in
 		if [ -t 2 ]; then _e=tty; else _e=file; fi
 		printf 'held %s %s\n' "${_n}" "${_e}" >>"${T_MEET}/log"
 		# The hold's pid and the trap that kills it are set before held says it holds.
+		# With T_STOPPED set, the stop reaps the hold before it opens stopped.<kind>, an
+		# open a SIGCHLD interrupts, then ends once the test writes to release.<kind>.
 		read -r _ <>"${T_MEET}/never" &
 		_sp=$!
-		trap 'kill "${_sp}" 2>/dev/null; "${T_REAL_SLEEP}" 0.3; printf "killed %s\n" "${_n}" >>"${T_MEET}/log"; exit 143' TERM
+		trap 'kill "${_sp}" 2>/dev/null
+			if [ -n "${T_STOPPED:-}" ]; then
+				wait "${_sp}" 2>/dev/null
+				echo >"${T_MEET}/stopped.${_k}"
+				read -r _ <>"${T_MEET}/release.${_k}"
+			else
+				"${T_REAL_SLEEP}" 0.3
+			fi
+			printf "killed %s\n" "${_n}" >>"${T_MEET}/log"
+			exit 143' TERM
 		echo >"${T_MEET}/held.${_k}"
 		wait "${_sp}"
 		printf 'finished %s\n' "${_n}" >>"${T_MEET}/log"
@@ -1366,7 +1378,8 @@ run_install() {
 	mkfifo "${T_RUN}/meet/never" "${T_RUN}/meet/polled" "${T_RUN}/gone"
 	for _ri_k in agentop cortex; do
 		mkfifo "${T_RUN}/meet/meet.${_ri_k}" "${T_RUN}/meet/slow.${_ri_k}" \
-			"${T_RUN}/meet/held.${_ri_k}" "${T_RUN}/meet/hheld.${_ri_k}" "${T_RUN}/meet/asked.${_ri_k}"
+			"${T_RUN}/meet/held.${_ri_k}" "${T_RUN}/meet/hheld.${_ri_k}" "${T_RUN}/meet/asked.${_ri_k}" \
+			"${T_RUN}/meet/stopped.${_ri_k}" "${T_RUN}/meet/release.${_ri_k}"
 	done
 	case "${T_SLEEP}:${T_CURL}" in :slow | :hold) T_SLEEP=frac ;; esac
 	# The terminals that draw a bar, and so ask for the sizes.
@@ -1680,6 +1693,25 @@ check "  with both downloads stopped before it exits" "2 0" \
 	"$(t_meet killed) $(t_meet finished)"
 check "  leaving no stage, and never handing off" "0 0 0" \
 	"$(t_tmp_left) $(t_nlog probe) $(t_nlog argv)"
+
+# A second signal while the EXIT trap waits on the downloads it has stopped, as a
+# closed terminal can send: the trap ignores it and finishes. The downloads end only
+# once the TERM has been sent.
+T_CURL=hold
+T_BG=1
+T_ENV="T_STOPPED=1"
+run_install ok release --ref=v9.9.9
+t_held held
+t_polled
+kill -HUP "${T_PID}"
+t_held stopped
+kill -TERM "${T_PID}"
+echo >"${T_RUN}/meet/release.agentop"
+echo >"${T_RUN}/meet/release.cortex"
+T_ST=0
+wait "${T_PID}" || T_ST=$?
+check "HUP, then TERM during its cleanup: exits 129, both downloads stopped, no stage" \
+	"129 2 0" "${T_ST} $(t_meet killed) $(t_tmp_left)"
 
 # --- on a terminal: the title, the bar, and what stays of them when the download ends ---
 # out is the terminal's bytes with ESC as E and CR as R; a pty ends each line with CR LF.

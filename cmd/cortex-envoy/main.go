@@ -292,6 +292,11 @@ func main() {
 		log.Fatalf("listener.skip_hosts: %v", err)
 	}
 
+	// Before any server starts, so a process that serves takes SIGTERM through the
+	// shutdown below, which stops the plugins and closes the session store.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
 	var grpcServers []*grpc.Server
 	grpcServers = append(grpcServers, startGRPCExtProc(inboundH, outboundH, sessions, store, skipHosts, cfg.Listener.ExtProcAddr))
 
@@ -334,8 +339,6 @@ func main() {
 		log.Fatalf("health server listen: %v", healthErr)
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
 	slog.Info("shutting down", "signal", sig)
 

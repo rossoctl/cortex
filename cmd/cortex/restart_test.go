@@ -487,6 +487,65 @@ func TestPodStillDrains(t *testing.T) {
 	}
 }
 
+// A SIGTERM during startup takes the shutdown path. In praxis mode main reads the gateway
+// token after its signal.Notify and before any server starts, so a FIFO there holds main
+// in that window while the signal arrives.
+func TestStartupSIGTERMShutsDown(t *testing.T) {
+	f := newProxyFixture(t, false)
+	praxis := fmt.Sprintf("praxis: {enabled: true, listen: %q, egress: %q}\n", freeAddr(t), freeAddr(t))
+	body, err := os.ReadFile(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.config, append(body, praxis...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token := filepath.Join(f.home, "token")
+	if err := syscall.Mkfifo(token, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(gatewayTokenEnv, token)
+	c := startChild(t, f.home, "main", "-config", f.config)
+
+	// Opening the FIFO to write returns once main opens it to read.
+	type opened struct {
+		w   *os.File
+		err error
+	}
+	open := make(chan opened, 1)
+	go func() {
+		w, err := os.OpenFile(token, os.O_WRONLY, 0)
+		open <- opened{w, err}
+	}()
+	var o opened
+	select {
+	case o = <-open:
+	case err := <-c.done:
+		c.done <- err
+		t.Fatalf("the child exited (%v) before it read the gateway token:\n%s", err, c.out.String())
+	}
+	if o.err != nil {
+		t.Fatal(o.err)
+	}
+	if err := c.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	_, err = o.w.WriteString("startup-token\n")
+	if cerr := o.w.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.await(t, "a shutdown", func(out string) bool {
+		return strings.Contains(out, `msg="shutting down"`)
+	})
+	_ = c.wait()
+	if !c.cmd.ProcessState.Success() {
+		t.Errorf("exit was not clean: %v", c.cmd.ProcessState)
+	}
+}
+
 // The supervisor ends a proxy that will not stop inside launchd's exit timeout (5s, pinned
 // as ExitTimeOut in the plist agentop writes). Waiting longer is what let launchd SIGKILL
 // the supervisor mid-wait: launchd only SIGTERMs the rest of the process group, which a
