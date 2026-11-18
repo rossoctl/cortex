@@ -416,8 +416,11 @@ func logTokens(pctx *pipeline.Context, thread string, res accountant.Result) {
 	order, flows := operatorTokens(res)
 	for _, op := range order {
 		f := flows[op]
+		// The session and request ids are attribution keys, not credentials: the harness
+		// matches these lines to its own sessions by them (as in core/session/store.go).
 		slog.Debug("accounting: tokens",
 			"session", pctx.SessionID,
+			// codeql[go/clear-text-logging]
 			"requestId", pctx.RequestID(),
 			"thread", thread,
 			"operator", op,

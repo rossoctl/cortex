@@ -759,8 +759,10 @@ accounting:
 
 On a local install the accountant keeps its state in `~/.cortex/accountant-state.json`, so
 a restart does not forget which prefix the provider has cached. Both fields are read once at
-startup: a reload that changes `enabled` (as resolved) or a weight is refused, and
-`agentop service restart` applies it.
+startup. A reload that changes a weight is refused, and so is a reload that turns accounting
+on (as resolved) when the proxy started with it off; `agentop service restart` applies either.
+A reload that turns it off is accepted: the accountant stays idle until a later reload turns
+it back on.
 
 ### The `metrics_push:` configuration
 

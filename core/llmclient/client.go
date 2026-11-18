@@ -205,6 +205,29 @@ type ChatResponse struct {
 	Usage *ChatUsage `json:"usage,omitempty"`
 }
 
+// UnmarshalJSON decodes choices as before and reads usage leniently: a usage block that does
+// not decode (float counts, an array, a string) leaves Usage nil instead of failing the call.
+// Only context-guru reads usage; the judge plugins (ibac, sparc) share this client and never
+// did, so an off-shape usage block from an OpenAI-compatible server must not turn their calls
+// into errors (review finding).
+func (r *ChatResponse) UnmarshalJSON(b []byte) error {
+	var wire struct {
+		Choices []ChatChoice    `json:"choices"`
+		Usage   json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal(b, &wire); err != nil {
+		return err
+	}
+	r.Choices, r.Usage = wire.Choices, nil
+	if len(wire.Usage) > 0 && string(wire.Usage) != "null" {
+		var u ChatUsage
+		if json.Unmarshal(wire.Usage, &u) == nil {
+			r.Usage = &u
+		}
+	}
+	return nil
+}
+
 // ChatUsage is the OpenAI chat-completions usage block. PromptTokens INCLUDES the cached
 // tokens; CachedTokens says how many of them were served from the provider's prompt cache.
 type ChatUsage struct {

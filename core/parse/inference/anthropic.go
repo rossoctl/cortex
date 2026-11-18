@@ -8,6 +8,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/internal/parsercommon"
 	"github.com/rossoctl/cortex/core/model"
+	"github.com/tidwall/gjson"
 )
 
 // --- request ---
@@ -247,12 +248,14 @@ type anthropicUsage struct {
 	// CacheCreation splits CacheCreationInputTokens by TTL. ephemeral_1h_input_tokens
 	// is a SUBSET of CacheCreationInputTokens, never an addition to it — the object is
 	// a breakdown of the same total, as Anthropic's prompt-caching docs show. Absent
-	// on a request with no 1-hour breakpoints, so a pointer so that absence stays
-	// absent rather than reading as a reported zero.
-	CacheCreation *struct {
-		Ephemeral5mInputTokens *int `json:"ephemeral_5m_input_tokens"`
-		Ephemeral1hInputTokens *int `json:"ephemeral_1h_input_tokens"`
-	} `json:"cache_creation"`
+	// on a request with no 1-hour breakpoints.
+	//
+	// RAW, READ LENIENTLY (cacheWrite1h): this optional breakdown is new to the
+	// parser, and a typed field would make an off-shape value (60.0, 0, [], a
+	// string from a relay or shim) fail the whole usage decode, losing every count
+	// the parser used to read (review finding). An unreadable breakdown means "no
+	// 1h writes", nothing more.
+	CacheCreation json.RawMessage `json:"cache_creation"`
 
 	// OutputTokensDetails splits output_tokens by what generated it. Anthropic reports
 	// one sub-field, thinking_tokens: the share spent on internal reasoning, a SUBSET of
@@ -286,8 +289,8 @@ func (u anthropicUsage) toNeutral() parsercommon.TokenUsage {
 	}
 	// A SUBSET of CacheWrite above, never added to it. No Present bit of its own:
 	// it rides on KindCacheWrite, which the total already set.
-	if u.CacheCreation != nil && u.CacheCreation.Ephemeral1hInputTokens != nil {
-		n.CacheWrite1h = *u.CacheCreation.Ephemeral1hInputTokens
+	if v, ok := cacheWrite1h(u.CacheCreation); ok {
+		n.CacheWrite1h = v
 	}
 	// BOTH POINTERS: a details object forwarded without the count inside it reports
 	// nothing, and must not set the bit.
@@ -618,4 +621,23 @@ func parseAnthropicSSE(body []byte, ext *model.InferenceExtension) {
 		foldAnthropicFrame(data, state, ext)
 	}
 	state.finalize(ext)
+}
+
+// cacheWrite1h reads ephemeral_1h_input_tokens from a usage.cache_creation object.
+// ok is false when the field is absent or is not a non-negative whole number, and
+// when cache_creation itself is not an object: the caller then reports no 1h
+// writes, and the rest of the usage block is unaffected.
+func cacheWrite1h(raw json.RawMessage) (int, bool) {
+	if len(raw) == 0 || !gjson.ValidBytes(raw) {
+		return 0, false
+	}
+	obj := gjson.ParseBytes(raw)
+	if !obj.IsObject() {
+		return 0, false
+	}
+	v := obj.Get("ephemeral_1h_input_tokens")
+	if v.Type != gjson.Number || v.Num < 0 || v.Num != float64(int64(v.Num)) {
+		return 0, false
+	}
+	return int(v.Num), true
 }

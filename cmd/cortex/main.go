@@ -603,7 +603,13 @@ func main() {
 		}
 		inDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: reverseproxy.Support(), LocalInstall: localInstall}
 		// The accountant on the outbound chain only: inference requests leave through it.
-		outDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: forwardproxy.Support(c.MTLS != nil), LocalInstall: localInstall, Accounting: acctHost}
+		outDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: forwardproxy.Support(c.MTLS != nil), LocalInstall: localInstall}
+		// Only while this config resolves accounting on: a reload may turn it off (the only
+		// context operator set to on_error: off), and the host then stays idle until a later
+		// reload turns it back on (reloader.validateAccounting).
+		if c.AccountingOn() {
+			outDeps.Accounting = acctHost
+		}
 		in, err := plugins.BuildWithDeps(c.Pipeline.Inbound.Plugins, inDeps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)

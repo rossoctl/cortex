@@ -41,8 +41,20 @@ Usage:
   python3 -I scripts/dev/compare-contextguru-savings.py plot <work-dir>
 The key is LITELLM_API_KEY, else read from --env-file (default: .env beside the main checkout).
 """
-import argparse, concurrent.futures, importlib.util, json, os, random, re, shutil, subprocess, sys
-import tempfile, threading, time, uuid
+
+import argparse
+import concurrent.futures
+import importlib.util
+import json
+import os
+import random
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -68,10 +80,18 @@ ARM_NAME = {"A": "cortex + context-guru", "B": "context-guru proxy", "C": "contr
 # preset names claude-haiku-4-5, which this gateway does not serve. A user block replaces the
 # preset's block whole, so every key is restated.
 EXTRACT_LLM = {
-    "aggressiveness": "medium", "context": "recent", "context_messages": 2, "economic_gate": True,
-    "fire_on": "pressure", "llm_every_n_requests": 1, "llm_max_per_request": 8,
-    "llm_max_per_session": 0, "min_tokens": 3000, "model": {"model": MODEL, "source": "incoming"},
-    "strategy": "code", "trigger": {"min_request_tokens": 3000},
+    "aggressiveness": "medium",
+    "context": "recent",
+    "context_messages": 2,
+    "economic_gate": True,
+    "fire_on": "pressure",
+    "llm_every_n_requests": 1,
+    "llm_max_per_request": 8,
+    "llm_max_per_session": 0,
+    "min_tokens": 3000,
+    "model": {"model": MODEL, "source": "incoming"},
+    "strategy": "code",
+    "trigger": {"min_request_tokens": 3000},
 }
 ENGINE = {"preset": "xhigh", "components": {"extract_llm": EXTRACT_LLM}}
 
@@ -89,6 +109,7 @@ def price_glob():
     """The Cortex pricing key for MODEL: its name without the gateway prefix, as a glob."""
     return "*" + MODEL.split("/", 1)[-1] + "*"
 
+
 LOCK = threading.Lock()
 PHASE = {"name": "start", "step": 0}
 
@@ -103,8 +124,9 @@ def api_key(env_file):
     if k:
         return k
     if env_file is None:
-        common = subprocess.check_output(["git", "-C", REPO, "rev-parse", "--path-format=absolute",
-                                          "--git-common-dir"], text=True).strip()
+        common = subprocess.check_output(
+            ["git", "-C", REPO, "rev-parse", "--path-format=absolute", "--git-common-dir"], text=True
+        ).strip()
         env_file = os.path.join(os.path.dirname(common), ".env")
     for line in open(env_file):
         m = re.match(r"\s*(?:export\s+)?LITELLM_API_KEY\s*=\s*['\"]?([^'\"\s]+)", line)
@@ -115,14 +137,21 @@ def api_key(env_file):
 
 # ---------------------------------------------------------------- the three servers
 
+
 def cortex_yaml(ports, work, name, with_cg):
     fwd, sess, health, stats, trans = ports
     plugins = "      - name: inference-parser\n"
     if with_cg:
-        cfg = {"engine": ENGINE,
-               "keep_alive": {"enabled": True, "idle_seconds": IDLE_S, "max_pings": MAX_PINGS,
-                              "min_prefix_tokens": MIN_PREFIX},
-               "context_window": {"model_info": "off", "windows": {MODEL: WINDOW}}}
+        cfg = {
+            "engine": ENGINE,
+            "keep_alive": {
+                "enabled": True,
+                "idle_seconds": IDLE_S,
+                "max_pings": MAX_PINGS,
+                "min_prefix_tokens": MIN_PREFIX,
+            },
+            "context_window": {"model_info": "off", "windows": {MODEL: WINDOW}},
+        }
         # JSON is YAML: one flow mapping keeps the nesting exact without a YAML library.
         plugins += f"      - name: context-guru\n        config: {json.dumps(cfg)}\n"
     r = RATES
@@ -131,7 +160,7 @@ pricing:
   endpoints:
     - hosts: ["{HOST}"]
       models:
-        "{price_glob()}": {{input_cost_per_million: {r['input']}, cache_write_cost_per_million: {r['cache_write']}, cache_read_cost_per_million: {r['cache_read']}, output_cost_per_million: {r['output']}}}
+        "{price_glob()}": {{input_cost_per_million: {r["input"]}, cache_write_cost_per_million: {r["cache_write"]}, cache_read_cost_per_million: {r["cache_read"]}, output_cost_per_million: {r["output"]}}}
 listener:
   roles: [forward]
   bind_loopback_only: true
@@ -161,8 +190,9 @@ pipeline:
 
 def build_cg(cg_repo, work):
     out = os.path.join(work, "context-guru-proxy")
-    subprocess.check_call(["go", "build", "-o", out, "./cmd/context-guru-proxy"], cwd=cg_repo,
-                          env=dict(os.environ, GOWORK="off"))
+    subprocess.check_call(
+        ["go", "build", "-o", out, "./cmd/context-guru-proxy"], cwd=cg_repo, env=dict(os.environ, GOWORK="off")
+    )
     return out
 
 
@@ -170,23 +200,62 @@ class CGProxy:
     def __init__(self, binary, work, port):
         self.port = port
         self.log_path = os.path.join(work, "cg-proxy.log")
-        cfg = dict(ENGINE, cache={"keepalive": True, "keepalive_idle_seconds": IDLE_S,
-                                  "keepalive_max_pings": MAX_PINGS, "keepalive_min_prefix_tokens": MIN_PREFIX})
+        cfg = dict(
+            ENGINE,
+            cache={
+                "keepalive": True,
+                "keepalive_idle_seconds": IDLE_S,
+                "keepalive_max_pings": MAX_PINGS,
+                "keepalive_min_prefix_tokens": MIN_PREFIX,
+            },
+        )
         cfg_path, prices = os.path.join(work, "cg-proxy.yaml"), os.path.join(work, "cg-prices.yaml")
         with open(cfg_path, "w") as f:
             json.dump(cfg, f, indent=1)
         r = RATES
         with open(prices, "w") as f:
-            json.dump({"models": [{"match": MODEL, "in": r["input"], "out": r["output"], "cache_read": r["cache_read"],
-                                   "cache_write": r["cache_write"], "window": WINDOW}]}, f, indent=1)
-        home = os.path.join(work, "home-cg"); os.makedirs(home, exist_ok=True)
-        env = {k: v for k, v in os.environ.items()
-               if k.lower() not in ("http_proxy", "https_proxy", "all_proxy", "no_proxy", "anthropic_api_key")}
+            json.dump(
+                {
+                    "models": [
+                        {
+                            "match": MODEL,
+                            "in": r["input"],
+                            "out": r["output"],
+                            "cache_read": r["cache_read"],
+                            "cache_write": r["cache_write"],
+                            "window": WINDOW,
+                        }
+                    ]
+                },
+                f,
+                indent=1,
+            )
+        home = os.path.join(work, "home-cg")
+        os.makedirs(home, exist_ok=True)
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k.lower() not in ("http_proxy", "https_proxy", "all_proxy", "no_proxy", "anthropic_api_key")
+        }
         env.update(HOME=home, MODEL_PRICES=prices)
         self.proc = subprocess.Popen(
-            [binary, "--listen", f"127.0.0.1:{port}", "--config", cfg_path, "--anthropic-upstream", UPSTREAM,
-             "--dashboard", "--dashboard-db", os.path.join(work, "cg-dashboard.db")],
-            cwd=work, env=env, stdout=open(self.log_path, "w"), stderr=subprocess.STDOUT)
+            [
+                binary,
+                "--listen",
+                f"127.0.0.1:{port}",
+                "--config",
+                cfg_path,
+                "--anthropic-upstream",
+                UPSTREAM,
+                "--dashboard",
+                "--dashboard-db",
+                os.path.join(work, "cg-dashboard.db"),
+            ],
+            cwd=work,
+            env=env,
+            stdout=open(self.log_path, "w"),
+            stderr=subprocess.STDOUT,
+        )
 
     def get(self, path):
         return cgit.local_get(self.port, path)
@@ -197,7 +266,8 @@ class CGProxy:
             if self.proc.poll() is not None:
                 return False
             try:
-                self.get("/stats"); return True
+                self.get("/stats")
+                return True
             except Exception:
                 time.sleep(0.3)
         return False
@@ -216,6 +286,7 @@ class CGProxy:
 
 # ---------------------------------------------------------------- fixtures and the agent
 
+
 def make_fixtures(d, n, rnd):
     """n files of ~20KB (~5-6k tokens) each, in four shapes the engine treats differently."""
     os.makedirs(d, exist_ok=True)
@@ -223,30 +294,46 @@ def make_fixtures(d, n, rnd):
     for i in range(1, n + 1):
         kind = ("log", "json", "py", "md")[i % 4]
         if kind == "log":
-            body = "\n".join(f"2026-10-15T0{i % 10}:{j // 60:02d}:{j % 60:02d}Z {rnd.choice(['INFO', 'INFO', 'WARN'])} "
-                             f"worker[{j % 6}] job={i}-{j} took {rnd.randint(20, 900)}ms queue={rnd.randint(0, 40)} ok"
-                             for j in range(230))
+            body = "\n".join(
+                f"2026-10-15T0{i % 10}:{j // 60:02d}:{j % 60:02d}Z {rnd.choice(['INFO', 'INFO', 'WARN'])} "
+                f"worker[{j % 6}] job={i}-{j} took {rnd.randint(20, 900)}ms queue={rnd.randint(0, 40)} ok"
+                for j in range(230)
+            )
         elif kind == "json":
-            body = json.dumps([{"id": f"svc-{i}-{j}", "region": rnd.choice(["us-east", "eu-de", "jp-tok"]),
-                                "status": rnd.choice(["healthy"] * 6 + ["degraded"]), "cpu": round(rnd.random(), 3),
-                                "owner": f"team-{rnd.randint(1, 9)}", "replicas": rnd.randint(1, 12)}
-                               for j in range(110)], indent=2)
+            body = json.dumps(
+                [
+                    {
+                        "id": f"svc-{i}-{j}",
+                        "region": rnd.choice(["us-east", "eu-de", "jp-tok"]),
+                        "status": rnd.choice(["healthy"] * 6 + ["degraded"]),
+                        "cpu": round(rnd.random(), 3),
+                        "owner": f"team-{rnd.randint(1, 9)}",
+                        "replicas": rnd.randint(1, 12),
+                    }
+                    for j in range(110)
+                ],
+                indent=2,
+            )
         elif kind == "py":
             body = "\n\n".join(
-                f"def handler_{i}_{j}(req, ctx):\n    \"\"\"Handle route /{i}/{j}; owner team-{rnd.randint(1, 9)}.\"\"\"\n"
+                f'def handler_{i}_{j}(req, ctx):\n    """Handle route /{i}/{j}; owner team-{rnd.randint(1, 9)}."""\n'
                 f"    if not req.get('id'):\n        raise ValueError('missing id for route {i}/{j}')\n"
                 f"    limit = ctx.config.get('limit_{j}', {rnd.randint(5, 500)})\n"
                 f"    rows = ctx.db.query('SELECT * FROM t{j % 13} WHERE k = ?', req['id'])[:limit]\n"
                 f"    return {{'route': '{i}/{j}', 'count': len(rows), 'rows': rows}}"
-                for j in range(55))
+                for j in range(55)
+            )
         else:
             # Plain sentences, not word salad: Sonnet 4.6's usage classifier refused a random word
             # sequence ("can't help with this ... [bio]") on one turn in two of three arms.
-            body = "\n\n".join(f"## Note {i}.{j}\nReference code FACT-{i:02d}{j:02d}-{rnd.randint(1000, 9999)}. "
-                               + " ".join(rnd.choice(NOTE_SENTENCES).format(n=rnd.randint(2, 9000),
-                                                                            r=rnd.choice(REGIONS))
-                                          for _ in range(7)) for j in range(22))
-        name = f"part-{i:02d}.{ 'txt' if kind == 'md' else kind}"
+            body = "\n\n".join(
+                f"## Note {i}.{j}\nReference code FACT-{i:02d}{j:02d}-{rnd.randint(1000, 9999)}. "
+                + " ".join(
+                    rnd.choice(NOTE_SENTENCES).format(n=rnd.randint(2, 9000), r=rnd.choice(REGIONS)) for _ in range(7)
+                )
+                for j in range(22)
+            )
+        name = f"part-{i:02d}.{'txt' if kind == 'md' else kind}"
         with open(os.path.join(d, name), "w") as f:
             f.write(body + "\n")
         names.append(name)
@@ -274,24 +361,51 @@ class Agent:
     def __init__(self, arm, work, fixtures, key, base_url, proxy=None, ca=None):
         self.arm, self.fixtures, self.sid, self.turns = arm, fixtures, str(uuid.uuid4()), 0
         home = os.path.join(work, f"home-claude-{arm}")
-        cfgdir = os.path.join(home, ".claude"); os.makedirs(cfgdir, exist_ok=True)
+        cfgdir = os.path.join(home, ".claude")
+        os.makedirs(cfgdir, exist_ok=True)
         with open(os.path.join(cfgdir, ".claude.json"), "w") as f:
             json.dump({"autoCompactEnabled": False, "hasCompletedOnboarding": True}, f)
-        env = {k: v for k, v in os.environ.items()
-               if not k.startswith(("ANTHROPIC_", "CLAUDE")) and k.lower() not in
-               ("http_proxy", "https_proxy", "all_proxy", "no_proxy", "node_extra_ca_certs")}
-        env.update(HOME=home, CLAUDE_CONFIG_DIR=cfgdir, ANTHROPIC_BASE_URL=base_url, ANTHROPIC_AUTH_TOKEN=key,
-                   ANTHROPIC_MODEL=MODEL, ANTHROPIC_SMALL_FAST_MODEL=MODEL, ANTHROPIC_DEFAULT_HAIKU_MODEL=MODEL,
-                   DISABLE_AUTO_COMPACT="1", DISABLE_COMPACT="1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1",
-                   CLAUDE_CODE_MAX_CONTEXT_TOKENS=str(WINDOW),
-                   ANTHROPIC_CUSTOM_HEADERS=f"X-Session-Id: {self.sid}\nx-context-guru-session: {self.sid}")
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("ANTHROPIC_", "CLAUDE"))
+            and k.lower() not in ("http_proxy", "https_proxy", "all_proxy", "no_proxy", "node_extra_ca_certs")
+        }
+        env.update(
+            HOME=home,
+            CLAUDE_CONFIG_DIR=cfgdir,
+            ANTHROPIC_BASE_URL=base_url,
+            ANTHROPIC_AUTH_TOKEN=key,
+            ANTHROPIC_MODEL=MODEL,
+            ANTHROPIC_SMALL_FAST_MODEL=MODEL,
+            ANTHROPIC_DEFAULT_HAIKU_MODEL=MODEL,
+            DISABLE_AUTO_COMPACT="1",
+            DISABLE_COMPACT="1",
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1",
+            CLAUDE_CODE_MAX_CONTEXT_TOKENS=str(WINDOW),
+            ANTHROPIC_CUSTOM_HEADERS=f"X-Session-Id: {self.sid}\nx-context-guru-session: {self.sid}",
+        )
         if proxy:
             env.update(HTTPS_PROXY=proxy, https_proxy=proxy, NODE_EXTRA_CA_CERTS=ca)
         self.env = env
 
     def turn(self, prompt, turns_path):
-        cmd = ["claude", "-p", prompt, "--output-format", "json", "--model", MODEL,
-               "--tools", "Read,Bash", "--allowed-tools", "Read", "Bash(cat:*)", "--permission-mode", "dontAsk"]
+        cmd = [
+            "claude",
+            "-p",
+            prompt,
+            "--output-format",
+            "json",
+            "--model",
+            MODEL,
+            "--tools",
+            "Read,Bash",
+            "--allowed-tools",
+            "Read",
+            "Bash(cat:*)",
+            "--permission-mode",
+            "dontAsk",
+        ]
         cmd += ["--session-id", self.sid] if self.turns == 0 else ["--resume", self.sid]
         t0 = time.time()
         p = subprocess.run(cmd, cwd=self.fixtures, env=self.env, capture_output=True, text=True, timeout=900)
@@ -300,15 +414,27 @@ class Agent:
             res = json.loads(p.stdout)
         except ValueError:
             res = {"unparsed": p.stdout[-2000:]}
-        row = {"t": t0, "dur": time.time() - t0, "arm": self.arm, "phase": PHASE["name"], "step": PHASE["step"],
-               "prompt": prompt[:200], "rc": p.returncode, "stderr": p.stderr[-1000:],
-               "is_error": res.get("is_error"), "usage": res.get("usage"), "total_cost_usd": res.get("total_cost_usd"),
-               "num_turns": res.get("num_turns"), "result": str(res.get("result", ""))[:300]}
+        row = {
+            "t": t0,
+            "dur": time.time() - t0,
+            "arm": self.arm,
+            "phase": PHASE["name"],
+            "step": PHASE["step"],
+            "prompt": prompt[:200],
+            "rc": p.returncode,
+            "stderr": p.stderr[-1000:],
+            "is_error": res.get("is_error"),
+            "usage": res.get("usage"),
+            "total_cost_usd": res.get("total_cost_usd"),
+            "num_turns": res.get("num_turns"),
+            "result": str(res.get("result", ""))[:300],
+        }
         jl(turns_path, row)
         return row
 
 
 # ---------------------------------------------------------------- polling
+
 
 def cortex_row(port, sid):
     for s in cgit.local_get(port, "/v1/sessions").get("sessions", []):
@@ -336,8 +462,12 @@ def log_lines(text, msg):
 
 def usd(u):
     """Price a usage dict (input/cacheWrite/cacheRead/output) at RATES."""
-    return (int(u.get("input", 0)) * RATES["input"] + int(u.get("cacheWrite", 0)) * RATES["cache_write"]
-            + int(u.get("cacheRead", 0)) * RATES["cache_read"] + int(u.get("output", 0)) * RATES["output"]) / 1e6
+    return (
+        int(u.get("input", 0)) * RATES["input"]
+        + int(u.get("cacheWrite", 0)) * RATES["cache_write"]
+        + int(u.get("cacheRead", 0)) * RATES["cache_read"]
+        + int(u.get("output", 0)) * RATES["output"]
+    ) / 1e6
 
 
 def plugin_spend(log, sid):
@@ -353,7 +483,7 @@ def plugin_spend(log, sid):
 
 
 def snapshot(ctx):
-    t, out = time.time(), {"t": time.time(), "phase": PHASE["name"], "step": PHASE["step"]}
+    out = {"t": time.time(), "phase": PHASE["name"], "step": PHASE["step"]}
     for arm in ("A", "C"):
         try:
             out[arm] = cortex_row(ctx["ports"][arm][1], ctx["agents"][arm].sid)
@@ -365,8 +495,13 @@ def snapshot(ctx):
     except Exception as e:
         out["B"] = {"error": str(e)}
     out["A_log_spend"] = plugin_spend(ctx["cx"]["A"].log(), ctx["agents"]["A"].sid)
-    out["A_log_pings"] = len([r for r in log_lines(ctx["cx"]["A"].log(), "context-guru keep-alive ping")
-                              if r.get("session") == ctx["agents"]["A"].sid])
+    out["A_log_pings"] = len(
+        [
+            r
+            for r in log_lines(ctx["cx"]["A"].log(), "context-guru keep-alive ping")
+            if r.get("session") == ctx["agents"]["A"].sid
+        ]
+    )
     return out
 
 
@@ -379,6 +514,7 @@ def poller(ctx, stop, every):
 
 
 # ---------------------------------------------------------------- final reads and checks
+
 
 def cortex_events(port, sid):
     """Every event of a session, paged backward from the tail."""
@@ -413,7 +549,12 @@ def find_key(obj, key):
 
 
 # The tiers of a token figure, as the dashboard names them, and the suffix of Cortex's log keys.
-TIERS = {"input": "Input", "cache_write_5m": "CacheWrite5m", "cache_write_1h": "CacheWrite1h", "cache_read": "CacheRead"}
+TIERS = {
+    "input": "Input",
+    "cache_write_5m": "CacheWrite5m",
+    "cache_write_1h": "CacheWrite1h",
+    "cache_read": "CacheRead",
+}
 
 
 def empty_flow():
@@ -422,7 +563,7 @@ def empty_flow():
 
 def component_of(operator):
     """The proxy's component name for a Cortex operator: context-guru's operators drop the prefix."""
-    return operator[len("context-guru."):] if operator.startswith("context-guru.") else operator
+    return operator[len("context-guru.") :] if operator.startswith("context-guru.") else operator
 
 
 def cortex_operator_tokens(log, sid):
@@ -489,8 +630,14 @@ def check_passthrough(events):
             by_req.setdefault(rid, []).append(e)
     rows = []
     for rid, evs in by_req.items():
-        cg = next((e["plugins"]["context-guru"] for e in evs if isinstance(e.get("plugins"), dict)
-                   and isinstance(e["plugins"].get("context-guru"), dict)), None)
+        cg = next(
+            (
+                e["plugins"]["context-guru"]
+                for e in evs
+                if isinstance(e.get("plugins"), dict) and isinstance(e["plugins"].get("context-guru"), dict)
+            ),
+            None,
+        )
         resp = next((e for e in evs if e.get("phase") == "response"), None)
         cost = (resp or {}).get("plugins", {}).get("cost") if resp else None
         # Every saving the accountant attributed (one per operator: context-guru.*, tool-prune,
@@ -498,8 +645,16 @@ def check_passthrough(events):
         saving = list(find_key(cost, "avoided") or []) or None
         if cg is None and saving is None:
             continue
-        rows.append({"requestId": rid, "at": (resp or evs[0]).get("at"), "event": cg, "saving": saving,
-                     "cost": cost, "usage": (resp or {}).get("inference") or {}})
+        rows.append(
+            {
+                "requestId": rid,
+                "at": (resp or evs[0]).get("at"),
+                "event": cg,
+                "saving": saving,
+                "cost": cost,
+                "usage": (resp or {}).get("inference") or {},
+            }
+        )
     return rows
 
 
@@ -512,10 +667,13 @@ def run_checks(ctx, final):
 
     tok_rows, bad = compare_tokens(final["A_tokens"], final["B_tokens"], ctx["p1_tolerance"])
     final["P1_rows"] = tok_rows
-    rec("P1-accountant-tokens", "PASS" if tok_rows and not bad else "FAIL",
+    rec(
+        "P1-accountant-tokens",
+        "PASS" if tok_rows and not bad else "FAIL",
         f"{len(tok_rows) - len(bad)}/{len(tok_rows)} component tiers within {ctx['p1_tolerance']:.0%}"
         + (f"; first differences: {bad[:3]}" if bad else "")
-        + ("" if tok_rows else "; no accountant tokens on either side (is Cortex logging at debug?)"))
+        + ("" if tok_rows else "; no accountant tokens on either side (is Cortex logging at debug?)"),
+    )
 
     # P2: the session total is the sum of the rows' accountant savings, by the ledger's rule (design
     # §5.7a): applied savings of basis "usd" only, gross in avoidedMicros and the penalty beside it.
@@ -529,57 +687,93 @@ def run_checks(ctx, final):
     sess = final["A_row"] or {}
     am, pm = int(sess.get("avoidedMicros", 0)), int(sess.get("penaltyMicros", 0))
     tol = max(2, len(rows))
-    rec("P2-session-total", "PASS" if abs(am - round(total_usd * 1e6)) <= tol and abs(pm - round(total_pen * 1e6)) <= tol else "FAIL",
-        f"avoidedMicros={am} penaltyMicros={pm} vs sum of row savings {round(total_usd * 1e6)} / penalties {round(total_pen * 1e6)}")
+    rec(
+        "P2-session-total",
+        "PASS" if abs(am - round(total_usd * 1e6)) <= tol and abs(pm - round(total_pen * 1e6)) <= tol else "FAIL",
+        f"avoidedMicros={am} penaltyMicros={pm} vs sum of row savings {round(total_usd * 1e6)} / penalties {round(total_pen * 1e6)}",
+    )
 
     b, c = final["B_row"] or {}, final["C_row"] or {}
     a_cost = int(sess.get("costMicros", 0)) / 1e6
     c_cost = int(c.get("costMicros", 0)) / 1e6
     a_extra = sum(final["A_log_spend"]["usd_by_purpose"].values())
     b_cost = float(b.get("cost_usd", 0)) + float(b.get("cg_llm_cost_usd", 0)) + float(b.get("keepalive_ping_usd", 0))
-    rec("X1-spend", "INFO", f"A agent ${a_cost:.4f} + plugin ${a_extra:.4f} (log) | B ${b_cost:.4f} "
+    rec(
+        "X1-spend",
+        "INFO",
+        f"A agent ${a_cost:.4f} + plugin ${a_extra:.4f} (log) | B ${b_cost:.4f} "
         f"(agent {b.get('cost_usd', 0):.4f}, cg llm {b.get('cg_llm_cost_usd', 0):.4f}, pings {b.get('keepalive_ping_usd', 0):.4f}) "
-        f"| C ${c_cost:.4f}")
-    rec("X1-savings", "INFO", f"A avoided ${am / 1e6:.4f} | B saved_usd ${b.get('saved_usd', 0):.4f}, "
+        f"| C ${c_cost:.4f}",
+    )
+    rec(
+        "X1-savings",
+        "INFO",
+        f"A avoided ${am / 1e6:.4f} | B saved_usd ${b.get('saved_usd', 0):.4f}, "
         f"baseline-cost ${float(b.get('baseline_cost_usd', 0)) - float(b.get('cost_usd', 0)):.4f}, "
         f"keepalive net ${b.get('keepalive_net_usd', 0):.4f} | measured C-A ${c_cost - a_cost - a_extra:.4f}, "
-        f"C-B ${c_cost - b_cost:.4f}")
-    rec("X1-figures", "INFO", f"A net ${(am - pm) / 1e6:.4f} (saved ${am / 1e6:.4f}, penalty ${pm / 1e6:.4f}), "
+        f"C-B ${c_cost - b_cost:.4f}",
+    )
+    rec(
+        "X1-figures",
+        "INFO",
+        f"A net ${(am - pm) / 1e6:.4f} (saved ${am / 1e6:.4f}, penalty ${pm / 1e6:.4f}), "
         f"plugin spend ${int(sess.get('pluginSpendMicros', 0)) / 1e6:.4f}, "
-        f"usage-limit units saved {int(sess.get('avoidedUnits', 0)) / 1000:.1f}")
-    rec("X1-tokens", "INFO", f"engine saved: A sum={sum(max(0, int((r['event'] or {}).get('tokensBefore', 0)) - int((r['event'] or {}).get('tokensAfter', 0))) for r in rows)} "
-        f"| B saved={b.get('saved')} saved_unique={b.get('saved_unique')}")
+        f"usage-limit units saved {int(sess.get('avoidedUnits', 0)) / 1000:.1f}",
+    )
+    rec(
+        "X1-tokens",
+        "INFO",
+        f"engine saved: A sum={sum(max(0, int((r['event'] or {}).get('tokensBefore', 0)) - int((r['event'] or {}).get('tokensAfter', 0))) for r in rows)} "
+        f"| B saved={b.get('saved')} saved_unique={b.get('saved_unique')}",
+    )
 
     pings_a, pings_b = final["A_log_pings"], int(b.get("keepalive_pings", 0))
-    rec("K1-pings", "PASS" if pings_a >= 1 and pings_b >= 1 else ("INFO" if ctx["smoke"] else "FAIL"),
-        f"A pings={pings_a} (log), B pings={pings_b} (dashboard)")
+    rec(
+        "K1-pings",
+        "PASS" if pings_a >= 1 and pings_b >= 1 else ("INFO" if ctx["smoke"] else "FAIL"),
+        f"A pings={pings_a} (log), B pings={pings_b} (dashboard)",
+    )
     for arm in ARMS:
         post = [t for t in final["turns"] if t["arm"] == arm and t["phase"] == "resume"]
         if post:
             u = post[0].get("usage") or {}
-            rec(f"K1-after-freeze-{arm}", "INFO", f"first resume turn: cache_read={u.get('cache_read_input_tokens')} "
-                f"cache_write={u.get('cache_creation_input_tokens')} input={u.get('input_tokens')}")
+            rec(
+                f"K1-after-freeze-{arm}",
+                "INFO",
+                f"first resume turn: cache_read={u.get('cache_read_input_tokens')} "
+                f"cache_write={u.get('cache_creation_input_tokens')} input={u.get('input_tokens')}",
+            )
     for arm in ARMS:
         errs = [t for t in final["turns"] if t["arm"] == arm and (t["rc"] != 0 or t.get("is_error"))]
-        rec(f"T-turns-{arm}", "PASS" if not errs else "FAIL",
+        rec(
+            f"T-turns-{arm}",
+            "PASS" if not errs else "FAIL",
             f"{len([t for t in final['turns'] if t['arm'] == arm])} turns, {len(errs)} failed"
-            + (f": {errs[0]['stderr'][-200:] or errs[0]['result'][:200]}" if errs else ""))
+            + (f": {errs[0]['stderr'][-200:] or errs[0]['result'][:200]}" if errs else ""),
+        )
     return checks
 
 
 # ---------------------------------------------------------------- plot
 
+
 def plot(work):
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    snaps = [json.loads(l) for l in open(os.path.join(work, "metrics.jsonl")) if '"error"' not in l[:40]]
+
+    snaps = [json.loads(line) for line in open(os.path.join(work, "metrics.jsonl")) if '"error"' not in line[:40]]
     snaps = [s for s in snaps if "A" in s]
-    turns = [json.loads(l) for l in open(os.path.join(work, "turns.jsonl"))]
+    turns = [json.loads(line) for line in open(os.path.join(work, "turns.jsonl"))]
     if not snaps:
-        print("no metrics to plot"); return
+        print("no metrics to plot")
+        return
     t0 = min(s["t"] for s in snaps)
-    mins = lambda t: (t - t0) / 60
+
+    def mins(t):
+        return (t - t0) / 60
+
     color = {"A": "#2a6fdb", "B": "#e07b00", "C": "#6b6b6b", "CA": "#2a6fdb", "CB": "#e07b00"}
 
     def series(f):
@@ -590,13 +784,21 @@ def plot(work):
             except Exception:
                 v = None
             if v is not None:
-                xs.append(mins(s["t"])); ys.append(v)
+                xs.append(mins(s["t"]))
+                ys.append(v)
         return xs, ys
 
-    num = lambda d, k: float((d or {}).get(k) or 0)
-    a_cost = lambda s: num(s["A"], "costMicros") / 1e6 + sum((s.get("A_log_spend") or {}).get("usd_by_purpose", {}).values())
-    b_cost = lambda s: num(s["B"], "cost_usd") + num(s["B"], "cg_llm_cost_usd") + num(s["B"], "keepalive_ping_usd")
-    c_cost = lambda s: num(s["C"], "costMicros") / 1e6
+    def num(d, k):
+        return float((d or {}).get(k) or 0)
+
+    def a_cost(s):
+        return num(s["A"], "costMicros") / 1e6 + sum((s.get("A_log_spend") or {}).get("usd_by_purpose", {}).values())
+
+    def b_cost(s):
+        return num(s["B"], "cost_usd") + num(s["B"], "cg_llm_cost_usd") + num(s["B"], "keepalive_ping_usd")
+
+    def c_cost(s):
+        return num(s["C"], "costMicros") / 1e6
 
     fig, ax = plt.subplots(3, 1, figsize=(11, 12), sharex=True)
     for arm, f in (("A", a_cost), ("B", b_cost), ("C", c_cost)):
@@ -604,11 +806,17 @@ def plot(work):
     ax[0].set_ylabel("cumulative spend (USD)")
     ax[0].set_title("Spend per arm (A includes plugin spend from the log; B includes cg LLM calls and pings)")
 
-    ax[1].plot(*series(lambda s: num(s["A"], "avoidedMicros") / 1e6), label="A: Cortex avoidedMicros",
-               color=color["A"], lw=2)
+    ax[1].plot(
+        *series(lambda s: num(s["A"], "avoidedMicros") / 1e6), label="A: Cortex avoidedMicros", color=color["A"], lw=2
+    )
     ax[1].plot(*series(lambda s: num(s["B"], "saved_usd")), label="B: cg saved_usd", color=color["B"], lw=2)
-    ax[1].plot(*series(lambda s: num(s["B"], "keepalive_net_usd") + num(s["B"], "saved_usd")),
-               label="B: saved_usd + keep-alive net", color=color["B"], lw=1.5, ls="--")
+    ax[1].plot(
+        *series(lambda s: num(s["B"], "keepalive_net_usd") + num(s["B"], "saved_usd")),
+        label="B: saved_usd + keep-alive net",
+        color=color["B"],
+        lw=1.5,
+        ls="--",
+    )
     ax[1].plot(*series(lambda s: c_cost(s) - a_cost(s)), label="measured C - A", color=color["CA"], lw=1.2, ls=":")
     ax[1].plot(*series(lambda s: c_cost(s) - b_cost(s)), label="measured C - B", color=color["CB"], lw=1.2, ls=":")
     ax[1].axhline(0, color="#999", lw=0.8)
@@ -616,9 +824,18 @@ def plot(work):
     ax[1].set_title("Reported savings vs measured difference to the control arm")
 
     for arm in ARMS:
-        pts = [(mins(t["t"] + t["dur"]), sum(int((t.get("usage") or {}).get(k) or 0) for k in
-                ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")) / max(1, t.get("num_turns") or 1))
-               for t in turns if t["arm"] == arm]
+        pts = [
+            (
+                mins(t["t"] + t["dur"]),
+                sum(
+                    int((t.get("usage") or {}).get(k) or 0)
+                    for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+                )
+                / max(1, t.get("num_turns") or 1),
+            )
+            for t in turns
+            if t["arm"] == arm
+        ]
         if pts:
             ax[2].plot(*zip(*pts), marker="o", ms=3, label=ARM_NAME[arm], color=color[arm], lw=1.2)
     ax[2].set_ylabel("prompt tokens per API call (turn avg)")
@@ -628,7 +845,8 @@ def plot(work):
     starts, last = [], None
     for s in snaps:
         if s["phase"] != last:
-            starts.append((mins(s["t"]), s["phase"])); last = s["phase"]
+            starts.append((mins(s["t"]), s["phase"]))
+            last = s["phase"]
     for a in ax:
         for x, name in starts:
             a.axvline(x, color="#bbb", lw=0.8, ls="--")
@@ -674,8 +892,11 @@ def step_all(ctx, prompts):
         res = {arm: f.result() for arm, f in futs.items()}
     for arm in ARMS:
         r = res[arm]
-        print(f"  step {PHASE['step']:3} {PHASE['name']:6} {arm} rc={r['rc']} {r['dur']:5.1f}s "
-              f"cost={r.get('total_cost_usd')} {r['result'][:60]!r}", flush=True)
+        print(
+            f"  step {PHASE['step']:3} {PHASE['name']:6} {arm} rc={r['rc']} {r['dur']:5.1f}s "
+            f"cost={r.get('total_cost_usd')} {r['result'][:60]!r}",
+            flush=True,
+        )
     return res
 
 
@@ -686,14 +907,22 @@ def run(a):
     key = api_key(a.env_file)
     work = tempfile.mkdtemp(prefix="cg-compare-")
     print("work dir:", work, flush=True)
-    ctx = {"smoke": a.smoke, "p1_tolerance": a.p1_tolerance, "metrics": os.path.join(work, "metrics.jsonl"), "turns": os.path.join(work, "turns.jsonl")}
+    ctx = {
+        "smoke": a.smoke,
+        "p1_tolerance": a.p1_tolerance,
+        "metrics": os.path.join(work, "metrics.jsonl"),
+        "turns": os.path.join(work, "turns.jsonl"),
+    }
     binary = cgit.build(work)
     cgbin = build_cg(a.cg_repo, work)
     ports = {"A": cgit.free_ports(5, lo=48700), "C": None}
     ports["C"] = cgit.free_ports(5, lo=ports["A"][-1] + 1)
     cg_port = cgit.free_ports(1, lo=ports["C"][-1] + 1)[0]
     ctx["ports"] = ports
-    cx = {arm: cgit.Cortex(binary, work, f"cortex-{arm}", cortex_yaml(ports[arm], work, arm, arm == "A")) for arm in ("A", "C")}
+    cx = {
+        arm: cgit.Cortex(binary, work, f"cortex-{arm}", cortex_yaml(ports[arm], work, arm, arm == "A"))
+        for arm in ("A", "C")
+    }
     cg = CGProxy(cgbin, work, cg_port)
     ctx["cx"], ctx["cg"] = cx, cg
     stop = threading.Event()
@@ -720,16 +949,36 @@ def run(a):
             "B": Agent("B", work, fx, key, f"http://127.0.0.1:{cg_port}/anthropic"),
             "C": Agent("C", work, fx, key, UPSTREAM, f"http://127.0.0.1:{ports['C'][0]}", cas["C"]),
         }
-        json.dump({"window": WINDOW, "fill_target": int(a.fill_frac * WINDOW), "rates": RATES, "model": MODEL,
-                   "sessions": {arm: ag.sid for arm, ag in ctx["agents"].items()}, "ports": ports, "cg_port": cg_port,
-                   "freeze_s": a.freeze_s, "engine": ENGINE}, open(os.path.join(work, "run.json"), "w"), indent=1)
+        json.dump(
+            {
+                "window": WINDOW,
+                "fill_target": int(a.fill_frac * WINDOW),
+                "rates": RATES,
+                "model": MODEL,
+                "sessions": {arm: ag.sid for arm, ag in ctx["agents"].items()},
+                "ports": ports,
+                "cg_port": cg_port,
+                "freeze_s": a.freeze_s,
+                "engine": ENGINE,
+            },
+            open(os.path.join(work, "run.json"), "w"),
+            indent=1,
+        )
         threading.Thread(target=poller, args=(ctx, stop, a.poll_s), daemon=True).start()
 
         target = int(a.fill_frac * WINDOW)
         PHASE["name"] = "fill"
-        same = lambda p: {arm: p for arm in ARMS}
-        step_all(ctx, same(f"Run {nonce}. You will look at files in this directory when asked. "
-                           f"{fetch(names[0])}, then reply with only the word OK."))
+
+        def same(p):
+            return {arm: p for arm in ARMS}
+
+        step_all(
+            ctx,
+            same(
+                f"Run {nonce}. You will look at files in this directory when asked. "
+                f"{fetch(names[0])}, then reply with only the word OK."
+            ),
+        )
         time.sleep(2)
         last = prompt_ctx(ports["C"][1], ctx["agents"]["C"].sid)
         i, growth = 1, 0
@@ -741,7 +990,8 @@ def run(a):
             step_all(ctx, same(" Then ".join(fetch(f) for f in files) + ". Then reply with only the word OK."))
             time.sleep(2)
             now = prompt_ctx(ports["C"][1], ctx["agents"]["C"].sid)
-            growth = max(growth, now - last); last = now
+            growth = max(growth, now - last)
+            last = now
             print(f"  arm C prompt context {now} / target {target} (growth {growth}/turn)", flush=True)
             if now + growth > target:
                 break
@@ -750,8 +1000,13 @@ def run(a):
 
         PHASE["name"] = "small"
         for q in range(a.small):
-            step_all(ctx, same(f"Without using any tool, answer in one short sentence: what kind of content "
-                               f"was in {names[(q * 5) % i]}?"))
+            step_all(
+                ctx,
+                same(
+                    f"Without using any tool, answer in one short sentence: what kind of content "
+                    f"was in {names[(q * 5) % i]}?"
+                ),
+            )
         jl(ctx["metrics"], snapshot(ctx))
         PHASE["name"] = "freeze"
         print(f"  freeze {a.freeze_s}s", flush=True)
@@ -759,8 +1014,13 @@ def run(a):
         jl(ctx["metrics"], snapshot(ctx))
         PHASE["name"] = "resume"
         for q in range(a.resume):
-            step_all(ctx, same(f"Without using any tool, answer in one short sentence: how many files have you "
-                               f"read so far{' in total' if q else ''}?"))
+            step_all(
+                ctx,
+                same(
+                    f"Without using any tool, answer in one short sentence: how many files have you "
+                    f"read so far{' in total' if q else ''}?"
+                ),
+            )
         time.sleep(5)
         PHASE["name"] = "end"
         jl(ctx["metrics"], snapshot(ctx))
@@ -770,14 +1030,17 @@ def run(a):
         final["A_events"] = cortex_events(ports["A"][1], ctx["agents"]["A"].sid)
         final["C_events"] = cortex_events(ports["C"][1], ctx["agents"]["C"].sid)
         final["A_row"], final["B_row"], final["C_row"] = final["A"], final["B"], final["C"]
-        final["turns"] = [json.loads(l) for l in open(ctx["turns"])]
+        final["turns"] = [json.loads(line) for line in open(ctx["turns"])]
         final["A_tokens"] = cortex_operator_tokens(cx["A"].log(), ctx["agents"]["A"].sid)
         try:
             final["B_tokens"] = cg_component_tokens(cg, ctx["agents"]["B"].sid)
         except Exception as e:
             final["B_tokens"], final["B_tokens_error"] = {}, str(e)
-        for path, name in (("/api/requests?session=" + ctx["agents"]["B"].sid + "&limit=1000", "B_requests"),
-                           ("/api/keepalive/sessions", "B_keepalive"), ("/stats", "B_stats")):
+        for path, name in (
+            ("/api/requests?session=" + ctx["agents"]["B"].sid + "&limit=1000", "B_requests"),
+            ("/api/keepalive/sessions", "B_keepalive"),
+            ("/stats", "B_stats"),
+        ):
             try:
                 final[name] = cg.get(path)
             except Exception as e:
@@ -810,14 +1073,21 @@ def main():
     r.add_argument("--resume", type=int, default=3)
     r.add_argument("--freeze-s", type=int, default=360)
     r.add_argument("--poll-s", type=int, default=15)
-    r.add_argument("--p1-tolerance", type=float, default=0.10,
-                   help="P1: the largest relative difference between the two hosts' tokens for one component tier")
-    r.add_argument("--smoke", action="store_true", help="tiny run to check the plumbing: fill to 45k, 1+1 questions, 20s freeze")
+    r.add_argument(
+        "--p1-tolerance",
+        type=float,
+        default=0.10,
+        help="P1: the largest relative difference between the two hosts' tokens for one component tier",
+    )
+    r.add_argument(
+        "--smoke", action="store_true", help="tiny run to check the plumbing: fill to 45k, 1+1 questions, 20s freeze"
+    )
     p = sub.add_parser("plot")
     p.add_argument("work")
     a = ap.parse_args()
     if a.cmd == "plot":
-        plot(a.work); return 0
+        plot(a.work)
+        return 0
     if a.smoke:
         a.fill_frac, a.small, a.resume, a.freeze_s, a.poll_s = 45000 / a.window, 1, 1, 20, 5
     return run(a)

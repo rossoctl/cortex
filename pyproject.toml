@@ -8,6 +8,10 @@ select = ["E", "F", "I", "W"]
 [tool.ruff.lint.per-file-ignores]
 # Verbatim captured prompts; wrapping them would change the reproduction.
 "deploy/sparc-service/tests/test_haiku_empty_response.py" = ["E501"]
+# Dev harnesses whose long lines are one-line report f-strings and embedded YAML rate
+# templates; wrapping them splits a single report line or a YAML entry across strings.
+"scripts/dev/compare-contextguru-savings.py" = ["E501"]
+"scripts/dev/integration-contextguru-litellm.py" = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

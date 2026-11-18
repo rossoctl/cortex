@@ -129,8 +129,13 @@ of these sections. They need a restart:
 - `spiffe.*`
 - `memory.*`
 - `stats.*`
+- `praxis.*`, `metrics_push.*`, `update.check_every` and `accounting.subscription_weights`
 
-A change to `pipeline:` or `pricing:` reloads. The proxy swaps the pricing table after it
+`validateAccounting` also refuses a reload that turns accounting on (as resolved) when the
+proxy started with it off. Under `accounting.enabled: auto` that is a `pipeline:` change that
+adds the first context operator. A reload that turns accounting off is accepted.
+
+Any other change to `pipeline:`, and any change to `pricing:`, reloads. The proxy swaps the pricing table after it
 accepts the reload (`applyPricing`, which `main` in `cmd/cortex/main.go` gives to
 `reloader.WithOnCommit`).
 

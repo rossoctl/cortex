@@ -233,7 +233,11 @@ func main() {
 		}
 		// The accountant on the outbound chain only: inference requests leave through it.
 		outDeps := deps
-		outDeps.Accounting = acctHost
+		// Only while this config resolves accounting on: a reload may turn it off, and the host
+		// then stays idle until a later reload turns it back on (reloader.validateAccounting).
+		if c.AccountingOn() {
+			outDeps.Accounting = acctHost
+		}
 		out, err := plugins.BuildWithDeps(c.Pipeline.Outbound.Plugins, outDeps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("outbound: %w", err)

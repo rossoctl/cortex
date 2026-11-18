@@ -50,7 +50,10 @@ it:
 agentop tools scan --write ~/.cortex/config.yaml
 ```
 
-The config is hot-reloaded, so no restart. A reload does rebuild the plugin and
+The config is hot-reloaded, so no restart — unless this adds the first context operator to a
+proxy that started without one. Under `accounting.enabled: auto` that turns accounting on,
+and the reload is refused until `agentop service restart` (the accountant is built at
+startup). A reload does rebuild the plugin and
 therefore **resets its counters** — the same as a process restart.
 
 ### Measure instead of enforce, when you want to

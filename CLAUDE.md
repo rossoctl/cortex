@@ -302,11 +302,15 @@ The binary watches its config file (`/etc/authbridge/config.yaml`) via `core/rel
 and atomically swaps the plugin pipelines without a restart. In-flight requests finish
 on the old pipeline.
 
-- **Reloads:** any plugin list change and any plugin `config:` subtree edit.
+- **Reloads:** any plugin `config:` subtree edit, and any plugin list change except one
+  that turns accounting on (below).
 - **Needs a restart:** `mode` and every field of `listener`, `session`, `cost_ledger`,
   `mtls`, `tls_bridge`, `spiffe`, `memory`, `stats`, `praxis` and `metrics_push`,
-  `update.check_every`, and `accounting.enabled` (as resolved) and
-  `accounting.subscription_weights` (`validateReloadable` in `core/reloader/reloader.go`).
+  `update.check_every`, and `accounting.subscription_weights` (`validateReloadable` in
+  `core/reloader/reloader.go`). Also a reload that turns accounting ON (as resolved) when the
+  process booted with it off: under `enabled: auto` that is adding the first context
+  operator (`tool-prune`, `context-guru`). Turning it off reloads, so `on_error: off` on the
+  only operator still works (`validateAccounting`).
 - **Bad YAML stays safe:** the active pipeline keeps serving, and `/reload/status`
   shows the error with `reloads_failed` incremented.
 

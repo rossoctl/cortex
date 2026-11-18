@@ -268,6 +268,23 @@ func TestReloader_RefusesModeChange(t *testing.T) {
 	}
 }
 
+// The reload path applies validateAccounting against the BOOT config: this process booted with no
+// context operator (accounting off under auto), so a reload that adds tool-prune would report to
+// a host that was never built, and is refused.
+func TestReloader_RefusesTurningAccountingOnAfterBoot(t *testing.T) {
+	r, b, cfgPath, _, _ := setup(t)
+	next := &config.Config{Mode: "envoy-sidecar"}
+	next.Pipeline.Outbound.Plugins = []config.PluginEntry{{Name: "tool-prune"}}
+	b.set(builderResult{inbound: emptyPipeline(t), outbound: emptyPipeline(t), cfg: next})
+
+	writeConfig(t, cfgPath, "mode: envoy-sidecar\n# tool-prune added\n")
+
+	waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsFailed >= 1 }, "reload to fail")
+	if !contains(r.Status().LastError, "accounting.enabled") {
+		t.Errorf("error should name accounting.enabled, got %q", r.Status().LastError)
+	}
+}
+
 // Listener address change is unreloadable.
 func TestReloader_RefusesListenerChange(t *testing.T) {
 	r, b, cfgPath, inH, _ := setup(t)
@@ -1335,11 +1352,12 @@ func TestValidateReloadable_PraxisPolicyPathNeedsRestart(t *testing.T) {
 	}
 }
 
-// Whether accounting is on is decided once, at boot: the process builds its accountant host then,
-// and the listeners keep the client body only when it exists. So a reload that would turn it on or
-// off is refused, like mtls.*. What is compared is the RESOLVED answer, not the block: under auto,
-// adding the first context operator flips it, and an edit that resolves the same is accepted.
-func TestValidateReloadable_RefusesAnAccountingFlip(t *testing.T) {
+// Whether the accountant host exists is decided once, at boot. So a reload that turns accounting
+// ON is refused when the process booted with it off: there is no host to hand the plugins. Every
+// other reload is accepted, including one that turns it off (on_error: off on the only context
+// operator is a kill-switch without a redeploy) and one that turns it back on. What is compared is
+// the RESOLVED answer, not the block.
+func TestValidateAccounting(t *testing.T) {
 	withOutbound := func(a *config.AccountingConfig, names ...string) *config.Config {
 		c := &config.Config{Accounting: a}
 		for _, n := range names {
@@ -1347,31 +1365,31 @@ func TestValidateReloadable_RefusesAnAccountingFlip(t *testing.T) {
 		}
 		return c
 	}
-	refused := []struct {
-		name         string
-		active, next *config.Config
+	off := &config.AccountingConfig{Enabled: "false"}
+	on := &config.AccountingConfig{Enabled: "true"}
+	tpOff := &config.Config{}
+	tpOff.Pipeline.Outbound.Plugins = []config.PluginEntry{{Name: "tool-prune", OnError: pipeline.ErrorPolicyOff}}
+	cases := []struct {
+		name    string
+		boot    *config.Config
+		next    *config.Config
+		refused bool
 	}{
-		{"auto: adding the first operator", withOutbound(nil, "inference-parser"), withOutbound(nil, "inference-parser", "tool-prune")},
-		{"auto: removing the last operator", withOutbound(nil, "tool-prune"), withOutbound(nil)},
-		{"auto to false with an operator", withOutbound(nil, "tool-prune"), withOutbound(&config.AccountingConfig{Enabled: "false"}, "tool-prune")},
-		{"false to true", withOutbound(&config.AccountingConfig{Enabled: "false"}), withOutbound(&config.AccountingConfig{Enabled: "true"})},
+		{"booted off, auto adds the first operator", withOutbound(nil, "inference-parser"), withOutbound(nil, "inference-parser", "tool-prune"), true},
+		{"booted off, false to true", withOutbound(off), withOutbound(on), true},
+		{"booted on, the only operator set to on_error: off", withOutbound(nil, "tool-prune"), tpOff, false},
+		{"booted on, the last operator removed", withOutbound(nil, "tool-prune"), withOutbound(nil), false},
+		{"booted on, auto to false", withOutbound(nil, "tool-prune"), withOutbound(off, "tool-prune"), false},
+		{"booted on, back on after a reload turned it off", withOutbound(nil, "tool-prune"), withOutbound(nil, "tool-prune"), false},
+		{"booted on, auto to true", withOutbound(nil, "tool-prune"), withOutbound(on, "tool-prune"), false},
+		{"booted off, operators come and go under false", withOutbound(off), withOutbound(off, "tool-prune"), false},
 	}
-	for _, c := range refused {
-		err := validateReloadable(c.active, c.next)
-		if err == nil || !strings.Contains(err.Error(), "accounting.enabled") {
+	for _, c := range cases {
+		err := validateAccounting(c.boot.AccountingOn(), c.next)
+		if c.refused && (err == nil || !strings.Contains(err.Error(), "accounting.enabled")) {
 			t.Errorf("%s: err = %v, want a refusal naming accounting.enabled", c.name, err)
 		}
-	}
-	accepted := []struct {
-		name         string
-		active, next *config.Config
-	}{
-		{"auto to true with an operator", withOutbound(nil, "tool-prune"), withOutbound(&config.AccountingConfig{Enabled: "true"}, "tool-prune")},
-		{"a second operator", withOutbound(nil, "tool-prune"), withOutbound(nil, "tool-prune", "context-guru")},
-		{"false, operators come and go", withOutbound(&config.AccountingConfig{Enabled: "false"}), withOutbound(&config.AccountingConfig{Enabled: "false"}, "tool-prune")},
-	}
-	for _, c := range accepted {
-		if err := validateReloadable(c.active, c.next); err != nil {
+		if !c.refused && err != nil {
 			t.Errorf("%s: refused: %v", c.name, err)
 		}
 	}

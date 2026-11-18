@@ -52,6 +52,46 @@ func TestAnthropic_ParsesCacheWrite1h(t *testing.T) {
 	}
 }
 
+// An off-shape usage.cache_creation must not fail the usage decode. The breakdown is
+// optional, and a relay or shim may serialize it differently; before the field was
+// read at all, these bodies parsed in full (review finding: a typed field zeroed
+// every count). A breakdown that cannot be read means "no 1h writes".
+func TestAnthropic_OffShapeCacheCreationKeepsUsage(t *testing.T) {
+	cases := []struct {
+		raw    string
+		want1h int
+	}{
+		{`null`, 0},
+		{`{"ephemeral_1h_input_tokens":60}`, 60},
+		{`{"ephemeral_1h_input_tokens":60.0}`, 60},
+		{`{"ephemeral_1h_input_tokens":60.5}`, 0},
+		{`{"ephemeral_1h_input_tokens":-1}`, 0},
+		{`{"ephemeral_1h_input_tokens":"60"}`, 0},
+		{`0`, 0},
+		{`[]`, 0},
+		{`"x"`, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.raw, func(t *testing.T) {
+			usage := `{"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":20,"cache_creation":` + c.raw + `}`
+			ext := &model.InferenceExtension{Model: "claude-sonnet-4-5"}
+			parseAnthropicJSON([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":`+usage+`}`), ext)
+			checkSplit(t, ext, model.InferenceExtension{
+				InputTokens: 10, CacheReadTokens: 20, CacheWriteTokens: 100, CacheWrite1hTokens: c.want1h,
+				OutputTokens: 5, PromptTokens: 130, CompletionTokens: 5, TotalTokens: 135,
+			})
+
+			sse := &model.InferenceExtension{Model: "claude-sonnet-4-5"}
+			parseAnthropicSSE([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":"+usage+"}}\n"+
+				"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n"), sse)
+			if sse.InputTokens != 10 || sse.CacheWriteTokens != 100 || sse.CacheReadTokens != 20 || sse.CacheWrite1hTokens != c.want1h {
+				t.Errorf("SSE: input=%d cache_write=%d cache_read=%d cache_write_1h=%d, want 10/100/20/%d",
+					sse.InputTokens, sse.CacheWriteTokens, sse.CacheReadTokens, sse.CacheWrite1hTokens, c.want1h)
+			}
+		})
+	}
+}
+
 // Non-streaming Anthropic response with both cache_read and cache_write.
 func TestSplitTokens_AnthropicJSON(t *testing.T) {
 	ext := &model.InferenceExtension{Model: "claude-opus-4-8"}
