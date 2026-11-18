@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -105,6 +106,10 @@ func series(rm metricdata.ResourceMetrics, fn func(name string, keys []string, v
 			case metricdata.Sum[float64]:
 				for _, p := range d.DataPoints {
 					fn(m.Name, keysOf(p.Attributes), p.Value)
+				}
+			case metricdata.Gauge[int64]:
+				for _, p := range d.DataPoints {
+					fn(m.Name, keysOf(p.Attributes), float64(p.Value))
 				}
 			default:
 				fn(m.Name+" (not a sum)", nil, 0)
@@ -212,10 +217,10 @@ var (
 		"llm.savings.cache_effect.usd": true, "llm.savings.interaction.usd": true,
 		"llm.savings.requests": true, "llm.savings.unpriced": true,
 		"llm.savings.check_failures": true, "llm.savings.estimated": true,
-		"llm.proxy.export_failures": true,
+		"llm.proxy.export_failures": true, "llm.proxy.info": true,
 	}
 	allowedKeys = map[string]bool{"kind": true, "tier": true, "component": true, "effect": true, "cause": true,
-		"direction": true, "reason": true, "check": true, "result": true}
+		"direction": true, "reason": true, "check": true, "result": true, "version": true}
 	allowedResource = map[string]bool{"service.instance.id": true, "service.version": true, "service.name": true}
 )
 
@@ -301,6 +306,38 @@ func TestStart_PushesTheSavingsCounters(t *testing.T) {
 		if !names[want] {
 			t.Errorf("series %s was not pushed; got %v", want, names)
 		}
+	}
+}
+
+// A push carries llm.proxy.info = 1 with the build's version, even before the first request. The
+// central dashboards list machines from it, and the MachineSilent alert fires on its absence, so an
+// idle Cortex must still send it.
+func TestStart_PushesProxyInfoWithNoTraffic(t *testing.T) {
+	_, srv := newReceiver(t)
+	rd := withReader(t)
+	mp, shutdown, err := Start(config.MetricsPushConfig{URL: srv.URL, Interval: time.Hour}, "v9.9.9", "")
+	if err != nil || mp == nil {
+		t.Fatalf("Start = %v, %v", mp, err)
+	}
+	t.Cleanup(func() { _ = shutdown(context.Background()) })
+	var got []string
+	for _, sm := range collect(t, rd).ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "llm.proxy.info" {
+				continue
+			}
+			g, ok := m.Data.(metricdata.Gauge[int64])
+			if !ok {
+				t.Fatalf("llm.proxy.info is %T, want an int64 gauge", m.Data)
+			}
+			for _, p := range g.DataPoints {
+				v, _ := p.Attributes.Value("version")
+				got = append(got, fmt.Sprintf("%d version=%s labels=%d", p.Value, v.AsString(), p.Attributes.Len()))
+			}
+		}
+	}
+	if len(got) != 1 || got[0] != "1 version=v9.9.9 labels=1" {
+		t.Errorf("llm.proxy.info points = %v, want [1 version=v9.9.9 labels=1]", got)
 	}
 }
 
