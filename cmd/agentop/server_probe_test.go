@@ -210,6 +210,31 @@ func TestProbe_DifferentHeaderPerProtocol(t *testing.T) {
 	}
 }
 
+// Each protocol works only with its usual header, so the headers differ: decision 14
+// writes no auth_header.
+func TestProbe_EachUsualButDifferent(t *testing.T) {
+	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, _ *http.Request) {
+		switch {
+		case p.path == "/v1/messages" && p.apiKey == "k":
+			io.WriteString(w, anthropicOK)
+		case p.path == "/v1/chat/completions" && p.bearer == "Bearer k":
+			io.WriteString(w, chatOK)
+		case p.path == "/v1/messages" || p.path == "/v1/chat/completions":
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			http.NotFound(w, nil)
+		}
+	})
+	api, auth, err := runProbe(t, srv, nil, "authorization", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"anthropic-messages": "/v1/messages", "chat-completions": "/v1/chat/completions"}
+	if !maps.Equal(api, want) || auth != "" {
+		t.Errorf("api %v, auth_header %q", api, auth)
+	}
+}
+
 // Anthropic works with its usual x-api-key and chat with the same x-api-key, which
 // is not its usual header: the one shared header is written.
 func TestProbe_UsualAndSharedHeader(t *testing.T) {

@@ -88,16 +88,19 @@ func probeAPI(ctx context.Context, client *http.Client, s routerconfig.Server, m
 	if fixed {
 		return api, header, nil
 	}
-	allUsual, one := true, ""
+	allUsual := true
 	for p, h := range worked {
 		allUsual = allUsual && h == usualHeader(p)
+	}
+	if allUsual {
+		return api, "", nil
+	}
+	one := ""
+	for _, h := range worked {
 		if one != "" && one != h {
 			return nil, "", errors.New("the server takes a different auth header for each protocol; give --auth-header and --api")
 		}
 		one = h
-	}
-	if allUsual {
-		return api, "", nil
 	}
 	return api, one, nil
 }
