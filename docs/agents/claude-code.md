@@ -48,16 +48,17 @@ service status` says whether the proxy is up.
 **The record.** The first `enable` on each settings file records what each of the six
 keys held before, in `~/.cortex/claude-code-state.json`. `disable` removes only the
 keys `enable` added, and puts back any value it recorded. It does not change a key
-whose value changed after `enable`, and it names each key it did not change. Each
-settings file `enable` routed, such as a project's and the default one, has its own
-entry. `agentop uninstall` runs the same `disable` on each.
+whose value changed after `enable`, and it names each key it did not change.
+`agentop uninstall` runs the same `disable` on each file.
 
-An older `agentop` recorded a relative `--settings` as given, with no directory, so
-after an upgrade `enable` or `disable` with that relative path says the entry is
-from an older agentop. A run that changes the file takes the entry for it, so
-`disable` and then `enable` from the project moves the entry to its absolute path.
-A run that changes nothing leaves the entry as it was. An absolute `--settings`
-leaves the entry alone.
+An older `agentop` recorded a relative `--settings` as given, with no directory.
+Give that relative path again, from the project; an absolute `--settings` does
+not find the entry. A run that changes the file records the entry under its
+absolute path, so `disable` and then `enable` moves it, and a run that changes
+nothing leaves it as it was. `agentop doctor` names each such entry with that
+fix, or deleting the entry for a project that no longer routes through Cortex.
+`agentop uninstall` names it, leaves it and the project's file as they are, keeps
+`~/.cortex` under `--purge` for the earlier values the entry holds, and exits 1.
 
 `disable` restores every value, but not the file's text. For example, it sorts the keys, uses a
 2-space indent, puts each array item on its own line, and writes `&`, `<` and `>` as

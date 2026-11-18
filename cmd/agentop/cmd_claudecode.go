@@ -126,9 +126,6 @@ func readState(path string) (*managedState, error) {
 // install.sh --claude-code makes on every upgrade still does not touch the file —
 // which is what lets setup's routed step top the record up unconditionally on its
 // already-routed path without writing on every upgrade.
-//
-// Claude Code's record holds an entry per settings file, through
-// writeClaudeCodeState; the other agents' records hold one.
 func writeState(path string, st managedState) error {
 	// An unreadable existing record is not a reason to overwrite it: if it can be
 	// repaired by hand it is still the only copy of what the user had.
@@ -180,11 +177,11 @@ func recordIndex(st *managedState, settingsPath string) int {
 }
 
 // adoptRelativeEntry records as abs the entry an older enable recorded as rel,
-// the relative path given again here, and returns a func that puts that entry
-// back as it was. The entry has no directory, and Cortex's values are the same
-// in every project, so runClaudeCode keeps the change only when the run succeeds
-// and changes abs. A file holding none of the keys Cortex manages leaves the
-// entry as it is, as does an entry abs already has.
+// the relative path given again here, and returns a func that puts it back.
+// Cortex's values are the same in every project, so the entry is abs's only when
+// the run succeeds and changes abs; otherwise runClaudeCode puts it back. A file
+// holding no key Cortex manages, or an abs with an entry of its own, leaves the
+// entry as it is.
 func adoptRelativeEntry(statePath, rel, abs string, stdout io.Writer) (func() error, error) {
 	st, err := readState(statePath)
 	if err != nil || recordFor(st, abs) != nil {
@@ -199,9 +196,9 @@ func adoptRelativeEntry(statePath, rel, abs string, stdout io.Writer) (func() er
 		return nil, nil
 	}
 	if !holdsManagedKey(envStrings(doc)) {
-		fmt.Fprintf(stdout, "The record's entry for %s is from an older agentop, which did not record\n"+
-			"its directory, and %s holds none of the keys Cortex\n"+
-			"manages, so the entry stays. If it names this file, delete it from %s.\n\n", rel, abs, statePath)
+		fmt.Fprintf(stdout, "The record's entry for %s is from an older agentop and has no directory.\n"+
+			"%s holds no key Cortex manages, so the entry stays;\n"+
+			"if it names this file, delete it from %s.\n\n", rel, abs, statePath)
 		return nil, nil
 	}
 	was := *e
@@ -209,9 +206,9 @@ func adoptRelativeEntry(statePath, rel, abs string, stdout io.Writer) (func() er
 	if err := writeStateFile(statePath, *st); err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(stdout, "The record's entry for %s is from an older agentop, which did not record\n"+
-		"its directory. A run that changes this file takes it as %s;\n"+
-		"give --settings as an absolute path to leave the entry as it is.\n\n", rel, abs)
+	fmt.Fprintf(stdout, "The record's entry for %s is from an older agentop and has no directory.\n"+
+		"A run that changes this file records it as %s;\n"+
+		"give --settings as an absolute path to leave it as it is.\n\n", rel, abs)
 	was.Settings, was.OtherFiles = rel, nil
 	// The undo keeps every other entry as the record then holds it. An entry the
 	// run took out comes back while abs still holds a key Cortex manages.
@@ -262,10 +259,8 @@ func recordFor(st *managedState, settingsPath string) *managedState {
 	}
 }
 
-// writeClaudeCodeState is writeState for a record of several settings files: e
-// becomes its file's entry, and every other file's entry stays. An existing entry
-// keeps its Prior, by writeState's rule. e needs a settings file and a Prior, as
-// readState needs of every entry.
+// writeClaudeCodeState records e as its file's entry, beside every other file's,
+// by writeState's rules. e needs a settings file and a Prior, as readState does.
 func writeClaudeCodeState(path string, e managedState) error {
 	if e.Settings == "" || e.Prior == nil {
 		return fmt.Errorf("refusing to record an entry with no settings file or prior-value record")
@@ -450,13 +445,17 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 	}
 	statePath := filepath.Join(home, stateRel)
 	// Absolute, so the record names the file from any directory. status reads
-	// only the settings file, so it leaves the record as it is. A record that
-	// cannot take the older entry as abs keeps the relative path for this run, so
-	// the run still finds that entry.
+	// only the settings file, so it leaves the record as it is. An older entry
+	// that cannot be recorded as abs stops enable, which records there too, and
+	// leaves disable the relative path that finds it.
 	var undo func() error
 	if abs, err := filepath.Abs(*settingsPath); err == nil {
 		if action != "status" && !filepath.IsAbs(*settingsPath) {
 			if undo, err = adoptRelativeEntry(statePath, *settingsPath, abs, stdout); err != nil {
+				if action == "enable" {
+					fmt.Fprintf(stderr, "agentop: could not record the older entry as %s (%v); nothing changed\n", abs, err)
+					return 1
+				}
 				fmt.Fprintf(stderr, "agentop: could not record the older entry as %s (%v); this run uses it as %s\n", abs, err, *settingsPath)
 				abs = *settingsPath
 			}
@@ -476,8 +475,6 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 	default:
 		return claudeCodeStatus(*settingsPath, stdout)
 	}
-	// An adopted entry stays when the run succeeded and changed the file: a run
-	// that changes nothing, --yes or not, says nothing of whose file it is.
 	if undo != nil {
 		after, _ := os.ReadFile(*settingsPath)
 		if code != 0 || bytes.Equal(before, after) {
@@ -486,12 +483,12 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			// After enable the file still routes, so the entry is what lets
-			// uninstall find it; disable and then enable record it under abs.
+			// uninstall find it.
 			if code == 0 && action == "enable" {
-				fmt.Fprintf(stdout, "The older entry stays as it was. If it names %s,\n"+
+				fmt.Fprintf(stdout, "The older entry stays. If it names %s,\n"+
 					"run disable and then enable with this --settings to record it there.\n", *settingsPath)
 			} else if code == 0 {
-				fmt.Fprintf(stdout, "The older entry stays as it was. If it names %s, delete it from %s.\n", *settingsPath, statePath)
+				fmt.Fprintf(stdout, "The older entry stays. If it names %s, delete it from %s.\n", *settingsPath, statePath)
 			}
 		}
 	}
@@ -953,9 +950,7 @@ func changedSinceEnable(st *managedState, key, cur string) bool {
 // the edit itself, and the value survives — see claudeCodeNeedsCortexDir for what
 // that then means for --purge.
 //
-// Only THIS settings file's entry is ours to delete, which planClaudeCodeDisable has
-// already decided: pl.st is nil unless the record has one, and a disable here must
-// not take another file's entry away. removeDisabledRecord says the rest.
+// Only this settings file's entry is deleted; removeDisabledRecord says why.
 func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr io.Writer) ([]string, error) {
 	if len(pl.present) == 0 {
 		return nil, nil
@@ -1041,11 +1036,9 @@ func printClaudeCodeLeft(pl claudeCodeDisablePlan, stdout io.Writer) {
 // so leaving it makes `agentop doctor` report a routing that is gone and offer a
 // fix that restores it.
 //
-// Only THIS settings file's entry is ours to delete: another file's is a different
-// enable's, and `disable --settings` on a project file must not take it away.
-// planClaudeCodeDisable has already applied that rule — pl.st is nil unless the
-// record has an entry for this file — so a nil st means there is nothing to remove.
-// A record that could not be read is left too, for the reason writeState gives.
+// Only this settings file's entry is deleted: another file's is another enable's,
+// and pl.st is nil unless the record has an entry for this file. A record that
+// could not be read is left too, for the reason writeState gives.
 func removeDisabledRecord(pl claudeCodeDisablePlan, statePath string, stderr io.Writer) {
 	if statePath == "" || pl.st == nil {
 		return

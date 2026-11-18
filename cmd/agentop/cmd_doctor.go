@@ -57,8 +57,8 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
-	var elsewhere []string
-	env.opts.claudeCode, env.opts.noService, elsewhere = installShape(env)
+	var elsewhere, older []string
+	env.opts.claudeCode, env.opts.noService, elsewhere, older = installShape(env)
 	fix := "agentop setup"
 	if env.opts.claudeCode {
 		fix += " --claude-code" // so the re-run checks the routing too
@@ -92,7 +92,13 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 				failed = true
 			}
 		}
-		if len(elsewhere) == 0 && !env.opts.claudeCode {
+		for _, rel := range older {
+			ui.Fail("routed", "the record's entry for "+rel+" is from an older agentop and has no directory")
+			ui.Remedy("fix: ", olderEntryFix(env, rel))
+			ui.Remedy("fix: ", "or, if that project no longer routes through Cortex, delete the entry from "+env.tilde(filepath.Join(env.home, stateRel)))
+			failed = true
+		}
+		if len(elsewhere) == 0 && len(older) == 0 && !env.opts.claudeCode {
 			hint := "agentop setup --claude-code"
 			if env.opts.noService {
 				hint += " --no-service"
@@ -161,24 +167,31 @@ func wouldChange(p stepPlan) string {
 // Cortex routed it. A file enable's record names other than ~/.claude/settings.json,
 // a project's, is elsewhere and is checked on its own: setup's step writes only the
 // default file, so its plan would read that file as unrouted, and its fix would
-// route Claude Code globally.
-func installShape(env *setupEnv) (claudeCode, noService bool, elsewhere []string) {
+// route Claude Code globally. older is the record's older relative entries,
+// which name a project's file too, so with any only the default file's own proxy
+// says it is routed.
+func installShape(env *setupEnv) (claudeCode, noService bool, elsewhere, older []string) {
 	def := filepath.Join(env.home, settingsRel)
 	recorded := false
-	for _, s := range recordedSettings(env) {
+	named, older := recordedFiles(env)
+	for _, s := range named {
 		if samePath(s, def) {
 			recorded = true
 			continue
 		}
 		elsewhere = append(elsewhere, s)
 	}
-	return recorded || (len(elsewhere) == 0 && claudeCodeRouted(env)), backgroundOnly(env), elsewhere
+	routed := claudeCodeRouted(env)
+	if len(older) > 0 {
+		routed = cortexProxyIn(env, def)
+	}
+	return recorded || (len(elsewhere) == 0 && routed), backgroundOnly(env), elsewhere, older
 }
 
 // claudeCodeRouted reports whether Cortex routed Claude Code: enable's state
 // record is there, or settings.json's HTTPS_PROXY is the proxy enable would write
-// from the current config. Enable writes the record and every disable deletes its
-// file's entry, the record going with the last, including one that left a key
+// from the current config. Enable writes its file's entry and every disable deletes
+// it, the record going with its last entry, including a disable that left a key
 // behind because its value changed since enable set it — the record's existence
 // is read here as "Cortex routes this", so it must not outlive the values it
 // describes, or doctor reports a routing that is gone and offers a fix that puts
@@ -193,23 +206,32 @@ func claudeCodeRouted(env *setupEnv) bool {
 	return fileExists(filepath.Join(env.home, stateRel)) || cortexProxyIn(env, filepath.Join(env.home, settingsRel))
 }
 
-// recordedSettings is each settings file enable's record names, which --settings
-// may have made a project's: the files doctor checks and uninstall unroutes. It
-// is empty when the record names none: there is no record or it cannot be read. A
-// relative path, as an older enable wrote it from where it ran, is a guess and is
-// left out, so a record of only those is empty too.
-func recordedSettings(env *setupEnv) []string {
+// recordedFiles is each settings file enable's record names, which --settings
+// may have made a project's: the files doctor checks and uninstall unroutes. rel
+// is each relative path, as an older enable wrote it from where it ran: a
+// project's file that doctor and uninstall cannot find, and name instead. Both
+// are empty when there is no record or it cannot be read.
+func recordedFiles(env *setupEnv) (abs, rel []string) {
 	st, err := readState(filepath.Join(env.home, stateRel))
 	if err != nil || st == nil {
-		return nil
+		return nil, nil
 	}
-	var files []string
 	for _, e := range append([]managedState{*st}, st.OtherFiles...) {
 		if filepath.IsAbs(e.Settings) {
-			files = append(files, e.Settings)
+			abs = append(abs, e.Settings)
+		} else {
+			rel = append(rel, e.Settings)
 		}
 	}
-	return files
+	return abs, rel
+}
+
+// olderEntryFix is the commands, run in the project an older relative entry
+// names, that record it under its absolute path.
+func olderEntryFix(env *setupEnv, rel string) string {
+	p := env.shellPath(rel)
+	return "in that project: agentop configure claude-code disable --settings " + p +
+		" && agentop configure claude-code enable --settings " + p
 }
 
 // cortexProxyIn reports whether the settings file's HTTPS_PROXY is the proxy

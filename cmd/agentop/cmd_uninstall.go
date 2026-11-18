@@ -68,7 +68,14 @@ type removal struct {
 // without --purge: it is not left behind, and does not change the exit status.
 // why is the whole clause after "Kept: <what>: ", so a row can give its own
 // reason rather than one phrasing having to fit every keeper.
-type kept struct{ what, why string }
+//
+// left marks one uninstall cannot finish: the row is ! with a fix: line for each
+// of fix, and left is its line under "Left behind", so the run exits 1.
+type kept struct {
+	what, why string
+	left      string
+	fix       []string
+}
 
 // remedy finishes by hand what a removal could not: with agentop, which puts
 // back what Cortex recorded, while agentop stays installed; and without it, as
@@ -217,13 +224,20 @@ func runUninstall(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(items) == 0 {
 		ui.Plain("Nothing to uninstall.")
+		code := 0
 		for _, k := range kepts {
 			ui.Plain("Kept " + k.what + ": " + k.why)
+			for _, f := range k.fix {
+				ui.Remedy("fix: ", f)
+			}
+			if k.left != "" {
+				code = 1
+			}
 		}
 		if keeps {
 			ui.Plain(dir + " is still here (config, CA, logs, usage and session history): rm -rf " + dir)
 		}
-		return 0
+		return code
 	}
 	ui.Consent(items)
 	ui.Blank()
@@ -304,11 +318,18 @@ func applyRemovals(env *setupEnv, ui *checklist.UI, removals []removal, sigs <-c
 				for _, s := range removals[i:] {
 					if s.keep == nil {
 						left = append(left, "not removed (interrupted): "+s.label+" "+s.item.What)
+					} else if s.keep.left != "" {
+						left = append(left, s.keep.left)
 					}
 				}
 				return left, failed, true
 			default:
 			}
+		}
+		if r.keep != nil && r.keep.left != "" {
+			ui.Advise(r.label, "kept "+r.keep.what+": "+r.keep.why, r.keep.fix...)
+			left = append(left, r.keep.left)
+			continue
 		}
 		if r.keep != nil {
 			ui.Already(r.label, "kept "+r.keep.what+": "+r.keep.why)
@@ -394,10 +415,12 @@ func cortexDirNeededBy(rs []removal) []string {
 // ~/.claude/settings.json when its own HTTPS_PROXY is Cortex's. The record is read
 // now. A file the record does not name is unrouted only when its proxy is
 // Cortex's: disable without the record deletes every managed key, a corporate
-// proxy and CA included.
+// proxy and CA included. An older relative entry names a file uninstall cannot
+// find, so its row names it, keeps it and the earlier values it holds, and is
+// left behind.
 func planUnrouteClaudeCode(env *setupEnv) []removal {
 	state, def := filepath.Join(env.home, stateRel), filepath.Join(env.home, settingsRel)
-	named := recordedSettings(env)
+	named, older := recordedFiles(env)
 	var rs []removal
 	for _, s := range named {
 		rs = append(rs, unrouteClaudeCode(env, s, state))
@@ -411,7 +434,28 @@ func planUnrouteClaudeCode(env *setupEnv) []removal {
 		}
 		rs = append(rs, unrouteClaudeCode(env, def, record))
 	}
+	for _, rel := range older {
+		rs = append(rs, keepOlderEntry(env, rel, state))
+	}
 	return rs
+}
+
+// keepOlderEntry is the row for an older relative entry. agentop is gone by the
+// time the user reads it, so its fix is by hand.
+func keepOlderEntry(env *setupEnv, rel, state string) removal {
+	entry := "the record's entry for " + rel
+	fix := strings.Split(unrouteByHand(env, rel, state, managedKeys, nil), "\n")
+	fix = append(fix, "then delete "+entry+" from "+env.tilde(state))
+	return removal{
+		label: "unrouted",
+		keep: &kept{
+			what: entry,
+			why:  "an older agentop recorded it without its directory, so uninstall cannot find that project's file",
+			left: rel + " in the project an older agentop enabled it in",
+			fix:  fix,
+		},
+		needsCortexDir: entry + " holds that file's earlier values",
+	}
 }
 
 // unrouteClaudeCode is disable for one settings file, planned now. state is the
