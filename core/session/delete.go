@@ -27,7 +27,6 @@ type Deleter interface {
 func (s *Store) Delete(sessionID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.noRecord, sessionID)
 	_, held := s.sessions[sessionID]
 	if held {
 		s.removeLocked(sessionID)

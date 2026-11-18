@@ -71,29 +71,81 @@ func TestNoRecord_HopMarkSurvivesEviction(t *testing.T) {
 	}
 }
 
-// Review round 3, item 4: a flag the writer has not seen yet, held only in memory (its event and
-// its opNoRecord lost to a full queue), still follows a rename to the new id.
-func TestNoRecord_AMemoryOnlyFlagFollowsARename(t *testing.T) {
+// The writer's mark is the opt-out's only state, so a flagged event of a session not marked yet is
+// never dropped: with the queue full, reserve included, it waits for the writer instead.
+func TestNoRecord_AFlaggedEventIsNeverDroppedWhileUnmarked(t *testing.T) {
 	root := t.TempDir()
 	a := openTest(t, root, newClock(), WithQueueDepth(reserve+6))
 	a.gate = make(chan struct{})
 	r := newRecorder(a)
-	evs := synthSession(332, 3, 512)     // 9 events
-	r.record("s1", evs[:6]...)           // fills the queue to the reserve
-	r.record("s1", flagged(evs[6:7])...) // dropped, and its opNoRecord does not fit
-	a.Rekeyed("s1", "s2")                // into the reserve
-	close(a.gate)
-	settle(a)
-	r.seq["s2"] = r.seq["s1"]
-	r.record("s2", evs[7:]...)
-	a.Close()
-	if got := onDisk(t, root, "s2"); len(got) != 6 {
-		t.Fatalf("s2 holds %d events, want the 6 recorded before the flag", len(got))
+	evs := synthSession(332, 3, 512) // 9 events
+	r.record("s1", evs[:6]...)       // to the reserve
+	for len(a.ops) < cap(a.ops) {    // and the reserve too
+		a.Rekeyed("filler", "filler2")
 	}
-	a2 := openTest(t, root, newClock())
-	defer a2.Close()
-	if err := a2.WriteSession("s2", importedEvents(4), true); !errors.Is(err, ErrLive) {
-		t.Fatalf("WriteSession(s2) after the rename = %v, want ErrLive: the mark was not persisted", err)
+	dropped := a.Stats().DroppedEvents
+	done := make(chan struct{})
+	go func() {
+		r.record("s1", flagged(evs[6:7])...)
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("a flagged event of an unmarked session returned with the queue full: it was dropped")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(a.gate)
+	<-done
+	if got := a.Stats().DroppedEvents; got != dropped {
+		t.Fatalf("dropped events %d → %d, want the flagged one delivered", dropped, got)
+	}
+	settle(a)
+	r.record("s1", evs[7:]...)
+	a.Close()
+	if got := onDisk(t, root, "s1"); len(got) != 6 {
+		t.Fatalf("s1 holds %d events, want the 6 recorded before the flag", len(got))
+	}
+}
+
+// A rename moves a marked session's mark inside the rename op, so a DELETE queued after it
+// removes the new id for good: no marker comes back behind the delete.
+func TestNoRecord_RenameThenDeleteLeavesNothing(t *testing.T) {
+	root := t.TempDir()
+	a := openTest(t, root, newClock())
+	r := newRecorder(a)
+	r.record("s1", flagged(synthSession(333, 1, 512))...)
+	settle(a)
+	a.Rekeyed("s1", "s2")
+	a.Deleted("s2")
+	if _, err := a.AwaitDelete("s2", 5*time.Second); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	settle(a)
+	r.seq["s2"] = 0
+	r.record("s2", synthSession(334, 1, 512)...)
+	a.Close()
+	if got := onDisk(t, root, "s2"); len(got) != 3 {
+		t.Fatalf("s2 holds %d events after DELETE, want the 3 recorded since: the mark came back", len(got))
+	}
+}
+
+// A clear removes every mark with the history: the user's explicit erase. Later unflagged events
+// record again.
+func TestNoRecord_ClearRemovesTheMark(t *testing.T) {
+	root := t.TempDir()
+	a := openTest(t, root, newClock())
+	r := newRecorder(a)
+	r.record("s1", flagged(synthSession(335, 1, 512))...)
+	settle(a)
+	a.Cleared()
+	if _, err := a.AwaitClear(5 * time.Second); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	r.seq["s1"] = 0
+	r.record("s1", synthSession(336, 1, 512)...)
+	a.Close()
+	if got := onDisk(t, root, "s1"); len(got) != 3 {
+		t.Fatalf("s1 holds %d events after CLEAR, want the 3 recorded since", len(got))
 	}
 }
 

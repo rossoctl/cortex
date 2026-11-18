@@ -22,7 +22,6 @@ func (a *Archive) Deleted(sessionID string) {
 	a.mu.Lock()
 	p.seqs = map[string]uint64{sessionID: a.lastSeq[sessionID]}
 	delete(a.started, sessionID)
-	delete(a.noRecord, sessionID)
 	if a.deletes == nil {
 		a.deletes = map[string]*pendingClear{}
 	}

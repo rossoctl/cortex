@@ -1,8 +1,11 @@
 package forwardproxy
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/session/archive"
 )
 
 // row is what a recorder saw of one event.
@@ -103,6 +107,53 @@ func TestNoRecord_FallbackFiledRequestIsRecorded(t *testing.T) {
 		if r.noRecord {
 			t.Fatalf("row %+v under a fallback bucket carries NoRecord", r)
 		}
+	}
+}
+
+// The normal laptop path for an inference host is the TLS bridge: the CONNECT names nothing, and
+// the bridged tunnel's open row is filed with the first decrypted request. When that request
+// withholds its session, the open row shares its fate, so the archive holds no segment at all
+// for the session (#1923), not even the CONNECT row with its project.
+func TestNoRecord_BridgedRequestLeavesNoSegment(t *testing.T) {
+	root := t.TempDir()
+	arch, err := archive.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	store.AddRecorder(arch)
+	proxyAddr, target, ca, done := bridgingProxyWith(t, store, func(s *Server) {
+		s.SessionIDHeaders = []string{session.ClaudeCodeSessionHeader}
+	})
+
+	raw, br, _ := sendConnect(t, proxyAddr, target)
+	tc := bridgedTLS(t, raw, br, target, ca)
+	req, _ := http.NewRequest(http.MethodGet, "https://"+target+"/v1/messages", nil)
+	req.Header.Set(session.ClaudeCodeSessionHeader, "11111111-2222-3333-4444-555555555555")
+	req.Header.Set(model.RecordHeader, "off")
+	if resp := bridgedRoundTrip(t, tc, req); resp.StatusCode != http.StatusOK {
+		t.Fatalf("bridged request status %d, want 200", resp.StatusCode)
+	}
+	_ = tc.Close()
+	waitDone(t, done)
+
+	open, next := openThen(t, store, "11111111-2222-3333-4444-555555555555")
+	if !open.NoRecord || !next.NoRecord {
+		t.Fatalf("open row NoRecord=%v, request row NoRecord=%v, want both", open.NoRecord, next.NoRecord)
+	}
+	if err := arch.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var segs []string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && strings.HasSuffix(p, ".jsonl.zst") {
+			segs = append(segs, p)
+		}
+		return nil
+	})
+	if len(segs) != 0 {
+		t.Fatalf("segments on disk %v, want none", segs)
 	}
 }
 

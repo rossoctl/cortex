@@ -180,6 +180,11 @@ func DenyResponse(pctx *pipeline.Context, action pipeline.Action, dir pipeline.D
 // TunnelOpen builds a tunnel's open row. reason says why the bytes stayed
 // opaque. The caller knows it, so it is a parameter and not derived here from
 // the host shape.
+//
+// No NoRecord on either tunnel row (#1923): a bridged tunnel's open row can be
+// filed later under the session its first decrypted request names, which need
+// not be the one the CONNECT named. The rows carry no content, and a withheld
+// session's archive withholds them anyway.
 func TunnelOpen(pctx *pipeline.Context, reason pipeline.TunnelReason) pipeline.SessionEvent {
 	return pipeline.SessionEvent{
 		At:          time.Now(),
@@ -211,7 +216,6 @@ func TunnelOpen(pctx *pipeline.Context, reason pipeline.TunnelReason) pipeline.S
 		SubagentKind:   pctx.SubagentKind(),
 		Proc:           pctx.AttributedProc(),
 		Project:        pctx.Project(),
-		NoRecord:       pctx.WithholdsSession(),
 	}
 }
 
@@ -247,7 +251,6 @@ func TunnelClose(pctx *pipeline.Context, reason pipeline.TunnelReason, status in
 		SubagentKind:   pctx.SubagentKind(),
 		Proc:           pctx.AttributedProc(),
 		Project:        pctx.Project(),
-		NoRecord:       pctx.WithholdsSession(),
 	}
 }
 

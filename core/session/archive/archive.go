@@ -131,12 +131,7 @@ type Archive struct {
 	// recent clear, for AwaitClear; see clear.go.
 	mu      sync.Mutex
 	lastSeq map[string]uint64
-	// noRecord holds, for each id a flagged event named (SessionEvent.NoRecord), the lowest Seq
-	// it carried. RecordCapture sets it before the event can be dropped, so the session is
-	// withheld even when that event never reaches the writer, and from that Seq on only: events
-	// queued before it are still written. See withhold. Under mu.
-	noRecord map[string]uint64
-	pending  *pendingClear
+	pending *pendingClear
 	// deletes is the most recent delete per session id, for AwaitDelete; see delete.go. nil
 	// until the first.
 	deletes map[string]*pendingClear
@@ -241,7 +236,6 @@ func Open(root string, opts ...Option) (*Archive, error) {
 		maxOpen:       defaultMaxOpen,
 		tickEvery:     defaultTickEvery,
 		lastSeq:       map[string]uint64{},
-		noRecord:      map[string]uint64{},
 		started:       map[string]entryStart{},
 		sessions:      map[string]*sessionState{},
 		index:         map[string]*indexEntry{},
@@ -343,17 +337,18 @@ func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *mode
 	if a.closed.Load() {
 		return
 	}
+	// A flagged event of a session the writer has not marked yet is never dropped (#1923): the
+	// writer's mark is the opt-out's only state, so losing the event would lose the opt-out.
+	// Read before a.mu, which the reader index never nests inside.
+	mustDeliver := e.NoRecord && session.IsConversation(sessionID) && !a.markedInIndex(sessionID)
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if e.Seq > a.lastSeq[sessionID] {
 		a.lastSeq[sessionID] = e.Seq
 	}
-	if e.NoRecord {
-		a.markLocked(sessionID, e.Seq)
-	}
 	// Every send happens under the store's write lock, so this check and the send below cannot
 	// race another producer; the writer only ever makes room.
-	if len(a.ops) >= cap(a.ops)-reserve {
+	if !mustDeliver && len(a.ops) >= cap(a.ops)-reserve {
+		a.mu.Unlock()
 		a.dropped.Add(1)
 		return
 	}
@@ -378,9 +373,25 @@ func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *mode
 			st.queued = true
 			a.started[sessionID] = st
 		}
+		a.mu.Unlock()
 	default:
-		a.dropped.Add(1)
-		a.releaseCapture(o.cap)
+		if !mustDeliver {
+			a.mu.Unlock()
+			a.dropped.Add(1)
+			a.releaseCapture(o.cap)
+			return
+		}
+		if starting && !st.queued {
+			st.queued = true
+			a.started[sessionID] = st
+		}
+		a.mu.Unlock()
+		// The queue is full, reserve included. Wait for the writer, outside a.mu: the writer
+		// takes a.mu and never the store's lock, so it always makes room. The store's write
+		// lock is held, so no other producer sends in between and the order holds. Privacy over
+		// latency: this waits at most once per opted-out session, and only while the archive is
+		// saturated.
+		a.deliver(o)
 	}
 }
 
@@ -566,14 +577,16 @@ func (a *Archive) begin(id string, after uint64) {
 // write appends one event, with its request's capture c when it has one, to its session's open
 // segment, opening one if needed.
 func (a *Archive) write(id string, e *model.SessionEvent, c *model.RequestCapture) {
-	if a.paused.Load() {
-		a.dropped.Add(1)
-		return
-	}
 	now := a.now()
 	s := a.sessions[id]
+	// Before the pause check: the marker is one small session.json, and it is the opt-out's only
+	// state, so it is written while paused too (#1923).
 	if a.withheld(id, s, e) {
 		a.withhold(id, s, now)
+		return
+	}
+	if a.paused.Load() {
+		a.dropped.Add(1)
 		return
 	}
 	fresh := s == nil
@@ -691,35 +704,34 @@ func (a *Archive) writeFailed(s *sessionState, err error) {
 // id under the old directory, which adopt finishes at the next start.
 func (a *Archive) rename(oldID, newID string, after uint64) {
 	s := a.sessions[oldID]
-	// A withheld session stays withheld under its new id (#1923), on every path below, the early
-	// returns included: the store's entry moves to newID whatever happens to the files here.
-	a.mu.Lock()
-	_, flaggedOld := a.noRecord[oldID]
-	marked := flaggedOld || (s != nil && s.meta.Summary.NoRecord())
-	delete(a.noRecord, oldID)
-	if marked {
-		a.markLocked(newID, 0) // every event under the new id
-	}
-	a.mu.Unlock()
 	if s == nil {
 		return
 	}
+	// A withheld session stays withheld under its new id (#1923): the store's entry moves to newID
+	// whatever happens to the files here. On the paths that move the fold, renameEntry and the
+	// move below keep its mark; where the move is refused, the new id is marked in place. All on
+	// the writer, in FIFO order with any later delete or clear of newID.
+	marked := s.meta.Summary.NoRecord()
 	newDir := filepath.Join(a.data, dirName(newID))
 	if _, taken := a.sessions[newID]; taken {
 		slog.Warn("session archive: rename target already has history; keeping it under the old id",
 			"from", oldID, "to", newID)
+		if marked {
+			a.withhold(newID, a.sessions[newID], a.now())
+		}
 		return
 	}
 	if _, err := os.Stat(newDir); err == nil {
 		slog.Warn("session archive: rename target directory exists; keeping history under the old id",
 			"from", oldID, "to", newID)
-		return
-	}
-	if marked {
-		// A flag only in memory (its event not written yet) moves with the session's files too.
-		s.meta.Summary.MarkNoRecord()
+		return // a directory the archive does not own: nothing is written into it
 	}
 	if after > 0 && a.renameEntry(s, oldID, newID, newDir, after) {
+		// The history stayed under oldID, whole or in part. If no part moved, newID has no state
+		// yet, and gets the mark as a marker.
+		if marked && a.sessions[newID] == nil {
+			a.withhold(newID, nil, a.now())
+		}
 		return
 	}
 	a.closeWriterBeforeRename(s) // a no-op except on Windows: see rename_windows.go
@@ -962,7 +974,6 @@ func (a *Archive) prune(now time.Time) {
 		if a.lastSeq[id] <= lastBefore[s] {
 			delete(a.lastSeq, id)
 		}
-		delete(a.noRecord, id) // an expired marker, or a session whose history expired
 		a.mu.Unlock()
 	}
 	for _, s := range a.sessions {
@@ -1020,6 +1031,11 @@ func (a *Archive) shutdown() error {
 	for _, s := range a.sessions {
 		if s.metaDirty {
 			a.writeMeta(s)
+			// A withheld session's marker is its opt-out: report one that could not be written,
+			// rather than restart without it (#1923). No session id: it comes from a client header.
+			if s.metaDirty && s.meta.Summary.NoRecord() {
+				errs = append(errs, errors.New("a withheld session's marker could not be written"))
+			}
 		}
 	}
 	return errors.Join(errs...)

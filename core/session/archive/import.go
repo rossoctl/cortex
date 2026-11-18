@@ -65,9 +65,8 @@ func (a *Archive) writeSession(id string, events []model.SessionEvent, replace b
 	// after the import (SeqSeeder), never from 1.
 	a.mu.Lock()
 	old := a.lastSeq[id]
-	_, flagged := a.noRecord[id]
 	switch {
-	case flagged || (s != nil && s.meta.Summary.NoRecord()):
+	case s != nil && s.meta.Summary.NoRecord():
 		// The session asked not to be recorded (#1923). Its marker is the user's own choice,
 		// so no import adds to it or replaces it, also one whose events were imported first.
 		a.mu.Unlock()
