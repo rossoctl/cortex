@@ -29,10 +29,11 @@ const CAEnvVar = "NODE_EXTRA_CA_CERTS"
 
 // State is the record agentop writes.
 //
-// Prior holds what agentop DISPLACED, captured before it overwrote the settings, and
-// exists so `disable` can restore rather than delete. It is emphatically not what
-// the client currently uses — every enable makes the two differ — so a reader asking
-// "what CA does this client load?" must go through Settings. See CurrentCA.
+// Prior holds what agentop DISPLACED, captured before it overwrote the settings
+// file, and exists so `disable` can restore rather than delete. It is emphatically
+// not what the client currently uses — every enable makes the two differ — so a
+// reader asking "what CA does this client load?" must go through Settings. See
+// CurrentCA.
 //
 // Written holds what agentop ITSELF SET for each managed key, so `disable` can tell
 // its own value from one changed since. Without it, disable restored Prior over
@@ -48,10 +49,15 @@ const CAEnvVar = "NODE_EXTRA_CA_CERTS"
 // Written is omitempty and may be absent or incomplete: a record from before it
 // existed has none, and a key added to the managed set later is missing from an
 // older record. A reader must treat "not recorded" as "unknown", never as "".
+//
+// Both are per settings file. OtherFiles holds one entry, in the same shape, for
+// each further settings file agentop routed, so each file keeps its own Prior
+// and Written. CurrentCAs reads every file's.
 type State struct {
-	Settings string             `json:"settings"`
-	Prior    map[string]*string `json:"prior"`
-	Written  map[string]string  `json:"written,omitempty"`
+	Settings   string             `json:"settings"`
+	Prior      map[string]*string `json:"prior"`
+	Written    map[string]string  `json:"written,omitempty"`
+	OtherFiles []State            `json:"other_files,omitempty"`
 }
 
 // Load reads the record at path. A missing file is (nil, nil): absent is a normal
@@ -72,7 +78,7 @@ func Load(path string) (*State, error) {
 }
 
 // CurrentCA returns the CA file the recorded client is configured with RIGHT NOW, by
-// reading the live value out of the settings file the record names. Returns "" when
+// reading the live value out of the entry's settings file. Returns "" when
 // that cannot be established for any reason.
 //
 // Deliberately never consults State.Prior. Doing so answers a different question —
@@ -103,4 +109,19 @@ func (s *State) CurrentCA() string {
 		return v
 	}
 	return ""
+}
+
+// CurrentCAs is CurrentCA for each settings file the record names, first file
+// first, leaving out each one CurrentCA answers "" for.
+func (s *State) CurrentCAs() []string {
+	if s == nil {
+		return nil
+	}
+	var cas []string
+	for _, e := range append([]State{*s}, s.OtherFiles...) {
+		if ca := e.CurrentCA(); ca != "" {
+			cas = append(cas, ca)
+		}
+	}
+	return cas
 }

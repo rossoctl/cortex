@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -380,6 +381,61 @@ func TestDoctorFailsTheRecordedSettingsFileWhenItNoLongerRoutes(t *testing.T) {
 			wantLines(t, code, 1, out, "\n"+markLine("✗", "routed")+c.reason+"\n      fix: "+c.fix+"\n")
 			everyFailHasAFix(t, out)
 		})
+	}
+}
+
+// With the default file routed as well, doctor still checks the project file,
+// and update keeps --claude-code for the default one.
+func TestDoctorChecksTheProjectFileBesideTheDefaultOne(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	proj := routeProject(t, sc)
+	var errb bytes.Buffer
+	if code := claudeCodeEnable2(filepath.Join(sc.home, settingsRel), filepath.Join(sc.home, ".cortex", "config.yaml"),
+		filepath.Join(sc.home, stateRel), true, io.Discard, &errb); code != 0 {
+		t.Fatalf("fixture: enable on the default file exit %d: %s", code, errb.String())
+	}
+	writeHomeFile(t, proj, "{}\n")
+	code, out := sc.doctor(t)
+	wantLines(t, code, 1, out, "\n"+markLine("✗", "routed")+"Claude Code is not routed through Cortex in ~/proj/.claude/settings.json\n")
+	if strings.Contains(out, "is not routed;") {
+		t.Errorf("doctor reads the default file as unrouted:\n%s", out)
+	}
+	env, err := newSetupEnv(setupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags := updateFlags(env, "", false); !slices.Contains(flags, "--claude-code") {
+		t.Errorf("update flags %q, want --claude-code", flags)
+	}
+}
+
+// An older relative entry fails routed with the runs that record it, or, for a
+// project that no longer routes, deleting it, and leaves the default file to its
+// own proxy: neither doctor nor update routes it.
+func TestDoctorNamesAnOlderRelativeEntry(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	writeHomeFile(t, filepath.Join(sc.home, "proj", settingsRel), "{}\n")
+	t.Chdir(filepath.Join(sc.home, "proj"))
+	if code := claudeCodeEnable2(settingsRel, filepath.Join(sc.home, ".cortex", "config.yaml"), filepath.Join(sc.home, stateRel), true, io.Discard, io.Discard); code != 0 {
+		t.Fatalf("fixture: relative enable exit %d", code)
+	}
+	t.Chdir(sc.home)
+	code, out := sc.doctor(t)
+	wantLines(t, code, 1, out,
+		"\n"+markLine("✗", "routed")+"the record's entry for .claude/settings.json is from an older agentop and has no directory\n",
+		"fix: in that project: agentop configure claude-code disable --settings .claude/settings.json && agentop configure claude-code enable --settings .claude/settings.json\n"+
+			"      fix: or, if that project no longer routes through Cortex, delete the entry from ~/.cortex/claude-code-state.json\n")
+	if strings.Contains(out, "setup would") || strings.Contains(out, "is not routed;") {
+		t.Errorf("doctor offers to route the default file:\n%s", out)
+	}
+	env, err := newSetupEnv(setupOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flags := updateFlags(env, "", false); slices.Contains(flags, "--claude-code") {
+		t.Errorf("update flags %q route the default file", flags)
 	}
 }
 

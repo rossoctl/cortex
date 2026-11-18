@@ -284,7 +284,7 @@ func updateFlags(env *setupEnv, ref string, yes bool) []string {
 	if !onPath(env.pathEnv, env.binDir) && !hasPathMarker(pathProfile(env.shell, env.home)) {
 		flags = append(flags, "--no-modify-path")
 	}
-	claudeCode, noService, _ := installShape(env)
+	claudeCode, noService, _, _ := installShape(env)
 	if claudeCode {
 		flags = append(flags, "--claude-code")
 	}

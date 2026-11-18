@@ -182,10 +182,20 @@ files.
 
 ### The record
 
-The first `enable` records what each of these keys held before, in
-`~/.cortex/claude-code-state.json`. `disable` removes only the keys `enable` added, and
-puts back any value it recorded. It does not change a key whose value changed after
-`enable`, and it names each key it did not change. `agentop uninstall` runs the same `disable`.
+The first `enable` on each settings file records what each of these
+keys held before, in `~/.cortex/claude-code-state.json`. `disable` removes only the
+keys `enable` added, and puts back any value it recorded. It does not change a key
+whose value changed after `enable`, and it names each key it did not change.
+`agentop uninstall` runs the same `disable` on each file.
+
+An older `agentop` recorded a relative `--settings` as given, with no directory.
+Give that relative path again, from the project; an absolute `--settings` does
+not find the entry. A run that changes the file records the entry under its
+absolute path, so `disable` and then `enable` moves it, and a run that changes
+nothing leaves it as it was. `agentop doctor` names each such entry with that
+fix, or deleting the entry for a project that no longer routes through Cortex.
+`agentop uninstall` names it, leaves it and the project's file as they are, keeps
+`~/.cortex` under `--purge` for the earlier values the entry holds, and exits 1.
 
 `disable` restores every value, but not the file's text. For example, it sorts the keys, uses a
 2-space indent, puts each array item on its own line, and writes `&`, `<` and `>` as

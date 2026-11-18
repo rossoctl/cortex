@@ -66,16 +66,16 @@ func defaultCortexDir() (string, error) {
 // what makes two of them indistinguishable from each other.
 const bridgeCACommonName = "authbridge-tls-bridge-ca"
 
-// clientCAFromState returns the CA file the agentop-managed client is configured with
-// right now, or "" when that cannot be established. The record's name and shape, and
-// the reason `prior` is the wrong field to read, live in core/clientstate — shared
-// with agentop, which writes the file.
-func clientCAFromState(statePath string) string {
+// clientCAsFromState returns the CA file each agentop-managed settings file is
+// configured with right now, leaving out those that cannot be established. The
+// record's name and shape, and the reason `prior` is the wrong field to read, live
+// in core/clientstate — shared with agentop, which writes the file.
+func clientCAsFromState(statePath string) []string {
 	st, err := clientstate.Load(statePath)
-	if err != nil || st == nil {
-		return ""
+	if err != nil {
+		return nil
 	}
-	return st.CurrentCA()
+	return st.CurrentCAs()
 }
 
 // staleClientCAWarning reports a client pointed at a DIFFERENT bridge CA than the
@@ -92,7 +92,7 @@ func clientCAFromState(statePath string) string {
 //
 // Two properties make this safe to print on every boot, and both are load-bearing:
 //
-//   - It reads the client's CURRENT CA (clientCAFromState), not agentop's record of
+//   - It reads the client's CURRENT CA (clientCAsFromState), not agentop's record of
 //     what it displaced. The displaced value is a different CA by construction on
 //     every enable, so comparing it warns about clients that are already correct.
 //   - It compares the CERTIFICATES, not their paths. The configured file is often
