@@ -222,7 +222,8 @@ func (p *Router) resendForModel(pctx *pipeline.Context, server, requested, sub s
 // attempt was sent with: a 403 with refusedType, a 400 whose error, a string or an
 // object's message, contains invalidModel, or an answer whose error message carries
 // one of modelNotFound's phrases for model at a status that phrase was recorded at.
-// A phrase for another name, or for none, is not a refusal of this one.
+// Anthropic's 404 not_found_error has no quotes, so its message must be exactly
+// "model: " + model. A phrase for another name, or for none, is not a refusal of this one.
 func refusesModel(status int, body []byte, model string) bool {
 	switch status {
 	case http.StatusForbidden:
@@ -242,6 +243,9 @@ func refusesModel(status int, body []byte, model string) bool {
 		return false
 	}
 	msg := errorMessage(body)
+	if status == http.StatusNotFound && gjson.GetBytes(body, "error.type").String() == "not_found_error" && msg == "model: "+model {
+		return true
+	}
 	for _, nf := range modelNotFound {
 		if !slices.Contains(nf.statuses, status) {
 			continue
