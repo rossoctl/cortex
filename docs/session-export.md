@@ -13,7 +13,9 @@ rates, tool failure rates. A live TUI cannot answer these.
 [`agentop cost`](pricing.md) answers a few of them inside the tool. This endpoint is the
 layer behind anything else.
 
-The commands and outputs on this page come from a served archive.
+Every command on this page was run against a served archive. The record counts in the
+walkthrough are from a small fixture archive, so treat the figures as illustrative: they
+show the shape of each answer, not a real traffic profile.
 
 **Terms used on this page.** A **record** is one line of the export. An **event** is one
 request or response that Cortex captured. One event becomes one record. The **store** is
@@ -67,10 +69,13 @@ exceptions: see [Two fields are not short](#two-fields-are-not-short).
 | Transport | `direction`, `phase`, `tunnel`, `tunnelReason`, `schema` |
 
 `client` is the coding agent Cortex recognised from the User-Agent, such as
-`claude-code/2.1.270`. Cortex never copies the header's text: the name comes from a closed
-list, and the version is kept only when it has the expected shape. So `client` is not an
-authenticated client id, and `agentRole` comes from the inference metadata. Neither one
-names an authenticated principal.
+`claude-code/2.1.270`. For proxied traffic Cortex does not copy the header's text: the
+name comes from a closed list, and the version is kept only when it has the expected
+shape. An event pushed to `POST /v1/ingest` is the exception — it keeps the name its
+producer sent, and the export carries that name as sent.
+
+`client` is not an authenticated client id, and `agentRole` comes from the inference
+metadata. Neither one names an authenticated principal.
 
 ### Two fields are not short
 
@@ -276,9 +281,12 @@ Each record is one event, reduced to numbers and short labels:
 }
 ```
 
-This is a **response**-phase record. Only a response carries token counts and a duration,
-because the model reports usage when it answers. Its request arrived as a separate record,
-with the same `requestId` and the previous `seq`.
+This is a **response**-phase record. The model reports usage when it answers, so the token
+counts and the duration arrive on the response. A request-phase record carries neither.
+
+Its request is a separate, earlier record with the same `requestId`. Pair the two on
+`requestId`, not on `seq`: `seq` counts every event in the session, so other events can
+take the numbers in between.
 
 Look at what the record does not have. The source event held this message content:
 `"SECRET-PROMPT-DO-NOT-EXPORT"`. The record has `"messageCount": 1` in its place.
