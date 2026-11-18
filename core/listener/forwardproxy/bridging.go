@@ -258,7 +258,7 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 		// that, since nothing they do to the client can fix it.
 		if reason == pipeline.TunnelClientRejectedCA {
 			// Short enough to read unwrapped. The lsof recipe for mapping the client
-			// port to a process lives in docs/laptop-service.md rather than being
+			// port to a process lives in docs/troubleshooting.md rather than being
 			// repeated on every occurrence of this line.
 			//
 			// The fingerprint and the file are what make a MOVED CA diagnosable:
