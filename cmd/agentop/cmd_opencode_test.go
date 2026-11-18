@@ -1095,10 +1095,9 @@ func TestConfigureOpenCode_ChangingTheEnvironmentRestartsTheService(t *testing.T
 	}
 }
 
-// The docs that say what a failed restart does name the command agentop prints for it.
-// The command is read from finishOpenCodeChange's own output, so the docs are held to
-// the code rather than to a literal here. cmd/agentop/README.md named `agentop
-// configure opencode status` instead, which after disable advises enabling again.
+// docs/agents/opencode.md, where it says what a failed restart does, names the command
+// agentop prints for it. The command is read from finishOpenCodeChange's own output, so
+// the doc is held to the code rather than to a literal here.
 func TestOpenCodeDocs_AFailedRestartNamesTheCommandAgentopPrints(t *testing.T) {
 	stubOpenCodeCLI(t, &openCodeCLI{running: true, restartErr: errors.New("opencode service restart: exit status 1")})
 	// enable and disable print the same command, and the docs describe them together.
@@ -1120,7 +1119,7 @@ func TestOpenCodeDocs_AFailedRestartNamesTheCommandAgentopPrints(t *testing.T) {
 	}
 
 	failed := regexp.MustCompile(`(?i)\brestart (that )?fails\b`)
-	for _, doc := range []string{"README.md", filepath.Join("..", "..", "docs", "agents", "opencode.md")} {
+	for _, doc := range []string{filepath.Join("..", "..", "docs", "agents", "opencode.md")} {
 		raw, err := os.ReadFile(doc)
 		if err != nil {
 			t.Fatalf("read %s: %v", doc, err)
