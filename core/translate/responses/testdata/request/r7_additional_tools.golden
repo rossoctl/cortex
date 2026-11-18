@@ -1,0 +1,2 @@
+dropped: web_search
+{"model":"gpt-5.5","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"tools":[{"type":"function","function":{"name":"shell","parameters":{"type":"object"}}},{"type":"function","function":{"name":"read_file","description":"Read.","parameters":{"type":"object"}}}]}

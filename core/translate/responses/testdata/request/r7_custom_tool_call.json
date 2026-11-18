@@ -1,0 +1,1 @@
+{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},{"type":"custom_tool_call","id":"ctc_1","status":"completed","call_id":"call_p","name":"apply_patch","input":"*** Begin Patch\n*** Add File: a.txt\n+hi <b>\n*** End Patch"},{"type":"custom_tool_call_output","call_id":"call_p","output":"Done."}]}

@@ -1,0 +1,2 @@
+dropped: 
+{"model":"gpt-5.5","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","tool_calls":[{"id":"call_p","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\\n*** Add File: a.txt\\n+hi <b>\\n*** End Patch\"}"}}]},{"role":"tool","content":[{"type":"text","text":"Done."}],"tool_call_id":"call_p"}]}

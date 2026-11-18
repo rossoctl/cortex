@@ -1,0 +1,2 @@
+dropped: 
+{"model":"gpt-5.5","messages":[{"role":"system","content":[{"type":"text","text":"You are Codex."},{"type":"text","text":"<permissions>workspace-write</permissions>"},{"type":"text","text":"second"}]},{"role":"user","content":[{"type":"text","text":"hi"}]}]}

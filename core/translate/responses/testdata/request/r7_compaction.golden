@@ -1,0 +1,1 @@
+error: 400 invalid_request_error: This Codex session was compacted by OpenAI. Cortex cannot send it to another server. Start a new Codex session.

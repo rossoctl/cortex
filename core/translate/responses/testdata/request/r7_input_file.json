@@ -1,0 +1,1 @@
+{"model":"gpt-5.5","input":[{"type":"message","role":"user","content":[{"type":"input_file","file_id":"file-123"}]}]}
