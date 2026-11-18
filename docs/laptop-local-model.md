@@ -193,6 +193,8 @@ Then give it a small real task through the agent before a large one.
 
 ## See also
 
+- [Route an agent to IBM's inference servers](laptop-ibm-inference-servers.md) —
+  ete-int, ete-ext and Bob
 - [Choosing an inference server](../cmd/agentop/README.md#choosing-an-inference-server-agentop-server) —
   every `agentop server` command
 - [Local model servers](../cmd/agentop/README.md#local-model-servers) —

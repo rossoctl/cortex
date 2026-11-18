@@ -57,7 +57,7 @@ echo ollama | agentop server add ollama http://localhost:11434 \
 agentop server use ollama --agent claude-code
 ```
 
-Guides: [local models](./docs/laptop-local-model.md) · [pricing](./docs/pricing.md)
+Guides: [local models](./docs/laptop-local-model.md) · [IBM servers](./docs/laptop-ibm-inference-servers.md) · [pricing](./docs/pricing.md)
 
 ## How it works
 
