@@ -190,6 +190,14 @@ func (d *decoder) closeOpen() {
 	d.open = kindNone
 }
 
+// redacted emits one whole redacted_thinking block (rule R2b).
+func (d *decoder) redacted(data string) {
+	d.closeOpen()
+	d.emit(pivot.Event{Kind: pivot.EventBlockStart, Index: d.next, Block: pivot.BlockRedactedThinking, Data: data})
+	d.emit(pivot.Event{Kind: pivot.EventBlockStop, Index: d.next})
+	d.next++
+}
+
 func (d *decoder) delta(k pivot.DeltaKind, v string) {
 	d.emit(pivot.Event{Kind: pivot.EventDelta, Index: d.openIndex, Delta: k, Value: v})
 }
@@ -214,6 +222,7 @@ type (
 		Type      string `json:"type"`
 		Thinking  string `json:"thinking"`
 		Signature string `json:"signature"`
+		Data      string `json:"data"` // redacted_thinking
 	}
 	replyToolCall struct {
 		Index    int    `json:"index"`
@@ -297,6 +306,10 @@ func (d *decoder) streamDelta(m replyMessage) {
 		d.delta(pivot.DeltaThinking, think)
 	}
 	for _, tb := range m.ThinkingBlocks {
+		if tb.Type == "redacted_thinking" {
+			d.redacted(tb.Data)
+			continue
+		}
 		if tb.Signature == "" {
 			continue
 		}
@@ -394,9 +407,10 @@ func (d *decoder) whole(body []byte) {
 	d.start(r.ID, r.Model)
 	if len(m.ThinkingBlocks) > 0 {
 		for _, tb := range m.ThinkingBlocks {
-			// shortcut: a redacted_thinking entry is not sent, because the
-			// pivot events have no field for its data; add one when a
-			// server sends it.
+			if tb.Type == "redacted_thinking" {
+				d.redacted(tb.Data)
+				continue
+			}
 			if tb.Type != "thinking" {
 				continue
 			}

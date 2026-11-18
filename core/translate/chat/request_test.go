@@ -141,19 +141,6 @@ func TestEncodeRequest_RefusesServerTool(t *testing.T) {
 	wantRefusal(t, err, `this inference server cannot run the server tool "web_search" (type web_search_20250305)`)
 }
 
-func TestEncodeRequest_DeletesAnthropicHeaders(t *testing.T) {
-	h := http.Header{}
-	h.Set("Anthropic-Version", "2023-06-01")
-	h.Set("Anthropic-Beta", "x")
-	h.Set("X-Keep", "1")
-	if _, _, err := (Protocol{}).EncodeRequest(pivot.Request{Model: "m"}, h); err != nil {
-		t.Fatal(err)
-	}
-	if len(h) != 1 || h.Get("X-Keep") != "1" {
-		t.Errorf("headers = %v, want only X-Keep", h)
-	}
-}
-
 func TestEncodeRequest_Effort(t *testing.T) {
 	for _, tc := range []struct {
 		effort, thinking, want string

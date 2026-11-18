@@ -41,6 +41,10 @@ type Request struct {
 	Effort      string    // "" when none
 	Thinking    *Thinking // nil when none
 	Extra       Extra
+	// Origin is set by a source decoder for its own reply encoder (rule
+	// R2a). Encoders of other protocols ignore it. It is not Extra, so it
+	// never shows in dropped.
+	Origin any
 }
 
 // Message is one turn of the conversation. Role is user, assistant or

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/core/translate/pivot"
 )
 
 var update = flag.Bool("update", false, "rewrite golden files")
@@ -172,7 +174,7 @@ func TestReplyGolden(t *testing.T) {
 		for _, agentStream := range c.agentForms() {
 			name := goldenName(c, agentStream)
 			t.Run(filepath.Base(name), func(t *testing.T) {
-				_, out := Reply(Anthropic, Chat, c.status, c.stream, agentStream, body)
+				_, out := Reply(Anthropic, Chat, pivot.Request{}, c.status, c.stream, agentStream, body)
 				checkGolden(t, name, out)
 			})
 		}

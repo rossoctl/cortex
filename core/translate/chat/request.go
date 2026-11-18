@@ -89,12 +89,9 @@ func refuse(msg string) error {
 var errDocument = refuse("this inference server cannot read documents (PDF)")
 
 // EncodeRequest converts a pivot request to a chat-completions body
-// (rules 11-19). It removes the Anthropic headers from h. dropped is the
-// sorted list of the fields that it did not send.
+// (rules 11-19). dropped is the sorted list of the fields that it did not
+// send.
 func (Protocol) EncodeRequest(req pivot.Request, h http.Header) ([]byte, []string, error) {
-	h.Del("Anthropic-Version")
-	h.Del("Anthropic-Beta")
-
 	e := encoder{dropped: map[string]bool{}}
 	e.extra(req.Extra)
 	out := request{
