@@ -1,0 +1,1 @@
+{"id":"msg_01Think","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"thinking","thinking":"","signature":"EqQBCkYIBRgCKkBx+/Sig=="},{"type":"text","text":"391 is 17 times 23."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":20,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":90}}

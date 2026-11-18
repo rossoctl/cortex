@@ -1,0 +1,1 @@
+{"id":"msg_01Stop","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"I can not help with that."}],"stop_reason":"refusal","stop_sequence":null,"usage":{"input_tokens":9,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":4}}

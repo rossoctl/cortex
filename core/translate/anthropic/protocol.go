@@ -1,6 +1,7 @@
 // Package anthropic is the anthropic-messages translation protocol: the
-// Anthropic Messages API. It decodes a request to the pivot form and
-// encodes pivot reply events as an Anthropic reply (rule H6).
+// Anthropic Messages API. It decodes a request to the pivot form,
+// encodes pivot reply events as an Anthropic reply, and decodes an
+// Anthropic reply to pivot events (rule H6).
 package anthropic
 
 import (
@@ -22,6 +23,7 @@ var (
 	_ pivot.Protocol            = Protocol{}
 	_ pivot.RequestDecoder      = Protocol{}
 	_ pivot.ReplyEncoding       = Protocol{}
+	_ pivot.ReplyDecoding       = Protocol{}
 	_ pivot.SourceHeaderRemover = Protocol{}
 )
 
