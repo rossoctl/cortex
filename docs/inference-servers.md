@@ -9,13 +9,13 @@ change the agent's own settings. Use it in these cases:
 
 This guide covers these servers:
 
-| Server | URL | Network | Protocol |
-|---|---|---|---|
-| `ete-int` | `https://ete-litellm.ai-models.vpc-int.res.ibm.com` | IBM network or VPN only | LiteLLM: Anthropic and chat completions |
-| `ete-ext` | `https://ete-litellm.ai-models.vpc.res.ibm.com` | IBM network or VPN only | LiteLLM: Anthropic and chat completions |
-| `cb` | `https://litellm.cb.ete.res.ibm.com` | IBM network or VPN only | LiteLLM: Anthropic and chat completions |
-| `bob` | `https://api.us-east.bob.ibm.com/inference` | Internet | Chat completions only |
-| `ollama` | `http://localhost:11434` | Your machine | Anthropic and chat completions |
+| Server | URL | Network |
+|---|---|---|
+| `ete-int` | `https://ete-litellm.ai-models.vpc-int.res.ibm.com` | IBM network or VPN only |
+| `ete-ext` | `https://ete-litellm.ai-models.vpc.res.ibm.com` | IBM network or VPN only |
+| `cb` | `https://litellm.cb.ete.res.ibm.com` | IBM network or VPN only |
+| `bob` | `https://api.us-east.bob.ibm.com/inference` | Internet |
+| `ollama` | `http://localhost:11434` | Your machine |
 
 The server names in the first column are only names. You can use other names.
 Any other LiteLLM gateway, or a local server such as LM Studio, llama.cpp's
