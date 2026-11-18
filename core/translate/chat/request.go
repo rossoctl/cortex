@@ -312,6 +312,8 @@ func effort(req pivot.Request) string {
 	switch req.Effort {
 	case "low", "medium", "high":
 		return req.Effort
+	case "none", "minimal":
+		return "low"
 	case "":
 	default:
 		return "high"

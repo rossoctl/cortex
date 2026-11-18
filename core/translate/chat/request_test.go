@@ -186,6 +186,19 @@ func TestEncodeRequest_Effort(t *testing.T) {
 	}
 }
 
+// R2c: a Chat server takes only low, medium and high, so none and
+// minimal go down to low and xhigh and max go up to high.
+func TestEffort(t *testing.T) {
+	for in, want := range map[string]string{
+		"none": "low", "minimal": "low", "low": "low", "medium": "medium",
+		"high": "high", "xhigh": "high", "max": "high", "": "",
+	} {
+		if got := effort(pivot.Request{Effort: in}); got != want {
+			t.Errorf("effort(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // Rule 9a: a new turn keeps the bytes before it, and a moved cache
 // marker changes only the marker's bytes.
 func TestEncodeRequest_PrefixStable(t *testing.T) {
