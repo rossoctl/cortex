@@ -34,9 +34,8 @@ func TestPlan(t *testing.T) {
 			apiPlan{kind: planPath, path: "/anthropic/v1/messages"}},
 		{"responses only", map[string]string{"responses": "/v1/responses"}, "/v1/messages",
 			apiPlan{kind: planRefuse, source: "anthropic-messages"}},
-		// Rule 7: a chat request cannot be decoded, so it is not translated.
-		{"no decoder", map[string]string{"anthropic-messages": "/v1/messages", "responses": "/v1/responses"}, "/v1/chat/completions",
-			apiPlan{kind: planAsIs}},
+		{"chat to an anthropic server", map[string]string{"anthropic-messages": "/v1/messages", "responses": "/v1/responses"}, "/v1/chat/completions",
+			apiPlan{kind: planTranslate, source: "chat-completions", target: "anthropic-messages", path: "/v1/messages"}},
 		{"count_tokens to a chat server", map[string]string{"chat-completions": "/v1/chat/completions"}, "/v1/messages/count_tokens",
 			apiPlan{kind: planCountTokens}},
 		{"count_tokens to an anthropic server", map[string]string{"anthropic-messages": "/v1/messages"}, "/v1/messages/count_tokens",

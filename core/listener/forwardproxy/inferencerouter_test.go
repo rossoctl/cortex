@@ -590,13 +590,13 @@ func TestRouterAPI_AnthropicPathEntry(t *testing.T) {
 	}
 }
 
-// Rule 7: a chat request cannot be decoded, so it is not translated and gets no 502.
-func TestRouterAPI_AChatRequestIsNotTranslated(t *testing.T) {
+// Rule C1 of #1911: a server that serves Chat gets a Chat request as it is.
+func TestRouterAPI_AChatServerGetsTheChatBodyUnchanged(t *testing.T) {
 	up := routedServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, replyFixture(t, "bob_shape1.json"))
 	})
-	proxy, _ := routedProxy(t, up, `, "api": {"anthropic-messages": "/v1/messages"}`)
+	proxy, _ := routedProxy(t, up, `, "api": {"chat-completions": "/v1/chat/completions"}`)
 	const chatBody = `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"}]}`
 	req, _ := http.NewRequest(http.MethodPost, "http://api.openai.example/v1/chat/completions", strings.NewReader(chatBody))
 	req.Header.Set("Content-Type", "application/json")
