@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/translate/pivot"
@@ -124,5 +125,186 @@ func TestDecodeRequest_BadJSON(t *testing.T) {
 		if re.Status != 400 || re.Type != "invalid_request_error" {
 			t.Errorf("%s: got %d %s, want 400 invalid_request_error", body, re.Status, re.Type)
 		}
+	}
+}
+
+// TestDecodeRequest_KeepsRawBytes checks that raw members are not
+// changed: the encoders send them byte for byte.
+func TestDecodeRequest_KeepsRawBytes(t *testing.T) {
+	const odd = `{ "b":1, "a":[1, 2] }`
+	body := `{"model":"m","odd":` + odd + `,` +
+		`"tools":[{"name":"T","input_schema":` + odd + `,"cache_control":` + odd + `}],` +
+		`"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"T","input":` + odd +
+		`,"cache_control":` + odd + `,"odd":` + odd + `}]}]}`
+	got, err := Protocol{}.DecodeRequest([]byte(body))
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	b := got.Messages[0].Content[0]
+	tool := got.Tools[0]
+	for name, v := range map[string]json.RawMessage{
+		"input":               b.Input,
+		"block cache_control": b.CacheControl,
+		"block extra":         b.Extra["anthropic.odd"],
+		"input_schema":        tool.InputSchema,
+		"tool cache_control":  tool.CacheControl,
+		"request extra":       got.Extra["anthropic.odd"],
+	} {
+		if string(v) != odd {
+			t.Errorf("%s = %s, want %s", name, v, odd)
+		}
+	}
+}
+
+func TestDecodeRequest_Errors(t *testing.T) {
+	for _, body := range []string{
+		`{"model":`,
+		`[]`,
+		`null`,
+		`{"model":5}`,
+		`{"messages":[{"role":"user","content":5}]}`,
+		`{"messages":[{"role":"user","content":[{"text":"no type"}]}]}`,
+		`{"messages":[{"role":"user","content":[{"type":"text","text":5}]}]}`,
+		`{"messages":{}}`,
+		`{"model":"m"} x`,
+		`{"tools":[5]}`,
+	} {
+		_, err := Protocol{}.DecodeRequest([]byte(body))
+		var re *pivot.RequestError
+		if !errors.As(err, &re) {
+			t.Errorf("%s: err = %v, want *pivot.RequestError", body, err)
+			continue
+		}
+		if re.Status != 400 || re.Type != "invalid_request_error" {
+			t.Errorf("%s: got %d %s, want 400 invalid_request_error", body, re.Status, re.Type)
+		}
+	}
+}
+
+// TestDecodeRequest_TypeNotFirst checks a block whose type comes after
+// its other members: a member of another kind still goes to Extra.
+func TestDecodeRequest_TypeNotFirst(t *testing.T) {
+	body := `{"messages":[{"role":"assistant","content":[{"text":"hi","type":"text"},` +
+		`{"input":{"a":1},"text":"t","id":"x","type":"tool_use"}]}]}`
+	got, err := Protocol{}.DecodeRequest([]byte(body))
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	want := []pivot.Block{
+		{Kind: pivot.BlockText, Text: "hi"},
+		{Kind: pivot.BlockToolUse, ID: "x", Input: raw(`{"a":1}`), Extra: pivot.Extra{"anthropic.text": raw(`"t"`)}},
+	}
+	if !reflect.DeepEqual(got.Messages[0].Content, want) {
+		t.Errorf("content = %+v, want %+v", got.Messages[0].Content, want)
+	}
+}
+
+// TestDecodeRequest_TypeExactName checks that only the exact member name
+// "type" gives a block its kind, and that a block with two different
+// types is refused.
+func TestDecodeRequest_TypeExactName(t *testing.T) {
+	for _, block := range []string{
+		`{"text":"x","TYPE":"text"}`,
+		`{"text":"x","type":"tool_use","Type":"text","type":"text"}`,
+		`{"type":"text","text":"x","type":"tool_use"}`,
+		`{"text":"x","type":"text","type":"tool_use"}`,
+	} {
+		body := `{"messages":[{"role":"user","content":[` + block + `]}]}`
+		if _, err := (Protocol{}).DecodeRequest([]byte(body)); err == nil {
+			t.Errorf("%s: DecodeRequest accepted it", block)
+		}
+	}
+	// Type is a different member: it goes to Extra, and text stays an
+	// unknown member of a tool_use block.
+	body := `{"messages":[{"role":"assistant","content":[{"text":"x","type":"tool_use","Type":"text","id":"i"}]}]}`
+	got, err := Protocol{}.DecodeRequest([]byte(body))
+	if err != nil {
+		t.Fatalf("DecodeRequest: %v", err)
+	}
+	b := got.Messages[0].Content[0]
+	if b.Kind != pivot.BlockToolUse || b.Text != "" || b.Extra["anthropic.text"] == nil || b.Extra["anthropic.Type"] == nil {
+		t.Errorf("block = %+v", b)
+	}
+}
+
+// TestDecodeRequest_TypeLastOnePass checks that a block with type as its
+// last member costs no more to read than one with type first. The official
+// SDKs write type last: the Go SDK by struct order, the Python SDK by
+// sorted names. Nested blocks of a tool_result are in the count too.
+func TestDecodeRequest_TypeLastOnePass(t *testing.T) {
+	first := []byte(`{"messages":[{"role":"assistant","content":[` +
+		`{"type":"thinking","thinking":"t","signature":"s"},{"type":"text","text":"hi"},` +
+		`{"type":"tool_use","id":"i","name":"n","input":{"a":1}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"i","content":[{"type":"text","text":"r"}]}]}]}`)
+	var v any
+	if err := json.Unmarshal(first, &v); err != nil {
+		t.Fatal(err)
+	}
+	last, _ := json.Marshal(v) // sorted names put type last in each block
+	decode := func(body []byte) func() {
+		return func() {
+			if _, err := (Protocol{}).DecodeRequest(body); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	a, b := testing.AllocsPerRun(50, decode(first)), testing.AllocsPerRun(50, decode(last))
+	if b > a*1.1 {
+		t.Errorf("type last: %v allocations, type first: %v", b, a)
+	}
+	gotFirst, _ := Protocol{}.DecodeRequest(first)
+	gotLast, _ := Protocol{}.DecodeRequest(last)
+	if !reflect.DeepEqual(gotFirst, gotLast) {
+		t.Errorf("type last = %+v, want %+v", gotLast, gotFirst)
+	}
+}
+
+// TestDecodeRequest_TypeScan checks blocks that could fool a scan for the
+// type member: a nested type, a value that reads "type", escaped quotes
+// and an escaped member name.
+func TestDecodeRequest_TypeScan(t *testing.T) {
+	for _, tc := range []struct{ block, want string }{
+		{`{"input":{"type":"text"},"id":"i","type":"tool_use"}`, `{"type":"tool_use","id":"i","input":{"type":"text"}}`},
+		{`{"input":[{"type":"text"}],"type":"tool_use"}`, `{"type":"tool_use","input":[{"type":"text"}]}`},
+		{`{"text":"type","type":"text"}`, `{"type":"text","text":"type"}`},
+		{`{"text":"a\"type\":\"image","type":"text"}`, `{"type":"text","text":"a\"type\":\"image"}`},
+		{`{"text":"a\\","type" : "text"}`, `{"type":"text","text":"a\\"}`},
+		{`{"text":"x","\u0074ype":"text"}`, `{"type":"text","text":"x"}`},
+	} {
+		dec := func(block string) []pivot.Block {
+			got, err := Protocol{}.DecodeRequest([]byte(`{"messages":[{"role":"user","content":[` + block + `]}]}`))
+			if err != nil {
+				t.Fatalf("%s: DecodeRequest: %v", block, err)
+			}
+			return got.Messages[0].Content
+		}
+		if got, want := dec(tc.block), dec(tc.want); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s = %+v, want %+v", tc.block, got, want)
+		}
+	}
+}
+
+// TestDecodeRequest_DeepContent checks that content nested too deeply is
+// refused with a 400, with type first and with type last. One nested
+// tool_result is still accepted.
+func TestDecodeRequest_DeepContent(t *testing.T) {
+	nest := func(n int, open, end string) []byte {
+		s := `{"model":"m","messages":[{"role":"user","content":[` +
+			strings.Repeat(open, n) + `{"type":"text","text":"x"}` + strings.Repeat(end, n) + `]}]}`
+		return []byte(s)
+	}
+	for name, body := range map[string][]byte{
+		"type first":   nest(300, `{"type":"tool_result","content":[`, `]}`),
+		"type last":    nest(300, `{"content":[`, `],"type":"tool_result"}`),
+		"escaped type": nest(300, `{"content":[`, `],"\u0074ype":"tool_result"}`),
+	} {
+		_, err := Protocol{}.DecodeRequest(body)
+		var re *pivot.RequestError
+		if !errors.As(err, &re) || re.Status != 400 {
+			t.Errorf("%s: err = %v, want a 400", name, err)
+		}
+	}
+	if _, err := (Protocol{}).DecodeRequest(nest(1, `{"content":[`, `],"type":"tool_result"}`)); err != nil {
+		t.Errorf("one tool_result: %v", err)
 	}
 }
