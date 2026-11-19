@@ -1,0 +1,1 @@
+{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"Hello."},{"role":"user","content":"Why?"},{"role":"assistant","content":[{"type":"text","text":"Because "},{"type":"refusal","refusal":"I cannot."},{"type":"text","text":"it is."}]},{"role":"user","content":"ok"}]}

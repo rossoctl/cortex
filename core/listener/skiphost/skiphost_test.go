@@ -66,24 +66,6 @@ func TestNew_RejectsPortInPattern(t *testing.T) {
 	}
 }
 
-func TestNew_AcceptsLeadingStar(t *testing.T) {
-	// "*.something" is NOT match-all under .-delimited glob — it
-	// requires the fixed suffix. Explicit guard against a future
-	// rewrite that over-rejects and breaks operator-typical FQDN
-	// patterns.
-	cases := []string{
-		"*.svc.cluster.local",
-		"*.metrics.local",
-		"otel-collector.*.svc.cluster.local",
-		"otel-collector*",
-	}
-	for _, p := range cases {
-		if _, err := New([]string{p}); err != nil {
-			t.Errorf("New([%q]) returned err = %v; non-match-all pattern must be accepted", p, err)
-		}
-	}
-}
-
 func TestMatch_StripsPort(t *testing.T) {
 	m, _ := New([]string{"otel-collector.rossoctl-system.svc.cluster.local"})
 	if !m.Match("otel-collector.rossoctl-system.svc.cluster.local:8335") {
@@ -170,6 +152,7 @@ func TestNew_AcceptsNonMatchAllWildcards(t *testing.T) {
 		"service-*",
 		"*-anything",
 		"*.something",
+		"*.metrics.local",
 		"otel-*",
 		"otel-collector*",
 		"otel-collector.*.svc.cluster.local",

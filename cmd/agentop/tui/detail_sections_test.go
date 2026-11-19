@@ -96,4 +96,13 @@ func TestDropShared(t *testing.T) {
 	if got, want := string(dropShared(resp, req)), `{"at":"2","host":"b","statusCode":200}`; got != want {
 		t.Errorf("dropShared = %s, want %s: equal fields go, a different host and at stay", got, want)
 	}
+	// A plugin record equal to the request's goes; one of the response's own stays.
+	req = []byte(`{"plugins":{"tool-prune":{"bytesRemoved":9},"cost":{"usd":1}}}`)
+	resp = []byte(`{"plugins":{"tool-prune":{"bytesRemoved":9},"cost":{"usd":2}}}`)
+	if got, want := string(dropShared(resp, req)), `{"plugins":{"cost":{"usd":2}}}`; got != want {
+		t.Errorf("dropShared = %s, want %s", got, want)
+	}
+	if got, want := string(dropShared(req, req)), `{}`; got != want {
+		t.Errorf("dropShared = %s, want %s: no record left drops plugins", got, want)
+	}
 }

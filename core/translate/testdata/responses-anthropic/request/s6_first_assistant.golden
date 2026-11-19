@@ -1,0 +1,1 @@
+error: 400 invalid_request_error: an Anthropic Messages server needs a user message first, but the first message of this request is an assistant message

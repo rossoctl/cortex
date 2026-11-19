@@ -35,6 +35,7 @@ import (
 	"github.com/rossoctl/cortex/core/spiffe"
 	"github.com/rossoctl/cortex/core/tlsbridge"
 	authtls "github.com/rossoctl/cortex/core/tlsconfig"
+	"github.com/rossoctl/cortex/core/translate"
 )
 
 // maxRequestBodySize caps a buffered request body. It is separate from
@@ -630,6 +631,8 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		sessionID = s.hydrateSession(pctx, trusted, r.Header, chain, connProcOf(r.Context()))
 	}
 
+	// tr is the conversion a plugin asked for with pctx.Translate, nil for none.
+	var tr *translation
 	if !skipped {
 		action := s.OutboundPipeline.Run(r.Context(), pctx)
 
@@ -665,6 +668,18 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			// rejection for non-MCP traffic.
 			httpx.WriteRejectionForRequest(w, action, pctx)
 			return
+		}
+
+		// After every request plugin, and before the request row is recorded, so the
+		// modify/translated record is on that row. A refusal goes nowhere upstream.
+		var refusal *pipeline.Action
+		if tr, refusal = startTranslation(pctx); refusal != nil {
+			s.recordOutboundRejectIn(tl, pctx, *refusal, s.recordingSessionID(sessionID, r.Header, chain))
+			httpx.WriteRejectionForRequest(w, *refusal, pctx)
+			return
+		}
+		if tr != nil && capture != nil {
+			capture.Translated = tr.conv.Body
 		}
 	}
 
@@ -754,12 +769,16 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// body-rewrite block below and the transport, so leave them untouched.
 	// Mirrors reverseproxy's forwarded-request header sync.
 	httpx.SyncRequestHeaders(r, pctx.Headers)
+	applyUpstreamHeaders(r, pctx.UpstreamHeaders())
 
 	// If a WritesRequestBody plugin rewrote pctx.Body, ship the new bytes
 	// upstream and clear Content-Encoding (see forwardproxy response
 	// path for the rationale).
 	if pctx.BodyMutated() {
 		httpx.SetRequestBody(r, pctx.Body)
+	}
+	if tr != nil {
+		tr.apply(r)
 	}
 
 	// The pipeline this request runs on for the rest of the handler: every
@@ -777,7 +796,8 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	bufferResponse := !skipped && pinned.NeedsResponseBody() && (parsed || pinned.ReadsEveryResponseBody())
 
 	// Hop branch point 3: the hop always owns the encoding.
-	ownEncoding := hopped || bufferResponse || (!skipped && pinned.HasStreamingResponders())
+	// A translated reply is converted, so the transport must decode it first.
+	ownEncoding := hopped || bufferResponse || tr != nil || (!skipped && pinned.HasStreamingResponders())
 	stripForUpstream(r, ownEncoding, forwardUpgrade)
 
 	// Clear RequestURI — set by the server but must be empty for client requests
@@ -845,7 +865,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// itself, with whatever credential it has now. Left as a request-keyed rule
 	// rather than made cleverer (#1549 review).
 	if err == nil && !skipped && !forwardUpgrade {
-		resp, err = s.resendIfAsked(r, pctx, client, resp, tl, ownEncoding, capture)
+		resp, err = s.resendIfAsked(r, pctx, client, resp, tl, ownEncoding, capture, tr)
 	}
 	if err != nil {
 		// The egress guard's refusal, BEFORE the generic 502: a destination that
@@ -913,6 +933,22 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	}
 	defer resp.Body.Close()
 
+	// The session archive's capture of the response (#1494), only when the request was
+	// captured, so a response never outlives its pair: the request row keeps its capture
+	// only for inference (recordCapturedRequest).
+	var rc *pipeline.ResponseCapture
+	if capture != nil && pctx.Extensions.Inference != nil {
+		rc = &pipeline.ResponseCapture{Status: resp.StatusCode, Decoded: resp.Uncompressed}
+	}
+
+	// Before the wrap: a not-streamed translated reply is read whole there.
+	headersAt := time.Now()
+	// Before any reply plugin or recorder reads the body: they all see the reply in
+	// the agent's protocol. A hop's own 503 returned above and is not converted.
+	if tr != nil {
+		tr.wrapReply(resp, rc)
+	}
+
 	// Response phase: populate pctx and run plugins in reverse order.
 	pctx.StatusCode = resp.StatusCode
 	pctx.ResponseHeaders = resp.Header.Clone()
@@ -923,7 +959,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// own flow — the moment the delivered response's headers are in hand —
 	// so ttfb means one thing wherever a row reports it. Stays zero on the
 	// error path above, where no headers ever arrived (#1251).
-	pctx.ResponseHeadersAt = time.Now()
+	pctx.ResponseHeadersAt = headersAt
 
 	// BytesDown for the response row (#1309), counted HERE and nowhere else. Every
 	// arm below reads this one body — buffered whole, relayed SSE block by block, relayed
@@ -944,10 +980,9 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	//
 	// The same wrapper keeps the body for the session archive's capture (#1494): every arm
 	// reads through it, so what it keeps is the body as it came off the wire, whatever arm
-	// relays it. Only when the request was captured, so a response never outlives its pair: the
-	// request row keeps its capture only for inference (recordCapturedRequest).
-	if capture != nil && pctx.Extensions.Inference != nil {
-		rc := &pipeline.ResponseCapture{Status: resp.StatusCode, Header: redact.Headers(resp.Header), Decoded: resp.Uncompressed}
+	// relays it. For a translated reply that is the reply in the agent's protocol.
+	if rc != nil {
+		rc.Header = redact.Headers(resp.Header)
 		pctx.ResponseCapture = rc
 		resp.Body = bodycount.WrapCapture(resp.Body, &pctx.ResponseBytes, &rc.Body, &rc.Truncated, &rc.Ended, pipeline.MaxResponseCapture)
 	} else {
@@ -1265,7 +1300,11 @@ func stripForUpstream(r *http.Request, ownEncoding, keepUpgrade bool) {
 // id, so the timeline shows both attempts and each pairs with its own answer. A
 // refused answer that is not sent again goes to the client byte for byte, the bytes
 // read for the Resender included.
-func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *http.Client, resp *http.Response, tl *tunnelLog, ownEncoding bool, capture *pipeline.RequestCapture) (*http.Response, error) {
+//
+// tr is the translation of the request, nil for none. The Resender reads the raw
+// answer, the request is converted again after the Resender changed it, and the
+// refused answer's row has the reply in the agent's protocol.
+func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *http.Client, resp *http.Response, tl *tunnelLog, ownEncoding bool, capture *pipeline.RequestCapture, tr *translation) (*http.Response, error) {
 	// Both probes and Resend itself answer for the pipeline this request
 	// ran on (Holder.ForPctx): the reload-drain window must not flip the
 	// resend decision onto plugins that never saw the request.
@@ -1277,7 +1316,19 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 		// The parse as the refused attempt was sent: a Resender may rewrite the model,
 		// and the refused attempt's row must name the one the upstream refused.
 		sent := pipeline.SnapshotInference(pctx.Extensions.Inference)
-		if !s.OutboundPipeline.Resend(r.Context(), pctx, resp.StatusCode, head) {
+		asked := s.OutboundPipeline.Resend(r.Context(), pctx, resp.StatusCode, head)
+		var conv translate.Converted
+		if asked && tr != nil {
+			var convErr error
+			// A request that cannot be converted after the change is not sent again.
+			conv, convErr = tr.convert(pctx)
+			asked = convErr == nil
+			if !asked {
+				// The answer goes back for the request sent, so its row names that model.
+				pctx.Extensions.Inference = sent
+			}
+		}
+		if !asked {
 			resp.Body = struct {
 				io.Reader
 				io.Closer
@@ -1290,7 +1341,11 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 			// back at once, because the status of the answer the client gets is the
 			// one OutcomeFromContext must read.
 			resent := pctx.Extensions.Inference
-			pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = resp.StatusCode, head, sent
+			refused := head
+			if tr != nil {
+				refused = tr.replyBody(resp, head)
+			}
+			pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = resp.StatusCode, refused, sent
 			if capture != nil && pctx.Extensions.Inference != nil {
 				// The refusal as far as it was read: the resend peeks at most ResendPeekLimit bytes.
 				pctx.ResponseCapture = &pipeline.ResponseCapture{Status: resp.StatusCode, Header: redact.Headers(resp.Header),
@@ -1299,11 +1354,23 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 			s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
 			pctx.StatusCode, pctx.ResponseBody, pctx.Extensions.Inference = 0, nil, resent
 			pctx.RenewRequestID()
+			if tr != nil && capture != nil {
+				// A copy: the refused attempt's row keeps the body it sent.
+				again := *capture
+				again.Translated = conv.Body
+				capture = &again
+			}
 			s.recordCapturedRequest(tl, pctx, pctx.OutboundSessionID, capture)
 		}
 		again := r.Clone(r.Context())
 		httpx.SyncRequestHeaders(again, pctx.Headers)
-		httpx.SetRequestBody(again, pctx.Body)
+		applyUpstreamHeaders(again, pctx.UpstreamHeaders())
+		if tr != nil {
+			tr.conv = conv
+			tr.apply(again)
+		} else {
+			httpx.SetRequestBody(again, pctx.Body)
+		}
 		// No keepUpgrade: a resent request is never a forwarded upgrade — the
 		// 101 branch in serveOutbound skips resendIfAsked entirely, and only that
 		// branch leaves the headers unstripped.

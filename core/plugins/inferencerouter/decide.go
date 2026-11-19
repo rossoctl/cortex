@@ -182,7 +182,7 @@ type resendFacts struct {
 	// model is the model the body names, "" when hasModel is false.
 	model    string
 	hasModel bool
-	// routed is whether the request's host is a server's.
+	// routed is whether the request has the router's routed record.
 	routed bool
 	// parsed is whether the parser read the request as inference, and substituted
 	// whether it was sent with a model other than the agent's.

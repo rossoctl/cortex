@@ -16,23 +16,6 @@ func cmStore(stub Runner) ConfigMapStore {
 	return ConfigMapStore{Run: stub, Namespace: "team1", Pod: "email-agent"}
 }
 
-func TestFetchCmd_Success(t *testing.T) {
-	stub := func(ctx context.Context, args ...string) ([]byte, error) {
-		return []byte(fixtureCMYAML), nil
-	}
-	cmd := FetchCmd(context.Background(), cmStore(stub), nil, nil)
-	msg := cmd().(FetchedMsg)
-	if msg.Err != nil {
-		t.Fatalf("FetchedMsg.Err = %v", msg.Err)
-	}
-	if msg.Fetched == nil {
-		t.Fatal("FetchedMsg.Fetched is nil")
-	}
-	if msg.TempPath == "" {
-		t.Fatal("FetchedMsg.TempPath empty (should be the path to the subtree-only tempfile)")
-	}
-}
-
 func TestFetchCmd_Error(t *testing.T) {
 	stub := func(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("forbidden")

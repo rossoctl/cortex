@@ -1197,3 +1197,344 @@ func TestRouter_UnderObserveAnOwnOverrideMovesNoPin(t *testing.T) {
 		t.Errorf("pin = %q, want glm: observe must not move it", pin)
 	}
 }
+
+const gwHost = "gw.example.com"
+
+// sharedConfig is ete, and team-a and team-b on one gateway URL with a key each.
+func sharedConfig(agents string) string {
+	return `{
+		"servers": {
+			"ete":    {"url": "https://ete.example.com", "key": "ete-key", "main": "opus", "helper": "haiku"},
+			"team-a": {"url": "https://gw.example.com/litellm", "key": "team-a-key", "main": "opus", "helper": "haiku"},
+			"team-b": {"url": "https://gw.example.com/litellm", "key": "team-b-key", "main": "opus", "helper": "haiku"}
+		},
+		"agents": {` + agents + `}
+	}`
+}
+
+// model.RoutedServer finds the router's record by the plugin name as a literal, which must be Name.
+func TestRoutedServerNameMatchesPlugin(t *testing.T) {
+	in := &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: Name, Action: pipeline.ActionModify,
+		Reason: "routed", Phase: pipeline.InvocationPhaseRequest, Details: map[string]string{"server": "team-b"}}}}
+	if got := pipeline.RoutedServer(in); got != "team-b" {
+		t.Errorf("RoutedServer = %q, want team-b", got)
+	}
+}
+
+// Two servers on one URL: a session stays on the server it started on after its agent moves to
+// the other, and after a restart that lost the pins, because the routed record names the server.
+func TestRouter_SharedURL_PinHolds(t *testing.T) {
+	st := session.New(0, 0, 0)
+	t.Cleanup(st.Close)
+	ask := func(p *pipeline.Pipeline, pins pipeline.SharedStore, step string) {
+		t.Helper()
+		pctx := hydrate(st, request(pins, gwHost, claudeUA, "s1"))
+		pctx.Path = "/litellm/v1/messages"
+		run(t, p, pctx)
+		e := recorded(pctx)
+		e.Invocations = pctx.Extensions.Invocations
+		st.Append("s1", e)
+		if pctx.Host != gwHost || pctx.Headers.Get("Authorization") != "Bearer team-b-key" {
+			t.Errorf("%s: Host %q, Authorization %q; want team-b", step, pctx.Host, pctx.Headers.Get("Authorization"))
+		}
+		if rec := routerRecord(t, pctx); rec.Reason != "routed" || rec.Details["server"] != "team-b" {
+			t.Errorf("%s: record %s %v, want routed to team-b", step, rec.Reason, rec.Details)
+		}
+	}
+	r := New()
+	if err := r.Configure(json.RawMessage(sharedConfig(`"claude-code": "team-b"`))); err != nil {
+		t.Fatal(err)
+	}
+	p, err := pipeline.New([]pipeline.Plugin{r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins := newStore(t)
+	ask(p, pins, "first request")
+	if err := r.Configure(json.RawMessage(sharedConfig(`"claude-code": "team-a"`))); err != nil {
+		t.Fatal(err)
+	}
+	ask(p, pins, "after the agent moved to team-a")
+	ask(build(t, sharedConfig(`"claude-code": "team-a"`)), pins, "a new router on the same pins")
+	ask(build(t, sharedConfig(`"claude-code": "team-a"`)), newStore(t), "a restart that lost the pins")
+}
+
+// A shared URL's path prefix is not added two times, and a request moved off the shared host
+// loses the prefix. Two servers on one host with different paths swap one prefix for the other.
+func TestRouter_SharedURLPathPrefix(t *testing.T) {
+	const twoPaths = `{
+		"servers": {
+			"pa": {"url": "https://gw2.example.com/a", "key": "pa-key", "main": "opus", "helper": "haiku"},
+			"pb": {"url": "https://gw2.example.com/b", "key": "pb-key", "main": "opus", "helper": "haiku"}
+		},
+		"agents": {"claude-code": "pb"}
+	}`
+	for _, tc := range []struct {
+		name, config, host, path string
+		wantHost, wantPath, key  string
+		cookie                   bool // the client's provider credential stays
+	}{
+		{"routed to a server on the URL", sharedConfig(`"claude-code": "team-b"`), gwHost, "/litellm/v1/messages",
+			gwHost, "/litellm/v1/messages", "team-b-key", true},
+		{"routed off the shared host", sharedConfig(`"claude-code": "ete"`), gwHost, "/litellm/v1/messages",
+			eteHost, "/v1/messages", "ete-key", false},
+		{"one host, two paths", twoPaths, "gw2.example.com", "/a/v1/messages",
+			"gw2.example.com", "/b/v1/messages", "pb-key", true},
+		// As on a host with one server: adding a second server must not change this path.
+		{"no prefix, stays on the URL", sharedConfig(`"claude-code": "team-b"`), gwHost, "/v1/messages",
+			gwHost, "/v1/messages", "team-b-key", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pctx := request(newStore(t), tc.host, claudeUA, "s1")
+			pctx.Path = tc.path
+			pctx.Headers.Set("Cookie", "meant=for-gw")
+			run(t, build(t, tc.config), pctx)
+			assertRouted(t, pctx, tc.wantHost, tc.key)
+			if pctx.Path != tc.wantPath {
+				t.Errorf("Path = %q, want %q", pctx.Path, tc.wantPath)
+			}
+			if got := pctx.Headers.Get("Cookie") != ""; got != tc.cookie {
+				t.Errorf("Cookie kept = %v, want %v", got, tc.cookie)
+			}
+		})
+	}
+}
+
+// keyRequest is request to gwHost's team path, with the client's Authorization
+// replaced by header: value ("" header sends no key).
+func keyRequest(store pipeline.SharedStore, ua, session, header, value string) *pipeline.Context {
+	pctx := request(store, gwHost, ua, session)
+	pctx.Path = "/litellm/v1/messages"
+	pctx.Headers.Del("Authorization")
+	if header != "" {
+		pctx.Headers.Set(header, value)
+	}
+	return pctx
+}
+
+// An agent with no agents: entry that sends a server's key is routed to that server.
+func TestRouter_KeySelectsServer(t *testing.T) {
+	t.Run("bearer", func(t *testing.T) {
+		store := newStore(t)
+		pctx := keyRequest(store, claudeUA, "s1", "Authorization", "Bearer team-b-key")
+		run(t, build(t, sharedConfig("")), pctx)
+		assertRouted(t, pctx, gwHost, "team-b-key")
+		assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "team-b", "key_of": "team-b"})
+		if pin, _ := pinOf(t, store, "s1"); pin != "team-b" {
+			t.Errorf("pin = %q, want team-b", pin)
+		}
+	})
+	t.Run("x-api-key", func(t *testing.T) {
+		store := newStore(t)
+		pctx := keyRequest(store, claudeUA, "s1", "X-Api-Key", "team-b-key")
+		run(t, build(t, sharedConfig("")), pctx)
+		if pctx.Host != gwHost || pctx.Headers.Get("X-Api-Key") != "team-b-key" {
+			t.Errorf("Host %q, X-Api-Key %q; want team-b", pctx.Host, pctx.Headers.Get("X-Api-Key"))
+		}
+		assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "team-b", "key_of": "team-b"})
+		if pin, _ := pinOf(t, store, "s1"); pin != "team-b" {
+			t.Errorf("pin = %q, want team-b", pin)
+		}
+	})
+	t.Run("auth_header", func(t *testing.T) {
+		store := newStore(t)
+		cfg := strings.Replace(sharedConfig(""), `"key": "team-b-key",`, `"key": "team-b-key", "auth_header": "x-team-key",`, 1)
+		pctx := keyRequest(store, claudeUA, "s1", "X-Team-Key", "team-b-key")
+		run(t, build(t, cfg), pctx)
+		if pctx.Host != gwHost || pctx.Headers.Get("X-Team-Key") != "team-b-key" {
+			t.Errorf("Host %q, X-Team-Key %q; want team-b", pctx.Host, pctx.Headers.Get("X-Team-Key"))
+		}
+		assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "team-b", "key_of": "team-b"})
+		if pin, _ := pinOf(t, store, "s1"); pin != "team-b" {
+			t.Errorf("pin = %q, want team-b", pin)
+		}
+	})
+}
+
+// A request to a provider with a server's key, and no agents: entry, is captured.
+func TestRouter_KeySelectsServer_Captured(t *testing.T) {
+	pctx := request(newStore(t), "api.anthropic.com", claudeUA, "s1")
+	pctx.Headers.Set("Authorization", "Bearer team-b-key")
+	run(t, build(t, sharedConfig("")), pctx)
+	assertRouted(t, pctx, gwHost, "team-b-key")
+	assertRecord(t, pctx, pipeline.ActionModify, "routed",
+		map[string]string{"server": "team-b", "key_of": "team-b", "captured": "/v1/messages"})
+}
+
+// A key_routes: entry sends a new session to another server. A session pinned
+// before the entry was added stays where it is.
+func TestRouter_KeyRoutes(t *testing.T) {
+	store := newStore(t)
+	before := keyRequest(store, claudeUA, "old", "Authorization", "Bearer team-b-key")
+	run(t, reloadBuild(t, sharedConfig("")), before)
+	assertRouted(t, before, gwHost, "team-b-key")
+
+	after := reloadBuild(t, keyConfig("", `"team-b": "team-a"`))
+	fresh := keyRequest(store, claudeUA, "new", "Authorization", "Bearer team-b-key")
+	run(t, after, fresh)
+	assertRouted(t, fresh, gwHost, "team-a-key")
+	assertRecord(t, fresh, pipeline.ActionModify, "routed", map[string]string{"server": "team-a", "key_of": "team-b"})
+
+	old := keyRequest(store, claudeUA, "old", "Authorization", "Bearer team-b-key")
+	run(t, after, old)
+	assertRouted(t, old, gwHost, "team-b-key")
+	assertRecord(t, old, pipeline.ActionModify, "routed", map[string]string{"server": "team-b", "pin": pinExisting})
+}
+
+// A request routed to a server other than its key's owner carries none of the owner's key,
+// on the owner's host and off it, whether a key_routes: or an agents: entry chose the server.
+func TestRouter_KeyOwnerHeaderDropped(t *testing.T) {
+	withHeader := func(cfg, header string) string {
+		return strings.Replace(cfg, `"key": "team-b-key",`, `"key": "team-b-key", "auth_header": "`+header+`",`, 1)
+	}
+	for _, tc := range []struct{ name, cfg, header, host, key, bearer string }{
+		{"key_routes, same host", withHeader(keyConfig("", `"team-b": "team-a"`), "x-team-key"), "X-Team-Key", gwHost, "team-a-key", ""},
+		{"key_routes, other host", withHeader(keyConfig("", `"team-b": "ete"`), "x-team"), "X-Team", eteHost, "ete-key", ""},
+		{"agents, same host", withHeader(sharedConfig(`"claude-code": "team-a"`), "x-team-key"), "X-Team-Key", gwHost, "team-a-key", ""},
+		// keyOwner names no owner here, since the request also sends ete's key.
+		{"agents, two servers' keys", withHeader(sharedConfig(`"claude-code": "team-a"`), "x-team-key"), "X-Team-Key", gwHost, "team-a-key", "ete-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pctx := keyRequest(newStore(t), claudeUA, "s1", tc.header, "team-b-key")
+			if tc.bearer != "" {
+				pctx.Headers.Set("Authorization", "Bearer "+tc.bearer)
+			}
+			run(t, build(t, tc.cfg), pctx)
+			assertRouted(t, pctx, tc.host, tc.key)
+			if v := pctx.Headers.Values(tc.header); len(v) > 0 {
+				t.Errorf("%s = %q, want the owner's key removed", tc.header, v)
+			}
+		})
+	}
+}
+
+// The request goes to its key's owner, team-b, but also sends the key that team-a and ete
+// share in team-a's auth_header. keyOwner skips a shared key.
+func TestRouter_SharedKeyHeaderDropped(t *testing.T) {
+	cfg := strings.Replace(strings.Replace(sharedConfig(""), `"ete-key"`, `"same-key"`, 1),
+		`"key": "team-a-key",`, `"key": "same-key", "auth_header": "x-team",`, 1)
+	pctx := keyRequest(newStore(t), claudeUA, "s1", "Authorization", "Bearer team-b-key")
+	pctx.Headers.Set("X-Team", "same-key")
+	run(t, build(t, cfg), pctx)
+	assertRouted(t, pctx, gwHost, "team-b-key")
+	if v := pctx.Headers.Values("X-Team"); len(v) > 0 {
+		t.Errorf("X-Team = %q, want the shared key removed", v)
+	}
+}
+
+func TestRouter_KeyRoutesOneHop(t *testing.T) {
+	pctx := keyRequest(newStore(t), claudeUA, "s1", "Authorization", "Bearer team-b-key")
+	run(t, build(t, keyConfig("", `"team-b": "team-a", "team-a": "ete"`)), pctx)
+	assertRouted(t, pctx, gwHost, "team-a-key")
+	assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "team-a"})
+}
+
+func TestRouter_AgentsWinOverKey(t *testing.T) {
+	pctx := keyRequest(newStore(t), claudeUA, "s1", "Authorization", "Bearer team-b-key")
+	run(t, build(t, keyConfig(`"claude-code": "ete"`, `"team-b": "team-a"`)), pctx)
+	assertRouted(t, pctx, eteHost, "ete-key")
+	assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "ete", "key_of": "team-b"})
+}
+
+// A key choice treats a side request as an agents: choice does.
+func TestRouter_KeyChoiceSideRequest(t *testing.T) {
+	for _, cfg := range []string{sharedConfig(""), sharedConfig(`"claude-code": "team-b"`)} {
+		store := newStore(t)
+		pctx := claudeCode(keyRequest(store, claudeUA, "s1", "Authorization", "Bearer team-b-key"), pipeline.AgentRoleMain, 0, 0)
+		run(t, build(t, cfg), pctx)
+		assertRouted(t, pctx, gwHost, "team-b-key")
+		assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"server": "team-b", "pin": pinNone})
+		if pin, ok := pinOf(t, store, "s1"); ok {
+			t.Errorf("pin = %q, want no pin for a side request", pin)
+		}
+	}
+}
+
+func TestRouter_KeyNotRouted(t *testing.T) {
+	dup := strings.Replace(strings.Replace(sharedConfig(""), "team-a-key", "same-key", 1), "team-b-key", "same-key", 1)
+	for _, tc := range []struct{ name, cfg, auth string }{
+		{"client key", sharedConfig(""), "Bearer client-key"},
+		{"subscription token", sharedConfig(""), "Bearer sk-ant-oat01-xyz"},
+		{"duplicate key", dup, "Bearer same-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pctx := keyRequest(newStore(t), claudeUA, "s1", "Authorization", tc.auth)
+			run(t, build(t, tc.cfg), pctx)
+			if pctx.Host != gwHost || pctx.Redirected() || pctx.Headers.Get("Authorization") != tc.auth {
+				t.Errorf("Host %q, Redirected %v, Authorization %q; want the request untouched",
+					pctx.Host, pctx.Redirected(), pctx.Headers.Get("Authorization"))
+			}
+			assertRecord(t, pctx, pipeline.ActionSkip, "not_routed", nil)
+			if v, ok := routerRecord(t, pctx).Details["key_of"]; ok {
+				t.Errorf("key_of = %q, want none", v)
+			}
+		})
+	}
+}
+
+func TestRouter_NoUserAgentNotRoutedByKey(t *testing.T) {
+	pctx := keyRequest(newStore(t), "", "s1", "Authorization", "Bearer team-b-key")
+	run(t, build(t, sharedConfig("")), pctx)
+	if pctx.Redirected() || pctx.Headers.Get("Authorization") != "Bearer team-b-key" {
+		t.Errorf("Redirected %v, Authorization %q; want the request untouched", pctx.Redirected(), pctx.Headers.Get("Authorization"))
+	}
+	assertRecord(t, pctx, pipeline.ActionSkip, "not_routed", map[string]string{"key_of": "team-b"})
+}
+
+func TestRouter_DuplicateKeyWarns(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	dup := strings.Replace(strings.Replace(sharedConfig(""), "team-a-key", "same-key", 1), "team-b-key", "same-key", 1)
+	if err := New().Configure(json.RawMessage(dup)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	out := logs.String()
+	if n := strings.Count(out, "level=WARN"); n != 1 || !strings.Contains(out, "team-a,team-b") {
+		t.Errorf("want one WARN that names team-a,team-b, got %d:\n%s", n, out)
+	}
+	if strings.Contains(out, "same-key") {
+		t.Errorf("the WARN holds the key:\n%s", out)
+	}
+}
+
+// No invocation holds a key; the router's record names the key's server.
+func TestRouter_KeyOfDetail(t *testing.T) {
+	keys := []string{"ete-key", "team-a-key", "team-b-key", "Bearer team-b-key"}
+	check := func(t *testing.T, pctx *pipeline.Context) {
+		t.Helper()
+		for _, inv := range pctx.Extensions.Invocations.Outbound {
+			for k, v := range inv.Details {
+				for _, key := range keys {
+					if v == key {
+						t.Errorf("%s/%s Details[%q] holds a key", inv.Plugin, inv.Reason, k)
+					}
+				}
+			}
+		}
+	}
+	t.Run("routed", func(t *testing.T) {
+		pctx := keyRequest(newStore(t), claudeUA, "s1", "Authorization", "Bearer team-b-key")
+		run(t, build(t, sharedConfig("")), pctx)
+		assertRecord(t, pctx, pipeline.ActionModify, "routed", map[string]string{"key_of": "team-b"})
+		check(t, pctx)
+	})
+	t.Run("not_routed", func(t *testing.T) {
+		// A session pinned "not routed" keeps that pin when it later sends a server's key.
+		store := newStore(t)
+		p := build(t, sharedConfig(""))
+		run(t, p, keyRequest(store, claudeUA, "s1", "Authorization", "Bearer client-key"))
+		pctx := keyRequest(store, claudeUA, "s1", "Authorization", "Bearer team-b-key")
+		run(t, p, pctx)
+		assertRecord(t, pctx, pipeline.ActionSkip, "not_routed", map[string]string{"key_of": "team-b", "pin": pinExisting})
+		check(t, pctx)
+	})
+	t.Run("would_route", func(t *testing.T) {
+		pctx := keyRequest(newStore(t), claudeUA, "s1", "Authorization", "Bearer team-b-key")
+		run(t, build(t, sharedConfig(""), pipeline.WithPolicies(pipeline.ErrorPolicyObserve)), pctx)
+		assertRecord(t, pctx, pipeline.ActionObserve, "would_route", map[string]string{"server": "team-b", "key_of": "team-b"})
+		check(t, pctx)
+	})
+}

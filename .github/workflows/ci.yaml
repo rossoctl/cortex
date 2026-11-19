@@ -61,8 +61,12 @@ jobs:
       - name: Build
         run: go build -v ./...
 
+      # Prints the module's total statement coverage as the last line, for a future
+      # coverage gate. `make coverage` reports the same figures locally.
       - name: Test
-        run: go test -v -race -cover ./...
+        run: |
+          go test -v -race -coverprofile=cover.out ./...
+          go tool cover -func=cover.out | tail -1
 
   # core/peerproc reads the macOS kernel's TCP table by byte offset and checks its record
   # sizes against the layout it was written for, so only a macOS runner exercises that
@@ -321,7 +325,9 @@ jobs:
           go vet ./...
 
       - name: Test
-        run: go test -v -race -cover ./...
+        run: |
+          go test -v -race -coverprofile=cover.out ./...
+          go tool cover -func=cover.out | tail -1
 
   go-ci-readme-demo:
     name: Go CI (README demo)
@@ -413,7 +419,8 @@ jobs:
             echo "::group::profile ${profile}"
             TAGS=$(go -C ../../scripts/profile-tags run . "${profile}")
             go build -v -tags "${TAGS}" ./...
-            go test -race -cover -tags "${TAGS}" ./...
+            go test -race -coverprofile=cover.out -tags "${TAGS}" ./...
+            echo "coverage (profile ${profile}): $(go tool cover -func=cover.out | tail -1)"
             echo "::endgroup::"
           done
 
@@ -441,7 +448,9 @@ jobs:
       - name: Test
         env:
           AGENTOP_SYSTEMD_TESTS: ${{ matrix.binary == 'agentop' && 'required' || '' }}
-        run: go test -v -race -cover ./...
+        run: |
+          go test -v -race -coverprofile=cover.out ./...
+          go tool cover -func=cover.out | tail -1
 
   proxy-init-iptables:
     name: proxy-init iptables rules

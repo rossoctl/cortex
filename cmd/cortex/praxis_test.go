@@ -9,10 +9,11 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
@@ -95,15 +96,69 @@ func TestStartPraxis_EgressServesProbe(t *testing.T) {
 	defer gw.Close()
 	cfg := praxisCfg(true)
 	cfg.Praxis.Listen = gw.Listener.Addr().String()
+	ready := hopReady(t, cfg.Praxis.ListenAddr())
 	hop, srv := startPraxis(ctx, cfg, &forwardproxy.Server{}, "tok", http.DefaultTransport, ln)
 	defer srv.Close()
-	deadline := time.Now().Add(3 * time.Second)
-	for !hop.Ready() {
-		if time.Now().After(deadline) {
-			t.Fatal("the hop is not ready after 3s")
-		}
-		time.Sleep(20 * time.Millisecond)
+	<-ready
+	if !hop.Ready() {
+		t.Fatal("the hop logged that it is ready, but Ready() is false")
 	}
+}
+
+// hopReadyMsg is what a hop logs once its probe passes, after Ready() turns true.
+const hopReadyMsg = "praxis hop: cortex-gateway is ready"
+
+// hopReady returns a channel that closes when the hop to gateway logs hopReadyMsg. The
+// default logger writes text to stderr through it until the test ends. It wraps a handler
+// of its own: the initial default handler writes through the log package, which
+// SetDefault points back at slog.
+func hopReady(t *testing.T, gateway string) <-chan struct{} {
+	t.Helper()
+	ready := make(chan struct{})
+	prev := slog.Default()
+	h := slog.NewTextHandler(os.Stderr, nil)
+	slog.SetDefault(slog.New(&readyHandler{Handler: h, gateway: gateway, once: &sync.Once{}, ready: ready}))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return ready
+}
+
+// readyHandler closes ready on the hop's ready line for gateway, and passes every record
+// the wrapped handler takes on to it.
+type readyHandler struct {
+	slog.Handler
+	gateway string
+	once    *sync.Once
+	ready   chan struct{}
+}
+
+func (h *readyHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *readyHandler) Handle(ctx context.Context, r slog.Record) error {
+	if r.Message == hopReadyMsg {
+		r.Attrs(func(a slog.Attr) bool {
+			if a.Key == "gateway" && a.Value.String() == h.gateway {
+				h.once.Do(func() { close(h.ready) })
+				return false
+			}
+			return true
+		})
+	}
+	if !h.Handler.Enabled(ctx, r.Level) {
+		return nil
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h *readyHandler) WithAttrs(as []slog.Attr) slog.Handler {
+	c := *h
+	c.Handler = h.Handler.WithAttrs(as)
+	return &c
+}
+
+func (h *readyHandler) WithGroup(name string) slog.Handler {
+	c := *h
+	c.Handler = h.Handler.WithGroup(name)
+	return &c
 }
 
 func TestOutboundEntries_WarnsDeprecatedCpexOnLocalInstall(t *testing.T) {

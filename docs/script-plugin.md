@@ -6,7 +6,9 @@ each request the agent sends and each response it gets back, and keeps its own
 state between them.
 
 Go plugins remain the way to build anything permanent, shared, or on the hot
-path. Script plugins are for the quick, personal customization.
+path. To write one, read [`plugin-tutorial.md`](plugin-tutorial.md) first,
+then [`plugin-reference.md`](plugin-reference.md). Script plugins are for the
+quick, personal customization.
 
 ## Write one
 

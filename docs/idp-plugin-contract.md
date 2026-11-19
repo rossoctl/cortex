@@ -1,6 +1,6 @@
 # IdP-Agnostic Token Exchange Plugin Contract
 
-> **Status:** Implemented — RHAIENG-5681 / cortex#481
+> **Status:** Implemented — cortex#481
 >
 > This document defines the contract that an Identity Provider (IdP)
 > plugin must satisfy for the AuthBridge token exchange pipeline.

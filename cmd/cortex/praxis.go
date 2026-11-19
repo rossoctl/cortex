@@ -16,7 +16,8 @@ import (
 var _ sessionapi.HopJoins = (*forwardproxy.Hop)(nil)
 
 // praxisProbeEvery is how often the hop probes the gateway until one probe passes (Decision 3).
-const praxisProbeEvery = time.Second
+// A var so that the end-to-end tests probe a gateway that starts after the hop at once.
+var praxisProbeEvery = time.Second
 
 // deprecatedCpexWarning is the one deprecation sentence for the laptop cpex build.
 // The installer prints the same words.

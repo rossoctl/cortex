@@ -1,0 +1,1 @@
+error: 400 invalid_request_error: Cortex cannot compact a Codex conversation on this server. Start a new Codex session, or move this agent to an OpenAI server with agentop server use.

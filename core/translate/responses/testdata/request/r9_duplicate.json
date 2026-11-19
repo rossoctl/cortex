@@ -1,0 +1,1 @@
+{"model":"gpt-5.5","input":"hi","tools":[{"type":"function","name":"mcp__a__b","parameters":{"type":"object"}},{"type":"namespace","name":"mcp__a","tools":[{"type":"function","name":"b","parameters":{"type":"object"}}]}]}

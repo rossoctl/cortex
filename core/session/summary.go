@@ -182,6 +182,11 @@ type SessionSummary struct {
 	// persists it, and a resumed session reports it until its own next inference request.
 	InferenceHost string `json:"inferenceHost,omitempty"`
 
+	// InferenceServer is the server name from the routed invocation of the request that set
+	// InferenceHost (model.RoutedServer), and "" when that request was not routed. It moves with
+	// InferenceHost, and InferenceHostFromHistory covers it too.
+	InferenceServer model.LenientString `json:"inferenceServer,omitempty"`
+
 	// InferenceHostFromHistory is true when InferenceHost came from the session's history before
 	// this store entry — the archive's fold — because no request the entry holds has set it: a
 	// session resumed after a restart, or re-created after an eviction, that has sent no inference
@@ -299,10 +304,11 @@ func (s *Store) ListSessions() []SessionSummary {
 			// is Append on the proxy's request path, with maxEvents unset by default.
 			PromptContext: sess.context.Publish(),
 			// Read, not computed, like Title: Append folds it.
-			InferenceHost: sess.inferenceHost,
-			Procs:         procsList(sess.procs),
-			procSpans:     maps.Clone(sess.procs),
-			LastRequestAt: sess.lastRequestAt,
+			InferenceHost:   sess.inferenceHost,
+			InferenceServer: model.LenientString(sess.inferenceServer),
+			Procs:           procsList(sess.procs),
+			procSpans:       maps.Clone(sess.procs),
+			LastRequestAt:   sess.lastRequestAt,
 		}
 		s.withPriorLocked(&sum, id, sess)
 		out = append(out, sum)

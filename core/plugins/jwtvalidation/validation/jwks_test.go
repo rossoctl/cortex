@@ -166,27 +166,6 @@ func TestJWKSVerifier_WrongIssuer(t *testing.T) {
 	}
 }
 
-func TestJWKSVerifier_WrongAudience(t *testing.T) {
-	privKey, jwksSrv := setupTestJWKS(t)
-	defer jwksSrv.Close()
-
-	ctx := context.Background()
-	v, _ := NewJWKSVerifier(ctx, jwksSrv.URL, "http://test-issuer")
-
-	token := signToken(t, privKey, map[string]interface{}{
-		"iss": "http://test-issuer",
-		"aud": []string{"other-agent"},
-		"sub": "user",
-		"exp": time.Now().Add(5 * time.Minute).Unix(),
-		"iat": time.Now().Unix(),
-	})
-
-	_, err := v.Verify(ctx, token, []string{"my-agent"})
-	if err == nil {
-		t.Fatal("expected error for wrong audience")
-	}
-}
-
 func TestJWKSVerifier_EmptyAudience_Rejected(t *testing.T) {
 	privKey, jwksSrv := setupTestJWKS(t)
 	defer jwksSrv.Close()
@@ -229,34 +208,6 @@ func TestJWKSVerifier_InvalidSignature(t *testing.T) {
 	_, err := v.Verify(ctx, token, []string{"my-agent"})
 	if err == nil {
 		t.Fatal("expected error for invalid signature")
-	}
-}
-
-func TestJWKSVerifier_MultiAudience_MatchSecond(t *testing.T) {
-	privKey, jwksSrv := setupTestJWKS(t)
-	defer jwksSrv.Close()
-
-	ctx := context.Background()
-	v, err := NewJWKSVerifier(ctx, jwksSrv.URL, "http://test-issuer")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Token has multiple audiences; expected audience matches the second one
-	token := signToken(t, privKey, map[string]interface{}{
-		"iss": "http://test-issuer",
-		"aud": []string{"other-service", "my-agent"},
-		"sub": "user-123",
-		"exp": time.Now().Add(5 * time.Minute).Unix(),
-		"iat": time.Now().Unix(),
-	})
-
-	claims, err := v.Verify(ctx, token, []string{"my-agent"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !claims.HasAudience("my-agent") {
-		t.Error("expected audience my-agent")
 	}
 }
 

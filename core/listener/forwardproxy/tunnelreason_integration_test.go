@@ -160,11 +160,10 @@ func TestClientRejectedCA_WarnsEvenAfterOtherTrafficBridged(t *testing.T) {
 		t.Errorf("warning did not state the CA cutoff, which is what makes it actionable:\n%s", got)
 	}
 	// The lsof recipe deliberately does NOT appear here: review asked for a log line
-	// short enough to read unwrapped, so mapping a client port to a process lives in
-	// docs/laptop-service.md instead of being repeated on every occurrence. What the
-	// line must still carry is the client and the cutoff, asserted above.
+	// short enough to read unwrapped. What the line must still carry is the client
+	// and the cutoff, asserted above.
 	if strings.Contains(got, "lsof") {
-		t.Errorf("the warning re-grew the lsof recipe; it belongs in the docs:\n%s", got)
+		t.Errorf("the warning re-grew the lsof recipe:\n%s", got)
 	}
 
 	// And the timeline carries it, so this is visible without reading a log file.
@@ -412,29 +411,6 @@ func TestHangUpAlsoSeedsTheSkip(t *testing.T) {
 	if !s.TLSBridge.Skip.Contains(host) {
 		t.Error("a hang-up did not seed the skip; the client's retry would forge again and " +
 			"die again")
-	}
-}
-
-// TestPassthroughReasonNeverEmpty: the fallback must be the sentinel, never "".
-// An empty reason is how a BRIDGED row is marked, so an unmapped passthrough would
-// render as an em dash and read as "we decrypted this" — the opposite of the truth.
-func TestPassthroughReasonNeverEmpty(t *testing.T) {
-	// Every reason Classify can DECLINE with must map to something non-empty. "" is
-	// excluded on purpose: Classify pairs it with Terminate, so it is not a
-	// passthrough at all and empty is the right answer there — asserted separately
-	// below rather than lumped in here, which is what made this test contradict the
-	// behaviour it was written to protect.
-	for _, why := range append([]string{"a-reason-nobody-mapped"}, tlsbridge.ClassifyReasons...) {
-		if got := passthroughReason(why); got == "" {
-			t.Errorf("passthroughReason(%q) = %q; an empty reason renders as BRIDGED", why, got)
-		}
-	}
-	if got := passthroughReason(""); got != "" {
-		t.Errorf(`passthroughReason("") = %q, want "" — Classify pairs "" with Terminate, `+
-			"so the caller bridges and bridgeServe records the outcome", got)
-	}
-	if got := passthroughReason("a-reason-nobody-mapped"); got != pipeline.TunnelPassthroughUnknown {
-		t.Errorf("unmapped reason = %q, want the sentinel %q", got, pipeline.TunnelPassthroughUnknown)
 	}
 }
 

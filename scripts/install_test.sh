@@ -26,7 +26,14 @@ REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 [ -f "${INSTALL_SH}" ] || { printf 'cannot find %s\n' "${INSTALL_SH}" >&2; exit 1; }
 
 TMP=$(mktemp -d)
-trap 'rm -rf "${TMP}"' EXIT
+# A line on each run's never fifo releases any stub curl install.sh left holding on it.
+t_cleanup() {
+	for _tc_f in "${TMP}"/run*/meet/never; do
+		[ ! -p "${_tc_f}" ] || printf '\n\n\n\n' 1<>"${_tc_f}"
+	done
+	rm -rf "${TMP}"
+}
+trap t_cleanup EXIT
 
 PASS=0
 FAIL=0
@@ -532,8 +539,9 @@ check "--ref=v0.5.0 with a 200 script re-execs into it" \
 # the group, or a closed terminal's HUP, kills bash too.
 #
 # The fake child is the re-exec'd script. It sends the signal to the bootstrap and to
-# itself, as the terminal does, and exits 3 from its trap a moment later, as setup
-# finishes its own output first. A suite started with the signal ignored (in the
+# itself, as the terminal does, and exits 3 from its trap. The bootstrap has the signal
+# before the child exits, so a bootstrap that dies of it does so with the child still
+# running. A suite started with the signal ignored (in the
 # background, or under nohup) passes that on, and no shell can undo it, so that is
 # probed first and fails as itself, as the ^C mid-download check below does.
 with_bootstrap_signal() { # INT|TERM|HUP
@@ -542,12 +550,13 @@ with_bootstrap_signal() { # INT|TERM|HUP
 		return 0
 	fi
 	# One file per signal: a child the bootstrap did not wait for may still be running.
-	# Should its trap never run, it gives up after 5s, with 4.
+	# A signal a process sends itself arrives before kill returns, and the shell runs its
+	# trap before the next command, so the exit 4 runs only when the trap never does.
 	# shellcheck disable=SC2016 # literal on purpose: expanded by the child, not here.
 	{
-		printf "trap 'sleep 0.3; exit 3' %s\n" "$1"
+		printf "trap 'exit 3' %s\n" "$1"
 		printf 'kill -%s "${PPID}" "$$"\n' "$1"
-		printf '_i=0\nwhile [ "${_i}" -lt 50 ]; do sleep 0.1; _i=$((_i + 1)); done\nexit 4\n'
+		printf 'exit 4\n'
 	} >"${TMP}/sig-child-$1.sh"
 	rm -rf "${TMP}/sig-tmp"
 	mkdir -p "${TMP}/sig-tmp"
@@ -875,18 +884,15 @@ check "pid_exe_path: /proc/<pid>/exe is preferred (Linux truth)" \
 check "pid_exe_path: a deleted/replaced binary keeps its path, drops ' (deleted)'" \
 	"/home/u/.local/bin/cortex" \
 	"$(with_pid_exe_path '/home/u/.local/bin/cortex (deleted)' '' '')"
-check "pid_exe_path: no /proc -> lsof txt descriptor (the macOS path)" \
+# lsof ORs -p and -d unless -a is passed, so without it the query means "this pid
+# OR any txt descriptor on the system" and head -1 can take another process's
+# executable. On macOS this is the source pre_rename_proxy_running judges, so the
+# wrong path there hides a v0.7.0 proxy from --stop. The stub above emits a
+# foreign record first when -a is missing, so this check also fails if the flag
+# is ever dropped.
+check "pid_exe_path: no /proc -> lsof txt descriptor (the macOS path), ANDed with -a" \
 	"/Users/u/.local/bin/cortex" \
 	"$(with_pid_exe_path '' /Users/u/.local/bin/cortex /ps/path)"
-# Same case, stated as the bug it guards: lsof ORs -p and -d unless -a is passed,
-# so without it the query means "this pid OR any txt descriptor on the system" and
-# head -1 can take another process's executable. On macOS this is the source
-# pre_rename_proxy_running judges, so the wrong path there hides a v0.7.0 proxy
-# from --stop. The stub above emits a foreign record first when -a is
-# missing, so this check is what fails if the flag is ever dropped.
-check "pid_exe_path: the lsof query is ANDed with -a (not 'this pid OR any txt fd')" \
-	"/Users/u/.local/bin/cortex" \
-	"$(with_pid_exe_path '' /Users/u/.local/bin/cortex '')"
 # Belt and braces: pin the flag in the source too, so a refactor that rewrites the
 # invocation cannot quietly lose the conjunction while still passing the stub test.
 check "the lsof executable query passes -a" "1" \
@@ -1102,26 +1108,36 @@ chmod +x "${TMP}/unamebin/uname"
 #
 # Every HEAD logs its arguments to T_MEET's log as "head-args <args>". T_HEAD changes
 # how a HEAD behaves:
-#   wait  answer only once the terminal (T_OUT) shows a bar's frame, waiting up to 3s,
-#         and log to T_MEET whether it saw one: "head framed" or "head blank"
+#   wait  write "head-answers" to the terminal as it answers, so the terminal's bytes
+#         show whether a bar's frame came first
 #   none  answer 404, so the size is unknown
-#   hang  write its pid to T_MEET/<name>.head, then take 6s to answer, logging "head
-#         finished" if it gets that far, or "head killed" when a TERM stops it first.
-#         It ignores HUP, so a HEAD left running outlives the pty's hangup at the end
-#         of the run, and t_heads can see it
+#   hang  write its pid to T_MEET/<name>.head, write a line to its archive's
+#         hheld.<kind> fifo, and then hold until killed, logging "head killed" when a
+#         TERM stops it. It ignores HUP, so a HEAD left running outlives the pty's
+#         hangup at the end of the run, and t_heads can see it
 #
-# T_CURL changes how an archive (*.tar.gz) download behaves, recording in T_MEET:
-#   meet  mark that it started, then wait up to 3s for the other archive's mark, and
-#         log how many it saw. Downloading at once, each sees 2; one after the other,
-#         the first sees only itself.
-#   slow  take 1s first, so the download outlasts a few polls
-#   hold  mark that it started, then hold until killed, and log the kill. It takes 0.3s
-#         to stop, so a script that does not wait for it exits before the log says so
-# Its own waits use the real sleep, by path, so a stub sleep on PATH never sees them.
+# T_CURL changes how an archive (*.tar.gz) download behaves, recording in T_MEET. The
+# two archives are kinds agentop and cortex, and each has its fifos in T_MEET. A side
+# that waits on one opens it read-write and reads a line; the side it waits for writes
+# that line, its open blocking until the waiter has the fifo open:
+#   meet  mark that it started, then meet the other archive at the meet.<kind> fifos,
+#         and log how many marks it saw. Downloading at once, both meet, and each sees
+#         2; one after the other, the first waits for the other forever.
+#   slow  wait for the stub sleep's third call to write to slow.<kind>, so the download
+#         outlasts a few polls; on a terminal with a bar, also for its HEAD's
+#         asked.<kind>, which the HEAD writes once it has logged its request; with
+#         T_HEAD=hang, also for its HEAD's hheld.<kind>
+#   hold  write a line to held.<kind>, then hold until killed, and log the kill. It
+#         takes 0.3s to stop, so a script that does not wait for it exits before the
+#         log says so; with T_STOPPED=1 in T_ENV, it stops once the test writes to
+#         release.<kind>, after writing to stopped.<kind>
+# Its own wait uses the real sleep, by path, so a stub sleep on PATH never sees it.
 T_REAL_SLEEP=$(command -v sleep)
 mkdir -p "${TMP}/tbin"
 cat >"${TMP}/tbin/curl" <<'EOF'
 #!/bin/sh
+# Off the gone fifo, so a curl install.sh leaves running is counted, not waited for.
+exec 8>&-
 _u=""; _o=""; _p=""; _head=""; _w=""
 for _a in "$@"; do
 	case "${_a}" in http*) _u="${_a}" ;; -*I*) _head=1 ;; esac
@@ -1131,33 +1147,25 @@ for _a in "$@"; do
 done
 _n="${_u##*/}"
 _f="${T_REL}/${_n}"
+_k="${_n%%_*}" # the archive's kind
 if [ -n "${_head}" ]; then
 	printf 'HEAD %s\n' "${_u}" >>"${T_URLS}"
 	printf 'head-args %s\n' "$*" >>"${T_MEET}/log"
+	[ "${T_HEAD:-}" != wait ] || printf 'head-answers' >/dev/tty
+	[ -z "${T_ASKED:-}" ] || echo >"${T_MEET}/asked.${_k}"
 	if [ "${T_HEAD:-}" = hang ]; then
-		# HUP ignored, here and in the sleep: script(1) hangs its pty up when the run
+		# HUP ignored, here and in the hold: script(1) hangs its pty up when the run
 		# ends, and that HUP would kill a HEAD install.sh left running, hiding the leak.
 		# A terminal that stays open sends none, so the HEAD would run on.
 		trap '' HUP
-		"${T_REAL_SLEEP}" 6 &
+		printf '%s\n' "$$" >"${T_MEET}/${_n}.head"
+		# The hold's pid and the trap that kills it are set before hheld says it holds.
+		read -r _ <>"${T_MEET}/never" &
 		_sp=$!
 		trap 'kill "${_sp}" 2>/dev/null; printf "head killed\n" >>"${T_MEET}/log"; exit 143' TERM
-		printf '%s\n' "$$" >"${T_MEET}/${_n}.head"
+		echo >"${T_MEET}/hheld.${_k}"
 		wait "${_sp}"
 		printf 'head finished\n' >>"${T_MEET}/log"
-	fi
-	if [ "${T_HEAD:-}" = wait ]; then
-		_seen=blank
-		_i=0
-		while [ "${_i}" -lt 30 ]; do
-			if tr '\033\r' 'ER' <"${T_OUT}" | grep -q 'E\[?25lR  '; then
-				_seen=framed
-				break
-			fi
-			"${T_REAL_SLEEP}" 0.1
-			_i=$((_i + 1))
-		done
-		printf 'head %s\n' "${_seen}" >>"${T_MEET}/log"
 	fi
 	if [ -f "${_f}" ] && [ "${T_HEAD:-}" != none ]; then
 		printf 'HTTP/2 302 \r\ncontent-length: 0\r\n\r\nHTTP/2 200 \r\ncontent-length: %s\r\n\r\n' \
@@ -1170,21 +1178,40 @@ fi
 printf '%s\n' "${_u}" >>"${T_URLS}"
 t_marks() { set -- "${T_MEET}"/*.tar.gz; if [ -e "$1" ]; then echo "$#"; else echo 0; fi; }
 case "${T_CURL:-}:${_n}" in
-	meet:*.tar.gz)
+	meet:agentop_*.tar.gz | meet:cortex_*.tar.gz)
 		: >"${T_MEET}/${_n}"
-		_i=0
-		while [ "$(t_marks)" -lt 2 ] && [ "${_i}" -lt 30 ]; do
-			"${T_REAL_SLEEP}" 0.1
-			_i=$((_i + 1))
-		done
+		_o_k=agentop
+		[ "${_k}" != agentop ] || _o_k=cortex
+		echo >"${T_MEET}/meet.${_o_k}" &
+		read -r _ <>"${T_MEET}/meet.${_k}"
+		wait
 		printf 'met %s %s\n' "${_n}" "$(t_marks)" >>"${T_MEET}/log"
 		;;
-	slow:*.tar.gz) "${T_REAL_SLEEP}" 1 ;;
-	hold:*.tar.gz)
-		"${T_REAL_SLEEP}" 30 &
+	slow:agentop_*.tar.gz | slow:cortex_*.tar.gz)
+		read -r _ <>"${T_MEET}/slow.${_k}"
+		[ -z "${T_ASKED:-}" ] || read -r _ <>"${T_MEET}/asked.${_k}"
+		[ "${T_HEAD:-}" != hang ] || read -r _ <>"${T_MEET}/hheld.${_k}"
+		;;
+	hold:agentop_*.tar.gz | hold:cortex_*.tar.gz)
+		# Where its errors go: a file once the bar is drawn, the terminal otherwise.
+		if [ -t 2 ]; then _e=tty; else _e=file; fi
+		printf 'held %s %s\n' "${_n}" "${_e}" >>"${T_MEET}/log"
+		# The hold's pid and the trap that kills it are set before held says it holds.
+		# With T_STOPPED set, the stop reaps the hold before it opens stopped.<kind>, an
+		# open a SIGCHLD interrupts, then ends once the test writes to release.<kind>.
+		read -r _ <>"${T_MEET}/never" &
 		_sp=$!
-		trap 'kill "${_sp}" 2>/dev/null; "${T_REAL_SLEEP}" 0.3; printf "killed %s\n" "${_n}" >>"${T_MEET}/log"; exit 143' TERM
-		: >"${T_MEET}/${_n}"
+		trap 'kill "${_sp}" 2>/dev/null
+			if [ -n "${T_STOPPED:-}" ]; then
+				wait "${_sp}" 2>/dev/null
+				echo >"${T_MEET}/stopped.${_k}"
+				read -r _ <>"${T_MEET}/release.${_k}"
+			else
+				"${T_REAL_SLEEP}" 0.3
+			fi
+			printf "killed %s\n" "${_n}" >>"${T_MEET}/log"
+			exit 143' TERM
+		echo >"${T_MEET}/held.${_k}"
 		wait "${_sp}"
 		printf 'finished %s\n' "${_n}" >>"${T_MEET}/log"
 		;;
@@ -1205,20 +1232,28 @@ chmod +x "${TMP}/tbin/curl"
 # may well hold this machine's ports, and they must not decide a run.
 printf '#!/bin/sh\nexit 1\n' >"${TMP}/tbin/lsof"
 chmod +x "${TMP}/tbin/lsof"
-# sleep, for the runs that put it on PATH: it logs each call to T_SLEEPS, then sleeps
-# 0.2s whatever it was asked, so a run stays short. With T_SLEEP_NOFRAC=1 it rejects a
-# fraction, as a sleep that takes whole seconds only does.
+# sleep, for the runs that put it on PATH: it logs each call to T_SLEEPS and returns at
+# once, and its third call releases the T_CURL=slow archives. With T_SLEEP_NOFRAC=1 it
+# rejects a fraction, as a sleep that takes whole seconds only does. In a T_CURL=hold
+# run, its first call writes a line to the polled fifo, and each call sleeps as asked.
 mkdir -p "${TMP}/sleepbin"
 cat >"${TMP}/sleepbin/sleep" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$1" >>"${T_SLEEPS}"
+if [ "${T_CURL:-}" = slow ] && [ "$(wc -l <"${T_SLEEPS}")" -eq 3 ]; then
+	echo >"${T_MEET}/slow.agentop"
+	echo >"${T_MEET}/slow.cortex"
+fi
 case "${T_SLEEP_NOFRAC:-}:$1" in
 	1:*[!0-9]*)
 		printf 'sleep: invalid time interval: %s\n' "$1" >&2
 		exit 1
 		;;
 esac
-exec "${T_REAL_SLEEP}" 0.2
+if [ "${T_CURL:-}" = hold ]; then
+	[ "$(wc -l <"${T_SLEEPS}")" -ne 1 ] || echo >"${T_MEET}/polled"
+	exec "${T_REAL_SLEEP}" "$1"
+fi
 EOF
 chmod +x "${TMP}/sleepbin/sleep"
 # What install.sh's stdin holds when piped: the rest of itself. setup must not get it.
@@ -1279,18 +1314,21 @@ make_release() {
 #   repair   AUTHBRIDGE_SKIP_DOWNLOAD=1, with the fakes installed in ~/.local/bin
 #   bare     AUTHBRIDGE_SKIP_DOWNLOAD=1, with nothing installed
 # It sets T_RUN (the sandbox) and T_ST (the exit status), and leaves in T_RUN: log
-# (the fake agentop's record), urls (curl's), meet (curl's marks, for T_CURL), sleeps
-# (the stub sleep's calls), and out and err (install.sh's).
+# (the fake agentop's record), urls (curl's), meet (curl's marks and fifos, for T_CURL
+# and T_HEAD), sleeps (the stub sleep's calls), and out and err (install.sh's).
 #
 # Seven globals change a run, and each is reset after it:
 #   T_CURL   the stub curl's mode for an archive, above
 #   T_HEAD   the stub curl's mode for a HEAD, above
-#   T_SLEEP  put the stub sleep on PATH: frac (it takes fractions), or nofrac
+#   T_SLEEP  put the stub sleep on PATH: frac (it takes fractions), or nofrac. A
+#            T_CURL=slow or hold run has it, as frac when T_SLEEP is unset
 #   T_BG     run install.sh in the background, and set T_PID instead of T_ST
 #   T_PTY    run it on a pseudo-terminal, 100 columns wide, with TERM=xterm: yes; int,
-#            to type a ^C once both archive downloads have marked their start and the
-#            bar is on screen (and, with T_HEAD=hang, both HEADs have marked theirs);
-#            hup, to close the terminal at that point instead; dumb,
+#            to type a ^C once both archive downloads have written to their held fifo,
+#            which they start after the bar's first frame (and, with T_HEAD=hang, both
+#            HEADs their hheld one), and install.sh has polled them; hup, to close the terminal at that point instead,
+#            then wait until install.sh and all it started but the stub curl have
+#            exited; dumb,
 #            with TERM=dumb; narrow, 40 columns wide; or mid, 60. out is then the
 #            terminal's bytes, stdout and stderr together, and pty.pid install.sh's pid.
 #   T_PIPE   run it as `curl … | sh -s --` does: the script on stdin, so $0 is "sh" and
@@ -1337,6 +1375,16 @@ run_install() {
 	: >"${T_RUN}/log"
 	: >"${T_RUN}/urls"
 	: >"${T_RUN}/sleeps"
+	mkfifo "${T_RUN}/meet/never" "${T_RUN}/meet/polled" "${T_RUN}/gone"
+	for _ri_k in agentop cortex; do
+		mkfifo "${T_RUN}/meet/meet.${_ri_k}" "${T_RUN}/meet/slow.${_ri_k}" \
+			"${T_RUN}/meet/held.${_ri_k}" "${T_RUN}/meet/hheld.${_ri_k}" "${T_RUN}/meet/asked.${_ri_k}" \
+			"${T_RUN}/meet/stopped.${_ri_k}" "${T_RUN}/meet/release.${_ri_k}"
+	done
+	case "${T_SLEEP}:${T_CURL}" in :slow | :hold) T_SLEEP=frac ;; esac
+	# The terminals that draw a bar, and so ask for the sizes.
+	_ri_asked=""
+	case "${T_CURL}:${T_PTY}" in slow:yes | slow:mid) _ri_asked=1 ;; esac
 	_ri_path="${TMP}/tbin:${PATH}"
 	[ -z "${T_SLEEP}" ] || _ri_path="${TMP}/sleepbin:${_ri_path}"
 	[ -z "${T_UNAME}" ] || _ri_path="${TMP}/unamebin:${_ri_path}"
@@ -1365,7 +1413,7 @@ run_install() {
 		HOME="${T_RUN}/home" TMPDIR="${T_RUN}/tmp" PATH="${_ri_path}" \
 		AUTHBRIDGE_SKIP_DOWNLOAD="${_ri_skip}" \
 		T_REL="${T_REL:-}" T_URLS="${T_RUN}/urls" T_LOG="${T_RUN}/log" T_PROBE="${_ri_probe}" \
-		T_CURL="${T_CURL}" T_HEAD="${T_HEAD}" T_OUT="${T_RUN}/out" T_MEET="${T_RUN}/meet" \
+		T_CURL="${T_CURL}" T_HEAD="${T_HEAD}" T_ASKED="${_ri_asked}" T_MEET="${T_RUN}/meet" \
 		T_REAL_SLEEP="${T_REAL_SLEEP}" T_UNAME="${T_UNAME}" \
 		T_SLEEPS="${T_RUN}/sleeps" T_SLEEP_NOFRAC="$([ "${T_SLEEP}" != nofrac ] || echo 1)" \
 		${T_ENV} sh "$@"
@@ -1379,6 +1427,9 @@ run_install() {
 		[ "${T_PTY}" != dumb ] || _ri_term=dumb
 		{
 			printf 'echo "$$" >%s\n' "$(t_q "${T_RUN}/pty.pid")" # exec keeps it: install.sh's
+			# Held open by install.sh and all it starts but the stub curl, so its reader
+			# sees EOF once they have all exited.
+			case "${T_PTY}" in int | hup) printf 'exec 8>%s\n' "$(t_q "${T_RUN}/gone")" ;; esac
 			printf 'stty cols %s rows 30 2>/dev/null\nTERM=%s\nexport TERM\nexec' "${_ri_cols}" "${_ri_term}"
 			for _ri_a in "$@"; do printf ' %s' "$(t_q "${_ri_a}")"; done
 			printf '\n'
@@ -1387,22 +1438,28 @@ run_install() {
 		if [ "${T_PTY}" = hup ]; then
 			# script(1) holds the pty's other end, so killing it hangs the pty up, as closing
 			# a terminal window does, and install.sh gets a HUP with no terminal left to
-			# write to. It is waited out by its pid, since it is no child of this shell.
+			# write to. It is waited out on the gone fifo, since it is no child of this
+			# shell.
 			: >"${T_RUN}/out"
 			t_pty_bg "${T_RUN}/pty.sh" </dev/null >"${T_RUN}/out" 2>&1
-			t_until 2 t_marks
-			t_until yes t_drawn
+			exec 9<"${T_RUN}/gone"
+			t_held held
+			t_polled
 			kill -KILL "${T_SPID}" 2>/dev/null || :
 			wait "${T_SPID}" 2>/dev/null || :
-			t_until gone t_gone
+			cat <&9 >/dev/null
+			exec 9<&-
 		elif [ "${T_PTY}" = int ]; then
+			# The pipe that types the ^C stays open until install.sh and all it started
+			# but the stub curl have exited, so the ^C alone ends the run.
 			: >"${T_RUN}/out"
 			{
-				t_until 2 t_marks
-				t_until yes t_drawn
-				[ "${T_HEAD}" != hang ] || t_until 2 t_hmarks
+				exec 9<"${T_RUN}/gone"
+				t_held held
+				[ "${T_HEAD}" != hang ] || t_held hheld
+				t_polled
 				printf '\003'
-				"${T_REAL_SLEEP}" 1
+				cat <&9 >/dev/null
 			} \
 				| t_pty "${T_RUN}/pty.sh" >"${T_RUN}/out" 2>&1 || T_ST=$?
 		else
@@ -1426,8 +1483,11 @@ run_install() {
 	T_UNAME=""
 	T_INSTALLED=""
 }
-# t_drawn says yes once the terminal has been sent a bar: the cursor hidden, then a line.
-t_drawn() { if tr '\033\r' 'ER' <"${T_RUN}/out" | grep -q 'E\[?25lR  '; then echo yes; fi; }
+# t_held FIFO returns once a line has come on both archives' FIFO.<kind> fifos.
+t_held() { read -r _ <>"${T_RUN}/meet/$1.agentop"; read -r _ <>"${T_RUN}/meet/$1.cortex"; }
+# t_polled returns once a T_CURL=hold run's install.sh has polled its downloads, which
+# it does with every pid it would stop on a signal recorded.
+t_polled() { read -r _ <>"${T_RUN}/meet/polled"; }
 # t_gone says gone once the pty run's install.sh has exited, and alive until then. A
 # zombie has exited: in a container whose pid 1 is no init, an orphan is never reaped,
 # and kill -0 still finds it.
@@ -1441,16 +1501,6 @@ t_gone() {
 	else
 		echo gone
 	fi
-}
-# t_until N CMD... polls, every 0.1s for up to 5s, until CMD prints N.
-t_until() {
-	_tu_n=$1
-	shift
-	_tu_i=0
-	while [ "$("$@")" != "${_tu_n}" ] && [ "${_tu_i}" -lt 50 ]; do
-		"${T_REAL_SLEEP}" 0.1
-		_tu_i=$((_tu_i + 1))
-	done
 }
 
 t_log() { sed -n "s/^$1 //p" "${T_RUN}/log"; } # one kind of record, without its tag
@@ -1487,17 +1537,13 @@ t_same() { # stage agentop|cortex -> same when the stage holds that archive as r
 	if cmp -s "$1/${_ts_n}" "${T_REL}/${_ts_n}"; then echo same; else echo "differs: $1/${_ts_n}"; fi
 }
 t_meet() { grep -c "^$1 " "${T_RUN}/meet/log" 2>/dev/null || true; } # met|killed|finished
-t_marks() { # how many archive downloads have marked their start
-	set -- "${T_RUN}/meet"/*.tar.gz
-	if [ -e "$1" ]; then echo "$#"; else echo 0; fi
-}
 t_hmarks() { # how many T_HEAD=hang HEADs have marked their start
 	set -- "${T_RUN}/meet"/*.head
 	if [ -e "$1" ]; then echo "$#"; else echo 0; fi
 }
 # t_heads says, for the T_HEAD=hang HEADs: how many marked their start, how many are
-# still running (a zombie has ended, as t_gone counts one), and how many ran their 6s
-# out. "2 0 0" is both stopped, and neither waited for.
+# still running (a zombie has ended, as t_gone counts one), and how many finished
+# rather than being stopped. "2 0 0" is both stopped.
 t_heads() {
 	_th_alive=0
 	for _th_f in "${T_RUN}/meet"/*.head; do
@@ -1591,7 +1637,7 @@ check "  and nothing runs after it: no probe, no handoff, no stage left" "0 0 0"
 	"$(t_nlog probe) $(t_nlog argv) $(t_tmp_left)"
 
 # The poll: every 0.2s, and every 1s where sleep rejects a fraction, from the first
-# rejection on. The archives take 1s, so the stub sleep (0.2s a call) is polled ~5 times.
+# rejection on. The archives end at the stub sleep's third call, so it is polled 3 times or more.
 # Shown as the first call, then the distinct calls after it.
 t_sleeps() {
 	printf '%s | %s' "$(sed -n 1p "${T_RUN}/sleeps")" "$(sed 1d "${T_RUN}/sleeps" | sort -u | tr '\n' ' ')"
@@ -1620,11 +1666,11 @@ check "  and still reaches the handoff" "0 1" "${T_ST} $(t_nlog argv)"
 T_CURL=hold
 T_BG=1
 run_install ok release --ref=v9.9.9
-t_until 2 t_marks
+t_held held
+t_polled
 kill -TERM "${T_PID}"
 T_ST=0
 wait "${T_PID}" || T_ST=$?
-t_until 2 t_meet killed
 check "TERM mid-download: exits 143" "143" "${T_ST}"
 check "  stopping both downloads" "2 0" "$(t_meet killed) $(t_meet finished)"
 check "  leaving no stage, and never handing off" "0 0 0" \
@@ -1632,27 +1678,45 @@ check "  leaving no stage, and never handing off" "0 0 0" \
 
 # HUP mid-download: trapped the same way. Untrapped, dash dies of it as it would of an
 # untrapped TERM, and the stage stays behind. The downloads are counted the moment the
-# script has exited, before any wait here: it waits them out itself, so the rm -rf after
-# the kill cannot race a curl still writing into the stage.
+# script has exited: it waits them out itself, so the rm -rf after the kill cannot race a
+# curl still writing into the stage.
 T_CURL=hold
 T_BG=1
 run_install ok release --ref=v9.9.9
-t_until 2 t_marks
+t_held held
+t_polled
 kill -HUP "${T_PID}"
 T_ST=0
 wait "${T_PID}" || T_ST=$?
-_hup_ended=$(t_meet killed)
-t_until 2 t_meet killed
 check "HUP mid-download: exits 129" "129" "${T_ST}"
-check "  with both downloads stopped before it exits" "2 2 0" \
-	"${_hup_ended} $(t_meet killed) $(t_meet finished)"
+check "  with both downloads stopped before it exits" "2 0" \
+	"$(t_meet killed) $(t_meet finished)"
 check "  leaving no stage, and never handing off" "0 0 0" \
 	"$(t_tmp_left) $(t_nlog probe) $(t_nlog argv)"
 
+# A second signal while the EXIT trap waits on the downloads it has stopped, as a
+# closed terminal can send: the trap ignores it and finishes. The downloads end only
+# once the TERM has been sent.
+T_CURL=hold
+T_BG=1
+T_ENV="T_STOPPED=1"
+run_install ok release --ref=v9.9.9
+t_held held
+t_polled
+kill -HUP "${T_PID}"
+t_held stopped
+kill -TERM "${T_PID}"
+echo >"${T_RUN}/meet/release.agentop"
+echo >"${T_RUN}/meet/release.cortex"
+T_ST=0
+wait "${T_PID}" || T_ST=$?
+check "HUP, then TERM during its cleanup: exits 129, both downloads stopped, no stage" \
+	"129 2 0" "${T_ST} $(t_meet killed) $(t_tmp_left)"
+
 # --- on a terminal: the title, the bar, and what stays of them when the download ends ---
 # out is the terminal's bytes with ESC as E and CR as R; a pty ends each line with CR LF.
-# The archives take 1s, so the bar is drawn at least once; "setup:start" is the fake
-# setup's first output.
+# The archives end at the third poll, so the bar is drawn at least once; "setup:start" is
+# the fake setup's first output.
 t_tty() { tr '\033\r' 'ER' <"${T_RUN}/out"; }
 t_ntty() { t_tty | grep -o -- "$1" | wc -l | tr -d ' '; } # how often a string is on screen
 t_flat() { t_tty | tr '\n' 'N'; }                          # the same, LF shown as N
@@ -1713,15 +1777,15 @@ T_ENV="NO_COLOR=1"
 run_install ok release --ref=v9.9.9
 check "terminal, NO_COLOR: the same bar, no colour" "0 0 yes" \
 	"${T_ST} $(t_ntty 'E\[[0-9;]*m') $(if t_frame '$p' | grep -q "^${T_FULL}  100%"; then echo yes; else t_frames; fi)"
-# The first frame comes before the size requests answer: each HEAD waits until the
-# terminal shows one, for up to 3s, and says whether it did. Asked first and drawn
-# after, they would wait out the 3s each, and see none.
+# The first frame comes before the size requests answer: each HEAD writes to the
+# terminal as it answers, and the terminal's bytes are in the order they were written.
+# Asked first and drawn after, both answers would come before the frame.
 T_CURL=slow
 T_HEAD=wait
 T_PTY=yes
 run_install ok release --ref=v9.9.9
-check "terminal: the bar is on screen while the size requests are still out" "0 2" \
-	"${T_ST} $(grep -c '^head framed$' "${T_RUN}/meet/log" || true)"
+check "terminal: the bar is on screen while the size requests are still out" "0 0 2" \
+	"${T_ST} $(t_flat | sed 's/E\[?25lR  .*//' | grep -o head-answers | wc -l | tr -d ' ') $(t_ntty head-answers)"
 # Sizes the server will not give leave the bar counting bytes, but the download still
 # ends on a full bar at 100%, of what landed.
 T_CURL=slow
@@ -1732,7 +1796,7 @@ check "terminal, sizes unknown: bytes only until the end, which is still 100%, f
 	"${T_ST} $(t_frames | grep -c '%' || true) $(if t_frame '$p' | grep -q "^${T_FULL}  100%  ${T_SIZE} · sha256 ✓"; then echo yes; else t_frames; fi)"
 # A HEAD that hangs past the download is stopped when the download ends, not waited for:
 # the handoff follows the archives, whatever the HEADs are doing, and none is left
-# running past it. Left alone, each would take its 6s, and then finish.
+# running past it. Left alone, each would hold until killed.
 T_CURL=slow
 T_HEAD=hang
 T_PTY=yes
@@ -1788,7 +1852,6 @@ else
 	T_HEAD=hang
 	T_PTY=int
 	run_install ok release --ref=v9.9.9
-	t_until 2 t_meet killed
 	check "terminal: ^C mid-download exits 130" "130" "${T_ST}"
 	check "  stopping both HEADs too, which ignore a ^C as the downloads do" "2 0 0" "$(t_heads)"
 	# The terminal echoes the ^C where the cursor is, at the end of the bar's line.
@@ -1804,8 +1867,8 @@ make_release v9.9.9
 T_CURL=hold
 T_PTY=hup
 run_install ok release --ref=v9.9.9
-check "terminal closed mid-download: the bar was drawn, and install.sh has exited" "yes gone" \
-	"$(t_drawn) $(if [ -s "${T_RUN}/pty.pid" ]; then t_gone; else echo 'no pid'; fi)"
+check "terminal closed mid-download: the bar was drawn (the downloads' errors go to its file), and install.sh has exited" "2 gone" \
+	"$(grep -c '^held .* file$' "${T_RUN}/meet/log" || true) $(if [ -s "${T_RUN}/pty.pid" ]; then t_gone; else echo 'no pid'; fi)"
 check "  leaving no stage, and never handing off" "0 0 0" \
 	"$(t_tmp_left) $(t_nlog probe) $(t_nlog argv)"
 # Terminals the bar cannot use get the plain line, and no HEADs: TERM=dumb cannot redraw

@@ -177,34 +177,9 @@ func responseScript(contentType string, bodies []string, torn bool) []*extprocv3
 	return reqs
 }
 
-// TestExtProc_ResponsePhaseRunsOncePerResponse covers a per-RESPONSE dispatch that was written as a
-// per-MESSAGE one.
-//
-// A statically configured STREAMED body mode delivers N messages, and the response phase ran on each
-// of them — N decisions over N prefixes of a document, with every Invocation row landing in the
-// recorded snapshot. It is the same "wait until the body is whole" rule the frame dispatch and the
-// session record already follow.
-func TestExtProc_ResponsePhaseRunsOncePerResponse(t *testing.T) {
-	srv, spy, _ := lifecycleServer(t)
-	reqs := responseScript("application/json", []string{`{"half":`, `1}`}, false)
-
-	stream := &mockStream{ctx: context.Background(), requests: reqs}
-	_ = srv.Process(stream)
-	if stream.recvIdx != len(reqs) {
-		t.Fatalf("consumed %d of %d messages; the listener bailed", stream.recvIdx, len(reqs))
-	}
-
-	phases, terminals, _, _ := spy.snapshot()
-	if phases != 1 {
-		t.Errorf("response phases = %d over a two-message body, want 1: each extra one decided over a partial document", phases)
-	}
-	if terminals != 1 {
-		t.Errorf("terminal dispatches = %d, want 1", terminals)
-	}
-}
-
-// TestExtProc_NonSSEBodyIsDispatchedWhole is the other half of that rule: a JSON body split across
-// messages must reach a plugin as ONE document.
+// TestExtProc_NonSSEBodyIsDispatchedWhole pins the "wait until the body is whole" rule for the
+// frame dispatch: a JSON body split across messages must reach a plugin as ONE document.
+// TestExtProc_WhatTheResponsePhaseSees pins the same rule for the response phase.
 //
 // Replaced per message, each fragment arrived as if it were the whole response — no fragment is
 // valid JSON, so anything parsing it got nothing, and a plugin latching its first answer could not
@@ -276,7 +251,7 @@ func TestExtProc_WhatTheResponsePhaseSees(t *testing.T) {
 
 			phases, _, _, _ := spy.snapshot()
 			if phases != 1 {
-				t.Fatalf("response phases = %d, want 1: this row asserts what the ONE phase was handed", phases)
+				t.Fatalf("response phases = %d over a two-message body, want 1: the phase runs once per response, not per message", phases)
 			}
 			if got := spy.phaseBody(); got != tc.want {
 				t.Errorf("the phase saw %q, want %q", got, tc.want)

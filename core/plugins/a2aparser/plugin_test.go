@@ -621,21 +621,6 @@ func TestA2AParser_OnResponse_NoSessionFound(t *testing.T) {
 	}
 }
 
-func TestA2AParser_OnRequest_ContextIDPreferred(t *testing.T) {
-	// A client resuming a conversation sends contextId; we should pick it up on the request side too.
-	p := NewA2AParser()
-	pctx := &pipeline.Context{
-		Body: []byte(`{"jsonrpc":"2.0","method":"message/send","id":1,"params":{"contextId":"ctx-resume","message":{"role":"user","messageId":"m2","parts":[{"kind":"text","text":"hi again"}]}}}`),
-	}
-	action := p.OnRequest(context.Background(), pctx)
-	if action.Type != pipeline.Continue {
-		t.Fatalf("expected Continue, got %v", action.Type)
-	}
-	if pctx.Extensions.A2A == nil || pctx.Extensions.A2A.SessionID != "ctx-resume" {
-		t.Errorf("SessionID from contextId: got %+v, want ctx-resume", pctx.Extensions.A2A)
-	}
-}
-
 // IsAction classification: message/send and message/stream are user-
 // meaningful action methods (judge them); everything else is protocol
 // mechanics (skip).

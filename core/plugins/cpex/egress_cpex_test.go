@@ -155,9 +155,10 @@ func TestEnginePrincipalInjection(t *testing.T) {
 	// so the llm route sees the subject; the forwarded request does not.
 	llm := anthropicToolResultRequest("s1")
 	llm.Identity = nil
-	llm.Headers.Set("X-User-Token", spikeJWT("mallory", nil))
+	mallory := spikeJWT("mallory", nil)
+	llm.Headers.Set("X-User-Token", mallory)
 	wantContinue(t, "inference", p.OnRequest(ctx, llm))
-	if got := llm.Headers.Values("X-User-Token"); len(got) != 1 || got[0] != spikeJWT("mallory", nil) {
+	if got := llm.Headers.Values("X-User-Token"); len(got) != 1 || got[0] != mallory {
 		t.Fatalf("forwarded inference X-User-Token = %v, want the caller's own value only", got)
 	}
 	bare := anthropicToolResultRequest("s1")

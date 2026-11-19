@@ -223,6 +223,65 @@ func TestServerPicker_TheFlashCountsTheRunningSessionsThatStay(t *testing.T) {
 	}
 }
 
+// sharedRouterYAML is routerYAML with a third server, team-b, on ete's URL.
+const sharedRouterYAML = `mode: proxy-sidecar
+pipeline:
+  outbound:
+    plugins:
+      - name: inference-parser
+      - name: inference-router
+        config:
+          servers:
+            ete:
+              url: https://ete.example.com
+              key: sk-ete
+              main: opus
+              helper: haiku
+            glm:
+              url: https://glm.example.com:8443
+              key: sk-glm
+              main: glm
+              helper: nemotron
+            team-b:
+              url: https://ete.example.com
+              key: sk-team-b
+              main: opus
+              helper: haiku
+          agents:
+            claude-code: ete
+`
+
+// sharedRouterRaw is sharedRouterYAML's router config as /v1/pipeline's source holds it.
+const sharedRouterRaw = `{"servers":{"ete":{"url":"https://ete.example.com","key":"sk-ete","main":"opus","helper":"haiku"},` +
+	`"glm":{"url":"https://glm.example.com:8443","key":"sk-glm","main":"glm","helper":"nemotron"},` +
+	`"team-b":{"url":"https://ete.example.com","key":"sk-team-b","main":"opus","helper":"haiku"}},"agents":{"claude-code":"ete"}}`
+
+// sharedServerModel is serverModel over a proxy that runs sharedRouterYAML.
+func sharedServerModel(t *testing.T) *model {
+	t.Helper()
+	f := newFakeProxy(t, false)
+	if err := os.WriteFile(f.path, []byte(sharedRouterYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := serverModel(t, f)
+	m.pipeline = routerPipeline(sharedRouterRaw)
+	return m
+}
+
+// Two servers on one host: the flash counts each session by the server name the proxy recorded,
+// not by its host, which names ete for both.
+func TestServerPicker_TheFlashCountsBySessionServerName(t *testing.T) {
+	m := sharedServerModel(t)
+	m.sessions = []session.SessionSummary{
+		{ID: "a", Agent: "claude-code", InferenceHost: "ete.example.com", InferenceServer: "team-b"},
+		{ID: "b", Agent: "claude-code", InferenceHost: "ete.example.com", InferenceServer: "ete"},
+	}
+	switchTo(t, m, "claude-code/2.1.270", "team-b")
+	if want := "New claude-code sessions → team-b. 1 running session stays where it is."; m.flash != want {
+		t.Errorf("flash %q, want %q", m.flash, want)
+	}
+}
+
 // A session resumed after a restart that has sent no inference since shows its history's host,
 // and its pin survived the restart in the plugin store, so it stays where it is like any other —
 // for a switch to a server, or back to own choice.
@@ -784,16 +843,6 @@ func TestServerPicker_EnterOnAServerMovesTheSession(t *testing.T) {
 	}
 }
 
-// S on the agents pane still writes an agents: choice — the regression guard.
-func TestServerPicker_SOnTheAgentsPaneStillRoutesTheAgent(t *testing.T) {
-	f := newFakeProxy(t, false)
-	m := serverModel(t, f)
-	switchTo(t, m, "opencode/1.0.3", "glm")
-	if !strings.Contains(f.config(t), "opencode: glm") {
-		t.Errorf("config:\\n%s", f.config(t))
-	}
-}
-
 // The confirmation states the cache cost from the session's promptContext.
 func TestServerPicker_AMoveStatesTheUncachedContext(t *testing.T) {
 	f := newFakeProxy(t, false)
@@ -843,5 +892,23 @@ func TestServerPicker_OpensOnTheSessionInForceServer(t *testing.T) {
 	}
 	if got := p.entries[p.cursor].name; got != "glm" {
 		t.Errorf("cursor on %q, want glm: the server the session uses", got)
+	}
+}
+
+// Two servers on one host: the picker opens on the server the proxy recorded for the session,
+// not on the first name for its host.
+func TestServerPicker_OpensOnTheSessionsNamedServer(t *testing.T) {
+	m := sharedServerModel(t)
+	m.pane = paneSessions
+	m.sessions = []session.SessionSummary{{ID: "on-team-b", Agent: "claude-code", InferenceHost: "ete.example.com", InferenceServer: "team-b"}}
+	m.rebuildSessionsTable()
+	onSessionRow(t, m, "on-team-b")
+	m.handleKey(keyRune('S'))
+	p := m.serverPicker
+	if p == nil {
+		t.Fatalf("no picker; notice %q", m.serverNotice)
+	}
+	if got := p.entries[p.cursor].name; got != "team-b" {
+		t.Errorf("cursor on %q, want team-b: the server the session uses", got)
 	}
 }

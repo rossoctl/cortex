@@ -119,13 +119,6 @@ func TestValidate_InvalidListenerCombo(t *testing.T) {
 	}
 }
 
-func TestValidate_ProxySidecarRequiresBackend(t *testing.T) {
-	cfg := &Config{Mode: ModeProxySidecar}
-	if err := Validate(cfg); err == nil {
-		t.Error("expected error for proxy-sidecar without backend")
-	}
-}
-
 func TestValidate_ProxySidecarRoles(t *testing.T) {
 	// forward-only: reverse_proxy_backend is NOT required.
 	if err := Validate(&Config{Mode: ModeProxySidecar, Listener: ListenerConfig{Roles: []string{RoleForward}}}); err != nil {

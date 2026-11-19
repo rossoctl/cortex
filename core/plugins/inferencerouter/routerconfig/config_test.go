@@ -58,16 +58,13 @@ func TestValidate_RefusesEachBrokenRule(t *testing.T) {
 		{"ftp", `{"servers": {"e": {"url": "ftp://e.example", "key": "k", "main": "m", "helper": "h"}}}`, "scheme must be http or https"},
 		{"no scheme", `{"servers": {"e": {"url": "e.example", "key": "k", "main": "m", "helper": "h"}}}`, "scheme must be http or https"},
 		{"no host", `{"servers": {"e": {"url": "https://", "key": "k", "main": "m", "helper": "h"}}}`, "has no host"},
-		{"path", `{"servers": {"e": {"url": "https://e.example/v1", "key": "k", "main": "m", "helper": "h"}}}`, "has a path"},
+		{"path", `{"servers": {"e": {"url": "https://e.example/v1/../x", "key": "k", "main": "m", "helper": "h"}}}`, "must be plain segments"},
 		{"query", `{"servers": {"e": {"url": "https://e.example?x=1", "key": "k", "main": "m", "helper": "h"}}}`, "query or fragment"},
 		{"fragment", `{"servers": {"e": {"url": "https://e.example#x", "key": "k", "main": "m", "helper": "h"}}}`, "query or fragment"},
 		{"user info", `{"servers": {"e": {"url": "https://u:p@e.example", "key": "k", "main": "m", "helper": "h"}}}`, "user info"},
 		{"non-numeric port", `{"servers": {"e": {"url": "https://e.example:abc", "key": "k", "main": "m", "helper": "h"}}}`, "servers.e.url: not a valid URL"},
 		{"port zero", `{"servers": {"e": {"url": "https://e.example:0", "key": "k", "main": "m", "helper": "h"}}}`, "port must be a number from 1 to 65535"},
 		{"port too high", `{"servers": {"e": {"url": "https://e.example:65536", "key": "k", "main": "m", "helper": "h"}}}`, "port must be a number from 1 to 65535"},
-		{"shared host, port and case ignored", `{"servers": {
-			"a": {"url": "https://gw.example", "key": "k", "main": "m", "helper": "h"},
-			"b": {"url": "http://GW.example:4000", "key": "k", "main": "m", "helper": "h"}}}`, `"a" and "b" are both on gw.example`},
 		{"empty key", `{"servers": {"e": {"url": "https://e.example", "key": "", "main": "m", "helper": "h"}}}`, "the key is empty"},
 		{"key with a space", `{"servers": {"e": {"url": "https://e.example", "key": "sk 1", "main": "m", "helper": "h"}}}`, "printable ASCII with no spaces"},
 		{"agent naming no server", `{"servers": {"e": {"url": "https://e.example", "key": "k", "main": "m", "helper": "h"}}, "agents": {"claude-code": "glm"}}`, `"glm" is not a server listed under servers`},
@@ -166,7 +163,7 @@ func TestParseURL_QuotesNoPartOfTheURL(t *testing.T) {
 		scheme  = "the URL's scheme must be http or https"
 		noHost  = "the URL has no host"
 		user    = "the URL carries user info"
-		path    = "the URL has a path"
+		segment = `the URL's path must be plain segments, with no ".", "..", empty or escaped segment`
 		query   = "the URL has a query or fragment"
 	)
 	for _, tc := range []struct{ url, want string }{
@@ -193,8 +190,13 @@ func TestParseURL_QuotesNoPartOfTheURL(t *testing.T) {
 		{"https://[::1]:sk-SECRET", invalid},
 		{"https://u:sk-SECRET@h.example.com:abc", invalid},
 		{"https://u:sk-SECRET%ZZ@h.example.com", invalid},
-		// A key as a path segment.
-		{"https://h.example.com/sk-SECRET", path},
+		// A key in a path that is not plain segments.
+		{"https://h.example.com/sk-SECRET/../x", segment},
+		{"https://h.example.com/./sk-SECRET", segment},
+		{"https://h.example.com/sk-SECRET//x", segment},
+		{"https://h.example.com/sk-SECRET%2Fx", segment},
+		// A key with a "/" given as user info: url.Parse takes the key for the host.
+		{"https://sk-SECRET/x@h.example.com", segment},
 	} {
 		_, err := ParseURL(tc.url)
 		if err == nil {
@@ -275,23 +277,23 @@ func TestFetchModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids, err := FetchModels(context.Background(), srv.Client(), ep, key)
+	ids, header, err := FetchModels(context.Background(), srv.Client(), ep, Auth{Key: key})
 	if err != nil {
 		t.Fatalf("FetchModels: %v", err)
 	}
-	if fmt.Sprint(ids) != "[rits/zai-org/glm-5-3 rits/nvidia/nemotron]" {
-		t.Errorf("ids = %v, want the two named models", ids)
+	if fmt.Sprint(ids) != "[rits/zai-org/glm-5-3 rits/nvidia/nemotron]" || header != "authorization" {
+		t.Errorf("ids = %v, header %q, want the two named models and authorization", ids, header)
 	}
 
 	// Neither a refusal nor an unreachable server quotes the URL or the key.
-	if _, err := FetchModels(context.Background(), srv.Client(), ep, "sk-wrong"); err == nil ||
+	if _, _, err := FetchModels(context.Background(), srv.Client(), ep, Auth{Key: "sk-wrong"}); err == nil ||
 		!strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), srv.URL) || strings.Contains(err.Error(), "sk-wrong") {
 		t.Errorf("wrong key: err = %v, want the status and nothing of the URL or key", err)
 	}
 	srv.Close()
 	// The address may be named, as the forward proxy names a failed upstream's; the
 	// URL, its path and the key may not.
-	if _, err := FetchModels(context.Background(), srv.Client(), ep, key); err == nil ||
+	if _, _, err := FetchModels(context.Background(), srv.Client(), ep, Auth{Key: key}); err == nil ||
 		strings.Contains(err.Error(), srv.URL) || strings.Contains(err.Error(), "/v1/models") || strings.Contains(err.Error(), key) {
 		t.Errorf("closed server: err = %v, want no URL, path or key in it", err)
 	}
@@ -318,8 +320,7 @@ func TestKey(t *testing.T) {
 	}
 }
 
-// Two model servers on one machine are two servers; one address named twice is still
-// refused.
+// Two model servers on one machine are two servers.
 func TestDecode_LocalServersAreTheirPorts(t *testing.T) {
 	if _, err := Decode(json.RawMessage(`{"servers": {
 		"ollama": {"url": "http://localhost:11434", "key": "k", "main": "m", "helper": "h"},
@@ -327,11 +328,22 @@ func TestDecode_LocalServersAreTheirPorts(t *testing.T) {
 		"llama":  {"url": "http://127.0.0.1:8080", "key": "k", "main": "m", "helper": "h"}}}`)); err != nil {
 		t.Errorf("Decode refused three local servers on their own ports: %v", err)
 	}
-	_, err := Decode(json.RawMessage(`{"servers": {
-		"a": {"url": "http://localhost:11434", "key": "k", "main": "m", "helper": "h"},
-		"b": {"url": "http://LOCALHOST:11434", "key": "k", "main": "m", "helper": "h"}}}`))
-	if err == nil || !strings.Contains(err.Error(), `"a" and "b" are both on localhost:11434`) {
-		t.Errorf("err = %v, want the two servers on localhost:11434 refused", err)
+}
+
+// Two servers can share one host, for example one server for each key on one gateway. The
+// router names a session's server from its routed record, not from the host.
+func TestDecode_SharedHost(t *testing.T) {
+	for name, raw := range map[string]string{
+		"one host, port and case ignored": `{"servers": {
+			"a": {"url": "https://gw.example", "key": "k", "main": "m", "helper": "h"},
+			"b": {"url": "http://GW.example:4000", "key": "k", "main": "m", "helper": "h"}}}`,
+		"one local URL": `{"servers": {
+			"a": {"url": "http://localhost:11434", "key": "k", "main": "m", "helper": "h"},
+			"b": {"url": "http://localhost:11434", "key": "k2", "main": "m", "helper": "h"}}}`,
+	} {
+		if _, err := Decode(json.RawMessage(raw)); err != nil {
+			t.Errorf("%s: Decode = %v, want two servers on one host accepted", name, err)
+		}
 	}
 }
 
@@ -369,6 +381,291 @@ func TestDecode_Sessions(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("Decode error = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+func TestCheckAPI(t *testing.T) {
+	for _, api := range []map[string]string{
+		nil,
+		{"chat-completions": "/v1/chat/completions"},
+		{"chat-completions": "/chat/completions", "anthropic-messages": "/anthropic/v1/messages"},
+		{"responses": "/v1/responses"},
+	} {
+		if err := CheckAPI(api); err != nil {
+			t.Errorf("CheckAPI(%v) = %v, want nil", api, err)
+		}
+	}
+	for api, want := range map[string]string{
+		`{"chat": "/v1/chat/completions"}`:                     `unknown protocol "chat"; valid protocols: anthropic-messages, chat-completions, responses`,
+		`{"chat-completions": "v1/chat/completions"}`:          `api.chat-completions: path "v1/chat/completions" must be absolute, with no query, fragment or ".." segment`,
+		`{"chat-completions": "/v1/chat/completions?x=1"}`:     `api.chat-completions: path "/v1/chat/completions?x=1" must be absolute`,
+		`{"chat-completions": "/v1/../chat/completions"}`:      `".." segment`,
+		`{"chat-completions": "/v1/chat#x"}`:                   `must be absolute`,
+		`{"anthropic-messages": "x", "chat-completions": "y"}`: `api.anthropic-messages:`, // sorted: first key first
+	} {
+		var m map[string]string
+		if err := json.Unmarshal([]byte(api), &m); err != nil {
+			t.Fatal(err)
+		}
+		err := CheckAPI(m)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("CheckAPI(%s) = %v, want %q", api, err, want)
+		}
+	}
+}
+
+func TestCheckAuthHeader(t *testing.T) {
+	for _, name := range []string{"", "authorization", "x-api-key", "api-key", "Authorization"} {
+		if err := CheckAuthHeader(name); err != nil {
+			t.Errorf("CheckAuthHeader(%q) = %v, want nil", name, err)
+		}
+	}
+	for _, name := range []string{"Host", "Connection", "content-length", "Transfer-Encoding", "TE", "Proxy-Authorization", "bad header", "x:y"} {
+		if err := CheckAuthHeader(name); err == nil {
+			t.Errorf("CheckAuthHeader(%q) = nil, want an error", name)
+		}
+	}
+}
+
+func TestCheckHeaders(t *testing.T) {
+	if err := CheckHeaders(map[string]string{"User-Agent": "bob-shell", "X-Team": "a b"}, ""); err != nil {
+		t.Errorf("CheckHeaders = %v, want nil", err)
+	}
+	for name, want := range map[string]string{
+		"Authorization":     `headers: "Authorization" cannot be set here: Cortex sets it`,
+		"X-Api-Key":         `headers: "X-Api-Key" cannot be set here: Cortex sets it`,
+		"api-key":           `Cortex sets it`,
+		"Content-Length":    `headers: "Content-Length" cannot be set here: it is a hop-by-hop or framing header`,
+		"Transfer-Encoding": `it is a hop-by-hop or framing header`,
+		"host":              `it is a hop-by-hop or framing header`,
+		"X-Key":             `Cortex sets it`, // the server's own auth_header
+		"bad name":          `not a valid header name`,
+	} {
+		err := CheckHeaders(map[string]string{name: "v"}, "x-key")
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("CheckHeaders(%q) = %v, want %q", name, err, want)
+		}
+	}
+	for _, v := range []string{"a\nb", "a\rb", "a\x00b"} {
+		if err := CheckHeaders(map[string]string{"User-Agent": v}, ""); err == nil {
+			t.Errorf("CheckHeaders(value %q) = nil, want an error", v)
+		}
+	}
+}
+
+func TestDecode_APIAuthHeaderHeaders(t *testing.T) {
+	c, err := Decode(json.RawMessage(`{"servers": {"bob": {"url": "https://bob.example.com", "key": "k", "main": "m", "helper": "h",
+		"api": {"chat-completions": "/v1/chat/completions"}, "auth_header": "x-api-key", "headers": {"User-Agent": "bob-shell"}}}}`))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	s := c.Servers["bob"]
+	if s.API["chat-completions"] != "/v1/chat/completions" || s.AuthHeader != "x-api-key" || s.Headers["User-Agent"] != "bob-shell" {
+		t.Errorf("decoded %+v", s)
+	}
+	for field, want := range map[string]string{
+		`"api": {"chat": "/x"}`:                    "servers.bob.api: unknown protocol",
+		`"auth_header": "Host"`:                    "servers.bob.auth_header:",
+		`"headers": {"Authorization": "Bearer x"}`: "servers.bob.headers: \"Authorization\" cannot be set here",
+	} {
+		_, err := Decode(json.RawMessage(`{"servers": {"bob": {"url": "https://bob.example.com", "key": "k", "main": "m", "helper": "h", ` + field + `}}}`))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("Decode(%s) = %v, want %q", field, err, want)
+		}
+	}
+}
+
+func TestParseURL_Path(t *testing.T) {
+	ep, err := ParseURL("https://api.us-east.bob.ibm.com/inference")
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	if ep.Path != "/inference" || ep.Host != "api.us-east.bob.ibm.com" ||
+		ep.URL() != "https://api.us-east.bob.ibm.com/inference" || ep.Key() != "api.us-east.bob.ibm.com" {
+		t.Errorf("got %+v URL %q Key %q", ep, ep.URL(), ep.Key())
+	}
+	for raw, want := range map[string]string{
+		"https://h.example/inference/": "/inference",
+		"https://h.example/a/b":        "/a/b",
+		"https://h.example/":           "",
+		"https://h.example":            "",
+	} {
+		ep, err := ParseURL(raw)
+		if err != nil || ep.Path != want {
+			t.Errorf("ParseURL(%q) = Path %q, err %v; want %q", raw, ep.Path, err, want)
+		}
+	}
+	for raw, want := range map[string]string{
+		"https://h.example/a/../b":        `the URL's path must be plain segments, with no ".", "..", empty or escaped segment`,
+		"https://h.example/./a":           `the URL's path must be plain segments, with no ".", "..", empty or escaped segment`,
+		"https://h.example/a//b":          `the URL's path must be plain segments, with no ".", "..", empty or escaped segment`,
+		"https://h.example/a%2Fb":         `the URL's path must be plain segments, with no ".", "..", empty or escaped segment`,
+		"https://h.example/inference?x=1": "the URL has a query or fragment",
+	} {
+		if _, err := ParseURL(raw); err == nil || err.Error() != want {
+			t.Errorf("ParseURL(%q) err = %v, want %q", raw, err, want)
+		}
+	}
+}
+
+// modelsRecorder is a fake server that records each request as "<path> <auth>",
+// where <auth> is "Bearer" or "x-api-key", and answers with answer.
+func modelsRecorder(t *testing.T, seen *[]string, answer func(path, auth string, r *http.Request) (int, string)) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := ""
+		switch {
+		case strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "):
+			auth = "Bearer"
+		case r.Header.Get("X-Api-Key") != "":
+			auth = "x-api-key"
+		}
+		*seen = append(*seen, r.URL.Path+" "+auth)
+		status, body := answer(r.URL.Path, auth, r)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestFetchModels_TriesInOrder(t *testing.T) {
+	var seen []string
+	srv := modelsRecorder(t, &seen, func(path, auth string, _ *http.Request) (int, string) {
+		switch {
+		case auth == "Bearer":
+			return 401, ""
+		case path == "/v1/models":
+			return 403, ""
+		case path == "/v1/model/info":
+			return 200, `{"data":[{"model_name":"a"},{"model_name":"a"},{"model_name":""},{"model_name":"b"}]}`
+		}
+		return 404, ""
+	})
+	ep, _ := ParseURL(srv.URL)
+	ids, header, err := FetchModels(context.Background(), srv.Client(), ep, Auth{Key: "k"})
+	if err != nil || fmt.Sprint(ids) != "[a b]" || header != "x-api-key" {
+		t.Errorf("got %v %q %v, want [a b] x-api-key", ids, header, err)
+	}
+	if got := strings.Join(seen, ", "); got != "/v1/models Bearer, /v1/models x-api-key, /v1/model/info x-api-key" {
+		t.Errorf("requests = %s", got)
+	}
+}
+
+func TestFetchModels_FallsBackToModelInfoWithPrefix(t *testing.T) {
+	var seen []string
+	srv := modelsRecorder(t, &seen, func(path, _ string, r *http.Request) (int, string) {
+		switch {
+		case path == "/inference/v1/models":
+			return 403, ""
+		case path == "/inference/v1/model/info" && r.Header.Get("X-Api-Key") == "k" && r.Header.Get("User-Agent") == "bob-shell":
+			return 200, `{"data":[{"model_name":"premium-ide"},{"model_name":"fast"}]}`
+		}
+		return 403, ""
+	})
+	ep, err := ParseURL(srv.URL + "/inference")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, header, err := FetchModels(context.Background(), srv.Client(), ep,
+		Auth{Key: "k", Header: "x-api-key", Headers: http.Header{"User-Agent": {"bob-shell"}}})
+	if err != nil || fmt.Sprint(ids) != "[premium-ide fast]" || header != "x-api-key" {
+		t.Errorf("got %v %q %v (requests %v)", ids, header, err, seen)
+	}
+}
+
+func TestFetchModels_KeepsAConfiguredHeader(t *testing.T) {
+	var seen []string
+	srv := modelsRecorder(t, &seen, func(string, string, *http.Request) (int, string) { return 401, "" })
+	ep, _ := ParseURL(srv.URL)
+	_, _, err := FetchModels(context.Background(), srv.Client(), ep, Auth{Key: "k", Header: "x-api-key"})
+	if err == nil || !strings.Contains(err.Error(), "401") || strings.Join(seen, ", ") != "/v1/models x-api-key" {
+		t.Errorf("fixed header: err %v, requests %v", err, seen)
+	}
+	seen = nil
+	_, _, err = FetchModels(context.Background(), srv.Client(), ep, Auth{Key: "k"})
+	if err == nil || err.Error() != "the server answered 401, 401 to its model list" ||
+		strings.Join(seen, ", ") != "/v1/models Bearer, /v1/models x-api-key" {
+		t.Errorf("no header: err %v, requests %v", err, seen)
+	}
+}
+
+// A model_name that is not a string is not read, and the list still decodes.
+func TestFetchModels_NonStringModelName(t *testing.T) {
+	for _, body := range []string{
+		`{"data":[{"id":"a","model_name":7}]}`,
+		`{"data":[{"id":"a","model_name":{"x":1}}]}`,
+		`{"data":[{"id":"a","model_name":null},{"model_name":["b"]}]}`,
+	} {
+		var seen []string
+		srv := modelsRecorder(t, &seen, func(string, string, *http.Request) (int, string) { return 200, body })
+		ep, _ := ParseURL(srv.URL)
+		ids, _, err := FetchModels(context.Background(), srv.Client(), ep, Auth{Key: "k"})
+		if err != nil || fmt.Sprint(ids) != "[a]" {
+			t.Errorf("%s: ids %v, err %v", body, ids, err)
+		}
+	}
+}
+
+func TestFetchModels_BadBodyStops(t *testing.T) {
+	var seen []string
+	srv := modelsRecorder(t, &seen, func(string, string, *http.Request) (int, string) { return 200, "not json" })
+	ep, _ := ParseURL(srv.URL)
+	_, _, err := FetchModels(context.Background(), srv.Client(), ep, Auth{Key: "k"})
+	if err == nil || err.Error() != "the server's model list is not an OpenAI-style list of models" || len(seen) != 1 {
+		t.Errorf("err %v, requests %v", err, seen)
+	}
+}
+
+func TestSetAuth(t *testing.T) {
+	for name, want := range map[string]string{"": "Authorization: Bearer k", "Authorization": "Authorization: Bearer k", "x-api-key": "X-Api-Key: k"} {
+		h := http.Header{}
+		SetAuth(h, name, "k")
+		var b strings.Builder
+		_ = h.Write(&b)
+		if got := strings.TrimSpace(b.String()); got != want {
+			t.Errorf("SetAuth(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestValidate_KeyRoutes(t *testing.T) {
+	base := `{"servers":{
+		"team-a":{"url":"https://gw.example.com","key":"team-a-key","main":"m","helper":"h"},
+		"team-b":{"url":"https://gw.example.com","key":"team-b-key","main":"m","helper":"h"}}`
+	for _, tc := range []struct {
+		name    string
+		extra   string
+		wantErr string
+	}{
+		{"a key to another server", `,"key_routes":{"team-b":"team-a"}`, ""},
+		{"a key to its own server", `,"key_routes":{"team-a":"team-a"}`, ""},
+		{"no key_routes is an empty map", ``, ""},
+		{"an unknown key owner is refused", `,"key_routes":{"nope":"team-a"}`,
+			`key_routes: "nope" is not a server listed under servers`},
+		{"an unknown target is refused", `,"key_routes":{"team-b":"nope"}`,
+			`key_routes.team-b: "nope" is not a server listed under servers`},
+		{"the first bad entry in sorted order is named", `,"key_routes":{"zz":"team-a","yy":"team-a"}`,
+			`key_routes: "yy" is not a server listed under servers`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Decode(json.RawMessage(base + tc.extra + `}`))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Decode: %v", err)
+				}
+				if c.KeyRoutes == nil {
+					t.Error("KeyRoutes is nil; an absent key_routes block routes nothing, as an empty one does")
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("Decode error = %v, want %q", err, tc.wantErr)
+			}
+			// An error names servers only, never a key.
+			if strings.Contains(err.Error(), "-key") {
+				t.Errorf("error %q holds a key", err)
 			}
 		})
 	}

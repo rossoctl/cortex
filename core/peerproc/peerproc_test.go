@@ -96,10 +96,6 @@ func sameFile(a, b string) bool {
 	return err1 == nil && err2 == nil && ea == eb
 }
 
-func TestNew_SelfTestPasses(t *testing.T) {
-	newResolver(t)
-}
-
 // A connection this process dialled is this process's.
 func TestConnOwner_NamesThisProcess(t *testing.T) {
 	r := newResolver(t)

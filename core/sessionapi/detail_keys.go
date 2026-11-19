@@ -11,7 +11,9 @@ import "slices"
 var detailKeys = map[string][2][]string{
 	"inference": {
 		{"model", "requestedModel", "messages", "temperature", "maxTokens", "topP",
-			"stream", "tools", "toolChoice", "toolResults", "historyToolCalls"},
+			"stream", "tools", "toolChoice", "toolResults", "historyToolCalls",
+			// How the agent asked the model to think. A change of effort breaks the prompt cache.
+			"effort", "thinkingType", "anthropicBeta", "agentRole", "historyThinking"},
 		// reasoningTokens is a SUBSET of completionTokens, not a sibling: it is the share
 		// of the generated tokens the model spent reasoning, billed at the output rate.
 		// Adding the two double-counts every one of them.

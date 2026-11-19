@@ -33,9 +33,12 @@ const serverUsage = `agentop server — choose the inference server each coding 
 Usage:
   agentop server [--config PATH]
   agentop server add <name> <url> --main WORD --helper WORD [--key-stdin] [--yes] [--config PATH]
+                     [--api PROTOCOL=PATH]... [--auth-header NAME] [--header NAME=VALUE]...
   agentop server remove <name> [--config PATH]
   agentop server use <name> --agent <agent> [--config PATH]
   agentop server reset --agent <agent> [--config PATH]
+  agentop server use <name> --key-of <server> [--config PATH]
+  agentop server reset --key-of <server> [--config PATH]
   agentop server move <session-id> <name|own> [--config PATH]
 
 With no action, lists the servers, the model each one's main and helper word
@@ -51,10 +54,17 @@ only, and a proxy restart moves none, since each session's server is kept in
 ~/.cortex. A conversation that began before routing was set up stays where the
 agent sends it.
 
+"use <name> --key-of <server>" sends the new sessions that send <server>'s
+key to <name>, through the router's key_routes: map. One hop only. An
+agent's own server, from "use --agent", wins over it. "reset --key-of
+<server>", or "use <server> --key-of <server>", removes the entry.
+
 "add" reads the server's API key at a prompt that does not echo, or from stdin
 with --key-stdin; it is never an argument. Adding a name that exists asks before
 replacing its URL, key and models (--yes skips the question), which is also how a
-key is rotated.
+key is rotated. --api names a protocol the server serves and its path
+(anthropic-messages, chat-completions or responses), --auth-header the header
+that carries the key, and --header a fixed header for every request.
 
 A request goes with the model the agent asked for. Only when the server refuses
 that model is it sent again, once and before the agent sees the refusal, with
@@ -66,9 +76,9 @@ refuses a word that names none of its models.
 Every change is written to ~/.cortex/config.yaml, or to --config PATH, and returns
 once the proxy has reloaded it. Nothing restarts. Flags go after the action.
 
-Setting up a local model server — installing it, picking a model, its context
-length — is walked at
-https://github.com/rossoctl/cortex/blob/main/docs/laptop-local-model.md
+Setting up a server — a gateway's key, or a local model's install, model and
+context length — is walked at
+https://github.com/rossoctl/cortex/blob/main/docs/inference-servers.md
 `
 
 // runServer handles the `server` subcommand. Returns the process exit code.
@@ -214,6 +224,16 @@ func agentsOn(c routerconfig.Config, server string) []string {
 	return out
 }
 
+// agentsCell is the last cell of server's row in the listing: the agents routed to
+// it and, when its key goes to another server, "its key → <server>".
+func agentsCell(c routerconfig.Config, server string) string {
+	cell := agentsOn(c, server)
+	if to := c.KeyRoutes[server]; to != "" && to != server {
+		cell = append(cell, "its key → "+to)
+	}
+	return strings.Join(cell, ", ")
+}
+
 func serverList(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("server", flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
@@ -253,11 +273,19 @@ func serverList(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(&table, 0, 0, 3, ' ', 0)
 	for _, name := range slices.Sorted(maps.Keys(c.Servers)) {
 		s := c.Servers[name]
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", name, servers.Host(s), resolvedWords(s), strings.Join(agentsOn(c, name), ", "))
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", name, servers.Host(s), resolvedWords(s), agentsCell(c, name))
 	}
 	tw.Flush()
+	// The detail lines go under each row after the table is aligned: a line with no
+	// tab would restart tabwriter's columns below it.
+	names := slices.Sorted(maps.Keys(c.Servers))
+	i := 0
 	for line := range strings.Lines(table.String()) {
 		fmt.Fprintln(stdout, strings.TrimRight(line, " \n"))
+		for _, d := range protocolLines(c.Servers[names[i]]) {
+			fmt.Fprintln(stdout, "      "+d)
+		}
+		i++
 	}
 	fmt.Fprintln(stdout)
 
@@ -267,11 +295,31 @@ func serverList(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// protocolLines is s's api, auth_header and header names, one line each that s has.
+// Header values are never shown: they can hold a credential.
+func protocolLines(s routerconfig.Server) []string {
+	var out []string
+	if len(s.API) > 0 {
+		var api []string
+		for _, p := range slices.Sorted(maps.Keys(s.API)) {
+			api = append(api, p+"="+s.API[p])
+		}
+		out = append(out, "api: "+strings.Join(api, ", "))
+	}
+	if s.AuthHeader != "" {
+		out = append(out, "auth header: "+s.AuthHeader)
+	}
+	if len(s.Headers) > 0 {
+		out = append(out, "headers: "+strings.Join(slices.Sorted(maps.Keys(s.Headers)), ", "))
+	}
+	return out
+}
+
 // resolvedWords is a server's main and helper words with the models they name on its
 // list now, read with the server's own key, as the router resolves them. A server
 // whose list cannot be read says why rather than showing a model it may not name.
 func resolvedWords(s routerconfig.Server) string {
-	ids, err := serverModels(s)
+	ids, _, err := serverModels(s)
 	if err != nil {
 		return fmt.Sprintf("%s (model list unavailable: %v)", servers.Mapping(s), err)
 	}
@@ -284,15 +332,19 @@ func resolvedWords(s routerconfig.Server) string {
 	return "main " + named(s.Main) + " · helper " + named(s.Helper)
 }
 
-// serverModels is s's model list. A var so tests can stand in for a server.
-var serverModels = func(s routerconfig.Server) ([]string, error) {
+// serverModels is s's model list and the auth header that worked. A var so tests
+// can stand in for a server.
+var serverModels = fetchServerModels
+
+func fetchServerModels(s routerconfig.Server) ([]string, string, error) {
 	ep, err := routerconfig.ParseURL(s.URL)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return routerconfig.FetchModels(ctx, routerconfig.NewModelsClient(), ep, s.Key)
+	return routerconfig.FetchModels(ctx, routerconfig.NewModelsClient(), ep,
+		routerconfig.Auth{Key: s.Key, Header: s.AuthHeader, Headers: routerconfig.HeaderOf(s.Headers)})
 }
 
 // printCheck writes one check as "  ✓ text", wrapped at 80 columns with the

@@ -1,5 +1,128 @@
 # IBM Bob
 
+IBM Bob is a VS Code fork. `agentop configure bob` routes both the Bob editor and
+the `bob` shell command through Cortex. Cortex files every child task in its root
+task's session, so one Bob run shows as one session. `agentop import --agent bob`
+adds Bob tasks from before Cortex.
+
+## Use it
+
+1. Run `agentop configure bob enable`. One command does both halves: the editor's
+   `settings.json`, and a `bob` function in `~/.zshrc` or `~/.bashrc`. It shows
+   every change and asks once. `--yes` skips the question. Off macOS, add
+   `--settings PATH` with the path of Bob's `settings.json` to every
+   `configure bob` command, `disable` and `status` too. Without it, the command
+   skips the editor half and exits 1. Off macOS, `enable` also prints how to add
+   the CA to the system trust store. That step needs `sudo`, so run it yourself
+   before you restart Bob.
+2. Restart the editor. On macOS, quit IBM Bob and reopen it from the Dock or
+   Spotlight. A Bob that starts from a terminal takes that terminal's environment
+   and does not read the CA block.
+3. Open a new terminal and run `bob`. A terminal that was open before `enable`
+   does not have the function.
+4. Check: run `agentop observe`, send one prompt, and see a row for Bob.
+   `agentop configure bob status` shows what is set. In a terminal that was open
+   before `enable`, it says `not enabled`.
+5. Undo: run `agentop configure bob disable`. Quit Bob and reopen it. Then open a
+   new terminal: `bob` keeps working in shells that are already open.
+
+## What you see
+
+### Subagents and subtasks
+
+Bob can start child tasks. A subagent runs beside its parent. A subtask runs in
+place of its parent until it ends. Cortex files every child in its root task's
+session, so one Bob run shows as one session.
+
+#### What Bob sends
+
+- Every chat request has `X-Task-Id`, the task's own id.
+- A child's request also has `X-Parent-Task-Id`. Every child names the root
+  task. A child of a subtask also names the root task.
+- The `router` and `security` calls send no task id.
+
+#### What Cortex does
+
+- A child's rows go in the root's session. The session id is the
+  `X-Parent-Task-Id` value. A root task keeps its own `X-Task-Id` as the id.
+- Each row of a child has `subagent` set to the child's own task id.
+- Each row of a child has `subagentKind` set to one of these values:
+  - `subtask`, when the request's tool list has `end_subtask`.
+  - `subagent`, in all other cases. This includes a pipeline with no inference
+    parser.
+- A request whose `X-Parent-Task-Id` is the same as its `X-Task-Id` is a root.
+- The cost of a child is part of the root's cost, as in Bob.
+
+The two headers come from the client and Cortex does not authenticate them.
+Cortex uses them only to group rows, never to identify a principal.
+
+#### What agentop shows
+
+- Each subagent is a block. The block is collapsed at first.
+- Each subtask is a section with the label `subtask <id>`, at its place in the
+  conversation. The section is open at first. Push Enter to collapse it.
+- The timeline has one agent row for each child. A subtask row has the label
+  `subtask <id>`.
+
+#### Limits
+
+- A child of a subtask shows as a child of the root, because the wire names
+  the root.
+- Archived child sessions that an older Cortex recorded stay as separate
+  sessions.
+- A call with no task id, such as a `router` call, stays in the root's session
+  with no `subagent` id.
+
+## Import history
+
+`agentop import --agent bob` adds the Bob tasks from before Cortex to the
+session history and the cost ledger. It reads `~/.bob/db/bob.db` through the
+`sqlite3` program, so `sqlite3` must be on `PATH`. It covers Bob Shell and Bob
+IDE, and it does not write to the database.
+
+- One root task and its child tasks make one session.
+- The import skips a session that Cortex captured live.
+- A turn keeps Bob's own cost.
+
+Flags and output:
+[`agentop import`](../../cmd/agentop/README.md#importing-agent-history-agentop-import).
+Rules: [`POST /v1/import`](../session-api.md#post-v1import--transcript-import-laptop-only).
+
+## Known issues
+
+- **`status` says `not enabled` in the terminal that ran `enable`.** Open a new
+  terminal. See [What `status` does and does not know](#what-status-does-and-does-not-know).
+- **`status` says enabled, but `bob` in a script or subshell skips Cortex.** Run
+  `type bob` in that shell. See [What `status` does and does not know](#what-status-does-and-does-not-know).
+- **bash on macOS: a new window has no `bob` function.** Source `~/.bashrc` from
+  `~/.bash_profile`. See [Which file it writes](#which-file-it-writes).
+- **A symlink chain, a dangling link, or another shell gets no rc block.** Place
+  the printed block yourself. See [Symlinks](#symlinks).
+- **`disable` declines a block "edited since it was written".** Remove the block
+  by hand. See [Typing `bob` instead of `agentop exec -- bob`](#typing-bob-instead-of-agentop-exec----bob-the-shell-half-of-agentop-configure-bob).
+- **Bob's traffic passes through unread.** Quit Bob and reopen it from the Dock or
+  Spotlight, and check the rc file that your login shell reads. See
+  [Trusting Cortex's CA without the keychain (macOS)](#trusting-cortexs-ca-without-the-keychain-macos).
+- **A Bob extension fails on a host that only the keychain trusts.** That is the
+  cost of `http.systemCertificates: false`. See
+  [Trusting Cortex's CA without the keychain (macOS)](#trusting-cortexs-ca-without-the-keychain-macos).
+- **`enable` refuses `settings.json`.** It refuses a file with comments, a proxy
+  that it does not own, a file that holds only `null`, and a missing `User`
+  directory. See [What it knows, and what it does not](#what-it-knows-and-what-it-does-not).
+  On macOS it also refuses an `http.systemCertificates` value that you set. See
+  [Trusting Cortex's CA without the keychain (macOS)](#trusting-cortexs-ca-without-the-keychain-macos).
+- **`status` says "cannot tell".** `~/.cortex/config.yaml` is missing or not
+  readable. See [What it knows, and what it does not](#what-it-knows-and-what-it-does-not).
+- **An extension's traffic does not go through Cortex.** An extension with its own
+  HTTP client can go around `http.proxy`. See
+  [What it knows, and what it does not](#what-it-knows-and-what-it-does-not).
+
+Problems that all agents share are in [troubleshooting.md](../troubleshooting.md).
+
+## How it works (for developers)
+
+### Routing the IBM Bob editor through Cortex (`agentop configure bob`)
+
 IBM Bob is a VS Code fork, so it reads the VS Code proxy setting. `agentop
 configure bob enable` writes it as a flat, top-level key in Bob's user settings,
 and on macOS one more key beside it:
@@ -26,18 +149,32 @@ worse than the setting is worth. `disable` takes the lines back out the same way
 so enable-then-disable returns the file byte-for-byte.
 
 ```sh
-agentop configure bob enable      # write the settings (and, on macOS, the shell block)
+agentop configure bob enable      # write the settings and the bob function (on macOS, also the CA block)
 agentop configure bob disable     # remove what enable wrote
-agentop configure bob status      # report, and act on nothing
+agentop configure bob status      # report, and act on nothing: the verdict, then one line per half
 ```
 
 `enable` and `disable` show every change and ask once before writing, keep a
 `.bak` of the settings file as it was first found, and take `--yes` for unattended
-use. Declined — or with no terminal to ask on — they write nothing and exit **3**,
-the same convention as `configure claude-code` and `configure bobshell`.
-`--settings PATH` and `--config PATH` override either file.
+use:
 
-### Trusting Cortex's CA without the keychain (macOS)
+```sh
+agentop configure bob enable --yes    # no prompt
+```
+
+Declined at the prompt, they write nothing and exit **3**. With no terminal to ask
+on — CI, a container, a Dockerfile `RUN` — they decline rather than prompt, print
+`Re-run with --yes to apply`, write nothing and exit **3**. Not 0: a decline is not a failure, but it is
+also not an applied change, and 3 is what lets an unattended caller tell the two
+apart — the same code `configure claude-code` and `service` return when they are
+declined. An unattended caller that omits `--yes` is still a no-op; it is just no
+longer a silent one. Scripted callers should pass `--yes`.
+
+`--settings PATH` and `--config PATH` override either file. Restart Bob afterwards:
+whether it re-reads a proxy change live is unverified, so the message says restart
+rather than guess.
+
+#### Trusting Cortex's CA without the keychain (macOS)
 
 The proxy terminates TLS with a forged leaf, so Bob has to trust Cortex's bridge
 CA or Cortex cannot read its requests. Bob's model calls leave from its extension
@@ -68,8 +205,9 @@ macOS `enable` makes two changes, and neither touches the keychain:
   # <<< cortex agentop (bob) <<<
   ```
 
-  The file, and every rule for editing it, is `configure bobshell`'s: `~/.zshrc`
-  for zsh, `~/.bashrc` for bash, followed through one symlink, written
+  The file, and every rule for editing it, is in
+  [the shell half](#typing-bob-instead-of-agentop-exec----bob-the-shell-half-of-agentop-configure-bob):
+  `~/.zshrc` for zsh, `~/.bashrc` for bash, followed through one symlink, written
   atomically, and removed by `disable` only when it is exactly what `enable`
   wrote. Any other shell, a dangling link, or a deeper chain gets the block
   printed to place yourself.
@@ -91,10 +229,9 @@ a root trusted *only* in the keychain (some company-internal CAs) fails from Bob
 extensions. Bob's own UI and webviews are Chromium, trust only the keychain, and
 are not affected by any of this: they stay passed through unread.
 
-Earlier versions of `enable` printed a `sudo security add-trusted-cert` command
-for the System keychain instead. `disable` still prints its undo — two commands,
-because `delete-certificate` alone leaves the admin-domain trust settings the add
-wrote:
+An older agentop printed a `sudo security add-trusted-cert` command for the
+System keychain instead. `disable` prints its undo — two commands, because
+`delete-certificate` alone leaves the admin-domain trust settings the add wrote:
 
 ```sh
 sudo security remove-trusted-cert -d ~/.cortex/ca/ca.crt
@@ -108,7 +245,7 @@ distribution — because that needs `sudo` and agentop does not escalate on its 
 It is `ca.crt`, the single bridge CA, and deliberately **not** the `bundle.crt`
 beside it, which holds every platform root as well.
 
-### What it knows, and what it does not
+#### What it knows, and what it does not
 
 "Enabled" means the value's **host and port both match** `listener.forward_proxy_addr`
 from `~/.cortex/config.yaml` — the address this machine's Cortex actually listens
@@ -121,7 +258,8 @@ while the settings file names `127.0.0.1`, and a hand-typed address must not be
 called someone else's proxy.
 
 That is not a record agentop keeps: ownership of `http.proxy` is re-decided from
-the value each time. `http.systemCertificates` is the exception — see below.
+the value each time. `http.systemCertificates` is the exception — see
+[Trusting Cortex's CA without the keychain (macOS)](#trusting-cortexs-ca-without-the-keychain-macos).
 
 Ownership has three answers, not two. A value that matches is **ours**; a
 corporate proxy, or a non-string value, is **not ours** and is left alone by both
@@ -162,58 +300,58 @@ Bob/User/settings.json`). Elsewhere `--settings PATH` is required rather than
 guessed — writing a proxy setting into a file nothing reads is a silent no-op,
 which is worse than a refusal that names the flag.
 
-## Subagents and subtasks
+### Typing `bob` instead of `agentop exec -- bob` (the shell half of `agentop configure bob`)
 
-Bob can start child tasks. A subagent runs beside its parent. A subtask runs in
-place of its parent until it ends. Cortex files every child in its root task's
-session, so one Bob run shows as one session.
+`agentop exec -- bob` routes one invocation. `agentop configure bob enable`
+makes that the meaning of `bob` in every new shell, by appending a delimited
+block to your rc file:
 
-### What Bob sends
+```sh
+# >>> cortex agentop (bobshell) >>>
+bob() {
+  agentop exec -- bob "$@"
+}
+export CORTEX_BOBSHELL=1
+# <<< cortex agentop (bobshell) <<<
+```
 
-- Every chat request has `X-Task-Id`, the task's own id.
-- A child's request also has `X-Parent-Task-Id`. Every child names the root
-  task. A child of a subtask also names the root task.
-- The `router` and `security` calls send no task id.
+Bob is one agent with two faces, and `configure bob` configures both: the IBM Bob
+**editor** — a VS Code fork, so the lever is `http.proxy` in its `settings.json`
+([the editor half](#routing-the-ibm-bob-editor-through-cortex-agentop-configure-bob))
+— and the **shell integration**, a `bob` function in your rc file so typing `bob`
+at a prompt runs through Cortex. Both halves' changes are listed under ONE preview
+and confirmed by ONE prompt, and a write failure in one half does not stop the
+other; a declined prompt declines both. `bobshell` is not a command.
 
-### What Cortex does
+Let `enable` write it rather than pasting the block above. What `enable` appends
+begins with a blank line, which the fence cannot show you: it is invisible when
+rendered, and formatters strip a leading blank line inside a fence anyway. That
+newline is part of the block rather than something added to your content, so the
+block starts on a line of its own even after a file whose last line has no
+newline of its own, and `disable` takes the separator away with the rest of it.
+Paste the fence's text verbatim at the top of a file and `disable` will report a
+block "edited since it was written" and decline — it matches the whole constant,
+leading newline included. It declines rather than guessing, so nothing is lost,
+but the block is then yours to remove by hand.
 
-- A child's rows go in the root's session. The session id is the
-  `X-Parent-Task-Id` value. A root task keeps its own `X-Task-Id` as the id.
-- Each row of a child has `subagent` set to the child's own task id.
-- Each row of a child has `subagentKind` set to one of these values:
-  - `subtask`, when the request's tool list has `end_subtask`.
-  - `subagent`, in all other cases. This includes a pipeline with no inference
-    parser.
-- A request whose `X-Parent-Task-Id` is the same as its `X-Task-Id` is a root.
-- The cost of a child is part of the root's cost, as in Bob.
+Letting `enable` write it is also why nothing else in the file is touched and the
+file comes back byte-for-byte — a round-trip test asserts exactly that,
+including on a file with no trailing newline, so the two halves cannot drift
+apart.
+Run `enable` twice and the second run is a no-op. If the block is there but
+hand-edited, or there twice over, both verbs decline and say so rather than
+guess which copy you meant.
 
-The two headers come from the client and Cortex does not authenticate them.
-Cortex uses them only to group rows, never to identify a principal.
+A shell function, not an alias: bash does not expand aliases in
+non-interactive shells unless `expand_aliases` is set, and `"$@"` forwards
+arguments explicitly, so `bob "two words"` stays one argument.
 
-### What agentop shows
+It cannot recurse into itself, which is why there is no machinery to resolve
+the real binary past the function. `agentop exec` runs the `bob` binary as a child
+process, and that process never reads your rc file, so the `bob` inside the body
+is always the one on `PATH`.
 
-- Each subagent is a block. The block is collapsed at first.
-- Each subtask is a section with the label `subtask <id>`, at its place in the
-  conversation. The section is open at first. Push Enter to collapse it.
-- The timeline has one agent row for each child. A subtask row has the label
-  `subtask <id>`.
-
-### Limits
-
-- A child of a subtask shows as a child of the root, because the wire names
-  the root.
-- Archived child sessions from before this change stay as separate sessions.
-- A call with no task id, such as a `router` call, stays in the root's session
-  with no `subagent` id.
-
-## The shell half: the rc-file block
-
-`agentop configure bob enable` also makes `bob` at a prompt run through Cortex,
-by appending a delimited block to your shell's rc file (the block and the
-`--yes` / exit-3 conventions are in the [README's bob section](../../cmd/agentop/README.md#routing-the-ibm-bob-editor-through-cortex-agentop-configure-bob)).
-What the write itself obeys:
-
-### Which file it writes
+#### Which file it writes
 
 The basename of `$SHELL` picks it, and only these two:
 
@@ -234,7 +372,7 @@ function does not appear in a new window, either source `~/.bashrc` from
 `~/.bash_profile` — the usual arrangement — or move the block there yourself.
 `enable` always prints the path it wrote, so you can see where it went.
 
-### Symlinks
+#### Symlinks
 
 A `~/.zshrc` symlinked into a dotfiles repo is followed, and the block lands in
 the real file: writing the link itself would replace it with a regular file and
@@ -253,7 +391,7 @@ The write is temp-file-then-rename, so a failure part way through leaves your
 rc file as it was rather than half-written. An existing file keeps its own
 permissions; a new one is created `0644`.
 
-### What `status` does and does not know
+#### What `status` does and does not know
 
 It reports whether `CORTEX_BOBSHELL` is set in the environment, and it reads no
 files. So it says `not enabled` in the very shell that just ran `enable`, until

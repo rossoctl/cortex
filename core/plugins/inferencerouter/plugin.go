@@ -5,16 +5,21 @@
 // The agent needs no setting of its own for that beyond going through the proxy. A
 // request addressed to a server's host is routed, and so is a routed agent's
 // inference request addressed anywhere else — its provider, Anthropic, OpenCode Zen,
-// Bob's gateway — which is captured: sent to the agent's server at the server's path
-// for its API format (see session.CapturePath), by how the path the agent named
+// Bob's gateway — which is captured: sent to the agent's server at the server URL's
+// path prefix, then the server's path for its API format (see session.CapturePath), by how the path the agent named
 // ends. Only a POST inference-parser read as inference is captured, since an agent's
 // own tools can POST to an API whose path happens to end the same way.
 //
-// The choice is plugin config — servers by name, and agents by name to a server —
-// changed by editing it and letting the proxy hot-reload. Sessions are pinned in the
-// process's durable store (storage.StoreConsumer) — on a local install a file under
-// ~/.cortex — which neither a reload nor a restart loses, so changing an agent's
-// server moves only the sessions it has not started yet. A process with no durable
+// The choice is plugin config, changed by editing it and letting the proxy
+// hot-reload. For a request, the order is: the session's sessions: entry, the
+// session's pin, the agent's agents: entry, the key_routes: entry of the server whose
+// key the request sent, that server, not routed. So a request that sends a server's
+// key, from an agent with no agents: entry, is routed to that server. A request with
+// no User-Agent is not routed by its key.
+//
+// Sessions are pinned in the process's durable store (storage.StoreConsumer) — on a
+// local install a file under ~/.cortex — which neither a reload nor a restart loses,
+// so changing an agent's server moves only the sessions it has not started yet. A process with no durable
 // store pins in its process-scoped store (pctx.Shared), which a reload keeps and a
 // restart empties.
 //
@@ -132,6 +137,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -187,6 +194,11 @@ type route struct {
 	// main and helper are the words naming the server's substitute models, resolved
 	// against its model list when one is needed (see substitute).
 	main, helper string
+	// api, authHeader and headers are the server's api, auth_header and headers
+	// fields (rules C1 to C3). headers is nil when the server has none.
+	api        map[string]string
+	authHeader string
+	headers    http.Header
 }
 
 // target is the server's own scheme and host, where every request routed to it is
@@ -197,9 +209,15 @@ func (r route) target() *url.URL {
 
 // Router is the plugin. Built by Configure; the zero value routes nothing.
 type Router struct {
-	servers map[string]route  // by server name
-	byHost  map[string]string // every server's Endpoint.Key, to its name
-	agents  map[string]string // agent name to server name
+	servers map[string]route    // by server name
+	byHost  map[string][]string // every server's Endpoint.Key, to the sorted names of its servers
+	agents  map[string]string   // agent name to server name
+	// keyRoutes is the config's key_routes: map, the server whose key a request
+	// sends to the server the request goes to.
+	keyRoutes map[string]string
+	// keys and keyHeaders are what keyOwner reads (see buildKeys).
+	keys       []serverKey
+	keyHeaders []string
 	// sessions is the config's sessions: map, a session id to the server the user
 	// moved it to ("" to stop routing it). It beats the pin and every unpinned rule.
 	sessions map[string]string
@@ -269,7 +287,7 @@ func (p *Router) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("inference-router config: %w", err)
 	}
 	servers := make(map[string]route, len(c.Servers))
-	byHost := make(map[string]string, len(c.Servers)) // one name per host: Decode refuses two servers on one
+	byHost := make(map[string][]string, len(c.Servers)) // a host can have more than one server
 	for name, s := range c.Servers {
 		ep, err := routerconfig.ParseURL(s.URL)
 		if err != nil { // Decode already accepted it; kept so a drift between the two fails here
@@ -278,10 +296,14 @@ func (p *Router) Configure(raw json.RawMessage) error {
 		if ep.PlaintextRemote() {
 			slog.Warn("inference-router: server is plain http on another machine, so every request routed to it "+
 				"crosses the network decrypted, its key and prompt included; use https unless the network is trusted",
-				"server", name, "url", ep.URL())
+				"server", name, "url", (route{endpoint: ep}).target().String()) // not ep.URL(): a key pasted as a path segment stays out of the log
 		}
-		servers[name] = route{endpoint: ep, key: s.Key, main: s.Main, helper: s.Helper}
-		byHost[ep.Key()] = name
+		servers[name] = route{endpoint: ep, key: s.Key, main: s.Main, helper: s.Helper,
+			api: s.API, authHeader: s.AuthHeader, headers: routerconfig.HeaderOf(s.Headers)}
+		byHost[ep.Key()] = append(byHost[ep.Key()], name)
+	}
+	for _, names := range byHost {
+		slices.Sort(names)
 	}
 	// p.agents is keyed by CANONICAL agent name, folded from whatever spelling the
 	// config named: pipeline.CanonicalAgent maps retired spellings ("bob-shell",
@@ -289,7 +311,9 @@ func (p *Router) Configure(raw json.RawMessage) error {
 	// rename keeps routing instead of silently matching nothing. pipeline.FoldAgentNames
 	// is the one implementation of that fold, shared with agentop's own reads and
 	// writes of the same agents: map so the two cannot disagree.
+	keys, keyHeaders := buildKeys(c.Servers)
 	p.servers, p.byHost, p.agents, p.sessions = servers, byHost, pipeline.FoldAgentNames(c.Agents), c.Sessions
+	p.keyRoutes, p.keys, p.keyHeaders = c.KeyRoutes, keys, keyHeaders
 	return nil
 }
 
@@ -304,18 +328,25 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		pctx.Skip("not_redirectable")
 		return cont
 	}
+	// keyOf is read one time, so the capture check and serverFor see the same headers.
+	keyOf := p.keyOwner(pctx.Headers)
+	agent := agentOf(pctx)
 	// Every path on a server's host is handled — /v1/messages, count_tokens,
 	// /v1/models — because they all belong to the server the session is on. A request
 	// to any other host is captured when it is a routed agent's inference request,
 	// and sent to the server's path for its API format.
 	captured := ""
-	addressed := p.byHost[routerconfig.Key(pctx.Host)] // the server the request named, "" for none
-	if _, ok := p.byHost[routerconfig.Key(pctx.Host)]; !ok {
+	names := p.byHost[routerconfig.Key(pctx.Host)] // the servers on the request's host
+	addressed := ""                                // the server the request named, "" for none
+	if len(names) == 1 {
+		addressed = names[0]
+	}
+	if len(names) == 0 {
 		path, ok := capture(pctx)
 		// A sessions: override admits the capture too: the move is the user's
 		// instruction, and it must reach a session whose agent is not routed and
 		// holds no pin, which no other rule would route.
-		if !ok || (p.agents[agentOf(pctx)] == "" && !p.pinnedToServer(pctx) && !p.overrideRoutes(pctx)) {
+		if !ok || (p.choiceFor(agent, keyOf) == "" && !p.pinnedToServer(pctx) && !p.overrideRoutes(pctx)) {
 			if ok {
 				p.keepOwnReasoning(pctx, "", false, "")
 			}
@@ -325,7 +356,14 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		captured = path
 	}
 
-	name, pin := p.serverFor(pctx, captured != "")
+	name, pin := p.serverFor(pctx, captured != "", keyOf)
+	if len(names) > 1 {
+		// A shared host names no one server: the request named the chosen server if it is on the host.
+		addressed = ""
+		if slices.Contains(names, name) {
+			addressed = name
+		}
+	}
 	if name == "" {
 		// Not routed: the request, its key included, goes where the client sent it.
 		// An own ("") override that cannot take effect — the router is observing, so
@@ -342,11 +380,20 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		if pin.turn != "" {
 			details["turn"] = pin.turn
 		}
+		if keyOf != "" {
+			details["key_of"] = keyOf
+		}
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionSkip, Reason: "not_routed", Details: details})
 		return cont
 	}
 	// Built where each record is made, since a failed redirect changes the pin.
-	details := func() map[string]string { return map[string]string{"server": name, "pin": pin.state} }
+	details := func() map[string]string {
+		d := map[string]string{"server": name, "pin": pin.state}
+		if keyOf != "" {
+			d["key_of"] = keyOf // a server name, never the key
+		}
+		return d
+	}
 	srv, ok := p.servers[name]
 	if !ok {
 		// Removed since the session was pinned, by agentop server remove or a hand edit.
@@ -366,11 +413,39 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	// sent it. Redirected is the signal that it moved, and it is this router's
 	// redirect: a pipeline admits one WritesDestination plugin.
 	redirected := redirectErr == nil && pctx.Redirected()
+	var pl apiPlan
 	var pathErr error
-	if redirected && captured != "" {
-		// The table's paths are absolute with no query, so this is refused only by a
-		// drift between the table and SetRedirectPath's rule.
-		pathErr = pctx.SetRedirectPath(captured)
+	if redirected {
+		// The paths of the table and of the api map are absolute with no query, so
+		// these are refused only by a drift between the checks and the pipeline's.
+		switch pl = srv.plan(pctx.Path); pl.kind {
+		case planPath:
+			pathErr = pctx.SetRedirectPath(srv.wirePath(pl.path))
+		case planTranslate:
+			pathErr = pctx.Translate(pl.source, pl.target, srv.wirePath(pl.path))
+		case planAsIs:
+			if captured != "" {
+				pathErr = pctx.SetRedirectPath(srv.wirePath(captured))
+			} else if len(names) > 1 {
+				// On a shared host the servers can have different paths: the longest one that
+				// the request path starts with off, this server's on. A request that starts with
+				// no prefix and stays on its host keeps its path, as on a host with one server.
+				pre := sharedPrefix(p.servers, names, pctx.Path)
+				if wp := srv.wirePath(strings.TrimPrefix(pctx.Path, pre)); wp != pctx.Path && (pre != "" || addressed != name) {
+					pathErr = pctx.SetRedirectPath(wp)
+				}
+			} else if addressed != name {
+				// Moved off the server its host names: that server's prefix off, this one's on.
+				own := p.servers[addressed].endpoint.Path
+				rest, ok := strings.CutPrefix(pctx.Path, own)
+				if !ok || (rest != "" && rest[0] != '/') {
+					rest = pctx.Path
+				}
+				if wp := srv.wirePath(rest); wp != pctx.Path {
+					pathErr = pctx.SetRedirectPath(wp)
+				}
+			}
+		}
 	}
 	err := cmp.Or(redirectErr, pathErr)
 	outcome := redirectMoved
@@ -397,6 +472,13 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionObserve, Reason: "would_route", Details: details()})
 		return cont
 	}
+	if pl.kind == planRefuse || pl.kind == planCountTokens {
+		// The session is on this server; only this request is answered here.
+		if settle {
+			pin.settle(name)
+		}
+		return refusePlan(pctx, srv, pl, details())
+	}
 	// The model is chosen only once the request has moved, so an observed router
 	// changes nothing.
 	p.chooseModel(pctx, name)
@@ -409,7 +491,22 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	if addressed != name {
 		dropProviderCredentials(pctx.Headers)
 	}
-	setKey(pctx, srv.key)
+	// Another server's key can be in that server's auth_header, which setAuth does not clear.
+	// setAuth sets this server's own header again.
+	for _, h := range p.keyHeaders {
+		pctx.Headers.Del(h)
+	}
+	translatedTo := ""
+	if pl.kind == planTranslate {
+		translatedTo = pl.target
+	}
+	setAuth(pctx, srv, translatedTo)
+	if len(srv.headers) > 0 {
+		if err := pctx.SetUpstreamHeaders(srv.headers); err != nil {
+			pctx.Record(pipeline.Invocation{Action: pipeline.ActionDeny, Reason: "redirect_failed", Details: details()})
+			return pipeline.Deny(codeUnavailable, fmt.Sprintf("inference-router could not send this request to %q: %v", name, err))
+		}
+	}
 	d := details()
 	if captured != "" {
 		d["captured"] = captured
@@ -490,9 +587,9 @@ func (pn *pinning) forgo() {
 // serverFor is the server the request's session uses, "" for not routed, and the
 // session's pin. It reads the pin store and renews the pin. decideServer makes the
 // decision.
-func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinning) {
+func (p *Router) serverFor(pctx *pipeline.Context, captured bool, keyOf string) (string, pinning) {
 	agent := agentOf(pctx)
-	choice := p.agents[agent]
+	choice := p.choiceFor(agent, keyOf)
 	unpinned := func() (string, string, bool) { return p.unpinned(pctx, agent, choice, captured) }
 	var store pins
 	if pctx.SessionID != "" && !synthetic(pctx.SessionID) {
@@ -575,15 +672,39 @@ func (p *Router) unpinned(pctx *pipeline.Context, agent, choice string, captured
 // and the archive.
 func (p *Router) wentTo(pctx *pipeline.Context, agent string) (server string, ok bool) {
 	if hosts, known := pctx.InferenceHosts(); known {
-		return hosts.LastServer(agent, p.serverAt)
+		return hosts.LastNamedServer(agent, p.hasServer, p.serverAt)
 	}
 	return p.wentToView(pctx.Session, agent)
 }
 
-// serverAt is the server on host by the current config, as serverOf maps a row's Host.
-func (p *Router) serverAt(host string) (string, bool) {
-	server, ok := p.byHost[routerconfig.Key(host)]
-	return server, ok
+// serverAt is the server on host by the current config, as serverOf maps a row's Host. known
+// is true when the host has at least one server, and server is "" when it has more than one.
+func (p *Router) serverAt(host string) (server string, known bool) {
+	names := p.byHost[routerconfig.Key(host)]
+	if len(names) == 1 {
+		return names[0], true
+	}
+	return "", len(names) > 0
+}
+
+// hasServer reports whether name is a server of the current config.
+func (p *Router) hasServer(name string) bool {
+	_, ok := p.servers[name]
+	return ok
+}
+
+// sharedPrefix is the longest endpoint path of the servers names that is a segment prefix of
+// path, "" when none is.
+func sharedPrefix(servers map[string]route, names []string, path string) string {
+	best := ""
+	for _, n := range names {
+		own := servers[n].endpoint.Path
+		rest, ok := strings.CutPrefix(path, own)
+		if ok && (rest == "" || rest[0] == '/') && len(own) > len(best) {
+			best = own
+		}
+	}
+	return best
 }
 
 // wentToView is the server the latest earlier inference request agent sent in the
@@ -644,8 +765,13 @@ func (p *Router) serverOf(e *pipeline.SessionEvent, agent string) (server string
 		session.TurnOf(e.Inference) == turnAside || pipeline.AgentName(e.Client.Label()) != agent {
 		return "", false
 	}
-	if server, ok = p.byHost[routerconfig.Key(e.Host)]; ok {
+	// The routed record names the server. Else the host names it, when one server has the
+	// host. A host that several servers share names none, so the row is no evidence.
+	if server = pipeline.RoutedServer(e.Invocations); server != "" && p.hasServer(server) {
 		return server, true
+	}
+	if server, known := p.serverAt(e.Host); known {
+		return server, server != ""
 	}
 	// A request the router captures from a routed agent is recorded under its
 	// server's host. One recorded where the agent sent it was made while the router

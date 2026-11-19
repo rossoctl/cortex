@@ -4,6 +4,9 @@
 contract — field names, invariants, error behaviour, the rules that the
 framework enforces at startup.
 
+Read [`plugin-tutorial.md`](./plugin-tutorial.md) first. For a plugin with no
+Go code, read [`script-plugin.md`](./script-plugin.md).
+
 **See also:**
 - [`plugin-catalog.md`](./plugin-catalog.md) — catalog of implemented plugins.
 - [`plugin-tutorial.md`](./plugin-tutorial.md) — step-by-step tutorial for writing a new plugin.
@@ -57,51 +60,8 @@ pipeline:
   The framework does not interpret it; it's captured as `json.RawMessage`
   and handed to `Configure`.
 
-### `jwt-validation`: `allowed_audiences` (optional, transitional)
-
-The `jwt-validation` plugin accepts an optional JSON array field
-`allowed_audiences` (YAML under `config:`). Each entry is an additional
-**expected** inbound JWT `aud` value. The plugin **union**s these with
-the primary audience from `audience` / `audience_file` (deduplicated,
-order preserved). Inbound verification succeeds if the token's `aud`
-claim (RFC 7519 — string **or** array) contains **any** configured value.
-
-Use this as a **short-term bridge** when legitimate tokens carry
-multiple audiences (for example a public UI client plus `account`) and
-the workload must accept more than the SPIFFE / client ID read from
-`audience_file` alone. Prefer aligning IdP audience policy and
-application token exchange long-term; see team design discussions linked
-from release notes.
-
-When `allowed_audiences` is non-empty, the default
-`/shared/client-id.txt` `audience_file` is **not** auto-added unless you
-still omit `audience`, `audience_file`, and `allowed_audiences` entirely
-— i.e. you can run with **only** `allowed_audiences` for static mode.
-
-**Session / log migration:** jwt-validation deny-path `Details` used a
-single key `expected_audience` (string). It now emits
-`expected_audiences` (comma-joined list of configured inbound audiences).
-Update saved queries and dashboards that filtered on the old
-key.
-
-### `jwt-validation`: `placeholder_mode` / `placeholder_ttl` (optional, off by default)
-
-Two fields enable the **mint** half of [credential placeholder
-swap](token-exchange-plugin.md#credential-placeholder-swap) (read that section for the full
-model — these are the field-level reference).
-
-- **`placeholder_mode`** — bool, default `false`. After validating the
-  inbound token, replace it with an opaque `abph_`-prefixed placeholder
-  before forwarding to the agent. The real token is held in the
-  process-scoped shared store for the outbound path to resolve. Requires
-  `token-exchange` with `resolve_placeholders: true` on the outbound
-  chain to be coherent (see the matched-pair note below).
-- **`placeholder_ttl`** — Go duration string (e.g. `30m`, `1h`), default
-  `1h`. How long the real token is retained for outbound resolution.
-
-Mint requires `pctx.Shared` to be wired by the listener; if it is nil
-when `placeholder_mode` is on, the plugin fails fast at init (a deploy
-error) rather than silently forwarding the real token.
+The `jwt-validation` fields `allowed_audiences`, `placeholder_mode` and
+`placeholder_ttl` are in [`jwt-validation-plugin.md`](jwt-validation-plugin.md).
 
 ## `on_error` policy
 
@@ -543,7 +503,7 @@ specific events through the `Custom` escape-hatch map.
 
 > For a tutorial on emitting Invocations — the `pctx.Record` / `Allow`
 > / `Skip` / `Observe` / `Modify` / `DenyAndRecord` helpers with
-> runnable examples — see [`plugin-tutorial.md` Step 2](./plugin-tutorial.md#step-2--record-what-your-plugin-did).
+> runnable examples — see [`plugin-tutorial.md` Step 3](./plugin-tutorial.md#step-3--record-what-your-plugin-did).
 > This section is the field-level reference for the `Invocation`
 > struct, the 5-value action vocabulary, and the rules around the
 > Custom escape-hatch map.
@@ -1337,14 +1297,18 @@ request that is not an aside turn (`session.TurnOf`):
 
 - `Agent` is `model.AgentName(e.Client.Label())`.
 - `Host` is `e.Host` as recorded: where the bytes went.
+- `Server` is the server name from the request's `modify/routed` record
+  (`model.RoutedServer`), and `""` when the router did not route it.
 - `Last` is the seq of the newest such request.
 - `LastUnrouted` is the seq of the newest one that `session.CapturePath`
   takes and that has no `RequestedHost`.
 
-The table holds hosts, not server names, because a hot reload can change
-the servers. A reader maps each host to a server by its own config when it
-reads: `LastServer(agent, serverAt)` gives the newest evidence for `agent`
-by the reader's `serverAt` map.
+A hot reload can change the servers, so a reader checks each name against
+its own config when it reads. `LastNamedServer(agent, exists, serverAt)`
+gives the newest evidence for `agent`: a `Server` that `exists` names the
+server, else a host with one server in the reader's `serverAt` map names it.
+Use it when servers can share a host. `LastServer(agent, serverAt)` reads
+the host only, so it cannot tell apart the servers on a shared host.
 
 `HostsKnown` false means "do not use the table". The zero `SessionFacts`
 has `HostsKnown` false. So when a listener sets facts with no table,
@@ -1386,7 +1350,7 @@ lives in this module. The pattern mirrors `database/sql` drivers and
 
 > For a step-by-step walkthrough (in-tree file layout, out-of-tree
 > module + side-effect import, operator YAML wiring), see
-> [`plugin-tutorial.md` Step 6](./plugin-tutorial.md#step-6--out-of-tree-plugins). This
+> [`plugin-tutorial.md` Step 7](./plugin-tutorial.md#step-7--out-of-tree-plugins). This
 > section is the field-level reference: the factory shape and the
 > panic-on-misuse guarantees that define the registry's contract.
 

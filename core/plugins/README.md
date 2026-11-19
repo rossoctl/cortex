@@ -9,14 +9,16 @@ Built-in plugins and the open plugin registry. Plugin authoring docs live under
 
 ## Built-in plugins
 
-All seventeen, with config and behavior, in
-[`docs/plugin-catalog.md`](../../docs/plugin-catalog.md); each plugin also
-has a dedicated reference doc there (`docs/<name>-plugin.md`).
+Each plugin package in this directory is in the table below.
+[`docs/plugin-catalog.md`](../../docs/plugin-catalog.md) gives a short summary
+of each one. Each plugin's config and behavior are in its own doc,
+`docs/<name>-plugin.md`.
 
 | Name | Purpose |
 |---|---|
 | `jwt-validation` | Inbound JWT signature / issuer / audience verification |
 | `token-exchange` | Outbound RFC 8693 token exchange with per-host routes |
+| `token-exchange-aiac` | Outbound token exchange with no routes: the audience comes from the destination host |
 | `a2a-parser` | Parse Agent-to-Agent JSON-RPC traffic into `Extensions.A2A` |
 | `mcp-parser` | Parse Model Context Protocol traffic into `Extensions.MCP` |
 | `inference-parser` | Parse OpenAI chat completions, Anthropic Messages and OpenAI Responses inference traffic into `Extensions.Inference`, and price the finished response |
@@ -31,6 +33,7 @@ has a dedicated reference doc there (`docs/<name>-plugin.md`).
 | `sparc` | Pre-tool reflection against a SPARC reflection service |
 | `session-budget` | Per-session token / call / duration budgets via Redis |
 | `context-guru` | Compact the outbound LLM request context |
+| `script` | Run the scripts in `~/.cortex/plugins` as pipeline steps. Laptop only |
 | `cpex` | Bridge hooks to the CPEX policy framework (cgo builds of `cortex` with the `cpex` tag) |
 
 ## Reusable building blocks for plugin authors
@@ -50,7 +53,7 @@ Third-party plugins can register from any Go module and are linked in via
 side-effect import. See
 [`docs/plugin-reference.md`](../../docs/plugin-reference.md#registering-a-plugin)
 for the contract and
-[`docs/plugin-tutorial.md`](../../docs/plugin-tutorial.md#step-6--out-of-tree-plugins)
+[`docs/plugin-tutorial.md`](../../docs/plugin-tutorial.md#step-7--out-of-tree-plugins)
 for the walkthrough.
 
 ### Build-tag plugin exclusion
@@ -59,14 +62,9 @@ Every plugin is selected at build time using Go build tags. Its side-effect
 import lives in a dedicated `all/plugins_<name>.go` file (shared by every `cmd/` binary)
 gated by `//go:build include_plugin_<name>`. A build with no tags registers
 no plugins and rejects any config that names one, so artifacts are built from
-named profiles in `scripts/profile-tags`:
-
-| Profile | Carries |
-|---------|---------|
-| `local` | the three parsers + `tool-prune` |
-| `full` | all fourteen non-optional plugins |
-| `lite` | jwt-validation, token-exchange, litellm-budget-track, static-inject |
-| `envoy`, `cpex` | the sets those binaries shipped historically |
+named profiles. The `membership` map in
+[`scripts/profile-tags/profiles.go`](../../scripts/profile-tags/profiles.go)
+lists the profiles that carry each plugin.
 
 See the [architecture doc](../../docs/architecture.md#build-tag-plugin-selection)
 for usage examples and instructions for tagging additional plugins.

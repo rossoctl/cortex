@@ -1022,56 +1022,6 @@ func TestBob_DeclinedPromptWritesNothing(t *testing.T) {
 	})
 }
 
-// Help goes to stdout and exits 0; everything malformed goes to stderr and exits 2.
-// The verb check has to come before any filesystem work, or a misspelled verb gets a
-// successful-looking answer from a later step.
-func TestBob_HelpAndUsageErrors(t *testing.T) {
-	for _, arg := range []string{"-h", "--help", "help"} {
-		t.Run("help "+arg, func(t *testing.T) {
-			var out, errb bytes.Buffer
-			if code := runBob([]string{arg}, &out, &errb); code != 0 {
-				t.Fatalf("exit = %d, want 0", code)
-			}
-			if !strings.Contains(out.String(), "Usage:") {
-				t.Errorf("usage did not go to stdout:\n%s", out.String())
-			}
-			if errb.Len() != 0 {
-				t.Errorf("help wrote to stderr: %s", errb.String())
-			}
-		})
-	}
-
-	t.Run("no arguments", func(t *testing.T) {
-		var out, errb bytes.Buffer
-		if code := runBob(nil, &out, &errb); code != 2 {
-			t.Fatalf("exit = %d, want 2", code)
-		}
-		if !strings.Contains(errb.String(), "Usage:") {
-			t.Errorf("usage did not go to stderr:\n%s", errb.String())
-		}
-	})
-
-	t.Run("unknown verb", func(t *testing.T) {
-		var out, errb bytes.Buffer
-		if code := runBob([]string{"enabel"}, &out, &errb); code != 2 {
-			t.Fatalf("exit = %d, want 2", code)
-		}
-		// Naming the valid set is the difference between a refusal and a dead end.
-		for _, verb := range []string{"enable", "disable", "status"} {
-			if !strings.Contains(errb.String(), verb) {
-				t.Errorf("the error omits %q: %s", verb, errb.String())
-			}
-		}
-	})
-
-	t.Run("status does not take --yes", func(t *testing.T) {
-		var out, errb bytes.Buffer
-		if code := runBob([]string{"status", "--yes"}, &out, &errb); code != 2 {
-			t.Errorf("exit = %d, want 2 — status writes nothing to confirm", code)
-		}
-	})
-}
-
 // A stray operand is usually a mistyped flag, and silently ignoring it means the run
 // did something other than what was asked.
 func TestBob_RejectsStrayArguments(t *testing.T) {

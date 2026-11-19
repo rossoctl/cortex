@@ -1,0 +1,20 @@
+data: {"id":"msg_01Tools","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"msg_01Tools","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"content":"I will read two files."},"finish_reason":null}]}
+
+data: {"id":"msg_01Tools","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"toolu_01A","type":"function","function":{"name":"Read","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"msg_01Tools","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"file_path\":"}}]},"finish_reason":null}]}
+
+data: {"id":"msg_01Tools","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"/a.txt\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"msg_01Tools","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"toolu_01B","type":"function","function":{"name":"Read","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"msg_01Tools","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"file_path\":\"/b.txt\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"msg_01Tools","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: {"id":"msg_01Tools","object":"chat.completion.chunk","created":0,"model":"claude-opus-5-5","choices":[],"usage":{"prompt_tokens":2107,"completion_tokens":61,"total_tokens":2168,"prompt_tokens_details":{"cached_tokens":2000},"cache_read_input_tokens":2000,"cache_creation_input_tokens":100}}
+
+data: [DONE]
+

@@ -226,14 +226,14 @@ func TestBobShellEnableCreatesTheFile(t *testing.T) {
 	//
 	// The literal, not rcFileMode. writeRCFile sets the mode FROM that constant, so
 	// comparing against it compares the implementation with itself — both sides move
-	// together and changing 0644 to anything else stays green. README.md commits to
-	// 0644 by name, so 0644 is what the test says.
+	// together and changing 0644 to anything else stays green. docs/agents/bob.md commits
+	// to 0644 by name, so 0644 is what the test says.
 	if perm := st.Mode().Perm(); perm != 0o644 {
 		t.Errorf("mode = %v, want %v", perm, os.FileMode(0o644))
 	}
 }
 
-// An rc file that already exists keeps its own permissions. README.md promises this,
+// An rc file that already exists keeps its own permissions. docs/agents/bob.md promises this,
 // and someone who deliberately locked their rc file down is exactly the person who
 // would not notice agentop widening it again.
 //

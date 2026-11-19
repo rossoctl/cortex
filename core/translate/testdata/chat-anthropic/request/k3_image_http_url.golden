@@ -1,0 +1,2 @@
+dropped: detail
+{"model":"claude-opus-5-5","max_tokens":16000,"messages":[{"role":"user","content":[{"type":"text","text":"What is this?"},{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}]}],"cache_control":{"type":"ephemeral"}}

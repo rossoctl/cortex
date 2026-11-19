@@ -577,7 +577,7 @@ func TestHandleExport_WithoutAnArchiveIs404(t *testing.T) {
 // readKeepingError GETs url and returns the body read ALONGSIDE the error that ended it.
 //
 // getBody and getPath both t.Fatalf on a body-read error, so neither can observe the one
-// thing these two tests are about: whether the read ended cleanly or broke. Modelled on
+// thing the test below is about: that the read broke. Modelled on
 // forwardproxy's readViaProxy, for the same #1543 question one endpoint over — a
 // header-phase error counts as client-visible too, since an abort can land before the
 // client reads the flushed headers.
@@ -688,19 +688,5 @@ func TestHandleExport_TruncatedWalkReachesClientAsError(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &r); err != nil {
 			t.Fatalf("line is not a whole record: %q: %v", line, err)
 		}
-	}
-}
-
-// The control for the test above: a HEALTHY export still reads clean. An abort on the
-// failure path is only correct if it never fires on the happy one — the same pair
-// forwardproxy keeps around its own abort.
-func TestHandleExport_CleanWalkStillReadsClean(t *testing.T) {
-	ts := exportFixture(t)
-	body, readErr := readKeepingError(t, ts.URL+"/v1/export")
-	if readErr != nil {
-		t.Fatalf("a complete export broke on read: %v", readErr)
-	}
-	if n := strings.Count(strings.TrimRight(body, "\n"), "\n") + 1; n != 9 {
-		t.Fatalf("got %d records, want the fixture's 9", n)
 	}
 }

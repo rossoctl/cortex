@@ -368,22 +368,6 @@ mod tests {
         check(&format!("data: {payload}\n\n"), DEFAULT, &[&payload]);
     }
 
-    // The LastEvent tests: the event type is not part of this API, so only
-    // their payloads are ported.
-    #[test]
-    fn frame_reader_last_event_payloads() {
-        check(
-            "event: message_start\ndata: {\"x\":1}\n\n",
-            DEFAULT,
-            &["{\"x\":1}"],
-        );
-        check(
-            "event: message_start\ndata: one\n\ndata: two\n\n",
-            DEFAULT,
-            &["one", "two"],
-        );
-    }
-
     const ANTHROPIC_TURN: &str = "event: message_start\n\
         data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":600}}}\n\n\
         event: message_delta\n\

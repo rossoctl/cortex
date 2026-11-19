@@ -1,0 +1,1 @@
+{"id":"msg_01Text","type":"message","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"Hello, <world> \"é\""}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":12,"cache_creation_input_tokens":3,"cache_read_input_tokens":40,"output_tokens":5}}

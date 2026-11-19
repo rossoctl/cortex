@@ -717,7 +717,8 @@ var sharedWithRequest = []string{"client", "direction", "host", "httpMethod", "h
 // dropShared leaves out of resp each sharedWithRequest field whose value equals req's. A field
 // that differs stays — a redirected response's host is news. at always stays: it is the
 // response's own time. Both inputs are filterForDetail's output, so equal values are equal
-// bytes. Any decode failure returns resp as it was.
+// bytes. Each plugin record in "plugins" that equals the request's goes too: a request-side
+// plugin's record repeats on its response. Any decode failure returns resp as it was.
 func dropShared(resp, req []byte) []byte {
 	var a, b map[string]json.RawMessage
 	if json.Unmarshal(resp, &a) != nil || json.Unmarshal(req, &b) != nil {
@@ -726,6 +727,19 @@ func dropShared(resp, req []byte) []byte {
 	for _, k := range sharedWithRequest {
 		if v, ok := a[k]; ok && bytes.Equal(v, b[k]) {
 			delete(a, k)
+		}
+	}
+	var pa, pb map[string]json.RawMessage
+	if json.Unmarshal(a["plugins"], &pa) == nil && json.Unmarshal(b["plugins"], &pb) == nil && len(pa) > 0 {
+		for k, v := range pa {
+			if bytes.Equal(v, pb[k]) {
+				delete(pa, k)
+			}
+		}
+		if len(pa) == 0 {
+			delete(a, "plugins")
+		} else if out, err := json.Marshal(pa); err == nil {
+			a["plugins"] = out
 		}
 	}
 	out, err := json.Marshal(a)

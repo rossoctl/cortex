@@ -150,7 +150,7 @@ func TestSummaryFold_AnOlderSessionJSONHasNoInferenceHost(t *testing.T) {
 // for the session, which it sets by a request it routes and keeps in memory only.
 func TestInferenceHost_SaysWhenOnlyTheHistorySetIt(t *testing.T) {
 	earlier := NewSummaryFold()
-	first := inferenceReq("ete.example.com")
+	first := routedTo("ete.example.com", claudeUA, "team-a")
 	earlier.Add("s1", &first)
 	st := New(0, 0, 0)
 	defer st.Close()
@@ -159,9 +159,9 @@ func TestInferenceHost_SaysWhenOnlyTheHistorySetIt(t *testing.T) {
 		st.Append("s1", e)
 	}
 	sum := summaryOf(t, st, "s1")
-	if sum.InferenceHost != "ete.example.com" || !sum.InferenceHostFromHistory {
-		t.Fatalf("resumed with no inference request since: InferenceHost %q, FromHistory %v; want the history's ete.example.com, from history",
-			sum.InferenceHost, sum.InferenceHostFromHistory)
+	if sum.InferenceHost != "ete.example.com" || sum.InferenceServer != "team-a" || !sum.InferenceHostFromHistory {
+		t.Fatalf("resumed with no inference request since: InferenceHost %q, InferenceServer %q, FromHistory %v; want the history's ete.example.com and team-a, from history",
+			sum.InferenceHost, sum.InferenceServer, sum.InferenceHostFromHistory)
 	}
 	if b, _ := json.Marshal(sum); !strings.Contains(string(b), `"inferenceHostFromHistory":true`) {
 		t.Errorf("the wire does not say it: %s", b)
@@ -169,9 +169,9 @@ func TestInferenceHost_SaysWhenOnlyTheHistorySetIt(t *testing.T) {
 
 	st.Append("s1", inferenceReq("ete.example.com"))
 	sum = summaryOf(t, st, "s1")
-	if sum.InferenceHost != "ete.example.com" || sum.InferenceHostFromHistory {
-		t.Fatalf("after its own request to the same host: InferenceHost %q, FromHistory %v; want ete.example.com, not from history",
-			sum.InferenceHost, sum.InferenceHostFromHistory)
+	if sum.InferenceHost != "ete.example.com" || sum.InferenceServer != "" || sum.InferenceHostFromHistory {
+		t.Fatalf("after its own unrouted request to the same host: InferenceHost %q, InferenceServer %q, FromHistory %v; want ete.example.com, no server, not from history",
+			sum.InferenceHost, sum.InferenceServer, sum.InferenceHostFromHistory)
 	}
 	if b, _ := json.Marshal(sum); strings.Contains(string(b), "inferenceHostFromHistory") {
 		t.Errorf("the wire sends the flag for a host the entry set: %s", b)

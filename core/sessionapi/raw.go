@@ -43,11 +43,26 @@ func rawOf(c *pipeline.RequestCapture) *pipeline.RawCapture {
 		}
 		r.ForwardedBase64 = f64
 	}
+	r.Translated, r.TranslatedBase64 = optionalTextOr64(c.Translated)
 	if p := c.Response; p != nil {
-		r.Response = &pipeline.RawBody{Status: p.Status, Headers: p.Header, Decoded: p.Decoded, Truncated: p.Truncated, Incomplete: p.Incomplete}
+		r.Response = &pipeline.RawBody{Status: p.Status, Headers: p.Header, Decoded: p.Decoded, Truncated: p.Truncated,
+			Incomplete: p.Incomplete, UpstreamTruncated: p.UpstreamTruncated}
 		r.Response.Body, r.Response.BodyBase64 = textOr64(p.Body)
+		r.Response.Upstream, r.Response.UpstreamBase64 = optionalTextOr64(p.Upstream)
 	}
 	return r
+}
+
+// optionalTextOr64 is textOr64 for a body that can be absent: nil and nil for a nil body.
+func optionalTextOr64(b []byte) (*string, []byte) {
+	if b == nil {
+		return nil, nil
+	}
+	t, t64 := textOr64(b)
+	if t64 != nil {
+		return nil, t64
+	}
+	return &t, nil
 }
 
 func textOr64(b []byte) (string, []byte) {

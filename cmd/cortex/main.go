@@ -934,8 +934,10 @@ func main() {
 		// the comparison is on certificates, so ours must exist first. Skipped outside
 		// --local, where there is no agentop-managed client to reason about.
 		if localStatePath != "" {
-			if args := staleClientCAWarning(cfg.TLSBridge.CADir, clientCAFromState(localStatePath), src.CACertPEM()); args != nil {
-				slog.Warn("a client is configured against a different bridge CA than the one now in force", args...)
+			for _, ca := range clientCAsFromState(localStatePath) {
+				if args := staleClientCAWarning(cfg.TLSBridge.CADir, ca, src.CACertPEM()); args != nil {
+					slog.Warn("a client is configured against a different bridge CA than the one now in force", args...)
+				}
 			}
 		}
 		// Assemble the CA + platform-roots bundle for tools whose CA setting
@@ -1022,6 +1024,11 @@ func main() {
 		}
 		slog.Info("tls-bridge enabled", "ca_dir", cfg.TLSBridge.CADir, "fail_closed", cfg.TLSBridge.FailClosed)
 	}
+
+	// Before any server starts, so a process that serves takes SIGTERM through the
+	// shutdown below, which flushes the cost ledger and the session archive.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	// Proxy-sidecar: reverse proxy (inbound) and/or forward proxy (outbound),
 	// selected by listener.roles (empty => both). sharedStore is created up
@@ -1303,8 +1310,6 @@ func main() {
 		fatalf("%v", err)
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	sig := <-sigCh
 	stopping := time.Now()
 	// A pod drains: endpoint removal propagates after SIGTERM, so callers are still routed

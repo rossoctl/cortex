@@ -5,7 +5,7 @@ A thin, in-process HTTP wrapper around the **SPARC** pre-tool reflection compone
 [`agent-lifecycle-toolkit`](https://pypi.org/project/agent-lifecycle-toolkit/) (ALTK)
 PyPI package.
 
-AuthBridge's Go [`sparc` plugin](../../core/plugins/sparc) calls this service to decide
+Cortex's Go [`sparc` plugin](../../core/plugins/sparc) calls this service to decide
 whether a proposed tool call is **grounded** in the conversation and the available tool
 specs. SPARC catches hallucinated / ungrounded arguments (e.g. an invented transaction
 ID) and inappropriate function selection.
@@ -16,7 +16,7 @@ This service is deliberately *just* a reflection wrapper:
 - It calls SPARC **in process** — no relay queue, observer, or host worker (those exist
   only in the original `ibac` reference repo as a `kind`-egress workaround).
 - It returns SPARC's verdict **faithfully**. All enforcement policy (observe / inject /
-  deny, score thresholds) lives in the AuthBridge plugin, not here.
+  deny, score thresholds) lives in the Cortex plugin, not here.
 
 ## Deploy to a cluster (one command)
 

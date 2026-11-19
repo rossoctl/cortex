@@ -584,6 +584,50 @@ func TestReturnedAtIsTheLastReturn(t *testing.T) {
 	}
 }
 
+// A run that ends with SubagentHandback returns at its <agent-message>. Claude Code sends the
+// <task-notification> later, here with the user's next prompt, and as a return it made the
+// user's 3 minutes read as waiting on the subagent (session 27737d97, seq 611).
+func TestNotificationAfterADeliveredHandBackIsNotAReturn(t *testing.T) {
+	note := user("<task-notification>\n<task-id>c3</task-id>\n<status>completed</status>")
+	var r rec
+	r.turn("", 0, 1, []pipeline.InferenceMessage{user("go")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "s1", Name: "Agent"})
+	r.turn("c3", 1, 1, []pipeline.InferenceMessage{user("p")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "hb", Name: "SubagentHandback"})
+	h := []pipeline.InferenceMessage{user("go"), user(`<agent-message from="c3"> report`)}
+	r.turn("", 5, 1, h, nil, "end_turn")
+	r.turn("", 200, 1, append(h, user("next question"), note), nil, "end_turn")
+	tl := Build("s", r.events, time.Time{})
+	if len(tl.Returns) != 1 || !tl.Returns[0].At.Equal(at(5)) {
+		t.Errorf("returns = %+v, want one at 5s", tl.Returns)
+	}
+	if a := findAgent(t, tl, "c3"); a.ReturnedAt == nil || !a.ReturnedAt.Equal(at(5)) {
+		t.Errorf("returnedAt = %v, want 5s", a.ReturnedAt)
+	}
+
+	// Without a hand-back call, an <agent-message> is a message sent mid-run, and the
+	// notification is still the return.
+	r = rec{}
+	r.turn("", 0, 1, []pipeline.InferenceMessage{user("go")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "s1", Name: "Agent"})
+	r.turn("c3", 1, 1, []pipeline.InferenceMessage{user("p")}, nil, "end_turn")
+	r.turn("", 5, 1, h, nil, "end_turn")
+	r.turn("", 200, 1, append(h, note), nil, "end_turn")
+	if a := findAgent(t, Build("s", r.events, time.Time{}), "c3"); a.ReturnedAt == nil || !a.ReturnedAt.Equal(at(200)) {
+		t.Errorf("no hand-back: returnedAt = %v, want 200s", a.ReturnedAt)
+	}
+
+	// A resumed run that hands back again returns again, at its second <agent-message>.
+	r = rec{}
+	r.turn("", 0, 1, []pipeline.InferenceMessage{user("go")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "s1", Name: "Agent"})
+	r.turn("c3", 1, 1, []pipeline.InferenceMessage{user("p")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "hb", Name: "SubagentHandback"})
+	r.turn("", 5, 1, h, nil, "end_turn")
+	r.turn("c3", 10, 1, []pipeline.InferenceMessage{user("p"), user("more")}, nil, "tool_use", pipeline.InferenceToolCall{ID: "hb2", Name: "SubagentHandback"})
+	h2 := append(h, note, user(`<agent-message from="c3"> second report`))
+	r.turn("", 20, 1, h2, nil, "end_turn")
+	r.turn("", 300, 1, append(h2, user("thanks"), note), nil, "end_turn")
+	if a := findAgent(t, Build("s", r.events, time.Time{}), "c3"); a.ReturnedAt == nil || !a.ReturnedAt.Equal(at(20)) {
+		t.Errorf("resumed: returnedAt = %v, want 20s", a.ReturnedAt)
+	}
+}
+
 // Clip moves spans within their slices; a lost span's End must not point into one.
 func TestLostSpansSurviveClip(t *testing.T) {
 	var r rec
@@ -788,6 +832,26 @@ func TestBackgroundJobRunsUntilItsNotification(t *testing.T) {
 	tl := Build("s", r.events, time.Time{})
 	if len(tl.Jobs) != 1 || tl.Jobs[0].ID != "bk42" || tl.Jobs[0].ToolUseID != "t1" || !tl.Jobs[0].Start.Equal(at(2)) || tl.Jobs[0].End == nil || !tl.Jobs[0].End.Equal(at(60)) {
 		t.Fatalf("jobs = %+v, want bk42 of t1 from 2s to 60s", tl.Jobs)
+	}
+}
+
+// A job that TaskStop stops gets no notification: it ends at the TaskStop result. A shell on
+// another host has its own result text.
+func TestBackgroundJobEndsAtTaskStop(t *testing.T) {
+	for _, stopped := range []string{
+		`{"message":"Successfully stopped task: bk42 (llama-server --port 18090)","task_id":"bk42"}`,
+		`{"message":"Successfully stopped background command bk42 on devbox","task_id":"bk42","task_type":"local_bash"}`,
+	} {
+		var r rec
+		h := []pipeline.InferenceMessage{user("go")}
+		r.turn("", 0, 1, h, nil, "tool_use", pipeline.InferenceToolCall{ID: "t1", Name: "Bash"})
+		r.turn("", 2, 1, h, []pipeline.InferenceToolResult{result("t1", "Command running in background with ID: bk42.")}, "tool_use", pipeline.InferenceToolCall{ID: "t2", Name: "TaskStop"})
+		r.turn("", 26, 1, h, []pipeline.InferenceToolResult{result("t2", stopped)}, "end_turn")
+		r.turn("", 600, 1, h, nil, "end_turn")
+		tl := Build("s", r.events, at(900))
+		if len(tl.Jobs) != 1 || tl.Jobs[0].End == nil || !tl.Jobs[0].End.Equal(at(26)) {
+			t.Fatalf("%s: jobs = %+v, want bk42 to end at 26s", stopped, tl.Jobs)
+		}
 	}
 }
 

@@ -1,0 +1,2 @@
+dropped: audio,frequency_penalty,logit_bias,logprobs,metadata,modalities,prediction,presence_penalty,prompt_cache_key,safety_identifier,seed,service_tier,store,top_logprobs,user,web_search_options,zzz_unknown
+{"model":"claude-opus-5-5","max_tokens":16000,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"cache_control":{"type":"ephemeral"}}

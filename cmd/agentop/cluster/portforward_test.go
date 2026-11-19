@@ -83,11 +83,3 @@ func TestKubectlPortForward_StatusEndpoint(t *testing.T) {
 		t.Fatalf("Endpoint: got %q", got)
 	}
 }
-
-func TestPortForwarderInterfaceHasStatusEndpoint(t *testing.T) {
-	var _ interface {
-		Endpoint() string
-		StatusEndpoint() string
-		Close() error
-	} = (*kubectlPortForward)(nil)
-}

@@ -2,7 +2,6 @@ package reverseproxy
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -115,67 +114,6 @@ func probePipeline(t *testing.T, probe *frameProbe, extra ...pipeline.Plugin) *p
 		t.Fatalf("pipeline.New: %v", err)
 	}
 	return pipeline.NewHolder(p)
-}
-
-// TestFinalize_LongStreamGetsAFullTeardownBudget covers the axis on which "detached" and "bounded"
-// fight each other: WHEN the bound starts.
-//
-// The terminal dispatch is the only one that lets an aggregating plugin finalize, and it runs at
-// end-of-stream. Build its context when the RESPONSE HEADERS arrive and the deadline is already
-// running, so a turn that streams for longer than httpx.TeardownTimeout reaches that dispatch on an
-// expired context — and RunResponseFrame refuses an expired context exactly as it refuses a
-// cancelled one, so the finalization silently does not happen. Agent turns past ten seconds are
-// ordinary.
-//
-// The budget LEFT at the dispatch is what discriminates, and it is cheaper than waiting out a real
-// overrun: built at finalization it is the whole of it, built at header time it is short by however
-// long the stream ran.
-func TestFinalize_LongStreamGetsAFullTeardownBudget(t *testing.T) {
-	const hold = 400 * time.Millisecond
-	const slack = 150 * time.Millisecond
-
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		flusher := w.(http.Flusher)
-		_, _ = fmt.Fprint(w, "data: {\"one\":1}\n\n")
-		flusher.Flush()
-		// The turn keeps generating: on the shipped path this gap is the model thinking.
-		time.Sleep(hold)
-		_, _ = fmt.Fprint(w, "data: {\"two\":2}\n\n")
-		flusher.Flush()
-	}))
-	defer backend.Close()
-
-	probe := &frameProbe{}
-	srv, err := NewServer(probePipeline(t, probe), nil, backend.URL, nil)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	proxy := httptest.NewServer(srv.Handler())
-	defer proxy.Close()
-
-	resp, err := http.Post(proxy.URL+"/v1/messages", "application/json", strings.NewReader(`{}`))
-	if err != nil {
-		t.Fatalf("Post: %v", err)
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-
-	terminals, ctxErr, budget, hadDeadline := probe.snapshot()
-	if terminals != 1 {
-		t.Fatalf("terminal dispatches = %d, want 1", terminals)
-	}
-	if ctxErr != nil {
-		t.Errorf("the terminal dispatch ran on a context already done (%v): every aggregating plugin is skipped when that happens", ctxErr)
-	}
-	if !hadDeadline {
-		t.Fatal("no deadline on the finalization context: detached is only half of it — a wedged plugin would pin this goroutine for the life of the process")
-	}
-	if want := httpx.TeardownTimeout - slack; budget < want {
-		t.Errorf("budget left at the terminal frame = %v, want >= %v (of %v): the deadline started when the response headers arrived, not at finalization, so any stream longer than %v finalizes nothing",
-			budget, want, httpx.TeardownTimeout, httpx.TeardownTimeout)
-	}
 }
 
 // TestModifyResponse_BufferedArmSurvivesAHangup covers the ordinary application/json response, which

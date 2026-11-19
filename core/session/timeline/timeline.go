@@ -138,7 +138,8 @@ type Tool struct {
 }
 
 // Job is a background shell command: from the tool result that acknowledged it ("Command
-// running in background with ID: …") to the <task-notification> naming that id. Its tool call
+// running in background with ID: …") to the <task-notification> naming that id, or to the
+// TaskStop result that stopped it. Its tool call
 // ends at the acknowledgement, so without this the agent looks idle while the job runs.
 type Job struct {
 	Agent string `json:"agent"`

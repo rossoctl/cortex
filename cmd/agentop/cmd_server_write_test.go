@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/sessionapi"
 )
@@ -157,11 +159,19 @@ func TestServerAdd_AnUnchangedServerIsNotRewritten(t *testing.T) {
 	}
 }
 
-func TestServerAdd_RefusesASecondServerOnOneHost(t *testing.T) {
+// Two servers can have one URL, for example two teams' keys for one gateway: agentop names a
+// session's server from the name the proxy records, not from the host.
+func TestServerAdd_AddsASecondServerOnOneHost(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
-	code, _, errOut := runServerCmd(t, "sk-x", "add", "east", "http://ETE.example.com:4000", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path)
-	if code != 1 || !strings.Contains(errOut, "ete is already on ete.example.com") {
-		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	code, out, errOut := runServerCmd(t, "sk-east", "add", "east", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--key-stdin", "--yes", "--config", path)
+	if code != 0 || !strings.Contains(out, "Added east.") {
+		t.Fatalf("exit %d, stdout:\n%s%s", code, out, errOut)
+	}
+	got := readConfig(t, path)
+	for _, name := range []string{"ete", "east"} {
+		if want := "            " + name + ":\n              url: https://ete.example.com\n"; !strings.Contains(got, want) {
+			t.Errorf("config has no %s on https://ete.example.com:\n%s", name, got)
+		}
 	}
 }
 
@@ -170,7 +180,7 @@ func TestServerAdd_RefusesABadNameOrURLBeforeAskingForAKey(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
 	for _, args := range [][]string{
 		{"add", "ETE", "https://ete.example.com"},
-		{"add", "ete", "https://ete.example.com/v1"},
+		{"add", "ete", "https://ete.example.com/v1/../x"},
 		{"add", "ete", "https://ete.example.com:99999"},
 		{"add", "ete"},
 	} {
@@ -457,6 +467,120 @@ func TestServerReset_AnAgentThatIsNotRoutedChangesNothing(t *testing.T) {
 	}
 }
 
+func TestServerUse_KeyOfRoutesTheKey(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	code, out, errOut := runServerCmd(t, "", "use", "ete", "--key-of", "glm", "--config", path)
+	if code != 0 || !strings.Contains(out, "New sessions that send glm's key → ete.") {
+		t.Fatalf("exit %d, stdout:\n%s%s", code, out, errOut)
+	}
+	if got := readConfig(t, path); !strings.Contains(got, "key_routes:") || !strings.Contains(got, "glm: ete") {
+		t.Errorf("config:\n%s", got)
+	}
+}
+
+func TestServerUseAndReset_KeyOfRemovesTheEntry(t *testing.T) {
+	routed := routerBlock + "          key_routes:\n            glm: ete\n"
+	for _, args := range [][]string{
+		{"reset", "--key-of", "glm"},
+		{"use", "glm", "--key-of", "glm"},
+	} {
+		path := serverEnv(t, newFakeStats(t, 0).addr(), routed)
+		code, out, errOut := runServerCmd(t, "", append(args, "--config", path)...)
+		if code != 0 {
+			t.Fatalf("%q: exit %d, stdout:\n%s%s", args, code, out, errOut)
+		}
+		if got := readConfig(t, path); strings.Contains(got, "key_routes:") {
+			t.Errorf("%q: want the entry gone:\n%s", args, got)
+		}
+	}
+}
+
+func TestServerReset_KeyOfNotRoutedChangesNothing(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	before := readConfig(t, path)
+	code, out, _ := runServerCmd(t, "", "reset", "--key-of", "glm", "--config", path)
+	if code != 0 || !strings.Contains(out, "nothing to change") || readConfig(t, path) != before {
+		t.Errorf("exit %d, stdout:\n%s", code, out)
+	}
+	// use X --key-of X with no entry is a removal of nothing: no write.
+	code, out, _ = runServerCmd(t, "", "use", "glm", "--key-of", "glm", "--config", path)
+	if code != 0 || !strings.Contains(out, "glm's key is not routed to another server; nothing to change.") || readConfig(t, path) != before {
+		t.Errorf("use glm --key-of glm: exit %d, stdout:\n%s", code, out)
+	}
+}
+
+// The router matches no server by a key two servers share, so an entry for that
+// key does nothing: the command still writes it, and says so.
+func TestServerUse_KeyOfWarnsOfASharedKey(t *testing.T) {
+	block := strings.Replace(routerBlock, "          agents:\n",
+		"            glm2:\n              url: https://glm2.example.com\n              key: sk-glm\n              main: glm\n              helper: nemotron\n          agents:\n", 1)
+	path := serverEnv(t, newFakeStats(t, 0).addr(), block)
+	code, out, errOut := runServerCmd(t, "", "use", "ete", "--key-of", "glm", "--config", path)
+	if code != 0 || !strings.Contains(errOut, "Warning: glm2 has the same key as glm") {
+		t.Errorf("exit %d, stdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	if strings.Contains(errOut, "sk-glm") {
+		t.Errorf("the warning shows the key:\n%s", errOut)
+	}
+	// A server with a key of its own gets no warning.
+	_, _, errOut = runServerCmd(t, "", "use", "glm", "--key-of", "ete", "--config", path)
+	if strings.Contains(errOut, "Warning") {
+		t.Errorf("warned for a key no other server has:\n%s", errOut)
+	}
+}
+
+func TestServerUseAndReset_AgentAndKeyOfAreExclusive(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	before := readConfig(t, path)
+	for _, args := range [][]string{
+		{"use", "ete", "--agent", "claude-code", "--key-of", "glm", "--config", path},
+		{"reset", "--agent", "claude-code", "--key-of", "glm", "--config", path},
+	} {
+		code, _, errOut := runServerCmd(t, "", args...)
+		if code != 2 || !strings.Contains(errOut, "exclusive") {
+			t.Errorf("%q: exit %d, stderr:\n%s", args, code, errOut)
+		}
+	}
+	if readConfig(t, path) != before {
+		t.Error("the config was written")
+	}
+}
+
+func TestServerUseAndReset_KeyOfRefusesAnUnknownServer(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	for _, args := range [][]string{
+		{"use", "ete", "--key-of", "east"},
+		{"use", "east", "--key-of", "glm"},
+		{"reset", "--key-of", "east"},
+	} {
+		code, _, errOut := runServerCmd(t, "", append(args, "--config", path)...)
+		if code != 1 || !strings.Contains(errOut, "no server named east; configured: ete, glm") {
+			t.Errorf("%q: exit %d, stderr:\n%s", args, code, errOut)
+		}
+	}
+	code, _, errOut := runServerCmd(t, "", "use", "ete", "--key-of", "ETE", "--config", path)
+	if code != 2 || !strings.Contains(errOut, "is not a server name") {
+		t.Errorf("--key-of ETE: exit %d, stderr:\n%s", code, errOut)
+	}
+}
+
+func TestServerRemove_RefusesAServerAKeyRouteNames(t *testing.T) {
+	block := strings.Replace(routerBlock, "          agents:\n            claude-code: glm\n",
+		"          key_routes:\n            glm: ete\n", 1)
+	path := serverEnv(t, newFakeStats(t, 0).addr(), block)
+	before := readConfig(t, path)
+	for _, s := range []string{"ete", "glm"} {
+		code, _, errOut := runServerCmd(t, "", "remove", s, "--config", path)
+		if code != 1 || !strings.Contains(errOut, "key_routes.glm: ete names "+s) ||
+			!strings.Contains(errOut, "agentop server reset --key-of glm") {
+			t.Errorf("remove %s: exit %d, stderr:\n%s", s, code, errOut)
+		}
+	}
+	if readConfig(t, path) != before {
+		t.Error("the config was written")
+	}
+}
+
 // Every write is checked against the plugin's own rules before it lands, so a
 // config the proxy would refuse is never written — here, one a hand edit left with
 // a field main and helper replaced.
@@ -642,6 +766,15 @@ func inferenceTo(host string) pipeline.SessionEvent {
 		Inference: &pipeline.InferenceExtension{Model: "claude-opus-5-5"}}
 }
 
+// routedInferenceTo is inferenceTo that the inference-router routed to server.
+func routedInferenceTo(host, server string) pipeline.SessionEvent {
+	e := inferenceTo(host)
+	e.Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: "inference-router",
+		Action: pipeline.ActionModify, Reason: "routed", Phase: pipeline.InvocationPhaseRequest,
+		Details: map[string]string{"server": server}}}}
+	return e
+}
+
 func tunnelTo(host string) pipeline.SessionEvent {
 	return pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest, Tunnel: true, HTTPMethod: "CONNECT", Host: host}
 }
@@ -694,6 +827,31 @@ func TestServerRemove_WarnsHowManyRunningSessionsUseIt(t *testing.T) {
 	if want := "A session the proxy routed to it now gets an error asking for a new session. " +
 		"Adding ete back routes them to it again."; !strings.Contains(flat(out), want) {
 		t.Errorf("want %q in stdout:\n%s", want, out)
+	}
+}
+
+// With two servers on one host, a session counts for the server the proxy routed it to. An
+// unrouted session has no server name, so it counts for the first name on its host in sorted
+// order (ete), as before.
+func TestServerRemove_CountsTheSessionsByServerName(t *testing.T) {
+	block := strings.Replace(routerBlock, "            glm:\n", "            team-b:\n"+
+		"              url: https://ete.example.com\n              key: sk-team-b\n              main: opus\n              helper: haiku\n"+
+		"            glm:\n", 1)
+	for _, tc := range []struct{ remove, want string }{
+		{"team-b", "warning: 1 running session last sent inference to team-b."},
+		{"ete", "warning: 2 running sessions last sent inference to ete."},
+	} {
+		t.Run(tc.remove, func(t *testing.T) {
+			store := session.New(0, 0, 0)
+			store.Append("s0", routedInferenceTo("ete.example.com", "team-b"))
+			store.Append("s1", routedInferenceTo("ete.example.com", "ete"))
+			store.Append("s2", inferenceTo("ete.example.com"))
+			path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), serveSessions(t, store), block)
+			code, out, errOut := runServerCmd(t, "", "remove", tc.remove, "--config", path)
+			if code != 0 || !strings.Contains(errOut, tc.want) {
+				t.Errorf("exit %d, want %q, stdout:\n%s\nstderr:\n%s", code, tc.want, out, errOut)
+			}
+		})
 	}
 }
 
@@ -1055,6 +1213,223 @@ func TestServerMove_AnEmptyListingPrunesNothing(t *testing.T) {
 		t.Errorf("an empty listing pruned another session's override:\n%s", cfg)
 	}
 	if !strings.Contains(cfg, "moved: ete") {
+		t.Errorf("config:\n%s", cfg)
+	}
+}
+
+// Rule C4: the three fields are written under the server, the maps sorted, and a
+// second --api for one protocol replaces the first.
+func TestServerAdd_WritesTheAPIAuthHeaderAndHeaders(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	code, _, errOut := runServerCmd(t, "sk-bob", "add", "bob", "https://bob.example.com", "--main", "opus", "--helper", "haiku",
+		"--api", "chat-completions=/x", "--api", "chat-completions=/v1/chat/completions", "--api", "anthropic-messages=/v1/messages",
+		"--auth-header", "x-api-key", "--header", "User-Agent=bob-shell", "--header", "X-Client=cortex",
+		"--key-stdin", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	want := `            bob:
+              url: https://bob.example.com
+              key: sk-bob
+              main: opus
+              helper: haiku
+              api:
+                anthropic-messages: /v1/messages
+                chat-completions: /v1/chat/completions
+              auth_header: x-api-key
+              headers:
+                User-Agent: bob-shell
+                X-Client: cortex
+`
+	if got := readConfig(t, path); !strings.HasSuffix(got, want) {
+		t.Errorf("config does not end with the new entry:\n%s", got)
+	}
+}
+
+// Each bad flag is refused with exit 2 before the key is asked for, and the file is
+// not written.
+func TestServerAdd_RefusesABadAPIOrHeaderFlagBeforeAskingForAKey(t *testing.T) {
+	asked := stubKeyPrompt(t, "sk")
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	before := readConfig(t, path)
+	for _, tc := range []struct {
+		flags []string
+		want  string
+	}{
+		{[]string{"--api", "bogus=/x"}, "valid protocols: anthropic-messages, chat-completions, responses"},
+		{[]string{"--api", "chat-completions"}, "want <protocol>=<path>"},
+		{[]string{"--api", "chat-completions=v1"}, "must be absolute"},
+		{[]string{"--auth-header", "Host"}, "cannot carry the key"},
+		{[]string{"--header", "X-A=$HOME"}, "--header X-A: the value contains $"},
+		{[]string{"--header", "Authorization=x"}, `"Authorization" cannot be set here`},
+		{[]string{"--header", "X-A"}, "want <name>=<value>"},
+	} {
+		args := append([]string{"add", "bob", "https://bob.example.com", "--main", "opus", "--helper", "haiku", "--config", path}, tc.flags...)
+		code, _, errOut := runServerCmd(t, "", args...)
+		if code != 2 || !strings.Contains(errOut, tc.want) {
+			t.Errorf("%v: exit %d, stderr:\n%s", tc.flags, code, errOut)
+		}
+		if strings.Contains(errOut, "$HOME") {
+			t.Errorf("%v: stderr repeats the header value:\n%s", tc.flags, errOut)
+		}
+	}
+	if *asked != "" || readConfig(t, path) != before {
+		t.Error("a bad flag asked for a key or wrote the file")
+	}
+}
+
+// realServerFuncs puts back the real serverModels and probeServer for the rest of
+// the test, so that serverAdd talks to a fake server on loopback.
+func realServerFuncs(t *testing.T, models func(routerconfig.Server) ([]string, string, error)) {
+	t.Helper()
+	prevModels, prevProbe := serverModels, probeServer
+	serverModels, probeServer = models, probeAPI
+	t.Cleanup(func() { serverModels, probeServer = prevModels, prevProbe })
+}
+
+func TestServerAdd_ProbesAndWritesTheAuthHeader(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	realServerFuncs(t, fetchServerModels)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Header.Get("X-Api-Key") != "sk-k":
+			w.WriteHeader(http.StatusUnauthorized)
+		case r.URL.Path == "/v1/models":
+			io.WriteString(w, `{"data":[{"id":"glm-5-3"}]}`)
+		case r.URL.Path == "/v1/chat/completions":
+			io.WriteString(w, `{"choices":[{"message":{"content":"p"}}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	code, out, errOut := runServerCmd(t, "sk-k", "add", "loc", srv.URL, "--main", "glm", "--helper", "glm", "--key-stdin", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "api chat-completions → /v1/chat/completions\n") || !strings.Contains(out, "auth_header → x-api-key\n") {
+		t.Errorf("stdout:\n%s", out)
+	}
+	want := `              api:
+                chat-completions: /v1/chat/completions
+              auth_header: x-api-key
+`
+	if got := readConfig(t, path); !strings.HasSuffix(got, want) {
+		t.Errorf("config does not end with the probed fields:\n%s", got)
+	}
+}
+
+func TestServerAdd_ProbeFailureWritesNothing(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	realServerFuncs(t, fetchServerModels)
+	before := readConfig(t, path)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			io.WriteString(w, `{"data":[{"id":"glm-5-3"}]}`)
+			return
+		}
+		io.WriteString(w, `{"error":{}}`)
+	}))
+	t.Cleanup(srv.Close)
+	code, _, errOut := runServerCmd(t, "sk-k", "add", "loc", srv.URL, "--main", "glm", "--helper", "glm", "--key-stdin", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "agentop server add: could not find which protocols loc serves: ") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+	if readConfig(t, path) != before {
+		t.Error("a failed probe wrote the config")
+	}
+}
+
+func TestServerAdd_APIFlagSkipsTheProbe(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	prev := probeServer
+	probeServer = func(context.Context, *http.Client, routerconfig.Server, string, string, bool) (map[string]string, string, error) {
+		t.Error("the probe ran with --api")
+		return nil, "", nil
+	}
+	t.Cleanup(func() { probeServer = prev })
+	code, _, errOut := runServerCmd(t, "sk-k", "add", "loc", "https://loc.example.com", "--main", "glm", "--helper", "glm",
+		"--api", "chat-completions=/v1/chat/completions", "--key-stdin", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+}
+
+// bobStubs records what serverModels and probeServer see, and answers as Bob does.
+type bobStubs struct {
+	models routerconfig.Server
+	probe  routerconfig.Server
+	header string
+	fixed  bool
+}
+
+func stubBob(t *testing.T) *bobStubs {
+	t.Helper()
+	got := &bobStubs{}
+	prevModels, prevProbe := serverModels, probeServer
+	serverModels = func(s routerconfig.Server) ([]string, string, error) {
+		got.models = s
+		return []string{"premium-ide", "fast"}, s.AuthHeader, nil
+	}
+	probeServer = func(_ context.Context, _ *http.Client, s routerconfig.Server, _, header string, fixed bool) (map[string]string, string, error) {
+		got.probe, got.header, got.fixed = s, header, fixed
+		return map[string]string{"chat-completions": "/v1/chat/completions"}, header, nil
+	}
+	t.Cleanup(func() { serverModels, probeServer = prevModels, prevProbe })
+	return got
+}
+
+// The Bob command the docs show: the flags reach the model list and the probe,
+// and the header stays fixed, so the probe does not try Bearer.
+func TestServerAdd_BobDocumentedCommand(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	got := stubBob(t)
+	code, out, errOut := runServerCmd(t, "sk-bob", "add", "bob", "https://api.us-east.bob.ibm.com/inference",
+		"--main", "premium-ide", "--helper", "fast", "--auth-header", "x-api-key", "--header", "User-Agent=bob-shell",
+		"--key-stdin", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	ua := map[string]string{"User-Agent": "bob-shell"}
+	if got.models.AuthHeader != "x-api-key" || !maps.Equal(got.models.Headers, ua) {
+		t.Errorf("serverModels saw auth_header %q, headers %v", got.models.AuthHeader, got.models.Headers)
+	}
+	if !got.fixed || got.header != "x-api-key" || !maps.Equal(got.probe.Headers, ua) {
+		t.Errorf("probe saw header %q, fixed %v, headers %v", got.header, got.fixed, got.probe.Headers)
+	}
+	if strings.Contains(out, "auth_header →") {
+		t.Errorf("a fixed header was shown as found by the probe:\n%s", out)
+	}
+	want := `            bob:
+              url: https://api.us-east.bob.ibm.com/inference
+              key: sk-bob
+              main: premium-ide
+              helper: fast
+              api:
+                chat-completions: /v1/chat/completions
+              auth_header: x-api-key
+              headers:
+                User-Agent: bob-shell
+`
+	if cfg := readConfig(t, path); !strings.HasSuffix(cfg, want) {
+		t.Errorf("config does not end with the Bob entry:\n%s", cfg)
+	}
+}
+
+// add has no per-vendor defaults: a Bob host without the flags gets no auth
+// header and no headers.
+func TestServerAdd_BobHostGetsNoHiddenDefaults(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	got := stubBob(t)
+	code, _, errOut := runServerCmd(t, "sk-bob", "add", "bob", "https://api.us-east.bob.ibm.com/inference",
+		"--main", "premium-ide", "--helper", "fast", "--key-stdin", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if got.models.AuthHeader != "" || len(got.models.Headers) != 0 || got.fixed || len(got.probe.Headers) != 0 {
+		t.Errorf("defaults were added: models %+v, probe header %q fixed %v", got.models, got.header, got.fixed)
+	}
+	if cfg := readConfig(t, path); strings.Contains(cfg, "bob-shell") || strings.Contains(cfg, "auth_header") {
 		t.Errorf("config:\n%s", cfg)
 	}
 }

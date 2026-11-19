@@ -12,6 +12,10 @@ type RequestCapture struct {
 	Original []byte
 	// Forwarded is the body as Cortex sent it upstream, nil when no plugin rewrote it.
 	Forwarded []byte
+	// Translated is the body as Cortex sent it upstream after it converted it to the
+	// server's protocol, nil when it did not convert it. Forwarded, or Original when
+	// Forwarded is nil, is the input of the conversion.
+	Translated []byte
 	// Header is the request's headers. The producer removes credential headers before it
 	// hands the capture over: the archive stores what it is given.
 	Header http.Header
@@ -37,6 +41,12 @@ type ResponseCapture struct {
 	Decoded bool
 	// Truncated is set when the body was longer than MaxResponseCapture.
 	Truncated bool
+	// Upstream is the server's reply before Cortex converted it to the agent's protocol, up
+	// to MaxResponseCapture bytes, nil when Cortex did not convert the reply. Body is then the
+	// converted reply, as the agent got it.
+	Upstream []byte
+	// UpstreamTruncated is set when Upstream was longer than MaxResponseCapture.
+	UpstreamTruncated bool
 	// Incomplete is set when the body did not arrive whole: the stream broke, or the client
 	// went away first.
 	Incomplete bool
@@ -54,13 +64,16 @@ const MaxResponseCapture = 10 << 20
 // text when it is valid UTF-8, which every JSON API body is, and base64 in the matching *Base64
 // field otherwise, so any body survives the trip.
 type RawCapture struct {
-	Request         string      `json:"request,omitempty"`
-	RequestBase64   []byte      `json:"requestBase64,omitempty"`
-	Forwarded       *string     `json:"forwarded,omitempty"`
-	ForwardedBase64 []byte      `json:"forwardedBase64,omitempty"`
-	RequestHeaders  http.Header `json:"requestHeaders,omitempty"`
-	Query           string      `json:"query,omitempty"`
-	Response        *RawBody    `json:"response,omitempty"`
+	Request         string  `json:"request,omitempty"`
+	RequestBase64   []byte  `json:"requestBase64,omitempty"`
+	Forwarded       *string `json:"forwarded,omitempty"`
+	ForwardedBase64 []byte  `json:"forwardedBase64,omitempty"`
+	// Translated is the body after Cortex converted it to the server's protocol.
+	Translated       *string     `json:"translated,omitempty"`
+	TranslatedBase64 []byte      `json:"translatedBase64,omitempty"`
+	RequestHeaders   http.Header `json:"requestHeaders,omitempty"`
+	Query            string      `json:"query,omitempty"`
+	Response         *RawBody    `json:"response,omitempty"`
 }
 
 // RawBody is a captured response. Body is in its Content-Encoding unless Decoded is set, so a
@@ -73,4 +86,8 @@ type RawBody struct {
 	Decoded    bool        `json:"decoded,omitempty"`
 	Truncated  bool        `json:"truncated,omitempty"`
 	Incomplete bool        `json:"incomplete,omitempty"`
+	// Upstream is the server's reply before Cortex converted it to the agent's protocol.
+	Upstream          *string `json:"upstream,omitempty"`
+	UpstreamBase64    []byte  `json:"upstreamBase64,omitempty"`
+	UpstreamTruncated bool    `json:"upstreamTruncated,omitempty"`
 }

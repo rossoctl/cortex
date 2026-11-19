@@ -1,0 +1,14 @@
+{"model":"claude-opus-5-5","max_tokens":32000,"stream":true,
+ "system":[{"type":"text","text":"You are Claude Code."},{"type":"text","text":"Follow the project rules.","cache_control":{"type":"ephemeral"}}],
+ "tools":[{"name":"Bash","description":"Run a shell command.","input_schema":{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}}],
+ "tool_choice":{"type":"auto"},
+ "thinking":{"type":"adaptive"},
+ "output_config":{"effort":"high"},
+ "metadata":{"user_id":"u1"},
+ "messages":[
+  {"role":"user","content":[{"type":"text","text":"What is in this image?"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]},
+  {"role":"assistant","content":[{"type":"thinking","thinking":"Look at it first.","signature":"EvkBsig1"},{"type":"text","text":"Let me check the file."},{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"file cat.png"}}]},
+  {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"cat.png: PNG image data"}]},
+  {"role":"system","content":"<system-reminder>The user changed cat.png.</system-reminder>"},
+  {"role":"assistant","content":[{"type":"text","text":"It is a PNG image of a cat."}]},
+  {"role":"user","content":[{"type":"text","text":"Thanks. Is 391 prime?","cache_control":{"type":"ephemeral"}}]}]}

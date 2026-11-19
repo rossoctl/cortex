@@ -148,6 +148,11 @@ func TestEnsureTrustBundle_NoSystemRootsWritesNothing(t *testing.T) {
 	if !errors.Is(err, ErrNoSystemRoots) {
 		t.Fatalf("error = %v, want ErrNoSystemRoots", err)
 	}
+	// Only the filesystem refusing the write is demoted: a missing root store is a
+	// genuine misconfiguration and keeps warning.
+	if errors.Is(err, ErrCADirNotWritable) {
+		t.Errorf("missing roots misclassified as unwritable ca_dir: %v", err)
+	}
 	if _, serr := os.Stat(filepath.Join(dir, TrustBundleName)); serr == nil {
 		t.Fatal("a CA-only bundle was written; it must not exist at all")
 	}
@@ -370,19 +375,5 @@ func TestEnsureTrustBundle_ReadOnlyCADirIsClassified(t *testing.T) {
 	// It must NOT be mistaken for the missing-roots case, which is a real problem.
 	if errors.Is(err, ErrNoSystemRoots) {
 		t.Error("a read-only ca_dir must not report as missing system roots")
-	}
-}
-
-// TestEnsureTrustBundle_OtherWriteErrorsStayLoud is the other side: only the
-// filesystem refusing the write is demoted. A missing root store is a genuine
-// misconfiguration and must keep warning.
-func TestEnsureTrustBundle_OtherWriteErrorsStayLoud(t *testing.T) {
-	withSystemRoots(t, nil)
-	_, err := EnsureTrustBundle(caDirWith(t, realPEM(t)))
-	if errors.Is(err, ErrCADirNotWritable) {
-		t.Errorf("missing roots misclassified as unwritable ca_dir: %v", err)
-	}
-	if !errors.Is(err, ErrNoSystemRoots) {
-		t.Errorf("error = %v, want ErrNoSystemRoots", err)
 	}
 }

@@ -48,20 +48,6 @@ func candidateTitle(ev pipeline.SessionEvent) string {
 // can actually be in is this one — it exists, it has events, and none of them named it — and a
 // distinct sentinel for the empty case would be both untestable here and indistinguishable on the
 // wire from a session genuinely so titled. See TestAppend_TitleAbsentWhenNothingNamedIt.
-func TestSessionTitle_NothingNamesTheSession(t *testing.T) {
-	// An event with no Inference extension at all, then one whose only message is not from the user.
-	events := []pipeline.SessionEvent{
-		{Host: "api.example.com"},
-		{Inference: &pipeline.InferenceExtension{Messages: []pipeline.InferenceMessage{
-			{Role: "assistant", Content: "an answer nobody asked for"},
-		}}},
-	}
-	if got := foldTitle(t, events...); got != "" {
-		t.Errorf("got %q, want %q — something named a session that nothing in it named", got, "")
-	}
-}
-
-// An event with no user text names nothing: "", absent on the wire.
 func TestSessionTitle_NoMatch(t *testing.T) {
 	events := []pipeline.SessionEvent{
 		{Inference: &pipeline.InferenceExtension{Messages: []pipeline.InferenceMessage{

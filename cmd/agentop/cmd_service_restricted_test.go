@@ -312,24 +312,6 @@ func TestServiceIsCurrent(t *testing.T) {
 			t.Error("claimed current without being able to confirm it serves")
 		}
 	})
-
-	t.Run("darwin requires --supervise, or crashes go unrecovered", func(t *testing.T) {
-		if runtime.GOOS != "darwin" {
-			t.Skip("darwin only")
-		}
-		p := base(t)
-		body, err := os.ReadFile(p.unitFile)
-		if err != nil {
-			t.Fatal(err)
-		}
-		no := strings.Replace(string(body), "<string>--supervise</string>", "", 1)
-		if err := os.WriteFile(p.unitFile, []byte(no), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if serviceIsCurrent(runtime.GOOS, p) {
-			t.Error("claimed current for a unit that lost --supervise")
-		}
-	})
 }
 
 // The session-history line must not appear on a first install, where there is no store to

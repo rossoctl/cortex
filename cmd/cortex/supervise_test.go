@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -201,6 +202,8 @@ func TestSuperviseDelays_AreOrdered(t *testing.T) {
 		t.Error("one bind failure escalates, so a restart racing a stop is treated as a held address")
 	case superviseHealthyRun <= superviseRestartDelay:
 		t.Error("a child counts as healthy sooner than the wait before starting it")
+	case superviseStopGrace >= 5*time.Second:
+		t.Errorf("superviseStopGrace = %v; a stop must end a stuck proxy inside launchd's 5s exit timeout", superviseStopGrace)
 	}
 }
 
@@ -341,7 +344,7 @@ func TestSupervisorChildren_GatewayWantsCortexVersion(t *testing.T) {
 	}
 }
 
-// runGatewaySpec runs superviseChild for 200 ms on a script that writes a marker file,
+// runGatewaySpec runs one attempt of superviseChild on a script that writes a marker file,
 // with gatewayVersionOf replaced by one that returns got. It returns true when the
 // script ran.
 func runGatewaySpec(t *testing.T, got, want string) bool {
@@ -352,12 +355,21 @@ func runGatewaySpec(t *testing.T, got, want string) bool {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\nexec cat >/dev/null\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	orig := gatewayVersionOf
-	gatewayVersionOf = func(string) string { return got }
-	t.Cleanup(func() { gatewayVersionOf = orig })
-
+	// The version check closes stop, so the loop ends after its first attempt: a refused
+	// start returns at once, and a started script is waited for, marker written.
 	stop := make(chan struct{})
-	time.AfterFunc(200*time.Millisecond, func() { close(stop) })
+	var once sync.Once
+	orig := gatewayVersionOf
+	gatewayVersionOf = func(string) string {
+		once.Do(func() { close(stop) })
+		return got
+	}
+	t.Cleanup(func() { gatewayVersionOf = orig })
+	// The script gets as long as it takes to write the marker and exit.
+	origGrace := superviseStopGrace
+	superviseStopGrace = time.Hour
+	t.Cleanup(func() { superviseStopGrace = origGrace })
+
 	spec := childSpec{name: gatewayBinary, path: script, env: []string{}, stdinPipe: true, wantVersion: want}
 	if err := superviseChild(spec, stop); err != nil {
 		t.Fatalf("superviseChild: %v", err)

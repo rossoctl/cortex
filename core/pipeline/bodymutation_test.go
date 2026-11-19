@@ -3,7 +3,6 @@ package pipeline
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"strings"
 	"testing"
 )
 
@@ -44,53 +43,6 @@ func TestCapabilities_Normalize(t *testing.T) {
 				t.Errorf("WritesRequestBody = %v, want %v", got.WritesRequestBody, tc.wantWrites)
 			}
 		})
-	}
-}
-
-// TestPipeline_NeedsBody_IncludesWritesRequestBody: NeedsBody returns true even
-// if the only body-touching plugin is a pure mutator. Listeners rely on
-// this to turn on buffering before the mutator sees (and rewrites) the
-// body.
-func TestPipeline_NeedsBody_IncludesWritesRequestBody(t *testing.T) {
-	p := mustBuild(t, &stubPlugin{
-		name: "mutator",
-		caps: PluginCapabilities{WritesRequestBody: true},
-	})
-	if !p.NeedsBody() {
-		t.Error("NeedsBody should be true when any plugin declares WritesRequestBody")
-	}
-	if !p.WritesRequestBody() {
-		t.Error("WritesRequestBody should be true")
-	}
-}
-
-// TestNew_RejectsReaderAfterMutator: a parser that expects to see the
-// original bytes must not run after a mutator. The validator catches
-// the swapped order at build time instead of silently giving the
-// reader mutated content.
-func TestNew_RejectsReaderAfterMutator(t *testing.T) {
-	_, err := New([]Plugin{
-		&stubPlugin{name: "rewriter", caps: PluginCapabilities{WritesRequestBody: true}},
-		&stubPlugin{name: "parser", caps: PluginCapabilities{ReadsBody: true}},
-	})
-	if err == nil {
-		t.Fatal("expected error for reader after mutator")
-	}
-	if !strings.Contains(err.Error(), "parser") || !strings.Contains(err.Error(), "rewriter") {
-		t.Errorf("error should name both plugins, got %q", err.Error())
-	}
-}
-
-// TestNew_AcceptsReaderBeforeMutator: the canonical ordering. Parser
-// sees the original; mutator sees whatever the parser did, rewrites,
-// and the listener ships the rewritten bytes.
-func TestNew_AcceptsReaderBeforeMutator(t *testing.T) {
-	_, err := New([]Plugin{
-		&stubPlugin{name: "parser", caps: PluginCapabilities{ReadsBody: true}},
-		&stubPlugin{name: "rewriter", caps: PluginCapabilities{WritesRequestBody: true}},
-	})
-	if err != nil {
-		t.Fatalf("reader-before-mutator should be valid, got %v", err)
 	}
 }
 

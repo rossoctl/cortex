@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/term"
+	"gopkg.in/yaml.v3"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
@@ -82,6 +83,10 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var models routerconfig.Server
 	flags.StringVar(&models.Main, "main", "", "a word naming the server's model for an agent's main work, such as opus or glm")
 	flags.StringVar(&models.Helper, "helper", "", "a word naming the server's model for an agent's helper calls, such as haiku")
+	api, headers := pairFlag{flag: "--api", want: "<protocol>=<path>"}, pairFlag{flag: "--header", want: "<name>=<value>"}
+	flags.Var(&api, "api", "a protocol the server serves and its path, such as chat-completions=/v1/chat/completions (repeatable)")
+	flags.StringVar(&models.AuthHeader, "auth-header", "", "the header that carries the key, such as x-api-key (default: the agent's)")
+	flags.Var(&headers, "header", "a fixed header set on every request to the server, as <name>=<value> (repeatable)")
 	pos, code, ok := serverFlags(flags, args, stdout, stderr)
 	if !ok {
 		return code
@@ -112,6 +117,11 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop server add: %v\n", err)
 		return 2
 	}
+	models.API, models.Headers = api.m, headers.m
+	if err := checkProtocolFlags(models); err != nil {
+		fmt.Fprintf(stderr, "agentop server add: %v\n", err)
+		return 2
+	}
 	// Before anything is asked or read: --key-stdin reads stdin as typed, so on a
 	// terminal the key would echo, character by character, onto the screen and into
 	// any recording of it. The prompt without the flag reads it without echo.
@@ -129,13 +139,6 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	c, _, err := readRouter(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server add: %v\n", err)
-		return 1
-	}
-	// servers.ForHost, the rule agentop then names a session's server by, so this refusal and
-	// what it protects cannot drift apart. A server replaced under its own name keeps its host.
-	if other, ok := servers.ForHost(c, ep.Host); ok && other != name {
-		fmt.Fprintf(stderr, "agentop server add: %s is already on %s. Each server needs a host of its own, "+
-			"because agentop names a session's server from the host its requests went to.\n", other, ep.Key())
 		return 1
 	}
 	old, replacing := c.Servers[name]
@@ -172,7 +175,7 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// given, so a word naming none of its models is refused before it is written,
 	// and a wrong key or URL is caught here rather than on the first routed request.
 	models.URL, models.Key = ep.URL(), key
-	ids, err := serverModels(models)
+	ids, _, err := serverModels(models)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server add: could not read %s's model list: %v. Check its URL and key.\n", name, err)
 		return 1
@@ -185,10 +188,41 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "%s %s → %s\n", strings.TrimPrefix(w.flag, "--"), w.word, m)
 	}
+	// With no --api, the probe finds the protocols, and the auth header when it is
+	// not the usual one. A given --auth-header is fixed: the probe does not change it.
+	if len(models.API) == 0 {
+		client := routerconfig.NewModelsClient()
+		client.Timeout = 60 * time.Second // a local server can load the model at the first request
+		ctx, cancel := context.WithTimeout(context.Background(), probeTotal(client.Timeout))
+		api, auth, err := probeServer(ctx, client, models, routerconfig.Resolve(models.Main, ids),
+			models.AuthHeader, models.AuthHeader != "")
+		cancel()
+		if err != nil {
+			fmt.Fprintf(stderr, "agentop server add: could not find which protocols %s serves: %v\n", name, err)
+			return 1
+		}
+		for _, p := range slices.Sorted(maps.Keys(api)) {
+			fmt.Fprintf(stdout, "api %s → %s\n", p, api[p])
+		}
+		if auth != "" && auth != models.AuthHeader {
+			fmt.Fprintf(stdout, "auth_header → %s\n", auth)
+			models.AuthHeader = auth
+		}
+		models.API = api
+	}
 
-	pairs := []string{"url", ep.URL(), "key", key, "main", models.Main, "helper", models.Helper}
+	value := edit.MapValue("url", ep.URL(), "key", key, "main", models.Main, "helper", models.Helper)
+	if len(models.API) > 0 {
+		value.Content = append(value.Content, edit.ScalarValue("api"), sortedMap(models.API))
+	}
+	if models.AuthHeader != "" {
+		value.Content = append(value.Content, edit.ScalarValue("auth_header"), edit.ScalarValue(models.AuthHeader))
+	}
+	if len(models.Headers) > 0 {
+		value.Content = append(value.Content, edit.ScalarValue("headers"), sortedMap(models.Headers))
+	}
 	ch := edit.ConfigChange{Chain: "outbound", Plugin: routerName, Path: []string{"servers", name},
-		Value: edit.MapValue(pairs...), CreatePlugin: true}
+		Value: value, CreatePlugin: true}
 	done := "Added " + name + "."
 	if replacing {
 		done = "Replaced " + name + "."
@@ -215,6 +249,57 @@ func checkWordFlags(models routerconfig.Server) error {
 		}
 	}
 	return nil
+}
+
+// pairFlag is a repeatable <key>=<value> flag. A second value for one key replaces the first.
+type pairFlag struct {
+	flag, want string
+	m          map[string]string
+}
+
+func (f *pairFlag) String() string { return "" }
+
+func (f *pairFlag) Set(s string) error {
+	k, v, ok := strings.Cut(s, "=")
+	if !ok || k == "" {
+		return fmt.Errorf("want %s", f.want)
+	}
+	if f.m == nil {
+		f.m = map[string]string{}
+	}
+	f.m[k] = v
+	return nil
+}
+
+// checkProtocolFlags checks add's --api, --auth-header and --header with the rules the
+// router loads them by, and refuses a header value with $, which config.Load would expand.
+// The errors never repeat a header value.
+func checkProtocolFlags(s routerconfig.Server) error {
+	if err := routerconfig.CheckAPI(s.API); err != nil {
+		return fmt.Errorf("--%w", err)
+	}
+	if err := routerconfig.CheckAuthHeader(s.AuthHeader); err != nil {
+		return fmt.Errorf("--auth-header: %w", err)
+	}
+	if err := routerconfig.CheckHeaders(s.Headers, s.AuthHeader); err != nil {
+		return fmt.Errorf("--header: %w", err)
+	}
+	for _, name := range slices.Sorted(maps.Keys(s.Headers)) {
+		if strings.Contains(s.Headers[name], "$") {
+			return fmt.Errorf("--header %s: the value contains $, which Cortex reads as an environment variable when it "+
+				"loads the config; write headers: {%s: ${NAME}} by hand", name, name)
+		}
+	}
+	return nil
+}
+
+// sortedMap is m as a YAML mapping, its keys sorted, so the same flags write the same file.
+func sortedMap(m map[string]string) *yaml.Node {
+	var pairs []string
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		pairs = append(pairs, k, m[k])
+	}
+	return edit.MapValue(pairs...)
 }
 
 func serverRemove(args []string, stdout, stderr io.Writer) int {
@@ -267,6 +352,25 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "To take the router out altogether, delete its entry from %s.\n", homeTilde(path))
 		return 1
 	}
+	// Before the session and agent checks: the config validation refuses the
+	// removal while an entry names name, so this is the first thing to fix.
+	var routed []string
+	for _, k := range slices.Sorted(maps.Keys(c.KeyRoutes)) {
+		if k == name || c.KeyRoutes[k] == name {
+			routed = append(routed, k)
+		}
+	}
+	if len(routed) > 0 {
+		clauses := make([]string, len(routed))
+		for i, k := range routed {
+			clauses[i] = fmt.Sprintf("key_routes.%s: %s names %s", k, c.KeyRoutes[k], name)
+		}
+		fmt.Fprintf(stderr, "agentop server remove: %s; remove the entry first:\n", strings.Join(clauses, ", "))
+		for _, k := range routed {
+			fmt.Fprintf(stderr, "  agentop server reset --key-of %s\n", k)
+		}
+		return 1
+	}
 	if moved := sessionsOn(c, name); len(moved) > 0 {
 		// Not rewritten to "": a remove the user asked for should not edit the
 		// moves they made, and a config that names no listed server cannot reload —
@@ -311,6 +415,7 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 
 // runningOn counts the sessions the proxy at sessionsURL holds in memory whose inference
 // traffic last went to server name: the ones a remove can leave asking for a new session.
+// servers.ForSession names each session's server: by the name the proxy recorded, else by host.
 //
 // NOT THE LISTENER'S SYNTHETIC SESSIONS — the default bucket and the pending:<agent> ones.
 // Each holds many conversations, so the router never pins one; their requests follow the
@@ -340,7 +445,7 @@ func runningOn(sessionsURL string, c routerconfig.Config, name string) int {
 		if !session.IsConversation(s.ID) {
 			continue
 		}
-		if on, ok := servers.ForHost(c, s.InferenceHost); ok && on == name {
+		if on, ok := servers.ForSession(c, s); ok && on == name {
 			n++
 		}
 	}
@@ -379,12 +484,17 @@ func serverUse(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("server use", flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
 	agent := flags.String("agent", "", "the agent whose new sessions go to the server, such as claude-code")
+	keyOf := flags.String("key-of", "", "the server whose key the new sessions send, such as team-b")
 	pos, code, ok := serverFlags(flags, args, stdout, stderr)
 	if !ok {
 		return code
 	}
-	if len(pos) != 1 || *agent == "" {
-		fmt.Fprintln(stderr, "agentop server use: want a server and an agent: agentop server use <name> --agent <agent>")
+	if *agent != "" && *keyOf != "" {
+		fmt.Fprintln(stderr, "agentop server use: --agent and --key-of are exclusive; give one")
+		return 2
+	}
+	if len(pos) != 1 || (*agent == "" && *keyOf == "") {
+		fmt.Fprintln(stderr, "agentop server use: want a server and an agent or a key: agentop server use <name> --agent <agent> | --key-of <server>")
 		return 2
 	}
 	name := pos[0]
@@ -392,6 +502,9 @@ func serverUse(args []string, stdout, stderr io.Writer) int {
 	if err := routerconfig.CheckName(name); err != nil {
 		fmt.Fprintf(stderr, "agentop server use: %v\n", err)
 		return 2
+	}
+	if *keyOf != "" {
+		return serverKeyRoute("use", name, *keyOf, *cfgPath, stdout, stderr)
 	}
 	if err := routerconfig.CheckAgent(*agent); err != nil {
 		fmt.Fprintf(stderr, "agentop server use: %v\n", err)
@@ -423,17 +536,80 @@ func serverUse(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
+// serverKeyRoute is `agentop server use <to> --key-of <from>`: the new sessions
+// that send from's key go to to. With to == from, which is also
+// `agentop server reset --key-of <from>`, it removes the entry.
+func serverKeyRoute(action, to, from, cfgPath string, stdout, stderr io.Writer) int {
+	if err := routerconfig.CheckName(from); err != nil {
+		fmt.Fprintf(stderr, "agentop server %s: %v\n", action, err)
+		return 2
+	}
+	cfg, path, statsURL, err := serverWriteTarget(cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server %s: %v\n", action, err)
+		return 1
+	}
+	c, _, err := readRouter(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server %s: %v\n", action, err)
+		return 1
+	}
+	for _, n := range []string{from, to} {
+		if _, ok := c.Servers[n]; !ok {
+			fmt.Fprintf(stderr, "agentop server %s: no server named %s%s. Add it first:\n  agentop server add %s <url>\n",
+				action, n, configuredServers(c), n)
+			return 1
+		}
+	}
+	r := writeReport{
+		done:      fmt.Sprintf("New sessions that send %s's key → %s.", from, to),
+		live:      runningSessionsStay,
+		unchanged: fmt.Sprintf("New sessions that send %s's key already go to %s.", from, to),
+		note:      routerInactive(cfg, path),
+	}
+	if to == from {
+		r.done = fmt.Sprintf("New sessions that send %s's key go to %s.", from, from)
+		r.unchanged = fmt.Sprintf("%s's key is not routed to another server; nothing to change.", from)
+	} else if shared := sameKeyAs(c, from); len(shared) > 0 {
+		// The router matches no server by a key that two servers share (buildKeys),
+		// so the entry would change nothing.
+		fmt.Fprintf(stderr, "Warning: %s has the same key as %s, so a request that sends it selects no server and this entry has no effect.\n",
+			strings.Join(shared, " and "), from)
+	}
+	return runServerWrite(stdout, stderr, path, statsURL, servers.KeyRouteChanges(from, to), r)
+}
+
+// sameKeyAs lists, sorted, the servers other than name whose key is name's key.
+func sameKeyAs(c routerconfig.Config, name string) []string {
+	var out []string
+	key := c.Servers[name].Key
+	for _, n := range slices.Sorted(maps.Keys(c.Servers)) {
+		if n != name && key != "" && c.Servers[n].Key == key {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 func serverReset(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("server reset", flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
 	agent := flags.String("agent", "", "the agent to stop routing, such as claude-code")
+	keyOf := flags.String("key-of", "", "the server whose key the new sessions send, such as team-b")
 	pos, code, ok := serverFlags(flags, args, stdout, stderr)
 	if !ok {
 		return code
 	}
-	if len(pos) != 0 || *agent == "" {
-		fmt.Fprintln(stderr, "agentop server reset: want an agent: agentop server reset --agent <agent>")
+	if *agent != "" && *keyOf != "" {
+		fmt.Fprintln(stderr, "agentop server reset: --agent and --key-of are exclusive; give one")
 		return 2
+	}
+	if len(pos) != 0 || (*agent == "" && *keyOf == "") {
+		fmt.Fprintln(stderr, "agentop server reset: want an agent or a key: agentop server reset --agent <agent> | --key-of <server>")
+		return 2
+	}
+	if *keyOf != "" {
+		return serverKeyRoute("reset", *keyOf, *keyOf, *cfgPath, stdout, stderr)
 	}
 	if err := routerconfig.CheckAgent(*agent); err != nil {
 		fmt.Fprintf(stderr, "agentop server reset: %v\n", err)

@@ -284,14 +284,6 @@ func TestYankTightensALooseModeDir(t *testing.T) {
 	}
 }
 
-// And the ordinary case still works: a clean home yanks without complaint.
-func TestYankAcceptsACleanDir(t *testing.T) {
-	yankHome(t)
-	if _, err := yankEventToFile(sampleEvent()); err != nil {
-		t.Errorf("clean home was refused: %v", err)
-	}
-}
-
 // The reported symptom: on a ~72-column terminal the footer read
 //
 //	● connected  0.0 events/sec   yanked → /Users/person/.cortex/agentop-

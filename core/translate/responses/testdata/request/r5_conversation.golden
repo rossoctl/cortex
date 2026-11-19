@@ -1,0 +1,1 @@
+error: 400 invalid_request_error: Cortex cannot translate a Responses request that refers to server state (previous_response_id). Send the full conversation.

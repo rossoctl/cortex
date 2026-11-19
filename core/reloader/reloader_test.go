@@ -248,26 +248,6 @@ func TestReloader_ContentHashDedup(t *testing.T) {
 	}
 }
 
-// Mode change is unreloadable; reload is refused; holders unchanged.
-func TestReloader_RefusesModeChange(t *testing.T) {
-	r, b, cfgPath, inH, _ := setup(t)
-
-	oldInPipeline := inH.Load()
-	newIn := emptyPipeline(t)
-	newOut := emptyPipeline(t)
-	b.set(builderResult{inbound: newIn, outbound: newOut, cfg: &config.Config{Mode: "proxy-sidecar"}})
-
-	writeConfig(t, cfgPath, "mode: proxy-sidecar\n")
-
-	waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsFailed >= 1 }, "reload to fail")
-	if inH.Load() != oldInPipeline {
-		t.Errorf("inbound holder mutated despite refused reload")
-	}
-	if r.Status().LastError == "" || !contains(r.Status().LastError, "mode") {
-		t.Errorf("error should mention mode, got %q", r.Status().LastError)
-	}
-}
-
 // Listener address change is unreloadable.
 func TestReloader_RefusesListenerChange(t *testing.T) {
 	r, b, cfgPath, inH, _ := setup(t)

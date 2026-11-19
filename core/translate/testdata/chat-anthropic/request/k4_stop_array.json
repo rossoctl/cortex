@@ -1,0 +1,1 @@
+{"model":"claude-opus-5-5","stop":["END","STOP"],"messages":[{"role":"user","content":"hi"}]}

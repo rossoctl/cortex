@@ -227,7 +227,7 @@ func (m *model) openSessionServerPicker() tea.Cmd {
 	// a no-op, never an accidental unroute of a running session.
 	inForce := router.Sessions[id]
 	if inForce == "" && summary != nil {
-		inForce, _ = servers.ForHost(router, summary.InferenceHost)
+		inForce, _ = servers.ForSession(router, *summary)
 	}
 	for _, name := range slices.Sorted(maps.Keys(router.Servers)) {
 		s := router.Servers[name]
@@ -452,8 +452,8 @@ func sessionSwitchedText(msg serverSwitchedMsg) string {
 }
 
 // sessionsStaying counts agent's running sessions that a switch to server leaves where they are:
-// the ones whose inference traffic last went somewhere other than server's host. For the agent's
-// own choice (server ""), every one whose inference last went to any configured server.
+// the ones whose server (servers.ForSession) is not server. For the agent's own choice
+// (server ""), every one whose inference last went to any configured server.
 //
 // RESET'S COUNT IS AN UPPER BOUND, and says only what is true of each session it counts. The
 // router acts only on requests a client already addresses to a server's host, so an agent's own
@@ -474,7 +474,7 @@ func sessionSwitchedText(msg serverSwitchedMsg) string {
 // store, so its pin survived. A row only the archive holds has sent nothing since and is not
 // counted. SessionSummary.Active would not do — it marks the one most recently updated session.
 //
-// Read with the router as it was: a switch changes agents, not servers, so the hosts are the same.
+// Read with the router as it was: a switch changes agents, not servers, so each session's server is the same.
 func (m *model) sessionsStaying(agent, server string) int {
 	router, _ := m.activeRouter()
 	n := 0
@@ -482,7 +482,7 @@ func (m *model) sessionsStaying(agent, server string) int {
 		if pipeline.AgentName(s.Agent) != agent || (s.Resident != nil && !*s.Resident) || s.InferenceHost == "" {
 			continue
 		}
-		on, ok := servers.ForHost(router, s.InferenceHost)
+		on, ok := servers.ForSession(router, s)
 		if (server == "" && ok) || (server != "" && on != server) {
 			n++
 		}

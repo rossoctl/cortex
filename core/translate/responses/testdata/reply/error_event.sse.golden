@@ -1,0 +1,12 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp-1","object":"response","model":"claude","status":"in_progress"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_0","role":"assistant","status":"in_progress","content":[]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","item_id":"msg_0","output_index":0,"content_index":0,"delta":"Hal"}
+
+event: response.failed
+data: {"type":"response.failed","response":{"id":"resp-1","object":"response","model":"claude","status":"failed","output":[],"error":{"code":"rate_limit_exceeded","message":"Slow down."}}}
+

@@ -48,7 +48,7 @@ session. Two things move it, and neither is a defect:
 A single early turn can read ~24%, which is why a figure quoted from one request is
 not the number to plan with.
 
-Watch it live: run `agentop` (it finds the local proxy on its own), then the plugin
+Watch it live: run `agentop observe` (it finds the local proxy on its own), then the plugin
 pane's `tool-prune` → `Metrics`, and the per-request saving in the events
 timeline's `TOKENS / SAVED` column.
 

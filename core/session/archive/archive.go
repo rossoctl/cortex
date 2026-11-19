@@ -437,9 +437,9 @@ func (a *Archive) sendLocked(o op) bool {
 // body read with io.ReadAll can hold up to twice that, and headers are not counted, so the
 // budget bounds memory within a small factor, not exactly.
 func captureSize(c *model.RequestCapture) int64 {
-	n := len(c.Original) + len(c.Forwarded)
+	n := len(c.Original) + len(c.Forwarded) + len(c.Translated)
 	if c.Response != nil {
-		n += len(c.Response.Body)
+		n += len(c.Response.Body) + len(c.Response.Upstream)
 	}
 	return int64(n)
 }

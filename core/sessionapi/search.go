@@ -92,6 +92,7 @@ type matcher struct {
 	q    string
 	seen map[strKey]bool
 	json map[strKey]bool
+	tool map[strKey]bool
 	keys map[string]bool
 }
 
@@ -102,7 +103,7 @@ type strKey struct {
 
 func newMatcher(q string) *matcher {
 	return &matcher{q: strings.Map(unicode.ToLower, q),
-		seen: map[strKey]bool{}, json: map[strKey]bool{}, keys: map[string]bool{}}
+		seen: map[strKey]bool{}, json: map[strKey]bool{}, tool: map[strKey]bool{}, keys: map[string]bool{}}
 }
 
 // fold reports whether s holds the query, folded as agentop's find.Contains folds: rune by rune,
@@ -129,6 +130,7 @@ func (m *matcher) text(s string) bool {
 func (m *matcher) forget() {
 	clear(m.seen)
 	clear(m.json)
+	clear(m.tool)
 	clear(m.keys)
 }
 
@@ -229,7 +231,7 @@ func (m *matcher) calls(cs []model.InferenceToolCall) bool {
 	}
 	for i := range cs {
 		x := &cs[i]
-		if m.field("id", x.ID) || m.field("name", x.Name) || m.field("arguments", x.Arguments) {
+		if m.field("id", x.ID) || m.field("name", x.Name) || m.toolJSON("arguments", x.Arguments, model.ToolArgumentsJSON) {
 			return true
 		}
 	}
@@ -245,12 +247,33 @@ func (m *matcher) results(rs []model.InferenceToolResult) bool {
 	}
 	for i := range rs {
 		x := &rs[i]
-		if m.field("toolUseId", x.ToolUseID) || m.field("content", x.Content) ||
+		if m.field("toolUseId", x.ToolUseID) || m.toolJSON("content", x.Content, model.ToolOutputJSON) ||
 			(x.IsError && (m.key("isError") || m.key("true"))) {
 			return true
 		}
 	}
 	return false
+}
+
+// toolJSON is field for a string that the detail tree shows as its decoded value when decode
+// accepts it. Each distinct string is checked one time. The strings inside the value are new
+// copies that no other field shares, so they are matched with fold: m.text would keep each one
+// in memory to the end of the search.
+func (m *matcher) toolJSON(key, v string, decode func(string) (any, bool)) bool {
+	if v == "" || m.key(key) {
+		return v != ""
+	}
+	k := strKey{unsafe.StringData(v), len(v)}
+	r, ok := m.tool[k]
+	if !ok {
+		if _, isJSON := decode(v); isJSON {
+			r = archive.MatchJSON(v, m.fold)
+		} else {
+			r = m.text(v)
+		}
+		m.tool[k] = r
+	}
+	return r
 }
 
 // schema is a tool's parameters: JSON, which the detail tree shows as keys and values. Each

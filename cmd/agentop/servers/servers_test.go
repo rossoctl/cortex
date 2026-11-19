@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 var twoServers = routerconfig.Config{Servers: map[string]routerconfig.Server{
@@ -188,6 +190,30 @@ func TestSessionChanges(t *testing.T) {
 	}
 }
 
+func TestKeyRouteChanges(t *testing.T) {
+	check := func(from, to string, wantValue string) {
+		t.Helper()
+		got := KeyRouteChanges(from, to)
+		if len(got) != 1 {
+			t.Fatalf("KeyRouteChanges(%q, %q) = %d changes, want 1", from, to, len(got))
+		}
+		ch := got[0]
+		if ch.Chain != "outbound" || ch.Plugin != PluginName || !slices.Equal(ch.Path, []string{"key_routes", from}) {
+			t.Errorf("KeyRouteChanges(%q, %q) = %+v", from, to, ch)
+		}
+		switch {
+		case wantValue == "" && ch.Value != nil:
+			t.Errorf("KeyRouteChanges(%q, %q): want a removal, got value %q", from, to, ch.Value.Value)
+		case wantValue != "" && (ch.Value == nil || ch.Value.Value != wantValue):
+			t.Errorf("KeyRouteChanges(%q, %q): want value %q, got %+v", from, to, wantValue, ch.Value)
+		}
+	}
+	check("team-b", "team-a", "team-a")
+	// A key routed to its own server is no entry: the change removes it.
+	check("team-b", "team-b", "")
+	check("team-b", "", "")
+}
+
 func TestPruneSessions(t *testing.T) {
 	cfg := routerconfig.Config{Sessions: map[string]string{
 		"live": "glm", "dead": "glm", "archived": "ete",
@@ -212,5 +238,28 @@ func TestVerify_RefusesASessionsEntryNamingNoServer(t *testing.T) {
 	err := Verify(cfg)
 	if err == nil || !strings.Contains(err.Error(), `sessions.s1: "nope" is not a server listed under servers`) {
 		t.Fatalf("Verify error = %v, want it to refuse the unlisted server", err)
+	}
+}
+
+func TestForSession(t *testing.T) {
+	shared := routerconfig.Config{Servers: map[string]routerconfig.Server{
+		"team-a": {URL: "https://shared.example.com", Key: "k", Main: "opus", Helper: "haiku"},
+		"team-b": {URL: "https://shared.example.com", Key: "k", Main: "opus", Helper: "haiku"},
+	}}
+	for _, tc := range []struct {
+		s      session.SessionSummary
+		want   string
+		wantOK bool
+	}{
+		{session.SessionSummary{InferenceHost: "shared.example.com", InferenceServer: "team-b"}, "team-b", true},
+		{session.SessionSummary{InferenceHost: "shared.example.com"}, "team-a", true},
+		{session.SessionSummary{InferenceHost: "shared.example.com", InferenceServer: "gone"}, "team-a", true},
+		{session.SessionSummary{InferenceHost: "other.example.com"}, "", false},
+		{session.SessionSummary{}, "", false},
+	} {
+		got, ok := ForSession(shared, tc.s)
+		if got != tc.want || ok != tc.wantOK {
+			t.Errorf("ForSession(%+v) = %q, %v; want %q, %v", tc.s, got, ok, tc.want, tc.wantOK)
+		}
 	}
 }

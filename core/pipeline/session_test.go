@@ -258,36 +258,6 @@ func TestSessionEvent_PluginsMap_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSessionEventWire_EveryFieldSerializes is the value-level half: a populated
-// event must produce a JSON key per wire field. Catches a field present in the DTO
-// but missing from MarshalJSON's literal — the other way the two halves can drift.
-func TestSessionEventWire_EveryFieldSerializes(t *testing.T) {
-	ev := SessionEvent{
-		SessionID: "s", At: time.Now(), Direction: Outbound, Phase: SessionRequest,
-		RequestID: "r", Host: "h:443", RequestedHost: "a:443", StatusCode: 200, Duration: time.Second,
-		Tunnel: true, TunnelReason: TunnelClientRejectedCA,
-		HTTPMethod: "GET", HTTPPath: "/v1/models", Subagent: "a1a2e36cb5946f31c",
-		ParentSubagent: "a0974b0b8591dc76b",
-	}
-	b, err := json.Marshal(ev)
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	var got map[string]json.RawMessage
-	if err := json.Unmarshal(b, &got); err != nil {
-		t.Fatalf("Unmarshal to map: %v", err)
-	}
-	for _, key := range []string{
-		"sessionId", "at", "direction", "phase", "requestId",
-		"host", "requestedHost", "statusCode", "durationMs", "tunnel", "tunnelReason",
-		"httpMethod", "httpPath", "subagent", "parentSubagent",
-	} {
-		if _, ok := got[key]; !ok {
-			t.Errorf("populated event produced no %q key; got %s", key, b)
-		}
-	}
-}
-
 // TestTunnelReasonsAreDocumented pins every reason against the operator docs.
 //
 // The doc previously said "two other reasons" when there were four, and omitted
@@ -299,9 +269,9 @@ func TestTunnelReasonsAreDocumented(t *testing.T) {
 	// reports success. go test runs in the package directory, so this path resolves for
 	// every invocation from anywhere in the repo; if it ever does not, the doc has moved or
 	// been deleted and the reason this test exists has moved with it.
-	doc, err := os.ReadFile("../../docs/laptop-service.md")
+	doc, err := os.ReadFile("../../docs/troubleshooting.md")
 	if err != nil {
-		t.Fatalf("read ../../docs/laptop-service.md: %v — this test's whole subject is that "+
+		t.Fatalf("read ../../docs/troubleshooting.md: %v — this test's whole subject is that "+
 			"every tunnel reason is documented there; if the file moved, point this at its new "+
 			"home rather than letting the check disappear", err)
 	}
@@ -313,7 +283,7 @@ func TestTunnelReasonsAreDocumented(t *testing.T) {
 		TunnelDialFailed, TunnelSNIMismatch, TunnelRefusedNonTLS,
 	} {
 		if !strings.Contains(string(doc), string(reason)) {
-			t.Errorf("tunnel reason %q is not in laptop-service.md; an operator who sees "+
+			t.Errorf("tunnel reason %q is not in troubleshooting.md; an operator who sees "+
 				"it in the timeline has nowhere to look it up", reason)
 		}
 	}

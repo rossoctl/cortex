@@ -1,6 +1,6 @@
 # `core/llmclient`
 
-Helper for authbridge plugins that call OpenAI-compatible chat-completions endpoints (OpenAI, Anthropic-via-proxy, ollama, vLLM, llama.cpp, and friends).
+Helper for Cortex plugins that call OpenAI-compatible chat-completions endpoints (OpenAI, Anthropic-via-proxy, ollama, vLLM, llama.cpp, and friends).
 
 The package exists so plugin authors don't rewrite ~150 LOC of HTTP plumbing, JSON-from-prose extraction, and error categorization every time they need an LLM in the loop. It deliberately stays small: no streaming, no multi-turn helpers, no retry, no template engine. Plugins keep ownership of prompts, response schemas, and pipeline-action mapping.
 
@@ -56,7 +56,7 @@ var ErrJudgeUncertain = fmt.Errorf("%w: judge produced bad output", llmclient.Er
 
 ## Reentrancy
 
-When a plugin's outbound LLM call passes through the same authbridge listener that hosts the plugin, the plugin's own `OnRequest` will fire on its own request — infinite loop. Two safeguards together solve this:
+When a plugin's outbound LLM call passes through the same Cortex listener that hosts the plugin, the plugin's own `OnRequest` will fire on its own request — infinite loop. Two safeguards together solve this:
 
 1. Make the LLM call via this package's `Client`, which uses a standalone `http.Client` and does not route through the local listener.
 2. Set `Options.SentinelHeaderName` (e.g. `X-IBAC-Judge`) together with `Options.SentinelValue` from `NewSentinelValue()`. At the top of `OnRequest`, the plugin compares that header against the exact value and returns immediately only on equality, so even a misconfiguration that sent the call back through the proxy would short-circuit. Equality, not presence: outbound headers are the agent's own request, so a caller who can set headers must not be able to switch the plugin off with a guessed value. The header is only sent when both fields are set — a name without a value emits nothing.

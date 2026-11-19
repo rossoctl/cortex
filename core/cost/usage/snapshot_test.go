@@ -613,7 +613,7 @@ func TestParseWindowSpec_TodayIsTheLocalDayStartToNow(t *testing.T) {
 // Just after midnight in a non-UTC zone is where a UTC boundary is not merely a
 // different length but a different DAY: 00:30 at UTC-7 is 07:30 UTC on the same date,
 // so a UTC reading reports seven and a half hours of "today" — most of it yesterday
-// evening's spend.
+// evening's spend. A fixed-length reading would report 24 hours.
 func TestParseWindowSpec_TodayJustAfterMidnightInANonUTCZone(t *testing.T) {
 	now := time.Date(2026, 9, 14, 0, 30, 0, 0, testZone(t))
 	got, err := ParseWindowSpec("today", now)
@@ -622,24 +622,6 @@ func TestParseWindowSpec_TodayJustAfterMidnightInANonUTCZone(t *testing.T) {
 	}
 	if d := got.To.Sub(got.From); d != 30*time.Minute {
 		t.Errorf("span = %v, want 30m; a UTC boundary would give 7h30m of someone else's day", d)
-	}
-}
-
-func TestParseWindowSpec_TodayJustAfterMidnightIsAShortWindow(t *testing.T) {
-	// The boundary case: at 00:05, "today" is five minutes, not 24 hours. A
-	// fixed-length reading would report yesterday evening's spend as today's.
-	//
-	// A pinned zone, not time.Local: with time.Local the result depends on the TZ the suite
-	// happens to run under, and 00:05 is exactly the wall time that does not exist on some
-	// zones' spring-forward day. Pinning makes the assertion mean the same thing on every
-	// host. dst_test.go is where the zone is the variable under test.
-	now := time.Date(2026, 9, 14, 0, 5, 0, 0, testZone(t))
-	got, err := ParseWindowSpec("today", now)
-	if err != nil {
-		t.Fatalf("ParseWindowSpec: %v", err)
-	}
-	if d := got.To.Sub(got.From); d != 5*time.Minute {
-		t.Errorf("span = %v, want 5m", d)
 	}
 }
 

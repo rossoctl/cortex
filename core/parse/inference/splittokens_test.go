@@ -313,3 +313,116 @@ func TestFoldOpenAIFrame_UsageIsCumulative(t *testing.T) {
 		t.Errorf("OutputTokens = %d, want 150 (last chunk wins)", ext.OutputTokens)
 	}
 }
+
+// checkCacheSplit compares the three input-side counters a Chat usage block gives.
+func checkCacheSplit(t *testing.T, ext *model.InferenceExtension, input, read, write int) {
+	t.Helper()
+	if ext.InputTokens != input || ext.CacheReadTokens != read || ext.CacheWriteTokens != write {
+		t.Errorf("input=%d cache_read=%d cache_write=%d, want %d %d %d",
+			ext.InputTokens, ext.CacheReadTokens, ext.CacheWriteTokens, input, read, write)
+	}
+}
+
+// LiteLLM's cache_creation_input_tokens is a cache write, and prompt_tokens includes it.
+func TestChatUsage_CacheWrite(t *testing.T) {
+	ext := &model.InferenceExtension{Model: "claude-opus-5-5"}
+	parseInferenceJSON([]byte(`{
+		"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":600,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":200},"cache_creation_input_tokens":100}
+	}`), ext)
+	checkCacheSplit(t, ext, 300, 200, 100)
+	if ext.PresentKinds&uint8(parsercommon.KindCacheWrite) == 0 {
+		t.Errorf("KindCacheWrite cleared, want set")
+	}
+}
+
+// With no cached_tokens, LiteLLM's cache_read_input_tokens is the cache read.
+func TestChatUsage_LiteLLMCacheRead(t *testing.T) {
+	ext := &model.InferenceExtension{Model: "claude-opus-5-5"}
+	parseInferenceJSON([]byte(`{
+		"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":600,"completion_tokens":5,"cache_read_input_tokens":200,"cache_creation_input_tokens":100}
+	}`), ext)
+	checkCacheSplit(t, ext, 300, 200, 100)
+	if ext.PresentKinds&uint8(parsercommon.KindCacheRead) == 0 {
+		t.Errorf("KindCacheRead cleared, want set")
+	}
+}
+
+// When both read fields are on the wire, cached_tokens wins.
+func TestChatUsage_BothReadFields(t *testing.T) {
+	ext := &model.InferenceExtension{Model: "claude-opus-5-5"}
+	parseInferenceJSON([]byte(`{
+		"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":600,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":200},"cache_read_input_tokens":150,"cache_creation_input_tokens":100}
+	}`), ext)
+	checkCacheSplit(t, ext, 300, 200, 100)
+}
+
+// A body with only cached_tokens parses as it did before the LiteLLM fields.
+func TestChatUsage_OnlyCachedTokensUnchanged(t *testing.T) {
+	ext := &model.InferenceExtension{Model: "gpt-4o"}
+	parseInferenceJSON([]byte(`{
+		"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":600,"completion_tokens":5,"total_tokens":605,"prompt_tokens_details":{"cached_tokens":200}}
+	}`), ext)
+	checkSplit(t, ext, model.InferenceExtension{
+		InputTokens: 400, CacheReadTokens: 200, OutputTokens: 5,
+		PromptTokens: 600, CompletionTokens: 5, TotalTokens: 605,
+	})
+	want := uint8(parsercommon.KindInput | parsercommon.KindOutput | parsercommon.KindCacheRead)
+	if ext.PresentKinds != want {
+		t.Errorf("PresentKinds = %b, want %b (no KindCacheWrite)", ext.PresentKinds, want)
+	}
+}
+
+// The cache write reads the same way on a streamed usage chunk with "choices":[].
+func TestChatUsage_CacheWriteSSE(t *testing.T) {
+	ext := &model.InferenceExtension{Model: "claude-opus-5-5", Stream: true}
+	parseInferenceSSE([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n"+
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n"+
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":600,\"completion_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":200},\"cache_creation_input_tokens\":100}}\n"+
+		"data: [DONE]\n"), ext)
+	checkCacheSplit(t, ext, 300, 200, 100)
+	if ext.PresentKinds&uint8(parsercommon.KindCacheWrite) == 0 {
+		t.Errorf("KindCacheWrite cleared, want set")
+	}
+}
+
+// A wrong-typed LiteLLM cache count drops only that count: the reply and the other usage still read.
+func TestChatUsage_WrongTypeCacheCountKeepsReply(t *testing.T) {
+	for _, field := range []string{"cache_creation_input_tokens", "cache_read_input_tokens"} {
+		for _, bad := range []string{`null`, `"12"`, `{}`, `[]`, `true`, `12.5`, `12.0`} {
+			usage := `{"prompt_tokens":100,"completion_tokens":2,"` + field + `":` + bad + `}`
+			check := func(path string, ext *model.InferenceExtension) {
+				t.Helper()
+				if ext.Completion != "hi" || ext.FinishReason != "stop" || ext.PromptTokens != 100 ||
+					ext.InputTokens != 100 || ext.OutputTokens != 2 || ext.CacheReadTokens != 0 || ext.CacheWriteTokens != 0 {
+					t.Errorf("%s %s=%s: completion=%q finish=%q prompt=%d input=%d output=%d read=%d write=%d",
+						path, field, bad, ext.Completion, ext.FinishReason, ext.PromptTokens,
+						ext.InputTokens, ext.OutputTokens, ext.CacheReadTokens, ext.CacheWriteTokens)
+				}
+				if ext.PresentKinds&uint8(parsercommon.KindCacheRead|parsercommon.KindCacheWrite) != 0 {
+					t.Errorf("%s %s=%s: PresentKinds = %b, want no cache kinds", path, field, bad, ext.PresentKinds)
+				}
+			}
+
+			ext := &model.InferenceExtension{}
+			parseInferenceJSON([]byte(`{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}],"usage":`+usage+`}`), ext)
+			check("json", ext)
+
+			frame := `{"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":` + usage + `}`
+			ext = &model.InferenceExtension{Stream: true}
+			parseInferenceSSE([]byte("data: "+frame+"\ndata: [DONE]\n"), ext)
+			check("sse", ext)
+
+			ext = &model.InferenceExtension{Stream: true}
+			state := &inferenceStreamState{}
+			foldOpenAIFrame([]byte(frame), state, ext)
+			if state.completion.String() != "hi" || ext.FinishReason != "stop" || !state.hasUsage || state.usage.Input != 100 {
+				t.Errorf("frame %s=%s: completion=%q finish=%q hasUsage=%v input=%d",
+					field, bad, state.completion.String(), ext.FinishReason, state.hasUsage, state.usage.Input)
+			}
+		}
+	}
+}

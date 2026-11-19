@@ -1,0 +1,2 @@
+dropped: image_generation_call,local_shell_call,tool_search_call,tool_search_output,web_search_call,zzz_item
+{"model":"gpt-5.5","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","content":"ok"}]}

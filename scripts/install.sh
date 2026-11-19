@@ -191,13 +191,10 @@ Options:
 Undo any time:
   agentop uninstall
 
-After installing, to cut Claude Code's token cost:
-  agentop tools scan --write ~/.cortex/config.yaml   (proposes which tools to prune)
-Then watch the $ saved on every prompt Claude Code sends, live in:
-  agentop
+After installing, watch your agent live:
+  agentop observe
 
-The session store is memory-only. To write it to files before it is lost:
-  cortex-session-dump --out ./cortex-dump
+History is kept in ~/.cortex/sessions. agentop import adds sessions from before Cortex.
 USAGE
 }
 
@@ -1179,8 +1176,10 @@ bar_shown=""
 # The stage goes before the bar's line is ended. Ending it writes to the terminal, which
 # is gone when the HUP came from closing it, and under set -e a failed write would end
 # the trap there. The trap is the last thing the script runs, so a live terminal sees no
-# change.
-trap 'stop_downloads; rm -rf "$tmp" || :; bar_end' EXIT
+# change. The trap first ignores INT, TERM and HUP, so a signal that lands while it runs,
+# as a closed terminal's can, neither ends it early nor cuts short its wait for the
+# downloads.
+trap 'trap "" INT TERM HUP; stop_downloads; rm -rf "$tmp" || :; bar_end' EXIT
 # exit runs the EXIT trap, so an INT (Ctrl-C), a TERM or a HUP cleans up as a die does.
 # Without these, dash dies of the signal and runs no EXIT trap at all, which leaves the
 # stage behind, the downloads running, and the cursor hidden.

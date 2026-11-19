@@ -189,6 +189,7 @@ func SnapshotInference(ext *InferenceExtension) *InferenceExtension {
 func SnapshotInvocations(ext *Invocations, phase InvocationPhase) *Invocations {
 	return model.SnapshotInvocations(ext, phase)
 }
+func RoutedServer(in *Invocations) string { return model.RoutedServer(in) }
 func SnapshotPlugins(custom map[string]any) map[string]json.RawMessage {
 	return model.SnapshotPlugins(custom)
 }

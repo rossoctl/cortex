@@ -52,22 +52,7 @@ func TestFilterForDetail_RequestDropsReasoningTokens(t *testing.T) {
 	}
 }
 
-// Unreported reasoning must not render as a zero. The field is omitempty, so an
-// absent split leaves the key out entirely rather than claiming the model did none.
-func TestFilterForDetail_UnreportedReasoningIsAbsentNotZero(t *testing.T) {
-	ext := &pipeline.InferenceExtension{
-		Model: "gpt-oss-120b", OutputTokens: 244, CompletionTokens: 244,
-	}
-	raw, err := json.Marshal(map[string]any{"inference": ext})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if got := string(filterForDetail(raw, pipeline.SessionResponse)); strings.Contains(got, "reasoningTokens") {
-		t.Errorf("a provider reporting no split still shows reasoningTokens:\n%s", got)
-	}
-}
-
-// THE OTHER HALF OF THE ONE ABOVE, and the half this pane was missing. A provider that
+// Unreported reasoning must not render as a zero, and a reported zero must. A provider that
 // measured the split and got zero has told us something — the model did no reasoning on
 // this call — and that is not the same statement as a provider which never measured.
 // omitempty erases the difference on the wire, so the pane has to read the presence bit

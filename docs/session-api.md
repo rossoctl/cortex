@@ -75,6 +75,10 @@ knowing by name:
   the inference-router keeps its pins in the plugin store
   (`~/.cortex/plugin-state.json`), which a restart keeps, so both of agentop's
   counts include such a resumed session.
+- **`inferenceServer`** — the name of the inference-router server that the
+  request which set `inferenceHost` was routed to, from that request's
+  `modify/routed` invocation. Empty when that request was not routed. It moves
+  with `inferenceHost`, and `inferenceHostFromHistory` covers it too.
 - **`procs`** — the processes, `<pid>.<start>`, whose own session header named
   this session. Recorded from each request's `proc` and `sessionHeader`, and
   continued from the archive's fold like the other figures.
@@ -165,15 +169,19 @@ second or so before the archive flushes a new event. A request event's `raw`:
 |---|---|
 | `request` | the body as the agent sent it |
 | `forwarded` | the body as Cortex sent it upstream; absent when no plugin rewrote it |
+| `translated` | the body after Cortex converted it to the server's protocol, as sent upstream; absent when Cortex did not convert it. `forwarded`, or `request` when `forwarded` is absent, is the input of the conversion |
 | `requestHeaders` | the request headers, without credential headers |
 | `query` | the URL's raw query |
 
 A response event's `raw` has `response`: `{status, headers, body, decoded,
-truncated, incomplete}`. `body` is up to 10 MiB of the body as it came off the wire,
+truncated, incomplete, upstream, upstreamTruncated}`. `body` is up to 10 MiB of the body as it came off the wire,
 in its `Content-Encoding`, unless `decoded` says the proxy decompressed it to read it
 for a plugin. `truncated` means it was longer, and `incomplete` means it was not read
-to its end: the stream broke off, or the proxy, a plugin or the client stopped it. A body that is not valid UTF-8 — every compressed body — is in
-`requestBase64`, `forwardedBase64` or `bodyBase64` instead. An unknown `raw`
+to its end: the stream broke off, or the proxy, a plugin or the client stopped it.
+When Cortex converted the reply to the agent's protocol, `body` is the converted reply
+as the agent got it, and `upstream` is up to 10 MiB of the server's reply before the
+conversion (`upstreamTruncated` when it was longer). A body that is not valid UTF-8 — every compressed body — is in
+`requestBase64`, `forwardedBase64`, `translatedBase64`, `bodyBase64` or `upstreamBase64` instead. An unknown `raw`
 value is ignored, so an older proxy answers with the event alone.
 
 ## `GET /v1/sessions/{id}/timeline` — agents, tools and hosts on one time axis
@@ -281,12 +289,15 @@ has no spawn link: nothing on the wire names the call that started it.
   proxy captured agent ids are one `subagents` agent.
 - A **return** is a subagent's result reaching another agent:
   `<agent-message from="…">` or `<task-notification>` in a message that agent
-  had not sent before.
+  had not sent before. A run that ends with `SubagentHandback` returns at its
+  `<agent-message>`. The `<task-notification>` that Claude Code sends after it
+  is not a return: it comes later, often with the user's next prompt.
 - A **job** is a background shell command, from the tool result that
   acknowledged it (`Command running in background with ID: …`) to the first
-  `<task-notification>` naming that id. Its tool call ends at the
+  `<task-notification>` naming that id, or to the `TaskStop` result that
+  stopped it (a stopped job gets no notification). Its tool call ends at the
   acknowledgement, so the job is what shows it still running. A job with no
-  `end` is one no notification named: still running, or never reported, as a
+  `end` is one no notification or `TaskStop` named: still running, or never reported, as a
   server left running when its agent exited is. A job whose agent was cut off
   ends where its tools do: at the first failed dial to a model host after the
   agent's last call. Absent when the session started none.
@@ -326,6 +337,8 @@ curl -s 'localhost:9094/v1/sessions/<id>/search?q=retry%20budget'
   - request: `inference.messages`, `inference.tools` (a tool's `parameters` as JSON),
     `inference.toolResults`, the history tool calls, `mcp.params`
   - response: `inference.toolCalls`, `mcp.result`, `a2a.artifact`
+  - a tool call's `arguments` and a tool's one-line output as their JSON value, where the view
+    decodes them (`model.ToolArgumentsJSON`, `model.ToolOutputJSON`)
   - the key names in those parts, as the view shows them
   - where the archive holds a capture: its body blocks (keys and values when a block is JSON,
     its text when not), the keys and values between blocks, the headers, the query, and a response's
@@ -634,9 +647,10 @@ there.
 ```json
 {"v":1, "schemaVersion":1, "op":"append", "requestId":"…", "startedAt":"<RFC 3339, ns, UTC>",
  "session":"<recording session>", "event":{ "...SessionEvent wire JSON..." },
- "capture":{"original":"<base64>", "forwarded":null, "header":{"Name":["v"]}, "query":"",
+ "capture":{"original":"<base64>", "forwarded":null, "translated":null, "header":{"Name":["v"]}, "query":"",
             "response":{"status":200, "header":{}, "body":"<base64>", "decoded":true,
-                        "truncated":false, "ended":true, "incomplete":false}},
+                        "truncated":false, "ended":true, "incomplete":false,
+                        "upstream":null, "upstreamTruncated":false}},
  "cost":{"headers":{"X-Litellm-Response-Cost":"0.01", "Content-Type":"application/json"}}}
 ```
 
