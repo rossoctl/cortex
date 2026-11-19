@@ -1294,9 +1294,12 @@ refusal is believed for an hour, and a session keeps the model it was given.
   that key and refuses a word that names none of its models, listing them, so a
   wrong URL or key is caught here; it prints what each word names now. A name that
   exists is replaced only after a yes (`--yes` skips the question), which is how a
-  key is rotated; with no terminal to ask on, nothing is written. A server on a
-  host another server already has, on any port, is refused, except on a loopback
-  host such as `localhost`, where each port is a host of its own. The first `add`
+  key is rotated; with no terminal to ask on, nothing is written. Two servers can
+  have one URL, for example two teams' keys for one gateway. agentop names a
+  session's server from the server name that the proxy records for the session.
+  A proxy older than this change does not record that name. For such a proxy,
+  agentop names the server from the host, so with two servers on one host it
+  shows the first name in alphabetical order. The first `add`
   creates the plugin's entry, last in the outbound pipeline. A key or a word
   containing `$` is refused: the config loader would read it as an environment
   variable.
