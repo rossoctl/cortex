@@ -198,6 +198,13 @@ func runCodex(args []string, stdout, stderr io.Writer) int {
 	if *envPath == "" {
 		*envPath = defaultCodexEnvPath(home)
 	}
+	// Absolute, so enable's record names the file from any directory. A relative --env,
+	// or a relative CODEX_HOME, is relative to this one, and uninstall reads the record
+	// from wherever it runs: opened from there, the path names some other file (#1781
+	// review). configure claude-code makes --settings absolute for the same reason.
+	if abs, err := filepath.Abs(*envPath); err == nil {
+		*envPath = abs
+	}
 	if *cortexCfgPath == "" {
 		*cortexCfgPath = filepath.Join(home, cortexCfgRel)
 	}
@@ -358,6 +365,30 @@ func (f *codexEnvFile) all(key string) []string {
 		}
 	}
 	return vals
+}
+
+// codexEnvValue is a dotenv value as Codex's loader, dotenvy, reads it, for the shapes a
+// path or a proxy URL takes: one pair of single or double quotes stripped, or an unquoted
+// value as it stands, surrounding space trimmed. ok is false for a value it might read
+// otherwise, one with an escape, a $ substitution, a stray quote or a # that may start a
+// comment, so a caller can take the safe side instead of misjudging it. get and all give
+// values raw, quotes and all, as the file holds them (#1783 review).
+func codexEnvValue(raw string) (string, bool) {
+	v := strings.TrimSpace(raw)
+	if n := len(v); n >= 2 && (v[0] == '"' || v[0] == '\'') && v[n-1] == v[0] {
+		inner, unsafe := v[1:n-1], `"\$`
+		if v[0] == '\'' {
+			unsafe = `'` // single quotes are literal to dotenvy
+		}
+		if strings.ContainsAny(inner, unsafe) {
+			return "", false
+		}
+		return inner, true
+	}
+	if strings.ContainsAny(v, `"'\$#`) {
+		return "", false
+	}
+	return v, true
 }
 
 // ambiguous names every key in keys defined more than once in the file.

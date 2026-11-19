@@ -660,3 +660,74 @@ func TestConfigureUsage_CodexPersists(t *testing.T) {
 		}
 	}
 }
+
+// enable records its dotenv file as an absolute path, so the record names the file from
+// any directory: a relative --env, or a relative CODEX_HOME, is relative to the one enable
+// runs in, and uninstall reads the record from wherever it runs (#1781 review).
+func TestCodexEnable_RecordsAnAbsolutePath(t *testing.T) {
+	for name, args := range map[string][]string{
+		"--env .env":          {"enable", "--yes", "--env", ".env"},
+		"relative CODEX_HOME": {"enable", "--yes"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv(codexHomeEnv, "")
+			cfg := filepath.Join(home, cortexCfgRel)
+			if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cfg, []byte(strings.Replace(cortexCfg, "CADIR", filepath.Join(home, ".cortex", "ca"), 1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(home, "codexhome")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(home)
+			want := filepath.Join(dir, ".env")
+			if name == "--env .env" {
+				t.Chdir(dir)
+			} else {
+				t.Setenv(codexHomeEnv, "codexhome")
+			}
+			stubCodexDaemon(t, dir, &fakeCodexDaemon{})
+			var out, errb bytes.Buffer
+			if code := runCodex(args, &out, &errb); code != 0 {
+				t.Fatalf("enable exit %d:\n%s%s", code, out.String(), errb.String())
+			}
+			st, err := readState(filepath.Join(home, codexStateRel))
+			if err != nil || st == nil {
+				t.Fatalf("enable's record: %v, %v", st, err)
+			}
+			if !filepath.IsAbs(st.Settings) || !samePath(st.Settings, want) {
+				t.Errorf("the record names %q, want the absolute %s", st.Settings, want)
+			}
+		})
+	}
+}
+
+// codexEnvValue reads a value as dotenvy does for a path or a proxy URL, and says when it
+// cannot be sure, so its callers can take the safe side.
+func TestCodexEnvValue(t *testing.T) {
+	for _, tc := range []struct {
+		raw, want string
+		ok        bool
+	}{
+		{"/Users/x/.cortex/ca/bundle.crt", "/Users/x/.cortex/ca/bundle.crt", true},
+		{`"/Users/x/.cortex/my-corp.pem"`, "/Users/x/.cortex/my-corp.pem", true},
+		{`'/Users/x/.cortex/my-corp.pem'`, "/Users/x/.cortex/my-corp.pem", true},
+		{`  "http://127.0.0.1:47600"  `, "http://127.0.0.1:47600", true},
+		{`'$HOME/ca.pem'`, "$HOME/ca.pem", true}, // single quotes are literal
+		{`"$HOME/ca.pem"`, "", false},            // substituted
+		{`"a\"b"`, "", false},                    // an escape
+		{`$HOME/ca.pem`, "", false},
+		{`/a/b # a comment`, "", false},
+		{`"/a/b`, "", false}, // unmatched
+	} {
+		got, ok := codexEnvValue(tc.raw)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("codexEnvValue(%q) = %q, %v, want %q, %v", tc.raw, got, ok, tc.want, tc.ok)
+		}
+	}
+}
