@@ -21,8 +21,7 @@ func TestUnreadReport_ListsProgramsAndHosts(t *testing.T) {
 	py := Program{Exe: "/usr/bin/python3"}.Key()
 	// The program set counts a rejection only once the window before it has ended, so
 	// stopping an entry takes rejections spread across windows.
-	e.Programs.base, e.Programs.ttl = time.Millisecond, 2*time.Millisecond
-	refuseAcrossWindows(e.Programs, py, programStopAfter)
+	refuseAcrossWindows(t, e.Programs, py, programStopAfter)
 	e.Unread.Note(py, UnreadProgramRefused, "example.org")
 	helm := Program{Exe: "/opt/homebrew/bin/helm", Agent: "/bin/claude"}.Key()
 	e.Unread.Note(helm, UnreadOSTrustOnly, "llm-d-incubation.github.io")
@@ -96,11 +95,10 @@ func TestUnreadReport_DropsPredictionsOnceTheOSTrustsTheCA(t *testing.T) {
 // A refusal whose window has ended is no longer being passed through.
 func TestUnreadReport_DropsAnExpiredRefusal(t *testing.T) {
 	e := &Engine{Skip: NewSkipSet(), Programs: NewProgramSkipSet(), Unread: NewUnreadLog()}
-	e.Programs.base, e.Programs.ttl = time.Millisecond, time.Millisecond
 	k := Program{Exe: "/usr/bin/curl"}.Key()
 	e.Programs.Fail(k)
 	e.Unread.Note(k, UnreadProgramRefused, "x.example")
-	time.Sleep(5 * time.Millisecond)
+	expireWindow(t, e.Programs, k)
 	if r := e.UnreadReport(); len(r.Programs) != 0 {
 		t.Errorf("programs = %+v, want none: the window ended", r.Programs)
 	}
@@ -146,7 +144,7 @@ func TestUnreadLog_IsBounded(t *testing.T) {
 	u := NewUnreadLog()
 	first := Program{Exe: "/bin/first"}.Key()
 	u.Note(first, UnreadOSTrustOnly, "h")
-	time.Sleep(2 * time.Millisecond) // so first is strictly the least recently seen
+	u.m[first].lastSeen = time.Now().Add(-time.Hour) // first is strictly the least recently seen
 	var last string
 	for i := 0; i < unreadMax+10; i++ {
 		last = Program{Exe: "/bin/p" + string(rune('a'+i%26)) + time.Duration(i).String()}.Key()
@@ -171,9 +169,7 @@ func TestUnreadLog_IsBounded(t *testing.T) {
 func TestUnreadReport_ListsAProcessEntryOnlyWhileTheProcessRuns(t *testing.T) {
 	stale := Program{Exe: "/bin/claude", PID: 4242, Start: 1700000000123456789}
 	e := &Engine{Skip: NewSkipSet(), Programs: NewProgramSkipSet(), Unread: NewUnreadLog()}
-	e.Programs.base, e.Programs.ttl = time.Millisecond, 2*time.Millisecond
-	refuseAcrossWindows(e.Programs, stale.ProcessKey(), programStopAfter)
-	e.Programs.base, e.Programs.ttl = time.Hour, time.Hour
+	refuseAcrossWindows(t, e.Programs, stale.ProcessKey(), programStopAfter)
 	e.Programs.Fail(Program{Exe: "/usr/bin/python3"}.Key())
 
 	listed := func() (process, program bool) {

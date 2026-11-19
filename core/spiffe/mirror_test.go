@@ -124,34 +124,16 @@ func (f *fakeMirrorJWT) Updated() <-chan struct{} {
 	return f.wakeup
 }
 
-// eventually polls fn until it returns nil, or fails the test after timeout.
-func eventually(t *testing.T, fn func() error, timeout time.Duration) {
+// requireFile fails the test unless path exists and is non-empty.
+func requireFile(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		if err := fn(); err == nil {
-			return
-		} else {
-			lastErr = err
-		}
-		time.Sleep(10 * time.Millisecond)
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
 	}
-	t.Fatalf("eventually: timeout after %s, last err: %v", timeout, lastErr)
-}
-
-func waitFile(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	eventually(t, func() error {
-		st, err := os.Stat(path)
-		if err != nil {
-			return err
-		}
-		if st.Size() == 0 {
-			return errors.New("file is empty")
-		}
-		return nil
-	}, timeout)
+	if st.Size() == 0 {
+		t.Fatalf("%s is empty", path)
+	}
 }
 
 func TestMirror_X509_WritesAllThreeFiles(t *testing.T) {
@@ -171,17 +153,13 @@ func TestMirror_X509_WritesAllThreeFiles(t *testing.T) {
 		X509: fake,
 	})
 
+	// run writes before it waits for a rotation, and returns on a cancelled ctx.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		m.run(ctx)
-		close(done)
-	}()
+	cancel()
+	m.run(ctx)
 
 	for _, name := range []string{"svid.pem", "svid_key.pem", "svid_bundle.pem"} {
-		waitFile(t, filepath.Join(dir, name), 2*time.Second)
+		requireFile(t, filepath.Join(dir, name))
 	}
 
 	// JWT not configured: must NOT be written.
@@ -203,25 +181,17 @@ func TestMirror_X509_WritesAllThreeFiles(t *testing.T) {
 	checkMode("svid.pem", 0o644)
 	checkMode("svid_key.pem", 0o600)
 	checkMode("svid_bundle.pem", 0o644)
-
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("mirror.run did not exit after ctx cancel")
-	}
 	_ = td
 }
 
 func TestRunJWTMirror_WritesAndRefreshes(t *testing.T) {
 	const audience = "https://keycloak/realms/test"
 
-	// Two JWT SVIDs: first expires soon (forces a fast refresh), second
-	// has a longer expiry so the refresh sleep is observable.
+	// Two JWT SVIDs, so the refresh writes a different token than the first write.
 	jwt1 := makeJWTSVID(t, audience)
-	jwt1.Expiry = time.Now().Add(200 * time.Millisecond)
+	jwt1.Expiry = time.Now().Add(time.Hour)
 	jwt2 := makeJWTSVID(t, audience)
-	jwt2.Expiry = time.Now().Add(time.Hour)
+	jwt2.Expiry = time.Now().Add(2 * time.Hour)
 
 	jwtFake := &fakeMirrorJWT{svids: []*jwtsvid.SVID{jwt1, jwt2}}
 
@@ -229,15 +199,26 @@ func TestRunJWTMirror_WritesAndRefreshes(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// after reports each delay the loop waits out, after the write before it, and
+	// fires when the test sends on tick.
+	waits := make(chan time.Duration)
+	tick := make(chan time.Time)
+	after := func(d time.Duration) <-chan time.Time {
+		waits <- d
+		return tick
+	}
+
 	done := make(chan struct{})
 	go func() {
-		runJWTMirror(ctx, jwtFake, audience, dir)
+		runJWTMirror(ctx, jwtFake, audience, dir, after)
 		close(done)
 	}()
 
 	tokenPath := filepath.Join(dir, "jwt_svid.token")
-	waitFile(t, tokenPath, 2*time.Second)
-
+	if d := <-waits; d <= 53*time.Minute || d > 54*time.Minute {
+		t.Errorf("refresh after %v, want 90%% of the token's hour", d)
+	}
+	requireFile(t, tokenPath)
 	st1, err := os.Stat(tokenPath)
 	if err != nil {
 		t.Fatalf("stat token: %v", err)
@@ -246,22 +227,18 @@ func TestRunJWTMirror_WritesAndRefreshes(t *testing.T) {
 		t.Errorf("jwt_svid.token mode = %o, want 0o644", got)
 	}
 
-	// The first SVID expires in ~200ms → 90% lifetime ~= 180ms refresh.
-	// Wait for at least two FetchJWTSVID calls.
-	eventually(t, func() error {
-		jwtFake.mu.Lock()
-		c := jwtFake.calls
-		jwtFake.mu.Unlock()
-		if c < 2 {
-			return errors.New("not enough fetches yet")
-		}
-		return nil
-	}, 2*time.Second)
+	tick <- time.Now()
+	<-waits
+	jwtFake.mu.Lock()
+	c := jwtFake.calls
+	jwtFake.mu.Unlock()
+	if c != 2 {
+		t.Errorf("FetchJWTSVID called %d times, want 2: the first write and one refresh", c)
+	}
+	if got, err := os.ReadFile(tokenPath); err != nil || string(got) != jwt2.Marshal() {
+		t.Errorf("token after the refresh = %q, %v; want the second SVID", got, err)
+	}
 
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("runJWTMirror did not exit after ctx cancel")
-	}
+	<-done
 }

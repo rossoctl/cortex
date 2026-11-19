@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 )
@@ -269,7 +270,7 @@ func (p *Provider) MirrorJWT(ctx context.Context, audience string) error {
 		slog.Warn("spiffe.Provider.MirrorJWT: initial jwt mirror write", "audience", audience, "err", err)
 	}
 
-	go runJWTMirror(p.mctx, sdk, audience, p.cfg.MirrorDir)
+	go runJWTMirror(p.mctx, sdk, audience, p.cfg.MirrorDir, time.After)
 	return nil
 }
 

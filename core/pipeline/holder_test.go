@@ -5,7 +5,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 )
 
 // holderTestPlugin is a no-op plugin used to build test pipelines.
@@ -99,48 +98,47 @@ func TestHolder_ConcurrentRunAndStore(t *testing.T) {
 	pipelines := []*Pipeline{pa, pb, pc}
 
 	h := NewHolder(pa)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 
-	var wg sync.WaitGroup
-
-	// 10 runners hammer Run/RunResponse. We accept Reject only when ctx
-	// has been cancelled — pipeline.Run short-circuits cancelled contexts
-	// by returning a Deny action, which is semantically correct but not
-	// what this test is asserting. We care that Load->Run never NPEs or
-	// tears under concurrent Store.
+	// 10 runners hammer Run/RunResponse while 1 swapper rotates through the
+	// pipelines until every runner is done. Each runner keeps going until the
+	// swapper has stored 100 times during its run. We care that Load->Run never
+	// NPEs or tears under concurrent Store.
+	var stores atomic.Int64
+	var runners sync.WaitGroup
 	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		runners.Go(func() {
 			pctx := &Context{Path: "/x", Direction: Inbound}
-			for ctx.Err() == nil {
-				action := h.Run(ctx, pctx)
-				if action.Type != Continue && ctx.Err() == nil {
+			from := stores.Load()
+			for n := 0; n < 2000 || stores.Load()-from < 100; n++ {
+				if action := h.Run(ctx, pctx); action.Type != Continue {
 					t.Errorf("unexpected non-Continue from no-op pipeline: %v", action.Type)
 				}
-				action = h.RunResponse(ctx, pctx)
-				if action.Type != Continue && ctx.Err() == nil {
+				if action := h.RunResponse(ctx, pctx); action.Type != Continue {
 					t.Errorf("unexpected non-Continue from no-op response pipeline: %v", action.Type)
 				}
 			}
-		}()
+		})
 	}
 
-	// 1 swapper rotates through pipelines.
-	wg.Add(1)
+	stop := make(chan struct{})
+	swapped := make(chan struct{})
 	go func() {
-		defer wg.Done()
-		i := 0
-		for ctx.Err() == nil {
+		defer close(swapped)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
 			h.Store(pipelines[i%len(pipelines)])
-			i++
+			stores.Add(1)
 		}
 	}()
 
-	time.Sleep(200 * time.Millisecond)
-	cancel()
-	wg.Wait()
+	runners.Wait()
+	close(stop)
+	<-swapped
 }
 
 // Holder must not accept a nil pipeline silently: Load returning nil

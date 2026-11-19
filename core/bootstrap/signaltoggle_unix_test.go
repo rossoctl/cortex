@@ -3,10 +3,12 @@
 package bootstrap
 
 import (
+	"context"
 	"log/slog"
+	"strings"
+	"sync"
 	"syscall"
 	"testing"
-	"time"
 )
 
 // TestStartSignalToggle verifies a SIGUSR1 flips the level between DEBUG and
@@ -17,32 +19,45 @@ func TestStartSignalToggle(t *testing.T) {
 	if LogLevel() != slog.LevelInfo {
 		t.Fatalf("precondition: want INFO, got %v", LogLevel())
 	}
+	// The toggle logs once it has set the level; each log line marks a toggle.
+	prev := slog.Default()
+	toggled := make(chan struct{}, 2)
+	slog.SetDefault(slog.New(notifyHandler{toggled}))
+	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	StartSignalToggle()
+	// One handler per process: a second would toggle the level back on each signal.
+	startToggle.Do(StartSignalToggle)
 
 	// INFO -> DEBUG
 	if err := syscall.Kill(syscall.Getpid(), syscall.SIGUSR1); err != nil {
 		t.Fatalf("kill SIGUSR1: %v", err)
 	}
-	waitForLevel(t, slog.LevelDebug)
+	<-toggled
+	if got := LogLevel(); got != slog.LevelDebug {
+		t.Fatalf("after first SIGUSR1: want DEBUG, got %v", got)
+	}
 
 	// DEBUG -> INFO
 	if err := syscall.Kill(syscall.Getpid(), syscall.SIGUSR1); err != nil {
 		t.Fatalf("kill SIGUSR1: %v", err)
 	}
-	waitForLevel(t, slog.LevelInfo)
+	<-toggled
+	if got := LogLevel(); got != slog.LevelInfo {
+		t.Fatalf("after second SIGUSR1: want INFO, got %v", got)
+	}
 }
 
-// waitForLevel polls until the process log level reaches want, since the signal
-// is handled asynchronously by the goroutine StartSignalToggle launched.
-func waitForLevel(t *testing.T, want slog.Level) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if LogLevel() == want {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+var startToggle sync.Once
+
+// notifyHandler sends on ch for every toggle record it handles.
+type notifyHandler struct{ ch chan<- struct{} }
+
+func (h notifyHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h notifyHandler) Handle(_ context.Context, r slog.Record) error {
+	if strings.HasPrefix(r.Message, "log level toggled") {
+		h.ch <- struct{}{}
 	}
-	t.Fatalf("timed out waiting for level %v (still %v)", want, LogLevel())
+	return nil
 }
+func (h notifyHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h notifyHandler) WithGroup(string) slog.Handler      { return h }

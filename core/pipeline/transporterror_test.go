@@ -27,11 +27,8 @@ const secretQuery = "?api_key=SECRET1045"
 // passed just as happily against a classifier that never fires in production.
 func TestTransportError(t *testing.T) {
 	// One hanging server shared by both timeout cases. It blocks until the test
-	// ends rather than sleeping a fixed span: a sleep has to be comfortably
-	// longer than the 150ms budgets below to avoid flaking, and httptest.Close
-	// waits for outstanding handlers, so that duration is then added to every
-	// run. Releasing on a channel keeps the handler outstanding for exactly as
-	// long as it is needed and makes Close immediate.
+	// ends, and releasing it on a channel makes Close immediate. Each budget
+	// below has run out before the request is sent, so the timeout is certain.
 	release := make(chan struct{})
 	slow := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		<-release
@@ -57,7 +54,7 @@ func TestTransportError(t *testing.T) {
 			want: "upstream_timeout",
 			do: func(*testing.T) error {
 				c := hermeticClient(nil)
-				c.Timeout = 150 * time.Millisecond
+				c.Timeout = time.Nanosecond
 				_, err := c.Get(slow.URL + "/" + secretQuery)
 				return err
 			},
@@ -68,7 +65,7 @@ func TestTransportError(t *testing.T) {
 			name: "context deadline",
 			want: "upstream_timeout",
 			do: func(t *testing.T) error {
-				ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 				defer cancel()
 				req, err := http.NewRequestWithContext(ctx, http.MethodGet, slow.URL+"/"+secretQuery, nil)
 				if err != nil {
@@ -94,7 +91,7 @@ func TestTransportError(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
-					hsCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+					hsCtx, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
 					defer cancel()
 					tlsConn := tls.Client(plain, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // never completes
 					if err := tlsConn.HandshakeContext(hsCtx); err != nil {
@@ -192,14 +189,20 @@ func assertCause(t *testing.T, msg string, err error) {
 // not a failure of the upstream. It must not be recorded as a 502 nobody got.
 func TestExchangeFailure_ClientCanceled(t *testing.T) {
 	release := make(chan struct{})
+	reached := make(chan struct{})
 	slow := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(reached)
 		<-release
 	}))
 	defer slow.Close()
 	defer close(release)
 
+	// The client gives up once the upstream has the request.
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(100*time.Millisecond, cancel)
+	go func() {
+		<-reached
+		cancel()
+	}()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, slow.URL+"/"+secretQuery, nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)

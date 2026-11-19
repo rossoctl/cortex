@@ -38,7 +38,6 @@ func TestTerminator_AgentTrustingCAHandshakes(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AppendCertsFromPEM(src.CACertPEM())
 	client := tls.Client(c1, &tls.Config{ServerName: "api.example.com", RootCAs: pool, NextProtos: []string{"h2", "http/1.1"}})
-	_ = c1.SetDeadline(time.Now().Add(2 * time.Second))
 	if err := client.Handshake(); err != nil {
 		t.Fatalf("client handshake failed (agent should trust minted leaf): %v", err)
 	}
@@ -88,7 +87,6 @@ func TestServeConn_HTTP11KeepAlive(t *testing.T) {
 	pool.AppendCertsFromPEM(src.CACertPEM())
 	// Force http/1.1 so we exercise the oneConnListener keep-alive path.
 	client := tls.Client(c1, &tls.Config{ServerName: "api.example.com", RootCAs: pool, NextProtos: []string{"http/1.1"}})
-	_ = c1.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := client.Handshake(); err != nil {
 		t.Fatalf("client handshake failed: %v", err)
 	}
@@ -163,8 +161,24 @@ func TestServeConnIdle_ClosesIdleConn(t *testing.T) {
 			case tc.sends == "nothing":
 				go func() { _, _ = io.Copy(io.Discard, client); close(drained) }()
 			case proto == "h2":
-				// The h2 idle clock starts once the client preface is read.
-				go func() { _, _ = io.Copy(io.Discard, client); close(drained) }()
+				// The h2 idle clock starts once the client preface is read. An idle
+				// server says GOAWAY and waits for the client to hang up.
+				go func() {
+					defer close(drained)
+					fr := http2.NewFramer(nil, client)
+					for {
+						f, err := fr.ReadFrame()
+						if err != nil {
+							return
+						}
+						if ga, ok := f.(*http2.GoAwayFrame); ok {
+							if ga.ErrCode != http2.ErrCodeNo {
+								t.Errorf("GOAWAY %v, want NO_ERROR for an idle close", ga.ErrCode)
+							}
+							_ = c1.Close()
+						}
+					}
+				}()
 				_, _ = io.WriteString(client, http2.ClientPreface)
 				_ = http2.NewFramer(client, nil).WriteSettings()
 			default:

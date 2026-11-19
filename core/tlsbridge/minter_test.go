@@ -80,12 +80,20 @@ func TestMinter_TTLExpiryRemints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ca: %v", err)
 	}
-	m := NewMinter(src, MinterOpts{CacheMax: 8, LeafTTL: 20 * time.Millisecond})
+	m := NewMinter(src, MinterOpts{CacheMax: 8, LeafTTL: time.Hour})
+	before := time.Now().Round(0)
 	a, err := m.GetCertificateForHost("h.example.com")
 	if err != nil {
 		t.Fatalf("first mint: %v", err)
 	}
-	time.Sleep(40 * time.Millisecond) // past the TTL
+	after := time.Now().Round(0)
+	m.mu.Lock()
+	e := m.items["h.example.com"].Value.(*cacheEntry)
+	if e.expires.Before(before.Add(time.Hour)) || e.expires.After(after.Add(time.Hour)) {
+		t.Errorf("cached until %v, want the LeafTTL after the mint at %v", e.expires, before)
+	}
+	e.expires = time.Now().Add(-time.Millisecond) // past the TTL
+	m.mu.Unlock()
 	b, err := m.GetCertificateForHost("h.example.com")
 	if err != nil {
 		t.Fatalf("second mint: %v", err)
