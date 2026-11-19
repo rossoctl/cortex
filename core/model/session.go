@@ -469,6 +469,12 @@ type SessionEvent struct {
 	// cwd), "" where the listener could not name the process or the row came on the trusted path.
 	Project string
 
+	// ParentSession is the session of the agent that started this row's agent, when it is not
+	// this row's session (pipeline.Context.ParentSession). "" everywhere else.
+	ParentSession string
+	// ParentProject is the project label of the process that holds ParentSession, "" with it.
+	ParentProject string
+
 	// SessionHeader is the session-id header that named this row's session, "" when the
 	// session was not named by the request (process, affinity, ActiveSession). Recorded so
 	// the fold can tell which processes NAMED a session from those merely filed into it,
@@ -722,6 +728,8 @@ type sessionEventWire struct {
 	Proc          string `json:"proc,omitempty"`
 	ClientProc    string `json:"clientProc,omitempty"`
 	Project       string `json:"project,omitempty"`
+	ParentSession string `json:"parentSession,omitempty"`
+	ParentProject string `json:"parentProject,omitempty"`
 	SessionHeader string `json:"sessionHeader,omitempty"`
 	// omitempty: absent on every row the egress guard did not dial for — it is
 	// off by default, so the common row costs nothing — and the same skew
@@ -765,6 +773,8 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Proc:            e.Proc,
 		ClientProc:      e.ClientProc,
 		Project:         e.Project,
+		ParentSession:   e.ParentSession,
+		ParentProject:   e.ParentProject,
 		SessionHeader:   e.SessionHeader,
 		DialAddr:        e.DialAddr,
 	})
@@ -813,6 +823,8 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Proc:            w.Proc,
 		ClientProc:      w.ClientProc,
 		Project:         w.Project,
+		ParentSession:   w.ParentSession,
+		ParentProject:   w.ParentProject,
 		SessionHeader:   w.SessionHeader,
 		DialAddr:        w.DialAddr,
 	}
@@ -1088,4 +1100,13 @@ func (s *LenientString) UnmarshalJSON(b []byte) error {
 // Imported tells if an import wrote e. A live event gives false.
 func (e *SessionEvent) Imported() bool {
 	return strings.HasPrefix(e.Source, ImportedSourcePrefix)
+}
+
+// RollupProject is the project this row's cost and session count are filed under: the
+// parent's project when the row has one, else Project.
+func (e *SessionEvent) RollupProject() string {
+	if e.ParentProject != "" {
+		return e.ParentProject
+	}
+	return e.Project
 }

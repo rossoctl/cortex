@@ -39,9 +39,11 @@ pub const NOT_SET_IN_PRAXIS_MODE: &[&str] = &[
     "tunnel",
     "tunnelReason",
     "dialAddr",
-    // The Go listener sets these two from its pipeline context. The gateway does not.
+    // The Go listener sets these four from its pipeline context. The gateway does not.
     "subagentKind",
     "project",
+    "parentSession",
+    "parentProject",
     // An import sets it; every gateway row is live.
     "source",
 ];
