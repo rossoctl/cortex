@@ -1,12 +1,14 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -47,6 +49,8 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		"write the export to this `file` (default: stdout, for piping)")
 	force := fs.Bool("force", false,
 		"overwrite --out when the file already exists; without it an existing file is refused")
+	gzipOut := fs.Bool("gzip", false,
+		"write the file gzip-compressed; requires --out and a file name ending in .gz")
 	sessions := &sessionIDs{}
 	fs.Var(sessions, "session",
 		"export only this `session`, repeatable and comma-separated; omit for every archived session")
@@ -60,6 +64,7 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 Usage:
   agentop export                       every archived event, one NDJSON line each, to stdout
   agentop export --out FILE            write the export to a file; --force overwrites
+  agentop export --gzip --out F.gz     write it gzip-compressed, for sharing
   agentop export --since 168h          only events from the last week
   agentop export --session ID          one session, repeatable or comma-separated
   agentop export --endpoint URL        ask a specific proxy rather than the local one
@@ -83,7 +88,13 @@ count of the rest; a proxy with no session archive (a cluster sidecar, or one pr
 A large archive can take a while to walk server-side; this command waits up to ten
 minutes before giving up. A walk that dies part-way exits non-zero and says so: the
 output holds every complete record written before the failure, never a short file
-reported as a whole one.
+reported as a whole one. With --gzip the file is left without its gzip trailer instead,
+so every tool that opens it reports it as incomplete rather than valid-but-short.
+
+--gzip writes the same records through gzip, to a file ending in .gz. It needs --out:
+stdout is for piping, and a pipe that wants gzip already has gzip. A file ending in .gz
+without --gzip is refused rather than written as plain NDJSON under a name that says
+gzip.
 
 Flags:
 `)
@@ -97,6 +108,30 @@ Flags:
 	}
 	if *force && *out == "" {
 		fmt.Fprintln(stderr, "agentop export: --force is for --out; stdout cannot be overwritten")
+		return 2
+	}
+	// filepath.Ext, not a slice of the last three characters: Ext returns "" for a name
+	// with no dot, so a one-character --out cannot underflow the slice. Judged
+	// case-folded, the way a user typing WEEK.GZ means the same file as week.gz.
+	gzNamed := *out != "" && strings.EqualFold(filepath.Ext(*out), ".gz")
+	if *gzipOut {
+		if *out == "" {
+			// Same refusal shape as --force without --out: stdout is a pipe, and a pipe
+			// that wants gzip already has gzip. A binary stream on a terminal helps nobody.
+			fmt.Fprintln(stderr, "agentop export: --gzip is for --out; pipe stdout through gzip yourself")
+			return 2
+		}
+		if !gzNamed {
+			// The name is the only thing that tells a consumer what the bytes are. A gzip
+			// stream in a file called .ndjson is the misleading name this command refuses
+			// in the other direction below.
+			fmt.Fprintf(stderr, "agentop export: --gzip writes a file ending in .gz; %s does not\n", *out)
+			return 2
+		}
+	} else if gzNamed {
+		// Plain NDJSON under a name that says gzip would hand `gzip -d` a file it reports
+		// as corrupt, with nothing in the name warning the user who wrote it that way.
+		fmt.Fprintf(stderr, "agentop export: %s ends in .gz; add --gzip to write gzip, or drop the suffix for plain NDJSON\n", *out)
 		return 2
 	}
 	// An EXPLICITLY EMPTY --since is a usage error, not an absent floor, for the reason
@@ -192,6 +227,7 @@ Flags:
 	// whole reason the server validates before its first byte.
 	var dest io.Writer = stdout
 	where := "(stdout)"
+	var outFile *os.File
 	if *out != "" {
 		flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 		if !*force {
@@ -207,6 +243,7 @@ Flags:
 			return 1
 		}
 		defer f.Close()
+		outFile = f
 		dest = f
 		where = *out
 	}
@@ -214,7 +251,17 @@ Flags:
 	// Counted on the way through, not by re-reading the file: the summary line is the
 	// one thing this command says on success, and it must agree with what was written
 	// even when the output is a pipe nobody could seek back on.
-	counted := &lineCounter{w: dest}
+	//
+	// With --gzip the counter sits BEFORE the gzip writer — body → lineCounter →
+	// gzip.Writer → file — so it counts the uncompressed records, and its write-error
+	// flag still catches a failed write at the file, which gzip.Writer propagates.
+	var gz *gzip.Writer
+	countedDest := dest
+	if *gzipOut {
+		gz = gzip.NewWriter(dest)
+		countedDest = gz
+	}
+	counted := &lineCounter{w: countedDest}
 	if _, err := io.Copy(counted, body); err != nil {
 		fmt.Fprintf(stderr, "agentop export: %v\n", err)
 		// Which END broke decides what to say, and io.Copy's error alone does not tell
@@ -222,16 +269,71 @@ Flags:
 		// it can stop mid-line, so promising whole records there would be wrong twice:
 		// wrong cause, wrong guarantee. A failed read is the walk, which only ever ends
 		// the stream at a record boundary.
+		//
+		// The gzip writer is DELIBERATELY FLUSHED, NEVER CLOSED, here. Close writes the
+		// trailer that makes the stream pass its CRC check; closing it now would hand
+		// the consumer a file every tool reports as whole, off a copy that failed.
+		// Flush writes a sync-flush block and no trailer, so the file still reads as
+		// incomplete while holding every byte the copy wrote — and the walk only ever
+		// ends a stream between records, so what it holds ends at a record boundary:
+		// the same every-complete-record guarantee the plain path gives.
 		if counted.err != nil {
 			fmt.Fprintf(stderr, "  writing %s failed; it may end in a partial line\n", where)
+		} else if *gzipOut {
+			if ferr := gz.Flush(); ferr != nil {
+				// The flush is a write; a disk that failed the copy can fail it too,
+				// and it is the same end breaking, so it gets the same words.
+				fmt.Fprintf(stderr, "agentop export: %v\n", ferr)
+				fmt.Fprintf(stderr, "  writing %s failed; it is incomplete\n", where)
+				return 1
+			}
+			// The macOS caveat is one clause, not the docs' paragraph: /usr/bin/gzip
+			// there reads in 64kB pieces and drops the last one off a stream without
+			// a trailer. A full inflate loses nothing; the docs say how.
+			fmt.Fprintf(stderr, "  the walk failed part-way; %s is incomplete; gzip -dc %s recovers the records before it (on macOS its gzip may drop the last 64kB)\n",
+				where, shellArg(*out))
 		} else {
 			fmt.Fprintf(stderr, "  the walk failed part-way; %s holds every complete record before it\n", where)
 		}
 		return 1
 	}
+	if gz != nil {
+		// The success path closes the gzip stream, which writes its trailer. A Close
+		// failure is a real failure, and the realistic one for a full disk: the header
+		// write during the copy succeeds, flate buffers the tail, and this final flush
+		// is the write that hits ENOSPC — so it gets the same "writing failed" line the
+		// in-copy path gives, not a bare error.
+		if err := gz.Close(); err != nil {
+			fmt.Fprintf(stderr, "agentop export: %v\n", err)
+			fmt.Fprintf(stderr, "  writing %s failed; it is incomplete\n", where)
+			return 1
+		}
+		// The compressed size comes from the handle this command wrote, after the
+		// trailer is written; the record count and the uncompressed bytes beside it
+		// come from the copy. One stat, no second read of the file.
+		var onDisk int64
+		if fi, err := outFile.Stat(); err == nil {
+			onDisk = fi.Size()
+		}
+		fmt.Fprintf(stderr, "  %s records, %s → %s (%s gzip)\n",
+			plainCount(counted.lines), byteSize(counted.bytes), where, byteSize(onDisk))
+		return 0
+	}
 	fmt.Fprintf(stderr, "  %s records, %s → %s\n",
 		plainCount(counted.lines), byteSize(counted.bytes), where)
 	return 0
+}
+
+// shellArg quotes a path for a command line this command suggests to the user. The
+// recovery hint names the export file, and an --out with a space in it would otherwise
+// paste as two arguments; a name starting with a dash would read as an option. Single
+// quotes, with an embedded quote closed and reopened, and a ./ prefix for the dash —
+// enough for a hint, not a promise about every shell.
+func shellArg(p string) string {
+	if strings.HasPrefix(p, "-") {
+		p = "./" + p
+	}
+	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
 }
 
 // sessionIDs is the repeatable --session flag: --session a --session b, or --session a,b.

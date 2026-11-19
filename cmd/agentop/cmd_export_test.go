@@ -1,8 +1,10 @@
 package main
 
 import (
+	"compress/gzip"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -354,5 +356,168 @@ func TestRunExport_StrayPositionalIsAUsageError(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("stdout = %q, want nothing on a usage error", out.String())
+	}
+}
+
+// --gzip WITHOUT --out IS A USAGE ERROR, the sibling of --force's: stdout is a pipe, a
+// binary stream on a terminal helps nobody, and a pipe that wants gzip already has gzip.
+func TestRunExport_GzipWithoutOutIsAUsageError(t *testing.T) {
+	var out, errOut strings.Builder
+	if code := runExport([]string{"--gzip"}, &out, &errOut); code != 2 {
+		t.Fatalf("runExport --gzip = %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "--gzip is for --out") {
+		t.Fatalf("stderr = %q, want the refusal to name the problem", errOut.String())
+	}
+}
+
+// A FILE NAME AND A COMPRESSION SETTING THAT DISAGREE ARE REFUSED, in both directions.
+// Plain NDJSON written under a .gz name hands `gzip -d` a file it reports as corrupt;
+// gzip written under a .ndjson name hides from the consumer what the bytes are. Either
+// way the name is the only thing that tells a later reader what the file holds, so it
+// must tell the truth.
+func TestRunExport_GzNameAndGzipFlagMustAgree(t *testing.T) {
+	srv, _ := exportServer(t, http.StatusOK, exportLines)
+	var out, errOut strings.Builder
+
+	if code := runExport([]string{"--endpoint", srv.URL, "--out", "plain.gz"},
+		&out, &errOut); code != 2 {
+		t.Fatalf("runExport --out plain.gz = %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "ends in .gz") || !strings.Contains(errOut.String(), "--gzip") {
+		t.Fatalf("stderr = %q, want the .gz name named and --gzip suggested", errOut.String())
+	}
+
+	errOut.Reset()
+	if code := runExport([]string{"--endpoint", srv.URL, "--gzip", "--out", "zipped.ndjson"},
+		&out, &errOut); code != 2 {
+		t.Fatalf("runExport --gzip --out zipped.ndjson = %d, want 2", code)
+	}
+	if !strings.Contains(errOut.String(), "ending in .gz") {
+		t.Fatalf("stderr = %q, want the refusal to name the .gz requirement", errOut.String())
+	}
+
+	// Case-folded, the way WEEK.GZ means the same file as week.gz: the refusal is about
+	// the name saying gzip, not about its case.
+	errOut.Reset()
+	if code := runExport([]string{"--endpoint", srv.URL, "--out", "PLAIN.GZ"},
+		&out, &errOut); code != 2 {
+		t.Fatalf("runExport --out PLAIN.GZ = %d, want 2", code)
+	}
+
+	// A one-character name cannot underflow the suffix check; it must be a plain export.
+	dir := t.TempDir()
+	tiny := filepath.Join(dir, "z")
+	errOut.Reset()
+	if code := runExport([]string{"--endpoint", srv.URL, "--out", tiny},
+		&out, &errOut); code != 0 {
+		t.Fatalf("runExport --out z = %d, want a plain export; stderr:\n%s", code, errOut.String())
+	}
+}
+
+// --gzip WRITES A FILE GZIP ACCEPTS, with the same records as the plain path and a
+// summary that reports both sizes: the uncompressed bytes the copy counted, and the
+// compressed bytes the file holds. --force guards an existing .gz as it guards a plain
+// one.
+func TestRunExport_GzipOutFile(t *testing.T) {
+	srv, _ := exportServer(t, http.StatusOK, exportLines)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "export.ndjson.gz")
+
+	var out, errOut strings.Builder
+	if code := runExport([]string{"--endpoint", srv.URL, "--gzip", "--out", path},
+		&out, &errOut); code != 0 {
+		t.Fatalf("runExport --gzip = %d, stderr:\n%s", code, errOut.String())
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v, want a stream gzip accepts", err)
+	}
+	plain, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("read the gzip stream: %v", err)
+	}
+	if string(plain) != exportLines {
+		t.Fatalf("decompressed = %q, want the export verbatim", plain)
+	}
+	if !strings.Contains(errOut.String(), "3 records") || !strings.Contains(errOut.String(), path) {
+		t.Fatalf("summary = %q, want the record count and the destination", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "gzip") {
+		t.Fatalf("summary = %q, want the compressed size labelled as gzip", errOut.String())
+	}
+
+	if code := runExport([]string{"--endpoint", srv.URL, "--gzip", "--out", path},
+		&out, &errOut); code != 1 || !strings.Contains(errOut.String(), "already exists") {
+		t.Fatalf("second --gzip --out = %d %q, want the existing-file refusal", code, errOut.String())
+	}
+	if code := runExport([]string{"--endpoint", srv.URL, "--gzip", "--out", path, "--force"},
+		&out, &errOut); code != 0 {
+		t.Fatalf("runExport --gzip --force = %d, stderr:\n%s", code, errOut.String())
+	}
+}
+
+// A TRUNCATED WALK UNDER --gzip LEAVES A FILE EVERY TOOL REPORTS AS INCOMPLETE, HOLDING
+// EVERY RECORD. The command flushes the gzip stream but never closes it after a failed
+// copy: Close writes the trailer that makes the CRC check pass, and a closed trailer
+// would make a broken stream read as whole. Flush writes a sync-flush block and no
+// trailer, so recovery gets every byte the copy wrote — and the walk only ever ends a
+// stream between records, so what it holds ends at a record boundary.
+func TestRunExport_TruncatedWalkGzipLeavesIncompleteFile(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(exportLines)) //nolint:errcheck // a test server writing to a closed client is the test's own failure
+		w.(http.Flusher).Flush()
+		// What handleExport does when the walk dies past its first record: no terminating
+		// chunk, so the client's read breaks rather than returning a clean EOF.
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	// A name with a space, so the recovery command in the message has to quote it:
+	// `gzip -dc my export.ndjson.gz` pasted back would pass two file names.
+	path := filepath.Join(dir, "my export.ndjson.gz")
+	var out, errOut strings.Builder
+	if code := runExport([]string{"--endpoint", srv.URL, "--gzip", "--out", path},
+		&out, &errOut); code != 1 {
+		t.Fatalf("runExport --gzip = %d, want 1 on a truncated export; stderr:\n%s", code, errOut.String())
+	}
+	if strings.Contains(errOut.String(), "records,") {
+		t.Fatalf("stderr = %q, want no success summary over a truncated export", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "is incomplete") || !strings.Contains(errOut.String(), "gzip -dc") {
+		t.Fatalf("stderr = %q, want the incomplete-file line naming the recovery command", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "gzip -dc '"+path+"'") {
+		t.Fatalf("stderr = %q, want the file shell-quoted in the recovery command", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "macOS") {
+		t.Fatalf("stderr = %q, want the macOS gzip caveat named", errOut.String())
+	}
+
+	// The file itself: a gzip stream without its trailer, holding every record. Reading
+	// it yields all three records, then the unexpected-EOF every tool reports for a
+	// stream without its trailer — detectably incomplete, losslessly recoverable.
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer f.Close()
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v, want the header the first record wrote", err)
+	}
+	recovered, rerr := io.ReadAll(zr)
+	if rerr == nil {
+		t.Fatalf("read the truncated stream: no error, want the unexpected EOF of a stream without its trailer")
+	}
+	if string(recovered) != exportLines {
+		t.Fatalf("recovered = %q, want every record the walk wrote before it died", recovered)
 	}
 }
