@@ -270,23 +270,27 @@ Flags:
 		// wrong cause, wrong guarantee. A failed read is the walk, which only ever ends
 		// the stream at a record boundary.
 		//
-		// The gzip writer is DELIBERATELY NOT CLOSED here. Close writes the trailer that
-		// makes the stream pass its CRC check; closing it now would hand the consumer a
-		// file every tool reports as whole, off a copy that failed. Left unclosed, the
-		// file ends without the trailer and reads as incomplete — the guarantee the
-		// plain path gets from the command's exit code, extended to whatever opens the
-		// file afterwards.
+		// The gzip writer is DELIBERATELY FLUSHED, NEVER CLOSED, here. Close writes the
+		// trailer that makes the stream pass its CRC check; closing it now would hand
+		// the consumer a file every tool reports as whole, off a copy that failed.
+		// Flush writes a sync-flush block and no trailer, so the file still reads as
+		// incomplete while holding every byte the copy wrote — and the walk only ever
+		// ends a stream between records, so what it holds ends at a record boundary:
+		// the same every-complete-record guarantee the plain path gives.
 		if counted.err != nil {
 			fmt.Fprintf(stderr, "  writing %s failed; it may end in a partial line\n", where)
 		} else if *gzipOut {
-			// "flushed", not "written": gzip.Writer buffers, so the tail of a broken
-			// stream — up to its buffer size — never reached the file. The records a
-			// consumer recovers are the ones gzip flushed as blocks, which on a real
-			// export is nearly all of them and on a small one is none. Flate cuts at
-			// token boundaries, not record boundaries, so what it flushes can end
-			// inside a JSON line; the docs tell a consumer to drop an unterminated
-			// final line.
-			fmt.Fprintf(stderr, "  the walk failed part-way; %s is incomplete; gzip -dc %s recovers the records flushed before it\n",
+			if ferr := gz.Flush(); ferr != nil {
+				// The flush is a write; a disk that failed the copy can fail it too,
+				// and it is the same end breaking, so it gets the same words.
+				fmt.Fprintf(stderr, "agentop export: %v\n", ferr)
+				fmt.Fprintf(stderr, "  writing %s failed; it is incomplete\n", where)
+				return 1
+			}
+			// The macOS caveat is one clause, not the docs' paragraph: /usr/bin/gzip
+			// there reads in 64kB pieces and drops the last one off a stream without
+			// a trailer. A full inflate loses nothing; the docs say how.
+			fmt.Fprintf(stderr, "  the walk failed part-way; %s is incomplete; gzip -dc %s recovers the records before it (on macOS its gzip may drop the last 64kB)\n",
 				where, shellArg(*out))
 		} else {
 			fmt.Fprintf(stderr, "  the walk failed part-way; %s holds every complete record before it\n", where)

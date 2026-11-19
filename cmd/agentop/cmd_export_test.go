@@ -2,11 +2,9 @@ package main
 
 import (
 	"compress/gzip"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -464,32 +462,16 @@ func TestRunExport_GzipOutFile(t *testing.T) {
 	}
 }
 
-// A TRUNCATED WALK UNDER --gzip LEAVES A FILE EVERY TOOL REPORTS AS INCOMPLETE. The
-// plain path guarantees the file holds every complete record; the gzip path cannot
-// promise that to a consumer that refuses a broken stream, so it promises the opposite
-// direction instead: the file is detectably incomplete, because the command never
-// closes the gzip writer after a failed copy — a closed trailer would make the CRC
-// check pass over a broken stream.
-//
-// The fixture is LARGE AND VARIED, because flate holds back a block until it has
-// enough output to emit: 150kB of one repeated line compresses to almost nothing and
-// never flushes, while real records — different ids, different counts — do. Recovery is
-// a property of the flushed blocks, not of everything the command copied.
+// A TRUNCATED WALK UNDER --gzip LEAVES A FILE EVERY TOOL REPORTS AS INCOMPLETE, HOLDING
+// EVERY RECORD. The command flushes the gzip stream but never closes it after a failed
+// copy: Close writes the trailer that makes the CRC check pass, and a closed trailer
+// would make a broken stream read as whole. Flush writes a sync-flush block and no
+// trailer, so recovery gets every byte the copy wrote — and the walk only ever ends a
+// stream between records, so what it holds ends at a record boundary.
 func TestRunExport_TruncatedWalkGzipLeavesIncompleteFile(t *testing.T) {
-	rng := rand.New(rand.NewSource(1)) //nolint:gosec // a fixed seed keeps the fixture deterministic
-	var body []byte
-	for range 4000 {
-		// requestId-length hex, so the records differ the way real ones do and the
-		// compressed output is large enough for flate to emit blocks as it goes.
-		var b [18]byte
-		rng.Read(b[:])
-		body = append(body, fmt.Sprintf("{\"schema\":1,\"sessionId\":\"s1\",\"seq\":2,\"requestId\":\"%s\"}\n",
-			hex.EncodeToString(b[:]))...)
-	}
-	first := "{\"schema\":1,\"sessionId\":\"s1\",\"seq\":2,\"requestId\":"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")
-		w.Write(body) //nolint:errcheck // a test server writing to a closed client is the test's own failure
+		w.Write([]byte(exportLines)) //nolint:errcheck // a test server writing to a closed client is the test's own failure
 		w.(http.Flusher).Flush()
 		// What handleExport does when the walk dies past its first record: no terminating
 		// chunk, so the client's read breaks rather than returning a clean EOF.
@@ -515,10 +497,13 @@ func TestRunExport_TruncatedWalkGzipLeavesIncompleteFile(t *testing.T) {
 	if !strings.Contains(errOut.String(), "gzip -dc '"+path+"'") {
 		t.Fatalf("stderr = %q, want the file shell-quoted in the recovery command", errOut.String())
 	}
+	if !strings.Contains(errOut.String(), "macOS") {
+		t.Fatalf("stderr = %q, want the macOS gzip caveat named", errOut.String())
+	}
 
-	// The file itself: a gzip stream without its trailer. Reading it yields the flushed
-	// blocks, then the unexpected-EOF every tool reports for a truncated stream — the
-	// consumer-detectable-truncation property this test exists to pin.
+	// The file itself: a gzip stream without its trailer, holding every record. Reading
+	// it yields all three records, then the unexpected-EOF every tool reports for a
+	// stream without its trailer — detectably incomplete, losslessly recoverable.
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
@@ -532,7 +517,7 @@ func TestRunExport_TruncatedWalkGzipLeavesIncompleteFile(t *testing.T) {
 	if rerr == nil {
 		t.Fatalf("read the truncated stream: no error, want the unexpected EOF of a stream without its trailer")
 	}
-	if !strings.HasPrefix(string(recovered), first) || len(recovered) < len(body)/10 {
-		t.Fatalf("recovered %d bytes, want the flushed blocks from the start of the export", len(recovered))
+	if string(recovered) != exportLines {
+		t.Fatalf("recovered = %q, want every record the walk wrote before it died", recovered)
 	}
 }

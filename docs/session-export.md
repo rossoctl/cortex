@@ -946,18 +946,20 @@ every complete record written before the failure. A `curl > file` leaves the par
 and returns a non-zero exit of its own. The server logs the failure as
 `sessionapi: export truncated`.
 
-With `--gzip` the guarantee changes shape. The command never closes the gzip stream after
-a failed copy, because a closed stream carries a CRC that passes. The file therefore ends
-without its trailer, and every tool that opens it reports it as incomplete rather than
-valid-but-short. `gzip -dc` recovers the records gzip flushed before the failure — nearly
-all of them on a large export, none of them on a small one, because gzip buffers before
-it writes a block.
+With `--gzip` the guarantee keeps its shape. The command flushes the gzip stream but
+never closes it after a failed copy: a closed stream carries a CRC that passes, and that
+would make a broken stream read as whole. A flush writes a sync-flush block and no
+trailer, so the file still ends reading as incomplete, and it holds every byte the copy
+wrote. The walk only ever ends a stream between records, so what the file holds ends at
+a record boundary: the same every-complete-record guarantee the plain path gives.
 
-What gzip flushed is a **byte prefix**, not a record count. Gzip cuts its blocks at its
-own token boundaries, not at NDJSON line boundaries, so the recovered output can end
-inside a JSON record even though the walk only ever ended a stream between records.
-Before you parse the recovered output as NDJSON, drop a final line that has no
-terminating newline. The plain path is the one that promises every complete record.
+One caveat on reading it back, on a Mac: `/usr/bin/gzip` there reads its input in 64kB
+pieces and drops the last piece off a stream without a trailer, so `gzip -dc` can lose
+up to 64kB of the recovery. A full inflate loses nothing:
+
+```sh
+python3 -c 'import zlib,sys; sys.stdout.buffer.write(zlib.decompressobj(31).decompress(open("usage.ndjson.gz","rb").read()))'
+```
 
 A failure before any record answers a status instead:
 
