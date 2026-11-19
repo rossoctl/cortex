@@ -435,13 +435,33 @@ func TestFooter_SaysWhenPagedBack(t *testing.T) {
 	m.rebuildEventsTable()
 
 	got := m.helpView()
-	if !strings.Contains(got, "live paused") || !strings.Contains(got, "[t]") {
+	if !strings.Contains(got, "live paused") || !strings.Contains(got, "[G]") {
 		t.Errorf("footer does not report the paged-back state: %q", got)
 	}
 
 	m.paging["sess-1"].droppedNewer = true
 	if got := m.helpView(); !strings.Contains(got, "newer dropped") {
 		t.Errorf("footer does not report that newer events were dropped: %q", got)
+	}
+}
+
+// `G` on a paged-back timeline goes back to the live tail, where `t` used to: one key for "the
+// newest end". It is a snapshot request, and not one while the timeline follows live.
+func TestGKey_ReturnsToTheTailWhenPagedBack(t *testing.T) {
+	m := pagedModel(t, pagedEvents(11, 10))
+	m.rebuildEventsTable()
+	if cmd := m.handleKey(keyRune('G')); cmd == nil || !m.paging["sess-1"].returning {
+		t.Fatal("`G` on a paged-back timeline did not return to the tail")
+	}
+
+	live := pagedModel(t, pagedEvents(11, 10))
+	live.paging = map[string]*pagingState{}
+	live.rebuildEventsTable()
+	if cmd := live.handleKey(keyRune('G')); cmd != nil {
+		t.Error("`G` on a live timeline asked for a snapshot")
+	}
+	if cmd := live.handleKey(keyRune('t')); cmd != nil {
+		t.Error("`t` still does something; `G` replaced it")
 	}
 }
 

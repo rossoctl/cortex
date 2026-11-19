@@ -38,7 +38,6 @@ const (
 	paneDetail
 	panePipeline
 	panePluginDetail
-	paneCatalog
 	paneUsage
 	// paneAgents shows what each CODING AGENT has spent, and picks which one the views are
 	// scoped to; see agentScope. Not to be confused with paneNamespaces,
@@ -83,19 +82,19 @@ type connStateInfo struct {
 // confirmation) stays in the footer.
 const flashDuration = 3 * time.Second
 
-// defaultLocalEndpoint is where `[l]` connects when nothing better is known:
+// defaultLocalEndpoint is where `[L]` connects when nothing better is known:
 // the session API's in-cluster default port, reached through an existing
 // `kubectl port-forward`. Useful when agentop runs inside the mesh, or when the
 // cluster's pod list isn't visible to their kubeconfig but a tunnel is.
 //
 // A local install listens somewhere else entirely (47601 by default), so
 // RunOptions.LocalEndpoint overrides this with the address read from the
-// machine's own Cortex config. Hardcoding 9094 sent `[l]` to the wrong port on
+// machine's own Cortex config. Hardcoding 9094 sent `[L]` to the wrong port on
 // every laptop.
 const defaultLocalEndpoint = "http://localhost:9094"
 
 // localEndpointOr returns the resolved local endpoint, falling back to the
-// in-cluster default. One accessor so `[l]`, the footer and the help overlay
+// in-cluster default. One accessor so `[L]`, the footer and the help overlay
 // cannot disagree about where the key goes.
 func (m *model) localEndpointOr() string {
 	if m.localEndpoint != "" {
@@ -116,7 +115,7 @@ func (m *model) localEndpointOr() string {
 // Local wins when the endpoint on screen IS the local Cortex. Deliberately a
 // question about the connection rather than about how agentop was started, so
 // `--endpoint http://127.0.0.1:47601` aimed at your own proxy edits it just
-// like a bare `agentop` does, and `[l]` gains the same ability mid-session.
+// like a bare `agentop` does, and `[L]` gains the same ability mid-session.
 // Compared against localEndpoint rather than localEndpointOr(): the fallback
 // is the in-cluster 9094, and matching that would claim a hand-run
 // port-forward to a POD is this machine's config file.
@@ -176,7 +175,7 @@ func isLoopbackHost(h string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// localProbeTimeout bounds the pre-connect reachability check for `[l]`.
+// localProbeTimeout bounds the pre-connect reachability check for `[L]`.
 // Without it, a dead localEndpoint would leave the operator in an empty
 // session view wondering why nothing streams; with it they get a footer
 // error and stay in the picker.
@@ -386,7 +385,7 @@ type model struct {
 
 	endpoint string
 	client   *apiclient.Client
-	// localEndpoint is what `[l]` connects to and what the footer and help
+	// localEndpoint is what `[L]` connects to and what the footer and help
 	// overlay name. Resolved from the local Cortex config when there is one.
 	localEndpoint string
 
@@ -716,7 +715,6 @@ type model struct {
 	sessionRowIDs []string
 	eventsTbl     table.Model
 	pipelineTbl   table.Model
-	catalogTbl    table.Model
 	detailVp      viewport.Model
 	// detailDoc is detailVp's text, searched — see searchdoc.go. Shared by message detail
 	// and plugin detail, as the viewport is.
@@ -911,7 +909,7 @@ type model struct {
 	// or quit.
 	activePF cluster.PortForward
 
-	// localDirect is true when the session view was entered via `[l]`
+	// localDirect is true when the session view was entered via `[L]`
 	// (direct connection to localEndpoint) rather than by picking a pod.
 	// There is no pod to go back to, so Esc returns to the Namespaces
 	// pane instead of Pods.
@@ -1024,7 +1022,6 @@ func New(ctx context.Context, c *apiclient.Client, opts ...Option) tea.Model {
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
 		pipelineTbl:  newPipelineTable(),
-		catalogTbl:   newCatalogTable(),
 		agentsTbl:    newAgentsTable(),
 		previousPane: paneNone,
 		// paneNone, not the zero value: paneNamespaces is 0, and a return pane
@@ -1070,7 +1067,7 @@ func (m *model) initSessionView() tea.Cmd {
 // ctx / cancel is derived from m.parentCtx so the next session-view
 // entry has a usable context.
 //
-// When the session was entered via `[l]` there is no pod to return to,
+// When the session was entered via `[L]` there is no pod to return to,
 // so the destination is the Namespaces pane instead.
 func (m *model) backToPodsPane() {
 	// Cancel current ctx — stops the SSE goroutine and any in-flight
@@ -1136,7 +1133,6 @@ func (m *model) backToPodsPane() {
 	// different framework instance with potentially different plugin
 	// versions registered. The next `P` press refetches.
 	m.catalog = nil
-	m.catalogTbl.SetRows(nil)
 	// pickerHarvested and pickerShowing are deliberately NOT reset here. They are edge-derived: the
 	// next refresh tick recomputes "is the picker showing", finds it disagrees with the recorded
 	// pickerShowing, and clears the budget on that inequality. Resetting them here would make this
@@ -1204,7 +1200,7 @@ func (m *model) backToPodsPane() {
 	m.ctx, m.cancel = context.WithCancel(m.parentCtx)
 
 	if m.localDirect {
-		// Entered via `[l]`: no pod was ever selected, so the Pods pane
+		// Entered via `[L]`: no pod was ever selected, so the Pods pane
 		// would render an empty table for a namespace the user never
 		// picked. Go back to where they actually were.
 		m.localDirect = false
@@ -1307,9 +1303,8 @@ type catalogLoadedMsg struct {
 	err     error
 }
 
-// loadCatalogCmd fetches /v1/plugins. Called lazily when the user
-// presses `P` to enter the catalog pane; the result is cached on the
-// model and refreshed on demand.
+// loadCatalogCmd fetches /v1/plugins: on each `P`, for the pipeline pane's
+// available rows, and kept on the model for the pipeline editor.
 func (m *model) loadCatalogCmd() tea.Cmd {
 	return func() tea.Msg {
 		cat, err := m.client.GetPluginCatalog(m.ctx)
@@ -1843,7 +1838,7 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.catalog = msg.catalog
-		m.rebuildCatalogTable()
+		m.rebuildPipelineTable()
 		return m, nil
 
 	case snapshotLoadedMsg:
@@ -2103,12 +2098,12 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		//
 		// The pod fields are CLEARED rather than assumed empty. They are only
 		// empty when no pod was ever visited: backToPodsPane clears ~20 fields
-		// but not these, so "pick a pod → esc → [l]" arrives here with
+		// but not these, so "pick a pod → esc → [L]" arrives here with
 		// selectedNamespace / selectedPod naming the pod and statusURL naming
 		// its closed port-forward. Since pipelineStore falls back to the
 		// ConfigMap branch on exactly those three, leaving them set let `e`
 		// kubectl-apply against a pod the screen was not showing — and poll a
-		// forward this path never established. Harmless while `[l]` sessions
+		// forward this path never established. Harmless while `[L]` sessions
 		// were assumed storeless; a wrong-target write once they were not.
 		m.selectedNamespace = ""
 		m.selectedPod = ""
@@ -2564,7 +2559,7 @@ func (m *model) paneView() string {
 		if m.namespaces != nil && len(m.namespaces) == 0 && m.pickerErr == "" {
 			body = styleHint.Render(
 				"No Cortex agents found in this cluster.\n" +
-					"Press [l] to connect to " + m.localEndpointOr() + " (an existing\n" +
+					"Press [L] to connect to " + m.localEndpointOr() + " (an existing\n" +
 					"port-forward), or use `agentop --endpoint http://...`.")
 		} else {
 			body = m.namespacesTbl.View()
@@ -2725,15 +2720,6 @@ func (m *model) paneView() string {
 	case paneTimeline:
 		title = m.sessionHeader(m.timeline.session, "timeline")
 		body = m.timelineBody()
-	case paneCatalog:
-		title = fmt.Sprintf("%s · %s · catalog", m.appName(), m.endpoint)
-		if m.catalog == nil {
-			body = styleHint.Render("(loading catalog…)")
-		} else if len(m.catalog.Plugins) == 0 {
-			body = styleHint.Render("(no registered plugins reported by /v1/plugins)")
-		} else {
-			body = m.catalogTbl.View()
-		}
 	}
 
 	// The band above every pane is scoped too, so every pane says so; usage and agents word it
@@ -2932,7 +2918,7 @@ type RunOptions struct {
 	Endpoint      string
 	Lister        cluster.Lister
 	PortForwarder cluster.PortForwarder
-	// LocalEndpoint overrides where `[l]` connects. Empty means
+	// LocalEndpoint overrides where `[L]` connects. Empty means
 	// defaultLocalEndpoint.
 	LocalEndpoint string
 	// LocalConfigPath and LocalStatsURL describe the Cortex running on this

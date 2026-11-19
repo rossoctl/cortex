@@ -71,9 +71,8 @@ Each pane opens with a key. `Esc` goes back to the pane before it.
 - **Timeline**: `T`. It shows the turns of the highlighted session in time order.
 - **Usage**: `u`. It shows the usage charts.
 - **Agents**: `A`. It shows the cost of each agent.
-- **Pipeline**: `P`. It shows the plugin pipeline that runs.
-- **Plugin detail**: `Enter` on a Pipeline or Catalog row. It shows one plugin.
-- **Catalog**: `C`. It lists the plugins that Cortex has.
+- **Pipeline**: `P`. It shows the plugin pipeline that runs. Under it, the `available` section lists the plugins that Cortex has but does not run.
+- **Plugin detail**: `Enter` on a Pipeline row. It shows one plugin.
 - **Key help**: `?`. It lists every key.
 - **Namespaces** and **Pods**: cluster only. They let you select an AuthBridge sidecar.
 

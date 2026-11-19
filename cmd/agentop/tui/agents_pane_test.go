@@ -169,13 +169,13 @@ func TestAgentRowsFromBuckets_MoneySaturatesRatherThanWrapping(t *testing.T) {
 
 // esc leaves the AGENTS pane and lands where `A` was pressed.
 //
-// A KEY-OPENED SURFACE MUST RETURN TO ITS CALLER, which is the rule paneCatalog's own esc
-// case states and the reason the sessions pane is the only one whose esc costs the
+// A KEY-OPENED SURFACE MUST RETURN TO ITS CALLER, which is the rule every key-opened
+// pane's esc case states and the reason the sessions pane is the only one whose esc costs the
 // connection. Without a case of its own a new pane is a DEAD END: esc falls through, the
 // reader is stuck, and the only way out is `q`.
 //
 // The paneNone fallback is Sessions rather than the pane enum's zero value. It is reachable
-// rather than defensive — the same way paneCatalog's is — and Sessions is the one pane that is
+// rather than defensive, and Sessions is the one pane that is
 // always a defensible place to land; falling back to the zero value would drop the reader on
 // the Kubernetes namespace picker, tearing down nothing but looking like the connection went
 // away.

@@ -129,7 +129,7 @@ func TestHelpOverlayRendersAndEmphasizesCurrentPane(t *testing.T) {
 func TestHelpOverlayAvailableInSessionPanes(t *testing.T) {
 	for _, pane := range []paneID{
 		paneSessions, paneEvents, paneDetail,
-		panePipeline, panePluginDetail, paneCatalog,
+		panePipeline, panePluginDetail,
 	} {
 		m := newPickerModel(context.Background(), &fakeLister{}, nil)
 		m.pane = pane
@@ -301,17 +301,17 @@ func TestFooterHintsMentionUsageKey(t *testing.T) {
 	// The usage pane's own footer must not fall through to the bare default.
 	m.pane = paneUsage
 	got := m.helpView()
-	for _, want := range []string{"[m] metric", "[w] window", "[b] breakdown"} {
+	for _, want := range []string{"[m] metric", "[w] window", "[o] breakdown"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("usage footer omits %q:\n  %s", want, got)
 		}
 	}
 
-	// Latency has no per-label breakdown, so the footer must not advertise [b]
+	// Latency has no per-label breakdown, so the footer must not advertise [o]
 	// there — a key shown as available but inert reads as a broken binding.
 	m.usage.metric = metricLatency
 	got = m.helpView()
-	if strings.Contains(got, "[b]") {
+	if strings.Contains(got, "[o]") {
 		t.Errorf("latency footer advertises the inert breakdown key:\n  %s", got)
 	}
 	if !strings.Contains(got, "[m] metric") {
@@ -331,8 +331,8 @@ func TestUsageFooterMatchesHandledKeys(t *testing.T) {
 	// been kept in sync by hand — which is the drift the test exists to catch.
 	//
 	// Each key is pressed on a fresh model and counted as handled if it changed the
-	// pane's state. `m`/`b` cycle enums, `w` refetches with a new window, `s` toggles
-	// scope; a key the switch stopped handling changes nothing and is reported.
+	// pane's state. `m`/`o` cycle enums, `w` refetches with a new window; a key the
+	// switch stopped handling changes nothing and is reported.
 	handled := []string{}
 	for _, probe := range []struct {
 		key     rune
@@ -340,8 +340,7 @@ func TestUsageFooterMatchesHandledKeys(t *testing.T) {
 	}{
 		{'m', func(b, a *usageState) bool { return a.metric != b.metric }},
 		{'w', func(b, a *usageState) bool { return a.windowIdx != b.windowIdx }},
-		{'b', func(b, a *usageState) bool { return a.group != b.group }},
-		{'s', func(b, a *usageState) bool { return a.session != b.session }},
+		{'o', func(b, a *usageState) bool { return a.group != b.group }},
 	} {
 		mm := &model{pane: paneUsage, selectedSess: "s1"}
 		before := mm.usage
@@ -361,13 +360,14 @@ func TestUsageFooterMatchesHandledKeys(t *testing.T) {
 		}
 	}
 	// And the retired ones must be gone from both surfaces.
-	for _, k := range []string{"[t]", "[g]", "[r]"} {
+	// `b` pages everywhere now and `s` scope is set by where `u` was pressed.
+	for _, k := range []string{"[t]", "[g]", "[r]", "[b]", "[s]"} {
 		if strings.Contains(footer, k) {
 			t.Errorf("footer still advertises retired key %s:\n  %s", k, footer)
 		}
 	}
 	for _, kb := range paneKeys[paneUsage].bindings {
-		if kb.keys == "t" || kb.keys == "g" || kb.keys == "r" {
+		if kb.keys == "t" || kb.keys == "g" || kb.keys == "r" || kb.keys == "b" || kb.keys == "s" {
 			t.Errorf("help overlay still lists retired key %q", kb.keys)
 		}
 	}
@@ -475,7 +475,7 @@ func TestHelpOverlayScrolls(t *testing.T) {
 
 	// The last group must be off-screen initially, and reachable by
 	// scrolling — that is the whole point of this change.
-	if strings.Contains(mm.View(), "PLUGIN CATALOG") {
+	if strings.Contains(mm.View(), "PLUGIN DETAIL") {
 		t.Fatal("setup: expected the tail of the reference to be off-screen")
 	}
 	u, _ := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
@@ -483,7 +483,7 @@ func TestHelpOverlayScrolls(t *testing.T) {
 	if !mm.helpVp.AtBottom() {
 		t.Fatal("`G` should jump to the bottom of the help body")
 	}
-	if !strings.Contains(mm.View(), "PLUGIN CATALOG") {
+	if !strings.Contains(mm.View(), "PLUGIN DETAIL") {
 		t.Fatalf("after scrolling to the bottom, the tail should be visible:\n%s", mm.View())
 	}
 
@@ -743,5 +743,20 @@ func TestHelp_EventsExplainsToolTime(t *testing.T) {
 		if c.id == colDuration && !strings.Contains(c.desc, phrase) {
 			t.Errorf("the DURATION desc %q does not contain %q", c.desc, phrase)
 		}
+	}
+}
+
+// `S` works on Sessions (it moves the highlighted session), so the Sessions group names it, and
+// the removed `X` is gone from it.
+func TestPaneKeys_SessionsListsSAndNotX(t *testing.T) {
+	keys := map[string]bool{}
+	for _, kb := range paneKeys[paneSessions].bindings {
+		keys[kb.keys] = true
+	}
+	if !keys["S"] {
+		t.Error("the Sessions group does not list `S`")
+	}
+	if keys["X"] {
+		t.Error("the Sessions group still lists the removed `X`")
 	}
 }

@@ -104,8 +104,7 @@ var helpNavKeys = keyGroup{
 	notes: []string{
 		"All three work on every pane, because they move this overlay rather than " +
 			"what is behind it. With it closed they move the pane's own list instead — " +
-			"except on the usage pane, which has no list: there b cycles the breakdown " +
-			"and g / G do nothing.",
+			"except on the usage pane, which has no list: there they do nothing.",
 	},
 }
 
@@ -192,13 +191,10 @@ func (jt jumpTarget) name() string {
 	return strings.ToLower(paneName(jt.pane))
 }
 
-// jumpTargets are the four keys that leave the pane you are on.
+// jumpTargets are the keys that leave the pane you are on.
 //
-// `C` WAS `P` UNTIL THE PIPELINE TOOK THAT LETTER, and this section is the reason
-// that swap was cheap: `P`-for-catalog was never shown in any footer, so there
-// was close to no muscle memory behind it — and the discoverability problem the
-// overlay existed to solve for it is now a titled section rather than one line in
-// a group of ten.
+// NO `C`: the plugin catalog was its own pane under `C`, and is now the pipeline
+// pane's "available" section, so one key shows what runs and what could.
 var jumpTargets = []jumpTarget{
 	{key: "u", pane: paneUsage,
 		desc: "charts over the events the proxy has seen — every session from the " +
@@ -206,9 +202,7 @@ var jumpTargets = []jumpTarget{
 	{key: "T", pane: paneTimeline,
 		desc: "the selected session's agents, tools and hosts on a time axis"},
 	{key: "P", pane: panePipeline,
-		desc: "the plugin chain this proxy runs, editable in $EDITOR"},
-	{key: "C", pane: paneCatalog,
-		desc: "every plugin the proxy offers, from /v1/plugins"},
+		desc: "the plugin chain this proxy runs, editable in $EDITOR, then the plugins it could run"},
 	{key: "A", pane: paneAgents,
 		desc: "what each coding agent has spent today; pick one to scope the views"},
 	{key: "$", pane: paneNone, label: "spend",
@@ -288,8 +282,8 @@ var paneKeys = map[paneID]keyGroup{
 		purpose: "Kubernetes agent workloads grouped by namespace; where agentop starts",
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
-			{"↵", "open namespace"},
-			{"l", "connect to the local session API"},
+			{"↵ / → / l", "open namespace"},
+			{"L", "connect to the local session API"},
 			{"r", "reload agent list"},
 			// `esc` ALONE, not "q · esc": quit is already in ANYWHERE, and `q` here made
 			// this the one pane group that restated a key from it. What is pane-specific
@@ -303,7 +297,7 @@ var paneKeys = map[paneID]keyGroup{
 		purpose: "the agent pods in that namespace, each with a proxy to connect to",
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
-			{"↵", "port-forward + connect"},
+			{"↵ / → / l", "port-forward + connect"},
 			{"esc", "back to namespaces"},
 			{"r", "reload agent list"},
 		},
@@ -315,8 +309,8 @@ var paneKeys = map[paneID]keyGroup{
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
 			{"↵ / → / l", "drill into session"},
-			{"X", "clear all history, in memory and on disk (asks first; the cost ledger is kept)"},
 			{"x", "erase this session, in memory and on disk (asks first; the cost ledger is kept)"},
+			{"S", "move this session to another inference server"},
 			{"esc", "back to the agents picker, else pods picker"},
 		},
 	},
@@ -332,7 +326,7 @@ var paneKeys = map[paneID]keyGroup{
 			{"c then s", "sort by a column: desc → asc → chronological"},
 			{"⚒ rows", "tool calls. DURATION, for a tool: from the reply to the next request of the same agent"},
 			{"↵ on ▲ row", "load the page before the oldest event shown"},
-			{"t", "back to the live tail (resumes updates)"},
+			{"G", "the newest row; when paged back, the live tail (resumes updates)"},
 			{"esc / ← / h", "back to sessions"},
 		},
 	},
@@ -349,7 +343,7 @@ var paneKeys = map[paneID]keyGroup{
 	},
 	panePipeline: {
 		title:   "PIPELINE (this pane)",
-		purpose: "the plugin chain this proxy runs, in the order it runs them",
+		purpose: "the plugin chain this proxy runs, in order, then the plugins available to add",
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
 			{"↵ / → / l", "plugin detail"},
@@ -371,8 +365,7 @@ var paneKeys = map[paneID]keyGroup{
 		bindings: []keyBinding{
 			{"m", "cycle metric (tokens/requests/errors/latency/cost)"},
 			{"w", "cycle window (10m/1h/6h)"},
-			{"b", "cycle breakdown (none/status/method/plugin/host; not for latency or a scope)"},
-			{"s", "toggle session / all sessions"},
+			{"o", "cycle breakdown (none/status/method/plugin/host; not for latency or a scope)"},
 			{"esc", "back"},
 		},
 	},
@@ -387,16 +380,6 @@ var paneKeys = map[paneID]keyGroup{
 			{"esc", "back"},
 		},
 	},
-	paneCatalog: {
-		title:   "PLUGIN CATALOG (this pane)",
-		purpose: "every plugin the proxy offers, whether or not the pipeline runs it",
-		bindings: []keyBinding{
-			{"↑↓ / jk", "navigate"},
-			{"↵ / → / l", "plugin detail"},
-			{"r", "refresh from /v1/plugins"},
-			{"esc / ← / h", "back"},
-		},
-	},
 	paneAgents: {
 		title: "AGENTS (this pane)",
 		// "coding" is load-bearing and pinned by
@@ -409,9 +392,6 @@ var paneKeys = map[paneID]keyGroup{
 			{"↑↓ / jk", "navigate"},
 			// Said here too because the footer only describes the row under the cursor.
 			{"↵", "open/close a row's projects; on a sub-row, scope and list its sessions"},
-			// One line each, at 76 columns here and 90 in the note: Other under a project is
-			// where spend from before the upgrade lands, so a month view can be mostly Other.
-			{"space", "close from a sub-row; COST adds up, SESSIONS overlap, pre-upgrade is Other"},
 			{"S", "choose the inference server this agent's new sessions use"},
 			{"w", "cycle the window: the rows and the breakdown together"},
 			{"x", "erase this agent's sessions (asks first); on All agents, everything"},
@@ -431,6 +411,9 @@ var paneKeys = map[paneID]keyGroup{
 		// views can honour it rather than whether any can.
 		notes: []string{
 			"Opens at 2 agents. Agent/project scopes sessions, usage pane, spend band. Other: unknowns.",
+			// Other under a project is where spend from before the upgrade lands, so a month
+			// view can be mostly Other.
+			"COST adds up; SESSIONS overlap; pre-upgrade spend is Other.",
 		},
 	},
 }
@@ -439,7 +422,7 @@ var paneKeys = map[paneID]keyGroup{
 // the overlay is stable across openings (Go map iteration is random).
 var otherPaneOrder = []paneID{
 	paneNamespaces, panePods, paneSessions, paneEvents,
-	paneDetail, paneAgents, paneUsage, paneTimeline, panePipeline, panePluginDetail, paneCatalog,
+	paneDetail, paneAgents, paneUsage, paneTimeline, panePipeline, panePluginDetail,
 }
 
 // helpKeyColWidth is the fixed width of the key column so descriptions

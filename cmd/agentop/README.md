@@ -237,7 +237,7 @@ subcommand if a title looks wrong.
 The UI has these panes. `Enter` drills in; `Esc` backs out.
 
 **Sessions is the only pane you land on.** Pipeline (`P`), Usage (`u`), Timeline
-(`T`), Agents (`A`) and the plugin catalog (`C`) are each opened by a key from the session views
+(`T`) and Agents (`A`) are each opened by a key from the session views
 and return to the pane you pressed it on. There is no tab strip: Sessions is what
 agentop is for, and the others are surfaces you visit and leave.
 
@@ -293,8 +293,8 @@ agentop is for, and the others are surfaces you visit and leave.
   `session.max_sessions` eviction takes a row off it. Enter opens an old session
   like any other; its events are read back from disk a page at a time — the
   latest on Enter, older ones from the timeline's first row, as for a resident session — so a long one
-  costs no more to open than a short one. `X` erases all of it, after asking; see
-  the keybindings below.
+  costs no more to open than a short one. `x` on the agents pane's *All agents* row
+  erases all of it, after asking; see the keybindings below.
 
   **Every figure in this table is a per-session total**, summed over that
   session's whole history rather than over a clock window — which is why its
@@ -601,13 +601,18 @@ agentop is for, and the others are surfaces you visit and leave.
   `P` from Sessions, Events or Detail; `Esc` returns to whichever of those it was
   opened from. Columns: position, direction, plugin name, DEPS (✓/✗ — see "Plugin
   dependencies" below), writes, body access, event count. `e` opens
-  the editor. Outside the viewer, `agentop pipeline get` prints the same
+  the editor. Under the chain, an `── available ──` divider lists every plugin the
+  running binary can build (`/v1/plugins`) that the chain does not run, so you can
+  see what to add before you edit. Those rows have no position, direction, DEPS or
+  events, and `Enter` on one opens its detail. The list is fetched each time `P`
+  opens the pane. This section replaced the plugin catalog pane, which had its own
+  key, `C`. Outside the viewer, `agentop pipeline get` prints the same
   composition — plus each plugin's description and config — and `--json` emits
   `/v1/pipeline`'s own shape for a script. It has no DEPS or event count:
   one is derived from the chain rather than reported by the proxy, the other
   counts invocations in cached session events, which a one-shot command has
   none of.
-- **Plugin detail**: drill-into-row for Pipeline or Catalog. Shows
+- **Plugin detail**: drill-into-row for a Pipeline row, available rows included. Shows
   description, position, reads/writes, body access, plugin config, and
   per-dependency satisfaction status against the active chain.
 - **Usage**: time-bucketed charts of volume, errors, latency and cost,
@@ -764,36 +769,11 @@ agentop is for, and the others are surfaces you visit and leave.
   result. Sessions recorded before the proxy captured agent ids show their
   subagents as one row; other agents show host rows alone. A proxy too old to
   serve the endpoint gets a line saying so.
-- **Catalog**: registered-plugin browser, opened by `C` from any
-  session-view pane. Lists every plugin the running binary knows how to
-  construct, including ones not in the active pipeline. Useful for
-  discovering what's available before adding to the pipeline. Sourced
-  from `/v1/plugins`.
-
-  REQUIRES lists a plugin's hard dependencies comma-separated; an either-or
-  group appears as one entry joined by `|`. Both are checked against the
-  ACTIVE pipeline in the Pipeline pane's DEPS column, not here — this pane
-  lists what the binary can build, not what is wired up.
-
-  ```
-  agentop · http://localhost:9094 · catalog
-
-   NAME                    REQUIRES                      DESCRIPTION
-   jwt-validation                                        Validate inbound JWTs against JWKS
-   token-exchange                                        RFC 8693 exchange for a target audience
-   mcp-parser                                            Parse MCP JSON-RPC requests and results
-   inference-parser                                      Parse LLM chat/completions traffic
-   ibac                    mcp-parser                   Intent-based access control
-   tool-prune              inference-parser              Drop unused tool definitions
-
-  [↑↓] nav  [↵] plugin detail  [r] refresh  [esc] back  [?] keys  [q] quit
-  ```
-
 - **Kubernetes Namespaces** (optional): the way in when agentop has no endpoint
   to connect to — one row per namespace holding an AuthBridge agent, then a
   Pods pane, then an automatic `kubectl port-forward` into the session view.
   Shown when `--endpoint` was not given and either no local Cortex is answering
-  or `--kubernetes` was passed; `[l]` leaves it for the Cortex on this machine.
+  or `--kubernetes` was passed; `[L]` leaves it for the Cortex on this machine.
 
   ```
   agentop · pick namespace
@@ -803,7 +783,7 @@ agentop is for, and the others are surfaces you visit and leave.
    team2                           1
    default                         1
 
-  [↑↓/jk] nav  [↵] open  [l] localhost:47601  [r] reload  [?] keys  [q] quit
+  [↑↓/jk] nav  [↵] open  [L] localhost:47601  [r] reload  [?] keys  [q] quit
   ```
 
   Without `--kubernetes`, a running local Cortex is connected to directly and
@@ -819,10 +799,9 @@ Layered on top of all of them:
   1. the current pane, highlighted — what it shows, then its own keys;
   2. **GO TO ANOTHER PANE** — the keys that leave, each naming the pane
      it opens and what is on it. Rendered per pane and only where the
-     key actually works: all four (`u`, `P`, `C`, `$`) from the session
-     views, `C` alone on Usage, and on the two pickers the heading kept
-     with a line saying they open once you're connected, rather than four
-     dead keys;
+     key actually works: `u`, `P` and `$` from the session views, and on
+     the two pickers the heading kept with a line saying they open once
+     you're connected, rather than dead keys;
   3. **THE DRILL PATH** — `namespaces → pods → sessions → events → event
      detail` on one line, since that spine is also what `Esc` walks back.
      If you're on one of its five panes it's in brackets; the four
@@ -871,9 +850,9 @@ Layered on top of all of them:
 | `?` | any (not while searching or mid-edit) | open the key-help overlay (`?`/`Esc`/`q` closes) |
 | `↑ ↓` / `k j`, `b`/`f`, `u`/`d`, `g`/`G` | key help | scroll the overlay |
 | `↑ ↓` / `k j` | picker, list | navigate rows |
-| `Enter` | namespaces | open the namespace |
-| `l` | namespaces | connect directly to this machine's Cortex, or to `localhost:9094` when none is installed |
-| `Enter` | pods | port-forward + connect |
+| `Enter` / `→` / `l` | namespaces | open the namespace |
+| `L` | namespaces | connect directly to this machine's Cortex, or to `localhost:9094` when none is installed. Capital, because `l` opens the row here as on every list |
+| `Enter` / `→` / `l` | pods | port-forward + connect |
 | `Esc` | pods | back to namespaces |
 | `r` | namespaces, pods | reload agent list from cluster |
 | `Enter` / `→` / `l` | sessions, events | drill into selection; on a subagent block's header row in the events pane, collapse/expand the block instead |
@@ -881,17 +860,15 @@ Layered on top of all of them:
 | `Esc` | sessions | back to the agents picker when the list was reached by picking an agent there; otherwise (picker mode) tear down port-forward and back to pods. Sessions and the agents picker above it are the only panes that tear down — every key-opened surface returns to its caller instead |
 | `/` | any pane, and the key help | search what the pane shows, as in a text editor: every row stays, the matched characters are highlighted, and the cursor (or, in a text view, the view) jumps to the first match at or after where you pressed `/`, wrapping past the end, as you type. Case-insensitive substring of the text the pane displays: a table's columns that are turned on, at full width (a value cut to `…` matches in full, and so does a column the terminal had no room for); an exchange's or plugin's detail line by line, before it is wrapped; the key help's and the usage chart's lines as drawn. `deny` finds denied events because ACTION shows it. `Enter` keeps the place; `Esc` puts the place and the previous search back; `Enter` on an empty box clears the search. Each pane keeps its own search; the events pane's and an exchange's detail's last while you stay with one session (the detail's carries from exchange to exchange), and none is saved. On the events pane, `Tab` in the prompt turns on `[x] details`: then `Enter`, `n` and `N` find the next row whose detail view shows the query — in either half, every field, the exact capture too. The proxy finds the matches in one pass over memory and the archive (`GET /v1/sessions/{id}/search`), and agentop checks the summary rows it holds itself, so nothing is fetched. The footer counts the matches, and also the matches in events older than the ones agentop holds: Enter on the timeline's `▲` row loads those. A Cortex that predates the search says so in the footer |
 | `n` / `N` | any pane with a search, and the key help | next / previous match, wrapping at both ends; in a text view an off-screen match is scrolled to a third of the way down |
-| `X` | sessions | clear all history: every session this Cortex holds, in memory and on disk. Asks first, with the count and the size on disk; `y` erases, `n`/`esc` keeps. The cost ledger is kept. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer, like `A`: a destructive key should not be advertised on the always-visible line |
-| `x` | sessions, agents | erase the row under the cursor, in memory and on disk: the highlighted session, or every session of the highlighted agent — on *All agents*, everything, as `X`. Asks first, with the count; `y` erases, `n`/`esc` keeps. The cost ledger is kept. An agent still using a session brings it back with its next request. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer, like `X` |
+| `x` | sessions, agents | erase the row under the cursor, in memory and on disk: the highlighted session, or every session of the highlighted agent — on *All agents*, every session this Cortex holds; that confirmation also shows the size on disk. Asks first, with the count; `y` erases, `n`/`esc` keeps. The cost ledger is kept. An agent still using a session brings it back with its next request. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer; the `?` overlay names it |
 | `s` | events | toggle hiding exchanges no plugin acted on (default: shown; an exchange is hidden only when no plugin acted on either half; the events footer shows the hidden count) |
 | `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `s` sort, `r` reset, `Esc`/`Enter`/`c` close); the selection and sort are saved on close |
 | `s` | column picker | sort by the column under the cursor: descending → ascending → chronological. Pressing it on a different column starts that column descending. `#` is not sortable — its order already *is* chronological |
 | `p` | any | pause/resume stream |
 | `y` | detail | yank the event of the section the cursor is in (request or response) to `~/.cortex/agentop-events` (path stays until the next keypress) |
 | `Tab` | detail | jump to the other section's title: request or response |
-| `g` / `G` | lists | jump to top / bottom. In the events timeline this also sets where the *next* session opens — see [Where a session opens](#where-a-session-opens) |
+| `g` / `G` | lists | jump to top / bottom. In the events timeline this also sets where the *next* session opens — see [Where a session opens](#where-a-session-opens). On a paged-back events timeline, `G` also goes back to the live tail and resumes updates |
 | `Enter` on the `▲` row | events | load the page before the oldest event shown. When a session holds more events than one response, the timeline's first row reads `▲ press Enter to load N older events`, and the footer says `N older (▲ at top)` |
-| `t` | events | back to the live tail from a paged-back timeline — resumes receiving updates |
 | `u` | sessions, events, detail | open the usage charts (sessions: all sessions; events/detail: the selected session) |
 | `T` | sessions, events, detail | open the timeline (sessions: the highlighted row; events/detail: the selected session) |
 | `w` | timeline | cycle window: 5m / 1h / 24h / all, only the windows shorter than the session |
@@ -905,22 +882,18 @@ Layered on top of all of them:
 | `w` | agents | cycle the pane's window, drawer open or not: the rows, the title and the breakdown move together through the same four spans. Opens on today; the drawer's own span on other panes is left alone |
 | `m` | usage | cycle metric: tokens / requests / errors / latency / cost |
 | `w` | usage | cycle window: 10m / 1h / 6h |
-| `b` | usage | cycle breakdown: none / status / method / plugin (not offered for latency — there is no per-label latency) |
-| `s` | usage | toggle between this session and all sessions |
+| `o` | usage | cycle breakdown: none / status / method / plugin (not offered for latency — there is no per-label latency). Not `b`, which pages up everywhere else. The pane's scope comes from where `u` was pressed: all sessions from Sessions, the session being read from Events or Detail |
 | `Esc` | usage | back to the pane it was opened from |
 | `P` | sessions, events, detail | open the pipeline. Capital `P` because lowercase `p` pauses the stream and has no replacement worth the trade — `space` and `d` page the table, except on the agents pane, where `space` opens projects and `d`, `PgDn` and `f` still page down |
 | `Esc` | pipeline | back to the pane `P` was pressed on |
-| `C` | any session-view pane (not the picker) | open the registered-plugin catalog. Was `P` until the pipeline took that letter |
-| `r` | catalog | refresh the catalog from `/v1/plugins` |
 | `A` | any session-view pane (not the picker) | open the per-agent breakdown — each coding agent's sessions, when it was last seen, and what it has spent today (`w` moves the window), plus a row for any agent that owns a listed session but has spent nothing in it, since the sessions list is not limited to today and every session in it needs a row to scope to. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press and opens however many agents it finds, one or none included; pressed on the agents pane it only refreshes the rows. Not in the footer, for width; the `?` overlay names it |
 | `↑↓` / `jk` | agents | move the cursor |
-| `space` | agents | on a sub-row, close the parent and move the cursor there; on an agent row that opens, the same as `↵`; on any other row, it pages down. Offered only when sessions record a project; the `Other` row never opens |
 | `↵` | agents | on a row that opens (sessions record a project), open it into its projects or close it. Opening puts the cursor on its `All projects` sub-row, so `↵` `↵` lists the agent's sessions. On any other row, scope to the agent under the cursor and list its sessions, whichever pane `A` was pressed on — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope** — from its `All projects` sub-row when sessions record a project. It reaches the sessions list, the usage pane, and the spend band and its drawer — except on the agents pane itself, where the band and the drawer follow the highlighted row instead of the committed scope; `agentop cost --agent` is a separate process. On a project sub-row, `↵` scopes to that project and its agent; on a project under All agents, to the project only; on the project `Other`, to the sessions and spend that record no project. `All projects` clears only the project scope. `x` and `S` act on the parent on the open row and on `All projects`, and do nothing on a project or `Other` sub-row |
 | `S` | agents | choose the inference server the highlighted agent's new sessions use: a picker over the pane, its cursor on what the agent has now. `↵` applies the highlighted entry, `Esc`/`q`/`Ctrl+C` close it, and an entry the config file already holds writes nothing. Opens only on an agent's row, when agentop is attached to this machine's Cortex and its `inference-router` routes; elsewhere a panel says why. See [Choosing an agent's server](#choosing-an-agents-server-s) |
 | `Esc` | agents | back to the pane `A` was pressed on, leaving the scope as it is. When the picker opened itself at startup, or was reached with `Esc` from the sessions list, it is the level above that list instead, and `Esc` backs out as `Esc` on sessions does: to the pods picker, or nowhere with `--endpoint` |
 | `e` | pipeline | edit pipeline subtree in `$EDITOR` |
 | `y` | edit/diff | apply the edit |
-| `N` | edit/diff | abort the edit |
+| `n` / `Esc` | edit/diff | cancel the edit |
 | `r` | edit/error | retry: re-open the editor (post-edit failure) or refetch (fetch failure) |
 | `Esc` | edit/{fetching,editing,applying} | abort the edit, return to Pipeline pane |
 | `Esc` | edit/{waiting,rollback} | background the watch; result lands as a footer flash |
@@ -1001,7 +974,7 @@ two agents are listed, and the agents pane `SESSIONS` and `LAST SEEN` once sessi
 name their agent. Those two describe the whole sessions list; `COST <window>` is the
 pane's only windowed column, and `w` moves it.
 
-**`↵` opens an agents row into its projects, and closes it.** `space` does too. An open row shows `All projects`
+**`↵` opens an agents row into its projects, and closes it.** An open row shows `All projects`
 (the agent's figures), one row per project, then `Other`. A project row shows the last
 path segment, or the shortest unique tail of segments when two share it, for example
 `github.com/kagenti/kagenti-extensions` and `git/kagenti/kagenti-extensions`. `Other`
@@ -1562,7 +1535,7 @@ archive got full, and an `error:` line when the agent failed. The exit status is
 **What it does not change.** A session that Cortex captured live is skipped, and
 the import never changes it. An imported copy that is as new as its transcript
 is skipped. A newer transcript replaces the imported copy, and only its new
-turns are counted as cost. A session that you erased with `x` or `X` comes back
+turns are counted as cost. A session that you erased with `x` comes back
 as an imported session while its transcript is still on disk. Its cost is not
 counted again, because the erase kept the ledger rows.
 
@@ -1642,7 +1615,7 @@ defaults. To change the pipeline, see [Editing the pipeline](#editing-the-pipeli
 
 Press `e` on the Pipeline pane to edit the runtime `pipeline:` subtree in
 `$EDITOR` (or `vi` if unset). On save, agentop shows a diff and asks
-`apply this change? (y/N)`. Confirming writes the change back, then polls the
+`apply this change?  [y] apply  [n] cancel`. `y` writes the change back, then polls the
 framework's `/reload/status` until the reload completes (success or failure).
 
 Where it writes depends on what you are connected to, not on how agentop was
@@ -1730,13 +1703,13 @@ cluster, or about a second later locally:
   • [outbound] ibac pos 1: Requires "mcp-parser", but it is not in the outbound chain
 ```
 
-The y/N prompt becomes "apply anyway? (y/N)" — agentop's check is
+The prompt becomes "apply anyway?  [y] apply  [n] cancel" — agentop's check is
 non-blocking. The framework's own validateRelationships is the
 source of truth and will fire again at reload regardless.
 
-Validation is silently skipped when the catalog isn't loaded
-(operator hasn't pressed `P` yet). Visit the catalog pane once to
-populate it for the rest of the session.
+Validation is silently skipped when the catalog isn't loaded. `P` loads
+it each time it opens the Pipeline pane, so this happens only when that
+fetch failed.
 
 #### Agent-name resolution
 

@@ -9,7 +9,7 @@ package tui
 // would flip the setting under an operator who was simply scrolling.
 //
 // Persisted immediately rather than on pane exit: there is no "closing" event for
-// a session view (Esc, [l], a pod switch and quitting all leave it), so waiting for
+// a session view (Esc, [L], a pod switch and quitting all leave it), so waiting for
 // one means the common paths never save.
 func (m *model) setOpenAtOldest(oldest bool) {
 	if Settings.Events.OpenAtOldest == oldest {

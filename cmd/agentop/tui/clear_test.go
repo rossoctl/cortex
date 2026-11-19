@@ -44,13 +44,14 @@ func clearStack(t *testing.T, allowed bool) (*model, *session.Store) {
 	return m, store
 }
 
-// X asks before it erases, and says what it is about to erase: the count and the size come from
-// the archive's own list, not from what agentop happens to hold.
-func TestXKey_OpensTheConfirmationWithCounts(t *testing.T) {
+// Clear-all asks before it erases, and says what it is about to erase: the count and the size come
+// from the archive's own list, not from what agentop happens to hold. It is reached by `x` on All
+// agents (erase_test.go); `X` is no longer a key.
+func TestClearAll_OpensTheConfirmationWithCounts(t *testing.T) {
 	m, _ := clearStack(t, true)
-	cmd := m.handleKey(keyRune('X'))
+	cmd := m.openClearConfirm()
 	if m.clearConfirm == nil || cmd == nil {
-		t.Fatal("X on the sessions pane opened no confirmation")
+		t.Fatal("openClearConfirm opened no confirmation")
 	}
 	m.Update(cmd())
 	view := m.View()
@@ -59,10 +60,9 @@ func TestXKey_OpensTheConfirmationWithCounts(t *testing.T) {
 			t.Errorf("the confirmation does not say %q:\n%s", want, view)
 		}
 	}
-	m.pane = paneEvents
 	m.clearConfirm = nil
 	if m.handleKey(keyRune('X')); m.clearConfirm != nil {
-		t.Fatal("X opened the confirmation off the sessions pane")
+		t.Fatal("X opened the confirmation; the key was removed")
 	}
 }
 
@@ -73,7 +73,7 @@ func TestClearConfirm_YClearsAndResetsState(t *testing.T) {
 	m.events["s1"] = []pipeline.SessionEvent{{Seq: 1}}
 	m.events["gone-from-server"] = []pipeline.SessionEvent{{Seq: 1}} // a cached-only row
 	m.selectedSess = "s1"
-	m.Update(m.handleKey(keyRune('X'))())
+	m.Update(m.openClearConfirm()())
 	cmd := m.handleKey(keyRune('y'))
 	if cmd == nil {
 		t.Fatal("y sent no clear")
@@ -96,7 +96,7 @@ func TestClearConfirm_YClearsAndResetsState(t *testing.T) {
 func TestClearConfirm_NAndEscCancel(t *testing.T) {
 	for _, k := range []tea.KeyMsg{keyRune('n'), keyRune('N'), {Type: tea.KeyEsc}} {
 		m, store := clearStack(t, true)
-		m.Update(m.handleKey(keyRune('X'))())
+		m.Update(m.openClearConfirm()())
 		if cmd := m.handleKey(k); cmd != nil || m.clearConfirm != nil {
 			t.Fatalf("%q: confirm=%v cmd=%v, want closed and nothing sent", k.String(), m.clearConfirm, cmd != nil)
 		}
@@ -110,7 +110,7 @@ func TestClearConfirm_NAndEscCancel(t *testing.T) {
 // other than y erases anything.
 func TestClearConfirm_SwallowsOtherKeys(t *testing.T) {
 	m, store := clearStack(t, true)
-	m.Update(m.handleKey(keyRune('X'))())
+	m.Update(m.openClearConfirm()())
 	for _, k := range []tea.KeyMsg{keyRune('u'), keyRune('?'), keyRune('/'), keyRune('H'), keyRune('X'), keyRune('$'), {Type: tea.KeyEnter}} {
 		if cmd := m.handleKey(k); cmd != nil {
 			t.Errorf("%q returned a command", k.String())
@@ -129,7 +129,7 @@ func TestClearConfirm_SwallowsOtherKeys(t *testing.T) {
 func TestClearConfirm_ShowsTheServersRefusal(t *testing.T) {
 	m, store := clearStack(t, false)
 	m.events["s1"] = []pipeline.SessionEvent{{Seq: 1}}
-	m.Update(m.handleKey(keyRune('X'))())
+	m.Update(m.openClearConfirm()())
 	m.Update(m.handleKey(keyRune('y'))())
 	if !strings.Contains(m.flash, "loopback only") {
 		t.Fatalf("flash = %q, want the server's reason", m.flash)
@@ -148,7 +148,7 @@ func TestSnapshot_FromBeforeAClearIsDropped(t *testing.T) {
 	if _, ok := stale.(snapshotLoadedMsg); !ok {
 		t.Fatalf("snapshot = %T, want snapshotLoadedMsg", stale)
 	}
-	m.Update(m.handleKey(keyRune('X'))())
+	m.Update(m.openClearConfirm()())
 	m.Update(m.handleKey(keyRune('y'))())
 	m.Update(stale)
 	if evs := m.events["s1"]; len(evs) != 0 {

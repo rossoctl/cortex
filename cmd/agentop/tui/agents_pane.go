@@ -267,8 +267,8 @@ func (m *model) fetchAgentRowsCmd(open agentsOpen, from paneID) tea.Cmd {
 
 // agentsColumns is the table's declared layout, at the width it wants on a wide terminal.
 //
-// A FUNCTION RATHER THAN A LITERAL INSIDE newAgentsTable, matching pipelineColumns and
-// catalogColumns, because layout() has to re-fit these on every resize and must do it from
+// A FUNCTION RATHER THAN A LITERAL INSIDE newAgentsTable, matching pipelineColumns,
+// because layout() has to re-fit these on every resize and must do it from
 // THESE definitions rather than from the live table's columns — refitting the live ones
 // compounds each narrowing, so widening the terminal back up never restores what it took away.
 //
@@ -290,7 +290,7 @@ func agentsColumns(window string) []table.Column {
 // be worth a picker.
 //
 // ONE FETCH FROM initSessionView, which is the single place every entry point converges on:
-// `--endpoint` mode's Init, the pod picker's portForwardReadyMsg, and `[l]`'s local endpoint all
+// `--endpoint` mode's Init, the pod picker's portForwardReadyMsg, and `[L]`'s local endpoint all
 // call it, and each replaces m.client first. Hooking it there rather than in Init is what makes
 // the gate run again when the operator backs out to the pod picker and enters a DIFFERENT pod —
 // a different proxy has different agents on it, and the answer from the previous one is not an

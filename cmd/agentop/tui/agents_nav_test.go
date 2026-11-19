@@ -172,19 +172,14 @@ func TestAgentsPane_AOverAListReachedThroughThePickerIsAnOverlay(t *testing.T) {
 	}
 }
 
-// `A` on the picker above Sessions refreshes it without turning it into an overlay, and so does
-// the catalog's round trip: esc still backs out of the connection rather than landing on Sessions.
-func TestAgentsPane_ThePickerAboveSessionsSurvivesARefreshAndTheCatalog(t *testing.T) {
+// `A` on the picker above Sessions refreshes it without turning it into an overlay: esc still
+// backs out of the connection rather than landing on Sessions.
+func TestAgentsPane_ThePickerAboveSessionsSurvivesARefresh(t *testing.T) {
 	m := navModel(t, paneSessions, true)
 	m.enterAgentsAtStartup()
 	m = pressA(t, m, navRows())
-	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'C'}})
-	if m.pane != paneCatalog {
-		t.Fatalf("`C` landed on %v", m.pane)
-	}
-	pressEsc(m)
 	if m.pane != paneAgents {
-		t.Fatalf("esc from the catalog landed on %v, want the picker", m.pane)
+		t.Fatalf("`A` landed on %v, want the picker", m.pane)
 	}
 	pressEsc(m)
 	if m.pane != panePods {

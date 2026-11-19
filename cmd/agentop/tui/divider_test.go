@@ -28,7 +28,7 @@ func dividerLine(view string) int {
 func TestDivider_DrawnOnEveryPaneAtEverySize(t *testing.T) {
 	panes := map[string]paneID{
 		"sessions": paneSessions, "events": paneEvents, "pipeline": panePipeline,
-		"detail": paneDetail, "catalog": paneCatalog, "usage": paneUsage,
+		"detail": paneDetail, "usage": paneUsage,
 		"namespaces": paneNamespaces, "pods": panePods,
 	}
 	for _, dim := range fitSizes {

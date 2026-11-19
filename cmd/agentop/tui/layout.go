@@ -73,7 +73,6 @@ func (m *model) layout() {
 	// SetColumns. rebuildSessionsTable owns both; see its doc. It is called below, after the
 	// heights are set.
 	m.pipelineTbl.SetColumns(fitTableColumns(pipelineColumns(), m.width))
-	m.catalogTbl.SetColumns(fitTableColumns(catalogColumns(), m.width))
 	m.rebuildAgentsTable()
 
 	m.sessionsTbl.SetHeight(bodyH)
@@ -96,20 +95,12 @@ func (m *model) layout() {
 	// a window resize too.
 	m.rebuildEventsTable()
 	m.pipelineTbl.SetHeight(bodyH)
-	// The catalog table had no height set anywhere: it kept bubbles' table.New
-	// default of 20 rows for the life of the process, so on a terminal shorter than
-	// that the pane rendered past the bottom (scrolling the title away) and on a
-	// taller one it left the remaining rows unused. TestLayout_EveryPaneFitsTheTerminal
-	// covered this pane but never populated m.catalog, so it only ever measured the
-	// "loading catalog…" line.
-	m.catalogTbl.SetHeight(bodyH)
-	// The agents table had the catalog's bug, whose comment above is this one's history: nothing
-	// sized it anywhere, so it kept bubbles' table.New default for the life of the process and
-	// rendered past the bottom of any shorter terminal. The catalog's blind spot was an empty
-	// fixture; this one was a size larger, and it is the class that will recur:
-	// TestLayout_EveryPaneFitsTheTerminal enumerates the panes it measures in a HAND-WRITTEN
-	// map, and paneAgents was simply not in it — so no fixture could have helped, and adding a
-	// pane means adding it to that map too.
+	// The agents table had no height set anywhere: it kept bubbles' table.New default for the
+	// life of the process and rendered past the bottom of any shorter terminal. The plugin
+	// catalog's own table (now the pipeline pane's available rows) had the same bug before it.
+	// It is the class that will recur: TestLayout_EveryPaneFitsTheTerminal enumerates the panes
+	// it measures in a HAND-WRITTEN map, and paneAgents was simply not in it — so adding a pane
+	// means adding it to that map too.
 	m.agentsTbl.SetHeight(bodyH)
 	m.detailVp.Width = m.width
 	// The event detail's fixed line takes one row (#1681). Every pane but the plugin detail

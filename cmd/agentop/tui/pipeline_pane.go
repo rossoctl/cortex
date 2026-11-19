@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
@@ -37,7 +38,9 @@ func newPipelineTable() table.Model {
 }
 
 // rebuildPipelineTable renders the plugin list with a "(app)" divider row
-// between inbound and outbound.
+// between inbound and outbound, then an "available" divider and one row for each
+// plugin the proxy offers (/v1/plugins) that the chain does not run. That second
+// section was the plugin catalog's own pane, under its own key.
 func (m *model) rebuildPipelineTable() {
 	if m.pipeline == nil {
 		m.pipelineTbl.SetRows(nil)
@@ -56,6 +59,16 @@ func (m *model) rebuildPipelineTable() {
 	rows = append(rows, table.Row{"", "", "── (app) ──", "", "", ""})
 	for _, p := range m.pipeline.Outbound {
 		rows = append(rows, pipelineRow(p, counts[p.Name], m.pipeline.Outbound))
+	}
+	if avail := m.availablePlugins(); len(avail) > 0 {
+		rows = append(rows, table.Row{"", "", availableDivider, "", "", ""})
+		for _, p := range avail {
+			body := "no"
+			if p.ReadsBody {
+				body = "yes"
+			}
+			rows = append(rows, table.Row{"", "", p.Name, "", body, ""})
+		}
 	}
 	m.pipelineTbl.SetRows(rows)
 	// If cursor is on the divider row, nudge to the next plugin. A relative move so
@@ -96,15 +109,50 @@ func pipelineRow(p apiclient.PipelinePlugin, events int, chain []apiclient.Pipel
 	}
 }
 
+const availableDivider = "── available ──"
+
+// isDividerRow reports a divider: no position, and a "──" label. A plugin row always
+// has a position, and an available row never starts its name with "──".
 func isDividerRow(rows []table.Row, i int) bool {
 	if i < 0 || i >= len(rows) {
 		return false
 	}
-	return rows[i][2] == "── (app) ──"
+	return rows[i][0] == "" && strings.HasPrefix(rows[i][2], "──")
+}
+
+// availablePlugins is the catalog minus every plugin the chain runs, in catalog order,
+// as synthetic PipelinePlugins: Direction blank and Position 0, which showPluginDetail
+// elides and which tells selectedPlugin's callers the row is not in the chain.
+func (m *model) availablePlugins() []apiclient.PipelinePlugin {
+	if m.catalog == nil || m.pipeline == nil {
+		return nil
+	}
+	running := map[string]bool{}
+	for _, p := range m.pipeline.Inbound {
+		running[p.Name] = true
+	}
+	for _, p := range m.pipeline.Outbound {
+		running[p.Name] = true
+	}
+	var out []apiclient.PipelinePlugin
+	for _, e := range m.catalog.Plugins {
+		if running[e.Name] {
+			continue
+		}
+		out = append(out, apiclient.PipelinePlugin{
+			Name:        e.Name,
+			ReadsBody:   e.ReadsBody,
+			Requires:    e.Requires,
+			RequiresAny: e.RequiresAny,
+			Description: e.Description,
+		})
+	}
+	return out
 }
 
 // selectedPlugin returns the PipelinePlugin under the cursor, or nil when
-// the cursor sits on the divider or the table is empty.
+// the cursor sits on a divider or the table is empty. An available row's plugin has
+// a blank Direction.
 func (m *model) selectedPlugin() *apiclient.PipelinePlugin {
 	if m.pipeline == nil {
 		return nil
@@ -129,6 +177,11 @@ func (m *model) selectedPlugin() *apiclient.PipelinePlugin {
 	for j := range m.pipeline.Outbound {
 		if m.pipeline.Outbound[j].Name == name {
 			return &m.pipeline.Outbound[j]
+		}
+	}
+	for _, p := range m.availablePlugins() {
+		if p.Name == name {
+			return &p
 		}
 	}
 	return nil

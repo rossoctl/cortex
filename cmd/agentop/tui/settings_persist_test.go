@@ -435,7 +435,7 @@ func TestUsagePane_ViewChoicesArePersisted(t *testing.T) {
 	}{
 		{"m cycles the metric", 'm', func(u UsageSettings) bool { return u.Metric != "" }, "Metric"},
 		{"w cycles the window", 'w', func(u UsageSettings) bool { return u.Window != "" }, "Window"},
-		{"b cycles the breakdown", 'b', func(u UsageSettings) bool { return u.Group != "" }, "Group"},
+		{"o cycles the breakdown", 'o', func(u UsageSettings) bool { return u.Group != "" }, "Group"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newTestEventsModel(t)

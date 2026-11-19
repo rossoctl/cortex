@@ -1155,7 +1155,7 @@ func TestSpendBandNeedsScopeMarker_EveryPaneIsClassified(t *testing.T) {
 	// its own header, and a user who scoped it to one session chose that.
 	manySessions := map[paneID]bool{
 		paneSessions: true, panePipeline: true, panePluginDetail: true,
-		paneCatalog: true, paneUsage: true, paneAgents: true,
+		paneUsage: true, paneAgents: true,
 		paneNamespaces: true, panePods: true,
 	}
 

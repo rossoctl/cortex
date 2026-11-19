@@ -42,7 +42,6 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	m.eventsTbl = newEventsTable()
 	m.sessionsTbl = newSessionsTable()
 	m.pipelineTbl = newPipelineTable()
-	m.catalogTbl = newCatalogTable()
 	m.namespacesTbl = newNamespacesTable()
 	m.podsTbl = newPodsTable()
 	// The real constructors build this one too (New and the picker's both call
@@ -174,7 +173,6 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	// count, but the fit assertions measure precisely what layout() produced.
 	m.rebuildSessionsTable()
 	m.rebuildPipelineTable()
-	m.rebuildCatalogTable()
 	m.rebuildAgentsTable()
 	if p == paneDetail && len(events) > 0 {
 		// An event on the page, so the fixed line above the viewport is measured too (#1681).
@@ -214,7 +212,7 @@ func TestLayout_EveryPaneFitsTheTerminal(t *testing.T) {
 	forceColor(t)
 	panes := map[string]paneID{
 		"sessions": paneSessions, "events": paneEvents, "pipeline": panePipeline,
-		"detail": paneDetail, "catalog": paneCatalog, "usage": paneUsage,
+		"detail": paneDetail, "usage": paneUsage,
 		"agents": paneAgents, "timeline": paneTimeline,
 	}
 	for _, dim := range fitSizes {
@@ -299,7 +297,6 @@ func TestLayout_TablesFitTheirTerminal(t *testing.T) {
 		}{
 			{"sessions", tableWidth(m.sessionsTbl.Columns()), len(m.sessionsTbl.Columns())},
 			{"pipeline", tableWidth(m.pipelineTbl.Columns()), len(m.pipelineTbl.Columns())},
-			{"catalog", tableWidth(m.catalogTbl.Columns()), len(m.catalogTbl.Columns())},
 		} {
 			if tc.width > dim[0] {
 				t.Errorf("%s table is %d columns wide (%d columns) at terminal width %d",

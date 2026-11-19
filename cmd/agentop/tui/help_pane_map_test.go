@@ -411,13 +411,13 @@ func TestHelpNavKeys_MoveTheOverlayOnEveryPane(t *testing.T) {
 }
 
 // And the exception the note names: with the overlay closed, usage is the one pane
-// where `b` is not paging and `g` moves nothing.
+// where the nav keys move nothing. `b` no longer changes the breakdown there (`o` does).
 func TestHelpNavKeys_NoteNamesTheOneExceptionCorrectly(t *testing.T) {
 	m := &model{pane: paneUsage, selectedSess: "s1"}
 	before := m.usage.group
 	m.handleKey(keyRune('b'))
-	if m.usage.group == before {
-		t.Errorf("`b` no longer cycles the usage breakdown — the nav note says it does")
+	if m.usage.group != before {
+		t.Errorf("`b` changed the usage breakdown; it pages on every pane, and `o` is the breakdown key")
 	}
 
 	// The note also claims g/G do nothing on usage. goTop has no case for it; assert
