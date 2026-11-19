@@ -119,10 +119,19 @@ func TestPolicyDefaults(t *testing.T) {
 	}
 }
 
-func TestKeepAliveOffByDefault(t *testing.T) {
-	p := configured(t, `{}`)
+func TestKeepAliveOnByDefault(t *testing.T) {
+	for _, cfg := range []string{`{}`, `{"keep_alive": {}}`, `{"keep_alive": {"max_pings": 3}}`} {
+		p := configured(t, cfg)
+		if p.keeper == nil || p.disp == nil || !p.kaPol.On() {
+			t.Fatalf("%s: no keeper built, want keep-alive on by default", cfg)
+		}
+	}
+}
+
+func TestKeepAliveCanBeTurnedOff(t *testing.T) {
+	p := configured(t, `{"keep_alive": {"enabled": false}}`)
 	if p.keeper != nil || p.disp != nil {
-		t.Fatal("a keeper was built with no keep_alive block")
+		t.Fatal("a keeper was built with keep_alive.enabled: false")
 	}
 	// The lifecycle hooks are no-ops with keep-alive off.
 	if err := p.Init(t.Context()); err != nil {

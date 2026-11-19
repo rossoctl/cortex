@@ -19,6 +19,11 @@ type pingEmitter struct {
 	session string
 	client  *pipeline.EventClient
 	host    string
+	// thread is the accountant thread of the request that established the entry
+	// (accounting.ThreadOf): the thread its next request is billed on, so the ping's billing mode
+	// and facts are that thread's. Not the report's keeper thread, whose id ("a:<agent>") is the
+	// keeper's own form and names no accountant thread.
+	thread string
 }
 
 // pingEmitter is the emitter for the keep-alive entry pctx establishes.
@@ -34,7 +39,8 @@ func (p *ContextGuru) pingEmitter(pctx *pipeline.Context, sid string) cgcomponen
 	if pctx.SessionID == "" {
 		acct = nil
 	}
-	return pingEmitter{acct: acct, session: pctx.SessionID, client: pctx.ClientInfo(), host: pctx.Host}
+	return pingEmitter{acct: acct, session: pctx.SessionID, client: pctx.ClientInfo(), host: pctx.Host,
+		thread: accounting.ThreadOf(pctx).ID}
 }
 
 // KeepAlivePing logs the ping and hands it to the accountant host, which refuses it, prices it,
@@ -45,7 +51,7 @@ func (e pingEmitter) KeepAlivePing(r cgcomponents.KeepAliveReport) {
 	if e.acct == nil || e.session == "" {
 		return
 	}
-	e.acct.Ping(e.session, e.client, e.host, pingFromReport(r, e.host), accounting.PingInfo{
+	e.acct.Ping(e.session, e.client, e.host, pingFromReport(r, e.host, e.thread), accounting.PingInfo{
 		Status:   r.Status,
 		Manual:   r.Manual,
 		Duration: time.Duration(r.DurationMs * float64(time.Millisecond)),
@@ -55,11 +61,13 @@ func (e pingEmitter) KeepAlivePing(r cgcomponents.KeepAliveReport) {
 // pingFromReport maps a keeper report to the library's Ping (wiring W4.6), as the context-guru
 // proxy's pingFromReport does. host is the upstream the ping went to: in Cortex the report's Route
 // is the request PATH (keepalive.go's recordFor sets it so), so the upstream comes from the
-// request instead. r.CostUSD is deliberately not carried: the host prices the ping with its own
-// rates. CacheWrite1h is the part of CacheWrite billed at the one-hour rate, in both types.
-func pingFromReport(r cgcomponents.KeepAliveReport, host string) accountant.Ping {
+// request instead. thread is the accountant thread (pingEmitter.thread), for the same kind of
+// reason: r.Thread is the keeper's key. r.CostUSD is deliberately not carried: the host prices the
+// ping with its own rates. CacheWrite1h is the part of CacheWrite billed at the one-hour rate, in
+// both types.
+func pingFromReport(r cgcomponents.KeepAliveReport, host, thread string) accountant.Ping {
 	return accountant.Ping{
-		Session: r.Session, ThreadID: r.Thread, Model: r.Model, Host: host,
+		Session: r.Session, ThreadID: thread, Model: r.Model, Host: host,
 		Usage: accountant.CallUsage{Usage: accountant.Usage{Input: int(r.FreshInput), CacheRead: int(r.CacheRead),
 			CacheWrite: int(r.CacheWrite), CacheWrite1h: int(r.CacheWrite1h)}, Output: int(r.Output)},
 		At: pingStart(r), Window: r.Window,
