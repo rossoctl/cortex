@@ -92,7 +92,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.15.0 // indirect
-	github.com/rossoctl/accountant v0.3.0 // indirect
+	github.com/rossoctl/accountant v0.4.0 // indirect
 	github.com/rossoctl/accountant/metrics v0.0.0-20261111151953-6085d4661624 // indirect
 	github.com/secure-systems-lab/go-securesystemslib v0.11.0 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
