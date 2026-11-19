@@ -195,13 +195,14 @@ func TestEgress_OriginEgressErrorRemoved(t *testing.T) {
 }
 
 func TestEgress_DialFailure502WithKind(t *testing.T) {
+	// The rig's servers start first, so the closed port cannot be handed to either of them.
+	rig := newEgressRig(t, egressTestToken, okOrigin)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	closed := "http://" + ln.Addr().String()
 	_ = ln.Close()
-	rig := newEgressRig(t, egressTestToken, okOrigin)
 	resp := egressDo(t, rig, "/", egressTestToken, closed, nil)
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
