@@ -184,6 +184,9 @@ type Context struct {
 	clientProc     string
 	namingHeader   string
 	attributed     bool
+	// namedSession and namedSet hold SetNamedSession's pin.
+	namedSession string
+	namedSet     bool
 
 	// project and projectSet hold SetProject's pin.
 	project    string

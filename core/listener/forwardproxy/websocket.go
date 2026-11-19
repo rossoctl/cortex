@@ -838,6 +838,7 @@ func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 	// process on the same session, and without it no turn row names the header that named
 	// the session — the rows #1535's fold counts procs and owner from.
 	pctx.SetAttribution(hs.AttributedProc(), hs.AttributedClientProc(), hs.NamingHeader())
+	pctx.SetNamedSession(hs.NamedSession())
 	pctx.SetProject(hs.Project())
 	return pctx
 }

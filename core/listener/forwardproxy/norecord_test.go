@@ -242,6 +242,35 @@ func TestNoRecord_OpaqueConnectWithholdsOnlyItsOwnSession(t *testing.T) {
 	}
 }
 
+// The CONNECT's opt-out compares the filing session with the id pinned before the gate plugins
+// ran, not with a re-read of pctx.Headers: a plugin that removes or rewrites the session-id header
+// must not make an own-session opt-out record its open row.
+func TestNoRecord_OpaqueConnectIgnoresARewrittenHeader(t *testing.T) {
+	const own = "11111111-2222-3333-4444-555555555555"
+	for _, rewritten := range []string{"", "99999999-2222-3333-4444-555555555555"} {
+		store := session.New(5*time.Minute, 100, 0)
+		h := http.Header{session.ClaudeCodeSessionHeader: {own}, model.RecordHeader: {"off"}}
+		pctx := &pipeline.Context{Headers: h}
+		pctx.ResolveClient()
+		pctx.SetAttribution("", "", session.ClaudeCodeSessionHeader)
+		pctx.SetNamedSession(own)
+		pctx.OutboundSessionID = own
+		// A gate plugin rewrites the header after the pin.
+		if rewritten == "" {
+			h.Del(session.ClaudeCodeSessionHeader)
+		} else {
+			h.Set(session.ClaudeCodeSessionHeader, rewritten)
+		}
+		s := &Server{Sessions: store, ClientAffinity: true, SessionIDHeaders: []string{session.ClaudeCodeSessionHeader}}
+		s.appendTunnelOpen(pctx, pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
+		v := store.View(own)
+		if v == nil || len(v.Events) != 1 || !v.Events[0].NoRecord {
+			t.Fatalf("header rewritten to %q: rows under %s %+v, want one flagged open row", rewritten, own, v)
+		}
+		store.Close()
+	}
+}
+
 // A request without the header is unchanged.
 func TestNoRecord_UnflaggedRequestIsRecorded(t *testing.T) {
 	proxy, backend, rec, _ := noRecordProxy(t)

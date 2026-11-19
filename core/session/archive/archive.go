@@ -94,6 +94,10 @@ type Stats struct {
 	DroppedCaptures uint64
 	// Paused is true after ENOSPC, until the next retention pass.
 	Paused bool
+	// FailedClosed is true once more sessions asked not to be recorded, while the queue was
+	// full, than the archive keeps track of (#1923). Until a restart it records no event of a
+	// conversation.
+	FailedClosed bool
 }
 
 // Archive is the session archive: a session.Recorder that writes every event the store appends
@@ -115,11 +119,9 @@ type Archive struct {
 	maxOpen    int
 	tickEvery  time.Duration
 
-	// Test seams: gate holds the writer before each op; segHook sees each new segment writer;
-	// deliverWait is called while deliver waits for room.
-	gate        chan struct{}
-	segHook     func(*segmentWriter)
-	deliverWait func()
+	// Test seams: gate holds the writer before each op; segHook sees each new segment writer.
+	gate    chan struct{}
+	segHook func(*segmentWriter)
 
 	ops       chan op
 	stop      chan struct{}
@@ -133,10 +135,21 @@ type Archive struct {
 	// recent clear, for AwaitClear; see clear.go.
 	mu      sync.Mutex
 	lastSeq map[string]uint64
-	// stopped is set by the writer once it has drained for Close: deliver then refuses an
-	// opt-out op rather than queue one nothing will read. Under mu.
+	// stopped is set by the writer once it has drained for Close: sendLocked and optOutLocked
+	// then refuse rather than queue what nothing will read. Under mu.
 	stopped bool
-	pending *pendingClear
+	// sent is the position of the last op sendLocked queued, and marks the position of the last
+	// queued op that can move or remove an opt-out's mark (a rename, a delete, a clear). optOuts
+	// holds, per session id, the positions after which its opt-out applies, for opt-outs that
+	// found no room in the queue; see norecord.go. optOutN is len(optOuts), for the writer's fast
+	// path. All under mu.
+	sent, marks uint64
+	optOuts     map[string][]uint64
+	optOutN     atomic.Int64
+	// failClosed is set when optOuts reached its bound: from then on until a restart, no event
+	// of a conversation is recorded (#1923).
+	failClosed atomic.Bool
+	pending    *pendingClear
 	// deletes is the most recent delete per session id, for AwaitDelete; see delete.go. nil
 	// until the first.
 	deletes map[string]*pendingClear
@@ -164,7 +177,8 @@ type Archive struct {
 	idxMu sync.RWMutex
 	index map[string]*indexEntry
 
-	// Writer goroutine only.
+	// Writer goroutine only. at is the position of the last positioned op the writer took.
+	at            uint64
 	sessions      map[string]*sessionState
 	lastMeta      time.Time
 	lastPrune     time.Time
@@ -220,6 +234,7 @@ type op struct {
 	ev     model.SessionEvent
 	cap    *model.RequestCapture // ev's request capture, nil for most events
 	after  uint64                // where a store entry began: on its first queued event, and on its rename
+	n      uint64                // its position, from sendLocked; 0 for an op sent without one
 	clear  *pendingClear
 	f      func()
 	done   chan struct{}
@@ -342,19 +357,29 @@ func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *mode
 	if a.closed.Load() {
 		return
 	}
-	// A flagged event of a conversation is never dropped (#1923): the writer's mark is the
-	// opt-out's only state, and a DELETE, CLEAR or prune still queued may be about to remove it,
-	// so no event may assume the session is already marked. See deliver.
-	mustDeliver := e.NoRecord && session.IsConversation(sessionID)
+	// A flagged event of a conversation is an opt-out (#1923), never lost: when the queue has no
+	// room for it, the opt-out is kept at its place in the queue instead (optOutLocked), and the
+	// event itself, withheld anyway, goes. Nothing here waits.
+	optOut := e.NoRecord && session.IsConversation(sessionID)
 	a.mu.Lock()
 	if e.Seq > a.lastSeq[sessionID] {
 		a.lastSeq[sessionID] = e.Seq
 	}
-	// Every send happens under the store's write lock, so this check and the send below cannot
-	// race another producer; the writer only ever makes room.
-	if !mustDeliver && len(a.ops) >= cap(a.ops)-reserve {
+	if a.failClosed.Load() && session.IsConversation(sessionID) {
 		a.mu.Unlock()
 		a.dropped.Add(1)
+		return
+	}
+	// The reserve is for renames, deletes and clears. Every send happens under the store's
+	// write lock, so this check and the send below cannot race another producer; the writer
+	// only ever makes room.
+	if len(a.ops) >= cap(a.ops)-reserve {
+		if optOut {
+			a.optOutLocked(sessionID)
+		} else {
+			a.dropped.Add(1)
+		}
+		a.mu.Unlock()
 		return
 	}
 	o := op{kind: opEvent, id: sessionID, ev: *e}
@@ -372,26 +397,39 @@ func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *mode
 	if starting && !st.queued {
 		o.after = st.after
 	}
-	if mustDeliver {
+	if a.sendLocked(o) {
 		if starting && !st.queued {
 			st.queued = true
 			a.started[sessionID] = st
 		}
 		a.mu.Unlock()
-		a.deliver(o) // outside a.mu: it may wait for the writer, which takes a.mu
 		return
 	}
+	if optOut {
+		a.optOutLocked(sessionID)
+	} else {
+		a.dropped.Add(1)
+	}
+	a.mu.Unlock()
+	a.releaseCapture(o.cap)
+}
+
+// sendLocked queues o without blocking and gives it its position in the queue, which is how the
+// writer applies a kept opt-out at its place (optOutLocked). It reports whether o was queued: not
+// when the queue is full, and not once the writer has stopped for Close. The caller holds a.mu.
+// Every producer that holds the store's write lock sends through here, so positions follow the
+// queue's order.
+func (a *Archive) sendLocked(o op) bool {
+	if a.stopped {
+		return false
+	}
+	o.n = a.sent + 1
 	select {
 	case a.ops <- o:
-		if starting && !st.queued {
-			st.queued = true
-			a.started[sessionID] = st
-		}
-		a.mu.Unlock()
+		a.sent = o.n
+		return true
 	default:
-		a.mu.Unlock()
-		a.dropped.Add(1)
-		a.releaseCapture(o.cap)
+		return false
 	}
 }
 
@@ -442,10 +480,12 @@ func (a *Archive) Rekeyed(oldID, newID string) {
 		}
 		a.lastSeq[newID] = max(a.lastSeq[newID], n)
 	}
+	ok := a.sendLocked(op{kind: opRename, id: oldID, to: newID, after: st.after})
+	if ok {
+		a.marks = a.sent // a rename moves a mark: see optOutLocked
+	}
 	a.mu.Unlock()
-	select {
-	case a.ops <- op{kind: opRename, id: oldID, to: newID, after: st.after}:
-	default:
+	if !ok {
 		a.droppedRenames.Add(1)
 		// Session ids are attribution keys the operator needs to find the
 		// history this rename left behind.
@@ -473,6 +513,7 @@ func (a *Archive) Stats() Stats {
 		DroppedRenames:  a.droppedRenames.Load(),
 		DroppedCaptures: a.droppedCaptures.Load(),
 		Paused:          a.paused.Load(),
+		FailedClosed:    a.failClosed.Load(),
 	}
 }
 
@@ -510,15 +551,18 @@ func (a *Archive) run() {
 		case o := <-a.ops:
 			a.take(o)
 		case <-t.C:
+			a.applyOptOuts(false)
 			a.tick()
 		case <-a.stop:
 			a.drain()
-			// From here no opt-out op is accepted (deliver checks stopped under a.mu), so one
-			// more drain takes every op that was (#1923).
+			// From here nothing more is queued or kept (sendLocked and optOutLocked check
+			// stopped under a.mu), so one more drain takes every op that was, and every kept
+			// opt-out is due (#1923). shutdown then writes their marks.
 			a.mu.Lock()
 			a.stopped = true
 			a.mu.Unlock()
 			a.drain()
+			a.applyOptOuts(true)
 			a.closeErr = a.shutdown()
 			return
 		}
@@ -540,6 +584,11 @@ func (a *Archive) drain() {
 func (a *Archive) take(o op) {
 	if a.gate != nil {
 		<-a.gate
+	}
+	// A kept opt-out applies before the first op queued after it (#1923).
+	a.applyOptOuts(false)
+	if o.n > 0 {
+		a.at = o.n
 	}
 	switch o.kind {
 	case opEvent:

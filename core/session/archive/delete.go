@@ -26,15 +26,18 @@ func (a *Archive) Deleted(sessionID string) {
 		a.deletes = map[string]*pendingClear{}
 	}
 	a.deletes[sessionID] = p
-	a.mu.Unlock()
 	if a.closed.Load() {
+		a.mu.Unlock()
 		p.finish(ClearResult{}, errors.New("the session archive is closed"))
 		return
 	}
 	// Into the reserve, like a rename and a clear: Record stops short of it.
-	select {
-	case a.ops <- op{kind: opDelete, id: sessionID, clear: p}:
-	default:
+	ok := a.sendLocked(op{kind: opDelete, id: sessionID, clear: p})
+	if ok {
+		a.marks = a.sent // a delete removes a mark: see optOutLocked
+	}
+	a.mu.Unlock()
+	if !ok {
 		slog.Error("session archive: a delete was lost to a full queue; the session's history on disk is unchanged",
 			"session", sessionID)
 		p.finish(ClearResult{}, errors.New("the session archive's queue is full; nothing on disk was erased"))

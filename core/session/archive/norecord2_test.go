@@ -2,6 +2,7 @@ package archive
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -74,19 +75,61 @@ func TestNoRecord_HopMarkSurvivesEviction(t *testing.T) {
 	}
 }
 
+// gateWriter holds a's writer before its next op and returns an idempotent release, also
+// registered as cleanup with a's Close, so a failing test never leaves the writer gated.
+func gateWriter(t *testing.T, a *Archive) (release func()) {
+	t.Helper()
+	gate := make(chan struct{})
+	a.gate = gate
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(func() {
+		release()
+		_ = a.Close()
+	})
+	return release
+}
+
+// fillToReserve queues events of id until the queue is at the reserve line, with the gated
+// writer holding the first one, and returns how many it recorded.
+func fillToReserve(t *testing.T, a *Archive, r *recorder, id string) int {
+	t.Helper()
+	evs := synthSession(390, 1, 512)[:1]
+	r.record(id, evs...)
+	deadline := time.Now().Add(10 * time.Second)
+	for len(a.ops) > 0 { // the writer has taken it and waits at the gate
+		if time.Now().After(deadline) {
+			t.Fatal("the writer never took the first op")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	n := 1
+	for len(a.ops) < cap(a.ops)-reserve {
+		r.record(id, plain(n)...)
+		n++
+	}
+	return n
+}
+
+// plain is one unflagged event, distinct by i.
+func plain(i int) []pipeline.SessionEvent {
+	e := synthSession(391, 1, 512)[0]
+	e.At = e.At.Add(time.Duration(i) * time.Millisecond)
+	return []pipeline.SessionEvent{e}
+}
+
 // The writer's mark is the opt-out's only state, so a flagged event of a session not marked yet is
-// never dropped: with the queue full, reserve included, it waits for the writer instead.
-func TestNoRecord_AFlaggedEventIsNeverDroppedWhileUnmarked(t *testing.T) {
+// never lost: with the queue full, reserve included, it is kept at its place and returns at once.
+func TestNoRecord_AFlaggedEventIsNeverLostWhileUnmarked(t *testing.T) {
 	root := t.TempDir()
 	a := openTest(t, root, newClock(), WithQueueDepth(reserve+6))
-	a.gate = make(chan struct{})
+	release := gateWriter(t, a)
 	r := newRecorder(a)
 	evs := synthSession(332, 3, 512) // 9 events
 	r.record("s1", evs[:6]...)       // to the reserve
 	for len(a.ops) < cap(a.ops) {    // and the reserve too
 		a.Rekeyed("filler", "filler2")
 	}
-	dropped := a.Stats().DroppedEvents
 	done := make(chan struct{})
 	go func() {
 		r.record("s1", flagged(evs[6:7])...)
@@ -94,19 +137,199 @@ func TestNoRecord_AFlaggedEventIsNeverDroppedWhileUnmarked(t *testing.T) {
 	}()
 	select {
 	case <-done:
-		t.Fatal("a flagged event of an unmarked session returned with the queue full: it was dropped")
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(2 * time.Second):
+		t.Fatal("a flagged event waited for the writer")
 	}
-	close(a.gate)
-	<-done
-	if got := a.Stats().DroppedEvents; got != dropped {
-		t.Fatalf("dropped events %d → %d, want the flagged one delivered", dropped, got)
-	}
+	release()
 	settle(a)
 	r.record("s1", evs[7:]...)
 	a.Close()
 	if got := onDisk(t, root, "s1"); len(got) != 6 {
 		t.Fatalf("s1 holds %d events, want the 6 recorded before the flag", len(got))
+	}
+}
+
+// clawgenti's probe on #1959, through the real store: with the writer stuck (a hung fsync, a
+// stalled mount) and the queue at its reserve line, one opted-out request must not block any other
+// session's traffic, nor itself. Its opt-out still lands, and no flagged event took the reserve.
+func TestNoRecord_AStuckWriterNeverBlocksTheStore(t *testing.T) {
+	root := t.TempDir()
+	a := openTest(t, root, newClock(), WithQueueDepth(reserve+6))
+	st := session.New(time.Hour, 0, 0)
+	t.Cleanup(st.Close) // registered first, so it runs after gateWriter's release
+	st.AddRecorder(a)
+	release := gateWriter(t, a)
+	evs := synthSession(392, 4, 512) // 12 events
+	st.Append("s1", evs[0])
+	for deadline := time.Now().Add(10 * time.Second); len(a.ops) > 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the writer never took the first op")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	n := 1
+	for ; len(a.ops) < cap(a.ops)-reserve; n++ {
+		st.Append("s1", evs[n])
+	}
+	fl := evs[n]
+	fl.NoRecord = true
+	other := synthSession(393, 1, 512)
+	done := make(chan string, 3)
+	go func() { st.Append("s1", fl); done <- "the opted-out Append" }()
+	go func() { st.Append("s2", other[0]); done <- "another session's Append" }()
+	go func() { st.ListSessions(); done <- "ListSessions" }()
+	for range 3 {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("the store blocked behind a stuck archive writer")
+		}
+	}
+	if q := len(a.ops); q > cap(a.ops)-reserve {
+		t.Fatalf("queue at %d with the writer gated, past the reserve line %d: a flagged event took the reserve", q, cap(a.ops)-reserve)
+	}
+	a.Rekeyed("x1", "x2") // the reserve is still free for a rename
+	if got := a.Stats().DroppedRenames; got != 0 {
+		t.Fatalf("dropped %d renames: the reserve was taken", got)
+	}
+	release()
+	settle(a)
+	for _, e := range evs[n+1:] {
+		st.Append("s1", e) // unflagged, after the opt-out
+	}
+	st.Append("s2", other[1])
+	settle(a)
+	a.Close()
+	if got := onDisk(t, root, "s1"); len(got) != n {
+		t.Fatalf("s1 holds %d events, want the %d recorded before the opt-out", len(got), n)
+	}
+	if got := onDisk(t, root, "s2"); len(got) != 1 {
+		t.Fatalf("s2 holds %d events, want its row after the writer recovered", len(got))
+	}
+}
+
+// A kept opt-out applies at its place in the queue: after a DELETE queued before it, which would
+// otherwise remove its mark, and again after a DELETE queued between two opt-outs of one session
+// (the entry adds a position). In both cases the unflagged rows that follow are withheld.
+func TestNoRecord_AKeptOptOutKeepsItsPlaceAfterADelete(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ops  func(a *Archive)
+	}{
+		{"delete, then opt-out", func(a *Archive) {
+			a.Deleted("s1")
+			a.Withhold("s1")
+		}},
+		{"opt-out, delete, opt-out", func(a *Archive) {
+			a.Withhold("s1")
+			a.Deleted("s1")
+			a.Withhold("s1")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			a := openTest(t, root, newClock(), WithQueueDepth(reserve+6))
+			r := newRecorder(a)
+			r.record("s1", flagged(synthSession(394, 1, 512))...)
+			settle(a) // s1 is marked
+			release := gateWriter(t, a)
+			fillToReserve(t, a, r, "s0")
+			tc.ops(a) // with the queue at the line: every Withhold is kept, not queued
+			if a.optOutN.Load() != 1 {
+				t.Fatalf("%d kept opt-outs, want 1 for s1", a.optOutN.Load())
+			}
+			release()
+			if _, err := a.AwaitDelete("s1", 5*time.Second); err != nil {
+				t.Fatalf("delete: %v", err)
+			}
+			settle(a)
+			r.seq["s1"] = 0
+			r.record("s1", synthSession(395, 1, 512)...) // unflagged, after the opt-out
+			a.Close()
+			if segs := segmentsIn(t, root, "s1"); len(segs) != 0 {
+				t.Fatalf("segments %v, want none: the opt-out was applied before the delete", segs)
+			}
+		})
+	}
+}
+
+// One entry per session, however often it opts out while the queue is full, and none left once
+// the writer has applied it.
+func TestNoRecord_KeptOptOutsAreOnePerSessionAndCleared(t *testing.T) {
+	a := openTest(t, t.TempDir(), newClock(), WithQueueDepth(reserve+6))
+	r := newRecorder(a)
+	release := gateWriter(t, a)
+	fillToReserve(t, a, r, "s0")
+	for range 1000 {
+		a.Withhold("s1")
+		r.record("s1", flagged(plain(1))...)
+	}
+	a.mu.Lock()
+	n, tags := len(a.optOuts), len(a.optOuts["s1"])
+	a.mu.Unlock()
+	if n != 1 || tags != 1 {
+		t.Fatalf("%d entries, s1 with %d positions; want 1 and 1", n, tags)
+	}
+	release()
+	settle(a)
+	if got := a.optOutN.Load(); got != 0 {
+		t.Fatalf("%d kept opt-outs after the writer caught up, want 0", got)
+	}
+}
+
+// A kept opt-out still pending at Close is written as a marker, so the session stays withheld
+// after a restart. A praxis Withhold is kept the same way.
+func TestNoRecord_AKeptOptOutSurvivesCloseAndRestart(t *testing.T) {
+	root := t.TempDir()
+	a := openTest(t, root, newClock(), WithQueueDepth(reserve+6))
+	r := newRecorder(a)
+	release := gateWriter(t, a)
+	fillToReserve(t, a, r, "s0")
+	r.record("s1", flagged(plain(1))...)
+	a.Withhold("s2")
+	release()
+	a.Close()
+
+	a2 := openTest(t, root, newClock())
+	r2 := newRecorder(a2)
+	r2.seq["s1"], r2.seq["s2"] = 1, 0
+	r2.record("s1", synthSession(396, 1, 512)...)
+	r2.record("s2", synthSession(397, 1, 512)...)
+	a2.Close()
+	for _, id := range []string{"s1", "s2"} {
+		if segs := segmentsIn(t, root, id); len(segs) != 0 {
+			t.Fatalf("%s: segments %v after a restart, want none", id, segs)
+		}
+	}
+}
+
+// Past its bound on kept opt-outs the archive fails closed: no conversation is recorded until a
+// restart, and Stats says so. A shared bucket still records.
+func TestNoRecord_TooManyKeptOptOutsFailClosed(t *testing.T) {
+	root := t.TempDir()
+	a := openTest(t, root, newClock(), WithQueueDepth(reserve+6))
+	r := newRecorder(a)
+	release := gateWriter(t, a)
+	fillToReserve(t, a, r, "s0")
+	for i := range a.depth + 1 {
+		a.Withhold(fmt.Sprintf("forged-%d", i))
+	}
+	if !a.Stats().FailedClosed {
+		t.Fatal("past the bound, the archive did not fail closed")
+	}
+	if got := a.optOutN.Load(); got != int64(a.depth) {
+		t.Fatalf("%d kept opt-outs, want the bound %d", got, a.depth)
+	}
+	release()
+	settle(a)
+	r.record("s9", synthSession(398, 1, 512)...)
+	r.record(session.DefaultSessionID, synthSession(399, 1, 512)...)
+	a.Close()
+	if segs := segmentsIn(t, root, "s9"); len(segs) != 0 {
+		t.Fatalf("segments %v for a conversation after failing closed, want none", segs)
+	}
+	if got := onDisk(t, root, session.DefaultSessionID); len(got) != 3 {
+		t.Fatalf("default holds %d events, want its 3", len(got))
 	}
 }
 
@@ -156,42 +379,60 @@ func TestNoRecord_FlaggedEventWhileAClearIsQueued(t *testing.T) {
 	}
 }
 
-// Flagged events wait below the reserve, never in it: the reserve stays for renames, deletes and
-// clears, which a burst of flagged events must not crowd out.
+// Flagged events never go into the reserve: it stays for renames, deletes and clears, which a
+// burst of flagged events must not crowd out. Past the reserve line they are kept, and the
+// producer returns.
 func TestNoRecord_FlaggedEventsLeaveTheReserveAlone(t *testing.T) {
 	root := t.TempDir()
 	a := openTest(t, root, newClock(), WithQueueDepth(reserve+6))
-	a.gate = make(chan struct{})
+	release := gateWriter(t, a)
 	r := newRecorder(a)
-	r.record("s1", synthSession(344, 2, 512)[:6]...) // up to the reserve
-	// More than the reserve holds, counting the slot the gated writer has already taken off
-	// the queue: if flagged events could use the reserve, they would fill it.
+	fillToReserve(t, a, r, "s1")
+	// More than the reserve holds: if flagged events could use the reserve, they would fill it.
 	evs := make([]pipeline.SessionEvent, reserve+2)
 	for i := range evs {
 		evs[i].NoRecord = true
 	}
-	waiting := make(chan struct{})
-	var once sync.Once
-	a.deliverWait = func() { once.Do(func() { close(waiting) }) }
 	done := make(chan struct{})
 	go func() {
 		r.record("s2", evs...)
 		close(done)
 	}()
 	select {
-	case <-waiting: // a flagged event reached the wait for room
 	case <-done:
-		// Every flagged event was queued without waiting: they took the reserve.
-	case <-time.After(10 * time.Second):
-		t.Fatal("the flagged producer never reached deliver's wait")
+	case <-time.After(2 * time.Second):
+		t.Fatal("the flagged producer waited for the writer")
+	}
+	if q := len(a.ops); q > cap(a.ops)-reserve {
+		t.Fatalf("queue at %d with the writer gated, past the reserve line %d", q, cap(a.ops)-reserve)
 	}
 	a.Rekeyed("s1", "s3") // with the writer still gated: must still find a reserve slot
 	if got := a.Stats().DroppedRenames; got != 0 {
 		t.Fatalf("dropped %d renames: flagged events took the reserve", got)
 	}
-	close(a.gate)
-	<-done
+	release()
 	a.Close()
+}
+
+// Review round 3: when retention leaves a withheld session with nothing, the summary of what it
+// held when the store's entry began (before) goes too, so the store's list row shows no expired
+// title or counts.
+func TestNoRecord_MarkerOnlyDropsThePriorSummary(t *testing.T) {
+	a := openTest(t, t.TempDir(), newClock())
+	defer a.Close()
+	r := newRecorder(a)
+	r.record("s1", synthSession(346, 1, 512)...)
+	settle(a)
+	a.inWriter(func() {
+		s := a.sessions["s1"]
+		s.before = s.meta.Summary.Clone() // as begin leaves it for a new store entry
+		s.meta.Summary.MarkNoRecord()
+		a.markerOnly(s)
+		if !onlyMark(s.before, "s1") || !onlyMark(s.meta.Summary, "s1") {
+			t.Errorf("after markerOnly: before %+v, fold %+v; want only the mark",
+				s.before.Summary("s1"), s.meta.Summary.Summary("s1"))
+		}
+	})
 }
 
 // Review: when retention expires the last segment of a withheld session, the marker it keeps
@@ -218,9 +459,9 @@ func TestNoRecord_AnExpiredHistoryLeavesOnlyTheMark(t *testing.T) {
 	}
 }
 
-// Review: an op that reaches deliver after the writer stopped reading the queue for Close is
-// refused and counted, never queued where nothing reads it.
-func TestNoRecord_DeliverRefusesAfterTheWriterStopped(t *testing.T) {
+// Review: an opt-out that reaches the archive after the writer stopped reading the queue for Close
+// is refused and counted, never queued or kept where nothing reads it.
+func TestNoRecord_AnOptOutIsRefusedAfterTheWriterStopped(t *testing.T) {
 	a := openTest(t, t.TempDir(), newClock())
 	defer a.Close()
 	a.mu.Lock()
@@ -231,8 +472,8 @@ func TestNoRecord_DeliverRefusesAfterTheWriterStopped(t *testing.T) {
 	if got := a.Stats().DroppedEvents; got != before+1 {
 		t.Fatalf("dropped %d → %d, want the op counted as undelivered", before, got)
 	}
-	if n := len(a.ops); n != 0 {
-		t.Fatalf("%d ops queued after the writer stopped, want none", n)
+	if n := len(a.ops); n != 0 || a.optOutN.Load() != 0 {
+		t.Fatalf("%d ops queued and %d opt-outs kept after the writer stopped, want none", n, a.optOutN.Load())
 	}
 	a.mu.Lock()
 	a.stopped = false
