@@ -159,7 +159,7 @@ func TestProject_RefusalRow(t *testing.T) {
 			}
 			// The refusal records after it answers, so wait for its row.
 			var got []string
-			eventually(t, func() bool {
+			eventually(t, store, func() bool {
 				got = nil
 				for _, e := range allEvents(t, store) {
 					if e.Phase == pipeline.SessionRequest && !e.Tunnel {

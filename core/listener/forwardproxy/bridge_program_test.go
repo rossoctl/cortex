@@ -146,8 +146,8 @@ func TestBridgeProgram_ARefusingProgramIsPassedThroughAndOthersStillBridged(t *t
 	if _, err := sc.handshake(t, procs, 300, sc.refusing); err == nil {
 		t.Fatal("first connection: helm completed a handshake on a leaf it does not trust")
 	}
-	eventually(t, func() bool { return sc.engine.Programs.Contains(helm) }, "helm's refusal to be recorded against helm")
-	eventually(t, func() bool {
+	eventually(t, store, func() bool { return sc.engine.Programs.Contains(helm) }, "helm's refusal to be recorded against helm")
+	eventually(t, store, func() bool {
 		reasons := tunnelReasons(store, session.DefaultSessionID)
 		return len(reasons) > 0 && reasons[0] == pipeline.TunnelClientRejectedCA
 	}, "the first connection's tunnel row to say client-rejected-ca")
@@ -162,7 +162,7 @@ func TestBridgeProgram_ARefusingProgramIsPassedThroughAndOthersStillBridged(t *t
 	if bridged {
 		t.Fatal("second connection: helm was shown the bridge's leaf again")
 	}
-	eventually(t, func() bool {
+	eventually(t, store, func() bool {
 		return slices.Contains(tunnelReasons(store, session.DefaultSessionID), pipeline.TunnelProgramRefused)
 	}, "a program-refused tunnel row")
 
@@ -184,7 +184,7 @@ func TestBridgeProgram_SameExecutableUnderAnAgentIsTrackedApart(t *testing.T) {
 	if _, err := sc.handshake(t, procs, 600, sc.refusing); err == nil {
 		t.Fatal("python3 on its own completed a handshake on a leaf it does not trust")
 	}
-	eventually(t, func() bool { return sc.engine.Programs.Contains(tlsbridge.Program{Exe: exePython}.Key()) },
+	eventually(t, store, func() bool { return sc.engine.Programs.Contains(tlsbridge.Program{Exe: exePython}.Key()) },
 		"python3's refusal to be recorded with no agent")
 	if bridged, err := sc.handshake(t, procs, 500, sc.trusting); err != nil || !bridged {
 		t.Fatalf("python3 under the agent was passed through because python3 on its own refused (bridged=%v, err=%v)", bridged, err)
@@ -204,14 +204,14 @@ func TestBridgeProgram_AnUnnamedClientKeepsTheHostMemory(t *testing.T) {
 	if _, err := sc.handshake(t, procs, 999, sc.refusing); err == nil {
 		t.Fatal("the unnamed client completed a handshake on a leaf it does not trust")
 	}
-	eventually(t, func() bool { return sc.engine.Skip.Contains(host) }, "the refusal to be recorded against the host")
+	eventually(t, store, func() bool { return sc.engine.Skip.Contains(host) }, "the refusal to be recorded against the host")
 	if bridged, err := sc.handshake(t, procs, 999, sc.refusing); err != nil || bridged {
 		t.Fatalf("the unnamed client's retry was not tunnelled by the host memory (bridged=%v, err=%v)", bridged, err)
 	}
 	if bridged, err := sc.handshake(t, procs, 400, sc.trusting); err != nil || !bridged {
 		t.Fatalf("curl was held back by another client's host entry (bridged=%v, err=%v)", bridged, err)
 	}
-	eventually(t, func() bool { return !sc.engine.Skip.Contains(host) }, "curl's success to clear the host's entry")
+	eventually(t, store, func() bool { return !sc.engine.Skip.Contains(host) }, "curl's success to clear the host's entry")
 }
 
 // The usual refusal is a process that started before the CA existed — a first install,
@@ -232,7 +232,7 @@ func TestBridgeProgram_AStaleProcessDoesNotStopItsProgram(t *testing.T) {
 	if _, err := sc.handshake(t, procs, 100, sc.refusing); err == nil {
 		t.Fatal("the stale process completed a handshake on a leaf it does not trust")
 	}
-	eventually(t, func() bool { return sc.engine.Programs.Contains(staleProg.ProcessKey()) },
+	eventually(t, store, func() bool { return sc.engine.Programs.Contains(staleProg.ProcessKey()) },
 		"the stale process's refusal to be recorded against that process")
 	// Its second and third refusals. A CONNECT cannot reach the forge again while the
 	// process's own window is open, and windows are 30s and up, so these go to
@@ -254,7 +254,7 @@ func TestBridgeProgram_AStaleProcessDoesNotStopItsProgram(t *testing.T) {
 	if bridged, err := sc.handshake(t, procs, 100, sc.refusing); err != nil || bridged {
 		t.Fatalf("the stale process's next connection was not passed through (bridged=%v, err=%v)", bridged, err)
 	}
-	eventually(t, func() bool {
+	eventually(t, store, func() bool {
 		return slices.Contains(tunnelReasons(store, session.DefaultSessionID), pipeline.TunnelProgramRefused)
 	}, "the stale process's next connection to be recorded as program-refused")
 }
@@ -402,11 +402,11 @@ func TestBridgeServe_ASuccessClearsTheProgramsEntry(t *testing.T) {
 	tl := discardTunnel()
 	tl.program = &prog
 
-	// bridgeServe blocks serving the decrypted connection, so run it and wait.
-	go s.bridgeServe(trustingClient(t, s.TLSBridge.CAPEM), authority, host, tl, false)
-	eventually(t, func() bool {
-		return !s.TLSBridge.Programs.Contains(prog.Key()) && !s.TLSBridge.Programs.Contains(prog.ProcessKey())
-	}, "a completed handshake to clear the program's entry and the process's")
+	// bridgeServe serves the decrypted connection until the client closes it.
+	s.bridgeServe(trustingClient(t, s.TLSBridge.CAPEM), authority, host, tl, false)
+	if s.TLSBridge.Programs.Contains(prog.Key()) || s.TLSBridge.Programs.Contains(prog.ProcessKey()) {
+		t.Error("a completed handshake did not clear the program's entry and the process's")
+	}
 }
 
 // fakeTrust predicts a refusal for the executables it names.
@@ -431,7 +431,7 @@ func TestBridgeProgram_APredictedRefusalWorksFromTheFirstConnection(t *testing.T
 	if bridged {
 		t.Fatal("helm was shown the bridge's leaf")
 	}
-	eventually(t, func() bool {
+	eventually(t, store, func() bool {
 		return slices.Contains(tunnelReasons(store, session.DefaultSessionID), pipeline.TunnelOSTrustOnly)
 	}, "an os-trust-only tunnel row")
 	if sc.engine.Programs.Contains(tlsbridge.Program{Exe: exeHelm}.Key()) {
@@ -459,7 +459,7 @@ func TestBridgeProgram_RefusedBeforeWinsOverOSTrust(t *testing.T) {
 	if bridged, err := sc.handshake(t, procs, 300, sc.refusing); err != nil || bridged {
 		t.Fatalf("helm was not passed through (bridged=%v, err=%v)", bridged, err)
 	}
-	eventually(t, func() bool {
+	eventually(t, store, func() bool {
 		return slices.Contains(tunnelReasons(store, session.DefaultSessionID), pipeline.TunnelProgramRefused)
 	}, "a program-refused tunnel row")
 	if slices.Contains(tunnelReasons(store, session.DefaultSessionID), pipeline.TunnelOSTrustOnly) {
@@ -500,7 +500,7 @@ func TestBridgeProgram_TheReportListsWhatIsNotRead(t *testing.T) {
 		if _, err := sc.handshake(t, procs, pid, sc.refusing); err == nil {
 			t.Fatalf("pid %d completed a handshake on a leaf it does not trust", pid)
 		}
-		eventually(t, func() bool { return sc.engine.Programs.Contains(key) }, "the refusal to be recorded")
+		eventually(t, store, func() bool { return sc.engine.Programs.Contains(key) }, "the refusal to be recorded")
 		if bridged, err := sc.handshake(t, procs, pid, sc.refusing); err != nil || bridged {
 			t.Fatalf("pid %d's next connection was not passed through (bridged=%v, err=%v)", pid, bridged, err)
 		}
@@ -511,7 +511,7 @@ func TestBridgeProgram_TheReportListsWhatIsNotRead(t *testing.T) {
 			t.Logf("report: %+v", report.Programs)
 		}
 	}()
-	eventually(t, func() bool {
+	eventually(t, store, func() bool {
 		report = sc.engine.UnreadReport()
 		var helm, python, curl bool
 		for _, p := range report.Programs {

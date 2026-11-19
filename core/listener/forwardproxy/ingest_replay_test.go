@@ -213,17 +213,10 @@ func liveRun(t *testing.T, cases []replayCase, rates pricing.Resolver) (*replayR
 		resp.Body.Close()
 		// The response row lands after the last byte reaches the client: wait for it, so the
 		// rows stay in case order.
-		deadline := time.Now().Add(5 * time.Second)
-		for {
+		eventually(t, rig.store, func() bool {
 			v := rig.store.View(replaySession)
-			if v != nil && len(v.Events) >= 2*(i+1) {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s: no response row", c.name)
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+			return v != nil && len(v.Events) >= 2*(i+1)
+		}, c.name+"'s response row")
 	}
 	return rig, rec
 }

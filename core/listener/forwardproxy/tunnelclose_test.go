@@ -91,7 +91,6 @@ func sendConnect(t *testing.T, proxyAddr, target string) (net.Conn, *bufio.Reade
 		t.Fatalf("dial proxy: %v", err)
 	}
 	t.Cleanup(func() { _ = raw.Close() })
-	_ = raw.SetDeadline(time.Now().Add(10 * time.Second))
 	if _, err := fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
 		t.Fatalf("write CONNECT: %v", err)
 	}
@@ -103,8 +102,8 @@ func sendConnect(t *testing.T, proxyAddr, target string) (net.Conn, *bufio.Reade
 	return raw, br, resp
 }
 
-// pingPong runs the tunnelPing/tunnelPong exchange over an open tunnel and waits for the
-// origin to close it.
+// pingPong runs the tunnelPing/tunnelPong exchange over an open tunnel, waits for the
+// origin to close it, and hangs up the client end, so both directions of the tunnel end.
 func pingPong(t *testing.T, raw net.Conn, br *bufio.Reader) {
 	t.Helper()
 	if _, err := raw.Write([]byte(tunnelPing)); err != nil {
@@ -117,15 +116,13 @@ func pingPong(t *testing.T, raw net.Conn, br *bufio.Reader) {
 	if string(got) != tunnelPong {
 		t.Fatalf("read %q through the tunnel, want %q", got, tunnelPong)
 	}
+	_ = raw.Close()
 }
 
+// waitDone waits for the proxy to finish handling the connection.
 func waitDone(t *testing.T, done <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the proxy never finished handling the connection")
-	}
+	<-done
 }
 
 // tunnelRows returns sid's tunnel rows split by phase.
@@ -298,16 +295,10 @@ func TestHandleConnect_CloseLandsInTheOpensSession(t *testing.T) {
 // its own goroutine, after answering the CONNECT.
 func waitOpen(t *testing.T, store *session.Store, sid string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if opens, _ := tunnelRows(store, sid); len(opens) == 1 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the tunnel open never landed in %s", sid)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	eventually(t, store, func() bool {
+		opens, _ := tunnelRows(store, sid)
+		return len(opens) == 1
+	}, "the tunnel open in "+sid)
 }
 
 func updatedAt(t *testing.T, store *session.Store, sid string) time.Time {
@@ -441,6 +432,7 @@ func TestHandleConnect_FallOpenTunnelRecordsItsClose(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 	_, _ = io.ReadAll(br) // the origin rejects the empty record and hangs up
+	_ = raw.Close()
 	waitDone(t, done)
 
 	open, closed := onePair(t, store, session.DefaultSessionID)
@@ -683,7 +675,6 @@ func TestHandleTransparentConn_RecordsItsClose(t *testing.T) {
 		defer close(done)
 		s.HandleTransparentConn(proxySide, dst)
 	}()
-	_ = agent.SetDeadline(time.Now().Add(10 * time.Second))
 	if _, err := agent.Write([]byte(tunnelPing)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -766,7 +757,6 @@ func TestHandleTransparentConn_FallOpenRedialFailureRecordsTheError(t *testing.T
 		defer close(done)
 		s.HandleTransparentConn(proxySide, dst)
 	}()
-	_ = agent.SetDeadline(time.Now().Add(10 * time.Second))
 	if _, err := agent.Write(tlsRecordHead); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -786,11 +776,8 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+// waitClosed waits for HandleTransparentConn to return.
 func waitClosed(t *testing.T, done <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("HandleTransparentConn did not return")
-	}
+	<-done
 }

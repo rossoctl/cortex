@@ -2,13 +2,13 @@ package forwardproxy
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,14 +17,14 @@ import (
 	"github.com/rossoctl/cortex/core/tlsbridge"
 )
 
-// wsClosingHandler writes the 101, waits, then closes — an origin that hangs up
+// wsClosingHandler writes the 101, waits for hangUp, then closes — an origin that hangs up
 // FIRST. That is RFC 6455 §7.1.1's server-initiated close (FIN after the close
 // frame), and also what an origin restart or an LB idle timeout looks like.
 //
 // Every other upgrade test has the CLIENT close first, which is exactly why the
 // bridged half-close gap survived: a client-initiated close is driven from the
 // agent side and never needs the origin's FIN to travel back.
-func wsClosingHandler(delay time.Duration) http.HandlerFunc {
+func wsClosingHandler(hangUp <-chan struct{}) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.Header.Get("Upgrade") != "websocket" {
 			http.Error(w, "expected a websocket upgrade", http.StatusBadRequest)
@@ -40,27 +40,31 @@ func wsClosingHandler(delay time.Duration) http.HandlerFunc {
 		if err := brw.Flush(); err != nil {
 			return
 		}
-		time.Sleep(delay)
+		<-hangUp
 		_ = conn.Close() // FIN toward the proxy; the splice must forward it
 	}
 }
 
-// readAfterOriginClose reads until the read fails and reports the error. A
-// forwarded close surfaces as EOF (or a reset); a close that was NOT forwarded
-// leaves the client blocked until its own deadline, so the error is a timeout.
-func readAfterOriginClose(t *testing.T, r io.Reader) error {
+// readAfterOriginClose reads until the read fails. A forwarded close surfaces as
+// EOF (or a reset); a close that was NOT forwarded leaves the client blocked.
+func readAfterOriginClose(t *testing.T, r io.Reader) {
 	t.Helper()
 	buf := make([]byte, 64)
 	for {
 		if _, err := r.Read(buf); err != nil {
-			return err
+			return
 		}
 	}
 }
 
-func isTimeout(err error) bool {
-	var ne net.Error
-	return errors.As(err, &ne) && ne.Timeout()
+// hangUpOnce returns a channel for wsClosingHandler and the func that closes it, which
+// also runs at cleanup.
+func hangUpOnce(t *testing.T) (<-chan struct{}, func()) {
+	ch := make(chan struct{})
+	var once sync.Once
+	hangUp := func() { once.Do(func() { close(ch) }) }
+	t.Cleanup(hangUp)
+	return ch, hangUp
 }
 
 // THE REGRESSION. On the TLS-bridged path the origin's half-close must reach the
@@ -83,12 +87,11 @@ func isTimeout(err error) bool {
 // Both paths are asserted here, in one test, because the bug WAS the asymmetry —
 // splitting them invites fixing one and leaving the other (#1549 review).
 func TestWebSocketSplice_OriginClosesFirst(t *testing.T) {
-	const originDelay = 100 * time.Millisecond
-
 	t.Run("plain", func(t *testing.T) {
 		store := session.New(5*time.Minute, 100, 0)
 		t.Cleanup(store.Close)
-		origin := httptest.NewServer(wsClosingHandler(originDelay))
+		hangUpCh, hangUp := hangUpOnce(t)
+		origin := httptest.NewServer(wsClosingHandler(hangUpCh))
 		t.Cleanup(origin.Close)
 
 		p, err := pipeline.New(nil)
@@ -116,9 +119,6 @@ func TestWebSocketSplice_OriginClosesFirst(t *testing.T) {
 			t.Fatalf("dial proxy: %v", err)
 		}
 		t.Cleanup(func() { _ = conn.Close() })
-		// Generous relative to the origin's 100ms, so a timeout here means the
-		// close was never forwarded rather than that the test was impatient.
-		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 
 		writeUpgradeRequest(conn, origin.URL+"/ws", originURL.Host)
 		br := bufio.NewReader(conn)
@@ -131,13 +131,14 @@ func TestWebSocketSplice_OriginClosesFirst(t *testing.T) {
 			t.Fatalf("upgrade status = %d, want 101", resp.StatusCode)
 		}
 
-		if err := readAfterOriginClose(t, br); isTimeout(err) {
-			t.Fatalf("plain: client never saw the origin's close (%v) — the splice dropped the half-close", err)
-		}
+		// The origin hangs up once the client holds the 101; the splice forwards its close.
+		hangUp()
+		readAfterOriginClose(t, br)
 	})
 
 	t.Run("bridged", func(t *testing.T) {
-		st := newClosingBridgeStack(t, originDelay)
+		hangUpCh, hangUp := hangUpOnce(t)
+		st := newClosingBridgeStack(t, hangUpCh)
 
 		tconn := st.connect(t)
 		writeUpgradeRequest(tconn, "/ws", st.originHostPort)
@@ -151,12 +152,11 @@ func TestWebSocketSplice_OriginClosesFirst(t *testing.T) {
 			t.Fatalf("upgrade status = %d, want 101 through the bridge", resp.StatusCode)
 		}
 
-		// The headline assertion: the origin hung up, so this read must END.
-		// Before the fix it blocked for the full deadline and reported a
-		// timeout, with the agent still holding a dead WebSocket.
-		if err := readAfterOriginClose(t, br); isTimeout(err) {
-			t.Fatalf("bridged: client never saw the origin's close (%v) — notifyConn has no CloseWrite, so the splice forwarded nothing", err)
-		}
+		// The headline assertion: the origin hangs up, so this read ENDS. A splice
+		// that forwards nothing (notifyConn with no CloseWrite) leaves the agent
+		// holding a dead WebSocket, and this read blocks.
+		hangUp()
+		readAfterOriginClose(t, br)
 
 		// And the 101 row lands. The client closes on seeing EOF, as a real
 		// WebSocket client does once the peer has gone — the row is recorded
@@ -164,7 +164,7 @@ func TestWebSocketSplice_OriginClosesFirst(t *testing.T) {
 		// on this (silent) client until it does. The point of the assertion
 		// is that the close reaching the client is what UNBLOCKS that: before
 		// the fix the client never learned to close, so the row never landed
-		// at all until the client's own deadline expired.
+		// at all.
 		//
 		// assertUpgradedRows is not reused here: it requires non-zero byte
 		// counts both ways, and this session deliberately exchanges no frames
@@ -195,10 +195,10 @@ func TestWebSocketSplice_OriginClosesFirst(t *testing.T) {
 // newClosingBridgeStack is newBridgeStack with an origin that closes first. Kept
 // separate rather than parameterising newBridgeStack, so the existing tests'
 // setup is untouched.
-func newClosingBridgeStack(t *testing.T, delay time.Duration) *bridgeStack {
+func newClosingBridgeStack(t *testing.T, hangUp <-chan struct{}) *bridgeStack {
 	t.Helper()
 	st := &bridgeStack{}
-	origin := httptest.NewUnstartedServer(wsClosingHandler(delay))
+	origin := httptest.NewUnstartedServer(wsClosingHandler(hangUp))
 	origin.EnableHTTP2 = true
 	origin.StartTLS()
 

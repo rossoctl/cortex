@@ -111,24 +111,21 @@ func TestForwardProxy_SSE_StreamsWithoutResponder(t *testing.T) {
 		}
 	}()
 
-	select {
-	case fr := <-got:
-		if fr.err != nil && fr.err != io.EOF {
-			t.Fatalf("reading first SSE frame: %v", fr.err)
-		}
-		frame := string(fr.data)
-		// Byte-faithful framing: event: and id: must survive verbatim.
-		if !strings.Contains(frame, "event: message") {
-			t.Errorf("first frame missing 'event: message' (framing not preserved): %q", frame)
-		}
-		if !strings.Contains(frame, "id: 42") {
-			t.Errorf("first frame missing 'id: 42' (framing not preserved): %q", frame)
-		}
-		if !strings.Contains(frame, `data: {"jsonrpc":"2.0"`) {
-			t.Errorf("first frame missing/garbled data line: %q", frame)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the first SSE event while upstream held the connection open — proxy buffered the stream (regression of #642)")
+	// A proxy that buffers the stream holds the first frame until the upstream exits.
+	fr := <-got
+	if fr.err != nil && fr.err != io.EOF {
+		t.Fatalf("reading first SSE frame: %v", fr.err)
+	}
+	frame := string(fr.data)
+	// Byte-faithful framing: event: and id: must survive verbatim.
+	if !strings.Contains(frame, "event: message") {
+		t.Errorf("first frame missing 'event: message' (framing not preserved): %q", frame)
+	}
+	if !strings.Contains(frame, "id: 42") {
+		t.Errorf("first frame missing 'id: 42' (framing not preserved): %q", frame)
+	}
+	if !strings.Contains(frame, `data: {"jsonrpc":"2.0"`) {
+		t.Errorf("first frame missing/garbled data line: %q", frame)
 	}
 
 	// Let the upstream handler exit cleanly.

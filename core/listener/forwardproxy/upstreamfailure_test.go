@@ -58,14 +58,9 @@ func failureProxy(t *testing.T, skip *skiphost.Matcher, plugins ...pipeline.Plug
 }
 
 // viaProxy sends a GET through the proxy and returns the status the client saw.
-func viaProxy(t *testing.T, proxy *httptest.Server, target string, timeout time.Duration) int {
+func viaProxy(t *testing.T, proxy *httptest.Server, target string) int {
 	t.Helper()
-	c := &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(mustParseURL(proxy.URL)),
-		},
-	}
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
 	resp, err := c.Get(target)
 	if err != nil {
 		t.Fatalf("request through proxy failed outright: %v (wanted a 502 from the proxy)", err)
@@ -81,7 +76,7 @@ func viaProxy(t *testing.T, proxy *httptest.Server, target string, timeout time.
 func TestForwardProxy_UpstreamRefused_RecordsResponseEvent(t *testing.T) {
 	proxy, store := failureProxy(t, nil)
 
-	if got := viaProxy(t, proxy, "http://"+closedAddr(t)+"/v1/thing", 5*time.Second); got != http.StatusBadGateway {
+	if got := viaProxy(t, proxy, "http://"+closedAddr(t)+"/v1/thing"); got != http.StatusBadGateway {
 		t.Errorf("client status = %d, want 502", got)
 	}
 
@@ -137,9 +132,11 @@ func TestForwardProxy_UpstreamRefused_RecordsResponseEvent(t *testing.T) {
 func TestForwardProxy_ClientGivesUp_RecordsClientCanceled(t *testing.T) {
 	logs := captureWarnings(t)
 	release := make(chan struct{})
-	// Hang until the test ends rather than sleeping a fixed span — httptest.Close
-	// waits for outstanding handlers, so a sleep would be added to the run.
+	reached := make(chan struct{})
+	var reachedOnce sync.Once
+	// Hang until the test ends — httptest.Close waits for outstanding handlers.
 	hang := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reachedOnce.Do(func() { close(reached) })
 		<-release
 	}))
 	defer hang.Close()
@@ -159,11 +156,19 @@ func TestForwardProxy_ClientGivesUp_RecordsClientCanceled(t *testing.T) {
 	proxy := httptest.NewServer(srv.Handler())
 	defer proxy.Close()
 
-	c := &http.Client{
-		Timeout:   300 * time.Millisecond,
-		Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))},
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
+	// The client gives up once the request has reached the hung upstream.
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		<-reached
+		cancel()
+	}()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, hang.URL+"/slow", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := c.Get(hang.URL + "/slow"); err == nil {
+	if _, err := c.Do(req); err == nil {
 		t.Fatal("request succeeded; wanted the client to give up on a hung upstream")
 	}
 
@@ -176,7 +181,7 @@ func TestForwardProxy_ClientGivesUp_RecordsClientCanceled(t *testing.T) {
 	if resp.Error == nil || resp.Error.Kind != "client_canceled" {
 		t.Errorf("Error = %+v, want kind client_canceled", resp.Error)
 	}
-	if got := fin.seen(); got == nil || got.FinalAction != pipeline.OutcomeError {
+	if got := fin.seen(); got.FinalAction != pipeline.OutcomeError {
 		t.Errorf("Outcome = %+v, want OutcomeError", got)
 	}
 	if strings.Contains(logs.String(), "upstream request failed") {
@@ -199,7 +204,7 @@ func TestForwardProxy_UpstreamTimeout_RecordsResponseEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	srv.Client.Transport.(*http.Transport).TLSHandshakeTimeout = 150 * time.Millisecond
+	srv.Client.Transport.(*http.Transport).TLSHandshakeTimeout = time.Nanosecond
 	proxy := httptest.NewServer(srv.Handler())
 	defer proxy.Close()
 
@@ -211,7 +216,6 @@ func TestForwardProxy_UpstreamTimeout_RecordsResponseEvent(t *testing.T) {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	if _, err := fmt.Fprintf(conn, "GET https://%s/slow HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
@@ -246,7 +250,7 @@ func TestForwardProxy_UpstreamFailure_KeepsQueryOffTheTimeline(t *testing.T) {
 	logs := captureWarnings(t)
 	proxy, store := failureProxy(t, nil)
 
-	viaProxy(t, proxy, "http://"+closedAddr(t)+"/v1/thing?api_key=SECRET1045", 5*time.Second)
+	viaProxy(t, proxy, "http://"+closedAddr(t)+"/v1/thing?api_key=SECRET1045")
 
 	events := allEvents(t, store)
 	if len(events) != 2 || events[1].Error == nil {
@@ -276,7 +280,7 @@ func TestForwardProxy_UpstreamFailure_SkipHostsRecordsNothing(t *testing.T) {
 	}
 	proxy, store := failureProxy(t, skip)
 
-	if got := viaProxy(t, proxy, "http://"+closedAddr(t)+"/skip-me", 5*time.Second); got != http.StatusBadGateway {
+	if got := viaProxy(t, proxy, "http://"+closedAddr(t)+"/skip-me"); got != http.StatusBadGateway {
 		t.Errorf("client status = %d, want 502 (skip still forwards, so it still fails)", got)
 	}
 
@@ -294,7 +298,7 @@ func TestForwardProxy_UpstreamFailure_OutcomeStaysError(t *testing.T) {
 	fin := &outcomeRecorder{}
 	proxy, store := failureProxy(t, nil, fin)
 
-	if got := viaProxy(t, proxy, "http://"+closedAddr(t)+"/v1/thing", 5*time.Second); got != http.StatusBadGateway {
+	if got := viaProxy(t, proxy, "http://"+closedAddr(t)+"/v1/thing"); got != http.StatusBadGateway {
 		t.Errorf("client status = %d, want 502", got)
 	}
 
@@ -305,9 +309,6 @@ func TestForwardProxy_UpstreamFailure_OutcomeStaysError(t *testing.T) {
 	}
 
 	got := fin.seen()
-	if got == nil {
-		t.Fatal("OnFinish never ran, so the outcome is unasserted")
-	}
 	if got.FinalAction != pipeline.OutcomeError {
 		t.Errorf("Outcome.FinalAction = %v, want OutcomeError — a request that never got a response is not an allow", got.FinalAction)
 	}
@@ -322,6 +323,16 @@ func TestForwardProxy_UpstreamFailure_OutcomeStaysError(t *testing.T) {
 type outcomeRecorder struct {
 	mu  sync.Mutex
 	got *pipeline.Outcome
+	// done closes when got is first set; see doneLocked.
+	done chan struct{}
+}
+
+// doneLocked returns done, making it on first use so the zero value is ready. r.mu held.
+func (r *outcomeRecorder) doneLocked() chan struct{} {
+	if r.done == nil {
+		r.done = make(chan struct{})
+	}
+	return r.done
 }
 
 func (*outcomeRecorder) Name() string { return "outcome-recorder" }
@@ -341,26 +352,25 @@ func (r *outcomeRecorder) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if o := pctx.Outcome(); o != nil {
+		if r.got == nil {
+			close(r.doneLocked())
+		}
 		c := *o
 		r.got = &c
 	}
 }
 
-// seen returns the captured Outcome, waiting briefly for it. RunFinish is
-// dispatched from a defer in the proxy's handler, which can land after the
-// client's response has been read — so a bare read races the dispatch.
+// seen waits for the captured Outcome and returns it. RunFinish is dispatched from a
+// defer in the proxy's handler, which can land after the client's response has been
+// read — so a bare read races the dispatch.
 func (r *outcomeRecorder) seen() *pipeline.Outcome {
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		r.mu.Lock()
-		got := r.got
-		r.mu.Unlock()
-		if got != nil {
-			return got
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	return nil
+	r.mu.Lock()
+	done := r.doneLocked()
+	r.mu.Unlock()
+	<-done
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.got
 }
 
 // allEvents returns every event in the store, oldest first, across all sessions.
@@ -417,7 +427,7 @@ func TestForwardProxy_OversizeResponse_RecordsProxyError(t *testing.T) {
 	fin := &outcomeRecorder{}
 	proxy, store := failureProxy(t, nil, bodyReadingPlugin{}, fin)
 
-	if got := viaProxy(t, proxy, backend.URL+"/big", 30*time.Second); got != http.StatusBadGateway {
+	if got := viaProxy(t, proxy, backend.URL+"/big"); got != http.StatusBadGateway {
 		t.Errorf("client status = %d, want 502 (we cannot relay what we cannot buffer)", got)
 	}
 
@@ -435,7 +445,7 @@ func TestForwardProxy_TruncatedResponse_RecordsUpstreamFailure(t *testing.T) {
 	fin := &outcomeRecorder{}
 	proxy, store := failureProxy(t, nil, bodyReadingPlugin{}, fin)
 
-	if got := viaProxy(t, proxy, backend+"/cut", 5*time.Second); got != http.StatusBadGateway {
+	if got := viaProxy(t, proxy, backend+"/cut"); got != http.StatusBadGateway {
 		t.Errorf("client status = %d, want 502", got)
 	}
 
@@ -547,9 +557,6 @@ func assertBufferingFailure(t *testing.T, resp pipeline.SessionEvent, status int
 func assertOutcomeError(t *testing.T, fin *outcomeRecorder) {
 	t.Helper()
 	got := fin.seen()
-	if got == nil {
-		t.Fatal("OnFinish never ran, so the outcome is unasserted")
-	}
 	if got.FinalAction != pipeline.OutcomeError {
 		t.Errorf("Outcome.FinalAction = %v, want OutcomeError", got.FinalAction)
 	}
@@ -571,43 +578,38 @@ func onlyResponseEvent(t *testing.T, store *session.Store) pipeline.SessionEvent
 	return out[0]
 }
 
-// waitForResponseEvent polls for the response event a failure records after the
+// waitForResponseEvent waits for the response event a failure records after the
 // client has already given up and returned.
 func waitForResponseEvent(t *testing.T, store *session.Store) pipeline.SessionEvent {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	var resp pipeline.SessionEvent
+	eventually(t, store, func() bool {
 		for _, ev := range allEvents(t, store) {
 			if ev.Phase == pipeline.SessionResponse {
-				return ev
+				resp = ev
+				return true
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("no response event recorded; events = %+v", allEvents(t, store))
-	return pipeline.SessionEvent{}
+		return false
+	}, "a response event")
+	return resp
 }
 
-// waitForResponseEventCount polls until at least n response-phase events are
+// waitForResponseEventCount waits until at least n response-phase events are
 // recorded — the multi-attempt shape of a resend, where waiting for the first
 // (waitForResponseEvent) would return while the last attempt's row is still
 // pending behind the relay.
 func waitForResponseEventCount(t *testing.T, store *session.Store, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	eventually(t, store, func() bool {
 		count := 0
 		for _, ev := range allEvents(t, store) {
 			if ev.Phase == pipeline.SessionResponse {
 				count++
 			}
 		}
-		if count >= n {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("fewer than %d response events recorded; events = %+v", n, allEvents(t, store))
+		return count >= n
+	}, "the response events")
 }
 
 // truncatingBackend returns the URL of an upstream that promises a 1000-byte

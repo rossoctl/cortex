@@ -398,14 +398,16 @@ func TestHandleTransparentConn_APluginCannotInventAClient(t *testing.T) {
 		t.Fatalf("listen upstream: %v", err)
 	}
 	defer func() { _ = upstream.Close() }()
+	held := make(chan struct{})
+	defer close(held)
 	go func() {
 		c, err := upstream.Accept()
 		if err != nil {
 			return
 		}
-		// Held open only long enough for the tunnel to be recorded; the test closes
-		// the agent side, which tears both down.
-		time.Sleep(500 * time.Millisecond)
+		// Held open until the test ends; the test closes the agent side, which tears
+		// both down.
+		<-held
 		_ = c.Close()
 	}()
 
@@ -423,15 +425,10 @@ func TestHandleTransparentConn_APluginCannotInventAClient(t *testing.T) {
 
 	// The event lands after the gate runs and the tunnel opens, on another goroutine.
 	var v *pipeline.SessionView
-	for i := 0; i < 100; i++ {
-		if v = store.View(session.DefaultSessionID); v != nil && len(v.Events) > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if v == nil || len(v.Events) == 0 {
-		t.Fatalf("no tunnel-open event recorded, so nothing here is asserted: %+v", v)
-	}
+	eventually(t, store, func() bool {
+		v = store.View(session.DefaultSessionID)
+		return v != nil && len(v.Events) > 0
+	}, "the tunnel-open event")
 	if ev := v.Events[0]; ev.Client != nil {
 		t.Errorf("Client = %+v, want nil: a plugin wrote a User-Agent into a redirected "+
 			"connection's empty headers and the tunnel row took it as the calling agent",

@@ -305,20 +305,15 @@ func TestClientAffinity_TunnelRowsKeepTodaysSessionWhenTheOwnerIsAmbiguous(t *te
 	}
 	waitFor := func(id string, want int) {
 		t.Helper()
-		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		eventually(t, store, func() bool {
 			n := 0
 			for _, e := range store.View(id).Events {
 				if e.HTTPMethod == http.MethodConnect {
 					n++
 				}
 			}
-			if n >= want {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s holds %d tunnel rows, want %d; default holds %v", id, n, want, store.View(session.DefaultSessionID))
-			}
-		}
+			return n >= want
+		}, id+"'s tunnel rows")
 	}
 	connect := func(uaLine string) {
 		t.Helper()

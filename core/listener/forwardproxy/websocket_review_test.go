@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/listener/internal/wsframe"
@@ -165,7 +164,6 @@ func TestResponsesWebSocket_ReloadAddingAnUncarriablePluginEndsTheSocket(t *test
 func TestResponsesWebSocket_OverLimitTurnEndsTheSocket(t *testing.T) {
 	h := newWSHarness(t, config.ResponsesWebSocketsParse, &turnDenier{})
 	c := h.dial(t, nil)
-	_ = c.conn.SetDeadline(time.Now().Add(60 * time.Second))
 	half := strings.Repeat("x", (wsClientMessageLimit/2)+1)
 	_, _ = c.conn.Write(fragmentFrame(wsframe.OpText, false, []byte(half)))
 	_, _ = c.conn.Write(fragmentFrame(wsframe.OpContinuation, true, []byte(half)))

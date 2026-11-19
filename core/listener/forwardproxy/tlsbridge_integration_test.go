@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/plugintesting"
@@ -167,7 +166,6 @@ func TestTransparentBridge(t *testing.T) {
 		RootCAs:    pool,
 		NextProtos: []string{"http/1.1"},
 	})
-	_ = tconn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tconn.Handshake(); err != nil {
 		t.Fatalf("agent-side TLS handshake through bridge failed: %v", err)
 	}
@@ -225,11 +223,7 @@ func TestTransparentBridge(t *testing.T) {
 
 	_ = clientSide.Close()
 	_ = serverSide.Close()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("HandleTransparentConn did not return after conns closed")
-	}
+	<-done
 }
 
 // TestTransparentBridge_CustomPort proves the configurable-ports path: the
@@ -303,7 +297,6 @@ func TestTransparentBridge_CustomPort(t *testing.T) {
 	}
 	host := hostOnly(originHostPort)
 	tconn := tls.Client(clientSide, &tls.Config{ServerName: host, RootCAs: pool, NextProtos: []string{"http/1.1"}})
-	_ = tconn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tconn.Handshake(); err != nil {
 		t.Fatalf("agent handshake through bridge on custom port failed: %v", err)
 	}
@@ -335,11 +328,7 @@ func TestTransparentBridge_CustomPort(t *testing.T) {
 
 	_ = clientSide.Close()
 	_ = serverSide.Close()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("HandleTransparentConn did not return")
-	}
+	<-done
 }
 
 // TestConnectBridge drives the full CONNECT → 200 → agent-TLS → decrypt →
@@ -420,7 +409,6 @@ func TestConnectBridge(t *testing.T) {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer func() { _ = rawConn.Close() }()
-	_ = rawConn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	connectReq, err := http.NewRequest(http.MethodConnect, "//"+originHostPort, nil)
 	if err != nil {
@@ -459,7 +447,6 @@ func TestConnectBridge(t *testing.T) {
 		RootCAs:    pool,
 		NextProtos: []string{"http/1.1"},
 	})
-	_ = tconn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tconn.Handshake(); err != nil {
 		t.Fatalf("agent-side TLS handshake through CONNECT bridge failed: %v", err)
 	}
@@ -615,7 +602,6 @@ func TestBridge_UnverifiableUpstream_FallsOpenToTunnel(t *testing.T) {
 		RootCAs:    pool,
 		NextProtos: []string{"http/1.1"},
 	})
-	_ = tconn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tconn.Handshake(); err != nil {
 		t.Fatalf("agent-side TLS handshake (expected to tunnel to origin) failed: %v", err)
 	}
@@ -655,11 +641,7 @@ func TestBridge_UnverifiableUpstream_FallsOpenToTunnel(t *testing.T) {
 
 	_ = clientSide.Close()
 	_ = serverSide.Close()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("HandleTransparentConn did not return after conns closed")
-	}
+	<-done
 }
 
 // TestBridge_PinnedClient_AutoSkipsThenTunnels encodes the no-broken-calls
@@ -742,33 +724,28 @@ func TestBridge_PinnedClient_AutoSkipsThenTunnels(t *testing.T) {
 
 	// --- Attempt 1: bridge forges, pinned agent rejects → handshake fails, host skipped. ---
 	clientSide1, serverSide1 := net.Pipe()
-	go srv.HandleTransparentConn(serverSide1, originHostPort)
+	done1 := make(chan struct{})
+	go func() {
+		defer close(done1)
+		srv.HandleTransparentConn(serverSide1, originHostPort)
+	}()
 
 	tconn1 := tls.Client(clientSide1, &tls.Config{
 		ServerName: host,
 		RootCAs:    pinnedPool,
 		NextProtos: []string{"http/1.1"},
 	})
-	_ = tconn1.SetDeadline(time.Now().Add(10 * time.Second))
 	hsErr := tconn1.Handshake()
 	if hsErr == nil {
 		t.Fatalf("attempt 1: pinned agent handshake unexpectedly SUCCEEDED — it must reject the bridge's minted leaf")
 	}
 	_ = clientSide1.Close()
 	_ = serverSide1.Close()
+	<-done1
 
 	// The rejected handshake must have auto-skipped the host (bridgeServe Skip.Add
-	// on Terminate error). Poll briefly: bridgeServe runs on the server goroutine,
-	// so Skip.Add may land just after the client observes the handshake error.
-	skipped := false
-	for i := 0; i < 100; i++ {
-		if engine.Skip.Contains(wantKey) {
-			skipped = true
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !skipped {
+	// on Terminate error), on the server goroutine that has now returned.
+	if !engine.Skip.Contains(wantKey) {
 		t.Fatalf("attempt 1: engine.Skip does not contain %q after pinned-client handshake failure — auto-skip did not fire", wantKey)
 	}
 
@@ -788,7 +765,6 @@ func TestBridge_PinnedClient_AutoSkipsThenTunnels(t *testing.T) {
 		RootCAs:    pinnedPool,
 		NextProtos: []string{"http/1.1"},
 	})
-	_ = tconn2.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tconn2.Handshake(); err != nil {
 		t.Fatalf("attempt 2: tunneled handshake to origin failed (auto-skip retry should tunnel cleanly): %v", err)
 	}
@@ -827,11 +803,7 @@ func TestBridge_PinnedClient_AutoSkipsThenTunnels(t *testing.T) {
 
 	_ = clientSide2.Close()
 	_ = serverSide2.Close()
-	select {
-	case <-done2:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("attempt 2: HandleTransparentConn did not return after conns closed")
-	}
+	<-done2
 }
 
 // TestBridge_NonTLS_Passthrough encodes the no-broken-calls guarantee for
@@ -894,7 +866,6 @@ func TestBridge_NonTLS_Passthrough(t *testing.T) {
 
 	clientSide, serverSide := net.Pipe()
 	defer func() { _ = clientSide.Close() }()
-	_ = clientSide.SetDeadline(time.Now().Add(10 * time.Second))
 
 	done := make(chan struct{})
 	go func() {
@@ -939,9 +910,5 @@ func TestBridge_NonTLS_Passthrough(t *testing.T) {
 
 	_ = clientSide.Close()
 	_ = serverSide.Close()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("HandleTransparentConn did not return after conns closed")
-	}
+	<-done
 }

@@ -147,7 +147,7 @@ func TestForwardProxy_CONNECT_TunnelsBytes(t *testing.T) {
 	// can drive the bytes manually (net/http's client wraps everything
 	// up too tightly for this kind of test).
 	proxyAddr := strings.TrimPrefix(proxy.URL, "http://")
-	tunnel, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	tunnel, err := net.Dial("tcp", proxyAddr)
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
@@ -186,13 +186,12 @@ func TestForwardProxy_CONNECT_TunnelsBytes(t *testing.T) {
 		if _, err := tunnel.Write([]byte(payload)); err != nil {
 			t.Fatalf("write %q through tunnel: %v", payload, err)
 		}
-		got := make([]byte, 32)
-		_ = tunnel.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, err := br.Read(got)
-		if err != nil && err != io.EOF {
+		want := "echo:" + payload
+		got := make([]byte, len(want))
+		n, err := io.ReadFull(br, got)
+		if err != nil {
 			t.Fatalf("read %q response: %v", payload, err)
 		}
-		want := "echo:" + payload
 		if string(got[:n]) != want {
 			t.Errorf("tunnel response for %q = %q, want %q", payload, got[:n], want)
 		}
@@ -220,7 +219,7 @@ func TestForwardProxy_CONNECT_PipelineDeny(t *testing.T) {
 	// no-token-policy denies it. Use raw TCP since net/http's client may
 	// retry or buffer in ways that obscure the response.
 	proxyAddr := strings.TrimPrefix(proxy.URL, "http://")
-	conn, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	conn, err := net.Dial("tcp", proxyAddr)
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
@@ -253,7 +252,7 @@ func TestForwardProxy_CONNECT_BadGatewayOnDialFailure(t *testing.T) {
 
 	// 127.0.0.1:1 is virtually guaranteed to refuse on a normal host.
 	proxyAddr := strings.TrimPrefix(proxy.URL, "http://")
-	conn, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	conn, err := net.Dial("tcp", proxyAddr)
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
@@ -262,7 +261,6 @@ func TestForwardProxy_CONNECT_BadGatewayOnDialFailure(t *testing.T) {
 		t.Fatalf("write CONNECT: %v", err)
 	}
 	br := bufio.NewReader(conn)
-	_ = conn.SetReadDeadline(time.Now().Add(connectDialTimeout + 5*time.Second))
 	line, err := br.ReadString('\n')
 	if err != nil {
 		t.Fatalf("read response: %v", err)
@@ -794,12 +792,12 @@ func TestForwardProxy_ResponseEventCarriesTtfb(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
 
-	const drip = 60 * time.Millisecond
+	release := make(chan struct{})
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
-		time.Sleep(drip)
+		<-release
 		w.Write([]byte("data: done\n\n"))
 	}))
 	defer backend.Close()
@@ -818,6 +816,9 @@ func TestForwardProxy_ResponseEventCarriesTtfb(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
+	// The headers have reached the client; the body is still held back.
+	released := time.Now()
+	close(release)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
@@ -840,11 +841,20 @@ func TestForwardProxy_ResponseEventCarriesTtfb(t *testing.T) {
 	if respEv.Ttfb > respEv.Duration {
 		t.Errorf("response event ttfb %v > duration %v — headers cannot arrive after the row is recorded", respEv.Ttfb, respEv.Duration)
 	}
-	// The drip happens entirely after the flush, so the body's share of the
-	// duration is at least most of it. The bound is deliberately loose: the
-	// claim is the ORDER of the two phases, not a stopwatch.
-	if body := respEv.Duration - respEv.Ttfb; body < drip/2 {
-		t.Errorf("duration−ttfb = %v, want ≥ %v — the body dripped for %v after the headers flushed", body, drip/2, drip)
+	assertSplitsAt(t, respEv, released)
+}
+
+// assertSplitsAt checks that ev's ttfb ends before released and its duration after it.
+// released is when the backend was let go of the body, once the client held the headers.
+// The row is stamped At when it is recorded, and its Duration is taken just after that,
+// so At−Duration is no later than the request's start.
+func assertSplitsAt(t *testing.T, ev pipeline.SessionEvent, released time.Time) {
+	t.Helper()
+	if headers := ev.At.Add(-ev.Duration).Add(ev.Ttfb); headers.After(released) {
+		t.Errorf("ttfb ends %v after the body was released, want it at the headers", headers.Sub(released))
+	}
+	if ev.At.Before(released) {
+		t.Errorf("response row recorded %v before the body was released, want after the body", released.Sub(ev.At))
 	}
 }
 
@@ -859,14 +869,14 @@ func TestForwardProxy_ResponseEventDurationIncludesUnbufferedBody(t *testing.T) 
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
 
-	const drip = 60 * time.Millisecond
+	release := make(chan struct{})
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Plain JSON, not event-stream: no streaming responder, and an empty
 		// pipeline buffers nothing — the final io.Copy arm.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
-		time.Sleep(drip)
+		<-release
 		w.Write([]byte(`{"ok":true}`))
 	}))
 	defer backend.Close()
@@ -885,6 +895,9 @@ func TestForwardProxy_ResponseEventDurationIncludesUnbufferedBody(t *testing.T) 
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
+	// The headers have reached the client; the body is still held back.
+	released := time.Now()
+	close(release)
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
@@ -904,13 +917,7 @@ func TestForwardProxy_ResponseEventDurationIncludesUnbufferedBody(t *testing.T) 
 	if respEv.Ttfb <= 0 {
 		t.Errorf("response event ttfb = %v, want > 0 — headers arrived, so the figure exists", respEv.Ttfb)
 	}
-	// The drip happens entirely after the flush, so the body's share is at least
-	// most of it — the same loose bound as the SSE test: the claim is the ORDER
-	// of the two phases, not a stopwatch.
-	if body := respEv.Duration - respEv.Ttfb; body < drip/2 {
-		t.Errorf("duration−ttfb = %v, want ≥ %v — the body dripped for %v after the headers flushed",
-			body, drip/2, drip)
-	}
+	assertSplitsAt(t, respEv, released)
 	if respEv.BytesDown == 0 {
 		t.Errorf("response event BytesDown = 0, want the relayed body counted — the row is recorded after the copy")
 	}

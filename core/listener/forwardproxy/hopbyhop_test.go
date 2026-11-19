@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -52,7 +51,6 @@ func proxyGet(t *testing.T, url string) *http.Response {
 	t.Cleanup(proxy.Close)
 	client := &http.Client{
 		Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))},
-		Timeout:   10 * time.Second,
 	}
 	resp, err := client.Get(url + "/data")
 	if err != nil {
