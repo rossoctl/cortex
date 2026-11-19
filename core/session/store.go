@@ -141,6 +141,8 @@ type entry struct {
 
 	// projects is SessionSummary.Projects (applyProject). Not shed on trim, like agents.
 	projects []string
+	// parentSession is SessionSummary.ParentSession (applyParent). Not shed on trim, like projects.
+	parentSession string
 
 	// context is the CONTEXT gauge's answer for this session: the main-agent turn that RANKS
 	// HIGHEST under the rule's total order, in prompt tokens — the LATEST such turn where the
@@ -559,7 +561,8 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event model.SessionEve
 	// shared with SummaryFold so an archived session is titled exactly as a resident one.
 	sess.titleRank, sess.Title = applyTitle(sess.titleRank, sess.Title, titleRank, titleText)
 	sess.agents = applyAgent(sess.agents, sessionID, agentName, event.Client)
-	sess.projects = applyProject(sess.projects, sessionID, event.Project)
+	sess.projects = applyProject(sess.projects, sessionID, event.RollupProject())
+	sess.parentSession = applyParent(sess.parentSession, sessionID, event.ParentSession)
 	// A field compare and a string header copy, so under the lock like context.Add. From &event,
 	// the local parameter, for the reason given there.
 	if h := inferenceHostOf(&event); h != "" {
@@ -986,7 +989,8 @@ func (s *Store) rekeyLocked(oldID, newID string) bool {
 	// reads stay consistent with live-streamed events after a rekey.
 	for i := range sess.Events {
 		sess.Events[i].SessionID = newID
-		sess.projects = applyProject(sess.projects, newID, sess.Events[i].Project)
+		sess.projects = applyProject(sess.projects, newID, sess.Events[i].RollupProject())
+		sess.parentSession = applyParent(sess.parentSession, newID, sess.Events[i].ParentSession)
 	}
 	// Every rename tells the recorders that keep per-session state, so that state follows the
 	// session: Adopt's pending bucket → session and Rekey's A2A default → contextId alike. Here

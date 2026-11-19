@@ -98,7 +98,7 @@ type Row struct {
 	//     sources differ in representation and agree in meaning; nothing a client sees
 	//     differs.
 	Agent string `json:"agent,omitempty"`
-	// Project is the git repo root of the agent process's cwd, from SessionEvent.Project.
+	// Project is the git repo root of the agent process's cwd, from SessionEvent.RollupProject.
 	// Stored as written, "" for absent and never "unknown", for the reason Agent gives;
 	// labelFor maps "" to usage.UnknownProjectLabel at the query boundary.
 	Project string `json:"project,omitempty"`

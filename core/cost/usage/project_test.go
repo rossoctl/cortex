@@ -139,3 +139,22 @@ func TestReplay_RebuildsTheProjectSeries(t *testing.T) {
 		}
 	}
 }
+
+// A headless run's cost goes to the series of the project of the session that started it.
+func TestSnapshot_GroupProjectUsesTheParentProject(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	a := New(WithClock(func() time.Time { return now }))
+	child := projectEvent(t, "claude-code", "~/child")
+	child.ParentProject = "~/parent"
+	a.Record("c1", child)
+	a.Record("s2", projectEvent(t, "claude-code", "~/solo"))
+	series := FoldSeriesAcrossWindow(a.Snapshot(10*BucketWidth, BucketWidth, "", GroupProject).Buckets)
+	keys := make([]string, 0, len(series))
+	for k := range series {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	if want := []string{"~/parent", "~/solo"}; !slices.Equal(keys, want) {
+		t.Errorf("series keys = %v, want %v", keys, want)
+	}
+}

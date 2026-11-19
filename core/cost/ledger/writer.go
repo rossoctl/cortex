@@ -476,7 +476,7 @@ func (w *Writer) row(e *model.SessionEvent) (minute time.Time, r Row, ok bool) {
 		// what keeps group=agent spelled identically whichever half answers. Sanitised for
 		// the same reason as the two above: EventClient.Raw is the header verbatim.
 		Agent:   rowLabel(agentLabel(e.Client)),
-		Project: projectRowLabel(e.Project),
+		Project: projectRowLabel(e.RollupProject()),
 		Counts:  usage.Counts{Requests: 1},
 	}
 	if e.Imported() {
