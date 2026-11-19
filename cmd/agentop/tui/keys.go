@@ -297,7 +297,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				m.colCursor++
 			}
 			return nil
-		case " ", "x":
+		case " ":
 			// Toggle. selectedColumns falls back to the defaults when the set is
 			// empty, so turning everything off cannot leave an unrecoverable blank
 			// pane.

@@ -863,7 +863,7 @@ Layered on top of all of them:
 | `n` / `N` | any pane with a search, and the key help | next / previous match, wrapping at both ends; in a text view an off-screen match is scrolled to a third of the way down |
 | `x` | sessions, agents | erase the row under the cursor, in memory and on disk: the highlighted session, or every session of the highlighted agent — on *All agents*, every session this Cortex holds; that confirmation also shows the size on disk. Asks first, with the count; `y` erases, `n`/`esc` keeps. The cost ledger is kept. An agent still using a session brings it back with its next request. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer; the `?` overlay names it |
 | `s` | events | toggle hiding exchanges no plugin acted on (default: shown; an exchange is hidden only when no plugin acted on either half; the events footer shows the hidden count) |
-| `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `s` sort, `r` reset, `Esc`/`Enter`/`c` close); the selection and sort are saved on close |
+| `c` | events | open the column picker (`↑↓`/`jk` move, `space` toggle, `s` sort, `r` reset, `Esc`/`Enter`/`c` close); the selection and sort are saved on close |
 | `s` | column picker | sort by the column under the cursor: descending → ascending → chronological. Pressing it on a different column starts that column descending. `#` is not sortable — its order already *is* chronological |
 | `p` | any | pause/resume stream |
 | `y` | detail | yank the event of the section the cursor is in (request or response) to `~/.cortex/agentop-events` (path stays until the next keypress) |
