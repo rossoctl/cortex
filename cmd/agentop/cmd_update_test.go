@@ -60,6 +60,7 @@ func latestIs(t *testing.T, tag string) {
 func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 	for _, c := range []struct {
 		name, latest, cortex string
+		agentop              string // the installed agentop, if not v9.9.9
 		release              string // the tag fakeStagedRelease serves, if any
 		args                 []string
 		want                 string // stdout
@@ -69,6 +70,9 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 		{name: "pinned", latest: "v9.9.8", args: []string{"--ref=v9.9.9"}, want: "Already at v9.9.9.\n"},
 		{name: "older", latest: "v9.9.10", release: "v9.9.10", want: "staged setup\n", code: 7},
 		{name: "pinned to another", latest: "v9.9.9", release: "v9.9.8", args: []string{"--ref=v9.9.8"}, want: "staged setup\n", code: 7},
+		// A dev build can be ahead of the newest release: only --ref replaces it.
+		{name: "dev build", latest: "v9.9.9", agentop: "#!/bin/sh\necho agentop dev\n", want: devBuildNotice + "\n"},
+		{name: "dev build pinned", latest: "v9.9.9", release: "v9.9.9", agentop: "#!/bin/sh\necho agentop dev\n", args: []string{"--ref=v9.9.9"}, want: "staged setup\n", code: 7},
 		{name: "main", latest: "v9.9.9", args: []string{"--ref=main"}, want: "installer: --ref=main\n", code: 7},
 		// setup repairs a pair that disagree.
 		{name: "cortex behind", latest: "v9.9.9", release: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", want: "staged setup\n", code: 7},
@@ -80,6 +84,9 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 			sc.installed(t)
 			if c.cortex != "" {
 				writeExe(t, filepath.Join(sc.home, ".local", "bin", "cortex"), c.cortex)
+			}
+			if c.agentop != "" {
+				writeExe(t, filepath.Join(sc.home, ".local", "bin", "agentop"), c.agentop)
 			}
 			latestIs(t, c.latest)
 			fakeInstaller(t, false)

@@ -43,9 +43,10 @@ install that runs the cpex build of cortex to the default build, and says so.
   --auto      what the updater runs: install the newest release only when it is a plain release and update.wait (24h) old; never asks
 
 Downloads nothing when agentop and cortex in ~/.local/bin are already at the
-release asked for. Run agentop doctor to check the rest of the install.
+release asked for, or when agentop is a dev build (make dev-install) and there
+is no --ref. Run agentop doctor to check the rest of the install.
 
-Exit status: 0 already current, 1 when a download or check fails, else setup's
+Exit status: 0 already current or a dev build, 1 when a download or check fails, else setup's
 (or the installer's for --ref=main).
 `
 
@@ -110,6 +111,12 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	if *auto {
 		return runAutoUpdate(env, stdout, stderr)
 	}
+	// A source build (make dev-install) reports "dev" and can be ahead of every
+	// release, so only an explicit --ref replaces it.
+	if env.readVersions(); *ref == "" && env.installedVersion == "dev" {
+		_, _ = fmt.Fprintln(stdout, devBuildNotice)
+		return 0
+	}
 	latest := ""
 	if *ref == "" {
 		latest = latestRelease()
@@ -148,6 +155,10 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	status(updatestatus.ResultUpdated, nil)
 	return 0
 }
+
+// devBuildNotice is what update prints, and does, for an installed dev build.
+const devBuildNotice = "agentop is a dev build, which can be newer than the newest release. Not updated.\n" +
+	"Run make dev-install to build it again, or agentop update --ref=vX.Y.Z to install a release."
 
 // installReleaseFn is what callers use, so tests can replace the installer.
 var installReleaseFn = installRelease
