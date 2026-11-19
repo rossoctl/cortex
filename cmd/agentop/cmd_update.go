@@ -140,14 +140,23 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stdout, "Already at %s.\n", v)
 		return 0
 	}
+	// An RC moves only forward, as in the automatic update: only --ref takes it back.
+	if v := env.installedVersion; updatestatus.IsRC(v) && updatestatus.IsRelease(latest) && !updatestatus.Newer(latest, v) {
+		status(updatestatus.ResultCurrent, nil)
+		_, _ = fmt.Fprintf(stdout, rcAheadNotice+"\n", v, latest)
+		return 0
+	}
 	if err := cpexConfigBlocks(env); err != nil {
 		status(updatestatus.ResultFailed, err)
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	if err := installReleaseFn(env, *ref, updateFlags(env, *ref, yes), stdout, stderr); err != nil {
-		status(updatestatus.ResultFailed, err)
 		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == exitDeclined {
+			return exitDeclined // the user said no: not a failure, so the status stays as it was
+		}
+		status(updatestatus.ResultFailed, err)
 		if errors.As(err, &exit) {
 			return exit.ExitCode()
 		}
@@ -161,6 +170,11 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 // notReleaseNotice is what update prints, and does, for an installed build that is
 // not a release. The argument is its version.
 const notReleaseNotice = "agentop %s is not a release build, and can be newer than the newest release. Not updated.\n" +
+	"Run agentop update --ref=vX.Y.Z to install a release."
+
+// rcAheadNotice is what update prints for an installed RC that is newer than the
+// newest release. The arguments are the RC and that release.
+const rcAheadNotice = "agentop %s is a release candidate, newer than the newest release %s. Not updated.\n" +
 	"Run agentop update --ref=vX.Y.Z to install a release."
 
 // installReleaseFn is what callers use, so tests can replace the installer.

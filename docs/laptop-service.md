@@ -331,8 +331,9 @@ A service install (launchd or systemd) updates itself:
 
 A release-candidate install (`vX.Y.Z-rc.N`) moves only forward. It installs Latest
 when Latest is a later version, for example `v0.10.0` over `v0.10.0-rc.1`, after the
-same wait. It never moves back to an older Latest. A plain release follows Latest in
-both directions, so the maintainers can withdraw a bad release.
+same wait. It never moves back to an older Latest. `agentop update` by hand follows
+the same rule: to move back, give the release, for example `--ref=v0.9.5`. A plain
+release follows Latest in both directions, so the maintainers can withdraw a bad release.
 
 It does not change a `dev` or `main-<sha>` install. That build has no version order
 against Latest, and is often ahead of it. `agentop doctor` says so, and the title bar
