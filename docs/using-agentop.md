@@ -125,7 +125,36 @@ For more detail, read the Timeline entry in [Panes](../cmd/agentop/README.md#pan
 ## Read what your agent sent (Events and Detail)
 
 Press `Enter` on a session to open its Events pane.
-It has one row for each request and its response.
+Most rows are one exchange: one request and its response.
+
+```
+ #   TIME          DIR   ACTION    PLUGIN             METHOD            STATUS   DURATION              BYTES              TOKENS                COST   HOST
+ 1   14:23:07.41   in    allow     jwt-validation                          200      118ms       ↑1.4kB ↓842B                                           weather-agent
+ 2   14:23:07.71   out   observe   inference-parser   claude-sonnet-5      200      1.20s   ↑118.6kB ↓12.4kB   681.3k(−9.9k)→412   $0.2767(−$0.0037)   api.anthropic.com
+ 3   14:23:09.01   out   modify    token-exchange     tools/call           503       96ms              ↑318B                                           github-tool-mcp
+```
+
+### What each row is
+
+| Row | How to identify it | What it is |
+|---|---|---|
+| Inference call | `METHOD` shows the model, for example `claude-sonnet-5`. `TOKENS` and `COST` have values | A request to the model server, and its reply |
+| Agent tool call | `#` shows `┣⚒` or `┗⚒`. The row is under the inference call that asked for the tool | A tool that the agent ran on your machine, for example a shell command. **This is not a network call.** Cortex gets it from the model reply |
+| MCP tool call | `METHOD` is `tools/call`, and `HOST` is the MCP server | A tool call over the network |
+| Other network call | `METHOD` is an HTTP method, and `HOST` is the destination | Other traffic from the agent through Cortex |
+| Tunnel | `PLUGIN` shows `tunnel`, and `METHOD` is empty | A connection that Cortex did not decrypt. Cortex sees only the host, how long it was open, and the bytes |
+| Inbound request | `DIR` is `in` | A request to the agent. This is for an AuthBridge sidecar in a cluster |
+| Subagent block | `▸─ <label> · N rows` | The rows of one subagent. The block is closed at first. `Enter` opens it |
+
+Some details:
+
+- An agent tool row shows the tool name. `Enter` opens the exchange that sends the output of the tool back to the model.
+- The `DURATION` of an agent tool is the time from the model reply to the next request of the agent. Thus it also includes the delay of the agent.
+- The `STATUS` of a tunnel is the status of the connection, not the status of the destination.
+- A blank `STATUS` means that the response did not arrive yet. `lost` means that no response arrived in 10 minutes.
+- `—` in `ACTION` and `PLUGIN` means that no plugin acted on the row.
+
+### Keys on Events and Detail
 
 - `c` opens the column picker. In the picker, `space` shows or hides a column, and `s` sorts by the column. For example, sort by `DURATION` to find the slowest calls.
 - `s` hides or shows the exchanges that no plugin acted on.
