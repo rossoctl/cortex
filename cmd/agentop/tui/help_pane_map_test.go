@@ -508,3 +508,19 @@ func TestHelpBody_WrapsProseToTheGivenWidth(t *testing.T) {
 		}
 	}
 }
+
+// `s` hides the Events table's passthrough rows, so it works only where that table is.
+func TestSKey_TogglesOnlyOnEvents(t *testing.T) {
+	for _, p := range []paneID{paneSessions, paneAgents, panePipeline, paneTimeline, paneDetail, paneUsage} {
+		m := &model{pane: p}
+		m.handleKey(keyRune('s'))
+		if m.hideInactive {
+			t.Errorf("pane %v: `s` toggled hideInactive off the Events pane", p)
+		}
+	}
+	m := &model{pane: paneEvents}
+	m.handleKey(keyRune('s'))
+	if !m.hideInactive {
+		t.Error("`s` on Events did not toggle hideInactive")
+	}
+}
