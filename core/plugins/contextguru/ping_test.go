@@ -52,7 +52,7 @@ func TestPingFromReport(t *testing.T) {
 		FreshInput: 3, CacheRead: 48_000, CacheWrite: 700, CacheWrite1h: 200, Output: 1,
 		CostUSD: 9.99, Status: 200, DurationMs: 2000, TS: ts.UnixMilli(), Window: window,
 	}
-	p := pingFromReport(r, "api.anthropic.com")
+	p := pingFromReport(r, "api.anthropic.com", "")
 	want := accountant.Ping{
 		Session: "s1", ThreadID: "", Model: "claude-sonnet-4-5", Host: "api.anthropic.com",
 		Usage: accountant.CallUsage{Usage: accountant.Usage{Input: 3, CacheRead: 48_000, CacheWrite: 700,
