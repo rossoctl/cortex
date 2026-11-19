@@ -635,7 +635,7 @@ func TestToggleSpendDrawer_RefusesPerPaneWithTheRightReason(t *testing.T) {
 		{name: "namespaces picker", pane: paneNamespaces, wantSub: "until a pod is connected"},
 		// That pane IS the breakdown, and it owns the keys the drawer's hint line would
 		// advertise.
-		{name: "usage pane", pane: paneUsage, wantSub: "usage pane is the breakdown"},
+		{name: "usage pane", pane: paneUsage, wantSub: "usage pane is the breakdown — use its own [o] and [w]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// A terminal with ample room, so height cannot be the cause of any refusal.
