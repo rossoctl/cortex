@@ -34,7 +34,8 @@ func backgroundOnly(env *setupEnv) bool {
 
 // doctorRefine adds those checks to a step's done plan: a failed one makes the
 // plan a problem, and a doubtful one gives it advice, unless it has its own. A
-// plan with changes or a problem is left as it is, as setup is its fix either way;
+// plan with changes or a problem is left as it is, as setup is its fix either way,
+// except a change that carries advice, which is still checked;
 // but the PATH lines setup would add get a second fix, the line to add by hand,
 // for whoever set up with --no-modify-path to keep setup out of their dotfiles.
 func doctorRefine(env *setupEnv, s step, p stepPlan, prob *problem, fix string) (stepPlan, *problem) {
@@ -42,7 +43,7 @@ func doctorRefine(env *setupEnv, s step, p stepPlan, prob *problem, fix string) 
 		return p, &problem{reason: wouldChange(p), fix: []string{fix,
 			"or add it yourself, in " + env.tilde(env.pathProfile) + ":  " + exportLine(env.binDir)}}
 	}
-	if prob != nil || !p.done || p.hidden {
+	if prob != nil || (!p.done && p.advice == nil) || p.hidden {
 		return p, prob
 	}
 	var bad, doubt *problem
