@@ -504,8 +504,28 @@ func TestServerReset_KeyOfNotRoutedChangesNothing(t *testing.T) {
 	}
 	// use X --key-of X with no entry is a removal of nothing: no write.
 	code, out, _ = runServerCmd(t, "", "use", "glm", "--key-of", "glm", "--config", path)
-	if code != 0 || !strings.Contains(out, "New sessions that send glm's key already go to glm.") || readConfig(t, path) != before {
+	if code != 0 || !strings.Contains(out, "glm's key is not routed to another server; nothing to change.") || readConfig(t, path) != before {
 		t.Errorf("use glm --key-of glm: exit %d, stdout:\n%s", code, out)
+	}
+}
+
+// The router matches no server by a key two servers share, so an entry for that
+// key does nothing: the command still writes it, and says so.
+func TestServerUse_KeyOfWarnsOfASharedKey(t *testing.T) {
+	block := strings.Replace(routerBlock, "          agents:\n",
+		"            glm2:\n              url: https://glm2.example.com\n              key: sk-glm\n              main: glm\n              helper: nemotron\n          agents:\n", 1)
+	path := serverEnv(t, newFakeStats(t, 0).addr(), block)
+	code, out, errOut := runServerCmd(t, "", "use", "ete", "--key-of", "glm", "--config", path)
+	if code != 0 || !strings.Contains(errOut, "Warning: glm2 has the same key as glm") {
+		t.Errorf("exit %d, stdout:\n%s\nstderr:\n%s", code, out, errOut)
+	}
+	if strings.Contains(errOut, "sk-glm") {
+		t.Errorf("the warning shows the key:\n%s", errOut)
+	}
+	// A server with a key of its own gets no warning.
+	_, _, errOut = runServerCmd(t, "", "use", "glm", "--key-of", "ete", "--config", path)
+	if strings.Contains(errOut, "Warning") {
+		t.Errorf("warned for a key no other server has:\n%s", errOut)
 	}
 }
 

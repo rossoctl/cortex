@@ -504,7 +504,7 @@ func serverUse(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *keyOf != "" {
-		return serverUseKeyOf(name, *keyOf, *cfgPath, stdout, stderr)
+		return serverKeyRoute("use", name, *keyOf, *cfgPath, stdout, stderr)
 	}
 	if err := routerconfig.CheckAgent(*agent); err != nil {
 		fmt.Fprintf(stderr, "agentop server use: %v\n", err)
@@ -536,36 +536,59 @@ func serverUse(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
-// serverUseKeyOf is `agentop server use <to> --key-of <from>`: the new sessions
-// that send from's key go to to. With to == from it removes the entry.
-func serverUseKeyOf(to, from, cfgPath string, stdout, stderr io.Writer) int {
+// serverKeyRoute is `agentop server use <to> --key-of <from>`: the new sessions
+// that send from's key go to to. With to == from, which is also
+// `agentop server reset --key-of <from>`, it removes the entry.
+func serverKeyRoute(action, to, from, cfgPath string, stdout, stderr io.Writer) int {
 	if err := routerconfig.CheckName(from); err != nil {
-		fmt.Fprintf(stderr, "agentop server use: %v\n", err)
+		fmt.Fprintf(stderr, "agentop server %s: %v\n", action, err)
 		return 2
 	}
 	cfg, path, statsURL, err := serverWriteTarget(cfgPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "agentop server use: %v\n", err)
+		fmt.Fprintf(stderr, "agentop server %s: %v\n", action, err)
 		return 1
 	}
 	c, _, err := readRouter(cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "agentop server use: %v\n", err)
+		fmt.Fprintf(stderr, "agentop server %s: %v\n", action, err)
 		return 1
 	}
 	for _, n := range []string{from, to} {
 		if _, ok := c.Servers[n]; !ok {
-			fmt.Fprintf(stderr, "agentop server use: no server named %s%s. Add it first:\n  agentop server add %s <url>\n",
-				n, configuredServers(c), n)
+			fmt.Fprintf(stderr, "agentop server %s: no server named %s%s. Add it first:\n  agentop server add %s <url>\n",
+				action, n, configuredServers(c), n)
 			return 1
 		}
 	}
-	return runServerWrite(stdout, stderr, path, statsURL, servers.KeyRouteChanges(from, to), writeReport{
+	r := writeReport{
 		done:      fmt.Sprintf("New sessions that send %s's key → %s.", from, to),
 		live:      runningSessionsStay,
 		unchanged: fmt.Sprintf("New sessions that send %s's key already go to %s.", from, to),
 		note:      routerInactive(cfg, path),
-	})
+	}
+	if to == from {
+		r.done = fmt.Sprintf("New sessions that send %s's key go to %s.", from, from)
+		r.unchanged = fmt.Sprintf("%s's key is not routed to another server; nothing to change.", from)
+	} else if shared := sameKeyAs(c, from); len(shared) > 0 {
+		// The router matches no server by a key that two servers share (buildKeys),
+		// so the entry would change nothing.
+		fmt.Fprintf(stderr, "Warning: %s has the same key as %s, so a request that sends it selects no server and this entry has no effect.\n",
+			strings.Join(shared, " and "), from)
+	}
+	return runServerWrite(stdout, stderr, path, statsURL, servers.KeyRouteChanges(from, to), r)
+}
+
+// sameKeyAs lists, sorted, the servers other than name whose key is name's key.
+func sameKeyAs(c routerconfig.Config, name string) []string {
+	var out []string
+	key := c.Servers[name].Key
+	for _, n := range slices.Sorted(maps.Keys(c.Servers)) {
+		if n != name && key != "" && c.Servers[n].Key == key {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func serverReset(args []string, stdout, stderr io.Writer) int {
@@ -586,7 +609,7 @@ func serverReset(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if *keyOf != "" {
-		return serverResetKeyOf(*keyOf, *cfgPath, stdout, stderr)
+		return serverKeyRoute("reset", *keyOf, *keyOf, *cfgPath, stdout, stderr)
 	}
 	if err := routerconfig.CheckAgent(*agent); err != nil {
 		fmt.Fprintf(stderr, "agentop server reset: %v\n", err)
@@ -613,39 +636,6 @@ func serverReset(args []string, stdout, stderr io.Writer) int {
 		done:      fmt.Sprintf("New %s sessions are no longer routed.", *agent),
 		live:      runningSessionsStay,
 		unchanged: fmt.Sprintf("%s is not routed; nothing to change.", *agent),
-	})
-}
-
-// serverResetKeyOf is `agentop server reset --key-of <from>`: the new sessions
-// that send from's key go to from again.
-func serverResetKeyOf(from, cfgPath string, stdout, stderr io.Writer) int {
-	if err := routerconfig.CheckName(from); err != nil {
-		fmt.Fprintf(stderr, "agentop server reset: %v\n", err)
-		return 2
-	}
-	cfg, path, statsURL, err := serverWriteTarget(cfgPath)
-	if err != nil {
-		fmt.Fprintf(stderr, "agentop server reset: %v\n", err)
-		return 1
-	}
-	c, _, err := readRouter(cfg)
-	if err != nil {
-		fmt.Fprintf(stderr, "agentop server reset: %v\n", err)
-		return 1
-	}
-	if _, ok := c.Servers[from]; !ok {
-		fmt.Fprintf(stderr, "agentop server reset: no server named %s%s\n", from, configuredServers(c))
-		return 1
-	}
-	notRouted := fmt.Sprintf("%s's key is not routed to another server; nothing to change.", from)
-	if c.KeyRoutes[from] == "" {
-		fmt.Fprintln(stdout, notRouted)
-		return 0
-	}
-	return runServerWrite(stdout, stderr, path, statsURL, servers.KeyRouteChanges(from, ""), writeReport{
-		done:      fmt.Sprintf("New sessions that send %s's key go to %s.", from, from),
-		live:      runningSessionsStay,
-		unchanged: notRouted,
 	})
 }
 
