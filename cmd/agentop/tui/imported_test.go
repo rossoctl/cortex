@@ -150,3 +150,59 @@ func TestSessionIDCell_ImportedPrefixWithoutTitle(t *testing.T) {
 		t.Errorf("live SESSION cell = %q, has the imported prefix", got)
 	}
 }
+
+// TestSessionTitleCell_ChildPrefix: a session that another session started has "↳ " in
+// front of its title (#1991).
+func TestSessionTitleCell_ChildPrefix(t *testing.T) {
+	m := fitModel(t, paneSessions, 200, 40, nil)
+	m.sessions = []session.SessionSummary{
+		{ID: "child-1", Title: "fix the build", ParentSession: "parent-123456789"},
+		{ID: "top-1", Title: "fix the build"},
+	}
+	m.rebuildSessionsTable()
+	rows := m.sessionsTbl.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	title := func(r []string) string {
+		for _, c := range r {
+			if strings.Contains(c, "fix the build") {
+				return c
+			}
+		}
+		t.Fatalf("no title cell in %q", r)
+		return ""
+	}
+	if got := title(rows[0]); !strings.HasPrefix(got, childMarker+"fix the build") {
+		t.Errorf("child title = %q, want the prefix %q", got, childMarker)
+	}
+	if got := title(rows[1]); strings.Contains(got, childMarker) {
+		t.Errorf("top title = %q, has the child prefix", got)
+	}
+}
+
+// TestSessionIDCell_ChildPrefixWithNoTitleColumn: with no TITLE column, the SESSION cell
+// of a child session has the mark.
+func TestSessionIDCell_ChildPrefixWithNoTitleColumn(t *testing.T) {
+	m := fitModel(t, paneSessions, 60, 40, nil)
+	m.sessions = []session.SessionSummary{
+		{ID: "child-1", Title: "fix the build", ParentSession: "parent-123456789"},
+		{ID: "top-1", Title: "fix the build"},
+	}
+	m.rebuildSessionsTable()
+	rows := m.sessionsTbl.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	for _, c := range rows[0] {
+		if strings.Contains(c, "fix the build") {
+			t.Fatalf("TITLE is shown at 60 columns: %q", rows[0])
+		}
+	}
+	if got := rows[0][0]; !strings.HasPrefix(got, childMarker) {
+		t.Errorf("child SESSION cell = %q, want the prefix %q", got, childMarker)
+	}
+	if got := rows[1][0]; strings.Contains(got, childMarker) {
+		t.Errorf("top SESSION cell = %q, has the child prefix", got)
+	}
+}

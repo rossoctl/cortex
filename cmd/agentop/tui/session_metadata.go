@@ -173,6 +173,17 @@ func (m *model) servedTitle(id string) string {
 	return ""
 }
 
+// parentSessionOf returns the session that started this session's agent, or "" if the
+// server lists none. The same linear walk as servedTitle, for the same reason.
+func (m *model) parentSessionOf(id string) string {
+	for _, s := range m.sessions {
+		if s.ID == id {
+			return s.ParentSession
+		}
+	}
+	return ""
+}
+
 // HarvestFunc reads an agent's transcripts and returns what it learned, keyed by session id.
 //
 // A function on RunOptions rather than a direct call into core/observe/claude, so this
