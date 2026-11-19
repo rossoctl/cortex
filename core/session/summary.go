@@ -219,7 +219,7 @@ type SessionSummary struct {
 	// most recent first, at most maxSessionProjects. Absent when none had one, and on the default
 	// and pending buckets.
 	Projects []string `json:"projects,omitempty"`
-	// ParentSession is the session of the agent that started this session's agent: the first
+	// ParentSession is the topmost session above this session's agent: the first
 	// non-empty model.SessionEvent.ParentSession. Absent on default and on pending buckets.
 	ParentSession model.LenientString `json:"parentSession,omitempty"`
 	// LastRequestAt is the time of the newest request this session holds, zero when it holds

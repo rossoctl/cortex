@@ -469,8 +469,9 @@ type SessionEvent struct {
 	// cwd), "" where the listener could not name the process or the row came on the trusted path.
 	Project string
 
-	// ParentSession is the session of the agent that started this row's agent, when it is not
-	// this row's session (pipeline.Context.ParentSession). "" everywhere else.
+	// ParentSession is the session that the topmost process above this row's agent named, when
+	// it is not this row's session (pipeline.Context.ParentSession). For A → B → C it is A on
+	// C's rows. "" everywhere else.
 	ParentSession string
 	// ParentProject is the project label of the process that holds ParentSession, "" with it.
 	ParentProject string

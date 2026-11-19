@@ -91,10 +91,10 @@ knowing by name:
   `parentProject` when it has one, else its `project`. Folded at append time,
   and continued from the archive's fold like the other figures. Absent on
   `default` and on pending buckets.
-- **`parentSession`** — the session of the agent that started this session's
-  agent, for a headless run (for example `claude -p`) that another session's
-  process started. It is the first non-empty `parentSession` of the session's
-  events. Absent on `default` and on pending buckets. Rows recorded before this
+- **`parentSession`** — the topmost session above this session's agent, for a
+  headless run (for example `claude -p`) that another session's process
+  started. When A starts B and B starts C, it is A on C, not B. It is the first
+  non-empty `parentSession` of the session's events. Absent on `default` and on pending buckets. Rows recorded before this
   field existed have none.
 - **`source`** is `"imported:<agent>"` while every event of the session is
   imported (see [`POST /v1/import`](#post-v1import--transcript-import-laptop-only)).
@@ -1266,7 +1266,8 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   transparentproxy) and when `session.process_attribution` is off.
   In praxis mode the request and response rows that cortex-gateway sends through
   `POST /v1/ingest` have no `project`: only the forward proxy's own rows have it.
-  `/v1/usage?group=project` totals cost by this label; an event with no
+  `/v1/usage?group=project` totals cost by this label (by `parentProject`
+  when it is set); an event with no
   `project` is counted under `unknown`. See
   [pricing.md](pricing.md#reading-usage-over-http).
 - `parentSession` — the session that the topmost process above this row's

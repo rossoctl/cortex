@@ -3396,25 +3396,25 @@ func TestSessionsPane_ZeroWidthFreeAndBindsToPreviousDisagreeOnPurpose(t *testin
 	}
 }
 
-// The header of a session that another session started names that session by its first
-// 8 runes (#1991).
-func TestSessionHeader_StartedBy(t *testing.T) {
+// The header of a session that another session started names the topmost session above it by
+// its first 8 runes (#1991).
+func TestSessionHeader_Under(t *testing.T) {
 	m := newTitleModel(t, map[string]SessionMetadata{"id-1": {Title: "fix the parser"}})
 	m.width = 200
 	m.sessions = []session.SessionSummary{
 		{ID: "id-1", Title: "fix the parser", ParentSession: "abcdef0123456789"},
 		{ID: "id-2", Title: "top"},
 	}
-	if got := m.sessionHeader("id-1", "event"); !strings.Contains(got, " · event · started by abcdef01") {
-		t.Errorf("header = %q, want it to contain %q", got, " · event · started by abcdef01")
+	if got := m.sessionHeader("id-1", "event"); !strings.Contains(got, " · event · under abcdef01") {
+		t.Errorf("header = %q, want it to contain %q", got, " · event · under abcdef01")
 	}
-	if got := m.sessionHeader("id-2", "event"); strings.Contains(got, "started by") {
-		t.Errorf("header of a session with no parent = %q, has %q", got, "started by")
+	if got := m.sessionHeader("id-2", "event"); strings.Contains(got, " · under ") {
+		t.Errorf("header of a session with no parent = %q, has %q", got, " · under ")
 	}
 }
 
 // The parent id comes from a client header, so the header shows no control byte of it.
-func TestSessionHeader_StartedBySanitises(t *testing.T) {
+func TestSessionHeader_UnderSanitises(t *testing.T) {
 	m := newTitleModel(t, nil)
 	m.width = 200
 	m.sessions = []session.SessionSummary{{ID: "id-1", ParentSession: "ab\x1b[31mcd"}}
@@ -3422,7 +3422,7 @@ func TestSessionHeader_StartedBySanitises(t *testing.T) {
 	if strings.Contains(got, "\x1b") {
 		t.Errorf("header = %q, has an escape byte", got)
 	}
-	if !strings.Contains(got, "started by") {
-		t.Errorf("header = %q, has no %q", got, "started by")
+	if !strings.Contains(got, " · under ") {
+		t.Errorf("header = %q, has no %q", got, " · under ")
 	}
 }

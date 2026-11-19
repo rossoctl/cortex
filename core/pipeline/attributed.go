@@ -41,8 +41,8 @@ func (c *Context) SetProject(label string) {
 // SessionEvent.Project.
 func (c *Context) Project() string { return c.project }
 
-// SetParent pins the parent session (the session of the agent that started this request's
-// agent, when it is not this request's session) and the project label of the process that
+// SetParent pins the parent session (the session that the topmost process above this request's
+// agent named, when it is not this request's session) and the project label of the process that
 // holds it, for every row recorded from this request. FIRST CALL WINS, as SetProject does,
 // with its own flag: a path that pins "", "" keeps them, and no later call can write a parent.
 func (c *Context) SetParent(session, project string) {
