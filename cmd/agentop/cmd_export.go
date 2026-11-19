@@ -227,6 +227,7 @@ Flags:
 	// whole reason the server validates before its first byte.
 	var dest io.Writer = stdout
 	where := "(stdout)"
+	var outFile *os.File
 	if *out != "" {
 		flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
 		if !*force {
@@ -242,6 +243,7 @@ Flags:
 			return 1
 		}
 		defer f.Close()
+		outFile = f
 		dest = f
 		where = *out
 	}
@@ -260,8 +262,7 @@ Flags:
 		countedDest = gz
 	}
 	counted := &lineCounter{w: countedDest}
-	var sink io.Writer = counted
-	if _, err := io.Copy(sink, body); err != nil {
+	if _, err := io.Copy(counted, body); err != nil {
 		fmt.Fprintf(stderr, "agentop export: %v\n", err)
 		// Which END broke decides what to say, and io.Copy's error alone does not tell
 		// them apart. A failed write is the local disk (--out to a small partition), and
@@ -281,28 +282,33 @@ Flags:
 			// "flushed", not "written": gzip.Writer buffers, so the tail of a broken
 			// stream — up to its buffer size — never reached the file. The records a
 			// consumer recovers are the ones gzip flushed as blocks, which on a real
-			// export is nearly all of them and on a small one is none.
+			// export is nearly all of them and on a small one is none. Flate cuts at
+			// token boundaries, not record boundaries, so what it flushes can end
+			// inside a JSON line; the docs tell a consumer to drop an unterminated
+			// final line.
 			fmt.Fprintf(stderr, "  the walk failed part-way; %s is incomplete; gzip -dc %s recovers the records flushed before it\n",
-				where, *out)
+				where, shellArg(*out))
 		} else {
 			fmt.Fprintf(stderr, "  the walk failed part-way; %s holds every complete record before it\n", where)
 		}
 		return 1
 	}
 	if gz != nil {
-		// The success path closes the gzip stream, which writes its trailer; a Close
-		// failure is a real failure (a full disk can strike here too), reported as one.
+		// The success path closes the gzip stream, which writes its trailer. A Close
+		// failure is a real failure, and the realistic one for a full disk: the header
+		// write during the copy succeeds, flate buffers the tail, and this final flush
+		// is the write that hits ENOSPC — so it gets the same "writing failed" line the
+		// in-copy path gives, not a bare error.
 		if err := gz.Close(); err != nil {
 			fmt.Fprintf(stderr, "agentop export: %v\n", err)
+			fmt.Fprintf(stderr, "  writing %s failed; it is incomplete\n", where)
 			return 1
 		}
-	}
-	if *gzipOut {
-		// The compressed size comes from the file, after the trailer is written; the
-		// record count and the uncompressed bytes beside it come from the copy. One
-		// stat, no second read of the file.
+		// The compressed size comes from the handle this command wrote, after the
+		// trailer is written; the record count and the uncompressed bytes beside it
+		// come from the copy. One stat, no second read of the file.
 		var onDisk int64
-		if fi, err := os.Stat(*out); err == nil {
+		if fi, err := outFile.Stat(); err == nil {
 			onDisk = fi.Size()
 		}
 		fmt.Fprintf(stderr, "  %s records, %s → %s (%s gzip)\n",
@@ -312,6 +318,18 @@ Flags:
 	fmt.Fprintf(stderr, "  %s records, %s → %s\n",
 		plainCount(counted.lines), byteSize(counted.bytes), where)
 	return 0
+}
+
+// shellArg quotes a path for a command line this command suggests to the user. The
+// recovery hint names the export file, and an --out with a space in it would otherwise
+// paste as two arguments; a name starting with a dash would read as an option. Single
+// quotes, with an embedded quote closed and reopened, and a ./ prefix for the dash —
+// enough for a hint, not a promise about every shell.
+func shellArg(p string) string {
+	if strings.HasPrefix(p, "-") {
+		p = "./" + p
+	}
+	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
 }
 
 // sessionIDs is the repeatable --session flag: --session a --session b, or --session a,b.

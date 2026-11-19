@@ -498,7 +498,9 @@ func TestRunExport_TruncatedWalkGzipLeavesIncompleteFile(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "export.ndjson.gz")
+	// A name with a space, so the recovery command in the message has to quote it:
+	// `gzip -dc my export.ndjson.gz` pasted back would pass two file names.
+	path := filepath.Join(dir, "my export.ndjson.gz")
 	var out, errOut strings.Builder
 	if code := runExport([]string{"--endpoint", srv.URL, "--gzip", "--out", path},
 		&out, &errOut); code != 1 {
@@ -509,6 +511,9 @@ func TestRunExport_TruncatedWalkGzipLeavesIncompleteFile(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "is incomplete") || !strings.Contains(errOut.String(), "gzip -dc") {
 		t.Fatalf("stderr = %q, want the incomplete-file line naming the recovery command", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "gzip -dc '"+path+"'") {
+		t.Fatalf("stderr = %q, want the file shell-quoted in the recovery command", errOut.String())
 	}
 
 	// The file itself: a gzip stream without its trailer. Reading it yields the flushed

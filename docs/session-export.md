@@ -307,7 +307,7 @@ agentop export --gzip --out usage.ndjson.gz
 ```
 
 ```
-  7 records, 1.6kB → usage.ndjson.gz (0.4kB gzip)
+  7 records, 1.6kB → usage.ndjson.gz (412B gzip)
 ```
 
 The file holds the same records, compressed. `gzip -dc usage.ndjson.gz` writes them as
@@ -951,7 +951,13 @@ a failed copy, because a closed stream carries a CRC that passes. The file there
 without its trailer, and every tool that opens it reports it as incomplete rather than
 valid-but-short. `gzip -dc` recovers the records gzip flushed before the failure — nearly
 all of them on a large export, none of them on a small one, because gzip buffers before
-it writes a block. The plain path is the one that promises every complete record.
+it writes a block.
+
+What gzip flushed is a **byte prefix**, not a record count. Gzip cuts its blocks at its
+own token boundaries, not at NDJSON line boundaries, so the recovered output can end
+inside a JSON record even though the walk only ever ended a stream between records.
+Before you parse the recovered output as NDJSON, drop a final line that has no
+terminating newline. The plain path is the one that promises every complete record.
 
 A failure before any record answers a status instead:
 
