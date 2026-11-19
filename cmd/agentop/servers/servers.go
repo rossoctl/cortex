@@ -108,6 +108,19 @@ func SessionChanges(session, server string) []edit.ConfigChange {
 	}}
 }
 
+// KeyRouteChanges sends the new sessions that send server from's key to server
+// to: the change `agentop server use --key-of` and `agentop server reset --key-of`
+// make. Per-key, for the same reason AgentChanges is. When to is "" or from, the
+// change removes the entry: a key goes to its own server with no entry. A removal
+// of an entry that the file does not have is a no-op.
+func KeyRouteChanges(from, to string) []edit.ConfigChange {
+	ch := edit.ConfigChange{Chain: "outbound", Plugin: PluginName, Path: []string{"key_routes", from}}
+	if to != "" && to != from {
+		ch.Value = edit.ScalarValue(to)
+	}
+	return []edit.ConfigChange{ch}
+}
+
 // PruneSessions is the removals for every sessions: override whose session is
 // neither live nor archived — inert config a move left behind. The caller decides
 // liveness; a nil or empty set means nothing can be seen dead, and nothing is

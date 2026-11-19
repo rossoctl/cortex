@@ -1256,11 +1256,22 @@ its own beyond going through Cortex.
 agentop server add ete https://ete-litellm.example.com     --main opus --helper haiku                            # asks for the key; it does not echo
 agentop server add glm https://glm-litellm.example.com     --main glm --helper nemotron
 agentop server use glm --agent opencode                   # new opencode sessions → glm
+agentop server use ete --key-of glm                       # new sessions that send glm's key → ete
+agentop server reset --key-of glm                         # glm's key goes to glm again
 agentop server move <session-id> glm                      # move one running session → glm
 agentop server                                            # the servers, their models, their agents
 agentop server reset --agent opencode                     # stop routing opencode
 agentop server remove glm                                 # refused while an agent uses it
 ```
+
+A request that sends the key of a configured server goes to that server.
+`use <name> --key-of <server>` writes `key_routes.<server>: <name>` in the
+router's config, so new sessions that send `<server>`'s key go to `<name>`.
+`key_routes:` is one hop only. An agent's server, from `use --agent`, wins over
+it. `reset --key-of <server>`, or `use <server> --key-of <server>`, removes the
+entry. A session already running stays where it is. agentop never shows a key; it
+names a key by the name of its server. See
+[`key_routes`](../../docs/inference-router-plugin.md#choosing-a-server-by-the-key-a-request-sends).
 
 In the TUI, `S` on the agents pane does what `use` and `reset` do, for an agent
 the pane lists; see [Choosing an agent's server](#choosing-an-agents-server-s).
@@ -1276,6 +1287,10 @@ The listing after `use` reads:
   ete   ete-litellm.example.com   main opus → aws/claude-opus-5-5 · helper haiku → aws/claude-haiku-4-5
   glm   glm-litellm.example.com   main glm → rits/zai-org/glm-5-3 · helper nemotron → rits/nvidia/nemotron-3   opencode
 ```
+
+A server whose key is routed to another server shows `its key → <server>` in its
+agents cell: for example `its key → ete` on the row of `glm` after
+`agentop server use ete --key-of glm`.
 
 **Models.** A routed request goes with the model the agent asked for, so an agent
 keeps choosing its own models wherever the server serves them. Only when the
@@ -1389,10 +1404,16 @@ refusal is believed for an hour, and a session keeps the model it was given.
   including an agent that has not run yet. **`reset --agent <agent>`** stops
   routing it. Either way a session already running stays where it is: its pin holds
   it, kept in `~/.cortex/plugin-state.json` so a proxy restart forgets none.
+  **`use <name> --key-of <server>`** routes the new sessions that send the key of
+  `<server>` to `<name>`. **`reset --key-of <server>`** removes that entry.
+  `--agent` and `--key-of` are exclusive, and each name must be a configured
+  server.
   **`move <session-id> <name>`** moves one running session; `own` sends it back to
   its agent's own provider.
 - **`remove <name>`** refuses while an agent is routed to the server, and names
-  the command that takes the agent off it; it also refuses the last server. A
+  the command that takes the agent off it; it also refuses the last server. It
+  also refuses while a `key_routes:` entry names the server on either side, and
+  names the entry and `agentop server reset --key-of <server>`. A
   session that started on a removed server gets a 503 asking for a new session
   until the server is added back or the session is moved. So when
   sessions the proxy is running last sent their inference to the server, `remove`
@@ -1400,7 +1421,8 @@ refusal is believed for an hour, and a session keeps the model it was given.
   out the default and `pending:` buckets, which the router never pins.
 - **`agentop server`** lists each server's host (its whole URL when it is plain
   `http`), what its main and helper words name on its list now, read with its own
-  key, and the agents routed to it. A server whose list cannot be read shows its
+  key, the agents routed to it and, for a server whose key is routed to another
+  server, `its key → <server>`. A server whose list cannot be read shows its
   words and why. When the router's entry has `on_error: observe`, which records
   what it would route and routes nothing, or `on_error: off`, which stops it
   running, the listing says so first, and `use` and `add` say so too.
