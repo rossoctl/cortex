@@ -67,6 +67,8 @@ type Attribution struct {
 	// ChainSession is the live session the topmost process above the client named; see
 	// pipeline.Context.ChainSession.
 	ChainSession string
+	// ChainProc is the process that holds ChainSession, as Proc.Key. "" when ChainSession is "".
+	ChainProc string
 }
 
 // PluginID is the session handed to plugins: a named session, the pending bucket for a
@@ -159,7 +161,11 @@ func (a *Attributor) Resolve(h http.Header, chain []Proc) Attribution {
 	now := a.now()
 	out := a.resolveLocked(h, agent, chain, now)
 	if len(chain) > 0 {
-		out.ChainSession = a.chainSessionLocked(chain, now)
+		var i int
+		out.ChainSession, i = a.chainSessionLocked(chain, now)
+		if i >= 0 {
+			out.ChainProc = chain[i].Key()
+		}
 	}
 	return out
 }

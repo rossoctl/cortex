@@ -246,6 +246,34 @@ func TestResolve_ChainSessionIsTheTopmostAncestorsClaim(t *testing.T) {
 	}
 }
 
+// ChainProc is the process whose claim gave ChainSession, and "" when there is no
+// ChainSession.
+func TestResolve_ChainProcIsTheProcessThatHoldsTheChainSession(t *testing.T) {
+	a, clk := newTest()
+	a.Resolve(req(claudeUA, "s1"), pchain(100, 50))
+	record(a, clk, "s1")
+	parent := pchain(100)[0].Key()
+	child := pchain(400, 300, 200, 100, 50)
+	got := a.Resolve(req(claudeUA, "c1"), child)
+	record(a, clk, "c1")
+	if got.Session != "c1" || got.ChainSession != "s1" || got.ChainProc != parent {
+		t.Errorf("the child: %+v, want Session c1, ChainSession s1, ChainProc %q", got, parent)
+	}
+	got = a.Resolve(nil, pchain(500, 400, 300, 200, 100, 50))
+	if got.ChainSession != "s1" || got.ChainProc != parent {
+		t.Errorf("a tool under the child: %+v, want ChainSession s1, ChainProc %q", got, parent)
+	}
+	got = a.Resolve(req(claudeUA, "x1"), pchain(700, 70))
+	if got.ChainSession != "" || got.ChainProc != "" {
+		t.Errorf("an agent with no claiming ancestor: %+v, want no ChainSession and no ChainProc", got)
+	}
+	a.Evicted("s1")
+	got = a.Resolve(req(claudeUA, "c1"), child)
+	if got.ChainSession != "" || got.ChainProc != "" {
+		t.Errorf("the child after s1 is evicted: %+v, want no ChainSession and no ChainProc", got)
+	}
+}
+
 // Without a process, client affinity files by User-Agent: the agent's newest session, else
 // its agent-wide pending bucket, and default for an unknown client between two agents.
 func TestResolve_ClientAffinityWithoutAProcess(t *testing.T) {
