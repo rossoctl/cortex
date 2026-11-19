@@ -1391,9 +1391,14 @@ func TestRouter_KeyOwnerHeaderDropped(t *testing.T) {
 		{"key_routes, same host", withHeader(keyConfig("", `"team-b": "team-a"`), "x-team-key"), "X-Team-Key", gwHost, "team-a-key"},
 		{"key_routes, other host", withHeader(keyConfig("", `"team-b": "ete"`), "x-team"), "X-Team", eteHost, "ete-key"},
 		{"agents, same host", withHeader(sharedConfig(`"claude-code": "team-a"`), "x-team-key"), "X-Team-Key", gwHost, "team-a-key"},
+		// keyOwner names no owner here, since the request also sends ete's key.
+		{"agents, two servers' keys", withHeader(sharedConfig(`"claude-code": "team-a"`), "x-team-key"), "X-Team-Key", gwHost, "team-a-key"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pctx := keyRequest(newStore(t), claudeUA, "s1", tc.header, "team-b-key")
+			if tc.name == "agents, two servers' keys" {
+				pctx.Headers.Set("Authorization", "Bearer ete-key")
+			}
 			run(t, build(t, tc.cfg), pctx)
 			assertRouted(t, pctx, tc.host, tc.key)
 			if v := pctx.Headers.Values(tc.header); len(v) > 0 {

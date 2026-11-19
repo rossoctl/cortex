@@ -491,8 +491,8 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	if addressed != name {
 		dropProviderCredentials(pctx.Headers)
 	}
-	// The owner's key can be in its auth_header, which setAuth does not clear for this server.
-	if keyOf != "" && keyOf != name {
+	// Another server's key can be in that server's auth_header, which setAuth does not clear.
+	if keyOf != name {
 		for _, h := range p.keyHeaders {
 			pctx.Headers.Del(h)
 		}
