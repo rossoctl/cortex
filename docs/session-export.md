@@ -115,6 +115,14 @@ secret reaches the encoded bytes, which fails CI.
 The count above is pinned. `TestDocSecretCountMatchesAllSecrets` fails if this page
 and the test disagree.
 
+### A session that asked not to be recorded
+
+The archive is the export's only source, so a session that sent `X-Cortex-Record: off`
+exports none of its events from then on. What the archive held from before the opt-out
+stays, and exports as usual. A session that asked from its first request exports no
+records at all. See
+[Keeping a session out of the archive](session-api.md#keeping-a-session-out-of-the-archive).
+
 ### Questions an export answers
 
 - Token spend per model

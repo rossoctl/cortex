@@ -90,6 +90,10 @@ knowing by name:
   imported (see [`POST /v1/import`](#post-v1import--transcript-import-laptop-only)).
   It is absent when the session has one or more live events. So a live request
   for an imported session gives it a live event, and the mark goes.
+- **`noRecord`** — `true` once the session asked not to be recorded, with the
+  `X-Cortex-Record` header: the archive keeps none of its events from then on. Absent
+  otherwise. It is sticky, and the archive's mark carries it across a restart. See
+  [Keeping a session out of the archive](#keeping-a-session-out-of-the-archive).
 - **Pending buckets.** A coding agent's calls before its process names a session
   are recorded under `pending:<agent>@<pid>.<start>` (or `pending:<agent>` when
   the process could not be looked up), carrying their `proc`. Nothing renames a
@@ -105,8 +109,11 @@ knowing by name:
   (`session.archive`, laptop only): every session the archive holds and memory
   does not, marked `resident: false`, plus a top-level `archive` object —
   `{bytes, maxBytes, retentionDays}` and, only when nonzero, `droppedEvents`,
-  `writeErrors`, `droppedRenames`, `droppedCaptures`, `paused`, any of which means the history has
-  gaps. A session in both is listed once, as its resident row, and that row
+  `writeErrors`, `droppedRenames`, `droppedCaptures`, `paused`, `failedClosed`, any of which means the history has
+  gaps. `failedClosed` is permanent until a restart: more sessions asked not to be
+  recorded, while the archive's writer was behind, than it keeps track of, so it
+  records no conversation at all (see
+  [Keeping a session out of the archive](#keeping-a-session-out-of-the-archive)). A session in both is listed once, as its resident row, and that row
   covers the session's whole history: `eventCount`, `totalTokens`, `costMicros`,
   `title`, `agent`, `createdAt` and the rest continue from the archive's fold of
   what came before this process's entry. **This applies to the default list
@@ -396,6 +403,45 @@ see [`laptop-service.md`](laptop-service.md) for the user-facing story.
 The next `agentop import` brings an erased session back from its transcript, as
 an imported session. Its cost is not counted again: the erase kept the ledger
 rows, and a forget record tells the import which turns those rows hold.
+
+## Keeping a session out of the archive
+
+A client keeps its own session out of the session archive by sending
+`X-Cortex-Record: off` on its requests. For Claude Code that is
+`ANTHROPIC_CUSTOM_HEADERS="X-Cortex-Record: off"`. The rules:
+
+- **Only `off` counts**, matched without case or padding. Any other value, or
+  none, records as before. The header is removed before any plugin runs, and it
+  is never forwarded upstream.
+- **The request must name its own session** with a session-id header from
+  `session.id_headers`. A request that names none is filed by fallback (the
+  active session or `default`), so its flag is ignored: it must not stop another
+  session's recording. So the header does nothing with `id_headers` empty, on a
+  vmcontrol session (attribution is pinned empty there), and through ext_proc,
+  which pins no naming header (#1960). `default` and pending buckets are never
+  withheld.
+- **From then on, never backwards.** From the first flagged request, the archive
+  keeps none of the session's events, also the header-less ones filed to it by
+  process or client affinity. What it already held stays: the session-id header
+  is client-asserted, so a request must not be able to erase another session's
+  history by naming it.
+- **Sticky.** The archive keeps a content-free marker for the session, also
+  across a restart, for `retention_days` after its last event. A resumed session
+  without the header stays withheld, and sending `on` later does not resume
+  recording. An import refuses a withheld session.
+- **Only [`DELETE /v1/sessions/{id}`](#delete-v1sessionsid--erase-one-session)
+  erases**, and `DELETE /v1/sessions` (which also clears the markers). After a
+  delete, the session records again unless it still sends the header, and the
+  next `agentop import` can bring it back from its transcript.
+- **What it does not cover.** The store holds the rows in memory as usual, and
+  the live streams carry them, flagged `noRecord`. The cost ledger and usage
+  totals count the session: their rows carry no content. Plugins with their own
+  per-session state, such as context-guru's database, are not covered (#1962).
+
+The archive never makes a request wait for the opt-out. If more sessions opt
+out while its writer is behind than it keeps track of (as many as its queue
+holds, 4096 by default), it records no conversation until a restart and reports
+`failedClosed` (see [`GET /v1/sessions`](#get-v1sessions)).
 
 ## `POST /v1/import` — transcript import (laptop only)
 
@@ -945,6 +991,11 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   [`POST /v1/import`](#post-v1import--transcript-import-laptop-only) wrote.
   Absent on a live event. The proxy did not see an imported exchange, so such
   an event has no `host` and no capture.
+- `noRecord` — `true` on the request and response rows of a request that sent
+  `X-Cortex-Record: off` and named its own session (see
+  [Keeping a session out of the archive](#keeping-a-session-out-of-the-archive)).
+  Absent otherwise, and on every row of `default` and of a pending bucket. Such
+  rows are in the store and on the live streams as usual; the archive keeps none.
 - `a2a` / `mcp` / `inference` — protocol parser payloads (one at most).
 - `invocations` — per-plugin invocation records for every plugin that ran on
   the pipeline pass, structured `{inbound: [...], outbound: [...]}`. Each entry

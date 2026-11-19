@@ -1079,6 +1079,10 @@ type ArchiveUsage struct {
 	DroppedCaptures uint64 `json:"droppedCaptures,omitempty"`
 	// Paused is true after the disk filled, until the archive's next retention pass.
 	Paused bool `json:"paused,omitempty"`
+	// FailedClosed is true once more sessions asked not to be recorded, while the archive's
+	// writer was behind, than it keeps track of (#1923): until a restart it records no
+	// conversation.
+	FailedClosed bool `json:"failedClosed,omitempty"`
 }
 
 // ImportedSourcePrefix starts the Source of every event that an import wrote.

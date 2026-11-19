@@ -365,7 +365,9 @@ func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *mode
 	if e.Seq > a.lastSeq[sessionID] {
 		a.lastSeq[sessionID] = e.Seq
 	}
-	if a.failClosed.Load() && session.IsConversation(sessionID) {
+	// Failed closed, no conversation event is recorded. An opt-out still goes on to the
+	// admission below, as Withhold's does, so its mark is written when there is room.
+	if a.failClosed.Load() && session.IsConversation(sessionID) && !optOut {
 		a.mu.Unlock()
 		a.dropped.Add(1)
 		return

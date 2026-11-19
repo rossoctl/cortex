@@ -364,6 +364,36 @@ func TestNoRecord_TooManyKeptOptOutsFailClosed(t *testing.T) {
 	}
 }
 
+// Failed closed, the archive records no conversation, but a flagged event that finds room still
+// writes its mark: the fail-closed state is lost at a restart, and the mark is not.
+func TestNoRecord_AnOptOutAfterFailingClosedIsStillMarked(t *testing.T) {
+	root := t.TempDir()
+	a := openTest(t, root, newClock(), WithQueueDepth(reserve+6))
+	r := newRecorder(a)
+	release := gateWriter(t, a)
+	fillToReserve(t, a, r, "s0")
+	for i := range a.depth + 1 {
+		a.Withhold(fmt.Sprintf("forged-%d", i))
+	}
+	if !a.Stats().FailedClosed {
+		t.Fatal("precondition: the archive failed closed")
+	}
+	release()
+	settle(a)
+	r.record("s7", flagged(plain(1))...) // room again: the opt-out is admitted
+	settle(a)
+	a.Close()
+
+	a2 := openTest(t, root, newClock())
+	r2 := newRecorder(a2)
+	r2.seq["s7"] = 1
+	r2.record("s7", synthSession(400, 1, 512)...) // unflagged, after the restart
+	a2.Close()
+	if segs := segmentsIn(t, root, "s7"); len(segs) != 0 {
+		t.Fatalf("segments %v after a restart, want none: the opt-out sent while failed closed was lost", segs)
+	}
+}
+
 // A DELETE still queued when a praxis Withhold arrives: the session was marked, but the delete is
 // about to remove the mark, so Withhold must not take "already marked" for granted. The rows
 // ingested after it are withheld.
