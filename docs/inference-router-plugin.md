@@ -5,8 +5,10 @@ LiteLLM gateway or a local model server such as Ollama, with its own URL and key
 and keeps every session on the
 server it started on until you move it (see **Moving a running session**), wherever the agent addressed its requests: its provider,
 Anthropic, OpenCode Zen or Bob's gateway, so the agent needs no setting of its own
-beyond going through the proxy. Routing is opt-in per agent: an agent not listed
-under `agents` is not routed, and its requests go where it sent them, keys untouched. Manage it
+beyond going through the proxy. Routing is opt-in: an agent not listed
+under `agents` is not routed, and its requests go where it sent them, keys untouched,
+unless a request sends the key of a listed server (see **Choosing a server by the key a
+request sends**). Manage it
 with [`agentop server`](../cmd/agentop/README.md#choosing-an-inference-server-agentop-server);
 the config stays hand-editable. Built for the laptop: it needs a listener that
 honors a redirect, so `cortex-envoy` and a config with an `mtls:` block refuse it
@@ -21,6 +23,7 @@ at startup, and in-cluster use has not been examined.
   - `auth_header` (string) — header that carries `key`. `authorization` sends `Bearer <key>`; any other name sends the raw key. Empty: the agent's header, or the target protocol's usual one for a translated request.
   - `headers` (map) — fixed headers set on every request to this server after the plugins run. Values may use `${ENV_VAR}`.
 - `agents` (map) — agent name, as agentop shows it (`claude-code`, `opencode`), to a server name. Each value must name a listed server. `unknown`, the name for requests with no User-Agent, cannot be routed.
+- `key_routes` (map) — server name to server name. A request that sends the key of the first server goes to the second server. Both names must name a listed server. An `agents` entry wins over it. One hop only. See **Choosing a server by the key a request sends**.
 - `sessions` (map) — session id to a server name, moving one running session to that server. Each value must name a listed server, or be `""` to stop routing that session. An entry beats the session's pin and every rule below, and the pin follows it, so removing the entry does not move the session back; `agentop server move` and the TUI's `S` on a session row write these; a `server move` from the shell also prunes an entry whose session is neither live nor archived. A synthetic id (`default`, `pending:<agent>`) is refused: it holds many conversations, not one to move.
 
 ```yaml
@@ -49,9 +52,9 @@ proxied one, or one decrypted by the TLS bridge — can be routed. A `CONNECT` o
 transparently redirected connection is dialed where the client chose, and is
 `skip/not_redirectable`. On a server's host every path is handled,
 `/v1/models` and `count_tokens` included. A request to any other host is
-**captured** when it is a routed agent's `POST` that `inference-parser` read as
+**captured** when it is a `POST` that `inference-parser` read as
 inference, with a path ending in `/chat/completions`, `/v1/messages` or
-`/responses`: it is sent to the agent's server at `/v1/chat/completions`,
+`/responses`, from a routed agent or with the key of a listed server: it is sent to the agent's server at `/v1/chat/completions`,
 `/v1/messages` or `/v1/responses`, after the prefix of the server's `url`, the query string kept, and its `modify/routed`
 carries `captured` with that path. The parse is required, not just the path: an
 agent's own tools can `POST` to any API whose path ends the same way. Anything else
@@ -69,7 +72,10 @@ decides:
   `~/.cortex/plugin-state.json`, which a restart keeps; elsewhere in the process
   store, which a restart empties.
 - A request in a session its agent has not pinned is decided in this order, for a
-  routed agent:
+  routed agent. "Its agent's current server" is the server that the `agents` entry
+  names. With no `agents` entry, it is the server that `key_routes` gives for the
+  server whose key the request sent, or else that server (see **Choosing a server by
+  the key a request sends**). With neither, the request is not routed.
   1. The session's history: the latest earlier inference request, other than a
      side request (3), that agent sent in the session to a server's host keeps
      the session on that server, from then with that server's key. A
@@ -155,7 +161,7 @@ decides:
   with client affinity off; or by a header id two clients share — is decided as if
   the session were unpinned, from that agent's own history and server, and leaves
   the pin alone.
-- Changing `agents` therefore moves only new sessions: the pins and the history
+- Changing `agents` or `key_routes` therefore moves only new sessions: the pins and the history
   survive a hot reload, and on a local install a restart too. A proxy with neither
   a plugin store nor a session archive loses both on restart, and a running
   session's next request is then decided as an unpinned one's. The store also drops
@@ -258,6 +264,67 @@ differs. The router also rewrites the request body to send a substitute, so the
 framework holds it after every body reader: a chain with a parser after the router
 is refused, at startup and on reload.
 
+## Choosing a server by the key a request sends
+
+A request can select its server by the key it sends. Some terminals send a team key
+of a gateway, and a listed server has that key. Then the router routes the request
+to that server, also when its agent has no `agents` entry.
+
+For a request with no `sessions:` entry and no pin, the router uses this order:
+
+1. The `agents` entry of the request's agent.
+2. The `key_routes` entry of the server whose key the request sent.
+3. The server whose key the request sent.
+4. Otherwise, the request is not routed.
+
+The history rules 1 to 4 above apply to a key choice as they apply to an `agents`
+choice.
+
+**How the router finds the key.** The router reads these values:
+
+- The bearer token of each `Authorization` header.
+- Each `X-Api-Key` header.
+- Each header that the `auth_header` of a listed server names.
+
+The router compares each value with the key of each server in constant time. A
+request selects a server only when all its matching values match that one server.
+When two values match two different servers, the request selects no server. A
+request with no User-Agent (agent `unknown`) is not routed by its key.
+
+**Two servers with one key.** This config is valid. At load, the proxy logs one
+WARN that names the two servers and not the key. A request that sends this key
+selects no server.
+
+**`key_routes`.** An entry sends the requests that have the key of one server to
+another server. The router then sends that server's key. Rules:
+
+- Both names must name a listed server. The router refuses an unknown name at load
+  and on a reload.
+- An entry whose two names are the same is valid and has no effect.
+- One hop only. With `{team-b: team-a, team-a: team-c}`, a request with team B's key
+  goes to `team-a`, not to `team-c`.
+- It hot-reloads, as `agents` does.
+- A session's pin and its history win over an entry. So a change to `key_routes`
+  moves only new sessions.
+
+```yaml
+servers:
+  team-a: {url: https://gw.example.com/litellm, key: ${TEAM_A_KEY}, main: opus, helper: haiku}
+  team-b: {url: https://gw.example.com/litellm, key: ${TEAM_B_KEY}, main: opus, helper: haiku}
+key_routes:
+  team-b: team-a   # terminals that send team B's key use team A's server and key
+```
+
+**What the router records.** When the key of a request matches a server, each
+router record of the request has `key_of: <server name>`. This is also true when
+the session is pinned to another server. The record holds a server name, not a key.
+
+**Change in behavior.** Before this feature, the router did not route an agent with
+no `agents` entry. Now, when such an agent calls a listed server with that server's
+key, the router routes and pins its session to that server. The session gets model
+substitution, limit fitting and the server's `headers:`. A session that has a "not
+routed" pin from before the upgrade keeps that pin.
+
 ## Servers that serve another protocol
 
 A server's `api` map says which protocols it serves, and at which path. DeepSeek
@@ -321,7 +388,8 @@ translation.
 
 **The auth header.** The sent request has only the header that this table picks.
 The router removes the agent's `Authorization`, `X-Api-Key` and `Api-Key` first,
-except in the first row:
+except in the first row. In each row, it also removes the `auth_header` of each
+server in the config, so the key of a different server does not stay on the request:
 
 | `auth_header` | Request | Header sent |
 |---|---|---|
