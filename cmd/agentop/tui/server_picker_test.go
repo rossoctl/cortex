@@ -1059,8 +1059,27 @@ func TestServerPicker_TheStayCountCountsOtherKeySessions(t *testing.T) {
 	m := keyServerModel(t, newFakeProxy(t, false), "", sessions, "s1")
 	pickerTo(t, m, "ete")
 	m.handleKey(keyEnter)
-	if view := m.View(); !strings.Contains(view, "(1 other running session stays on glm)") {
+	if view := m.View(); !strings.Contains(view, "(1 other running session with this key stays where it is)") {
 		t.Errorf("no stay count:\n%s", view)
+	}
+
+	// A session that is already on the target is not counted.
+	onEte := keySession("s4", "opencode", "glm")
+	onEte.InferenceServer, onEte.InferenceHost = "ete", "ete.example.com"
+	m = keyServerModel(t, newFakeProxy(t, false), "", append(sessions, keySession("s5", "opencode", "glm"), onEte), "s1")
+	pickerTo(t, m, "ete")
+	m.handleKey(keyEnter)
+	if view := m.View(); !strings.Contains(view, "(2 other running sessions with this key stay where they are)") {
+		t.Errorf("no plural stay count:\n%s", view)
+	}
+
+	// Back to the key's server: a session that an earlier key_routes: entry sent to
+	// ete stays there, so it is counted.
+	m = keyServerModel(t, newFakeProxy(t, false), "glm: ete", []session.SessionSummary{keySession("s1", "opencode", "glm"), onEte}, "s1")
+	pickerTo(t, m, "glm")
+	m.handleKey(keyEnter)
+	if view := m.View(); !strings.Contains(view, "(1 other running session with this key stays where it is)") {
+		t.Errorf("a session on a third server is not counted:\n%s", view)
 	}
 
 	m = keyServerModel(t, newFakeProxy(t, false), "", sessions[:1], "s1")
@@ -1075,7 +1094,8 @@ func TestServerPicker_AnAgentEntrySaysRowTwoIsIgnored(t *testing.T) {
 	m := keyServerModel(t, newFakeProxy(t, false), "", []session.SessionSummary{keySession("s1", "claude-code", "glm")}, "s1")
 	pickerTo(t, m, "ete")
 	m.handleKey(keyEnter)
-	if view := m.View(); !strings.Contains(view, "(claude-code ignores this: the Agents pane sends it to ete)") {
+	// At 80 columns too: the note is on its own line, so MaxWidth does not cut it.
+	if view := renderServerPicker(m.serverPicker, 80); !strings.Contains(view, "(claude-code ignores this: the Agents pane sends it to ete)") {
 		t.Errorf("no ignore note:\n%s", view)
 	}
 }
@@ -1158,7 +1178,7 @@ func TestServerPicker_RowZeroIsEachTerminalsKey(t *testing.T) {
 func TestServerPicker_TheKeyCountGroupsByServer(t *testing.T) {
 	view := agentsKeyView(t, "", keySession("s1", "opencode", "glm"), keySession("s2", "opencode", "glm"),
 		keySession("s3", "opencode", "ete"), keySession("s4", "claude-code", "ete"), keySession("s5", "opencode", "gone"))
-	if !strings.Contains(view, "now: 2 sessions → glm, 1 → ete") {
+	if !strings.Contains(view, "by key: 2 sessions → glm, 1 → ete") {
 		t.Errorf("no key count:\n%s", view)
 	}
 }
@@ -1166,8 +1186,23 @@ func TestServerPicker_TheKeyCountGroupsByServer(t *testing.T) {
 // key_routes: is one hop: glm's key goes to ete, and ete: glm does not send it back.
 func TestServerPicker_TheKeyCountIsOneHop(t *testing.T) {
 	view := agentsKeyView(t, `"glm":"ete","ete":"glm"`, keySession("s1", "opencode", "glm"))
-	if !strings.Contains(view, "now: 1 session → ete") {
+	if !strings.Contains(view, "by key: 1 session → ete") {
 		t.Errorf("not one hop:\n%s", view)
+	}
+}
+
+// An agents: entry wins over the key, so claude-code (agents: {claude-code: ete}) gets
+// no count line: it would name servers its sessions do not use.
+func TestServerPicker_AnAgentEntryHasNoKeyCount(t *testing.T) {
+	m := serverModel(t, newFakeProxy(t, false))
+	m.sessions = []session.SessionSummary{keySession("s1", "claude-code", "glm")}
+	onRow(t, m, "claude-code/2.1.270")
+	m.handleKey(keyRune('S'))
+	if m.serverPicker == nil {
+		t.Fatalf("no picker; notice %q", m.serverNotice)
+	}
+	if view := m.View(); strings.Contains(view, "by key:") || strings.Contains(view, "known key") {
+		t.Errorf("a count line under an agents: entry:\n%s", view)
 	}
 }
 

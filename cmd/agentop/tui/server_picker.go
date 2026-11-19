@@ -37,7 +37,8 @@ type serverPicker struct {
 	// configured server or the picker is the agents pane's. When set, ↵ on a server
 	// opens the second step, scope, with scopeCursor on 0 (this session only) or 1
 	// (also new sessions that send keyOf's key). keyStaying and agentRoute are what
-	// row 1's note says, read when the picker opens.
+	// the second row's note says. agentRoute is read when the picker opens, and
+	// keyStaying when ↵ opens the second step, because it depends on the target.
 	keyOf       string
 	scope       bool
 	scopeCursor int
@@ -205,7 +206,9 @@ func (m *model) serverPickerKey(msg tea.KeyMsg) tea.Cmd {
 	case "enter":
 		// Not on row 0: key_routes: has no value for "not routed".
 		if p.keyOf != "" && p.entries[p.cursor].name != "" {
+			router, _ := m.activeRouter()
 			p.scope, p.scopeCursor = true, 0
+			p.keyStaying = m.keySessionsStaying(router, p.session, p.keyOf, p.entries[p.cursor].name)
 			return nil
 		}
 		return m.applyServerChoice()
@@ -278,7 +281,6 @@ func (m *model) openSessionServerPicker() tea.Cmd {
 		if _, ok := router.Servers[string(summary.InferenceKeyOf)]; ok {
 			p.keyOf = string(summary.InferenceKeyOf)
 			p.agentRoute = router.Agents[p.agent]
-			p.keyStaying = m.keySessionsStaying(router, id, p.keyOf)
 		}
 	}
 	m.serverPicker = p
@@ -515,15 +517,16 @@ func keyRouteText(msg serverSwitchedMsg) string {
 }
 
 // keySessionsStaying counts the running sessions other than id that sent keyOf's
-// key and are on keyOf: the ones a key_routes: change leaves where they are.
-// "Running" as sessionsStaying says it.
-func (m *model) keySessionsStaying(router routerconfig.Config, id, keyOf string) int {
+// key and are not on target: a key_routes: change moves no running session, so
+// these stay where they are. Not only the ones on keyOf: an earlier key_routes:
+// entry can have sent some to a third server. "Running" as sessionsStaying says it.
+func (m *model) keySessionsStaying(router routerconfig.Config, id, keyOf, target string) int {
 	n := 0
 	for _, s := range m.sessions {
 		if s.ID == id || (s.Resident != nil && !*s.Resident) || s.InferenceHost == "" || string(s.InferenceKeyOf) != keyOf {
 			continue
 		}
-		if on, _ := servers.ForSession(router, s); on == keyOf {
+		if on, _ := servers.ForSession(router, s); on != target {
 			n++
 		}
 	}
@@ -533,8 +536,13 @@ func (m *model) keySessionsStaying(router routerconfig.Config, id, keyOf string)
 // keyCountLine says where agent's running sessions go by their key: each one whose
 // key names a configured server goes to that server's key_routes: target, else to
 // that server. One hop only, as the router reads key_routes:. Groups sort by count,
-// most first, then by name.
+// most first, then by name. It is "" when agent has an agents: entry: that entry
+// wins over the key, so the line would name servers the sessions do not use.
+// "by key", not "now": a session pin keeps a running session where it started.
 func (m *model) keyCountLine(router routerconfig.Config, agent string) string {
+	if router.Agents[agent] != "" {
+		return ""
+	}
 	counts := map[string]int{}
 	for _, s := range m.sessions {
 		k := string(s.InferenceKeyOf)
@@ -568,7 +576,7 @@ func (m *model) keyCountLine(router routerconfig.Config, agent string) string {
 		}
 		parts[i] = n + " → " + sanitizeLabel(name)
 	}
-	return "now: " + strings.Join(parts, ", ")
+	return "by key: " + strings.Join(parts, ", ")
 }
 
 // sessionsStaying counts agent's running sessions that a switch to server leaves where they are:
@@ -753,15 +761,16 @@ func renderScopeStep(p *serverPicker, width int) string {
 	to, keyOf := sanitizeLabel(p.entries[p.cursor].name), sanitizeLabel(p.keyOf)
 	rows := []string{"This session only", "This session and new sessions that send " + keyOf + "'s key"}
 	// An agents: entry wins over key_routes:, so the stay count does not apply.
+	// The note is on its own line under row 2: on the row's line it is too wide
+	// for an 80-column terminal, and MaxWidth cuts it.
+	note := ""
 	switch {
 	case p.agentRoute != "":
-		rows[1] += styleMuted.Render(" (" + sanitizeLabel(p.agent) + " ignores this: the Agents pane sends it to " +
-			sanitizeLabel(p.agentRoute) + ")")
-	case p.entries[p.cursor].name == p.keyOf:
+		note = sanitizeLabel(p.agent) + " ignores this: the Agents pane sends it to " + sanitizeLabel(p.agentRoute)
 	case p.keyStaying == 1:
-		rows[1] += styleMuted.Render(" (1 other running session stays on " + keyOf + ")")
+		note = "1 other running session with this key stays where it is"
 	case p.keyStaying > 1:
-		rows[1] += styleMuted.Render(fmt.Sprintf(" (%d other running sessions stay on %s)", p.keyStaying, keyOf))
+		note = fmt.Sprintf("%d other running sessions with this key stay where they are", p.keyStaying)
 	}
 	var b strings.Builder
 	b.WriteString(styleTitle.Render("Move to: "+to) + "\n\n")
@@ -771,6 +780,9 @@ func renderScopeStep(p *serverPicker, width int) string {
 			marker = "> "
 		}
 		b.WriteString(marker + row + "\n")
+	}
+	if note != "" {
+		b.WriteString("    " + styleMuted.Render("("+note+")") + "\n")
 	}
 	if p.sessionTokens > 0 {
 		b.WriteString("\n" + styleMuted.Render(fmt.Sprintf("%d tokens of its context go uncached on its first turn there.", p.sessionTokens)) + "\n")
