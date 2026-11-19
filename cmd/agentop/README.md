@@ -905,7 +905,7 @@ Layered on top of all of them:
 | `w` | agents | cycle the pane's window, drawer open or not: the rows, the title and the breakdown move together through the same four spans. Opens on today; the drawer's own span on other panes is left alone |
 | `m` | usage | cycle metric: tokens / requests / errors / latency / cost |
 | `w` | usage | cycle window: 10m / 1h / 6h |
-| `b` | usage | cycle breakdown: none / status / method / plugin (not offered for latency — there is no per-label latency) |
+| `b` | usage | cycle breakdown: none / status / method / plugin / host (not offered for latency — there is no per-label latency — or under an agent or project scope) |
 | `s` | usage | toggle between this session and all sessions |
 | `Esc` | usage | back to the pane it was opened from |
 | `P` | sessions, events, detail | open the pipeline. Capital `P` because lowercase `p` pauses the stream and has no replacement worth the trade — `space` and `d` page the table, except on the agents pane, where `space` opens projects and `d`, `PgDn` and `f` still page down |

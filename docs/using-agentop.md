@@ -33,7 +33,7 @@ Press `Enter` on `All agents` to see all sessions.
 
 ## The screen
 
-`agentop` opens on the Sessions pane. This is the Sessions pane at 100 columns:
+This is the Sessions pane at 100 columns:
 
 ```
 agentop · http://127.0.0.1:47601
@@ -142,7 +142,7 @@ Most rows are one exchange: one request and its response.
 | Agent tool call | `#` shows `┣⚒` or `┗⚒`. The row is under the inference call that asked for the tool | A tool that the agent ran on your machine, for example a shell command. **This is not a network call.** Cortex gets it from the model reply |
 | MCP tool call | `METHOD` is `tools/call`, and `HOST` is the MCP server | A tool call over the network |
 | Other network call | `METHOD` is an HTTP method, and `HOST` is the destination | Other traffic from the agent through Cortex |
-| Tunnel | `PLUGIN` shows `tunnel`, and `METHOD` is empty | A connection that Cortex did not decrypt. Cortex sees only the host, how long it was open, and the bytes |
+| Tunnel | `ACTION` shows `tunnel`, `PLUGIN` shows why Cortex did not decrypt it, and `METHOD` is empty | A connection that Cortex did not decrypt. Cortex sees only the host, how long it was open, and the bytes |
 | Inbound request | `DIR` is `in` | A request to the agent. This is for an AuthBridge sidecar in a cluster |
 | Subagent block | `▸─ <label> · N rows` | The rows of one subagent. The block is closed at first. `Enter` opens it |
 
@@ -185,7 +185,7 @@ On Sessions, the charts show all sessions. On Events or Detail, they show the se
 |---|---|
 | `m` | Change the metric: tokens, requests, errors, latency or cost |
 | `w` | Change the window: 10m, 1h or 6h |
-| `b` | Change the breakdown: none, status, method or plugin |
+| `b` | Change the breakdown: none, status, method, plugin or host. Not for latency, or when the view is scoped to an agent or a project |
 | `s` | Change between this session and all sessions |
 
 ## Change the inference server
