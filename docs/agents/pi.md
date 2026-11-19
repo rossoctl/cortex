@@ -60,9 +60,8 @@ Rules: [`POST /v1/import`](../session-api.md#post-v1import--transcript-import-la
   through, but no model, tokens or cost are recorded.
 - **Tool results are not recorded on Chat Completions.** Tool calls are. This applies to
   every agent using that API.
-- **No Timeline turns and no harvested titles.** Those come from Claude Code's own
-  signals and transcripts, so Pi has host rows on the Timeline and a title from its
-  traffic, the same as Bob, OpenCode and Codex.
+- **No subagent rows and no harvested titles.** Pi has one main agent row on the
+  Timeline, and a title from its traffic, the same as OpenCode and Codex.
 - **A custom User-Agent is not recognised.** Pi's identity setting can replace its
   User-Agent. Its default and `short` forms are recognised; a custom string is not.
 

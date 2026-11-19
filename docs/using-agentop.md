@@ -118,8 +118,9 @@ Use the timeline to answer these questions:
 
 You can also press `T` on the Events or Detail pane.
 
-Claude Code and IBM Bob show agent and subagent rows.
-For other agents, the timeline shows only the host rows.
+Claude Code and IBM Bob show a row for the main agent and a row for each subagent.
+OpenCode, Codex and Pi show one row for the main agent, with no subagent rows.
+For other clients, the timeline shows only the host rows.
 For more detail, read the Timeline entry in [Panes](../cmd/agentop/README.md#panes).
 
 ## Read what your agent sent (Events and Detail)

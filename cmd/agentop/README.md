@@ -759,10 +759,11 @@ agentop is for, and the others are surfaces you visit and leave.
   2s, 4s … up to 30s, and the first fetch of a visit waits up to 30s, since a
   session only on disk is read from its archive.
 
-  **Claude Code and IBM Bob only.** Agents come from the requests the proxy attributed to a
-  Claude Code or Bob agent, and a tool's end from the first request carrying its
-  result. Sessions recorded before the proxy captured agent ids show their
-  subagents as one row; other agents show host rows alone. A proxy too old to
+  **Subagent rows: Claude Code and IBM Bob only.** Every recognised agent gets its
+  main row. Subagents come from Claude Code's agent-id headers and Bob's task ids,
+  and a tool's end from the first request carrying its result. Sessions recorded
+  before the proxy captured agent ids show their subagents as one row; a client
+  Cortex does not recognise shows host rows alone. A proxy too old to
   serve the endpoint gets a line saying so.
 - **Catalog**: registered-plugin browser, opened by `C` from any
   session-view pane. Lists every plugin the running binary knows how to
