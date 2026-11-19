@@ -159,11 +159,19 @@ func TestServerAdd_AnUnchangedServerIsNotRewritten(t *testing.T) {
 	}
 }
 
-func TestServerAdd_RefusesASecondServerOnOneHost(t *testing.T) {
+// Two servers can have one URL, for example two teams' keys for one gateway: agentop names a
+// session's server from the name the proxy records, not from the host.
+func TestServerAdd_AddsASecondServerOnOneHost(t *testing.T) {
 	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
-	code, _, errOut := runServerCmd(t, "sk-x", "add", "east", "http://ETE.example.com:4000", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path)
-	if code != 1 || !strings.Contains(errOut, "ete is already on ete.example.com") {
-		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	code, out, errOut := runServerCmd(t, "sk-east", "add", "east", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--key-stdin", "--yes", "--config", path)
+	if code != 0 || !strings.Contains(out, "Added east.") {
+		t.Fatalf("exit %d, stdout:\n%s%s", code, out, errOut)
+	}
+	got := readConfig(t, path)
+	for _, name := range []string{"ete", "east"} {
+		if want := "            " + name + ":\n              url: https://ete.example.com\n"; !strings.Contains(got, want) {
+			t.Errorf("config has no %s on https://ete.example.com:\n%s", name, got)
+		}
 	}
 }
 
@@ -644,6 +652,15 @@ func inferenceTo(host string) pipeline.SessionEvent {
 		Inference: &pipeline.InferenceExtension{Model: "claude-opus-5-5"}}
 }
 
+// routedInferenceTo is inferenceTo that the inference-router routed to server.
+func routedInferenceTo(host, server string) pipeline.SessionEvent {
+	e := inferenceTo(host)
+	e.Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: "inference-router",
+		Action: pipeline.ActionModify, Reason: "routed", Phase: pipeline.InvocationPhaseRequest,
+		Details: map[string]string{"server": server}}}}
+	return e
+}
+
 func tunnelTo(host string) pipeline.SessionEvent {
 	return pipeline.SessionEvent{At: time.Now(), Phase: pipeline.SessionRequest, Tunnel: true, HTTPMethod: "CONNECT", Host: host}
 }
@@ -696,6 +713,31 @@ func TestServerRemove_WarnsHowManyRunningSessionsUseIt(t *testing.T) {
 	if want := "A session the proxy routed to it now gets an error asking for a new session. " +
 		"Adding ete back routes them to it again."; !strings.Contains(flat(out), want) {
 		t.Errorf("want %q in stdout:\n%s", want, out)
+	}
+}
+
+// With two servers on one host, a session counts for the server the proxy routed it to. An
+// unrouted session has no server name, so it counts for the first name on its host in sorted
+// order (ete), as before.
+func TestServerRemove_CountsTheSessionsByServerName(t *testing.T) {
+	block := strings.Replace(routerBlock, "            glm:\n", "            team-b:\n"+
+		"              url: https://ete.example.com\n              key: sk-team-b\n              main: opus\n              helper: haiku\n"+
+		"            glm:\n", 1)
+	for _, tc := range []struct{ remove, want string }{
+		{"team-b", "warning: 1 running session last sent inference to team-b."},
+		{"ete", "warning: 2 running sessions last sent inference to ete."},
+	} {
+		t.Run(tc.remove, func(t *testing.T) {
+			store := session.New(0, 0, 0)
+			store.Append("s0", routedInferenceTo("ete.example.com", "team-b"))
+			store.Append("s1", routedInferenceTo("ete.example.com", "ete"))
+			store.Append("s2", inferenceTo("ete.example.com"))
+			path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), serveSessions(t, store), block)
+			code, out, errOut := runServerCmd(t, "", "remove", tc.remove, "--config", path)
+			if code != 0 || !strings.Contains(errOut, tc.want) {
+				t.Errorf("exit %d, want %q, stdout:\n%s\nstderr:\n%s", code, tc.want, out, errOut)
+			}
+		})
 	}
 }
 

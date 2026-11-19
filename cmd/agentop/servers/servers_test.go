@@ -11,6 +11,7 @@ import (
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 var twoServers = routerconfig.Config{Servers: map[string]routerconfig.Server{
@@ -212,5 +213,28 @@ func TestVerify_RefusesASessionsEntryNamingNoServer(t *testing.T) {
 	err := Verify(cfg)
 	if err == nil || !strings.Contains(err.Error(), `sessions.s1: "nope" is not a server listed under servers`) {
 		t.Fatalf("Verify error = %v, want it to refuse the unlisted server", err)
+	}
+}
+
+func TestForSession(t *testing.T) {
+	shared := routerconfig.Config{Servers: map[string]routerconfig.Server{
+		"team-a": {URL: "https://shared.example.com", Key: "k", Main: "opus", Helper: "haiku"},
+		"team-b": {URL: "https://shared.example.com", Key: "k", Main: "opus", Helper: "haiku"},
+	}}
+	for _, tc := range []struct {
+		s      session.SessionSummary
+		want   string
+		wantOK bool
+	}{
+		{session.SessionSummary{InferenceHost: "shared.example.com", InferenceServer: "team-b"}, "team-b", true},
+		{session.SessionSummary{InferenceHost: "shared.example.com"}, "team-a", true},
+		{session.SessionSummary{InferenceHost: "shared.example.com", InferenceServer: "gone"}, "team-a", true},
+		{session.SessionSummary{InferenceHost: "other.example.com"}, "", false},
+		{session.SessionSummary{}, "", false},
+	} {
+		got, ok := ForSession(shared, tc.s)
+		if got != tc.want || ok != tc.wantOK {
+			t.Errorf("ForSession(%+v) = %q, %v; want %q, %v", tc.s, got, ok, tc.want, tc.wantOK)
+		}
 	}
 }
