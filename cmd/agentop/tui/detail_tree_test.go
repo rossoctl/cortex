@@ -309,3 +309,22 @@ func TestRenderTree_JSONStringInRawStaysAString(t *testing.T) {
 		}
 	}
 }
+
+// A decoded tool value larger than clipBytes starts closed, as the string did. A small one starts
+// open.
+func TestRenderTree_LargeDecodedToolValueStartsClosed(t *testing.T) {
+	big := toolDoc(t, []any{strings.Repeat("y", clipBytes)})
+	doc := toolDoc(t, map[string]any{"inference": map[string]any{"messages": []any{map[string]any{
+		"role": "user", "toolResults": []any{map[string]any{"content": big}, map[string]any{"content": `{"a":1}`}}}}}})
+	root, err := treeFromJSON([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := root.child("inference").child("messages").kids[0].child("toolResults").kids
+	if c := res[0].child("content"); c.kind != kindArray || c.defOpen {
+		t.Errorf("large output: kind %v, open %v, want a closed array", c.kind, c.defOpen)
+	}
+	if c := res[1].child("content"); c.kind != kindObject || !c.defOpen {
+		t.Errorf("small output: kind %v, open %v, want an open object", c.kind, c.defOpen)
+	}
+}

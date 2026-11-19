@@ -256,7 +256,9 @@ func (m *matcher) results(rs []model.InferenceToolResult) bool {
 }
 
 // toolJSON is field for a string that the detail tree shows as its decoded value when decode
-// accepts it. Each distinct string is decoded one time.
+// accepts it. Each distinct string is checked one time. The strings inside the value are new
+// copies that no other field shares, so they are matched with fold: m.text would keep each one
+// in memory to the end of the search.
 func (m *matcher) toolJSON(key, v string, decode func(string) (any, bool)) bool {
 	if v == "" || m.key(key) {
 		return v != ""
@@ -264,8 +266,8 @@ func (m *matcher) toolJSON(key, v string, decode func(string) (any, bool)) bool 
 	k := strKey{unsafe.StringData(v), len(v)}
 	r, ok := m.tool[k]
 	if !ok {
-		if d, isJSON := decode(v); isJSON {
-			r = m.value(d)
+		if _, isJSON := decode(v); isJSON {
+			r = archive.MatchJSON(v, m.fold)
 		} else {
 			r = m.text(v)
 		}

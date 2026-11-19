@@ -172,7 +172,10 @@ func buildTree(v any, path, key string, hasKey bool) *node {
 			val, ok = coremodel.ToolOutputJSON(x)
 		}
 		if ok {
-			return buildTree(val, path, key, hasKey)
+			// A large value starts closed, as the string did, so it does not fill the turn.
+			t := buildTree(val, path, key, hasKey)
+			t.defOpen = len(x) <= clipBytes
+			return t
 		}
 		n.kind, n.plain, n.size = kindString, x, len(x)+2
 		n.fold = strings.Count(x, "\n") >= clipLines || len(x) > clipBytes
