@@ -259,3 +259,36 @@ func TestStatusClass(t *testing.T) {
 		}
 	}
 }
+
+// llm.inference.added_seconds records a response row's Added: not a denial (it never reached
+// the upstream, so none of its time is "on top of" an upstream's) and not a zero (the send was
+// never stamped). Its buckets start at a millisecond: the proxy's own work sits far below the
+// 50ms floor of the duration buckets, where every observation would land in the first one.
+func TestRecord_AddedSecondsIsResponseOnly(t *testing.T) {
+	mp, rd := manual(t)
+	r := New(mp)
+	r.Record("s1", &model.SessionEvent{Phase: model.SessionResponse, StatusCode: 200, Added: 3 * time.Millisecond,
+		Inference: &model.InferenceExtension{Model: "m"}})
+	r.Record("s1", &model.SessionEvent{Phase: model.SessionDenied, StatusCode: 429, Added: time.Millisecond})
+	r.Record("s1", &model.SessionEvent{Phase: model.SessionResponse, StatusCode: 502})
+
+	if got := sum(t, rd, "llm.inference.added_seconds"); got != 1 {
+		t.Errorf("llm.inference.added_seconds count = %v, want 1 (the response row only)", got)
+	}
+	var rm metricdata.ResourceMetrics
+	_ = rd.Collect(context.Background(), &rm)
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "llm.inference.added_seconds" {
+				continue
+			}
+			dp := m.Data.(metricdata.Histogram[float64]).DataPoints[0]
+			if dp.Bounds[0] != 0.001 {
+				t.Errorf("added_seconds first bound = %v, want 0.001", dp.Bounds[0])
+			}
+			if m.Unit != "s" {
+				t.Errorf("added_seconds unit = %q, want \"s\" (the dashboard reads llm_inference_added_seconds_bucket)", m.Unit)
+			}
+		}
+	}
+}

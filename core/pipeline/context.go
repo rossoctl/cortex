@@ -135,6 +135,17 @@ type Context struct {
 	// duration is usually asking the timeline for.
 	ResponseHeadersAt time.Time
 
+	// UpstreamSentAt is the wall-clock time the listener handed the request to
+	// the upstream: just before the first client.Do (forward proxy, hop path
+	// included), just before the reverse proxy's ServeHTTP, or when ext_proc
+	// answered the last request-phase message and Envoy forwarded. Set by the
+	// listener, once, at the FIRST send: a resend (forward proxy resendIfAsked)
+	// comes after an upstream round trip, and counting from it would bill the
+	// origin's time to the proxy. StartedAt → UpstreamSentAt is the time the
+	// proxy's own request-side work added (SessionEvent.Added). Zero when the
+	// request never left (a denial, a refused destination).
+	UpstreamSentAt time.Time
+
 	// requestID backs RequestID(), which generates it on first use. See
 	// requestid.go for why it is lazy rather than a constructor argument.
 	requestID string

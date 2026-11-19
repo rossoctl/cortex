@@ -26,7 +26,7 @@ func TestSessionEventWire_HasEveryDomainField(t *testing.T) {
 	// Deliberate renames, kept explicit so the check stays strict. Duration and
 	// Ttfb are milliseconds on the wire, and the DTO fields are named for the
 	// unit rather than silently changing what a same-named field means.
-	renamed := map[string]string{"Duration": "DurationMs", "Ttfb": "TtfbMs"}
+	renamed := map[string]string{"Duration": "DurationMs", "Ttfb": "TtfbMs", "Added": "AddedMs"}
 
 	for i := 0; i < domain.NumField(); i++ {
 		f := domain.Field(i)

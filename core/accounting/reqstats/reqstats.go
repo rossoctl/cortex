@@ -1,5 +1,5 @@
 // Package reqstats pushes the llm.inference.* transport metrics (requests by status class,
-// duration, time-to-first-byte, request/response bytes) that core/accounting/metrics.go's
+// duration, time-to-first-byte, time the proxy added, request/response bytes) that core/accounting/metrics.go's
 // per-request accountant data cannot provide, because that call site never sees an HTTP status,
 // a wall-clock duration, or a byte count.
 //
@@ -7,7 +7,8 @@
 // core/pipeline/pipeline.go regardless of which listener (forward-proxy, extproc, reverse-proxy)
 // handled the request. New is a session.Recorder built on that existing fact, registered the same
 // way core/cost/usage.Aggregator and the cost ledger already are
-// (cmd/cortex/main.go, sessions.AddRecorder), so it needs no listener change.
+// (cmd/cortex/main.go, sessions.AddRecorder). The one figure a listener had to add is the
+// send moment behind SessionEvent.Added (pctx.UpstreamSentAt), which every listener stamps.
 package reqstats
 
 import (
@@ -28,6 +29,12 @@ const MeterName = "github.com/rossoctl/cortex/core/accounting/reqstats"
 // completion. The SDK's own default boundaries are sized for milliseconds, not seconds.
 var secondBuckets = []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600}
 
+// addedBuckets are the boundaries for added_seconds: the proxy's own request-side work is
+// milliseconds to a few seconds, far below secondBuckets' 50ms floor. The same boundaries the
+// context-guru proxy uses for this metric (proxy/inferencemetrics.go), so the central
+// dashboard's quantiles compare like with like across proxies.
+var addedBuckets = []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5}
+
 // recorder is the session.Recorder New returns. A zero-value recorder (every instrument nil) is
 // the no-op case: Record's early checks never reach a nil instrument, mirroring how
 // accounting.Sink's own nil case is reached before any instrument is used.
@@ -35,6 +42,7 @@ type recorder struct {
 	requests      metric.Int64Counter
 	duration      metric.Float64Histogram
 	ttfb          metric.Float64Histogram
+	added         metric.Float64Histogram
 	responseBytes metric.Int64Counter
 	requestBytes  metric.Int64Counter
 }
@@ -70,6 +78,12 @@ func New(mp metric.MeterProvider) session.Recorder {
 			r.ttfb, err = meter.Float64Histogram("llm.inference.ttfb_seconds",
 				metric.WithDescription("Wall-clock time from request entry to the upstream's response headers."), metric.WithUnit("s"),
 				metric.WithExplicitBucketBoundaries(secondBuckets...))
+			return err
+		}},
+		{"llm.inference.added_seconds", func() (err error) {
+			r.added, err = meter.Float64Histogram("llm.inference.added_seconds",
+				metric.WithDescription("Wall-clock time from request entry to the request being handed to the upstream: what the proxy's own work added."), metric.WithUnit("s"),
+				metric.WithExplicitBucketBoundaries(addedBuckets...))
 			return err
 		}},
 		{"llm.inference.response_bytes", func() (err error) {
@@ -123,6 +137,12 @@ func (r *recorder) Record(_ string, e *model.SessionEvent) {
 		}
 		if r.ttfb != nil && e.Ttfb > 0 {
 			r.ttfb.Record(ctx, e.Ttfb.Seconds(), attrs)
+		}
+		// Response rows only: a denial never reached the upstream, so it added nothing on top
+		// of an upstream time — its whole Duration is the proxy's, and counting it would mix
+		// refusals into the latency figure. Labelled by model alone, as the contract has it.
+		if r.added != nil && e.Phase == model.SessionResponse && e.Added > 0 {
+			r.added.Record(ctx, e.Added.Seconds(), metric.WithAttributes(modelAttr(e)))
 		}
 		if r.responseBytes != nil {
 			r.responseBytes.Add(ctx, e.BytesDown, attrs)

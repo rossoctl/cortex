@@ -1114,6 +1114,17 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   before headers (the 502 cases above), on request rows, and on tunnel rows —
   an opaque tunnel has no headers to time. agentop's detail pane renders the
   split as a `timing:` line.
+- `addedMs` — on a delivered response row, the wall time from request entry to
+  the request being handed to the upstream: what the proxy's own request-side
+  work (the inbound pipeline, body rewrites, header sync) added before the origin
+  saw anything. `ttfbMs` − `addedMs` is then the origin's time to answer. All
+  three listeners set `pctx.UpstreamSentAt` at their own send moment (before the
+  forward proxy's first `client.Do`, hop included; before the reverse proxy's
+  `ServeHTTP`; when ext_proc answers the last request-phase message), once, so a
+  resend does not bill the first upstream round trip to the proxy. It feeds
+  `llm.inference.added_seconds`. Absent when the request never left (a denial,
+  a refused destination), under one millisecond, on request rows and on tunnel
+  rows.
 - `requestedHost` — present only when a plugin redirected the request: the
   host the client asked for. `host` is where the request actually went, and
   usage, the cost ledger and pricing all follow `host`.

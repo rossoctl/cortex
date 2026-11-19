@@ -416,6 +416,10 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r = r.WithContext(context.WithValue(r.Context(), pctxKey{}, pctx))
+	// The request-side work is done; ServeHTTP dials the backend next. Same moment the
+	// forward proxy takes before its client.Do, so llm.inference.added_seconds means
+	// one thing on every listener.
+	pctx.UpstreamSentAt = time.Now()
 	s.proxy.ServeHTTP(w, r)
 }
 
