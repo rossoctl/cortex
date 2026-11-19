@@ -590,7 +590,7 @@ func TestConfigure_RebuildKeepsScriptState(t *testing.T) {
 	}
 }
 
-// The slot's timeout bounds a call to a script that never answers.
+// The slot's timeout is the worker's call timeout, and a call it cuts short is a script error.
 func TestOnRequest_Timeout(t *testing.T) {
 	dir := home(t)
 	hang(t, dir, "request")
