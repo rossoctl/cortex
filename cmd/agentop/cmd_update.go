@@ -43,9 +43,10 @@ install that runs the cpex build of cortex to the default build, and says so.
   --auto      what the updater runs: install the newest release only when it is a plain release and update.wait (24h) old; never asks
 
 Downloads nothing when agentop and cortex in ~/.local/bin are already at the
-release asked for. Run agentop doctor to check the rest of the install.
+release asked for, or when agentop is not a release build (make dev-install,
+--ref=main) and there is no --ref. Run agentop doctor to check the rest of the install.
 
-Exit status: 0 already current, 1 when a download or check fails, else setup's
+Exit status: 0 already current or not a release build, 1 when a download or check fails, else setup's
 (or the installer's for --ref=main).
 `
 
@@ -110,6 +111,14 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	if *auto {
 		return runAutoUpdate(env, stdout, stderr)
 	}
+	// A dev build ("dev") or a main-channel build ("main-<sha>") can be ahead of
+	// every release, so only an explicit --ref replaces it. The automatic update
+	// makes the same check. "" (no agentop, or no answer) still installs.
+	env.readVersions()
+	if v := env.installedVersion; *ref == "" && v != "" && !updatestatus.IsRelease(v) && !updatestatus.IsRC(v) {
+		_, _ = fmt.Fprintf(stdout, notReleaseNotice+"\n", v)
+		return 0
+	}
 	latest := ""
 	if *ref == "" {
 		latest = latestRelease()
@@ -148,6 +157,11 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 	status(updatestatus.ResultUpdated, nil)
 	return 0
 }
+
+// notReleaseNotice is what update prints, and does, for an installed build that is
+// not a release. The argument is its version.
+const notReleaseNotice = "agentop %s is not a release build, and can be newer than the newest release. Not updated.\n" +
+	"Run agentop update --ref=vX.Y.Z to install a release."
 
 // installReleaseFn is what callers use, so tests can replace the installer.
 var installReleaseFn = installRelease
