@@ -135,7 +135,7 @@ func TestParent_TunnelRowsCarryTheParent(t *testing.T) {
 	}
 	_ = raw.Close()
 	var tunnel []pipeline.SessionEvent
-	eventually(t, func() bool {
+	eventually(t, store, func() bool {
 		tunnel = nil
 		for _, e := range allEvents(t, store) {
 			if e.Tunnel {
@@ -226,7 +226,7 @@ func TestParent_RefusalRowCarriesTheParent(t *testing.T) {
 		t.Fatalf("status %d, want 421", resp.StatusCode)
 	}
 	var refused []pipeline.SessionEvent
-	eventually(t, func() bool {
+	eventually(t, store, func() bool {
 		refused = nil
 		for _, e := range allEvents(t, store) {
 			// The refusal row names the tunnel's host, not the Host it refused.
