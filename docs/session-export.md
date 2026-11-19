@@ -140,13 +140,27 @@ names out for now:
 
 - A record is a flat list of scalars. A name list would be the first array, which changes
   the shape every consumer parses.
-- Names alone would not give per-tool latency. A tool result arrives in a later request,
-  and the key that pairs it with its call is the tool-use id, which no record carries. So a
-  name list says only which tools a response asked for.
+- A name list on a response record would not carry per-tool latency, because a tool result
+  arrives in a later request and the key that pairs it with its call is the tool-use id. A
+  record carries no tool-use id, so a name list would say only which tools a response asked
+  for. **Per-tool latency is not blocked on the names**: the timeline already does the
+  pairing, below.
 
-Use `GET /v1/sessions/{id}/timeline` for names today. It pairs each call with its result by
-tool-use id, and it returns named spans.
-[#1906](https://github.com/rossoctl/cortex/issues/1906) tracks adding names here.
+Use `GET /v1/sessions/{id}/timeline` for per-tool timing today. It pairs each call with its
+result by tool-use id and returns named spans with a start and an end, so it answers "which
+tools ran, and for how long" without a prompt.
+[#1906](https://github.com/rossoctl/cortex/issues/1906) tracks bringing names, and the
+timing that pairing yields, into a record.
+
+Two rules before you total those spans, both of which cost real accuracy:
+
+- **A batch of parallel calls shares one window.** Calls the model issues together carry the
+  same start and the same end, not a duration each. Measured at 15.7% of spans (42 of 267)
+  on one 30-day archive. Charging every member of a batch the whole window's time
+  overcounts; read a shared window once per batch.
+- **Exclude `lost` spans.** A span that never got an answer but provably stopped sets `end`
+  equal to `start`, so it passes an `end != null` filter as a 0 ms call and drags a p50
+  toward zero. A span with no `end` is still running.
 
 An export is **content-free**. It is **not anonymous**. It keeps hosts, models, session
 ids and timestamps. Together these show who called what, and when. Read an export before
