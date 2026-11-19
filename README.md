@@ -30,7 +30,8 @@ agentop observe                         # in another terminal: watch it live
 **Next: [Getting started](./docs/getting-started.md)**. It shows what you should see, how to read the screen, and how to undo it.
 
 Setup asks once before changing anything. If something looks wrong, `agentop doctor`
-names the fix. To move to a newer release later, run `agentop update`. Can't reach
+names the fix. A service install [updates itself](./docs/laptop-service.md#automatic-updates);
+to update now, run `agentop update`. Can't reach
 rossoctl.dev? The same script is [in this repo](https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh).
 
 Used your agent before Cortex? `agentop import` adds its past sessions and their

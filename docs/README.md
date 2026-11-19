@@ -3,7 +3,7 @@
 Cortex's documentation lives next to the code it describes. This directory
 holds the repo-level pieces; this file is the index.
 
-## New here
+## Start using Cortex
 
 | If you want to… | Read |
 |---|---|
@@ -12,7 +12,7 @@ holds the repo-level pieces; this file is the index.
 | Read the `agentop` screen | [Using agentop](using-agentop.md) |
 | Fix a problem | [Troubleshooting](troubleshooting.md) |
 
-## Daily use
+## Use Cortex every day
 
 | If you want to… | Read |
 |---|---|
@@ -22,14 +22,15 @@ holds the repo-level pieces; this file is the index.
 | Run Cortex on a remote machine | [`remote.md`](remote.md) |
 | Add your agent's sessions from before Cortex | [`agentop import`](../cmd/agentop/README.md#importing-agent-history-agentop-import) |
 | Set model prices and gateway discounts | [`pricing.md`](pricing.md). To see the rates in effect, run `agentop pricing [--host <gateway>]` |
-| Run, stop or update the service | [`laptop-service.md`](laptop-service.md) |
+| Run, stop or remove the service | [`laptop-service.md`](laptop-service.md) |
+| Update Cortex, or turn automatic updates off | [Automatic updates](laptop-service.md#automatic-updates). To update now, run `agentop update` |
 | Apply policy to agent traffic in praxis mode | [`praxis-policy.md`](praxis-policy.md) |
 | Measure traffic — tokens, latency, errors — **without content** | [`session-export.md`](session-export.md) |
 | Keep prompts, completions and tool results as files — **with content** | [`session-dump.md`](session-dump.md) |
 
 ## Reference
 
-### Kubernetes
+### Run Cortex in Kubernetes
 
 | If you want to… | Read |
 |---|---|
@@ -39,7 +40,7 @@ holds the repo-level pieces; this file is the index.
 | Keep whole sessions from a cluster as files | [`session-dump.md`](session-dump.md) |
 | Run a demo | [`cortex-demos/README.md`](https://github.com/rossoctl/cortex-demos/blob/main/README.md) |
 
-### Plugins
+### Configure and write plugins
 
 | If you want to… | Read |
 |---|---|
@@ -79,6 +80,15 @@ Per-plugin reference docs: [a2a-parser](a2a-parser-plugin.md),
 |---|---|
 | Write an IdP plugin for token-exchange | [`idp-plugin-contract.md`](idp-plugin-contract.md) |
 | Read the lineage OTLP wire contract | [`lineage-wire-contract.md`](lineage-wire-contract.md) |
+
+## Contribute to Cortex
+
+| If you want to… | Read |
+|---|---|
+| Build, test and lint, and open a pull request | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
+| Find a package in the runtime library | [`core/README.md`](../core/README.md) |
+| Find which binary serves which deployment shape | [`cmd/README.md`](../cmd/README.md) |
+| Write an IdP plugin or read a wire contract | [Contracts for contributors and integrators](#contracts-for-contributors-and-integrators) |
 
 ## In this directory
 
