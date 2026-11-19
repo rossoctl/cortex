@@ -25,6 +25,7 @@ func fullEvent() pipeline.SessionEvent {
 		StatusCode: 200,
 		Duration:   1200 * time.Millisecond,
 		Ttfb:       412 * time.Millisecond,
+		Added:      3 * time.Millisecond,
 		BytesUp:    4210,
 		BytesDown:  18230,
 		Identity:   &pipeline.EventIdentity{},
@@ -201,6 +202,11 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 	// origin's answer time and the body's (#1251).
 	if got.Ttfb != full.Ttfb {
 		t.Errorf("ttfb = %v, want %v — the detail pane's timing: line reads it", got.Ttfb, full.Ttfb)
+	}
+	// added is kept beside ttfb: it is the same kind of scalar timing, and the struct copy
+	// keeps it. llm.inference.added_seconds reads the in-process event, not this projection.
+	if got.Added != full.Added {
+		t.Errorf("added = %v, want %v", got.Added, full.Added)
 	}
 	// upgradeStripped is kept for the same reason as requestedHost: the detail pane's
 	// upgrade: line reads it off the projected event, and a 405 whose explanation only
@@ -448,7 +454,9 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// so the struct copy keeps it; asserted above.
 		// 36 since Source, TIMELINE data: agentop marks an imported row by it (#1871). A
 		// scalar, so the struct copy keeps it; asserted above.
-		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 36},
+		// 37 since Added, TIMELINE data like Ttfb: the time the proxy added before the send.
+		// A scalar, so the struct copy keeps it; asserted above.
+		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 37},
 		// 25 since AgentRole, which is TIMELINE data: agentop's CONTEXT gauge reads it on every
 		// row the timeline serves. It needs no assertion of its own in the projection test
 		// beyond the equality one there — a scalar survives the struct copy, unlike the two

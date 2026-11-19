@@ -221,9 +221,11 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			} else if direction == "inbound" {
 				resp, pctx = s.handleInbound(stream, headers, nil)
 				requestDirection = direction
+				markUpstreamSent(pctx)
 			} else {
 				resp, pctx = s.handleOutbound(stream, headers, nil)
 				requestDirection = direction
+				markUpstreamSent(pctx)
 			}
 
 		case *extprocv3.ProcessingRequest_RequestBody:
@@ -235,9 +237,11 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			} else if pendingDirection == "inbound" {
 				resp, pctx = s.handleInboundBody(stream, pendingHeaders, body)
 				requestDirection = pendingDirection
+				markUpstreamSent(pctx)
 			} else {
 				resp, pctx = s.handleOutboundBody(stream, pendingHeaders, body)
 				requestDirection = pendingDirection
+				markUpstreamSent(pctx)
 			}
 			pendingHeaders = nil
 			pendingDirection = ""
@@ -266,6 +270,17 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 		if err := stream.Send(resp); err != nil {
 			return status.Errorf(codes.Unknown, "cannot send stream response: %v", err)
 		}
+	}
+}
+
+// markUpstreamSent stamps pctx.UpstreamSentAt when the request phase is over: Envoy
+// forwards the request upstream as soon as it reads the answer the loop sends next,
+// so this is the ext_proc listener's "handed to the upstream" moment, the one the
+// two proxy listeners take before their own send. A nil pctx (a rejected stream)
+// is left alone.
+func markUpstreamSent(pctx *pipeline.Context) {
+	if pctx != nil && pctx.UpstreamSentAt.IsZero() {
+		pctx.UpstreamSentAt = time.Now()
 	}
 }
 

@@ -835,6 +835,10 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// Hop branch point 4: after the redirect re-check, dial the gateway in place of the origin.
 	var resp *http.Response
 	var err error
+	// The request-side work is done: everything from here is the upstream's time (or
+	// the hop's). Taken before both arms so the hop path reports the same figure, and
+	// only here — resendIfAsked's second client.Do follows a whole upstream round trip.
+	pctx.UpstreamSentAt = time.Now()
 	if hopped {
 		var answered bool
 		if resp, err, answered = s.hopDo(w, r, pctx, tl, pctx.OutboundSessionID); answered {
