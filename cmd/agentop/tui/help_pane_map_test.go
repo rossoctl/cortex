@@ -443,6 +443,20 @@ func TestHelpNavKeys_NoteNamesTheOneExceptionCorrectly(t *testing.T) {
 	}
 }
 
+// `s` was Usage's session toggle. Removed, it must do nothing there, not reach the
+// global hide-inactive toggle for an Events table the user cannot see.
+func TestUsagePane_RemovedSKeyDoesNothing(t *testing.T) {
+	m := &model{pane: paneUsage, selectedSess: "s1"}
+	m.usage.session = "s1"
+	m.handleKey(keyRune('s'))
+	if m.hideInactive {
+		t.Error("`s` on Usage toggled hideInactive through the global handler")
+	}
+	if m.pane != paneUsage || m.usage.session != "s1" {
+		t.Errorf("`s` on Usage changed pane %v or scope %q", m.pane, m.usage.session)
+	}
+}
+
 // `a` and `w` are live only while the drawer is open, so listing them beside
 // the keys that work everywhere taught a binding that mostly does nothing.
 func TestHelpBody_SpendDrawerKeysAreTheirOwnSection(t *testing.T) {

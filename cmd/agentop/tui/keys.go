@@ -169,6 +169,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.usage.cycleGroup()
 			m.persistUsage()
 			return m.beginFetch()
+		case "s":
+			// Was the session toggle. Swallowed so it cannot reach the global hideInactive toggle.
+			return nil
 		}
 		// No scope key: the pane `u` was pressed on sets it — Sessions charts every
 		// session, Events and Detail the one being read.
@@ -488,7 +491,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// Toggle hiding of passthrough / skip-only messages. Default is
 		// off (show everything); turning it on focuses the timeline on
 		// plugin activity. Only meaningful while the events pane is
-		// active, but accepting the key on any pane keeps the keybinding
+		// active, but accepting the key on other panes keeps the keybinding
 		// simple and lets operators set their preference before drilling
 		// into a session. rebuildEventsTable is a no-op when no session
 		// is selected.
