@@ -5190,17 +5190,17 @@ clipPath rect{width:100000px}
 </g>
 <g id="r241"><text y="508.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">▌</tspan><tspan x="100.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">▾ </tspan><tspan x="116.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">{</tspan></text>
 </g>
-<g id="r242"><text y="526.0"><tspan x="133.6" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;arguments&quot;</tspan><tspan x="226.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="242.8" textLength="336.0" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;{\&quot;command\&quot;:\&quot;npm test -- Settings\&quot;}&quot;</tspan><tspan x="578.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
+<g id="r242"><text y="526.0"><tspan x="116.8" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">▾ </tspan><tspan x="133.6" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;arguments&quot;</tspan><tspan x="226.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="242.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">{</tspan></text>
 </g>
-<g id="r243"><text y="544.0"><tspan x="133.6" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;id&quot;</tspan><tspan x="167.2" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="184.0" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;toolu_web_04&quot;</tspan><tspan x="301.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
+<g id="r243"><text y="544.0"><tspan x="150.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;command&quot;</tspan><tspan x="226.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="242.8" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;npm test -- Settings&quot;</tspan></text>
 </g>
-<g id="r244"><text y="562.0"><tspan x="133.6" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;name&quot;</tspan><tspan x="184.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="200.8" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;Bash&quot;</tspan></text>
+<g id="r244"><text y="562.0"><tspan x="133.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">}</tspan><tspan x="142.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
 </g>
-<g id="r245"><text y="580.0"><tspan x="116.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">}</tspan></text>
+<g id="r245"><text y="580.0"><tspan x="133.6" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;id&quot;</tspan><tspan x="167.2" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="184.0" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;toolu_web_04&quot;</tspan><tspan x="301.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
 </g>
-<g id="r246"><text y="598.0"><tspan x="100.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">]</tspan></text>
+<g id="r246"><text y="598.0"><tspan x="133.6" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;name&quot;</tspan><tspan x="184.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="200.8" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;Bash&quot;</tspan></text>
 </g>
-<g id="r247"><text y="616.0"><tspan x="83.2" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">}</tspan><tspan x="91.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
+<g id="r247"><text y="616.0"><tspan x="116.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">}</tspan></text>
 </g>
 <g id="r248"><text y="652.0"><tspan x="16.0" textLength="907.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[↑↓] move  [↵] fold  [tab] response  [y] yank request  [u] usage  [/] search  [esc] back  [?] keys  [q] quit</tspan></text>
 </g>
@@ -5228,37 +5228,37 @@ clipPath rect{width:100000px}
 </g>
 <g id="r260"><text y="328.0"><tspan x="100.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">▾ </tspan><tspan x="116.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">{</tspan></text>
 </g>
-<g id="r261"><text y="346.0"><tspan x="133.6" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;arguments&quot;</tspan><tspan x="226.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="242.8" textLength="336.0" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;{\&quot;command\&quot;:\&quot;npm test -- Settings\&quot;}&quot;</tspan><tspan x="578.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
+<g id="r261"><text y="346.0"><tspan x="116.8" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">▾ </tspan><tspan x="133.6" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;arguments&quot;</tspan><tspan x="226.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="242.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">{</tspan></text>
 </g>
-<g id="r262"><text y="364.0"><tspan x="133.6" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;id&quot;</tspan><tspan x="167.2" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="184.0" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;toolu_web_04&quot;</tspan><tspan x="301.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
+<g id="r262"><text y="364.0"><tspan x="150.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;command&quot;</tspan><tspan x="226.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="242.8" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;npm test -- Settings&quot;</tspan></text>
 </g>
-<g id="r263"><text y="382.0"><tspan x="133.6" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;name&quot;</tspan><tspan x="184.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="200.8" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;Bash&quot;</tspan></text>
+<g id="r263"><text y="382.0"><tspan x="133.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">}</tspan><tspan x="142.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
 </g>
-<g id="r264"><text y="400.0"><tspan x="116.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">}</tspan></text>
+<g id="r264"><text y="400.0"><tspan x="133.6" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;id&quot;</tspan><tspan x="167.2" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="184.0" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;toolu_web_04&quot;</tspan><tspan x="301.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
 </g>
-<g id="r265"><text y="418.0"><tspan x="100.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">]</tspan></text>
+<g id="r265"><text y="418.0"><tspan x="133.6" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;name&quot;</tspan><tspan x="184.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="200.8" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;Bash&quot;</tspan></text>
 </g>
-<g id="r266"><text y="436.0"><tspan x="83.2" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">}</tspan><tspan x="91.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
+<g id="r266"><text y="436.0"><tspan x="116.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">}</tspan></text>
 </g>
-<g id="r267"><text y="454.0"><tspan x="66.4" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">▾ </tspan><tspan x="83.2" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">{</tspan></text>
+<g id="r267"><text y="454.0"><tspan x="100.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">]</tspan></text>
 </g>
-<g id="r268"><text y="472.0"><tspan x="100.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;role&quot;</tspan><tspan x="150.4" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="167.2" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;user&quot;</tspan><tspan x="217.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
+<g id="r268"><text y="472.0"><tspan x="83.2" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">}</tspan><tspan x="91.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
 </g>
-<g id="r269"><text y="490.0"><tspan x="83.2" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">▾ </tspan><tspan x="100.0" textLength="109.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;toolResults&quot;</tspan><tspan x="209.2" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="226.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[</tspan></text>
+<g id="r269"><text y="490.0"><tspan x="66.4" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">▾ </tspan><tspan x="83.2" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">{</tspan></text>
 </g>
-<g id="r270"><text y="508.0"><tspan x="100.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">▾ </tspan><tspan x="116.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">{</tspan></text>
+<g id="r270"><text y="508.0"><tspan x="100.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;role&quot;</tspan><tspan x="150.4" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="167.2" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;user&quot;</tspan><tspan x="217.6" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">,</tspan></text>
 </g>
-<g id="r271"><text y="526.0"><tspan x="133.6" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;content&quot;</tspan><tspan x="209.2" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="226.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">│</tspan></text>
+<g id="r271"><text y="526.0"><tspan x="83.2" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">▾ </tspan><tspan x="100.0" textLength="109.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;toolResults&quot;</tspan><tspan x="209.2" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="226.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[</tspan></text>
 </g>
-<g id="r272"><text y="544.0"><tspan x="150.4" textLength="277.2" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">PASS  src/pages/Settings.test.tsx</tspan></text>
+<g id="r272"><text y="544.0"><tspan x="100.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">▾ </tspan><tspan x="116.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">{</tspan></text>
 </g>
-<g id="r273"><text y="562.0"><tspan x="150.4" textLength="243.6" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">  ✓ toggles dark mode (31 ms)</tspan></text>
+<g id="r273"><text y="562.0"><tspan x="133.6" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;content&quot;</tspan><tspan x="209.2" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="226.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">│</tspan></text>
 </g>
-<g id="r274"><text y="580.0"><tspan x="150.4" textLength="344.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">  ✓ keeps the choice after reload (12 ms)</tspan></text>
+<g id="r274"><text y="580.0"><tspan x="150.4" textLength="277.2" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">PASS  src/pages/Settings.test.tsx</tspan></text>
 </g>
-<g id="r275"><text y="598.0"><tspan x="133.6" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;toolUseId&quot;</tspan><tspan x="226.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="242.8" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;toolu_web_04&quot;</tspan></text>
+<g id="r275"><text y="598.0"><tspan x="150.4" textLength="243.6" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">  ✓ toggles dark mode (31 ms)</tspan></text>
 </g>
-<g id="r276"><text y="616.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">▌</tspan><tspan x="116.8" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">}</tspan></text>
+<g id="r276"><text y="616.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">▌</tspan><tspan x="150.4" textLength="344.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">  ✓ keeps the choice after reload (12 ms)</tspan></text>
 </g>
 </defs>
 <g class="st st0 lbl-install">

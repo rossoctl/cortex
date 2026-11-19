@@ -240,3 +240,91 @@ func TestParentPath(t *testing.T) {
 		}
 	}
 }
+
+// toolDoc is v as JSON, so a test can write a JSON string that holds JSON without escapes.
+func toolDoc(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// A tool call's arguments and a tool's one-line JSON output show as their value, at the paths
+// where the detail view puts them, one level only. The same key elsewhere, a string inside a
+// decoded value, and output with line breaks stay strings.
+func TestRenderTree_ToolArgumentsAndOutputDecodeOneLevel(t *testing.T) {
+	doc := toolDoc(t, map[string]any{
+		"inference": map[string]any{"toolCalls": []any{map[string]any{
+			"arguments": `{"command":"cd x\ncat y","arguments":"{\"a\":1}"}`, "other": `{"a":1}`}},
+			"toolResults": []any{map[string]any{"content": `[1,{"content":"{\"b\":2}"}]`}, map[string]any{"content": "{\n\"a\": 1}"}},
+			"arguments":   `{"a":1}`},
+		"mcp": map[string]any{"params": map[string]any{"arguments": `{"a":1}`}},
+	})
+	want := []string{"{", `  "inference": {`, `    "arguments": "{\"a\":1}",`, `    "toolCalls": [`, "      {",
+		`        "arguments": {`, `          "arguments": "{\"a\":1}",`, `          "command": │`, "            cd x", "            cat y",
+		"        },", `        "other": "{\"a\":1}"`, "      }", "    ],", `    "toolResults": [`, "      {", `        "content": [`,
+		"          1,", "          {", `            "content": "{\"b\":2}"`, "          }", "        ]", "      },", "      {",
+		`        "content": │`, "          {", `          "a": 1}`, "      }", "    ]", "  },", `  "mcp": {`, `    "params": {`,
+		`      "arguments": "{\"a\":1}"`, "    }", "  }", "}"}
+	if got := treeText(t, doc, foldState{all: true}); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}
+
+// A string that is not exactly one JSON value stays a string, in arguments and in tool output.
+func TestRenderTree_ToolJSONWithOtherBytesStaysAString(t *testing.T) {
+	for _, s := range []string{`{bad`, `{} {}`, `{}]`, `{"a":1}}`, `{"a":1}]`, `{"a":1}x`} {
+		for _, inf := range []map[string]any{
+			{"toolCalls": []any{map[string]any{"arguments": s}}},
+			{"toolResults": []any{map[string]any{"content": s}}},
+		} {
+			doc := toolDoc(t, map[string]any{"inference": inf})
+			kept := toolDoc(t, s)
+			if got := strings.Join(treeText(t, doc, foldState{all: true}), "\n"); !strings.Contains(got, kept) {
+				t.Errorf("%s: got %q, want %s kept", doc, got, kept)
+			}
+		}
+	}
+}
+
+// The exact capture shows the body as the client sent it: arguments and tool output stay strings.
+func TestRenderTree_JSONStringInRawStaysAString(t *testing.T) {
+	body := `{"raw":{"arguments":"{\"a\":1}","toolResults":[{"content":"[1]"}]},"inference":{"toolCalls":[{"arguments":"{\"a\":1}"}]}}`
+	for _, path := range []string{"", "request", "response"} {
+		sec, err := sectionTree(path, "━━ S", nil, []byte(body), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var args, out, inf bool
+		for _, l := range renderTree(sec, foldState{all: true}) {
+			s := strings.TrimSpace(stripANSI(l.text))
+			args = args || strings.HasPrefix(s, `"arguments": "{\"a\":1}"`)
+			out = out || s == `"content": "[1]"`
+			inf = inf || s == `"arguments": {`
+		}
+		if !args || !out || !inf {
+			t.Errorf("path %q: raw arguments kept %v, raw output kept %v, inference object %v", path, args, out, inf)
+		}
+	}
+}
+
+// A decoded tool value larger than clipBytes starts closed, as the string did. A small one starts
+// open.
+func TestRenderTree_LargeDecodedToolValueStartsClosed(t *testing.T) {
+	big := toolDoc(t, []any{strings.Repeat("y", clipBytes)})
+	doc := toolDoc(t, map[string]any{"inference": map[string]any{"messages": []any{map[string]any{
+		"role": "user", "toolResults": []any{map[string]any{"content": big}, map[string]any{"content": `{"a":1}`}}}}}})
+	root, err := treeFromJSON([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := root.child("inference").child("messages").kids[0].child("toolResults").kids
+	if c := res[0].child("content"); c.kind != kindArray || c.defOpen {
+		t.Errorf("large output: kind %v, open %v, want a closed array", c.kind, c.defOpen)
+	}
+	if c := res[1].child("content"); c.kind != kindObject || !c.defOpen {
+		t.Errorf("small output: kind %v, open %v, want an open object", c.kind, c.defOpen)
+	}
+}

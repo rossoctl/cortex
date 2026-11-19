@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/session/archive"
@@ -257,5 +258,18 @@ func TestSearch_MatcherForgetsAtASegment(t *testing.T) {
 	m.forget()
 	if len(m.seen) != 0 || len(m.json) != 0 || len(m.keys) != 0 {
 		t.Errorf("after forget: %d texts, %d schemas and %d keys kept, want none", len(m.seen), len(m.json), len(m.keys))
+	}
+}
+
+// A tool string's decoded value is a new copy of its strings. The search matches them without
+// keeping them, and still finds a long string inside the value.
+func TestToolJSON_KeepsNoDecodedString(t *testing.T) {
+	long := strings.Repeat("x", session.InternMinLen) + ` needle\n`
+	m := newMatcher("needle")
+	if !m.toolJSON("arguments", `{"command":"`+long+`"}`, model.ToolArgumentsJSON) {
+		t.Fatal("the long string in the decoded arguments did not match")
+	}
+	if len(m.seen) != 0 {
+		t.Errorf("the matcher kept %d decoded strings", len(m.seen))
 	}
 }
