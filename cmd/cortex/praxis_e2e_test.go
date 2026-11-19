@@ -118,6 +118,9 @@ type chain struct {
 	client *http.Client
 	cfg    *config.Config
 	hop    *forwardproxy.Hop // nil in direct mode
+	ready  <-chan struct{}   // closes when the hop is ready; nil in direct mode
+	exited <-chan struct{}   // closes when cortex-gateway exits
+	events <-chan model.SessionEvent
 	// startGateway starts cortex-gateway. newPraxisChain calls it unless noGateway is set.
 	startGateway func()
 }
@@ -173,10 +176,20 @@ func newStore(t *testing.T) *session.Store {
 	return store
 }
 
+// newChainStore gives c a store, subscribed before any traffic so that every row wakes
+// waitResponses.
+func (c *chain) newChainStore(t *testing.T) {
+	c.store = newStore(t)
+	sub, cancel := c.store.Subscribe()
+	t.Cleanup(cancel)
+	c.events = sub.Events()
+}
+
 // newDirectChain is the direct-mode twin: the same origin and dialer, praxis off.
 func newDirectChain(t *testing.T, origin *mockOrigin) *chain {
 	t.Helper()
-	c := &chain{origin: origin, store: newStore(t), cfg: e2eConfig(false)}
+	c := &chain{origin: origin, cfg: e2eConfig(false)}
+	c.newChainStore(t)
 	fp := newForwardProxy(t, c.cfg, c.store, e2eRates(t))
 	fp.Client.Transport.(*http.Transport).DialContext = origin.dial
 	c.serveProxy(t, fp)
@@ -196,7 +209,8 @@ func newPraxisChain(t *testing.T, origin *mockOrigin, opts chainOpts) *chain {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	c := &chain{origin: origin, store: newStore(t), cfg: e2eConfig(true)}
+	c := &chain{origin: origin, cfg: e2eConfig(true)}
+	c.newChainStore(t)
 	apiLn, egressLn := listen(t), listen(t)
 	c.cfg.Listener.SessionAPIAddr = apiLn.Addr().String()
 	c.cfg.Praxis.Listen = freeAddr(t)
@@ -225,6 +239,11 @@ func newPraxisChain(t *testing.T, origin *mockOrigin, opts chainOpts) *chain {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c.ready = hopReady(t, c.cfg.Praxis.ListenAddr())
+	// The gateway starts after the hop, so the first probe fails. The next one follows at once.
+	orig := praxisProbeEvery
+	praxisProbeEvery = time.Millisecond
+	t.Cleanup(func() { praxisProbeEvery = orig })
 	hop, egressSrv := startPraxis(ctx, c.cfg, fp, token, up.Transport, egressLn)
 	t.Cleanup(func() { egressSrv.Close() })
 	c.hop = hop
@@ -246,16 +265,12 @@ func newPraxisChain(t *testing.T, origin *mockOrigin, opts chainOpts) *chain {
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
+		exited := make(chan struct{})
+		go func() { _ = cmd.Wait(); close(exited) }()
+		c.exited = exited
 		t.Cleanup(func() {
 			stdin.Close()
-			done := make(chan struct{})
-			go func() { _ = cmd.Wait(); close(done) }()
-			select {
-			case <-done:
-			case <-time.After(10 * time.Second):
-				_ = cmd.Process.Kill()
-				<-done
-			}
+			<-exited
 			if t.Failed() {
 				t.Logf("cortex-gateway output:\n%s", out.String())
 			}
@@ -263,19 +278,21 @@ func newPraxisChain(t *testing.T, origin *mockOrigin, opts chainOpts) *chain {
 	}
 	if !opts.noGateway {
 		c.startGateway()
-		c.waitReady(t, 20*time.Second)
+		c.waitReady(t)
 	}
 	return c
 }
 
-func (c *chain) waitReady(t *testing.T, d time.Duration) {
+// waitReady waits for the hop's probe to pass, and fails if cortex-gateway exits first.
+func (c *chain) waitReady(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for !c.hop.Ready() {
-		if time.Now().After(deadline) {
-			t.Fatalf("the hop is not ready after %s", d)
-		}
-		time.Sleep(20 * time.Millisecond)
+	select {
+	case <-c.ready:
+	case <-c.exited:
+		t.Fatal("cortex-gateway exited before the hop was ready")
+	}
+	if !c.hop.Ready() {
+		t.Fatal("the hop logged that it is ready, but Ready() is false")
 	}
 }
 
@@ -317,22 +334,27 @@ func responseCount(evs []model.SessionEvent) int {
 	return n
 }
 
-// waitResponses waits until the session holds n response rows, and returns its rows.
-func (c *chain) waitResponses(t *testing.T, n int, d time.Duration) []model.SessionEvent {
+// waitResponses waits until the e2e session holds n response rows, and returns its rows.
+func (c *chain) waitResponses(t *testing.T, n int) []model.SessionEvent {
 	t.Helper()
-	deadline := time.Now().Add(d)
+	return c.waitSessionResponses(t, e2eSession, n)
+}
+
+// waitSessionResponses waits until session sid holds n response rows, and returns its
+// rows. Each row the store takes wakes it.
+func (c *chain) waitSessionResponses(t *testing.T, sid string, n int) []model.SessionEvent {
+	t.Helper()
 	for {
 		var evs []model.SessionEvent
-		if v := c.store.View(e2eSession); v != nil {
+		if v := c.store.View(sid); v != nil {
 			evs = v.Events
 		}
 		if responseCount(evs) >= n {
 			return evs
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the session has %d response rows after %s, want %d: %+v", responseCount(evs), d, n, evs)
+		if _, ok := <-c.events; !ok {
+			t.Fatalf("the store closed with %d response rows in %s, want %d: %+v", responseCount(evs), sid, n, evs)
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -411,27 +433,17 @@ func serveFrames(contentType string, gz bool, frames []string, release <-chan st
 	}
 }
 
-// readFrame reads one SSE frame (to the blank line), or fails after 10 s.
+// readFrame reads one SSE frame (to the blank line). The origin holds the rest of the
+// response until the caller releases it, so a buffered response blocks here.
 func readFrame(t *testing.T, br *bufio.Reader) string {
 	t.Helper()
-	got := make(chan string, 1)
-	go func() {
-		var b strings.Builder
-		for {
-			line, err := br.ReadString('\n')
-			b.WriteString(line)
-			if err != nil || line == "\n" {
-				got <- b.String()
-				return
-			}
+	var b strings.Builder
+	for {
+		line, err := br.ReadString('\n')
+		b.WriteString(line)
+		if err != nil || line == "\n" {
+			return b.String()
 		}
-	}()
-	select {
-	case s := <-got:
-		return s
-	case <-time.After(10 * time.Second):
-		t.Fatal("no frame in 10s: the response is buffered")
-		return ""
 	}
 }
 
@@ -444,7 +456,7 @@ func TestPraxisE2E_HostAndCostMatchDirect(t *testing.T) {
 		if st, b, _ := c.do(t, request(t, t.Context(), http.MethodPost, chatURL, chatRequest)); st != http.StatusOK {
 			t.Fatalf("status %d: %s", st, b)
 		}
-		rows[i] = lastResponse(t, c.waitResponses(t, 1, 10*time.Second))
+		rows[i] = lastResponse(t, c.waitResponses(t, 1))
 	}
 	direct, praxis := rows[0], rows[1]
 	if praxis.Host != direct.Host || praxis.Host == "" {
@@ -522,12 +534,8 @@ func TestPraxisE2E_HangUpIsClientCanceled(t *testing.T) {
 	readFrame(t, bufio.NewReader(resp.Body))
 	cancel()
 	resp.Body.Close()
-	select {
-	case <-originDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the origin's request context did not end within 5s")
-	}
-	row := lastResponse(t, c.waitResponses(t, 1, 10*time.Second))
+	<-originDone
+	row := lastResponse(t, c.waitResponses(t, 1))
 	if row.Error == nil || row.Error.Kind != "client_canceled" {
 		t.Errorf("error = %+v, want client_canceled", row.Error)
 	}
@@ -541,21 +549,14 @@ func TestPraxisE2E_FailClosedAtStartup(t *testing.T) {
 	if st, b, _ := c.do(t, request(t, t.Context(), http.MethodPost, chatURL, chatRequest)); st != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d (%s), want 503", st, b)
 	}
-	row := lastResponse(t, c.waitResponses(t, 1, 5*time.Second))
+	row := lastResponse(t, c.waitResponses(t, 1))
 	if row.Error == nil || row.Error.Kind != model.ErrorKindGatewayUnavailable {
 		t.Errorf("error = %+v, want %s", row.Error, model.ErrorKindGatewayUnavailable)
 	}
 	c.startGateway()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		st, _, _ := c.do(t, request(t, t.Context(), http.MethodPost, chatURL, chatRequest))
-		if st == http.StatusOK {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("status = %d 10s after the gateway started, want 200", st)
-		}
-		time.Sleep(200 * time.Millisecond)
+	c.waitReady(t)
+	if st, b, _ := c.do(t, request(t, t.Context(), http.MethodPost, chatURL, chatRequest)); st != http.StatusOK {
+		t.Fatalf("status = %d (%s) once the gateway is ready, want 200", st, b)
 	}
 }
 
@@ -568,7 +569,7 @@ func TestPraxisE2E_SilenceMidStream(t *testing.T) {
 	if want := strings.Join(chatFrames, ""); st != http.StatusOK || string(b) != want {
 		t.Fatalf("got %d %q, want 200 %q", st, b, want)
 	}
-	if row := lastResponse(t, c.waitResponses(t, 1, 10*time.Second)); row.Error != nil {
+	if row := lastResponse(t, c.waitResponses(t, 1)); row.Error != nil {
 		t.Errorf("error = %+v, want none", row.Error)
 	}
 }
@@ -600,7 +601,7 @@ func TestPraxisE2E_OverTenMiBEachWay(t *testing.T) {
 		t.Errorf("the origin read %d bytes, want %d", n, size)
 	}
 	// One direction per row (docs/session-api.md): bytesUp on the request row, bytesDown on the response row.
-	evs := c.waitResponses(t, 1, 10*time.Second)
+	evs := c.waitResponses(t, 1)
 	var up int64
 	for _, ev := range evs {
 		if ev.Phase == pipeline.SessionRequest {
@@ -629,7 +630,7 @@ func TestPraxisE2E_CodexMislabeledSSE(t *testing.T) {
 	if got := streamFirstFrame(t, c, request(t, t.Context(), http.MethodPost, codexURL, codexRequest), release); got != strings.Join(frames, "") {
 		t.Errorf("body = %q", got)
 	}
-	c.waitResponses(t, 1, 10*time.Second)
+	c.waitResponses(t, 1)
 
 	const detail = `{"detail":"Method Not Allowed"}`
 	origin.serve(func(w http.ResponseWriter, r *http.Request) {
@@ -642,7 +643,7 @@ func TestPraxisE2E_CodexMislabeledSSE(t *testing.T) {
 	if st != http.StatusMethodNotAllowed || string(b) != detail {
 		t.Fatalf("got %d %q, want 405 %q", st, b, detail)
 	}
-	row := lastResponse(t, c.waitResponses(t, 2, 10*time.Second))
+	row := lastResponse(t, c.waitResponses(t, 2))
 	// The provider's text must not go into the store, which has no authentication.
 	if row.StatusCode != http.StatusMethodNotAllowed || row.Error == nil || row.Error.Kind != "backend_error" || row.Error.Code != "405" || row.Error.Message != "" {
 		t.Errorf("row = %d %+v, want 405 backend_error/405 with no message", row.StatusCode, row.Error)
@@ -670,7 +671,7 @@ func TestPraxisE2E_AcceptEncodingDecoded(t *testing.T) {
 	if ae := origin.lastHeader(t).Get("Accept-Encoding"); ae != "gzip" {
 		t.Errorf("the origin saw Accept-Encoding %q, want gzip", ae)
 	}
-	row := lastResponse(t, c.waitResponses(t, 1, 10*time.Second))
+	row := lastResponse(t, c.waitResponses(t, 1))
 	if row.Inference == nil || row.Inference.InputTokens != 11 || row.Inference.OutputTokens != 5 {
 		t.Errorf("inference = %+v, want 11 input and 5 output tokens", row.Inference)
 	}
@@ -716,9 +717,17 @@ func TestPraxisE2E_TokenlessRequestTo47605(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403", resp.StatusCode)
 	}
-	time.Sleep(time.Second) // a row, if one were sent, lands well within this
-	if after := len(c.store.ListSessions()); after != before || c.store.View(e2eSession) != nil {
-		t.Errorf("sessions went from %d to %d; e2e session = %+v", before, after, c.store.View(e2eSession))
+	// The gateway sends rows in order on one stream, so once a later request's row is in
+	// the store, a row for the refused request would be too.
+	const barrier = "00000000-0000-4000-8000-0000000000b1"
+	later := request(t, t.Context(), http.MethodPost, chatURL, chatRequest)
+	later.Header.Set(session.ClaudeCodeSessionHeader, barrier)
+	if st, b, _ := c.do(t, later); st != http.StatusOK {
+		t.Fatalf("later request: status %d: %s", st, b)
+	}
+	c.waitSessionResponses(t, barrier, 1)
+	if after := len(c.store.ListSessions()); after != before+1 || c.store.View(e2eSession) != nil {
+		t.Errorf("sessions went from %d to %d, want one more for the later request; e2e session = %+v", before, after, c.store.View(e2eSession))
 	}
 }
 
@@ -744,10 +753,11 @@ func eventsJSON(t *testing.T, c *chain) []map[string]any {
 // The JSON and SSE requests record the same rows in both modes.
 func TestPraxisE2E_SameEventsAsDirect(t *testing.T) {
 	origin := newMockOrigin(t)
-	// ttfbMs and durationMs are omitempty. The delay keeps both at 5 ms or more, so a
-	// missing key means the field is missing, not a 0 ms value.
+	// ttfbMs and durationMs are omitempty. The origin's delay before its first byte is a
+	// floor under both, so a missing key means the field is missing, not a 0 ms value.
+	const originDelay = 5 * time.Millisecond
 	slow := func(h http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) { time.Sleep(5 * time.Millisecond); h(w, r) }
+		return func(w http.ResponseWriter, r *http.Request) { time.Sleep(originDelay); h(w, r) }
 	}
 	var got [2][]map[string]any
 	for i, c := range []*chain{newDirectChain(t, origin), newPraxisChain(t, origin, chainOpts{})} {
@@ -755,12 +765,12 @@ func TestPraxisE2E_SameEventsAsDirect(t *testing.T) {
 		if st, b, _ := c.do(t, request(t, t.Context(), http.MethodPost, chatURL, chatRequest)); st != http.StatusOK {
 			t.Fatalf("status %d: %s", st, b)
 		}
-		c.waitResponses(t, 1, 10*time.Second)
+		c.waitResponses(t, 1)
 		origin.serve(slow(serveFrames("text/event-stream", false, chatFrames, nil, 0)))
 		if st, b, _ := c.do(t, request(t, t.Context(), http.MethodPost, chatURL, chatStreamRequest)); st != http.StatusOK {
 			t.Fatalf("status %d: %s", st, b)
 		}
-		c.waitResponses(t, 2, 10*time.Second)
+		c.waitResponses(t, 2)
 		got[i] = eventsJSON(t, c)
 	}
 	direct, praxis := got[0], got[1]
@@ -776,11 +786,12 @@ func TestPraxisE2E_SameEventsAsDirect(t *testing.T) {
 		for _, k := range []string{"ttfbMs", "durationMs"} {
 			dv, dok := d[k].(float64)
 			pv, pok := p[k].(float64)
-			// A missing key reads as 0, which is within 50 ms of the other side's value.
+			// Each mode times its own run, so the values differ; both carry the origin's delay.
+			floor := float64(originDelay.Milliseconds())
 			if dok != pok {
 				t.Errorf("row %d: %s = %s, direct %s (on one side only)", i, k, compact(p[k]), compact(d[k]))
-			} else if dv-pv > 50 || pv-dv > 50 {
-				t.Errorf("row %d: %s = %v, direct %v (over 50 ms apart)", i, k, pv, dv)
+			} else if dok && (dv < floor || pv < floor) {
+				t.Errorf("row %d: %s = %v, direct %v, want both at least the origin's %v ms", i, k, pv, dv, floor)
 			}
 			delete(d, k)
 			delete(p, k)
@@ -869,7 +880,7 @@ func TestPraxisE2E_PolicyDeniesModel(t *testing.T) {
 	if n := origin.count(); n != 1 {
 		t.Fatalf("model-bad: the origin got %d requests, want 1", n)
 	}
-	c.waitResponses(t, 2, 10*time.Second)
+	c.waitResponses(t, 2)
 }
 
 // A policy with llm: routes passes requests that are not inference calls.
@@ -1074,7 +1085,7 @@ func TestPraxisE2E_PolicyDecisionInRow(t *testing.T) {
 					t.Fatalf("error.code = %d (%v), want %d; body %s", rpc.Error.Code, err, tc.rpcCode, b)
 				}
 			}
-			row := lastResponse(t, c.waitResponses(t, 1, 10*time.Second))
+			row := lastResponse(t, c.waitResponses(t, 1))
 			if row.Invocations == nil || !reflect.DeepEqual(row.Invocations.Outbound, []model.Invocation{tc.want}) {
 				t.Errorf("response row outbound = %+v, want %+v", row.Invocations, []model.Invocation{tc.want})
 			}
