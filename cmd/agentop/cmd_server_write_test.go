@@ -253,6 +253,29 @@ func TestServerAdd_RefusesAMissingWordBeforeAskingForAKey(t *testing.T) {
 	}
 }
 
+// Neither word given: one run names both, so the user does not learn of the second
+// only after fixing the first.
+func TestServerAdd_NamesBothMissingWordsAtOnce(t *testing.T) {
+	asked := stubKeyPrompt(t, "sk")
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	code, _, errOut := runServerCmd(t, "", "add", "glm", "https://glm.example.com", "--config", path)
+	if code != 2 || !strings.Contains(errOut, "--main and --helper are empty") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+	if *asked != "" {
+		t.Error("missing words asked for a key")
+	}
+}
+
+// The usage line names the two required flags, so a user who gave only a name
+// learns of them in the same run.
+func TestServerAdd_UsageNamesTheRequiredFlags(t *testing.T) {
+	code, _, errOut := runServerCmd(t, "", "add", "glm")
+	if code != 2 || !strings.Contains(errOut, "agentop server add <name> <url> --main WORD --helper WORD") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+}
+
 // A word is checked against the server's own list, read with the key just given, so
 // a word naming none of its models is refused with the list to choose from, and a
 // list that cannot be read stops the add: its URL or key is wrong.

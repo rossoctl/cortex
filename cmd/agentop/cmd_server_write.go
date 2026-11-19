@@ -92,7 +92,7 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return code
 	}
 	if len(pos) != 2 {
-		fmt.Fprintln(stderr, "agentop server add: want a name and a URL: agentop server add <name> <url>")
+		fmt.Fprintln(stderr, "agentop server add: want a name and a URL: agentop server add <name> <url> --main WORD --helper WORD")
 		return 2
 	}
 	name, rawURL := pos[0], pos[1]
@@ -240,6 +240,10 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // checkWordFlags checks add's --main and --helper: both given, each a word the router
 // can match, and no $, which config.Load would expand.
 func checkWordFlags(models routerconfig.Server) error {
+	// Both at once, so a user who gave neither learns it in one run, not two.
+	if models.Main == "" && models.Helper == "" {
+		return errors.New("--main and --helper are empty: give a word of each model's name, such as opus and haiku")
+	}
 	for _, w := range []struct{ flag, word string }{{"--main", models.Main}, {"--helper", models.Helper}} {
 		if err := routerconfig.CheckWord(w.word); err != nil {
 			return fmt.Errorf("%s %w", w.flag, err)

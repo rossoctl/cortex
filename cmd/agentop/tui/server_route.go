@@ -66,7 +66,7 @@ func (m *model) routerStatus() (c routerconfig.Config, why string) {
 	}
 	// NOT CONFIGURED, OR OFF, AND THIS SIDE CANNOT TELL WHICH: the proxy does not build an
 	// on_error: off plugin, so /v1/pipeline lists neither. Both fixes, then.
-	return routerconfig.Config{}, "this Cortex runs no inference-router: add a server with agentop server add <name> <url>, " +
+	return routerconfig.Config{}, "this Cortex runs no inference-router: add a server with agentop server add <name> <url> --main WORD --helper WORD, " +
 		"or, if " + homeTilde(m.localConfigPath) + " has one under on_error: off, remove on_error to route"
 }
 
