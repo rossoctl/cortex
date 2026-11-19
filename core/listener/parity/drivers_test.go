@@ -904,7 +904,7 @@ func runReverseProxy(t *testing.T, f fixture, wantPhase pipeline.SessionPhase) *
 	// The unbuffered relay records its response row when ReverseProxy finishes copying the
 	// body, which can be after the client has its response: wait for it rather than race it.
 	waitResponse := func() {}
-	if wantPhase == pipeline.SessionResponse && !f.refusedPreRun("reverseproxy") {
+	if wantPhase == pipeline.SessionResponse && !f.refusedPreRun("reverseproxy") && !f.unrecordedBy["reverseproxy"] {
 		waitResponse = awaitPhase(store, pipeline.Inbound, wantPhase)
 	}
 
