@@ -253,6 +253,37 @@ func TestNoRecord_AKeptOptOutKeepsItsPlaceAfterADelete(t *testing.T) {
 	}
 }
 
+// An unflagged row of a session that gets a queue slot while its opt-out is still kept (the
+// writer has made room, but not reached the opt-out's place) is withheld: the opt-out applies
+// before it.
+func TestNoRecord_ARowQueuedWhileTheOptOutIsKeptIsWithheld(t *testing.T) {
+	root := t.TempDir()
+	a := openTest(t, root, newClock(), WithQueueDepth(reserve+6))
+	r := newRecorder(a)
+	release := gateWriter(t, a)
+	fillToReserve(t, a, r, "s0")
+	r.record("s1", flagged(plain(1))...) // no room: kept
+	if a.optOutN.Load() != 1 {
+		t.Fatal("precondition: the opt-out is kept")
+	}
+	a.gate <- struct{}{} // one op through: the writer takes the next and waits again
+	for deadline := time.Now().Add(10 * time.Second); len(a.ops) >= cap(a.ops)-reserve; {
+		if time.Now().After(deadline) {
+			t.Fatal("the writer made no room")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	r.record("s1", plain(2)...) // unflagged, queued behind the opt-out's place
+	if a.optOutN.Load() != 1 {
+		t.Fatal("the opt-out was applied before the row was queued")
+	}
+	release()
+	a.Close()
+	if segs := segmentsIn(t, root, "s1"); len(segs) != 0 {
+		t.Fatalf("segments %v, want none: a row queued while the opt-out was kept was recorded", segs)
+	}
+}
+
 // One entry per session, however often it opts out while the queue is full, and none left once
 // the writer has applied it.
 func TestNoRecord_KeptOptOutsAreOnePerSessionAndCleared(t *testing.T) {

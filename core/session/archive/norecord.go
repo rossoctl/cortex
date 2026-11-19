@@ -23,10 +23,16 @@ import (
 // store's write lock, never waits, so a stalled writer never stalls other sessions' traffic.
 //
 // optOuts holds one entry per session id, removed when the writer applies it. It grows only while
-// the queue is full, and is bounded at as many ids as the queue holds ops (a.depth). Past that the
-// archive FAILS CLOSED: until a restart it records no event of a conversation, because it no longer
-// knows which ones asked not to be recorded. On a single-user laptop that many opted-out sessions
-// during one stall means forged session ids.
+// the queue is full. Its ids are bounded at as many as the queue holds ops (a.depth). Each id's
+// list of positions grows by at most one per rename, delete or clear queued after its last one,
+// so in the worst case the list holds about depth × depth positions. While any entry is kept, the
+// writer scans the list under a.mu before each op (applyOptOuts).
+//
+// Past the bound on ids the archive FAILS CLOSED: until a restart it records no event of a
+// conversation, because it no longer knows which ones asked not to be recorded. The opt-outs that
+// did not fit are not kept anywhere durable, so after a restart such a session's unflagged rows are
+// recorded again until it sends another flagged request. On a single-user laptop that many
+// opted-out sessions during one stall means forged session ids.
 
 // withhold keeps session id out of the archive from now on. It runs on the writer goroutine for an
 // event that asked not to be recorded (SessionEvent.NoRecord, which listeners set only for a
@@ -109,7 +115,8 @@ func (a *Archive) optOutLocked(id string) {
 		if len(a.optOuts) >= a.depth {
 			if !a.failClosed.Swap(true) {
 				slog.Error("session archive: more sessions asked not to be recorded, while the writer was behind, than it keeps track of; " +
-					"recording no conversation until a restart")
+					"recording no conversation until a restart. The opt-outs that did not fit are not remembered across that restart: " +
+					"those sessions' unflagged rows are recorded again until they next ask")
 			}
 			a.dropped.Add(1)
 			return
