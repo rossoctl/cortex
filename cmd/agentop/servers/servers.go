@@ -17,6 +17,7 @@ import (
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // PluginName is the inference-router plugin's registered name: the outbound entry every server
@@ -153,8 +154,8 @@ func Mapping(s routerconfig.Server) string {
 // ForHost is the server whose host hostport names, compared as the plugin matches a request.
 // ok is false for a host no server has, and for "".
 //
-// Unambiguous because the router refuses two servers on one host — the rule exists so that a
-// session's server can be named from where its requests went.
+// With two servers on one host, ForHost returns the first name in sorted order. To name a
+// session's server, use ForSession.
 func ForHost(c routerconfig.Config, hostport string) (name string, ok bool) {
 	if hostport == "" {
 		return "", false
@@ -166,4 +167,14 @@ func ForHost(c routerconfig.Config, hostport string) (name string, ok bool) {
 		}
 	}
 	return "", false
+}
+
+// ForSession is the server of session s. It is s.InferenceServer when the config has a server of
+// that name. Else it is ForHost of s.InferenceHost: that fallback is for a proxy that does not send
+// inferenceServer, and for a name that the config no longer has.
+func ForSession(c routerconfig.Config, s session.SessionSummary) (name string, ok bool) {
+	if _, ok := c.Servers[string(s.InferenceServer)]; ok {
+		return string(s.InferenceServer), true
+	}
+	return ForHost(c, s.InferenceHost)
 }
