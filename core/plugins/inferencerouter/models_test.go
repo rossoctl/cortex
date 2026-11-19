@@ -322,6 +322,8 @@ type fakeStore struct {
 	mu   sync.Mutex
 	vals map[string]string
 	ttls map[string]time.Duration
+	// onSet, when set, sees every write after it lands.
+	onSet func(k, v string)
 }
 
 func (f *fakeStore) Get(_ context.Context, k string) (string, error) {
@@ -336,6 +338,9 @@ func (f *fakeStore) Set(_ context.Context, k, v string, ttl time.Duration) error
 		f.vals, f.ttls = map[string]string{}, map[string]time.Duration{}
 	}
 	f.vals[k], f.ttls[k] = v, ttl
+	if f.onSet != nil {
+		f.onSet(k, v)
+	}
 	return nil
 }
 func (f *fakeStore) Incr(context.Context, string, int64) (int64, error)             { return 0, nil }
@@ -403,6 +408,13 @@ func TestInit_FetchesEachServersModelsAndKeepsThem(t *testing.T) {
 
 	st := &fakeStore{}
 	_ = st.Set(context.Background(), catalogPrefix+"glm", `["rits/zai-org/glm-5-3"]`, 0)
+	fetched := make(chan struct{})
+	var once sync.Once
+	st.onSet = func(k, v string) {
+		if k == catalogPrefix+"glm" && strings.Contains(v, "glm-6") {
+			once.Do(func() { close(fetched) })
+		}
+	}
 	r := New()
 	r.SetStore(st)
 	r.client = srv.Client()
@@ -417,17 +429,7 @@ func TestInit_FetchesEachServersModelsAndKeepsThem(t *testing.T) {
 
 	// Wait for the durable copy: the fetch writes it after the in-memory one, so
 	// seeing it in the store means both are done.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		v, _ := st.Get(context.Background(), catalogPrefix+"glm")
-		if strings.Contains(v, "glm-6") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("stored list = %s, want the fetched one kept", v)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	<-fetched
 	if got := routerconfig.Resolve("glm", r.catalogs.get("glm")); got != "rits/zai-org/glm-6" {
 		t.Errorf("list = %v, want the fetched one", r.catalogs.get("glm"))
 	}

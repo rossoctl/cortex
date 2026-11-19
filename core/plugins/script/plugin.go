@@ -49,6 +49,10 @@ func init() {
 // worker — and its state — to the next build.
 var pool = worker.NewPool()
 
+// startTimeout bounds each script's handshake; zero is the worker's default. A var
+// so a test can give up on a script at once.
+var startTimeout time.Duration
+
 type config struct {
 	Dir        string `json:"dir" description:"Folder of scripts, relative to ~/.cortex/plugins. Empty: that folder itself." default:""`
 	Timeout    string `json:"timeout" description:"How long one script may take to answer one hook." default:"2s"`
@@ -186,7 +190,7 @@ func (s *Script) Configure(raw json.RawMessage) error {
 	results := make([]*loaded, len(files))
 	var wg sync.WaitGroup
 	for i, f := range files {
-		w := pool.Acquire(s.holder, worker.Config{Path: f.path, Env: env, CallTimeout: s.timeout}, f.hash)
+		w := pool.Acquire(s.holder, worker.Config{Path: f.path, Env: env, StartTimeout: startTimeout, CallTimeout: s.timeout}, f.hash)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

@@ -19,14 +19,12 @@ import (
 
 func TestClient_AcquireToken_ClientTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(1 * time.Second)
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"token": "late-token"})
+		<-r.Context().Done()
 	}))
 	defer srv.Close()
 
 	client := &Client{
-		httpClient: &http.Client{Timeout: 100 * time.Millisecond},
+		httpClient: &http.Client{Timeout: time.Nanosecond},
 	}
 
 	_, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
@@ -70,28 +68,48 @@ func TestClient_AcquireToken_ContextCancellationMidRequest(t *testing.T) {
 }
 
 func TestClient_AcquireToken_LongPolling(t *testing.T) {
-	const brokerDelay = 200 * time.Millisecond
+	reached := make(chan struct{})
+	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(brokerDelay)
+		close(reached)
+		<-release
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"token": "delayed-token"})
 	}))
 	defer srv.Close()
+	unblock := sync.OnceFunc(func() { close(release) })
+	defer unblock()
 
 	client := NewClient()
-	start := time.Now()
-	token, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
-	duration := time.Since(start)
+	type result struct {
+		token string
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		token, err := client.AcquireToken(context.Background(), srv.URL, "user-token", "https://api.github.com", "", "")
+		done <- result{token, err}
+	}()
 
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// The client waits on the broker for as long as the broker holds the request.
+	select {
+	case <-reached:
+	case r := <-done:
+		t.Fatalf("AcquireToken returned before the broker had the request: %q, %v", r.token, r.err)
 	}
-	if token != "delayed-token" {
-		t.Errorf("token = %q, want delayed-token", token)
+	select {
+	case r := <-done:
+		t.Fatalf("AcquireToken returned before the broker answered: %q, %v", r.token, r.err)
+	default:
 	}
-	if duration < brokerDelay {
-		t.Errorf("request completed too quickly: %v (expected >= %v)", duration, brokerDelay)
+	unblock()
+	r := <-done
+	if r.err != nil {
+		t.Fatalf("unexpected error: %v", r.err)
+	}
+	if r.token != "delayed-token" {
+		t.Errorf("token = %q, want delayed-token", r.token)
 	}
 }
 

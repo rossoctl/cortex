@@ -1536,9 +1536,7 @@ func TestInit_RefusesToStartWithoutIdentity(t *testing.T) {
 			p.cfg = tc.cfg
 			err := p.Init(context.Background())
 			if p.tp != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-				_ = p.tp.Shutdown(ctx)
-				cancel()
+				_ = p.tp.Shutdown(context.Background())
 			}
 			if tc.wantErr && err == nil {
 				t.Fatal("Init succeeded without a resolvable identity")
@@ -1588,9 +1586,7 @@ func TestInit_RefusesWithoutNamespace(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Init refused a valid namespace %q: %v", tc.ns, err)
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-				_ = p.Shutdown(ctx) // the provider AND the gRPC client Init stored
-				cancel()
+				_ = p.Shutdown(context.Background()) // the provider AND the gRPC client Init stored
 				if got := strings.TrimSpace(tc.ns); p.cfg.Namespace != got {
 					t.Errorf("stored namespace = %q, want %q", p.cfg.Namespace, got)
 				}
@@ -1661,9 +1657,7 @@ func TestInit_NamespaceFile(t *testing.T) {
 			p.cfg = tc.cfg
 			err := p.Init(context.Background())
 			if err == nil {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-				_ = p.Shutdown(ctx)
-				cancel()
+				_ = p.Shutdown(context.Background())
 			}
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
@@ -1693,17 +1687,11 @@ func TestNamespace_ThroughDecodeAndInit(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = p.Shutdown(ctx) // the in-memory provider swapped in below, and the gRPC client
+		_ = p.Shutdown(context.Background()) // the in-memory provider swapped in below, and the gRPC client
 	})
 	// Swap the real exporter for an in-memory one so the spans can be read —
 	// after shutting the real provider down, so nothing Init built is orphaned.
-	{
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		_ = p.tp.Shutdown(ctx)
-		cancel()
-	}
+	_ = p.tp.Shutdown(context.Background())
 	exp := tracetest.NewInMemoryExporter()
 	p.tp = sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
 	p.tracer = p.tp.Tracer("test")
@@ -1824,15 +1812,13 @@ func TestShutdown_StopsIdentityPoll(t *testing.T) {
 		if err := os.WriteFile(path, []byte("weather-service\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		if err := p.Shutdown(ctx); err != nil {
+		if err := p.Shutdown(context.Background()); err != nil {
 			t.Fatalf("Shutdown: %v", err)
 		}
-		cancel()
 		plugins = append(plugins, p)
 	}
-	time.Sleep(200 * identityPollInterval)
 	for i, p := range plugins {
+		<-p.bgDone
 		if p.Ready() {
 			t.Fatalf("plugin %d: the identity poller outlived Shutdown and made the plugin ready again", i)
 		}
@@ -1851,23 +1837,17 @@ func initPolling(t *testing.T, path string) *LineageTelemetry {
 	if err := p.Init(context.Background()); err != nil {
 		t.Fatalf("Init with an unreadable self_id_file must not fail the process: %v", err)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = p.Shutdown(ctx)
-	})
+	t.Cleanup(func() { _ = p.Shutdown(context.Background()) })
 	return p
 }
 
-// waitReady blocks until the poller flips readiness, or fails the test.
+// waitReady waits for the poller to return, and fails the test unless it
+// left the plugin ready.
 func waitReady(t *testing.T, p *LineageTelemetry) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for !p.Ready() {
-		if time.Now().After(deadline) {
-			t.Fatal("plugin never became ready after the identity file appeared")
-		}
-		time.Sleep(identityPollInterval)
+	<-p.bgDone
+	if !p.Ready() {
+		t.Fatal("plugin not ready after the identity file appeared")
 	}
 }
 
@@ -1902,9 +1882,7 @@ func TestInit_ReadsSelfIDFile(t *testing.T) {
 	if err := p.Init(context.Background()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	_ = p.tp.Shutdown(ctx)
-	cancel()
+	_ = p.tp.Shutdown(context.Background())
 	if p.selfID != "weather-service" {
 		t.Errorf("selfID = %q, want trimmed file content", p.selfID)
 	}
@@ -2089,8 +2067,7 @@ func TestShutdown_ClosesConn(t *testing.T) {
 	if p.conn == nil {
 		t.Fatal("Init did not store the gRPC conn for Shutdown to close")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := context.Background()
 	if err := p.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown returned an error: %v", err)
 	}
@@ -2122,8 +2099,7 @@ func TestShutdown_ClearsReady(t *testing.T) {
 	if !p.Ready() {
 		t.Fatal("Ready() is false after a successful Init")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx := context.Background()
 	if err := p.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown returned an error: %v", err)
 	}
@@ -2356,9 +2332,7 @@ func TestInit_CAFile(t *testing.T) {
 			if !p.Ready() {
 				t.Error("plugin not ready after a successful Init")
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			_ = p.Shutdown(ctx)
+			_ = p.Shutdown(context.Background())
 		})
 	}
 }

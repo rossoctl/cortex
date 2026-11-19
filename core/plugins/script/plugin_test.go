@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -26,6 +28,7 @@ func TestMain(m *testing.M) {
 		fakeScript(mode)
 		os.Exit(0)
 	}
+	startTimeout = time.Hour // a script's start ends with its handshake or its exit
 	os.Exit(m.Run())
 }
 
@@ -534,13 +537,15 @@ func TestConfigure_ARebuildClearsAScriptThatDidNotStart(t *testing.T) {
 // counts as not started.
 func TestOnRequest_FailClosedRefusesAScriptThatNeverAnswers(t *testing.T) {
 	dir := home(t)
-	if err := os.WriteFile(filepath.Join(dir, "guard"), []byte("#!/bin/sh\nexec sleep 30\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "guard"), []byte("#!/bin/sh\nwhile read -r _; do :; done\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	start := time.Now()
+	prev := startTimeout
+	startTimeout = time.Nanosecond
+	t.Cleanup(func() { startTimeout = prev })
 	s := configured(t, true, `{"fail_closed": true}`)
-	if d := time.Since(start); d > worker.DefaultStartTimeout+2*time.Second {
-		t.Errorf("Configure took %v", d)
+	if got := metric(s, "scripts not started"); got != 1 {
+		t.Errorf("scripts not started = %v, want 1", got)
 	}
 	if a := s.OnRequest(context.Background(), request("x")); a.Type != pipeline.Reject {
 		t.Fatal("a script that never answered let requests through")
@@ -588,20 +593,38 @@ func TestConfigure_RebuildKeepsScriptState(t *testing.T) {
 // The slot's timeout bounds a call to a script that never answers.
 func TestOnRequest_Timeout(t *testing.T) {
 	dir := home(t)
-	exe, _ := os.Executable()
-	// Answers the handshake, then never replies.
-	body := fmt.Sprintf("#!/bin/sh\nprintf '{\"cortex\":1,\"hooks\":[\"request\"],\"enforce\":true}\\n'\nexec sleep 3600\n# %s\n", exe)
-	os.WriteFile(filepath.Join(dir, "hang"), []byte(body), 0o700)
-	s := configured(t, true, `{"timeout": "150ms"}`)
-	start := time.Now()
+	hang(t, dir, "request")
+	s := configured(t, true, `{"timeout": "1ns"}`)
+	if got := s.loaded[0].w.CallTimeout(); got != time.Nanosecond {
+		t.Fatalf("the script's calls are bounded by %v, want the slot's 1ns", got)
+	}
 	pctx := request("x")
 	if a := s.OnRequest(context.Background(), pctx); a.Type != pipeline.Continue {
 		t.Fatal("a hung script blocked the request")
 	}
-	if d := time.Since(start); d > 2*time.Second {
-		t.Errorf("took %v", d)
+	if invs := invocations(pctx); len(invs) != 1 || invs[0].Plugin != "hang" || invs[0].Reason != "script_error" {
+		t.Errorf("invocations = %+v, want one script_error row for hang", invs)
 	}
 }
+
+// hang writes a script into dir that answers the handshake for hook, then reads
+// until its stdin closes and never replies.
+func hang(t *testing.T, dir, hook string) {
+	t.Helper()
+	body := fmt.Sprintf("#!/bin/sh\nprintf '{\"cortex\":%d,\"hooks\":[\"%s\"],\"enforce\":true}\\n'\nwhile read -r _; do :; done\n", worker.Protocol, hook)
+	if err := os.WriteFile(filepath.Join(dir, "hang"), []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// deadlineOnly carries a deadline and is never done, so only what the code under
+// test derives from the deadline can expire.
+type deadlineOnly struct {
+	context.Context
+	d time.Time
+}
+
+func (c deadlineOnly) Deadline() (time.Time, bool) { return c.d, true }
 
 // A rebuild while a crashed script waits out its backoff keeps the script loaded.
 func TestConfigure_KeepsAScriptThatIsBackingOff(t *testing.T) {
@@ -642,23 +665,39 @@ func TestInit_SweepsARefusedBuildsWorkers(t *testing.T) {
 	script(t, dir, "count", "count")
 	running := configured(t, true, "")
 	exe, _ := os.Executable()
-	os.WriteFile(filepath.Join(dir, "count"), []byte(fmt.Sprintf("#!/bin/sh\n# v2\nFAKE_SCRIPT=count exec %q\n", exe)), 0o700)
-	refused := built(t, true, "")
+	// The refused build's script holds a FIFO open for as long as it runs, so reading
+	// the FIFO to EOF waits for it to exit.
+	hold := filepath.Join(t.TempDir(), "hold")
+	if err := syscall.Mkfifo(hold, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "count"), []byte(fmt.Sprintf("#!/bin/sh\n# v2\nexec 3>%q\nFAKE_SCRIPT=count exec %q\n", hold, exe)), 0o700)
+	held := make(chan *os.File, 1)
+	go func() {
+		f, err := os.Open(hold) // returns once the script opens it to write
+		if err != nil {
+			t.Error(err)
+		}
+		held <- f
+	}()
+	refused := built(t, true, "") // starts the script
 	orphan := refused.loaded[0].w
+	f := <-held
+	if f == nil {
+		t.FailNow()
+	}
+	defer f.Close()
 	os.WriteFile(filepath.Join(dir, "count"), []byte(fmt.Sprintf("#!/bin/sh\n# v3\nFAKE_SCRIPT=count exec %q\n", exe)), 0o700)
 	next := built(t, true, "")
 	next.Init(context.Background())
 	running.Shutdown(context.Background())
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		_, err := orphan.Call(context.Background(), map[string]any{}, nil)
-		if err != nil && strings.Contains(err.Error(), "stopped") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("a refused build's worker was never stopped")
-		}
-		time.Sleep(20 * time.Millisecond)
+	// The orphan's script exits once its stop closes its stdin, while that stop holds
+	// the worker, so the next call sees the stop.
+	if _, err := io.ReadAll(f); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orphan.Call(context.Background(), map[string]any{}, nil); err == nil || !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("a refused build's worker answers: %v", err)
 	}
 	if a := next.OnRequest(context.Background(), request("x")); a.Type != pipeline.Continue {
 		t.Fatal("the build that started does not work")
@@ -1028,31 +1067,37 @@ func (l *lastFrame) OnResponseFrame(_ context.Context, _ *pipeline.Context, _ []
 // agent a 499 for a response that arrived complete and drops the settle.
 func TestResponse_SlowScriptsLeaveTheDeadlineForTheParsersAfterTheSlot(t *testing.T) {
 	dir := home(t)
-	// Answers the handshake, then never replies.
-	body := "#!/bin/sh\nprintf '{\"cortex\":1,\"hooks\":[\"response\"],\"enforce\":true}\\n'\nexec sleep 3600\n"
-	if err := os.WriteFile(filepath.Join(dir, "hang"), []byte(body), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// A timeout larger than the dispatch deadline, so only the reserve can stop it.
-	s := configured(t, true, `{"timeout": "30s"}`)
+	hang(t, dir, "response")
+	// A timeout no test outlasts, so only the reserve can stop the call.
+	s := configured(t, true, `{"timeout": "1h"}`)
 	rec := &lastFrame{}
 	p, err := pipeline.New([]pipeline.Plugin{rec, s})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pctx := response(`{"answer":"hi"}`)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	a := p.RunResponseFrame(ctx, pctx, pctx.ResponseBody, true)
+	a := p.RunResponseFrame(reserveAndTen{context.Background()}, pctx, pctx.ResponseBody, true)
 	if a.Type != pipeline.Continue {
 		t.Fatalf("action %+v", a)
 	}
 	if !rec.got {
 		t.Fatal("the parser after the slot never saw its last frame")
 	}
-	if d, ok := ctx.Deadline(); !ok || time.Until(d) <= 0 {
-		t.Fatal("the scripts spent the whole dispatch deadline")
+	inv := invocations(pctx)[0]
+	if inv.Plugin != "hang" || inv.Reason != "script_error" {
+		t.Errorf("the hung script is recorded as %+v", inv)
 	}
+	if err := inv.Details["error"]; !strings.Contains(err, context.DeadlineExceeded.Error()) {
+		t.Errorf("the hung script's call ended with %q, want its share of the deadline spent", err)
+	}
+}
+
+// reserveAndTen is never done, and its deadline is always finalReserve and 10ms
+// away, so a response hook's share of it is 10ms whenever the slot asks.
+type reserveAndTen struct{ context.Context }
+
+func (reserveAndTen) Deadline() (time.Time, bool) {
+	return time.Now().Add(finalReserve + 10*time.Millisecond), true
 }
 
 // Once the reserve is all that remains of the deadline, the scripts are skipped
@@ -1068,8 +1113,7 @@ func TestResponse_AnExhaustedDeadlineSkipsTheScripts(t *testing.T) {
 		t.Fatal(err)
 	}
 	pctx := response(`{"answer":"hi"}`)
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
+	ctx := deadlineOnly{context.Background(), time.Now().Add(finalReserve)}
 	a := p.RunResponseFrame(ctx, pctx, pctx.ResponseBody, true)
 	if a.Type != pipeline.Continue {
 		t.Fatalf("action %+v", a)
@@ -1077,8 +1121,24 @@ func TestResponse_AnExhaustedDeadlineSkipsTheScripts(t *testing.T) {
 	if !rec.got {
 		t.Fatal("the parser after the slot never saw its last frame")
 	}
-	if inv := invocations(pctx)[0]; inv.Reason != "script_error" || inv.Shadow {
+	if inv := invocations(pctx)[0]; inv.Reason != "script_error" || inv.Shadow || inv.Details["error"] != errReserveSpent.Error() {
 		t.Errorf("the skipped script is recorded as %+v", inv)
+	}
+}
+
+// The scripts' share of a response deadline ends finalReserve before it.
+func TestResponseBudget_EndsTheReserveBeforeTheDeadline(t *testing.T) {
+	before := time.Now()
+	d := before.Add(finalReserve + time.Hour)
+	narrowed, cancel, ok := responseBudget(deadlineOnly{context.Background(), d})
+	after := time.Now()
+	if !ok {
+		t.Fatal("an hour past the reserve was refused")
+	}
+	defer cancel()
+	got, _ := narrowed.Deadline()
+	if want := d.Add(-finalReserve); got.Before(want) || got.After(want.Add(after.Sub(before))) {
+		t.Errorf("the scripts' deadline is %v from the dispatch's, want %v", d.Sub(got), finalReserve)
 	}
 }
 
