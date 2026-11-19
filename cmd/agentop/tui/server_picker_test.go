@@ -1233,7 +1233,7 @@ func TestServerPicker_AnAgentEntryHasNoKeyCount(t *testing.T) {
 	if m.serverPicker == nil {
 		t.Fatalf("no picker; notice %q", m.serverNotice)
 	}
-	if view := m.View(); strings.Contains(view, "by key:") || strings.Contains(view, "known key") {
+	if view := m.View(); strings.Contains(view, "session →") || strings.Contains(view, "known key") {
 		t.Errorf("a count line under an agents: entry:\n%s", view)
 	}
 }
