@@ -32,6 +32,18 @@ func TestUpdateSuffix(t *testing.T) {
 			"v0.9.5", true, "· no update check since 2026-11-09"},
 		{"current", updatestatus.Status{Installed: "v0.9.5", Latest: "v0.9.5", Result: updatestatus.ResultCurrent, CheckedAt: noticeNow.Add(-time.Hour)},
 			"v0.9.5", true, ""},
+		// A dev build has no order against Latest, and is often ahead of it.
+		{"dev build", updatestatus.Status{Installed: "dev", Latest: "v0.9.5", Result: updatestatus.ResultNotARelease, CheckedAt: noticeNow},
+			"dev-a698b60e+dirty", true, ""},
+		{"rc ahead", updatestatus.Status{Installed: "v0.10.0-rc.1", Latest: "v0.9.5", Result: updatestatus.ResultCurrent, CheckedAt: noticeNow},
+			"v0.10.0-rc.1", true, ""},
+		{"rc release out", updatestatus.Status{Installed: "v0.10.0-rc.1", Latest: "v0.10.0", Result: updatestatus.ResultWaiting, CheckedAt: noticeNow},
+			"v0.10.0-rc.1", true, "· v0.10.0 available"},
+		{"rc updated", updatestatus.Status{Installed: "v0.10.0", Latest: "v0.10.0", Result: updatestatus.ResultUpdated, CheckedAt: noticeNow},
+			"v0.10.0-rc.1", true, "· updated to v0.10.0, restart agentop"},
+		// Latest moved back: the update installs it, with no "available" before.
+		{"withdrawn", updatestatus.Status{Installed: "v0.10.0", Latest: "v0.9.5", Result: updatestatus.ResultWaiting, CheckedAt: noticeNow},
+			"v0.10.0", true, ""},
 	} {
 		if got := updateSuffix(tc.st, tc.version, tc.service, noticeNow); got != tc.want {
 			t.Errorf("%s: updateSuffix = %q, want %q", tc.name, got, tc.want)

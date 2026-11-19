@@ -25,6 +25,43 @@ func TestIsRelease(t *testing.T) {
 	}
 }
 
+func TestIsRC(t *testing.T) {
+	for v, want := range map[string]bool{
+		"v0.10.0-rc.1":   true,
+		"v0.10.0-rc.12":  true,
+		"v0.10.0":        false,
+		"v0.10.0-rc":     false,
+		"v0.10.0-beta.1": false,
+		"dev":            false,
+	} {
+		if got := IsRC(v); got != want {
+			t.Errorf("IsRC(%q) = %v, want %v", v, got, want)
+		}
+	}
+}
+
+func TestNewer(t *testing.T) {
+	for _, tc := range []struct {
+		latest, installed string
+		want              bool
+	}{
+		{"v0.9.6", "v0.9.5", true},
+		{"v0.9.5", "v0.9.5", false},
+		{"v0.9.5", "v0.10.0", false},
+		{"v0.10.0", "v0.10.0-rc.1", true},
+		{"v0.9.5", "v0.10.0-rc.1", false},
+		{"v0.10.1", "v0.10.0-rc.3", true},
+		{"v0.9.5", "dev-a698b60e+dirty", false},
+		{"v0.9.5", "main-1a2b3c4", false},
+		{"", "v0.9.5", false},
+		{"v0.10.0-rc.2", "v0.10.0-rc.1", false},
+	} {
+		if got := Newer(tc.latest, tc.installed); got != tc.want {
+			t.Errorf("Newer(%q, %q) = %v, want %v", tc.latest, tc.installed, got, tc.want)
+		}
+	}
+}
+
 func TestReadRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 	const body = `{"checkedAt":"2026-11-12T15:00:00Z","latest":"v0.9.6","installed":"v0.9.5","result":"waiting","installAfter":"2026-11-14T10:00:00Z","error":""}`

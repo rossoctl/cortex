@@ -151,7 +151,8 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		s.Result = updatestatus.ResultDisabled
 		return s
 	}
-	if !updatestatus.IsRelease(agentop) || !updatestatus.IsRelease(cortex) {
+	updatable := func(v string) bool { return updatestatus.IsRelease(v) || updatestatus.IsRC(v) }
+	if !updatable(agentop) || !updatable(cortex) {
 		s.Result = updatestatus.ResultNotARelease
 		return s
 	}
@@ -159,9 +160,12 @@ func autoUpdate(env *setupEnv, stdout, stderr io.Writer) updatestatus.Status {
 		s.Result, s.Error = updatestatus.ResultCheckFailed, "Latest "+tag+" is not a plain release"
 		return s
 	}
+	// An RC moves only forward, to its release or a later one. A plain release
+	// follows Latest both ways, so that moving Latest back withdraws a release.
+	rcAhead := func(v string) bool { return updatestatus.IsRC(v) && !updatestatus.Newer(tag, v) }
 	// A cpex cortex reports the tag too, and the default build must replace it.
 	wasCpex := installedIsCpex(cortexPath)
-	if agentop == tag && cortex == tag && !wasCpex {
+	if (agentop == tag && cortex == tag && !wasCpex) || rcAhead(agentop) || rcAhead(cortex) {
 		s.Result = updatestatus.ResultCurrent
 		return s
 	}

@@ -7,6 +7,8 @@ import (
 	"os"
 	"regexp"
 	"time"
+
+	"golang.org/x/mod/semver"
 )
 
 // FileName is the name of the status file in ~/.cortex.
@@ -48,7 +50,21 @@ func Read(path string) (Status, error) {
 	return s, err
 }
 
-var releaseRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+var (
+	releaseRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+	rcRE      = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$`)
+)
 
 // IsRelease reports whether v is a plain release tag such as v0.9.5.
 func IsRelease(v string) bool { return releaseRE.MatchString(v) }
+
+// IsRC reports whether v is a release candidate tag such as v0.10.0-rc.1.
+func IsRC(v string) bool { return rcRE.MatchString(v) }
+
+// Newer reports whether latest is a plain release that comes after installed.
+// installed must be a plain release or a release candidate. A dev or main build
+// has no order, so Newer is false for it.
+func Newer(latest, installed string) bool {
+	return IsRelease(latest) && (IsRelease(installed) || IsRC(installed)) &&
+		semver.Compare(latest, installed) > 0
+}

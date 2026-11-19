@@ -42,7 +42,8 @@ The title bar shows one of these notices. When more than one applies, it shows t
 
 1. `· updated to vX.Y.Z, restart agentop`
 2. `· update to vX.Y.Z failed, see agentop doctor`
-3. `· vX.Y.Z available`
+3. `· vX.Y.Z available`: only when vX.Y.Z is newer than the installed release or
+   release candidate. A `dev` or `main` build shows no notice.
 4. `· no update check since <date>`: service installs only, after 72 hours with no check.
 
 ## Run
