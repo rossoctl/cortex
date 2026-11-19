@@ -607,14 +607,26 @@ func TestOnRequest_Timeout(t *testing.T) {
 	}
 }
 
-// hang writes a script into dir that answers the handshake for hook, then reads
-// until its stdin closes and never replies.
-func hang(t *testing.T, dir, hook string) {
+// hang writes a script into dir that answers the handshake for hook and never
+// replies to a call. A script holding a call exits on release, which lets the
+// slot's shutdown take the worker back.
+func hang(t *testing.T, dir, hook string) (release func()) {
 	t.Helper()
-	body := fmt.Sprintf("#!/bin/sh\nprintf '{\"cortex\":%d,\"hooks\":[\"%s\"],\"enforce\":true}\\n'\nwhile read -r _; do :; done\n", worker.Protocol, hook)
+	gate := filepath.Join(t.TempDir(), "gate")
+	if err := syscall.Mkfifo(gate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Held open both ways, so the script's open returns and a release never blocks.
+	g, err := os.OpenFile(gate, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { g.Close() })
+	body := fmt.Sprintf("#!/bin/sh\nexec 3<%q\nprintf '{\"cortex\":%d,\"hooks\":[\"%s\"],\"enforce\":true}\\n'\nread -r _ && read -r _ <&3\n", gate, worker.Protocol, hook)
 	if err := os.WriteFile(filepath.Join(dir, "hang"), []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	return func() { g.Write([]byte("\n")) }
 }
 
 // deadlineOnly carries a deadline and is never done, so only what the code under
@@ -1067,9 +1079,10 @@ func (l *lastFrame) OnResponseFrame(_ context.Context, _ *pipeline.Context, _ []
 // agent a 499 for a response that arrived complete and drops the settle.
 func TestResponse_SlowScriptsLeaveTheDeadlineForTheParsersAfterTheSlot(t *testing.T) {
 	dir := home(t)
-	hang(t, dir, "response")
+	release := hang(t, dir, "response")
 	// A timeout no test outlasts, so only the reserve can stop the call.
 	s := configured(t, true, `{"timeout": "1h"}`)
+	t.Cleanup(release)
 	rec := &lastFrame{}
 	p, err := pipeline.New([]pipeline.Plugin{rec, s})
 	if err != nil {
