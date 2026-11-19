@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
@@ -1094,9 +1095,40 @@ func TestServerPicker_AnAgentEntrySaysRowTwoIsIgnored(t *testing.T) {
 	m := keyServerModel(t, newFakeProxy(t, false), "", []session.SessionSummary{keySession("s1", "claude-code", "glm")}, "s1")
 	pickerTo(t, m, "ete")
 	m.handleKey(keyEnter)
-	// At 80 columns too: the note is on its own line, so MaxWidth does not cut it.
-	if view := renderServerPicker(m.serverPicker, 80); !strings.Contains(view, "(claude-code ignores this: the Agents pane sends it to ete)") {
+	if view := m.View(); !strings.Contains(view, "(claude-code ignores this: the Agents pane sends it to ete)") {
 		t.Errorf("no ignore note:\n%s", view)
+	}
+}
+
+// The second row's note is whole at the picker's width, whatever the names' length:
+// MaxWidth cuts a line that is too wide, so the note wraps and no line is wider.
+func TestServerPicker_TheSecondRowsNoteFitsTheWidth(t *testing.T) {
+	entries := []serverChoice{{}, {name: "glm"}, {name: "team-b-long-name"}}
+	for name, tc := range map[string]struct {
+		p    serverPicker
+		note string
+	}{
+		"the agent note": {serverPicker{agent: "claude-code", session: "s1", entries: entries, cursor: 1,
+			keyOf: "team-b-long-name", scope: true, agentRoute: "a-server-with-a-long-name"},
+			"(claude-code ignores this: the Agents pane sends it to a-server-with-a-long-name)"},
+		"the stay note": {serverPicker{agent: "opencode", session: "s1", entries: entries, cursor: 1,
+			keyOf: "team-b-long-name", scope: true, keyStaying: 12},
+			"(12 other running sessions with this key stay where they are)"},
+	} {
+		for _, width := range []int{60, 80} {
+			view := renderServerPicker(&tc.p, width)
+			var words []string
+			for _, line := range strings.Split(view, "\n") {
+				if w := lipgloss.Width(line); w > width {
+					t.Errorf("%s at %d: a line of %d columns: %q", name, width, w, line)
+				}
+				words = append(words, strings.Fields(strings.Trim(ansi.Strip(line), "│ "))...)
+			}
+			// Without spaces: the wrap can break a name at a hyphen.
+			if got := strings.Join(words, ""); !strings.Contains(got, strings.ReplaceAll(tc.note, " ", "")) {
+				t.Errorf("%s at %d: the note is not whole:\n%s", name, width, view)
+			}
+		}
 	}
 }
 

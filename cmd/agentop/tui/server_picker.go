@@ -782,7 +782,14 @@ func renderScopeStep(p *serverPicker, width int) string {
 		b.WriteString(marker + row + "\n")
 	}
 	if note != "" {
-		b.WriteString("    " + styleMuted.Render("("+note+")") + "\n")
+		note = "(" + note + ")"
+		if width > 0 {
+			// 4 for the box's border and padding, 4 for the indent.
+			note = lipgloss.NewStyle().Width(max(width-8, 20)).Render(note)
+		}
+		for _, l := range strings.Split(note, "\n") {
+			b.WriteString("    " + styleMuted.Render(strings.TrimRight(l, " ")) + "\n")
+		}
 	}
 	if p.sessionTokens > 0 {
 		b.WriteString("\n" + styleMuted.Render(fmt.Sprintf("%d tokens of its context go uncached on its first turn there.", p.sessionTokens)) + "\n")
