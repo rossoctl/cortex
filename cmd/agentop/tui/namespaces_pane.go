@@ -47,7 +47,7 @@ func loadAgentsCmd(ctx context.Context, lister cluster.Lister) tea.Cmd {
 }
 
 // localConnectedMsg carries the result of probing localEndpoint for the
-// `[l]` shortcut. client is non-nil only when the probe succeeded.
+// `[L]` shortcut. client is non-nil only when the probe succeeded.
 type localConnectedMsg struct {
 	client   *apiclient.Client
 	endpoint string
@@ -105,7 +105,6 @@ func newPickerModel(ctx context.Context, lister cluster.Lister, pf cluster.PortF
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
 		pipelineTbl:  newPipelineTable(),
-		catalogTbl:   newCatalogTable(),
 		agentsTbl:    newAgentsTable(),
 		previousPane: paneNone,
 		// Mirrors New, per this constructor's doc comment. paneNone rather than

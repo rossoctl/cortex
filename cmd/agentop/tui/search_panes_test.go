@@ -36,7 +36,6 @@ func newPanesModel(t *testing.T) *model {
 	m.rebuildNamespacesTable()
 	m.rebuildPodsTable()
 	m.rebuildPipelineTable()
-	m.rebuildCatalogTable()
 	m.rebuildAgentsTable()
 	return m
 }
@@ -50,7 +49,6 @@ func TestSearch_EveryCellOfEveryOtherTableIsSearchable(t *testing.T) {
 		{paneNamespaces, &m.namespacesTbl},
 		{panePods, &m.podsTbl},
 		{panePipeline, &m.pipelineTbl},
-		{paneCatalog, &m.catalogTbl},
 		{paneAgents, &m.agentsTbl},
 	} {
 		t.Run(paneName(tc.pane), func(t *testing.T) {
@@ -83,14 +81,14 @@ func TestSearch_SlashOnThePickers(t *testing.T) {
 	}
 }
 
-// TestSearch_OnAPaneWithNoRows: the catalog before it loads has no table rows at all.
+// TestSearch_OnAPaneWithNoRows: the pipeline before it loads has no table rows at all.
 func TestSearch_OnAPaneWithNoRows(t *testing.T) {
 	m := newPanesModel(t)
-	m.catalog = nil
-	m.catalogTbl.SetRows(nil)
-	m.pane = paneCatalog
+	m.pipeline = nil
+	m.rebuildPipelineTable()
+	m.pane = panePipeline
 	typeKeys(m, "/x")
-	if st := m.searchStatus(paneCatalog); st != "[/x: no match]" {
+	if st := m.searchStatus(panePipeline); st != "[/x: no match]" {
 		t.Errorf("status = %q, want [/x: no match]", st)
 	}
 	press(m, tea.KeyEnter)
@@ -121,18 +119,19 @@ func TestSearch_ThePaneChangesUnderTheOpenPrompt(t *testing.T) {
 
 func TestSearch_NextAndPreviousOnAnotherTable(t *testing.T) {
 	m := newPanesModel(t)
-	m.pane = paneCatalog
-	typeKeys(m, "/plugin")
+	m.pane = panePipeline
+	typeKeys(m, "/alpha")
 	press(m, tea.KeyEnter)
-	if c := m.catalogTbl.Cursor(); c != 0 {
-		t.Fatalf("cursor = %d, want 0 (alpha's \"First plugin\")", c)
+	// Rows: jwt-validation, (app), token-exchange, available, alpha, beta.
+	if c := m.pipelineTbl.Cursor(); c != 4 {
+		t.Fatalf("cursor = %d, want 4 (the available row alpha)", c)
 	}
 	m.Update(keyRune('n'))
-	if c := m.catalogTbl.Cursor(); c != 0 {
+	if c := m.pipelineTbl.Cursor(); c != 4 {
 		t.Errorf("n with one match moved the cursor to %d", c)
 	}
-	if got := m.catalogTbl.Matches(); !slices.Equal(got, []int{0}) {
-		t.Errorf("Matches = %v, want [0]", got)
+	if got := m.pipelineTbl.Matches(); !slices.Equal(got, []int{4}) {
+		t.Errorf("Matches = %v, want [4]", got)
 	}
 }
 
@@ -188,7 +187,7 @@ func TestHelp_SearchIsAnAnywhereKey(t *testing.T) {
 // agentop exits, so those three stay.
 func TestSearch_LeavingTheConnectionClearsItsSearches(t *testing.T) {
 	m := newPanesModel(t)
-	for p, q := range map[paneID]string{panePipeline: "jwt", paneCatalog: "alpha", panePods: "weather"} {
+	for p, q := range map[paneID]string{panePipeline: "jwt", paneAgents: "claude", panePods: "weather"} {
 		m.pane = p
 		typeKeys(m, "/"+q)
 		press(m, tea.KeyEnter)
@@ -202,7 +201,7 @@ func TestSearch_LeavingTheConnectionClearsItsSearches(t *testing.T) {
 	}
 
 	m.backToPodsPane()
-	for p, tbl := range map[paneID]*table.Model{panePipeline: &m.pipelineTbl, paneCatalog: &m.catalogTbl} {
+	for p, tbl := range map[paneID]*table.Model{panePipeline: &m.pipelineTbl, paneAgents: &m.agentsTbl} {
 		if m.search[p] != "" || len(tbl.Matches()) != 0 {
 			t.Errorf("pane %v kept its search: query %q, matches %v", p, m.search[p], tbl.Matches())
 		}

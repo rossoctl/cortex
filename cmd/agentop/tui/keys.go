@@ -144,17 +144,15 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.usage.cycleWindow()
 			m.persistUsage()
 			return m.beginFetch()
-		case "b":
+		case "o":
 			// Breakdown. NOT `g` for "group": `g` is globally "go to top" (see
-			// goTop below), and shadowing a vim-style motion inside one pane is
-			// worse than picking a second-choice mnemonic.
+			// goTop below). NOT `b`, which pages up on every other pane: one letter
+			// keeps one meaning wherever the pane allows it.
 			//
 			// Ignored while viewing latency: the aggregator holds no per-label
 			// latency, so there is no per-status or per-model mean to plot. The
 			// footer and the [?] overlay both say so, which is what keeps this from
-			// reading as a broken binding — `b` reaches no other handler for this
-			// pane (pageActivePane has no paneUsage case), so breaking here simply
-			// drops it.
+			// reading as a broken binding.
 			if m.usage.metric.isLatency() {
 				break
 			}
@@ -172,15 +170,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.persistUsage()
 			return m.beginFetch()
 		case "s":
-			// Toggle scope between this session and all sessions. Only offered
-			// when a session is selected; otherwise there is nothing to toggle to.
-			if m.usage.session != "" {
-				m.usage.session = ""
-			} else if m.selectedSess != "" {
-				m.usage.session = m.selectedSess
-			}
-			return m.beginFetch()
+			// Was the session toggle. Swallowed so it cannot reach the global hideInactive toggle.
+			return nil
 		}
+		// No scope key: the pane `u` was pressed on sets it — Sessions charts every
+		// session, Events and Detail the one being read.
 	}
 
 	// `u` opens the Usage pane. Scope depends on where it was pressed: from the
@@ -190,7 +184,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	//
 	// Gated on !m.colPicker as well: this handler sits above the picker block, so
 	// without it `u` reached openUsage while m.colPicker stayed true — View() drew
-	// the picker popup over the Usage pane, paneUsage's own m/w/b/s bindings went
+	// the picker popup over the Usage pane, paneUsage's own m/w/o bindings went
 	// live underneath it, and `esc` then closed the picker onto Usage instead of the
 	// events timeline the picker was opened from. (`?` above is deliberately NOT
 	// gated: it layers help over the picker without changing panes, and closing it
@@ -391,14 +385,15 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// Picker panes handle their own keys before session-view logic.
 	if m.pane == paneNamespaces {
 		switch msg.String() {
-		case "enter":
+		case "enter", "right", "l":
 			if cur := m.namespacesTbl.Cursor(); cur < len(m.namespaces) {
 				m.selectedNamespace = m.namespaces[cur].Name
 				m.pane = panePods
 				m.rebuildPodsTable()
 			}
 			return nil
-		case "l":
+		case "L":
+			// Capital, because lowercase `l` opens the row here as on every other list.
 			// Skip the cluster entirely and talk to whatever session API
 			// is already listening locally — an existing port-forward, an
 			// in-mesh agentop, or a tunnel from a kubeconfig that can't list
@@ -428,7 +423,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	if m.pane == panePods {
 		switch msg.String() {
-		case "enter":
+		case "enter", "right", "l":
 			pods := m.currentPodsList()
 			if cur := m.podsTbl.Cursor(); cur < len(pods) {
 				if !pods[cur].Ready {
@@ -486,7 +481,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// so anything the refetch still misses can arrive off the stream
 		// without a duplicate. NOT while paged back: a snapshot ends the
 		// paging window, so this refetch would jump an operator reading an
-		// old page to the tail — [t] does that on purpose, [p] must not.
+		// old page to the tail — [G] does that on purpose, [p] must not.
 		if id := m.watchingSessionID(); id != "" && !m.pagedBack(id) {
 			return m.snapshotCmd(id)
 		}
@@ -496,7 +491,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// Toggle hiding of passthrough / skip-only messages. Default is
 		// off (show everything); turning it on focuses the timeline on
 		// plugin activity. Only meaningful while the events pane is
-		// active, but accepting the key on any pane keeps the keybinding
+		// active, but accepting the key on other panes keeps the keybinding
 		// simple and lets operators set their preference before drilling
 		// into a session. rebuildEventsTable is a no-op when no session
 		// is selected.
@@ -506,7 +501,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "esc", "left", "h":
 		// Back-out: plugin-detail → pipeline (or catalog if we came from there);
-		// detail → events; events → sessions; pipeline, catalog and usage → the
+		// detail → events; events → sessions; pipeline and usage → the
 		// pane that opened them. Sessions is the only top-level pane now, and in
 		// picker mode it backs out further to the Pods picker, tearing down PF +
 		// SSE. It is the ONLY pane that does that — a key-opened surface returning
@@ -514,48 +509,13 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		from := m.pane
 		switch m.pane {
 		case panePluginDetail:
-			// Return to whichever pane invoked the detail (Pipeline or Catalog).
-			if m.previousPane == paneCatalog {
-				m.pane = paneCatalog
-				m.previousPane = paneNone
-			} else {
-				m.pane = panePipeline
-			}
+			// The pipeline is the one pane that opens a plugin, catalog rows included.
+			m.pane = panePipeline
 		case paneAgents:
 			// Leaving WITHOUT touching the scope, which is the difference between this and the
 			// Enter arm below. esc means "back out" on every other pane here, and a key that
 			// silently discarded a scope on the way out would be the one exception.
 			return m.leaveAgentsPane()
-		case paneCatalog:
-			// Return to whichever pane the user pressed `C` from.
-			//
-			// The fallback is SESSIONS, not the pipeline. It was the pipeline while the
-			// pipeline was a top-level pane; now that it is a key-opened surface, being
-			// dropped into it is being dropped somewhere the operator never asked to be,
-			// with a return pane of paneNone underneath. Sessions is the only pane that
-			// is always a defensible place to land.
-			//
-			// The branch is reachable, not just defensive: drilling catalog → plugin
-			// detail overwrites previousPane with paneCatalog and the detail's esc
-			// clears it, so the catalog backs out with no caller recorded.
-			if m.previousPane != paneNone {
-				m.pane = m.previousPane
-				m.previousPane = paneNone
-			} else {
-				m.pane = paneSessions
-			}
-			// Returning INTO Usage has to restart its polling chain. The tick
-			// that was in flight when the catalog opened was dropped by the
-			// `m.pane != paneUsage` guard, so without this nothing reschedules
-			// and the 20s auto-refresh is silently dead until the user backs all
-			// the way out and re-enters with `u` — `r` refetches once but starts
-			// no chain.
-			if m.pane == paneUsage {
-				return m.resumeUsagePolling()
-			}
-			if m.pane == paneTimeline {
-				return m.resumeTimeline()
-			}
 		case paneTimeline:
 			// esc only: the pane binds left/h to its cursor, ahead of this arm.
 			if m.timeline.returnPane != paneNone {
@@ -576,8 +536,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.timeline.session = ""
 		case paneUsage:
 			// Return to whichever pane opened it, from usageState's own field —
-			// model.previousPane is shared with the catalog overlay and gets
-			// clobbered when the catalog is opened from here.
+			// model.previousPane is shared with other panes.
 			if m.usage.returnPane != paneNone {
 				m.pane = m.usage.returnPane
 				m.usage.returnPane = paneNone
@@ -587,9 +546,8 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// End the polling chain on the way out.
 			m.usage.tickGen++
 		case panePipeline:
-			// Back to the pane `P` was pressed on, from the pipeline's OWN field —
-			// model.previousPane is the catalog's and gets clobbered when the catalog
-			// is opened from here, exactly as it did for Usage.
+			// Back to the pane `P` was pressed on, from the pipeline's OWN field, as
+			// Usage does.
 			//
 			// IT USED TO BE GROUPED WITH paneSessions BELOW, which meant esc here tore
 			// down the port-forward and the SSE stream and dropped the operator at the
@@ -665,7 +623,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// session whatever the scope, so the reader landed back in the session they were
 			// reading — under a title naming an agent it might not belong to. esc keeps that exit;
 			// it changes nothing, so going back is all it can mean. previousPane is spent as
-			// leaveAgentsPane spends it, since the catalog shares the field. The spend band and
+			// leaveAgentsPane spends it, since other panes share the field. The spend band and
 			// drawer restart under the new scope, so no figure from the old one stays on screen
 			// beneath it. esc on that list comes back here.
 			m.pane = paneSessions
@@ -812,18 +770,12 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.previousPane = panePipeline
 			m.showPluginDetail(p, true)
 			m.pane = panePluginDetail
+			if p.Direction == "" {
+				return nil // an available row is not in the chain: no counters to refresh
+			}
 			// Fetch immediately rather than waiting for the next refresh tick:
 			// opening the pane is exactly when someone wants current counters.
 			return m.loadPipelineCmd()
-		case paneCatalog:
-			p := m.selectedCatalogEntry()
-			if p == nil {
-				return nil
-			}
-			m.previousPane = paneCatalog
-			m.showPluginDetail(p, true)
-			m.pane = panePluginDetail
-			return nil
 		}
 		return nil
 
@@ -896,14 +848,12 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "G":
 		m.goBottom()
-		return nil
-
-	case "t":
-		// Back to the live tail from a paged-back timeline.
-		if m.pane != paneEvents {
-			return nil
+		// On a paged-back timeline the bottom is the live tail, so `G` goes back to it:
+		// one key for "the newest end", where there used to be `G` and `t`.
+		if m.pane == paneEvents && m.pagedBack(m.selectedSess) {
+			return m.returnToTail()
 		}
-		return m.returnToTail()
+		return nil
 
 	case "pgup", "pgdown", "pgdn", "b", "f":
 		// Page the active pane. Sessions can hold up to session.max_events
@@ -917,7 +867,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "x":
 		// Erase the row under the cursor, after a confirmation: the highlighted session on the
 		// sessions pane, every session of the highlighted agent on the agents pane — on All agents,
-		// everything, which is X's confirmation. Off the footer, like X — the `?` overlay names it.
+		// everything (openClearConfirm). There is no second key for "everything": one key with
+		// the row deciding is one fewer Shift slip on a key that cannot be undone. Off the footer;
+		// the `?` overlay names it.
 		if m.client == nil {
 			return nil
 		}
@@ -929,15 +881,6 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 
-	case "X":
-		// Clear all history, after a confirmation. Capital, and off the footer like `A`: a
-		// destructive key should not be one stray press of a common letter, nor advertised on
-		// the always-visible line. The `?` overlay names it.
-		if m.client == nil || m.pane != paneSessions {
-			return nil
-		}
-		return m.openClearConfirm()
-
 	case "P":
 		// Open the pipeline. `P` REPLACED `tab` HERE, and took the letter off the
 		// plugin catalog (now `C`) to do it.
@@ -946,15 +889,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// other spelling of it — lowercase `p` — pauses the stream, is printed in
 		// two footers, and has no replacement worth the trade: `space` and `d` are
 		// bubbles' page-down and half-page-down, and every free letter is a worse
-		// pause mnemonic than `p` is a pipeline one. The catalog's claim on `P` was
-		// the weaker of the two (it only fit by borrowing the "Plugin" in "plugin
-		// catalog") and `C` for Catalog is a better key than it gave up.
+		// pause mnemonic than `p` is a pipeline one. The plugin catalog, once its own
+		// pane under `C`, is the pane's second section: plugins available but not run.
 		//
 		// The allowlist is the same three panes `u` opens Usage from, deliberately:
 		// two top-level surfaces reached from the same places is a rule an operator
 		// can hold, whereas two overlapping sets is a lookup. It also keeps the
-		// pipeline out of the nested-overlay cases (opened from Usage or from the
-		// catalog) where the pane to return to is ambiguous.
+		// pipeline out of the nested-overlay case (opened from Usage) where the pane
+		// to return to is ambiguous.
 		//
 		// The panes match; the CONDITIONS do not, and the difference is deliberate.
 		// `u` additionally requires a selected session on Events/Detail, because its
@@ -965,10 +907,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// DO NOT MOVE THIS UP BESIDE `u` ON THE STRENGTH OF THAT SYMMETRY. `u`, `$`,
 		// `c` and `?` sit ABOVE the modal blocks and each carries explicit
 		// `!m.searching && !m.colPicker && m.editState.phase == editPhaseDone` guards
-		// to compensate. `P` and `C` carry none, and do not need to, because they sit
+		// to compensate. `P` carries none, and does not need to, because it sits
 		// BELOW all three: the column picker ends in `default: return nil`, the search
 		// prompt returns unconditionally after feeding the input, and an in-flight edit
-		// returns via handleEditKey. The safety here is POSITIONAL. Hoisting either
+		// returns via handleEditKey. The safety here is POSITIONAL. Hoisting the
 		// key above those blocks without adopting the guards would make `P` change
 		// panes under a modal popup and swallow a `P` someone was typing into the
 		// search — silently, since nothing in the type system notices.
@@ -986,7 +928,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// build from already; rebuild rather than refetch. A nil pipeline renders
 		// "(loading pipeline…)" and rebuildPipelineTable is a no-op on it.
 		m.rebuildPipelineTable()
-		return nil
+		// The available-plugin rows come from /v1/plugins, fetched on every open so a
+		// rebuilt binary's plugins show without a refresh key.
+		return m.loadCatalogCmd()
 
 	case "S":
 		// Choose where the highlighted agent's new sessions go, or move the highlighted session.
@@ -1005,8 +949,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// Open the per-agent cost breakdown.
 		//
 		// `A` CAPITALISED, for the reason `P` is: lowercase `a` is the spend drawer's axis
-		// cycle. Available wherever `C` is — anywhere past the pickers, since it needs a
-		// connection.
+		// cycle. Available anywhere past the pickers, since it needs a connection.
 		//
 		// ALWAYS REFETCHED, never opened from cached rows: how many agents have been seen changes
 		// while agentop runs. The reply enters the pane.
@@ -1024,32 +967,6 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// THE CALLER IS RESOLVED HERE, AT PRESS TIME, and carried on the message: by the time the
 		// reply lands the reader may have navigated elsewhere.
 		return m.fetchAgentRowsCmd(agentsOpenOnPress, m.pane)
-
-	case "C":
-		// Open the registered-plugin catalog. Available from any
-		// session-view pane; in --endpoint mode the picker fields
-		// don't matter — the catalog comes via the same /v1/* endpoint
-		// agentop is already pointed at.
-		//
-		// `C` for Catalog, moved off `P` when the pipeline took that letter. See
-		// the `P` case above for why this side of the swap is the cheap one — and
-		// note this key's own doc in globalKeys, which records that `P` was never
-		// advertised in any footer, so the muscle memory being broken is thin.
-		if m.client == nil {
-			return nil
-		}
-		switch m.pane {
-		case paneNamespaces, panePods:
-			return nil
-		}
-		m.previousPane = m.pane
-		m.pane = paneCatalog
-		// Fetch on first open; cached afterward (refresh via `r`).
-		if m.catalog == nil {
-			return m.loadCatalogCmd()
-		}
-		m.rebuildCatalogTable()
-		return nil
 
 		// Dispatch j/k/up/down to the active component's Update.
 	}
@@ -1088,32 +1005,15 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 		}
 		return cmd
-	case paneCatalog:
-		// `r` here refreshes the catalog (in the catalog pane only — the
-		// top-level `r` is reserved for the picker). All other keys go to
-		// the table for navigation.
-		if msg.String() == "r" {
-			return m.loadCatalogCmd()
-		}
-		var cmd tea.Cmd
-		m.catalogTbl, cmd = m.catalogTbl.Update(msg)
-		return cmd
 	case paneAgents:
 		// Without this arm the pane's navigation keys fell off the end of the switch and
 		// returned nil, while its footer printed "[↑↓] nav" and the help overlay listed
 		// "↑↓ / jk  navigate" — an advertised key that does nothing. The table is built
 		// WithFocused(true), so it drew a selection highlight on a cursor nothing could move.
 		//
-		// NO `r` BRANCH, unlike the catalog above: the rows are refetched by every `A` press,
-		// which is why the footer advertises no refresh key either.
-		//
-		// SPACE opens or closes a row's projects. On a row that cannot open, it goes to the table,
-		// which pages down.
-		if msg.String() == " " {
-			if cmd, ok := m.toggleAgentRow(); ok {
-				return cmd
-			}
-		}
+		// NO `r` BRANCH: the rows are refetched by every `A` press, which is why the footer
+		// advertises no refresh key either. NO SPACE BRANCH: Enter opens and closes a row, and
+		// esc backs out, so space is the table's page-down here as everywhere else.
 		var cmd tea.Cmd
 		m.agentsTbl, cmd = m.agentsTbl.Update(msg)
 		return cmd
@@ -1125,8 +1025,6 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 // empty-table guard and clamps, so goBottom does not need the row count.
 func (m *model) goTop() {
 	switch m.pane {
-	case paneCatalog:
-		setCursorVisible(&m.catalogTbl, 0)
 	case paneSessions:
 		setCursorVisible(&m.sessionsTbl, 0)
 	case paneEvents:
@@ -1156,8 +1054,6 @@ func (m *model) goBottom() {
 		m.setOpenAtOldest(false)
 	case panePipeline:
 		setCursorVisible(&m.pipelineTbl, len(m.pipelineTbl.Rows())-1)
-	case paneCatalog:
-		setCursorVisible(&m.catalogTbl, len(m.catalogTbl.Rows())-1)
 	case paneDetail:
 		m.detailCursorKey("G")
 	case panePluginDetail:
@@ -1192,8 +1088,6 @@ func (m *model) pageActivePane(msg tea.KeyMsg) tea.Cmd {
 		page(&m.sessionsTbl)
 	case panePipeline:
 		page(&m.pipelineTbl)
-	case paneCatalog:
-		page(&m.catalogTbl)
 	case paneDetail:
 		m.detailCursorKey(msg.String())
 	case panePluginDetail:
@@ -1235,7 +1129,7 @@ func (m *model) persistSettings() {
 
 // persistUsage records the usage pane's view, then saves.
 //
-// Its own helper rather than three copies of the two lines: [m], [w] and [b] each
+// Its own helper rather than three copies of the two lines: [m], [w] and [o] each
 // change one of the three, and all three belong in the file together — a reader
 // returning to the pane expects the view they left, not two thirds of it.
 func (m *model) persistUsage() {
@@ -1274,7 +1168,7 @@ func (m *model) helpView() string {
 	}
 	switch m.pane {
 	case paneNamespaces:
-		return "[↑↓/jk] nav  [↵] open  [l] " + shortHost(m.localEndpointOr()) +
+		return "[↑↓/jk] nav  [↵] open  [L] " + shortHost(m.localEndpointOr()) +
 			"  [r] reload  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	case panePods:
 		return "[↑↓/jk] nav  [↵] connect  [Esc] back  [r] reload  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
@@ -1306,9 +1200,8 @@ func (m *model) helpView() string {
 		// column is PLUGIN. The footer is where a key gets DISCOVERED, so it is named
 		// for what the pane shows rather than for the concept behind it; the [?]
 		// overlay, which has room, carries the precise version ("the plugin chain this
-		// proxy runs"). Not to be confused with [C], the plugin CATALOG — every plugin
-		// the proxy offers, against the chain it actually runs. That pair is only ever
-		// adjacent in the overlay, since [C] appears in no footer.
+		// proxy runs"). The pane also lists the plugins the proxy offers but does not run,
+		// under its "available" divider.
 		//
 		// MEASURED, because the intuition here is off by more than it looks: the
 		// un-drilled line is 98 columns, and [P] survives down to 34 columns at the
@@ -1365,9 +1258,9 @@ func (m *model) helpView() string {
 		// silently stopped updating is the same class of lie as one that silently
 		// omitted its beginning.
 		if st := m.paging[m.selectedSess]; st != nil {
-			note := "paged back, live paused ([t] for tail)"
+			note := "paged back, live paused ([G] for tail)"
 			if st.droppedNewer {
-				note = "paged back, newer dropped ([t] for tail)"
+				note = "paged back, newer dropped ([G] for tail)"
 			}
 			base = fmt.Sprintf("%s  ·  %s", base, note)
 		}
@@ -1416,17 +1309,9 @@ func (m *model) helpView() string {
 		}
 		return "[w] window  [←→] moment  " + scroll + "[enter] events  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case paneUsage:
-		// [s] only appears when there is a session to scope to, so the footer
-		// never advertises a key that would do nothing.
-		scopeHint := ""
-		if m.usage.session != "" {
-			scopeHint = "  [s] all sessions"
-		} else if m.selectedSess != "" {
-			scopeHint = "  [s] this session"
-		}
-		// [b] is omitted under latency rather than shown as a no-op: a footer that
+		// [o] is omitted under latency rather than shown as a no-op: a footer that
 		// advertises an inert key is worse than a shorter footer.
-		breakdownHint := "  [b] breakdown"
+		breakdownHint := "  [o] breakdown"
 		// Omitted under an agent or a project scope for the same reason as under latency: the scope has taken
 		// the wire axis, so there is no second one to break down by, and a footer that advertises
 		// an inert key is worse than a shorter footer.
@@ -1438,13 +1323,8 @@ func (m *model) helpView() string {
 		}
 		// No [r]: the pane polls every 20s on its own, so a manual refresh key
 		// bought nothing but a line of footer.
-		return "[m] metric  [w] window" + breakdownHint + scopeHint +
+		return "[m] metric  [w] window" + breakdownHint +
 			"  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
-	case paneCatalog:
-		if m.catalog == nil {
-			return "loading catalog…  [esc] back  [?] keys  [q] quit"
-		}
-		return "[↑↓] nav  [↵] plugin detail  [r] refresh  [esc] back  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	case paneAgents:
 		// [↵] LABELLED BY WHAT IT WILL SHOW: the highlighted agent, or every agent on the All
 		// agents row.
@@ -1465,13 +1345,9 @@ func (m *model) helpView() string {
 				enterHint = "  [↵] all agents"
 			}
 		}
-		// [space] after [↵], and the full project label after nav: the cell may show only a tail.
-		navHint, spaceHint := "[↑↓] nav", ""
+		// The full project label after nav: the cell may show only a tail.
+		navHint := "[↑↓] nav"
 		if d, ok := m.selectedAgentRow(); ok {
-			// Only on a sub-row: on an agent row [↵] already says it.
-			if d.kind != agentRowAgent && d.kind != agentRowHeading {
-				spaceHint = "  [space] close"
-			}
 			if d.kind == agentRowProject {
 				navHint += "  " + sanitizeLabel(d.project)
 			}
@@ -1493,7 +1369,7 @@ func (m *model) helpView() string {
 		// key gets discovered. The drawer here breaks down the row under the cursor.
 		spendHint := "  [$] spend"
 		// [w] the pane's window, which the title names; see cycleAgentsWindow.
-		return navHint + enterHint + spaceHint + escHint + serverHint + "  [w] window" + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
+		return navHint + enterHint + escHint + serverHint + "  [w] window" + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	}
 	return "[?] keys  [q] quit"
 }

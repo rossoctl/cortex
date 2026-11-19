@@ -454,13 +454,13 @@ func TestLocalhostKeybindConnects(t *testing.T) {
 	updated, _ := m.Update(m.Init()())
 	mm := updated.(*model)
 
-	// `l` should dispatch a probe Cmd and mark the model loading.
-	_, cmd := mm.Update(keyRune('l'))
+	// `L` should dispatch a probe Cmd and mark the model loading.
+	_, cmd := mm.Update(keyRune('L'))
 	if cmd == nil {
-		t.Fatal("`l` on paneNamespaces should produce a connect Cmd")
+		t.Fatal("`L` on paneNamespaces should produce a connect Cmd")
 	}
 	if !mm.loading {
-		t.Fatal("`l` should set m.loading while the probe is in flight")
+		t.Fatal("`L` should set m.loading while the probe is in flight")
 	}
 
 	// Run the probe against the stub (not the real localhost:9094) and feed
@@ -553,7 +553,7 @@ func TestLocalhostEscReturnsToNamespaces(t *testing.T) {
 	}
 }
 
-// The namespaces footer and empty state must advertise `[l]`, otherwise
+// The namespaces footer and empty state must advertise `[L]`, otherwise
 // the shortcut is undiscoverable.
 func TestLocalhostKeybindIsAdvertised(t *testing.T) {
 	m := newPickerModel(context.Background(), &fakeLister{namespaces: fixtureNamespaces}, nil)
@@ -561,31 +561,31 @@ func TestLocalhostKeybindIsAdvertised(t *testing.T) {
 	mm := updated.(*model)
 	updated, _ = mm.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	mm = updated.(*model)
-	if !strings.Contains(mm.View(), "[l] localhost:9094") {
-		t.Fatalf("namespaces footer should advertise [l]:\n%s", mm.View())
+	if !strings.Contains(mm.View(), "[L] localhost:9094") {
+		t.Fatalf("namespaces footer should advertise [L]:\n%s", mm.View())
 	}
 
-	// Empty-state hint: the no-agents case is exactly when `l` is most
+	// Empty-state hint: the no-agents case is exactly when `L` is most
 	// useful, so it should be mentioned there too.
 	m2 := newPickerModel(context.Background(), &fakeLister{namespaces: []cluster.AgentNamespace{}}, nil)
 	u2, _ := m2.Update(m2.Init()())
 	mm2 := u2.(*model)
-	if !strings.Contains(mm2.View(), "[l]") {
-		t.Fatalf("empty-state hint should mention [l]:\n%s", mm2.View())
+	if !strings.Contains(mm2.View(), "[L]") {
+		t.Fatalf("empty-state hint should mention [L]:\n%s", mm2.View())
 	}
 }
 
-// `l` must not be swallowed when the picker is mid-load, and must not
-// hijack the vim-right binding in the session panes.
+// `L` must not be swallowed when the picker is mid-load, and `l` must not
+// connect in the session panes, where it is vim-right.
 func TestLocalhostKeybindScoping(t *testing.T) {
 	srv := sessionAPIStub(t)
 	m := newPickerModel(context.Background(), &fakeLister{namespaces: fixtureNamespaces}, nil)
 	updated, _ := m.Update(m.Init()())
 	mm := updated.(*model)
 	mm.loading = true
-	_, cmd := mm.Update(keyRune('l'))
+	_, cmd := mm.Update(keyRune('L'))
 	if cmd != nil {
-		t.Fatal("`l` while loading should be a no-op")
+		t.Fatal("`L` while loading should be a no-op")
 	}
 	mm.loading = false
 

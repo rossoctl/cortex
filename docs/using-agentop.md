@@ -14,8 +14,8 @@ For every flag and key, read the [agentop reference](../cmd/agentop/README.md).
 | See charts of tokens, requests, errors, latency and cost | `u` | [Usage](#see-charts-usage) |
 | Change the inference server of an agent or a session | `S` | [Servers](#change-the-inference-server) |
 | Find text in any pane | `/` | [Search](#search) |
-| See, add and change the plugins that run | `P`, `C` | [Plugins](#see-and-change-the-plugins) |
-| Erase sessions, in memory and on disk | `x`, `X` | [Erase history](#erase-history) |
+| See, add and change the plugins that run | `P` | [Plugins](#see-and-change-the-plugins) |
+| Erase sessions, in memory and on disk | `x` | [Erase history](#erase-history) |
 
 ## Open it
 
@@ -186,8 +186,7 @@ On Sessions, the charts show all sessions. On Events or Detail, they show the se
 |---|---|
 | `m` | Change the metric: tokens, requests, errors, latency or cost |
 | `w` | Change the window: 10m, 1h or 6h |
-| `b` | Change the breakdown: none, status, method, plugin or host. Not for latency, or when the view is scoped to an agent or a project |
-| `s` | Change between this session and all sessions |
+| `o` | Change the breakdown: none, status, method, plugin or host. Not for latency, or when the view is scoped to an agent or a project |
 
 ## Change the inference server
 
@@ -210,8 +209,8 @@ On the Events pane, press `Tab` after `/` to search the details of each row.
 
 - `P` opens the Pipeline pane. It shows the plugins that run, in order.
 - On the Pipeline pane, `e` opens the pipeline in `$EDITOR`. When you save, agentop shows the change, and `y` applies it. Cortex loads the new pipeline with no restart.
-- `C` opens the catalog of all the plugins that Cortex has, also the plugins that do not run.
-- `Enter` on a Pipeline or Catalog row shows the plugin.
+- Under the plugins that run, the `available` section lists the plugins that Cortex has but does not run.
+- `Enter` on a Pipeline row shows the plugin.
 
 Read [Editing the pipeline](../cmd/agentop/README.md#editing-the-pipeline) and the [plugin catalog](plugin-catalog.md).
 
@@ -222,7 +221,7 @@ You cannot get them back. agentop asks before it deletes.
 
 - `x` on Sessions erases the highlighted session.
 - `x` on Agents erases all sessions of the highlighted agent.
-- `X` on Sessions erases all sessions.
+- `x` on the *All agents* row of the Agents pane erases all sessions.
 
 The cost history stays.
 When an agent still uses a session, its next request starts that session again.
@@ -242,11 +241,10 @@ When an agent still uses a session, its next request starts that session again.
 | `A` | Open the Agents pane |
 | `S` | On Agents, select the server for the new sessions of the agent. On Sessions, move the session to a different server |
 | `P` | Open the Pipeline pane |
-| `C` | Open the plugin catalog |
 | `c` | On Events, open the column picker |
 | `s` | On Events, hide or show the exchanges that no plugin acted on |
 | `y` | On Detail, write the event to a file |
-| `x` / `X` | On Sessions, erase the session / all sessions. On Agents, `x` erases the sessions of the agent |
+| `x` | On Sessions, erase the session. On Agents, erase the sessions of the agent, or all sessions on the *All agents* row |
 | `p` | Pause or resume the live stream |
 | `q` / `Ctrl+C` | Quit |
 

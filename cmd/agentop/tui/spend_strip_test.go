@@ -98,7 +98,7 @@ func TestSpendStripVisible_HiddenOnPreConnectionPickers(t *testing.T) {
 }
 
 func TestSpendStripVisible_ShownOnTheDataPanes(t *testing.T) {
-	for _, p := range []paneID{paneSessions, paneEvents, paneDetail, panePipeline, paneUsage, paneCatalog} {
+	for _, p := range []paneID{paneSessions, paneEvents, paneDetail, panePipeline, paneUsage} {
 		m := &model{height: 40}
 		m.pane = p
 		if !m.spendStripVisible() {

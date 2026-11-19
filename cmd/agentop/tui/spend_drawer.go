@@ -286,7 +286,7 @@ func spendDrawerHostPane(pane paneID) (bool, string) {
 		// its key handler runs before this one and returns, so the drawer's own keys could never
 		// reach it. A drawer whose hint line advertises [w] on the one pane where `w` belongs to
 		// something else is a lie printed on screen.
-		return false, "spend: the usage pane is the breakdown — use its own [b] and [w]"
+		return false, "spend: the usage pane is the breakdown — use its own [o] and [w]"
 	case paneTimeline:
 		// Its own [w] picks the time window, and runs before the drawer's.
 		return false, "spend: the timeline's [w] is its window — open the drawer from the events pane"

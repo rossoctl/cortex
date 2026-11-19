@@ -253,7 +253,7 @@ func onDesc(t *testing.T, m *model, d agentRowDesc) {
 func openClaudeCode(t *testing.T, m *model) {
 	t.Helper()
 	onRow(t, m, projAgent)
-	deliver(m, pressCmd(m, spaceKey))
+	deliver(m, pressCmd(m, enterKey))
 }
 
 var (
@@ -296,7 +296,7 @@ func TestAgentsProjects_NoProjectsNoMarkerAndSpacePagesDown(t *testing.T) {
 	}
 }
 
-func TestAgentsProjects_SpaceOnAnAgentFetchesItsProjects(t *testing.T) {
+func TestAgentsProjects_EnterOnAnAgentFetchesItsProjects(t *testing.T) {
 	m, asked := projectsModel(t, defaultProjectSeries)
 	openClaudeCode(t, m)
 	if q := asked(); !hasQuery(q, "agent=claude-code", "group=project") {
@@ -316,10 +316,10 @@ func TestAgentsProjects_SpaceOnAnAgentFetchesItsProjects(t *testing.T) {
 	}
 }
 
-func TestAgentsProjects_SpaceOnAllAgentsFetchesWithoutAgent(t *testing.T) {
+func TestAgentsProjects_EnterOnAllAgentsFetchesWithoutAgent(t *testing.T) {
 	m, asked := projectsModel(t, defaultProjectSeries)
 	onRow(t, m, "")
-	deliver(m, pressCmd(m, spaceKey))
+	deliver(m, pressCmd(m, enterKey))
 	q := asked()
 	if !hasQuery(q, "group=project") {
 		t.Fatalf("queries %v; want a group=project one", q)
@@ -380,11 +380,23 @@ func TestAgentsProjects_OpenStateAndCursorSurviveRefetchAndW(t *testing.T) {
 	}
 }
 
-func TestAgentsProjects_SpaceOnASubRowClosesTheParent(t *testing.T) {
+// Space no longer closes a row from a sub-row: it is the table's page-down, as everywhere.
+// Enter on the open agent row is how to close it.
+func TestAgentsProjects_SpaceOnASubRowDoesNotCloseTheParent(t *testing.T) {
 	m, _ := projectsModel(t, defaultProjectSeries)
 	openClaudeCode(t, m)
 	onDesc(t, m, cortexRow)
 	runCmds(pressCmd(m, spaceKey))
+	if !m.agentsExpanded[projAgent] {
+		t.Error("space closed the row; only Enter on the agent row does")
+	}
+}
+
+func TestAgentsProjects_EnterOnTheOpenAgentClosesIt(t *testing.T) {
+	m, _ := projectsModel(t, defaultProjectSeries)
+	openClaudeCode(t, m)
+	onDesc(t, m, agentRowDesc{agent: projAgent, kind: agentRowHeading})
+	runCmds(pressCmd(m, enterKey))
 	if len(m.agentsExpanded) != 0 {
 		t.Errorf("rows still open: %v", m.agentsExpanded)
 	}
@@ -492,11 +504,11 @@ func TestAgentsProjects_FooterNamesTheFullLabel(t *testing.T) {
 	if got := m.helpView(); !strings.Contains(got, "[↵] projects") {
 		t.Errorf("closed row footer %q; want [↵] projects", got)
 	}
-	deliver(m, pressCmd(m, spaceKey))
+	deliver(m, pressCmd(m, enterKey))
 	onDesc(t, m, agentRowDesc{agent: projAgent, kind: agentRowProject, project: label})
 	got := m.helpView()
-	if !strings.Contains(got, sanitizeLabel(label)) || !strings.Contains(got, "[space] close") {
-		t.Errorf("footer %q; want %q and [space] close", got, sanitizeLabel(label))
+	if !strings.Contains(got, sanitizeLabel(label)) || strings.Contains(got, "[space]") {
+		t.Errorf("footer %q; want %q and no [space]", got, sanitizeLabel(label))
 	}
 	if strings.Contains(got, "\x1b") {
 		t.Errorf("footer carries a raw escape: %q", got)
@@ -523,8 +535,8 @@ func TestAgentsProjects_FetchErrorClearsOnCloseAndW(t *testing.T) {
 		m.Update(agentProjectsLoadedMsg{agent: projAgent, err: errors.New("boom"), window: m.agentsSpanDef().window})
 	}
 	fail()
-	onDesc(t, m, cortexRow)
-	runCmds(pressCmd(m, spaceKey))
+	onDesc(t, m, agentRowDesc{agent: projAgent, kind: agentRowHeading})
+	runCmds(pressCmd(m, enterKey))
 	if strings.Contains(m.View(), "refresh failed") {
 		t.Error("error still shows after the last row closed")
 	}
