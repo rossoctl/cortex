@@ -12,9 +12,19 @@ This one narrows its §7.2 `toolCallNames` item and supersedes the shape propose
 Items marked **Open** must be decided before the work they belong to begins. Nothing here
 is merged.
 
-**22 numbered requirements T1–T22**, phrased as plain declaratives: a requirement says what
+**28 numbered requirements T0–T27**, phrased as plain declaratives: a requirement says what
 the system does once built. The numbering is stable so it can be cited in review and in the
-PRs that implement it.
+PRs that implement it. T0 sits in §2.0 because it bounds the whole spec rather than one
+section, and T23–T27 in §4.3a.
+
+Revised 2026-11-19, the same day, after review raised two things the first draft buried.
+§2.0 is new: every field here is **already collected and most of it is already on disk**, so
+this is a projection change and not an instrumentation one — and arguments and result content
+are a separate decision (Tier 3), not a larger version of this one. §4.3a is new: the first
+draft carried a tool duration with **no inter-call gap at all**, which cannot answer occupancy
+— a duration says how long the sandbox was busy, never how long it sat idle holding resources.
+§2.1 and §2.2 are corrected: today's record has no per-tool timing of any kind, and the
+timeline's pairing is derived rather than stored.
 
 Written after measuring, not before. §3 is the measurement; every design choice in §5 and §6
 traces to a number in it. The measurement corpus is one developer's 30-day laptop archive:
@@ -52,6 +62,38 @@ NDJSON file (#1810 §9.2).
 
 ## 2. What exists today
 
+### 2.0 Nothing here needs new capture — and that is the point
+
+**Everything this spec exports is already collected, and most of it is already on disk.** The
+work is a projection, not an instrumentation change. Stating it plainly because the rest of
+§2 reads like a capability gap, and it is not one:
+
+| Already collected | Where | On disk? |
+|---|---|---|
+| Tool call name and id | `InferenceToolCall{ID, Name}` on a response | yes |
+| Tool call **arguments** | `InferenceToolCall.Arguments` | yes — `archive/format.go` interns `HistoryToolCalls[i].Arguments` |
+| Tool **result content** | `InferenceToolResult.Content` | yes — `archive/format.go` interns `ToolResults[i].Content` |
+| Result error flag | `InferenceToolResult.IsError` | yes |
+| Pairing key | `InferenceToolResult.ToolUseID`, message `ToolUseIDs` | yes, interned |
+| Inference duration | `SessionEvent.Duration` | yes |
+
+So a 30-day archive already holds every tool call's arguments and every tool result's text.
+The export carries none of it, by construction (#1810 R7).
+
+**Two things follow, and they are different decisions, not two sizes of one:**
+
+1. **Names, per-call timing and result size are a projection change.** Content-free, covered
+   by this spec, and shippable without touching the privacy posture.
+2. **Arguments and result content are NOT.** They are content — a `Bash` command line is the
+   canonical example (#1810 §4.1) — so exporting them is Tier 3, which needs redaction
+   (#1921) and its own loopback-only route and command (#1925), not a flag on this one.
+   `TestRecord_CarriesNoContent` exists to fail the build if they ever arrive here by
+   accident.
+
+T0. This spec exports no tool argument and no tool result content, in any tier or mode it
+defines. A consumer that needs those uses the Tier 3 path, which is specified elsewhere and
+carries a different privacy posture.
+
 ### 2.1 Shipped
 
 - `core/sessionexport.Record` — ~36 flat scalars per event, an allowlist, with
@@ -60,9 +102,23 @@ NDJSON file (#1810 §9.2).
 - `GET /v1/export` and `agentop export` (#1830, #1831), with `--gzip` (#1996).
 
 A record carries `toolCount` (the manifest the request offered) and `toolCallCount` (the
-calls the response emitted). It carries no tool name and no per-tool timing.
+calls the response emitted). **Both are counts and nothing else.** Today's export therefore
+has:
 
-### 2.2 The pairing already exists, in `core/session/timeline`
+- no tool name;
+- **no per-tool timing of any kind.** `InferenceToolCall` is three strings — `{ID, Name,
+  Arguments}` — and `InferenceToolResult` is three more. Neither carries a timestamp or a
+  duration, and no field anywhere on the event model does per-call timing. The only per-tool
+  timing in the system is **derived** by the timeline (§2.2), never stored;
+- **no gap between calls.** No `gapMs`, think-time or idle field exists on a record, on the
+  event, or on a timeline span. A consumer can derive a gap between *events* from `at` and
+  `durationMs`, which is what #1810 §9 did; it cannot derive one between *tool calls*,
+  because it has no tool call to anchor to.
+
+The second and third are what make today's record unable to answer occupancy: a count says
+how many calls a turn made, never how long the sandbox was busy or idle.
+
+### 2.2 The pairing is DERIVED by `core/session/timeline`, not stored
 
 `timeline.Tool` is `{Agent, ID, Name, Start, End, Preview, Error, Lost, Seq}`, built in
 `core/session/timeline/agents.go`. Reading that code is what sized this spec, so its shape is
@@ -210,6 +266,45 @@ duration to report, and a record that appears with one later would make the expo
 non-reproducible.
 T18. Durations are milliseconds, truncated, matching `Record`.
 
+### 4.3a Model time, tool time and user time
+
+The three quantities a capacity plan needs, and the one asymmetry that makes the split sound:
+**model time is measured, not inferred.** `durationMs` on an inference response *is* the
+model's time. Only the leftover gap has to be classified.
+
+T23. A `toolCall` record carries `modelMs`: the measured duration of the inference response
+that asked for this call. It is the turn's model time, copied, not derived — so a consumer
+gets the inference/tool ratio per call without joining back to the event record.
+T24. A `toolCall` record carries `gapMs`: the time from the previous tool call's end to this
+call's start, within the same agent. Absent on an agent's first call, where there is no
+previous end — absent, never zero.
+T25. A `toolCall` record carries `gapKind`, a **closed vocabulary** exported by naming its
+values, never by sanitising what arrives:
+
+| `gapKind` | The preceding response | What the gap is |
+|---|---|---|
+| `user` | `toolCallCount == 0` | The model stopped and waited for a human. Nothing else can be happening. |
+| `tool` | `toolCallCount > 0` | Tool execution, plus any approval wait (T26). |
+| `inference` | a model call landed inside the gap | Model time, already in `modelMs`. Not idle. |
+
+T26. **An approval wait is inside `tool` and cannot be separated from execution.** When a user
+sits on a permission prompt, that time lands in the tool gap and is indistinguishable from the
+command running. E15's SPEC caps it at 30 s for exactly this reason. This is the largest
+single error source in any density figure built from this export, and the docs say so beside
+the field. Only #1924 (Claude Code telemetry, which records permission waits explicitly)
+removes it.
+T27. **A `user` gap is meaningless without a stated ceiling, and the record does not impose
+one.** Measured on the reference archive, the same data totals 24.8 h at a 300 s cap, 44.8 h
+at 1800 s, 56.8 h at 3600 s and **539 h uncapped** — a 20x spread. So the export carries the
+raw `gapMs` and the documentation requires any consumer publishing a duty cycle to publish its
+ceiling alongside it (#1810 §9 states the same rule for event gaps).
+
+Why this split is worth the three fields: on the reference archive, user wait is **72.6% of
+all gap time** (44.8 h of 61.7 h) and costs nothing in sandbox occupancy. Without `gapKind`,
+a density plan reads that as idle capacity it is paying for. The classifier is already
+validated — run on that archive it separated `AskUserQuestion` (p50 62.6 s) from `Bash`
+(p50 201 ms) by three orders of magnitude **without ever seeing a tool name** (#1810 §9).
+
 ### 4.4 Schema and compatibility
 
 T19. A `toolCall` record is a **sibling record on the same NDJSON stream**, discriminated by a
@@ -237,6 +332,7 @@ list. The doc fix that precedes this spec already states them for `/timeline`.
  "at":"2026-11-05T15:52:26.102885Z","tool":"Bash","toolSource":"builtin",
  "callSeq":2077,"resultSeq":2081,"durationMs":473,"isError":false,
  "resultBytes":1432,"agentRole":"main","client":"claude-code/2.1.270",
+ "modelMs":4279,"gapMs":812,"gapKind":"tool",
  "parallelGroup":"2077#0","parallelN":3,"durationShared":true}
 ```
 
@@ -252,6 +348,9 @@ list. The doc fix that precedes this spec already states them for `/timeline`.
 | `durationMs` | T18. The paired duration. Absent on a `lost` record (T16). |
 | `isError` | Whether the result was an error. The tool failure rate, per tool. |
 | `resultBytes` | T14. Effort proxy, never content. |
+| `modelMs` | T23. The asking response's measured duration — model time, per call, no join needed. |
+| `gapMs` | T24. Since the previous tool call ended, within the agent. Absent on the first call. |
+| `gapKind` | T25. `user`, `tool` or `inference` — what the gap was. The field that turns idle time into a duty cycle. |
 | `agentRole` | T5. `main` or `subagent`, so subagent tool traffic reads apart. |
 | `client` | T5. Cost-attribution and display key. **Never an authorization subject.** |
 | `parallelGroup` / `parallelN` / `durationShared` | T15. The §3.4 finding, made explicit. |
@@ -321,8 +420,14 @@ sizing this may be *correct*, since those calls cost no sandbox time either, but
 undercounts call volume and any table built from it says so.** Closing the gap needs #1924
 (Claude Code telemetry), not this spec.
 
-7.2 **Which `Bash`.** The name is `Bash`; which command ran is in the arguments, which T6
-keeps out permanently. So this spec answers "how long do tools take" and never "what did they
+7.1a **An approval wait reads as execution.** T26: a permission prompt the user sits on lands
+inside a `tool` gap, indistinguishable from the command running. Nobody has quantified it
+here, and it inflates exactly the figure a sandbox is sized against. Measuring it against
+local Claude Code transcripts — where the harness records the wait — is the cheapest way to
+bound the error, and should happen before any density number from this export is published.
+
+7.2 **Which `Bash`.** The name is `Bash`; which command ran is in the arguments, which T6 and
+T0 keep out permanently. So this spec answers "how long do tools take" and never "what did they
 do". A workload taxonomy finer than the tool name needs #1810's Tier 3 and a different privacy
 posture.
 
@@ -341,7 +446,8 @@ which user instruction.
 | #1906 | The tracker. This spec narrows its §2 and **supersedes** its "list on the response record" shape, for the §3.4 reason. |
 | #1810 | The parent spec. This is its §7.2 `toolCallNames` item, re-scoped from names to paired calls. |
 | #1740 | Adds `newToolResults` and `toolResultErrors` to the event record. Complementary: those count results per event; this counts calls with durations. |
-| #1924 | Claude Code telemetry would supply the tool times the proxy cannot see (§7.1), including permission waits. The better long-term answer for local tools. |
+| #1924 | Claude Code telemetry would supply the tool times the proxy cannot see (§7.1) **and the permission waits T26 cannot separate from execution (§7.1a)**. It is the fix for both of this spec's largest error sources, so the two should be planned together even though this one ships first. |
+| #1921 / #1925 | Redaction and the content export. Where tool arguments and result content go, per T0 — a different privacy posture, not a flag on this record. |
 | #1997 | `sessionIncarnation`. Needed before per-session aggregates mean anything (§7.3). |
 | #505 | An OTLP emitter would be the third consumer of the §6 pairing, and the reason to prefer Option A. |
 | rossoctl/trajectory-schema | A `toolCall` record maps closely to that schema's `$defs.sessionToolCall`, which already records a tool call as sizes rather than content (`command_chars`, `result_preview_chars`). Worth aligning field names where the semantics match. |
@@ -374,5 +480,7 @@ its frequency — but the *rate* is not a constant to design against.
 | T20 | The opt-in switch: per-item (`?include=toolCalls`) or one Tier-2 switch. |
 | §6 | Which of the three pairing options. Author leans A. |
 | §6.4 | The per-session pairing bound, and the behaviour when it is hit. |
+| T25 | Whether `gapKind` needs a fourth value for a gap that spans both a model call and tool execution, or whether `inference` winning is the right precedence. |
+| §7.1a | Whether to quantify the approval-wait error against local transcripts before publishing any density figure. Author's view: yes, and it is cheap. |
 
 Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>
