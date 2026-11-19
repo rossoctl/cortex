@@ -17,6 +17,8 @@ import (
 // Context and Timeout Tests
 // =============================================================================
 
+// The client's timeout surfaces as a timeout error. At 1ns it expires before the
+// request reaches the broker.
 func TestClient_AcquireToken_ClientTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
