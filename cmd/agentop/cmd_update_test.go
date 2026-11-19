@@ -67,6 +67,7 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 		args                 []string
 		want                 string // stdout
 		code                 int
+		result               string // the status update.json records, if checked
 	}{
 		{name: "newest", latest: "v9.9.9", want: "Already at v9.9.9.\n"},
 		{name: "pinned", latest: "v9.9.8", args: []string{"--ref=v9.9.9"}, want: "Already at v9.9.9.\n"},
@@ -77,7 +78,8 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 		{name: "main build", latest: "v9.9.9", agentop: "#!/bin/sh\necho agentop main-abc1234\n", want: fmt.Sprintf(notReleaseNotice+"\n", "main-abc1234")},
 		{name: "dev build pinned", latest: "v9.9.9", release: "v9.9.9", agentop: "#!/bin/sh\necho agentop dev\n", args: []string{"--ref=v9.9.9"}, want: "staged setup\n", code: 7},
 		// An RC moves only forward: to its release or a later one, or back by --ref.
-		{name: "rc ahead", latest: "v9.9.8", agentop: "#!/bin/sh\necho agentop v9.9.9-rc.1\n", want: fmt.Sprintf(rcAheadNotice+"\n", "v9.9.9-rc.1", "v9.9.8")},
+		{name: "rc ahead", latest: "v9.9.8", agentop: "#!/bin/sh\necho agentop v9.9.9-rc.1\n", want: fmt.Sprintf(rcAheadNotice+"\n", "agentop", "v9.9.9-rc.1", "v9.9.8"), result: updatestatus.ResultCurrent},
+		{name: "cortex rc ahead", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.10-rc.1\n", want: fmt.Sprintf(rcAheadNotice+"\n", "cortex", "v9.9.10-rc.1", "v9.9.9"), result: updatestatus.ResultCurrent},
 		{name: "rc released", latest: "v9.9.9", release: "v9.9.9", agentop: "#!/bin/sh\necho agentop v9.9.9-rc.1\n", want: "staged setup\n", code: 7},
 		{name: "rc pinned back", latest: "v9.9.8", release: "v9.9.8", agentop: "#!/bin/sh\necho agentop v9.9.9-rc.1\n", args: []string{"--ref=v9.9.8"}, want: "staged setup\n", code: 7},
 		{name: "main", latest: "v9.9.9", args: []string{"--ref=main"}, want: "installer: --ref=main\n", code: 7},
@@ -103,6 +105,11 @@ func TestUpdateSkipsTheInstallerWhenCurrent(t *testing.T) {
 			var out, errb bytes.Buffer
 			if code := runUpdate(c.args, &out, &errb); code != c.code || out.String() != c.want {
 				t.Errorf("exit %d stdout %q, want %d %q\n%s", code, out.String(), c.code, c.want, errb.String())
+			}
+			if c.result != "" {
+				if s := readStatus(t, sc); s.Result != c.result || s.Latest != c.latest {
+					t.Errorf("status %q latest %q, want %q %q", s.Result, s.Latest, c.result, c.latest)
+				}
 			}
 		})
 	}
