@@ -13,20 +13,21 @@ rates, tool failure rates. A live TUI cannot answer these.
 [`agentop cost`](pricing.md) answers a few of them inside the tool. This endpoint is the
 layer behind anything else.
 
-The commands and outputs on this page come from a served archive.
+Every command on this page was run against a served archive. The record counts in the
+walkthrough are from a small fixture archive, so treat the figures as illustrative: they
+show the shape of each answer, not a real traffic profile.
 
 **Terms used on this page.** A **record** is one line of the export. An **event** is one
 request or response that Cortex captured. One event becomes one record. The **store** is
 what Cortex holds in memory. The **archive** is what Cortex has written to disk.
 
-- [Step 1: confirm the proxy has an archive](#step-1-confirm-the-proxy-has-an-archive)
-- [Step 2: list what the archive holds](#step-2-list-what-the-archive-holds)
-  - [Find the id of the session you want](#find-the-id-of-the-session-you-want)
-- [Step 3: export it](#step-3-export-it)
-- [Step 4: select less than everything](#step-4-select-less-than-everything)
-- [Answer a question with the export](#answer-a-question-with-the-export)
+- [What an export contains](#what-an-export-contains)
+- [Step 1: list the sessions](#step-1-list-the-sessions)
+- [Step 2: export](#step-2-export)
+- [Step 3: select less than everything](#step-3-select-less-than-everything)
+- [Step 4: answer a question with the export](#step-4-answer-a-question-with-the-export)
 - [Three traps](#three-traps)
-- [Export from a cluster sidecar](#export-from-a-cluster-sidecar)
+- [When the proxy has no archive](#when-the-proxy-has-no-archive)
 - [Use the export in a script](#use-the-export-in-a-script)
 - [Read the refusals](#read-the-refusals)
 - [What a record is](#what-a-record-is)
@@ -37,45 +38,151 @@ what Cortex holds in memory. The **archive** is what Cortex has written to disk.
 - [Truncation, not corruption](#truncation-not-corruption)
 - [See also](#see-also)
 
-## Step 1: confirm the proxy has an archive
+## What an export contains
 
-The export reads the archive on disk. It does not read the store in memory. A laptop
-install has an archive. Most other deployments do not.
+An export carries the **shape** of your traffic. It omits the content. An export tells you
+how much, how fast, how often, and to where. It cannot tell you what was said.
 
-Ask the proxy what its archive holds:
+Cortex does record content. It holds it in the store and in the archive, and
+[`session-dump.md`](session-dump.md) is how you get it. The export is the path that leaves
+the content behind.
 
-```sh
-curl -s 'http://127.0.0.1:47601/v1/sessions?archived=true' | jq '.archive'
-```
+Read this section before you export. It decides whether this is the right tool.
 
-```
-{
-  "bytes": 493,
-  "maxBytes": 2147483648,
-  "retentionDays": 30
-}
-```
+### What a record carries
 
-`retentionDays` is how long the archive keeps a session. `maxBytes` is its size limit.
+One record is one event. A record holds 36 fields. Cortex caps each label at 96 bytes, so
+nearly every field is a number or a short label. `sessionId` and `requestId` are the
+exceptions: see [Two fields are not short](#two-fields-are-not-short).
 
-If the reply is `null`, this proxy has no archive. Go to
-[Export from a cluster sidecar](#export-from-a-cluster-sidecar).
+| Group | Fields |
+|---|---|
+| Identity | `sessionId`, `seq`, `requestId`, `at` |
+| Destination | `host`, `requestedHost`, `httpMethod` |
+| Outcome | `statusCode`, `errorKind`, `errorCode`, `finishReason` |
+| Timing | `durationMs`, `ttfbMs` |
+| Volume | `bytesUp`, `bytesDown` |
+| Tokens | `inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`, `reasoningTokens`, `presentKinds` |
+| Model | `model`, `requestedModel`, `servedModel`, `stream`, `streamedResponse` |
+| Counts | `messageCount`, `toolCount`, `toolCallCount` |
+| Caller | `client`, `agentRole` |
+| Transport | `direction`, `phase`, `tunnel`, `tunnelReason`, `schema` |
 
-## Step 2: list what the archive holds
+`client` is the coding agent Cortex recognised from the User-Agent, such as
+`claude-code/2.1.270`. For proxied traffic Cortex does not copy the header's text: the
+name comes from a closed list, and the version is kept only when it has the expected
+shape. An event pushed to `POST /v1/ingest` is the exception — it keeps the name its
+producer sent, and the export carries that name as sent.
+
+`client` is not an authenticated client id, and `agentRole` comes from the inference
+metadata. Neither one names an authenticated principal.
+
+### Two fields are not short
+
+`sessionId` is the value a client asserted. Cortex copies it through unchanged, up to 256
+bytes. The 96-byte label cap does not apply to it. A client is therefore free to use a
+sentence as its session id, and the export then carries that sentence.
+
+`requestId` is uncapped too. Cortex mints it on live traffic, such as `a0-9e37cd`, so it
+holds no client text. On an imported session it comes from the transcript, and one importer
+builds it as `<session id>/<entry id>` — which repeats whatever the session id holds.
+
+Other fields carry client text as well, but capped at 96 bytes. `model`, `requestedModel`
+and `servedModel` are whatever the request body and the response named. `host` is whatever
+the client connected to.
+
+**Read these values before you share an export.** `sessionId` and `requestId` are the two
+that can be long.
+
+### What a record never carries
+
+A record never contains the content below. Cortex does not remove it. Cortex never copies
+it in. A record is an allowlist: a field must be added deliberately to appear.
+
+- Prompts and user queries
+- Model completions and reasoning text
+- Tool arguments, such as a `Bash` command line
+- Tool results, and tool names
+- MCP parameters and results, and A2A message parts and artifacts
+- Request and response bodies, and request headers
+- Authenticated identity: subject, client id, agent id, scopes, SPIFFE id
+- URL paths
+
+A test holds this contract. `TestRecord_CarriesNoContent` puts 24 distinct secrets in the
+content-bearing fields of an event. It then encodes the record. The test fails if any
+secret reaches the encoded bytes, which fails CI.
+
+The count above is pinned. `TestDocSecretCountMatchesAllSecrets` fails if this page
+and the test disagree.
+
+### Questions an export answers
+
+- Token spend per model
+- Latency percentiles, including time to first byte
+- Cache hit rates
+- Which hosts an agent reached
+- Error rates and refusal rates
+- Agent-version adoption
+- How traffic changed across a release
+
+### Questions an export cannot answer
+
+- What a user asked
+- What the model replied
+- Which file a tool touched
+- Why a request was made
+- Who the user was
+- Which tools ran. A record counts them in `toolCallCount`. It never names them.
+
+Tool names are not refused on privacy grounds. A name is low risk, unlike an argument: a
+`Bash` command line is a secret, and arguments stay out permanently. Two other reasons keep
+names out for now:
+
+- A record is a flat list of scalars. A name list would be the first array, which changes
+  the shape every consumer parses.
+- Names alone would not give per-tool latency. A tool result arrives in a later request,
+  and the key that pairs it with its call is the tool-use id, which no record carries. So a
+  name list says only which tools a response asked for.
+
+Use `GET /v1/sessions/{id}/timeline` for names today. It pairs each call with its result by
+tool-use id, and it returns named spans.
+[#1906](https://github.com/rossoctl/cortex/issues/1906) tracks adding names here.
+
+An export is **content-free**. It is **not anonymous**. It keeps hosts, models, session
+ids and timestamps. Together these show who called what, and when. Read an export before
+you send it somewhere.
+
+If you need any of the content above, use [`session-dump.md`](session-dump.md) instead.
+
+## Step 1: list the sessions
+
+Ask the proxy which sessions the archive holds:
 
 ```sh
 curl -s 'http://127.0.0.1:47601/v1/sessions?archived=true' \
-  | jq -r '.sessions[] | [.id, .eventCount, (.resident != false)] | @tsv'
+  | jq -r '.sessions[]
+           | [.id, .eventCount, (.resident != false), (.title // "(untitled)")[0:50]]
+           | @tsv' \
+  | column -t -s $'\t'
 ```
 
 ```
-old-session      3   false
-today-session    4   false
+849102c5-e59f-404c-8b2e-3dde35e052bb  412  true   please address the review comments
+59046505-b6f3-43f5-a2ef-9071c9a847a2  188  false  https://github.com/rossoctl/cortex/pull/1854
+0e2f9a41-7c3d-4b18-9f52-6a1e4d7b2c90  24   false  (untitled)
 ```
 
-The third column is `resident`. Test it with `!= false`, not with `// true`: in `jq` the
-`//` operator treats `false` as absent, so `// true` would report every session as
-resident.
+`column -t` aligns the columns. Without it `@tsv` separates the fields with tabs, and a
+short event count moves the later columns out of line.
+
+`-s $'\t'` is not optional. `column` splits on any whitespace by default, so a title with
+spaces becomes several columns.
+
+Each row is one session: its id, its event count, whether the store still holds it, and
+its title.
+
+The third column is `resident`. Test it with `!= false`, not with `// true`. In `jq` the
+`//` operator treats `false` as absent, so `// true` reports every session as resident.
 
 The values mean:
 
@@ -84,51 +191,57 @@ The values mean:
 - **`false`**: the store has dropped this session, and the archive supplied this row. The
   viewer no longer shows it. The export still carries it.
 
+A `resident` session is not always in the archive yet. Cortex writes to the archive a tick
+behind the store, so a session that started seconds ago can be listed here and still be
+absent from the export. Give it a moment and export again.
+
 Cortex drops a session from the store when the store reaches its session limit, or when
 the session expires. The archive keeps the session after that. This is the reason to
 export: the archive holds history that memory has lost.
 
-### Find the id of the session you want
+A proxy with no archive still answers this command. It ignores `archived=true` and returns
+the store's sessions, each one `resident`. Check the `archive` key to tell the two apart:
 
-`--session` takes a **session id**, and it matches that id exactly. It does not match a
-title, and it does not match a prefix.
+```sh
+curl -s 'http://127.0.0.1:47601/v1/sessions?archived=true' | jq '.archive'
+```
+
+A reply of `null` means this proxy has no archive. The rows above then come from memory
+only, and the export cannot read them. See
+[When the proxy has no archive](#when-the-proxy-has-no-archive).
+
+### Copy the id you need
+
+`--session` takes a **session id**. It matches that id exactly. It does not match a title.
+It does not match a prefix.
+
+One exception: the flag splits its value at commas, because it accepts a comma-separated
+list. So `--session task,one` asks for two sessions, `task` and `one`. To export an id that
+contains a comma, call the endpoint directly. `?session=` reads the whole value as one id:
+
+```sh
+curl -s 'http://127.0.0.1:47601/v1/export?session=task%2Cone' > one.ndjson
+```
 
 A session id is the value a client asserted. It is often a UUID. It can also be a plain
 word, such as `default`.
 
-An id alone does not tell you which session it is. List the ids with their titles:
-
-```sh
-curl -s 'http://localhost:47601/v1/sessions?archived=true' \
-  | jq -r '.sessions[] | "\(.id)  \((.title // "(untitled)")[0:60])"'
-```
-
-```
-849102c5-e59f-404c-8b2e-3dde35e052bb  please address the review comments
-59046505-b6f3-43f5-a2ef-9071c9a847a2  https://github.com/rossoctl/cortex/pull/1854
-24e624cb-b578-42c4-9c8b-9bfbe29341ab  please address Alek's comments
-17051bcc-5ae8-40eb-a975-48488242b93d  Our rossoctl org has several repos
-0e2f9a41-7c3d-4b18-9f52-6a1e4d7b2c90  (untitled)
-```
-
 A session has no title until its events carry one: a `/rename`, a user query, or ordinary
-prose. Tunnel-only traffic and utility clients therefore stay untitled. Keep those rows —
-they are the ones you most need an id for.
-
-Copy the id from the first column.
+prose. Tunnel-only traffic and utility clients therefore stay untitled. Keep those rows.
+They are the ones you most need an id for.
 
 > **A title is user content. An export is not.**
 >
 > Cortex derives a title from the session's own events: a `/rename`, else a user query,
 > else ordinary conversation. A title therefore contains prompt text.
 >
-> The export excludes prompt text by design. The command above does not. Use it in your
-> own terminal. Do not paste its output where you would paste an export.
+> The export excludes prompt text. The command above does not. Run it in your own
+> terminal. Do not paste its output where you would paste an export.
 
-The export carries no title. A record identifies its session by `sessionId` only. To
-label a report, join the ids back to the titles yourself.
+The export carries no title. A record identifies its session by `sessionId` only. To label
+a report, join the ids back to the titles yourself.
 
-## Step 3: export it
+## Step 2: export
 
 ```sh
 agentop export --out usage.ndjson
@@ -145,27 +258,38 @@ can be the export itself:
 agentop export | jq -r '.model // empty' | sort | uniq -c
 ```
 
-Each record is one event, reduced to about 30 numbers and short strings. This record
-comes from a larger install than the 7-record archive above:
+Each record is one event, reduced to numbers and short labels:
 
 ```json
-{"schema":1,"sessionId":"45fa31b2-…","seq":2077,"requestId":"a0-9e37cd",
- "at":"2026-11-05T15:52:26.102885Z","direction":"outbound","phase":"response",
- "host":"litellm.cb.ete.res.ibm.com","httpMethod":"POST","statusCode":200,
- "durationMs":4279,"ttfbMs":3182,"bytesDown":3142,"client":"claude-code/2.1.270",
- "agentRole":"main","model":"rits/zai-org/glm-5-3","servedModel":"hosted_vllm/zai-org/GLM-5.3",
- "stream":true,"streamedResponse":true,"finishReason":"end_turn",
- "inputTokens":1249,"cacheReadTokens":196096,"outputTokens":49,
- "messageCount":385,"toolCount":24,"toolCallCount":11}
+{
+  "schema": 1,
+  "sessionId": "today-session",
+  "seq": 5,
+  "requestId": "a0-9e37cd",
+  "at": "2026-11-16T23:08:45.84114Z",
+  "direction": "outbound",
+  "phase": "response",
+  "host": "api.anthropic.com",
+  "httpMethod": "POST",
+  "statusCode": 200,
+  "durationMs": 1311,
+  "ttfbMs": 402,
+  "model": "claude-opus-5",
+  "inputTokens": 1230,
+  "outputTokens": 51,
+  "messageCount": 1
+}
 ```
 
-Look at what the record does not have. The source event held 385 messages of
-conversation. The record has `"messageCount":385` in their place. The export carries no
-prompts, no completions and no tool arguments. This is why you can share an export where
-you cannot share the full events.
+This is a **response**-phase record. The model reports usage when it answers, so the token
+counts and the duration arrive on the response. A request-phase record carries neither.
 
-An export is not anonymous. Read
-[What a record is](#what-a-record-is) before you send it somewhere.
+Its request is a separate, earlier record with the same `requestId`. Pair the two on
+`requestId`, not on `seq`: `seq` counts every event in the session, so other events can
+take the numbers in between.
+
+Look at what the record does not have. The source event held this message content:
+`"SECRET-PROMPT-DO-NOT-EXPORT"`. The record has `"messageCount": 1` in its place.
 
 The command refuses to overwrite a file:
 
@@ -176,7 +300,7 @@ agentop export: usage.ndjson already exists; --force overwrites it
 
 Add `--force` to overwrite it.
 
-## Step 4: select less than everything
+## Step 3: select less than everything
 
 Select by time:
 
@@ -185,17 +309,26 @@ agentop export --since 7d
 ```
 
 Select by session id. Get the id from
-[Step 2](#find-the-id-of-the-session-you-want):
+[Step 1](#copy-the-id-you-need):
 
 ```sh
 agentop export --session 849102c5-e59f-404c-8b2e-3dde35e052bb
 ```
 
-Select more than one session. Repeat the flag, or separate the ids with commas:
+Select more than one session. Repeat the flag, or separate the ids with commas and no
+spaces:
 
 ```sh
 agentop export --session 849102c5-… --session 59046505-…
 agentop export --session 849102c5-…,59046505-…
+```
+
+A space after a comma needs quotes. Without them the shell splits the list, and the second
+id becomes a stray argument that the command refuses with exit 2:
+
+```sh
+agentop export --session 'a, b'     # two sessions
+agentop export --session a, b       # exit 2: unexpected argument "b"
 ```
 
 An id that the archive does not hold is a refusal, not an empty result. See
@@ -217,7 +350,7 @@ A session can appear in an export with fewer events than it has. Example: a sess
 started a month ago, and it ran again this morning. `--since 24h` carries this morning's
 events from it. `--since 24h` excludes its older events.
 
-## Answer a question with the export
+## Step 4: answer a question with the export
 
 The export is NDJSON. One record per line. `jq` reads it directly.
 
@@ -257,6 +390,28 @@ agentop export --since 7d | jq -r '.durationMs // empty' | sort -n \
 n=4 p50=1237ms p95=1274ms max=1311ms
 ```
 
+**p50** is the median: half the requests were faster, half slower. **p95** means 95% of
+requests were faster than this value. **max** is the slowest single request.
+
+Read the gap between p50 and p95, not either one alone. `p50=200ms p95=240ms` is a
+consistent system. `p50=200ms p95=9000ms` is a system that stalls. Both can have the same
+average, which is why this recipe does not report one: a single timeout moves an average
+and tells you nothing about the typical request.
+
+The command works in four steps:
+
+- `.durationMs // empty` takes the duration and drops a record that has none. A dropped
+  record is not a zero. See [Trap 1](#trap-1-an-absent-field-is-not-a-zero).
+- `sort -n` sorts numerically. Plain `sort` is alphabetical, which puts `1000` before `9`.
+- `a[NR]=$1` stores each value in order. `NR` is awk's line number, so the array runs from
+  1 to the number of values.
+- `int((NR-1)*0.95)+1` is the index of the p95 value.
+
+That index arithmetic is awkward because the array starts at 1. For 100 values,
+`int(99*0.95)+1` is index 95. Without the `+1` you read the value one place too low, and at
+`n=1` you read `a[0]`, which is unset. awk prints that as `0`, so the recipe would report
+`p50=0ms` with no error.
+
 **Query it with SQL.** DuckDB reads NDJSON directly:
 
 ```sh
@@ -293,6 +448,28 @@ SEQ  MS    TTFB  INPUT  CACHE_R  CACHE_W  OUTPUT  TOOL_CALLS
 2    4000  900   1200   190000   500      60      2
 ```
 
+The columns are:
+
+| Column | Field | Meaning |
+|---|---|---|
+| `SEQ` | `seq` | The event's position in the session. Higher is later. |
+| `MS` | `durationMs` | The whole request, in milliseconds. |
+| `TTFB` | `ttfbMs` | Time to the first byte of the response. `MS` − `TTFB` is the time the body took. |
+| `INPUT` | `inputTokens` | Prompt tokens the model read fresh. |
+| `CACHE_R` | `cacheReadTokens` | Prompt tokens served from the cache, and far cheaper. |
+| `CACHE_W` | `cacheWriteTokens` | Prompt tokens written to the cache for a later turn. |
+| `OUTPUT` | `outputTokens` | Tokens the model generated. |
+| `TOOL_CALLS` | `toolCallCount` | Tool calls this response asked for. Never their names. |
+
+Two rules for reading the token columns:
+
+- **The three prompt columns are a split, not a total.** Add `INPUT` + `CACHE_R` +
+  `CACHE_W` to get the whole prompt. No field holds that sum, which stops a consumer
+  counting cached tokens twice.
+- **`CACHE_R` dwarfing `INPUT` is normal and good.** The rows above re-read about 190,000
+  cached tokens and paid for 1,200. A low `CACHE_R` on a long conversation is the problem
+  worth chasing.
+
 Select `phase=="response"`. A request-phase record carries no token counts, because the
 model reports usage on the response.
 
@@ -303,9 +480,6 @@ happens on real data. `-` makes the absence visible, which is also what Trap 1 a
 
 `printf` rather than `echo -e`: under `dash`, which is `/bin/sh` on Debian and Ubuntu,
 `echo -e` prints a literal `-e`.
-
-Remember [Trap 1](#three-traps): the `.inputTokens` test is what keeps non-inference
-records out of the table.
 
 **Do not use the timeline for token counts.** `GET /v1/sessions/{id}/timeline` carries
 `outputTokens` and `liveTokens` only. It has no `inputTokens` and no cache counts. The
@@ -421,6 +595,23 @@ these as 3, 2, 1.
 A client can reuse one session id for as long as it likes. The id `default` can cover
 weeks of unrelated work.
 
+Two ids are not units of work at all. `default` is the shared bucket. An id starting with
+`pending:` is a holding bucket: an agent's calls from before its process named a session.
+`codex exec` leaves one on every run.
+
+Exclude both when you compute a figure per session. Neither one is a session:
+
+```sh
+agentop export | jq -c 'select(.sessionId | startswith("pending:") or . == "default" | not)'
+```
+
+Keep them when you compute a total. The export does not link a bucket to the session it
+named, so a bucket's calls are in the bucket only. Drop them and the total is too low.
+
+[`session-api.md`](session-api.md#get-v1sessions) explains how the **list** links a bucket
+to the session it named. That link is a property of the list, not of the export. No record
+carries it.
+
 Do not group by `sessionId` and call the result a task. The average covers unrelated work.
 
 Cortex has no field for "one sitting" yet
@@ -443,7 +634,28 @@ agentop export --session default \
 2026-11-16T23:08:45.84114Z  gap=191h
 ```
 
-## Export from a cluster sidecar
+## When the proxy has no archive
+
+The export reads the archive on disk. It does not read the store in memory. A laptop
+install has an archive. Most other deployments do not.
+
+Ask the proxy what its archive holds:
+
+```sh
+curl -s 'http://127.0.0.1:47601/v1/sessions?archived=true' | jq '.archive'
+```
+
+```json
+{
+  "bytes": 493,
+  "maxBytes": 2147483648,
+  "retentionDays": 30
+}
+```
+
+`retentionDays` is how long the archive keeps a session. `maxBytes` is its size limit.
+
+A reply of `null` means this proxy has no archive.
 
 An injected sidecar normally runs no archive. The endpoint then answers 404:
 
@@ -583,7 +795,7 @@ agentop export: /v1/export?session=today-session&since=bogus: apiclient: bad req
 
 This refusal says nothing about sessions, because `--since` is the problem.
 
-The accepted forms are in the [flag table](#agentop-export). Cortex refuses zero and
+Accepted forms are a day count (`7d`) or a Go duration (`168h`). Cortex refuses zero and
 negative values. It also refuses a sign, so `+7d` is invalid.
 
 **A malformed query.** A query that Cortex cannot decode is a 400:
@@ -599,24 +811,28 @@ this error, because it escapes its own query. A hand-written `curl` can.
 
 ## What a record is
 
-One line is one event. A record is content-free by construction. It is an allowlist of
-about 30 scalars projected from the event. It is never the event itself.
-[Step 3](#step-3-export-it) shows one record.
+[What an export contains](#what-an-export-contains) lists every field and every exclusion.
+A fully-populated record, from a real archive:
 
-**A record never carries** message content, completions, tool-call names, tool-call
-arguments, tool results, MCP params, request paths, headers or authenticated identity.
+```json
+{"schema":1,"sessionId":"45fa31b2-…","seq":2077,"requestId":"a0-9e37cd",
+ "at":"2026-11-05T15:52:26.102885Z","direction":"outbound","phase":"response",
+ "host":"litellm.cb.ete.res.ibm.com","httpMethod":"POST","statusCode":200,
+ "durationMs":4279,"ttfbMs":3182,"bytesDown":3142,"client":"claude-code/2.1.270",
+ "agentRole":"main","model":"rits/zai-org/glm-5-3","servedModel":"hosted_vllm/zai-org/GLM-5.3",
+ "stream":true,"streamedResponse":true,"finishReason":"end_turn",
+ "inputTokens":1249,"cacheReadTokens":196096,"outputTokens":49,
+ "messageCount":385,"toolCount":24,"toolCallCount":11}
+```
 
-The field list is an allowlist. A field added to the event later does not reach an export
-on its own. Someone must add it to the projection first. This is what makes the endpoint
-safe to pipe off the machine that must keep the full events.
+Two rules govern the field list itself.
 
-**Content-free is not detail-free.** A record carries hosts, models, client identifiers,
-session identifiers and timestamps. These describe where an agent talked, and how much.
-An external analysis wants exactly this. Review a file before it leaves your hands.
+**The field list is an allowlist.** A field added to the event does not reach an export on
+its own. Someone must add it to the projection first. This is what makes the endpoint safe
+to pipe off the machine that must keep the full events.
 
-`client` needs its own warning. Cortex parses it from the User-Agent. It is a
-cost-attribution key and a display key. **It is never an authorization subject.** An
-external collector is where someone will treat it as identity.
+**`client` is never an authorization subject.** It is a cost-attribution key and a display
+key. An external collector is where someone will treat it as identity.
 
 ## Reading rules
 
@@ -654,7 +870,7 @@ bytes, not in ids. This keeps the answer inside what a client reads of a 400 bod
 long the ids are. The refusal lists as many ids as fit, then a count of the rest.
 
 `since` floors on **event time**, not on session age
-([Step 4](#step-4-select-less-than-everything) has an example). Cortex skips a session that
+([Step 3](#step-3-select-less-than-everything) has an example). Cortex skips a session that
 it last touched before the floor, and does not read its segments.
 
 ## `agentop export`

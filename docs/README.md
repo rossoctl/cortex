@@ -24,7 +24,8 @@ holds the repo-level pieces; this file is the index.
 | Set model prices and gateway discounts | [`pricing.md`](pricing.md). To see the rates in effect, run `agentop pricing [--host <gateway>]` |
 | Run, stop or update the service | [`laptop-service.md`](laptop-service.md) |
 | Apply policy to agent traffic in praxis mode | [`praxis-policy.md`](praxis-policy.md) |
-| Export sessions | [`session-export.md`](session-export.md) |
+| Measure traffic — tokens, latency, errors — **without content** | [`session-export.md`](session-export.md) |
+| Keep prompts, completions and tool results as files — **with content** | [`session-dump.md`](session-dump.md) |
 
 ## Reference
 
