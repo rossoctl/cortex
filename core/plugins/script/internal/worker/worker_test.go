@@ -71,7 +71,9 @@ func fakeWorker(mode string) {
 		hold, _ := os.OpenFile(os.Getenv("FAKE_HOLD"), os.O_WRONLY, 0)
 		child := exec.Command("sleep", "3600")
 		child.Stdout = hold
-		_ = child.Start()
+		if err := child.Start(); err != nil {
+			os.Exit(1) // the FIFO closes unsignalled, so the test reports no grandchild
+		}
 		hold.Write([]byte{1})
 		hold.Close()
 	}

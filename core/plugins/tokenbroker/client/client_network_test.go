@@ -82,6 +82,9 @@ func TestClient_AcquireToken_LongPolling(t *testing.T) {
 	defer unblock()
 
 	client := NewClient()
+	if got := client.httpClient.Timeout; got <= 300*time.Second {
+		t.Fatalf("client timeout = %v, want longer than the broker's 300s long poll", got)
+	}
 	type result struct {
 		token string
 		err   error
