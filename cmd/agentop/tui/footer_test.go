@@ -7,6 +7,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+
+	"github.com/rossoctl/cortex/core/session/timeline"
 )
 
 // statusRow returns the first line of the footer — the status row, where the
@@ -147,6 +149,12 @@ func TestFooter_WShowsTheCurrentWindow(t *testing.T) {
 	tl.timeline.windowIdx = 1       // 1h: longer than the session, so "all" is drawn
 	if got := tl.helpView(); !strings.Contains(got, "[w] all") {
 		t.Errorf("timeline footer: %q, want [w] all", got)
+	}
+	// An ended session with a tool that never ended: the pane draws from tl.End, not the clock.
+	tl.timeline.tl.Tools = append(tl.timeline.tl.Tools, timeline.Tool{Agent: timeline.MainAgent, ID: "open", Name: "Bash", Start: tlAt(1700)})
+	_, _, _, win := tl.timelineRange()
+	if want := "[w] " + timelineWindows[win].label + " "; !strings.Contains(tl.helpView(), want) {
+		t.Errorf("timeline footer with an open tool: %q, want %q", tl.helpView(), want)
 	}
 
 	a := &model{pane: paneAgents}

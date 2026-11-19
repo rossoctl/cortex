@@ -1304,7 +1304,8 @@ func (m *model) helpView() string {
 		if lay, ok := m.timelineLayoutNow(); ok && m.timelineScrollMax(lay) > 0 {
 			scroll = "[↑↓] rows  "
 		}
-		return "[w] " + timelineWindows[m.timeline.window(m.clock())].label + "  [←→] moment  " + scroll + "[enter] events  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
+		_, _, _, win := m.timelineRange()
+		return "[w] " + timelineWindows[win].label + "  [←→] moment  " + scroll + "[enter] events  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case paneUsage:
 		// [o] is omitted under latency rather than shown as a no-op: a footer that
 		// advertises an inert key is worse than a shorter footer.
