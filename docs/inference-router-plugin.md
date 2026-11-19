@@ -388,7 +388,8 @@ translation.
 
 **The auth header.** The sent request has only the header that this table picks.
 The router removes the agent's `Authorization`, `X-Api-Key` and `Api-Key` first,
-except in the first row:
+except in the first row. In each row, it also removes the `auth_header` of each
+server in the config, so the key of a different server does not stay on the request:
 
 | `auth_header` | Request | Header sent |
 |---|---|---|

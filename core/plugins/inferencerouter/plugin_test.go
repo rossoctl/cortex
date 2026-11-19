@@ -1408,6 +1408,20 @@ func TestRouter_KeyOwnerHeaderDropped(t *testing.T) {
 	}
 }
 
+// The request goes to its key's owner, team-b, but also sends the key that team-a and ete
+// share in team-a's auth_header. keyOwner skips a shared key, so the router keeps it.
+func TestRouter_SharedKeyHeaderDropped(t *testing.T) {
+	cfg := strings.Replace(strings.Replace(sharedConfig(""), `"ete-key"`, `"same-key"`, 1),
+		`"key": "team-a-key",`, `"key": "same-key", "auth_header": "x-team",`, 1)
+	pctx := keyRequest(newStore(t), claudeUA, "s1", "Authorization", "Bearer team-b-key")
+	pctx.Headers.Set("X-Team", "same-key")
+	run(t, build(t, cfg), pctx)
+	assertRouted(t, pctx, gwHost, "team-b-key")
+	if v := pctx.Headers.Values("X-Team"); len(v) > 0 {
+		t.Errorf("X-Team = %q, want the shared key removed", v)
+	}
+}
+
 func TestRouter_KeyRoutesOneHop(t *testing.T) {
 	pctx := keyRequest(newStore(t), claudeUA, "s1", "Authorization", "Bearer team-b-key")
 	run(t, build(t, keyConfig("", `"team-b": "team-a", "team-a": "ete"`)), pctx)
