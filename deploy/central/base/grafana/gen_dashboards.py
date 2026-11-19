@@ -177,9 +177,12 @@ def fleet():
                   desc="What the providers billed over the selected range: actual (a configured or confirmed rate) plus estimated (a bundled/fallback rate, when no pricing.endpoints entry matches the gateway). Each proxy prices with its own rate table."))
     # A timeseries in bar mode, not a barchart: Grafana's barchart draws nothing for a single row,
     # which is what a fleet younger than two days returns.
-    p5 = series(5, "Net saved per day", [(net(fn="inc").replace("$__range", "1d"), "net")], 0, 5, 24, 7, unit=USD,
-                bars=True, time_from="30d", interval="1d",
-                desc="One bar per day, for 30 days whatever the dashboard range. A bar below zero is a day the proxy cost more than it saved.")
+    # The 1d step puts one point at 00:00 UTC of each day. A plain [1d] window there ends at that
+    # point, so it is the PREVIOUS day's total, and today would never show. "offset -1d" moves the
+    # window to start at the point: each bar is its own day, and today's bar is the total so far.
+    p5 = series(5, "Net saved per day", [(net(fn="inc").replace("[$__range]", "[1d] offset -1d"), "net")],
+                0, 5, 24, 7, unit=USD, bars=True, time_from="30d", interval="1d",
+                desc="One bar per UTC day, for 30 days whatever the dashboard range. Today's bar is the total so far. A bar below zero is a day the proxy cost more than it saved.")
     # A bar below zero is a loss: red. Above zero: green. Colors by value, as bargauge does.
     p5["fieldConfig"]["defaults"]["color"] = {"mode": "thresholds"}
     p5["fieldConfig"]["defaults"]["thresholds"] = {"mode": "absolute", "steps": [

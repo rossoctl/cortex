@@ -313,7 +313,7 @@
       "id": 5,
       "type": "timeseries",
       "title": "Net saved per day",
-      "description": "One bar per day, for 30 days whatever the dashboard range. A bar below zero is a day the proxy cost more than it saved.",
+      "description": "One bar per UTC day, for 30 days whatever the dashboard range. Today's bar is the total so far. A bar below zero is a day the proxy cost more than it saved.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -326,7 +326,7 @@
       },
       "targets": [
         {
-          "expr": "(sum(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d])) - sum(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d])))",
+          "expr": "(sum(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset -1d)) - sum(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset -1d)))",
           "legendFormat": "net",
           "refId": "A",
           "datasource": {
