@@ -109,7 +109,7 @@ Depends on: T2
 - Consumes: `routerconfig.Config.KeyRoutes` (T2).
 - Produces (package-private):
   - `type serverKey struct{ name, key string }`.
-  - Router fields `keys []serverKey` (sorted by name, duplicates removed, Decision 3), `keyHeaders []string` (canonical names from each server's `auth_header`, without `Authorization`, sorted, unique), `keyRoutes map[string]string`.
+  - Router fields `keys []serverKey` (sorted by name, duplicates removed, Decision 3), `keyHeaders []string` (canonical names from each server's `auth_header`, without `Authorization` and without `X-Api-Key`, because `keyOwner` reads those two always; sorted, unique), `keyRoutes map[string]string`.
   - `func buildKeys(servers map[string]routerconfig.Server) (keys []serverKey, headers []string)`. Logs the duplicate WARN (Decision 3).
   - `func (p *Router) keyOwner(h http.Header) string`: the one server whose key the request sent, `""` for none or more than one. Collect the candidate values (Decision 2), skip empty values, compare each with each `p.keys` entry by `subtle.ConstantTimeCompare` and do not exit early. Return a name only when exactly one distinct server matched.
   - `func (p *Router) choiceFor(agent, keyOf string) string`: `""` when `agent == ""`. Else `p.agents[agent]` when set. Else, when `keyOf != ""`, `p.keyRoutes[keyOf]` when set, else `keyOf`. Else `""`.
@@ -167,6 +167,16 @@ key_routes:
 - [ ] **Step 1:** Write the field entry beside `agents` and `sessions`, the order change, and a section `## Choosing a server by the key a request sends` with the facts above and the example.
 - [ ] **Step 2:** Run `pre-commit run check-doc-links --files docs/inference-router-plugin.md`. Expected: Passed.
 - [ ] **Step 3:** Commit: `docs: Explain how the key a request sends selects its server`.
+
+## Gate
+
+Run from the worktree root:
+
+```sh
+cd core && GOWORK=off go vet ./... && GOWORK=off go test -race ./plugins/inferencerouter/... ./session/... ./model/... ./redact/... && test -z "$(gofmt -l .)" && cd ../cmd/agentop && GOWORK=off go vet ./... && cd ../.. && pre-commit run --from-ref 9201b81f29d7b61b262e70e3e11b0a561d37f6e6 --to-ref HEAD
+```
+
+The vet and gofmt steps pass on the unchanged base (checked at plan review).
 
 ## PRs
 
