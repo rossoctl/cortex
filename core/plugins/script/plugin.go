@@ -367,6 +367,9 @@ const finalReserve = time.Second
 // after the slot.
 var errReserveSpent = errors.New("skipped to leave the response deadline's reserve for the plugins after the slot")
 
+// budgetTimeout bounds a response-hook call to its share; tests replace it.
+var budgetTimeout = context.WithTimeout
+
 // responseBudget narrows ctx to the part of its deadline one response-hook call
 // may spend. ok is false when the reserve is all that remains.
 func responseBudget(ctx context.Context) (context.Context, context.CancelFunc, bool) {
@@ -378,7 +381,7 @@ func responseBudget(ctx context.Context) (context.Context, context.CancelFunc, b
 	if budget <= 0 {
 		return nil, nil, false
 	}
-	narrowed, cancel := context.WithTimeout(ctx, budget)
+	narrowed, cancel := budgetTimeout(ctx, budget)
 	return narrowed, cancel, true
 }
 

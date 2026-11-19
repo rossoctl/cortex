@@ -607,26 +607,14 @@ func TestOnRequest_Timeout(t *testing.T) {
 	}
 }
 
-// hang writes a script into dir that answers the handshake for hook and never
-// replies to a call. A script holding a call exits on release, which lets the
-// slot's shutdown take the worker back.
-func hang(t *testing.T, dir, hook string) (release func()) {
+// hang writes a script into dir that answers the handshake for hook, then reads
+// until its stdin closes and never replies.
+func hang(t *testing.T, dir, hook string) {
 	t.Helper()
-	gate := filepath.Join(t.TempDir(), "gate")
-	if err := syscall.Mkfifo(gate, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// Held open both ways, so the script's open returns and a release never blocks.
-	g, err := os.OpenFile(gate, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { g.Close() })
-	body := fmt.Sprintf("#!/bin/sh\nexec 3<%q\nprintf '{\"cortex\":%d,\"hooks\":[\"%s\"],\"enforce\":true}\\n'\nread -r _ && read -r _ <&3\n", gate, worker.Protocol, hook)
+	body := fmt.Sprintf("#!/bin/sh\nprintf '{\"cortex\":%d,\"hooks\":[\"%s\"],\"enforce\":true}\\n'\nwhile read -r _; do :; done\n", worker.Protocol, hook)
 	if err := os.WriteFile(filepath.Join(dir, "hang"), []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return func() { g.Write([]byte("\n")) }
 }
 
 // deadlineOnly carries a deadline and is never done, so only what the code under
@@ -1079,17 +1067,24 @@ func (l *lastFrame) OnResponseFrame(_ context.Context, _ *pipeline.Context, _ []
 // agent a 499 for a response that arrived complete and drops the settle.
 func TestResponse_SlowScriptsLeaveTheDeadlineForTheParsersAfterTheSlot(t *testing.T) {
 	dir := home(t)
-	release := hang(t, dir, "response")
-	// A timeout no test outlasts, so only the reserve can stop the call.
+	hang(t, dir, "response")
+	// A timeout no test outlasts, so only the share can stop the call.
 	s := configured(t, true, `{"timeout": "1h"}`)
-	t.Cleanup(release)
+	// The share is spent as soon as it is given.
+	var share time.Duration
+	budgetTimeout = func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		share = d
+		return context.WithTimeout(parent, 0)
+	}
+	t.Cleanup(func() { budgetTimeout = context.WithTimeout })
 	rec := &lastFrame{}
 	p, err := pipeline.New([]pipeline.Plugin{rec, s})
 	if err != nil {
 		t.Fatal(err)
 	}
 	pctx := response(`{"answer":"hi"}`)
-	a := p.RunResponseFrame(reserveAndTen{context.Background()}, pctx, pctx.ResponseBody, true)
+	ctx := deadlineOnly{context.Background(), time.Now().Add(finalReserve + time.Hour)}
+	a := p.RunResponseFrame(ctx, pctx, pctx.ResponseBody, true)
 	if a.Type != pipeline.Continue {
 		t.Fatalf("action %+v", a)
 	}
@@ -1103,14 +1098,9 @@ func TestResponse_SlowScriptsLeaveTheDeadlineForTheParsersAfterTheSlot(t *testin
 	if err := inv.Details["error"]; !strings.Contains(err, context.DeadlineExceeded.Error()) {
 		t.Errorf("the hung script's call ended with %q, want its share of the deadline spent", err)
 	}
-}
-
-// reserveAndTen is never done, and its deadline is always finalReserve and 10ms
-// away, so a response hook's share of it is 10ms whenever the slot asks.
-type reserveAndTen struct{ context.Context }
-
-func (reserveAndTen) Deadline() (time.Time, bool) {
-	return time.Now().Add(finalReserve + 10*time.Millisecond), true
+	if share <= 0 || share > time.Hour {
+		t.Errorf("the script's share is %v, want the deadline less the reserve", share)
+	}
 }
 
 // Once the reserve is all that remains of the deadline, the scripts are skipped
