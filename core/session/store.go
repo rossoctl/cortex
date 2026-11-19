@@ -166,10 +166,8 @@ type entry struct {
 	// A LATEST VALUE, NOT A SUM, so in context's class above: a trim has nothing to subtract, and
 	// the request that set it is the newest of its kind, which is the last a trim would take.
 	inferenceHost string
-	// inferenceServer and inferenceKeyOf are SessionSummary.InferenceServer and InferenceKeyOf.
-	// Append sets them with inferenceHost.
+	// inferenceServer is SessionSummary.InferenceServer. Append sets it with inferenceHost.
 	inferenceServer string
-	inferenceKeyOf  string
 
 	// procs is each process that NAMED this session through its own header, with when it first
 	// and last did (applyProcs); owner is the agent whose header named it first (applyOwner).
@@ -564,7 +562,6 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event model.SessionEve
 	// the local parameter, for the reason given there.
 	if h := inferenceHostOf(&event); h != "" {
 		sess.inferenceHost, sess.inferenceServer = h, model.RoutedServer(event.Invocations)
-		sess.inferenceKeyOf = model.RoutedKeyOf(event.Invocations)
 	}
 	// An event of neither kind must not change the facts.
 	if model.IsIntent(&event) {

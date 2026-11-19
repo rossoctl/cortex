@@ -187,11 +187,6 @@ type SessionSummary struct {
 	// InferenceHost, and InferenceHostFromHistory covers it too.
 	InferenceServer model.LenientString `json:"inferenceServer,omitempty"`
 
-	// InferenceKeyOf is the name of the server whose key the request that set InferenceHost sent
-	// (model.RoutedKeyOf), and "" when that key matched no server. It never holds a key. It moves
-	// with InferenceHost, and InferenceHostFromHistory covers it too.
-	InferenceKeyOf model.LenientString `json:"inferenceKeyOf,omitempty"`
-
 	// InferenceHostFromHistory is true when InferenceHost came from the session's history before
 	// this store entry — the archive's fold — because no request the entry holds has set it: a
 	// session resumed after a restart, or re-created after an eviction, that has sent no inference
@@ -305,7 +300,6 @@ func (s *Store) ListSessions() []SessionSummary {
 			// Read, not computed, like Title: Append folds it.
 			InferenceHost:   sess.inferenceHost,
 			InferenceServer: model.LenientString(sess.inferenceServer),
-			InferenceKeyOf:  model.LenientString(sess.inferenceKeyOf),
 			Procs:           procsList(sess.procs),
 			procSpans:       maps.Clone(sess.procs),
 			LastRequestAt:   sess.lastRequestAt,

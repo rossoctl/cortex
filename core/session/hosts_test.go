@@ -402,40 +402,12 @@ func TestSummary_InferenceServer(t *testing.T) {
 	check("tunnel and response after a routed request", "gw", "team-a")
 }
 
-// InferenceKeyOf moves with InferenceHost, in the store and in the fold: a request with a router
-// key_of sets it, and a later inference request with none sets it to "".
-func TestSummary_InferenceKeyOf(t *testing.T) {
-	s := New(0, 0, 0)
-	defer s.Close()
-	f := NewSummaryFold()
-	check := func(step, keyOf string) {
-		t.Helper()
-		for src, sum := range map[string]SessionSummary{"store": summaryOf(t, s, "s1"), "fold": f.Summary("s1")} {
-			if string(sum.InferenceKeyOf) != keyOf {
-				t.Errorf("%s, %s: keyOf %q, want %q", step, src, sum.InferenceKeyOf, keyOf)
-			}
-		}
-	}
-	add := func(e pipeline.SessionEvent) { s.Append("s1", e); f.Add("s1", &e) }
-	e := routedTo("gw", claudeUA, "team-a")
-	e.Invocations.Outbound[0].Details["key_of"] = "team-b"
-	add(e)
-	check("key_of", "team-b")
-	add(inferenceTo("other.example.com", claudeUA))
-	check("no key_of", "")
-}
-
 func TestSummaryFold_JSONRoundTripKeepsInferenceServer(t *testing.T) {
 	f := NewSummaryFold()
 	e := routedTo("gw", claudeUA, "team-b")
-	e.Invocations.Outbound[0].Details["key_of"] = "team-a"
 	f.Add("s1", &e)
-	got := roundTrip(t, f).Summary("s1")
-	if got.InferenceServer != "team-b" {
-		t.Fatalf("InferenceServer after a round trip = %q, want team-b", got.InferenceServer)
-	}
-	if got.InferenceKeyOf != "team-a" {
-		t.Fatalf("InferenceKeyOf after a round trip = %q, want team-a", got.InferenceKeyOf)
+	if got := roundTrip(t, f).Summary("s1").InferenceServer; got != "team-b" {
+		t.Fatalf("InferenceServer after a round trip = %q, want team-b", got)
 	}
 	old := NewSummaryFold()
 	if err := json.Unmarshal([]byte(`{"eventCount":3}`), old); err != nil {

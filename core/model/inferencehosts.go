@@ -55,22 +55,6 @@ func RoutedServer(in *Invocations) string {
 	return ""
 }
 
-// RoutedKeyOf is the name of the server whose key a request sent: the "key_of" detail of the last
-// outbound request-phase inference-router invocation that has one. The router records key_of on
-// every reason, so the reason does not count. It is "" for a nil in or no such invocation.
-func RoutedKeyOf(in *Invocations) string {
-	if in == nil {
-		return ""
-	}
-	for i := len(in.Outbound) - 1; i >= 0; i-- {
-		inv := &in.Outbound[i]
-		if inv.Plugin == routerPlugin && inv.Phase == InvocationPhaseRequest && inv.Details["key_of"] != "" {
-			return inv.Details["key_of"]
-		}
-	}
-	return ""
-}
-
 // LastNamedServer is LastServer for a config where servers can share a host. exists tells if
 // a server name is in the config. serverAt gives the host's server: known is true when the
 // host has at least one server, and server is "" when it has more than one.

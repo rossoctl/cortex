@@ -1381,6 +1381,28 @@ func TestRouter_KeyRoutes(t *testing.T) {
 	assertRecord(t, old, pipeline.ActionModify, "routed", map[string]string{"server": "team-b", "pin": pinExisting})
 }
 
+// A request routed to a server other than its key's owner carries none of the owner's key,
+// on the owner's host and off it, whether a key_routes: or an agents: entry chose the server.
+func TestRouter_KeyOwnerHeaderDropped(t *testing.T) {
+	withHeader := func(cfg, header string) string {
+		return strings.Replace(cfg, `"key": "team-b-key",`, `"key": "team-b-key", "auth_header": "`+header+`",`, 1)
+	}
+	for _, tc := range []struct{ name, cfg, header, host, key string }{
+		{"key_routes, same host", withHeader(keyConfig("", `"team-b": "team-a"`), "x-team-key"), "X-Team-Key", gwHost, "team-a-key"},
+		{"key_routes, other host", withHeader(keyConfig("", `"team-b": "ete"`), "x-team"), "X-Team", eteHost, "ete-key"},
+		{"agents, same host", withHeader(sharedConfig(`"claude-code": "team-a"`), "x-team-key"), "X-Team-Key", gwHost, "team-a-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pctx := keyRequest(newStore(t), claudeUA, "s1", tc.header, "team-b-key")
+			run(t, build(t, tc.cfg), pctx)
+			assertRouted(t, pctx, tc.host, tc.key)
+			if v := pctx.Headers.Values(tc.header); len(v) > 0 {
+				t.Errorf("%s = %q, want the owner's key removed", tc.header, v)
+			}
+		})
+	}
+}
+
 func TestRouter_KeyRoutesOneHop(t *testing.T) {
 	pctx := keyRequest(newStore(t), claudeUA, "s1", "Authorization", "Bearer team-b-key")
 	run(t, build(t, keyConfig("", `"team-b": "team-a", "team-a": "ete"`)), pctx)
