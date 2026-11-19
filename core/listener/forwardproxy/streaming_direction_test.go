@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -42,7 +41,6 @@ func TestForwardProxy_Streaming_RequestOnlyWriterKeepsStreaming(t *testing.T) {
 		for i := 1; i <= 3; i++ {
 			fmt.Fprintf(w, "data: {\"id\":%d}\n\n", i)
 			flusher.Flush()
-			time.Sleep(20 * time.Millisecond)
 		}
 	}))
 	defer upstream.Close()

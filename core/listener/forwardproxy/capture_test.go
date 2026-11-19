@@ -22,9 +22,30 @@ import (
 
 // captures is a session.CaptureRecorder that keeps what it is handed.
 type captures struct {
-	mu  sync.Mutex
-	got map[string]*pipeline.RequestCapture  // request captures, by request id
-	res map[string]*pipeline.ResponseCapture // response captures, by request id
+	mu      sync.Mutex
+	got     map[string]*pipeline.RequestCapture  // request captures, by request id
+	res     map[string]*pipeline.ResponseCapture // response captures, by request id
+	changed chan struct{}                        // signalled after each capture; see changedLocked
+}
+
+// changedLocked returns changed, making it on first use so the zero value is ready. c.mu held.
+func (c *captures) changedLocked() chan struct{} {
+	if c.changed == nil {
+		c.changed = make(chan struct{}, 1)
+	}
+	return c.changed
+}
+
+// until blocks until cond, run under c.mu, holds.
+func (c *captures) until(cond func() bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for !cond() {
+		changed := c.changedLocked()
+		c.mu.Unlock()
+		<-changed
+		c.mu.Lock()
+	}
 }
 
 func (c *captures) Record(string, *pipeline.SessionEvent) {}
@@ -35,6 +56,10 @@ func (c *captures) RecordCapture(_ string, e *pipeline.SessionEvent, rc *pipelin
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	select {
+	case c.changedLocked() <- struct{}{}:
+	default:
+	}
 	if c.got == nil {
 		c.got, c.res = map[string]*pipeline.RequestCapture{}, map[string]*pipeline.ResponseCapture{}
 	}
@@ -244,21 +269,18 @@ func TestCapture_AResentRequestCarriesItsOwnForwardedBody(t *testing.T) {
 	}
 }
 
-// responses is the response captures, keyed by request id. It waits a little for the first: the
-// proxy records a response's row after its last byte reaches the client, so a client can read
-// the whole body before the row exists.
+// responses is the response captures, keyed by request id. It waits for the first: the proxy
+// records a response's row after its last byte reaches the client, so a client can read the
+// whole body before the row exists.
 func (c *captures) responses() map[string]*pipeline.ResponseCapture {
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
-		c.mu.Lock()
-		out := map[string]*pipeline.ResponseCapture{}
-		for id, r := range c.res {
-			out[id] = r
-		}
-		c.mu.Unlock()
-		if len(out) > 0 || time.Now().After(deadline) {
-			return out
-		}
+	c.until(func() bool { return len(c.res) > 0 })
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := map[string]*pipeline.ResponseCapture{}
+	for id, r := range c.res {
+		out[id] = r
 	}
+	return out
 }
 
 // A response is captured as the origin sent it, on every arm the proxy relays it through:
@@ -515,16 +537,7 @@ func TestCapture_ResendCapturesBothAttempts(t *testing.T) {
 	proxy, rec := proxyWithCaptures(t, &substituter{target: backend.URL, sub: "glm-5-3", resend: true})
 	postThrough(t, proxy, "http://agent-provider.example/v1/chat/completions",
 		`{"model":"exo-free","messages":[{"role":"user","content":"hi"}]}`, nil)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		rec.mu.Lock()
-		n, m := len(rec.got), len(rec.res)
-		rec.mu.Unlock()
-		if (n == 2 && m == 2) || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	rec.until(func() bool { return len(rec.got) >= 2 && len(rec.res) >= 2 })
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	if len(rec.got) != 2 || len(rec.res) != 2 {
@@ -569,16 +582,7 @@ func TestCapture_ABrokenRefusalBeforeAResendIsIncomplete(t *testing.T) {
 	defer backend.Close()
 	proxy, rec := proxyWithCaptures(t, &substituter{target: backend.URL, sub: "glm-5-3", resend: true})
 	postThrough(t, proxy, "http://agent-provider.example/v1/chat/completions", `{"model":"exo-free","messages":[]}`, nil)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		rec.mu.Lock()
-		n := len(rec.res)
-		rec.mu.Unlock()
-		if n == 2 || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	rec.until(func() bool { return len(rec.res) >= 2 })
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
 	var refused *pipeline.ResponseCapture

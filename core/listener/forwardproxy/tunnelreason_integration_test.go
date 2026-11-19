@@ -252,15 +252,15 @@ func connectThrough(t *testing.T, s *Server, store *session.Store, target string
 	if len(first) > 0 {
 		_, _ = raw.Write(first)
 	}
-	// The event is recorded on the CONNECT path before any copying; give it a moment.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	// The event is recorded on the CONNECT path before any copying, on the proxy's goroutine.
+	var ev *pipeline.SessionEvent
+	eventually(t, store, func() bool {
 		if v := store.View(session.DefaultSessionID); v != nil && len(v.Events) > 0 {
-			return &v.Events[0]
+			ev = &v.Events[0]
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return nil
+		return ev != nil
+	}, "the tunnel-open event")
+	return ev
 }
 
 // connectServer builds a Server wired the way handleConnect needs: an outbound
@@ -368,13 +368,10 @@ func TestHandleConnect_RecordsExactlyOnce(t *testing.T) {
 	}
 	// connectThrough hangs up on return, which ends the tunnel; its close is recorded
 	// asynchronously, so wait for it rather than counting a moving target.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, closes := tunnelRows(store, session.DefaultSessionID); len(closes) > 0 || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	eventually(t, store, func() bool {
+		_, closes := tunnelRows(store, session.DefaultSessionID)
+		return len(closes) > 0
+	}, "the tunnel's close row")
 	onePair(t, store, session.DefaultSessionID)
 }
 
@@ -455,19 +452,15 @@ func TestOneStaleClientDoesNotSuppressAHealthyOne(t *testing.T) {
 		t.Fatal("a rejected forge did not skip the host")
 	}
 
-	// 2. The healthy client bridges. bridgeServe blocks serving the decrypted
-	//    connection, so run it and wait for the skip to clear.
-	go s.bridgeServe(trustingClient(t, s.TLSBridge.CAPEM), authority, host, discardTunnel(), false)
+	// 2. The healthy client bridges. bridgeServe serves the decrypted connection
+	//    until the client closes it.
+	s.bridgeServe(trustingClient(t, s.TLSBridge.CAPEM), authority, host, discardTunnel(), false)
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if !s.TLSBridge.Skip.Contains(host) {
-			return // cleared: the next connection from either client is intercepted again
-		}
-		time.Sleep(10 * time.Millisecond)
+	// Cleared: the next connection from either client is intercepted again.
+	if s.TLSBridge.Skip.Contains(host) {
+		t.Error("a successful bridge did not clear the skip; the healthy client stays blind " +
+			"until a window it did not cause elapses")
 	}
-	t.Error("a successful bridge did not clear the skip; the healthy client stays blind " +
-		"until a window it did not cause elapses")
 }
 
 // Escalation itself — that a rejection lengthens the window and a transient failure

@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/plugintesting"
@@ -103,7 +102,6 @@ func TestForwardProxy_TruncatedStream_BridgedReachesClientAsError(t *testing.T) 
 		RootCAs:    pool,
 		NextProtos: []string{"http/1.1"},
 	})
-	_ = tconn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tconn.Handshake(); err != nil {
 		t.Fatalf("agent-side TLS handshake through bridge failed: %v", err)
 	}
@@ -132,9 +130,5 @@ func TestForwardProxy_TruncatedStream_BridgedReachesClientAsError(t *testing.T) 
 	}
 
 	_ = serverSide.Close()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("HandleTransparentConn did not return after conns closed")
-	}
+	<-done
 }

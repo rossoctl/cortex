@@ -542,11 +542,7 @@ func TestTransparentPath_RecordsUnderTheIdentityThePluginSaw(t *testing.T) {
 		defer close(done)
 		srv.HandleTransparentConn(serverSide, "10.0.0.1:9999")
 	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("HandleTransparentConn did not return; it should reject before dialing")
-	}
+	<-done // the rejection comes before any dial
 
 	countDenied := func(id string) int {
 		v := store.View(id)
@@ -608,11 +604,7 @@ func TestTransparentPath_HydratesTheIdentityItGatesOn(t *testing.T) {
 		defer close(done)
 		srv.HandleTransparentConn(serverSide, "10.0.0.1:9999")
 	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("HandleTransparentConn did not return; it should reject before dialing")
-	}
+	<-done // the rejection comes before any dial
 
 	if len(probe.sawID) != 1 {
 		t.Fatalf("probe ran %d times on the transparent path, want 1", len(probe.sawID))

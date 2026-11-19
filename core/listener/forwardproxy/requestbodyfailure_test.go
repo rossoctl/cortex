@@ -57,7 +57,7 @@ func TestForwardProxy_OversizeRequest_RecordsProxyError(t *testing.T) {
 	// closedAddr: had the proxy forwarded this, the client would see a 502.
 	body := bytes.Repeat([]byte("x"), maxRequestBodySize+1)
 	req, _ := http.NewRequest(http.MethodPost, "http://"+closedAddr(t)+"/v1/messages", bytes.NewReader(body))
-	c := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
 	resp, err := c.Do(req)
 	if err != nil {
 		t.Fatalf("request: %v", err)
@@ -163,7 +163,6 @@ func TestForwardProxy_UnreadableRequestBody_RecordsFailure(t *testing.T) {
 			if tc.closeWrite {
 				_ = conn.(*net.TCPConn).CloseWrite()
 			} else {
-				_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 				resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 				if err != nil {
 					t.Fatalf("read response: %v", err)

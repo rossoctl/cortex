@@ -206,7 +206,6 @@ func connectAs(t *testing.T, procs *fakeProcs, proxyURL, target string, pid int3
 	}
 	t.Cleanup(func() { _ = raw.Close() })
 	procs.own(raw, pid)
-	_ = raw.SetDeadline(time.Now().Add(10 * time.Second))
 	if _, err := fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
 		t.Fatalf("write CONNECT: %v", err)
 	}
@@ -233,14 +232,28 @@ func recordedPaths(store *session.Store, id string) []string {
 	return out
 }
 
-func eventually(t *testing.T, cond func() bool, what string) {
+// storeSignal is a session.Recorder that signals after each event its store records and
+// each rename, coalescing signals not yet read.
+type storeSignal chan struct{}
+
+func (c storeSignal) Record(string, *pipeline.SessionEvent) { c.signal() }
+func (c storeSignal) Rekeyed(string, string)                { c.signal() }
+
+func (c storeSignal) signal() {
+	select {
+	case c <- struct{}{}:
+	default:
+	}
+}
+
+// eventually blocks until cond holds, checking it again after each change to store. what
+// names the awaited state, for the reader.
+func eventually(t *testing.T, store *session.Store, cond func() bool, what string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	changed := make(storeSignal, 1)
+	store.AddRecorder(changed)
 	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(10 * time.Millisecond)
+		<-changed
 	}
 }
 
@@ -321,7 +334,7 @@ func TestProcessAttribution_AServicesToolJoinsTheSessionThatAnsweredLast(t *test
 		defer close(done)
 		sendAs(t, svc, backend.URL+"/a", "opencode/latest/2.0.21/cli", "X-Opencode-Session-Id", "ses_a")
 	}()
-	eventually(t, func() bool { return len(recordedPaths(store, "ses_a")) == 1 }, "a's request")
+	eventually(t, store, func() bool { return len(recordedPaths(store, "ses_a")) == 1 }, "a's request")
 	sendAs(t, svc, backend.URL+"/b", "opencode/latest/2.0.21/cli", "X-Opencode-Session-Id", "ses_b")
 	unblock()
 	<-done
@@ -391,7 +404,7 @@ func TestProcessAttribution_AnOpaqueTunnelJoinsItsProcessSession(t *testing.T) {
 				t.Fatalf("CONNECT status %d", resp.StatusCode)
 			}
 			pingPong(t, raw, br)
-			eventually(t, func() bool { _, closes := tunnelRows(store, "s1"); return len(closes) == 1 }, "the git tunnel's close row in s1")
+			eventually(t, store, func() bool { _, closes := tunnelRows(store, "s1"); return len(closes) == 1 }, "the git tunnel's close row in s1")
 			onePair(t, store, "s1")
 
 			// A process of no agent while agents are active: its tunnel goes to default.
@@ -400,7 +413,7 @@ func TestProcessAttribution_AnOpaqueTunnelJoinsItsProcessSession(t *testing.T) {
 				t.Fatalf("CONNECT status %d", resp.StatusCode)
 			}
 			pingPong(t, raw, br)
-			eventually(t, func() bool {
+			eventually(t, store, func() bool {
 				_, closes := tunnelRows(store, session.DefaultSessionID)
 				return len(closes) == 1
 			}, "the stranger's tunnel close row in default")
@@ -422,14 +435,31 @@ func TestProcessAttribution_AConnectionWithNoRequestIsNotLookedUp(t *testing.T) 
 	procs := newFakeProcs(fproc(100, 50, "/bin/claude"))
 	store := session.New(0, 0, 0)
 	defer store.Close()
-	proxyURL, _, _ := newProcessProxy(t, store, procs, nil)
-	raw, err := net.Dial("tcp", strings.TrimPrefix(proxyURL, "http://"))
+	srv := &Server{
+		Sessions:         store,
+		Client:           http.DefaultClient,
+		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader},
+		ClientAffinity:   true,
+		Processes:        procs,
+	}
+	ts := httptest.NewUnstartedServer(srv.Handler())
+	ts.Config.ConnContext = srv.ConnContext
+	// http.Server reports StateClosed once it has finished with the connection.
+	closed := make(chan struct{})
+	ts.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateClosed {
+			close(closed)
+		}
+	}
+	ts.Start()
+	t.Cleanup(ts.Close)
+	raw, err := net.Dial("tcp", ts.Listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	procs.own(raw, 100)
-	time.Sleep(50 * time.Millisecond) // let the server accept it and run ConnContext
 	_ = raw.Close()
+	<-closed
 	if n := procs.lookupCount(); n != 0 {
 		t.Errorf("%d lookups for a connection that sent no request, want 0", n)
 	}
@@ -470,7 +500,7 @@ func TestProcessAttribution_ABridgedTunnelsRequestsUseItsProcess(t *testing.T) {
 	if n := procs.lookupCount() - before; n != 1 {
 		t.Errorf("the CONNECT and its two requests took %d lookups, want 1", n)
 	}
-	eventually(t, func() bool { return len(recordedPaths(store, "s1")) == 3 }, "both decrypted requests in s1")
+	eventually(t, store, func() bool { return len(recordedPaths(store, "s1")) == 3 }, "both decrypted requests in s1")
 	if got := strings.Join(recordedPaths(store, "s1"), ","); got != "/v1/messages,/a,/b" {
 		t.Errorf("s1 = %s, want the agent's request and the curl tunnel's two", got)
 	}
@@ -704,7 +734,7 @@ func TestSelfTraffic_ABridgedRequestIsRecorded(t *testing.T) {
 	bridgedRoundTrip(t, tc, req)
 	_ = tc.Close()
 
-	eventually(t, func() bool { return countPath(store, "/api/info") == 1 }, "the bridged request's row")
+	eventually(t, store, func() bool { return countPath(store, "/api/info") == 1 }, "the bridged request's row")
 }
 
 // Self-traffic is relayed as it arrives. OpenCode's TUI follows its service's event stream
@@ -731,9 +761,7 @@ func TestSelfTraffic_AnEventStreamIsRelayedAsItArrives(t *testing.T) {
 	procs.listens(t, events.URL, 500)
 	sendAs(t, procs.clientFor(proxyURL, 500), backendURL+"/zen/v1/chat/completions", "", "X-Opencode-Session-Id", "ses_1")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, events.URL+"/api/event", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, events.URL+"/api/event", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -844,7 +872,7 @@ func TestSelfTraffic_AServiceThatNamesItsSessionInsideATunnelIsAnAgents(t *testi
 	req.Header.Set("X-Opencode-Session-Id", "ses_1")
 	bridgedRoundTrip(t, tc, req)
 	_ = tc.Close()
-	eventually(t, func() bool { return len(recordedPaths(store, "ses_1")) == 1 }, "the service's inference in ses_1")
+	eventually(t, store, func() bool { return len(recordedPaths(store, "ses_1")) == 1 }, "the service's inference in ses_1")
 
 	sendAs(t, procs.clientFor(proxyURL, 510), backendURL+"/api/info", "opencode/latest/2.0.21/cli", "", "")
 	if n := countPath(store, "/api/info"); n != 0 {

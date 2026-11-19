@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -110,13 +109,9 @@ func TestForwardProxy_Streaming_HeartbeatDeliveredWhileUpstreamOpen(t *testing.T
 		blank, _ := br.ReadString('\n')
 		got <- line + blank
 	}()
-	select {
-	case s := <-got:
-		if s != ": ping\n\n" {
-			t.Errorf("first bytes = %q, want %q", s, ": ping\n\n")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("heartbeat not delivered while the upstream stayed open")
+	// The upstream stays open, so the heartbeat arrives only if it is relayed as it comes.
+	if s := <-got; s != ": ping\n\n" {
+		t.Errorf("first bytes = %q, want %q", s, ": ping\n\n")
 	}
 }
 

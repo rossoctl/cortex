@@ -406,9 +406,7 @@ func TestHop_ProbeSetsReady(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	hop := NewHop(gatewayAddr(gw), hopTestToken)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	hop.Probe(ctx, 10*time.Millisecond)
+	hop.Probe(t.Context(), time.Nanosecond)
 	if !hop.Ready() {
 		t.Fatal("Ready() = false after a 204")
 	}
@@ -450,7 +448,6 @@ func TestHop_SkipHostsAndUpgradesDoNotHop(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	u, _ := url.Parse(origin.URL)
 	writeUpgradeRequest(conn, origin.URL+"/ws", u.Host)
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)

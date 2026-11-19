@@ -113,34 +113,28 @@ func echoRound(t *testing.T, conn io.Writer, br io.Reader) {
 	}
 }
 
-// waitForUpgradedRows polls the store until the 101's response row arrives.
+// waitForUpgradedRows waits until the 101's response row arrives.
 // That row is recorded only after BOTH splice directions end — i.e. after the
 // client closes — so waiting for event COUNT is not enough: the tunnel-open and
-// request rows land before client.Do even returns, and a count-based poll would
+// request rows land before client.Do even returns, and a count-based wait would
 // race the splice's teardown.
 func waitForUpgradedRows(t *testing.T, store *session.Store) []pipeline.SessionEvent {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	var got []pipeline.SessionEvent
+	eventually(t, store, func() bool {
 		v := store.View(session.DefaultSessionID)
-		if v != nil {
-			for _, ev := range v.Events {
-				if ev.Phase == pipeline.SessionResponse && ev.StatusCode == http.StatusSwitchingProtocols {
-					return v.Events
-				}
+		if v == nil {
+			return false
+		}
+		for _, ev := range v.Events {
+			if ev.Phase == pipeline.SessionResponse && ev.StatusCode == http.StatusSwitchingProtocols {
+				got = v.Events
+				return true
 			}
 		}
-		if time.Now().After(deadline) {
-			if v == nil {
-				t.Fatal("no events recorded within 5s")
-			}
-			for _, ev := range v.Events {
-				t.Logf("  phase=%v tunnel=%v path=%q status=%d", ev.Phase, ev.Tunnel, ev.HTTPPath, ev.StatusCode)
-			}
-			t.Fatalf("no 101 response row within 5s; %d events recorded", len(v.Events))
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return false
+	}, "the 101 response row")
+	return got
 }
 
 // assertUpgradedRows checks the audit shape #1488 promises: a request row with
@@ -226,7 +220,6 @@ func TestForwardProxy_WebSocketEcho(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	writeUpgradeRequest(conn, origin.URL+"/ws", originURL.Host)
 	br := bufio.NewReader(conn)
@@ -425,7 +418,6 @@ func (st *bridgeStack) connect(t *testing.T) *tls.Conn {
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
-	_ = rawConn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	connectReq, err := http.NewRequest(http.MethodConnect, "//"+st.originHostPort, nil)
 	if err != nil {
@@ -455,7 +447,6 @@ func (st *bridgeStack) connect(t *testing.T) *tls.Conn {
 		RootCAs:    pool,
 		NextProtos: []string{"http/1.1"},
 	})
-	_ = tconn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tconn.Handshake(); err != nil {
 		t.Fatalf("agent-side TLS handshake through the bridge failed: %v", err)
 	}
@@ -528,11 +519,7 @@ func TestForwardProxy_WebSocketSpliceFailureClosesTheOrigin(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("client status = %d, want 502 — a failed splice is a bad gateway", rec.Code)
 	}
-	select {
-	case <-copyReturned:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the origin's copy never returned: its connection was left open after the splice failed")
-	}
+	<-copyReturned // returns once the failed splice closes the origin's connection
 }
 
 // A BROKEN DIRECTION MUST NOT STRAND THE OTHER. The splice waits for both
@@ -558,6 +545,10 @@ func TestForwardProxy_WebSocketBrokenDirectionDoesNotStrandTheOther(t *testing.T
 		t.Fatal(err)
 	}
 	defer func() { _ = origin.Close() }()
+	reset := make(chan struct{})
+	var resetOnce sync.Once
+	resetNow := func() { resetOnce.Do(func() { close(reset) }) }
+	defer resetNow()
 	go func() {
 		c, err := origin.Accept()
 		if err != nil {
@@ -575,7 +566,7 @@ func TestForwardProxy_WebSocketBrokenDirectionDoesNotStrandTheOther(t *testing.T
 		if tc, ok := c.(*net.TCPConn); ok {
 			_ = tc.SetLinger(0)
 		}
-		time.Sleep(100 * time.Millisecond)
+		<-reset // once the client holds the 101
 		_ = c.Close()
 	}()
 
@@ -606,32 +597,25 @@ func TestForwardProxy_WebSocketBrokenDirectionDoesNotStrandTheOther(t *testing.T
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("status = %d, want 101", resp.StatusCode)
 	}
-	// Then say nothing at all: client→origin stays blocked on this read.
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if v := store.View(session.DefaultSessionID); v != nil {
-			for _, e := range v.Events {
-				if e.Phase == pipeline.SessionResponse && e.StatusCode == http.StatusSwitchingProtocols {
-					// And the row says the session ended badly. Without this the
-					// only symptom of a WebSocket that broke mid-session was
-					// truncated byte counts, so an audit read it as a clean
-					// upgrade — one event per upgrade that cannot tell the two
-					// outcomes apart only half keeps the contract (#1549 review).
-					if e.Error == nil {
-						t.Fatal("the 101 row carries no error after a broken splice; a session that died " +
-							"reads as one that closed cleanly")
-					}
-					if e.Error.Kind != "proxy_error" {
-						t.Errorf("error.kind = %q, want proxy_error — the relay's failure is ours", e.Error.Kind)
-					}
-					return
-				}
+	// Then say nothing at all: client→origin stays blocked on this read. The 101 row
+	// lands only if the broken direction tears down the other.
+	resetNow()
+	for _, e := range waitForUpgradedRows(t, store) {
+		if e.Phase == pipeline.SessionResponse && e.StatusCode == http.StatusSwitchingProtocols {
+			// And the row says the session ended badly. Without this the
+			// only symptom of a WebSocket that broke mid-session was
+			// truncated byte counts, so an audit read it as a clean
+			// upgrade — one event per upgrade that cannot tell the two
+			// outcomes apart only half keeps the contract (#1549 review).
+			if e.Error == nil {
+				t.Fatal("the 101 row carries no error after a broken splice; a session that died " +
+					"reads as one that closed cleanly")
+			}
+			if e.Error.Kind != "proxy_error" {
+				t.Errorf("error.kind = %q, want proxy_error — the relay's failure is ours", e.Error.Kind)
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("the 101 response row was never recorded: a broken splice direction stranded the other, so the upgrade went unaudited")
 }
 
 // TestForwardProxy_UpgradeWithoutConnectionTokenIsStripped: an "Upgrade:
@@ -699,7 +683,6 @@ func TestForwardProxy_UpgradeWithoutConnectionTokenIsStripped(t *testing.T) {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	// Note the absent Connection header — that is the whole point.
 	fmt.Fprintf(conn, "GET %s/ws HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\n"+
 		"Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n",
@@ -717,16 +700,12 @@ func TestForwardProxy_UpgradeWithoutConnectionTokenIsStripped(t *testing.T) {
 	if string(body) != "ordinary" {
 		t.Errorf("body = %q, want %q", body, "ordinary")
 	}
-	select {
-	case h := <-seen:
-		if got := h.Get("Upgrade"); got != "" {
-			t.Errorf("origin saw Upgrade = %q, want it stripped — the proxy must not forge a handshake", got)
-		}
-		if got := h.Get("Connection"); got != "" {
-			t.Errorf("origin saw Connection = %q, want it stripped", got)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("origin never received the request")
+	h := <-seen
+	if got := h.Get("Upgrade"); got != "" {
+		t.Errorf("origin saw Upgrade = %q, want it stripped — the proxy must not forge a handshake", got)
+	}
+	if got := h.Get("Connection"); got != "" {
+		t.Errorf("origin saw Connection = %q, want it stripped", got)
 	}
 }
 
@@ -782,7 +761,6 @@ func TestForwardProxy_RefusesA101ToAnotherProtocol(t *testing.T) {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	writeUpgradeRequest(conn, origin.URL+"/ws", originURL.Host)
 
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
@@ -796,16 +774,14 @@ func TestForwardProxy_RefusesA101ToAnotherProtocol(t *testing.T) {
 
 	// And the failure is audited: a request row with no pair reads as still in
 	// flight, which is the thing recordSpliceFailure exists to prevent.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	eventually(t, store, func() bool {
 		if v := store.View(session.DefaultSessionID); v != nil {
 			for _, e := range v.Events {
 				if e.Phase == pipeline.SessionResponse && e.StatusCode == http.StatusBadGateway {
-					return
+					return true
 				}
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatal("no 502 response row recorded for the refused upgrade")
+		return false
+	}, "the refused upgrade's 502 response row")
 }

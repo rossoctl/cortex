@@ -254,7 +254,6 @@ func TestPlaintext_AbsoluteFormJudgesTheRequestLineHost(t *testing.T) {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer func() { _ = raw.Close() }()
-	_ = raw.SetDeadline(time.Now().Add(10 * time.Second))
 	_, _ = io.WriteString(raw, "GET http://"+target+"/x HTTP/1.1\r\nHost: support.example\r\nConnection: close\r\n\r\n")
 	resp, err := http.ReadResponse(bufio.NewReader(raw), nil)
 	if err != nil {

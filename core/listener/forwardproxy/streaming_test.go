@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -85,18 +84,23 @@ func (p *streamingProbe) onResponseCount() int {
 // each frame reaches the StreamingResponder plugin with last=false.
 // A final last=true call is made at end-of-stream.
 func TestForwardProxy_Streaming_FramesFlowThrough(t *testing.T) {
-	// Upstream sends 3 SSE frames with small idle gaps. We use real
-	// timers (not mock clocks) because the proxy reads off net/http
-	// internals; the gaps are tens of milliseconds, well under any
-	// timeout, and far longer than the per-frame work.
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// Upstream sends 3 SSE frames, each only once the client has read the one
+	// before it, so a proxy that buffers the body never delivers the first.
+	next := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		flusher := w.(http.Flusher)
 		for i := 1; i <= 3; i++ {
+			if i > 1 {
+				select {
+				case <-next:
+				case <-r.Context().Done(): // the client hung up
+					return
+				}
+			}
 			fmt.Fprintf(w, "data: {\"id\":%d}\n\n", i)
 			flusher.Flush()
-			time.Sleep(20 * time.Millisecond)
 		}
 	}))
 	defer upstream.Close()
@@ -132,10 +136,30 @@ func TestForwardProxy_Streaming_FramesFlowThrough(t *testing.T) {
 		t.Errorf("Content-Type = %q, want text/event-stream", got)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	br := bufio.NewReader(resp.Body)
+	var body []byte
+	for i := 1; i <= 3; i++ {
+		var frame []byte
+		for !bytes.HasSuffix(frame, []byte("\n\n")) {
+			line, err := br.ReadBytes('\n')
+			if err != nil {
+				t.Fatalf("reading frame %d: %v", i, err)
+			}
+			frame = append(frame, line...)
+		}
+		body = append(body, frame...)
+		if !bytes.Contains(frame, []byte(fmt.Sprintf(`"id":%d`, i))) {
+			t.Fatalf("frame %d = %q", i, frame)
+		}
+		if i < 3 {
+			next <- struct{}{}
+		}
+	}
+	rest, err := io.ReadAll(br)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
+	body = append(body, rest...)
 	// Body should contain 3 SSE events.
 	if got := bytes.Count(body, []byte("data:")); got != 3 {
 		t.Errorf("body has %d data: lines, want 3 — body=%q", got, body)
@@ -321,9 +345,8 @@ func TestForwardProxy_Streaming_HeadersAndBodyArriveBeforeUpstreamCloses(t *test
 	// read would block until upstream closes (and a 30s timeout would
 	// likely fire — that was the bug).
 	br := bufio.NewReader(resp.Body)
-	deadline := time.Now().Add(2 * time.Second)
 	var firstFrame []byte
-	for time.Now().Before(deadline) {
+	for firstFrame == nil {
 		line, err := br.ReadString('\n')
 		if err != nil {
 			t.Fatalf("ReadString: %v", err)
@@ -332,9 +355,6 @@ func TestForwardProxy_Streaming_HeadersAndBodyArriveBeforeUpstreamCloses(t *test
 			firstFrame = []byte(line)
 			break
 		}
-	}
-	if firstFrame == nil {
-		t.Fatal("first frame did not arrive within 2s — proxy likely buffered")
 	}
 	if !bytes.Contains(firstFrame, []byte(`"id":1`)) {
 		t.Errorf("first frame = %q, missing id 1", firstFrame)

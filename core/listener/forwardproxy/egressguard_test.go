@@ -41,7 +41,7 @@ func guardProxy(t *testing.T, permits []string) (*httptest.Server, *session.Stor
 func connectRaw(t *testing.T, proxy *httptest.Server, target string) (string, *bufio.Reader, net.Conn) {
 	t.Helper()
 	proxyAddr := strings.TrimPrefix(proxy.URL, "http://")
-	conn, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	conn, err := net.Dial("tcp", proxyAddr)
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
@@ -49,7 +49,6 @@ func connectRaw(t *testing.T, proxy *httptest.Server, target string) (string, *b
 		t.Fatalf("write CONNECT: %v", err)
 	}
 	br := bufio.NewReader(conn)
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	line, err := br.ReadString('\n')
 	if err != nil {
 		t.Fatalf("read CONNECT response: %v", err)
@@ -65,7 +64,6 @@ func connectRaw(t *testing.T, proxy *httptest.Server, target string) (string, *b
 			break
 		}
 	}
-	_ = conn.SetReadDeadline(time.Time{})
 	return line, br, conn
 }
 
@@ -207,29 +205,25 @@ func TestForwardProxy_EgressGuardPermitTunnelsAndRecordsDialAddr(t *testing.T) {
 		t.Fatalf("write through tunnel: %v", err)
 	}
 	got := make([]byte, 4)
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	if _, err := io.ReadFull(br, got); err != nil || string(got) != "ping" {
 		t.Fatalf("echo through tunnel = %q (%v), want ping", got, err)
 	}
 	_ = conn.Close()
 
-	// The close row lands after the tunnel ends; poll for the pair.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		v := store.View(session.DefaultSessionID)
-		if v != nil && len(v.Events) == 2 {
-			if v.Events[0].DialAddr != target {
-				t.Errorf("open row dialAddr = %q, want %q", v.Events[0].DialAddr, target)
-			}
-			if !v.Events[0].Tunnel {
-				t.Errorf("open row is not a tunnel row: %+v", v.Events[0])
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("want a tunnel open and close row, got %+v", v)
-		}
-		time.Sleep(10 * time.Millisecond)
+	// The close row lands after the tunnel ends; wait for the pair.
+	var v *pipeline.SessionView
+	eventually(t, store, func() bool {
+		v = store.View(session.DefaultSessionID)
+		return v != nil && len(v.Events) >= 2
+	}, "the tunnel's open and close rows")
+	if len(v.Events) != 2 {
+		t.Fatalf("want a tunnel open and close row, got %+v", v)
+	}
+	if v.Events[0].DialAddr != target {
+		t.Errorf("open row dialAddr = %q, want %q", v.Events[0].DialAddr, target)
+	}
+	if !v.Events[0].Tunnel {
+		t.Errorf("open row is not a tunnel row: %+v", v.Events[0])
 	}
 }
 
@@ -297,13 +291,7 @@ func TestTransparent_EgressGuardRefusalReportsAnAllowToFinishers(t *testing.T) {
 	defer func() { _ = agentSide.Close() }()
 
 	// OnFinish runs on the handler's goroutine, after the refusal.
-	var got *pipeline.Outcome
-	for i := 0; i < 200; i++ {
-		if got = fin.seen(); got != nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	got := fin.seen()
 	if got == nil {
 		t.Fatal("OnFinish never ran, so the outcome is unasserted")
 	}

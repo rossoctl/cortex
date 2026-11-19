@@ -44,9 +44,6 @@ type wsOrigin struct {
 	sawExtensions string
 	// answer, when set, is the events the origin sends for turn n instead of turnEvents.
 	answer func(n int) []string
-	// pause, when set, runs after each event the origin writes, so a test can hold a turn
-	// open mid-stream.
-	pause func()
 }
 
 // wsHost is the name the origin is addressed by. It must be one of OpenAI's: the
@@ -145,9 +142,6 @@ func (o *wsOrigin) serve(conn net.Conn, br *bufio.Reader) {
 		o.mu.Unlock()
 		for _, ev := range events(turn) {
 			_, _ = conn.Write(wsframe.Encode(wsframe.OpText, []byte(ev), false))
-			if o.pause != nil {
-				o.pause()
-			}
 		}
 	}
 }
@@ -263,7 +257,6 @@ func (h *wsHarness) dial(t *testing.T, extra http.Header) *wsClient {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = raw.Close() })
-	_ = raw.SetDeadline(time.Now().Add(15 * time.Second))
 	connect, _ := http.NewRequest(http.MethodConnect, "//"+authority, nil)
 	connect.Host, connect.URL.Host = authority, authority
 	if err := connect.Write(raw); err != nil {
@@ -359,29 +352,24 @@ func responseCreate(text string) string {
 // events reads the session's rows once the socket has closed and recorded its close.
 func (h *wsHarness) events(t *testing.T, sid string, wantClose bool) []pipeline.SessionEvent {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	var got []pipeline.SessionEvent
+	eventually(t, h.store, func() bool {
 		v := h.store.View(sid)
-		if v != nil {
-			if !wantClose {
-				return v.Events
-			}
-			for _, e := range v.Events {
-				if e.Tunnel && e.Phase == pipeline.SessionResponse {
-					return v.Events
-				}
+		if v == nil {
+			return false
+		}
+		got = v.Events
+		if !wantClose {
+			return true
+		}
+		for _, e := range v.Events {
+			if e.Tunnel && e.Phase == pipeline.SessionResponse {
+				return true
 			}
 		}
-		if time.Now().After(deadline) {
-			if v == nil {
-				t.Fatalf("no session %q", sid)
-			}
-			// Failing here, not returning what there is: a slow run would otherwise
-			// fail later, on an assertion about rows that had not landed yet.
-			t.Fatalf("session %q has no WebSocket close row after 10s (%d events)", sid, len(v.Events))
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return false
+	}, "session "+sid+"'s WebSocket close row")
+	return got
 }
 
 const codexSID = "11111111-2222-3333-4444-555555555555"
@@ -501,15 +489,12 @@ func TestResponsesWebSocket_TurnsAreParsedLikeHTTPS(t *testing.T) {
 // A parsed turn is an open inference response like any other, so the store publishes its live byte
 // count while it streams and drops it when the turn ends (#1861).
 func TestResponsesWebSocket_OpenTurnPublishesItsLiveCount(t *testing.T) {
-	h := newWSHarness(t, config.ResponsesWebSocketsParse)
-	held, release := make(chan struct{}), make(chan struct{})
-	var holdOnce, relOnce sync.Once
-	rel := func() { relOnce.Do(func() { close(release) }) }
+	// Hold the turn open at its second event: the first is relayed and counted by then.
+	gate := &frameGate{streamingProbe: newStreamingProbe(false), at: 2, reached: make(chan struct{}), release: make(chan struct{})}
+	h := newWSHarness(t, config.ResponsesWebSocketsParse, gate)
+	var relOnce sync.Once
+	rel := func() { relOnce.Do(func() { close(gate.release) }) }
 	t.Cleanup(rel) // before the harness's cleanup, which waits on the origin
-	// Hold the turn open after its first event, so the client has read part of it.
-	h.origin.pause = func() {
-		holdOnce.Do(func() { close(held); <-release })
-	}
 
 	c := h.dial(t, nil)
 	if c.status != http.StatusSwitchingProtocols {
@@ -517,55 +502,54 @@ func TestResponsesWebSocket_OpenTurnPublishesItsLiveCount(t *testing.T) {
 	}
 	defer c.close()
 	c.send(responseCreate("hello"))
-	select {
-	case <-held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the origin did not write the turn's first event")
-	}
+	<-gate.reached
 
 	// The turn's own request row names the stream, as an HTTPS request's does.
 	var id string
-	deadline := time.Now().Add(5 * time.Second)
-	for id == "" && time.Now().Before(deadline) {
-		if v := h.store.View(codexSID); v != nil {
-			for _, e := range v.Events {
-				if e.Phase == pipeline.SessionRequest && !e.Tunnel {
-					id = e.RequestID
-				}
+	if v := h.store.View(codexSID); v != nil {
+		for _, e := range v.Events {
+			if e.Phase == pipeline.SessionRequest && !e.Tunnel {
+				id = e.RequestID
 			}
-		}
-		if id == "" {
-			time.Sleep(time.Millisecond)
 		}
 	}
 	if id == "" {
 		t.Fatal("the turn recorded no request row")
 	}
 	// The first frame reached the client, so it is counted: a permanent zero must fail here.
-	deadline = time.Now().Add(5 * time.Second)
-	for {
-		if n, ok := h.store.StreamBytes(id); ok && n > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			n, ok := h.store.StreamBytes(id)
-			t.Fatalf("StreamBytes(%q) = (%d, %v) with a frame relayed, want a positive count", id, n, ok)
-		}
-		time.Sleep(time.Millisecond)
+	if n, ok := h.store.StreamBytes(id); !ok || n <= 0 {
+		t.Fatalf("StreamBytes(%q) = (%d, %v) with a frame relayed, want a positive count", id, n, ok)
 	}
 
 	rel()
 	c.readUntil("response.completed")
-	deadline = time.Now().Add(5 * time.Second)
-	for {
-		if _, ok := h.store.StreamBytes(id); !ok {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("StreamBytes(%q) still answers after the turn ended", id)
-		}
-		time.Sleep(time.Millisecond)
+	// The relay ends a turn before it carries the next one's answer, so the socket stays
+	// open and the count is gone once the second turn's answer arrives.
+	c.send(responseCreate("again"))
+	c.readUntil("response.completed")
+	if _, ok := h.store.StreamBytes(id); ok {
+		t.Fatalf("StreamBytes(%q) still answers after the turn ended", id)
 	}
+}
+
+// frameGate blocks the at-th data frame of a response until release closes, and closes
+// reached when that frame arrives.
+type frameGate struct {
+	*streamingProbe
+	at      int
+	seen    int
+	reached chan struct{}
+	release chan struct{}
+}
+
+func (g *frameGate) OnResponseFrame(ctx context.Context, pctx *pipeline.Context, frame []byte, last bool) pipeline.Action {
+	if !last {
+		if g.seen++; g.seen == g.at {
+			close(g.reached)
+			<-g.release
+		}
+	}
+	return g.streamingProbe.OnResponseFrame(ctx, pctx, frame, last)
 }
 
 // Compression would make every frame unreadable, so the offer never reaches the origin.
@@ -1149,11 +1133,10 @@ func TestResponsesWebSocket_ReloadMidTurnFinishesOnTheTurnsPipeline(t *testing.T
 //
 // The turn is just over that 10 MB, not far over it: the size is what the test is about,
 // and parsing it is the costliest thing in this file — under -race it is ~3s on a laptop
-// and was over 15s on a shared CI runner. The read deadline is raised for the same reason.
+// and was over 15s on a shared CI runner.
 func TestResponsesWebSocket_LargeFirstTurnIsParsed(t *testing.T) {
 	h := newWSHarness(t, config.ResponsesWebSocketsParse)
 	c := h.dial(t, nil)
-	_ = c.conn.SetDeadline(time.Now().Add(60 * time.Second))
 	big := strings.Repeat("x", maxBodySize+1<<20)
 	c.send(responseCreate(big))
 	c.readUntil("response.completed")
