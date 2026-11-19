@@ -226,6 +226,8 @@ func checkUpdates(env *setupEnv, ui *checklist.UI) (failed bool) {
 	switch {
 	case err != nil:
 		ui.Advise(label, "no update check yet", fix)
+	case st.Result == updatestatus.ResultNotARelease:
+		ui.Already(label, "not automatic for a build that is not a release or release candidate; agentop update installs the newest release")
 	case st.Result == updatestatus.ResultFailed:
 		ui.Fail(label, "update to "+st.Latest+" failed at "+at(st.CheckedAt), strings.Split(st.Error, "\n")...)
 		ui.Remedy("fix: ", fix)

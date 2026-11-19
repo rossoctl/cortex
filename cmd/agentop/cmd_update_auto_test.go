@@ -106,7 +106,17 @@ var autoUpdateRows = []autoRow{
 	{name: "mismatch", latest: "v9.9.9", cortex: "#!/bin/sh\necho cortex v9.9.8\n", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
 	// The kill switch: Latest moved back.
 	{name: "downgrade", latest: "v9.9.8", age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
+	// An RC moves to its release, after the same wait.
+	{name: "rc to its release", latest: "v9.9.10", agentop: rcVersion("agentop"), cortex: rcVersion("cortex"), age: 25 * time.Hour, want: updatestatus.ResultUpdated, ran: true},
+	{name: "rc waiting", latest: "v9.9.10", agentop: rcVersion("agentop"), cortex: rcVersion("cortex"), age: 23 * time.Hour, want: updatestatus.ResultWaiting},
+	// An RC never moves back to an older Latest.
+	{name: "rc ahead of latest", latest: "v9.9.9", agentop: rcVersion("agentop"), cortex: rcVersion("cortex"), age: 25 * time.Hour, want: updatestatus.ResultCurrent},
+	{name: "rc cortex ahead", latest: "v9.9.9", cortex: rcVersion("cortex"), age: 25 * time.Hour, want: updatestatus.ResultCurrent},
+	{name: "beta", latest: "v9.9.10", agentop: "#!/bin/sh\necho agentop v9.9.10-beta.1\n", age: 25 * time.Hour, want: updatestatus.ResultNotARelease},
 }
+
+// rcVersion is a --version script that reports v9.9.10-rc.1.
+func rcVersion(name string) string { return "#!/bin/sh\necho " + name + " v9.9.10-rc.1\n" }
 
 func runAutoRow(t *testing.T, i int) (int, doctorScene, *fakeRelease) {
 	t.Helper()

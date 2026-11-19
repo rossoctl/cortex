@@ -329,10 +329,19 @@ A service install (launchd or systemd) updates itself:
   time of the release's `checksums.txt`.
 - Then it restarts the proxy. Attached sessions lose the request in flight and retry it.
 
-It does not change a `dev`, `main-<sha>` or release-candidate service install. Those
-installs get the notice only. A newer Latest shows on the `agentop` title bar after the
-next check, before the wait ends. A `--no-service` install has no updater, so
-it gets no notice. `agentop update` by hand still works there.
+A release-candidate install (`vX.Y.Z-rc.N`) moves only forward. It installs Latest
+when Latest is a later version, for example `v0.10.0` over `v0.10.0-rc.1`, after the
+same wait. It never moves back to an older Latest. A plain release follows Latest in
+both directions, so the maintainers can withdraw a bad release.
+
+It does not change a `dev` or `main-<sha>` install. That build has no version order
+against Latest, and is often ahead of it. `agentop doctor` says so, and the title bar
+shows no update notice. `agentop update` by hand installs the newest release, and
+automatic updates start again from there.
+
+When Latest is newer than the installed version, the `agentop` title bar shows
+`vX.Y.Z available` after the next check, before the wait ends. A `--no-service`
+install has no updater, so it gets no notice. `agentop update` by hand still works there.
 
 To turn it off, set this in `~/.cortex/config.yaml`:
 
