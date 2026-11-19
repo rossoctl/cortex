@@ -300,6 +300,28 @@ agentop export: usage.ndjson already exists; --force overwrites it
 
 Add `--force` to overwrite it.
 
+### Write it gzip-compressed
+
+```sh
+agentop export --gzip --out usage.ndjson.gz
+```
+
+```
+  7 records, 1.6kB → usage.ndjson.gz (0.4kB gzip)
+```
+
+The file holds the same records, compressed. `gzip -dc usage.ndjson.gz` writes them as
+NDJSON. The summary reports both sizes: the records as written, and the file as shared.
+
+`--gzip` needs `--out`, and the file name must end in `.gz`. The two refusals say why: a
+binary stream on a terminal helps nobody, and a file name is the only thing that tells a
+later reader what the bytes are. `--out x.gz` without `--gzip` is refused rather than
+written as plain NDJSON under a name that says gzip. `--out x.ndjson` with `--gzip` is
+refused rather than written as gzip under a name that says NDJSON.
+
+A truncated gzip export is incomplete in a way every tool reports. Read
+[Truncation, not corruption](#truncation-not-corruption) before you share one.
+
 ## Step 3: select less than everything
 
 Select by time:
@@ -882,6 +904,7 @@ output goes to a file or to a pipe. A summary line goes to stderr, for example
 | Flag | Meaning |
 |---|---|
 | `--out FILE` | Write to a file rather than stdout. An existing file is refused without `--force` |
+| `--gzip` | Write the file gzip-compressed. Needs `--out`, and the name must end in `.gz` |
 | `--session ID` | Repeatable and comma-separated: `--session a --session b` or `--session a,b` |
 | `--since DUR` | `168h` or `7d`, as on the endpoint |
 | `--endpoint URL` | Ask a specific proxy rather than the local one |
@@ -922,6 +945,13 @@ mistaken for a whole one.
 every complete record written before the failure. A `curl > file` leaves the partial file
 and returns a non-zero exit of its own. The server logs the failure as
 `sessionapi: export truncated`.
+
+With `--gzip` the guarantee changes shape. The command never closes the gzip stream after
+a failed copy, because a closed stream carries a CRC that passes. The file therefore ends
+without its trailer, and every tool that opens it reports it as incomplete rather than
+valid-but-short. `gzip -dc` recovers the records gzip flushed before the failure — nearly
+all of them on a large export, none of them on a small one, because gzip buffers before
+it writes a block. The plain path is the one that promises every complete record.
 
 A failure before any record answers a status instead:
 
