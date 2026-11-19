@@ -46,7 +46,7 @@ func TestDoctorUpdatesNotARelease(t *testing.T) {
 	sc := updatesScene(t, updatestatus.Status{CheckedAt: updatesNow.Add(-time.Hour), Latest: "v9.9.9", Installed: "dev",
 		Result: updatestatus.ResultNotARelease})
 	code, out := sc.doctor(t)
-	wantLines(t, code, 0, out, "  · updates      not automatic for a dev or main build; agentop update installs the newest release\n")
+	wantLines(t, code, 0, out, "  · updates      not automatic for a build that is not a release or release candidate; agentop update installs the newest release\n")
 }
 
 func TestDoctorUpdatesWaiting(t *testing.T) {
