@@ -69,7 +69,7 @@ Then read [Troubleshooting](troubleshooting.md).
 This is the Sessions pane at 100 columns:
 
 ```
-agentop · http://localhost:9094
+agentop · http://127.0.0.1:47601
 LAST 1H    TODAY   7 DAYS    MONTH
   $4.04   $18.80  $216.44  $703.18
 ────────────────────────────────────────────────────────────────────────────────────────────────────
