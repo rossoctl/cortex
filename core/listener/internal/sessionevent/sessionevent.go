@@ -77,6 +77,8 @@ func Deny(pctx *pipeline.Context, action pipeline.Action, dir pipeline.Direction
 		SubagentKind:   pctx.SubagentKind(),
 		Proc:           pctx.AttributedProc(),
 		Project:        pctx.Project(),
+		ParentSession:  pctx.ParentSession(),
+		ParentProject:  pctx.ParentProject(),
 		TLS:            TLS(pctx),
 	}
 }
@@ -121,6 +123,8 @@ func Request(pctx *pipeline.Context, dir pipeline.Direction) pipeline.SessionEve
 		SubagentKind:    pctx.SubagentKind(),
 		Proc:            pctx.AttributedProc(),
 		Project:         pctx.Project(),
+		ParentSession:   pctx.ParentSession(),
+		ParentProject:   pctx.ParentProject(),
 		ClientProc:      pctx.AttributedClientProc(),
 		SessionHeader:   pctx.NamingHeader(),
 		TLS:             TLS(pctx),
@@ -162,6 +166,8 @@ func Response(pctx *pipeline.Context, dir pipeline.Direction, status int, fail *
 		SubagentKind:   pctx.SubagentKind(),
 		Proc:           pctx.AttributedProc(),
 		Project:        pctx.Project(),
+		ParentSession:  pctx.ParentSession(),
+		ParentProject:  pctx.ParentProject(),
 		TLS:            TLS(pctx),
 	}
 }
@@ -208,6 +214,8 @@ func TunnelOpen(pctx *pipeline.Context, reason pipeline.TunnelReason) pipeline.S
 		SubagentKind:   pctx.SubagentKind(),
 		Proc:           pctx.AttributedProc(),
 		Project:        pctx.Project(),
+		ParentSession:  pctx.ParentSession(),
+		ParentProject:  pctx.ParentProject(),
 	}
 }
 
@@ -243,6 +251,8 @@ func TunnelClose(pctx *pipeline.Context, reason pipeline.TunnelReason, status in
 		SubagentKind:   pctx.SubagentKind(),
 		Proc:           pctx.AttributedProc(),
 		Project:        pctx.Project(),
+		ParentSession:  pctx.ParentSession(),
+		ParentProject:  pctx.ParentProject(),
 	}
 }
 

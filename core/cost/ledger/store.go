@@ -598,7 +598,7 @@ func (s *store) decodeDay(path string) ([]Row, dayIssues, error) {
 		// write.
 		r.Endpoint, r.Model = rowLabel(r.Endpoint), rowLabel(r.Model)
 		r.Agent, r.Provenance = rowLabel(r.Agent), rowLabel(r.Provenance)
-		r.Project = projectRowLabel(r.Project)
+		r.Project, r.OwnProject = projectRowLabel(r.Project), projectRowLabel(r.OwnProject)
 		r.Source = rowLabel(r.Source)
 		out = append(out, r)
 	}

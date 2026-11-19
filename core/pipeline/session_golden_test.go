@@ -83,6 +83,8 @@ func goldenEvent() SessionEvent {
 		Proc:            "/bin/claude",
 		ClientProc:      "/bin/zsh",
 		Project:         "~/src/app",
+		ParentSession:   "s-parent",
+		ParentProject:   "~/src/parent",
 		Source:          "imported:claude-code",
 		SessionHeader:   "x-session-id",
 		DialAddr:        "203.0.113.7:443",

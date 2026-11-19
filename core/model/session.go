@@ -469,6 +469,13 @@ type SessionEvent struct {
 	// cwd), "" where the listener could not name the process or the row came on the trusted path.
 	Project string
 
+	// ParentSession is the session that the topmost process above this row's agent named, when
+	// it is not this row's session (pipeline.Context.ParentSession). For A → B → C it is A on
+	// C's rows. "" everywhere else.
+	ParentSession string
+	// ParentProject is the project label of the process that holds ParentSession, "" with it.
+	ParentProject string
+
 	// SessionHeader is the session-id header that named this row's session, "" when the
 	// session was not named by the request (process, affinity, ActiveSession). Recorded so
 	// the fold can tell which processes NAMED a session from those merely filed into it,
@@ -719,10 +726,12 @@ type sessionEventWire struct {
 	SubagentKind string `json:"subagentKind,omitempty"`
 	// omitempty: absent wherever the listener could not name the client's process, and on
 	// every event recorded before the field existed.
-	Proc          string `json:"proc,omitempty"`
-	ClientProc    string `json:"clientProc,omitempty"`
-	Project       string `json:"project,omitempty"`
-	SessionHeader string `json:"sessionHeader,omitempty"`
+	Proc          string        `json:"proc,omitempty"`
+	ClientProc    string        `json:"clientProc,omitempty"`
+	Project       string        `json:"project,omitempty"`
+	ParentSession LenientString `json:"parentSession,omitempty"`
+	ParentProject LenientString `json:"parentProject,omitempty"`
+	SessionHeader string        `json:"sessionHeader,omitempty"`
 	// omitempty: absent on every row the egress guard did not dial for — it is
 	// off by default, so the common row costs nothing — and the same skew
 	// reason as TunnelReason above.
@@ -765,6 +774,8 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Proc:            e.Proc,
 		ClientProc:      e.ClientProc,
 		Project:         e.Project,
+		ParentSession:   LenientString(e.ParentSession),
+		ParentProject:   LenientString(e.ParentProject),
 		SessionHeader:   e.SessionHeader,
 		DialAddr:        e.DialAddr,
 	})
@@ -813,6 +824,8 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Proc:            w.Proc,
 		ClientProc:      w.ClientProc,
 		Project:         w.Project,
+		ParentSession:   string(w.ParentSession),
+		ParentProject:   string(w.ParentProject),
 		SessionHeader:   w.SessionHeader,
 		DialAddr:        w.DialAddr,
 	}
@@ -1088,4 +1101,13 @@ func (s *LenientString) UnmarshalJSON(b []byte) error {
 // Imported tells if an import wrote e. A live event gives false.
 func (e *SessionEvent) Imported() bool {
 	return strings.HasPrefix(e.Source, ImportedSourcePrefix)
+}
+
+// RollupProject is the project this row's cost and session count are filed under: the
+// parent's project when the row has one, else Project.
+func (e *SessionEvent) RollupProject() string {
+	if e.ParentProject != "" {
+		return e.ParentProject
+	}
+	return e.Project
 }

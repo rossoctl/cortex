@@ -839,6 +839,7 @@ func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 	// the session — the rows #1535's fold counts procs and owner from.
 	pctx.SetAttribution(hs.AttributedProc(), hs.AttributedClientProc(), hs.NamingHeader())
 	pctx.SetProject(hs.Project())
+	pctx.SetParent(hs.ParentSession(), hs.ParentProject())
 	return pctx
 }
 

@@ -526,7 +526,7 @@ type bucket struct {
 	// an agent name. An agent that WAS reported but matched no known name keeps its raw
 	// User-Agent instead, so a new coding agent never pools in with untagged traffic.
 	byAgent map[string]Counts
-	// byProject tallies by SessionEvent.Project, folded for every event like byAgent.
+	// byProject tallies by SessionEvent.RollupProject, folded for every event like byAgent.
 	byProject map[string]Counts
 	byStatus  map[string]Counts
 	byPlugin  map[string]Counts
@@ -569,10 +569,11 @@ type bucket struct {
 
 // projectLabel is the GroupProject key of e.
 func projectLabel(e *model.SessionEvent) string {
-	if e.Project == "" {
+	p := e.RollupProject()
+	if p == "" {
 		return UnknownProjectLabel
 	}
-	return ProjectLabel(e.Project)
+	return ProjectLabel(p)
 }
 
 // ProjectLabel is the GroupProject series label of the project path p. It keeps the END of a long

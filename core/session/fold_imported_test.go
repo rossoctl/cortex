@@ -83,3 +83,22 @@ func TestFold_OldLiveSessionJSONStaysLive(t *testing.T) {
 		t.Fatalf("Source = %q, want empty: the restored history is live", got)
 	}
 }
+
+// A parentSession that is not a string decodes as "" in a session.json and in a session
+// summary, and the rest of the fold or summary stays, as it did before the field existed.
+func TestNonStringParentSessionDecodesAsEmpty(t *testing.T) {
+	for _, v := range []string{`7`, `1.5`, `{"a":1}`, `[1]`, `true`, `null`} {
+		var f SummaryFold
+		if err := json.Unmarshal([]byte(`{"eventCount":3,"parentSession":`+v+`}`), &f); err != nil {
+			t.Errorf("fold parentSession %s: %v", v, err)
+		} else if s := f.Summary("s1"); s.ParentSession != "" || s.EventCount != 3 {
+			t.Errorf("fold parentSession %s: ParentSession %q, EventCount %d", v, s.ParentSession, s.EventCount)
+		}
+		var s SessionSummary
+		if err := json.Unmarshal([]byte(`{"id":"s1","parentSession":`+v+`}`), &s); err != nil {
+			t.Errorf("summary parentSession %s: %v", v, err)
+		} else if s.ParentSession != "" || s.ID != "s1" {
+			t.Errorf("summary parentSession %s: ParentSession %q, ID %q", v, s.ParentSession, s.ID)
+		}
+	}
+}

@@ -164,3 +164,6 @@ const cachedMarker = "cached"
 
 // importedMarker starts the TITLE cell of a session that an import wrote.
 const importedMarker = "(*) "
+
+// childMarker starts the TITLE cell of a session that another session started (#1991).
+const childMarker = "↳ "

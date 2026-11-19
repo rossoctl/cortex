@@ -233,6 +233,10 @@ func (s *Store) withPriorLocked(sum *SessionSummary, id string, sess *entry) {
 		}
 		sum.Projects = projects
 	}
+	// The history's parent wins: it is earlier, and applyParent keeps the first.
+	if f.parentSession != "" {
+		sum.ParentSession = model.LenientString(f.parentSession)
+	}
 	if f.lastRequestAt.After(sum.LastRequestAt) {
 		sum.LastRequestAt = f.lastRequestAt
 	}

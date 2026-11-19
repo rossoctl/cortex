@@ -1,7 +1,9 @@
 package model
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -68,5 +70,46 @@ func TestSessionEventWireCoversEveryField(t *testing.T) {
 		t.Fatalf("SessionEvent has %d fields, sessionEventWire has %d.\n"+
 			"Add the new field to sessionEventWire AND to both MarshalJSON and "+
 			"UnmarshalJSON, or agentop will never see it.", got, want)
+	}
+}
+
+func TestSessionEvent_RollupProject(t *testing.T) {
+	for _, tc := range []struct {
+		ev   SessionEvent
+		want string
+	}{
+		{SessionEvent{Project: "~/c", ParentProject: "~/p"}, "~/p"},
+		{SessionEvent{Project: "~/c"}, "~/c"},
+		{SessionEvent{}, ""},
+	} {
+		if got := tc.ev.RollupProject(); got != tc.want {
+			t.Errorf("%+v: RollupProject %q, want %q", tc.ev, got, tc.want)
+		}
+	}
+}
+
+func TestSessionEvent_ParentFieldsRoundTrip(t *testing.T) {
+	in := SessionEvent{ParentSession: "s-parent", ParentProject: "~/src/parent"}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"parentSession":"s-parent"`) {
+		t.Errorf("JSON %s has no parentSession", b)
+	}
+	var out SessionEvent
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ParentSession != in.ParentSession || out.ParentProject != in.ParentProject {
+		t.Errorf("round trip got %q %q", out.ParentSession, out.ParentProject)
+	}
+
+	b, err = json.Marshal(SessionEvent{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "parentSession") || strings.Contains(string(b), "parentProject") {
+		t.Errorf("JSON %s has a parent key, want none", b)
 	}
 }
