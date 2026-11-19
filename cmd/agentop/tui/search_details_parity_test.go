@@ -36,9 +36,9 @@ func TestDetailSearch_ParityWithTheDetailView(t *testing.T) {
 		Tools: []pipeline.InferenceTool{{Name: "bash", Description: "run gamma",
 			Parameters: `{"type":"object","properties":{"deltafield":{"type":"string"}}}`}},
 		ToolResults: []pipeline.InferenceToolResult{{ToolUseID: "t1", Content: "epsilon output"},
-			{ToolUseID: "t3", Content: `{"name":"caf\u00e9","n":"ABC"}`}},
+			{ToolUseID: "t3", Content: `{"name":"caf\u00e9","n":"ABC","content":"{\"z\":\"caf\\u00e9z\"}"}`}},
 		HistoryToolCalls: []pipeline.InferenceToolCall{{ID: "t1", Name: "bash", Arguments: `{"cmd":"zeta"}`},
-			{ID: "t3", Name: "bash", Arguments: `{"command":"echo \"omega\"\nls"}`}},
+			{ID: "t3", Name: "bash", Arguments: `{"command":"echo \"omega\"\nls","arguments":"{\"n\":\"na\\u00efve\"}"}`}},
 	}
 	resp := inf
 	resp.Completion = "eta answer"
@@ -54,7 +54,7 @@ func TestDetailSearch_ParityWithTheDetailView(t *testing.T) {
 		{pipeline.SessionEvent{At: now, Phase: pipeline.SessionResponse, Inference: &resp},
 			&pipeline.RequestCapture{Response: &pipeline.ResponseCapture{Status: 200, Body: []byte("data: mu stream" + pad)}}},
 		{pipeline.SessionEvent{At: now, Phase: pipeline.SessionRequest,
-			MCP: &pipeline.MCPExtension{Method: "tools/call", Params: map[string]any{"path": "/nu"}}}, nil},
+			MCP: &pipeline.MCPExtension{Method: "tools/call", Params: map[string]any{"path": "/nu", "arguments": `{"kk":"r\u00e9sum\u00e9"}`}}}, nil},
 		{pipeline.SessionEvent{At: now, Phase: pipeline.SessionResponse,
 			MCP: &pipeline.MCPExtension{Method: "tools/call", Result: map[string]any{"text": "xi"}}}, nil},
 	} {
@@ -73,7 +73,7 @@ func TestDetailSearch_ParityWithTheDetailView(t *testing.T) {
 	}
 	for _, q := range []string{"alpha", "beta reply", "gamma", "deltafield", "epsilon", "zeta", "eta answer",
 		"theta", "iota", "lambda", "x-kappa", "mu stream", "/nu", "xi", "toolUseId", "role", "bash", "absent",
-		`echo "omega"`, "café", `\"`} {
+		`echo "omega"`, "café", "caféz", "naïve", "résumé"} {
 		res, err := c.SearchSession(ctx, "s1", q)
 		if err != nil {
 			t.Fatal(err)

@@ -241,38 +241,49 @@ func TestParentPath(t *testing.T) {
 	}
 }
 
-// A tool call's arguments string shows as its object, so a command's lines are lines.
-// A string that is not one JSON object stays a string.
-func TestRenderTree_ArgumentsStringIsAnObject(t *testing.T) {
-	got := treeText(t, `{"arguments":"{\"command\":\"cd x\\ncat y\"}","other":"{\"a\":1}"}`, foldState{all: true})
-	want := []string{"{", `  "arguments": {`, `    "command": │`, "      cd x", "      cat y", "  },", `  "other": "{\"a\":1}"`, "}"}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Errorf("got %q, want %q", got, want)
+// toolDoc is v as JSON, so a test can write a JSON string that holds JSON without escapes.
+func toolDoc(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, bad := range []string{`{"arguments":"{bad"}`, `{"arguments":"{} {}"}`} {
-		if l := treeText(t, bad, foldState{all: true}); len(l) != 3 {
-			t.Errorf("%s: got %q, want the string kept", bad, l)
-		}
-	}
+	return string(b)
 }
 
-// A tool's one-line JSON output shows as its value. Output with line breaks, and a content
-// key outside toolResults, stay strings.
-func TestRenderTree_ToolResultJSONIsAValue(t *testing.T) {
-	got := treeText(t, `{"toolResults":[{"content":"[1,{\"a\":2}]"},{"content":"{\n\"a\": 1}"}],"content":"{\"b\":3}"}`, foldState{all: true})
-	want := []string{"{", `  "content": "{\"b\":3}",`, `  "toolResults": [`, "    {", `      "content": [`, "        1,", "        {",
-		`          "a": 2`, "        }", "      ]", "    },", "    {", `      "content": │`, "        {", `        "a": 1}`, "    }", "  ]", "}"}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+// A tool call's arguments and a tool's one-line JSON output show as their value, at the paths
+// where the detail view puts them, one level only. The same key elsewhere, a string inside a
+// decoded value, and output with line breaks stay strings.
+func TestRenderTree_ToolArgumentsAndOutputDecodeOneLevel(t *testing.T) {
+	doc := toolDoc(t, map[string]any{
+		"inference": map[string]any{"toolCalls": []any{map[string]any{
+			"arguments": `{"command":"cd x\ncat y","arguments":"{\"a\":1}"}`, "other": `{"a":1}`}},
+			"toolResults": []any{map[string]any{"content": `[1,{"content":"{\"b\":2}"}]`}, map[string]any{"content": "{\n\"a\": 1}"}},
+			"arguments":   `{"a":1}`},
+		"mcp": map[string]any{"params": map[string]any{"arguments": `{"a":1}`}},
+	})
+	want := []string{"{", `  "inference": {`, `    "arguments": "{\"a\":1}",`, `    "toolCalls": [`, "      {",
+		`        "arguments": {`, `          "arguments": "{\"a\":1}",`, `          "command": │`, "            cd x", "            cat y",
+		"        },", `        "other": "{\"a\":1}"`, "      }", "    ],", `    "toolResults": [`, "      {", `        "content": [`,
+		"          1,", "          {", `            "content": "{\"b\":2}"`, "          }", "        ]", "      },", "      {",
+		`        "content": │`, "          {", `          "a": 1}`, "      }", "    ]", "  },", `  "mcp": {`, `    "params": {`,
+		`      "arguments": "{\"a\":1}"`, "    }", "  }", "}"}
+	if got := treeText(t, doc, foldState{all: true}); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("got %q\nwant %q", got, want)
 	}
 }
 
-// A string with bytes after its JSON value stays a string, in arguments and in tool output.
-func TestRenderTree_JSONStringWithTrailingBytesStaysAString(t *testing.T) {
-	for _, s := range []string{`{}]`, `{\"a\":1}}`, `{\"a\":1}]`, `{\"a\":1}x`} {
-		for _, doc := range []string{`{"arguments":"` + s + `"}`, `{"toolResults":[{"content":"` + s + `"}]}`} {
-			if got := strings.Join(treeText(t, doc, foldState{all: true}), "\n"); !strings.Contains(got, `"`+s+`"`) {
-				t.Errorf("%s: got %q, want the string kept", doc, got)
+// A string that is not exactly one JSON value stays a string, in arguments and in tool output.
+func TestRenderTree_ToolJSONWithOtherBytesStaysAString(t *testing.T) {
+	for _, s := range []string{`{bad`, `{} {}`, `{}]`, `{"a":1}}`, `{"a":1}]`, `{"a":1}x`} {
+		for _, inf := range []map[string]any{
+			{"toolCalls": []any{map[string]any{"arguments": s}}},
+			{"toolResults": []any{map[string]any{"content": s}}},
+		} {
+			doc := toolDoc(t, map[string]any{"inference": inf})
+			kept := toolDoc(t, s)
+			if got := strings.Join(treeText(t, doc, foldState{all: true}), "\n"); !strings.Contains(got, kept) {
+				t.Errorf("%s: got %q, want %s kept", doc, got, kept)
 			}
 		}
 	}
@@ -280,7 +291,7 @@ func TestRenderTree_JSONStringWithTrailingBytesStaysAString(t *testing.T) {
 
 // The exact capture shows the body as the client sent it: arguments and tool output stay strings.
 func TestRenderTree_JSONStringInRawStaysAString(t *testing.T) {
-	body := `{"raw":{"arguments":"{\"a\":1}","toolResults":[{"content":"[1]"}]},"inference":{"arguments":"{\"a\":1}"}}`
+	body := `{"raw":{"arguments":"{\"a\":1}","toolResults":[{"content":"[1]"}]},"inference":{"toolCalls":[{"arguments":"{\"a\":1}"}]}}`
 	for _, path := range []string{"", "request", "response"} {
 		sec, err := sectionTree(path, "━━ S", nil, []byte(body), "")
 		if err != nil {

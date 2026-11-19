@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -135,13 +136,13 @@ func sectionOf(path string) string {
 	return "request"
 }
 
-// inCapture reports whether path is in an event's exact capture: the "raw" child of its root.
-func inCapture(path string) bool {
-	if s := sectionOf(path); strings.HasPrefix(path, s+".") {
-		path = path[len(s)+1:]
-	}
-	return path == "raw" || strings.HasPrefix(path, "raw.") || strings.HasPrefix(path, "raw[")
-}
+// toolArgsPath and toolOutputPath are a tool call's arguments and a tool result's content in an
+// event's inference, where the detail view puts them. They are the fields that sessionapi's
+// details search decodes, so a string in the capture, in MCP, or in a decoded value stays a string.
+var (
+	toolArgsPath   = regexp.MustCompile(`^((request|response)\.)?inference\.(messages\[\d+\]\.)?(toolCalls|historyToolCalls)\[\d+\]\.arguments$`)
+	toolOutputPath = regexp.MustCompile(`^((request|response)\.)?inference\.(messages\[\d+\]\.)?toolResults\[\d+\]\.content$`)
+)
 
 func buildTree(v any, path, key string, hasKey bool) *node {
 	n := &node{path: path, key: key, hasKey: hasKey}
@@ -162,17 +163,16 @@ func buildTree(v any, path, key string, hasKey bool) *node {
 	case string:
 		// A tool call's arguments are a JSON object sent as a string, and a tool's output is
 		// often compact JSON: show the value.
-		if !inCapture(path) {
-			var val any
-			ok := false
-			if key == "arguments" {
-				val, ok = coremodel.ToolArgumentsJSON(x)
-			} else if key == "content" && strings.Contains(path, "toolResults[") {
-				val, ok = coremodel.ToolOutputJSON(x)
-			}
-			if ok {
-				return buildTree(val, path, key, hasKey)
-			}
+		var val any
+		ok := false
+		switch {
+		case toolArgsPath.MatchString(path):
+			val, ok = coremodel.ToolArgumentsJSON(x)
+		case toolOutputPath.MatchString(path):
+			val, ok = coremodel.ToolOutputJSON(x)
+		}
+		if ok {
+			return buildTree(val, path, key, hasKey)
 		}
 		n.kind, n.plain, n.size = kindString, x, len(x)+2
 		n.fold = strings.Count(x, "\n") >= clipLines || len(x) > clipBytes
