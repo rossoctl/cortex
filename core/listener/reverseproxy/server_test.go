@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -768,6 +769,8 @@ func TestReverseProxy_ModifyResponse_RekeyAndResponseEvent(t *testing.T) {
 	}
 	proxy := httptest.NewServer(srv.Handler())
 	defer proxy.Close()
+	sub, cancelSub := store.Subscribe()
+	defer cancelSub()
 
 	resp, err := http.DefaultClient.Get(proxy.URL + "/api")
 	if err != nil {
@@ -779,8 +782,14 @@ func TestReverseProxy_ModifyResponse_RekeyAndResponseEvent(t *testing.T) {
 	// to ctxID) and the ctxID bucket should hold both events from this
 	// turn (request + response). The response row lands when ReverseProxy
 	// finishes relaying the body, which can be after the client has its
-	// response, so wait for it rather than race it.
-	view := waitForEvents(t, store, ctxID, 2)
+	// response, so wait for it rather than race it. It is the turn's last
+	// row, whichever bucket it lands in.
+	for ev := range sub.Events() {
+		if ev.Phase == pipeline.SessionResponse {
+			break
+		}
+	}
+	view := store.View(ctxID)
 	if v := store.View(session.DefaultSessionID); v != nil {
 		t.Errorf("default bucket still exists with %d events; expected rekey to %q", len(v.Events), ctxID)
 	}
@@ -822,33 +831,52 @@ func TestReverseProxy_ResponseEventDurationIncludesUnbufferedBody(t *testing.T) 
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
 
-	const drip = 60 * time.Millisecond
+	// The body is held back until the test has seen the headers.
+	body := make(chan struct{})
+	var bodyOnce sync.Once
+	releaseBody := func() { bodyOnce.Do(func() { close(body) }) }
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Plain JSON, not event-stream, and the pipeline below is empty: nothing
-		// buffers the body, so ReverseProxy's own copy is the relay.
+		// Plain JSON, not event-stream, and the pipeline below reads no body:
+		// nothing buffers it, so ReverseProxy's own copy is the relay.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
-		time.Sleep(drip)
+		<-body
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer backend.Close()
 
-	p, err := pipeline.New([]pipeline.Plugin{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv, err := NewServer(pipeline.NewHolder(p), store, backend.URL, nil)
+	// startedAt is the moment Duration and Ttfb are measured from.
+	startedAt := make(chan time.Time, 1)
+	clock := &finisherStub{name: "started-at", onReq: func(pctx *pipeline.Context) pipeline.Action {
+		startedAt <- pctx.StartedAt
+		return pipeline.Action{Type: pipeline.Continue}
+	}}
+	srv, err := NewServer(pipelineWith(t, clock), store, backend.URL, nil)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 	proxy := httptest.NewServer(srv.Handler())
 	defer proxy.Close()
+	// Registered LAST so it runs FIRST: both servers' Close wait for the held handler.
+	defer releaseBody()
 
 	resp, err := http.DefaultClient.Get(proxy.URL + "/api")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
+	headersSeen := time.Now()
+	// The headers are downstream and the body is not yet sent: a row recorded at the
+	// headers is already in the store.
+	if v := store.View(session.DefaultSessionID); v != nil {
+		for _, ev := range v.Events {
+			if ev.Phase == pipeline.SessionResponse {
+				t.Fatalf("response row recorded before the body was relayed: %+v", ev)
+			}
+		}
+	}
+	bodyReleased := time.Now()
+	releaseBody()
 	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
@@ -869,12 +897,15 @@ func TestReverseProxy_ResponseEventDurationIncludesUnbufferedBody(t *testing.T) 
 	if respEv.Ttfb <= 0 {
 		t.Errorf("response event ttfb = %v, want > 0 — headers arrived, so the figure exists", respEv.Ttfb)
 	}
-	// The drip happens entirely after the flush, so the body's share is at least
-	// most of it. Loose bound on purpose: the claim is the ORDER of the two
-	// phases, not a stopwatch.
-	if body := respEv.Duration - respEv.Ttfb; body < drip/2 {
-		t.Errorf("duration−ttfb = %v, want ≥ %v — the body dripped for %v after the headers flushed",
-			body, drip/2, drip)
+	// The request reached the backend, so its start is in hand. The headers arrived
+	// before the client saw them, and the body ended after it was released.
+	start := <-startedAt
+	if headersAt := start.Add(respEv.Ttfb); headersAt.After(headersSeen) {
+		t.Errorf("ttfb ends %v after the client already had the headers", headersAt.Sub(headersSeen))
+	}
+	if endedAt := start.Add(respEv.Duration); endedAt.Before(bodyReleased) {
+		t.Errorf("duration ends %v before the body was released — it stopped at the headers, not at the end of the relay",
+			bodyReleased.Sub(endedAt))
 	}
 	if respEv.BytesDown == 0 {
 		t.Errorf("response event BytesDown = 0, want the relayed body counted — the row is recorded after the copy")

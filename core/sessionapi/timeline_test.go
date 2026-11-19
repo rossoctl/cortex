@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
@@ -373,18 +374,16 @@ func TestTimelineHeldHistoryIsBounded(t *testing.T) {
 // A history replaced or dropped from the cache is not kept alive by it.
 func TestTimelineDroppedHistoryIsCollectable(t *testing.T) {
 	var c timelineCache
-	collected := make(chan struct{})
 	p := &timelinePrefix{events: make([]pipeline.SessionEvent, 1), readAt: time.Now()}
-	runtime.AddCleanup(p, func(ch chan struct{}) { close(ch) }, collected)
+	w := weak.Make(p)
 	c.putPrefix("a", 0, p)
 	c.putPrefix("a", 0, &timelinePrefix{events: make([]pipeline.SessionEvent, 1), readAt: time.Now()})
 	p = nil
+	// A collection that finds p unreachable clears w before runtime.GC returns.
 	for range 20 {
 		runtime.GC()
-		select {
-		case <-collected:
+		if w.Value() == nil {
 			return
-		case <-time.After(10 * time.Millisecond):
 		}
 	}
 	t.Error("a replaced history is still reachable")
@@ -392,21 +391,27 @@ func TestTimelineDroppedHistoryIsCollectable(t *testing.T) {
 
 // A held history goes timelinePrefixTTL after it was read, though nothing else is stored.
 func TestTimelineIdleHistoryExpires(t *testing.T) {
-	defer func(d time.Duration) { timelinePrefixTTL = d }(timelinePrefixTTL)
-	timelinePrefixTTL = 10 * time.Millisecond
+	defer func(f func(time.Duration, func()) *time.Timer) { prefixAfterFunc = f }(prefixAfterFunc)
+	var expire func()
+	prefixAfterFunc = func(d time.Duration, f func()) *time.Timer {
+		if d != timelinePrefixTTL {
+			t.Errorf("expiry scheduled after %v, want %v", d, timelinePrefixTTL)
+		}
+		expire = f
+		return nil
+	}
 	var c timelineCache
 	c.putPrefix("a", 0, &timelinePrefix{events: make([]pipeline.SessionEvent, 1), readAt: time.Now()})
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		c.mu.Lock()
-		n := len(c.prefixes)
-		c.mu.Unlock()
-		if n == 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	if expire == nil {
+		t.Fatal("no expiry was scheduled")
 	}
-	t.Error("an idle history was kept past its expiry")
+	expire()
+	c.mu.Lock()
+	n := len(c.prefixes)
+	c.mu.Unlock()
+	if n != 0 {
+		t.Error("an idle history was kept past its expiry")
+	}
 }
 
 // A cached timeline outlives the old one-minute bound while its session records nothing, and an

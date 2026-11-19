@@ -19,11 +19,9 @@ import (
 )
 
 // importSource yields fixed sessions. When block is set, Sessions first waits until it closes.
-// gap is a wait before each progress call after the first.
 type importSource struct {
 	sessions []importer.Session
 	block    chan struct{}
-	gap      time.Duration
 }
 
 func (f *importSource) Agent() string       { return "claude-code" }
@@ -35,9 +33,6 @@ func (f *importSource) Sessions(_ time.Time, skip func(string, time.Time) bool, 
 		}
 		defer progress(len(f.sessions), len(f.sessions))
 		for i, s := range f.sessions {
-			if i > 0 {
-				time.Sleep(f.gap)
-			}
 			progress(i, len(f.sessions))
 			if skip(s.ID, s.Updated) {
 				continue
@@ -145,18 +140,18 @@ func TestImport_RunsAndReports(t *testing.T) {
 // went by since the last line sent.
 func TestImport_ProgressLinesBeforeTheReport(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		every, gap time.Duration
-		want       int
+		name  string
+		every time.Duration
+		want  int
 	}{
-		{"middle line dropped", time.Hour, 0, 2},
-		{"middle line sent", 50 * time.Millisecond, 100 * time.Millisecond, 3},
+		{"middle line dropped", time.Hour, 2},
+		{"middle line sent", 0, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer func(old time.Duration) { importProgressEvery = old }(importProgressEvery)
 			importProgressEvery = tc.every
 			ts := importServer(t, []importer.Source{&importSource{
-				sessions: []importer.Session{importSession("s1"), importSession("s2")}, gap: tc.gap}})
+				sessions: []importer.Session{importSession("s1"), importSession("s2")}}})
 			code, b := postImport(t, ts.URL, `{"progress":true}`)
 			if code != http.StatusOK {
 				t.Fatalf("POST /v1/import = %d %s", code, b)

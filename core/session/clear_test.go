@@ -2,7 +2,6 @@ package session
 
 import (
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -89,7 +88,7 @@ func TestClear_LeavesSubscribersConnected(t *testing.T) {
 		if !ok || e.SessionID != "a" {
 			t.Fatalf("after Clear the subscriber got %+v (open=%v)", e, ok)
 		}
-	case <-time.After(2 * time.Second):
+	default:
 		t.Fatal("the subscriber saw nothing appended after Clear")
 	}
 }

@@ -143,7 +143,7 @@ func TestHandleStream_DeliversAppendedEvent(t *testing.T) {
 	sc.Buffer(make([]byte, 0, 8192), 4<<20)
 
 	// Wait for the initial ": ok" comment to know the handler is ready.
-	waitForLine(t, sc, ":", "initial comment", 2*time.Second)
+	waitForLine(t, sc, ":", "initial comment")
 
 	// Now append an event and expect it in the stream.
 	store.Append("s1", pipeline.SessionEvent{
@@ -152,16 +152,16 @@ func TestHandleStream_DeliversAppendedEvent(t *testing.T) {
 		A2A:       &pipeline.A2AExtension{Method: "message/stream"},
 	})
 
-	// Expect event/id/data lines, in order, within 2s.
-	sawEvent := scanUntil(t, sc, "event: session-event", 2*time.Second)
+	// Expect event/id/data lines, in order.
+	sawEvent := scanUntil(t, sc, "event: session-event")
 	if !sawEvent {
 		t.Fatal("event: session-event line never arrived")
 	}
-	sawID := scanUntil(t, sc, "id: 1", time.Second)
+	sawID := scanUntil(t, sc, "id: 1")
 	if !sawID {
 		t.Error("id: 1 line never arrived")
 	}
-	sawData := scanUntilPrefix(t, sc, "data: ", 5*time.Second)
+	sawData := scanUntilPrefix(t, sc, "data: ")
 	if sawData == "" {
 		t.Fatal("data: line never arrived")
 	}
@@ -171,8 +171,7 @@ func TestHandleStream_DeliversAppendedEvent(t *testing.T) {
 }
 
 func TestHandleStream_Heartbeat(t *testing.T) {
-	// With heartbeat=25ms, we should see at least one heartbeat comment
-	// within 200ms even with no events appended.
+	// With no events appended, the stream still carries a heartbeat comment.
 	ts, _ := newTestServer(t, WithHeartbeatInterval(25*time.Millisecond))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -185,11 +184,11 @@ func TestHandleStream_Heartbeat(t *testing.T) {
 	defer resp.Body.Close()
 
 	sc := bufio.NewScanner(resp.Body)
-	// Consume the initial ": ok", then expect ": heartbeat" within the window.
-	waitForLine(t, sc, ":", "initial", 5*time.Second)
-	got := scanUntilExact(t, sc, ": heartbeat", 500*time.Millisecond)
+	// Consume the initial ": ok", then expect ": heartbeat".
+	waitForLine(t, sc, ":", "initial")
+	got := scanUntil(t, sc, ": heartbeat")
 	if !got {
-		t.Error("no heartbeat observed within 500ms")
+		t.Error("no heartbeat observed")
 	}
 }
 
@@ -206,7 +205,7 @@ func TestHandleStream_SessionFilter(t *testing.T) {
 	defer resp.Body.Close()
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 8192), 4<<20)
-	waitForLine(t, sc, ":", "initial", 5*time.Second)
+	waitForLine(t, sc, ":", "initial")
 
 	// Event with a different SessionID — should be filtered out.
 	store.Append("drop", pipeline.SessionEvent{
@@ -217,7 +216,7 @@ func TestHandleStream_SessionFilter(t *testing.T) {
 		A2A: &pipeline.A2AExtension{Method: "message/stream"},
 	})
 
-	data := scanUntilPrefix(t, sc, "data: ", 5*time.Second)
+	data := scanUntilPrefix(t, sc, "data: ")
 	if data == "" {
 		t.Fatal("no data frame received")
 	}
@@ -246,7 +245,7 @@ func TestHandleStream_SessionFilter_WorksOnOutboundMCP(t *testing.T) {
 	defer resp.Body.Close()
 	sc := bufio.NewScanner(resp.Body)
 	sc.Buffer(make([]byte, 0, 8192), 4<<20)
-	waitForLine(t, sc, ":", "initial", 5*time.Second)
+	waitForLine(t, sc, ":", "initial")
 
 	// Outbound MCP call appended to the wrong bucket — must be filtered.
 	store.Append("drop", pipeline.SessionEvent{
@@ -257,9 +256,9 @@ func TestHandleStream_SessionFilter_WorksOnOutboundMCP(t *testing.T) {
 		MCP: &pipeline.MCPExtension{Method: "tools/list"},
 	})
 
-	data := scanUntilPrefix(t, sc, "data: ", 5*time.Second)
+	data := scanUntilPrefix(t, sc, "data: ")
 	if data == "" {
-		t.Fatal("no data frame received within deadline")
+		t.Fatal("no data frame received")
 	}
 	if !strings.Contains(data, `"sessionId":"keep"`) {
 		t.Errorf("expected sessionId:keep, got: %s", data)
@@ -443,29 +442,21 @@ func TestHandleHealthz(t *testing.T) {
 
 // --- helpers -------------------------------------------------------------
 
-// waitForLine scans until a line equal to want appears or the deadline fires.
-func waitForLine(t *testing.T, sc *bufio.Scanner, want, label string, d time.Duration) {
+// waitForLine scans until a line equal to, or starting with, want appears.
+func waitForLine(t *testing.T, sc *bufio.Scanner, want, label string) {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if !sc.Scan() {
-			t.Fatalf("scanner closed before %s line; err=%v", label, sc.Err())
-		}
+	for sc.Scan() {
 		if sc.Text() == want || strings.HasPrefix(sc.Text(), want) {
 			return
 		}
 	}
-	t.Fatalf("deadline waiting for %s line (%q)", label, want)
+	t.Fatalf("scanner closed before %s line (%q); err=%v", label, want, sc.Err())
 }
 
-// scanUntil returns true if line == want appears before the deadline.
-func scanUntil(t *testing.T, sc *bufio.Scanner, want string, d time.Duration) bool {
+// scanUntil reports whether a line equal to want appears before the stream ends.
+func scanUntil(t *testing.T, sc *bufio.Scanner, want string) bool {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if !sc.Scan() {
-			return false
-		}
+	for sc.Scan() {
 		if sc.Text() == want {
 			return true
 		}
@@ -473,19 +464,10 @@ func scanUntil(t *testing.T, sc *bufio.Scanner, want string, d time.Duration) bo
 	return false
 }
 
-// scanUntilExact returns true if the exact line appears before the deadline.
-func scanUntilExact(t *testing.T, sc *bufio.Scanner, exact string, d time.Duration) bool {
-	return scanUntil(t, sc, exact, d)
-}
-
-// scanUntilPrefix returns the line (once) if it starts with prefix, else "".
-func scanUntilPrefix(t *testing.T, sc *bufio.Scanner, prefix string, d time.Duration) string {
+// scanUntilPrefix returns the first line that starts with prefix, or "" when the stream ends.
+func scanUntilPrefix(t *testing.T, sc *bufio.Scanner, prefix string) string {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if !sc.Scan() {
-			return ""
-		}
+	for sc.Scan() {
 		if strings.HasPrefix(sc.Text(), prefix) {
 			return sc.Text()
 		}

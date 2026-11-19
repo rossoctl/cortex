@@ -461,25 +461,18 @@ func TestIngest_ShutdownEndsStream(t *testing.T) {
 			resp.Body.Close()
 		}
 	}()
+	sub, unsubscribe := store.Subscribe()
+	defer unsubscribe()
 	if _, err := pw.Write(append(line(t, nil), '\n')); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for store.View("s1") == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("the line never arrived")
-		}
-		time.Sleep(5 * time.Millisecond)
+	if e := <-sub.Events(); e.SessionID != "s1" {
+		t.Fatalf("the first event is %+v, want the line for s1", e)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	start := time.Now()
-	if err := srv.Server().Shutdown(ctx); err != nil {
+	// Shutdown waits for every active connection, so it returns only once the stream has ended.
+	if err := srv.Server().Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
-	}
-	if d := time.Since(start); d > time.Second {
-		t.Errorf("Shutdown took %v, want under 1s", d)
 	}
 }
 

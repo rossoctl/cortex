@@ -99,8 +99,11 @@ const timelineCacheMax = 32
 // compute reads it from disk.
 const timelinePrefixEvents = 10_000
 
-// timelinePrefixTTL is how long a held history outlives its read; a var so a test can shorten it.
-var timelinePrefixTTL = time.Minute
+// timelinePrefixTTL is how long a held history outlives its read.
+const timelinePrefixTTL = time.Minute
+
+// prefixAfterFunc schedules a held history's expiry; a var so a test can fire it.
+var prefixAfterFunc = time.AfterFunc
 
 // get returns a private copy, since the caller clips it, aged against now.
 //
@@ -232,7 +235,7 @@ func (c *timelineCache) putPrefix(id string, epoch uint64, p *timelinePrefix) {
 	c.prefixes[id] = p
 	// Captures the id and read time, not p, so a replaced history is not kept alive by its timer.
 	at := p.readAt
-	time.AfterFunc(timelinePrefixTTL, func() {
+	prefixAfterFunc(timelinePrefixTTL, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if q := c.prefixes[id]; q != nil && q.readAt.Equal(at) {

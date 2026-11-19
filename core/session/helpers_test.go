@@ -1,6 +1,7 @@
 package session
 
 import (
+	"sync"
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/usage"
@@ -19,10 +20,23 @@ func ev() pipeline.SessionEvent {
 }
 
 // procTestClock is a store clock tests move by hand.
-type procTestClock struct{ t time.Time }
+// The store's cleanup goroutine reads it too.
+type procTestClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
 
-func (c *procTestClock) now() time.Time          { return c.t }
-func (c *procTestClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+func (c *procTestClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *procTestClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
 
 func newProcStore() (*Store, *procTestClock) {
 	clk := &procTestClock{t: time.Unix(1_700_000_000, 0)}

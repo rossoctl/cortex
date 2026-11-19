@@ -209,22 +209,20 @@ func TestStore_ReopeningRestoresWhatCloseSaved(t *testing.T) {
 // dies without closing it loses at most one interval.
 func TestStore_SavesAChangeWithinTheFlushInterval(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.json")
-	s := openT(t, path, newClock(), withFlushEvery(10*time.Millisecond))
+	tick := make(chan time.Time)
+	s := openT(t, path, newClock(), withTick(tick))
 	_ = s.Set(ctx, "k", "v", 0)
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if r, err := openWith(path, withFlushEvery(time.Hour)); err == nil {
-			v, _ := r.Get(ctx, "k")
-			_ = r.Close()
-			if v == "v" {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the change was not saved while the store was open")
-		}
-		time.Sleep(10 * time.Millisecond)
+	// The loop takes the second tick only once it has saved after the first.
+	tick <- time.Time{}
+	tick <- time.Time{}
+	r, err := openWith(path, withFlushEvery(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if v, _ := r.Get(ctx, "k"); v != "v" {
+		t.Fatal("the change was not saved while the store was open")
 	}
 }
 

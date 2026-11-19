@@ -91,7 +91,9 @@ func TestConnCapIsPerVM(t *testing.T) {
 		t.Fatalf("third conn on vm-a: %v", err)
 	}
 	wantRefusal(t, resp, DecisionConnCap, "vm-a")
-	// The event follows the answer, so it may land after the 429 is read.
+	// Closing ends the answer's drain. The event follows the answer, so it may
+	// land after the 429 is read.
+	_ = third.Close()
 	if e := sink.awaitEvent("vm-a", DecisionConnCap); e.SID != "sid-a" || e.Status != 429 {
 		t.Errorf("audit = %+v, want sid-a 429", e)
 	}

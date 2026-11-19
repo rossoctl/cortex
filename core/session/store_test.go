@@ -77,16 +77,18 @@ func TestStore_MultipleSessions(t *testing.T) {
 }
 
 func TestStore_TTLExpiry(t *testing.T) {
-	s := New(50*time.Millisecond, 100, 0)
+	clk := &procTestClock{t: time.Unix(1_700_000_000, 0)}
+	s := New(time.Minute, 100, 0, WithClock(clk.now))
+	defer s.Close()
 
-	s.Append("sess-1", pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Inbound, Phase: pipeline.SessionRequest})
+	s.Append("sess-1", pipeline.SessionEvent{At: clk.now(), Direction: pipeline.Inbound, Phase: pipeline.SessionRequest})
 
 	v := s.View("sess-1")
 	if v == nil {
 		t.Fatal("expected View to return session before expiry")
 	}
 
-	time.Sleep(60 * time.Millisecond)
+	clk.advance(2 * time.Minute)
 
 	v = s.View("sess-1")
 	if v != nil {
@@ -164,12 +166,14 @@ func TestStore_ConcurrentAccess(t *testing.T) {
 }
 
 func TestStore_Cleanup(t *testing.T) {
-	s := New(50*time.Millisecond, 100, 0)
+	clk := &procTestClock{t: time.Unix(1_700_000_000, 0)}
+	s := New(time.Minute, 100, 0, WithClock(clk.now))
+	defer s.Close()
 
-	s.Append("sess-old", pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Inbound, Phase: pipeline.SessionRequest})
-	time.Sleep(60 * time.Millisecond)
+	s.Append("sess-old", pipeline.SessionEvent{At: clk.now(), Direction: pipeline.Inbound, Phase: pipeline.SessionRequest})
+	clk.advance(2 * time.Minute)
 
-	s.Append("sess-new", pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Inbound, Phase: pipeline.SessionRequest})
+	s.Append("sess-new", pipeline.SessionEvent{At: clk.now(), Direction: pipeline.Inbound, Phase: pipeline.SessionRequest})
 
 	if v := s.View("sess-old"); v != nil {
 		t.Error("expected sess-old to be cleaned up")
@@ -277,14 +281,15 @@ func TestView_LastIntent_Empty(t *testing.T) {
 }
 
 func TestStore_MaxSessionsEviction(t *testing.T) {
-	s := New(5*time.Minute, 100, 2)
+	clk := &procTestClock{t: time.Unix(1_700_000_000, 0)}
+	s := New(5*time.Minute, 100, 2, WithClock(clk.now))
 	defer s.Close()
 
-	s.Append("sess-1", pipeline.SessionEvent{At: time.Now(), A2A: &pipeline.A2AExtension{Method: "m1"}})
-	time.Sleep(time.Millisecond)
-	s.Append("sess-2", pipeline.SessionEvent{At: time.Now(), A2A: &pipeline.A2AExtension{Method: "m2"}})
-	time.Sleep(time.Millisecond)
-	s.Append("sess-3", pipeline.SessionEvent{At: time.Now(), A2A: &pipeline.A2AExtension{Method: "m3"}})
+	s.Append("sess-1", pipeline.SessionEvent{At: clk.now(), A2A: &pipeline.A2AExtension{Method: "m1"}})
+	clk.advance(time.Millisecond)
+	s.Append("sess-2", pipeline.SessionEvent{At: clk.now(), A2A: &pipeline.A2AExtension{Method: "m2"}})
+	clk.advance(time.Millisecond)
+	s.Append("sess-3", pipeline.SessionEvent{At: clk.now(), A2A: &pipeline.A2AExtension{Method: "m3"}})
 
 	if v := s.View("sess-1"); v != nil {
 		t.Error("sess-1 should have been evicted (oldest)")
@@ -463,8 +468,8 @@ func TestStore_Subscribe_ReceivesAppendedEvents(t *testing.T) {
 		if e.A2A == nil || e.A2A.Method != "message/send" {
 			t.Errorf("received wrong event: %+v", e)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("no event received within 1s")
+	default:
+		t.Fatal("no event received")
 	}
 }
 
@@ -483,7 +488,7 @@ func TestStore_Subscribe_CancelStopsDelivery(t *testing.T) {
 		if ok {
 			t.Error("received event after cancel")
 		}
-	case <-time.After(500 * time.Millisecond):
+	default:
 		t.Fatal("channel never closed after cancel")
 	}
 }
@@ -495,21 +500,10 @@ func TestStore_Subscribe_SlowConsumerDropsWithoutBlocking(t *testing.T) {
 	sub, cancel := s.Subscribe()
 	defer cancel()
 
-	// Flood well beyond buffer capacity without consuming — must not block Append.
+	// Flood well beyond buffer capacity without consuming — Append returns each time.
 	total := subscriberChanBuf + 50
-	done := make(chan struct{})
-	go func() {
-		for i := 0; i < total; i++ {
-			s.Append("sess", pipeline.SessionEvent{})
-		}
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Good — Append did not block.
-	case <-time.After(time.Second):
-		t.Fatal("Append blocked on slow consumer")
+	for i := 0; i < total; i++ {
+		s.Append("sess", pipeline.SessionEvent{})
 	}
 
 	if drops := sub.Drops(); drops == 0 {
@@ -528,8 +522,8 @@ func TestStore_Subscribe_FanOutToMultipleSubscribers(t *testing.T) {
 
 	s.Append("sess", pipeline.SessionEvent{A2A: &pipeline.A2AExtension{Method: "ping"}})
 
-	gotA := waitEvent(t, a.Events(), time.Second)
-	gotB := waitEvent(t, b.Events(), time.Second)
+	gotA := waitEvent(t, a.Events())
+	gotB := waitEvent(t, b.Events())
 	if gotA.A2A == nil || gotA.A2A.Method != "ping" {
 		t.Errorf("A received wrong event: %+v", gotA)
 	}
@@ -550,7 +544,7 @@ func TestStore_Subscribe_CloseStoreUnblocksSubscribers(t *testing.T) {
 		if ok {
 			t.Error("expected closed channel after Store.Close")
 		}
-	case <-time.After(500 * time.Millisecond):
+	default:
 		t.Fatal("Store.Close did not close subscriber channel")
 	}
 }
@@ -1262,13 +1256,14 @@ func TestListSessions_TotalTokens(t *testing.T) {
 	}
 }
 
-func waitEvent(t *testing.T, ch <-chan pipeline.SessionEvent, d time.Duration) pipeline.SessionEvent {
+// waitEvent takes the event already delivered on ch; delivery is synchronous with Append.
+func waitEvent(t *testing.T, ch <-chan pipeline.SessionEvent) pipeline.SessionEvent {
 	t.Helper()
 	select {
 	case e := <-ch:
 		return e
-	case <-time.After(d):
-		t.Fatalf("timeout waiting for event after %v", d)
+	default:
+		t.Fatal("no event delivered")
 		return pipeline.SessionEvent{}
 	}
 }

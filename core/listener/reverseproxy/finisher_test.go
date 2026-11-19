@@ -4,27 +4,20 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/plugintesting"
 )
 
-// waitSeen polls b until it's true, up to ~1s. OnFinish runs in the
+// waitFinished blocks until p's OnFinish has run. OnFinish runs in the
 // reverse-proxy handler's deferred RunFinish, which fires only after the
 // streamed response (NewServer sets FlushInterval=-1) has already reached the
-// client — so http.Get can return before OnFinish has run. Poll rather than
-// read immediately, which otherwise races (flaky under -race).
-func waitSeen(b *atomic.Bool) bool {
-	for i := 0; i < 1000; i++ {
-		if b.Load() {
-			return true
-		}
-		time.Sleep(time.Millisecond)
-	}
-	return false
+// client — so http.Get can return before OnFinish has run.
+func waitFinished(p *finisherStub) {
+	<-p.finishedCh()
 }
 
 // finisherStub is a minimal Plugin + Finisher used by these tests to
@@ -34,6 +27,15 @@ type finisherStub struct {
 	onReq   func(*pipeline.Context) pipeline.Action
 	seen    atomic.Bool
 	outcome atomic.Pointer[pipeline.Outcome]
+
+	finishedOnce sync.Once
+	finished     chan struct{}
+}
+
+// finishedCh is closed once OnFinish has run.
+func (p *finisherStub) finishedCh() chan struct{} {
+	p.finishedOnce.Do(func() { p.finished = make(chan struct{}) })
+	return p.finished
 }
 
 func (p *finisherStub) Name() string { return p.name }
@@ -57,6 +59,7 @@ func (p *finisherStub) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	// Store seen LAST so a reader that observes seen==true is guaranteed to
 	// also see the outcome that was set just above.
 	p.seen.Store(true)
+	close(p.finishedCh())
 }
 
 func pipelineWith(t *testing.T, plugins ...pipeline.Plugin) *pipeline.Holder {
@@ -91,9 +94,7 @@ func TestReverseProxy_Finisher_Allow(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if !waitSeen(&f.seen) {
-		t.Fatal("OnFinish did not fire")
-	}
+	waitFinished(f)
 	o := f.outcome.Load()
 	if o == nil {
 		t.Fatal("Outcome was nil in OnFinish")
@@ -151,12 +152,10 @@ func TestReverseProxy_Finisher_Deny(t *testing.T) {
 		t.Errorf("HTTP status = %d, want 403", resp.StatusCode)
 	}
 
-	if !waitSeen(&before.seen) {
-		t.Error("before-deny.OnFinish should have fired (OnRequest ran before denial)")
-	}
-	if !waitSeen(&denier.seen) {
-		t.Error("denier.OnFinish should have fired (OnRequest ran and produced the deny)")
-	}
+	// before-deny's OnRequest ran before the denial and denier's produced it, so both
+	// OnFinish calls fire.
+	waitFinished(before)
+	waitFinished(denier)
 	// before/denier have fired, so the single RunFinish dispatch is complete;
 	// after-deny was never dispatched (its OnRequest never ran), so its
 	// OnFinish must not have fired.
