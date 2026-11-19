@@ -199,7 +199,7 @@ func TestReverseProxy_OversizeResponse_RecordsProxyError(t *testing.T) {
 	defer backend.Close()
 
 	f := &finisherStub{name: "f-oversize"}
-	ev, clientStatus := failedExchange(t, backend.URL+"/big", 5*time.Second, bodyReader{}, f)
+	ev, clientStatus := failedExchange(t, backend.URL+"/big", bodyReader{}, f)
 	if clientStatus != http.StatusBadGateway {
 		t.Errorf("client status = %d, want 502", clientStatus)
 	}
@@ -226,7 +226,7 @@ func TestReverseProxy_TruncatedResponse_RecordsUpstreamFailure(t *testing.T) {
 	defer backend.Close()
 
 	f := &finisherStub{name: "f-truncated"}
-	ev, clientStatus := failedExchange(t, backend.URL+"/cut", 5*time.Second, bodyReader{}, f)
+	ev, clientStatus := failedExchange(t, backend.URL+"/cut", bodyReader{}, f)
 	if clientStatus != http.StatusBadGateway {
 		t.Errorf("client status = %d, want 502", clientStatus)
 	}
@@ -241,7 +241,9 @@ func TestReverseProxy_TruncatedResponse_RecordsUpstreamFailure(t *testing.T) {
 // nobody received. It is a 499 client_canceled instead.
 func TestReverseProxy_ClientGivesUp_RecordsClientCanceled(t *testing.T) {
 	release := make(chan struct{})
+	reached := make(chan struct{}, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached <- struct{}{}
 		<-release
 	}))
 	defer backend.Close()
@@ -250,8 +252,23 @@ func TestReverseProxy_ClientGivesUp_RecordsClientCanceled(t *testing.T) {
 	f := &finisherStub{name: "f-cancel"}
 	store, proxy := failureServer(t, backend.URL, allowOnlyPlugin{}, f)
 
-	c := &http.Client{Timeout: 300 * time.Millisecond, Transport: &http.Transport{Proxy: nil}}
-	if _, err := c.Get(proxy.URL + "/slow"); err == nil {
+	// The client gives up once the request is parked at the backend.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-reached:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, proxy.URL+"/slow", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	c := &http.Client{Transport: &http.Transport{Proxy: nil}}
+	if resp, err := c.Do(req); err == nil {
+		resp.Body.Close()
 		t.Fatal("request succeeded; wanted the client to give up on a hung backend")
 	}
 
@@ -284,14 +301,26 @@ func TestReverseProxy_FailedUpgrade_RecordsOneResponse(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	store, proxy := failureServer(t, backend.URL, allowOnlyPlugin{})
+	store := session.New(5*time.Minute, 100, 100)
+	t.Cleanup(store.Close)
+	srv, err := NewServer(pipelineWith(t, allowOnlyPlugin{}), store, backend.URL, nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	// served is signalled once the proxy's handler has returned: every row it records is in
+	// the store by then.
+	served := make(chan struct{}, 1)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv.Handler().ServeHTTP(w, r)
+		served <- struct{}{}
+	}))
+	t.Cleanup(proxy.Close)
 
 	conn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	host := strings.TrimPrefix(proxy.URL, "http://")
 	if _, err := fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n", host); err != nil {
 		t.Fatalf("write request: %v", err)
@@ -302,10 +331,11 @@ func TestReverseProxy_FailedUpgrade_RecordsOneResponse(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	ev := waitForResponseEvent(t, store, session.DefaultSessionID)
-	// Give a second row the time to land, if it were going to.
-	time.Sleep(100 * time.Millisecond)
+	<-served
 	v := store.View(session.DefaultSessionID)
+	if v == nil {
+		t.Fatal("no session recorded")
+	}
 	var responses []pipeline.SessionEvent
 	for _, e := range v.Events {
 		if e.Phase == pipeline.SessionResponse {
@@ -315,8 +345,8 @@ func TestReverseProxy_FailedUpgrade_RecordsOneResponse(t *testing.T) {
 	if len(responses) != 1 {
 		t.Fatalf("recorded %d response rows, want 1 (the 101): %+v", len(responses), responses)
 	}
-	if ev.StatusCode != http.StatusSwitchingProtocols {
-		t.Errorf("StatusCode = %d, want 101", ev.StatusCode)
+	if responses[0].StatusCode != http.StatusSwitchingProtocols {
+		t.Errorf("StatusCode = %d, want 101", responses[0].StatusCode)
 	}
 }
 
@@ -337,15 +367,14 @@ func failureServer(t *testing.T, backendURL string, plugins ...pipeline.Plugin) 
 
 // failedExchange sends one GET through a reverse proxy in front of target and
 // returns its only response event and the status the client got.
-func failedExchange(t *testing.T, target string, timeout time.Duration, plugins ...pipeline.Plugin) (pipeline.SessionEvent, int) {
+func failedExchange(t *testing.T, target string, plugins ...pipeline.Plugin) (pipeline.SessionEvent, int) {
 	t.Helper()
 	u, err := url.Parse(target)
 	if err != nil {
 		t.Fatalf("parse %q: %v", target, err)
 	}
 	store, proxy := failureServer(t, u.Scheme+"://"+u.Host, plugins...)
-	c := &http.Client{Timeout: timeout, Transport: &http.Transport{Proxy: nil}}
-	resp, err := c.Get(proxy.URL + u.Path)
+	resp, err := hermeticGet(proxy.URL + u.Path)
 	if err != nil {
 		t.Fatalf("client.Do: %v", err)
 	}
@@ -376,48 +405,47 @@ func assertBufferingFailure(t *testing.T, ev pipeline.SessionEvent, status int, 
 // allow — lineage labelling "ok" an exchange the client saw fail.
 func assertOutcomeError(t *testing.T, f *finisherStub) {
 	t.Helper()
-	if !waitSeen(&f.seen) {
-		t.Fatal("OnFinish never ran, so the outcome is unasserted")
-	}
+	waitFinished(f)
 	if o := f.outcome.Load(); o == nil || o.FinalAction != pipeline.OutcomeError {
 		t.Errorf("Outcome = %+v, want OutcomeError", o)
 	}
 }
 
-// waitForResponseEvent polls the session's events for a response row. A
-// response is recorded after the client may already have returned — the
-// unbuffered relay defers its row to the end of ReverseProxy's body copy
-// (recordOnEOFBody), and a failure row is appended from errorHandler after the
-// 502 went out — so a bare read races the recording. The session id is a
-// parameter because a rekeyed turn's rows land under the contextId bucket.
+// waitForResponseEvent waits for a response row in the session. A response is
+// recorded after the client may already have returned — the unbuffered relay
+// defers its row to the end of ReverseProxy's body copy (recordOnEOFBody), and a
+// failure row is appended from errorHandler after the 502 went out — so a bare
+// read races the recording. The session id is a parameter because a rekeyed
+// turn's rows land under the contextId bucket.
 func waitForResponseEvent(t *testing.T, store *session.Store, sid string) pipeline.SessionEvent {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if v := store.View(sid); v != nil {
-			for _, ev := range v.Events {
-				if ev.Phase == pipeline.SessionResponse {
-					return ev
-				}
+	var resp pipeline.SessionEvent
+	waitForView(t, store, sid, func(v *pipeline.SessionView) bool {
+		for _, ev := range v.Events {
+			if ev.Phase == pipeline.SessionResponse {
+				resp = ev
+				return true
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("no response event recorded in session %q", sid)
-	return pipeline.SessionEvent{}
+		return false
+	})
+	return resp
 }
 
-// waitForEvents polls id until it holds at least n events, and returns its view: nil when it
-// never held any.
-func waitForEvents(t *testing.T, store *session.Store, id string, n int) *pipeline.SessionView {
+// waitForView returns id's view once done reports true for it, re-checking on every event
+// the store publishes. Subscribing before the first check means no append slips between the
+// two.
+func waitForView(t *testing.T, store *session.Store, id string, done func(*pipeline.SessionView) bool) *pipeline.SessionView {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	sub, cancel := store.Subscribe()
+	defer cancel()
 	for {
-		v := store.View(id)
-		if (v != nil && len(v.Events) >= n) || !time.Now().Before(deadline) {
+		if v := store.View(id); v != nil && done(v) {
 			return v
 		}
-		time.Sleep(10 * time.Millisecond)
+		if _, ok := <-sub.Events(); !ok {
+			t.Fatalf("store closed before session %q reached the awaited state", id)
+		}
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 )
 
 // These tests drive the control server the way vmpool's client does: one
@@ -96,10 +95,12 @@ type recordingHandler struct {
 	registered   []string
 	unregistered []string
 	lns          map[string]net.Listener
+	// unregisteredCh is signalled after each Unregister.
+	unregisteredCh chan struct{}
 }
 
 func newRecordingHandler() *recordingHandler {
-	return &recordingHandler{lns: map[string]net.Listener{}}
+	return &recordingHandler{lns: map[string]net.Listener{}, unregisteredCh: make(chan struct{}, 1)}
 }
 
 func (h *recordingHandler) Register(vmID, _ string, _ []byte, ln net.Listener) error {
@@ -117,6 +118,10 @@ func (h *recordingHandler) Unregister(vmID string) error {
 	if ln := h.lns[vmID]; ln != nil {
 		_ = ln.Close()
 		delete(h.lns, vmID)
+	}
+	select {
+	case h.unregisteredCh <- struct{}{}:
+	default:
 	}
 	return nil
 }
@@ -254,14 +259,7 @@ func TestServerDropConnUnbinds(t *testing.T) {
 	}
 
 	_ = tc.conn.Close() // vmpool goes away
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		_, unregistered := h.calls()
-		if len(unregistered) > 0 || !time.Now().Before(deadline) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	<-h.unregisteredCh
 	_, unregistered := h.calls()
 	if len(unregistered) != 1 || unregistered[0] != "vm-a" {
 		t.Fatalf("unregistered %v, want [vm-a]", unregistered)

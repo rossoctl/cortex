@@ -278,11 +278,7 @@ func TestRun_AppliesTheCacheThenEachChange(t *testing.T) {
 			}
 		})
 	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not apply the cached list and then the changed one")
-	}
+	<-done
 	mu.Lock()
 	defer mu.Unlock()
 	if applied[0] < 3.999 || applied[0] > 4.001 || applied[1] < 2.999 || applied[1] > 3.001 {

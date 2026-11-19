@@ -59,11 +59,11 @@ type costProbe struct {
 	// terminal dispatch — a double charge — passed every test in this package.
 	frames    int
 	terminals int
-	// terminalBudget is how much of httpx.TeardownTimeout was still left when the terminal
-	// dispatch reached the plugins, and terminalDeadline whether that context carried one at
-	// all. See TestReverseProxy_LongStreamGetsAFullTeardownBudget.
-	terminalBudget   time.Duration
-	terminalDeadline bool
+	// terminalDeadlineAt is the deadline the terminal dispatch's context carried, and
+	// terminalDeadline whether it carried one at all. See
+	// TestReverseProxy_LongStreamGetsAFullTeardownBudget.
+	terminalDeadlineAt time.Time
+	terminalDeadline   bool
 
 	// terminal is signalled once when the terminal frame reaches the plugins. Buffered so
 	// the server goroutine never blocks on a test that has stopped listening.
@@ -89,7 +89,7 @@ func (p *costProbe) OnResponseFrame(ctx context.Context, pctx *pipeline.Context,
 	}
 	p.terminals++
 	if dl, ok := ctx.Deadline(); ok {
-		p.terminalDeadline, p.terminalBudget = true, time.Until(dl)
+		p.terminalDeadline, p.terminalDeadlineAt = true, dl
 	}
 	p.settled, p.loaded = settle.Load(pctx)
 	if ext := pctx.Extensions.Inference; ext != nil {
@@ -129,12 +129,12 @@ func (p *costProbe) dispatches() (frames, terminals int) {
 	return p.frames, p.terminals
 }
 
-// teardownBudget returns what was left of the finalization deadline when the terminal frame
-// arrived, and whether there was a deadline at all.
-func (p *costProbe) teardownBudget() (time.Duration, bool) {
+// teardownDeadline returns the finalization deadline the terminal frame arrived with, and
+// whether there was a deadline at all.
+func (p *costProbe) teardownDeadline() (time.Time, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.terminalBudget, p.terminalDeadline
+	return p.terminalDeadlineAt, p.terminalDeadline
 }
 
 func (p *costProbe) snapshotBody() (string, int) {
@@ -566,40 +566,15 @@ func TestReverseProxy_ClientDisconnectMidStreamStillSettles(t *testing.T) {
 
 	// Wait until the first event is downstream, so the fold has definitely happened, then
 	// hang up exactly as a real client does.
-	// BOUNDED. A read error fails cleanly, but a backend that holds the connection open
-	// without writing would otherwise park here until the package timeout — a test that hangs
-	// instead of failing, and takes every other test's output with it.
-	firstEvent := make(chan error, 1)
-	go func() {
-		br := bufio.NewReader(resp.Body)
-		for {
-			line, err := br.ReadString('\n')
-			if err != nil {
-				firstEvent <- err
-				return
-			}
-			if strings.HasPrefix(line, "data:") {
-				firstEvent <- nil
-				return
-			}
-		}
-	}()
-	select {
-	case err := <-firstEvent:
-		if err != nil {
-			t.Fatalf("reading first event: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no SSE event downstream within 5s; the fold this test depends on never happened")
+	if err := readFirstEvent(bufio.NewReader(resp.Body)); err != nil {
+		t.Fatalf("reading first event: %v", err)
 	}
 	cancel()
 	_ = resp.Body.Close()
 
-	select {
-	case <-probe.terminal:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no terminal frame reached the plugins within 5s: the disconnect cancelled the context the finalization dispatch runs on, so RunResponseFrame denied it and nothing settled")
-	}
+	// A disconnect that cancelled the finalization context makes RunResponseFrame deny the
+	// terminal frame before any plugin sees it, and this receive never completes.
+	<-probe.terminal
 
 	settled, loaded, prompt, _, _ := probe.snapshotCost()
 	if !loaded {
@@ -629,18 +604,17 @@ func TestReverseProxy_ClientDisconnectMidStreamStillSettles(t *testing.T) {
 // and a worse blast radius, because it drops the LONG turns — the expensive ones. Agent turns
 // past ten seconds are ordinary.
 //
-// WHAT IS ASSERTED IS THE BUDGET, NOT A REAL OVERRUN. Waiting out a ten-second stream would
-// put ten seconds into every run of this package, and TeardownTimeout is a const because
-// nothing should be tuning it at runtime — including a test. The discriminating question is
-// cheaper than the wait anyway: how much of the budget is LEFT when the terminal frame
-// arrives. Built at finalization it is the whole of it; built at header time it is short by
-// however long the stream ran, so a stream held well past the slack below fails.
+// WHAT IS ASSERTED IS WHEN THE BUDGET STARTED, NOT A REAL OVERRUN. Waiting out a ten-second
+// stream would put ten seconds into every run of this package, and TeardownTimeout is a const
+// because nothing should be tuning it at runtime — including a test. The discriminating
+// question is cheaper than the wait anyway: was the deadline set before or after the stream's
+// middle? The backend holds the stream open after its first event until the client has read
+// that event, so a deadline built at header time starts before the hold ends, and one built at
+// finalization starts after it.
 func TestReverseProxy_LongStreamGetsAFullTeardownBudget(t *testing.T) {
-	// hold is how long the response stays open after its first event, and slack is what the
-	// assertion allows for scheduling. hold must exceed slack by enough that the failure is
-	// unambiguous rather than flaky in either direction.
-	const hold = 400 * time.Millisecond
-	const slack = 150 * time.Millisecond
+	hold := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(hold) }) }
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -652,7 +626,7 @@ func TestReverseProxy_LongStreamGetsAFullTeardownBudget(t *testing.T) {
 		// The turn keeps generating. This is the whole point: on the shipped path the gap
 		// between the first event and the last is the model's thinking time, which for a long
 		// agent turn is minutes, not milliseconds.
-		time.Sleep(hold)
+		<-hold
 		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":500}}\n\n")
 		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_stop\"}\n\n")
 		flusher.Flush()
@@ -666,17 +640,34 @@ func TestReverseProxy_LongStreamGetsAFullTeardownBudget(t *testing.T) {
 	}
 	proxy := httptest.NewServer(srv.Handler())
 	defer proxy.Close()
+	// Registered LAST so it runs FIRST: httptest.Server.Close waits for in-flight handlers.
+	defer release()
 
-	postThrough(t, proxy.URL, "/v1/messages",
-		`{"model":"claude-opus-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	resp, err := http.Post(proxy.URL+"/v1/messages", "application/json",
+		strings.NewReader(`{"model":"claude-opus-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	br := bufio.NewReader(resp.Body)
+	if err := readFirstEvent(br); err != nil {
+		t.Fatalf("reading first event: %v", err)
+	}
+	// The response headers and first event are downstream: everything built at header time
+	// is built by now.
+	holdEnded := time.Now()
+	release()
+	if _, err := io.ReadAll(br); err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
 
-	budget, hasDeadline := probe.teardownBudget()
+	deadline, hasDeadline := probe.teardownDeadline()
 	if !hasDeadline {
 		t.Fatal("the terminal dispatch ran on a context with no deadline: detached is only half of it — a wedged plugin would pin this goroutine for the life of the process")
 	}
-	if want := httpx.TeardownTimeout - slack; budget < want {
-		t.Errorf("teardown budget left at the terminal frame = %v, want >= %v (of %v): the deadline started when the response headers arrived, not at finalization, so a stream longer than %v settles nothing",
-			budget, want, httpx.TeardownTimeout, httpx.TeardownTimeout)
+	if started := deadline.Add(-httpx.TeardownTimeout); started.Before(holdEnded) {
+		t.Errorf("the terminal frame's teardown budget started %v before the stream's hold ended: the deadline started when the response headers arrived, not at finalization, so a stream longer than %v settles nothing",
+			holdEnded.Sub(started), httpx.TeardownTimeout)
 	}
 
 	// AND STILL EXACTLY ONCE. The lazy context is per-finalization, so the guard that used to
@@ -880,5 +871,18 @@ func TestReverseProxy_BufferedSSEFallbackStillFlagsATruncatedStream(t *testing.T
 	if !settled.Incomplete || settled.IncompleteReason != pricing.ReasonOutputUncounted {
 		t.Errorf("Incomplete = %v (%q), want true (%q): an OpenAI stream restates a RUNNING total on every usage chunk, so a tally with no stop reason is a floor — and delivering it whole must not make it read as exact",
 			settled.Incomplete, settled.IncompleteReason, pricing.ReasonOutputUncounted)
+	}
+}
+
+// readFirstEvent reads br up to and including the first SSE data line.
+func readFirstEvent(br *bufio.Reader) error {
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(line, "data:") {
+			return nil
+		}
 	}
 }

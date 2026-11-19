@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 )
 
@@ -310,13 +309,16 @@ func TestReadFrame_ReservesForWhatArrivesNotWhatIsClaimed(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	pr, pw := io.Pipe()
-	go func() { _, _ = pw.Write(hdr); _, _ = pw.Write([]byte("abc")) }()
+	sr := &stallingReader{
+		r:       io.MultiReader(bytes.NewReader(hdr), bytes.NewReader([]byte("abc"))),
+		stalled: make(chan struct{}),
+		release: make(chan struct{}),
+	}
 	done := make(chan struct{})
-	go func() { _, _ = NewReader(pr, 1<<30, 1<<30).ReadFrame(); close(done) }()
-	time.Sleep(50 * time.Millisecond) // the reader is now stalled mid-payload
+	go func() { _, _ = NewReader(sr, 1<<30, 1<<30).ReadFrame(); close(done) }()
+	<-sr.stalled // the reader has taken everything sent and is waiting mid-payload
 	runtime.ReadMemStats(&after)
-	_ = pw.Close()
+	close(sr.release)
 	<-done
 	if grew := int64(after.HeapAlloc) - int64(before.HeapAlloc); grew > 4<<20 {
 		t.Errorf("a stalled 16 MiB claim grew the heap by %d bytes; want it bounded by what arrived", grew)
@@ -329,4 +331,20 @@ func TestClosePayload_CutsAtACharacter(t *testing.T) {
 	if len(p) > maxControlPayload || !utf8.Valid(p[2:]) {
 		t.Errorf("payload %d bytes, valid UTF-8 %v", len(p), utf8.Valid(p[2:]))
 	}
+}
+
+// stallingReader serves r, then closes stalled on the first Read past its end and
+// blocks that Read until release is closed.
+type stallingReader struct {
+	r                io.Reader
+	stalled, release chan struct{}
+}
+
+func (s *stallingReader) Read(p []byte) (int, error) {
+	if n, err := s.r.Read(p); n > 0 || err != io.EOF {
+		return n, err
+	}
+	close(s.stalled)
+	<-s.release
+	return 0, io.EOF
 }

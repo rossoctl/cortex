@@ -70,6 +70,8 @@ type Store struct {
 	path  string
 	now   func() time.Time
 	every time.Duration
+	// tick, when set, paces the saves in place of a ticker at every.
+	tick <-chan time.Time
 
 	mu      sync.Mutex
 	entries map[string]*entry
@@ -84,6 +86,7 @@ type option func(*Store)
 
 func withClock(now func() time.Time) option { return func(s *Store) { s.now = now } }
 func withFlushEvery(d time.Duration) option { return func(s *Store) { s.every = d } }
+func withTick(c <-chan time.Time) option    { return func(s *Store) { s.tick = c } }
 
 // Open loads the store saved at path, or starts an empty one when there is none,
 // creating path's directory if it is missing.
@@ -316,13 +319,17 @@ func (s *Store) Close() error {
 
 func (s *Store) flushLoop() {
 	defer close(s.done)
-	tick := time.NewTicker(s.every)
-	defer tick.Stop()
+	tick := s.tick
+	if tick == nil {
+		t := time.NewTicker(s.every)
+		defer t.Stop()
+		tick = t.C
+	}
 	for {
 		select {
 		case <-s.stop:
 			return
-		case <-tick.C:
+		case <-tick:
 			if err := s.flush(); err != nil {
 				slog.Warn("filestore: saving the store failed; the next interval retries", "path", s.path, "error", err)
 			}

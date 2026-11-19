@@ -237,7 +237,6 @@ func (h *inboundHarness) tlsClient(t *testing.T) *http.Client {
 	}
 	return &http.Client{
 		Transport: &http.Transport{TLSClientConfig: cfg},
-		Timeout:   10 * time.Second,
 	}
 }
 
@@ -289,9 +288,6 @@ func (h *inboundHarness) expectPeerRejected(t *testing.T, cfg *tls.Config, peer 
 // only by a client timeout. Reading the socket directly removes that.
 func rawExchange(t *testing.T, c net.Conn) (string, error) {
 	t.Helper()
-	if err := c.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		return "", err
-	}
 	req := "GET /api/data HTTP/1.1\r\nHost: authbridge\r\nAuthorization: Bearer valid-token\r\n\r\n"
 	if _, err := c.Write([]byte(req)); err != nil {
 		return "", err
@@ -349,11 +345,8 @@ func TestTransparentInboundMTLS_StrictRejectsPlaintext(t *testing.T) {
 	}
 
 	// The counter is the operator-visible signal that a caller was turned away;
-	// a silent drop looks identical to a network fault from outside.
-	deadline := time.Now().Add(3 * time.Second)
-	for h.metrics.InboundPlainRejected.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	// a silent drop looks identical to a network fault from outside. It is counted
+	// before the conn is closed, so it is in by the time the read above returned.
 	if got := h.metrics.InboundPlainRejected.Load(); got != 1 {
 		t.Errorf("InboundPlainRejected = %d, want 1", got)
 	}
@@ -541,7 +534,7 @@ func TestTransparentInboundMTLS_PermissiveServesBothOnOnePort(t *testing.T) {
 		scheme string
 		client func() *http.Client
 	}{
-		{"plaintext", "http", func() *http.Client { return &http.Client{Timeout: 10 * time.Second} }},
+		{"plaintext", "http", func() *http.Client { return &http.Client{} }},
 		{"mtls", "https", func() *http.Client { return h.tlsClient(t) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

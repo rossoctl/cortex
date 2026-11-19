@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -32,7 +31,6 @@ func sseBackend(t *testing.T, frames int) *httptest.Server {
 		for i := 1; i <= frames; i++ {
 			fmt.Fprintf(w, "data: {\"event\":%d}\n\n", i)
 			flusher.Flush()
-			time.Sleep(20 * time.Millisecond)
 		}
 	}))
 }

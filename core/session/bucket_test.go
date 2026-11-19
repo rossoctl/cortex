@@ -14,10 +14,11 @@ func trailingEvent() pipeline.SessionEvent {
 // An expired session is gone to every reader before cleanup gets to it, so a trailing
 // event must not land in it either.
 func TestAppendTrailing_RefusesAnExpiredSession(t *testing.T) {
-	s := New(20*time.Millisecond, 0, 0)
+	clk := &procTestClock{t: time.Unix(1_700_000_000, 0)}
+	s := New(time.Minute, 0, 0, WithClock(clk.now))
 	defer s.Close()
-	b := s.AppendBucket("sess-1", pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
-	time.Sleep(50 * time.Millisecond)
+	b := s.AppendBucket("sess-1", pipeline.SessionEvent{At: clk.now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
+	clk.advance(2 * time.Minute)
 
 	if s.AppendTrailing(b, trailingEvent()) {
 		t.Error("AppendTrailing appended to a session past its ttl")

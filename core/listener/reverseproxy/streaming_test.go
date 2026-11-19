@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -85,7 +84,6 @@ func TestReverseProxy_Streaming_FramesFlowThrough(t *testing.T) {
 		for i := 1; i <= 3; i++ {
 			fmt.Fprintf(w, "data: {\"event\":%d}\n\n", i)
 			flusher.Flush()
-			time.Sleep(20 * time.Millisecond)
 		}
 	}))
 	defer backend.Close()
@@ -166,21 +164,18 @@ func TestReverseProxy_Streaming_FlushesBeforeUpstreamCloses(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
+	// The upstream holds its second frame until the test ends, so a buffering proxy never
+	// delivers the first one.
 	br := bufio.NewReader(resp.Body)
-	deadline := time.Now().Add(2 * time.Second)
 	var first []byte
-	for time.Now().Before(deadline) {
+	for first == nil {
 		line, err := br.ReadString('\n')
 		if err != nil {
 			t.Fatalf("ReadString: %v", err)
 		}
 		if bytes.HasPrefix([]byte(line), []byte("data:")) {
 			first = []byte(line)
-			break
 		}
-	}
-	if first == nil {
-		t.Fatal("first frame did not arrive within 2s — proxy buffering")
 	}
 	if !bytes.Contains(first, []byte(`"id":1`)) {
 		t.Errorf("first frame = %q, missing id 1", first)
