@@ -346,6 +346,16 @@ pipeline:
         on_error: enforce
         config:
           remove: []
+      # context-guru compacts the request context before it reaches the LLM.
+      # Preset xhigh: its LLM steps use model.source: incoming, so they reuse
+      # the agent's own endpoint and key; no key is stored here. Like
+      # tool-prune it rewrites the request body, so it stays after every
+      # reader. on_error: observe measures without changing any bytes.
+      - name: context-guru
+        on_error: enforce
+        config:
+          engine:
+            preset: xhigh
 `
 }
 

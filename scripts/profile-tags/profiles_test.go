@@ -8,7 +8,7 @@ import (
 
 // TestTags_Local pins the desktop profile. The set mirrors the plugin list
 // cmd/cortex/local.go writes into ~/.cortex/config.yaml — the three
-// parsers plus tool-prune — and script, which the preset appends there. If those diverge, a laptop either ships plugins its
+// parsers plus tool-prune and context-guru — and script, which the preset appends there. If those diverge, a laptop either ships plugins its
 // config never names or names plugins the binary cannot load, and the latter is
 // a refuse-to-start (`unknown plugin ...`) rather than a degraded feature.
 func TestTags_Local(t *testing.T) {
@@ -16,7 +16,7 @@ func TestTags_Local(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Tags(local): %v", err)
 	}
-	want := "include_plugin_a2aparser,include_plugin_inferenceparser," +
+	want := "include_plugin_a2aparser,include_plugin_contextguru,include_plugin_inferenceparser," +
 		"include_plugin_mcpparser,include_plugin_script,include_plugin_toolprune"
 	if strings.Join(got, ",") != want {
 		t.Errorf("output changed\n got: %s\nwant: %s", strings.Join(got, ","), want)
@@ -34,7 +34,7 @@ func TestTags_ReproduceTodaysDefaults(t *testing.T) {
 		want    []string
 	}{
 		{"full", []string{
-			"a2aparser", "ibac", "inferenceparser", "inferencerouter", "jwtvalidation", "lineage",
+			"a2aparser", "contextguru", "ibac", "inferenceparser", "inferencerouter", "jwtvalidation", "lineage",
 			"litellm_budgettrack", "mcpparser", "opa", "script", "sparc", "staticinject",
 			"tokenbroker", "tokenexchange", "tokenexchangeaiac", "toolprune",
 		}},
@@ -50,7 +50,7 @@ func TestTags_ReproduceTodaysDefaults(t *testing.T) {
 			"mcpparser", "sparc", "tokenbroker", "tokenexchange", "tokenexchangeaiac",
 		}},
 		{"fullcpex", []string{
-			"a2aparser", "cpex", "ibac", "inferenceparser", "inferencerouter", "jwtvalidation",
+			"a2aparser", "contextguru", "cpex", "ibac", "inferenceparser", "inferencerouter", "jwtvalidation",
 			"lineage", "litellm_budgettrack", "mcpparser", "opa", "script", "sparc", "staticinject",
 			"tokenbroker", "tokenexchange", "tokenexchangeaiac", "toolprune",
 		}},

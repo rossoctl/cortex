@@ -408,14 +408,16 @@ declarative profile per shipped artifact and emits its tags:
 
 | Profile | Artifact | Plugins |
 |---------|----------|---------|
-| `local` | desktop `cortex` | the three parsers + `tool-prune` |
+| `local` | desktop `cortex` | the three parsers + `tool-prune` + `context-guru` + `script` |
 | `full` | `authbridge` image, Kubernetes proxy-sidecar | every plugin in [`profiles.go`](../scripts/profile-tags/profiles.go) |
 | `lite` | `authbridge-lite` image | sidecar minimum: jwt-validation, token-exchange, litellm-budget-track, static-inject |
 | `envoy` | `authbridge-envoy` image | envoy-sidecar set |
 | `cpex` | `authbridge-cpex` image | cpex set |
 
-`context-guru` and `session-budget` belong to no profile — both are heavy
-(roughly 16 MiB and 6 MiB respectively) and are linked only on request.
+`session-budget` belongs to no profile — it is heavy (roughly 6 MiB) and is
+linked only on request. `context-guru` is heavy too (roughly 16 MiB), but
+`local`, `full` and `fullcpex` carry it, because the `--local` config enables it
+by default.
 
 ### Usage
 
