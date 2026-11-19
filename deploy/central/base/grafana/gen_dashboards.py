@@ -52,8 +52,15 @@ def spend(by=""):
     read zero/no-data rather than the real total. Use this, not inc("llm_inference_cost_usd_total",
     ...) alone, for any panel meant to show total spend. inference.json's "Spend priced from a
     fallback rate" panel is the one place that wants the two kept apart, to show the fallback
-    fraction."""
-    return f'({inc("llm_inference_cost_usd_total", by)} + {inc("llm_inference_estimated_cost_usd_total", by)})'
+    fraction.
+
+    PromQL's `+` between two vectors only produces a result where a series exists on BOTH sides
+    (vector matching) — sum() of zero series is an empty vector, not a 0-valued one, so with
+    nothing in the actual-rate counter yet (every request so far priced from the bundled table)
+    a plain `actual + estimated` silently returns NOTHING, actual's data included. Padded with
+    the other side times zero, the same idiom net() below uses for saved/added."""
+    a, e = inc("llm_inference_cost_usd_total", by), inc("llm_inference_estimated_cost_usd_total", by)
+    return f'(({a}) or ({e}) * 0) + (({e}) or ({a}) * 0)'
 
 
 def net(by="", fn="inc"):
