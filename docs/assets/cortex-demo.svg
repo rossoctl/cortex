@@ -389,7 +389,7 @@ clipPath rect{width:100000px}
 </g>
 <g id="r23"><text y="472.0"><tspan x="16.0" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">● connected</tspan><tspan x="125.2" textLength="126.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">12.4 events/sec</tspan><tspan x="251.2" textLength="546.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">   feedback: https://github.com/rossoctl/cortex/issues/new/choose</tspan></text>
 </g>
-<g id="r24"><text y="490.0"><tspan x="16.0" textLength="697.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[w] window  [←→] moment  [enter] events  [/] search  [esc] back  [?] keys  [q] quit</tspan></text>
+<g id="r24"><text y="490.0"><tspan x="16.0" textLength="672.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[w] all  [←→] moment  [enter] events  [/] search  [esc] back  [?] keys  [q] quit</tspan></text>
 </g>
 <g id="r25"><rect x="259.6" y="153.0" width="8.9" height="18.0" fill="#a78bfa"/>
 <rect x="293.2" y="153.0" width="8.9" height="18.0" fill="#a78bfa"/>
@@ -583,7 +583,7 @@ clipPath rect{width:100000px}
 </g>
 <g id="r45"><text y="580.0"><tspan x="16.0" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">● connected</tspan><tspan x="125.2" textLength="126.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">12.4 events/sec</tspan><tspan x="251.2" textLength="546.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">   feedback: https://github.com/rossoctl/cortex/issues/new/choose</tspan></text>
 </g>
-<g id="r46"><text y="598.0"><tspan x="16.0" textLength="697.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[w] window  [←→] moment  [enter] events  [/] search  [esc] back  [?] keys  [q] quit</tspan></text>
+<g id="r46"><text y="598.0"><tspan x="16.0" textLength="672.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[w] all  [←→] moment  [enter] events  [/] search  [esc] back  [?] keys  [q] quit</tspan></text>
 </g>
 <g id="r47"><rect x="251.2" y="153.0" width="8.9" height="18.0" fill="#a78bfa"/>
 <rect x="276.4" y="153.0" width="8.9" height="18.0" fill="#a78bfa"/>
