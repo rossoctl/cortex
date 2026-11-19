@@ -906,3 +906,23 @@ func TestCodexDaemonAlive_RealProcesses(t *testing.T) {
 		t.Error("a non-positive pid reads as running")
 	}
 }
+
+// A proxy of the user's left in the file is not what the restarted daemon is judged by:
+// one that now uses that proxy no longer uses Cortex, and is not told it still does.
+func TestCodexDisable_JudgesTheRestartByCortexsProxyNotOneItLeft(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	const corp = "http://proxy.corp.example:8080"
+	editFile(t, envPath, "HTTPS_PROXY="+cortexProxyURL, "HTTPS_PROXY="+corp)
+	f := &fakeCodexDaemon{pid: 5613, env: onCortex, newPID: 7001, newEnv: []string{"HOME=/home/someone", "HTTPS_PROXY=" + corp}}
+	stubCodexDaemon(t, filepath.Dir(envPath), f)
+
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	wantAll(t, "disable output", out.String(), "restarted (pid 7001) and no longer uses Cortex")
+	if strings.Contains(out.String(), "still uses Cortex's proxy") {
+		t.Errorf("disable called the user's proxy Cortex's:\n%s", out.String())
+	}
+}

@@ -443,24 +443,31 @@ newly-added lines the first time any are appended.
 
 ### The record
 
-The record is always empty today. The first `enable` records what the five
-variables held in `~/.cortex/codex-state.json`. In practice that record contains nothing to
-restore, and the reason is worth stating plainly rather than leaving as a surprise:
-`enable` **refuses** whenever one of the five holds a value that is not Cortex's own, and
-a value that *is* Cortex's own is recorded as absent (so `disable` removes it rather than
-putting back a stale Cortex address). Those two rules are exact opposites, so every value
-that reaches the record is stored as "was not set". The file, and `disable`'s restore
-branch, exist to keep Codex's state shape identical to claude-code's and OpenCode's.
+The first `enable` records, in `~/.cortex/codex-state.json`, which file it changed, what the
+five variables held before, and the five values it wrote. Every later `enable` refreshes
+the values it wrote, and one that finds nothing to change fills them in for a record made
+before they were recorded, so an older install gains them on its next `enable`.
+
+What the variables held before is always "not set" today, and the reason is worth stating
+plainly rather than leaving as a surprise: `enable` **refuses** whenever one of the five holds
+a value that is not Cortex's own, and a value that *is* Cortex's own is recorded as absent
+(so `disable` removes it rather than putting back a stale Cortex address). Those two rules
+are exact opposites, so every earlier value that reaches the record is stored as "was not
+set". `disable`'s restore branch exists to keep Codex's state shape identical to
+claude-code's and OpenCode's.
 
 ### What disable does
 
-`disable` removes the five variables, removes the
+`disable` removes the variables that still hold the value `enable` wrote, removes the
 `# Added by agentop configure codex enable` marker if it is still exactly as written, and
 deletes the record — so an `enable` / `disable` cycle is a round trip that leaves the file
-as it found it. It would restore a recorded prior value if one existed, which per the
-paragraph above does not happen today; if you hand-edit one of the five variables after
-`enable`, `disable` simply removes it. Unlike Claude Code's `disable`, it does not check
-whether a value changed since `enable`.
+as it found it. A variable you changed after `enable`, such as to a company proxy or CA
+bundle, is left as it is, and `disable` names it, as Claude Code's `disable` does. It judges
+by the record, not by Cortex's config, so it works the same when the config has moved its
+port or is gone. With no record of what `enable` wrote (an install enabled before it was
+recorded, or a deleted `~/.cortex`), it removes all five variables, as Claude Code's does:
+leaving Codex pointed at a Cortex being turned off would be worse than losing an edit. In
+v0.9.5 and earlier, `disable` removed all five whatever the record said.
 
 ### What status says
 
@@ -545,8 +552,8 @@ lsof -nP -a -p "$(pgrep -f 'codex app-server --listen')" -iTCP -sTCP:ESTABLISHED
 ### When you uninstall Cortex
 
 `agentop uninstall` unroutes Codex before it stops the proxy, the way `disable` does: it
-removes the five variables, deletes the record, stops Codex's auto-updater, and restarts
-a running app-server. It does this for the file enable's record names, wherever `--env`
+removes Cortex's values, leaves and names a variable you changed since `enable`, deletes
+the record, stops Codex's auto-updater, and restarts a running app-server. It does this for the file enable's record names, wherever `--env`
 or a `CODEX_HOME` put it, and for the default file when one of its proxy lines is the
 proxy `enable` would write now. When it cannot change a file, for example when a
 variable is defined twice, the step fails with the lines to remove by hand, and

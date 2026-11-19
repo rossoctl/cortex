@@ -860,8 +860,10 @@ func codexProxyIn(envPath string, want map[string]string) bool {
 }
 
 // unrouteCodex is configure codex disable for one dotenv file, planned now: it removes
-// the managed keys and enable's marker comment, restores what the record holds when the
-// record is this file's, and deletes the record. state is that record, or "" for none.
+// Cortex's values and enable's marker comment, restores what the record holds when the
+// record is this file's, and deletes the record. state is that record, or "" for none. A
+// key changed since enable is the user's: disable leaves it, so it is this row's "Left
+// behind", as it is the Claude Code row's.
 //
 // Codex's auto-updater is stopped, and a running app-server restarted, as disable does,
 // so neither keeps the proxy that is about to stop: both read the file only when they
@@ -870,7 +872,7 @@ func codexProxyIn(envPath string, want map[string]string) bool {
 func unrouteCodex(env *setupEnv, envPath, state string, want map[string]string) removal {
 	codexHome := filepath.Dir(envPath)
 	restartCmd := codexRestartCmdFor(env, codexHome)
-	pl, planErr := planCodexDisable(envPath)
+	pl, planErr := planCodexDisable(envPath, state)
 	// Read here as well as by the plan: a file disable refuses, one defining a key twice,
 	// still names the keys to remove by hand and what may point into ~/.cortex.
 	f, _ := parseCodexEnv(envPath)
@@ -882,18 +884,15 @@ func unrouteCodex(env *setupEnv, envPath, state string, want map[string]string) 
 			}
 		}
 	}
-	// The proxy the restarted processes are compared with: the one this file held, read
-	// before the row removes it, else the config's.
+	// The proxy the restarted processes are compared with: the one the row removes from
+	// this file, read now, else the config's. A proxy left in place is not Cortex's.
 	cortexProxy := want["HTTPS_PROXY"]
-	if f != nil {
-		for _, k := range []string{"https_proxy", "HTTPS_PROXY"} {
-			if v, ok := f.get(k); ok {
-				if d, ok := codexEnvValue(v); ok {
-					cortexProxy = d
-				}
-			}
+	if planErr == nil {
+		if v := codexCortexProxy(pl); v != "" {
+			cortexProxy = v
 		}
 	}
+	leftNote := codexLeftNote(env, envPath, pl.left)
 	where, suffix := env.tilde(envPath), ""
 	if !samePath(envPath, defaultCodexEnvPath(env.home)) {
 		suffix = " · " + env.tilde(envPath)
@@ -933,7 +932,8 @@ func unrouteCodex(env *setupEnv, envPath, state string, want map[string]string) 
 				return "", unchanged, planErr
 			}
 			if len(pl.present) == 0 {
-				// Nothing of Cortex's left in the file: removed by hand, say. The record
+				// Nothing of Cortex's left in the file: every managed key it holds was
+				// changed after enable, or it holds none, removed by hand say. The record
 				// would otherwise outlive it.
 				detail := "nothing routed in " + env.tilde(envPath)
 				if state != "" {
@@ -942,13 +942,17 @@ func unrouteCodex(env *setupEnv, envPath, state string, want map[string]string) 
 					}
 					detail = "removed Cortex's record (" + env.tilde(envPath) + " had nothing routed)"
 				}
-				// An app-server started before those lines went may still have Cortex's
-				// proxy, which uninstall is about to stop, so it gets the restart a changed
-				// file would have (#1783 review).
-				if d, ok := runningCodexDaemon(codexHome); ok && d.EnvErr == nil && cortexProxy != "" && sameProxy(d.Proxy, cortexProxy) {
-					return settleCodex(detail, "", nil, true)
+				if len(pl.left) > 0 {
+					detail = "left " + someKeys(pl.left) + " as they are" + suffix
 				}
-				return detail, nil, nil
+				// An app-server started before those lines changed may still have Cortex's
+				// proxy, which uninstall is about to stop, so it gets the restart a changed
+				// file would have (#1783 review). cortexProxy is enable's record of it when
+				// the file no longer holds it.
+				if d, ok := runningCodexDaemon(codexHome); ok && d.EnvErr == nil && cortexProxy != "" && sameProxy(d.Proxy, cortexProxy) {
+					return settleCodex(detail, "", leftNote, true)
+				}
+				return detail, leftNote, nil
 			}
 			_, running := runningCodexDaemon(codexHome)
 			var errb bytes.Buffer
@@ -956,11 +960,16 @@ func unrouteCodex(env *setupEnv, envPath, state string, want map[string]string) 
 			if err != nil {
 				return "", unchanged, err
 			}
+			// Not "no longer goes through Cortex" when a key was left: a left HTTPS_PROXY
+			// still points somewhere, and the row would contradict the note below it.
 			detail := "Codex no longer goes through Cortex" + suffix
+			if len(pl.left) > 0 {
+				detail = "removed what Cortex set" + suffix
+			}
 			if len(restored) > 0 {
 				detail += " · restored your " + strings.Join(restored, ", ")
 			}
-			return settleCodex(detail, stderrNotes(env, errb.String()), nil, running)
+			return settleCodex(detail, stderrNotes(env, errb.String()), leftNote, running)
 		},
 	}
 }
@@ -982,6 +991,17 @@ func codexRestartCmdFor(env *setupEnv, codexHome string) string {
 // the kill could keep the old one, proxy and all. A kill that fails stops the line there.
 func codexKillThenRestart(pid int, restartCmd string) string {
 	return fmt.Sprintf("kill %d && while kill -0 %d 2>/dev/null; do sleep 1; done && %s", pid, pid, restartCmd)
+}
+
+// codexLeftNote is the Codex row's "Left behind" line for the keys disable did not touch
+// because they changed since enable, in the Claude Code row's words (claudeCodeLeftNote).
+// Keys and the file, no values: this text is printed at the end of a run and gets pasted.
+func codexLeftNote(env *setupEnv, envPath string, left []string) []string {
+	if len(left) == 0 {
+		return nil
+	}
+	return []string{someKeys(left) + " in " + env.tilde(envPath) +
+		", changed since Cortex set them — remove them by hand if you want them gone"}
 }
 
 // codexUpdaterStopByHand stops Codex's auto-updater without agentop. Codex's restart keeps
