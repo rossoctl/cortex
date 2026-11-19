@@ -55,7 +55,7 @@ Depends on: none
 
 **Interfaces:**
 - Produces: `Attribution.ChainProc string` — the `Proc.Key()` of the chain entry whose claim gave `ChainSession`; `""` when `ChainSession` is `""`. Doc comment: "ChainProc is the process that holds ChainSession, as Proc.Key. "" when ChainSession is ""."
-- `chainSessionLocked(chain []Proc, now time.Time) (string, int)` returns the session and the chain index; index `-1` with `""`.
+- `func (a *Attributor) chainSessionLocked(chain []Proc, now time.Time) (string, int)` returns the session and the chain index; index `-1` with `""`. Its only caller is `Resolve` (`attribution.go:162`).
 
 - [ ] **Step 1: Write the failing test** `TestResolve_ChainProcIsTheProcessThatHoldsTheChainSession`, with the helpers `newTest`, `req`, `pchain`, `record`, `claudeUA` from this file:
   - Parent: `a.Resolve(req(claudeUA, "s1"), pchain(100, 50))`, `record(a, clk, "s1")`.
@@ -79,7 +79,7 @@ Depends on: none
 - Modify: `core/listener/internal/sessionevent/sessionevent.go:79,123,164,210,245` (each builder that sets `Project: pctx.Project()` also sets `ParentSession: pctx.ParentSession(), ParentProject: pctx.ParentProject()`)
 - Modify: `core/pipeline/session_golden_test.go:85` (`goldenEvent` sets `ParentSession: "s-parent"`, `ParentProject: "~/src/parent"`), then rewrite `core/pipeline/testdata/session-event.golden.json` with `-update`
 - Modify: `praxis/filters/src/record/line.rs:43-44` (add `"parentSession",` and `"parentProject",` after `"project",`; change the comment above to "The Go listener sets these four from its pipeline context. The gateway does not.")
-- Test: `core/pipeline/attributed_test.go` (create if absent, else add), `core/model/session_test.go` (or the file that tests `SessionEvent` JSON), `core/listener/internal/sessionevent/sessionevent_test.go:445` (`TestBuilders_CopyProject`)
+- Test: `core/pipeline/attributed_test.go` (create), `core/model/session_wire_test.go` (add; its reflection tests `TestSessionEventWire_HasEveryDomainField` and `TestSessionEventWireCoversEveryField` also check that the wire struct gets both fields), `core/listener/internal/sessionevent/sessionevent_test.go:445` (`TestBuilders_CopyProject`)
 
 **Interfaces:**
 - Produces: `func (c *Context) SetParent(session, project string)` — FIRST CALL WINS, own flag, like `SetProject`. `func (c *Context) ParentSession() string`, `func (c *Context) ParentProject() string`.
@@ -169,7 +169,7 @@ Depends on: T4
 
 - [ ] **Step 1: Write the failing tests**
   - `TestSessionTitleCell_ChildPrefix`: `fitModel(t, paneSessions, 200, 40, nil)`, sessions `{ID: "child-1", Title: "fix the build", ParentSession: "parent-123456789"}` and `{ID: "top-1", Title: "fix the build"}`. The child's title cell has the prefix `childMarker + "fix the build"`; the other has no `childMarker`.
-  - `TestSessionIDCell_ChildPrefixWithNoTitleColumn`: a width where the TITLE column is hidden (use the width the existing hidden-TITLE test for `importedMarker` uses, or find it with `showTitle` in `sessions_pane.go`); the SESSION cell of the child starts with `childMarker`.
+  - `TestSessionIDCell_ChildPrefixWithNoTitleColumn`: follow `TestSessionIDCell_ImportedPrefixWithoutTitle` (`imported_test.go:130`), with `fitModel(t, paneSessions, 60, 40, nil)`, where TITLE is hidden; the SESSION cell of the child starts with `childMarker`, the other has no `childMarker`.
   - `TestSessionHeader_StartedBy`: with `m.sessions` holding `{ID: "id-1", Title: "fix the parser", ParentSession: "abcdef0123456789"}`, `m.sessionHeader("id-1", "event")` contains `" · event · started by abcdef01"`. A session with no parent: the header contains no `started by`.
   - `TestSessionHeader_StartedBySanitises`: `ParentSession: "ab\x1b[31mcd"`; the header has no `\x1b`.
 - [ ] **Step 2:** Run `scripts/dev/go-test-shards.sh -short cmd/agentop`. Expected: FAIL on the new tests.
@@ -201,7 +201,7 @@ One PR. Estimated counted lines (the golden file and this plan do not count): T1
 
 ## Gate
 
-From the worktree root:
+From the worktree root. Checked on the base (a698b60eb) on 2026-11-19: `gofmt -l`, the three `go vet` steps and `cargo fmt --check` pass as written. No change to how they are called.
 
 ```sh
 (cd core && GOWORK=off go vet ./... && GOWORK=off go test -race ./attribution/ ./pipeline/ ./model/ ./listener/... ./cost/... ./session/... ./sessionapi/) && (cd cmd/cortex && GOWORK=off go vet ./...) && (cd cmd/agentop && GOWORK=off go vet ./... && GOWORK=off go test -race $(GOWORK=off go list ./... | grep -v 'agentop$')) && scripts/dev/go-test-shards.sh -race cmd/agentop && test -z "$(gofmt -l core cmd/cortex cmd/agentop)" && (cd praxis && cargo fmt --check && cargo test --locked -p cortex-praxis-filters) && pre-commit run --from-ref a698b60eb1c6d30f76b4e9ba4ce84b49983d3a87 --to-ref HEAD
