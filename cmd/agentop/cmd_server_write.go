@@ -141,13 +141,6 @@ func serverAdd(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop server add: %v\n", err)
 		return 1
 	}
-	// servers.ForHost, the rule agentop then names a session's server by, so this refusal and
-	// what it protects cannot drift apart. A server replaced under its own name keeps its host.
-	if other, ok := servers.ForHost(c, ep.Host); ok && other != name {
-		fmt.Fprintf(stderr, "agentop server add: %s is already on %s. Each server needs a host of its own, "+
-			"because agentop names a session's server from the host its requests went to.\n", other, ep.Key())
-		return 1
-	}
 	old, replacing := c.Servers[name]
 	if replacing {
 		// The whole server is replaced, models included, so the question says what it
@@ -403,6 +396,7 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 
 // runningOn counts the sessions the proxy at sessionsURL holds in memory whose inference
 // traffic last went to server name: the ones a remove can leave asking for a new session.
+// servers.ForSession names each session's server: by the name the proxy recorded, else by host.
 //
 // NOT THE LISTENER'S SYNTHETIC SESSIONS — the default bucket and the pending:<agent> ones.
 // Each holds many conversations, so the router never pins one; their requests follow the
@@ -432,7 +426,7 @@ func runningOn(sessionsURL string, c routerconfig.Config, name string) int {
 		if !session.IsConversation(s.ID) {
 			continue
 		}
-		if on, ok := servers.ForHost(c, s.InferenceHost); ok && on == name {
+		if on, ok := servers.ForSession(c, s); ok && on == name {
 			n++
 		}
 	}
