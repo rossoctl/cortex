@@ -371,9 +371,6 @@ func TestForwardProxy_DeclineReportsAnAllowToFinishers(t *testing.T) {
 	h.do(t, http.MethodGet, "/backend-api/codex/responses", websocketHeaders())
 
 	got := fin.seen()
-	if got == nil {
-		t.Fatal("OnFinish never ran, so the outcome is unasserted")
-	}
 	if got.FinalAction != pipeline.OutcomeAllow || got.StatusCode != http.StatusUpgradeRequired {
 		t.Errorf("outcome = %v/%d, want allow/426", got.FinalAction, got.StatusCode)
 	}

@@ -292,9 +292,6 @@ func TestTransparent_EgressGuardRefusalReportsAnAllowToFinishers(t *testing.T) {
 
 	// OnFinish runs on the handler's goroutine, after the refusal.
 	got := fin.seen()
-	if got == nil {
-		t.Fatal("OnFinish never ran, so the outcome is unasserted")
-	}
 	if got.FinalAction != pipeline.OutcomeAllow || got.StatusCode != http.StatusForbidden {
 		t.Errorf("outcome = %v/%d, want allow/403 — the same shape handleConnect reports",
 			got.FinalAction, got.StatusCode)

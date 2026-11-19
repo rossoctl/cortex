@@ -146,7 +146,7 @@ func (f *fakeProcs) clientFor(proxyURL string, pid int32) *http.Client {
 // newProcessProxy is a forward proxy with process attribution over procs, served by an
 // http.Server carrying its ConnContext, as cortex wires it. configure, when non-nil, runs
 // before it serves; backendHits counts what the backend received.
-func newProcessProxy(t *testing.T, store *session.Store, procs *fakeProcs, configure func(*Server)) (proxyURL, backendURL string, backendHits *atomic.Int32) {
+func newProcessProxy(t *testing.T, store *session.Store, procs *fakeProcs, configure func(*Server), hooks ...func(*http.Server)) (proxyURL, backendURL string, backendHits *atomic.Int32) {
 	t.Helper()
 	backendHits = &atomic.Int32{}
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -171,6 +171,9 @@ func newProcessProxy(t *testing.T, store *session.Store, procs *fakeProcs, confi
 	}
 	ts := httptest.NewUnstartedServer(srv.Handler())
 	ts.Config.ConnContext = srv.ConnContext
+	for _, hook := range hooks {
+		hook(ts.Config)
+	}
 	ts.Start()
 	t.Cleanup(ts.Close)
 	return ts.URL, backend.URL, backendHits
@@ -246,8 +249,9 @@ func (c storeSignal) signal() {
 	}
 }
 
-// eventually blocks until cond holds, checking it again after each change to store. what
-// names the awaited state, for the reader.
+// eventually blocks until cond holds, checking it again after each change to store, so
+// cond reads only state that is in place by the store write it waits for. what names the
+// awaited state, for the reader.
 func eventually(t *testing.T, store *session.Store, cond func() bool, what string) {
 	t.Helper()
 	changed := make(storeSignal, 1)
@@ -435,25 +439,16 @@ func TestProcessAttribution_AConnectionWithNoRequestIsNotLookedUp(t *testing.T) 
 	procs := newFakeProcs(fproc(100, 50, "/bin/claude"))
 	store := session.New(0, 0, 0)
 	defer store.Close()
-	srv := &Server{
-		Sessions:         store,
-		Client:           http.DefaultClient,
-		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader},
-		ClientAffinity:   true,
-		Processes:        procs,
-	}
-	ts := httptest.NewUnstartedServer(srv.Handler())
-	ts.Config.ConnContext = srv.ConnContext
 	// http.Server reports StateClosed once it has finished with the connection.
 	closed := make(chan struct{})
-	ts.Config.ConnState = func(_ net.Conn, st http.ConnState) {
-		if st == http.StateClosed {
-			close(closed)
+	proxyURL, _, _ := newProcessProxy(t, store, procs, nil, func(hs *http.Server) {
+		hs.ConnState = func(_ net.Conn, st http.ConnState) {
+			if st == http.StateClosed {
+				close(closed)
+			}
 		}
-	}
-	ts.Start()
-	t.Cleanup(ts.Close)
-	raw, err := net.Dial("tcp", ts.Listener.Addr().String())
+	})
+	raw, err := net.Dial("tcp", strings.TrimPrefix(proxyURL, "http://"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -181,7 +181,7 @@ func TestForwardProxy_ClientGivesUp_RecordsClientCanceled(t *testing.T) {
 	if resp.Error == nil || resp.Error.Kind != "client_canceled" {
 		t.Errorf("Error = %+v, want kind client_canceled", resp.Error)
 	}
-	if got := fin.seen(); got == nil || got.FinalAction != pipeline.OutcomeError {
+	if got := fin.seen(); got.FinalAction != pipeline.OutcomeError {
 		t.Errorf("Outcome = %+v, want OutcomeError", got)
 	}
 	if strings.Contains(logs.String(), "upstream request failed") {
@@ -309,9 +309,6 @@ func TestForwardProxy_UpstreamFailure_OutcomeStaysError(t *testing.T) {
 	}
 
 	got := fin.seen()
-	if got == nil {
-		t.Fatal("OnFinish never ran, so the outcome is unasserted")
-	}
 	if got.FinalAction != pipeline.OutcomeError {
 		t.Errorf("Outcome.FinalAction = %v, want OutcomeError — a request that never got a response is not an allow", got.FinalAction)
 	}
@@ -560,9 +557,6 @@ func assertBufferingFailure(t *testing.T, resp pipeline.SessionEvent, status int
 func assertOutcomeError(t *testing.T, fin *outcomeRecorder) {
 	t.Helper()
 	got := fin.seen()
-	if got == nil {
-		t.Fatal("OnFinish never ran, so the outcome is unasserted")
-	}
 	if got.FinalAction != pipeline.OutcomeError {
 		t.Errorf("Outcome.FinalAction = %v, want OutcomeError", got.FinalAction)
 	}
