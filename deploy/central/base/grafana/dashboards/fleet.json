@@ -122,7 +122,7 @@
       "id": 13,
       "type": "stat",
       "title": "Saving rate",
-      "description": "Net saved as a share of what the traffic would have cost without the proxy. The baseline is spend plus net saved, which is what you would have paid. The exact baseline counter (llm_savings_baseline_usd_total) is not built yet.",
+      "description": "Net saved as a share of what the traffic would have cost without the proxy. The baseline is spend (actual plus estimated) plus net saved, which is what you would have paid. The exact baseline counter (llm_savings_baseline_usd_total) is not built yet.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -135,7 +135,7 @@
       },
       "targets": [
         {
-          "expr": "(sum(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) - sum(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) / clamp_min(sum(increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) + (sum(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) - sum(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))), 1e-9)",
+          "expr": "(sum(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) - sum(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) / clamp_min((sum(increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) + sum(increase(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) + (sum(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) - sum(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))), 1e-9)",
           "refId": "A",
           "instant": true,
           "datasource": {
@@ -268,7 +268,7 @@
       "id": 4,
       "type": "stat",
       "title": "Spend",
-      "description": "What the providers billed over the selected range. Each proxy prices with its own rate table.",
+      "description": "What the providers billed over the selected range: actual (a configured or confirmed rate) plus estimated (a bundled/fallback rate, when no pricing.endpoints entry matches the gateway). Each proxy prices with its own rate table.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -281,7 +281,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))",
+          "expr": "(sum(increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) + sum(increase(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])))",
           "refId": "A",
           "instant": true,
           "datasource": {
