@@ -182,7 +182,7 @@ func agentsCell(t *testing.T, m *model, label, title string) (string, bool) {
 }
 
 // The column is there only while the proxy runs the router, and says each agent's server — or
-// own choice — with nothing on All agents.
+// "by key" — with nothing on All agents.
 func TestAgentsPane_ServerColumnFollowsTheRouter(t *testing.T) {
 	m := serverModel(t, newFakeProxy(t, false))
 	for label, want := range map[string]string{"": "", "claude-code/2.1.270": "ete", "opencode/1.0.3": agentOwnChoice} {
@@ -197,7 +197,7 @@ func TestAgentsPane_ServerColumnFollowsTheRouter(t *testing.T) {
 	}
 }
 
-// The SERVER cells carry no ANSI: the table truncates an escape as text. "own choice" is the
+// The SERVER cells carry no ANSI: the table truncates an escape as text. "by key" is the
 // dimming, in words.
 func TestServerCells_CarryNoANSI(t *testing.T) {
 	restore := lipgloss.ColorProfile()
@@ -414,7 +414,7 @@ func TestPipelineLoaded_RepaintsTheAgentsOnlyWhenTheRouterChanged(t *testing.T) 
 
 // A SERVER cell names a server only where one can be chosen. Other pools many agents, and the
 // no-User-Agent row is one the router refuses to route, so both show nothing rather than an
-// "own choice" S would then refuse. A server name is sanitised like every other served label.
+// "by key" S would then refuse. A server name is sanitised like every other served label.
 func TestAgentServerCell_NamesNoServerWhereNoneCanBeChosen(t *testing.T) {
 	router := routerconfig.Config{Agents: map[string]string{"claude-code": "ete", "opencode": "\x1b[31mglm"}}
 	for label, want := range map[string]string{

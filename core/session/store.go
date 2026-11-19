@@ -168,6 +168,8 @@ type entry struct {
 	inferenceHost string
 	// inferenceServer is SessionSummary.InferenceServer. Append sets it with inferenceHost.
 	inferenceServer string
+	// inferenceKeyOf is SessionSummary.InferenceKeyOf. Append sets it with inferenceHost.
+	inferenceKeyOf string
 
 	// procs is each process that NAMED this session through its own header, with when it first
 	// and last did (applyProcs); owner is the agent whose header named it first (applyOwner).
@@ -562,6 +564,7 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event model.SessionEve
 	// the local parameter, for the reason given there.
 	if h := inferenceHostOf(&event); h != "" {
 		sess.inferenceHost, sess.inferenceServer = h, model.RoutedServer(event.Invocations)
+		sess.inferenceKeyOf = model.RoutedKeyOf(event.Invocations)
 	}
 	// An event of neither kind must not change the facts.
 	if model.IsIntent(&event) {

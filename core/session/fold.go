@@ -271,9 +271,11 @@ type SummaryFold struct {
 	context         model.PromptContextFold
 	restoredContext *model.PromptContext
 	// inferenceHost is SessionSummary.InferenceHost: the latest inference request's host.
-	// inferenceServer is SessionSummary.InferenceServer, and moves with inferenceHost.
+	// inferenceServer is SessionSummary.InferenceServer and inferenceKeyOf is
+	// SessionSummary.InferenceKeyOf. Both move with inferenceHost.
 	inferenceHost   string
 	inferenceServer string
+	inferenceKeyOf  string
 	// procs, owner and lastRequestAt are the entry's fields of the same names, by the same
 	// rules (applyProcs, applyOwner).
 	procs         map[string]ProcSpan
@@ -337,6 +339,7 @@ func (f *SummaryFold) Add(sessionID string, e *model.SessionEvent) {
 	f.context.Add(e)
 	if h := inferenceHostOf(e); h != "" {
 		f.inferenceHost, f.inferenceServer = h, model.RoutedServer(e.Invocations)
+		f.inferenceKeyOf = model.RoutedKeyOf(e.Invocations)
 	}
 	f.procs = applyProcs(f.procs, sessionID, e)
 	f.owner = applyOwner(f.owner, sessionID, p.agentName, e)
@@ -372,6 +375,7 @@ func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 		PromptContext:   f.promptContext(),
 		InferenceHost:   f.inferenceHost,
 		InferenceServer: model.LenientString(f.inferenceServer),
+		InferenceKeyOf:  model.LenientString(f.inferenceKeyOf),
 		Procs:           procsList(f.procs),
 		procSpans:       maps.Clone(f.procs),
 		LastRequestAt:   f.lastRequestAt,
@@ -409,6 +413,8 @@ type foldJSON struct {
 	InferenceHost string `json:"inferenceHost,omitempty"`
 	// InferenceServer moves with InferenceHost. A session.json written before it existed decodes to "".
 	InferenceServer model.LenientString `json:"inferenceServer,omitempty"`
+	// InferenceKeyOf moves with InferenceHost. A session.json written before it existed decodes to "".
+	InferenceKeyOf model.LenientString `json:"inferenceKeyOf,omitempty"`
 	// Procs, Owner and LastRequestAt are absent from a session.json written before they
 	// existed: that history names no process, links nothing, and its agent is picked by label.
 	Procs         map[string]ProcSpan `json:"procs,omitempty"`
@@ -469,6 +475,7 @@ func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 		PromptContext:    f.promptContext(),
 		InferenceHost:    f.inferenceHost,
 		InferenceServer:  model.LenientString(f.inferenceServer),
+		InferenceKeyOf:   model.LenientString(f.inferenceKeyOf),
 		Procs:            f.procs,
 		Owner:            f.owner,
 		LastRequestAt:    f.lastRequestAt,
@@ -502,6 +509,7 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		restoredContext: j.PromptContext,
 		inferenceHost:   j.InferenceHost,
 		inferenceServer: string(j.InferenceServer),
+		inferenceKeyOf:  string(j.InferenceKeyOf),
 		procs:           j.Procs,
 		owner:           model.CanonicalAgent(j.Owner),
 		lastRequestAt:   j.LastRequestAt,
