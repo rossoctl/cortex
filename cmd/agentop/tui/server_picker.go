@@ -43,6 +43,9 @@ type serverPicker struct {
 	scopeCursor int
 	keyStaying  int
 	agentRoute  string
+	// keyCount is the agents picker's muted line under row 0 (keyCountLine), "" in
+	// the sessions picker.
+	keyCount string
 }
 
 // serverChoice is one picker entry. name is "" for the agent's own choice.
@@ -157,6 +160,7 @@ func (m *model) openServerPicker() tea.Cmd {
 	}
 	router, _ := m.activeRouter()
 	p := &serverPicker{agent: pipeline.AgentName(label), entries: []serverChoice{{}}}
+	p.keyCount = m.keyCountLine(router, p.agent)
 	for _, name := range slices.Sorted(maps.Keys(router.Servers)) {
 		s := router.Servers[name]
 		p.entries = append(p.entries, serverChoice{name: name, host: servers.Host(s), mapping: servers.Mapping(s)})
@@ -526,6 +530,47 @@ func (m *model) keySessionsStaying(router routerconfig.Config, id, keyOf string)
 	return n
 }
 
+// keyCountLine says where agent's running sessions go by their key: each one whose
+// key names a configured server goes to that server's key_routes: target, else to
+// that server. One hop only, as the router reads key_routes:. Groups sort by count,
+// most first, then by name.
+func (m *model) keyCountLine(router routerconfig.Config, agent string) string {
+	counts := map[string]int{}
+	for _, s := range m.sessions {
+		k := string(s.InferenceKeyOf)
+		if pipeline.AgentName(s.Agent) != agent || (s.Resident != nil && !*s.Resident) {
+			continue
+		}
+		if _, ok := router.Servers[k]; !ok {
+			continue
+		}
+		if to := router.KeyRoutes[k]; to != "" {
+			k = to
+		}
+		counts[k]++
+	}
+	if len(counts) == 0 {
+		return "no session sends a known key now"
+	}
+	names := slices.SortedFunc(maps.Keys(counts), func(a, b string) int {
+		if counts[a] != counts[b] {
+			return counts[b] - counts[a]
+		}
+		return strings.Compare(a, b)
+	})
+	parts := make([]string, len(names))
+	for i, name := range names {
+		n := fmt.Sprint(counts[name])
+		if i == 0 && counts[name] == 1 {
+			n += " session"
+		} else if i == 0 {
+			n += " sessions"
+		}
+		parts[i] = n + " → " + sanitizeLabel(name)
+	}
+	return "now: " + strings.Join(parts, ", ")
+}
+
 // sessionsStaying counts agent's running sessions that a switch to server leaves where they are:
 // the ones whose server (servers.ForSession) is not server. For the agent's own choice
 // (server ""), every one whose inference last went to any configured server.
@@ -626,7 +671,7 @@ const serverPickerHostMax = 32
 // ownChoiceEntry is the agents picker's first entry, sessionOwnChoiceEntry the
 // sessions picker's: for one session, "" sends it to its own provider.
 const (
-	ownChoiceEntry        = "its own choice (not routed)"
+	ownChoiceEntry        = "Each terminal's key decides"
 	sessionOwnChoiceEntry = "its own choice (not routed)"
 )
 
@@ -687,6 +732,9 @@ func renderServerPicker(p *serverPicker, width int) string {
 				"   " + e.mapping
 		}
 		b.WriteString(marker + line + "\n")
+		if i == 0 && p.keyCount != "" {
+			b.WriteString("    " + styleMuted.Render(p.keyCount) + "\n")
+		}
 	}
 	if p.session != "" && p.sessionTokens > 0 {
 		b.WriteString("\n" + styleMuted.Render(fmt.Sprintf("%d tokens of its context go uncached on its first turn there.", p.sessionTokens)) + "\n")

@@ -1131,3 +1131,52 @@ func TestServerPicker_OwnChoiceRowIsOneStep(t *testing.T) {
 		t.Errorf("↵ on row 0 did not write at once: picker %+v", m.serverPicker)
 	}
 }
+
+// agentsKeyView opens the agents picker on opencode's row with sessions in the
+// model and keyRoutes (a JSON object body, "" for none) in what the proxy serves.
+func agentsKeyView(t *testing.T, keyRoutes string, sessions ...session.SessionSummary) string {
+	t.Helper()
+	m := serverModel(t, newFakeProxy(t, false))
+	if keyRoutes != "" {
+		m.pipeline = routerPipeline(strings.TrimSuffix(routerRaw, "}") + `,"key_routes":{` + keyRoutes + `}}`)
+	}
+	m.sessions = sessions
+	onRow(t, m, "opencode/1.0.3")
+	m.handleKey(keyRune('S'))
+	if m.serverPicker == nil {
+		t.Fatalf("no picker; notice %q", m.serverNotice)
+	}
+	return m.View()
+}
+
+func TestServerPicker_RowZeroIsEachTerminalsKey(t *testing.T) {
+	if view := agentsKeyView(t, ""); !strings.Contains(view, "Each terminal's key decides") {
+		t.Errorf("row 0:\n%s", view)
+	}
+}
+
+func TestServerPicker_TheKeyCountGroupsByServer(t *testing.T) {
+	view := agentsKeyView(t, "", keySession("s1", "opencode", "glm"), keySession("s2", "opencode", "glm"),
+		keySession("s3", "opencode", "ete"), keySession("s4", "claude-code", "ete"), keySession("s5", "opencode", "gone"))
+	if !strings.Contains(view, "now: 2 sessions → glm, 1 → ete") {
+		t.Errorf("no key count:\n%s", view)
+	}
+}
+
+// key_routes: is one hop: glm's key goes to ete, and ete: glm does not send it back.
+func TestServerPicker_TheKeyCountIsOneHop(t *testing.T) {
+	view := agentsKeyView(t, `"glm":"ete","ete":"glm"`, keySession("s1", "opencode", "glm"))
+	if !strings.Contains(view, "now: 1 session → ete") {
+		t.Errorf("not one hop:\n%s", view)
+	}
+}
+
+func TestServerPicker_NoKnownKeySaysSo(t *testing.T) {
+	archived := false
+	gone := keySession("s2", "opencode", "glm")
+	gone.Resident = &archived
+	view := agentsKeyView(t, "", keySession("s1", "opencode", "gone"), gone)
+	if !strings.Contains(view, "no session sends a known key now") {
+		t.Errorf("no empty count:\n%s", view)
+	}
+}
