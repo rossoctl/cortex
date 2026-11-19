@@ -49,3 +49,20 @@ func TestSessionEvent_NonStringSourceDecodesAsLive(t *testing.T) {
 		}
 	}
 }
+
+// A parentSession or parentProject that is not a string decodes as "", and the other fields
+// stay, as they did before the fields existed.
+func TestSessionEvent_NonStringParentDecodesAsEmpty(t *testing.T) {
+	for _, key := range []string{"parentSession", "parentProject"} {
+		for _, v := range []string{`7`, `1.5`, `{"a":1}`, `[1]`, `true`, `null`} {
+			var e SessionEvent
+			if err := json.Unmarshal([]byte(`{"requestId":"r1","`+key+`":`+v+`}`), &e); err != nil {
+				t.Errorf("%s %s: %v", key, v, err)
+				continue
+			}
+			if e.ParentSession != "" || e.ParentProject != "" || e.RequestID != "r1" {
+				t.Errorf("%s %s: ParentSession %q, ParentProject %q, RequestID %q", key, v, e.ParentSession, e.ParentProject, e.RequestID)
+			}
+		}
+	}
+}

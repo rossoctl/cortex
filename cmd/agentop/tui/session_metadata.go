@@ -178,7 +178,7 @@ func (m *model) servedTitle(id string) string {
 func (m *model) parentSessionOf(id string) string {
 	for _, s := range m.sessions {
 		if s.ID == id {
-			return s.ParentSession
+			return string(s.ParentSession)
 		}
 	}
 	return ""

@@ -221,7 +221,7 @@ type SessionSummary struct {
 	Projects []string `json:"projects,omitempty"`
 	// ParentSession is the session of the agent that started this session's agent: the first
 	// non-empty model.SessionEvent.ParentSession. Absent on default and on pending buckets.
-	ParentSession string `json:"parentSession,omitempty"`
+	ParentSession model.LenientString `json:"parentSession,omitempty"`
 	// LastRequestAt is the time of the newest request this session holds, zero when it holds
 	// none. On a pending bucket it is what Link compares with a process's claims.
 	LastRequestAt time.Time `json:"lastRequestAt,omitzero"`
@@ -289,7 +289,7 @@ func (s *Store) ListSessions() []SessionSummary {
 			Agent:    pickAgent(id, sess.owner, nil, sess.agents),
 			Projects: slices.Clone(sess.projects),
 			// The first non-empty parent, read like Projects.
-			ParentSession: sess.parentSession,
+			ParentSession: model.LenientString(sess.parentSession),
 			// Still a walk, and deliberately left as one: it is a pointer deref per event
 			// with no allocation, where the money figures below needed a JSON unmarshal.
 			TotalTokens: sumTokens(sess.Events),

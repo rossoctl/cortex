@@ -725,12 +725,12 @@ type sessionEventWire struct {
 	SubagentKind string `json:"subagentKind,omitempty"`
 	// omitempty: absent wherever the listener could not name the client's process, and on
 	// every event recorded before the field existed.
-	Proc          string `json:"proc,omitempty"`
-	ClientProc    string `json:"clientProc,omitempty"`
-	Project       string `json:"project,omitempty"`
-	ParentSession string `json:"parentSession,omitempty"`
-	ParentProject string `json:"parentProject,omitempty"`
-	SessionHeader string `json:"sessionHeader,omitempty"`
+	Proc          string        `json:"proc,omitempty"`
+	ClientProc    string        `json:"clientProc,omitempty"`
+	Project       string        `json:"project,omitempty"`
+	ParentSession LenientString `json:"parentSession,omitempty"`
+	ParentProject LenientString `json:"parentProject,omitempty"`
+	SessionHeader string        `json:"sessionHeader,omitempty"`
 	// omitempty: absent on every row the egress guard did not dial for — it is
 	// off by default, so the common row costs nothing — and the same skew
 	// reason as TunnelReason above.
@@ -773,8 +773,8 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		Proc:            e.Proc,
 		ClientProc:      e.ClientProc,
 		Project:         e.Project,
-		ParentSession:   e.ParentSession,
-		ParentProject:   e.ParentProject,
+		ParentSession:   LenientString(e.ParentSession),
+		ParentProject:   LenientString(e.ParentProject),
 		SessionHeader:   e.SessionHeader,
 		DialAddr:        e.DialAddr,
 	})
@@ -823,8 +823,8 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		Proc:            w.Proc,
 		ClientProc:      w.ClientProc,
 		Project:         w.Project,
-		ParentSession:   w.ParentSession,
-		ParentProject:   w.ParentProject,
+		ParentSession:   string(w.ParentSession),
+		ParentProject:   string(w.ParentProject),
 		SessionHeader:   w.SessionHeader,
 		DialAddr:        w.DialAddr,
 	}

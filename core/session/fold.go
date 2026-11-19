@@ -394,7 +394,7 @@ func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 		LastRequestAt:   f.lastRequestAt,
 		Agent:           pickAgent(sessionID, f.owner, nil, f.agents),
 		Projects:        slices.Clone(f.projects),
-		ParentSession:   f.parentSession,
+		ParentSession:   model.LenientString(f.parentSession),
 	}
 	if !f.live {
 		sum.Source = f.imported
@@ -415,7 +415,7 @@ type foldJSON struct {
 	// Projects is absent from a session.json written before it existed, which decodes to none.
 	Projects []string `json:"projects,omitempty"`
 	// ParentSession is SummaryFold.parentSession. A session.json written before it existed decodes to "".
-	ParentSession    string               `json:"parentSession,omitempty"`
+	ParentSession    model.LenientString  `json:"parentSession,omitempty"`
 	TotalTokens      int                  `json:"totalTokens,omitempty"`
 	CostMicros       int64                `json:"costMicros,omitempty"`
 	CostSaturated    bool                 `json:"costSaturated,omitempty"`
@@ -496,7 +496,7 @@ func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 		Owner:            f.owner,
 		LastRequestAt:    f.lastRequestAt,
 		Projects:         f.projects,
-		ParentSession:    f.parentSession,
+		ParentSession:    model.LenientString(f.parentSession),
 		Imported:         f.imported,
 		Live:             f.live,
 	}
@@ -531,7 +531,7 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		owner:           model.CanonicalAgent(j.Owner),
 		lastRequestAt:   j.LastRequestAt,
 		projects:        j.Projects,
-		parentSession:   j.ParentSession,
+		parentSession:   string(j.ParentSession),
 		imported:        j.Imported,
 		// A fold with events and no imported one holds only live events, also in a
 		// session.json written before Live existed.
