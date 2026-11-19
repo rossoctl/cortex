@@ -453,3 +453,29 @@ func TestDoctorPATHFixAlsoNamesTheLineToAdd(t *testing.T) {
 	}
 	everyFailHasAFix(t, out)
 }
+
+// A retired key an older enable wrote is a note, not a failure: routing works, and
+// setup still removes the key. The CA-file check still runs on that plan.
+func TestDoctorNotesARetiredKeyAndStillChecksCAFiles(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t, "--claude-code")
+	settings, state := filepath.Join(sc.home, settingsRel), filepath.Join(sc.home, stateRel)
+	handEdit(t, settings, map[string]string{envNoTelem: "1"})
+	st, err := readState(state)
+	if err != nil || st == nil {
+		t.Fatalf("no record: %v", err)
+	}
+	st.Written[envNoTelem], st.Prior[envNoTelem] = "1", nil
+	if err := writeState(state, *st); err != nil {
+		t.Fatal(err)
+	}
+	code, out := sc.doctor(t)
+	wantLines(t, code, 0, out, "\n"+markLine("!", "routed")+"Claude Code routed · "+envNoTelem+" is retired; setup removes it\n"+
+		"      fix: agentop setup --claude-code\n", "\n  Nothing to fix.\n")
+
+	if err := os.RemoveAll(filepath.Join(sc.home, ".cortex", "ca")); err != nil {
+		t.Fatal(err)
+	}
+	code, out = sc.doctor(t)
+	wantLines(t, code, 1, out, "\n"+markLine("✗", "routed")+"Claude Code's CA files are not there")
+}
