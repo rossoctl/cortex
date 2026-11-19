@@ -467,6 +467,100 @@ func TestServerReset_AnAgentThatIsNotRoutedChangesNothing(t *testing.T) {
 	}
 }
 
+func TestServerUse_KeyOfRoutesTheKey(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	code, out, errOut := runServerCmd(t, "", "use", "ete", "--key-of", "glm", "--config", path)
+	if code != 0 || !strings.Contains(out, "New sessions that send glm's key → ete.") {
+		t.Fatalf("exit %d, stdout:\n%s%s", code, out, errOut)
+	}
+	if got := readConfig(t, path); !strings.Contains(got, "key_routes:") || !strings.Contains(got, "glm: ete") {
+		t.Errorf("config:\n%s", got)
+	}
+}
+
+func TestServerUseAndReset_KeyOfRemovesTheEntry(t *testing.T) {
+	routed := routerBlock + "          key_routes:\n            glm: ete\n"
+	for _, args := range [][]string{
+		{"reset", "--key-of", "glm"},
+		{"use", "glm", "--key-of", "glm"},
+	} {
+		path := serverEnv(t, newFakeStats(t, 0).addr(), routed)
+		code, out, errOut := runServerCmd(t, "", append(args, "--config", path)...)
+		if code != 0 {
+			t.Fatalf("%q: exit %d, stdout:\n%s%s", args, code, out, errOut)
+		}
+		if got := readConfig(t, path); strings.Contains(got, "key_routes:") {
+			t.Errorf("%q: want the entry gone:\n%s", args, got)
+		}
+	}
+}
+
+func TestServerReset_KeyOfNotRoutedChangesNothing(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	before := readConfig(t, path)
+	code, out, _ := runServerCmd(t, "", "reset", "--key-of", "glm", "--config", path)
+	if code != 0 || !strings.Contains(out, "nothing to change") || readConfig(t, path) != before {
+		t.Errorf("exit %d, stdout:\n%s", code, out)
+	}
+	// use X --key-of X with no entry is a removal of nothing: no write.
+	code, out, _ = runServerCmd(t, "", "use", "glm", "--key-of", "glm", "--config", path)
+	if code != 0 || !strings.Contains(out, "New sessions that send glm's key already go to glm.") || readConfig(t, path) != before {
+		t.Errorf("use glm --key-of glm: exit %d, stdout:\n%s", code, out)
+	}
+}
+
+func TestServerUseAndReset_AgentAndKeyOfAreExclusive(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	before := readConfig(t, path)
+	for _, args := range [][]string{
+		{"use", "ete", "--agent", "claude-code", "--key-of", "glm", "--config", path},
+		{"reset", "--agent", "claude-code", "--key-of", "glm", "--config", path},
+	} {
+		code, _, errOut := runServerCmd(t, "", args...)
+		if code != 2 || !strings.Contains(errOut, "exclusive") {
+			t.Errorf("%q: exit %d, stderr:\n%s", args, code, errOut)
+		}
+	}
+	if readConfig(t, path) != before {
+		t.Error("the config was written")
+	}
+}
+
+func TestServerUseAndReset_KeyOfRefusesAnUnknownServer(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	for _, args := range [][]string{
+		{"use", "ete", "--key-of", "east"},
+		{"use", "east", "--key-of", "glm"},
+		{"reset", "--key-of", "east"},
+	} {
+		code, _, errOut := runServerCmd(t, "", append(args, "--config", path)...)
+		if code != 1 || !strings.Contains(errOut, "no server named east; configured: ete, glm") {
+			t.Errorf("%q: exit %d, stderr:\n%s", args, code, errOut)
+		}
+	}
+	code, _, errOut := runServerCmd(t, "", "use", "ete", "--key-of", "ETE", "--config", path)
+	if code != 2 || !strings.Contains(errOut, "is not a server name") {
+		t.Errorf("--key-of ETE: exit %d, stderr:\n%s", code, errOut)
+	}
+}
+
+func TestServerRemove_RefusesAServerAKeyRouteNames(t *testing.T) {
+	block := strings.Replace(routerBlock, "          agents:\n            claude-code: glm\n",
+		"          key_routes:\n            glm: ete\n", 1)
+	path := serverEnv(t, newFakeStats(t, 0).addr(), block)
+	before := readConfig(t, path)
+	for _, s := range []string{"ete", "glm"} {
+		code, _, errOut := runServerCmd(t, "", "remove", s, "--config", path)
+		if code != 1 || !strings.Contains(errOut, "key_routes.glm: ete names "+s) ||
+			!strings.Contains(errOut, "agentop server reset --key-of glm") {
+			t.Errorf("remove %s: exit %d, stderr:\n%s", s, code, errOut)
+		}
+	}
+	if readConfig(t, path) != before {
+		t.Error("the config was written")
+	}
+}
+
 // Every write is checked against the plugin's own rules before it lands, so a
 // config the proxy would refuse is never written — here, one a hand edit left with
 // a field main and helper replaced.

@@ -37,6 +37,8 @@ Usage:
   agentop server remove <name> [--config PATH]
   agentop server use <name> --agent <agent> [--config PATH]
   agentop server reset --agent <agent> [--config PATH]
+  agentop server use <name> --key-of <server> [--config PATH]
+  agentop server reset --key-of <server> [--config PATH]
   agentop server move <session-id> <name|own> [--config PATH]
 
 With no action, lists the servers, the model each one's main and helper word
@@ -51,6 +53,11 @@ session stays on the server it started on, so a change applies to new sessions
 only, and a proxy restart moves none, since each session's server is kept in
 ~/.cortex. A conversation that began before routing was set up stays where the
 agent sends it.
+
+"use <name> --key-of <server>" sends the new sessions that send <server>'s
+key to <name>, through the router's key_routes: map. One hop only. An
+agent's own server, from "use --agent", wins over it. "reset --key-of
+<server>", or "use <server> --key-of <server>", removes the entry.
 
 "add" reads the server's API key at a prompt that does not echo, or from stdin
 with --key-stdin; it is never an argument. Adding a name that exists asks before
@@ -217,6 +224,16 @@ func agentsOn(c routerconfig.Config, server string) []string {
 	return out
 }
 
+// agentsCell is the last cell of server's row in the listing: the agents routed to
+// it and, when its key goes to another server, "its key → <server>".
+func agentsCell(c routerconfig.Config, server string) string {
+	cell := agentsOn(c, server)
+	if to := c.KeyRoutes[server]; to != "" && to != server {
+		cell = append(cell, "its key → "+to)
+	}
+	return strings.Join(cell, ", ")
+}
+
 func serverList(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("server", flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
@@ -256,7 +273,7 @@ func serverList(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(&table, 0, 0, 3, ' ', 0)
 	for _, name := range slices.Sorted(maps.Keys(c.Servers)) {
 		s := c.Servers[name]
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", name, servers.Host(s), resolvedWords(s), strings.Join(agentsOn(c, name), ", "))
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", name, servers.Host(s), resolvedWords(s), agentsCell(c, name))
 	}
 	tw.Flush()
 	// The detail lines go under each row after the table is aligned: a line with no

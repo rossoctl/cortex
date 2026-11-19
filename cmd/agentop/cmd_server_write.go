@@ -352,6 +352,25 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "To take the router out altogether, delete its entry from %s.\n", homeTilde(path))
 		return 1
 	}
+	// Before the session and agent checks: the config validation refuses the
+	// removal while an entry names name, so this is the first thing to fix.
+	var routed []string
+	for _, k := range slices.Sorted(maps.Keys(c.KeyRoutes)) {
+		if k == name || c.KeyRoutes[k] == name {
+			routed = append(routed, k)
+		}
+	}
+	if len(routed) > 0 {
+		clauses := make([]string, len(routed))
+		for i, k := range routed {
+			clauses[i] = fmt.Sprintf("key_routes.%s: %s names %s", k, c.KeyRoutes[k], name)
+		}
+		fmt.Fprintf(stderr, "agentop server remove: %s; remove the entry first:\n", strings.Join(clauses, ", "))
+		for _, k := range routed {
+			fmt.Fprintf(stderr, "  agentop server reset --key-of %s\n", k)
+		}
+		return 1
+	}
 	if moved := sessionsOn(c, name); len(moved) > 0 {
 		// Not rewritten to "": a remove the user asked for should not edit the
 		// moves they made, and a config that names no listed server cannot reload —
@@ -465,12 +484,17 @@ func serverUse(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("server use", flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
 	agent := flags.String("agent", "", "the agent whose new sessions go to the server, such as claude-code")
+	keyOf := flags.String("key-of", "", "the server whose key the new sessions send, such as team-b")
 	pos, code, ok := serverFlags(flags, args, stdout, stderr)
 	if !ok {
 		return code
 	}
-	if len(pos) != 1 || *agent == "" {
-		fmt.Fprintln(stderr, "agentop server use: want a server and an agent: agentop server use <name> --agent <agent>")
+	if *agent != "" && *keyOf != "" {
+		fmt.Fprintln(stderr, "agentop server use: --agent and --key-of are exclusive; give one")
+		return 2
+	}
+	if len(pos) != 1 || (*agent == "" && *keyOf == "") {
+		fmt.Fprintln(stderr, "agentop server use: want a server and an agent or a key: agentop server use <name> --agent <agent> | --key-of <server>")
 		return 2
 	}
 	name := pos[0]
@@ -478,6 +502,9 @@ func serverUse(args []string, stdout, stderr io.Writer) int {
 	if err := routerconfig.CheckName(name); err != nil {
 		fmt.Fprintf(stderr, "agentop server use: %v\n", err)
 		return 2
+	}
+	if *keyOf != "" {
+		return serverUseKeyOf(name, *keyOf, *cfgPath, stdout, stderr)
 	}
 	if err := routerconfig.CheckAgent(*agent); err != nil {
 		fmt.Fprintf(stderr, "agentop server use: %v\n", err)
@@ -509,17 +536,57 @@ func serverUse(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
+// serverUseKeyOf is `agentop server use <to> --key-of <from>`: the new sessions
+// that send from's key go to to. With to == from it removes the entry.
+func serverUseKeyOf(to, from, cfgPath string, stdout, stderr io.Writer) int {
+	if err := routerconfig.CheckName(from); err != nil {
+		fmt.Fprintf(stderr, "agentop server use: %v\n", err)
+		return 2
+	}
+	cfg, path, statsURL, err := serverWriteTarget(cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server use: %v\n", err)
+		return 1
+	}
+	c, _, err := readRouter(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server use: %v\n", err)
+		return 1
+	}
+	for _, n := range []string{from, to} {
+		if _, ok := c.Servers[n]; !ok {
+			fmt.Fprintf(stderr, "agentop server use: no server named %s%s. Add it first:\n  agentop server add %s <url>\n",
+				n, configuredServers(c), n)
+			return 1
+		}
+	}
+	return runServerWrite(stdout, stderr, path, statsURL, servers.KeyRouteChanges(from, to), writeReport{
+		done:      fmt.Sprintf("New sessions that send %s's key → %s.", from, to),
+		live:      runningSessionsStay,
+		unchanged: fmt.Sprintf("New sessions that send %s's key already go to %s.", from, to),
+		note:      routerInactive(cfg, path),
+	})
+}
+
 func serverReset(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("server reset", flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
 	agent := flags.String("agent", "", "the agent to stop routing, such as claude-code")
+	keyOf := flags.String("key-of", "", "the server whose key the new sessions send, such as team-b")
 	pos, code, ok := serverFlags(flags, args, stdout, stderr)
 	if !ok {
 		return code
 	}
-	if len(pos) != 0 || *agent == "" {
-		fmt.Fprintln(stderr, "agentop server reset: want an agent: agentop server reset --agent <agent>")
+	if *agent != "" && *keyOf != "" {
+		fmt.Fprintln(stderr, "agentop server reset: --agent and --key-of are exclusive; give one")
 		return 2
+	}
+	if len(pos) != 0 || (*agent == "" && *keyOf == "") {
+		fmt.Fprintln(stderr, "agentop server reset: want an agent or a key: agentop server reset --agent <agent> | --key-of <server>")
+		return 2
+	}
+	if *keyOf != "" {
+		return serverResetKeyOf(*keyOf, *cfgPath, stdout, stderr)
 	}
 	if err := routerconfig.CheckAgent(*agent); err != nil {
 		fmt.Fprintf(stderr, "agentop server reset: %v\n", err)
@@ -546,6 +613,39 @@ func serverReset(args []string, stdout, stderr io.Writer) int {
 		done:      fmt.Sprintf("New %s sessions are no longer routed.", *agent),
 		live:      runningSessionsStay,
 		unchanged: fmt.Sprintf("%s is not routed; nothing to change.", *agent),
+	})
+}
+
+// serverResetKeyOf is `agentop server reset --key-of <from>`: the new sessions
+// that send from's key go to from again.
+func serverResetKeyOf(from, cfgPath string, stdout, stderr io.Writer) int {
+	if err := routerconfig.CheckName(from); err != nil {
+		fmt.Fprintf(stderr, "agentop server reset: %v\n", err)
+		return 2
+	}
+	cfg, path, statsURL, err := serverWriteTarget(cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server reset: %v\n", err)
+		return 1
+	}
+	c, _, err := readRouter(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop server reset: %v\n", err)
+		return 1
+	}
+	if _, ok := c.Servers[from]; !ok {
+		fmt.Fprintf(stderr, "agentop server reset: no server named %s%s\n", from, configuredServers(c))
+		return 1
+	}
+	notRouted := fmt.Sprintf("%s's key is not routed to another server; nothing to change.", from)
+	if c.KeyRoutes[from] == "" {
+		fmt.Fprintln(stdout, notRouted)
+		return 0
+	}
+	return runServerWrite(stdout, stderr, path, statsURL, servers.KeyRouteChanges(from, ""), writeReport{
+		done:      fmt.Sprintf("New sessions that send %s's key go to %s.", from, from),
+		live:      runningSessionsStay,
+		unchanged: notRouted,
 	})
 }
 

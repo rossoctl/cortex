@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -187,6 +188,30 @@ func TestSessionChanges(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("SessionChanges(\"\") = %+v, want %+v", got, want)
 	}
+}
+
+func TestKeyRouteChanges(t *testing.T) {
+	check := func(from, to string, wantValue string) {
+		t.Helper()
+		got := KeyRouteChanges(from, to)
+		if len(got) != 1 {
+			t.Fatalf("KeyRouteChanges(%q, %q) = %d changes, want 1", from, to, len(got))
+		}
+		ch := got[0]
+		if ch.Chain != "outbound" || ch.Plugin != PluginName || !slices.Equal(ch.Path, []string{"key_routes", from}) {
+			t.Errorf("KeyRouteChanges(%q, %q) = %+v", from, to, ch)
+		}
+		switch {
+		case wantValue == "" && ch.Value != nil:
+			t.Errorf("KeyRouteChanges(%q, %q): want a removal, got value %q", from, to, ch.Value.Value)
+		case wantValue != "" && (ch.Value == nil || ch.Value.Value != wantValue):
+			t.Errorf("KeyRouteChanges(%q, %q): want value %q, got %+v", from, to, wantValue, ch.Value)
+		}
+	}
+	check("team-b", "team-a", "team-a")
+	// A key routed to its own server is no entry: the change removes it.
+	check("team-b", "team-b", "")
+	check("team-b", "", "")
 }
 
 func TestPruneSessions(t *testing.T) {

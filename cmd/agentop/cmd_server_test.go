@@ -258,6 +258,56 @@ func TestServer_AgentsLineUpAroundAServerWithNone(t *testing.T) {
 	}
 }
 
+func TestServer_ListsWhereAKeyIsRouted(t *testing.T) {
+	path := serverEnv(t, closedAddr(t), `      - name: inference-router
+        config:
+          servers:
+            aaa:
+              url: https://a.example.com
+              key: sk-a
+              main: big
+              helper: small
+            bbb:
+              url: https://b.example.com
+              key: sk-b
+              main: big
+              helper: small
+            ccc:
+              url: https://c.example.com
+              key: sk-c
+              main: big
+              helper: small
+          agents:
+            claude-code: aaa
+            opencode: ccc
+          key_routes:
+            bbb: aaa
+`)
+	code, out, errOut := runServerCmd(t, "", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	lines := strings.Split(out, "\n")
+	if !strings.Contains(lines[1], "bbb") || !strings.Contains(lines[1], "its key → aaa") {
+		t.Fatalf("want the bbb row to name where its key goes:\n%s", out)
+	}
+	col := func(line, word string) int {
+		i := strings.Index(line, word)
+		if i < 0 {
+			t.Fatalf("no %q in %q", word, line)
+		}
+		return utf8.RuneCountInString(line[:i])
+	}
+	if a, b, c := col(lines[0], "claude-code"), col(lines[1], "its key"), col(lines[2], "opencode"); a != b || b != c {
+		t.Errorf("agents start in columns %d, %d and %d:\n%s", a, b, c, out)
+	}
+	for i, line := range lines[:3] {
+		if strings.TrimRight(line, " ") != line {
+			t.Errorf("line %d ends in spaces: %q", i+1, line)
+		}
+	}
+}
+
 // A key given as a username that contains '/', '?' or '#' ends the authority
 // early, so url.Parse takes the KEY for the host: https://sk-SECRET/x@h.example.com
 // parses with Host "sk-SECRET". Nothing of a refused server URL may be shown, and
