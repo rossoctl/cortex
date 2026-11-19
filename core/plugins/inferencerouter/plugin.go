@@ -10,11 +10,16 @@
 // ends. Only a POST inference-parser read as inference is captured, since an agent's
 // own tools can POST to an API whose path happens to end the same way.
 //
-// The choice is plugin config — servers by name, and agents by name to a server —
-// changed by editing it and letting the proxy hot-reload. Sessions are pinned in the
-// process's durable store (storage.StoreConsumer) — on a local install a file under
-// ~/.cortex — which neither a reload nor a restart loses, so changing an agent's
-// server moves only the sessions it has not started yet. A process with no durable
+// The choice is plugin config, changed by editing it and letting the proxy
+// hot-reload. For a request, the order is: the session's sessions: entry, the
+// session's pin, the agent's agents: entry, the key_routes: entry of the server whose
+// key the request sent, that server, not routed. So a request that sends a server's
+// key, from an agent with no agents: entry, is routed to that server. A request with
+// no User-Agent is not routed by its key.
+//
+// Sessions are pinned in the process's durable store (storage.StoreConsumer) — on a
+// local install a file under ~/.cortex — which neither a reload nor a restart loses,
+// so changing an agent's server moves only the sessions it has not started yet. A process with no durable
 // store pins in its process-scoped store (pctx.Shared), which a reload keeps and a
 // restart empties.
 //
@@ -207,6 +212,12 @@ type Router struct {
 	servers map[string]route    // by server name
 	byHost  map[string][]string // every server's Endpoint.Key, to the sorted names of its servers
 	agents  map[string]string   // agent name to server name
+	// keyRoutes is the config's key_routes: map, the server whose key a request
+	// sends to the server the request goes to.
+	keyRoutes map[string]string
+	// keys and keyHeaders are what keyOwner reads (see buildKeys).
+	keys       []serverKey
+	keyHeaders []string
 	// sessions is the config's sessions: map, a session id to the server the user
 	// moved it to ("" to stop routing it). It beats the pin and every unpinned rule.
 	sessions map[string]string
@@ -300,7 +311,9 @@ func (p *Router) Configure(raw json.RawMessage) error {
 	// rename keeps routing instead of silently matching nothing. pipeline.FoldAgentNames
 	// is the one implementation of that fold, shared with agentop's own reads and
 	// writes of the same agents: map so the two cannot disagree.
+	keys, keyHeaders := buildKeys(c.Servers)
 	p.servers, p.byHost, p.agents, p.sessions = servers, byHost, pipeline.FoldAgentNames(c.Agents), c.Sessions
+	p.keyRoutes, p.keys, p.keyHeaders = c.KeyRoutes, keys, keyHeaders
 	return nil
 }
 
@@ -315,6 +328,9 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		pctx.Skip("not_redirectable")
 		return cont
 	}
+	// keyOf is read one time, so the capture check and serverFor see the same headers.
+	keyOf := p.keyOwner(pctx.Headers)
+	agent := agentOf(pctx)
 	// Every path on a server's host is handled — /v1/messages, count_tokens,
 	// /v1/models — because they all belong to the server the session is on. A request
 	// to any other host is captured when it is a routed agent's inference request,
@@ -330,7 +346,7 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		// A sessions: override admits the capture too: the move is the user's
 		// instruction, and it must reach a session whose agent is not routed and
 		// holds no pin, which no other rule would route.
-		if !ok || (p.agents[agentOf(pctx)] == "" && !p.pinnedToServer(pctx) && !p.overrideRoutes(pctx)) {
+		if !ok || (p.choiceFor(agent, keyOf) == "" && !p.pinnedToServer(pctx) && !p.overrideRoutes(pctx)) {
 			if ok {
 				p.keepOwnReasoning(pctx, "", false, "")
 			}
@@ -340,7 +356,7 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		captured = path
 	}
 
-	name, pin := p.serverFor(pctx, captured != "")
+	name, pin := p.serverFor(pctx, captured != "", keyOf)
 	if len(names) > 1 {
 		// A shared host names no one server: the request named the chosen server if it is on the host.
 		addressed = ""
@@ -364,11 +380,20 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 		if pin.turn != "" {
 			details["turn"] = pin.turn
 		}
+		if keyOf != "" {
+			details["key_of"] = keyOf
+		}
 		pctx.Record(pipeline.Invocation{Action: pipeline.ActionSkip, Reason: "not_routed", Details: details})
 		return cont
 	}
 	// Built where each record is made, since a failed redirect changes the pin.
-	details := func() map[string]string { return map[string]string{"server": name, "pin": pin.state} }
+	details := func() map[string]string {
+		d := map[string]string{"server": name, "pin": pin.state}
+		if keyOf != "" {
+			d["key_of"] = keyOf // a server name, never the key
+		}
+		return d
+	}
 	srv, ok := p.servers[name]
 	if !ok {
 		// Removed since the session was pinned, by agentop server remove or a hand edit.
@@ -557,9 +582,9 @@ func (pn *pinning) forgo() {
 // serverFor is the server the request's session uses, "" for not routed, and the
 // session's pin. It reads the pin store and renews the pin. decideServer makes the
 // decision.
-func (p *Router) serverFor(pctx *pipeline.Context, captured bool) (string, pinning) {
+func (p *Router) serverFor(pctx *pipeline.Context, captured bool, keyOf string) (string, pinning) {
 	agent := agentOf(pctx)
-	choice := p.agents[agent]
+	choice := p.choiceFor(agent, keyOf)
 	unpinned := func() (string, string, bool) { return p.unpinned(pctx, agent, choice, captured) }
 	var store pins
 	if pctx.SessionID != "" && !synthetic(pctx.SessionID) {
