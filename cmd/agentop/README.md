@@ -764,10 +764,11 @@ agentop is for, and the others are surfaces you visit and leave.
   2s, 4s … up to 30s, and the first fetch of a visit waits up to 30s, since a
   session only on disk is read from its archive.
 
-  **Claude Code only.** Agents come from the requests the proxy attributed to a
-  Claude Code agent, and a tool's end from the first request carrying its
-  result. Sessions recorded before the proxy captured agent ids show their
-  subagents as one row; other agents show host rows alone. A proxy too old to
+  **Subagent rows: Claude Code and IBM Bob only.** Every recognised agent gets its
+  main row. Subagents come from Claude Code's agent-id headers and Bob's task ids,
+  and a tool's end from the first request carrying its result. Sessions recorded
+  before the proxy captured agent ids show their subagents as one row; a client
+  Cortex does not recognise shows host rows alone. A proxy too old to
   serve the endpoint gets a line saying so.
 - **Kubernetes Namespaces** (optional): the way in when agentop has no endpoint
   to connect to — one row per namespace holding an AuthBridge agent, then a
@@ -882,7 +883,7 @@ Layered on top of all of them:
 | `w` | agents | cycle the pane's window, drawer open or not: the rows, the title and the breakdown move together through the same four spans. Opens on today; the drawer's own span on other panes is left alone |
 | `m` | usage | cycle metric: tokens / requests / errors / latency / cost |
 | `w` | usage | cycle window: 10m / 1h / 6h |
-| `o` | usage | cycle breakdown: none / status / method / plugin (not offered for latency — there is no per-label latency). Not `b`, which pages up everywhere else. The pane's scope comes from where `u` was pressed: all sessions from Sessions, the session being read from Events or Detail |
+| `o` | usage | cycle breakdown: none / status / method / plugin / host (not offered for latency — there is no per-label latency — or under an agent or project scope). Not `b`, which pages up everywhere else. The pane's scope comes from where `u` was pressed: all sessions from Sessions, the session being read from Events or Detail |
 | `Esc` | usage | back to the pane it was opened from |
 | `P` | sessions, events, detail | open the pipeline. Capital `P` because lowercase `p` pauses the stream and has no replacement worth the trade — `space` and `d` page the table, except on the agents pane, where `space` opens projects and `d`, `PgDn` and `f` still page down |
 | `Esc` | pipeline | back to the pane `P` was pressed on |
@@ -890,6 +891,7 @@ Layered on top of all of them:
 | `↑↓` / `jk` | agents | move the cursor |
 | `↵` | agents | on a row that opens (sessions record a project), open it into its projects or close it. Opening puts the cursor on its `All projects` sub-row, so `↵` `↵` lists the agent's sessions. On any other row, scope to the agent under the cursor and list its sessions, whichever pane `A` was pressed on — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope** — from its `All projects` sub-row when sessions record a project. It reaches the sessions list, the usage pane, and the spend band and its drawer — except on the agents pane itself, where the band and the drawer follow the highlighted row instead of the committed scope; `agentop cost --agent` is a separate process. On a project sub-row, `↵` scopes to that project and its agent; on a project under All agents, to the project only; on the project `Other`, to the sessions and spend that record no project. `All projects` clears only the project scope. `x` and `S` act on the parent on the open row and on `All projects`, and do nothing on a project or `Other` sub-row |
 | `S` | agents | choose the inference server the highlighted agent's new sessions use: a picker over the pane, its cursor on what the agent has now. `↵` applies the highlighted entry, `Esc`/`q`/`Ctrl+C` close it, and an entry the config file already holds writes nothing. Opens only on an agent's row, when agentop is attached to this machine's Cortex and its `inference-router` routes; elsewhere a panel says why. See [Choosing an agent's server](#choosing-an-agents-server-s) |
+| `S` | sessions | move the highlighted session to another server: a picker, its cursor on the server the session uses now, so `↵` at once changes nothing. Opens only when agentop is attached to this machine's Cortex and its `inference-router` routes; elsewhere a notice says why |
 | `Esc` | agents | back to the pane `A` was pressed on, leaving the scope as it is. When the picker opened itself at startup, or was reached with `Esc` from the sessions list, it is the level above that list instead, and `Esc` backs out as `Esc` on sessions does: to the pods picker, or nowhere with `--endpoint` |
 | `e` | pipeline | edit pipeline subtree in `$EDITOR` |
 | `y` | edit/diff | apply the edit |

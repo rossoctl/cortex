@@ -30,7 +30,8 @@ agentop observe                         # in another terminal: watch it live
 **Next: [Getting started](./docs/getting-started.md)**. It shows what you should see, how to read the screen, and how to undo it.
 
 Setup asks once before changing anything. If something looks wrong, `agentop doctor`
-names the fix. To move to a newer release later, run `agentop update`. Can't reach
+names the fix. A service install [updates itself](./docs/laptop-service.md#automatic-updates);
+to update now, run `agentop update`. Can't reach
 rossoctl.dev? The same script is [in this repo](https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh).
 
 Used your agent before Cortex? `agentop import` adds its past sessions and their
@@ -46,6 +47,11 @@ Open one to read the whole conversation, and the tool list it re-sends every tur
 agentop observe
 agentop cost --window month --by agent
 ```
+
+**See where a session's time went.** Press `T` on a session in `agentop observe`.
+The timeline shows the main agent and each subagent on one time axis: model time,
+tool time, retries, and the time the agent waited on you. It also shows each host
+that the session called, and its errors. See [Using agentop](./docs/using-agentop.md).
 
 **Switch any agent to another inference server.** Provider down, or your team
 has its own gateway? Point the agent at another server without changing the
