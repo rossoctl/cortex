@@ -14,6 +14,7 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
 	"github.com/rossoctl/cortex/cmd/agentop/servers"
 	"github.com/rossoctl/cortex/core/cost/usage"
+	coremodel "github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -764,6 +765,7 @@ func TestServerTexts_DrawNoControlFromWhatTheProxyServed(t *testing.T) {
 		t.Fatalf("picker %+v; notice %q", m.serverPicker, m.serverNotice)
 	}
 	name := m.serverPicker.entries[2].name
+	const keyOf = "te\x1b[31mam-b"
 	m.serverSwitch = &serverSwitch{agent: "claude-code", server: name}
 	for what, got := range map[string]string{
 		"the picker":         renderServerPicker(m.serverPicker, 120),
@@ -775,8 +777,16 @@ func TestServerTexts_DrawNoControlFromWhatTheProxyServed(t *testing.T) {
 		"a refusal": serverSwitchedText(serverSwitchedMsg{agent: "claude-code", server: name,
 			res: edit.WriteResult{Outcome: edit.WriteReloadFailed, ReloadError: "bad \x1b]0;x\x07", RolledBack: true}}, 0),
 		"an error": serverSwitchedText(serverSwitchedMsg{agent: "claude-code", server: name, err: errors.New("bad \x1b[2J")}, 0),
+		"the second step": renderServerPicker(&serverPicker{agent: "opencode", session: "s1", entries: m.serverPicker.entries,
+			cursor: 2, keyOf: keyOf, scope: true, scopeCursor: 1, keyStaying: 2}, 120),
+		"the second step's agent note": renderServerPicker(&serverPicker{agent: "opencode", session: "s1", entries: m.serverPicker.entries,
+			cursor: 1, keyOf: keyOf, scope: true, agentRoute: keyOf}, 120),
+		"a key move": serverSwitchedText(serverSwitchedMsg{session: "s1", server: name, keyOf: keyOf,
+			res: edit.WriteResult{Outcome: edit.WriteReloaded}}, 0),
+		"a key move to its owner": serverSwitchedText(serverSwitchedMsg{session: "s1", server: keyOf, keyOf: keyOf,
+			res: edit.WriteResult{Outcome: edit.WriteUnchanged}}, 0),
 	} {
-		for _, bad := range []string{"\x1b]", "\x07", "\x1b[2J"} {
+		for _, bad := range []string{"\x1b]", "\x07", "\x1b[2J", "\x1b[31m"} {
 			if strings.Contains(got, bad) {
 				t.Errorf("%s draws %q: %q", what, bad, got)
 			}
@@ -910,5 +920,214 @@ func TestServerPicker_OpensOnTheSessionsNamedServer(t *testing.T) {
 	}
 	if got := p.entries[p.cursor].name; got != "team-b" {
 		t.Errorf("cursor on %q, want team-b: the server the session uses", got)
+	}
+}
+
+// keyServerModel is the sessions pane over f with sessions as its rows, the
+// router as it reads with keyRoutes ("" for none) as its key_routes: block, both
+// in the file and in what the proxy serves. S is open on id's row.
+func keyServerModel(t *testing.T, f *fakeProxy, keyRoutes string, sessions []session.SessionSummary, id string) *model {
+	t.Helper()
+	if keyRoutes != "" {
+		yaml := routerYAML + "          key_routes:\n            " + strings.ReplaceAll(keyRoutes, ",", "\n            ") + "\n"
+		if err := os.WriteFile(f.path, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := serverModel(t, f)
+	if keyRoutes != "" {
+		var pairs []string
+		for _, kv := range strings.Split(keyRoutes, ",") {
+			k, v, _ := strings.Cut(kv, ": ")
+			pairs = append(pairs, `"`+k+`":"`+v+`"`)
+		}
+		m.pipeline = routerPipeline(strings.TrimSuffix(routerRaw, "}") + `,"key_routes":{` + strings.Join(pairs, ",") + `}}`)
+	}
+	m.pane = paneSessions
+	m.sessions = sessions
+	m.rebuildSessionsTable()
+	onSessionRow(t, m, id)
+	m.handleKey(keyRune('S'))
+	if m.serverPicker == nil {
+		t.Fatalf("no picker; notice %q", m.serverNotice)
+	}
+	return m
+}
+
+// pickerTo moves the open picker's cursor to the entry named server.
+func pickerTo(t *testing.T, m *model, server string) {
+	t.Helper()
+	p := m.serverPicker
+	for i, e := range p.entries {
+		if e.name == server {
+			p.cursor = i
+			return
+		}
+	}
+	t.Fatalf("the picker has no entry %q", server)
+}
+
+// landFlash runs the write cmd started and returns the flash as it stood
+// before the refetch that follows.
+func landFlash(t *testing.T, m *model, cmd tea.Cmd) string {
+	t.Helper()
+	if cmd == nil {
+		t.Fatalf("↵ started no write; flash %q", m.flash)
+	}
+	_, refetch := m.Update(cmd())
+	flash := m.flash
+	if refetch != nil {
+		m.Update(refetch())
+	}
+	return flash
+}
+
+func keySession(id, agent, keyOf string) session.SessionSummary {
+	return session.SessionSummary{ID: id, Agent: agent, InferenceHost: "glm.example.com:8443", InferenceServer: "glm",
+		InferenceKeyOf: coremodel.LenientString(keyOf)}
+}
+
+func TestServerPicker_AKeyOwnerOpensASecondStep(t *testing.T) {
+	m := keyServerModel(t, newFakeProxy(t, false), "", []session.SessionSummary{keySession("s1", "opencode", "glm")}, "s1")
+	pickerTo(t, m, "ete")
+	if cmd := m.handleKey(keyEnter); cmd != nil || m.serverPicker == nil || !m.serverPicker.scope {
+		t.Fatalf("↵ on ete did not open the second step: picker %+v", m.serverPicker)
+	}
+	view := m.View()
+	for _, want := range []string{"Move to: ete", "This session only", "This session and new sessions that send glm's key"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("the second step has no %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestServerPicker_RowOneWritesOnlyTheSession(t *testing.T) {
+	f := newFakeProxy(t, false)
+	m := keyServerModel(t, f, "", []session.SessionSummary{keySession("s1", "opencode", "glm")}, "s1")
+	pickerTo(t, m, "ete")
+	m.handleKey(keyEnter)
+	landFlash(t, m, m.handleKey(keyEnter))
+	if cfg := f.config(t); !strings.Contains(cfg, "s1: ete") || strings.Contains(cfg, "key_routes") {
+		t.Errorf("config:\n%s", cfg)
+	}
+}
+
+func TestServerPicker_RowTwoWritesTheSessionAndTheKey(t *testing.T) {
+	f := newFakeProxy(t, false)
+	if err := os.WriteFile(f.path, []byte(routerYAML+"          sessions:\n            other: glm\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := keyServerModel(t, f, "", []session.SessionSummary{keySession("s1", "opencode", "glm")}, "s1")
+	pickerTo(t, m, "ete")
+	m.handleKey(keyEnter)
+	m.handleKey(keyDown)
+	flash := landFlash(t, m, m.handleKey(keyEnter))
+	cfg := f.config(t)
+	if !strings.Contains(cfg, "s1: ete") || !strings.Contains(cfg, "other: glm") {
+		t.Errorf("sessions: entries wrong:\n%s", cfg)
+	}
+	if _, after, ok := strings.Cut(cfg, "key_routes:"); !ok || !strings.Contains(after, "glm: ete") {
+		t.Errorf("no key_routes glm: ete:\n%s", cfg)
+	}
+	if !strings.Contains(flash, "New sessions that send glm's key → ete.") {
+		t.Errorf("flash %q", flash)
+	}
+}
+
+func TestServerPicker_RowTwoToTheKeyOwnerRemovesTheEntry(t *testing.T) {
+	f := newFakeProxy(t, false)
+	s := keySession("s1", "opencode", "glm")
+	s.InferenceServer, s.InferenceHost = "ete", "ete.example.com"
+	m := keyServerModel(t, f, "glm: ete", []session.SessionSummary{s}, "s1")
+	pickerTo(t, m, "glm")
+	m.handleKey(keyEnter)
+	m.handleKey(keyDown)
+	flash := landFlash(t, m, m.handleKey(keyEnter))
+	if cfg := f.config(t); strings.Contains(cfg, "glm: ete") || strings.Contains(cfg, "glm: glm") || !strings.Contains(cfg, "s1: glm") {
+		t.Errorf("config:\n%s", cfg)
+	}
+	if !strings.Contains(flash, "New sessions that send glm's key go to glm.") {
+		t.Errorf("flash %q", flash)
+	}
+}
+
+func TestServerPicker_TheStayCountCountsOtherKeySessions(t *testing.T) {
+	archived := false
+	gone := keySession("s3", "opencode", "glm")
+	gone.Resident = &archived
+	sessions := []session.SessionSummary{keySession("s1", "opencode", "glm"), keySession("s2", "opencode", "glm"), gone}
+	m := keyServerModel(t, newFakeProxy(t, false), "", sessions, "s1")
+	pickerTo(t, m, "ete")
+	m.handleKey(keyEnter)
+	if view := m.View(); !strings.Contains(view, "(1 other running session stays on glm)") {
+		t.Errorf("no stay count:\n%s", view)
+	}
+
+	m = keyServerModel(t, newFakeProxy(t, false), "", sessions[:1], "s1")
+	pickerTo(t, m, "ete")
+	m.handleKey(keyEnter)
+	if view := m.View(); strings.Contains(view, "stay") {
+		t.Errorf("a count of none is drawn:\n%s", view)
+	}
+}
+
+func TestServerPicker_AnAgentEntrySaysRowTwoIsIgnored(t *testing.T) {
+	m := keyServerModel(t, newFakeProxy(t, false), "", []session.SessionSummary{keySession("s1", "claude-code", "glm")}, "s1")
+	pickerTo(t, m, "ete")
+	m.handleKey(keyEnter)
+	if view := m.View(); !strings.Contains(view, "(claude-code ignores this: the Agents pane sends it to ete)") {
+		t.Errorf("no ignore note:\n%s", view)
+	}
+}
+
+func TestServerPicker_NoKeyOwnerIsOneStep(t *testing.T) {
+	m := keyServerModel(t, newFakeProxy(t, false), "", []session.SessionSummary{keySession("s1", "opencode", "")}, "s1")
+	pickerTo(t, m, "ete")
+	if cmd := m.handleKey(keyEnter); cmd == nil || m.serverPicker != nil {
+		t.Errorf("↵ did not write at once: picker %+v", m.serverPicker)
+	}
+}
+
+func TestServerPicker_AnUnknownKeyOwnerIsOneStep(t *testing.T) {
+	m := keyServerModel(t, newFakeProxy(t, false), "", []session.SessionSummary{keySession("s1", "opencode", "gone")}, "s1")
+	pickerTo(t, m, "ete")
+	if cmd := m.handleKey(keyEnter); cmd == nil || m.serverPicker != nil {
+		t.Errorf("↵ did not write at once: picker %+v", m.serverPicker)
+	}
+}
+
+func TestServerPicker_EscOnTheSecondStepGoesBack(t *testing.T) {
+	for _, back := range []tea.KeyMsg{keyEsc, keyRune('q')} {
+		f := newFakeProxy(t, false)
+		m := keyServerModel(t, f, "", []session.SessionSummary{keySession("s1", "opencode", "glm")}, "s1")
+		pickerTo(t, m, "ete")
+		m.handleKey(keyEnter)
+		if cmd := m.handleKey(back); cmd != nil {
+			t.Errorf("%v started a write", back)
+		}
+		p := m.serverPicker
+		if p == nil || p.scope || p.entries[p.cursor].name != "ete" {
+			t.Fatalf("%v: picker %+v, want the server list on ete", back, p)
+		}
+		if f.config(t) != routerYAML {
+			t.Errorf("%v changed the config:\n%s", back, f.config(t))
+		}
+	}
+	m := keyServerModel(t, newFakeProxy(t, false), "", []session.SessionSummary{keySession("s1", "opencode", "glm")}, "s1")
+	pickerTo(t, m, "ete")
+	m.handleKey(keyEnter)
+	if cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd != nil || m.serverPicker != nil {
+		t.Errorf("ctrl+c did not close the picker: %+v", m.serverPicker)
+	}
+}
+
+func TestServerPicker_OwnChoiceRowIsOneStep(t *testing.T) {
+	m := keyServerModel(t, newFakeProxy(t, false), "", []session.SessionSummary{keySession("s1", "opencode", "glm")}, "s1")
+	if !strings.Contains(m.View(), "its own choice (not routed)") {
+		t.Errorf("row 0 of the sessions picker:\n%s", m.View())
+	}
+	m.serverPicker.cursor = 0
+	if cmd := m.handleKey(keyEnter); cmd == nil || m.serverPicker != nil {
+		t.Errorf("↵ on row 0 did not write at once: picker %+v", m.serverPicker)
 	}
 }
