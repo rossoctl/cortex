@@ -311,7 +311,7 @@
     },
     {
       "id": 5,
-      "type": "barchart",
+      "type": "timeseries",
       "title": "Net saved per day",
       "description": "One bar per day, for 30 days whatever the dashboard range. A bar below zero is a day the proxy cost more than it saved.",
       "datasource": {
@@ -342,20 +342,37 @@
           "custom": {
             "stacking": {
               "mode": "none"
-            }
+            },
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "gradientMode": "scheme"
           },
           "color": {
-            "mode": "fixed",
-            "fixedColor": "#73BF69"
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#F2495C",
+                "value": null
+              },
+              {
+                "color": "#73BF69",
+                "value": 0
+              }
+            ]
           }
         },
         "overrides": []
       },
       "options": {
         "legend": {
-          "displayMode": "hidden"
-        },
-        "xTickLabelRotation": 0
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": false
+        }
       },
       "timeFrom": "30d"
     },

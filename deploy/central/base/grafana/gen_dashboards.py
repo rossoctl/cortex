@@ -175,9 +175,18 @@ def fleet():
                   desc="What the proxy's own work cost: its model calls and the cache writes it caused."))
     P.append(stat(4, "Spend", spend(), 19, 0, w=5, h=5, unit=USD, decimals=2,
                   desc="What the providers billed over the selected range: actual (a configured or confirmed rate) plus estimated (a bundled/fallback rate, when no pricing.endpoints entry matches the gateway). Each proxy prices with its own rate table."))
-    P.append(series(5, "Net saved per day", [(net(fn="inc").replace("$__range", "1d"), "net")], 0, 5, 24, 7, unit=USD,
-                    kind="barchart", time_from="30d", interval="1d",
-                    desc="One bar per day, for 30 days whatever the dashboard range. A bar below zero is a day the proxy cost more than it saved."))
+    # A timeseries in bar mode, not a barchart: Grafana's barchart draws nothing for a single row,
+    # which is what a fleet younger than two days returns.
+    p5 = series(5, "Net saved per day", [(net(fn="inc").replace("$__range", "1d"), "net")], 0, 5, 24, 7, unit=USD,
+                bars=True, time_from="30d", interval="1d",
+                desc="One bar per day, for 30 days whatever the dashboard range. A bar below zero is a day the proxy cost more than it saved.")
+    # A bar below zero is a loss: red. Above zero: green. Colors by value, as bargauge does.
+    p5["fieldConfig"]["defaults"]["color"] = {"mode": "thresholds"}
+    p5["fieldConfig"]["defaults"]["thresholds"] = {"mode": "absolute", "steps": [
+        {"color": RED, "value": None}, {"color": GREEN, "value": 0}]}
+    p5["fieldConfig"]["defaults"]["custom"]["gradientMode"] = "scheme"
+    p5["options"]["legend"]["showLegend"] = False
+    P.append(p5)
     P.append(series(6, "Saved vs added (USD per hour)", [
         (f'{rate("llm_savings_saved_usd_total")} * 3600', "saved"),
         (f'{rate("llm_savings_added_usd_total")} * 3600', "added")], 0, 12, 12, 8, unit=USD,
