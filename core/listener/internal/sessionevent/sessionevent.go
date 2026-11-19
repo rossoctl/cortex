@@ -77,6 +77,7 @@ func Deny(pctx *pipeline.Context, action pipeline.Action, dir pipeline.Direction
 		SubagentKind:   pctx.SubagentKind(),
 		Proc:           pctx.AttributedProc(),
 		Project:        pctx.Project(),
+		NoRecord:       pctx.WithholdsSession(),
 		ParentSession:  pctx.ParentSession(),
 		ParentProject:  pctx.ParentProject(),
 		TLS:            TLS(pctx),
@@ -99,6 +100,13 @@ func Deny(pctx *pipeline.Context, action pipeline.Action, dir pipeline.Direction
 //
 // dir is a parameter for the reason Deny gives. The caller still decides
 // whether to record and in which session bucket.
+//
+// NoRecord (#1923), here and on the Deny and Response rows, needs no check of that bucket
+// against the named session, unlike a tunnel row: WithholdsSession requires a naming header,
+// attribution resolves a request's valid session-id header before anything else
+// (Attributor.resolveLocked), and the bucket a listener files these rows under is that answer
+// (recordingSessionID, attributeForRecording). A trusted session pins attribution empty, so
+// its rows carry no flag.
 func Request(pctx *pipeline.Context, dir pipeline.Direction) pipeline.SessionEvent {
 	return pipeline.SessionEvent{
 		At:              time.Now(),
@@ -123,6 +131,7 @@ func Request(pctx *pipeline.Context, dir pipeline.Direction) pipeline.SessionEve
 		SubagentKind:    pctx.SubagentKind(),
 		Proc:            pctx.AttributedProc(),
 		Project:         pctx.Project(),
+		NoRecord:        pctx.WithholdsSession(),
 		ParentSession:   pctx.ParentSession(),
 		ParentProject:   pctx.ParentProject(),
 		ClientProc:      pctx.AttributedClientProc(),
@@ -166,6 +175,7 @@ func Response(pctx *pipeline.Context, dir pipeline.Direction, status int, fail *
 		SubagentKind:   pctx.SubagentKind(),
 		Proc:           pctx.AttributedProc(),
 		Project:        pctx.Project(),
+		NoRecord:       pctx.WithholdsSession(),
 		ParentSession:  pctx.ParentSession(),
 		ParentProject:  pctx.ParentProject(),
 		TLS:            TLS(pctx),
@@ -183,6 +193,11 @@ func DenyResponse(pctx *pipeline.Context, action pipeline.Action, dir pipeline.D
 // TunnelOpen builds a tunnel's open row. reason says why the bytes stayed
 // opaque. The caller knows it, so it is a parameter and not derived here from
 // the host shape.
+//
+// No NoRecord on either tunnel row (#1923): a bridged tunnel's open row can be
+// filed later under the session its first decrypted request names, which need
+// not be the one the CONNECT named. The rows carry no content, and a withheld
+// session's archive withholds them anyway.
 func TunnelOpen(pctx *pipeline.Context, reason pipeline.TunnelReason) pipeline.SessionEvent {
 	return pipeline.SessionEvent{
 		At:          time.Now(),

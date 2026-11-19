@@ -228,6 +228,11 @@ type SessionSummary struct {
 	// Source is "imported:<agent>" while every event of the session is imported, and ""
 	// otherwise. Only the archive's fold sets it: store entries are live.
 	Source string `json:"source,omitempty"`
+	// NoRecord is true when the session asked not to be recorded (#1923): the archive keeps none
+	// of its events from then on, and what it held before stays. A session with nothing before
+	// is only a marker that it opted out. A live session shows it from its first flagged request,
+	// and after a restart from the archive's mark.
+	NoRecord bool `json:"noRecord,omitempty"`
 	// LinkedTo, on a pending bucket, is the sessions its process named that OwnerAt gives a
 	// call of the bucket, each with the span of its naming requests (Link says how close that
 	// is); LinkedAll says every request in the bucket falls before one of them. Set by Link when
@@ -288,6 +293,7 @@ func (s *Store) ListSessions() []SessionSummary {
 			Title:    sess.Title,
 			Agent:    pickAgent(id, sess.owner, nil, sess.agents),
 			Projects: slices.Clone(sess.projects),
+			NoRecord: sess.noRecord,
 			// The first non-empty parent, read like Projects.
 			ParentSession: model.LenientString(sess.parentSession),
 			// Still a walk, and deliberately left as one: it is a pointer deref per event

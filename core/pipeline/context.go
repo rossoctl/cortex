@@ -171,11 +171,22 @@ type Context struct {
 	// bobChild is true when subagent came from Bob's X-Task-Id, not Claude Code's header.
 	bobChild bool
 
+	// noRecord and noRecordParsed memoize NoRecord's answer, on the same terms as client
+	// and clientParsed: filled by ResolveClient before any plugin runs.
+	noRecord       bool
+	noRecordParsed bool
+	// recordHeaderSeen is true when the client sent model.RecordHeader with any value, so a
+	// listener that forwards by explicit mutation (ext_proc) knows to remove it.
+	recordHeaderSeen bool
+
 	// attributedProc, namingHeader and attributed hold SetAttribution's pin.
 	attributedProc string
 	clientProc     string
 	namingHeader   string
 	attributed     bool
+	// namedSession and namedSet hold SetNamedSession's pin.
+	namedSession string
+	namedSet     bool
 
 	// project and projectSet hold SetProject's pin.
 	project    string
@@ -557,10 +568,14 @@ func (c *Context) ClientInfo() *EventClient {
 // X-Claude-Code-Agent-Id a plugin rewrote must not re-file a row under another subagent,
 // and recorders reading the memo must not be the ones filling it.
 //
+// It pins NoRecord too, which also removes model.RecordHeader from Headers, so no plugin
+// sees it and the forwarded request does not carry it.
+//
 // Idempotent: the second call is the memo's own no-op.
 func (c *Context) ResolveClient() {
 	_ = c.ClientInfo()
 	_ = c.Subagent()
+	_ = c.NoRecord()
 }
 
 // SetSessionFacts is for listeners: pass what session.Store.ViewFacts returned. A zero

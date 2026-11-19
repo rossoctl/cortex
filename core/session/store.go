@@ -85,6 +85,11 @@ type entry struct {
 	// count rather than a set because a trim has to know when the LAST event in a unit leaves.
 	units map[string]int
 
+	// noRecord is true once an event of this entry asked not to be recorded
+	// (SessionEvent.NoRecord, #1923). Sticky, and read by ListSessions as
+	// SessionSummary.NoRecord. The archive keeps its own sticky mark, which survives a restart.
+	noRecord bool
+
 	// money is each event's decoded contribution, PARALLEL TO Events: same length, same
 	// order, same trim.
 	//
@@ -315,6 +320,38 @@ func (s *Store) backgroundCleanup() {
 	}
 }
 
+// MarkNoRecord withholds sessionID from the archive from now on (#1923), for a request whose rows
+// the listener does not build itself: in praxis mode the gateway records a hopped request, and
+// its rows come back through /v1/ingest without the flag, the header having been stripped before
+// the hop. It tells every Withholder (the archive), whose mark is the opt-out's only state, and
+// marks the live entry's summary when there is one. Call it before the request is hopped: the
+// archive's op then precedes every row that comes back.
+//
+// The caller must have checked pipeline.Context.WithholdsSession: the request named sessionID
+// with its own session-id header. Never for a fallback bucket.
+func (s *Store) MarkNoRecord(sessionID string) {
+	if !IsConversation(sessionID) { // see appendLocked
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess := s.sessions[sessionID]; sess != nil {
+		sess.noRecord = true
+	}
+	for _, r := range s.recorders {
+		if w, ok := r.(Withholder); ok {
+			w.Withhold(sessionID)
+		}
+	}
+}
+
+// Withholder is optionally implemented by a Recorder that keeps a session's events (the
+// session archive): Withhold tells it, from now on, to keep none of sessionID's (#1923). Called
+// under the store's write lock. It may wait for its own writer, never for the store.
+type Withholder interface {
+	Withhold(sessionID string)
+}
+
 // Append adds an event to the named session. Creates the session if it
 // doesn't exist. Updates activeID to this session. Evicts the oldest event if the
 // session exceeds maxEvents — which by default it cannot, maxEvents being unset.
@@ -497,6 +534,16 @@ func (s *Store) appendLocked(sessionID string, b *Bucket, event model.SessionEve
 	// without needing to know which session it was appended to — critical for
 	// outbound events that have no protocol-native session field.
 	event.SessionID = sessionID
+	// Only one conversation's own session can opt out (#1923). The default bucket and a pending
+	// bucket hold many clients' calls, and a header can name them ("default" passes the
+	// session-id rules): a flag there would withhold everyone filed to it, and a pending mark
+	// would follow an Adopt onto a session that never asked. Such an event records as usual.
+	if event.NoRecord && !IsConversation(sessionID) {
+		event.NoRecord = false
+	}
+	if event.NoRecord {
+		sess.noRecord = true
+	}
 
 	// Stamp the cursor before publishLocked below, so a subscriber streaming events
 	// live sees the same Seq a paging client would get for that event. If this were

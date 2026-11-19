@@ -26,6 +26,7 @@ import (
 	"github.com/rossoctl/cortex/core/listener/internal/sessionevent"
 	"github.com/rossoctl/cortex/core/listener/internal/sseframe"
 	"github.com/rossoctl/cortex/core/listener/skiphost"
+	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -504,7 +505,9 @@ func (s *Server) handleOutbound(stream extprocv3.ExternalProcessor_ProcessServer
 	// handleResponseBody) and the deferred RunFinish to no-op as well —
 	// all four phases are skipped consistently. See ListenerConfig.SkipHosts.
 	if s.SkipHosts.Match(pctx.Host) {
-		return passResponse(), nil
+		// No pipeline ran, so pctx.Headers is its own original and only the X-Cortex-Record
+		// removal is emitted: the header is for Cortex only, also toward a skipped host (#1923).
+		return withHeaderMutation(passResponse(), pctx, pctx.Headers), nil
 	}
 
 	if s.Sessions != nil {
@@ -555,7 +558,7 @@ func (s *Server) handleOutboundBody(stream extprocv3.ExternalProcessor_ProcessSe
 	if pat, matched := s.SkipHosts.MatchPattern(pctx.Host); matched {
 		slog.Info("ext_proc: skip_hosts match (body phase) — bypassing pipeline + session recording",
 			"host", pipeline.SanitizeLogValue(pctx.Host), "pattern", pat, "path", pipeline.SanitizeLogValue(pctx.Path))
-		return allowBodyResponse(), nil
+		return withHeaderMutation(allowBodyResponse(), pctx, pctx.Headers), nil // as in handleOutbound
 	}
 
 	if s.Sessions != nil {
@@ -968,7 +971,9 @@ func withHeaderMutation(resp *extprocv3.ProcessingResponse, pctx *pipeline.Conte
 	var set []*corev3.HeaderValueOption
 	var del []string
 	for k, vv := range pctx.Headers {
-		if skip(k) || slices.Equal(orig[k], vv) {
+		// Never forward X-Cortex-Record (#1923), also when a plugin wrote it back: it is removed
+		// below, and a set beside the remove would leave the outcome to Envoy's ordering.
+		if skip(k) || slices.Equal(orig[k], vv) || strings.EqualFold(k, model.RecordHeader) {
 			continue
 		}
 		if len(vv) == 0 {
@@ -1007,6 +1012,11 @@ func withHeaderMutation(resp *extprocv3.ProcessingResponse, pctx *pipeline.Conte
 		if _, ok := pctx.Headers[k]; !ok && !skip(k) {
 			del = append(del, strings.ToLower(k)) // plugin removed it
 		}
+	}
+	// X-Cortex-Record is for Cortex only (#1923). ResolveClient removed it from pctx.Headers
+	// before orig was cloned, so the loop above cannot see it: remove it from the wire here.
+	if pctx.RecordHeaderSeen() {
+		del = append(del, strings.ToLower(model.RecordHeader))
 	}
 	if len(set) == 0 && len(del) == 0 {
 		return resp

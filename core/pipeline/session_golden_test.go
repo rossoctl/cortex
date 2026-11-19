@@ -86,6 +86,7 @@ func goldenEvent() SessionEvent {
 		ParentSession:   "s-parent",
 		ParentProject:   "~/src/parent",
 		Source:          "imported:claude-code",
+		NoRecord:        true,
 		SessionHeader:   "x-session-id",
 		DialAddr:        "203.0.113.7:443",
 	}

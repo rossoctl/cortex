@@ -94,6 +94,10 @@ type Stats struct {
 	DroppedCaptures uint64
 	// Paused is true after ENOSPC, until the next retention pass.
 	Paused bool
+	// FailedClosed is true once more sessions asked not to be recorded, while the queue was
+	// full, than the archive keeps track of (#1923). Until a restart it records no event of a
+	// conversation.
+	FailedClosed bool
 }
 
 // Archive is the session archive: a session.Recorder that writes every event the store appends
@@ -131,7 +135,21 @@ type Archive struct {
 	// recent clear, for AwaitClear; see clear.go.
 	mu      sync.Mutex
 	lastSeq map[string]uint64
-	pending *pendingClear
+	// stopped is set by the writer once it has drained for Close: sendLocked and optOutLocked
+	// then refuse rather than queue what nothing will read. Under mu.
+	stopped bool
+	// sent is the position of the last op sendLocked queued, and marks the position of the last
+	// queued op that can move or remove an opt-out's mark (a rename, a delete, a clear). optOuts
+	// holds, per session id, the positions after which its opt-out applies, for opt-outs that
+	// found no room in the queue; see norecord.go. optOutN is len(optOuts), for the writer's fast
+	// path. All under mu.
+	sent, marks uint64
+	optOuts     map[string][]uint64
+	optOutN     atomic.Int64
+	// failClosed is set when optOuts reached its bound: from then on until a restart, no event
+	// of a conversation is recorded (#1923).
+	failClosed atomic.Bool
+	pending    *pendingClear
 	// deletes is the most recent delete per session id, for AwaitDelete; see delete.go. nil
 	// until the first.
 	deletes map[string]*pendingClear
@@ -159,7 +177,8 @@ type Archive struct {
 	idxMu sync.RWMutex
 	index map[string]*indexEntry
 
-	// Writer goroutine only.
+	// Writer goroutine only. at is the position of the last positioned op the writer took.
+	at            uint64
 	sessions      map[string]*sessionState
 	lastMeta      time.Time
 	lastPrune     time.Time
@@ -203,6 +222,8 @@ const (
 	opClear
 	opDelete
 	opFunc
+	// opNoRecord marks a session as withheld (#1923), queued with its first flagged event.
+	opNoRecord
 )
 
 // op is one unit of work for the writer goroutine. Events and renames share one FIFO, so a
@@ -213,6 +234,7 @@ type op struct {
 	ev     model.SessionEvent
 	cap    *model.RequestCapture // ev's request capture, nil for most events
 	after  uint64                // where a store entry began: on its first queued event, and on its rename
+	n      uint64                // its position, from sendLocked; 0 for an op sent without one
 	clear  *pendingClear
 	f      func()
 	done   chan struct{}
@@ -335,19 +357,37 @@ func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *mode
 	if a.closed.Load() {
 		return
 	}
+	// A flagged event of a conversation is an opt-out (#1923), never lost: when the queue has no
+	// room for it, the opt-out is kept at its place in the queue instead (optOutLocked), and the
+	// event itself, withheld anyway, goes. Nothing here waits.
+	optOut := e.NoRecord && session.IsConversation(sessionID)
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if e.Seq > a.lastSeq[sessionID] {
 		a.lastSeq[sessionID] = e.Seq
 	}
-	// Every send happens under the store's write lock, so this check and the send below cannot
-	// race another producer; the writer only ever makes room.
-	if len(a.ops) >= cap(a.ops)-reserve {
+	// Failed closed, no conversation event is recorded. An opt-out still goes on to the
+	// admission below, as Withhold's does, so its mark is written when there is room.
+	if a.failClosed.Load() && session.IsConversation(sessionID) && !optOut {
+		a.mu.Unlock()
 		a.dropped.Add(1)
 		return
 	}
+	// The reserve is for renames, deletes and clears. Every send happens under the store's
+	// write lock, so this check and the send below cannot race another producer; the writer
+	// only ever makes room.
+	if len(a.ops) >= cap(a.ops)-reserve {
+		if optOut {
+			a.optOutLocked(sessionID)
+		} else {
+			a.dropped.Add(1)
+		}
+		a.mu.Unlock()
+		return
+	}
 	o := op{kind: opEvent, id: sessionID, ev: *e}
-	if c != nil {
+	// A request that asked not to be recorded queues no bodies: the writer withholds its
+	// session anyway (withhold), so the copy would only take capture budget from others.
+	if c != nil && !e.NoRecord {
 		if n := captureSize(c); a.captureBytes.Load()+n <= a.captureBudget {
 			a.captureBytes.Add(n)
 			o.cap = c
@@ -359,15 +399,39 @@ func (a *Archive) RecordCapture(sessionID string, e *model.SessionEvent, c *mode
 	if starting && !st.queued {
 		o.after = st.after
 	}
-	select {
-	case a.ops <- o:
+	if a.sendLocked(o) {
 		if starting && !st.queued {
 			st.queued = true
 			a.started[sessionID] = st
 		}
-	default:
+		a.mu.Unlock()
+		return
+	}
+	if optOut {
+		a.optOutLocked(sessionID)
+	} else {
 		a.dropped.Add(1)
-		a.releaseCapture(o.cap)
+	}
+	a.mu.Unlock()
+	a.releaseCapture(o.cap)
+}
+
+// sendLocked queues o without blocking and gives it its position in the queue, which is how the
+// writer applies a kept opt-out at its place (optOutLocked). It reports whether o was queued: not
+// when the queue is full, and not once the writer has stopped for Close. The caller holds a.mu.
+// Every producer that holds the store's write lock sends through here, so positions follow the
+// queue's order.
+func (a *Archive) sendLocked(o op) bool {
+	if a.stopped {
+		return false
+	}
+	o.n = a.sent + 1
+	select {
+	case a.ops <- o:
+		a.sent = o.n
+		return true
+	default:
+		return false
 	}
 }
 
@@ -418,10 +482,12 @@ func (a *Archive) Rekeyed(oldID, newID string) {
 		}
 		a.lastSeq[newID] = max(a.lastSeq[newID], n)
 	}
+	ok := a.sendLocked(op{kind: opRename, id: oldID, to: newID, after: st.after})
+	if ok {
+		a.marks = a.sent // a rename moves a mark: see optOutLocked
+	}
 	a.mu.Unlock()
-	select {
-	case a.ops <- op{kind: opRename, id: oldID, to: newID, after: st.after}:
-	default:
+	if !ok {
 		a.droppedRenames.Add(1)
 		// Session ids are attribution keys the operator needs to find the
 		// history this rename left behind.
@@ -449,6 +515,7 @@ func (a *Archive) Stats() Stats {
 		DroppedRenames:  a.droppedRenames.Load(),
 		DroppedCaptures: a.droppedCaptures.Load(),
 		Paused:          a.paused.Load(),
+		FailedClosed:    a.failClosed.Load(),
 	}
 }
 
@@ -486,17 +553,31 @@ func (a *Archive) run() {
 		case o := <-a.ops:
 			a.take(o)
 		case <-t.C:
+			a.applyOptOuts(false)
 			a.tick()
 		case <-a.stop:
-			for drained := false; !drained; {
-				select {
-				case o := <-a.ops:
-					a.take(o)
-				default:
-					drained = true
-				}
-			}
+			a.drain()
+			// From here nothing more is queued or kept (sendLocked and optOutLocked check
+			// stopped under a.mu), so one more drain takes every op that was, and every kept
+			// opt-out is due (#1923). shutdown then writes their marks.
+			a.mu.Lock()
+			a.stopped = true
+			a.mu.Unlock()
+			a.drain()
+			a.applyOptOuts(true)
 			a.closeErr = a.shutdown()
+			return
+		}
+	}
+}
+
+// drain takes every op queued now, without waiting for more.
+func (a *Archive) drain() {
+	for {
+		select {
+		case o := <-a.ops:
+			a.take(o)
+		default:
 			return
 		}
 	}
@@ -505,6 +586,11 @@ func (a *Archive) run() {
 func (a *Archive) take(o op) {
 	if a.gate != nil {
 		<-a.gate
+	}
+	// A kept opt-out applies before the first op queued after it (#1923).
+	a.applyOptOuts(false)
+	if o.n > 0 {
+		a.at = o.n
 	}
 	switch o.kind {
 	case opEvent:
@@ -525,6 +611,10 @@ func (a *Archive) take(o op) {
 	case opFunc:
 		o.f()
 		close(o.done)
+	case opNoRecord:
+		// Also while paused: the mark is one small session.json, and it is what keeps the
+		// session out after a restart.
+		a.withhold(o.id, a.sessions[o.id], a.now())
 	}
 }
 
@@ -549,12 +639,18 @@ func (a *Archive) begin(id string, after uint64) {
 // write appends one event, with its request's capture c when it has one, to its session's open
 // segment, opening one if needed.
 func (a *Archive) write(id string, e *model.SessionEvent, c *model.RequestCapture) {
+	now := a.now()
+	s := a.sessions[id]
+	// Before the pause check: the marker is one small session.json, and it is the opt-out's only
+	// state, so it is written while paused too (#1923).
+	if a.withheld(id, s, e) {
+		a.withhold(id, s, now)
+		return
+	}
 	if a.paused.Load() {
 		a.dropped.Add(1)
 		return
 	}
-	now := a.now()
-	s := a.sessions[id]
 	fresh := s == nil
 	if fresh {
 		s = &sessionState{
@@ -673,22 +769,42 @@ func (a *Archive) rename(oldID, newID string, after uint64) {
 	if s == nil {
 		return
 	}
+	// A withheld session stays withheld under its new id (#1923): the store's entry moves to newID
+	// whatever happens to the files here. On the paths that move the fold, renameEntry and the
+	// move below keep its mark; where the move is refused, the new id is marked in place. All on
+	// the writer, in FIFO order with any later delete or clear of newID.
+	marked := s.meta.Summary.NoRecord()
 	newDir := filepath.Join(a.data, dirName(newID))
 	if _, taken := a.sessions[newID]; taken {
 		slog.Warn("session archive: rename target already has history; keeping it under the old id",
 			"from", oldID, "to", newID)
+		if marked {
+			a.withhold(newID, a.sessions[newID], a.now())
+		}
 		return
 	}
 	if _, err := os.Stat(newDir); err == nil {
 		slog.Warn("session archive: rename target directory exists; keeping history under the old id",
 			"from", oldID, "to", newID)
+		// newID's next event would build its state on that directory anyway (write), so mark it
+		// there now, as for a taken target: unflagged events under newID must not be recorded.
+		if marked {
+			a.withhold(newID, nil, a.now())
+		}
 		return
 	}
 	if after > 0 && a.renameEntry(s, oldID, newID, newDir, after) {
+		// The history stayed under oldID, whole or in part. If no part moved, newID has no state
+		// yet, and gets the mark as a marker.
+		if marked && a.sessions[newID] == nil {
+			a.withhold(newID, nil, a.now())
+		}
 		return
 	}
 	a.closeWriterBeforeRename(s) // a no-op except on Windows: see rename_windows.go
 	s.meta.ID = newID
+	// Dirty before the write: a failure is retried, and Close reports a withheld session's (#1923).
+	s.metaDirty = true
 	a.writeMeta(s)
 	if err := os.Rename(s.dir, newDir); err != nil {
 		slog.Warn("session archive: could not move a renamed session's directory; it will be moved at the next start",
@@ -719,10 +835,15 @@ func (a *Archive) renameEntry(s *sessionState, oldID, newID, newDir string, afte
 	}
 	startAfter, before := s.startAfter, s.before
 	s.startAfter, s.before = 0, nil
+	// Both folds below are rebuilt from segments, which do not hold the mark (#1923).
+	noRec := s.meta.Summary.NoRecord()
 	if entry == len(segs) {
 		if startAfter == after {
 			a.closeWriter(s)
 			s.meta.Summary, _ = foldSegments(s.dir, s.meta.Segments, oldID)
+			if noRec {
+				s.meta.Summary.MarkNoRecord()
+			}
 		} else {
 			// The fold also holds the history's events, which stay under oldID. The new id must
 			// not take the history's hosts as its own.
@@ -758,6 +879,13 @@ func (a *Archive) renameEntry(s *sessionState, oldID, newID, newDir string, afte
 		meta:      &sessionMeta{ID: newID, CreatedAt: createdAt, UpdatedAt: latestWrite(move), Summary: since, Segments: move},
 		lastWrite: s.lastWrite,
 	}
+	renewed := s.meta.UpdatedAt // a withheld session's last event, which wrote no segment
+	if noRec {
+		ns.meta.Summary.MarkNoRecord()
+		// The marker lives retainDays after the session's last event (keepMarker), not after its
+		// last segment.
+		ns.meta.UpdatedAt = later(ns.meta.UpdatedAt, renewed)
+	}
 	// session.json first: a crash before a segment moves leaves it listed where it is not, which
 	// reconcile drops, rather than a directory loadMetas cannot read.
 	if err := writeMeta(newDir, ns.meta); err != nil {
@@ -781,6 +909,12 @@ func (a *Archive) renameEntry(s *sessionState, oldID, newID, newDir string, afte
 	}
 	// A CLONE: before was published, and the old id's live fold is Added to from here on.
 	s.meta.Segments, s.meta.Summary, s.meta.UpdatedAt = keep, before.Clone(), latestWrite(keep)
+	if noRec {
+		// before predates the opt-out, so it does not hold the mark; the old id keeps it (#1923),
+		// and the renewal time with it.
+		s.meta.Summary.MarkNoRecord()
+		s.meta.UpdatedAt = later(s.meta.UpdatedAt, renewed)
+	}
 	a.writeMeta(s)
 	if ns.metaDirty {
 		a.writeMeta(ns)
@@ -900,9 +1034,14 @@ func (a *Archive) prune(now time.Time) {
 	}
 	var gone []*sessionState
 	for _, s := range a.sessions {
-		if s.w == nil && len(s.meta.Segments) == 0 {
-			gone = append(gone, s)
+		if s.w != nil || len(s.meta.Segments) > 0 {
+			continue
 		}
+		if keepMarker(s, now, a.retainDays) {
+			a.markerOnly(s) // its history expired: keep the mark, not the history's fold
+			continue
+		}
+		gone = append(gone, s)
 	}
 	a.forget(gone)
 	for _, s := range gone {
@@ -976,6 +1115,11 @@ func (a *Archive) shutdown() error {
 	for _, s := range a.sessions {
 		if s.metaDirty {
 			a.writeMeta(s)
+			// A withheld session's marker is its opt-out: report one that could not be written,
+			// rather than restart without it (#1923). No session id: it comes from a client header.
+			if s.metaDirty && s.meta.Summary.NoRecord() {
+				errs = append(errs, errors.New("a withheld session's marker could not be written"))
+			}
 		}
 	}
 	return errors.Join(errs...)
