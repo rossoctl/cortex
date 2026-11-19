@@ -1197,3 +1197,105 @@ func TestRouter_UnderObserveAnOwnOverrideMovesNoPin(t *testing.T) {
 		t.Errorf("pin = %q, want glm: observe must not move it", pin)
 	}
 }
+
+const gwHost = "gw.example.com"
+
+// sharedConfig is ete, and team-a and team-b on one gateway URL with a key each.
+func sharedConfig(agents string) string {
+	return `{
+		"servers": {
+			"ete":    {"url": "https://ete.example.com", "key": "ete-key", "main": "opus", "helper": "haiku"},
+			"team-a": {"url": "https://gw.example.com/litellm", "key": "team-a-key", "main": "opus", "helper": "haiku"},
+			"team-b": {"url": "https://gw.example.com/litellm", "key": "team-b-key", "main": "opus", "helper": "haiku"}
+		},
+		"agents": {` + agents + `}
+	}`
+}
+
+// model.RoutedServer finds the router's record by the plugin name as a literal, which must be Name.
+func TestRoutedServerNameMatchesPlugin(t *testing.T) {
+	in := &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: Name, Action: pipeline.ActionModify,
+		Reason: "routed", Phase: pipeline.InvocationPhaseRequest, Details: map[string]string{"server": "team-b"}}}}
+	if got := pipeline.RoutedServer(in); got != "team-b" {
+		t.Errorf("RoutedServer = %q, want team-b", got)
+	}
+}
+
+// Two servers on one URL: a session stays on the server it started on after its agent moves to
+// the other, and after a restart that lost the pins, because the routed record names the server.
+func TestRouter_SharedURL_PinHolds(t *testing.T) {
+	st := session.New(0, 0, 0)
+	t.Cleanup(st.Close)
+	ask := func(p *pipeline.Pipeline, pins pipeline.SharedStore, step string) {
+		t.Helper()
+		pctx := hydrate(st, request(pins, gwHost, claudeUA, "s1"))
+		pctx.Path = "/litellm/v1/messages"
+		run(t, p, pctx)
+		e := recorded(pctx)
+		e.Invocations = pctx.Extensions.Invocations
+		st.Append("s1", e)
+		if pctx.Host != gwHost || pctx.Headers.Get("Authorization") != "Bearer team-b-key" {
+			t.Errorf("%s: Host %q, Authorization %q; want team-b", step, pctx.Host, pctx.Headers.Get("Authorization"))
+		}
+		if rec := routerRecord(t, pctx); rec.Reason != "routed" || rec.Details["server"] != "team-b" {
+			t.Errorf("%s: record %s %v, want routed to team-b", step, rec.Reason, rec.Details)
+		}
+	}
+	r := New()
+	if err := r.Configure(json.RawMessage(sharedConfig(`"claude-code": "team-b"`))); err != nil {
+		t.Fatal(err)
+	}
+	p, err := pipeline.New([]pipeline.Plugin{r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins := newStore(t)
+	ask(p, pins, "first request")
+	if err := r.Configure(json.RawMessage(sharedConfig(`"claude-code": "team-a"`))); err != nil {
+		t.Fatal(err)
+	}
+	ask(p, pins, "after the agent moved to team-a")
+	ask(build(t, sharedConfig(`"claude-code": "team-a"`)), pins, "a new router on the same pins")
+	ask(build(t, sharedConfig(`"claude-code": "team-a"`)), newStore(t), "a restart that lost the pins")
+}
+
+// A shared URL's path prefix is not added two times, and a request moved off the shared host
+// loses the prefix. Two servers on one host with different paths swap one prefix for the other.
+func TestRouter_SharedURLPathPrefix(t *testing.T) {
+	const twoPaths = `{
+		"servers": {
+			"pa": {"url": "https://gw2.example.com/a", "key": "pa-key", "main": "opus", "helper": "haiku"},
+			"pb": {"url": "https://gw2.example.com/b", "key": "pb-key", "main": "opus", "helper": "haiku"}
+		},
+		"agents": {"claude-code": "pb"}
+	}`
+	for _, tc := range []struct {
+		name, config, host, path string
+		wantHost, wantPath, key  string
+		cookie                   bool // the client's provider credential stays
+	}{
+		{"routed to a server on the URL", sharedConfig(`"claude-code": "team-b"`), gwHost, "/litellm/v1/messages",
+			gwHost, "/litellm/v1/messages", "team-b-key", true},
+		{"routed off the shared host", sharedConfig(`"claude-code": "ete"`), gwHost, "/litellm/v1/messages",
+			eteHost, "/v1/messages", "ete-key", false},
+		{"one host, two paths", twoPaths, "gw2.example.com", "/a/v1/messages",
+			"gw2.example.com", "/b/v1/messages", "pb-key", true},
+		// As on a host with one server: adding a second server must not change this path.
+		{"no prefix, stays on the URL", sharedConfig(`"claude-code": "team-b"`), gwHost, "/v1/messages",
+			gwHost, "/v1/messages", "team-b-key", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pctx := request(newStore(t), tc.host, claudeUA, "s1")
+			pctx.Path = tc.path
+			pctx.Headers.Set("Cookie", "meant=for-gw")
+			run(t, build(t, tc.config), pctx)
+			assertRouted(t, pctx, tc.wantHost, tc.key)
+			if pctx.Path != tc.wantPath {
+				t.Errorf("Path = %q, want %q", pctx.Path, tc.wantPath)
+			}
+			if got := pctx.Headers.Get("Cookie") != ""; got != tc.cookie {
+				t.Errorf("Cookie kept = %v, want %v", got, tc.cookie)
+			}
+		})
+	}
+}

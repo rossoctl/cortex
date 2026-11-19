@@ -1297,14 +1297,18 @@ request that is not an aside turn (`session.TurnOf`):
 
 - `Agent` is `model.AgentName(e.Client.Label())`.
 - `Host` is `e.Host` as recorded: where the bytes went.
+- `Server` is the server name from the request's `modify/routed` record
+  (`model.RoutedServer`), and `""` when the router did not route it.
 - `Last` is the seq of the newest such request.
 - `LastUnrouted` is the seq of the newest one that `session.CapturePath`
   takes and that has no `RequestedHost`.
 
-The table holds hosts, not server names, because a hot reload can change
-the servers. A reader maps each host to a server by its own config when it
-reads: `LastServer(agent, serverAt)` gives the newest evidence for `agent`
-by the reader's `serverAt` map.
+A hot reload can change the servers, so a reader checks each name against
+its own config when it reads. `LastNamedServer(agent, exists, serverAt)`
+gives the newest evidence for `agent`: a `Server` that `exists` names the
+server, else a host with one server in the reader's `serverAt` map names it.
+Use it when servers can share a host. `LastServer(agent, serverAt)` reads
+the host only, so it cannot tell apart the servers on a shared host.
 
 `HostsKnown` false means "do not use the table". The zero `SessionFacts`
 has `HostsKnown` false. So when a listener sets facts with no table,

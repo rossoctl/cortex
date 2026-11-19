@@ -260,3 +260,54 @@ func TestRouter_ASideRequestsRowIsNoEvidence(t *testing.T) {
 		})
 	}
 }
+
+// routedRow is a request row to host that the router recorded as routed to server, or a row with
+// no routed record when server is "".
+func routedRow(host, server string) pipeline.SessionEvent {
+	e := sent(host, claudeUA)
+	e.Seq = 1
+	if server != "" {
+		e.Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: Name, Action: pipeline.ActionModify,
+			Reason: "routed", Phase: pipeline.InvocationPhaseRequest, Details: map[string]string{"server": server}}}}
+	}
+	return e
+}
+
+// On a host two servers share, a row names its server only by its routed record, and only when
+// that server is in the config. The host names the server only when one server has it. Each case
+// runs through wentToView and through the InferenceHosts table.
+func TestServerOf_SharedHost(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		agent         string
+		row           pipeline.SessionEvent
+		wantHost, key string
+	}{
+		{"routed to team-b", "team-a", routedRow(gwHost, "team-b"), gwHost, "team-b-key"},
+		// The agent is on team-b, not team-a: team-a sorts first on gwHost, so a reader that
+		// falls back to the host's first server fails these two cases.
+		{"no routed record on the shared host: the agent's server", "team-b", routedRow(gwHost, ""), gwHost, "team-b-key"},
+		{"routed to a removed server on the shared host: the agent's server", "team-b", routedRow(gwHost, "gone"), gwHost, "team-b-key"},
+		{"routed to a removed server on a one-server host: that host's server", "team-a", routedRow(eteHost, "gone"), eteHost, "ete-key"},
+	} {
+		for _, reader := range []string{"view", "table"} {
+			t.Run(tc.name+"/"+reader, func(t *testing.T) {
+				pctx := request(newStore(t), gwHost, claudeUA, "s1")
+				pctx.Path = "/litellm/v1/messages"
+				if reader == "view" {
+					withHistory(pctx, tc.row)
+				} else {
+					f := session.NewSummaryFold()
+					f.Add("s1", &tc.row)
+					table, known := f.InferenceHosts()
+					if !known {
+						t.Fatal("the fold cannot vouch for its table")
+					}
+					pctx.SetSessionFacts(pipeline.SessionFacts{InferenceHosts: table, HostsKnown: true})
+				}
+				run(t, build(t, sharedConfig(`"claude-code": "`+tc.agent+`"`)), pctx)
+				assertRouted(t, pctx, tc.wantHost, tc.key)
+			})
+		}
+	}
+}

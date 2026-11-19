@@ -65,9 +65,6 @@ func TestValidate_RefusesEachBrokenRule(t *testing.T) {
 		{"non-numeric port", `{"servers": {"e": {"url": "https://e.example:abc", "key": "k", "main": "m", "helper": "h"}}}`, "servers.e.url: not a valid URL"},
 		{"port zero", `{"servers": {"e": {"url": "https://e.example:0", "key": "k", "main": "m", "helper": "h"}}}`, "port must be a number from 1 to 65535"},
 		{"port too high", `{"servers": {"e": {"url": "https://e.example:65536", "key": "k", "main": "m", "helper": "h"}}}`, "port must be a number from 1 to 65535"},
-		{"shared host, port and case ignored", `{"servers": {
-			"a": {"url": "https://gw.example", "key": "k", "main": "m", "helper": "h"},
-			"b": {"url": "http://GW.example:4000", "key": "k", "main": "m", "helper": "h"}}}`, `"a" and "b" are both on gw.example`},
 		{"empty key", `{"servers": {"e": {"url": "https://e.example", "key": "", "main": "m", "helper": "h"}}}`, "the key is empty"},
 		{"key with a space", `{"servers": {"e": {"url": "https://e.example", "key": "sk 1", "main": "m", "helper": "h"}}}`, "printable ASCII with no spaces"},
 		{"agent naming no server", `{"servers": {"e": {"url": "https://e.example", "key": "k", "main": "m", "helper": "h"}}, "agents": {"claude-code": "glm"}}`, `"glm" is not a server listed under servers`},
@@ -323,8 +320,7 @@ func TestKey(t *testing.T) {
 	}
 }
 
-// Two model servers on one machine are two servers; one address named twice is still
-// refused.
+// Two model servers on one machine are two servers.
 func TestDecode_LocalServersAreTheirPorts(t *testing.T) {
 	if _, err := Decode(json.RawMessage(`{"servers": {
 		"ollama": {"url": "http://localhost:11434", "key": "k", "main": "m", "helper": "h"},
@@ -332,11 +328,22 @@ func TestDecode_LocalServersAreTheirPorts(t *testing.T) {
 		"llama":  {"url": "http://127.0.0.1:8080", "key": "k", "main": "m", "helper": "h"}}}`)); err != nil {
 		t.Errorf("Decode refused three local servers on their own ports: %v", err)
 	}
-	_, err := Decode(json.RawMessage(`{"servers": {
-		"a": {"url": "http://localhost:11434", "key": "k", "main": "m", "helper": "h"},
-		"b": {"url": "http://LOCALHOST:11434", "key": "k", "main": "m", "helper": "h"}}}`))
-	if err == nil || !strings.Contains(err.Error(), `"a" and "b" are both on localhost:11434`) {
-		t.Errorf("err = %v, want the two servers on localhost:11434 refused", err)
+}
+
+// Two servers can share one host, for example one server for each key on one gateway. The
+// router names a session's server from its routed record, not from the host.
+func TestDecode_SharedHost(t *testing.T) {
+	for name, raw := range map[string]string{
+		"one host, port and case ignored": `{"servers": {
+			"a": {"url": "https://gw.example", "key": "k", "main": "m", "helper": "h"},
+			"b": {"url": "http://GW.example:4000", "key": "k", "main": "m", "helper": "h"}}}`,
+		"one local URL": `{"servers": {
+			"a": {"url": "http://localhost:11434", "key": "k", "main": "m", "helper": "h"},
+			"b": {"url": "http://localhost:11434", "key": "k2", "main": "m", "helper": "h"}}}`,
+	} {
+		if _, err := Decode(json.RawMessage(raw)); err != nil {
+			t.Errorf("%s: Decode = %v, want two servers on one host accepted", name, err)
+		}
 	}
 }
 

@@ -1,5 +1,5 @@
 {
-  "v": 1,
+  "v": 2,
   "hosts": [
     {
       "agent": "claude-code",
@@ -32,6 +32,12 @@
       "agent": "bob",
       "host": "glm.example.com:8443",
       "last": 13
+    },
+    {
+      "agent": "bob",
+      "host": "glm.example.com:8443",
+      "server": "team-b",
+      "last": 14
     }
   ]
 }

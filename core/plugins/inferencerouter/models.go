@@ -164,7 +164,8 @@ func (p *Router) chooseModel(pctx *pipeline.Context, server string) {
 // request.
 func (p *Router) Resend(_ context.Context, pctx *pipeline.Context, status int, body []byte) bool {
 	ext := pctx.Extensions.Inference
-	server, routed := p.byHost[routerconfig.Key(pctx.Host)]
+	server := pipeline.RoutedServer(pctx.Extensions.Invocations) // not the host: servers can share one
+	routed := server != ""
 	model, hasModel := pctx.RequestModel()
 	step := decideResend(resendFacts{
 		status: status, refusal: body, body: pctx.Body, model: model, hasModel: hasModel,

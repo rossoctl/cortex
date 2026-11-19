@@ -181,6 +181,7 @@ type hostEvidence struct {
 	ok       bool   // the event is evidence: an outbound inference request that is no aside turn
 	agent    string // model.AgentName(e.Client.Label()), as the router's serverOf compares it
 	unrouted bool   // CapturePath takes the request and it has no RequestedHost: the session ran unrouted
+	server   string // model.RoutedServer of the request: "" when the router did not route it
 }
 
 // hostEvidenceOf is the inference-router's serverOf without its config: the half of the rule
@@ -191,7 +192,8 @@ func hostEvidenceOf(e *model.SessionEvent) hostEvidence {
 		return hostEvidence{}
 	}
 	_, captured := CapturePath(e.HTTPMethod, e.HTTPPath)
-	return hostEvidence{ok: true, agent: model.AgentName(e.Client.Label()), unrouted: captured && e.RequestedHost == ""}
+	return hostEvidence{ok: true, agent: model.AgentName(e.Client.Label()), unrouted: captured && e.RequestedHost == "",
+		server: model.RoutedServer(e.Invocations)}
 }
 
 // applyHost folds the evidence of the event with this host and seq into h, and returns h. It
@@ -202,7 +204,7 @@ func applyHost(h model.InferenceHosts, ev hostEvidence, host string, seq uint64)
 		return h
 	}
 	for i := range h {
-		if h[i].Agent == ev.agent && h[i].Host == host {
+		if h[i].Agent == ev.agent && h[i].Host == host && h[i].Server == ev.server {
 			h[i].Last = max(h[i].Last, seq)
 			if ev.unrouted {
 				h[i].LastUnrouted = max(h[i].LastUnrouted, seq)
@@ -210,7 +212,7 @@ func applyHost(h model.InferenceHosts, ev hostEvidence, host string, seq uint64)
 			return h
 		}
 	}
-	s := model.InferenceHostSeen{Agent: ev.agent, Host: host, Last: seq}
+	s := model.InferenceHostSeen{Agent: ev.agent, Host: host, Server: ev.server, Last: seq}
 	if ev.unrouted {
 		s.LastUnrouted = seq
 	}
@@ -222,7 +224,7 @@ func applyHost(h model.InferenceHosts, ev hostEvidence, host string, seq uint64)
 // table only, so the merge keeps each seq in one entry, as LastServer requires.
 func mergeHost(h model.InferenceHosts, x model.InferenceHostSeen) model.InferenceHosts {
 	for i := range h {
-		if h[i].Agent == x.Agent && h[i].Host == x.Host {
+		if h[i].Agent == x.Agent && h[i].Host == x.Host && h[i].Server == x.Server {
 			h[i].Last, h[i].LastUnrouted = max(h[i].Last, x.Last), max(h[i].LastUnrouted, x.LastUnrouted)
 			return h
 		}
@@ -233,7 +235,7 @@ func mergeHost(h model.InferenceHosts, x model.InferenceHostSeen) model.Inferenc
 // hostRuleVersion is the version of the InferenceHosts rule (hostEvidenceOf and applyHost) in a
 // persisted table. A table of another version decodes as unknown. Bump it when the rule changes:
 // TestHostRule_Golden fails until you do.
-const hostRuleVersion = 1
+const hostRuleVersion = 2
 
 // SummaryFold is ListSessions' per-session figures folded one event at a time and never shed:
 // the session archive's running summary for a session the store may no longer hold.
@@ -269,7 +271,9 @@ type SummaryFold struct {
 	context         model.PromptContextFold
 	restoredContext *model.PromptContext
 	// inferenceHost is SessionSummary.InferenceHost: the latest inference request's host.
-	inferenceHost string
+	// inferenceServer is SessionSummary.InferenceServer, and moves with inferenceHost.
+	inferenceHost   string
+	inferenceServer string
 	// procs, owner and lastRequestAt are the entry's fields of the same names, by the same
 	// rules (applyProcs, applyOwner).
 	procs         map[string]ProcSpan
@@ -332,7 +336,7 @@ func (f *SummaryFold) Add(sessionID string, e *model.SessionEvent) {
 	f.projects = applyProject(f.projects, sessionID, e.Project)
 	f.context.Add(e)
 	if h := inferenceHostOf(e); h != "" {
-		f.inferenceHost = h
+		f.inferenceHost, f.inferenceServer = h, model.RoutedServer(e.Invocations)
 	}
 	f.procs = applyProcs(f.procs, sessionID, e)
 	f.owner = applyOwner(f.owner, sessionID, p.agentName, e)
@@ -357,21 +361,22 @@ func (f *SummaryFold) promptContext() *model.PromptContext {
 // the timestamps and the live-only fields (Active, Adopted) are the caller's.
 func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 	sum := SessionSummary{
-		ID:            sessionID,
-		EventCount:    f.events,
-		Title:         f.title,
-		TotalTokens:   f.tokens,
-		CostMicros:    f.cost.Micros,
-		AvoidedMicros: f.avoided.Micros,
-		Currencies:    currenciesOf(f.units),
-		Saturated:     f.cost.Saturated || f.avoided.Saturated,
-		PromptContext: f.promptContext(),
-		InferenceHost: f.inferenceHost,
-		Procs:         procsList(f.procs),
-		procSpans:     maps.Clone(f.procs),
-		LastRequestAt: f.lastRequestAt,
-		Agent:         pickAgent(sessionID, f.owner, nil, f.agents),
-		Projects:      slices.Clone(f.projects),
+		ID:              sessionID,
+		EventCount:      f.events,
+		Title:           f.title,
+		TotalTokens:     f.tokens,
+		CostMicros:      f.cost.Micros,
+		AvoidedMicros:   f.avoided.Micros,
+		Currencies:      currenciesOf(f.units),
+		Saturated:       f.cost.Saturated || f.avoided.Saturated,
+		PromptContext:   f.promptContext(),
+		InferenceHost:   f.inferenceHost,
+		InferenceServer: model.LenientString(f.inferenceServer),
+		Procs:           procsList(f.procs),
+		procSpans:       maps.Clone(f.procs),
+		LastRequestAt:   f.lastRequestAt,
+		Agent:           pickAgent(sessionID, f.owner, nil, f.agents),
+		Projects:        slices.Clone(f.projects),
 	}
 	if !f.live {
 		sum.Source = f.imported
@@ -402,6 +407,8 @@ type foldJSON struct {
 	// THERE "" MEANS UNKNOWN, NOT "NO INFERENCE TRAFFIC": that history may hold plenty, folded by
 	// a Cortex that did not record where it went. The session's next inference request sets it.
 	InferenceHost string `json:"inferenceHost,omitempty"`
+	// InferenceServer moves with InferenceHost. A session.json written before it existed decodes to "".
+	InferenceServer model.LenientString `json:"inferenceServer,omitempty"`
 	// Procs, Owner and LastRequestAt are absent from a session.json written before they
 	// existed: that history names no process, links nothing, and its agent is picked by label.
 	Procs         map[string]ProcSpan `json:"procs,omitempty"`
@@ -461,6 +468,7 @@ func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 		Units:            f.units,
 		PromptContext:    f.promptContext(),
 		InferenceHost:    f.inferenceHost,
+		InferenceServer:  model.LenientString(f.inferenceServer),
 		Procs:            f.procs,
 		Owner:            f.owner,
 		LastRequestAt:    f.lastRequestAt,
@@ -493,6 +501,7 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		title:           j.Title,
 		restoredContext: j.PromptContext,
 		inferenceHost:   j.InferenceHost,
+		inferenceServer: string(j.InferenceServer),
 		procs:           j.Procs,
 		owner:           model.CanonicalAgent(j.Owner),
 		lastRequestAt:   j.LastRequestAt,

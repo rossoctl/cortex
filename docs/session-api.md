@@ -75,6 +75,10 @@ knowing by name:
   the inference-router keeps its pins in the plugin store
   (`~/.cortex/plugin-state.json`), which a restart keeps, so both of agentop's
   counts include such a resumed session.
+- **`inferenceServer`** — the name of the inference-router server that the
+  request which set `inferenceHost` was routed to, from that request's
+  `modify/routed` invocation. Empty when that request was not routed. It moves
+  with `inferenceHost`, and `inferenceHostFromHistory` covers it too.
 - **`procs`** — the processes, `<pid>.<start>`, whose own session header named
   this session. Recorded from each request's `proc` and `sessionHeader`, and
   continued from the archive's fold like the other figures.
