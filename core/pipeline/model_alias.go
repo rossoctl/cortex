@@ -190,6 +190,7 @@ func SnapshotInvocations(ext *Invocations, phase InvocationPhase) *Invocations {
 	return model.SnapshotInvocations(ext, phase)
 }
 func RoutedServer(in *Invocations) string { return model.RoutedServer(in) }
+func RoutedKeyOf(in *Invocations) string  { return model.RoutedKeyOf(in) }
 func SnapshotPlugins(custom map[string]any) map[string]json.RawMessage {
 	return model.SnapshotPlugins(custom)
 }

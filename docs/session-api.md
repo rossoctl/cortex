@@ -79,6 +79,10 @@ knowing by name:
   request which set `inferenceHost` was routed to, from that request's
   `modify/routed` invocation. Empty when that request was not routed. It moves
   with `inferenceHost`, and `inferenceHostFromHistory` covers it too.
+- **`inferenceKeyOf`** — the name of the server whose key the request that set
+  `inferenceHost` sent, from the router's `key_of` detail. Empty when that key
+  matched no server. It moves with `inferenceHost`, and
+  `inferenceHostFromHistory` covers it too. It never holds a key.
 - **`procs`** — the processes, `<pid>.<start>`, whose own session header named
   this session. Recorded from each request's `proc` and `sessionHeader`, and
   continued from the archive's fold like the other figures.

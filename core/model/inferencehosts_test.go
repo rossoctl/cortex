@@ -31,6 +31,36 @@ func TestRoutedServer(t *testing.T) {
 	}
 }
 
+func keyOfInv(plugin string, action InvocationAction, reason string, phase InvocationPhase, details map[string]string) Invocation {
+	return Invocation{Plugin: plugin, Action: action, Reason: reason, Phase: phase, Details: details}
+}
+
+// key_of is on every router request-phase record, so any reason counts. The last one that has
+// a key_of wins.
+func TestRoutedKeyOf(t *testing.T) {
+	const r = "inference-router"
+	req := InvocationPhaseRequest
+	for name, tc := range map[string]struct {
+		in   *Invocations
+		want string
+	}{
+		"nil":        {nil, ""},
+		"not_routed": {&Invocations{Outbound: []Invocation{keyOfInv(r, ActionSkip, "not_routed", req, map[string]string{"key_of": "team-b"})}}, "team-b"},
+		"routed": {&Invocations{Outbound: []Invocation{keyOfInv(r, ActionModify, "routed", req,
+			map[string]string{"server": "team-a", "key_of": "team-b"})}}, "team-b"},
+		"another plugin": {&Invocations{Outbound: []Invocation{keyOfInv("other", ActionSkip, "not_routed", req, map[string]string{"key_of": "team-b"})}}, ""},
+		"response phase": {&Invocations{Outbound: []Invocation{keyOfInv(r, ActionSkip, "not_routed", InvocationPhaseResponse, map[string]string{"key_of": "team-b"})}}, ""},
+		"inbound":        {&Invocations{Inbound: []Invocation{keyOfInv(r, ActionSkip, "not_routed", req, map[string]string{"key_of": "team-b"})}}, ""},
+		"last has none": {&Invocations{Outbound: []Invocation{
+			keyOfInv(r, ActionSkip, "not_routed", req, map[string]string{"key_of": "team-b"}),
+			keyOfInv(r, ActionModify, "routed", req, map[string]string{"server": "team-a"})}}, "team-b"},
+	} {
+		if got := RoutedKeyOf(tc.in); got != tc.want {
+			t.Errorf("%s: RoutedKeyOf = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
 func TestLastNamedServer(t *testing.T) {
 	both := func(s string) bool { return s == "team-a" || s == "team-b" }
 	onlyA := func(s string) bool { return s == "team-a" }

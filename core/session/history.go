@@ -217,6 +217,7 @@ func (s *Store) withPriorLocked(sum *SessionSummary, id string, sess *entry) {
 	// none the row says so, since a request the entry holds is what a router's pin is made by.
 	if sum.InferenceHost == "" && f.inferenceHost != "" {
 		sum.InferenceHost, sum.InferenceServer, sum.InferenceHostFromHistory = f.inferenceHost, model.LenientString(f.inferenceServer), true
+		sum.InferenceKeyOf = model.LenientString(f.inferenceKeyOf)
 	}
 	// The processes that named the session before this entry still named it, so a resumed
 	// session links calls a process made before the restart.
