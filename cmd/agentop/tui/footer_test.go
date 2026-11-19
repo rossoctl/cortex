@@ -130,3 +130,37 @@ func TestFooterShowsSearchOnEveryPane(t *testing.T) {
 		}
 	}
 }
+
+// Each [w] hint names the window it is on now, so the key reads the same on every pane.
+func TestFooter_WShowsTheCurrentWindow(t *testing.T) {
+	u := &model{pane: paneUsage}
+	if got := u.helpView(); !strings.Contains(got, "[w] 10m") {
+		t.Errorf("usage footer at the first window: %q, want [w] 10m", got)
+	}
+	u.usage.cycleWindow()
+	if got := u.helpView(); !strings.Contains(got, "[w] 1h") {
+		t.Errorf("usage footer after w: %q, want [w] 1h", got)
+	}
+
+	resetSettingsForTest(t)
+	tl := timelineModel(t, 120, 40) // a 30-minute session
+	tl.timeline.windowIdx = 1       // 1h: longer than the session, so "all" is drawn
+	if got := tl.helpView(); !strings.Contains(got, "[w] all") {
+		t.Errorf("timeline footer: %q, want [w] all", got)
+	}
+
+	a := &model{pane: paneAgents}
+	label := a.agentsWindowLabel()
+	if label == "" {
+		t.Fatal("agentsWindowLabel is empty before the first rows reply")
+	}
+	if got := a.helpView(); !strings.Contains(got, "[w] "+label) {
+		t.Errorf("agents footer: %q, want [w] %s", got, label)
+	}
+
+	for _, m := range []*model{u, tl, a} {
+		if strings.Contains(m.helpView(), "[w] window") {
+			t.Errorf("pane %v still says [w] window", m.pane)
+		}
+	}
+}

@@ -1304,7 +1304,7 @@ func (m *model) helpView() string {
 		if lay, ok := m.timelineLayoutNow(); ok && m.timelineScrollMax(lay) > 0 {
 			scroll = "[↑↓] rows  "
 		}
-		return "[w] window  [←→] moment  " + scroll + "[enter] events  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
+		return "[w] " + timelineWindows[m.timeline.window(m.clock())].label + "  [←→] moment  " + scroll + "[enter] events  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case paneUsage:
 		// [o] is omitted under latency rather than shown as a no-op: a footer that
 		// advertises an inert key is worse than a shorter footer.
@@ -1320,7 +1320,8 @@ func (m *model) helpView() string {
 		}
 		// No [r]: the pane polls every 20s on its own, so a manual refresh key
 		// bought nothing but a line of footer.
-		return "[m] metric  [w] window" + breakdownHint +
+		usageWindow, _ := m.usage.window()
+		return "[m] metric  [w] " + formatWindowLabel(usageWindow) + breakdownHint +
 			"  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case paneAgents:
 		// [↵] LABELLED BY WHAT IT WILL SHOW: the highlighted agent, or every agent on the All
@@ -1366,7 +1367,7 @@ func (m *model) helpView() string {
 		// key gets discovered. The drawer here breaks down the row under the cursor.
 		spendHint := "  [$] spend"
 		// [w] the pane's window, which the title names; see cycleAgentsWindow.
-		return navHint + enterHint + escHint + serverHint + "  [w] window" + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
+		return navHint + enterHint + escHint + serverHint + "  [w] " + m.agentsWindowLabel() + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	}
 	return "[?] keys  [q] quit"
 }

@@ -674,7 +674,7 @@ agentop is for, and the others are surfaces you visit and leave.
 
     updated 7s ago (every 20s)
 
-  [m] metric  [w] window  [b] breakdown  [s] this session  [esc] back  [?] keys  [q] quit
+  [m] metric  [w] 10m  [o] breakdown  [/] search  [esc] back  [?] keys  [q] quit
   ```
 
   Under `latency` the bars give way to mean-with-whiskers and the breakdown
