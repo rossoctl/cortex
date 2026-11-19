@@ -135,7 +135,7 @@
       "id": 2,
       "type": "table",
       "title": "By preset",
-      "description": "Saving rate is net saved divided by spend plus net saved (the exact baseline counter is not built). Net per 1,000 requests compares a busy machine with a quiet one.",
+      "description": "Saving rate is net saved divided by spend (actual plus estimated) plus net saved (the exact baseline counter is not built). Net per 1,000 requests compares a busy machine with a quiet one.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -168,7 +168,7 @@
           "format": "table"
         },
         {
-          "expr": "(((sum by (preset)(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) or (sum by (preset)(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) * 0) - ((sum by (preset)(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) or (sum by (preset)(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) * 0)) / clamp_min(sum by (preset)(increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) + (((sum by (preset)(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) or (sum by (preset)(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) * 0) - ((sum by (preset)(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) or (sum by (preset)(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) * 0)), 1e-9)",
+          "expr": "(((sum by (preset)(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) or (sum by (preset)(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) * 0) - ((sum by (preset)(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) or (sum by (preset)(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) * 0)) / clamp_min((sum by (preset)(increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) + sum by (preset)(increase(llm_inference_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) + (((sum by (preset)(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) or (sum by (preset)(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) * 0) - ((sum by (preset)(increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) or (sum by (preset)(increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) * 0)), 1e-9)",
           "refId": "C",
           "datasource": {
             "type": "prometheus",

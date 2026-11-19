@@ -43,6 +43,19 @@ def rate(metric, by="", extra=""):
     return f'sum{g}(rate({metric}{{{FILTER}{extra}}}[$__rate_interval]))'
 
 
+def spend(by=""):
+    """Total priced spend: llm_inference_cost_usd_total (a confirmed rate) plus
+    llm_inference_estimated_cost_usd_total (a bundled/fallback rate) — the two never double-count
+    one request's cost (core/accounting/metrics.go's priceUsageSplit prices each tier as either
+    actual or estimated, never both). A fleet with no configured pricing.endpoints entry for its
+    gateway prices everything from the bundled table, so "Spend" and "Saving rate" would otherwise
+    read zero/no-data rather than the real total. Use this, not inc("llm_inference_cost_usd_total",
+    ...) alone, for any panel meant to show total spend. inference.json's "Spend priced from a
+    fallback rate" panel is the one place that wants the two kept apart, to show the fallback
+    fraction."""
+    return f'({inc("llm_inference_cost_usd_total", by)} + {inc("llm_inference_estimated_cost_usd_total", by)})'
+
+
 def net(by="", fn="inc"):
     """saved - added, per label value. PromQL drops a label value that is on one side only, and a
     component that only ever ADDS cost (a compaction call, say) is exactly the one this must show.
@@ -146,15 +159,15 @@ def fleet():
     # Money first (spec 6.0, rule 1). The tiles cover the selected time range (default: 7 days).
     P.append(stat(1, "NET SAVED", net(), 0, 0, w=7, h=5, unit=USD, decimals=2, c=GREEN, big=True,
                   desc="Saved minus added over the selected range. This is the number that says whether the proxy pays. Cache effects are a breakdown and are not added."))
-    P.append(stat(13, "Saving rate", f'{net()} / clamp_min({inc("llm_inference_cost_usd_total")} + {net()}, 1e-9)', 7, 0, w=4, h=5,
+    P.append(stat(13, "Saving rate", f'{net()} / clamp_min({spend()} + {net()}, 1e-9)', 7, 0, w=4, h=5,
                   unit="percentunit", decimals=1, c=GREEN, big=True,
-                  desc="Net saved as a share of what the traffic would have cost without the proxy. The baseline is spend plus net saved, which is what you would have paid. The exact baseline counter (llm_savings_baseline_usd_total) is not built yet."))
+                  desc="Net saved as a share of what the traffic would have cost without the proxy. The baseline is spend (actual plus estimated) plus net saved, which is what you would have paid. The exact baseline counter (llm_savings_baseline_usd_total) is not built yet."))
     P.append(stat(2, "Gross saved", inc("llm_savings_saved_usd_total"), 11, 0, w=4, h=5, unit=USD, decimals=2,
                   desc="Cost the proxy removed, before what it cost to do so."))
     P.append(stat(3, "Added cost", inc("llm_savings_added_usd_total"), 15, 0, w=4, h=5, unit=USD, decimals=2, c=ORANGE,
                   desc="What the proxy's own work cost: its model calls and the cache writes it caused."))
-    P.append(stat(4, "Spend", inc("llm_inference_cost_usd_total"), 19, 0, w=5, h=5, unit=USD, decimals=2,
-                  desc="What the providers billed over the selected range. Each proxy prices with its own rate table."))
+    P.append(stat(4, "Spend", spend(), 19, 0, w=5, h=5, unit=USD, decimals=2,
+                  desc="What the providers billed over the selected range: actual (a configured or confirmed rate) plus estimated (a bundled/fallback rate, when no pricing.endpoints entry matches the gateway). Each proxy prices with its own rate table."))
     P.append(series(5, "Net saved per day", [(net(fn="inc").replace("$__range", "1d"), "net")], 0, 5, 24, 7, unit=USD,
                     kind="barchart", time_from="30d", interval="1d",
                     desc="One bar per day, for 30 days whatever the dashboard range. A bar below zero is a day the proxy cost more than it saved."))
@@ -267,13 +280,13 @@ def machines():
                     0, 0, 10, 12, unit=USD, kind="bargauge", instant=True, desc="Every machine, best first."))
     P.append(table(2, "By preset", [
         f'count by (preset) (count by (preset, machine) (llm_proxy_info{{{f}}}))',
-        net("preset"), f'{net("preset")} / clamp_min({inc("llm_inference_cost_usd_total", "preset")} + {net("preset")}, 1e-9)', per1k("preset"),
+        net("preset"), f'{net("preset")} / clamp_min({spend("preset")} + {net("preset")}, 1e-9)', per1k("preset"),
         f'{inc("llm_savings_estimated_total", "preset")} / clamp_min({inc("llm_savings_requests_total", "preset")}, 1)'],
         10, 0, 14, 12, "preset", [
             {"id": "organize", "options": {"excludeByName": {"Time": True}, "renameByName": {
                 "Value #A": "machines", "Value #B": "net saved", "Value #C": "saving rate", "Value #D": "net per 1,000 requests",
                 "Value #E": "estimated"}}}],
-        desc="Saving rate is net saved divided by spend plus net saved (the exact baseline counter is not built). Net per 1,000 requests compares a busy machine with a quiet one.",
+        desc="Saving rate is net saved divided by spend (actual plus estimated) plus net saved (the exact baseline counter is not built). Net per 1,000 requests compares a busy machine with a quiet one.",
         unit_by_col={"net saved": USD, "saving rate": "percentunit", "net per 1,000 requests": USD, "estimated": "percentunit"}))
     P.append(series(3, "Net saved by proxy (USD, selected range)", [(net("proxy"), "{{proxy}}")], 0, 12, 10, 9,
                     unit=USD, kind="bargauge", vertical=True, instant=True,
