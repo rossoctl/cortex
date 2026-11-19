@@ -43,10 +43,11 @@ install that runs the cpex build of cortex to the default build, and says so.
   --auto      what the updater runs: install the newest release only when it is a plain release and update.wait (24h) old; never asks
 
 Downloads nothing when agentop and cortex in ~/.local/bin are already at the
-release asked for, or when agentop is not a release build (make dev-install,
---ref=main) and there is no --ref. Run agentop doctor to check the rest of the install.
+release asked for, or when there is no --ref and agentop is not a release build
+(make dev-install, --ref=main) or agentop or cortex is a release candidate newer
+than the newest release. Run agentop doctor to check the rest of the install.
 
-Exit status: 0 already current or not a release build, 1 when a download or check fails, else setup's
+Exit status: 0 already current, not a release build or a newer release candidate, 1 when a download or check fails, else setup's
 (or the installer's for --ref=main).
 `
 
@@ -140,14 +141,25 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stdout, "Already at %s.\n", v)
 		return 0
 	}
+	// An RC moves only forward, as in the automatic update: only --ref takes it back.
+	for _, b := range []string{"agentop", proxyBinary} {
+		if v := installedVersion(filepath.Join(env.binDir, b)); updatestatus.IsRC(v) && updatestatus.IsRelease(latest) && !updatestatus.Newer(latest, v) {
+			status(updatestatus.ResultCurrent, nil)
+			_, _ = fmt.Fprintf(stdout, rcAheadNotice+"\n", b, v, latest)
+			return 0
+		}
+	}
 	if err := cpexConfigBlocks(env); err != nil {
 		status(updatestatus.ResultFailed, err)
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	if err := installReleaseFn(env, *ref, updateFlags(env, *ref, yes), stdout, stderr); err != nil {
-		status(updatestatus.ResultFailed, err)
 		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == exitDeclined {
+			return exitDeclined // not a failure, so the status stays as it was
+		}
+		status(updatestatus.ResultFailed, err)
 		if errors.As(err, &exit) {
 			return exit.ExitCode()
 		}
@@ -161,6 +173,11 @@ func runUpdate(args []string, stdout, stderr io.Writer) int {
 // notReleaseNotice is what update prints, and does, for an installed build that is
 // not a release. The argument is its version.
 const notReleaseNotice = "agentop %s is not a release build, and can be newer than the newest release. Not updated.\n" +
+	"Run agentop update --ref=vX.Y.Z to install a release."
+
+// rcAheadNotice is what update prints for an installed RC that is newer than the
+// newest release. The arguments are the binary, its RC and that release.
+const rcAheadNotice = "%s %s is a release candidate, newer than the newest release %s. Not updated.\n" +
 	"Run agentop update --ref=vX.Y.Z to install a release."
 
 // installReleaseFn is what callers use, so tests can replace the installer.
