@@ -78,6 +78,8 @@ func Deny(pctx *pipeline.Context, action pipeline.Action, dir pipeline.Direction
 		Proc:           pctx.AttributedProc(),
 		Project:        pctx.Project(),
 		NoRecord:       pctx.WithholdsSession(),
+		ParentSession:  pctx.ParentSession(),
+		ParentProject:  pctx.ParentProject(),
 		TLS:            TLS(pctx),
 	}
 }
@@ -98,6 +100,13 @@ func Deny(pctx *pipeline.Context, action pipeline.Action, dir pipeline.Direction
 //
 // dir is a parameter for the reason Deny gives. The caller still decides
 // whether to record and in which session bucket.
+//
+// NoRecord (#1923), here and on the Deny and Response rows, needs no check of that bucket
+// against the named session, unlike a tunnel row: WithholdsSession requires a naming header,
+// attribution resolves a request's valid session-id header before anything else
+// (Attributor.resolveLocked), and the bucket a listener files these rows under is that answer
+// (recordingSessionID, attributeForRecording). A trusted session pins attribution empty, so
+// its rows carry no flag.
 func Request(pctx *pipeline.Context, dir pipeline.Direction) pipeline.SessionEvent {
 	return pipeline.SessionEvent{
 		At:              time.Now(),
@@ -123,6 +132,8 @@ func Request(pctx *pipeline.Context, dir pipeline.Direction) pipeline.SessionEve
 		Proc:            pctx.AttributedProc(),
 		Project:         pctx.Project(),
 		NoRecord:        pctx.WithholdsSession(),
+		ParentSession:   pctx.ParentSession(),
+		ParentProject:   pctx.ParentProject(),
 		ClientProc:      pctx.AttributedClientProc(),
 		SessionHeader:   pctx.NamingHeader(),
 		TLS:             TLS(pctx),
@@ -165,6 +176,8 @@ func Response(pctx *pipeline.Context, dir pipeline.Direction, status int, fail *
 		Proc:           pctx.AttributedProc(),
 		Project:        pctx.Project(),
 		NoRecord:       pctx.WithholdsSession(),
+		ParentSession:  pctx.ParentSession(),
+		ParentProject:  pctx.ParentProject(),
 		TLS:            TLS(pctx),
 	}
 }
@@ -216,6 +229,8 @@ func TunnelOpen(pctx *pipeline.Context, reason pipeline.TunnelReason) pipeline.S
 		SubagentKind:   pctx.SubagentKind(),
 		Proc:           pctx.AttributedProc(),
 		Project:        pctx.Project(),
+		ParentSession:  pctx.ParentSession(),
+		ParentProject:  pctx.ParentProject(),
 	}
 }
 
@@ -251,6 +266,8 @@ func TunnelClose(pctx *pipeline.Context, reason pipeline.TunnelReason, status in
 		SubagentKind:   pctx.SubagentKind(),
 		Proc:           pctx.AttributedProc(),
 		Project:        pctx.Project(),
+		ParentSession:  pctx.ParentSession(),
+		ParentProject:  pctx.ParentProject(),
 	}
 }
 

@@ -178,7 +178,7 @@ type stepPlan struct {
 	where   string   //
 	done    bool     // nothing to change: a dim "·" line, or "!" when advice is set
 	doneMsg string   //
-	advice  *problem // a non-fatal note shown in place of the "·" line
+	advice  *problem // a non-fatal note shown in place of the "·" line; on a plan with changes, doctor shows it in place of the ✗
 	hidden  bool     // nothing to change and nothing worth a line; set done too, as allDone and consentItems read only done
 }
 

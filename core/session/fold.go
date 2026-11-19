@@ -133,6 +133,16 @@ func applyProject(projects []string, sessionID, label string) []string {
 	return projects
 }
 
+// applyParent is SessionSummary.ParentSession after one more event: the first non-empty parent.
+// The default and pending buckets keep none, for applyProject's reason. Shared by appendLocked,
+// the rekey and SummaryFold.
+func applyParent(cur, sessionID, parent string) string {
+	if cur != "" || parent == "" || sessionID == DefaultSessionID || strings.HasPrefix(sessionID, PendingPrefix) {
+		return cur
+	}
+	return parent
+}
+
 // agentLabelIn is the first label the agent named name sent, or "".
 func agentLabelIn(agents []sessionAgent, name string) string {
 	for _, a := range agents {
@@ -263,6 +273,8 @@ type SummaryFold struct {
 	agents    []sessionAgent
 	// projects is SessionSummary.Projects, by the store's rule (applyProject).
 	projects []string
+	// parentSession is SessionSummary.ParentSession (applyParent).
+	parentSession string
 	// context is the CTX figure folded so far, by the store's own rule (entry.context), and
 	// restoredContext the figure a fold resumed from session.json started from. TWO FIELDS BECAUSE
 	// model.PromptContextFold HAS NO RESTORE PATH: what persists is its published figure, and
@@ -271,9 +283,11 @@ type SummaryFold struct {
 	context         model.PromptContextFold
 	restoredContext *model.PromptContext
 	// inferenceHost is SessionSummary.InferenceHost: the latest inference request's host.
-	// inferenceServer is SessionSummary.InferenceServer, and moves with inferenceHost.
+	// inferenceServer is SessionSummary.InferenceServer and inferenceKeyOf is
+	// SessionSummary.InferenceKeyOf. Both move with inferenceHost.
 	inferenceHost   string
 	inferenceServer string
+	inferenceKeyOf  string
 	// procs, owner and lastRequestAt are the entry's fields of the same names, by the same
 	// rules (applyProcs, applyOwner).
 	procs         map[string]ProcSpan
@@ -343,10 +357,12 @@ func (f *SummaryFold) Add(sessionID string, e *model.SessionEvent) {
 	}
 	f.titleRank, f.title = applyTitle(f.titleRank, f.title, p.titleRank, p.titleText)
 	f.agents = applyAgent(f.agents, sessionID, p.agentName, e.Client)
-	f.projects = applyProject(f.projects, sessionID, e.Project)
+	f.projects = applyProject(f.projects, sessionID, e.RollupProject())
+	f.parentSession = applyParent(f.parentSession, sessionID, e.ParentSession)
 	f.context.Add(e)
 	if h := inferenceHostOf(e); h != "" {
 		f.inferenceHost, f.inferenceServer = h, model.RoutedServer(e.Invocations)
+		f.inferenceKeyOf = model.RoutedKeyOf(e.Invocations)
 	}
 	f.procs = applyProcs(f.procs, sessionID, e)
 	f.owner = applyOwner(f.owner, sessionID, p.agentName, e)
@@ -385,12 +401,14 @@ func (f *SummaryFold) Summary(sessionID string) SessionSummary {
 		PromptContext:   f.promptContext(),
 		InferenceHost:   f.inferenceHost,
 		InferenceServer: model.LenientString(f.inferenceServer),
+		InferenceKeyOf:  model.LenientString(f.inferenceKeyOf),
 		Procs:           procsList(f.procs),
 		procSpans:       maps.Clone(f.procs),
 		LastRequestAt:   f.lastRequestAt,
 		Agent:           pickAgent(sessionID, f.owner, nil, f.agents),
 		Projects:        slices.Clone(f.projects),
 		NoRecord:        f.noRecord,
+		ParentSession:   model.LenientString(f.parentSession),
 	}
 	if !f.live {
 		sum.Source = f.imported
@@ -409,7 +427,9 @@ type foldJSON struct {
 	TitleRank  *int        `json:"titleRank,omitempty"`
 	Agents     []foldAgent `json:"agents,omitempty"`
 	// Projects is absent from a session.json written before it existed, which decodes to none.
-	Projects         []string             `json:"projects,omitempty"`
+	Projects []string `json:"projects,omitempty"`
+	// ParentSession is SummaryFold.parentSession. A session.json written before it existed decodes to "".
+	ParentSession    model.LenientString  `json:"parentSession,omitempty"`
 	TotalTokens      int                  `json:"totalTokens,omitempty"`
 	CostMicros       int64                `json:"costMicros,omitempty"`
 	CostSaturated    bool                 `json:"costSaturated,omitempty"`
@@ -423,6 +443,8 @@ type foldJSON struct {
 	InferenceHost string `json:"inferenceHost,omitempty"`
 	// InferenceServer moves with InferenceHost. A session.json written before it existed decodes to "".
 	InferenceServer model.LenientString `json:"inferenceServer,omitempty"`
+	// InferenceKeyOf moves with InferenceHost. A session.json written before it existed decodes to "".
+	InferenceKeyOf model.LenientString `json:"inferenceKeyOf,omitempty"`
 	// Procs, Owner and LastRequestAt are absent from a session.json written before they
 	// existed: that history names no process, links nothing, and its agent is picked by label.
 	Procs         map[string]ProcSpan `json:"procs,omitempty"`
@@ -486,10 +508,12 @@ func (f *SummaryFold) MarshalJSON() ([]byte, error) {
 		PromptContext:    f.promptContext(),
 		InferenceHost:    f.inferenceHost,
 		InferenceServer:  model.LenientString(f.inferenceServer),
+		InferenceKeyOf:   model.LenientString(f.inferenceKeyOf),
 		Procs:            f.procs,
 		Owner:            f.owner,
 		LastRequestAt:    f.lastRequestAt,
 		Projects:         f.projects,
+		ParentSession:    model.LenientString(f.parentSession),
 		Imported:         f.imported,
 		Live:             f.live,
 		NoRecord:         f.noRecord,
@@ -520,10 +544,12 @@ func (f *SummaryFold) UnmarshalJSON(b []byte) error {
 		restoredContext: j.PromptContext,
 		inferenceHost:   j.InferenceHost,
 		inferenceServer: string(j.InferenceServer),
+		inferenceKeyOf:  string(j.InferenceKeyOf),
 		procs:           j.Procs,
 		owner:           model.CanonicalAgent(j.Owner),
 		lastRequestAt:   j.LastRequestAt,
 		projects:        j.Projects,
+		parentSession:   string(j.ParentSession),
 		imported:        j.Imported,
 		// A fold with events and no imported one holds only live events, also in a
 		// session.json written before Live existed.

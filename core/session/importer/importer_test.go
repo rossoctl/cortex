@@ -477,6 +477,27 @@ func TestRun_LedgerSkipsTurnsRecordedLive(t *testing.T) {
 	}
 }
 
+// A headless run's live rows are filed under its parent's project, and its transcript names its
+// own project. The import still finds the live rows and skips those turns (#1991).
+func TestRun_LedgerSkipsTurnsOfAHeadlessRunRecordedLive(t *testing.T) {
+	a := openArchive(t)
+	w := openLedger(t)
+	s := fakeSession("c1", start, 1)
+	for i := range s.Events {
+		s.Events[i].Project = "/child"
+	}
+	liveTurn := s.Events[1]
+	liveTurn.ParentSession, liveTurn.ParentProject = "s1", "/parent"
+	w.Record("c1", &liveTurn)
+	Run(context.Background(), &fakeSource{sessions: []Session{s}},
+		Options{Archive: a, Ledger: w, Rates: testRates(t)})
+	for _, r := range ledgerRows(t, w) {
+		if r.Source == "transcript" {
+			t.Fatalf("ledger has an imported row %+v, want none: the turn is live under /parent", r)
+		}
+	}
+}
+
 // A session past the archive's retention is not written: the next prune would delete it, and the
 // next run would write it again.
 func TestRun_SkipsSessionPastRetention(t *testing.T) {

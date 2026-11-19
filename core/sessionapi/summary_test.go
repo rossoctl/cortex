@@ -98,6 +98,8 @@ func fullEvent() pipeline.SessionEvent {
 		ClientProc:    "101.5",
 		SessionHeader: "X-Claude-Code-Session-Id",
 		Project:       "~/src/app",
+		ParentSession: "s-parent",
+		ParentProject: "~/src/parent",
 		Source:        "imported:claude-code",
 		NoRecord:      true,
 	}
@@ -233,6 +235,10 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 		t.Errorf("project = %q, want %q", got.Project, full.Project)
 	}
 	// source is kept: a short scalar that marks an imported row in the timeline.
+	if got.ParentSession != full.ParentSession || got.ParentProject != full.ParentProject {
+		t.Errorf("parent = %q %q, want %q %q", got.ParentSession, got.ParentProject,
+			full.ParentSession, full.ParentProject)
+	}
 	if got.Source != full.Source {
 		t.Errorf("source = %q, want %q", got.Source, full.Source)
 	}
@@ -450,9 +456,11 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// so the struct copy keeps it; asserted above.
 		// 36 since Source, TIMELINE data: agentop marks an imported row by it (#1871). A
 		// scalar, so the struct copy keeps it; asserted above.
-		// 37 since NoRecord, TIMELINE data: it marks a row of a withheld session (#1923). A
+		// 38 since ParentSession and ParentProject, TIMELINE data: a reader files the row
+		// under RollupProject (#1991). Scalars, so the struct copy keeps them; asserted above.
+		// 39 since NoRecord, TIMELINE data: it marks a row of a withheld session (#1923). A
 		// scalar, so the struct copy keeps it; asserted above.
-		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 37},
+		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 39},
 		// 25 since AgentRole, which is TIMELINE data: agentop's CONTEXT gauge reads it on every
 		// row the timeline serves. It needs no assertion of its own in the projection test
 		// beyond the equality one there — a scalar survives the struct copy, unlike the two

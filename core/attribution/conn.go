@@ -45,6 +45,11 @@ type Memo struct {
 	projectOnce sync.Once
 	project     string
 
+	// parentOnce and parentProject hold the project label of the parent session's
+	// process, for ParentProject.
+	parentOnce    sync.Once
+	parentProject string
+
 	// mu guards listeners: which process listens behind each loopback destination this
 	// connection's requests went to, for SelfTraffic.
 	mu        sync.Mutex
@@ -87,6 +92,14 @@ func (a *Attributor) Chain(res peerproc.Resolver, key ConnKey, m *Memo) ([]Proc,
 func (m *Memo) Project(compute func() string) string {
 	m.projectOnce.Do(func() { m.project = compute() })
 	return m.project
+}
+
+// ParentProject is the connection's parent project label, memoised as Project is: the
+// first call on m runs compute, and every later call on m returns that value. m must not
+// be nil.
+func (m *Memo) ParentProject(compute func() string) string {
+	m.parentOnce.Do(func() { m.parentProject = compute() })
+	return m.parentProject
 }
 
 // Program names chain's client program for the TLS bridge's per-program rules: the

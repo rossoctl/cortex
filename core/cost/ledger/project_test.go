@@ -190,3 +190,27 @@ func TestSeriesCurrenciesIn_GroupProject(t *testing.T) {
 		t.Errorf("unknown = %v, want %v", got[usage.UnknownProjectLabel], want)
 	}
 }
+
+// A headless run's row carries the project of the session that started it.
+func TestWriter_GroupProjectUsesTheParentProject(t *testing.T) {
+	now := at
+	dir := t.TempDir()
+	w := newTestWriter(t, dir, func() time.Time { return now })
+	child := projectEvent(t, at, "~/child", 0.25)
+	child.ParentProject = "~/parent"
+	w.Record("c1", child)
+	w.Record("s2", projectEvent(t, at, "~/solo", 0.25))
+	now = at.Add(time.Minute)
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	var got []string
+	for _, r := range readAllRows(t, dir) {
+		got = append(got, r.Project+"|"+r.OwnProject)
+	}
+	slices.Sort(got)
+	// The importer matches a transcript turn on OwnProject, so only the headless row has one.
+	if want := []string{"~/parent|~/child", "~/solo|"}; !slices.Equal(got, want) {
+		t.Errorf("row projects = %v, want %v", got, want)
+	}
+}

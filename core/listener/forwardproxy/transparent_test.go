@@ -69,8 +69,6 @@ func TestHandleTransparentConn_Tunnels(t *testing.T) {
 	agentSide, proxySide := net.Pipe()
 	go srv.HandleTransparentConn(proxySide, upstream.Addr().String())
 
-	_ = agentSide.SetDeadline(time.Now().Add(5 * time.Second))
-
 	// The first bytes the agent sees must be the upstream's banner, NOT a
 	// "200 Connection Established" — proving no proxy protocol leaked.
 	got := make([]byte, len(banner))

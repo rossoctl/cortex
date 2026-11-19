@@ -383,6 +383,19 @@ func (s *Server) recordTunnelClosed(pctx *pipeline.Context, b *session.Bucket, r
 // full-closed, so a reply that keeps streaming extends the wait and finishes
 // without truncation.
 func tunnel(client, upstream net.Conn) (up, down int64) {
+	return tunnelTicked(client, upstream, newDrainTicker)
+}
+
+// drainTicker starts the ticker that drainTunnel counts idle time by.
+type drainTicker func(every time.Duration) (ticks <-chan time.Time, stop func())
+
+func newDrainTicker(every time.Duration) (<-chan time.Time, func()) {
+	t := time.NewTicker(every)
+	return t.C, t.Stop
+}
+
+// tunnelTicked is tunnel with the drain's ticker from newTicker.
+func tunnelTicked(client, upstream net.Conn, newTicker drainTicker) (up, down int64) {
 	var upBytes, downBytes atomic.Int64
 	upc := make(chan int64, 1)
 	downc := make(chan int64, 1)
@@ -398,9 +411,9 @@ func tunnel(client, upstream net.Conn) (up, down int64) {
 	}()
 	select {
 	case up = <-upc:
-		down = drainTunnel(&downBytes, downc, client, upstream)
+		down = drainTunnel(&downBytes, downc, client, upstream, newTicker)
 	case down = <-downc:
-		up = drainTunnel(&upBytes, upc, client, upstream)
+		up = drainTunnel(&upBytes, upc, client, upstream, newTicker)
 	}
 	_ = client.Close()
 	_ = upstream.Close()
@@ -410,16 +423,16 @@ func tunnel(client, upstream net.Conn) (up, down int64) {
 // drainTunnel waits for the second copy, extending the wait while bytes keep
 // flowing (seen via n). Idle for halfCloseDrainVar → full-close both ends to
 // unblock the copy, read its total, return.
-func drainTunnel(n *atomic.Int64, done <-chan int64, client, upstream net.Conn) int64 {
+func drainTunnel(n *atomic.Int64, done <-chan int64, client, upstream net.Conn, newTicker drainTicker) int64 {
 	last := n.Load()
-	tick := time.NewTicker(halfCloseDrainVar / 4)
-	defer tick.Stop()
+	ticks, stop := newTicker(halfCloseDrainVar / 4)
+	defer stop()
 	idle := time.Duration(0)
 	for {
 		select {
 		case total := <-done:
 			return total
-		case <-tick.C:
+		case <-ticks:
 			now := n.Load()
 			if now != last {
 				last, idle = now, 0

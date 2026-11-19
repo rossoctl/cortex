@@ -41,6 +41,14 @@ func TestDoctorUpdatesOK(t *testing.T) {
 	wantLines(t, code, 0, out, "  · updates      auto on · current at "+updatesTime(at)+"\n")
 }
 
+// A dev build never updates by itself, so doctor must not say "auto on".
+func TestDoctorUpdatesNotARelease(t *testing.T) {
+	sc := updatesScene(t, updatestatus.Status{CheckedAt: updatesNow.Add(-time.Hour), Latest: "v9.9.9", Installed: "dev",
+		Result: updatestatus.ResultNotARelease})
+	code, out := sc.doctor(t)
+	wantLines(t, code, 0, out, "  · updates      not automatic for a build that is not a release or release candidate; agentop update installs the newest release\n")
+}
+
 func TestDoctorUpdatesWaiting(t *testing.T) {
 	at, after := updatesNow.Add(-time.Hour), updatesNow.Add(time.Hour)
 	sc := updatesScene(t, updatestatus.Status{CheckedAt: at, Latest: "v9.9.10", Installed: "v9.9.9",

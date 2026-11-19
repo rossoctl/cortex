@@ -192,12 +192,15 @@ func TestStream_CountsArePublishedWhileTheResponseIsOpen(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
 	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Sessions: store, Client: http.DefaultClient}
-	proxy := httptest.NewServer(srv.Handler())
+	// served receives once the proxy's handler for the request has returned.
+	served := make(chan struct{}, 1)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv.Handler().ServeHTTP(w, r)
+		served <- struct{}{}
+	}))
 	t.Cleanup(proxy.Close)
 
-	// A timeout, so a proxy that buffers the response again fails the read below
-	// instead of blocking until the package's test timeout.
-	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}
 	resp, err := client.Get(backend.URL + "/v1/messages")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -222,30 +225,22 @@ func TestStream_CountsArePublishedWhileTheResponseIsOpen(t *testing.T) {
 	if _, err := io.Copy(io.Discard, br); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
-	waitForResponseEvent(t, store)
-	// The untrack runs as the serving goroutine returns, just after the row.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, ok := store.StreamBytes(id); !ok {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("StreamBytes(%q) still answers after the relay ended", id)
-		}
-		time.Sleep(time.Millisecond)
+	// The untrack runs as the serving goroutine returns.
+	<-served
+	if _, ok := store.StreamBytes(id); ok {
+		t.Fatalf("StreamBytes(%q) still answers after the relay ended", id)
 	}
 }
 
 // requestIDOf waits for the request row and returns its ID.
 func requestIDOf(t *testing.T, store *session.Store) string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if v := store.View(session.DefaultSessionID); v != nil && len(v.Events) > 0 && v.Events[0].RequestID != "" {
-			return v.Events[0].RequestID
+	var id string
+	eventually(t, store, func() bool {
+		if v := store.View(session.DefaultSessionID); v != nil && len(v.Events) > 0 {
+			id = v.Events[0].RequestID
 		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatal("no request event recorded")
-	return ""
+		return id != ""
+	}, "the request row")
+	return id
 }

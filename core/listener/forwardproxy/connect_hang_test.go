@@ -8,28 +8,25 @@ import (
 )
 
 // If the client half-closes but the upstream never does, tunnel still has to
-// return so the close row can settle. Pre-fix the downstream io.Copy blocked
-// forever; post-fix halfCloseDrainVar bounds the wait.
+// return so the close row can settle: halfCloseDrainVar of idle time bounds the wait.
 func TestTunnel_ReturnsWhenUpstreamNeverHalfCloses(t *testing.T) {
 	cl, clPeer := tcpPair(t)
 	up, _ := tcpPair(t) // upstream peer kept alive by tcpPair's cleanup; never writes EOF
 
-	go func() {
-		_, _ = clPeer.Write([]byte("hello"))
-		_ = clPeer.(*net.TCPConn).CloseWrite()
-	}()
-
-	start := time.Now()
+	ticks := make(chan time.Time)
 	done := make(chan struct{})
 	go func() {
-		tunnel(cl, up)
+		tunnelTicked(cl, up, testTicker(ticks))
 		close(done)
 	}()
-	select {
-	case <-done:
-	case <-time.After(halfCloseDrainVar + 2*time.Second):
-		t.Fatalf("tunnel did not return after %v", time.Since(start))
+	_, _ = clPeer.Write([]byte("hello"))
+	_ = clPeer.(*net.TCPConn).CloseWrite()
+
+	// Four idle ticks make halfCloseDrainVar.
+	for range 4 {
+		tick(ticks, done)
 	}
+	<-done
 }
 
 // A reply that keeps streaming past halfCloseDrainVar is not truncated: the
@@ -39,48 +36,52 @@ func TestTunnel_ReplyStreamingPastDrainCompletes(t *testing.T) {
 	cl, clPeer := tcpPair(t)
 	up, upPeer := tcpPair(t)
 
-	// Upstream: read to EOF, then drip-feed a reply longer than halfCloseDrainVar.
-	chunks := 6
-	gap := halfCloseDrainVar / 2 // < halfCloseDrainVar, so each gap extends the drain
-	wantTotal := chunks * 5      // "chunk" × 5 bytes
-	upDone := make(chan struct{})
-	go func() {
-		defer close(upDone)
-		_, _ = io.ReadAll(upPeer)
-		for range chunks {
-			if _, err := upPeer.Write([]byte("chunk")); err != nil {
-				return
-			}
-			time.Sleep(gap)
-		}
-		_ = upPeer.Close()
-	}()
-
-	reply := make(chan []byte, 1)
-	go func() {
-		_, _ = clPeer.Write([]byte("hello"))
-		_ = clPeer.(*net.TCPConn).CloseWrite()
-		b, _ := io.ReadAll(clPeer)
-		reply <- b
-	}()
-
+	ticks := make(chan time.Time)
 	done := make(chan struct{})
 	go func() {
-		tunnel(cl, up)
+		tunnelTicked(cl, up, testTicker(ticks))
 		close(done)
 	}()
+	_, _ = clPeer.Write([]byte("hello"))
+	_ = clPeer.(*net.TCPConn).CloseWrite()
+	_, _ = io.ReadAll(upPeer) // the client's half-close reached the upstream
 
-	deadline := time.Duration(chunks)*gap + halfCloseDrainVar + 2*time.Second
-	select {
-	case got := <-reply:
-		if len(got) != wantTotal {
-			t.Fatalf("reply = %d bytes, want %d; drain truncated a slow stream", len(got), wantTotal)
+	// One tick per chunk, so the reply spans twice halfCloseDrainVar. The relay counts
+	// a chunk before it reads the next, so at most two ticks in a row see no new bytes:
+	// half of halfCloseDrainVar.
+	chunks := 8
+	var got []byte
+	buf := make([]byte, len("chunk"))
+	for range chunks {
+		if _, err := upPeer.Write([]byte("chunk")); err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(deadline):
-		t.Fatal("tunnel never returned a complete reply")
+		if _, err := io.ReadFull(clPeer, buf); err != nil {
+			t.Fatalf("reply = %d bytes, then %v; drain truncated a slow stream", len(got), err)
+		}
+		got = append(got, buf...)
+		tick(ticks, done)
+	}
+	_ = upPeer.Close()
+	rest, _ := io.ReadAll(clPeer)
+	got = append(got, rest...)
+	if want := chunks * len("chunk"); len(got) != want {
+		t.Fatalf("reply = %d bytes, want %d", len(got), want)
 	}
 	<-done
-	<-upDone
+}
+
+// testTicker is a drainTicker whose ticks the test sends on ticks.
+func testTicker(ticks chan time.Time) drainTicker {
+	return func(time.Duration) (<-chan time.Time, func()) { return ticks, func() {} }
+}
+
+// tick hands the drain one tick, unless the tunnel has returned.
+func tick(ticks chan<- time.Time, done <-chan struct{}) {
+	select {
+	case ticks <- time.Time{}:
+	case <-done:
+	}
 }
 
 // tcpPair returns two ends of a localhost TCP connection as *net.TCPConn,

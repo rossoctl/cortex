@@ -82,7 +82,9 @@ func (s *Server) attributeForRecording(pctx *pipeline.Context, trusted string, c
 	pctx.SetAttribution(at.Proc, at.ClientProc, at.Header)
 	pctx.SetNamedSession(namedSession(at))
 	pctx.SetProject(s.projectFor(trusted, m, chain, at))
-	return at.RecordSession(trusted, s.activeSession)
+	sid := at.RecordSession(trusted, s.activeSession)
+	pctx.SetParent(s.parentFor(trusted, m, chain, at, sid))
+	return sid
 }
 
 // namedSession is the session id a session-id header named in at, "" when none did.
@@ -189,6 +191,7 @@ func (s *Server) hydrateSession(pctx *pipeline.Context, trusted string, clientHe
 	pctx.SetNamedSession(namedSession(at))
 	pctx.SetProject(s.projectFor(trusted, m, chain, at))
 	sid, source := at.PluginSession(trusted, s.activeSession)
+	pctx.SetParent(s.parentFor(trusted, m, chain, at, sid))
 	if sid != "" {
 		var facts pipeline.SessionFacts
 		pctx.Session, facts = s.sessionViewFor(sid)
@@ -228,6 +231,27 @@ func (s *Server) projectFor(trusted string, m *attribution.Memo, chain []attribu
 		}
 	}
 	return m.Project(func() string { return s.ProjectOf(pid) })
+}
+
+// parentFor is the session that started the request's agent run, and that session's
+// project: at.ChainSession, when it is not sid, and the project of the process that holds
+// it. "", "" on the trusted path, without a chain, without process attribution, and when
+// the chain session is sid itself (a tool on the parent session). The project is "" when
+// ProjectOf is off, m is nil or no chain entry holds the chain session; the session still
+// applies. The project is memoised on the connection, as projectFor's is.
+func (s *Server) parentFor(trusted string, m *attribution.Memo, chain []attribution.Proc, at attribution.Attribution, sid string) (session, project string) {
+	if trusted != "" || chain == nil || !s.processesOn() || at.ChainSession == "" || at.ChainSession == sid {
+		return "", ""
+	}
+	if s.ProjectOf == nil || m == nil {
+		return at.ChainSession, ""
+	}
+	for _, p := range chain {
+		if p.Key() == at.ChainProc {
+			return at.ChainSession, m.ParentProject(func() string { return s.ProjectOf(p.PID) })
+		}
+	}
+	return at.ChainSession, ""
 }
 
 // activeSession is the store's ActiveSession(), "" without a store.

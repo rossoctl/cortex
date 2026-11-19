@@ -187,6 +187,11 @@ type SessionSummary struct {
 	// InferenceHost, and InferenceHostFromHistory covers it too.
 	InferenceServer model.LenientString `json:"inferenceServer,omitempty"`
 
+	// InferenceKeyOf is the name of the server whose key the request that set InferenceHost
+	// sent (model.RoutedKeyOf), and "" when that key matched no server. It moves with
+	// InferenceHost, and InferenceHostFromHistory covers it too. It never holds a key.
+	InferenceKeyOf model.LenientString `json:"inferenceKeyOf,omitempty"`
+
 	// InferenceHostFromHistory is true when InferenceHost came from the session's history before
 	// this store entry — the archive's fold — because no request the entry holds has set it: a
 	// session resumed after a restart, or re-created after an eviction, that has sent no inference
@@ -210,10 +215,13 @@ type SessionSummary struct {
 	// Procs are the processes that named this session through their own session header,
 	// "<pid>.<start>", sorted. Absent when none did, and on a summary from before the field.
 	Procs []string `json:"procs,omitempty"`
-	// Projects are the distinct project labels of this session's events (model.SessionEvent.Project),
+	// Projects are the distinct project labels of this session's events (model.SessionEvent.RollupProject),
 	// most recent first, at most maxSessionProjects. Absent when none had one, and on the default
 	// and pending buckets.
 	Projects []string `json:"projects,omitempty"`
+	// ParentSession is the topmost session above this session's agent: the first
+	// non-empty model.SessionEvent.ParentSession. Absent on default and on pending buckets.
+	ParentSession model.LenientString `json:"parentSession,omitempty"`
 	// LastRequestAt is the time of the newest request this session holds, zero when it holds
 	// none. On a pending bucket it is what Link compares with a process's claims.
 	LastRequestAt time.Time `json:"lastRequestAt,omitzero"`
@@ -286,6 +294,8 @@ func (s *Store) ListSessions() []SessionSummary {
 			Agent:    pickAgent(id, sess.owner, nil, sess.agents),
 			Projects: slices.Clone(sess.projects),
 			NoRecord: sess.noRecord,
+			// The first non-empty parent, read like Projects.
+			ParentSession: model.LenientString(sess.parentSession),
 			// Still a walk, and deliberately left as one: it is a pointer deref per event
 			// with no allocation, where the money figures below needed a JSON unmarshal.
 			TotalTokens: sumTokens(sess.Events),
@@ -306,6 +316,7 @@ func (s *Store) ListSessions() []SessionSummary {
 			// Read, not computed, like Title: Append folds it.
 			InferenceHost:   sess.inferenceHost,
 			InferenceServer: model.LenientString(sess.inferenceServer),
+			InferenceKeyOf:  model.LenientString(sess.inferenceKeyOf),
 			Procs:           procsList(sess.procs),
 			procSpans:       maps.Clone(sess.procs),
 			LastRequestAt:   sess.lastRequestAt,

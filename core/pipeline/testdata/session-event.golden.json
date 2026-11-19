@@ -202,6 +202,8 @@
   "proc": "/bin/claude",
   "clientProc": "/bin/zsh",
   "project": "~/src/app",
+  "parentSession": "s-parent",
+  "parentProject": "~/src/parent",
   "sessionHeader": "x-session-id",
   "dialAddr": "203.0.113.7:443"
 }

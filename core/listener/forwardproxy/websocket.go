@@ -840,6 +840,7 @@ func (ws *wsSocket) newTurnContext(body []byte) *pipeline.Context {
 	pctx.SetAttribution(hs.AttributedProc(), hs.AttributedClientProc(), hs.NamingHeader())
 	pctx.SetNamedSession(hs.NamedSession())
 	pctx.SetProject(hs.Project())
+	pctx.SetParent(hs.ParentSession(), hs.ParentProject())
 	return pctx
 }
 

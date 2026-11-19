@@ -161,10 +161,11 @@ func (a *Attributor) sessionForProcessLocked(chain []Proc, agent string, now tim
 
 // chainSessionLocked is the live session the topmost process above chain[0] named, "" when
 // none above it holds one. chain[0]'s agent root and the processes of that agent below it
-// are chain[0]'s own and are not consulted.
-func (a *Attributor) chainSessionLocked(chain []Proc, now time.Time) string {
+// are chain[0]'s own and are not consulted. The index is the chain entry that holds the
+// session, -1 with "".
+func (a *Attributor) chainSessionLocked(chain []Proc, now time.Time) (string, int) {
 	if len(chain) < 2 {
-		return ""
+		return "", -1
 	}
 	agent := ""
 	if self := a.procs[chain[0].key()]; self != nil {
@@ -173,11 +174,11 @@ func (a *Attributor) chainSessionLocked(chain []Proc, now time.Time) string {
 	for i := len(chain) - 1; i > a.agentRootIndexLocked(chain, agent); i-- {
 		if st := a.procs[chain[i].key()]; st != nil {
 			if sid := a.newestClaimLocked(st, now); sid != "" {
-				return sid
+				return sid, i
 			}
 		}
 	}
-	return ""
+	return "", -1
 }
 
 // ProcessHints are the PIDs of processes that have named a session, most recently seen

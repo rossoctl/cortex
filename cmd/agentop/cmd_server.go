@@ -261,7 +261,7 @@ func serverList(args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 		fmt.Fprintln(stdout, "No inference servers yet. Add one:")
-		fmt.Fprintln(stdout, "  agentop server add <name> <url>")
+		fmt.Fprintln(stdout, "  agentop server add <name> <url> --main WORD --helper WORD")
 		return 0
 	}
 

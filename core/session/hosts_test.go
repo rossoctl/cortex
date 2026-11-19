@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/model"
@@ -373,6 +374,43 @@ func TestHostEvidence_RecordsRoutedServer(t *testing.T) {
 	}
 }
 
+// withKeyOf adds the router's key_of detail to the router record of e.
+func withKeyOf(e pipeline.SessionEvent, keyOf string) pipeline.SessionEvent {
+	if e.Invocations == nil {
+		e.Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: "inference-router",
+			Action: pipeline.ActionSkip, Reason: "not_routed", Phase: pipeline.InvocationPhaseRequest, Details: map[string]string{}}}}
+	}
+	e.Invocations.Outbound[0].Details["key_of"] = keyOf
+	return e
+}
+
+// InferenceKeyOf moves with InferenceHost, in the store and in the fold.
+func TestSummary_InferenceKeyOf(t *testing.T) {
+	s := New(0, 0, 0)
+	defer s.Close()
+	f := NewSummaryFold()
+	check := func(step, keyOf string) {
+		t.Helper()
+		for src, sum := range map[string]SessionSummary{"store": summaryOf(t, s, "s1"), "fold": f.Summary("s1")} {
+			if string(sum.InferenceKeyOf) != keyOf {
+				t.Errorf("%s, %s: InferenceKeyOf %q, want %q", step, src, sum.InferenceKeyOf, keyOf)
+			}
+		}
+	}
+	add := func(e pipeline.SessionEvent) { s.Append("s1", e); f.Add("s1", &e) }
+	add(withKeyOf(inferenceTo("gw", claudeUA), "team-b"))
+	check("not routed, with a key owner", "team-b")
+	tunnel := tunnelRow()
+	tunnel.Host = "elsewhere"
+	add(tunnel)
+	check("a tunnel row", "team-b")
+	add(inferenceTo("gw", claudeUA))
+	check("no key owner", "")
+	if b, _ := json.Marshal(summaryOf(t, s, "s1")); strings.Contains(string(b), "inferenceKeyOf") {
+		t.Errorf("an empty key owner is on the wire: %s", b)
+	}
+}
+
 // InferenceServer moves with InferenceHost, in the store and in the fold: a routed request sets
 // both, an unrouted one sets the server to "", and no other event changes either.
 func TestSummary_InferenceServer(t *testing.T) {
@@ -404,10 +442,20 @@ func TestSummary_InferenceServer(t *testing.T) {
 
 func TestSummaryFold_JSONRoundTripKeepsInferenceServer(t *testing.T) {
 	f := NewSummaryFold()
-	e := routedTo("gw", claudeUA, "team-b")
+	e := withKeyOf(routedTo("gw", claudeUA, "team-b"), "team-c")
 	f.Add("s1", &e)
-	if got := roundTrip(t, f).Summary("s1").InferenceServer; got != "team-b" {
-		t.Fatalf("InferenceServer after a round trip = %q, want team-b", got)
+	if got := roundTrip(t, f).Summary("s1"); got.InferenceServer != "team-b" || got.InferenceKeyOf != "team-c" {
+		t.Fatalf("after a round trip: InferenceServer %q, InferenceKeyOf %q, want team-b and team-c", got.InferenceServer, got.InferenceKeyOf)
+	}
+	// The history merge copies the key owner with the host.
+	st := New(0, 0, 0)
+	defer st.Close()
+	st.AddRecorder(&priorKeeper{last: map[string]uint64{"s1": 1}, prior: map[string]Prior{"s1": {Fold: roundTrip(t, f)}}})
+	for _, ev := range interleaved() {
+		st.Append("s1", ev)
+	}
+	if sum := summaryOf(t, st, "s1"); !sum.InferenceHostFromHistory || sum.InferenceKeyOf != "team-c" {
+		t.Fatalf("from history: FromHistory %v, InferenceKeyOf %q, want true and team-c", sum.InferenceHostFromHistory, sum.InferenceKeyOf)
 	}
 	old := NewSummaryFold()
 	if err := json.Unmarshal([]byte(`{"eventCount":3}`), old); err != nil {

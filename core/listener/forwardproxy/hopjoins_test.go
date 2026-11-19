@@ -48,20 +48,22 @@ func serveBridged(s *Server, tl *tunnelLog, path string) int {
 // gatewayRow is the request row that ingestion gets from the gateway for path.
 func gatewayRow(path string) pipeline.SessionEvent { return decryptedRequest(path) }
 
-// waitEvents polls until the store holds n events, or fails after 2 s.
+// waitEvents waits until the store holds n events, and fails when it holds more.
 func waitEvents(t *testing.T, store *session.Store, n int) []pipeline.SessionEvent {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		got := allEvents(t, store)
-		if len(got) == n || time.Now().After(deadline) {
-			if len(got) != n {
-				t.Fatalf("store holds %d events, want %d: %+v", len(got), n, got)
-			}
-			return got
-		}
-		time.Sleep(5 * time.Millisecond)
+	eventually(t, store, func() bool { return len(allEvents(t, store)) >= n }, "the store's events")
+	got := allEvents(t, store)
+	if len(got) != n {
+		t.Fatalf("store holds %d events, want %d: %+v", len(got), n, got)
 	}
+	return got
+}
+
+// pendingJoins is how many joins h holds; a held join's timer can still settle its tunnel.
+func pendingJoins(h *Hop) int {
+	h.joinMu.Lock()
+	defer h.joinMu.Unlock()
+	return len(h.joins)
 }
 
 func TestHopJoin_TunnelClosedBeforeRowGetsOnePair(t *testing.T) {
@@ -94,7 +96,7 @@ func TestHopJoin_TunnelClosedBeforeRowGetsOnePair(t *testing.T) {
 func TestHopJoin_ExpiredJoinSettlesAsToday(t *testing.T) {
 	gw := newFakeGateway(t, nil)
 	s, store := hopTunnelServer(t, gatewayAddr(gw), false)
-	s.Hop.ttl = 50 * time.Millisecond
+	s.Hop.ttl = time.Nanosecond
 	tl := deferredTunnel(s)
 	serveBridged(s, tl, "/v1/x")
 	tl.finish()
@@ -110,12 +112,14 @@ func TestHopJoin_ExpiredJoinSettlesAsToday(t *testing.T) {
 func TestHopJoin_ReleaseWritesNothing(t *testing.T) {
 	gw := newFakeGateway(t, nil)
 	s, store := hopTunnelServer(t, gatewayAddr(gw), false)
-	s.Hop.ttl = 50 * time.Millisecond
+	s.Hop.ttl = time.Hour
 	tl := deferredTunnel(s)
 	serveBridged(s, tl, "/v1/x")
 	tl.finish()
 	s.Hop.Release(gw.only(t).header.Get(headerRequestID))
-	time.Sleep(2 * s.Hop.ttl)
+	if n := pendingJoins(s.Hop); n != 0 {
+		t.Errorf("Hop holds %d join(s) after Release, want none", n)
+	}
 	if got := allEvents(t, store); len(got) != 0 {
 		t.Errorf("store holds %d rows after Release, want none: %+v", len(got), got)
 	}
@@ -168,12 +172,8 @@ func TestHopJoin_IdleCutIsTaken(t *testing.T) {
 		_ = resp.Body.Close()
 	}
 	id := gw.only(t).header.Get(headerRequestID)
-	deadline := time.Now().Add(2 * time.Second)
+	// The relay notes the cut before the client's read ends.
 	cut, status := srv.Hop.TakeCut(id)
-	for cut == nil && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-		cut, status = srv.Hop.TakeCut(id)
-	}
 	if cut == nil || cut.Kind != "proxy_error" {
 		t.Fatalf("TakeCut = %+v, want kind proxy_error", cut)
 	}
@@ -194,13 +194,15 @@ func TestHopJoin_GatewayUnavailablePairsAndReleases(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			addr := closedAddr(t)
 			s, store := hopTunnelServer(t, addr, tc.notReady)
-			s.Hop.ttl = 50 * time.Millisecond
+			s.Hop.ttl = time.Hour
 			tl := deferredTunnel(s)
 			if st := serveBridged(s, tl, "/v1/x"); st != http.StatusServiceUnavailable {
 				t.Fatalf("status = %d, want 503", st)
 			}
 			tl.finish()
-			time.Sleep(2 * s.Hop.ttl)
+			if n := pendingJoins(s.Hop); n != 0 {
+				t.Errorf("Hop holds %d join(s) after the 503, want none", n)
+			}
 			_, next := openThen(t, store, "sess-1")
 			if next.HTTPPath != "/v1/x" {
 				t.Errorf("open precedes %q, want the request row", next.HTTPPath)

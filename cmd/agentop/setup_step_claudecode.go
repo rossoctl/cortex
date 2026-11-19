@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
@@ -52,6 +54,14 @@ func (s claudeCodeStep) plan(env *setupEnv) (stepPlan, *problem) {
 		}
 		if len(pl.changes) == 0 {
 			p.done, p.doneMsg = true, "Claude Code already routed"
+			return p, nil
+		}
+		if len(pl.changes) == len(pl.retire) {
+			// Routing is current and only keys an older enable wrote go. Setup still
+			// removes them; the advice makes doctor show that as a note, not a failure.
+			keys := strings.Join(slices.Sorted(maps.Keys(pl.retire)), ", ")
+			p.verb, p.what, p.where = "remove", "retired "+keys, env.tilde(settings)
+			p.advice = &problem{reason: "Claude Code routed · " + keys + " is retired; setup removes it"}
 			return p, nil
 		}
 	}

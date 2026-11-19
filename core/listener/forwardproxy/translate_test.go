@@ -217,14 +217,8 @@ func outboundRows(store *session.Store, phase pipeline.SessionPhase) []pipeline.
 // after the client has read the reply.
 func waitRows(t *testing.T, store *session.Store, phase pipeline.SessionPhase, n int) []pipeline.SessionEvent {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		rows := outboundRows(store, phase)
-		if len(rows) >= n || time.Now().After(deadline) {
-			return rows
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	eventually(t, store, func() bool { return len(outboundRows(store, phase)) >= n }, "the outbound rows")
+	return outboundRows(store, phase)
 }
 
 func newStore(t *testing.T) *session.Store {
@@ -266,14 +260,11 @@ func TestTranslate_StreamedReplyRecordedAndIncremental(t *testing.T) {
 			}
 		}
 	}()
-	select {
-	case got := <-done:
-		if got == "" {
-			t.Fatal("the reply ended with no message_start")
-		}
-	case <-time.After(5 * time.Second):
+	// The upstream holds the rest of its reply, so message_start arrives only if it is
+	// relayed before the upstream finishes.
+	if got := <-done; got == "" {
 		close(release)
-		t.Fatal("message_start did not reach the client before the upstream finished")
+		t.Fatal("the reply ended with no message_start")
 	}
 	close(release)
 	rest, _ := io.ReadAll(br)
@@ -297,14 +288,11 @@ func TestTranslate_StreamedReplyRecordedAndIncremental(t *testing.T) {
 	}
 
 	// The response row has the Anthropic inference.
-	deadline := time.Now().Add(5 * time.Second)
 	var inf *pipeline.InferenceExtension
-	for time.Now().Before(deadline) {
-		if inf = lastInferenceResponse(t, store); inf != nil && inf.Completion != "" {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	eventually(t, store, func() bool {
+		inf = lastInferenceResponse(t, store)
+		return inf != nil && inf.Completion != ""
+	}, "the response row's inference")
 	if inf == nil || inf.Completion != "391 is not prime" {
 		t.Fatalf("response inference = %+v, want completion %q", inf, "391 is not prime")
 	}
@@ -800,14 +788,11 @@ func TestTranslate_CodexToChat(t *testing.T) {
 		t.Errorf("upstream body is not the chat request: %s", reqs[0].body)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
 	var inf *pipeline.InferenceExtension
-	for time.Now().Before(deadline) {
-		if inf = lastInferenceResponse(t, store); inf != nil && inf.OutputTokens != 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	eventually(t, store, func() bool {
+		inf = lastInferenceResponse(t, store)
+		return inf != nil && inf.OutputTokens != 0
+	}, "the response row's inference")
 	if inf == nil {
 		t.Fatal("no response inference")
 	}

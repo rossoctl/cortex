@@ -2861,6 +2861,15 @@ func (m *model) sessionHeader(id, suffix string) string {
 	if suffix != "" {
 		tail = " · " + suffix
 	}
+	// The parent is the topmost session above this one, not always the one that started it:
+	// for A → B → C, C shows A. The id comes from a client header, so it is sanitised first.
+	if p := m.parentSessionOf(id); p != "" {
+		p = sanitizeLabel(p)
+		if r := []rune(p); len(r) > 8 {
+			p = string(r[:8])
+		}
+		tail += " · under " + p
+	}
 	tail += m.scopeSuffix(m.agentScope, m.projectScope)
 	// A floor of 12, so a very narrow terminal shows a stub of the label rather than dropping
 	// it: the header is the only thing on screen naming which session these events belong to.

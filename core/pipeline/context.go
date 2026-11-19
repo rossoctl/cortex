@@ -192,6 +192,11 @@ type Context struct {
 	project    string
 	projectSet bool
 
+	// parentSession, parentProject and parentSet hold SetParent's pin.
+	parentSession string
+	parentProject string
+	parentSet     bool
+
 	Agent    *AgentIdentity
 	Identity Identity // nil before an auth plugin runs
 

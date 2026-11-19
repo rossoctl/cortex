@@ -66,7 +66,7 @@ func (m *model) routerStatus() (c routerconfig.Config, why string) {
 	}
 	// NOT CONFIGURED, OR OFF, AND THIS SIDE CANNOT TELL WHICH: the proxy does not build an
 	// on_error: off plugin, so /v1/pipeline lists neither. Both fixes, then.
-	return routerconfig.Config{}, "this Cortex runs no inference-router: add a server with agentop server add <name> <url>, " +
+	return routerconfig.Config{}, "this Cortex runs no inference-router: add a server with agentop server add <name> <url> --main WORD --helper WORD, " +
 		"or, if " + homeTilde(m.localConfigPath) + " has one under on_error: off, remove on_error to route"
 }
 
@@ -109,12 +109,13 @@ func (m *model) localCortexTarget() (path, statsURL string, ok bool) {
 	return "", "", false
 }
 
-// agentOwnChoice is the AGENTS pane's SERVER cell for an agent the router does not route.
+// agentOwnChoice is the AGENTS pane's SERVER cell for an agent the router does not route:
+// each of its sessions goes where its key sends it (key_routes:, else the key's server).
 //
 // THE WORDING IS THE DIMMING. The spec draws it dimmed, and a table cell can carry no ANSI —
 // the table truncates escapes as text (TestSessionsRows_CarryNoANSIUnderAForcedColourProfile).
 // No server can be named this, since a server name has no space, so it never reads as one.
-const agentOwnChoice = "own choice"
+const agentOwnChoice = "by key"
 
 // agentsServerWidth fits agentOwnChoice and every server name worth typing.
 const agentsServerWidth = 12
@@ -123,7 +124,7 @@ const agentsServerWidth = 12
 // new sessions go to, or agentOwnChoice. A row no server can be chosen for shows nothing: Other,
 // which pools every agent Cortex does not recognise, so there is no one agent for the router to
 // name, and any agent the router refuses to route — the no-User-Agent row, whose requests belong
-// to no one agent. "own choice" there would offer a choice S then refuses.
+// to no one agent. "by key" there would offer a choice S then refuses.
 //
 // SANITISED AT RENDER TIME, as every served label is: the proxy only runs server names its rule
 // allows, but the name arrives over an unauthenticated API, and nothing here assumes the producer

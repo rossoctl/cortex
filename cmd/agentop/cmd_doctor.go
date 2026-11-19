@@ -144,6 +144,14 @@ func doctorCheck(ui *checklist.UI, label string, p stepPlan, prob *problem, fix 
 	case p.done && p.advice != nil:
 		ui.Advise(label, p.advice.reason, p.advice.fix...)
 		return false
+	case p.advice != nil:
+		// A change setup makes that breaks nothing, such as removing a retired key.
+		fixes := p.advice.fix
+		if len(fixes) == 0 {
+			fixes = []string{fix}
+		}
+		ui.Advise(label, p.advice.reason, fixes...)
+		return false
 	case p.done:
 		ui.Done(label, p.doneMsg, 0)
 		return false

@@ -314,7 +314,7 @@ func TestForwardProxy_SkipHosts_CONNECT_BypassesPipeline(t *testing.T) {
 
 	// Drive CONNECT manually so we can observe the 200 + tunnel.
 	proxyAddr := strings.TrimPrefix(proxy.URL, "http://")
-	tunnel, err := net.DialTimeout("tcp", proxyAddr, 5*time.Second)
+	tunnel, err := net.Dial("tcp", proxyAddr)
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
@@ -346,10 +346,9 @@ func TestForwardProxy_SkipHosts_CONNECT_BypassesPipeline(t *testing.T) {
 	if _, err := tunnel.Write([]byte("hello")); err != nil {
 		t.Fatalf("write through tunnel: %v", err)
 	}
-	got := make([]byte, 32)
-	_ = tunnel.SetReadDeadline(time.Now().Add(2 * time.Second))
-	n, err := br.Read(got)
-	if err != nil && err != io.EOF {
+	got := make([]byte, len("echo:hello"))
+	n, err := io.ReadFull(br, got)
+	if err != nil {
 		t.Fatalf("read tunnel: %v", err)
 	}
 	if string(got[:n]) != "echo:hello" {

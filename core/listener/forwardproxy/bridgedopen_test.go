@@ -289,10 +289,7 @@ func (p *outlivesServeConn) OnRequest(_ context.Context, pctx *pipeline.Context)
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 	close(p.entered)
-	select {
-	case <-p.finished:
-	case <-time.After(10 * time.Second): // reported by the test's own wait, not hung on
-	}
+	<-p.finished
 	if p.deny {
 		return pipeline.Deny("test.denied", "denied without a record")
 	}
@@ -349,10 +346,10 @@ func outliveTheConnect(t *testing.T, store *session.Store, probe *outlivesServeC
 		}
 	}()
 
-	waitFor(t, probe.entered, "the decrypted request never reached the pipeline")
-	_ = tc.Close() // the client goes; ServeConn returns with the handler still running
+	<-probe.entered // the decrypted request has reached the pipeline
+	_ = tc.Close()  // the client goes; ServeConn returns with the handler still running
 	waitDone(t, done)
-	waitFor(t, probe.served, "the decrypted request never finished its pipeline pass")
+	<-probe.served // the decrypted request has finished its pipeline pass
 }
 
 // On h2 a decrypted request can record after the CONNECT has finished, so building the
@@ -381,16 +378,10 @@ func TestHandleConnect_H2HandlerOutlivingTheConnectRecordsItsOpen(t *testing.T) 
 		})
 
 		// The pipeline pass ends before the handler's release, which is what settles.
-		deadline := time.Now().Add(10 * time.Second)
-		for {
-			if _, closes := tunnelRows(store, session.DefaultSessionID); len(closes) > 0 {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("the tunnel never settled after its last handler returned")
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+		eventually(t, store, func() bool {
+			_, closes := tunnelRows(store, session.DefaultSessionID)
+			return len(closes) > 0
+		}, "the tunnel to settle after its last handler returned")
 		open, closed := onePair(t, store, session.DefaultSessionID)
 		if open.TunnelReason != "" || closed.StatusCode != http.StatusOK {
 			t.Errorf("settled tunnel = {reason %q, close status %d}, want {\"\", 200}", open.TunnelReason, closed.StatusCode)
@@ -399,13 +390,4 @@ func TestHandleConnect_H2HandlerOutlivingTheConnectRecordsItsOpen(t *testing.T) 
 			t.Errorf("sess-1 holds %d event(s); a request that recorded nothing files nothing", len(v.Events))
 		}
 	})
-}
-
-func waitFor(t *testing.T, ch <-chan struct{}, msg string) {
-	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(10 * time.Second):
-		t.Fatal(msg)
-	}
 }

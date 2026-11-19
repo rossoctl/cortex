@@ -79,13 +79,23 @@ knowing by name:
   request which set `inferenceHost` was routed to, from that request's
   `modify/routed` invocation. Empty when that request was not routed. It moves
   with `inferenceHost`, and `inferenceHostFromHistory` covers it too.
+- **`inferenceKeyOf`** — the name of the server whose key the request that set
+  `inferenceHost` sent, from the router's `key_of` detail. Empty when that key
+  matched no server. It moves with `inferenceHost`, and
+  `inferenceHostFromHistory` covers it too. It never holds a key.
 - **`procs`** — the processes, `<pid>.<start>`, whose own session header named
   this session. Recorded from each request's `proc` and `sessionHeader`, and
   continued from the archive's fold like the other figures.
-- **`projects`** — the distinct `project` labels that the session's events
-  carried, most recent first, at most 8. Folded at append time, and continued
-  from the archive's fold like the other figures. Absent on `default` and on
-  pending buckets.
+- **`projects`** — the distinct project labels that the session's events
+  carried, most recent first, at most 8. Each label is the event's
+  `parentProject` when it has one, else its `project`. Folded at append time,
+  and continued from the archive's fold like the other figures. Absent on
+  `default` and on pending buckets.
+- **`parentSession`** — the topmost session above this session's agent, for a
+  headless run (for example `claude -p`) that another session's process
+  started. When A starts B and B starts C, it is A on C, not B. It is the first
+  non-empty `parentSession` of the session's events. Absent on `default` and on pending buckets. Rows recorded before this
+  field existed have none.
 - **`source`** is `"imported:<agent>"` while every event of the session is
   imported (see [`POST /v1/import`](#post-v1import--transcript-import-laptop-only)).
   It is absent when the session has one or more live events. So a live request
@@ -428,7 +438,9 @@ A client keeps its own session out of the session archive by sending
 - **Sticky.** The archive keeps a content-free marker for the session, also
   across a restart, for `retention_days` after its last event. A resumed session
   without the header stays withheld, and sending `on` later does not resume
-  recording. An import refuses a withheld session.
+  recording. An import refuses a withheld session. An opt-out that did not fit
+  while the archive was failed closed is not remembered across a restart: the
+  session records again until it next sends the header.
 - **Only [`DELETE /v1/sessions/{id}`](#delete-v1sessionsid--erase-one-session)
   erases**, and `DELETE /v1/sessions` (which also clears the markers). After a
   delete, the session records again unless it still sends the header, and the
@@ -1307,9 +1319,19 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   transparentproxy) and when `session.process_attribution` is off.
   In praxis mode the request and response rows that cortex-gateway sends through
   `POST /v1/ingest` have no `project`: only the forward proxy's own rows have it.
-  `/v1/usage?group=project` totals cost by this label; an event with no
+  `/v1/usage?group=project` totals cost by this label (by `parentProject`
+  when it is set); an event with no
   `project` is counted under `unknown`. See
   [pricing.md](pricing.md#reading-usage-over-http).
+- `parentSession` — the session that the topmost process above this row's
+  agent named, when it is not this row's session. Set only by the forward
+  proxy, with `session.process_attribution` on. Absent on the VM control path,
+  on a tool process filed in that same session, and in praxis mode's ingested
+  rows.
+- `parentProject` — the project of the process that holds `parentSession`,
+  read once per connection. Absent with `parentSession`.
+  `/v1/usage?group=project`, the cost ledger and the summary's `projects` use
+  it in place of `project` when it is set.
 - `subagent` — present on rows from a Claude Code subagent or agent-team
   teammate: the `X-Claude-Code-Agent-Id` the request carried. For a subagent it
   is the same id that names its files under

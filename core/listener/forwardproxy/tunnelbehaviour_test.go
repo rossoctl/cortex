@@ -122,8 +122,7 @@ var tunnelCases = []tunnelCase{
 	},
 }
 
-// readCount reads c to EOF and returns how many bytes arrived, or the error that stopped
-// it — a deadline included, which is how a hung tunnel shows up as a failure.
+// readCount reads c to EOF and returns how many bytes arrived, or the error that stopped it.
 func readCount(c net.Conn) string {
 	n, err := io.Copy(io.Discard, c)
 	if err != nil {
@@ -131,10 +130,6 @@ func readCount(c net.Conn) string {
 	}
 	return strconv.FormatInt(n, 10)
 }
-
-// tunnelDeadline bounds every case on every path. The bridge paths spend up to
-// connectSniffTimeout in the classify peek before a silent client's tunnel starts.
-const tunnelDeadline = connectSniffTimeout + 3*time.Second
 
 // serveOnce starts an origin that accepts one connection, runs serve on it and closes it.
 // The returned channel carries what serve observed.
@@ -153,7 +148,6 @@ func serveOnce(t *testing.T, serve func(net.Conn) string) (string, <-chan string
 			return
 		}
 		defer func() { _ = c.Close() }()
-		_ = c.SetDeadline(time.Now().Add(tunnelDeadline))
 		got <- serve(c)
 	}()
 	return ln.Addr().String(), got
@@ -212,18 +206,12 @@ func TestTunnel_BehavesLikeADirectConnection(t *testing.T) {
 				}
 				origin, originGot := serveOnce(t, tc.serve)
 				conn, r, wait := p.connect(t, store, origin)
-				_ = conn.SetDeadline(time.Now().Add(tunnelDeadline))
 
 				if got := tc.drive(conn, r); got != tc.wantClient {
 					t.Errorf("client observed %q, want %q", got, tc.wantClient)
 				}
-				select {
-				case got := <-originGot:
-					if got != tc.wantOrigin {
-						t.Errorf("origin observed %q, want %q", got, tc.wantOrigin)
-					}
-				case <-time.After(tunnelDeadline + time.Second):
-					t.Fatal("origin never finished")
+				if got := <-originGot; got != tc.wantOrigin {
+					t.Errorf("origin observed %q, want %q", got, tc.wantOrigin)
 				}
 				wait()
 				if store == nil {

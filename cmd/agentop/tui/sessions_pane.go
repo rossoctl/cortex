@@ -295,13 +295,17 @@ func (m *model) rebuildSessionsTable() {
 			continue
 		}
 		b := newRowBuilder(q != "")
-		// An imported session's title starts with "(*) ". Plain text, not dim: the table cuts
-		// a cell by its bytes, and a style's escape bytes would mangle it (see cachedMarker).
-		// With no TITLE column, the SESSION cell has the mark.
-		mark, markW := "", 0
+		// An imported session's title starts with "(*) ", and a session that another session
+		// started with "↳ ". Plain text, not dim: the table cuts a cell by its bytes, and a
+		// style's escape bytes would mangle it (see cachedMarker). With no TITLE column, the
+		// SESSION cell has the mark.
+		mark := ""
 		if strings.HasPrefix(s.Source, coremodel.ImportedSourcePrefix) {
-			mark, markW = importedMarker, len(importedMarker)
+			mark = importedMarker
+		} else if s.ParentSession != "" {
+			mark = childMarker
 		}
+		markW := lipgloss.Width(mark) // columns, not bytes: "↳" is 3 bytes and 1 column
 		if showTitle || mark == "" {
 			b.cut(sessionIDCell(s.ID, idW), func() string { return sessionIDCell(s.ID, noLimit) })
 		} else {

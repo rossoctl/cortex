@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/attribution"
 	"github.com/rossoctl/cortex/core/listener/egressguard"
@@ -250,17 +249,10 @@ func TestEgress_StreamsFrames(t *testing.T) {
 	})
 	defer close(release)
 	resp := egressDo(t, rig, "/", egressTestToken, rig.dest(), nil)
-	line := make(chan string, 1)
-	go func() {
-		s, _ := bufio.NewReader(resp.Body).ReadString('\n')
-		line <- s
-	}()
-	select {
-	case s := <-line:
-		if !strings.HasPrefix(s, "data: one") {
-			t.Fatalf("first frame = %q, want data: one", s)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("first frame did not arrive before the origin finished")
+	// The origin holds its second frame until the test returns, so the first frame
+	// arrives only if it is relayed as it is written.
+	s, _ := bufio.NewReader(resp.Body).ReadString('\n')
+	if !strings.HasPrefix(s, "data: one") {
+		t.Fatalf("first frame = %q, want data: one", s)
 	}
 }

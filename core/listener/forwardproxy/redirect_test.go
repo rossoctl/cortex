@@ -190,7 +190,6 @@ func bridgedGet(t *testing.T, proxy *httptest.Server, bridgeCA []byte, authority
 		t.Fatalf("dial proxy: %v", err)
 	}
 	t.Cleanup(func() { _ = rawConn.Close() })
-	_ = rawConn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	connectReq, err := http.NewRequest(http.MethodConnect, "//"+authority, nil)
 	if err != nil {
@@ -565,7 +564,6 @@ func TestConnectBridge_UntrustedOriginStillFallsOpenToTunnel(t *testing.T) {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer func() { _ = rawConn.Close() }()
-	_ = rawConn.SetDeadline(time.Now().Add(10 * time.Second))
 	connectReq, err := http.NewRequest(http.MethodConnect, "//"+a.authority(), nil)
 	if err != nil {
 		t.Fatalf("new CONNECT request: %v", err)
@@ -597,7 +595,7 @@ func TestConnectBridge_UntrustedOriginStillFallsOpenToTunnel(t *testing.T) {
 		_ = tconn.Close()
 		t.Fatal("handshake against a leaf the bridge did not forge succeeded; the connection should have been tunnelled to the real origin, whose cert this client does not trust")
 	}
-	eventually(t, func() bool {
+	eventually(t, store, func() bool {
 		return len(tunnelReasons(store, session.DefaultSessionID)) > 0
 	}, "the passthrough tunnel's open row to be recorded")
 	for _, reason := range tunnelReasons(store, session.DefaultSessionID) {
