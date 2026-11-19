@@ -206,10 +206,11 @@ func TestWriter_GroupProjectUsesTheParentProject(t *testing.T) {
 	}
 	var got []string
 	for _, r := range readAllRows(t, dir) {
-		got = append(got, r.Project)
+		got = append(got, r.Project+"|"+r.OwnProject)
 	}
 	slices.Sort(got)
-	if want := []string{"~/parent", "~/solo"}; !slices.Equal(got, want) {
+	// The importer matches a transcript turn on OwnProject, so only the headless row has one.
+	if want := []string{"~/parent|~/child", "~/solo|"}; !slices.Equal(got, want) {
 		t.Errorf("row projects = %v, want %v", got, want)
 	}
 }

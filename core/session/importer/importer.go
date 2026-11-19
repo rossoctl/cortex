@@ -273,6 +273,11 @@ func toLedger(ctx context.Context, w *ledger.Writer, s Session, prior *priorTurn
 		if r.Source != event.SourceTranscript {
 			if r.Source == "" {
 				live[k] = true
+				// A headless run's live row is filed under its parent's project. Its
+				// transcript names the run's own project.
+				if r.OwnProject != "" {
+					live[liveKey{k.minute, r.OwnProject}] = true
+				}
 			}
 			continue
 		}

@@ -98,10 +98,15 @@ type Row struct {
 	//     sources differ in representation and agree in meaning; nothing a client sees
 	//     differs.
 	Agent string `json:"agent,omitempty"`
-	// Project is the git repo root of the agent process's cwd, from SessionEvent.RollupProject.
-	// Stored as written, "" for absent and never "unknown", for the reason Agent gives;
-	// labelFor maps "" to usage.UnknownProjectLabel at the query boundary.
+	// Project is SessionEvent.RollupProject: the git repo root of the agent process's cwd,
+	// or of the parent session's process for a headless run. Stored as written, "" for
+	// absent and never "unknown", for the reason Agent gives; labelFor maps "" to
+	// usage.UnknownProjectLabel at the query boundary.
 	Project string `json:"project,omitempty"`
+	// OwnProject is SessionEvent.Project when the row has a parent project, else "". Part of
+	// the key. The importer matches a transcript turn on it, because a transcript names
+	// the run's own project and not its parent's.
+	OwnProject string `json:"ownProject,omitempty"`
 	// Provenance is part of the KEY, not a summary of the row: one minute can mix a
 	// gateway's own figures with modelled ones, and a single provenance per row
 	// would have to pick a winner. Keying on it keeps /v1/usage's pricedBy
@@ -156,6 +161,8 @@ func (r Row) currencyOrUSD() string {
 // key is the in-memory accumulation key. Mirrors the JSON identity fields exactly.
 type key struct {
 	endpoint, model, agent, provenance, project string
+	// ownProject is Row.OwnProject.
+	ownProject string
 	// source is Row.Source. It is a closed set that this process writes, so the overflow
 	// row keeps it, as it keeps the unit.
 	source string
@@ -174,7 +181,7 @@ type key struct {
 }
 
 func (r Row) key() key {
-	return key{r.Endpoint, r.Model, r.Agent, r.Provenance, r.Project, r.Source, strings.ToLower(r.currencyOrUSD())}
+	return key{r.Endpoint, r.Model, r.Agent, r.Provenance, r.Project, r.OwnProject, r.Source, strings.ToLower(r.currencyOrUSD())}
 }
 
 // maxLabelLen bounds one label ON DISK. It is event.MaxLabelLen, so a model name is
@@ -267,12 +274,13 @@ const overflowLabel = "(other)"
 // can: it is the rate table's answer, one of the units the table was configured with,
 // not a string a request supplies.
 func overflowKeyFor(source, currency string) key {
-	return key{overflowLabel, overflowLabel, overflowLabel, overflowLabel, overflowLabel, source, currency}
+	return key{overflowLabel, overflowLabel, overflowLabel, overflowLabel, overflowLabel, "", source, currency}
 }
 
 // overflow rewrites a row's labels onto overflowKeyFor's, keeping its unit, At and
 // every counter. The figures are unchanged; only the attribution is coarsened.
 func overflow(r Row) Row {
 	r.Endpoint, r.Model, r.Agent, r.Provenance, r.Project = overflowLabel, overflowLabel, overflowLabel, overflowLabel, overflowLabel
+	r.OwnProject = ""
 	return r
 }

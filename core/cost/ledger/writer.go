@@ -479,6 +479,9 @@ func (w *Writer) row(e *model.SessionEvent) (minute time.Time, r Row, ok bool) {
 		Project: projectRowLabel(e.RollupProject()),
 		Counts:  usage.Counts{Requests: 1},
 	}
+	if e.ParentProject != "" {
+		r.OwnProject = projectRowLabel(e.Project)
+	}
 	if e.Imported() {
 		r.Source = event.SourceTranscript
 	}
