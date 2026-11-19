@@ -327,9 +327,9 @@ func (m *model) rebuildSessionsTable() {
 		}
 		// Read-only: where the session's inference went. No key here changes it — that would
 		// move a running conversation, which the router exists not to do.
-		server := func() string { return sessionServerCell(router, s.InferenceHost, noLimit) }
+		server := func() string { return sessionServerCell(router, s, noLimit) }
 		if serverW > 0 {
-			b.cut(sessionServerCell(router, s.InferenceHost, serverW), server)
+			b.cut(sessionServerCell(router, s, serverW), server)
 		} else if showServer {
 			b.dropped(server)
 		}

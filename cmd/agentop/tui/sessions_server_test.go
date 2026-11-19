@@ -182,7 +182,7 @@ func TestSessionServerCell_ShowsOnlyAHostOfAHost(t *testing.T) {
 		"evil.com)(ete.example.com":      sessionsNotAHost,
 		":8443":                          sessionsNotAHost,
 	} {
-		got := sessionServerCell(router, host, sessionsServerWidth)
+		got := sessionServerCell(router, session.SessionSummary{InferenceHost: host}, sessionsServerWidth)
 		if got != want {
 			t.Errorf("sessionServerCell(%q) = %q, want %q", host, got, want)
 		}
@@ -190,6 +190,35 @@ func TestSessionServerCell_ShowsOnlyAHostOfAHost(t *testing.T) {
 			if strings.Contains(got, leak) {
 				t.Errorf("sessionServerCell(%q) = %q shows %q", host, got, leak)
 			}
+		}
+	}
+}
+
+// Two servers can have one host, so the cell names the server the proxy recorded for the session.
+// A summary with no server name, or with a name the config no longer has, falls back to the host:
+// the first name in sorted order. The cell never shows a stale name, and never a part of a hostile
+// host.
+func TestSessionServerCell_NamesTheSessionsServer(t *testing.T) {
+	router := routerconfig.Config{Servers: map[string]routerconfig.Server{
+		"team-a": {URL: "https://shared.example.com"},
+		"team-b": {URL: "https://shared.example.com"},
+	}}
+	for _, tc := range []struct {
+		s    session.SessionSummary
+		want string
+	}{
+		{session.SessionSummary{InferenceHost: "shared.example.com", InferenceServer: "team-b"}, "team-b"},
+		{session.SessionSummary{InferenceHost: "shared.example.com"}, "team-a"},
+		{session.SessionSummary{InferenceHost: "shared.example.com", InferenceServer: "gone"}, "team-a"},
+		{session.SessionSummary{InferenceServer: "team-b"}, emptyCell},
+		{session.SessionSummary{InferenceHost: "sk-ant-api03-secret:x@evil.com", InferenceServer: "team-b"}, "team-b"},
+	} {
+		got := sessionServerCell(router, tc.s, sessionsServerWidth)
+		if got != tc.want {
+			t.Errorf("sessionServerCell(%+v) = %q, want %q", tc.s, got, tc.want)
+		}
+		if strings.Contains(got, "secret") {
+			t.Errorf("sessionServerCell(%+v) = %q shows the host's key", tc.s, got)
 		}
 	}
 }

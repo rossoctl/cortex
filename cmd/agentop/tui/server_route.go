@@ -11,6 +11,7 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/servers"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // activeRouter is the config of the inference-router the proxy runs, read off /v1/pipeline, and
@@ -147,9 +148,10 @@ const sessionsServerWidth = 12
 // reading as a host called that, as agentOwnChoice's does for a server.
 const sessionsNotAHost = "(not a host)"
 
-// sessionServerCell is the sessions table's SERVER cell for a session whose inference traffic
-// last went to host: the server on that host; a host no server has, in parentheses; or emptyCell
-// when the session has no inference traffic.
+// sessionServerCell is the sessions table's SERVER cell for session s: the session's server,
+// from the server name when the proxy sent one, else from the host its inference traffic last
+// went to (servers.ForSession); a host no server has, in parentheses; or emptyCell when the
+// session has no inference traffic.
 //
 // PARENTHESES ARE THE DIMMING, for agentOwnChoice's reason. They are not in a server name's
 // alphabet, so "(api.anthropic.com)" cannot read as a server called that.
@@ -162,11 +164,12 @@ const sessionsNotAHost = "(not a host)"
 // so "sk-…:x@evil.example" comes back as "sk-…", the key (servers.Host refuses a URL whole for
 // the same reason). That alphabet is
 // stricter than sanitizeLabel, so what passes it needs no sanitising; a server name does.
-func sessionServerCell(router routerconfig.Config, host string, w int) string {
+func sessionServerCell(router routerconfig.Config, s session.SessionSummary, w int) string {
+	host := s.InferenceHost
 	if host == "" {
 		return emptyCell
 	}
-	if name, ok := servers.ForHost(router, host); ok {
+	if name, ok := servers.ForSession(router, s); ok {
 		return trunc(sanitizeLabel(name), w)
 	}
 	h := routerconfig.Hostname(host)
