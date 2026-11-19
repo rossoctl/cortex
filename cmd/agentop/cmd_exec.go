@@ -92,15 +92,18 @@ Flags:
                  Mutually exclusive with a command: --print emits settings for a
                  shell to keep (paths under the CA directory, which outlive this
                  process), whereas a command gets them for its own lifetime only.
-  --no-record    ask Cortex not to record the child's session (Claude Code only, for
-                 now). Adds "X-Cortex-Record: off" to the child's
-                 ANTHROPIC_CUSTOM_HEADERS, keeping the headers already there.
-                 CORTEX_RECORD=off in agentop's environment does the same. Refused
-                 when ~/.claude/settings.json, or .claude/settings.json or
+  --no-record    ask Cortex not to record the child's session. Claude Code only, for
+                 now: refused for any other command, which would be recorded. Adds
+                 "X-Cortex-Record: off" to the child's ANTHROPIC_CUSTOM_HEADERS,
+                 keeping the headers already there. CORTEX_RECORD=off in agentop's
+                 environment does the same. Refused when ~/.claude/settings.json,
+                 $CLAUDE_CONFIG_DIR/settings.json, or .claude/settings.json or
                  .claude/settings.local.json in this directory, sets
                  ANTHROPIC_CUSTOM_HEADERS in its "env" block: Claude Code applies that
                  over the environment, so the header would be lost and the session
-                 recorded. Managed settings are not checked.
+                 recorded. NOT checked: managed settings, "claude --settings FILE",
+                 and project settings above this directory. With --print the check
+                 runs now, here: a later claude run elsewhere is not checked.
 
 Exit status: the child's, or 1 if the command could not be started (127 if it
 was not found on PATH), or 2 for a usage error.
@@ -205,8 +208,12 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 	}
 	if noRecordWanted(*noRecord, os.Getenv) {
 		home, dir := launchDirs()
-		if err := addRecordOff(inject, home, dir, os.Getenv); err != nil {
-			fmt.Fprintf(stderr, "agentop: --no-record: %v\n", err)
+		var child string
+		if len(cmdArgs) > 0 {
+			child = cmdArgs[0]
+		}
+		if err := addRecordOff(inject, child, home, dir, os.Getenv); err != nil {
+			fmt.Fprintf(stderr, "agentop: %v\n", err)
 			return 1
 		}
 	}

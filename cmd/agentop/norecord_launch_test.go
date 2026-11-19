@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/core/observe/claude"
 )
 
 func TestNoRecordWanted(t *testing.T) {
@@ -74,7 +76,7 @@ func TestAddRecordOff_RefusesASettingsOverride(t *testing.T) {
 			p := filepath.Join(root, filepath.FromSlash(rel))
 			writeSettingsFile(t, p, `{"env":{"ANTHROPIC_CUSTOM_HEADERS":"X-Team: a"}}`)
 			inject := map[string]string{}
-			err := addRecordOff(inject, home, dir, func(string) string { return "" })
+			err := addRecordOff(inject, "claude", home, dir, func(string) string { return "" })
 			if err == nil || !strings.Contains(err.Error(), p) {
 				t.Fatalf("addRecordOff = %v, want a refusal naming %s", err, p)
 			}
@@ -96,7 +98,7 @@ func TestAddRecordOff_AppendsToTheEnvironment(t *testing.T) {
 		}
 		return ""
 	}
-	if err := addRecordOff(inject, root, filepath.Join(root, "missing"), getenv); err != nil {
+	if err := addRecordOff(inject, "claude", root, filepath.Join(root, "missing"), getenv); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := inject[customHeadersEnv], "X-Team: a\nX-Cortex-Record: off"; got != want {
@@ -108,8 +110,48 @@ func TestAddRecordOff_AppendsToTheEnvironment(t *testing.T) {
 func TestAddRecordOff_RefusesAnUnreadableSettingsFile(t *testing.T) {
 	root := t.TempDir()
 	writeSettingsFile(t, filepath.Join(root, ".claude", "settings.json"), `{not json`)
-	if err := addRecordOff(map[string]string{}, root, "", func(string) string { return "" }); err == nil {
+	if err := addRecordOff(map[string]string{}, "claude", root, "", func(string) string { return "" }); err == nil {
 		t.Fatal("a settings file that is not JSON was taken as setting nothing")
+	}
+}
+
+// Claude Code reads its user settings from CLAUDE_CONFIG_DIR when that is set, so a file there
+// that overrides the variable refuses too.
+func TestAddRecordOff_ChecksClaudeConfigDir(t *testing.T) {
+	root := t.TempDir()
+	cfgDir := filepath.Join(root, "cfg")
+	p := filepath.Join(cfgDir, "settings.json")
+	writeSettingsFile(t, p, `{"env":{"ANTHROPIC_CUSTOM_HEADERS":"X-Team: a"}}`)
+	getenv := func(k string) string {
+		if k == claude.ConfigDirEnv {
+			return cfgDir
+		}
+		return ""
+	}
+	err := addRecordOff(map[string]string{}, "claude", filepath.Join(root, "home"), "", getenv)
+	if err == nil || !strings.Contains(err.Error(), p) {
+		t.Fatalf("addRecordOff = %v, want a refusal naming %s", err, p)
+	}
+}
+
+// Any child but Claude Code would ignore the header and be recorded, so it is refused. A path
+// to claude, and --print (no child), are accepted.
+func TestAddRecordOff_RefusesAChildThatIsNotClaudeCode(t *testing.T) {
+	none := func(string) string { return "" }
+	for _, cmd := range []string{"bob", "opencode", "curl", "/usr/bin/codex", "claude-wrapper"} {
+		inject := map[string]string{}
+		err := addRecordOff(inject, cmd, t.TempDir(), "", none)
+		if err == nil || !strings.Contains(err.Error(), "would be recorded") {
+			t.Errorf("%s: addRecordOff = %v, want a refusal", cmd, err)
+		}
+		if _, set := inject[customHeadersEnv]; set {
+			t.Errorf("%s: the child got %s despite the refusal", cmd, customHeadersEnv)
+		}
+	}
+	for _, cmd := range []string{"claude", "/opt/bin/claude", "claude.exe", ""} {
+		if err := addRecordOff(map[string]string{}, cmd, t.TempDir(), "", none); err != nil {
+			t.Errorf("%q: addRecordOff = %v, want it accepted", cmd, err)
+		}
 	}
 }
 
@@ -123,8 +165,16 @@ func TestRunExec_NoRecordReachesTheChild(t *testing.T) {
 	stats := execStats(t, cfgPath)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv(claude.ConfigDirEnv, "")
 	t.Chdir(t.TempDir())
 	t.Setenv(customHeadersEnv, "X-Team: a")
+	// A stand-in claude on PATH that prints what it was given: --no-record runs only Claude Code.
+	bin := t.TempDir()
+	writeSettingsFile(t, filepath.Join(bin, "claude"), "#!/bin/sh\nprintf '%s' \"$"+customHeadersEnv+"\"\n")
+	if err := os.Chmod(filepath.Join(bin, "claude"), 0o755); err != nil { //nolint:gosec // test stub
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -137,7 +187,7 @@ func TestRunExec_NoRecordReachesTheChild(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(recordEnv, tc.env)
-			args := append(append([]string{"--cortex-stats-url", stats}, tc.args...), "--", "/bin/sh", "-c", `printf '%s' "$`+customHeadersEnv+`"`)
+			args := append(append([]string{"--cortex-stats-url", stats}, tc.args...), "--", "claude")
 			var stdout, stderr bytes.Buffer
 			if code := runExec(args, &stdout, &stderr); code != 0 {
 				t.Fatalf("exit %d: %s", code, stderr.String())
@@ -149,16 +199,28 @@ func TestRunExec_NoRecordReachesTheChild(t *testing.T) {
 	}
 }
 
+// Through runExec, a child that is not Claude Code is refused before it runs.
+func TestRunExec_NoRecordRefusesOtherAgents(t *testing.T) {
+	cfgPath, _ := execCfg(t)
+	var stdout, stderr bytes.Buffer
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--no-record", "--", "bob"}, &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "bob would be recorded") {
+		t.Fatalf("exit %d, stderr %q; want 1 and a refusal naming bob", code, stderr.String())
+	}
+}
+
 // The refusal stops the launch: nothing runs.
 func TestRunExec_NoRecordRefusesASettingsOverride(t *testing.T) {
 	cfgPath, _ := execCfg(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv(claude.ConfigDirEnv, "")
 	t.Chdir(t.TempDir())
 	writeSettingsFile(t, filepath.Join(home, ".claude", "settings.json"), `{"env":{"ANTHROPIC_CUSTOM_HEADERS":"X-Team: a"}}`)
 	var stdout, stderr bytes.Buffer
-	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--no-record", "--", "no-such-command-should-not-run"}, &stdout, &stderr)
+	// claude need not exist: the refusal comes before the launch.
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--no-record", "--", "claude"}, &stdout, &stderr)
 	if code != 1 || !strings.Contains(stderr.String(), customHeadersEnv) {
 		t.Fatalf("exit %d, stderr %q; want 1 and a refusal naming %s", code, stderr.String(), customHeadersEnv)
 	}
