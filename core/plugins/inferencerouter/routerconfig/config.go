@@ -38,6 +38,9 @@ type Config struct {
 	// the pin that session already holds. "" stops routing that session. agentop
 	// writes these; see CheckSessionID for what an id may look like.
 	Sessions map[string]string `json:"sessions" description:"Sessions to move to a server, by session id, beating their pin. An empty value stops routing the session."`
+	// KeyRoutes sends a request that carries the key of one server to another
+	// server. The router does not follow a second entry.
+	KeyRoutes map[string]string `json:"key_routes" description:"Servers whose key a request sends, by server name, to the server the request goes to. One hop only. An agents: entry wins over it."`
 }
 
 // Server is one inference server.
@@ -201,9 +204,12 @@ func (c *Config) applyDefaults() {
 	if c.Sessions == nil {
 		c.Sessions = map[string]string{}
 	}
+	if c.KeyRoutes == nil {
+		c.KeyRoutes = map[string]string{}
+	}
 }
 
-// Validate checks every rule the plugin routes by. Servers and agents are checked
+// Validate checks every rule the plugin routes by. Each map is checked
 // in name order, so the same config always reports the same first error.
 func (c Config) Validate() error {
 	if len(c.Servers) == 0 {
@@ -253,6 +259,15 @@ func (c Config) Validate() error {
 			if _, ok := c.Servers[server]; !ok {
 				return fmt.Errorf("sessions.%s: %q is not a server listed under servers", id, server)
 			}
+		}
+	}
+	for _, owner := range slices.Sorted(maps.Keys(c.KeyRoutes)) {
+		if _, ok := c.Servers[owner]; !ok {
+			return fmt.Errorf("key_routes: %q is not a server listed under servers", owner)
+		}
+		server := c.KeyRoutes[owner]
+		if _, ok := c.Servers[server]; !ok {
+			return fmt.Errorf("key_routes.%s: %q is not a server listed under servers", owner, server)
 		}
 	}
 	return nil

@@ -629,3 +629,44 @@ func TestSetAuth(t *testing.T) {
 		}
 	}
 }
+
+func TestValidate_KeyRoutes(t *testing.T) {
+	base := `{"servers":{
+		"team-a":{"url":"https://gw.example.com","key":"team-a-key","main":"m","helper":"h"},
+		"team-b":{"url":"https://gw.example.com","key":"team-b-key","main":"m","helper":"h"}}`
+	for _, tc := range []struct {
+		name    string
+		extra   string
+		wantErr string
+	}{
+		{"a key to another server", `,"key_routes":{"team-b":"team-a"}`, ""},
+		{"a key to its own server", `,"key_routes":{"team-a":"team-a"}`, ""},
+		{"no key_routes is an empty map", ``, ""},
+		{"an unknown key owner is refused", `,"key_routes":{"nope":"team-a"}`,
+			`key_routes: "nope" is not a server listed under servers`},
+		{"an unknown target is refused", `,"key_routes":{"team-b":"nope"}`,
+			`key_routes.team-b: "nope" is not a server listed under servers`},
+		{"the first bad entry in sorted order is named", `,"key_routes":{"zz":"team-a","yy":"team-a"}`,
+			`key_routes: "yy" is not a server listed under servers`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := Decode(json.RawMessage(base + tc.extra + `}`))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Decode: %v", err)
+				}
+				if c.KeyRoutes == nil {
+					t.Error("KeyRoutes is nil; an absent key_routes block routes nothing, as an empty one does")
+				}
+				return
+			}
+			if err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("Decode error = %v, want %q", err, tc.wantErr)
+			}
+			// An error names servers only, never a key.
+			if strings.Contains(err.Error(), "-key") {
+				t.Errorf("error %q holds a key", err)
+			}
+		})
+	}
+}
