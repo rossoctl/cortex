@@ -20,6 +20,7 @@ holds the repo-level pieces; this file is the index.
 | Use a server whose protocol Cortex cannot translate to | [`translation-server.md`](translation-server.md) |
 | Change Cortex with a small Python or shell script | [`script-plugin.md`](script-plugin.md) |
 | Run Cortex on a remote machine | [`remote.md`](remote.md) |
+| Run your agent in a nono sandbox | [`nono-sandbox.md`](nono-sandbox.md) |
 | Add your agent's sessions from before Cortex | [`agentop import`](../cmd/agentop/README.md#importing-agent-history-agentop-import) |
 | Set model prices and gateway discounts | [`pricing.md`](pricing.md). To see the rates in effect, run `agentop pricing [--host <gateway>]` |
 | Run, stop or update the service | [`laptop-service.md`](laptop-service.md) |
