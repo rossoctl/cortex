@@ -1,6 +1,7 @@
 package contextguru
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -97,6 +98,70 @@ func TestShutdownReleasesIncomingHolds(t *testing.T) {
 	}
 }
 
+// Without startSweep, an expired hold was released only by a later call to hold() (the
+// review finding: on a quiet installation with no later request, it was never released at
+// all). startSweep's first pass runs immediately, so an already-expired hold is released
+// without any request arriving.
+func TestStartSweepReleasesAlreadyExpiredHoldWithNoRequest(t *testing.T) {
+	d := newCortexDispatcher(newPingClient(false))
+	h := newCredHolds(d)
+	pctx := anthropicPctx("gw", pipeline.AgentRoleMain)
+	past := time.Now().Add(-incomingHoldTTL - time.Minute)
+	ref := h.hold(pctx, past)
+	if _, held := d.held[ref]; !held {
+		t.Fatal("hold not recorded")
+	}
+
+	h.startSweep()
+	defer h.stopSweep()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		h.mu.Lock()
+		n := len(h.m)
+		h.mu.Unlock()
+		if n == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("startSweep did not release an already-expired hold within 2s, with no request")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, held := d.held[ref]; held {
+		t.Fatal("hold still recorded on the dispatcher after the sweep released it")
+	}
+}
+
+// stopSweep on a credHolds that never had startSweep called (Init did not run, as a test-built
+// instance from newCredHolds directly, or from Configure without Init) must not block or panic.
+func TestStopSweepWithoutStartIsANoop(t *testing.T) {
+	h := newCredHolds(newCortexDispatcher(newPingClient(false)))
+	h.stopSweep()
+}
+
+// Init starts the sweep, and Shutdown stops it and waits for it to exit before releasing every
+// hold — so the sweep goroutine cannot race Shutdown's own release of the same hold.
+func TestInitStartsAndShutdownStopsTheHoldSweep(t *testing.T) {
+	p := configured(t, `{`+offline+`}}`)
+	if err := p.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p.holds.sweepStop == nil {
+		t.Fatal("Init did not start the hold sweep")
+	}
+	if err := p.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Shutdown's stopSweep blocks on sweepDone, so by the time it returns the goroutine has
+	// already exited; a second close would panic if it had not.
+	select {
+	case <-p.holds.sweepDone:
+	default:
+		t.Fatal("sweep goroutine did not exit by the time Shutdown returned")
+	}
+}
+
 func TestSentStashReplacesAndDropsOversizedBodies(t *testing.T) {
 	s := newSentStash()
 	s.put("k", bschemas.Anthropic, []byte("pre"), []byte("sent-1"))
@@ -133,9 +198,48 @@ func TestOnFinishStashesOnlySuccessfulMainRequests(t *testing.T) {
 		if got := p.stash.get(k) != nil; got != tc.want {
 			t.Errorf("%s: stashed=%v, want %v", name, got, tc.want)
 		}
-		if _, left := p.pending.Load("s1"); left {
-			t.Errorf("%s: OnFinish left the pending body behind", name)
-		}
+	}
+}
+
+// The body OnRequest snapshots for stashSent is kept on the REQUEST's own pctx
+// (pipeline.SetState), not in a map keyed by session id. Two requests that share one session id
+// — Claude Code sends one-shot calls (title, permission monitor) under the main turn's session —
+// can overlap in flight: a one-shot request B starts, then the main turn A starts before B
+// finishes. A session-keyed map let A's Store overwrite B's entry, so B's own OnFinish paired
+// A's received body with B's forwarded body (review finding: silent context loss once the
+// summarizer's prefix ask sent the mismatched pair). Keying on pctx instead makes each
+// request's own pair exact by construction, whatever else is in flight on the same session.
+func TestStashedBodyIsNotMixedUpBetweenOverlappingRequestsOnOneSession(t *testing.T) {
+	p := configured(t, `{`+offline+`}}`)
+	pctxA := anthropicPctx("gw", pipeline.AgentRoleMain)
+	pctxA.Body = []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"A-received"}]}`)
+	pctxB := anthropicPctx("gw", pipeline.AgentRoleMain)
+	pctxB.Body = []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"B-received"}]}`)
+
+	// B (the one-shot) starts first; A (the main turn) starts on the same session id before B
+	// finishes. With the old session-keyed map, A's Store here would overwrite B's entry.
+	invokeReq(p, pctxB)
+	invokeReq(p, pctxA)
+
+	// B finishes first, successfully.
+	pctxB.StatusCode = 200
+	p.OnFinish(context.Background(), pctxB)
+
+	key, ok := p.cgSessions.get("s1")
+	if !ok {
+		t.Fatal("no engine session key for s1")
+	}
+	p.stash.mu.Lock()
+	entry, ok := p.stash.m[key]
+	p.stash.mu.Unlock()
+	if !ok {
+		t.Fatal("B's OnFinish did not stash anything")
+	}
+	if !bytes.Contains(entry.preBody, []byte("B-received")) {
+		t.Errorf("stashed preBody = %s, want B's own received body (B-received), not A's", entry.preBody)
+	}
+	if !bytes.Equal(entry.forwarded, pctxB.Body) {
+		t.Errorf("stashed forwarded = %s, want B's own forwarded body", entry.forwarded)
 	}
 }
 

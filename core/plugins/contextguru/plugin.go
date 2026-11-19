@@ -25,7 +25,6 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -233,9 +232,6 @@ type ContextGuru struct {
 	// Separate from disp, which belongs to the keep-alive.
 	holds *credHolds
 	stash *sentStash
-	// pending is the body this plugin received for a session's request in flight, kept until
-	// OnFinish stashes it beside the body that went upstream.
-	pending sync.Map
 
 	// windows resolves a model's context window; see windows.go.
 	windows proxyapp.Resolver
@@ -490,9 +486,19 @@ func (p *ContextGuru) OnRequest(ctx context.Context, pctx *pipeline.Context) pip
 		cli.MaxTokens = cheapmodel.PrefixAskMaxTokens
 		asker = prefixAsker{stash: p.stash, cli: cli}
 		if !isSubagent(pctx) {
-			// The body as this plugin received it. SetBody replaces pctx.Body rather than
-			// writing into it. OnFinish stashes it once upstream has accepted the request.
-			p.pending.Store(sid, pctx.Body)
+			// The body as this plugin received it, kept on THIS request's own pctx, not in a
+			// map keyed by session (review finding): Claude Code sends one-shot calls (title,
+			// permission monitor) under the same session id as the main turn, so two requests
+			// on one session can overlap in flight. A session-keyed map let the later Store
+			// win regardless of which request it belonged to, so OnFinish could pair one
+			// request's received body with a DIFFERENT, concurrent request's forwarded body —
+			// silent context loss once the summarizer spliced the mismatched pair into the
+			// conversation. pctx is single-threaded per request (SetState's doc), so keying on
+			// it instead makes the pairing exact by construction. SetBody replaces pctx.Body
+			// rather than writing into it, so this snapshot is unaffected by what BodyOpts
+			// does below. OnFinish reads it back and stashes it beside the body that went
+			// upstream.
+			pipeline.SetState(pctx, pendingBodyStateKey, &pendingBody{body: pctx.Body})
 		}
 	}
 	res := apply.BodyOpts(ctx, p.pipe, p.store, apply.Opts{
@@ -591,16 +597,23 @@ func (p *ContextGuru) selfCall(pctx *pipeline.Context) bool {
 	return pctx.Headers != nil && p.sentinel != "" && pctx.Headers.Get(sentinelHeader) == p.sentinel
 }
 
-// Init starts the keep-alive sweep. Nothing to start when keep_alive is off.
+// Init starts the keep-alive sweep and the incoming-model credential-hold sweep (held, not a
+// nil/zero holds: Configure always builds one, see newCredHolds there). Each releases a hold
+// idle past its own TTL on a timer, not only when a later request happens to ask for one.
 func (p *ContextGuru) Init(context.Context) error {
 	if p.keeper != nil {
 		p.keeper.Start()
 	}
+	if p.holds != nil {
+		p.holds.startSweep()
+	}
 	return nil
 }
 
-// Shutdown stops the sweep and releases every held credential before returning: on a hot-reload
-// this instance is the old one, and its holds must not outlive it.
+// Shutdown stops both sweeps and releases every held credential before returning: on a
+// hot-reload this instance is the old one, and its holds must not outlive it. The hold sweep is
+// stopped before releaseAll, so the sweep goroutine's own release of an expired hold cannot race
+// this one releasing the same hold a second time.
 func (p *ContextGuru) Shutdown(context.Context) error {
 	p.stopped.Store(true)
 	if p.keeper != nil {
@@ -610,6 +623,7 @@ func (p *ContextGuru) Shutdown(context.Context) error {
 		p.disp.Close()
 	}
 	if p.holds != nil {
+		p.holds.stopSweep()
 		p.holds.releaseAll()
 		p.holds.d.Close()
 	}

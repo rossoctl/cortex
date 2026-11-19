@@ -40,12 +40,23 @@ import (
 // it. Matches the engine proxy's IncomingRefTTL.
 const incomingHoldTTL = 2 * time.Hour
 
+// holdSweepInterval is how often credHolds checks every held credential for incomingHoldTTL,
+// independent of traffic. Without this, a hold already past its TTL was only ever noticed
+// (and released) by `hold`, so it is in `hold`'s request path: on a quiet installation with no
+// later Anthropic request, a masked credential stayed held — and the session's forwarded-body
+// stash beside it — for as long as the process ran (review finding). The sweep bounds that to
+// one interval past the TTL, whether or not any request arrives.
+const holdSweepInterval = 10 * time.Minute
+
 // credHolds dedups holds on one dispatcher by credential, so a session holds one copy of its key
 // however many requests it makes.
 type credHolds struct {
 	d  *cortexDispatcher
 	mu sync.Mutex
 	m  map[[32]byte]*credHold
+
+	sweepStop chan struct{}
+	sweepDone chan struct{}
 }
 
 type credHold struct {
@@ -57,18 +68,50 @@ func newCredHolds(d *cortexDispatcher) *credHolds {
 	return &credHolds{d: d, m: map[[32]byte]*credHold{}}
 }
 
+// startSweep releases every hold idle past incomingHoldTTL, once now and then every
+// holdSweepInterval, until stopSweep runs. Starting it twice on one credHolds (without an
+// intervening stopSweep) panics on the closed channel, the same guard releaseAll-after-Shutdown
+// would need; callers hold one credHolds per plugin instance and call this at most once, from
+// Init.
+func (h *credHolds) startSweep() {
+	h.sweepStop = make(chan struct{})
+	h.sweepDone = make(chan struct{})
+	go func() {
+		defer close(h.sweepDone)
+		t := time.NewTicker(holdSweepInterval)
+		defer t.Stop()
+		h.releaseExpired(time.Now())
+		for {
+			select {
+			case <-t.C:
+				h.releaseExpired(time.Now())
+			case <-h.sweepStop:
+				return
+			}
+		}
+	}()
+}
+
+// stopSweep stops the sweep goroutine and waits for it to exit, so a Shutdown that calls
+// releaseAll right after never races the sweep's own release of the same holds. A credHolds
+// that never had startSweep called (no Init ran, as in a test built directly with
+// newCredHolds) has a nil sweepStop, so this is a no-op rather than a nil-channel block.
+func (h *credHolds) stopSweep() {
+	if h.sweepStop == nil {
+		return
+	}
+	close(h.sweepStop)
+	<-h.sweepDone
+}
+
 // hold returns the ref for this request's endpoint and credential, holding it if it is new, and
-// releases every hold idle past incomingHoldTTL.
+// releases every hold idle past incomingHoldTTL. Also done on a timer (startSweep), so this is
+// belt-and-suspenders for a key that holds right up to its own release.
 func (h *credHolds) hold(pctx *pipeline.Context, now time.Time) dispatch.Ref {
 	key := credKey(pctx)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for k, e := range h.m {
-		if now.Sub(e.lastUsed) > incomingHoldTTL {
-			h.d.Release(e.ref)
-			delete(h.m, k)
-		}
-	}
+	h.releaseExpiredLocked(now)
 	if e, ok := h.m[key]; ok {
 		e.lastUsed = now
 		return e.ref
@@ -76,6 +119,23 @@ func (h *credHolds) hold(pctx *pipeline.Context, now time.Time) dispatch.Ref {
 	ref := h.d.hold(pctx.Scheme, pctx.Host, pctx.Headers)
 	h.m[key] = &credHold{ref: ref, lastUsed: now}
 	return ref
+}
+
+// releaseExpired is releaseExpiredLocked with its own lock, for the sweep goroutine, which does
+// not otherwise touch h.mu.
+func (h *credHolds) releaseExpired(now time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.releaseExpiredLocked(now)
+}
+
+func (h *credHolds) releaseExpiredLocked(now time.Time) {
+	for k, e := range h.m {
+		if now.Sub(e.lastUsed) > incomingHoldTTL {
+			h.d.Release(e.ref)
+			delete(h.m, k)
+		}
+	}
 }
 
 func (h *credHolds) releaseAll() {
@@ -286,13 +346,26 @@ func (s *sentStash) CoversSpan(session string, count int, hash string) bool {
 	return cgcomponents.SpanHash(norm[:count]) == hash
 }
 
+// pendingBody is OnRequest's snapshot of the body this plugin received, kept on the REQUEST's
+// own pctx (pipeline.SetState) rather than in a map keyed by session. A session-keyed map let
+// two requests sharing one session id (Claude Code's one-shot calls, the main turn) overlap in
+// flight and clobber each other's entry, pairing one request's received body with a different
+// request's forwarded body (review finding). pctx is single-threaded per request, so keying on
+// it makes the pairing exact by construction. See the comment where OnRequest sets this.
+type pendingBody struct {
+	body []byte
+}
+
+// pendingBodyStateKey is this plugin's pipeline.SetState key for pendingBody.
+const pendingBodyStateKey = "context-guru-pending-body"
+
 // stashSent stores a finished main-agent request's two bodies for the next turn's prefix ask.
 // Only a 200 is a valid prefix: a rejected send populated no prompt cache. pctx.Body in OnFinish
 // is the body that went upstream. A shadow run (on_error: observe) sent the client's body, which
 // is still pctx.Body, so the stash matches what upstream cached in that case too.
 func (p *ContextGuru) stashSent(pctx *pipeline.Context, sid string) {
-	pre, ok := p.pending.LoadAndDelete(sid)
-	if !ok || p.stash == nil || isSubagent(pctx) || pctx.StatusCode != 200 {
+	pre := pipeline.GetState[pendingBody](pctx, pendingBodyStateKey)
+	if pre == nil || p.stash == nil || isSubagent(pctx) || pctx.StatusCode != 200 {
 		return
 	}
 	key, ok := p.cgSessions.get(sid)
@@ -300,7 +373,7 @@ func (p *ContextGuru) stashSent(pctx *pipeline.Context, sid string) {
 		return
 	}
 	provider, _ := dialectFor(pctx.Path)
-	p.stash.put(key, provider, pre.([]byte), pctx.Body)
+	p.stash.put(key, provider, pre.body, pctx.Body)
 }
 
 // prefixAsker is the components.PrefixAsker the engine receives on an Anthropic request.

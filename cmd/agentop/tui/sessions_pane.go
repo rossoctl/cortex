@@ -571,9 +571,9 @@ const unitsColumnTitle = "UNITS"
 const sessionsUnitsWidth = 8
 
 // sessionUnitsCell is a session's net usage-limit saving, one decimal, or the em dash when it has
-// none. withEquivalent appends the API-equivalent dollars of the gross saving, labelled, for the
-// full text a search reads; the cell itself has no room for them. A cell that does not fit budget
-// is the em dash rather than a cut figure.
+// none. withEquivalent appends the API-equivalent dollars of the NET saving (may be negative),
+// labelled, for the full text a search reads; the cell itself has no room for them. A cell that
+// does not fit budget is the em dash rather than a cut figure.
 func sessionUnitsCell(s session.SessionSummary, budget int, withEquivalent bool) string {
 	if s.AvoidedUnits == 0 && s.PenaltyUnits == 0 {
 		return emptyCell

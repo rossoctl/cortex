@@ -560,11 +560,12 @@ func (e Event) Figures() Figures {
 		case BasisSubscriptionEquivalent:
 			unitsSaved += s.Units
 			unitsPen += s.PenaltyUnits
-			// Net, like the units beside it: a gross figure here sat beside net units.
+			// Net, like the units beside it, and converted with SignedMicrosOrZero below so a
+			// penalty bigger than the saving stays a negative net instead of flooring to 0.
 			equivSaved += s.USD - s.PenaltyUSD
 		case BasisUnknown:
-			// Net: the penalty went nowhere, so a saving that cost more than it saved read as
-			// a gain (review finding).
+			// Net, for the same reason: the penalty went nowhere else, so a saving that cost
+			// more than it saved must read as a net cost, not as a zero.
 			unknownSaved += s.USD - s.PenaltyUSD
 		}
 	}
@@ -587,8 +588,8 @@ func (e Event) Figures() Figures {
 		PenaltyMicros:              e.TotalPenaltyMicros(),
 		AvoidedUnits:               MilliUnits(unitsSaved),
 		PenaltyUnits:               MilliUnits(unitsPen),
-		AvoidedAPIEquivalentMicros: pricing.MicrosOrZero(equivSaved),
-		AvoidedUnknownMicros:       pricing.MicrosOrZero(unknownSaved),
+		AvoidedAPIEquivalentMicros: pricing.SignedMicrosOrZero(equivSaved),
+		AvoidedUnknownMicros:       pricing.SignedMicrosOrZero(unknownSaved),
 		PluginSpendMicros:          pricing.MicrosOrZero(spendUSD),
 		PluginSpendUnits:           MilliUnits(spendUnits),
 		PluginSpendUnknownMicros:   pricing.MicrosOrZero(spendUnknown),

@@ -617,6 +617,32 @@ func TestFigures_SplitsByBasis(t *testing.T) {
 	}
 }
 
+// A penalty bigger than the saving is a real net cost: AvoidedAPIEquivalentMicros and
+// AvoidedUnknownMicros must go negative, the same way PenaltyUnits already can exceed
+// AvoidedUnits on the same line (review finding: both used to floor at 0 via MicrosOrZero,
+// which reported a net cost as a net gain of nothing and disagreed in sign with the units
+// figure beside it).
+func TestFigures_NegativeNetIsNegative(t *testing.T) {
+	ev := Event{
+		Avoided: []Saving{
+			{Basis: BasisSubscriptionEquivalent, USD: 0.10, PenaltyUSD: 0.40, Units: 1, PenaltyUnits: 5},
+			{Basis: BasisUnknown, USD: 0.10, PenaltyUSD: 0.40},
+		},
+	}
+	got := ev.Figures()
+	if got.AvoidedAPIEquivalentMicros != -300_000 {
+		t.Errorf("AvoidedAPIEquivalentMicros = %d, want -300000", got.AvoidedAPIEquivalentMicros)
+	}
+	if got.AvoidedUnknownMicros != -300_000 {
+		t.Errorf("AvoidedUnknownMicros = %d, want -300000", got.AvoidedUnknownMicros)
+	}
+	// The units figure on the same line was already allowed to go negative; the two must agree
+	// in sign, not just both be "small".
+	if got.PenaltyUnits-got.AvoidedUnits <= 0 {
+		t.Errorf("units net is not negative: avoided=%d penalty=%d", got.AvoidedUnits, got.PenaltyUnits)
+	}
+}
+
 func TestMilliUnits(t *testing.T) {
 	for _, tc := range []struct {
 		in   float64

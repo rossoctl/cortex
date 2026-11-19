@@ -4,9 +4,12 @@ Compacts an agent's outbound LLM request context before forwarding,
 using the embedded context-guru engine. `OnResponse` is currently a
 pass-through; model-driven expand/restore is a later integration. The
 plugin also implements `OnFinish`, `Init`, and `Shutdown` for the
-keep-alive feature below. Opt-in at build time
-(`-tags include_plugin_contextguru`) because its engine pulls a large
-transitive dependency set.
+keep-alive feature below. It ships in the `local`, `full` and
+`fullcpex` build profiles (see `scripts/profile-tags`), because its
+engine pulls a large transitive dependency set and the `local`
+config enables it by default (preset `xhigh`). `lite`, `envoy` and
+`cpex` leave it out; a build with none of those tags needs
+`-tags include_plugin_contextguru` to link it.
 
 - `paths` (`[]string`) — inference request paths to compact. Default: `/v1/chat/completions`, `/v1/completions`, `/v1/messages`, `/v1/responses`. A `/v1/responses` body (OpenAI Responses API: `instructions` + `input`) is parsed as that shape, not as Chat Completions.
 - `model` (object) — optional "cheap" LLM endpoint for model-backed components (summarize, extract:code); omitted means those degrade to deterministic/no-op.
@@ -21,7 +24,7 @@ transitive dependency set.
 **The request's own model (`model.source: incoming`).** A component configured with `model.source: incoming` calls the model the agent itself is using, on the agent's own credential:
 
 - **OpenAI Chat Completions:** through `llmclient`, on the request's endpoint and `Authorization`.
-- **Anthropic Messages** (`/v1/messages`, Claude Code's traffic): through context-guru's `cheapmodel.Anthropic`, on the request's endpoint and credential (`x-api-key` or `Authorization`). The credential is held in memory, masked, one hold per credential, and released 2 hours after its last use, on a config reload, or at `Shutdown`. It is held, not borrowed, because `cache_aware_summarizer` commissions its call in the background and the request returns first. On Anthropic the summarizer asks one question appended to the previous turn's forwarded body, so the provider's prompt cache serves the whole transcript. The plugin keeps that body in memory for the last 16 sessions (main agent only, a 200 response only, at most 8 MiB per body and 96 MiB in total).
+- **Anthropic Messages** (`/v1/messages`, Claude Code's traffic): through context-guru's `cheapmodel.Anthropic`, on the request's endpoint and credential (`x-api-key` or `Authorization`). The credential is held in memory, masked, one hold per credential, and released 2 hours after its last use (on a timer, not only on the next matching request), on a config reload, or at `Shutdown`. It is held, not borrowed, because `cache_aware_summarizer` commissions its call in the background and the request returns first. On Anthropic the summarizer asks one question appended to the previous turn's forwarded body, so the provider's prompt cache serves the whole transcript. The plugin keeps that body in memory for the last 16 sessions (main agent only, a 200 response only, at most 8 MiB per body and 96 MiB in total).
 - **OpenAI Responses API:** none. A Responses request uses the `model` block, or the component degrades to deterministic.
 
 Each such call is reported to the request it was made for as a spend op (`pluginSpendMicros`). A call that returns after its request was accounted (the summarizer's background call can) is dropped and counted in the `late_model_calls_dropped` metric.

@@ -715,8 +715,8 @@ presence.
 | `avoidedMicros` | the `usd` of applied savings with basis `usd`. Gross, as before the accountant |
 | `penaltyMicros` | their `penaltyUsd`. Net saved is `avoidedMicros − penaltyMicros`, and may be negative; nothing floors it |
 | `avoidedUnits`, `penaltyUnits` | the `units`/`penaltyUnits` of `subscriptionEquivalent` savings, in milli-units |
-| `avoidedApiEquivalentMicros` | the `usd` of those same savings: shown beside the units as "API equivalent", never in a money total |
-| `avoidedUnknownMicros` | the `usd` of savings with basis `unknown`: shown, never added |
+| `avoidedApiEquivalentMicros` | net of its penalty (`usd − penaltyUsd`), for the savings with basis `subscriptionEquivalent`: shown beside `avoidedUnits`/`penaltyUnits` as "API equivalent net", never in a money total. **May be negative** when the penalty exceeds the saving, the same way `avoidedUnits − penaltyUnits` can; nothing floors it |
+| `avoidedUnknownMicros` | net of its penalty (`usd − penaltyUsd`), for savings with basis `unknown`: shown, never added. **May be negative**, for the same reason |
 | `pluginSpendMicros`, `pluginSpendUnits`, `pluginSpendUnknownMicros` | `spends[]` by basis, without the `projected` and `refused` ones. **Not in `costMicros`**, so the existing spend figure keeps its meaning |
 | `keepAliveMicros`, `keepAliveUnits`, `keepAliveApiEquivalentMicros`, `keepAliveUnknownMicros` | a `purpose: keep-alive` record's cost by its `basis`, like `pluginSpend*`: `keepAliveMicros` is the `usd` pings' `cost_usd` (money); `keepAliveUnits` the `subscriptionEquivalent` pings' `units`, in milli-units, with their `cost_usd` in `keepAliveApiEquivalentMicros` (shown as "API equivalent", never in a money total); `keepAliveUnknownMicros` the `unknown` pings' `cost_usd` (shown, never added). The metrics push books ping dollars on the same rule: only for an API key |
 | `keepAlivePings` | the number of keep-alive pings, of every basis. A ping is in no other column: not `requests`, not `costMicros`, not the tokens, the coverage counters or the latency mean |

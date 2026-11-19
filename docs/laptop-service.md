@@ -679,8 +679,13 @@ curl -X DELETE http://localhost:47601/v1/sessions/<id>
 
 Neither erases the savings accountant's own per-session state: ids, content hashes and the
 billing mode, no content, in memory and in `~/.cortex/accountant-state.json`, plus the
-keep-alive keeper's masked credential. The keeper's entries go within about 13.5 minutes at
-its defaults. The rest stays until newer sessions push it out (at most 10,000 threads are
+keep-alive keeper's masked credential, context-guru's incoming-model credential holds, and its
+forwarded-body stash. The keeper's entries go within about 13.5 minutes at its defaults. The
+incoming-model holds (one per distinct host+credential, shared across every session on it) are
+masked too, and go within 2h10m of their last use, on a timer, whether or not a later request
+arrives. The forwarded-body stash DOES hold content — the last body sent upstream, for up to 16
+sessions and 96 MiB total — evicted only when a newer session's body needs the room, not on a
+timer. The rest stays until newer sessions push it out (at most 10,000 threads are
 kept), and a state file older than 1 hour is not read at startup (see
 [session-api.md](session-api.md#delete-v1sessions)).
 
