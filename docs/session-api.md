@@ -333,6 +333,8 @@ curl -s 'localhost:9094/v1/sessions/<id>/search?q=retry%20budget'
   - request: `inference.messages`, `inference.tools` (a tool's `parameters` as JSON),
     `inference.toolResults`, the history tool calls, `mcp.params`
   - response: `inference.toolCalls`, `mcp.result`, `a2a.artifact`
+  - a tool call's `arguments` and a tool's one-line output as their JSON value, where the view
+    decodes them (`model.ToolArgumentsJSON`, `model.ToolOutputJSON`)
   - the key names in those parts, as the view shows them
   - where the archive holds a capture: its body blocks (keys and values when a block is JSON,
     its text when not), the keys and values between blocks, the headers, the query, and a response's

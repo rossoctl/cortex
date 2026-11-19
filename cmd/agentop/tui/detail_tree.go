@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/agentop/tui/find"
+	coremodel "github.com/rossoctl/cortex/core/model"
 )
 
 // The event detail pane renders an event as a tree, so that the parts of it a reader does not
@@ -161,18 +161,17 @@ func buildTree(v any, path, key string, hasKey bool) *node {
 		scalar(strconv.FormatInt(toInt64(x), 10), styleJSONNumber.Render)
 	case string:
 		// A tool call's arguments are a JSON object sent as a string, and a tool's output is
-		// often compact JSON: show the value. Output with line breaks already reads well.
-		args := key == "arguments" && strings.HasPrefix(x, "{")
-		output := key == "content" && strings.Contains(path, "toolResults[") &&
-			(strings.HasPrefix(x, "{") || strings.HasPrefix(x, "[")) && !strings.Contains(x, "\n")
-		if (args || output) && !inCapture(path) {
-			dec := json.NewDecoder(strings.NewReader(x))
-			dec.UseNumber()
+		// often compact JSON: show the value.
+		if !inCapture(path) {
 			var val any
-			if dec.Decode(&val) == nil {
-				if _, err := dec.Token(); err == io.EOF {
-					return buildTree(val, path, key, hasKey)
-				}
+			ok := false
+			if key == "arguments" {
+				val, ok = coremodel.ToolArgumentsJSON(x)
+			} else if key == "content" && strings.Contains(path, "toolResults[") {
+				val, ok = coremodel.ToolOutputJSON(x)
+			}
+			if ok {
+				return buildTree(val, path, key, hasKey)
 			}
 		}
 		n.kind, n.plain, n.size = kindString, x, len(x)+2

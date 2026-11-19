@@ -35,8 +35,10 @@ func TestDetailSearch_ParityWithTheDetailView(t *testing.T) {
 		},
 		Tools: []pipeline.InferenceTool{{Name: "bash", Description: "run gamma",
 			Parameters: `{"type":"object","properties":{"deltafield":{"type":"string"}}}`}},
-		ToolResults:      []pipeline.InferenceToolResult{{ToolUseID: "t1", Content: "epsilon output"}},
-		HistoryToolCalls: []pipeline.InferenceToolCall{{ID: "t1", Name: "bash", Arguments: `{"cmd":"zeta"}`}},
+		ToolResults: []pipeline.InferenceToolResult{{ToolUseID: "t1", Content: "epsilon output"},
+			{ToolUseID: "t3", Content: `{"name":"caf\u00e9","n":"ABC"}`}},
+		HistoryToolCalls: []pipeline.InferenceToolCall{{ID: "t1", Name: "bash", Arguments: `{"cmd":"zeta"}`},
+			{ID: "t3", Name: "bash", Arguments: `{"command":"echo \"omega\"\nls"}`}},
 	}
 	resp := inf
 	resp.Completion = "eta answer"
@@ -70,7 +72,8 @@ func TestDetailSearch_ParityWithTheDetailView(t *testing.T) {
 		t.Fatalf("page: %d events, err %v", len(page.Events), err)
 	}
 	for _, q := range []string{"alpha", "beta reply", "gamma", "deltafield", "epsilon", "zeta", "eta answer",
-		"theta", "iota", "lambda", "x-kappa", "mu stream", "/nu", "xi", "toolUseId", "role", "bash", "absent"} {
+		"theta", "iota", "lambda", "x-kappa", "mu stream", "/nu", "xi", "toolUseId", "role", "bash", "absent",
+		`echo "omega"`, "café", `\"`} {
 		res, err := c.SearchSession(ctx, "s1", q)
 		if err != nil {
 			t.Fatal(err)
