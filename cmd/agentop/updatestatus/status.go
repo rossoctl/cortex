@@ -56,10 +56,10 @@ var (
 )
 
 // IsRelease reports whether v is a plain release tag such as v0.9.5.
-func IsRelease(v string) bool { return releaseRE.MatchString(v) }
+func IsRelease(v string) bool { return releaseRE.MatchString(v) && semver.IsValid(v) }
 
 // IsRC reports whether v is a release candidate tag such as v0.10.0-rc.1.
-func IsRC(v string) bool { return rcRE.MatchString(v) }
+func IsRC(v string) bool { return rcRE.MatchString(v) && semver.IsValid(v) }
 
 // Newer reports whether latest is a plain release that comes after installed.
 // installed must be a plain release or a release candidate. A dev or main build

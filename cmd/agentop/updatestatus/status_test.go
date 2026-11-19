@@ -17,6 +17,7 @@ func TestIsRelease(t *testing.T) {
 		"main-1a2b3c4":  false,
 		"v0.9.6-rc.1":   false,
 		"v0.9":          false,
+		"v01.0.0":       false,
 		"":              false,
 	} {
 		if got := IsRelease(v); got != want {
@@ -31,6 +32,7 @@ func TestIsRC(t *testing.T) {
 		"v0.10.0-rc.12":  true,
 		"v0.10.0":        false,
 		"v0.10.0-rc":     false,
+		"v0.10.0-rc.01":  false,
 		"v0.10.0-beta.1": false,
 		"dev":            false,
 	} {
@@ -50,6 +52,7 @@ func TestNewer(t *testing.T) {
 		{"v0.9.5", "v0.10.0", false},
 		{"v0.10.0", "v0.10.0-rc.1", true},
 		{"v0.9.5", "v0.10.0-rc.1", false},
+		{"v0.9.5", "v0.10.0-rc.01", false},
 		{"v0.10.1", "v0.10.0-rc.3", true},
 		{"v0.9.5", "dev-a698b60e+dirty", false},
 		{"v0.9.5", "main-1a2b3c4", false},
