@@ -517,7 +517,7 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 		if _, redirected, ok := pctx.RedirectTarget(); ok {
 			endpoint = redirected
 		}
-		h.observe(p.meta, usage, p.result, endpoint, pricing.UsageFromInference(inf).PromptTotal())
+		h.observe(p.meta, usage, inf.OutputTokens, p.result, endpoint, pricing.UsageFromInference(inf).PromptTotal())
 	}
 	return p.result, p.ok
 }

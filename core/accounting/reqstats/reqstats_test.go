@@ -160,6 +160,47 @@ func TestRecord_InferenceRowCarriesModelLabel(t *testing.T) {
 	}
 }
 
+// requestsByStream sums llm.inference.requests by its "stream" label value.
+func requestsByStream(t *testing.T, rd *sdkmetric.ManualReader) map[bool]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	_ = rd.Collect(context.Background(), &rm)
+	got := map[bool]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "llm.inference.requests" {
+				continue
+			}
+			for _, p := range m.Data.(metricdata.Sum[int64]).DataPoints {
+				v, ok := p.Attributes.Value("stream")
+				if !ok {
+					t.Fatalf("llm.inference.requests data point has no stream label: %v", p.Attributes.ToSlice())
+				}
+				got[v.AsBool()] += p.Value
+			}
+		}
+	}
+	return got
+}
+
+// The "stream" label says whether the ANSWER streamed (StreamedResponse), not what the request
+// asked for (Stream): a gateway can answer a streaming request with a buffered body. A
+// non-inference row streamed nothing and is labelled false, not dropped.
+func TestRecord_StreamLabelIsTheResponseShape(t *testing.T) {
+	mp, rd := manual(t)
+	r := New(mp)
+	r.Record("s1", &model.SessionEvent{Phase: model.SessionResponse, StatusCode: 200,
+		Inference: &model.InferenceExtension{Model: "m", Stream: true, StreamedResponse: true}})
+	r.Record("s1", &model.SessionEvent{Phase: model.SessionResponse, StatusCode: 200,
+		Inference: &model.InferenceExtension{Model: "m", Stream: true}}) // asked, answered buffered
+	r.Record("s1", &model.SessionEvent{Phase: model.SessionResponse, StatusCode: 200})
+
+	got := requestsByStream(t, rd)
+	if got[true] != 1 || got[false] != 2 {
+		t.Errorf("requests by stream = %v, want map[false:2 true:1]", got)
+	}
+}
+
 // A row with no Inference extension (a non-inference proxied request) still counts, under an
 // empty model label rather than being dropped or panicking.
 func TestRecord_NonInferenceRowHasEmptyModelLabel(t *testing.T) {

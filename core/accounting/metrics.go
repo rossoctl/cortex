@@ -99,7 +99,7 @@ func NewSink(mp metric.MeterProvider, r pricing.Resolver) *Sink {
 	}{
 		{"llm.inference.tokens", func() (err error) {
 			s.inferenceTokens, err = meter.Int64Counter("llm.inference.tokens",
-				metric.WithDescription("Billed prompt tokens per tier, for non-ping inference requests."))
+				metric.WithDescription("Provider-billed tokens per tier (prompt tiers and output), for non-ping inference requests."))
 			return err
 		}},
 		{"llm.inference.cost_usd", func() (err error) {
@@ -108,12 +108,12 @@ func NewSink(mp metric.MeterProvider, r pricing.Resolver) *Sink {
 			// — a name no dashboard queries. llm.savings.* sets none either, for the same
 			// reason.
 			s.inferenceCostUSD, err = meter.Float64Counter("llm.inference.cost_usd",
-				metric.WithDescription("Actual priced USD of non-ping inference requests."))
+				metric.WithDescription("Provider cost in USD of non-ping inference requests, every tier."))
 			return err
 		}},
 		{"llm.inference.estimated_cost_usd", func() (err error) {
 			s.inferenceEstimatedUSD, err = meter.Float64Counter("llm.inference.estimated_cost_usd",
-				metric.WithDescription("Estimated (bundled/unknown-rate) USD of non-ping inference requests."))
+				metric.WithDescription("Part of llm.inference.cost_usd priced from a fallback (bundled/unknown) rate."))
 			return err
 		}},
 		{"llm.keepalive.pings", func() (err error) {
@@ -123,12 +123,12 @@ func NewSink(mp metric.MeterProvider, r pricing.Resolver) *Sink {
 		}},
 		{"llm.keepalive.cost_usd", func() (err error) {
 			s.keepaliveCostUSD, err = meter.Float64Counter("llm.keepalive.cost_usd",
-				metric.WithDescription("Actual priced USD of keep-alive pings."))
+				metric.WithDescription("Provider cost in USD of keep-alive pings, every tier."))
 			return err
 		}},
 		{"llm.keepalive.estimated_cost_usd", func() (err error) {
 			s.keepaliveEstimatedUSD, err = meter.Float64Counter("llm.keepalive.estimated_cost_usd",
-				metric.WithDescription("Estimated (bundled/unknown-rate) USD of keep-alive pings."))
+				metric.WithDescription("Part of llm.keepalive.cost_usd priced from a fallback (bundled/unknown) rate."))
 			return err
 		}},
 		{"llm.cache.misses", func() (err error) {
@@ -152,13 +152,15 @@ func NewSink(mp metric.MeterProvider, r pricing.Resolver) *Sink {
 	return s
 }
 
-// Observe adds one computed request, or one ping (an empty RequestID), to the counters. endpoint
-// and promptTotal are the ones the ledger priced the request at: the server that billed (after
-// any redirect) and the request's whole prompt. A panic in the library or the pricer is
+// Observe adds one computed request, or one ping (an empty RequestID), to the counters. output is
+// the response's generated tokens: accountant.Usage holds only the prompt tiers, so the output
+// tier reaches the Tier 1 token and cost counters through this argument. endpoint and
+// promptTotal are the ones the ledger priced the request at: the server that billed (after any
+// redirect) and the request's whole prompt. A panic in the library or the pricer is
 // recovered and logged: it costs this observation and nothing else. Safe on a nil Sink.
 //
 // Money moves only for meta.Billing.Mode == api; the library decides that, not this sink.
-func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, res accountant.Result, endpoint string, promptTotal int) {
+func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, output int, res accountant.Result, endpoint string, promptTotal int) {
 	if s == nil || s.sink == nil {
 		return
 	}
@@ -172,7 +174,7 @@ func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, res acco
 	s.pricer.request = binding{endpoint: endpoint, promptTotal: promptTotal}
 	s.pricer.byModel = bindingsFor(meta.Model, s.pricer.request, res)
 	s.sink.Observe(acmetrics.Observation{Meta: meta, Usage: u, Result: res})
-	s.observeInferenceMetrics(meta, u, res)
+	s.observeInferenceMetrics(meta, u, output)
 }
 
 // observeInferenceMetrics adds one observation to the Tier 1 counters: llm.inference.* for a
@@ -180,21 +182,26 @@ func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, res acco
 // s.pricer.request/byModel are set for this observation, so priceUsageSplit prices at the same
 // endpoint and prompt total the ledger and llm.savings.* use.
 //
+// The cost counters follow the shared metrics contract (context-guru docs/metrics/spec.md 5.1),
+// which every proxy pushing to the central stack honours: cost_usd is the request's WHOLE price,
+// every tier including output, and estimated_cost_usd is the part of it priced from a fallback
+// rate — a subset of cost_usd, never an addition to it. So total spend is cost_usd alone, and the
+// fallback share is estimated_cost_usd / cost_usd. The keep-alive pair follows the same rule.
+//
 // "Estimated" is USD's own per-tier signal (a bundled or unknown rate, or a 1h write priced at
 // the 5m fallback) — not res.Unpriced, which is the accountant library's "this savings op could
-// not be priced" marker and says nothing about this request's own price. actual and estimated
-// are therefore a genuine split of one request's dollars, never an either/or on the whole
-// request: a reader summing cost_usd + estimated_cost_usd gets the request's whole price exactly
-// once, and the estimated/total ratio the Inference dashboard reads is meaningful.
-func (s *Sink) observeInferenceMetrics(meta accountant.RequestMeta, u accountant.Usage, res accountant.Result) {
+// not be priced" marker and says nothing about this request's own price. So a request with one
+// estimated tier and three priced ones books only that tier's dollars as estimated.
+func (s *Sink) observeInferenceMetrics(meta accountant.RequestMeta, u accountant.Usage, output int) {
 	ctx := context.Background()
 	modelAttr := attribute.String("model", meta.Model)
-	actual, estimated := s.priceUsageSplit(meta.Model, u)
+	actual, estimated := s.priceUsageSplit(meta.Model, u, output)
+	total := actual + estimated
 
 	if meta.RequestID == "" {
 		s.keepalivePings.Add(ctx, 1, metric.WithAttributes(modelAttr))
-		if actual > 0 {
-			s.keepaliveCostUSD.Add(ctx, actual, metric.WithAttributes(modelAttr))
+		if total > 0 {
+			s.keepaliveCostUSD.Add(ctx, total, metric.WithAttributes(modelAttr))
 		}
 		if estimated > 0 {
 			s.keepaliveEstimatedUSD.Add(ctx, estimated, metric.WithAttributes(modelAttr))
@@ -208,34 +215,36 @@ func (s *Sink) observeInferenceMetrics(meta accountant.RequestMeta, u accountant
 		n    int
 	}{
 		{"input", u.Input}, {"cache_read", u.CacheRead}, {"cache_write_5m", cacheWrite5m}, {"cache_write_1h", u.CacheWrite1h},
+		{"output", output},
 	}
 	for _, t := range tiers {
 		if t.n > 0 {
 			s.inferenceTokens.Add(ctx, int64(t.n), metric.WithAttributes(modelAttr, attribute.String("tier", t.name)))
 		}
 	}
-	if actual > 0 {
-		s.inferenceCostUSD.Add(ctx, actual, metric.WithAttributes(modelAttr))
+	if total > 0 {
+		s.inferenceCostUSD.Add(ctx, total, metric.WithAttributes(modelAttr))
 	}
 	if estimated > 0 {
 		s.inferenceEstimatedUSD.Add(ctx, estimated, metric.WithAttributes(modelAttr))
 	}
 	if u.CacheRead == 0 {
 		s.cacheMisses.Add(ctx, 1, metric.WithAttributes(modelAttr))
-		if cost := actual + estimated; cost > 0 {
-			s.cacheMissCostUSD.Add(ctx, cost, metric.WithAttributes(modelAttr))
+		if total > 0 {
+			s.cacheMissCostUSD.Add(ctx, total, metric.WithAttributes(modelAttr))
 		}
 	}
 }
 
-// priceUsageSplit prices u's tiers at s.pricer's current binding (endpoint, promptTotal) for
+// priceUsageSplit prices u's tiers and output's tokens at s.pricer's current binding (endpoint, promptTotal) for
 // model, with the same USD function the ledger and llm.savings.* price with — splitting the
 // result by each tier's own `estimated` return rather than combining them into one flag, so a
 // request with one estimated tier and three priced ones books most of its cost as actual.
 // CacheWrite1h is "the part of CacheWrite billed at the one-hour rate, never an addition to it"
 // (accountant.Usage): priced as cacheWrite5m (CacheWrite minus CacheWrite1h) plus CacheWrite1h,
-// never as raw CacheWrite plus CacheWrite1h, which would price the 1h tokens twice.
-func (s *Sink) priceUsageSplit(model string, u accountant.Usage) (actual, estimated float64) {
+// never as raw CacheWrite plus CacheWrite1h, which would price the 1h tokens twice. Output is
+// priced at TierOutput: it is most of the bill on a long answer, and the provider charges it.
+func (s *Sink) priceUsageSplit(model string, u accountant.Usage, output int) (actual, estimated float64) {
 	price := func(t pricing.Tier, n int) {
 		if n <= 0 {
 			return
@@ -251,6 +260,7 @@ func (s *Sink) priceUsageSplit(model string, u accountant.Usage) (actual, estima
 	price(pricing.TierCacheRead, u.CacheRead)
 	price(pricing.TierCacheWrite, u.CacheWrite-u.CacheWrite1h)
 	price(pricing.TierCacheWrite1h, u.CacheWrite1h)
+	price(pricing.TierOutput, output)
 	return
 }
 
@@ -350,7 +360,7 @@ func pricingTier(t acmetrics.Tier) (pricing.Tier, bool) {
 
 // observe gives one Result to the sink, off the caller's goroutine: Compute runs on the response
 // path, and the sink's lock is shared by every request. Close waits for these.
-func (h *Host) observe(meta accountant.RequestMeta, u accountant.Usage, res accountant.Result, endpoint string, promptTotal int) {
+func (h *Host) observe(meta accountant.RequestMeta, u accountant.Usage, output int, res accountant.Result, endpoint string, promptTotal int) {
 	if h.sink == nil && h.observeHook == nil {
 		return
 	}
@@ -371,6 +381,6 @@ func (h *Host) observe(meta accountant.RequestMeta, u accountant.Usage, res acco
 		if h.observeHook != nil {
 			h.observeHook(meta)
 		}
-		h.sink.Observe(meta, u, res, endpoint, promptTotal)
+		h.sink.Observe(meta, u, output, res, endpoint, promptTotal)
 	}()
 }

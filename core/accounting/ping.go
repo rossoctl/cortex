@@ -119,7 +119,7 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 		at = h.now()
 	}
 	h.observe(accountant.RequestMeta{Session: sessionID, Model: p.Model, At: at, Billing: billing},
-		p.Usage.Usage, res, host, p.Usage.Input+p.Usage.CacheRead+p.Usage.CacheWrite)
+		p.Usage.Usage, p.Usage.Output, res, host, p.Usage.Input+p.Usage.CacheRead+p.Usage.CacheWrite)
 	return res, true
 }
 

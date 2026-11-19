@@ -54,7 +54,7 @@ func New(mp metric.MeterProvider) session.Recorder {
 	}{
 		{"llm.inference.requests", func() (err error) {
 			r.requests, err = meter.Int64Counter("llm.inference.requests",
-				metric.WithDescription("HTTP requests the proxy completed, by status class."))
+				metric.WithDescription("HTTP requests the proxy completed, by status class and whether the answer streamed."))
 			return err
 		}},
 		{"llm.inference.duration_seconds", func() (err error) {
@@ -115,7 +115,8 @@ func (r *recorder) Record(_ string, e *model.SessionEvent) {
 	case model.SessionResponse, model.SessionDenied:
 		attrs := metric.WithAttributes(modelAttr(e))
 		if r.requests != nil {
-			r.requests.Add(ctx, 1, metric.WithAttributes(modelAttr(e), attribute.String("status_class", statusClass(e.StatusCode))))
+			r.requests.Add(ctx, 1, metric.WithAttributes(modelAttr(e),
+				attribute.String("status_class", statusClass(e.StatusCode)), attribute.Bool("stream", streamed(e))))
 		}
 		if r.duration != nil {
 			r.duration.Record(ctx, e.Duration.Seconds(), attrs)
@@ -138,6 +139,15 @@ func modelAttr(e *model.SessionEvent) attribute.KeyValue {
 		m = e.Inference.Model
 	}
 	return attribute.String("model", m)
+}
+
+// streamed is the "stream" label of llm.inference.requests: whether the ANSWER arrived as a
+// stream (Inference.StreamedResponse), the meaning the shared metrics contract gives the label
+// (context-guru docs/metrics/spec.md 5.1). Not Inference.Stream, which is what the request asked
+// for: a gateway can answer either way. False on a non-inference row and on a denial, neither
+// of which streamed anything.
+func streamed(e *model.SessionEvent) bool {
+	return e.Inference != nil && e.Inference.StreamedResponse
 }
 
 // statusClass buckets an HTTP status into "2xx"/"4xx"/"5xx", or "unknown" for 0 (not yet known —
