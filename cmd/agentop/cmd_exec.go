@@ -50,8 +50,8 @@ var execProxyVars = []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_p
 const execUsage = `agentop exec — run a command with Cortex's proxy and CA in its environment
 
 Usage:
-  agentop exec [--cortex-stats-url URL] -- COMMAND [ARG...]
-  agentop exec [--cortex-stats-url URL] --print
+  agentop exec [--cortex-stats-url URL] [--no-record] -- COMMAND [ARG...]
+  agentop exec [--cortex-stats-url URL] [--no-record] --print
 
 Everything after -- is passed to COMMAND exactly as given; agentop does not
 interpret it, so the command's own flags need no escaping:
@@ -92,6 +92,15 @@ Flags:
                  Mutually exclusive with a command: --print emits settings for a
                  shell to keep (paths under the CA directory, which outlive this
                  process), whereas a command gets them for its own lifetime only.
+  --no-record    ask Cortex not to record the child's session (Claude Code only, for
+                 now). Adds "X-Cortex-Record: off" to the child's
+                 ANTHROPIC_CUSTOM_HEADERS, keeping the headers already there.
+                 CORTEX_RECORD=off in agentop's environment does the same. Refused
+                 when ~/.claude/settings.json, or .claude/settings.json or
+                 .claude/settings.local.json in this directory, sets
+                 ANTHROPIC_CUSTOM_HEADERS in its "env" block: Claude Code applies that
+                 over the environment, so the header would be lost and the session
+                 recorded. Managed settings are not checked.
 
 Exit status: the child's, or 1 if the command could not be started (127 if it
 was not found on PATH), or 2 for a usage error.
@@ -120,6 +129,7 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, execUsage) }
 	printOnly := fs.Bool("print", false, "print the variables instead of running a command")
+	noRecord := fs.Bool("no-record", false, "ask Cortex not to record the child's session (Claude Code)")
 	statsURL := fs.String("cortex-stats-url", defaultCortexStatsURL, "stats URL of the running Cortex")
 	if err := fs.Parse(before); err != nil {
 		return 2
@@ -192,6 +202,13 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agentop: note: %s does not exist yet — Cortex writes it on first start.\n"+
 			"  Until then the child keeps its own trusted roots and only hosts the bridge\n"+
 			"  terminates will fail verification (agentop service start).\n", missingBundle)
+	}
+	if noRecordWanted(*noRecord, os.Getenv) {
+		home, dir := launchDirs()
+		if err := addRecordOff(inject, home, dir, os.Getenv); err != nil {
+			fmt.Fprintf(stderr, "agentop: --no-record: %v\n", err)
+			return 1
+		}
 	}
 
 	if *printOnly {
