@@ -1029,15 +1029,20 @@ a restart.
 
 When this Cortex runs the [`inference-router`](../../docs/plugin-catalog.md#inference-router),
 the agents pane gains a `SERVER` column: the server each agent's new sessions go to,
-or `own choice` for an agent the router leaves alone. `All agents`, `Other` and
+or `by key` for an agent with no `agents:` entry: each of its sessions goes to the
+server its key selects. `All agents`, `Other` and
 `unknown` show nothing there — routing is chosen per agent, `Other` is every client
 Cortex does not recognise, and `unknown` is requests that carry no User-Agent, which
 belong to no one agent. A router under `on_error: observe` records what it would
 route and routes nothing, so it gets no column.
 
 `S` on an agent's row opens a picker over the pane, its cursor on what the agent has
-now: *its own choice (not routed)* first, then each server with its host and its
-main and helper words. `↵` applies the highlighted entry, as in every agentop picker; `Esc`, `q` or
+now: *Each terminal's key decides* first, then each server with its host and its
+main and helper words. The first row removes the agent's `agents:` entry. Under it, a
+muted line counts the agent's sessions by the server each one goes to by its key: the
+`key_routes:` target of its key's server (one hop only), else that server. For example
+`now: 2 sessions → team-b, 1 → team-a`. When no session sent the key of a configured
+server, the line reads `no session sends a known key now`. `↵` applies the highlighted entry, as in every agentop picker; `Esc`, `q` or
 `Ctrl+C` closes it; choosing what the config file already holds writes nothing — the
 file decides, not where the cursor opened, since the route can change while the
 picker is up. The change is
@@ -1050,7 +1055,7 @@ New claude-code sessions → glm. 3 running sessions stay where they are.
 ```
 
 The count is of the agent's sessions this proxy holds in memory whose inference last
-went somewhere other than the new choice (for a switch back to its own choice, to any
+went somewhere other than the new choice (for a switch back to `by key`, to any
 of the servers), and is left out when there are none. A switch moves none of them:
 the router keeps a running session on the server it started on, across a proxy
 restart too (see [`agentop server`](#choosing-an-inference-server-agentop-server)).
@@ -1276,8 +1281,27 @@ names a key by the name of its server. See
 In the TUI, `S` on the agents pane does what `use` and `reset` do, for an agent
 the pane lists; see [Choosing an agent's server](#choosing-an-agents-server-s).
 On the sessions pane, `S` moves the highlighted session to a server (or to its own
-provider), confirming what the move costs first: the session's context is re-sent
-uncached on its first turn at the new server. A `server move` from the shell also
+provider, *its own choice (not routed)*). The picker shows a muted line with the cost:
+the session's context is re-sent uncached on its first turn at the new server. It asks
+for no confirmation.
+
+When the session sent the key of a configured server, `↵` on a server opens a second
+step, `Move to: <server>`, with two rows:
+
+- *This session only* moves the session, as the one-step picker does. The cursor
+  starts here, so `↵ ↵` does what `↵` does with one step.
+- *This session and new sessions that send <server>'s key* also writes
+  `key_routes.<key's server>: <target>`, in the same write. When the target is the
+  key's server, it removes that entry. It moves no other running session. Its note
+  says how many other running sessions stay on the key's server, for example
+  `(1 other running session stays on team-b)`. When the agent has an `agents:` entry,
+  the note says instead that the agent ignores `key_routes:`, for example
+  `(claude-code ignores this: the Agents pane sends it to ete)`.
+
+`Esc` or `q` goes back to the server list; `Ctrl+C` closes the picker and writes
+nothing. The flash after the second row adds what it changed, for example
+`New sessions that send team-b's key → team-a.` With no key of a configured server,
+and on the *its own choice* row, the picker has one step. A `server move` from the shell also
 prunes the config's `sessions:` entries for sessions that are neither live nor
 archived; the TUI's move does not.
 
