@@ -687,7 +687,7 @@ func planCodexDisable(envPath, statePath string) (codexDisablePlan, error) {
 		v, ok := f.get(k)
 		switch {
 		case !ok:
-		case changedSinceEnable(pl.st, k, v):
+		case changedSinceEnable(pl.st, k, codexAsRead(v)):
 			pl.left = append(pl.left, k)
 		default:
 			pl.present = append(pl.present, k)
@@ -696,16 +696,46 @@ func planCodexDisable(envPath, statePath string) (codexDisablePlan, error) {
 	return pl, nil
 }
 
+// codexAsRead is v as Codex reads it, quotes stripped, or v as it stands when
+// codexEnvValue cannot be sure. Compared with what enable wrote, which carries no quotes,
+// a quoted copy of Cortex's own value is still Cortex's, and a value that may read
+// otherwise is not: it is left, the safe side (#1783 review).
+func codexAsRead(v string) string {
+	if d, ok := codexEnvValue(v); ok {
+		return d
+	}
+	return v
+}
+
 // codexCortexProxy is the proxy the processes restarted after disable are compared with:
 // the value of HTTPS_PROXY, else https_proxy, among the keys the plan removes. A proxy
-// left in place is not Cortex's, and "" means there is nothing to compare with.
+// left in place is not Cortex's. With neither removed, enable's record says what
+// Cortex's proxy was, if there is a record (#1783 review); "" means there is nothing
+// to compare with.
 func codexCortexProxy(pl codexDisablePlan) string {
 	for _, k := range []string{"HTTPS_PROXY", "https_proxy"} {
 		if v, ok := pl.f.get(k); ok && slices.Contains(pl.present, k) {
-			return v
+			return codexAsRead(v)
 		}
 	}
+	if pl.st != nil {
+		return pl.st.Written["HTTPS_PROXY"]
+	}
 	return ""
+}
+
+// noteCodexDaemonOnCortex names an app-server still on Cortex's proxy when disable has
+// nothing of Cortex's to take out of the file. One started before the user changed the
+// file keeps the proxy it started with, and drops it only when it restarts. Nothing is
+// restarted here, since nothing was asked (#1783 review).
+func noteCodexDaemonOnCortex(codexHome, cortexProxy string, stdout io.Writer) {
+	d, ok := runningCodexDaemon(codexHome)
+	if !ok || d.EnvErr != nil || cortexProxy == "" || !sameProxy(d.Proxy, cortexProxy) {
+		return
+	}
+	fmt.Fprintf(stdout, "\nCodex's background app-server (pid %d%s) still uses Cortex's proxy, from before\n"+
+		"  these changes. It picks up the file when it restarts:\n"+
+		"    %s   # open Codex windows reconnect\n", d.PID, startedSuffix(d), codexDaemonRestartCmd)
 }
 
 // printCodexLeft names the keys disable leaves because they changed since enable, in
@@ -797,6 +827,7 @@ func codexDisable(envPath, statePath string, yes bool, stdout, stderr io.Writer)
 		// take out, and nothing to ask about.
 		fmt.Fprintf(stdout, "Nothing to remove from %s.\n\n", envPath)
 		printCodexLeft(pl, stdout)
+		noteCodexDaemonOnCortex(filepath.Dir(envPath), codexCortexProxy(pl), stdout)
 		return 0
 	}
 	fmt.Fprintf(stdout, "This will remove from %s: %s\n", envPath, strings.Join(pl.present, ", "))

@@ -469,6 +469,12 @@ recorded, or a deleted `~/.cortex`), it removes all five variables, as Claude Co
 leaving Codex pointed at a Cortex being turned off would be worse than losing an edit. In
 v0.9.5 and earlier, `disable` removed all five whatever the record said.
 
+It reads each value as Codex does, with surrounding quotes removed, so a quoted copy of
+Cortex's value is still Cortex's. When every variable was changed since `enable`, there is
+nothing to remove, but an app-server started before those changes still uses Cortex's
+proxy: `disable` names it, with the restart that drops the proxy, and does not restart it
+itself.
+
 ### What status says
 
 `status` prints the five variables as the file currently holds them, a

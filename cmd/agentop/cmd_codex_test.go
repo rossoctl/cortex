@@ -882,7 +882,10 @@ func TestCodexDisable_ChangesNothingWhenEveryKeyChangedSinceEnable(t *testing.T)
 	if code := codexDisable(envPath, statePath, false, &out, &errb); code != 0 {
 		t.Fatalf("disable exit %d, want 0 with no question asked: %s", code, errb.String())
 	}
-	wantAll(t, "disable output", out.String(), "Nothing to remove from "+envPath+".\n", "Leaving these alone — changed since Cortex set them:\n")
+	// The app-server started before the changes still has Cortex's proxy: named, with the
+	// restart that drops it, and not restarted, since nothing was asked (#1783 review).
+	wantAll(t, "disable output", out.String(), "Nothing to remove from "+envPath+".\n", "Leaving these alone — changed since Cortex set them:\n",
+		"Codex's background app-server (pid 5613", "still uses Cortex's proxy, from before\n", codexDaemonRestartCmd)
 	if b, _ := os.ReadFile(envPath); string(b) != mine {
 		t.Errorf("the file is %q, want it untouched", b)
 	}
@@ -891,5 +894,21 @@ func TestCodexDisable_ChangesNothingWhenEveryKeyChangedSinceEnable(t *testing.T)
 	}
 	if fileExists(statePath) {
 		t.Error("enable's record outlived the last of Cortex's values")
+	}
+}
+
+// Codex reads a quoted value with its quotes stripped, so a quoted copy of the value
+// enable wrote is still Cortex's, and disable removes it rather than leave Codex on a
+// Cortex being turned off (#1783 review).
+func TestCodexDisable_ReadsAQuotedValueAsCodexDoes(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	editFile(t, envPath, "HTTPS_PROXY="+cortexProxyURL, `HTTPS_PROXY="`+cortexProxyURL+`"`)
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	if env := readCodexEnv(t, envPath); len(env) != 0 {
+		t.Errorf("after disable the managed keys are %v, want none:\n%s", env, out.String())
 	}
 }

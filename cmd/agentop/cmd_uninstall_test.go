@@ -2249,22 +2249,27 @@ func TestUninstallLeavesACodexValueChangedSinceEnable(t *testing.T) {
 
 // A CA bundle of the user's kept inside ~/.cortex, set after enable, is theirs by the
 // record, so uninstall leaves the key, and --purge keeps ~/.cortex rather than delete the
-// file it names. By shape alone it read as Cortex's, and both went (#1781 review).
+// file it names. By shape alone it read as Cortex's, and both went (#1781 review). Quoted,
+// it is the same path to Codex, whose loader strips the quotes (#1783 review).
 func TestUninstallPurgeKeepsAnOwnCodexCAUnderCortex(t *testing.T) {
-	sc := newUninstallScene(t)
-	sc.setUp(t)
-	envPath := codexEnabledIn(t, sc, &fakeCodexDaemon{})
-	mine := filepath.Join(sc.home, ".cortex", "my-corp.pem")
-	writeHomeFile(t, mine, "corporate CA\n")
-	replaceIn(t, envPath, envSSLCert+"="+readCodexEnv(t, envPath)[envSSLCert], envSSLCert+"="+mine)
-	code, out := sc.uninstall(t, "--yes", "--purge")
-	wantLines(t, code, 1, out, markLine("·", "purged")+"kept ~/.cortex: "+envSSLCert+
-		" in ~/.codex/.env still points into it — delete it once nothing points into it: rm -rf ~/.cortex\n")
-	if got := readCodexEnv(t, envPath)[envSSLCert]; got != mine {
-		t.Errorf("%s = %q after uninstall, want the user's %q", envSSLCert, got, mine)
-	}
-	if !fileExists(mine) {
-		t.Error("--purge deleted the user's CA bundle")
+	for name, quote := range map[string]string{"bare": "", "double-quoted": `"`, "single-quoted": "'"} {
+		t.Run(name, func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t)
+			envPath := codexEnabledIn(t, sc, &fakeCodexDaemon{})
+			mine := filepath.Join(sc.home, ".cortex", "my-corp.pem")
+			writeHomeFile(t, mine, "corporate CA\n")
+			replaceIn(t, envPath, envSSLCert+"="+readCodexEnv(t, envPath)[envSSLCert], envSSLCert+"="+quote+mine+quote)
+			code, out := sc.uninstall(t, "--yes", "--purge")
+			wantLines(t, code, 1, out, markLine("·", "purged")+"kept ~/.cortex: "+envSSLCert+
+				" in ~/.codex/.env still points into it — delete it once nothing points into it: rm -rf ~/.cortex\n")
+			if got := readCodexEnv(t, envPath)[envSSLCert]; got != quote+mine+quote {
+				t.Errorf("%s = %q after uninstall, want the user's %q", envSSLCert, got, quote+mine+quote)
+			}
+			if !fileExists(mine) {
+				t.Error("--purge deleted the user's CA bundle")
+			}
+		})
 	}
 }
 
@@ -2281,5 +2286,23 @@ func TestUninstallUnroutesACodexWhosePortMovedSinceEnable(t *testing.T) {
 	wantLines(t, code, 0, out, markLine("✓", "unrouted")+"Codex no longer goes through Cortex\n")
 	if got := readCodexEnv(t, envPath); len(got) != 0 {
 		t.Errorf("Cortex's values survived the unroute: %v", got)
+	}
+}
+
+// A file whose managed keys were all changed since enable has nothing of Cortex's to take
+// out, but an app-server started before the changes still has Cortex's proxy, which
+// uninstall is about to stop. Enable's record says what that proxy was, so the row
+// restarts it, as it would after removing the keys (#1783 review).
+func TestUninstallRestartsACodexStillOnCortexWhenEveryKeyChanged(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t)
+	f := runningCodex()
+	envPath := codexEnabledIn(t, sc, f)
+	const corp = "http://proxy.corp.example:8080"
+	writeHomeFile(t, envPath, "HTTP_PROXY="+corp+"\nHTTPS_PROXY="+corp+"\nhttp_proxy="+corp+"\nhttps_proxy="+corp+"\nSSL_CERT_FILE=/etc/corp.pem\n")
+	code, out := sc.uninstall(t, "--yes")
+	wantLines(t, code, 1, out, markLine("!", "unrouted")+"left HTTP_PROXY, HTTPS_PROXY, http_proxy, … as they are · restarted its app-server\n")
+	if !slices.Equal(f.steps, []string{"stop-updater", "restart"}) {
+		t.Errorf("the daemon saw %v, want the updater stopped and the app-server restarted", f.steps)
 	}
 }
