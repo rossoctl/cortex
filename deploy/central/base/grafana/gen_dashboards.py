@@ -44,23 +44,12 @@ def rate(metric, by="", extra=""):
 
 
 def spend(by=""):
-    """Total priced spend: llm_inference_cost_usd_total (a confirmed rate) plus
-    llm_inference_estimated_cost_usd_total (a bundled/fallback rate) — the two never double-count
-    one request's cost (core/accounting/metrics.go's priceUsageSplit prices each tier as either
-    actual or estimated, never both). A fleet with no configured pricing.endpoints entry for its
-    gateway prices everything from the bundled table, so "Spend" and "Saving rate" would otherwise
-    read zero/no-data rather than the real total. Use this, not inc("llm_inference_cost_usd_total",
-    ...) alone, for any panel meant to show total spend. inference.json's "Spend priced from a
-    fallback rate" panel is the one place that wants the two kept apart, to show the fallback
-    fraction.
-
-    PromQL's `+` between two vectors only produces a result where a series exists on BOTH sides
-    (vector matching) — sum() of zero series is an empty vector, not a 0-valued one, so with
-    nothing in the actual-rate counter yet (every request so far priced from the bundled table)
-    a plain `actual + estimated` silently returns NOTHING, actual's data included. Padded with
-    the other side times zero, the same idiom net() below uses for saved/added."""
-    a, e = inc("llm_inference_cost_usd_total", by), inc("llm_inference_estimated_cost_usd_total", by)
-    return f'(({a}) or ({e}) * 0) + (({e}) or ({a}) * 0)'
+    """Total priced spend: llm_inference_cost_usd_total. Under the shared metrics contract
+    (context-guru docs/metrics/spec.md 5.1) cost_usd is every request's whole price, and
+    llm_inference_estimated_cost_usd_total is the part of it priced from a fallback rate: a
+    subset, never an addition. Adding the two would count the fallback-priced dollars twice.
+    inference.json's "Spend priced from a fallback rate" panel divides the subset by this total."""
+    return inc("llm_inference_cost_usd_total", by)
 
 
 def net(by="", fn="inc"):
@@ -385,9 +374,9 @@ def inference():
         (quant(0.99, "llm_inference_ttfb_seconds"), "p99")], 0, 13, 12, 8, unit="s", colors={"p50": GREEN, "p95": YELLOW, "p99": RED},
         desc="Time from request to the first byte of a streamed answer. A buffered stream has no true first byte and is left out."))
     P.append(series(9, "Time to first token p95 by model (seconds)", [(quant(0.95, "llm_inference_ttfb_seconds", "model"), "{{model}}")], 12, 13, 12, 8, unit="s"))
-    P.append(series(10, "Output tokens per streamed request", [
-        (f'{rate(tok, "model", tier("output"))} / clamp_min(sum by (model) (rate(llm_inference_requests_total{{{FILTER},stream="true"}}[$__rate_interval])), 1e-9)', "{{model}}")],
-        0, 21, 12, 8, desc="Not a speed. Output tokens divided by streamed requests, by model. A true tokens per second needs the time spent writing, which is not recorded."))
+    P.append(series(10, "Output tokens per request", [
+        (f'{rate(tok, "model", tier("output"))} / clamp_min(sum by (model) (rate(llm_inference_requests_total{{{FILTER},status_class="2xx"}}[$__rate_interval])), 1e-9)', "{{model}}")],
+        0, 21, 12, 8, desc="Not a speed. Output tokens divided by successful requests, by model. Streamed and buffered answers both count: llm_inference_tokens_total has no stream label, so a streamed-only denominator would divide every answer's tokens by part of the requests. A true tokens per second needs the time spent writing, which is not recorded."))
     P.append(series(11, "Time the proxy added (seconds)", [
         (quant(0.5, "llm_inference_added_seconds"), "p50"), (quant(0.95, "llm_inference_added_seconds"), "p95"),
         (quant(0.99, "llm_inference_added_seconds"), "p99")], 12, 21, 12, 8, unit="s", colors={"p50": GREEN, "p95": YELLOW, "p99": RED},

@@ -199,7 +199,7 @@ func everyCounter() accountant.Result {
 func observe(s *accounting.Sink) {
 	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(),
 		Billing: accountant.Billing{Mode: accountant.BillingAPI}}
-	s.Observe(meta, accountant.Usage{Input: 3, CacheRead: 2000}, everyCounter(), "api.anthropic.com", 2003)
+	s.Observe(meta, accountant.Usage{Input: 3, CacheRead: 2000}, 0, everyCounter(), "api.anthropic.com", 2003)
 }
 
 // The series names and label keys Cortex pushes. The central collector's label allow-list is,

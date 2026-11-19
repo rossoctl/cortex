@@ -89,7 +89,7 @@ func TestSink_SavedMatchesTheLedgerToTheMicro(t *testing.T) {
 	s := NewSink(mp, rates)
 	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
 	res := maskResult()
-	s.Observe(meta, accountant.Usage{Input: 3, CacheRead: 34000}, res, "api.anthropic.com", 34003)
+	s.Observe(meta, accountant.Usage{Input: 3, CacheRead: 34000}, 0, res, "api.anthropic.com", 34003)
 
 	if got := sum(t, rd, "llm.savings.saved.tokens", map[string]string{"kind": "rewrite", "tier": "input", "component": "mask"}); got != 1200 {
 		t.Errorf("saved input tokens = %v, want 1200", got)
@@ -143,7 +143,7 @@ func TestSink_ConcurrentObservationsKeepTheirOwnEndpoint(t *testing.T) {
 			go func(ep string, total int) {
 				defer wg.Done()
 				meta := accountant.RequestMeta{RequestID: fmt.Sprint(ep, i), Model: "m", At: time.Now(), Billing: apiBilling}
-				s.Observe(meta, accountant.Usage{Input: total}, res, ep, total)
+				s.Observe(meta, accountant.Usage{Input: total}, 0, res, ep, total)
 			}(ep, total)
 		}
 	}
@@ -172,7 +172,7 @@ func TestSink_PricerPanicDoesNotEscape(t *testing.T) {
 					t.Fatalf("Observe let a panic out: %v", r)
 				}
 			}()
-			s.Observe(meta, accountant.Usage{}, maskResult(), "e", 1)
+			s.Observe(meta, accountant.Usage{}, 0, maskResult(), "e", 1)
 		}()
 	}
 }
@@ -182,7 +182,7 @@ func TestSink_NilIsANoOp(t *testing.T) {
 	if s := NewSink(nil, testRates(pricing.ProvConfigured)); s != nil {
 		t.Errorf("NewSink(nil) = %v, want nil", s)
 	}
-	(*Sink)(nil).Observe(accountant.RequestMeta{}, accountant.Usage{}, maskResult(), "", 0)
+	(*Sink)(nil).Observe(accountant.RequestMeta{}, accountant.Usage{}, 0, maskResult(), "", 0)
 }
 
 // The Host observes a computed request once, however many times Compute is asked, and the pushed
@@ -304,7 +304,7 @@ func TestSink_SpendMatchesTheLedgerToTheMicro(t *testing.T) {
 	res := maskResult()
 	res.Ops = append(res.Ops, spendOp("sp1", "m2", "other.example"))
 	meta := accountant.RequestMeta{Model: "m1", At: time.Now(), Billing: apiBilling}
-	s.Observe(meta, accountant.Usage{Input: 30000}, res, "api.example", 30000)
+	s.Observe(meta, accountant.Usage{Input: 30000}, 0, res, "api.example", 30000)
 
 	ledger := ledgerSpends(zone, res, "m1", "api.example", 30000)
 	got := sum(t, rd, "llm.savings.added.usd", map[string]string{"kind": "spend"})
@@ -344,7 +344,7 @@ func TestSink_SpendCollisionFallsBackToTheRequestBinding(t *testing.T) {
 			s := NewSink(mp, zone)
 			res := accountant.Result{Ops: c.ops}
 			s.Observe(accountant.RequestMeta{Model: "m1", At: time.Now(), Billing: apiBilling},
-				accountant.Usage{Input: 30000}, res, "api.example", 30000)
+				accountant.Usage{Input: 30000}, 0, res, "api.example", 30000)
 			var want, ledgerTotal float64
 			for _, op := range c.ops {
 				want += requestBound(op.Call, c.model)
@@ -374,7 +374,7 @@ func TestSink_NonAPIBillingMovesNoMoney(t *testing.T) {
 			res := maskResult()
 			res.Ops = append(res.Ops, spendOp("sp1", "m2", "other.example"))
 			s.Observe(accountant.RequestMeta{Model: "m1", At: time.Now(), Billing: accountant.Billing{Mode: mode}},
-				accountant.Usage{Input: 30000}, res, "api.example", 30000)
+				accountant.Usage{Input: 30000}, 0, res, "api.example", 30000)
 			if got := sum(t, rd, "llm.savings.saved.tokens", map[string]string{"component": "mask", "tier": "input"}); got != 1200 {
 				t.Errorf("saved tokens = %v, want 1200", got)
 			}
@@ -430,7 +430,7 @@ func TestSpends_DryRunAndRefusedCountInNeitherOutput(t *testing.T) {
 			}
 			mp, rd := manual(t)
 			NewSink(mp, zone).Observe(accountant.RequestMeta{Model: "m1", At: time.Now(), Billing: apiBilling},
-				accountant.Usage{Input: 30000}, res, "api.example", 30000)
+				accountant.Usage{Input: 30000}, 0, res, "api.example", 30000)
 			got := sum(t, rd, "llm.savings.added.usd", map[string]string{"kind": "spend"})
 			if want := float64(all.Figures().PluginSpendMicros) / 1e6; !micro(got, want) {
 				t.Errorf("pushed spend usd = %.9f, ledger PluginSpendMicros = %.9f: they must agree", got, want)
@@ -446,7 +446,7 @@ func TestSink_PingCountsOnlyUnderKeepalive(t *testing.T) {
 	s := NewSink(mp, rates)
 	meta := accountant.RequestMeta{RequestID: "", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
 	u := accountant.Usage{Input: 100, CacheRead: 50}
-	s.Observe(meta, u, accountant.Result{}, "api.example.com", 150)
+	s.Observe(meta, u, 0, accountant.Result{}, "api.example.com", 150)
 
 	if got := sum(t, rd, "llm.inference.tokens", nil); got != 0 {
 		t.Errorf("ping counted under llm.inference.tokens: %v", got)
@@ -463,7 +463,7 @@ func TestSink_CacheMissCountsAndPrices(t *testing.T) {
 	s := NewSink(mp, rates)
 	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
 	u := accountant.Usage{Input: 100}
-	s.Observe(meta, u, accountant.Result{}, "api.example.com", 100)
+	s.Observe(meta, u, 0, accountant.Result{}, "api.example.com", 100)
 
 	if got := sum(t, rd, "llm.cache.misses", nil); got != 1 {
 		t.Errorf("llm.cache.misses = %v, want 1", got)
@@ -481,7 +481,7 @@ func TestSink_CacheReadIsNotAMiss(t *testing.T) {
 	s := NewSink(mp, rates)
 	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
 	u := accountant.Usage{Input: 100, CacheRead: 50}
-	s.Observe(meta, u, accountant.Result{}, "api.example.com", 150)
+	s.Observe(meta, u, 0, accountant.Result{}, "api.example.com", 150)
 
 	if got := sum(t, rd, "llm.cache.misses", nil); got != 0 {
 		t.Errorf("llm.cache.misses = %v, want 0", got)
@@ -490,20 +490,88 @@ func TestSink_CacheReadIsNotAMiss(t *testing.T) {
 
 // A request priced at a bundled (fallback) rate is estimated even when the accountant Result
 // itself carries no Unpriced ops — the request's own price, not the accountant's savings
-// computation, is what "estimated" means here. (review finding 3)
+// computation, is what "estimated" means here. (review finding 3) Every tier is estimated, so
+// the estimated part is the whole cost: cost_usd is the total, estimated_cost_usd a subset of it.
 func TestSink_BundledRateIsEstimatedWithNoUnpricedOps(t *testing.T) {
 	mp, rd := manual(t)
 	rates := testRates(pricing.ProvBundled)
 	s := NewSink(mp, rates)
 	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
 	u := accountant.Usage{Input: 100, CacheRead: 50}
-	s.Observe(meta, u, accountant.Result{}, "api.example.com", 150) // no Unpriced ops
+	s.Observe(meta, u, 0, accountant.Result{}, "api.example.com", 150) // no Unpriced ops
 
-	if got := sum(t, rd, "llm.inference.estimated_cost_usd", nil); got <= 0 {
-		t.Errorf("llm.inference.estimated_cost_usd = %v, want > 0 (bundled rate)", got)
+	want := 100*3e-6 + 50*3e-7
+	if got := sum(t, rd, "llm.inference.estimated_cost_usd", nil); !micro(got, want) {
+		t.Errorf("llm.inference.estimated_cost_usd = %v, want %v (bundled rate: every tier estimated)", got, want)
 	}
-	if got := sum(t, rd, "llm.inference.cost_usd", nil); got != 0 {
-		t.Errorf("llm.inference.cost_usd = %v, want 0 (a bundled-rate price is estimated, not actual)", got)
+	if got := sum(t, rd, "llm.inference.cost_usd", nil); !micro(got, want) {
+		t.Errorf("llm.inference.cost_usd = %v, want %v (the whole price, estimated part included)", got, want)
+	}
+}
+
+// cost_usd is the request's whole price and estimated_cost_usd the part of it priced from a
+// fallback rate (the shared metrics contract, context-guru docs/metrics/spec.md 5.1). A
+// non-Anthropic model has no documented 1h-write rate, so its 1h write is priced at the 5m
+// fallback and is estimated; its input is not. The dashboard's fallback share
+// (estimated / cost) must then read that one tier's share, not 0 and not 1.
+func TestSink_EstimatedCostIsSubsetOfCost(t *testing.T) {
+	mp, rd := manual(t)
+	rates := testRates(pricing.ProvConfigured)
+	s := NewSink(mp, rates)
+	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "m1", At: time.Now(), Billing: apiBilling}
+	u := accountant.Usage{Input: 100, CacheWrite: 1000, CacheWrite1h: 1000}
+	s.Observe(meta, u, 0, accountant.Result{}, "api.example.com", 1100)
+
+	input, inputEst := USD(rates, "api.example.com", "m1", 1100, pricing.TierInput, 100)
+	write1h, write1hEst := USD(rates, "api.example.com", "m1", 1100, pricing.TierCacheWrite1h, 1000)
+	if inputEst || !write1hEst {
+		t.Fatalf("fixture: input estimated=%v (want false), 1h write estimated=%v (want true)", inputEst, write1hEst)
+	}
+	if got := sum(t, rd, "llm.inference.cost_usd", nil); !micro(got, input+write1h) {
+		t.Errorf("llm.inference.cost_usd = %v, want %v (input + 1h write: the whole price)", got, input+write1h)
+	}
+	if got := sum(t, rd, "llm.inference.estimated_cost_usd", nil); !micro(got, write1h) {
+		t.Errorf("llm.inference.estimated_cost_usd = %v, want %v (the 1h write only)", got, write1h)
+	}
+}
+
+// Output tokens are counted under tier="output" and priced into cost_usd. accountant.Usage holds
+// only the prompt tiers, so they arrive through Observe's output argument; without them the
+// Inference dashboard's output panels read no data and its spend misses most of a long answer.
+func TestSink_OutputTierIsCountedAndPriced(t *testing.T) {
+	mp, rd := manual(t)
+	rates := testRates(pricing.ProvConfigured)
+	s := NewSink(mp, rates)
+	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
+	s.Observe(meta, accountant.Usage{Input: 100}, 200, accountant.Result{}, "api.example.com", 100)
+
+	if got := sum(t, rd, "llm.inference.tokens", map[string]string{"tier": "output"}); got != 200 {
+		t.Errorf("tokens tier=output = %v, want 200", got)
+	}
+	if want := 100*3e-6 + 200*1.5e-5; !micro(sum(t, rd, "llm.inference.cost_usd", nil), want) {
+		t.Errorf("llm.inference.cost_usd = %v, want %v (input + output)", sum(t, rd, "llm.inference.cost_usd", nil), want)
+	}
+	if got := sum(t, rd, "llm.inference.estimated_cost_usd", nil); got != 0 {
+		t.Errorf("llm.inference.estimated_cost_usd = %v, want 0 (every rate configured)", got)
+	}
+}
+
+// A ping follows the same contract: llm.keepalive.cost_usd is its whole price, output included,
+// and llm.keepalive.estimated_cost_usd the fallback-priced part of it. The keep-alive net
+// recording rule subtracts cost_usd alone, so a split here would understate the ping's cost.
+func TestSink_KeepaliveCostIsTotal(t *testing.T) {
+	mp, rd := manual(t)
+	rates := testRates(pricing.ProvBundled)
+	s := NewSink(mp, rates)
+	meta := accountant.RequestMeta{RequestID: "", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
+	s.Observe(meta, accountant.Usage{CacheRead: 1000}, 1, accountant.Result{}, "api.example.com", 1000)
+
+	want := 1000*3e-7 + 1*1.5e-5
+	if got := sum(t, rd, "llm.keepalive.cost_usd", nil); !micro(got, want) {
+		t.Errorf("llm.keepalive.cost_usd = %v, want %v (whole price, output included)", got, want)
+	}
+	if got := sum(t, rd, "llm.keepalive.estimated_cost_usd", nil); !micro(got, want) {
+		t.Errorf("llm.keepalive.estimated_cost_usd = %v, want %v (bundled: all of it)", got, want)
 	}
 }
 
@@ -515,7 +583,7 @@ func TestSink_NoRateIsEstimatedNotActual(t *testing.T) {
 	s := NewSink(mp, rates)
 	meta := accountant.RequestMeta{RequestID: "r1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
 	u := accountant.Usage{Input: 100}
-	s.Observe(meta, u, accountant.Result{}, "api.example.com", 100)
+	s.Observe(meta, u, 0, accountant.Result{}, "api.example.com", 100)
 
 	if got := sum(t, rd, "llm.inference.cost_usd", nil); got != 0 {
 		t.Errorf("llm.inference.cost_usd = %v, want 0", got)
@@ -535,7 +603,7 @@ func TestSink_CacheWrite1hIsPricedOnce(t *testing.T) {
 	s := NewSink(mp, rates)
 	meta := accountant.RequestMeta{RequestID: "r1", Session: "s1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
 	u := accountant.Usage{CacheWrite: 1000, CacheWrite1h: 1000} // every write is a 1h write
-	s.Observe(meta, u, accountant.Result{}, "api.anthropic.com", 1000)
+	s.Observe(meta, u, 0, accountant.Result{}, "api.anthropic.com", 1000)
 
 	want, _ := TierUSD(rates, "api.anthropic.com", "claude-sonnet-4-5", 1000, accountant.TierTokens{CacheWrite1h: 1000})
 	if got := sum(t, rd, "llm.inference.cost_usd", nil); !micro(got, want) {
@@ -557,7 +625,7 @@ func TestSink_DollarCountersSetNoUnit(t *testing.T) {
 	rates := testRates(pricing.ProvConfigured)
 	s := NewSink(mp, rates)
 	meta := accountant.RequestMeta{RequestID: "r1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
-	s.Observe(meta, accountant.Usage{Input: 100}, accountant.Result{}, "api.example.com", 100)
+	s.Observe(meta, accountant.Usage{Input: 100}, 0, accountant.Result{}, "api.example.com", 100)
 
 	var rm metricdata.ResourceMetrics
 	if err := rd.Collect(context.Background(), &rm); err != nil {
@@ -579,7 +647,7 @@ func TestSink_CountersCarryModelLabel(t *testing.T) {
 	rates := testRates(pricing.ProvConfigured)
 	s := NewSink(mp, rates)
 	meta := accountant.RequestMeta{RequestID: "r1", Model: "claude-sonnet-4-5", At: time.Now(), Billing: apiBilling}
-	s.Observe(meta, accountant.Usage{Input: 100}, accountant.Result{}, "api.example.com", 100)
+	s.Observe(meta, accountant.Usage{Input: 100}, 0, accountant.Result{}, "api.example.com", 100)
 
 	if got := sum(t, rd, "llm.inference.cost_usd", map[string]string{"model": "claude-sonnet-4-5"}); got <= 0 {
 		t.Errorf("llm.inference.cost_usd with model label = %v, want > 0", got)
