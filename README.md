@@ -47,6 +47,11 @@ agentop observe
 agentop cost --window month --by agent
 ```
 
+**See where a session's time went.** Press `T` on a session in `agentop observe`.
+The timeline shows the main agent and each subagent on one time axis: model time,
+tool time, retries, and the time the agent waited on you. It also shows each host
+that the session called, and its errors. See [Using agentop](./docs/using-agentop.md).
+
 **Switch any agent to another inference server.** Provider down, or your team
 has its own gateway? Point the agent at another server without changing the
 agent's settings: a LiteLLM gateway, a provider's API, or a model on your own
