@@ -544,13 +544,14 @@ lsof -nP -a -p "$(pgrep -f 'codex app-server --listen')" -iTCP -sTCP:ESTABLISHED
 
 ### When you uninstall Cortex
 
-`agentop uninstall` unroutes Codex before it stops the proxy: it removes each of the five
-variables whose value is Cortex's, deletes the record, and restarts a running app-server
-the way `disable` does. Unlike `disable`, it leaves a variable whose value is not Cortex's,
-such as a proxy or CA bundle of your own, and lists it under *Left behind*, because it
-changes everything on one question. When it cannot change the file, for example when a
-variable is defined twice, `--purge` keeps `~/.cortex`, since Codex's `SSL_CERT_FILE` still
-names the CA bundle there.
+`agentop uninstall` unroutes Codex before it stops the proxy, the way `disable` does: it
+removes the five variables, deletes the record, stops Codex's auto-updater, and restarts
+a running app-server. It does this for the file enable's record names, wherever `--env`
+or a `CODEX_HOME` put it, and for the default file when one of its proxy lines is the
+proxy `enable` would write now. When it cannot change a file, for example when a
+variable is defined twice, the step fails with the lines to remove by hand, and
+`--purge` keeps `~/.cortex`, since Codex's `SSL_CERT_FILE` still names the CA bundle
+there.
 
 `agentop uninstall` in v0.9.5 and earlier skipped Codex. If you uninstalled with one of
 those, Codex still points at a proxy that is gone: undo it by hand, as below.
@@ -564,15 +565,18 @@ Cortex's. Then delete the record, stop Codex's auto-updater, and restart Codex's
 server, so neither keeps using the proxy. The updater has to go first: `codex app-server
 daemon restart` keeps a running updater, which still has the proxy and passes it to the
 app-server it starts after its next update, and Codex has no command that stops one. The
-`pkill` matches the updater by its command line; the brackets keep the pattern from
-matching the shell that runs it.
+`pkill` matches the updater by its command line, and the brackets keep the pattern from
+matching the shell that runs it. `pkill` only signals the updater, so wait for it to
+exit: a restart while it is still running keeps it.
 
 ```sh
 # Remove only lines matching these five keys, and only if they point at Cortex:
 #   HTTP_PROXY  HTTPS_PROXY  http_proxy  https_proxy  SSL_CERT_FILE
 $EDITOR ~/.codex/.env
 rm -f ~/.cortex/codex-state.json
-pkill -f 'app-server daemon pid-update-loo[p]'; codex app-server daemon restart
+pkill -f 'app-server daemon pid-update-loo[p]'
+while pgrep -f 'app-server daemon pid-update-loo[p]' >/dev/null; do sleep 1; done
+codex app-server daemon restart
 ```
 
 ### CA trust
