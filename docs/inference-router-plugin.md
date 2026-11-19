@@ -317,8 +317,7 @@ key_routes:
 
 **What the router records.** When the key of a request matches a server, each
 router record of the request has `key_of: <server name>`. This is also true when
-the session is pinned to another server. The session summary shows this value as
-`inferenceKeyOf`. Neither holds a key.
+the session is pinned to another server. The record holds a server name, not a key.
 
 **Change in behavior.** Before this feature, the router did not route an agent with
 no `agents` entry. Now, when such an agent calls a listed server with that server's
