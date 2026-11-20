@@ -18,6 +18,7 @@ import (
 	_ "github.com/rossoctl/cortex/core/session"
 	_ "github.com/rossoctl/cortex/core/session/archive"
 	_ "github.com/rossoctl/cortex/core/session/timeline"
+	_ "github.com/rossoctl/cortex/core/session/toolpair"
 	_ "github.com/rossoctl/cortex/core/sessionexport"
 )
 
@@ -32,6 +33,7 @@ var dataOnly = []string{
 	"github.com/rossoctl/cortex/core/session",
 	"github.com/rossoctl/cortex/core/session/archive",
 	"github.com/rossoctl/cortex/core/session/timeline",
+	"github.com/rossoctl/cortex/core/session/toolpair",
 	"github.com/rossoctl/cortex/core/sessionexport",
 	"github.com/rossoctl/cortex/core/attribution",
 	"github.com/rossoctl/cortex/core/parse/a2a",
