@@ -411,10 +411,9 @@ func (m *model) timelineLayoutNow() (tlLayout, bool) {
 // legend's lines and the cursor line. Each agent and host row takes two lines, its own and the
 // blank one that keeps a row's bars off the next row's.
 const (
-	timelineFixedLines = 8
-	// timelineLegendLines is how many lines legend draws. The tok/s note has a line of its own,
-	// so it is not cut at a width where the chart itself still fits.
-	timelineLegendLines = 2
+	timelineFixedLines = 7
+	// timelineLegendLines is how many lines legend draws.
+	timelineLegendLines = 1
 )
 
 // tlEmptyLines is what an empty side draws in place of its rows: a note and a blank line.
@@ -774,14 +773,26 @@ func (m *model) renderTimeline() string {
 	return b.String()
 }
 
+// legend is one line that fits m.width: whole items drop from the right, never a wrap.
 func (m *model) legend() string {
-	sw := func(c lipgloss.AdaptiveColor, s string) string {
-		return lipgloss.NewStyle().Foreground(c).Render("█") + styleMuted.Render(" "+s+"  ")
+	sw := func(sep string, c lipgloss.AdaptiveColor, s string) [2]string {
+		return [2]string{sep + "█ " + s, styleMuted.Render(sep) + lipgloss.NewStyle().Foreground(c).Render("█") + styleMuted.Render(" "+s)}
 	}
-	return sw(colorTLTool, "tools") + sw(colorTLModel, "model") + sw(colorTLRetry, "retrying") +
-		sw(colorTLSubs, "waiting on subagents") + sw(colorTLUser, "waiting on you") +
-		styleMuted.Render("┆ time cut from the axis, in its colour   ▁…█ requests in flight") + "\n" +
-		styleMuted.Render("  tok/s output per second of model time, last 60 s")
+	note := func(s string) [2]string { return [2]string{s, styleMuted.Render(s)} }
+	items := [][2]string{
+		sw("", colorTLTool, "tools"), sw("  ", colorTLModel, "model"), sw("  ", colorTLRetry, "retrying"),
+		sw("  ", colorTLSubs, "waiting on subagents"), sw("  ", colorTLUser, "waiting on you"),
+		note("  ┆ time cut from the axis"), note("   ▁…█ requests in flight"),
+	}
+	var plain, styled strings.Builder
+	for _, it := range items {
+		if lipgloss.Width(plain.String()+it[0]) > m.width {
+			break
+		}
+		plain.WriteString(it[0])
+		styled.WriteString(it[1])
+	}
+	return styled.String()
 }
 
 func (m *model) timelineStatus(lay tlLayout) string {
@@ -959,7 +970,7 @@ func (m *model) cursorAt(c int, s string) string {
 func (m *model) cursorStrip(lay tlLayout) string {
 	c := m.timeline.cursor
 	if c < 0 || c >= lay.axis.width() {
-		return renderHints("▸ [←→] pick a moment: lists the tools running then, with their durations and commands")
+		return "" // the row stays, blank, so the chart does not move when a moment is picked
 	}
 	cell := lay.axis.cells[c]
 	head := fmt.Sprintf("▸ %s  ", cell.from.Local().Format("15:04:05"))
