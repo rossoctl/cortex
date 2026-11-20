@@ -109,7 +109,7 @@ type mcpEvolve struct {
 	http    *http.Client
 
 	mu     sync.Mutex
-	client *mcpclient.Client
+	client *conn
 	// connecting is closed when the connect in progress ends; nil when none is.
 	connecting chan struct{}
 	connErr    error // why the last connect failed
@@ -144,15 +144,29 @@ func newMCPEvolve(url, profile, prompt string, timeout time.Duration) *mcpEvolve
 	}
 }
 
-// session returns the open SSE session, starting a connect when there is none
-// and none is in progress. The caller waits for the connect only until its ctx
-// ends; the connect itself is bounded by connectTimeout.
-func (e *mcpEvolve) session(ctx context.Context) (*mcpclient.Client, error) {
+// conn is one SSE session and the number of calls using it. A session that
+// failed is retired: later calls get a new one, and it is closed once its last
+// call returns. Closing it while a call still waits for its reply would cancel
+// that call, and could panic: mcp-go's reader sends a reply on the call's
+// channel after releasing its lock, and Close closes the channels still waiting.
+type conn struct {
+	c       *mcpclient.Client
+	calls   int
+	retired bool
+	closed  bool
+}
+
+// session returns the open SSE session, counted as in use until release,
+// starting a connect when there is none and none is in progress. The caller
+// waits for the connect only until its ctx ends; the connect itself is bounded
+// by connectTimeout.
+func (e *mcpEvolve) session(ctx context.Context) (*conn, error) {
 	e.mu.Lock()
 	if e.client != nil {
-		c := e.client
+		cn := e.client
+		cn.calls++
 		e.mu.Unlock()
-		return c, nil
+		return cn, nil
 	}
 	wait := e.connecting
 	if wait == nil {
@@ -170,6 +184,7 @@ func (e *mcpEvolve) session(ctx context.Context) (*mcpclient.Client, error) {
 	defer e.mu.Unlock()
 	switch {
 	case e.client != nil:
+		e.client.calls++
 		return e.client, nil
 	case e.connErr != nil:
 		return nil, e.connErr
@@ -185,7 +200,7 @@ func (e *mcpEvolve) connect(done chan struct{}, gen int) {
 	e.connErr = err
 	if err == nil {
 		if e.gen == gen {
-			e.client = c
+			e.client = &conn{c: c}
 		} else {
 			_ = c.Close()
 		}
@@ -229,30 +244,55 @@ func (e *mcpEvolve) dial() (*mcpclient.Client, error) {
 	return c, nil
 }
 
-func (e *mcpEvolve) drop(c *mcpclient.Client) {
+// release ends a call on cn. A call whose session failed retires it, and what
+// the plugin learned about this evolve (ensured, noDetails, noPrompt) is
+// forgotten with it, in case evolve was upgraded or replaced. A retired session
+// is closed once no call is using it.
+func (e *mcpEvolve) release(cn *conn, failed bool) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.client == c {
-		_ = c.Close()
-		e.client = nil
-		e.ensured = false
-		e.noDetails = false
-		e.noPrompt = false
+	cn.calls--
+	if failed && e.client == cn {
+		e.retire()
 	}
+	closeNow := cn.retired && cn.calls == 0 && !cn.closed
+	cn.closed = cn.closed || closeNow
+	e.mu.Unlock()
+	if closeNow {
+		_ = cn.c.Close()
+	}
+}
+
+// retire stops handing out the current session. Called with e.mu held.
+func (e *mcpEvolve) retire() {
+	e.client.retired = true
+	e.client = nil
+	e.ensured = false
+	e.noDetails = false
+	e.noPrompt = false
+}
+
+// broken reports whether a call's error means its session failed: a transport
+// error (the stream is gone, or evolve refused the request) other than the
+// caller's own deadline or cancellation. A tool error or a JSON-RPC error comes
+// back over a working session, and a call that timed out says nothing about the
+// calls still waiting on the same session.
+func broken(err error) bool {
+	var te *transport.Error
+	return errors.As(err, &te) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled)
 }
 
 // call invokes a tool and returns its text result.
 func (e *mcpEvolve) call(ctx context.Context, tool string, args map[string]any) (string, error) {
-	c, err := e.session(ctx)
+	cn, err := e.session(ctx)
 	if err != nil {
 		return "", fmt.Errorf("%w: connect: %v", ErrUnavailable, err)
 	}
 	req := mcp.CallToolRequest{}
 	req.Params.Name = tool
 	req.Params.Arguments = args
-	res, err := c.CallTool(ctx, req)
+	res, err := cn.c.CallTool(ctx, req)
+	e.release(cn, err != nil && broken(err))
 	if err != nil {
-		e.drop(c)
 		return "", fmt.Errorf("%w: %s: %v", ErrUnavailable, tool, err)
 	}
 	text := resultText(res)
@@ -468,16 +508,25 @@ func (e *mcpEvolve) ensureProfile(ctx context.Context) error {
 	return err
 }
 
-// Close closes the session without waiting for a connect in progress, which
-// closes its own session when it finishes.
+// Close retires the session, which closes once the calls still using it
+// return; those are bounded by their own contexts. It doesn't wait for a connect
+// in progress, which closes its own session when it finishes.
 func (e *mcpEvolve) Close() {
 	e.mu.Lock()
 	e.gen++
-	c := e.client
-	e.client = nil
+	var cn *conn
+	if e.client != nil {
+		cn = e.client
+		e.retire()
+		if cn.calls > 0 || cn.closed {
+			cn = nil
+		} else {
+			cn.closed = true
+		}
+	}
 	e.mu.Unlock()
-	if c != nil {
-		_ = c.Close()
+	if cn != nil {
+		_ = cn.c.Close()
 	}
 }
 

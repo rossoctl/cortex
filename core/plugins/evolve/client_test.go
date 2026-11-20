@@ -31,6 +31,9 @@ type fakeEvolveServer struct {
 	// rejectPrompt is an evolve that predates guidelines_prompt (altk-evolve #479):
 	// its processor config rejects the key the way pydantic does.
 	rejectPrompt bool
+	// holdGuidelines and holdLearn, when set, keep those tools from answering until
+	// they are closed.
+	holdGuidelines, holdLearn chan struct{}
 }
 
 func (f *fakeEvolveServer) record(req mcp.CallToolRequest) {
@@ -42,13 +45,25 @@ func (f *fakeEvolveServer) record(req mcp.CallToolRequest) {
 
 func (f *fakeEvolveServer) start(t *testing.T) string {
 	t.Helper()
+	ts := server.NewTestServer(f.mcpServer())
+	t.Cleanup(ts.Close)
+	return ts.URL + "/sse"
+}
+
+func (f *fakeEvolveServer) mcpServer() *server.MCPServer {
 	s := server.NewMCPServer("entities", "test")
 	text := func(v any) *mcp.CallToolResult {
 		b, _ := json.Marshal(v)
 		return mcp.NewToolResultText(string(b))
 	}
-	s.AddTool(mcp.NewTool("get_guidelines_with_attribution"), func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(mcp.NewTool("get_guidelines_with_attribution"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		f.record(req)
+		if f.holdGuidelines != nil {
+			select {
+			case <-f.holdGuidelines:
+			case <-ctx.Done():
+			}
+		}
 		_, details := req.GetArguments()["include_details"]
 		if details && f.old {
 			return mcp.NewToolResultError("1 validation error for call[get_guidelines_with_attribution]\ninclude_details\n" +
@@ -84,16 +99,20 @@ func (f *fakeEvolveServer) start(t *testing.T) string {
 			map[string]any{"id": "9", "content": "guideline 9", "metadata": map[string]any{"agent_id": "claude-code"}},
 		}}), nil
 	})
-	s.AddTool(mcp.NewTool("process_trajectory"), func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(mcp.NewTool("process_trajectory"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		f.record(req)
+		if f.holdLearn != nil {
+			select {
+			case <-f.holdLearn:
+			case <-ctx.Done():
+			}
+		}
 		if f.failLearn {
 			return mcp.NewToolResultError("Namespace not found"), nil
 		}
 		return text(map[string]any{"operation_id": "op", "updates": []any{}}), nil
 	})
-	ts := server.NewTestServer(s)
-	t.Cleanup(ts.Close)
-	return ts.URL + "/sse"
+	return s
 }
 
 func (f *fakeEvolveServer) tools() []string {
@@ -407,5 +426,87 @@ func TestMCPEvolve_ConnectsAgainAfterClose(t *testing.T) {
 			t.Fatal(err)
 		}
 		e.Close()
+	}
+}
+
+func (f *fakeEvolveServer) called(tool string) bool {
+	for _, name := range f.tools() {
+		if name == tool {
+			return true
+		}
+	}
+	return false
+}
+
+func TestMCPEvolve_OneCallTimingOutLeavesTheOthersRunning(t *testing.T) {
+	f := &fakeEvolveServer{holdGuidelines: make(chan struct{}), holdLearn: make(chan struct{})}
+	e := newMCPEvolve(f.start(t), "cortex", "environment-grounded", time.Second)
+	defer e.Close()
+
+	learned := make(chan error, 1)
+	go func() {
+		learned <- e.Learn(context.Background(), "cortex", Trajectory{Messages: []map[string]any{{"role": "user", "content": "x"}}})
+	}()
+	for !f.called("process_trajectory") {
+		time.Sleep(5 * time.Millisecond)
+	}
+	// A session's fetch times out while evolve is still learning. Before, the
+	// timeout closed the shared session and failed the learning call with it, so
+	// evolve's minutes of LLM work were sent again.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	_, err := e.Guidelines(ctx, "cortex", "t", "s")
+	cancel()
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("fetch err = %v, want ErrUnavailable", err)
+	}
+	close(f.holdLearn)
+	if err := <-learned; err != nil {
+		t.Fatalf("learning failed with the fetch: %v", err)
+	}
+}
+
+// swappable serves whichever handler is current at one URL, so a test can stand
+// in a fresh evolve for the one a session was opened with.
+type swappable struct {
+	mu sync.Mutex
+	h  http.Handler
+}
+
+func (s *swappable) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	h := s.h
+	s.mu.Unlock()
+	h.ServeHTTP(w, r)
+}
+
+func (s *swappable) set(h http.Handler) {
+	s.mu.Lock()
+	s.h = h
+	s.mu.Unlock()
+}
+
+func TestMCPEvolve_AnEvolveThatForgotTheSessionIsReconnected(t *testing.T) {
+	sw := &swappable{}
+	ts := httptest.NewServer(sw)
+	t.Cleanup(ts.Close)
+	first, second := &fakeEvolveServer{}, &fakeEvolveServer{}
+	sw.set(server.NewSSEServer(first.mcpServer(), server.WithBaseURL(ts.URL)))
+	e := newMCPEvolve(ts.URL+"/sse", "cortex", "environment-grounded", time.Second)
+	defer e.Close()
+	if _, err := e.Guidelines(context.Background(), "cortex", "t", "s"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Evolve restarts: the new process doesn't know the session, and rejects the
+	// call. That call fails; the next one connects again.
+	sw.set(server.NewSSEServer(second.mcpServer(), server.WithBaseURL(ts.URL)))
+	if _, err := e.Guidelines(context.Background(), "cortex", "t", "s"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v, want the stale session refused", err)
+	}
+	if _, err := e.Guidelines(context.Background(), "cortex", "t", "s"); err != nil {
+		t.Fatalf("not reconnected: %v", err)
+	}
+	if !second.called("get_guidelines_with_attribution") {
+		t.Fatal("the new evolve was never called")
 	}
 }
