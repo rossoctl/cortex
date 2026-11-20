@@ -43,6 +43,12 @@ import (
 //	            group for a recognised agent (pipeline.IsKnownAgent) with no session;
 //	            any other is served with group none, and "group" says which. Refused
 //	            past event.MaxLabelLen.
+//	project     a project, as group=project reports it (the label, never a raw path);
+//	            narrows the window to that project's traffic, alone or with agent=, and
+//	            the response echoes it in "project". Absent means not applied. A window
+//	            served from the ring keeps its group only when that project's ring holds
+//	            the whole window; otherwise it is served with group none, and "group"
+//	            says which. Refused past event.MaxLabelLen.
 //
 // THREE THINGS A CLIENT MUST NOT GET WRONG:
 //
@@ -208,11 +214,17 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent = pipeline.AgentName(agent)
+	// project= matches the label group=project reports, not a path: no folding.
+	project := r.URL.Query().Get("project")
+	if len(project) > maxProjectLabelLen {
+		writeUsageError(w, errProjectLabelTooLong)
+		return
+	}
 
 	var snap usage.Snapshot
 	switch {
 	case !spec.Symbolic():
-		snap = s.ringSnapshot(spec.Dur, resolution, sessionID, agent, group)
+		snap = s.ringSnapshot(spec.Dur, resolution, sessionID, agent, project, group)
 	case s.ledger == nil:
 		// No ledger: Kubernetes by design, where files in a pod are the wrong sink
 		// and the central collector is the right one. Serve what the ring HAS rather
@@ -225,13 +237,13 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		// window=today returned five and a half hours of YESTERDAY plus thirty minutes of today.
 		// The label said 6h0m0s and was literally true, so nothing was mislabelled — it
 		// over-reported today instead, which is the opposite of the degrade this comment claims.
-		snap = s.ringSnapshot(servedSpan(spec), resolution, sessionID, agent, group)
+		snap = s.ringSnapshot(servedSpan(spec), resolution, sessionID, agent, project, group)
 	default:
 		// r.Context(), so a client that hangs up stops the read. The ledger walks one day
 		// file per day in the window — up to eight for window=7d, against a path an
 		// operator configured and possibly a slow mount — and without this every abandoned
 		// request kept reading to the end for nobody. See ledger.Query.
-		snap, err = s.ledger.Snapshot(r.Context(), spec, group, agent, "")
+		snap, err = s.ledger.Snapshot(r.Context(), spec, group, agent, project)
 		if err != nil {
 			// A read failure is not a client error and must not look like one.
 			//
@@ -271,8 +283,18 @@ const maxAgentLabelLen = event.MaxLabelLen
 
 var errAgentLabelTooLong = usageError{"agent label too long"}
 
-// ringSnapshot is the ring's answer, narrowed to one agent when agent is set.
-func (s *Server) ringSnapshot(window, resolution time.Duration, sessionID, agent string, group usage.Group) usage.Snapshot {
+// maxProjectLabelLen bounds project=: the ring cuts a project label to this length, so a longer
+// value cannot match any label.
+const maxProjectLabelLen = event.MaxLabelLen
+
+var errProjectLabelTooLong = usageError{"project label too long"}
+
+// ringSnapshot is the ring's answer, narrowed to one agent when agent is set and to one project
+// when project is set.
+func (s *Server) ringSnapshot(window, resolution time.Duration, sessionID, agent, project string, group usage.Group) usage.Snapshot {
+	if project != "" {
+		return s.usage.ProjectSnapshot(window, resolution, sessionID, agent, project, group)
+	}
 	if agent == "" {
 		return s.usage.Snapshot(window, resolution, sessionID, group)
 	}
