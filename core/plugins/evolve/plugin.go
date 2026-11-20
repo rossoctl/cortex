@@ -518,6 +518,14 @@ func (p *Plugin) fetch(ctx context.Context, sessionID, task string, previous *ca
 		if len(gs) > 0 {
 			entry.block = formatBlock(gs)
 		}
+		// A refresh that still serves every guideline the session has, unchanged,
+		// keeps the session's block: a new block mid-session makes the provider
+		// re-read, and re-cache, everything after it. Guidelines selected since
+		// wait for a new session. The block changes when a served guideline is
+		// withdrawn, edited or no longer selected.
+		if previous != nil && len(previous.guidelines) > 0 && stillServed(previous.guidelines, gs) {
+			entry.guidelines, entry.block = previous.guidelines, previous.block
+		}
 	}
 	// Keep serving what the session already had through a transient failure,
 	// rather than dropping guidelines mid-session and breaking the prompt cache.
@@ -529,6 +537,22 @@ func (p *Plugin) fetch(ctx context.Context, sessionID, task string, previous *ca
 	}
 	p.store(sessionID, entry)
 	return entry
+}
+
+// stillServed reports whether every guideline in had is in now, at the same
+// revision.
+func stillServed(had, now []Guideline) bool {
+	revisions := make(map[string]*int, len(now))
+	for _, g := range now {
+		revisions[g.ID] = g.Revision
+	}
+	for _, g := range had {
+		r, ok := revisions[g.ID]
+		if !ok || (r == nil) != (g.Revision == nil) || (r != nil && *r != *g.Revision) {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *Plugin) store(sessionID string, entry *cached) {

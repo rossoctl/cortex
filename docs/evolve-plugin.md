@@ -86,7 +86,11 @@ Guidelines learned from earlier sessions on this machine. Apply them when they a
 
 Guidelines are fetched **once per session** (from the session's first user message, with the
 agent's harness context removed) and the rendered block is cached, so every turn appends
-identical bytes and the provider's prompt cache keeps hitting. Requests the plugin leaves
+identical bytes and the provider's prompt cache keeps hitting. Every `cache_ttl_seconds` the
+plugin checks the guidelines again, and keeps the session's block while every guideline in it is
+still served unchanged; guidelines accepted since then reach new sessions. The block changes,
+and the provider re-reads the prompt after it once, when a served guideline is withdrawn, edited
+or no longer selected, or when a session whose first fetch failed gets guidelines later. Requests the plugin leaves
 alone: subagents, tool-less side calls (titles, summaries), sessions without an id, agents
 outside `agents`, and its own calls (`X-Evolve-Cortex`).
 

@@ -1339,3 +1339,36 @@ func TestFormatBlock_GuidelinesCannotCloseTheReminder(t *testing.T) {
 		t.Fatalf("clean = %q, want only the user's text", got)
 	}
 }
+
+func TestInject_TheBlockStaysUntilAServedGuidelineChanges(t *testing.T) {
+	fe := &fakeEvolve{gs: twoGuidelines}
+	p, c := configured(t, `{"endpoint":"http://x","cache_ttl_seconds":60}`, fe)
+	request := func() *pipeline.Context {
+		pctx := reqCtx("/v1/messages", anthropicBody)
+		run(t, p, pctx)
+		return pctx
+	}
+	first := request()
+	refresh := func(gs []Guideline) *pipeline.Context {
+		fe.mu.Lock()
+		fe.gs = gs
+		fe.mu.Unlock()
+		c.t = c.t.Add(61 * time.Second)
+		return request()
+	}
+	// A reviewer accepts a third guideline. The session keeps its block: before,
+	// the refresh changed it, and the provider re-cached the rest of the prompt.
+	accepted := append(append([]Guideline{}, twoGuidelines...), Guideline{ID: "g3", Content: "Run make check.", Revision: rev(1)})
+	if got := refresh(accepted); string(got.Body) != string(first.Body) {
+		t.Fatal("a newly accepted guideline changed the session's block")
+	}
+	// g2 is edited: the block changes, so the session stops seeing the old text.
+	edited := []Guideline{twoGuidelines[0], {ID: "g2", Content: "Check git status and the diff before committing.", Revision: rev(3)}}
+	if got := refresh(edited); !strings.Contains(string(got.Body), "and the diff") {
+		t.Fatal("an edited guideline kept its old text")
+	}
+	// g1 is withdrawn: the block changes again.
+	if got := refresh(edited[1:]); strings.Contains(string(got.Body), "uv run pytest") {
+		t.Fatal("a withdrawn guideline is still served")
+	}
+}
