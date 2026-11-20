@@ -2588,7 +2588,7 @@ func (m *model) pickerView(title, body, footer string) string {
 		return lipgloss.JoinVertical(lipgloss.Left, renderTitle(title), body, footer)
 	}
 	frameH := m.bodyHeight
-	if m.searching {
+	if m.searching && m.searchPane != targetHelp {
 		frameH++ // layout() reserved the prompt's row; it is the body's first line, or blank
 	}
 	if m.bodyHeight == 0 {
@@ -2795,7 +2795,7 @@ func (m *model) framePane(title, body string) string {
 	// prompt is open): boxFrame pads a short body and cuts a tall one, so the footer is always
 	// on the last row. Fixed here once, not in each pane.
 	frameH := m.bodyHeight
-	if m.searching {
+	if m.searching && m.searchPane != targetHelp {
 		frameH++
 	}
 	if m.bodyHeight == 0 {

@@ -967,6 +967,10 @@ func overlayCenter(base, overlay string, width, height int) string {
 			prefix += strings.Repeat(" ", left-w)
 		}
 		tail := ansi.TruncateLeft(out[row], left+overW, "")
+		if rest := lipgloss.Width(out[row]) - left - overW; rest > 0 && lipgloss.Width(tail) > rest {
+			// TruncateLeft kept a double-width rune that crosses the panel's edge: show its right half as a space.
+			tail = " " + ansi.TruncateLeft(out[row], left+overW+1, "")
+		}
 		out[row] = prefix + padRight(ol, overW) + tail
 	}
 	return strings.Join(out, "\n")

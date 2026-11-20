@@ -293,3 +293,44 @@ func TestBox_StyledRowsKeepTheRightEdge(t *testing.T) {
 		}
 	}
 }
+
+// THE HELP OVERLAY'S SEARCH PROMPT is drawn on the overlay, not above the body, so the frame
+// reserves no row for it: the view stays the terminal's height, before and after a re-layout.
+func TestBox_HelpSearchPromptKeepsTheHeight(t *testing.T) {
+	for _, p := range []paneID{paneSessions, paneEvents, paneNamespaces} {
+		m := fitModel(t, p, 100, 30, cursorRowsFixture(60))
+		m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+		m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+		if !m.searching || m.searchPane != targetHelp {
+			t.Fatalf("pane %v: searching=%v target=%v, want the prompt open on help", p, m.searching, m.searchPane)
+		}
+		for _, when := range []string{"open", "re-layout"} {
+			if when == "re-layout" {
+				m.layout()
+			}
+			if got := len(strings.Split(m.View(), "\n")); got != m.height {
+				t.Errorf("pane %v, %s: view is %d lines for a %d-line terminal", p, when, got, m.height)
+			}
+		}
+	}
+}
+
+// A DOUBLE-WIDTH RUNE ACROSS THE OVERLAY'S RIGHT EDGE: its half right of the panel is a space,
+// so the row is not wider than the terminal and the box's right edge stays on the last column.
+func TestOverlayCenter_WideRuneAtTheRightEdge(t *testing.T) {
+	base := "│" + strings.Repeat("中", 49) + "│"
+	for _, overW := range []int{20, 21} {
+		overlay := strings.Repeat("x", overW)
+		got := strings.Split(overlayCenter(base, overlay, 100, 1), "\n")[0]
+		if w := lipgloss.Width(got); w != 100 {
+			t.Errorf("overlay %d wide: row is %d columns for a 100-column terminal: %q", overW, w, got)
+		}
+		if !strings.HasSuffix(got, "│") || !strings.Contains(got, overlay) {
+			t.Errorf("overlay %d wide: row lost the edge or the panel: %q", overW, got)
+		}
+	}
+	// A base row that ends under the panel gets no tail.
+	if got := overlayCenter("中中", "xxxx", 10, 1); got != "中 xxxx" {
+		t.Errorf("short base row: got %q, want %q", got, "中 xxxx")
+	}
+}

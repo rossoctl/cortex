@@ -34,7 +34,7 @@ func (m *model) layout() {
 	// came out one line taller than the terminal at every size, the terminal scrolled, and the
 	// bottom row went missing for as long as the operator was typing — the same symptom as a
 	// mis-sized table, from a line nobody counted.
-	if m.searching {
+	if m.searching && m.searchPane != targetHelp {
 		bodyH--
 	}
 	if bodyH < 4 {
