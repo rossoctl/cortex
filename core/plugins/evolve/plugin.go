@@ -579,12 +579,13 @@ func (p *Plugin) learnLoop(ctx context.Context) {
 	}
 }
 
-// learnIdle sends each idle session's new turns to evolve. A failed send is
-// restored and retried on a later tick under the same batch id; evolve skips a
-// batch it already processed, so a send that succeeded but reported failure is
-// not learned twice.
+// learnIdle sends each idle session's new turns to evolve, and failed batches
+// whose retry is due. A failed batch is sent again as it was, under the same
+// batch id: evolve skips a batch it already processed, so a send that succeeded
+// but reported failure is not learned twice.
 func (p *Plugin) learnIdle(ctx context.Context) {
-	cutoff := p.now().Add(-time.Duration(p.cfg.IdleAfter) * time.Second)
+	now := p.now()
+	cutoff := now.Add(-time.Duration(p.cfg.IdleAfter) * time.Second)
 	type due struct {
 		id string
 		s  *session
@@ -593,12 +594,12 @@ func (p *Plugin) learnIdle(ctx context.Context) {
 	var batches []due
 	p.mu.Lock()
 	for id, s := range p.sessions {
-		if s.sending || s.last.After(cutoff) {
+		if s.sending {
 			continue
 		}
 		// A session stays tracked after it is learned from, so a resumed session
 		// continues its batch sequence; max_sessions bounds how many are kept.
-		t, ok := s.rec.take(id, p.cfg.MinTurns)
+		t, ok := s.rec.next(id, p.cfg.MinTurns, !s.last.After(cutoff), now)
 		if !ok {
 			continue
 		}
@@ -613,11 +614,15 @@ func (p *Plugin) learnIdle(ctx context.Context) {
 		cancel()
 		p.mu.Lock()
 		b.s.sending = false
-		if err != nil {
-			b.s.rec.restore(b.t)
-		}
+		dropped := b.s.rec.sent(b.t, err, p.now(), p.tick)
 		p.mu.Unlock()
-		if err != nil {
+		switch {
+		case dropped:
+			p.m.inc(&p.m.learnDropped)
+			slog.Warn("evolve: giving up sending a session batch to learn from", "session", b.id,
+				"batch", b.t.Batch.BatchID, "attempts", maxLearnAttempts, "err", err)
+			continue
+		case err != nil:
 			p.m.inc(&p.m.learnErrors)
 			slog.Warn("evolve: sending session to learn from failed; will retry", "session", b.id, "err", err)
 			continue

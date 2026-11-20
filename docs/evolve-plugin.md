@@ -138,7 +138,9 @@ was learned from (comma-separated for a guideline consolidated from several). ag
 Evolve unreachable, slow (`timeout_ms`, default 3 s, paid once per session), or returning an
 error means the request is forwarded **unchanged**, a fetch error is counted, and the plugin
 tries again after `retry_after_seconds`. A session that already has guidelines keeps them
-through a failed refresh. A failed learning send is retried on the next 30-second tick.
+through a failed refresh. A failed learning send is sent again as it was, under its own batch
+id, after a wait that doubles from 30 seconds; new turns wait for it and go in a later batch.
+After 6 failed sends the batch is dropped, with a warning and a `batches dropped` count.
 
 ## Configuration
 

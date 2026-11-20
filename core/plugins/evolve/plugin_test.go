@@ -25,12 +25,13 @@ type learned struct {
 }
 
 type fakeEvolve struct {
-	mu       sync.Mutex
-	gs       []Guideline
-	err      error
-	calls    []fetch
-	learned  []learned
-	learnErr error
+	mu         sync.Mutex
+	gs         []Guideline
+	err        error
+	calls      []fetch
+	learned    []learned
+	learnErr   error
+	learnCalls int
 	// hold, when set, keeps fetches for holdSession from answering until it is
 	// closed or the fetch's context ends.
 	hold        chan struct{}
@@ -66,6 +67,7 @@ func (f *fakeEvolve) fetches() int {
 func (f *fakeEvolve) Learn(_ context.Context, namespace string, t Trajectory) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.learnCalls++
 	if f.learnErr != nil {
 		return f.learnErr
 	}
@@ -588,10 +590,66 @@ func TestLearn_RetriesWithSameBatchID(t *testing.T) {
 	c.t = c.t.Add(61 * time.Second)
 	p.learnIdle(context.Background())
 	fe.learnErr = nil
+	p.learnIdle(context.Background()) // not yet: the retry waits one tick
+	if len(fe.learned) != 0 {
+		t.Fatalf("retried before its backoff: %+v", fe.learned)
+	}
+	c.t = c.t.Add(p.tick)
 	p.learnIdle(context.Background())
 	if len(fe.learned) != 1 || !strings.HasSuffix(fe.learned[0].t.Batch.BatchID, "-1") || len(fe.learned[0].t.Messages) != 7 {
 		t.Fatalf("learned = %+v", fe.learned)
 	}
+}
+
+func TestLearn_ARetryIsTheBatchAsSentAndNewTurnsGetANewID(t *testing.T) {
+	fe := &fakeEvolve{learnErr: ErrUnavailable}
+	p, c := configured(t, `{"endpoint":"http://x","idle_after_seconds":60,"min_turns":1}`, fe)
+	finish(t, p, turn(h1, "Running.", bash1))
+	c.t = c.t.Add(61 * time.Second)
+	p.learnIdle(context.Background()) // fails; perhaps evolve did process it
+	// The session goes on before the retry.
+	finish(t, p, turn(h2, "Done.", nil, pipeline.InferenceToolResult{ToolUseID: "t1", Content: "ok"}))
+	fe.learnErr = nil
+	c.t = c.t.Add(61 * time.Second)
+	p.learnIdle(context.Background()) // the retry
+	p.learnIdle(context.Background()) // then the new turns
+	if len(fe.learned) != 2 {
+		t.Fatalf("learned = %+v, want the retry, then the new turns", fe.learned)
+	}
+	first, second := fe.learned[0].t, fe.learned[1].t
+	// Before, the retry merged the new turns into the first batch, under its id:
+	// had evolve processed that batch, it skipped the new turns with it.
+	if !strings.HasSuffix(first.Batch.BatchID, "-1") || len(first.Messages) != 2 {
+		t.Fatalf("retry = %s with %d messages, want batch 1 as sent", first.Batch.BatchID, len(first.Messages))
+	}
+	if !strings.HasSuffix(second.Batch.BatchID, "-2") || second.Messages[0]["role"] != "tool" {
+		t.Fatalf("new turns = %s %v, want batch 2 starting with the tool result", second.Batch.BatchID, second.Messages)
+	}
+}
+
+func TestLearn_GivesUpOnABatchAfterRepeatedFailures(t *testing.T) {
+	fe := &fakeEvolve{learnErr: errors.New("NotImplementedError: Incremental processing requires atomic namespace writes")}
+	p, c := configured(t, `{"endpoint":"http://x","idle_after_seconds":60}`, fe)
+	session3(t, p)
+	for range 20 {
+		c.t = c.t.Add(time.Hour)
+		p.learnIdle(context.Background())
+	}
+	if fe.learnCalls != maxLearnAttempts {
+		t.Fatalf("sends = %d, want %d, then none", fe.learnCalls, maxLearnAttempts)
+	}
+	if got := metricValue(p, "batches dropped"); got != 1 {
+		t.Fatalf("batches dropped = %v, want 1", got)
+	}
+}
+
+func metricValue(p *Plugin, name string) float64 {
+	for _, m := range p.Metrics() {
+		if m.Name == name {
+			return m.Value
+		}
+	}
+	return 0
 }
 
 func TestLearn_SkipsTooFewTurnsAndIneligibleTraffic(t *testing.T) {

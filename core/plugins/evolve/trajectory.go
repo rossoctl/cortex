@@ -3,6 +3,7 @@ package evolve
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -13,6 +14,13 @@ const (
 	// maxPendingMessages bounds one session's unsent turns. Past it the oldest
 	// are dropped: evolve renders a bounded window of a trajectory anyway.
 	maxPendingMessages = 400
+	// maxLearnAttempts is how many times one batch is sent before the plugin gives
+	// up on it. Some failures never clear, such as a backend that can't process
+	// identified batches or a profile that doesn't exist.
+	maxLearnAttempts = 6
+	// maxRetryWait caps the backoff between sends of a failed batch, which
+	// doubles from the sender's tick.
+	maxRetryWait = 30 * time.Minute
 )
 
 // clean removes harness context (Claude Code's system reminders, Codex's
@@ -52,8 +60,13 @@ type recorder struct {
 	// recorder of the same session, which evolve would otherwise skip as already
 	// processed: one in an earlier Cortex process (the epoch), or an earlier one
 	// in this process, before the session was evicted and resumed.
-	gen   string
-	taken int // turns in the batch last taken, for restore
+	gen string
+	// retry is a batch whose send failed. It is sent again as it was, under its
+	// own id, before any new batch is taken, so a batch evolve did accept but
+	// whose answer was lost is skipped, and new turns aren't skipped with it.
+	retry    *Trajectory
+	attempts int // failed sends of retry
+	retryAt  time.Time
 }
 
 func newRecorder(agent, gen string) *recorder {
@@ -147,17 +160,41 @@ func (r *recorder) take(sessionID string, minTurns int) (t Trajectory, ok bool) 
 	if r.batch > 1 && r.task != "" && !startsWithUser(r.pending, r.task) {
 		t.ContextMessages = []map[string]any{{"role": "user", "content": r.task}}
 	}
-	r.taken = r.turns
 	r.pending, r.turns = nil, 0
 	return t, true
 }
 
-// restore puts the batch last taken back after a failed send, so the next
-// attempt resends it under the same batch id.
-func (r *recorder) restore(t Trajectory) {
-	r.pending = append(t.Messages, r.pending...)
-	r.turns += r.taken
-	r.batch--
+// next returns the batch to send at now, if any: a failed batch once its retry
+// is due; otherwise, when the session is idle, its new turns as a new batch.
+func (r *recorder) next(sessionID string, minTurns int, idle bool, now time.Time) (Trajectory, bool) {
+	if r.retry != nil {
+		if now.Before(r.retryAt) {
+			return Trajectory{}, false
+		}
+		return *r.retry, true
+	}
+	if !idle {
+		return Trajectory{}, false
+	}
+	return r.take(sessionID, minTurns)
+}
+
+// sent records how sending t went. A failed batch is kept to be sent again after
+// a backoff that doubles from tick, and dropped after maxLearnAttempts sends,
+// which sent reports. New turns meanwhile stay in pending, bounded as always.
+func (r *recorder) sent(t Trajectory, err error, now time.Time, tick time.Duration) (dropped bool) {
+	if err == nil {
+		r.retry, r.attempts = nil, 0
+		return false
+	}
+	r.attempts++
+	if r.attempts >= maxLearnAttempts {
+		r.retry, r.attempts = nil, 0
+		return true
+	}
+	r.retry = &t
+	r.retryAt = now.Add(min(tick<<(r.attempts-1), maxRetryWait))
+	return false
 }
 
 func startsWithUser(msgs []map[string]any, text string) bool {
