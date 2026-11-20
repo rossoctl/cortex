@@ -377,8 +377,9 @@ func TestDetailFixedLine_Styles(t *testing.T) {
 			}
 		}
 	}
-	if w := lipgloss.Width(m.detailFixedLine()); w != 140 {
-		t.Errorf("a cut summary is %d wide, want 140", w)
+	// The inner width of the body box at a 140-column terminal.
+	if w := lipgloss.Width(m.detailFixedLine()); w != 140-boxSideCols {
+		t.Errorf("a cut summary is %d wide, want %d", w, 140-boxSideCols)
 	}
 }
 

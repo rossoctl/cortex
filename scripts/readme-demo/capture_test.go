@@ -128,3 +128,16 @@ func TestCapture_EveryBeatShowsWhatTheStoryboardClaims(t *testing.T) {
 		t.Errorf("the Bash call's output should be on screen below it:\n%s", out)
 	}
 }
+
+// The status is right-aligned, so the rate rewrite must keep the row's width and the
+// status's column whatever width the real rate had.
+func TestFixRate_KeepsTheStatusColumn(t *testing.T) {
+	narrow := fixRate("q quit      ● connected  3.2 events/sec")
+	wide := fixRate("q quit     ● connected  10.3 events/sec")
+	if narrow != wide {
+		t.Fatalf("rows differ:\n%q\n%q", narrow, wide)
+	}
+	if want := len("q quit      ● connected  3.2 events/sec"); len(narrow) != want {
+		t.Errorf("width %d, want %d", len(narrow), want)
+	}
+}

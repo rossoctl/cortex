@@ -61,7 +61,7 @@ func TestAgentsPane_APressOpensOnOneAgentAndOnNone(t *testing.T) {
 		body string
 	}{
 		{"one agent", navRows()[:1], "claude-code/2.1.270"},
-		{"no agents", nil, "no agent traffic"},
+		{"no agents", nil, "No agent traffic"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := navModel(t, paneSessions, false)

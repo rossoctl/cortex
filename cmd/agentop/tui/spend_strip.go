@@ -533,18 +533,11 @@ func fitStripFigures(label string, figures []stripFigure, width int) string {
 // response together, which is the smallest useful unit of that pane.
 const spendStripMinHeight = 20
 
-// spendStripVisible reports whether the strip DRAWS a row on the current pane.
+// spendStripVisible reports whether the strip DRAWS in the box's top edge on the
+// current pane.
 //
 // False on paneNamespaces and panePods: those run before a connection exists, so
-// there is no spend to report, and they return early from paneView with their own
-// JoinVertical anyway.
-//
-// Note the asymmetry with layout(), which reserves the row on HEIGHT alone and
-// ignores the pane. That is deliberate and is explained where the reservation is
-// made: layout() runs on WindowSizeMsg, so a pane-aware reservation would have to
-// be re-run on every pane transition. The consequence is that the two picker
-// panes render one row shorter than they strictly need — invisible, next to an
-// events table that is wrong by a row and pushes the footer off-screen.
+// there is no spend to report, and their top edge is plain.
 func (m *model) spendStripVisible() bool {
 	if !m.spendStripReservesRow() {
 		return false
@@ -556,18 +549,10 @@ func (m *model) spendStripVisible() bool {
 	return true
 }
 
-// spendStripReservesRow reports whether layout() must hold a row back for the
-// strip. Height ONLY — deliberately blind to the pane.
+// spendStripReservesRow reports whether the terminal is tall enough for the
+// strip. Height ONLY — deliberately blind to the pane, so the drawer's floor
+// (spendDrawerMinHeight) can build on it.
 //
-// There is no setPane choke point to hook: the pane is assigned in twenty-odd
-// places, and layout() runs on resizes, drawer toggles and pane transitions
-// alike — none of them a guaranteed stop on the way between two panes. So a
-// reservation that read m.pane would go stale the moment the user moved
-// between a picker and a data pane, and bodyHeight would stay wrong until the
-// next layout() — which for a pane the strip DOES draw on means a body one row
-// too tall and a footer pushed off the bottom.
-//
-// Being blind to the pane costs the two picker panes one row they could have
-// used. That is the accepted trade: a picker one row short is invisible, an
-// events table one row long is not.
+// The strip is the label of the box's top edge, which layout() reserves on every
+// pane, so this no longer holds a row back of its own. The name is from when it did.
 func (m *model) spendStripReservesRow() bool { return m.height >= spendStripMinHeight }

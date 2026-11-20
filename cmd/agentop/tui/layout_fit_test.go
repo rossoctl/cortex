@@ -100,12 +100,12 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	// shipped green past this test while overflowing 80x24 — one of fitSizes — by that
 	// one row.
 	//
-	// NOT YET REACHED BY TestLayout_EveryPaneFitsTheTerminal, which skips paneUsage: with
-	// this snapshot in place the pane overflows at 60x20 (by 4) and at 80x24 with the
-	// filter open (by 1), and BOTH reproduce unchanged on the commit this branch started
-	// from — the pane does not respect bodyHeight in general. Measuring the chart is what
-	// makes that visible; fixing it is a separate change. TestUsageChart_FitsTheChartBudget
-	// below covers the part this branch is responsible for.
+	// THE PANE DOES NOT FOLLOW bodyHeight AT SMALL SIZES: with this snapshot its body is 4
+	// rows too tall at 60x20, and 1 row too tall at 80x24 with the filter open. The body box
+	// cuts it at bodyHeight (boxFrame), so the bottom rows of the body (the summary and the
+	// "updated … ago" line) are not drawn there and the bar stays on the last row. A smaller
+	// chart at those sizes is a separate change. TestUsageChart_FitsTheChartBudget below
+	// covers the unit caption's row.
 	//
 	// UNGROUPED AND UNLABELLED, so every height assertion written against this model takes
 	// the BAR path: the buckets carry no Series and m.usage.group is left zero, and
@@ -126,7 +126,7 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	m.usage.lastFetch = time.Now()
 
 	// Populated agent rows, for the third time and the same reason as the catalog and the usage
-	// snapshot above: paneAgents renders a one-line "(no agent traffic in this window)" branch
+	// snapshot above: paneAgents renders its "No agent traffic in this window." empty state
 	// when m.agents is empty, so without rows this test measures that sentence and never the
 	// TABLE. That is precisely how the catalog table kept bubbles' default height of 20 — the
 	// comment on m.catalog records it — and the agents table shipped with the identical defect,
@@ -183,12 +183,13 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	return m
 }
 
-// assertFits is the invariant: no line wider than the terminal, no more lines than it has.
+// assertFits is the invariant: no line wider than the terminal, and exactly as many lines as
+// it has. Fewer is a fault too: the bar is then not on the last row.
 func assertFits(t *testing.T, m *model, label string) {
 	t.Helper()
 	view := m.View()
-	if got := lipgloss.Height(view); got > m.height {
-		t.Errorf("%s: view is %d lines for a %d-line terminal (%d too many)",
+	if got := lipgloss.Height(view); got != m.height {
+		t.Errorf("%s: view is %d lines for a %d-line terminal (%+d)",
 			label, got, m.height, got-m.height)
 	}
 	for i, line := range strings.Split(view, "\n") {
@@ -217,12 +218,6 @@ func TestLayout_EveryPaneFitsTheTerminal(t *testing.T) {
 	}
 	for _, dim := range fitSizes {
 		for name, p := range panes {
-			if p == paneUsage {
-				// See fitModel's usage-snapshot comment: this pane overflows at two of
-				// fitSizes on main as well as here, so asserting it would fail on a
-				// pre-existing bug rather than on anything this test is guarding.
-				continue
-			}
 			for _, searching := range []bool{false, true} {
 				if searching && (&model{}).surface(p) == nil {
 					continue
@@ -239,6 +234,37 @@ func TestLayout_EveryPaneFitsTheTerminal(t *testing.T) {
 					}
 				}
 				assertFits(t, m, fmt.Sprintf("%s %dx%d searching=%v", name, dim[0], dim[1], searching))
+			}
+		}
+	}
+}
+
+// THE BAR IS ON THE LAST ROW on every pane, including the Timeline with no timeline yet and
+// Usage, whose bodies are shorter or taller than bodyHeight. The box pads or cuts the body,
+// so the footer never moves up into the screen or off its bottom.
+func TestLayout_BarOnTheLastRow(t *testing.T) {
+	for _, dim := range [][2]int{{80, 24}, {100, 30}, {140, 30}} {
+		for name, p := range boxedPanes {
+			m := fitModel(t, p, dim[0], dim[1], cursorRowsFixture(60))
+			if p == paneTimeline && m.timeline.tl != nil {
+				t.Fatalf("setup: the timeline fixture has a timeline, so its body is not short")
+			}
+			label := fmt.Sprintf("%s %dx%d", name, dim[0], dim[1])
+			view := m.View()
+			if got := lipgloss.Height(view); got != m.height {
+				t.Errorf("%s: view is %d lines, want %d", label, got, m.height)
+			}
+			lines := strings.Split(view, "\n")
+			footer := strings.Split(m.footerView(), "\n")
+			if p == paneNamespaces || p == panePods {
+				// The pickers draw their own one-line key bar, not footerView.
+				if last := strings.TrimRight(lines[len(lines)-1], " "); !strings.HasSuffix(last, "[q] quit") {
+					t.Errorf("%s: the last line is not the key bar: %q", label, last)
+				}
+				continue
+			}
+			if got, want := strings.TrimRight(lines[len(lines)-1], " "), strings.TrimRight(footer[len(footer)-1], " "); got != want {
+				t.Errorf("%s: the last line is %q, want the footer's last line %q", label, got, want)
 			}
 		}
 	}
@@ -313,15 +339,14 @@ func probeIdentity(subject, client string) pipeline.SessionEvent {
 	}
 }
 
-// The status row is built by unconditional writes, and only the feedback link ever
-// checked the width — so the optional state markers could overflow it. layout()
-// reserves exactly three rows for title + blank + footer, so a wrapped status row
-// costs the hint line below it, which is the row carrying [?] keys and [q] quit.
+// The status is built by unconditional writes, so the optional state markers could
+// overflow the bar. layout() reserves exactly one row for it, so a wrapped bar makes the
+// view taller than the terminal.
 //
 // TestLayout_EveryPaneFitsTheTerminal cannot catch this: it never sets sortCol,
-// a search or paused, so the row it measures has none of the optional markers on it.
-// Measured before fitStatusLine: paused + a restored filter (the search's predecessor)
-// + an active sort rendered 87 columns at width 80.
+// a search or paused, so the bar it measures has none of the optional markers on it.
+// Measured before the status was fitted: paused + a restored filter (the search's
+// predecessor) + an active sort rendered 87 columns at width 80.
 func TestLayout_StateRichFooterFitsTheTerminal(t *testing.T) {
 	for _, dim := range fitSizes {
 		for _, tc := range []struct {
@@ -590,24 +615,25 @@ func TestUsageChartHeight_MatchesTheRenderedChrome(t *testing.T) {
 // which has no tier column, grew with it.
 //
 // SIZES CHOSEN HERE, NOT fitSizes, and that is the whole reason this test exists.
-// fitSizes has no entry that is both narrow enough for one column (< 86) and tall enough
-// to open the drawer (>= spendDrawerMinHeight, 28): its sub-86 widths are 20 and 24 rows
+// fitSizes has no entry that is both narrow enough for one column (inner width < 86) and tall
+// enough to open the drawer (>= spendDrawerMinHeight, 29): its sub-88 widths are 20 and 24 rows
 // tall, so `$` does not expand and the case is vacuous. Written against fitSizes first,
 // this test passed with the call site reverted — which is how the gap was measured
 // rather than argued.
 func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 	forceColor(t)
 	narrowSeen, wideSeen := false, false
-	// BOTH SIDES OF THE BOUNDARY, at spendDrawerTwoColumnMin-1 and spendDrawerTwoColumnMin
-	// themselves. Written as 84 and 85 these were BOTH one-column widths — the constant is
-	// 86 — so the two-column half of the sweep rested entirely on {120,40} and the boundary
-	// the comment above calls this test's reason to exist was never crossed. The guards at
-	// the end are what stop that recurring silently.
+	// BOTH SIDES OF THE BOUNDARY: the drawer is inside a box, so its threshold applies to
+	// the inner width, and the terminal widths are spendDrawerTwoColumnMin+1 (inner width
+	// one short) and spendDrawerTwoColumnMin+2 (the first that reaches two columns). Written
+	// as 84 and 85 these were once BOTH one-column widths, so the two-column half of the
+	// sweep rested entirely on {120,40} and the boundary the comment above calls this test's
+	// reason to exist was never crossed. The guards at the end stop that recurring silently.
 	for _, dim := range [][2]int{
-		{80, 30},  // one column: below spendDrawerTwoColumnMin, tall enough to open
-		{85, 40},  // one column, at the boundary: spendDrawerTwoColumnMin-1
-		{86, 40},  // two columns: the first width that reaches them
-		{120, 40}, // two columns, comfortably
+		{80, 30},                          // one column, tall enough to open
+		{spendDrawerTwoColumnMin + 1, 40}, // one column, at the boundary
+		{spendDrawerTwoColumnMin + 2, 40}, // two columns: the first width that reaches them
+		{120, 40},                         // two columns, comfortably
 	} {
 		w, h := dim[0], dim[1]
 		m := fitModel(t, paneEvents, w, h, cursorRowsFixture(60))
@@ -622,7 +648,7 @@ func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 		if !m.spendDrawerVisible() {
 			t.Fatalf("%dx%d: the drawer did not open, so this case asserts nothing", w, h)
 		}
-		if w < spendDrawerTwoColumnMin {
+		if !drawerTwoColumn(m.innerWidth()) {
 			narrowSeen = true
 		} else {
 			wideSeen = true
@@ -658,7 +684,7 @@ func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 // a seven-row drawer it costs the table the row the floor exists to protect.
 //
 // A LITERAL, like spend_sanitize_test.go's line pins and for the same reason: a
-// right-hand side spelled with spendStripMinHeight + spendDrawerLines + dividerLines is
+// right-hand side spelled with spendStripMinHeight + spendDrawerLines + drawerBoxExtraLines is
 // the tautology this replaces. The terms are named in the failure message instead, so a
 // deliberate change to any of them reads as one number to update and an accidental one
 // names what moved.
@@ -666,15 +692,15 @@ func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 // spendDrawerLines is already pinned to 7 twice (TestSpendDrawerLines_AccountsForTheChildRow
 // and the {120, 7} row in spend_sanitize_test.go), so this is the last unwitnessed link in
 // the chain, not a second copy of one.
-func TestSpendDrawerMinHeight_IsTwentyEight(t *testing.T) {
-	const wantFloor = 28 // 20 strip rows + 7 drawer rows + 1 divider
+func TestSpendDrawerMinHeight_IsTwentyNine(t *testing.T) {
+	const wantFloor = 29 // 20 strip rows + 7 drawer rows + 2 drawer box rows
 	if spendDrawerMinHeight != wantFloor {
 		t.Errorf("the drawer's height floor is %d, want %d — recompute it from the terms: "+
-			"spendStripMinHeight %d + spendDrawerLines %d + dividerLines %d. If one of those "+
+			"spendStripMinHeight %d + spendDrawerLines %d + drawerBoxExtraLines %d. If one of those "+
 			"moved deliberately, update this literal; if none did, the floor has been written "+
 			"as a constant again and no longer follows the drawer's height",
 			spendDrawerMinHeight, wantFloor,
-			spendStripMinHeight, spendDrawerLines, dividerLines)
+			spendStripMinHeight, spendDrawerLines, drawerBoxExtraLines)
 	}
 }
 
@@ -683,7 +709,7 @@ func TestSpendDrawerMinHeight_IsTwentyEight(t *testing.T) {
 // than a couple of rows".
 //
 // WHAT THIS CANNOT CATCH, and the reason is worth stating rather than discovering later.
-// The floor is derived (spendStripMinHeight + spendDrawerLines + dividerLines), so any
+// The floor is derived (spendStripMinHeight + spendDrawerLines + drawerBoxExtraLines), so any
 // assertion here comparing it to those components is a tautology — the defect class three
 // earlier rounds of review found in this package. A one-row drift is therefore not
 // detectable here: with the floor at 27 against a seven-row drawer the body is 14 rows
@@ -692,7 +718,7 @@ func TestSpendDrawerMinHeight_IsTwentyEight(t *testing.T) {
 // What it does catch is a floor that has come loose altogether — low enough that opening
 // the drawer squeezes the table to nothing, which is the failure the constant's doc
 // describes and the one that makes the drawer "a pane, badly". The single row is guarded
-// by TestSpendDrawerMinHeight_IsTwentyEight above, which pins the value to a literal.
+// by TestSpendDrawerMinHeight_IsTwentyNine above, which pins the value to a literal.
 func TestLayout_DrawerFloorLeavesAUsableTable(t *testing.T) {
 	forceColor(t)
 	const w = 120

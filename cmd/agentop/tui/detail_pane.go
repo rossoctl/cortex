@@ -227,7 +227,7 @@ func (m *model) detailFixedLine() string {
 		sectionOf(m.detailLines[i].path) == "response" {
 		name = "RESPONSE"
 	}
-	return truncToWidth(styleSeg.Render(name)+styleDim.Render(" │ ")+styleExchangeSummary(m.detailSummary), max(m.width, 20))
+	return truncToWidth(styleSeg.Render(name)+styleDim.Render(" │ ")+styleExchangeSummary(m.detailSummary), max(m.innerWidth(), 20))
 }
 
 // styleExchangeSummary colors exchangeSummary's plain text without changing it: " · " dim,
@@ -282,7 +282,7 @@ func (m *model) shownNum() string { return m.numAt(m.eventsTbl.Cursor()) }
 
 // numAt is the # cell of events table row i. "" when # is not shown or i is out of range.
 func (m *model) numAt(i int) string {
-	cols, _ := layoutColumns(m.eventColumns, m.eventColWidths, m.width)
+	cols, _ := layoutColumns(m.eventColumns, m.eventColWidths, m.innerWidth())
 	rows := m.eventsTbl.Rows()
 	for c, col := range cols {
 		if col.id == colIndex && i >= 0 && i < len(rows) && c < len(rows[i]) {

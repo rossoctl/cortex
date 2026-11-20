@@ -764,6 +764,13 @@ func helpBodyLines(pane paneID, width int) string {
 	if len(others) > 1 {
 		sections = append(sections, strings.Join(others, "\n\n"))
 	}
+	// Last: the bottom bar has no room for it. Wrapped, not cut, below its width: a cut URL
+	// cannot be followed.
+	url := "  " + feedbackURL
+	if lipgloss.Width(url) > width {
+		url = ansi.Hardwrap(feedbackURL, width, true)
+	}
+	sections = append(sections, styleHint.Render("FEEDBACK")+"\n"+styleMuted.Render(url))
 
 	return strings.Join(sections, "\n\n")
 }
@@ -906,9 +913,8 @@ func padRight(s string, n int) string {
 // preserving the surrounding view. Both are treated as plain rendered
 // blocks; the overlay's lines replace the base's at the computed offset.
 //
-// ANSI-aware only insofar as lipgloss.Width is used for column math —
-// good enough because the overlay fully covers the columns it occupies,
-// so no partial-escape splicing happens on the overlay's own rows.
+// ANSI-aware: the base's prefix and tail are cut with ANSI-aware functions,
+// and the overlay fully covers the columns it occupies.
 func overlayCenter(base, overlay string, width, height int) string {
 	baseLines := strings.Split(base, "\n")
 	overLines := strings.Split(overlay, "\n")
@@ -952,15 +958,20 @@ func overlayCenter(base, overlay string, width, height int) string {
 		if row >= len(out) {
 			break
 		}
-		// Rebuild the row as: base prefix (left columns) + overlay line.
-		// Anything the overlay covers to the right is dropped — the panel
-		// is opaque, and reconstructing a styled tail past an ANSI-laden
-		// prefix is not worth the complexity for a modal.
+		// Rebuild the row as: base prefix (left columns) + overlay line, padded to the
+		// panel's width + the base's tail right of the panel. The tail is what keeps the
+		// body box's right edge visible beside the panel. ansi.TruncateLeft keeps the
+		// tail's styles; the panel's own columns are opaque.
 		prefix := truncToWidth(out[row], left)
 		if w := lipgloss.Width(prefix); w < left {
 			prefix += strings.Repeat(" ", left-w)
 		}
-		out[row] = prefix + ol
+		tail := ansi.TruncateLeft(out[row], left+overW, "")
+		if rest := lipgloss.Width(out[row]) - left - overW; rest > 0 && lipgloss.Width(tail) > rest {
+			// TruncateLeft kept a double-width rune that crosses the panel's edge: show its right half as a space.
+			tail = " " + ansi.TruncateLeft(out[row], left+overW+1, "")
+		}
+		out[row] = prefix + padRight(ol, overW) + tail
 	}
 	return strings.Join(out, "\n")
 }

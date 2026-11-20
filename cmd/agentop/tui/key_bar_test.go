@@ -97,27 +97,24 @@ func TestRenderKeyBar_FullWidthUnderColor(t *testing.T) {
 	eachTheme(t, func(t *testing.T) {
 		fitted := fitHintLine(h, 100)
 		checkBar(t, renderKeyBar(fitted, 100), fitted, 100)
-		// The trailing form: a head with brackets that are not keys.
-		line := "error: [::1]  " + h
-		checkBarHead(t, renderTrailingKeyBar(line, h, 100), "error: [::1]  ", h, 100)
-	})
-}
-
-// checkBarHead is checkBar for a trailing bar whose head keeps its brackets.
-func checkBarHead(t *testing.T, out, head, keys string, w int) {
-	t.Helper()
-	if got := lipgloss.Width(out); got != w {
-		t.Fatalf("bar width %d, want %d", got, w)
-	}
-	if got, want := strings.TrimRight(ansi.Strip(out), " "), head+chipText(keys); got != want {
-		t.Fatalf("bar text %q, want %q", got, want)
-	}
-	bar := sgrOf(colorBarBg, true)
-	for i, sgr := range runeSGR(out)[:len([]rune(head))] {
-		if !strings.Contains(sgr, bar) {
-			t.Fatalf("head rune %d drawn with %q, want bar background", i, sgr)
+		// The status on the right keeps its brackets, and every rune of it, gap included,
+		// is on the bar's ground.
+		st := "error: [::1]"
+		out := bottomBar(h, barInk(styleError).Render(st), 100)
+		if got := lipgloss.Width(out); got != 100 {
+			t.Fatalf("bar width %d, want 100", got)
 		}
-	}
+		if got := ansi.Strip(out); !strings.HasPrefix(got, chipText(h)) || !strings.HasSuffix(got, st) {
+			t.Fatalf("bar text %q, want the keys then %q", got, st)
+		}
+		bar := sgrOf(colorBarBg, true)
+		sgr := runeSGR(out)
+		for i := len([]rune(chipText(h))); i < len(sgr); i++ {
+			if !strings.Contains(sgr[i], bar) {
+				t.Fatalf("status rune %d drawn with %q, want bar background", i, sgr[i])
+			}
+		}
+	})
 }
 
 // Review Focus 4: a cut that starts with "… " and ends in half a bracket still fills the
@@ -147,9 +144,6 @@ func TestRenderKeyBar_AsciiUnchanged(t *testing.T) {
 		for _, in := range []string{"[↵] open  [/] search", "… [es"} {
 			if got, want := renderKeyBar(in, 100), renderHints(in); got != want {
 				t.Fatalf("renderKeyBar(%q) = %q, want %q", in, got, want)
-			}
-			if got, want := renderTrailingKeyBar("x  "+in, in, 100), renderTrailingHints("x  "+in, in); got != want {
-				t.Fatalf("renderTrailingKeyBar = %q, want %q", got, want)
 			}
 		}
 	})

@@ -129,7 +129,9 @@ func TestSessionsHeaders_CarryNoANSIUnderAForcedColourProfile(t *testing.T) {
 	// with SESSION. That is the regime fitTableColumns documents as "the terminal is simply too
 	// narrow", and the table is already knowingly degraded there — TOKENS cannot hold its own
 	// widest value below forty columns either.
-	for width := 45; width <= 200; width++ {
+	//
+	// The 45 is the TABLE's width; the terminal is boxSideCols wider, for the body box.
+	for width := 45 + boxSideCols; width <= 200; width++ {
 		m := &model{width: width, height: 40, pane: paneSessions}
 		m.sessionsTbl = newSessionsTable()
 		m.layout()

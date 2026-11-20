@@ -53,10 +53,11 @@ func TestSessionsTable_PendingBucketFullAgentName(t *testing.T) {
 }
 
 // The columns SESSION gave back go to TITLE: 24 -> 30 at 140 columns with AGENT (and SERVER)
-// showing, the layout the issue measured.
+// showing, the layout the issue measured. 140 is the TABLE's width; the terminal is
+// boxSideCols wider, for the body box.
 func TestSessionsTable_TitleGetsFreedColumns(t *testing.T) {
 	m := sessionsServerModel(routerRaw)
-	m.width = 140
+	m.width = 140 + boxSideCols
 	m.rebuildSessionsTable()
 	cols := m.sessionsTbl.Columns()
 	if sessionsColumnWidth(cols, "AGENT") == 0 || sessionsColumnWidth(cols, "SERVER") == 0 {

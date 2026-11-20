@@ -8,16 +8,17 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/money"
 )
 
-// spendBandLines is the band's height: ONE row, labels inline with their figures.
+// spendBandLines is the band's height: ONE row, labels inline with their figures. That row
+// is the body box's top edge (#2020): the band is the edge's label, so it costs layout() no
+// row of its own.
 //
 // Constant in every state, for the same reason numTierRows is — layout() reserves it from
 // the terminal height and paneView fills it, and a renderer whose height follows its data
 // floats the footer or overflows the terminal.
 //
 // IT WAS TWO, stacking labels over values so their figures could share a column stride. The
-// row is worth more to the sessions table than the stride was to a reader: keys.go does
-// `bodyH -= spendBandLines`, so this hands a row back to the body of every pane the band draws
-// on, drawer open or closed. What is given up and why it is affordable is recorded on
+// row is worth more to the sessions table than the stride was to a reader, so it handed a row
+// back to the body of every pane the band draws on, drawer open or closed. What is given up and why it is affordable is recorded on
 // TestRenderSpendBand_EveryLabelSitsBesideItsOwnFigure, which replaced the stride assertion.
 const spendBandLines = 1
 

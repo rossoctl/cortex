@@ -261,14 +261,15 @@ func (m *model) rebuildSessionsTable() {
 	// The gates measure SESSION at sessionIDWidth. A pending bucket's agent name widens it, so
 	// they are asked about the width left once that extra is taken out.
 	scope, project := m.sessionsScope(), m.sessionsProjectScope()
-	idW, gateW := m.sessionsIDWidth(scope, project, sessionsShowTitle(m.width)), m.width
-	if m.width > 0 {
-		gateW = max(m.width-(idW-sessionIDWidth), 1) // 0 would read as "no width yet"
+	bodyW := m.innerWidth()
+	idW, gateW := m.sessionsIDWidth(scope, project, sessionsShowTitle(bodyW)), bodyW
+	if bodyW > 0 {
+		gateW = max(bodyW-(idW-sessionIDWidth), 1) // 0 would read as "no width yet"
 		// Without TITLE the mark moves into SESSION, so measure again. TITLE stays hidden then,
 		// because gateW only shrinks.
 		if !sessionsShowTitle(gateW) {
 			idW = m.sessionsIDWidth(scope, project, false)
-			gateW = max(m.width-(idW-sessionIDWidth), 1)
+			gateW = max(bodyW-(idW-sessionIDWidth), 1)
 		}
 	}
 	showMoney := sessionsShowMoney(gateW)
@@ -289,7 +290,7 @@ func (m *model) rebuildSessionsTable() {
 	// no room. Kept, so the search can still read a dropped one.
 	twoAgents := m.sessionsListTwoAgents(scope, project)
 	want := alignSessionsHeaders(fitTableColumns(withSessionsIDWidth(
-		sessionsColumnsWith(gateW, twoAgents, showServer), idW), m.width))
+		sessionsColumnsWith(gateW, twoAgents, showServer), idW), bodyW))
 	agentW := sessionsColumnWidth(want, "AGENT")
 	serverW := sessionsColumnWidth(want, "SERVER")
 	costW := sessionsColumnWidth(want, "COST")

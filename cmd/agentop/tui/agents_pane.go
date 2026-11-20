@@ -373,7 +373,7 @@ func (m *model) rebuildAgentsTable() {
 		cols = append(cols, table.Column{Title: "SERVER", Width: agentsServerWidth})
 		kinds = append(kinds, cellMuted)
 	}
-	if want := fitTableColumns(cols, m.width); !sameColumns(m.agentsTbl.Columns(), want) {
+	if want := fitTableColumns(cols, m.innerWidth()); !sameColumns(m.agentsTbl.Columns(), want) {
 		m.agentsTbl.SetRows(nil)
 		m.agentsTbl.SetColumns(want)
 	}

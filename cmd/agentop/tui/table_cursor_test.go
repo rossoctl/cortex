@@ -740,7 +740,8 @@ func TestSessionsTable_PollThatWidensSessionKeepsScrollPosition(t *testing.T) {
 		}
 		return fmt.Sprintf("%d..%d", first, last)
 	}
-	for _, w := range []int{52, 200} {
+	// 52 is the TABLE's width; the terminal is boxSideCols wider, for the body box.
+	for _, w := range []int{52 + boxSideCols, 200} {
 		m := &model{pane: paneSessions, width: w}
 		m.sessionsTbl = newSessionsTable()
 		m.sessionsTbl.SetHeight(12)
