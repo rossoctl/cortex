@@ -621,6 +621,7 @@ func (m *model) revealPendingSeq() bool {
 func (m *model) timelineBody() string {
 	if msg, before, key, after, ok := m.timelineEmptyState(); ok {
 		m.timelineDoc.setLines(nil, 0)
+		m.timelineDoc.render("") // only render resets the matches, so the chart's do not stay
 		return m.paneEmptyState(msg, before, key, after)
 	}
 	lines := strings.Split(strings.TrimRight(m.renderTimeline(), "\n"), "\n")

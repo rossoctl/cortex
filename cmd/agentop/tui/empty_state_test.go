@@ -196,3 +196,19 @@ func TestEmptyStates_EveryPane(t *testing.T) {
 		})
 	}
 }
+
+// A search set on the chart finds nothing once the Timeline shows an empty state: the matches
+// of the chart that is gone do not stay.
+func TestTimelineEmptyState_SearchFindsNothing(t *testing.T) {
+	m := timelineModel(t, 100, 30)
+	m.search = map[paneID]string{paneTimeline: "a"}
+	m.timelineBody()
+	if len((timelineSurface{m}).matchLines()) == 0 {
+		t.Fatal("the chart has no match for \"a\"; the test needs one")
+	}
+	m.timeline.tl = nil
+	m.timelineBody()
+	if got := (timelineSurface{m}).matchLines(); len(got) != 0 {
+		t.Errorf("empty state: %d matches, want 0", len(got))
+	}
+}
