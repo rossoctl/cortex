@@ -43,7 +43,6 @@ var (
 	colorZebraBg = lipgloss.AdaptiveColor{Light: "#F3F4F6", Dark: "#15151C"} // every second table row
 	colorChipBg  = lipgloss.AdaptiveColor{Light: "#E5E7EB", Dark: "#374151"} // key chip ground
 	colorChipFg  = lipgloss.AdaptiveColor{Light: "#111827", Dark: "#F3F4F6"} // key chip text
-	colorTool    = lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#F59E0B"} // agent tool rows
 )
 
 var (
@@ -60,7 +59,6 @@ var (
 	styleBold       = lipgloss.NewStyle().Bold(true)
 	styleChip       = lipgloss.NewStyle().Foreground(colorChipFg).Background(colorChipBg)
 	styleSeg        = lipgloss.NewStyle().Foreground(colorOnSeries).Background(colorAccent).Bold(true)
-	styleTool       = lipgloss.NewStyle().Foreground(colorTool)
 	styleAccent     = lipgloss.NewStyle().Foreground(colorAccent)
 	styleAccentBold = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 	styleMutedBold  = lipgloss.NewStyle().Foreground(colorMuted).Bold(true)
@@ -142,12 +140,14 @@ func tableStyles() table.Styles {
 }
 
 // tableGlyphs are the runes drawn in their own ink inside a styled cell: the CTX gauge's
-// brackets and the BYTES arrows dim, the agents pane's open marks accent.
+// brackets and the BYTES arrows dim, a tool row's ┗⚒/┣⚒ mark and the subagent │ dim, the agents
+// pane's open marks accent.
 //
 // shortcut: the gauge's one-eighth block is the same rune as its closing bracket (▏), so a fill
 // under one eighth of a cell draws dim; give the gauge its own bracket rune if that matters.
 var tableGlyphs = map[rune]lipgloss.Style{
 	'▕': styleDim, '▏': styleDim, '↑': styleDim, '↓': styleDim,
+	'┗': styleDim, '┣': styleDim, '⚒': styleDim, '│': styleDim,
 	'▸': styleAccent, '▾': styleAccent,
 }
 
