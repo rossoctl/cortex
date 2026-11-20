@@ -169,8 +169,8 @@ func newServedTitleModel(t *testing.T, meta map[string]SessionMetadata, served m
 // sessionsColumns' comment and selectedSessionID both depend on that.
 func titleRow(t *testing.T, m *model, id string) table.Row {
 	t.Helper()
-	for _, r := range m.sessionsTbl.Rows() {
-		if r[0] == id {
+	for i, r := range m.sessionsTbl.Rows() {
+		if m.sessionRowIDs[i] == id {
 			return r
 		}
 	}
@@ -272,10 +272,10 @@ func TestSessionsColumnsFor_TitleGrowsIntoSlackOnly(t *testing.T) {
 	if got, want := width(at200, "TITLE"), sessionsTitleWidth+(200-declared); got != want {
 		t.Errorf("TITLE at 200 = %d, want %d (declared %d + all the slack)", got, want, declared)
 	}
-	// SESSION, not ID, and 14 rather than 40: main narrowed the id column to seat COST and
-	// SAVED. The property is unchanged — growth comes from slack, never from a neighbour.
-	if got := width(at200, "SESSION"); got != 14 {
-		t.Errorf("SESSION at 200 = %d, want its declared 14 — growth must come from slack, not a neighbour", got)
+	// SESSION, not ID, and 8 rather than 40: an 8-character id prefix (#2019). The property is
+	// unchanged — growth comes from slack, never from a neighbour.
+	if got := width(at200, "SESSION"); got != sessionIDWidth {
+		t.Errorf("SESSION at 200 = %d, want its declared %d — growth must come from slack, not a neighbour", got, sessionIDWidth)
 	}
 	if got := tableWidth(at200); got != 200 {
 		t.Errorf("rendered width at 200 = %d, want exactly 200", got)

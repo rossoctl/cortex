@@ -379,7 +379,8 @@ func sessionsModel(t *testing.T, n int) *model {
 	m.sessionsTbl.SetHeight(12)
 	for i := 0; i < n; i++ {
 		m.sessions = append(m.sessions, session.SessionSummary{
-			ID: hostToken(i), UpdatedAt: time.Now(), EventCount: 3,
+			// The title carries the marker: SESSION shows only 8 characters of the id.
+			ID: hostToken(i), Title: hostToken(i), UpdatedAt: time.Now(), EventCount: 3,
 		})
 	}
 	m.rebuildSessionsTable()

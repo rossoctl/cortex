@@ -139,7 +139,7 @@ func TestSessionsGauge_TrueColorInk(t *testing.T) {
 	cols := []table.Column{{Title: "SESSION", Width: 8}, {Title: contextColumnTitle, Width: 7}}
 	rows := []table.Row{{"aaaaaaaa", gauge}, {"bbbbbbbb", gauge}, {"cccccccc", gauge}}
 	tbl := table.New(table.WithColumns(cols), table.WithRows(rows), table.WithHeight(4),
-		table.WithCellStyle(sessionsCellStyle(cols)))
+		table.WithCellStyle(sessionsCellStyle(cols, nil)))
 	tbl.SetStyles(tableStyles())
 	tbl.SetCursor(0)
 

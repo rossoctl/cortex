@@ -22,7 +22,7 @@ import (
 // resize: fitting the LIVE columns would be cumulative, and a terminal that got narrower once
 // would keep its narrowed columns after being widened again.
 //
-// These widths sum to 84 declared columns, or 100 rendered once bubbles adds its two of padding
+// These widths sum to 78 declared columns, or 94 rendered once bubbles adds its two of padding
 // per cell, which is why they are fitted rather than used as-is — see fitTableColumns.
 //
 // THIS PARAGRAPH HAS CARRIED WRONG NUMBERS THREE TIMES: 104/116 before a rebase, 98/114 after one
@@ -33,21 +33,20 @@ import (
 // TITLE is the widest optional column, and it is dropped rather than shrunk when the terminal
 // cannot seat it — see sessionsShowTitle, which decides after the money columns so that
 // widening the window never takes a column away. Where TITLE does render, fitTableColumns
-// shrinks the widest column rather than dropping any, so it and SESSION pay for each other:
-// measured, SESSION is 12 at 97 columns and 14 from 100 up. A 12-character id prefix still
-// distinguishes sessions in practice, and an unnamed session is what this column exists to fix.
+// shrinks the widest column rather than dropping any. SESSION is 8 wide (an 8-character id
+// prefix, #2019), so it is never the widest and TITLE pays for a narrow terminal on its own.
 //
-// A terminal WIDER than 100 rendered is handled by sessionsColumnsFor rather than here:
+// A terminal WIDER than 94 rendered is handled by sessionsColumnsFor rather than here:
 // fitTableColumns only ever shrinks, so these declared widths are simultaneously the
 // narrow-terminal budget and the wide-terminal ceiling, and titles are mostly directory paths
 // with nothing to gain from a ceiling of 24 when there are spare columns on the screen.
 func sessionsColumns() []table.Column {
 	return []table.Column{
-		// SESSION, and 14 wide rather than 40. A session id is a 36-character UUID whose
-		// first characters identify it to a human as well as all of them do, and the 26
-		// columns it was spending are the ones the money columns need. `/` filters on the
-		// FULL id, so nothing is lost for finding a session — only for reading one.
-		{Title: "SESSION", Width: 14},
+		// SESSION, and 8 wide rather than 36: the first 8 characters of a UUID identify a
+		// session to a human as well as all of them do (#2019). `/` filters on the FULL id,
+		// so nothing is lost for finding a session — only for reading one. The rebuild widens
+		// it for a pending bucket's agent name; see sessionsIDWidth.
+		{Title: "SESSION", Width: sessionIDWidth},
 		// After SESSION, never before it. Nothing reads the id off a row any more —
 		// selectedSessionID and the cursor restore read sessionRowIDs, kept beside the rows —
 		// but SESSION first is where a reader looks for it, and withColumnIfItFits seats every
@@ -170,13 +169,20 @@ var sessionsCellKinds = map[string]cellKind{
 }
 
 // sessionsCellStyle styles the cells under cols by their declared title (headerTitle), so the
-// style follows a column wherever the width puts it.
-func sessionsCellStyle(cols []table.Column) table.CellStyleFunc {
+// style follows a column wherever the width puts it. The row whose id in ids is the default
+// bucket is background traffic, so all of it is muted (an em dash stays dim).
+func sessionsCellStyle(cols []table.Column, ids []string) table.CellStyleFunc {
 	kinds := make([]cellKind, len(cols))
 	for i, c := range cols {
 		kinds[i] = sessionsCellKinds[headerTitle(c)]
 	}
-	return kindsCellStyle(kinds)
+	byKind := kindsCellStyle(kinds)
+	return dashDim(func(r int, row table.Row, col int) lipgloss.Style {
+		if r < len(ids) && ids[r] == session.DefaultSessionID {
+			return styleMuted
+		}
+		return byKind(r, row, col)
+	})
 }
 
 // sessionsTitleWidth is TITLE's floor: the narrowest cell worth granting the column, and its
@@ -186,7 +192,7 @@ func sessionsCellStyle(cols []table.Column) table.CellStyleFunc {
 // does not displace render 67 wide, and 67 + 11 + 2 is 80" — 67 was right then (63 since the
 // context heading became CTX(1M)), but the gate does not add up declared widths any more: it asks
 // the fitter what TITLE is left with, and the fitter narrows the two wider columns before it
-// touches TITLE. So the real threshold is lower than that sum — 69, measured.
+// touches TITLE. So the real threshold is lower than that sum — 67, measured.
 //
 // 11 is the narrowest cell where a left-truncated path still says which session it is:
 // "…claudesessions" fits, where 8 columns give a leaf fragment identifying nothing. Picked for
@@ -197,7 +203,8 @@ func sessionsCellStyle(cols []table.Column) table.CellStyleFunc {
 // that base by three and pushed TITLE's threshold to 83 — caught by
 // TestSessionsShowTitle_RendersAtTheCommonWidth, which exists because an earlier revision let a
 // 20-column error through with nothing asserting the threshold. Shortening that heading to
-// CTX(1M) took four columns back out, moving the threshold from 73 to 69. Any future column
+// CTX(1M) took four columns back out, moving the threshold from 73 to 69, and SESSION going
+// from 14 to 8 (#2019) moved it to 67. Any future column
 // added to this table moves this number again, and that test is what says so.
 //
 // Narrow for a path, deliberately: truncLeft keeps the TAIL, so 14 columns of
@@ -216,7 +223,7 @@ func newSessionsTable() table.Model {
 	t := table.New(
 		table.WithColumns(alignSessionsHeaders(sessionsColumns())),
 		table.WithFocused(true),
-		table.WithCellStyle(sessionsCellStyle(sessionsColumns())),
+		table.WithCellStyle(sessionsCellStyle(sessionsColumns(), nil)),
 	)
 	t.SetStyles(tableStyles())
 	return t
@@ -268,8 +275,8 @@ func (m *model) rebuildSessionsTable() {
 	// AGENT and SERVER are asked for by what is listed, then dropped whole when the terminal has
 	// no room. Kept, so the search can still read a dropped one.
 	twoAgents := m.sessionsListTwoAgents(scope, project)
-	want := alignSessionsHeaders(fitTableColumns(
-		sessionsColumnsWith(m.width, twoAgents, showServer), m.width))
+	want := alignSessionsHeaders(fitTableColumns(withSessionsIDWidth(
+		sessionsColumnsWith(m.width, twoAgents, showServer), m.sessionsIDWidth(scope, project, showTitle)), m.width))
 	agentW := sessionsColumnWidth(want, "AGENT")
 	serverW := sessionsColumnWidth(want, "SERVER")
 	costW := sessionsColumnWidth(want, "COST")
@@ -316,17 +323,12 @@ func (m *model) rebuildSessionsTable() {
 		// started with "↳ ". Plain text, not dim: the table cuts a cell by its bytes, and a
 		// style's escape bytes would mangle it (see cachedMarker). With no TITLE column, the
 		// SESSION cell has the mark.
-		mark := ""
-		if strings.HasPrefix(s.Source, coremodel.ImportedSourcePrefix) {
-			mark = importedMarker
-		} else if s.ParentSession != "" {
-			mark = childMarker
-		}
+		mark := sessionMark(s)
 		markW := lipgloss.Width(mark) // columns, not bytes: "↳" is 3 bytes and 1 column
 		if showTitle || mark == "" {
-			b.cut(sessionIDCell(s.ID, idW), func() string { return sessionIDCell(s.ID, noLimit) })
+			b.cut(sessionIDCell(s.ID, idW), func() string { return sessionIDSearch(s.ID) })
 		} else {
-			b.cut(mark+sessionIDCell(s.ID, idW-markW), func() string { return sessionIDCell(s.ID, noLimit) })
+			b.cut(mark+sessionIDCell(s.ID, idW-markW), func() string { return sessionIDSearch(s.ID) })
 		}
 		// s.Title straight off the summary, where sessionLabel reaches the same value by id
 		// through m.servedTitle. Two routes, equal only because they read the same slice —
@@ -400,7 +402,7 @@ func (m *model) rebuildSessionsTable() {
 		}
 		cached := m.events[id]
 		b := newRowBuilder(q != "")
-		b.cut(sessionIDCell(id, idW), func() string { return sessionIDCell(id, noLimit) })
+		b.cut(sessionIDCell(id, idW), func() string { return sessionIDSearch(id) })
 		// These rows exist precisely because the server no longer lists the session, so there
 		// is no summary to carry a served title. Harvested metadata outlives the listing, so
 		// the cell can still fill from that. Named constant rather than a bare "" so the
@@ -464,7 +466,7 @@ func (m *model) rebuildSessionsTable() {
 		m.sessionsTbl.SetRows(nil)
 		m.sessionsTbl.SetColumns(want)
 	}
-	m.sessionsTbl.SetCellStyle(sessionsCellStyle(want))
+	m.sessionsTbl.SetCellStyle(sessionsCellStyle(want, ids))
 	m.sessionsTbl.SetRows(rows)
 	m.sessionsTbl.SetSearch(q, full)
 	// Published with the rows they describe, never separately.
@@ -505,6 +507,54 @@ func (m *model) cachedOnlySessionIDs() []string {
 		out = append(out, id)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// sessionMark is the plain-text mark before a session's title: imported, or started by another
+// session. With no TITLE column, the SESSION cell has it.
+func sessionMark(s session.SessionSummary) string {
+	if strings.HasPrefix(s.Source, coremodel.ImportedSourcePrefix) {
+		return importedMarker
+	}
+	if s.ParentSession != "" {
+		return childMarker
+	}
+	return ""
+}
+
+// sessionsIDWidth is SESSION's width for the listed rows: the widest SESSION cell, an id counted
+// at sessionIDWidth, so a pending bucket's agent name is never cut (claude-code gives 11). It
+// reads the same filters as rebuildSessionsTable's two row loops.
+func (m *model) sessionsIDWidth(scope, project string, showTitle bool) int {
+	w := sessionIDWidth
+	for _, s := range m.sessions {
+		if !m.sessionListed(s, scope, project) || foldedInto(s) != "" {
+			continue
+		}
+		cell := sessionIDCell(s.ID, noLimit)
+		if !showTitle {
+			cell = sessionMark(s) + cell
+		}
+		w = max(w, lipgloss.Width(cell))
+	}
+	if (scope == "" || scope == otherAgents) && (project == "" || project == otherProjects) {
+		for _, id := range m.cachedOnlySessionIDs() {
+			w = max(w, lipgloss.Width(sessionIDCell(id, noLimit)))
+		}
+	}
+	return w
+}
+
+// withSessionsIDWidth is cols with SESSION set to w. Applied before fitTableColumns, so on a
+// terminal with no room left the fitter takes the extra from the widest column (TITLE).
+func withSessionsIDWidth(cols []table.Column, w int) []table.Column {
+	out := make([]table.Column, len(cols))
+	copy(out, cols)
+	for i := range out {
+		if headerTitle(out[i]) == "SESSION" {
+			out[i].Width = w
+		}
+	}
 	return out
 }
 
@@ -853,7 +903,7 @@ const sessionMoneyCellMin = 9
 // lines above sessionMoneyCell forbids it in both directions.
 //
 // The cost is real and measured: on this floor alone the columns disappear below 71 columns
-// (TITLE, which they yield to, keeps them out until 93 — see sessionsShowTitle), where an ordinary
+// (TITLE, which they yield to, keeps them out until 91 — see sessionsShowTitle), where an ordinary
 // "$36.58" would still have fitted. Dropping a whole column is this file's stated answer to
 // not being able to render a cell honestly, and a reader who cannot see COST at all goes
 // looking for the width; one who sees "—" against a session that definitely spent money
@@ -1023,8 +1073,8 @@ func sessionsShowTitle(termWidth int) bool {
 	// paragraph is live.
 	//
 	// What the function does: TITLE is granted when the FITTED set leaves it its floor, measured
-	// without the money columns because those are what yield to it. TITLE renders from 69; COST
-	// and SAVED are absent from 69 to 92 and return at 93, where the whole set holds every
+	// without the money columns because those are what yield to it. TITLE renders from 67; COST
+	// and SAVED are absent from 67 to 90 and return at 91, where the whole set holds every
 	// minimum at once.
 	//
 	// Why in that order: TITLE is the column this pane gained and the only one whose absence
@@ -1040,8 +1090,8 @@ func sessionsShowTitle(termWidth int) bool {
 	//
 	// Measured WITHOUT the money columns, because they are what yields: this gate is decided
 	// first and sessionsShowMoney reads it, so COST and SAVED take only what is left once a
-	// legible title has its room. They are absent from 69 to 92 for that reason and return at
-	// 93, where the full set holds every minimum at once.
+	// legible title has its room. They are absent from 67 to 90 for that reason and return at
+	// 91, where the full set holds every minimum at once.
 	keep := make([]table.Column, 0, len(sessionsColumns()))
 	for _, c := range sessionsColumns() {
 		switch headerTitle(c) {
@@ -1082,7 +1132,7 @@ func growSessionsTitle(cols []table.Column, termWidth, pending int) []table.Colu
 	//
 	// So growth stops at what survives their return. Below the width where they fit, the room
 	// they will take is reserved rather than lent: TITLE grows steadily instead of ballooning
-	// and collapsing. Column PRESENCE is monotonic — TITLE from 69, the money columns from 93,
+	// and collapsing. Column PRESENCE is monotonic — TITLE from 67, the money columns from 91,
 	// AGENT and SERVER only where those render (withColumnIfItFits) — and this, with pending, is
 	// what makes TITLE's width so.
 	if !sessionsShowMoney(termWidth) {
