@@ -3405,8 +3405,9 @@ func TestSessionHeader_Under(t *testing.T) {
 		{ID: "id-1", Title: "fix the parser", ParentSession: "abcdef0123456789"},
 		{ID: "id-2", Title: "top"},
 	}
-	if got := m.sessionHeader("id-1", "event"); !strings.Contains(got, " · event · under abcdef01") {
-		t.Errorf("header = %q, want it to contain %q", got, " · event · under abcdef01")
+	// The parent as its SESSION cell shows it: the last 8 characters.
+	if got := m.sessionHeader("id-1", "event"); !strings.Contains(got, " · event · under 23456789") {
+		t.Errorf("header = %q, want it to contain %q", got, " · event · under 23456789")
 	}
 	if got := m.sessionHeader("id-2", "event"); strings.Contains(got, " · under ") {
 		t.Errorf("header of a session with no parent = %q, has %q", got, " · under ")
