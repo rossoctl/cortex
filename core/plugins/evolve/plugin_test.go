@@ -969,3 +969,30 @@ func TestLearn_ASessionThatResumesDuringATickWaits(t *testing.T) {
 		t.Fatalf("learned %d batches, want only the session that stayed idle", len(fe.learned))
 	}
 }
+
+func TestLearn_MaxSessionsHoldsWhileEverySessionIsSending(t *testing.T) {
+	fe := &fakeEvolve{learnHold: make(chan struct{})}
+	p, c := configured(t, `{"endpoint":"http://x","idle_after_seconds":60,"min_turns":1,"max_sessions":1}`, fe)
+	finish(t, p, turn(h1, "Running.", bash1))
+	c.t = c.t.Add(61 * time.Second)
+	hold := fe.learnHold
+	done := make(chan struct{})
+	go func() { p.learnIdle(context.Background()); close(done) }()
+	waitFor(t, func() bool { return fe.sendingSession() == "s1" })
+
+	// s1 is being sent, so it can't be evicted to make room for s2.
+	other := turn(h1, "x", nil)
+	other.Session.ID = "s2"
+	finish(t, p, other)
+	p.mu.Lock()
+	tracked := len(p.sessions)
+	p.mu.Unlock()
+	close(hold)
+	<-done
+	if tracked != 1 {
+		t.Fatalf("tracking %d sessions with max_sessions 1", tracked)
+	}
+	if got := metricValue(p, "turns not tracked"); got != 1 {
+		t.Fatalf("turns not tracked = %v, want 1", got)
+	}
+}

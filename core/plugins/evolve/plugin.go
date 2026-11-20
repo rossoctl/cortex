@@ -520,8 +520,11 @@ func (p *Plugin) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	defer p.mu.Unlock()
 	s, ok := p.sessions[sessionID]
 	if !ok {
-		if len(p.sessions) >= p.cfg.MaxCached {
-			p.evictOldestSession()
+		if len(p.sessions) >= p.cfg.MaxCached && !p.evictOldestSession() {
+			// Every tracked session is being sent. Leave this one out rather than
+			// go past max_sessions; its turns aren't learned from.
+			p.m.inc(&p.m.untracked)
+			return
 		}
 		p.recorders++
 		s = &session{rec: newRecorder(agent, fmt.Sprintf("%d.%d", p.epoch, p.recorders))}
@@ -554,7 +557,9 @@ func answered(pctx *pipeline.Context) bool {
 		(inf.Completion != "" || len(inf.ToolCalls) > 0)
 }
 
-func (p *Plugin) evictOldestSession() {
+// evictOldestSession stops tracking the least recently active session that
+// isn't being sent, and reports whether there was one.
+func (p *Plugin) evictOldestSession() bool {
 	var oldest string
 	var at time.Time
 	for id, s := range p.sessions {
@@ -562,7 +567,11 @@ func (p *Plugin) evictOldestSession() {
 			oldest, at = id, s.last
 		}
 	}
+	if oldest == "" {
+		return false
+	}
 	delete(p.sessions, oldest)
+	return true
 }
 
 func (p *Plugin) learnLoop(ctx context.Context) {
