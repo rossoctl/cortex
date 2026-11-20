@@ -989,7 +989,7 @@ drawer follow that project.
 sessions list to the sessions that recorded the project, and narrows the usage pane,
 the spend band and its drawer to the project's figures. Every title then says
 `project=<display name>`, beside `agent=` when an agent is scoped. agentop sends
-`project=<display name>` to the server (with `agent=` when an agent is scoped), and
+`project=<label>`, the label that `group=project` reports, to the server (with `agent=` when an agent is scoped), and
 uses the reply only when the reply echoes `project`. A proxy that does not echo
 `project` (older than #2033) gets the old read: agentop asks for the `group=project`
 series and narrows the reply itself. agentop never sends `project=Other` or

@@ -83,14 +83,17 @@ func TestFetchUsageScopedProject_NoEchoFallsBack(t *testing.T) {
 	}
 }
 
-// Other and (other) are agentop's own fold labels: no server knows them, so they never go on the
-// wire, whether or not the server echoes.
+// Other, (other) and the agent Other are agentop's own fold labels: no server knows them, so
+// project= never goes on the wire with one, whether or not the server echoes. A server that
+// echoes agent=Other&project=X would answer a zero that agentop takes as the project's spend.
 func TestFetchUsageScopedProject_NeverSendsOther(t *testing.T) {
 	client, asked := projectServer(t, true)
-	for _, p := range []string{otherProjects, projectOverflowLabel} {
+	for _, c := range []struct{ agent, project string }{
+		{"", otherProjects}, {"", projectOverflowLabel}, {otherAgents, "/repo/a"},
+	} {
 		// (other) is not a series of the reply, beside no overflow series: a zero, not an error.
-		if _, err := fetchUsageScopedProject(context.Background(), client, "today", 0, "", p, usage.GroupNone); err != nil {
-			t.Fatalf("%s: %v", p, err)
+		if _, err := fetchUsageScopedProject(context.Background(), client, "today", 0, c.agent, c.project, usage.GroupNone); err != nil {
+			t.Fatalf("agent %q, project %q: %v", c.agent, c.project, err)
 		}
 	}
 	for _, q := range asked() {
