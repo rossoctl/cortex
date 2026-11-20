@@ -48,15 +48,16 @@ type recorder struct {
 	seen    int              // request messages already accounted for
 	calls   map[string]bool  // tool-call ids awaiting a result
 	batch   int              // batches sent so far
-	// epoch distinguishes this recorder's batch ids from those of an earlier
-	// Cortex process recording the same session, which evolve would otherwise
-	// skip as already processed.
-	epoch int64
+	// gen distinguishes this recorder's batch ids from those of any other
+	// recorder of the same session, which evolve would otherwise skip as already
+	// processed: one in an earlier Cortex process (the epoch), or an earlier one
+	// in this process, before the session was evicted and resumed.
+	gen   string
 	taken int // turns in the batch last taken, for restore
 }
 
-func newRecorder(agent string, epoch int64) *recorder {
-	return &recorder{agent: agent, calls: map[string]bool{}, epoch: epoch}
+func newRecorder(agent, gen string) *recorder {
+	return &recorder{agent: agent, calls: map[string]bool{}, gen: gen}
 }
 
 // observe folds one completed main-agent exchange into the recorder.
@@ -134,7 +135,7 @@ func (r *recorder) take(sessionID string, minTurns int) (t Trajectory, ok bool) 
 		return Trajectory{}, false
 	}
 	r.batch++
-	id := fmt.Sprintf("%d-%d", r.epoch, r.batch)
+	id := fmt.Sprintf("%s-%d", r.gen, r.batch)
 	t = Trajectory{
 		Messages: r.pending,
 		Batch:    &Batch{Source: "cortex", ConversationID: sessionID, BatchID: id, Scope: "cortex"},

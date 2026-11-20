@@ -169,6 +169,10 @@ type Plugin struct {
 	agents map[string]struct{}
 	now    func() time.Time
 	epoch  int64
+	// recorders counts the recorders created, for their batch ids: a session
+	// evicted and resumed gets a new recorder, whose batches must not reuse the
+	// ids evolve already accepted from the old one.
+	recorders int
 
 	mu       sync.Mutex
 	cache    map[string]*cached
@@ -519,7 +523,8 @@ func (p *Plugin) OnFinish(_ context.Context, pctx *pipeline.Context) {
 		if len(p.sessions) >= p.cfg.MaxCached {
 			p.evictOldestSession()
 		}
-		s = &session{rec: newRecorder(agent, p.epoch)}
+		p.recorders++
+		s = &session{rec: newRecorder(agent, fmt.Sprintf("%d.%d", p.epoch, p.recorders))}
 		p.sessions[sessionID] = s
 	}
 	s.rec.observe(pctx.Extensions.Inference)

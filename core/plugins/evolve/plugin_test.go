@@ -819,7 +819,7 @@ func TestTaskText_IsCodexsPromptNotItsContext(t *testing.T) {
 }
 
 func TestLearn_CodexsContextIsNotLearned(t *testing.T) {
-	r := newRecorder("codex", 1)
+	r := newRecorder("codex", "1.1")
 	var msgs []pipeline.InferenceMessage
 	for _, m := range codexMessages("Fix the login bug") {
 		msgs = append(msgs, pipeline.InferenceMessage{Role: m.role, Content: m.content})
@@ -832,5 +832,32 @@ func TestLearn_CodexsContextIsNotLearned(t *testing.T) {
 		if c, _ := m["content"].(string); strings.Contains(c, "AGENTS.md") || strings.Contains(c, "environment_context") {
 			t.Fatalf("learned Codex's context: %v", r.pending)
 		}
+	}
+}
+
+func TestLearn_AResumedSessionDoesNotReuseItsBatchIDs(t *testing.T) {
+	fe := &fakeEvolve{}
+	p, c := configured(t, `{"endpoint":"http://x","idle_after_seconds":60,"min_turns":1,"max_sessions":1}`, fe)
+	finish(t, p, turn(h1, "Running.", bash1))
+	c.t = c.t.Add(61 * time.Second)
+	p.learnIdle(context.Background())
+	// Another session evicts s1, which then resumes with a new turn.
+	other := turn(h1, "x", nil)
+	other.Session.ID = "s2"
+	finish(t, p, other)
+	finish(t, p, turn(h2, "Done.", nil, pipeline.InferenceToolResult{ToolUseID: "t1", Content: "ok"}))
+	c.t = c.t.Add(61 * time.Second)
+	p.learnIdle(context.Background())
+
+	var ids []string
+	for _, l := range fe.learned {
+		if l.t.Batch.ConversationID == "s1" {
+			ids = append(ids, l.t.Batch.BatchID)
+		}
+	}
+	// Before, the new recorder started again at batch 1, and evolve skipped its
+	// turns as a batch it had already processed.
+	if len(ids) != 2 || ids[0] == ids[1] {
+		t.Fatalf("s1 batch ids = %v, want two different ids", ids)
 	}
 }
