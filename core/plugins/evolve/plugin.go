@@ -146,6 +146,13 @@ type cached struct {
 	failed     bool
 }
 
+// flight is a session's guideline fetch in progress. Requests of the session
+// that arrive meanwhile wait for its entry instead of calling evolve again.
+type flight struct {
+	done  chan struct{}
+	entry *cached // set before done is closed; nil if the fetch panicked
+}
+
 // session is one session's learning state: its unsent turns and when it was
 // last active.
 type session struct {
@@ -166,7 +173,7 @@ type Plugin struct {
 	mu       sync.Mutex
 	cache    map[string]*cached
 	order    []string // cache insertion order, for eviction
-	inflight map[string]*sync.Mutex
+	inflight map[string]*flight
 	sessions map[string]*session
 
 	tick   time.Duration
@@ -219,7 +226,7 @@ func (p *Plugin) Configure(raw json.RawMessage) error {
 		p.agents[a] = struct{}{}
 	}
 	p.cache = map[string]*cached{}
-	p.inflight = map[string]*sync.Mutex{}
+	p.inflight = map[string]*flight{}
 	p.sessions = map[string]*session{}
 	p.epoch = p.now().Unix()
 	if p.client == nil {
@@ -368,8 +375,10 @@ func (p *Plugin) OnRequest(ctx context.Context, pctx *pipeline.Context) (action 
 }
 
 // guidelinesFor returns the session's cached guidelines, fetching them when
-// absent or expired. One fetch per session at a time: concurrent requests of
-// the same session wait for it rather than each calling evolve.
+// absent or expired. One fetch per session at a time: a request that arrives
+// while one is in progress waits for it rather than calling evolve again, but
+// only until its own timeout_ms or cancellation, and then goes on with the
+// session's earlier guidelines, or none.
 func (p *Plugin) guidelinesFor(ctx context.Context, sessionID string, messages []pipeline.InferenceMessage) (*cached, bool) {
 	p.mu.Lock()
 	if c, ok := p.cache[sessionID]; ok && p.now().Before(c.expires) {
@@ -377,23 +386,48 @@ func (p *Plugin) guidelinesFor(ctx context.Context, sessionID string, messages [
 		p.m.inc(&p.m.cacheHits)
 		return c, true
 	}
-	lock, ok := p.inflight[sessionID]
-	if !ok {
-		lock = &sync.Mutex{}
-		p.inflight[sessionID] = lock
-	}
-	p.mu.Unlock()
-
-	lock.Lock()
-	defer lock.Unlock()
-	p.mu.Lock()
-	if c, ok := p.cache[sessionID]; ok && p.now().Before(c.expires) {
-		p.mu.Unlock()
-		p.m.inc(&p.m.cacheHits)
-		return c, true
-	}
 	previous := p.cache[sessionID]
+	if f, ok := p.inflight[sessionID]; ok {
+		p.mu.Unlock()
+		return p.await(ctx, f, previous)
+	}
+	f := &flight{done: make(chan struct{})}
+	p.inflight[sessionID] = f
 	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		if p.inflight[sessionID] == f {
+			delete(p.inflight, sessionID)
+		}
+		p.mu.Unlock()
+		close(f.done)
+	}()
+	f.entry = p.fetch(ctx, sessionID, messages, previous)
+	return f.entry, false
+}
+
+// await waits for another request's fetch of the same session, for as long as
+// this request would have waited for its own.
+func (p *Plugin) await(ctx context.Context, f *flight, previous *cached) (*cached, bool) {
+	timer := time.NewTimer(time.Duration(p.cfg.TimeoutMs) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-f.done:
+		if f.entry != nil {
+			p.m.inc(&p.m.cacheHits)
+			return f.entry, true
+		}
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+	if previous != nil && len(previous.guidelines) > 0 {
+		return previous, true
+	}
+	return &cached{failed: true}, false
+}
+
+// fetch asks evolve for the session's guidelines and caches the result.
+func (p *Plugin) fetch(ctx context.Context, sessionID string, messages []pipeline.InferenceMessage, previous *cached) *cached {
 
 	texts := make([]messageText, len(messages))
 	for i, m := range messages {
@@ -403,7 +437,9 @@ func (p *Plugin) guidelinesFor(ctx context.Context, sessionID string, messages [
 	if task := taskText(texts); task == "" {
 		entry.expires = p.now().Add(time.Duration(p.cfg.RetryAfter) * time.Second)
 	} else {
-		callCtx, cancel := context.WithTimeout(ctx, time.Duration(p.cfg.TimeoutMs)*time.Millisecond)
+		// Not cancelled with the request that started it: other requests of the
+		// session may be waiting for the answer. timeout_ms still bounds it.
+		callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Duration(p.cfg.TimeoutMs)*time.Millisecond)
 		gs, err := p.client.Guidelines(callCtx, p.cfg.ServeNamespace, task, sessionID)
 		cancel()
 		p.m.inc(&p.m.fetches)
@@ -433,7 +469,7 @@ func (p *Plugin) guidelinesFor(ctx context.Context, sessionID string, messages [
 		entry.guidelines, entry.block, entry.failed = previous.guidelines, previous.block, false
 	}
 	p.store(sessionID, entry)
-	return entry, false
+	return entry
 }
 
 func (p *Plugin) store(sessionID string, entry *cached) {
@@ -446,8 +482,9 @@ func (p *Plugin) store(sessionID string, entry *cached) {
 	for len(p.order) > p.cfg.MaxCached {
 		evict := p.order[0]
 		p.order = p.order[1:]
+		// A fetch in progress for the evicted session is left alone: the requests
+		// waiting for it still get its answer, and later ones join it.
 		delete(p.cache, evict)
-		delete(p.inflight, evict)
 	}
 }
 

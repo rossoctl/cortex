@@ -31,13 +31,36 @@ type fakeEvolve struct {
 	calls    []fetch
 	learned  []learned
 	learnErr error
+	// hold, when set, keeps fetches for holdSession from answering until it is
+	// closed or the fetch's context ends.
+	hold        chan struct{}
+	holdSession string
 }
 
-func (f *fakeEvolve) Guidelines(_ context.Context, namespace, task, sessionID string) ([]Guideline, error) {
+func (f *fakeEvolve) Guidelines(ctx context.Context, namespace, task, sessionID string) ([]Guideline, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, fetch{namespace, task, sessionID})
+	hold := f.hold
+	if sessionID != f.holdSession {
+		hold = nil
+	}
+	f.mu.Unlock()
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, fetch{namespace, task, sessionID})
 	return f.gs, f.err
+}
+
+func (f *fakeEvolve) fetches() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
 }
 
 func (f *fakeEvolve) Learn(_ context.Context, namespace string, t Trajectory) error {
@@ -673,5 +696,94 @@ func TestInitShutdown(t *testing.T) {
 	case <-p.done:
 	default:
 		t.Fatal("notifier still running after Shutdown")
+	}
+}
+
+// --- A session's fetch in progress ---
+
+func userTask(text string) []pipeline.InferenceMessage {
+	return []pipeline.InferenceMessage{{Role: "user", Content: text}}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); !cond(); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting")
+		}
+	}
+}
+
+func TestFetch_OutlivesTheRequestThatStartedIt(t *testing.T) {
+	fe := &fakeEvolve{gs: twoGuidelines, hold: make(chan struct{}), holdSession: "s1"}
+	p, _ := configured(t, `{"endpoint":"http://evolve.invalid/sse","timeout_ms":5000}`, fe)
+	first, cancel := context.WithCancel(context.Background())
+	started := make(chan *cached, 1)
+	go func() {
+		entry, _ := p.guidelinesFor(first, "s1", userTask("fix the test"))
+		started <- entry
+	}()
+	waitFor(t, func() bool { return fe.fetches() == 1 })
+	// The client that started the fetch hangs up. Before, that cancelled the fetch,
+	// and the failure was cached for the whole session for retry_after_seconds.
+	cancel()
+	waiting := make(chan *cached, 1)
+	go func() {
+		entry, _ := p.guidelinesFor(context.Background(), "s1", userTask("fix the test"))
+		waiting <- entry
+	}()
+	close(fe.hold)
+	for _, entry := range []*cached{<-started, <-waiting} {
+		if len(entry.guidelines) != 2 || entry.failed {
+			t.Fatalf("entry = %+v, want the two guidelines", entry)
+		}
+	}
+	if n := fe.fetches(); n != 1 {
+		t.Fatalf("evolve called %d times, want one fetch shared by both requests", n)
+	}
+}
+
+func TestFetch_AWaitingRequestStopsAtItsOwnCancellation(t *testing.T) {
+	fe := &fakeEvolve{gs: twoGuidelines, hold: make(chan struct{}), holdSession: "s1"}
+	p, _ := configured(t, `{"endpoint":"http://evolve.invalid/sse","timeout_ms":5000}`, fe)
+	defer close(fe.hold)
+	go p.guidelinesFor(context.Background(), "s1", userTask("fix the test"))
+	waitFor(t, func() bool { return fe.fetches() == 1 })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	entry, _ := p.guidelinesFor(ctx, "s1", userTask("fix the test"))
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("a cancelled request waited %v for the fetch in progress", took)
+	}
+	if len(entry.guidelines) != 0 {
+		t.Fatalf("entry = %+v, want none: the fetch hasn't answered", entry)
+	}
+}
+
+func TestFetch_EvictingASessionLeavesItsFetchShared(t *testing.T) {
+	fe := &fakeEvolve{gs: twoGuidelines}
+	p, clk := configured(t, `{"endpoint":"http://evolve.invalid/sse","timeout_ms":5000,"max_sessions":1,"cache_ttl_seconds":60}`, fe)
+	p.guidelinesFor(context.Background(), "a", userTask("task a"))
+	clk.t = clk.t.Add(2 * time.Minute) // a's guidelines expire: the next request refreshes them
+	fe.mu.Lock()
+	fe.hold, fe.holdSession = make(chan struct{}), "a"
+	fe.mu.Unlock()
+
+	done := make(chan struct{}, 2)
+	go func() { p.guidelinesFor(context.Background(), "a", userTask("task a")); done <- struct{}{} }()
+	waitFor(t, func() bool { return fe.fetches() == 2 })
+	// b's answer evicts a from the cache while a's refresh is still in progress.
+	p.guidelinesFor(context.Background(), "b", userTask("task b"))
+	go func() { p.guidelinesFor(context.Background(), "a", userTask("task a")); done <- struct{}{} }()
+	time.Sleep(50 * time.Millisecond)
+	close(fe.hold)
+	<-done
+	<-done
+	// a's fetch, a's refresh and b's fetch. Before, eviction also dropped a's
+	// in-progress marker, so the second request for a started another refresh.
+	if n := fe.fetches(); n != 3 {
+		t.Fatalf("evolve called %d times, want 3", n)
 	}
 }
