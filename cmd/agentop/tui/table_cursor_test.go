@@ -719,6 +719,31 @@ func TestSessionsTable_PollRebuildKeepsScrollPosition(t *testing.T) {
 	}
 }
 
+// A poll that lists a pending bucket widens SESSION. Only a width changes, so the picker
+// keeps its scroll position as it does for any other poll.
+func TestSessionsTable_PollThatWidensSessionKeepsScrollPosition(t *testing.T) {
+	m := sessionsModel(t, 40)
+	setCursorVisible(&m.sessionsTbl, 30)
+	for i := 0; i < 3; i++ {
+		m.sessionsTbl, _ = m.sessionsTbl.Update(tea.KeyMsg{Type: tea.KeyUp})
+	}
+	wantID, wantWindow := m.selectedSessionID(), renderedWindow(t, m.sessionsTbl)
+	before := sessionsColumnWidth(m.sessionsTbl.Columns(), "SESSION")
+
+	m.sessions = append(m.sessions, session.SessionSummary{
+		ID: "pending:claude-code@4242.1", UpdatedAt: time.Now(), EventCount: 1})
+	m.rebuildSessionsTable()
+	if after := sessionsColumnWidth(m.sessionsTbl.Columns(), "SESSION"); after == before {
+		t.Fatalf("SESSION stayed %d wide, so this asserted nothing", after)
+	}
+	if got := m.selectedSessionID(); got != wantID {
+		t.Errorf("the poll moved the selection to %q, want %q", got, wantID)
+	}
+	if got := renderedWindow(t, m.sessionsTbl); got != wantWindow {
+		t.Errorf("the poll scrolled the picker: showing rows %s, want %s", got, wantWindow)
+	}
+}
+
 // TestTables_ResizeKeepsSelectionVisible guards the sharp edge of that fix.
 //
 // Restoring the cursor to the row it is already on no longer touches the scroll

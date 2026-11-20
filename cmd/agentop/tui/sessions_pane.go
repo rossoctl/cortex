@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -466,16 +467,20 @@ func (m *model) rebuildSessionsTable() {
 	} else {
 		full = append(full, bucketFull...)
 	}
-	// ONLY WHEN THE HEADER ACTUALLY CHANGES, which is a resize and nothing else. SetRows(nil)
+	// ONLY WHEN THE HEADER ACTUALLY CHANGES. SetRows(nil)
 	// resets the viewport's offset, and this function runs on every poll — clearing
 	// unconditionally scrolled the picker back under the operator twice a second, which
 	// TestSessionsTable_PollRebuildKeepsScrollPosition exists to catch.
 	//
 	// When it does change, the rows go first: SetColumns renders whatever rows are loaded, so
-	// there must be none it could misread. A scroll reset is unavoidable there — the rows are
-	// being rebuilt against a different header — and a resize is already a re-layout.
-	if !sameColumns(m.sessionsTbl.Columns(), want) {
-		m.sessionsTbl.SetRows(nil)
+	// there must be none it could misread.
+	//
+	// Only a change of headings needs that. Loaded rows read the same under new widths, and a
+	// poll that lists a pending bucket changes only SESSION's width.
+	if old := m.sessionsTbl.Columns(); !sameColumns(old, want) {
+		if !slices.EqualFunc(old, want, func(a, b table.Column) bool { return a.Title == b.Title }) {
+			m.sessionsTbl.SetRows(nil)
+		}
 		m.sessionsTbl.SetColumns(want)
 	}
 	m.sessionsTbl.SetCellStyle(sessionsCellStyle(want, ids))
