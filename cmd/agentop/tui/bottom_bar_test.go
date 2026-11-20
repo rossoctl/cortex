@@ -172,6 +172,18 @@ func TestBottomBar_Pickers(t *testing.T) {
 			}
 		}
 	}
+	// No error, search or flash: the usual picker bar has no status and must still fill the
+	// width. Call bottomBar directly: View()'s JoinVertical pads every line and hides a short bar.
+	for _, prof := range []termenv.Profile{termenv.TrueColor, termenv.Ascii} {
+		withProfile(t, prof)
+		if w := lipgloss.Width(bottomBar("[enter] pick  [?] keys  [q] quit", "", 100)); w != 100 {
+			t.Fatalf("profile %v: bar with no status is %d columns, want 100", prof, w)
+		}
+		// Below 23 columns there is no room for a status, so the same branch runs.
+		if w := lipgloss.Width(bottomBar("[enter] pick  [?] keys  [q] quit", "error: boom", 20)); w != 20 {
+			t.Fatalf("profile %v: 20-column bar is %d columns, want 20", prof, w)
+		}
+	}
 }
 
 func TestHelp_HasFeedbackURL(t *testing.T) {

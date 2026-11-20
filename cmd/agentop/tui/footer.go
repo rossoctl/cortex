@@ -171,7 +171,12 @@ func bottomBar(hints, status string, width int) string {
 		status = truncToWidth(status, statusRoom)
 	}
 	if status == "" {
-		return renderKeyBar(fitHintLine(hints, width), width)
+		bar := renderKeyBar(fitHintLine(hints, width), width)
+		if colorOn() {
+			return bar
+		}
+		// renderKeyBar does not pad under Ascii; the bar must still be width columns.
+		return bar + strings.Repeat(" ", max(width-lipgloss.Width(bar), 0))
 	}
 	left := renderKeyBar(fitHintLine(hints, width-lipgloss.Width(status)-2), 0)
 	gap := strings.Repeat(" ", max(width-lipgloss.Width(left)-lipgloss.Width(status), 0))
