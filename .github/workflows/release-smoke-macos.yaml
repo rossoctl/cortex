@@ -1,0 +1,117 @@
+# Release Smoke Test (macOS) — #956
+#
+# release-smoke-linux.yaml's macOS twin: installs a just-published release the way a
+# user does (curl | sh, from GitHub Releases), then drives the launchd install,
+# upgrade and uninstall for real, with one request through Cortex to a fake model
+# API. scripts/release_smoke_test_macos.sh does the work and says where macOS
+# differs from Linux.
+#
+# Triggers on Release binaries finishing, as the Linux workflow does and for its
+# reason: the release assets this installs already exist.
+#
+# Runners. GitHub's macOS images log their user in automatically at boot, so the
+# desktop session a launch agent needs already exists; the first step checks that
+# rather than assuming it (#956's spike: runs 42284398514 and 44787735425). Pinned
+# labels, not macos-latest, so each leg stays one macOS version and a difference
+# between legs is the version or the architecture, not the image moving:
+#   - macos-15:       arm64, the oldest macOS GitHub still offers (macOS 14 was
+#                     retired on 2026-11-02);
+#   - macos-26:       arm64, the newest;
+#   - macos-15-intel: x86_64, since Cortex ships darwin/amd64 too.
+# The Xcode 27 preview image (macOS 27) passed the spike but is a preview, and a
+# release gate should not depend on one.
+#
+# THIS JOB IS COUNTED, like the Linux one: every leg fresh-installs the previous
+# stable release, and docs/install-stats/ subtracts those installs.
+# scripts/collect-install-stats.sh reads this workflow's runs as well as the Linux
+# one's and counts each job that ran the "Run the macOS release smoke test" step.
+# Renaming that step means updating the collector's jq to match.
+name: Release Smoke Test (macOS)
+
+on:
+  workflow_run:
+    # Must be byte-identical to release-binaries.yaml's own `name:`; a mismatch
+    # fails silently: no run is ever created.
+    workflows: ["Release binaries"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  macos-smoke-test:
+    name: macOS install/upgrade/uninstall smoke test (${{ matrix.runner }})
+    # event == 'push' excludes Release binaries' workflow_dispatch dry runs, which
+    # build but never publish.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    strategy:
+      # Each runner is its own result; one failing should not cancel the others.
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-26, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      # Pinned to the release's own commit, for the reason release-smoke-linux.yaml
+      # gives: the script asserts on output the binaries under test produce.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      # This file always runs from main, but the checkout above is the release's
+      # commit, and a tag on a commit from before this test existed has no script to
+      # run: a final release tagged on its candidate's commit, or a backport. Skip
+      # the test then, rather than fail: such a release is not smoke-tested on
+      # macOS, as before this workflow existed. A skipped step is also not counted as
+      # an install, where a failed one would be.
+      - name: Check that the release has the macOS smoke test
+        id: script
+        env:
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          if [ -f scripts/release_smoke_test_macos.sh ]; then
+            echo "present=true" >>"${GITHUB_OUTPUT}"
+          else
+            echo "::notice::${BRANCH}'s commit predates the macOS smoke test, so it is not smoke-tested on macOS"
+            echo "present=false" >>"${GITHUB_OUTPUT}"
+          fi
+
+      - name: Determine the tag under test
+        id: tag
+        env:
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          branch="${BRANCH}"
+          case "${branch}" in
+            v*) tag="${branch}" ;;
+            main) tag="main-latest" ;;
+            *)
+              echo "::error::unexpected trigger branch/tag: ${branch}"
+              exit 1
+              ;;
+          esac
+          echo "tag=${tag}" >>"${GITHUB_OUTPUT}"
+
+      # A launch agent runs only in a logged-in desktop session. Fail here, naming
+      # that, rather than later as an install that cannot load its job.
+      - name: Check for a desktop session
+        if: steps.script.outputs.present == 'true'
+        run: |
+          echo "macOS $(sw_vers -productVersion) $(uname -m); console: $(stat -f%Su /dev/console)"
+          launchctl print "gui/$(id -u)" >/dev/null 2>&1 || {
+            echo "::error::no desktop session (gui/$(id -u)): this runner image no longer logs its user in automatically"
+            exit 1
+          }
+
+      # scripts/collect-install-stats.sh matches this step by name to count the
+      # job's install. Rename both together.
+      - name: Run the macOS release smoke test
+        if: steps.script.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMOKE_TEST_TAG: ${{ steps.tag.outputs.tag }}
+          SMOKE_TEST_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: sh scripts/release_smoke_test_macos.sh "${SMOKE_TEST_TAG}" "${SMOKE_TEST_SHA}"

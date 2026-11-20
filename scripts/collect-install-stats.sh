@@ -165,17 +165,45 @@ gh api "repos/${REPO}/releases" --paginate >"${tmp}"
 # takes minutes, while this one returns the workflow's own runs in a single page.
 # total_count stays the count of ALL runs, unfiltered, because the page uses it to
 # decide whether the first snapshot's page of 100 held the whole history.
-SMOKE_WORKFLOW="release-smoke-linux.yaml"
-if ! gh api \
-	"repos/${REPO}/actions/workflows/${SMOKE_WORKFLOW}/runs?per_page=100" \
-	>"${runs_api}" 2>/dev/null; then
+#
+# Two workflows install: the Linux smoke test and, since #956, the macOS one. Their
+# runs are pooled, which is safe because a run id is unique across workflows, and
+# total_count is their sum. Both are read or neither counts: a series missing one
+# workflow's installs would read them as people, the silent error null exists to
+# avoid.
+#
+# Each run is recorded with the platform it installed on, from the workflow that ran
+# it, so the page can take CI off each platform's own column: macOS runs fetch the
+# darwin tarballs, not the linux ones. A run recorded before the field existed has
+# none, and was a Linux run.
+SMOKE_WORKFLOWS="release-smoke-linux.yaml release-smoke-macos.yaml"
+: >"${pairs}"
+total_count=0
+unread=""
+for workflow in ${SMOKE_WORKFLOWS}; do
+	case "${workflow}" in
+		*macos*) platform=darwin ;;
+		*) platform=linux ;;
+	esac
+	if ! gh api \
+		"repos/${REPO}/actions/workflows/${workflow}/runs?per_page=100" \
+		>"${runs_api}" 2>/dev/null; then
+		unread="${workflow}"
+		break
+	fi
+	jq -r --arg platform "${platform}" '.workflow_runs[]
+	       | select(.status == "completed")
+	       | "\(.id)\t\(.created_at)\t\($platform)"' "${runs_api}" >>"${pairs}"
+	total_count=$((total_count + $(jq -r '.total_count' "${runs_api}")))
+done
+if [ -n "${unread}" ]; then
 	# A missing or renamed workflow must not take the whole snapshot down: the
 	# download series is the primary signal and stands on its own.
 	#
 	# null, NOT []: an empty list is a measurement ("no runs"), and a failed query
 	# is not one. The page renders null as "—" and a list as a number, so the two
 	# stay distinguishable instead of both reading as zero.
-	warn "could not read ${SMOKE_WORKFLOW} runs; recording CI as unknown for today"
+	warn "could not read ${unread} runs; recording CI as unknown for today"
 	echo 'null' >"${runs}"
 else
 	# A completed run's job outcomes rarely change, so a count already in the series
@@ -208,30 +236,28 @@ else
 		: >"${known}"
 	fi
 
-	jq -r '.workflow_runs[]
-	       | select(.status == "completed")
-	       | "\(.id)\t\(.created_at)"' "${runs_api}" >"${pairs}"
-	total_count=$(jq -r '.total_count' "${runs_api}")
 
 	: >"${rows}"
 	queried=0
 	jobs_failed=0
 	tab=$(printf '\t')
-	while IFS="${tab}" read -r id created; do
+	while IFS="${tab}" read -r id created platform; do
 		[ -n "${id}" ] || continue
 		n=$(awk -v id="${id}" '$1 == id { print $2; exit }' "${known}")
 		if [ -z "${n}" ]; then
 			queried=$((queried + 1))
 			# A job counts when its smoke-test step ran (see the comment above the
-			# runs query). The step name must match release-smoke-linux.yaml. If it
-			# drifts, `conclusion == "success"` still counts every passing job, so a
-			# rename brings back #1455 rather than zeroing CI.
+			# runs query). The step names must match release-smoke-linux.yaml and
+			# release-smoke-macos.yaml. If one drifts, `conclusion == "success"` still
+			# counts every passing job, so a rename brings back #1455 rather than
+			# zeroing CI.
 			#
 			# per_page=100 because the endpoint defaults to 30 jobs, and a run with
 			# more legs than that would be undercounted without any error.
 			if ! n=$(gh api "repos/${REPO}/actions/runs/${id}/jobs?per_page=100" \
 				--jq '[.jobs[] | select(.conclusion == "success"
-				        or any(.steps[]?; .name == "Run the Linux release smoke test"
+				        or any(.steps[]?; (.name == "Run the Linux release smoke test"
+				                          or .name == "Run the macOS release smoke test")
 				                         and .conclusion != "skipped"))] | length' \
 				2>/dev/null); then
 				# One unreadable run is not worth discarding the rest. It is simply
@@ -248,7 +274,7 @@ else
 		# re-queried forever: 33 of the 100 in today's window are skipped, which was
 		# 33 pointless requests a day until this line stopped dropping them. The page
 		# filters zeros out when it counts runs.
-		printf '%s\t%s\t%s\n' "${id}" "${created}" "${n}" >>"${rows}"
+		printf '%s\t%s\t%s\t%s\n' "${id}" "${created}" "${n}" "${platform}" >>"${rows}"
 	done <"${pairs}"
 
 	[ "${jobs_failed}" -eq 0 ] ||
@@ -267,7 +293,8 @@ else
 		          | {id: (.[0] | tonumber),
 		             created_at: .[1],
 		             installs: (.[2] | tonumber),
-		             installs_rule: "step"}]}
+		             installs_rule: "step",
+		             platform: .[3]}]}
 		' <"${rows}" >"${runs}"
 	fi
 fi
@@ -334,10 +361,13 @@ jq --arg date "${today}" \
     # and almost every run lands after that.
     taken_at: $taken_at,
 
-    # Every completed smoke run, as {id, created_at, installs, installs_rule}, or
-    # null when the query failed. The page merges these across snapshots on id, so
-    # a run stays counted after it falls out of the last-100 window the API
-    # returns, and it ignores the installs:0 rows when counting runs.
+    # Every completed smoke run of both smoke workflows, as {id, created_at,
+    # installs, installs_rule, platform}, or null when either query failed. The page
+    # merges these across snapshots on id, so a run stays counted after it falls out
+    # of the last-100 window the API returns, and it ignores the installs:0 rows
+    # when counting runs. platform is linux or darwin, the column the run comes off;
+    # a record from before the macOS workflow has none, and the page reads it as
+    # linux, which it was.
     #
     # The installs field counts the jobs of that run that ran the smoke-test step,
     # and installs_rule "step" marks it as counted that way (an older record without
@@ -350,13 +380,13 @@ jq --arg date "${today}" \
     # a mysterious function-definition error. Bitten a 4th time writing this.)
     smoke_runs: ($smoke[0].runs // null),
 
-    # How many runs the workflow has EVER had, successful or not, per the API.
+    # How many runs the smoke workflows have EVER had together, successful or not,
+    # per the API: the sum of each one total_count.
     #
-    # Lets the page tell a truncated history from a complete one. A page of 100 is
-    # all the API gives, so when total_count is at or below 100 the first snapshot
-    # holds the entire history for this workflow and no run is missing -- without
-    # this, a release published before the workflow existed gets a floor marker for
-    # runs that never happened.
+    # Recorded, but no longer read: the page used it to tell a truncated history
+    # from a complete one, and dropped that test because one snapshot count could
+    # not say it (see the page, "THE total_count TEST THAT USED TO GUARD THIS IS
+    # GONE"). Kept so that older and newer snapshots have the same shape.
     #
     # (No apostrophes in this jq program: it is single-quoted in the shell, so one
     # would end the quote and produce a confusing jq syntax error. Bitten 3x.)

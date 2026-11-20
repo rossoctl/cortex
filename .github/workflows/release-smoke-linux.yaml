@@ -23,10 +23,10 @@
 # and the arithmetic follows on its own; hardcode a number over there and it will
 # not. Renaming that step means updating the collector's jq to match.
 #
-# Deliberately not covered: driving a real request through the proxy and
-# asserting a parsed event with a non-zero token count (#957's third
-# checklist bullet). That needs the unattended/headless capture path from
-# #955, which does not exist yet.
+# After the upgrade, the script sends one request through Cortex to a fake model
+# API and checks the session API recorded its tokens
+# (scripts/smoke_inference_check.sh; #957's third checklist bullet, #956 item 3d).
+# It reads the session API rather than the unattended capture path #955 will add.
 name: Release Smoke Test (Linux)
 
 on:
