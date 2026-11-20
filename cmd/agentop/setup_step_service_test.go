@@ -944,13 +944,9 @@ func TestServiceStepBackgroundRestoreRefusesBesideALoadedUnhealthyJob(t *testing
 // $!, where installed. sh -c expands the ~ in each path, the redirections' too.
 func TestStartByHandRunsFromAShell(t *testing.T) {
 	env := newTestSetupEnv(t)
-	// The fake cortex logs its argv, then marks itself started on a FIFO this test
+	// The fake cortex logs its argv, then marks itself started on the pipe this test
 	// reads.
-	started := filepath.Join(t.TempDir(), "started")
-	if err := syscall.Mkfifo(started, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\necho \"started $*\"\n: > '"+started+"'\nexec sleep 30\n")
+	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\necho \"started $*\"\nprintf x >&3\nexec sleep 30\n")
 	if err := os.MkdirAll(env.cortexDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -963,15 +959,15 @@ func TestStartByHandRunsFromAShell(t *testing.T) {
 		_ = os.Remove(pidFile)
 		cmd := exec.Command(sh, "-c", startByHand(env, filepath.Join(env.binDir, "cortex"))) //nolint:gosec // the line under test
 		cmd.Env = append(os.Environ(), "HOME="+env.home)
+		started, waitStarted := readyPipe(t)
+		cmd.ExtraFiles = []*os.File{started}
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%s: %v %s", sh, err, out)
 		}
 		// The line writes proxy.pid before its shell exits.
 		pid := readPIDFile(pidFile)
 		stopProcessOnCleanup(t, &pid)
-		if _, err := os.ReadFile(started); err != nil {
-			t.Fatal(err)
-		}
+		waitStarted()
 		log, _ := os.ReadFile(filepath.Join(env.cortexDir, "proxy.log"))
 		if !alive(pid) || !strings.Contains(string(log), "started --local --supervise") {
 			t.Errorf("%s: proxy.pid %d alive=%v, proxy.log %q", sh, pid, alive(pid), log)

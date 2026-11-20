@@ -593,7 +593,7 @@ func TestRunExec_RelaysSIGTERM(t *testing.T) {
 	}()
 
 	// The child prints once its trap is installed.
-	<-stdout.started
+	awaitStarted(t, stdout, stderr, done)
 
 	// Signal THIS process, the way `timeout` signals agentop. runExec's relay must
 	// pass it to the child.
@@ -604,6 +604,17 @@ func TestRunExec_RelaysSIGTERM(t *testing.T) {
 	<-done
 	if _, err := os.Stat(caught); err != nil {
 		t.Error("the child never received SIGTERM, so it would have been orphaned")
+	}
+}
+
+// awaitStarted returns once the child has printed, and fails the test when runExec
+// returns first: then the child never started, and never will print.
+func awaitStarted(t *testing.T, stdout *startedWriter, stderr *bytes.Buffer, done <-chan int) {
+	t.Helper()
+	select {
+	case <-stdout.started:
+	case code := <-done:
+		t.Fatalf("runExec returned %d before the child printed: %s", code, stderr)
 	}
 }
 
@@ -1054,7 +1065,7 @@ func TestRunExec_SurvivesSIGINT(t *testing.T) {
 			"/bin/sh", "-c", script}, stdout, stderr)
 	}()
 
-	<-stdout.started
+	awaitStarted(t, stdout, stderr, done)
 	var child int
 	if _, err := fmt.Sscanf(stdout.String(), "started %d", &child); err != nil {
 		t.Fatalf("no child pid in %q: %v", stdout.String(), err)

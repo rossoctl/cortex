@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -230,8 +229,8 @@ const (
 
 func init() {
 	if os.Getenv(sleeperEnv) == "1" {
-		if ready := os.Getenv(sleeperReadyEnv); ready != "" {
-			_ = os.WriteFile(ready, nil, 0o600)
+		if os.Getenv(sleeperReadyEnv) == "1" {
+			_, _ = os.NewFile(3, "ready").Write([]byte{1})
 		}
 		time.Sleep(time.Minute)
 		os.Exit(0)
@@ -256,9 +255,10 @@ func startSleeperAt(t *testing.T, path string) int {
 	if err := os.WriteFile(path, b, 0o755); err != nil { //nolint:gosec // an executable fixture
 		t.Fatal(err)
 	}
-	ready, waitReady := sleeperReady(t)
+	ready, waitReady := readyPipe(t)
 	cmd := exec.Command(path)
-	cmd.Env = append(os.Environ(), sleeperEnv+"=1", sleeperReadyEnv+"="+ready)
+	cmd.Env = append(os.Environ(), sleeperEnv+"=1", sleeperReadyEnv+"=1")
+	cmd.ExtraFiles = []*os.File{ready}
 	if err := cmd.Start(); err != nil {
 		t.Skipf("cannot start the fixture process: %v", err)
 	}
@@ -270,18 +270,21 @@ func startSleeperAt(t *testing.T, path string) int {
 	return cmd.Process.Pid
 }
 
-// sleeperReady is the path a sleeper marks itself ready at, a FIFO, and the wait
-// for that mark: the sleeper's write to it and this read meet.
-func sleeperReady(t *testing.T) (string, func()) {
+// readyPipe is the pipe a child marks itself ready on, as its fd 3, and the wait
+// for that mark. The read ends at the mark, or at EOF once the child and everything
+// it started exit without making it.
+func readyPipe(t *testing.T) (*os.File, func()) {
 	t.Helper()
-	ready := filepath.Join(t.TempDir(), "ready")
-	if err := syscall.Mkfifo(ready, 0o600); err != nil {
+	r, w, err := os.Pipe()
+	if err != nil {
 		t.Fatal(err)
 	}
-	return ready, func() {
+	t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
+	return w, func() {
 		t.Helper()
-		if _, err := os.ReadFile(ready); err != nil {
-			t.Fatal(err)
+		_ = w.Close() // the child holds the only write end now
+		if _, err := r.Read(make([]byte, 1)); err != nil {
+			t.Fatalf("the child exited before it was ready: %v", err)
 		}
 	}
 }
@@ -513,7 +516,7 @@ func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
 // answer is 2xx.
 func TestWaitHealthy_TimesOut(t *testing.T) {
 	if waitHealthy("http://127.0.0.1:1/healthz", time.Nanosecond) {
-		t.Error("reported healthy against a closed port")
+		t.Error("reported healthy with its window already over")
 	}
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -62,9 +62,10 @@ func detachedSleeperAt(t *testing.T, path string) int {
 	if err := os.WriteFile(path, b, 0o755); err != nil { //nolint:gosec // an executable fixture
 		t.Fatal(err)
 	}
-	ready, waitReady := sleeperReady(t)
+	ready, waitReady := readyPipe(t)
 	cmd := exec.Command("/bin/sh", "-c", `"$0" >/dev/null 2>&1 </dev/null & echo $!`, path)
-	cmd.Env = append(os.Environ(), sleeperEnv+"=1", sleeperReadyEnv+"="+ready)
+	cmd.Env = append(os.Environ(), sleeperEnv+"=1", sleeperReadyEnv+"=1")
+	cmd.ExtraFiles = []*os.File{ready}
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatal(err)

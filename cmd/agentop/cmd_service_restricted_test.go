@@ -198,19 +198,16 @@ func TestReportSessionInterruption(t *testing.T) {
 		}
 		defer ln.Close() //nolint:errcheck
 
-		accepted := make(chan net.Conn, 1)
-		go func() {
-			c, aerr := ln.Accept()
-			if aerr == nil {
-				accepted <- c
-			}
-		}()
 		client, err := net.Dial("tcp", ln.Addr().String())
 		if err != nil {
 			t.Fatalf("cannot dial the listener we just opened: %v", err)
 		}
 		defer client.Close() //nolint:errcheck
-		c := <-accepted
+		// The connection is already in the accept queue, so this returns at once.
+		c, err := ln.Accept()
+		if err != nil {
+			t.Fatalf("our own listener did not accept: %v", err)
+		}
 		defer c.Close() //nolint:errcheck
 
 		var out strings.Builder
