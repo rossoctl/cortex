@@ -114,20 +114,39 @@ func injectAnthropic(body []byte, block string) ([]byte, error) {
 	return nil, errUnsupportedShape
 }
 
+// injectChat adds block after the system instructions: the leading run of
+// system and developer messages. It goes on the last of them, as more text or a
+// new text part, so the messages before it, and any cache breakpoint in them,
+// are unchanged; or, when that message's content is neither, as a new system
+// message right after it. With no instructions it leads the conversation.
 func injectChat(body []byte, block string) ([]byte, error) {
 	messages := gjson.GetBytes(body, "messages")
 	if !messages.IsArray() {
 		return nil, errUnsupportedShape
 	}
-	first := messages.Get("0")
-	if role := first.Get("role").String(); role == "system" || role == "developer" {
-		if content := first.Get("content"); content.Type == gjson.String {
-			return sjson.SetBytes(body, "messages.0.content", joinText(content.String(), block))
+	items := messages.Array()
+	n := 0
+	for n < len(items) {
+		if role := items[n].Get("role").String(); role != "system" && role != "developer" {
+			break
+		}
+		n++
+	}
+	if n > 0 {
+		at := fmt.Sprintf("messages.%d.content", n-1)
+		switch content := items[n-1].Get("content"); {
+		case content.Type == gjson.String:
+			return sjson.SetBytes(body, at, joinText(content.String(), block))
+		case content.IsArray():
+			return sjson.SetBytes(body, at+".-1", map[string]string{"type": "text", "text": block})
 		}
 	}
-	msgs := make([]any, 0, len(messages.Array())+1)
+	msgs := make([]any, 0, len(items)+1)
+	for _, m := range items[:n] {
+		msgs = append(msgs, rawJSON(m.Raw))
+	}
 	msgs = append(msgs, map[string]string{"role": "system", "content": block})
-	for _, m := range messages.Array() {
+	for _, m := range items[n:] {
 		msgs = append(msgs, rawJSON(m.Raw))
 	}
 	return sjson.SetBytes(body, "messages", msgs)

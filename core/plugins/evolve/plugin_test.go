@@ -1122,3 +1122,46 @@ func TestLearn_ARewrittenHistoryOfTheSameLengthIsReadAgain(t *testing.T) {
 		t.Fatalf("user turns = %q, want the correction recorded", users)
 	}
 }
+
+func TestInject_ChatGuidelinesFollowTheLastInstruction(t *testing.T) {
+	blockAt := func(t *testing.T, body []byte, field string) string {
+		t.Helper()
+		got := gjson.GetBytes(body, field).String()
+		if !strings.HasSuffix(got, "</evolve-guidelines>") {
+			t.Fatalf("%s = %q, want the block; body %s", field, got, body)
+		}
+		return got
+	}
+	run1 := func(t *testing.T, body string) []byte {
+		t.Helper()
+		p, _ := configured(t, "", &fakeEvolve{gs: twoGuidelines})
+		pctx := reqCtx("/v1/chat/completions", body)
+		run(t, p, pctx)
+		return pctx.Body
+	}
+	t.Run("two instruction messages", func(t *testing.T) {
+		out := run1(t, `{"messages":[{"role":"system","content":"first"},{"role":"developer","content":"base"},{"role":"user","content":"hi"}]}`)
+		if got := blockAt(t, out, "messages.1.content"); !strings.HasPrefix(got, "base\n\n") {
+			t.Fatalf("block not after the last instruction: %q", got)
+		}
+		// Before, it went on the first, ahead of the second instruction.
+		if gjson.GetBytes(out, "messages.0.content").String() != "first" {
+			t.Fatalf("first instruction changed: %s", out)
+		}
+	})
+	t.Run("array content", func(t *testing.T) {
+		out := run1(t, `{"messages":[{"role":"system","content":[{"type":"text","text":"base","cache_control":{"type":"ephemeral"}}]},{"role":"user","content":"hi"}]}`)
+		blockAt(t, out, "messages.0.content.1.text")
+		// Before, a new system message was put ahead of all the instructions.
+		if n := len(gjson.GetBytes(out, "messages").Array()); n != 2 || gjson.GetBytes(out, "messages.0.content.0.cache_control.type").String() != "ephemeral" {
+			t.Fatalf("instructions not kept as they were: %s", out)
+		}
+	})
+	t.Run("other content", func(t *testing.T) {
+		out := run1(t, `{"messages":[{"role":"system","content":null},{"role":"user","content":"hi"}]}`)
+		blockAt(t, out, "messages.1.content")
+		if gjson.GetBytes(out, "messages.1.role").String() != "system" || gjson.GetBytes(out, "messages.2.content").String() != "hi" {
+			t.Fatalf("block not a system message after the instructions: %s", out)
+		}
+	})
+}
