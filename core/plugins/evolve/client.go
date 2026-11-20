@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
@@ -129,6 +130,8 @@ type mcpEvolve struct {
 	// altk-evolve #479, or doesn't have the prompt), so the profile is created
 	// with the server's default prompt. Cleared with the session, like noDetails.
 	noPrompt bool
+	// closeHook, when a test sets it, runs just before a session's client is closed.
+	closeHook func(*conn)
 }
 
 func newMCPEvolve(url, profile, prompt string, timeout time.Duration) *mcpEvolve {
@@ -159,9 +162,35 @@ type conn struct {
 	retired bool
 	closed  bool
 	// readerDone is closed when mcp-go's SSE reader for this session has
-	// returned, however the stream ended.
+	// returned, however the stream ended. stop cancels the stream, which makes
+	// the reader return.
 	readerDone chan struct{}
 	readerOnce sync.Once
+	stop       context.CancelFunc
+	streaming  atomic.Bool // the stream's body was opened, so a reader runs or ran
+}
+
+// closeConn closes a session the plugin is done with. It stops the stream and
+// waits for mcp-go's reader to return before closing the client. mcp-go's Close
+// closes the reply channels still registered while the reader may be about to
+// send on one, a send on a closed channel in a goroutine with no recover. A
+// channel can stay registered with no call waiting on it: SendRequest leaves it
+// when reading a POST's response body fails. With the reader stopped, nothing
+// can send.
+func (e *mcpEvolve) closeConn(cn *conn) {
+	if cn.stop != nil {
+		cn.stop()
+	}
+	if cn.streaming.Load() {
+		select {
+		case <-cn.readerDone:
+		case <-time.After(connectTimeout): // a reader that doesn't stop when cancelled
+		}
+	}
+	if e.closeHook != nil {
+		e.closeHook(cn)
+	}
+	_ = cn.c.Close()
 }
 
 // streamWatch is the transport of one session's HTTP client. It wraps the body
@@ -180,6 +209,7 @@ type streamWatch struct {
 func (w *streamWatch) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := w.base.RoundTrip(req)
 	if err == nil && req.Method == http.MethodGet && strings.Contains(req.Header.Get("Accept"), "text/event-stream") {
+		w.cn.streaming.Store(true)
 		resp.Body = &watchedBody{ReadCloser: resp.Body, closed: func() { w.e.readerStopped(w.cn) }}
 	}
 	return resp, err
@@ -214,7 +244,7 @@ func (e *mcpEvolve) readerStopped(cn *conn) {
 	cn.closed = true
 	e.mu.Unlock()
 	if closeNow {
-		go func() { _ = cn.c.Close() }()
+		go e.closeConn(cn)
 	}
 }
 
@@ -258,7 +288,7 @@ func (e *mcpEvolve) session(ctx context.Context) (*conn, error) {
 // or its stream has already ended.
 func (e *mcpEvolve) connect(done chan struct{}, gen int) {
 	cn := &conn{readerDone: make(chan struct{})}
-	c, err := e.dial(cn)
+	_, err := e.dial(cn)
 	e.mu.Lock()
 	e.connecting = nil
 	e.connErr = err
@@ -273,7 +303,7 @@ func (e *mcpEvolve) connect(done chan struct{}, gen int) {
 	}
 	e.mu.Unlock()
 	if closeNow {
-		_ = c.Close()
+		go e.closeConn(cn)
 	}
 	close(done)
 }
@@ -292,11 +322,13 @@ func (e *mcpEvolve) dial(cn *conn) (*mcpclient.Client, error) {
 	// cancels it only if the session isn't up in time: mcp-go's own 30 s wait for
 	// the endpoint event starts only once the stream's headers have arrived.
 	stream, cancel := context.WithCancel(context.Background())
+	e.mu.Lock()
+	cn.stop = cancel
+	e.mu.Unlock()
 	timer := time.AfterFunc(connectTimeout, cancel)
 	fail := func(err error) (*mcpclient.Client, error) {
 		timer.Stop()
-		cancel()
-		_ = c.Close()
+		e.closeConn(cn)
 		return nil, err
 	}
 	if err := c.Start(stream); err != nil {
@@ -330,7 +362,7 @@ func (e *mcpEvolve) release(cn *conn, failed bool) {
 	cn.closed = cn.closed || closeNow
 	e.mu.Unlock()
 	if closeNow {
-		_ = cn.c.Close()
+		go e.closeConn(cn)
 	}
 }
 
@@ -613,7 +645,7 @@ func (e *mcpEvolve) Close() {
 	}
 	e.mu.Unlock()
 	if cn != nil {
-		_ = cn.c.Close()
+		go e.closeConn(cn)
 	}
 }
 

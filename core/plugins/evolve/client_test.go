@@ -267,8 +267,16 @@ func TestMCPEvolve_UnreachableIsUnavailable(t *testing.T) {
 	defer e.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, err := e.Guidelines(ctx, "cortex", "t", "s"); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("err = %v", err)
+	for range 2 {
+		// A refused connection fails at once, not at the call's deadline, the
+		// second time too: nothing is left waiting for a stream that never opened.
+		start := time.Now()
+		if _, err := e.Guidelines(ctx, "cortex", "t", "s"); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("err = %v", err)
+		}
+		if took := time.Since(start); took > time.Second {
+			t.Fatalf("a refused connection took %v to fail", took)
+		}
 	}
 }
 
@@ -640,5 +648,71 @@ func TestMCPEvolve_ASessionWhoseStreamEndedIsReplaced(t *testing.T) {
 	defer cancel()
 	if _, err := e.Guidelines(ctx, "cortex", "t", "s"); err != nil {
 		t.Fatalf("after %v, still on the dead session: %v", time.Since(start), err)
+	}
+}
+
+// failBodyOnce answers the first tool call's POST with a body that can't be
+// read, after evolve has received it, so evolve's reply is on its way over the
+// stream while mcp-go's SendRequest fails with its reply channel still
+// registered.
+type failBodyOnce struct {
+	base http.RoundTripper
+	mu   sync.Mutex
+	done bool
+}
+
+type unreadable struct{}
+
+func (unreadable) Read([]byte) (int, error) { return 0, errors.New("connection reset") }
+func (unreadable) Close() error             { return nil }
+
+func (f *failBodyOnce) RoundTrip(req *http.Request) (*http.Response, error) {
+	var body []byte
+	if req.Body != nil {
+		body, _ = io.ReadAll(req.Body)
+		req.Body = io.NopCloser(strings.NewReader(string(body)))
+	}
+	resp, err := f.base.RoundTrip(req)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err == nil && !f.done && req.Method == http.MethodPost && strings.Contains(string(body), `"tools/call"`) {
+		f.done = true
+		_ = resp.Body.Close()
+		resp.Body = unreadable{}
+	}
+	return resp, err
+}
+
+func TestMCPEvolve_ASessionIsClosedOnlyAfterItsReaderStopped(t *testing.T) {
+	f := &fakeEvolveServer{}
+	e := newMCPEvolve(f.start(t), "cortex", "environment-grounded", time.Second)
+	e.http.Transport = &failBodyOnce{base: e.http.Transport}
+	var mu sync.Mutex
+	var closes, early int
+	e.closeHook = func(cn *conn) {
+		mu.Lock()
+		defer mu.Unlock()
+		closes++
+		select {
+		case <-cn.readerDone:
+		default:
+			early++
+		}
+	}
+
+	// The unreadable body is a transport error, so the session is retired and
+	// closed while evolve's reply is in flight on its stream.
+	if _, err := e.Guidelines(context.Background(), "cortex", "t", "s"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v, want the unreadable body", err)
+	}
+	if _, err := e.Guidelines(context.Background(), "cortex", "t", "s"); err != nil {
+		t.Fatalf("not reconnected: %v", err)
+	}
+	e.Close()
+	waitFor(t, func() bool { mu.Lock(); defer mu.Unlock(); return closes >= 2 })
+	mu.Lock()
+	defer mu.Unlock()
+	if early > 0 {
+		t.Fatalf("%d of %d sessions were closed while their reader could still deliver a reply", early, closes)
 	}
 }
