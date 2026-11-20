@@ -13,6 +13,13 @@ import (
 const (
 	maxToolResultChars = 4000
 	maxUserChars       = 8000
+	// The assistant's text and each tool call's arguments are capped too: a
+	// single Write can carry hundreds of KB, and maxPendingMessages bounds the
+	// number of messages, not their size. Evolve shows at most a couple of
+	// thousand characters of a step anyway, and shows arguments that no longer
+	// parse as JSON as they are.
+	maxAssistantChars = 8000
+	maxToolArgChars   = 4000
 	// maxPendingMessages bounds one session's unsent turns. Past it the oldest
 	// are dropped: evolve renders a bounded window of a trajectory anyway.
 	maxPendingMessages = 400
@@ -149,7 +156,7 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 	}
 
 	// The assistant can quote the injected block, too.
-	completion := clean(inf.Completion)
+	completion := truncate(clean(inf.Completion), maxAssistantChars)
 	assistant := map[string]any{"role": "assistant", "content": completion}
 	if len(inf.ToolCalls) > 0 {
 		calls := make([]map[string]any, 0, len(inf.ToolCalls))
@@ -158,7 +165,7 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 			if id == "" {
 				id = fmt.Sprintf("call_%d_%d", r.turns, i)
 			}
-			args := c.Arguments
+			args := truncate(c.Arguments, maxToolArgChars)
 			if args == "" {
 				args = "{}"
 			}

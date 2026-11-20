@@ -1304,3 +1304,20 @@ func TestLearn_ARetryWaitsForTheSessionToBeIdle(t *testing.T) {
 		t.Fatalf("learned = %+v, want the retry once the session is idle", fe.learned)
 	}
 }
+
+func TestLearn_AssistantTextAndToolArgumentsAreCapped(t *testing.T) {
+	r := newRecorder("claude-code", "1.1")
+	write := `{"file_path":"big.txt","content":"` + strings.Repeat("x", 200_000) + `"}`
+	r.observe(&pipeline.InferenceExtension{
+		Messages:   h1,
+		Completion: strings.Repeat("y", 100_000),
+		ToolCalls:  []pipeline.InferenceToolCall{{ID: "w1", Name: "Write", Arguments: write}},
+	})
+	assistant := r.pending[len(r.pending)-1]
+	args := assistant["tool_calls"].([]map[string]any)[0]["function"].(map[string]any)["arguments"].(string)
+	// Before, both were kept whole: one session could hold tens of MB, sent to
+	// evolve in one call.
+	if c := assistant["content"].(string); len(c) > maxAssistantChars || len(args) > maxToolArgChars {
+		t.Fatalf("assistant text %d bytes, arguments %d bytes; want at most %d and %d", len(c), len(args), maxAssistantChars, maxToolArgChars)
+	}
+}
