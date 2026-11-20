@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tidwall/gjson"
 
@@ -1037,5 +1038,25 @@ func TestInject_ARequestWithoutATaskDoesNotHoldBackTheNextOne(t *testing.T) {
 	}
 	if reason := skipReason(first); reason != "no_task" || fetchedFirst != 0 {
 		t.Fatalf("first request: skip = %q after %d fetches, want no_task and no fetch", reason, fetchedFirst)
+	}
+}
+
+func TestTruncation_StaysWithinTheCapAndValidUTF8(t *testing.T) {
+	r := newRecorder("claude-code", "1.1")
+	r.calls["t1"] = true
+	r.observe(&pipeline.InferenceExtension{ToolResults: []pipeline.InferenceToolResult{
+		{ToolUseID: "t1", Content: strings.Repeat("x", maxToolResultChars), IsError: true},
+	}})
+	content := r.pending[0]["content"].(string)
+	if len(content) > maxToolResultChars || !strings.HasPrefix(content, "[error] ") {
+		t.Fatalf("error result is %d bytes, want the marker within %d", len(content), maxToolResultChars)
+	}
+	// "é" is two bytes, so a cut at an odd byte count falls inside one.
+	if got := truncate(strings.Repeat("é", 10), 7); got != "ééé" || !utf8.ValidString(got) {
+		t.Fatalf("truncate = %q, want three whole runes", got)
+	}
+	task := taskText([]messageText{{"user", "a" + strings.Repeat("é", maxTaskChars)}})
+	if !utf8.ValidString(task) || len(task) > maxTaskChars {
+		t.Fatalf("task is %d bytes, valid UTF-8 %v", len(task), utf8.ValidString(task))
 	}
 }

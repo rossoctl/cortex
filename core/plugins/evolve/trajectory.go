@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -34,9 +35,14 @@ func clean(text string) string {
 	return strings.TrimSpace(text)
 }
 
+// truncate cuts s to at most n bytes, at a rune boundary, so a multibyte
+// character isn't cut into invalid UTF-8.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n]
 }
@@ -86,10 +92,11 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 			continue
 		}
 		delete(r.calls, res.ToolUseID)
-		content := truncate(res.Content, maxToolResultChars)
+		content := res.Content
 		if res.IsError {
 			content = "[error] " + content
 		}
+		content = truncate(content, maxToolResultChars)
 		r.add(map[string]any{"role": "tool", "tool_call_id": res.ToolUseID, "content": content})
 	}
 	for _, m := range inf.Messages[r.seen:] {

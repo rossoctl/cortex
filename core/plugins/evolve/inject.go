@@ -229,10 +229,7 @@ func taskText(messages []messageText) string {
 		if text == "" {
 			continue
 		}
-		if len(text) > maxTaskChars {
-			text = text[:maxTaskChars]
-		}
-		return text
+		return truncate(text, maxTaskChars)
 	}
 	return ""
 }
