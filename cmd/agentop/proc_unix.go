@@ -41,8 +41,9 @@ func lockFile(f *os.File) (held bool, err error) {
 	return false, nil
 }
 
-// writable reports whether this process may create files in dir.
-func writable(dir string) error {
+// writable reports whether this process may write path: a file, or a directory to create files
+// in.
+func writable(path string) error {
 	const wOK = 0x2
-	return syscall.Access(dir, wOK)
+	return syscall.Access(path, wOK)
 }

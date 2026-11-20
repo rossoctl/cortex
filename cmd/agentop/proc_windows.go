@@ -25,7 +25,10 @@ func detached() *syscall.SysProcAttr {
 }
 
 // processAlive reports whether pid names a live process: it can be opened and has not exited.
-// A process this user may not query counts as not alive, as kill -0 answers EPERM.
+// Two differences from kill -0 on Unix. A process of another user can often be opened with
+// PROCESS_QUERY_LIMITED_INFORMATION, so it reads as alive here, where Unix's EPERM reads it as
+// gone. And a process that exited with code 259 reads as still running, since that is
+// STILL_ACTIVE's value.
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -63,10 +66,18 @@ func lockFile(f *os.File) (held bool, err error) {
 	return false, err
 }
 
-// writable reports whether this process may create files in dir, by creating and removing
-// one: Windows has no access(2), and its ACLs are what decide.
-func writable(dir string) error {
-	f, err := os.CreateTemp(dir, ".agentop-writable-*")
+// writable reports whether this process may write path: for a directory, create files in it,
+// by creating and removing one; for a file, open it for appending, which writes nothing. Windows
+// has no access(2), and its ACLs are what decide.
+func writable(path string) error {
+	if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			return err
+		}
+		return f.Close()
+	}
+	f, err := os.CreateTemp(path, ".agentop-writable-*")
 	if err != nil {
 		return err
 	}

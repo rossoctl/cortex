@@ -88,6 +88,17 @@ func TestWritable(t *testing.T) {
 	if err := writable(filepath.Join(dir, "missing")); err == nil {
 		t.Fatal("a missing dir is writable")
 	}
+	// A file (setup checks the shell profile this way): writable, and left unchanged.
+	f := filepath.Join(dir, ".zshrc")
+	if err := os.WriteFile(f, []byte("export A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writable(f); err != nil {
+		t.Fatalf("writable(%s) = %v for a writable file", f, err)
+	}
+	if b, _ := os.ReadFile(f); string(b) != "export A=1\n" {
+		t.Fatalf("writable changed the file: %q", b)
+	}
 }
 
 // On Windows, stopping a process refuses rather than killing it: there is no SIGTERM, and a
