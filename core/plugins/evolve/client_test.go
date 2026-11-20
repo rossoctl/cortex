@@ -716,3 +716,49 @@ func TestMCPEvolve_ASessionIsClosedOnlyAfterItsReaderStopped(t *testing.T) {
 		t.Fatalf("%d of %d sessions were closed while their reader could still deliver a reply", early, closes)
 	}
 }
+
+// lateEndpoint sends the endpoint event after a delay and then never answers
+// initialize: evolve accepts the request and sends no reply.
+func lateEndpoint(t *testing.T, delay time.Duration) string {
+	t.Helper()
+	stop := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		select {
+		case <-time.After(delay):
+		case <-stop:
+			return
+		}
+		_, _ = w.Write([]byte("event: endpoint\ndata: /message?sessionId=s\n\n"))
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-stop:
+		}
+	}))
+	t.Cleanup(func() { close(stop); srv.Close() })
+	return srv.URL + "/sse"
+}
+
+func TestMCPEvolve_OneDeadlineCoversStartingAndInitializing(t *testing.T) {
+	e := newMCPEvolve(lateEndpoint(t, 400*time.Millisecond), "cortex", "environment-grounded", time.Second)
+	e.connectBudget = 600 * time.Millisecond
+	defer e.Close()
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := e.Guidelines(ctx, "cortex", "t", "s"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v, want the connect to fail", err)
+	}
+	// The endpoint came at 400 ms and initialize never answered: the connect ends
+	// at its 600 ms budget. Before, initialize got 600 ms of its own, to 1 s.
+	if took := time.Since(start); took > 850*time.Millisecond {
+		t.Fatalf("connect failed after %v, want within its 600ms budget", took)
+	}
+}

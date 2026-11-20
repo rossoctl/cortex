@@ -132,15 +132,18 @@ type mcpEvolve struct {
 	noPrompt bool
 	// closeHook, when a test sets it, runs just before a session's client is closed.
 	closeHook func(*conn)
+	// connectBudget is connectTimeout, shortened by tests.
+	connectBudget time.Duration
 }
 
 func newMCPEvolve(url, profile, prompt string, timeout time.Duration) *mcpEvolve {
 	dialer := &net.Dialer{Timeout: connectTimeout, KeepAlive: 30 * time.Second}
 	return &mcpEvolve{
-		url:     url,
-		profile: profile,
-		prompt:  prompt,
-		timeout: timeout,
+		url:           url,
+		profile:       profile,
+		prompt:        prompt,
+		timeout:       timeout,
+		connectBudget: connectTimeout,
 		// No client timeout: the SSE stream is long-lived. Calls are bounded by ctx.
 		// The dial and response-header timeouts bound only getting an answer started,
 		// so a server that accepts the connection and never answers can't hold one.
@@ -325,7 +328,11 @@ func (e *mcpEvolve) dial(cn *conn) (*mcpclient.Client, error) {
 	e.mu.Lock()
 	cn.stop = cancel
 	e.mu.Unlock()
-	timer := time.AfterFunc(connectTimeout, cancel)
+	// One deadline for the whole connect: starting the stream and initializing.
+	// With a deadline each, a late endpoint event gave initialize a full budget
+	// of its own, and a connect could take twice as long as it should.
+	deadline := time.Now().Add(e.connectBudget)
+	timer := time.AfterFunc(time.Until(deadline), cancel)
 	fail := func(err error) (*mcpclient.Client, error) {
 		timer.Stop()
 		e.closeConn(cn)
@@ -334,7 +341,7 @@ func (e *mcpEvolve) dial(cn *conn) (*mcpclient.Client, error) {
 	if err := c.Start(stream); err != nil {
 		return fail(err)
 	}
-	initCtx, cancelInit := context.WithTimeout(context.Background(), connectTimeout)
+	initCtx, cancelInit := context.WithDeadline(context.Background(), deadline)
 	defer cancelInit()
 	init := mcp.InitializeRequest{}
 	init.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
@@ -343,7 +350,7 @@ func (e *mcpEvolve) dial(cn *conn) (*mcpclient.Client, error) {
 		return fail(err)
 	}
 	if !timer.Stop() {
-		return fail(fmt.Errorf("not connected within %s", connectTimeout))
+		return fail(fmt.Errorf("not connected within %s", e.connectBudget))
 	}
 	return c, nil
 }
