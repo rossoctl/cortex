@@ -202,11 +202,16 @@ func WriteTitles(home string, f Fixture) error {
 // FIVE SECONDS PAST THE MINUTE, not on it. The newest turn sits on the current minute
 // boundary, so an anchor on the boundary put it under a second old for the first frames,
 // and "just now" is the one age the masking does not rewrite.
-var demoAnchor = time.Date(2026, time.September, 15, 12, 0, 5, 0, time.Local)
+var demoAnchor = time.Date(2026, time.September, 15, 12, 0, 5, 0, demoZone)
+
+// demoZone is the one zone every run renders in. agentop shows times in time.Local, and a
+// UTC runner's "Z" is shorter than "-04:00", so the detail pane's border moved on CI.
+var demoZone = time.FixedZone("EDT", -4*60*60)
 
 // NewCapturer builds the synthetic stack, replays the fixture into it, and
 // attaches a TUI model sized to cols x rows.
 func NewCapturer(f Fixture, cols, rows int, ledgerDir string, start time.Duration) (*Capturer, error) {
+	time.Local = demoZone
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	lipgloss.SetHasDarkBackground(true)
 
