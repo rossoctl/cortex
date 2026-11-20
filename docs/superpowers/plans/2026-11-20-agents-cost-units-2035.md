@@ -178,4 +178,3 @@ Rules:
 
 
 Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>
-
