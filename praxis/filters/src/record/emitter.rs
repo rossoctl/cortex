@@ -53,7 +53,12 @@ pub const MAX_QUEUE_LINES: usize = 4096;
 pub const MAX_QUEUE_BYTES: usize = 256 << 20;
 pub const MAX_LINE: usize = 64 << 20;
 
+#[cfg(not(test))]
 const BACKOFF_MIN: Duration = Duration::from_millis(100);
+/// Tests reconnect within a millisecond. Above zero, so doubling still grows
+/// the backoff of an emitter whose ingest stays down.
+#[cfg(test)]
+const BACKOFF_MIN: Duration = Duration::from_millis(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(5);
 
 /// The emitter counters, and the queue size at the time of the call.

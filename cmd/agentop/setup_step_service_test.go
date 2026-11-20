@@ -133,7 +133,7 @@ func TestServiceStepUpgradeUndoRestoresTheUnitAndThePrior(t *testing.T) {
 // left: service restart while the unit is there, setup itself once the service
 // undo could not put it back.
 func TestServiceStepFailedRestoreNamesWhatIsLeft(t *testing.T) {
-	shortReadyTimeout(t)
+	readyOnFirstAnswer(t)
 	for _, unitGone := range []bool{false, true} {
 		t.Run(fmt.Sprintf("unit gone %v", unitGone), func(t *testing.T) {
 			fakeSupervisor(t)
@@ -784,7 +784,7 @@ func notRunning(t *testing.T, loaded string) {
 // A failed start's detail is service install's own words, less what the rollback
 // makes untrue, then the log since the start: not install's tail of the whole log.
 func TestServiceStepFailureDetailIsWhatThisStartLeft(t *testing.T) {
-	shortReadyTimeout(t)
+	readyOnFirstAnswer(t)
 	t.Run("nothing answers", func(t *testing.T) {
 		fakeSupervisor(t)
 		env := serviceEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
@@ -856,7 +856,7 @@ func TestServiceStepRestoresThePriorOnlyOnceTheJobWasReplaced(t *testing.T) {
 // found it, and its manual says how: a stopped job is stopped again, and a loaded
 // one that was not answering stays loaded.
 func TestServiceStepUndoLeavesTheJobAsItFoundIt(t *testing.T) {
-	shortReadyTimeout(t)
+	readyOnFirstAnswer(t)
 	for _, tc := range []struct {
 		name                   string
 		loaded, serving, prior bool
@@ -910,7 +910,7 @@ func TestServiceStepUndoLeavesTheJobAsItFoundIt(t *testing.T) {
 // The background restore refuses while the new job is loaded, whether or not it
 // answers: one crash-looping still fights a background copy for the ports.
 func TestServiceStepBackgroundRestoreRefusesBesideALoadedUnhealthyJob(t *testing.T) {
-	shortReadyTimeout(t)
+	readyOnFirstAnswer(t)
 	loaded := fakeSupervisor(t)
 	env := serviceEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
 	t.Setenv(sleeperEnv, "1") // a restarted copy of the test binary sleeps too

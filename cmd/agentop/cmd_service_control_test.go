@@ -66,6 +66,7 @@ func withBuiltinHealthURL(t *testing.T, url string) {
 // the command: "Restarted." over a proxy that had not been running, and a bare
 // "Restarted." at all, are what #1282 reported.
 func TestServiceControl_SaysWhatHappenedToTheProxy(t *testing.T) {
+	readyOnFirstAnswer(t)
 	loaded := fakeSupervisor(t)
 	sc := newServiceSceneServing(t, loaded)
 	sc.writeUnit(t)
@@ -86,6 +87,7 @@ func TestServiceControl_SaysWhatHappenedToTheProxy(t *testing.T) {
 // the config it last loaded. A stop needs no config, and still works. A missing
 // config is worded as install words it, not as a file to fix.
 func TestServiceControl_RefusesToStartOntoABrokenConfig(t *testing.T) {
+	readyOnFirstAnswer(t)
 	for _, tc := range []struct {
 		name    string
 		missing bool
@@ -130,6 +132,7 @@ func TestServiceControl_RefusesToStartOntoABrokenConfig(t *testing.T) {
 // anything was serving, and silence there is not a no: the file may have moved
 // health_addr. So the stop says what is now true rather than "was not running".
 func TestServiceControl_StopCannotTellWithABrokenConfig(t *testing.T) {
+	readyOnFirstAnswer(t)
 	loaded := fakeSupervisor(t)
 	sc := newServiceSceneServing(t, loaded)
 	sc.writeUnit(t)
@@ -198,6 +201,7 @@ func statusScene(t *testing.T, missing bool) servicePaths {
 // built-in health address, and exits 1 either way: the file needs fixing. Silence at
 // that address is reported as only that, since the file may have moved health_addr.
 func TestServiceStatus_BrokenConfig(t *testing.T) {
+	readyOnFirstAnswer(t)
 	status := func(t *testing.T, p servicePaths, health string) string {
 		t.Helper()
 		withBuiltinHealthURL(t, health)

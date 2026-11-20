@@ -490,6 +490,7 @@ func TestServiceUsage_NamesTheAgentsThatDependOnTheProxy(t *testing.T) {
 // is for: active, yet silent. Asking the real systemd made the verdict depend on the
 // machine the test ran on (a CI runner reported "stopped, but still enabled").
 func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
+	readyOnFirstAnswer(t)
 	saved := unitStateOf
 	unitStateOf = func() unitState {
 		return unitState{known: true, load: "loaded", active: "active", sub: "running", enabled: "enabled", result: "success"}
@@ -513,10 +514,27 @@ func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
 // TestWaitHealthy_TimesOut: install claims success only after the health endpoint
 // answers, because a supervisor reports "loaded" for a proxy that is crash-looping.
 // Within its window it asks again, past a dropped connection and a 503, until the
-// answer is 2xx.
+// answer is 2xx. A window already over takes the first answer.
 func TestWaitHealthy_TimesOut(t *testing.T) {
 	if waitHealthy("http://127.0.0.1:1/healthz", time.Nanosecond) {
-		t.Error("reported healthy with its window already over")
+		t.Error("reported healthy with nothing listening")
+	}
+	var status atomic.Int32
+	var asks atomic.Int32
+	once := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		asks.Add(1)
+		w.WriteHeader(int(status.Load()))
+	}))
+	t.Cleanup(once.Close)
+	for _, tc := range []struct {
+		status int32
+		want   bool
+	}{{http.StatusServiceUnavailable, false}, {http.StatusOK, true}} {
+		status.Store(tc.status)
+		asks.Store(0)
+		if got := waitHealthy(once.URL+"/healthz", time.Nanosecond); got != tc.want || asks.Load() != 1 {
+			t.Errorf("an over window against %d: waitHealthy = %v after %d asks, want %v after 1", tc.status, got, asks.Load(), tc.want)
+		}
 	}
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

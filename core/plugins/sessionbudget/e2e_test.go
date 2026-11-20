@@ -31,7 +31,9 @@ func newE2EPlugin(t *testing.T, maxTokens int64, store *memStore) *SessionBudget
 		t.Fatalf("Configure: %v", err)
 	}
 	p.store = store
-	go p.refreshLoop(30 * time.Millisecond)
+	// The loop runs for its shutdown path; an hour-long interval keeps ticks
+	// out of the test, and a test that needs a refresh calls p.refreshCache.
+	go p.refreshLoop(time.Hour)
 	t.Cleanup(func() { close(p.stopCh); <-p.stopped })
 	return p
 }
@@ -58,7 +60,7 @@ func newE2EPluginPause(t *testing.T, maxTokens int64, store *memStore, webhookUR
 	}
 	p.store = store
 	p.httpClient = &http.Client{Timeout: 0}
-	go p.refreshLoop(30 * time.Millisecond)
+	go p.refreshLoop(time.Hour)
 	t.Cleanup(func() { close(p.stopCh); <-p.stopped })
 	return p
 }
@@ -177,7 +179,7 @@ func TestE2E_LocalCacheEnforcesDuringOutage(t *testing.T) {
 		t.Fatalf("Configure: %v", err)
 	}
 	p.store = &failingStore{}
-	go p.refreshLoop(30 * time.Millisecond)
+	go p.refreshLoop(time.Hour)
 	t.Cleanup(func() { close(p.stopCh); <-p.stopped })
 
 	p.mu.Lock()
@@ -434,7 +436,7 @@ func TestE2E_PauseMode(t *testing.T) {
 			}
 			p.store = newMemStore()
 			p.httpClient = &http.Client{}
-			go p.refreshLoop(30 * time.Millisecond)
+			go p.refreshLoop(time.Hour)
 			t.Cleanup(func() { close(p.stopCh); <-p.stopped })
 
 			p.mu.Lock()
@@ -481,7 +483,7 @@ func TestE2E_ConcurrentDenyOvershootBound(t *testing.T) {
 		t.Fatalf("Configure: %v", err)
 	}
 	p.store = newMemStore()
-	go p.refreshLoop(30 * time.Millisecond)
+	go p.refreshLoop(time.Hour)
 	t.Cleanup(func() { close(p.stopCh); <-p.stopped })
 
 	// Seed the cache one call below the limit. With no OnResponseFrame calls

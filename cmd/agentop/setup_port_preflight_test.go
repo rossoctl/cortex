@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -99,9 +101,23 @@ func TestPreflightPorts_OurOwnSessionAPIPortStillPasses(t *testing.T) {
 // (#1545).
 func TestApplyUnsupervised_CannotStartIsAFailure(t *testing.T) {
 	fakeNoSupervisor(t)
+	readyOnFirstAnswer(t)
 	// The health endpoint answers 500 forever: the proxy is "alive but never
-	// healthy", which is the state the false-ready shipped through.
-	env := serviceEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) })
+	// healthy", which is the state the false-ready shipped through. Its first
+	// answer waits for the proxy to have logged, on a FIFO the proxy writes next.
+	logged := filepath.Join(t.TempDir(), "logged")
+	if err := syscall.Mkfifo(logged, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	env := serviceEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+		once.Do(func() {
+			if b, err := os.ReadFile(logged); err != nil || len(b) == 0 { //nolint:gosec // the test's own FIFO
+				t.Errorf("the proxy did not say it had logged: %v", err)
+			}
+		})
+		w.WriteHeader(http.StatusInternalServerError)
+	})
 	freePorts(t)
 
 	// A cortex whose supervise arm writes the cannot-start line to the log
@@ -113,6 +129,7 @@ case "$*" in
   "--local --write-config") exit 0 ;;
   "--local --supervise")
     echo 'level=ERROR msg="cannot start: another process already holds this address" listener=session-api address=127.0.0.1:47601 holder_pid=65100' >&2
+    echo logged > '`+logged+`'
     exec sleep 300 ;;
 esac
 `)

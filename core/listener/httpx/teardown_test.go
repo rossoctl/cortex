@@ -31,18 +31,20 @@ func TestTeardownContext(t *testing.T) {
 	})
 
 	t.Run("carries a deadline", func(t *testing.T) {
+		before := time.Now()
 		ctx, release := TeardownContext(context.Background())
+		after := time.Now()
 		defer release()
 
 		deadline, ok := ctx.Deadline()
 		if !ok {
 			t.Fatal("no deadline: detaching removes the only thing that would ever stop this work, so a plugin that blocks holds a goroutine, its buffers and its pctx forever")
 		}
-		// A window rather than an equality: the clock starts inside the call. The lower bound is
-		// what matters — a deadline much shorter than TeardownTimeout would cut finalization
-		// short — and the upper bound catches a unit mix-up.
-		if left := time.Until(deadline); left <= TeardownTimeout/2 || left > TeardownTimeout {
-			t.Errorf("time until deadline = %v, want (%v, %v]", left, TeardownTimeout/2, TeardownTimeout)
+		// Bounds rather than an equality: the clock starts inside the call. The lower bound is
+		// what matters — a deadline shorter than TeardownTimeout would cut finalization short —
+		// and the upper bound catches a unit mix-up.
+		if lo, hi := before.Add(TeardownTimeout), after.Add(TeardownTimeout); deadline.Before(lo) || deadline.After(hi) {
+			t.Errorf("deadline = %v, want TeardownTimeout after the call, between %v and %v", deadline, lo, hi)
 		}
 	})
 

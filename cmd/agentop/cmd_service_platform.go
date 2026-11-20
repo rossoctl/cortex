@@ -225,7 +225,7 @@ func loadService(goos string, p servicePaths, progress io.Writer) error {
 			if attempt >= 3 || !strings.Contains(string(out), "Input/output error") {
 				return fmt.Errorf("launchctl bootstrap failed: %v: %s", err, strings.TrimSpace(string(out)))
 			}
-			time.Sleep(time.Duration(attempt) * time.Second)
+			time.Sleep(time.Duration(attempt) * bootstrapRetryDelay)
 			if !waitBootedOutf(target, serviceBootoutTimeout, progress) {
 				return fmt.Errorf("launchctl bootstrap failed and the label is still "+
 					"registered: %v: %s", err, strings.TrimSpace(string(out)))
@@ -594,10 +594,17 @@ func stopPID(pid int) error {
 // in agentop. Tests set it, so that a stub that answers soon is seen soon.
 var healthPollDivisor time.Duration = 1
 
+// healthFirstAnswer makes waitHealthy take the first answer, whatever its window. It
+// is false in agentop. A test whose stubs answer at once sets it, so that a stub that
+// never answers 2xx is not waited out.
+var healthFirstAnswer bool
+
+// waitHealthy reports whether url answers 2xx within the window. It always asks once,
+// so a window that is already over takes the first answer.
 func waitHealthy(url string, within time.Duration) bool {
 	c := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
+	for {
 		resp, err := c.Get(url) //nolint:noctx // bounded by Timeout
 		if err == nil {
 			_ = resp.Body.Close()
@@ -605,9 +612,11 @@ func waitHealthy(url string, within time.Duration) bool {
 				return true
 			}
 		}
+		if healthFirstAnswer || !time.Now().Before(deadline) {
+			return false
+		}
 		time.Sleep(500 * time.Millisecond / healthPollDivisor)
 	}
-	return false
 }
 
 func lastLines(path string, n int) []string {
