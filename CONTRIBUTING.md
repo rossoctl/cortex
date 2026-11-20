@@ -318,6 +318,42 @@ there you get a stopped service rather than a looping one. Either way the proxy 
 missing plugin and the set it does have, and `agentop service status` shows the last log
 lines; the default `full` avoids the question.
 
+### A release is tested before it is Latest
+
+`release-binaries.yaml` publishes a new `vX.Y.Z` tag as a **prerelease**, so nothing
+installs it yet: the plain one-liner, `agentop update` and the auto-updater all follow
+GitHub's Latest badge, which a prerelease never has. Then:
+
+1. `release-smoke-linux.yaml` and `release-smoke-macos.yaml` install it the way a user
+   does: upgrade from the previous release, one request through Cortex, uninstall. They
+   run on Linux (amd64, arm64) and macOS (15 and 26 on arm64, 15 on Intel).
+2. When both have passed, `release-promote.yaml` makes it a full release. It also makes
+   it Latest, unless a higher stable release exists: a patch to an older line leaves
+   Latest where it is.
+
+That usually takes a few minutes after the tag build finishes.
+
+If a smoke test fails, the release stays a prerelease and reaches nobody:
+
+- If the failure is the release's, fix it and tag the next patch.
+- If it is not, such as a runner problem, re-run the failed jobs. If the release is still
+  a prerelease after they pass, promote it by hand.
+- To promote by hand: `gh workflow run release-promote.yaml -f tag=vX.Y.Z`. This does not
+  check the smoke tests.
+
+Things to know:
+
+- **The auto-updater's 24-hour wait counts from publication, not promotion.**
+  `update.wait` is measured from the upload of the release's `checksums.txt`. A release
+  promoted a day after it was published goes to auto-updaters at their next check.
+- **Only a release that the tag build creates is tested first.** A release that already
+  exists keeps its flags. Flagging a live release would give Latest back to the release
+  before it, and the auto-updater follows Latest both ways, so it would take installs
+  back a version. A release created from the Releases page before its tag build runs is
+  therefore Latest before it is tested.
+- **Only `vX.Y.Z` is promoted.** A tag spelled any other way that is not a release
+  candidate (`v0.9.0-pre1`) is published as a prerelease and stays one.
+
 ### Stopping a bad release
 
 To stop a bad release, mark the previous release as Latest on GitHub.
@@ -359,17 +395,20 @@ curl -fsSL https://www.rossoctl.dev/cortex/install.sh \
   | sh -s -- --ref=v0.9.0-rc.1
 ```
 
-To promote a candidate, tag the same commit `v0.9.0`.
+To release a candidate, tag the same commit `v0.9.0`. That release is tested before it
+is Latest, like any other ([see above](#a-release-is-tested-before-it-is-latest)).
 
 Things to know:
 
 - **Spell the suffix `-rc.N`, `-alpha.N` or `-beta.N`.** Those are what
-  `release-binaries.yaml` flags as a prerelease. Any other spelling (`v0.9.0-pre1`)
-  publishes an ordinary release, which takes the Latest badge and goes to everyone.
+  `release-binaries.yaml` flags as a candidate, and the release page then tells testers
+  how to install it. Any other spelling (`v0.9.0-pre1`) is published as a prerelease
+  without that note, and is never promoted.
 - **Do not create the release from the Releases page first.** If you do, the tag build
   flags it by its tag when it uploads the binaries, but until then an unticked "Set as
   a pre-release" box leaves a candidate with no assets as Latest, and the plain
-  one-liner fails for everyone in that window.
+  one-liner fails for everyone in that window. The same is true of a stable release,
+  and that release is also never tested before it is Latest.
 - **Installers from v0.8.1 and earlier still pick candidates.** Their copy of the
   script takes the newest release of any kind, so running one directly —
   `curl …/v0.8.1/scripts/install.sh | sh`, with no `--ref` — installs the candidate.

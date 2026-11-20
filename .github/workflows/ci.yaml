@@ -553,6 +553,18 @@ jobs:
       - name: Run release_notes.sh tests
         run: sh scripts/release_notes_test.sh
 
+  # release_promote.sh runs once per stable release, after its smoke tests, so a
+  # regression would otherwise surface as a release that never becomes Latest.
+  release-promote-script:
+    name: release_promote.sh tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run release_promote.sh tests
+        run: sh scripts/release_promote_test.sh
+
   # check-gateway-linkage.sh runs only at release time, so without this job a
   # regression in it would show only on a release.
   gateway-linkage-script:
