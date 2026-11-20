@@ -76,10 +76,12 @@ func TestNoRecord_HopMarkSurvivesEviction(t *testing.T) {
 }
 
 // gateWriter holds a's writer before its next op and returns an idempotent release, also
-// registered as cleanup with a's Close, so a failing test never leaves the writer gated.
+// registered as cleanup with a's Close, so a failing test never leaves the writer gated. Each
+// time the writer takes an op and waits at the gate, a.held receives a value.
 func gateWriter(t *testing.T, a *Archive) (release func()) {
 	t.Helper()
 	gate := make(chan struct{})
+	a.held = make(chan struct{}, 1)
 	a.gate = gate
 	var once sync.Once
 	release = func() { once.Do(func() { close(gate) }) }
@@ -96,13 +98,7 @@ func fillToReserve(t *testing.T, a *Archive, r *recorder, id string) int {
 	t.Helper()
 	evs := synthSession(390, 1, 512)[:1]
 	r.record(id, evs...)
-	deadline := time.Now().Add(10 * time.Second)
-	for len(a.ops) > 0 { // the writer has taken it and waits at the gate
-		if time.Now().After(deadline) {
-			t.Fatal("the writer never took the first op")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	<-a.held // the writer has taken it and waits at the gate
 	n := 1
 	for len(a.ops) < cap(a.ops)-reserve {
 		r.record(id, plain(n)...)
@@ -130,16 +126,7 @@ func TestNoRecord_AFlaggedEventIsNeverLostWhileUnmarked(t *testing.T) {
 	for len(a.ops) < cap(a.ops) {    // and the reserve too
 		a.Rekeyed("filler", "filler2")
 	}
-	done := make(chan struct{})
-	go func() {
-		r.record("s1", flagged(evs[6:7])...)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("a flagged event waited for the writer")
-	}
+	r.record("s1", flagged(evs[6:7])...) // returns with the writer still gated
 	release()
 	settle(a)
 	r.record("s1", evs[7:]...)
@@ -161,12 +148,7 @@ func TestNoRecord_AStuckWriterNeverBlocksTheStore(t *testing.T) {
 	release := gateWriter(t, a)
 	evs := synthSession(392, 4, 512) // 12 events
 	st.Append("s1", evs[0])
-	for deadline := time.Now().Add(10 * time.Second); len(a.ops) > 0; {
-		if time.Now().After(deadline) {
-			t.Fatal("the writer never took the first op")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	<-a.held // the writer has taken it and waits at the gate
 	n := 1
 	for ; len(a.ops) < cap(a.ops)-reserve; n++ {
 		st.Append("s1", evs[n])
@@ -174,17 +156,10 @@ func TestNoRecord_AStuckWriterNeverBlocksTheStore(t *testing.T) {
 	fl := evs[n]
 	fl.NoRecord = true
 	other := synthSession(393, 1, 512)
-	done := make(chan string, 3)
-	go func() { st.Append("s1", fl); done <- "the opted-out Append" }()
-	go func() { st.Append("s2", other[0]); done <- "another session's Append" }()
-	go func() { st.ListSessions(); done <- "ListSessions" }()
-	for range 3 {
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatal("the store blocked behind a stuck archive writer")
-		}
-	}
+	// Each returns with the writer still gated.
+	st.Append("s1", fl)
+	st.Append("s2", other[0])
+	st.ListSessions()
 	if q := len(a.ops); q > cap(a.ops)-reserve {
 		t.Fatalf("queue at %d with the writer gated, past the reserve line %d: a flagged event took the reserve", q, cap(a.ops)-reserve)
 	}
@@ -267,12 +242,7 @@ func TestNoRecord_ARowQueuedWhileTheOptOutIsKeptIsWithheld(t *testing.T) {
 		t.Fatal("precondition: the opt-out is kept")
 	}
 	a.gate <- struct{}{} // one op through: the writer takes the next and waits again
-	for deadline := time.Now().Add(10 * time.Second); len(a.ops) >= cap(a.ops)-reserve; {
-		if time.Now().After(deadline) {
-			t.Fatal("the writer made no room")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	<-a.held
 	r.record("s1", plain(2)...) // unflagged, queued behind the opt-out's place
 	if a.optOutN.Load() != 1 {
 		t.Fatal("the opt-out was applied before the row was queued")
@@ -454,16 +424,7 @@ func TestNoRecord_FlaggedEventsLeaveTheReserveAlone(t *testing.T) {
 	for i := range evs {
 		evs[i].NoRecord = true
 	}
-	done := make(chan struct{})
-	go func() {
-		r.record("s2", evs...)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("the flagged producer waited for the writer")
-	}
+	r.record("s2", evs...) // returns with the writer still gated
 	if q := len(a.ops); q > cap(a.ops)-reserve {
 		t.Fatalf("queue at %d with the writer gated, past the reserve line %d", q, cap(a.ops)-reserve)
 	}

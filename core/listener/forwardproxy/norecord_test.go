@@ -181,7 +181,6 @@ func sendConnectWith(t *testing.T, proxyAddr, target string, h http.Header) (net
 		t.Fatalf("dial proxy: %v", err)
 	}
 	t.Cleanup(func() { _ = raw.Close() })
-	_ = raw.SetDeadline(time.Now().Add(10 * time.Second))
 	var b strings.Builder
 	fmt.Fprintf(&b, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n", target, target)
 	for k, vs := range h {
