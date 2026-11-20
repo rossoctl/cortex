@@ -2147,6 +2147,10 @@ func TestUninstallKeepsACodexRecordWithARelativePath(t *testing.T) {
 	wantLines(t, code, 1, out,
 		markLine("!", "unrouted")+"kept Codex's record of .env: an older agentop recorded it without its directory, so uninstall cannot find that file\n",
 		"    .env in the directory an older agentop enabled Codex in\n")
+	// The restart names that Codex home relatively, so it says where to run it from too.
+	if want := "then, from that directory, if Codex's app-server runs: CODEX_HOME=. " + codexDaemonRestartCmd; !strings.Contains(out, want) {
+		t.Errorf("want %q in:\n%s", want, out)
+	}
 	if got := readFile(t, filepath.Join(other, ".env")); got != theirs {
 		t.Errorf("uninstall changed %s, a file Cortex never routed:\n%s", filepath.Join(other, ".env"), got)
 	}
@@ -2304,5 +2308,61 @@ func TestUninstallRestartsACodexStillOnCortexWhenEveryKeyChanged(t *testing.T) {
 	wantLines(t, code, 1, out, markLine("!", "unrouted")+"left HTTP_PROXY, HTTPS_PROXY, http_proxy, … as they are · restarted its app-server\n")
 	if !slices.Equal(f.steps, []string{"stop-updater", "restart"}) {
 		t.Errorf("the daemon saw %v, want the updater stopped and the app-server restarted", f.steps)
+	}
+}
+
+// With every key changed since enable and no app-server running, an auto-updater started
+// before those edits still has Cortex's proxy, and the app-server it starts after its next
+// update would inherit it once Cortex is gone. So uninstall stops it, as it does when the
+// file changed, and names it when the stop fails (#1783 review). Nothing runs to restart,
+// so the consent line promises no restart.
+func TestUninstallStopsACodexUpdaterStillOnCortexWhenEveryKeyChanged(t *testing.T) {
+	for _, stopFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stopFails=%v", stopFails), func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t)
+			f := &fakeCodexDaemon{updaterPID: 4103, updaterEnv: onCortex}
+			if stopFails {
+				f.stopErr = errors.New("it would not stop")
+			}
+			envPath := codexEnabledIn(t, sc, f)
+			const corp = "http://proxy.corp.example:8080"
+			writeHomeFile(t, envPath, "HTTP_PROXY="+corp+"\nHTTPS_PROXY="+corp+"\nhttp_proxy="+corp+"\nhttps_proxy="+corp+"\nSSL_CERT_FILE=/etc/corp.pem\n")
+			code, out := sc.uninstall(t, "--yes")
+			want := []string{markLine("!", "unrouted") + "left HTTP_PROXY, HTTPS_PROXY, http_proxy, … as they are\n"}
+			if stopFails {
+				want = append(want, "    Codex's auto-updater (pid 4103), which agentop could not stop, so it may still have Cortex's proxy — "+
+					"stop it, then restart the app-server: "+codexKillThenRestart(4103, codexDaemonRestartCmd)+"\n")
+			}
+			wantLines(t, code, 1, out, want...)
+			if !slices.Equal(f.steps, []string{"stop-updater"}) {
+				t.Errorf("the daemon saw %v, want the updater stopped and nothing restarted", f.steps)
+			}
+			if strings.Contains(out, "restarts its app-server") {
+				t.Errorf("the consent line promised a restart that does not happen:\n%s", out)
+			}
+			if !stopFails && strings.Contains(out, "auto-updater") {
+				t.Errorf("named an updater it stopped:\n%s", out)
+			}
+		})
+	}
+}
+
+// With every key changed and both processes already off Cortex's proxy, nothing needs
+// settling: restarting the app-server would interrupt its turns for nothing.
+func TestUninstallLeavesACodexOffCortexAloneWhenEveryKeyChanged(t *testing.T) {
+	sc := newUninstallScene(t)
+	sc.setUp(t)
+	f := &fakeCodexDaemon{pid: 4101, env: offCortex, updaterPID: 4103, updaterEnv: offCortex}
+	envPath := codexEnabledIn(t, sc, f)
+	const corp = "http://proxy.corp.example:8080"
+	writeHomeFile(t, envPath, "HTTP_PROXY="+corp+"\nHTTPS_PROXY="+corp+"\nhttp_proxy="+corp+"\nhttps_proxy="+corp+"\nSSL_CERT_FILE=/etc/corp.pem\n")
+	code, out := sc.uninstall(t, "--yes")
+	wantLines(t, code, 1, out, markLine("!", "unrouted")+"left HTTP_PROXY, HTTPS_PROXY, http_proxy, … as they are\n")
+	if len(f.steps) != 0 {
+		t.Errorf("the daemon saw %v, want nothing", f.steps)
+	}
+	if strings.Contains(out, "restarts its app-server") {
+		t.Errorf("the consent line promised a restart that does not happen:\n%s", out)
 	}
 }

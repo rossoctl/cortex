@@ -601,7 +601,7 @@ func codexEnable(envPath, cortexCfgPath, statePath string, yes bool, stdout, std
 	}
 	fmt.Fprintf(stdout, "Sets in %s:\n%s\n", envPath, strings.Join(pl.changes, "\n"))
 	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak if it already existed.\n", envPath)
-	was := noteCodexDaemonRestart(codexHome, stdout)
+	noteCodexDaemonRestart(codexHome, stdout)
 	fmt.Fprintln(stdout)
 	if !yes && !codexConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
@@ -612,7 +612,8 @@ func codexEnable(envPath, cortexCfgPath, statePath string, yes bool, stdout, std
 		return 1
 	}
 	fmt.Fprintln(stdout, "Enabled — run `codex` as usual. agentop configure codex disable undoes this.")
-	finishCodexChange(codexHome, pl.want["HTTPS_PROXY"], pl.want, true, was, stdout, stderr)
+	p := settleCodexProcs(codexHome, pl.want["HTTPS_PROXY"], pl.want, true, true, stdout)
+	printCodexProcs(p, true, codexHome, stdout, stderr)
 	return 0
 }
 
@@ -724,20 +725,6 @@ func codexCortexProxy(pl codexDisablePlan) string {
 	return ""
 }
 
-// noteCodexDaemonOnCortex names an app-server still on Cortex's proxy when disable has
-// nothing of Cortex's to take out of the file. One started before the user changed the
-// file keeps the proxy it started with, and drops it only when it restarts. Nothing is
-// restarted here, since nothing was asked (#1783 review).
-func noteCodexDaemonOnCortex(codexHome, cortexProxy string, stdout io.Writer) {
-	d, ok := runningCodexDaemon(codexHome)
-	if !ok || d.EnvErr != nil || cortexProxy == "" || !sameProxy(d.Proxy, cortexProxy) {
-		return
-	}
-	fmt.Fprintf(stdout, "\nCodex's background app-server (pid %d%s) still uses Cortex's proxy, from before\n"+
-		"  these changes. It picks up the file when it restarts:\n"+
-		"    %s   # open Codex windows reconnect\n", d.PID, startedSuffix(d), codexDaemonRestartCmd)
-}
-
 // printCodexLeft names the keys disable leaves because they changed since enable, in
 // claude-code's words (printClaudeCodeLeft), before the question they bear on.
 func printCodexLeft(pl codexDisablePlan, stdout io.Writer) {
@@ -827,7 +814,7 @@ func codexDisable(envPath, statePath string, yes bool, stdout, stderr io.Writer)
 		// take out, and nothing to ask about.
 		fmt.Fprintf(stdout, "Nothing to remove from %s.\n\n", envPath)
 		printCodexLeft(pl, stdout)
-		noteCodexDaemonOnCortex(filepath.Dir(envPath), codexCortexProxy(pl), stdout)
+		reportCodexDaemon(filepath.Dir(envPath), codexCortexProxy(pl), false, false, stdout)
 		return 0
 	}
 	fmt.Fprintf(stdout, "This will remove from %s: %s\n", envPath, strings.Join(pl.present, ", "))
@@ -835,7 +822,7 @@ func codexDisable(envPath, statePath string, yes bool, stdout, stderr io.Writer)
 	// answer is about.
 	printCodexLeft(pl, stdout)
 	codexHome := filepath.Dir(envPath)
-	was := noteCodexDaemonRestart(codexHome, stdout)
+	noteCodexDaemonRestart(codexHome, stdout)
 	fmt.Fprintln(stdout)
 	// The proxy the restarted daemon is compared with, read before the file loses it.
 	// Disable has to work when Cortex is gone, so this is what the file held, not
@@ -860,7 +847,8 @@ func codexDisable(envPath, statePath string, yes bool, stdout, stderr io.Writer)
 	} else {
 		fmt.Fprintf(stdout, "\nDisabled. Codex no longer routes through Cortex.\n")
 	}
-	finishCodexChange(codexHome, cortexProxy, nil, false, was, stdout, stderr)
+	p := settleCodexProcs(codexHome, cortexProxy, nil, false, true, stdout)
+	printCodexProcs(p, false, codexHome, stdout, stderr)
 	return 0
 }
 
