@@ -46,6 +46,7 @@ func TestCellStyle_NilHookIsByteIdentical(t *testing.T) {
 	tb.SetCursor(1)
 	want := tb.View()
 	tb.SetCellStyle(nil)
+	tb.UpdateViewport()
 	if got := tb.View(); got != want {
 		t.Errorf("nil hook changed the output:\n got %q\nwant %q", got, want)
 	}

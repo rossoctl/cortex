@@ -232,8 +232,7 @@ func renderHints(fitted string) string {
 }
 
 // renderTrailingHints is renderHints for a line whose tail is the key hints keys and whose head
-// is other text, such as an error or a search status, that keeps its brackets. fitted is the line
-// after fitHintLine, which drops text from the front.
+// is other text, such as an error or a search status, that keeps its brackets.
 func renderTrailingHints(fitted, keys string) string {
 	if !colorOn() {
 		return styleHint.Render(fitted)
