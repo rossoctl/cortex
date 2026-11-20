@@ -736,10 +736,10 @@ func TestBandFixtureProbes_DoNotCrossMatch(t *testing.T) {
 //
 // THE PADDING HALF OF THIS TEST IS GONE WITH padLeft. A one-line band pads nothing — each cell is
 // exactly its own contents — so there is no second function to agree with a measurement. What
-// replaced that agreement is render() against renderMuting(): the styled form must occupy the same
+// replaced that agreement is render() against renderInk(): the styled form must occupy the same
 // columns as the plain one, or the fit is computed on one band and drawn from another. Asserted
 // below with a mute that emits real escape sequences, since an identity function would pass for a
-// renderMuting that counted them.
+// renderInk that counted them.
 func TestBandCell_MeasuresInDisplayColumns(t *testing.T) {
 	restore := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -778,13 +778,14 @@ func TestBandCell_MeasuresInDisplayColumns(t *testing.T) {
 			}
 			// THE STYLED CELL OCCUPIES THE SAME COLUMNS, which is what lets the drop enumeration
 			// run over the plain form and the screen be drawn from the muted one.
-			plain, dressed := tc.cell.render(), tc.cell.renderMuting(mute)
+			plain := tc.cell.render()
+			dressed := tc.cell.renderInk(bandInk{label: mute, value: func(s string) string { return s }})
 			if got, want := lipgloss.Width(dressed), lipgloss.Width(plain); got != want {
-				t.Errorf("renderMuting renders %d columns against render's %d — muting a label must "+
+				t.Errorf("renderInk renders %d columns against render's %d — muting a label must "+
 					"not move a figure", got, want)
 			}
 			if dressed == plain {
-				t.Error("renderMuting returned the plain cell, so the styling assertion is vacuous")
+				t.Error("renderInk returned the plain cell, so the styling assertion is vacuous")
 			}
 		})
 	}

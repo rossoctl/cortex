@@ -337,11 +337,8 @@ func groupStyle(g colorGroup) lipgloss.Style {
 	return styleNone
 }
 
-// cellStyleFunc is the table's per-cell style hook (table.CellStyleFunc once that exists).
-type cellStyleFunc = func(row table.Row, col int) lipgloss.Style
-
 // dashDim draws a cell whose value is "—" (no value) dim, and every other cell with f.
-func dashDim(f cellStyleFunc) cellStyleFunc {
+func dashDim(f table.CellStyleFunc) table.CellStyleFunc {
 	return func(row table.Row, col int) lipgloss.Style {
 		if col < len(row) && strings.TrimSpace(row[col]) == "—" {
 			return styleDim

@@ -2772,7 +2772,7 @@ func (m *model) paneView() string {
 			// `styleMuted.Render(band[0]), band[1]` — which is a hierarchy that exists only while
 			// labels and figures live on separate rows. Folded to one row, wrapping the line would
 			// mute the figures with the labels and flatten the contrast into uniform grey, so the
-			// mute moved to where a cell knows which half is which. See bandCell.renderMuting.
+			// mute moved to where a cell knows which half is which. See bandCell.renderInk.
 			//
 			// ONE CALL, because this is bubbletea's per-event render path and spendSummary walks
 			// all four poll chains. `drew` comes back from the renderer rather than being tested

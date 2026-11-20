@@ -40,28 +40,21 @@ type bandCell struct{ label, value string }
 //
 // PLAIN, ALWAYS. Width arithmetic runs over this, and an escape sequence is not a display column —
 // the rule app.go's composition site states for the band and footer.go records the cost of
-// breaking. renderMuting below is the styled form, and it is width-identical by construction.
+// breaking. renderInk below is the styled form, and it is width-identical by construction.
 func (c bandCell) render() string { return c.label + " " + c.value }
 
-// renderMuting is render with the LABEL dimmed and the figure left alone.
+// bandInk is how the styled band dresses each kind of run: the label, the value, and the
+// separator. Funcs, not styles, so this file stays free of the package's styles and a test can
+// assert the geometry with an identity function.
+type bandInk struct{ label, value, sep func(string) string }
+
+// renderInk is render with each half dressed by its own ink. Width-identical to render.
 //
 // THE HIERARCHY THE TWO-LINE BAND GOT FOR FREE. app.go used to mute the whole label ROW and leave
 // the whole value row bright — `styleMuted.Render(band[0]), band[1]` — which folding to one line
 // would have destroyed silently, muting labels and figures together into one uniform grey. The
 // contrast is the thing that makes four readings scannable, so it moves down here where a cell
 // knows which half is which.
-//
-// mute is passed in rather than reaching for styleMuted directly so this file stays free of the
-// package's styles and a test can assert the geometry with an identity function.
-func (c bandCell) renderMuting(mute func(string) string) string {
-	return c.renderInk(bandInk{label: mute, value: func(s string) string { return s }})
-}
-
-// bandInk is how the styled band dresses each kind of run: the label, the value, and the
-// separator. Funcs for the reason renderMuting takes one: the cell code stays free of styles.
-type bandInk struct{ label, value, sep func(string) string }
-
-// renderInk is render with each half dressed by its own ink. Width-identical to render.
 func (c bandCell) renderInk(ink bandInk) string {
 	return ink.label(c.label) + " " + ink.value(c.value)
 }
