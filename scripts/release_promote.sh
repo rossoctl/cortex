@@ -80,6 +80,9 @@ else
 	title="${SMOKE_RUN_TITLE:?SMOKE_RUN_TITLE is not set}"
 	trigger_id="${SMOKE_RUN_ID:?SMOKE_RUN_ID is not set}"
 	trigger_path="${SMOKE_RUN_PATH:?SMOKE_RUN_PATH is not set}"
+	case "${trigger_id}" in
+		*[!0-9]*) die "SMOKE_RUN_ID is not a run id: '${trigger_id}'" ;;
+	esac
 	case " ${SMOKE_WORKFLOWS} " in
 		*" ${trigger_path#.github/workflows/} "*) ;;
 		*) die "${trigger_path} is not a release smoke workflow (${SMOKE_WORKFLOWS})" ;;
@@ -112,11 +115,12 @@ else
 		state=$(smoke_state "${wf}" "${release_run}")
 		# The run that started this one passed: the trigger fires on success only.
 		# Taken from the event, not the API, so that the API catching up late
-		# cannot lose the promotion. A newer run of the same workflow still wins.
-		if [ ".github/workflows/${wf}" = "${trigger_path}" ]; then
-			case "${state}" in
-				'' | "${trigger_id} "*) state="${trigger_id} completed success" ;;
-			esac
+		# cannot lose the promotion: when the newest run the API lists is older than
+		# the trigger, or is the trigger, the trigger decides. Run ids only go up,
+		# so a newer run of the same workflow, listed above the trigger, still wins.
+		if [ ".github/workflows/${wf}" = "${trigger_path}" ] &&
+			{ [ -z "${state}" ] || [ "${state%% *}" -le "${trigger_id}" ]; }; then
+			state="${trigger_id} completed success"
 		fi
 		case "${state}" in
 			*" completed success") say "${wf}: passed (run ${state%% *})" ;;

@@ -230,6 +230,19 @@ after_smoke "${MACOS}" 301 v0.9.6 100
 check "the trigger's own success is taken from the event" \
 	"release edit v0.9.6 --repo o/r --prerelease=false --latest" "${edits}"
 
+echo "the API lists only an older failed run of the triggering workflow"
+# A re-run of the release run after a failed smoke run: the new smoke run (310)
+# passed and started this, but the API still lists only the old failure (301).
+fresh
+release_run 100 v0.9.6
+smoke release-smoke-linux.yaml 201:completed:success:100
+smoke release-smoke-macos.yaml 301:completed:failure:100
+release v0.9.6 false true
+after_smoke "${MACOS}" 310 v0.9.6 100
+check "exit 0" 0 "${status}"
+check "the trigger, newer than anything listed, decides" \
+	"release edit v0.9.6 --repo o/r --prerelease=false --latest" "${edits}"
+
 echo "a newer smoke run of the triggering workflow is still running"
 fresh
 release_run 100 v0.9.6
@@ -305,6 +318,10 @@ status=0
 out=$(REPO=o/r SMOKE_RUN_PATH="${LINUX}" SMOKE_RUN_ID=201 SMOKE_RUN_TITLE="Release Smoke Test (Linux)" \
 	sh "${PROMOTE_SH}" 2>&1) || status=$?
 check "a title without the release run: fails" 1 "${status}"
+fresh
+after_smoke "${LINUX}" "201 x" v0.9.6 100
+check "a run id that is not a number: fails" 1 "${status}"
+check_contains "says so" "SMOKE_RUN_ID is not a run id" "${out}"
 
 echo "by hand"
 fresh

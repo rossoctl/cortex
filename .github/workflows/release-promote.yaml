@@ -43,10 +43,13 @@ jobs:
   promote:
     name: Promote the release once both smoke tests passed
     # A smoke run that failed promotes nothing, and has no need to look: the
-    # release stays a prerelease, and the failed run is already red.
+    # release stays a prerelease, and the failed run is already red. Nor does one
+    # for a merge to main, which every merge starts two of: main-latest is never
+    # promoted. The script refuses a tag that is not vX.Y.Z either way.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event.workflow_run.conclusion == 'success' &&
+       !contains(github.event.workflow_run.display_title, ' for main, '))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
