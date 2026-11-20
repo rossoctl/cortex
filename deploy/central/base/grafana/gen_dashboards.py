@@ -43,6 +43,21 @@ def rate(metric, by="", extra=""):
     return f'sum{g}(rate({metric}{{{FILTER}{extra}}}[$__rate_interval]))'
 
 
+def ratio(num, den):
+    """num / den, with NO DATA where den is 0. Never divide by clamp_min(den, 1e-9): a zero den then
+    shows num times a billion (2026-11-19: "Pings that paid" read 1164430250x). Never by
+    clamp_min(den, 1) either: no traffic then reads 0 %, which looks like a measured value.
+    "> 0" drops the zero series, so the division has nothing to match and returns no sample."""
+    return f"{num} / (({den}) > 0)"
+
+
+def unattributed(expr, label):
+    """expr with an empty label filled in as "unattributed". A by-label panel otherwise names a
+    series without the label "Value": cortex pushes llm_cache_misses_total with no cause and
+    llm_keepalive_pings_total with no outcome; context-guru pushes both."""
+    return f'label_replace({expr}, "{label}", "unattributed", "{label}", "")'
+
+
 def spend(by=""):
     """Total priced spend: llm_inference_cost_usd_total. Under the shared metrics contract
     (context-guru docs/metrics/spec.md 5.1) cost_usd is every request's whole price, and
@@ -155,7 +170,7 @@ def fleet():
     # Money first (spec 6.0, rule 1). The tiles cover the selected time range (default: 7 days).
     P.append(stat(1, "NET SAVED", net(), 0, 0, w=7, h=5, unit=USD, decimals=2, c=GREEN, big=True,
                   desc="Saved minus added over the selected range. This is the number that says whether the proxy pays. Cache effects are a breakdown and are not added."))
-    P.append(stat(13, "Saving rate", f'{net()} / clamp_min({spend()} + {net()}, 1e-9)', 7, 0, w=4, h=5,
+    P.append(stat(13, "Saving rate", ratio(net(), f'{spend()} + {net()}'), 7, 0, w=4, h=5,
                   unit="percentunit", decimals=1, c=GREEN, big=True,
                   desc="Net saved as a share of what the traffic would have cost without the proxy. The baseline is spend (actual plus estimated) plus net saved, which is what you would have paid. The exact baseline counter (llm_savings_baseline_usd_total) is not built yet."))
     P.append(stat(2, "Gross saved", inc("llm_savings_saved_usd_total"), 11, 0, w=4, h=5, unit=USD, decimals=2,
@@ -193,7 +208,7 @@ def fleet():
                   5, 20, w=5, h=4, c=YELLOW,
                   desc="Machines that pushed in the last day and have pushed nothing for a few minutes. The alert MachineSilent fires after 15."))
     P.append(stat(10, "5xx error rate",
-                  f'{inc("llm_inference_requests_total", extra=X5)} / clamp_min({inc("llm_inference_requests_total")}, 1)',
+                  ratio(inc("llm_inference_requests_total", extra=X5), inc("llm_inference_requests_total")),
                   10, 20, w=5, h=4, unit="percentunit", decimals=2, c=GREEN,
                   desc="Server errors only. A 4xx is usually the client's own request."))
     P.append(stat(11, "Requests per minute", f'{rate("llm_inference_requests_total")} * 60', 15, 20, w=5, h=4,
@@ -226,7 +241,7 @@ def savings():
         (inc("llm_savings_cache_effect_usd_total", "cause", extra=',effect="break",direction="added"'), "{{cause}}")],
         16, 9, 8, 8, unit=USD, kind="bargauge", instant=True, desc="What cache breaks cost, by why they happened."))
     P.append(stat(6, "Estimated share",
-                  f'{inc("llm_savings_estimated_total")} / clamp_min({inc("llm_savings_requests_total")}, 1)',
+                  ratio(inc("llm_savings_estimated_total"), inc("llm_savings_requests_total")),
                   0, 17, w=4, h=8, unit="percentunit", decimals=1, c=YELLOW,
                   desc="Share of requests whose figure is an estimate. Above 20 percent, read the headline as a range."))
     P.append(series(7, "Unpriced requests by reason (per minute)", [(f'{rate("llm_savings_unpriced_total", "reason")} * 60', "{{reason}}")],
@@ -251,25 +266,26 @@ def cache():
     rescue = lambda e: rate("llm_savings_cache_effect_usd_total", extra=e)
     P = []
     P.append(series(1, "Cache read ratio", [
-        (f'{rate("llm_inference_tokens_total", "model", TIER_READ)} / clamp_min({rate("llm_inference_tokens_total", "model", TIER_PROMPT)}, 1e-9)', "{{model}}")],
+        (ratio(rate("llm_inference_tokens_total", "model", TIER_READ), rate("llm_inference_tokens_total", "model", TIER_PROMPT)), "{{model}}")],
         0, 0, 12, 8, unit="percentunit", desc="cache_read / (cache_read + cache_write + input). Output tokens are not part of the prompt."))
-    P.append(series(2, "Misses by cause (per hour)", [(f'{rate("llm_cache_misses_total", "cause")} * 3600', "{{cause}}")],
+    P.append(series(2, "Misses by cause (per hour)", [(f'{unattributed(rate("llm_cache_misses_total", "cause"), "cause")} * 3600', "{{cause}}")],
                     12, 0, 12, 8, stack=True, bars=True, desc="Cache misses per hour, by why."))
-    P.append(series(3, "Miss cost by cause (USD, selected range)", [(inc("llm_cache_miss_cost_usd_total", "cause"), "{{cause}}")],
+    P.append(series(3, "Miss cost by cause (USD, selected range)", [(unattributed(inc("llm_cache_miss_cost_usd_total", "cause"), "cause"), "{{cause}}")],
                     0, 8, 8, 8, unit=USD, kind="bargauge", instant=True,
                     desc="The write premium on the re-written prefix, priced with each model's own rate. A model with no rate counts the miss and books no money."))
-    P.append(series(4, "Ping outcomes (per hour)", [(f'{rate("llm_keepalive_pings_total", "outcome")} * 3600', "{{outcome}}")],
+    P.append(series(4, "Ping outcomes (per hour)", [(f'{unattributed(rate("llm_keepalive_pings_total", "outcome"), "outcome")} * 3600', "{{outcome}}")],
                     8, 8, 10, 8, stack=True, bars=True,
                     colors={"ok": GREEN, "skipped": BLUE, "failed": RED, "timeout": ORANGE},
-                    desc="Pings per hour. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show."))
+                    desc="Pings per hour. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is a proxy that does not label the outcome (cortex)."))
     P.append(stat(5, "Pings that paid",
-                  f'({inc("llm_savings_cache_effect_usd_total", extra=RESCUE_SAVED)} - {inc("llm_savings_cache_effect_usd_total", extra=RESCUE_ADDED)}) / clamp_min({inc("llm_keepalive_cost_usd_total")}, 1e-9)',
+                  ratio(f'({inc("llm_savings_cache_effect_usd_total", extra=RESCUE_SAVED)} - {inc("llm_savings_cache_effect_usd_total", extra=RESCUE_ADDED)})',
+                        inc("llm_keepalive_cost_usd_total")),
                   18, 8, w=6, h=4, unit="suffix: x", decimals=1, c=GREEN, big=True,
-                  desc="Rescue value divided by ping cost over the selected range. Above 1, the pings paid."))
+                  desc="Rescue value divided by ping cost over the selected range. Above 1, the pings paid. No data means the ping cost did not increase in the range."))
     P.append(stat(8, "Estimated ping cost",
-                  f'{inc("llm_keepalive_estimated_cost_usd_total")} / clamp_min({inc("llm_keepalive_cost_usd_total")}, 1e-9)',
+                  ratio(inc("llm_keepalive_estimated_cost_usd_total"), inc("llm_keepalive_cost_usd_total")),
                   18, 12, w=6, h=4, unit="percentunit", decimals=1, c=ORANGE,
-                  desc="Share of the ping cost that is a projection: pings that timed out with no answer (#754). The provider probably billed them, so the cost is booked, but the figure is not measured."))
+                  desc="Share of the ping cost that is not a measured figure. Each proxy books a different part here. context-guru: pings that timed out with no answer, booked at their projected cost (#754). cortex: pings priced from a fallback rate, because the model has no rate of its own. No data means the ping cost did not increase in the range."))
     P.append(series(6, "Keep-alive: cost, rescue and net (USD per hour)", [
         (f'{rate("llm_keepalive_cost_usd_total")} * 3600', "ping cost"),
         (f'({rescue(RESCUE_SAVED)} - {rescue(RESCUE_ADDED)}) * 3600', "rescue (net of reads)"),
@@ -282,14 +298,14 @@ def cache():
 
 def machines():
     f = FILTER
-    per1k = lambda by: f'1000 * {net(by)} / clamp_min({inc("llm_inference_requests_total", by)}, 1)'
+    per1k = lambda by: ratio(f'1000 * {net(by)}', inc("llm_inference_requests_total", by))
     P = []
     P.append(series(1, "Net saved by machine (USD, selected range)", [(f"sort_desc({net('machine')})", "{{machine}}")],
                     0, 0, 10, 12, unit=USD, kind="bargauge", instant=True, desc="Every machine, best first."))
     P.append(table(2, "By preset", [
         f'count by (preset) (count by (preset, machine) (llm_proxy_info{{{f}}}))',
-        net("preset"), f'{net("preset")} / clamp_min({spend("preset")} + {net("preset")}, 1e-9)', per1k("preset"),
-        f'{inc("llm_savings_estimated_total", "preset")} / clamp_min({inc("llm_savings_requests_total", "preset")}, 1)'],
+        net("preset"), ratio(net("preset"), f'{spend("preset")} + {net("preset")}'), per1k("preset"),
+        ratio(inc("llm_savings_estimated_total", "preset"), inc("llm_savings_requests_total", "preset"))],
         10, 0, 14, 12, "preset", [
             {"id": "organize", "options": {"excludeByName": {"Time": True}, "renameByName": {
                 "Value #A": "machines", "Value #B": "net saved", "Value #C": "saving rate", "Value #D": "net per 1,000 requests",
@@ -317,11 +333,11 @@ def requests():
     total = inc(req)
     P = []
     P.append(stat(1, "Requests", total, 0, 0, w=4, h=4, decimals=0, desc="Requests that reached the proxies in the selected range. Keep-alive pings and /compact are not counted."))
-    P.append(stat(2, "2xx", f'{inc(req, extra=cls("2xx"))} / clamp_min({total}, 1)', 4, 0, w=4, h=4, unit="percentunit", decimals=2, c=GREEN,
+    P.append(stat(2, "2xx", ratio(inc(req, extra=cls("2xx")), total), 4, 0, w=4, h=4, unit="percentunit", decimals=2, c=GREEN,
                   desc="Share of requests the provider answered with success."))
-    P.append(stat(3, "4xx", f'{inc(req, extra=cls("4xx"))} / clamp_min({total}, 1)', 8, 0, w=4, h=4, unit="percentunit", decimals=2, c=ORANGE,
+    P.append(stat(3, "4xx", ratio(inc(req, extra=cls("4xx")), total), 8, 0, w=4, h=4, unit="percentunit", decimals=2, c=ORANGE,
                   desc="Share of requests that failed because of the request itself: bad key, too large, rate limited."))
-    P.append(stat(4, "5xx", f'{inc(req, extra=X5)} / clamp_min({total}, 1)', 12, 0, w=4, h=4, unit="percentunit", decimals=2, c=RED,
+    P.append(stat(4, "5xx", ratio(inc(req, extra=X5), total), 12, 0, w=4, h=4, unit="percentunit", decimals=2, c=RED,
                   desc="Share of requests that failed on the provider or the proxy."))
     P.append(stat(5, "Median duration", quant(0.5, "llm_inference_duration_seconds").replace("$__rate_interval", "$__range"), 16, 0, w=4, h=4, unit="s", decimals=2,
                   desc="p50 of total time, from request to last byte, over the selected range."))
@@ -341,10 +357,10 @@ def requests():
     P.append(series(10, "Duration p95 by model (seconds)", [(quant(0.95, "llm_inference_duration_seconds", "model"), "{{model}}")], 12, 13, 12, 8, unit="s",
                     desc="Which model is slow."))
     P.append(series(11, "Request size (bytes per request)", [
-        (f'{rate("llm_inference_request_bytes_total")} / clamp_min({rate(req)}, 1e-9)', "request")], 0, 21, 12, 8, unit="bytes", colors={"request": BLUE},
+        (ratio(rate("llm_inference_request_bytes_total"), rate(req)), "request")], 0, 21, 12, 8, unit="bytes", colors={"request": BLUE},
         desc="Body bytes sent upstream, as forwarded, divided by requests. NO DATA YET: the proxy does not count body sizes on every path, so llm_inference_request_bytes_total is not built (design 5.1). The panel fills when it is."))
     P.append(series(12, "Response size (bytes per request)", [
-        (f'{rate("llm_inference_response_bytes_total")} / clamp_min({rate(req)}, 1e-9)', "response")], 12, 21, 12, 8, unit="bytes", colors={"response": PURPLE},
+        (ratio(rate("llm_inference_response_bytes_total"), rate(req)), "response")], 12, 21, 12, 8, unit="bytes", colors={"response": PURPLE},
         desc="Body bytes received from the upstream, divided by requests. NO DATA YET: llm_inference_response_bytes_total is not built."))
     P.append(series(13, "Requests per hour, by model", [(f'{rate(req, "model")} * 3600', "{{model}}")], 0, 29, 16, 8, stack=True, bars=True,
                     desc="Who is busy."))
@@ -362,7 +378,7 @@ def inference():
     P.append(stat(3, "Cache write tokens", inc(tok, extra=',tier=~"cache_write_5m|cache_write_1h"'), 10, 0, w=5, h=4, decimals=0, c=ORANGE,
                   desc="Prompt tokens written to the cache (a premium over input)."))
     P.append(stat(4, "Output tokens", inc(tok, extra=tier("output")), 15, 0, w=5, h=4, decimals=0, c=BLUE, desc="Tokens the model wrote."))
-    P.append(stat(5, "Cache read ratio", f'{inc(tok, extra=TIER_READ)} / clamp_min({inc(tok, extra=TIER_PROMPT)}, 1)', 20, 0, w=4, h=4,
+    P.append(stat(5, "Cache read ratio", ratio(inc(tok, extra=TIER_READ), inc(tok, extra=TIER_PROMPT)), 20, 0, w=4, h=4,
                   unit="percentunit", decimals=1, c=GREEN, desc="cache_read / (cache_read + cache_write + input)."))
     P.append(series(6, "Tokens per hour, by tier", [(f'{rate(tok, "tier")} * 3600', "{{tier}}")], 0, 4, 16, 9, stack=True, bars=True,
                     colors={"input": YELLOW, "cache_read": GREEN, "cache_write_5m": ORANGE, "cache_write_1h": RED, "output": BLUE},
@@ -375,7 +391,7 @@ def inference():
         desc="Time from request to the first byte of a streamed answer. A buffered stream has no true first byte and is left out."))
     P.append(series(9, "Time to first token p95 by model (seconds)", [(quant(0.95, "llm_inference_ttfb_seconds", "model"), "{{model}}")], 12, 13, 12, 8, unit="s"))
     P.append(series(10, "Output tokens per request", [
-        (f'{rate(tok, "model", tier("output"))} / clamp_min(sum by (model) (rate(llm_inference_requests_total{{{FILTER},status_class="2xx"}}[$__rate_interval])), 1e-9)', "{{model}}")],
+        (ratio(rate(tok, "model", tier("output")), f'sum by (model) (rate(llm_inference_requests_total{{{FILTER},status_class="2xx"}}[$__rate_interval]))'), "{{model}}")],
         0, 21, 12, 8, desc="Not a speed. Output tokens divided by successful requests, by model. Streamed and buffered answers both count: llm_inference_tokens_total has no stream label, so a streamed-only denominator would divide every answer's tokens by part of the requests. A true tokens per second needs the time spent writing, which is not recorded."))
     P.append(series(11, "Time the proxy added (seconds)", [
         (quant(0.5, "llm_inference_added_seconds"), "p50"), (quant(0.95, "llm_inference_added_seconds"), "p95"),
@@ -383,7 +399,7 @@ def inference():
         desc="What the proxy's own work added on top of the upstream time (R46)."))
     P.append(series(12, "Spend per hour, by model", [(f'{rate("llm_inference_cost_usd_total", "model")} * 3600', "{{model}}")], 0, 29, 16, 8, unit=USD, stack=True, bars=True,
                     desc="Provider cost at request time. Each proxy prices with its own rate table."))
-    P.append(stat(13, "Spend priced from a fallback rate", f'{inc("llm_inference_estimated_cost_usd_total")} / clamp_min({inc("llm_inference_cost_usd_total")}, 1e-9)',
+    P.append(stat(13, "Spend priced from a fallback rate", ratio(inc("llm_inference_estimated_cost_usd_total"), inc("llm_inference_cost_usd_total")),
                   16, 29, w=8, h=8, unit="percentunit", decimals=1, c=YELLOW, big=True,
                   desc="Share of spend where the model had no rate of its own. A high value means the money panels are a guess."))
     return dash("central-inference", "Inference", "What do the models consume, and how fast do they answer?", P, ["inference"])

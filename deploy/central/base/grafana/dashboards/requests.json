@@ -128,7 +128,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\",status_class=\"2xx\"}[$__range])) / clamp_min(sum(increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])), 1)",
+          "expr": "sum(increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\",status_class=\"2xx\"}[$__range])) / ((sum(increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
           "refId": "A",
           "instant": true,
           "datasource": {
@@ -177,7 +177,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\",status_class=\"4xx\"}[$__range])) / clamp_min(sum(increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])), 1)",
+          "expr": "sum(increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\",status_class=\"4xx\"}[$__range])) / ((sum(increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
           "refId": "A",
           "instant": true,
           "datasource": {
@@ -226,7 +226,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\",status_class=\"5xx\"}[$__range])) / clamp_min(sum(increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])), 1)",
+          "expr": "sum(increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\",status_class=\"5xx\"}[$__range])) / ((sum(increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
           "refId": "A",
           "instant": true,
           "datasource": {
@@ -728,7 +728,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(llm_inference_request_bytes_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])) / clamp_min(sum(rate(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])), 1e-9)",
+          "expr": "sum(rate(llm_inference_request_bytes_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])) / ((sum(rate(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval]))) > 0)",
           "legendFormat": "request",
           "refId": "A",
           "datasource": {
@@ -788,7 +788,7 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(llm_inference_response_bytes_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])) / clamp_min(sum(rate(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])), 1e-9)",
+          "expr": "sum(rate(llm_inference_response_bytes_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])) / ((sum(rate(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval]))) > 0)",
           "legendFormat": "response",
           "refId": "A",
           "datasource": {
