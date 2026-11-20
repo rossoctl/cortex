@@ -453,58 +453,6 @@ func TestBlocks_CollapseStateIsPerSession(t *testing.T) {
 	}
 }
 
-// The block's population is the rows the pane would show: hideInactive hides a
-// subagent's whole exchange, and a block with no surviving rows leaves no header
-// behind — a header naming nothing is worse than no header, because it claims a
-// subagent the filter just said produced nothing visible.
-func TestBlocks_RollupFollowsTheInactiveFilter(t *testing.T) {
-	active := func(id, sub string, phase pipeline.SessionPhase) pipeline.SessionEvent {
-		return pipeline.SessionEvent{
-			Direction: pipeline.Outbound, Phase: phase, Host: "ete", RequestID: id, Subagent: sub,
-			Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{
-				{Plugin: "inference-parser", Action: pipeline.ActionObserve},
-			}},
-		}
-	}
-	inactive := func(id, sub string, phase pipeline.SessionPhase) pipeline.SessionEvent {
-		return pipeline.SessionEvent{
-			Direction: pipeline.Outbound, Phase: phase, Host: "ete", RequestID: id, Subagent: sub,
-		}
-	}
-	events := []pipeline.SessionEvent{
-		active("m1", "", pipeline.SessionRequest),
-		active("a1", "a1", pipeline.SessionRequest),
-		// a1's response is inactive but kept: its partner is shown (an exchange
-		// hides whole or not at all).
-		inactive("a1", "a1", pipeline.SessionResponse),
-		active("m2", "", pipeline.SessionRequest),
-		// a2's whole exchange is inactive: no block, no header.
-		inactive("a2", "a2", pipeline.SessionRequest),
-		inactive("a2", "a2", pipeline.SessionResponse),
-	}
-	m := &model{selectedSess: "s", events: map[string][]pipeline.SessionEvent{"s": events}, hideInactive: true}
-	m.eventsTbl = newEventsTable()
-	m.rebuildEventsTable()
-
-	if _, ok := m.subagentBlocks["a2"]; ok {
-		t.Fatal("a2 has a block despite every row being hidden")
-	}
-	// Rendered: m1, header(a1), m2 — collapsed by default, so the kept exchange
-	// sits behind the header rather than on screen. No a2 header anywhere.
-	if got := len(m.eventsTbl.Rows()); got != 3 {
-		t.Fatalf("rendered rows = %d, want 3", got)
-	}
-	for i, b := range m.headerRows {
-		if b.id == "a2" {
-			t.Errorf("header for a2 at row %d", i)
-		}
-	}
-	// a1's header counts what expanding it would show: the kept exchange, 1 msg.
-	if h := m.eventsTbl.Rows()[1][0]; !strings.Contains(h, "1 msg") {
-		t.Errorf("a1 header = %q, want the kept exchange counted", h)
-	}
-}
-
 // The Timeline's Enter names subagent rows as readily as the conversation's, and
 // a subagent's row inside a collapsed block is not on screen — the reveal must
 // open the block rather than wait forever for a row that cannot appear.

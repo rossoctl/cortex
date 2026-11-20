@@ -108,6 +108,13 @@ func TestHelpBody_EveryPaneSectionSpellsOutEveryDescription(t *testing.T) {
 		t.Fatalf("body has no EVERY PANE section:\n%s", body)
 	}
 	for p := paneNamespaces; p <= lastPaneID; p++ {
+		// Read each pane in EVERY PANE, one column at full width: the active pane is drawn
+		// above it, in a column of a two-column body, so its prose wraps there.
+		body := body
+		if p == paneSessions {
+			body = helpBodyLines(paneEvents, helpWide)
+		}
+		body = sectionFrom(t, body, everyPaneTitle, false)
 		g := paneKeys[p]
 		name := paneName(p)
 		if !strings.Contains(body, name) {
@@ -443,15 +450,11 @@ func TestHelpNavKeys_NoteNamesTheOneExceptionCorrectly(t *testing.T) {
 	}
 }
 
-// `s` was Usage's session toggle. Removed, it must do nothing there, not reach the
-// global hide-inactive toggle for an Events table the user cannot see.
+// `s` was Usage's session toggle. Removed, it must do nothing there.
 func TestUsagePane_RemovedSKeyDoesNothing(t *testing.T) {
 	m := &model{pane: paneUsage, selectedSess: "s1"}
 	m.usage.session = "s1"
 	m.handleKey(keyRune('s'))
-	if m.hideInactive {
-		t.Error("`s` on Usage toggled hideInactive through the global handler")
-	}
 	if m.pane != paneUsage || m.usage.session != "s1" {
 		t.Errorf("`s` on Usage changed pane %v or scope %q", m.pane, m.usage.session)
 	}
@@ -509,18 +512,20 @@ func TestHelpBody_WrapsProseToTheGivenWidth(t *testing.T) {
 	}
 }
 
-// `s` hides the Events table's passthrough rows, so it works only where that table is.
-func TestSKey_TogglesOnlyOnEvents(t *testing.T) {
-	for _, p := range []paneID{paneSessions, paneAgents, panePipeline, paneTimeline, paneDetail, paneUsage} {
-		m := &model{pane: p}
-		m.handleKey(keyRune('s'))
-		if m.hideInactive {
-			t.Errorf("pane %v: `s` toggled hideInactive off the Events pane", p)
-		}
-	}
-	m := &model{pane: paneEvents}
+// `s` on Events was the hide-passthru toggle (#2019 removed it: quiet rows show muted
+// instead). Pressing it now must change nothing: not the rows, the footer or the cursor.
+func TestEventsS_DoesNothing(t *testing.T) {
+	m := newTestEventsModel(t)
+	m.eventsTbl.SetCursor(2)
+	rows, footer, cur := len(m.visibleRows), m.helpView(), m.eventsTbl.Cursor()
 	m.handleKey(keyRune('s'))
-	if !m.hideInactive {
-		t.Error("`s` on Events did not toggle hideInactive")
+	if got := len(m.visibleRows); got != rows {
+		t.Errorf("`s` on Events changed the rows: %d, want %d", got, rows)
+	}
+	if got := m.helpView(); got != footer {
+		t.Errorf("`s` on Events changed the footer:\n got %q\nwant %q", got, footer)
+	}
+	if got := m.eventsTbl.Cursor(); got != cur {
+		t.Errorf("`s` on Events moved the cursor: %d, want %d", got, cur)
 	}
 }

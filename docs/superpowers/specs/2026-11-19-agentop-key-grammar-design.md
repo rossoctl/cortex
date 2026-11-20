@@ -32,7 +32,7 @@ This is project 1 of 3:
 
 | Key | Today | After |
 |---|---|---|
-| `s` | Global: toggles `hideInactive` from every pane | Events only. The column picker keeps `s` = sort |
+| `s` | Global: toggles `hideInactive` from every pane | Removed on Events (#2019): rows where no plugin acted show muted. The column picker keeps `s` = sort |
 | `x` | Column picker: toggle a column (`space` also toggles) | Erase only. The column picker toggles with `space` only |
 | `w` | Footers show `[w] window` | Footers show the current value, for example `[w] 1h` |
 
@@ -73,8 +73,8 @@ The `w` value sets stay as they are, because each one reads different data:
 
 - How the guard tests find the global cases (an AST walk or a table).
 - The exact exception list in guard test 1.
-- Docs: `cmd/agentop/README.md` and `docs/using-agentop.md` must say that `s` works on
-  Events only, and that the column picker toggles with `space`.
+- Docs: `cmd/agentop/README.md` and `docs/using-agentop.md` must say that the column
+  picker toggles with `space`, and sorts with `s`.
 
 ## Size
 

@@ -192,11 +192,9 @@ func TestMeasureColumns_IgnoreTheSearchAndTheInactiveToggle(t *testing.T) {
 	}{
 		// Every row stays, and the narrow exchange's one row is marked.
 		{"search", func(m *model) { m.search = map[paneID]string{paneEvents: "narrow.example"} }, 2, 1},
-		// No plugin acted on these fixture rows, so hiding inactive rows hides all of them.
-		{"hide inactive", func(m *model) { m.hideInactive = true }, 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m.search, m.hideInactive = nil, false
+			m.search = nil
 			tc.apply(m)
 			m.rebuildEventsTable()
 			if got := len(m.eventsTbl.Rows()); got != tc.rows {

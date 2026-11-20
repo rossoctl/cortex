@@ -563,7 +563,7 @@ agentop is for, and the others are surfaces you visit and leave.
    4   14:23:09.40   out   observe   inference-parser   claude-sonnet-5                               ↑121.0kB                                           api.anthropic.com
 
   ● connected   2.1 events/sec   [/anthropic 2 matches]   [sort: DURATION▼]
-  [↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  [s] hide passthru/skip  [p] pause  [/] search  [n/N] next/prev  [esc] back  ·  [?] keys  [q] quit
+  [b/f] page  [↵] detail  [c] columns  [u] usage  [/] search  [n/N] next/prev  [esc] back  [?] keys  [q] quit
   ```
 
   Exchange 3 has no ↓ figure because there was nothing to count:
@@ -706,9 +706,7 @@ agentop is for, and the others are surfaces you visit and leave.
   rows:
 
   ```
-  window 5m 1h [all]  10-26 14:28 → 10-26 20:08
-                            14:28           15:17           16:06   37m  39m      18:41
-                                                                                           model  tools  tok/s
+  window  5m  1h  all       ╷10-26 14:28    ╷15:17          ╷16:06  37m   10-26 20:08╷   model  tools  tok/s
   main agent                ▂█▃▅▃██▁▄▃▁▃█▁▆▁▂▇█▂▁▁▂████████▁▁▅▁███▅▁ ┆ ▄▁ ┆ ▂▁▆▂▁███▄▁│  1.6h    29m     85
 
     Survey cortex egress da ▃▂▁                                      ┆    ┆           │    4m     1m     92
@@ -757,8 +755,8 @@ agentop is for, and the others are surfaces you visit and leave.
   still running from earlier ("since 12:41:04"), each with its duration and its
   command, path or description; a cell with no tool names the request `↵` would
   open. `↵` opens the Events pane on the first event listed. `↑`/`↓` scroll the
-  agent rows, then the host rows, when they do not all fit; the footer offers
-  them only then. The pane refreshes at most once a second while the stream
+  agent rows, then the host rows, when they do not all fit; the `?` help lists
+  them, not the footer. The pane refreshes at most once a second while the stream
   delivers that session's events, and every ten seconds while a call is in
   flight with nothing new recorded. A failed fetch is retried after 1s, then
   2s, 4s … up to 30s, and the first fetch of a visit waits up to 30s, since a
@@ -784,7 +782,7 @@ agentop is for, and the others are surfaces you visit and leave.
    team2                           1
    default                         1
 
-  [↑↓/jk] nav  [↵] open  [L] localhost:47601  [r] reload  [?] keys  [q] quit
+  [↵] open  [L] localhost:47601  [r] reload  [/] search  [?] keys  [q] quit
   ```
 
   Without `--kubernetes`, a running local Cortex is connected to directly and
@@ -862,7 +860,6 @@ Layered on top of all of them:
 | `/` | any pane, and the key help | search what the pane shows, as in a text editor: every row stays, the matched characters are highlighted, and the cursor (or, in a text view, the view) jumps to the first match at or after where you pressed `/`, wrapping past the end, as you type. Case-insensitive substring of the text the pane displays: a table's columns that are turned on, at full width (a value cut to `…` matches in full, and so does a column the terminal had no room for); an exchange's or plugin's detail line by line, before it is wrapped; the key help's and the usage chart's lines as drawn. `deny` finds denied events because ACTION shows it. `Enter` keeps the place; `Esc` puts the place and the previous search back; `Enter` on an empty box clears the search. Each pane keeps its own search; the events pane's and an exchange's detail's last while you stay with one session (the detail's carries from exchange to exchange), and none is saved. On the events pane, `Tab` in the prompt turns on `[x] details`: then `Enter`, `n` and `N` find the next row whose detail view shows the query — in either half, every field, the exact capture too. The proxy finds the matches in one pass over memory and the archive (`GET /v1/sessions/{id}/search`), and agentop checks the summary rows it holds itself, so nothing is fetched. The footer counts the matches, and also the matches in events older than the ones agentop holds: Enter on the timeline's `▲` row loads those. A Cortex that predates the search says so in the footer |
 | `n` / `N` | any pane with a search, and the key help | next / previous match, wrapping at both ends; in a text view an off-screen match is scrolled to a third of the way down |
 | `x` | sessions, agents | erase the row under the cursor, in memory and on disk: the highlighted session, or every session of the highlighted agent — on *All agents*, every session this Cortex holds; that confirmation also shows the size on disk. Asks first, with the count; `y` erases, `n`/`esc` keeps. The cost ledger is kept. An agent still using a session brings it back with its next request. Refused — with the proxy's reason — anywhere but a loopback-only laptop install. Not in the footer; the `?` overlay names it |
-| `s` | events | toggle hiding exchanges no plugin acted on (default: shown; an exchange is hidden only when no plugin acted on either half; the events footer shows the hidden count) |
 | `c` | events | open the column picker (`↑↓`/`jk` move, `space` toggle, `s` sort, `r` reset, `Esc`/`Enter`/`c` close); the selection and sort are saved on close |
 | `s` | column picker | sort by the column under the cursor: descending → ascending → chronological. Pressing it on a different column starts that column descending. `#` is not sortable — its order already *is* chronological |
 | `p` | any | pause/resume stream |

@@ -40,14 +40,14 @@ agentop · http://127.0.0.1:47601
 LAST 1H    TODAY   7 DAYS    MONTH
   $4.04   $18.80  $216.44  $703.18
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- SESSION         TITLE        UPDATED           EVENTS      TOKENS        COST      SAVED~  CTX(1M)
- ctx-abc-123-4…  …pend-spans  3s ago                42       48.2k       $0.12       $0.01  ████░░░
- ctx-def-567-4…  weather-ag…  18m ago               15        1.2k      <$0.01           —  ▏░░░░░░
- ctx-ghi-901-4…               42m ago                7        2.9k           —           —  ██░░░░░
+ SESSION   TITLE              UPDATED           EVENTS      TOKENS        COST      SAVED~  CTX(1M)
+ 567-89ab  …src/append-spans  3s ago                42       48.2k       $0.12       $0.01  ████░░░
+ 890-cdef  weather-agent      18m ago               15        1.2k      <$0.01           —  ▏░░░░░░
+ 321-0fed                     42m ago                7        2.9k           —           —  ██░░░░░
  default                      1h ago                 8           —           —           —        —
 
 ● connected  2.1 events/sec   feedback: https://github.com/rossoctl/cortex/issues/new/choose
-[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] plugins  [?] keys  [q] quit
+[↵] drill  [u] usage  [$] spend  [/] search  [?] keys  [q] quit
 ```
 
 The band at the top shows what your agents spent in each period:
@@ -154,11 +154,11 @@ Some details:
 - The `STATUS` of a tunnel is the status of the connection, not the status of the destination.
 - A blank `STATUS` means that the response did not arrive yet. `lost` means that no response arrived in 10 minutes.
 - `—` in `ACTION` and `PLUGIN` means that no plugin acted on the row.
+- Tunnel rows, and rows where no plugin acted, show muted, unless a plugin acted on them or on their partner.
 
 ### Keys on Events and Detail
 
 - `c` opens the column picker. In the picker, `space` shows or hides a column, and `s` sorts by the column. For example, sort by `DURATION` to find the slowest calls.
-- `s` hides or shows the exchanges that no plugin acted on.
 
 Press `Enter` on an event to open the Detail pane.
 It shows the full request and the full response.
@@ -242,7 +242,6 @@ When an agent still uses a session, its next request starts that session again.
 | `S` | On Agents, select the server for the new sessions of the agent. On Sessions, move the session to a different server |
 | `P` | Open the Pipeline pane |
 | `c` | On Events, open the column picker |
-| `s` | On Events, hide or show the exchanges that no plugin acted on |
 | `y` | On Detail, write the event to a file |
 | `x` | On Sessions, erase the session. On Agents, erase the sessions of the agent, or all sessions on the *All agents* row |
 | `p` | Pause or resume the live stream |

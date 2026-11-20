@@ -616,7 +616,7 @@ func TestSessionsRows_RightAlignNumericCells(t *testing.T) {
 }
 
 // A 36-character UUID is truncated: it is the least readable thing on the row and was taking
-// 40 columns to say less than its first twelve do.
+// 40 columns to say less than its last eight do.
 func TestSessionsRows_TruncateTheSessionID(t *testing.T) {
 	m := &model{width: 100}
 	m.sessionsTbl = newSessionsTable()
@@ -628,8 +628,8 @@ func TestSessionsRows_TruncateTheSessionID(t *testing.T) {
 	if cell == full {
 		t.Errorf("the full UUID is in the cell: %q", cell)
 	}
-	if !strings.HasPrefix(cell, "ecb7387f") {
-		t.Errorf("cell %q lost the identifying prefix", cell)
+	if !strings.HasPrefix(cell, "3e992e9a") {
+		t.Errorf("cell %q lost the identifying tail", cell)
 	}
 	idW := sessionsColumnWidth(m.sessionsTbl.Columns(), "SESSION")
 	if idW == 0 {

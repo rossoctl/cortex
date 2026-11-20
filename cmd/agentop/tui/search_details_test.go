@@ -720,22 +720,17 @@ func TestDetailSearch_OpeningARowShowsADeepMatch(t *testing.T) {
 	})
 }
 
-// A row hidden when the search ran is outside its answer. Shown again, n searches again and
+// A row missing when the search ran is outside its answer. Shown again, n searches again and
 // reaches it.
 func TestDetailSearch_ARowShownAgainSearchesAgain(t *testing.T) {
 	f := &fakeSearch{answer: map[string][]uint64{"s": {3}}}
 	m := searchModel(t, 5, f)
-	for i := range m.events["s"] {
-		if i != 2 {
-			m.events["s"][i].Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{
-				{Plugin: "p", Action: pipeline.ActionObserve}}}
-		}
-	}
-	m.hideInactive = true
+	all := m.events["s"]
+	m.events["s"] = slices.Delete(slices.Clone(all), 2, 3)
 	m.rebuildEventsTable()
 	detailsQuery(m, "needle")
 	runAll(m, enter(m))
-	m.hideInactive = false
+	m.events["s"] = all
 	m.rebuildEventsTable()
 	key(m, 'n')
 	if s, _ := f.counts(); s != 2 {

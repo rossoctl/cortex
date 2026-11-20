@@ -525,81 +525,6 @@ func TestBuildEventRows_TunnelInvocationsFoldIntoRow(t *testing.T) {
 	}
 }
 
-// TestRebuildEventsTable_HideInactive is the integration check for #5: the
-// hideInactive toggle (predicate → row build → footer count) suppresses
-// passthrough/skip-only messages while keeping partially-active ones.
-func TestRebuildEventsTable_HideInactive(t *testing.T) {
-	events := []pipeline.SessionEvent{
-		// active — a2a observe
-		{Direction: pipeline.Inbound, Phase: pipeline.SessionRequest, Host: "agent",
-			Invocations: &pipeline.Invocations{Inbound: []pipeline.Invocation{
-				{Plugin: "jwt-validation", Action: pipeline.ActionSkip}, // partially-active: skip + observe
-				{Plugin: "a2a-parser", Action: pipeline.ActionObserve},
-			}}},
-		// inactive — no invocations (passthrough response)
-		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "x", StatusCode: 200},
-		// inactive — skip-only
-		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "y",
-			Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{
-				{Plugin: "token-exchange", Action: pipeline.ActionSkip},
-			}}},
-	}
-	m := &model{selectedSess: "s", events: map[string][]pipeline.SessionEvent{"s": events}}
-	m.eventsTbl = newEventsTable()
-
-	m.hideInactive = false
-	m.rebuildEventsTable()
-	if len(m.visibleRows) != 3 || m.hiddenInactive != 0 {
-		t.Fatalf("show-all: rows=%d hidden=%d, want 3/0", len(m.visibleRows), m.hiddenInactive)
-	}
-
-	m.hideInactive = true
-	m.rebuildEventsTable()
-	if len(m.visibleRows) != 1 || m.hiddenInactive != 2 {
-		t.Fatalf("hide: rows=%d hidden=%d, want 1/2", len(m.visibleRows), m.hiddenInactive)
-	}
-	// The surviving row is the partially-active a2a message.
-	if action, _ := eventAction(m.visibleRows[0].invocations()); action != "observe" {
-		t.Errorf("surviving row action = %q, want observe", action)
-	}
-}
-
-// The `s` toggle hides exchanges, not halves of one: an exchange is one row (#1681),
-// and it shows when a plugin acted on either half. The live case is a routed
-// request refused for its model: no plugin acts on the 403, and hiding it left the
-// request looking as if it never got an answer.
-func TestRebuildEventsTable_HideInactiveKeepsAnExchangeWhole(t *testing.T) {
-	routed := &pipeline.Invocations{Outbound: []pipeline.Invocation{
-		{Plugin: "inference-router", Action: pipeline.ActionModify, Reason: "routed"},
-	}}
-	observed := &pipeline.Invocations{Outbound: []pipeline.Invocation{
-		{Plugin: "inference-parser", Action: pipeline.ActionObserve},
-	}}
-	events := []pipeline.SessionEvent{
-		// A request a plugin acted on, and its response no plugin did: shown.
-		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: "a", Invocations: routed},
-		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "ete", RequestID: "a", StatusCode: 403},
-		// A request no plugin acted on, and a response one did: shown.
-		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: "b"},
-		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "ete", RequestID: "b", StatusCode: 200, Invocations: observed},
-		// Neither half acted on: hidden.
-		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "s3", RequestID: "c"},
-		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "s3", RequestID: "c", StatusCode: 200},
-	}
-	m := &model{selectedSess: "s", events: map[string][]pipeline.SessionEvent{"s": events}, hideInactive: true}
-	m.eventsTbl = newEventsTable()
-	m.rebuildEventsTable()
-
-	if len(m.visibleRows) != 2 || m.hiddenInactive != 1 {
-		t.Fatalf("rows=%d hidden=%d, want 2/1", len(m.visibleRows), m.hiddenInactive)
-	}
-	for i, want := range [][2]*pipeline.SessionEvent{{&events[0], &events[1]}, {&events[2], &events[3]}} {
-		if got := m.visibleRows[i]; got.event != want[0] || got.resp != want[1] {
-			t.Errorf("row %d = %+v, want request %s with its response", i, got, want[0].RequestID)
-		}
-	}
-}
-
 // TestComputeEventPairIDs pairs each response row with its preceding request
 // row by direction + host + method, sharing one # across the exchange and
 // minting fresh integers for unpaired rows.
@@ -1567,53 +1492,6 @@ func TestSort_DurationLeavesUnpairedRowsAlone(t *testing.T) {
 	want := []string{"pair", "orphanresp", "orphanreq"}
 	if got := hostsInOrder(m); !slices.Equal(got, want) {
 		t.Errorf("descending with unpaired rows =\n  %v\nwant\n  %v", got, want)
-	}
-}
-
-// activeInvocation makes a row survive hideInactive: the `s` toggle hides a row
-// whose plugins all skipped, and eventInactive counts no invocations as inactive too.
-func activeInvocation() *pipeline.Invocations {
-	return &pipeline.Invocations{Inbound: []pipeline.Invocation{{Action: pipeline.ActionObserve}}}
-}
-
-// With `s` on, the sort still ranks whole exchanges.
-//
-// The sort keys carry an arrival index over the session's full row list, before
-// hideInactive drops any, while the rendered rows are only what survived that filter.
-// ONE hidden row shifts every later index by one, which is the fixture that catches a
-// sort that reads the two index spaces as one. The hidden row here is a skip-only
-// request with no response, which is the ordinary shape of one: a passthrough request
-// no plugin acted on.
-func TestSort_HideInactiveKeepsAnExchangeTogether(t *testing.T) {
-	base := time.Date(2026, 10, 13, 8, 0, 0, 0, time.UTC)
-	events := []pipeline.SessionEvent{
-		// Hidden: no invocations, and no partner to vouch for it. Shifts every
-		// index below it by exactly one.
-		{Host: "hidden", RequestID: "h1", Phase: pipeline.SessionRequest, At: base},
-		{Host: "slow", RequestID: "r1", Phase: pipeline.SessionRequest, At: base.Add(time.Second), Invocations: activeInvocation()},
-		{Host: "slow", RequestID: "r1", Phase: pipeline.SessionResponse, At: base.Add(2 * time.Second), Duration: 11 * time.Minute, Invocations: activeInvocation()},
-		{Host: "fast", RequestID: "r2", Phase: pipeline.SessionRequest, At: base.Add(3 * time.Second), Invocations: activeInvocation()},
-		{Host: "fast", RequestID: "r2", Phase: pipeline.SessionResponse, At: base.Add(4 * time.Second), Duration: 90 * time.Millisecond, Invocations: activeInvocation()},
-	}
-
-	m := sortTestModel(events)
-	m.hideInactive = true
-	m.sortCol, m.sortDesc = colDuration, true
-	m.rebuildEventsTable()
-
-	if m.hiddenInactive != 1 {
-		t.Fatalf("hid %d rows, want exactly 1 — an even shift cannot catch this", m.hiddenInactive)
-	}
-	want := []string{"slow", "fast"}
-	if got := hostsInOrder(m); !slices.Equal(got, want) {
-		t.Errorf("descending by duration with hideInactive =\n  %v\nwant\n  %v", got, want)
-	}
-
-	m.sortDesc = false
-	m.rebuildEventsTable()
-	wantAsc := []string{"fast", "slow"}
-	if got := hostsInOrder(m); !slices.Equal(got, wantAsc) {
-		t.Errorf("ascending by duration with hideInactive =\n  %v\nwant\n  %v", got, wantAsc)
 	}
 }
 
