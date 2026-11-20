@@ -358,9 +358,10 @@ func joinBandCells(cells []bandCell, ink *bandInk) string {
 	return line.String()
 }
 
-// styleBandValue dresses one band figure without changing its text: each amount bold, an amount
-// in a unit that is not dollars warn, the "~" and "+" markers, the " + " between units and an em
-// dash dim. "(mixed)" keeps the default ink: it is not an amount.
+// styleBandValue dresses one band figure without changing its text: each amount bold in every
+// unit, the word of a unit that is not dollars muted, the "~" and "+" markers, the " + " between
+// units and an em dash dim. "(mixed)" keeps the default ink: it is not an amount. No unit is warn
+// (#2019): a unit is not a problem.
 func styleBandValue(v string) string {
 	switch v {
 	case emptyCell:
@@ -376,12 +377,10 @@ func styleBandValue(v string) string {
 }
 
 // styleBandAmount is one unit's amount with its markers: a leading "~" and a trailing "+" dim,
-// the rest (with any "!") bold for dollars and warn for another unit.
+// the amount (with any "!") bold, and for a unit that is not dollars, the trailing " <unit>" word
+// (" Bobcoins") muted.
 func styleBandAmount(p string) string {
 	ink := styleBold
-	if !strings.Contains(p, "$") {
-		ink = styleWarn
-	}
 	var b strings.Builder
 	for len(p) > 0 && (p[0] == '~' || p[0] == '!') {
 		if p[0] == '~' {
@@ -395,7 +394,11 @@ func styleBandAmount(p string) string {
 	if body, ok := strings.CutSuffix(p, partialMarker); ok {
 		p, tail = body, styleDim.Render(partialMarker)
 	}
-	return b.String() + ink.Render(p) + tail
+	unit := ""
+	if i := strings.LastIndexByte(p, ' '); i >= 0 && !strings.Contains(p, "$") {
+		p, unit = p[:i], styleMuted.Render(p[i:])
+	}
+	return b.String() + ink.Render(p) + unit + tail
 }
 
 // bandWidth is what these cells render at on one line, skipping the dropped ones.
