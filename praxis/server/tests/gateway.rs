@@ -342,7 +342,7 @@ fn gateway(origin: &Origin, ingest: &Ingest, access_log: bool) -> Gateway {
 }
 
 /// Starts the gateway with `flags` added, `env` as its env and `stdin` as its
-/// stdin. The returned `Gateway` holds a piped stdin.
+/// stdin. With `Stdio::piped()`, the returned `Gateway` holds the write end.
 fn gateway_with(
     origin: &Origin,
     ingest: &Ingest,
