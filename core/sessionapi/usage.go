@@ -231,7 +231,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		// file per day in the window — up to eight for window=7d, against a path an
 		// operator configured and possibly a slow mount — and without this every abandoned
 		// request kept reading to the end for nobody. See ledger.Query.
-		snap, err = s.ledger.Snapshot(r.Context(), spec, group, agent)
+		snap, err = s.ledger.Snapshot(r.Context(), spec, group, agent, "")
 		if err != nil {
 			// A read failure is not a client error and must not look like one.
 			//

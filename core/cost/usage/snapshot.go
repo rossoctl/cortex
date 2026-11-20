@@ -171,6 +171,9 @@ type Snapshot struct {
 	// Agent is the agent= filter this snapshot was narrowed to, set only when the producer applied it,
 	// so a client can tell a narrowed answer from a server that ignored the parameter.
 	Agent string `json:"agent,omitempty"`
+	// Project is the project= filter this snapshot was narrowed to, set only when the producer
+	// applied it, with the same contract as Agent: absent means "not applied".
+	Project string `json:"project,omitempty"`
 	// SeriesCurrencies names, for group=model, endpoint and agent, the units EACH series is in —
 	// the cross-tabulation Currencies cannot carry, so one agent's (or model's, or endpoint's)
 	// figure can be labelled and summed without borrowing another's units. Keyed like the series;
