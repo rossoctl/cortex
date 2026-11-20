@@ -312,6 +312,8 @@ func TestInject_UserPlacementLeadsFirstUserMessage(t *testing.T) {
 		{"anthropic block content", "/v1/messages", `{"messages":[{"role":"user","content":[{"type":"text","text":"fix the test","cache_control":{"type":"ephemeral"}}]}]}`, "messages.0.content.0.text"},
 		{"chat after system message", "/v1/chat/completions", `{"messages":[{"role":"system","content":"base"},{"role":"user","content":"fix the test"}]}`, "messages.1.content"},
 		{"responses input", "/v1/responses", `{"instructions":"base","input":[{"role":"user","content":[{"type":"input_text","text":"fix the test"}]}]}`, "input.0.content.0.text"},
+		// Before, a bare string input was an unsupported shape, and went without.
+		{"responses string input", "/v1/responses", `{"instructions":"base","input":"fix the test"}`, "input"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

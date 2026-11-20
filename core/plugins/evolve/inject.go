@@ -173,6 +173,10 @@ func injectFirstUser(body []byte, d dialect, reminder string) ([]byte, error) {
 		path, textType = "input", "input_text"
 	}
 	items := gjson.GetBytes(body, path)
+	if d == dialectResponses && items.Type == gjson.String {
+		// input's shorthand: a bare string is the one user message.
+		return sjson.SetBytes(body, path, joinText(reminder, items.String()))
+	}
 	if !items.IsArray() {
 		return nil, errUnsupportedShape
 	}
