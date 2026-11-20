@@ -958,25 +958,6 @@ func TestTimelineEnter_RevealSkipsALinkedBucketsEventOfTheSameSeq(t *testing.T) 
 	}
 }
 
-// [↑↓] is advertised only when some agent rows do not fit.
-func TestTimelineFooter_ScrollHintOnlyWhenRowsAreHidden(t *testing.T) {
-	m := timelineModel(t, 140, 46)
-	m.timeline.windowIdx = 3
-	m.layout()
-	if strings.Contains(m.helpView(), "[↑↓]") {
-		t.Errorf("every agent fits, yet the footer offers [↑↓]: %q", m.helpView())
-	}
-	many := sampleTimeline()
-	for i := 0; i < 20; i++ {
-		id := string(rune('b' + i))
-		many.Agents = append(many.Agents, timeline.Agent{ID: id, Parent: timeline.MainAgent, Label: "subagent " + id})
-	}
-	m.timeline.tl, m.timeline.layoutKey = many, tlLayoutKey{}
-	if !strings.Contains(m.helpView(), "[↑↓] rows") {
-		t.Errorf("rows are hidden, yet the footer does not offer [↑↓]: %q", m.helpView())
-	}
-}
-
 // laterSession is sampleTimeline plus a turn a day after it, so "all" collapses the stretch
 // between them into a gap.
 func laterSession(after timeline.Turn) *timeline.Timeline {

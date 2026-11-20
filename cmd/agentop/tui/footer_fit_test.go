@@ -57,7 +57,7 @@ func TestFitHintLine_DropsFromTheFront(t *testing.T) {
 	got := fitHintLine(m.helpView(), 60)
 
 	// The specialised, pane-specific keys go first.
-	for _, gone := range []string{"[↑↓] nav", "[c] columns", "[u] usage"} {
+	for _, gone := range []string{"[b/f] page", "[↵] detail", "[c] columns"} {
 		if strings.Contains(got, gone) {
 			t.Errorf("width 60 kept %q, which should have been dropped: %q", gone, got)
 		}

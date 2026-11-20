@@ -563,7 +563,7 @@ agentop is for, and the others are surfaces you visit and leave.
    4   14:23:09.40   out   observe   inference-parser   claude-sonnet-5                               ↑121.0kB                                           api.anthropic.com
 
   ● connected   2.1 events/sec   [/anthropic 2 matches]   [sort: DURATION▼]
-  [↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  [p] pause  [/] search  [n/N] next/prev  [esc] back  ·  [?] keys  [q] quit
+  [b/f] page  [↵] detail  [c] columns  [u] usage  [/] search  [n/N] next/prev  [esc] back  [?] keys  [q] quit
   ```
 
   Exchange 3 has no ↓ figure because there was nothing to count:
@@ -755,8 +755,8 @@ agentop is for, and the others are surfaces you visit and leave.
   still running from earlier ("since 12:41:04"), each with its duration and its
   command, path or description; a cell with no tool names the request `↵` would
   open. `↵` opens the Events pane on the first event listed. `↑`/`↓` scroll the
-  agent rows, then the host rows, when they do not all fit; the footer offers
-  them only then. The pane refreshes at most once a second while the stream
+  agent rows, then the host rows, when they do not all fit; the `?` help lists
+  them, not the footer. The pane refreshes at most once a second while the stream
   delivers that session's events, and every ten seconds while a call is in
   flight with nothing new recorded. A failed fetch is retried after 1s, then
   2s, 4s … up to 30s, and the first fetch of a visit waits up to 30s, since a
@@ -782,7 +782,7 @@ agentop is for, and the others are surfaces you visit and leave.
    team2                           1
    default                         1
 
-  [↑↓/jk] nav  [↵] open  [L] localhost:47601  [r] reload  [?] keys  [q] quit
+  [↵] open  [L] localhost:47601  [r] reload  [/] search  [?] keys  [q] quit
   ```
 
   Without `--kubernetes`, a running local Cortex is connected to directly and

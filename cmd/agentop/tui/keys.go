@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -1143,6 +1144,9 @@ func (m *model) setStickyFlash(s string) {
 
 // helpView renders the keybinding hint line for the current pane. Short
 // enough to fit on a single row at 80 cols.
+//
+// ONLY THE KEYS THAT ACT ON THIS PANE (#2019). General keys a user guesses or
+// looks up once — ↑↓/jk, p pause, P plugins — are in the ? help only, and still work.
 func (m *model) helpView() string {
 	if m.searching {
 		if m.searchPane == paneEvents {
@@ -1152,10 +1156,10 @@ func (m *model) helpView() string {
 	}
 	switch m.pane {
 	case paneNamespaces:
-		return "[↑↓/jk] nav  [↵] open  [L] " + shortHost(m.localEndpointOr()) +
+		return "[↵] open  [L] " + shortHost(m.localEndpointOr()) +
 			"  [r] reload  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	case panePods:
-		return "[↑↓/jk] nav  [↵] connect  [Esc] back  [r] reload  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
+		return "[↵] connect  [Esc] back  [r] reload  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	case paneSessions:
 		// THE PER-SESSION SCOPE IS NOT SAID HERE. It was, as a leading notice; then the pane's
 		// title carried it as " · lifetime totals"; now neither does. See paneView's sessions
@@ -1172,40 +1176,20 @@ func (m *model) helpView() string {
 		// from the line those two describe — so the drawer existed only for a reader who went
 		// looking for it. Placed after [u] so fitHintLine, which drops from the front, gives up
 		// the navigation keys before either of the two that reach cost.
-		// [P] plugins sits at the TAIL, not where [tab] pipeline used to sit third
-		// from the left. The tab strip in the title bar survived every width; a footer
-		// hint does not, and fitHintLine drops from the front — so the key that
-		// replaced the strip is placed behind the hints it is willing to outlive.
-		//
-		// THE HINT SAYS "plugins" WHILE THE PANE TITLES ITSELF "pipeline", and the
-		// mismatch is deliberate (#1212). "pipeline" is the config noun — what the
-		// YAML declares and what [e] edits — but a reader meeting this footer has not
-		// seen that YAML, and the first thing the pane shows them is a table whose main
-		// column is PLUGIN. The footer is where a key gets DISCOVERED, so it is named
-		// for what the pane shows rather than for the concept behind it; the [?]
-		// overlay, which has room, carries the precise version ("the plugin chain this
-		// proxy runs"). The pane also lists the plugins the proxy offers but does not run,
-		// under its "available" divider.
-		//
-		// MEASURED, because the intuition here is off by more than it looks: the
-		// un-drilled line is 98 columns, and [P] survives down to 34 columns at the
-		// tail versus 79 third from the left. So the two placements are equivalent at
-		// the classic 80-column floor — 79 still fits — and the tail only starts
-		// paying below that, in a tmux split or a half-screen terminal. It is bought
-		// cheaply (the hints it outlives are the two most guessable on the line) so it
-		// is worth having, but it is not the difference between visible and invisible
-		// at 80 that the first draft of this comment claimed.
-		// [A] agents is absent for width: the line is already 98 columns, and with one agent —
+		// [P] plugins and [p] pause are not here (#2019): the ? help lists both. The hint
+		// was "plugins" while the pane titles itself "pipeline" (#1212); the help keeps
+		// the precise wording.
+		// [A] agents is absent for width: with one agent —
 		// the common case — the breakdown is a single row. The [?] overlay names it. esc names
 		// the picker instead when this list was reached through it.
 		search := m.searchHints(m.pane)
 		if m.sessionsViaAgents {
-			return "[↑↓] nav  [↵] drill  [u] usage  [$] spend  " + search + "  [esc] agents  [p] pause  [P] plugins  [?] keys  [q] quit"
+			return "[↵] drill  [u] usage  [$] spend  " + search + "  [esc] agents  [?] keys  [q] quit"
 		}
 		if m.parentCtx != nil {
-			return "[↑↓] nav  [↵] drill  [u] usage  [$] spend  " + search + "  [esc] pods  [p] pause  [P] plugins  [?] keys  [q] quit"
+			return "[↵] drill  [u] usage  [$] spend  " + search + "  [esc] pods  [?] keys  [q] quit"
 		}
-		return "[↑↓] nav  [↵] drill  [u] usage  [$] spend  " + search + "  [p] pause  [P] plugins  [?] keys  [q] quit"
+		return "[↵] drill  [u] usage  [$] spend  " + search + "  [?] keys  [q] quit"
 	case paneEvents:
 		// Ordered by what must survive truncation, not by how the keys group. The
 		// footer runs 135 columns and an 80-column terminal cuts the tail, so
@@ -1213,8 +1197,9 @@ func (m *model) helpView() string {
 		// past it, which is the pair a stuck user reaches for. They now sit at the
 		// end, and the escapable/discoverable keys ahead of them, with the
 		// specialised ones first to be lost.
-		base := "[↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  " +
-			"[p] pause  " + m.searchHints(m.pane) + "  [esc] back"
+		// [b/f] stays: unlike ↑↓, it is not a key a user guesses.
+		base := "[b/f] page  [↵] detail  [c] columns  [u] usage  " +
+			m.searchHints(m.pane) + "  [esc] back"
 
 		// Notices go BEFORE the essential hints, not after.
 		//
@@ -1254,7 +1239,7 @@ func (m *model) helpView() string {
 		if m.detailHalf() == nil {
 			yank = "" // y has nothing to write in a missing half
 		}
-		return "[↑↓] move  [↵] fold  [tab] " + other + yank + "  [u] usage  " +
+		return "[↵] fold  [tab] " + other + yank + "  [u] usage  " +
 			m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case panePipeline:
 		// ONE SPELLING NOW, where there used to be two. The picker/bypass split
@@ -1262,7 +1247,7 @@ func (m *model) helpView() string {
 		// to pods" with a parent context, nothing without one. esc now returns to
 		// whichever pane opened this one in both modes, so there is nothing left for
 		// the branch to say differently.
-		base := "[↑↓] nav  [↵] plugin detail  [e] edit  [esc] back"
+		base := "[↵] plugin detail  [e] edit  [esc] back"
 		// Surface a count of plugins with unmet dependencies so a single "✗" in the
 		// DEPS column doesn't get lost in a long list. Before the essential hints,
 		// for the reason given in the paneEvents case: fitHintLine drops from the
@@ -1273,16 +1258,10 @@ func (m *model) helpView() string {
 		}
 		return base + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	case panePluginDetail:
-		return "[↑↓] scroll  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
+		return m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case paneTimeline:
-		// [↑↓] only when there are rows to scroll to: a key that does nothing on screen reads as
-		// broken.
-		scroll := ""
-		if lay, ok := m.timelineLayoutNow(); ok && m.timelineScrollMax(lay) > 0 {
-			scroll = "[↑↓] rows  "
-		}
 		_, _, _, win := m.timelineRange()
-		return "[w] " + timelineWindows[win].label + "  [←→] moment  " + scroll + "[enter] events  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
+		return "[w] " + timelineWindows[win].label + "  [←→] moment  [enter] events  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case paneUsage:
 		// [o] is omitted under latency rather than shown as a no-op: a footer that
 		// advertises an inert key is worse than a shorter footer.
@@ -1321,12 +1300,10 @@ func (m *model) helpView() string {
 				enterHint = "  [↵] all agents"
 			}
 		}
-		// The full project label after nav: the cell may show only a tail.
-		navHint := "[↑↓] nav"
-		if d, ok := m.selectedAgentRow(); ok {
-			if d.kind == agentRowProject {
-				navHint += "  " + sanitizeLabel(d.project)
-			}
+		// The full project label at the head: the cell may show only a tail.
+		head := ""
+		if d, ok := m.selectedAgentRow(); ok && d.kind == agentRowProject {
+			head = sanitizeLabel(d.project)
 		}
 		escHint := "  [esc] back"
 		if m.agentsAboveSessions {
@@ -1336,7 +1313,7 @@ func (m *model) helpView() string {
 			}
 		}
 		// [S] only on a row where it opens, so the footer never advertises a key that would only
-		// say why not. After esc, so fitHintLine — which drops from the front — gives up nav first.
+		// say why not. After esc, so fitHintLine — which drops from the front — gives up [↵] first.
 		serverHint := ""
 		if m.serverKeyOffered() {
 			serverHint = "  [S] server"
@@ -1345,7 +1322,7 @@ func (m *model) helpView() string {
 		// key gets discovered. The drawer here breaks down the row under the cursor.
 		spendHint := "  [$] spend"
 		// [w] the pane's window, which the title names; see cycleAgentsWindow.
-		return navHint + enterHint + escHint + serverHint + "  [w] " + m.agentsWindowLabel() + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
+		return strings.TrimPrefix(head+enterHint, "  ") + escHint + serverHint + "  [w] " + m.agentsWindowLabel() + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	}
 	return "[?] keys  [q] quit"
 }

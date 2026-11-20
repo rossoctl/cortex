@@ -47,7 +47,7 @@ LAST 1H    TODAY   7 DAYS    MONTH
  default                      1h ago                 8           —           —           —        —
 
 ● connected  2.1 events/sec   feedback: https://github.com/rossoctl/cortex/issues/new/choose
-[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] search  [p] pause  [P] plugins  [?] keys  [q] quit
+[↵] drill  [u] usage  [$] spend  [/] search  [?] keys  [q] quit
 ```
 
 The band at the top shows what your agents spent in each period:

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 )
@@ -216,32 +217,15 @@ func TestTopLevelTitles_CarryNoTabStrip(t *testing.T) {
 	}
 }
 
-// A surface reached by a key is only as good as the advertisement for that key.
-// fitHintLine drops hints from the FRONT, so `[P] plugins` sits near the tail.
-//
-// THE ASSERTION IS AT 60 COLUMNS, NOT 80, and the difference matters: measured,
-// the key survives to 34 columns at the tail and to 79 third from the left, so an
-// 80-column assertion passes for BOTH placements and tests nothing. 60 is inside
-// the gap — narrow enough that only the tail placement holds, and a width a tmux
-// split or half-screen terminal actually reaches. 80 is asserted too, as the
-// floor that must never regress.
-func TestSessionsFooter_AdvertisesThePipelineKeyAtAWidthThatSurvives(t *testing.T) {
-	m := &model{pane: paneSessions}
-
-	got := m.helpView()
-	if !strings.Contains(got, "[P] plugins") {
-		t.Errorf("the sessions footer omits [P] plugins:\n  %s", got)
-	}
-	for _, w := range []int{80, 60} {
-		if fit := fitHintLine(got, w); !strings.Contains(fit, "[P]") {
-			t.Errorf("a %d-column fit drops the pipeline key:\n  %s", w, fit)
+// [P] left the sessions bar in #2019: the ? help lists it as a jump target, and it works.
+func TestSessionsFooter_PipelineKeyIsInTheHelpOnly(t *testing.T) {
+	for _, m := range []*model{{pane: paneSessions}, {pane: paneSessions, parentCtx: context.Background()}} {
+		if got := m.helpView(); strings.Contains(got, "[P]") {
+			t.Errorf("the sessions footer still offers [P]:\n  %s", got)
 		}
 	}
-
-	// The drilled-in spelling is a separate string with its own [esc] pods.
-	m.parentCtx = context.Background()
-	if got := m.helpView(); !strings.Contains(got, "[P] plugins") {
-		t.Errorf("the drilled-in sessions footer omits [P] plugins:\n  %s", got)
+	if !helpHasKey(ansi.Strip(helpBodyLines(paneSessions, 200)), "P ") {
+		t.Error("the sessions help does not list P")
 	}
 }
 

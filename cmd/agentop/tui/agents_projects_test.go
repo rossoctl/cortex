@@ -500,8 +500,8 @@ func TestAgentsProjects_FooterNamesTheFullLabel(t *testing.T) {
 	deliver(m, pressCmd(m, enterKey))
 	onDesc(t, m, agentRowDesc{agent: projAgent, kind: agentRowProject, project: label})
 	got := m.helpView()
-	if !strings.Contains(got, sanitizeLabel(label)) || strings.Contains(got, "[space]") {
-		t.Errorf("footer %q; want %q and no [space]", got, sanitizeLabel(label))
+	if !strings.HasPrefix(got, sanitizeLabel(label)+"  [↵]") || strings.Contains(got, "[space]") {
+		t.Errorf("footer %q; want it to start with %q and no [space]", got, sanitizeLabel(label))
 	}
 	if strings.Contains(got, "\x1b") {
 		t.Errorf("footer carries a raw escape: %q", got)
