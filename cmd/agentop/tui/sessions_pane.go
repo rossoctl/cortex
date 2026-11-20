@@ -257,12 +257,25 @@ func (m *model) rebuildSessionsTable() {
 	// Reading the flag off the table's own columns fixed the disagreement WITHIN a rebuild and
 	// did nothing for this, because the columns were still set somewhere else. Derived once
 	// here now, and used for both, so the two cannot be produced by separate decisions at all.
-	showMoney := sessionsShowMoney(m.width)
+	// The gates measure SESSION at sessionIDWidth. A pending bucket's agent name widens it, so
+	// they are asked about the width left once that extra is taken out.
+	scope, project := m.sessionsScope(), m.sessionsProjectScope()
+	idW, gateW := m.sessionsIDWidth(scope, project, sessionsShowTitle(m.width)), m.width
+	if m.width > 0 {
+		gateW = m.width - (idW - sessionIDWidth)
+		// Without TITLE the mark moves into SESSION, so measure again. TITLE stays hidden then,
+		// because gateW only shrinks.
+		if !sessionsShowTitle(gateW) {
+			idW = m.sessionsIDWidth(scope, project, false)
+			gateW = m.width - (idW - sessionIDWidth)
+		}
+	}
+	showMoney := sessionsShowMoney(gateW)
 	// The SAME predicates the header used, for the reason its own comment gives: the columns
 	// and the rows are decided by two separate calls, and one consulted here and not there
 	// makes every cell after it render under the wrong heading — or, when the arity differs,
 	// panics inside bubbles' SetColumns.
-	showTitle := sessionsShowTitle(m.width)
+	showTitle := sessionsShowTitle(gateW)
 	// The header this rebuild will install, computed first because the money cells are rendered
 	// against their column's FITTED width — the fitter shrinks columns on a narrow terminal, so
 	// the declared 10 is a ceiling rather than the budget.
@@ -270,13 +283,12 @@ func (m *model) rebuildSessionsTable() {
 	// Fitted, THEN aligned, and in that order: the alignment pads each heading to the width the
 	// fitter settled on, so padding first would pad to a width the column no longer has. Every
 	// lookup below still finds its column, because they go through headerTitle.
-	scope, project := m.sessionsScope(), m.sessionsProjectScope()
 	router, showServer := m.sessionsShowServer()
 	// AGENT and SERVER are asked for by what is listed, then dropped whole when the terminal has
 	// no room. Kept, so the search can still read a dropped one.
 	twoAgents := m.sessionsListTwoAgents(scope, project)
 	want := alignSessionsHeaders(fitTableColumns(withSessionsIDWidth(
-		sessionsColumnsWith(m.width, twoAgents, showServer), m.sessionsIDWidth(scope, project, showTitle)), m.width))
+		sessionsColumnsWith(gateW, twoAgents, showServer), idW), m.width))
 	agentW := sessionsColumnWidth(want, "AGENT")
 	serverW := sessionsColumnWidth(want, "SERVER")
 	costW := sessionsColumnWidth(want, "COST")
@@ -285,7 +297,7 @@ func (m *model) rebuildSessionsTable() {
 	// line up at whatever width the fitter settled on. Left-aligned numbers were the main
 	// reason this table read as ragged — "5" and "105" began at the same column and ended
 	// two apart, so no two rows could be compared by eye.
-	idW := sessionsColumnWidth(want, "SESSION")
+	idW = sessionsColumnWidth(want, "SESSION")
 	// From `want`, the header about to be installed, not from the table's current one.
 	titleW := sessionsColumnWidth(want, "TITLE")
 	eventsW := sessionsColumnWidth(want, "EVENTS")
@@ -545,8 +557,7 @@ func (m *model) sessionsIDWidth(scope, project string, showTitle bool) int {
 	return w
 }
 
-// withSessionsIDWidth is cols with SESSION set to w. Applied before fitTableColumns, so on a
-// terminal with no room left the fitter takes the extra from the widest column (TITLE).
+// withSessionsIDWidth is cols with SESSION set to w.
 func withSessionsIDWidth(cols []table.Column, w int) []table.Column {
 	out := make([]table.Column, len(cols))
 	copy(out, cols)

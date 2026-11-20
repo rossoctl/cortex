@@ -115,3 +115,21 @@ func TestSessionsTable_SearchAndSelectUseTheFullID(t *testing.T) {
 		t.Errorf("selectedSessionID = %q, want the full id %q", got, uuidOpened)
 	}
 }
+
+// A pending bucket widens SESSION, and the width gates count that: at no width is the bucket's
+// agent name cut, or TITLE shown below its floor.
+func TestSessionsTable_PendingBucketWidthGates(t *testing.T) {
+	for w := 60; w <= 120; w++ {
+		m := uuidPicker(t, w, uuidOpened, "pending:claude-code")
+		cols := m.sessionsTbl.Columns()
+		if got := m.sessionsTbl.Rows()[rowOf(t, m, "pending:claude-code")][0]; got != "claude-code" {
+			t.Errorf("width %d: bucket SESSION cell = %q, want %q", w, got, "claude-code")
+		}
+		if tw := sessionsColumnWidth(cols, "TITLE"); tw != 0 && tw < sessionsTitleWidth {
+			t.Errorf("width %d: TITLE is %d, below its floor %d", w, tw, sessionsTitleWidth)
+		}
+		if got := tableWidth(cols); got > w {
+			t.Errorf("width %d: table is %d wide", w, got)
+		}
+	}
+}
