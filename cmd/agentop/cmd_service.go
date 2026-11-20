@@ -730,8 +730,11 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 		fmt.Fprintf(stdout, "Cortex is healthy according to %s\n", p.healthURL)
 		return 0
 	}
-	if runtime.GOOS == "linux" {
+	switch runtime.GOOS {
+	case "linux":
 		return reportUnitNotAnswering(p, unitStateOf(), stdout)
+	case "darwin":
+		return reportJobNotAnswering(p, jobStateOf(), stdout)
 	}
 	reportNotAnswering(p, stdout)
 	return 1
@@ -740,6 +743,55 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 // unitStateOf is how status reads systemd. A var so a test can hand it a state
 // without a systemd to stop.
 var unitStateOf = systemdUnitState
+
+// jobStateOf is how status reads launchd, a var for the same reason.
+var jobStateOf = launchdJobState
+
+// reportJobNotAnswering is status's verdict on macOS when the health probe got no
+// answer: reportUnitNotAnswering's, with launchd asked instead of systemd. Before it,
+// a `service stop` read as "NOT answering … will fail", exit 1, exactly like a crash.
+//
+// As there, a stopped, disabled job is the one case that is not a failure, and the
+// only one that exits 0, and each case names what launchd reports rather than how the
+// job got there.
+func reportJobNotAnswering(p servicePaths, s launchdState, stdout io.Writer) int {
+	switch {
+	case !s.known:
+		reportNotAnswering(p, stdout)
+		return 1
+	case !s.session:
+		fmt.Fprintf(stdout, "Cortex is not running: nobody is logged in to this Mac's desktop, and it runs only in a desktop session.\n"+
+			"  It starts at the next login at the screen, or at boot with automatic login. An SSH login does not start it.\n")
+		return 1
+	case !s.loaded && s.disabled:
+		fmt.Fprintf(stdout, "Cortex is stopped, and stays stopped across logins and reboots until you start it.\n"+
+			"  Claude Code and OpenCode fail until it runs again:  agentop service start\n")
+		return 0
+	case !s.loaded:
+		// Booted out but not disabled, so the next login loads it again: `launchctl
+		// bootout` by hand, since `service stop` disables it too.
+		fmt.Fprintf(stdout, "Cortex is stopped, but not disabled, so it starts again at the next login.\n"+
+			"  Claude Code and OpenCode fail until it runs again:  agentop service start\n")
+		return 1
+	case s.state != "" && s.state != "running":
+		// Loaded, and launchd is not running it. It restarts a job on its own, after
+		// ThrottleInterval, unless it is holding starts back: "pending spawn, domain in
+		// on-demand-only mode", for a while after every login, and sometimes for hours.
+		fmt.Fprintf(stdout, "Cortex is NOT running: launchd has its job loaded but not running (state = %s).\n", s.state)
+		printHolderLines(p, stdout)
+		fmt.Fprintf(stdout, "  launchd may be holding its start back, as it does for a while after login. To start it now:\n"+
+			"    agentop service restart\n"+
+			"  Claude Code and OpenCode will fail meanwhile. Last log lines:\n")
+		for _, line := range lastLines(p.logFile, 5) {
+			fmt.Fprintf(stdout, "    %s\n", line)
+		}
+		return 1
+	}
+	// Running but silent: the supervisor is up and the proxy under it is not
+	// answering, crashing or still starting.
+	reportNotAnswering(p, stdout)
+	return 1
+}
 
 // reportUnitNotAnswering is status's verdict on Linux when the health probe got no
 // answer. Without asking systemd why, every case read as "NOT answering … Claude

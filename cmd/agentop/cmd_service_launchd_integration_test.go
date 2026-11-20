@@ -302,13 +302,9 @@ func TestServiceLifecycle_RealLaunchd(t *testing.T) {
 			t.Errorf("something still held %s 10s after stop", addr)
 		}
 	}
-	// Not the wording: on macOS a deliberate stop and a crash still read alike
-	// ("NOT answering"), where Linux tells them apart (#1529). Only that status does
-	// not call a stopped Cortex healthy, and does not exit 0.
+	// A deliberate stop reads as one, not as a crash, and exits 0, as on Linux (#1529).
 	code, out = status()
-	if code == 0 || strings.Contains(out, "is healthy") {
-		t.Errorf("status after stop: exit %d, want nonzero and no claim of health:\n%s", code, out)
-	}
+	expect("status after stop", code, out, 0, "Cortex is stopped, and stays stopped")
 
 	code, out = control("start")
 	expect("start", code, out, 0)
