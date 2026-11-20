@@ -2550,10 +2550,9 @@ func (m *model) paneView() string {
 		// hint mid-load); non-nil empty slice → loaded, no agents found.
 		var body string
 		if m.namespaces != nil && len(m.namespaces) == 0 && m.pickerErr == "" {
-			body = styleHint.Render(
-				"No Cortex agents found in this cluster.\n" +
-					"Press [L] to connect to " + m.localEndpointOr() + " (an existing\n" +
-					"port-forward), or use `agentop --endpoint http://...`.")
+			body = m.paneEmptyState(
+				"No Cortex agents found in this cluster.\nTo use another proxy, run agentop --endpoint http://....",
+				"Press ", "L", " to connect to "+m.localEndpointOr()+" (an existing port-forward).")
 		} else {
 			body = m.namespacesTbl.View()
 		}
@@ -2654,7 +2653,15 @@ func (m *model) paneContent() (title, body string) {
 		if (m.sessionsScope() != "" || m.sessionsProjectScope() != "") && len(m.sessionRowIDs) == 0 {
 			rest := strings.TrimPrefix(m.scopeSuffix(m.sessionsScope(), m.sessionsProjectScope()), " · ")
 			rest = strings.TrimPrefix(rest, "agent=")
-			body = styleHint.Render("(no session belongs to " + rest + ")")
+			// The key line names the key the footer offers to leave this list: helpView's order.
+			before, key, after := "Press ", "A", " to pick another agent."
+			switch {
+			case m.sessionsViaAgents:
+				key, after = "esc", " to go back to the agents."
+			case m.parentCtx != nil:
+				key, after = "esc", " to go back to the pods."
+			}
+			body = m.paneEmptyState("No session belongs to "+rest+".", before, key, after)
 		}
 	case paneEvents:
 		// Fitted to the terminal rather than to a fixed 36: a bare UUID is 36 characters, so
@@ -2676,7 +2683,7 @@ func (m *model) paneContent() (title, body string) {
 		// would be indistinguishable from Sessions in a screenshot.
 		title = fmt.Sprintf("%s · %s · pipeline", m.appName(), m.endpoint)
 		if m.pipeline == nil {
-			body = styleHint.Render("(loading pipeline…)")
+			body = m.paneEmptyState("Loading the pipeline…", "Press ", "esc", " to go back.")
 		} else {
 			body = m.pipelineTbl.View()
 		}
@@ -2711,9 +2718,10 @@ func (m *model) paneContent() (title, body string) {
 		case m.agentsErr != nil && !hasRows:
 			// Named, not blank: an unreachable endpoint and a quiet day look identical
 			// otherwise, and only one of them is worth waiting out.
-			body = styleHint.Render("(agent breakdown unavailable: " + m.agentsErr.Error() + ")")
+			// w refetches the rows (cycleAgentsWindow), so it is the retry key too.
+			body = m.paneEmptyState("Agent breakdown unavailable: "+m.agentsErr.Error()+".", "Press ", "w", " to try again with the next window.")
 		case !hasRows:
-			body = styleHint.Render("(no agent traffic in this window)")
+			body = m.paneEmptyState("No agent traffic in this window.", "Press ", "w", " to pick another window.")
 		case m.agentsErr != nil || m.agentProjectsErr != nil:
 			// A failed refresh keeps the rows on screen, one line shorter to fit the hint.
 			err := m.agentsErr

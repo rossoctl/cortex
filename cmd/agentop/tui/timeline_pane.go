@@ -615,7 +615,14 @@ func (m *model) revealPendingSeq() bool {
 
 // timelineBody is the pane drawn and searched. Every line is clipped to the terminal: the
 // chart is sized to fit, but a header or cursor line naming a long command is not.
+//
+// An empty state (timelineEmptyState) is drawn in the middle of the body and is not searched:
+// the document has no lines then, so a search finds nothing.
 func (m *model) timelineBody() string {
+	if msg, before, key, after, ok := m.timelineEmptyState(); ok {
+		m.timelineDoc.setLines(nil, 0)
+		return m.paneEmptyState(msg, before, key, after)
+	}
 	lines := strings.Split(strings.TrimRight(m.renderTimeline(), "\n"), "\n")
 	for i, l := range lines {
 		lines[i] = truncToWidth(l, max(m.innerWidth(), 20))
@@ -694,35 +701,45 @@ func shareGlyph(s share) string {
 	return lipgloss.NewStyle().Foreground(tlStateColor[big]).Render(tlEighths[topE])
 }
 
-func (m *model) renderTimeline() string {
+// timelineEmptyState is the state the pane shows in place of the chart, when it has no chart to
+// draw. Each one is left with esc, which goes back to where the Timeline was opened from.
+func (m *model) timelineEmptyState() (msg, before, key, after string, ok bool) {
 	t := &m.timeline
-	var b strings.Builder
 	switch {
 	case t.err != nil && errors.Is(t.err, errTimelineUnsupported):
-		b.WriteString(styleWarn.Render("  This proxy does not serve /v1/sessions/{id}/timeline — upgrade cortex to see the timeline.") + "\n")
-		return b.String()
+		msg = "This proxy does not serve the timeline. Upgrade Cortex to see it."
 	case t.err != nil && t.tl == nil:
 		// Retried on its backoff, so a slow first read reads as loading, not as a dead end.
 		wait := ""
 		if left := t.retryAt.Sub(m.clock()); left > 0 {
 			wait = fmt.Sprintf(" in %ds", int(left.Round(time.Second).Seconds()))
 		}
-		b.WriteString(styleMuted.Render("  loading… the last try failed, retrying"+wait+": "+t.err.Error()) + "\n")
-		return b.String()
+		msg = "Loading… The last try failed. Retrying" + wait + ": " + t.err.Error()
 	case t.tl == nil && !m.sessionServed(t.session):
-		b.WriteString(styleMuted.Render("  The proxy no longer has this session, so it has no timeline.") + "\n")
-		return b.String()
+		msg = "The proxy no longer has this session, so it has no timeline."
 	case t.tl == nil:
-		b.WriteString(styleMuted.Render("  loading…") + "\n")
-		return b.String()
+		msg = "Loading…"
+	default:
+		// The chart needs its fixed lines, any empty side's note and one row; below that, say
+		// so rather than run past the terminal.
+		lay, _ := m.timelineLayoutNow()
+		if m.bodyHeight >= m.timelineFixed(lay)+1 {
+			return "", "", "", "", false
+		}
+		msg = "Make the terminal taller to see the timeline."
 	}
-	// The chart needs its fixed lines, any empty side's note and one row; below that, say so
-	// rather than run past the terminal.
+	return msg, "Press ", "esc", " to go back.", true
+}
+
+func (m *model) renderTimeline() string {
+	t := &m.timeline
+	var b strings.Builder
+	// timelineBody draws these in the middle of the body; the message alone keeps this safe to
+	// call without a timeline.
+	if msg, _, _, _, ok := m.timelineEmptyState(); ok {
+		return styleMuted.Render(msg)
+	}
 	lay, _ := m.timelineLayoutNow()
-	if m.bodyHeight < m.timelineFixed(lay)+1 {
-		b.WriteString(styleMuted.Render("  make the terminal taller to see the timeline"))
-		return b.String()
-	}
 	_, _, now, win := m.timelineRange()
 	width := lay.axis.width()
 	b.WriteString(m.timelineHeader(lay, offeredWindows(t.sessionSpan(now)), win) + "\n")

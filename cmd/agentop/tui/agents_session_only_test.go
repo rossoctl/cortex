@@ -147,12 +147,12 @@ func TestAgentsPane_APressOpensWhenOnlySessionsNameTheSecondAgent(t *testing.T) 
 }
 
 // The pane opens on two agents from sessions alone, with nothing spent in the window: the morning
-// before any agent has made a request. The body is the table, not "(no agent traffic …)".
+// before any agent has made a request. The body is the table, not "No agent traffic …".
 func TestAgentsPane_OpensOnSessionsAloneAndShowsTheTable(t *testing.T) {
 	m := morningAfterFixture()
 	m.agents = nil
 	m.enterAgents(paneSessions)
-	if view := m.View(); strings.Contains(view, "no agent traffic") || !strings.Contains(view, "opencode") {
+	if view := m.View(); strings.Contains(view, "No agent traffic") || !strings.Contains(view, "opencode") {
 		t.Errorf("the pane did not render the session-only rows:\n%s", view)
 	}
 }

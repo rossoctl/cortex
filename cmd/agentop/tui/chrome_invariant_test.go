@@ -74,6 +74,8 @@ func TestChrome_PlainTextInvariant(t *testing.T) {
 						}
 						hints = append(hints, found...)
 					}
+					// An empty state's key line chips its key (empty_state.go).
+					hints = append(hints, hintLinesOf(m.View(), "Press [")...)
 					// The Timeline's cursor strip is a hint line once T7 chips it.
 					if v.name == fmt.Sprintf("pane %d", paneTimeline) {
 						hints = append(hints, hintLinesOf(m.View(), "▸ [←→]")...)

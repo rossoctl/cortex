@@ -126,7 +126,7 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	m.usage.lastFetch = time.Now()
 
 	// Populated agent rows, for the third time and the same reason as the catalog and the usage
-	// snapshot above: paneAgents renders a one-line "(no agent traffic in this window)" branch
+	// snapshot above: paneAgents renders its "No agent traffic in this window." empty state
 	// when m.agents is empty, so without rows this test measures that sentence and never the
 	// TABLE. That is precisely how the catalog table kept bubbles' default height of 20 — the
 	// comment on m.catalog records it — and the agents table shipped with the identical defect,

@@ -482,7 +482,7 @@ func TestTimelineLoaded_NotFound(t *testing.T) {
 	m.timeline.tl = nil
 	m.timeline.reqSeq = 3
 	m.handleTimelineLoaded(timelineLoadedMsg{req: 3, err: apiclient.ErrNotFound})
-	if !errors.Is(m.timeline.err, errTimelineUnsupported) || !strings.Contains(stripANSI(m.renderTimeline()), "upgrade cortex") {
+	if !errors.Is(m.timeline.err, errTimelineUnsupported) || !strings.Contains(stripANSI(m.renderTimeline()), "Upgrade Cortex") {
 		t.Errorf("old proxy: err %v", m.timeline.err)
 	}
 
@@ -1138,7 +1138,7 @@ func TestTimelineRefresh_FailedFetchIsRetriedOnABackoff(t *testing.T) {
 	m.timeline.tl = nil
 	m.timeline.tickGen, m.timeline.reqSeq = 1, 3
 	m.handleTimelineLoaded(timelineLoadedMsg{req: 3, err: errors.New("context deadline exceeded")})
-	if out := stripANSI(m.renderTimeline()); !strings.Contains(out, "retrying in 1s") {
+	if out := stripANSI(m.renderTimeline()); !strings.Contains(out, "Retrying in 1s") {
 		t.Errorf("after a failed first fetch: %q, want it shown as retrying", out)
 	}
 	m.handleTimelineTick(timelineTickMsg{gen: 1})

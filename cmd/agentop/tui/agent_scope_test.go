@@ -139,7 +139,7 @@ func TestSessionsPane_ScopedTitleAndTheEmptyScope(t *testing.T) {
 	if title := strings.SplitN(view, "\n", 2)[0]; !strings.Contains(title, "agent=Claude-User") {
 		t.Errorf("title %q does not name the scope", title)
 	}
-	if !strings.Contains(view, "no session belongs to") {
+	if !strings.Contains(view, "No session belongs to") {
 		t.Errorf("a raw User-Agent scope matched sessions or said nothing:\n%s", view)
 	}
 }
@@ -260,7 +260,7 @@ func TestSessionsPane_AnOlderServerListsEverySessionUnderAScope(t *testing.T) {
 	v := fitModel(t, paneSessions, 160, 40, nil)
 	v.sessions, v.agentScope = old, "bob-shell/2.0.5"
 	v.rebuildSessionsTable()
-	if view := v.paneView(); strings.Contains(view, "no session belongs to") {
+	if view := v.paneView(); strings.Contains(view, "No session belongs to") {
 		t.Errorf("an older server's sessions read as belonging to no agent:\n%s", view)
 	}
 	if footer := v.footerView(); !strings.Contains(footer, "list not scoped") {
