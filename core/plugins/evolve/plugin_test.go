@@ -683,10 +683,21 @@ func metricValue(p *Plugin, name string) float64 {
 	return 0
 }
 
-func TestLearn_SkipsTooFewTurnsAndIneligibleTraffic(t *testing.T) {
+func TestLearn_SkipsTooFewTurns(t *testing.T) {
 	fe := &fakeEvolve{}
 	p, c := configured(t, `{"endpoint":"http://x","idle_after_seconds":60}`, fe)
 	finish(t, p, turn(h1, "Running.", bash1)) // one turn < min_turns
+	c.t = c.t.Add(61 * time.Second)
+	p.learnIdle(context.Background())
+	if len(fe.learned) != 0 {
+		t.Fatalf("learned = %+v", fe.learned)
+	}
+}
+
+func TestLearn_SkipsIneligibleTraffic(t *testing.T) {
+	// min_turns 1, so a single wrongly recorded turn would be sent.
+	fe := &fakeEvolve{}
+	p, c := configured(t, `{"endpoint":"http://x","idle_after_seconds":60,"min_turns":1}`, fe)
 	sub := turn(h1, "x", nil)
 	sub.Extensions.Inference.AgentRole = pipeline.AgentRoleSubagent
 	sub.Session.ID = "s2"

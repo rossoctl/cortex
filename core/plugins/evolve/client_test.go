@@ -277,6 +277,13 @@ func TestMCPEvolve_IgnoresProxyEnvironment(t *testing.T) {
 	if _, err := e.Guidelines(context.Background(), "cortex", "t", "s"); err != nil {
 		t.Fatalf("request went through the proxy: %v", err)
 	}
+	// The call above can't tell: Go never proxies a loopback address, which the
+	// fake server is on. So check the transport itself, as an evolve on another
+	// host would be reached.
+	tr, ok := e.http.Transport.(*http.Transport)
+	if !ok || tr.Proxy != nil {
+		t.Fatal("evolve's transport would use the environment's proxy")
+	}
 }
 
 // profilePrompt is the guidelines_prompt an ensure_processing_profile call asked for, or "".
