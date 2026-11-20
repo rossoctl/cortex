@@ -309,6 +309,7 @@ func sortedMap(m map[string]string) *yaml.Node {
 func serverRemove(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("server remove", flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
+	yes := flags.Bool("yes", false, "take the router out with the only server without asking, though running sessions last used it")
 	pos, code, ok := serverFlags(flags, args, stdout, stderr)
 	if !ok {
 		return code
@@ -339,21 +340,21 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	agents := agentsOn(c, name)
-	// The only server first, since no command removes it. With agents routed to it
-	// the refusal names the step that makes it carry no traffic too, rather than
-	// naming that step alone and refusing again once it is taken.
-	if len(c.Servers) == 1 {
-		fmt.Fprintf(stderr, "agentop server remove: %s is the only server, and %s needs one. ", name, routerName)
-		if len(agents) > 0 {
-			fmt.Fprintf(stderr, "It is %s's server for new sessions; stop routing to it with\n", strings.Join(agents, " and "))
-			for _, a := range agents {
-				fmt.Fprintf(stderr, "  agentop server reset --agent %s\n", a)
-			}
-			fmt.Fprint(stderr, "and it changes no traffic. ")
-		} else {
-			fmt.Fprint(stderr, "With no agent routed to it it changes no traffic. ")
+	moved := sessionsOn(c, name)
+	// The only server takes the router entry out with it — the router needs a
+	// server — which undoes the add that created the entry. Not while anything is
+	// routed to it, as for any server; the refusal names every step that ends that
+	// at once, rather than naming one and refusing again once it is taken.
+	if len(c.Servers) == 1 && (len(agents) > 0 || len(moved) > 0) {
+		fmt.Fprintf(stderr, "agentop server remove: %s is the only server, so removing it takes the %s entry out of %s. "+
+			"First stop routing to it:\n", name, routerName, homeTilde(path))
+		for _, a := range agents {
+			fmt.Fprintf(stderr, "  agentop server reset --agent %s\n", a)
 		}
-		fmt.Fprintf(stderr, "To take the router out altogether, delete its entry from %s.\n", homeTilde(path))
+		for _, id := range moved {
+			fmt.Fprintf(stderr, "  agentop server move %s own\n", id)
+		}
+		fmt.Fprintf(stderr, "Then agentop server remove %s takes it out.\n", name)
 		return 1
 	}
 	// Before the session and agent checks: the config validation refuses the
@@ -375,7 +376,7 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
-	if moved := sessionsOn(c, name); len(moved) > 0 {
+	if len(moved) > 0 {
 		// Not rewritten to "": a remove the user asked for should not edit the
 		// moves they made, and a config that names no listed server cannot reload —
 		// or, with the proxy stopped, start.
@@ -405,7 +406,11 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 	if statsURL != "" {
 		sessionsURL = dialURL(cfg.Listener.SessionAPIAddr)
 	}
-	if n := runningOn(sessionsURL, c, name); n > 0 {
+	n := runningOn(sessionsURL, c, name)
+	if len(c.Servers) == 1 {
+		return removeLastServer(stdout, stderr, path, statsURL, name, n, *yes)
+	}
+	if n > 0 {
 		fmt.Fprintf(stderr, "agentop server remove: warning: %s last sent inference to %s. A session the proxy routed "+
 			"there gets an error asking for a new session, until %s is added back.\n", runningSessions(n), name, name)
 	}
@@ -417,8 +422,35 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
+// removeLastServer takes the inference-router entry out with name, its only server,
+// once nothing is routed to it: the inverse of the add that created the entry, so
+// add then remove leaves the config as it was.
+//
+// With the router gone, nothing reads the pins of running sessions, so the running
+// sessions that last sent inference there (running, from runningOn) go where their
+// agent sends them from their next request — partway through their conversation,
+// which is no 503 but is a move. So that case asks first; with none, removing the
+// router changes no traffic and asks nothing. The pins stay in the plugin store, so
+// adding name back takes those sessions back to it.
+func removeLastServer(stdout, stderr io.Writer, path, statsURL, name string, running int, yes bool) int {
+	if running > 0 {
+		fmt.Fprintf(stdout, "%s is the only server, so removing it takes the %s entry out, and %s last sent inference to it. "+
+			"With no router, each goes where its agent sends it from its next request, partway through its conversation; "+
+			"adding %s back takes it back there.\n", name, routerName, runningSessions(running), name)
+		if !yes && !serverConfirm(stdout) {
+			return exitDeclined
+		}
+	}
+	ch := edit.ConfigChange{Chain: "outbound", Plugin: routerName, RemoveEntry: true}
+	return runServerWrite(stdout, stderr, path, statsURL, []edit.ConfigChange{ch}, writeReport{
+		done: fmt.Sprintf("Removed %s, the only server, and the %s entry with it.", name, routerName),
+		live: "Requests now go where each agent sends them.",
+	})
+}
+
 // runningOn counts the sessions the proxy at sessionsURL holds in memory whose inference
-// traffic last went to server name: the ones a remove can leave asking for a new session.
+// traffic last went to server name: the ones a remove can leave asking for a new session,
+// or, when name is the only server, sends where their agent sends them.
 // servers.ForSession names each session's server: by the name the proxy recorded, else by host.
 //
 // NOT THE LISTENER'S SYNTHETIC SESSIONS — the default bucket and the pending:<agent> ones.

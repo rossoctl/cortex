@@ -379,8 +379,8 @@ func TestServerRemove_RemovesAServerNoAgentUses(t *testing.T) {
 	}
 }
 
-func TestServerRemove_RefusesTheOnlyServer(t *testing.T) {
-	only := strings.Replace(routerBlock, `            glm:
+// onlyEte is routerBlock with ete its only server and no agent routed.
+var onlyEte = strings.Replace(routerBlock, `            glm:
               url: https://glm.example.com:8443
               key: sk-glm
               main: glm
@@ -388,10 +388,109 @@ func TestServerRemove_RefusesTheOnlyServer(t *testing.T) {
           agents:
             claude-code: glm
 `, "", 1)
-	path := serverEnv(t, newFakeStats(t, 0).addr(), only)
-	code, _, errOut := runServerCmd(t, "", "remove", "ete", "--config", path)
-	if code != 1 || !strings.Contains(errOut, "ete is the only server") {
-		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+
+// onlyGlm is routerBlock with glm its only server, claude-code still routed to it.
+var onlyGlm = strings.Replace(routerBlock, `            ete:
+              url: https://ete.example.com
+              key: sk-ete
+              main: opus
+              helper: haiku
+`, "", 1)
+
+// The router needs a server, so removing the last one takes the router's entry out
+// with it. With nothing routed there and no running session on it, that changes no
+// traffic, so nothing is asked.
+func TestServerRemove_TheOnlyServerTakesTheRouterOut(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), onlyEte)
+	before := readConfig(t, path)
+	asks := stubConfirm(t, false)
+	code, out, errOut := runServerCmd(t, "", "remove", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	for _, want := range []string{
+		"Removed ete, the only server, and the inference-router entry with it.",
+		"Requests now go where each agent sends them.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, out)
+		}
+	}
+	if *asks != 0 {
+		t.Errorf("asked %d times; with no running session on it the removal changes no traffic", *asks)
+	}
+	if got, want := readConfig(t, path), strings.TrimSuffix(before, onlyEte); got != want {
+		t.Errorf("want the router's entry gone and nothing else changed:\n%s", got)
+	}
+}
+
+// The first add creates the router's entry, so removing the server it added must
+// leave the config byte for byte as it was before.
+func TestServerRemove_TheOnlyServerUndoesItsFirstAdd(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	before := readConfig(t, path)
+	if code, _, errOut := runServerCmd(t, "sk-ete\n", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path); code != 0 {
+		t.Fatalf("add: exit %d: %s", code, errOut)
+	}
+	if readConfig(t, path) == before {
+		t.Fatal("add wrote nothing")
+	}
+	if code, _, errOut := runServerCmd(t, "", "remove", "ete", "--config", path); code != 0 {
+		t.Fatalf("remove: exit %d: %s", code, errOut)
+	}
+	if got := readConfig(t, path); got != before {
+		t.Errorf("add then remove changed the config:\nbefore:\n%s\nafter:\n%s", before, got)
+	}
+}
+
+// Agents routed to the only server and sessions moved to it are named in one
+// refusal, so the user is not refused again after taking the first step.
+func TestServerRemove_TheOnlyServerNamesEveryStepAtOnce(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), onlyGlm+
+		"            opencode: glm\n          sessions:\n            s0: glm\n")
+	before := readConfig(t, path)
+	code, _, errOut := runServerCmd(t, "", "remove", "glm", "--config", path)
+	if code != 1 {
+		t.Fatalf("exit %d, stderr:\n%s", code, errOut)
+	}
+	want := "agentop server remove: glm is the only server, so removing it takes the inference-router entry out of ~/cortex.yaml. " +
+		"First stop routing to it: agentop server reset --agent claude-code agentop server reset --agent opencode " +
+		"agentop server move s0 own Then agentop server remove glm takes it out."
+	if !strings.Contains(flat(errOut), want) {
+		t.Errorf("want %q in stderr:\n%s", want, errOut)
+	}
+	if readConfig(t, path) != before {
+		t.Error("the config was written")
+	}
+}
+
+// With the router gone nothing holds a running session where it was, so the
+// sessions that last used the only server go where their agent sends them,
+// partway through their conversation: remove says so and asks first.
+func TestServerRemove_TheOnlyServerAsksWhenSessionsRanOnIt(t *testing.T) {
+	sessions := sessionsAPI(t, "ete.example.com", "glm.example.com:8443")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, onlyEte)
+	before := readConfig(t, path)
+	asks := stubConfirm(t, false)
+	code, out, errOut := runServerCmd(t, "", "remove", "ete", "--config", path)
+	if code != exitDeclined || *asks != 1 {
+		t.Fatalf("exit %d after %d asks, want %d after 1:\n%s%s", code, *asks, exitDeclined, out, errOut)
+	}
+	if want := "ete is the only server, so removing it takes the inference-router entry out, and 1 running session " +
+		"last sent inference to it. With no router, each goes where its agent sends it from its next request, " +
+		"partway through its conversation; adding ete back takes it back there."; !strings.Contains(flat(out), want) {
+		t.Errorf("want %q in stdout:\n%s", want, out)
+	}
+	if readConfig(t, path) != before {
+		t.Fatal("a declined remove wrote the config")
+	}
+
+	code, out, errOut = runServerCmd(t, "", "remove", "ete", "--yes", "--config", path)
+	if code != 0 || *asks != 1 || !strings.Contains(out, "Removed ete, the only server") {
+		t.Fatalf("--yes: exit %d after %d asks:\n%s%s", code, *asks, out, errOut)
+	}
+	if strings.Contains(readConfig(t, path), "inference-router") {
+		t.Error("--yes left the router's entry in")
 	}
 }
 
@@ -728,15 +827,9 @@ func TestServer_SaysWhenTheRouterCannotRoute(t *testing.T) {
 // The only server, with an agent routed to it, needs two steps to remove, and the
 // refusal names both at once rather than one and then, after it, the other.
 func TestServerRemove_TheOnlyServerWithAnAgentNamesBothSteps(t *testing.T) {
-	only := strings.Replace(routerBlock, `            ete:
-              url: https://ete.example.com
-              key: sk-ete
-              main: opus
-              helper: haiku
-`, "", 1)
-	path := serverEnv(t, newFakeStats(t, 0).addr(), only)
+	path := serverEnv(t, newFakeStats(t, 0).addr(), onlyGlm)
 	code, _, errOut := runServerCmd(t, "", "remove", "glm", "--config", path)
-	for _, want := range []string{"glm is the only server", "agentop server reset --agent claude-code", "delete its entry"} {
+	for _, want := range []string{"glm is the only server", "agentop server reset --agent claude-code", "Then agentop server remove glm takes it out."} {
 		if !strings.Contains(flat(errOut), want) {
 			t.Errorf("stderr lacks %q:\n%s", want, errOut)
 		}
@@ -749,13 +842,18 @@ func TestServerRemove_TheOnlyServerWithAnAgentNamesBothSteps(t *testing.T) {
 // Written for the next start, the change must not promise that running sessions
 // stay where they are.
 func TestServerWrites_ForTheNextStartPromiseNoRunningSessionStays(t *testing.T) {
-	for _, args := range [][]string{
-		{"use", "ete", "--agent", "opencode"},
-		{"reset", "--agent", "claude-code"},
-		{"remove", "ete"},
+	for _, tc := range []struct {
+		name, router string
+		args         []string
+	}{
+		{"use", routerBlock, []string{"use", "ete", "--agent", "opencode"}},
+		{"reset", routerBlock, []string{"reset", "--agent", "claude-code"}},
+		{"remove", routerBlock, []string{"remove", "ete"}},
+		{"remove the only server", onlyEte, []string{"remove", "ete"}},
 	} {
-		t.Run(args[0], func(t *testing.T) {
-			path := serverEnv(t, closedAddr(t), routerBlock)
+		args := tc.args
+		t.Run(tc.name, func(t *testing.T) {
+			path := serverEnv(t, closedAddr(t), tc.router)
 			code, out, errOut := runServerCmd(t, "", append(args, "--config", path)...)
 			if code != 0 || !strings.Contains(out, "applies when the proxy next starts") {
 				t.Fatalf("exit %d, stdout:\n%s%s", code, out, errOut)
