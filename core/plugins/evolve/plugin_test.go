@@ -899,11 +899,19 @@ func TestFetch_EvictingASessionLeavesItsFetchShared(t *testing.T) {
 	waitFor(t, func() bool { return fe.fetches() == 2 })
 	// b's answer evicts a from the cache while a's refresh is still in progress.
 	p.guidelinesFor(context.Background(), "b", "claude-code", userTask("task b"))
+	joined := make(chan struct{})
+	p.joinHook = func() { close(joined) }
 	go func() {
 		p.guidelinesFor(context.Background(), "a", "claude-code", userTask("task a"))
 		done <- struct{}{}
 	}()
-	time.Sleep(50 * time.Millisecond)
+	// The second request for a joins the refresh in progress. Had eviction
+	// dropped it, that request would start a refresh of its own and never join.
+	select {
+	case <-joined:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second request for a didn't join the refresh in progress")
+	}
 	close(fe.hold)
 	<-done
 	<-done

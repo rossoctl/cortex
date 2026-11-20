@@ -405,7 +405,9 @@ func silentListener(t *testing.T) string {
 	}
 	var mu sync.Mutex
 	var conns []net.Conn
+	accepting := make(chan struct{})
 	go func() {
+		defer close(accepting)
 		for {
 			c, err := ln.Accept()
 			if err != nil {
@@ -417,7 +419,10 @@ func silentListener(t *testing.T) string {
 		}
 	}()
 	t.Cleanup(func() {
+		// Wait for the accept loop to stop before closing what it accepted, so a
+		// connection accepted just before cleanup is closed too.
 		_ = ln.Close()
+		<-accepting
 		mu.Lock()
 		defer mu.Unlock()
 		for _, c := range conns {
@@ -496,8 +501,16 @@ func TestMCPEvolve_OneCallTimingOutLeavesTheOthersRunning(t *testing.T) {
 	go func() {
 		learned <- e.Learn(context.Background(), "cortex", Trajectory{Messages: []map[string]any{{"role": "user", "content": "x"}}})
 	}()
-	for !f.called("process_trajectory") {
-		time.Sleep(5 * time.Millisecond)
+	// Wait for process_trajectory to start, or for Learn to fail before it does.
+	for deadline := time.Now().Add(5 * time.Second); !f.called("process_trajectory"); time.Sleep(5 * time.Millisecond) {
+		select {
+		case err := <-learned:
+			t.Fatalf("Learn ended before process_trajectory: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("process_trajectory never started")
+		}
 	}
 	// A session's fetch times out while evolve is still learning. Before, the
 	// timeout closed the shared session and failed the learning call with it, so

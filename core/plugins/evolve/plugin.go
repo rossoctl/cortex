@@ -198,6 +198,9 @@ type Plugin struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
+	// joinHook, when a test sets it, runs when a request joins a fetch in progress.
+	joinHook func()
+
 	m metrics
 }
 
@@ -446,6 +449,9 @@ func (p *Plugin) guidelinesFor(ctx context.Context, sessionID, agent string, mes
 		go p.fly(context.WithoutCancel(ctx), sessionID, task, previous, f)
 	}
 	p.mu.Unlock()
+	if joined && p.joinHook != nil {
+		p.joinHook()
+	}
 	return p.await(ctx, f, previous, joined)
 }
 
