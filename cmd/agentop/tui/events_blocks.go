@@ -107,7 +107,13 @@ func (m *model) blockOpen(id string, subtask, searching bool) bool {
 // must count the rows expanding it would show, and a second spelling of the
 // predicate here would drift with the first edit to either.
 func (m *model) rowInactiveHidden(ctxs []cellContext, partner map[int]int, j int) bool {
-	return m.hideInactive && eventInactive(ctxs[j].invs) && !partnerActive(ctxs, partner, j)
+	return m.hideInactive && rowQuiet(ctxs, partner, j)
+}
+
+// rowQuiet reports whether row j is background traffic: no plugin acted on it or on its
+// partner. An unbridged CONNECT has no invocations, so it is quiet unless a gate denied it.
+func rowQuiet(ctxs []cellContext, partner map[int]int, j int) bool {
+	return eventInactive(ctxs[j].invs) && !partnerActive(ctxs, partner, j)
 }
 
 // collectSubagentBlocks groups the rows that survive the inactive filter by their

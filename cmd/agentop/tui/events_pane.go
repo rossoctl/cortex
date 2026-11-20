@@ -92,7 +92,7 @@ func newEventsTable() table.Model {
 		// beside the widths that actually decide, in eventColumns.
 		// No sort column: the table is chronological until a model says otherwise.
 		table.WithColumns(tableColumns(selectedColumns(defaultColumnSelection()), "", false)),
-		table.WithCellStyle(eventCellStyle(selectedColumns(defaultColumnSelection()), nil)),
+		table.WithCellStyle(eventCellStyle(selectedColumns(defaultColumnSelection()), nil, nil)),
 		table.WithFocused(true),
 	)
 	t.SetStyles(tableStyles())
@@ -117,6 +117,9 @@ type eventRow struct {
 	// of its exchange.
 	tool *toolRow
 	last bool
+	// quiet is rowQuiet's answer for an exchange row, so the row's ink moves with it when
+	// sortEventRows reorders the rows.
+	quiet bool
 }
 
 // invocations returns every plugin invocation the row's ACTION/PLUGIN cell and the inactive
@@ -132,6 +135,26 @@ func (er eventRow) invocations() []pipeline.Invocation {
 		invs = append(invs, allInvocations(er.resp)...)
 	}
 	return invs
+}
+
+// eventRowKinds is the kind of each of the first n rendered rows, read from m.visibleRows
+// and m.headerRows.
+func (m *model) eventRowKinds(n int) []eventRowKind {
+	kinds := make([]eventRowKind, n)
+	for i, vr := range m.visibleRows[:min(len(m.visibleRows), n)] {
+		switch {
+		case vr.tool != nil:
+			kinds[i] = eventRowTool
+		case vr.quiet:
+			kinds[i] = eventRowQuiet
+		}
+	}
+	for i := range m.headerRows {
+		if i < n {
+			kinds[i] = eventRowHeader
+		}
+	}
+	return kinds
 }
 
 // partnerActive reports whether row i's paired request or response is one a plugin
@@ -341,6 +364,7 @@ func (m *model) rebuildEventsTable() {
 			row = append(row, c.render(cc))
 		}
 		rows = append(rows, row)
+		cc.row.quiet = rowQuiet(ctxs, partner, j)
 		m.visibleRows = append(m.visibleRows, cc.row)
 		if q != "" {
 			full = append(full, eventSearchRow(cols, droppedCols, cc))
@@ -463,18 +487,7 @@ func (m *model) rebuildEventsTable() {
 	// or narrowing as figures arrive, which can push a column off the terminal or
 	// let one back on. The third happens mid-stream with no keystroke behind it, so
 	// none of them may re-anchor the pane under an operator who is reading it.
-	kinds := make([]eventRowKind, len(rows))
-	for i, vr := range m.visibleRows[:min(len(m.visibleRows), len(rows))] {
-		if vr.tool != nil {
-			kinds[i] = eventRowTool
-		}
-	}
-	for i := range m.headerRows {
-		if i < len(kinds) {
-			kinds[i] = eventRowHeader
-		}
-	}
-	m.eventsTbl.SetCellStyle(eventCellStyle(cols, kinds))
+	m.eventsTbl.SetCellStyle(eventCellStyle(cols, m.eventRowKinds(len(rows)), rows))
 	newCols := tableColumns(cols, m.sortCol, m.sortDesc)
 	switch oldCols := m.eventsTbl.Columns(); {
 	case slices.Equal(oldCols, newCols):

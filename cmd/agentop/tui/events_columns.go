@@ -504,12 +504,15 @@ const (
 	eventRowExchange eventRowKind = iota
 	eventRowTool
 	eventRowHeader
+	// eventRowQuiet is an exchange row no plugin acted on: background traffic.
+	eventRowQuiet
 )
 
 // eventCellStyle is the events table's cell style hook for the columns cols, in the order
-// tableColumns hands them to the table, and the rows of kinds. It reads each cell's column by
-// id, never by position or header, so a hidden or sorted column moves no ink to another column.
-func eventCellStyle(cols []eventColumn, kinds []eventRowKind) table.CellStyleFunc {
+// tableColumns hands them to the table, the rows of kinds, and the table's rows. It reads each
+// cell's column by id, never by position or header, so a hidden or sorted column moves no ink
+// to another column.
+func eventCellStyle(cols []eventColumn, kinds []eventRowKind, rows []table.Row) table.CellStyleFunc {
 	ids := make([]eventColumnID, len(cols))
 	for i, c := range cols {
 		ids[i] = c.id
@@ -541,6 +544,23 @@ func eventCellStyle(cols []eventColumn, kinds []eventRowKind) table.CellStyleFun
 			case colStatus:
 				if g := statusGroup(v); g == groupWarn || g == groupError {
 					return groupStyle(g)
+				}
+			}
+			return styleMuted
+		}
+		// A quiet row steps back: all muted, except a failed STATUS. In a run of quiet rows,
+		// a DIR, ACTION, PLUGIN, METHOD or HOST that repeats the row above is dim, so the run
+		// reads as one block.
+		if kind == eventRowQuiet {
+			switch ids[col] {
+			case colStatus:
+				if statusGroup(v) == groupError {
+					return styleError
+				}
+			case colDir, colAction, colPlugin, colMethod, colHost:
+				if r > 0 && r <= len(rows) && kinds[r-1] == eventRowQuiet &&
+					col < len(rows[r-1]) && strings.TrimSpace(rows[r-1][col]) == v {
+					return styleDim
 				}
 			}
 			return styleMuted
