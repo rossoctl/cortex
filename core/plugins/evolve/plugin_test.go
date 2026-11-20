@@ -1094,11 +1094,31 @@ func TestLearn_UnansweredToolCallsAreForgotten(t *testing.T) {
 		})
 	}
 	if len(r.calls) > openCallTurns+1 {
-		t.Fatalf("%d tool calls still open, want at most the last %d turns'", len(r.calls), openCallTurns+1)
+		t.Fatalf("%d tool calls still open, want at most the last %d turns", len(r.calls), openCallTurns+1)
 	}
 	// The last turn's call is still answered by the next request.
 	r.observe(&pipeline.InferenceExtension{Messages: h1, ToolResults: []pipeline.InferenceToolResult{{ToolUseID: "abandoned-199", Content: "ok"}}})
 	if last := r.pending[len(r.pending)-1]; last["role"] != "tool" || last["tool_call_id"] != "abandoned-199" {
 		t.Fatalf("last message = %v, want the result of the latest call", last)
+	}
+}
+
+func TestLearn_ARewrittenHistoryOfTheSameLengthIsReadAgain(t *testing.T) {
+	r := newRecorder("claude-code", "1.1")
+	history := []pipeline.InferenceMessage{sys, {Role: "user", Content: "fix the test"}, {Role: "assistant", Content: "Running."}, {Role: "user", Content: "ok"}}
+	r.observe(&pipeline.InferenceExtension{Messages: history, Completion: "Done."})
+	// The agent compacts: four messages again, ending in the user's correction.
+	compacted := []pipeline.InferenceMessage{sys, {Role: "user", Content: "Summary: fixed the test."}, {Role: "assistant", Content: "Done."}, {Role: "user", Content: "no, use uv"}}
+	r.observe(&pipeline.InferenceExtension{Messages: compacted, Completion: "Using uv."})
+	var users []string
+	for _, m := range r.pending {
+		if m["role"] == "user" {
+			users = append(users, m["content"].(string))
+		}
+	}
+	// Before, the recorder took the four messages as already seen and recorded
+	// the reply without the correction it answered.
+	if users[len(users)-1] != "no, use uv" {
+		t.Fatalf("user turns = %q, want the correction recorded", users)
 	}
 }

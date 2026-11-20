@@ -2,6 +2,7 @@ package evolve
 
 import (
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -64,9 +65,12 @@ type recorder struct {
 	pending []map[string]any // turns not yet sent to evolve
 	turns   int              // completed turns in pending
 	seen    int              // request messages already accounted for
-	calls   map[string]int   // tool-call ids awaiting a result, and the turn each was made in
-	turn    int              // turns observed in all, across batches
-	batch   int              // batches sent so far
+	// first and last fingerprint the first and the last of those messages, to
+	// notice a history rewritten without getting shorter.
+	first, last uint64
+	calls       map[string]int // tool-call ids awaiting a result, and the turn each was made in
+	turn        int            // turns observed in all, across batches
+	batch       int            // batches sent so far
 	// gen distinguishes this recorder's batch ids from those of any other
 	// recorder of the same session, which evolve would otherwise skip as already
 	// processed: one in an earlier Cortex process (the epoch), or an earlier one
@@ -89,7 +93,12 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 	if inf.Model != "" {
 		r.model = inf.Model
 	}
-	if len(inf.Messages) < r.seen { // the agent compacted its context
+	// The agent compacted or rewrote its context: what was seen is no longer a
+	// prefix of the history, so it is read from the start again. A rewrite need
+	// not make the history shorter, so the first and last messages seen are
+	// compared too.
+	if len(inf.Messages) < r.seen || (r.seen > 0 &&
+		(fingerprint(inf.Messages[0]) != r.first || fingerprint(inf.Messages[r.seen-1]) != r.last)) {
 		r.seen = 0
 	}
 	for _, res := range inf.ToolResults {
@@ -119,6 +128,9 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 		}
 	}
 	r.seen = len(inf.Messages)
+	if r.seen > 0 {
+		r.first, r.last = fingerprint(inf.Messages[0]), fingerprint(inf.Messages[r.seen-1])
+	}
 
 	// The assistant can quote the injected block, too.
 	completion := clean(inf.Completion)
@@ -152,6 +164,14 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 			delete(r.calls, id)
 		}
 	}
+}
+
+func fingerprint(m pipeline.InferenceMessage) uint64 {
+	h := fnv.New64a()
+	h.Write([]byte(m.Role))
+	h.Write([]byte{0})
+	h.Write([]byte(m.Content))
+	return h.Sum64()
 }
 
 func (r *recorder) add(m map[string]any) {
