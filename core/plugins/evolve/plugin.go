@@ -393,10 +393,10 @@ func (p *Plugin) OnRequest(ctx context.Context, pctx *pipeline.Context) (action 
 }
 
 // guidelinesFor returns the session's cached guidelines, fetching them when
-// absent or expired. One fetch per session at a time: a request that arrives
-// while one is in progress waits for it rather than calling evolve again, but
-// only until its own timeout_ms or cancellation, and then goes on with the
-// session's earlier guidelines, or none.
+// absent or expired. One fetch per session at a time: it runs on its own, for
+// every request of the session that needs it, and each request waits for it only
+// until its own timeout_ms or cancellation, then goes on with the session's
+// earlier guidelines, or none.
 func (p *Plugin) guidelinesFor(ctx context.Context, sessionID, agent string, messages []pipeline.InferenceMessage) (*cached, bool) {
 	p.mu.Lock()
 	if c, ok := p.cache[sessionID]; ok && p.now().Before(c.expires) {
@@ -405,14 +405,49 @@ func (p *Plugin) guidelinesFor(ctx context.Context, sessionID, agent string, mes
 		return c, true
 	}
 	previous := p.cache[sessionID]
-	if f, ok := p.inflight[sessionID]; ok {
-		p.mu.Unlock()
-		return p.await(ctx, f, previous)
-	}
-	f := &flight{done: make(chan struct{})}
-	p.inflight[sessionID] = f
 	p.mu.Unlock()
+
+	texts := make([]messageText, len(messages))
+	for i, m := range messages {
+		texts[i] = messageText{role: m.Role, content: m.Content}
+	}
+	task := taskText(texts, agent)
+	if task == "" {
+		// Nothing to ask with yet, such as a request carrying only harness context.
+		// Nothing is cached and no fetch is started: either would answer the
+		// session's next request, which may carry the task, with nothing.
+		if previous != nil && len(previous.guidelines) > 0 {
+			return previous, true
+		}
+		return &cached{noTask: true}, false
+	}
+
+	p.mu.Lock()
+	if c, ok := p.cache[sessionID]; ok && p.now().Before(c.expires) {
+		p.mu.Unlock()
+		p.m.inc(&p.m.cacheHits)
+		return c, true
+	}
+	previous = p.cache[sessionID]
+	f, joined := p.inflight[sessionID]
+	if !joined {
+		f = &flight{done: make(chan struct{})}
+		p.inflight[sessionID] = f
+		// Not cancelled with the request that started it: other requests of the
+		// session may be waiting for the answer. timeout_ms still bounds it.
+		go p.fly(context.WithoutCancel(ctx), sessionID, task, previous, f)
+	}
+	p.mu.Unlock()
+	return p.await(ctx, f, previous, joined)
+}
+
+// fly runs a session's fetch and hands its entry to every request waiting.
+func (p *Plugin) fly(ctx context.Context, sessionID, task string, previous *cached, f *flight) {
 	defer func() {
+		if r := recover(); r != nil {
+			p.m.inc(&p.m.recovered)
+			slog.Warn("evolve: recovered in a guideline fetch", "panic", r)
+		}
 		p.mu.Lock()
 		if p.inflight[sessionID] == f {
 			delete(p.inflight, sessionID)
@@ -420,22 +455,28 @@ func (p *Plugin) guidelinesFor(ctx context.Context, sessionID, agent string, mes
 		p.mu.Unlock()
 		close(f.done)
 	}()
-	f.entry = p.fetch(ctx, sessionID, agent, messages, previous)
-	return f.entry, false
+	f.entry = p.fetch(ctx, sessionID, task, previous)
 }
 
-// await waits for another request's fetch of the same session, for as long as
-// this request would have waited for its own.
-func (p *Plugin) await(ctx context.Context, f *flight, previous *cached) (*cached, bool) {
-	timer := time.NewTimer(time.Duration(p.cfg.TimeoutMs) * time.Millisecond)
-	defer timer.Stop()
+// await waits for the session's fetch. The request that started it waits until
+// the fetch ends (timeout_ms bounds it) or the request is cancelled; one that
+// joined it waits for as long as it would have waited for its own.
+func (p *Plugin) await(ctx context.Context, f *flight, previous *cached, joined bool) (*cached, bool) {
+	var timeout <-chan time.Time
+	if joined {
+		timer := time.NewTimer(time.Duration(p.cfg.TimeoutMs) * time.Millisecond)
+		defer timer.Stop()
+		timeout = timer.C
+	}
 	select {
 	case <-f.done:
 		if f.entry != nil {
-			p.m.inc(&p.m.cacheHits)
-			return f.entry, true
+			if joined {
+				p.m.inc(&p.m.cacheHits)
+			}
+			return f.entry, joined
 		}
-	case <-timer.C:
+	case <-timeout:
 	case <-ctx.Done():
 	}
 	if previous != nil && len(previous.guidelines) > 0 {
@@ -445,26 +486,9 @@ func (p *Plugin) await(ctx context.Context, f *flight, previous *cached) (*cache
 }
 
 // fetch asks evolve for the session's guidelines and caches the result.
-func (p *Plugin) fetch(ctx context.Context, sessionID, agent string, messages []pipeline.InferenceMessage, previous *cached) *cached {
-
-	texts := make([]messageText, len(messages))
-	for i, m := range messages {
-		texts[i] = messageText{role: m.Role, content: m.Content}
-	}
-	task := taskText(texts, agent)
-	if task == "" {
-		// Nothing to ask with yet, such as a request carrying only harness context.
-		// Not cached: caching it would answer the session's next request, which
-		// may carry the task, with no guidelines until retry_after_seconds passed.
-		if previous != nil && len(previous.guidelines) > 0 {
-			return previous
-		}
-		return &cached{noTask: true}
-	}
+func (p *Plugin) fetch(ctx context.Context, sessionID, task string, previous *cached) *cached {
 	entry := &cached{fetchedAt: p.now()}
-	// Not cancelled with the request that started it: other requests of the
-	// session may be waiting for the answer. timeout_ms still bounds it.
-	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Duration(p.cfg.TimeoutMs)*time.Millisecond)
+	callCtx, cancel := context.WithTimeout(ctx, time.Duration(p.cfg.TimeoutMs)*time.Millisecond)
 	gs, err := p.client.Guidelines(callCtx, p.cfg.ServeNamespace, task, sessionID)
 	cancel()
 	p.m.inc(&p.m.fetches)

@@ -838,16 +838,25 @@ func TestFetch_OutlivesTheRequestThatStartedIt(t *testing.T) {
 	// The client that started the fetch hangs up. Before, that cancelled the fetch,
 	// and the failure was cached for the whole session for retry_after_seconds.
 	cancel()
+	// That request stops waiting at once; the fetch goes on for the next one.
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("the cancelled request that started the fetch is still waiting for it")
+	}
 	waiting := make(chan *cached, 1)
 	go func() {
 		entry, _ := p.guidelinesFor(context.Background(), "s1", "claude-code", userTask("fix the test"))
 		waiting <- entry
 	}()
+	waitFor(t, func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.inflight["s1"] != nil
+	})
 	close(fe.hold)
-	for _, entry := range []*cached{<-started, <-waiting} {
-		if len(entry.guidelines) != 2 || entry.failed {
-			t.Fatalf("entry = %+v, want the two guidelines", entry)
-		}
+	if entry := <-waiting; len(entry.guidelines) != 2 || entry.failed {
+		t.Fatalf("entry = %+v, want the two guidelines", entry)
 	}
 	if n := fe.fetches(); n != 1 {
 		t.Fatalf("evolve called %d times, want one fetch shared by both requests", n)
