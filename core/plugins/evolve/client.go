@@ -693,9 +693,10 @@ func (e *mcpEvolve) Close() {
 	}
 }
 
+// preview shortens an error's text for a message, at a rune boundary.
 func preview(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	return truncate(s, n) + "…"
 }

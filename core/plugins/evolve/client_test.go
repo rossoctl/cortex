@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -832,5 +833,11 @@ func TestMCPEvolve_AListingThatDoesNotFinishIsAnError(t *testing.T) {
 				t.Fatalf("read %d pages, want %d", f.pages, want)
 			}
 		})
+	}
+}
+
+func TestPreview_StopsAtARuneBoundary(t *testing.T) {
+	if got := preview(strings.Repeat("é", 10), 7); got != "ééé…" || !utf8.ValidString(got) {
+		t.Fatalf("preview = %q", got)
 	}
 }
