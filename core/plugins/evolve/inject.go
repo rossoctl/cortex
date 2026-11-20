@@ -241,14 +241,13 @@ var codexContextPattern = func() *regexp.Regexp {
 const maxTaskChars = 2000
 
 // taskText derives the retrieval query from the conversation's first user
-// message with text, cleaned of harness context (Claude Code's and Codex's) and
-// injected guidelines.
-func taskText(messages []messageText) string {
+// message with text, cleaned of agent's harness context and injected guidelines.
+func taskText(messages []messageText, agent string) string {
 	for _, m := range messages {
 		if m.role != "user" {
 			continue
 		}
-		text := clean(m.content)
+		text := cleanUser(m.content, agent)
 		if text == "" {
 			continue
 		}

@@ -340,7 +340,7 @@ func (p *Plugin) OnRequest(ctx context.Context, pctx *pipeline.Context) (action 
 		pctx.Skip("path_not_inference")
 		return action
 	}
-	reason, sessionID, _ := p.eligible(pctx)
+	reason, sessionID, agent := p.eligible(pctx)
 	if reason != "" {
 		pctx.Skip(reason)
 		return action
@@ -350,7 +350,7 @@ func (p *Plugin) OnRequest(ctx context.Context, pctx *pipeline.Context) (action 
 		return action
 	}
 
-	entry, hit := p.guidelinesFor(ctx, sessionID, pctx.Extensions.Inference.Messages)
+	entry, hit := p.guidelinesFor(ctx, sessionID, agent, pctx.Extensions.Inference.Messages)
 	ev := event{Cached: hit, FetchedAt: entry.fetchedAt}
 	if entry.stale {
 		ev.Error = "refresh_failed"
@@ -397,7 +397,7 @@ func (p *Plugin) OnRequest(ctx context.Context, pctx *pipeline.Context) (action 
 // while one is in progress waits for it rather than calling evolve again, but
 // only until its own timeout_ms or cancellation, and then goes on with the
 // session's earlier guidelines, or none.
-func (p *Plugin) guidelinesFor(ctx context.Context, sessionID string, messages []pipeline.InferenceMessage) (*cached, bool) {
+func (p *Plugin) guidelinesFor(ctx context.Context, sessionID, agent string, messages []pipeline.InferenceMessage) (*cached, bool) {
 	p.mu.Lock()
 	if c, ok := p.cache[sessionID]; ok && p.now().Before(c.expires) {
 		p.mu.Unlock()
@@ -420,7 +420,7 @@ func (p *Plugin) guidelinesFor(ctx context.Context, sessionID string, messages [
 		p.mu.Unlock()
 		close(f.done)
 	}()
-	f.entry = p.fetch(ctx, sessionID, messages, previous)
+	f.entry = p.fetch(ctx, sessionID, agent, messages, previous)
 	return f.entry, false
 }
 
@@ -445,13 +445,13 @@ func (p *Plugin) await(ctx context.Context, f *flight, previous *cached) (*cache
 }
 
 // fetch asks evolve for the session's guidelines and caches the result.
-func (p *Plugin) fetch(ctx context.Context, sessionID string, messages []pipeline.InferenceMessage, previous *cached) *cached {
+func (p *Plugin) fetch(ctx context.Context, sessionID, agent string, messages []pipeline.InferenceMessage, previous *cached) *cached {
 
 	texts := make([]messageText, len(messages))
 	for i, m := range messages {
 		texts[i] = messageText{role: m.Role, content: m.Content}
 	}
-	task := taskText(texts)
+	task := taskText(texts, agent)
 	if task == "" {
 		// Nothing to ask with yet, such as a request carrying only harness context.
 		// Not cached: caching it would answer the session's next request, which

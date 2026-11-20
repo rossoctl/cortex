@@ -29,19 +29,28 @@ const (
 	maxRetryWait = 30 * time.Minute
 )
 
-// clean removes harness context (Claude Code's system reminders, Codex's
-// AGENTS.md instructions and environment context) and previously injected
+// clean removes Claude Code's system reminders and previously injected
 // guidelines from a message's text: neither is the user's words, and learning
 // from injected guidelines would feed evolve its own output.
 func clean(text string) string {
 	text = reminderPattern.ReplaceAllString(text, "")
-	text = codexContextPattern.ReplaceAllString(text, "")
 	text = blockPattern.ReplaceAllString(text, "")
 	return strings.TrimSpace(text)
 }
 
 // truncate cuts s to at most n bytes, at a rune boundary, so a multibyte
 // character isn't cut into invalid UTF-8.
+// cleanUser cleans a user message from agent. Codex's own context (its AGENTS.md
+// instructions and environment context) comes as user text, so it is removed
+// from Codex's messages, and only theirs: another agent's user can write the
+// same tags, and those are the user's words.
+func cleanUser(text, agent string) string {
+	if agent == "codex" {
+		text = codexContextPattern.ReplaceAllString(text, "")
+	}
+	return clean(text)
+}
+
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -105,12 +114,12 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 	from := r.seen
 	if r.turn == 0 || len(inf.Messages) < r.seen || (r.seen > 0 &&
 		(fingerprint(inf.Messages[0]) != r.first || fingerprint(inf.Messages[r.seen-1]) != r.last)) {
-		from = latestUserText(inf.Messages)
+		from = latestUserText(inf.Messages, r.agent)
 	}
 	// The task is the conversation's first user message, kept as context for
 	// batches that don't start with it.
 	if r.task == "" {
-		r.task = firstUserText(inf.Messages)
+		r.task = firstUserText(inf.Messages, r.agent)
 	}
 	for _, res := range inf.ToolResults {
 		if _, open := r.calls[res.ToolUseID]; !open {
@@ -130,7 +139,7 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 		if m.Role != "user" {
 			continue
 		}
-		if text := clean(m.Content); text != "" {
+		if text := cleanUser(m.Content, r.agent); text != "" {
 			r.add(map[string]any{"role": "user", "content": truncate(text, maxUserChars)})
 		}
 	}
@@ -175,21 +184,21 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 
 // latestUserText is the index of the last user message with text once cleaned,
 // or len(messages) if there is none.
-func latestUserText(messages []pipeline.InferenceMessage) int {
+func latestUserText(messages []pipeline.InferenceMessage, agent string) int {
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == "user" && clean(messages[i].Content) != "" {
+		if messages[i].Role == "user" && cleanUser(messages[i].Content, agent) != "" {
 			return i
 		}
 	}
 	return len(messages)
 }
 
-func firstUserText(messages []pipeline.InferenceMessage) string {
+func firstUserText(messages []pipeline.InferenceMessage, agent string) string {
 	for _, m := range messages {
 		if m.Role != "user" {
 			continue
 		}
-		if text := clean(m.Content); text != "" {
+		if text := cleanUser(m.Content, agent); text != "" {
 			return truncate(text, maxUserChars)
 		}
 	}

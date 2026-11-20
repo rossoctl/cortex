@@ -478,7 +478,7 @@ func TestTaskText(t *testing.T) {
 		{"system", "sys"},
 		{"user", "<system-reminder>only context</system-reminder>"},
 		{"user", "<system-reminder>x</system-reminder>\n  the real task  "},
-	})
+	}, "claude-code")
 	if got != "the real task" {
 		t.Fatalf("task = %q", got)
 	}
@@ -831,7 +831,7 @@ func TestFetch_OutlivesTheRequestThatStartedIt(t *testing.T) {
 	first, cancel := context.WithCancel(context.Background())
 	started := make(chan *cached, 1)
 	go func() {
-		entry, _ := p.guidelinesFor(first, "s1", userTask("fix the test"))
+		entry, _ := p.guidelinesFor(first, "s1", "claude-code", userTask("fix the test"))
 		started <- entry
 	}()
 	waitFor(t, func() bool { return fe.fetches() == 1 })
@@ -840,7 +840,7 @@ func TestFetch_OutlivesTheRequestThatStartedIt(t *testing.T) {
 	cancel()
 	waiting := make(chan *cached, 1)
 	go func() {
-		entry, _ := p.guidelinesFor(context.Background(), "s1", userTask("fix the test"))
+		entry, _ := p.guidelinesFor(context.Background(), "s1", "claude-code", userTask("fix the test"))
 		waiting <- entry
 	}()
 	close(fe.hold)
@@ -858,13 +858,13 @@ func TestFetch_AWaitingRequestStopsAtItsOwnCancellation(t *testing.T) {
 	fe := &fakeEvolve{gs: twoGuidelines, hold: make(chan struct{}), holdSession: "s1"}
 	p, _ := configured(t, `{"endpoint":"http://evolve.invalid/sse","timeout_ms":5000}`, fe)
 	defer close(fe.hold)
-	go p.guidelinesFor(context.Background(), "s1", userTask("fix the test"))
+	go p.guidelinesFor(context.Background(), "s1", "claude-code", userTask("fix the test"))
 	waitFor(t, func() bool { return fe.fetches() == 1 })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	start := time.Now()
-	entry, _ := p.guidelinesFor(ctx, "s1", userTask("fix the test"))
+	entry, _ := p.guidelinesFor(ctx, "s1", "claude-code", userTask("fix the test"))
 	if took := time.Since(start); took > time.Second {
 		t.Fatalf("a cancelled request waited %v for the fetch in progress", took)
 	}
@@ -876,18 +876,24 @@ func TestFetch_AWaitingRequestStopsAtItsOwnCancellation(t *testing.T) {
 func TestFetch_EvictingASessionLeavesItsFetchShared(t *testing.T) {
 	fe := &fakeEvolve{gs: twoGuidelines}
 	p, clk := configured(t, `{"endpoint":"http://evolve.invalid/sse","timeout_ms":5000,"max_sessions":1,"cache_ttl_seconds":60}`, fe)
-	p.guidelinesFor(context.Background(), "a", userTask("task a"))
+	p.guidelinesFor(context.Background(), "a", "claude-code", userTask("task a"))
 	clk.t = clk.t.Add(2 * time.Minute) // a's guidelines expire: the next request refreshes them
 	fe.mu.Lock()
 	fe.hold, fe.holdSession = make(chan struct{}), "a"
 	fe.mu.Unlock()
 
 	done := make(chan struct{}, 2)
-	go func() { p.guidelinesFor(context.Background(), "a", userTask("task a")); done <- struct{}{} }()
+	go func() {
+		p.guidelinesFor(context.Background(), "a", "claude-code", userTask("task a"))
+		done <- struct{}{}
+	}()
 	waitFor(t, func() bool { return fe.fetches() == 2 })
 	// b's answer evicts a from the cache while a's refresh is still in progress.
-	p.guidelinesFor(context.Background(), "b", userTask("task b"))
-	go func() { p.guidelinesFor(context.Background(), "a", userTask("task a")); done <- struct{}{} }()
+	p.guidelinesFor(context.Background(), "b", "claude-code", userTask("task b"))
+	go func() {
+		p.guidelinesFor(context.Background(), "a", "claude-code", userTask("task a"))
+		done <- struct{}{}
+	}()
 	time.Sleep(50 * time.Millisecond)
 	close(fe.hold)
 	<-done
@@ -915,12 +921,12 @@ func codexMessages(prompt string) []messageText {
 }
 
 func TestTaskText_IsCodexsPromptNotItsContext(t *testing.T) {
-	if got := taskText(codexMessages("Bump the version and commit the fix for the login bug")); got != "Bump the version and commit the fix for the login bug" {
+	if got := taskText(codexMessages("Bump the version and commit the fix for the login bug"), "codex"); got != "Bump the version and commit the fix for the login bug" {
 		t.Fatalf("task = %q", got)
 	}
 	// Without an AGENTS.md, Codex sends the environment context alone.
 	env := []messageText{{"user", "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>"}, {"user", "Fix the login bug"}}
-	if got := taskText(env); got != "Fix the login bug" {
+	if got := taskText(env, "codex"); got != "Fix the login bug" {
 		t.Fatalf("task = %q", got)
 	}
 	// Text that merely mentions a tag mid-line is the user's.
@@ -1069,7 +1075,7 @@ func TestTruncation_StaysWithinTheCapAndValidUTF8(t *testing.T) {
 	if got := truncate(strings.Repeat("é", 10), 7); got != "ééé" || !utf8.ValidString(got) {
 		t.Fatalf("truncate = %q, want three whole runes", got)
 	}
-	task := taskText([]messageText{{"user", "a" + strings.Repeat("é", maxTaskChars)}})
+	task := taskText([]messageText{{"user", "a" + strings.Repeat("é", maxTaskChars)}}, "claude-code")
 	if !utf8.ValidString(task) || len(task) > maxTaskChars {
 		t.Fatalf("task is %d bytes, valid UTF-8 %v", len(task), utf8.ValidString(task))
 	}
@@ -1227,5 +1233,22 @@ func TestLearn_ARewriteDoesNotReplayEarlierPrompts(t *testing.T) {
 	// "ok" were recorded again.
 	if users := userTurns(r.pending); strings.Join(users, "|") != "fix the test|ok|no, use uv" {
 		t.Fatalf("user turns = %q, want each prompt once", users)
+	}
+}
+
+func TestTaskText_OnlyCodexsContextIsStripped(t *testing.T) {
+	// A Claude Code user's literal example of Codex markup is their own words.
+	example := "Explain this Codex skill block:\n<skill>\n<name>deploy</name>\n</skill>"
+	if got := taskText([]messageText{{"user", example}}, "claude-code"); got != example {
+		t.Fatalf("task = %q, want the user's text kept", got)
+	}
+	r := newRecorder("claude-code", "1.1")
+	r.observe(&pipeline.InferenceExtension{Messages: []pipeline.InferenceMessage{{Role: "user", Content: example}}, Completion: "It defines a skill."})
+	if users := userTurns(r.pending); len(users) != 1 || users[0] != example {
+		t.Fatalf("recorded %q, want the user's text", users)
+	}
+	// From Codex, the same block is Codex's own context.
+	if got := taskText([]messageText{{"user", "<skill>\n<name>deploy</name>\n</skill>"}, {"user", "Deploy it"}}, "codex"); got != "Deploy it" {
+		t.Fatalf("codex task = %q", got)
 	}
 }
