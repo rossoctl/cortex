@@ -18,6 +18,8 @@ Codex's dotenv file, and removes it again.
    `pending:codex@…` bucket with no tokens means that the daemon did not restart.
    `agentop configure codex status` shows what is set, and if the daemon uses Cortex.
 4. Undo: `agentop configure codex disable`. It restarts the daemon in the same way.
+   `agentop uninstall` does the same undo for Codex before it removes Cortex. See
+   [When you uninstall Cortex](#when-you-uninstall-cortex).
 
 ## On a Chat Completions server
 
@@ -441,24 +443,37 @@ newly-added lines the first time any are appended.
 
 ### The record
 
-The record is always empty today. The first `enable` records what the five
-variables held in `~/.cortex/codex-state.json`. In practice that record contains nothing to
-restore, and the reason is worth stating plainly rather than leaving as a surprise:
-`enable` **refuses** whenever one of the five holds a value that is not Cortex's own, and
-a value that *is* Cortex's own is recorded as absent (so `disable` removes it rather than
-putting back a stale Cortex address). Those two rules are exact opposites, so every value
-that reaches the record is stored as "was not set". The file, and `disable`'s restore
-branch, exist to keep Codex's state shape identical to claude-code's and OpenCode's.
+The first `enable` records, in `~/.cortex/codex-state.json`, which file it changed, what the
+five variables held before, and the five values it wrote. Every later `enable` refreshes
+the values it wrote, and one that finds nothing to change fills them in for a record made
+before they were recorded, so an older install gains them on its next `enable`.
+
+What the variables held before is always "not set" today, and the reason is worth stating
+plainly rather than leaving as a surprise: `enable` **refuses** whenever one of the five holds
+a value that is not Cortex's own, and a value that *is* Cortex's own is recorded as absent
+(so `disable` removes it rather than putting back a stale Cortex address). Those two rules
+are exact opposites, so every earlier value that reaches the record is stored as "was not
+set". `disable`'s restore branch exists to keep Codex's state shape identical to
+claude-code's and OpenCode's.
 
 ### What disable does
 
-`disable` removes the five variables, removes the
+`disable` removes the variables that still hold the value `enable` wrote, removes the
 `# Added by agentop configure codex enable` marker if it is still exactly as written, and
 deletes the record — so an `enable` / `disable` cycle is a round trip that leaves the file
-as it found it. It would restore a recorded prior value if one existed, which per the
-paragraph above does not happen today; if you hand-edit one of the five variables after
-`enable`, `disable` simply removes it. Unlike Claude Code's `disable`, it does not check
-whether a value changed since `enable`.
+as it found it. A variable you changed after `enable`, such as to a company proxy or CA
+bundle, is left as it is, and `disable` names it, as Claude Code's `disable` does. It judges
+by the record, not by Cortex's config, so it works the same when the config has moved its
+port or is gone. With no record of what `enable` wrote (an install enabled before it was
+recorded, or a deleted `~/.cortex`), it removes all five variables, as Claude Code's does:
+leaving Codex pointed at a Cortex being turned off would be worse than losing an edit. In
+v0.9.5 and earlier, `disable` removed all five whatever the record said.
+
+It reads each value as Codex does, with surrounding quotes removed, so a quoted copy of
+Cortex's value is still Cortex's. When every variable was changed since `enable`, there is
+nothing to remove, but an app-server started before those changes still uses Cortex's
+proxy: `disable` names it, with the restart that drops the proxy, and does not restart it
+itself.
 
 ### What status says
 
@@ -540,19 +555,40 @@ OpenAI:
 lsof -nP -a -p "$(pgrep -f 'codex app-server --listen')" -iTCP -sTCP:ESTABLISHED
 ```
 
+### When you uninstall Cortex
+
+`agentop uninstall` unroutes Codex before it stops the proxy, the way `disable` does: it
+removes Cortex's values, leaves and names a variable you changed since `enable`, deletes
+the record, stops Codex's auto-updater, and restarts a running app-server. It does this for the file enable's record names, wherever `--env`
+or a `CODEX_HOME` put it, and for the default file when one of its proxy lines is the
+proxy `enable` would write now. When it cannot change a file, for example when a
+variable is defined twice, the step fails with the lines to remove by hand, and
+`--purge` keeps `~/.cortex`, since Codex's `SSL_CERT_FILE` still names the CA bundle
+there.
+
+`agentop uninstall` in v0.9.5 and earlier skipped Codex. If you uninstalled with one of
+those, Codex still points at a proxy that is gone: undo it by hand, as below.
+
 ### Undoing it by hand
 
 Without `agentop`: open `$CODEX_HOME/.env` (or `~/.codex/.env`) and remove the lines for the five variables above,
 if they point at Cortex (a proxy on `localhost:476…`/`127.0.0.1:476…`, or a CA path under
 `~/.cortex/ca` unless you moved its `ca_dir`). Leave any that point elsewhere — they are not
-Cortex's. Then delete the record, and restart Codex's background server so it stops using
-the proxy.
+Cortex's. Then delete the record, stop Codex's auto-updater, and restart Codex's background
+server, so neither keeps using the proxy. The updater has to go first: `codex app-server
+daemon restart` keeps a running updater, which still has the proxy and passes it to the
+app-server it starts after its next update, and Codex has no command that stops one. The
+`pkill` matches the updater by its command line, and the brackets keep the pattern from
+matching the shell that runs it. `pkill` only signals the updater, so wait for it to
+exit: a restart while it is still running keeps it.
 
 ```sh
 # Remove only lines matching these five keys, and only if they point at Cortex:
 #   HTTP_PROXY  HTTPS_PROXY  http_proxy  https_proxy  SSL_CERT_FILE
 $EDITOR ~/.codex/.env
 rm -f ~/.cortex/codex-state.json
+pkill -f 'app-server daemon pid-update-loo[p]'
+while pgrep -f 'app-server daemon pid-update-loo[p]' >/dev/null; do sleep 1; done
 codex app-server daemon restart
 ```
 

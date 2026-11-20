@@ -37,6 +37,7 @@ type fakeCodexDaemon struct {
 
 	updaterPID     int
 	updaterEnv     []string
+	updaterEnvErr  error // the updater's environment cannot be read
 	newUpdaterPID  int   // the updater a restart starts when none is running
 	stopErr        error // stopping the updater fails, and it keeps running
 	updaterReused  bool  // the updater's pid now names another process, so its record is stale
@@ -78,7 +79,7 @@ func stubCodexDaemon(t *testing.T, codexHome string, f *fakeCodexDaemon) {
 		case f.pid:
 			return f.env, f.envErr
 		case f.updaterPID:
-			return f.updaterEnv, nil
+			return f.updaterEnv, f.updaterEnvErr
 		}
 		t.Errorf("read the environment of pid %d, which is neither fake process", pid)
 		return nil, errors.New("not a fake process")
@@ -900,4 +901,43 @@ func TestCodexDaemonAlive_RealProcesses(t *testing.T) {
 	if codexDaemonAlive(0) || codexDaemonAlive(-1) {
 		t.Error("a non-positive pid reads as running")
 	}
+}
+
+// A proxy of the user's left in the file is not what the restarted daemon is judged by:
+// one that now uses that proxy no longer uses Cortex, and is not told it still does.
+func TestCodexDisable_JudgesTheRestartByCortexsProxyNotOneItLeft(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	const corp = "http://proxy.corp.example:8080"
+	editFile(t, envPath, "HTTPS_PROXY="+cortexProxyURL, "HTTPS_PROXY="+corp)
+	f := &fakeCodexDaemon{pid: 5613, env: onCortex, newPID: 7001, newEnv: []string{"HOME=/home/someone", "HTTPS_PROXY=" + corp}}
+	stubCodexDaemon(t, filepath.Dir(envPath), f)
+
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	wantAll(t, "disable output", out.String(), "restarted (pid 7001) and no longer uses Cortex")
+	if strings.Contains(out.String(), "still uses Cortex's proxy") {
+		t.Errorf("disable called the user's proxy Cortex's:\n%s", out.String())
+	}
+}
+
+// With both HTTPS_PROXY spellings changed by the user, disable still knows Cortex's proxy
+// from enable's record, so a restarted daemon that kept it is told so rather than
+// reported as plainly restarted (#1783 review).
+func TestCodexDisable_JudgesTheRestartByTheRecordWhenBothProxiesChanged(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	const corp = "http://proxy.corp.example:8080"
+	editFile(t, envPath, "HTTPS_PROXY="+cortexProxyURL, "HTTPS_PROXY="+corp)
+	editFile(t, envPath, "https_proxy="+cortexProxyURL, "https_proxy="+corp)
+	f := &fakeCodexDaemon{pid: 5613, env: onCortex, newPID: 7001, newEnv: onCortex}
+	stubCodexDaemon(t, filepath.Dir(envPath), f)
+
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	wantAll(t, "disable output", out.String(), "restarted (pid 7001), but it still uses Cortex's proxy")
 }

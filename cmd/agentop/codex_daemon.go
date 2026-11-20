@@ -382,8 +382,8 @@ func codexRun(bin, codexHome string, want map[string]string, args ...string) err
 }
 
 // codexCLIEnv is env, a list of "NAME=value" strings, without those of the managed keys
-// (codexKeys) whose value is Cortex's, judged as disable judges them (codexIsOurs). Every
-// other entry is kept.
+// (codexKeys) whose value is Cortex's, by codexIsOurs: Cortex's value or its shape, since
+// a process environment has no record to judge by. Every other entry is kept.
 func codexCLIEnv(env []string, want map[string]string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
