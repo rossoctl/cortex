@@ -372,6 +372,14 @@ jobs:
           case "${TAG}" in
             main-latest | *-rc* | *-alpha* | *-beta*) prerelease="--prerelease" ;;
           esac
+          # Every other release is created as a prerelease too, until it is tested
+          # (#956). release-promote.yaml clears the flag, and gives it Latest, once
+          # both release smoke tests have passed on these binaries. Only on create:
+          # see the comment on the edit below for why an existing release keeps its
+          # flags. A tag spelled neither way (v0.9.0-pre1) stays a prerelease, since
+          # only vX.Y.Z is promoted.
+          staged=""
+          [ -n "${prerelease}" ] || staged="--prerelease"
           # Build release notes one line at a time so no single string
           # exceeds yamllint's 150-char cap. Single-quoted arguments keep
           # backticks literal (no shell expansion).
@@ -480,6 +488,12 @@ jobs:
             # candidate takes the Latest badge and the plain one-liner installs it.
             # Flagging it here lets the tag decide, whichever path created the
             # release; for main-latest it changes nothing.
+            #
+            # Not ${staged}: a stable release that already exists has been Latest, or
+            # may be now, and flagging it would hand Latest back to the release before
+            # it. The auto-updater follows Latest both ways, so every install that
+            # checked before the smoke tests passed would go back a version. A
+            # release created from the Releases page first therefore skips the gate.
             if [ -n "${prerelease}" ]; then
               gh release edit "${TAG}" --prerelease >/dev/null
             fi
@@ -491,7 +505,7 @@ jobs:
             # tag at the wrong commit, so the two paths disagreed.
             gh release create "${TAG}" dist/*.tar.gz dist/checksums.txt \
               --target "${GITHUB_SHA}" \
-              --title "${TAG}" --notes "${notes}" ${prerelease}
+              --title "${TAG}" --notes "${notes}" ${prerelease} ${staged}
           fi
 
       - name: Upload dry-run artifacts
