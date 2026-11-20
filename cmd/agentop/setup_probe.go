@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -209,7 +208,7 @@ func ourProxy(binDir, pidFile string, pid int, exe string) bool {
 	return samePath(exe, filepath.Join(binDir, proxyBinary)) || samePath(exe, filepath.Join(binDir, preRenameBinary))
 }
 
-func alive(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }
+func alive(pid int) bool { return processAlive(pid) }
 
 // psComm is ps's comm for pid, and whether ps answered at all.
 func psComm(pid int) (string, bool) {

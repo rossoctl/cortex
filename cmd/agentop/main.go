@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -129,6 +130,9 @@ func main() {
 	// argument selects a subcommand, and anything else falls through to the
 	// terminal UI, preserving the original flags-only invocation.
 	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		if refuseUnsupported(runtime.GOOS, os.Args[1], os.Stderr) {
+			os.Exit(1)
+		}
 		switch os.Args[1] {
 		case "tools":
 			os.Exit(runTools(os.Args[2:], os.Stdout, os.Stderr))

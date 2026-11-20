@@ -78,7 +78,7 @@ func detachedSleeperAt(t *testing.T, path string) int {
 	// be reused by then.
 	t.Cleanup(func() {
 		if ranFrom(pid, path) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			_ = killPID(pid, syscall.SIGKILL)
 		}
 	})
 	waitReady()

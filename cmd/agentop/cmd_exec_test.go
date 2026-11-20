@@ -597,7 +597,7 @@ func TestRunExec_RelaysSIGTERM(t *testing.T) {
 
 	// Signal THIS process, the way `timeout` signals agentop. runExec's relay must
 	// pass it to the child.
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+	if err := killPID(syscall.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1073,10 +1073,10 @@ func TestRunExec_SurvivesSIGINT(t *testing.T) {
 
 	// Signal THIS process, as a tty would. If runExec did not catch SIGINT, the
 	// whole test binary would die here rather than one test failing.
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
+	if err := killPID(syscall.Getpid(), syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Kill(child, syscall.SIGTERM); err != nil {
+	if err := killPID(child, syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 

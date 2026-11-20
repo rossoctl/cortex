@@ -155,7 +155,7 @@ func TestSetupSignalsCatchesInterruptAndTerminate(t *testing.T) {
 	defer signal.Stop(guard)
 	sigs, stop := setupSignals()
 	for _, s := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
-		if err := syscall.Kill(os.Getpid(), s); err != nil {
+		if err := killPID(os.Getpid(), s); err != nil {
 			t.Fatal(err)
 		}
 		<-guard
@@ -167,7 +167,7 @@ func TestSetupSignalsCatchesInterruptAndTerminate(t *testing.T) {
 	// os/signal hands each signal to every subscriber before it takes the next, so
 	// once guard has the second, any send of the first to sigs has happened.
 	for _, s := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT} {
-		if err := syscall.Kill(os.Getpid(), s); err != nil {
+		if err := killPID(os.Getpid(), s); err != nil {
 			t.Fatal(err)
 		}
 		<-guard

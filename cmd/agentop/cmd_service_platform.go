@@ -19,7 +19,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -578,11 +577,11 @@ func resolvePath(p string) (string, error) {
 // before giving up rather than reporting success on a process that still holds the
 // ports. A current one is gone in well under a second.
 func stopPID(pid int) error {
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	if err := terminate(pid); err != nil {
 		return err
 	}
 	for i := 0; i < 90; i++ {
-		if err := syscall.Kill(pid, 0); err != nil {
+		if !processAlive(pid) {
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)

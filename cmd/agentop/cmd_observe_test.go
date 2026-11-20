@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/rossoctl/cortex/cmd/agentop/tui"
@@ -526,7 +525,7 @@ func runAgentopChild(t *testing.T, args ...string) (string, error) {
 	// Not every argv exits on its own: one that reaches tui.Run opens the terminal. In
 	// a session of its own the child has no controlling terminal, so that open fails
 	// and the child exits.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = sessionAttr()
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
