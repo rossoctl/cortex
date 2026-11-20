@@ -940,7 +940,7 @@ func spendTick(span spendSpan, gen uint64) tea.Cmd {
 	// too slowly is a dated figure that says so; a span never polled is a permanent em dash with no
 	// explanation.
 	d := spendSpanDefs[span].pollInterval()
-	return tea.Tick(d, func(time.Time) tea.Msg { return spendTickMsg{span: span, gen: gen} })
+	return tick(d, func(time.Time) tea.Msg { return spendTickMsg{span: span, gen: gen} })
 }
 
 // fetchSpendSpan requests one span's all-sessions total off the render loop. Returns nil
@@ -1019,7 +1019,7 @@ func (m *model) applySpendDrawerLoaded(msg spendDrawerLoadedMsg) {
 // A keypress refetches immediately — see cycleSpendAxis and cycleSpendWindow — so this only
 // governs how stale an UNTOUCHED open drawer gets.
 func spendDrawerTick(gen uint64, every time.Duration) tea.Cmd {
-	return tea.Tick(every, func(time.Time) tea.Msg {
+	return tick(every, func(time.Time) tea.Msg {
 		return spendDrawerTickMsg{gen: gen}
 	})
 }

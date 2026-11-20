@@ -7,11 +7,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// elapsed is time.After with the wait already over, so a stream reconnects at once.
+func elapsed(time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	ch <- time.Now()
+	return ch
+}
 
 func TestStream_ParsesEvents(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,35 +33,29 @@ func TestStream_ParsesEvents(t *testing.T) {
 		flusher.Flush()
 		fmt.Fprint(w, "event: session-event\nid: 2\ndata: {\"sessionId\":\"s2\",\"at\":\"2026-01-01T00:00:01Z\",\"direction\":\"outbound\",\"phase\":\"response\"}\n\n")
 		flusher.Flush()
-		// Hold the connection open briefly so the test can observe the events
-		// before reconnect-land kicks in.
-		select {
-		case <-r.Context().Done():
-		case <-time.After(100 * time.Millisecond):
-		}
+		// Hold the connection open so the events arrive on one connection.
+		<-r.Context().Done()
 	}))
 	defer ts.Close()
 
 	c := New(ts.URL)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	ch := c.Stream(ctx, "")
 
 	var gotEvents []string
-	deadline := time.After(time.Second)
 	for len(gotEvents) < 2 {
-		select {
-		case msg, ok := <-ch:
-			if !ok {
-				t.Fatalf("channel closed before receiving 2 events; got %d", len(gotEvents))
-			}
-			if msg.Event != nil {
-				gotEvents = append(gotEvents, msg.Event.SessionID)
-			}
-			// status messages (open, reconnecting) are ignored here.
-		case <-deadline:
-			t.Fatalf("timeout waiting for events; got %v", gotEvents)
+		msg, ok := <-ch
+		if !ok {
+			t.Fatalf("channel closed before receiving 2 events; got %d", len(gotEvents))
+		}
+		if msg.Event != nil {
+			gotEvents = append(gotEvents, msg.Event.SessionID)
+		}
+		// The server holds the connection open, so a reconnect means the stream failed.
+		if msg.Status.Phase == "reconnecting" {
+			t.Fatalf("reconnecting after %v: %v", gotEvents, msg.Status.Err)
 		}
 	}
 	if gotEvents[0] != "s1" || gotEvents[1] != "s2" {
@@ -76,32 +76,29 @@ func TestStream_IgnoresHeartbeats(t *testing.T) {
 	defer ts.Close()
 
 	c := New(ts.URL)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch := c.Stream(ctx, "")
-	deadline := time.After(time.Second)
-	for {
-		select {
-		case msg, ok := <-ch:
-			if !ok {
-				t.Fatal("closed without event")
+	for msg := range c.Stream(ctx, "") {
+		if msg.Event != nil {
+			if msg.Event.SessionID != "after-heartbeats" {
+				t.Errorf("unexpected sessionID %q", msg.Event.SessionID)
 			}
-			if msg.Event != nil {
-				if msg.Event.SessionID != "after-heartbeats" {
-					t.Errorf("unexpected sessionID %q", msg.Event.SessionID)
-				}
-				return
-			}
-		case <-deadline:
-			t.Fatal("timeout")
+			return
+		}
+		if msg.Status.Phase == "reconnecting" {
+			t.Fatalf("reconnecting before the event: %v", msg.Status.Err)
 		}
 	}
+	t.Fatal("closed without event")
 }
 
 func TestStream_PassesSessionFilter(t *testing.T) {
-	var got atomic.Value
+	got := make(chan string, 1)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got.Store(r.URL.RawQuery)
+		select {
+		case got <- r.URL.RawQuery:
+		default:
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
 		w.(http.Flusher).Flush()
@@ -110,12 +107,10 @@ func TestStream_PassesSessionFilter(t *testing.T) {
 	defer ts.Close()
 
 	c := New(ts.URL)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_ = c.Stream(ctx, "keep-this")
-	// Give the goroutine a moment to hit the server before we cancel.
-	time.Sleep(50 * time.Millisecond)
-	if q := got.Load(); q == nil || q.(string) != "session=keep-this" {
+	if q := <-got; q != "session=keep-this" {
 		t.Errorf("query = %q, want session=keep-this", q)
 	}
 }
@@ -136,31 +131,26 @@ func TestStream_ReconnectsAfterServerClose(t *testing.T) {
 	defer ts.Close()
 
 	c := New(ts.URL)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	c.reconnectAfter = elapsed
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := c.Stream(ctx, "")
 
 	var sawReconnecting, sawSecondOpen bool
 	seenOpens := 0
-	deadline := time.After(3 * time.Second)
 	for !sawReconnecting || !sawSecondOpen {
-		select {
-		case msg, ok := <-ch:
-			if !ok {
-				t.Fatalf("channel closed; reconnecting=%v secondOpen=%v", sawReconnecting, sawSecondOpen)
+		msg, ok := <-ch
+		if !ok {
+			t.Fatalf("channel closed; reconnecting=%v secondOpen=%v", sawReconnecting, sawSecondOpen)
+		}
+		switch msg.Status.Phase {
+		case "open":
+			seenOpens++
+			if seenOpens >= 2 {
+				sawSecondOpen = true
 			}
-			switch msg.Status.Phase {
-			case "open":
-				seenOpens++
-				if seenOpens >= 2 {
-					sawSecondOpen = true
-				}
-			case "reconnecting":
-				sawReconnecting = true
-			}
-		case <-deadline:
-			t.Fatalf("timeout; reconnecting=%v secondOpen=%v connects=%d",
-				sawReconnecting, sawSecondOpen, atomic.LoadInt32(&connects))
+		case "reconnecting":
+			sawReconnecting = true
 		}
 	}
 	if atomic.LoadInt32(&connects) < 2 {
@@ -182,27 +172,16 @@ func TestStream_CancelClosesChannel(t *testing.T) {
 	ch := c.Stream(ctx, "")
 
 	// Let the stream open, then cancel.
-	time.Sleep(50 * time.Millisecond)
+	for msg := range ch {
+		if msg.Status.Phase == "open" {
+			break
+		}
+	}
 	cancel()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		deadline := time.After(time.Second)
-		for {
-			select {
-			case _, ok := <-ch:
-				if !ok {
-					return // channel closed as expected
-				}
-			case <-deadline:
-				t.Error("channel not closed within 1s of cancel")
-				return
-			}
-		}
-	}()
-	wg.Wait()
+	// The channel closes: ranging over it returns.
+	for range ch {
+	}
 }
 
 func TestBackoffSchedule_CapsAt30s(t *testing.T) {
@@ -233,32 +212,27 @@ func TestStream_BackoffResetsAfterOpen(t *testing.T) {
 		w.(http.Flusher).Flush()
 		// Every connection opens, then closes — each is a successful open
 		// followed by a disconnect.
-		<-time.After(50 * time.Millisecond)
 	}))
 	defer ts.Close()
 
 	c := New(ts.URL)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	c.reconnectAfter = elapsed
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := c.Stream(ctx, "")
 
 	reconnects := 0
-	deadline := time.After(5 * time.Second)
 	for reconnects < 3 {
-		select {
-		case msg, ok := <-ch:
-			if !ok {
-				t.Fatalf("channel closed after %d reconnects", reconnects)
+		msg, ok := <-ch
+		if !ok {
+			t.Fatalf("channel closed after %d reconnects", reconnects)
+		}
+		if msg.Status.Phase == "reconnecting" {
+			reconnects++
+			if msg.Status.Attempt != 1 || msg.Status.Wait != time.Second {
+				t.Fatalf("reconnect #%d carried attempt %d wait %v, want 1 and 1s — backoff did not reset after a successful open",
+					reconnects, msg.Status.Attempt, msg.Status.Wait)
 			}
-			if msg.Status.Phase == "reconnecting" {
-				reconnects++
-				if msg.Status.Attempt != 1 {
-					t.Fatalf("reconnect #%d carried attempt %d, want 1 — backoff did not reset after a successful open",
-						reconnects, msg.Status.Attempt)
-				}
-			}
-		case <-deadline:
-			t.Fatalf("timeout after %d reconnects", reconnects)
 		}
 	}
 }
@@ -286,23 +260,21 @@ func TestStream_SkipsOversizedFrame(t *testing.T) {
 	defer ts.Close()
 
 	c := New(ts.URL)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := c.Stream(ctx, "")
 
 	var gotEvents int
-	deadline := time.After(3 * time.Second)
 	for gotEvents < 2 {
-		select {
-		case msg, ok := <-ch:
-			if !ok {
-				t.Fatalf("channel closed after %d events — the oversized frame killed the connection", gotEvents)
-			}
-			if msg.Event != nil {
-				gotEvents++
-			}
-		case <-deadline:
-			t.Fatalf("timeout after %d events; the oversized frame killed the connection", gotEvents)
+		msg, ok := <-ch
+		if !ok {
+			t.Fatalf("channel closed after %d events — the oversized frame killed the connection", gotEvents)
+		}
+		if msg.Event != nil {
+			gotEvents++
+		}
+		if msg.Status.Phase == "reconnecting" {
+			t.Fatalf("reconnecting after %d events — the oversized frame killed the connection", gotEvents)
 		}
 	}
 }

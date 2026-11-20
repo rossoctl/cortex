@@ -179,9 +179,7 @@ func TestEditFlow_ReportsARefusalThatLandsBeforeTheFirstPoll(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	m := newPickerModel(ctx, nil, nil)
+	m := newPickerModel(t.Context(), nil, nil)
 	m.statusURL = srv.URL
 	m.editRunner = func(ctx context.Context, args ...string) ([]byte, error) {
 		out, err := runner.run(ctx, args...)

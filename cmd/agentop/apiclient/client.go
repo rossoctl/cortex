@@ -37,6 +37,9 @@ type Client struct {
 	endpoint   string
 	http       *http.Client
 	httpStream *http.Client
+	// reconnectAfter waits out a stream's reconnect backoff. It is time.After, as a field so a
+	// test can reconnect at once.
+	reconnectAfter func(time.Duration) <-chan time.Time
 }
 
 // restDefaultTimeout bounds a REST call whose caller supplied NO deadline, so a dead
@@ -104,6 +107,9 @@ var responseHeaderTimeout = HeaderTimeout
 // A var so a test can shorten it.
 var streamDefaultTimeout = 60 * time.Second
 
+// streamDeadline applies streamDefaultTimeout; tests replace it to end the call at a chosen point.
+var streamDeadline = context.WithTimeout
+
 // New returns a Client pointed at endpoint (e.g. "http://localhost:9094").
 // Trailing slash is tolerated.
 func New(endpoint string) *Client {
@@ -146,6 +152,7 @@ func New(endpoint string) *Client {
 		httpStream: &http.Client{
 			Transport: transport,
 		},
+		reconnectAfter: time.After,
 	}
 }
 
@@ -406,7 +413,7 @@ func (c *Client) GetPluginCatalog(ctx context.Context) (*PluginCatalog, error) {
 func (c *Client) getBody(ctx context.Context, path string) (body io.ReadCloser, err error) {
 	cancel := context.CancelFunc(func() {})
 	if _, ok := ctx.Deadline(); !ok {
-		ctx, cancel = context.WithTimeout(ctx, streamDefaultTimeout)
+		ctx, cancel = streamDeadline(ctx, streamDefaultTimeout)
 	}
 	defer func() {
 		if err != nil {

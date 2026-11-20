@@ -186,7 +186,7 @@ func (m *model) resumeTimeline() tea.Cmd {
 }
 
 func timelineTick(gen uint64) tea.Cmd {
-	return tea.Tick(timelineRefresh, func(time.Time) tea.Msg { return timelineTickMsg{gen: gen} })
+	return tick(timelineRefresh, func(time.Time) tea.Msg { return timelineTickMsg{gen: gen} })
 }
 
 func (m *model) fetchTimeline() tea.Cmd {

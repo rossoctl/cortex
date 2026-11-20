@@ -1222,7 +1222,7 @@ func TestLooksLikePath_AnyUnicodeSpaceSeparates(t *testing.T) {
 func TestTrunc_ScalesLinearly(t *testing.T) {
 	const budget = 40
 	// THE LOWEST OF FIVE MEASUREMENTS. The count is process-wide, and earlier tests in this package
-	// leave goroutines alive (bubbletea.Tick timers, apiclient stream loops that reconnect). One that
+	// leave goroutines alive (apiclient stream loops that reconnect). One that
 	// wakes during a measurement adds its allocations, which failed this test in a loaded gate run
 	// ("18 allocations, up from 8") with no change to the code. Another goroutine can only add to the
 	// count, so the lowest of several runs drops that noise and cannot hide the function's own work.

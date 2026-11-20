@@ -183,8 +183,7 @@ func pressCmd(m *model, key tea.KeyMsg) tea.Cmd {
 var spaceKey = tea.KeyMsg{Type: tea.KeySpace}
 
 // deliver runs cmd and passes each rows or projects reply it gives through Update, then delivers
-// what Update returned in the same way. Other replies are dropped, and a command that blocks (a
-// tick) is given up.
+// what Update returned in the same way. Other replies are dropped.
 func deliver(m *model, cmd tea.Cmd) {
 	var mu sync.Mutex
 	var msgs []tea.Msg
@@ -197,21 +196,15 @@ func deliver(m *model, cmd tea.Cmd) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			done := make(chan tea.Msg, 1)
-			go func() { done <- c() }()
-			select {
-			case msg := <-done:
-				switch msg := msg.(type) {
-				case tea.BatchMsg:
-					for _, cc := range msg {
-						run(cc)
-					}
-				case agentRowsLoadedMsg, agentProjectsLoadedMsg:
-					mu.Lock()
-					msgs = append(msgs, msg)
-					mu.Unlock()
+			switch msg := c().(type) {
+			case tea.BatchMsg:
+				for _, cc := range msg {
+					run(cc)
 				}
-			case <-time.After(300 * time.Millisecond):
+			case agentRowsLoadedMsg, agentProjectsLoadedMsg:
+				mu.Lock()
+				msgs = append(msgs, msg)
+				mu.Unlock()
 			}
 		}()
 	}

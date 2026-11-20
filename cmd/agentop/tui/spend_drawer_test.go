@@ -1588,32 +1588,29 @@ func TestStartSpendPolling_ReArmsAnOpenDrawer(t *testing.T) {
 		if !ok {
 			t.Fatalf("startSpendPolling produced %T, want a tea.BatchMsg", cmd())
 		}
-		// Every command at once, then ONE deadline. The batch holds fetches and tea.Tick
-		// closures; the fetches answer against a loopback server in milliseconds while the
-		// ticks block for their whole interval, so anything that has not answered by the
-		// deadline is a tick and not the fetch under test. Fired concurrently rather than in
-		// sequence because waiting out each tick in turn took sixteen seconds.
+		// Every command at once, and every one answered: the fetches against a loopback
+		// server and the ticks at once (see TestMain).
 		msgs := make(chan tea.Msg, len(batch))
+		var wg sync.WaitGroup
 		for _, c := range batch {
 			if c == nil {
 				continue
 			}
+			wg.Add(1)
 			go func(c tea.Cmd) {
+				defer wg.Done()
 				defer func() { _ = recover() }()
 				msgs <- c()
 			}(c)
 		}
-		deadline := time.After(3 * time.Second)
-		for {
-			select {
-			case msg := <-msgs:
-				if _, isDrawer := msg.(spendDrawerLoadedMsg); isDrawer {
-					return true
-				}
-			case <-deadline:
-				return false
+		wg.Wait()
+		close(msgs)
+		for msg := range msgs {
+			if _, isDrawer := msg.(spendDrawerLoadedMsg); isDrawer {
+				return true
 			}
 		}
+		return false
 	}
 
 	open := &model{width: 200, height: 60, pane: paneSessions, client: apiclient.New(ts.URL)}

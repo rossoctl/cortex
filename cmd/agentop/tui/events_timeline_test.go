@@ -5,7 +5,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -184,8 +183,7 @@ func TestEventsTimeline_EnterDuringAListBlipStartsTheChain(t *testing.T) {
 }
 
 // cmdMsgs runs cmd and the members of a batch it returns, and returns what they send once
-// every one has returned. A command that never returns fails the test shortly before go
-// test's own timeout, so the failure names cmdMsgs, not a goroutine dump.
+// every one has returned.
 func cmdMsgs(t *testing.T, cmd tea.Cmd) []tea.Msg {
 	t.Helper()
 	var (
@@ -214,18 +212,7 @@ func cmdMsgs(t *testing.T, cmd tea.Cmd) []tea.Msg {
 		wg.Add(1)
 		go run(cmd)
 	}
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	var hung <-chan time.Time
-	if d, ok := t.Deadline(); ok {
-		left := time.Until(d)
-		hung = time.After(left - left/10)
-	}
-	select {
-	case <-done:
-	case <-hung:
-		t.Fatal("a command never returned")
-	}
+	wg.Wait()
 	return msgs
 }
 
