@@ -2,7 +2,9 @@
 
 Source: issue #2035 (part 3 of 3 of #2032). The design is in #2032. The text after the
 line `---` is the issue body. Its Task 7 is task T7 here. This header adds the decisions,
-the dependencies, the PR list and one docs task (T8).
+the dependencies, the PR list and one docs task (T8). Where the issue body and a decision
+below differ, the decision applies. Two such places: do not add `agentRow.byUnit`
+(decision 2), and do not hard-code AGENT width 26 (decision 7).
 
 Base: `08146f192a770865222892abcba5abfe44f05289` (upstream `main`). Part 1 (#2033, PR #2038)
 and part 2 (#2034, PR #2040) merged before this base. So `fetchUsageScopedProject` sends
@@ -106,6 +108,9 @@ From the worktree root:
 ```sh
 GOWORK=off go -C cmd/agentop vet ./... && test -z "$(gofmt -l cmd/agentop)" && scripts/dev/go-test-shards.sh -race cmd/agentop && (cd cmd/agentop && export GOWORK=off && go test -race $(go list ./... | grep -v 'agentop$')) && pre-commit run --from-ref 08146f192a770865222892abcba5abfe44f05289 --to-ref HEAD
 ```
+
+Checked on the unchanged base (2026-11-20): `GOWORK=off go -C cmd/agentop vet ./...` and
+`test -z "$(gofmt -l cmd/agentop)"` pass from the worktree root. No change to the gate.
 
 ## For a human after review
 
