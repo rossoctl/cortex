@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -157,6 +158,64 @@ type conn struct {
 	calls   int
 	retired bool
 	closed  bool
+	// readerDone is closed when mcp-go's SSE reader for this session has
+	// returned, however the stream ended.
+	readerDone chan struct{}
+	readerOnce sync.Once
+}
+
+// streamWatch is the transport of one session's HTTP client. It wraps the body
+// of the session's SSE stream, the GET whose events carry every reply, so the
+// plugin learns when mcp-go's reader is done with it: the reader closes the body
+// when it returns. mcp-go itself tells no one when a stream ends, and evolve can
+// go on accepting the session's requests, so without this a session whose
+// stream had ended was kept, and every later call waited out its deadline for a
+// reply that couldn't arrive.
+type streamWatch struct {
+	base http.RoundTripper
+	e    *mcpEvolve
+	cn   *conn
+}
+
+func (w *streamWatch) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := w.base.RoundTrip(req)
+	if err == nil && req.Method == http.MethodGet && strings.Contains(req.Header.Get("Accept"), "text/event-stream") {
+		resp.Body = &watchedBody{ReadCloser: resp.Body, closed: func() { w.e.readerStopped(w.cn) }}
+	}
+	return resp, err
+}
+
+type watchedBody struct {
+	io.ReadCloser
+	once   sync.Once
+	closed func()
+}
+
+func (b *watchedBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(b.closed)
+	return err
+}
+
+// readerStopped runs when cn's SSE reader has returned. If the plugin isn't
+// already closing cn, its stream ended on its own (evolve restarted, or the
+// connection dropped), and no reply can reach it again: cn is retired and
+// closed at once, so calls still waiting on it fail now instead of at their
+// deadlines, and the next call connects again. Closing is safe here because the
+// reader, the only sender on the calls' reply channels, has returned.
+func (e *mcpEvolve) readerStopped(cn *conn) {
+	cn.readerOnce.Do(func() { close(cn.readerDone) })
+	e.mu.Lock()
+	if e.client == cn {
+		e.retire()
+	}
+	cn.retired = true
+	closeNow := !cn.closed && cn.c != nil
+	cn.closed = true
+	e.mu.Unlock()
+	if closeNow {
+		go func() { _ = cn.c.Close() }()
+	}
 }
 
 // session returns the open SSE session, counted as in use until release,
@@ -195,30 +254,40 @@ func (e *mcpEvolve) session(ctx context.Context) (*conn, error) {
 	return nil, errors.New("connection closed")
 }
 
-// connect establishes a session and publishes it, unless Close ran meanwhile.
+// connect establishes a session and publishes it, unless Close ran meanwhile
+// or its stream has already ended.
 func (e *mcpEvolve) connect(done chan struct{}, gen int) {
-	c, err := e.dial()
+	cn := &conn{readerDone: make(chan struct{})}
+	c, err := e.dial(cn)
 	e.mu.Lock()
 	e.connecting = nil
 	e.connErr = err
+	closeNow := false
 	if err == nil {
-		if e.gen == gen {
-			e.client = &conn{c: c}
+		if e.gen == gen && !cn.retired {
+			e.client = cn
 		} else {
-			_ = c.Close()
+			closeNow = !cn.closed
+			cn.retired, cn.closed = true, true
 		}
 	}
 	e.mu.Unlock()
+	if closeNow {
+		_ = c.Close()
+	}
 	close(done)
 }
 
-func (e *mcpEvolve) dial() (*mcpclient.Client, error) {
+func (e *mcpEvolve) dial(cn *conn) (*mcpclient.Client, error) {
 	c, err := mcpclient.NewSSEMCPClient(e.url,
-		transport.WithHTTPClient(e.http),
+		transport.WithHTTPClient(&http.Client{Transport: &streamWatch{base: e.http.Transport, e: e, cn: cn}}),
 		transport.WithHeaders(map[string]string{sentinelHeader: "1"}))
 	if err != nil {
 		return nil, err
 	}
+	e.mu.Lock()
+	cn.c = c
+	e.mu.Unlock()
 	// The stream outlives the connect, so its context has no deadline. The timer
 	// cancels it only if the session isn't up in time: mcp-go's own 30 s wait for
 	// the endpoint event starts only once the stream's headers have arrived.

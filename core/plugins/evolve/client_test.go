@@ -1,12 +1,15 @@
 package evolve
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -552,5 +555,90 @@ func TestMCPEvolve_OlderEvolveFindsGuidelinesBeyondTheFirstPage(t *testing.T) {
 	}
 	if pages != 2 {
 		t.Fatalf("list_entities called %d times, want 2 pages", pages)
+	}
+}
+
+// cutStream serves f behind a proxy that ends the first SSE stream after the
+// initialize reply, keeping its own connection to evolve open: the session stays
+// alive on the server, which goes on accepting the session's requests, but no
+// reply reaches the client. Later streams are relayed whole. Evolve advertises
+// the proxy's URL, since mcp-go ignores an endpoint on another host.
+func cutStream(t *testing.T, f *fakeEvolveServer) string {
+	t.Helper()
+	var backend *httptest.Server
+	var mu sync.Mutex
+	cut := false
+	var held []*http.Response
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		req, _ := http.NewRequestWithContext(context.WithoutCancel(r.Context()), r.Method, backend.URL+r.URL.RequestURI(), r.Body)
+		req.Header = r.Header.Clone()
+		resp, err := http.DefaultTransport.RoundTrip(req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		for k, v := range resp.Header {
+			w.Header()[k] = v
+		}
+		w.WriteHeader(resp.StatusCode)
+		if r.Method != http.MethodGet {
+			_, _ = io.Copy(w, resp.Body)
+			_ = resp.Body.Close()
+			return
+		}
+		mu.Lock()
+		first := !cut
+		cut = true
+		held = append(held, resp)
+		mu.Unlock()
+		br := bufio.NewReader(resp.Body)
+		messages := 0
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return
+			}
+			_, _ = w.Write([]byte(line))
+			w.(http.Flusher).Flush()
+			if strings.HasPrefix(line, "event: message") {
+				messages++
+			}
+			// The blank line ending the initialize reply: end this stream here.
+			if first && messages == 1 && strings.TrimRight(line, "\r\n") == "" {
+				return
+			}
+		}
+	}))
+	backend = httptest.NewServer(server.NewSSEServer(f.mcpServer(), server.WithBaseURL(proxy.URL)))
+	t.Cleanup(func() {
+		mu.Lock()
+		for _, resp := range held {
+			_ = resp.Body.Close()
+		}
+		mu.Unlock()
+		proxy.Close()
+		backend.Close()
+	})
+	return proxy.URL + "/sse"
+}
+
+func TestMCPEvolve_ASessionWhoseStreamEndedIsReplaced(t *testing.T) {
+	f := &fakeEvolveServer{}
+	e := newMCPEvolve(cutStream(t, f), "cortex", "environment-grounded", time.Second)
+	defer e.Close()
+	// The first call's reply can't arrive: the stream ended after initialize.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, err := e.Guidelines(ctx, "cortex", "t", "s")
+	cancel()
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v, want ErrUnavailable", err)
+	}
+	// Before, the session was kept: evolve accepted every later request on it, and
+	// each call waited out its deadline for a reply.
+	start := time.Now()
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := e.Guidelines(ctx, "cortex", "t", "s"); err != nil {
+		t.Fatalf("after %v, still on the dead session: %v", time.Since(start), err)
 	}
 }
