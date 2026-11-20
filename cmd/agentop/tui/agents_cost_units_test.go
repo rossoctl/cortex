@@ -257,3 +257,63 @@ func indexOfDesc(t *testing.T, m *model, d agentRowDesc) int {
 	t.Fatalf("no row %+v in %+v", d, m.agentRowDescs)
 	return -1
 }
+
+func TestAgentsPane_SplitDropsOtherWindows(t *testing.T) {
+	m, _ := unitsModel(t, 160)
+	window := m.agentsSpanDef().window
+	old := agentsSplitKey{agent: "claude-code/2.1.270", window: "old-window"}
+	m.agentsSplits = map[agentsSplitKey]map[string]int64{old: mixedSplit}
+	cur := agentsSplitKey{agent: "claude-code/2.1.270", window: window}
+	m.Update(agentsUnitSplitLoadedMsg{key: cur, byUnit: mixedSplit})
+	if _, ok := m.agentsSplits[old]; ok || len(m.agentsSplits) != 1 || m.agentsSplits[cur] == nil {
+		t.Errorf("splits %v, want only %+v", m.agentsSplits, cur)
+	}
+}
+
+func TestAgentsPane_FailedSplitChangesNothing(t *testing.T) {
+	m, _ := unitsModel(t, 160)
+	window := m.agentsSpanDef().window
+	kept := agentsSplitKey{agent: "bob-shell/2.0.5", window: window}
+	m.agentsSplits = map[agentsSplitKey]map[string]int64{kept: mixedSplit}
+	m.Update(agentsUnitSplitLoadedMsg{key: agentsSplitKey{agent: "claude-code/2.1.270", window: window},
+		err: context.DeadlineExceeded})
+	if len(m.agentsSplits) != 1 || m.agentsSplits[kept] == nil {
+		t.Errorf("a failed split changed the map: %v", m.agentsSplits)
+	}
+}
+
+func TestAgentsPane_AllProjectsUnderAllAgentsFetchesItsSplit(t *testing.T) {
+	m, asked := unitsModel(t, 160)
+	m.sessions[0].Projects = []string{"~/works/cortex"}
+	loadUnitsRows(m)
+	m.agentsExpanded = map[string]bool{"": true}
+	_, cmd := m.Update(agentProjectsLoadedMsg{agent: "", window: m.agentsSpanDef().window,
+		data: agentProjectsData{all: agentRow{Counts: usage.Counts{CostMicros: 1_066_470_000, PricedRequests: 3},
+			units: []string{"Bobcoins", "USD"}}}})
+	deliverSplits(m, cmd)
+	found := false
+	for _, q := range asked() {
+		if strings.Contains(q, "group=currency") && !strings.Contains(q, "agent=") && !strings.Contains(q, "project=") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no unscoped split request in %q", asked())
+	}
+	d := agentRowDesc{kind: agentRowAllProjects}
+	if got := strings.Join(m.agentsTbl.Rows()[indexOfDesc(t, m, d)], " "); !strings.Contains(got, mixedCell) {
+		t.Errorf("All projects row %q, want %q", got, mixedCell)
+	}
+}
+
+func TestAgentsPane_AllProjectsUnderAnAgentReadsItsSplit(t *testing.T) {
+	m, _ := unitsModel(t, 160)
+	m.sessions[0].Projects = []string{"~/works/cortex"}
+	loadUnitsRows(m)
+	m.agentsExpanded = map[string]bool{"claude-code/2.1.270": true}
+	m.rebuildAgentsTable()
+	d := agentRowDesc{agent: "claude-code/2.1.270", kind: agentRowAllProjects}
+	if got := strings.Join(m.agentsTbl.Rows()[indexOfDesc(t, m, d)], " "); !strings.Contains(got, mixedCell) {
+		t.Errorf("All projects row %q, want %q", got, mixedCell)
+	}
+}
