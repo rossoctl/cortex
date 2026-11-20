@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // SetRequestBody replaces r's body with body and fixes the headers that describe it:
@@ -28,14 +30,23 @@ func SetRequestBody(r *http.Request, body []byte) {
 // overwritten. Content-Length and Content-Encoding are skipped — the body-rewrite
 // path and the transport own those.
 //
+// model.RecordHeader is never sent (#2005): it is removed from r, in any case, and never
+// copied from h, also when a plugin wrote it back into h. It is for Cortex only, as ext_proc
+// treats it.
+//
 // Shared for the same reason as SetRequestBody: the forward proxy's syncHeaders and
 // the reverse proxy's inline copy of it were identical only because someone kept
 // them that way.
 func SyncRequestHeaders(r *http.Request, h http.Header) {
 	skip := func(k string) bool {
-		return strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Content-Encoding")
+		return strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Content-Encoding") ||
+			strings.EqualFold(k, model.RecordHeader)
 	}
 	for k := range r.Header {
+		if strings.EqualFold(k, model.RecordHeader) {
+			delete(r.Header, k)
+			continue
+		}
 		if skip(k) {
 			continue
 		}
