@@ -1371,7 +1371,7 @@ func (m *model) snapshotCmd(id string) tea.Cmd {
 // THE REPAINT IS A BACKSTOP, not the fix for #1461: Run turns autowrap off, which is
 // what keeps a row the terminal draws wider than bubbletea measured from scrolling the
 // screen. But bubbletea's renderer skips a row equal to the one it drew there last, and
-// the divider under the spend band is the same on every pane, so any drift that still
+// the box edges are the same on every pane, so any drift that still
 // reaches the screen — a terminal that ignores DECAWM, a write from outside the
 // renderer — would otherwise stay on those rows until a resize. A pane change is the
 // moment the operator is looking at a new screen, so it is when a stale row costs most
@@ -2572,15 +2572,7 @@ func (m *model) paneView() string {
 		// short picker hint past the terminal width, and a wrapped footer costs a
 		// row of the table above it.
 		footer = fitHintLine(footer, m.width)
-		// The divider closes the top block here as on every other pane, which on a picker is
-		// the title alone. layout() reserves its row unconditionally, so a pane that skipped
-		// drawing it would leave a row nobody fills.
-		return lipgloss.JoinVertical(lipgloss.Left,
-			renderTitle(title),
-			styleDim.Render(renderDivider(m.width)),
-			body,
-			renderTrailingKeyBar(footer, keys, m.width),
-		)
+		return m.pickerView(title, body, renderTrailingKeyBar(footer, keys, m.width))
 	}
 	if m.pane == panePods {
 		title := m.appName() + " · " + m.selectedNamespace + " · pick pod"
@@ -2600,18 +2592,46 @@ func (m *model) paneView() string {
 		// short picker hint past the terminal width, and a wrapped footer costs a
 		// row of the table above it.
 		footer = fitHintLine(footer, m.width)
-		return lipgloss.JoinVertical(lipgloss.Left,
-			renderTitle(title),
-			styleDim.Render(renderDivider(m.width)),
-			body,
-			renderTrailingKeyBar(footer, keys, m.width),
-		)
+		return m.pickerView(title, body, renderTrailingKeyBar(footer, keys, m.width))
 	}
 	if m.width == 0 {
 		return "initializing…"
 	}
-	var title string
-	var body string
+	title, body := m.paneContent()
+	return m.framePane(title, body)
+}
+
+// pickerView is a picker pane: the title, the body in the box, and the picker's key bar.
+//
+// The box fills every row the footer does not use. layout() reserves the band row by height
+// alone (see spendStripReservesRow), and a picker draws no band, so that row goes into the box.
+// The picker's key bar is one line where footerView is footerLines.
+//
+// A picker is the first screen, so it can render before the first WindowSizeMsg. With no width
+// yet there is no box to draw, and the body shows as it is.
+func (m *model) pickerView(title, body, footer string) string {
+	if m.width == 0 {
+		return lipgloss.JoinVertical(lipgloss.Left, renderTitle(title), body, footer)
+	}
+	frameH := m.bodyHeight + (footerLines - lipgloss.Height(footer))
+	if m.spendStripReservesRow() {
+		frameH += spendBandLines
+	}
+	if m.searching {
+		frameH++ // layout() reserved the prompt's row; it is the body's first line, or blank
+	}
+	if m.bodyHeight == 0 {
+		frameH = lipgloss.Height(body) // layout() has not run, so there is no reservation to fill
+	}
+	rows := []string{renderTitle(title), boxTop("", m.width)}
+	rows = append(rows, boxFrame(body, m.width, frameH)...)
+	rows = append(rows, boxBottom(m.width), footer)
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// paneContent is a data pane's title and body, before the box frames the body. The body is
+// sized from m.innerWidth(); TestBox_BodyFitsInsideWithoutCutting holds every pane to it.
+func (m *model) paneContent() (title, body string) {
 	switch m.pane {
 	case paneSessions:
 		// NO SCOPE NOTE. The title used to carry " · lifetime totals", to say that the table's
@@ -2647,7 +2667,7 @@ func (m *model) paneView() string {
 		// spare. sessionHeader measures the room actually available.
 		title = m.sessionHeader(m.selectedSess, "")
 		body = m.eventsTbl.View()
-		if banner := identityBanner(m.events[m.selectedSess], m.width); banner != "" {
+		if banner := identityBanner(m.events[m.selectedSess], m.innerWidth()); banner != "" {
 			body = banner + "\n" + body
 		}
 	case paneDetail:
@@ -2708,7 +2728,7 @@ func (m *model) paneView() string {
 			if m.bodyHeight > 1 {
 				tbl.SetHeight(m.bodyHeight - 1)
 			}
-			body = tbl.View() + "\n" + styleHint.Render(clipRow("(refresh failed: "+err.Error()+")", m.width))
+			body = tbl.View() + "\n" + styleHint.Render(clipRow("(refresh failed: "+err.Error()+")", m.innerWidth()))
 		default:
 			body = m.agentsTbl.View()
 		}
@@ -2722,10 +2742,16 @@ func (m *model) paneView() string {
 	if m.pane != paneUsage && m.pane != paneAgents && m.pane != paneEvents && m.pane != paneDetail && m.pane != paneTimeline {
 		title += m.scopeSuffix(m.agentScope, m.projectScope)
 	}
-	header := renderTitle(title)
 	if m.searching && m.searchPane != targetHelp {
 		body = m.searchPromptView() + "\n" + body
 	}
+	return title, body
+}
+
+// framePane is a data pane's screen: the title, the spend band and its drawer, the body in the
+// box at exactly the rows layout() reserved, and the footer on the last row.
+func (m *model) framePane(title, body string) string {
+	header := renderTitle(title)
 	// A row slice rather than a fixed JoinVertical, so the strip's row can be absent
 	// without needing a second call site. It sits directly under the title because that
 	// is the whole requirement: spend read BEFORE the data rather than navigated to.
@@ -2797,11 +2823,22 @@ func (m *model) paneView() string {
 			rows = append(rows, styleDrawerLines(lines)...)
 		}
 	}
-	// The rule that closes the top block, AFTER the band and its drawer so it always sits
-	// between the whole block and the body rather than inside it. Appended unconditionally,
-	// which is what lets layout() reserve it without asking anything — see renderDivider.
-	rows = append(rows, styleDim.Render(renderDivider(m.width)))
-	rows = append(rows, body, m.footerView())
+	// The box, AFTER the band and its drawer. Appended unconditionally, which is what lets
+	// layout() reserve its edges without asking anything — see boxTop.
+	//
+	// EXACTLY bodyHeight rows (and the search prompt's row, which layout() reserves while the
+	// prompt is open): boxFrame pads a short body and cuts a tall one, so the footer is always
+	// on the last row. Fixed here once, not in each pane.
+	frameH := m.bodyHeight
+	if m.searching {
+		frameH++
+	}
+	if m.bodyHeight == 0 {
+		frameH = lipgloss.Height(body) // layout() has not run, so there is no reservation to fill
+	}
+	rows = append(rows, boxTop("", m.width))
+	rows = append(rows, boxFrame(body, m.width, frameH)...)
+	rows = append(rows, boxBottom(m.width), m.footerView())
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
@@ -2991,7 +3028,7 @@ func Run(ctx context.Context, opts RunOptions) error {
 	// "वि" is one column to x/ansi and two to go-runewidth. A row bubbletea thinks fills
 	// the terminal exactly then wraps, and in the last row that scrolls the alt screen up
 	// by one. bubbletea's renderer skips any row equal to the one it drew there before,
-	// so after a scroll the rows that never change — the divider under the spend band
+	// so after a scroll the rows that never change — the box edges
 	// above all — keep whatever moved onto them, across pane changes, until a full
 	// repaint (#1461). With autowrap off the overflow overwrites the last column instead,
 	// and nothing moves.

@@ -56,7 +56,7 @@ const (
 	//
 	// spendDrawerLines, not spendDrawerLinesFor: a floor has to admit the TALLEST form, or
 	// widening the terminal would squeeze the table.
-	spendDrawerMinHeight = spendStripMinHeight + spendDrawerLines + dividerLines
+	spendDrawerMinHeight = spendStripMinHeight + spendDrawerLines + boxTopLines
 
 	// spendDrawerLines is the drawer's MAXIMUM height — the two-column form. What layout()
 	// actually holds back is spendDrawerLinesFor(width), which is this at a width that

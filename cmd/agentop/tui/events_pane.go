@@ -179,7 +179,7 @@ func (m *model) rebuildEventsTable() {
 		// terminal's width and reports what it costs. The old form subtracted a constant
 		// and an over-wide banner then wrapped in the terminal, taking rows the table had
 		// already claimed.
-		h := m.bodyHeight - identityBannerHeightFor(events, m.width)
+		h := m.bodyHeight - identityBannerHeightFor(events, m.innerWidth())
 		if h < 3 {
 			h = 3
 		}
@@ -232,7 +232,7 @@ func (m *model) rebuildEventsTable() {
 	// Both the header and every row cell come from `cols`, so they cannot disagree.
 	var measured map[eventColumnID][]string
 	m.eventColWidths, measured = measureColumns(selectedColumns(m.eventColumns), ctxs)
-	cols, dropped := layoutColumns(m.eventColumns, m.eventColWidths, m.width)
+	cols, dropped := layoutColumns(m.eventColumns, m.eventColWidths, m.innerWidth())
 	m.eventColsDropped = dropped
 
 	// Rows are built first and handed to the table together with their columns at

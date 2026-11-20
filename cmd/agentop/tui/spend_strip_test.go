@@ -134,15 +134,15 @@ func TestLayout_ReservesExactlyTheBandsRowsForTheStrip(t *testing.T) {
 	short.pane = paneEvents
 	short.layout()
 
-	// dividerLines is in both expectations, and in the short one it is the ONLY new term: the
-	// rule closes the top block on every pane and at every height, so unlike the band it is
-	// reserved below the fold too.
-	if want := 40 - 3 - dividerLines - spendBandLines; tall.bodyHeight != want {
-		t.Errorf("bodyHeight with the band = %d, want %d (height - title - 2 footer rows - "+
-			"dividerLines - spendBandLines)", tall.bodyHeight, want)
+	// The box edges are in both expectations, and in the short one they are the ONLY new
+	// terms: the box frames the body on every pane and at every height, so unlike the band its
+	// edges are reserved below the fold too.
+	if want := 40 - 1 - footerLines - boxTopLines - boxBottomLines - spendBandLines; tall.bodyHeight != want {
+		t.Errorf("bodyHeight with the band = %d, want %d (height - title - footer rows - "+
+			"box edges - spendBandLines)", tall.bodyHeight, want)
 	}
-	if want := 19 - 3 - dividerLines; short.bodyHeight != want {
-		t.Errorf("bodyHeight below the fold = %d, want %d (the divider's row, no band rows)",
+	if want := 19 - 1 - footerLines - boxTopLines - boxBottomLines; short.bodyHeight != want {
+		t.Errorf("bodyHeight below the fold = %d, want %d (the box edges, no band rows)",
 			short.bodyHeight, want)
 	}
 }
@@ -156,7 +156,7 @@ func TestLayout_PickerPanesStillReserveTheStripRow(t *testing.T) {
 	picker.pane = panePods
 	picker.layout()
 
-	if want := 40 - 3 - dividerLines - spendBandLines; picker.bodyHeight != want {
+	if want := 40 - 1 - footerLines - boxTopLines - boxBottomLines - spendBandLines; picker.bodyHeight != want {
 		t.Errorf("picker bodyHeight = %d, want %d: the reservation must not depend on the pane",
 			picker.bodyHeight, want)
 	}

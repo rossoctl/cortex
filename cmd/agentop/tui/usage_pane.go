@@ -631,6 +631,6 @@ func costUngroupedRow(snap *usage.Snapshot, scope string, windowUnits []string) 
 // usageBody is the usage pane drawn and searched. It is drawn to fit the pane, so what it
 // drew is its text, and a search highlights it after the drawing.
 func (m *model) usageBody() string {
-	m.usageDoc.setLines(strings.Split(m.renderUsage(m.width, m.bodyHeight), "\n"), 0)
+	m.usageDoc.setLines(strings.Split(m.renderUsage(m.innerWidth(), m.bodyHeight), "\n"), 0)
 	return m.usageDoc.render(m.searchQuery(paneUsage))
 }

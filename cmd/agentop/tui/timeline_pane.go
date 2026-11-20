@@ -359,7 +359,7 @@ const (
 
 // timelineCells is how many cells the chart gets at the current width.
 func (m *model) timelineCells() int {
-	return max(m.width-timelineLabelWidth-timelineGutterWidth, 10)
+	return max(m.innerWidth()-timelineLabelWidth-timelineGutterWidth, 10)
 }
 
 // timelineRange is the window's [from, to] and the layout's now. For a live session now is the
@@ -618,7 +618,7 @@ func (m *model) revealPendingSeq() bool {
 func (m *model) timelineBody() string {
 	lines := strings.Split(strings.TrimRight(m.renderTimeline(), "\n"), "\n")
 	for i, l := range lines {
-		lines[i] = truncToWidth(l, max(m.width, 20))
+		lines[i] = truncToWidth(l, max(m.innerWidth(), 20))
 	}
 	m.timelineDoc.setLines(lines, 0)
 	return m.timelineDoc.render(m.searchQuery(paneTimeline))
@@ -764,7 +764,7 @@ func (m *model) renderTimeline() string {
 	return b.String()
 }
 
-// legend is one line that fits m.width: whole items drop from the right, never a wrap.
+// legend is one line that fits m.innerWidth(): whole items drop from the right, never a wrap.
 func (m *model) legend() string {
 	sw := func(sep string, c lipgloss.AdaptiveColor, s string) [2]string {
 		return [2]string{sep + "█ " + s, styleMuted.Render(sep) + lipgloss.NewStyle().Foreground(c).Render("█") + styleMuted.Render(" "+s)}
@@ -777,7 +777,7 @@ func (m *model) legend() string {
 	}
 	var plain, styled strings.Builder
 	for _, it := range items {
-		if lipgloss.Width(plain.String()+it[0]) > m.width {
+		if lipgloss.Width(plain.String()+it[0]) > m.innerWidth() {
 			break
 		}
 		plain.WriteString(it[0])
@@ -1057,7 +1057,7 @@ func (m *model) cursorStrip(lay tlLayout) string {
 		// The row stays, so the chart does not move when a moment is picked; until then it
 		// carries the pane's notes.
 		if st := m.timelineStatus(); st != "" {
-			return styleMuted.Render(truncToWidth(st, max(m.width, 1)))
+			return styleMuted.Render(truncToWidth(st, max(m.innerWidth(), 1)))
 		}
 		return ""
 	}
@@ -1107,7 +1107,7 @@ func (m *model) cursorStrip(lay tlLayout) string {
 	// Whole entries only: a duration cut in half reads as a different number. Past what fits,
 	// the rest is counted.
 	const hint = "  [enter] events"
-	budget := max(m.width-1-lipgloss.Width(hint), 20)
+	budget := max(m.innerWidth()-1-lipgloss.Width(hint), 20)
 	line := head + parts[0]
 	if lipgloss.Width(line) > budget {
 		line = truncToWidth(line, budget-1) + "…"

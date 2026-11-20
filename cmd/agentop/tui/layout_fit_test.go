@@ -100,12 +100,12 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	// shipped green past this test while overflowing 80x24 — one of fitSizes — by that
 	// one row.
 	//
-	// NOT YET REACHED BY TestLayout_EveryPaneFitsTheTerminal, which skips paneUsage: with
-	// this snapshot in place the pane overflows at 60x20 (by 4) and at 80x24 with the
-	// filter open (by 1), and BOTH reproduce unchanged on the commit this branch started
-	// from — the pane does not respect bodyHeight in general. Measuring the chart is what
-	// makes that visible; fixing it is a separate change. TestUsageChart_FitsTheChartBudget
-	// below covers the part this branch is responsible for.
+	// THE PANE DOES NOT FOLLOW bodyHeight AT SMALL SIZES: with this snapshot its body is 4
+	// rows too tall at 60x20, and 1 row too tall at 80x24 with the filter open. The body box
+	// cuts it at bodyHeight (boxFrame), so the bottom rows of the body (the summary and the
+	// "updated … ago" line) are not drawn there and the bar stays on the last row. A smaller
+	// chart at those sizes is a separate change. TestUsageChart_FitsTheChartBudget below
+	// covers the unit caption's row.
 	//
 	// UNGROUPED AND UNLABELLED, so every height assertion written against this model takes
 	// the BAR path: the buckets carry no Series and m.usage.group is left zero, and
@@ -183,12 +183,13 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	return m
 }
 
-// assertFits is the invariant: no line wider than the terminal, no more lines than it has.
+// assertFits is the invariant: no line wider than the terminal, and exactly as many lines as
+// it has. Fewer is a fault too: the bar is then not on the last row.
 func assertFits(t *testing.T, m *model, label string) {
 	t.Helper()
 	view := m.View()
-	if got := lipgloss.Height(view); got > m.height {
-		t.Errorf("%s: view is %d lines for a %d-line terminal (%d too many)",
+	if got := lipgloss.Height(view); got != m.height {
+		t.Errorf("%s: view is %d lines for a %d-line terminal (%+d)",
 			label, got, m.height, got-m.height)
 	}
 	for i, line := range strings.Split(view, "\n") {
@@ -217,12 +218,6 @@ func TestLayout_EveryPaneFitsTheTerminal(t *testing.T) {
 	}
 	for _, dim := range fitSizes {
 		for name, p := range panes {
-			if p == paneUsage {
-				// See fitModel's usage-snapshot comment: this pane overflows at two of
-				// fitSizes on main as well as here, so asserting it would fail on a
-				// pre-existing bug rather than on anything this test is guarding.
-				continue
-			}
 			for _, searching := range []bool{false, true} {
 				if searching && (&model{}).surface(p) == nil {
 					continue
@@ -239,6 +234,37 @@ func TestLayout_EveryPaneFitsTheTerminal(t *testing.T) {
 					}
 				}
 				assertFits(t, m, fmt.Sprintf("%s %dx%d searching=%v", name, dim[0], dim[1], searching))
+			}
+		}
+	}
+}
+
+// THE BAR IS ON THE LAST ROW on every pane, including the Timeline with no timeline yet and
+// Usage, whose bodies are shorter or taller than bodyHeight. The box pads or cuts the body,
+// so the footer never moves up into the screen or off its bottom.
+func TestLayout_BarOnTheLastRow(t *testing.T) {
+	for _, dim := range [][2]int{{80, 24}, {100, 30}, {140, 30}} {
+		for name, p := range boxedPanes {
+			m := fitModel(t, p, dim[0], dim[1], cursorRowsFixture(60))
+			if p == paneTimeline && m.timeline.tl != nil {
+				t.Fatalf("setup: the timeline fixture has a timeline, so its body is not short")
+			}
+			label := fmt.Sprintf("%s %dx%d", name, dim[0], dim[1])
+			view := m.View()
+			if got := lipgloss.Height(view); got != m.height {
+				t.Errorf("%s: view is %d lines, want %d", label, got, m.height)
+			}
+			lines := strings.Split(view, "\n")
+			footer := strings.Split(m.footerView(), "\n")
+			if p == paneNamespaces || p == panePods {
+				// The pickers draw their own one-line key bar, not footerView.
+				if last := strings.TrimRight(lines[len(lines)-1], " "); !strings.HasSuffix(last, "[q] quit") {
+					t.Errorf("%s: the last line is not the key bar: %q", label, last)
+				}
+				continue
+			}
+			if got, want := strings.TrimRight(lines[len(lines)-1], " "), strings.TrimRight(footer[len(footer)-1], " "); got != want {
+				t.Errorf("%s: the last line is %q, want the footer's last line %q", label, got, want)
 			}
 		}
 	}
@@ -658,7 +684,7 @@ func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 // a seven-row drawer it costs the table the row the floor exists to protect.
 //
 // A LITERAL, like spend_sanitize_test.go's line pins and for the same reason: a
-// right-hand side spelled with spendStripMinHeight + spendDrawerLines + dividerLines is
+// right-hand side spelled with spendStripMinHeight + spendDrawerLines + boxTopLines is
 // the tautology this replaces. The terms are named in the failure message instead, so a
 // deliberate change to any of them reads as one number to update and an accidental one
 // names what moved.
@@ -667,14 +693,14 @@ func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 // and the {120, 7} row in spend_sanitize_test.go), so this is the last unwitnessed link in
 // the chain, not a second copy of one.
 func TestSpendDrawerMinHeight_IsTwentyEight(t *testing.T) {
-	const wantFloor = 28 // 20 strip rows + 7 drawer rows + 1 divider
+	const wantFloor = 28 // 20 strip rows + 7 drawer rows + 1 box top edge
 	if spendDrawerMinHeight != wantFloor {
 		t.Errorf("the drawer's height floor is %d, want %d — recompute it from the terms: "+
-			"spendStripMinHeight %d + spendDrawerLines %d + dividerLines %d. If one of those "+
+			"spendStripMinHeight %d + spendDrawerLines %d + boxTopLines %d. If one of those "+
 			"moved deliberately, update this literal; if none did, the floor has been written "+
 			"as a constant again and no longer follows the drawer's height",
 			spendDrawerMinHeight, wantFloor,
-			spendStripMinHeight, spendDrawerLines, dividerLines)
+			spendStripMinHeight, spendDrawerLines, boxTopLines)
 	}
 }
 
@@ -683,7 +709,7 @@ func TestSpendDrawerMinHeight_IsTwentyEight(t *testing.T) {
 // than a couple of rows".
 //
 // WHAT THIS CANNOT CATCH, and the reason is worth stating rather than discovering later.
-// The floor is derived (spendStripMinHeight + spendDrawerLines + dividerLines), so any
+// The floor is derived (spendStripMinHeight + spendDrawerLines + boxTopLines), so any
 // assertion here comparing it to those components is a tautology — the defect class three
 // earlier rounds of review found in this package. A one-row drift is therefore not
 // detectable here: with the floor at 27 against a seven-row drawer the body is 14 rows

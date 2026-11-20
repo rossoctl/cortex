@@ -100,7 +100,7 @@ func TestSessionsPane_AgentColumnOnlyWhenTwoAgentsAreListed(t *testing.T) {
 	}
 	one := &model{width: 200, sessions: sessionsFixture()[:1]}
 	one.rebuildSessionsTable()
-	if want := alignSessionsHeaders(fitTableColumns(sessionsColumnsFor(200), 200)); !sameColumns(one.sessionsTbl.Columns(), want) {
+	if want := alignSessionsHeaders(fitTableColumns(sessionsColumnsFor(200-boxSideCols), 200-boxSideCols)); !sameColumns(one.sessionsTbl.Columns(), want) {
 		t.Errorf("one agent: columns %v, want today's %v", one.sessionsTbl.Columns(), want)
 	}
 }

@@ -18,6 +18,9 @@ import (
 // This is the same destination the docs point at (see rossoctl#977).
 const feedbackURL = "https://github.com/rossoctl/cortex/issues/new/choose"
 
+// footerLines is the height of footerView, and the number of rows layout() reserves for it.
+const footerLines = 2
+
 // footerView renders the bottom two lines: status (connection + rate
 // + optional transient flash, then a muted feedback link) and a
 // context-sensitive keybinding hint. No lipgloss borders; parent view handles

@@ -1,31 +1,22 @@
 package tui
 
 // layout recomputes component sizes to fit the current terminal. Called on
-// every WindowSizeMsg. The footer reserves two lines; the title one.
+// every WindowSizeMsg.
 func (m *model) layout() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	// Reserve 3 rows: the title row and the footer's two.
+	// Reserve the title row, the body box's two edges and the footer.
 	//
-	// NOT "title + blank + footer", which is what this said and was never true — there is
-	// no blank row to borrow, and a reader who believes there is one reclaims a row the
-	// footer is standing on.
-	bodyH := m.height - 3
-	// And one for the rule that closes the top block.
+	// The box edges are UNCONDITIONAL, unlike the reservations below: paneView draws the box on
+	// every pane that renders a body, so there is no pane-dependent condition here to get wrong
+	// and none that can go stale between resizes. The two states that do NOT draw it — the edit
+	// overlay and `m.width == 0` — are full-screen takeovers that never read bodyHeight; see
+	// boxTop for what that means for anyone adding a third early return.
 	//
-	// UNCONDITIONAL, unlike the two reservations below it: paneView draws the rule on every pane
-	// that renders a body, so there is no pane-dependent condition here to get wrong and none
-	// that can go stale between resizes.
-	//
-	// The two states that do NOT draw it — the edit overlay and `m.width == 0` — are full-screen
-	// takeovers that never read bodyHeight, so this row cannot be stranded in a body that does
-	// not exist. That is the exemption's reason, and it is narrower than "it always draws"; see
-	// renderDivider for what it means for anyone adding a third early return.
-	//
-	// TestLayout_EveryPaneFitsTheTerminal reports the reservation's absence as "one line too
-	// many", on every pane and every size.
-	bodyH -= dividerLines
+	// TestLayout_EveryPaneFitsTheTerminal reports a reservation error as a view that is not
+	// exactly as tall as the terminal, on every pane and every size.
+	bodyH := m.height - 1 /* title */ - boxTopLines - boxBottomLines - footerLines
 	// And one for the spend strip, which View() draws directly under the title.
 	//
 	// BY HEIGHT ALONE, deliberately blind to the pane: there is no setPane choke point to
@@ -72,7 +63,7 @@ func (m *model) layout() {
 	// slack — and setting columns with the old rows still loaded panics inside bubbles'
 	// SetColumns. rebuildSessionsTable owns both; see its doc. It is called below, after the
 	// heights are set.
-	m.pipelineTbl.SetColumns(fitTableColumns(pipelineColumns(), m.width))
+	m.pipelineTbl.SetColumns(fitTableColumns(pipelineColumns(), m.innerWidth()))
 	m.rebuildAgentsTable()
 
 	m.sessionsTbl.SetHeight(bodyH)
@@ -102,7 +93,7 @@ func (m *model) layout() {
 	// it measures in a HAND-WRITTEN map, and paneAgents was simply not in it — so adding a pane
 	// means adding it to that map too.
 	m.agentsTbl.SetHeight(bodyH)
-	m.detailVp.Width = m.width
+	m.detailVp.Width = m.innerWidth()
 	// The event detail's fixed line takes one row (#1681). Every pane but the plugin detail
 	// gets the shorter viewport, because the event detail is the pane they return to, and
 	// the usage and Timeline panes return to it without a re-render.
@@ -117,7 +108,7 @@ func (m *model) layout() {
 	// re-render would land after it either way.
 	m.detailVp.SetYOffset(m.detailVp.YOffset)
 
-	m.searchInput.Width = m.width - 4
+	m.searchInput.Width = m.innerWidth() - 4
 	if m.searchPane == paneEvents {
 		m.searchInput.Width = max(m.searchInput.Width-detailsBoxWidth, 1)
 	}

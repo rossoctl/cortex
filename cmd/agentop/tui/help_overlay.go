@@ -906,9 +906,8 @@ func padRight(s string, n int) string {
 // preserving the surrounding view. Both are treated as plain rendered
 // blocks; the overlay's lines replace the base's at the computed offset.
 //
-// ANSI-aware only insofar as lipgloss.Width is used for column math —
-// good enough because the overlay fully covers the columns it occupies,
-// so no partial-escape splicing happens on the overlay's own rows.
+// ANSI-aware: the base's prefix and tail are cut with ANSI-aware functions,
+// and the overlay fully covers the columns it occupies.
 func overlayCenter(base, overlay string, width, height int) string {
 	baseLines := strings.Split(base, "\n")
 	overLines := strings.Split(overlay, "\n")
@@ -952,15 +951,16 @@ func overlayCenter(base, overlay string, width, height int) string {
 		if row >= len(out) {
 			break
 		}
-		// Rebuild the row as: base prefix (left columns) + overlay line.
-		// Anything the overlay covers to the right is dropped — the panel
-		// is opaque, and reconstructing a styled tail past an ANSI-laden
-		// prefix is not worth the complexity for a modal.
+		// Rebuild the row as: base prefix (left columns) + overlay line, padded to the
+		// panel's width + the base's tail right of the panel. The tail is what keeps the
+		// body box's right edge visible beside the panel. ansi.TruncateLeft keeps the
+		// tail's styles; the panel's own columns are opaque.
 		prefix := truncToWidth(out[row], left)
 		if w := lipgloss.Width(prefix); w < left {
 			prefix += strings.Repeat(" ", left-w)
 		}
-		out[row] = prefix + ol
+		tail := ansi.TruncateLeft(out[row], left+overW, "")
+		out[row] = prefix + padRight(ol, overW) + tail
 	}
 	return strings.Join(out, "\n")
 }
