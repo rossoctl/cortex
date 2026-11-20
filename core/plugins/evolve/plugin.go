@@ -580,55 +580,64 @@ func (p *Plugin) learnLoop(ctx context.Context) {
 }
 
 // learnIdle sends each idle session's new turns to evolve, and failed batches
-// whose retry is due. A failed batch is sent again as it was, under the same
-// batch id: evolve skips a batch it already processed, so a send that succeeded
-// but reported failure is not learned twice.
+// whose retry is due, one session at a time. A failed batch is sent again as it
+// was, under the same batch id: evolve skips a batch it already processed, so a
+// send that succeeded but reported failure is not learned twice.
 func (p *Plugin) learnIdle(ctx context.Context) {
-	now := p.now()
-	cutoff := now.Add(-time.Duration(p.cfg.IdleAfter) * time.Second)
-	type due struct {
-		id string
-		s  *session
-		t  Trajectory
-	}
-	var batches []due
 	p.mu.Lock()
-	for id, s := range p.sessions {
-		if s.sending {
-			continue
-		}
-		// A session stays tracked after it is learned from, so a resumed session
-		// continues its batch sequence; max_sessions bounds how many are kept.
-		t, ok := s.rec.next(id, p.cfg.MinTurns, !s.last.After(cutoff), now)
-		if !ok {
-			continue
-		}
-		s.sending = true
-		batches = append(batches, due{id, s, t})
+	ids := make([]string, 0, len(p.sessions))
+	for id := range p.sessions {
+		ids = append(ids, id)
 	}
 	p.mu.Unlock()
-
-	for _, b := range batches {
-		callCtx, cancel := context.WithTimeout(ctx, time.Duration(p.cfg.LearnTimeout)*time.Second)
-		err := p.client.Learn(callCtx, p.cfg.LearnNamespace, b.t)
-		cancel()
-		p.mu.Lock()
-		b.s.sending = false
-		dropped := b.s.rec.sent(b.t, err, p.now(), p.tick)
-		p.mu.Unlock()
-		switch {
-		case dropped:
-			p.m.inc(&p.m.learnDropped)
-			slog.Warn("evolve: giving up sending a session batch to learn from", "session", b.id,
-				"batch", b.t.Batch.BatchID, "attempts", maxLearnAttempts, "err", err)
-			continue
-		case err != nil:
-			p.m.inc(&p.m.learnErrors)
-			slog.Warn("evolve: sending session to learn from failed; will retry", "session", b.id, "err", err)
-			continue
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return
 		}
+		p.learnOne(ctx, id)
+	}
+}
+
+// learnOne sends one session's due batch, if it has one. The batch is taken
+// just before it is sent, so a session that resumed while earlier sessions were
+// being sent is no longer idle, and waits for a later tick.
+func (p *Plugin) learnOne(ctx context.Context, id string) {
+	p.mu.Lock()
+	s, ok := p.sessions[id]
+	if !ok || s.sending {
+		p.mu.Unlock()
+		return
+	}
+	now := p.now()
+	idle := !s.last.After(now.Add(-time.Duration(p.cfg.IdleAfter) * time.Second))
+	// A session stays tracked after it is learned from, so a resumed session
+	// continues its batch sequence; max_sessions bounds how many are kept.
+	t, due := s.rec.next(id, p.cfg.MinTurns, idle, now)
+	if !due {
+		p.mu.Unlock()
+		return
+	}
+	s.sending = true
+	p.mu.Unlock()
+
+	callCtx, cancel := context.WithTimeout(ctx, time.Duration(p.cfg.LearnTimeout)*time.Second)
+	err := p.client.Learn(callCtx, p.cfg.LearnNamespace, t)
+	cancel()
+	p.mu.Lock()
+	s.sending = false
+	dropped := s.rec.sent(t, err, p.now(), p.tick)
+	p.mu.Unlock()
+	switch {
+	case dropped:
+		p.m.inc(&p.m.learnDropped)
+		slog.Warn("evolve: giving up sending a session batch to learn from", "session", id,
+			"batch", t.Batch.BatchID, "attempts", maxLearnAttempts, "err", err)
+	case err != nil:
+		p.m.inc(&p.m.learnErrors)
+		slog.Warn("evolve: sending session to learn from failed; will retry", "session", id, "err", err)
+	default:
 		p.m.inc(&p.m.learned)
-		slog.Info("evolve: sent idle session to learn from", "session", b.id, "messages", len(b.t.Messages), "batch", b.t.Batch.BatchID)
+		slog.Info("evolve: sent idle session to learn from", "session", id, "messages", len(t.Messages), "batch", t.Batch.BatchID)
 	}
 }
 

@@ -32,6 +32,10 @@ type fakeEvolve struct {
 	learned    []learned
 	learnErr   error
 	learnCalls int
+	// learnHold, when set, keeps the next Learn from answering until it is
+	// closed; learning names the conversation that Learn is sending.
+	learnHold chan struct{}
+	learning  string
 	// hold, when set, keeps fetches for holdSession from answering until it is
 	// closed or the fetch's context ends.
 	hold        chan struct{}
@@ -65,6 +69,16 @@ func (f *fakeEvolve) fetches() int {
 }
 
 func (f *fakeEvolve) Learn(_ context.Context, namespace string, t Trajectory) error {
+	f.mu.Lock()
+	hold := f.learnHold
+	f.learnHold = nil
+	if t.Batch != nil {
+		f.learning = t.Batch.ConversationID
+	}
+	f.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.learnCalls++
@@ -917,5 +931,41 @@ func TestLearn_AResumedSessionDoesNotReuseItsBatchIDs(t *testing.T) {
 	// turns as a batch it had already processed.
 	if len(ids) != 2 || ids[0] == ids[1] {
 		t.Fatalf("s1 batch ids = %v, want two different ids", ids)
+	}
+}
+
+func (f *fakeEvolve) sendingSession() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.learning
+}
+
+func TestLearn_ASessionThatResumesDuringATickWaits(t *testing.T) {
+	fe := &fakeEvolve{learnHold: make(chan struct{})}
+	p, c := configured(t, `{"endpoint":"http://x","idle_after_seconds":60,"min_turns":1}`, fe)
+	for _, id := range []string{"s1", "s2"} {
+		pctx := turn(h1, "Running.", bash1)
+		pctx.Session.ID = id
+		finish(t, p, pctx)
+	}
+	c.t = c.t.Add(61 * time.Second)
+	hold := fe.learnHold
+	done := make(chan struct{})
+	go func() { p.learnIdle(context.Background()); close(done) }()
+	waitFor(t, func() bool { return fe.sendingSession() != "" })
+	// Both sessions were idle when the tick began. The one not being sent resumes.
+	other := "s1"
+	if fe.sendingSession() == "s1" {
+		other = "s2"
+	}
+	resumed := turn(h2, "Done.", nil, pipeline.InferenceToolResult{ToolUseID: "t1", Content: "ok"})
+	resumed.Session.ID = other
+	finish(t, p, resumed)
+	close(hold)
+	<-done
+	// Before, the tick had taken both batches before sending either, so the
+	// resumed session was sent though it was active again.
+	if len(fe.learned) != 1 {
+		t.Fatalf("learned %d batches, want only the session that stayed idle", len(fe.learned))
 	}
 }
