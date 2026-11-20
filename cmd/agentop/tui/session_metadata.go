@@ -184,6 +184,17 @@ func (m *model) parentSessionOf(id string) string {
 	return ""
 }
 
+// sessionNoRecord reports whether the server lists this session as not recorded (#1923). The
+// same linear walk as servedTitle, for the same reason.
+func (m *model) sessionNoRecord(id string) bool {
+	for _, s := range m.sessions {
+		if s.ID == id {
+			return s.NoRecord
+		}
+	}
+	return false
+}
+
 // HarvestFunc reads an agent's transcripts and returns what it learned, keyed by session id.
 //
 // A function on RunOptions rather than a direct call into core/observe/claude, so this

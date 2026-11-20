@@ -2846,6 +2846,9 @@ func (m *model) sessionHeader(id, suffix string) string {
 	if p := m.parentSessionOf(id); p != "" {
 		tail += " · under " + sessionIDCell(sanitizeLabel(p), noLimit)
 	}
+	if m.sessionNoRecord(id) {
+		tail += " · not recorded"
+	}
 	tail += m.scopeSuffix(m.agentScope, m.projectScope)
 	// A floor of 12, so a very narrow terminal shows a stub of the label rather than dropping
 	// it: the header is the only thing on screen naming which session these events belong to.
