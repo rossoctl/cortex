@@ -62,7 +62,7 @@ tests:
             value: 0.5
 
   # ---- A series with no cause label is named, not shown as "Value" ------------------------------
-  # cortex pushes llm_cache_misses_total with no cause label; context-guru pushes it with one.
+  # An older cortex build pushes llm_cache_misses_total with no cause label; context-guru pushes it with one.
   - name: a miss with no cause label is shown as unattributed
     interval: 1m
     input_series:

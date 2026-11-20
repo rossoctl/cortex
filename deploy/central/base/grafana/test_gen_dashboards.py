@@ -61,7 +61,7 @@ class PromtoolTestInStepTest(unittest.TestCase):
 
 class LegendTest(unittest.TestCase):
     def test_a_by_label_legend_never_falls_back_to_value(self):
-        # cortex pushes llm_cache_misses_total and llm_keepalive_pings_total with no cause or
+        # Older cortex builds push llm_cache_misses_total and llm_keepalive_pings_total with no cause or
         # outcome label. Grafana names such a series "Value". The panel must name it.
         cache = g.cache()
         for title, label in (("Misses by cause (per hour)", "cause"), ("Miss cost by cause (USD, selected range)", "cause"),
