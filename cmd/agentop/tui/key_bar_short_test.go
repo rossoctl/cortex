@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -89,24 +90,38 @@ func TestHelpView_TimelineShort(t *testing.T) {
 	}
 }
 
-// Each key a bar no longer shows is still in that pane's ? help.
+// Each key a bar no longer shows is still in that pane's ? help, in the section that owns it:
+// the pane's own group, the ANYWHERE group, or the pane's jumps. The match is exact, so "↑↓"
+// is not found as the head of "↑↓ / jk", and a key that only EVERY PANE or another group lists
+// does not count.
 func TestHelpOverlay_ListsRemovedKeys(t *testing.T) {
-	removed := map[paneID][]string{
-		paneNamespaces:   {"↑↓ / jk"},
-		panePods:         {"↑↓ / jk"},
-		paneSessions:     {"↑↓ / jk", "p ", "P "},
-		paneEvents:       {"↑↓ / jk", "p "},
-		paneDetail:       {"↑↓ "},
-		panePipeline:     {"↑↓ / jk"},
-		panePluginDetail: {"↑↓ "},
-		paneTimeline:     {"↑ ↓ / k j"},
-		paneAgents:       {"↑↓ / jk"},
+	inGroup := func(g keyGroup, k string) bool {
+		return slices.ContainsFunc(g.bindings, func(b keyBinding) bool { return b.keys == k })
+	}
+	own := func(pane paneID, k string) bool { return inGroup(paneKeys[pane], k) }
+	anywhere := func(_ paneID, k string) bool { return inGroup(anywhereKeys, k) }
+	jump := func(pane paneID, k string) bool {
+		return slices.ContainsFunc(jumpsFrom(pane), func(j jumpTarget) bool { return j.key == k })
+	}
+	type key struct {
+		keys  string
+		owner func(paneID, string) bool
+	}
+	removed := map[paneID][]key{
+		paneNamespaces:   {{"↑↓ / jk", own}},
+		panePods:         {{"↑↓ / jk", own}},
+		paneSessions:     {{"↑↓ / jk", own}, {"p", anywhere}, {"P", jump}},
+		paneEvents:       {{"↑↓ / jk", own}, {"p", anywhere}},
+		paneDetail:       {{"↑↓", own}},
+		panePipeline:     {{"↑↓ / jk", own}},
+		panePluginDetail: {{"↑↓", own}},
+		paneTimeline:     {{"↑ ↓ / k j", own}},
+		paneAgents:       {{"↑↓ / jk", own}},
 	}
 	for pane, keys := range removed {
-		body := ansi.Strip(helpBodyLines(pane, 200))
 		for _, k := range keys {
-			if !helpHasKey(body, k) {
-				t.Errorf("%s help does not list %q", paneName(pane), k)
+			if !k.owner(pane, k.keys) {
+				t.Errorf("%s help does not list %q in the section that owns it", paneName(pane), k.keys)
 			}
 		}
 	}
