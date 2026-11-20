@@ -52,6 +52,7 @@ sends to a callee). "Both" means that the plugin runs on the two pipelines.
 | Name | Description | Where | Direction |
 |------|-------------|-------|-----------|
 | [`a2a-parser`](#a2a-parser) | Reads A2A messages into `pctx.Extensions.A2A` for the plugins after it. | Both | Both |
+| [`evolve`](#evolve) | Adds the guidelines that [altk-evolve](https://github.com/AgentToolkit/altk-evolve) learned from earlier sessions to a coding agent's requests, and sends finished sessions to it to learn from. | Laptop | Outbound |
 | [`context-guru`](#context-guru) | Makes the outbound LLM request context smaller before Cortex sends it. | Both | Outbound |
 | [`cpex`](#cpex) | Runs [CPEX](https://github.com/contextforge-org/cpex) 0.3 policy plugins (JWT identity, OAuth delegation, Cedar, CEL, OPA) as one pipeline step. | Kubernetes | Outbound |
 | [`ibac`](#ibac) | An LLM judge compares each outbound tool call with the user's intent. | Kubernetes | Outbound |
@@ -82,6 +83,14 @@ which shipped artifact carries which plugin.
 
 Gives the A2A method, session ID, message parts and role to the plugins after it.
 See [`a2a-parser-plugin.md`](a2a-parser-plugin.md).
+
+## `evolve`
+
+Connects coding agents to [altk-evolve](https://github.com/AgentToolkit/altk-evolve), a service
+that learns guidelines from agent sessions, through its stock MCP server. It adds the
+guidelines relevant to a session's task to that session's requests, and sends a session to
+altk-evolve once it goes quiet. By default, learned guidelines are served only after a person
+reviews them. Fails open. See [`evolve-plugin.md`](evolve-plugin.md).
 
 ## `context-guru`
 
