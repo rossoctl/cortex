@@ -43,6 +43,10 @@ var (
 	colorZebraBg = lipgloss.AdaptiveColor{Light: "#F3F4F6", Dark: "#15151C"} // every second table row
 	colorChipBg  = lipgloss.AdaptiveColor{Light: "#E5E7EB", Dark: "#374151"} // key chip ground
 	colorChipFg  = lipgloss.AdaptiveColor{Light: "#111827", Dark: "#F3F4F6"} // key chip text
+
+	colorBarBg     = lipgloss.AdaptiveColor{Light: "#F3F4F6", Dark: "#1F2937"} // the key bar, the last line
+	colorBarChipBg = lipgloss.AdaptiveColor{Light: "#D1D5DB", Dark: "#4B5563"} // a key chip on the bar
+	colorBarChipFg = lipgloss.AdaptiveColor{Light: "#111827", Dark: "#F9FAFB"} // its text
 )
 
 var (
@@ -58,6 +62,9 @@ var (
 	styleDim        = lipgloss.NewStyle().Foreground(colorDim)
 	styleBold       = lipgloss.NewStyle().Bold(true)
 	styleChip       = lipgloss.NewStyle().Foreground(colorChipFg).Background(colorChipBg)
+	styleBar        = lipgloss.NewStyle().Background(colorBarBg)
+	styleBarLabel   = lipgloss.NewStyle().Foreground(colorMuted).Background(colorBarBg)
+	styleBarChip    = lipgloss.NewStyle().Foreground(colorBarChipFg).Background(colorBarChipBg)
 	styleSeg        = lipgloss.NewStyle().Foreground(colorOnSeries).Background(colorAccent).Bold(true)
 	styleAccent     = lipgloss.NewStyle().Foreground(colorAccent)
 	styleAccentBold = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
@@ -217,12 +224,16 @@ func renderHints(fitted string) string {
 	if !colorOn() {
 		return styleHint.Render(fitted)
 	}
+	return chipHints(fitted, styleHint, styleChip)
+}
+
+func chipHints(fitted string, label, chip lipgloss.Style) string {
 	var b strings.Builder
 	for _, p := range splitHintChips(fitted) {
 		if p.chip {
-			b.WriteString(styleChip.Render(" " + p.text + " "))
+			b.WriteString(chip.Render(" " + p.text + " "))
 		} else {
-			b.WriteString(styleHint.Render(p.text))
+			b.WriteString(label.Render(p.text))
 		}
 	}
 	return b.String()
@@ -234,17 +245,45 @@ func renderTrailingHints(fitted, keys string) string {
 	if !colorOn() {
 		return styleHint.Render(fitted)
 	}
+	return trailingChipHints(fitted, keys, styleHint, styleChip)
+}
+
+func trailingChipHints(fitted, keys string, label, chip lipgloss.Style) string {
 	if head, ok := strings.CutSuffix(fitted, keys); ok {
 		if head == "" {
-			return renderHints(keys)
+			return chipHints(keys, label, chip)
 		}
-		return styleHint.Render(head) + renderHints(keys)
+		return label.Render(head) + chipHints(keys, label, chip)
 	}
 	// The fit cut into the keys, so no other text is left.
 	if strings.HasSuffix(keys, strings.TrimPrefix(fitted, "… ")) {
+		return chipHints(fitted, label, chip)
+	}
+	return label.Render(fitted)
+}
+
+// renderKeyBar is renderHints for the last line of the screen: with color, the line is a
+// shaded bar padded to width (no pad when width <= 0). Under Ascii it is renderHints.
+func renderKeyBar(fitted string, width int) string {
+	if !colorOn() {
 		return renderHints(fitted)
 	}
-	return styleHint.Render(fitted)
+	return padBar(chipHints(fitted, styleBarLabel, styleBarChip), width)
+}
+
+// renderTrailingKeyBar is renderTrailingHints drawn as the key bar (see renderKeyBar).
+func renderTrailingKeyBar(fitted, keys string, width int) string {
+	if !colorOn() {
+		return renderTrailingHints(fitted, keys)
+	}
+	return padBar(trailingChipHints(fitted, keys, styleBarLabel, styleBarChip), width)
+}
+
+func padBar(line string, width int) string {
+	if pad := width - lipgloss.Width(line); pad > 0 {
+		line += styleBar.Render(strings.Repeat(" ", pad))
+	}
+	return line
 }
 
 // titleMarkRe finds the parts of a title that are not bold default ink.

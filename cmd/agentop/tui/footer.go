@@ -37,7 +37,7 @@ func (m *model) footerView() string {
 	// reading right now.
 	if m.flash != "" && m.flashSticky {
 		return styleTitle.Render(fitFlashLine(m.flash, m.width)) + "\n" +
-			renderHints(fitHintLine(m.helpView(), m.width))
+			renderKeyBar(fitHintLine(m.helpView(), m.width), m.width)
 	}
 
 	// Connection state dot.
@@ -133,7 +133,7 @@ func (m *model) footerView() string {
 
 	hint := fitHintLine(m.helpView(), m.width)
 
-	return fitStatusLine(status.String(), m.width) + "\n" + renderHints(hint)
+	return fitStatusLine(status.String(), m.width) + "\n" + renderKeyBar(hint, m.width)
 }
 
 // fitStatusLine bounds the status row to the terminal.
