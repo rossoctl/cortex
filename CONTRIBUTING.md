@@ -394,9 +394,11 @@ Two things worth knowing before reading it:
   taken off its own platform's column. Each job installs three times — a fresh install
   of the newest stable tag, an upgrade to the tag under test, and a no-op re-run —
   but on a push to `main` the latter two land on `main-latest`, which the collector
-  excludes because `--clobber` resets its download counts on every push. Change
-  that structure, and the estimate drifts until `scripts/collect-install-stats.sh`
-  is updated to match.
+  excludes because `--clobber` resets its download counts on every push. On a tag
+  push they land on the tag under test, and nothing subtracts them: each release
+  carries two installs per smoke job that the page counts as people: four on Linux
+  and six on Mac with today's runners. Change that structure, and the estimate drifts until
+  `scripts/collect-install-stats.sh` is updated to match.
 - **The figures include us.** At the current scale, maintainers running the
   installer are a large share of the total. Do not read a daily number as new users.
 

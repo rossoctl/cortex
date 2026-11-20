@@ -628,8 +628,9 @@ function renderReleases(snapshots) {
     // after the oldest run this page holds, so no span has lost macOS runs off its
     // front, and a span before it began truly had none.
     const macEst = ci !== null ? people(r.mac, ci.darwin) : null;
+    // Unadjusted is said, as in the Linux column, now that Mac has CI to subtract.
     const macCell = macEst === null
-      ? `${r.mac}`
+      ? `<span class="delta" title="not adjusted for CI — the run history does not reach a span when the smoke test installed this release, so its CI installs are unknown">${r.mac}</span>`
       : macEst.underflow
         ? `<span class="delta" title="${r.mac} Mac installs including CI, against ${ci.darwin} CI, so this would be ${macEst.raw}">~0</span>`
         : `${macEst.value}`;

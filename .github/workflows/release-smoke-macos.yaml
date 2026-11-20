@@ -61,6 +61,24 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
 
+      # This file always runs from main, but the checkout above is the release's
+      # commit, and a tag on a commit from before this test existed has no script to
+      # run: a final release tagged on its candidate's commit, or a backport. Skip
+      # the test then, rather than fail: such a release is not smoke-tested on
+      # macOS, as before this workflow existed. A skipped step is also not counted as
+      # an install, where a failed one would be.
+      - name: Check that the release has the macOS smoke test
+        id: script
+        env:
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          if [ -f scripts/release_smoke_test_macos.sh ]; then
+            echo "present=true" >>"${GITHUB_OUTPUT}"
+          else
+            echo "::notice::${BRANCH}'s commit predates the macOS smoke test, so it is not smoke-tested on macOS"
+            echo "present=false" >>"${GITHUB_OUTPUT}"
+          fi
+
       - name: Determine the tag under test
         id: tag
         env:
@@ -80,6 +98,7 @@ jobs:
       # A launch agent runs only in a logged-in desktop session. Fail here, naming
       # that, rather than later as an install that cannot load its job.
       - name: Check for a desktop session
+        if: steps.script.outputs.present == 'true'
         run: |
           echo "macOS $(sw_vers -productVersion) $(uname -m); console: $(stat -f%Su /dev/console)"
           launchctl print "gui/$(id -u)" >/dev/null 2>&1 || {
@@ -90,6 +109,7 @@ jobs:
       # scripts/collect-install-stats.sh matches this step by name to count the
       # job's install. Rename both together.
       - name: Run the macOS release smoke test
+        if: steps.script.outputs.present == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           SMOKE_TEST_TAG: ${{ steps.tag.outputs.tag }}

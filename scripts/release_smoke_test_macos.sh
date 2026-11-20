@@ -172,6 +172,10 @@ if [ -n "${OLDER_TAG}" ]; then
 	marker="smoke-test-marker-${TAG}"
 	printf '# %s\n' "${marker}" >>"${CFG}"
 
+	# assert_running_binary_is_current compares whole seconds, so a stale process
+	# that started in the same second as the binary changed would pass. The download
+	# in between makes that all but impossible; this makes it impossible.
+	sleep 1
 	log "Upgrade: ${INSTALL_TAG} -> ${TAG}"
 	install_cortex "${TAG}"
 	assert_contains "${CFG}" "${marker}" "config marker did not survive the upgrade"

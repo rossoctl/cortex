@@ -53,7 +53,11 @@ if [ -z "${port}" ]; then
 	exit 1
 fi
 
-code=$(curl -sS --max-time 30 -o "${TMP_DIR}/reply" -w '%{http_code}' \
+# --noproxy '' because curl obeys NO_PROXY even with -x: a NO_PROXY that names
+# 127.0.0.1, common on a developer's machine, would send this past Cortex. The
+# session API calls below take --noproxy '*' for the opposite reason: they must
+# reach the session API directly, whatever HTTP_PROXY says.
+code=$(curl -sS --max-time 30 --noproxy '' -o "${TMP_DIR}/reply" -w '%{http_code}' \
 	-x "http://${PROXY}" "http://127.0.0.1:${port}/v1/messages" \
 	-H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
 	-H 'x-api-key: smoke-test' -H "X-Session-Id: ${SID}" \
@@ -68,7 +72,7 @@ fi
 # after the client has its reply, so poll briefly rather than read once.
 got=""
 for _ in $(seq 1 20); do
-	got=$(curl -fsS --max-time 5 "http://${SESSION_API}/v1/sessions/${SID}" 2>/dev/null |
+	got=$(curl -fsS --max-time 5 --noproxy '*' "http://${SESSION_API}/v1/sessions/${SID}" 2>/dev/null |
 		jq -r '[.events[] | select(.phase == "response" and .inference != null)] | last
 		       | if . == null then "" else "\(.inference.model) \(.inference.inputTokens) \(.inference.outputTokens)" end' \
 		2>/dev/null || true)
@@ -77,10 +81,10 @@ for _ in $(seq 1 20); do
 done
 if [ "${got}" != "claude-sonnet-4-5 12 3" ]; then
 	echo "FAIL: Cortex did not record the request's tokens: want 'claude-sonnet-4-5 12 3' (model, in, out), got '${got:-no parsed response in session ${SID}}'" >&2
-	curl -sS --max-time 5 "http://${SESSION_API}/v1/sessions/${SID}" >&2 2>/dev/null || true
+	curl -sS --max-time 5 --noproxy '*' "http://${SESSION_API}/v1/sessions/${SID}" >&2 2>/dev/null || true
 	exit 1
 fi
-total=$(curl -fsS --max-time 5 "http://${SESSION_API}/v1/sessions" | jq -r --arg id "${SID}" '.sessions[] | select(.id == $id) | .totalTokens')
+total=$(curl -fsS --max-time 5 --noproxy '*' "http://${SESSION_API}/v1/sessions" | jq -r --arg id "${SID}" '.sessions[] | select(.id == $id) | .totalTokens')
 if [ "${total}" != 15 ]; then
 	echo "FAIL: session ${SID} lists totalTokens '${total}', want 15" >&2
 	exit 1

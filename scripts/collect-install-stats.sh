@@ -361,10 +361,13 @@ jq --arg date "${today}" \
     # and almost every run lands after that.
     taken_at: $taken_at,
 
-    # Every completed smoke run, as {id, created_at, installs, installs_rule}, or
-    # null when the query failed. The page merges these across snapshots on id, so
-    # a run stays counted after it falls out of the last-100 window the API
-    # returns, and it ignores the installs:0 rows when counting runs.
+    # Every completed smoke run of both smoke workflows, as {id, created_at,
+    # installs, installs_rule, platform}, or null when either query failed. The page
+    # merges these across snapshots on id, so a run stays counted after it falls out
+    # of the last-100 window the API returns, and it ignores the installs:0 rows
+    # when counting runs. platform is linux or darwin, the column the run comes off;
+    # a record from before the macOS workflow has none, and the page reads it as
+    # linux, which it was.
     #
     # The installs field counts the jobs of that run that ran the smoke-test step,
     # and installs_rule "step" marks it as counted that way (an older record without
@@ -377,13 +380,13 @@ jq --arg date "${today}" \
     # a mysterious function-definition error. Bitten a 4th time writing this.)
     smoke_runs: ($smoke[0].runs // null),
 
-    # How many runs the workflow has EVER had, successful or not, per the API.
+    # How many runs the smoke workflows have EVER had together, successful or not,
+    # per the API: the sum of each one total_count.
     #
-    # Lets the page tell a truncated history from a complete one. A page of 100 is
-    # all the API gives, so when total_count is at or below 100 the first snapshot
-    # holds the entire history for this workflow and no run is missing -- without
-    # this, a release published before the workflow existed gets a floor marker for
-    # runs that never happened.
+    # Recorded, but no longer read: the page used it to tell a truncated history
+    # from a complete one, and dropped that test because one snapshot count could
+    # not say it (see the page, "THE total_count TEST THAT USED TO GUARD THIS IS
+    # GONE"). Kept so that older and newer snapshots have the same shape.
     #
     # (No apostrophes in this jq program: it is single-quoted in the shell, so one
     # would end the quote and produce a confusing jq syntax error. Bitten 3x.)
