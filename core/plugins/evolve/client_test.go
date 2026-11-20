@@ -762,3 +762,39 @@ func TestMCPEvolve_OneDeadlineCoversStartingAndInitializing(t *testing.T) {
 		t.Fatalf("connect failed after %v, want within its 600ms budget", took)
 	}
 }
+
+func TestMCPEvolve_LearningSetsUpTheSessionItSendsOn(t *testing.T) {
+	sw := &swappable{}
+	ts := httptest.NewServer(sw)
+	t.Cleanup(ts.Close)
+	first, second := &fakeEvolveServer{}, &fakeEvolveServer{}
+	sw.set(server.NewSSEServer(first.mcpServer(), server.WithBaseURL(ts.URL)))
+	e := newMCPEvolve(ts.URL+"/sse", "cortex", "environment-grounded", time.Second)
+	defer e.Close()
+	swapped := false
+	e.afterSetup = func() {
+		if swapped {
+			return
+		}
+		swapped = true
+		// Evolve restarts just after setup, and a concurrent call retires the session.
+		sw.set(server.NewSSEServer(second.mcpServer(), server.WithBaseURL(ts.URL)))
+		e.mu.Lock()
+		if e.client != nil {
+			e.retire()
+		}
+		e.mu.Unlock()
+	}
+	tr := Trajectory{Messages: []map[string]any{{"role": "user", "content": "x"}}}
+	_ = e.Learn(context.Background(), "cortex", tr) // sent on the session that was set up, which evolve no longer knows
+	if err := e.Learn(context.Background(), "cortex", tr); err != nil {
+		t.Fatal(err)
+	}
+	// The new evolve is set up before it is sent anything to learn. Before, the
+	// setup was recorded for the plugin as a whole, so the batch went to the new
+	// evolve unprepared; one without the profile would fail it every time.
+	got := second.tools()
+	if len(got) < 3 || got[0] != "ensure_processing_profile" || got[1] != "list_entities" || got[2] != "process_trajectory" {
+		t.Fatalf("new evolve got %v, want setup before process_trajectory", got)
+	}
+}

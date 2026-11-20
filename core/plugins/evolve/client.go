@@ -119,21 +119,13 @@ type mcpEvolve struct {
 	connecting chan struct{}
 	connErr    error // why the last connect failed
 	// gen counts Close calls, so a connect that finishes after one is discarded.
-	gen     int
-	ensured bool
-	// noDetails records that this evolve predates include_details on
-	// get_guidelines_with_attribution, so Guidelines reads the guidelines with
-	// list_entities instead. Cleared with the session, in case evolve was
-	// upgraded in the meantime.
-	noDetails bool
-	// noPrompt records that this evolve rejected guidelines_prompt (it predates
-	// altk-evolve #479, or doesn't have the prompt), so the profile is created
-	// with the server's default prompt. Cleared with the session, like noDetails.
-	noPrompt bool
+	gen int
 	// closeHook, when a test sets it, runs just before a session's client is closed.
 	closeHook func(*conn)
 	// connectBudget is connectTimeout, shortened by tests.
 	connectBudget time.Duration
+	// afterSetup, when a test sets it, runs once a session's setup calls are done.
+	afterSetup func()
 }
 
 func newMCPEvolve(url, profile, prompt string, timeout time.Duration) *mcpEvolve {
@@ -171,6 +163,19 @@ type conn struct {
 	readerOnce sync.Once
 	stop       context.CancelFunc
 	streaming  atomic.Bool // the stream's body was opened, so a reader runs or ran
+
+	// What the plugin has learned about the evolve behind this session. It
+	// belongs to the session, so a new session (after evolve restarted, or was
+	// upgraded or replaced) starts over, and nothing learned on one session can
+	// be applied to another. Guarded by mcpEvolve.mu.
+	//
+	// ensured: the processing profile and the learn namespace are in place.
+	// noDetails: this evolve predates include_details on
+	// get_guidelines_with_attribution, so Guidelines reads the guidelines with
+	// list_entities instead. noPrompt: this evolve rejected guidelines_prompt (it
+	// predates altk-evolve #479, or doesn't have the prompt), so the profile is
+	// created with the server's default prompt.
+	ensured, noDetails, noPrompt bool
 }
 
 // closeConn closes a session the plugin is done with. It stops the stream and
@@ -355,16 +360,11 @@ func (e *mcpEvolve) dial(cn *conn) (*mcpclient.Client, error) {
 	return c, nil
 }
 
-// release ends a call on cn. A call whose session failed retires it, and what
-// the plugin learned about this evolve (ensured, noDetails, noPrompt) is
-// forgotten with it, in case evolve was upgraded or replaced. A retired session
-// is closed once no call is using it.
-func (e *mcpEvolve) release(cn *conn, failed bool) {
+// release ends a use of cn that session began. A retired session is closed once
+// no one is using it.
+func (e *mcpEvolve) release(cn *conn) {
 	e.mu.Lock()
 	cn.calls--
-	if failed && e.client == cn {
-		e.retire()
-	}
 	closeNow := cn.retired && cn.calls == 0 && !cn.closed
 	cn.closed = cn.closed || closeNow
 	e.mu.Unlock()
@@ -373,13 +373,11 @@ func (e *mcpEvolve) release(cn *conn, failed bool) {
 	}
 }
 
-// retire stops handing out the current session. Called with e.mu held.
+// retire stops handing out the current session. What was learned about evolve
+// goes with it. Called with e.mu held.
 func (e *mcpEvolve) retire() {
 	e.client.retired = true
 	e.client = nil
-	e.ensured = false
-	e.noDetails = false
-	e.noPrompt = false
 }
 
 // broken reports whether a call's error means its session failed: a transport
@@ -392,18 +390,33 @@ func broken(err error) bool {
 	return errors.As(err, &te) && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled)
 }
 
-// call invokes a tool and returns its text result.
-func (e *mcpEvolve) call(ctx context.Context, tool string, args map[string]any) (string, error) {
+// use runs fn with the current session, connecting if there is none. Every
+// call fn makes goes over that one session, so what fn learns about evolve, and
+// the setup it does, apply to the session the calls use.
+func (e *mcpEvolve) use(ctx context.Context, fn func(*conn) error) error {
 	cn, err := e.session(ctx)
 	if err != nil {
-		return "", fmt.Errorf("%w: connect: %v", ErrUnavailable, err)
+		return fmt.Errorf("%w: connect: %v", ErrUnavailable, err)
 	}
+	defer e.release(cn)
+	return fn(cn)
+}
+
+// call invokes a tool on cn and returns its text result. An error that says the
+// session failed retires it.
+func (e *mcpEvolve) call(ctx context.Context, cn *conn, tool string, args map[string]any) (string, error) {
 	req := mcp.CallToolRequest{}
 	req.Params.Name = tool
 	req.Params.Arguments = args
 	res, err := cn.c.CallTool(ctx, req)
-	e.release(cn, err != nil && broken(err))
 	if err != nil {
+		if broken(err) {
+			e.mu.Lock()
+			if e.client == cn {
+				e.retire()
+			}
+			e.mu.Unlock()
+		}
 		return "", fmt.Errorf("%w: %s: %v", ErrUnavailable, tool, err)
 	}
 	text := resultText(res)
@@ -447,21 +460,29 @@ type attributed struct {
 // rejects it as an unexpected argument.
 const detailsArg = "include_details"
 
-func (e *mcpEvolve) Guidelines(ctx context.Context, namespace, task, sessionID string) ([]Guideline, error) {
+func (e *mcpEvolve) Guidelines(ctx context.Context, namespace, task, sessionID string) (out []Guideline, err error) {
+	err = e.use(ctx, func(cn *conn) error {
+		out, err = e.guidelines(ctx, cn, namespace, task, sessionID)
+		return err
+	})
+	return out, err
+}
+
+func (e *mcpEvolve) guidelines(ctx context.Context, cn *conn, namespace, task, sessionID string) ([]Guideline, error) {
 	args := map[string]any{"task": task, "namespace_id": namespace, "session_id": sessionID}
 	e.mu.Lock()
-	details := !e.noDetails
+	details := !cn.noDetails
 	e.mu.Unlock()
 	if details {
 		args[detailsArg] = true
 	}
-	text, err := e.call(ctx, "get_guidelines_with_attribution", args)
+	text, err := e.call(ctx, cn, "get_guidelines_with_attribution", args)
 	if err != nil && details && strings.Contains(err.Error(), detailsArg) {
 		e.mu.Lock()
-		e.noDetails = true
+		cn.noDetails = true
 		e.mu.Unlock()
 		delete(args, detailsArg)
-		text, err = e.call(ctx, "get_guidelines_with_attribution", args)
+		text, err = e.call(ctx, cn, "get_guidelines_with_attribution", args)
 	}
 	if err != nil {
 		return nil, err
@@ -493,7 +514,7 @@ func (e *mcpEvolve) Guidelines(ctx context.Context, namespace, task, sessionID s
 	// are read separately. list_entities rather than get_entity: get_entity
 	// refuses a guideline whose agent_id differs from the caller's, and a caller
 	// cannot name one agent that owns both unowned and agent-owned guidelines.
-	byID, err := e.guidelineIndex(ctx, namespace, a.EntityIDs)
+	byID, err := e.guidelineIndex(ctx, cn, namespace, a.EntityIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -521,7 +542,7 @@ func contentText(content any) string {
 // id, for an evolve that can't return them with their attribution. It reads
 // list_entities pages until it has found them all or the namespace ends, so a
 // guideline selected from beyond the first page is found too.
-func (e *mcpEvolve) guidelineIndex(ctx context.Context, namespace string, ids []string) (map[string]Guideline, error) {
+func (e *mcpEvolve) guidelineIndex(ctx context.Context, cn *conn, namespace string, ids []string) (map[string]Guideline, error) {
 	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		want[id] = true
@@ -532,7 +553,7 @@ func (e *mcpEvolve) guidelineIndex(ctx context.Context, namespace string, ids []
 		"include_content": true, "limit": listPageSize,
 	}
 	for range maxListPages {
-		text, err := e.call(ctx, "list_entities", args)
+		text, err := e.call(ctx, cn, "list_entities", args)
 		if err != nil {
 			return nil, err
 		}
@@ -567,41 +588,49 @@ func (e *mcpEvolve) guidelineIndex(ctx context.Context, namespace string, ids []
 	return out, nil
 }
 
+// Learn sends a trajectory to evolve, preparing the server first on the same
+// session: if the session is replaced in between, the batch fails and is retried
+// on the new session, which is prepared in turn.
 func (e *mcpEvolve) Learn(ctx context.Context, namespace string, t Trajectory) error {
-	if err := e.ensure(ctx, namespace); err != nil {
-		return err
-	}
 	raw, err := json.Marshal(t)
 	if err != nil {
 		return fmt.Errorf("marshal trajectory: %w", err)
 	}
 	var obj map[string]any
 	_ = json.Unmarshal(raw, &obj)
-	_, err = e.call(ctx, "process_trajectory", map[string]any{
-		"trajectory": obj, "namespace_id": namespace, "processing_profile": e.profile,
+	return e.use(ctx, func(cn *conn) error {
+		if err := e.ensure(ctx, cn, namespace); err != nil {
+			return err
+		}
+		_, err := e.call(ctx, cn, "process_trajectory", map[string]any{
+			"trajectory": obj, "namespace_id": namespace, "processing_profile": e.profile,
+		})
+		return err
 	})
-	return err
 }
 
 // ensure prepares the server for learning, once per session: the processing
 // profile, and the learn namespace. process_trajectory requires the namespace to
 // exist, and the MCP server has no tool that only creates one; every other tool
 // that takes namespace_id creates it on first use, so a one-row listing does.
-func (e *mcpEvolve) ensure(ctx context.Context, namespace string) error {
+func (e *mcpEvolve) ensure(ctx context.Context, cn *conn, namespace string) error {
 	e.mu.Lock()
-	done := e.ensured
+	done := cn.ensured
 	e.mu.Unlock()
 	if done {
 		return nil
 	}
-	if err := e.ensureProfile(ctx); err != nil {
+	if err := e.ensureProfile(ctx, cn); err != nil {
 		return err
 	}
-	if _, err := e.call(ctx, "list_entities", map[string]any{"namespace_id": namespace, "limit": 1}); err != nil {
+	if _, err := e.call(ctx, cn, "list_entities", map[string]any{"namespace_id": namespace, "limit": 1}); err != nil {
 		return err
+	}
+	if e.afterSetup != nil {
+		e.afterSetup()
 	}
 	e.mu.Lock()
-	e.ensured = true
+	cn.ensured = true
 	e.mu.Unlock()
 	return nil
 }
@@ -611,23 +640,23 @@ func (e *mcpEvolve) ensure(ctx context.Context, namespace string) error {
 // #479 rejects the key, and one without the prompt rejects the name) still
 // learns, with its own default prompt: the plugin warns once and asks again
 // without the prompt, as it fails open everywhere else.
-func (e *mcpEvolve) ensureProfile(ctx context.Context) error {
+func (e *mcpEvolve) ensureProfile(ctx context.Context, cn *conn) error {
 	e.mu.Lock()
 	prompt := e.prompt
-	if e.noPrompt {
+	if cn.noPrompt {
 		prompt = ""
 	}
 	e.mu.Unlock()
-	_, err := e.call(ctx, "ensure_processing_profile", map[string]any{
+	_, err := e.call(ctx, cn, "ensure_processing_profile", map[string]any{
 		"profile_id": e.profile, "definition": profileDefinition(prompt),
 	})
 	if err != nil && prompt != "" && strings.Contains(err.Error(), "guidelines_prompt") {
 		slog.Warn("evolve: evolve can't take the configured guideline prompt; learning with its default prompt",
 			"guidelines_prompt", prompt, "err", err)
 		e.mu.Lock()
-		e.noPrompt = true
+		cn.noPrompt = true
 		e.mu.Unlock()
-		_, err = e.call(ctx, "ensure_processing_profile", map[string]any{
+		_, err = e.call(ctx, cn, "ensure_processing_profile", map[string]any{
 			"profile_id": e.profile, "definition": profileDefinition(""),
 		})
 	}
