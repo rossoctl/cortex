@@ -984,11 +984,11 @@ func (m *model) fetchSpendSpan(span spendSpan) tea.Cmd {
 		// units — is answered by the poll above exactly as before. Two or more units have no
 		// single number, so the per-unit figures are asked for; a server that downgrades the
 		// grouping, or a split that fails, leaves byUnit nil and the cell says money.Mixed.
-		// Not under a project scope: the narrowed reply has no currency series, so the cell
-		// says money.Mixed.
+		// Under a project scope a proxy that does not echo project= gives a narrowed reply with
+		// no currency series, so the cell says money.Mixed.
 		var byUnit map[string]int64
-		if err == nil && snap != nil && len(snap.Currencies) > 1 && project == "" {
-			if split, serr := fetchUsageScoped(ctx, client, def.window, def.resolution, agent, usage.GroupCurrency); serr == nil {
+		if err == nil && snap != nil && len(snap.Currencies) > 1 {
+			if split, serr := fetchUsageScopedProject(ctx, client, def.window, def.resolution, agent, project, usage.GroupCurrency); serr == nil {
 				byUnit = unitCosts(split)
 			}
 		}
@@ -1081,7 +1081,7 @@ func (m *model) fetchSpendDrawer() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), spendFetchTimeout)
 		defer cancel()
-		// Under a project scope the axis is ignored: the reply is narrowed to one series.
+		// A proxy that does not echo project= ignores the axis: the reply is narrowed to one series.
 		snap, err := fetchUsageScopedProject(ctx, client, window, resolution, agent, project, axis)
 		return spendDrawerLoadedMsg{snap: snap, req: req, err: err, axis: axis}
 	}
