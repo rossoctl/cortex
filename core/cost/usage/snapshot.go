@@ -702,17 +702,6 @@ func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string
 // snapshot reads one ring: sessionID's when set, else agent's when set, else every session's. A
 // ring that does not exist reads as zeroed buckets, for an agent as for a session.
 func (a *Aggregator) snapshot(window, resolution time.Duration, sessionID, agent string, group Group, maxSeries int) Snapshot {
-	if resolution < BucketWidth {
-		resolution = BucketWidth
-	}
-	n := int(window / BucketWidth)
-	if n < 1 {
-		n = 1
-	}
-	if n > NumBuckets {
-		n = NumBuckets
-	}
-
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
@@ -728,6 +717,21 @@ func (a *Aggregator) snapshot(window, resolution time.Duration, sessionID, agent
 	case agent != "":
 		ring = a.agents[agent] // nil when the agent has sent nothing yet, as above
 	}
+	return a.snapshotRingLocked(ring, window, resolution, sessionID, group, maxSeries)
+}
+
+// windowBuckets is the number of one-minute buckets a window reads, clamped to the ring.
+func windowBuckets(window time.Duration) int {
+	return max(1, min(int(window/BucketWidth), NumBuckets))
+}
+
+// snapshotRingLocked is snapshot after the ring is picked: ring nil reads as zeroed buckets.
+// Caller holds mu (read).
+func (a *Aggregator) snapshotRingLocked(ring []bucket, window, resolution time.Duration, sessionID string, group Group, maxSeries int) Snapshot {
+	if resolution < BucketWidth {
+		resolution = BucketWidth
+	}
+	n := windowBuckets(window)
 
 	newest := a.now().Truncate(BucketWidth)
 	// THE SPAN COVERED, NOT THE SPAN ASKED FOR, which is what the field promises and what a client

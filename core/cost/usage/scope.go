@@ -212,3 +212,63 @@ func NarrowToLabel(snap Snapshot, label string) Snapshot {
 	scoped.Group = GroupNone
 	return *scoped
 }
+
+// ProjectSnapshot is Snapshot narrowed to one project's traffic, for /v1/usage?project=. project
+// is a GroupProject series label, as a client got it from group=project.
+//
+// A PROJECT RING THAT HOLDS THE WHOLE WINDOW IS READ DIRECTLY, so group is honoured. That needs no
+// session and an agent that is "" or recognised: only those have a ring per project. A ring that
+// was evicted and came back holds fewer minutes than its reference ring says it should, and is not
+// read. Then the reply is narrowed from the project axis of the agent's ring (or the session's) and
+// served as group none. An unrecognised agent has no agent-by-project data at all, so it gets
+// AgentSnapshot's reply with no Project echo: the filter was not applied.
+func (a *Aggregator) ProjectSnapshot(window, resolution time.Duration, sessionID, agent, project string, group Group) Snapshot {
+	if agent != "" && !model.IsKnownAgent(agent) {
+		return a.AgentSnapshot(window, resolution, sessionID, agent, group)
+	}
+	if sessionID == "" {
+		a.mu.RLock()
+		ref := a.all
+		if agent != "" {
+			ref = a.agents[agent]
+		}
+		if r, ok := a.projects[projectKey{agent, project}]; ok &&
+			projectRingComplete(r.buckets, ref, project, a.now().Truncate(BucketWidth), windowBuckets(window)) {
+			snap := a.snapshotRingLocked(r.buckets, window, resolution, "", group, MaxSeriesInResponse)
+			a.mu.RUnlock()
+			snap.Agent, snap.Project = agent, project
+			return snap
+		}
+		// Released before snapshot takes it again: a second read lock behind a waiting writer
+		// deadlocks.
+		a.mu.RUnlock()
+	}
+	refAgent := agent
+	if sessionID != "" {
+		refAgent = ""
+	}
+	snap := NarrowToLabel(a.snapshot(window, resolution, sessionID, refAgent, GroupProject, math.MaxInt), project)
+	snap.Project = project
+	if sessionID == "" {
+		snap.Agent = agent
+	}
+	return snap
+}
+
+// projectRingComplete reports whether ring holds every request that ref's project axis counts for
+// project over the n buckets ending at newest. It is false for a ring that was evicted and came
+// back inside the window.
+func projectRingComplete(ring, ref []bucket, project string, newest time.Time, n int) bool {
+	var got, want int64
+	for i := 0; i < n; i++ {
+		t := newest.Add(-time.Duration(i) * BucketWidth)
+		s := slot(t)
+		if ring != nil && ring[s].start.Equal(t) {
+			got += ring[s].Requests
+		}
+		if ref != nil && ref[s].start.Equal(t) {
+			want += ref[s].byProject[project].Requests
+		}
+	}
+	return got == want
+}
