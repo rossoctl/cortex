@@ -50,9 +50,18 @@ func TestE2E_ModelReceivesStreamEvents(t *testing.T) {
 	// short-circuit: kick off the stream channel + sessions fetch manually.
 	mdl.streamCh = c.Stream(ctx, "")
 
-	// Append an event on the server side. First one with no subscribers (ok —
-	// Subscribe happens inside Stream's goroutine, which is already running).
-	time.Sleep(100 * time.Millisecond) // let Subscribe happen
+	// The server subscribes before it answers, so the stream is subscribed once
+	// it reports "open".
+	for opened := false; !opened; {
+		ev, ok := <-mdl.streamCh
+		if !ok {
+			t.Fatal("channel closed before the stream opened")
+		}
+		_, _ = mdl.Update(streamMsg(ev))
+		opened = ev.Status.Phase == "open"
+	}
+
+	// Append an event on the server side.
 	store.Append("test-ctx", pipeline.SessionEvent{
 		Direction: pipeline.Inbound,
 		Phase:     pipeline.SessionRequest,
@@ -64,24 +73,15 @@ func TestE2E_ModelReceivesStreamEvents(t *testing.T) {
 	// opened nothing. Standing in for the user's Enter.
 	mdl.selectedSess = "test-ctx"
 
-	// Read one message off the stream — must be either the "open" status
-	// or the event. Pump until we see the event.
-	deadline := time.After(2 * time.Second)
-	var gotEvent bool
-	for !gotEvent {
-		select {
-		case ev, ok := <-mdl.streamCh:
-			if !ok {
-				t.Fatal("channel closed before event")
-			}
-			// Hand the msg to the model's Update (what tea would do).
-			_, _ = mdl.Update(streamMsg(ev))
-			if ev.Event != nil {
-				gotEvent = true
-			}
-		case <-deadline:
-			t.Fatal("timeout waiting for event")
+	// Pump the stream until the event arrives.
+	for gotEvent := false; !gotEvent; {
+		ev, ok := <-mdl.streamCh
+		if !ok {
+			t.Fatal("channel closed before event")
 		}
+		// Hand the msg to the model's Update (what tea would do).
+		_, _ = mdl.Update(streamMsg(ev))
+		gotEvent = ev.Event != nil
 	}
 
 	// Verify the model cached the event under the right session.

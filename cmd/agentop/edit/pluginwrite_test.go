@@ -77,10 +77,7 @@ func TestWritePluginConfig_ReportsARefusalThatLandsBeforeTheFirstPoll(t *testing
 		}
 		return ReloadStatus{ReloadsFailed: 3, LastError: "refused before the first poll"}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	res, err := WritePluginConfig(ctx, ConfigWrite{Path: path, StatsURL: srv.URL, Changes: []ConfigChange{routeClaudeToGLM()}})
+	res, err := WritePluginConfig(context.Background(), ConfigWrite{Path: path, StatsURL: srv.URL, Changes: []ConfigChange{routeClaudeToGLM()}})
 	if err != nil {
 		t.Fatalf("WritePluginConfig: %v", err)
 	}
@@ -277,18 +274,23 @@ func TestWritePluginConfig_AfterRollbackWritingSameChangeIsNotUnchanged(t *testi
 }
 
 // A timed-out reload leaves the file with the new bytes (state is uncertain). The
-// deadline is the caller's ctx when that is shorter than LocalPollDeadline, so the
-// test waits a fraction of a second rather than the real 30s.
+// deadline is the caller's ctx when that ends before LocalPollDeadline; here it ends
+// at the first poll after the write.
 func TestWritePluginConfig_OnTimeoutLeavesNewBytes(t *testing.T) {
 	path := writeFixtureContent(t, withRouter, 0o600)
 	original := readFile(t, path)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int32
 	srv := makeStatusServer(t, func() ReloadStatus {
-		// Never change status, so poll times out
+		// The baseline read, then the first poll, which ends ctx. The status never
+		// changes.
+		if calls.Add(1) == 2 {
+			cancel()
+		}
 		return ReloadStatus{}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
 	res, err := WritePluginConfig(ctx, ConfigWrite{Path: path, StatsURL: srv.URL, Changes: []ConfigChange{routeClaudeToGLM()}})
 	if err != nil {
 		t.Fatalf("WritePluginConfig: %v", err)

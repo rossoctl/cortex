@@ -37,6 +37,9 @@ type Client struct {
 	endpoint   string
 	http       *http.Client
 	httpStream *http.Client
+	// reconnectAfter waits out a stream's reconnect backoff. It is time.After, as a field so a
+	// test can reconnect at once.
+	reconnectAfter func(time.Duration) <-chan time.Time
 }
 
 // restDefaultTimeout bounds a REST call whose caller supplied NO deadline, so a dead
@@ -146,6 +149,7 @@ func New(endpoint string) *Client {
 		httpStream: &http.Client{
 			Transport: transport,
 		},
+		reconnectAfter: time.After,
 	}
 }
 

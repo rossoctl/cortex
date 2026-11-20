@@ -29,6 +29,7 @@ func makeStatusServer(t *testing.T, body func() ReloadStatus) *httptest.Server {
 }
 
 func TestPollUntilReloaded_Success(t *testing.T) {
+	shortenPollSchedule(t)
 	applyTime := time.Now()
 	var calls atomic.Int32
 	srv := makeStatusServer(t, func() ReloadStatus {
@@ -45,6 +46,7 @@ func TestPollUntilReloaded_Success(t *testing.T) {
 }
 
 func TestPollUntilReloaded_Failure(t *testing.T) {
+	shortenPollSchedule(t)
 	applyTime := time.Now()
 	var calls atomic.Int32
 	srv := makeStatusServer(t, func() ReloadStatus {
@@ -63,26 +65,42 @@ func TestPollUntilReloaded_Failure(t *testing.T) {
 	}
 }
 
+// Stale answers keep the poll going until ctx is done, here at the third poll.
 func TestPollUntilReloaded_Timeout(t *testing.T) {
+	shortenPollSchedule(t)
 	applyTime := time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int32
 	srv := makeStatusServer(t, func() ReloadStatus {
+		if calls.Add(1) == 3 {
+			cancel()
+		}
 		return ReloadStatus{LastSuccess: applyTime.Add(-1 * time.Hour)}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
 	res := PollUntilReloaded(ctx, srv.URL, applyTime, baselineFailedSentinel, "")
 	if res.Status != PollTimeout {
 		t.Fatalf("status = %v, want PollTimeout", res.Status)
 	}
+	if n := calls.Load(); n != 3 {
+		t.Fatalf("polled %d times, want 3", n)
+	}
 }
 
+// Fewer transport errors than the unreachable threshold keep the poll going
+// until ctx is done.
 func TestPollUntilReloaded_HTTPError(t *testing.T) {
+	shortenPollSchedule(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == unreachableThreshold-1 {
+			cancel()
+		}
 		http.Error(w, "internal", http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
 	res := PollUntilReloaded(ctx, srv.URL, time.Now(), baselineFailedSentinel, "")
 	if res.Status != PollTimeout {
 		t.Fatalf("status = %v, want PollTimeout", res.Status)
@@ -135,7 +153,7 @@ func TestApplyCmd_ReadsTheBaselineBeforeTheWrite(t *testing.T) {
 		t.Fatalf("applied = %+v, want BaselineFailed 4 from before the write", applied)
 	}
 	polled := PollCmd(context.Background(), srv.URL, applied.ApplyTime, applied.BaselineFailed,
-		Target{PollDeadline: 2 * time.Second})().(PolledMsg)
+		Target{PollDeadline: time.Hour})().(PolledMsg)
 	if polled.Result.Status != PollFailure || polled.Result.LastError != "refused before the first poll" {
 		t.Errorf("poll = %+v, want the refusal", polled.Result)
 	}
@@ -149,6 +167,7 @@ func TestApplyCmd_ReadsTheBaselineBeforeTheWrite(t *testing.T) {
 // the baseline. The poll then lowers the baseline to that count, so a refusal on
 // the restarted proxy is still seen, as with a baseline read at the first poll.
 func TestPollUntilReloaded_SeesARefusalAfterTheProxyRestarted(t *testing.T) {
+	shortenPollSchedule(t)
 	var calls atomic.Int32
 	srv := makeStatusServer(t, func() ReloadStatus {
 		if calls.Add(1) == 1 {
@@ -156,9 +175,7 @@ func TestPollUntilReloaded_SeesARefusalAfterTheProxyRestarted(t *testing.T) {
 		}
 		return ReloadStatus{ReloadsFailed: 1, LastError: "refused after a restart"}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	res := PollUntilReloaded(ctx, srv.URL, time.Now(), 3, "")
+	res := PollUntilReloaded(context.Background(), srv.URL, time.Now(), 3, "")
 	if res.Status != PollFailure || res.LastError != "refused after a restart" {
 		t.Fatalf("result = %+v, want the refusal", res)
 	}

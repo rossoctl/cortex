@@ -491,11 +491,7 @@ func TestDetailSearch_EscEndsTheRequest(t *testing.T) {
 	go func() { done <- cmd() }()
 	<-f.started
 	press(m, tea.KeyEsc)
-	select {
-	case <-f.ended:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the proxy's request went on after Esc")
-	}
+	<-f.ended
 	<-done
 }
 
@@ -579,11 +575,7 @@ func TestDetailSearch_LeavingThePaneEndsTheRequest(t *testing.T) {
 			if m.pane == paneEvents {
 				t.Fatalf("%s did not leave the events pane", k)
 			}
-			select {
-			case <-f.ended:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("the proxy's request went on after %s left the pane", k)
-			}
+			<-f.ended
 			<-done
 		})
 	}

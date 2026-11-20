@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -613,9 +614,8 @@ func TestAgentsPane_StartupFetchFailureIsSilent(t *testing.T) {
 // (--endpoint mode's Init, the pod picker's portForwardReadyMsg, and [l]'s local endpoint), and it
 // is where the gate has to live for a second pod's connection to re-run it.
 //
-// THE BATCH IS FANNED OUT CONCURRENTLY WITH A DEADLINE, because tea.Batch's leaves include a 1s
-// tick and an SSE pump that never returns on their own. Running them in sequence would hang on
-// the first blocker rather than reaching the gate's fetch.
+// THE BATCH IS FANNED OUT CONCURRENTLY, and every leaf returns: ticks fire at once (see
+// TestMain), and the SSE pump returns with the stream's first status, "open" or "reconnecting".
 func TestInitSessionView_ArmsTheStartupAgentsGate(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only /v1/usage matters here; the batch's other leaves may 404 harmlessly.
@@ -640,16 +640,20 @@ func TestInitSessionView_ArmsTheStartupAgentsGate(t *testing.T) {
 		t.Fatalf("initSessionView produced %T, want tea.BatchMsg", first)
 	}
 	got := make(chan agentRowsLoadedMsg, len(batch))
+	var wg sync.WaitGroup
 	for _, leaf := range batch {
 		if leaf == nil {
 			continue
 		}
+		wg.Add(1)
 		go func(c tea.Cmd) {
+			defer wg.Done()
 			if msg, ok := c().(agentRowsLoadedMsg); ok {
 				got <- msg
 			}
 		}(leaf)
 	}
+	wg.Wait()
 	select {
 	case msg := <-got:
 		// The VALUE, not just the arrival: a gate armed with agentsOpenOnPress would flash a
@@ -667,7 +671,7 @@ func TestInitSessionView_ArmsTheStartupAgentsGate(t *testing.T) {
 		if len(msg.rows) != 2 {
 			t.Errorf("the startup fetch carried %d rows, want the fixture's 2", len(msg.rows))
 		}
-	case <-time.After(10 * time.Second):
+	default:
 		t.Fatal("no agentRowsLoadedMsg came out of initSessionView's batch — the startup gate is not armed")
 	}
 }

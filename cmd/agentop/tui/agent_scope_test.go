@@ -182,29 +182,9 @@ func TestAgentsPane_EnterRestartsTheBandUnderTheScope(t *testing.T) {
 	if m.agentScope != "bob-shell/2.0.5" || cmd == nil {
 		t.Fatalf("scope %q, cmd %v", m.agentScope, cmd)
 	}
-	runBatchNoWait(cmd)
+	runCmds(cmd)
 	if !sawAgent.Load() {
 		t.Error("no band request named the new scope")
-	}
-}
-
-// runBatchNoWait is runBatch for a batch holding ticks: each member runs on its own goroutine and
-// the test waits a moment rather than for a tick that blocks for seconds.
-func runBatchNoWait(cmd tea.Cmd) {
-	done := make(chan tea.Msg, 1)
-	go func() { done <- cmd() }()
-	select {
-	case msg := <-done:
-		if batch, ok := msg.(tea.BatchMsg); ok {
-			for _, c := range batch {
-				if c == nil {
-					continue
-				}
-				go c()
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-	case <-time.After(time.Second):
 	}
 }
 

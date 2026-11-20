@@ -1312,12 +1312,17 @@ func (m *model) loadCatalogCmd() tea.Cmd {
 	}
 }
 
+// tick schedules every tick this package arms. It is tea.Tick, as a var so the package's
+// tests can fire a tick at once and read the interval it was given. Nothing in production
+// writes it.
+var tick = tea.Tick
+
 func tickCmd() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func refreshTickCmd() tea.Cmd {
-	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg { return refreshTickMsg(t) })
+	return tick(refreshInterval, func(t time.Time) tea.Msg { return refreshTickMsg(t) })
 }
 
 // loadSessionsCmd fetches the session list: every session the proxy holds in memory and, where it

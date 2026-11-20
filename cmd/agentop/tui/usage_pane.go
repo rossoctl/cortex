@@ -311,7 +311,7 @@ func sameBucketTimes(a, b []usage.Bucket) bool {
 
 // usageTick schedules the next poll for the given generation.
 func usageTick(gen uint64) tea.Cmd {
-	return tea.Tick(usagePollInterval, func(time.Time) tea.Msg {
+	return tick(usagePollInterval, func(time.Time) tea.Msg {
 		return usageTickMsg{gen: gen}
 	})
 }

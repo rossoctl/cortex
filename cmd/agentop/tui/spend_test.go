@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -1424,26 +1422,21 @@ func TestSpendSummary_AFailedWindowPollStillCarriesTheDayFigure(t *testing.T) {
 // reschedules at zero, which is one /v1/usage request per event-loop iteration against the proxy.
 //
 // TestSpendSpanDefs_EverySpanIsComplete is the guard that catches the mistake; this asserts what it
-// costs if that guard is ever bypassed, and that the answer is not "a request storm". Asserted by
-// timing the command rather than by reading the constant: tea.Tick's duration is not observable, so
-// the only honest evidence is that the message does not arrive immediately.
+// costs if that guard is ever bypassed, and that the answer is not "a request storm". Asserted on
+// the interval the tick is armed with, as recordTicks captures it.
 func TestSpendTick_AZeroCadenceDoesNotFireImmediately(t *testing.T) {
 	saved := spendSpanDefs[spanMonth].interval
 	spendSpanDefs[spanMonth].interval = 0
 	defer func() { spendSpanDefs[spanMonth].interval = saved }()
 
+	armed := recordTicks(t)
 	cmd := spendTick(spanMonth, 1)
 	if cmd == nil {
 		t.Fatal("spendTick returned nil for a zero cadence: the span is then never polled, which " +
 			"is a permanent em dash with no explanation")
 	}
-	done := make(chan tea.Msg, 1)
-	go func() { done <- cmd() }()
-	select {
-	case msg := <-done:
-		t.Errorf("a zero-cadence tick delivered %T immediately; rescheduling on that would poll "+
-			"the proxy once per loop iteration", msg)
-	case <-time.After(250 * time.Millisecond):
-		// Still waiting, which is the whole assertion: the cadence was clamped to something real.
+	if len(*armed) != 1 || (*armed)[0] <= 0 {
+		t.Errorf("a zero-cadence tick was armed with %v; rescheduling on that would poll the "+
+			"proxy once per loop iteration", *armed)
 	}
 }

@@ -3,11 +3,9 @@
 package cluster
 
 import (
-	"context"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestE2ESmoke runs against the active kubectl context. Set up by
@@ -17,8 +15,7 @@ import (
 //
 // The test fails clearly if no AuthBridge agent is found.
 func TestE2ESmoke(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	lister := NewLister()
 	groups, err := lister.ListAgents(ctx)
@@ -54,8 +51,7 @@ func TestE2ESmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build /healthz request: %v", err)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET /healthz: %v", err)
 	}
