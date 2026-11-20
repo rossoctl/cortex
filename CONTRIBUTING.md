@@ -386,11 +386,12 @@ signal there is — and the page is explicit about what that does and does not s
 
 Two things worth knowing before reading it:
 
-- **`release-smoke-linux.yaml` is in those numbers.** It installs the way a user
-  does, `curl | sh` from GitHub Releases, which is the point of it — so it cannot
-  be told apart from a real Linux user by behaviour. The page subtracts it by
-  *count* instead: **one** install per job lands in the figures the page reads,
-  with one job per architecture. Each job installs three times — a fresh install
+- **`release-smoke-linux.yaml` and `release-smoke-macos.yaml` are in those
+  numbers.** They install the way a user does, `curl | sh` from GitHub Releases,
+  which is the point of them — so they cannot be told apart from a real user by
+  behaviour. The page subtracts them by *count* instead: **one** install per job
+  lands in the figures the page reads, with one job per runner, and each run is
+  taken off its own platform's column. Each job installs three times — a fresh install
   of the newest stable tag, an upgrade to the tag under test, and a no-op re-run —
   but on a push to `main` the latter two land on `main-latest`, which the collector
   excludes because `--clobber` resets its download counts on every push. Change
