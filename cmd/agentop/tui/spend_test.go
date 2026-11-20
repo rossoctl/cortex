@@ -1435,8 +1435,8 @@ func TestSpendTick_AZeroCadenceDoesNotFireImmediately(t *testing.T) {
 		t.Fatal("spendTick returned nil for a zero cadence: the span is then never polled, which " +
 			"is a permanent em dash with no explanation")
 	}
-	if len(*armed) != 1 || (*armed)[0] <= 0 {
+	if got := armed(); len(got) != 1 || got[0] <= 0 {
 		t.Errorf("a zero-cadence tick was armed with %v; rescheduling on that would poll the "+
-			"proxy once per loop iteration", *armed)
+			"proxy once per loop iteration", got)
 	}
 }

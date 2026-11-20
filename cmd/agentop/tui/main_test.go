@@ -2,6 +2,8 @@ package tui
 
 import (
 	"os"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,16 +23,24 @@ func instantTick(_ time.Duration, fn func(time.Time) tea.Msg) tea.Cmd {
 	return func() tea.Msg { return fn(time.Now()) }
 }
 
-// recordTicks makes tick record each interval it is given into the returned slice, still
-// firing at once, until the test ends.
-func recordTicks(t *testing.T) *[]time.Duration {
+// recordTicks makes tick record each interval it is given, still firing at once, until the
+// test ends. The returned func reads the intervals so far, and is safe beside commands
+// built on other goroutines.
+func recordTicks(t *testing.T) func() []time.Duration {
 	t.Helper()
+	var mu sync.Mutex
 	var got []time.Duration
 	prev := tick
 	tick = func(d time.Duration, fn func(time.Time) tea.Msg) tea.Cmd {
+		mu.Lock()
 		got = append(got, d)
+		mu.Unlock()
 		return instantTick(d, fn)
 	}
 	t.Cleanup(func() { tick = prev })
-	return &got
+	return func() []time.Duration {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(got)
+	}
 }

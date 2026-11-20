@@ -107,6 +107,9 @@ var responseHeaderTimeout = HeaderTimeout
 // A var so a test can shorten it.
 var streamDefaultTimeout = 60 * time.Second
 
+// streamDeadline applies streamDefaultTimeout; tests replace it to end the call at a chosen point.
+var streamDeadline = context.WithTimeout
+
 // New returns a Client pointed at endpoint (e.g. "http://localhost:9094").
 // Trailing slash is tolerated.
 func New(endpoint string) *Client {
@@ -410,7 +413,7 @@ func (c *Client) GetPluginCatalog(ctx context.Context) (*PluginCatalog, error) {
 func (c *Client) getBody(ctx context.Context, path string) (body io.ReadCloser, err error) {
 	cancel := context.CancelFunc(func() {})
 	if _, ok := ctx.Deadline(); !ok {
-		ctx, cancel = context.WithTimeout(ctx, streamDefaultTimeout)
+		ctx, cancel = streamDeadline(ctx, streamDefaultTimeout)
 	}
 	defer func() {
 		if err != nil {

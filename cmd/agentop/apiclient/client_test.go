@@ -663,13 +663,19 @@ func TestGetJSON_ServerThinkTimeInsideTheCallersBudgetSucceeds(t *testing.T) {
 // The body is deliberately left OPEN by the server and the client's read blocks; a bound has to
 // come from somewhere other than the reader.
 //
-// The default has to run out MID-BODY, so it is a real window the headers arrive inside, and the
-// stall lasts until the client gives up. The error has to come from the body read: a default
-// that ends at the headers fails a call only before they arrive.
+// The default runs out MID-BODY: the test ends it as soon as the headers arrive, and the stall
+// lasts until the client gives up. The error has to come from the body read: a default that
+// ends at the headers fails a call only before they arrive.
 func TestGetBody_ADeadlinelessCallerIsBoundedMidBody(t *testing.T) {
-	prev := streamDefaultTimeout
-	streamDefaultTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { streamDefaultTimeout = prev })
+	var given time.Duration
+	var expire context.CancelFunc
+	streamDeadline = func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		given = d
+		ctx, cancel := context.WithCancel(parent)
+		expire = cancel
+		return ctx, cancel
+	}
+	t.Cleanup(func() { streamDeadline = context.WithTimeout })
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -682,14 +688,37 @@ func TestGetBody_ADeadlinelessCallerIsBoundedMidBody(t *testing.T) {
 	}))
 	defer ts.Close()
 
+	c := New(ts.URL)
+	c.http.Transport = expireAfterHeaders{c.http.Transport, func() {
+		if expire != nil {
+			expire()
+		}
+	}}
 	// No deadline, exactly as the TUI's root context has none.
-	_, err := New(ts.URL).GetSessionPage(context.Background(), "s1", 0, 10)
+	_, err := c.GetSessionPage(context.Background(), "s1", 0, 10)
 	if err == nil {
 		t.Fatal("GetSessionPage returned no error against a server that stalled mid-body")
 	}
 	if !strings.Contains(err.Error(), ": decode: ") {
 		t.Errorf("failed with %v, want a failed body read: the call ended before the body", err)
 	}
+	if given != streamDefaultTimeout {
+		t.Errorf("the call was bounded by %v, want streamDefaultTimeout (%v)", given, streamDefaultTimeout)
+	}
+}
+
+// expireAfterHeaders runs expire once a response's headers have arrived.
+type expireAfterHeaders struct {
+	http.RoundTripper
+	expire func()
+}
+
+func (e expireAfterHeaders) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := e.RoundTripper.RoundTrip(r)
+	if err == nil {
+		e.expire()
+	}
+	return resp, err
 }
 
 // And the other direction: the default must not cut off a caller that DID set a budget, nor a
