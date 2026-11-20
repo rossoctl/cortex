@@ -2800,7 +2800,7 @@ func (m *model) paneView() string {
 				lines = append(lines, "")
 			}
 			for _, line := range lines {
-				rows = append(rows, styleMuted.Render(line))
+				rows = append(rows, styleDrawerLine(line))
 			}
 		}
 	}

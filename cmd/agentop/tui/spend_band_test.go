@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"github.com/rossoctl/cortex/core/cost/usage"
@@ -1171,6 +1172,50 @@ func TestSpendBandNeedsScopeMarker_EveryPaneIsClassified(t *testing.T) {
 		m := &model{pane: p, selectedSess: "s1", timeline: timelineState{session: "s1"}}
 		if got := m.spendBandNeedsScopeMarker(); got != singleSession[p] {
 			t.Errorf("pane %v: spendBandNeedsScopeMarker() = %v, want %v", p, got, singleSession[p])
+		}
+	}
+}
+
+// THE STYLED BAND IS THE PLAIN BAND IN COLOR (#2015): amounts bold, a foreign unit warn,
+// markers, em dashes and separators dim, labels muted, and not one column moved.
+func TestSpendBand_StyledTextAndWidth(t *testing.T) {
+	withProfile(t, termenv.TrueColor)
+	s := withSpan(bandSummary(), spanHour, func(r *spanReading) {
+		r.Incomplete, r.Unpriced = 1, 1
+	})
+	s = withSpan(s, spanToday, func(r *spanReading) {
+		r.USD, r.Units = 7.8, []string{"Bobcoins"}
+	})
+	s = withSpan(s, span7d, func(r *spanReading) { r.Unanswerable = true })
+
+	for _, w := range []int{80, 100, 140} {
+		plain := renderSpendBand(s, w, true)[0]
+		styled, _ := renderSpendBandStyled(s, w, true)
+		if got := ansi.Strip(styled[0]); got != plain {
+			t.Errorf("width %d: styled band reads %q, want the plain %q", w, got, plain)
+		}
+		if lipgloss.Width(styled[0]) != lipgloss.Width(plain) {
+			t.Errorf("width %d: styled band is %d columns, plain is %d", w, lipgloss.Width(styled[0]), lipgloss.Width(plain))
+		}
+	}
+
+	plain := renderSpendBand(s, 140, true)[0]
+	styled, _ := renderSpendBandStyled(s, 140, true)
+	for _, want := range []struct{ name, part, plain string }{
+		{"amount bold", styleBold.Render("$703.18"), "$703.18"},
+		{"Bobcoins amount warn", styleWarn.Render("7.80 Bobcoins"), "7.80 Bobcoins"},
+		{"inexact marker dim", styleDim.Render("~"), "~$4.04"},
+		{"partial marker dim", styleDim.Render("+"), "$4.04+"},
+		{"em dash dim", styleDim.Render("—"), "—"},
+		{"separator dim", styleDim.Render(" · "), " · "},
+		{"label muted", styleMuted.Render("THIS MONTH"), "THIS MONTH"},
+		{"scope marker muted", styleMuted.Render(allSessionsMarker), allSessionsMarker},
+	} {
+		if !strings.Contains(plain, want.plain) {
+			t.Fatalf("%s: the plain band %q has no %q, so the case asserts nothing", want.name, plain, want.plain)
+		}
+		if !strings.Contains(styled[0], want.part) {
+			t.Errorf("%s: styled band %q does not contain %q", want.name, styled[0], want.part)
 		}
 	}
 }
