@@ -81,8 +81,8 @@ Guidelines learned from earlier sessions on this machine. Apply them when they a
 </evolve-guidelines>
 ```
 
-Guidelines are fetched **once per session** (from the session's first user message, with
-`<system-reminder>` context removed) and the rendered block is cached, so every turn appends
+Guidelines are fetched **once per session** (from the session's first user message, with the
+agent's harness context removed) and the rendered block is cached, so every turn appends
 identical bytes and the provider's prompt cache keeps hitting. Requests the plugin leaves
 alone: subagents, tool-less side calls (titles, summaries), sessions without an id, agents
 outside `agents`, and its own calls (`X-Evolve-Cortex`).
@@ -92,8 +92,10 @@ outside `agents`, and its own calls (`X-Evolve-Cortex`).
 Only the main conversation of sessions the plugin saw: each successful (2xx) main-agent
 exchange contributes the new user messages, the assistant's reply and tool calls, and the tool
 results the next request carried (truncated to 4 KB each, errors marked `[error]`).
-`<system-reminder>` and `<evolve-guidelines>` blocks are stripped, so evolve does not learn
-from harness context or from its own injected guidelines. A session is sent once it has been
+Harness context and `<evolve-guidelines>` blocks are stripped, so evolve does not learn from
+the agent's own context or from its injected guidelines. Harness context is Claude Code's
+`<system-reminder>` blocks, and the blocks Codex sends as user text ahead of the prompt: the
+repo's AGENTS.md instructions, `<environment_context>` (cwd, shell, date) and the like. A session is sent once it has been
 idle for `idle_after_seconds` with at least `min_turns` new turns; a resumed session sends only
 its new turns, with the original task as context.
 

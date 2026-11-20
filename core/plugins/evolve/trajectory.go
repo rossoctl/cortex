@@ -15,11 +15,13 @@ const (
 	maxPendingMessages = 400
 )
 
-// clean removes harness context and previously injected guidelines from a
-// message's text: neither is the user's words, and learning from injected
-// guidelines would feed evolve its own output.
+// clean removes harness context (Claude Code's system reminders, Codex's
+// AGENTS.md instructions and environment context) and previously injected
+// guidelines from a message's text: neither is the user's words, and learning
+// from injected guidelines would feed evolve its own output.
 func clean(text string) string {
 	text = reminderPattern.ReplaceAllString(text, "")
+	text = codexContextPattern.ReplaceAllString(text, "")
 	text = blockPattern.ReplaceAllString(text, "")
 	return strings.TrimSpace(text)
 }

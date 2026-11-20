@@ -194,10 +194,32 @@ func (r rawJSON) MarshalJSON() ([]byte, error) { return []byte(r), nil }
 // messages; it is not the user's task.
 var reminderPattern = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
 
+// codexContextTags are the blocks Codex sends as user-role text that are its own
+// context, not the user's words (codex-rs/core/src/context, the matchers behind
+// is_contextual_user_fragment). Codex sends them ahead of the prompt as parts of
+// a user item, which the parser joins into the first user message, so without
+// this the plugin's "task" was the repo's AGENTS.md or the cwd and shell.
+var codexContextTags = []string{
+	"environment_context", "user_instructions", "skill", "user_shell_command", "turn_aborted",
+	"subagent_notification", "codex_internal_context", "goal_context", "recommended_plugins",
+	"agent_message_board_notification",
+}
+
+// codexContextPattern matches those blocks, and the AGENTS.md instructions,
+// where they start a line, as Codex writes them.
+var codexContextPattern = func() *regexp.Regexp {
+	alts := []string{`# AGENTS\.md instructions\b.*?</INSTRUCTIONS>`}
+	for _, tag := range codexContextTags {
+		alts = append(alts, `<`+tag+`\b[^>]*>.*?</`+tag+`>`)
+	}
+	return regexp.MustCompile(`(?ms)^[ \t]*(?:` + strings.Join(alts, "|") + `)`)
+}()
+
 const maxTaskChars = 2000
 
 // taskText derives the retrieval query from the conversation's first user
-// message with text, cleaned of harness context and injected guidelines.
+// message with text, cleaned of harness context (Claude Code's and Codex's) and
+// injected guidelines.
 func taskText(messages []messageText) string {
 	for _, m := range messages {
 		if m.role != "user" {

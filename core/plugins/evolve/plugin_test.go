@@ -787,3 +787,50 @@ func TestFetch_EvictingASessionLeavesItsFetchShared(t *testing.T) {
 		t.Fatalf("evolve called %d times, want 3", n)
 	}
 }
+
+// --- Codex's harness context ---
+
+// codexContext is the first user item Codex 0.169 sends in a repo with an
+// AGENTS.md, as the parser joins its two parts.
+const codexContext = "# AGENTS.md instructions for /repo\n\n<INSTRUCTIONS>\n# Project rules\n\nRun `make test` before committing.\n\n</INSTRUCTIONS>\n" +
+	"<environment_context>\n  <cwd>/repo</cwd>\n  <shell>zsh</shell>\n  <current_date>2026-11-20</current_date>\n</environment_context>"
+
+func codexMessages(prompt string) []messageText {
+	return []messageText{
+		{"developer", "You are Codex."},
+		{"user", codexContext},
+		{"user", prompt},
+	}
+}
+
+func TestTaskText_IsCodexsPromptNotItsContext(t *testing.T) {
+	if got := taskText(codexMessages("Bump the version and commit the fix for the login bug")); got != "Bump the version and commit the fix for the login bug" {
+		t.Fatalf("task = %q", got)
+	}
+	// Without an AGENTS.md, Codex sends the environment context alone.
+	env := []messageText{{"user", "<environment_context>\n  <cwd>/repo</cwd>\n</environment_context>"}, {"user", "Fix the login bug"}}
+	if got := taskText(env); got != "Fix the login bug" {
+		t.Fatalf("task = %q", got)
+	}
+	// Text that merely mentions a tag mid-line is the user's.
+	if got := clean("Explain what <skill> tags do in Codex"); got != "Explain what <skill> tags do in Codex" {
+		t.Fatalf("clean = %q", got)
+	}
+}
+
+func TestLearn_CodexsContextIsNotLearned(t *testing.T) {
+	r := newRecorder("codex", 1)
+	var msgs []pipeline.InferenceMessage
+	for _, m := range codexMessages("Fix the login bug") {
+		msgs = append(msgs, pipeline.InferenceMessage{Role: m.role, Content: m.content})
+	}
+	r.observe(&pipeline.InferenceExtension{Messages: msgs, Completion: "Done."})
+	if r.task != "Fix the login bug" {
+		t.Fatalf("task = %q", r.task)
+	}
+	for _, m := range r.pending {
+		if c, _ := m["content"].(string); strings.Contains(c, "AGENTS.md") || strings.Contains(c, "environment_context") {
+			t.Fatalf("learned Codex's context: %v", r.pending)
+		}
+	}
+}
