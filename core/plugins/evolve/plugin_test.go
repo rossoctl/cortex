@@ -488,6 +488,10 @@ func turn(history []pipeline.InferenceMessage, completion string, calls []pipeli
 	inf.Completion = completion
 	inf.ToolCalls = calls
 	inf.ToolResults = results
+	inf.FinishReason = "end_turn" // as Anthropic reports it
+	if len(calls) > 0 {
+		inf.FinishReason = "tool_use"
+	}
 	return pctx
 }
 
@@ -719,8 +723,19 @@ func TestLearn_KeepsTurnsTheClientHungUpOnAfterTheEnd(t *testing.T) {
 
 func TestLearn_SkipsTurnsCutOffOrDenied(t *testing.T) {
 	cases := map[string]func(*pipeline.Context) pipeline.Outcome{
-		"no finish reason": func(*pipeline.Context) pipeline.Outcome {
+		"no finish reason": func(pctx *pipeline.Context) pipeline.Outcome {
+			pctx.Extensions.Inference.FinishReason = ""
 			return pipeline.Outcome{FinalAction: pipeline.OutcomeError}
+		},
+		// A 200 whose stream ended before the response did, or in which the
+		// provider reported failure.
+		"2xx without a finish reason": func(pctx *pipeline.Context) pipeline.Outcome {
+			pctx.Extensions.Inference.FinishReason = ""
+			return pipeline.Outcome{FinalAction: pipeline.OutcomeAllow, StatusCode: 200}
+		},
+		"2xx failed": func(pctx *pipeline.Context) pipeline.Outcome {
+			pctx.Extensions.Inference.FinishReason = "failed"
+			return pipeline.Outcome{FinalAction: pipeline.OutcomeAllow, StatusCode: 200}
 		},
 		"failed": func(pctx *pipeline.Context) pipeline.Outcome {
 			pctx.Extensions.Inference.FinishReason = "failed"

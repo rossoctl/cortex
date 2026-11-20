@@ -548,22 +548,25 @@ func (p *Plugin) OnFinish(_ context.Context, pctx *pipeline.Context) {
 // end of it. Codex closes each stream as soon as it reads response.completed,
 // so the listener marks most of its turns client_canceled and resets the
 // status to 0, though the response arrived whole; without this most of every
-// Codex session would be dropped. A turn the parser never saw finish (no
-// finish reason, or a failed one) and a denied request are still skipped.
+// Codex session would be dropped. Either way the parser must have seen the
+// response finish: a turn with no finish reason was cut off, and a failed one
+// (a provider reporting failure inside a stream that began with 200) has no
+// answer worth learning. A truncated finish (max_tokens, incomplete) is still
+// a turn the agent saw and acted on, so it counts. A denied request is skipped.
 func answered(pctx *pipeline.Context) bool {
 	out := pctx.Outcome()
 	if out == nil {
 		return false
 	}
+	inf := pctx.Extensions.Inference
+	finished := inf != nil && inf.FinishReason != "" && inf.FinishReason != "failed"
 	if out.StatusCode >= 200 && out.StatusCode < 300 {
-		return true
+		return finished
 	}
 	if out.StatusCode != 0 || out.FinalAction != pipeline.OutcomeError {
 		return false
 	}
-	inf := pctx.Extensions.Inference
-	return inf != nil && inf.FinishReason != "" && inf.FinishReason != "failed" &&
-		(inf.Completion != "" || len(inf.ToolCalls) > 0)
+	return finished && (inf.Completion != "" || len(inf.ToolCalls) > 0)
 }
 
 // evictOldestSession stops tracking the least recently active session that
