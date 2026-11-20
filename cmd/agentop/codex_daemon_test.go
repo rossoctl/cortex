@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -307,7 +308,7 @@ func TestCodexDisable_NamesAnUpdaterThatKeptCortex(t *testing.T) {
 	}
 	wantAll(t, "stderr", errb.String(), "did not exit")
 	wantAll(t, "disable output", out.String(), "no longer uses Cortex",
-		"auto-updater (pid 5600) still uses Cortex's proxy", "kill 5600 && "+codexDaemonRestartCmd)
+		"auto-updater (pid 5600) could not be stopped", codexKillThenRestart(5600, codexRestartCmdHere(filepath.Dir(envPath))))
 }
 
 // An updater pid that agentop cannot confirm is never named after the restart (#1736
@@ -944,4 +945,83 @@ func TestCodexDisable_JudgesTheRestartByTheRecordWhenBothProxiesChanged(t *testi
 		t.Fatalf("disable exit %d: %s", code, errb.String())
 	}
 	wantAll(t, "disable output", out.String(), "restarted (pid 7001), but it still uses Cortex's proxy")
+}
+
+// With no app-server running, disable still stops an auto-updater: Codex's daemon stop
+// leaves one running, and the app-server it starts after its next update would inherit
+// Cortex's proxy. Nothing is restarted, since nothing runs to restart.
+func TestCodexDisable_StopsAnUpdaterWithNoAppServer(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	f := &fakeCodexDaemon{updaterPID: 5600, updaterEnv: onCortex}
+	stubCodexDaemon(t, filepath.Dir(envPath), f)
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	if !slices.Equal(f.steps, []string{"stop-updater"}) {
+		t.Errorf("the daemon saw %v, want the updater stopped and nothing restarted", f.steps)
+	}
+	if strings.Contains(out.String(), "auto-updater") {
+		t.Errorf("named an updater it stopped:\n%s", out.String())
+	}
+}
+
+// A restart that fails still leaves the updater to report: one that could not be stopped
+// keeps Cortex's proxy whatever happened to the app-server.
+func TestCodexDisable_NamesTheUpdaterWhenTheRestartFails(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	f := &fakeCodexDaemon{
+		pid: 5613, env: onCortex, restartErr: errors.New("daemon lock held"),
+		updaterPID: 5600, updaterEnv: onCortex, stopErr: errors.New("it would not stop"),
+	}
+	stubCodexDaemon(t, filepath.Dir(envPath), f)
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	restartCmd := codexRestartCmdHere(filepath.Dir(envPath))
+	wantAll(t, "stderr", errb.String(), "could not restart Codex's background app-server (daemon lock held)", restartCmd)
+	wantAll(t, "disable output", out.String(), "auto-updater (pid 5600) could not be stopped", codexKillThenRestart(5600, restartCmd))
+}
+
+// With nothing of Cortex's to take out, disable restarts nothing, but names an updater
+// still on Cortex's proxy as it names such an app-server: the app-server it starts after
+// its next update would go back to Cortex (#1783 review).
+func TestCodexDisable_NothingToRemoveNamesAnUpdaterOnCortex(t *testing.T) {
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	const corp = "http://proxy.corp.example:8080"
+	mine := "HTTP_PROXY=" + corp + "\nHTTPS_PROXY=" + corp + "\nhttp_proxy=" + corp + "\nhttps_proxy=" + corp + "\nSSL_CERT_FILE=/etc/ssl/corp.pem\n"
+	if err := os.WriteFile(envPath, []byte(mine), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeCodexDaemon{updaterPID: 5600, updaterEnv: onCortex}
+	stubCodexDaemon(t, filepath.Dir(envPath), f)
+	var out, errb bytes.Buffer
+	if code := codexDisable(envPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("disable exit %d: %s", code, errb.String())
+	}
+	wantAll(t, "disable output", out.String(), "Nothing to remove from "+envPath+".\n",
+		"auto-updater (pid 5600) still uses Cortex's proxy", codexKillThenRestart(5600, codexRestartCmdHere(filepath.Dir(envPath))))
+	if len(f.steps) != 0 {
+		t.Errorf("the daemon saw %v, want nothing: nothing was asked", f.steps)
+	}
+}
+
+// The restart command configure prints names the Codex home it changed when that is not
+// the one the user's shell uses, as codexRun sets it: bare, it would restart another
+// Codex's app-server and leave this one on its old settings.
+func TestCodexEnable_PrintsTheRestartForItsCodexHome(t *testing.T) {
+	t.Setenv(codexHomeEnv, "")
+	envPath, cfgPath := codexFixture(t, "")
+	enableCodex(t, envPath, cfgPath)
+	stubCodexDaemon(t, filepath.Dir(envPath), &fakeCodexDaemon{pid: 5613, env: offCortex})
+	var out, errb bytes.Buffer
+	if code := codexEnable(envPath, cfgPath, filepath.Join(filepath.Dir(envPath), "state.json"), true, &out, &errb); code != 0 {
+		t.Fatalf("enable exit %d: %s", code, errb.String())
+	}
+	want := codexHomeEnv + "=" + shellQuote(filepath.Dir(envPath)) + " " + codexDaemonRestartCmd
+	wantAll(t, "enable output", out.String(), "running with its old settings", want)
 }

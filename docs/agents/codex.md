@@ -12,7 +12,7 @@ Codex's dotenv file, and removes it again.
    says that the restart failed, run `codex app-server daemon restart`. A restart
    interrupts running turns, and Codex resumes them. See
    [Codex's background app-server](#codexs-background-app-server).
-   If `enable` prints a `kill <pid> && codex app-server daemon restart` line for the
+   If `enable` prints a `kill <pid> && … && codex app-server daemon restart` line for the
    auto-updater, run that line.
 3. Check: run `agentop observe`, send one prompt, and see a `codex` row with tokens. A
    `pending:codex@…` bucket with no tokens means that the daemon did not restart.
@@ -346,7 +346,7 @@ Rules: [`POST /v1/import`](../session-api.md#post-v1import--transcript-import-la
 
 - **Changing the routing restarts Codex's background server.** `enable` and `disable`
   change a file Codex's app-server daemon and auto-updater read only when they start, so
-  they restart both when they are running, which interrupts running Codex turns for up to
+  they stop the updater and restart a running daemon, which interrupts running Codex turns for up to
   the daemon's shutdown grace (a minute by default). Changing
   the file any other way — by hand, or with an older agentop — does not reach a
   running daemon until `codex app-server daemon restart`. See
@@ -471,9 +471,9 @@ v0.9.5 and earlier, `disable` removed all five whatever the record said.
 
 It reads each value as Codex does, with surrounding quotes removed, so a quoted copy of
 Cortex's value is still Cortex's. When every variable was changed since `enable`, there is
-nothing to remove, but an app-server started before those changes still uses Cortex's
-proxy: `disable` names it, with the restart that drops the proxy, and does not restart it
-itself.
+nothing to remove, but an app-server or auto-updater started before those changes still
+uses Cortex's proxy: `disable` names it, with the command that drops the proxy, and does
+not restart or stop it itself.
 
 ### What status says
 
@@ -509,7 +509,8 @@ process, `codex app-server daemon pid-update-loop`, which also reads the dotenv 
 it starts. After installing an update it starts a new daemon, and that daemon inherits the
 updater's environment, but `codex app-server daemon restart` leaves a running updater alone.
 So `enable` and `disable` stop the updater first, and the restart starts a fresh one that has
-read the new file. Comparing `ps` before and after, both processes change. Without this, a
+read the new file. They stop it also when no daemon runs, since `codex app-server daemon
+stop` leaves the updater running. Comparing `ps` before and after, both processes change. Without this, a
 `disable` would come undone at the next Codex update, with the daemon back on Cortex's proxy. If the
 updater will not stop, they name it and the command that replaces it.
 
@@ -542,7 +543,8 @@ interrupts Codex rather than ending it, and `enable` or `disable` can take as lo
 when a turn is running.
 
 If the restart fails, the file is still changed and the command still exits 0; it prints the
-error and the command to run yourself:
+error and the command to run yourself, with `CODEX_HOME=` in front when the file is not the
+one your shell's `codex` reads:
 
 ```sh
 codex app-server daemon restart
@@ -559,7 +561,9 @@ lsof -nP -a -p "$(pgrep -f 'codex app-server --listen')" -iTCP -sTCP:ESTABLISHED
 
 `agentop uninstall` unroutes Codex before it stops the proxy, the way `disable` does: it
 removes Cortex's values, leaves and names a variable you changed since `enable`, deletes
-the record, stops Codex's auto-updater, and restarts a running app-server. It does this for the file enable's record names, wherever `--env`
+the record, stops Codex's auto-updater, and restarts a running app-server. When the file
+has nothing of Cortex's left, because you changed every variable, it stops the updater and
+restarts the app-server only if they still have Cortex's proxy. It does this for the file enable's record names, wherever `--env`
 or a `CODEX_HOME` put it, and for the default file when one of its proxy lines is the
 proxy `enable` would write now. When it cannot change a file, for example when a
 variable is defined twice, the step fails with the lines to remove by hand, and
