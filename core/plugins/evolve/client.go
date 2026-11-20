@@ -541,7 +541,10 @@ func contentText(content any) string {
 // guidelineIndex reads the guidelines in namespace with the given ids, keyed by
 // id, for an evolve that can't return them with their attribution. It reads
 // list_entities pages until it has found them all or the namespace ends, so a
-// guideline selected from beyond the first page is found too.
+// guideline selected from beyond the first page is found too. A listing it can't
+// finish (past maxListPages, or a cursor that comes back again) is an error: a
+// partial answer would be cached as the session's guidelines for
+// cache_ttl_seconds, where a failure is retried after retry_after_seconds.
 func (e *mcpEvolve) guidelineIndex(ctx context.Context, cn *conn, namespace string, ids []string) (map[string]Guideline, error) {
 	want := make(map[string]bool, len(ids))
 	for _, id := range ids {
@@ -552,6 +555,7 @@ func (e *mcpEvolve) guidelineIndex(ctx context.Context, cn *conn, namespace stri
 		"namespace_id": namespace, "entity_types": []string{"guideline"},
 		"include_content": true, "limit": listPageSize,
 	}
+	cursors := map[string]bool{}
 	for range maxListPages {
 		text, err := e.call(ctx, cn, "list_entities", args)
 		if err != nil {
@@ -581,11 +585,15 @@ func (e *mcpEvolve) guidelineIndex(ctx context.Context, cn *conn, namespace stri
 			out[item.ID] = g
 		}
 		if len(out) == len(want) || page.NextCursor == "" {
-			break
+			return out, nil // every selected guideline, or all that are left
 		}
+		if cursors[page.NextCursor] {
+			return nil, fmt.Errorf("%w: list_entities returned cursor %q again", ErrUnavailable, page.NextCursor)
+		}
+		cursors[page.NextCursor] = true
 		args["cursor"] = page.NextCursor
 	}
-	return out, nil
+	return nil, fmt.Errorf("%w: list_entities: %d pages read without finding every selected guideline", ErrUnavailable, maxListPages)
 }
 
 // Learn sends a trajectory to evolve, preparing the server first on the same

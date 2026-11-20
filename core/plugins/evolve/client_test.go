@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -39,6 +40,10 @@ type fakeEvolveServer struct {
 	holdGuidelines, holdLearn chan struct{}
 	// paged serves list_entities a page at a time: 7 and 8, then 9.
 	paged bool
+	// cursor, when set, makes list_entities serve 7 alone, on and on: the same
+	// cursor every time ("same"), or a new one every time ("advancing").
+	cursor string
+	pages  int
 }
 
 func (f *fakeEvolveServer) record(req mcp.CallToolRequest) {
@@ -96,6 +101,18 @@ func (f *fakeEvolveServer) mcpServer() *server.MCPServer {
 		f.record(req)
 		if f.listErr {
 			return text(map[string]any{"error": "invalid cursor"}), nil
+		}
+		if f.cursor != "" {
+			f.mu.Lock()
+			f.pages++
+			next := "same"
+			if f.cursor == "advancing" {
+				next = fmt.Sprintf("page-%d", f.pages)
+			}
+			f.mu.Unlock()
+			return text(map[string]any{"items": []any{
+				map[string]any{"id": "7", "content": "guideline 7", "metadata": map[string]any{}},
+			}, "next_cursor": next}), nil
 		}
 		if f.paged {
 			if req.GetArguments()["cursor"] != "page-2" {
@@ -796,5 +813,24 @@ func TestMCPEvolve_LearningSetsUpTheSessionItSendsOn(t *testing.T) {
 	got := second.tools()
 	if len(got) < 3 || got[0] != "ensure_processing_profile" || got[1] != "list_entities" || got[2] != "process_trajectory" {
 		t.Fatalf("new evolve got %v, want setup before process_trajectory", got)
+	}
+}
+
+func TestMCPEvolve_AListingThatDoesNotFinishIsAnError(t *testing.T) {
+	for _, cursor := range []string{"same", "advancing"} {
+		t.Run(cursor, func(t *testing.T) {
+			f := &fakeEvolveServer{old: true, cursor: cursor}
+			e := newMCPEvolve(f.start(t), "cortex", "environment-grounded", 5*time.Second)
+			defer e.Close()
+			// 9 is never listed. Before, the fallback returned 7 alone as a
+			// successful fetch, and the session cached it.
+			gs, err := e.Guidelines(context.Background(), "cortex", "t", "s")
+			if !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("guidelines = %+v, err = %v; want ErrUnavailable", gs, err)
+			}
+			if want := map[string]int{"same": 2, "advancing": maxListPages}[cursor]; f.pages != want {
+				t.Fatalf("read %d pages, want %d", f.pages, want)
+			}
+		})
 	}
 }
