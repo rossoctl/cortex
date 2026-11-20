@@ -410,7 +410,10 @@ func (p *Plugin) guidelinesFor(ctx context.Context, sessionID string, messages [
 		switch {
 		case err != nil:
 			p.m.inc(&p.m.fetchErrors)
-			slog.Warn("evolve: guideline fetch failed; forwarding requests unchanged", "session", sessionID, "err", err)
+			// No session id: the failure is evolve's, not the session's, and the session's own
+			// event already records the skip. The id comes from a request header, which
+			// CodeQL's go/clear-text-logging treats as sensitive.
+			slog.Warn("evolve: guideline fetch failed; forwarding requests unchanged", "err", err)
 			entry.failed = true
 			entry.expires = p.now().Add(time.Duration(p.cfg.RetryAfter) * time.Second)
 		default:
