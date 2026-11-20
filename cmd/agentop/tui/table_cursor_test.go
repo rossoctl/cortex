@@ -269,7 +269,7 @@ func TestEventsTable_ResizeKeepsSelectionVisible(t *testing.T) {
 }
 
 // TestEventsTable_ShrinkKeepsSelectionVisible covers the rows-SHRINK case, the one the
-// old `else if prevRow < len(rows)` skipped outright: toggling hideInactive can pull the
+// old `else if prevRow < len(rows)` skipped outright: FIFO eviction can pull the
 // list out from under the cursor, and with no restore the cursor was left wherever SetRows
 // had clamped it, with an offset nobody reconciled. (Typing a filter could too, until `/`
 // became a search that hides nothing.)
@@ -278,16 +278,9 @@ func TestEventsTable_ResizeKeepsSelectionVisible(t *testing.T) {
 // is the one where the stale offset still addresses a line of the new, shorter content — a
 // drastic shrink is self-correcting, a moderate one is not.
 func TestEventsTable_ShrinkKeepsSelectionVisible(t *testing.T) {
-	// keep gives events [from, to) a plugin invocation, so hiding inactive rows keeps those.
+	// keep leaves only events [from, to) in the cache, as an eviction would.
 	keep := func(from, to int) func(m *model) {
-		return func(m *model) {
-			for i := from; i < to; i++ {
-				m.events["s"][i].Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{
-					{Plugin: "tool-prune", Action: pipeline.ActionModify, Reason: "tools_pruned"},
-				}}
-			}
-			m.hideInactive = true
-		}
+		return func(m *model) { m.events["s"] = m.events["s"][from:to] }
 	}
 	for _, tc := range []struct {
 		name     string
@@ -301,6 +294,7 @@ func TestEventsTable_ShrinkKeepsSelectionVisible(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := cursorModel(t, 40)
+			all := m.events["s"]
 			setCursorVisible(&m.eventsTbl, 30)
 			assertSelectionVisible(t, m.eventsTbl, "parked at row 30")
 
@@ -320,7 +314,7 @@ func TestEventsTable_ShrinkKeepsSelectionVisible(t *testing.T) {
 			}
 
 			// Showing every row grows the list back; the cursor must still be on screen.
-			m.hideInactive = false
+			m.events["s"] = all
 			m.rebuildEventsTable()
 			if got := len(m.eventsTbl.Rows()); got != 40 {
 				t.Fatalf("showing every row left %d rows, want 40", got)
@@ -331,43 +325,6 @@ func TestEventsTable_ShrinkKeepsSelectionVisible(t *testing.T) {
 			}
 		})
 	}
-}
-
-// hideInactive is the other shrink lever, and it hides rows from the MIDDLE of the list
-// rather than the ends, so the surviving rows keep no relationship to their old indices.
-func TestEventsTable_HideInactiveShrinkKeepsSelectionVisible(t *testing.T) {
-	events := cursorRowsFixture(40)
-	// Give a handful of events a plugin invocation so they survive the inactive filter.
-	active := map[int]bool{2: true, 9: true, 17: true, 26: true, 33: true, 38: true}
-	for i := range events {
-		if active[i] {
-			events[i].Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{
-				{Plugin: "tool-prune", Action: pipeline.ActionModify, Reason: "tools_pruned"},
-			}}
-		}
-	}
-	m := &model{
-		pane: paneEvents, selectedSess: "s", bodyHeight: 12, width: 200,
-		events: map[string][]pipeline.SessionEvent{"s": events},
-	}
-	m.eventsTbl = newEventsTable()
-	m.rebuildEventsTable()
-	setCursorVisible(&m.eventsTbl, 30)
-	assertSelectionVisible(t, m.eventsTbl, "parked at row 30")
-
-	m.hideInactive = true
-	m.rebuildEventsTable()
-	if got, want := len(m.eventsTbl.Rows()), len(active); got != want {
-		t.Fatalf("hideInactive left %d rows, want %d", got, want)
-	}
-	assertSelectionVisible(t, m.eventsTbl, "after hideInactive shrank the list")
-	if _, ok := m.selectedEventRow(); !ok {
-		t.Error("no selected row resolves after hideInactive")
-	}
-
-	m.hideInactive = false
-	m.rebuildEventsTable()
-	assertSelectionVisible(t, m.eventsTbl, "after hideInactive off")
 }
 
 // sessionsModel builds a sessions pane with n sessions, taller than the table, and the

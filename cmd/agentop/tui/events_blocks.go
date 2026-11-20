@@ -19,9 +19,8 @@ import (
 // a subagent's.
 type subagentBlock struct {
 	id string
-	// rows indexes cellContexts, in arrival order, among the rows that passed the
-	// inactive filter — the same population the row loop renders, so the header's
-	// rollup counts what expanding would show.
+	// rows indexes cellContexts, in arrival order — the same population the row loop
+	// renders, so the header's rollup counts what expanding would show.
 	rows []int
 	// tokens and cost are the block's rollup, from the same readings the TOKENS
 	// and COST cells sort by (rowTokens / rowCostUSD). A request whose response
@@ -102,29 +101,18 @@ func (m *model) blockOpen(id string, subtask, searching bool) bool {
 	return subtask
 }
 
-// rowInactiveHidden is the hideInactive (`s` toggle) predicate, stated once so the
-// row loop and collectSubagentBlocks filter the same population: a block's rollup
-// must count the rows expanding it would show, and a second spelling of the
-// predicate here would drift with the first edit to either.
-func (m *model) rowInactiveHidden(ctxs []cellContext, partner map[int]int, j int) bool {
-	return m.hideInactive && rowQuiet(ctxs, partner, j)
-}
-
 // rowQuiet reports whether row j is background traffic: no plugin acted on it or on its
 // partner. An unbridged CONNECT has no invocations, so it is quiet unless a gate denied it.
 func rowQuiet(ctxs []cellContext, partner map[int]int, j int) bool {
 	return eventInactive(ctxs[j].invs) && !partnerActive(ctxs, partner, j)
 }
 
-// collectSubagentBlocks groups the rows that survive the inactive filter by their
-// `subagent` field. Nil when no row names one, which is every session without
-// Claude Code or Bob subagents — those rebuild exactly as before.
-func (m *model) collectSubagentBlocks(ctxs []cellContext, partner map[int]int) map[string]*subagentBlock {
+// collectSubagentBlocks groups the rows by their `subagent` field. Nil when no row
+// names one, which is every session without Claude Code or Bob subagents — those
+// rebuild exactly as before.
+func (m *model) collectSubagentBlocks(ctxs []cellContext) map[string]*subagentBlock {
 	var blocks map[string]*subagentBlock
 	for j, cc := range ctxs {
-		if m.rowInactiveHidden(ctxs, partner, j) {
-			continue
-		}
 		id := cc.row.event.Subagent
 		if id == "" {
 			continue

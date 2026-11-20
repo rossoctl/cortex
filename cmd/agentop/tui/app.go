@@ -648,16 +648,6 @@ type model struct {
 	detailSearch    *detailSearch
 	detailSearchGen uint64
 	paused          bool
-	// hideInactive toggles whether passthrough / skip-only messages are
-	// hidden from the events table. False (default) shows every message —
-	// the operator asked to see all network traffic, processed or not.
-	// Toggle with `s` to focus on plugin activity (deny/modify/allow/
-	// observe). hiddenInactive is the count from the most recent
-	// rebuildEventsTable, surfaced in the footer so a filtered timeline
-	// doesn't read as data loss.
-	hideInactive   bool
-	hiddenInactive int
-
 	// olderNotFetched is how many events a session holds that its snapshot did not
 	// carry, reported by the server, keyed by session id.
 	//
@@ -665,9 +655,7 @@ type model struct {
 	// whichever session was selected when the fetch started. A single field let a late
 	// snapshot for an abandoned session describe the one on screen, and showed the
 	// previous session's count in the window between selecting a session and its
-	// snapshot arriving. Beside hiddenInactive in spirit — both answer "is this the
-	// whole timeline?" — but that one is a filter the operator chose and this is a
-	// bound they did not.
+	// snapshot arriving.
 	olderNotFetched map[string]int
 
 	// paging holds the backward-paging state of any session the operator has walked off

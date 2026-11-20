@@ -154,11 +154,11 @@ Some details:
 - The `STATUS` of a tunnel is the status of the connection, not the status of the destination.
 - A blank `STATUS` means that the response did not arrive yet. `lost` means that no response arrived in 10 minutes.
 - `—` in `ACTION` and `PLUGIN` means that no plugin acted on the row.
+- Rows where no plugin acted, and tunnel rows, show muted.
 
 ### Keys on Events and Detail
 
 - `c` opens the column picker. In the picker, `space` shows or hides a column, and `s` sorts by the column. For example, sort by `DURATION` to find the slowest calls.
-- `s` hides or shows the exchanges that no plugin acted on.
 
 Press `Enter` on an event to open the Detail pane.
 It shows the full request and the full response.
@@ -242,7 +242,6 @@ When an agent still uses a session, its next request starts that session again.
 | `S` | On Agents, select the server for the new sessions of the agent. On Sessions, move the session to a different server |
 | `P` | Open the Pipeline pane |
 | `c` | On Events, open the column picker |
-| `s` | On Events, hide or show the exchanges that no plugin acted on |
 | `y` | On Detail, write the event to a file |
 | `x` | On Sessions, erase the session. On Agents, erase the sessions of the agent, or all sessions on the *All agents* row |
 | `p` | Pause or resume the live stream |

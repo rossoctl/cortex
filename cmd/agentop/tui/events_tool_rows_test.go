@@ -172,21 +172,6 @@ func TestToolRows_InExpandedBlock(t *testing.T) {
 	}
 }
 
-func TestToolRows_HideInactiveHidesTools(t *testing.T) {
-	events := slices.Concat(trExchange(1, 10, ""), trExchange(2, 20, ""))
-	events[2].Invocations = &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: "p", Action: pipeline.ActionAllow}}}
-	m := toolRowsModel(t, events, &timeline.Timeline{Tools: []timeline.Tool{
-		trTool(2, "hidden", "Bash", 12, 13, ""),
-		trTool(4, "shown", "Bash", 22, 23, ""),
-	}})
-	m.hideInactive = true
-	m.rebuildEventsTable()
-	toolRowAt(t, m, "shown")
-	if slices.ContainsFunc(m.visibleRows, func(r eventRow) bool { return r.tool != nil && r.tool.ID == "hidden" }) {
-		t.Errorf("the tool of a hidden exchange still shows")
-	}
-}
-
 // The issue (#1805): under a DURATION sort a long tool stays under its exchange, and it does
 // not rank above an exchange that took longer than its own.
 func TestToolRows_SortByDuration(t *testing.T) {

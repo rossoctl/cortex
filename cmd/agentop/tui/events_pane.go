@@ -19,8 +19,8 @@ import (
 
 // eventKey pins a row to a specific event across rebuilds, so the
 // cursor follows the same event when the underlying slice shifts:
-// FIFO eviction at session.max_events, a re-sort, hideInactive
-// toggled. Zero value = unpinned. `at` is UnixNano so struct == is
+// FIFO eviction at session.max_events, a re-sort, a block
+// collapsed. Zero value = unpinned. `at` is UnixNano so struct == is
 // safe against time.Time's monotonic clock and Location pointer.
 type eventKey struct {
 	at        int64
@@ -158,14 +158,14 @@ func (m *model) eventRowKinds(n int) []eventRowKind {
 }
 
 // partnerActive reports whether row i's paired request or response is one a plugin
-// acted on, so hideInactive keeps row i with it.
+// acted on, so rowQuiet does not mute row i apart from it.
 func partnerActive(ctxs []cellContext, partner map[int]int, i int) bool {
 	p, ok := partner[i]
 	return ok && !eventInactive(ctxs[p].invs)
 }
 
 // rebuildEventsTable populates the events table from the cache for the
-// currently selected session, applying hideInactive, marking the search's
+// currently selected session, marking quiet rows and the search's
 // matches and preserving the cursor. Also
 // resizes the table height to account for the IDENTITY banner — when
 // the session has inbound identity, subtract the banner's rendered
@@ -209,19 +209,14 @@ func (m *model) rebuildEventsTable() {
 	// so a merged row keeps the number its request had, and # reads as it always did.
 	eventRows, partner = mergeExchanges(eventRows, partner)
 
-	// One cellContext per row of the SESSION, before hideInactive drops any. The
-	// fitsContent columns are measured over all of them (see measureColumns), and the row
-	// loop below shows the cells measured there, so a column cannot be sized from one
-	// reading of a row and filled from another.
-	//
-	// That computes invocations, rowAction and the measured cells for rows hideInactive
-	// then hides, which the loop used to skip. Each is evaluated once per row, which is
-	// what showing every row pays on every rebuild anyway, so hiding rows never makes a
-	// rebuild dearer than showing them.
+	// One cellContext per row of the SESSION, including rows a collapsed block keeps off
+	// the screen. The fitsContent columns are measured over all of them (see
+	// measureColumns), and the row loop below shows the cells measured there, so a column
+	// cannot be sized from one reading of a row and filled from another.
 	ref := m.lostRef(events)
 	ctxs := make([]cellContext, len(eventRows))
 	for i, er := range eventRows {
-		// One invocations and one rowAction per row: hideInactive below reads invs,
+		// One invocations and one rowAction per row: rowQuiet below reads invs,
 		// and the ACTION and PLUGIN cells read this one rowAction result rather than
 		// each recomputing the pair and discarding half of it. Both consider the
 		// folded tunnel's invocations too.
@@ -244,7 +239,6 @@ func (m *model) rebuildEventsTable() {
 	// the end of this function — see the note there on why the order matters.
 	rows := make([]table.Row, 0, len(eventRows))
 	m.visibleRows = m.visibleRows[:0]
-	m.hiddenInactive = 0
 
 	// The older-events row goes first, with no event under it, like a subagent header.
 	// lead is how many rows precede the events: the sort below must not move this one.
@@ -259,8 +253,7 @@ func (m *model) rebuildEventsTable() {
 	// Subagent blocks (#1047), only while CHRONOLOGICAL: under a sort the row
 	// order is a ranking, and pulling a subagent's rows under a header would
 	// contradict the very thing the operator sorted to see. Collected over the
-	// same population the row loop renders — the inactive filter is applied
-	// identically, via the same predicate — so a header's rollup counts the rows
+	// same population the row loop renders, so a header's rollup counts the rows
 	// expanding it would show.
 	//
 	// headerRows is rebuilt with them; subagentOpen (the operator's collapses)
@@ -271,7 +264,7 @@ func (m *model) rebuildEventsTable() {
 		m.subagentOpen = nil
 	}
 	if m.sortCol == "" {
-		m.subagentBlocks = m.collectSubagentBlocks(ctxs, partner)
+		m.subagentBlocks = m.collectSubagentBlocks(ctxs)
 	} else {
 		m.subagentBlocks = nil
 	}
@@ -382,19 +375,6 @@ func (m *model) rebuildEventsTable() {
 		return ts
 	}
 	for j, cc := range ctxs {
-		// hideInactive (the `s` toggle) is off by default — every message is
-		// shown, including passthrough/skip-only ones, per "I should see all
-		// network messages". Turning it on focuses the timeline on plugin
-		// activity (deny/modify/observe/allow). It hides whole exchanges: a row whose
-		// partner is shown is shown too, or a routed request refused for its model —
-		// no plugin acts on the 403 — would look as if it never got an answer.
-		// The predicate is rowInactiveHidden, shared with collectSubagentBlocks
-		// so the two filter the same rows.
-		if m.rowInactiveHidden(ctxs, partner, j) {
-			m.hiddenInactive++
-			continue
-		}
-
 		// Subagent blocks: a row naming an agent joins that agent's block, whose
 		// header sits at the block's first surviving row. Collapsed (the default,
 		// and always while no search is live) the row is not rendered at all — the
@@ -421,9 +401,9 @@ func (m *model) rebuildEventsTable() {
 					full = append(full, table.SearchRow{Cells: []string{text}})
 				}
 				if m.blockOpen(b.id, b.subtask, q != "") {
-					// b.rows holds exactly the member rows that survived the
-					// inactive filter, in arrival order — the same population the
-					// loop below renders — so nothing is double-counted or skipped.
+					// b.rows holds exactly the member rows, in arrival order — the
+					// same population the loop below renders — so nothing is
+					// double-counted or skipped.
 					for _, mj := range b.rows {
 						renderEventRow(mj)
 					}
@@ -440,9 +420,9 @@ func (m *model) rebuildEventsTable() {
 		// here — render takes its own copy — and no sortKey reads it.
 		//
 		// Each row is one exchange (#1681), so exchange is the row's own arrival
-		// index. j indexes ctxs, which is every row before hideInactive drops any.
-		// The sort never reads it as a position in `keys` — only compares two of
-		// them — so the filter's gaps are harmless.
+		// index. j indexes ctxs, which is every row of the session. The sort never
+		// reads it as a position in `keys` — only compares two of them — so a gap
+		// in the numbering is harmless.
 		//
 		// The exchange's tool rows take its key and its exchange (#1805). All three
 		// tiers of sortEventRows then tie, and the row position keeps the tools
@@ -513,7 +493,7 @@ func (m *model) rebuildEventsTable() {
 	//     next event, for every session long enough to scroll. setCursorVisible
 	//     carries the mechanics.
 	//   - the old `else if prevRow < len(rows)` skipped the restore entirely when
-	//     the rows SHRANK under the cursor — a filter typed, hideInactive toggled.
+	//     the rows SHRANK under the cursor — a filter typed, a block collapsed.
 	//     SetRows had clamped the index by then, so the cursor was left wherever
 	//     that landed, with an offset nobody reconciled.
 	//
@@ -643,8 +623,8 @@ func sortEventRows(rows []table.Row, visible []eventRow, full []table.SearchRow,
 	// Tiers 2 and 3 do NOT flip. Descending flips which exchange comes first, never
 	// the order of rows that tie.
 	//
-	// Both tiers compare arrival indexes without indexing anything by them, so the
-	// gaps hideInactive leaves in that numbering cost nothing.
+	// Both tiers compare arrival indexes without indexing anything by them, so a
+	// gap in that numbering costs nothing.
 	sort.SliceStable(idx, func(a, b int) bool {
 		ia, ib := idx[a], idx[b]
 		ka, kb := keys[ia], keys[ib]
@@ -753,7 +733,7 @@ func buildEventRows(events []pipeline.SessionEvent) []eventRow {
 // then show that call's status and duration as this one's. A guessed pair stays two rows.
 //
 // Returns the merged rows and the partner map re-indexed onto them. Only guessed pairs are
-// left in it, which is what rowInactiveHidden still needs to keep such a pair together.
+// left in it, which is what rowQuiet still needs to judge such a pair together.
 func mergeExchanges(rows []eventRow, partner map[int]int) ([]eventRow, map[int]int) {
 	out := make([]eventRow, 0, len(rows))
 	at := make(map[int]int, len(rows)) // index in rows → index in out

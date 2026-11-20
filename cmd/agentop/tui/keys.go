@@ -336,9 +336,8 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// inheriting the previous column's direction — a fresh column is a fresh
 			// question.
 			//
-			// `s` does not collide with the global hideInactive toggle: this modal block
-			// returns before the global switch is reached, the same way its `r` shadows
-			// nothing.
+			// `s` is free outside this modal block: the Events hide toggle it once
+			// shadowed was removed in #2019.
 			id := eventColumns[m.colCursor].id
 			switch {
 			case eventColumns[m.colCursor].sortKey == nil:
@@ -482,18 +481,6 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if id := m.watchingSessionID(); id != "" && !m.pagedBack(id) {
 			return m.snapshotCmd(id)
 		}
-		return nil
-
-	case "s":
-		// Toggle hiding of passthrough / skip-only messages. Default is
-		// off (show everything); turning it on focuses the timeline on
-		// plugin activity. Events only: on another pane it would change a
-		// table the user cannot see.
-		if m.pane != paneEvents {
-			return nil
-		}
-		m.hideInactive = !m.hideInactive
-		m.rebuildEventsTable()
 		return nil
 
 	case "esc", "left", "h":
@@ -1220,10 +1207,6 @@ func (m *model) helpView() string {
 		}
 		return "[↑↓] nav  [↵] drill  [u] usage  [$] spend  " + search + "  [p] pause  [P] plugins  [?] keys  [q] quit"
 	case paneEvents:
-		skipHint := "[s] hide passthru/skip"
-		if m.hideInactive {
-			skipHint = "[s] show all"
-		}
 		// Ordered by what must survive truncation, not by how the keys group. The
 		// footer runs 135 columns and an 80-column terminal cuts the tail, so
 		// anything after the cut is invisible — [?] keys and [q] quit were both
@@ -1231,7 +1214,7 @@ func (m *model) helpView() string {
 		// end, and the escapable/discoverable keys ahead of them, with the
 		// specialised ones first to be lost.
 		base := "[↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  " +
-			skipHint + "  [p] pause  " + m.searchHints(m.pane) + "  [esc] back"
+			"[p] pause  " + m.searchHints(m.pane) + "  [esc] back"
 
 		// Notices go BEFORE the essential hints, not after.
 		//
@@ -1239,12 +1222,6 @@ func (m *model) helpView() string {
 		// outlives it — at width 40 the footer read "… · → 1 more column ([c] to
 		// choose)" with no way to quit or reach help. A notice is worth less than
 		// the keys that let a user act on it.
-		//
-		// Surface the hidden-message count so a filtered timeline doesn't look like
-		// data loss. Only when hiding is on AND at least one message was hidden.
-		if m.hideInactive && m.hiddenInactive > 0 {
-			base = fmt.Sprintf("%s  ·  %d hidden", base, m.hiddenInactive)
-		}
 		// The older-events row is the timeline's first row, off the screen at the tail.
 		if n := m.olderNotFetched[m.selectedSess]; n > 0 {
 			base = fmt.Sprintf("%s  ·  %d older (▲ at top)", base, n)
