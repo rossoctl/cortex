@@ -70,8 +70,8 @@ type config struct {
 	TopK           int      `json:"top_k" description:"Most guidelines to inject per session." default:"8"`
 	TimeoutMs      int      `json:"timeout_ms" description:"Timeout for fetching a session's guidelines. The first request of a session waits up to this long." default:"3000"`
 	LearnTimeout   int      `json:"learn_timeout_seconds" description:"Timeout for one learning call; evolve generates guidelines with an LLM before answering." default:"300"`
-	CacheTTL       int      `json:"cache_ttl_seconds" description:"How long a session's guidelines are reused before refetching (how soon a removed guideline stops)." default:"1800"`
-	RetryAfter     int      `json:"retry_after_seconds" description:"After a failed fetch, how long to inject nothing before trying again." default:"60"`
+	CacheTTL       int      `json:"cache_ttl_seconds" description:"How long a session's guidelines are reused before they are checked again. A withdrawn guideline stops at the first check that reaches evolve." default:"1800"`
+	RetryAfter     int      `json:"retry_after_seconds" description:"After a failed fetch, how long before trying again. Meanwhile the session keeps its earlier guidelines, if it has any." default:"60"`
 	IdleAfter      int      `json:"idle_after_seconds" description:"Quiet time after which a session's new turns are sent to evolve." default:"900"`
 	MinTurns       int      `json:"min_turns" description:"Fewest new main-agent turns worth learning from." default:"2"`
 	MaxCached      int      `json:"max_sessions" description:"Most sessions tracked for caching and learning." default:"1024"`
@@ -506,7 +506,7 @@ func (p *Plugin) fetch(ctx context.Context, sessionID, task string, previous *ca
 		// No session id: the failure is evolve's, not the session's, and the session's own
 		// event already records the skip. The id comes from a request header, which
 		// CodeQL's go/clear-text-logging treats as sensitive.
-		slog.Warn("evolve: guideline fetch failed; forwarding requests unchanged", "err", err)
+		slog.Warn("evolve: guideline fetch failed; the session keeps its earlier guidelines, if it has any", "err", err)
 		entry.failed = true
 		entry.expires = p.now().Add(time.Duration(p.cfg.RetryAfter) * time.Second)
 	default:
