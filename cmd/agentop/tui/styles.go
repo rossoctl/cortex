@@ -115,10 +115,16 @@ var (
 //
 // ONE STYLE FOR EVERY TABLE. Scoping this to the sessions table would have left one pane
 // tinting its selection and five inverting theirs.
+//
+// Per-column color now exists, and it keeps the argument above: the table applies a pane's
+// cell style after it cuts the cell to width, and a cell style sets only ink and bold, never
+// Reverse or a background. So the gauge's filled blocks keep their ink (accent) on the tinted
+// row, and its brackets are dim through Glyphs. Zebra rows (Alt) are a background on rows the
+// cursor is not on, and the bar (Bar) replaces the cursor row's blank left pad.
 func tableStyles() table.Styles {
 	s := table.DefaultStyles()
 	s.Header = s.Header.
-		Foreground(colorAccent).
+		Foreground(colorMuted).
 		BorderForeground(colorMuted).
 		Bold(true)
 	s.Selected = lipgloss.NewStyle().Bold(true).Background(colorSelectedBg)
@@ -129,8 +135,54 @@ func tableStyles() table.Styles {
 	s.Match = styleMatch
 	s.CurrentMatch = styleCurrentMatch
 	s.Marked = lipgloss.NewStyle().Foreground(colorWarn)
+	s.Alt = lipgloss.NewStyle().Background(colorZebraBg)
+	s.Bar = lipgloss.NewStyle().Foreground(colorAccent)
+	s.Glyphs = tableGlyphs
 	return s
 }
+
+// tableGlyphs are the runes drawn in their own ink inside a styled cell: the CTX gauge's
+// brackets and the BYTES arrows dim, the agents pane's open marks accent.
+//
+// shortcut: the gauge's one-eighth block is the same rune as its closing bracket (▏), so a fill
+// under one eighth of a cell draws dim; give the gauge its own bracket rune if that matters.
+var tableGlyphs = map[rune]lipgloss.Style{
+	'▕': styleDim, '▏': styleDim, '↑': styleDim, '↓': styleDim,
+	'▸': styleAccent, '▾': styleAccent,
+}
+
+// cellKind is the style a pane gives one of its columns.
+type cellKind int
+
+const (
+	cellPlain cellKind = iota
+	cellMuted
+	cellBold
+	cellOK
+	cellAccent
+)
+
+var cellKindStyles = [...]lipgloss.Style{
+	cellPlain: styleNone, cellMuted: styleMuted, cellBold: styleBold, cellOK: styleOK, cellAccent: styleAccent,
+}
+
+// kindsCellStyle styles each cell by its column's kind, kinds parallel to the table's columns.
+func kindsCellStyle(kinds []cellKind) table.CellStyleFunc {
+	return dashDim(func(_ table.Row, col int) lipgloss.Style {
+		if col < len(kinds) {
+			return cellKindStyles[kinds[col]]
+		}
+		return styleNone
+	})
+}
+
+// pickerCellStyle is the Namespaces and Pods tables' style: the name bold, the rest muted.
+var pickerCellStyle = dashDim(func(_ table.Row, col int) lipgloss.Style {
+	if col == 0 {
+		return styleBold
+	}
+	return styleMuted
+})
 
 // colorOn reports whether lipgloss emits color. Under Ascii (what go test gets) every
 // helper below returns exactly what the code drew before it existed.

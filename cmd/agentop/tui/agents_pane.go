@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/agentop/money"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
@@ -349,10 +350,12 @@ func (m *model) rebuildAgentsTable() {
 	cursor := m.agentsTbl.Cursor()
 	prev, hadPrev := m.selectedAgentRow()
 	cols := agentsColumns(m.agentsWindowLabel())
+	kinds := []cellKind{cellPlain, cellBold} // AGENT is bolded per row below; COST
 	if withSessions {
 		cols = slices.Insert(cols, 1,
 			table.Column{Title: "SESSIONS", Width: 8},
 			table.Column{Title: "LAST SEEN", Width: agentsLastSeenWidth})
+		kinds = slices.Insert(kinds, 1, cellPlain, cellMuted)
 	}
 	// SERVER, last, only while the proxy runs an inference-router that routes — not one under
 	// on_error: observe, which keeps its config but moves nothing (see routerStatus). Without
@@ -368,6 +371,7 @@ func (m *model) rebuildAgentsTable() {
 	router, routed := m.activeRouter()
 	if routed {
 		cols = append(cols, table.Column{Title: "SERVER", Width: agentsServerWidth})
+		kinds = append(kinds, cellMuted)
 	}
 	if want := fitTableColumns(cols, m.width); !sameColumns(m.agentsTbl.Columns(), want) {
 		m.agentsTbl.SetRows(nil)
@@ -376,7 +380,11 @@ func (m *model) rebuildAgentsTable() {
 	picker := m.pickerRows()
 	rows := make([]table.Row, 0, len(picker)+1)
 	descs := make([]agentRowDesc, 0, len(picker)+1)
+	top := map[string]bool{} // the AGENT labels of top-level rows, which are bold
 	add := func(d agentRowDesc, agent, sessions, lastSeen, cost, server string) {
+		if d.kind == agentRowAgent || d.kind == agentRowHeading {
+			top[agent] = true
+		}
 		row := table.Row{agent, cost}
 		if withSessions {
 			row = slices.Insert(row, 1, sessions, lastSeen)
@@ -425,6 +433,13 @@ func (m *model) rebuildAgentsTable() {
 			m.agentSessionsCell(a.label), relTime(now, m.agentLastSeen(a.label)),
 			agentCostCellIn(a.Counts, a.units, agentsCostWidth), agentServerCell(router, a.label))
 	}
+	byKind := kindsCellStyle(kinds)
+	m.agentsTbl.SetCellStyle(func(row table.Row, col int) lipgloss.Style {
+		if col == 0 && top[row[0]] {
+			return styleBold
+		}
+		return byKind(row, col) // dims a "—"
+	})
 	m.agentsTbl.SetRows(rows)
 	m.agentRowDescs = descs
 	// Follow the row, not the index: a refresh can reorder the rows under the cursor. When the
