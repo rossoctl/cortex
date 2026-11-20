@@ -1261,3 +1261,25 @@ func TestTaskText_OnlyCodexsContextIsStripped(t *testing.T) {
 		t.Fatalf("codex task = %q", got)
 	}
 }
+
+func TestLearn_TwoInstancesDoNotShareBatchIDs(t *testing.T) {
+	// A reload configures a new instance while the old one is still draining,
+	// often in the same second; both can record the same session.
+	var ids []string
+	for range 2 {
+		fe := &fakeEvolve{}
+		p, c := configured(t, `{"endpoint":"http://x","idle_after_seconds":60,"min_turns":1}`, fe)
+		finish(t, p, turn(h1, "Running.", bash1))
+		c.t = c.t.Add(61 * time.Second)
+		p.learnIdle(context.Background())
+		if len(fe.learned) != 1 {
+			t.Fatalf("learned %d batches", len(fe.learned))
+		}
+		ids = append(ids, fe.learned[0].t.Batch.BatchID)
+	}
+	// Both instances have the same clock. Before, both batches were "<second>.1-1",
+	// and evolve skipped the second as already processed.
+	if ids[0] == ids[1] {
+		t.Fatalf("both instances sent batch %q for session s1", ids[0])
+	}
+}

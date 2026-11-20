@@ -30,6 +30,8 @@ package evolve
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -176,7 +178,11 @@ type Plugin struct {
 	client Evolve
 	agents map[string]struct{}
 	now    func() time.Time
-	epoch  int64
+	// epoch names this plugin instance in its batch ids: when it was configured,
+	// and a random part. Two instances can record the same session (a reload
+	// builds a new one while the old drains, possibly in the same second), and
+	// evolve would skip the second one's batches as already processed.
+	epoch string
 	// recorders counts the recorders created, for their batch ids: a session
 	// evicted and resumed gets a new recorder, whose batches must not reuse the
 	// ids evolve already accepted from the old one.
@@ -240,7 +246,9 @@ func (p *Plugin) Configure(raw json.RawMessage) error {
 	p.cache = map[string]*cached{}
 	p.inflight = map[string]*flight{}
 	p.sessions = map[string]*session{}
-	p.epoch = p.now().Unix()
+	var nonce [4]byte
+	_, _ = rand.Read(nonce[:])
+	p.epoch = fmt.Sprintf("%d-%s", p.now().Unix(), hex.EncodeToString(nonce[:]))
 	if p.client == nil {
 		p.client = newMCPEvolve(c.Endpoint, c.Profile, *c.Prompt, time.Duration(c.TimeoutMs)*time.Millisecond)
 	}
@@ -574,7 +582,7 @@ func (p *Plugin) OnFinish(_ context.Context, pctx *pipeline.Context) {
 			return
 		}
 		p.recorders++
-		s = &session{rec: newRecorder(agent, fmt.Sprintf("%d.%d", p.epoch, p.recorders))}
+		s = &session{rec: newRecorder(agent, fmt.Sprintf("%s.%d", p.epoch, p.recorders))}
 		p.sessions[sessionID] = s
 	}
 	s.rec.observe(pctx.Extensions.Inference)
