@@ -169,9 +169,6 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.usage.cycleGroup()
 			m.persistUsage()
 			return m.beginFetch()
-		case "s":
-			// Was the session toggle. Swallowed so it cannot reach the global hideInactive toggle.
-			return nil
 		}
 		// No scope key: the pane `u` was pressed on sets it — Sessions charts every
 		// session, Events and Detail the one being read.
@@ -300,7 +297,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				m.colCursor++
 			}
 			return nil
-		case " ", "x":
+		case " ":
 			// Toggle. selectedColumns falls back to the defaults when the set is
 			// empty, so turning everything off cannot leave an unrecoverable blank
 			// pane.
@@ -490,11 +487,11 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "s":
 		// Toggle hiding of passthrough / skip-only messages. Default is
 		// off (show everything); turning it on focuses the timeline on
-		// plugin activity. Only meaningful while the events pane is
-		// active, but accepting the key on other panes keeps the keybinding
-		// simple and lets operators set their preference before drilling
-		// into a session. rebuildEventsTable is a no-op when no session
-		// is selected.
+		// plugin activity. Events only: on another pane it would change a
+		// table the user cannot see.
+		if m.pane != paneEvents {
+			return nil
+		}
 		m.hideInactive = !m.hideInactive
 		m.rebuildEventsTable()
 		return nil
@@ -1307,7 +1304,8 @@ func (m *model) helpView() string {
 		if lay, ok := m.timelineLayoutNow(); ok && m.timelineScrollMax(lay) > 0 {
 			scroll = "[↑↓] rows  "
 		}
-		return "[w] window  [←→] moment  " + scroll + "[enter] events  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
+		_, _, _, win := m.timelineRange()
+		return "[w] " + timelineWindows[win].label + "  [←→] moment  " + scroll + "[enter] events  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case paneUsage:
 		// [o] is omitted under latency rather than shown as a no-op: a footer that
 		// advertises an inert key is worse than a shorter footer.
@@ -1323,7 +1321,8 @@ func (m *model) helpView() string {
 		}
 		// No [r]: the pane polls every 20s on its own, so a manual refresh key
 		// bought nothing but a line of footer.
-		return "[m] metric  [w] window" + breakdownHint +
+		usageWindow, _ := m.usage.window()
+		return "[m] metric  [w] " + formatWindowLabel(usageWindow) + breakdownHint +
 			"  " + m.searchHints(m.pane) + "  [esc] back  [?] keys  [q] quit"
 	case paneAgents:
 		// [↵] LABELLED BY WHAT IT WILL SHOW: the highlighted agent, or every agent on the All
@@ -1369,7 +1368,7 @@ func (m *model) helpView() string {
 		// key gets discovered. The drawer here breaks down the row under the cursor.
 		spendHint := "  [$] spend"
 		// [w] the pane's window, which the title names; see cycleAgentsWindow.
-		return navHint + enterHint + escHint + serverHint + "  [w] window" + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
+		return navHint + enterHint + escHint + serverHint + "  [w] " + m.agentsWindowLabel() + spendHint + "  " + m.searchHints(m.pane) + "  [?] keys  [q] quit"
 	}
 	return "[?] keys  [q] quit"
 }

@@ -301,7 +301,7 @@ func TestFooterHintsMentionUsageKey(t *testing.T) {
 	// The usage pane's own footer must not fall through to the bare default.
 	m.pane = paneUsage
 	got := m.helpView()
-	for _, want := range []string{"[m] metric", "[w] window", "[o] breakdown"} {
+	for _, want := range []string{"[m] metric", "[w] 10m", "[o] breakdown"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("usage footer omits %q:\n  %s", want, got)
 		}

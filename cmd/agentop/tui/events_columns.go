@@ -825,7 +825,7 @@ func renderColumnPicker(sel map[eventColumnID]bool, widths map[eventColumnID]int
 	// fitHintLine, so a narrow terminal drops hints from the front and keeps
 	// [q] quit rather than wrapping the line. Same treatment the footer gets.
 	b.WriteString(styleHint.Render(fitHintLine(
-		"[↑↓] move  [space]/[x] toggle  [s] sort  [r] reset  [esc]/[enter] close  [q] quit",
+		"[↑↓] move  [space] toggle  [s] sort  [r] reset  [esc]/[enter] close  [q] quit",
 		width-borderWidth)))
 
 	// MaxWidth as a backstop. overlayCenter is explicit that bounding the panel is
