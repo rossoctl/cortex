@@ -405,12 +405,17 @@ agentop is for, and the others are surfaces you visit and leave.
   unit everywhere — `0.03 Bobcoins`, never `$0.03` — with the same precision rules
   as dollars. Figures in different units are never added: a band span holding
   both prints them side by side (`$6.20 + 0.03 Bobcoins`), and the drawer, the
-  agents pane and the sessions table label each row with its own unit. A row that
-  itself spans units reads `(mixed)`, the drawer's tier column is withheld for a
-  mixed window, and so is the Usage pane's cost chart — scope to one agent (`A`,
-  then `u`) to chart it. Where a column is too narrow for the name it is shortened
-  (`0.03 Bobc…`), down to `¤`. A deployment with no `unit:` configured sees
-  exactly the dollar figures it always did.
+  agents pane and the sessions table label each row with its own unit. In the
+  Agents pane, an agent row or a project row that spans units shows the amount in
+  each unit, dollars first: `$1,065.52 + 0.95 Bobcoins`. The COST column grows
+  into the free width of the pane. When the terminal is too narrow for that cell,
+  the cell reads `(mixed)`. The Other rows, and a sessions table row that spans
+  units, read `(mixed)`. The drawer's tier column is withheld for a mixed window,
+  and so is the Usage pane's cost chart — scope to one agent (`A`, then `u`) to
+  chart it. Where a column is too narrow for the name it is shortened
+  (`0.03 Bobc…`), down to `¤`. In the Agents pane, a single unit is not shortened
+  when the pane has free width (`15.90 Bobcoins`). A deployment with no `unit:`
+  configured sees exactly the dollar figures it always did.
 
   `$` expands the band into two columns — where the money went, by rate tier,
   and who spent it, by model, endpoint or agent:
