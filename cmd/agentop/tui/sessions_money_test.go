@@ -628,8 +628,8 @@ func TestSessionsRows_TruncateTheSessionID(t *testing.T) {
 	if cell == full {
 		t.Errorf("the full UUID is in the cell: %q", cell)
 	}
-	if !strings.HasPrefix(cell, "ecb7387f") {
-		t.Errorf("cell %q lost the identifying prefix", cell)
+	if !strings.HasPrefix(cell, "3e992e9a") {
+		t.Errorf("cell %q lost the identifying tail", cell)
 	}
 	idW := sessionsColumnWidth(m.sessionsTbl.Columns(), "SESSION")
 	if idW == 0 {

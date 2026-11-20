@@ -10,16 +10,29 @@ import (
 	"github.com/rossoctl/cortex/core/session"
 )
 
-// SESSION shows the first 8 characters of an id (#2019, change 8), with no "…". default is
-// shorter and stays whole.
+// SESSION shows the last 8 characters of an id, with no "…". default is shorter and stays whole.
 func TestSessionIDCell_EightChars(t *testing.T) {
 	for _, w := range []int{8, 14, noLimit} {
-		if got := sessionIDCell("f0a50e1f-1234-4abc-8def-0123456789ab", w); got != "f0a50e1f" {
-			t.Errorf("width %d: sessionIDCell = %q, want %q", w, got, "f0a50e1f")
+		if got := sessionIDCell("f0a50e1f-1234-4abc-8def-0123456789ab", w); got != "456789ab" {
+			t.Errorf("width %d: sessionIDCell = %q, want %q", w, got, "456789ab")
 		}
 	}
 	if got := sessionIDCell(session.DefaultSessionID, 8); got != "default" {
 		t.Errorf("sessionIDCell(default) = %q, want %q", got, "default")
+	}
+}
+
+// Ids that start with a timestamp share their head with every session started near them: a
+// Codex UUIDv7 for about 65 s, an OpenCode ses_ id for about 17 minutes. Their cells differ.
+func TestSessionIDCell_TimeOrderedIDsDiffer(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"019a8b2c-1d3e-7f40-8a1b-2c3d4e5f6a7b", "019a8b2c-4f10-7c22-9d3e-8a7b6c5d4e3f"}, // UUIDv7, 1 s apart
+		{"ses_f00ff1689ffeGD4X9nXaHggqh1", "ses_f00ff3a01c22kP7wQm2Rt5Ve8Z"},             // OpenCode
+	} {
+		a, b := sessionIDCell(pair[0], noLimit), sessionIDCell(pair[1], noLimit)
+		if a == b {
+			t.Errorf("%q and %q both show %q", pair[0], pair[1], a)
+		}
 	}
 }
 
@@ -87,15 +100,15 @@ func TestSessionsTable_DefaultRowMuted(t *testing.T) {
 }
 
 // The cell is short, but search and the row's id (what drill and the header use) are the full id.
-func TestSessionsTable_SearchAndYankUseTheFullID(t *testing.T) {
+func TestSessionsTable_SearchAndSelectUseTheFullID(t *testing.T) {
 	m := uuidPicker(t, 140, uuidOpened, uuidOther)
-	if got := m.sessionsTbl.Rows()[rowOf(t, m, uuidOpened)][0]; got != uuidOpened[:8] {
-		t.Fatalf("SESSION cell = %q, want %q", got, uuidOpened[:8])
+	if got := m.sessionsTbl.Rows()[rowOf(t, m, uuidOpened)][0]; got != uuidOpened[28:] {
+		t.Fatalf("SESSION cell = %q, want %q", got, uuidOpened[28:])
 	}
-	m.search = map[paneID]string{paneSessions: uuidOpened[24:]}
+	m.search = map[paneID]string{paneSessions: uuidOpened[:8]}
 	m.rebuildSessionsTable()
 	if got := m.sessionsTbl.Matches(); len(got) != 1 || got[0] != rowOf(t, m, uuidOpened) {
-		t.Errorf("search for the id's tail matched rows %v, want only row %d", got, rowOf(t, m, uuidOpened))
+		t.Errorf("search for the id's head matched rows %v, want only row %d", got, rowOf(t, m, uuidOpened))
 	}
 	m.sessionsTbl.SetCursor(rowOf(t, m, uuidOpened))
 	if got := m.selectedSessionID(); got != uuidOpened {

@@ -33,8 +33,8 @@ import (
 // TITLE is the widest optional column, and it is dropped rather than shrunk when the terminal
 // cannot seat it — see sessionsShowTitle, which decides after the money columns so that
 // widening the window never takes a column away. Where TITLE does render, fitTableColumns
-// shrinks the widest column rather than dropping any. SESSION is 8 wide (an 8-character id
-// prefix, #2019), so it is never the widest and TITLE pays for a narrow terminal on its own.
+// shrinks the widest column rather than dropping any. SESSION is 8 wide (the last 8 characters
+// of the id, #2019), so it is never the widest and TITLE pays for a narrow terminal on its own.
 //
 // A terminal WIDER than 94 rendered is handled by sessionsColumnsFor rather than here:
 // fitTableColumns only ever shrinks, so these declared widths are simultaneously the
@@ -42,7 +42,7 @@ import (
 // with nothing to gain from a ceiling of 24 when there are spare columns on the screen.
 func sessionsColumns() []table.Column {
 	return []table.Column{
-		// SESSION, and 8 wide rather than 36: the first 8 characters of a UUID identify a
+		// SESSION, and 8 wide rather than 36: the last 8 characters of an id identify a
 		// session to a human as well as all of them do (#2019). `/` filters on the FULL id,
 		// so nothing is lost for finding a session — only for reading one. The rebuild widens
 		// it for a pending bucket's agent name; see sessionsIDWidth.

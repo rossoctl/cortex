@@ -3,8 +3,6 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/x/ansi"
-
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -30,18 +28,22 @@ func pendingTitle(pid string) string {
 	return "calls outside any session · pid " + pid
 }
 
-// sessionIDWidth is the SESSION cell of a session id: its first 8 characters (#2019).
+// sessionIDWidth is the SESSION cell of a session id: its last 8 characters (#2019).
 const sessionIDWidth = 8
 
-// sessionIDCell is the SESSION cell: the first sessionIDWidth characters of the id, with no
-// "…", or a pending bucket's agent in full. The agent and not agent·pid: SESSION widens to the
+// sessionIDCell is the SESSION cell: the last sessionIDWidth characters of the id, with no
+// "…", or a pending bucket's agent in full. The tail, not the head: Codex (UUIDv7) and OpenCode
+// (ses_) ids start with a timestamp, so sessions started minutes apart share their head. The agent and not agent·pid: SESSION widens to the
 // agent name (sessionsIDWidth), and the pid is in the title. w cuts only where a narrow
 // terminal fits the column below that.
 func sessionIDCell(id string, w int) string {
 	if agent, _, ok := pendingBucket(id); ok {
 		return trunc(sanitizeLabel(agent), w)
 	}
-	return trunc(ansi.Truncate(id, sessionIDWidth, ""), w)
+	if r := []rune(id); len(r) > sessionIDWidth {
+		id = string(r[len(r)-sessionIDWidth:])
+	}
+	return trunc(id, w)
 }
 
 // sessionIDSearch is what `/` reads for the SESSION cell: the FULL id, or a pending bucket's

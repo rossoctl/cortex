@@ -19,9 +19,9 @@ import (
 const (
 	uuidOpened = "ecb7387f-bffd-4172-adc4-8da23e992e9a"
 	uuidOther  = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-	// Shares its first 13 characters with uuidOpened, which is more than the SESSION cell
+	// Shares its last 13 characters with uuidOpened, which is more than the SESSION cell
 	// shows at any width. Two rows that RENDER identically must still be told apart.
-	uuidSibling = "ecb7387f-bffd-4172-adc4-999999999999"
+	uuidSibling = "99999999-9999-4999-adc4-8da23e992e9a"
 )
 
 func uuidPicker(t *testing.T, width int, ids ...string) *model {
@@ -61,8 +61,8 @@ func TestSelectedSessionID_IsTheFullIDNotTheRenderedCell(t *testing.T) {
 			t.Errorf("width %d: the cell is untruncated (%q), so this test asserted nothing",
 				width, cell)
 		}
-		if !strings.HasPrefix(uuidOpened, strings.TrimSuffix(cell, "…")) {
-			t.Errorf("width %d: cell %q is not a prefix of %q", width, cell, uuidOpened)
+		if !strings.HasSuffix(uuidOpened, strings.TrimSuffix(cell, "…")) {
+			t.Errorf("width %d: cell %q is not a suffix of %q", width, cell, uuidOpened)
 		}
 	}
 }
@@ -138,9 +138,10 @@ func TestSessionRowIDs_MatchTheRowsOneForOne(t *testing.T) {
 				if id == "" {
 					t.Errorf("width %d search %q: row %d has an empty id", width, search, i)
 				}
-				// The id and its row agree: the rendered cell is a prefix of the id it stands for.
+				// The id and its row agree: the rendered cell, less any "…" cut, is a substring of
+				// the id it stands for.
 				cell := strings.TrimSuffix(rows[i][0], "…")
-				if !strings.HasPrefix(id, cell) {
+				if !strings.Contains(id, cell) {
 					t.Errorf("width %d search %q: row %d renders %q for id %q — the slices drifted",
 						width, search, i, rows[i][0], id)
 				}
