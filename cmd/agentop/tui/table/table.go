@@ -642,7 +642,73 @@ func (m *Model) renderRow(r int) string {
 		s = append(s, m.renderCell(r, i, texts[i], widths[i], sp, row, match, barred))
 		barred = false
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, s...)
+	line := lipgloss.JoinHorizontal(lipgloss.Top, s...)
+	if m.cell != nil {
+		line = mergeRuns(line)
+	}
+	return line
+}
+
+// mergeRuns joins two runs in one foreground-only SGR that only spaces part:
+// "S a RESET spaces S b" becomes "S a spaces b". A space in a foreground ink looks the
+// same as a plain space, so the text and its width do not change, and each draw of the
+// page measures fewer escape bytes. A run with a background, underline or reverse is
+// never joined: the spaces would show it.
+func mergeRuns(line string) string {
+	const reset = "\x1b[0m"
+	if strings.Count(line, reset) < 2 {
+		return line
+	}
+	var b strings.Builder
+	b.Grow(len(line))
+	open := "" // the foreground-only SGR the text written since the last reset is in
+	for {
+		i := strings.Index(line, reset)
+		if i < 0 {
+			break
+		}
+		if p := strings.LastIndex(line[:i], "\x1b["); p >= 0 {
+			open = ""
+			if q := strings.IndexByte(line[p:i], 'm'); q > 0 && fgOnly(line[p+2:p+q]) {
+				open = line[p : p+q+1]
+			}
+		}
+		j := i + len(reset)
+		k := j
+		for k < len(line) && line[k] == ' ' {
+			k++
+		}
+		if open != "" && strings.HasPrefix(line[k:], open) {
+			b.WriteString(line[:i])
+			b.WriteString(line[j:k])
+			line = line[k+len(open):]
+			continue
+		}
+		b.WriteString(line[:j])
+		line = line[j:]
+		open = ""
+	}
+	b.WriteString(line)
+	return b.String()
+}
+
+// fgOnly is whether the SGR parameters params set only bold, faint, italic or a
+// foreground color.
+func fgOnly(params string) bool {
+	ps := strings.Split(params, ";")
+	for i := 0; i < len(ps); i++ {
+		switch p := ps[i]; {
+		case p == "1", p == "2", p == "3", p == "39":
+		case len(p) == 2 && (p[0] == '3' || p[0] == '9') && p[1] >= '0' && p[1] <= '7':
+		case p == "38" && i+1 < len(ps) && ps[i+1] == "5":
+			i += 2
+		case p == "38" && i+1 < len(ps) && ps[i+1] == "2":
+			i += 4
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // renderCell draws one cell, text already cut to width. With no cell style, the text is
