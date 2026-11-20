@@ -30,7 +30,7 @@ Allow about 20 minutes. Steps 1–4 are one-time setup; steps 5–9 are the loop
 | Go ≥ 1.26.10 | `go version` (`brew install go`) |
 | uv | `uv --version` |
 | A Cortex checkout with the plugin | this repo |
-| An altk-evolve checkout | `altk-evolve` ≥ 1.5.2 (needs `ensure_processing_profile`). The plugin uses two later additions when evolve has them, and falls back without them: `include_details` ([#485](https://github.com/AgentToolkit/altk-evolve/pull/485), after 1.10.0) and the `environment-grounded` prompt ([#479](https://github.com/AgentToolkit/altk-evolve/pull/479)). With Claude models on Bedrock, evolve needs [#477](https://github.com/AgentToolkit/altk-evolve/pull/477) (after 1.10.0) to learn at all |
+| An altk-evolve checkout | `altk-evolve` main, or the first release after 1.10.0, has everything the plugin uses: `include_details` ([#485](https://github.com/AgentToolkit/altk-evolve/pull/485)), the `environment-grounded` prompt ([#479](https://github.com/AgentToolkit/altk-evolve/pull/479)), and the fix that lets Claude models on Bedrock generate guidelines ([#477](https://github.com/AgentToolkit/altk-evolve/pull/477)). Any `altk-evolve` ≥ 1.5.2 works: without `include_details` the plugin reads the guidelines with `list_entities`, and without the prompt it learns with evolve's default and logs a warning |
 | The installed Cortex | `~/.cortex/ca/ca.crt` must exist and be trusted — the dev build reuses that CA |
 | LLM credentials for evolve | any litellm model; evolve calls it to generate guidelines |
 | Claude Code credentials | whatever `claude -p` normally uses |
@@ -40,7 +40,7 @@ The commands below use these variables; set them once per terminal:
 ```bash
 export CORTEX_SRC=~/src/cortex       # Cortex checkout
 export EVOLVE_SRC=~/src/altk-evolve  # altk-evolve checkout
-export DEV=/tmp/cortex-dev           # scratch dir for this walkthrough
+export DEV=/tmp/cortex-dev           # scratch dir for this walkthrough, evolve's data included
 ```
 
 You will use **three terminals**: one for evolve, one for the dev Cortex, one to drive.
@@ -71,17 +71,18 @@ Before going further, make sure nothing is left over from an earlier run:
 ## 2. Write evolve's environment file
 
 ```bash
-mkdir -p ~/.evolve && umask 077
-cat > ~/.evolve/cortex.env <<'EOF'
+umask 077 && mkdir -p $DEV
+cat > $DEV/evolve.env <<'EOF'
 EVOLVE_MODEL_NAME=litellm_proxy/Azure/gpt-4o
 LITELLM_PROXY_API_BASE=https://<your litellm gateway>
 LITELLM_PROXY_API_KEY=<key>
 EVOLVE_BACKEND=filesystem
-EVOLVE_DATA_DIR=/Users/<you>/.evolve/data
 EVOLVE_INJECTION_MODE=retrieval
 EVOLVE_OTEL_ENABLED=false
 EVOLVE_HOOKS_CONFIG=
 EOF
+echo "EVOLVE_DATA_DIR=$DEV/evolve-data" >> $DEV/evolve.env
+echo "EVOLVE_SQLITE_PATH=$DEV/evolve.sqlite.db" >> $DEV/evolve.env
 ```
 
 **What each line does.**
@@ -89,9 +90,11 @@ EOF
 - `EVOLVE_MODEL_NAME` + the `LITELLM_*` pair — the model evolve uses for guideline generation
   and conflict resolution. Any litellm model string works; use whichever credentials you have
   (`OPENAI_API_KEY`, etc.).
-- `EVOLVE_BACKEND=filesystem`, `EVOLVE_DATA_DIR` — store guidelines as JSON files in one
-  directory you can inspect and delete. Use an absolute path: evolve resolves a relative one
-  against the directory it was started from.
+- `EVOLVE_BACKEND=filesystem`, `EVOLVE_DATA_DIR`, `EVOLVE_SQLITE_PATH` — store guidelines
+  as JSON files, and evolve's bookkeeping database, in `$DEV`, apart from any evolve data you
+  already have, so cleaning up deletes only what this walkthrough made. The `echo` lines write
+  them as absolute paths: evolve resolves a relative one against the directory it was started
+  from.
 - `EVOLVE_INJECTION_MODE=retrieval` — **required.** Makes `get_guidelines_with_attribution`
   rank guidelines by similarity to the task. The default mode matches the task text
   literally and on this backend returns almost nothing, so the plugin would inject nothing.
@@ -104,8 +107,8 @@ The file holds a key, hence `umask 077`.
 ## 3. Start evolve's MCP server — terminal 1
 
 ```bash
-set -a; source ~/.evolve/cortex.env; set +a
-cd ~/.evolve && env -u HTTPS_PROXY -u HTTP_PROXY \
+set -a; source $DEV/evolve.env; set +a
+cd $DEV && env -u HTTPS_PROXY -u HTTP_PROXY \
   uv run --project $EVOLVE_SRC evolve-mcp --transport sse --port 8201
 ```
 
@@ -133,17 +136,19 @@ prints `200` (the request then times out holding the stream open — that is nor
 ## 4. Write the dev Cortex config
 
 ```bash
-mkdir -p $DEV
 sed -e 's/127.0.0.1:4760\([0-9]\)/127.0.0.1:4770\1/g' \
     -e 's/generate_ca: true/generate_ca: false/' \
     ~/.cortex/config.yaml > $DEV/config.yaml
-cat >> $DEV/config.yaml <<'EOF'
-      - name: evolve
-        config:
-          endpoint: http://127.0.0.1:8201/sse
-          agents: [claude-code]
-          idle_after_seconds: 60
-          cache_ttl_seconds: 120
+uv run -q --project $EVOLVE_SRC python - $DEV/config.yaml <<'EOF'
+import sys, yaml
+path = sys.argv[1]
+with open(path) as f:
+    cfg = yaml.safe_load(f)
+cfg["pipeline"]["outbound"]["plugins"].append({"name": "evolve", "config": {
+    "endpoint": "http://127.0.0.1:8201/sse", "agents": ["claude-code"],
+    "idle_after_seconds": 60, "cache_ttl_seconds": 120}})
+with open(path, "w") as f:
+    yaml.safe_dump(cfg, f, sort_keys=False)
 EOF
 echo '{"env":{"HTTPS_PROXY":"http://127.0.0.1:47700","NODE_EXTRA_CA_CERTS":"'$HOME'/.cortex/ca/ca.crt"}}' \
   > $DEV/claude-settings.json
@@ -156,16 +161,18 @@ echo '{"env":{"HTTPS_PROXY":"http://127.0.0.1:47700","NODE_EXTRA_CA_CERTS":"'$HO
   health `47704`.
 - `generate_ca: false` — reuse `~/.cortex/ca` (which Claude Code already trusts) and never
   write to it.
-- Appends the `evolve` plugin as the **last** outbound plugin (it rewrites the request body,
-  and body readers such as the parsers must come before it). `idle_after_seconds: 60` and
+- Adds the `evolve` plugin as the **last** outbound plugin (it rewrites the request body,
+  and body readers such as the parsers must come before it). It edits the YAML rather than
+  appending to the file, because the outbound plugin list needn't be the file's last section;
+  the copy loses its comments. PyYAML comes with evolve, hence `--project $EVOLVE_SRC`. `idle_after_seconds: 60` and
   `cache_ttl_seconds: 120` shorten the defaults (15 and 30 minutes) so the loop runs in
   minutes.
 - `claude-settings.json` is for step 6: Claude Code's `~/.claude/settings.json` usually pins
   `HTTPS_PROXY` to your everyday Cortex, and settings beat the shell environment, so a
   `--settings` override is the reliable way to route one run elsewhere.
 
-**Check** the tail of the file: the `evolve` entry must be indented under `plugins:` like the
-`tool-prune` entry above it, and `grep -c 4760 $DEV/config.yaml` prints `0`.
+**Check**: `grep -A2 'name: evolve' $DEV/config.yaml` shows the entry with its endpoint, and
+`grep -c 4760 $DEV/config.yaml` prints `0`.
 
 Because the config lives outside `~/.cortex`, Cortex treats it as not-a-local-install: the
 **session archive is off** (sessions live in memory only), so the dev build cannot write to
@@ -213,8 +220,8 @@ Evolve starts empty, so put one guideline into the reviewed namespace by hand. A
 an instruction with a visible effect — proves the text reached the model:
 
 ```bash
-set -a; source ~/.evolve/cortex.env; set +a
-ev() { (cd ~/.evolve && env -u HTTPS_PROXY uv run -q --project $EVOLVE_SRC evolve "$@"); }
+set -a; source $DEV/evolve.env; set +a
+ev() { (cd $DEV && env -u HTTPS_PROXY uv run -q --project $EVOLVE_SRC evolve "$@"); }
 
 ev namespaces create cortex
 ev entities add cortex --no-conflict-resolution \
@@ -327,7 +334,7 @@ canary. Nothing learned is ever injected until you copy it over.
 |---|---|---|
 | No log line after 2 minutes | The session had fewer than `min_turns` (2) successful turns, or every turn failed upstream | Use a prompt that makes at least one tool call |
 | `sending session to learn from failed; will retry … Namespace … not found` | Old plugin build | Rebuild (step 1) |
-| `… failed; will retry` with an LLM error | Evolve's model credentials are wrong | Fix `~/.evolve/cortex.env`, restart terminal 1; the plugin retries every 30 s with the same batch |
+| `… failed; will retry` with an LLM error | Evolve's model credentials are wrong | Fix `$DEV/evolve.env`, restart terminal 1; the plugin sends the same batch again after 30 s, then 1, 2, 4 and 8 minutes |
 | Sent, but `cortex-candidates` is empty | Evolve judged the run not worth a guideline | Normal for trivial sessions; try a task where the agent hits and recovers from an error |
 
 ## 8. Promote a candidate and see it served
@@ -337,7 +344,7 @@ where it came from:
 
 ```bash
 ID=<candidate id>
-(cd ~/.evolve && env -u HTTPS_PROXY uv run -q --project $EVOLVE_SRC python - "$ID" <<'EOF'
+(cd $DEV && env -u HTTPS_PROXY uv run -q --project $EVOLVE_SRC python - "$ID" <<'EOF'
 import json, sys
 from altk_evolve.frontend.client.evolve_client import EvolveClient
 from altk_evolve.schema.core import Entity
@@ -380,7 +387,7 @@ the `evolve` entry from the dev config.
 
 ```bash
 # terminals 1 and 2: Ctrl-C
-rm -rf $DEV ~/.evolve/data            # dev config, scratch dir, and every guideline
+rm -rf $DEV                           # dev config, evolve's data from this walkthrough, scratch dir
 ```
 
 Your everyday Cortex, its config and its archive were never modified. The only shared state
