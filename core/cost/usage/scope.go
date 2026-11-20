@@ -220,28 +220,40 @@ func NarrowToLabel(snap Snapshot, label string) Snapshot {
 // session and an agent that is "" or recognised: only those have a ring per project. A ring that
 // was evicted and came back holds fewer minutes than its reference ring says it should, and is not
 // read. Then the reply is narrowed from the project axis of the agent's ring (or the session's) and
-// served as group none. An unrecognised agent has no agent-by-project data at all, so it gets
-// AgentSnapshot's reply with no Project echo: the filter was not applied.
+// served as group none.
+//
+// AN UNRECOGNISED AGENT has no ring per project, but the all-agents ring of the project has an agent
+// axis. With no session and that ring complete, the reply is narrowed from it to the agent, as
+// group none. Otherwise there is no agent-by-project data, so it gets AgentSnapshot's reply with no
+// Project echo: the filter was not applied.
 func (a *Aggregator) ProjectSnapshot(window, resolution time.Duration, sessionID, agent, project string, group Group) Snapshot {
-	if agent != "" && !model.IsKnownAgent(agent) {
-		return a.AgentSnapshot(window, resolution, sessionID, agent, group)
-	}
+	known := agent == "" || model.IsKnownAgent(agent)
 	if sessionID == "" {
+		ringAgent, ringGroup, maxSeries := agent, group, MaxSeriesInResponse
+		if !known {
+			ringAgent, ringGroup, maxSeries = "", GroupAgent, math.MaxInt
+		}
 		a.mu.RLock()
 		ref := a.all
-		if agent != "" {
-			ref = a.agents[agent]
+		if ringAgent != "" {
+			ref = a.agents[ringAgent]
 		}
-		if r, ok := a.projects[projectKey{agent, project}]; ok &&
+		if r, ok := a.projects[projectKey{ringAgent, project}]; ok &&
 			projectRingComplete(r.buckets, ref, project, a.now().Truncate(BucketWidth), windowBuckets(window)) {
-			snap := a.snapshotRingLocked(r.buckets, window, resolution, "", group, MaxSeriesInResponse)
+			snap := a.snapshotRingLocked(r.buckets, window, resolution, "", ringGroup, maxSeries)
 			a.mu.RUnlock()
+			if !known {
+				snap = NarrowToLabel(snap, agent)
+			}
 			snap.Agent, snap.Project = agent, model.LenientString(project)
 			return snap
 		}
 		// Released before snapshot takes it again: a second read lock behind a waiting writer
 		// deadlocks.
 		a.mu.RUnlock()
+	}
+	if !known {
+		return a.AgentSnapshot(window, resolution, sessionID, agent, group)
 	}
 	refAgent := agent
 	if sessionID != "" {
@@ -258,6 +270,9 @@ func (a *Aggregator) ProjectSnapshot(window, resolution time.Duration, sessionID
 // projectRingComplete reports whether ring holds every request that ref's project axis counts for
 // project over the n buckets ending at newest. It is false for a ring that was evicted and came
 // back inside the window.
+//
+// AT LEAST, NOT EXACTLY: ref files a project past maxLabelsPerBucket under the overflow label, so
+// in such a minute ref counts too few. Only got < want can show an eviction.
 func projectRingComplete(ring, ref []bucket, project string, newest time.Time, n int) bool {
 	var got, want int64
 	for i := 0; i < n; i++ {
@@ -270,5 +285,5 @@ func projectRingComplete(ring, ref []bucket, project string, newest time.Time, n
 			want += ref[s].byProject[project].Requests
 		}
 	}
-	return got == want
+	return got >= want
 }

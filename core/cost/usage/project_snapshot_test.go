@@ -89,15 +89,58 @@ func TestProjectSnapshot_EvictedRingIsServedNarrowed(t *testing.T) {
 	}
 }
 
-func TestProjectSnapshot_UnknownAgentDoesNotEcho(t *testing.T) {
+// An unrecognised agent has no ring per project, but the project's all-agents ring has an agent
+// axis: the reply is narrowed from it and both filters are echoed.
+func TestProjectSnapshot_UnknownAgentIsNarrowedFromTheProjectRing(t *testing.T) {
 	a := New()
 	a.Record("s1", projectEvent(t, "not-an-agent", "/repo/a"))
+	a.Record("s1", projectEvent(t, "not-an-agent", "/repo/a"))
+	a.Record("s1", projectEvent(t, "not-an-agent", "/repo/b"))
+	a.Record("s2", projectEvent(t, "claude-code", "/repo/a"))
 	snap := a.ProjectSnapshot(time.Hour, time.Hour, "", "not-an-agent", "/repo/a", GroupModel)
+	if snap.Group != GroupNone {
+		t.Errorf("Group = %q, want %q", snap.Group, GroupNone)
+	}
+	if snap.Totals.Requests != 2 {
+		t.Errorf("Totals.Requests = %d, want 2 (not-an-agent in /repo/a only)", snap.Totals.Requests)
+	}
+	if snap.Project != "/repo/a" || snap.Agent != "not-an-agent" {
+		t.Errorf("echo = (agent %q, project %q), want (not-an-agent, /repo/a)", snap.Agent, snap.Project)
+	}
+}
+
+// With no complete project ring, an unrecognised agent has no agent-by-project data, so the
+// reply is AgentSnapshot's and does not echo the project.
+func TestProjectSnapshot_UnknownAgentWithoutRingDoesNotEcho(t *testing.T) {
+	a := New()
+	a.Record("s1", projectEvent(t, "not-an-agent", "/repo/a"))
+	snap := a.ProjectSnapshot(time.Hour, time.Hour, "", "not-an-agent", "/repo/none", GroupModel)
 	if snap.Project != "" {
-		t.Errorf("Project = %q, want empty: no agent-by-project data exists", snap.Project)
+		t.Errorf("Project = %q, want empty: no ring holds /repo/none", snap.Project)
 	}
 	if snap.Agent != "not-an-agent" {
 		t.Errorf("Agent = %q, want the AgentSnapshot echo", snap.Agent)
+	}
+}
+
+// In a minute with more projects than a bucket keeps labels, the all-sessions ring files the late
+// ones under the overflow label and counts too few for them. Their own ring is still complete.
+func TestProjectSnapshot_OverflowMinuteKeepsTheGroup(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 30, 0, time.UTC)
+	a := New(WithClock(func() time.Time { return now }))
+	var last string
+	for i := 0; i <= maxLabelsPerBucket; i++ {
+		last = fmt.Sprintf("/repo/%d", i)
+		e := projectEvent(t, "not-an-agent", last)
+		e.At = now
+		a.Record("s1", e)
+	}
+	snap := a.ProjectSnapshot(time.Hour, time.Minute, "", "", last, GroupModel)
+	if snap.Group != GroupModel {
+		t.Errorf("Group = %q, want %q: the ring is complete", snap.Group, GroupModel)
+	}
+	if snap.Totals.Requests != 1 {
+		t.Errorf("Totals.Requests = %d, want 1", snap.Totals.Requests)
 	}
 }
 

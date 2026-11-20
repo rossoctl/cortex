@@ -290,7 +290,10 @@ grouping, unless the agent is a recognised one and no `session=` is given: then 
 the group. So `agent=claude-code&group=project` gives per-project series for that agent only, on
 any window. With `project=`, a ring window keeps the group only when the server holds a complete
 ring for that project (and that agent, if `agent=` is given) over the whole window, and no
-`session=` is given. Otherwise it is served with group `none`, narrowed to the project. Always
+`session=` is given. Otherwise it is served with group `none`, narrowed to the project. An agent
+that is not recognised, such as `unknown`, has no ring for each project. For it, a ring window
+applies `project=` only when the project's ring is complete and no `session=` is given, and the
+reply has group `none`. Otherwise the reply has no `project` field: the filter was not applied. Always
 read the `group` field back:
 
 ```sh
