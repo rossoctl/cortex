@@ -13,7 +13,8 @@ import (
 var errDurationWindow = errors.New("costledger: a snapshot needs a symbolic window (today, 7d, month)")
 
 // Snapshot is the ledger's answer to a /v1/usage window: every row in spec's window,
-// narrowed to agent's rows when agent is set, folded into ONE bucket spanning the window.
+// narrowed to agent's rows when agent is set and to project's group=project label when
+// project is set, folded into ONE bucket spanning the window.
 // The ledger answers "what did today cost"; a shaped chart comes from the ring.
 //
 // It reads through Window, so the minute still accumulating in memory is included.
@@ -28,7 +29,7 @@ var errDurationWindow = errors.New("costledger: a snapshot needs a symbolic wind
 // as Totals.PricedRequests against Totals.PriceableRequests.
 //
 // spec must be symbolic: a duration window is the ring's, and carries no From or To.
-func (w *Writer) Snapshot(ctx context.Context, spec usage.Spec, group usage.Group, agent string) (usage.Snapshot, error) {
+func (w *Writer) Snapshot(ctx context.Context, spec usage.Spec, group usage.Group, agent, project string) (usage.Snapshot, error) {
 	if !spec.Symbolic() {
 		return usage.Snapshot{}, errDurationWindow
 	}
@@ -38,6 +39,9 @@ func (w *Writer) Snapshot(ctx context.Context, spec usage.Spec, group usage.Grou
 	}
 	if agent != "" {
 		rows = FilterAgent(rows, agent)
+	}
+	if project != "" {
+		rows = FilterProject(rows, project)
 	}
 	// Measured against spec.To rather than a second clock read, so a request crossing
 	// midnight compares both sides against the same day.
@@ -88,6 +92,7 @@ func (w *Writer) Snapshot(ctx context.Context, spec usage.Spec, group usage.Grou
 	snap.Currencies = CurrenciesIn(rows)
 	snap.SeriesCurrencies = SeriesCurrenciesIn(rows, applied, series)
 	snap.Agent = agent
+	snap.Project = model.LenientString(project)
 	snap.SetUngroupedAvoided(ungroupedAvoided)
 	return snap, nil
 }

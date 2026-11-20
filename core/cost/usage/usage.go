@@ -836,9 +836,14 @@ type Aggregator struct {
 	// It can come up LONGER than the agent axis's row for the same agent, in one case: a minute
 	// with more than maxLabelsPerBucket agent labels files the late ones under (other) in byAgent,
 	// while the agent's own ring still counts them. The ring is the right figure there.
-	agents  map[string][]bucket
-	maxSess int
-	now     func() time.Time
+	agents map[string][]bucket
+	// projects holds a ring per project label: one of every agent's traffic, keyed agent "", and
+	// one per recognised agent, so project= can be answered with any grouping, for the reason
+	// agents exists. Unlike agent names, project labels are an open set, so the map is capped
+	// at maxProjectRings and the coldest ring goes. See projectRing for what that costs a reader.
+	projects map[projectKey]*projectRing
+	maxSess  int
+	now      func() time.Time
 
 	// pending holds request-phase plugin names awaiting their response event,
 	// keyed by RequestID. See Record.
@@ -926,6 +931,7 @@ func New(opts ...Option) *Aggregator {
 		all:      make([]bucket, NumBuckets),
 		sessions: make(map[string]*sessionRing),
 		agents:   make(map[string][]bucket),
+		projects: make(map[projectKey]*projectRing),
 		pending:  make(map[string]*pendingRequest),
 		maxSess:  defaultMaxSessions,
 		now:      time.Now,
@@ -1075,15 +1081,22 @@ func (a *Aggregator) Record(sessionID string, e *model.SessionEvent) {
 	t := at.Truncate(BucketWidth)
 	a.foldInto(a.all, t, sessionID, e, requestPlugins, ec, avoided)
 
-	// BEFORE the session ring, whose branch below returns early on both of its paths. See the
-	// agents field for why only a recognised agent gets a ring.
-	if agent := event.AgentLabel(e.Client); model.IsKnownAgent(agent) {
+	// The agent and project rings come BEFORE the session ring, whose branch below returns early
+	// on both of its paths. See the agents field for why only a recognised agent gets a ring.
+	agent := event.AgentLabel(e.Client)
+	knownAgent := model.IsKnownAgent(agent)
+	if knownAgent {
 		ring, ok := a.agents[agent]
 		if !ok {
 			ring = make([]bucket, NumBuckets)
 			a.agents[agent] = ring
 		}
 		a.foldInto(ring, t, sessionID, e, requestPlugins, ec, avoided)
+	}
+	project := projectLabel(e)
+	a.foldInto(a.projectRingLocked(projectKey{"", project}, at), t, sessionID, e, requestPlugins, ec, avoided)
+	if knownAgent {
+		a.foldInto(a.projectRingLocked(projectKey{agent, project}, at), t, sessionID, e, requestPlugins, ec, avoided)
 	}
 
 	if ring, ok := a.sessions[sessionID]; ok {

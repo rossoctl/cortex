@@ -644,3 +644,14 @@ func FilterAgent(rows []Row, agent string) []Row {
 	}
 	return out
 }
+
+// FilterProject keeps the rows whose group=project label is project, for /v1/usage?project=.
+func FilterProject(rows []Row, project string) []Row {
+	var out []Row
+	for _, r := range rows {
+		if label, ok := labelFor(r, usage.GroupProject); ok && label == project {
+			out = append(out, r)
+		}
+	}
+	return out
+}

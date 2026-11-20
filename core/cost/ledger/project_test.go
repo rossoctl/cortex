@@ -49,7 +49,7 @@ func TestWriter_GroupProjectOverAMonth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseWindowSpec: %v", err)
 	}
-	snap, err := w.Snapshot(context.Background(), spec, usage.GroupProject, "")
+	snap, err := w.Snapshot(context.Background(), spec, usage.GroupProject, "", "")
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestWriter_LongProjectsWithOnePrefixStayApart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseWindowSpec: %v", err)
 	}
-	snap, err := w.Snapshot(context.Background(), spec, usage.GroupProject, "")
+	snap, err := w.Snapshot(context.Background(), spec, usage.GroupProject, "", "")
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestSnapshot_AgentAndGroupProject(t *testing.T) {
 	bob.Client = &pipeline.EventClient{Name: "bob", Version: "1.0"}
 	w.Record("s1", bob)
 	spec := usage.Spec{Label: usage.WindowToday, From: usage.StartOfLocalDay(at), To: at.Add(time.Minute)}
-	snap, err := w.Snapshot(context.Background(), spec, usage.GroupProject, "claude-code")
+	snap, err := w.Snapshot(context.Background(), spec, usage.GroupProject, "claude-code", "")
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
