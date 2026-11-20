@@ -1237,16 +1237,29 @@ var drawerMarkRe = regexp.MustCompile(`WHERE IT WENT|BY [A-Z]+|[█▉▊▋▌�
 // drawerKeys are the drawer's key hints, the only brackets that become chips.
 var drawerKeys = map[string]bool{"[a]": true, "[w]": true, "[$]": true}
 
-// styleDrawerLine dresses one drawer line that is already cut to width. Under Ascii it is
-// styleMuted.Render(line), as before. With color the text stays the same except that [a], [w]
-// and [$] become chips; on the controls line the bracketed axis keeps its brackets in styleSeg.
-func styleDrawerLine(line string) string {
+// styleDrawerLines dresses the drawer's lines, each already cut to width. The hint line is the
+// last line that is not empty (renderSpendDrawerAxes writes it last, then pads), and only it
+// gets key chips: a diagnostic or a server label that holds "[w]" keeps its text.
+func styleDrawerLines(lines []string) []string {
+	hint := -1
+	for i, l := range lines {
+		if l != "" {
+			hint = i
+		}
+	}
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = styleDrawerLine(l, i == hint)
+	}
+	return out
+}
+
+// styleDrawerLine dresses one drawer line. Under Ascii it is styleMuted.Render(line), as before.
+// With color the text stays the same except that, on the controls line, [a], [w] and [$] become
+// chips and the bracketed axis keeps its brackets in styleSeg.
+func styleDrawerLine(line string, controls bool) string {
 	if !colorOn() {
 		return styleMuted.Render(line)
-	}
-	controls := false
-	for k := range drawerKeys {
-		controls = controls || strings.Contains(line, k)
 	}
 	var b strings.Builder
 	last := 0
@@ -1266,7 +1279,7 @@ func styleDrawerLine(line string) string {
 // styleDrawerMark is one drawerMarkRe match in its own ink.
 func styleDrawerMark(m string, controls bool) string {
 	switch {
-	case drawerKeys[m]:
+	case controls && drawerKeys[m]:
 		return styleChip.Render(" " + m[1:len(m)-1] + " ")
 	case m[0] == '[':
 		if controls {

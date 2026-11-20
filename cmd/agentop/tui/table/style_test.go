@@ -26,7 +26,7 @@ const (
 )
 
 // col1Red styles cell 1 of every row in red bold.
-func col1Red(_ table.Row, col int) lipgloss.Style {
+func col1Red(_ int, _ table.Row, col int) lipgloss.Style {
 	if col == 1 {
 		return red
 	}
@@ -63,6 +63,7 @@ func TestCellStyle_Precedence(t *testing.T) {
 	s := searchStyles(t)
 	tb := styledTable(s, []table.Row{{"r0", "aq"}, {"r1", "bq"}, {"r2", "cc"}, {"r3", "dd"}}, 4, 6)
 	tb.SetCellStyle(col1Red)
+	tb.UpdateViewport()
 
 	// No search: the cell ink shows on a plain row and through the cursor row's background.
 	if l := lineFor(t, tb, "r3"); !strings.Contains(l, red.Render("dd")) {
@@ -91,6 +92,7 @@ func TestCellStyle_StyledCellPadIsRowOnly(t *testing.T) {
 	s.Alt = alt
 	tb := styledTable(s, []table.Row{{"r0", "aq"}, {"r1", "bq"}}, 4, 6)
 	tb.SetCellStyle(col1Red)
+	tb.UpdateViewport()
 	if l := lineFor(t, tb, "r0"); !strings.Contains(l, s.Selected.Inherit(red).Render("aq")+s.Selected.Render("    ")) {
 		t.Errorf("cursor row: pad is not a Selected-only run in %q", l)
 	}
@@ -134,6 +136,7 @@ func TestZebra_RowCostsOneBackground(t *testing.T) {
 	rows := []table.Row{{"r0", "x"}, {"r1", "↑1kB"}, {"r1", "↑1kB"}}
 	tb := styledTable(s, rows, 4, 6)
 	tb.SetCellStyle(col1Red)
+	tb.UpdateViewport()
 	tb.SetCursor(0)
 	lines := strings.Split(tb.View(), "\n")
 	zebra, plain := lines[2], lines[3]
@@ -218,12 +221,13 @@ func TestGlyphs_OnlyInStyledCells(t *testing.T) {
 	s.Glyphs = map[rune]lipgloss.Style{'↑': dim}
 	tb := styledTable(s, []table.Row{{"s", "↑1kB"}, {"u", "↑1kB"}, {"c", "x"}}, 4, 6)
 	tb.SetCursor(2)
-	tb.SetCellStyle(func(row table.Row, col int) lipgloss.Style {
+	tb.SetCellStyle(func(r int, row table.Row, col int) lipgloss.Style {
 		if col == 1 && row[0] == "s" {
 			return red
 		}
 		return none
 	})
+	tb.UpdateViewport()
 	if l := lineFor(t, tb, "s"); !strings.Contains(l, dim.Render("↑")+red.Render("1kB")) {
 		t.Errorf("styled cell: want a dim ↑ and red text in %q", l)
 	}
@@ -258,7 +262,7 @@ func TestStyles_WidthUnchanged(t *testing.T) {
 		s := searchStyles(t)
 		s.Alt, s.Bar = alt, bar
 		s.Glyphs = map[rune]lipgloss.Style{'↑': dim, '↓': dim, '▕': dim, '▏': dim}
-		all := func(table.Row, int) lipgloss.Style { return red }
+		all := func(int, table.Row, int) lipgloss.Style { return red }
 		got := strings.Split(build(s, all).View(), "\n")
 		if len(got) != len(base) {
 			t.Fatalf("w=%d: %d lines, want %d", w, len(got), len(base))

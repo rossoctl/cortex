@@ -496,28 +496,42 @@ func tableColumns(cols []eventColumn, sortCol eventColumnID, desc bool) []table.
 	return out
 }
 
+// eventRowKind is what an events table row shows, by row index: the hook cannot tell a tool
+// row or a block header from its cells, because hidden columns change them.
+type eventRowKind uint8
+
+const (
+	eventRowExchange eventRowKind = iota
+	eventRowTool
+	eventRowHeader
+)
+
 // eventCellStyle is the events table's cell style hook for the columns cols, in the order
-// tableColumns hands them to the table. It reads each cell's column by id, never by
-// position or header, so a hidden or sorted column moves no ink to another column.
-func eventCellStyle(cols []eventColumn) table.CellStyleFunc {
+// tableColumns hands them to the table, and the rows of kinds. It reads each cell's column by
+// id, never by position or header, so a hidden or sorted column moves no ink to another column.
+func eventCellStyle(cols []eventColumn, kinds []eventRowKind) table.CellStyleFunc {
 	ids := make([]eventColumnID, len(cols))
 	for i, c := range cols {
 		ids[i] = c.id
 	}
-	return dashDim(func(row table.Row, col int) lipgloss.Style {
+	return dashDim(func(r int, row table.Row, col int) lipgloss.Style {
+		kind := eventRowExchange
+		if r < len(kinds) {
+			kind = kinds[r]
+		}
+		if kind == eventRowHeader {
+			return styleAccent
+		}
 		v := strings.TrimSpace(row[col])
-		// A one-cell row spans the table: a subagent block header, or the older-events row.
+		// A one-cell row spans the table: the older-events row.
 		if len(row) == 1 && len(ids) > 1 {
-			if strings.HasPrefix(v, "▸─") || strings.HasPrefix(v, "▾─") {
-				return styleAccent
-			}
 			return styleNone
 		}
 		// An empty cell has no text to ink, and an ink on it only adds escape bytes.
 		if col >= len(ids) || v == "" {
 			return styleNone
 		}
-		if c0 := strings.TrimSpace(row[0]); c0 == "┣⚒" || c0 == "┗⚒" {
+		if kind == eventRowTool {
 			switch ids[col] {
 			case colIndex, colMethod:
 				return styleTool

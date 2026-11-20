@@ -92,7 +92,7 @@ func newEventsTable() table.Model {
 		// beside the widths that actually decide, in eventColumns.
 		// No sort column: the table is chronological until a model says otherwise.
 		table.WithColumns(tableColumns(selectedColumns(defaultColumnSelection()), "", false)),
-		table.WithCellStyle(eventCellStyle(selectedColumns(defaultColumnSelection()))),
+		table.WithCellStyle(eventCellStyle(selectedColumns(defaultColumnSelection()), nil)),
 		table.WithFocused(true),
 	)
 	t.SetStyles(tableStyles())
@@ -463,19 +463,26 @@ func (m *model) rebuildEventsTable() {
 	// or narrowing as figures arrive, which can push a column off the terminal or
 	// let one back on. The third happens mid-stream with no keystroke behind it, so
 	// none of them may re-anchor the pane under an operator who is reading it.
-	//
-	// The cell style hook reads columns by id, so it changes only with them: equal titles
-	// are equal ids. Set on every rebuild, it cost one more render of the page each time.
+	kinds := make([]eventRowKind, len(rows))
+	for i, vr := range m.visibleRows[:min(len(m.visibleRows), len(rows))] {
+		if vr.tool != nil {
+			kinds[i] = eventRowTool
+		}
+	}
+	for i := range m.headerRows {
+		if i < len(kinds) {
+			kinds[i] = eventRowHeader
+		}
+	}
+	m.eventsTbl.SetCellStyle(eventCellStyle(cols, kinds))
 	newCols := tableColumns(cols, m.sortCol, m.sortDesc)
 	switch oldCols := m.eventsTbl.Columns(); {
 	case slices.Equal(oldCols, newCols):
 		m.eventsTbl.SetRows(rows)
 	case len(newCols) < len(oldCols):
 		m.eventsTbl.SetRows(rows)
-		m.eventsTbl.SetCellStyle(eventCellStyle(cols))
 		m.eventsTbl.SetColumns(newCols)
 	default:
-		m.eventsTbl.SetCellStyle(eventCellStyle(cols))
 		m.eventsTbl.SetColumns(newCols)
 		m.eventsTbl.SetRows(rows)
 	}

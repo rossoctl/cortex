@@ -74,9 +74,9 @@ type Model struct {
 	end      int
 }
 
-// CellStyleFunc gives the style of cell col of row: foreground and bold only. A style
-// with neither leaves the cell as it is drawn without a hook. Not upstream.
-type CellStyleFunc func(row Row, col int) lipgloss.Style
+// CellStyleFunc gives the style of cell col of row, the row at index r: foreground and bold
+// only. A style with neither leaves the cell as it is drawn without a hook. Not upstream.
+type CellStyleFunc func(r int, row Row, col int) lipgloss.Style
 
 // Row represents one line in the table.
 type Row []string
@@ -275,10 +275,10 @@ func WithCellStyle(f CellStyleFunc) Option {
 	}
 }
 
-// SetCellStyle sets the per-cell style hook; nil removes it. Not upstream.
+// SetCellStyle sets the per-cell style hook; nil removes it. It does not draw: the next
+// SetRows, SetColumns or UpdateViewport draws with it. Not upstream.
 func (m *Model) SetCellStyle(f CellStyleFunc) {
 	m.cell = f
-	m.UpdateViewport()
 }
 
 // WithKeyMap sets the key map.
@@ -811,7 +811,7 @@ func (m *Model) cellStyle(r, i int) (lipgloss.Style, bool) {
 	if m.cell == nil {
 		return lipgloss.Style{}, false
 	}
-	cs := m.cell(m.rows[r], i)
+	cs := m.cell(r, m.rows[r], i)
 	return cs, hasColor(cs.GetForeground()) || cs.GetBold()
 }
 

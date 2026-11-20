@@ -124,3 +124,36 @@ func TestEventsCellStyles_PlainInvariant(t *testing.T) {
 		})
 	}
 }
+
+// A tool row keeps its ink with # hidden: no cell then shows the ┣⚒ mark, so the hook must
+// know the row is a tool row from the row itself, not from a visible cell.
+func TestEventsCellStyles_ToolRowsWithIndexHidden(t *testing.T) {
+	withProfile(t, termenv.TrueColor)
+	events := slices.Concat(trExchange(1, 10, ""), trExchange(2, 30, ""))
+	tl := &timeline.Timeline{Tools: []timeline.Tool{trTool(2, "t1", "Grep", 98.8, -1, "")}}
+	m := toolRowsModel(t, events, tl)
+	m.now = func() time.Time { return tlAt(100) }
+	m.eventColumns = defaultColumnSelection()
+	m.eventColumns[colIndex] = false
+	m.rebuildEventsTable()
+	_, row := toolRowAt(t, m, "t1")
+	dur := toolCell(m, row, colDuration)
+	view := m.eventsTbl.View()
+	if strings.Contains(ansi.Strip(view), "⚒") {
+		t.Fatalf("# is hidden, but the view shows the tool mark:\n%s", ansi.Strip(view))
+	}
+	assertInk(t, view, "Grep", colorTool, "tool")
+	assertInk(t, view, dur, colorTool, "tool")
+}
+
+// A block header is accent when # is the only column: one visible column makes every row one
+// cell wide, so the header is known by its row, not by its width.
+func TestEventsCellStyles_BlockRowAccentOneColumn(t *testing.T) {
+	withProfile(t, termenv.TrueColor)
+	m := newBlockModel(t, blockEvents())
+	m.eventColumns = map[eventColumnID]bool{colIndex: true}
+	m.rebuildEventsTable()
+	view := m.eventsTbl.View()
+	// The # column is narrow, so the header's label is cut to "─ …".
+	assertInk(t, view, "─ …", colorAccent, "accent")
+}

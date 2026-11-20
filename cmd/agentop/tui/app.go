@@ -2564,7 +2564,8 @@ func (m *model) paneView() string {
 		} else {
 			body = m.namespacesTbl.View()
 		}
-		footer := m.helpView()
+		keys := m.helpView()
+		footer := keys
 		if m.pickerErr != "" {
 			footer = "error: " + m.pickerErr + "    " + footer
 		}
@@ -2585,13 +2586,14 @@ func (m *model) paneView() string {
 			renderTitle(title),
 			styleDim.Render(renderDivider(m.width)),
 			body,
-			renderHints(footer),
+			renderTrailingHints(footer, keys),
 		)
 	}
 	if m.pane == panePods {
 		title := m.appName() + " · " + m.selectedNamespace + " · pick pod"
 		body := m.podsTbl.View()
-		footer := m.helpView()
+		keys := m.helpView()
+		footer := keys
 		if m.pickerErr != "" {
 			footer = "error: " + m.pickerErr + "    " + footer
 		}
@@ -2609,7 +2611,7 @@ func (m *model) paneView() string {
 			renderTitle(title),
 			styleDim.Render(renderDivider(m.width)),
 			body,
-			renderHints(footer),
+			renderTrailingHints(footer, keys),
 		)
 	}
 	if m.width == 0 {
@@ -2799,9 +2801,7 @@ func (m *model) paneView() string {
 			for len(lines) < spendDrawerLinesFor(m.width) {
 				lines = append(lines, "")
 			}
-			for _, line := range lines {
-				rows = append(rows, styleDrawerLine(line))
-			}
+			rows = append(rows, styleDrawerLines(lines)...)
 		}
 	}
 	// The rule that closes the top block, AFTER the band and its drawer so it always sits

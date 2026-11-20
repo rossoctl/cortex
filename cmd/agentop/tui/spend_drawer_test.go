@@ -2133,22 +2133,28 @@ func TestREADME_StatesTheCurrentTwoColumnThreshold(t *testing.T) {
 // drawerChipped is the text a drawer line shows in color: only the three key hints change.
 var drawerChipped = strings.NewReplacer("[a]", " a ", "[w]", " w ", "[$]", " $ ")
 
-// THE DRAWER IN COLOR (#2015): same text bar the key chips, same width, and each kind of
-// run in its own ink.
+// THE DRAWER IN COLOR (#2015): same text bar the key chips on the hint line, same width,
+// and each kind of run in its own ink.
 func TestDrawerLine_Styles(t *testing.T) {
 	withProfile(t, termenv.TrueColor)
-	lines := renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", 140)
-	lines = append(lines, renderSpendDrawer(nil, errors.New("boom [x]"), usage.GroupModel, "1h", 140)...)
 	var all strings.Builder
-	for _, l := range lines {
-		got := styleDrawerLine(l)
-		if s := ansi.Strip(got); s != drawerChipped.Replace(l) {
-			t.Errorf("styled line reads %q, want %q", s, drawerChipped.Replace(l))
+	for _, plain := range [][]string{
+		renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", 140),
+		renderSpendDrawer(nil, errors.New("boom [x]"), usage.GroupModel, "1h", 140),
+	} {
+		for i, got := range styleDrawerLines(plain) {
+			l, want := plain[i], plain[i]
+			if strings.HasPrefix(strings.TrimSpace(l), "[a]") || strings.HasPrefix(strings.TrimSpace(l), "[w]") {
+				want = drawerChipped.Replace(l)
+			}
+			if s := ansi.Strip(got); s != want {
+				t.Errorf("styled line reads %q, want %q", s, want)
+			}
+			if lipgloss.Width(got) != lipgloss.Width(l) {
+				t.Errorf("styled line %q is %d columns, plain is %d", l, lipgloss.Width(got), lipgloss.Width(l))
+			}
+			all.WriteString(got + "\n")
 		}
-		if lipgloss.Width(got) != lipgloss.Width(l) {
-			t.Errorf("styled line %q is %d columns, plain is %d", l, lipgloss.Width(got), lipgloss.Width(l))
-		}
-		all.WriteString(got + "\n")
 	}
 	for _, want := range []struct{ name, part string }{
 		{"heading", styleMutedBold.Render("WHERE IT WENT")},
@@ -2173,11 +2179,24 @@ func TestDrawerLine_Styles(t *testing.T) {
 	}
 }
 
+// A diagnostic that holds the key-hint text keeps it: only the hint line gets chips.
+func TestDrawerLine_DiagnosticKeepsItsBrackets(t *testing.T) {
+	withProfile(t, termenv.TrueColor)
+	plain := renderSpendDrawer(nil, errors.New("boom [a] [w] [$]"), usage.GroupModel, "1h", 140)
+	if !strings.Contains(plain[0], "boom [a] [w] [$]") {
+		t.Fatalf("the diagnostic line is %q, want it to hold the error text", plain[0])
+	}
+	if got := ansi.Strip(styleDrawerLines(plain)[0]); got != plain[0] {
+		t.Errorf("styled diagnostic reads %q, want %q", got, plain[0])
+	}
+}
+
 // UNDER ASCII THE DRAWER IS TODAY'S BYTES: the whole line in styleMuted.
 func TestDrawerLine_AsciiIsToday(t *testing.T) {
 	withProfile(t, termenv.Ascii)
-	for _, l := range renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", 140) {
-		if got, want := styleDrawerLine(l), styleMuted.Render(l); got != want {
+	plain := renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", 140)
+	for i, got := range styleDrawerLines(plain) {
+		if l, want := plain[i], styleMuted.Render(plain[i]); got != want {
 			t.Errorf("styleDrawerLine(%q) = %q, want %q", l, got, want)
 		}
 	}

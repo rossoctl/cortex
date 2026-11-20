@@ -168,7 +168,7 @@ var cellKindStyles = [...]lipgloss.Style{
 
 // kindsCellStyle styles each cell by its column's kind, kinds parallel to the table's columns.
 func kindsCellStyle(kinds []cellKind) table.CellStyleFunc {
-	return dashDim(func(_ table.Row, col int) lipgloss.Style {
+	return dashDim(func(_ int, _ table.Row, col int) lipgloss.Style {
 		if col < len(kinds) {
 			return cellKindStyles[kinds[col]]
 		}
@@ -177,7 +177,7 @@ func kindsCellStyle(kinds []cellKind) table.CellStyleFunc {
 }
 
 // pickerCellStyle is the Namespaces and Pods tables' style: the name bold, the rest muted.
-var pickerCellStyle = dashDim(func(_ table.Row, col int) lipgloss.Style {
+var pickerCellStyle = dashDim(func(_ int, _ table.Row, col int) lipgloss.Style {
 	if col == 0 {
 		return styleBold
 	}
@@ -229,6 +229,26 @@ func renderHints(fitted string) string {
 		}
 	}
 	return b.String()
+}
+
+// renderTrailingHints is renderHints for a line whose tail is the key hints keys and whose head
+// is other text, such as an error or a search status, that keeps its brackets. fitted is the line
+// after fitHintLine, which drops text from the front.
+func renderTrailingHints(fitted, keys string) string {
+	if !colorOn() {
+		return styleHint.Render(fitted)
+	}
+	if head, ok := strings.CutSuffix(fitted, keys); ok {
+		if head == "" {
+			return renderHints(keys)
+		}
+		return styleHint.Render(head) + renderHints(keys)
+	}
+	// The fit cut into the keys, so no other text is left.
+	if strings.HasSuffix(keys, strings.TrimPrefix(fitted, "… ")) {
+		return renderHints(fitted)
+	}
+	return styleHint.Render(fitted)
 }
 
 // titleMarkRe finds the parts of a title that are not bold default ink.
@@ -339,10 +359,10 @@ func groupStyle(g colorGroup) lipgloss.Style {
 
 // dashDim draws a cell whose value is "—" (no value) dim, and every other cell with f.
 func dashDim(f table.CellStyleFunc) table.CellStyleFunc {
-	return func(row table.Row, col int) lipgloss.Style {
+	return func(r int, row table.Row, col int) lipgloss.Style {
 		if col < len(row) && strings.TrimSpace(row[col]) == "—" {
 			return styleDim
 		}
-		return f(row, col)
+		return f(r, row, col)
 	}
 }

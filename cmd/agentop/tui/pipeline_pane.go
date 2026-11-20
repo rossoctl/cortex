@@ -120,7 +120,7 @@ var pipelineKinds = []cellKind{cellMuted, cellPlain, cellBold, cellPlain, cellMu
 var pipelineByKind = kindsCellStyle(pipelineKinds)
 
 // pipelineCellStyle draws a divider row (isDividerRow's test) dim, DIRECTION in its direction's ink and ✓ ok.
-func pipelineCellStyle(row table.Row, col int) lipgloss.Style {
+func pipelineCellStyle(r int, row table.Row, col int) lipgloss.Style {
 	switch {
 	case len(row) > 2 && row[0] == "" && strings.HasPrefix(row[2], "──"):
 		return styleDim
@@ -131,7 +131,7 @@ func pipelineCellStyle(row table.Row, col int) lipgloss.Style {
 	case col == 3 && row[col] == "✓":
 		return styleOK
 	}
-	return pipelineByKind(row, col)
+	return pipelineByKind(r, row, col)
 }
 
 // isDividerRow reports a divider: no position, and a "──" label. A plugin row always

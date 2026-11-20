@@ -434,11 +434,11 @@ func (m *model) rebuildAgentsTable() {
 			agentCostCellIn(a.Counts, a.units, agentsCostWidth), agentServerCell(router, a.label))
 	}
 	byKind := kindsCellStyle(kinds)
-	m.agentsTbl.SetCellStyle(func(row table.Row, col int) lipgloss.Style {
+	m.agentsTbl.SetCellStyle(func(r int, row table.Row, col int) lipgloss.Style {
 		if col == 0 && top[row[0]] {
 			return styleBold
 		}
-		return byKind(row, col) // dims a "—"
+		return byKind(r, row, col) // dims a "—"
 	})
 	m.agentsTbl.SetRows(rows)
 	m.agentRowDescs = descs

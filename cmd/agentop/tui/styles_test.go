@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
@@ -137,11 +139,11 @@ func TestActionGroup_EveryValue(t *testing.T) {
 
 func TestDashDim_DashCellIsDim(t *testing.T) {
 	withProfile(t, termenv.TrueColor)
-	f := dashDim(func(table.Row, int) lipgloss.Style { return styleOK })
-	if got := f(table.Row{" — "}, 0).Render("x"); got != styleDim.Render("x") {
+	f := dashDim(func(int, table.Row, int) lipgloss.Style { return styleOK })
+	if got := f(0, table.Row{" — "}, 0).Render("x"); got != styleDim.Render("x") {
 		t.Errorf("dash cell = %q, want dim", got)
 	}
-	if got := f(table.Row{"200"}, 0).Render("x"); got != styleOK.Render("x") {
+	if got := f(0, table.Row{"200"}, 0).Render("x"); got != styleOK.Render("x") {
 		t.Errorf("other cell = %q, want the wrapped style", got)
 	}
 }
@@ -156,4 +158,34 @@ func TestAssertPlainInvariant_AcceptsABarThatAsciiAlsoDraws(t *testing.T) {
 	assertPlainInvariant(t, func() string {
 		return styleDetailCursor.Render("▌") + " row\n" + styleDetailCursor.Render("▌") + " [q] quit"
 	}, -1)
+}
+
+// Text from the server or the user ahead of the key hints keeps its brackets in color: a
+// picker error such as "[::1]" and a search query such as "[foo]" are not keys.
+func TestHints_PrefixKeepsItsBrackets(t *testing.T) {
+	withProfile(t, termenv.TrueColor)
+
+	lister := &fakeLister{namespaces: fixtureNamespaces}
+	m := newPickerModel(context.Background(), lister, nil)
+	updated, _ := m.Update(m.Init()())
+	mm := updated.(*model)
+	mm.width, mm.height = 200, 30
+	mm.pickerErr = "dial tcp [::1]:9094: connection refused"
+	view := ansi.Strip(mm.View())
+	if !strings.Contains(view, "error: dial tcp [::1]:9094") {
+		t.Errorf("the picker error lost its brackets:\n%s", view)
+	}
+	if strings.Contains(view, "[q]") {
+		t.Errorf("the picker footer keys are not chips:\n%s", view)
+	}
+
+	hm := &model{pane: paneSessions, width: 100, height: 30, helpVp: viewport.New(0, 0)}
+	hm.syncHelpViewport(true)
+	out := ansi.Strip(renderHelpOverlay(hm.helpVp, 100, 30, "", "[foo] 1/2"))
+	if !strings.Contains(out, "[foo] 1/2") {
+		t.Errorf("the help search status lost its brackets:\n%s", out)
+	}
+	if strings.Contains(out, "[esc]") {
+		t.Errorf("the help close hint is not a chip:\n%s", out)
+	}
 }
