@@ -706,9 +706,7 @@ agentop is for, and the others are surfaces you visit and leave.
   rows:
 
   ```
-  window 5m 1h [all]  10-26 14:28 → 10-26 20:08
-                            14:28           15:17           16:06   37m  39m      18:41
-                                                                                           model  tools  tok/s
+  window  5m  1h  all       ╷10-26 14:28    ╷15:17          ╷16:06  37m   10-26 20:08╷   model  tools  tok/s
   main agent                ▂█▃▅▃██▁▄▃▁▃█▁▆▁▂▇█▂▁▁▂████████▁▁▅▁███▅▁ ┆ ▄▁ ┆ ▂▁▆▂▁███▄▁│  1.6h    29m     85
 
     Survey cortex egress da ▃▂▁                                      ┆    ┆           │    4m     1m     92

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -407,11 +408,11 @@ func (m *model) timelineLayoutNow() (tlLayout, bool) {
 	return t.layout, true
 }
 
-// The pane's fixed lines: tabs, axis, column heads, the separator, the closing rule, the
-// legend's lines and the cursor line. Each agent and host row takes two lines, its own and the
+// The pane's fixed lines: the header (window tabs, axis and column heads), the separator, the
+// closing rule, the legend's line and the cursor line. Each agent and host row takes two lines, its own and the
 // blank one that keeps a row's bars off the next row's.
 const (
-	timelineFixedLines = 7
+	timelineFixedLines = 5
 	// timelineLegendLines is how many lines legend draws.
 	timelineLegendLines = 1
 )
@@ -723,18 +724,8 @@ func (m *model) renderTimeline() string {
 		return b.String()
 	}
 	_, _, now, win := m.timelineRange()
-	var tabs []string
-	for _, i := range offeredWindows(t.sessionSpan(now)) {
-		l := timelineWindows[i].label
-		if i == win {
-			l = "[" + l + "]"
-		}
-		tabs = append(tabs, l)
-	}
-	fmt.Fprintf(&b, "%s  %s\n", styleTitle.Render("window "+strings.Join(tabs, " ")), styleMuted.Render(m.timelineStatus(lay)))
 	width := lay.axis.width()
-	b.WriteString(strings.Repeat(" ", timelineLabelWidth) + styleMuted.Render(axisLabels(lay)) + "\n")
-	b.WriteString(strings.Repeat(" ", timelineLabelWidth+width) + styleMuted.Render("   model  tools  tok/s") + "\n")
+	b.WriteString(m.timelineHeader(lay, offeredWindows(t.sessionSpan(now)), win) + "\n")
 
 	agentRows := m.timelineAgentRows(lay)
 	agentOff, hostOff := m.timelineOffsets(lay)
@@ -795,9 +786,10 @@ func (m *model) legend() string {
 	return styled.String()
 }
 
-func (m *model) timelineStatus(lay tlLayout) string {
+// timelineStatus is the pane's notes, joined, or "" when there are none.
+func (m *model) timelineStatus() string {
 	t := &m.timeline
-	parts := []string{fmt.Sprintf("%s → %s", lay.from.Local().Format("01-02 15:04"), lay.to.Local().Format("01-02 15:04"))}
+	var parts []string
 	if t.tl.Truncated {
 		parts = append(parts, "oldest events not shown")
 	}
@@ -807,50 +799,142 @@ func (m *model) timelineStatus(lay tlLayout) string {
 	return strings.Join(parts, " · ")
 }
 
-// axisLabels is the time axis: each collapsed gap's length centred on its marker, then a time
-// every 16 cells where it does not crowd one.
-func axisLabels(lay tlLayout) string {
-	w := lay.axis.width()
-	line := []rune(strings.Repeat(" ", w+16))
-	taken := make([]bool, len(line))
-	claim := func(c int, s string) {
-		rs := []rune(s)
-		if c < 0 || c+len(rs) > len(line) {
-			return
+// timelineHeader is the pane's one header line: the window selector in the label column, the
+// time axis, and the gutter's column heads.
+func (m *model) timelineHeader(lay tlLayout, offered []int, win int) string {
+	var b strings.Builder
+	b.WriteString(styleMuted.Render("window "))
+	for _, i := range offered {
+		l := timelineWindows[i].label
+		switch {
+		case i != win:
+			b.WriteString(styleMuted.Render(" " + l + " "))
+		case lipgloss.ColorProfile() == termenv.Ascii:
+			b.WriteString("[" + l + "]")
+		default:
+			b.WriteString(styleSeg.Render(" " + l + " "))
 		}
-		for i := max(c-1, 0); i <= c+len(rs) && i < len(taken); i++ {
+	}
+	return padRight(b.String(), timelineLabelWidth) + renderAxisLine(axisLabels(lay), lay.axis.width()) +
+		styleMuted.Render(padRight("   model  tools  tok/s", timelineGutterWidth))
+}
+
+// tlAxisLabel is one label on the time axis. cell is the first column of text; date is the byte
+// length of the "MM-DD " part at the start of text, after any leading tick; bold marks the two
+// ends.
+type tlAxisLabel struct {
+	cell int
+	text string
+	date int
+	bold bool
+}
+
+// axisLabels places the time axis's labels: the dated start and finish, each collapsed gap's
+// length centred on its marker, then a time every 16 cells, dated on a new day. A label that
+// would touch a placed one is dropped, never cut.
+func axisLabels(lay tlLayout) []tlAxisLabel {
+	w := lay.axis.width()
+	taken := make([]bool, w)
+	var out []tlAxisLabel
+	claim := func(l tlAxisLabel) bool {
+		n := utf8.RuneCountInString(l.text)
+		if l.cell < 0 || l.cell+n > w {
+			return false
+		}
+		for i := max(l.cell-1, 0); i <= l.cell+n && i < w; i++ {
 			if taken[i] {
-				return
+				return false
 			}
 		}
-		for i, r := range rs {
-			line[c+i], taken[c+i] = r, true
+		for i := l.cell; i < l.cell+n; i++ {
+			taken[i] = true
 		}
+		out = append(out, l)
+		return true
+	}
+	if w == 0 {
+		return nil
+	}
+	format := "15:04"
+	if lay.to.Sub(lay.from) <= 10*time.Minute {
+		format = "15:04:05"
+	}
+	start, finish := lay.axis.cells[0].from.Local(), lay.axis.cells[w-1].from.Local()
+	ends := func(dated bool) (tlAxisLabel, tlAxisLabel) {
+		f, d := format, 0
+		if dated {
+			f, d = "01-02 "+format, len("01-02 ")
+		}
+		s, e := start.Format(f), finish.Format(f)
+		return tlAxisLabel{0, "╷" + s, d, true}, tlAxisLabel{w - utf8.RuneCountInString(e) - 1, e + "╷", d, true}
+	}
+	fits := func(s, e tlAxisLabel) bool { return utf8.RuneCountInString(s.text)+1 <= e.cell }
+	s, e := ends(true)
+	if !fits(s, e) {
+		s, e = ends(false)
+	}
+	if !claim(s) {
+		return nil
+	}
+	if fits(s, e) {
+		claim(e)
 	}
 	for c, cell := range lay.axis.cells {
 		if cell.marker {
 			label := tlDuration(cell.to.Sub(cell.from))
-			claim(c-len(label)/2, label)
+			claim(tlAxisLabel{cell: c - len(label)/2, text: label})
 		}
 	}
 	// A squeezed live wait is labelled with its length, like a gap, since its cells are not to
-	// scale with the rest.
+	// scale with the rest. The finish covers those cells, so the label goes just before it.
 	if n := lay.axis.tail; n > 0 {
 		label := "+" + tlDuration(lay.axis.cells[w-1].to.Sub(lay.axis.cells[w-n].from))
-		claim(w-n, label)
+		claim(tlAxisLabel{cell: min(w-n, e.cell-1-utf8.RuneCountInString(label)), text: label})
 	}
-	format := "15:04"
-	if span := lay.to.Sub(lay.from); span <= 10*time.Minute {
-		format = "15:04:05"
-	} else if span > 36*time.Hour {
-		format = "01-02 15:04"
-	}
-	for c := 0; c < w-5; c += 16 {
-		if !lay.axis.cells[c].gap {
-			claim(c, lay.axis.cells[c].from.Local().Format(format))
+	day := start.Format("01-02")
+	for c := 16; c < w; c += 16 {
+		if lay.axis.cells[c].gap {
+			continue
+		}
+		t := lay.axis.cells[c].from.Local()
+		l := tlAxisLabel{cell: c, text: "╷" + t.Format(format)}
+		if t.Format("01-02") != day {
+			l.text, l.date = "╷"+t.Format("01-02 "+format), len("01-02 ")
+		}
+		if claim(l) {
+			day = t.Format("01-02")
 		}
 	}
-	return strings.TrimRight(string(line[:min(len(line), w+8)]), " ")
+	return out
+}
+
+// renderAxisLine draws labels on a line exactly w columns wide: ticks dim, dates muted, the
+// ends' times bold and the other times muted.
+func renderAxisLine(labels []tlAxisLabel, w int) string {
+	labels = slices.SortedFunc(slices.Values(labels), func(a, b tlAxisLabel) int { return a.cell - b.cell })
+	var b strings.Builder
+	col := 0
+	for _, l := range labels {
+		b.WriteString(strings.Repeat(" ", l.cell-col))
+		col = l.cell + utf8.RuneCountInString(l.text)
+		s, tick := l.text, styleDim.Render("╷")
+		if r, ok := strings.CutPrefix(s, "╷"); ok {
+			b.WriteString(tick)
+			s = r
+		}
+		r, tail := strings.CutSuffix(s, "╷")
+		b.WriteString(styleMuted.Render(r[:l.date]))
+		if l.bold {
+			b.WriteString(styleBold.Render(r[l.date:]))
+		} else {
+			b.WriteString(styleMuted.Render(r[l.date:]))
+		}
+		if tail {
+			b.WriteString(tick)
+		}
+	}
+	b.WriteString(strings.Repeat(" ", max(w-col, 0)))
+	return b.String()
 }
 
 // timelineLabelHarvestEvery is the shortest time between two harvests that the timeline pane
@@ -970,7 +1054,12 @@ func (m *model) cursorAt(c int, s string) string {
 func (m *model) cursorStrip(lay tlLayout) string {
 	c := m.timeline.cursor
 	if c < 0 || c >= lay.axis.width() {
-		return "" // the row stays, blank, so the chart does not move when a moment is picked
+		// The row stays, so the chart does not move when a moment is picked; until then it
+		// carries the pane's notes.
+		if st := m.timelineStatus(); st != "" {
+			return styleMuted.Render(truncToWidth(st, max(m.width, 1)))
+		}
+		return ""
 	}
 	cell := lay.axis.cells[c]
 	head := fmt.Sprintf("▸ %s  ", cell.from.Local().Format("15:04:05"))
