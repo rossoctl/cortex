@@ -1,0 +1,81 @@
+# Spike for #956, not for merging: the final release smoke scripts on real runners,
+# against the published v0.9.5 (upgrading from v0.9.4), before their workflows can
+# run from their real workflow_run trigger. Plus the macOS workflow's guard, on a
+# checkout of v0.10.0-rc.2, which predates the macOS smoke script.
+name: Spike smoke tests (#956)
+on:
+  push:
+    branches: [macos-launchd-spike]
+    paths: [.github/workflows/spike-smoke.yaml]
+permissions:
+  contents: read
+jobs:
+  macos:
+    name: macOS smoke on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-26, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check for a desktop session
+        run: |
+          echo "macOS $(sw_vers -productVersion) $(uname -m); console: $(stat -f%Su /dev/console)"
+          launchctl print "gui/$(id -u)" >/dev/null 2>&1 || {
+            echo "::error::no desktop session (gui/$(id -u))"
+            exit 1
+          }
+      - name: Run the macOS release smoke test against v0.9.5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/release_smoke_test_macos.sh v0.9.5
+  linux:
+    name: Linux smoke on ubuntu-24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Enable a systemd --user session
+        run: |
+          sudo loginctl enable-linger "$(whoami)"
+          rt="/run/user/$(id -u)"
+          for i in $(seq 1 30); do [ -S "${rt}/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=${rt}" >>"${GITHUB_ENV}"
+      - name: Run the Linux release smoke test against v0.9.5
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/release_smoke_test_linux.sh v0.9.5
+  # The guard and the two steps it gates, copied from release-smoke-macos.yaml with
+  # the tag written in, on a release commit from before the macOS script existed.
+  guard:
+    name: macOS guard on a pre-script release (v0.10.0-rc.2)
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: v0.10.0-rc.2
+          persist-credentials: false
+      - name: Check that the release has the macOS smoke test
+        id: script
+        env:
+          BRANCH: v0.10.0-rc.2
+        run: |
+          if [ -f scripts/release_smoke_test_macos.sh ]; then
+            echo "present=true" >>"${GITHUB_OUTPUT}"
+          else
+            echo "::notice::${BRANCH}'s commit predates the macOS smoke test, so it is not smoke-tested on macOS"
+            echo "present=false" >>"${GITHUB_OUTPUT}"
+          fi
+      - name: Check for a desktop session
+        if: steps.script.outputs.present == 'true'
+        run: launchctl print "gui/$(id -u)" >/dev/null
+      - name: Run the macOS release smoke test
+        if: steps.script.outputs.present == 'true'
+        run: sh scripts/release_smoke_test_macos.sh v0.10.0-rc.2
