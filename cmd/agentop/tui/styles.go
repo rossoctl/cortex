@@ -140,13 +140,10 @@ func tableStyles() table.Styles {
 }
 
 // tableGlyphs are the runes drawn in their own ink inside a styled cell: the CTX gauge's
-// brackets and the BYTES arrows dim, a tool row's ┗⚒/┣⚒ mark and the subagent │ dim, the agents
+// ░ track and the BYTES arrows dim, a tool row's ┗⚒/┣⚒ mark and the subagent │ dim, the agents
 // pane's open marks accent.
-//
-// shortcut: the gauge's one-eighth block is the same rune as its closing bracket (▏), so a fill
-// under one eighth of a cell draws dim; give the gauge its own bracket rune if that matters.
 var tableGlyphs = map[rune]lipgloss.Style{
-	'▕': styleDim, '▏': styleDim, '↑': styleDim, '↓': styleDim,
+	'░': styleDim, '↑': styleDim, '↓': styleDim,
 	'┗': styleDim, '┣': styleDim, '⚒': styleDim, '│': styleDim,
 	'▸': styleAccent, '▾': styleAccent,
 }

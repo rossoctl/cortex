@@ -451,7 +451,7 @@ func heldContextCell(t *testing.T, m *model, id string) string {
 	return ""
 }
 
-// assertGaugeFilled fails unless the cell is a bracketed track with something drawn IN it.
+// assertGaugeFilled fails unless the cell is a gauge with a fill drawn in it.
 //
 // `!= emptyCell` is too weak, which a review caught: an EMPTY track is not the em dash, so it
 // would pass, and this package calls it a fault in its own right — "an empty track beside a live
@@ -459,22 +459,17 @@ func heldContextCell(t *testing.T, m *model, id string) string {
 // a non-zero figure never drawing as an empty bar.
 //
 // NOT the sibling assertion's strings.Contains(cell, "█") though, which holds only for a large
-// figure. Measured at this column's width: 500,000 of 1M draws "▕████▌    ▏", but 62,000 draws
-// "▕▌        ▏" and 8,200 draws "▕▏        ▏" — no full block in either. Requiring one would fail
-// the small figures the tests below deliberately use. Ink between the brackets is the property
-// that holds for every non-zero figure.
-//
-// Sliced by byte offset rather than strings.Trim, and that is not pedantry: the one-eighth fill ▏
-// is THE SAME RUNE as the closing bracket, so Trim(cell, "▕▏") eats an 8,200-token sliver whole
-// and then reports the empty track it was written to catch.
+// figure. 62,000 of 1M draws a half-block sliver and 8,200 draws "▏" — no full block in either.
+// Requiring one would fail the small figures the tests below deliberately use. A cell made only of
+// the ░ track and fill runes, with at least one fill rune, is the property that holds for every
+// non-zero figure.
 func assertGaugeFilled(t *testing.T, cell, when string) {
 	t.Helper()
-	const openBracket, closeBracket = "▕", "▏"
-	if !strings.HasPrefix(cell, openBracket) || !strings.HasSuffix(cell, closeBracket) {
+	if cell == "" || strings.Trim(cell, "░█▉▊▋▌▍▎▏") != "" {
 		t.Errorf("%s the row holds %q, which is not a gauge at all", when, cell)
 		return
 	}
-	if strings.TrimSpace(cell[len(openBracket):len(cell)-len(closeBracket)]) == "" {
+	if strings.Trim(cell, "░") == "" {
 		t.Errorf("%s the row holds an EMPTY track %q — the figure reached contextRun and not "+
 			"the cell", when, cell)
 	}
@@ -484,10 +479,10 @@ func assertGaugeFilled(t *testing.T, cell, when string) {
 // table built the row against — a different question from assertGaugeFilled's, and the one the
 // tests below actually mean.
 //
-// INK BETWEEN THE BRACKETS WAS NOT ENOUGH, measured rather than argued — and the measurement is the
+// A FILL IN THE TRACK WAS NOT ENOUGH, measured rather than argued — and the measurement is the
 // DOUBLED figure. Drawing contextGauge(m.sessionContextFor(...)*2, contextW) in rebuildSessionsTable
 // left the whole tui suite green before this helper existed, and fails all five row tests below with
-// it: a gauge at twice the figure still has ink between its brackets, so "the row repainted" was
+// it: a gauge at twice the figure still has a fill in its track, so "the row repainted" was
 // pinned as "something was drawn". The figure and the cell have to be pinned TOGETHER.
 //
 // AND NOT THE CONSTANT GAUGE, which is the mutation the review that found this named first and which
