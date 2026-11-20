@@ -12,19 +12,43 @@ This one narrows its §7.2 `toolCallNames` item and supersedes the shape propose
 Items marked **Open** must be decided before the work they belong to begins. Nothing here
 is merged.
 
-**28 numbered requirements T0–T27**, phrased as plain declaratives: a requirement says what
+**34 numbered requirements T0–T33**, phrased as plain declaratives: a requirement says what
 the system does once built. The numbering is stable so it can be cited in review and in the
-PRs that implement it. T0 sits in §2.0 because it bounds the whole spec rather than one
-section, and T23–T27 in §4.3a.
+PRs that implement it, and is therefore in the order the requirements were ADDED, not document
+order: T0 sits in §2.0 because it bounds the whole spec, T23–T27 in §4.3a, and T28–T33 in §4.4
+and §4.4a.
 
-Revised 2026-11-19, the same day, after review raised two things the first draft buried.
-§2.0 is new: every field here is **already collected and most of it is already on disk**, so
-this is a projection change and not an instrumentation one — and arguments and result content
-are a separate decision (Tier 3), not a larger version of this one. §4.3a is new: the first
-draft carried a tool duration with **no inter-call gap at all**, which cannot answer occupancy
-— a duration says how long the sandbox was busy, never how long it sat idle holding resources.
-§2.1 and §2.2 are corrected: today's record has no per-tool timing of any kind, and the
-timeline's pairing is derived rather than stored.
+Revised twice on 2026-11-19.
+
+**First revision**, after review raised two things the first draft buried. §2.0 is new: every
+field here is **already collected and most of it is already on disk**, so this is a projection
+change and not an instrumentation one — and arguments and result content are a separate
+decision (Tier 3), not a larger version of this one. §4.3a is new: the first draft carried a
+tool duration with **no inter-call gap at all**, which cannot answer occupancy. §2.1 and §2.2
+corrected: today's record has no per-tool timing of any kind, and the timeline's pairing is
+derived rather than stored.
+
+**Second revision**, after @webchang's review on #2009, which read the draft against the code
+and against a converter written for it. Four measurement claims were wrong and are corrected:
+
+- **§7.1 contradicted §3.1.** A span's two boundaries are both model traffic, so a local tool
+  call *does* get a span — the first draft's "local calls are invisible" was #1810 §9's gap
+  classification misapplied. §7.1 now states the real limit (the proxy sees the gap around a
+  tool, never inside it), and §7.1b separates sizing the model leg from sizing a sandbox host.
+- **§3.2 and §3.3 double-counted shared windows** and priced `AskUserQuestion` as tool time.
+  §3 now states three method rules and every figure is re-derived under them: the ratio moves
+  4.1 → **4.2 : 1**, the long band 55.4% → **61.7%** of work.
+- **§3.5 is new:** `durationMs` is a client round trip including permission waits, which the
+  first draft stated only for the gap.
+- **§4.3a's gap was undefinable** — T24's interval always contained `modelMs` while T25
+  classified a different one. Now one named interval, with `modelMs` outside it by
+  construction and the fourth `gapKind` dropped as an artifact.
+
+Record shape changed with it: `startedAt` replaces `at` and is always present (T29), `seq` and
+`parallelGroup` are gone, `callIndex` (T30) and a closed `endReason` (T31) are added. T28 gives
+event records an explicit `kind`. T32 says background jobs are out of scope rather than leaving
+it ambiguous; T33 says a call below a `since` floor is dropped. §10 splits into what the review
+settled and what is still open.
 
 Written after measuring, not before. §3 is the measurement; every design choice in §5 and §6
 traces to a number in it. The measurement corpus is one developer's 30-day laptop archive:
@@ -38,14 +62,21 @@ traces to a number in it. The measurement corpus is one developer's 30-day lapto
 1. Answer "which tools does our community run, and what do they cost in time" from the
    export alone, across every session and beyond the archive's 30-day retention.
 2. Answer "how does inference time compare with tool time" as a ratio a capacity plan can
-   use.
+   use — for the **model leg**. Sizing a remote sandbox host needs a sandbox-side record
+   joined to this one; see §7.1b before using these figures for that.
 3. Keep the export content-free by construction, as #1810 §3.2 requires: no tool arguments,
    no tool results, no prompts.
 
 ### 1.1 Why the export, when `/timeline` already pairs tool calls
 
-`GET /v1/sessions/{id}/timeline` answers per-tool latency today, content-free, by pairing on
-tool-use id (#1810 §9.1). It is the right tool for one session. It cannot do this job:
+`GET /v1/sessions/{id}/timeline` answers per-tool latency today by pairing on tool-use id
+(#1810 §9.1). It is the right tool for one session. It cannot do this job:
+
+It is also **content-light, not content-free**, which matters when comparing it with this
+record: `Tool.Preview` carries up to 80 runes of argument text — a command line, a file path,
+a query (`agents.go:487-515`) — and `Tool.ID` is the tool-use id itself
+(`timeline.go:128-138`). #1810 §9.1 states the same caveat in its own words ("no prompts",
+not "safe to share"). A `toolCall` record carries neither (T6, T8).
 
 | Need | Why `/timeline` cannot |
 |---|---|
@@ -149,65 +180,124 @@ that it is cheap. §6 is that decision.
 
 ## 3. The measurement
 
-Method: `/v1/export` for the record view, `/v1/sessions/{id}/timeline` for the paired view,
-over the same four sessions. 268 tool spans, 267 usable (one still running, zero `lost`).
+Source: `/v1/export` for the record view, `/v1/sessions/{id}/timeline` for the paired view,
+over four sessions of one live install. 348 spans with an end and not `lost`, across **323
+distinct windows** (§3.4).
+
+**Three method rules, each of which moves a figure below.** The first draft of this spec
+stated none of them, and §3.2 and §3.3 were wrong as a result:
+
+1. **A shared window is counted once**, not once per call in its batch. Summing per span
+   double-counts a batch's window. Measured: 828.2 s naive against **812.9 s** counted once —
+   a 1.9% overcount, smaller than §3.4's 14% span share suggests, because batched calls are
+   short.
+2. **An interactive tool is excluded from a tool-time total.** `AskUserQuestion` is a person
+   answering, not work: 12.7 s on one call here, and 62.6 s p50 over 68 calls on #1810's
+   larger corpus. Leaving it in prices human think time as tool time.
+3. **`durationMs` is a client round trip, including waits** (§3.5). No rule removes that; it
+   is stated so a reader knows what the figures contain.
 
 ### 3.1 Per-tool timing
 
-| Tool | n | p50 | p95 | total | share of tool time |
-|---|---|---|---|---|---|
-| `Bash` | 210 | 473 ms | 7,561 ms | 598.9 s | 97.4% |
-| `AskUserQuestion` | 1 | 12,714 ms | — | 12.7 s | 2.1% |
-| `Agent` | 1 | 1,093 ms | — | 1.1 s | 0.2% |
-| `Read` | 17 | 41 ms | 194 ms | 1.0 s | 0.2% |
-| `Edit` | 29 | 24 ms | 66 ms | 0.8 s | 0.1% |
-| `Write` | 9 | 16 ms | 224 ms | 0.4 s | 0.1% |
+Every span, including batch members, since a per-tool p50 wants each call:
 
-Errors: `Bash` 11, `Read` 3.
+| Tool | n | p50 | p95 | total |
+|---|---|---|---|---|
+| `Bash` | 272 | 420 ms | 7,860 ms | 811.1 s |
+| `AskUserQuestion` | 1 | 12,714 ms | — | 12.7 s |
+| `Edit` | 39 | 35 ms | 76 ms | 1.4 s |
+| `Agent` | 1 | 1,093 ms | — | 1.1 s |
+| `Read` | 18 | 41 ms | 194 ms | 1.0 s |
+| `Write` | 17 | 17 ms | 239 ms | 0.9 s |
 
-**`Bash` is 78% of calls and 97.4% of tool time.** One tool dominates, which is why the name
-alone nearly answers the workload question — and why the *duration distribution*, not the
-name, is the signal worth carrying.
+**`Bash` is 78% of calls and over 97% of tool time.** One tool dominates, which is why the
+name alone nearly answers the workload question — and why the *duration distribution*, not
+the name, is the signal worth carrying.
 
 ### 3.2 Inference against tools
 
-| | calls | total | p50 |
-|---|---|---|---|
-| Model | 307 | 2,510.7 s | 5,473 ms |
-| Tool | 267 | 614.8 s | 243 ms |
+Windows counted once, `AskUserQuestion` excluded:
 
-**4.1 : 1** — inference is 80.3% of measured work. For sandbox capacity this is the headline:
-the agent waits on the model four times longer than it runs tools.
-
-### 3.3 Weight tiers, on E15's cuts (1 s / 10 s)
-
-| Tier | share of calls | share of work |
+| | calls | total |
 |---|---|---|
-| light (<1 s) | 76.0% | 8.3% |
-| medium (1–10 s) | 22.1% | 36.3% |
-| **heavy (>10 s)** | **1.9%** | **55.4%** |
+| Model | 400 | 3,371.6 s |
+| Tool | 322 | 800.2 s |
 
-The heaviest 10% of calls carry **77.7%** of tool time; the heaviest single call was a 145.2 s
-`Bash`. This reproduces E15's concentration finding (7.4% of calls / 86.5% of work) on our own
-traffic, independently. It is the number density planning turns on, and it is the reason a
-mean is useless here: a design that reports averages hides the tail that sizes the sandbox.
+**4.2 : 1** — inference is 80.8% of measured work. For sandbox capacity this is the headline:
+the agent waits on the model four times longer than it runs tools. The ratio is robust to the
+method rules — it was 4.1 : 1 before them — because both corrections are small against a gap
+this wide.
 
-### 3.4 Parallel calls share one window — the finding that shapes the record
+### 3.3 Duration bands (<1 s / 1–10 s / >10 s)
 
-**42 of 267 spans (15.7%) carry an identical start and end**: calls the model issued together.
-The timeline gives a batch one merged interval, not a duration each.
+Windows counted once, `AskUserQuestion` excluded. Band edges: short `< 1000 ms`, medium
+`1000–10000 ms` inclusive, long `> 10000 ms`.
 
-So a naive per-call `durationMs` is wrong for one call in six, and wrong in the direction that
-inflates: charging every member of a batch the whole window's time overcounts tool time and
-drags the heavy tier upward. This is the same class of error as the 272x tool-result overcount
-#1810 documents, and the record must make it explicit rather than leave a consumer to discover
-it.
+| Band | share of calls | share of work |
+|---|---|---|
+| short | 78.9% | 7.4% |
+| medium | 18.9% | 31.0% |
+| **long** | **2.2%** | **61.7%** |
 
-### 3.5 The two views reconcile
+The heaviest 10% of calls carry **82.4%** of tool time; the heaviest single call was a 145.2 s
+`Bash`. It is the reason a mean is useless here: a design that reports averages hides the tail
+that sizes the sandbox.
 
-Summed `toolCallCount` over the same sessions is **273** against **267** paired spans — 2.2%
-apart, consistent with calls in flight at the archive boundary. A record derived archive-side
-will therefore not contradict `/timeline`.
+These are **per-call duration bands**, named short/medium/long. They are not the
+light/medium/heavy *weight tiers* of the TraceLab session-density analysis
+(`moca-experiments/experiments/e15-session-density`, cuts at 1 s and 10 s on a call's
+`work_ms`; `analysis/tracelab/analysis/tiers.py`), which elsewhere also names terciles of a
+task's total time. Same cuts, different unit of analysis, so the tables are not comparable
+and the names are kept apart deliberately. That analysis found 7.4% of calls carrying 86.5%
+of work; the concentration here is the same shape, independently measured, and nothing more
+than that should be read into the agreement.
+
+### 3.4 A batch of calls shares one window — the finding that shapes the record
+
+**25 batches, covering 50 of 348 spans (14%), carry an identical start and end.** The timeline
+gives such a batch one merged interval, not a duration each.
+
+A batch is **structural, not inferred from the timestamps**: every call of one response starts
+at that response's end (`agents.go:234` sets `Start: end` for each), so they share a start by
+construction. They share an *end* when their results arrive in one later request. So the
+grouping key is the asking response's seq, and `durationShared` says the results also returned
+together — which is why §5 carries both rather than a timestamp match.
+
+**A shared window is request-boundary granularity, not proof the calls ran in parallel.** Two
+calls whose results land in the same request are indistinguishable from each other in time,
+whether they ran together, back to back, or overlapped partly. The record therefore says "this
+duration is a window shared with n calls", never "these ran concurrently".
+
+Effect on a total: 828.2 s naive against 812.9 s with each window counted once, a **1.9%**
+overcount. Small, because batched calls are short — but it is a bias, not noise, and it always
+inflates. §3's method rule 1 applies it.
+
+### 3.5 What `durationMs` measures, and what it contains
+
+A span runs from the asking response's end to the arrival of the result, so **it is a client
+round trip, not an execution time.** Everything the client did in between is inside it:
+
+- the tool actually running;
+- a **permission prompt and the person's answer** — the single largest contaminant, and the
+  reason `AskUserQuestion` reads 12,714 ms here (T26, §7.1a);
+- any client-side queueing, retry or transport leg before and after the tool ran.
+
+So §3.1's figures are round trips, §3.2's ratio counts approval waits as tool time for any
+tool that prompts, and no rule in §3 removes that. Method rule 2 excludes the one tool whose
+*whole* duration is a person; it cannot exclude a permission prompt on a `Bash`. T26 states
+the limit on the record and #1924 is the fix.
+
+### 3.6 The two views reconcile
+
+Summed `toolCallCount` over the same sessions at the time of the first measurement was **273**
+against **267** paired spans — 2.2% apart, consistent with calls in flight at the archive
+boundary. A record derived archive-side will therefore not contradict `/timeline`.
+
+A note on the two span counts in this section: the install is live, so a later re-measurement
+read 348 spans where the first read 267. Every figure in §3.1–§3.4 comes from the **later**
+snapshot and is internally consistent; §3.6's reconciliation is from the earlier one. The
+ratio and the concentration are stable across both, which is the claim being made — not the
+absolute counts.
 
 ---
 
@@ -218,7 +308,7 @@ will therefore not contradict `/timeline`.
 T1. The export answers per-tool call counts and duration distributions across every archived
 session, without a second endpoint and without a hand-written join.
 T2. The export answers the inference-time-to-tool-time ratio per session and in aggregate.
-T3. A consumer can compute the §3.3 weight tiers from the export alone.
+T3. A consumer can compute the §3.3 duration bands from the export alone.
 T4. A consumer can separate built-in tools from MCP tools without parsing a name.
 T5. A tool call's record names the session, the agent role and the client, so a fleet view can
 split by any of them.
@@ -233,34 +323,49 @@ T8. A `toolCall` record carries **no tool-use id**. The id is the pairing key, u
 proxy and discarded: the export ships the measurement the key yields, never the key. This is
 what keeps a `toolCall` record unjoinable back to a conversation.
 T9. `TestRecord_CarriesNoContent` is extended to cover the `toolCall` record, planting a
-secret in every content field the pairing reads — tool arguments, result content and the
-preview fields `/timeline` builds — and failing if any reaches the encoding.
-T10. A built-in tool name is exported verbatim: it comes from a closed vocabulary
-(`Bash`, `Read`, `Edit`, …).
+secret in every content field the pairing reads and failing if any reaches the encoding. The
+pairing reads more content than the record carries, which is exactly why the test must cover
+it: the closing cases scan **message text** for task notifications (`agents.go:147-190`) and
+**tool result text** for background-job acknowledgements, so the planted secrets must include
+message content and result content, not only tool arguments.
+T10. A tool name is exported **verbatim**, whatever its source. The built-in vocabulary is
+closed per client but **not shared between clients** — one agent's `Bash` and `Read` are
+another's `bash` and `read` — so there is no single list to normalise against, and
+normalising would lose which spelling the client actually sent. `toolSource` (T4) is decided
+by the client's own list; the name itself is never rewritten.
 T11. An **MCP tool name is operator-defined and namespaced**, so it can carry a vendor
 relationship, an internal system name or a project codename — `mcp__acme-billing-prod__refund`
-is the worked example. It is therefore **not** treated as a built-in name. **Open:** gate it
-off by default, or export a stable hash so distinct MCP tools stay countable without being
-readable. Hashing is the author's recommendation: it preserves T1 and T4 for MCP traffic,
-which gating does not.
+is the worked example. It is therefore **not** treated as a built-in name. It is exported as a
+**keyed** hash with a typed prefix (`hmac-sha256:` + hex), under an install-local key. A plain
+digest is not enough: the namespace makes the input guessable, so an unkeyed hash of a
+known vendor name is reversible by trying candidates. The cost is that counts do not join
+across installs, which is the right trade for a name that may identify a customer. Hashing
+happens **before** T12's cut, so the cut never splits a digest.
 T12. A tool name is bounded on the way out by the same `exportLabel` every wire-sourced
-string in a record passes: control runes removed, then truncated to `maxLabelLen` (96) on a
-rune boundary.
+string in a record passes: control runes removed, then truncated to `maxLabelLen` on a rune
+boundary. `maxLabelLen` is **96 bytes**, not runes (`record.go:352-355`), so a multi-byte name
+is cut sooner than its rune count suggests.
 
 ### 4.3 Data rules
 
 T13. A `toolCall` record is **flat scalars only**, as #1810 R2 requires of a record. No array,
 no nested object. This is what keeps one line one thing and keeps `jq` usable.
-T14. `resultBytes` is the size of the tool's result, as the effort proxy T7 permits instead of
-content. Absent means not measured, never zero — the export's zero-means-absent rule.
-T15. **A batch of parallel calls is marked as such.** A record whose duration comes from a
-window shared with other calls carries `durationShared: true`, the batch's size in
-`parallelN`, and a `parallelGroup` key that is stable within the session. A consumer can then
-divide, take the window once per batch, or exclude it — explicitly, by its own choice.
-T16. A `lost` span — one that never got a result but provably stopped — is marked `lost: true`
-and **carries no duration**, rather than the zero-length duration `/timeline` draws it with. A
-zero would pass a consumer's `durationMs > 0` filter as a 0 ms call and drag a p50 toward
-zero.
+T14. `resultBytes` is the size of the tool's result, and `inputBytes` the size of its
+arguments, as the effort proxy T7 permits instead of content. **Both are byte counts, and the
+names say so** — a size is not a character count and the two differ for any non-ASCII payload.
+Absent means not measured, never zero — the export's zero-means-absent rule. A size is not
+content: it is the same concession the trajectory schema's `sessionToolCall` already makes
+with `command_chars` and `result_preview_chars`.
+T15. **A batch of calls is marked as such.** A record whose duration comes from a window
+shared with the other calls of its asking response carries `durationShared: true` and the
+batch's size in `parallelN`. The batch's identity is `callSeq` (§3.4), so no separate group key
+exists. A consumer can then divide, take the window once per batch, or exclude it — explicitly,
+by its own choice. The marker says the window is shared, **never** that the calls ran
+concurrently.
+T16. A call with no result **carries no duration**, rather than the zero-length span
+`/timeline` draws it with. A zero would pass a consumer's `durationMs > 0` filter as a 0 ms
+call and drag a p50 toward zero. Which no-result case it was is `endReason` (T31), so the
+record carries no separate `lost` flag.
 T17. A span still open when the walk reads it is not exported. An unfinished call has no
 duration to report, and a record that appears with one later would make the export
 non-reproducible.
@@ -270,22 +375,41 @@ T18. Durations are milliseconds, truncated, matching `Record`.
 
 The three quantities a capacity plan needs, and the one asymmetry that makes the split sound:
 **model time is measured, not inferred.** `durationMs` on an inference response *is* the
-model's time. Only the leftover gap has to be classified.
+model's time. Only the leftover interval has to be classified.
+
+**One named interval, defined once.** The first draft of this section defined `gapMs` from the
+previous tool call's end to this call's start, and classified a different interval in T25 —
+which cannot be checked, because a call starts when its asking response ends, so that first
+interval always contains the asking response's own inference. Corrected:
+
+> **`gapMs` is the idle interval BEFORE this call's asking response: from the end of the
+> previous response of the same agent, to the start of the request that produced this call's
+> asking response.** It therefore contains **no** `modelMs` and no tool execution of this
+> call. It is the time the agent was neither talking to the model nor running this tool.
 
 T23. A `toolCall` record carries `modelMs`: the measured duration of the inference response
-that asked for this call. It is the turn's model time, copied, not derived — so a consumer
-gets the inference/tool ratio per call without joining back to the event record.
-T24. A `toolCall` record carries `gapMs`: the time from the previous tool call's end to this
-call's start, within the same agent. Absent on an agent's first call, where there is no
-previous end — absent, never zero.
+that asked for this call. Copied from that response, not derived — so a consumer gets the
+inference/tool ratio per call without joining back to the event record. It sits **after**
+`gapMs` and **before** `durationMs` on the timeline, and the three never overlap.
+T24. A `toolCall` record carries `gapMs`, the interval defined above. Absent on an agent's
+first turn, where there is no previous response — absent, never zero.
 T25. A `toolCall` record carries `gapKind`, a **closed vocabulary** exported by naming its
-values, never by sanitising what arrives:
+values, never by sanitising what arrives. It classifies the `gapMs` interval by **the previous
+response of the same agent** — the one whose end begins the interval:
 
-| `gapKind` | The preceding response | What the gap is |
+| `gapKind` | That previous response | What the interval was |
 |---|---|---|
 | `user` | `toolCallCount == 0` | The model stopped and waited for a human. Nothing else can be happening. |
-| `tool` | `toolCallCount > 0` | Tool execution, plus any approval wait (T26). |
-| `inference` | a model call landed inside the gap | Model time, already in `modelMs`. Not idle. |
+| `tool` | `toolCallCount > 0` | The previous turn's tool calls were running. Their own durations are on their own records. |
+| `first` | there is none | The agent's first turn. `gapMs` is absent. |
+
+A fourth value is **not** needed for "a model call landed inside the gap": by the definition
+above the interval ends at the next request, so no inference can be inside it. That was an
+artifact of the old definition.
+
+**A consumer with the event records can derive all three fields**, so these definitions are
+the deliverable and the fields are the convenience. A definition that cannot be checked
+against the data is worse than no field.
 
 T26. **An approval wait is inside `tool` and cannot be separated from execution.** When a user
 sits on a permission prompt, that time lands in the tool gap and is indistinguishable from the
@@ -316,6 +440,42 @@ T20. `toolCall` records are **opt-in**, per #1810 R49's rule for Tier 2: a plain
 and `--with-tool-calls` on the command, or a single Tier-2 switch covering every §7.2 item.
 T21. Adding the record does not bump `Record`'s `schema`. A new record *kind* on the stream is
 additive; `sessionexport.SchemaVersion` bumps only on a removal or a meaning change.
+T28. An event record carries an explicit `kind: "event"` once `toolCall` records exist, so a
+consumer can select on `kind` in both directions rather than on the absence of a key. An
+absent `kind` still reads as an event record, so an older file stays readable.
+
+### 4.4a Placing and ordering a call
+
+T29. A `toolCall` record carries `startedAt`, the call's start — the asking response's end. It
+is **always present**, including on a call that never got a result, so every record can be
+placed on a timeline. The end, where there is one, is `startedAt + durationMs`. The record
+carries no separate `seq`: that collided with the event record's own `seq` and was undefined
+for an unresolved call.
+T30. A `toolCall` record carries `callIndex`, the call's position among the calls its asking
+response made, from 0, in the order the model emitted them. A batch is otherwise unorderable.
+T31. A `toolCall` record carries `endReason`, a closed vocabulary naming how the call ended.
+`durationMs` is present only for the reasons that have an end:
+
+| `endReason` | Duration? | Meaning |
+|---|---|---|
+| `result` | yes | Its result arrived. |
+| `ended_run` | no | By design no result: the call ends the run or hands control back (`SubagentHandback`, `StructuredOutput`, `end_subtask`). |
+| `abandoned` | no | The agent moved on without the result (`lastTurn`). |
+| `stopped` | no | The run was stopped while the call was open (a `<task-notification>`). |
+| `lost` | no | Open with no reason established. |
+
+These are the timeline's own closing cases (`agents.go:273-295`), named rather than collapsed
+into one `lost` flag: "the agent moved on" and "the call ends the run by design" are different
+facts, and a consumer filtering latency wants to exclude both but count them apart.
+T32. **Background commands are out of scope for this record, and the spec says so rather than
+leaving it ambiguous.** A `Bash` call that backgrounds a job ends at the acknowledgement, and
+the job's own run is a separate `timeline.Job` (`agents.go:133-137`). So this record undercounts
+a backgrounded command's wall time. Carrying jobs needs a second record kind and its own
+pairing (`backgroundRe`, the `<task-notification>` match), which this spec does not specify.
+T33. A `toolCall` record whose asking response is below a `since` floor is **not exported**.
+`Walk` stops at the first event below the floor (`walk.go:243-245`), so such a call has no
+start to report, and T29 requires one. A result inside the window whose call is outside it
+therefore yields no record, rather than a record with a missing start.
 
 ### 4.5 Documentation
 
@@ -328,33 +488,49 @@ list. The doc fix that precedes this spec already states them for `/timeline`.
 ## 5. The record
 
 ```json
-{"schema":1,"kind":"toolCall","sessionId":"45fa31b2-…","seq":2081,
- "at":"2026-11-05T15:52:26.102885Z","tool":"Bash","toolSource":"builtin",
- "callSeq":2077,"resultSeq":2081,"durationMs":473,"isError":false,
- "resultBytes":1432,"agentRole":"main","client":"claude-code/2.1.270",
+{"schema":1,"kind":"toolCall","sessionId":"45fa31b2-…",
+ "startedAt":"2026-11-05T15:52:25.629885Z","tool":"Bash","toolSource":"builtin",
+ "callSeq":2077,"callIndex":0,"resultSeq":2081,
+ "durationMs":473,"endReason":"result","isError":false,"resultBytes":1432,
+ "agentRole":"main","client":"claude-code/2.1.270",
  "modelMs":4279,"gapMs":812,"gapKind":"tool",
- "parallelGroup":"2077#0","parallelN":3,"durationShared":true}
+ "parallelN":3,"durationShared":true}
 ```
+
+Four changes from the first draft, all so a record can be placed and ordered on its own:
+
+- **`startedAt` replaces `at`.** The first draft carried the *end*, so a `lost` call — which
+  has no duration — could not be placed on a timeline at all. A start exists for every call
+  (the asking response's end), so it is always present; the end is `startedAt + durationMs`
+  when there is one.
+- **`seq` is gone.** It copied the result event's seq, which collides with the event record's
+  own `seq` and is undefined for a `lost` call. `callSeq` and `resultSeq` carry the two real
+  anchors.
+- **`callIndex` added.** The call's position among the calls its response asked for, from 0,
+  in the order the model asked. Without it a batch cannot be put back in order.
+- **`parallelGroup` is gone**, replaced by `callSeq` + `callIndex`. The group *is* the asking
+  response, so `callSeq` already identifies it; a separate composite string was a second
+  spelling of the same fact.
 
 | Field | Why it is here |
 |---|---|
-| `kind` | T19. The discriminator. Always `"toolCall"` on this record. |
+| `kind` | T19. The discriminator. Always `"toolCall"` here; an event record carries `"event"` (T28). |
 | `sessionId` | T5. The session, as the client asserted it. Not a unit of work until #1997. |
-| `seq` | Orders the record within its session, as on an event record. The result event's seq. |
-| `at` | When the call ended, so a record sorts on one time base with event records. |
-| `tool` | T10/T11. The name, bounded by T12. |
+| `startedAt` | T29. When the call started — the asking response's end. **Always present**, so a `lost` call can still be placed. |
+| `tool` | T10/T11. The name, verbatim, bounded by T12. |
 | `toolSource` | T4. `builtin`, `mcp` or `unknown` — a closed vocabulary, exported by naming the values. |
-| `callSeq` / `resultSeq` | The response that asked and the request that carried the result. Lets a consumer rejoin a `toolCall` to the event records either side **without a tool-use id** (T8). |
-| `durationMs` | T18. The paired duration. Absent on a `lost` record (T16). |
+| `callSeq` / `resultSeq` | The response that asked and the request that carried the result. Lets a consumer rejoin a `toolCall` to the event records either side **without a tool-use id** (T8). `resultSeq` is absent when nothing carried a result. |
+| `callIndex` | T30. The call's position among its response's calls, from 0, in the order the model asked. |
+| `durationMs` | T18. The paired duration. Absent when `endReason` says there was no result (T16, T31). |
+| `endReason` | T31. Closed vocabulary: how the call ended. `lost` derives from it, so no separate flag. |
 | `isError` | Whether the result was an error. The tool failure rate, per tool. |
-| `resultBytes` | T14. Effort proxy, never content. |
+| `resultBytes` | T14. Effort proxy, never content. Bytes, as the name says. |
 | `modelMs` | T23. The asking response's measured duration — model time, per call, no join needed. |
-| `gapMs` | T24. Since the previous tool call ended, within the agent. Absent on the first call. |
-| `gapKind` | T25. `user`, `tool` or `inference` — what the gap was. The field that turns idle time into a duty cycle. |
+| `gapMs` | T24. The idle interval before the asking response. Contains no `modelMs`. |
+| `gapKind` | T25. `user`, `tool` or `first` — what that interval was. The field that turns idle time into a duty cycle. |
 | `agentRole` | T5. `main` or `subagent`, so subagent tool traffic reads apart. |
 | `client` | T5. Cost-attribution and display key. **Never an authorization subject.** |
-| `parallelGroup` / `parallelN` / `durationShared` | T15. The §3.4 finding, made explicit. |
-| `lost` | T16. Set, with no `durationMs`, on a call that stopped without a result. |
+| `parallelN` / `durationShared` | T15. The §3.4 finding. The batch is `callSeq`; these say how many and whether the window is shared. |
 
 Not here, deliberately: the tool-use id (T8), arguments (T6), result content (T7), the
 `/timeline` `preview` (it is built from argument keys and is explicitly "no prompts, not safe
@@ -383,7 +559,9 @@ The walk calls the timeline builder per session and projects its spans.
 
 - **For:** smallest diff, no new pairing code.
 - **Against:** inherits the 50,000-event cap, which bounds the export by a timeline limit that
-  has nothing to do with it; and it builds turns, hosts and agents the export discards.
+  has nothing to do with it; and it builds turns, hosts and agents the export discards. The cap
+  lives in the **HTTP handler** (`sessionapi/timeline.go:25`), not the builder, so an in-process
+  caller could avoid it — but then the export depends on a limit staying where it is.
 
 ### 6.3 Option C — a second, bounded pass in `sessionexport`
 
@@ -413,12 +591,31 @@ should match. **Open:** the bound and what happens at it.
 
 ## 7. What this does not answer
 
-7.1 **Local tool calls are invisible.** `durationMs` here is proxy-observed, so it covers
-tools that generate proxied traffic. An `Edit`, `Read` or `Bash` touching nothing on the
-network appears only as gap time — #1810 measures that at 5,653 calls and 5.3 h. For sandbox
-sizing this may be *correct*, since those calls cost no sandbox time either, but **it
-undercounts call volume and any table built from it says so.** Closing the gap needs #1924
-(Claude Code telemetry), not this spec.
+7.1 **The proxy sees the gap around a tool, never inside it.** A correction to the first draft
+of this spec, which claimed local tool calls are invisible. They are not: a span runs from the
+asking response's end to the next request carrying the result (`agents.go:234`, `:280-287`),
+and **both boundaries are model traffic**, so a tool that touches nothing on the network still
+gets a span. §3.1's `Edit` at p50 35 ms is such a call. The earlier claim confused this record
+with #1810 §9's gap classification, where "no proxied traffic landed inside the gap" is how a
+*local* call is inferred — a different measurement answering a different question.
+
+What the proxy genuinely cannot see is **what happened inside the span**: whether the time went
+to the tool running, to a permission prompt, to client-side queueing, or to a transport leg
+(§3.5). So the record measures a client round trip per call, with full coverage of calls and
+no visibility into their composition.
+
+7.1b **Sandbox density needs a sandbox-side record; this one sizes the model leg.** The
+distinction §3.2's ratio invites a reader to miss. Where an agent's tools run on the
+developer's own machine, a tool call costs no sandbox time and the ratio is the whole story.
+Where they run in a **remote sandbox**, those calls *are* the sandbox's work, and this record
+sees only the round trip around them — which includes a transport leg the sandbox's own timing
+excludes, so the two disagree and neither is wrong. A sandbox host is bounded by its concurrent
+commands and the memory each holds, and **no field here measures either**.
+
+So: this record sizes the model leg — tokens, latency, concurrency of model calls — and bounds
+the tool leg from outside. A sandbox capacity plan wants it **joined to a sandbox-side record**,
+for which the record already carries the keys: `sessionId` plus UTC `startedAt` and
+`durationMs`. Specifying that record is not in scope here.
 
 7.1a **An approval wait reads as execution.** T26: a permission prompt the user sits on lands
 inside a `tool` gap, indistinguishable from the command running. Nobody has quantified it
@@ -449,8 +646,8 @@ which user instruction.
 | #1924 | Claude Code telemetry would supply the tool times the proxy cannot see (§7.1) **and the permission waits T26 cannot separate from execution (§7.1a)**. It is the fix for both of this spec's largest error sources, so the two should be planned together even though this one ships first. |
 | #1921 / #1925 | Redaction and the content export. Where tool arguments and result content go, per T0 — a different privacy posture, not a flag on this record. |
 | #1997 | `sessionIncarnation`. Needed before per-session aggregates mean anything (§7.3). |
-| #505 | An OTLP emitter would be the third consumer of the §6 pairing, and the reason to prefer Option A. |
-| rossoctl/trajectory-schema | A `toolCall` record maps closely to that schema's `$defs.sessionToolCall`, which already records a tool call as sizes rather than content (`command_chars`, `result_preview_chars`). Worth aligning field names where the semantics match. |
+| rossoctl/trajectory-schema | **A consumer exists.** That schema added an observed-session kind (`trajectory-schema/session/1`, v2.1) and `tools/from-cortex.py`, which converts a `/v1/export` stream of event and `toolCall` records into it and into OTLP/JSON. Its field-by-field mapping is what surfaced T29 (a start on every record) and T30 (`callIndex`): without them a lost call cannot be placed and a batch cannot be ordered. Both are now required. The converter reports `gapKind` as unmapped and derives it from the event records instead, which is the right division — §4.3a says the definitions are the deliverable. |
+| #505 | OpenTelemetry's GenAI conventions name a tool span `execute_tool {gen_ai.tool.name}` with `gen_ai.operation.name=execute_tool`, and `gen_ai.tool.call.id` is only **conditionally** required — so T8's omission of the tool-use id stays spec-compliant. An OTLP emitter would also be the third consumer of §6's pairing. |
 
 ---
 
@@ -474,13 +671,23 @@ its frequency — but the *rate* is not a constant to design against.
 
 ## 10. Open items, collected
 
+### 10.1 Settled in review (#2009), and now normative
+
+| § | Decision |
+|---|---|
+| T11 | **Keyed** hash (`hmac-sha256:` + hex, install-local key), not a plain digest: a namespaced name is guessable, so an unkeyed digest is reversible. Cross-install counts are given up deliberately. |
+| T20 | **Per item** (`?include=toolCalls`). One Tier-2 switch would opt a consumer into items it never asked for. |
+| §6 | **Option A**, scoped to tool spans and their closing inputs. |
+| §6.4 | A fixed cap on open calls per session, and **a per-session marker record** when it is hit — matching the export's degrade-loudly posture. |
+| T25 | **No fourth `gapKind`.** The redefined interval ends at the next request, so no inference can fall inside it; the question was an artifact of the first draft's definition. |
+
+### 10.2 Still open
+
 | § | Open |
 |---|---|
-| T11 | MCP tool names: gate off by default, or export a stable hash. Author recommends hashing. |
-| T20 | The opt-in switch: per-item (`?include=toolCalls`) or one Tier-2 switch. |
-| §6 | Which of the three pairing options. Author leans A. |
-| §6.4 | The per-session pairing bound, and the behaviour when it is hit. |
-| T25 | Whether `gapKind` needs a fourth value for a gap that spans both a model call and tool execution, or whether `inference` winning is the right precedence. |
-| §7.1a | Whether to quantify the approval-wait error against local transcripts before publishing any density figure. Author's view: yes, and it is cheap. |
+| §7.1a | Whether to quantify the approval-wait error against local Claude Code transcripts before publishing any density figure. Author's view: yes, and it is cheap. |
+| §7.1b | Whether a sandbox-side record is specified now or later, given that sandbox density was part of this work's motivation and this record cannot answer it alone. |
+| T32 | Whether background jobs get a record kind of their own, or stay out. As written their wall time is undercounted. |
+| §3.3 | Whether the band names (short/medium/long) should instead match the TraceLab tier names, accepting the collision. Author's view: keep them apart — one measures a call, the other a task. Worth confirming with the analysis's author. |
 
 Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>
