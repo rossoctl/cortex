@@ -638,9 +638,9 @@ func (m *model) spendHourAndDaySummary() spendSummary {
 		// guarantee is expressed in rune counts and lipgloss.Width, and
 		// lipgloss.Width("abc\nabcdef") is 6 — it measures the WIDEST LINE. So a label
 		// carrying a newline passes the budget check and then renders as an EXTRA line.
-		// layout() reserves exactly spendBandLines rows and paneView pads to them, so a
-		// third line is not merely untidy: the view comes out taller than the terminal and
-		// the footer goes off the bottom. Control characters and DEL become U+FFFD (one
+		// The band is the one-line label of the box's top edge, so a second line is not
+		// merely untidy: the view comes out taller than the terminal and the footer goes
+		// off the bottom. Control characters and DEL become U+FFFD (one
 		// column, so the arithmetic still holds) rather than being dropped, so tampering
 		// shows.
 		WindowLabel: sanitizeLabel(snap.Window),

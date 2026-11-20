@@ -16,30 +16,18 @@ func (m *model) layout() {
 	//
 	// TestLayout_EveryPaneFitsTheTerminal reports a reservation error as a view that is not
 	// exactly as tall as the terminal, on every pane and every size.
-	bodyH := m.height - 1 /* title */ - boxTopLines - boxBottomLines - footerLines
-	// And one for the spend strip, which View() draws directly under the title.
 	//
-	// BY HEIGHT ALONE, deliberately blind to the pane: there is no setPane choke point to
-	// hook (the pane is assigned in twenty-odd places, and layout() runs on resizes, drawer
-	// toggles and pane transitions alike), so a reservation that read m.pane would go stale
-	// the moment the user moved between a picker and a data pane, leaving bodyHeight wrong
-	// until the next layout() — which on a pane the strip DOES draw means a body one row too
-	// tall and a footer pushed off the bottom. The cost is that the two picker panes render
-	// one row shorter than they need, which is invisible next to that. See
-	// spendStripReservesRow and spendStripVisible for the same asymmetry stated from the
-	// other side.
-	if m.spendStripReservesRow() {
-		// spendBandLines, not one row: the band stacks labels over values. paneView fills
-		// exactly this many, and the two must move together — see paneView.
-		bodyH -= spendBandLines
-	}
-	// And the drawer's rows when it is open. Reserving nothing for them made the view
-	// spendDrawerLines taller than the terminal the moment `$` was pressed, pushing the footer
-	// off the bottom on every pane — the failure the strip's own reservation exists to prevent,
-	// five rows at a time instead of one. Unlike the strip's, this one reads the pane, and
+	// The spend band costs no row: it is the label of the box's top edge (see framePane).
+	bodyH := m.height - 1 /* title */ - boxTopLines - boxBottomLines - footerLines
+	// And the drawer's rows when it is open, plus its own box's bottom edge and the table box's
+	// top edge. Reserving nothing for them made the view taller than the terminal the moment `$`
+	// was pressed, pushing the footer off the bottom on every pane. This one reads the pane, and
 	// Update re-runs layout() when it changes. See spendDrawerReservesRows.
+	//
+	// At the INNER width, because the drawer renders inside a box at that width: the reservation
+	// and the render must use the same one.
 	if m.spendDrawerReservesRows() {
-		bodyH -= spendDrawerLinesFor(m.width)
+		bodyH -= spendDrawerLinesFor(m.innerWidth()) + drawerBoxExtraLines
 	}
 	// And one more while the search prompt is open: View() prepends searchInput above the body,
 	// so the line exists on screen whether or not the budget admits it. Unreserved, the view

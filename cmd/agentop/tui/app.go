@@ -2603,9 +2603,8 @@ func (m *model) paneView() string {
 
 // pickerView is a picker pane: the title, the body in the box, and the picker's key bar.
 //
-// The box fills every row the footer does not use. layout() reserves the band row by height
-// alone (see spendStripReservesRow), and a picker draws no band, so that row goes into the box.
-// The picker's key bar is one line where footerView is footerLines.
+// The box fills every row the footer does not use. A picker draws no band, so its top edge is
+// plain. The picker's key bar is one line where footerView is footerLines.
 //
 // A picker is the first screen, so it can render before the first WindowSizeMsg. With no width
 // yet there is no box to draw, and the body shows as it is.
@@ -2614,9 +2613,6 @@ func (m *model) pickerView(title, body, footer string) string {
 		return lipgloss.JoinVertical(lipgloss.Left, renderTitle(title), body, footer)
 	}
 	frameH := m.bodyHeight + (footerLines - lipgloss.Height(footer))
-	if m.spendStripReservesRow() {
-		frameH += spendBandLines
-	}
 	if m.searching {
 		frameH++ // layout() reserved the prompt's row; it is the body's first line, or blank
 	}
@@ -2752,9 +2748,8 @@ func (m *model) paneContent() (title, body string) {
 // box at exactly the rows layout() reserved, and the footer on the last row.
 func (m *model) framePane(title, body string) string {
 	header := renderTitle(title)
-	// A row slice rather than a fixed JoinVertical, so the strip's row can be absent
-	// without needing a second call site. It sits directly under the title because that
-	// is the whole requirement: spend read BEFORE the data rather than navigated to.
+	// The band sits directly under the title because that is the whole requirement: spend
+	// read BEFORE the data rather than navigated to.
 	//
 	// Styled AFTER fitting. renderSpendBand measures DISPLAY COLUMNS (lipgloss.Width, see
 	// bandCell.width), and styleMuted only adds a colour escape so the column count is
@@ -2764,67 +2759,53 @@ func (m *model) framePane(title, body string) string {
 	// Nothing here touches eventsTbl: the strip holds no cursor, filter or scroll state,
 	// so it cannot perturb the pane it sits above.
 	rows := []string{header}
-	// EXACTLY WHAT layout() RESERVED, blank where there is nothing to say. Both reservations are
-	// height-gated and must stay that way — layout() runs on resizes, drawer toggles and pane
-	// transitions, none of them on a poll's schedule, so a content-gated reservation would go
-	// stale the moment a poll landed, and stale in the direction that overflows. So the render
-	// fills them rather than the reservation tracking the render.
+	// THE BAND IS THE TOP EDGE'S LABEL (#2020), so it costs no row: layout() reserves the edge
+	// on every pane, and the edge is plain when the band does not draw.
 	//
-	// The case that made this necessary: the renderer can return FEWER lines than the reservation,
-	// which left the strip's row and the drawer's five unfilled and the footer six rows above the
-	// bottom of the terminal. The same arithmetic covers a drawer left open on a pane that cannot
-	// host it.
+	// m.width-6 is what boxTop leaves for a label ("╭─ " + label + " ─╮"). spendBandCells drops
+	// whole periods to fit it, so the edge never wraps.
 	//
-	// NOT "blank before the first poll answers", which an earlier version of this said: an
-	// unanswered band draws its four labels over four em dashes — that IS the honest "we have not
-	// looked". Measured, the band comes back blank in one case only: a width so narrow that not
-	// even one cell fits, which is 4 columns or less. So `drew` below tracks "the strip is visible
-	// AND at least one cell fit", and it is not vacuous — it is the gate that keeps the breakdown
-	// off a screen with no figure above it.
-	if m.spendStripReservesRow() {
-		band := make([]string, spendBandLines)
-		drew := false
-		if m.spendStripVisible() {
-			// Styled AFTER fitting, for the reason stated above the row slice: the renderer
-			// measures display columns and an escape sequence is not one.
-			//
-			// THE STYLED FORM COMES FROM THE RENDERER NOW, not from wrapping its output here. The
-			// band used to be two rows and this line muted the whole label row —
-			// `styleMuted.Render(band[0]), band[1]` — which is a hierarchy that exists only while
-			// labels and figures live on separate rows. Folded to one row, wrapping the line would
-			// mute the figures with the labels and flatten the contrast into uniform grey, so the
-			// mute moved to where a cell knows which half is which. See bandCell.renderInk.
-			//
-			// ONE CALL, because this is bubbletea's per-event render path and spendSummary walks
-			// all four poll chains. `drew` comes back from the renderer rather than being tested
-			// on the string it returns — see renderSpendBandStyled for why the styled form cannot
-			// answer that question.
-			band, drew = renderSpendBandStyled(m.spendSummary(), m.width, m.spendBandNeedsScopeMarker())
-		}
-		for len(band) < spendBandLines {
-			band = append(band, "")
-		}
-		rows = append(rows, band...)
-
-		if m.spendDrawerReservesRows() {
-			var lines []string
-			// The breakdown goes directly under the figure it breaks down, and ONLY when the
-			// strip itself drew — a headless breakdown would be a pane, which is the one thing
-			// this is not.
-			if drew && m.spendDrawerVisible() {
-				// The axis and span come off the SNAPSHOT, not off what was last requested: see
-				// drawerLabels.
-				axis, window := m.drawerLabels()
-				lines = renderSpendDrawerAxes(m.spend.drawer.snap, m.spend.drawer.err, axis, m.spend.drawerAxis, m.spendAxes(), window, m.spend.drawerProject, m.width)
-			}
-			for len(lines) < spendDrawerLinesFor(m.width) {
-				lines = append(lines, "")
-			}
-			rows = append(rows, styleDrawerLines(lines)...)
+	// `drew` tracks "the strip is visible AND at least one cell fit". It is the gate that keeps
+	// the breakdown off a screen with no figure above it.
+	label, drew := "", false
+	if m.spendStripVisible() { // false below spendStripMinHeight, so the edge is plain there
+		// ONE CALL, because this is bubbletea's per-event render path and spendSummary walks
+		// all four poll chains. `drew` comes back from the renderer rather than being tested
+		// on the string it returns — see renderSpendBandStyled for why the styled form cannot
+		// answer that question.
+		var band []string
+		band, drew = renderSpendBandStyled(m.spendSummary(), m.width-6, m.spendBandNeedsScopeMarker())
+		if drew {
+			label = band[0]
 		}
 	}
-	// The box, AFTER the band and its drawer. Appended unconditionally, which is what lets
-	// layout() reserve its edges without asking anything — see boxTop.
+	rows = append(rows, boxTop(label, m.width))
+
+	// THE DRAWER IS ITS OWN PANEL, under the band it breaks down: its rows framed, its bottom
+	// edge, then a plain top edge for the table box. EXACTLY WHAT layout() RESERVED, blank where
+	// there is nothing to say: the reservation is height- and pane-gated, never content-gated,
+	// because layout() does not run on a poll's schedule and a content-gated reservation would
+	// go stale in the direction that overflows. That covers a drawer left open on a pane that
+	// cannot host it, too.
+	//
+	// At the inner width, the width layout() reserved for (spendDrawerLinesFor).
+	if m.spendDrawerReservesRows() {
+		var lines []string
+		// ONLY when the strip itself drew — a headless breakdown would be a pane, which is
+		// the one thing this is not.
+		if drew && m.spendDrawerVisible() {
+			// The axis and span come off the SNAPSHOT, not off what was last requested: see
+			// drawerLabels.
+			axis, window := m.drawerLabels()
+			lines = renderSpendDrawerAxes(m.spend.drawer.snap, m.spend.drawer.err, axis, m.spend.drawerAxis, m.spendAxes(), window, m.spend.drawerProject, m.innerWidth())
+		}
+		n := spendDrawerLinesFor(m.innerWidth())
+		rows = append(rows, boxFrame(strings.Join(styleDrawerLines(lines), "\n"), m.width, n)...)
+		rows = append(rows, boxBottom(m.width), boxTop("", m.width))
+	}
+	// The body box: its top edge is above (the band's, or the plain one after the drawer), and
+	// both edges are drawn unconditionally, which is what lets layout() reserve them without
+	// asking anything — see boxTop.
 	//
 	// EXACTLY bodyHeight rows (and the search prompt's row, which layout() reserves while the
 	// prompt is open): boxFrame pads a short body and cuts a tall one, so the footer is always
@@ -2836,7 +2817,6 @@ func (m *model) framePane(title, body string) string {
 	if m.bodyHeight == 0 {
 		frameH = lipgloss.Height(body) // layout() has not run, so there is no reservation to fill
 	}
-	rows = append(rows, boxTop("", m.width))
 	rows = append(rows, boxFrame(body, m.width, frameH)...)
 	rows = append(rows, boxBottom(m.width), m.footerView())
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)

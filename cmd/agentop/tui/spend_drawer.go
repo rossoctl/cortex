@@ -44,7 +44,9 @@ const (
 	spendDrawerSeries = 3
 
 	// spendDrawerMinHeight is the terminal height at which the drawer may open: the
-	// strip's own floor, the drawer's rows, and the separator between them.
+	// strip's own floor, the drawer's rows, and the two box edges between the drawer and the
+	// table (drawerBoxExtraLines). At the floor the table keeps the 16 rows it had when the
+	// floor was 28 and a one-row divider sat between them.
 	//
 	// Below it the answer is "no", not "a table with two visible rows": the drawer exists
 	// to be read ALONGSIDE the data, and one that squeezes the data out has defeated its
@@ -56,11 +58,17 @@ const (
 	//
 	// spendDrawerLines, not spendDrawerLinesFor: a floor has to admit the TALLEST form, or
 	// widening the terminal would squeeze the table.
-	spendDrawerMinHeight = spendStripMinHeight + spendDrawerLines + boxTopLines
+	spendDrawerMinHeight = spendStripMinHeight + spendDrawerLines + drawerBoxExtraLines
+
+	// drawerBoxExtraLines is what the drawer's own panel costs beyond its rows: its bottom edge
+	// and the table box's top edge. Its top edge is the band's, which the closed layout already
+	// reserves (boxTopLines).
+	drawerBoxExtraLines = 2
 
 	// spendDrawerLines is the drawer's MAXIMUM height — the two-column form. What layout()
-	// actually holds back is spendDrawerLinesFor(width), which is this at a width that
-	// affords the tier column and one row less below it.
+	// actually holds back is spendDrawerLinesFor(m.innerWidth()) framed rows, which is this at
+	// an inner width that affords the tier column and one row less below it, plus
+	// drawerBoxExtraLines for the panel's edges.
 	//
 	// spendDrawerSeries named rows, plus the "(other)" band, plus the hint line. Derived rather
 	// than written as 5 so the two cannot drift: renderSpendDrawer emits exactly this many at
@@ -308,8 +316,8 @@ func spendDrawerHostPane(pane paneID) (bool, string) {
 	return true, ""
 }
 
-// spendDrawerReservesRows reports whether layout() must hold spendDrawerLinesFor(width)
-// back.
+// spendDrawerReservesRows reports whether layout() must hold the drawer's panel back:
+// spendDrawerLinesFor(m.innerWidth()) framed rows and drawerBoxExtraLines edges.
 //
 // ONLY ON A PANE THAT CAN HOST THE DRAWER. The flag survives a move to the timeline or the usage
 // pane, and a reservation that ignored the pane left the drawer's rows there as blank lines

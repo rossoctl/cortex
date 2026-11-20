@@ -616,24 +616,25 @@ func TestUsageChartHeight_MatchesTheRenderedChrome(t *testing.T) {
 // which has no tier column, grew with it.
 //
 // SIZES CHOSEN HERE, NOT fitSizes, and that is the whole reason this test exists.
-// fitSizes has no entry that is both narrow enough for one column (< 86) and tall enough
-// to open the drawer (>= spendDrawerMinHeight, 28): its sub-86 widths are 20 and 24 rows
+// fitSizes has no entry that is both narrow enough for one column (inner width < 86) and tall
+// enough to open the drawer (>= spendDrawerMinHeight, 29): its sub-88 widths are 20 and 24 rows
 // tall, so `$` does not expand and the case is vacuous. Written against fitSizes first,
 // this test passed with the call site reverted — which is how the gap was measured
 // rather than argued.
 func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 	forceColor(t)
 	narrowSeen, wideSeen := false, false
-	// BOTH SIDES OF THE BOUNDARY, at spendDrawerTwoColumnMin-1 and spendDrawerTwoColumnMin
-	// themselves. Written as 84 and 85 these were BOTH one-column widths — the constant is
-	// 86 — so the two-column half of the sweep rested entirely on {120,40} and the boundary
-	// the comment above calls this test's reason to exist was never crossed. The guards at
-	// the end are what stop that recurring silently.
+	// BOTH SIDES OF THE BOUNDARY: the drawer is inside a box, so its threshold applies to
+	// the inner width, and the terminal widths are spendDrawerTwoColumnMin+1 (inner width
+	// one short) and spendDrawerTwoColumnMin+2 (the first that reaches two columns). Written
+	// as 84 and 85 these were once BOTH one-column widths, so the two-column half of the
+	// sweep rested entirely on {120,40} and the boundary the comment above calls this test's
+	// reason to exist was never crossed. The guards at the end stop that recurring silently.
 	for _, dim := range [][2]int{
-		{80, 30},  // one column: below spendDrawerTwoColumnMin, tall enough to open
-		{85, 40},  // one column, at the boundary: spendDrawerTwoColumnMin-1
-		{86, 40},  // two columns: the first width that reaches them
-		{120, 40}, // two columns, comfortably
+		{80, 30},                          // one column, tall enough to open
+		{spendDrawerTwoColumnMin + 1, 40}, // one column, at the boundary
+		{spendDrawerTwoColumnMin + 2, 40}, // two columns: the first width that reaches them
+		{120, 40},                         // two columns, comfortably
 	} {
 		w, h := dim[0], dim[1]
 		m := fitModel(t, paneEvents, w, h, cursorRowsFixture(60))
@@ -648,7 +649,7 @@ func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 		if !m.spendDrawerVisible() {
 			t.Fatalf("%dx%d: the drawer did not open, so this case asserts nothing", w, h)
 		}
-		if w < spendDrawerTwoColumnMin {
+		if !drawerTwoColumn(m.innerWidth()) {
 			narrowSeen = true
 		} else {
 			wideSeen = true
@@ -684,7 +685,7 @@ func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 // a seven-row drawer it costs the table the row the floor exists to protect.
 //
 // A LITERAL, like spend_sanitize_test.go's line pins and for the same reason: a
-// right-hand side spelled with spendStripMinHeight + spendDrawerLines + boxTopLines is
+// right-hand side spelled with spendStripMinHeight + spendDrawerLines + drawerBoxExtraLines is
 // the tautology this replaces. The terms are named in the failure message instead, so a
 // deliberate change to any of them reads as one number to update and an accidental one
 // names what moved.
@@ -692,15 +693,15 @@ func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 // spendDrawerLines is already pinned to 7 twice (TestSpendDrawerLines_AccountsForTheChildRow
 // and the {120, 7} row in spend_sanitize_test.go), so this is the last unwitnessed link in
 // the chain, not a second copy of one.
-func TestSpendDrawerMinHeight_IsTwentyEight(t *testing.T) {
-	const wantFloor = 28 // 20 strip rows + 7 drawer rows + 1 box top edge
+func TestSpendDrawerMinHeight_IsTwentyNine(t *testing.T) {
+	const wantFloor = 29 // 20 strip rows + 7 drawer rows + 2 drawer box rows
 	if spendDrawerMinHeight != wantFloor {
 		t.Errorf("the drawer's height floor is %d, want %d — recompute it from the terms: "+
-			"spendStripMinHeight %d + spendDrawerLines %d + boxTopLines %d. If one of those "+
+			"spendStripMinHeight %d + spendDrawerLines %d + drawerBoxExtraLines %d. If one of those "+
 			"moved deliberately, update this literal; if none did, the floor has been written "+
 			"as a constant again and no longer follows the drawer's height",
 			spendDrawerMinHeight, wantFloor,
-			spendStripMinHeight, spendDrawerLines, boxTopLines)
+			spendStripMinHeight, spendDrawerLines, drawerBoxExtraLines)
 	}
 }
 
@@ -709,7 +710,7 @@ func TestSpendDrawerMinHeight_IsTwentyEight(t *testing.T) {
 // than a couple of rows".
 //
 // WHAT THIS CANNOT CATCH, and the reason is worth stating rather than discovering later.
-// The floor is derived (spendStripMinHeight + spendDrawerLines + boxTopLines), so any
+// The floor is derived (spendStripMinHeight + spendDrawerLines + drawerBoxExtraLines), so any
 // assertion here comparing it to those components is a tautology — the defect class three
 // earlier rounds of review found in this package. A one-row drift is therefore not
 // detectable here: with the floor at 27 against a seven-row drawer the body is 14 rows
@@ -718,7 +719,7 @@ func TestSpendDrawerMinHeight_IsTwentyEight(t *testing.T) {
 // What it does catch is a floor that has come loose altogether — low enough that opening
 // the drawer squeezes the table to nothing, which is the failure the constant's doc
 // describes and the one that makes the drawer "a pane, badly". The single row is guarded
-// by TestSpendDrawerMinHeight_IsTwentyEight above, which pins the value to a literal.
+// by TestSpendDrawerMinHeight_IsTwentyNine above, which pins the value to a literal.
 func TestLayout_DrawerFloorLeavesAUsableTable(t *testing.T) {
 	forceColor(t)
 	const w = 120
