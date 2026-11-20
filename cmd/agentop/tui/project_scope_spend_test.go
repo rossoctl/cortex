@@ -77,7 +77,11 @@ func TestProjectScope_BandMakesNoCurrencyReadForAMixedWindow(t *testing.T) {
 	var asked []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		asked = append(asked, r.URL.RawQuery)
+		// This server does not echo project, so a project= read is followed by the fallback.
+		// Only the fallback reads are counted.
+		if !r.URL.Query().Has("project") {
+			asked = append(asked, r.URL.RawQuery)
+		}
 		mu.Unlock()
 		q := r.URL.Query()
 		_ = json.NewEncoder(w).Encode(usage.Snapshot{

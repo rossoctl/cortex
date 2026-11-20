@@ -67,11 +67,22 @@ func narrowToProject(snap *usage.Snapshot, project string) (*usage.Snapshot, err
 }
 
 // fetchUsageScopedProject is fetchUsageScoped narrowed to one project when project is set: it
-// asks for the project axis (of agent, when set) and narrows the reply here. No project= key goes
-// to the server.
+// sends project= (and agent=, when set) and uses the reply only when the server echoes them. A
+// server that does not echo predates project=, so the read falls back to the project axis (of
+// agent, when set), narrowed here. Other, (other) and the agent Other are agentop's own fold
+// labels: they never go to the server and always take the fallback.
 func fetchUsageScopedProject(ctx context.Context, client *apiclient.Client, window string, resolution time.Duration, agent, project string, group usage.Group) (*usage.Snapshot, error) {
 	if project == "" {
 		return fetchUsageScoped(ctx, client, window, resolution, agent, group)
+	}
+	if project != otherProjects && project != projectOverflowLabel && agent != otherAgents {
+		snap, err := client.GetUsageWindowScoped(ctx, window, resolution, "", agent, project, group)
+		if err != nil {
+			return nil, err
+		}
+		if string(snap.Project) == project && (agent == "" || snap.Agent == agent) {
+			return snap, nil
+		}
 	}
 	snap, err := fetchUsageScoped(ctx, client, window, resolution, agent, usage.GroupProject)
 	if err != nil {
