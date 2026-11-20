@@ -15,6 +15,10 @@ const (
 	// maxPendingMessages bounds one session's unsent turns. Past it the oldest
 	// are dropped: evolve renders a bounded window of a trajectory anyway.
 	maxPendingMessages = 400
+	// openCallTurns is how many turns a tool call waits for its result before it
+	// is forgotten. A result comes in the next request; a call the agent never
+	// answered would otherwise stay open for the rest of the session.
+	openCallTurns = 16
 	// maxLearnAttempts is how many times one batch is sent before the plugin gives
 	// up on it. Some failures never clear, such as a backend that can't process
 	// identified batches or a profile that doesn't exist.
@@ -60,7 +64,8 @@ type recorder struct {
 	pending []map[string]any // turns not yet sent to evolve
 	turns   int              // completed turns in pending
 	seen    int              // request messages already accounted for
-	calls   map[string]bool  // tool-call ids awaiting a result
+	calls   map[string]int   // tool-call ids awaiting a result, and the turn each was made in
+	turn    int              // turns observed in all, across batches
 	batch   int              // batches sent so far
 	// gen distinguishes this recorder's batch ids from those of any other
 	// recorder of the same session, which evolve would otherwise skip as already
@@ -76,7 +81,7 @@ type recorder struct {
 }
 
 func newRecorder(agent, gen string) *recorder {
-	return &recorder{agent: agent, calls: map[string]bool{}, gen: gen}
+	return &recorder{agent: agent, calls: map[string]int{}, gen: gen}
 }
 
 // observe folds one completed main-agent exchange into the recorder.
@@ -88,7 +93,7 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 		r.seen = 0
 	}
 	for _, res := range inf.ToolResults {
-		if !r.calls[res.ToolUseID] {
+		if _, open := r.calls[res.ToolUseID]; !open {
 			continue
 		}
 		delete(r.calls, res.ToolUseID)
@@ -133,7 +138,7 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 				"id": id, "type": "function",
 				"function": map[string]any{"name": c.Name, "arguments": args},
 			})
-			r.calls[id] = true
+			r.calls[id] = r.turn
 		}
 		assistant["tool_calls"] = calls
 	}
@@ -141,6 +146,12 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 		r.add(assistant)
 	}
 	r.turns++
+	r.turn++
+	for id, at := range r.calls {
+		if r.turn-at > openCallTurns {
+			delete(r.calls, id)
+		}
+	}
 }
 
 func (r *recorder) add(m map[string]any) {

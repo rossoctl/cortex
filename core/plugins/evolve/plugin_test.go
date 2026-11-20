@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -1043,7 +1044,7 @@ func TestInject_ARequestWithoutATaskDoesNotHoldBackTheNextOne(t *testing.T) {
 
 func TestTruncation_StaysWithinTheCapAndValidUTF8(t *testing.T) {
 	r := newRecorder("claude-code", "1.1")
-	r.calls["t1"] = true
+	r.calls["t1"] = 0
 	r.observe(&pipeline.InferenceExtension{ToolResults: []pipeline.InferenceToolResult{
 		{ToolUseID: "t1", Content: strings.Repeat("x", maxToolResultChars), IsError: true},
 	}})
@@ -1081,5 +1082,23 @@ func TestLearn_InjectedGuidelinesAreNotLearnedFromAssistantOrToolText(t *testing
 	}
 	if r.pending[1]["content"] != "My instructions say:\n\nSo I'll run the tests." {
 		t.Fatalf("assistant text = %q, want the rest kept", r.pending[1]["content"])
+	}
+}
+
+func TestLearn_UnansweredToolCallsAreForgotten(t *testing.T) {
+	r := newRecorder("claude-code", "1.1")
+	for i := range 200 {
+		r.observe(&pipeline.InferenceExtension{
+			Messages:  h1,
+			ToolCalls: []pipeline.InferenceToolCall{{ID: fmt.Sprintf("abandoned-%d", i), Name: "Bash"}},
+		})
+	}
+	if len(r.calls) > openCallTurns+1 {
+		t.Fatalf("%d tool calls still open, want at most the last %d turns'", len(r.calls), openCallTurns+1)
+	}
+	// The last turn's call is still answered by the next request.
+	r.observe(&pipeline.InferenceExtension{Messages: h1, ToolResults: []pipeline.InferenceToolResult{{ToolUseID: "abandoned-199", Content: "ok"}}})
+	if last := r.pending[len(r.pending)-1]; last["role"] != "tool" || last["tool_call_id"] != "abandoned-199" {
+		t.Fatalf("last message = %v, want the result of the latest call", last)
 	}
 }
