@@ -43,6 +43,13 @@ type ConfigChange struct {
 	// editing its config:. Path and Value are then unused. An absent entry changes
 	// nothing.
 	RemoveEntry bool
+	// RenameTo, when set, renames the key at Path to RenameTo in place, instead of
+	// setting a value: only the key's own text changes, so its value — a ${NAME}
+	// reference included, which copying the loaded value to a new key would expand —
+	// its comments and its place among its siblings stay as they were. Value must be
+	// nil. A missing key, or a RenameTo its mapping already has, is an error rather
+	// than nothing to change.
+	RenameTo string
 }
 
 // ScalarValue is a string value for ConfigChange.Value. It is written as a YAML
@@ -93,6 +100,9 @@ func SetPluginConfig(src []byte, ch ConfigChange) ([]byte, error) {
 	if len(ch.Path) == 0 && !ch.RemoveEntry {
 		return nil, errors.New("edit: a config change needs at least one key")
 	}
+	if ch.RenameTo != "" && (ch.Value != nil || ch.RemoveEntry || ch.CreatePlugin) {
+		return nil, errors.New("edit: a rename sets no value, removes no entry and creates none")
+	}
 	// Refuse a src holding U+0085 (NEL), U+2028 (LS), U+2029 (PS), or a \r not
 	// immediately followed by \n, wherever it is: in a comment or a quoted value as
 	// much as between lines. The parser counts each as a line break and the split
@@ -123,6 +133,11 @@ func SetPluginConfig(src []byte, ch ConfigChange) ([]byte, error) {
 
 	var out []string
 	switch {
+	// Before the cases below, which read a nil Value as a removal or as nothing to do.
+	case ch.RenameTo != "" && item == nil:
+		return nil, fmt.Errorf("pipeline.%s has no %s entry", ch.Chain, ch.Plugin)
+	case ch.RenameTo != "":
+		out, err = renameKey(lines, item, ch)
 	case ch.RemoveEntry && item == nil:
 		return src, nil
 	case ch.RemoveEntry:
@@ -310,6 +325,80 @@ func editEntry(lines []string, item *yaml.Node, ch ConfigChange) ([]string, erro
 		return splice(lines, end+1, end+1, append([]string{pad(keys) + "config:"}, body...)), nil
 	}
 	return setIn(lines, []pair{{ck, cv}}, ch.Path, ch.Value, ch.Plugin)
+}
+
+// renameKey renames the key at ch.Path below item's config: to ch.RenameTo, by
+// rewriting the key's own text on its line and nothing else.
+//
+// It edits only a key it can find on its line as written: a plain key, or one quoted
+// with nothing to unescape, preceded by nothing but indentation and followed by its
+// colon. Anything else — a tagged key, a ? complex key, a mapping in flow style on the
+// way down — is refused with an error saying to rename it by hand, rather than
+// guessed at.
+func renameKey(lines []string, item *yaml.Node, ch ConfigChange) ([]string, error) {
+	where := ch.Plugin + " " + strings.Join(append([]string{"config"}, ch.Path...), ".")
+	ck, cv := mappingEntry(item, "config")
+	if ck == nil {
+		return nil, fmt.Errorf("%s does not exist, so there is nothing to rename", where)
+	}
+	chain := []pair{{ck, cv}}
+	for i, key := range ch.Path {
+		parent := chain[len(chain)-1]
+		if !blockMapping(parent.v) {
+			return nil, fmt.Errorf("%s %s is not an indented mapping; rename the key by hand", ch.Plugin, dotted(chain))
+		}
+		k, v := mappingEntry(parent.v, key)
+		if k == nil {
+			// The loaded config expands ${NAME} and the file does not, so a key written
+			// as a reference is not found by what it expands to.
+			return nil, fmt.Errorf("%s does not exist in the file, so there is nothing to rename "+
+				"(a key written as an environment variable reference is not found by its value)", where)
+		}
+		if i < len(ch.Path)-1 {
+			chain = append(chain, pair{k, v})
+			continue
+		}
+		if other, _ := mappingEntry(parent.v, ch.RenameTo); other != nil {
+			return nil, fmt.Errorf("%s %s already has %s; not renaming %s over it", ch.Plugin, dotted(chain), ch.RenameTo, key)
+		}
+		return renameToken(lines, k, ch.RenameTo, where)
+	}
+	return nil, nil // unreachable: Path has at least one key
+}
+
+// renameToken replaces key node k's text on its line with name, quoted if it must
+// be. where names the key for an error.
+func renameToken(lines []string, k *yaml.Node, name, where string) ([]string, error) {
+	refuse := fmt.Errorf("%s is not written as a plain key on a line of its own; rename it by hand", where)
+	var token string
+	switch k.Style {
+	case 0:
+		token = k.Value
+	case yaml.SingleQuotedStyle:
+		token = "'" + strings.ReplaceAll(k.Value, "'", "''") + "'"
+	case yaml.DoubleQuotedStyle:
+		if strings.ContainsAny(k.Value, `\"`) {
+			return nil, refuse
+		}
+		token = `"` + k.Value + `"`
+	default:
+		return nil, refuse
+	}
+	line, col := lines[k.Line-1], k.Column-1
+	if col > len(line) || strings.TrimLeft(line[:col], " ") != "" || !strings.HasPrefix(line[col:], token) {
+		return nil, refuse
+	}
+	rest := line[col+len(token):]
+	if !strings.HasPrefix(strings.TrimLeft(rest, " "), ":") {
+		return nil, refuse
+	}
+	text, err := scalarText(name)
+	if err != nil {
+		return nil, err
+	}
+	out := append([]string(nil), lines...)
+	out[k.Line-1] = line[:col] + text + rest
+	return out, nil
 }
 
 // setIn applies the change below the mapping that is the value of the last pair in

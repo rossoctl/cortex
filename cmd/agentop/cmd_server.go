@@ -34,7 +34,8 @@ Usage:
   agentop server [--config PATH]
   agentop server add <name> <url> --main WORD --helper WORD [--key-stdin] [--yes] [--config PATH]
                      [--api PROTOCOL=PATH]... [--auth-header NAME] [--header NAME=VALUE]...
-  agentop server remove <name> [--config PATH]
+  agentop server remove <name> [--yes] [--config PATH]
+  agentop server rename <name> <new-name> [--config PATH]
   agentop server use <name> --agent <agent> [--config PATH]
   agentop server reset --agent <agent> [--config PATH]
   agentop server use <name> --key-of <server> [--config PATH]
@@ -65,6 +66,17 @@ replacing its URL, key and models (--yes skips the question), which is also how 
 key is rotated. --api names a protocol the server serves and its path
 (anthropic-messages, chat-completions or responses), --auth-header the header
 that carries the key, and --header a fixed header for every request.
+
+"remove" refuses a server an agent is routed to, a session was moved to or a
+key_routes: entry names, and names the commands that take them off it. Removing the only server takes the
+router's entry out with it, leaving the config as it was before the first "add".
+When running sessions last used that server it asks first, since they then go
+where their agent sends them (--yes skips the question).
+
+"rename" gives a server a new name, and the agents, sessions and key routes
+that name it follow: its URL, key and models stay as they are, and so does its
+place in the file. A running session the proxy pinned to the old name gets an
+error asking for a new session, as after "remove", so rename warns how many.
 
 A request goes with the model the agent asked for. Only when the server refuses
 that model is it sent again, once and before the agent sees the refusal, with
@@ -97,6 +109,8 @@ func runServer(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return serverAdd(args, stdin, stdout, stderr)
 	case "remove":
 		return serverRemove(args, stdout, stderr)
+	case "rename":
+		return serverRename(args, stdout, stderr)
 	case "use":
 		return serverUse(args, stdout, stderr)
 	case "reset":

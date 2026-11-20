@@ -379,8 +379,8 @@ func TestServerRemove_RemovesAServerNoAgentUses(t *testing.T) {
 	}
 }
 
-func TestServerRemove_RefusesTheOnlyServer(t *testing.T) {
-	only := strings.Replace(routerBlock, `            glm:
+// onlyEte is routerBlock with ete its only server and no agent routed.
+var onlyEte = strings.Replace(routerBlock, `            glm:
               url: https://glm.example.com:8443
               key: sk-glm
               main: glm
@@ -388,10 +388,109 @@ func TestServerRemove_RefusesTheOnlyServer(t *testing.T) {
           agents:
             claude-code: glm
 `, "", 1)
-	path := serverEnv(t, newFakeStats(t, 0).addr(), only)
-	code, _, errOut := runServerCmd(t, "", "remove", "ete", "--config", path)
-	if code != 1 || !strings.Contains(errOut, "ete is the only server") {
-		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+
+// onlyGlm is routerBlock with glm its only server, claude-code still routed to it.
+var onlyGlm = strings.Replace(routerBlock, `            ete:
+              url: https://ete.example.com
+              key: sk-ete
+              main: opus
+              helper: haiku
+`, "", 1)
+
+// The router needs a server, so removing the last one takes the router's entry out
+// with it. With nothing routed there and no running session on it, that changes no
+// traffic, so nothing is asked.
+func TestServerRemove_TheOnlyServerTakesTheRouterOut(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), onlyEte)
+	before := readConfig(t, path)
+	asks := stubConfirm(t, false)
+	code, out, errOut := runServerCmd(t, "", "remove", "ete", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	for _, want := range []string{
+		"Removed ete, the only server, and the inference-router entry with it.",
+		"Requests now go where each agent sends them.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, out)
+		}
+	}
+	if *asks != 0 {
+		t.Errorf("asked %d times; with no running session on it the removal changes no traffic", *asks)
+	}
+	if got, want := readConfig(t, path), strings.TrimSuffix(before, onlyEte); got != want {
+		t.Errorf("want the router's entry gone and nothing else changed:\n%s", got)
+	}
+}
+
+// The first add creates the router's entry, so removing the server it added must
+// leave the config byte for byte as it was before.
+func TestServerRemove_TheOnlyServerUndoesItsFirstAdd(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	before := readConfig(t, path)
+	if code, _, errOut := runServerCmd(t, "sk-ete\n", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path); code != 0 {
+		t.Fatalf("add: exit %d: %s", code, errOut)
+	}
+	if readConfig(t, path) == before {
+		t.Fatal("add wrote nothing")
+	}
+	if code, _, errOut := runServerCmd(t, "", "remove", "ete", "--config", path); code != 0 {
+		t.Fatalf("remove: exit %d: %s", code, errOut)
+	}
+	if got := readConfig(t, path); got != before {
+		t.Errorf("add then remove changed the config:\nbefore:\n%s\nafter:\n%s", before, got)
+	}
+}
+
+// Agents routed to the only server and sessions moved to it are named in one
+// refusal, so the user is not refused again after taking the first step.
+func TestServerRemove_TheOnlyServerNamesEveryStepAtOnce(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), onlyGlm+
+		"            opencode: glm\n          sessions:\n            s0: glm\n")
+	before := readConfig(t, path)
+	code, _, errOut := runServerCmd(t, "", "remove", "glm", "--config", path)
+	if code != 1 {
+		t.Fatalf("exit %d, stderr:\n%s", code, errOut)
+	}
+	want := "agentop server remove: glm is the only server, so removing it takes the inference-router entry out of ~/cortex.yaml. " +
+		"First stop routing to it: agentop server reset --agent claude-code agentop server reset --agent opencode " +
+		"agentop server move s0 own Then agentop server remove glm takes it out."
+	if !strings.Contains(flat(errOut), want) {
+		t.Errorf("want %q in stderr:\n%s", want, errOut)
+	}
+	if readConfig(t, path) != before {
+		t.Error("the config was written")
+	}
+}
+
+// With the router gone nothing holds a running session where it was, so the
+// sessions that last used the only server go where their agent sends them,
+// partway through their conversation: remove says so and asks first.
+func TestServerRemove_TheOnlyServerAsksWhenSessionsRanOnIt(t *testing.T) {
+	sessions := sessionsAPI(t, "ete.example.com", "glm.example.com:8443")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, onlyEte)
+	before := readConfig(t, path)
+	asks := stubConfirm(t, false)
+	code, out, errOut := runServerCmd(t, "", "remove", "ete", "--config", path)
+	if code != exitDeclined || *asks != 1 {
+		t.Fatalf("exit %d after %d asks, want %d after 1:\n%s%s", code, *asks, exitDeclined, out, errOut)
+	}
+	if want := "ete is the only server, so removing it takes the inference-router entry out, and 1 running session " +
+		"last sent inference to it. With no router, each goes where its agent sends it from its next request, " +
+		"partway through its conversation; adding ete back takes it back there."; !strings.Contains(flat(out), want) {
+		t.Errorf("want %q in stdout:\n%s", want, out)
+	}
+	if readConfig(t, path) != before {
+		t.Fatal("a declined remove wrote the config")
+	}
+
+	code, out, errOut = runServerCmd(t, "", "remove", "ete", "--yes", "--config", path)
+	if code != 0 || *asks != 1 || !strings.Contains(out, "Removed ete, the only server") {
+		t.Fatalf("--yes: exit %d after %d asks:\n%s%s", code, *asks, out, errOut)
+	}
+	if strings.Contains(readConfig(t, path), "inference-router") {
+		t.Error("--yes left the router's entry in")
 	}
 }
 
@@ -456,6 +555,9 @@ func TestServerUseAndRemove_RefuseABadServerNameFirst(t *testing.T) {
 		{"remove", "ETE", "--config", path},
 		{"remove", "a\x1b[2Jb", "--config", path},
 		{"remove", "a\x1b[2Jb", "--config", missing},
+		{"rename", "ETE", "zai", "--config", path},
+		{"rename", "ete", "a\x1b[2Jb", "--config", path},
+		{"rename", "a\x1b[2Jb", "zai", "--config", missing},
 	} {
 		code, out, errOut := runServerCmd(t, "", args...)
 		if code != 2 || !strings.Contains(errOut, "is not a server name") {
@@ -728,15 +830,9 @@ func TestServer_SaysWhenTheRouterCannotRoute(t *testing.T) {
 // The only server, with an agent routed to it, needs two steps to remove, and the
 // refusal names both at once rather than one and then, after it, the other.
 func TestServerRemove_TheOnlyServerWithAnAgentNamesBothSteps(t *testing.T) {
-	only := strings.Replace(routerBlock, `            ete:
-              url: https://ete.example.com
-              key: sk-ete
-              main: opus
-              helper: haiku
-`, "", 1)
-	path := serverEnv(t, newFakeStats(t, 0).addr(), only)
+	path := serverEnv(t, newFakeStats(t, 0).addr(), onlyGlm)
 	code, _, errOut := runServerCmd(t, "", "remove", "glm", "--config", path)
-	for _, want := range []string{"glm is the only server", "agentop server reset --agent claude-code", "delete its entry"} {
+	for _, want := range []string{"glm is the only server", "agentop server reset --agent claude-code", "Then agentop server remove glm takes it out."} {
 		if !strings.Contains(flat(errOut), want) {
 			t.Errorf("stderr lacks %q:\n%s", want, errOut)
 		}
@@ -749,13 +845,19 @@ func TestServerRemove_TheOnlyServerWithAnAgentNamesBothSteps(t *testing.T) {
 // Written for the next start, the change must not promise that running sessions
 // stay where they are.
 func TestServerWrites_ForTheNextStartPromiseNoRunningSessionStays(t *testing.T) {
-	for _, args := range [][]string{
-		{"use", "ete", "--agent", "opencode"},
-		{"reset", "--agent", "claude-code"},
-		{"remove", "ete"},
+	for _, tc := range []struct {
+		name, router string
+		args         []string
+	}{
+		{"use", routerBlock, []string{"use", "ete", "--agent", "opencode"}},
+		{"reset", routerBlock, []string{"reset", "--agent", "claude-code"}},
+		{"remove", routerBlock, []string{"remove", "ete"}},
+		{"remove the only server", onlyEte, []string{"remove", "ete"}},
+		{"rename", routerBlock, []string{"rename", "glm", "zai"}},
 	} {
-		t.Run(args[0], func(t *testing.T) {
-			path := serverEnv(t, closedAddr(t), routerBlock)
+		args := tc.args
+		t.Run(tc.name, func(t *testing.T) {
+			path := serverEnv(t, closedAddr(t), tc.router)
 			code, out, errOut := runServerCmd(t, "", append(args, "--config", path)...)
 			if code != 0 || !strings.Contains(out, "applies when the proxy next starts") {
 				t.Fatalf("exit %d, stdout:\n%s%s", code, out, errOut)
@@ -1454,5 +1556,197 @@ func TestServerAdd_BobHostGetsNoHiddenDefaults(t *testing.T) {
 	}
 	if cfg := readConfig(t, path); strings.Contains(cfg, "bob-shell") || strings.Contains(cfg, "auth_header") {
 		t.Errorf("config:\n%s", cfg)
+	}
+}
+
+// rename gives the server a new name in place, and every agents: and sessions: value
+// naming it follows in the same write. Nothing else in the file changes.
+func TestServerRename_RenamesTheServerAndWhatNamesIt(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock+
+		"            opencode: glm\n          sessions:\n            s0: glm\n            s1: ete\n")
+	before := readConfig(t, path)
+	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if want := "Renamed glm to zai. New claude-code and opencode sessions go to zai."; !strings.Contains(out, want) {
+		t.Errorf("want %q in stdout:\n%s", want, out)
+	}
+	want := strings.NewReplacer(
+		"            glm:\n", "            zai:\n",
+		"            claude-code: glm\n", "            claude-code: zai\n",
+		"            opencode: glm\n", "            opencode: zai\n",
+		"            s0: glm\n", "            s0: zai\n",
+	).Replace(before)
+	if got := readConfig(t, path); got != want {
+		t.Errorf("config:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// The server's own lines stay byte for byte: the comments on and above it, and a key
+// written as an environment variable reference, which a rename that copied the
+// loaded value to a new key would write out as the secret itself.
+func TestServerRename_KeepsTheServersBytesAndAnEnvReference(t *testing.T) {
+	t.Setenv("GLM_KEY", "sk-glm-from-env")
+	block := strings.Replace(routerBlock, "            glm:\n              url: https://glm.example.com:8443\n              key: sk-glm\n",
+		"            # the GLM gateway\n            glm:   # added in October\n              url: https://glm.example.com:8443\n              key: ${GLM_KEY}\n", 1)
+	path := serverEnv(t, newFakeStats(t, 0).addr(), block)
+	if code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path); code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	got := readConfig(t, path)
+	if want := "            # the GLM gateway\n            zai:   # added in October\n              url: https://glm.example.com:8443\n              key: ${GLM_KEY}\n"; !strings.Contains(got, want) {
+		t.Errorf("the server's lines changed:\n%s", got)
+	}
+	if strings.Contains(got, "sk-glm-from-env") {
+		t.Errorf("the environment variable's value was written into the file:\n%s", got)
+	}
+}
+
+func TestServerRename_RefusesAnUnknownServer(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	before := readConfig(t, path)
+	code, _, errOut := runServerCmd(t, "", "rename", "nope", "zai", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "no server named nope") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+	if readConfig(t, path) != before {
+		t.Error("the config was written")
+	}
+}
+
+// rename does not merge two servers: a name another server has is refused, with the
+// way to free it.
+func TestServerRename_RefusesATakenName(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	before := readConfig(t, path)
+	code, _, errOut := runServerCmd(t, "", "rename", "glm", "ete", "--config", path)
+	if code != 1 || !strings.Contains(errOut, "there is already a server named ete; remove it first") {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+	if readConfig(t, path) != before {
+		t.Error("the config was written")
+	}
+}
+
+func TestServerRename_RefusesOwnAsTheNewName(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	code, _, errOut := runServerCmd(t, "", "rename", "glm", "own", "--config", path)
+	if code != 2 || !strings.Contains(errOut, `"own" is reserved`) {
+		t.Errorf("exit %d, stderr:\n%s", code, errOut)
+	}
+}
+
+func TestServerRename_ToItsOwnNameChangesNothing(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	before := readConfig(t, path)
+	code, out, errOut := runServerCmd(t, "", "rename", "glm", "glm", "--config", path)
+	if code != 0 || !strings.Contains(out, "nothing to change") {
+		t.Errorf("exit %d, stdout:\n%s%s", code, out, errOut)
+	}
+	if readConfig(t, path) != before {
+		t.Error("the config was written")
+	}
+}
+
+func TestServerRename_WantsTwoNames(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock)
+	for _, args := range [][]string{{"rename", "glm"}, {"rename", "glm", "zai", "extra"}} {
+		code, _, errOut := runServerCmd(t, "", append(args, "--config", path)...)
+		if code != 2 || !strings.Contains(errOut, "agentop server rename <name> <new-name>") {
+			t.Errorf("%q: exit %d, stderr:\n%s", args, code, errOut)
+		}
+	}
+}
+
+// The router pins a running session to its server by name, so the sessions pinned to
+// the old name get the removed server's error: rename warns how many, as remove does,
+// and asks nothing.
+func TestServerRename_WarnsOfTheSessionsPinnedToTheOldName(t *testing.T) {
+	asks := stubConfirm(t, false)
+	sessions := sessionsAPI(t, "glm.example.com:8443", "GLM.example.com:8443", "ete.example.com")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock)
+	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
+	if code != 0 || !strings.Contains(out, "Renamed glm to zai.") {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if want := "agentop server rename: warning: 2 running sessions last sent inference to glm. A session the proxy " +
+		"routed there gets an error asking for a new session, until it is moved or the server is renamed back to glm."; !strings.Contains(flat(errOut), want) {
+		t.Errorf("want %q in stderr:\n%s", want, errOut)
+	}
+	if want := "A session the proxy routed to glm now gets an error asking for a new session. " +
+		"Renaming the server back to glm routes them to it again."; !strings.Contains(flat(out), want) {
+		t.Errorf("want %q in stdout:\n%s", want, out)
+	}
+	if *asks != 0 {
+		t.Errorf("asked %d times; rename warns as remove does", *asks)
+	}
+}
+
+// A session with a sessions: entry follows the rename, since the entry beats its pin
+// and the rename rewrites it, so the warning leaves it out.
+func TestServerRename_LeavesAMovedSessionOutOfTheWarning(t *testing.T) {
+	sessions := sessionsAPI(t, "glm.example.com:8443", "glm.example.com:8443")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock+"          sessions:\n            s0: glm\n")
+	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
+	if code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	if want := "warning: 1 running session last sent inference to glm."; !strings.Contains(flat(errOut), want) {
+		t.Errorf("want %q in stderr:\n%s", want, errOut)
+	}
+	if got := readConfig(t, path); !strings.Contains(got, "            s0: zai\n") {
+		t.Errorf("want s0 moved to zai:\n%s", got)
+	}
+}
+
+// With no running session on the server, rename warns of none.
+func TestServerRename_SaysNothingWhenNoRunningSessionUsesIt(t *testing.T) {
+	sessions := sessionsAPI(t, "ete.example.com")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, routerBlock)
+	code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
+	if code != 0 || strings.Contains(errOut, "warning") || strings.Contains(out, "error asking") {
+		t.Errorf("exit %d: %s%s", code, out, errOut)
+	}
+}
+
+// A key_routes: entry naming the server, on either side, follows the rename: without it
+// the config would not load.
+func TestServerRename_RewritesTheKeyRoutesThatNameIt(t *testing.T) {
+	for _, tc := range []struct{ name, routes, want string }{
+		{"its key", "            glm: ete\n", "            zai: ete\n"},
+		{"its server", "            ete: glm\n", "            ete: zai\n"},
+		{"both", "            glm: glm\n", "            zai: zai\n"},
+		{"both entries", "            ete: glm\n            glm: ete\n", "            ete: zai\n            zai: ete\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := serverEnv(t, newFakeStats(t, 0).addr(), routerBlock+"          key_routes:\n"+tc.routes)
+			before := readConfig(t, path)
+			code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path)
+			if code != 0 {
+				t.Fatalf("exit %d: %s%s", code, out, errOut)
+			}
+			want := strings.NewReplacer(
+				"            glm:\n", "            zai:\n",
+				"            claude-code: glm\n", "            claude-code: zai\n",
+				tc.routes, tc.want,
+			).Replace(before)
+			if got := readConfig(t, path); got != want {
+				t.Errorf("want:\n%s\ngot:\n%s", want, got)
+			}
+		})
+	}
+}
+
+// An agent named by a retired spelling is written under today's, as use writes it.
+func TestServerRename_MovesARetiredAgentSpelling(t *testing.T) {
+	path := serverEnv(t, newFakeStats(t, 0).addr(), strings.Replace(routerBlock,
+		"            claude-code: glm\n", "            bob-shell: glm\n", 1))
+	if code, out, errOut := runServerCmd(t, "", "rename", "glm", "zai", "--config", path); code != 0 {
+		t.Fatalf("exit %d: %s%s", code, out, errOut)
+	}
+	got := readConfig(t, path)
+	if !strings.Contains(got, "            bob: zai\n") || strings.Contains(got, "bob-shell") {
+		t.Errorf("want bob: zai and no retired spelling:\n%s", got)
 	}
 }

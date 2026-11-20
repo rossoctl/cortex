@@ -1241,8 +1241,9 @@ agentop server use ete --key-of glm                       # new sessions that se
 agentop server reset --key-of glm                         # glm's key goes to glm again
 agentop server move <session-id> glm                      # move one running session → glm
 agentop server                                            # the servers, their models, their agents
+agentop server rename ete litellm-external               # a new name; its agents follow
 agentop server reset --agent opencode                     # stop routing opencode
-agentop server remove glm                                 # refused while an agent uses it
+agentop server remove glm                                 # refused while an agent uses it; the last takes the router out
 ```
 
 A request that sends the key of a configured server goes to that server.
@@ -1411,15 +1412,34 @@ refusal is believed for an hour, and a session keeps the model it was given.
   server.
   **`move <session-id> <name>`** moves one running session; `own` sends it back to
   its agent's own provider.
-- **`remove <name>`** refuses while an agent is routed to the server, and names
-  the command that takes the agent off it; it also refuses the last server. It
-  also refuses while a `key_routes:` entry names the server on either side, and
-  names the entry and `agentop server reset --key-of <server>`. A
+- **`remove <name>`** refuses while an agent is routed to the server, or a
+  `sessions:` entry moved a session to it, and names the commands that take them
+  off it. It also refuses while a `key_routes:` entry names the server on either
+  side, and names the entry and `agentop server reset --key-of <server>`. A
   session that started on a removed server gets a 503 asking for a new session
   until the server is added back or the session is moved. So when
   sessions the proxy is running last sent their inference to the server, `remove`
   warns how many before it goes ahead. It leaves
   out the default and `pending:` buckets, which the router never pins.
+- **Removing the last server** takes the router's entry out with it, since the
+  router needs a server: `add` then `remove` leaves the config as it was. With no
+  router, nothing holds a running session where it was, so the sessions the proxy
+  is running that last sent their inference there go where their agent sends
+  them from their next request, partway through their conversation, rather than
+  getting the 503. When there are any, `remove` says how many and asks first
+  (`--yes` skips the question). Their pins stay in the plugin store, so adding the
+  server back takes them back to it.
+- **`rename <name> <new-name>`** gives a server a new name in one write: the
+  server's key in the file is renamed in place, so its URL, key (a `${NAME}`
+  reference included), models, comments and place in the file stay as they were,
+  and every `agents:`, `sessions:` and `key_routes:` entry naming it is rewritten
+  to the new name. The router pins a running session to its server by name, so a
+  session pinned to the old name gets the removed server's 503 until it is moved
+  or the server is renamed back. `rename` warns how many before it goes ahead, as
+  `remove` does, and asks nothing. A session moved with a `sessions:` entry
+  follows the rename, since the entry beats the pin. It refuses a name another
+  server has (remove that one first) and `own`, and with the old name again
+  changes nothing.
 - **`agentop server`** lists each server's host (its whole URL when it is plain
   `http`), what its main and helper words name on its list now, read with its own
   key, the agents routed to it and, for a server whose key is routed to another
@@ -1451,7 +1471,8 @@ that changes nothing writes nothing. `--config PATH` points every form at anothe
 config, with the stats address read from it: that is how to try this against a
 second Cortex without touching the one every session uses. Flags go after the
 action. Exit codes: 0 done, or nothing to do; 1 refused or failed; 2 a usage error,
-a malformed name, agent or URL included; 3 a replacement declined.
+a malformed name, agent or URL included; 3 a replacement, or the router's
+removal with the last server, declined.
 
 #### Local model servers
 
