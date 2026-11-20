@@ -41,12 +41,31 @@ func rowLook(tbl table.Model, tok string) string {
 		switch {
 		case strings.Contains(l, sel):
 			return "selected"
-		case strings.Contains(l, esc(st.Match)), strings.Contains(l, esc(st.Marked)):
+		case strings.Contains(l, esc(st.Match)), lastSGRBefore(l, tok) == esc(st.Marked):
 			return "marked"
 		}
 		return "plain"
 	}
 	return "absent"
+}
+
+// lastSGRBefore is the last escape sequence in l before tok. A marked row draws tok in the
+// Marked ink; a column ink elsewhere in the row may be the same color (colorOutbound and
+// colorWarn are one ink in the dark theme), so the row's other cells cannot tell.
+func lastSGRBefore(l, tok string) string {
+	i := strings.Index(l, tok)
+	if i < 0 {
+		return ""
+	}
+	j := strings.LastIndex(l[:i], "\x1b[")
+	if j < 0 {
+		return ""
+	}
+	k := strings.IndexByte(l[j:i], 'm')
+	if k < 0 {
+		return ""
+	}
+	return l[j : j+k+1]
 }
 
 func checkLooks(t *testing.T, what string, tbl table.Model, want map[string]string) {

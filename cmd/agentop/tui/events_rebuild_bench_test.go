@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session/timeline"
@@ -36,6 +39,37 @@ func BenchmarkRebuildEventsTable(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				m.rebuildEventsTable()
+			}
+		})
+	}
+}
+
+// BenchmarkRebuildEventsTableTrueColor is BenchmarkRebuildEventsTable under a color
+// profile, where the cell style hook draws inks.
+func BenchmarkRebuildEventsTableTrueColor(b *testing.B) {
+	restore := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	b.Cleanup(func() { lipgloss.SetColorProfile(restore) })
+	BenchmarkRebuildEventsTable(b)
+}
+
+// BenchmarkEventsTableView is one draw of a full page (height 40) of a 1,000-exchange
+// session, without and with color.
+func BenchmarkEventsTableView(b *testing.B) {
+	for _, bc := range []struct {
+		name    string
+		profile termenv.Profile
+	}{{"ascii", termenv.Ascii}, {"truecolor", termenv.TrueColor}} {
+		b.Run(bc.name, func(b *testing.B) {
+			restore := lipgloss.ColorProfile()
+			lipgloss.SetColorProfile(bc.profile)
+			b.Cleanup(func() { lipgloss.SetColorProfile(restore) })
+			m := rebuildBenchModel(b, 1000)
+			m.bodyHeight = 40
+			m.rebuildEventsTable()
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = m.eventsTbl.View()
 			}
 		})
 	}

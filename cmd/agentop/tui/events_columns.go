@@ -496,6 +496,59 @@ func tableColumns(cols []eventColumn, sortCol eventColumnID, desc bool) []table.
 	return out
 }
 
+// eventCellStyle is the events table's cell style hook for the columns cols, in the order
+// tableColumns hands them to the table. It reads each cell's column by id, never by
+// position or header, so a hidden or sorted column moves no ink to another column.
+func eventCellStyle(cols []eventColumn) table.CellStyleFunc {
+	ids := make([]eventColumnID, len(cols))
+	for i, c := range cols {
+		ids[i] = c.id
+	}
+	return dashDim(func(row table.Row, col int) lipgloss.Style {
+		v := strings.TrimSpace(row[col])
+		// A one-cell row spans the table: a subagent block header, or the older-events row.
+		if len(row) == 1 && len(ids) > 1 {
+			if strings.HasPrefix(v, "▸─") || strings.HasPrefix(v, "▾─") {
+				return styleAccent
+			}
+			return styleNone
+		}
+		// An empty cell has no text to ink, and an ink on it only adds escape bytes.
+		if col >= len(ids) || v == "" {
+			return styleNone
+		}
+		if c0 := strings.TrimSpace(row[0]); c0 == "┣⚒" || c0 == "┗⚒" {
+			switch ids[col] {
+			case colIndex, colMethod:
+				return styleTool
+			case colDuration:
+				if strings.HasPrefix(v, "⋯") {
+					return styleTool
+				}
+			case colStatus:
+				return groupStyle(statusGroup(v))
+			}
+			return styleNone
+		}
+		switch ids[col] {
+		case colIndex, colTime, colHost, colBytes:
+			return styleMuted
+		case colDir:
+			switch strings.TrimPrefix(v, "│") {
+			case "out":
+				return styleOutbound
+			case "in":
+				return styleInbound
+			}
+		case colAction:
+			return groupStyle(actionGroup(v))
+		case colStatus:
+			return groupStyle(statusGroup(v))
+		}
+		return styleNone
+	})
+}
+
 // measureColumns evaluates each fitsContent column in cols for every row in ctxs. It returns
 // the width each needs — its widest cell, no narrower than its heading with a sort glyph and
 // no wider than its declared width — and the cells themselves, indexed like ctxs.
