@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -69,15 +70,20 @@ func TestProjectScope_BandOnAProjectPastTheSeriesCapIsAnError(t *testing.T) {
 	}
 }
 
-// A mixed-unit window under a project scope makes no group=currency read: that read is the
-// whole agent's, so its per-unit figures would show under the project's title.
+// A mixed-unit window under a project scope, on a proxy that does not echo project, makes no
+// whole-agent group=currency read: its per-unit figures would show under the project's title.
+// The split falls back to the narrowed group=project read, as the band poll does.
 func TestProjectScope_BandMakesNoCurrencyReadForAMixedWindow(t *testing.T) {
 	m, _ := projectsModel(t, defaultProjectSeries)
 	var mu sync.Mutex
 	var asked []string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		asked = append(asked, r.URL.RawQuery)
+		// This server does not echo project, so each project= read is followed by the fallback.
+		// Only the fallback reads are counted: one for the poll, one for the split.
+		if !r.URL.Query().Has("project") {
+			asked = append(asked, r.URL.RawQuery)
+		}
 		mu.Unlock()
 		q := r.URL.Query()
 		_ = json.NewEncoder(w).Encode(usage.Snapshot{
@@ -104,8 +110,8 @@ func TestProjectScope_BandMakesNoCurrencyReadForAMixedWindow(t *testing.T) {
 			t.Errorf("band asked %q under a project scope, want no group=currency read", q)
 		}
 	}
-	if len(asked) != 1 {
-		t.Errorf("band made %d reads %q, want 1", len(asked), asked)
+	if len(asked) != 2 {
+		t.Errorf("band made %d fallback reads %q, want 2", len(asked), asked)
 	}
 }
 
@@ -138,11 +144,13 @@ func openDrawerOnCortex(t *testing.T, m *model) {
 	m.Update(m.fetchSpendDrawer()())
 }
 
-func TestProjectScope_DrawerHasNoAxesAndSaysSo(t *testing.T) {
+// The fixture does not echo project, so it acts as an older proxy: the reply is the narrowed
+// group-none one, and the drawer says it has no breakdown. The axes are those of an agent scope.
+func TestProjectScope_OlderProxyDrawerSaysNoBreakdown(t *testing.T) {
 	m, _ := projectsModel(t, defaultProjectSeries)
 	openDrawerOnCortex(t, m)
-	if axes := m.spendAxes(); len(axes) != 0 {
-		t.Errorf("spendAxes %q, want none under a project", axes)
+	if axes := m.spendAxes(); !slices.Equal(axes, []usage.Group{usage.GroupModel, usage.GroupEndpoint}) {
+		t.Errorf("spendAxes %q, want [model endpoint] under a project", axes)
 	}
 	if m.spend.drawerProject != "~/works/cortex" {
 		t.Errorf("drawerProject %q, want ~/works/cortex", m.spend.drawerProject)
@@ -150,20 +158,22 @@ func TestProjectScope_DrawerHasNoAxesAndSaysSo(t *testing.T) {
 	axis, window := m.drawerLabels()
 	lines := strings.Join(renderSpendDrawerAxes(m.spend.drawer.snap, m.spend.drawer.err, axis,
 		m.spend.drawerAxis, m.spendAxes(), window, m.spend.drawerProject, m.width), "\n")
-	if !strings.Contains(lines, "no breakdown for this scope in") || strings.Contains(lines, "[a]") {
-		t.Errorf("drawer lines do not say there is no breakdown, or show [a]:\n%s", lines)
+	if !strings.Contains(lines, "no breakdown for this scope in") {
+		t.Errorf("drawer lines do not say there is no breakdown:\n%s", lines)
 	}
 }
 
-func TestProjectScope_DrawerAxisKeyIsInert(t *testing.T) {
+func TestProjectScope_DrawerAxisKeyCyclesModelAndEndpoint(t *testing.T) {
 	m, _ := projectsModel(t, defaultProjectSeries)
 	openDrawerOnCortex(t, m)
-	idx := m.spend.groupIdx
-	pressCmd(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	if cmd := m.cycleSpendAxis(); cmd != nil {
-		t.Error("a under a project scope gave a command")
+	var got []usage.Group
+	for range 2 {
+		if cmd := pressCmd(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}}); cmd == nil {
+			t.Fatal("a under a project scope gave no command")
+		}
+		got = append(got, m.spendAxis())
 	}
-	if m.spend.groupIdx != idx {
-		t.Errorf("groupIdx %d, want %d", m.spend.groupIdx, idx)
+	if want := []usage.Group{usage.GroupEndpoint, usage.GroupModel}; !slices.Equal(got, want) {
+		t.Errorf("a went model -> %q, want %q and never agent", got, want)
 	}
 }
