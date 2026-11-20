@@ -3397,7 +3397,7 @@ func TestSessionsPane_ZeroWidthFreeAndBindsToPreviousDisagreeOnPurpose(t *testin
 }
 
 // The header of a session that another session started names the topmost session above it by
-// its first 8 runes (#1991).
+// its last 8 characters, as its SESSION cell does (#1991).
 func TestSessionHeader_Under(t *testing.T) {
 	m := newTitleModel(t, map[string]SessionMetadata{"id-1": {Title: "fix the parser"}})
 	m.width = 200

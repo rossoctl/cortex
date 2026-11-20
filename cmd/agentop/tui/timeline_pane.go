@@ -1064,7 +1064,7 @@ func (m *model) cursorStrip(lay tlLayout) string {
 	cell := lay.axis.cells[c]
 	head := fmt.Sprintf("▸ %s  ", cell.from.Local().Format("15:04:05"))
 	if m.timeline.err != nil {
-		head += "refresh failed · " // the full error is on the idle row
+		head += "refresh failed · "
 	}
 	started, running := m.cellTools(lay, cell)
 	var parts []string
