@@ -371,7 +371,8 @@ ev entities delete cortex 1        # the canary
 
 Run another `claude -p`. **Look for**: no canary line in the reply, and `1` gone from `ids`.
 The same applies to any guideline you decide is harmful — deleting it from `cortex` stops it
-within one cache period.
+within one cache period, once evolve answers the refresh. To stop all of them at once, remove
+the `evolve` entry from the dev config.
 
 ---
 

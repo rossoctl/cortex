@@ -49,7 +49,10 @@ evolve's conflict resolution reconciles new guidelines only against the namespac
 written to, so a trajectory can never rewrite or delete a reviewed guideline.
 
 A withdrawn guideline stops being injected once each session's cache expires
-(`cache_ttl_seconds`, default 30 minutes).
+(`cache_ttl_seconds`, default 30 minutes) and its guidelines are fetched again. If evolve
+can't be reached then, the session keeps the guidelines it had, withdrawn ones included, and
+its event says `refresh_failed`, until a refresh succeeds. To stop every guideline at once,
+remove the `evolve` entry from the pipeline.
 
 ### Serving what is learned, without review
 

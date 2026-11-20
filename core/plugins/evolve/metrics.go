@@ -43,7 +43,7 @@ func (m *metrics) snapshot() []pipeline.Metric {
 		{"requests projected", m.projected, "observe mode: block computed, not sent"},
 		{"cache hits", m.cacheHits, ""},
 		{"guideline fetches", m.fetches, ""},
-		{"fetch errors", m.fetchErrors, "requests were forwarded without guidelines"},
+		{"fetch errors", m.fetchErrors, "evolve didn't answer; the session kept its earlier guidelines, or had none"},
 		{"inject errors", m.injectErrors, "unsupported request shape; forwarded unchanged"},
 		{"sessions sent to learn", m.learned, ""},
 		{"learn errors", m.learnErrors, "the batch is sent again, with backoff"},

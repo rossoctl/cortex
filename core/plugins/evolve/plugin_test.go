@@ -406,6 +406,12 @@ func TestInject_KeepsGuidelinesThroughTransientFailure(t *testing.T) {
 	if string(first.Body) != string(second.Body) {
 		t.Fatal("a refetch failure dropped the session's guidelines")
 	}
+	// Still injected, but the event says the refresh failed, and when evolve last
+	// answered. Before, it reported the failed attempt as a successful fetch.
+	before, after := published(t, first), published(t, second)
+	if !after.Injected || after.Error != "refresh_failed" || !after.FetchedAt.Equal(before.FetchedAt) {
+		t.Fatalf("event after a failed refresh = %+v; first fetch at %v", after, before.FetchedAt)
+	}
 }
 
 func TestInject_Skips(t *testing.T) {

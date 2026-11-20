@@ -141,9 +141,12 @@ func (c *config) validate() error {
 type cached struct {
 	guidelines []Guideline
 	block      string
-	fetchedAt  time.Time
+	fetchedAt  time.Time // when evolve last answered for this session
 	expires    time.Time
 	failed     bool
+	// stale marks guidelines kept from an earlier fetch because the refresh
+	// failed: still injected, but not what evolve serves now.
+	stale bool
 }
 
 // flight is a session's guideline fetch in progress. Requests of the session
@@ -344,6 +347,9 @@ func (p *Plugin) OnRequest(ctx context.Context, pctx *pipeline.Context) (action 
 
 	entry, hit := p.guidelinesFor(ctx, sessionID, pctx.Extensions.Inference.Messages)
 	ev := event{Cached: hit, FetchedAt: entry.fetchedAt}
+	if entry.stale {
+		ev.Error = "refresh_failed"
+	}
 	if len(entry.guidelines) == 0 {
 		reason := "no_guidelines"
 		if entry.failed {
@@ -469,8 +475,11 @@ func (p *Plugin) fetch(ctx context.Context, sessionID string, messages []pipelin
 	}
 	// Keep serving what the session already had through a transient failure,
 	// rather than dropping guidelines mid-session and breaking the prompt cache.
+	// The entry still says the refresh failed, and when evolve last answered: a
+	// guideline withdrawn meanwhile is still being served.
 	if entry.failed && previous != nil && len(previous.guidelines) > 0 {
 		entry.guidelines, entry.block, entry.failed = previous.guidelines, previous.block, false
+		entry.fetchedAt, entry.stale = previous.fetchedAt, true
 	}
 	p.store(sessionID, entry)
 	return entry
