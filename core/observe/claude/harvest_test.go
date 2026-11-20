@@ -1,14 +1,16 @@
 package claude
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -706,13 +708,6 @@ func TestReadMetadata_IsBounded(t *testing.T) {
 	}
 }
 
-// childTimeout bounds a harvester subprocess.
-//
-// Its own constant rather than a shared one, since cmd_observe_test.go's namesake is in a different
-// module. Generous enough that a loaded CI machine running six children against one lock does not
-// flake, short enough that a wedge fails the test instead of the package.
-const childTimeout = 60 * time.Second
-
 // A concurrent run's FRESHER title for a shared id survives this run's recovery pass.
 //
 // recoverConcurrentEntries only pulled in ids this run did not have (`if _, ours := meta[id];
@@ -833,9 +828,15 @@ func TestRecoverConcurrentEntries_KeepsOursWhenNeitherIsComparable(t *testing.T)
 // Deliberately more children than a single pair, and repeated, because one pair passes by luck often
 // enough to be a useless regression test.
 //
-// The child branch is in TestMain, not here: it os.Exit()s before m.Run(), so a child never reaches
-// a test body at all. A guard at the top of this function would be dead code.
+// A child re-enters this test with CLAUDE_HARVEST_CHILD set and runs one harvest, under the
+// parent's -test.timeout.
 func TestHarvest_ConcurrentRunsLoseNothing(t *testing.T) {
+	if dir := os.Getenv("CLAUDE_HARVEST_CHILD"); dir != "" {
+		if _, err := Harvest(Options{ConfigDir: dir, Merge: true}); err != nil {
+			t.Fatalf("child harvest: %v", err)
+		}
+		return
+	}
 	if testing.Short() {
 		t.Skip("spawns subprocesses")
 	}
@@ -875,19 +876,16 @@ func TestHarvest_ConcurrentRunsLoseNothing(t *testing.T) {
 			wg.Add(1)
 			go func(dir string) {
 				defer wg.Done()
-				// BOUNDED, and it matters more here than the usual "tests should have timeouts".
-				// Every child shares one HOME, so they contend on a single blocking
-				// syscall.Flock(LOCK_EX) — lock_unix.go takes it with no timeout, deliberately. A
-				// child wedged holding it would block cmd.Wait(), then wg.Wait(), and with three
-				// attempts times six children the package would hit its own timeout with nothing
-				// saying which child stuck. Same two lines cmd_observe_test.go's runAgentopChild uses.
-				ctx, cancel := context.WithTimeout(context.Background(), childTimeout)
-				defer cancel()
-				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHarvest_ConcurrentRunsLoseNothing")
+				// Every child shares one HOME, so they contend on one metadata lock. Each child
+				// runs under this run's -test.timeout, so a wedged child still exits.
+				cmd := exec.Command(os.Args[0], "-test.run=^TestHarvest_ConcurrentRunsLoseNothing$",
+					"-test.timeout="+flag.Lookup("test.timeout").Value.String())
 				cmd.Env = append(os.Environ(),
 					"CLAUDE_HARVEST_CHILD="+dir,
 					"HOME="+home, "USERPROFILE="+home,
 				)
+				var out bytes.Buffer
+				cmd.Stdout, cmd.Stderr = &out, &out
 				// Started BEFORE the barrier so the spawn cost is paid in parallel; the barrier
 				// then releases the harvests themselves as close together as this can manage.
 				if err := cmd.Start(); err != nil {
@@ -896,12 +894,7 @@ func TestHarvest_ConcurrentRunsLoseNothing(t *testing.T) {
 				}
 				<-start
 				if err := cmd.Wait(); err != nil {
-					if ctx.Err() != nil {
-						t.Errorf("child for %s did not exit within %s — likely wedged on the metadata lock",
-							dir, childTimeout)
-						return
-					}
-					t.Errorf("child for %s failed: %v", dir, err)
+					t.Errorf("child for %s failed: %v\n%s", dir, err, out.Bytes())
 				}
 			}(dirs[i])
 		}
@@ -918,18 +911,6 @@ func TestHarvest_ConcurrentRunsLoseNothing(t *testing.T) {
 			}
 		}
 	}
-}
-
-// TestMain lets the test above re-enter this binary as a harvester.
-func TestMain(m *testing.M) {
-	if dir := os.Getenv("CLAUDE_HARVEST_CHILD"); dir != "" {
-		if _, err := Harvest(Options{ConfigDir: dir, Merge: true}); err != nil {
-			fmt.Fprintln(os.Stderr, "child harvest:", err)
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}
-	os.Exit(m.Run())
 }
 
 // Both title line kinds are read: ai-title and agent-name.
@@ -2449,38 +2430,25 @@ func TestTitleFromTranscript_AttributionDoesNotChangeBlockTitles(t *testing.T) {
 // four times the input for eleven times the work. bufio admits lines up to 16MB, so one chatty
 // transcript line could stall the harvest for seconds. After: 9ms, 24ms, 54ms.
 //
-// Asserted as a RATIO rather than a wall-clock bound, so the test says what it means on a loaded CI
-// machine: quadratic growth shows up as time scaling with the square of the input, and a 4x input
-// step would take ~16x. The 8x ceiling leaves room for noise while still failing the 11x that was
-// measured.
+// Asserted on the bytes it allocates, which are the same on any machine: re-slicing on every
+// excision copies the rest of the input each time, so a 1MB input of 85-byte blocks allocates
+// gigabytes, where one output buffer allocates about the input's size.
 func TestStripHarnessSpans_ScalesLinearly(t *testing.T) {
-	if testing.Short() {
-		t.Skip("timing-sensitive")
+	var b strings.Builder
+	for b.Len() < 1024*1024 {
+		b.WriteString("some prose here <system-reminder>hidden payload text</system-reminder> more prose\n")
 	}
-	build := func(kb int) string {
-		var b strings.Builder
-		for b.Len() < kb*1024 {
-			b.WriteString("some prose here <system-reminder>hidden payload text</system-reminder> more prose\n")
-		}
-		return b.String()
-	}
-	measure := func(s string) time.Duration {
-		start := time.Now()
-		stripHarnessSpans(s)
-		return time.Since(start)
-	}
-	small, large := build(256), build(1024) // a 4x step
+	s := b.String()
 
-	// Warm up, so the first allocation does not land inside a measurement.
-	measure(small)
-
-	ts, tl := measure(small), measure(large)
-	if ts <= 0 {
-		ts = time.Microsecond
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	out := stripHarnessSpans(s)
+	runtime.ReadMemStats(&after)
+	if strings.Contains(out, "hidden payload") {
+		t.Fatal("the spans were not stripped")
 	}
-	if ratio := float64(tl) / float64(ts); ratio > 8 {
-		t.Errorf("4x the input took %.1fx the time (%v vs %v) — that is quadratic, not linear",
-			ratio, tl, ts)
+	if got := after.TotalAlloc - before.TotalAlloc; got > 3*uint64(len(s)) {
+		t.Errorf("stripping %d bytes allocated %d — that is quadratic, not linear", len(s), got)
 	}
 }
 

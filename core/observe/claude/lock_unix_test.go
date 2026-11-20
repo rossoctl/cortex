@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func metadataLockPath(t *testing.T, path string) string {
 // Flock is per-open-file-description, not per-process, so a second descriptor here does
 // contend with the product's — which is what makes an in-process test of this possible at
 // all, without the subprocess machinery TestHarvest_ConcurrentRunsLoseNothing needs.
-func holdMetadataLock(t *testing.T, path string) {
+func holdMetadataLock(t *testing.T, path string) (release func()) {
 	t.Helper()
 	lockPath := metadataLockPath(t, path)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
@@ -40,22 +41,23 @@ func holdMetadataLock(t *testing.T, path string) {
 		_ = f.Close()
 		t.Fatalf("could not take the lock the test depends on holding: %v", err)
 	}
-	t.Cleanup(func() {
+	release = sync.OnceFunc(func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		_ = f.Close()
 	})
+	t.Cleanup(release)
+	return release
 }
 
-// shortenLockTimeout shrinks the deadline for one test and restores it after.
+// zeroLockTimeout sets the deadline to zero for one test and restores it after.
 //
 // The deadline's production VALUE is a judgement about slow machines (see lockTimeout); what
 // these tests check is the behaviour at it — that expiry happens, is reported, and returns no
-// unlock func. That behaviour is identical at 40ms, and waiting the real 30s twice would add a
-// minute to the package to re-learn nothing.
-func shortenLockTimeout(t *testing.T) {
+// unlock func. At zero the first refused attempt is already past the deadline.
+func zeroLockTimeout(t *testing.T) {
 	t.Helper()
 	was := lockTimeout
-	lockTimeout = 40 * time.Millisecond
+	lockTimeout = 0
 	t.Cleanup(func() { lockTimeout = was })
 }
 
@@ -63,14 +65,11 @@ func shortenLockTimeout(t *testing.T) {
 // wedged-holder case: before the timeout, `agentop observe` queued every harvest behind a
 // lock nobody would release and showed no titles at all, indefinitely.
 func TestLockMetadata_TimesOutAndReportsIt(t *testing.T) {
-	shortenLockTimeout(t)
+	zeroLockTimeout(t)
 	path := filepath.Join(t.TempDir(), "session-metadata.json")
 	holdMetadataLock(t, path)
 
-	start := time.Now()
 	unlock, err := lockMetadata(path)
-	elapsed := time.Since(start)
-
 	if !errors.Is(err, ErrLockTimeout) {
 		if unlock != nil {
 			unlock()
@@ -82,29 +81,44 @@ func TestLockMetadata_TimesOutAndReportsIt(t *testing.T) {
 	if unlock != nil {
 		t.Error("unlock is non-nil alongside an error")
 	}
-	if elapsed < lockTimeout {
-		t.Errorf("gave up after %s, before the %s deadline", elapsed, lockTimeout)
+}
+
+// A held lock that frees up before the deadline is taken on the next attempt.
+func TestLockMetadata_RetriesUntilTheLockFrees(t *testing.T) {
+	was := lockTimeout
+	lockTimeout = time.Hour
+	t.Cleanup(func() { lockTimeout = was })
+	path := filepath.Join(t.TempDir(), "session-metadata.json")
+	release := holdMetadataLock(t, path)
+	waited := false
+	lockWait = func(time.Duration) {
+		waited = true
+		release()
 	}
-	// Generous: this asserts it is bounded at all, not that the sleep is precise.
-	if elapsed > 4*lockTimeout {
-		t.Errorf("took %s, far past the %s deadline", elapsed, lockTimeout)
+	t.Cleanup(func() { lockWait = time.Sleep })
+
+	unlock, err := lockMetadata(path)
+	if err != nil {
+		t.Fatalf("lockMetadata: %v", err)
+	}
+	unlock()
+	if !waited {
+		t.Error("the lock was taken without waiting for its holder")
 	}
 }
 
-// An uncontended lock is still taken, and released, at once.
+// An uncontended lock is still taken, and released, at once: under a zero deadline only a
+// first-attempt acquisition succeeds.
 func TestLockMetadata_UncontendedIsFast(t *testing.T) {
+	zeroLockTimeout(t)
 	path := filepath.Join(t.TempDir(), "session-metadata.json")
 
-	start := time.Now()
 	unlock, err := lockMetadata(path)
 	if err != nil {
 		t.Fatalf("lockMetadata: %v", err)
 	}
 	if unlock == nil {
 		t.Fatal("unlock is nil with no error")
-	}
-	if elapsed := time.Since(start); elapsed >= lockTimeout {
-		t.Errorf("uncontended acquisition took %s, want well under %s", elapsed, lockTimeout)
 	}
 	unlock()
 
@@ -120,7 +134,7 @@ func TestLockMetadata_UncontendedIsFast(t *testing.T) {
 // THE POINT OF THE TIMEOUT, at the level the bug was reported at: a wedged holder no
 // longer stops the titles from appearing. The harvest proceeds unlocked and writes.
 func TestHarvest_ProceedsWhenTheLockIsHeld(t *testing.T) {
-	shortenLockTimeout(t)
+	zeroLockTimeout(t)
 	metadataHome(t)
 	cfg := filepath.Join(t.TempDir(), "claude")
 	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",

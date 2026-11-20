@@ -66,7 +66,6 @@ func listen(t testing.TB, network, addr string) net.Listener {
 
 func acceptOne(t testing.TB, ln net.Listener) net.Conn {
 	t.Helper()
-	_ = ln.(*net.TCPListener).SetDeadline(time.Now().Add(10 * time.Second))
 	c, err := ln.Accept()
 	if err != nil {
 		t.Fatalf("accept: %v", err)

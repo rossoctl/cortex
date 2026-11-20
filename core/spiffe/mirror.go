@@ -206,8 +206,8 @@ func writeJWT(ctx context.Context, jwtSrc mirrorJWTSource, audience, dir string)
 // runJWTMirror loops calling writeJWT and sleeping until the next refresh
 // time (90% of token lifetime) or ctx cancellation. On error, retries
 // every 30s. Used by Provider.MirrorJWT for the background refresh
-// goroutine.
-func runJWTMirror(ctx context.Context, jwtSrc mirrorJWTSource, audience, dir string) {
+// goroutine. after waits out each delay: time.After, or a test's own.
+func runJWTMirror(ctx context.Context, jwtSrc mirrorJWTSource, audience, dir string, after func(time.Duration) <-chan time.Time) {
 	const errRetry = 30 * time.Second
 	for {
 		var sleep time.Duration
@@ -220,7 +220,7 @@ func runJWTMirror(ctx context.Context, jwtSrc mirrorJWTSource, audience, dir str
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(sleep):
+		case <-after(sleep):
 		}
 	}
 }

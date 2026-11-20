@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"runtime"
 	"testing"
-	"time"
 )
 
 // ProcessIdentity against the real process table: this process has one, read twice it is
@@ -61,22 +60,19 @@ func TestProcessIdentity_RealProcesses(t *testing.T) {
 // An exited child that has not been reaped is a zombie: it keeps its pid and identity but
 // runs nothing, which is what lets a caller tell it from a live process.
 func TestProcessIdentity_Zombie(t *testing.T) {
+	exited := notifyChildExit(t)
 	cmd := exec.Command("true")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Wait() })
 	pid := int32(cmd.Process.Pid)
-	for i := 0; i < 200; i++ {
-		id, err := ProcessIdentity(pid)
-		if err != nil {
-			t.Fatalf("an unreaped child: %v", err)
-		}
-		if id.Zombie {
-			return
-		}
-		// Not exited yet; true exits within milliseconds.
-		time.Sleep(10 * time.Millisecond)
+	exited(pid)
+	id, err := ProcessIdentity(pid)
+	if err != nil {
+		t.Fatalf("an unreaped child: %v", err)
 	}
-	t.Fatal("an exited, unreaped child never read as a zombie")
+	if !id.Zombie {
+		t.Fatal("an exited, unreaped child does not read as a zombie")
+	}
 }

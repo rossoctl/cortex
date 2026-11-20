@@ -3,9 +3,11 @@ package config
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -426,35 +428,60 @@ func TestReadCredentialFile_Empty(t *testing.T) {
 }
 
 func TestWaitForCredentialFile_ContextCancel(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	_, err := WaitForCredentialFile(ctx, filepath.Join(t.TempDir(), "never"))
 	if err == nil {
 		t.Error("expected error when ctx cancels before file appears")
 	}
 }
 
-// TestWaitForCredentialFile_HeartbeatFires verifies that the
-// heartbeat log path is reachable while the file is absent. The actual
-// slog output isn't captured (stdlib slog has no test hook without a
-// handler swap) — this test just ensures the heartbeat branch in the
-// select loop is wired up, by lowering the interval and letting ctx
-// time out after a heartbeat has fired.
+// heartbeatLog cancels its ctx on the first credential-file heartbeat.
+type heartbeatLog struct {
+	cancel context.CancelFunc
+	path   string
+	seen   *atomic.Bool
+}
+
+func (h heartbeatLog) Enabled(context.Context, slog.Level) bool { return true }
+func (h heartbeatLog) Handle(_ context.Context, r slog.Record) error {
+	if r.Message != "credential file still not available" {
+		return nil
+	}
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "path" && a.Value.String() == h.path {
+			h.seen.Store(true)
+			h.cancel()
+		}
+		return true
+	})
+	return nil
+}
+func (h heartbeatLog) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h heartbeatLog) WithGroup(string) slog.Handler      { return h }
+
+// TestWaitForCredentialFile_HeartbeatFires verifies that the heartbeat WARN
+// names the missing file while it is absent: the wait ends only when the
+// heartbeat's log record cancels its ctx.
 func TestWaitForCredentialFile_HeartbeatFires(t *testing.T) {
 	orig := heartbeatInterval
-	heartbeatInterval = 50 * time.Millisecond
+	heartbeatInterval = time.Nanosecond
 	defer func() { heartbeatInterval = orig }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	path := filepath.Join(t.TempDir(), "never")
+	var seen atomic.Bool
+	prev := slog.Default()
+	slog.SetDefault(slog.New(heartbeatLog{cancel: cancel, path: path, seen: &seen}))
+	defer slog.SetDefault(prev)
 
-	// 200ms is enough for at least one heartbeat tick even under CI
-	// load. The assertion below is indirect: if the heartbeat branch
-	// panicked (missing slog import, nil deref on the ticker, etc.),
-	// the goroutine would crash and the test harness would surface it.
-	_, err := WaitForCredentialFile(ctx, filepath.Join(t.TempDir(), "never"))
+	_, err := WaitForCredentialFile(ctx, path)
 	if err == nil {
 		t.Error("expected error when ctx cancels before file appears")
+	}
+	if !seen.Load() {
+		t.Error("the wait ended without a heartbeat naming the file")
 	}
 }
 

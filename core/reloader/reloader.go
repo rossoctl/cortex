@@ -114,6 +114,9 @@ type Reloader struct {
 	startTimeout time.Duration
 	// afterFunc arms the debounce timer: time.AfterFunc, or a test's own.
 	afterFunc func(time.Duration, func()) debounceTimer
+	// attempts, when set, receives after each reload attempt, without blocking; a test
+	// waits on it.
+	attempts chan struct{}
 	// onCommit is run after a reload is accepted; see WithOnCommit.
 	onCommit func(*config.Config)
 	// extraDirs and fingerprint widen what a reload depends on; see WithExtraWatch.
@@ -380,6 +383,12 @@ func (r *Reloader) watchLoop(ctx context.Context, watcher *fsnotify.Watcher) {
 			// backends send no event while holding the lock Add takes, so this
 			// cannot block on the channel this loop drains.
 			r.reloadOnce(ctx, watcher)
+			if r.attempts != nil {
+				select {
+				case r.attempts <- struct{}{}:
+				default:
+				}
+			}
 		}
 	}
 }

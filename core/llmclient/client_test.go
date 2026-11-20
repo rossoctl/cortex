@@ -182,24 +182,19 @@ func TestCall_NetworkError(t *testing.T) {
 
 // Per-call Timeout must actually be enforced.
 func TestCall_TimeoutEnforced(t *testing.T) {
+	// The handler answers only once the client gives up, so Call returns only by timing out.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-time.After(5 * time.Second):
-		case <-r.Context().Done():
-		}
+		<-r.Context().Done()
 	}))
 	defer srv.Close()
 
-	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: 200 * time.Millisecond})
-	start := time.Now()
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Nanosecond})
 	_, err := c.Call(context.Background(), "s", "u")
-	elapsed := time.Since(start)
-
 	if err == nil {
 		t.Fatal("Call: expected timeout error, got nil")
 	}
-	if elapsed > 1500*time.Millisecond {
-		t.Errorf("Call took %v, expected the 200ms timeout to trip well before 1.5s", elapsed)
+	if !strings.Contains(err.Error(), "Client.Timeout exceeded") {
+		t.Errorf("err = %v, want the client timeout", err)
 	}
 	if errors.Is(err, llmclient.ErrUncertain) {
 		t.Errorf("timeout error wrongly wrapped ErrUncertain; err=%v", err)
