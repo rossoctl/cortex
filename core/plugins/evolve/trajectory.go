@@ -92,7 +92,9 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 			continue
 		}
 		delete(r.calls, res.ToolUseID)
-		content := res.Content
+		// Cleaned like user text, before the cap: a tool can echo the injected block
+		// back, and Claude Code adds its reminders to tool results.
+		content := clean(res.Content)
 		if res.IsError {
 			content = "[error] " + content
 		}
@@ -113,7 +115,9 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 	}
 	r.seen = len(inf.Messages)
 
-	assistant := map[string]any{"role": "assistant", "content": inf.Completion}
+	// The assistant can quote the injected block, too.
+	completion := clean(inf.Completion)
+	assistant := map[string]any{"role": "assistant", "content": completion}
 	if len(inf.ToolCalls) > 0 {
 		calls := make([]map[string]any, 0, len(inf.ToolCalls))
 		for i, c := range inf.ToolCalls {
@@ -133,7 +137,7 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 		}
 		assistant["tool_calls"] = calls
 	}
-	if inf.Completion != "" || len(inf.ToolCalls) > 0 {
+	if completion != "" || len(inf.ToolCalls) > 0 {
 		r.add(assistant)
 	}
 	r.turns++

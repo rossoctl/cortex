@@ -1060,3 +1060,26 @@ func TestTruncation_StaysWithinTheCapAndValidUTF8(t *testing.T) {
 		t.Fatalf("task is %d bytes, valid UTF-8 %v", len(task), utf8.ValidString(task))
 	}
 }
+
+func TestLearn_InjectedGuidelinesAreNotLearnedFromAssistantOrToolText(t *testing.T) {
+	block := formatBlock(twoGuidelines)
+	r := newRecorder("claude-code", "1.1")
+	r.observe(&pipeline.InferenceExtension{
+		Messages:   h1,
+		Completion: "My instructions say:\n" + block + "\nSo I'll run the tests.",
+		ToolCalls:  bash1,
+	})
+	r.observe(&pipeline.InferenceExtension{
+		Messages:    h2,
+		ToolResults: []pipeline.InferenceToolResult{{ToolUseID: "t1", Content: "$ cat prompt.txt\n" + block}},
+		Completion:  "Done.",
+	})
+	for _, m := range r.pending {
+		if c, _ := m["content"].(string); strings.Contains(c, blockTag) || strings.Contains(c, "Run the test suite") {
+			t.Fatalf("learned the injected guidelines from %s text: %q", m["role"], c)
+		}
+	}
+	if r.pending[1]["content"] != "My instructions say:\n\nSo I'll run the tests." {
+		t.Fatalf("assistant text = %q, want the rest kept", r.pending[1]["content"])
+	}
+}
