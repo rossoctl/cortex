@@ -8,7 +8,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
 )
@@ -160,24 +159,23 @@ func TestSetupSignalsCatchesInterruptAndTerminate(t *testing.T) {
 			t.Fatal(err)
 		}
 		<-guard
-		select {
-		case got := <-sigs:
-			if got != s {
-				t.Errorf("sent %v, setupSignals' channel got %v", s, got)
-			}
-		case <-time.After(2 * time.Second):
-			t.Errorf("setupSignals' channel got no %v", s)
+		if got := <-sigs; got != s {
+			t.Errorf("sent %v, setupSignals' channel got %v", s, got)
 		}
 	}
 	stop()
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
+	// os/signal hands each signal to every subscriber before it takes the next, so
+	// once guard has the second, any send of the first to sigs has happened.
+	for _, s := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT} {
+		if err := syscall.Kill(os.Getpid(), s); err != nil {
+			t.Fatal(err)
+		}
+		<-guard
 	}
-	<-guard
 	select {
 	case got := <-sigs:
 		t.Errorf("a %v arrived after the stop func ran", got)
-	case <-time.After(200 * time.Millisecond):
+	default:
 	}
 }
 

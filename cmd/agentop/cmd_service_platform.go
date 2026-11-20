@@ -1078,6 +1078,10 @@ func serviceManagerUsable(goos string) (bool, string) {
 	return systemdUsable()
 }
 
+// waitGoneAnnounceAfter is how long waitGone waits before it says it is waiting. A
+// var so a test can set when the line shows.
+var waitGoneAnnounceAfter = time.Second
+
 // waitGone polls gone() until it reports true, or d elapses.
 //
 // Split from waitBootedOutf so the progress behaviour is testable without launchd. The
@@ -1094,7 +1098,7 @@ func waitGone(d time.Duration, progress io.Writer, gone func() bool) bool {
 			}
 			return true
 		}
-		if !announced && progress != nil && time.Since(start) > time.Second {
+		if !announced && progress != nil && time.Since(start) > waitGoneAnnounceAfter {
 			fmt.Fprintf(progress, "  Waiting for the previous Cortex to stop (up to %s)...\n", d)
 			announced = true
 		}

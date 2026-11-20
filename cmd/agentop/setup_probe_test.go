@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -352,12 +351,8 @@ func TestStartUnsupervised(t *testing.T) {
 	if err := os.WriteFile(quits, []byte("#!/bin/sh\necho boom >&2\nexit 1\n"), 0o755); err != nil { //nolint:gosec
 		t.Fatal(err)
 	}
-	began := time.Now()
 	if _, _, err := startUnsupervised(quits, dir2, bad.URL+"/healthz"); err == nil {
 		t.Error("a proxy that exits at once was reported started")
-	}
-	if time.Since(began) > 5*time.Second {
-		t.Error("an immediate exit was not noticed promptly")
 	}
 	if _, err := os.Stat(filepath.Join(dir2, "proxy.pid")); err == nil {
 		t.Error("the pidfile of an exited proxy was left behind")

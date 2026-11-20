@@ -31,6 +31,11 @@ const localProbeTimeout = 400 * time.Millisecond
 // localProbeTimeout. A var so a test of a socket that never answers need not wait it out.
 var localStartupWait = 6 * time.Second
 
+// localStartingNotice is how long waitForLocalSessionAPI waits for an answer before
+// it says the Cortex is starting: past the dial's own bound, so a probe still
+// waiting is a connected one. A var so a test can set when the notice shows.
+var localStartingNotice = localProbeTimeout + 100*time.Millisecond
+
 // localSessionEndpoint returns the session API URL of the Cortex installed on
 // this machine, or "" if there isn't one.
 //
@@ -196,9 +201,9 @@ func waitForLocalSessionAPI(endpoint string, w io.Writer) bool {
 	select {
 	case up := <-done:
 		return up
-	// Past the dial's own bound, so a probe still waiting is a connected one: a dial
-	// that was going to fail has failed by then, and must not be called "starting".
-	case <-time.After(localProbeTimeout + 100*time.Millisecond):
+	// A dial that was going to fail has failed by localStartingNotice, and must not
+	// be called "starting".
+	case <-time.After(localStartingNotice):
 		fmt.Fprintf(w, "agentop: the Cortex at %s is starting; waiting for it…\n", endpoint)
 		return <-done
 	}

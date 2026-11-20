@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 // fakeLaunchctl puts a launchctl on PATH that behaves like a restricted sandbox: it
@@ -199,24 +198,17 @@ func TestReportSessionInterruption(t *testing.T) {
 		}
 		defer ln.Close() //nolint:errcheck
 
-		accepted := make(chan net.Conn, 1)
-		go func() {
-			c, aerr := ln.Accept()
-			if aerr == nil {
-				accepted <- c
-			}
-		}()
 		client, err := net.Dial("tcp", ln.Addr().String())
 		if err != nil {
 			t.Fatalf("cannot dial the listener we just opened: %v", err)
 		}
 		defer client.Close() //nolint:errcheck
-		select {
-		case c := <-accepted:
-			defer c.Close() //nolint:errcheck
-		case <-time.After(2 * time.Second):
-			t.Fatal("our own listener did not accept in 2s")
+		// The connection is already in the accept queue, so this returns at once.
+		c, err := ln.Accept()
+		if err != nil {
+			t.Fatalf("our own listener did not accept: %v", err)
 		}
+		defer c.Close() //nolint:errcheck
 
 		var out strings.Builder
 		reportSessionInterruption(servicePaths{forwardAddr: ln.Addr().String()}, &out)

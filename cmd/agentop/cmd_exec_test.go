@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/redact"
 	"github.com/rossoctl/cortex/core/tlsbridge"
@@ -15,9 +16,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
-	"time"
 )
 
 // execCfg writes a Cortex config and returns its path plus the CA path it names.
@@ -579,30 +580,20 @@ func TestRunExec_RelaysSIGTERM(t *testing.T) {
 	}
 	cfgPath, _ := execCfg(t)
 	dir := t.TempDir()
-	started := filepath.Join(dir, "started")
 	// The child records that it caught SIGTERM. Without relaying it never runs the
 	// trap, and the file stays absent.
 	caught := filepath.Join(dir, "caught")
-	script := "trap 'touch " + caught + "; exit 0' TERM; touch " + started +
+	script := "trap 'touch " + caught + "; exit 0' TERM; echo started" +
 		"; i=0; while [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done"
 
-	var stdout, stderr bytes.Buffer
+	stdout, stderr := newStartedWriter(), &bytes.Buffer{}
 	done := make(chan int, 1)
 	go func() {
-		done <- runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--", "/bin/sh", "-c", script}, &stdout, &stderr)
+		done <- runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--", "/bin/sh", "-c", script}, stdout, stderr)
 	}()
 
-	// Wait for the child to install its trap.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(started); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("child never started")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// The child prints once its trap is installed.
+	awaitStarted(t, stdout, stderr, done)
 
 	// Signal THIS process, the way `timeout` signals agentop. runExec's relay must
 	// pass it to the child.
@@ -610,14 +601,48 @@ func TestRunExec_RelaysSIGTERM(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	select {
-	case <-done:
-	case <-time.After(20 * time.Second):
-		t.Fatal("runExec did not return after SIGTERM; the child was not signalled")
-	}
+	<-done
 	if _, err := os.Stat(caught); err != nil {
 		t.Error("the child never received SIGTERM, so it would have been orphaned")
 	}
+}
+
+// awaitStarted returns once the child has printed, and fails the test when runExec
+// returns first: then the child never started, and never will print.
+func awaitStarted(t *testing.T, stdout *startedWriter, stderr *bytes.Buffer, done <-chan int) {
+	t.Helper()
+	select {
+	case <-stdout.started:
+	case code := <-done:
+		t.Fatalf("runExec returned %d before the child printed: %s", code, stderr)
+	}
+}
+
+// startedWriter is a child's stdout that closes started once the child has
+// printed its first line.
+type startedWriter struct {
+	mu      sync.Mutex
+	b       bytes.Buffer
+	once    sync.Once
+	started chan struct{}
+}
+
+func newStartedWriter() *startedWriter { return &startedWriter{started: make(chan struct{})} }
+
+func (w *startedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n, err := w.b.Write(p)
+	if strings.Contains(w.b.String(), "\n") {
+		w.once.Do(func() { close(w.started) })
+	}
+	return n, err
+}
+
+func (w *startedWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.b.String()
 }
 
 // TestRunExec_PreservesArgv0AsTyped. exec.Command sets Args[0] to the resolved
@@ -1027,29 +1052,23 @@ func TestRunExec_SurvivesSIGINT(t *testing.T) {
 		t.Skip("no POSIX signals")
 	}
 	cfgPath, _ := execCfg(t)
-	dir := t.TempDir()
-	started := filepath.Join(dir, "started")
-	// The child exits on its own shortly after; the point is that runExec is still
-	// there to report its status rather than having been killed by the SIGINT.
-	script := "trap 'true' INT; touch " + started +
-		"; i=0; while [ $i -lt 40 ]; do sleep 0.05; i=$((i+1)); done; exit 3"
+	// The child exits 3 on a SIGTERM the test sends it after the SIGINT; the point
+	// is that runExec is still there to report that status rather than having been
+	// killed by the SIGINT.
+	script := "trap 'true' INT; trap 'exit 3' TERM; echo \"started $$\"" +
+		"; i=0; while [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done"
 
-	var stdout, stderr bytes.Buffer
+	stdout, stderr := newStartedWriter(), &bytes.Buffer{}
 	done := make(chan int, 1)
 	go func() {
 		done <- runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--",
-			"/bin/sh", "-c", script}, &stdout, &stderr)
+			"/bin/sh", "-c", script}, stdout, stderr)
 	}()
 
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, err := os.Stat(started); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("child never started")
-		}
-		time.Sleep(20 * time.Millisecond)
+	awaitStarted(t, stdout, stderr, done)
+	var child int
+	if _, err := fmt.Sscanf(stdout.String(), "started %d", &child); err != nil {
+		t.Fatalf("no child pid in %q: %v", stdout.String(), err)
 	}
 
 	// Signal THIS process, as a tty would. If runExec did not catch SIGINT, the
@@ -1057,15 +1076,13 @@ func TestRunExec_SurvivesSIGINT(t *testing.T) {
 	if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
+	if err := syscall.Kill(child, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
 
-	select {
-	case code := <-done:
-		// The child's own exit status, proving agentop stayed alive to Wait on it.
-		if code != 3 {
-			t.Errorf("exit = %d, want 3 (the child's); agentop did not survive the SIGINT", code)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("runExec never returned after SIGINT")
+	// The child's own exit status, proving agentop stayed alive to Wait on it.
+	if code := <-done; code != 3 {
+		t.Errorf("exit = %d, want 3 (the child's); agentop did not survive the SIGINT", code)
 	}
 }
 

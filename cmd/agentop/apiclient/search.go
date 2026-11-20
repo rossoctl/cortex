@@ -31,7 +31,7 @@ const maxSearchBody = 16 << 20
 func (c *Client) SearchSession(ctx context.Context, id, q string) (SearchResult, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, streamDefaultTimeout)
+		ctx, cancel = streamDeadline(ctx, streamDefaultTimeout)
 		defer cancel()
 	}
 	path := fmt.Sprintf("/v1/sessions/%s/search?q=%s", url.PathEscape(id), url.QueryEscape(q))

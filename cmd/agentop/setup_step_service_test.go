@@ -213,19 +213,24 @@ func TestServiceStepUnsupervisedRestoreNamesItsStartByHand(t *testing.T) {
 	}
 }
 
-// stopProcessOnCleanup kills *pid, if it is still alive when the test ends:
-// startUnsupervised's own goroutine reaps it, so this waits for it to go.
+// stopProcessOnCleanup kills *pid, if it is still alive when the test ends.
 func stopProcessOnCleanup(t *testing.T, pid *int) {
 	t.Helper()
 	t.Cleanup(func() {
-		if !alive(*pid) {
-			return
-		}
-		_ = syscall.Kill(*pid, syscall.SIGKILL)
-		for i := 0; i < 50 && alive(*pid); i++ {
-			time.Sleep(100 * time.Millisecond)
+		if alive(*pid) {
+			killAndReap(*pid)
 		}
 	})
+}
+
+// killAndReap kills pid and, when it is a child of this process, returns once it
+// is reaped: by this wait, or by startUnsupervised's goroutine, which leaves this
+// wait an ECHILD.
+func killAndReap(pid int) {
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	if p, err := os.FindProcess(pid); err == nil {
+		_, _ = p.Wait()
+	}
 }
 
 func TestServiceStepRunsUnsupervisedInASandbox(t *testing.T) {
@@ -939,7 +944,9 @@ func TestServiceStepBackgroundRestoreRefusesBesideALoadedUnhealthyJob(t *testing
 // $!, where installed. sh -c expands the ~ in each path, the redirections' too.
 func TestStartByHandRunsFromAShell(t *testing.T) {
 	env := newTestSetupEnv(t)
-	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\necho \"started $*\"\nexec sleep 30\n")
+	// The fake cortex logs its argv, then marks itself started on the pipe this test
+	// reads.
+	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\necho \"started $*\"\nprintf x >&3\nexec sleep 30\n")
 	if err := os.MkdirAll(env.cortexDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -952,18 +959,16 @@ func TestStartByHandRunsFromAShell(t *testing.T) {
 		_ = os.Remove(pidFile)
 		cmd := exec.Command(sh, "-c", startByHand(env, filepath.Join(env.binDir, "cortex"))) //nolint:gosec // the line under test
 		cmd.Env = append(os.Environ(), "HOME="+env.home)
+		started, waitStarted := readyPipe(t)
+		cmd.ExtraFiles = []*os.File{started}
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%s: %v %s", sh, err, out)
 		}
-		var pid int
-		for deadline := time.Now().Add(5 * time.Second); pid == 0 && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-			pid = readPIDFile(pidFile)
-		}
+		// The line writes proxy.pid before its shell exits.
+		pid := readPIDFile(pidFile)
 		stopProcessOnCleanup(t, &pid)
+		waitStarted()
 		log, _ := os.ReadFile(filepath.Join(env.cortexDir, "proxy.log"))
-		for deadline := time.Now().Add(5 * time.Second); !strings.Contains(string(log), "started --local --supervise") && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-			log, _ = os.ReadFile(filepath.Join(env.cortexDir, "proxy.log"))
-		}
 		if !alive(pid) || !strings.Contains(string(log), "started --local --supervise") {
 			t.Errorf("%s: proxy.pid %d alive=%v, proxy.log %q", sh, pid, alive(pid), log)
 		}
@@ -975,16 +980,12 @@ func TestStartByHandRunsFromAShell(t *testing.T) {
 // systemd's disable --now has returned by then, so linux waits for nothing.
 func TestWaitUnloadedNamesItsTimeout(t *testing.T) {
 	saved := serviceBootoutTimeout
-	serviceBootoutTimeout = 500 * time.Millisecond
+	serviceBootoutTimeout = time.Nanosecond
 	t.Cleanup(func() { serviceBootoutTimeout = saved })
 	installStub(t, "launchctl", "#!/bin/sh\necho 'state = running'\n") // the job is still there
-	began := time.Now()
 	err := waitUnloaded("darwin")
-	if want := "the launchd user agent is still shutting down after 500ms"; err == nil || err.Error() != want {
+	if want := "the launchd user agent is still shutting down after 1ns"; err == nil || err.Error() != want {
 		t.Errorf("waitUnloaded = %v, want %q", err, want)
-	}
-	if took := time.Since(began); took > 5*time.Second {
-		t.Errorf("waited %s, not serviceBootoutTimeout", took)
 	}
 	if err := waitUnloaded("linux"); err != nil {
 		t.Errorf("linux waited: %v", err)

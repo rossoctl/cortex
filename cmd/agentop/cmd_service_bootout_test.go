@@ -159,10 +159,27 @@ func TestWaitGone_Progress(t *testing.T) {
 		}
 	})
 
-	t.Run("a slow teardown announces, then confirms", func(t *testing.T) {
+	t.Run("a teardown inside the grace stays silent", func(t *testing.T) {
+		saved := waitGoneAnnounceAfter
+		waitGoneAnnounceAfter = time.Hour
+		t.Cleanup(func() { waitGoneAnnounceAfter = saved })
 		var out bytes.Buffer
-		start := time.Now()
-		ok := waitGone(10*time.Second, &out, func() bool { return time.Since(start) > 1500*time.Millisecond })
+		var asks int
+		if !waitGone(time.Hour, &out, func() bool { asks++; return asks > 1 }) {
+			t.Fatal("gave up on a label that did go away")
+		}
+		if out.Len() != 0 {
+			t.Errorf("announced a wait shorter than its grace: %q", out.String())
+		}
+	})
+
+	t.Run("a slow teardown announces, then confirms", func(t *testing.T) {
+		saved := waitGoneAnnounceAfter
+		waitGoneAnnounceAfter = -1
+		t.Cleanup(func() { waitGoneAnnounceAfter = saved })
+		var out bytes.Buffer
+		var asks int
+		ok := waitGone(time.Hour, &out, func() bool { asks++; return asks > 1 })
 		if !ok {
 			t.Fatal("gave up on a label that did go away")
 		}
@@ -177,7 +194,7 @@ func TestWaitGone_Progress(t *testing.T) {
 
 	t.Run("a label that never goes away times out", func(t *testing.T) {
 		var out bytes.Buffer
-		if waitGone(300*time.Millisecond, &out, func() bool { return false }) {
+		if waitGone(0, &out, func() bool { return false }) {
 			t.Error("claimed a still-present label was gone")
 		}
 	})
