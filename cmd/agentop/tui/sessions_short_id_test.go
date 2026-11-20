@@ -116,8 +116,8 @@ func TestSessionsTable_SearchAndSelectUseTheFullID(t *testing.T) {
 	}
 }
 
-// A pending bucket widens SESSION, and the width gates count that: at no width is the bucket's
-// agent name cut, or TITLE shown below its floor.
+// A pending bucket widens SESSION, and the width gates count that: from 60 columns up, the
+// bucket's agent name is not cut, and TITLE is not shown below its floor.
 func TestSessionsTable_PendingBucketWidthGates(t *testing.T) {
 	for w := 60; w <= 120; w++ {
 		m := uuidPicker(t, w, uuidOpened, "pending:claude-code")
@@ -130,6 +130,18 @@ func TestSessionsTable_PendingBucketWidthGates(t *testing.T) {
 		}
 		if got := tableWidth(cols); got > w {
 			t.Errorf("width %d: table is %d wide", w, got)
+		}
+	}
+}
+
+// On a terminal narrower than the bucket's extra width, the gates still see a width: the
+// bucket does not bring back the columns that width drops.
+func TestSessionsTable_PendingBucketOnATinyTerminal(t *testing.T) {
+	for _, w := range []int{1, 2, 3} {
+		plain := len(uuidPicker(t, w, uuidOpened).sessionsTbl.Columns())
+		bucket := len(uuidPicker(t, w, uuidOpened, "pending:claude-code").sessionsTbl.Columns())
+		if bucket != plain {
+			t.Errorf("width %d: %d columns with a bucket, %d without", w, bucket, plain)
 		}
 	}
 }

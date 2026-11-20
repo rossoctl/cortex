@@ -719,28 +719,57 @@ func TestSessionsTable_PollRebuildKeepsScrollPosition(t *testing.T) {
 	}
 }
 
-// A poll that lists a pending bucket widens SESSION. Only a width changes, so the picker
-// keeps its scroll position as it does for any other poll.
+// A poll that lists a pending bucket widens SESSION. Where the headings stay the same, the
+// picker keeps its scroll position as it does for any other poll. At 52 columns only the
+// padding of the right-aligned headings changes, and TITLE is hidden, so the ids carry the
+// markers: their SESSION cells are the last 8 characters, "row-0005" for row 5.
 func TestSessionsTable_PollThatWidensSessionKeepsScrollPosition(t *testing.T) {
-	m := sessionsModel(t, 40)
-	setCursorVisible(&m.sessionsTbl, 30)
-	for i := 0; i < 3; i++ {
-		m.sessionsTbl, _ = m.sessionsTbl.Update(tea.KeyMsg{Type: tea.KeyUp})
+	window := func(tbl table.Model) string {
+		view := tbl.View()
+		first, last := -1, -1
+		for i := 0; i < len(tbl.Rows()); i++ {
+			if strings.Contains(view, fmt.Sprintf("row-%04d", i)) {
+				if first < 0 {
+					first = i
+				}
+				last = i
+			}
+		}
+		if first < 0 {
+			t.Fatal("no fixture row is rendered")
+		}
+		return fmt.Sprintf("%d..%d", first, last)
 	}
-	wantID, wantWindow := m.selectedSessionID(), renderedWindow(t, m.sessionsTbl)
-	before := sessionsColumnWidth(m.sessionsTbl.Columns(), "SESSION")
+	for _, w := range []int{52, 200} {
+		m := &model{pane: paneSessions, width: w}
+		m.sessionsTbl = newSessionsTable()
+		m.sessionsTbl.SetHeight(12)
+		for i := 0; i < 40; i++ {
+			// UpdatedAt falls with i, so the rows list in id order.
+			m.sessions = append(m.sessions, session.SessionSummary{ID: fmt.Sprintf("session-row-%04d", i),
+				UpdatedAt: time.Now().Add(-time.Duration(i) * time.Minute), EventCount: 3})
+		}
+		m.rebuildSessionsTable()
+		setCursorVisible(&m.sessionsTbl, 30)
+		for i := 0; i < 3; i++ {
+			m.sessionsTbl, _ = m.sessionsTbl.Update(tea.KeyMsg{Type: tea.KeyUp})
+		}
+		wantID, wantWindow := m.selectedSessionID(), window(m.sessionsTbl)
+		before := m.sessionsTbl.Columns()
 
-	m.sessions = append(m.sessions, session.SessionSummary{
-		ID: "pending:claude-code@4242.1", UpdatedAt: time.Now(), EventCount: 1})
-	m.rebuildSessionsTable()
-	if after := sessionsColumnWidth(m.sessionsTbl.Columns(), "SESSION"); after == before {
-		t.Fatalf("SESSION stayed %d wide, so this asserted nothing", after)
-	}
-	if got := m.selectedSessionID(); got != wantID {
-		t.Errorf("the poll moved the selection to %q, want %q", got, wantID)
-	}
-	if got := renderedWindow(t, m.sessionsTbl); got != wantWindow {
-		t.Errorf("the poll scrolled the picker: showing rows %s, want %s", got, wantWindow)
+		m.sessions = append(m.sessions, session.SessionSummary{
+			ID: "pending:claude-code@4242.1", UpdatedAt: time.Now(), EventCount: 1})
+		m.rebuildSessionsTable()
+		after := m.sessionsTbl.Columns()
+		if sessionsColumnWidth(after, "SESSION") == sessionsColumnWidth(before, "SESSION") {
+			t.Fatalf("width %d: SESSION stayed the same width, so this asserted nothing", w)
+		}
+		if got := m.selectedSessionID(); got != wantID {
+			t.Errorf("width %d: the poll moved the selection to %q, want %q", w, got, wantID)
+		}
+		if got := window(m.sessionsTbl); got != wantWindow {
+			t.Errorf("width %d: the poll scrolled the picker: showing rows %s, want %s", w, got, wantWindow)
+		}
 	}
 }
 

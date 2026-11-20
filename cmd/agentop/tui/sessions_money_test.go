@@ -616,7 +616,7 @@ func TestSessionsRows_RightAlignNumericCells(t *testing.T) {
 }
 
 // A 36-character UUID is truncated: it is the least readable thing on the row and was taking
-// 40 columns to say less than its first twelve do.
+// 40 columns to say less than its last eight do.
 func TestSessionsRows_TruncateTheSessionID(t *testing.T) {
 	m := &model{width: 100}
 	m.sessionsTbl = newSessionsTable()

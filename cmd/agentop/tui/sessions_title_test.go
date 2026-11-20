@@ -272,7 +272,7 @@ func TestSessionsColumnsFor_TitleGrowsIntoSlackOnly(t *testing.T) {
 	if got, want := width(at200, "TITLE"), sessionsTitleWidth+(200-declared); got != want {
 		t.Errorf("TITLE at 200 = %d, want %d (declared %d + all the slack)", got, want, declared)
 	}
-	// SESSION, not ID, and 8 rather than 40: an 8-character id prefix (#2019). The property is
+	// SESSION, not ID, and 8 rather than 40: the last 8 characters of the id (#2019). The property is
 	// unchanged — growth comes from slack, never from a neighbour.
 	if got := width(at200, "SESSION"); got != sessionIDWidth {
 		t.Errorf("SESSION at 200 = %d, want its declared %d — growth must come from slack, not a neighbour", got, sessionIDWidth)

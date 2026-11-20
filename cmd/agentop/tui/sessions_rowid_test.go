@@ -138,10 +138,10 @@ func TestSessionRowIDs_MatchTheRowsOneForOne(t *testing.T) {
 				if id == "" {
 					t.Errorf("width %d search %q: row %d has an empty id", width, search, i)
 				}
-				// The id and its row agree: the rendered cell, less any "…" cut, is a substring of
-				// the id it stands for.
+				// The id and its row agree: the rendered cell, less any "…" cut, is the start of
+				// the cell the id renders to with unlimited room.
 				cell := strings.TrimSuffix(rows[i][0], "…")
-				if !strings.Contains(id, cell) {
+				if !strings.HasPrefix(sessionIDCell(id, noLimit), cell) {
 					t.Errorf("width %d search %q: row %d renders %q for id %q — the slices drifted",
 						width, search, i, rows[i][0], id)
 				}

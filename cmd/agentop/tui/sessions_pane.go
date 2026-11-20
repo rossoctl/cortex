@@ -263,12 +263,12 @@ func (m *model) rebuildSessionsTable() {
 	scope, project := m.sessionsScope(), m.sessionsProjectScope()
 	idW, gateW := m.sessionsIDWidth(scope, project, sessionsShowTitle(m.width)), m.width
 	if m.width > 0 {
-		gateW = m.width - (idW - sessionIDWidth)
+		gateW = max(m.width-(idW-sessionIDWidth), 1) // 0 would read as "no width yet"
 		// Without TITLE the mark moves into SESSION, so measure again. TITLE stays hidden then,
 		// because gateW only shrinks.
 		if !sessionsShowTitle(gateW) {
 			idW = m.sessionsIDWidth(scope, project, false)
-			gateW = m.width - (idW - sessionIDWidth)
+			gateW = max(m.width-(idW-sessionIDWidth), 1)
 		}
 	}
 	showMoney := sessionsShowMoney(gateW)
@@ -475,10 +475,10 @@ func (m *model) rebuildSessionsTable() {
 	// When it does change, the rows go first: SetColumns renders whatever rows are loaded, so
 	// there must be none it could misread.
 	//
-	// Only a change of headings needs that. Loaded rows read the same under new widths, and a
-	// poll that lists a pending bucket changes only SESSION's width.
+	// Only a change of headings needs that. Loaded rows read the same under new widths and new
+	// heading padding (alignSessionsHeaders), so those keep the scroll position.
 	if old := m.sessionsTbl.Columns(); !sameColumns(old, want) {
-		if !slices.EqualFunc(old, want, func(a, b table.Column) bool { return a.Title == b.Title }) {
+		if !slices.EqualFunc(old, want, func(a, b table.Column) bool { return headerTitle(a) == headerTitle(b) }) {
 			m.sessionsTbl.SetRows(nil)
 		}
 		m.sessionsTbl.SetColumns(want)
