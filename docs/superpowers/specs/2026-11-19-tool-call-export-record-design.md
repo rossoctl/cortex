@@ -12,13 +12,13 @@ This one narrows its §7.2 `toolCallNames` item and supersedes the shape propose
 Items marked **Open** must be decided before the work they belong to begins. Nothing here
 is merged.
 
-**34 numbered requirements T0–T33**, phrased as plain declaratives: a requirement says what
+**35 numbered requirements T0–T34**, phrased as plain declaratives: a requirement says what
 the system does once built. The numbering is stable so it can be cited in review and in the
 PRs that implement it, and is therefore in the order the requirements were ADDED, not document
-order: T0 sits in §2.0 because it bounds the whole spec, T23–T27 in §4.3a, and T28–T33 in §4.4
-and §4.4a.
+order: T0 sits in §2.0 because it bounds the whole spec, T23–T27 in §4.3a, T28–T33 in §4.4
+and §4.4a, and T34 in §7.1b.
 
-Revised twice on 2026-11-19.
+Revised twice on 2026-11-19 and once on 2026-11-20.
 
 **First revision**, after review raised two things the first draft buried. §2.0 is new: every
 field here is **already collected and most of it is already on disk**, so this is a projection
@@ -44,10 +44,19 @@ and against a converter written for it. Four measurement claims were wrong and a
   classified a different one. Now one named interval, with `modelMs` outside it by
   construction and the fourth `gapKind` dropped as an artifact.
 
-Record shape changed with it: `startedAt` replaces `at` and is always present (T29), `seq` and
+**Third revision**, after @webchang's follow-ups on #2009. §7.1b is rewritten: the question is
+**where a tool runs**, which the proxy cannot see at all — a built-in tool may run locally or in
+a remote sandbox, and an MCP tool may be served over stdio or HTTP, so `toolSource` says what
+kind of tool it is and never where it ran. Cortex therefore specifies no sandbox-side record and
+guarantees stable join keys instead (T34). T32 changes from "out of scope" to **marked**: a
+backgrounded call gets `endReason: "background"`, so the undercount is visible per call rather
+than hidden inside `result`. T3 and §3.3 now say banding is an **analyzer's** policy — the
+export carries raw timings and names no bands — which also removes the naming question from
+this spec.
+
+Record shape changed in the second revision: `startedAt` replaces `at` and is always present (T29), `seq` and
 `parallelGroup` are gone, `callIndex` (T30) and a closed `endReason` (T31) are added. T28 gives
-event records an explicit `kind`. T32 says background jobs are out of scope rather than leaving
-it ambiguous; T33 says a call below a `since` floor is dropped. §10 splits into what the review
+event records an explicit `kind`. T33 says a call below a `since` floor is dropped. §10 splits into what the review
 settled and what is still open.
 
 Written after measuring, not before. §3 is the measurement; every design choice in §5 and §6
@@ -62,8 +71,8 @@ traces to a number in it. The measurement corpus is one developer's 30-day lapto
 1. Answer "which tools does our community run, and what do they cost in time" from the
    export alone, across every session and beyond the archive's 30-day retention.
 2. Answer "how does inference time compare with tool time" as a ratio a capacity plan can
-   use — for the **model leg**. Sizing a remote sandbox host needs a sandbox-side record
-   joined to this one; see §7.1b before using these figures for that.
+   use — **as the agent saw it**. The record cannot say where a tool ran or what it cost
+   there; see §7.1b before using these figures to size any host.
 3. Keep the export content-free by construction, as #1810 §3.2 requires: no tool arguments,
    no tool results, no prompts.
 
@@ -243,7 +252,11 @@ The heaviest 10% of calls carry **82.4%** of tool time; the heaviest single call
 `Bash`. It is the reason a mean is useless here: a design that reports averages hides the tail
 that sizes the sandbox.
 
-These are **per-call duration bands**, named short/medium/long. They are not the
+**These cuts and names are this measurement's choice, not the record's.** T3: the export
+carries raw `durationMs`, so banding is an analyzer's policy. Nothing downstream should treat
+short/medium/long as a Cortex vocabulary.
+
+They are also not the
 light/medium/heavy *weight tiers* of the TraceLab session-density analysis
 (`moca-experiments/experiments/e15-session-density`, cuts at 1 s and 10 s on a call's
 `work_ms`; `analysis/tracelab/analysis/tiers.py`), which elsewhere also names terciles of a
@@ -308,7 +321,9 @@ absolute counts.
 T1. The export answers per-tool call counts and duration distributions across every archived
 session, without a second endpoint and without a hand-written join.
 T2. The export answers the inference-time-to-tool-time ratio per session and in aggregate.
-T3. A consumer can compute the §3.3 duration bands from the export alone.
+T3. The export carries each call's **raw** timing — `durationMs` and `startedAt` — so any
+analyzer can apply its own duration bands or weight tiers. Band names and cut points are an
+analyzer's policy, not a property of the record, and the record defines none.
 T4. A consumer can separate built-in tools from MCP tools without parsing a name.
 T5. A tool call's record names the session, the agent role and the client, so a fleet view can
 split by any of them.
@@ -459,6 +474,7 @@ T31. A `toolCall` record carries `endReason`, a closed vocabulary naming how the
 | `endReason` | Duration? | Meaning |
 |---|---|---|
 | `result` | yes | Its result arrived. |
+| `background` | yes, **to the acknowledgement only** | The result only acknowledged a job that keeps running (`backgroundRe`, `agents.go:37`). The command's real duration is longer and is not here. |
 | `ended_run` | no | By design no result: the call ends the run or hands control back (`SubagentHandback`, `StructuredOutput`, `end_subtask`). |
 | `abandoned` | no | The agent moved on without the result (`lastTurn`). |
 | `stopped` | no | The run was stopped while the call was open (a `<task-notification>`). |
@@ -467,11 +483,18 @@ T31. A `toolCall` record carries `endReason`, a closed vocabulary naming how the
 These are the timeline's own closing cases (`agents.go:273-295`), named rather than collapsed
 into one `lost` flag: "the agent moved on" and "the call ends the run by design" are different
 facts, and a consumer filtering latency wants to exclude both but count them apart.
-T32. **Background commands are out of scope for this record, and the spec says so rather than
-leaving it ambiguous.** A `Bash` call that backgrounds a job ends at the acknowledgement, and
-the job's own run is a separate `timeline.Job` (`agents.go:133-137`). So this record undercounts
-a backgrounded command's wall time. Carrying jobs needs a second record kind and its own
-pairing (`backgroundRe`, the `<task-notification>` match), which this spec does not specify.
+T32. **A backgrounded command is MARKED, not silently undercounted.** A `Bash` call that starts
+a background job ends at the acknowledgement, and the job's own run is a separate
+`timeline.Job` (`agents.go:133-137`), so this record cannot carry the command's real duration.
+It therefore sets `endReason: "background"` with `durationMs` measuring only the
+acknowledgement. A count of such calls tells a consumer **how much tool time is missing** and
+from where, which an undifferentiated `result` would hide.
+
+A job record is deliberately left for later: its start, its duration or an `endReason` when it
+never ended, and its starting call's `callSeq` + `callIndex` (no ids), paired by the
+`<task-notification>` match. **Note for whoever specifies it:** a backgrounded command overlaps
+later calls, so summed per-command time can exceed a session's wall-clock tool time. A
+consumer must not add job time to `durationMs` totals.
 T33. A `toolCall` record whose asking response is below a `since` floor is **not exported**.
 `Walk` stops at the first event below the floor (`walk.go:243-245`), so such a call has no
 start to report, and T29 requires one. A result inside the window whose call is outside it
@@ -604,18 +627,30 @@ to the tool running, to a permission prompt, to client-side queueing, or to a tr
 (§3.5). So the record measures a client round trip per call, with full coverage of calls and
 no visibility into their composition.
 
-7.1b **Sandbox density needs a sandbox-side record; this one sizes the model leg.** The
-distinction §3.2's ratio invites a reader to miss. Where an agent's tools run on the
-developer's own machine, a tool call costs no sandbox time and the ratio is the whole story.
-Where they run in a **remote sandbox**, those calls *are* the sandbox's work, and this record
-sees only the round trip around them — which includes a transport leg the sandbox's own timing
-excludes, so the two disagree and neither is wrong. A sandbox host is bounded by its concurrent
-commands and the memory each holds, and **no field here measures either**.
+7.1b **The record cannot say WHERE a call ran, and therefore what it cost there.** The
+question is where a tool runs, not whether a sandbox is involved — and the proxy sees neither:
 
-So: this record sizes the model leg — tokens, latency, concurrency of model calls — and bounds
-the tool leg from outside. A sandbox capacity plan wants it **joined to a sandbox-side record**,
-for which the record already carries the keys: `sessionId` plus UTC `startedAt` and
-`durationMs`. Specifying that record is not in scope here.
+- A built-in tool (`Bash`, `Read`, `Edit`) may run on the developer's machine **or** in a
+  remote sandbox the agent sends its tools to.
+- An MCP tool may be served by a **local** server over stdio **or** a **remote** one over HTTP.
+
+A model proxy sees the model ask for a call and, later, the result arrive. So the record
+measures **each call's time as the agent saw it**, and says nothing about where the work
+happened. A local call costs the developer's machine; a sandboxed one, the sandbox host; a
+remote MCP call, whoever runs that server. Each of those hosts also measures the call
+differently — a sandbox's own timing excludes the transport leg this record includes, so the
+two disagree and neither is wrong.
+
+**`toolSource` says what KIND of tool it is, never where it ran.** `builtin` and `mcp` are
+properties of the tool, not of its execution site, and the proxy must not infer a site from
+them. If a client knows where a call ran, an optional field carrying what the client stated
+would be the place for it — never a proxy-side guess.
+
+T34. **The join keys are stable**, so a consumer holding a host's own records can join on its
+side: `sessionId`, `startedAt` (UTC), `callSeq` + `callIndex`, and `agentRole`. Those five are
+the contract this record offers a capacity plan; their names and meanings do not change without
+a `schema` bump. Cortex specifies no sandbox-side record — a consumer that has one joins it
+itself.
 
 7.1a **An approval wait reads as execution.** T26: a permission prompt the user sits on lands
 inside a `tool` gap, indistinguishable from the command running. Nobody has quantified it
@@ -680,14 +715,19 @@ its frequency — but the *rate* is not a constant to design against.
 | §6 | **Option A**, scoped to tool spans and their closing inputs. |
 | §6.4 | A fixed cap on open calls per session, and **a per-session marker record** when it is hit — matching the export's degrade-loudly posture. |
 | T25 | **No fourth `gapKind`.** The redefined interval ends at the next request, so no inference can fall inside it; the question was an artifact of the first draft's definition. |
+| T32 | **`endReason: "background"`** now, marking the undercount per call; a job record later. A consumer must not add job time to `durationMs` totals, since a backgrounded command overlaps later calls. |
+| §7.1b | **Cortex specifies no sandbox-side record.** It guarantees stable join keys (T34) and a consumer joins its own host's records. |
+| §3.3 / T3 | **Banding is the analyzer's policy.** The export carries raw timings; the spec names no bands, so the naming collision is not the export's to settle. |
 
 ### 10.2 Still open
 
 | § | Open |
 |---|---|
 | §7.1a | Whether to quantify the approval-wait error against local Claude Code transcripts before publishing any density figure. Author's view: yes, and it is cheap. |
-| §7.1b | Whether a sandbox-side record is specified now or later, given that sandbox density was part of this work's motivation and this record cannot answer it alone. |
-| T32 | Whether background jobs get a record kind of their own, or stay out. As written their wall time is undercounted. |
-| §3.3 | Whether the band names (short/medium/long) should instead match the TraceLab tier names, accepting the collision. Author's view: keep them apart — one measures a call, the other a task. Worth confirming with the analysis's author. |
+| T32 | Whether the job record gets specified in this cycle or a later one. The undercount is marked either way. |
+| §7.1b | Whether an optional client-stated execution site is worth a field, for a client that knows where its tools ran. Not a proxy-side inference under any circumstance. |
+
+Nothing above blocks implementation: §6 Option A, T11's keyed hash, T20's per-item switch and
+§6.4's marker record are all settled, and T28–T34 are normative.
 
 Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>
