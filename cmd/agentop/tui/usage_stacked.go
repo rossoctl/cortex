@@ -295,7 +295,7 @@ func renderStackedBarsIn(buckets []usage.Bucket, m usageMetric, group usage.Grou
 			sb.WriteString(stackedCell(b, m, group, series, rank, letters, peak, row))
 			sb.WriteString(strings.Repeat(" ", barGap))
 		}
-		out = append(out, strings.TrimRight(sb.String(), " "))
+		out = append(out, stylePlotRow(strings.TrimRight(sb.String(), " "), nil))
 	}
 
 	out = append(out, renderAxis(len(buckets)))

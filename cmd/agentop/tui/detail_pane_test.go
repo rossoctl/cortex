@@ -6,6 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
+
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -345,5 +349,52 @@ func TestRewriteHeader_IncludesTheUpgradeLine(t *testing.T) {
 	})
 	if !strings.Contains(got, "websocket") {
 		t.Errorf("rewriteHeader = %q, want the upgrade line composed in", got)
+	}
+}
+
+// The REQUEST │ line keeps its text and width under color: the section name is a segment,
+// the bar dim, the status in its STATUS ink and the cost bold, and the cut stays after them.
+func TestDetailFixedLine_Styles(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(restore) })
+	m := exchangeDetail(t)
+	m.detailSummary = "#1 · POST /v1/messages · 503 · 1.2s · $0.12 · " + strings.Repeat("120 tok · ", 12) + "end"
+	for _, w := range []int{80, 100, 140} {
+		m.width = w
+		lipgloss.SetColorProfile(termenv.Ascii)
+		plain := m.detailFixedLine()
+		lipgloss.SetColorProfile(termenv.TrueColor)
+		color := m.detailFixedLine()
+		if got := ansi.Strip(color); got != plain {
+			t.Errorf("width %d: color text\n  %q\nAscii text\n  %q", w, got, plain)
+		}
+		if lipgloss.Width(color) != lipgloss.Width(plain) {
+			t.Errorf("width %d: color width %d, Ascii %d", w, lipgloss.Width(color), lipgloss.Width(plain))
+		}
+		for _, want := range []string{styleSeg.Render("REQUEST"), styleDim.Render(" │ "), styleError.Render("503"), styleBold.Render("$0.12"), styleDim.Render(" · ")} {
+			if !strings.Contains(color, want) {
+				t.Errorf("width %d: fixed line %q lacks %q", w, color, want)
+			}
+		}
+	}
+	if w := lipgloss.Width(m.detailFixedLine()); w != 140 {
+		t.Errorf("a cut summary is %d wide, want 140", w)
+	}
+}
+
+// Fold marks and the section line are accent under color, and text does not change.
+func TestDetailTree_FoldMarksAccent(t *testing.T) {
+	restore := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(restore) })
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	m := exchangeDetail(t)
+	var section bool
+	for _, l := range m.detailLines {
+		if strings.HasPrefix(ansi.Strip(l.text), "▾ ") && strings.Contains(l.text, styleAccentBold.Render("▾ ")) {
+			section = true
+		}
+	}
+	if !section {
+		t.Error("no section line draws its ▾ in accent bold")
 	}
 }

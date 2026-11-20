@@ -116,7 +116,7 @@ func renderWhiskers(buckets []usage.Bucket, width int) []string {
 			sb.WriteString(whiskerCell(r, peak, row))
 			sb.WriteString(strings.Repeat(" ", barGap))
 		}
-		out = append(out, strings.TrimRight(sb.String(), " "))
+		out = append(out, stylePlotRow(strings.TrimRight(sb.String(), " "), nil))
 	}
 
 	out = append(out, renderAxis(len(rows)))

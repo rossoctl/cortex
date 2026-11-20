@@ -753,7 +753,7 @@ func (m *model) renderTimeline() string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString(styleMuted.Render(strings.Repeat("╌", timelineLabelWidth+width+timelineGutterWidth)) + "\n")
+	b.WriteString(styleDim.Render(strings.Repeat("╌", timelineLabelWidth+width+timelineGutterWidth)) + "\n")
 	hostRows := m.timelineHostRows(lay, agentRows)
 	for i, r := range m.visibleHostRows(lay) {
 		b.WriteString(m.hostLine(r, lay) + "\n")
@@ -766,7 +766,7 @@ func (m *model) renderTimeline() string {
 	if len(lay.hosts) == 0 {
 		b.WriteString(styleMuted.Render("  no outbound requests in this window") + "\n\n")
 	}
-	b.WriteString(styleMuted.Render(strings.Repeat("─", timelineLabelWidth+width+timelineGutterWidth)) + "\n")
+	b.WriteString(styleDim.Render(strings.Repeat("─", timelineLabelWidth+width+timelineGutterWidth)) + "\n")
 	if m.bodyHeight >= timelineFixedLines+2*4 {
 		b.WriteString(m.legend() + "\n")
 	}
@@ -902,7 +902,7 @@ func (m *model) agentLine(r tlAgentRow, lay tlLayout) string {
 		}
 		b.WriteString(m.cursorAt(c, g))
 	}
-	fmt.Fprintf(&b, "%s%s%s", styleMuted.Render("│"),
+	fmt.Fprintf(&b, "%s%s%s", styleDim.Render("│"),
 		lipgloss.NewStyle().Foreground(colorTLModel).Render(fmt.Sprintf("%6s", tlDuration(r.modelTime))),
 		lipgloss.NewStyle().Foreground(colorTLTool).Render(fmt.Sprintf("%7s", tlDuration(r.toolTime))))
 	rate, st := "", styleMuted
@@ -937,7 +937,7 @@ func (m *model) hostLine(r tlHostRow, lay tlLayout) string {
 		}
 		b.WriteString(m.cursorAt(c, g))
 	}
-	b.WriteString(styleMuted.Render("│" + fmt.Sprintf("%15d req", r.requests)))
+	b.WriteString(styleDim.Render("│") + styleMuted.Render(fmt.Sprintf("%15d req", r.requests)))
 	return b.String()
 }
 
@@ -959,7 +959,7 @@ func (m *model) cursorAt(c int, s string) string {
 func (m *model) cursorStrip(lay tlLayout) string {
 	c := m.timeline.cursor
 	if c < 0 || c >= lay.axis.width() {
-		return styleMuted.Render("▸ [←→] pick a moment: lists the tools running then, with their durations and commands")
+		return renderHints("▸ [←→] pick a moment: lists the tools running then, with their durations and commands")
 	}
 	cell := lay.axis.cells[c]
 	head := fmt.Sprintf("▸ %s  ", cell.from.Local().Format("15:04:05"))

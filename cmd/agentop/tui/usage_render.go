@@ -6,6 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/rossoctl/cortex/cmd/agentop/money"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -303,7 +306,7 @@ func renderBarsIn(buckets []usage.Bucket, m usageMetric, width, height int, unit
 			sb.WriteString(strings.Repeat(" ", axisLabel))
 		}
 		sb.WriteString(barCellsForRow(buckets, m, peak, row))
-		out = append(out, strings.TrimRight(sb.String(), " "))
+		out = append(out, stylePlotRow(strings.TrimRight(sb.String(), " "), &styleAccent))
 	}
 
 	out = append(out, renderAxis(len(buckets)))
@@ -361,6 +364,19 @@ func barCell(v, peak int64, row int) string {
 	}
 }
 
+// stylePlotRow draws a plot row's axis label muted and its marks in bars (nil: as they are).
+// It runs after the row's TrimRight, so no trailing space hides inside a style.
+func stylePlotRow(line string, bars *lipgloss.Style) string {
+	if !colorOn() {
+		return line
+	}
+	gutter, rest := ansi.Truncate(line, axisLabel, ""), ansi.TruncateLeft(line, axisLabel, "")
+	if rest != "" && bars != nil {
+		rest = bars.Render(rest)
+	}
+	return styleMuted.Render(gutter) + rest
+}
+
 // renderAxis draws the baseline. The corner glyph sits in the LAST gutter column
 // so the dashes after it start at axisLabel — the column the bars start at.
 // Writing axisLabel-2 spaces then "0 ┼" placed the corner AT axisLabel and
@@ -380,7 +396,7 @@ func renderAxis(n int) string {
 			sb.WriteString(strings.Repeat("─", barGap-1))
 		}
 	}
-	return sb.String()
+	return styleMuted.Render(sb.String())
 }
 
 // renderTimeLabels labels every other bucket. A full HH:MM does not fit under a
@@ -409,7 +425,7 @@ func renderTimeLabels(buckets []usage.Bucket) string {
 			copy(row[at:], label)
 		}
 	}
-	return strings.TrimRight(string(row), " ")
+	return styleMuted.Render(strings.TrimRight(string(row), " "))
 }
 
 // renderValues prints each bucket's value under its bar. An idle bucket prints
@@ -509,6 +525,12 @@ func renderUsageSummary(snap *usage.Snapshot) string {
 	}
 
 	parts = append(parts, renderCostSummary(snap))
+	if colorOn() {
+		for i, p := range parts {
+			label, value, _ := strings.Cut(p, " ")
+			parts[i] = styleMuted.Render(label) + " " + styleBold.Render(value)
+		}
+	}
 	return "  " + strings.Join(parts, "    ")
 }
 

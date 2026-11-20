@@ -227,7 +227,25 @@ func (m *model) detailFixedLine() string {
 		sectionOf(m.detailLines[i].path) == "response" {
 		name = "RESPONSE"
 	}
-	return truncToWidth(styleTitle.Render(name)+" │ "+m.detailSummary, max(m.width, 20))
+	return truncToWidth(styleSeg.Render(name)+styleDim.Render(" │ ")+styleExchangeSummary(m.detailSummary), max(m.width, 20))
+}
+
+// styleExchangeSummary colors exchangeSummary's plain text without changing it: " · " dim,
+// the status in its STATUS ink, the cost bold.
+func styleExchangeSummary(s string) string {
+	if !colorOn() {
+		return s
+	}
+	parts := strings.Split(s, " · ")
+	for i, p := range parts {
+		switch {
+		case p == "lost" || len(p) == 3 && strings.Trim(p, "0123456789") == "":
+			parts[i] = groupStyle(statusGroup(p)).Render(p)
+		case strings.HasPrefix(p, "$") || strings.HasPrefix(p, "~$"):
+			parts[i] = styleBold.Render(p)
+		}
+	}
+	return strings.Join(parts, styleDim.Render(" · "))
 }
 
 // jumpDetailSection is Tab on the detail page: the cursor goes to the other section's title,

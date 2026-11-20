@@ -1647,3 +1647,20 @@ func TestTimelineRender_TokPerSecNoteReachesTheUser(t *testing.T) {
 		}
 	}
 }
+
+// Color changes no text and no width on the timeline; the cursor strip's [←→] is a key chip.
+func TestTimeline_PlainInvariant(t *testing.T) {
+	for _, w := range []int{80, 100, 140} {
+		m := timelineModel(t, w, 46)
+		assertPlainInvariant(t, m.renderTimeline, -1)
+	}
+	restore := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(restore) })
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	out := timelineModel(t, 140, 46).renderTimeline()
+	for _, want := range []string{styleChip.Render(" ←→ "), styleDim.Render("│")} {
+		if !strings.Contains(out, want) {
+			t.Errorf("timeline lacks %q", want)
+		}
+	}
+}
