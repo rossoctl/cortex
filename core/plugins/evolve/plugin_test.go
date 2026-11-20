@@ -176,6 +176,9 @@ func TestConfigure_Validation(t *testing.T) {
 	for _, raw := range []string{
 		`{}`,
 		`{"endpoint":"evolve:8202"}`,
+		`{"endpoint":"https://"}`,
+		`{"endpoint":"http:///sse"}`,
+		`{"endpoint":"HTTP//127.0.0.1:8201/sse"}`,
 		`{"endpoint":"http://x","bogus":1}`,
 		`{"endpoint":"http://x","top_k":99}`,
 		`{"endpoint":"http://x","min_turns":-1}`,

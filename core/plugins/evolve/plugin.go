@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -113,8 +114,10 @@ func (c *config) applyDefaults() {
 }
 
 func (c *config) validate() error {
-	if !strings.HasPrefix(c.Endpoint, "http://") && !strings.HasPrefix(c.Endpoint, "https://") {
-		return fmt.Errorf("endpoint must be an http(s) URL, got %q", c.Endpoint)
+	// Checked here, so a URL the client can't connect to fails the config, not
+	// every fetch once it is running.
+	if u, err := url.Parse(c.Endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return fmt.Errorf("endpoint must be an http(s) URL with a host, got %q", c.Endpoint)
 	}
 	if *c.Prompt != "" && !promptName.MatchString(*c.Prompt) {
 		return fmt.Errorf("guidelines_prompt must be an evolve prompt name (letters, digits, '-' and '_'), or empty for evolve's default, got %q", *c.Prompt)
