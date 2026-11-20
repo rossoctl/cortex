@@ -50,7 +50,7 @@ func TestCommittedAssetIsWithinBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const budget = 500 << 10
+	const budget = 560 << 10 // 535 KB once agentop drew boxed panels (#2027)
 	if info.Size() > budget {
 		t.Errorf("asset is %d KB, over the %d KB budget", info.Size()>>10, budget>>10)
 	}

@@ -662,6 +662,30 @@ var eventRate = regexp.MustCompile(`\d+\.\d events/sec`)
 
 const canonicalRate = "12.4 events/sec"
 
+// barGap is the padding bottomBar puts before the right-aligned status.
+var barGap = regexp.MustCompile(` {3,}`)
+
+// fixRate rewrites the events/sec and keeps the status in its column. The status is
+// right-aligned, so a real rate one digit wider moved it one cell left, and which
+// frame got the wide rate changed between runs. The gap before it takes the difference.
+func fixRate(view string) string {
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		loc := eventRate.FindStringIndex(line)
+		if loc == nil {
+			continue
+		}
+		head := line[:loc[0]]
+		if gaps := barGap.FindAllStringIndex(head, -1); len(gaps) > 0 {
+			g := gaps[len(gaps)-1]
+			n := max(g[1]-g[0]-(len(canonicalRate)-(loc[1]-loc[0])), 1)
+			head = head[:g[0]] + strings.Repeat(" ", n) + head[g[1]:]
+		}
+		lines[i] = head + canonicalRate + line[loc[1]:]
+	}
+	return strings.Join(lines, "\n")
+}
+
 func fixAge(match string) string {
 	if len(match) < len(canonicalAge) {
 		return fixClock(match)
@@ -698,7 +722,7 @@ func (c *Capturer) Screen() string {
 	}
 	view = isoTimestamp.ReplaceAllString(view, canonicalISO)
 	view = agePattern.ReplaceAllStringFunc(view, fixAge)
-	view = eventRate.ReplaceAllString(view, canonicalRate)
+	view = fixRate(view)
 	for _, re := range clockPatterns {
 		view = re.ReplaceAllStringFunc(view, fixClock)
 	}
