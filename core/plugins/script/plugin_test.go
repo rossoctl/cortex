@@ -1068,9 +1068,9 @@ func (l *lastFrame) OnResponseFrame(_ context.Context, _ *pipeline.Context, _ []
 func TestResponse_SlowScriptsLeaveTheDeadlineForTheParsersAfterTheSlot(t *testing.T) {
 	dir := home(t)
 	hang(t, dir, "response")
-	// A timeout no test outlasts, so only the share can stop the call.
+	// A timeout no test outlasts, so the share is the only bound on the call.
 	s := configured(t, true, `{"timeout": "1h"}`)
-	// The share is spent as soon as it is given.
+	// The share is spent as soon as it is given, so the call ends before it reaches the script.
 	var share time.Duration
 	budgetTimeout = func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 		share = d
@@ -1093,10 +1093,10 @@ func TestResponse_SlowScriptsLeaveTheDeadlineForTheParsersAfterTheSlot(t *testin
 	}
 	inv := invocations(pctx)[0]
 	if inv.Plugin != "hang" || inv.Reason != "script_error" {
-		t.Errorf("the hung script is recorded as %+v", inv)
+		t.Errorf("the expired call is recorded as %+v", inv)
 	}
 	if err := inv.Details["error"]; !strings.Contains(err, context.DeadlineExceeded.Error()) {
-		t.Errorf("the hung script's call ended with %q, want its share of the deadline spent", err)
+		t.Errorf("the call ended with %q, want its share spent", err)
 	}
 	if share <= 0 || share > time.Hour {
 		t.Errorf("the script's share is %v, want the deadline less the reserve", share)
