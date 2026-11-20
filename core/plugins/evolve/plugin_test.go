@@ -1017,3 +1017,22 @@ func TestLearn_MaxSessionsHoldsWhileEverySessionIsSending(t *testing.T) {
 		t.Fatalf("turns not tracked = %v, want 1", got)
 	}
 }
+
+func TestInject_ARequestWithoutATaskDoesNotHoldBackTheNextOne(t *testing.T) {
+	fe := &fakeEvolve{gs: twoGuidelines}
+	p, _ := configured(t, "", fe)
+	first := reqCtx("/v1/messages", anthropicBody)
+	first.Extensions.Inference.Messages = []pipeline.InferenceMessage{{Role: "user", Content: "<system-reminder>\nrules\n</system-reminder>"}}
+	run(t, p, first)
+	fetchedFirst := fe.fetches()
+	// The session's next request carries the task. Before, the first request's
+	// empty answer was cached for retry_after_seconds, so this got nothing.
+	second := reqCtx("/v1/messages", anthropicBody)
+	run(t, p, second)
+	if fe.fetches() != 1 || !published(t, second).Injected {
+		t.Fatalf("fetches = %d, event = %+v; want the task looked up and injected", fe.fetches(), published(t, second))
+	}
+	if reason := skipReason(first); reason != "no_task" || fetchedFirst != 0 {
+		t.Fatalf("first request: skip = %q after %d fetches, want no_task and no fetch", reason, fetchedFirst)
+	}
+}

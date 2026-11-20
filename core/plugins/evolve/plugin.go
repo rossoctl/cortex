@@ -147,6 +147,8 @@ type cached struct {
 	// stale marks guidelines kept from an earlier fetch because the refresh
 	// failed: still injected, but not what evolve serves now.
 	stale bool
+	// noTask marks a request with nothing to ask evolve with. It is never cached.
+	noTask bool
 }
 
 // flight is a session's guideline fetch in progress. Requests of the session
@@ -352,6 +354,9 @@ func (p *Plugin) OnRequest(ctx context.Context, pctx *pipeline.Context) (action 
 	}
 	if len(entry.guidelines) == 0 {
 		reason := "no_guidelines"
+		if entry.noTask {
+			reason = "no_task"
+		}
 		if entry.failed {
 			reason = "evolve_unavailable"
 			ev.Error = reason
@@ -443,34 +448,40 @@ func (p *Plugin) fetch(ctx context.Context, sessionID string, messages []pipelin
 	for i, m := range messages {
 		texts[i] = messageText{role: m.Role, content: m.Content}
 	}
+	task := taskText(texts)
+	if task == "" {
+		// Nothing to ask with yet, such as a request carrying only harness context.
+		// Not cached: caching it would answer the session's next request, which
+		// may carry the task, with no guidelines until retry_after_seconds passed.
+		if previous != nil && len(previous.guidelines) > 0 {
+			return previous
+		}
+		return &cached{noTask: true}
+	}
 	entry := &cached{fetchedAt: p.now()}
-	if task := taskText(texts); task == "" {
+	// Not cancelled with the request that started it: other requests of the
+	// session may be waiting for the answer. timeout_ms still bounds it.
+	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Duration(p.cfg.TimeoutMs)*time.Millisecond)
+	gs, err := p.client.Guidelines(callCtx, p.cfg.ServeNamespace, task, sessionID)
+	cancel()
+	p.m.inc(&p.m.fetches)
+	switch {
+	case err != nil:
+		p.m.inc(&p.m.fetchErrors)
+		// No session id: the failure is evolve's, not the session's, and the session's own
+		// event already records the skip. The id comes from a request header, which
+		// CodeQL's go/clear-text-logging treats as sensitive.
+		slog.Warn("evolve: guideline fetch failed; forwarding requests unchanged", "err", err)
+		entry.failed = true
 		entry.expires = p.now().Add(time.Duration(p.cfg.RetryAfter) * time.Second)
-	} else {
-		// Not cancelled with the request that started it: other requests of the
-		// session may be waiting for the answer. timeout_ms still bounds it.
-		callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Duration(p.cfg.TimeoutMs)*time.Millisecond)
-		gs, err := p.client.Guidelines(callCtx, p.cfg.ServeNamespace, task, sessionID)
-		cancel()
-		p.m.inc(&p.m.fetches)
-		switch {
-		case err != nil:
-			p.m.inc(&p.m.fetchErrors)
-			// No session id: the failure is evolve's, not the session's, and the session's own
-			// event already records the skip. The id comes from a request header, which
-			// CodeQL's go/clear-text-logging treats as sensitive.
-			slog.Warn("evolve: guideline fetch failed; forwarding requests unchanged", "err", err)
-			entry.failed = true
-			entry.expires = p.now().Add(time.Duration(p.cfg.RetryAfter) * time.Second)
-		default:
-			if len(gs) > p.cfg.TopK {
-				gs = gs[:p.cfg.TopK]
-			}
-			entry.guidelines = gs
-			entry.expires = p.now().Add(time.Duration(p.cfg.CacheTTL) * time.Second)
-			if len(gs) > 0 {
-				entry.block = formatBlock(gs)
-			}
+	default:
+		if len(gs) > p.cfg.TopK {
+			gs = gs[:p.cfg.TopK]
+		}
+		entry.guidelines = gs
+		entry.expires = p.now().Add(time.Duration(p.cfg.CacheTTL) * time.Second)
+		if len(gs) > 0 {
+			entry.block = formatBlock(gs)
 		}
 	}
 	// Keep serving what the session already had through a transient failure,
