@@ -23,8 +23,8 @@ Evolve is Python, so it runs beside Cortex and the plugin is a client of its sto
 
 `include_details` ([altk-evolve #485](https://github.com/AgentToolkit/altk-evolve/pull/485)) returns each selected guideline's content and sources with
 its id, in one call. An evolve that predates it rejects the argument; the plugin then asks
-again without it and reads the guidelines with `list_entities`, which reads at most 200 from
-the served namespace. It asks with `include_details` again after reconnecting, in case evolve
+again without it and reads the guidelines with `list_entities`, a page at a time until it has
+found the ones selected. It asks with `include_details` again after reconnecting, in case evolve
 was upgraded.
 
 ## By default, nothing learned is injected until a person accepts it

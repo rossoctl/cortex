@@ -63,10 +63,13 @@ type Batch struct {
 // on all of them.
 var ErrUnavailable = errors.New("evolve unavailable")
 
-// maxServedGuidelines is the most guidelines read from the served namespace
-// when evolve can't return them with their attribution (list_entities caps a
-// page at 200).
-const maxServedGuidelines = 200
+// listPageSize is list_entities' largest page, and maxListPages the most pages
+// read to find the selected guidelines when evolve can't return them with their
+// attribution. The pages are read within the fetch's own timeout.
+const (
+	listPageSize = 200
+	maxListPages = 100
+)
 
 // connectTimeout bounds establishing the SSE session: the dial, the stream's
 // response headers, the endpoint event and initialize. A caller waits for a
@@ -382,7 +385,7 @@ func (e *mcpEvolve) Guidelines(ctx context.Context, namespace, task, sessionID s
 	// are read separately. list_entities rather than get_entity: get_entity
 	// refuses a guideline whose agent_id differs from the caller's, and a caller
 	// cannot name one agent that owns both unowned and agent-owned guidelines.
-	byID, err := e.guidelineIndex(ctx, namespace)
+	byID, err := e.guidelineIndex(ctx, namespace, a.EntityIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +393,7 @@ func (e *mcpEvolve) Guidelines(ctx context.Context, namespace, task, sessionID s
 	for _, id := range a.EntityIDs {
 		g, ok := byID[id]
 		if !ok {
-			continue // removed between the two calls, or beyond maxServedGuidelines
+			continue // removed between the two calls
 		}
 		g.Revision = a.EntityRevisions[id]
 		out = append(out, g)
@@ -406,37 +409,52 @@ func contentText(content any) string {
 	return string(b)
 }
 
-// guidelineIndex reads the guidelines in namespace, keyed by id, for an evolve
-// that can't return them with their attribution. It reads at most
-// maxServedGuidelines, so in a larger namespace (one learned into directly, say)
-// some attributed guidelines are missed.
-func (e *mcpEvolve) guidelineIndex(ctx context.Context, namespace string) (map[string]Guideline, error) {
-	text, err := e.call(ctx, "list_entities", map[string]any{
+// guidelineIndex reads the guidelines in namespace with the given ids, keyed by
+// id, for an evolve that can't return them with their attribution. It reads
+// list_entities pages until it has found them all or the namespace ends, so a
+// guideline selected from beyond the first page is found too.
+func (e *mcpEvolve) guidelineIndex(ctx context.Context, namespace string, ids []string) (map[string]Guideline, error) {
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	out := make(map[string]Guideline, len(ids))
+	args := map[string]any{
 		"namespace_id": namespace, "entity_types": []string{"guideline"},
-		"include_content": true, "limit": maxServedGuidelines,
-	})
-	if err != nil {
-		return nil, err
+		"include_content": true, "limit": listPageSize,
 	}
-	var page struct {
-		Items []struct {
-			ID       string         `json:"id"`
-			Content  any            `json:"content"`
-			Metadata map[string]any `json:"metadata"`
-		} `json:"items"`
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(text), &page); err != nil {
-		return nil, fmt.Errorf("%w: decode list_entities: %v", ErrUnavailable, err)
-	}
-	if page.Error != "" {
-		return nil, fmt.Errorf("%w: list_entities: %s", ErrUnavailable, page.Error)
-	}
-	out := make(map[string]Guideline, len(page.Items))
-	for _, item := range page.Items {
-		g := Guideline{ID: item.ID, Content: contentText(item.Content)}
-		g.Source, _ = item.Metadata["source_task_id"].(string)
-		out[item.ID] = g
+	for range maxListPages {
+		text, err := e.call(ctx, "list_entities", args)
+		if err != nil {
+			return nil, err
+		}
+		var page struct {
+			Items []struct {
+				ID       string         `json:"id"`
+				Content  any            `json:"content"`
+				Metadata map[string]any `json:"metadata"`
+			} `json:"items"`
+			NextCursor string `json:"next_cursor"`
+			Error      string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(text), &page); err != nil {
+			return nil, fmt.Errorf("%w: decode list_entities: %v", ErrUnavailable, err)
+		}
+		if page.Error != "" {
+			return nil, fmt.Errorf("%w: list_entities: %s", ErrUnavailable, page.Error)
+		}
+		for _, item := range page.Items {
+			if !want[item.ID] {
+				continue
+			}
+			g := Guideline{ID: item.ID, Content: contentText(item.Content)}
+			g.Source, _ = item.Metadata["source_task_id"].(string)
+			out[item.ID] = g
+		}
+		if len(out) == len(want) || page.NextCursor == "" {
+			break
+		}
+		args["cursor"] = page.NextCursor
 	}
 	return out, nil
 }

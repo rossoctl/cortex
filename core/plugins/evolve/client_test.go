@@ -34,6 +34,8 @@ type fakeEvolveServer struct {
 	// holdGuidelines and holdLearn, when set, keep those tools from answering until
 	// they are closed.
 	holdGuidelines, holdLearn chan struct{}
+	// paged serves list_entities a page at a time: 7 and 8, then 9.
+	paged bool
 }
 
 func (f *fakeEvolveServer) record(req mcp.CallToolRequest) {
@@ -91,6 +93,17 @@ func (f *fakeEvolveServer) mcpServer() *server.MCPServer {
 		f.record(req)
 		if f.listErr {
 			return text(map[string]any{"error": "invalid cursor"}), nil
+		}
+		if f.paged {
+			if req.GetArguments()["cursor"] != "page-2" {
+				return text(map[string]any{"items": []any{
+					map[string]any{"id": "7", "content": "guideline 7", "metadata": map[string]any{"source_task_id": "cortex:s:7"}},
+					map[string]any{"id": "8", "content": "guideline 8", "metadata": map[string]any{}},
+				}, "next_cursor": "page-2"}), nil
+			}
+			return text(map[string]any{"items": []any{
+				map[string]any{"id": "9", "content": "guideline 9", "metadata": map[string]any{}},
+			}, "next_cursor": nil}), nil
 		}
 		// 7 is unowned, 9 was learned from a Claude Code session; 8 is not attributed.
 		return text(map[string]any{"items": []any{
@@ -508,5 +521,29 @@ func TestMCPEvolve_AnEvolveThatForgotTheSessionIsReconnected(t *testing.T) {
 	}
 	if !second.called("get_guidelines_with_attribution") {
 		t.Fatal("the new evolve was never called")
+	}
+}
+
+func TestMCPEvolve_OlderEvolveFindsGuidelinesBeyondTheFirstPage(t *testing.T) {
+	f := &fakeEvolveServer{old: true, paged: true}
+	e := newMCPEvolve(f.start(t), "cortex", "environment-grounded", time.Second)
+	defer e.Close()
+	gs, err := e.Guidelines(context.Background(), "cortex", "t", "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 9 is on the second page. Before, only the first page was read, and 9 was
+	// silently left out.
+	if len(gs) != 2 || gs[0].ID != "7" || gs[1].ID != "9" || gs[1].Content != "guideline 9" {
+		t.Fatalf("guidelines = %+v, want 7 and 9", gs)
+	}
+	var pages int
+	for _, name := range f.tools() {
+		if name == "list_entities" {
+			pages++
+		}
+	}
+	if pages != 2 {
+		t.Fatalf("list_entities called %d times, want 2 pages", pages)
 	}
 }
