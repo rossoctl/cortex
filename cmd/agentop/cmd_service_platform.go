@@ -616,6 +616,9 @@ func waitHealthy(url string, within time.Duration) bool {
 			return false
 		}
 		time.Sleep(500 * time.Millisecond / healthPollDivisor)
+		if !time.Now().Before(deadline) {
+			return false
+		}
 	}
 }
 

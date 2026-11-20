@@ -563,9 +563,13 @@ func (a *Archive) run() {
 		select {
 		case o := <-a.ops:
 			a.take(o)
-		case <-ticks:
-			a.applyOptOuts(false)
-			a.tick()
+		case _, ok := <-ticks:
+			if ok {
+				a.applyOptOuts(false)
+				a.tick()
+			} else {
+				ticks = nil
+			}
 		case <-a.stop:
 			a.drain()
 			// From here nothing more is queued or kept (sendLocked and optOutLocked check
