@@ -101,3 +101,21 @@ per-request accountant data (Usage, Result, ping detection).
 - Test coverage: a fake `metric.MeterProvider` (manual reader) replay for both the `Sink` additions
   and the new `Recorder`, following the existing pattern in `core/accounting/push/push_test.go`'s
   `extraReaders`.
+
+## Amendment, 2026-11-20: the outcome and cause labels
+
+The central Cache dashboard groups `llm_keepalive_pings_total` by `outcome` and the two miss
+counters by `cause`. Cortex pushed neither label, so its series showed as "Value". Both now
+carry context-guru's label values, so the two proxies stack on one axis.
+
+- **`outcome`** (`ok`, `failed`, `timeout`). `Host.Ping` counts every ping the keeper reports,
+  once. A priced ping is `ok`. A refused ping is counted by `Sink.CountPing`: `timeout` when the
+  report has `TimedOut`, `failed` for a status outside 200-299, else `ok` with no cost. A timeout
+  has no usage, so it is booked at the keeper's projected cost (`KeepAliveReport.CostUSD`), in
+  both `cost_usd` and `estimated_cost_usd`. The ledger is unchanged: a refused ping still writes
+  no cost event.
+- **`cause`** (`cold_start`, `ttl_expiry`, `model_changed`, `other`), from `missCause`:
+  `model_changed` for a break with `CauseModelChanged` or a `modelChangeOp` ChangeID; else
+  `ttl_expiry` when the library's phase is `cold`; else `cold_start` when the phase is `unknown`
+  and `RequestEnd` had not seen the thread; else `other`. Cortex sees no body diff, so
+  context-guru's `prefix_change`, `compaction_after_rewrite` and `bypass_flip` are `other` here.

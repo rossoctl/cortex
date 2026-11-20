@@ -53,8 +53,9 @@ def ratio(num, den):
 
 def unattributed(expr, label):
     """expr with an empty label filled in as "unattributed". A by-label panel otherwise names a
-    series without the label "Value": cortex pushes llm_cache_misses_total with no cause and
-    llm_keepalive_pings_total with no outcome; context-guru pushes both."""
+    series without the label "Value": cortex builds before feat/ping-miss-labels push
+    llm_cache_misses_total with no cause and llm_keepalive_pings_total with no outcome, and
+    Prometheus keeps their series for 30 days."""
     return f'label_replace({expr}, "{label}", "unattributed", "{label}", "")'
 
 
@@ -276,7 +277,7 @@ def cache():
     P.append(series(4, "Ping outcomes (per hour)", [(f'{unattributed(rate("llm_keepalive_pings_total", "outcome"), "outcome")} * 3600', "{{outcome}}")],
                     8, 8, 10, 8, stack=True, bars=True,
                     colors={"ok": GREEN, "skipped": BLUE, "failed": RED, "timeout": ORANGE},
-                    desc="Pings per hour. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is a proxy that does not label the outcome (cortex)."))
+                    desc="Pings per hour. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is an older cortex build, which did not label the outcome."))
     P.append(stat(5, "Pings that paid",
                   ratio(f'({inc("llm_savings_cache_effect_usd_total", extra=RESCUE_SAVED)} - {inc("llm_savings_cache_effect_usd_total", extra=RESCUE_ADDED)})',
                         inc("llm_keepalive_cost_usd_total")),
@@ -285,7 +286,7 @@ def cache():
     P.append(stat(8, "Estimated ping cost",
                   ratio(inc("llm_keepalive_estimated_cost_usd_total"), inc("llm_keepalive_cost_usd_total")),
                   18, 12, w=6, h=4, unit="percentunit", decimals=1, c=ORANGE,
-                  desc="Share of the ping cost that is not a measured figure. Each proxy books a different part here. context-guru: pings that timed out with no answer, booked at their projected cost (#754). cortex: pings priced from a fallback rate, because the model has no rate of its own. No data means the ping cost did not increase in the range."))
+                  desc="Share of the ping cost that is not a measured figure. Each proxy books a different part here. context-guru: pings that timed out with no answer, booked at their projected cost (#754). cortex: pings priced from a fallback rate, because the model has no rate of its own, and pings that timed out, booked at the keeper's projected cost. No data means the ping cost did not increase in the range."))
     P.append(series(6, "Keep-alive: cost, rescue and net (USD per hour)", [
         (f'{rate("llm_keepalive_cost_usd_total")} * 3600', "ping cost"),
         (f'({rescue(RESCUE_SAVED)} - {rescue(RESCUE_ADDED)}) * 3600', "rescue (net of reads)"),

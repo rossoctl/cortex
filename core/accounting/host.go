@@ -239,6 +239,9 @@ type pending struct {
 	pinged     bool
 	// meta is the RequestMeta the record was begun with, for the sink.
 	meta accountant.RequestMeta
+	// firstOnThread is true when RequestEnd had no earlier request of this (session, thread),
+	// for the cold_start cause of llm.cache.misses (missCause).
+	firstOnThread bool
 
 	computeMu sync.Mutex
 	computed  bool
@@ -313,11 +316,11 @@ func (h *Host) RequestEnd(pctx *pipeline.Context) {
 		Billing:   billing,
 	}
 	thread := ThreadOf(pctx)
-	h.setThreadBilling(pctx.SessionID, thread.ID, billing.Mode)
+	seen := h.setThreadBilling(pctx.SessionID, thread.ID, billing.Mode)
 	if h.metaHook != nil {
 		h.metaHook(meta)
 	}
-	p := &pending{done: make(chan struct{}), meta: meta}
+	p := &pending{done: make(chan struct{}), meta: meta, firstOnThread: !seen}
 	pipeline.SetState(pctx, pendingKey, p)
 	go h.end(p, format, meta, client, forwarded, ops, thread, facts.Classify(host, pctx.Path))
 }
@@ -339,18 +342,23 @@ func (h *Host) ThreadBilling(session, thread string) accountant.Billing {
 }
 
 // setThreadBilling records mode as thread's last-seen billing mode, and trims the map if that
-// pushed it over threadBillingCap. Runs on the request goroutine, inside RequestEnd.
-func (h *Host) setThreadBilling(session, thread string, mode accountant.BillingMode) {
+// pushed it over threadBillingCap. Runs on the request goroutine, inside RequestEnd. seen says
+// whether the thread already had an entry: the check and the write are under one lock, so two
+// concurrent requests cannot both be the thread's first.
+func (h *Host) setThreadBilling(session, thread string, mode accountant.BillingMode) (seen bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.threadBilling == nil {
 		h.threadBilling = map[threadBillingKey]threadBillingEntry{}
 	}
-	h.threadBilling[threadBillingKey{session: session, thread: thread}] = threadBillingEntry{
+	key := threadBillingKey{session: session, thread: thread}
+	_, seen = h.threadBilling[key]
+	h.threadBilling[key] = threadBillingEntry{
 		mode:     mode,
 		lastSeen: h.now(),
 	}
 	h.trimThreadBillingLocked()
+	return seen
 }
 
 // trimThreadBillingLocked drops the (session, thread) pairs seen longest ago, down to
@@ -517,7 +525,7 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 		if _, redirected, ok := pctx.RedirectTarget(); ok {
 			endpoint = redirected
 		}
-		h.observe(p.meta, usage, inf.OutputTokens, p.result, endpoint, pricing.UsageFromInference(inf).PromptTotal())
+		h.observe(p.meta, usage, inf.OutputTokens, p.result, endpoint, pricing.UsageFromInference(inf).PromptTotal(), p.firstOnThread)
 	}
 	return p.result, p.ok
 }
@@ -550,6 +558,10 @@ func (h *Host) computeSafe(req *accountant.Request, u accountant.Usage) (res acc
 	return req.Compute(u), true
 }
 
+// modelChangePrefix starts the ChangeID of every modelChangeOp, so missCause can tell a break a
+// plugin's model change caused from any other.
+const modelChangePrefix = "model:"
+
 // modelChangeOp is the setting op for a plugin that changed the model (SetRequestModel): the
 // change is not a body edit the library can see by comparing positions, and it starts at the
 // first position, because a model change invalidates the whole cached prefix (cached-prefix.md).
@@ -572,7 +584,7 @@ func modelChangeOp(pctx *pipeline.Context, from, to string) (accountant.Operatio
 	return accountant.Operation{
 		Kind:     accountant.KindSetting,
 		Operator: operator,
-		ChangeID: "model:" + from + "->" + to,
+		ChangeID: modelChangePrefix + from + "->" + to,
 		Settings: map[string]accountant.SettingChange{"model": {
 			From: &from,
 			To:   &to,

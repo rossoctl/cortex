@@ -3,6 +3,7 @@ package accounting
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,54 @@ var Components = []string{
 	"toolschema", "toon", "usershrink",
 	// context-guru operators outside the registry (envelope and trace ops)
 	"adjudicate", "headttl", "tailbreakpoint", "toolcut", "tooldefer", "expand", "expand_restore",
+}
+
+// The outcome label of llm.keepalive.pings, with context-guru's values (its observePing), so the
+// central dashboard stacks the two proxies on one axis.
+const (
+	PingOK      = "ok"      // the provider answered 2xx
+	PingFailed  = "failed"  // a status outside 200-299, or no response at all (a transport error)
+	PingTimeout = "timeout" // the ping ran to the keeper's timeout with no answer (#754)
+)
+
+// The cause label of llm.cache.misses and llm.cache.miss_cost_usd, with context-guru's values
+// (its missCause). Cortex cannot see the body diffs behind context-guru's prefix_change,
+// compaction_after_rewrite and bypass_flip, so such a miss is "other" here, not a guess.
+const (
+	MissColdStart    = "cold_start"
+	MissTTLExpiry    = "ttl_expiry"
+	MissModelChanged = "model_changed"
+	MissOther        = "other"
+)
+
+// missCause says why a request that read nothing from the cache missed. In order:
+//
+//   - model_changed: a break the library attributes to a model change (CauseModelChanged), or
+//     one a plugin's model change caused (a modelChangeOp's ChangeID). The provider keeps one
+//     cache for each model, so this beats an expiry.
+//   - ttl_expiry: the library's phase is cold. It sets cold only when the clock shows the
+//     entry the previous request wrote has expired (accountant §5.2).
+//   - cold_start: the thread's first request. The library leaves the phase unknown when it has
+//     no previous request, and firstOnThread is Cortex's own record of that. Both must hold: after
+//     a restart Cortex has forgotten the thread, but the restored library state gives a hot or
+//     cold phase, and that request is not a cold start.
+//   - other: anything else, such as an entry lost early or a prefix change.
+func missCause(res accountant.Result, firstOnThread bool) string {
+	for _, e := range res.CacheEffects {
+		if e.Kind != accountant.EffectBreak {
+			continue
+		}
+		if e.Cause == accountant.CauseModelChanged || strings.HasPrefix(e.ChangeID, modelChangePrefix) {
+			return MissModelChanged
+		}
+	}
+	switch {
+	case res.Phase == accountant.PhaseCold:
+		return MissTTLExpiry
+	case res.Phase == accountant.PhaseUnknown && firstOnThread:
+		return MissColdStart
+	}
+	return MissOther
 }
 
 // Sink hands each computed Result to accountant/metrics, which adds it to the llm.savings.*
@@ -118,7 +167,7 @@ func NewSink(mp metric.MeterProvider, r pricing.Resolver) *Sink {
 		}},
 		{"llm.keepalive.pings", func() (err error) {
 			s.keepalivePings, err = meter.Int64Counter("llm.keepalive.pings",
-				metric.WithDescription("Keep-alive pings observed."))
+				metric.WithDescription("Keep-alive pings the keeper reported, by outcome (ok, failed, timeout)."))
 			return err
 		}},
 		{"llm.keepalive.cost_usd", func() (err error) {
@@ -128,17 +177,17 @@ func NewSink(mp metric.MeterProvider, r pricing.Resolver) *Sink {
 		}},
 		{"llm.keepalive.estimated_cost_usd", func() (err error) {
 			s.keepaliveEstimatedUSD, err = meter.Float64Counter("llm.keepalive.estimated_cost_usd",
-				metric.WithDescription("Part of llm.keepalive.cost_usd priced from a fallback (bundled/unknown) rate."))
+				metric.WithDescription("Part of llm.keepalive.cost_usd that is not measured: priced from a fallback (bundled/unknown) rate, or the keeper's projection for a ping that timed out."))
 			return err
 		}},
 		{"llm.cache.misses", func() (err error) {
 			s.cacheMisses, err = meter.Int64Counter("llm.cache.misses",
-				metric.WithDescription("Non-ping inference requests with no cache-read tokens."))
+				metric.WithDescription("Non-ping inference requests with no cache-read tokens, by cause (cold_start, ttl_expiry, model_changed, other)."))
 			return err
 		}},
 		{"llm.cache.miss_cost_usd", func() (err error) {
 			s.cacheMissCostUSD, err = meter.Float64Counter("llm.cache.miss_cost_usd",
-				metric.WithDescription("Priced USD (actual + estimated) of cache-miss requests."))
+				metric.WithDescription("Priced USD (actual + estimated) of cache-miss requests, by cause."))
 			return err
 		}},
 	}
@@ -159,8 +208,11 @@ func NewSink(mp metric.MeterProvider, r pricing.Resolver) *Sink {
 // redirect) and the request's whole prompt. A panic in the library or the pricer is
 // recovered and logged: it costs this observation and nothing else. Safe on a nil Sink.
 //
+// firstOnThread says the request is its thread's first that the Host has seen (missCause). It is
+// ignored for a ping.
+//
 // Money moves only for meta.Billing.Mode == api; the library decides that, not this sink.
-func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, output int, res accountant.Result, endpoint string, promptTotal int) {
+func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, output int, res accountant.Result, endpoint string, promptTotal int, firstOnThread bool) {
 	if s == nil || s.sink == nil {
 		return
 	}
@@ -174,7 +226,30 @@ func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, output i
 	s.pricer.request = binding{endpoint: endpoint, promptTotal: promptTotal}
 	s.pricer.byModel = bindingsFor(meta.Model, s.pricer.request, res)
 	s.sink.Observe(acmetrics.Observation{Meta: meta, Usage: u, Result: res})
-	s.observeInferenceMetrics(meta, u, output)
+	s.observeInferenceMetrics(meta, u, output, missCause(res, firstOnThread))
+}
+
+// CountPing counts a ping the Host refused to price (Host.Ping): one llm.keepalive.pings with
+// outcome. projectedUSD is the keeper's projected cost of a ping with no answer; it is booked as
+// cost and, all of it, as estimated cost, because the provider probably billed the ping but
+// nobody measured it. 0 books no money. A priced ping is counted by Observe instead, never here
+// too. Safe on a nil Sink.
+func (s *Sink) CountPing(model, outcome string, projectedUSD float64) {
+	if s == nil || s.sink == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("accounting: counting a ping panicked; it books no metric", "panic", r)
+		}
+	}()
+	ctx := context.Background()
+	modelAttr := attribute.String("model", model)
+	s.keepalivePings.Add(ctx, 1, metric.WithAttributes(modelAttr, attribute.String("outcome", outcome)))
+	if projectedUSD > 0 {
+		s.keepaliveCostUSD.Add(ctx, projectedUSD, metric.WithAttributes(modelAttr))
+		s.keepaliveEstimatedUSD.Add(ctx, projectedUSD, metric.WithAttributes(modelAttr))
+	}
 }
 
 // observeInferenceMetrics adds one observation to the Tier 1 counters: llm.inference.* for a
@@ -192,14 +267,15 @@ func (s *Sink) Observe(meta accountant.RequestMeta, u accountant.Usage, output i
 // the 5m fallback) — not res.Unpriced, which is the accountant library's "this savings op could
 // not be priced" marker and says nothing about this request's own price. So a request with one
 // estimated tier and three priced ones books only that tier's dollars as estimated.
-func (s *Sink) observeInferenceMetrics(meta accountant.RequestMeta, u accountant.Usage, output int) {
+func (s *Sink) observeInferenceMetrics(meta accountant.RequestMeta, u accountant.Usage, output int, cause string) {
 	ctx := context.Background()
 	modelAttr := attribute.String("model", meta.Model)
 	actual, estimated := s.priceUsageSplit(meta.Model, u, output)
 	total := actual + estimated
 
 	if meta.RequestID == "" {
-		s.keepalivePings.Add(ctx, 1, metric.WithAttributes(modelAttr))
+		// A ping reaches here only once Host.Ping has priced it, which needs a 2xx answer.
+		s.keepalivePings.Add(ctx, 1, metric.WithAttributes(modelAttr, attribute.String("outcome", PingOK)))
 		if total > 0 {
 			s.keepaliveCostUSD.Add(ctx, total, metric.WithAttributes(modelAttr))
 		}
@@ -229,9 +305,10 @@ func (s *Sink) observeInferenceMetrics(meta accountant.RequestMeta, u accountant
 		s.inferenceEstimatedUSD.Add(ctx, estimated, metric.WithAttributes(modelAttr))
 	}
 	if u.CacheRead == 0 {
-		s.cacheMisses.Add(ctx, 1, metric.WithAttributes(modelAttr))
+		missAttrs := metric.WithAttributes(modelAttr, attribute.String("cause", cause))
+		s.cacheMisses.Add(ctx, 1, missAttrs)
 		if total > 0 {
-			s.cacheMissCostUSD.Add(ctx, total, metric.WithAttributes(modelAttr))
+			s.cacheMissCostUSD.Add(ctx, total, missAttrs)
 		}
 	}
 }
@@ -360,10 +437,29 @@ func pricingTier(t acmetrics.Tier) (pricing.Tier, bool) {
 
 // observe gives one Result to the sink, off the caller's goroutine: Compute runs on the response
 // path, and the sink's lock is shared by every request. Close waits for these.
-func (h *Host) observe(meta accountant.RequestMeta, u accountant.Usage, output int, res accountant.Result, endpoint string, promptTotal int) {
+func (h *Host) observe(meta accountant.RequestMeta, u accountant.Usage, output int, res accountant.Result, endpoint string, promptTotal int, firstOnThread bool) {
 	if h.sink == nil && h.observeHook == nil {
 		return
 	}
+	h.goObserve(func() {
+		if h.observeHook != nil {
+			h.observeHook(meta)
+		}
+		h.sink.Observe(meta, u, output, res, endpoint, promptTotal, firstOnThread)
+	})
+}
+
+// countPing counts a ping Host.Ping refused to price (Sink.CountPing), off the keeper's goroutine
+// like observe. It is not an observation of a Result, so observeHook does not see it.
+func (h *Host) countPing(model, outcome string, projectedUSD float64) {
+	if h.sink == nil {
+		return
+	}
+	h.goObserve(func() { h.sink.CountPing(model, outcome, projectedUSD) })
+}
+
+// goObserve runs fn on a goroutine of its own that Close waits for, unless Close has started.
+func (h *Host) goObserve(fn func()) {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -378,9 +474,6 @@ func (h *Host) observe(meta accountant.RequestMeta, u accountant.Usage, output i
 				slog.Error("accounting: observing a request panicked; it books no metric", "panic", r)
 			}
 		}()
-		if h.observeHook != nil {
-			h.observeHook(meta)
-		}
-		h.sink.Observe(meta, u, output, res, endpoint, promptTotal)
+		fn()
 	}()
 }

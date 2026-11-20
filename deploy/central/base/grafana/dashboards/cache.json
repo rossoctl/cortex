@@ -226,7 +226,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "Ping outcomes (per hour)",
-      "description": "Pings per hour. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is a proxy that does not label the outcome (cortex).",
+      "description": "Pings per hour. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is an older cortex build, which did not label the outcome.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -386,7 +386,7 @@
       "id": 8,
       "type": "stat",
       "title": "Estimated ping cost",
-      "description": "Share of the ping cost that is not a measured figure. Each proxy books a different part here. context-guru: pings that timed out with no answer, booked at their projected cost (#754). cortex: pings priced from a fallback rate, because the model has no rate of its own. No data means the ping cost did not increase in the range.",
+      "description": "Share of the ping cost that is not a measured figure. Each proxy books a different part here. context-guru: pings that timed out with no answer, booked at their projected cost (#754). cortex: pings priced from a fallback rate, because the model has no rate of its own, and pings that timed out, booked at the keeper's projected cost. No data means the ping cost did not increase in the range.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"

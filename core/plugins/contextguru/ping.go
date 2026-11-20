@@ -55,6 +55,9 @@ func (e pingEmitter) KeepAlivePing(r cgcomponents.KeepAliveReport) {
 		Status:   r.Status,
 		Manual:   r.Manual,
 		Duration: time.Duration(r.DurationMs * float64(time.Millisecond)),
+		// A ping with no answer has no usage, so the keeper's projection is its only cost.
+		TimedOut:     r.TimedOut,
+		ProjectedUSD: r.CostUSD,
 	})
 }
 
@@ -63,7 +66,8 @@ func (e pingEmitter) KeepAlivePing(r cgcomponents.KeepAliveReport) {
 // is the request PATH (keepalive.go's recordFor sets it so), so the upstream comes from the
 // request instead. thread is the accountant thread (pingEmitter.thread), for the same kind of
 // reason: r.Thread is the keeper's key. r.CostUSD is deliberately not carried: the host prices the
-// ping with its own rates. CacheWrite1h is the part of CacheWrite billed at the one-hour rate, in
+// ping with its own rates. Only a timed-out ping, which has no usage to price, hands r.CostUSD
+// to the host, as PingInfo.ProjectedUSD (KeepAlivePing). CacheWrite1h is the part of CacheWrite billed at the one-hour rate, in
 // both types.
 func pingFromReport(r cgcomponents.KeepAliveReport, host, thread string) accountant.Ping {
 	return accountant.Ping{
