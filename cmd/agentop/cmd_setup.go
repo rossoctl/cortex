@@ -69,6 +69,9 @@ var setupConfirm = func(w io.Writer) bool {
 	return setupConfirmFrom(tty, w)
 }
 
+// setupNow is the clock ready in is measured on. A var so a test can set the time.
+var setupNow = time.Now
+
 // setupAnimate reports whether the screen animates on w: on a terminal. A var for
 // the reason uninstallAnimate gives.
 var setupAnimate = isTerminal
@@ -294,14 +297,14 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 
 	// ready in is the time the changes took, from here: not the time spent reading
 	// the list of them at the prompt.
-	started := time.Now()
+	started := setupNow()
 	if !applySteps(env, ui, planned, sigs) {
 		return 1
 	}
 	for _, f := range env.onSuccess {
 		f()
 	}
-	printSetupEnding(env, ui, time.Since(started))
+	printSetupEnding(env, ui, setupNow().Sub(started))
 	return 0
 }
 

@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 // fakeLaunchctl puts a launchctl on PATH that behaves like a restricted sandbox: it
@@ -211,12 +210,8 @@ func TestReportSessionInterruption(t *testing.T) {
 			t.Fatalf("cannot dial the listener we just opened: %v", err)
 		}
 		defer client.Close() //nolint:errcheck
-		select {
-		case c := <-accepted:
-			defer c.Close() //nolint:errcheck
-		case <-time.After(2 * time.Second):
-			t.Fatal("our own listener did not accept in 2s")
-		}
+		c := <-accepted
+		defer c.Close() //nolint:errcheck
 
 		var out strings.Builder
 		reportSessionInterruption(servicePaths{forwardAddr: ln.Addr().String()}, &out)

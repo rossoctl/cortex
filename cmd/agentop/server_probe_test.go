@@ -430,16 +430,18 @@ func TestProbe_HungPathLeavesTimeForItsProtocol(t *testing.T) {
 	}
 }
 
+// The probe's context ends at the first request after /v1/messages served.
 func TestProbe_EndedContextKeepsWhatWasFound(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, r *http.Request) {
 		if p.path == "/v1/messages" {
 			io.WriteString(w, anthropicOK)
 			return
 		}
+		cancel()
 		hang(r)
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
 	api, _, err := probeAPI(ctx, srv.Client(), routerconfig.Server{URL: srv.URL, Key: "k"}, "m", "", false)
 	want := map[string]string{"anthropic-messages": "/v1/messages"}
 	if err != nil || !maps.Equal(api, want) {

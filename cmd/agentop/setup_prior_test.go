@@ -12,7 +12,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
 )
@@ -63,7 +62,7 @@ func detachedSleeperAt(t *testing.T, path string) int {
 	if err := os.WriteFile(path, b, 0o755); err != nil { //nolint:gosec // an executable fixture
 		t.Fatal(err)
 	}
-	ready := filepath.Join(t.TempDir(), "ready")
+	ready, waitReady := sleeperReady(t)
 	cmd := exec.Command("/bin/sh", "-c", `"$0" >/dev/null 2>&1 </dev/null & echo $!`, path)
 	cmd.Env = append(os.Environ(), sleeperEnv+"=1", sleeperReadyEnv+"="+ready)
 	out, err := cmd.Output()
@@ -81,14 +80,8 @@ func detachedSleeperAt(t *testing.T, path string) int {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		}
 	})
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := os.Stat(ready); err == nil {
-			return pid
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the detached sleeper never started")
-		}
-	}
+	waitReady()
+	return pid
 }
 
 // ranFrom reports whether pid is alive and was started as path, by ps's argv[0].
@@ -561,9 +554,10 @@ func TestSetupRollbackRestartsTheBackgroundCortexBesideAStoppedService(t *testin
 }
 
 // asyncTeardown makes fakeSupervisor's bootout of a loaded job return at once and
-// the job leave the domain a second later, as launchd's does while the job's
-// supervisor drains the proxy. Everything else goes to the fake, which it alone
-// may wrap: the real launchctl acts on the real io.rossoctl.cortex.
+// the job leave the domain at the second look at it after that, as launchd's does
+// while the job's supervisor drains the proxy: the first look still finds it
+// running. Everything else goes to the fake, which it alone may wrap: the real
+// launchctl acts on the real io.rossoctl.cortex.
 func asyncTeardown(t *testing.T, loaded string) {
 	t.Helper()
 	fake, err := exec.LookPath("launchctl")
@@ -573,9 +567,17 @@ func asyncTeardown(t *testing.T, loaded string) {
 	if b, _ := os.ReadFile(fake); !strings.Contains(string(b), loaded) { //nolint:gosec
 		t.Fatalf("%s on PATH is not fakeSupervisor's", fake)
 	}
+	leaving, looked := loaded+".leaving", loaded+".looked"
 	installStub(t, "launchctl", `#!/bin/sh
 case "$1" in
-  bootout) if [ -f '`+loaded+`' ]; then ( sleep 1; rm -f '`+loaded+`' ) >/dev/null 2>&1 </dev/null & exit 0; fi ;;
+  bootout) if [ -f '`+loaded+`' ]; then : > '`+leaving+`'; exit 0; fi ;;
+  bootstrap) rm -f '`+leaving+`' '`+looked+`' ;;
+  print)
+    case "$2" in
+      */*/*) if [ -f '`+leaving+`' ]; then
+               if [ -f '`+looked+`' ]; then rm -f '`+loaded+`' '`+leaving+`' '`+looked+`'; else : > '`+looked+`'; fi
+             fi ;;
+    esac ;;
 esac
 exec '`+fake+`' "$@"
 `)
@@ -632,13 +634,13 @@ func TestSetupRollbackWaitsOutLaunchdTeardown(t *testing.T) {
 		if err := controlService(runtimeGOOS(), "stop", sp, io.Discard); err != nil {
 			t.Fatal(err)
 		}
-		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(100 * time.Millisecond) {
-			if _, err := os.Stat(sc.loaded); err != nil {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("fixture: the stopped job never left")
-			}
+		// The stopped job leaves at the second look.
+		target := "gui/" + strconv.Itoa(os.Getuid()) + "/" + launchdLabel
+		for range 2 {
+			_, _ = labelGone(target)
+		}
+		if _, err := os.Stat(sc.loaded); err == nil {
+			t.Fatal("fixture: the stopped job never left")
 		}
 		prev, err := os.ReadFile(bin)
 		if err != nil {

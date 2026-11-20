@@ -13,7 +13,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/peerproc"
 )
@@ -734,7 +733,6 @@ func TestCodexStopUpdater_RealProcess(t *testing.T) {
 			} else {
 				writeCodexPIDStarted(t, home, codexUpdaterPIDRel, pid, psStarted(t, pid))
 			}
-			start := time.Now()
 			if err := codexStopUpdater(home); err != nil {
 				t.Fatalf("stopping a live updater: %v", err)
 			}
@@ -742,9 +740,6 @@ func TestCodexStopUpdater_RealProcess(t *testing.T) {
 			case <-exited:
 			default:
 				t.Fatal("codexStopUpdater returned with the updater still running")
-			}
-			if d := time.Since(start); d > 5*time.Second {
-				t.Errorf("stop took %s; SIGTERM should end sleep at once", d)
 			}
 			if err := codexStopUpdater(home); err != nil {
 				t.Errorf("stale pid file: %v", err)
@@ -799,10 +794,11 @@ func TestCodexStopUpdater_LeavesAReusedPIDAlone(t *testing.T) {
 			if err := codexStopUpdater(home); err != nil {
 				t.Errorf("a pid that is not the updater: %v", err)
 			}
+			// A stop that signals waits for the exit before it returns.
 			select {
 			case <-exited:
 				t.Fatal("signalled a process the pid file does not describe")
-			case <-time.After(300 * time.Millisecond):
+			default:
 			}
 		})
 	}

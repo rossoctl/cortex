@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/xml"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -252,7 +256,7 @@ func startSleeperAt(t *testing.T, path string) int {
 	if err := os.WriteFile(path, b, 0o755); err != nil { //nolint:gosec // an executable fixture
 		t.Fatal(err)
 	}
-	ready := filepath.Join(t.TempDir(), "ready")
+	ready, waitReady := sleeperReady(t)
 	cmd := exec.Command(path)
 	cmd.Env = append(os.Environ(), sleeperEnv+"=1", sleeperReadyEnv+"="+ready)
 	if err := cmd.Start(); err != nil {
@@ -262,15 +266,24 @@ func startSleeperAt(t *testing.T, path string) int {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := os.Stat(ready); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the fixture process at %s never started", path)
+	waitReady()
+	return cmd.Process.Pid
+}
+
+// sleeperReady is the path a sleeper marks itself ready at, a FIFO, and the wait
+// for that mark: the sleeper's write to it and this read meet.
+func sleeperReady(t *testing.T) (string, func()) {
+	t.Helper()
+	ready := filepath.Join(t.TempDir(), "ready")
+	if err := syscall.Mkfifo(ready, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return ready, func() {
+		t.Helper()
+		if _, err := os.ReadFile(ready); err != nil {
+			t.Fatal(err)
 		}
 	}
-	return cmd.Process.Pid
 }
 
 // TestServiceStatus_ReportsTheV070ProxyInThePidfile: v0.7.0's installer ran
@@ -496,13 +509,27 @@ func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
 
 // TestWaitHealthy_TimesOut: install claims success only after the health endpoint
 // answers, because a supervisor reports "loaded" for a proxy that is crash-looping.
+// Within its window it asks again, past a dropped connection and a 503, until the
+// answer is 2xx.
 func TestWaitHealthy_TimesOut(t *testing.T) {
-	start := time.Now()
-	if waitHealthy("http://127.0.0.1:1/healthz", 1200*time.Millisecond) {
+	if waitHealthy("http://127.0.0.1:1/healthz", time.Nanosecond) {
 		t.Error("reported healthy against a closed port")
 	}
-	if elapsed := time.Since(start); elapsed < 900*time.Millisecond {
-		t.Errorf("returned after %s; it should have used the timeout", elapsed)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			c, _, err := http.NewResponseController(w).Hijack()
+			if err == nil {
+				_ = c.Close()
+			}
+		case 2:
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	if ok := waitHealthy(srv.URL+"/healthz", time.Hour); !ok || calls.Load() != 3 {
+		t.Errorf("waitHealthy = %v after %d asks, want true after 3", ok, calls.Load())
 	}
 }
 

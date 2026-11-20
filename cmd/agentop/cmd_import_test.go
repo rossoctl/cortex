@@ -110,11 +110,13 @@ func TestRunImport_SinceForms(t *testing.T) {
 	}
 
 	got = importer.Request{}
+	before := time.Now()
 	if code := runImport([]string{"--endpoint", srv.URL, "--since", "30d"}, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d; stderr = %s", code, errOut.String())
 	}
-	if d := time.Since(got.Since) - 720*time.Hour; d < 0 || d > time.Second {
-		t.Errorf("since 30d = %v, want now - 720h within a second (off by %v)", got.Since, d)
+	after := time.Now()
+	if got.Since.Before(before.Add(-720*time.Hour)) || got.Since.After(after.Add(-720*time.Hour)) {
+		t.Errorf("since 30d = %v, want 720h before a time in [%v, %v]", got.Since, before, after)
 	}
 
 	for _, bad := range []string{"bad", "0d", "-3d", "2026-13-01"} {
