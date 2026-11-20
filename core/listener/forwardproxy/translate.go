@@ -10,6 +10,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/listener/internal/bodycount"
+	"github.com/rossoctl/cortex/core/model"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/translate"
 	"github.com/rossoctl/cortex/core/translate/pivot"
@@ -97,9 +98,13 @@ func (t *translation) convert(pctx *pipeline.Context) (translate.Converted, erro
 
 // applyUpstreamHeaders sets the headers that a plugin gave with
 // pctx.SetUpstreamHeaders on the upstream request. Each one replaces a header of
-// the same name (rule C3). It runs after the sync of pctx.Headers.
+// the same name (rule C3). It runs after the sync of pctx.Headers. model.RecordHeader is
+// never set (#2005): it is for Cortex only, also when a plugin gives it.
 func applyUpstreamHeaders(r *http.Request, h http.Header) {
 	for k, v := range h {
+		if strings.EqualFold(k, model.RecordHeader) {
+			continue
+		}
 		r.Header[http.CanonicalHeaderKey(k)] = append([]string(nil), v...)
 	}
 }

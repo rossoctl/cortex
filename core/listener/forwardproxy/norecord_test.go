@@ -271,6 +271,25 @@ func TestNoRecord_OpaqueConnectIgnoresARewrittenHeader(t *testing.T) {
 	}
 }
 
+// A plugin's upstream headers (SetUpstreamHeaders, as the inference router gives a server's
+// configured headers) never carry X-Cortex-Record upstream, in any case (#2005).
+func TestNoRecord_UpstreamHeadersNeverSetTheRecordHeader(t *testing.T) {
+	r, _ := http.NewRequest(http.MethodPost, "http://upstream.example/v1/messages", nil)
+	applyUpstreamHeaders(r, http.Header{
+		model.RecordHeader: {"off"},
+		"x-cortex-record":  {"off"},
+		"X-Tenant":         {"a"},
+	})
+	for k := range r.Header {
+		if strings.EqualFold(k, model.RecordHeader) {
+			t.Fatalf("the upstream request has %s: %v", k, r.Header)
+		}
+	}
+	if r.Header.Get("X-Tenant") != "a" {
+		t.Fatalf("other upstream headers were not set: %v", r.Header)
+	}
+}
+
 // A request without the header is unchanged.
 func TestNoRecord_UnflaggedRequestIsRecorded(t *testing.T) {
 	proxy, backend, rec, _ := noRecordProxy(t)
