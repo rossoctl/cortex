@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -305,5 +307,105 @@ func TestMCPEvolve_AnEvolveWithoutThePromptStillLearns(t *testing.T) {
 	}
 	if profilePrompt(f.calls[0]) != "environment-grounded" || profilePrompt(f.calls[1]) != "" {
 		t.Fatalf("prompts sent = %q, %q; want environment-grounded, then none", profilePrompt(f.calls[0]), profilePrompt(f.calls[1]))
+	}
+}
+
+// hungStream answers the SSE request with headers and then nothing: no endpoint
+// event, so the session never comes up.
+func hungStream(t *testing.T) string {
+	t.Helper()
+	stop := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-stop:
+		}
+	}))
+	t.Cleanup(func() { close(stop); srv.Close() })
+	return srv.URL + "/sse"
+}
+
+// silentListener accepts connections and never answers them.
+func silentListener(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var conns []net.Conn
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		}
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	})
+	return "http://" + ln.Addr().String() + "/sse"
+}
+
+func TestMCPEvolve_AHungEvolveCostsACallOnlyItsOwnTimeout(t *testing.T) {
+	for name, url := range map[string]func(*testing.T) string{
+		"no endpoint event": hungStream,
+		"silent listener":   silentListener,
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newMCPEvolve(url(t), "cortex", "environment-grounded", 200*time.Millisecond)
+			// Two sessions' first requests at once: neither waits on the other, and
+			// each returns at its own 200 ms deadline. Before, the first waited 30 s
+			// (no endpoint event) or forever (silent listener), and the second
+			// queued behind it.
+			start := time.Now()
+			var wg sync.WaitGroup
+			for range 2 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+					defer cancel()
+					if _, err := e.Guidelines(ctx, "cortex", "t", "s"); !errors.Is(err, ErrUnavailable) {
+						t.Errorf("err = %v, want ErrUnavailable", err)
+					}
+				}()
+			}
+			wg.Wait()
+			if took := time.Since(start); took > 2*time.Second {
+				t.Fatalf("calls took %v, want about their 200ms timeout", took)
+			}
+			closed := make(chan struct{})
+			go func() { e.Close(); close(closed) }()
+			select {
+			case <-closed:
+			case <-time.After(time.Second):
+				t.Fatal("Close waited for the hung connect")
+			}
+		})
+	}
+}
+
+func TestMCPEvolve_ConnectsAgainAfterClose(t *testing.T) {
+	f := &fakeEvolveServer{}
+	e := newMCPEvolve(f.start(t), "cortex", "environment-grounded", time.Second)
+	defer e.Close()
+	for range 2 {
+		if _, err := e.Guidelines(context.Background(), "cortex", "t", "s"); err != nil {
+			t.Fatal(err)
+		}
+		e.Close()
 	}
 }

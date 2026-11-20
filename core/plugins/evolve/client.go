@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -67,6 +68,12 @@ var ErrUnavailable = errors.New("evolve unavailable")
 // page at 200).
 const maxServedGuidelines = 200
 
+// connectTimeout bounds establishing the SSE session: the dial, the stream's
+// response headers, the endpoint event and initialize. A caller waits for a
+// connect only as long as its own context allows; the connect carries on, for
+// the calls after it, until this bound.
+const connectTimeout = 10 * time.Second
+
 // sentinelHeader marks the plugin's own calls so that, should one ever loop
 // back through the listener, OnRequest skips it instead of recursing.
 const sentinelHeader = "X-Evolve-Cortex"
@@ -87,7 +94,9 @@ func profileDefinition(prompt string) map[string]any {
 }
 
 // mcpEvolve talks to `evolve-mcp --transport sse`. One SSE session is kept
-// open and re-established after a failure.
+// open and re-established after a failure. Connecting happens off the lock, one
+// attempt at a time, so a slow or hung evolve costs each call at most its own
+// timeout and never blocks calls on other sessions.
 //
 // Its http.Client never uses a proxy: Cortex is usually also the machine's
 // HTTPS_PROXY, and routing evolve's calls through it would record them as
@@ -99,8 +108,13 @@ type mcpEvolve struct {
 	timeout time.Duration
 	http    *http.Client
 
-	mu      sync.Mutex
-	client  *mcpclient.Client
+	mu     sync.Mutex
+	client *mcpclient.Client
+	// connecting is closed when the connect in progress ends; nil when none is.
+	connecting chan struct{}
+	connErr    error // why the last connect failed
+	// gen counts Close calls, so a connect that finishes after one is discarded.
+	gen     int
 	ensured bool
 	// noDetails records that this evolve predates include_details on
 	// get_guidelines_with_attribution, so Guidelines reads the guidelines with
@@ -114,40 +128,104 @@ type mcpEvolve struct {
 }
 
 func newMCPEvolve(url, profile, prompt string, timeout time.Duration) *mcpEvolve {
+	dialer := &net.Dialer{Timeout: connectTimeout, KeepAlive: 30 * time.Second}
 	return &mcpEvolve{
 		url:     url,
 		profile: profile,
 		prompt:  prompt,
 		timeout: timeout,
 		// No client timeout: the SSE stream is long-lived. Calls are bounded by ctx.
-		http: &http.Client{Transport: &http.Transport{Proxy: nil, MaxIdleConnsPerHost: 4, IdleConnTimeout: 90 * time.Second}},
+		// The dial and response-header timeouts bound only getting an answer started,
+		// so a server that accepts the connection and never answers can't hold one.
+		http: &http.Client{Transport: &http.Transport{
+			Proxy: nil, DialContext: dialer.DialContext, ResponseHeaderTimeout: connectTimeout,
+			MaxIdleConnsPerHost: 4, IdleConnTimeout: 90 * time.Second,
+		}},
 	}
 }
 
+// session returns the open SSE session, starting a connect when there is none
+// and none is in progress. The caller waits for the connect only until its ctx
+// ends; the connect itself is bounded by connectTimeout.
 func (e *mcpEvolve) session(ctx context.Context) (*mcpclient.Client, error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.client != nil {
-		return e.client, nil
+		c := e.client
+		e.mu.Unlock()
+		return c, nil
 	}
+	wait := e.connecting
+	if wait == nil {
+		wait = make(chan struct{})
+		e.connecting = wait
+		go e.connect(wait, e.gen)
+	}
+	e.mu.Unlock()
+	select {
+	case <-wait:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	switch {
+	case e.client != nil:
+		return e.client, nil
+	case e.connErr != nil:
+		return nil, e.connErr
+	}
+	return nil, errors.New("connection closed")
+}
+
+// connect establishes a session and publishes it, unless Close ran meanwhile.
+func (e *mcpEvolve) connect(done chan struct{}, gen int) {
+	c, err := e.dial()
+	e.mu.Lock()
+	e.connecting = nil
+	e.connErr = err
+	if err == nil {
+		if e.gen == gen {
+			e.client = c
+		} else {
+			_ = c.Close()
+		}
+	}
+	e.mu.Unlock()
+	close(done)
+}
+
+func (e *mcpEvolve) dial() (*mcpclient.Client, error) {
 	c, err := mcpclient.NewSSEMCPClient(e.url,
 		transport.WithHTTPClient(e.http),
 		transport.WithHeaders(map[string]string{sentinelHeader: "1"}))
 	if err != nil {
 		return nil, err
 	}
-	// The stream outlives this call, so it must not inherit the caller's deadline.
-	if err := c.Start(context.Background()); err != nil {
-		return nil, err
-	}
-	init := mcp.InitializeRequest{}
-	init.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	init.Params.ClientInfo = mcp.Implementation{Name: "cortex-evolve-plugin", Version: "1"}
-	if _, err := c.Initialize(ctx, init); err != nil {
+	// The stream outlives the connect, so its context has no deadline. The timer
+	// cancels it only if the session isn't up in time: mcp-go's own 30 s wait for
+	// the endpoint event starts only once the stream's headers have arrived.
+	stream, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(connectTimeout, cancel)
+	fail := func(err error) (*mcpclient.Client, error) {
+		timer.Stop()
+		cancel()
 		_ = c.Close()
 		return nil, err
 	}
-	e.client = c
+	if err := c.Start(stream); err != nil {
+		return fail(err)
+	}
+	initCtx, cancelInit := context.WithTimeout(context.Background(), connectTimeout)
+	defer cancelInit()
+	init := mcp.InitializeRequest{}
+	init.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	init.Params.ClientInfo = mcp.Implementation{Name: "cortex-evolve-plugin", Version: "1"}
+	if _, err := c.Initialize(initCtx, init); err != nil {
+		return fail(err)
+	}
+	if !timer.Stop() {
+		return fail(fmt.Errorf("not connected within %s", connectTimeout))
+	}
 	return c, nil
 }
 
@@ -390,12 +468,16 @@ func (e *mcpEvolve) ensureProfile(ctx context.Context) error {
 	return err
 }
 
+// Close closes the session without waiting for a connect in progress, which
+// closes its own session when it finishes.
 func (e *mcpEvolve) Close() {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.client != nil {
-		_ = e.client.Close()
-		e.client = nil
+	e.gen++
+	c := e.client
+	e.client = nil
+	e.mu.Unlock()
+	if c != nil {
+		_ = c.Close()
 	}
 }
 
