@@ -68,6 +68,25 @@ the base, and the PR has no parent PR.
    Keep the other sentences of that paragraph (`[b]` is inert on the usage pane, latency
    is not available per project, the sessions list rules).
 8. **One PR.** The estimated total is about 640 counted lines, under the 2,000 limit.
+9. **The issue body below is part 2 of a 3-part issue text.** Read only Tasks 5 and 6 of it.
+   - The heading "PR 2 ... stacked on PR 1" is replaced by decision 1: the PR has no parent.
+   - "Open PR 2" in Task 6 Step 5 is not a task step. The workflow opens the PR.
+   - Review Focus items 2, 3, 4 and 5 name part 1 and part 3 tests (Tasks 1, 2 and 7 of
+     #2032). They are not in this plan. Only item 1 applies here.
+   - "Before each push" applies only to `cmd/agentop`. This plan does not change `core`.
+   - Out of scope (from the issue): the Sessions pane cost cell, `agentop cost --project`,
+     new drawer axes. Part 3 (#2035) is not in this plan.
+10. **The currency split under a project scope.** In `fetchSpendSpan`, replace the call
+    `fetchUsageScoped(ctx, client, def.window, def.resolution, agent, usage.GroupCurrency)`
+    with `fetchUsageScopedProject(ctx, client, def.window, def.resolution, agent, project, usage.GroupCurrency)`.
+    On a fallback (older proxy, or `Other`) the reply is the narrowed `GroupNone` one.
+    `unitCosts` returns nil for a reply that is not `GroupCurrency`, so the cell says
+    `money.Mixed`, as today. No other change is needed for that case.
+11. **Note order in `drawerScopeNote`.** Check the project case first: when
+    `project != ""`, return the project note or `""`, and do not fall through to the
+    agent cases. `(other)` (`projectOverflowLabel`) is never a scope
+    (`spendScopeProject` returns a project or `otherProjects`), so `spendAxes` needs no
+    case for it.
 
 ## Tasks, dependencies and estimates
 
@@ -139,7 +158,7 @@ Part 2 of 3 of #2032. The design, its anti-goals and its facts are in #2032. Thi
 5. **An 80-column terminal with SERVER shown.** A mixed cell does not fit. It must show `(mixed)`, and AGENT must not get narrower than today. Test: Task 7, `TestAgentsPane_MixedCellFallsBackAt80`.
 
 
-## PR 2: agentop drawer and band (Tasks 5–6), stacked on PR 1
+## PR 2: agentop drawer and band (Tasks 5–6) — in this plan, PR P1 with no parent (decision 1)
 
 ### Task 5 (T5): Send `project=`, trust only the echo
 
@@ -147,7 +166,9 @@ Part 2 of 3 of #2032. The design, its anti-goals and its facts are in #2032. Thi
 
 **Files:**
 - Modify: `cmd/agentop/apiclient/client.go` (`GetUsageWindowForAgent` at `:597`), `cmd/agentop/tui/agent_scope.go` (`fetchUsageScopedProject` at `:72`)
-- Test: `cmd/agentop/tui/agent_scope_project_test.go`, `cmd/agentop/apiclient/client_test.go`
+- Test: create `cmd/agentop/tui/agent_scope_project_test.go`; add to `cmd/agentop/apiclient/client_test.go`
+- Modify tests (decision 3): `cmd/agentop/tui/agent_scope_test.go`, `cmd/agentop/tui/agents_projects_test.go`, `cmd/agentop/tui/agents_cursor_scope_test.go`
+- Update the doc comment of `fetchUsageScopedProject`: it now sends `project=`.
 
 **Interfaces:**
 - Produces: `func (c *Client) GetUsageWindowScoped(ctx context.Context, window string, resolution time.Duration, sessionID, agent, project string, group usage.Group) (*usage.Snapshot, error)`. `GetUsageWindowForAgent` calls it with `project ""`. Sets `project` in the query when non-empty.
@@ -172,7 +193,9 @@ Part 2 of 3 of #2032. The design, its anti-goals and its facts are in #2032. Thi
 
 **Files:**
 - Modify: `cmd/agentop/tui/agent_scope.go` (`spendAxes` at `:104`), `cmd/agentop/tui/spend_drawer.go` (`drawerScopeNote` at `:1170`), `cmd/agentop/tui/spend.go` (`fetchSpendSpan` guard at `:984`)
-- Test: `cmd/agentop/tui/spend_drawer_project_test.go`
+- Test: create `cmd/agentop/tui/spend_drawer_project_test.go`
+- Modify tests (decision 4): `cmd/agentop/tui/project_scope_spend_test.go`
+- Also modify `spendAxis` in `cmd/agentop/tui/agent_scope.go` (decision 5), and the comments above `spendAxes`, `drawerScopeNote` and the `fetchSpendSpan` split that say a project scope has no breakdown.
 
 **Interfaces:**
 - Consumes: Task 5's `fetchUsageScopedProject`.
@@ -188,4 +211,4 @@ Part 2 of 3 of #2032. The design, its anti-goals and its facts are in #2032. Thi
 - [ ] **Step 2: Run, expect FAIL.** `GOWORK=off go -C cmd/agentop test ./tui/ -run 'SpendDrawer_Project|SpendDrawer_OtherProject|SpendBand_Project' -count=1`
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run, expect PASS.** Then `scripts/dev/go-test-shards.sh -short cmd/agentop`.
-- [ ] **Step 5: Commit** `feat: Break down a project's spend in the agentop drawer`. Open PR 2: `feat: Show a project's spend by model in agentop`.
+- [ ] **Step 5: Commit** `feat: Break down a project's spend in the agentop drawer`. (Do not open a PR here: decision 9.)
