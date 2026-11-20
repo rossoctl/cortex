@@ -555,9 +555,10 @@ func TestMain(m *testing.M) {
 		main()
 		return
 	}
-	// Poll a stub's health 10 times as often. The windows stay real: a shorter
-	// window made tests fail on a loaded machine, where a stub can need more than
-	// 1s to answer or to exit.
+	// Poll a stub's health 10 times as often. A test that calls readyOnFirstAnswer
+	// takes the first answer; the rest keep real windows, because a shorter window
+	// made tests fail on a loaded machine, where a stub can need more than 1s to
+	// answer or to exit.
 	healthPollDivisor = 10
 	os.Exit(m.Run())
 }

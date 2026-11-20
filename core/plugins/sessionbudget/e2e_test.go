@@ -166,7 +166,7 @@ func TestE2E_MultiSession(t *testing.T) {
 // TestE2E_LocalCacheEnforcesDuringOutage confirms that a populated
 // cache enforces even when the backing store is unreachable.
 func TestE2E_LocalCacheEnforcesDuringOutage(t *testing.T) {
-	// Build without starting refreshLoop so we can swap store safely.
+	// The store is down for the whole test.
 	p := New()
 	cfg, _ := json.Marshal(config{
 		RedisURL:         "mem://test",
@@ -236,6 +236,37 @@ func TestE2E_RefreshRecovery(t *testing.T) {
 	p.mu.RUnlock()
 	if gotAfter != 180 {
 		t.Errorf("after recovery: tokens = %d, want 180", gotAfter)
+	}
+}
+
+// TestE2E_RefreshLoopRefreshesAtEachTick: each tick of the refresh loop brings
+// the cache up to the store's counters.
+func TestE2E_RefreshLoopRefreshesAtEachTick(t *testing.T) {
+	store := newMemStore()
+	p := New()
+	cfg, _ := json.Marshal(config{
+		RedisURL:         "mem://test",
+		MaxTokens:        200,
+		OnExceed:         "deny",
+		RedisUnavailable: "fail_open",
+	})
+	if err := p.Configure(cfg); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	p.store = store
+	store.HashIncr(context.Background(), "session-budget:s", "tokens", 180)
+	p.mu.Lock()
+	p.cache["s"] = &counters{tokens: 50}
+	p.mu.Unlock()
+
+	ticks := make(chan time.Time)
+	go p.refreshOn(ticks)
+	ticks <- time.Now()
+	close(p.stopCh) // the loop finishes the tick's refresh before it stops
+	<-p.stopped
+
+	if got := p.cache["s"].tokens; got != 180 {
+		t.Errorf("after a tick: tokens = %d, want 180", got)
 	}
 }
 

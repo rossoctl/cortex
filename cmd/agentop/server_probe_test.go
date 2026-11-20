@@ -391,6 +391,7 @@ func hang(r *http.Request) { <-r.Context().Done() }
 // would: the client gives up a request once its handler calls hang. As a transport
 // it is the client's, and each request it sends carries the id hang finds it by.
 type giveUp struct {
+	t       *testing.T
 	rt      http.RoundTripper
 	n       atomic.Int64
 	cancels sync.Map // id → context.CancelFunc
@@ -407,12 +408,15 @@ func (g *giveUp) RoundTrip(r *http.Request) (*http.Response, error) {
 	return g.rt.RoundTrip(r)
 }
 
-// hang answers only when the client has given r up, which it does at once.
+// hang answers only when the client has given r up, which it does at once. A
+// request g did not send fails the test and is answered at once.
 func (g *giveUp) hang(r *http.Request) {
 	if cancel, ok := g.cancels.Load(r.Header.Get(giveUpHeader)); ok {
 		cancel.(context.CancelFunc)()
+		<-r.Context().Done()
+	} else {
+		g.t.Errorf("%s carries no give-up id g sent", r.URL.Path)
 	}
-	<-r.Context().Done()
 }
 
 // probeGivingUp probes srv as server add does, through g, with each request's time
@@ -440,7 +444,7 @@ func TestProbeTotal_IsARequestTimeForEachPath(t *testing.T) {
 }
 
 func TestProbe_HungProtocolLeavesTimeForTheNext(t *testing.T) {
-	g := &giveUp{}
+	g := &giveUp{t: t}
 	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, r *http.Request) {
 		switch {
 		case strings.HasSuffix(p.path, "messages"):
@@ -459,7 +463,7 @@ func TestProbe_HungProtocolLeavesTimeForTheNext(t *testing.T) {
 }
 
 func TestProbe_HungPathLeavesTimeForItsProtocol(t *testing.T) {
-	g := &giveUp{}
+	g := &giveUp{t: t}
 	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, r *http.Request) {
 		switch p.path {
 		case "/v1/messages":

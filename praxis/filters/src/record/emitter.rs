@@ -55,7 +55,7 @@ pub const MAX_LINE: usize = 64 << 20;
 
 #[cfg(not(test))]
 const BACKOFF_MIN: Duration = Duration::from_millis(100);
-/// Tests reconnect within a millisecond. Above zero, so doubling still grows
+/// Tests back off for 1ms. Above zero, so doubling still grows
 /// the backoff of an emitter whose ingest stays down.
 #[cfg(test)]
 const BACKOFF_MIN: Duration = Duration::from_millis(1);

@@ -118,6 +118,11 @@ func TestApplyUnsupervised_CannotStartIsAFailure(t *testing.T) {
 		})
 		w.WriteHeader(http.StatusInternalServerError)
 	})
+	t.Cleanup(func() { // release a handler still waiting on the FIFO before srv.Close waits for it
+		if f, err := os.OpenFile(logged, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			_ = f.Close()
+		}
+	})
 	freePorts(t)
 
 	// A cortex whose supervise arm writes the cannot-start line to the log
@@ -134,7 +139,8 @@ case "$*" in
 esac
 `)
 
-	_, _, err := serviceStep{}.applyUnsupervised(env)
+	_, u, err := serviceStep{}.applyUnsupervised(env)
+	t.Cleanup(func() { _ = u.fn() }) // stop the stub proxy
 	if err == nil {
 		t.Fatal("a proxy that logged cannot start was reported as started")
 	}

@@ -205,16 +205,19 @@ func TestLocalSessionAPIUp_WaitsForAProxyStillStarting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer ln.Close()
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"sessions":[]}`))
 	})}
 	defer srv.Close()
-	// The server starts once the client has connected, and serves that connection first.
+	// The server starts past the dial bound after the client has connected, and serves
+	// that connection first. Outlasting that bound is the behaviour under test.
 	go func() {
 		c, err := ln.Accept()
 		if err != nil {
 			return
 		}
+		time.Sleep(localProbeTimeout + 100*time.Millisecond)
 		_ = srv.Serve(&acceptedFirst{Listener: ln, first: c})
 	}()
 

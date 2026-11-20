@@ -554,6 +554,22 @@ func TestWaitHealthy_TimesOut(t *testing.T) {
 	}
 }
 
+// A window that ends during the wait between asks sends no more: the 503 is the
+// answer, and the 2xx a later ask would get is past the window.
+func TestWaitHealthy_NoAskPastTheWindow(t *testing.T) {
+	var asks atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if asks.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	within := 500 * time.Millisecond / healthPollDivisor / 2 // half the wait between asks
+	if ok := waitHealthy(srv.URL+"/healthz", within); ok || asks.Load() != 1 {
+		t.Errorf("waitHealthy = %v after %d asks, want false after 1", ok, asks.Load())
+	}
+}
+
 // TestLastLines_SurfacesTheReason: "installed but not answering" is useless
 // without the log tail that says why.
 func TestLastLines_SurfacesTheReason(t *testing.T) {
