@@ -1283,3 +1283,24 @@ func TestLearn_TwoInstancesDoNotShareBatchIDs(t *testing.T) {
 		t.Fatalf("both instances sent batch %q for session s1", ids[0])
 	}
 }
+
+func TestLearn_ARetryWaitsForTheSessionToBeIdle(t *testing.T) {
+	fe := &fakeEvolve{learnErr: ErrUnavailable}
+	p, c := configured(t, `{"endpoint":"http://x","idle_after_seconds":60,"min_turns":1}`, fe)
+	finish(t, p, turn(h1, "Running.", bash1))
+	c.t = c.t.Add(61 * time.Second)
+	p.learnIdle(context.Background()) // fails: retry due a tick later
+	fe.learnErr = nil
+	c.t = c.t.Add(p.tick)
+	// The session resumes just as the retry comes due.
+	finish(t, p, turn(h2, "Done.", nil, pipeline.InferenceToolResult{ToolUseID: "t1", Content: "ok"}))
+	p.learnIdle(context.Background())
+	if fe.learnCalls != 1 {
+		t.Fatalf("sent %d times, want the retry held while the session is active", fe.learnCalls)
+	}
+	c.t = c.t.Add(61 * time.Second)
+	p.learnIdle(context.Background())
+	if len(fe.learned) != 1 || !strings.HasSuffix(fe.learned[0].t.Batch.BatchID, "-1") {
+		t.Fatalf("learned = %+v, want the retry once the session is idle", fe.learned)
+	}
+}

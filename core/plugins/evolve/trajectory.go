@@ -246,17 +246,18 @@ func (r *recorder) take(sessionID string, minTurns int) (t Trajectory, ok bool) 
 	return t, true
 }
 
-// next returns the batch to send at now, if any: a failed batch once its retry
-// is due; otherwise, when the session is idle, its new turns as a new batch.
+// next returns the batch to send at now, if any. Nothing is sent while the
+// session is active. When it is idle: a failed batch once its retry is due, as
+// it was; otherwise its new turns, as a new batch.
 func (r *recorder) next(sessionID string, minTurns int, idle bool, now time.Time) (Trajectory, bool) {
+	if !idle {
+		return Trajectory{}, false
+	}
 	if r.retry != nil {
 		if now.Before(r.retryAt) {
 			return Trajectory{}, false
 		}
 		return *r.retry, true
-	}
-	if !idle {
-		return Trajectory{}, false
 	}
 	return r.take(sessionID, minTurns)
 }
