@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/core/plugins/script/internal/worker"
 )
@@ -112,28 +111,20 @@ func TestCatalog_EveryScriptHandshakes(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer cmd.Process.Kill()
-				line := make(chan []byte, 1)
-				go func() {
-					s := bufio.NewScanner(out)
-					if s.Scan() {
-						line <- append([]byte(nil), s.Bytes()...)
-					}
-					close(line)
-				}()
-				select {
-				case b := <-line:
-					var hs struct {
-						Cortex          int      `json:"cortex"`
-						Hooks           []string `json:"hooks"`
-						RewriteResponse bool     `json:"rewrite_response"`
-					}
-					if err := json.Unmarshal(b, &hs); err != nil || hs.Cortex != worker.Protocol || len(hs.Hooks) == 0 {
-						t.Fatalf("handshake %q: %v", b, err)
-					}
-					rewrites = rewrites || hs.RewriteResponse
-				case <-time.After(10 * time.Second):
-					t.Fatal("no handshake within 10s")
+				sc := bufio.NewScanner(out)
+				if !sc.Scan() {
+					t.Fatalf("the script exited without a handshake: %v", sc.Err())
 				}
+				b := sc.Bytes()
+				var hs struct {
+					Cortex          int      `json:"cortex"`
+					Hooks           []string `json:"hooks"`
+					RewriteResponse bool     `json:"rewrite_response"`
+				}
+				if err := json.Unmarshal(b, &hs); err != nil || hs.Cortex != worker.Protocol || len(hs.Hooks) == 0 {
+					t.Fatalf("handshake %q: %v", b, err)
+				}
+				rewrites = rewrites || hs.RewriteResponse
 			})
 		}
 		// install orders slots by it, so it must say what the scripts declare.
