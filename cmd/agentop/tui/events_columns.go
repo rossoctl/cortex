@@ -728,7 +728,7 @@ func renderColumnPicker(sel map[eventColumnID]bool, widths map[eventColumnID]int
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("COLUMNS"))
+	b.WriteString(renderTitle("COLUMNS"))
 	b.WriteString("\n\n")
 
 	// Bound the list to what the terminal can actually show.
@@ -824,7 +824,7 @@ func renderColumnPicker(sel map[eventColumnID]bool, widths map[eventColumnID]int
 	b.WriteString("\n")
 	// fitHintLine, so a narrow terminal drops hints from the front and keeps
 	// [q] quit rather than wrapping the line. Same treatment the footer gets.
-	b.WriteString(styleHint.Render(fitHintLine(
+	b.WriteString(renderHints(fitHintLine(
 		"[↑↓] move  [space] toggle  [s] sort  [r] reset  [esc]/[enter] close  [q] quit",
 		width-borderWidth)))
 

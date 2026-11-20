@@ -37,7 +37,7 @@ func (m *model) footerView() string {
 	// reading right now.
 	if m.flash != "" && m.flashSticky {
 		return styleTitle.Render(fitFlashLine(m.flash, m.width)) + "\n" +
-			styleHint.Render(fitHintLine(m.helpView(), m.width))
+			renderHints(fitHintLine(m.helpView(), m.width))
 	}
 
 	// Connection state dot.
@@ -126,14 +126,14 @@ func (m *model) footerView() string {
 	// dropped whole rather than truncated: half a URL is not clickable and reads
 	// as corruption. On the common wide terminal it is always present, which is
 	// the case #975 is about; a width of 0 (no size yet) keeps it too.
-	feedback := styleMuted.Render("   feedback: " + feedbackURL)
+	feedback := styleDim.Render("   feedback: " + feedbackURL)
 	if m.width <= 0 || lipgloss.Width(status.String())+lipgloss.Width(feedback) <= m.width {
 		status.WriteString(feedback)
 	}
 
 	hint := fitHintLine(m.helpView(), m.width)
 
-	return fitStatusLine(status.String(), m.width) + "\n" + styleHint.Render(hint)
+	return fitStatusLine(status.String(), m.width) + "\n" + renderHints(hint)
 }
 
 // fitStatusLine bounds the status row to the terminal.

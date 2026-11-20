@@ -826,7 +826,12 @@ func renderHelpOverlay(vp viewport.Model, width, height int, prompt, status stri
 		}
 	}
 
-	inner := vp.View() + "\n" + styleHint.Render(hint)
+	// The open prompt is a text input that carries its own escapes, so it is no hint line.
+	foot := renderHints(hint)
+	if prompt != "" {
+		foot = styleHint.Render(hint)
+	}
+	inner := vp.View() + "\n" + foot
 
 	// No Width()/MaxHeight() here: the viewport is already sized to the
 	// terminal by helpViewportSize (which reserves helpOverlayFrameH rows

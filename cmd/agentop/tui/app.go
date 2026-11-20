@@ -2582,10 +2582,10 @@ func (m *model) paneView() string {
 		// the title alone. layout() reserves its row unconditionally, so a pane that skipped
 		// drawing it would leave a row nobody fills.
 		return lipgloss.JoinVertical(lipgloss.Left,
-			styleTitle.Render(title),
-			styleMuted.Render(renderDivider(m.width)),
+			renderTitle(title),
+			styleDim.Render(renderDivider(m.width)),
 			body,
-			styleHint.Render(footer),
+			renderHints(footer),
 		)
 	}
 	if m.pane == panePods {
@@ -2606,10 +2606,10 @@ func (m *model) paneView() string {
 		// row of the table above it.
 		footer = fitHintLine(footer, m.width)
 		return lipgloss.JoinVertical(lipgloss.Left,
-			styleTitle.Render(title),
-			styleMuted.Render(renderDivider(m.width)),
+			renderTitle(title),
+			styleDim.Render(renderDivider(m.width)),
 			body,
-			styleHint.Render(footer),
+			renderHints(footer),
 		)
 	}
 	if m.width == 0 {
@@ -2727,7 +2727,7 @@ func (m *model) paneView() string {
 	if m.pane != paneUsage && m.pane != paneAgents && m.pane != paneEvents && m.pane != paneDetail && m.pane != paneTimeline {
 		title += m.scopeSuffix(m.agentScope, m.projectScope)
 	}
-	header := styleTitle.Render(title)
+	header := renderTitle(title)
 	if m.searching && m.searchPane != targetHelp {
 		body = m.searchPromptView() + "\n" + body
 	}
@@ -2807,7 +2807,7 @@ func (m *model) paneView() string {
 	// The rule that closes the top block, AFTER the band and its drawer so it always sits
 	// between the whole block and the body rather than inside it. Appended unconditionally,
 	// which is what lets layout() reserve it without asking anything — see renderDivider.
-	rows = append(rows, styleMuted.Render(renderDivider(m.width)))
+	rows = append(rows, styleDim.Render(renderDivider(m.width)))
 	rows = append(rows, body, m.footerView())
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }

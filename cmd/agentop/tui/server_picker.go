@@ -695,7 +695,7 @@ const (
 func renderServerNotice(text string, width int) string {
 	const wrap = 60
 	w := min(wrap, max(width-6, 20))
-	body := lipgloss.NewStyle().Width(w).Render(sanitizeLabel(text)) + "\n\n" + styleHint.Render("[esc] close")
+	body := lipgloss.NewStyle().Width(w).Render(sanitizeLabel(text)) + "\n\n" + renderHints("[esc] close")
 	box := styleBorder.Padding(0, 2)
 	if width > styleBorder.GetHorizontalBorderSize() {
 		box = box.MaxWidth(width)
@@ -725,7 +725,7 @@ func renderServerPicker(p *serverPicker, width int) string {
 	if p.session != "" {
 		title = "Session " + sanitizeLabel(p.session) + " uses"
 	}
-	b.WriteString(styleTitle.Render(title) + "\n\n")
+	b.WriteString(renderTitle(title) + "\n\n")
 	for i, e := range shown {
 		marker := "  "
 		if i == p.cursor {
@@ -747,7 +747,7 @@ func renderServerPicker(p *serverPicker, width int) string {
 	if p.session != "" && p.sessionTokens > 0 {
 		b.WriteString("\n" + styleMuted.Render(fmt.Sprintf("%d tokens of its context go uncached on its first turn there.", p.sessionTokens)) + "\n")
 	}
-	b.WriteString("\n" + styleHint.Render("[↵] choose  [esc] cancel"))
+	b.WriteString("\n" + renderHints("[↵] choose  [esc] cancel"))
 	box := styleBorder.Padding(0, 1)
 	if width > styleBorder.GetHorizontalBorderSize() {
 		box = box.MaxWidth(width)
@@ -773,7 +773,7 @@ func renderScopeStep(p *serverPicker, width int) string {
 		note = fmt.Sprintf("%d other running sessions with this key stay where they are", p.keyStaying)
 	}
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("Move to: "+to) + "\n\n")
+	b.WriteString(renderTitle("Move to: "+to) + "\n\n")
 	for i, row := range rows {
 		marker := "  "
 		if i == p.scopeCursor {
@@ -794,7 +794,7 @@ func renderScopeStep(p *serverPicker, width int) string {
 	if p.sessionTokens > 0 {
 		b.WriteString("\n" + styleMuted.Render(fmt.Sprintf("%d tokens of its context go uncached on its first turn there.", p.sessionTokens)) + "\n")
 	}
-	b.WriteString("\n" + styleHint.Render("[↵] choose  [esc] back"))
+	b.WriteString("\n" + renderHints("[↵] choose  [esc] back"))
 	box := styleBorder.Padding(0, 1)
 	if width > styleBorder.GetHorizontalBorderSize() {
 		box = box.MaxWidth(width)
