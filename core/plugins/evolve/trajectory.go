@@ -93,13 +93,24 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 	if inf.Model != "" {
 		r.model = inf.Model
 	}
-	// The agent compacted or rewrote its context: what was seen is no longer a
-	// prefix of the history, so it is read from the start again. A rewrite need
-	// not make the history shorter, so the first and last messages seen are
-	// compared too.
-	if len(inf.Messages) < r.seen || (r.seen > 0 &&
+	// Where this request's new user messages start. A recorder that has seen the
+	// history reads on from where it stopped. One that hasn't, because it is new
+	// (Cortex restarted, the config was reloaded, or the session was evicted and
+	// came back), or whose history was rewritten (compacted, or a changed system
+	// message), starts at the latest user message: the ones before it were learned
+	// from already, or answered before this recorder existed, and sending them
+	// again would have evolve learn twice from prompts it has had, without the
+	// replies that gave them context. A rewrite need not make the history
+	// shorter, so the first and last messages seen are compared too.
+	from := r.seen
+	if r.turn == 0 || len(inf.Messages) < r.seen || (r.seen > 0 &&
 		(fingerprint(inf.Messages[0]) != r.first || fingerprint(inf.Messages[r.seen-1]) != r.last)) {
-		r.seen = 0
+		from = latestUserText(inf.Messages)
+	}
+	// The task is the conversation's first user message, kept as context for
+	// batches that don't start with it.
+	if r.task == "" {
+		r.task = firstUserText(inf.Messages)
 	}
 	for _, res := range inf.ToolResults {
 		if _, open := r.calls[res.ToolUseID]; !open {
@@ -115,16 +126,12 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 		content = truncate(content, maxToolResultChars)
 		r.add(map[string]any{"role": "tool", "tool_call_id": res.ToolUseID, "content": content})
 	}
-	for _, m := range inf.Messages[r.seen:] {
+	for _, m := range inf.Messages[from:] {
 		if m.Role != "user" {
 			continue
 		}
 		if text := clean(m.Content); text != "" {
-			text = truncate(text, maxUserChars)
-			if r.task == "" {
-				r.task = text
-			}
-			r.add(map[string]any{"role": "user", "content": text})
+			r.add(map[string]any{"role": "user", "content": truncate(text, maxUserChars)})
 		}
 	}
 	r.seen = len(inf.Messages)
@@ -166,6 +173,29 @@ func (r *recorder) observe(inf *pipeline.InferenceExtension) {
 	}
 }
 
+// latestUserText is the index of the last user message with text once cleaned,
+// or len(messages) if there is none.
+func latestUserText(messages []pipeline.InferenceMessage) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" && clean(messages[i].Content) != "" {
+			return i
+		}
+	}
+	return len(messages)
+}
+
+func firstUserText(messages []pipeline.InferenceMessage) string {
+	for _, m := range messages {
+		if m.Role != "user" {
+			continue
+		}
+		if text := clean(m.Content); text != "" {
+			return truncate(text, maxUserChars)
+		}
+	}
+	return ""
+}
+
 func fingerprint(m pipeline.InferenceMessage) uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(m.Role))
@@ -198,8 +228,9 @@ func (r *recorder) take(sessionID string, minTurns int) (t Trajectory, ok bool) 
 		Model:    r.model,
 		Metadata: map[string]any{"creation_mode": "auto-cortex", "agent_id": r.agent, "session_id": sessionID},
 	}
-	// After the first batch, the task is supporting context rather than new material.
-	if r.batch > 1 && r.task != "" && !startsWithUser(r.pending, r.task) {
+	// A batch that doesn't start with the task (any after the first, and the first
+	// of a recorder that joined the session late) gets it as supporting context.
+	if r.task != "" && !startsWithUser(r.pending, r.task) {
 		t.ContextMessages = []map[string]any{{"role": "user", "content": r.task}}
 	}
 	r.pending, r.turns = nil, 0

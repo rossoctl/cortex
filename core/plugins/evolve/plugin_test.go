@@ -1178,3 +1178,54 @@ func TestInject_ChatGuidelinesFollowTheLastInstruction(t *testing.T) {
 		}
 	})
 }
+
+// --- A recorder that joins a session late ---
+
+func longHistory(prompts int) []pipeline.InferenceMessage {
+	h := []pipeline.InferenceMessage{sys, {Role: "user", Content: "fix the test"}}
+	for i := 1; i < prompts; i++ {
+		h = append(h, pipeline.InferenceMessage{Role: "assistant", Content: fmt.Sprintf("done %d", i)},
+			pipeline.InferenceMessage{Role: "user", Content: fmt.Sprintf("now step %d", i)})
+	}
+	return h
+}
+
+func userTurns(pending []map[string]any) []string {
+	var users []string
+	for _, m := range pending {
+		if m["role"] == "user" {
+			users = append(users, m["content"].(string))
+		}
+	}
+	return users
+}
+
+func TestLearn_ANewRecorderSendsOnlyTheLatestPrompt(t *testing.T) {
+	// After a restart, a reload or an eviction, a recorder first sees a session
+	// 50 prompts in. Before, it sent all 50 again, without their replies.
+	r := newRecorder("claude-code", "1.1")
+	r.observe(&pipeline.InferenceExtension{Messages: longHistory(50), Completion: "Done."})
+	if users := userTurns(r.pending); len(users) != 1 || users[0] != "now step 49" {
+		t.Fatalf("user turns = %q, want only the latest prompt", users)
+	}
+	tr, ok := r.take("s1", 1)
+	if !ok || len(tr.ContextMessages) != 1 || tr.ContextMessages[0]["content"] != "fix the test" {
+		t.Fatalf("context = %v, want the session's task", tr.ContextMessages)
+	}
+}
+
+func TestLearn_ARewriteDoesNotReplayEarlierPrompts(t *testing.T) {
+	r := newRecorder("claude-code", "1.1")
+	first := []pipeline.InferenceMessage{sys, {Role: "user", Content: "fix the test"}, {Role: "assistant", Content: "Running."}, {Role: "user", Content: "ok"}}
+	r.observe(&pipeline.InferenceExtension{Messages: first[:2], Completion: "Running."})
+	r.observe(&pipeline.InferenceExtension{Messages: first, Completion: "Done."})
+	// The harness changes the system message while the user adds a correction.
+	rewritten := append([]pipeline.InferenceMessage{{Role: "system", Content: "You are Claude Code. Today is Friday."}}, first[1:]...)
+	rewritten = append(rewritten, pipeline.InferenceMessage{Role: "assistant", Content: "Done."}, pipeline.InferenceMessage{Role: "user", Content: "no, use uv"})
+	r.observe(&pipeline.InferenceExtension{Messages: rewritten, Completion: "Using uv."})
+	// Before, the rewrite reset the recorder to the start, and "fix the test" and
+	// "ok" were recorded again.
+	if users := userTurns(r.pending); strings.Join(users, "|") != "fix the test|ok|no, use uv" {
+		t.Fatalf("user turns = %q, want each prompt once", users)
+	}
+}
