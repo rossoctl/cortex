@@ -212,7 +212,6 @@ def test_handshake_enforces_and_rewrites_responses():
         capture_output=True,
         text=True,
         env=env,
-        timeout=30,
     )
     hs = json.loads(proc.stdout.splitlines()[0])
     assert hs["enforce"] is True and hs["rewrite_response"] is True

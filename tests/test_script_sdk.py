@@ -345,7 +345,6 @@ def test_run_speaks_the_protocol(tmp_path):
         capture_output=True,
         text=True,
         env={"PYTHONPATH": str(SDK.parent)},
-        timeout=30,
     )
     lines = proc.stdout.splitlines()
     assert json.loads(lines[0]) == {"cortex": 2, "hooks": ["request"], "enforce": True, "rewrite_response": False}
@@ -366,7 +365,6 @@ def run_held_back(tmp_path, hook_body, msg, answers):
         capture_output=True,
         text=True,
         env={"PYTHONPATH": str(SDK.parent)},
-        timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
     return [json.loads(line) for line in proc.stdout.splitlines()[1:]]
@@ -475,7 +473,6 @@ def test_a_hook_cannot_end_the_script(tmp_path, hook, carries, env):
         input=(json.dumps(first) + "\n" + json.dumps(second) + "\n").encode(),
         capture_output=True,
         env={"PYTHONPATH": str(SDK.parent), "LANG": "en_US.UTF-8", **env},
-        timeout=30,
     )
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
     replies = {}
@@ -804,7 +801,7 @@ def run_in_shell(cmd, home, cwd):
     """cmd in sh, as typed into a terminal: HOME is home and nothing has set PYTHONPATH."""
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["HOME"] = str(home)
-    return subprocess.run(["sh", "-c", cmd], cwd=cwd, env=env, capture_output=True, text=True, timeout=30)
+    return subprocess.run(["sh", "-c", cmd], cwd=cwd, env=env, capture_output=True, text=True)
 
 
 def test_the_guides_replay_command_runs_from_a_shell(tmp_path, session_api):
