@@ -83,7 +83,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (model)(rate(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__rate_interval])) / clamp_min(sum by (model)(rate(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_read|cache_write_5m|cache_write_1h|input\"}[$__rate_interval])), 1e-9)",
+          "expr": "sum by (model)(rate(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=\"cache_read\"}[$__rate_interval])) / ((sum by (model)(rate(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\",tier=~\"cache_read|cache_write_5m|cache_write_1h|input\"}[$__rate_interval]))) > 0)",
           "legendFormat": "{{model}}",
           "refId": "A",
           "datasource": {
@@ -127,7 +127,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (cause)(rate(llm_cache_misses_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])) * 3600",
+          "expr": "label_replace(sum by (cause)(rate(llm_cache_misses_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])), \"cause\", \"unattributed\", \"cause\", \"\") * 3600",
           "legendFormat": "{{cause}}",
           "refId": "A",
           "datasource": {
@@ -174,7 +174,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (cause)(increase(llm_cache_miss_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))",
+          "expr": "label_replace(sum by (cause)(increase(llm_cache_miss_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])), \"cause\", \"unattributed\", \"cause\", \"\")",
           "legendFormat": "{{cause}}",
           "refId": "A",
           "datasource": {
@@ -226,7 +226,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "Ping outcomes (per hour)",
-      "description": "Pings per hour. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show.",
+      "description": "Pings per hour. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is a proxy that does not label the outcome (cortex).",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -239,7 +239,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (outcome)(rate(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])) * 3600",
+          "expr": "label_replace(sum by (outcome)(rate(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])), \"outcome\", \"unattributed\", \"outcome\", \"\") * 3600",
           "legendFormat": "{{outcome}}",
           "refId": "A",
           "datasource": {
@@ -334,7 +334,7 @@
       "id": 5,
       "type": "stat",
       "title": "Pings that paid",
-      "description": "Rescue value divided by ping cost over the selected range. Above 1, the pings paid.",
+      "description": "Rescue value divided by ping cost over the selected range. Above 1, the pings paid. No data means the ping cost did not increase in the range.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -347,7 +347,7 @@
       },
       "targets": [
         {
-          "expr": "(sum(increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__range])) - sum(increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__range]))) / clamp_min(sum(increase(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])), 1e-9)",
+          "expr": "(sum(increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__range])) - sum(increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__range]))) / ((sum(increase(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
           "refId": "A",
           "instant": true,
           "datasource": {
@@ -386,7 +386,7 @@
       "id": 8,
       "type": "stat",
       "title": "Estimated ping cost",
-      "description": "Share of the ping cost that is a projection: pings that timed out with no answer (#754). The provider probably billed them, so the cost is booked, but the figure is not measured.",
+      "description": "Share of the ping cost that is not a measured figure. Each proxy books a different part here. context-guru: pings that timed out with no answer, booked at their projected cost (#754). cortex: pings priced from a fallback rate, because the model has no rate of its own. No data means the ping cost did not increase in the range.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -399,7 +399,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(llm_keepalive_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) / clamp_min(sum(increase(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])), 1e-9)",
+          "expr": "sum(increase(llm_keepalive_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) / ((sum(increase(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
           "refId": "A",
           "instant": true,
           "datasource": {

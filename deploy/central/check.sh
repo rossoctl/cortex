@@ -5,8 +5,9 @@
 #
 #   sh deploy/central/check.sh
 #
-# Checks, in order: the Prometheus rules parse; the rule unit tests pass; the collector config is
-# valid; the committed dashboards match gen_dashboards.py; the OpenShift overlay renders and every
+# Checks, in order: the Prometheus rules parse; the rule and dashboard-query unit tests pass; the
+# collector config is valid; the committed dashboards match gen_dashboards.py; the generator's own
+# tests pass; the OpenShift overlay renders and every
 # object passes kubeconform.
 set -eu
 
@@ -32,7 +33,7 @@ $run run --rm -v "$base/prometheus:/p:ro" --entrypoint promtool "$PROM_IMAGE" \
 
 step "promtool test rules"
 $run run --rm -v "$base/prometheus:/p:ro" -w /p/tests --entrypoint promtool "$PROM_IMAGE" \
-  test rules alerts_test.yml
+  test rules alerts_test.yml dashboards_test.yml
 
 step "otelcol-contrib validate"
 # The token files are read by the bearertokenauth extensions; validate gets placeholders.
@@ -48,6 +49,9 @@ echo "collector config valid"
 
 step "dashboards up to date"
 python3 "$base/grafana/gen_dashboards.py" --check
+
+step "dashboard generator tests"
+python3 -m unittest discover -s "$base/grafana" -p 'test_*.py'
 
 if [ ! -f "$overlay/kustomization.yaml" ]; then
   echo "no overlay yet: skipping render and kubeconform"

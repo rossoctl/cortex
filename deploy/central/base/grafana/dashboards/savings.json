@@ -380,7 +380,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(llm_savings_estimated_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) / clamp_min(sum(increase(llm_savings_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])), 1)",
+          "expr": "sum(increase(llm_savings_estimated_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) / ((sum(increase(llm_savings_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
           "refId": "A",
           "instant": true,
           "datasource": {
