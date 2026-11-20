@@ -64,7 +64,6 @@ def run_dump(api, out, *args):
         [sys.executable, str(SCRIPT), "--api", api, "--out", str(out), *args],
         capture_output=True,
         text=True,
-        timeout=60,
     )
 
 

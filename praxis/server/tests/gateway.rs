@@ -1,13 +1,13 @@
 //! End-to-end tests: the real `cortex-gateway` binary between a test client,
 //! a mock origin and a mock ingest endpoint.
 
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -25,8 +25,8 @@ const SUPERVISOR_YAML: &str = include_str!(concat!(
     "/../../cmd/cortex/testdata/gateway.yaml.golden"
 ));
 const ACCESS_LOG: &str = "      - filter: access_log";
-const WAIT: Duration = Duration::from_secs(10);
-const QUIET: Duration = Duration::from_secs(1);
+/// The request id of the request that `Ingest::rest` sends.
+const LAST: &str = "last";
 
 // ---------------------------------------------------------------------------
 // HTTP/1.1 reading, enough for these tests
@@ -264,31 +264,38 @@ fn ingest() -> Ingest {
 }
 
 impl Ingest {
-    /// Waits for `n` lines.
-    fn take(&self, n: usize) -> Vec<Value> {
-        let deadline = Instant::now() + WAIT;
-        (0..n)
-            .map(|i| {
-                let left = deadline.saturating_duration_since(Instant::now());
-                self.lines
-                    .recv_timeout(left)
-                    .unwrap_or_else(|_| panic!("line {i} of {n} did not arrive"))
-                    .unwrap_or_else(|e| panic!("{e}"))
-            })
-            .collect()
+    fn next(&self) -> Value {
+        self.lines
+            .recv()
+            .expect("the ingest mock ended")
+            .unwrap_or_else(|e| panic!("{e}"))
     }
 
-    /// Every line that arrives within `QUIET`.
-    fn quiet(&self) -> Vec<Value> {
-        let deadline = Instant::now() + QUIET;
+    /// Waits for `n` lines.
+    fn take(&self, n: usize) -> Vec<Value> {
+        (0..n).map(|_| self.next()).collect()
+    }
+
+    /// Every line of the requests that `g` closed, read up to the rows of one
+    /// more request. The gateway submits a request's rows before it closes the
+    /// connection, and the emitter sends lines in the order submitted.
+    fn rest(&self, g: &Gateway) -> Vec<Value> {
+        send(
+            g,
+            "GET",
+            "/last",
+            &[("X-Cortex-Token", TOKEN), ("X-Cortex-Request-Id", LAST)],
+            b"",
+        );
         let mut out = Vec::new();
-        while let Ok(v) = self
-            .lines
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        {
-            out.push(v.unwrap_or_else(|e| panic!("{e}")));
+        loop {
+            let v = self.next();
+            if v["requestId"] != LAST {
+                out.push(v);
+            } else if v["event"]["phase"] == "response" {
+                return out;
+            }
         }
-        out
     }
 }
 
@@ -300,6 +307,8 @@ struct Gateway {
     child: Child,
     port: u16,
     dir: PathBuf,
+    /// The lines of its log, as it writes them.
+    log: mpsc::Receiver<String>,
 }
 
 impl Drop for Gateway {
@@ -329,19 +338,20 @@ fn free_port() -> u16 {
 }
 
 fn gateway(origin: &Origin, ingest: &Ingest, access_log: bool) -> Gateway {
-    gateway_with(origin, ingest, access_log, &[], &[])
+    gateway_with(origin, ingest, access_log, &[], &[], Stdio::piped())
 }
 
-/// Starts the gateway with `flags` added and `env` as its env. Its stdin is a
-/// pipe that the returned `Gateway` holds.
+/// Starts the gateway with `flags` added, `env` as its env and `stdin` as its
+/// stdin. The returned `Gateway` holds a piped stdin.
 fn gateway_with(
     origin: &Origin,
     ingest: &Ingest,
     access_log: bool,
     flags: &[&str],
     env: &[(&str, &str)],
+    stdin: Stdio,
 ) -> Gateway {
-    start(flags, env, |token_file, port| {
+    start(flags, env, stdin, |token_file, port| {
         TEMPLATE
             .replace("{{LISTEN}}", &port.to_string())
             .replace("{{TOKEN_FILE}}", token_file)
@@ -352,10 +362,11 @@ fn gateway_with(
 }
 
 /// Starts the gateway on the config that `config(token_file, listen_port)`
-/// gives, with `flags` added and `env` as its env.
+/// gives, with `flags` added, `env` as its env and `stdin` as its stdin.
 fn start(
     flags: &[&str],
     env: &[(&str, &str)],
+    stdin: Stdio,
     config: impl FnOnce(&str, u16) -> String,
 ) -> Gateway {
     static N: AtomicUsize = AtomicUsize::new(0);
@@ -371,7 +382,11 @@ fn start(
     let yaml = config(token_file.to_str().expect("path"), port);
     let config = dir.join("gateway.yaml");
     std::fs::write(&config, yaml).expect("config");
-    let log = std::fs::File::create(dir.join("gateway.log")).expect("log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("gateway.log"))
+        .expect("log");
     let mut child = Command::new(env!("CARGO_BIN_EXE_cortex-gateway"))
         // The supervisor gives the gateway an empty env. Test it the same way.
         .env_clear()
@@ -379,12 +394,21 @@ fn start(
         .arg("-c")
         .arg(&config)
         .args(flags)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(log)
+        .stdin(stdin)
+        .stdout(Stdio::piped())
+        .stderr(log.try_clone().expect("log"))
         .spawn()
         .expect("start cortex-gateway");
-    let deadline = Instant::now() + WAIT;
+    // The log goes to stdout. Each line goes to the log file and to `Gateway::log`.
+    let out = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut log = log;
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = writeln!(log, "{line}");
+            let _ = tx.send(line);
+        }
+    });
     // A connect alone is not proof: during startup the port accepts and then
     // refuses again. Only the gateway answers a tokenless request with 403.
     while !answers_403(port) {
@@ -392,27 +416,44 @@ fn start(
             let log = std::fs::read_to_string(dir.join("gateway.log")).unwrap_or_default();
             panic!("cortex-gateway exited with {st}:\n{log}");
         }
-        assert!(Instant::now() < deadline, "cortex-gateway is not ready");
         std::thread::sleep(Duration::from_millis(20));
     }
-    Gateway { child, port, dir }
+    Gateway {
+        child,
+        port,
+        dir,
+        log: rx,
+    }
 }
 
 fn answers_403(port: u16) -> bool {
     let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) else {
         return false;
     };
-    let _ = s.set_read_timeout(Some(QUIET));
     s.write_all(&head("GET", "/", &[], 0)).is_ok()
         && read_head(&mut s).is_some_and(|(h, _)| h.split_whitespace().nth(1) == Some("403"))
 }
 
 impl Gateway {
     fn connect(&self) -> TcpStream {
-        let s = TcpStream::connect(("127.0.0.1", self.port)).expect("connect");
-        s.set_read_timeout(Some(WAIT)).expect("timeout");
-        s
+        TcpStream::connect(("127.0.0.1", self.port)).expect("connect")
     }
+
+    /// Waits for a log line that contains `text`.
+    fn logged(&self, text: &str) {
+        while !self
+            .log
+            .recv()
+            .expect("cortex-gateway closed its log")
+            .contains(text)
+        {}
+    }
+}
+
+/// Reads `s` to its end. Every request asks for `Connection: close`, and the
+/// gateway closes a connection after its request's rows are submitted.
+fn closed(s: &mut TcpStream) {
+    let _ = s.read_to_end(&mut Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -430,7 +471,7 @@ fn head(method: &str, path: &str, headers: &[(&str, &str)], length: usize) -> Ve
     out.into_bytes()
 }
 
-/// Sends one request and reads the whole response: (head, body).
+/// Sends one request and reads the whole response and the close: (head, body).
 fn send(
     g: &Gateway,
     method: &str,
@@ -444,6 +485,7 @@ fn send(
     s.write_all(body).expect("write body");
     let (h, rest) = read_head(&mut s).expect("response head");
     let body = Body::new(&mut s, &h, rest).read_to_end();
+    closed(&mut s);
     (h, body)
 }
 
@@ -493,7 +535,7 @@ fn ok_origin() -> Origin {
     origin(|_, s| respond(s, "200 OK", &[("Content-Type", "text/plain")], b"ok"))
 }
 
-/// Sends half of a declared body and closes the connection.
+/// Sends half of a declared body, ends the request stream and reads to the close.
 fn abort_mid_body(g: &Gateway) {
     let mut s = g.connect();
     let mut h = fixture_headers();
@@ -502,8 +544,8 @@ fn abort_mid_body(g: &Gateway) {
         .expect("head");
     s.write_all(&[b' '; 500]).expect("half body");
     s.flush().expect("flush");
-    std::thread::sleep(Duration::from_millis(200));
-    let _ = s.shutdown(Shutdown::Both);
+    let _ = s.shutdown(Shutdown::Write);
+    closed(&mut s);
 }
 
 // ---------------------------------------------------------------------------
@@ -518,18 +560,27 @@ fn tokenless_request_gets_403_and_no_line() {
     assert_eq!(status(&h), 403);
     let (h, _) = send(&g, "GET", "/v1/models", &[("X-Cortex-Token", "wrong")], b"");
     assert_eq!(status(&h), 403);
+    assert_eq!(i.rest(&g), Vec::<Value>::new());
+    let seen = o.seen.recv().expect("the origin saw the last request");
     assert!(
-        o.seen.recv_timeout(QUIET).is_err(),
-        "the origin saw a request"
+        seen.head.starts_with("GET /last "),
+        "the origin saw a request: {}",
+        seen.head
     );
-    assert_eq!(i.quiet(), Vec::<Value>::new());
 }
 
 #[test]
 fn starts_and_serves_with_an_empty_ca_file() {
     // The CA file that the gateway sets on macOS. Set here, so that Linux runs it too.
     let (o, i) = (ok_origin(), ingest());
-    let g = gateway_with(&o, &i, true, &[], &[("SSL_CERT_FILE", "/dev/null")]);
+    let g = gateway_with(
+        &o,
+        &i,
+        true,
+        &[],
+        &[("SSL_CERT_FILE", "/dev/null")],
+        Stdio::piped(),
+    );
     let (h, body) = send(&g, "GET", "/v1/models", &[("X-Cortex-Token", TOKEN)], b"");
     assert_eq!(status(&h), 200);
     assert_eq!(body, b"ok");
@@ -548,9 +599,9 @@ fn probe_request_records_nothing() {
     );
     assert_eq!(status(&h), 200);
     assert_eq!(body, b"ok");
-    let seen = o.seen.recv_timeout(WAIT).expect("the origin saw the probe");
+    let seen = o.seen.recv().expect("the origin saw the probe");
     assert!(header(&seen.head, "x-cortex-probe").is_none());
-    assert_eq!(i.quiet(), Vec::<Value>::new());
+    assert_eq!(i.rest(&g), Vec::<Value>::new());
 }
 
 #[test]
@@ -583,10 +634,7 @@ fn hop_headers_removed_custom_kept() {
         &fixture("request.json"),
     );
     assert_eq!(status(&rh), 200);
-    let seen = o
-        .seen
-        .recv_timeout(WAIT)
-        .expect("the origin saw the request");
+    let seen = o.seen.recv().expect("the origin saw the request");
     let mut cortex: Vec<String> = seen
         .head
         .lines()
@@ -655,10 +703,7 @@ fn inference_request_gives_request_and_response_lines() {
     );
     assert_eq!(status(&rh), 200);
     assert_eq!(body, fixture("response.sse"));
-    let seen = o
-        .seen
-        .recv_timeout(WAIT)
-        .expect("the origin saw the request");
+    let seen = o.seen.recv().expect("the origin saw the request");
     assert_eq!(seen.body, fixture("request.json"));
 
     let lines = i.take(2);
@@ -702,7 +747,7 @@ fn policy_filter_denies_a_model() {
     let o = origin(|_, s| respond(s, "200 OK", &[("Content-Type", "application/json")], b"{}"));
     let i = ingest();
     // `policy` goes right after `cortex_observe` and before `access_log`.
-    let g = start(&[], &[], |token_file, port| {
+    let g = start(&[], &[], Stdio::piped(), |token_file, port| {
         TEMPLATE
             .replace("{{LISTEN}}", &port.to_string())
             .replace("{{TOKEN_FILE}}", token_file)
@@ -746,14 +791,11 @@ fn policy_filter_denies_a_model() {
         body("model-ok").as_bytes(),
     );
     assert_eq!(status(&rh), 200, "{rh}");
-    assert!(
-        o.seen.recv_timeout(WAIT).is_ok(),
-        "the origin saw no request"
-    );
+    assert!(o.seen.recv().is_ok(), "the origin saw no request");
 
     // A policy file that does not parse keeps the last good policy.
     std::fs::write(&policy, "routes: [").expect("bad policy");
-    std::thread::sleep(Duration::from_millis(1500)); // the watcher debounces for 500 ms
+    g.logged("config reload failed");
     let (rh, _) = send(
         &g,
         "POST",
@@ -779,24 +821,19 @@ fn policy_filter_denies_a_model() {
         "routes:\n  - llm: \"*\"\n    authorization:\n      pre_invocation:\n        - \"deny('no', 'all_denied')\"\n",
     )
     .expect("deny-all policy");
-    let deadline = std::time::Instant::now() + WAIT;
-    loop {
-        let (rh, _) = send(
-            &g,
-            "POST",
-            "/v1/messages?beta=true",
-            &as_refs(&h),
-            body("model-ok").as_bytes(),
-        );
-        if header(&rh, "x-policy-violation") == Some("all_denied") {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the edit did not apply: {rh}"
-        );
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    g.logged("config reload complete");
+    let (rh, _) = send(
+        &g,
+        "POST",
+        "/v1/messages?beta=true",
+        &as_refs(&h),
+        body("model-ok").as_bytes(),
+    );
+    assert_eq!(
+        header(&rh, "x-policy-violation"),
+        Some("all_denied"),
+        "the edit did not apply: {rh}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -825,7 +862,7 @@ fn gzip_sse_streams_as_frames_and_wire_bytes_unchanged() {
         let _ = write_chunk(s, &part1);
         let _ = s.flush();
         // The last frame goes only after the client got the first one.
-        let _ = go_rx.lock().expect("lock").recv_timeout(WAIT);
+        let _ = go_rx.lock().expect("lock").recv();
         let _ = write_chunk(s, &part2);
         let _ = s.write_all(b"0\r\n\r\n");
     });
@@ -970,6 +1007,7 @@ fn buffered_over_cap_after_the_head_keeps_upstream_status() {
     let (rh, rest) = read_head(&mut s).expect("response head");
     assert_eq!(status(&rh), 200);
     let body = Body::new(&mut s, &rh, rest).read_to_end();
+    closed(&mut s);
     assert!(body.len() < 12 << 20, "the body was not cut");
     let lines = i.take(2);
     let resp = response_row(&lines);
@@ -983,7 +1021,7 @@ fn buffered_over_cap_after_the_head_keeps_upstream_status() {
         resp["event"]["error"]["message"],
         "response body over the 10485760-byte buffer limit"
     );
-    assert_eq!(i.quiet(), Vec::<Value>::new(), "a second response row");
+    assert_eq!(i.rest(&g), Vec::<Value>::new(), "a second response row");
 }
 
 /// Praxis calls on_request_body with end-of-stream for an empty body; these rows depend on it.
@@ -1030,7 +1068,7 @@ fn bodyless_response_ends_its_row() {
     assert_eq!(resp["event"]["statusCode"], 204);
     assert!(resp["event"].get("error").is_none(), "{resp}");
     assert_eq!(resp["capture"]["response"]["ended"], true);
-    assert_eq!(i.quiet(), Vec::<Value>::new(), "a second response row");
+    assert_eq!(i.rest(&g), Vec::<Value>::new(), "a second response row");
 }
 
 #[test]
@@ -1062,6 +1100,7 @@ fn frame_over_cap_aborts_stream() {
     let (rh, rest) = read_head(&mut s).expect("response head");
     assert_eq!(status(&rh), 200);
     let body = Body::new(&mut s, &rh, rest).read_to_end();
+    closed(&mut s);
     assert!(body.len() < 12 << 20, "the stream was not cut");
     let lines = i.take(2);
     let resp = response_row(&lines);
@@ -1071,7 +1110,7 @@ fn frame_over_cap_aborts_stream() {
         resp["event"]["error"]["message"],
         "single SSE frame over the 10485760-byte frame cap"
     );
-    assert_eq!(i.quiet(), Vec::<Value>::new(), "a second response row");
+    assert_eq!(i.rest(&g), Vec::<Value>::new(), "a second response row");
 }
 
 #[test]
@@ -1097,7 +1136,7 @@ fn egress_error_header_becomes_kind() {
     let resp = response_row(&lines);
     assert_eq!(resp["event"]["statusCode"], 502);
     assert_eq!(resp["event"]["error"]["kind"], "upstream_dns");
-    assert_eq!(i.quiet(), Vec::<Value>::new(), "a second response row");
+    assert_eq!(i.rest(&g), Vec::<Value>::new(), "a second response row");
 }
 
 #[test]
@@ -1105,7 +1144,7 @@ fn without_access_log_no_deferred_row() {
     let (o, i) = (ok_origin(), ingest());
     let g = gateway(&o, &i, false);
     abort_mid_body(&g);
-    let lines = i.quiet();
+    let lines = i.rest(&g);
     assert!(
         lines.iter().all(|l| l["event"]["phase"] != "response"),
         "a response row without access_log: {lines:?}"
@@ -1146,14 +1185,10 @@ fn client_close_mid_sse_is_client_canceled() {
         );
         let _ = write_chunk(s, b"event: ping\ndata: {\"type\":\"ping\"}\n\n");
         let _ = s.flush();
-        let _ = closed_rx.lock().expect("lock").recv_timeout(WAIT);
-        // Keep the stream open, as a model still writing its answer does.
-        for _ in 0..40 {
-            if write_chunk(s, b"event: ping\ndata: {\"type\":\"ping\"}\n\n").is_err() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        let _ = closed_rx.lock().expect("lock").recv();
+        // Keep the stream open, as a model still writing its answer does,
+        // until the gateway closes it.
+        while write_chunk(s, b"event: ping\ndata: {\"type\":\"ping\"}\n\n").is_ok() {}
     });
     let i = ingest();
     let g = gateway(&o, &i, true);
@@ -1178,28 +1213,19 @@ fn client_close_mid_sse_is_client_canceled() {
 #[test]
 fn exits_on_stdin_eof() {
     let (o, i) = (ok_origin(), ingest());
-    let mut g = gateway_with(&o, &i, true, &["--exit-on-stdin-eof"], &[]);
+    let mut g = gateway_with(&o, &i, true, &["--exit-on-stdin-eof"], &[], Stdio::piped());
     drop(g.child.stdin.take());
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(st) = g.child.try_wait().expect("try_wait") {
-            assert!(st.success(), "cortex-gateway exited with {st}");
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "cortex-gateway still runs 5s after stdin closed"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let st = g.child.wait().expect("wait");
+    assert!(st.success(), "cortex-gateway exited with {st}");
 }
 
 #[test]
 fn keeps_running_without_flag() {
     let (o, i) = (ok_origin(), ingest());
-    let mut g = gateway(&o, &i, true);
-    drop(g.child.stdin.take());
-    std::thread::sleep(QUIET);
+    // A stdin at EOF from the start: the gateway starts and serves on it.
+    let mut g = gateway_with(&o, &i, true, &[], &[], Stdio::null());
+    let (h, _) = send(&g, "GET", "/v1/models", &[("X-Cortex-Token", TOKEN)], b"");
+    assert_eq!(status(&h), 200);
     assert!(
         g.child.try_wait().expect("try_wait").is_none(),
         "cortex-gateway exited without --exit-on-stdin-eof"
@@ -1216,7 +1242,7 @@ fn supervisor_gateway_yaml_serves() {
         .replace("127.0.0.1:47601", "");
     assert!(!rest.contains(":4760"), "{SUPERVISOR_YAML}");
     let (o, i) = (ok_origin(), ingest());
-    let g = start(&[], &[], |token_file, port| {
+    let g = start(&[], &[], Stdio::piped(), |token_file, port| {
         let yaml = SUPERVISOR_YAML
             .replace("/CORTEX_DIR/gateway.token", token_file)
             .replace("127.0.0.1:47605", &format!("127.0.0.1:{port}"))
@@ -1228,9 +1254,7 @@ fn supervisor_gateway_yaml_serves() {
     let (h, body) = send(&g, "GET", "/v1/models", &[("X-Cortex-Token", TOKEN)], b"");
     assert_eq!(status(&h), 200);
     assert_eq!(body, b"ok");
-    o.seen
-        .recv_timeout(WAIT)
-        .expect("the origin saw the request");
+    o.seen.recv().expect("the origin saw the request");
     let lines = i.take(2);
     assert_eq!(lines[0]["event"]["phase"], "request");
     assert_eq!(lines[1]["event"]["phase"], "response");
