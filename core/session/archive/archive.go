@@ -119,8 +119,10 @@ type Archive struct {
 	maxOpen    int
 	tickEvery  time.Duration
 
-	// Test seams: gate holds the writer before each op; segHook sees each new segment writer.
+	// Test seams: gate holds the writer before each op, and held, when set, is signaled each time
+	// the writer waits there; segHook sees each new segment writer.
 	gate    chan struct{}
+	held    chan struct{}
 	segHook func(*segmentWriter)
 
 	ops       chan op
@@ -585,6 +587,10 @@ func (a *Archive) drain() {
 
 func (a *Archive) take(o op) {
 	if a.gate != nil {
+		select {
+		case a.held <- struct{}{}:
+		default:
+		}
 		<-a.gate
 	}
 	// A kept opt-out applies before the first op queued after it (#1923).

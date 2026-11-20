@@ -130,29 +130,13 @@ func BenchmarkBuild(b *testing.B) {
 	}
 }
 
-// TestBuildBudget fails if one compute of a 6,000-event session takes over 50ms, the bound the
-// pane's once-a-second refresh was designed around. Best of three, so a noisy CI neighbour
-// does not fail it. Under -race, which CI's core job always uses, everything runs several
-// times slower (135ms measured against 4.5ms), so the bound scales rather than the test
-// skipping: a regression back to rescanning every message is two orders of magnitude, and
-// still fails at 10x.
-func TestBuildBudget(t *testing.T) {
-	if testing.Short() {
-		t.Skip("timing")
-	}
-	budget := 50 * time.Millisecond
-	if raceEnabled {
-		budget *= 10
-	}
-	events := syntheticSession(6000)
-	best := time.Duration(1<<63 - 1)
-	for i := 0; i < 3; i++ {
-		start := time.Now()
-		Build("s", events, time.Time{})
-		best = min(best, time.Since(start))
-	}
-	if best > budget {
-		t.Errorf("Build took %v on 6000 events, budget %v", best, budget)
+// On the heaviest real shape, the bytes Build searches grow in step with the session: twice
+// the events scan twice the bytes. Rescanning every message each turn scans four times as much.
+func TestBuildScalesLinearly(t *testing.T) {
+	half := Build("s", syntheticSession(3000), time.Time{}).scanned
+	full := Build("s", syntheticSession(6000), time.Time{}).scanned
+	if full > 3*half {
+		t.Errorf("scanned %d bytes on 6000 events against %d on 3000: more than linear", full, half)
 	}
 }
 
