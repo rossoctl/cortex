@@ -107,7 +107,9 @@ func TestEventsCellStyles_BlockRowAccent(t *testing.T) {
 	withProfile(t, termenv.TrueColor)
 	m := newBlockModel(t, blockEvents())
 	view := m.eventsTbl.View()
-	assertInk(t, view, "▸─", colorAccent, "accent")
+	// The glyph is a run of its own (tableGlyphs), so each part is checked alone.
+	assertInk(t, view, "▸", colorAccent, "accent")
+	assertInk(t, view, "─ a1", colorAccent, "accent")
 }
 
 func TestEventsCellStyles_PlainInvariant(t *testing.T) {

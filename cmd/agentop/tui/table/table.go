@@ -646,7 +646,46 @@ func (m *Model) renderRow(r int) string {
 	if m.cell != nil {
 		line = mergeRuns(line)
 	}
-	return line
+	return m.zebra(r, spans != nil && !lit, line)
+}
+
+// zebra draws line, a row drawn with no row style, on the Alt background when row r is a
+// zebra row: the background opens the line, and each reset is cut to what keeps it. A
+// foreground-only run closes with its own off codes, any other run with a reset and the
+// background again. One background on the joined row costs far fewer bytes than one on
+// every nested cell run.
+func (m *Model) zebra(r int, marked bool, line string) string {
+	const reset = "\x1b[0m"
+	if r == m.cursor || marked || r%2 == 0 || !hasColor(m.styles.Alt.GetBackground()) {
+		return line
+	}
+	bg, _, _ := strings.Cut(m.styles.Alt.Render(" "), " ")
+	if bg == "" {
+		return line
+	}
+	var b strings.Builder
+	b.Grow(len(line) + 2*len(bg))
+	b.WriteString(bg)
+	for {
+		i := strings.Index(line, reset)
+		if i < 0 {
+			break
+		}
+		closer := reset + bg
+		if p := strings.LastIndex(line[:i], "\x1b["); p >= 0 {
+			if q := strings.IndexByte(line[p:i], 'm'); q > 0 {
+				if c, ok := fgCloser(line[p+2 : p+q]); ok {
+					closer = c
+				}
+			}
+		}
+		b.WriteString(line[:i])
+		b.WriteString(closer)
+		line = line[i+len(reset):]
+	}
+	b.WriteString(line)
+	b.WriteString(reset)
+	return b.String()
 }
 
 // mergeRuns joins two runs in one foreground-only SGR that only spaces part:
@@ -695,20 +734,39 @@ func mergeRuns(line string) string {
 // fgOnly is whether the SGR parameters params set only bold, faint, italic or a
 // foreground color.
 func fgOnly(params string) bool {
+	_, ok := fgCloser(params)
+	return ok
+}
+
+// fgCloser is the SGR that turns off what params set, and whether params set only bold,
+// faint, italic or a foreground color.
+func fgCloser(params string) (string, bool) {
+	weight, italic := false, false
 	ps := strings.Split(params, ";")
 	for i := 0; i < len(ps); i++ {
 		switch p := ps[i]; {
-		case p == "1", p == "2", p == "3", p == "39":
+		case p == "1", p == "2":
+			weight = true
+		case p == "3":
+			italic = true
+		case p == "39":
 		case len(p) == 2 && (p[0] == '3' || p[0] == '9') && p[1] >= '0' && p[1] <= '7':
 		case p == "38" && i+1 < len(ps) && ps[i+1] == "5":
 			i += 2
 		case p == "38" && i+1 < len(ps) && ps[i+1] == "2":
 			i += 4
 		default:
-			return false
+			return "", false
 		}
 	}
-	return true
+	off := "\x1b["
+	if weight {
+		off += "22;"
+	}
+	if italic {
+		off += "23;"
+	}
+	return off + "39m", true
 }
 
 // renderCell draws one cell, text already cut to width. With no cell style, the text is
@@ -734,8 +792,8 @@ func (m *Model) renderCell(r, i int, text string, width int, sp []find.Range, ro
 	return pad.Render(box.Render(body))
 }
 
-// rowStyles is the style of row r and of its matches: the cursor's, a marked row's, the
-// zebra style on odd rows when it has a background, or none.
+// rowStyles is the style of row r and of its matches: the cursor's, a marked row's, or
+// none. zebra adds the Alt background after the row is drawn.
 func (m *Model) rowStyles(r int, marked bool) (row, match lipgloss.Style) {
 	row, match = lipgloss.NewStyle(), m.styles.Match
 	switch {
@@ -743,8 +801,6 @@ func (m *Model) rowStyles(r int, marked bool) (row, match lipgloss.Style) {
 		row, match = m.styles.Selected, m.styles.CurrentMatch
 	case marked:
 		row = m.styles.Marked
-	case r%2 == 1 && hasColor(m.styles.Alt.GetBackground()):
-		row = m.styles.Alt
 	}
 	return row, match.Inherit(row)
 }
@@ -846,7 +902,7 @@ func (m *Model) renderSectionRow(r int) string {
 	}
 
 	row, match := m.rowStyles(r, spans != nil && !lit)
-	return m.renderCell(r, 0, text, total, spans, row, match, r == m.cursor && m.barShown())
+	return m.zebra(r, spans != nil && !lit, m.renderCell(r, 0, text, total, spans, row, match, r == m.cursor && m.barShown()))
 }
 
 func clamp(v, low, high int) int {

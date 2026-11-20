@@ -94,8 +94,58 @@ func TestCellStyle_StyledCellPadIsRowOnly(t *testing.T) {
 	if l := lineFor(t, tb, "r0"); !strings.Contains(l, s.Selected.Inherit(red).Render("aq")+s.Selected.Render("    ")) {
 		t.Errorf("cursor row: pad is not a Selected-only run in %q", l)
 	}
-	if l := lineFor(t, tb, "r1"); !strings.Contains(l, alt.Inherit(red).Render("bq")+alt.Render("    ")) {
-		t.Errorf("zebra row: pad is not an Alt-only run in %q", l)
+	l := lineFor(t, tb, "r1")
+	if !strings.Contains(l, strings.TrimSuffix(red.Render("bq"), "\x1b[0m")+"\x1b[22;39m    ") {
+		t.Errorf("zebra row: no red cell with an unstyled pad after it in %q", l)
+	}
+	if off := offAlt(l); off != "" {
+		t.Errorf("zebra row: %q is not on the Alt background in %q", off, l)
+	}
+}
+
+// offAlt is the visible text of line that is drawn with no Alt background in effect.
+func offAlt(line string) string {
+	var state, off strings.Builder
+	for len(line) > 0 {
+		if strings.HasPrefix(line, "\x1b[") {
+			q := strings.IndexByte(line, 'm')
+			if p := line[2:q]; p == "0" {
+				state.Reset()
+			} else {
+				state.WriteString(";" + p)
+			}
+			line = line[q+1:]
+			continue
+		}
+		if !strings.Contains(state.String(), altSGR) {
+			off.WriteByte(line[0])
+		}
+		line = line[1:]
+	}
+	return off.String()
+}
+
+// TestZebra_RowCostsOneBackground pins the zebra row's size: the plain row's bytes plus
+// the Alt background after each reset, not a background on every nested cell run.
+func TestZebra_RowCostsOneBackground(t *testing.T) {
+	s := searchStyles(t)
+	s.Alt = alt
+	s.Glyphs = map[rune]lipgloss.Style{'↑': dim}
+	rows := []table.Row{{"r0", "x"}, {"r1", "↑1kB"}, {"r1", "↑1kB"}}
+	tb := styledTable(s, rows, 4, 6)
+	tb.SetCellStyle(col1Red)
+	tb.SetCursor(0)
+	lines := strings.Split(tb.View(), "\n")
+	zebra, plain := lines[2], lines[3]
+	if ansi.Strip(zebra) != ansi.Strip(plain) {
+		t.Fatalf("rows differ: %q vs %q", zebra, plain)
+	}
+	if off := offAlt(zebra); off != "" {
+		t.Errorf("zebra row: %q is not on the Alt background in %q", off, zebra)
+	}
+	bg := len(alt.Render("x")) - len("x") - len("\x1b[0m")
+	if limit := len(plain) + (strings.Count(plain, "\x1b[0m")+1)*bg + len("\x1b[0m"); len(zebra) > limit {
+		t.Errorf("zebra row is %d bytes, want at most %d (plain row %d):\n%q", len(zebra), limit, len(plain), zebra)
 	}
 }
 
@@ -220,7 +270,7 @@ func TestStyles_WidthUnchanged(t *testing.T) {
 		}
 		// The "…" of a cut cell takes the cell style.
 		cut := ansi.Truncate(rows[1][1], w-30, "…")
-		if l := lineFor(t, build(s, all), "r1"); !strings.Contains(l, alt.Inherit(red).Render(cut)) {
+		if l := lineFor(t, build(s, all), "r1"); !strings.Contains(l, cut) || !strings.Contains(l, redSGR) || offAlt(l) != "" {
 			t.Errorf("w=%d: the cut cell is not drawn in the cell style: %q", w, l)
 		}
 	}
