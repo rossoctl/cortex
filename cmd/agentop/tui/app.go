@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"os"
@@ -862,6 +863,9 @@ type model struct {
 	agentProjectsErr   error
 	agentsCursorWant   *agentRowDesc
 	agentsCursorWantAt int
+	// agentsSplits is the cost per unit of each row in more than one unit, for one window at a
+	// time (see agentsUnitSplitLoadedMsg). Kept off agentRow, which every poll replaces.
+	agentsSplits map[agentsSplitKey]map[string]int64
 	// agentsFetchedAt is when the last per-agent fetch was issued, so the open pane polls.
 	agentsFetchedAt time.Time
 	// agentsWindowStep is how far `w` has moved the agents pane's window past today; see
@@ -1618,11 +1622,15 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The open rows refetch their projects with the rows: the poll, `w`, `A` and esc all come
 		// here.
 		projects := m.fetchOpenProjectsCmd()
+		var splits tea.Cmd
+		if msg.err == nil {
+			splits = m.fetchAgentRowSplitsCmd()
+		}
 		if m.client != nil && !m.pipelineFetching {
 			m.pipelineFetching = true
-			return m, tea.Batch(m.loadPipelineCmd(), sync, projects)
+			return m, tea.Batch(m.loadPipelineCmd(), sync, projects, splits)
 		}
-		return m, tea.Batch(sync, projects)
+		return m, tea.Batch(sync, projects, splits)
 
 	case agentProjectsLoadedMsg:
 		if msg.window != m.agentsSpanDef().window {
@@ -1636,10 +1644,29 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.agentProjects[msg.agent] = msg.data
 		}
+		var splits tea.Cmd
+		if msg.err == nil {
+			splits = m.fetchProjectSplitsCmd(msg.agent, msg.data)
+		}
 		if m.pane == paneAgents {
 			m.rebuildAgentsTable()
 			// The rebuild can move the cursor onto the scoped sub-row.
-			return m, m.syncSpendScope()
+			return m, tea.Batch(m.syncSpendScope(), splits)
+		}
+		return m, splits
+
+	case agentsUnitSplitLoadedMsg:
+		// A split for another window than the pane's is stale; a failed one changes nothing.
+		if msg.err != nil || msg.key.window != m.agentsSpanDef().window {
+			return m, nil
+		}
+		if m.agentsSplits == nil {
+			m.agentsSplits = map[agentsSplitKey]map[string]int64{}
+		}
+		maps.DeleteFunc(m.agentsSplits, func(k agentsSplitKey, _ map[string]int64) bool { return k.window != msg.key.window })
+		m.agentsSplits[msg.key] = msg.byUnit
+		if m.pane == paneAgents {
+			m.rebuildAgentsTable()
 		}
 		return m, nil
 
