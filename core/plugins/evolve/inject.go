@@ -45,9 +45,12 @@ func pathOnly(target string) string {
 
 const blockTag = "evolve-guidelines"
 
-// tagPattern matches anything that could open or close the guidelines block, so
-// guideline text cannot end the block early or forge a second one.
-var tagPattern = regexp.MustCompile(`(?i)</?\s*` + blockTag + `[^>]*>`)
+// tagPattern matches anything that could open or close the guidelines block, or
+// the <system-reminder> that wraps it with placement: user, so guideline text
+// cannot end either early or forge another. Escaping the reminder would turn the
+// rest of a guideline into the user's own words, and with learn_namespace equal
+// to serve_namespace a guideline can carry text a tool result had.
+var tagPattern = regexp.MustCompile(`(?i)</?\s*(?:` + blockTag + `|system-reminder)\b[^>]*>`)
 
 // blockPattern matches a whole injected block, for removal from trajectories.
 var blockPattern = regexp.MustCompile(`(?is)<` + blockTag + `\b[^>]*>.*?</` + blockTag + `>`)
