@@ -124,7 +124,7 @@ func TestBox_DrawnOnEveryPaneAtEverySize(t *testing.T) {
 			if got := len(lines) - 1 - bottom; got != lipgloss.Height(m.footerView()) && p != paneNamespaces && p != panePods {
 				t.Errorf("%s: %d lines under the box, want the footer's %d", label, got, lipgloss.Height(m.footerView()))
 			}
-			if last := strings.TrimRight(lines[len(lines)-1], " "); !strings.HasSuffix(last, "[q] quit") {
+			if last := lines[len(lines)-1]; !strings.Contains(last, "[q] quit") {
 				t.Errorf("%s: the last line is not the key bar: %q", label, last)
 			}
 		}

@@ -294,15 +294,18 @@ func TestYankTightensALooseModeDir(t *testing.T) {
 //
 // Widths are measured with lipgloss.Width, not len: "…" and "→" are multi-byte, so
 // a byte count overstates the columns used.
+//
+// From 60 columns: the bar keeps [?] keys [q] quit and the connection state before the
+// flash, so at 40 the flash has 3 columns (see footerView).
 func TestStickyFlash_FitsANarrowFooter(t *testing.T) {
 	const path = "/Users/someone/.cortex/agentop-events/20260910-223650-80907711.json"
 
-	for _, width := range []int{40, 60, 72, 80, 120} {
+	for _, width := range []int{60, 72, 80, 120} {
 		m := newTestDetailModel(t)
 		m.width = width
 		m.setStickyFlash("yanked → " + path)
 
-		line := strings.SplitN(m.footerView(), "\n", 2)[0]
+		line := m.footerView()
 		if got := lipgloss.Width(line); got > width {
 			t.Errorf("width %d: footer is %d columns, overflowing by %d: %q",
 				width, got, got-width, line)
@@ -355,7 +358,7 @@ func TestStickyFlash_FitsWithWideRunes(t *testing.T) {
 			m.width = width
 			m.setStickyFlash(path)
 
-			line := strings.SplitN(m.footerView(), "\n", 2)[0]
+			line := m.footerView()
 			if got := lipgloss.Width(line); got > width {
 				t.Errorf("%s at width %d: %d columns, overflowing by %d: %q",
 					name, width, got, got-width, line)
@@ -364,15 +367,16 @@ func TestStickyFlash_FitsWithWideRunes(t *testing.T) {
 	}
 }
 
-// The full-width takeover applies to sticky flashes only. A timed flash keeps the
+// The takeover applies to sticky flashes only. A timed flash keeps the
 // connection state and rate beside it — ten other producers use that path
-// and none of them is a path the user is about to retype.
+// and none of them is a path the user is about to retype. At 80 columns, because a cut
+// drops a timed flash first, and at 72 the bar has no room for this one.
 func TestTimedFlash_KeepsTheStatusPrefix(t *testing.T) {
 	m := newTestDetailModel(t)
-	m.width = 72
+	m.width = 80
 	m.setFlash("hot-reload succeeded")
 
-	line := strings.SplitN(m.footerView(), "\n", 2)[0]
+	line := m.footerView()
 	if !strings.Contains(line, "events/sec") {
 		t.Errorf("a timed flash lost the status prefix: %q", line)
 	}

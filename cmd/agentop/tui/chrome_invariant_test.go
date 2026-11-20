@@ -7,7 +7,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
 )
 
 // hintLinesOf is the index of each line of view that holds one of marks: the hint lines
@@ -84,18 +83,5 @@ func TestChrome_PlainTextInvariant(t *testing.T) {
 				})
 			}
 		}
-	}
-}
-
-// TestFooter_FeedbackIsDim: the feedback link is the quietest thing on the status line.
-func TestFooter_FeedbackIsDim(t *testing.T) {
-	restore := lipgloss.ColorProfile()
-	t.Cleanup(func() { lipgloss.SetColorProfile(restore) })
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	m := fitModel(t, paneSessions, 200, 30, nil)
-	m.layout()
-	want := styleDim.Render("   feedback: " + feedbackURL)
-	if got := m.footerView(); !strings.Contains(got, want) {
-		t.Fatalf("footer does not draw the feedback link dim:\n%q\nwant it to hold\n%q", got, want)
 	}
 }

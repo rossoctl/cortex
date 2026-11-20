@@ -11,36 +11,9 @@ import (
 	"github.com/rossoctl/cortex/core/session/timeline"
 )
 
-// statusRow returns the first line of the footer — the status row, where the
-// feedback link lives. The second line is the keybinding hint.
-func statusRow(footer string) string {
-	return strings.Split(footer, "\n")[0]
-}
-
-// On a terminal wide enough to hold everything, the footer must carry a way to
-// send feedback. A user looking at their session data is the user most likely
-// to have an opinion about it; #975 asks that the tool point them somewhere
-// rather than leaving them to hunt for the repository.
-func TestFooterShowsFeedbackLinkWhenWide(t *testing.T) {
-	if feedbackURL == "" {
-		t.Fatal("feedbackURL const is empty; the footer has nothing to point users at")
-	}
-
-	m := &model{width: 200, pane: paneSessions}
-	got := m.footerView()
-
-	if !strings.Contains(got, feedbackURL) {
-		t.Errorf("footerView() at width 200 does not contain the feedback URL %q\n---\n%s", feedbackURL, got)
-	}
-}
-
-// The status row is the one footer line that nothing else bounds, and it feeds
-// into an unbounded lipgloss.JoinVertical — so if it overflows the terminal the
-// terminal wraps it onto a third row, breaking the "two-line footer" contract.
-// The feedback link is the longest thing on it and has the weakest claim on the
-// columns, so a narrow terminal must drop it rather than wrap. This is the test
-// that the earlier presence-only check could not be: it measures the rendered
-// width, the axis the bug lives on.
+// The bottom bar feeds into an unbounded lipgloss.JoinVertical, so if it overflows the
+// terminal the terminal wraps it onto a second row, and the view is one row too tall.
+// This test measures the rendered width, the axis the bug lives on.
 func TestFooterStatusRowFitsNarrowWidth(t *testing.T) {
 	const width = 80
 
@@ -50,15 +23,14 @@ func TestFooterStatusRowFitsNarrowWidth(t *testing.T) {
 	}{
 		{"plain connected", &model{width: width, pane: paneSessions, connState: connStateInfo{phase: connOpen}}},
 		{"paused", &model{width: width, pane: paneEvents, connState: connStateInfo{phase: connOpen}, paused: true}},
-		// The timed (non-sticky) flash path also appends to the status row before
-		// the feedback link, so it is the tightest case. flashUntil in the future
-		// keeps the flash live.
+		// The timed (non-sticky) flash path also appends to the status, so it is
+		// the tightest case. flashUntil in the future keeps the flash live.
 		{"with timed flash", &model{width: width, pane: paneEvents, connState: connStateInfo{phase: connOpen}, flash: "yanked → ~/.cortex/agentop-events/event.json", flashUntil: time.Now().Add(time.Hour)}},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			row := statusRow(tc.model.footerView())
+			row := tc.model.footerView()
 			if w := lipgloss.Width(row); w > width {
 				t.Errorf("status row is %d columns at width %d (must not wrap):\n%q", w, width, row)
 			}
@@ -100,7 +72,7 @@ func TestFooterShowsActiveSort(t *testing.T) {
 				pane: tc.pane, width: 200, eventColumns: defaultColumnSelection(),
 				sortCol: tc.col, sortDesc: tc.desc,
 			}
-			got := stripANSI(statusRow(m.footerView()))
+			got := stripANSI(m.footerView())
 			if tc.want != "" && !strings.Contains(got, tc.want) {
 				t.Errorf("status row = %q, want it to contain %q", got, tc.want)
 			}
@@ -127,7 +99,7 @@ func TestFooterShowsSearchOnEveryPane(t *testing.T) {
 		if m.surface(p) == nil {
 			continue
 		}
-		if got := stripANSI(statusRow(m.footerView())); !strings.Contains(got, "[/github-tool") {
+		if got := stripANSI(m.footerView()); !strings.Contains(got, "[/github-tool") {
 			t.Errorf("pane %v: status row = %q, want the search", p, got)
 		}
 	}

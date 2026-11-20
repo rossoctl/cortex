@@ -271,14 +271,6 @@ func renderKeyBar(fitted string, width int) string {
 	return padBar(chipHints(fitted, styleBarLabel, styleBarChip), width)
 }
 
-// renderTrailingKeyBar is renderTrailingHints drawn as the key bar (see renderKeyBar).
-func renderTrailingKeyBar(fitted, keys string, width int) string {
-	if !colorOn() {
-		return renderTrailingHints(fitted, keys)
-	}
-	return padBar(trailingChipHints(fitted, keys, styleBarLabel, styleBarChip), width)
-}
-
 func padBar(line string, width int) string {
 	if pad := width - lipgloss.Width(line); pad > 0 {
 		line += styleBar.Render(strings.Repeat(" ", pad))

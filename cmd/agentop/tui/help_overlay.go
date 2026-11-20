@@ -764,6 +764,13 @@ func helpBodyLines(pane paneID, width int) string {
 	if len(others) > 1 {
 		sections = append(sections, strings.Join(others, "\n\n"))
 	}
+	// Last: the bottom bar has no room for it. Wrapped, not cut, below its width: a cut URL
+	// cannot be followed.
+	url := "  " + feedbackURL
+	if lipgloss.Width(url) > width {
+		url = ansi.Hardwrap(feedbackURL, width, true)
+	}
+	sections = append(sections, styleHint.Render("FEEDBACK")+"\n"+styleMuted.Render(url))
 
 	return strings.Join(sections, "\n\n")
 }

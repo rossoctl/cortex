@@ -339,15 +339,14 @@ func probeIdentity(subject, client string) pipeline.SessionEvent {
 	}
 }
 
-// The status row is built by unconditional writes, and only the feedback link ever
-// checked the width — so the optional state markers could overflow it. layout()
-// reserves exactly three rows for title + blank + footer, so a wrapped status row
-// costs the hint line below it, which is the row carrying [?] keys and [q] quit.
+// The status is built by unconditional writes, so the optional state markers could
+// overflow the bar. layout() reserves exactly one row for it, so a wrapped bar makes the
+// view taller than the terminal.
 //
 // TestLayout_EveryPaneFitsTheTerminal cannot catch this: it never sets sortCol,
-// a search or paused, so the row it measures has none of the optional markers on it.
-// Measured before fitStatusLine: paused + a restored filter (the search's predecessor)
-// + an active sort rendered 87 columns at width 80.
+// a search or paused, so the bar it measures has none of the optional markers on it.
+// Measured before the status was fitted: paused + a restored filter (the search's
+// predecessor) + an active sort rendered 87 columns at width 80.
 func TestLayout_StateRichFooterFitsTheTerminal(t *testing.T) {
 	for _, dim := range fitSizes {
 		for _, tc := range []struct {

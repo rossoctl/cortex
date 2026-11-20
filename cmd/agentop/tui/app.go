@@ -2556,42 +2556,18 @@ func (m *model) paneView() string {
 		} else {
 			body = m.namespacesTbl.View()
 		}
-		keys := m.helpView()
-		footer := keys
-		if m.pickerErr != "" {
-			footer = "error: " + m.pickerErr + "    " + footer
-		}
 		if m.searching && m.searchPane != targetHelp {
 			body = m.searchInput.View() + "\n" + body
 		}
-		if st := m.searchStatus(m.pane); st != "" {
-			footer = st + "  " + footer
-		}
-		// Fitted like the session-view footer: an error prefix can push even a
-		// short picker hint past the terminal width, and a wrapped footer costs a
-		// row of the table above it.
-		footer = fitHintLine(footer, m.width)
-		return m.pickerView(title, body, renderTrailingKeyBar(footer, keys, m.width))
+		return m.pickerView(title, body, bottomBar(m.helpView(), m.pickerStatus(), m.width))
 	}
 	if m.pane == panePods {
 		title := m.appName() + " · " + m.selectedNamespace + " · pick pod"
 		body := m.podsTbl.View()
-		keys := m.helpView()
-		footer := keys
-		if m.pickerErr != "" {
-			footer = "error: " + m.pickerErr + "    " + footer
-		}
 		if m.searching && m.searchPane != targetHelp {
 			body = m.searchInput.View() + "\n" + body
 		}
-		if st := m.searchStatus(m.pane); st != "" {
-			footer = st + "  " + footer
-		}
-		// Fitted like the session-view footer: an error prefix can push even a
-		// short picker hint past the terminal width, and a wrapped footer costs a
-		// row of the table above it.
-		footer = fitHintLine(footer, m.width)
-		return m.pickerView(title, body, renderTrailingKeyBar(footer, keys, m.width))
+		return m.pickerView(title, body, bottomBar(m.helpView(), m.pickerStatus(), m.width))
 	}
 	if m.width == 0 {
 		return "initializing…"
@@ -2603,7 +2579,7 @@ func (m *model) paneView() string {
 // pickerView is a picker pane: the title, the body in the box, and the picker's key bar.
 //
 // The box fills every row the footer does not use. A picker draws no band, so its top edge is
-// plain. The picker's key bar is one line where footerView is footerLines.
+// plain.
 //
 // A picker is the first screen, so it can render before the first WindowSizeMsg. With no width
 // yet there is no box to draw, and the body shows as it is.
@@ -2611,7 +2587,7 @@ func (m *model) pickerView(title, body, footer string) string {
 	if m.width == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left, renderTitle(title), body, footer)
 	}
-	frameH := m.bodyHeight + (footerLines - lipgloss.Height(footer))
+	frameH := m.bodyHeight
 	if m.searching {
 		frameH++ // layout() reserved the prompt's row; it is the body's first line, or blank
 	}
