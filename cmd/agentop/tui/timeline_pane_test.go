@@ -1330,6 +1330,9 @@ func TestTimelineAll_LongLiveWaitIsCapped(t *testing.T) {
 		if label := ansi.Strip(renderAxisLine(axisLabels(lay), lay.axis.width())); tc.capped != strings.Contains(label, "+"+tlDuration(tc.after)) {
 			t.Errorf("%v on: axis %q, want the squeezed wait labelled only when squeezed", tc.after, label)
 		}
+		if label := ansi.Strip(renderAxisLine(axisLabels(lay), lay.axis.width())); !strings.HasSuffix(strings.TrimRight(label, " "), live.Local().Format("15:04")+"╷") {
+			t.Errorf("%v on: axis %q, want it to finish at now, %s", tc.after, label, live.Local().Format("15:04"))
+		}
 	}
 }
 
@@ -1753,40 +1756,41 @@ func assertAxis(t *testing.T, name string, lay tlLayout, want map[int]string) {
 func TestAxisLabels_SameDay(t *testing.T) {
 	lay := axisAt(localAt(11, 19, 23, 30), 30*time.Second, 60)
 	assertAxis(t, "same day", lay, map[int]string{
-		0: "╷11-19 23:30", 16: "╷23:38", 32: "╷23:46", 48: "11-19 23:59╷",
+		0: "╷11-19 23:30", 16: "╷23:38", 32: "╷23:46", 48: "11-20 00:00╷",
 	})
 }
 
 func TestAxisLabels_AcrossMidnight(t *testing.T) {
 	lay := axisAt(localAt(11, 19, 23, 45), 30*time.Second, 60)
 	assertAxis(t, "across midnight", lay, map[int]string{
-		0: "╷11-19 23:45", 16: "╷23:53", 32: "╷11-20 00:01", 48: "11-20 00:14╷",
+		0: "╷11-19 23:45", 16: "╷23:53", 32: "╷11-20 00:01", 48: "11-20 00:15╷",
 	})
 }
 
 func TestAxisLabels_ThreeDays(t *testing.T) {
 	lay := axisAt(localAt(11, 18, 0, 0), 45*time.Minute, 96)
 	assertAxis(t, "three days", lay, map[int]string{
-		0: "╷11-18 00:00", 16: "╷12:00", 32: "╷11-19 00:00", 48: "╷12:00", 64: "╷11-20 00:00", 84: "11-20 23:15╷",
+		0: "╷11-18 00:00", 16: "╷12:00", 32: "╷11-19 00:00", 48: "╷12:00", 64: "╷11-20 00:00", 84: "11-21 00:00╷",
 	})
 }
 
 // A middle label that would touch the finish is dropped whole; no label is ever cut.
 func TestAxisLabels_DropsOverlap(t *testing.T) {
 	lay := axisAt(localAt(11, 19, 23, 30), 30*time.Second, 46)
-	assertAxis(t, "overlap", lay, map[int]string{0: "╷11-19 23:30", 16: "╷23:38", 34: "11-19 23:52╷"})
+	assertAxis(t, "overlap", lay, map[int]string{0: "╷11-19 23:30", 16: "╷23:38", 34: "11-19 23:53╷"})
 }
 
 // Under 25 cells the dated ends do not fit with a blank between, so they lose their dates; under
 // 13 only the start shows, and under 6 nothing does.
 func TestAxisLabels_NarrowUndated(t *testing.T) {
-	assertAxis(t, "21 cells", axisAt(localAt(11, 19, 23, 30), 3*time.Minute, 21), map[int]string{0: "╷23:30", 15: "00:30╷"})
-	assertAxis(t, "25 cells", axisAt(localAt(11, 19, 23, 30), 3*time.Minute, 25), map[int]string{0: "╷11-19 23:30", 13: "11-20 00:42╷"})
+	assertAxis(t, "21 cells", axisAt(localAt(11, 19, 23, 30), 3*time.Minute, 21), map[int]string{0: "╷23:30", 15: "00:33╷"})
+	assertAxis(t, "25 cells", axisAt(localAt(11, 19, 23, 30), 3*time.Minute, 25), map[int]string{0: "╷11-19 23:30", 13: "11-20 00:45╷"})
 	assertAxis(t, "12 cells", axisAt(localAt(11, 19, 23, 30), 3*time.Minute, 12), map[int]string{0: "╷23:30"})
 	assertAxis(t, "5 cells", axisAt(localAt(11, 19, 23, 30), 3*time.Minute, 5), map[int]string{})
 }
 
-// Each tick sits on the cell whose start is the label's time, seconds included in a short window.
+// Each tick sits on the cell whose start is the label's time, seconds included in a short window;
+// the finish ticks the last cell and names its end.
 func TestAxisLabels_TickOnNamedCell(t *testing.T) {
 	for _, tc := range []struct {
 		lay    tlLayout
@@ -1802,6 +1806,9 @@ func TestAxisLabels_TickOnNamedCell(t *testing.T) {
 				tick, text = l.cell+len(rs)-1, string(rs[:len(rs)-1])
 			}
 			named := tc.lay.axis.cells[tick].from.Local()
+			if tick == tc.lay.axis.width()-1 {
+				named = tc.lay.axis.cells[tick].to.Local()
+			}
 			if !strings.HasSuffix(text, named.Format(tc.format)) || (l.date > 0 && !strings.HasPrefix(text, named.Format("01-02 "))) {
 				t.Errorf("label %q ticks cell %d, which starts at %s", l.text, tick, named.Format("01-02 15:04:05"))
 			}

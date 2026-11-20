@@ -859,7 +859,7 @@ func axisLabels(lay tlLayout) []tlAxisLabel {
 	if lay.to.Sub(lay.from) <= 10*time.Minute {
 		format = "15:04:05"
 	}
-	start, finish := lay.axis.cells[0].from.Local(), lay.axis.cells[w-1].from.Local()
+	start, finish := lay.axis.cells[0].from.Local(), lay.axis.cells[w-1].to.Local()
 	ends := func(dated bool) (tlAxisLabel, tlAxisLabel) {
 		f, d := format, 0
 		if dated {
