@@ -1926,8 +1926,9 @@ when the match arrives with the fetch. `y` writes the half without its capture.
 
 `CTX(1M)` is a gauge, not a figure: how full the **conversation's**
 context was on its latest turn, against a fixed one-million-token window. The
-brackets are the scale, drawn on every row, so a nearly-empty session reads
-as empty-out-of-something rather than as a blank cell — and an em dash, which
+fill is followed by a shaded `░` track for the rest of the window (`███▌░░░`),
+so the scale shows on every row and a nearly-empty session reads as
+empty-out-of-something rather than as a blank cell — and an em dash, which
 means *no context known*, stays distinguishable from the sliver a barely-used
 session gets.
 

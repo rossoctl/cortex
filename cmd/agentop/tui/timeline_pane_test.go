@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 
@@ -1628,27 +1629,93 @@ func TestTimelineRender_TokPerSecColumn(t *testing.T) {
 	}
 }
 
-// The tok/s note is the only text that explains the column, so the user must see it. The body
-// cuts every line at the pane's width, so the note needs its own legend line to survive at the
-// widths people use.
-func TestTimelineRender_TokPerSecNoteReachesTheUser(t *testing.T) {
-	const note = "tok/s output per second of model time, last 60 s"
-	for _, w := range []int{140, 120} {
+const fullTimelineLegend = "█ tools  █ model  █ retrying  █ waiting on subagents  █ waiting on you  ┆ time cut from the axis   ▁…█ requests in flight"
+
+// The legend is one line, and it no longer explains tok/s or says "in its colour".
+func TestTimelineLegend_OneLine(t *testing.T) {
+	m := timelineModel(t, 200, 46)
+	plainWidth := lipgloss.Width(m.legend())
+	restore := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(restore) })
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	l := m.legend()
+	got := ansi.Strip(l)
+	if !strings.Contains(l, lipgloss.NewStyle().Foreground(colorTLTool).Render("█")) {
+		t.Errorf("tools swatch lost its color: %q", l)
+	}
+	if lipgloss.Width(l) != plainWidth {
+		t.Errorf("width %d under TrueColor, %d under Ascii", lipgloss.Width(l), plainWidth)
+	}
+	if got != fullTimelineLegend {
+		t.Errorf("legend = %q, want %q", got, fullTimelineLegend)
+	}
+	if strings.Contains(got, "\n") || strings.Contains(got, "tok/s") || strings.Contains(got, "in its colour") {
+		t.Errorf("legend = %q", got)
+	}
+}
+
+// A legend too wide for the terminal drops whole items from the right and never wraps.
+func TestTimelineLegend_DropsFromTheRight(t *testing.T) {
+	full := lipgloss.Width(fullTimelineLegend)
+	m := timelineModel(t, full-1, 46)
+	got := ansi.Strip(m.legend())
+	if want := "█ tools  █ model  █ retrying  █ waiting on subagents  █ waiting on you  ┆ time cut from the axis"; got != want {
+		t.Errorf("at %d columns legend = %q, want %q", full-1, got, want)
+	}
+	m = timelineModel(t, full-30, 46)
+	if got, want := ansi.Strip(m.legend()), "█ tools  █ model  █ retrying  █ waiting on subagents  █ waiting on you"; got != want {
+		t.Errorf("at %d columns legend = %q, want %q", full-30, got, want)
+	}
+	for w := 1; w <= full+2; w++ {
 		m := timelineModel(t, w, 46)
-		m.timeline.windowIdx = 3
-		body := stripANSI(m.timelineBody())
-		if !strings.Contains(body, note) {
-			t.Errorf("at %d columns the body does not explain tok/s:\n%s", w, body)
+		l := m.legend()
+		if strings.Contains(l, "\n") || lipgloss.Width(l) > w {
+			t.Fatalf("at %d columns legend = %q (%d wide)", w, ansi.Strip(l), lipgloss.Width(l))
 		}
-		for _, l := range strings.Split(stripANSI(m.legend()), "\n") {
-			if strings.Contains(l, note) && lipgloss.Width(l) > w {
-				t.Errorf("at %d columns the note's legend line is %d wide: %q", w, lipgloss.Width(l), l)
-			}
+		if !strings.HasPrefix(fullTimelineLegend, ansi.Strip(l)) {
+			t.Fatalf("at %d columns legend %q is not a cut of the full text from the right", w, ansi.Strip(l))
 		}
 	}
 }
 
-// Color changes no text and no width on the timeline; the cursor strip's [←→] is a key chip.
+// With no moment picked the cursor row stays, blank, so ← does not move the chart.
+func TestCursorStrip_IdleRowIsBlank(t *testing.T) {
+	m := timelineModel(t, 140, 46)
+	m.timeline.windowIdx = 3
+	lay, _ := m.timelineLayoutNow()
+	if s := m.cursorStrip(lay); s != "" {
+		t.Errorf("idle cursor strip = %q, want blank", ansi.Strip(s))
+	}
+	firstRow := func() int {
+		for i, l := range strings.Split(stripANSI(m.renderTimeline()), "\n") {
+			if strings.Contains(l, "main agent") {
+				return i
+			}
+		}
+		t.Fatal("no main agent row")
+		return -1
+	}
+	before := stripANSI(m.renderTimeline())
+	at := firstRow()
+	lines := strings.Split(before, "\n")
+	if last := lines[len(lines)-1]; strings.TrimSpace(last) != "" {
+		t.Errorf("idle body ends with %q, want the blank cursor row", last)
+	}
+	// Fixed lines (7, one of them the legend) plus two per shown row, and nothing else.
+	agents := m.timelineAgentRows(lay)
+	if want := timelineFixedLines + tlEmptyLines(lay) + 2*agents + 2*m.timelineHostRows(lay, agents); len(lines) != want {
+		t.Errorf("idle body is %d lines, want %d:\n%s", len(lines), want, before)
+	}
+	m.handleKey(tea.KeyMsg{Type: tea.KeyLeft})
+	if got := firstRow(); got != at {
+		t.Errorf("← moved the chart from line %d to %d", at, got)
+	}
+	if n, k := len(lines), len(strings.Split(stripANSI(m.renderTimeline()), "\n")); n != k {
+		t.Errorf("← changed the body from %d to %d lines", n, k)
+	}
+}
+
+// Color changes no text and no width on the timeline.
 func TestTimeline_PlainInvariant(t *testing.T) {
 	for _, w := range []int{80, 100, 140} {
 		m := timelineModel(t, w, 46)
@@ -1658,7 +1725,7 @@ func TestTimeline_PlainInvariant(t *testing.T) {
 	t.Cleanup(func() { lipgloss.SetColorProfile(restore) })
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	out := timelineModel(t, 140, 46).renderTimeline()
-	for _, want := range []string{styleChip.Render(" ←→ "), styleDim.Render("│")} {
+	for _, want := range []string{styleDim.Render("│")} {
 		if !strings.Contains(out, want) {
 			t.Errorf("timeline lacks %q", want)
 		}

@@ -41,9 +41,9 @@ LAST 1H    TODAY   7 DAYS    MONTH
   $4.04   $18.80  $216.44  $703.18
 ────────────────────────────────────────────────────────────────────────────────────────────────────
  SESSION         TITLE        UPDATED           EVENTS      TOKENS        COST      SAVED~  CTX(1M)
- ctx-abc-123-4…  …pend-spans  3s ago                42       48.2k       $0.12       $0.01  ▕████ ▏
- ctx-def-567-4…  weather-ag…  18m ago               15        1.2k      <$0.01           —  ▕▏    ▏
- ctx-ghi-901-4…               42m ago                7        2.9k           —           —  ▕██   ▏
+ ctx-abc-123-4…  …pend-spans  3s ago                42       48.2k       $0.12       $0.01  ████░░░
+ ctx-def-567-4…  weather-ag…  18m ago               15        1.2k      <$0.01           —  ▏░░░░░░
+ ctx-ghi-901-4…               42m ago                7        2.9k           —           —  ██░░░░░
  default                      1h ago                 8           —           —           —        —
 
 ● connected  2.1 events/sec   feedback: https://github.com/rossoctl/cortex/issues/new/choose

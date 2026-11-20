@@ -531,18 +531,19 @@ func eventCellStyle(cols []eventColumn, kinds []eventRowKind) table.CellStyleFun
 		if col >= len(ids) || v == "" {
 			return styleNone
 		}
+		// A tool row steps back: all muted, except live state (running, ⋯) and a failed tool.
 		if kind == eventRowTool {
 			switch ids[col] {
-			case colIndex, colMethod:
-				return styleTool
 			case colDuration:
 				if strings.HasPrefix(v, "⋯") {
-					return styleTool
+					return styleWarn
 				}
 			case colStatus:
-				return groupStyle(statusGroup(v))
+				if g := statusGroup(v); g == groupWarn || g == groupError {
+					return groupStyle(g)
+				}
 			}
-			return styleNone
+			return styleMuted
 		}
 		switch ids[col] {
 		case colIndex, colTime, colHost, colBytes:

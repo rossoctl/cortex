@@ -2591,7 +2591,7 @@ func (m *model) paneView() string {
 			renderTitle(title),
 			styleDim.Render(renderDivider(m.width)),
 			body,
-			renderTrailingHints(footer, keys),
+			renderTrailingKeyBar(footer, keys, m.width),
 		)
 	}
 	if m.pane == panePods {
@@ -2616,7 +2616,7 @@ func (m *model) paneView() string {
 			renderTitle(title),
 			styleDim.Render(renderDivider(m.width)),
 			body,
-			renderTrailingHints(footer, keys),
+			renderTrailingKeyBar(footer, keys, m.width),
 		)
 	}
 	if m.width == 0 {

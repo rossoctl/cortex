@@ -7,7 +7,10 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
+	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -93,45 +96,80 @@ func subagent(id string, at time.Time, msgs, context int) []pipeline.SessionEven
 	return roled(conversation(id, at, msgs, context), pipeline.AgentRoleSubagent)
 }
 
-func TestContextGauge(t *testing.T) {
+// The gauge is a shaded track (#2019): the fill, then ░ for the rest of the window. A partial
+// cell leaves a gap before the track, which the author accepted.
+func TestContextGauge_ShadedTrack(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		tokens int
 		width  int
 		want   string
 	}{
-		// The track is always drawn, so a scale is visible on every row.
-		{"half full", 500_000, 10, "▕████    ▏"},
-		{"nearly full", 991_200, 10, "▕███████▉▏"},
-		{"full", 1_000_000, 10, "▕████████▏"},
-		// A NON-ZERO CONTEXT NEVER RENDERS AS AN EMPTY TRACK. tierBar's rule, inherited: 8,200
-		// of a million is 0.8%, which rounds to no block at all, so it gets the sliver instead.
-		// An empty track beside a live session reads as a rendering fault.
-		{"a sliver rather than nothing", 8_200, 10, "▕▏       ▏"},
-		// Unknown is the em dash COST and SAVED use, and it must not be confusable with the
-		// sliver above — which is the whole reason the brackets are drawn.
-		{"unknown", 0, 10, emptyCell},
+		{"half full", 500_000, 7, "███▌░░░"},
+		// A NON-ZERO CONTEXT NEVER RENDERS AS AN EMPTY TRACK: tierBar's sliver rule.
+		{"a sliver rather than nothing", 8_200, 7, "▏░░░░░░"},
+		{"full", 1_000_000, 7, "███████"},
 		// Over the window: capped rather than overflowing its column.
-		{"past the window", 1_400_000, 10, "▕████████▏"},
-		// Narrow terminals shrink the track with the column.
-		{"the narrowest useful gauge", 500_000, 3, "▕▌▏"},
-		// Below that there is nothing to draw; a bracket pair alone would claim a scale it
-		// cannot show.
-		{"too narrow to say anything", 500_000, 2, ""},
+		{"past the window", 2_000_000, 7, "███████"},
+		// Unknown is the em dash COST and SAVED use, never an empty track.
+		{"unknown", 0, 7, emptyCell},
+		{"one cell", 500_000, 1, "▌"},
+		{"no width", 5, 0, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := contextGauge(tc.tokens, tc.width)
 			if got != tc.want {
 				t.Errorf("contextGauge(%d, %d) = %q, want %q", tc.tokens, tc.width, got, tc.want)
 			}
-			// Exactly the column's width, so every row's gauge starts and ends in the same
-			// place and the fills can be compared down the column by eye.
+			// Exactly the column's width, so the fills can be compared down the column by eye.
 			if tc.want != "" && tc.want != emptyCell {
 				if w := lipgloss.Width(got); w != tc.width {
 					t.Errorf("gauge is %d columns, want %d: %q", w, tc.width, got)
 				}
 			}
 		})
+	}
+}
+
+// Under color the CTX cell draws its fill in the accent ink and its ░ track dim, and the plain
+// text is the plain gauge.
+func TestSessionsGauge_TrueColorInk(t *testing.T) {
+	withProfile(t, termenv.TrueColor)
+	gauge := contextGauge(500_000, 7)
+	cols := []table.Column{{Title: "SESSION", Width: 8}, {Title: contextColumnTitle, Width: 7}}
+	rows := []table.Row{{"aaaaaaaa", gauge}, {"bbbbbbbb", gauge}, {"cccccccc", gauge}}
+	tbl := table.New(table.WithColumns(cols), table.WithRows(rows), table.WithHeight(4),
+		table.WithCellStyle(sessionsCellStyle(cols)))
+	tbl.SetStyles(tableStyles())
+	tbl.SetCursor(0)
+
+	lines, first := tableLines(t, tbl, "aaaaaaaa")
+	line := lines[first+2] // not the cursor row
+	if got := ansi.Strip(line); !strings.Contains(got, "cccccccc") || !strings.Contains(got, gauge) {
+		t.Fatalf("plain row is %q, want it to hold %q", got, gauge)
+	}
+	if p := sgrAt(line, "█"); !strings.Contains(p, fgOf(styleAccent)) {
+		t.Errorf("the fill has SGR %q, want the accent ink %q", p, fgOf(styleAccent))
+	}
+	if p := sgrAt(line, "▌"); !strings.Contains(p, fgOf(styleAccent)) {
+		t.Errorf("the partial cell has SGR %q, want the accent ink %q", p, fgOf(styleAccent))
+	}
+	// Every ░, not only the first, sits under the dim ink.
+	n := 0
+	for at := 0; ; {
+		i := strings.Index(line[at:], "░")
+		if i < 0 {
+			break
+		}
+		at += i
+		if p := sgrAt(line[:at]+"\x00", "\x00"); !strings.Contains(p, fgOf(styleDim)) {
+			t.Errorf("track cell %d has SGR %q, want the dim ink %q", n, p, fgOf(styleDim))
+		}
+		n++
+		at += len("░")
+	}
+	if n != 3 {
+		t.Fatalf("the row draws %d ░, want 3", n)
 	}
 }
 
@@ -169,7 +207,7 @@ func TestSessionsTable_ContextColumnReplacesActive(t *testing.T) {
 	}
 	// 500k of 1M: a gauge half full, drawn to the fitted width.
 	cell := row[len(row)-1]
-	if !strings.Contains(cell, "▕") || !strings.Contains(cell, "█") {
+	if !strings.Contains(cell, "░") || !strings.Contains(cell, "█") {
 		t.Errorf("last cell is not a gauge: %q", cell)
 	}
 	if got, want := lipgloss.Width(cell), cols[len(cols)-1].Width; got != want {

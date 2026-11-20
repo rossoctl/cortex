@@ -47,6 +47,23 @@ func assertInk(t *testing.T, view, text string, c lipgloss.AdaptiveColor, name s
 	}
 }
 
+// assertLastInk checks the last SGR before the first text in s. Unlike assertInk it allows
+// text between them, for cells of one ink that the table draws as one run.
+func assertLastInk(t *testing.T, s, text string, c lipgloss.AdaptiveColor, name string) {
+	t.Helper()
+	i := strings.Index(s, text)
+	if i < 0 {
+		t.Fatalf("%q is not in %q", text, ansi.Strip(s))
+	}
+	j := strings.LastIndex(s[:i], "\x1b[")
+	if j < 0 {
+		t.Fatalf("no SGR before %q", text)
+	}
+	if sgr := s[j:i]; !strings.Contains(sgr, fgSGR(c)) {
+		t.Errorf("%q: last SGR %q has no %s ink (%s)", text, sgr, name, fgSGR(c))
+	}
+}
+
 // cellStylesEvents is a modify exchange answered 200, an exchange answered 503 and an
 // unbridged CONNECT, so the ACTION and STATUS cells hold one value of each group.
 func cellStylesEvents() []pipeline.SessionEvent {
@@ -97,9 +114,10 @@ func TestEventsCellStyles_ToolRows(t *testing.T) {
 		t.Fatalf("DURATION = %q, want a running tool's ⋯ cell", dur)
 	}
 	view := m.eventsTbl.View()
-	assertInk(t, view, "┗⚒", colorTool, "tool")
-	assertInk(t, view, "Grep", colorTool, "tool")
-	assertInk(t, view, dur, colorTool, "tool")
+	assertLastInk(t, view, "┗", colorDim, "dim")
+	assertLastInk(t, view, "⚒", colorDim, "dim")
+	assertLastInk(t, view, "Grep", colorMuted, "muted")
+	assertLastInk(t, view, dur, colorWarn, "warn")
 	assertInk(t, view, "running", colorWarn, "warn")
 }
 
@@ -142,8 +160,8 @@ func TestEventsCellStyles_ToolRowsWithIndexHidden(t *testing.T) {
 	if strings.Contains(ansi.Strip(view), "⚒") {
 		t.Fatalf("# is hidden, but the view shows the tool mark:\n%s", ansi.Strip(view))
 	}
-	assertInk(t, view, "Grep", colorTool, "tool")
-	assertInk(t, view, dur, colorTool, "tool")
+	assertLastInk(t, view, "Grep", colorMuted, "muted")
+	assertLastInk(t, view, dur, colorWarn, "warn")
 }
 
 // A block header is accent when # is the only column: one visible column makes every row one
@@ -156,4 +174,104 @@ func TestEventsCellStyles_BlockRowAccentOneColumn(t *testing.T) {
 	view := m.eventsTbl.View()
 	// The # column is narrow, so the header's label is cut to "─ …".
 	assertInk(t, view, "─ …", colorAccent, "accent")
+}
+
+// toolRowFg is the foreground the events hook gives each cell of row r, keyed by column id.
+func toolRowFg(m *model, r int) map[eventColumnID]lipgloss.TerminalColor {
+	cols, _ := layoutColumns(m.eventColumns, m.eventColWidths, m.width)
+	kinds := make([]eventRowKind, len(m.visibleRows))
+	for i, vr := range m.visibleRows {
+		if vr.tool != nil {
+			kinds[i] = eventRowTool
+		}
+	}
+	hook := eventCellStyle(cols, kinds)
+	row := m.eventsTbl.Rows()[r]
+	fg := map[eventColumnID]lipgloss.TerminalColor{}
+	for i, c := range cols {
+		if i < len(row) && strings.TrimSpace(row[i]) != "" {
+			fg[c.id] = hook(r, row, i).GetForeground()
+		}
+	}
+	return fg
+}
+
+// drawnLine is the drawn line of view whose plain text contains text.
+func drawnLine(t *testing.T, view, text string) string {
+	t.Helper()
+	for _, l := range strings.Split(view, "\n") {
+		if strings.Contains(ansi.Strip(l), text) {
+			return l
+		}
+	}
+	t.Fatalf("no line with %q in:\n%s", text, ansi.Strip(view))
+	return ""
+}
+
+// A tool row steps back (#2019 change 3): every cell is muted, only live state (running, ⋯)
+// keeps the warn ink and a failed tool the error ink, and its ┗⚒/┣⚒ mark and a subagent │
+// are dim. The same holds in search results and inside an open subagent block.
+func TestEventCellStyle_ToolRowsMuted(t *testing.T) {
+	withProfile(t, termenv.TrueColor)
+	okTool := trTool(2, "ok", "Grep", 12, 13, "x")
+	running := trTool(2, "run", "Bash", 12, -1, "")
+	failed := trTool(2, "err", "Edit", 12, 13, "")
+	failed.Error = true
+	lost := trTool(2, "lost", "Read", 12, 14, "")
+	lost.Lost = true
+	m := toolRowsModel(t, trExchange(1, 10, ""), &timeline.Timeline{Tools: []timeline.Tool{okTool, running, failed, lost}})
+	want := map[string]map[eventColumnID]lipgloss.AdaptiveColor{
+		"ok":   {colStatus: colorMuted},
+		"run":  {colStatus: colorWarn, colDuration: colorWarn},
+		"err":  {colStatus: colorError},
+		"lost": {colStatus: colorError},
+	}
+	for id, special := range want {
+		r, row := toolRowAt(t, m, id)
+		for col, fg := range toolRowFg(m, r) {
+			c, ok := special[col]
+			if !ok {
+				c = colorMuted
+			}
+			if strings.TrimSpace(row[colPos(m, col)]) == "—" {
+				c = colorDim
+			}
+			if fg != c {
+				t.Errorf("%s: column %v = %v, want %v", id, col, fg, c)
+			}
+		}
+	}
+	view := m.eventsTbl.View()
+	assertLastInk(t, view, "┣", colorDim, "dim")
+	assertLastInk(t, view, "┗", colorDim, "dim")
+	assertLastInk(t, view, "⚒", colorDim, "dim")
+	assertLastInk(t, drawnLine(t, view, "Grep"), "ok", colorMuted, "muted")
+
+	m.search = map[paneID]string{paneEvents: "Grep"}
+	m.rebuildEventsTable()
+	view = m.eventsTbl.View()
+	assertLastInk(t, drawnLine(t, view, "Grep"), "┣", colorDim, "dim")
+	assertLastInk(t, drawnLine(t, view, "Grep"), "ok", colorMuted, "muted")
+	if fg := toolRowFg(m, slices.IndexFunc(m.visibleRows, func(r eventRow) bool { return r.tool != nil && r.tool.ID == "ok" })); fg[colStatus] != colorMuted {
+		t.Errorf("search: STATUS ok = %v, want muted", fg[colStatus])
+	}
+}
+
+func TestEventCellStyle_ToolRowsMutedInSubagentBlock(t *testing.T) {
+	withProfile(t, termenv.TrueColor)
+	events := slices.Concat(trExchange(1, 10, ""), trExchange(2, 20, "a1"), trExchange(3, 30, ""))
+	tl := &timeline.Timeline{Tools: []timeline.Tool{trTool(4, "sub", "Read", 22, 23, "x")}}
+	tl.Tools[0].Agent = "a1"
+	m := toolRowsModel(t, events, tl)
+	m.subagentOpen = map[string]bool{"a1": true}
+	m.rebuildEventsTable()
+	r, _ := toolRowAt(t, m, "sub")
+	for col, fg := range toolRowFg(m, r) {
+		if fg != colorMuted && fg != colorDim {
+			t.Errorf("column %v = %v, want muted", col, fg)
+		}
+	}
+	line := drawnLine(t, m.eventsTbl.View(), "Read")
+	assertLastInk(t, line, "│", colorDim, "dim")
+	assertLastInk(t, line, "Read", colorMuted, "muted")
 }

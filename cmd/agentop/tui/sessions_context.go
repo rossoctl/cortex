@@ -122,36 +122,27 @@ func (m *model) rebaseSessionContext(id string, events []pipeline.SessionEvent) 
 
 // contextGauge draws prompt tokens against contextWindowTokens, in exactly width columns.
 //
-// A BRACKETED TRACK, because the brackets are what make the scale visible on every row. The
-// three designs considered were this, a dotted remainder ("███▎····") and a single eighth-block
-// cell; the brackets earn their two columns twice over. A session at 0.8% draws "▕▏       ▏",
-// which reads as nearly-empty-out-of-something, where a bare "▏" floating in whitespace reads as
-// a rendering fault — and the em dash for an unknown context stays unmistakably different from
-// both, which it cannot be when an almost-empty bar is itself almost nothing.
-//
-// No ░ for the remainder. usage_glyphs.go rejected shaded blocks after measuring them: "█
-// against ▓ is nearly indistinguishable at a glance in most terminal fonts", and a track a
-// reader cannot separate from the fill is worse than no track.
+// A SHADED TRACK, which the author chose in #2019: the fill, then ░ for the rest of the window,
+// so the scale shows on every row without the bracket pair the gauge drew before. A partial cell
+// is followed directly by the track, and the small gap inside that cell is accepted. There is no
+// "nearly full" color: the fill length is the whole signal.
 //
 // Fill arithmetic is tierBar's, reused rather than restated, which brings its rule with it: a
 // non-zero value never renders as an empty bar. That rule is the whole reason a 8,200-token
-// context still shows a sliver.
+// context still shows a sliver, and the em dash for an unknown context stays different from it.
 //
 // Exactly width columns, so every row's gauge starts and ends in the same place and the fills can
 // be compared down the column by eye. That is also what makes the column's alignment moot — see
 // sessionsRightAligned, which lists it for the em dash's sake.
 func contextGauge(promptTokens, width int) string {
-	// Three is brackets plus one cell of track. Below that there is nothing to draw, and a
-	// bracket pair alone would claim a scale it cannot show.
-	if width < 3 {
+	if width < 1 {
 		return ""
 	}
 	if promptTokens <= 0 {
 		return emptyCell
 	}
-	budget := width - 2
-	bar := tierBar(int64(promptTokens), contextWindowTokens, budget)
-	return "▕" + bar + strings.Repeat(" ", budget-lipgloss.Width(bar)) + "▏"
+	bar := tierBar(int64(promptTokens), contextWindowTokens, width)
+	return bar + strings.Repeat("░", width-lipgloss.Width(bar))
 }
 
 // cachedMarker names a row whose events agentop holds and the server no longer lists (#870).
