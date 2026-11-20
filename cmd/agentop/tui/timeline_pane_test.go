@@ -1866,12 +1866,36 @@ func TestTimelineStatus_OnIdleCursorRow(t *testing.T) {
 	}
 	lay, _ := m.timelineLayoutNow()
 	m.timeline.cursor = cellOf(t, lay, 210)
-	// A failed refresh still shows with a moment picked: the chart under the cursor is old.
-	if got := last(); !strings.HasPrefix(got, "refresh failed: down · ▸ ") || strings.Contains(got, "oldest events") {
-		t.Errorf("cursor row with a moment picked = %q, want the failure, then that moment", got)
-	}
-	m.timeline.err = nil
-	if got := last(); !strings.HasPrefix(got, "▸ ") {
+	if got := last(); !strings.HasPrefix(got, "▸ ") || strings.Contains(got, "oldest events") {
 		t.Errorf("cursor row with a moment picked = %q, want that moment", got)
+	}
+}
+
+// With a moment picked, a failed refresh is a short marker after the moment's time: the chart
+// under the cursor is old. A real error is long (the URL, then the dial error), and the full
+// text is on the idle row, so here it would push the moment off the row.
+func TestTimelineStatus_FailedRefreshOnPickedRow(t *testing.T) {
+	const long = `Get "http://127.0.0.1:47601/v1/sessions/ecb7387f-bffd-4172-adc4-8da23e992e9a/timeline": ` +
+		`dial tcp 127.0.0.1:47601: connect: connection refused`
+	for _, w := range []int{80, 140} {
+		m := timelineModel(t, w, 46)
+		m.timeline.windowIdx = 3
+		lay, _ := m.timelineLayoutNow()
+		m.timeline.cursor = cellOf(t, lay, 210)
+		lines := strings.Split(stripANSI(m.renderTimeline()), "\n")
+		clean := lines[len(lines)-1]
+		m.timeline.err = errors.New(long)
+		lines = strings.Split(stripANSI(m.renderTimeline()), "\n")
+		got := lines[len(lines)-1]
+		head := clean[:len("▸ 00:00:00  ")]
+		if want := head + "refresh failed · "; !strings.HasPrefix(got, want) {
+			t.Errorf("width %d: row = %q, want it to start %q", w, got, want)
+		}
+		if strings.Contains(got, "dial tcp") {
+			t.Errorf("width %d: row = %q carries the full error", w, got)
+		}
+		if !strings.Contains(got, "Bash") {
+			t.Errorf("width %d: row = %q lost the moment's tool", w, got)
+		}
 	}
 }
