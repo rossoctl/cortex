@@ -92,7 +92,7 @@ func (w *Writer) Snapshot(ctx context.Context, spec usage.Spec, group usage.Grou
 	snap.Currencies = CurrenciesIn(rows)
 	snap.SeriesCurrencies = SeriesCurrenciesIn(rows, applied, series)
 	snap.Agent = agent
-	snap.Project = project
+	snap.Project = model.LenientString(project)
 	snap.SetUngroupedAvoided(ungroupedAvoided)
 	return snap, nil
 }

@@ -236,7 +236,7 @@ func (a *Aggregator) ProjectSnapshot(window, resolution time.Duration, sessionID
 			projectRingComplete(r.buckets, ref, project, a.now().Truncate(BucketWidth), windowBuckets(window)) {
 			snap := a.snapshotRingLocked(r.buckets, window, resolution, "", group, MaxSeriesInResponse)
 			a.mu.RUnlock()
-			snap.Agent, snap.Project = agent, project
+			snap.Agent, snap.Project = agent, model.LenientString(project)
 			return snap
 		}
 		// Released before snapshot takes it again: a second read lock behind a waiting writer
@@ -248,7 +248,7 @@ func (a *Aggregator) ProjectSnapshot(window, resolution time.Duration, sessionID
 		refAgent = ""
 	}
 	snap := NarrowToLabel(a.snapshot(window, resolution, sessionID, refAgent, GroupProject, math.MaxInt), project)
-	snap.Project = project
+	snap.Project = model.LenientString(project)
 	if sessionID == "" {
 		snap.Agent = agent
 	}

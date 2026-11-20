@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // Group selects which label breakdown a Snapshot carries.
@@ -173,7 +174,7 @@ type Snapshot struct {
 	Agent string `json:"agent,omitempty"`
 	// Project is the project= filter this snapshot was narrowed to, set only when the producer
 	// applied it, with the same contract as Agent: absent means "not applied".
-	Project string `json:"project,omitempty"`
+	Project model.LenientString `json:"project,omitempty"`
 	// SeriesCurrencies names, for group=model, endpoint and agent, the units EACH series is in —
 	// the cross-tabulation Currencies cannot carry, so one agent's (or model's, or endpoint's)
 	// figure can be labelled and summed without borrowing another's units. Keyed like the series;
