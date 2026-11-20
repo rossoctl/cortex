@@ -691,6 +691,12 @@ func renderDrillPath(pane paneID, width int) string {
 	return out
 }
 
+// helpTwoColumnMinWidth is the narrowest body that is drawn in two columns. Each column
+// needs the key indent (2), the key column (12), the gutter (2) and about 40 columns of
+// description: 2*56, plus 3 for the separator. A 140-column terminal (134 of body) gets two
+// columns, an 80-column one (74) gets one.
+const helpTwoColumnMinWidth = 2*56 + 3
+
 // helpBodyLines builds the scrollable body of the key-help overlay, wrapped to
 // width: the active pane in full (emphasized), then where it can go, then the
 // spine, then the keys that work anywhere, then the spend drawer's own, then every
@@ -700,6 +706,11 @@ func renderDrillPath(pane paneID, width int) string {
 // get back, and only then the complete reference. The old body ran active pane →
 // GLOBAL → a glyph wall, which answered the last question badly and the first
 // three not at all.
+//
+// TWO COLUMNS ON A WIDE BODY (helpTwoColumnMinWidth). The left column holds this pane
+// and where it can go, the right one the keys that work anywhere and the drill path,
+// so the first screen answers more without a scroll. EVERY PANE stays one column below
+// them, at the full width.
 //
 // The other panes are rendered IN FULL, descriptions and all, rather than
 // compacted to their bare keys. `USAGE  m  w  b  s  esc` told a reader that the
@@ -713,17 +724,29 @@ func helpBodyLines(pane paneID, width int) string {
 	if width < helpMinProseWidth {
 		width = helpMinProseWidth
 	}
-	var sections []string
-
-	if g, ok := paneKeys[pane]; ok {
-		sections = append(sections, renderKeyGroup(g, true, width, 0))
+	two := width >= helpTwoColumnMinWidth
+	colW := width
+	if two {
+		colW = (width - 3) / 2
 	}
-	sections = append(sections,
-		renderJumpSection(pane, width),
-		renderDrillPath(pane, width),
-	)
+
+	var left, right []string
+	if g, ok := paneKeys[pane]; ok {
+		left = append(left, renderKeyGroup(g, true, colW, 0))
+	}
+	left = append(left, renderJumpSection(pane, colW))
 	for _, g := range helpGlobalGroups(pane) {
-		sections = append(sections, renderKeyGroup(g, false, width, 0))
+		right = append(right, renderKeyGroup(g, false, colW, 0))
+	}
+	drill := renderDrillPath(pane, colW)
+
+	var sections []string
+	if two {
+		right = append(right, drill)
+		sections = append(sections, joinHelpColumns(
+			strings.Join(left, "\n\n"), strings.Join(right, "\n\n"), colW, width))
+	} else {
+		sections = append(append(append(sections, left...), drill), right...)
 	}
 
 	// Every other pane, in full. The active pane is already rendered above.
@@ -744,6 +767,29 @@ func helpBodyLines(pane paneID, width int) string {
 	}
 
 	return strings.Join(sections, "\n\n")
+}
+
+// joinHelpColumns draws left and right side by side, each line of left padded to colW,
+// with a dim separator between. The shorter column is padded with blank lines.
+//
+// EACH ROW IS PADDED TO width, so the overlay spans the terminal as the one-column body
+// does. A body one column short centred the panel one column in, and the base's key bar
+// showed in the gap beside it.
+func joinHelpColumns(left, right string, colW, width int) string {
+	l, r := strings.Split(left, "\n"), strings.Split(right, "\n")
+	sep := styleDim.Render(" │ ")
+	rows := make([]string, max(len(l), len(r)))
+	for i := range rows {
+		var a, b string
+		if i < len(l) {
+			a = l[i]
+		}
+		if i < len(r) {
+			b = r[i]
+		}
+		rows[i] = padRight(padRight(a, colW)+sep+b, width)
+	}
+	return strings.Join(rows, "\n")
 }
 
 // helpBodyWidth is the natural (unwrapped) width of the help body, used

@@ -108,6 +108,13 @@ func TestHelpBody_EveryPaneSectionSpellsOutEveryDescription(t *testing.T) {
 		t.Fatalf("body has no EVERY PANE section:\n%s", body)
 	}
 	for p := paneNamespaces; p <= lastPaneID; p++ {
+		// Read each pane in EVERY PANE, one column at full width: the active pane is drawn
+		// above it, in a column of a two-column body, so its prose wraps there.
+		body := body
+		if p == paneSessions {
+			body = helpBodyLines(paneEvents, helpWide)
+		}
+		body = sectionFrom(t, body, everyPaneTitle, false)
 		g := paneKeys[p]
 		name := paneName(p)
 		if !strings.Contains(body, name) {
