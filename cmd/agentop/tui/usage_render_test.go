@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
@@ -572,5 +575,32 @@ func TestRenderBars_RepeatedAxisLabelIsSuppressed(t *testing.T) {
 	}
 	if len(labels) == 0 {
 		t.Fatal("no axis labels at all — the fixture is not exercising the gutter")
+	}
+}
+
+// Color changes no text and no width on the usage pane, ungrouped and broken down.
+func TestUsage_PlainInvariant(t *testing.T) {
+	for _, w := range []int{80, 100, 140} {
+		m := fitModel(t, paneUsage, w, 40, nil)
+		m.usage.snap = &usage.Snapshot{Buckets: mkBuckets([]int64{4100, 0, 300, 12, 9000})}
+		for _, b := range m.usage.snap.Buckets {
+			m.usage.snap.Totals.Add(b.Counts)
+		}
+		assertPlainInvariant(t, func() string { return m.renderUsage(m.width, m.bodyHeight) })
+		m.usage.group = usage.GroupStatus
+		m.usage.snap = &usage.Snapshot{Buckets: mkSeriesBuckets([]map[string]int64{{"200": 100, "500": 5}, {"429": 40}})}
+		assertPlainInvariant(t, func() string { return m.renderUsage(m.width, m.bodyHeight) })
+	}
+	restore := lipgloss.ColorProfile()
+	t.Cleanup(func() { lipgloss.SetColorProfile(restore) })
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	m := fitModel(t, paneUsage, 120, 40, nil)
+	m.usage.snap = &usage.Snapshot{Buckets: mkBuckets([]int64{4100, 300})}
+	m.usage.lastFetch = time.Now()
+	out := m.renderUsage(m.width, m.bodyHeight)
+	for _, want := range []string{styleAccentBold.Render("USAGE"), styleDim.Render(" — "), styleMuted.Render("REQUESTS"), styleBold.Render("0"), strings.Split(styleDim.Render("x"), "x")[0] + "  updated", styleAccent.Render("████")} {
+		if !strings.Contains(out, want) {
+			t.Errorf("usage pane lacks %q:\n%q", want, out)
+		}
 	}
 }

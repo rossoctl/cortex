@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 )
@@ -32,6 +34,7 @@ func newPipelineTable() table.Model {
 	t := table.New(
 		table.WithColumns(pipelineColumns()),
 		table.WithFocused(true),
+		table.WithCellStyle(pipelineCellStyle),
 	)
 	t.SetStyles(tableStyles())
 	return t
@@ -110,6 +113,26 @@ func pipelineRow(p apiclient.PipelinePlugin, events int, chain []apiclient.Pipel
 }
 
 const availableDivider = "── available ──"
+
+// pipelineKinds is each pipelineColumns column's style; DIRECTION is styled by its value.
+var pipelineKinds = []cellKind{cellMuted, cellPlain, cellBold, cellPlain, cellMuted, cellPlain}
+
+var pipelineByKind = kindsCellStyle(pipelineKinds)
+
+// pipelineCellStyle draws a divider row (isDividerRow's test) dim, DIRECTION in its direction's ink and ✓ ok.
+func pipelineCellStyle(r int, row table.Row, col int) lipgloss.Style {
+	switch {
+	case len(row) > 2 && row[0] == "" && strings.HasPrefix(row[2], "──"):
+		return styleDim
+	case col == 1 && strings.TrimSpace(row[col]) == "inbound":
+		return styleInbound
+	case col == 1 && strings.TrimSpace(row[col]) == "outbound":
+		return styleOutbound
+	case col == 3 && row[col] == "✓":
+		return styleOK
+	}
+	return pipelineByKind(r, row, col)
+}
 
 // isDividerRow reports a divider: no position, and a "──" label. A plugin row always
 // has a position, and an available row never starts its name with "──".

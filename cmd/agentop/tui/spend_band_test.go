@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"github.com/rossoctl/cortex/core/cost/usage"
@@ -735,10 +736,10 @@ func TestBandFixtureProbes_DoNotCrossMatch(t *testing.T) {
 //
 // THE PADDING HALF OF THIS TEST IS GONE WITH padLeft. A one-line band pads nothing — each cell is
 // exactly its own contents — so there is no second function to agree with a measurement. What
-// replaced that agreement is render() against renderMuting(): the styled form must occupy the same
+// replaced that agreement is render() against renderInk(): the styled form must occupy the same
 // columns as the plain one, or the fit is computed on one band and drawn from another. Asserted
 // below with a mute that emits real escape sequences, since an identity function would pass for a
-// renderMuting that counted them.
+// renderInk that counted them.
 func TestBandCell_MeasuresInDisplayColumns(t *testing.T) {
 	restore := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -777,13 +778,14 @@ func TestBandCell_MeasuresInDisplayColumns(t *testing.T) {
 			}
 			// THE STYLED CELL OCCUPIES THE SAME COLUMNS, which is what lets the drop enumeration
 			// run over the plain form and the screen be drawn from the muted one.
-			plain, dressed := tc.cell.render(), tc.cell.renderMuting(mute)
+			plain := tc.cell.render()
+			dressed := tc.cell.renderInk(bandInk{label: mute, value: func(s string) string { return s }})
 			if got, want := lipgloss.Width(dressed), lipgloss.Width(plain); got != want {
-				t.Errorf("renderMuting renders %d columns against render's %d — muting a label must "+
+				t.Errorf("renderInk renders %d columns against render's %d — muting a label must "+
 					"not move a figure", got, want)
 			}
 			if dressed == plain {
-				t.Error("renderMuting returned the plain cell, so the styling assertion is vacuous")
+				t.Error("renderInk returned the plain cell, so the styling assertion is vacuous")
 			}
 		})
 	}
@@ -1171,6 +1173,50 @@ func TestSpendBandNeedsScopeMarker_EveryPaneIsClassified(t *testing.T) {
 		m := &model{pane: p, selectedSess: "s1", timeline: timelineState{session: "s1"}}
 		if got := m.spendBandNeedsScopeMarker(); got != singleSession[p] {
 			t.Errorf("pane %v: spendBandNeedsScopeMarker() = %v, want %v", p, got, singleSession[p])
+		}
+	}
+}
+
+// THE STYLED BAND IS THE PLAIN BAND IN COLOR (#2015): amounts bold, a foreign unit warn,
+// markers, em dashes and separators dim, labels muted, and not one column moved.
+func TestSpendBand_StyledTextAndWidth(t *testing.T) {
+	withProfile(t, termenv.TrueColor)
+	s := withSpan(bandSummary(), spanHour, func(r *spanReading) {
+		r.Incomplete, r.Unpriced = 1, 1
+	})
+	s = withSpan(s, spanToday, func(r *spanReading) {
+		r.USD, r.Units = 7.8, []string{"Bobcoins"}
+	})
+	s = withSpan(s, span7d, func(r *spanReading) { r.Unanswerable = true })
+
+	for _, w := range []int{80, 100, 140} {
+		plain := renderSpendBand(s, w, true)[0]
+		styled, _ := renderSpendBandStyled(s, w, true)
+		if got := ansi.Strip(styled[0]); got != plain {
+			t.Errorf("width %d: styled band reads %q, want the plain %q", w, got, plain)
+		}
+		if lipgloss.Width(styled[0]) != lipgloss.Width(plain) {
+			t.Errorf("width %d: styled band is %d columns, plain is %d", w, lipgloss.Width(styled[0]), lipgloss.Width(plain))
+		}
+	}
+
+	plain := renderSpendBand(s, 140, true)[0]
+	styled, _ := renderSpendBandStyled(s, 140, true)
+	for _, want := range []struct{ name, part, plain string }{
+		{"amount bold", styleBold.Render("$703.18"), "$703.18"},
+		{"Bobcoins amount warn", styleWarn.Render("7.80 Bobcoins"), "7.80 Bobcoins"},
+		{"inexact marker dim", styleDim.Render("~"), "~$4.04"},
+		{"partial marker dim", styleDim.Render("+"), "$4.04+"},
+		{"em dash dim", styleDim.Render("—"), "—"},
+		{"separator dim", styleDim.Render(" · "), " · "},
+		{"label muted", styleMuted.Render("THIS MONTH"), "THIS MONTH"},
+		{"scope marker muted", styleMuted.Render(allSessionsMarker), allSessionsMarker},
+	} {
+		if !strings.Contains(plain, want.plain) {
+			t.Fatalf("%s: the plain band %q has no %q, so the case asserts nothing", want.name, plain, want.plain)
+		}
+		if !strings.Contains(styled[0], want.part) {
+			t.Errorf("%s: styled band %q does not contain %q", want.name, styled[0], want.part)
 		}
 	}
 }

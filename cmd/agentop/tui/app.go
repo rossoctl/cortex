@@ -2564,7 +2564,8 @@ func (m *model) paneView() string {
 		} else {
 			body = m.namespacesTbl.View()
 		}
-		footer := m.helpView()
+		keys := m.helpView()
+		footer := keys
 		if m.pickerErr != "" {
 			footer = "error: " + m.pickerErr + "    " + footer
 		}
@@ -2582,16 +2583,17 @@ func (m *model) paneView() string {
 		// the title alone. layout() reserves its row unconditionally, so a pane that skipped
 		// drawing it would leave a row nobody fills.
 		return lipgloss.JoinVertical(lipgloss.Left,
-			styleTitle.Render(title),
-			styleMuted.Render(renderDivider(m.width)),
+			renderTitle(title),
+			styleDim.Render(renderDivider(m.width)),
 			body,
-			styleHint.Render(footer),
+			renderTrailingHints(footer, keys),
 		)
 	}
 	if m.pane == panePods {
 		title := m.appName() + " · " + m.selectedNamespace + " · pick pod"
 		body := m.podsTbl.View()
-		footer := m.helpView()
+		keys := m.helpView()
+		footer := keys
 		if m.pickerErr != "" {
 			footer = "error: " + m.pickerErr + "    " + footer
 		}
@@ -2606,10 +2608,10 @@ func (m *model) paneView() string {
 		// row of the table above it.
 		footer = fitHintLine(footer, m.width)
 		return lipgloss.JoinVertical(lipgloss.Left,
-			styleTitle.Render(title),
-			styleMuted.Render(renderDivider(m.width)),
+			renderTitle(title),
+			styleDim.Render(renderDivider(m.width)),
 			body,
-			styleHint.Render(footer),
+			renderTrailingHints(footer, keys),
 		)
 	}
 	if m.width == 0 {
@@ -2727,7 +2729,7 @@ func (m *model) paneView() string {
 	if m.pane != paneUsage && m.pane != paneAgents && m.pane != paneEvents && m.pane != paneDetail && m.pane != paneTimeline {
 		title += m.scopeSuffix(m.agentScope, m.projectScope)
 	}
-	header := styleTitle.Render(title)
+	header := renderTitle(title)
 	if m.searching && m.searchPane != targetHelp {
 		body = m.searchPromptView() + "\n" + body
 	}
@@ -2772,7 +2774,7 @@ func (m *model) paneView() string {
 			// `styleMuted.Render(band[0]), band[1]` — which is a hierarchy that exists only while
 			// labels and figures live on separate rows. Folded to one row, wrapping the line would
 			// mute the figures with the labels and flatten the contrast into uniform grey, so the
-			// mute moved to where a cell knows which half is which. See bandCell.renderMuting.
+			// mute moved to where a cell knows which half is which. See bandCell.renderInk.
 			//
 			// ONE CALL, because this is bubbletea's per-event render path and spendSummary walks
 			// all four poll chains. `drew` comes back from the renderer rather than being tested
@@ -2799,15 +2801,13 @@ func (m *model) paneView() string {
 			for len(lines) < spendDrawerLinesFor(m.width) {
 				lines = append(lines, "")
 			}
-			for _, line := range lines {
-				rows = append(rows, styleMuted.Render(line))
-			}
+			rows = append(rows, styleDrawerLines(lines)...)
 		}
 	}
 	// The rule that closes the top block, AFTER the band and its drawer so it always sits
 	// between the whole block and the body rather than inside it. Appended unconditionally,
 	// which is what lets layout() reserve it without asking anything — see renderDivider.
-	rows = append(rows, styleMuted.Render(renderDivider(m.width)))
+	rows = append(rows, styleDim.Render(renderDivider(m.width)))
 	rows = append(rows, body, m.footerView())
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }

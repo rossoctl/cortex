@@ -18,6 +18,7 @@ func newPodsTable() table.Model {
 			{Title: "READY", Width: 6},
 		}),
 		table.WithFocused(true),
+		table.WithCellStyle(pickerCellStyle),
 	)
 	t.SetStyles(tableStyles())
 	return t

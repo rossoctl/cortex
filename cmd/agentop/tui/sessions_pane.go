@@ -163,6 +163,22 @@ func alignSessionsHeaders(cols []table.Column) []table.Column {
 	return out
 }
 
+// sessionsCellKinds is each sessions column's style, by its declared title.
+var sessionsCellKinds = map[string]cellKind{
+	"SESSION": cellMuted, "AGENT": cellMuted, "SERVER": cellMuted, "UPDATED": cellMuted,
+	"COST": cellBold, "SAVED": cellOK, contextColumnTitle: cellAccent,
+}
+
+// sessionsCellStyle styles the cells under cols by their declared title (headerTitle), so the
+// style follows a column wherever the width puts it.
+func sessionsCellStyle(cols []table.Column) table.CellStyleFunc {
+	kinds := make([]cellKind, len(cols))
+	for i, c := range cols {
+		kinds[i] = sessionsCellKinds[headerTitle(c)]
+	}
+	return kindsCellStyle(kinds)
+}
+
 // sessionsTitleWidth is TITLE's floor: the narrowest cell worth granting the column, and its
 // width at the declared layout.
 //
@@ -200,6 +216,7 @@ func newSessionsTable() table.Model {
 	t := table.New(
 		table.WithColumns(alignSessionsHeaders(sessionsColumns())),
 		table.WithFocused(true),
+		table.WithCellStyle(sessionsCellStyle(sessionsColumns())),
 	)
 	t.SetStyles(tableStyles())
 	return t
@@ -447,6 +464,7 @@ func (m *model) rebuildSessionsTable() {
 		m.sessionsTbl.SetRows(nil)
 		m.sessionsTbl.SetColumns(want)
 	}
+	m.sessionsTbl.SetCellStyle(sessionsCellStyle(want))
 	m.sessionsTbl.SetRows(rows)
 	m.sessionsTbl.SetSearch(q, full)
 	// Published with the rows they describe, never separately.

@@ -23,6 +23,7 @@ func newNamespacesTable() table.Model {
 			{Title: "PODS", Width: 6},
 		}),
 		table.WithFocused(true),
+		table.WithCellStyle(pickerCellStyle),
 	)
 	t.SetStyles(tableStyles())
 	return t

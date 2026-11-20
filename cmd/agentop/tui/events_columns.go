@@ -496,6 +496,73 @@ func tableColumns(cols []eventColumn, sortCol eventColumnID, desc bool) []table.
 	return out
 }
 
+// eventRowKind is what an events table row shows, by row index: the hook cannot tell a tool
+// row or a block header from its cells, because hidden columns change them.
+type eventRowKind uint8
+
+const (
+	eventRowExchange eventRowKind = iota
+	eventRowTool
+	eventRowHeader
+)
+
+// eventCellStyle is the events table's cell style hook for the columns cols, in the order
+// tableColumns hands them to the table, and the rows of kinds. It reads each cell's column by
+// id, never by position or header, so a hidden or sorted column moves no ink to another column.
+func eventCellStyle(cols []eventColumn, kinds []eventRowKind) table.CellStyleFunc {
+	ids := make([]eventColumnID, len(cols))
+	for i, c := range cols {
+		ids[i] = c.id
+	}
+	return dashDim(func(r int, row table.Row, col int) lipgloss.Style {
+		kind := eventRowExchange
+		if r < len(kinds) {
+			kind = kinds[r]
+		}
+		if kind == eventRowHeader {
+			return styleAccent
+		}
+		v := strings.TrimSpace(row[col])
+		// A one-cell row spans the table: the older-events row.
+		if len(row) == 1 && len(ids) > 1 {
+			return styleNone
+		}
+		// An empty cell has no text to ink, and an ink on it only adds escape bytes.
+		if col >= len(ids) || v == "" {
+			return styleNone
+		}
+		if kind == eventRowTool {
+			switch ids[col] {
+			case colIndex, colMethod:
+				return styleTool
+			case colDuration:
+				if strings.HasPrefix(v, "⋯") {
+					return styleTool
+				}
+			case colStatus:
+				return groupStyle(statusGroup(v))
+			}
+			return styleNone
+		}
+		switch ids[col] {
+		case colIndex, colTime, colHost, colBytes:
+			return styleMuted
+		case colDir:
+			switch strings.TrimPrefix(v, "│") {
+			case "out":
+				return styleOutbound
+			case "in":
+				return styleInbound
+			}
+		case colAction:
+			return groupStyle(actionGroup(v))
+		case colStatus:
+			return groupStyle(statusGroup(v))
+		}
+		return styleNone
+	})
+}
+
 // measureColumns evaluates each fitsContent column in cols for every row in ctxs. It returns
 // the width each needs — its widest cell, no narrower than its heading with a sort glyph and
 // no wider than its declared width — and the cells themselves, indexed like ctxs.
@@ -728,7 +795,7 @@ func renderColumnPicker(sel map[eventColumnID]bool, widths map[eventColumnID]int
 	}
 
 	var b strings.Builder
-	b.WriteString(styleTitle.Render("COLUMNS"))
+	b.WriteString(renderTitle("COLUMNS"))
 	b.WriteString("\n\n")
 
 	// Bound the list to what the terminal can actually show.
@@ -824,7 +891,7 @@ func renderColumnPicker(sel map[eventColumnID]bool, widths map[eventColumnID]int
 	b.WriteString("\n")
 	// fitHintLine, so a narrow terminal drops hints from the front and keeps
 	// [q] quit rather than wrapping the line. Same treatment the footer gets.
-	b.WriteString(styleHint.Render(fitHintLine(
+	b.WriteString(renderHints(fitHintLine(
 		"[↑↓] move  [space] toggle  [s] sort  [r] reset  [esc]/[enter] close  [q] quit",
 		width-borderWidth)))
 

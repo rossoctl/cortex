@@ -92,6 +92,7 @@ func newEventsTable() table.Model {
 		// beside the widths that actually decide, in eventColumns.
 		// No sort column: the table is chronological until a model says otherwise.
 		table.WithColumns(tableColumns(selectedColumns(defaultColumnSelection()), "", false)),
+		table.WithCellStyle(eventCellStyle(selectedColumns(defaultColumnSelection()), nil)),
 		table.WithFocused(true),
 	)
 	t.SetStyles(tableStyles())
@@ -159,7 +160,11 @@ func (m *model) rebuildEventsTable() {
 		if h < 3 {
 			h = 3
 		}
-		m.eventsTbl.SetHeight(h)
+		// SetHeight draws the page again, and SetRows below draws it anyway; skip it when
+		// the height holds. Height() leaves out the one-line header.
+		if m.eventsTbl.Height() != h-1 {
+			m.eventsTbl.SetHeight(h)
+		}
 	}
 
 	prevRow := m.eventsTbl.Cursor()
@@ -458,6 +463,18 @@ func (m *model) rebuildEventsTable() {
 	// or narrowing as figures arrive, which can push a column off the terminal or
 	// let one back on. The third happens mid-stream with no keystroke behind it, so
 	// none of them may re-anchor the pane under an operator who is reading it.
+	kinds := make([]eventRowKind, len(rows))
+	for i, vr := range m.visibleRows[:min(len(m.visibleRows), len(rows))] {
+		if vr.tool != nil {
+			kinds[i] = eventRowTool
+		}
+	}
+	for i := range m.headerRows {
+		if i < len(kinds) {
+			kinds[i] = eventRowHeader
+		}
+	}
+	m.eventsTbl.SetCellStyle(eventCellStyle(cols, kinds))
 	newCols := tableColumns(cols, m.sortCol, m.sortDesc)
 	switch oldCols := m.eventsTbl.Columns(); {
 	case slices.Equal(oldCols, newCols):

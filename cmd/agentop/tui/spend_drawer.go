@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -1226,4 +1227,73 @@ func rankSeriesByCost(buckets []usage.Bucket) []seriesKey {
 		return out[i].label < out[j].label
 	})
 	return out
+}
+
+// drawerMarkRe finds the runs of a drawer line that are not muted, in the order they win at one
+// position: headings, bar glyphs, a saving up to the next two spaces, a (…) caveat, an amount, a
+// [bracket].
+var drawerMarkRe = regexp.MustCompile(`WHERE IT WENT|BY [A-Z]+|[█▉▊▋▌▍▎▏]+|saved (?:[^ ]| [^ ])+|\([^()]*\)|[<~!]*\$[0-9.,]+\+?|\[[^\[\]\s]+\]`)
+
+// drawerKeys are the drawer's key hints, the only brackets that become chips.
+var drawerKeys = map[string]bool{"[a]": true, "[w]": true, "[$]": true}
+
+// styleDrawerLines dresses the drawer's lines, each already cut to width. The hint line is the
+// last line that is not empty (renderSpendDrawerAxes writes it last, then pads), and only it
+// gets key chips: a diagnostic or a server label that holds "[w]" keeps its text.
+func styleDrawerLines(lines []string) []string {
+	hint := -1
+	for i, l := range lines {
+		if l != "" {
+			hint = i
+		}
+	}
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = styleDrawerLine(l, i == hint)
+	}
+	return out
+}
+
+// styleDrawerLine dresses one drawer line. Under Ascii it is styleMuted.Render(line), as before.
+// With color the text stays the same except that, on the controls line, [a], [w] and [$] become
+// chips and the bracketed axis keeps its brackets in styleSeg.
+func styleDrawerLine(line string, controls bool) string {
+	if !colorOn() {
+		return styleMuted.Render(line)
+	}
+	var b strings.Builder
+	last := 0
+	for _, loc := range drawerMarkRe.FindAllStringIndex(line, -1) {
+		if loc[0] > last {
+			b.WriteString(styleMuted.Render(line[last:loc[0]]))
+		}
+		b.WriteString(styleDrawerMark(line[loc[0]:loc[1]], controls))
+		last = loc[1]
+	}
+	if last < len(line) {
+		b.WriteString(styleMuted.Render(line[last:]))
+	}
+	return b.String()
+}
+
+// styleDrawerMark is one drawerMarkRe match in its own ink.
+func styleDrawerMark(m string, controls bool) string {
+	switch {
+	case controls && drawerKeys[m]:
+		return styleChip.Render(" " + m[1:len(m)-1] + " ")
+	case m[0] == '[':
+		if controls {
+			return styleSeg.Render(m)
+		}
+		return styleMuted.Render(m)
+	case m == "WHERE IT WENT" || strings.HasPrefix(m, "BY "):
+		return styleMutedBold.Render(m)
+	case strings.HasPrefix(m, "saved "):
+		return styleOK.Render(m)
+	case m[0] == '(':
+		return styleDim.Render(m)
+	case strings.Contains(m, "$"):
+		return styleBold.Render(m)
+	}
+	return styleAccent.Render(m)
 }
