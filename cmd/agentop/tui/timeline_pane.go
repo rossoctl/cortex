@@ -1063,6 +1063,9 @@ func (m *model) cursorStrip(lay tlLayout) string {
 	}
 	cell := lay.axis.cells[c]
 	head := fmt.Sprintf("▸ %s  ", cell.from.Local().Format("15:04:05"))
+	if err := m.timeline.err; err != nil {
+		head = "refresh failed: " + sanitizeLabel(err.Error()) + " · " + head
+	}
 	started, running := m.cellTools(lay, cell)
 	var parts []string
 	for i, x := range append(started, running...) {

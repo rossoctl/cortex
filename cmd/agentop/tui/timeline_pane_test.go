@@ -1866,7 +1866,12 @@ func TestTimelineStatus_OnIdleCursorRow(t *testing.T) {
 	}
 	lay, _ := m.timelineLayoutNow()
 	m.timeline.cursor = cellOf(t, lay, 210)
-	if got := last(); !strings.HasPrefix(got, "▸ ") || strings.Contains(got, "oldest events") {
+	// A failed refresh still shows with a moment picked: the chart under the cursor is old.
+	if got := last(); !strings.HasPrefix(got, "refresh failed: down · ▸ ") || strings.Contains(got, "oldest events") {
+		t.Errorf("cursor row with a moment picked = %q, want the failure, then that moment", got)
+	}
+	m.timeline.err = nil
+	if got := last(); !strings.HasPrefix(got, "▸ ") {
 		t.Errorf("cursor row with a moment picked = %q, want that moment", got)
 	}
 }
