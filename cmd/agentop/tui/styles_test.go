@@ -151,3 +151,9 @@ func TestAssertPlainInvariant_AcceptsAChippedHintLine(t *testing.T) {
 		return renderTitle("agentop · x") + "\n" + renderHints("[q] quit  [/] search")
 	}, -1)
 }
+
+func TestAssertPlainInvariant_AcceptsABarThatAsciiAlsoDraws(t *testing.T) {
+	assertPlainInvariant(t, func() string {
+		return styleDetailCursor.Render("▌") + " row\n" + styleDetailCursor.Render("▌") + " [q] quit"
+	}, -1)
+}
