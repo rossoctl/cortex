@@ -9,8 +9,8 @@ Background: #1810 (the export's own spec and tracker), #1830/#1812/#1831 (what s
 Parent spec: [`2026-11-13-session-event-export-design.md`](2026-11-13-session-event-export-design.md).
 This one narrows its §7.2 `toolCallNames` item and supersedes the shape proposed there.
 
-Items marked **Open** must be decided before the work they belong to begins. Nothing here
-is merged.
+Items marked **Open** must be decided before the work they belong to begins; §10.2 collects
+them, and says which requirement is not ready because of one. Nothing here is merged.
 
 **40 numbered requirements T0–T37, plus the lettered T10a and T11a that narrow T10 and T11**, phrased as plain declaratives: a requirement says what
 the system does once built. The numbering is stable so it can be cited in review and in the
@@ -18,7 +18,7 @@ PRs that implement it, and is therefore in the order the requirements were ADDED
 order: T0 sits in §2.0 because it bounds the whole spec, T23–T27 and T36–T37 in §4.3a,
 T28–T33 and T35 in §4.4 and §4.4a, and T34 in §7.1b.
 
-Revised twice on 2026-11-19, once on 2026-11-20 and four times on 2026-11-21.
+Revised twice on 2026-11-19, once on 2026-11-20 and five times on 2026-11-21.
 
 **First revision**, after review raised two things the first draft buried. §2.0 is new: every
 field here is **already collected and most of it is already on disk**, so this is a projection
@@ -117,6 +117,16 @@ recounted with `stranded` among them; `stranded` wins over `background` as well 
 and T11a settles the HMAC key's lifecycle, which T11 left open — generated once, never
 rotated, because a key that changes re-labels every MCP tool and splits one tool's history into
 two series a consumer cannot rejoin.
+
+**Eighth revision**, two carried-forward must-fixes. The `endReason` field-table row said it
+was "the only thing that says whether a result arrived" — which four other places in the same
+revision correctly contradict, because `stranded` occurs both with a late result and without
+one. `resultSeq` answers that question; the row was the last place still disagreeing, and it is
+the place an implementer builds from. And §10 claimed nothing blocks implementation while T31's
+stranding route sat **Open** in two paragraphs and in no §10.2 row: it now has the row, names
+T31 as the one requirement not ready, and states the interim behaviour — a stranded call
+exports as `abandoned` with no duration, biasing the heavy tail — so nobody builds a tier table
+on it before #2046 closes.
 
 **Code references name symbols, not line numbers.** Every `agents.go:NNN` pin in the first
 four revisions was correct when written and wrong a day later: #2041 moves all of them into
@@ -442,7 +452,10 @@ for MCP traffic: the same tool would carry a different label in every export, an
 could total its time across two of them. Concretely — created on first use by an export that
 needs it, 32 bytes from `crypto/rand`, written `0600` beside the install's other state, read
 back unchanged thereafter, following the read-or-create pattern `cmd/cortex`'s gateway token
-already uses. **It does not rotate.** Rotation would silently re-label every MCP tool from that
+already uses (`writeGatewayFiles`). One difference from that precedent to settle in
+implementation: the gateway writes its token once at boot, where two exports racing on first
+use could each generate a key and the later write would win, re-labelling the earlier export's
+MCP tools. Create under a lock, or create it at service start rather than on first use. **It does not rotate.** Rotation would silently re-label every MCP tool from that
 point, splitting one tool's history into two series that a consumer cannot rejoin; anyone who
 needs new labels deletes the key and knows the old exports no longer compare. A lost key is the
 same event, and the honest answer to it is that the old labels are unrecoverable — which is the
@@ -616,7 +629,7 @@ T31. A `toolCall` record carries `endReason`, a closed vocabulary naming how the
 | `ended_run` | no | By design no result: the call ends the run or hands control back (`SubagentHandback`, `StructuredOutput`, `end_subtask`). |
 | `abandoned` | no | The agent moved on without the result (`lastTurn`). |
 | `stopped` | no | The run was stopped while the call was open (a `<task-notification>`). |
-| `stranded` | **yes** | The agent finished the tool and could not reach the model to report back: the first failed dial to a model host after the call started ends it (`endStrandedTools`). The duration is the tool's, not the outage's. `resultSeq` is absent when no result ever came, and set when one arrived late (see below). |
+| `stranded` | **yes** | The agent finished the tool and could not reach the model to report back: the first failed dial to a model host after the call started ends it, when no turn of that agent or an agent below it succeeded in between (`endStrandedTools`). The duration is the tool's, not the outage's. `resultSeq` is absent when no result ever came, and set when one arrived late (see below). |
 
 **`stranded` is the fifth closing case, and this spec missed it until review.** `Build` runs
 `endStrandedTools` AFTER the pairing (`buildAgents` then `endStrandedTools`, both from `Build`), and it sets a tool's
@@ -733,7 +746,7 @@ Four changes from the first draft, all so a record can be placed and ordered on 
 | `callSeq` / `resultSeq` | The response that asked and the request that carried the result. Lets a consumer rejoin a `toolCall` to the event records either side **without a tool-use id** (T8). `resultSeq` is absent when nothing carried a result. |
 | `callIndex` | T30. The call's position among its response's calls, from 0, in the order the model asked. |
 | `durationMs` | T18. The paired duration. Absent exactly when `endReason.HasEnd()` is false (T16, T31) — so present for `stranded`, whose end comes from the failed dial whether or not a result ever arrived. |
-| `endReason` | T31. Closed vocabulary: how the call ended, and the only thing that says whether a result arrived. No separate flag derives from it. |
+| `endReason` | T31. Closed vocabulary: how the call ended, and what its duration means. It does **not** say whether a result arrived — `resultSeq` does, because `stranded` occurs both with a late result and without one. No separate flag derives from it. |
 | `isError` | Whether the result was an error. The tool failure rate, per tool. |
 | `inputBytes` / `resultBytes` | T14. Effort proxies, never content. Bytes, as the names say. |
 | `modelMs` | T23. The asking response's measured duration — model time, per call, no join needed. |
@@ -917,8 +930,18 @@ its frequency — but the *rate* is not a constant to design against.
 | §7.1a | Whether to quantify the approval-wait error against local Claude Code transcripts before publishing any density figure. Author's view: yes, and it is cheap. |
 | T32 | Whether the job record gets specified in this cycle or a later one. The undercount is marked either way. |
 | §7.1b | Whether an optional client-stated execution site is worth a field, for a client that knows where its tools ran. Not a proxy-side inference under any circumstance. |
+| T31 / §2.2 | **Where the stranding cut runs** — carry the host-failure times into the pairing, or apply the cut in the export over the records it is about to write. Author leans the former, for §6's reason: a closing case that exists twice drifts. Tracked as #2046 so it does not block the record. |
 
-Nothing above blocks implementation: §6 Option A, T11's keyed hash, T20's per-item switch and
-§6.4's marker record are all settled, and T28–T34 are normative.
+**T31 is the one requirement above that is NOT ready to implement**, and §10.2's row above says
+why: `stranded` is specified, but where its cut runs is not, and the pairing package cannot see
+the case at all today. Everything else is settled — §6 Option A, T10a/T11/T11a's hashing,
+T20's per-item switch, §6.4's marker record — and T28–T30 and T32–T37 are normative.
+
+**Interim behaviour, until T31's route is decided:** a stranded call matches `abandoned`,
+because the agent's later request is after the call's start, and an `abandoned` call carries no
+duration (T16). So the export silently drops the timing of a call that did finish and was
+measured accurately. A closed laptop lid strands the long call rather than the short one, so
+that undercount lands in the heavy tail — the part §3.3's bands and any density figure turn on.
+Do not publish a tier table from `toolCall` records until this is closed.
 
 Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>

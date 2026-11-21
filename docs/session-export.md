@@ -167,10 +167,12 @@ Two rules before you total those spans, both of which cost real accuracy:
 
   A third kind needs no filter: a call whose agent finished the tool and then could not reach
   the model to report back — a lid closed, a VPN dropped — gets its `end` from the first failed
-  dial and is **not** marked `lost`. **Keep it.** Its duration is the tool's, not the outage's:
-  Cortex cuts the span at that dial precisely so the outage is excluded, and against Claude
-  Code's own transcripts the dial landed within a fraction of a second of the tool's real end.
-  Without the cut, one 9-minute `Bash` drew as 8 hours.
+  dial and is **not** marked `lost`. **Keep it.** Its duration is usually the tool's rather than
+  the outage's: Cortex cuts the span at that dial precisely so the outage is excluded, and
+  against Claude Code's own transcripts the dial landed within a fraction of a second of the
+  tool's real end. Without the cut, one 9-minute `Bash` drew as 8 hours. "Usually" because the
+  cut is matched by host and not by agent, so another agent's failure can end a call that was
+  still running — a subagent's long `Bash` cut where the main agent retried.
 
   Two things to know about that kind before you join on it. **Its result may be missing, or may
   have arrived much later** — an `end` and no `lost` does not mean a result came back, so an
