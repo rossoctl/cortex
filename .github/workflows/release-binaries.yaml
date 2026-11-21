@@ -408,9 +408,8 @@ jobs:
               echo "::warning::Could not list the changes since the previous release; publishing ${TAG} without them."
             fi
           fi
-          add 'Prebuilt `agentop` and `cortex` binaries for linux and macOS (amd64/arm64).'
-          add 'Windows (amd64/arm64) is a preview, as `.zip`: run `cortex --local` in a terminal.'
-          add '`agentop service`, `setup`, `uninstall` and `update` are not supported there yet (#1520).'
+          add 'Prebuilt `agentop` and `cortex` binaries for linux and macOS (amd64/arm64),'
+          add 'and a Windows preview (see below).'
           # The laptop cpex build is gone. Drop this, and the cortex-cpex_* copies above,
           # once no supported release ships a cpex laptop build.
           add 'The laptop cpex build is removed. `cortex-cpex_*` is a copy of `cortex_*`,'
@@ -436,9 +435,9 @@ jobs:
           add '`authbridge-*`); image and container names are unchanged. Setup removes the old'
           add 'binary once the service no longer runs it. Stop a proxy you started by hand first.'
           add ''
-          add 'Verify downloads with `sha256sum -c checksums.txt` (it lists the `.zip` files too;'
-          add 'on Windows compare `(Get-FileHash <file> -Algorithm SHA256).Hash.ToLower()`). On macOS, clear the'
-          add 'Gatekeeper quarantine after extracting: `xattr -dr com.apple.quarantine ./agentop`.'
+          add 'Verify downloads with `sha256sum -c checksums.txt`, which lists the `.zip` files too.'
+          add 'On macOS, clear the Gatekeeper quarantine after extracting:'
+          add '`xattr -dr com.apple.quarantine ./agentop`.'
           # Whoever is asked to try a release candidate lands on this page, and the
           # one-liner they already know will not install it.
           if [ -n "${prerelease}" ]; then
@@ -459,6 +458,18 @@ jobs:
             add 'Each binary reports its own build (`agentop --version` -> `main-<sha>`). For a'
             add 'supported install, use the plain one-liner, which installs the newest stable release.'
           fi
+          # Windows (#1520), after the channel-specific block above, which replaces the notes
+          # on main-latest: every release with Windows archives keeps this guidance.
+          add ''
+          add '## Windows (preview)'
+          add ''
+          add '`agentop_*_windows_*.zip` and `cortex_*_windows_*.zip` (amd64/arm64). No installer'
+          add 'runs on Windows yet: check each `.zip` with'
+          add '`(Get-FileHash <file> -Algorithm SHA256).Hash.ToLower()` against `checksums.txt`,'
+          add 'run `Unblock-File <file>` on it (the binaries are unsigned, so SmartScreen may block'
+          add 'them otherwise), extract both onto your PATH, then run `cortex --local` in one'
+          add 'terminal and `agentop observe` in another. `agentop service`, `setup`, `uninstall`'
+          add 'and `update` are not supported there yet. See docs/getting-started.md.'
           if gh release view "${TAG}" >/dev/null 2>&1; then
             # Uploading assets does not move the tag, so on a REUSED tag the release
             # would keep pointing at its first-publish commit forever: the "Source
