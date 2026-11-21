@@ -217,6 +217,31 @@ func TestAbandonedCallIsNamedAsSuch(t *testing.T) {
 	}
 }
 
+// TestToolLessCallDoesNotAbandon: Bob asks its security classifier, with no tool manifest, while
+// its command runs. That call cannot carry the result, so the command stays open until the
+// request that does.
+func TestToolLessCallDoesNotAbandon(t *testing.T) {
+	var r rec
+	bob := &model.EventClient{Name: "bob"}
+	ask := func(start float64, tools []model.InferenceTool, results []model.InferenceToolResult, calls ...model.InferenceToolCall) {
+		id := r.id()
+		r.add(model.SessionEvent{At: at(start), Phase: model.SessionRequest, RequestID: id, Client: bob,
+			Inference: &model.InferenceExtension{Tools: tools, Messages: []model.InferenceMessage{user("go")}, ToolResults: results}})
+		r.add(model.SessionEvent{At: at(start + 1), Phase: model.SessionResponse, RequestID: id, Client: bob, StatusCode: 200,
+			Inference: &model.InferenceExtension{FinishReason: "tool_calls", ToolCalls: calls}})
+	}
+	ask(0, manifest, nil, model.InferenceToolCall{ID: "t1", Name: "execute_command"})
+	ask(2, nil, nil) // the security classifier
+
+	if c := callOf(t, Calls(r.events, Options{}).Calls, "t1"); c.EndReason != "" {
+		t.Fatalf("after the classifier: EndReason = %q, want empty (still open)", c.EndReason)
+	}
+	ask(10, manifest, []model.InferenceToolResult{result("t1", "done")})
+	if c := callOf(t, Calls(r.events, Options{}).Calls, "t1"); c.EndReason != ReasonResult {
+		t.Errorf("after the result: EndReason = %q, want %q", c.EndReason, ReasonResult)
+	}
+}
+
 // TestOpenCallHasNoReason is the distinction the zero value exists for: a call still being
 // waited on is not a lost one, and must not read as a 0 ms call.
 func TestOpenCallHasNoReason(t *testing.T) {

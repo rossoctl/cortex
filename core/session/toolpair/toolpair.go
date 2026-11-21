@@ -404,7 +404,11 @@ func Calls(events []model.SessionEvent, opts Options) Result {
 			}
 		}
 		prev[c.agent] = msgs
-		if lastAsk[c.agent].Before(c.req.At) {
+		// Only a call that offers tools can carry a tool's result. Bob's security classifier and
+		// router calls offer none, and they follow every tool call. An imported call has no
+		// manifest, but a transcript holds only real turns.
+		canAnswer := len(inf.Tools) > 0 || inf.ToolCount > 0 || c.req.Imported()
+		if canAnswer && lastAsk[c.agent].Before(c.req.At) {
 			lastAsk[c.agent] = c.req.At
 		}
 
