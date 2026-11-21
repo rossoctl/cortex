@@ -12,33 +12,16 @@ import (
 	"github.com/rossoctl/cortex/core/session/toolpair"
 )
 
-// progressPrompt is the instruction Claude Code appends when it asks a model for a subagent's
-// 3-5 word status line. Those calls carry the subagent's whole context and tool list, so only
-// their last user message tells them apart from the subagent's real turns; Claude Code can send
-// system messages after it (a <total_tokens> count). They are a third of all subagent calls on
-// real sessions, and drawing them would bury the turns that matter.
-const progressPrompt = "Describe your most recent action in 3-5 words"
-
-// recapPrompt asks for the summary Claude Code shows when the user comes back to an idle
-// session. The same shape as a progress label: whole context and tool list, told apart only by
-// its last user message. Drawn as a turn it was the agent working while the user was away, and
-// two recaps of an unchanged conversation read as a retry: 74 hours of it on one session.
-const recapPrompt = "The user stepped away and is coming back"
-
-// The two ways a background subagent's result reaches the agent that started it. Both name the
-// subagent by the id Claude Code sends as X-Claude-Code-Agent-Id, the id the proxy records as
-// SessionEvent.Subagent, so a return links to its row without any text matching.
-var (
-	agentMessageRe = regexp.MustCompile(`<agent-message from="([A-Za-z0-9_-]+)"`)
-	taskIDRe       = regexp.MustCompile(`<task-notification>\s*<task-id>([A-Za-z0-9_-]+)</task-id>`)
-	spawnedIDRe    = regexp.MustCompile(`agentId: ([A-Za-z0-9_-]+)`)
-	// backgroundRe is Claude Code's result for a shell command it started in the background;
-	// the command's <task-notification> later names the same id.
-	backgroundRe = regexp.MustCompile(`^Command running in background with ID: ([A-Za-z0-9_-]+)`)
-	// stoppedRe is TaskStop's result. A stopped job gets no <task-notification>, so without it
-	// the job stays open and covers every later wait of its agent.
-	stoppedRe = regexp.MustCompile(`^\{"message":"Successfully stopped (?:task: |background command )([A-Za-z0-9_-]+)`)
-)
+// spawnedIDRe reads the subagent id out of an Agent call's result ("agentId: …"), which is how
+// a spawned subagent is linked to the call that started it.
+//
+// THE ONLY MARKER PATTERN LEFT HERE. The agent-message, task-notification, background-job and
+// TaskStop patterns moved to core/session/toolpair with the scan that uses them. They are NOT
+// duplicated back: Go does not report an unused package-level var, so a copy here would compile,
+// pass vet, read as live beside this one — and silently do nothing when someone widened it,
+// because the pattern that runs is in the other package. Same for the progress and recap prompt
+// literals, which are matched against live traffic and change when Claude Code rewords them.
+var spawnedIDRe = regexp.MustCompile(`agentId: ([A-Za-z0-9_-]+)`)
 
 // failedFinish are the finish reasons of a reply that did not complete: none at all, a refusal
 // (Anthropic "refusal", OpenAI chat "content_filter"), and a Responses API status of "failed" or
@@ -84,16 +67,18 @@ type toolArgs struct {
 //
 // THE ONE PLACE THE TWO VOCABULARIES MEET. toolpair names WHY a call got no result (spec T31);
 // Tool.Lost only says that it did not, because that is what agentop decodes and its JSON is a
-// wire contract. A call still being waited on is NOT lost — it has no End at all — which is why
-// the zero reason is absent from this list rather than defaulting into it. Changing either side
-// means reading the other: toolpair.EndReason's doc, and Tool.Lost's.
-func lostFor(r toolpair.EndReason) bool {
-	switch r {
-	case toolpair.ReasonEndedRun, toolpair.ReasonAbandoned, toolpair.ReasonStopped, toolpair.ReasonLost:
-		return true
-	}
-	return false
-}
+// wire contract.
+//
+// DERIVED FROM HasEnd RATHER THAN A LIST OF REASONS, so that it FAILS CLOSED. Naming the
+// no-result reasons here means a reason added to toolpair later matches none of them and reads
+// as false — and a lost call with Lost false renders as still running, forever, on a pane whose
+// whole job is showing what finished. Asking "does this reason carry an end" instead inverts
+// that: a new reason is lost until someone says otherwise, which is the safe default and needs
+// no edit here.
+//
+// The empty reason is the one that must not be lost: it means still open, which is a different
+// fact — no End at all rather than an end equal to its start.
+func lostFor(r toolpair.EndReason) bool { return r != "" && !r.HasEnd() }
 
 func buildAgents(t *Timeline, events []model.SessionEvent) {
 	// The tool calls, the background jobs and the subagent returns all come from one walk over

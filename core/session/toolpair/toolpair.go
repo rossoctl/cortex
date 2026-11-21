@@ -67,13 +67,15 @@ var (
 	stoppedRe = regexp.MustCompile(`^\{"message":"Successfully stopped (?:task: |background command )([A-Za-z0-9_-]+)`)
 )
 
-// EndReason says how a tool call ended. Its ZERO VALUE MEANS STILL OPEN, which is a different
-// fact from ReasonLost: a call the agent is still waiting on has no duration yet, while a lost
-// one never will. core/session/timeline draws the first as a tick and the second as a
-// bar, and its fixture test asserts one open call and eight lost ones on a real session.
+// EndReason says how a tool call ended. Its ZERO VALUE MEANS STILL OPEN, which is a fact of
+// its own and not a kind of loss: a call the agent is still waiting on has no duration YET,
+// where one that ended without a result never will. core/session/timeline draws the second as
+// a tick and leaves the first with no end at all, and its fixture test asserts one open call
+// and eight closed-without-result ones on a real session.
 //
-// Only ReasonResult and ReasonBackground have an end. For the other three a consumer has a
-// start and no duration — see Call.End.
+// Only ReasonResult and ReasonBackground have an end — ask HasEnd rather than listing the
+// others, so that a reason added later is handled by default. For the rest a consumer has a
+// start and no duration; see Call.End.
 type EndReason string
 
 const (
@@ -93,15 +95,24 @@ const (
 	ReasonStopped EndReason = "stopped"
 	// ReasonAbandoned is a call whose agent asked again without ever carrying its result.
 	ReasonAbandoned EndReason = "abandoned"
-	// ReasonLost is open with no reason established. Reserved: Calls does not currently return
-	// it, because every no-result case it can see has a more specific reason. A consumer should
-	// treat it as "no result, cause unknown" rather than assuming it never appears.
-	ReasonLost EndReason = "lost"
 )
 
-// HasEnd says whether r is a reason that carries a duration. The five no-result reasons leave
-// Call.End nil, and a consumer that renders a missing end as a zero-length call reports it as
-// an instant one — which drags a p50 toward zero.
+// NO "lost" REASON, DELIBERATELY. An earlier draft reserved one for "no result, cause unknown",
+// and nothing ever returned it: every no-result case this package can see has a more specific
+// reason, and a call with none of them is not lost — it is STILL OPEN, which the zero value
+// says. A reserved constant a producer never produces is worse than its absence, because the
+// consumer this package exists for would reasonably switch on it and ship a dead branch, or
+// read it as the catch-all for "no result" and miss the three reasons above. Add one only
+// alongside the code that returns it.
+
+// HasEnd says whether r is a reason that carries a duration.
+//
+// THE PREDICATE TO BRANCH ON, not a list of the reasons that do not. A consumer naming the
+// no-result reasons has to be edited when one is added, and the edit it forgets reads as
+// "this call has an end" — so a call that ended without a result renders as still running.
+// Asking this instead fails the safe way round. The no-result reasons leave Call.End nil, and
+// a consumer that renders a missing end as a zero-length call reports it as an instant one,
+// which drags a p50 toward zero.
 func (r EndReason) HasEnd() bool { return r == ReasonResult || r == ReasonBackground }
 
 // Call is one tool call the model asked for, with when it started, how it ended, and the keys
@@ -157,6 +168,12 @@ type Call struct {
 	// Start by construction (see Calls), so timestamps cannot put them back in order.
 	CallIndex int
 	SiblingN  int
+
+	// FIVE FIELDS BELOW HAVE NO READER YET, and are here for core/sessionexport (spec T23, T29,
+	// T30): ResultSeq, CallIndex, SiblingN, AskedAt and ModelDur. The timeline reads none of
+	// them. They are ungated, unlike Arguments and AgentResults, because each is a scalar the
+	// walk already holds — gating them would cost an Options branch per field to save a few
+	// bytes, where Arguments and the result map gate real content and real allocations.
 
 	// AskedAt is when the asking REQUEST started, and ModelDur is how long its response took.
 	// Carried so a consumer gets the model time beside the tool time without a second lookup,
@@ -535,17 +552,20 @@ func ResponseEnd(req, resp *model.SessionEvent) time.Time {
 }
 
 // agentOf is which agent a request belongs to, and whether it counts as agent traffic at all.
+//
+// e.Inference MUST BE NON-NIL, which pairCalls guarantees before it calls this. Not a nil check
+// but a precondition, deliberately: tolerating a nil Inference here would let the Client
+// fallback below answer MainAgent for an event that is not a model call at all, which is a
+// turn invented out of a tunnel row rather than a crash someone would notice.
 func agentOf(e *model.SessionEvent) (string, bool) {
 	if e.Subagent != "" {
 		return e.Subagent, true
 	}
-	if e.Inference != nil {
-		switch e.Inference.AgentRole {
-		case model.AgentRoleSubagent:
-			return UnseparatedAgent, true
-		case model.AgentRoleMain:
-			return MainAgent, true
-		}
+	switch e.Inference.AgentRole {
+	case model.AgentRoleSubagent:
+		return UnseparatedAgent, true
+	case model.AgentRoleMain:
+		return MainAgent, true
 	}
 	if e.Client != nil && model.IsKnownAgent(e.Client.Name) {
 		return MainAgent, true
