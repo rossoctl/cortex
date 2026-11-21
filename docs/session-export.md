@@ -166,11 +166,18 @@ Two rules before you total those spans, both of which cost real accuracy:
   `end`.
 
   A third kind needs no filter: a call whose agent finished the tool and then could not reach
-  the model to report back — a lid closed, a VPN dropped — gets its `end` from that first
-  failed attempt and is **not** marked `lost`. **Keep it.** Its duration is the tool's, not the
-  outage's: the proxy cuts the span at the failed dial precisely so the outage is excluded, and
-  against Claude Code's own transcripts that dial landed within 0.1 s of the tool's real end
-  every time. Without it, one 9-minute `Bash` drew as 8 hours.
+  the model to report back — a lid closed, a VPN dropped — gets its `end` from the first failed
+  dial and is **not** marked `lost`. **Keep it.** Its duration is the tool's, not the outage's:
+  Cortex cuts the span at that dial precisely so the outage is excluded, and against Claude
+  Code's own transcripts the dial landed within a fraction of a second of the tool's real end.
+  Without the cut, one 9-minute `Bash` drew as 8 hours.
+
+  Two things to know about that kind before you join on it. **Its result may be missing, or may
+  have arrived much later** — an `end` and no `lost` does not mean a result came back, so an
+  error rate or a result-size join over these spans is counting something else. And **only a
+  failed dial is caught this way**: an upstream 502, or a client that hung up mid-handshake,
+  leaves its outage inside the span. So a long tail can still be an outage of another kind
+  rather than a slow tool.
 
 An export is **content-free**. It is **not anonymous**. It keeps hosts, models, session
 ids and timestamps. Together these show who called what, and when. Read an export before

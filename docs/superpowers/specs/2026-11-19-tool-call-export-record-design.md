@@ -12,13 +12,13 @@ This one narrows its §7.2 `toolCallNames` item and supersedes the shape propose
 Items marked **Open** must be decided before the work they belong to begins. Nothing here
 is merged.
 
-**39 numbered requirements T0–T37, plus the lettered T10a that narrows T10**, phrased as plain declaratives: a requirement says what
+**40 numbered requirements T0–T37, plus the lettered T10a and T11a that narrow T10 and T11**, phrased as plain declaratives: a requirement says what
 the system does once built. The numbering is stable so it can be cited in review and in the
 PRs that implement it, and is therefore in the order the requirements were ADDED, not document
 order: T0 sits in §2.0 because it bounds the whole spec, T23–T27 and T36–T37 in §4.3a,
 T28–T33 and T35 in §4.4 and §4.4a, and T34 in §7.1b.
 
-Revised twice on 2026-11-19, once on 2026-11-20 and three times on 2026-11-21.
+Revised twice on 2026-11-19, once on 2026-11-20 and four times on 2026-11-21.
 
 **First revision**, after review raised two things the first draft buried. §2.0 is new: every
 field here is **already collected and most of it is already on disk**, so this is a projection
@@ -106,6 +106,17 @@ half-wired, which is the whole of this round.
   at `resultSeq`. That is the one case where the two disagree.
 - **"None of the four reasons ... has `End == nil`"** was the sentence the fifth revision's own
   commit message called false, still sitting 15 lines below the paragraph disproving it.
+
+**Seventh revision.** The sixth said the guide now warned about a stranded span's missing
+result and about only a failed dial being caught. It did not — the edit landed on the duration
+and not on the caveats, and the commit message described the intent rather than the result. The
+guide now carries both warnings. Also: the stranding cut is matched by HOST, not by agent, so
+its documented shortcut can cut a subagent's running tool at another agent's blip — named now,
+because `stranded` claims to explain a duration; the reasons-without-a-result count is
+recounted with `stranded` among them; `stranded` wins over `background` as well as `result`;
+and T11a settles the HMAC key's lifecycle, which T11 left open — generated once, never
+rotated, because a key that changes re-labels every MCP tool and splits one tool's history into
+two series a consumer cannot rejoin.
 
 **Code references name symbols, not line numbers.** Every `agents.go:NNN` pin in the first
 four revisions was correct when written and wrong a day later: #2041 moves all of them into
@@ -426,6 +437,16 @@ digest is not enough: the namespace makes the input guessable, so an unkeyed has
 known vendor name is reversible by trying candidates. The cost is that counts do not join
 across installs, which is the right trade for a name that may identify a customer. Hashing
 happens **before** T12's cut, so the cut never splits a digest.
+T11a. **The key is generated once and kept**, because a key that changes makes T1 and T4 fail
+for MCP traffic: the same tool would carry a different label in every export, and no consumer
+could total its time across two of them. Concretely — created on first use by an export that
+needs it, 32 bytes from `crypto/rand`, written `0600` beside the install's other state, read
+back unchanged thereafter, following the read-or-create pattern `cmd/cortex`'s gateway token
+already uses. **It does not rotate.** Rotation would silently re-label every MCP tool from that
+point, splitting one tool's history into two series that a consumer cannot rejoin; anyone who
+needs new labels deletes the key and knows the old exports no longer compare. A lost key is the
+same event, and the honest answer to it is that the old labels are unrecoverable — which is the
+property that made a keyed hash safe to ship in the first place.
 T12. A tool name is bounded on the way out by the same `exportLabel` every wire-sourced
 string in a record passes: control runes removed, then truncated to `maxLabelLen` on a rune
 boundary. `maxLabelLen` is **96 bytes**, not runes (`sessionexport.maxLabelLen`), so a multi-byte name
@@ -454,8 +475,8 @@ carries no separate `lost` flag.
 
 **`stranded` is the exception, and it is not a contradiction**: that call HAS an end, so it has
 a duration. Its agent finished the tool and then could not reach the model to report back, and
-the proxy cuts the span at that first failed dial — which measured within 0.1 s of the tool's
-real end on every session checked against Claude Code's transcripts. So the rule is "no end, no
+the proxy cuts the span at that first failed dial — which measured within a fraction of a
+second of the tool's real end on the sessions checked against Claude Code's transcripts. So the rule is "no end, no
 duration", not "no result, no duration": `durationMs` is present exactly when
 `endReason.HasEnd()`, which is `result`, `background` and `stranded`.
 
@@ -595,7 +616,7 @@ T31. A `toolCall` record carries `endReason`, a closed vocabulary naming how the
 | `ended_run` | no | By design no result: the call ends the run or hands control back (`SubagentHandback`, `StructuredOutput`, `end_subtask`). |
 | `abandoned` | no | The agent moved on without the result (`lastTurn`). |
 | `stopped` | no | The run was stopped while the call was open (a `<task-notification>`). |
-| `stranded` | **yes** | The agent finished the tool and could not reach the model to report back: its next attempt on that host failed to dial, and the call ends there (`endStrandedTools`). The duration is the tool's, not the outage's. `resultSeq` is absent when no result ever came, and set when one arrived late (see below). |
+| `stranded` | **yes** | The agent finished the tool and could not reach the model to report back: the first failed dial to a model host after the call started ends it (`endStrandedTools`). The duration is the tool's, not the outage's. `resultSeq` is absent when no result ever came, and set when one arrived late (see below). |
 
 **`stranded` is the fifth closing case, and this spec missed it until review.** `Build` runs
 `endStrandedTools` AFTER the pairing (`buildAgents` then `endStrandedTools`, both from `Build`), and it sets a tool's
@@ -604,13 +625,15 @@ none of the other four reasons. A pairing that stops at those four leaves such a
 empty reason, which T35 says cannot happen on an exported record, and T17 would then drop a
 call that did in fact finish.
 
-**`stranded` WINS over `result` when both apply.** `endStrandedTools`'s own doc says the result
-"reaches the proxy only once the network is back, hours later, or never". When it does arrive,
+**`stranded` WINS over `result` — and over `background` — when both apply.**
+`endStrandedTools`'s own doc says the result "reaches the proxy only once the network is back,
+hours later, or never". When it does arrive,
 `buildAgents` first ends the call on it and the stranding pass then moves `End` back to the
 dial — so the call satisfies both reasons, and the one that EXPLAINS the duration is the one to
 export. Concretely, for a stranded call whose result arrived late:
 
-- `endReason` is `stranded`, not `result`.
+- `endReason` is `stranded`, not `result`. The same holds for a `background` acknowledgement
+  the cut lands before: the reason that explains the duration wins.
 - `resultSeq` **stays present**: a request did carry the result, and a consumer joining on it
   is right to.
 - `durationMs` ends at the **dial**, not at `resultSeq`. This is the one case where the two
@@ -618,6 +641,16 @@ export. Concretely, for a stranded call whose result arrived late:
 
 So whichever option below is chosen must apply the stranding cut to a call **with** a result as
 well as one without. **Open** with the rest of this case.
+
+**The cut is matched by host, not by agent, and that bounds how precisely `stranded` explains a
+duration.** `endStrandedTools` names no agent: its documented `shortcut:` is that a blip in any
+other agent — a parent included — ends a tool whose own branch had no success first, so a
+subagent's long-running `Bash` can be cut at the moment the main agent retried. Two agents
+stranded by one outage therefore both end at its first failure. For a fleet latency figure this
+is the right trade, since the alternative is a span that runs to the session's last unrelated
+event; for a single call it means `stranded` says "cut at an outage this agent could not be
+proven to have survived", not "cut at this agent's own failure". The upstream note says to
+revisit if CONNECTs ever carry the agent id.
 
 Implementation note: the pairing package must therefore learn this case, which it does **not**
 do today — `core/session/toolpair` was extracted from `buildAgents` only, and
@@ -630,8 +663,9 @@ the pairing's inputs as they are; the first keeps the reason where the other fou
 case produces it: a call with none of the five reasons above still has `End == nil`, which
 means **still open**, and T17 does not export an open call at all. A vocabulary entry a
 producer never emits is a trap for the consumer — it switches on it and ships a dead branch,
-or reads it as the catch-all for "no result" and misses the three real reasons. Add one only
-alongside the code that returns it.
+or reads it as the catch-all for "no result" and misses the four reasons that can occur
+without one — `ended_run`, `stopped`, `abandoned`, and `stranded` where no late result
+arrived. Add one only alongside the code that returns it.
 
 These are the timeline's own closing cases (the closing pass), named rather than collapsed
 into one `Lost` bool: "the agent moved on" and "the call ends the run by design" are different
@@ -698,7 +732,7 @@ Four changes from the first draft, all so a record can be placed and ordered on 
 | `toolSource` | T4. `builtin`, `mcp` or `unknown` — a closed vocabulary, exported by naming the values. Only `builtin` exports its name in clear (T10a). |
 | `callSeq` / `resultSeq` | The response that asked and the request that carried the result. Lets a consumer rejoin a `toolCall` to the event records either side **without a tool-use id** (T8). `resultSeq` is absent when nothing carried a result. |
 | `callIndex` | T30. The call's position among its response's calls, from 0, in the order the model asked. |
-| `durationMs` | T18. The paired duration. Absent exactly when `endReason.HasEnd()` is false (T16, T31) — so present for `stranded`, which has an end without a result. |
+| `durationMs` | T18. The paired duration. Absent exactly when `endReason.HasEnd()` is false (T16, T31) — so present for `stranded`, whose end comes from the failed dial whether or not a result ever arrived. |
 | `endReason` | T31. Closed vocabulary: how the call ended, and the only thing that says whether a result arrived. No separate flag derives from it. |
 | `isError` | Whether the result was an error. The tool failure rate, per tool. |
 | `inputBytes` / `resultBytes` | T14. Effort proxies, never content. Bytes, as the names say. |
