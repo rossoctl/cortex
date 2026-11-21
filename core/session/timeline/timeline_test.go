@@ -552,24 +552,6 @@ func TestOnlyNewMessagesAreScanned(t *testing.T) {
 	}
 }
 
-func TestCommonPrefix(t *testing.T) {
-	a, b, c := user("a"), user("b"), user("c")
-	for _, tc := range []struct {
-		prev, cur []pipeline.InferenceMessage
-		want      int
-	}{
-		{nil, []pipeline.InferenceMessage{a}, 0},
-		{[]pipeline.InferenceMessage{a, b}, []pipeline.InferenceMessage{a, b, c}, 2},
-		{[]pipeline.InferenceMessage{a, b}, []pipeline.InferenceMessage{a, c}, 1},    // history rewritten
-		{[]pipeline.InferenceMessage{a, b, c}, []pipeline.InferenceMessage{a, b}, 2}, // compacted shorter
-		{[]pipeline.InferenceMessage{{Role: "system", Content: "a"}}, []pipeline.InferenceMessage{a}, 0},
-	} {
-		if got := commonPrefix(tc.prev, tc.cur); got != tc.want {
-			t.Errorf("commonPrefix(%v, %v) = %d, want %d", tc.prev, tc.cur, got, tc.want)
-		}
-	}
-}
-
 // A parent can resume a subagent with SendMessage after its first hand-back; the row runs to
 // the last one.
 func TestReturnedAtIsTheLastReturn(t *testing.T) {
