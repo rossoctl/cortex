@@ -135,7 +135,7 @@ jobs:
         with:
           go-version-file: cmd/cortex/go.mod
 
-      - name: Build binaries (linux/darwin, amd64/arm64)
+      - name: Build binaries (linux/darwin/windows, amd64/arm64)
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -151,35 +151,46 @@ jobs:
             ":${full_tags}"
           )
 
+          # pack <os> <archive-without-extension> <binary>: a .tar.gz, or on Windows a
+          # .zip of the .exe (#1520), the format a Windows user can open without tools.
+          pack() {
+            local os="$1" archive="$2" bin="$3"
+            if [ "${os}" = windows ]; then
+              ( cd dist && zip -q "${archive#dist/}.zip" "${bin}" )
+            else
+              tar -C dist -czf "${archive}.tar.gz" "${bin}"
+            fi
+            rm -f "dist/${bin}"
+          }
+
           build_proxy() {
             local variant="$1" tags="$2" os="$3" arch="$4"
             local suffix=""; [ -n "${variant}" ] && suffix="-${variant}"
+            local bin="cortex"; [ "${os}" = windows ] && bin="cortex.exe"
             # ${TAG}, not ${VERSION}: the filename has to match the download URL the
             # installer builds from the release tag. They are the same string for a
             # v* tag and differ only on the rolling channel release.
-            local archive="dist/cortex${suffix}_${TAG}_${os}_${arch}.tar.gz"
             echo "==> cortex${suffix} ${os}/${arch}"
             ( cd cmd/cortex && \
               GOWORK=off CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
               go build -trimpath \
                 -tags "${tags}" \
                 -ldflags "-s -w -X main.version=${VERSION}" \
-                -o "${GITHUB_WORKSPACE}/dist/cortex" . )
-            tar -C dist -czf "${archive}" cortex
-            rm -f dist/cortex
+                -o "${GITHUB_WORKSPACE}/dist/${bin}" . )
+            pack "${os}" "dist/cortex${suffix}_${TAG}_${os}_${arch}" "${bin}"
           }
 
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             os="${target%/*}"; arch="${target#*/}"
+            bin="agentop"; [ "${os}" = windows ] && bin="agentop.exe"
 
             echo "==> agentop ${os}/${arch}"
             ( cd cmd/agentop && \
               GOWORK=off CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
               go build -trimpath \
                 -ldflags "-s -w -X main.version=${VERSION}" \
-                -o "${GITHUB_WORKSPACE}/dist/agentop" . )
-            tar -C dist -czf "dist/agentop_${TAG}_${os}_${arch}.tar.gz" agentop
-            rm -f dist/agentop
+                -o "${GITHUB_WORKSPACE}/dist/${bin}" . )
+            pack "${os}" "dist/agentop_${TAG}_${os}_${arch}" "${bin}"
 
             for entry in "${proxy_variants[@]}"; do
               build_proxy "${entry%%:*}" "${entry#*:}" "${os}" "${arch}"
@@ -191,7 +202,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: dist-go
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
           if-no-files-found: error
           retention-days: 1
 
@@ -313,10 +326,11 @@ jobs:
           # main-latest the prune below deletes whatever dist/ lacks, so a silent gap
           # here would also remove the previous build's asset from the release.
           missing=""
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             os="${target%/*}"; arch="${target#*/}"
+            ext="tar.gz"; [ "${os}" = windows ] && ext="zip"
             for name in agentop cortex; do
-              f="dist/${name}_${TAG}_${os}_${arch}.tar.gz"
+              f="dist/${name}_${TAG}_${os}_${arch}.${ext}"
               [ -s "${f}" ] || missing="${missing} ${f}"
             done
           done
@@ -336,7 +350,7 @@ jobs:
             p="${TAG}_${target%/*}_${target#*/}.tar.gz"
             cp "dist/cortex_${p}" "dist/cortex-cpex_${p}"
           done
-          ( cd dist && sha256sum ./*.tar.gz > checksums.txt )
+          ( cd dist && sha256sum ./*.tar.gz ./*.zip > checksums.txt )
           ls -l dist
           cat dist/checksums.txt
 
@@ -345,7 +359,9 @@ jobs:
         if: github.event_name == 'push'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
-          subject-path: dist/*.tar.gz
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
 
       - name: Publish to GitHub Release
         # A main push publishes too, which is the whole point of the channel; the
@@ -393,6 +409,8 @@ jobs:
             fi
           fi
           add 'Prebuilt `agentop` and `cortex` binaries for linux and macOS (amd64/arm64).'
+          add 'Windows (amd64/arm64) is a preview, as `.zip`: run `cortex --local` in a terminal.'
+          add '`agentop service`, `setup` and `update` are not supported there yet (#1520).'
           # The laptop cpex build is gone. Drop this, and the cortex-cpex_* copies above,
           # once no supported release ships a cpex laptop build.
           add 'The laptop cpex build is removed. `cortex-cpex_*` is a copy of `cortex_*`,'
@@ -451,7 +469,7 @@ jobs:
               gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
                 -f sha="${GITHUB_SHA}" -F force=true >/dev/null
             fi
-            gh release upload "${TAG}" dist/*.tar.gz dist/checksums.txt --clobber
+            gh release upload "${TAG}" dist/*.tar.gz dist/*.zip dist/checksums.txt --clobber
             # --clobber replaces same-named assets but never deletes others, so every
             # name this build stops producing lingers on the rolling release: frozen at
             # its last build, and missing from checksums.txt, so nothing can verify it.
@@ -489,7 +507,7 @@ jobs:
             # built. Usually the same on a main push, but it is exactly the drift the
             # PATCH above exists to prevent — and it made the FIRST publish create the
             # tag at the wrong commit, so the two paths disagreed.
-            gh release create "${TAG}" dist/*.tar.gz dist/checksums.txt \
+            gh release create "${TAG}" dist/*.tar.gz dist/*.zip dist/checksums.txt \
               --target "${GITHUB_SHA}" \
               --title "${TAG}" --notes "${notes}" ${prerelease}
           fi
