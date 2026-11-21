@@ -160,9 +160,13 @@ Two rules before you total those spans, both of which cost real accuracy:
   that leaves them with no duration each. Measured at 14% of spans (50 of 348) on one 30-day
   archive. Charging every member of such a batch the whole window's time overcounts; read a
   shared window once per batch.
-- **Exclude `lost` spans.** A span that never got an answer but provably stopped sets `end`
-  equal to `start`, so it passes an `end != null` filter as a 0 ms call and drags a p50
-  toward zero. A span with no `end` is still running.
+- **Exclude `lost` spans, and do not trust `lost` alone.** A span that never got an answer but
+  provably stopped sets `end` equal to `start`, so it passes an `end != null` filter as a 0 ms
+  call and drags a p50 toward zero. A span with no `end` is still running. But a third kind
+  exists: a call whose agent could not reach the model to report back gets an `end` from the
+  failed attempt and is **not** marked `lost`, so neither filter catches it and its duration is
+  the outage rather than the tool. Filter `lost`, drop spans with no `end`, and treat a
+  suspiciously long tail as possibly an outage rather than a slow tool.
 
 An export is **content-free**. It is **not anonymous**. It keeps hosts, models, session
 ids and timestamps. Together these show who called what, and when. Read an export before

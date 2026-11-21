@@ -12,13 +12,13 @@ This one narrows its §7.2 `toolCallNames` item and supersedes the shape propose
 Items marked **Open** must be decided before the work they belong to begins. Nothing here
 is merged.
 
-**38 numbered requirements T0–T37**, phrased as plain declaratives: a requirement says what
+**39 numbered requirements T0–T37, plus the lettered T10a that narrows T10**, phrased as plain declaratives: a requirement says what
 the system does once built. The numbering is stable so it can be cited in review and in the
 PRs that implement it, and is therefore in the order the requirements were ADDED, not document
 order: T0 sits in §2.0 because it bounds the whole spec, T23–T27 and T36–T37 in §4.3a,
 T28–T33 and T35 in §4.4 and §4.4a, and T34 in §7.1b.
 
-Revised twice on 2026-11-19, once on 2026-11-20 and once on 2026-11-21.
+Revised twice on 2026-11-19, once on 2026-11-20 and twice on 2026-11-21.
 
 **First revision**, after review raised two things the first draft buried. §2.0 is new: every
 field here is **already collected and most of it is already on disk**, so this is a projection
@@ -72,6 +72,30 @@ naively; §2.2's claim that a background job extends a `Bash` span is removed, b
 does not do that and T32 says so correctly; and the stale first-draft figures in §9 and the
 guide are corrected to §3's.
 
+**Fifth revision**, after @clawgenti's second pass on #2009 found two more must-fixes, both
+places where the fourth revision's new text claimed more than the code supports:
+
+- **"No case produces `lost`" was false.** `endStrandedTools` is a FIFTH closing case this spec
+  never mentioned: it runs after the pairing and gives a tool an end at a failed model-host dial
+  WITHOUT marking it lost. Such a call has an end and none of the four reasons, which T35 says
+  cannot happen and T17 would drop. `endReason` gains `stranded`, and the implementation note
+  says plainly that the pairing package cannot see this case today — `endStrandedTools` needs
+  the agents, turns and hosts the pairing has none of — so how it learns it is **Open**.
+- **The T10 fix left `toolSource: "unknown"` uncovered** by either rule. T10a says it follows
+  T11 and is hashed: the branch is on "provably a built-in", never on "provably MCP", because a
+  hashed built-in costs a reader one unreadable label where a cleartext MCP name costs a
+  customer's identity. The field table said "verbatim" without qualification and now does not.
+
+Also: the guide's lost-span filter had the same blind spot as the first item and now names the
+third kind; the #1924 row no longer cites a claim §7.1 stopped making; and T35 says six fields
+rather than five.
+
+**Code references name symbols, not line numbers.** Every `agents.go:NNN` pin in the first
+four revisions was correct when written and wrong a day later: #2041 moves all of them into
+`core/session/toolpair`. A spec that cites `toolpair.Calls`, `closeCalls`, `preview` or
+`endStrandedTools` still reads correctly after the move; one that cites a line is stale the day
+it merges, and a reader who checks a stale pin and finds unrelated code stops trusting the rest.
+
 Written after measuring, not before. §3 is the measurement; every design choice in §5 and §6
 traces to a number in it. The measurement corpus is one developer's 30-day laptop archive:
 40,496 export records, 12,104 tool calls, `claude-code/2.1.270` throughout with 46
@@ -96,8 +120,8 @@ traces to a number in it. The measurement corpus is one developer's 30-day lapto
 
 It is also **content-light, not content-free**, which matters when comparing it with this
 record: `Tool.Preview` carries up to 80 runes of argument text — a command line, a file path,
-a query (`agents.go:487-515`) — and `Tool.ID` is the tool-use id itself
-(`timeline.go:128-138`). #1810 §9.1 states the same caveat in its own words ("no prompts",
+a query (`preview`) — and `Tool.ID` is the tool-use id itself
+(`timeline.Tool`). #1810 §9.1 states the same caveat in its own words ("no prompts",
 not "safe to share"). A `toolCall` record carries neither (T6, T8).
 
 | Need | Why `/timeline` cannot |
@@ -190,7 +214,7 @@ stated here rather than summarised:
   moving on without the result (`lastTurn`), a `<task-notification>` stopping the run
   (`stopped`), and background jobs (`backgroundRe`): the `Bash` span still **ends at its
   acknowledgement** — nothing extends it — and the job becomes a separate `timeline.Job`
-  (`agents.go:133-137`, closed at `:140-142` and `:192-194`). An earlier draft of this bullet
+  (the `Job` the pairing records, closed by its `<task-notification>` or by `TaskStop`). An earlier draft of this bullet
   said the span is extended, which contradicted T32 and would send an implementer of §6 looking
   for code that does not exist.
 
@@ -287,7 +311,7 @@ than that should be read into the agreement.
 gives such a batch one merged interval, not a duration each.
 
 A batch is **structural, not inferred from the timestamps**: every call of one response starts
-at that response's end (`agents.go:234` sets `Start: end` for each), so they share a start by
+at that response's end (`buildAgents` sets a span's `Start` to the asking response's end for each), so they share a start by
 construction. They share an *end* when their results arrive in one later request. So the
 grouping key is the asking response's seq, and `durationShared` says the results also returned
 together — which is why §5 carries both rather than a timestamp match.
@@ -356,7 +380,7 @@ what keeps a `toolCall` record unjoinable back to a conversation.
 T9. `TestRecord_CarriesNoContent` is extended to cover the `toolCall` record, planting a
 secret in every content field the pairing reads and failing if any reaches the encoding. The
 pairing reads more content than the record carries, which is exactly why the test must cover
-it: the closing cases scan **message text** for task notifications (`agents.go:147-190`) and
+it: the closing cases scan **message text** for task notifications (the returns-marker scan) and
 **tool result text** for background-job acknowledgements, so the planted secrets must include
 message content and result content, not only tool arguments.
 T10. **A BUILT-IN tool name is exported verbatim.** An MCP name is not: it follows T11. The
@@ -366,11 +390,17 @@ against, and normalising would lose which spelling the client actually sent. Wit
 source, then, the name is never rewritten: no case folding, no canonical spelling.
 `toolSource` (T4) decides which rule applies, and it is decided by the client's own list.
 
+T10a. **A name whose source cannot be determined (`toolSource: "unknown"`) follows T11, not
+T10** — it is hashed. Neither of the two rules above covers it otherwise, and the safe default
+for a name that might be operator-defined is to treat it as if it were: a hashed built-in costs
+a consumer one unreadable label, where a cleartext MCP name costs a customer's identity. So
+the branch is on "is this provably a built-in", never on "is this provably MCP".
+
 "Verbatim" is scoped to built-ins deliberately, and the scope is the privacy rule rather than
 a detail of it. An earlier draft of T10 said "whatever its source", which read as a licence to
 export `mcp__acme-billing-prod__refund` in clear text and contradicted T11 two lines below.
 An implementer who reads one requirement and not the next must still land on the safe
-behaviour.
+behaviour — which is why T10a exists rather than leaving the third value to inference.
 T11. An **MCP tool name is operator-defined and namespaced**, so it can carry a vendor
 relationship, an internal system name or a project codename — `mcp__acme-billing-prod__refund`
 is the worked example. It is therefore **not** treated as a built-in name. It is exported as a
@@ -381,7 +411,7 @@ across installs, which is the right trade for a name that may identify a custome
 happens **before** T12's cut, so the cut never splits a digest.
 T12. A tool name is bounded on the way out by the same `exportLabel` every wire-sourced
 string in a record passes: control runes removed, then truncated to `maxLabelLen` on a rune
-boundary. `maxLabelLen` is **96 bytes**, not runes (`record.go:352-355`), so a multi-byte name
+boundary. `maxLabelLen` is **96 bytes**, not runes (`sessionexport.maxLabelLen`), so a multi-byte name
 is cut sooner than its rune count suggests.
 
 ### 4.3 Data rules
@@ -408,7 +438,7 @@ T17. A span still open when the walk reads it is not exported. An unfinished cal
 duration to report, and a record that appears with one later would make the export
 non-reproducible.
 T18. Durations are milliseconds, truncated, matching `Record`.
-T35. **Five `toolCall` fields are always written, even at zero**, because for them zero is a
+T35. **Six `toolCall` fields are always written, even at zero**, because for them zero is a
 real value rather than "not recorded" — the opposite of the event record's rule:
 
 | Always written | Why zero is real |
@@ -533,10 +563,25 @@ T31. A `toolCall` record carries `endReason`, a closed vocabulary naming how the
 | `endReason` | Duration? | Meaning |
 |---|---|---|
 | `result` | yes | Its result arrived. |
-| `background` | yes, **to the acknowledgement only** | The result only acknowledged a job that keeps running (`backgroundRe`, `agents.go:37`). The command's real duration is longer and is not here. |
+| `background` | yes, **to the acknowledgement only** | The result only acknowledged a job that keeps running (`backgroundRe`, in the pairing package). The command's real duration is longer and is not here. |
 | `ended_run` | no | By design no result: the call ends the run or hands control back (`SubagentHandback`, `StructuredOutput`, `end_subtask`). |
 | `abandoned` | no | The agent moved on without the result (`lastTurn`). |
 | `stopped` | no | The run was stopped while the call was open (a `<task-notification>`). |
+| `stranded` | **yes** | The agent could not reach the model to report back: its next attempt on that host failed to dial, and the call ended there (`endStrandedTools`). |
+
+**`stranded` is the fifth closing case, and this spec missed it until review.** `Build` runs
+`endStrandedTools` AFTER the pairing (`buildAgents` then `endStrandedTools`, both from `Build`), and it sets a tool's
+`End` on a non-`Lost` span without setting `Lost` — so the timeline has a call with an end and
+none of the four reasons above. A pairing that stops at those four leaves such a call with an
+empty reason, which T35 says cannot happen on an exported record, and T17 would then drop a
+call that did in fact finish.
+
+Implementation note: the pairing package must therefore learn this case, which it does **not**
+do today — `core/session/toolpair` was extracted from `buildAgents` only, and
+`endStrandedTools` needs `t.Agents`, `t.Turns` and `t.Hosts`, which the pairing has none of.
+Two ways out, and this is **Open**: carry the host-failure times into the pairing, or let the
+export apply the stranding pass itself over the records it is about to write. The second keeps
+the pairing's inputs as they are; the first keeps the reason where the other four live.
 
 **No `lost` value.** An earlier draft had one for "open with no reason established", and no
 case produces it: a call with none of the four reasons above still has `End == nil`, which
@@ -545,12 +590,12 @@ producer never emits is a trap for the consumer — it switches on it and ships 
 or reads it as the catch-all for "no result" and misses the three real reasons. Add one only
 alongside the code that returns it.
 
-These are the timeline's own closing cases (`agents.go:273-295`), named rather than collapsed
+These are the timeline's own closing cases (the closing pass), named rather than collapsed
 into one `Lost` bool: "the agent moved on" and "the call ends the run by design" are different
 facts, and a consumer filtering latency wants to exclude both but count them apart.
 T32. **A backgrounded command is MARKED, not silently undercounted.** A `Bash` call that starts
 a background job ends at the acknowledgement, and the job's own run is a separate
-`timeline.Job` (`agents.go:133-137`), so this record cannot carry the command's real duration.
+`timeline.Job` (a `Job` of its own), so this record cannot carry the command's real duration.
 It therefore sets `endReason: "background"` with `durationMs` measuring only the
 acknowledgement. A count of such calls tells a consumer **how much tool time is missing** and
 from where, which an undifferentiated `result` would hide.
@@ -561,7 +606,7 @@ never ended, and its starting call's `callSeq` + `callIndex` (no ids), paired by
 later calls, so summed per-command time can exceed a session's wall-clock tool time. A
 consumer must not add job time to `durationMs` totals.
 T33. A `toolCall` record whose asking response is below a `since` floor is **not exported**.
-`Walk` stops at the first event below the floor (`walk.go:243-245`), so such a call has no
+`Walk` stops at the first event below the floor (`Walk`'s `since` stop), so such a call has no
 start to report, and T29 requires one. A result inside the window whose call is outside it
 therefore yields no record, rather than a record with a missing start.
 
@@ -606,8 +651,8 @@ Four changes from the first draft, all so a record can be placed and ordered on 
 | `kind` | T19. The discriminator. Always `"toolCall"` here; an event record carries `"event"` (T28). |
 | `sessionId` | T5. The session, as the client asserted it. Not a unit of work until #1997. |
 | `startedAt` | T29. When the call started — the asking response's end. **Always present**, so a `lost` call can still be placed. |
-| `tool` | T10/T11. The name, verbatim, bounded by T12. |
-| `toolSource` | T4. `builtin`, `mcp` or `unknown` — a closed vocabulary, exported by naming the values. |
+| `tool` | T10/T10a/T11. A built-in name verbatim; an `mcp` or `unknown` name as a keyed hash. Bounded by T12. |
+| `toolSource` | T4. `builtin`, `mcp` or `unknown` — a closed vocabulary, exported by naming the values. Only `builtin` exports its name in clear (T10a). |
 | `callSeq` / `resultSeq` | The response that asked and the request that carried the result. Lets a consumer rejoin a `toolCall` to the event records either side **without a tool-use id** (T8). `resultSeq` is absent when nothing carried a result. |
 | `callIndex` | T30. The call's position among its response's calls, from 0, in the order the model asked. |
 | `durationMs` | T18. The paired duration. Absent when `endReason` says there was no result (T16, T31). |
@@ -649,7 +694,7 @@ The walk calls the timeline builder per session and projects its spans.
 - **For:** smallest diff, no new pairing code.
 - **Against:** inherits the 50,000-event cap, which bounds the export by a timeline limit that
   has nothing to do with it; and it builds turns, hosts and agents the export discards. The cap
-  lives in the **HTTP handler** (`sessionapi/timeline.go:25`), not the builder, so an in-process
+  lives in the **HTTP handler** (`sessionapi`'s `timelineMaxEvents`), not the builder, so an in-process
   caller could avoid it — but then the export depends on a limit staying where it is.
 
 ### 6.3 Option C — a second, bounded pass in `sessionexport`
@@ -685,7 +730,7 @@ marker record when it is hit.
 
 7.1 **The proxy sees the gap around a tool, never inside it.** A correction to the first draft
 of this spec, which claimed local tool calls are invisible. They are not: a span runs from the
-asking response's end to the next request carrying the result (`agents.go:234`, `:280-287`),
+asking response's end to the next request carrying the result (the span-emission loop and the closing pass in `buildAgents`, now `toolpair.Calls` and `toolpair.closeCalls`),
 and **both boundaries are model traffic**, so a tool that touches nothing on the network still
 gets a span. §3.1's `Edit` at p50 35 ms is such a call. The earlier claim confused this record
 with #1810 §9's gap classification, where "no proxied traffic landed inside the gap" is how a
@@ -747,7 +792,7 @@ which user instruction.
 | #1906 | The tracker. This spec narrows its §2 and **supersedes** its "list on the response record" shape, for the §3.4 reason. |
 | #1810 | The parent spec. This is its §7.2 `toolCallNames` item, re-scoped from names to paired calls. |
 | #1740 | Adds `newToolResults` and `toolResultErrors` to the event record. Complementary: those count results per event; this counts calls with durations. |
-| #1924 | Claude Code telemetry would supply the tool times the proxy cannot see (§7.1) **and the permission waits T26 cannot separate from execution (§7.1a)**. It is the fix for both of this spec's largest error sources, so the two should be planned together even though this one ships first. |
+| #1924 | Claude Code telemetry records what happens INSIDE a span, which §7.1 says the proxy cannot see: the permission waits T26 cannot separate from execution (§7.1a), and where a call actually ran (§7.1b). It is the fix for this spec's largest error source, so the two should be planned together even though this one ships first. |
 | #1921 / #1925 | Redaction and the content export. Where tool arguments and result content go, per T0 — a different privacy posture, not a flag on this record. |
 | #1997 | `sessionIncarnation`. Needed before per-session aggregates mean anything (§7.3). |
 | rossoctl/trajectory-schema | **A consumer exists.** That schema added an observed-session kind (`trajectory-schema/session/1`, v2.1) and `tools/from-cortex.py`, which converts a `/v1/export` stream of event and `toolCall` records into it and into OTLP/JSON. Its field-by-field mapping is what surfaced T29 (a start on every record) and T30 (`callIndex`): without them a lost call cannot be placed and a batch cannot be ordered. Both are now required. The converter reports `gapKind` as unmapped and derives it from the event records instead, which is the right division — §4.3a says the definitions are the deliverable. |
