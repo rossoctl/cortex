@@ -87,7 +87,7 @@ func detachedSleeperAt(t *testing.T, path string) int {
 
 // ranFrom reports whether pid is alive and was started as path, by ps's argv[0].
 func ranFrom(pid int, path string) bool {
-	if !alive(pid) {
+	if !processAlive(pid) {
 		return false
 	}
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "args=").Output()
@@ -231,7 +231,7 @@ func TestSetupStopsAPreRenameBackgroundProxyAndRestartsItOnRollback(t *testing.T
 	if code != 1 {
 		t.Errorf("a failed run exited %d", code)
 	}
-	if alive(newPID) {
+	if processAlive(newPID) {
 		t.Error("the rollback left the new cortex running")
 	}
 	if !ranFrom(restarted, filepath.Join(bin, "authbridge-proxy")) || restarted == old {
@@ -496,7 +496,7 @@ func TestSetupRollbackRestartsTheBackgroundCortexBesideAStoppedService(t *testin
 	running := filepath.Join(t.TempDir(), "running")
 	sc := newSetupScene(t, func(w http.ResponseWriter, _ *http.Request) {
 		_, err := os.Stat(running)
-		if err != nil && !alive(readPIDFile(filepath.Join(os.Getenv("HOME"), ".cortex", "proxy.pid"))) {
+		if err != nil && !processAlive(readPIDFile(filepath.Join(os.Getenv("HOME"), ".cortex", "proxy.pid"))) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 	})

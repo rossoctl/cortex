@@ -208,8 +208,6 @@ func ourProxy(binDir, pidFile string, pid int, exe string) bool {
 	return samePath(exe, filepath.Join(binDir, proxyBinary)) || samePath(exe, filepath.Join(binDir, preRenameBinary))
 }
 
-func alive(pid int) bool { return processAlive(pid) }
-
 // psComm is ps's comm for pid, and whether ps answered at all.
 func psComm(pid int) (string, bool) {
 	out, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
@@ -221,7 +219,7 @@ func psComm(pid int) (string, bool) {
 // and ps either cannot see it (sandbox-blind) or calls it cortex.
 func proxyRunning(pidFile string) (int, bool) {
 	pid := readPIDFile(pidFile)
-	if !alive(pid) {
+	if !processAlive(pid) {
 		return 0, false
 	}
 	comm, seen := psComm(pid)
@@ -236,7 +234,7 @@ func proxyRunning(pidFile string) (int, bool) {
 // background proxy. proxyRunning does not count it: ps does not call it cortex.
 func preRenameProxyRunning(binDir, pidFile string) (int, bool) {
 	pid := readPIDFile(pidFile)
-	if !alive(pid) {
+	if !processAlive(pid) {
 		return 0, false
 	}
 	exe := setupPIDExePath(pid)
@@ -250,7 +248,7 @@ func preRenameProxyRunning(binDir, pidFile string) (int, bool) {
 // process ps cannot name, which may still re-exec a pre-rename binary.
 func pidfileProcessUnnamed(pidFile string) bool {
 	pid := readPIDFile(pidFile)
-	if !alive(pid) {
+	if !processAlive(pid) {
 		return false
 	}
 	_, seen := psComm(pid)

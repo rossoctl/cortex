@@ -359,7 +359,7 @@ func TestUninstallStopsABackgroundCortex(t *testing.T) {
 	stopProcessOnCleanup(t, &pid)
 	sc.setUp(t, "--no-service")
 	pidFile := filepath.Join(sc.home, ".cortex", "proxy.pid")
-	if pid = readPIDFile(pidFile); !alive(pid) {
+	if pid = readPIDFile(pidFile); !processAlive(pid) {
 		t.Fatal("fixture: setup --no-service left no live proxy")
 	}
 	// ps names the stub's sleep as cortex, as it names the real background proxy.
@@ -369,7 +369,7 @@ func TestUninstallStopsABackgroundCortex(t *testing.T) {
 	if row := consentRow(out, "stop and remove"); !strings.Contains(row, " the background Cortex ") || !strings.HasSuffix(row, " ~/.cortex/proxy.pid") {
 		t.Errorf("the consent row is %q, want the background Cortex and its pidfile", row)
 	}
-	if alive(pid) {
+	if processAlive(pid) {
 		t.Errorf("the background Cortex (pid %d) is still running", pid)
 	}
 	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
