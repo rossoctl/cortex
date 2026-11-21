@@ -485,6 +485,8 @@ type model struct {
 	serviceInstall bool
 	// updateNote is the update notice after the build on the title bar.
 	updateNote string
+	// updateInk is the color of updateNote.
+	updateInk lipgloss.Style
 	// lastHarvest is when the most recent harvest was STARTED. Read by TWO callers: the sessions
 	// pane's backoff gate, which asks whether untitledBackoff has elapsed since then, and the
 	// timeline pane's gate for unlabeled subagents (timelineLabelHarvestEvery). The picker
@@ -2612,7 +2614,7 @@ func (m *model) paneView() string {
 // yet there is no box to draw, and the body shows as it is.
 func (m *model) pickerView(title, body, footer string) string {
 	if m.width == 0 {
-		return lipgloss.JoinVertical(lipgloss.Left, renderTitle(title), body, footer)
+		return lipgloss.JoinVertical(lipgloss.Left, m.titleView(title), body, footer)
 	}
 	frameH := m.bodyHeight
 	if m.searching && m.searchPane != targetHelp {
@@ -2621,7 +2623,7 @@ func (m *model) pickerView(title, body, footer string) string {
 	if m.bodyHeight == 0 {
 		frameH = lipgloss.Height(body) // layout() has not run, so there is no reservation to fill
 	}
-	rows := []string{renderTitle(title), boxTop("", m.width)}
+	rows := []string{m.titleView(title), boxTop("", m.width)}
 	rows = append(rows, boxFrame(body, m.width, frameH)...)
 	rows = append(rows, boxBottom(m.width), footer)
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
@@ -2758,7 +2760,7 @@ func (m *model) paneContent() (title, body string) {
 // framePane is a data pane's screen: the title, the spend band and its drawer, the body in the
 // box at exactly the rows layout() reserved, and the footer on the last row.
 func (m *model) framePane(title, body string) string {
-	header := renderTitle(title)
+	header := m.titleView(title)
 	// The band sits directly under the title because that is the whole requirement: spend
 	// read BEFORE the data rather than navigated to.
 	//
