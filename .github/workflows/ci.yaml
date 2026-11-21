@@ -129,8 +129,9 @@ jobs:
   # Windows (#1520): core and the laptop proxy must keep building, and the session archive and
   # cost ledger must keep writing where a directory is flushed only through a write handle and
   # cannot be renamed with a file open in it. Only those packages' tests run: the rest of core
-  # and cmd/cortex still have Unix-only tests (Setpgid, SIGUSR1), and agentop does not build
-  # yet. No -race: the race detector needs cgo and a C toolchain on the runner.
+  # and cmd/cortex still have Unix-only tests (Setpgid, SIGUSR1). agentop builds, but most of
+  # its tests need a Unix shell or service manager, so only a named set runs (see its step).
+  # No -race: the race detector needs cgo and a C toolchain on the runner.
   go-ci-windows:
     name: Go CI (Windows build, archive and ledger)
     runs-on: windows-latest
@@ -187,6 +188,23 @@ jobs:
           go build ./...
           go vet ./...
           go test -run 'TestRefuseUnsupported|TestProcessAlive|TestLockFile|TestWritable|TestTerminateRefusesOnWindows|TestNoRecordWanted|TestWithRecordOff|TestAddRecordOff' .
+
+      # release-binaries.yaml builds every platform in one loop, so a Windows build break would
+      # stop the Linux and macOS releases too, and main-latest on every merge. Build exactly its
+      # Windows targets here: cortex with the release's proxy variant (the full profile) and
+      # agentop, for amd64 and arm64, with cgo off as the release does. Keep the tags in step
+      # with proxy_variants there.
+      - name: Build the release's Windows targets
+        run: |
+          set -euo pipefail
+          full_tags=$(go -C scripts/profile-tags run . full)
+          for arch in amd64 arm64; do
+            echo "==> windows/${arch}"
+            ( cd cmd/cortex && CGO_ENABLED=0 GOOS=windows GOARCH="${arch}" \
+              go build -trimpath -tags "${full_tags}" -o /dev/null . )
+            ( cd cmd/agentop && CGO_ENABLED=0 GOOS=windows GOARCH="${arch}" \
+              go build -trimpath -o /dev/null . )
+          done
 
   # The cpex plugin's FFI-backed code sits behind the `cpex` build tag and needs
   # cgo plus the pinned libcpex_ffi.a, so no other job compiles or tests it. It

@@ -410,7 +410,7 @@ jobs:
           fi
           add 'Prebuilt `agentop` and `cortex` binaries for linux and macOS (amd64/arm64).'
           add 'Windows (amd64/arm64) is a preview, as `.zip`: run `cortex --local` in a terminal.'
-          add '`agentop service`, `setup` and `update` are not supported there yet (#1520).'
+          add '`agentop service`, `setup`, `uninstall` and `update` are not supported there yet (#1520).'
           # The laptop cpex build is gone. Drop this, and the cortex-cpex_* copies above,
           # once no supported release ships a cpex laptop build.
           add 'The laptop cpex build is removed. `cortex-cpex_*` is a copy of `cortex_*`,'
@@ -425,8 +425,8 @@ jobs:
             add '`cortex-gateway_*` is the praxis-mode gateway (static on linux).'
             add 'Install it with `install.sh --praxis`.'
           fi
-          add 'Every tarball carries build provenance:'
-          add '`gh attestation verify <tarball> --repo rossoctl/cortex`.'
+          add 'Every archive (`.tar.gz` and `.zip`) carries build provenance:'
+          add '`gh attestation verify <archive> --repo rossoctl/cortex`.'
           add ''
           # The rename shipped with no alias, so it has to be said somewhere a v0.7.0
           # user will look. Drop this once no supported release predates it.
@@ -436,7 +436,8 @@ jobs:
           add '`authbridge-*`); image and container names are unchanged. Setup removes the old'
           add 'binary once the service no longer runs it. Stop a proxy you started by hand first.'
           add ''
-          add 'Verify downloads with `sha256sum -c checksums.txt`. On macOS, clear the'
+          add 'Verify downloads with `sha256sum -c checksums.txt` (it lists the `.zip` files too;'
+          add 'on Windows compare `(Get-FileHash <file> -Algorithm SHA256).Hash.ToLower()`). On macOS, clear the'
           add 'Gatekeeper quarantine after extracting: `xattr -dr com.apple.quarantine ./agentop`.'
           # Whoever is asked to try a release candidate lands on this page, and the
           # one-liner they already know will not install it.

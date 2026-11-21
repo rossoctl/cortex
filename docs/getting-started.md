@@ -32,7 +32,7 @@ When setup is done, open a new terminal. The new terminal reads the new `PATH`.
 `install.sh` and `agentop setup` don't run on Windows yet (#1520). Install by hand:
 
 1. From the [releases page](https://github.com/rossoctl/cortex/releases), download `agentop_<version>_windows_amd64.zip` and `cortex_<version>_windows_amd64.zip` (`arm64` on an Arm PC), and `checksums.txt`.
-2. Check them in PowerShell: `Get-FileHash .\agentop_*_windows_*.zip` must match the line for that file in `checksums.txt`, and the same for `cortex`.
+2. Check them in PowerShell. `checksums.txt` has lower-case hashes, and `Get-FileHash` prints upper case, so compare `(Get-FileHash .\agentop_<version>_windows_amd64.zip -Algorithm SHA256).Hash.ToLower()` with the line for that file, and the same for `cortex`.
 3. Unzip both into one folder, for example `$HOME\.local\bin`, and add that folder to your user `PATH`.
 4. In one terminal, run the proxy: `cortex --local`. It writes `~/.cortex/config.yaml` on first run. Stop it with `Ctrl-C`.
 5. In a second terminal, run `agentop observe`.
