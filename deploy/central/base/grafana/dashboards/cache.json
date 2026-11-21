@@ -174,7 +174,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace(sum by (cause)(increase(llm_cache_miss_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])), \"cause\", \"unattributed\", \"cause\", \"\")",
+          "expr": "label_replace(sum by (cause)((increase(llm_cache_miss_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and llm_cache_miss_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"} offset $__range) or last_over_time(llm_cache_miss_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])), \"cause\", \"unattributed\", \"cause\", \"\")",
           "legendFormat": "{{cause}}",
           "refId": "A",
           "datasource": {
@@ -347,7 +347,7 @@
       },
       "targets": [
         {
-          "expr": "(sum(increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__range])) - sum(increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__range]))) / ((sum(increase(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
+          "expr": "(sum((increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__range]) and llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"} offset $__range) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__range])) - sum((increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__range]) and llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"} offset $__range) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__range]))) / ((sum((increase(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"} offset $__range) or last_over_time(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
           "refId": "A",
           "instant": true,
           "datasource": {
@@ -399,7 +399,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(llm_keepalive_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) / ((sum(increase(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
+          "expr": "sum((increase(llm_keepalive_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and llm_keepalive_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"} offset $__range) or last_over_time(llm_keepalive_estimated_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range])) / ((sum((increase(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]) and llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"} offset $__range) or last_over_time(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__range]))) > 0)",
           "refId": "A",
           "instant": true,
           "datasource": {
