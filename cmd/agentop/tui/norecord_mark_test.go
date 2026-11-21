@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/rossoctl/cortex/core/session"
 )
 
@@ -74,14 +76,49 @@ func TestSessionIDCell_NoRecordPrefixWithoutTitle(t *testing.T) {
 	}
 }
 
+// At TITLE's narrowest width the full mark leaves no room for the title, so the TITLE cell has
+// the short mark and still some of the title.
+func TestSessionTitleCell_NoRecordAtTheTitleFloor(t *testing.T) {
+	const title = "fix the build"
+	sessions := []session.SessionSummary{{ID: "off-1", Title: title, NoRecord: true}}
+	for width := 40; width <= 200; width++ {
+		m := fitModel(t, paneSessions, width, 40, nil)
+		m.sessions = sessions
+		m.rebuildSessionsTable()
+		rows := m.sessionsTbl.Rows()
+		if len(rows) != 1 {
+			t.Fatalf("width %d: got %d rows, want 1", width, len(rows))
+		}
+		for _, c := range rows[0] {
+			if !strings.Contains(c, "fix") {
+				continue
+			}
+			// The first width that shows TITLE: the column is at its floor.
+			if lipgloss.Width(c) > sessionsTitleWidth {
+				t.Fatalf("width %d: TITLE cell %q wider than the floor %d", width, c, sessionsTitleWidth)
+			}
+			if !strings.HasPrefix(c, noRecordIDMarker+"fix") {
+				t.Fatalf("width %d: TITLE cell at the floor = %q, want %q and then some of the title", width, c, noRecordIDMarker)
+			}
+			return
+		}
+	}
+	t.Fatal("no width from 40 to 200 shows the TITLE column")
+}
+
 // The session's header says it is not recorded, in full, also on a narrow terminal, where the
-// list shows only the short mark; a recorded session's header does not.
+// list shows only the short mark and the header has to clip a long title; a recorded session's
+// header does not.
 func TestSessionHeader_SaysNotRecorded(t *testing.T) {
+	long := strings.Repeat("refactor the session archive writer ", 4)
 	for _, width := range []int{200, 60} {
 		m := fitModel(t, paneSessions, width, 40, nil)
 		m.sessions = []session.SessionSummary{
-			{ID: "off-1", Title: "fix the build", NoRecord: true},
-			{ID: "live-1", Title: "fix the build"},
+			{ID: "off-1", Title: long, NoRecord: true},
+			{ID: "live-1", Title: long},
+		}
+		if width == 60 && strings.Contains(m.sessionHeader("off-1", ""), strings.TrimSpace(long)) {
+			t.Fatalf("precondition: at %d columns the header should clip the title", width)
 		}
 		if got := m.sessionHeader("off-1", ""); !strings.Contains(got, "not recorded") {
 			t.Errorf("width %d: header = %q, want it to say not recorded", width, got)
