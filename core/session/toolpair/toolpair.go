@@ -5,8 +5,12 @@
 // tool-use id, a forward walk and per-agent state. This package is that walk, and it is shared
 // because two consumers need the same answer from the same events:
 //
-//   - core/session/timeline draws the spans in agentop's Timeline pane.
-//   - core/sessionexport projects them to content-free records for GET /v1/export.
+//   - core/session/timeline draws the spans in agentop's Timeline pane. It is the only caller
+//     today.
+//   - core/sessionexport WILL project them to content-free records for GET /v1/export
+//     (rossoctl/cortex#1906 §2). Nothing imports this package from there yet, so every claim
+//     below about what the export does or does not read is a statement about that design, not
+//     about shipped code.
 //
 // WHY A SHARED PACKAGE RATHER THAN A SECOND IMPLEMENTATION. Closing a call correctly has five
 // cases beyond "its result arrived", and each one was a bug before it was a case: a call that
@@ -27,9 +31,10 @@
 //
 // NO ARGUMENT TEXT AND NO RESULT TEXT LEAVE THIS PACKAGE unless a caller asks. A Call carries
 // the SIZE of a result, never its content, and carries a call's arguments only under
-// Options.Arguments — which core/sessionexport does not set, so an export's Call values hold no
-// argument bytes at all, rather than holding them beside a field nobody reads. The timeline sets
-// it, because its preview is built from them.
+// Options.Arguments. The timeline sets it, because its preview is built from them; the export
+// is designed not to, so that its Call values will hold no argument bytes at all rather than
+// holding them beside a field nobody reads. That property is a claim about the export PR, and
+// it is that PR's test that will hold it.
 package toolpair
 
 import (
@@ -46,7 +51,9 @@ import (
 // shared bucket, because pre-#1459 traffic cannot be told apart.
 //
 // Spelled here rather than imported from core/session/timeline, which is this package's
-// consumer: the dependency runs the other way. The timeline re-exports its own copies.
+// consumer: the dependency runs the other way. THESE ARE THE DEFINITIONS — the timeline's
+// exported MainAgent and UnseparatedAgent alias them rather than respelling the strings, so the
+// keys it compares against cannot drift from the keys assigned here.
 const (
 	MainAgent        = "main"
 	UnseparatedAgent = "subagents"
@@ -169,11 +176,21 @@ type Call struct {
 	CallIndex int
 	SiblingN  int
 
-	// FIVE FIELDS BELOW HAVE NO READER YET, and are here for core/sessionexport (spec T23, T29,
-	// T30): ResultSeq, CallIndex, SiblingN, AskedAt and ModelDur. The timeline reads none of
-	// them. They are ungated, unlike Arguments and AgentResults, because each is a scalar the
-	// walk already holds — gating them would cost an Options branch per field to save a few
-	// bytes, where Arguments and the result map gate real content and real allocations.
+	// FIVE FIELDS HAVE NO PRODUCTION READER YET: ResultSeq, CallIndex, SiblingN, ModelDur and
+	// ResultBytes. They are for core/sessionexport (spec T23, T29, T30, T14); only AskedAt is
+	// read here, by the timeline. This package's own tests cover all five.
+	//
+	// SHIPPED NOW RATHER THAN WITH THEIR READER, DELIBERATELY, and the trade is worth stating
+	// because core/ is consumed outside this repo, so each one is external API from this commit.
+	// Adding them later means a second PR reopening Calls and closeCalls to carry values this
+	// walk already computes, and the pairing tests that pin them live here, not in the export.
+	// So the exposure is accepted on one condition: THESE NAMES AND MEANINGS ARE NOT SETTLED
+	// until the export lands. A spec change to T23/T29/T30 before then changes them here, and
+	// that is not a breaking change to anything — nothing outside this module reads them.
+	//
+	// They are ungated, unlike Arguments and AgentResults, because each is a scalar the walk
+	// already holds: gating would cost an Options branch per field to save a few bytes, where
+	// those two gate real content and real allocations.
 
 	// AskedAt is when the asking REQUEST started, and ModelDur is how long its response took.
 	// Carried so a consumer gets the model time beside the tool time without a second lookup,
@@ -210,7 +227,10 @@ type Return struct {
 
 // Options asks for the outputs a caller actually wants. The message scan runs either way —
 // two closing cases depend on it — so these skip the bookkeeping and the allocations, not the
-// work. core/sessionexport passes the zero value.
+// work. The timeline sets all three; the export is expected to pass the zero value.
+//
+// Every false path is exercised only by this package's tests today, for the same reason the
+// doc above gives: the export caller does not exist yet.
 type Options struct {
 	// Returns fills Result.Returns.
 	Returns bool
