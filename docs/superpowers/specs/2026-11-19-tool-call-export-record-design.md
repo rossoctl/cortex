@@ -124,9 +124,23 @@ revision correctly contradict, because `stranded` occurs both with a late result
 one. `resultSeq` answers that question; the row was the last place still disagreeing, and it is
 the place an implementer builds from. And §10 claimed nothing blocks implementation while T31's
 stranding route sat **Open** in two paragraphs and in no §10.2 row: it now has the row, names
-T31 as the one requirement not ready, and states the interim behaviour — a stranded call
-exports as `abandoned` with no duration, biasing the heavy tail — so nobody builds a tier table
-on it before #2046 closes.
+T31 as the one requirement not ready, and states the interim behaviour, so nobody builds a tier
+table on it before #2046 closes.
+
+**Ninth revision**, and the interim behaviour the eighth revision added was itself wrong — it
+described one of three outcomes as the whole loss. Probed against #2041's `closeCalls` at
+`410966e`: a result wins over every no-result reason and a failed dial is a CONNECT that
+`pairCalls` skips, so a stranded call whose result arrives late exports as `result` with the
+**outage inside `durationMs`** — the 9-minute `Bash` that drew as 8 hours — one the agent moved
+on from exports as `abandoned` with no duration, and one whose session never resumed stays open
+and is not exported at all (T17). The first *inflates* the heavy tail, which is the opposite
+direction from the undercount the eighth revision described, and the one that matters for a
+tier table. §10 now states all three. Also this round: §2.2 names `endStrandedTools` as a fifth
+case that runs after the pairing, so the two places that pointed at §2.2 for its route now point
+at §4.4a where the options actually live; the `stranded` row drops the last unqualified "the
+duration is the tool's"; T35 keeps a measured zero for `inputBytes`, `resultBytes` and `gapMs`
+distinguishable from an unmeasured field, which `omitempty` would not; and T37's `user` gap is
+qualified for a background job still running behind it.
 
 **Code references name symbols, not line numbers.** Every `agents.go:NNN` pin in the first
 four revisions was correct when written and wrong a day later: #2041 moves all of them into
@@ -255,6 +269,10 @@ stated here rather than summarised:
   (the `Job` the pairing records, closed by its `<task-notification>` or by `TaskStop`). An earlier draft of this bullet
   said the span is extended, which contradicted T32 and would send an implementer of §6 looking
   for code that does not exist.
+- **A fifth case runs after the pairing, not inside it.** `Build` calls `buildAgents` and then
+  `endStrandedTools`, which closes a tool whose agent could not reach the model to report back
+  (§4.4a, T31). It is the one case this spec missed until review, and the one whose route is
+  still open — §4.4a holds both options and §10.2 tracks it as #2046.
 
 ### 2.3 The gap, and why it is structural
 
@@ -494,13 +512,13 @@ duration", not "no result, no duration": `durationMs` is present exactly when
 `endReason.HasEnd()`, which is `result`, `background` and `stranded`.
 
 **Note for #2041:** `toolpair.EndReason.HasEnd()` there is `result || background`. Whichever of
-§2.2's two options lands, `HasEnd` has to include `stranded`, or `omitempty` drops the duration
+§4.4a's two options lands, `HasEnd` has to include `stranded`, or `omitempty` drops the duration
 of a stranded call that measured 0 ms.
 T17. A span still open when the walk reads it is not exported. An unfinished call has no
 duration to report, and a record that appears with one later would make the export
 non-reproducible.
 T18. Durations are milliseconds, truncated, matching `Record`.
-T35. **Six `toolCall` fields are always written, even at zero**, because for them zero is a
+T35. **Nine `toolCall` fields are always written, even at zero**, because for them zero is a
 real value rather than "not recorded" — the opposite of the event record's rule:
 
 | Always written | Why zero is real |
@@ -510,6 +528,13 @@ real value rather than "not recorded" — the opposite of the event record's rul
 | `callIndex` | the FIRST call of every batch is 0, and T34 makes it a join key |
 | `durationMs` on a reason that `HasEnd` | a result clamped to its call's start is a real 0 ms call (§3.5), and T31 requires a duration there |
 | `endReason` | every exported call has one |
+| `inputBytes`, `resultBytes` when measured | an empty result or an argument-free call is a real 0, and T14 reserves absence for "not measured" |
+| `gapMs` when measured | a gap under half a millisecond rounds to a real 0, and T24 reserves absence for an agent's first turn |
+
+The last two rows are why these fields cannot use `omitempty`: T14 and T24 each give absence a
+meaning other than zero, so a measured zero has to be distinguishable from an unmeasured field.
+An implementation that reaches for `omitempty` on them silently turns an empty result into "not
+measured" and a sub-millisecond gap into "first turn".
 
 `isError` stays `omitempty`: absent reads as false, which is what it means. The rest of the
 record keeps the export's zero-means-absent rule (#1810 R3).
@@ -565,8 +590,17 @@ fields:
 T37. **A `tool` gap is not idle time, and must not be added to tool time.** By §4.3a's
 definition the interval covers what the previous turn's calls were doing, so for a `gapKind`
 of `tool` it overlaps those calls' own `durationMs`: adding the two counts the same wall clock
-twice. Only a `user` gap is time no tool and no model was working, which is why it is the one
-that answers a duty cycle.
+twice. Only a `user` gap is time no *foreground* tool and no model was working, which is why it
+is the one that answers a duty cycle.
+
+One exception, and it is T32's: a background job started by an earlier `Bash` keeps running
+after the acknowledgement that closed that call, so it can span a `user` gap. Such a gap is
+still classified `user` — the pairing has no job state to consult, and reclassifying it would
+need the job record T32 defers — so a duty cycle computed from `user` gaps is an upper bound on
+idleness wherever background jobs are in use. A consumer that needs the exact figure joins the
+job records when they exist (§10.2). The same qualification applies to T27's "costs nothing in
+sandbox occupancy": it is true of the agent's foreground work, not of a job still running
+behind it.
 
 **A consumer with the event records can derive all three fields**, so these definitions are
 the deliverable and the fields are the convenience. A definition that cannot be checked
@@ -629,9 +663,12 @@ T31. A `toolCall` record carries `endReason`, a closed vocabulary naming how the
 | `ended_run` | no | By design no result: the call ends the run or hands control back (`SubagentHandback`, `StructuredOutput`, `end_subtask`). |
 | `abandoned` | no | The agent moved on without the result (`lastTurn`). |
 | `stopped` | no | The run was stopped while the call was open (a `<task-notification>`). |
-| `stranded` | **yes** | The agent finished the tool and could not reach the model to report back: the first failed dial to a model host after the call started ends it, when no turn of that agent or an agent below it succeeded in between (`endStrandedTools`). The duration is the tool's, not the outage's. `resultSeq` is absent when no result ever came, and set when one arrived late (see below). |
+| `stranded` | **yes** | The agent finished the tool and could not reach the model to report back: the first failed dial to a model host after the call started ends it, when no turn of that agent or an agent below it succeeded in between (`endStrandedTools`). Its duration is usually the tool's rather than the outage's; the cut is matched by host, so another agent's blip can end it early (§4.4a). `resultSeq` is absent when no result ever came, and set when one arrived late (see below). |
 
-**`stranded` is the fifth closing case, and this spec missed it until review.** `Build` runs
+**`stranded` is the fifth case beyond a plain result that §2.2 lists, and this spec missed it
+until review.** (#2041's `toolpair` doc comment counts five of its own, because it treats the
+clamped early result as a case rather than as part of the end definition; `stranded` would be
+its sixth.) `Build` runs
 `endStrandedTools` AFTER the pairing (`buildAgents` then `endStrandedTools`, both from `Build`), and it sets a tool's
 `End` on a non-`Lost` span without setting `Lost` — so the timeline has a call with an end and
 none of the other four reasons. A pairing that stops at those four leaves such a call with an
@@ -930,18 +967,30 @@ its frequency — but the *rate* is not a constant to design against.
 | §7.1a | Whether to quantify the approval-wait error against local Claude Code transcripts before publishing any density figure. Author's view: yes, and it is cheap. |
 | T32 | Whether the job record gets specified in this cycle or a later one. The undercount is marked either way. |
 | §7.1b | Whether an optional client-stated execution site is worth a field, for a client that knows where its tools ran. Not a proxy-side inference under any circumstance. |
-| T31 / §2.2 | **Where the stranding cut runs** — carry the host-failure times into the pairing, or apply the cut in the export over the records it is about to write. Author leans the former, for §6's reason: a closing case that exists twice drifts. Tracked as #2046 so it does not block the record. |
+| T31 / §4.4a | **Where the stranding cut runs** — carry the host-failure times into the pairing, or apply the cut in the export over the records it is about to write. Author leans the former, for §6's reason: a closing case that exists twice drifts. Tracked as #2046 so it does not block the record. |
 
-**T31 is the one requirement above that is NOT ready to implement**, and §10.2's row above says
+**T31 is the one requirement in T28–T37 that is NOT ready to implement** (T32's open row is the
+job record it deliberately defers, not an unimplementable requirement), and §10.2's row says
 why: `stranded` is specified, but where its cut runs is not, and the pairing package cannot see
 the case at all today. Everything else is settled — §6 Option A, T10a/T11/T11a's hashing,
 T20's per-item switch, §6.4's marker record — and T28–T30 and T32–T37 are normative.
 
-**Interim behaviour, until T31's route is decided:** a stranded call matches `abandoned`,
-because the agent's later request is after the call's start, and an `abandoned` call carries no
-duration (T16). So the export silently drops the timing of a call that did finish and was
-measured accurately. A closed laptop lid strands the long call rather than the short one, so
-that undercount lands in the heavy tail — the part §3.3's bands and any density figure turn on.
+**Interim behaviour, until T31's route is decided:** the pairing has no stranding pass, so a
+stranded call exports as whichever of its other cases applies — and there are three, not one.
+`closeCalls` checks for a result before every no-result reason ("a result wins over every
+no-result reason"), and a failed dial is a CONNECT with no `Inference`, which `pairCalls` skips,
+so it never advances `lastAsk` either:
+
+| The stranded call | `toolpair` today | What the export would ship |
+|---|---|---|
+| Its result arrived late | `result`, with `End` at that late result | `durationMs` **including the outage** — the 9-minute `Bash` that drew as 8 hours. The heavy tail is **overcounted**. |
+| Its result never arrived, and the agent asked again without it | `abandoned` | No duration (T16). The timing of a call that did finish is dropped. |
+| Its result never arrived, and the session never resumed | the zero reason, still open | **Nothing**: T17 does not export an open call, so it is not even counted as an `abandoned` one. |
+
+The first is the dangerous one for a tier table, because it inflates the tail rather than
+shrinking it. A closed laptop lid strands the long call rather than the short one, so all three
+errors land in the heavy tail — the part §3.3's bands and any density figure turn on — one
+inflating it, one dropping a duration from it, and one hiding the call entirely.
 Do not publish a tier table from `toolCall` records until this is closed.
 
 Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>
