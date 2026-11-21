@@ -1312,7 +1312,7 @@ func TestUninstallARealSigintStillShowsTheCursor(t *testing.T) {
 					run: func(*checklist.Running) (string, []string, error) { fn(); return "done", nil, nil }}
 			}
 			return []removal{step("first", func() {}), step("second", func() {
-				_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
+				_ = killPID(os.Getpid(), syscall.SIGINT)
 				<-arrived
 			}), step("third", func() {})}
 		}

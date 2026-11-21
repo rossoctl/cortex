@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -217,7 +216,7 @@ var bobProbeLaunch = func(shell string) (string, error) {
 		env = append(env, kv)
 	}
 	cmd.Env = append(env, "VSCODE_RESOLVING_ENVIRONMENT=1", "__CFBundleIdentifier="+bobBundleID)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detached()
 	out, err := cmd.Output()
 	if ctx.Err() != nil {
 		return "", fmt.Errorf("%s did not finish within %s", shell, bobProbeTimeout)

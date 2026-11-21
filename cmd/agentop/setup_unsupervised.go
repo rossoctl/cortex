@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 )
 
@@ -27,7 +26,7 @@ func startUnsupervised(bin, cortexDir, healthURL string) (pid int, healthy bool,
 	}
 	cmd := exec.Command(bin, "--local", "--supervise") //nolint:gosec // the installed cortex
 	cmd.Stdout, cmd.Stderr = logf, logf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.SysProcAttr = detached()
 	err = cmd.Start()
 	_ = logf.Close()
 	if err != nil {

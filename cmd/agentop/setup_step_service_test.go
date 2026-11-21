@@ -227,7 +227,7 @@ func stopProcessOnCleanup(t *testing.T, pid *int) {
 // is reaped: by this wait, or by startUnsupervised's goroutine, which leaves this
 // wait an ECHILD.
 func killAndReap(pid int) {
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	_ = killPID(pid, syscall.SIGKILL)
 	if p, err := os.FindProcess(pid); err == nil {
 		_, _ = p.Wait()
 	}

@@ -141,7 +141,7 @@ var codexStopUpdater = func(codexHome string) error {
 	if codexIsRecorded(u) != codexRecordMatches {
 		return nil
 	}
-	if err := syscall.Kill(-u.PID, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+	if err := terminateGroup(u.PID); err != nil {
 		return fmt.Errorf("stopping Codex's updater (pid %d): %w", u.PID, err)
 	}
 	deadline := time.Now().Add(codexUpdaterStopTimeout)

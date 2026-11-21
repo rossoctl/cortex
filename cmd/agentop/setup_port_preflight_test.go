@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 )
 
@@ -106,7 +105,7 @@ func TestApplyUnsupervised_CannotStartIsAFailure(t *testing.T) {
 	// healthy", which is the state the false-ready shipped through. Its first
 	// answer waits for the proxy to have logged, on a FIFO the proxy writes next.
 	logged := filepath.Join(t.TempDir(), "logged")
-	if err := syscall.Mkfifo(logged, 0o600); err != nil {
+	if err := mkfifo(logged, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	gaveUp := make(chan struct{})

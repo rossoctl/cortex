@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"golang.org/x/sys/unix"
 )
 
 func TestSetupSupervisorUsable(t *testing.T) {
@@ -338,7 +336,7 @@ func TestStartUnsupervised(t *testing.T) {
 	if readPIDFile(filepath.Join(dir, "proxy.pid")) != pid {
 		t.Error("the pidfile does not name the started process")
 	}
-	if sid, err := unix.Getsid(pid); err != nil || sid != pid {
+	if sid, err := getsid(pid); err != nil || sid != pid {
 		t.Errorf("the proxy's session = %d %v, want its own (%d)", sid, err, pid)
 	}
 

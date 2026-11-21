@@ -487,7 +487,7 @@ func TestUpdateScriptExitsWithTheInstallersStatusOnInterrupt(t *testing.T) {
 	installStub(t, "sh", "#!"+dash+"\nexec "+dash+" \"$@\"\n")
 	installStub(t, "curl", "#!/bin/sh\nprintf '%s\\n' \"trap 'exit 3' INT\" 'echo ready' 'sleep 5 >/dev/null & wait'\n")
 	cmd := exec.Command("sh", "-c", updateScript, installerURL)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = groupAttr()
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -498,7 +498,7 @@ func TestUpdateScriptExitsWithTheInstallersStatusOnInterrupt(t *testing.T) {
 	if line, _ := bufio.NewReader(out).ReadString('\n'); line != "ready\n" {
 		t.Fatalf("installer said %q", line)
 	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGINT)
+	_ = killPID(-cmd.Process.Pid, syscall.SIGINT)
 	_ = cmd.Wait()
 	if code := cmd.ProcessState.ExitCode(); code != 3 {
 		t.Errorf("exit %d, want the installer's 3", code)

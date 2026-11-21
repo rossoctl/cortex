@@ -683,7 +683,7 @@ func TestCodexRun(t *testing.T) {
 		b, _ := os.ReadFile(pids) //nolint:gosec // the test's own file
 		for _, f := range strings.Fields(string(b)) {
 			if pid, err := strconv.Atoi(f); err == nil {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
+				_ = killPID(pid, syscall.SIGKILL)
 			}
 		}
 	})
@@ -703,13 +703,13 @@ func TestCodexRun(t *testing.T) {
 func startGroupLeader(t *testing.T) (*exec.Cmd, <-chan struct{}) {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", "-c", "sleep 30")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = groupAttr()
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	exited := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(exited) }()
-	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); <-exited })
+	t.Cleanup(func() { _ = killPID(-cmd.Process.Pid, syscall.SIGKILL); <-exited })
 	prev := codexDaemonAlive
 	t.Cleanup(func() { codexDaemonAlive = prev })
 	codexDaemonAlive = func(pid int) bool {
