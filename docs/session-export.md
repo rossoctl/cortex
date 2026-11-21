@@ -154,10 +154,12 @@ timing that pairing yields, into a record.
 
 Two rules before you total those spans, both of which cost real accuracy:
 
-- **A batch of parallel calls shares one window.** Calls the model issues together carry the
-  same start and the same end, not a duration each. Measured at 15.7% of spans (42 of 267)
-  on one 30-day archive. Charging every member of a batch the whole window's time
-  overcounts; read a shared window once per batch.
+- **A batch of parallel calls can share one window.** Calls the model issues together always
+  share a *start*, because that start is the end of the response that asked for them. They
+  share an *end* only when their results come back in one later request — which is the case
+  that leaves them with no duration each. Measured at 14% of spans (50 of 348) on one 30-day
+  archive. Charging every member of such a batch the whole window's time overcounts; read a
+  shared window once per batch.
 - **Exclude `lost` spans.** A span that never got an answer but provably stopped sets `end`
   equal to `start`, so it passes an `end != null` filter as a 0 ms call and drags a p50
   toward zero. A span with no `end` is still running.

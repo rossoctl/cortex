@@ -12,13 +12,13 @@ This one narrows its §7.2 `toolCallNames` item and supersedes the shape propose
 Items marked **Open** must be decided before the work they belong to begins. Nothing here
 is merged.
 
-**35 numbered requirements T0–T34**, phrased as plain declaratives: a requirement says what
+**38 numbered requirements T0–T37**, phrased as plain declaratives: a requirement says what
 the system does once built. The numbering is stable so it can be cited in review and in the
 PRs that implement it, and is therefore in the order the requirements were ADDED, not document
-order: T0 sits in §2.0 because it bounds the whole spec, T23–T27 in §4.3a, T28–T33 in §4.4
-and §4.4a, and T34 in §7.1b.
+order: T0 sits in §2.0 because it bounds the whole spec, T23–T27 and T36–T37 in §4.3a,
+T28–T33 and T35 in §4.4 and §4.4a, and T34 in §7.1b.
 
-Revised twice on 2026-11-19 and once on 2026-11-20.
+Revised twice on 2026-11-19, once on 2026-11-20 and once on 2026-11-21.
 
 **First revision**, after review raised two things the first draft buried. §2.0 is new: every
 field here is **already collected and most of it is already on disk**, so this is a projection
@@ -58,6 +58,19 @@ Record shape changed in the second revision: `startedAt` replaces `at` and is al
 `parallelGroup` are gone, `callIndex` (T30) and a closed `endReason` (T31) are added. T28 gives
 event records an explicit `kind`. T33 says a call below a `since` floor is dropped. §10 splits into what the review
 settled and what is still open.
+
+**Fourth revision**, after @huang195's and @clawgenti's reviews on #2009. The must-fix was a
+privacy contradiction: T10 said a name is exported verbatim "whatever its source", which
+licensed shipping `mcp__acme-billing-prod__refund` in clear text and disagreed with T11's keyed
+hash two lines below. T10 is now scoped to built-ins. Also: `lost` is dropped from `endReason`
+(no case produces it — a call with no reason is still OPEN, and T17 does not export one); T35
+names the five fields written even at zero, since `omitempty` would drop a real `callIndex: 0`
+and a clamped 0 ms duration; T28 is scoped to an opted-in stream, which it has to be or T20 is
+false; `inputBytes` reaches the example and the field table; T36 and T37 say that `modelMs` and
+`gapMs` repeat across a batch and that a `tool` gap is not idle time, so neither can be summed
+naively; §2.2's claim that a background job extends a `Bash` span is removed, because the code
+does not do that and T32 says so correctly; and the stale first-draft figures in §9 and the
+guide are corrected to §3's.
 
 Written after measuring, not before. §3 is the measurement; every design choice in §5 and §6
 traces to a number in it. The measurement corpus is one developer's 30-day laptop archive:
@@ -147,7 +160,7 @@ has:
 
 - no tool name;
 - **no per-tool timing of any kind.** `InferenceToolCall` is three strings — `{ID, Name,
-  Arguments}` — and `InferenceToolResult` is three more. Neither carries a timestamp or a
+  Arguments}` — and `InferenceToolResult` is two strings and a bool. Neither carries a timestamp or a
   duration, and no field anywhere on the event model does per-call timing. The only per-tool
   timing in the system is **derived** by the timeline (§2.2), never stored;
 - **no gap between calls.** No `gapMs`, think-time or idle field exists on a record, on the
@@ -175,8 +188,11 @@ stated here rather than summarised:
 - Four further closing cases exist and each one is load-bearing: `endedRun` (a
   `SubagentHandback`, `StructuredOutput` or `end_subtask` call never gets a result), the agent
   moving on without the result (`lastTurn`), a `<task-notification>` stopping the run
-  (`stopped`), and background jobs (`backgroundRe`) that extend a `Bash` span past its
-  acknowledgement.
+  (`stopped`), and background jobs (`backgroundRe`): the `Bash` span still **ends at its
+  acknowledgement** — nothing extends it — and the job becomes a separate `timeline.Job`
+  (`agents.go:133-137`, closed at `:140-142` and `:192-194`). An earlier draft of this bullet
+  said the span is extended, which contradicted T32 and would send an implementer of §6 looking
+  for code that does not exist.
 
 ### 2.3 The gap, and why it is structural
 
@@ -343,11 +359,18 @@ pairing reads more content than the record carries, which is exactly why the tes
 it: the closing cases scan **message text** for task notifications (`agents.go:147-190`) and
 **tool result text** for background-job acknowledgements, so the planted secrets must include
 message content and result content, not only tool arguments.
-T10. A tool name is exported **verbatim**, whatever its source. The built-in vocabulary is
-closed per client but **not shared between clients** — one agent's `Bash` and `Read` are
-another's `bash` and `read` — so there is no single list to normalise against, and
-normalising would lose which spelling the client actually sent. `toolSource` (T4) is decided
-by the client's own list; the name itself is never rewritten.
+T10. **A BUILT-IN tool name is exported verbatim.** An MCP name is not: it follows T11. The
+built-in vocabulary is closed per client but **not shared between clients** — one agent's
+`Bash` and `Read` are another's `bash` and `read` — so there is no single list to normalise
+against, and normalising would lose which spelling the client actually sent. Within that
+source, then, the name is never rewritten: no case folding, no canonical spelling.
+`toolSource` (T4) decides which rule applies, and it is decided by the client's own list.
+
+"Verbatim" is scoped to built-ins deliberately, and the scope is the privacy rule rather than
+a detail of it. An earlier draft of T10 said "whatever its source", which read as a licence to
+export `mcp__acme-billing-prod__refund` in clear text and contradicted T11 two lines below.
+An implementer who reads one requirement and not the next must still land on the safe
+behaviour.
 T11. An **MCP tool name is operator-defined and namespaced**, so it can carry a vendor
 relationship, an internal system name or a project codename — `mcp__acme-billing-prod__refund`
 is the worked example. It is therefore **not** treated as a built-in name. It is exported as a
@@ -385,6 +408,19 @@ T17. A span still open when the walk reads it is not exported. An unfinished cal
 duration to report, and a record that appears with one later would make the export
 non-reproducible.
 T18. Durations are milliseconds, truncated, matching `Record`.
+T35. **Five `toolCall` fields are always written, even at zero**, because for them zero is a
+real value rather than "not recorded" — the opposite of the event record's rule:
+
+| Always written | Why zero is real |
+|---|---|
+| `kind` | the discriminator (T19) |
+| `sessionId`, `startedAt` | identity and placement (T29) |
+| `callIndex` | the FIRST call of every batch is 0, and T34 makes it a join key |
+| `durationMs` on a reason that `HasEnd` | a result clamped to its call's start is a real 0 ms call (§3.5), and T31 requires a duration there |
+| `endReason` | every exported call has one |
+
+`isError` stays `omitempty`: absent reads as false, which is what it means. The rest of the
+record keeps the export's zero-means-absent rule (#1810 R3).
 
 ### 4.3a Model time, tool time and user time
 
@@ -422,6 +458,24 @@ A fourth value is **not** needed for "a model call landed inside the gap": by th
 above the interval ends at the next request, so no inference can be inside it. That was an
 artifact of the old definition.
 
+T36. **`modelMs` and `gapMs` belong to the asking RESPONSE, not to the call**, so every record
+of a batch repeats the same two values. Two rules follow, and the docs state both beside the
+fields:
+
+- **Take them once per `callSeq`.** Summing `modelMs` over `toolCall` records counts a batch's
+  inference `parallelN` times — the same inflating bias §3.4 describes for `durationMs`, except
+  here it is in the NUMERATOR of T2's ratio, and `durationShared` does not mark it.
+- **An aggregate inference-to-tool ratio needs the event records.** A response that asks for no
+  tool — a final answer, or a question to the user — produces no `toolCall` record at all, so
+  its inference time appears on no record here. `modelMs` answers "what did this call's turn
+  cost"; it cannot answer T2 on its own.
+
+T37. **A `tool` gap is not idle time, and must not be added to tool time.** By §4.3a's
+definition the interval covers what the previous turn's calls were doing, so for a `gapKind`
+of `tool` it overlaps those calls' own `durationMs`: adding the two counts the same wall clock
+twice. Only a `user` gap is time no tool and no model was working, which is why it is the one
+that answers a duty cycle.
+
 **A consumer with the event records can derive all three fields**, so these definitions are
 the deliverable and the fields are the convenience. A definition that cannot be checked
 against the data is worse than no field.
@@ -439,7 +493,8 @@ raw `gapMs` and the documentation requires any consumer publishing a duty cycle 
 ceiling alongside it (#1810 §9 states the same rule for event gaps).
 
 Why this split is worth the three fields: on the reference archive, user wait is **72.6% of
-all gap time** (44.8 h of 61.7 h) and costs nothing in sandbox occupancy. Without `gapKind`,
+all gap time** (44.8 h of 61.7 h, at an 1800 s ceiling — T27's own rule) and costs nothing in
+sandbox occupancy. Without `gapKind`,
 a density plan reads that as idle capacity it is paying for. The classifier is already
 validated — run on that archive it separated `AskUserQuestion` (p50 62.6 s) from `Bash`
 (p50 201 ms) by three orders of magnitude **without ever seeing a tool name** (#1810 §9).
@@ -451,13 +506,17 @@ T19. A `toolCall` record is a **sibling record on the same NDJSON stream**, disc
 `select(.kind != "toolCall")` or ignores the key: an absent `kind` reads as the event record,
 so no shipped consumer breaks.
 T20. `toolCall` records are **opt-in**, per #1810 R49's rule for Tier 2: a plain
-`GET /v1/export` is byte-identical to today's. **Open:** `?include=toolCalls` on the endpoint
-and `--with-tool-calls` on the command, or a single Tier-2 switch covering every §7.2 item.
+`GET /v1/export` is byte-identical to today's. **Settled (§10.1): per item** —
+`?include=toolCalls` on the endpoint and `--with-tool-calls` on the command, not a single
+Tier-2 switch, which would opt a consumer into items it never asked for.
 T21. Adding the record does not bump `Record`'s `schema`. A new record *kind* on the stream is
 additive; `sessionexport.SchemaVersion` bumps only on a removal or a meaning change.
-T28. An event record carries an explicit `kind: "event"` once `toolCall` records exist, so a
-consumer can select on `kind` in both directions rather than on the absence of a key. An
-absent `kind` still reads as an event record, so an older file stays readable.
+T28. An event record carries an explicit `kind: "event"` **only on a stream that carries
+`toolCall` records** — that is, only when T20's opt-in is on. A plain `GET /v1/export` is
+byte-identical to today's, which T20 requires and which adding a key to every record would
+break. On an opted-in stream a consumer can then select on `kind` in both directions rather
+than on the absence of a key; an absent `kind` still reads as an event record, so a file from
+either mode stays readable.
 
 ### 4.4a Placing and ordering a call
 
@@ -478,10 +537,16 @@ T31. A `toolCall` record carries `endReason`, a closed vocabulary naming how the
 | `ended_run` | no | By design no result: the call ends the run or hands control back (`SubagentHandback`, `StructuredOutput`, `end_subtask`). |
 | `abandoned` | no | The agent moved on without the result (`lastTurn`). |
 | `stopped` | no | The run was stopped while the call was open (a `<task-notification>`). |
-| `lost` | no | Open with no reason established. |
+
+**No `lost` value.** An earlier draft had one for "open with no reason established", and no
+case produces it: a call with none of the four reasons above still has `End == nil`, which
+means **still open**, and T17 does not export an open call at all. A vocabulary entry a
+producer never emits is a trap for the consumer — it switches on it and ships a dead branch,
+or reads it as the catch-all for "no result" and misses the three real reasons. Add one only
+alongside the code that returns it.
 
 These are the timeline's own closing cases (`agents.go:273-295`), named rather than collapsed
-into one `lost` flag: "the agent moved on" and "the call ends the run by design" are different
+into one `Lost` bool: "the agent moved on" and "the call ends the run by design" are different
 facts, and a consumer filtering latency wants to exclude both but count them apart.
 T32. **A backgrounded command is MARKED, not silently undercounted.** A `Bash` call that starts
 a background job ends at the acknowledgement, and the job's own run is a separate
@@ -514,7 +579,8 @@ list. The doc fix that precedes this spec already states them for `/timeline`.
 {"schema":1,"kind":"toolCall","sessionId":"45fa31b2-…",
  "startedAt":"2026-11-05T15:52:25.629885Z","tool":"Bash","toolSource":"builtin",
  "callSeq":2077,"callIndex":0,"resultSeq":2081,
- "durationMs":473,"endReason":"result","isError":false,"resultBytes":1432,
+ "durationMs":473,"endReason":"result","isError":false,
+ "inputBytes":64,"resultBytes":1432,
  "agentRole":"main","client":"claude-code/2.1.270",
  "modelMs":4279,"gapMs":812,"gapKind":"tool",
  "parallelN":3,"durationShared":true}
@@ -547,7 +613,7 @@ Four changes from the first draft, all so a record can be placed and ordered on 
 | `durationMs` | T18. The paired duration. Absent when `endReason` says there was no result (T16, T31). |
 | `endReason` | T31. Closed vocabulary: how the call ended. `lost` derives from it, so no separate flag. |
 | `isError` | Whether the result was an error. The tool failure rate, per tool. |
-| `resultBytes` | T14. Effort proxy, never content. Bytes, as the name says. |
+| `inputBytes` / `resultBytes` | T14. Effort proxies, never content. Bytes, as the names say. |
 | `modelMs` | T23. The asking response's measured duration — model time, per call, no join needed. |
 | `gapMs` | T24. The idle interval before the asking response. Contains no `modelMs`. |
 | `gapKind` | T25. `user`, `tool` or `first` — what that interval was. The field that turns idle time into a duty cycle. |
@@ -596,9 +662,11 @@ result lands.
 - **Against:** a second implementation of §2.2's closing cases, which will drift from the
   timeline's.
 
-**Open: which option.** The author leans **A**, because §2.2's four closing cases are exactly
-the kind of logic that must not exist twice, and because the export is the second consumer that
-wants it — a third (an OTLP emitter, #505) would make the duplication permanent.
+**Settled (§10.1): Option A**, scoped to tool spans and their closing inputs. §2.2's four
+closing cases are exactly the kind of logic that must not exist twice, and the export is the
+second consumer that wants it — a third (an OTLP emitter, #505) would make the duplication
+permanent. Note for the implementer: because the closing cases read message and tool-result
+text, T9's planted-secret test must plant in both, not only in tool arguments.
 
 ### 6.4 Memory, whichever option wins
 
@@ -608,7 +676,8 @@ The walk is O(1) per event today. Pairing is O(open calls) per session. On the r
 archive a session held 2,911 events; the largest in §3 held 722 with 204 tool spans. A bound
 is needed, with a documented behaviour when it is hit — the export's existing posture is to
 degrade loudly (a truncated stream resets the connection) rather than silently, and this
-should match. **Open:** the bound and what happens at it.
+should match. **Settled (§10.1):** a fixed cap on open calls per session, and a per-session
+marker record when it is hit.
 
 ---
 
@@ -692,11 +761,11 @@ One developer's laptop archive over 30 days: 40,496 records, 12,104 tool calls, 
 `claude-code/2.1.270` with 46 `codex/0.163.0` records. Four sessions had timeline spans.
 
 The **mechanism** generalises, because it follows the event schema and the pairing rules, not
-this traffic. The **ratios do not**: 4.1:1 inference-to-tool and `Bash` at 97.4% of tool time
-will move with working style, prompting and agent. Fleet numbers are the entire point of
+this traffic. The **ratios do not**: 4.2 : 1 inference-to-tool and `Bash` at over 97% of tool
+time (811.1 s of 828.2 s) will move with working style, prompting and agent. Fleet numbers are the entire point of
 building this, and they will come from the export rather than from §3.
 
-A second caveat on §3.4: 15.7% is one archive's parallel rate under one agent's batching
+A second caveat on §3.4: 14% is one archive's parallel rate under one agent's batching
 behaviour. #1810 notes Claude Code's calls are sequential in the trace while Codex's overlap,
 so the rate is agent-dependent and the 46 Codex records here cannot speak to it. The
 requirement T15 derives from it stands regardless — a shared window must be marked whatever
