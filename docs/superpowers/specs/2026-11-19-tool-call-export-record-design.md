@@ -12,7 +12,7 @@ This one narrows its §7.2 `toolCallNames` item and supersedes the shape propose
 Items marked **Open** must be decided before the work they belong to begins; §10.2 collects
 them, and says which requirement is not ready because of one. Nothing here is merged.
 
-**40 numbered requirements T0–T37, plus the lettered T10a and T11a that narrow T10 and T11**, phrased as plain declaratives: a requirement says what
+**41 numbered requirements T0–T37, plus the lettered T10a, T11a and T32a that narrow T10, T11 and T32**, phrased as plain declaratives: a requirement says what
 the system does once built. The numbering is stable so it can be cited in review and in the
 PRs that implement it, and is therefore in the order the requirements were ADDED, not document
 order: T0 sits in §2.0 because it bounds the whole spec, T23–T27 and T36–T37 in §4.3a,
@@ -141,6 +141,16 @@ at §4.4a where the options actually live; the `stranded` row drops the last unq
 duration is the tool's"; T35 keeps a measured zero for `inputBytes`, `resultBytes` and `gapMs`
 distinguishable from an unmeasured field, which `omitempty` would not; and T37's `user` gap is
 qualified for a background job still running behind it.
+
+**Tenth revision**, two consequences of the ninth that review caught. Both are cases where one
+field was carrying two facts. **T37's `user` gap is agent-local**, which T25's own "nothing else
+can be happening" denied: a parent waiting on a human can have a subagent running a tool beside
+it, and the parent's gap is `user` either way. A sandbox duty cycle therefore has to union the
+busy intervals across agents, and summed `user` gaps are only an upper bound on its idleness —
+T25, T27 and T37 now all say so. And **T32a adds `backgrounded`**, because §4.4a makes
+`stranded` win over `background` and that silently deleted T32's per-call marking for exactly
+the calls whose timing is least trustworthy. The background fact now has its own field and
+`endReason` keeps explaining the duration.
 
 **Code references name symbols, not line numbers.** Every `agents.go:NNN` pin in the first
 four revisions was correct when written and wrong a day later: #2041 moves all of them into
@@ -567,7 +577,7 @@ response of the same agent** — the one whose end begins the interval:
 
 | `gapKind` | That previous response | What the interval was |
 |---|---|---|
-| `user` | `toolCallCount == 0` | The model stopped and waited for a human. Nothing else can be happening. |
+| `user` | `toolCallCount == 0` | The model stopped and waited for a human. Nothing else of THIS agent's foreground work is happening — see T37 for the two things that still can be. |
 | `tool` | `toolCallCount > 0` | The previous turn's tool calls were running. Their own durations are on their own records. |
 | `first` | there is none | The agent's first turn. `gapMs` is absent. |
 
@@ -590,17 +600,30 @@ fields:
 T37. **A `tool` gap is not idle time, and must not be added to tool time.** By §4.3a's
 definition the interval covers what the previous turn's calls were doing, so for a `gapKind`
 of `tool` it overlaps those calls' own `durationMs`: adding the two counts the same wall clock
-twice. Only a `user` gap is time no *foreground* tool and no model was working, which is why it
-is the one that answers a duty cycle.
+twice. Only a `user` gap is time the asking agent's own foreground tool and model were both
+idle, which is why it is the one a duty cycle starts from — with the scope qualification
+below.
 
-One exception, and it is T32's: a background job started by an earlier `Bash` keeps running
-after the acknowledgement that closed that call, so it can span a `user` gap. Such a gap is
-still classified `user` — the pairing has no job state to consult, and reclassifying it would
-need the job record T32 defers — so a duty cycle computed from `user` gaps is an upper bound on
-idleness wherever background jobs are in use. A consumer that needs the exact figure joins the
-job records when they exist (§10.2). The same qualification applies to T27's "costs nothing in
-sandbox occupancy": it is true of the agent's foreground work, not of a job still running
-behind it.
+**A `user` gap is AGENT-LOCAL**, because T25 classifies it from the previous response of the
+same agent. Two things can therefore be running inside one, and neither is visible on the
+record that carries it:
+
+- **A background job** started by an earlier `Bash` (T32) keeps running past the
+  acknowledgement that closed that call, so it can span the gap. The gap is still classified
+  `user`: the pairing has no job state to consult, and reclassifying it would need the job
+  record T32 defers.
+- **Another agent's work.** While a parent waits on a human, a subagent can be running a tool
+  or an inference of its own. The parent's gap is `user` regardless — its own previous response
+  made no tool calls — and nothing on that record says the sandbox was busy.
+
+So a `user` gap answers "was THIS agent idle", and a **sandbox** duty cycle is a different
+question: it must exclude every interval in which any agent in that sandbox was running a tool
+or a model, which means unioning the intervals across agents rather than summing one agent's
+`user` gaps. Summed `user` gaps are an upper bound on sandbox idleness, not the figure itself.
+A consumer that needs the exact figure unions by `sessionId` across `agentRole` (T34's join
+keys) and joins the job records for the background case when they exist (§10.2). The same
+qualification applies to T27's "costs nothing in sandbox occupancy": it is true of the waiting
+agent's own foreground work, not of a job or a sibling agent still working behind it.
 
 **A consumer with the event records can derive all three fields**, so these definitions are
 the deliverable and the fields are the convenience. A definition that cannot be checked
@@ -620,7 +643,9 @@ ceiling alongside it (#1810 §9 states the same rule for event gaps).
 
 Why this split is worth the three fields: on the reference archive, user wait is **72.6% of
 all gap time** (44.8 h of 61.7 h, at an 1800 s ceiling — T27's own rule) and costs nothing in
-sandbox occupancy. Without `gapKind`,
+the waiting agent's own foreground occupancy — though not necessarily the sandbox's, since
+T37 names a background job and a sibling agent as two things that can run inside such a gap.
+Without `gapKind`,
 a density plan reads that as idle capacity it is paying for. The classifier is already
 validated — run on that archive it separated `AskUserQuestion` (p50 62.6 s) from `Bash`
 (p50 201 ms) by three orders of magnitude **without ever seeing a tool name** (#1810 §9).
@@ -683,7 +708,8 @@ dial — so the call satisfies both reasons, and the one that EXPLAINS the durat
 export. Concretely, for a stranded call whose result arrived late:
 
 - `endReason` is `stranded`, not `result`. The same holds for a `background` acknowledgement
-  the cut lands before: the reason that explains the duration wins.
+  the cut lands before: the reason that explains the duration wins. The background fact is not
+  lost with it — T32a puts it on `backgrounded`, precisely because this rule takes the reason.
 - `resultSeq` **stays present**: a request did carry the result, and a consumer joining on it
   is right to.
 - `durationMs` ends at the **dial**, not at `resultSeq`. This is the one case where the two
@@ -726,6 +752,16 @@ a background job ends at the acknowledgement, and the job's own run is a separat
 It therefore sets `endReason: "background"` with `durationMs` measuring only the
 acknowledgement. A count of such calls tells a consumer **how much tool time is missing** and
 from where, which an undifferentiated `result` would hide.
+
+T32a. **The background fact also rides on its own field, `backgrounded: true`, because
+`endReason` cannot always carry it.** `endReason` holds one value and §4.4a makes `stranded`
+win over `background` when both apply — correctly, since `stranded` is what explains the
+duration. But then the only marker of a backgrounded call is gone, and T32's "how much tool
+time is missing" becomes uncountable for exactly the calls whose timing is already least
+trustworthy. So a backgrounded `Bash` sets `backgrounded: true` whatever its `endReason`, and
+`endReason: "background"` means "backgrounded AND nothing later overrode the reason". A
+consumer counting missing job time filters on the field, never on the reason. It is written
+only when true (`omitempty`), like `isError`: absent reads as false, which is what it means.
 
 A job record is deliberately left for later: its start, its duration or an `endReason` when it
 never ended, and its starting call's `callSeq` + `callIndex` (no ids), paired by the
@@ -783,7 +819,8 @@ Four changes from the first draft, all so a record can be placed and ordered on 
 | `callSeq` / `resultSeq` | The response that asked and the request that carried the result. Lets a consumer rejoin a `toolCall` to the event records either side **without a tool-use id** (T8). `resultSeq` is absent when nothing carried a result. |
 | `callIndex` | T30. The call's position among its response's calls, from 0, in the order the model asked. |
 | `durationMs` | T18. The paired duration. Absent exactly when `endReason.HasEnd()` is false (T16, T31) — so present for `stranded`, whose end comes from the failed dial whether or not a result ever arrived. |
-| `endReason` | T31. Closed vocabulary: how the call ended, and what its duration means. It does **not** say whether a result arrived — `resultSeq` does, because `stranded` occurs both with a late result and without one. No separate flag derives from it. |
+| `endReason` | T31. Closed vocabulary: how the call ended, and what its duration means. It does **not** say whether a result arrived — `resultSeq` does, because `stranded` occurs both with a late result and without one — nor whether the call was backgrounded, which `backgrounded` says, because `stranded` wins over `background`. |
+| `backgrounded` | T32a. The call started a background job, whatever its `endReason`. Count missing job time on this, never on `endReason: "background"`. Omitted when false. |
 | `isError` | Whether the result was an error. The tool failure rate, per tool. |
 | `inputBytes` / `resultBytes` | T14. Effort proxies, never content. Bytes, as the names say. |
 | `modelMs` | T23. The asking response's measured duration — model time, per call, no join needed. |
@@ -973,7 +1010,8 @@ its frequency — but the *rate* is not a constant to design against.
 job record it deliberately defers, not an unimplementable requirement), and §10.2's row says
 why: `stranded` is specified, but where its cut runs is not, and the pairing package cannot see
 the case at all today. Everything else is settled — §6 Option A, T10a/T11/T11a's hashing,
-T20's per-item switch, §6.4's marker record — and T28–T30 and T32–T37 are normative.
+T20's per-item switch, §6.4's marker record — and T28–T30 and T32–T37, T32a included, are
+normative.
 
 **Interim behaviour, until T31's route is decided:** the pairing has no stranding pass, so a
 stranded call exports as whichever of its other cases applies — and there are three, not one.
