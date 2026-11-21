@@ -182,17 +182,22 @@ jobs:
       # manager or signals, so only the tests of the Windows-specific code and of commands
       # that work there run here for now. `go test -run` passes when a name matches nothing,
       # so each listed name must also have run: a renamed test fails the step instead of
-      # silently dropping out.
+      # silently dropping out. Every entry is a full test name, matched exactly, not a prefix
+      # that stands for several tests.
       - name: Build, vet and test cmd/agentop
         working-directory: cmd/agentop
         run: |
           set -euo pipefail
           go build ./...
           go vet ./...
-          tests="TestRefuseUnsupported TestProcessAlive TestLockFile TestWritable TestTerminateRefusesOnWindows TestNoRecordWanted TestWithRecordOff TestAddRecordOff"
-          go test -v -run "^($(echo ${tests} | tr ' ' '|'))" . | tee "${RUNNER_TEMP}/agentop-tests.txt"
+          tests="TestRefuseUnsupported TestProcessAlive TestLockFile TestWritable TestTerminateRefusesOnWindows
+            TestNoRecordWanted TestWithRecordOff
+            TestAddRecordOff_RefusesASettingsOverride TestAddRecordOff_AppendsToTheEnvironment
+            TestAddRecordOff_RefusesAnUnreadableSettingsFile TestAddRecordOff_ChecksClaudeConfigDir
+            TestAddRecordOff_RefusesAChildThatIsNotClaudeCode"
+          go test -v -run "^($(echo ${tests} | tr ' ' '|'))\$" . | tee "${RUNNER_TEMP}/agentop-tests.txt"
           for t in ${tests}; do
-            grep -qE "^--- (PASS|SKIP): ${t}" "${RUNNER_TEMP}/agentop-tests.txt" \
+            grep -qE "^--- (PASS|SKIP): ${t} \(" "${RUNNER_TEMP}/agentop-tests.txt" \
               || { echo "::error::${t} did not run"; exit 1; }
           done
 
