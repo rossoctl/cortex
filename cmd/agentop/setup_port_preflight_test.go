@@ -109,20 +109,27 @@ func TestApplyUnsupervised_CannotStartIsAFailure(t *testing.T) {
 	if err := syscall.Mkfifo(logged, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	gaveUp := make(chan struct{})
 	var once sync.Once
 	env := serviceEnv(t, func(w http.ResponseWriter, _ *http.Request) {
 		once.Do(func() {
-			if b, err := os.ReadFile(logged); err != nil || len(b) == 0 { //nolint:gosec // the test's own FIFO
-				t.Errorf("the proxy did not say it had logged: %v", err)
+			read := make(chan []byte, 1)
+			go func() {
+				b, _ := os.ReadFile(logged) //nolint:gosec // the test's own FIFO
+				read <- b
+			}()
+			select {
+			case b := <-read:
+				if len(b) == 0 {
+					t.Error("the proxy wrote nothing to say it had logged")
+				}
+			case <-gaveUp:
+				t.Error("the proxy did not say it had logged")
 			}
 		})
 		w.WriteHeader(http.StatusInternalServerError)
 	})
-	t.Cleanup(func() { // release a handler still waiting on the FIFO before srv.Close waits for it
-		if f, err := os.OpenFile(logged, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
-			_ = f.Close()
-		}
-	})
+	t.Cleanup(func() { close(gaveUp) }) // ends a handler's wait before srv.Close waits for it
 	freePorts(t)
 
 	// A cortex whose supervise arm writes the cannot-start line to the log
@@ -140,7 +147,11 @@ esac
 `)
 
 	_, u, err := serviceStep{}.applyUnsupervised(env)
-	t.Cleanup(func() { _ = u.fn() }) // stop the stub proxy
+	t.Cleanup(func() { // stop the stub proxy
+		if u.fn != nil {
+			_ = u.fn()
+		}
+	})
 	if err == nil {
 		t.Fatal("a proxy that logged cannot start was reported as started")
 	}

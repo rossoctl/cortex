@@ -166,7 +166,8 @@ func TestE2E_MultiSession(t *testing.T) {
 // TestE2E_LocalCacheEnforcesDuringOutage confirms that a populated
 // cache enforces even when the backing store is unreachable.
 func TestE2E_LocalCacheEnforcesDuringOutage(t *testing.T) {
-	// The store is down for the whole test.
+	// The store is down for the whole test, and the loop's hour-long interval
+	// keeps ticks out of it.
 	p := New()
 	cfg, _ := json.Marshal(config{
 		RedisURL:         "mem://test",

@@ -600,7 +600,8 @@ var healthPollDivisor time.Duration = 1
 var healthFirstAnswer bool
 
 // waitHealthy reports whether url answers 2xx within the window. It always asks once,
-// so a window that is already over takes the first answer.
+// so a window that is already over takes the first answer, which can take the 2s
+// request timeout. Every caller in agentop passes a positive window.
 func waitHealthy(url string, within time.Duration) bool {
 	c := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(within)
