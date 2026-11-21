@@ -40,11 +40,13 @@ install updates itself.
 
 The title bar shows one of these notices. When more than one applies, it shows the first:
 
-1. `· updated to vX.Y.Z, restart agentop`
-2. `· update to vX.Y.Z failed, see agentop doctor`
-3. `· vX.Y.Z available`: only when vX.Y.Z is newer than the installed release or
+1. `· vX.Y.Z installed, quit and reopen agentop`, in green. The proxy already runs
+   vX.Y.Z. Only the open agentop still runs the old binary, so you do not need
+   `agentop service restart`.
+2. `· update to vX.Y.Z failed, see agentop doctor`, in red.
+3. `· vX.Y.Z available`, in green: only when vX.Y.Z is newer than the installed release or
    release candidate. A `dev` or `main` build shows no notice.
-4. `· no update check since <date>`: service installs only, after 72 hours with no check.
+4. `· no update check since <date>`, in amber: service installs only, after 72 hours with no check.
 
 ## Run
 
