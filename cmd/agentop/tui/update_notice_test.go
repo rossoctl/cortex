@@ -111,6 +111,8 @@ func TestUpdateNoticeRereadOnRefreshTick(t *testing.T) {
 
 // Green for news, red for a failure, amber for a missed check.
 func TestUpdateSuffixInk(t *testing.T) {
+	// With no color, every style renders "x" alike and the test cannot fail.
+	withProfile(t, termenv.TrueColor)
 	for _, tc := range []struct {
 		name    string
 		st      updatestatus.Status
