@@ -393,6 +393,7 @@ detect_platform() {
 	case "$os" in
 		Darwin) os=darwin ;;
 		Linux) os=linux ;;
+		MINGW* | MSYS* | CYGWIN*) die "Windows: this installer does not run there yet; install from the release .zip (docs/getting-started.md, \"Windows (preview)\")" ;;
 		*) die "unsupported OS: $os (the installer supports macOS and Linux)" ;;
 	esac
 	arch=$(uname -m)

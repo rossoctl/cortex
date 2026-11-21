@@ -27,6 +27,21 @@ curl -fsSL https://www.rossoctl.dev/cortex/install.sh | sh -s -- --yes
 
 When setup is done, open a new terminal. The new terminal reads the new `PATH`.
 
+### Windows (preview)
+
+`install.sh` and `agentop setup` don't run on Windows yet (#1520). Install by hand:
+
+1. From the [releases page](https://github.com/rossoctl/cortex/releases), download `agentop_<version>_windows_amd64.zip` and `cortex_<version>_windows_amd64.zip` (`arm64` on an Arm PC), and `checksums.txt`.
+2. Check them in PowerShell. `checksums.txt` has lower-case hashes, and `Get-FileHash` prints upper case, so compare `(Get-FileHash .\agentop_<version>_windows_amd64.zip -Algorithm SHA256).Hash.ToLower()` with the line for that file, and the same for `cortex`.
+3. Unblock both: `Unblock-File .\agentop_<version>_windows_amd64.zip`, and the same for `cortex`. The binaries are not signed yet, and a downloaded `.zip` passes its "from the internet" mark on to what it holds, so without this SmartScreen may block them.
+4. Unzip both into one folder, for example `$HOME\.local\bin`, and add that folder to your user `PATH`. Then open a new terminal: a terminal that is already open keeps the old `PATH`.
+5. In that new terminal, run the proxy: `cortex --local`. It writes `~/.cortex/config.yaml` on first run. Stop it with `Ctrl-C`. If it says it can't parse `~/.cortex/config.yaml`, a file written by an earlier Windows build, delete that file and run it again: Cortex writes a fresh one.
+6. In a second new terminal, run `agentop observe`.
+
+Then connect Claude Code with `agentop configure claude-code enable`, or run one session through Cortex with `agentop exec -- claude`.
+
+Not on Windows yet: `agentop service`, `setup`, `uninstall` and `update` (they refuse and say so), so the proxy runs only while its terminal is open. Tools other than Node (`git`, `curl`, Python) inside a session don't trust the TLS bridge yet.
+
 ## Connect your agent
 
 Connect each agent that you use. Do this one time per agent.
@@ -125,5 +140,12 @@ To remove Cortex, run `agentop uninstall`. It asks once.
 
 Uninstall disconnects Claude Code, OpenCode, IBM Bob and Pi.
 It does not disconnect Codex. If you use Codex, run `agentop configure codex disable` first.
+
+On Windows, `agentop uninstall` is not supported yet (#1520). Remove Cortex by hand:
+
+1. Disconnect each agent you connected: `agentop configure <agent> disable`. Then restart the agent.
+2. Stop the proxy: `Ctrl-C` in its terminal.
+3. Delete `agentop.exe` and `cortex.exe`, and remove their folder from your user `PATH` if you added it only for them.
+4. Optional, and separate: delete `~/.cortex`. That deletes everything Cortex kept, including the session archive, the cost ledger and the TLS bridge's CA.
 
 For more detail, read [Remove it](laptop-service.md#remove-it).
