@@ -148,13 +148,46 @@ names out for now:
 
 - A record is a flat list of scalars. A name list would be the first array, which changes
   the shape every consumer parses.
-- Names alone would not give per-tool latency. A tool result arrives in a later request,
-  and the key that pairs it with its call is the tool-use id, which no record carries. So a
-  name list says only which tools a response asked for.
+- A name list on a response record would not carry per-tool latency, because a tool result
+  arrives in a later request and the key that pairs it with its call is the tool-use id. A
+  record carries no tool-use id, so a name list would say only which tools a response asked
+  for. **Per-tool latency is not blocked on the names**: the timeline already does the
+  pairing, below.
 
-Use `GET /v1/sessions/{id}/timeline` for names today. It pairs each call with its result by
-tool-use id, and it returns named spans.
-[#1906](https://github.com/rossoctl/cortex/issues/1906) tracks adding names here.
+Use `GET /v1/sessions/{id}/timeline` for per-tool timing today. It pairs each call with its
+result by tool-use id and returns named spans with a start and an end, so it answers "which
+tools ran, and for how long" without a prompt.
+[#1906](https://github.com/rossoctl/cortex/issues/1906) tracks bringing names, and the
+timing that pairing yields, into a record.
+
+Two rules before you total those spans, both of which cost real accuracy:
+
+- **A batch of parallel calls can share one window.** Calls the model issues together always
+  share a *start*, because that start is the end of the response that asked for them. They
+  share an *end* only when their results come back in one later request — which is the case
+  that leaves them with no duration each. Measured at 14% of spans (50 of 348) on one 30-day
+  archive. Charging every member of such a batch the whole window's time overcounts; read a
+  shared window once per batch.
+- **Exclude `lost` spans.** A span that never got an answer but provably stopped sets `end`
+  equal to `start`, so it passes an `end != null` filter as a 0 ms call and drags a p50
+  toward zero. A span with no `end` is still running. Filter `lost`, and drop a span with no
+  `end`.
+
+  A third kind needs no filter: a call whose agent finished the tool and then could not reach
+  the model to report back — a lid closed, a VPN dropped — gets its `end` from the first failed
+  dial and is **not** marked `lost`. **Keep it.** Its duration is usually the tool's rather than
+  the outage's: Cortex cuts the span at that dial precisely so the outage is excluded, and
+  against Claude Code's own transcripts the dial landed within a fraction of a second of the
+  tool's real end. Without the cut, one 9-minute `Bash` drew as 8 hours. "Usually" because the
+  cut is matched by host and not by agent, so another agent's failure can end a call that was
+  still running — a subagent's long `Bash` cut where the main agent retried.
+
+  Two things to know about that kind before you join on it. **Its result may be missing, or may
+  have arrived much later** — an `end` and no `lost` does not mean a result came back, so an
+  error rate or a result-size join over these spans is counting something else. And **only a
+  failed dial is caught this way**: an upstream 502, or a client that hung up mid-handshake,
+  leaves its outage inside the span. So a long tail can still be an outage of another kind
+  rather than a slow tool.
 
 An export is **content-free**. It is **not anonymous**. It keeps hosts, models, session
 ids and timestamps. Together these show who called what, and when. Read an export before
