@@ -42,6 +42,31 @@ class RatioTest(unittest.TestCase):
         self.assertEqual(bad, [], "divide with gen_dashboards.ratio(), not clamp_min")
 
 
+class IncTest(unittest.TestCase):
+    def test_default_falls_back_to_last_over_time_for_a_new_series(self):
+        # A series born inside the window started at 0; increase() alone does not know that and
+        # can undercount it (2026-11-19). The fallback is PromQL-side only: no OTLP start
+        # timestamps, no new collector or Prometheus flag, no proxy change.
+        got = g.inc("m")
+        self.assertEqual(got, 'sum((increase(m{proxy=~"$proxy", machine=~"$machine"}[$__range]) '
+                               'and m{proxy=~"$proxy", machine=~"$machine"} offset $__range) '
+                               'or last_over_time(m{proxy=~"$proxy", machine=~"$machine"}[$__range]))')
+
+    def test_new_series_fallback_false_keeps_the_plain_query(self):
+        # fleet()'s "Net saved per day" bars pick their window by replacing "[$__range]" with
+        # "[1d] offset -1d" in the returned text. The fallback's own "offset $__range" has no
+        # brackets around $__range, so that replace would not reach it and the two offsets would
+        # collide into invalid PromQL. new_series_fallback=False avoids generating it there.
+        got = g.inc("m", new_series_fallback=False)
+        self.assertEqual(got, 'sum(increase(m{proxy=~"$proxy", machine=~"$machine"}[$__range]))')
+        self.assertNotIn("offset", got)
+
+    def test_only_fleets_daily_bars_opt_out_of_the_fallback(self):
+        # Every other increase()-based query must also carry the last_over_time() fallback.
+        opted_out = {t for _, t, e in exprs() if "increase(" in e and "last_over_time(" not in e}
+        self.assertEqual(opted_out, {"Net saved per day"}, opted_out)
+
+
 class PromtoolTestInStepTest(unittest.TestCase):
     def test_every_promtool_expr_is_a_dashboard_expr(self):
         with open(PROMTOOL_TEST) as f:

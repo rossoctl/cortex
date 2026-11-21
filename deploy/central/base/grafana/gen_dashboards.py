@@ -32,10 +32,29 @@ def var(name, label, query, multi=True):
     }
 
 
-def inc(metric, by="", win="$__range", extra=""):
-    """sum(increase(metric{filter}[win])), optionally by a label."""
+def inc(metric, by="", win="$__range", extra="", new_series_fallback=True):
+    """Total over win: sum(increase(metric{filter}[win])), optionally by a label.
+
+    A series born inside win started at 0, but increase() does not know that: with fewer than a
+    full win of history to extrapolate from, it can read far too low — 2026-11-19, a ping-cost
+    counter created partway into the selected 7d range, with a flat history after that,
+    extrapolated to exactly 0 (see ratio(), the other half of that incident; a counter that
+    simply RESTARTS under the same labels is unaffected, since increase() already compensates
+    for that reset on its own).
+
+    So, with new_series_fallback (the default), a series present win before this point keeps its
+    increase() as-is; a series with no such earlier sample falls back to last_over_time(), which
+    for a series that started at 0 inside win IS its total.
+
+    new_series_fallback=False keeps the old, increase()-only query. Use it only where the
+    returned text is itself rewritten by later string substitution, because the fallback's own
+    "offset {win}" (outside any [brackets]) would not survive a substitution keyed on "[{win}]"
+    (fleet()'s "Net saved per day" bars, which pick their window this way)."""
     g = f" by ({by})" if by else ""
-    return f'sum{g}(increase({metric}{{{FILTER}{extra}}}[{win}]))'
+    sel = f'{metric}{{{FILTER}{extra}}}'
+    if not new_series_fallback:
+        return f'sum{g}(increase({sel}[{win}]))'
+    return f'sum{g}((increase({sel}[{win}]) and {sel} offset {win}) or last_over_time({sel}[{win}]))'
 
 
 def rate(metric, by="", extra=""):
@@ -68,11 +87,12 @@ def spend(by=""):
     return inc("llm_inference_cost_usd_total", by)
 
 
-def net(by="", fn="inc"):
+def net(by="", fn="inc", new_series_fallback=True):
     """saved - added, per label value. PromQL drops a label value that is on one side only, and a
     component that only ever ADDS cost (a compaction call, say) is exactly the one this must show.
-    So each side is padded with the other side's label values times zero."""
-    side = (lambda m: inc(m, by)) if fn == "inc" else (lambda m: rate(m, by))
+    So each side is padded with the other side's label values times zero. new_series_fallback is
+    forwarded to inc() (ignored when fn="rate"); see inc()'s own doc comment."""
+    side = (lambda m: inc(m, by, new_series_fallback=new_series_fallback)) if fn == "inc" else (lambda m: rate(m, by))
     s, a = side("llm_savings_saved_usd_total"), side("llm_savings_added_usd_total")
     if not by:
         return f"({s} - {a})"
@@ -185,7 +205,7 @@ def fleet():
     # The 1d step puts one point at 00:00 UTC of each day. A plain [1d] window there ends at that
     # point, so it is the PREVIOUS day's total, and today would never show. "offset -1d" moves the
     # window to start at the point: each bar is its own day, and today's bar is the total so far.
-    p5 = series(5, "Net saved per day", [(net(fn="inc").replace("[$__range]", "[1d] offset -1d"), "net")],
+    p5 = series(5, "Net saved per day", [(net(fn="inc", new_series_fallback=False).replace("[$__range]", "[1d] offset -1d"), "net")],
                 0, 5, 24, 7, unit=USD, bars=True, time_from="30d", interval="1d",
                 desc="One bar per UTC day, for 30 days whatever the dashboard range. Today's bar is the total so far. A bar below zero is a day the proxy cost more than it saved.")
     # A bar below zero is a loss: red. Above zero: green. Colors by value, as bargauge does.
