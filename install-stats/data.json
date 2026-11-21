@@ -49082,6 +49082,1271 @@
         "linux_arm64": 777,
         "checksums": 1055
       }
+    },
+    {
+      "date": "2026-11-21",
+      "taken_at": "2026-11-21T11:16:19Z",
+      "smoke_runs": [
+        {
+          "id": 44856164837,
+          "created_at": "2026-11-21T02:29:22Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44847262668,
+          "created_at": "2026-11-21T00:58:14Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44845457171,
+          "created_at": "2026-11-21T00:41:10Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44827596870,
+          "created_at": "2026-11-20T22:16:38Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44815219283,
+          "created_at": "2026-11-20T20:52:13Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44810508104,
+          "created_at": "2026-11-20T20:20:46Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44808578497,
+          "created_at": "2026-11-20T20:08:07Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44806447195,
+          "created_at": "2026-11-20T19:54:15Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44794634513,
+          "created_at": "2026-11-20T18:38:11Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44792000057,
+          "created_at": "2026-11-20T18:21:34Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44774713820,
+          "created_at": "2026-11-20T16:34:20Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44774022013,
+          "created_at": "2026-11-20T16:30:13Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44770098849,
+          "created_at": "2026-11-20T16:07:04Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44744806336,
+          "created_at": "2026-11-20T13:29:52Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44734318363,
+          "created_at": "2026-11-20T12:15:50Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44731512191,
+          "created_at": "2026-11-20T11:55:23Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44680852647,
+          "created_at": "2026-11-20T05:24:47Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44671975297,
+          "created_at": "2026-11-20T04:04:52Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44669705749,
+          "created_at": "2026-11-20T03:44:04Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44649625526,
+          "created_at": "2026-11-20T00:54:58Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44646817677,
+          "created_at": "2026-11-20T00:33:32Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44634567151,
+          "created_at": "2026-11-19T23:05:24Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44616254896,
+          "created_at": "2026-11-19T21:11:31Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44612277981,
+          "created_at": "2026-11-19T20:47:42Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44608647682,
+          "created_at": "2026-11-19T20:26:10Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44606455238,
+          "created_at": "2026-11-19T20:13:36Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44594224222,
+          "created_at": "2026-11-19T19:03:02Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44593578075,
+          "created_at": "2026-11-19T18:59:27Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44580983515,
+          "created_at": "2026-11-19T17:47:45Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44577491312,
+          "created_at": "2026-11-19T17:28:09Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44573449360,
+          "created_at": "2026-11-19T17:06:00Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44572226924,
+          "created_at": "2026-11-19T16:59:27Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44568859997,
+          "created_at": "2026-11-19T16:41:04Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44563909590,
+          "created_at": "2026-11-19T16:14:54Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44561118045,
+          "created_at": "2026-11-19T16:00:09Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44557142928,
+          "created_at": "2026-11-19T15:38:48Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44553048596,
+          "created_at": "2026-11-19T15:17:07Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44538445532,
+          "created_at": "2026-11-19T13:56:19Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44523152691,
+          "created_at": "2026-11-19T12:21:39Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44451935680,
+          "created_at": "2026-11-19T03:30:41Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44446032775,
+          "created_at": "2026-11-19T02:40:31Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44444735542,
+          "created_at": "2026-11-19T02:29:50Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44443132130,
+          "created_at": "2026-11-19T02:16:47Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44433477077,
+          "created_at": "2026-11-19T01:00:07Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44431691266,
+          "created_at": "2026-11-19T00:46:23Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44431187053,
+          "created_at": "2026-11-19T00:42:41Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44403666618,
+          "created_at": "2026-11-18T21:39:07Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44400226616,
+          "created_at": "2026-11-18T21:19:14Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44387722251,
+          "created_at": "2026-11-18T20:07:46Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44384880354,
+          "created_at": "2026-11-18T19:51:56Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44380620830,
+          "created_at": "2026-11-18T19:26:51Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44369746057,
+          "created_at": "2026-11-18T18:26:32Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44366881110,
+          "created_at": "2026-11-18T18:11:01Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44363990266,
+          "created_at": "2026-11-18T17:55:22Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44358797656,
+          "created_at": "2026-11-18T17:27:01Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44353491639,
+          "created_at": "2026-11-18T16:59:10Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44350196746,
+          "created_at": "2026-11-18T16:41:46Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44333159072,
+          "created_at": "2026-11-18T15:13:40Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44234382356,
+          "created_at": "2026-11-18T04:01:08Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44227817853,
+          "created_at": "2026-11-18T03:04:39Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44226625055,
+          "created_at": "2026-11-18T02:54:28Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44225509166,
+          "created_at": "2026-11-18T02:44:59Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44222388098,
+          "created_at": "2026-11-18T02:19:25Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44220819585,
+          "created_at": "2026-11-18T02:06:36Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44220815595,
+          "created_at": "2026-11-18T02:06:34Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44219967753,
+          "created_at": "2026-11-18T01:59:56Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44217420056,
+          "created_at": "2026-11-18T01:39:07Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44216542708,
+          "created_at": "2026-11-18T01:32:08Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44211703214,
+          "created_at": "2026-11-18T00:55:00Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44209942833,
+          "created_at": "2026-11-18T00:41:58Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44187484815,
+          "created_at": "2026-11-17T22:11:05Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44184180194,
+          "created_at": "2026-11-17T21:51:38Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44177624106,
+          "created_at": "2026-11-17T21:13:57Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44166708465,
+          "created_at": "2026-11-17T20:11:50Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44128809976,
+          "created_at": "2026-11-17T16:42:27Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44125329748,
+          "created_at": "2026-11-17T16:24:06Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44120188803,
+          "created_at": "2026-11-17T15:57:14Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44110966909,
+          "created_at": "2026-11-17T15:08:53Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44104262767,
+          "created_at": "2026-11-17T14:32:40Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44017300546,
+          "created_at": "2026-11-17T04:27:23Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44003355590,
+          "created_at": "2026-11-17T02:29:27Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44001736983,
+          "created_at": "2026-11-17T02:16:18Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 44001162541,
+          "created_at": "2026-11-17T02:11:41Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43999510662,
+          "created_at": "2026-11-17T01:58:16Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43996823321,
+          "created_at": "2026-11-17T01:36:11Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43996821102,
+          "created_at": "2026-11-17T01:36:10Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43995491441,
+          "created_at": "2026-11-17T01:25:38Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43992795231,
+          "created_at": "2026-11-17T01:05:09Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43991771189,
+          "created_at": "2026-11-17T00:57:19Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43991088935,
+          "created_at": "2026-11-17T00:52:08Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43987144019,
+          "created_at": "2026-11-17T00:22:50Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43985654812,
+          "created_at": "2026-11-17T00:11:54Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43984387177,
+          "created_at": "2026-11-17T00:02:51Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43963572490,
+          "created_at": "2026-11-16T21:47:09Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43955365136,
+          "created_at": "2026-11-16T20:59:08Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43954018205,
+          "created_at": "2026-11-16T20:51:04Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43940482123,
+          "created_at": "2026-11-16T19:33:00Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43937407494,
+          "created_at": "2026-11-16T19:15:21Z",
+          "installs": 0,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43937230747,
+          "created_at": "2026-11-16T19:14:22Z",
+          "installs": 2,
+          "installs_rule": "step"
+        },
+        {
+          "id": 43927605816,
+          "created_at": "2026-11-16T18:19:26Z",
+          "installs": 0,
+          "installs_rule": "step"
+        }
+      ],
+      "smoke_runs_total_count": 505,
+      "latest_release": "v0.9.5",
+      "releases": [
+        {
+          "tag": "v0.10.0-rc.2",
+          "published_at": "2026-11-20T16:30:05Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 2,
+            "darwin_arm64": 7,
+            "linux_amd64": 5,
+            "linux_arm64": 5,
+            "checksums": 5
+          }
+        },
+        {
+          "tag": "v0.10.0-rc.1",
+          "published_at": "2026-11-19T18:59:19Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 2,
+            "darwin_arm64": 11,
+            "linux_amd64": 5,
+            "linux_arm64": 5,
+            "checksums": 7
+          }
+        },
+        {
+          "tag": "v0.9.5",
+          "published_at": "2026-11-06T17:38:50Z",
+          "prerelease": false,
+          "platforms": {
+            "darwin_amd64": 11,
+            "darwin_arm64": 104,
+            "linux_amd64": 329,
+            "linux_arm64": 286,
+            "checksums": 383
+          }
+        },
+        {
+          "tag": "v0.9.4",
+          "published_at": "2026-10-30T16:44:25Z",
+          "prerelease": false,
+          "platforms": {
+            "darwin_amd64": 11,
+            "darwin_arm64": 36,
+            "linux_amd64": 74,
+            "linux_arm64": 59,
+            "checksums": 82
+          }
+        },
+        {
+          "tag": "v0.9.3",
+          "published_at": "2026-10-27T11:29:50Z",
+          "prerelease": false,
+          "platforms": {
+            "darwin_amd64": 8,
+            "darwin_arm64": 23,
+            "linux_amd64": 97,
+            "linux_arm64": 92,
+            "checksums": 84
+          }
+        },
+        {
+          "tag": "v0.9.2",
+          "published_at": "2026-10-26T18:21:58Z",
+          "prerelease": false,
+          "platforms": {
+            "darwin_amd64": 4,
+            "darwin_arm64": 9,
+            "linux_amd64": 18,
+            "linux_arm64": 17,
+            "checksums": 13
+          }
+        },
+        {
+          "tag": "v0.9.1",
+          "published_at": "2026-10-16T20:08:59Z",
+          "prerelease": false,
+          "platforms": {
+            "darwin_amd64": 4,
+            "darwin_arm64": 34,
+            "linux_amd64": 75,
+            "linux_arm64": 58,
+            "checksums": 74
+          }
+        },
+        {
+          "tag": "v0.9.0",
+          "published_at": "2026-10-14T23:49:58Z",
+          "prerelease": false,
+          "platforms": {
+            "darwin_amd64": 3,
+            "darwin_arm64": 16,
+            "linux_amd64": 40,
+            "linux_arm64": 24,
+            "checksums": 38
+          }
+        },
+        {
+          "tag": "v0.9.0-rc.4",
+          "published_at": "2026-10-14T18:31:15Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 4,
+            "darwin_arm64": 16,
+            "linux_amd64": 8,
+            "linux_arm64": 4,
+            "checksums": 8
+          }
+        },
+        {
+          "tag": "v0.9.0-rc.3",
+          "published_at": "2026-10-07T23:08:44Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 4,
+            "darwin_arm64": 7,
+            "linux_amd64": 14,
+            "linux_arm64": 4,
+            "checksums": 4
+          }
+        },
+        {
+          "tag": "v0.9.0-rc.2",
+          "published_at": "2026-10-05T12:36:46Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 12,
+            "darwin_arm64": 22,
+            "linux_amd64": 14,
+            "linux_arm64": 12,
+            "checksums": 7
+          }
+        },
+        {
+          "tag": "v0.9.0-rc.1",
+          "published_at": "2026-10-04T22:33:00Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 9,
+            "darwin_arm64": 10,
+            "linux_amd64": 18,
+            "linux_arm64": 8,
+            "checksums": 3
+          }
+        },
+        {
+          "tag": "v0.8.1",
+          "published_at": "2026-10-01T16:08:10Z",
+          "prerelease": false,
+          "platforms": {
+            "darwin_amd64": 8,
+            "darwin_arm64": 46,
+            "linux_amd64": 184,
+            "linux_arm64": 10,
+            "checksums": 110
+          }
+        },
+        {
+          "tag": "v0.8.0",
+          "published_at": "2026-10-01T14:14:38Z",
+          "prerelease": false,
+          "platforms": {
+            "darwin_amd64": 8,
+            "darwin_arm64": 30,
+            "linux_amd64": 20,
+            "linux_arm64": 10,
+            "checksums": 12
+          }
+        },
+        {
+          "tag": "v0.7.0",
+          "published_at": "2026-09-24T17:59:19Z",
+          "prerelease": false,
+          "platforms": {
+            "darwin_amd64": 8,
+            "darwin_arm64": 31,
+            "linux_amd64": 16,
+            "linux_arm64": 18,
+            "checksums": 19
+          }
+        },
+        {
+          "tag": "v0.7.0-rc.3",
+          "published_at": "2026-09-23T18:10:03Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 8,
+            "darwin_arm64": 18,
+            "linux_amd64": 17,
+            "linux_arm64": 9,
+            "checksums": 6
+          }
+        },
+        {
+          "tag": "v0.7.0-rc.2",
+          "published_at": "2026-09-18T12:48:28Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 7,
+            "darwin_arm64": 10,
+            "linux_amd64": 12,
+            "linux_arm64": 4,
+            "checksums": 5
+          }
+        },
+        {
+          "tag": "v0.7.0-rc.1",
+          "published_at": "2026-09-15T21:28:24Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 8,
+            "darwin_arm64": 18,
+            "linux_amd64": 12,
+            "linux_arm64": 8,
+            "checksums": 7
+          }
+        },
+        {
+          "tag": "v0.7.0-alpha.10",
+          "published_at": "2026-09-15T14:01:37Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 8,
+            "darwin_arm64": 10,
+            "linux_amd64": 12,
+            "linux_arm64": 8,
+            "checksums": 3
+          }
+        },
+        {
+          "tag": "v0.7.0-alpha.9",
+          "published_at": "2026-09-11T22:30:51Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 8,
+            "darwin_arm64": 16,
+            "linux_amd64": 14,
+            "linux_arm64": 8,
+            "checksums": 5
+          }
+        },
+        {
+          "tag": "v0.7.0-alpha.8",
+          "published_at": "2026-09-09T20:33:10Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 4,
+            "darwin_arm64": 38,
+            "linux_amd64": 8,
+            "linux_arm64": 4,
+            "checksums": 18
+          }
+        },
+        {
+          "tag": "v0.7.0-alpha.7",
+          "published_at": "2026-09-04T21:30:38Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 16,
+            "darwin_arm64": 66,
+            "linux_amd64": 24,
+            "linux_arm64": 16,
+            "checksums": 27
+          }
+        },
+        {
+          "tag": "v0.7.0-alpha.6",
+          "published_at": "2026-09-04T20:42:33Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 17,
+            "darwin_arm64": 18,
+            "linux_amd64": 28,
+            "linux_arm64": 16,
+            "checksums": 3
+          }
+        },
+        {
+          "tag": "v0.7.0-alpha.5",
+          "published_at": "2026-09-04T18:40:38Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 12,
+            "darwin_arm64": 16,
+            "linux_amd64": 24,
+            "linux_arm64": 12,
+            "checksums": 4
+          }
+        },
+        {
+          "tag": "v0.7.0-alpha.4",
+          "published_at": "2026-09-04T14:43:03Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 16,
+            "darwin_arm64": 42,
+            "linux_amd64": 28,
+            "linux_arm64": 16,
+            "checksums": 15
+          }
+        },
+        {
+          "tag": "v0.7.0-alpha.3",
+          "published_at": "2026-08-19T14:14:16Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 7,
+            "darwin_arm64": 62,
+            "linux_amd64": 12,
+            "linux_arm64": 4,
+            "checksums": 36
+          }
+        },
+        {
+          "tag": "v0.7.0-alpha.2",
+          "published_at": "2026-07-30T12:07:47Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 6,
+            "darwin_arm64": 12,
+            "linux_amd64": 10,
+            "linux_arm64": 6,
+            "checksums": 4
+          }
+        },
+        {
+          "tag": "v0.7.0-alpha.1",
+          "published_at": "2026-07-29T20:36:47Z",
+          "prerelease": true,
+          "platforms": {
+            "darwin_amd64": 6,
+            "darwin_arm64": 29,
+            "linux_amd64": 6,
+            "linux_arm64": 7,
+            "checksums": 14
+          }
+        },
+        {
+          "tag": "v0.6.0-alpha.12",
+          "published_at": "2026-07-22T17:10:06Z",
+          "prerelease": true,
+          "platforms": {}
+        },
+        {
+          "tag": "v0.6.0-alpha.4",
+          "published_at": "2026-05-23T12:14:27Z",
+          "prerelease": true,
+          "platforms": {}
+        },
+        {
+          "tag": "v0.5.0-rc.3",
+          "published_at": "2026-05-13T14:35:08Z",
+          "prerelease": true,
+          "platforms": {}
+        },
+        {
+          "tag": "v0.5.0-alpha.2",
+          "published_at": "2026-04-16T11:42:50Z",
+          "prerelease": true,
+          "platforms": {}
+        },
+        {
+          "tag": "v0.4.0-alpha.12",
+          "published_at": "2026-04-09T15:33:42Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 1,
+            "darwin_arm64": 1,
+            "linux_amd64": 3,
+            "linux_arm64": 1
+          }
+        },
+        {
+          "tag": "v0.4.0-alpha.13",
+          "published_at": "2026-04-09T18:25:09Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 4,
+            "darwin_arm64": 1,
+            "linux_amd64": 2,
+            "linux_arm64": 2
+          }
+        },
+        {
+          "tag": "v0.4.0-alpha.11",
+          "published_at": "2026-04-02T01:50:32Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 3,
+            "darwin_arm64": 3,
+            "linux_amd64": 5,
+            "linux_arm64": 3
+          }
+        },
+        {
+          "tag": "v0.4.0-alpha.10",
+          "published_at": "2026-03-30T18:21:22Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 5,
+            "darwin_amd64": 4,
+            "darwin_arm64": 3,
+            "linux_amd64": 4,
+            "linux_arm64": 3
+          }
+        },
+        {
+          "tag": "v0.4.0-alpha.9",
+          "published_at": "2026-03-18T14:32:48Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 5,
+            "darwin_arm64": 3,
+            "linux_amd64": 5,
+            "linux_arm64": 3
+          }
+        },
+        {
+          "tag": "v0.4.0-alpha.8",
+          "published_at": "2026-03-16T20:52:26Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 3,
+            "darwin_arm64": 4,
+            "linux_amd64": 5,
+            "linux_arm64": 3
+          }
+        },
+        {
+          "tag": "v0.4.0-alpha.7",
+          "published_at": "2026-03-11T02:16:35Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 2,
+            "darwin_arm64": 3,
+            "linux_amd64": 3,
+            "linux_arm64": 3
+          }
+        },
+        {
+          "tag": "v0.4.0-alpha.6",
+          "published_at": "2026-03-06T19:03:37Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 2,
+            "darwin_arm64": 2,
+            "linux_amd64": 5,
+            "linux_arm64": 2
+          }
+        },
+        {
+          "tag": "v0.4.0-alpha.5",
+          "published_at": "2026-02-25T15:51:10Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 3,
+            "darwin_arm64": 2,
+            "linux_amd64": 2,
+            "linux_arm64": 2
+          }
+        },
+        {
+          "tag": "v0.4.0-alpha.4",
+          "published_at": "2026-02-24T01:06:18Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 2,
+            "darwin_arm64": 2,
+            "linux_amd64": 3,
+            "linux_arm64": 2
+          }
+        },
+        {
+          "tag": "v0.4.0-alpha.3",
+          "published_at": "2026-02-12T14:50:55Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 5,
+            "darwin_amd64": 3,
+            "darwin_arm64": 3,
+            "linux_amd64": 4,
+            "linux_arm64": 3
+          }
+        },
+        {
+          "tag": "v0.4.0-alpha.2",
+          "published_at": "2026-02-06T21:25:51Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 2,
+            "darwin_arm64": 3,
+            "linux_amd64": 5,
+            "linux_arm64": 2
+          }
+        },
+        {
+          "tag": "v0.4.0-alpha.1",
+          "published_at": "2026-02-03T18:37:01Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 2,
+            "darwin_arm64": 2,
+            "linux_amd64": 7,
+            "linux_arm64": 2
+          }
+        },
+        {
+          "tag": "v0.3.1",
+          "published_at": "2026-01-30T18:07:21Z",
+          "prerelease": false,
+          "platforms": {
+            "checksums": 6,
+            "darwin_amd64": 6,
+            "darwin_arm64": 4,
+            "linux_amd64": 4,
+            "linux_arm64": 4
+          }
+        },
+        {
+          "tag": "v0.3.0",
+          "published_at": "2026-01-29T20:54:23Z",
+          "prerelease": false,
+          "platforms": {
+            "checksums": 5,
+            "darwin_amd64": 4,
+            "darwin_arm64": 4,
+            "linux_amd64": 6,
+            "linux_arm64": 4
+          }
+        },
+        {
+          "tag": "v0.1.0-alpha.9",
+          "published_at": "2025-12-19T20:36:43Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 5,
+            "darwin_amd64": 3,
+            "darwin_arm64": 3,
+            "linux_amd64": 4,
+            "linux_arm64": 3
+          }
+        },
+        {
+          "tag": "v0.1.0-alpha.8",
+          "published_at": "2025-12-19T20:06:48Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 5,
+            "darwin_amd64": 3,
+            "darwin_arm64": 3,
+            "linux_amd64": 6,
+            "linux_arm64": 3
+          }
+        },
+        {
+          "tag": "v0.1.0-alpha.7",
+          "published_at": "2025-12-19T16:33:48Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 5,
+            "darwin_amd64": 4,
+            "darwin_arm64": 5,
+            "linux_amd64": 8,
+            "linux_arm64": 4
+          }
+        },
+        {
+          "tag": "v0.1.0-alpha.6",
+          "published_at": "2025-11-20T21:28:48Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 4,
+            "darwin_arm64": 4,
+            "linux_amd64": 6,
+            "linux_arm64": 4
+          }
+        },
+        {
+          "tag": "v0.1.0-alpha.5",
+          "published_at": "2025-11-20T18:11:25Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 2,
+            "darwin_arm64": 2,
+            "linux_amd64": 4,
+            "linux_arm64": 2
+          }
+        },
+        {
+          "tag": "v0.1.0-alpha.4",
+          "published_at": "2025-11-20T17:42:50Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 3,
+            "darwin_arm64": 3,
+            "linux_amd64": 6,
+            "linux_arm64": 4
+          }
+        },
+        {
+          "tag": "v0.1.0-alpha.3",
+          "published_at": "2025-11-19T23:04:13Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 5,
+            "darwin_arm64": 5,
+            "linux_amd64": 6,
+            "linux_arm64": 5
+          }
+        },
+        {
+          "tag": "v0.1.0-alpha.2",
+          "published_at": "2025-11-19T21:53:15Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 4,
+            "darwin_amd64": 6,
+            "darwin_arm64": 5,
+            "linux_amd64": 8,
+            "linux_arm64": 5
+          }
+        },
+        {
+          "tag": "v0.1.0-alpha.1",
+          "published_at": "2025-11-19T20:54:54Z",
+          "prerelease": true,
+          "platforms": {
+            "checksums": 5,
+            "darwin_amd64": 5,
+            "darwin_arm64": 6,
+            "linux_amd64": 6,
+            "linux_arm64": 5
+          }
+        }
+      ],
+      "totals": {
+        "darwin_amd64": 302,
+        "darwin_arm64": 833,
+        "linux_amd64": 1241,
+        "linux_arm64": 804,
+        "checksums": 1101
+      }
     }
   ]
 }
