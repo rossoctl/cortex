@@ -201,7 +201,7 @@ func TestServiceStepUnsupervisedRestoreNamesItsStartByHand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if alive(old) {
+	if processAlive(old) {
 		t.Fatal("fixture: the step did not stop the background proxy")
 	}
 	want := "sh -c 'nohup ~/.local/bin/cortex --local --supervise >> ~/.cortex/proxy.log 2>&1 & echo $! > ~/.cortex/proxy.pid'"
@@ -217,7 +217,7 @@ func TestServiceStepUnsupervisedRestoreNamesItsStartByHand(t *testing.T) {
 func stopProcessOnCleanup(t *testing.T, pid *int) {
 	t.Helper()
 	t.Cleanup(func() {
-		if alive(*pid) {
+		if processAlive(*pid) {
 			killAndReap(*pid)
 		}
 	})
@@ -250,7 +250,7 @@ func TestServiceStepRunsUnsupervisedInASandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !alive(pid) {
+	if !processAlive(pid) {
 		t.Fatal("no background proxy")
 	}
 	if u.manual != "kill $(cat ~/.cortex/proxy.pid)" {
@@ -259,7 +259,7 @@ func TestServiceStepRunsUnsupervisedInASandbox(t *testing.T) {
 	if err := u.fn(); err != nil {
 		t.Fatal(err)
 	}
-	if alive(pid) {
+	if processAlive(pid) {
 		t.Error("undo left the background proxy running")
 		return
 	}
@@ -611,7 +611,7 @@ func TestSupervisedHolderWhenPsCannotNameTheParent(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got := supervisedHolder(pidFile, 31337); got != tc.want {
-			t.Errorf("proxy.pid %d alive=%v: supervisedHolder = %v, want %v", tc.pf, alive(tc.pf), got, tc.want)
+			t.Errorf("proxy.pid %d alive=%v: supervisedHolder = %v, want %v", tc.pf, processAlive(tc.pf), got, tc.want)
 		}
 	}
 }
@@ -924,8 +924,8 @@ func TestServiceStepBackgroundRestoreRefusesBesideALoadedUnhealthyJob(t *testing
 		t.Fatalf("plan = %+v %v", p, prob)
 	}
 	_, u, err := serviceStep{}.apply(env, nil)
-	if err == nil || alive(old) || env.restorePrior == nil {
-		t.Fatalf("fixture: apply = %v, background proxy alive %v, restorePrior set %v", err, alive(old), env.restorePrior != nil)
+	if err == nil || processAlive(old) || env.restorePrior == nil {
+		t.Fatalf("fixture: apply = %v, background proxy alive %v, restorePrior set %v", err, processAlive(old), env.restorePrior != nil)
 	}
 	failingUnload(t, loaded)
 	if err := u.fn(); err == nil {
@@ -969,8 +969,8 @@ func TestStartByHandRunsFromAShell(t *testing.T) {
 		stopProcessOnCleanup(t, &pid)
 		waitStarted()
 		log, _ := os.ReadFile(filepath.Join(env.cortexDir, "proxy.log"))
-		if !alive(pid) || !strings.Contains(string(log), "started --local --supervise") {
-			t.Errorf("%s: proxy.pid %d alive=%v, proxy.log %q", sh, pid, alive(pid), log)
+		if !processAlive(pid) || !strings.Contains(string(log), "started --local --supervise") {
+			t.Errorf("%s: proxy.pid %d alive=%v, proxy.log %q", sh, pid, processAlive(pid), log)
 		}
 	}
 }

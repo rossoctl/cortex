@@ -181,13 +181,26 @@ jobs:
 
       # agentop builds on Windows (#1520). Most of its tests drive a Unix shell, a service
       # manager or signals, so only the tests of the Windows-specific code and of commands
-      # that work there run here for now.
+      # that work there run here for now. `go test -run` passes when a name matches nothing,
+      # so each listed name must also have run: a renamed test fails the step instead of
+      # silently dropping out. Every entry is a full test name, matched exactly, not a prefix
+      # that stands for several tests.
       - name: Build, vet and test cmd/agentop
         working-directory: cmd/agentop
         run: |
+          set -euo pipefail
           go build ./...
           go vet ./...
-          go test -run 'TestRefuseUnsupported|TestProcessAlive|TestLockFile|TestWritable|TestTerminateRefusesOnWindows|TestNoRecordWanted|TestWithRecordOff|TestAddRecordOff' .
+          tests="TestRefuseUnsupported TestProcessAlive TestLockFile TestWritable TestTerminateRefusesOnWindows
+            TestNoRecordWanted TestWithRecordOff
+            TestAddRecordOff_RefusesASettingsOverride TestAddRecordOff_AppendsToTheEnvironment
+            TestAddRecordOff_RefusesAnUnreadableSettingsFile TestAddRecordOff_ChecksClaudeConfigDir
+            TestAddRecordOff_RefusesAChildThatIsNotClaudeCode"
+          go test -v -run "^($(echo ${tests} | tr ' ' '|'))\$" . | tee "${RUNNER_TEMP}/agentop-tests.txt"
+          for t in ${tests}; do
+            grep -qE "^--- (PASS|SKIP): ${t} \(" "${RUNNER_TEMP}/agentop-tests.txt" \
+              || { echo "::error::${t} did not run"; exit 1; }
+          done
 
       # release-binaries.yaml builds every platform in one loop, so a Windows build break would
       # stop the Linux and macOS releases too, and main-latest on every merge. Build exactly its
