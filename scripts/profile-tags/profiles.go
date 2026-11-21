@@ -41,7 +41,7 @@ var allProfiles = []ProfileName{
 //
 //	local     desktop cortex — the three parsers, tool-prune and script
 //	full      authbridge image, Kubernetes proxy-sidecar, release tarballs,
-//	          make dev-install — all sixteen
+//	          make dev-install — all seventeen
 //	lite      authbridge-lite image — sidecar minimum
 //	envoy     authbridge-envoy image
 //	cpex      authbridge-cpex image
@@ -69,6 +69,11 @@ var membership = map[PluginName][]ProfileName{
 	// tarballs and make dev-install build, so it reaches laptops; it changes no
 	// traffic until an agent is routed.
 	"inferencerouter": {ProfileFull, ProfileFullCpex},
+
+	// Full only, like inference-router: it reaches laptops through the release tarballs and
+	// changes no traffic until a pipeline names it. It needs an altk-evolve MCP server beside
+	// it, which only a laptop runs today.
+	"evolve": {ProfileFull, ProfileFullCpex},
 
 	// The credential and identity plugins lite exists for, plus budget tracking.
 	"jwtvalidation": {ProfileFull, ProfileFullCpex, ProfileLite, ProfileEnvoy, ProfileCpex},
