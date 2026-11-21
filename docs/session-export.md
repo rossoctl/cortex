@@ -160,13 +160,17 @@ Two rules before you total those spans, both of which cost real accuracy:
   that leaves them with no duration each. Measured at 14% of spans (50 of 348) on one 30-day
   archive. Charging every member of such a batch the whole window's time overcounts; read a
   shared window once per batch.
-- **Exclude `lost` spans, and do not trust `lost` alone.** A span that never got an answer but
-  provably stopped sets `end` equal to `start`, so it passes an `end != null` filter as a 0 ms
-  call and drags a p50 toward zero. A span with no `end` is still running. But a third kind
-  exists: a call whose agent could not reach the model to report back gets an `end` from the
-  failed attempt and is **not** marked `lost`, so neither filter catches it and its duration is
-  the outage rather than the tool. Filter `lost`, drop spans with no `end`, and treat a
-  suspiciously long tail as possibly an outage rather than a slow tool.
+- **Exclude `lost` spans.** A span that never got an answer but provably stopped sets `end`
+  equal to `start`, so it passes an `end != null` filter as a 0 ms call and drags a p50
+  toward zero. A span with no `end` is still running. Filter `lost`, and drop a span with no
+  `end`.
+
+  A third kind needs no filter: a call whose agent finished the tool and then could not reach
+  the model to report back — a lid closed, a VPN dropped — gets its `end` from that first
+  failed attempt and is **not** marked `lost`. **Keep it.** Its duration is the tool's, not the
+  outage's: the proxy cuts the span at the failed dial precisely so the outage is excluded, and
+  against Claude Code's own transcripts that dial landed within 0.1 s of the tool's real end
+  every time. Without it, one 9-minute `Bash` drew as 8 hours.
 
 An export is **content-free**. It is **not anonymous**. It keeps hosts, models, session
 ids and timestamps. Together these show who called what, and when. Read an export before

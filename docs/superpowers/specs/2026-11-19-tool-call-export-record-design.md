@@ -18,7 +18,7 @@ PRs that implement it, and is therefore in the order the requirements were ADDED
 order: T0 sits in §2.0 because it bounds the whole spec, T23–T27 and T36–T37 in §4.3a,
 T28–T33 and T35 in §4.4 and §4.4a, and T34 in §7.1b.
 
-Revised twice on 2026-11-19, once on 2026-11-20 and twice on 2026-11-21.
+Revised twice on 2026-11-19, once on 2026-11-20 and three times on 2026-11-21.
 
 **First revision**, after review raised two things the first draft buried. §2.0 is new: every
 field here is **already collected and most of it is already on disk**, so this is a projection
@@ -77,7 +77,7 @@ places where the fourth revision's new text claimed more than the code supports:
 
 - **"No case produces `lost`" was false.** `endStrandedTools` is a FIFTH closing case this spec
   never mentioned: it runs after the pairing and gives a tool an end at a failed model-host dial
-  WITHOUT marking it lost. Such a call has an end and none of the four reasons, which T35 says
+  WITHOUT marking it lost. Such a call has an end and none of the other four reasons, which T35 says
   cannot happen and T17 would drop. `endReason` gains `stranded`, and the implementation note
   says plainly that the pairing package cannot see this case today — `endStrandedTools` needs
   the agents, turns and hosts the pairing has none of — so how it learns it is **Open**.
@@ -89,6 +89,23 @@ places where the fourth revision's new text claimed more than the code supports:
 Also: the guide's lost-span filter had the same blind spot as the first item and now names the
 third kind; the #1924 row no longer cites a claim §7.1 stopped making; and T35 says six fields
 rather than five.
+
+**Sixth revision**, finishing what the fifth started: it added `stranded` and left it
+half-wired, which is the whole of this round.
+
+- **The guide had the duration backwards.** It said a stranded span's duration is the outage.
+  It is the opposite: `endStrandedTools` exists to CUT the outage off, and the dial it cuts at
+  measured within 0.1 s of the tool's real end on every session checked against Claude Code's
+  transcripts — one 9-minute `Bash` had drawn as 8 hours. A reader following the old text would
+  have discarded the one class of span already corrected. What the guide should warn about, and
+  now does, is the **result**: a stranded span may have none, or one that arrived hours later.
+- **T16 said "no result, no duration"**, which `stranded` contradicts. The rule is "no END, no
+  duration": `durationMs` is present exactly when `endReason.HasEnd()`.
+- **The late-result case is specified**: `stranded` wins over `result`, because it is the reason
+  that explains the duration; `resultSeq` stays present; and `durationMs` ends at the dial, not
+  at `resultSeq`. That is the one case where the two disagree.
+- **"None of the four reasons ... has `End == nil`"** was the sentence the fifth revision's own
+  commit message called false, still sitting 15 lines below the paragraph disproving it.
 
 **Code references name symbols, not line numbers.** Every `agents.go:NNN` pin in the first
 four revisions was correct when written and wrong a day later: #2041 moves all of them into
@@ -430,10 +447,21 @@ batch's size in `parallelN`. The batch's identity is `callSeq` (§3.4), so no se
 exists. A consumer can then divide, take the window once per batch, or exclude it — explicitly,
 by its own choice. The marker says the window is shared, **never** that the calls ran
 concurrently.
-T16. A call with no result **carries no duration**, rather than the zero-length span
-`/timeline` draws it with. A zero would pass a consumer's `durationMs > 0` filter as a 0 ms
-call and drag a p50 toward zero. Which no-result case it was is `endReason` (T31), so the
-record carries no separate `lost` flag.
+T16. A call with no result and **no end** carries no duration, rather than the zero-length
+span `/timeline` draws it with. A zero would pass a consumer's `durationMs > 0` filter as a
+0 ms call and drag a p50 toward zero. Which case it was is `endReason` (T31), so the record
+carries no separate `lost` flag.
+
+**`stranded` is the exception, and it is not a contradiction**: that call HAS an end, so it has
+a duration. Its agent finished the tool and then could not reach the model to report back, and
+the proxy cuts the span at that first failed dial — which measured within 0.1 s of the tool's
+real end on every session checked against Claude Code's transcripts. So the rule is "no end, no
+duration", not "no result, no duration": `durationMs` is present exactly when
+`endReason.HasEnd()`, which is `result`, `background` and `stranded`.
+
+**Note for #2041:** `toolpair.EndReason.HasEnd()` there is `result || background`. Whichever of
+§2.2's two options lands, `HasEnd` has to include `stranded`, or `omitempty` drops the duration
+of a stranded call that measured 0 ms.
 T17. A span still open when the walk reads it is not exported. An unfinished call has no
 duration to report, and a record that appears with one later would make the export
 non-reproducible.
@@ -551,8 +579,8 @@ either mode stays readable.
 ### 4.4a Placing and ordering a call
 
 T29. A `toolCall` record carries `startedAt`, the call's start — the asking response's end. It
-is **always present**, including on a call that never got a result, so every record can be
-placed on a timeline. The end, where there is one, is `startedAt + durationMs`. The record
+is **always present**, including one that never got a result, so every record can be placed
+on a timeline. The end, where there is one, is `startedAt + durationMs`. The record
 carries no separate `seq`: that collided with the event record's own `seq` and was undefined
 for an unresolved call.
 T30. A `toolCall` record carries `callIndex`, the call's position among the calls its asking
@@ -563,18 +591,33 @@ T31. A `toolCall` record carries `endReason`, a closed vocabulary naming how the
 | `endReason` | Duration? | Meaning |
 |---|---|---|
 | `result` | yes | Its result arrived. |
-| `background` | yes, **to the acknowledgement only** | The result only acknowledged a job that keeps running (`backgroundRe`, in the pairing package). The command's real duration is longer and is not here. |
+| `background` | yes, **to the acknowledgement only** | The result only acknowledged a job that keeps running (`backgroundRe`, in the pairing). The command's real duration is longer and is not here. |
 | `ended_run` | no | By design no result: the call ends the run or hands control back (`SubagentHandback`, `StructuredOutput`, `end_subtask`). |
 | `abandoned` | no | The agent moved on without the result (`lastTurn`). |
 | `stopped` | no | The run was stopped while the call was open (a `<task-notification>`). |
-| `stranded` | **yes** | The agent could not reach the model to report back: its next attempt on that host failed to dial, and the call ended there (`endStrandedTools`). |
+| `stranded` | **yes** | The agent finished the tool and could not reach the model to report back: its next attempt on that host failed to dial, and the call ends there (`endStrandedTools`). The duration is the tool's, not the outage's. `resultSeq` is absent when no result ever came, and set when one arrived late (see below). |
 
 **`stranded` is the fifth closing case, and this spec missed it until review.** `Build` runs
 `endStrandedTools` AFTER the pairing (`buildAgents` then `endStrandedTools`, both from `Build`), and it sets a tool's
 `End` on a non-`Lost` span without setting `Lost` — so the timeline has a call with an end and
-none of the four reasons above. A pairing that stops at those four leaves such a call with an
+none of the other four reasons. A pairing that stops at those four leaves such a call with an
 empty reason, which T35 says cannot happen on an exported record, and T17 would then drop a
 call that did in fact finish.
+
+**`stranded` WINS over `result` when both apply.** `endStrandedTools`'s own doc says the result
+"reaches the proxy only once the network is back, hours later, or never". When it does arrive,
+`buildAgents` first ends the call on it and the stranding pass then moves `End` back to the
+dial — so the call satisfies both reasons, and the one that EXPLAINS the duration is the one to
+export. Concretely, for a stranded call whose result arrived late:
+
+- `endReason` is `stranded`, not `result`.
+- `resultSeq` **stays present**: a request did carry the result, and a consumer joining on it
+  is right to.
+- `durationMs` ends at the **dial**, not at `resultSeq`. This is the one case where the two
+  disagree, and the `callSeq`/`resultSeq` row would otherwise imply the latter.
+
+So whichever option below is chosen must apply the stranding cut to a call **with** a result as
+well as one without. **Open** with the rest of this case.
 
 Implementation note: the pairing package must therefore learn this case, which it does **not**
 do today — `core/session/toolpair` was extracted from `buildAgents` only, and
@@ -584,7 +627,7 @@ export apply the stranding pass itself over the records it is about to write. Th
 the pairing's inputs as they are; the first keeps the reason where the other four live.
 
 **No `lost` value.** An earlier draft had one for "open with no reason established", and no
-case produces it: a call with none of the four reasons above still has `End == nil`, which
+case produces it: a call with none of the five reasons above still has `End == nil`, which
 means **still open**, and T17 does not export an open call at all. A vocabulary entry a
 producer never emits is a trap for the consumer — it switches on it and ships a dead branch,
 or reads it as the catch-all for "no result" and misses the three real reasons. Add one only
@@ -612,8 +655,8 @@ therefore yields no record, rather than a record with a missing start.
 
 ### 4.5 Documentation
 
-T22. `docs/session-export.md` states the §3.4 parallel-window rule and the T16 `lost` rule
-beside the record, because both cost real accuracy and neither is guessable from the field
+T22. `docs/session-export.md` states the §3.4 parallel-window rule and T16's end-versus-result
+rule beside the record, because both cost real accuracy and neither is guessable from the field
 list. The doc fix that precedes this spec already states them for `/timeline`.
 
 ---
@@ -633,12 +676,12 @@ list. The doc fix that precedes this spec already states them for `/timeline`.
 
 Four changes from the first draft, all so a record can be placed and ordered on its own:
 
-- **`startedAt` replaces `at`.** The first draft carried the *end*, so a `lost` call — which
+- **`startedAt` replaces `at`.** The first draft carried the *end*, so a call with no result — which
   has no duration — could not be placed on a timeline at all. A start exists for every call
   (the asking response's end), so it is always present; the end is `startedAt + durationMs`
   when there is one.
 - **`seq` is gone.** It copied the result event's seq, which collides with the event record's
-  own `seq` and is undefined for a `lost` call. `callSeq` and `resultSeq` carry the two real
+  own `seq` and is undefined for a call that never got a result. `callSeq` and `resultSeq` carry the two real
   anchors.
 - **`callIndex` added.** The call's position among the calls its response asked for, from 0,
   in the order the model asked. Without it a batch cannot be put back in order.
@@ -650,13 +693,13 @@ Four changes from the first draft, all so a record can be placed and ordered on 
 |---|---|
 | `kind` | T19. The discriminator. Always `"toolCall"` here; an event record carries `"event"` (T28). |
 | `sessionId` | T5. The session, as the client asserted it. Not a unit of work until #1997. |
-| `startedAt` | T29. When the call started — the asking response's end. **Always present**, so a `lost` call can still be placed. |
+| `startedAt` | T29. When the call started — the asking response's end. **Always present**, so a call with no result can still be placed. |
 | `tool` | T10/T10a/T11. A built-in name verbatim; an `mcp` or `unknown` name as a keyed hash. Bounded by T12. |
 | `toolSource` | T4. `builtin`, `mcp` or `unknown` — a closed vocabulary, exported by naming the values. Only `builtin` exports its name in clear (T10a). |
 | `callSeq` / `resultSeq` | The response that asked and the request that carried the result. Lets a consumer rejoin a `toolCall` to the event records either side **without a tool-use id** (T8). `resultSeq` is absent when nothing carried a result. |
 | `callIndex` | T30. The call's position among its response's calls, from 0, in the order the model asked. |
-| `durationMs` | T18. The paired duration. Absent when `endReason` says there was no result (T16, T31). |
-| `endReason` | T31. Closed vocabulary: how the call ended. `lost` derives from it, so no separate flag. |
+| `durationMs` | T18. The paired duration. Absent exactly when `endReason.HasEnd()` is false (T16, T31) — so present for `stranded`, which has an end without a result. |
+| `endReason` | T31. Closed vocabulary: how the call ended, and the only thing that says whether a result arrived. No separate flag derives from it. |
 | `isError` | Whether the result was an error. The tool failure rate, per tool. |
 | `inputBytes` / `resultBytes` | T14. Effort proxies, never content. Bytes, as the names say. |
 | `modelMs` | T23. The asking response's measured duration — model time, per call, no join needed. |
@@ -730,7 +773,7 @@ marker record when it is hit.
 
 7.1 **The proxy sees the gap around a tool, never inside it.** A correction to the first draft
 of this spec, which claimed local tool calls are invisible. They are not: a span runs from the
-asking response's end to the next request carrying the result (the span-emission loop and the closing pass in `buildAgents`, now `toolpair.Calls` and `toolpair.closeCalls`),
+asking response's end to the next request carrying the result (the span-emission loop and the closing pass in `buildAgents`; #2041's `toolpair.Calls` and `closeCalls`),
 and **both boundaries are model traffic**, so a tool that touches nothing on the network still
 gets a span. §3.1's `Edit` at p50 35 ms is such a call. The earlier claim confused this record
 with #1810 §9's gap classification, where "no proxied traffic landed inside the gap" is how a
