@@ -250,28 +250,25 @@ func TestRunFinish_FreshContextNotCancelled(t *testing.T) {
 // unblocked.
 func TestRunFinish_FreshContextHasDeadline(t *testing.T) {
 	var hadDeadline bool
-	var deadlineRemaining time.Duration
+	var deadline time.Time
 	f := newFinisher("f", func(ctx context.Context, _ *Context) {
-		d, ok := ctx.Deadline()
-		hadDeadline = ok
-		if ok {
-			deadlineRemaining = time.Until(d)
-		}
+		deadline, hadDeadline = ctx.Deadline()
 	})
-	// Pick an override small enough to see but large enough to reliably
-	// be positive-remaining when OnFinish reads it.
-	p, err := New([]Plugin{f}, WithFinishTimeout(250*time.Millisecond))
+	p, err := New([]Plugin{f}, WithFinishTimeout(time.Hour))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	pctx := &Context{}
 	p.Run(context.Background(), pctx)
+	before := time.Now()
 	p.RunFinish(context.Background(), pctx, Outcome{FinalAction: OutcomeAllow})
+	after := time.Now()
 	if !hadDeadline {
 		t.Fatal("OnFinish ctx had no deadline; expected framework-set timeout")
 	}
-	if deadlineRemaining <= 0 || deadlineRemaining > 250*time.Millisecond {
-		t.Errorf("deadline remaining = %v, want in (0, 250ms]", deadlineRemaining)
+	if deadline.Before(before.Add(time.Hour)) || deadline.After(after.Add(time.Hour)) {
+		t.Errorf("deadline = %v, want 1h after RunFinish, between %v and %v",
+			deadline, before.Add(time.Hour), after.Add(time.Hour))
 	}
 }
 

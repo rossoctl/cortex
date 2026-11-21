@@ -6,8 +6,10 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -385,27 +387,75 @@ func TestProbe_DroppedPathIsNotTheEnd(t *testing.T) {
 // hang answers only when the request is cancelled.
 func hang(r *http.Request) { <-r.Context().Done() }
 
-// probeWithTimeout probes srv as server add does, with per as each request's time.
-func probeWithTimeout(srv *httptest.Server, per time.Duration) (map[string]string, string, error) {
+// giveUp lets a handler end its own request as the client's per-request timeout
+// would: the client gives up a request once its handler calls hang. As a transport
+// it is the client's, and each request it sends carries the id hang finds it by.
+type giveUp struct {
+	t       *testing.T
+	rt      http.RoundTripper
+	n       atomic.Int64
+	cancels sync.Map // id → context.CancelFunc
+}
+
+const giveUpHeader = "X-Test-Give-Up"
+
+func (g *giveUp) RoundTrip(r *http.Request) (*http.Response, error) {
+	ctx, cancel := context.WithCancel(r.Context())
+	id := strconv.FormatInt(g.n.Add(1), 10)
+	g.cancels.Store(id, cancel)
+	r = r.Clone(ctx)
+	r.Header.Set(giveUpHeader, id)
+	return g.rt.RoundTrip(r)
+}
+
+// hang answers only when the client has given r up, which it does at once. A
+// request g did not send fails the test and is answered at once.
+func (g *giveUp) hang(r *http.Request) {
+	if cancel, ok := g.cancels.Load(r.Header.Get(giveUpHeader)); ok {
+		cancel.(context.CancelFunc)()
+		<-r.Context().Done()
+	} else {
+		g.t.Errorf("%s carries no give-up id g sent", r.URL.Path)
+	}
+}
+
+// probeGivingUp probes srv as server add does, through g, with each request's time
+// out of play: a hung request ends when g gives it up.
+func probeGivingUp(srv *httptest.Server, g *giveUp) (map[string]string, string, error) {
 	client := srv.Client()
-	client.Timeout = per
-	ctx, cancel := context.WithTimeout(context.Background(), probeTotal(per))
+	client.Timeout = time.Hour
+	g.rt = client.Transport
+	client.Transport = g
+	ctx, cancel := context.WithTimeout(context.Background(), probeTotal(client.Timeout))
 	defer cancel()
 	return probeAPI(ctx, client, routerconfig.Server{URL: srv.URL, Key: "k"}, "m", "", false)
 }
 
+// The probe's whole time is one request's time for each candidate path, so paths
+// that hang still leave each later one its own.
+func TestProbeTotal_IsARequestTimeForEachPath(t *testing.T) {
+	n := 0
+	for _, paths := range probePaths {
+		n += len(paths)
+	}
+	if got := probeTotal(time.Minute); got != time.Duration(n)*time.Minute {
+		t.Errorf("probeTotal(1m) = %s, want %dm", got, n)
+	}
+}
+
 func TestProbe_HungProtocolLeavesTimeForTheNext(t *testing.T) {
+	g := &giveUp{t: t}
 	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, r *http.Request) {
 		switch {
 		case strings.HasSuffix(p.path, "messages"):
-			hang(r) // a Bob-like server: no anthropic path answers
+			g.hang(r) // a Bob-like server: no anthropic path answers
 		case p.path == "/v1/chat/completions":
 			io.WriteString(w, chatOK)
 		default:
 			http.NotFound(w, nil)
 		}
 	})
-	api, _, err := probeWithTimeout(srv, 100*time.Millisecond)
+	api, _, err := probeGivingUp(srv, g)
 	want := map[string]string{"chat-completions": "/v1/chat/completions"}
 	if err != nil || !maps.Equal(api, want) {
 		t.Errorf("api = %v, err = %v; want %v", api, err, want)
@@ -413,17 +463,18 @@ func TestProbe_HungProtocolLeavesTimeForTheNext(t *testing.T) {
 }
 
 func TestProbe_HungPathLeavesTimeForItsProtocol(t *testing.T) {
+	g := &giveUp{t: t}
 	srv, _ := fakeProbeServer(t, func(w http.ResponseWriter, p probeReq, r *http.Request) {
 		switch p.path {
 		case "/v1/messages":
-			hang(r)
+			g.hang(r)
 		case "/anthropic/v1/messages":
 			io.WriteString(w, anthropicOK)
 		default:
 			http.NotFound(w, nil)
 		}
 	})
-	api, _, err := probeWithTimeout(srv, 100*time.Millisecond)
+	api, _, err := probeGivingUp(srv, g)
 	want := map[string]string{"anthropic-messages": "/anthropic/v1/messages"}
 	if err != nil || !maps.Equal(api, want) {
 		t.Errorf("api = %v, err = %v; want %v", api, err, want)

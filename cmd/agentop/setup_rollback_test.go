@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
 )
@@ -145,23 +144,23 @@ func brokenRelease(t *testing.T, sc setupScene) (string, []byte) {
 	return next, old
 }
 
-// shortReadyTimeout cuts serviceReadyTimeout for a test whose start never
-// answers, which would otherwise wait the full 15s.
-func shortReadyTimeout(t *testing.T) {
+// readyOnFirstAnswer is for a test whose stubs answer at once: each health probe and
+// supervisor ask takes its first answer, so a stub that never answers is not waited
+// out.
+func readyOnFirstAnswer(t *testing.T) {
 	t.Helper()
-	saved := serviceReadyTimeout
-	serviceReadyTimeout = 2 * time.Second
-	t.Cleanup(func() { serviceReadyTimeout = saved })
+	saved, first := serviceReadyTimeout, healthFirstAnswer
+	serviceReadyTimeout, healthFirstAnswer = 0, true
+	t.Cleanup(func() { serviceReadyTimeout, healthFirstAnswer = saved, first })
 }
 
 // An upgrade whose new cortex never answers puts the old one back, serving.
 func TestSetupFailedUpgradeRevertsToThePreviousVersion(t *testing.T) {
-	shortReadyTimeout(t)
+	readyOnFirstAnswer(t)
 	sc, running := newUpgradeScene(t)
 	before := homeFiles(t, sc.home)
 	next, old := brokenRelease(t, sc)
 
-	began := time.Now()
 	code, out := sc.run(t, "--from", next, "--yes")
 	if code != 1 {
 		t.Fatalf("a broken upgrade exited %d:\n%s", code, out)
@@ -191,14 +190,13 @@ func TestSetupFailedUpgradeRevertsToThePreviousVersion(t *testing.T) {
 	if b, _ := os.ReadFile(running); !bytes.Equal(b, old) {
 		t.Error("the job left loaded after the revert does not run the previous cortex")
 	}
-	t.Logf("broken-upgrade round trip took %s (bounded by serviceReadyTimeout)", time.Since(began))
 }
 
 // An upgrade over a Cortex stopped with `agentop service stop` rolls back to it
 // stopped. The failed install loaded the new job; left loaded, it would undo the
 // user's stop and run again at the next login.
 func TestSetupFailedUpgradeLeavesAStoppedServiceStopped(t *testing.T) {
-	shortReadyTimeout(t)
+	readyOnFirstAnswer(t)
 	sc, _ := newUpgradeScene(t)
 	sp, err := resolveServicePaths(filepath.Join(sc.home, ".cortex", "config.yaml"), "",
 		filepath.Join(sc.home, ".local", "bin", "cortex"))

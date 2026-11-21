@@ -60,6 +60,10 @@ const codexDaemonRestartCmd = "codex app-server daemon restart"
 // the forced stop and the new start. This allows the same, plus a margin.
 const codexRestartTimeout = 5*time.Minute + 90*time.Second
 
+// codexWaitDelay is how long codexRun reads the command's stderr after it exits. A var
+// so a test of a child that keeps the pipe open need not wait it out.
+var codexWaitDelay = time.Second
+
 // codexDaemon is a running app-server daemon, as its pid file and the process table
 // describe it.
 type codexDaemon struct {
@@ -367,7 +371,7 @@ func codexRun(bin, codexHome string, want map[string]string, args ...string) err
 	var stderr bytes.Buffer
 	cmd.Stdout = io.Discard
 	cmd.Stderr = &stderr
-	cmd.WaitDelay = time.Second
+	cmd.WaitDelay = codexWaitDelay
 	if err := cmd.Run(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		what := filepath.Base(bin) + " " + strings.Join(args, " ")
 		if ctx.Err() != nil {
