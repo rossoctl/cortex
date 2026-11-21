@@ -34,9 +34,9 @@ When setup is done, open a new terminal. The new terminal reads the new `PATH`.
 1. From the [releases page](https://github.com/rossoctl/cortex/releases), download `agentop_<version>_windows_amd64.zip` and `cortex_<version>_windows_amd64.zip` (`arm64` on an Arm PC), and `checksums.txt`.
 2. Check them in PowerShell. `checksums.txt` has lower-case hashes, and `Get-FileHash` prints upper case, so compare `(Get-FileHash .\agentop_<version>_windows_amd64.zip -Algorithm SHA256).Hash.ToLower()` with the line for that file, and the same for `cortex`.
 3. Unblock both: `Unblock-File .\agentop_<version>_windows_amd64.zip`, and the same for `cortex`. The binaries are not signed yet, and a downloaded `.zip` passes its "from the internet" mark on to what it holds, so without this SmartScreen may block them.
-4. Unzip both into one folder, for example `$HOME\.local\bin`, and add that folder to your user `PATH`.
-5. In one terminal, run the proxy: `cortex --local`. It writes `~/.cortex/config.yaml` on first run. Stop it with `Ctrl-C`.
-6. In a second terminal, run `agentop observe`.
+4. Unzip both into one folder, for example `$HOME\.local\bin`, and add that folder to your user `PATH`. Then open a new terminal: a terminal that is already open keeps the old `PATH`.
+5. In that new terminal, run the proxy: `cortex --local`. It writes `~/.cortex/config.yaml` on first run. Stop it with `Ctrl-C`. If it says it can't parse `~/.cortex/config.yaml`, a file written by an earlier Windows build, delete that file and run it again: Cortex writes a fresh one.
+6. In a second new terminal, run `agentop observe`.
 
 Then connect Claude Code with `agentop configure claude-code enable`, or run one session through Cortex with `agentop exec -- claude`.
 

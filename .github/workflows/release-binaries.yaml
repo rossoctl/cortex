@@ -467,8 +467,8 @@ jobs:
           add 'runs on Windows yet: check each `.zip` with'
           add '`(Get-FileHash <file> -Algorithm SHA256).Hash.ToLower()` against `checksums.txt`,'
           add 'run `Unblock-File <file>` on it (the binaries are unsigned, so SmartScreen may block'
-          add 'them otherwise), extract both onto your PATH, then run `cortex --local` in one'
-          add 'terminal and `agentop observe` in another. `agentop service`, `setup`, `uninstall`'
+          add 'them otherwise), and extract both onto your PATH. Then, in a NEW terminal (an open one'
+          add 'keeps the old PATH), run `cortex --local`, and `agentop observe` in another. `agentop service`, `setup`, `uninstall`'
           add 'and `update` are not supported there yet. See docs/getting-started.md.'
           if gh release view "${TAG}" >/dev/null 2>&1; then
             # Uploading assets does not move the tag, so on a REUSED tag the release
