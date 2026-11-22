@@ -550,7 +550,7 @@ func SettleInput(in Input, rates pricing.Resolver) Settled {
 	// is stamped whichever of the two wins below.
 	out.Currency = pricing.UnitOf(rates, in.Host, model)
 	promptTotal := usage.PromptTotal()
-	micros, tiers, prov, ok, refusal := modelledCost(rates, in.Host, model, usage, promptTotal)
+	micros, tiers, prov, ok, refusal, estimated1h := modelledCost(rates, in.Host, model, usage, promptTotal)
 	if ok {
 		out.ModelledUSD, out.HasModelled, out.ModelledProv = float64(micros)/1e6, true, prov
 		// From the WHOLE request's pricing, under one resolved rate set, so the four
@@ -596,15 +596,24 @@ func SettleInput(in Input, rates pricing.Resolver) Settled {
 	// presented as a whole one is worse than none.
 	promptOnly := usage
 	promptOnly.Output = 0
-	if micros, _, _, ok, _ := modelledCost(rates, in.Host, model, promptOnly, promptTotal); ok {
+	if micros, _, _, ok, _, _ := modelledCost(rates, in.Host, model, promptOnly, promptTotal); ok {
 		out.PromptUSD, out.HasPrompt = float64(micros)/1e6, true
 	}
 
 	// The output half, for a response row, by the same construction: zero the prompt
 	// tiers instead of subtracting the prompt figure from the total.
+	//
+	// CacheWrite1h ZEROED TOO, and that is load-bearing, not cosmetic: it is a SUBSET
+	// of CacheWrite (pricing.Usage.CacheWrite1h), never a sibling field, so leaving it
+	// set here after CacheWrite itself is zeroed makes modelledCost add the 1h-vs-5m
+	// delta onto a request that carries NO cache-write tokens at all — the whole 1h
+	// premium landing on the OUTPUT half instead of nowhere. Fixed in review of task 7
+	// (2026-11-17 accountant-integration): measured at CacheWrite:1000,
+	// CacheWrite1h:600, Output:100 on Sonnet-like rates, OutputUSD came back as if
+	// Output were priced at output-rate PLUS the full 600-token delta.
 	outputOnly := usage
-	outputOnly.Input, outputOnly.CacheWrite, outputOnly.CacheRead = 0, 0, 0
-	if micros, _, _, ok, _ := modelledCost(rates, in.Host, model, outputOnly, promptTotal); ok {
+	outputOnly.Input, outputOnly.CacheWrite, outputOnly.CacheRead, outputOnly.CacheWrite1h = 0, 0, 0, 0
+	if micros, _, _, ok, _, _ := modelledCost(rates, in.Host, model, outputOnly, promptTotal); ok {
 		out.OutputUSD, out.HasOutput = float64(micros)/1e6, true
 	}
 
@@ -685,7 +694,17 @@ func SettleInput(in Input, rates pricing.Resolver) Settled {
 	// here as SourceGatewayHeader too: the gateway stating it charged nothing is an
 	// exact total, and publishing a floor of zero would be a lower bound on nothing.
 	if out.HasModelled {
-		if reason := pricing.IncompleteReason(in.Inference); reason != "" {
+		reason := pricing.IncompleteReason(in.Inference)
+		// estimated1h stands for a DIFFERENT gap than the three IncompleteReason cases:
+		// those are about the PARSER's counters, this is about pricing.CacheWrite1hRate
+		// having to guess at a rate rather than knowing one. Only consulted when the
+		// counters themselves raised no reason, so a reason about missing counters is
+		// never shadowed by one about a guessed rate — spec §5.6: "mark the figure
+		// estimated." Added in review of task 7 (2026-11-17 accountant-integration).
+		if reason == "" && estimated1h {
+			reason = pricing.ReasonCacheWrite1hRateEstimated
+		}
+		if reason != "" {
 			out.ModelledIncomplete, out.ModelledIncompleteReason = true, reason
 			// The charged figure is qualified only when the modelled one IS the charged one.
 			// Gated on the source rather than on "the header was not positive" because
@@ -761,22 +780,62 @@ func withRefusal(out Settled, cost float64, state headerCostState, in Input, rea
 // have been safe. tool-prune hit exactly this and its fail-open masked the panic, so
 // pruning silently stopped.
 func modelledCost(rates pricing.Resolver, host, model string, u pricing.Usage, promptTotal int) (
-	int64, [pricing.NumTiers]int64, pricing.Provenance, bool, pricing.Refusal) {
+	micros int64, tiers [pricing.NumTiers]int64, prov pricing.Provenance, ok bool, refusal pricing.Refusal, estimated1h bool) {
 	var none [pricing.NumTiers]int64
 	if rates == nil || u == (pricing.Usage{}) {
 		// No resolver is a deployment with no rate table at all, and no counters is unknown
 		// usage. Neither is a refusal of anything: nothing was on the wire to refuse.
-		return 0, none, pricing.ProvNone, false, pricing.RefusalNoTokens
+		return 0, none, pricing.ProvNone, false, pricing.RefusalNoTokens, false
 	}
 	r, prov := rates.Resolve(host, model, promptTotal)
 	if prov == pricing.ProvNone {
-		return 0, none, pricing.ProvNone, false, pricing.RefusalNoRate
+		return 0, none, pricing.ProvNone, false, pricing.RefusalNoRate, false
 	}
-	tiers, micros, ok, refusal := pricing.CostByTier(r, u)
+	tiers, micros, ok, refusal = pricing.CostByTier(r, u)
 	if !ok {
-		return 0, none, pricing.ProvNone, false, refusal
+		return 0, none, pricing.ProvNone, false, refusal, false
 	}
-	return micros, tiers, prov, true, pricing.RefusalNone
+	// u.CacheWrite1h is a SUBSET of u.CacheWrite, so CostByTier above already
+	// priced it once, at the 5m write rate — see pricing.Usage.CacheWrite1h. Add
+	// just the DIFFERENCE for the 1h subset, so the 5m portion keeps its own rate
+	// rather than re-resolving the whole request against a modified prompt total
+	// (the rule the comment on modelledCost above states for the prompt/output
+	// halves, and the same reason this is an addition here rather than another
+	// CostByTier call with CacheWrite zeroed). A delta pricing refuses to
+	// (CacheWrite1hDeltaMicros returning ok=false) leaves the tier at the 5m
+	// price CostByTier already applied, never the whole request refused over a
+	// rate CostByTier itself never required.
+	//
+	// estimated1h is CacheWrite1hDeltaMicros's own estimated: whether the 1h rate
+	// came from the generic 5m-rate fallback rather than an explicit rate or
+	// Anthropic's documented premium. Propagated to the caller — SettleInput
+	// publishes it on the settled result (spec §5.6: "mark the figure estimated")
+	// — rather than swallowed here, which is what review of this task found: the
+	// original version discarded it with `_`.
+	//
+	// Added for the 1h cache-write tier (2026-11-17 accountant-integration task 7).
+	if u.CacheWrite1h > 0 {
+		delta, deltaOK, deltaEstimated := pricing.CacheWrite1hDeltaMicros(r, u.CacheWrite1h, isAnthropicModel(model))
+		estimated1h = deltaOK && deltaEstimated
+		if deltaOK && delta > 0 {
+			micros += delta
+			tiers[pricing.TierCacheWrite] += delta
+		}
+	}
+	return micros, tiers, prov, true, pricing.RefusalNone, estimated1h
+}
+
+// isAnthropicModel reports whether model is on Anthropic's Claude family, the only
+// provider on a path Cortex runs whose 1-hour cache-write premium is documented
+// (2x input — see pricing.Rates.CacheWrite1hRate). modelledCost is the natural
+// place for this: it already has the model string, which pricing.Rates itself
+// carries no equivalent of (a Rates value names no provider).
+//
+// A substring match, not an exact one: bundled model names include dated and
+// provider-prefixed forms ("claude-sonnet-4-5-20250929", "anthropic/claude-opus-5",
+// Bedrock's "anthropic.claude-..."), all of which contain "claude".
+func isAnthropicModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "claude")
 }
 
 // StateKey is where the full Settled outcome is stashed for the rest of the request.

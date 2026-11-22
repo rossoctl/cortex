@@ -47,7 +47,7 @@ func goldenEvent() SessionEvent {
 			Completion: "done", FinishReason: "tool_use",
 			ToolCalls:    []InferenceToolCall{{ID: "toolu_2", Name: "get_weather", Arguments: `{"city":"Oslo"}`}},
 			PromptTokens: 1000, CompletionTokens: 200, TotalTokens: 1200, InputTokens: 100,
-			CacheReadTokens: 800, CacheWriteTokens: 100, OutputTokens: 200, ReasoningTokens: 50,
+			CacheReadTokens: 800, CacheWriteTokens: 100, CacheWrite1hTokens: 40, OutputTokens: 200, ReasoningTokens: 50,
 			PresentKinds: 3, IsAction: true,
 		},
 		Invocations: &Invocations{

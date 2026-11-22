@@ -119,6 +119,7 @@
     "inputTokens": 100,
     "cacheReadTokens": 800,
     "cacheWriteTokens": 100,
+    "cacheWrite1hTokens": 40,
     "outputTokens": 200,
     "reasoningTokens": 50,
     "presentKinds": 3,

@@ -1203,6 +1203,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `inference.reasoningTokens` — on a response row: the token counts that the
   provider reported, by kind. `inputTokens` are the uncached prompt tokens.
   `reasoningTokens` are a part of `outputTokens`.
+- `inference.cacheWrite1hTokens` — on a response row: the part of
+  `cacheWriteTokens` written with a 1-hour TTL (Anthropic's
+  `cache_creation.ephemeral_1h_input_tokens`). A part of `cacheWriteTokens`,
+  never an addition to it.
 - `inference.presentKinds` — a bitmask of the token kinds that the provider
   reported: input 1, cache read 2, cache write 4, output 8, reasoning 16. A
   zero count with its bit set means that the provider reported zero. A zero

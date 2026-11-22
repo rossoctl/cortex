@@ -15,6 +15,7 @@ a2a.taskId string
 inference.agentRole string
 inference.anthropicBeta string
 inference.cacheReadTokens number
+inference.cacheWrite1hTokens number
 inference.cacheWriteTokens number
 inference.completion string
 inference.completionTokens number
