@@ -145,7 +145,8 @@
             },
             "drawStyle": "bars",
             "fillOpacity": 80,
-            "lineWidth": 0
+            "lineWidth": 0,
+            "barAlignment": -1
           }
         },
         "overrides": []
@@ -258,7 +259,8 @@
             },
             "drawStyle": "bars",
             "fillOpacity": 80,
-            "lineWidth": 0
+            "lineWidth": 0,
+            "barAlignment": -1
           }
         },
         "overrides": [
@@ -435,8 +437,8 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Keep-alive: cost, rescue and net (USD per hour)",
-      "description": "Do the pings pay? The rescue is a write that became a read, so its value is the write saved minus the read paid.",
+      "title": "Keep-alive: cost, rescue and net (USD)",
+      "description": "Do the pings pay? The rescue is a write that became a read, so its value is the write saved minus the read paid. Ping cost is below zero, rescue above, and the line is the net. Each bar is about the dollars in that bar's time span (increase() extrapolates to the span's edges). The span grows with the dashboard range and is at least 5 minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -449,31 +451,34 @@
       },
       "targets": [
         {
-          "expr": "sum(rate(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])) * 3600",
+          "expr": "-sum((increase(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) and last_over_time(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) >= last_over_time(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))",
           "legendFormat": "ping cost",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          }
+          },
+          "interval": "5m"
         },
         {
-          "expr": "(sum(rate(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__rate_interval])) - sum(rate(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__rate_interval]))) * 3600",
+          "expr": "((sum((increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__interval]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[1d] offset $__interval)) or (increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__interval]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__interval])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__interval])) or vector(0)) - (sum((increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__interval]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[1d] offset $__interval)) or (increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__interval]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__interval])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__interval])) or vector(0)))",
           "legendFormat": "rescue (net of reads)",
           "refId": "B",
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          }
+          },
+          "interval": "5m"
         },
         {
-          "expr": "((sum(rate(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__rate_interval])) - sum(rate(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__rate_interval]))) - sum(rate(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval]))) * 3600",
+          "expr": "(((sum((increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__interval]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[1d] offset $__interval)) or (increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__interval]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__interval])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"saved\"}[$__interval])) or vector(0)) - (sum((increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__interval]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[1d] offset $__interval)) or (increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__interval]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__interval])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",effect=\"rescue\",direction=\"added\"}[$__interval])) or vector(0))) - sum((increase(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) and last_over_time(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) >= last_over_time(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_keepalive_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])))",
           "legendFormat": "net",
           "refId": "C",
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          }
+          },
+          "interval": "5m"
         }
       ],
       "fieldConfig": {
@@ -481,8 +486,12 @@
           "unit": "currencyUSD",
           "custom": {
             "stacking": {
-              "mode": "none"
-            }
+              "mode": "normal"
+            },
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "barAlignment": -1
           }
         },
         "overrides": [
@@ -527,6 +536,32 @@
                 "value": {
                   "mode": "fixed",
                   "fixedColor": "#5794F2"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "net"
+            },
+            "properties": [
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.stacking",
+                "value": {
+                  "mode": "none"
                 }
               }
             ]

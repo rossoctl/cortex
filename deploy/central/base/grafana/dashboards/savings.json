@@ -134,8 +134,8 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Net by kind (USD per hour)",
-      "description": "rewrite, spend and setting, operations only. A spend is a component's own model call or a keep-alive ping, and is always a cost. Cache effects have no kind: see Cache effects.",
+      "title": "Net by kind (USD)",
+      "description": "rewrite, spend and setting, operations only. A spend is a component's own model call or a keep-alive ping, and is always a cost. Cache effects have no kind: see Cache effects. Each bar is about the dollars in that bar's time span (increase() extrapolates to the span's edges). The span grows with the dashboard range and is at least 5 minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -148,13 +148,14 @@
       },
       "targets": [
         {
-          "expr": "(((sum by (kind)(rate(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval]))) or (sum by (kind)(rate(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval]))) * 0) - ((sum by (kind)(rate(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval]))) or (sum by (kind)(rate(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval]))) * 0)) * 3600",
+          "expr": "(((sum by (kind)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))) or (sum by (kind)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))) * 0) - ((sum by (kind)((increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) and last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) >= last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_savings_added_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))) or (sum by (kind)((increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) and last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) >= last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_savings_saved_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))) * 0))",
           "legendFormat": "{{kind}}",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          }
+          },
+          "interval": "5m"
         }
       ],
       "fieldConfig": {
@@ -163,7 +164,11 @@
           "custom": {
             "stacking": {
               "mode": "normal"
-            }
+            },
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "barAlignment": -1
           }
         },
         "overrides": []
@@ -286,7 +291,8 @@
             },
             "drawStyle": "bars",
             "fillOpacity": 80,
-            "lineWidth": 0
+            "lineWidth": 0,
+            "barAlignment": -1
           }
         },
         "overrides": []

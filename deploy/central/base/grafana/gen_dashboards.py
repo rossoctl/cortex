@@ -83,6 +83,21 @@ def inc(metric, by="", win="$__range", extra="", new_series_fallback=True):
     return f'sum{g}(({grew} and {old}) or ({grew} >= {last}) or {last})'
 
 
+# A dollar counter moves in steps: one event is one step. rate() * 3600 over a ~1 min window turns a
+# $1.75 step into a $105/h spike for one minute (context-guru #1273). So money over time is shown as
+# the dollars in each bar: increase() over $__interval, with a floor of BAR so each bar spans several
+# 30 s pushes. inc() keeps its new-series fallback here: a keep-alive series is born with its first
+# ping already in it, and increase() alone would lose that ping.
+BAR = "5m"
+BAR_DESC = (" Each bar is about the dollars in that bar's time span (increase() extrapolates to the span's"
+            " edges). The span grows with the dashboard range and is at least 5 minutes.")
+
+
+def bar(metric, by="", extra=""):
+    """About the dollars in each bar: inc() over $__interval. Use with series(..., bars=True, interval=BAR)."""
+    return inc(metric, by, "$__interval", extra)
+
+
 def rate(metric, by="", extra=""):
     g = f" by ({by})" if by else ""
     return f'sum{g}(rate({metric}{{{FILTER}{extra}}}[$__rate_interval]))'
@@ -92,14 +107,14 @@ def saved_side(by="", fn="inc", new_series_fallback=True):
     """The saved side of the net: the operations' saved, the cache effects' saved and the
     interaction's saved. Only for a by in NET_LABELS."""
     assert by in NET_LABELS, by
-    return inc("", by, extra=SAVED_SIDE, new_series_fallback=new_series_fallback) if fn == "inc" else rate("", by, SAVED_SIDE)
+    return inc("", by, extra=SAVED_SIDE, new_series_fallback=new_series_fallback) if fn == "inc" else bar("", by, SAVED_SIDE)
 
 
 def added_side(by="", fn="inc", new_series_fallback=True):
     """The added side of the net: the operations' added (a keep-alive ping is a spend there), the
     cache effects' added (a break, a premium) and the interaction's added."""
     assert by in NET_LABELS, by
-    return inc("", by, extra=ADDED_SIDE, new_series_fallback=new_series_fallback) if fn == "inc" else rate("", by, ADDED_SIDE)
+    return inc("", by, extra=ADDED_SIDE, new_series_fallback=new_series_fallback) if fn == "inc" else bar("", by, ADDED_SIDE)
 
 
 def ratio(num, den):
@@ -136,12 +151,12 @@ def net(by="", fn="inc", new_series_fallback=True):
     PromQL drops a label value that is on one side only, and a component that only ever ADDS cost
     (a compaction call, say) is exactly the one this must show. So each side is padded with the
     other side's label values times zero. new_series_fallback is forwarded to inc() (ignored when
-    fn="rate"); see inc()'s own doc comment."""
+    fn="bar", which always keeps it); see inc()'s own doc comment."""
     if by in NET_LABELS:
         s = saved_side(by, fn, new_series_fallback)
         a = added_side(by, fn, new_series_fallback)
     else:
-        side = (lambda m: inc(m, by, new_series_fallback=new_series_fallback)) if fn == "inc" else (lambda m: rate(m, by))
+        side = (lambda m: inc(m, by, new_series_fallback=new_series_fallback)) if fn == "inc" else (lambda m: bar(m, by))
         s, a = side("llm_savings_saved_usd_total"), side("llm_savings_added_usd_total")
     if not by:
         return f"({s} - {a})"
@@ -169,7 +184,8 @@ def stat(pid, title, expr, x, y, w=4, h=4, unit="short", desc="", decimals=None,
 
 
 def series(pid, title, targets, x, y, w=12, h=8, unit="short", stack=False, desc="", kind="timeseries",
-           colors=None, bars=False, vertical=False, instant=False, time_from=None, interval=None, fixed_color=None):
+           colors=None, bars=False, vertical=False, instant=False, time_from=None, interval=None, fixed_color=None,
+           lines=()):
     d = {"id": pid, "type": kind, "title": title, "description": desc, "datasource": DS,
          "gridPos": {"x": x, "y": y, "w": w, "h": h},
          "targets": [{"expr": e, "legendFormat": l, "refId": chr(65 + i), "datasource": DS}
@@ -186,7 +202,9 @@ def series(pid, title, targets, x, y, w=12, h=8, unit="short", stack=False, desc
     if time_from:
         d["timeFrom"] = time_from
     if bars:
-        d["fieldConfig"]["defaults"]["custom"].update({"drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0})
+        # increase() and rate() at t cover the span that ENDS at t, so the bar ends at t, not centered on it
+        d["fieldConfig"]["defaults"]["custom"].update({"drawStyle": "bars", "fillOpacity": 80, "lineWidth": 0,
+                                                       "barAlignment": -1})
     if kind == "bargauge":
         d["options"] = {"orientation": "vertical" if vertical else "horizontal", "displayMode": "basic",
                         "showUnfilled": True, "reduceOptions": {"calcs": ["lastNotNull"]}}
@@ -203,6 +221,11 @@ def series(pid, title, targets, x, y, w=12, h=8, unit="short", stack=False, desc
     for name, c in (colors or {}).items():
         d["fieldConfig"]["overrides"].append({"matcher": {"id": "byName", "options": name},
                                               "properties": [{"id": "color", "value": color(c)}]})
+    # a total drawn over stacked bars: a line, outside the stack, so it does not add to it
+    for name in lines:
+        d["fieldConfig"]["overrides"].append({"matcher": {"id": "byName", "options": name}, "properties": [
+            {"id": "custom.drawStyle", "value": "line"}, {"id": "custom.lineWidth", "value": 2},
+            {"id": "custom.fillOpacity", "value": 0}, {"id": "custom.stacking", "value": {"mode": "none"}}]})
     return d
 
 
@@ -267,10 +290,11 @@ def fleet():
     p5["fieldConfig"]["defaults"]["custom"]["gradientMode"] = "scheme"
     p5["options"]["legend"]["showLegend"] = False
     P.append(p5)
-    P.append(series(6, "Saved vs added (USD per hour)", [
-        (f'{saved_side(fn="rate")} * 3600', "saved"),
-        (f'{added_side(fn="rate")} * 3600', "added")], 0, 12, 12, 8, unit=USD,
-        colors={"saved": GREEN, "added": ORANGE}, desc="Both sides of the net, as a rate, cache effects included."))
+    P.append(series(6, "Saved vs added (USD)", [
+        (saved_side(fn="bar"), "saved"),
+        (f'-{added_side(fn="bar")}', "added")], 0, 12, 12, 8, unit=USD, stack=True, bars=True, interval=BAR,
+        colors={"saved": GREEN, "added": ORANGE},
+        desc="Both sides of the net, cache effects included: saved above zero, added below." + BAR_DESC))
     P.append(series(7, "Net saved by machine", [(f"topk(8, {net('machine')})", "{{machine}}")], 12, 12, 12, 8,
                     unit=USD, kind="bargauge", instant=True,
                     desc="The 8 best machines over the selected range. The full list is on the Machine comparison dashboard."))
@@ -302,9 +326,9 @@ def savings():
     P.append(series(1, "Net by component (USD, selected range)", [(net("component"), "{{component}}")],
                     0, 0, 9, 9, unit=USD, kind="bargauge", instant=True,
                     desc="Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So a keep-alive rescue is not here, and the keeper shows only its ping cost. A red bar is a component whose operations cost more than they save."))
-    P.append(series(2, "Net by kind (USD per hour)", [(f'{net("kind", fn="rate")} * 3600', "{{kind}}")],
-                    9, 0, 15, 9, unit=USD, stack=True,
-                    desc="rewrite, spend and setting, operations only. A spend is a component's own model call or a keep-alive ping, and is always a cost. Cache effects have no kind: see Cache effects."))
+    P.append(series(2, "Net by kind (USD)", [(net("kind", fn="bar"), "{{kind}}")],
+                    9, 0, 15, 9, unit=USD, stack=True, bars=True, interval=BAR,
+                    desc="rewrite, spend and setting, operations only. A spend is a component's own model call or a keep-alive ping, and is always a cost. Cache effects have no kind: see Cache effects." + BAR_DESC))
     P.append(series(3, "Saved tokens by tier (selected range)", [(inc("llm_savings_saved_tokens_total", "tier"), "{{tier}}")],
                     0, 9, 7, 8, kind="bargauge", vertical=True, instant=True,
                     desc="Tokens the provider did not bill. The tier decides the price of each token."))
@@ -339,7 +363,9 @@ def savings():
 
 def cache():
     f = FILTER
-    rescue = lambda e: rate("llm_savings_cache_effect_usd_total", extra=e)
+    # or vector(0): with pings and no rescue yet (or no "added" side), the difference would have no
+    # series, and rescue and net would vanish while the ping cost still shows
+    rescue = lambda e: f'({bar("llm_savings_cache_effect_usd_total", extra=e)} or vector(0))'
     P = []
     P.append(series(1, "Cache read ratio", [
         (ratio(rate("llm_inference_tokens_total", "model", TIER_READ), rate("llm_inference_tokens_total", "model", TIER_PROMPT)), "{{model}}")],
@@ -364,12 +390,13 @@ def cache():
                   ratio(inc("llm_keepalive_estimated_cost_usd_total"), inc("llm_keepalive_cost_usd_total")),
                   18, 12, w=6, h=4, unit="percentunit", decimals=1, c=ORANGE,
                   desc="Share of the ping cost that is not a measured figure. Each proxy books a different part here. context-guru: pings that timed out with no answer, booked at their projected cost (#754). cortex: pings priced from a fallback rate, because the model has no rate of its own, and pings that timed out, booked at the keeper's projected cost. No data means the ping cost did not increase in the range."))
-    P.append(series(6, "Keep-alive: cost, rescue and net (USD per hour)", [
-        (f'{rate("llm_keepalive_cost_usd_total")} * 3600', "ping cost"),
-        (f'({rescue(RESCUE_SAVED)} - {rescue(RESCUE_ADDED)}) * 3600', "rescue (net of reads)"),
-        (f'(({rescue(RESCUE_SAVED)} - {rescue(RESCUE_ADDED)}) - {rate("llm_keepalive_cost_usd_total")}) * 3600', "net")],
-        0, 16, 16, 8, unit=USD, colors={"ping cost": ORANGE, "rescue (net of reads)": GREEN, "net": BLUE},
-        desc="Do the pings pay? The rescue is a write that became a read, so its value is the write saved minus the read paid."))
+    P.append(series(6, "Keep-alive: cost, rescue and net (USD)", [
+        (f'-{bar("llm_keepalive_cost_usd_total")}', "ping cost"),
+        (f'({rescue(RESCUE_SAVED)} - {rescue(RESCUE_ADDED)})', "rescue (net of reads)"),
+        (f'(({rescue(RESCUE_SAVED)} - {rescue(RESCUE_ADDED)}) - {bar("llm_keepalive_cost_usd_total")})', "net")],
+        0, 16, 16, 8, unit=USD, stack=True, bars=True, interval=BAR, lines=("net",),
+        colors={"ping cost": ORANGE, "rescue (net of reads)": GREEN, "net": BLUE},
+        desc="Do the pings pay? The rescue is a write that became a read, so its value is the write saved minus the read paid. Ping cost is below zero, rescue above, and the line is the net." + BAR_DESC))
     P.append(text(7, "Shared-warm tokens", "**No data yet.**\n\nThe counter `llm_keepalive_shared_warm_tokens_total` needs #853.", 16, 16, 8, 8))
     return dash("central-cache", "Cache and keep-alive", "Does the cache pay, and do pings pay?", P, ["cache"])
 
@@ -475,8 +502,8 @@ def inference():
         (quant(0.5, "llm_inference_added_seconds"), "p50"), (quant(0.95, "llm_inference_added_seconds"), "p95"),
         (quant(0.99, "llm_inference_added_seconds"), "p99")], 12, 21, 12, 8, unit="s", colors={"p50": GREEN, "p95": YELLOW, "p99": RED},
         desc="What the proxy's own work added on top of the upstream time (R46)."))
-    P.append(series(12, "Spend per hour, by model", [(f'{rate("llm_inference_cost_usd_total", "model")} * 3600', "{{model}}")], 0, 29, 16, 8, unit=USD, stack=True, bars=True,
-                    desc="Provider cost at request time. Each proxy prices with its own rate table."))
+    P.append(series(12, "Spend by model (USD)", [(bar("llm_inference_cost_usd_total", "model"), "{{model}}")], 0, 29, 16, 8, unit=USD, stack=True, bars=True,
+                    interval=BAR, desc="Provider cost at request time. Each proxy prices with its own rate table." + BAR_DESC))
     P.append(stat(13, "Spend priced from a fallback rate", ratio(inc("llm_inference_estimated_cost_usd_total"), inc("llm_inference_cost_usd_total")),
                   16, 29, w=8, h=8, unit="percentunit", decimals=1, c=YELLOW, big=True,
                   desc="Share of spend where the model had no rate of its own. A high value means the money panels are a guess."))

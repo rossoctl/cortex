@@ -346,6 +346,7 @@
             "drawStyle": "bars",
             "fillOpacity": 80,
             "lineWidth": 0,
+            "barAlignment": -1,
             "gradientMode": "scheme"
           },
           "color": {
@@ -379,8 +380,8 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Saved vs added (USD per hour)",
-      "description": "Both sides of the net, as a rate, cache effects included.",
+      "title": "Saved vs added (USD)",
+      "description": "Both sides of the net, cache effects included: saved above zero, added below. Each bar is about the dollars in that bar's time span (increase() extrapolates to the span's edges). The span grows with the dashboard range and is at least 5 minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -393,22 +394,24 @@
       },
       "targets": [
         {
-          "expr": "sum(rate({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__rate_interval])) * 3600",
+          "expr": "sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__interval]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[1d] offset $__interval)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__interval]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__interval])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"saved|\"}[$__interval]))",
           "legendFormat": "saved",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          }
+          },
+          "interval": "5m"
         },
         {
-          "expr": "sum(rate({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__rate_interval])) * 3600",
+          "expr": "-sum((increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__interval]) and last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[1d] offset $__interval)) or (increase({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__interval]) >= last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__interval])) or last_over_time({proxy=~\"$proxy\", machine=~\"$machine\",__name__=~\"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total\",direction=~\"added|\"}[$__interval]))",
           "legendFormat": "added",
           "refId": "B",
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          }
+          },
+          "interval": "5m"
         }
       ],
       "fieldConfig": {
@@ -416,8 +419,12 @@
           "unit": "currencyUSD",
           "custom": {
             "stacking": {
-              "mode": "none"
-            }
+              "mode": "normal"
+            },
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "barAlignment": -1
           }
         },
         "overrides": [
