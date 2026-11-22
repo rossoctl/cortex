@@ -16,6 +16,9 @@ func TestLinearOnAdversarialInput(t *testing.T) {
 	const n = 64 << 10
 	rep := func(s string, size int) string { return strings.Repeat(s, size/len(s)) }
 	r := func(s string) func(int) string { return func(size int) string { return rep(s, size) } }
+	// above sizes a case whose END line is at the end: n is the END-line window, so at n the run
+	// finds its END line and at 4n it does not. From 4n on, both sizes are past the window.
+	above := func(size int) int { return size * 4 }
 	for name, in := range map[string]func(int) string{
 		"scheme separators":   r("://"),
 		"user info no at":     r("a://b:c"),
@@ -37,9 +40,12 @@ func TestLinearOnAdversarialInput(t *testing.T) {
 			return pgpBegin + "\nComment: " + rep(`a"`, size) + "\n\n" + pgpEnd
 		},
 		// Many blocks with a quoted header: the END search must not restart for each one.
-		"many quoted blocks":             r(pgpBegin + "\nComment: \"x\n"),
-		"many quoted blocks, raw JSON":   r(pgpBegin + `\nComment: \"x\n`),
-		"many quoted blocks, END at end": func(size int) string { return rep(pgpBegin+"\nComment: \"x\n", size) + "\n" + pgpEnd },
+		"many quoted blocks":           r(pgpBegin + "\nComment: \"x\n"),
+		"many quoted blocks, raw JSON": r(pgpBegin + `\nComment: \"x\n`),
+		"many quoted blocks, END at end": func(size int) string {
+			size = above(size)
+			return rep(pgpBegin+"\nComment: \"x\n", size) + "\n" + pgpEnd
+		},
 		// Many blocks with a bare-quoted header on one long line, then a bad line: each block must
 		// not search the rest of the line again.
 		"blocks with bare quotes on one line": func(size int) string {
@@ -48,9 +54,11 @@ func TestLinearOnAdversarialInput(t *testing.T) {
 		// A BEGIN inside each block's header line: the END search restarts behind its range.
 		"blocks inside header lines": r(pgpBegin + "\nComment: \"x " + pgpBegin + `Comment: \"y ` + "\n"),
 		"blocks inside header lines, END at end": func(size int) string {
+			size = above(size)
 			return rep(pgpBegin+"\nComment: \"x "+pgpBegin+`Comment: \"y `+"\n", size) + pgpEnd
 		},
 		"many raw-JSON blocks, END at end": func(size int) string {
+			size = above(size)
 			return rep(pgpBegin+`\nComment: \"x\n`, size) + `\n` + pgpEnd
 		},
 		"key headers": r("-----" + "BEGIN RSA " + "PRIVATE KEY-----"),
@@ -74,6 +82,9 @@ func TestLinearOnAdversarialInput(t *testing.T) {
 		"command prose":     r("run curl with care, then docker login and mysql later "),
 		"password flags":    r("--password --token "),
 		"rejected values":   r("auth_url=https://x.example.io/a?b=c "),
+		// Query strings in values: each override may rescan only within a total budget.
+		"query marks in values":  r("key=?"),
+		"query marks in a value": func(size int) string { return "key=" + rep("a?", size) },
 		"rejected URLs": func(size int) string {
 			return "auth_url=https://x.example.io/" + rep("a", size) + "?" + rep("password=", size)
 		},

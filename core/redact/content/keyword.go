@@ -186,6 +186,11 @@ func isNameByte(c byte) bool { return isTokenByte(c) || c == '.' }
 // findKeywords runs the keyword rule at each trigger position (sorted).
 func findKeywords(text string, at []int, out []Edit) []Edit {
 	covered, nameRunEnd := 0, -1
+	// rescanBudget is how many bytes, in all, the query-string override below may send back to
+	// be scanned again. Without a bound, "key=?" repeated makes every trigger's value run to the
+	// end of the text and be rescanned: quadratic. With it, the rescans cost at most 8 times the
+	// text, plus 64 KiB so a short text with nested URLs is never cut short.
+	rescanBudget := 8*len(text) + 64<<10
 	for _, p := range at {
 		if p < covered || p < nameRunEnd {
 			continue // inside an accepted or long value, or another word of the same name
@@ -235,8 +240,10 @@ func findKeywords(text string, at []int, out []Edit) []Edit {
 		covered = rejectedCover(ok, s+m[1], vs, ve)
 		if !ok && ve-vs >= longRejected {
 			// A long rejected URL can still hold an assignment in its query string
-			// ("auth_url=https://host/...?password=..."): the triggers from its "?" on are tried.
-			if q := strings.IndexByte(text[vs:ve], '?'); q >= 0 {
+			// ("auth_url=https://host/...?password=..."): the triggers from its "?" on are tried,
+			// within the rescan budget.
+			if q := strings.IndexByte(text[vs:ve], '?'); q >= 0 && rescanBudget > 0 {
+				rescanBudget -= ve - vs
 				covered = vs + q
 			}
 		}

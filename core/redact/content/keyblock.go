@@ -122,11 +122,27 @@ func armorHeaderValueEnd(text string, i int, endLine *endLineCache) (int, bool) 
 				i += 2
 				continue
 			}
+			// A JSON \uXXXX escape (Go's encoder writes "<", ">" and "&" that way) cannot end
+			// the string the block is in: it is part of the header.
+			if i+6 <= len(text) && text[i+1] == 'u' && isHex4(text[i+2:i+6]) {
+				i += 6
+				continue
+			}
 			return i, false
 		}
 		i++
 	}
 	return i, true
+}
+
+// isHex4 reports whether s is four hex digits.
+func isHex4(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if !(s[i] >= '0' && s[i] <= '9' || s[i] >= 'a' && s[i] <= 'f' || s[i] >= 'A' && s[i] <= 'F') {
+			return false
+		}
+	}
+	return len(s) == 4
 }
 
 // endLineBeforeQuote reports whether a key block's END line comes at or after i, within 64 KiB,
