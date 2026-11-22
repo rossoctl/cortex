@@ -5,9 +5,15 @@ doc, which holds its configuration and behavior.
 
 ## Plugins on a laptop
 
-A local install runs four plugins on the outbound pipeline: `inference-parser`,
-`mcp-parser`, `a2a-parser` and `tool-prune`. `tool-prune` does nothing until its
-`remove` list names a tool. Cortex also adds one [`script`](#script) slot at the
+A local install runs five plugins on the outbound pipeline: `inference-parser`,
+`mcp-parser`, `a2a-parser`, `tool-prune` and [`context-guru`](#context-guru).
+`tool-prune` does nothing until its `remove` list names a tool. `context-guru` runs
+preset `xhigh`, so it makes the request context smaller and makes extra model calls
+on the agent's own endpoint. Set its `on_error` to `observe` to measure it without
+changing any bytes **and without the model calls**: under `observe`, context-guru
+builds neither its static nor its incoming model, so every model-backed component
+degrades to deterministic/no-op, the same way the keep-alive keeper makes no ping
+under `observe`. Cortex also adds one [`script`](#script) slot at the
 end of the outbound pipeline. That slot runs each executable file in
 `~/.cortex/plugins`, and it does nothing while the folder is empty.
 
@@ -36,6 +42,11 @@ pipeline:
         on_error: enforce
         config:
           remove: []
+      - name: context-guru
+        on_error: enforce
+        config:
+          engine:
+            preset: xhigh
 ```
 
 ## Plugins
