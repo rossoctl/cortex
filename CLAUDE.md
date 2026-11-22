@@ -265,8 +265,11 @@ guards on the two `DELETE` routes. The producer-side contract is in
 
 **`DELETE /v1/sessions` and `DELETE /v1/sessions/{id}` do not clear the accountant's
 per-session state:** the Tracker state and `~/.cortex/accountant-state.json`, the
-per-thread billing mode in `core/accounting.Host`. The accountant state holds session and thread
-ids, content hashes and a billing mode, no content. The rest
+per-thread billing mode in `core/accounting.Host`, and the context-guru plugin's session
+state in `~/.cortex/context-guru-state.db`. The accountant state holds session and thread
+ids, content hashes and a billing mode, no content. The context-guru state DOES
+hold content (the summary checkpoint and other text the plugin made), and its rows stay 30 days
+after their last write. The rest
 has no time bound while the process runs: the in-memory maps keep at most 10,000 threads,
 dropping the oldest, and the snapshot (rewritten every 60s) holds what memory holds. A snapshot
 older than 1h is not restored. Details:
