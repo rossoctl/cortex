@@ -43,7 +43,7 @@ NET_LABELS = ("", "machine", "proxy", "preset")
 OLD_LOOKBACK = "1d"
 
 
-def inc(metric, by="", win="$__range", extra="", new_series_fallback=True, anchored=False):
+def inc(metric, by="", win="$__range", extra="", new_series_fallback=True, anchored=False, ahead=False):
     """Total over win: sum(increase(metric{filter}[win])), optionally by a label.
 
     A series born inside win started at 0, but increase() does not know that: with fewer than a
@@ -74,14 +74,18 @@ def inc(metric, by="", win="$__range", extra="", new_series_fallback=True, ancho
     "offset {win}" (outside any [brackets]) would not survive a substitution keyed on "[{win}]"
     (fleet()'s "Net saved per day" bars, which pick their window this way).
 
-    anchored=True adds Prometheus's anchored modifier to the increase() (see count_bar())."""
+    anchored=True adds Prometheus's anchored modifier to the increase() (see count_bar()).
+
+    ahead=True moves win to START at the evaluation time, not end there (see day_bar()). A sample
+    before win is then any sample at or before the evaluation time, so the OLD check has no offset."""
     g = f" by ({by})" if by else ""
     sel = f'{metric}{{{FILTER}{extra}}}'
     if not new_series_fallback:
         return f'sum{g}(increase({sel}[{win}]))'
-    grew = f'increase({sel}[{win}]{" anchored" if anchored else ""})'
-    last = f'last_over_time({sel}[{win}])'
-    old = f'last_over_time({sel}[{OLD_LOOKBACK}] offset {win})'
+    shift = f" offset -{win}" if ahead else ""
+    grew = f'increase({sel}[{win}]{" anchored" if anchored else ""}{shift})'
+    last = f'last_over_time({sel}[{win}]{shift})'
+    old = f'last_over_time({sel}[{OLD_LOOKBACK}]{"" if ahead else f" offset {win}"})'
     return f'sum{g}(({grew} and {old}) or ({grew} >= {last}) or {last})'
 
 
@@ -118,6 +122,15 @@ COUNT_DESC = " Each bar is the count in that bar's time span. The span grows wit
 def count_bar(metric, by="", extra=""):
     """The exact count in each bar: bar(), which is inc() anchored over $__interval. Use with series(..., bars=True, interval=BAR)."""
     return bar(metric, by, extra)
+
+
+def day_bar(metric, by="", extra=""):
+    """The dollars of each UTC day: inc() anchored over the day that STARTS at the bar. Use with
+    series(..., bars=True, interval="1d"). The 1d step puts one point at 00:00 UTC of each day, and
+    a window that ends there is the PREVIOUS day: the bar marked 11-22 held 11-21, and today never
+    showed (2026-11-22, Cache effects). ahead=True makes each bar its own day, and today's bar the
+    total so far, as "Net saved per day" does with "offset -1d"."""
+    return inc(metric, by, "1d", extra, anchored=True, ahead=True)
 
 
 def rate(metric, by="", extra=""):
@@ -355,10 +368,10 @@ def savings():
                     0, 9, 7, 8, kind="bargauge", vertical=True, instant=True,
                     desc="Tokens the provider did not bill. The tier decides the price of each token."))
     P.append(series(4, "Cache effects (USD per day)", [
-        (bar("llm_savings_cache_effect_usd_total", "effect", DIR_SAVED), "{{effect}} saved"),
-        (f'-{bar("llm_savings_cache_effect_usd_total", "effect", DIR_ADDED)}', "{{effect}} added")],
+        (day_bar("llm_savings_cache_effect_usd_total", "effect", DIR_SAVED), "{{effect}} saved"),
+        (f'-{day_bar("llm_savings_cache_effect_usd_total", "effect", DIR_ADDED)}', "{{effect}} added")],
         7, 9, 9, 8, unit=USD, stack=True, bars=True, interval="1d",
-        desc="How the cache changed the bill, saved above zero and added below. These are not in the operations' saved or added counters. NET SAVED on the Fleet dashboard adds them."))
+        desc="How the cache changed the bill, saved above zero and added below. One bar per UTC day; today's bar is the total so far. These are not in the operations' saved or added counters. NET SAVED on the Fleet dashboard adds them."))
     P.append(series(5, "Break cost by cause", [
         (inc("llm_savings_cache_effect_usd_total", "cause", extra=',effect="break",direction="added"'), "{{cause}}")],
         16, 9, 8, 8, unit=USD, kind="bargauge", instant=True, desc="What cache breaks cost, by why they happened."))

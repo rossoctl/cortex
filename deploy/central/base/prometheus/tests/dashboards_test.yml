@@ -144,6 +144,40 @@ tests:
           - labels: '{cause="other"}'
             value: 1
 
+  # ---- A daily bar is its own day, not the day before ------------------------------------------
+  # The 1d step puts a bar at 00:00 UTC. A window that ends there is the previous day: the bar
+  # marked 11-22 held 11-21's dollars, and today never showed (2026-11-22, Cache effects).
+  # day_bar() looks ahead from the bar. Day 1 (0-24h) saves 1 per hour; day 2 saves 2 per hour
+  # until 31h, the last push. The rescue series is born at 26h already holding 5.
+  # The 48h evaluation is also there because promtool loads input samples only up to the last
+  # eval_time: without it, the window after 24h would be empty here, though not in Prometheus.
+  - name: a daily cache-effect bar holds its own day, and today so far
+    interval: 1h
+    input_series:
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="break",cause="none",direction="saved"}'
+        values: '0+1x24 26+2x6'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="rescue",cause="none",direction="saved"}'
+        values: '_x26 5x5'
+    promql_expr_test:
+      # The bar at 0h is day 1: 24, with nothing from day 2.
+      - eval_time: 0h
+        expr: 'sum by (effect)((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d] anchored offset -1d) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d])) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d] anchored offset -1d) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d] offset -1d)) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d] offset -1d))'
+        exp_samples:
+          - labels: '{effect="break"}'
+            value: 24
+      # The bar at 24h is day 2 so far: break 24 to 38 is 14, and rescue counts its first 5.
+      - eval_time: 24h
+        expr: 'sum by (effect)((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d] anchored offset -1d) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d])) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d] anchored offset -1d) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d] offset -1d)) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d] offset -1d))'
+        exp_samples:
+          - labels: '{effect="break"}'
+            value: 14
+          - labels: '{effect="rescue"}'
+            value: 5
+      # Day 3 has no push yet, so it has no bar.
+      - eval_time: 48h
+        expr: 'sum by (effect)((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d] anchored offset -1d) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d])) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d] anchored offset -1d) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d] offset -1d)) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",direction="saved"}[1d] offset -1d))'
+        exp_samples: []
+
   # ---- NET SAVED adds the cache effects and the interaction --------------------------------------
   # accountant docs/metrics/metrics.md, "The net saving": no counter contains another, so the net is
   # the operations plus the cache effects plus the interaction. Before this, the net left out the

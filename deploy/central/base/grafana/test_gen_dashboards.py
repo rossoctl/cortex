@@ -142,6 +142,15 @@ class CountTrendTest(unittest.TestCase):
         self.assertIn(filled(p["targets"][0]["expr"]), tested)
 
 
+class DayBarTest(unittest.TestCase):
+    def test_the_cache_effect_day_bars_are_tested(self):
+        with open(PROMTOOL_TEST) as f:
+            tested = f.read()
+        p = next(p for p in g.savings()["panels"] if p["title"] == "Cache effects (USD per day)")
+        self.assertIn(filled(p["targets"][0]["expr"]), tested)
+        self.assertIn(" offset -1d", p["targets"][1]["expr"])
+
+
 class LegendTest(unittest.TestCase):
     def test_a_by_label_legend_never_falls_back_to_value(self):
         # Older cortex builds push llm_cache_misses_total and llm_keepalive_pings_total with no cause or

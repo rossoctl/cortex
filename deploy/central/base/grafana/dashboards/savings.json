@@ -249,7 +249,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "Cache effects (USD per day)",
-      "description": "How the cache changed the bill, saved above zero and added below. These are not in the operations' saved or added counters. NET SAVED on the Fleet dashboard adds them.",
+      "description": "How the cache changed the bill, saved above zero and added below. One bar per UTC day; today's bar is the total so far. These are not in the operations' saved or added counters. NET SAVED on the Fleet dashboard adds them.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -262,7 +262,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (effect)((increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"saved\"}[$__interval] anchored) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"saved\"}[1d] offset $__interval)) or (increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"saved\"}[$__interval] anchored) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"saved\"}[$__interval])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"saved\"}[$__interval]))",
+          "expr": "sum by (effect)((increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"saved\"}[1d] anchored offset -1d) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"saved\"}[1d])) or (increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"saved\"}[1d] anchored offset -1d) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"saved\"}[1d] offset -1d)) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"saved\"}[1d] offset -1d))",
           "legendFormat": "{{effect}} saved",
           "refId": "A",
           "datasource": {
@@ -272,7 +272,7 @@
           "interval": "1d"
         },
         {
-          "expr": "-sum by (effect)((increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"added\"}[$__interval] anchored) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"added\"}[1d] offset $__interval)) or (increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"added\"}[$__interval] anchored) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"added\"}[$__interval])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"added\"}[$__interval]))",
+          "expr": "-sum by (effect)((increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"added\"}[1d] anchored offset -1d) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"added\"}[1d])) or (increase(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"added\"}[1d] anchored offset -1d) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"added\"}[1d] offset -1d)) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~\"$proxy\", machine=~\"$machine\",direction=\"added\"}[1d] offset -1d))",
           "legendFormat": "{{effect}} added",
           "refId": "B",
           "datasource": {
