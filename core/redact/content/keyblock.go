@@ -34,14 +34,15 @@ func isKeyBodyByte(c byte) bool {
 // text, so the whole line is body, whatever its bytes, except a double quote or a backslash that
 // is not one of those escapes: those can end the JSON string the block is in, and the run must
 // not cross it.
-func keyBodyEnd(text string, i int) int {
+//
+// el is the END-line cache that findKeyBlocks keeps across all the blocks of the text.
+func keyBodyEnd(text string, i int, el *endLineCache) int {
 	lineStart := true
-	endLine := endLineCache{at: -1, clearFrom: -1, linesClearFrom: -1} // found once for every header quote that asks
 	for i < len(text) {
 		if lineStart {
 			lineStart = false
 			if n := armorHeaderName(text[i:]); n > 0 {
-				end, ok := armorHeaderValueEnd(text, i+n, &endLine)
+				end, ok := armorHeaderValueEnd(text, i+n, el)
 				if !ok {
 					return end
 				}
@@ -90,8 +91,10 @@ func armorHeaderName(s string) int {
 //     header line, holds a quote. A bare quote that ends a JSON string is on a line with no real
 //     break, and the run stops there.
 //
-// endLine caches where the next END line is, and what was found up to it.
+// endLine caches where the next END line is, and what was found up to it. Where this header
+// line ends is found once, at its first bare quote, so a line full of quotes is read once.
 func armorHeaderValueEnd(text string, i int, endLine *endLineCache) (int, bool) {
+	lineEnd := 0 // the line's real line break, once a bare quote asked; -1: none usable
 	for i < len(text) {
 		switch c := text[i]; {
 		case c == '\n' || c == '\r':
@@ -103,7 +106,10 @@ func armorHeaderValueEnd(text string, i int, endLine *endLineCache) (int, bool) 
 			i += 2
 			continue
 		case c == '"':
-			if !decodedHeaderQuoteOK(text, i, endLine) {
+			if lineEnd == 0 {
+				lineEnd = realLineEnd(text, i, endLine)
+			}
+			if lineEnd < 0 || !decodedHeaderQuoteOK(text, lineEnd, endLine) {
 				return i, false
 			}
 			i++
@@ -133,8 +139,12 @@ func endLineBeforeQuote(text string, i int, el *endLineCache) bool {
 	if el.clearFrom >= 0 && i >= el.clearFrom {
 		return true // no unescaped quote from clearFrom to the END line, so none from i either
 	}
+	if el.quoteAt >= i {
+		return false // an unescaped quote at quoteAt, before the END line, is after i too
+	}
 	for j := i; j < el.at; j++ {
 		if text[j] == '"' && !escapedAt(text, j) {
+			el.quoteAt = j
 			return false
 		}
 	}
@@ -142,20 +152,35 @@ func endLineBeforeQuote(text string, i int, el *endLineCache) bool {
 	return true
 }
 
-// decodedHeaderQuoteOK reports whether a bare quote at q, on an armour header line, is part of
-// the header: its line ends with a real line break (no escaped one first), the END line follows
-// within 64 KiB, and every line in between that holds a quote is a header line.
-func decodedHeaderQuoteOK(text string, q int, el *endLineCache) bool {
-	nl := strings.IndexByte(text[q:], '\n')
-	if nl < 0 || strings.Contains(text[q:q+nl], `\n`) {
-		return false
+// realLineEnd returns where the line holding q ends, just after its real line break, or -1 when
+// it has none or an escaped one ("\n", raw JSON) comes first. The line's break, and the last
+// escaped one before it, are cached in el: many blocks on one long line ask about the same line.
+func realLineEnd(text string, q int, el *endLineCache) int {
+	if !(el.lineFrom >= 0 && q >= el.lineFrom && q < el.lineBreak) {
+		el.lineFrom, el.lineBreak = q, len(text)
+		if nl := strings.IndexByte(text[q:], '\n'); nl >= 0 {
+			el.lineBreak = q + nl
+		}
+		el.lineEscaped = el.lineFrom + strings.LastIndex(text[el.lineFrom:el.lineBreak], `\n`) // lineFrom-1: none
 	}
-	lineEnd := q + nl + 1
+	if el.lineBreak >= len(text) || el.lineEscaped >= q {
+		return -1
+	}
+	return el.lineBreak + 1
+}
+
+// decodedHeaderQuoteOK reports whether a bare quote on an armour header line that ends at
+// lineEnd (realLineEnd) is part of the header: the END line follows within 64 KiB, and every line
+// in between that holds a quote is a header line. What a walk finds is cached in el.
+func decodedHeaderQuoteOK(text string, lineEnd int, el *endLineCache) bool {
 	if !endLineAfter(text, lineEnd, el) {
 		return false
 	}
 	if el.linesClearFrom >= 0 && lineEnd >= el.linesClearFrom {
 		return true // the lines from linesClearFrom to the END line were checked
+	}
+	if el.badLineAt >= lineEnd {
+		return false // a line with a quote, at badLineAt, is still between
 	}
 	for j := lineEnd; j < el.at; {
 		k := strings.IndexByte(text[j:el.at], '\n')
@@ -164,6 +189,7 @@ func decodedHeaderQuoteOK(text string, q int, el *endLineCache) bool {
 			line = text[j : j+k]
 		}
 		if armorHeaderName(line) == 0 && strings.IndexByte(line, '"') >= 0 {
+			el.badLineAt = j
 			return false
 		}
 		if k < 0 {
@@ -175,21 +201,63 @@ func decodedHeaderQuoteOK(text string, q int, el *endLineCache) bool {
 	return true
 }
 
+// endLineWindow is how far an END line may be from where it is looked for: a key block is a few
+// kilobytes, so one farther off is another block's.
+const endLineWindow = 64 << 10
+
 // endLineAfter finds the next END line at or after i into el, and reports whether there is one
-// within 64 KiB.
+// within endLineWindow. Each search reads no farther than the window, and no byte an earlier
+// search read again: the cache is shared by every block of the text, so many blocks stay linear.
+//
+// The searched range is [lo, searched). A question about a point before lo (a BEGIN line inside
+// an earlier block's header line) is about text never searched: everything is forgotten and the
+// search starts again from there.
 func endLineAfter(text string, i int, el *endLineCache) bool {
-	if el.at < i {
-		el.at, el.clearFrom, el.linesClearFrom = len(text), -1, -1 // none
-		if j := indexFrom(text, "-----END", i); j >= 0 {
-			el.at = j
-		}
+	if i < el.lo {
+		el.reset()
+		el.lo, el.searched = i, i
 	}
-	return el.at < len(text) && el.at-i <= 64<<10
+	if el.at >= i {
+		return el.at-i <= endLineWindow
+	}
+	el.reset()
+	from := max(i, el.searched-len(endMark)+1)
+	if i > el.searched {
+		el.lo = i // a gap after the searched range: the range starts again here
+	}
+	limit := min(len(text), i+endLineWindow+len(endMark))
+	if from < limit {
+		if j := indexFrom(text[:limit], endMark, from); j >= 0 {
+			el.at, el.searched = j, j
+			return true
+		}
+		el.searched = limit
+	}
+	return false
 }
 
-// endLineCache is where the next END line is, and from where up to it there is no unescaped
-// quote (clearFrom), or no line but header lines holding one (linesClearFrom); -1: not known.
-type endLineCache struct{ at, clearFrom, linesClearFrom int }
+const endMark = "-----END"
+
+// endLineCache is what the key-block rule knows about the next END line: where it is (at, -1:
+// none found), the range of text searched for one ([lo, searched)), and, up to it: from where
+// there is no unescaped quote (clearFrom), where there is one (quoteAt), from where no line but
+// header lines holds a quote (linesClearFrom), and where a line that is not a header holds one
+// (badLineAt). -1: not known. Apart from the END line, it holds the last line realLineEnd read:
+// from lineFrom, its real line break (lineBreak, len(text): none), and the last escaped "\n"
+// before it (lineEscaped, lineFrom-1: none).
+type endLineCache struct {
+	at, lo, searched, clearFrom, quoteAt, linesClearFrom, badLineAt int
+	lineFrom, lineBreak, lineEscaped                                int
+}
+
+func newEndLineCache() *endLineCache {
+	return &endLineCache{at: -1, clearFrom: -1, quoteAt: -1, linesClearFrom: -1, badLineAt: -1, lineFrom: -1}
+}
+
+// reset forgets the END line and what was found up to it, but not how far the text was searched.
+func (el *endLineCache) reset() {
+	el.at, el.clearFrom, el.quoteAt, el.linesClearFrom, el.badLineAt = -1, -1, -1, -1, -1
+}
 
 // escapedAt reports whether the byte at j is escaped: an odd number of backslashes before it.
 func escapedAt(text string, j int) bool {
@@ -206,6 +274,7 @@ func escapedAt(text string, j int) bool {
 // reused while the BEGIN lines are inside them.
 func findKeyBlocks(text string, at []int, out []Edit) []Edit {
 	covered, runEnd, nextEnd := 0, -1, -1
+	el := newEndLineCache() // shared by every block: END positions only move forward
 	for _, p := range at {
 		if p < covered {
 			continue
@@ -216,7 +285,7 @@ func findKeyBlocks(text string, at []int, out []Edit) []Edit {
 		}
 		bodyStart := p + h[1]
 		if runEnd < bodyStart {
-			runEnd = keyBodyEnd(text, bodyStart)
+			runEnd = keyBodyEnd(text, bodyStart, el)
 		}
 		end := runEnd // the cut-off case
 		for {

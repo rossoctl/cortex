@@ -29,6 +29,30 @@ func TestLinearOnAdversarialInput(t *testing.T) {
 		"armor header quotes": func(size int) string {
 			return "-----" + "BEGIN PGP " + "PRIVATE KEY BLOCK-----\n" + rep(`Comment: \"x\" \"y\"`+"\n", size) + "-----END PGP PRIVATE KEY BLOCK-----"
 		},
+		// One header line full of bare quotes: each quote must not rescan the line.
+		"bare quotes on one header line": func(size int) string {
+			return pgpBegin + "\nComment: " + rep(`"`, size) + "\n\n" + pgpEnd
+		},
+		"a\" on one header line": func(size int) string {
+			return pgpBegin + "\nComment: " + rep(`a"`, size) + "\n\n" + pgpEnd
+		},
+		// Many blocks with a quoted header: the END search must not restart for each one.
+		"many quoted blocks":             r(pgpBegin + "\nComment: \"x\n"),
+		"many quoted blocks, raw JSON":   r(pgpBegin + `\nComment: \"x\n`),
+		"many quoted blocks, END at end": func(size int) string { return rep(pgpBegin+"\nComment: \"x\n", size) + "\n" + pgpEnd },
+		// Many blocks with a bare-quoted header on one long line, then a bad line: each block must
+		// not search the rest of the line again.
+		"blocks with bare quotes on one line": func(size int) string {
+			return rep(pgpBegin+`Comment: "y `, size) + "\n\"bad\"\n" + pgpEnd
+		},
+		// A BEGIN inside each block's header line: the END search restarts behind its range.
+		"blocks inside header lines": r(pgpBegin + "\nComment: \"x " + pgpBegin + `Comment: \"y ` + "\n"),
+		"blocks inside header lines, END at end": func(size int) string {
+			return rep(pgpBegin+"\nComment: \"x "+pgpBegin+`Comment: \"y `+"\n", size) + pgpEnd
+		},
+		"many raw-JSON blocks, END at end": func(size int) string {
+			return rep(pgpBegin+`\nComment: \"x\n`, size) + `\n` + pgpEnd
+		},
 		"key headers": r("-----" + "BEGIN RSA " + "PRIVATE KEY-----"),
 		"key headers and end": func(size int) string {
 			return rep("-----"+"BEGIN RSA "+"PRIVATE KEY-----", size) + "-----END RSA PRIVATE KEY-----"
@@ -62,6 +86,12 @@ func TestLinearOnAdversarialInput(t *testing.T) {
 		}
 	}
 }
+
+// A PGP key block's BEGIN and END lines, assembled so no header appears in the source.
+const (
+	pgpBegin = "-----" + "BEGIN PGP " + "PRIVATE KEY BLOCK-----"
+	pgpEnd   = "-----" + "END PGP " + "PRIVATE KEY BLOCK-----"
+)
 
 // bestOf runs f k times and returns its shortest time: the least disturbed by the machine.
 func bestOf(k int, f func()) time.Duration {

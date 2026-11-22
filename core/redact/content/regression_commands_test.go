@@ -63,6 +63,17 @@ func TestRegression_CommandsWithShellEscapes(t *testing.T) {
 		{`docker login -u bob -p Pa\$` + r + ` reg.example.com`, "docker login -u bob -p [REDACTED:password] reg.example.com"},
 		// the same in raw JSON, where the shell's backslash is itself escaped
 		{`{"cmd":"mysql -uroot -pMy\\$` + r + `"}`, `{"cmd":"mysql -uroot -p[REDACTED:password]"}`},
+		// An escaped space ends a value for now (the part before it goes): taking it in is a
+		// follow-up. These pin that the part before is still replaced, and that what follows
+		// the escape never hides an earlier or a later secret.
+		{`tool --token ` + mixed(40) + `\ trailing`, `tool --token [REDACTED:secret_value]\ trailing`},
+		{`tool --password S3cr3tQ9\ example.com`, `tool --password [REDACTED:password]\ example.com`},
+		{`mysql -uroot -pS3cr3tQ9\ ***`, `mysql -uroot -p[REDACTED:password]\ ***`},
+		{`curl -u alice:S3cr3tQ9\ *** https://x.example.com`, `curl -u alice:[REDACTED:password]\ *** https://x.example.com`},
+		{`mysql -pS3cr3tQ9\\ -h prod db`, `mysql -p[REDACTED:password] -h prod db`},
+		{`curl -u alice:S3cr3tQ9xZ https://h.example.com -u bob:\ x`, `curl -u alice:[REDACTED:password] https://h.example.com -u bob:\ x`},
+		{`docker login -p S3cr3tQ9xZ reg.example.com --password \ x`, `docker login -p [REDACTED:password] reg.example.com --password \ x`},
+		{`curl -u a:S3cr3tQ9\ ***;curl -u b:Zq8#Lm3pW9 https://h`, `curl -u a:[REDACTED:password]\ ***;curl -u b:[REDACTED:password] https://h`},
 	} {
 		out, _ := redact(tc.in)
 		if out != tc.want {

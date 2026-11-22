@@ -120,6 +120,13 @@ func TestPrivateKeys_ArmorHeaders(t *testing.T) {
 	in := `{"k":"-----` + `BEGIN PGP ` + `PRIVATE KEY BLOCK-----\nComment: say \"hi\"\n\n` + mixed(64) + `","n":1}`
 	out, _ := redact(in)
 	mustBeJSON(t, "the output", out)
+
+	// A second BEGIN inside the first block's header line, with its own END line on that line:
+	// the first block's check looked past it, and the second must still find its END line.
+	nested := pgpBegin + "\nComment: \"x " + pgpBegin + `Comment: \"y zz ` + pgpEnd + "\"\nAAAA"
+	if out, _ := redact(nested); strings.Contains(out, "zz") || strings.Contains(out, `\"y`) {
+		t.Errorf("a block inside a header line: out = %q", out)
+	}
 }
 
 // A key block inside a JSON string, with its line breaks escaped, is replaced inside the string;
@@ -174,6 +181,11 @@ func TestURLPasswords(t *testing.T) {
 		{"postgres://bob:" + "p@ss/w0rd" + "@db.example.com/x", "postgres://bob:[REDACTED:password]@db.example.com/x"},                             // both @ and /
 		{"postgres://u:" + fill("a", 129) + "@db/x", "postgres://u:[REDACTED:password]@db/x"},                                                      // over 128 bytes
 		{"https://alice:" + fill("a", 16) + "@registry.npmjs.org/@babel/core", "https://alice:[REDACTED:password]@registry.npmjs.org/@babel/core"}, // an npm scope in the path
+		{"postgres://u:" + mixed(16) + "/@db.example.com/x", "postgres://u:[REDACTED:password]@db.example.com/x"},                                  // a password ending in "/"
+		{"DATABASE_URL=postgres://u:" + mixed(16) + "/@db:5432/app", "DATABASE_URL=postgres://u:[REDACTED:password]@db:5432/app"},                  // the same, in an env line
+		{"https://user:pw1234@host/path/x@y=z", "https://user:[REDACTED:password]@host/path/x@y=z"},                                                // an "@" in the path: the host stays
+		{"https://u:" + mixed(12) + "@host/pkg@1.0+local", "https://u:[REDACTED:password]@host/pkg@1.0+local"},                                     // the same
+		{"https://user:Secr3tPw@host.example.com/a/b@v1|grep x", "https://user:[REDACTED:password]@host.example.com/a/b@v1|grep x"},                // a shell pipe after the path
 
 		{`{"dsn":"amqp://guest:` + fill("g", 9) + `@mq/vhost","n":1}`, `{"dsn":"amqp://guest:[REDACTED:password]@mq/vhost","n":1}`},
 	} {
@@ -214,6 +226,8 @@ func TestURLPasswords_Kept(t *testing.T) {
 		"http://host:8080 then mail a@b.example.com",
 		"ssh://git@github.com/org/repo",
 		"http://[::1]/contact@company.example.com", // an IPv6 host, an @ in the path
+		"https://example.com/a:b/@scope/pkg",       // a "/" before the colon: no user info
+		"http://host:8080/@babel/core",             // a port, then a scoped path
 		"http://[::1]:8080/x",
 		"https://not-hooks." + "slack.com/services/" + "T" + fill("S", 8) + "/B" + fill("T", 8) + "/" + fill("U", 12), // another host
 	} {

@@ -89,25 +89,37 @@ func findURLPasswords(text string, at []int, out []Edit) []Edit {
 // Taking the last one keeps a password that holds "@" and "/" whole ("p@ss/w0rd@db"). If the
 // URL also has an email in its path after real credentials, more than the password is replaced:
 // over-redaction, the safe side.
+//
+// An "@" right after "/" is usually a path segment (an npm scope, "/@babel/core"), so one that is
+// not is preferred. When "/@" is the only one, it separates a password that ends in "/" from its
+// host ("u:s3cr3t/@db"), and is taken.
 func lastHostAt(run string, colon int) int {
+	scoped := -1
 	for i := len(run) - 1; i > colon; i-- {
-		// An "@" right after "/" starts a path segment (an npm scope, "/@babel/core"), not a host.
-		if run[i] == '@' && run[i-1] != '/' && isHostAt(run[i+1:]) {
-			return i
+		if run[i] == '@' && isHostAt(run[i+1:]) {
+			if run[i-1] != '/' {
+				return i
+			}
+			if scoped < 0 {
+				scoped = i
+			}
 		}
 	}
-	return -1
+	return scoped
 }
 
-// isHostAt reports whether rest starts with a host: one or more host characters, up to the
-// end of the authority ("/", "?", "#"), the "," or ";" of a list of URLs, or the run's end.
+// isHostAt reports whether rest starts with a host: one or more host characters, up to the end
+// of the authority ("/", "?", "#"), the separator of a list of URLs ("," ";"), or the run's end.
+// Any other byte means it is not a host, so an "@" in a path ("/x@y=z", "/pkg@1.0+local") is not
+// taken for the host's, and the real host stays. ("|" is not a separator: in a shell command it
+// is a pipe, "…/b@v1|grep x".)
 func isHostAt(rest string) bool {
 	if rest == "" || !isHostStart(rest[0]) {
 		return false
 	}
 	for i := 0; i < len(rest); i++ {
 		c := rest[i]
-		if c == '/' || c == '?' || c == '#' || c == ',' || c == ';' {
+		if strings.IndexByte("/?#,;", c) >= 0 {
 			return true
 		}
 		if !(isLetter(c) || c >= '0' && c <= '9' || strings.IndexByte(".-:[]_%", c) >= 0) {
