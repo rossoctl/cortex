@@ -212,11 +212,13 @@ func TestAccountingThread(t *testing.T) {
 }
 
 // An engine's model calls run on goroutines of their own while the plugin is still dispatched
-// (context-guru's extract stage runs six at once). ReportOpsAs must be safe beside them, beside
-// the framework's own stamping on the request goroutine, and beside ReportedOps. Run with -race.
-func TestReportOpsAs_ConcurrentWithDispatch(t *testing.T) {
+// (context-guru's extract stage runs six at once). OpReporter.Report must be safe beside them,
+// beside the framework's own stamping on the request goroutine, and beside ReportedOps. Run with
+// -race.
+func TestOpReporter_ConcurrentWithDispatch(t *testing.T) {
 	const n = 16
 	pctx := &Context{}
+	reporter := OpReporter{c: pctx, operator: "engine", dryRun: true}
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
@@ -224,8 +226,8 @@ func TestReportOpsAs_ConcurrentWithDispatch(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			if !pctx.ReportOpsAs("engine", true, accountant.Operation{Kind: accountant.KindSpend}) {
-				t.Error("ReportOpsAs dropped an op before the list was sealed")
+			if !reporter.Report(accountant.Operation{Kind: accountant.KindSpend}) {
+				t.Error("OpReporter.Report dropped an op before the list was sealed")
 			}
 		}()
 	}
@@ -252,12 +254,14 @@ func TestReportOpsAs_ConcurrentWithDispatch(t *testing.T) {
 	}
 }
 
-// ReportOpsAs takes the operator and dry-run state it is given and reads nothing of the plugin
-// being dispatched, so an op reported after the plugin returned is not given another's name.
-func TestReportOpsAs_ReadsNoDispatchState(t *testing.T) {
+// OpReporter.Report takes the operator and dry-run state the reporter was built with and reads
+// nothing of the plugin being dispatched, so an op reported after the plugin returned is not
+// given another's name.
+func TestOpReporter_ReadsNoDispatchState(t *testing.T) {
 	pctx := &Context{}
 	pctx.setCurrent("someone-else", InvocationPhaseRequest, ErrorPolicyObserve)
-	pctx.ReportOpsAs("engine", false, accountant.Operation{ID: "1"}, accountant.Operation{ID: "2", Operator: "engine.sub", DryRun: true})
+	reporter := OpReporter{c: pctx, operator: "engine", dryRun: false}
+	reporter.Report(accountant.Operation{ID: "1"}, accountant.Operation{ID: "2", Operator: "engine.sub", DryRun: true})
 	pctx.clearCurrent()
 	ops := pctx.ReportedOps()
 	if len(ops) != 2 {
@@ -290,10 +294,11 @@ func TestReportOps_AfterRunIsDroppedAndCounted(t *testing.T) {
 	p.Run(context.Background(), pctx)
 
 	before := LateOpsDropped()
+	reporter := OpReporter{c: held, operator: "keep", dryRun: false}
 	done := make(chan bool)
-	go func() { done <- held.ReportOpsAs("keep", false, accountant.Operation{ID: "late"}) }()
+	go func() { done <- reporter.Report(accountant.Operation{ID: "late"}) }()
 	if <-done {
-		t.Error("ReportOpsAs after Run returned true, want the op dropped")
+		t.Error("OpReporter.Report after Run returned true, want the op dropped")
 	}
 	held.ReportOps(accountant.Operation{ID: "late-2"})
 	if got := LateOpsDropped() - before; got != 2 {

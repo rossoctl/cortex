@@ -359,7 +359,7 @@ func TestPlugin_ModelCallIsSpendOp(t *testing.T) {
 		maxTokens: 100,
 		model:     "cheap-model",
 		host:      "cheap-llm.svc",
-		pctx:      pctx,
+		report:    pctx.OpReporter(),
 	}
 	if _, err := m.Complete(context.Background(), "summarize this"); err != nil {
 		t.Fatalf("Complete: %v", err)
