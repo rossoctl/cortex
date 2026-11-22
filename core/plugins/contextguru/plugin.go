@@ -116,24 +116,24 @@ type contextGuruConfig struct {
 
 // cgModel adapts an llmclient.Client to context-guru's components.Model interface
 // (single prompt in, text out). model/host identify the call for accounting
-// (accountant.ModelCall.Model/Host); pctx, when set, is the request this call was made
-// for, and Complete reports the call to it as a KindSpend context operation (W4.6)
-// before returning. pctx is captured at call time because it is per-request while a
-// cgModel wrapping the plugin's static model is shared across requests.
+// (accountant.ModelCall.Model/Host); report, when set, is the request this call was made
+// for, and Complete reports the call to it as a KindSpend context operation (W4.6) before
+// returning. report is captured at call time because it is per-request while a cgModel
+// wrapping the plugin's static model is shared across requests.
 //
 // The engine calls Complete concurrently (its extract stage runs six calls at once) and
 // sometimes after OnRequest returned (summarize_async, cache_aware_async). So Complete reads
-// nothing of pctx's dispatch state: dryRun is the plugin's on_error: observe state, captured
-// on the request goroutine when the model was built, and the op is reported with
-// pctx.ReportOpsAs under the plugin's own name. A call that returns after the request was
-// accounted has its op dropped by the pipeline and counted in lateDropped.
+// nothing of pctx's dispatch state: report is a pipeline.OpReporter, captured on the request
+// goroutine (via pctx.OpReporter(), while the plugin is dispatched) when the model was built, so
+// Report is safe to call later from any goroutine and stamps the op with the plugin's own name
+// and its on_error: observe state without Complete having to know either. A call that returns
+// after the request was accounted has its op dropped by the pipeline and counted in lateDropped.
 type cgModel struct {
 	c           *llmclient.Client
 	maxTokens   int
 	model       string
 	host        string
-	pctx        *pipeline.Context
-	dryRun      bool
+	report      pipeline.OpReporter
 	lateDropped *atomic.Int64
 }
 
@@ -149,9 +149,9 @@ func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if resp.Usage != nil && m.pctx != nil {
+	if resp.Usage != nil && m.report != (pipeline.OpReporter{}) {
 		cached := resp.Usage.CachedTokens()
-		accepted := m.pctx.ReportOpsAs(pluginName, m.dryRun, accountant.Operation{
+		accepted := m.report.Report(accountant.Operation{
 			Kind: accountant.KindSpend,
 			Call: &accountant.ModelCall{
 				Host:  m.host,
@@ -403,8 +403,7 @@ func (p *ContextGuru) staticModelFor(pctx *pipeline.Context) cgcomponents.Model 
 		return nil
 	}
 	m := *p.static
-	m.pctx = pctx
-	m.dryRun = pctx.Observing()
+	m.report = pctx.OpReporter()
 	m.lateDropped = &p.lateModelCalls
 	return m
 }
@@ -452,8 +451,7 @@ func (p *ContextGuru) incomingModel(pctx *pipeline.Context, provider bschemas.Mo
 		maxTokens:   p.modelMax,
 		model:       model,
 		host:        pctx.Host,
-		pctx:        pctx,
-		dryRun:      pctx.Observing(),
+		report:      pctx.OpReporter(),
 		lateDropped: &p.lateModelCalls,
 	}
 }

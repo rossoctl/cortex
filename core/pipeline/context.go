@@ -462,7 +462,7 @@ type Context struct {
 	// the pipeline has an accountant. See ClientBody.
 	clientBody []byte
 	// opsMu guards reportedOps and opsSealed: an engine's model calls report from goroutines
-	// of their own (ReportOpsAs), beside the request goroutine.
+	// of their own (OpReporter), beside the request goroutine.
 	opsMu sync.Mutex
 	// reportedOps are the context operations plugins reported, in call order. See ReportOps.
 	reportedOps []accountant.Operation
