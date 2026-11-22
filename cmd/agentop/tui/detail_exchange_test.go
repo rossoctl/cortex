@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -204,7 +205,7 @@ func yanked(t *testing.T, m *model) string {
 }
 
 func TestDetail_YankWritesCursorHalf(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	testhome.Set(t, t.TempDir())
 	m := exchangeDetail(t)
 	m.Update(keyRune('y'))
 	if got := yanked(t, m); !strings.Contains(got, `"phase": "request"`) {
@@ -220,7 +221,7 @@ func TestDetail_YankWritesCursorHalf(t *testing.T) {
 // Review focus: the cursor sits in a missing half.
 func TestDetail_YankMissingHalfWritesNothing(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	at := time.Now().Add(-time.Minute)
 	req, _ := turnExchange(at)
 	m := openDetail(t, at.Add(time.Minute), req)

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/cmd/agentop/tui"
 )
 
@@ -562,7 +563,13 @@ func TestMain(m *testing.M) {
 	// Tests set package variables like this one, so tests in this package run
 	// sequentially: none calls t.Parallel.
 	healthPollDivisor = 10
-	os.Exit(m.Run())
+	// The home directory is a temporary one for the whole run, so no test can read or write
+	// the real profile, even one that sets no home of its own (see testhome). The children
+	// above inherit it.
+	cleanup := testhome.Isolate()
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 // The child argv round-trips an argument containing a space, ACROSS the process boundary.

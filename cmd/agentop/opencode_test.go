@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/core/peerproc"
 )
 
@@ -40,7 +41,7 @@ type fakeOpenCode struct {
 // nothing a test does can run the real opencode or read the real user's files.
 func stubOpenCode(t *testing.T, f *fakeOpenCode) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
+	testhome.Set(t, t.TempDir())
 	run, listener, environ := openCodeRun, openCodeListener, openCodeEnviron
 	t.Cleanup(func() { openCodeRun, openCodeListener, openCodeEnviron = run, listener, environ })
 	openCodeRun = func(bin string, args ...string) (string, error) {
@@ -316,7 +317,7 @@ func TestFindOpenCode(t *testing.T) {
 		t.Skip("exec bits")
 	}
 	t.Run("on PATH", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		testhome.Set(t, t.TempDir())
 		fakeOpenCodeBin(t) // a fallback that must lose to PATH
 		dir := t.TempDir()
 		onPath := filepath.Join(dir, "opencode")
@@ -330,7 +331,7 @@ func TestFindOpenCode(t *testing.T) {
 		}
 	})
 	t.Run("installer's directory", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		testhome.Set(t, t.TempDir())
 		want := fakeOpenCodeBin(t)
 		got, err := findOpenCode()
 		if err != nil || got != want {
@@ -338,7 +339,7 @@ func TestFindOpenCode(t *testing.T) {
 		}
 	})
 	t.Run("not executable", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		testhome.Set(t, t.TempDir())
 		bin := fakeOpenCodeBin(t)
 		if err := os.Chmod(bin, 0o644); err != nil {
 			t.Fatal(err)
@@ -356,7 +357,7 @@ func TestOpenCodeRun(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh")
 	}
-	t.Setenv("HOME", t.TempDir())
+	testhome.Set(t, t.TempDir())
 	out, err := openCodeRun("/bin/sh", "-c", `printf '  http://127.0.0.1:49374 \n\n'`)
 	if err != nil || out != "http://127.0.0.1:49374" {
 		t.Errorf("openCodeRun = %q, %v; want the trimmed URL", out, err)
@@ -381,7 +382,7 @@ func TestOpenCodeRun_LeavesOutOnlyCortexsValues(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh")
 	}
-	t.Setenv("HOME", t.TempDir())
+	testhome.Set(t, t.TempDir())
 	t.Cleanup(func() { openCodeCLIWant = nil })
 	openCodeCLIWant = map[string]string{"HTTPS_PROXY": "http://127.0.0.1:8081", "SSL_CERT_FILE": "/srv/ca/bundle.crt"}
 	env := map[string]string{

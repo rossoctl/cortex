@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // launchdSkip is t.Skipf, or t.Fatalf under AGENTOP_LAUNCHD_TESTS=required: the
@@ -43,7 +45,11 @@ func requireRealLaunchd(t *testing.T) {
 	}
 	if ok, why := launchdUsable(); !ok {
 		skip("cannot load a launch agent here (no launchctl, or no desktop session gui/%d): %s", os.Getuid(), why)
+		return
 	}
+	// These tests act on the real account: launchd loads agents from the real
+	// ~/Library/LaunchAgents, not the temporary home the rest of the package uses.
+	testhome.Real(t)
 }
 
 // realCortexBinary is the cortex the launchd lifecycle test installs. Unlike the

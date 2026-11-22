@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/core/config"
 )
 
@@ -32,7 +33,7 @@ func praxisServer(t *testing.T, on bool) string {
 func praxisConfigFile(t *testing.T) (path, src string) {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	src = `mode: proxy-sidecar
 stats:
   address: ` + closedAddr(t) + `

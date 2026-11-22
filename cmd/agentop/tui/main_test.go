@@ -8,14 +8,20 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // TestMain fires every tick at once, so a test that runs a command tree gets each tick's
 // message back immediately instead of waiting out the interval. A test about a tick's
-// interval swaps in recordTicks.
+// interval swaps in recordTicks. It also points the home directory at a temporary one for the
+// whole run, so no test can read or write the real profile (see testhome).
 func TestMain(m *testing.M) {
 	tick = instantTick
-	os.Exit(m.Run())
+	cleanup := testhome.Isolate()
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 // instantTick is tea.Tick with the interval already elapsed.

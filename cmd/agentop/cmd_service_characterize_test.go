@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // These tests pin the output of each `agentop service install|uninstall` path below
@@ -107,7 +109,7 @@ func newServiceSceneServing(t *testing.T, loaded string) serviceScene {
 func newServiceSceneWith(t *testing.T, healthz http.HandlerFunc) serviceScene {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	health := httptest.NewServer(healthz)
 	t.Cleanup(health.Close)
 	cfgDir := filepath.Join(home, ".cortex")

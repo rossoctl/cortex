@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // claude-code used to take `status --yes`, a stray argument, and `--help` after the action,
 // and checked the action only after the home directory. It now parses as the other agents do.
 func TestRunClaudeCode_ArgumentsParseLikeTheOtherAgents(t *testing.T) {
-	t.Setenv("HOME", "") // a late action check would exit 1 here, not 2
+	testhome.Set(t, "") // a late action check would exit 1 here, not 2
 	for _, tc := range []struct {
 		name     string
 		args     []string

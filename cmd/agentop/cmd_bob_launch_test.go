@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // macLaunch is a bobLaunch with the macOS half on, pointed entirely into a temporary
@@ -517,7 +519,7 @@ func TestBobProbeLaunch_RealBash(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
+			testhome.Set(t, home)
 			// A value agentop itself was started with must not pass for one the
 			// shell set.
 			t.Setenv(envCACerts, "/inherited.pem")

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // newTestSetupEnv is a setupEnv over a temp HOME with zsh and a PATH that does
@@ -18,7 +19,7 @@ import (
 func newTestSetupEnv(t *testing.T) *setupEnv {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	return &setupEnv{
 		home: home, goos: runtime.GOOS, shell: "/bin/zsh", pathEnv: "/usr/bin:/bin",
 		binDir: filepath.Join(home, ".local", "bin"), cortexDir: filepath.Join(home, ".cortex"),
