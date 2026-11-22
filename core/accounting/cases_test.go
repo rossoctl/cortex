@@ -10,12 +10,15 @@ import (
 	"github.com/rossoctl/accountant/test/cases"
 )
 
-// TestAccountantCases plays every case in github.com/rossoctl/accountant/test/cases through the
-// library exactly as a host does: BeginRequest, Add, EndRequest, Compute (or ComputeStandalone
-// for a keep-alive-ping step), and compares the Result to the case's Expected, the way the
-// library's own test/cases/cases_test.go (TestComputeMeetsEveryCase) does. This is the agreement
-// test accountant/docs/testing.md §10.4 asks every host to run. Every case must pass: none is
-// skipped or deferred, so a case Cortex cannot meet fails here and is fixed, not listed away.
+// TestAccountantCases plays every case in github.com/rossoctl/accountant/test/cases directly
+// against the library: BeginRequest, Add, EndRequest, Compute (or ComputeStandalone for a
+// keep-alive-ping step), and compares the Result to the case's Expected, the way the library's
+// own test/cases/cases_test.go (TestComputeMeetsEveryCase) does. The cases carry already-parsed
+// accountant.Body values, not raw request bodies, so this does not exercise Cortex's own
+// wire.Parse/facts.For/Classify or Host.RequestEnd/Compute path — it shows the library at the
+// pinned version meets its own cases, not that Host agrees with them. This is the agreement test
+// accountant/docs/testing.md §10.4 asks every host to run. Every case must pass: none is skipped
+// or deferred, so a case Cortex cannot meet fails here and is fixed, not listed away.
 func TestAccountantCases(t *testing.T) {
 	all := cases.All()
 	if len(all) == 0 {

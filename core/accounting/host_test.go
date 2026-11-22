@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"reflect"
 	"runtime"
 	"strings"
@@ -285,6 +286,56 @@ func TestHost_NoSessionStartsNothing(t *testing.T) {
 	}
 }
 
+// translator is a request plugin that redirects and then asks the listener to translate the
+// request, the way inference-router does for a cross-protocol route.
+type translator struct {
+	target *url.URL
+}
+
+func (t *translator) Name() string { return "translator" }
+func (t *translator) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{WritesDestination: true}
+}
+func (t *translator) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	if err := pctx.Redirect(t.target); err != nil {
+		panic(err)
+	}
+	if err := pctx.Translate("anthropic", "openai", "/v1/chat/completions"); err != nil {
+		panic(err)
+	}
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (t *translator) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// A translated request starts no record: at RequestEnd the body is still the client's own
+// protocol, so a record built now would be classified and priced under the wrong protocol.
+func TestHost_TranslatedRequestStartsNothing(t *testing.T) {
+	h := newHost(t)
+	target, err := url.Parse("https://api.openai.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := pipeline.New([]pipeline.Plugin{&translator{target: target}}, pipeline.WithAccountant(h))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pctx := &pipeline.Context{Host: "api.anthropic.com", Path: "/v1/messages", Method: "POST", Body: clientBody("hi"), SessionID: "s1"}
+	pctx.MarkRedirectable()
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-sonnet-4-5", InputTokens: 3, CacheWriteTokens: 1800}
+	if act := p.Run(context.Background(), pctx); act.Type != pipeline.Continue {
+		t.Fatalf("action = %v", act.Type)
+	}
+	pctx.StatusCode = 200
+	if pipeline.GetState[pending](pctx, pendingKey) != nil {
+		t.Error("a translated request left a pending handle")
+	}
+	if _, ok := h.Compute(pctx); ok {
+		t.Error("Compute gave a Result for a translated request")
+	}
+}
+
 // Review Focus 3: a client that hangs up, or an upstream 5xx, is skipped; its handle is
 // released and its goroutine ends.
 func TestHost_SkipReleasesHandle(t *testing.T) {
@@ -321,6 +372,10 @@ func TestHost_ComputeTimesOut(t *testing.T) {
 	}
 	if d := time.Since(start); d > 2100*time.Millisecond {
 		t.Errorf("Compute took %v, want at most 2.1s", d)
+	}
+	// The handle is released, as on every other no-figure path.
+	if !released(pctx) {
+		t.Error("the pending handle was not released on a timeout")
 	}
 	// Latched: the second call does not wait again.
 	start = time.Now()

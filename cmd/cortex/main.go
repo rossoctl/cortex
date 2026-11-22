@@ -543,9 +543,10 @@ func main() {
 	var pendingPricing *pricing.Table
 	// acctHost is the process's accountant host (core/accounting), nil when accounting is off.
 	// ONE per process, made by the first build and handed to every later one, so a reload keeps
-	// its Tracker state. Whether it exists is decided once: the reloader refuses a reload whose
-	// resolved accounting.enabled differs (reloader.validateReloadable), so no later build needs
-	// to make or drop it.
+	// its Tracker state. The reloader refuses only a reload that would turn accounting on when
+	// the process booted with it off (reloader.validateAccounting); turning it off is accepted,
+	// so no later build ever needs to make acctHost, only drop it by leaving outDeps.Accounting
+	// nil.
 	var acctHost *accounting.Host
 	acctDecided := false
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {

@@ -16,9 +16,10 @@ import (
 // The block is the same in a cluster and on a laptop; only the Tracker snapshot is
 // laptop-only.
 //
-// NOT HOT-RELOADABLE in its resolved answer. The host is built once at boot, and the listeners
-// keep the client body only when it exists, so a reload that would turn accounting on or off is
-// refused (reloader.validateReloadable). An edit that resolves the same is accepted.
+// NOT HOT-RELOADABLE from off to on: the host is built once at boot, so a reload that would turn
+// accounting on when the process booted with it off is refused (reloader.validateAccounting).
+// Turning it off is accepted on purpose, as a kill-switch for on_error: off, and the host goes
+// idle. An edit that resolves the same is accepted either way.
 type AccountingConfig struct {
 	// Enabled is "auto" (the default, also spelled ""), "true" or "false". A string, not a
 	// *bool, because it has three values; YAML's true and false decode into it as "true" and
