@@ -11,7 +11,7 @@ require (
 	github.com/lestrrat-go/jwx/v2 v2.1.7
 	github.com/maximhq/bifrost/core v1.7.15
 	github.com/open-policy-agent/opa v1.22.4
-	github.com/rossoctl/accountant v0.4.0
+	github.com/rossoctl/accountant v0.5.0
 	github.com/rossoctl/accountant/metrics v0.0.0-20261111151953-6085d4661624
 	github.com/rossoctl/context-guru v0.7.4-beta.1
 	github.com/spiffe/go-spiffe/v2 v2.9.0
