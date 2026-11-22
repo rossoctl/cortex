@@ -2,7 +2,10 @@
 // hashes: tools, then system, then messages, one []byte per position, in the provider's cache
 // order (accountant/docs/cortex-wiring.md W6.3). It ports the context-guru proxy's accParse
 // (proxy/accountant_savings_body.go) to Cortex, so both hosts build the same accountant.Body for
-// the same bytes.
+// the same bytes, with four deliberate departures from accParse: scan keeps reading for a
+// Responses input when messages is not an array; a top-level cache_control (Anthropic's automatic
+// caching) counts as a mark and gives a breakpoint; and only cache_control keys in cache-metadata
+// locations leave the hash, so a tool parameter named cache_control stays in it.
 package wire
 
 import (
@@ -60,6 +63,9 @@ var errNotJSON = errors.New("wire: body is not valid JSON")
 type sections struct {
 	tools, system, messages gjson.Result
 	instructions, input     gjson.Result
+	// auto is the body's top-level cache_control: Anthropic's automatic caching, which puts one
+	// breakpoint on the last cacheable block of the request.
+	auto gjson.Result
 }
 
 // Parse splits raw into the sections accountant.NewBody wants, and lists its cache breakpoints.
@@ -111,19 +117,20 @@ func Parse(f Format, raw []byte) (accountant.Body, []accountant.Breakpoint, erro
 	return body, breakpointsOf(sec), nil
 }
 
-// scan reads the five top-level fields a body may carry, in one pass, then folds the Responses
-// pair (instructions, input) into (system, messages) where that applies — ported field-for-field
-// from the proxy's accScan (proxy/accountant_savings_body.go). Like gjson.Get, the first key of a
-// name wins. The early-return condition only watches tools/system/messages, as accScan's does: a
-// body that has filled those three has nothing left for responsesSections to change anyway, since
-// it only acts when messages is NOT an array.
+// scan reads the six top-level fields a body may carry, in one pass, then folds the Responses
+// pair (instructions, input) into (system, messages) where that applies — ported from the proxy's
+// accScan (proxy/accountant_savings_body.go). Like gjson.Get, the first key of a name wins. scan
+// stops early only when tools, system, cache_control and a messages ARRAY are all seen: a body
+// like that has nothing left for responsesSections to change, since it only acts when messages is
+// not an array. Unlike accScan, a messages value that is not an array (null, say) does not stop
+// the scan, so an input after it is still read.
 func scan(raw []byte) sections {
 	var sec sections
 	root := gjson.ParseBytes(raw)
 	if !root.IsObject() {
 		return sec
 	}
-	var seen [5]bool
+	var seen [6]bool
 	root.ForEach(func(k, v gjson.Result) bool {
 		var i int
 		var dst *gjson.Result
@@ -138,13 +145,15 @@ func scan(raw []byte) sections {
 			i, dst = 3, &sec.instructions
 		case "input":
 			i, dst = 4, &sec.input
+		case "cache_control":
+			i, dst = 5, &sec.auto
 		default:
 			return true
 		}
 		if !seen[i] {
 			seen[i], *dst = true, v
 		}
-		return !(seen[0] && seen[1] && seen[2])
+		return !(seen[0] && seen[1] && seen[2] && seen[5] && sec.messages.IsArray())
 	})
 	return sec.responsesSections()
 }
@@ -179,9 +188,12 @@ func (sec sections) responsesSections() sections {
 // exists apart from the Breakpoint slice Parse returns: AllBreakpointsAskExtendedTTL must see a
 // lone 5m mark even when it shares a position with a 1h one and the merged Breakpoint says "1h".
 //
-// Anthropic-only in practice: the four gjson paths read messages/system/tools' own cache_control
-// objects, fields a Chat or Responses body does not carry, so this is always false on those
-// wires. No Format parameter is needed to gate that: a path that does not exist in the body
+// The top-level cache_control (automatic caching) is one more mark: a body whose only mark is a
+// top-level 1h one asks for 1h, and a top-level 5m mark next to 1h block marks makes this false.
+//
+// Anthropic-only in practice: the gjson paths read the body's and messages/system/tools' own
+// cache_control objects, fields a Chat or Responses body does not carry, so this is always false
+// on those wires. No Format parameter is needed to gate that: a path that does not exist in the body
 // simply matches nothing.
 func AllMarksAsk1h(raw []byte) bool {
 	total, extended := 0, 0
@@ -199,6 +211,7 @@ func AllMarksAsk1h(raw []byte) bool {
 		}
 	}
 	for _, path := range []string{
+		"cache_control",
 		"messages.#.content.#.cache_control",
 		"messages.#.cache_control",
 		"system.#.cache_control",
@@ -209,9 +222,10 @@ func AllMarksAsk1h(raw []byte) bool {
 	return total > 0 && total == extended
 }
 
-// withoutCacheMarks is one position's JSON without any cache_control: its own, the ones on its
-// content blocks, and ones nested deeper (a mark inside a tool_result block's own content array).
-// A position with none is returned as it is, byte for byte, so the common case costs no
+// withoutCacheMarks is one position's JSON without its cache_control marks: its own, the ones on
+// its content blocks, and ones nested deeper (a mark inside a tool_result block's own content
+// array). A key named cache_control anywhere else is data, not a mark, and stays (see
+// findCacheMark). A position with none is returned as it is, byte for byte, so the common case costs no
 // allocation (ported from the proxy's withoutCacheMarks, context-guru#917).
 func withoutCacheMarks(body []byte, v gjson.Result) []byte {
 	raw := v.Raw
@@ -236,43 +250,40 @@ func withoutCacheMarks(body []byte, v gjson.Result) []byte {
 	return []byte(out)
 }
 
-// findCacheMark returns the gjson path of the first cache_control key under v, or "" when there
-// is none. It looks at objects and arrays only, never inside a string.
+// findCacheMark returns the gjson path of the first cache-control mark under v, or "" when there
+// is none. A mark is a cache_control key on v itself or on a block of a content array, at any
+// depth of content nesting (a tool_result block's own content). It descends only through
+// "content" arrays, so a cache_control key anywhere else stays in the hash: a tool's
+// input_schema.properties.cache_control parameter, or a tool_use block's input value, is part of
+// what the provider caches, and a change to it must change the hash.
 func findCacheMark(v gjson.Result, prefix string) string {
-	var found string
+	if !v.IsObject() {
+		return ""
+	}
 	join := func(k string) string {
 		if prefix == "" {
 			return k
 		}
 		return prefix + "." + k
 	}
-	switch {
-	case v.IsObject():
-		v.ForEach(func(k, c gjson.Result) bool {
-			if k.String() == "cache_control" {
-				found = join(strings.NewReplacer(".", "\\.", "*", "\\*", "?", "\\?").Replace(k.String()))
-				return false
+	var found string
+	v.ForEach(func(k, c gjson.Result) bool {
+		switch k.String() {
+		case "cache_control":
+			found = join("cache_control")
+		case "content":
+			if !c.IsArray() {
+				return true
 			}
-			if c.IsObject() || c.IsArray() {
-				ek := strings.NewReplacer(".", "\\.", "*", "\\*", "?", "\\?", "|", "\\|", "#", "\\#", "@", "\\@").Replace(k.String())
-				if found = findCacheMark(c, join(ek)); found != "" {
-					return false
-				}
-			}
-			return true
-		})
-	case v.IsArray():
-		i := 0
-		v.ForEach(func(_, c gjson.Result) bool {
-			if c.IsObject() || c.IsArray() {
-				if found = findCacheMark(c, join(strconv.Itoa(i))); found != "" {
-					return false
-				}
-			}
-			i++
-			return true
-		})
-	}
+			i := 0
+			c.ForEach(func(_, blk gjson.Result) bool {
+				found = findCacheMark(blk, join("content."+strconv.Itoa(i)))
+				i++
+				return found == ""
+			})
+		}
+		return found == ""
+	})
 	return found
 }
 
@@ -280,6 +291,11 @@ func findCacheMark(v gjson.Result, prefix string) string {
 // Parse's Body. A mark on the position itself and a mark on one of its content blocks can both
 // name one position; it is listed once, with the longer TTL (1h over 5m), because the provider
 // keeps the entry for the longest TTL asked for at it. ttl defaults to "5m" (W6.3).
+//
+// A top-level cache_control (automatic caching) adds one breakpoint at the body's last position,
+// which holds the request's last cacheable block. When an explicit mark already names that
+// position it is not listed twice. The provider walks back past a last block it cannot cache;
+// this does not, because a position here is a whole message, not one block of it.
 func breakpointsOf(sec sections) []accountant.Breakpoint {
 	if !sec.messages.IsArray() {
 		return nil
@@ -346,5 +362,35 @@ func breakpointsOf(sec sections) []accountant.Breakpoint {
 		scanSection(accountant.SectionSystem, sec.system)
 	}
 	scanSection(accountant.SectionMessages, sec.messages)
+	if sec.auto.IsObject() {
+		if p, ok := lastPosition(sec); ok {
+			add(p, ttl(sec.auto))
+		}
+	}
 	return out
+}
+
+// lastPosition is the last position of the body Parse builds from sec: the last message, else
+// the last system position, else the last tool. ok is false when the body has no positions.
+func lastPosition(sec sections) (accountant.Position, bool) {
+	count := func(v gjson.Result) int {
+		if v.IsArray() {
+			return len(v.Array())
+		}
+		return 0
+	}
+	if n := count(sec.messages); n > 0 {
+		return accountant.Position{Section: accountant.SectionMessages, Index: n - 1}, true
+	}
+	n := count(sec.system)
+	if !sec.system.IsArray() && sec.system.Exists() {
+		n = 1
+	}
+	if n > 0 {
+		return accountant.Position{Section: accountant.SectionSystem, Index: n - 1}, true
+	}
+	if n := count(sec.tools); n > 0 {
+		return accountant.Position{Section: accountant.SectionTools, Index: n - 1}, true
+	}
+	return accountant.Position{}, false
 }
