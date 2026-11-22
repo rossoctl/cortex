@@ -51,7 +51,7 @@ Read this section before you export. It decides whether this is the right tool.
 
 ### What a record carries
 
-One record is one event. A record holds 36 fields. Cortex caps each label at 96 bytes, so
+One record is one event. A record holds 37 fields. Cortex caps each label at 96 bytes, so
 nearly every field is a number or a short label. `sessionId` and `requestId` are the
 exceptions: see [Two fields are not short](#two-fields-are-not-short).
 
@@ -67,6 +67,7 @@ exceptions: see [Two fields are not short](#two-fields-are-not-short).
 | Counts | `messageCount`, `toolCount`, `toolCallCount` |
 | Caller | `client`, `agentRole` |
 | Transport | `direction`, `phase`, `tunnel`, `tunnelReason`, `schema` |
+| Record type | `kind` |
 
 `client` is the coding agent Cortex recognised from the User-Agent, such as
 `claude-code/2.1.270`. For proxied traffic Cortex does not copy the header's text: the

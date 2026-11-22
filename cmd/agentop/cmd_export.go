@@ -69,7 +69,7 @@ Usage:
   agentop export --session ID          one session, repeatable or comma-separated
   agentop export --endpoint URL        ask a specific proxy rather than the local one
 
-Each line is one archived event reduced to 36 content-free scalars — timings, token
+Each line is one archived event reduced to 37 content-free scalars — timings, token
 counts, hosts, models, outcomes — never message content, completions or tool arguments,
 which is what makes it shareable where the full events are not. It is not anonymous,
 though: hosts, models, session ids and timestamps remain, and together they describe who

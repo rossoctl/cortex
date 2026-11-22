@@ -26,14 +26,29 @@ type Filter struct {
 	// whose last update is older than it is skipped whole, and one that straddles it stops at
 	// its first event below — see Walk for why stopping, not filtering, is sound.
 	Since time.Time
+
+	// ToolNameKey labels a hashed tool name on toolCall records. Read only when the Writer
+	// carries them; a zero key leaves a hashed name ABSENT rather than exporting it in clear
+	// (see ToolNameKey.label), so a misconfigured install loses a label instead of leaking one.
+	ToolNameKey ToolNameKey
 }
 
 // WalkStats is what a walk carried.
 type WalkStats struct {
 	// Sessions is how many sessions contributed at least one record.
 	Sessions int
-	// Records is how many records were written: the walk's output line count.
+	// Records is how many records were written: the walk's output line count, every kind
+	// included.
 	Records int
+	// ToolCalls is how many of Records were toolCall records, and Truncated how many sessions
+	// hit maxCallsPerSession and so carry a marker record. Both are zero unless the Writer
+	// carries toolCall records.
+	//
+	// Truncated IS WORTH A FIELD rather than leaving the marker records to be counted by a
+	// reader: a caller that logs or summarises a walk should be able to say "this export was
+	// incomplete for N sessions" without parsing its own output back.
+	ToolCalls int
+	Truncated int
 }
 
 // UnknownSessionsError is Walk's answer to a Filter naming session ids the archive does not
@@ -230,6 +245,20 @@ func Walk(a *archive.Archive, w *Writer, f Filter) (WalkStats, error) {
 			continue
 		}
 		wrote, writeErr := 0, error(nil)
+		// paired accumulates this session's events when the Writer wants toolCall records, and
+		// stays nil otherwise so a plain walk keeps its O(1)-per-event memory.
+		//
+		// WHY ACCUMULATE AT ALL, against this function's whole streaming design: a call's result
+		// arrives in a LATER request, so toolpair.Calls needs every event of a session in one
+		// slice and cannot run inside this callback. Measured 2026-11-22 on a 75-session,
+		// 44,325-event archive: pairing the deepest session cost 7 ms against the 1.45 s the
+		// archive read already costs — 0.45% — and peak heap moved 279 to 319 MiB. Holding one
+		// session is also what the timeline already pays per pane refresh. maxCallsPerSession
+		// bounds the output; the accumulation itself is bounded by the session.
+		var paired []model.SessionEvent
+		if w.WantsToolCalls() {
+			paired = make([]model.SessionEvent, 0, 256)
+		}
 		err := a.Earlier(s.ID, 0, func(e *model.SessionEvent) bool {
 			// STOP, NOT FILTER: Earlier walks newest first, and a session's events are
 			// appended in time order — approximately. At is stamped when an event is built
@@ -248,6 +277,12 @@ func Walk(a *archive.Archive, w *Writer, f Filter) (WalkStats, error) {
 				return false
 			}
 			wrote++
+			if paired != nil {
+				// The VALUE, not the pointer: Earlier pages 500 events at a time, so holding
+				// pointers would keep each page's decoded events alive for the whole session
+				// and make the retained set the pointer graph rather than the slice.
+				paired = append(paired, *e)
+			}
 			return true
 		})
 		// Folded before the error checks, not after: the docs promise the stats report
@@ -262,6 +297,32 @@ func Walk(a *archive.Archive, w *Writer, f Filter) (WalkStats, error) {
 		}
 		if writeErr != nil {
 			return stats, writeErr
+		}
+		if len(paired) == 0 {
+			continue
+		}
+		// ASCENDING SEQ, which toolpair.Calls requires ("events must be one session's, in seq
+		// order") and which Earlier does not give: it walks NEWEST FIRST. Reversing is not a
+		// tidiness step — a descending slice pairs nothing, because every result precedes the
+		// call it closes, so each call closes as still-open and T17 then drops every record.
+		// It fails silently and completely, which is why the tests assert the order rather
+		// than the output alone.
+		slices.Reverse(paired)
+		recs, dropped := projectToolCalls(paired, s.ID, f.ToolNameKey)
+		for _, r := range recs {
+			if err := w.WriteToolCall(r); err != nil {
+				return stats, err
+			}
+			stats.Records++
+			stats.ToolCalls++
+		}
+		if dropped > 0 {
+			// §6.4: say so in band. A consumer must not read a capped session as a complete one.
+			if err := w.WriteMarker(markerRecord(s.ID, dropped)); err != nil {
+				return stats, err
+			}
+			stats.Records++
+			stats.Truncated++
 		}
 	}
 	return stats, nil
