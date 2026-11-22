@@ -87,22 +87,16 @@ func expectedNet(c cases.Case, s cases.Step) int64 {
 	return cases.RoundMicros(c.StepPicos(s))
 }
 
-// TestSavingsAgreesWithTheAccountantCases plays every case (skipping the ones
-// docs/accounting-differences.json lists, same as TestAccountantCases) through SavingsBilled and
-// wants its net to match the case's expected net on every step, and over the whole case.
+// TestSavingsAgreesWithTheAccountantCases plays every case through SavingsBilled, none skipped
+// (same as TestAccountantCases), and wants its net to match the case's expected net on every
+// step, and over the whole case.
 func TestSavingsAgreesWithTheAccountantCases(t *testing.T) {
-	diffs := loadDifferences(t)
 	all := cases.All()
 	if len(all) == 0 {
 		t.Fatal("no cases: github.com/rossoctl/accountant/test/cases returned none")
 	}
-	var skipped []string
-	defer func() { logSkipped(t, len(all), skipped) }()
 	for _, c := range all {
 		c := c
-		if skipDifference(t, diffs, c.ID, &skipped) {
-			continue
-		}
 		t.Run(c.ID, func(t *testing.T) {
 			ts := accountant.NewTrackers()
 			var wantTotal, gotTotal int64

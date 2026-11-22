@@ -1,8 +1,6 @@
 package accounting
 
 import (
-	"encoding/json"
-	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -12,103 +10,19 @@ import (
 	"github.com/rossoctl/accountant/test/cases"
 )
 
-// differencesFile is accountant/docs/testing.md §10.4's host-side differences list: cases where
-// Cortex knowingly differs from the library's cases, or does not yet cover something the cases
-// test. Kept at the repo's docs/ root because it is not specific to one package.
-const differencesFile = "../../docs/accounting-differences.json"
-
-// difference is one entry of differencesFile.
-type difference struct {
-	ID     string `json:"id"`
-	Kind   string `json:"kind"` // "differs" | "notCovered"
-	Reason string `json:"reason"`
-}
-
-type differencesDoc struct {
-	Host        string       `json:"host"`
-	Differences []difference `json:"differences"`
-}
-
-func loadDifferences(t *testing.T) map[string]difference {
-	t.Helper()
-	raw, err := os.ReadFile(differencesFile)
-	if err != nil {
-		t.Fatalf("read %s: %v", differencesFile, err)
-	}
-	var doc differencesDoc
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("unmarshal %s: %v", differencesFile, err)
-	}
-	if doc.Host != "cortex" {
-		t.Fatalf("%s: host = %q, want cortex", differencesFile, doc.Host)
-	}
-	out := map[string]difference{}
-	for _, d := range doc.Differences {
-		if d.Kind != "differs" && d.Kind != "notCovered" {
-			t.Fatalf("%s: case %q has unknown kind %q", differencesFile, d.ID, d.Kind)
-		}
-		if strings.TrimSpace(d.Reason) == "" {
-			t.Fatalf("%s: case %q has no reason", differencesFile, d.ID)
-		}
-		out[d.ID] = d
-	}
-	return out
-}
-
-// skipDifference reports whether case id is a documented difference to skip, and runs the skip as
-// its own subtest so it shows in the test output. Only kind "differs" is skipped. A "notCovered"
-// entry is a documentation-only note about a behaviour no case exercises, so the same id showing up
-// as a real case fails: the note would otherwise silently skip a case it says should run (review
-// finding). skipped collects the skipped ids for the summary the caller logs.
-func skipDifference(t *testing.T, diffs map[string]difference, id string, skipped *[]string) bool {
-	t.Helper()
-	d, ok := diffs[id]
-	if !ok {
-		return false
-	}
-	if d.Kind != "differs" {
-		t.Errorf("%s lists %q as %s, but it is a case in github.com/rossoctl/accountant/test/cases: "+
-			"make it a \"differs\" entry or delete it", differencesFile, id, d.Kind)
-		return false
-	}
-	*skipped = append(*skipped, id)
-	t.Run(id, func(t *testing.T) {
-		t.Skipf("listed in %s: %s (%s)", differencesFile, d.Reason, d.Kind)
-	})
-	return true
-}
-
-// logSkipped writes how many cases ran and which were skipped as documented differences, so a
-// passing run does not read as full parity.
-func logSkipped(t *testing.T, total int, skipped []string) {
-	t.Helper()
-	if len(skipped) > 0 {
-		t.Logf("%d of %d cases skipped as differences documented in %s: %v", len(skipped), total, differencesFile, skipped)
-	}
-}
-
 // TestAccountantCases plays every case in github.com/rossoctl/accountant/test/cases through the
 // library exactly as a host does: BeginRequest, Add, EndRequest, Compute (or ComputeStandalone
 // for a keep-alive-ping step), and compares the Result to the case's Expected, the way the
 // library's own test/cases/cases_test.go (TestComputeMeetsEveryCase) does. This is the agreement
-// test accountant/docs/testing.md §10.4 asks every host to run: a case not listed in
-// docs/accounting-differences.json must agree with the library, because Task 1 adds no host logic
-// that could disagree with it yet (wire and facts are not wired into Compute's inputs here) — this
-// test exists so that later tasks, which do add such logic, inherit a passing baseline and a place
-// to record any divergence they introduce.
+// test accountant/docs/testing.md §10.4 asks every host to run. Every case must pass: none is
+// skipped or deferred, so a case Cortex cannot meet fails here and is fixed, not listed away.
 func TestAccountantCases(t *testing.T) {
-	diffs := loadDifferences(t)
 	all := cases.All()
 	if len(all) == 0 {
 		t.Fatal("no cases: github.com/rossoctl/accountant/test/cases returned none")
 	}
-	var skipped []string
-	defer func() { logSkipped(t, len(all), skipped) }()
 	for _, c := range all {
 		c := c
-		if skipDifference(t, diffs, c.ID, &skipped) {
-			continue
-		}
 		t.Run(c.ID, func(t *testing.T) {
 			ts := accountant.NewTrackers()
 			for i, s := range c.Steps {

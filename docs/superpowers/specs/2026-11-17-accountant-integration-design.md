@@ -448,10 +448,10 @@ The fields follow W7.1.
 
 Each commit has a check that must pass before the next commit is written.
 
-- **Cache cases.** The 160 `accountant/test/cases` cases (`cases.All()`) play through
+- **Cache cases.** Every `accountant/test/cases` case (`cases.All()`) plays through
   `core/accounting`'s Begin, Add, End and Compute path and its facts conversion. Every case
-  passes, or is listed in `docs/accounting-differences.json` with a section reference (accountant
-  testing §10.4). The cases hold bodies that are already parsed (`accountant.Body`), so they do
+  must pass. No case is skipped or deferred: `docs/accounting-differences.json` documents
+  Cortex-level differences from the proxy, and it is not a skip list. The cases hold bodies that are already parsed (`accountant.Body`), so they do
   not test `wire.Parse`.
 - **Wire parse.** Golden fixtures in `core/accounting/wire/testdata`: Anthropic Messages, OpenAI
   Chat and OpenAI Responses bodies, with the expected positions, sizes and breakpoints. They cover
