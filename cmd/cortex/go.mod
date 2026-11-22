@@ -5,6 +5,7 @@ go 1.26.10
 require (
 	github.com/rossoctl/cortex/core v0.0.0
 	github.com/rossoctl/cortex/core/storage/redis v0.0.0
+	go.opentelemetry.io/otel/metric v1.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -84,7 +85,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rossoctl/accountant v0.5.0 // indirect
 	github.com/rossoctl/accountant/metrics v0.0.0-20261111151953-6085d4661624 // indirect
-	github.com/rossoctl/context-guru v0.7.4-beta.1 // indirect
+	github.com/rossoctl/context-guru v0.7.5-beta.2 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
@@ -115,7 +116,6 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.47.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
-	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.47.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.47.0 // indirect
 	go.opentelemetry.io/otel/trace v1.47.0 // indirect

@@ -9,7 +9,8 @@ import (
 	"time"
 
 	"github.com/rossoctl/context-guru/apply"
-	"github.com/rossoctl/context-guru/proxyapp"
+	"github.com/rossoctl/context-guru/models"
+	"github.com/rossoctl/context-guru/models/litellm"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -46,8 +47,8 @@ func (f fixedWindows) WindowExact(ctx context.Context, model string) (int, bool,
 
 // buildWindows returns the resolver chain: the operator's table, then the LiteLLM map when it is
 // on (modelInfoOn), then the engine's built-in table as an inexact last resort.
-func buildWindows(c windowsConfig, local bool) proxyapp.Resolver {
-	chain := proxyapp.Chain{}
+func buildWindows(c windowsConfig, local bool) models.Resolver {
+	chain := models.Chain{}
 	if len(c.Windows) > 0 {
 		f := make(fixedWindows, len(c.Windows))
 		for k, v := range c.Windows {
@@ -59,9 +60,9 @@ func buildWindows(c windowsConfig, local bool) proxyapp.Resolver {
 		// A standalone client, not one routed back through this proxy. The map refreshes in the
 		// background, so a lookup never waits on the network; until the first fetch lands the
 		// chain falls through and the fraction triggers decline, which is the safe direction.
-		chain = append(chain, proxyapp.NewLiteLLM(c.ModelInfoURL, &http.Client{Timeout: 30 * time.Second}, 0))
+		chain = append(chain, litellm.New(c.ModelInfoURL, &http.Client{Timeout: 30 * time.Second}, 0))
 	}
-	return append(chain, proxyapp.DefaultStatic())
+	return append(chain, models.DefaultStatic())
 }
 
 // modelInfoOn says whether the LiteLLM map is fetched. An explicit model_info wins: "off" turns it
@@ -86,7 +87,7 @@ func (p *ContextGuru) windowFor(ctx context.Context, pctx *pipeline.Context) (wi
 	if p.windows == nil || inf == nil || inf.Model == "" {
 		return 0, false
 	}
-	w, ex, ok := proxyapp.ExactWindow(p.windows, ctx, inf.Model)
+	w, ex, ok := models.ExactWindow(p.windows, ctx, inf.Model)
 	if !ok {
 		return 0, false
 	}

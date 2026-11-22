@@ -8,7 +8,8 @@ import (
 
 	"github.com/rossoctl/cortex/core/pipeline"
 
-	"github.com/rossoctl/context-guru/proxyapp"
+	"github.com/rossoctl/context-guru/models"
+	"github.com/rossoctl/context-guru/models/litellm"
 	cgstore "github.com/rossoctl/context-guru/store"
 )
 
@@ -106,13 +107,13 @@ func TestSessionKeysIsBounded(t *testing.T) {
 	}
 }
 
-func hasLiteLLM(r proxyapp.Resolver) bool {
-	chain, ok := r.(proxyapp.Chain)
+func hasLiteLLM(r models.Resolver) bool {
+	chain, ok := r.(models.Chain)
 	if !ok {
 		return false
 	}
 	for _, c := range chain {
-		if _, ok := c.(*proxyapp.LiteLLM); ok {
+		if _, ok := c.(*litellm.LiteLLM); ok {
 			return true
 		}
 	}

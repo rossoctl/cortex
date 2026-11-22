@@ -44,7 +44,7 @@ import (
 	cgconfig "github.com/rossoctl/context-guru/config"
 	"github.com/rossoctl/context-guru/dispatch"
 	"github.com/rossoctl/context-guru/keepalive"
-	"github.com/rossoctl/context-guru/proxyapp"
+	"github.com/rossoctl/context-guru/models"
 	cgstore "github.com/rossoctl/context-guru/store"
 )
 
@@ -234,7 +234,7 @@ type ContextGuru struct {
 	stash *sentStash
 
 	// windows resolves a model's context window; see windows.go.
-	windows proxyapp.Resolver
+	windows models.Resolver
 	// cgSessions maps a Cortex session id to the session key the engine derived for it
 	// (apply.Trace.Session), so OnFinish records billed input under the key OnRequest reads.
 	// One entry per session, overwritten on each request, bounded by sessionKeysCap.
