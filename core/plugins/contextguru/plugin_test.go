@@ -302,10 +302,13 @@ func TestReportResult_ForwardsOpsUnchanged(t *testing.T) {
 		Trace:   apply.Trace{Ops: append([]accountant.Operation(nil), wantOps...)},
 	}
 
-	out, changed := reportResult(pctx, res)
+	out, changed, ops := reportResult(pctx, res)
 	if !changed || string(out) != `{"ok":true}` {
 		t.Fatalf("reportResult = (%q, %v), want (%q, true)", out, changed, `{"ok":true}`)
 	}
+	applied := pctx.SetBody(out)
+	stampDryRun(ops, !applied)
+	pctx.ReportOps(ops...)
 
 	gotOps := pctx.ReportedOps()
 	if len(gotOps) != 2 {
@@ -569,6 +572,64 @@ func (g *modelGrabber) OnRequest(_ context.Context, pctx *pipeline.Context) pipe
 }
 func (g *modelGrabber) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// modelsForGrabber calls context-guru's modelsFor inside OnRequest, as OnRequest does, and
+// keeps the result, so a test can inspect it after the request — in particular under a policy
+// (observe) that invokeReq's bypass of pctx.SetCurrentPlugin cannot set, since
+// pipeline.Context.Observing reads the policy the pipeline itself stamped on dispatch.
+type modelsForGrabber struct {
+	p        *ContextGuru
+	provider bschemas.ModelProvider
+	out      cgcomponents.ModelSpec
+}
+
+func (g *modelsForGrabber) Name() string { return "context-guru" }
+func (g *modelsForGrabber) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
+func (g *modelsForGrabber) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	g.out = g.p.modelsFor(pctx, g.provider)
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (g *modelsForGrabber) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// Under on_error: observe, modelsFor must build neither model: a real, billed call on the
+// agent's own credential is the opposite of a shadow pass that changes nothing (review
+// finding — cgModel.Complete always sends the HTTP call regardless of
+// dryRun, which only changes how the resulting op is reported). Checked for both dialects.
+func TestModelsForBuildsNeitherModelUnderObserve(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider bschemas.ModelProvider
+		pctx     func(*ContextGuru) *pipeline.Context
+	}{
+		{"anthropic", bschemas.Anthropic, func(*ContextGuru) *pipeline.Context {
+			return inferencePctx("/v1/messages", []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}]}`))
+		}},
+		{"openai chat completions", bschemas.OpenAI, func(*ContextGuru) *pipeline.Context {
+			return inferencePctx("/v1/chat/completions", chatBody("hi"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := configured(t, `{}`)
+			grab := &modelsForGrabber{p: p, provider: tc.provider}
+			pl, err := pipeline.New([]pipeline.Plugin{grab}, pipeline.WithPolicies(pipeline.ErrorPolicyObserve))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pl.Run(context.Background(), tc.pctx(p))
+
+			if grab.out.Static != nil {
+				t.Error("modelsFor built a static model under observe")
+			}
+			if grab.out.Incoming != nil {
+				t.Error("modelsFor built an incoming model under observe")
+			}
+		})
+	}
 }
 
 func metricValue(ms []pipeline.Metric, name string) float64 {

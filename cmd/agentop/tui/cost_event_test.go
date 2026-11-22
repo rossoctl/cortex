@@ -19,7 +19,7 @@ import (
 const costWire = `{"cost_usd":0.2824,"source":"gateway-header",
   "daily_total_usd":1.4207,"daily_max_usd":5,"prompt_usd":0.26334,
   "output_usd":0.03515,
-  "avoided":[{"component":"tool-prune","tokensAvoided":9899,"usd":0.0038,
+  "avoided":[{"component":"tool-prune","basis":"usd","tokensAvoided":9899,"usd":0.0038,
   "tier":"cache_read","estimated":true}]}`
 
 // bigPromptWire is a tool-prune event sized for the cache-heavy agent turn this
@@ -346,7 +346,7 @@ func TestExchangeTokensCell_SavingSignMarksAProjection(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := recordEvent(t, event.Event{CostUSD: 0.2824, Settled: true, Avoided: []event.Saving{{
-				Component: "tool-prune", TokensAvoided: 9_899, Estimated: true, Projected: tc.projected,
+				Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 9_899, Estimated: true, Projected: tc.projected,
 			}}})
 			resp.Inference = agentTurn()
 			got := exchangeTokensCell(eventRow{event: &pipeline.SessionEvent{Phase: pipeline.SessionRequest}, resp: resp})

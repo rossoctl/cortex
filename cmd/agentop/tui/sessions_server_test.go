@@ -135,8 +135,8 @@ func TestSessionsTable_ServerColumnNeverNarrowsAnother(t *testing.T) {
 		declared[headerTitle(c)] = c.Width
 	}
 	for _, width := range []int{200, 120, 100, 90, 80, 60} {
-		with := fitTableColumns(sessionsColumnsWith(width, true, true), width)
-		without := fitTableColumns(sessionsColumnsWith(width, true, false), width)
+		with := fitTableColumns(sessionsColumnsWith(width, true, true, false), width)
+		without := fitTableColumns(sessionsColumnsWith(width, true, false, false), width)
 		for _, c := range without {
 			title := headerTitle(c)
 			if w := sessionsColumnWidth(with, title); w < min(c.Width, declared[title]) {
@@ -144,7 +144,7 @@ func TestSessionsTable_ServerColumnNeverNarrowsAnother(t *testing.T) {
 			}
 		}
 	}
-	if sessionsColumnWidth(fitTableColumns(sessionsColumnsWith(200, true, true), 200), "SERVER") == 0 {
+	if sessionsColumnWidth(fitTableColumns(sessionsColumnsWith(200, true, true, false), 200), "SERVER") == 0 {
 		t.Error("no SERVER column at 200 columns")
 	}
 }
@@ -301,7 +301,7 @@ func TestSessionsTable_WideningNeverDropsAColumnOrNarrowsTitle(t *testing.T) {
 		seen := map[string]int{}
 		prevTitle := 0
 		for w := 40; w < 250; w++ {
-			cols := fitTableColumns(sessionsColumnsWith(w, flags.agent, flags.server), w)
+			cols := fitTableColumns(sessionsColumnsWith(w, flags.agent, flags.server, false), w)
 			for _, title := range []string{"AGENT", "SERVER", "TITLE", "COST"} {
 				if sessionsColumnWidth(cols, title) > 0 {
 					seen[title] = w

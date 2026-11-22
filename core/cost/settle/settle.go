@@ -815,7 +815,7 @@ func modelledCost(rates pricing.Resolver, host, model string, u pricing.Usage, p
 	//
 	// Added for the 1h cache-write tier (2026-11-17 accountant-integration task 7).
 	if u.CacheWrite1h > 0 {
-		delta, deltaOK, deltaEstimated := pricing.CacheWrite1hDeltaMicros(r, u.CacheWrite1h, isAnthropicModel(model))
+		delta, deltaOK, deltaEstimated := pricing.CacheWrite1hDeltaMicros(r, u.CacheWrite1h, IsAnthropicModel(model))
 		estimated1h = deltaOK && deltaEstimated
 		if deltaOK && delta > 0 {
 			// The ceiling CostByTier applied to the base figure applies to the total with
@@ -833,7 +833,7 @@ func modelledCost(rates pricing.Resolver, host, model string, u pricing.Usage, p
 	return micros, tiers, prov, true, pricing.RefusalNone, estimated1h
 }
 
-// isAnthropicModel reports whether model is on Anthropic's Claude family, the only
+// IsAnthropicModel reports whether model is on Anthropic's Claude family, the only
 // provider on a path Cortex runs whose 1-hour cache-write premium is documented
 // (2x input — see pricing.Rates.CacheWrite1hRate). modelledCost is the natural
 // place for this: it already has the model string, which pricing.Rates itself
@@ -842,7 +842,10 @@ func modelledCost(rates pricing.Resolver, host, model string, u pricing.Usage, p
 // A substring match, not an exact one: bundled model names include dated and
 // provider-prefixed forms ("claude-sonnet-4-5-20250929", "anthropic/claude-opus-5",
 // Bedrock's "anthropic.claude-..."), all of which contain "claude".
-func isAnthropicModel(model string) bool {
+//
+// Exported for core/accounting's TierUSD, so the accountant's figures and the spend figure
+// decide the 1h premium by the same rule.
+func IsAnthropicModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "claude")
 }
 

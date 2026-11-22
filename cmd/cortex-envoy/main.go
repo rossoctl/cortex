@@ -200,7 +200,7 @@ func main() {
 		if !acctDecided {
 			acctDecided = true
 			if c.AccountingOn() {
-				acctHost = accounting.New(accounting.Options{Resolver: pricingRegistry})
+				acctHost = accounting.New(accounting.OptionsFrom(c, pricingRegistry))
 				slog.Info("accounting enabled — context savings are computed by the accountant")
 			}
 		}

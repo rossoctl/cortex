@@ -734,3 +734,23 @@ func TestHost_ThreadBillingIsBounded(t *testing.T) {
 			got.Mode, accountant.BillingUnknown)
 	}
 }
+
+// Counts no request could have reported are refused before Compute, as settle refuses them
+// (pricing.PlausibleUsage): an impossible report would be priced into an impossible saving.
+func TestHost_ComputeRefusesImplausibleUsage(t *testing.T) {
+	h := newHost(t)
+	for name, mutate := range map[string]func(u *pipeline.InferenceExtension){
+		"negative":         func(u *pipeline.InferenceExtension) { u.InputTokens = -5 },
+		"past the ceiling": func(u *pipeline.InferenceExtension) { u.CacheReadTokens = 2_000_000_000 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			usage := coldUsage()
+			mutate(&usage)
+			pctx := request(t, h, "s-"+name, "/v1/messages", clientBody("hi"),
+				&operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}, 200, usage)
+			if res, ok := h.Compute(pctx); ok {
+				t.Errorf("Compute priced implausible counts: %+v", res)
+			}
+		})
+	}
+}

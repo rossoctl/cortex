@@ -1420,3 +1420,21 @@ func TestValidateAccounting(t *testing.T) {
 		}
 	}
 }
+
+// accounting.subscription_weights are read once, when the accountant host is built, so a reload
+// that changes them is refused rather than accepted and not applied. Compared as resolved: an
+// absent block and one spelling out the defaults are the same weights.
+func TestValidateReloadable_RefusesASubscriptionWeightsChange(t *testing.T) {
+	with := func(w *config.SubscriptionWeights) *config.Config {
+		return &config.Config{Accounting: &config.AccountingConfig{Enabled: "true", SubscriptionWeights: w}}
+	}
+	changed := config.DefaultSubscriptionWeights()
+	changed.Output = 4
+	if err := validateReloadable(with(nil), with(&changed)); err == nil || !strings.Contains(err.Error(), "accounting.subscription_weights") {
+		t.Errorf("changed weights: err = %v, want a refusal naming accounting.subscription_weights", err)
+	}
+	same := config.DefaultSubscriptionWeights()
+	if err := validateReloadable(with(nil), with(&same)); err != nil {
+		t.Errorf("the defaults spelled out were refused: %v", err)
+	}
+}

@@ -2127,6 +2127,28 @@ func TestREADME_StatesTheCurrentTwoColumnThreshold(t *testing.T) {
 	}
 }
 
+// A drawer row shows the net saving when the operators caused a penalty, and the accountant's
+// other figures in its note: the gross and the penalty, usage-limit units with their API
+// equivalent and plugin spend, each named.
+func TestDrawerFigures_ShowTheAccountantsFigures(t *testing.T) {
+	r := drawerRow{label: "claude-opus-5", counts: usage.Counts{
+		Requests: 3, PricedRequests: 3, PriceableRequests: 3, CostMicros: 1_000_000,
+		AvoidedMicros: 10_000, PenaltyMicros: 30_000,
+		AvoidedUnits: 4_500, AvoidedAPIEquivalentMicros: 1_000_000,
+		PluginSpendMicros: 40_000,
+	}}
+	var parts []string
+	for _, f := range drawerFigures(r) {
+		parts = append(parts, f.full)
+	}
+	got := strings.Join(parts, " | ")
+	for _, want := range []string{"net -$0.02", "penalty $0.03", "API equivalent net $1.00", "plugin model calls $0.04"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("row = %q, missing %q", got, want)
+		}
+	}
+}
+
 // drawerChipped is the text a drawer line shows in color: only the three key hints change.
 var drawerChipped = strings.NewReplacer("[a]", " a ", "[w]", " w ", "[$]", " $ ")
 
