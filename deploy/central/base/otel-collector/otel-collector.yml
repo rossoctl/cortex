@@ -1,5 +1,5 @@
-# OpenTelemetry Collector for the central metrics stack (contrib build; the core build has no
-# remote-write exporter).
+# OpenTelemetry Collector for the central metrics stack (contrib build, for the transform processor
+# and the bearer-token extension).
 #
 # Each proxy pushes OTLP/JSON over HTTPS. Two things are decided HERE and never taken from the
 # sender:
@@ -75,12 +75,15 @@ processors:
     timeout: 5s
 
 exporters:
-  prometheusremotewrite:
-    endpoint: http://prometheus:9090/api/v1/write
-    # Resource attributes become labels. Do not add a unit suffix: the metric names already carry
-    # `usd`, `tokens` and `seconds` (spec 5.1).
-    resource_to_telemetry_conversion:
-      enabled: true
+  # OTLP into Prometheus's own OTLP receiver, not remote write. Remote write v1 carries no start
+  # time, so Prometheus cannot store the 0 a counter starts from, and increase() then loses the
+  # first sample of every new series (a new label set, or the first increment after a proxy
+  # restart). The OTLP receiver stores that 0 at the point's StartTimeUnixNano
+  # (created-timestamp-zero-ingestion, Prometheus 3.7.0 and later, prometheus#16951).
+  # Prometheus, not this exporter, turns the resource attributes into labels: see `otlp:` in
+  # prometheus.yml.
+  otlphttp/prometheus:
+    metrics_endpoint: http://prometheus:9090/api/v1/otlp/v1/metrics
 
 service:
   extensions: [health_check, bearertokenauth/cortex, bearertokenauth/contextguru]
@@ -88,11 +91,11 @@ service:
     metrics/cortex:
       receivers: [otlp/cortex]
       processors: [memory_limiter, transform/cortex, batch]
-      exporters: [prometheusremotewrite]
+      exporters: [otlphttp/prometheus]
     metrics/contextguru:
       receivers: [otlp/contextguru]
       processors: [memory_limiter, transform/contextguru, batch]
-      exporters: [prometheusremotewrite]
+      exporters: [otlphttp/prometheus]
   telemetry:
     # The collector's own metrics, for the pipeline alerts. Prometheus scrapes this port.
     metrics:

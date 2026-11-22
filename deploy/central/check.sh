@@ -15,7 +15,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 base="$here/base"
 overlay="$here/overlays/openshift"
 
-PROM_IMAGE="${PROM_IMAGE:-docker.io/prom/prometheus:v3.2.1}"
+PROM_IMAGE="${PROM_IMAGE:-docker.io/prom/prometheus:v3.16.0}"
 OTELCOL_IMAGE="${OTELCOL_IMAGE:-docker.io/otel/opentelemetry-collector-contrib:0.165.0}"
 KUBECONFORM_IMAGE="${KUBECONFORM_IMAGE:-ghcr.io/yannh/kubeconform:v0.6.7}"
 KUSTOMIZE_IMAGE="${KUSTOMIZE_IMAGE:-registry.k8s.io/kustomize/kustomize:v5.6.0}"
