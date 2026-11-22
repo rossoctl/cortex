@@ -233,6 +233,18 @@ func TestAllMarksAsk1h(t *testing.T) {
 			false,
 		},
 		{
+			// A 5m mark inside a tool_result's content is a mark too: it must make this false
+			// even though the only top-level-of-content mark asks 1h.
+			"a nested tool_result mark asks 5m next to a 1h tool mark",
+			`{"tools":[{"name":"t","input_schema":{},"cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":[{"type":"text","text":"r","cache_control":{"type":"ephemeral"}}]}]}]}`,
+			false,
+		},
+		{
+			"a null cache_control is not a mark",
+			`{"system":[{"type":"text","text":"a","cache_control":{"ttl":"1h"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":null}]}]}`,
+			true,
+		},
+		{
 			"an OpenAI-shaped body has no cache_control fields to find",
 			`{"model":"gpt-5","messages":[{"role":"user","content":"hi"}]}`,
 			false,
@@ -332,6 +344,53 @@ func TestParse_AutomaticCachingBreakpoint(t *testing.T) {
 			"no messages positions",
 			`{"cache_control":{"type":"ephemeral"},"system":"s","messages":[]}`,
 			[]wantBreak{{"system", 0, "5m"}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, bps, err := Parse(FormatAnthropic, []byte(c.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(bps) != len(c.want) {
+				t.Fatalf("got %+v, want %+v", bps, c.want)
+			}
+			for i, w := range c.want {
+				if g := bps[i]; string(g.Pos.Section) != w.Section || g.Pos.Index != w.Index || g.TTL != w.TTL {
+					t.Errorf("breakpoint %d: got %+v, want %+v", i, g, w)
+				}
+			}
+		})
+	}
+}
+
+// TestParse_MarkBreakpoints: which cache_control values give a breakpoint. A null is not a mark,
+// the same as in AllMarksAsk1h; a mark nested inside a tool_result's content names its enclosing
+// position, the same marks withoutCacheMarks strips from the hash.
+func TestParse_MarkBreakpoints(t *testing.T) {
+	cases := []struct {
+		name, raw string
+		want      []wantBreak
+	}{
+		{
+			"null on a content block",
+			`{"messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":null}]}]}`,
+			nil,
+		},
+		{
+			"null on a position",
+			`{"system":[{"type":"text","text":"s","cache_control":null}],"messages":[{"role":"user","content":"hi"}]}`,
+			nil,
+		},
+		{
+			"mark nested in a tool_result's content",
+			`{"tools":[{"name":"t","input_schema":{},"cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":"q"},{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":[{"type":"text","text":"r","cache_control":{"type":"ephemeral"}}]}]}]}`,
+			[]wantBreak{{"tools", 0, "1h"}, {"messages", 1, "5m"}},
+		},
+		{
+			"a tool param named cache_control is not a mark",
+			`{"tools":[{"name":"t","input_schema":{"properties":{"cache_control":{"type":"string"}}}}],"messages":[{"role":"user","content":"hi"}]}`,
+			nil,
 		},
 	}
 	for _, c := range cases {

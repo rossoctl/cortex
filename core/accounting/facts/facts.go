@@ -2,8 +2,8 @@
 // (accountant.EntryFacts) that provider's prompt cache has for a model. It is Cortex's own table,
 // the host part of accountant/docs/cortex-wiring.md W6 (cortex-wiring.md's cached-prefix.md
 // companion document is cited on each row). It matches the context-guru proxy's entryFacts
-// (proxy/accountant_wire.go:229-246) exactly, minus the ping facts, which Task 2 applies in
-// core/accounting.
+// (proxy/accountant_wire.go:229-246) exactly, minus the ping facts, which the caller in
+// core/accounting applies on top.
 package facts
 
 import (
@@ -15,8 +15,8 @@ import (
 
 // Provider is the LLM provider a request went to, as far as Cortex's cache-facts table
 // distinguishes them. It is Cortex's own enum: the proxy uses bifrost's bschemas.ModelProvider,
-// which core/accounting does not import (global-constraints.md: no context-guru dependency, and
-// bschemas is a context-guru dependency, not a Cortex one).
+// which core/accounting does not import: Cortex does not depend on context-guru, and bschemas is
+// a context-guru dependency, not a Cortex one.
 type Provider int
 
 const (
@@ -31,11 +31,10 @@ const (
 // hostname (LiteLLM, OpenRouter, Azure) still speaks one of the two wire dialects, and the dialect
 // is what decides which provider's cache rules apply.
 //
-// host is kept as a parameter because it is part of this function's required interface (the task
-// brief) and may matter to a future caller (for example, logging which destination a request with
-// no recognizable path went to), but it plays no part in the answer: an unrecognized path is
-// ProviderUnknown whatever the host says, even a host whose name contains "anthropic" or
-// "openai" — review round 1 removed the earlier host-substring fallback for exactly that reason.
+// host plays no part in the answer. It is kept as a parameter for a future caller that may need
+// it (for example, to log which destination a request with no recognizable path went to). An
+// unrecognized path is ProviderUnknown whatever the host says, even a host whose name contains
+// "anthropic" or "openai", because a host name does not say which wire dialect the request uses.
 func Classify(host, path string) Provider {
 	switch {
 	case strings.HasSuffix(path, "/v1/messages"):
@@ -55,23 +54,14 @@ const (
 )
 
 // For returns the accountant.EntryFacts for provider p and model, given allMarksAsk1h — whether
-// EVERY raw cache_control mark in the forwarded body asked for the 1h tier
-// (wire.AllMarksAsk1h). It does not know about keep-alive pings; Task 2's core/accounting
-// applies those on top, as entryFacts' PingStore lookup does in the proxy.
+// EVERY raw cache_control mark in the forwarded body asked for the 1h tier. It does not know about
+// keep-alive pings; the caller in core/accounting applies those on top, as entryFacts' PingStore
+// lookup does in the proxy.
 //
-// Interface note for later tasks: this is not the signature task-1-brief.md specified
-// (`For(p Provider, model string, breakpoints []accountant.Breakpoint) accountant.EntryFacts`).
-// Review round 1 found that signature could not match the proxy's entryFacts rule for the 1h
-// tier (apply.AllBreakpointsAskExtendedTTL: EVERY raw cache_control mark must ask 1h, not just
-// the merged per-position Breakpoint wire.Parse returns — a position can merge a 5m mark and a
-// 1h mark into one Breakpoint{TTL:"1h"}, which would wrongly read as "every mark here is 1h").
-// accountant.Breakpoint cannot carry that distinction: it is one merged value per position, by
-// the library's own contract, needed as-is for BeginRequest/EndRequest. The fix is
-// wire.AllMarksAsk1h(raw []byte) bool, which a caller runs over the raw forwarded body (Anthropic
-// only; it finds nothing to count on a Chat or Responses body) and passes in here instead of the
-// breakpoints slice — which this function no longer needs now that MinCacheable,
-// Provider.ReadGranularity and Provider.TTLs are gone too (see anthropicFacts). Task 2+ must call
-// wire.AllMarksAsk1h directly rather than deriving this bool from Parse's Breakpoint slice.
+// The 1h tier needs every raw mark to ask 1h, which a merged accountant.Breakpoint cannot express:
+// a position can merge a 5m mark and a 1h mark into one Breakpoint{TTL:"1h"}. So callers pass
+// wire.AllMarksAsk1h(raw) over the raw forwarded body, and must not derive this bool from the
+// Breakpoint slice wire.Parse returns.
 func For(p Provider, model string, allMarksAsk1h bool) accountant.EntryFacts {
 	switch p {
 	case ProviderAnthropic:

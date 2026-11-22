@@ -19,7 +19,7 @@ func TestClassify(t *testing.T) {
 		// apply on the wire.
 		{"litellm anthropic dialect", "litellm.local:4000", "/v1/messages", ProviderAnthropic},
 		{"unknown path", "gateway.example.com", "/v1/embeddings", ProviderUnknown},
-		// Classification is by path only (review round 1): a host whose name contains
+		// Classification is by path only: a host whose name contains
 		// "anthropic" on a path this package does not recognize must still be Unknown, not
 		// Anthropic by a hostname guess.
 		{"anthropic-looking host, unrecognized path", "api.anthropic.com", "/v1/embeddings", ProviderUnknown},

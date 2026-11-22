@@ -179,47 +179,75 @@ func (sec sections) responsesSections() sections {
 }
 
 // AllMarksAsk1h reports whether raw has at least one cache_control mark and every one of them
-// asks for the 1h tier — ported path-for-path from the context-guru proxy's
-// apply.AllBreakpointsAskExtendedTTL (apply/apply.go), which the keeper uses to decide a thread's
-// keep-alive schedule and which facts.For uses for the same "is this whole entry 1h" question
-// W6.4's entryFacts answers. It counts raw marks, not merged positions: a position with two marks
-// (a 5m one and a 1h one) counts as two separate cache_control occurrences here, unlike
-// breakpointsOf's one merged Breakpoint per position — that distinction is exactly why this
-// exists apart from the Breakpoint slice Parse returns: AllBreakpointsAskExtendedTTL must see a
-// lone 5m mark even when it shares a position with a 1h one and the merged Breakpoint says "1h".
+// asks for the 1h tier. It answers the question the context-guru proxy's
+// apply.AllBreakpointsAskExtendedTTL (apply/apply.go) answers, and facts.For uses it for the same
+// "is this whole entry 1h" question W6.4's entryFacts answers. It counts raw marks, not merged
+// positions: a position with two marks (a 5m one and a 1h one) counts as two marks here, unlike
+// breakpointsOf's one merged Breakpoint per position. That is why this exists apart from the
+// Breakpoint slice Parse returns: it must see a lone 5m mark even when it shares a position with
+// a 1h one and the merged Breakpoint says "1h".
+//
+// A mark is what eachMark finds: a cache_control object on a tool, system block or message, or on
+// a content block at any depth (a block inside a tool_result's content). The proxy's version reads
+// only one level of content, so it misses a nested 5m mark; this one does not, so that it agrees
+// with breakpointsOf and with the marks withoutCacheMarks strips from the hash. A null
+// cache_control is not a mark.
 //
 // The top-level cache_control (automatic caching) is one more mark: a body whose only mark is a
 // top-level 1h one asks for 1h, and a top-level 5m mark next to 1h block marks makes this false.
 //
-// Anthropic-only in practice: the gjson paths read the body's and messages/system/tools' own
-// cache_control objects, fields a Chat or Responses body does not carry, so this is always false
-// on those wires. No Format parameter is needed to gate that: a path that does not exist in the body
-// simply matches nothing.
+// Anthropic-only in practice: a Chat or Responses body carries no cache_control objects, so this
+// is always false on those wires. No Format parameter is needed to gate that.
 func AllMarksAsk1h(raw []byte) bool {
 	total, extended := 0, 0
-	var walk func(v gjson.Result)
-	walk = func(v gjson.Result) {
-		if v.IsArray() {
-			v.ForEach(func(_, vv gjson.Result) bool { walk(vv); return true })
-			return
-		}
-		if v.IsObject() {
-			total++
-			if v.Get("ttl").String() == "1h" {
-				extended++
-			}
+	count := func(cc gjson.Result) {
+		total++
+		if cc.Get("ttl").String() == "1h" {
+			extended++
 		}
 	}
-	for _, path := range []string{
-		"cache_control",
-		"messages.#.content.#.cache_control",
-		"messages.#.cache_control",
-		"system.#.cache_control",
-		"tools.#.cache_control",
-	} {
-		walk(gjson.GetBytes(raw, path))
+	body := gjson.ParseBytes(raw)
+	if cc := body.Get("cache_control"); cc.IsObject() {
+		count(cc)
+	}
+	for _, sec := range []string{"tools", "system", "messages"} {
+		if arr := body.Get(sec); arr.IsArray() {
+			arr.ForEach(func(_, el gjson.Result) bool { eachMark(el, count); return true })
+		}
 	}
 	return total > 0 && total == extended
+}
+
+// eachMark calls fn once for each cache_control mark under v: a cache_control object on v
+// itself, or on a block of a content array at any depth of content nesting (a text block inside
+// a tool_result block's own content). It walks the same keys findCacheMark walks, so every mark
+// that leaves the hash is also counted as a breakpoint. Only an object is a mark: the Anthropic
+// schema allows "cache_control": null, and a null asks for nothing. When v has a key twice, only
+// the first one counts, as gjson's Get reads it.
+func eachMark(v gjson.Result, fn func(cc gjson.Result)) {
+	if !v.IsObject() {
+		return
+	}
+	var gotCC, gotContent bool
+	v.ForEach(func(k, c gjson.Result) bool {
+		switch k.String() {
+		case "cache_control":
+			if !gotCC {
+				gotCC = true
+				if c.IsObject() {
+					fn(c)
+				}
+			}
+		case "content":
+			if !gotContent {
+				gotContent = true
+				if c.IsArray() {
+					c.ForEach(func(_, blk gjson.Result) bool { eachMark(blk, fn); return true })
+				}
+			}
+		}
+		return !(gotCC && gotContent)
+	})
 }
 
 // withoutCacheMarks is one position's JSON without its cache_control marks: its own, the ones on
@@ -290,7 +318,9 @@ func findCacheMark(v gjson.Result, prefix string) string {
 // breakpointsOf lists the cache_control marks of sec, one per position, in the same space as
 // Parse's Body. A mark on the position itself and a mark on one of its content blocks can both
 // name one position; it is listed once, with the longer TTL (1h over 5m), because the provider
-// keeps the entry for the longest TTL asked for at it. ttl defaults to "5m" (W6.3).
+// keeps the entry for the longest TTL asked for at it. ttl defaults to "5m" (W6.3). A mark on a
+// block nested deeper (inside a tool_result's content) names its enclosing position too; see
+// eachMark. A null cache_control is not a mark.
 //
 // A top-level cache_control (automatic caching) adds one breakpoint at the body's last position,
 // which holds the request's last cacheable block. When an explicit mark already names that
@@ -318,41 +348,12 @@ func breakpointsOf(sec sections) []accountant.Breakpoint {
 		}
 		return "5m"
 	}
-	mark := func(el gjson.Result) (cc, content gjson.Result) {
-		if !el.IsObject() {
-			return
-		}
-		var gotCC, gotContent bool
-		el.ForEach(func(k, v gjson.Result) bool {
-			switch k.String() {
-			case "cache_control":
-				if !gotCC {
-					gotCC, cc = true, v
-				}
-			case "content":
-				if !gotContent {
-					gotContent, content = true, v
-				}
-			}
-			return !(gotCC && gotContent)
-		})
-		return
-	}
 	scanSection := func(s accountant.Section, arr gjson.Result) {
 		i := 0
 		arr.ForEach(func(_, el gjson.Result) bool {
-			cc, content := mark(el)
-			if cc.Exists() {
+			eachMark(el, func(cc gjson.Result) {
 				add(accountant.Position{Section: s, Index: i}, ttl(cc))
-			}
-			if content.IsArray() {
-				content.ForEach(func(_, blk gjson.Result) bool {
-					if cc, _ := mark(blk); cc.Exists() {
-						add(accountant.Position{Section: s, Index: i}, ttl(cc))
-					}
-					return true
-				})
-			}
+			})
 			i++
 			return true
 		})
