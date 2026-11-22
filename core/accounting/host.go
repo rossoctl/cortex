@@ -210,8 +210,20 @@ func (h *Host) RequestStart(pctx *pipeline.Context) {
 //
 // Traffic that is not an inference request, or that has no session to key a thread on, starts
 // nothing and logs nothing (Review Focus 2).
+//
+// A request a plugin asked to translate (pctx.TranslateTarget) also starts nothing: the listener
+// converts the body to the target protocol in startTranslation, which runs after Run returns, so
+// at this point pctx.Body is still the client-protocol body. wire.FormatOf(pctx.Path) and
+// facts.Classify both key on the client's own path, so a record built here would classify and
+// price a request under the wrong protocol's caching rules — the provider bills the converted
+// body under its own. The same TranslateTarget check also covers a translation the listener
+// later refuses: RequestEnd has no later chance to undo the record it would otherwise start, and
+// a refused request must start no accounting work (pipeline/accounting.go).
 func (h *Host) RequestEnd(pctx *pipeline.Context) {
 	if h == nil || pctx == nil || pctx.SessionID == "" {
+		return
+	}
+	if _, _, _, ok := pctx.TranslateTarget(); ok {
 		return
 	}
 	format, ok := wire.FormatOf(pctx.Path)
@@ -391,6 +403,7 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	case <-timer.C:
 		slog.Warn("accounting: the record was not ended in time; the request is recorded with no saving",
 			"wait", wait)
+		h.release(p, "timeout")
 		return accountant.Result{}, false
 	}
 	in.ServerHeldHistory = p.serverHeld
