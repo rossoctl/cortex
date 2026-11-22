@@ -70,6 +70,10 @@ type Config struct {
 	// wrong sink; a central collector is the right one). Set `cost_ledger.enabled:
 	// false` to turn it off locally.
 	CostLedger *CostLedgerConfig `yaml:"cost_ledger,omitempty" json:"cost_ledger,omitempty"`
+	// Accounting says whether the process hosts the accountant, which prices what the context
+	// operators saved. Absent means auto: on when the outbound pipeline has a context
+	// operator. See AccountingConfig.
+	Accounting *AccountingConfig `yaml:"accounting,omitempty" json:"accounting,omitempty"`
 }
 
 // CostLedgerConfig configures the durable cost ledger.
