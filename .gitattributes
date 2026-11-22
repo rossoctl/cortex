@@ -1,0 +1,14 @@
+# Files that tests compare byte for byte, or split on "\n", must keep the line endings they
+# were committed with. A Windows checkout with core.autocrlf=true (the GitHub runner's default)
+# would otherwise turn them into CRLF and the tests would fail on Windows only (#1520).
+
+# Fixtures and goldens: no line-ending conversion at all, so each is checked out exactly as
+# committed (binary fixtures included).
+**/testdata/** -text
+*.golden -text
+*.golden.* -text
+
+# Docs whose examples, tables or endpoint lists tests read: text, always checked out with LF.
+docs/**/*.md text eol=lf
+cmd/agentop/README.md text eol=lf
+core/plugins/cpex/README.md text eol=lf
