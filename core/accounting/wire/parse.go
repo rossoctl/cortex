@@ -199,6 +199,9 @@ func (sec sections) responsesSections() sections {
 // Anthropic-only in practice: a Chat or Responses body carries no cache_control objects, so this
 // is always false on those wires. No Format parameter is needed to gate that.
 func AllMarksAsk1h(raw []byte) bool {
+	if !json.Valid(raw) {
+		return false
+	}
 	total, extended := 0, 0
 	count := func(cc gjson.Result) {
 		total++
@@ -218,14 +221,40 @@ func AllMarksAsk1h(raw []byte) bool {
 	return total > 0 && total == extended
 }
 
+// maxContentDepth bounds how many levels of nested "content" arrays eachMark and findCacheMark
+// descend into. On the wire, content nests at most two levels below a position (message ->
+// tool_result -> text/image block); this leaves slack above that for a provider variant without
+// inventing an unbounded one. Without this bound, a body whose content nests far deeper than the
+// wire ever does (a crafted tool_result wrapped in tool_result wrapped in ...) costs O(depth ×
+// size) in each of these functions, because gjson's ForEach rescans the remaining bytes of a
+// value to find each child's boundary, at every level of the walk. A limit this small still
+// finds every mark the wire actually produces.
+const maxContentDepth = 8
+
+// mayMarkCacheControl is a cheap, conservative check for whether raw could hold a cache_control
+// key: it is used to skip the ForEach walk in eachMark and findCacheMark entirely for a value
+// that plainly cannot contain one. It cannot rule a value out from the literal text alone,
+// because gjson decodes JSON escapes when it reads a key (so "cache_control" is still the
+// key "cache_control" to ForEach): a backslash anywhere in raw means an escape could be hiding
+// the key, so this stays true whenever raw has one, even though most such backslashes are
+// unrelated (an escaped quote or newline in message text, say). A value with neither the literal
+// text nor a backslash cannot name cache_control no matter how it is decoded.
+func mayMarkCacheControl(raw string) bool {
+	return strings.Contains(raw, "cache_control") || strings.Contains(raw, `\`)
+}
+
 // eachMark calls fn once for each cache_control mark under v: a cache_control object on v
 // itself, or on a block of a content array at any depth of content nesting (a text block inside
-// a tool_result block's own content). It walks the same keys findCacheMark walks, so every mark
-// that leaves the hash is also counted as a breakpoint. Only an object is a mark: the Anthropic
-// schema allows "cache_control": null, and a null asks for nothing. When v has a key twice, only
-// the first one counts, as gjson's Get reads it.
+// a tool_result block's own content), down to maxContentDepth. It walks the same keys
+// findCacheMark walks, so every mark that leaves the hash is also counted as a breakpoint. Only
+// an object is a mark: the Anthropic schema allows "cache_control": null, and a null asks for
+// nothing. When v has a key twice, only the first one counts, as gjson's Get reads it.
 func eachMark(v gjson.Result, fn func(cc gjson.Result)) {
-	if !v.IsObject() {
+	eachMarkDepth(v, fn, 0)
+}
+
+func eachMarkDepth(v gjson.Result, fn func(cc gjson.Result), depth int) {
+	if depth > maxContentDepth || !v.IsObject() || !mayMarkCacheControl(v.Raw) {
 		return
 	}
 	var gotCC, gotContent bool
@@ -242,7 +271,7 @@ func eachMark(v gjson.Result, fn func(cc gjson.Result)) {
 			if !gotContent {
 				gotContent = true
 				if c.IsArray() {
-					c.ForEach(func(_, blk gjson.Result) bool { eachMark(blk, fn); return true })
+					c.ForEach(func(_, blk gjson.Result) bool { eachMarkDepth(blk, fn, depth+1); return true })
 				}
 			}
 		}
@@ -254,10 +283,15 @@ func eachMark(v gjson.Result, fn func(cc gjson.Result)) {
 // its content blocks, and ones nested deeper (a mark inside a tool_result block's own content
 // array). A key named cache_control anywhere else is data, not a mark, and stays (see
 // findCacheMark). A position with none is returned as it is, byte for byte, so the common case costs no
-// allocation (ported from the proxy's withoutCacheMarks, context-guru#917).
+// allocation (ported from the proxy's withoutCacheMarks, context-guru#917). The fast path's
+// check is mayMarkCacheControl, not a plain literal-text search: a block holding
+// "cache\u005fcontrol":{"ttl":"1h"} has no literal "cache_control" substring, but gjson
+// decodes the escape when it reads the key, so eachMark still reports it as a mark. Leaving a
+// block like that in the hash would make adding or moving that metadata look like a prefix
+// change.
 func withoutCacheMarks(body []byte, v gjson.Result) []byte {
 	raw := v.Raw
-	if !strings.Contains(raw, "cache_control") {
+	if !mayMarkCacheControl(raw) {
 		if i := v.Index; i > 0 && i+len(raw) <= len(body) && string(body[i:i+len(raw)]) == raw {
 			return body[i : i+len(raw) : i+len(raw)]
 		}
@@ -280,12 +314,16 @@ func withoutCacheMarks(body []byte, v gjson.Result) []byte {
 
 // findCacheMark returns the gjson path of the first cache-control mark under v, or "" when there
 // is none. A mark is a cache_control key on v itself or on a block of a content array, at any
-// depth of content nesting (a tool_result block's own content). It descends only through
-// "content" arrays, so a cache_control key anywhere else stays in the hash: a tool's
-// input_schema.properties.cache_control parameter, or a tool_use block's input value, is part of
-// what the provider caches, and a change to it must change the hash.
+// depth of content nesting (a tool_result block's own content), down to maxContentDepth. It
+// descends only through "content" arrays, so a cache_control key anywhere else stays in the
+// hash: a tool's input_schema.properties.cache_control parameter, or a tool_use block's input
+// value, is part of what the provider caches, and a change to it must change the hash.
 func findCacheMark(v gjson.Result, prefix string) string {
-	if !v.IsObject() {
+	return findCacheMarkDepth(v, prefix, 0)
+}
+
+func findCacheMarkDepth(v gjson.Result, prefix string, depth int) string {
+	if depth > maxContentDepth || !v.IsObject() || !mayMarkCacheControl(v.Raw) {
 		return ""
 	}
 	join := func(k string) string {
@@ -305,7 +343,7 @@ func findCacheMark(v gjson.Result, prefix string) string {
 			}
 			i := 0
 			c.ForEach(func(_, blk gjson.Result) bool {
-				found = findCacheMark(blk, join("content."+strconv.Itoa(i)))
+				found = findCacheMarkDepth(blk, join("content."+strconv.Itoa(i)), depth+1)
 				i++
 				return found == ""
 			})

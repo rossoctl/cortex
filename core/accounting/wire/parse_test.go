@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/rossoctl/accountant"
 )
@@ -157,6 +158,81 @@ func TestParse_CacheControlStrippedFromHash(t *testing.T) {
 	// The sizes must still differ: the size keeps the cache_control bytes.
 	if bodyA.Pos[startA].Bytes == bodyB.Pos[startB].Bytes {
 		t.Errorf("sizes should differ (marks count toward wire size), both are %d", bodyA.Pos[startA].Bytes)
+	}
+}
+
+// TestWithoutCacheMarks_EscapedKeyStripped pins the review of #2054: an escaped cache_control
+// key (e.g. "cache_control") has no literal "cache_control" substring in the position's raw
+// bytes, but gjson decodes the escape when it reads the key, so eachMark still counts it as a
+// mark. The literal-text fast path in withoutCacheMarks must not keep it in the hash: a position
+// with only an escaped mark must hash the same as the identical block with no mark at all.
+func TestWithoutCacheMarks_EscapedKeyStripped(t *testing.T) {
+	plain := []byte(`{"system":[{"type":"text","text":"a"}],"messages":[{"role":"user","content":"hi"}]}`)
+	escaped := []byte(`{"system":[{"type":"text","text":"a","cache\u005fcontrol":{"ttl":"1h"}}],"messages":[{"role":"user","content":"hi"}]}`)
+
+	plainBody, _, err := Parse(FormatAnthropic, plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	escapedBody, bps, err := Parse(FormatAnthropic, escaped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bps) != 1 {
+		t.Fatalf("got %d breakpoints for a body with one escaped mark, want 1: %+v", len(bps), bps)
+	}
+	startA, _ := sectionBounds(plainBody, accountant.SectionSystem)
+	startB, _ := sectionBounds(escapedBody, accountant.SectionSystem)
+	if plainBody.Pos[startA].Hash != escapedBody.Pos[startB].Hash {
+		t.Error("an escaped cache_control key was left in the hash: it differs from the same block with no mark at all")
+	}
+}
+
+// nestedToolResultContent builds one user message whose content is a tool_result wrapped in a
+// tool_result, depth times, with mark (empty, or a cache_control member) on the innermost text
+// block. It is the same content/tool_result shape TestParse_ToolParamNamedCacheControlStaysInHash
+// nests once, just far deeper, to exercise the maxContentDepth bound added in review of #2054.
+func nestedToolResultContent(depth int, mark string) []byte {
+	block := `{"type":"text","text":"x"` + mark + `}`
+	for i := 0; i < depth; i++ {
+		block = `{"type":"tool_result","tool_use_id":"x","content":[` + block + `]}`
+	}
+	return []byte(`{"messages":[{"role":"user","content":[` + block + `]}]}`)
+}
+
+// TestDeepContentNesting_StaysBounded pins the maxContentDepth bound added in review of #2054:
+// gjson's ForEach rescans the rest of a value at every level it descends, so without a bound,
+// eachMark and findCacheMark cost grows with nesting depth. 4000 levels is far past anything the
+// wire itself produces (two levels below a position), but Parse and AllMarksAsk1h must still
+// return promptly instead of taking proportionally longer. A mark past the bound is out of
+// reach: that is the bound's point, so it is correctly not stripped from the hash and not
+// counted as a breakpoint.
+func TestDeepContentNesting_StaysBounded(t *testing.T) {
+	const depth = 4000
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		noMark := nestedToolResultContent(depth, "")
+		if _, _, err := Parse(FormatAnthropic, noMark); err != nil {
+			t.Error(err)
+		}
+		if AllMarksAsk1h(noMark) {
+			t.Error("AllMarksAsk1h: no mark anywhere, want false")
+		}
+
+		deepMark := nestedToolResultContent(depth, `,"cache_control":{"type":"ephemeral"}`)
+		_, bps, err := Parse(FormatAnthropic, deepMark)
+		if err != nil {
+			t.Error(err)
+		}
+		if len(bps) != 0 {
+			t.Errorf("mark past maxContentDepth: got %d breakpoints, want 0 (out of reach)", len(bps))
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Parse/AllMarksAsk1h did not return within 5s for a deeply nested body: depth bound regressed")
 	}
 }
 
