@@ -36,11 +36,12 @@ func isKeyBodyByte(c byte) bool {
 // not cross it.
 func keyBodyEnd(text string, i int) int {
 	lineStart := true
+	endLine := endLineCache{at: -1, clearFrom: -1, linesClearFrom: -1} // found once for every header quote that asks
 	for i < len(text) {
 		if lineStart {
 			lineStart = false
 			if n := armorHeaderName(text[i:]); n > 0 {
-				end, ok := armorHeaderValueEnd(text, i+n)
+				end, ok := armorHeaderValueEnd(text, i+n, &endLine)
 				if !ok {
 					return end
 				}
@@ -77,14 +78,36 @@ func armorHeaderName(s string) int {
 
 // armorHeaderValueEnd returns where an armour header's value, starting at i, ends: at its line
 // break (raw, or escaped in JSON), which is left for the caller. ok is false when the value holds
-// a double quote or a stray backslash first: the run ends there.
-func armorHeaderValueEnd(text string, i int) (int, bool) {
+// a stray backslash, or a double quote (bare or escaped) that may end the JSON string the block
+// is in: the run ends there.
+//
+// A quote can still be part of the header ("Comment: Alice "Al" Lovelace"):
+//   - an escaped quote (raw JSON, where every quote inside a string is escaped) is, when the
+//     block's END line comes before the next unescaped quote: the string closes after the END
+//     line;
+//   - a bare quote is, in decoded text only: when its header line ends with a real line break
+//     (raw JSON has them escaped), and no line between it and the END line, other than another
+//     header line, holds a quote. A bare quote that ends a JSON string is on a line with no real
+//     break, and the run stops there.
+//
+// endLine caches where the next END line is, and what was found up to it.
+func armorHeaderValueEnd(text string, i int, endLine *endLineCache) (int, bool) {
 	for i < len(text) {
 		switch c := text[i]; {
 		case c == '\n' || c == '\r':
 			return i, true
+		case c == '\\' && i+1 < len(text) && text[i+1] == '"':
+			if !endLineBeforeQuote(text, i+2, endLine) {
+				return i, false
+			}
+			i += 2
+			continue
 		case c == '"':
-			return i, false
+			if !decodedHeaderQuoteOK(text, i, endLine) {
+				return i, false
+			}
+			i++
+			continue
 		case c == '\\':
 			if i+1 < len(text) && strings.IndexByte("nrt", text[i+1]) >= 0 {
 				return i, true
@@ -98,6 +121,83 @@ func armorHeaderValueEnd(text string, i int) (int, bool) {
 		i++
 	}
 	return i, true
+}
+
+// endLineBeforeQuote reports whether a key block's END line comes at or after i, within 64 KiB,
+// and before the next unescaped double quote. The answers are cached in el, so a header full of
+// quotes is still read once.
+func endLineBeforeQuote(text string, i int, el *endLineCache) bool {
+	if !endLineAfter(text, i, el) {
+		return false
+	}
+	if el.clearFrom >= 0 && i >= el.clearFrom {
+		return true // no unescaped quote from clearFrom to the END line, so none from i either
+	}
+	for j := i; j < el.at; j++ {
+		if text[j] == '"' && !escapedAt(text, j) {
+			return false
+		}
+	}
+	el.clearFrom = i
+	return true
+}
+
+// decodedHeaderQuoteOK reports whether a bare quote at q, on an armour header line, is part of
+// the header: its line ends with a real line break (no escaped one first), the END line follows
+// within 64 KiB, and every line in between that holds a quote is a header line.
+func decodedHeaderQuoteOK(text string, q int, el *endLineCache) bool {
+	nl := strings.IndexByte(text[q:], '\n')
+	if nl < 0 || strings.Contains(text[q:q+nl], `\n`) {
+		return false
+	}
+	lineEnd := q + nl + 1
+	if !endLineAfter(text, lineEnd, el) {
+		return false
+	}
+	if el.linesClearFrom >= 0 && lineEnd >= el.linesClearFrom {
+		return true // the lines from linesClearFrom to the END line were checked
+	}
+	for j := lineEnd; j < el.at; {
+		k := strings.IndexByte(text[j:el.at], '\n')
+		line := text[j:el.at]
+		if k >= 0 {
+			line = text[j : j+k]
+		}
+		if armorHeaderName(line) == 0 && strings.IndexByte(line, '"') >= 0 {
+			return false
+		}
+		if k < 0 {
+			break
+		}
+		j += k + 1
+	}
+	el.linesClearFrom = lineEnd
+	return true
+}
+
+// endLineAfter finds the next END line at or after i into el, and reports whether there is one
+// within 64 KiB.
+func endLineAfter(text string, i int, el *endLineCache) bool {
+	if el.at < i {
+		el.at, el.clearFrom, el.linesClearFrom = len(text), -1, -1 // none
+		if j := indexFrom(text, "-----END", i); j >= 0 {
+			el.at = j
+		}
+	}
+	return el.at < len(text) && el.at-i <= 64<<10
+}
+
+// endLineCache is where the next END line is, and from where up to it there is no unescaped
+// quote (clearFrom), or no line but header lines holding one (linesClearFrom); -1: not known.
+type endLineCache struct{ at, clearFrom, linesClearFrom int }
+
+// escapedAt reports whether the byte at j is escaped: an odd number of backslashes before it.
+func escapedAt(text string, j int) bool {
+	n := 0
+	for k := j - 1; k >= 0 && text[k] == '\\'; k-- {
+		n++
+	}
+	return n%2 == 1
 }
 
 // findKeyBlocks replaces each private key block whole, from its BEGIN line to its END line.

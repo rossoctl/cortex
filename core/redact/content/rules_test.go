@@ -103,8 +103,20 @@ func TestPrivateKeys_ArmorHeaders(t *testing.T) {
 			t.Errorf("%q in JSON: out = %q", header, out)
 		}
 	}
-	// A header holding an escaped quote in raw JSON ends the run there: the match must not
-	// run out of its JSON string. What follows stays, and the JSON stays valid.
+	// A header holding a quote, in decoded text or escaped in raw JSON, when the END line follows
+	// before any quote that could end a JSON string: still one block.
+	quoted := "-----" + "BEGIN PGP " + "PRIVATE KEY BLOCK-----\nComment: Alice \"Al\" Lovelace <alice@example.org>\n\n" + body + "\n-----" + "END PGP " + "PRIVATE KEY BLOCK-----"
+	if out, _ := redact("key:\n" + quoted + "\nend"); out != "key:\n[REDACTED:private_key]\nend" {
+		t.Errorf("a quoted header: out = %q", out)
+	}
+	inJSON := `{"k":"` + strings.ReplaceAll(strings.ReplaceAll(quoted, `"`, `\"`), "\n", `\n`) + `","n":1}`
+	mustBeJSON(t, "the fixture", inJSON)
+	if out, _ := redact(inJSON); out != `{"k":"[REDACTED:private_key]","n":1}` {
+		t.Errorf("a quoted header in JSON: out = %q", out)
+	}
+	// A header holding an escaped quote in raw JSON, with no END line before the string ends,
+	// ends the run there: the match must not run out of its JSON string. What follows stays,
+	// and the JSON stays valid.
 	in := `{"k":"-----` + `BEGIN PGP ` + `PRIVATE KEY BLOCK-----\nComment: say \"hi\"\n\n` + mixed(64) + `","n":1}`
 	out, _ := redact(in)
 	mustBeJSON(t, "the output", out)
@@ -158,14 +170,35 @@ func TestURLPasswords(t *testing.T) {
 		{"mongodb+srv://app:" + fill("p", 12) + "@cluster.example.net/x", "mongodb+srv://app:[REDACTED:password]@cluster.example.net/x"},
 		{"see https://user:" + fill("q", 8) + "@git.example.com/repo", "see https://user:[REDACTED:password]@git.example.com/repo"},
 		{"redis://:" + fill("r", 10) + "@cache:6379/0", "redis://:[REDACTED:password]@cache:6379/0"},
-		{"mysql://root:" + "1234" + "56@db:3306/x", "mysql://root:[REDACTED:password]@db:3306/x"},                      // all digits, not a port
-		{"postgres://bob:" + "p@ss/w0rd" + "@db.example.com/x", "postgres://bob:[REDACTED:password]@db.example.com/x"}, // both @ and /
-		{"postgres://u:" + fill("a", 129) + "@db/x", "postgres://u:[REDACTED:password]@db/x"},                          // over 128 bytes
+		{"mysql://root:" + "1234" + "56@db:3306/x", "mysql://root:[REDACTED:password]@db:3306/x"},                                                  // all digits, not a port
+		{"postgres://bob:" + "p@ss/w0rd" + "@db.example.com/x", "postgres://bob:[REDACTED:password]@db.example.com/x"},                             // both @ and /
+		{"postgres://u:" + fill("a", 129) + "@db/x", "postgres://u:[REDACTED:password]@db/x"},                                                      // over 128 bytes
+		{"https://alice:" + fill("a", 16) + "@registry.npmjs.org/@babel/core", "https://alice:[REDACTED:password]@registry.npmjs.org/@babel/core"}, // an npm scope in the path
 
 		{`{"dsn":"amqp://guest:` + fill("g", 9) + `@mq/vhost","n":1}`, `{"dsn":"amqp://guest:[REDACTED:password]@mq/vhost","n":1}`},
 	} {
 		out, st := redact(tc.in)
 		if out != tc.want || st["password"] != 1 {
+			t.Errorf("%q: out = %q, stats %v, want %q", tc.in, out, st, tc.want)
+		}
+	}
+}
+
+// Every password of a list of URLs joined by "," or ";" is replaced, not only the last.
+func TestURLPasswords_Lists(t *testing.T) {
+	p1, p2 := mixed(16), hexRun(16)
+	for _, tc := range []struct{ in, want string }{
+		{"https://alice:" + p1 + "@h1.example.io,https://bob:" + p2 + "@h2.example.io",
+			"https://alice:[REDACTED:password]@h1.example.io,https://bob:[REDACTED:password]@h2.example.io"},
+		{"https://alice:" + p1 + "@h1.example.io;https://bob:" + p2 + "@h2.example.io",
+			"https://alice:[REDACTED:password]@h1.example.io;https://bob:[REDACTED:password]@h2.example.io"},
+		{"https://alice:" + p1 + "@h1.example.io/a,https://bob:" + p2 + "@h2.example.io/b",
+			"https://alice:[REDACTED:password]@h1.example.io/a,https://bob:[REDACTED:password]@h2.example.io/b"},
+		{"ELASTICSEARCH_HOSTS=https://u:" + p1 + "@es1:9200,https://u:" + p2 + "@es2:9200",
+			"ELASTICSEARCH_HOSTS=https://u:[REDACTED:password]@es1:9200,https://u:[REDACTED:password]@es2:9200"},
+		{"amqp://u:" + p1 + "@h1;amqp://u:" + p2 + "@h2", "amqp://u:[REDACTED:password]@h1;amqp://u:[REDACTED:password]@h2"},
+	} {
+		if out, st := redact(tc.in); out != tc.want || st["password"] != 2 {
 			t.Errorf("%q: out = %q, stats %v, want %q", tc.in, out, st, tc.want)
 		}
 	}

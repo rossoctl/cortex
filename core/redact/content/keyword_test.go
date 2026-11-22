@@ -108,20 +108,32 @@ func TestNameTier(t *testing.T) {
 	}
 }
 
-// A name whose last word says what the value is about (password_policy, token_type) is not a
-// secret name: its value is a setting, not the secret.
-func TestKeywordValue_ModifierNamesAreKept(t *testing.T) {
+// A name whose last word says what the value is about (password_policy, token_type) keeps a
+// setting: it loses the password tier's no-entropy rule. A generated token under such a name is
+// still a secret.
+func TestKeywordValue_ModifierNames(t *testing.T) {
 	for _, in := range []string{
 		"password_policy: strong",
 		`{"passwordPolicy":"strong"}`,
 		"password_min_length: 12345678",
 		`{"password_reset_enabled": "enabled"}`,
-		`{"token_type": "` + mixed(24) + `"}`,
-		"token_endpoint: " + mixed(24),
-		`{"secret_name": "` + mixed(24) + `"}`,
+		`{"token_type": "refresh_token"}`,
+		"token_endpoint: https://auth.example.com/oauth/token",
+		`{"secret_name": "github-actions-deploy"}`,
 	} {
 		if out, st := redact(in); out != in || len(st) != 0 {
 			t.Errorf("%q changed: %q, stats %v", in, out, st)
+		}
+	}
+	for _, in := range []string{
+		"api_token_name: " + mixed(40),
+		"GITHUB_TOKEN_VAR=" + mixed(40),
+		"x-auth-token-version: " + mixed(40),
+		"db_password_env: " + mixed(16),
+		"password_hint: " + mixed(16),
+	} {
+		if out, st := redact(in); strings.Contains(out, mixed(16)) || st["secret_value"] != 1 {
+			t.Errorf("%q: out = %q, stats %v, want the token redacted", in, out, st)
 		}
 	}
 }

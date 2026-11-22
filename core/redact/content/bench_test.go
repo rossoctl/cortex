@@ -25,7 +25,11 @@ func TestLinearOnAdversarialInput(t *testing.T) {
 		"keyword long value":  func(size int) string { return "password=" + rep("a=", size) },
 		"quoted values":       r(`password="`),
 		"cookies":             r("Cookie: a=b; "),
-		"key headers":         r("-----" + "BEGIN RSA " + "PRIVATE KEY-----"),
+		"cookie lists":        r("Cookie: " + strings.Repeat("a=b;", 1022) + "\n"),
+		"armor header quotes": func(size int) string {
+			return "-----" + "BEGIN PGP " + "PRIVATE KEY BLOCK-----\n" + rep(`Comment: \"x\" \"y\"`+"\n", size) + "-----END PGP PRIVATE KEY BLOCK-----"
+		},
+		"key headers": r("-----" + "BEGIN RSA " + "PRIVATE KEY-----"),
 		"key headers and end": func(size int) string {
 			return rep("-----"+"BEGIN RSA "+"PRIVATE KEY-----", size) + "-----END RSA PRIVATE KEY-----"
 		},

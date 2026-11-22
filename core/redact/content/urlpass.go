@@ -45,15 +45,24 @@ func findURLPasswords(text string, at []int, out []Edit) []Edit {
 			end++
 		}
 		run := text[u:end]
+		// A list of URLs joined by "," or ";" has no space between them: the run stops where
+		// the next URL's scheme starts, so an "@" of the next URL is never this one's.
+		nextURL := false
+		if k := strings.Index(run, "://"); k >= 0 {
+			run, nextURL = run[:schemeStart(run, k)], true
+		}
 		firstAt := strings.IndexByte(run, '@')
 		if firstAt < 0 {
 			// No "@": nor in the run of any later trigger that starts inside this one and ends
 			// where it ends, so those are skipped, which keeps a long run of "a://b:c" linear.
 			// A run cut at maxUserInfo may continue past the cut for a later trigger, so then
-			// only its first half is skipped.
-			if end-u < maxUserInfo {
+			// only its first half is skipped. A run cut at the next URL skips to it.
+			switch {
+			case nextURL:
+				covered = u + len(run)
+			case end-u < maxUserInfo:
 				covered = end
-			} else {
+			default:
 				covered = u + maxUserInfo/2
 			}
 			continue
@@ -82,7 +91,8 @@ func findURLPasswords(text string, at []int, out []Edit) []Edit {
 // over-redaction, the safe side.
 func lastHostAt(run string, colon int) int {
 	for i := len(run) - 1; i > colon; i-- {
-		if run[i] == '@' && isHostAt(run[i+1:]) {
+		// An "@" right after "/" starts a path segment (an npm scope, "/@babel/core"), not a host.
+		if run[i] == '@' && run[i-1] != '/' && isHostAt(run[i+1:]) {
 			return i
 		}
 	}
@@ -90,14 +100,14 @@ func lastHostAt(run string, colon int) int {
 }
 
 // isHostAt reports whether rest starts with a host: one or more host characters, up to the
-// end of the authority ("/", "?", "#") or of the run.
+// end of the authority ("/", "?", "#"), the "," or ";" of a list of URLs, or the run's end.
 func isHostAt(rest string) bool {
 	if rest == "" || !isHostStart(rest[0]) {
 		return false
 	}
 	for i := 0; i < len(rest); i++ {
 		c := rest[i]
-		if c == '/' || c == '?' || c == '#' {
+		if c == '/' || c == '?' || c == '#' || c == ',' || c == ';' {
 			return true
 		}
 		if !(isLetter(c) || c >= '0' && c <= '9' || strings.IndexByte(".-:[]_%", c) >= 0) {

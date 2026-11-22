@@ -96,11 +96,21 @@ func set(words ...string) map[string]bool {
 // Only whole words count: "pass" is a password word, but "passport", "bypass" and "compass"
 // are not. "signature" is not a secret word: a model's thinking signature is not the user's
 // secret.
+//
+// A name whose last word is a modifier is about the secret, not the secret itself
+// (password_policy, password_min_length): it loses the password tier's no-entropy rule and is
+// checked as a secret name, so "strong" or "12" is kept but a generated token still is not.
 func nameTier(name string) tier {
 	parts := splitName(name)
-	if len(parts) > 1 && modifierWords[parts[len(parts)-1]] {
-		return tierNone // a setting about the secret: password_policy, token_type, secretName
+	t := wordTier(parts)
+	if t == tierPassword && len(parts) > 1 && modifierWords[parts[len(parts)-1]] {
+		return tierSecret
 	}
+	return t
+}
+
+// wordTier is the highest tier any word of the name, or two adjacent words, gives.
+func wordTier(parts []string) tier {
 	t := tierNone
 	for i, p := range parts {
 		words := []string{p}
@@ -273,7 +283,10 @@ func cookieEnd(text string, i int) int {
 func cookieEdits(text string, start, end int) []Edit {
 	var out []Edit
 	for i := start; i < end; {
-		j := i + strings.IndexByte(text[i:end]+";", ';')
+		j := end
+		if k := strings.IndexByte(text[i:end], ';'); k >= 0 {
+			j = i + k
+		}
 		if eq := strings.IndexByte(text[i:j], '='); eq >= 0 {
 			vs := i + eq + 1
 			v := strings.TrimSpace(text[vs:j])

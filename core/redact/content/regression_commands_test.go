@@ -52,6 +52,25 @@ func TestRegression_CommandsFound(t *testing.T) {
 	}
 }
 
+// A password that holds a shell escape (\$, \@, \!) is replaced whole, escape and all, on every
+// command-line form.
+func TestRegression_CommandsWithShellEscapes(t *testing.T) {
+	r := mixed(16)
+	for _, tc := range []struct{ in, want string }{
+		{`mysql -uroot -pMy\$` + r, "mysql -uroot -p[REDACTED:password]"},
+		{`psql --password=P\@` + r, "psql --password=[REDACTED:password]"},
+		{`curl -u alice:P\!` + r + ` https://x.example.com`, "curl -u alice:[REDACTED:password] https://x.example.com"},
+		{`docker login -u bob -p Pa\$` + r + ` reg.example.com`, "docker login -u bob -p [REDACTED:password] reg.example.com"},
+		// the same in raw JSON, where the shell's backslash is itself escaped
+		{`{"cmd":"mysql -uroot -pMy\\$` + r + `"}`, `{"cmd":"mysql -uroot -p[REDACTED:password]"}`},
+	} {
+		out, _ := redact(tc.in)
+		if out != tc.want {
+			t.Errorf("%q: out = %q, want %q", tc.in, out, tc.want)
+		}
+	}
+}
+
 // In raw JSON text a command-line value stops before a JSON escape: the escape stays, and the
 // JSON stays valid.
 func TestRegression_CommandsInJSONKeepEscapes(t *testing.T) {

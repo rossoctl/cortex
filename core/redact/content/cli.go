@@ -14,14 +14,20 @@ import (
 // A value that is a placeholder or a reference is kept, as for the keyword rule. A flag's
 // password must not be lowercase letters only, so help text ("--password option") is kept.
 
+// bareArgChar is one character of a bare (unquoted) argument: anything but whitespace and
+// quotes, where a backslash comes with the byte it escapes. A shell escape ("-pMy\$x", raw JSON's
+// "\\$") is then part of the value, but a backslash before a quote ("\"", the end of a JSON
+// string), before whitespace or in a "\n" "\r" "\t" escape (the next line, in raw JSON) ends
+// it, so the escape stays and the JSON stays valid.
+const bareArgChar = `(?:[^\s'"` + "`" + `\\]|\\[^\s'"` + "`" + `nrt])`
+
 // argValue is a flag's value: double-quoted or single-quoted (spaces allowed), or bare. The
-// value is whichever of its three groups matched (anchored.anyGroup). No value holds a
-// backslash, so in raw JSON text a value stops before an escape ("-p\"x") and the escape stays.
-const argValue = "(?:\"([^\"\\\\\\r\\n]+)\"|'([^'\\\\\\r\\n]+)'|([^\\s'\"`\\\\]+))"
+// value is whichever of its three groups matched (anchored.anyGroup).
+const argValue = `(?:"([^"\\\r\n]+)"|'([^'\\\r\n]+)'|(` + bareArgChar + `+))`
 
 // curlUser is curl's "user:password" argument, quoted or bare; the password is whichever of
 // its three groups matched. A quoted password may hold spaces ('alice:one two3').
-const curlUser = "(?:'[^':\\\\\\r\\n]{1,64}:([^'\\\\\\r\\n]+)'|\"[^\":\\\\\\r\\n]{1,64}:([^\"\\\\\\r\\n]+)\"|[^:\\s'\"`\\\\]{1,64}:([^\\s'\"`\\\\]+))"
+const curlUser = `(?:'[^':\\\r\n]{1,64}:([^'\\\r\n]+)'|"[^":\\\r\n]{1,64}:([^"\\\r\n]+)"|[^:\s'"` + "`" + `\\]{1,64}:(` + bareArgChar + `+))`
 
 // cliPassword checks a password given as a flag's value: not another flag, not a lowercase word
 // (help text: "--password option"), and password-shaped. A quoted one may hold spaces.
@@ -57,7 +63,7 @@ var cliRules = []*anchored{
 	},
 	{
 		cat: catPassword, triggers: []string{"mysql"}, group: 1, span: 1024, before: true, segment: true,
-		re:    regexp.MustCompile("^mysql(?:dump|admin|sh)?[ \\t](?:[^\\n|;&]*?[ \\t])?-p([^\\s'\"`\\\\-][^\\s'\"`\\\\]*)"),
+		re:    regexp.MustCompile(`^mysql(?:dump|admin|sh)?[ \t](?:[^\n|;&]*?[ \t])?-p((?:[^\s'"` + "`" + `\\-]|\\[^\s'"` + "`" + `nrt])` + bareArgChar + `*)`),
 		check: func(v string) bool { return len(v) >= 4 && !notASecret(v) },
 	},
 	{
