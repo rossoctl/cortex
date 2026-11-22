@@ -582,6 +582,26 @@ jobs:
       - name: Run install.sh tests
         run: sh scripts/install_test.sh
 
+  # install.ps1 is the Windows one-liner (irm | iex), so it gets the same
+  # care. The tests install a pinned release into temporary folders with
+  # -NoPath, in both shells a Windows user has: Windows PowerShell 5.1
+  # (from a local mirror, including a tampered zip that must stop the
+  # install) and PowerShell 7 (from GitHub, as the one-liner does).
+  install-ps1:
+    name: install.ps1 tests
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run install.ps1 tests (Windows PowerShell 5.1)
+        shell: powershell
+        run: .\scripts\install_test.ps1
+
+      - name: Run install.ps1 tests (PowerShell 7)
+        shell: pwsh
+        run: .\scripts\install_test.ps1
+
   # release_notes.sh runs once per release, on the tag push, so a regression
   # would otherwise surface as a release page missing its change list.
   release-notes-script:
