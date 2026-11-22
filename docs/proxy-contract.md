@@ -129,7 +129,7 @@ of these sections. They need a restart:
 - `spiffe.*`
 - `memory.*`
 - `stats.*`
-- `praxis.*` and `update.check_every`
+- `praxis.*`, `metrics_push.*`, `update.check_every` and `accounting.subscription_weights`
 
 `validateAccounting` also refuses a reload that turns accounting on (as resolved) when the
 proxy started with it off. Under `accounting.enabled: auto` that is a `pipeline:` change that

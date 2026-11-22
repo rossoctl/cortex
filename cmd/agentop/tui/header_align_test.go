@@ -178,7 +178,7 @@ func eventsAlignModel(t *testing.T, width int) *model {
 		},
 		Plugins: costRecord(t, event.Event{
 			CostUSD: 0.2481, Settled: true, PromptUSD: 0.2460, OutputUSD: 0.0221,
-			Avoided: []event.Saving{{Component: "tool-prune", TokensAvoided: 10_300, USD: 0.0039}},
+			Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", TokensAvoided: 10_300, USD: 0.0039}},
 		}),
 	}
 	req := pipeline.SessionEvent{
@@ -317,7 +317,8 @@ func lastInk(s string) int {
 // shape — it stays covered only because headerTitle strips the marker before the lookup. This
 // test makes that a checked property rather than a coincidence.
 func TestSessionsRightAligned_EveryNameResolvesToAColumn(t *testing.T) {
-	cols := sessionsColumns()
+	// The base columns plus every optional one, asked for at a width that seats them all.
+	cols := sessionsColumnsWith(200, true, true, true)
 	for name := range sessionsRightAligned {
 		found := false
 		for _, c := range cols {

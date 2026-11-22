@@ -263,16 +263,38 @@ tunnel rows, `subagent`), the 5-value invocation `action` vocabulary, paging, an
 guards on the two `DELETE` routes. The producer-side contract is in
 [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events).
 
+**`DELETE /v1/sessions` and `DELETE /v1/sessions/{id}` do not clear the accountant's
+per-session state:** the Tracker state and `~/.cortex/accountant-state.json`, the
+per-thread billing mode in `core/accounting.Host`. The accountant state holds session and thread
+ids, content hashes and a billing mode, no content. The rest
+has no time bound while the process runs: the in-memory maps keep at most 10,000 threads,
+dropping the oldest, and the snapshot (rewritten every 60s) holds what memory holds. A snapshot
+older than 1h is not restored. Details:
+[`docs/session-api.md`](docs/session-api.md#delete-v1sessions).
+
+**Savings are the accountant's figure, and only basis `usd` is money.** `GET /v1/sessions`
+rows carry `avoidedMicros` and, omitted rather than zero like every figure there,
+`penaltyMicros`, `avoidedUnits`, `penaltyUnits`, `avoidedApiEquivalentMicros`,
+`avoidedUnknownMicros`, `pluginSpendMicros`, `pluginSpendUnits` and
+`pluginSpendUnknownMicros`. `/v1/usage` totals and ledger rows carry the same fields.
+Plugin spend is not in `costMicros`. What each sums:
+[`docs/pricing.md`](docs/pricing.md#cost-records).
+
 ## Config Hot-Reload (`:9093/reload/status`)
 
 The binary watches its config file (`/etc/authbridge/config.yaml`) via `core/reloader`
 and atomically swaps the plugin pipelines without a restart. In-flight requests finish
 on the old pipeline.
 
-- **Reloads:** any plugin list change and any plugin `config:` subtree edit.
+- **Reloads:** any plugin `config:` subtree edit, and any plugin list change except one
+  that turns accounting on (below).
 - **Needs a restart:** `mode` and every field of `listener`, `session`, `cost_ledger`,
-  `mtls`, `tls_bridge`, `spiffe`, `memory`, `stats` and `praxis`, and `update.check_every`
-  (`validateReloadable` in `core/reloader/reloader.go`).
+  `mtls`, `tls_bridge`, `spiffe`, `memory`, `stats` and `praxis`,
+  `update.check_every`, and `accounting.subscription_weights` (`validateReloadable` in
+  `core/reloader/reloader.go`). Also a reload that turns accounting ON (as resolved) when the
+  process booted with it off: under `enabled: auto` that is adding the first context
+  operator (`tool-prune`, `context-guru`). Turning it off reloads, so `on_error: off` on the
+  only operator still works (`validateAccounting`).
 - **Bad YAML stays safe:** the active pipeline keeps serving, and `/reload/status`
   shows the error with `reloads_failed` incremented.
 

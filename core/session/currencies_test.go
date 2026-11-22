@@ -112,7 +112,7 @@ func TestSessionSummary_ASavingNamesItsUnit(t *testing.T) {
 	st := New(5*time.Minute, 1, 0)
 	defer st.Close()
 	st.Append("bob", pipeline.SessionEvent{Phase: pipeline.SessionResponse, Plugins: costRecord(t,
-		event.Event{Currency: "Bobcoins", Avoided: []event.Saving{{Component: "tool-prune", USD: 0.5}}})})
+		event.Event{Currency: "Bobcoins", Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", USD: 0.5}}})})
 	if got := summaryOf(t, st, "bob").Currencies; !slices.Equal(got, []string{"Bobcoins"}) {
 		t.Errorf("Currencies = %v, want [Bobcoins]", got)
 	}

@@ -120,3 +120,56 @@ func TestValidate_RefusesABadAccountingValue(t *testing.T) {
 		t.Errorf("Validate = %v, want a refusal naming accounting.enabled", err)
 	}
 }
+
+// accounting.subscription_weights (design §5.7a): absent means the defaults, the API rate ratios;
+// a key that is set replaces only its own weight, and 0 is a weight like any other.
+func TestAccountingConfig_SubscriptionWeights(t *testing.T) {
+	defaults := SubscriptionWeights{Input: 1, CacheWrite5m: 1.25, CacheWrite1h: 2, CacheRead: 0.1, Output: 5}
+	if got := DefaultSubscriptionWeights(); got != defaults {
+		t.Errorf("DefaultSubscriptionWeights = %+v, want %+v", got, defaults)
+	}
+	var nilBlock *AccountingConfig
+	if got := nilBlock.Weights(); got != defaults {
+		t.Errorf("absent block: Weights = %+v, want the defaults", got)
+	}
+	if got := (&AccountingConfig{}).Weights(); got != defaults {
+		t.Errorf("no subscription_weights: Weights = %+v, want the defaults", got)
+	}
+
+	doc := "accounting:\n  subscription_weights:\n    cache_read: 0\n    output: 4\n"
+	var c Config
+	if err := yaml.Unmarshal([]byte(doc), &c); err != nil {
+		t.Fatal(err)
+	}
+	want := defaults
+	want.CacheRead, want.Output = 0, 4
+	if got := c.Accounting.Weights(); got != want {
+		t.Errorf("Weights = %+v, want %+v", got, want)
+	}
+
+	full := "accounting:\n  subscription_weights:\n    input: 2\n    cache_write_5m: 3\n    cache_write_1h: 4\n    cache_read: 0.5\n    output: 6\n"
+	c = Config{}
+	if err := yaml.Unmarshal([]byte(full), &c); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Accounting.Weights(); got != (SubscriptionWeights{2, 3, 4, 0.5, 6}) {
+		t.Errorf("every key set: Weights = %+v", got)
+	}
+}
+
+func TestAccountingConfig_ValidateRefusesANegativeWeight(t *testing.T) {
+	for _, key := range []string{"input", "cache_write_5m", "cache_write_1h", "cache_read", "output"} {
+		var c Config
+		doc := "accounting:\n  subscription_weights:\n    " + key + ": -1\n"
+		if err := yaml.Unmarshal([]byte(doc), &c); err != nil {
+			t.Fatal(err)
+		}
+		err := c.Accounting.Validate()
+		if err == nil || !strings.Contains(err.Error(), "accounting.subscription_weights."+key) {
+			t.Errorf("%s: -1: err = %v, want a refusal naming accounting.subscription_weights.%s", key, err, key)
+		}
+	}
+	if err := (&AccountingConfig{SubscriptionWeights: &SubscriptionWeights{}}).Validate(); err != nil {
+		t.Errorf("all-zero weights: %v", err)
+	}
+}

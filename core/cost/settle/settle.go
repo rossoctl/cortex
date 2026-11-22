@@ -802,6 +802,22 @@ func modelledCost(rates pricing.Resolver, host, model string, u pricing.Usage, p
 	return micros, tiers, prov, true, pricing.RefusalNone, estimated1h
 }
 
+// IsAnthropicModel reports whether model is on Anthropic's Claude family, the only
+// provider on a path Cortex runs whose 1-hour cache-write premium is documented
+// (2x input — see pricing.Rates.CacheWrite1hRate). modelledCost is the natural
+// place for this: it already has the model string, which pricing.Rates itself
+// carries no equivalent of (a Rates value names no provider).
+//
+// A substring match, not an exact one: bundled model names include dated and
+// provider-prefixed forms ("claude-sonnet-4-5-20250929", "anthropic/claude-opus-5",
+// Bedrock's "anthropic.claude-..."), all of which contain "claude".
+//
+// Exported for core/accounting's TierUSD, so the accountant's figures and the spend figure
+// decide the 1h premium by the same rule.
+func IsAnthropicModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "claude")
+}
+
 // StateKey is where the full Settled outcome is stashed for the rest of the request.
 //
 // In-process only — deliberately not on the wire. A consumer that needs the number reads
