@@ -33,9 +33,9 @@ param(
 )
 
 # Everything runs in a child scope: piped to iex, the script runs in the user's own session, and
-# its preferences ($ErrorActionPreference = 'Stop') and helper functions must not outlive it. The
-# parameters, which iex leaves in the session too, are removed at the end.
-try { & {
+# its preferences ($ErrorActionPreference = 'Stop') and helper functions would outlive it there.
+# (The parameters do not: iex binds them in a scope of their own.)
+& {
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue' # Windows PowerShell 5.1 downloads far slower with a progress bar
 
@@ -62,7 +62,8 @@ try { & {
     # Get-LatestTag reads the latest release's tag from the github.com/<repo>/releases/latest
     # redirect first: GitHub's API allows 60 requests an hour per IP address without a token, and
     # everyone behind one NAT or VPN shares them. The API is the fallback.
-    function Get-LatestTag([string]$Repo) {
+    # -RedirectOnly skips the fallback, so a test can prove the redirect works.
+    function Get-LatestTag([string]$Repo, [switch]$RedirectOnly) {
         try {
             $req = [Net.HttpWebRequest]::Create("https://github.com/$Repo/releases/latest")
             $req.AllowAutoRedirect = $false
@@ -74,6 +75,7 @@ try { & {
                 return $Matches[1]
             }
         } catch { } # fall through to the API
+        if ($RedirectOnly) { throw "The releases/latest redirect of $Repo gave no release tag." }
         try {
             $release = Invoke-RestMethod -UseBasicParsing -Headers @{ 'User-Agent' = 'cortex-install-ps1' } `
                 -Uri "https://api.github.com/repos/$Repo/releases/latest"
@@ -256,6 +258,4 @@ try { & {
     }
 
     Install-Cortex
-} } finally {
-    Remove-Variable -Name Version, InstallDir, NoPath, Repo, BaseUrl -ErrorAction SilentlyContinue
 }

@@ -82,7 +82,7 @@ try {
 
     Check 'finds the latest release from the github.com redirect, not the API' {
         . Import-InstallFunction 'Get-LatestTag'
-        $tag = Get-LatestTag 'rossoctl/cortex'
+        $tag = Get-LatestTag 'rossoctl/cortex' -RedirectOnly # no API fallback: the redirect itself must work
         if ($tag -notmatch '^v[0-9]') { throw "Get-LatestTag returned '$tag'" }
     }
 
@@ -171,18 +171,31 @@ try {
     } else {
         Check 'installs from GitHub, as the one-liner does (options from the environment)' {
             $dir = Join-Path $root 'iex'
+            # The one-liner runs at a user's prompt: the session's top-level scope. A fresh
+            # PowerShell process gives the same scope here (this check's own scope is a compiled
+            # scriptblock, which is not what a user has). Afterwards nothing of the install may
+            # be left in that session: preferences, functions or parameters.
+            $probe = @'
+$ErrorActionPreference = 'Continue'
+$ProgressPreference = 'Continue'
+Get-Content -Raw $env:CORTEX_TEST_SCRIPT | Invoke-Expression | Out-Null
+$leaks = @()
+if ($ErrorActionPreference -ne 'Continue' -or $ProgressPreference -ne 'Continue') { $leaks += 'preferences' }
+if (Get-Command Install-Cortex -ErrorAction SilentlyContinue) { $leaks += 'functions' }
+foreach ($n in 'Version', 'InstallDir', 'NoPath', 'Repo', 'BaseUrl') { if (Get-Variable -Name $n -ErrorAction SilentlyContinue) { $leaks += "`$$n" } }
+if ($leaks) { "LEAKED: $($leaks -join ', ')" } else { 'CLEAN' }
+'@
             $env:CORTEX_VERSION = $Version
             $env:CORTEX_INSTALL_DIR = $dir
             $env:CORTEX_NO_PATH = '1'
-            # The piped form runs in this scope: afterwards, nothing of it may be left here.
-            $ErrorActionPreference = 'Continue'
-            $ProgressPreference = 'Continue'
-            try { Assert-PathUnchanged { Get-Content -Raw $script | Invoke-Expression | Out-Null } }
-            finally { Remove-Item Env:CORTEX_VERSION, Env:CORTEX_INSTALL_DIR, Env:CORTEX_NO_PATH -ErrorAction SilentlyContinue }
-            if ($ErrorActionPreference -ne 'Continue' -or $ProgressPreference -ne 'Continue') { throw 'the piped install changed the session preferences' }
-            if (Get-Command Install-Cortex -ErrorAction SilentlyContinue) { throw 'the piped install left its functions in the session' }
-            if (Get-Variable -Name InstallDir -Scope Local -ErrorAction SilentlyContinue) { throw 'the piped install left its parameters in the session' }
-            $ErrorActionPreference = 'Stop'
+            $env:CORTEX_TEST_SCRIPT = $script
+            try {
+                $exe = (Get-Process -Id $PID).Path
+                Assert-PathUnchanged { $script:probeOut = & $exe -NoProfile -ExecutionPolicy Bypass -Command $probe 2>&1 | Out-String }
+            } finally {
+                Remove-Item Env:CORTEX_VERSION, Env:CORTEX_INSTALL_DIR, Env:CORTEX_NO_PATH, Env:CORTEX_TEST_SCRIPT -ErrorAction SilentlyContinue
+            }
+            if ($script:probeOut -notmatch 'CLEAN') { throw "the piped install left something in the session: $($script:probeOut.Trim())" }
             Assert-Installed $dir
         }
     }
