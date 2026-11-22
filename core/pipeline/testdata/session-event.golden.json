@@ -178,6 +178,7 @@
   "requestedHost": "asked.example:443",
   "durationMs": 1500,
   "ttfbMs": 200,
+  "addedMs": 3,
   "tls": {
     "version": "TLS 1.3",
     "cipherSuite": "TLS_AES_128_GCM_SHA256",

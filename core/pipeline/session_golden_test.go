@@ -68,6 +68,7 @@ func goldenEvent() SessionEvent {
 		RequestedHost:   "asked.example:443",
 		Duration:        1500 * time.Millisecond,
 		Ttfb:            200 * time.Millisecond,
+		Added:           3 * time.Millisecond,
 		TLS:             &EventTLS{Version: "TLS 1.3", CipherSuite: "TLS_AES_128_GCM_SHA256", PeerSPIFFEID: "spiffe://example/agent"},
 		Tunnel:          true,
 		TunnelReason:    TunnelClientRejectedCA,

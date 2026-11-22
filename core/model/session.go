@@ -256,6 +256,15 @@ type SessionEvent struct {
 	// Tunnel rows carry none: an opaque tunnel has no headers to time.
 	Ttfb time.Duration
 
+	// Added is the wall-clock time from request entry into the listener
+	// (pctx.StartedAt) to the request being handed to the upstream
+	// (pctx.UpstreamSentAt): the time the proxy's own request-side work — the
+	// inbound pipeline, body rewrites, header sync — added before the origin saw
+	// anything. It is the figure llm.inference.added_seconds reports, and what
+	// tells an operator whether Cortex or the origin is slow. Zero when the
+	// request never left, and on request-phase and tunnel rows.
+	Added time.Duration
+
 	// TLS, when non-nil, carries connection-level identity for events
 	// that arrived over TLS: negotiated version, cipher, and the peer's
 	// SPIFFE ID extracted from the URI SAN. Nil for plaintext events
@@ -698,9 +707,13 @@ type sessionEventWire struct {
 	// an instant answer instead. Same wire-skew safety as DurationMs: an old
 	// agentop ignores the key, and an event from a proxy that predates the
 	// field decodes to zero and omits.
-	TtfbMs int64     `json:"ttfbMs,omitempty"`
-	TLS    *EventTLS `json:"tls,omitempty"`
-	Tunnel bool      `json:"tunnel,omitempty"`
+	TtfbMs int64 `json:"ttfbMs,omitempty"`
+	// AddedMs omitempty, like TtfbMs: zero means the request never reached the
+	// upstream (or the proxy added under a millisecond, which the in-process
+	// metric still records exactly). Same wire-skew safety as TtfbMs.
+	AddedMs int64     `json:"addedMs,omitempty"`
+	TLS     *EventTLS `json:"tls,omitempty"`
+	Tunnel  bool      `json:"tunnel,omitempty"`
 	// omitempty so both skew directions are safe: an old agentop ignores an unknown
 	// key, and a new agentop against an old proxy sees "" and renders exactly what it
 	// renders today.
@@ -771,6 +784,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		RequestedHost:   e.RequestedHost,
 		DurationMs:      e.Duration.Milliseconds(),
 		TtfbMs:          e.Ttfb.Milliseconds(),
+		AddedMs:         e.Added.Milliseconds(),
 		TLS:             e.TLS,
 		Tunnel:          e.Tunnel,
 		TunnelReason:    e.TunnelReason,
@@ -822,6 +836,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		RequestedHost:   w.RequestedHost,
 		Duration:        time.Duration(w.DurationMs) * time.Millisecond,
 		Ttfb:            time.Duration(w.TtfbMs) * time.Millisecond,
+		Added:           time.Duration(w.AddedMs) * time.Millisecond,
 		TLS:             w.TLS,
 		Tunnel:          w.Tunnel,
 		TunnelReason:    w.TunnelReason,

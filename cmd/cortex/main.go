@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/accounting"
+	"github.com/rossoctl/cortex/core/accounting/reqstats"
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/bootstrap"
 	"github.com/rossoctl/cortex/core/clientstate"
@@ -60,6 +61,7 @@ import (
 	"github.com/rossoctl/cortex/core/spiffe"
 	"github.com/rossoctl/cortex/core/tlsbridge"
 	authtls "github.com/rossoctl/cortex/core/tlsconfig"
+	"go.opentelemetry.io/otel/metric"
 
 	// Only HTTP listeners are compiled in: no extproc
 	// (no gRPC, no envoy types).
@@ -552,6 +554,10 @@ func main() {
 	// stopMetricsPush flushes and stops the metrics push (core/accounting/push), started with
 	// the host: its counters are the accountant's. A no-op when nothing is pushed.
 	stopMetricsPush := func(context.Context) error { return nil }
+	// pushMP is the raw MeterProvider startMetricsPush builds, shared by acctHost's Sink and by
+	// reqStats below (core/accounting/reqstats) so both tiers push through the same provider. Nil
+	// on every no-push path, same as stopMetricsPush being a no-op on those paths.
+	var pushMP metric.MeterProvider
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
 		c, err := config.Load(*configPath)
 		if err != nil {
@@ -596,7 +602,7 @@ func main() {
 			acctDecided = true
 			if c.AccountingOn() {
 				var sink *accounting.Sink
-				sink, stopMetricsPush = startMetricsPush(c, pricingRegistry)
+				sink, pushMP, stopMetricsPush = startMetricsPush(c, pricingRegistry)
 				acctHost = newAccountingHost(c, pricingRegistry, sink)
 			} else if c.MetricsPush.Resolve(os.Getenv).On() {
 				slog.Info("metrics push off — accounting is off, so there are no savings counters to push")
@@ -754,6 +760,11 @@ func main() {
 		// Every Recorder that keeps cost is also the accountant's, for spend it makes outside a
 		// request (the keep-alive ping), which never passes through the session store.
 		acctHost.AddCostRecorder(usageAgg)
+		// reqStats pushes the Tier 2 transport metrics (llm.inference.requests/duration_seconds/
+		// ttfb_seconds/request_bytes/response_bytes) through the same MeterProvider acctHost's
+		// Sink uses. Unconditional: reqstats.New(nil) is a safe no-op when nothing is pushed.
+		reqStats := reqstats.New(pushMP)
+		sessions.AddRecorder(reqStats)
 
 		// The durable cost ledger is a SECOND Recorder alongside the aggregator, not a
 		// reader of it: the aggregator keeps independent marginals (by-model,
