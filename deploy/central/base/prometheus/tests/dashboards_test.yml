@@ -1,7 +1,7 @@
 # Unit tests for the dashboard ratio queries, run with promtool (simulated time):
 #   promtool test rules tests/dashboards_test.yml
 # The expressions are the cache and fleet dashboards', with the Grafana variables filled in: $proxy and
-# $machine as ".*" (All), $__range as 1h. grafana/test_gen_dashboards.py fails if an expression
+# $machine as ".*" (All), $__range as 1h, $__interval as 5m. grafana/test_gen_dashboards.py fails if an expression
 # here is not one that gen_dashboards.py writes, so these tests cannot drift from the dashboards.
 #
 # Why: on 2026-11-19 a ratio divided by clamp_min(<zero>, 1e-9) and showed 1164430250x and
@@ -174,3 +174,37 @@ tests:
         exp_samples:
           - labels: '{}'
             value: 50.49999999999999
+
+  # ---- One keep-alive ping is dollars in one bar, not a $105/h spike -----------------------------
+  # context-guru #1273: the panel was rate(...[$__rate_interval]) * 3600, so one $1.75 ping over a
+  # ~1 min window read as $105/h. It is now the dollars in each bar: increase() over $__interval
+  # (filled here as 5m, the panel's floor). The ping is between 32m and 33m. The bar at 35m holds it:
+  # 1.75 over the 4 min of samples in (30m, 35m], extrapolated to the 5 min window = 2.1875. The next
+  # bar holds nothing, so the ping is counted once. There is no rescue series at all: rescue must
+  # still read 0 and net minus the ping (or vector(0)), not vanish.
+  - name: one keep-alive ping shows as its dollars in one bar
+    interval: 1m
+    input_series:
+      - series: 'llm_keepalive_cost_usd_total{proxy="cortex",machine="m1",model="m"}'
+        values: '1x32 2.75x10'
+    promql_expr_test:
+      - eval_time: 35m
+        expr: '-sum((increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[5m]) and last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1d] offset 5m)) or (increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[5m]) >= last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[5m])) or last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[5m]))'
+        exp_samples:
+          - labels: '{}'
+            value: -2.1875
+      - eval_time: 40m
+        expr: '-sum((increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[5m]) and last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1d] offset 5m)) or (increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[5m]) >= last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[5m])) or last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[5m]))'
+        exp_samples:
+          - labels: '{}'
+            value: 0
+      - eval_time: 35m
+        expr: '((sum((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[5m]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1d] offset 5m)) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[5m]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[5m])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[5m])) or vector(0)) - (sum((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[5m]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1d] offset 5m)) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[5m]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[5m])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[5m])) or vector(0)))'
+        exp_samples:
+          - labels: '{}'
+            value: 0
+      - eval_time: 35m
+        expr: '(((sum((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[5m]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1d] offset 5m)) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[5m]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[5m])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[5m])) or vector(0)) - (sum((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[5m]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1d] offset 5m)) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[5m]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[5m])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[5m])) or vector(0))) - sum((increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[5m]) and last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1d] offset 5m)) or (increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[5m]) >= last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[5m])) or last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[5m])))'
+        exp_samples:
+          - labels: '{}'
+            value: -2.1875

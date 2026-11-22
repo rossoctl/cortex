@@ -25,10 +25,11 @@ def exprs():
                 yield name, p["title"], t["expr"]
 
 
-def filled(expr, rng="1h", rate_interval="5m"):
+def filled(expr, rng="1h", rate_interval="5m", interval="5m"):
     """expr with the Grafana variables replaced the way dashboards_test.yml replaces them."""
     return (expr.replace('"$proxy"', '".*"').replace('"$machine"', '".*"')
-            .replace("$__range", rng).replace("$__rate_interval", rate_interval))
+            .replace("$__range", rng).replace("$__rate_interval", rate_interval)
+            .replace("$__interval", interval))
 
 
 class RatioTest(unittest.TestCase):
@@ -106,6 +107,23 @@ class PromtoolTestInStepTest(unittest.TestCase):
         for _, title, e in exprs():
             if title in ("Pings that paid", "Estimated ping cost"):
                 self.assertIn(filled(e), tested, title)
+
+
+class MoneyTrendTest(unittest.TestCase):
+    def test_no_money_panel_is_a_rate_times_3600(self):
+        # A dollar counter moves in steps. rate() * 3600 over a ~1 min window shows one $1.75 ping
+        # as a $105/h spike (context-guru #1273). A money trend is bar(): the dollars in each bar.
+        bad = [p["title"] for fn in g.DASHBOARDS.values() for p in fn()["panels"]
+               if p.get("fieldConfig", {}).get("defaults", {}).get("unit") == g.USD
+               and any("* 3600" in t["expr"] for t in p.get("targets", []))]
+        self.assertEqual(bad, [], "show money over time with gen_dashboards.bar(), not rate() * 3600")
+
+    def test_the_keepalive_bars_are_tested(self):
+        with open(PROMTOOL_TEST) as f:
+            tested = f.read()
+        p = next(p for p in g.cache()["panels"] if p["title"] == "Keep-alive: cost, rescue and net (USD)")
+        for t in p["targets"]:
+            self.assertIn(filled(t["expr"]), tested, t["legendFormat"])
 
 
 class LegendTest(unittest.TestCase):
