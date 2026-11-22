@@ -26,9 +26,41 @@ func TestIsolate(t *testing.T) {
 	for _, k := range append([]string{"HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"}, unset...) {
 		t.Setenv(k, filepath.Join(t.TempDir(), "real-"+k))
 	}
+	runtimeDir := filepath.Join(t.TempDir(), "run-user")
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	for _, k := range []string{"GOPATH", "GOMODCACHE", "GOCACHE", "GOENV"} {
+		t.Setenv(k, "")
+	}
+	realHome, _ := os.UserHomeDir()
 	defer func(old string) { isolatedRoot = old }(isolatedRoot)
 
 	cleanup := Isolate()
+	// The runtime directory is not the profile's: systemctl --user needs the real one.
+	if got := os.Getenv("XDG_RUNTIME_DIR"); got != runtimeDir {
+		t.Errorf("XDG_RUNTIME_DIR = %q, want it kept as %q", got, runtimeDir)
+	}
+	// The Go toolchain keeps the real home's directories.
+	if got, want := os.Getenv("GOPATH"), filepath.Join(realHome, "go"); got != want {
+		t.Errorf("GOPATH = %q, want the real default %q", got, want)
+	}
+	if got := os.Getenv("GOMODCACHE"); got != filepath.Join(realHome, "go", "pkg", "mod") {
+		t.Errorf("GOMODCACHE = %q, want it under the real GOPATH", got)
+	}
+	for _, k := range []string{"GOCACHE", "GOENV"} {
+		if v := os.Getenv(k); v == "" || strings.HasPrefix(v, isolatedRoot) {
+			t.Errorf("%s = %q, want a real directory outside %q", k, v, isolatedRoot)
+		}
+	}
+	// Real gives one test the real home back, and the isolated one returns after it.
+	t.Run("Real", func(t *testing.T) {
+		Real(t)
+		if got, _ := os.UserHomeDir(); got != realHome {
+			t.Errorf("after Real, os.UserHomeDir() = %q, want %q", got, realHome)
+		}
+	})
+	if got, _ := os.UserHomeDir(); !strings.HasPrefix(got, isolatedRoot) {
+		t.Errorf("after the Real subtest, os.UserHomeDir() = %q, want the isolated home back", got)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || !strings.HasPrefix(home, isolatedRoot) || strings.Contains(home, "real-") {
 		t.Fatalf("os.UserHomeDir() = %q, %v; want a directory inside %q", home, err, isolatedRoot)

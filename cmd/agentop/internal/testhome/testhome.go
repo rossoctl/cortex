@@ -35,10 +35,19 @@ func Temp(t testing.TB) string {
 
 // unset are variables that, left as they are, point a test at real directories in the
 // profile: the XDG base directories (unset, they derive from HOME), and the agents' own homes.
+// XDG_RUNTIME_DIR is not one: it is the runtime directory (/run/user/<uid>) through which
+// `systemctl --user` reaches the user's bus, not a place in the profile, and the systemd tests
+// need it.
 var unset = []string{
-	"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
+	"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
 	"CODEX_HOME", "CLAUDE_CONFIG_DIR",
 }
+
+// moved are the variables Isolate changes, and Real puts back.
+var moved = append([]string{"HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"}, unset...)
+
+// original holds moved's values before Isolate, and whether each was set.
+var original = map[string]*string{}
 
 // Isolate points HOME and USERPROFILE, and Windows' APPDATA and LOCALAPPDATA, at a fresh
 // temporary home for the rest of the process, and unsets the variables that name directories
@@ -51,7 +60,20 @@ var unset = []string{
 //
 // Child processes a test starts inherit the same environment. Isolate panics if it cannot make
 // the directory: running the tests against the real profile instead is worse than not running.
+//
+// The Go toolchain's directories (GOPATH, GOMODCACHE, GOCACHE, GOENV) default to places under
+// the home directory. Isolate pins each one that is not set to its real default first, so a
+// `go build` a test runs uses the developer's module cache, build cache and `go env -w`
+// settings, not a cold, temporary copy.
 func Isolate() (cleanup func()) {
+	for _, k := range moved {
+		if v, ok := os.LookupEnv(k); ok {
+			original[k] = &v
+		} else {
+			original[k] = nil
+		}
+	}
+	pinGoDirs()
 	root, err := os.MkdirTemp("", "agentop-test-home-")
 	if err != nil {
 		panic("testhome: " + err.Error())
@@ -74,6 +96,47 @@ func Isolate() (cleanup func()) {
 		os.Unsetenv(k)
 	}
 	return func() { os.RemoveAll(root) }
+}
+
+// pinGoDirs sets GOPATH, GOMODCACHE, GOCACHE and GOENV, each that is not set, to the default the
+// go command would use with the real home directory.
+func pinGoDirs() {
+	set := func(k, v string) {
+		if os.Getenv(k) == "" && v != "" {
+			os.Setenv(k, v)
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		set("GOPATH", filepath.Join(home, "go"))
+	}
+	if gp := filepath.SplitList(os.Getenv("GOPATH")); len(gp) > 0 {
+		set("GOMODCACHE", filepath.Join(gp[0], "pkg", "mod"))
+	}
+	if dir, err := os.UserCacheDir(); err == nil {
+		set("GOCACHE", filepath.Join(dir, "go-build"))
+	}
+	if dir, err := os.UserConfigDir(); err == nil {
+		set("GOENV", filepath.Join(dir, "go", "env"))
+	}
+}
+
+// Real points the home directory and the variables Isolate moved back at the real ones, for the
+// rest of the test: for the tests that must act on the real account (a launchd agent, a systemd
+// --user unit) and have their own guards for when they may. Like t.Setenv, it cannot be used in
+// a parallel test.
+func Real(t testing.TB) {
+	t.Helper()
+	if isolatedRoot == "" {
+		return // not isolated: already real
+	}
+	for _, k := range moved {
+		if v := original[k]; v != nil {
+			t.Setenv(k, *v)
+		} else {
+			t.Setenv(k, "") // so the test's end restores the isolated value
+			os.Unsetenv(k)
+		}
+	}
 }
 
 // isolatedRoot is the temporary home Isolate made, or "".
