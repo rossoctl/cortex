@@ -52,6 +52,63 @@ func TestDispatchSetsTheSentinel(t *testing.T) {
 	}
 }
 
+// A Claude subscription (OAuth) token's own oauth-* Anthropic-Beta flows through to a call this
+// dispatcher makes on its behalf: cheapmodel's own headers never set one (anthropicHeaders), so
+// without this an incoming-model call on that credential can 401 for a missing beta the direct
+// client always sent (review finding). The non-oauth betas (tooldefer.AuthBetas' own filter) are
+// left behind, same as the probe that filter exists for.
+func TestDoFillsTheRequestsOwnAuthBetaWhenTheCallerSetNone(t *testing.T) {
+	var got http.Header
+	srv := newHeaderSink(t, &got)
+	d := newCortexDispatcher(newPingClient(true))
+	ref := d.hold("http", stripScheme(srv.URL), http.Header{
+		"X-Api-Key":      {"sk-caller"},
+		"Anthropic-Beta": {"oauth-2026-01-01,prompt-caching-2024-07-31"},
+	})
+	if _, err := d.Do(context.Background(), dispatch.Request{Ref: ref, Path: "/v1/messages",
+		Body: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("Anthropic-Beta") != "oauth-2026-01-01" {
+		t.Fatalf("Anthropic-Beta = %q, want only the oauth-* value", got.Get("Anthropic-Beta"))
+	}
+}
+
+// A caller that set its own Anthropic-Beta (tooldefer.RunProbeBeta's own beta argument) is left
+// alone: its choice is deliberate, not a gap to fill.
+func TestDoDoesNotOverrideACallerSetAuthBeta(t *testing.T) {
+	var got http.Header
+	srv := newHeaderSink(t, &got)
+	d := newCortexDispatcher(newPingClient(true))
+	ref := d.hold("http", stripScheme(srv.URL), http.Header{
+		"X-Api-Key":      {"sk-caller"},
+		"Anthropic-Beta": {"oauth-2026-01-01"},
+	})
+	if _, err := d.Do(context.Background(), dispatch.Request{Ref: ref, Path: "/v1/messages",
+		Header: http.Header{"Anthropic-Beta": {"its-own-beta"}}, Body: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Get("Anthropic-Beta") != "its-own-beta" {
+		t.Fatalf("Anthropic-Beta = %q, want the caller's own value left untouched", got.Get("Anthropic-Beta"))
+	}
+}
+
+// No Anthropic-Beta on the original request means no beta is sent — nothing to fill in, and
+// nothing invented.
+func TestDoSendsNoAuthBetaWhenTheRequestHadNone(t *testing.T) {
+	var got http.Header
+	srv := newHeaderSink(t, &got)
+	d := newCortexDispatcher(newPingClient(true))
+	ref := d.hold("http", stripScheme(srv.URL), http.Header{"X-Api-Key": {"sk-caller"}})
+	if _, err := d.Do(context.Background(), dispatch.Request{Ref: ref, Path: "/v1/messages",
+		Body: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if v := got.Get("Anthropic-Beta"); v != "" {
+		t.Fatalf("Anthropic-Beta = %q, want none", v)
+	}
+}
+
 func newHeaderSink(t *testing.T, got *http.Header) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		*got = r.Header.Clone()

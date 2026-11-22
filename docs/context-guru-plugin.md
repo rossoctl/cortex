@@ -24,10 +24,16 @@ config enables it by default (preset `xhigh`). `lite`, `envoy` and
 **The request's own model (`model.source: incoming`).** A component configured with `model.source: incoming` calls the model the agent itself is using, on the agent's own credential:
 
 - **OpenAI Chat Completions:** through `llmclient`, on the request's endpoint and `Authorization`.
-- **Anthropic Messages** (`/v1/messages`, Claude Code's traffic): through context-guru's `cheapmodel.Anthropic`, on the request's endpoint and credential (`x-api-key` or `Authorization`). The credential is held in memory, masked, one hold per credential, and released 2 hours after its last use (on a timer, not only on the next matching request), on a config reload, or at `Shutdown`. It is held, not borrowed, because `cache_aware_summarizer` commissions its call in the background and the request returns first. On Anthropic the summarizer asks one question appended to the previous turn's forwarded body, so the provider's prompt cache serves the whole transcript. The plugin keeps that body in memory for the last 16 sessions (main agent only, a 200 response only, at most 8 MiB per body and 96 MiB in total).
+- **Anthropic Messages** (`/v1/messages`, Claude Code's traffic): through context-guru's `cheapmodel.Anthropic`, on the request's endpoint and credential (`x-api-key` or `Authorization`). The credential is held in memory, masked, one hold per credential, and released 2 hours after its last use (on a timer, not only on the next matching request), on a config reload, or at `Shutdown`. The request's own `Anthropic-Beta` oauth-* values (`tooldefer.AuthBetas`) are held too and sent on the call when `cheapmodel` set none: a Claude subscription (OAuth) token can need one to authenticate directly against `api.anthropic.com`, and without it the call 401s — failing open, but silently, since the summarizer then does nothing that turn. It is held, not borrowed, because `cache_aware_summarizer` commissions its call in the background and the request returns first. On Anthropic the summarizer asks one question appended to the previous turn's forwarded body, so the provider's prompt cache serves the whole transcript. The plugin keeps that body in memory for the last 16 sessions (main agent only, a 200 response only, at most 8 MiB per body and 96 MiB in total).
 - **OpenAI Responses API:** none. A Responses request uses the `model` block, or the component degrades to deterministic.
 
 Each such call is reported to the request it was made for as a spend op (`pluginSpendMicros`). A call that returns after its request was accounted (the summarizer's background call can) is dropped and counted in the `late_model_calls_dropped` metric.
+
+**Under `on_error: observe`, no model is built at all**, static or incoming: every
+model-calling component degrades to deterministic/no-op, and `model.source: incoming`'s
+credential is never held. `observe` is a shadow pass — nothing it does is supposed to take
+effect — and a real, billed model call on the agent's own credential is the opposite of that,
+the same reasoning that already keeps the keep-alive keeper from pinging under `observe`.
 
 **Session state is kept on disk.** The plugin keeps the state a session needs between turns
 (the summary checkpoint, the last billed input, freeze decisions and similar) in context-guru's

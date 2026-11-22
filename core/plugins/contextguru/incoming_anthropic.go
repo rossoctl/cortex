@@ -363,9 +363,22 @@ const pendingBodyStateKey = "context-guru-pending-body"
 // Only a 200 is a valid prefix: a rejected send populated no prompt cache. pctx.Body in OnFinish
 // is the body that went upstream. A shadow run (on_error: observe) sent the client's body, which
 // is still pctx.Body, so the stash matches what upstream cached in that case too.
+//
+// Nothing is stashed for a redirected request (review finding): inference-router runs after
+// context-guru (agentop server add appends it last), so the incoming-model hold this plugin took
+// in OnRequest is always on the host and credential the CLIENT named — captured before any
+// redirect — while pctx.Body by OnFinish can be inference-router's own rewrite of what actually
+// went out (a different host, possibly a translated model name). A prefix ask on the next turn
+// would then send that routed body, under the routed model's shape, to the client's ORIGINAL
+// host, which may not recognise it. Whether the incoming model should instead follow the
+// redirect is a product question (does context-guru's own side-channel traffic mean to honor a
+// routing rule meant for the agent's main traffic, or always reach the agent's real endpoint?)
+// this fix does not answer; it only removes the concrete risk of sending a mismatched body.
+// pctx.Redirected stays false under on_error: observe and after a refused redirect, so neither
+// case is affected.
 func (p *ContextGuru) stashSent(pctx *pipeline.Context, sid string) {
 	pre := pipeline.GetState[pendingBody](pctx, pendingBodyStateKey)
-	if pre == nil || p.stash == nil || isSubagent(pctx) || pctx.StatusCode != 200 {
+	if pre == nil || p.stash == nil || isSubagent(pctx) || pctx.StatusCode != 200 || pctx.Redirected() {
 		return
 	}
 	key, ok := p.cgSessions.get(sid)

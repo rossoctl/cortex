@@ -748,7 +748,26 @@ func dialectFor(path string) (bschemas.ModelProvider, string) {
 // model as the incoming one. On Anthropic that is cheapmodel.Anthropic on the caller's held
 // credential (incoming_anthropic.go); on OpenAI chat completions it is incomingModel. An absent
 // client stays a nil interface, never a typed nil: the engine checks the interface.
+// modelsFor builds the static and incoming models for this request, UNLESS the plugin runs
+// under on_error: observe, when it builds neither.
+//
+// Observing's own doc says a shadow pass changes nothing: "nothing it does this pass takes
+// effect". The keep-alive keeper already holds this line (OnRequest: "UNDER on_error: observe
+// NOTHING IS HELD... that ping is real, billed spend — the opposite of a shadow run"). Before
+// this, the engine's own model-calling components (cache_aware_summarizer, extract_llm,
+// extract_llm_sweep) did not: cgModel.Complete and meteredDispatcher always send the real HTTP
+// call, and dryRun only changes how the resulting op is REPORTED (Projected, left out of every
+// total) — the call itself, and its cost on the caller's own credential, already happened
+// (review finding). Returning an empty ModelSpec here makes every model.source: incoming or
+// model: component degrade to deterministic/no-op under observe, the same way the keeper
+// degrades to no ping: observe measures what the DETERMINISTIC reducers would do, at the cost
+// of not previewing what the model-backed ones would add. It also means anthropicIncoming is
+// never called under observe, so no credential hold is taken for a mode that is supposed to
+// hold nothing.
 func (p *ContextGuru) modelsFor(pctx *pipeline.Context, provider bschemas.ModelProvider, api string) cgcomponents.ModelSpec {
+	if pctx.Observing() {
+		return cgcomponents.ModelSpec{}
+	}
 	spec := cgcomponents.ModelSpec{Static: p.staticModelFor(pctx)}
 	if provider == bschemas.Anthropic {
 		if m, ok := p.anthropicIncoming(pctx); ok {

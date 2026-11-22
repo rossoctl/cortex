@@ -243,6 +243,59 @@ func TestStashedBodyIsNotMixedUpBetweenOverlappingRequestsOnOneSession(t *testin
 	}
 }
 
+// redirectingPlugin calls pctx.Redirect from OnRequest, as inference-router does — the one
+// production plugin that declares WritesDestination. A test puts it after context-guru, as
+// agentop server add does (inference-router is always appended last).
+type redirectingPlugin struct{ target *url.URL }
+
+func (redirectingPlugin) Name() string { return "redirector" }
+func (redirectingPlugin) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{WritesDestination: true}
+}
+func (r redirectingPlugin) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	if err := pctx.Redirect(r.target); err != nil {
+		panic(err) // test setup error, not a case under test
+	}
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (redirectingPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// Nothing is stashed for a redirected request (review finding): the incoming-model hold is on
+// the host and credential the client named, captured in OnRequest before inference-router (which
+// always runs after context-guru) redirects — but pctx.Body by OnFinish can be the redirected
+// server's own rewrite. Stashing it anyway would have the next turn's prefix ask send that body,
+// in whatever shape the OTHER server expects, to the client's original (non-redirected) host.
+func TestStashSentSkipsARedirectedRequest(t *testing.T) {
+	p := configured(t, `{`+offline+`}}`)
+	target, err := url.Parse("http://other-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl, err := pipeline.New([]pipeline.Plugin{p, redirectingPlugin{target: target}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pctx := anthropicPctx("gw", pipeline.AgentRoleMain)
+	pctx.MarkRedirectable()
+	pl.Run(context.Background(), pctx)
+	if !pctx.Redirected() {
+		t.Fatal("test setup: the request was not redirected")
+	}
+
+	pctx.StatusCode = 200
+	p.OnFinish(context.Background(), pctx)
+
+	key, _ := p.cgSessions.get("s1")
+	p.stash.mu.Lock()
+	_, stashed := p.stash.m[key]
+	p.stash.mu.Unlock()
+	if stashed {
+		t.Error("OnFinish stashed a redirected request's body")
+	}
+}
+
 // The asker appends its question to the stashed forwarded body and sends it on the caller's own
 // credential; with nothing stashed it reports ErrNoPrefix, which the summarizer handles. The call
 // carries the plugin's sentinel, so Cortex skips it if it comes back through the proxy.

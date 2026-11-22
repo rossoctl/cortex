@@ -634,6 +634,71 @@ func (g *modelGrabber) OnResponse(context.Context, *pipeline.Context) pipeline.A
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
+// modelsForGrabber calls context-guru's modelsFor inside OnRequest, as OnRequest does, and
+// keeps the result, so a test can inspect it after the request — in particular under a policy
+// (observe) that invokeReq's bypass of pctx.SetCurrentPlugin cannot set, since
+// pipeline.Context.Observing reads the policy the pipeline itself stamped on dispatch.
+type modelsForGrabber struct {
+	p        *ContextGuru
+	provider bschemas.ModelProvider
+	api      string
+	out      cgcomponents.ModelSpec
+}
+
+func (g *modelsForGrabber) Name() string { return "context-guru" }
+func (g *modelsForGrabber) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
+func (g *modelsForGrabber) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	g.out = g.p.modelsFor(pctx, g.provider, g.api)
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (g *modelsForGrabber) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// Under on_error: observe, modelsFor must build neither model: a real, billed call on the
+// agent's own credential is the opposite of a shadow pass that changes nothing (review
+// finding — cgModel.Complete and meteredDispatcher always send the HTTP call regardless of
+// dryRun, which only changes how the resulting op is reported). Checked for both dialects:
+// Anthropic also takes a credential hold as a side effect of building its incoming model
+// (anthropicIncoming), so this doubles as the test that observe takes no hold either.
+func TestModelsForBuildsNeitherModelUnderObserve(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider bschemas.ModelProvider
+		api      string
+		pctx     func(*ContextGuru) *pipeline.Context
+	}{
+		{"anthropic", bschemas.Anthropic, "", func(*ContextGuru) *pipeline.Context {
+			return anthropicPctx("gw", pipeline.AgentRoleMain)
+		}},
+		{"openai chat completions", bschemas.OpenAI, "", func(*ContextGuru) *pipeline.Context {
+			return inferencePctx("/v1/chat/completions", chatBody("hi"))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := configured(t, `{`+offline+`}}`)
+			grab := &modelsForGrabber{p: p, provider: tc.provider, api: tc.api}
+			pl, err := pipeline.New([]pipeline.Plugin{grab}, pipeline.WithPolicies(pipeline.ErrorPolicyObserve))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pl.Run(context.Background(), tc.pctx(p))
+
+			if grab.out.Static != nil {
+				t.Error("modelsFor built a static model under observe")
+			}
+			if grab.out.Incoming != nil {
+				t.Error("modelsFor built an incoming model under observe")
+			}
+			if p.holds != nil && len(p.holds.d.held) != 0 {
+				t.Errorf("observe took %d credential hold(s), want 0", len(p.holds.d.held))
+			}
+		})
+	}
+}
+
 func metricValue(ms []pipeline.Metric, name string) float64 {
 	for _, m := range ms {
 		if m.Name == name {
