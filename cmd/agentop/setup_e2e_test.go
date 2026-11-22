@@ -21,6 +21,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 type setupScene struct {
@@ -38,7 +39,7 @@ func newSetupScene(t *testing.T, healthz http.HandlerFunc) setupScene {
 	srv := httptest.NewServer(healthz)
 	t.Cleanup(srv.Close)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	t.Setenv("SHELL", "/bin/zsh")
 	stubTerminal(t, true, "y\n")
 	return setupScene{home: home, stage: stageDir(t, cortexStub(strings.TrimPrefix(srv.URL, "http://"))), loaded: loaded}

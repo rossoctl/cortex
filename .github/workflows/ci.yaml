@@ -195,12 +195,15 @@ jobs:
             TestNoRecordWanted TestWithRecordOff
             TestAddRecordOff_RefusesASettingsOverride TestAddRecordOff_AppendsToTheEnvironment
             TestAddRecordOff_RefusesAnUnreadableSettingsFile TestAddRecordOff_ChecksClaudeConfigDir
-            TestAddRecordOff_RefusesAChildThatIsNotClaudeCode"
+            TestAddRecordOff_RefusesAChildThatIsNotClaudeCode
+            TestHomeIsIsolated"
           go test -v -run "^($(echo ${tests} | tr ' ' '|'))\$" . | tee "${RUNNER_TEMP}/agentop-tests.txt"
           for t in ${tests}; do
             grep -qE "^--- (PASS|SKIP): ${t} \(" "${RUNNER_TEMP}/agentop-tests.txt" \
               || { echo "::error::${t} did not run"; exit 1; }
           done
+          # The tests' home isolation itself (USERPROFILE as well as HOME), where it matters most.
+          go test -v ./internal/testhome/
 
       # release-binaries.yaml builds every platform in one loop, so a Windows build break would
       # stop the Linux and macOS releases too, and main-latest on every merge. Build exactly its

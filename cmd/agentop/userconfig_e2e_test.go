@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/cmd/agentop/tui"
 )
 
@@ -14,8 +15,7 @@ import (
 // no other test spans both packages.
 func TestEndToEnd_SettingsSurviveARestart(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testhome.Set(t, home)
 
 	path, err := userConfigPath()
 	if err != nil {

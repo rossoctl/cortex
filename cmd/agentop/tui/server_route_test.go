@@ -17,6 +17,7 @@ import (
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/cmd/agentop/servers"
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/usage"
@@ -434,7 +435,7 @@ func TestAgentServerCell_NamesNoServerWhereNoneCanBeChosen(t *testing.T) {
 // ~/…, so the panel and the command say the same thing about the same file.
 func TestServerNotice_NamesTheConfigFileAsAgentopServerDoes(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	const shown = "~/.cortex/config.yaml"
 	for _, pv := range []*apiclient.PipelineView{
 		observing(routerPipeline(routerRaw)),

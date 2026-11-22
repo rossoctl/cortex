@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 const endpointCfg = `mode: proxy-sidecar
@@ -39,7 +41,7 @@ func withCortexConfig(t *testing.T, addr string) {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("HOME", dir)
+	testhome.Set(t, dir)
 }
 
 // TestLocalSessionEndpoint_ReadsTheConfiguredPort: the in-cluster default is 9094

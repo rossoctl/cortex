@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/cmd/agentop/tui"
 )
 
@@ -22,8 +23,7 @@ import (
 func prefsHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	t.Setenv("USERPROFILE", dir)
+	testhome.Set(t, dir)
 	return dir
 }
 
@@ -44,8 +44,7 @@ func TestUserConfigPath_DefaultsUnderCortexDir(t *testing.T) {
 // settings file into whatever directory agentop started in, where it would be found
 // again only by accident.
 func TestUserConfigPath_NoHomeIsAnError(t *testing.T) {
-	t.Setenv("HOME", "")
-	t.Setenv("USERPROFILE", "")
+	testhome.Set(t, "")
 	if got, err := userConfigPath(); err == nil {
 		t.Errorf("userConfigPath() = %q with no home, want an error", got)
 	}

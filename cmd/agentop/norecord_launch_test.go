@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/core/observe/claude"
 )
 
@@ -164,7 +165,7 @@ func TestRunExec_NoRecordReachesTheChild(t *testing.T) {
 	cfgPath, _ := execCfg(t)
 	stats := execStats(t, cfgPath)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	t.Setenv(claude.ConfigDirEnv, "")
 	t.Chdir(t.TempDir())
 	t.Setenv(customHeadersEnv, "X-Team: a")
@@ -213,8 +214,7 @@ func TestRunExec_NoRecordRefusesOtherAgents(t *testing.T) {
 func TestRunExec_NoRecordRefusesASettingsOverride(t *testing.T) {
 	cfgPath, _ := execCfg(t)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	testhome.Set(t, home)
 	t.Setenv(claude.ConfigDirEnv, "")
 	t.Chdir(t.TempDir())
 	writeSettingsFile(t, filepath.Join(home, ".claude", "settings.json"), `{"env":{"ANTHROPIC_CUSTOM_HEADERS":"X-Team: a"}}`)

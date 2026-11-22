@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -212,8 +213,7 @@ func TestStickyFlash_ClearsAStaleDeadline(t *testing.T) {
 // nobody would ever see until they did. This asserts the reachable path reads
 // well; the unreachable one is kept legible by construction, not by a test.
 func TestYankDir_UnsetHomeGivesAReadableError(t *testing.T) {
-	t.Setenv("HOME", "")
-	t.Setenv("USERPROFILE", "")
+	testhome.Set(t, "")
 
 	_, err := yankDir()
 	if err == nil {
@@ -404,8 +404,7 @@ func yankHome(t *testing.T) string {
 	// and HOME elsewhere, and two separate t.TempDir() calls would make the two
 	// disagree — so a test would exercise a different home depending on platform.
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	t.Setenv("USERPROFILE", dir)
+	testhome.Set(t, dir)
 	return dir
 }
 

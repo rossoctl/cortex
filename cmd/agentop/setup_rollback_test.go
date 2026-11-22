@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 )
 
 // failingStep plans like the step it wraps and fails instead of applying.
@@ -286,7 +287,7 @@ func TestSetupRemovesTheInstallersStagingDir(t *testing.T) {
 	// Unlike a usage error: those flags parsed, so the stage is known.
 	t.Run("when HOME cannot be resolved", func(t *testing.T) {
 		sc := newSetupScene(t, ok200)
-		t.Setenv("HOME", "")
+		testhome.Set(t, "")
 		code, out := sc.run(t, "--from", sc.stage, "--yes", "--handoff-bytes=2048")
 		if code != 1 || !strings.Contains(out, "cannot determine your home directory") {
 			t.Fatalf("exit %d:\n%s", code, out)

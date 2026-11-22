@@ -13,6 +13,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
 )
 
@@ -99,7 +100,7 @@ func serverEnvWithSessions(t *testing.T, statsAddr, sessionsAddr, router string)
 	t.Helper()
 	stubServerModels(t, testModels, anyModels)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	testhome.Set(t, home)
 	src := fmt.Sprintf(`mode: proxy-sidecar
 stats:
   address: %s

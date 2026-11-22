@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/cmd/agentop/internal/testhome"
 	"github.com/rossoctl/cortex/core/peerproc"
 )
 
@@ -656,7 +657,7 @@ func TestCodexRun(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh")
 	}
-	t.Setenv("HOME", t.TempDir())
+	testhome.Set(t, t.TempDir())
 	t.Setenv(codexHomeEnv, "")
 	t.Setenv("HTTPS_PROXY", cortexProxyURL)
 	home := t.TempDir()
