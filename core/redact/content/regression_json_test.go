@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-// REGRESSIONS: inputs an adversarial review found to corrupt JSON or to leak, against the first
-// version of these rules. Each is raw JSON or text, redacted whole; JSON must stay valid JSON,
-// and only the secret may change.
+// REGRESSIONS for raw JSON: inputs that corrupted JSON or leaked in a first version of these
+// rules. Each is raw JSON or text, redacted whole; JSON must stay valid JSON, and only the
+// secret may change.
 
 // A rule's match must not run from one JSON value into the next.
-func TestReview_MatchesStayInsideAValue(t *testing.T) {
+func TestRegression_MatchesStayInsideAValue(t *testing.T) {
 	for _, in := range []string{
 		`{"dsn":"postgres://localhost/db","port":5432,"email":"x@y.io"}`,                                    // a URL with no credentials, then an email
 		`{"url":"http://localhost:8080","contact":"ops@example.com"}`,                                       // a port, then an email
@@ -32,7 +32,7 @@ func TestReview_MatchesStayInsideAValue(t *testing.T) {
 }
 
 // An Authorization value in compact JSON is replaced alone: the rest of the document stays.
-func TestReview_AuthorizationInCompactJSON(t *testing.T) {
+func TestRegression_AuthorizationInCompactJSON(t *testing.T) {
 	tok := mixed(30)
 	in := `{"headers":{"Authorization":"Bearer ` + tok + `","X-Trace":"abc"},"model":"m","stream":true}`
 	want := `{"headers":{"Authorization":"Bearer [REDACTED:credential]","X-Trace":"abc"},"model":"m","stream":true}`
@@ -42,7 +42,7 @@ func TestReview_AuthorizationInCompactJSON(t *testing.T) {
 }
 
 // Secrets the first version let through.
-func TestReview_Leaks(t *testing.T) {
+func TestRegression_Leaks(t *testing.T) {
 	basic := base64.StdEncoding.EncodeToString([]byte("admin:" + fakePassword()))
 	for name, tc := range map[string]struct{ in, secret string }{
 		"aws secret env":      {"AWS_SECRET_ACCESS_KEY=" + mixed(40), mixed(40)},

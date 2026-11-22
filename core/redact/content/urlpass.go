@@ -9,8 +9,8 @@ import (
 // user and host stay.
 //
 // RFC 3986 requires "@ / ? #" to be percent-encoded in a password, but real ones are often not
-// ("postgres://bob:p@ss/w0rd@db"). So the password runs to the LAST "@" before the authority's
-// end, which is the first "/" after the first "@". A password may then hold "@", "/" and "#".
+// ("postgres://bob:p@ss/w0rd@db"). So the password runs to the LAST "@" that a host follows,
+// within the user info's bounded run, and may hold "@", "/" and "#".
 // It never holds whitespace, a quote, a backslash or "?", so a match cannot run from a URL into
 // the next JSON value or the next word. A "password" that starts with a port ("8080/x#a@b",
 // "http://host:8080/contact#ops@example.com") is a port, a path and an email, and is kept; so
@@ -37,32 +37,74 @@ func findURLPasswords(text string, at []int, out []Edit) []Edit {
 			continue
 		}
 		u := p + 3
+		if u < len(text) && text[u] == '[' {
+			continue // a bracketed IPv6 host comes first: there is no user info
+		}
 		end := u
 		for end < len(text) && end-u < maxUserInfo && isUserInfoByte(text[end]) {
 			end++
 		}
 		run := text[u:end]
-		colon := strings.IndexByte(run, ':')
 		firstAt := strings.IndexByte(run, '@')
-		if colon < 0 || firstAt < 0 || colon > firstAt || strings.ContainsAny(run[:colon], "/#@") || colon > 64 {
+		if firstAt < 0 {
+			// No "@": nor in the run of any later trigger that starts inside this one and ends
+			// where it ends, so those are skipped, which keeps a long run of "a://b:c" linear.
+			// A run cut at maxUserInfo may continue past the cut for a later trigger, so then
+			// only its first half is skipped.
+			if end-u < maxUserInfo {
+				covered = end
+			} else {
+				covered = u + maxUserInfo/2
+			}
 			continue
 		}
-		authEnd := len(run)
-		if i := strings.IndexByte(run[firstAt:], '/'); i >= 0 {
-			authEnd = firstAt + i
+		colon := strings.IndexByte(run[:firstAt], ':')
+		if colon < 0 || colon > 64 || strings.ContainsAny(run[:colon], "/#") {
+			continue
 		}
-		last := strings.LastIndexByte(run[:authEnd], '@')
+		last := lastHostAt(run, colon)
+		if last < 0 {
+			continue
+		}
 		pw := run[colon+1 : last]
-		if len(pw) == 0 || len(pw) > 128 || last+1 >= len(run) || !isHostStart(run[last+1]) {
-			continue
-		}
-		if isPortPath(pw) || strings.Contains(pw, "://") || strings.HasPrefix(pw, "[REDACTED:") {
+		if len(pw) == 0 || isPortPath(pw) || strings.Contains(pw, "://") || strings.HasPrefix(pw, "[REDACTED:") {
 			continue
 		}
 		out = append(out, Edit{Start: u + colon + 1, End: u + last, Cat: catPassword})
 		covered = u + last
 	}
 	return out
+}
+
+// lastHostAt returns the position in run of the last "@" after colon that a host follows, or -1.
+// Taking the last one keeps a password that holds "@" and "/" whole ("p@ss/w0rd@db"). If the
+// URL also has an email in its path after real credentials, more than the password is replaced:
+// over-redaction, the safe side.
+func lastHostAt(run string, colon int) int {
+	for i := len(run) - 1; i > colon; i-- {
+		if run[i] == '@' && isHostAt(run[i+1:]) {
+			return i
+		}
+	}
+	return -1
+}
+
+// isHostAt reports whether rest starts with a host: one or more host characters, up to the
+// end of the authority ("/", "?", "#") or of the run.
+func isHostAt(rest string) bool {
+	if rest == "" || !isHostStart(rest[0]) {
+		return false
+	}
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		if c == '/' || c == '?' || c == '#' {
+			return true
+		}
+		if !(isLetter(c) || c >= '0' && c <= '9' || strings.IndexByte(".-:[]_%", c) >= 0) {
+			return false
+		}
+	}
+	return true
 }
 
 func isHostStart(c byte) bool { return isLetter(c) || c >= '0' && c <= '9' || c == '[' }

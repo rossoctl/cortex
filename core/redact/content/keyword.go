@@ -71,6 +71,16 @@ var (
 	// secretSuffixes classify a one-word name such as "authtoken" or "dbpassword".
 	secretSuffixes   = []string{"token", "secret", "apikey"}
 	passwordSuffixes = []string{"password", "passwd"}
+	// modifierWords, as a name's last word, make it a name about a secret, not of one:
+	// password_policy, password_min_length, token_type, token_endpoint, secret_name.
+	modifierWords = set("policy", "policies", "length", "len", "min", "max", "minimum", "maximum",
+		"enabled", "enable", "disabled", "required", "require", "reset", "expiry", "expires", "expiration",
+		"expired", "strength", "hint", "hints", "rule", "rules", "regex", "pattern", "complexity", "history",
+		"age", "lifetime", "ttl", "field", "label", "prompt", "placeholder", "type", "types", "kind", "mode",
+		"format", "file", "path", "dir", "env", "var", "variable", "name", "names", "ref", "url", "uri",
+		"endpoint", "endpoints", "count", "attempts", "retries", "timeout", "scope", "scopes", "provider",
+		"issuer", "audience", "version", "changed", "change", "updated", "created", "at", "date", "time",
+		"status", "valid", "validation", "validator")
 )
 
 func set(words ...string) map[string]bool {
@@ -88,6 +98,9 @@ func set(words ...string) map[string]bool {
 // secret.
 func nameTier(name string) tier {
 	parts := splitName(name)
+	if len(parts) > 1 && modifierWords[parts[len(parts)-1]] {
+		return tierNone // a setting about the secret: password_policy, token_type, secretName
+	}
 	t := tierNone
 	for i, p := range parts {
 		words := []string{p}
@@ -180,6 +193,11 @@ func findKeywords(text string, at []int, out []Edit) []Edit {
 		}
 		s := keywordStart(text, p)
 		m := matchAt(keywordPattern, text, s, 256)
+		if m == nil && quotedValueAt(text, end) {
+			// A quoted value whose closing quote is past the first window: look once more,
+			// further. Only a quoted value, so a failed trigger costs this once.
+			m = matchAt(keywordPattern, text, s, 4096+256)
+		}
 		if m == nil {
 			continue
 		}
@@ -192,13 +210,79 @@ func findKeywords(text string, at []int, out []Edit) []Edit {
 		if g == 5 {
 			mode = valueBare
 		}
-		t := nameTier(text[s+m[2] : s+m[3]])
+		name := text[s+m[2] : s+m[3]]
+		if isCookieName(name) {
+			// A Cookie header holds several name=value pairs; each value is checked, and the
+			// triggers inside the list are not tried again.
+			ce := cookieEnd(text, vs)
+			out = append(out, cookieEdits(text, vs, ce)...)
+			covered = ce
+			continue
+		}
+		t := nameTier(name)
 		ok := t != tierNone && secretShaped(t, text[vs:ve], mode) &&
 			!(mode == valueBare && (callAfter(text, ve) || t == tierPassword && proseAfter(text, vs, ve)))
 		covered = rejectedCover(ok, s+m[1], vs, ve)
+		if !ok && ve-vs >= longRejected {
+			// A long rejected URL can still hold an assignment in its query string
+			// ("auth_url=https://host/...?password=..."): the triggers from its "?" on are tried.
+			if q := strings.IndexByte(text[vs:ve], '?'); q >= 0 {
+				covered = vs + q
+			}
+		}
 		if ok {
 			out = append(out, Edit{Start: vs, End: ve, Cat: t.cat()})
 		}
+	}
+	return out
+}
+
+// quotedValueAt reports whether the assignment after a name ending at i opens a quoted value.
+func quotedValueAt(text string, i int) bool {
+	if i < len(text) && text[i] == '\\' {
+		i++
+	}
+	if i < len(text) && (text[i] == '"' || text[i] == '\'') {
+		i++
+	}
+	for i < len(text) && (text[i] == ' ' || text[i] == '\t' || text[i] == ':' || text[i] == '=' || text[i] == '>') {
+		i++
+	}
+	return i < len(text) && (text[i] == '"' || text[i] == '\'' || text[i] == '\\')
+}
+
+// isCookieName reports whether a name is a Cookie or Set-Cookie header's.
+func isCookieName(name string) bool {
+	n := strings.ToLower(name)
+	return n == "cookie" || n == "set-cookie" || n == "cookies"
+}
+
+// cookieEnd is where a cookie list starting at i ends: a line break, a quote (raw or escaped)
+// or a backslash, at most 4096 bytes on.
+func cookieEnd(text string, i int) int {
+	end := min(len(text), i+4096)
+	if j := strings.IndexAny(text[i:end], "\r\n\"'`\\"); j >= 0 {
+		return i + j
+	}
+	return end
+}
+
+// cookieEdits checks each "name=value" pair of a cookie list in text[start:end] ("sid=x;
+// session=y") and returns an edit for each value shaped like a secret. A cookie's name and the
+// attributes of a Set-Cookie (Path=/, HttpOnly) stay.
+func cookieEdits(text string, start, end int) []Edit {
+	var out []Edit
+	for i := start; i < end; {
+		j := i + strings.IndexByte(text[i:end]+";", ';')
+		if eq := strings.IndexByte(text[i:j], '='); eq >= 0 {
+			vs := i + eq + 1
+			v := strings.TrimSpace(text[vs:j])
+			vs += strings.Index(text[vs:j], v)
+			if v != "" && !strings.ContainsAny(v, " \t,") && secretShaped(tierSecret, v, valueBare) {
+				out = append(out, Edit{Start: vs, End: vs + len(v), Cat: catSecretValue})
+			}
+		}
+		i = j + 1
 	}
 	return out
 }
@@ -242,7 +326,8 @@ func assignmentAt(text string, i int) bool {
 }
 
 // keyedValue checks a whole text value under a JSON key. An Authorization-style value
-// ("Bearer x", "Basic x") is checked without its scheme, which stays.
+// ("Bearer x", "Basic x") is checked without its scheme, which stays. A password is checked
+// whole, whatever it starts with: "token My passphrase!" is a password, not a scheme.
 func keyedValue(text, key string) (Edit, bool) {
 	t := nameTier(key)
 	if t == tierNone {
@@ -251,7 +336,7 @@ func keyedValue(text, key string) (Edit, bool) {
 	start := len(text) - len(strings.TrimLeft(text, " \t"))
 	v := strings.TrimRight(text[start:], " \t")
 	for _, scheme := range []string{"bearer ", "basic ", "token ", "digest ", "negotiate ", "ntlm "} {
-		if len(v) > len(scheme) && strings.EqualFold(v[:len(scheme)], scheme) {
+		if t != tierPassword && len(v) > len(scheme) && strings.EqualFold(v[:len(scheme)], scheme) {
 			// An explicit credential scheme: the token after it is the secret, whatever its
 			// entropy, if it is one token.
 			tok := strings.TrimLeft(v[len(scheme):], " ")
@@ -322,7 +407,9 @@ func notASecret(v string) bool {
 		len(v) > 2 && v[1] == ':' && (v[2] == '\\' || v[2] == '/'), // C:\x, C:/x
 		strings.Contains(v, "://"),
 		strings.Contains(lower, "redacted"), strings.Contains(lower, "xxxx"), strings.Contains(v, "***"),
-		strings.HasPrefix(lower, "your"), strings.Contains(lower, "example"), strings.Contains(lower, "placeholder"):
+		// "your-api-key-here", "your_password": words only. "yourH0rse!2026" is a password.
+		strings.HasPrefix(lower, "your") && strings.Trim(lower, "abcdefghijklmnopqrstuvwxyz-_ ") == "",
+		strings.Contains(lower, "example"), strings.Contains(lower, "placeholder"):
 		return true
 	}
 	return knownIDPattern.MatchString(v) || dottedRefPattern.MatchString(v) || envNamePattern.MatchString(v)

@@ -215,16 +215,30 @@ func TestPlantedSecretsLeaveNoTrace(t *testing.T) {
 			t.Errorf("no %s was counted (stats %v)", cat, st)
 		}
 	}
+	// The key block sat in the stream with its line breaks escaped: none of it, in that form,
+	// survives either, so a redacted header alone would not pass.
+	if strings.Contains(out, pemJSON) || strings.Contains(out, fill("M", 40)) {
+		t.Error("the key block's body survived in its on-wire form")
+	}
 	for _, sep := range []string{`"`, "data: ", "\n\n", "event: "} {
 		if strings.Count(out, sep) != strings.Count(all, sep) {
 			t.Errorf("the count of %q changed: %d -> %d", sep, strings.Count(all, sep), strings.Count(out, sep))
 		}
 	}
-	// Every JSON document is still JSON: the request line, each data line, the error line.
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimPrefix(line, "data: ")
-		if strings.HasPrefix(line, "{") {
-			mustBeJSON(t, "a redacted line", line)
+	// Every JSON document is still JSON, found by its framing: the request line, the two data
+	// lines, the error line.
+	lines := strings.Split(out, "\n")
+	var docs []string
+	for _, line := range lines {
+		if rest, ok := strings.CutPrefix(line, "data: "); ok {
+			docs = append(docs, rest)
 		}
+	}
+	docs = append([]string{lines[0]}, append(docs, lines[len(lines)-1])...)
+	if len(docs) != 4 {
+		t.Fatalf("found %d documents in the redacted output, want 4: %q", len(docs), out)
+	}
+	for i, doc := range docs {
+		mustBeJSON(t, []string{"the request", "data 1", "data 2", "the error"}[i], doc)
 	}
 }

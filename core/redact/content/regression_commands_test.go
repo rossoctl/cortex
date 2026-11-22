@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// REGRESSIONS from the third review: false positives in identifiers, URL lists, tool names and
-// code, and the last command-line leaks.
+// REGRESSIONS for identifiers, URL lists, tool names and code that must be kept, and for the
+// command-line forms (curl, docker, mysql, --password) that must be found.
 
-func TestReview3_Kept(t *testing.T) {
+func TestRegression_IdentifiersAndCommandsKept(t *testing.T) {
 	for _, in := range []string{
 		// identifiers with a one-letter chunk
 		"token_provider = GoogleOAuth2AuthenticationProvider",
@@ -34,7 +34,7 @@ func TestReview3_Kept(t *testing.T) {
 	}
 }
 
-func TestReview3_Found(t *testing.T) {
+func TestRegression_CommandsFound(t *testing.T) {
 	pw := fakePassword()
 	for name, tc := range map[string]struct{ in, secret string }{
 		"curl combined flags":      {"curl -sSu admin:" + pw + " https://api.example.com/x", pw},
@@ -43,10 +43,28 @@ func TestReview3_Found(t *testing.T) {
 		"--password=":              {"tool --password=" + pw, pw},
 		"docker login --password=": {"docker login --password=" + pw + " registry.example.com", pw},
 		"url userinfo, UTF-8":      {"postgres://bob:p" + "ässwörd1@db.example.com/x", "ässwörd1"},
+		"curl quoted user":         {"curl -u 'alice:one " + "two3' https://api.example.com/x", "two3"},
 	} {
 		out, st := redact(tc.in)
 		if strings.Contains(out, tc.secret) || len(st) == 0 {
 			t.Errorf("%s: leaked: %q (stats %v)", name, out, st)
 		}
+	}
+}
+
+// In raw JSON text a command-line value stops before a JSON escape: the escape stays, and the
+// JSON stays valid.
+func TestRegression_CommandsInJSONKeepEscapes(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`{"cmd":"mysql -p` + "abc" + `123\" tail"}`, `{"cmd":"mysql -p[REDACTED:password]\" tail"}`},
+		{`{"cmd":"tool --password ` + fakePassword() + `\"x"}`, `{"cmd":"tool --password [REDACTED:password]\"x"}`},
+		{`{"cmd":"curl -u admin:` + fakePassword() + `\" https://x"}`, `{"cmd":"curl -u admin:[REDACTED:password]\" https://x"}`},
+	} {
+		mustBeJSON(t, "the fixture", tc.in)
+		out, _ := redact(tc.in)
+		if out != tc.want {
+			t.Errorf("%q: out = %q, want %q", tc.in, out, tc.want)
+		}
+		mustBeJSON(t, "the output", out)
 	}
 }

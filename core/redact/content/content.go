@@ -64,7 +64,10 @@ const minLen = 8
 // It returns nil when there are none.
 func (r *Redactor) Find(text string, ctx Context) []Edit {
 	var edits []Edit
-	if ctx.Key != "" {
+	switch {
+	case isCookieName(ctx.Key):
+		edits = append(edits, cookieEdits(text, 0, len(text))...)
+	case ctx.Key != "":
 		if e, ok := keyedValue(text, ctx.Key); ok {
 			edits = append(edits, e)
 		}

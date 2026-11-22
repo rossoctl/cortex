@@ -29,19 +29,75 @@ func isKeyBodyByte(c byte) bool {
 // keyBodyEnd returns where the body run starting at i ends: the first byte that cannot be in a
 // body. In raw JSON text the escapes \n \r \t and \/ are body bytes too, since a key block
 // inside a JSON string has its line breaks escaped.
+//
+// An armour header line ("Comment: Alice <alice@example.org>", "Comment: Bob's key #1") is free
+// text, so the whole line is body, whatever its bytes, except a double quote or a backslash that
+// is not one of those escapes: those can end the JSON string the block is in, and the run must
+// not cross it.
 func keyBodyEnd(text string, i int) int {
+	lineStart := true
 	for i < len(text) {
+		if lineStart {
+			lineStart = false
+			if n := armorHeaderName(text[i:]); n > 0 {
+				end, ok := armorHeaderValueEnd(text, i+n)
+				if !ok {
+					return end
+				}
+				i = end
+				continue
+			}
+		}
 		c := text[i]
 		if c == '\\' && i+1 < len(text) && strings.IndexByte("nrt/", text[i+1]) >= 0 {
+			lineStart = text[i+1] == 'n'
 			i += 2
 			continue
 		}
 		if !isKeyBodyByte(c) {
 			break
 		}
+		lineStart = c == '\n'
 		i++
 	}
 	return i
+}
+
+// armorHeaderName returns the length of an armour header's "Name: " at the start of s, or 0.
+func armorHeaderName(s string) int {
+	j := 0
+	for j < len(s) && j < 64 && (isLetter(s[j]) || j > 0 && (s[j] >= '0' && s[j] <= '9' || s[j] == '-')) {
+		j++
+	}
+	if j == 0 || j+1 >= len(s) || s[j] != ':' || s[j+1] != ' ' {
+		return 0
+	}
+	return j + 2
+}
+
+// armorHeaderValueEnd returns where an armour header's value, starting at i, ends: at its line
+// break (raw, or escaped in JSON), which is left for the caller. ok is false when the value holds
+// a double quote or a stray backslash first: the run ends there.
+func armorHeaderValueEnd(text string, i int) (int, bool) {
+	for i < len(text) {
+		switch c := text[i]; {
+		case c == '\n' || c == '\r':
+			return i, true
+		case c == '"':
+			return i, false
+		case c == '\\':
+			if i+1 < len(text) && strings.IndexByte("nrt", text[i+1]) >= 0 {
+				return i, true
+			}
+			if i+1 < len(text) && text[i+1] == '/' {
+				i += 2
+				continue
+			}
+			return i, false
+		}
+		i++
+	}
+	return i, true
 }
 
 // findKeyBlocks replaces each private key block whole, from its BEGIN line to its END line.

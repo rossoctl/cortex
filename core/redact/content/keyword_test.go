@@ -108,6 +108,40 @@ func TestNameTier(t *testing.T) {
 	}
 }
 
+// A name whose last word says what the value is about (password_policy, token_type) is not a
+// secret name: its value is a setting, not the secret.
+func TestKeywordValue_ModifierNamesAreKept(t *testing.T) {
+	for _, in := range []string{
+		"password_policy: strong",
+		`{"passwordPolicy":"strong"}`,
+		"password_min_length: 12345678",
+		`{"password_reset_enabled": "enabled"}`,
+		`{"token_type": "` + mixed(24) + `"}`,
+		"token_endpoint: " + mixed(24),
+		`{"secret_name": "` + mixed(24) + `"}`,
+	} {
+		if out, st := redact(in); out != in || len(st) != 0 {
+			t.Errorf("%q changed: %q, stats %v", in, out, st)
+		}
+	}
+}
+
+// Every cookie of a Cookie header is checked, in text and in JSON; a password that only starts
+// with "your" is a password.
+func TestKeywordValue_CookiesAndYourPrefix(t *testing.T) {
+	sid, sess := mixed(32), hexRun(32)
+	for _, tc := range []struct{ in, want string }{
+		{"Cookie: sid=" + sid + "; session=" + sess, "Cookie: sid=[REDACTED:secret_value]; session=[REDACTED:secret_value]"},
+		{`{"cookie":"sid=` + sid + `; theme=dark"}`, `{"cookie":"sid=[REDACTED:secret_value]; theme=dark"}`},
+		{"Set-Cookie: sid=" + sid + "; Path=/; HttpOnly", "Set-Cookie: sid=[REDACTED:secret_value]; Path=/; HttpOnly"},
+		{"password=your" + "H0rse!2026", "password=[REDACTED:password]"},
+	} {
+		if out, _ := redact(tc.in); out != tc.want {
+			t.Errorf("%q: out = %q, want %q", tc.in, out, tc.want)
+		}
+	}
+}
+
 // A value under a JSON key the caller names is checked whole: a password may then hold spaces,
 // and an Authorization value keeps its scheme.
 func TestKeyedValue(t *testing.T) {
@@ -120,6 +154,10 @@ func TestKeyedValue(t *testing.T) {
 		{"x-api-key", " " + mixed(24) + " ", " [REDACTED:secret_value] "},
 		{"Authorization", "Bearer " + mixed(24), "Bearer [REDACTED:credential]"},
 		{"authorization", "Basic " + basic, "Basic [REDACTED:credential]"},
+		// a password that starts like a scheme is still a password, checked whole
+		{"password", "token My passphrase!", "[REDACTED:password]"},
+		// every cookie of a list, not only the first
+		{"cookie", "sid=" + mixed(32) + "; csrftoken=" + hexRun(32) + "; theme=dark", "sid=[REDACTED:secret_value]; csrftoken=[REDACTED:secret_value]; theme=dark"},
 	} {
 		e := r.Find(tc.text, Context{Key: tc.key})
 		if out := Apply(tc.text, e); out != tc.want {

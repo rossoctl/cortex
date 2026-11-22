@@ -72,7 +72,8 @@ var apiKeys = []*anchored{
 	key([]string{"sg."}, `SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}`, true),                                                  // SendGrid
 	key([]string{"dapi"}, `dapi[a-f0-9]{32}(?:-[0-9])?`, true),                                                              // Databricks
 	{
-		cat: catAPIKey, triggers: []string{"hooks.slack.com/services/"}, span: 256, after: true,
+		// before: the host must start at a boundary, so "not-hooks.slack.com" is not Slack's.
+		cat: catAPIKey, triggers: []string{"hooks.slack.com/services/"}, span: 256, before: true, after: true,
 		re:    regexp.MustCompile(`^(?:https?://)?hooks\.slack\.com/services/T[A-Za-z0-9_]+/B[A-Za-z0-9_]+/[A-Za-z0-9_]+`),
 		start: func(text string, p int) int { return p - len(prefixBefore(text, p, "https://", "http://")) },
 	}, // Slack webhooks, replaced with their scheme
@@ -82,9 +83,10 @@ func key(triggers []string, pattern string, fixedLength bool) *anchored {
 	return &anchored{cat: catAPIKey, triggers: triggers, re: regexp.MustCompile(`^` + pattern), span: 512, before: true, after: fixedLength}
 }
 
-// jwt is three base64url segments, the first two starting with "eyJ".
+// jwt is three base64url segments, the first two starting with "eyJ". Its window is wide: a
+// JWT with many claims is kilobytes long, and a match cut by the window would not be found.
 var jwt = &anchored{
-	cat: catJWT, triggers: []string{"eyj"}, span: 512, before: true,
+	cat: catJWT, triggers: []string{"eyj"}, span: 16 << 10, before: true,
 	re: regexp.MustCompile(`^eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`),
 }
 
@@ -93,7 +95,17 @@ var jwt = &anchored{
 const tokenClass = `[A-Za-z0-9._~+/=-]`
 
 // authSchemes are the Authorization schemes whose token is replaced and whose name stays.
-const authSchemes = `bearer|basic|token|digest|negotiate|ntlm|aws4-hmac-sha256`
+// Digest is not one: its value is a list of parameters, and digestResponse finds its secret.
+const authSchemes = `bearer|basic|token|negotiate|ntlm|aws4-hmac-sha256`
+
+// digestResponse is the proof of a Digest Authorization value (RFC 7616): the hex of its
+// "response" parameter, wherever it sits among the others (username=, realm=, nonce=).
+// A failed scan looked through its whole window, a later Digest's response included, so the
+// triggers in that window are skipped (segment): "Digest x=1, Digest x=1, ..." stays linear.
+var digestResponse = &anchored{
+	cat: catCredential, triggers: []string{"digest"}, group: 1, span: 2048, before: true, segment: true,
+	re: regexp.MustCompile(`(?i)^digest[ \t]+[^\r\n]*?\bresponse=\\?"?([0-9a-f]{32,128})`),
+}
 
 // authorization is an Authorization header or pair, in text or JSON ("Authorization: Bearer
 // x", `"authorization":"Basic x"`, `\"Authorization\": \"token x\"`). Group 2 is the token; the
@@ -135,7 +147,7 @@ var bearer = &anchored{
 
 // anchoredRules are the pattern rules found by trigger, beside the key blocks, URL passwords, the
 // keyword rule and the encoded rule, which have their own finders.
-var anchoredRules = append(append(append([]*anchored{}, apiKeys...), jwt, authorization, bearer, sigV4, djangoSecretKey), cliRules...)
+var anchoredRules = append(append(append([]*anchored{}, apiKeys...), jwt, authorization, digestResponse, bearer, sigV4, djangoSecretKey), cliRules...)
 
 // longRejected is the length from which a rejected candidate's triggers are skipped. A shorter
 // one is not: a trigger inside it can start a secret of its own

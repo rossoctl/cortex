@@ -6,7 +6,8 @@ import (
 	"testing"
 )
 
-// REGRESSIONS from the second review: rule gaps found by probes against the text-value rules.
+// REGRESSIONS for rule gaps found by probes: secret forms that leaked (pass names, URL queries,
+// decoded base64, URL passwords, UUID keys, Django, SigV4) and look-alikes that must be kept.
 // Each case names the secret that must be gone; the output must also be valid JSON when the
 // input is.
 
@@ -20,7 +21,7 @@ func fakeDjangoKey() string {
 	return string(b)
 }
 
-func TestReview2_Found(t *testing.T) {
+func TestRegression_RuleGapsFound(t *testing.T) {
 	pw, v, uuid := fakePassword(), mixed(24), "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
 	envB64 := base64.StdEncoding.EncodeToString([]byte("DB_HOST=db.example.com\nDB_PASSWORD=" + pw + "\nDEBUG=false\n"))
 	dockerCfg := base64.StdEncoding.EncodeToString([]byte(`{"auths":{"registry.example.com":{"username":"me","password":"` + pw + `"}}}`))
@@ -71,7 +72,7 @@ func TestReview2_Found(t *testing.T) {
 
 // What the new forms must keep: words around "pass", help text, prompts, a port before an email,
 // ids under a bare key name.
-func TestReview2_Kept(t *testing.T) {
+func TestRegression_RuleGapsKept(t *testing.T) {
 	for _, in := range []string{
 		"passport=AB1234567X", "compass_heading=north-east-2", "bypass_cache=enabled",
 		"use the --password option to set it",
