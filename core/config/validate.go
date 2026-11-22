@@ -53,6 +53,14 @@ func Validate(cfg *Config) error {
 	if err := cfg.Accounting.Validate(); err != nil {
 		return err
 	}
+	// The block as written: a bad metrics_push block fails config.Load, like every block. The
+	// METRICS_PUSH_* overrides are runtime and are checked again at boot by push.Start, where a
+	// bad METRICS_PUSH_URL only WARNs and turns the push off (MetricsPushConfig.Validate).
+	if cfg.MetricsPush != nil {
+		if err := cfg.MetricsPush.Validate(); err != nil {
+			return err
+		}
+	}
 	return validatePricing(cfg)
 }
 

@@ -777,6 +777,49 @@ coming — compaction, redaction, "what a cheaper model would have cost" — and
 `cost_usd` the record would become half-real and half-hypothetical, which is how someone
 eventually sums two fields that must never be summed.
 
+## Savings metrics
+
+The accountant's figures can also leave the machine as OpenTelemetry counters, pushed to a
+central collector by `metrics_push:` (configured in
+[laptop-service.md](laptop-service.md#the-metrics_push-configuration); off until you set a URL).
+
+**One pricing function.** `llm.savings.*.usd` is priced by the function that prices the
+ledger (`core/accounting.USD`), from the same rate table and the same `pricing:` overrides, at
+the same binding:
+
+- A request's own tokens (saved, added, cache effects, interaction) are priced at the request's
+  model, its endpoint (after any redirect) and its prompt total, as `avoided[].usd` is.
+- An operator's model call (`kind="spend"` on `llm.savings.added.*`) is priced at the call's
+  own model, its own host (the request's endpoint when it names none) and its own prompt total,
+  as `spends[].usd` is (`core/accounting.CallUSD`).
+
+For one request, the pushed saved dollars equal the ledger's savings, and the pushed spend
+dollars equal the ledger's spends, to the micro-dollar. The counters split a saving by tier and
+component, where the ledger keeps one saving per operator; that is a different grouping of the
+same dollars. Three differences remain:
+
+- **A stated cost.** When a call's response stated its cost (`CostUSD`), the ledger records that
+  figure. The counters price the call's tokens instead, because the metrics library does not
+  read `CostUSD`.
+- **A model collision.** The library asks for a rate by model alone, so each model has one
+  binding per request. A spend on the request's own model with another host or prompt size, or
+  two spends on one model with different bindings, are priced at the request's binding.
+- **Attribution of cache effects.** The ledger charges a cache effect to the operator that owns
+  it. The counters break effects down by `effect`, `cause` and `direction` instead, and never
+  add them to saved or added.
+
+Both outputs leave out the same two kinds of spend. A model call made by an operator under
+`on_error: observe` is real spend, but its op is a dry run, and by method a dry run is never
+counted in a total (accountant R12). A call the accountant refused to price (it is listed in
+`llm.savings.unpriced`) has no figure to count. The ledger still records each one in
+`spends[]`, flagged `projected` or `refused`, so you can see it. No spend total and no counter
+includes either.
+
+**Only `basis: usd` is money here too.** A request on a subscription login, or with no
+credential Cortex can read, moves the token counters and `llm.savings.estimated`, never a
+dollar counter. Its usage-limit value comes from `accounting.subscription_weights`, and stays in
+the ledger's `avoidedUnits`.
+
 ## See also
 
 - [`plugin-catalog.md`](plugin-catalog.md) — the plugins that consume these rates:

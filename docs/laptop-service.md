@@ -802,6 +802,52 @@ on (as resolved) when the proxy started with it off; `agentop service restart` a
 A reload that turns it off is accepted: the accountant stays idle until a later reload turns
 it back on.
 
+### The `metrics_push:` configuration
+
+Cortex can push the accountant's savings counters to a central OpenTelemetry collector. **It
+sends nothing until you set a URL.** `agentop setup` does not set one.
+
+```yaml
+metrics_push:
+  enabled: true     # default true, but with no URL nothing is sent
+  url: ""           # the collector's base URL; Cortex posts to <url>/v1/metrics
+  token: ""         # sent as Authorization: Bearer <token>
+  interval: 30s
+```
+
+| Field | Environment override | Default | Meaning |
+|---|---|---|---|
+| `enabled` | `METRICS_PUSH` | `true` | A value that is not a boolean turns the push off. |
+| `url` | `METRICS_PUSH_URL` | *(none)* | Must be `https`. `http` is allowed only to a loopback address. A URL with user info (`https://user:pass@host`) or a query string is refused, because neither is sent: put the credential in `token`. In the file that fails startup; in `METRICS_PUSH_URL` it logs a WARN and turns the push off. |
+| `token` | `METRICS_PUSH_TOKEN` | *(none)* | Never logged. `/config` serves it redacted. |
+| `interval` | `METRICS_PUSH_INTERVAL` | `30s` | How often the counters are pushed. |
+
+What is sent: the `llm.savings.*` counters (tokens saved and added by tier and component, their
+dollar value, cache effects, request and check counts), `llm.proxy.export_failures`, and
+`llm.proxy.info`: a gauge that is always 1, with the build's `version` as its label. It is sent
+on every push, also before the first request, so the central dashboards list an idle machine and
+the `MachineSilent` alert sees when a machine stops pushing. The
+resource carries `service.name=cortex`, `service.version` and `service.instance.id`: a random
+id kept in `~/.cortex/machine-id` (mode 0600), so the collector sees one machine across
+restarts. In a cluster the id is random per process. No prompt, path, host, session or key is
+sent. Dollar counters move only for requests billed per token (an API key); a subscription
+login moves the token counters alone.
+
+The counters are cumulative. A push that fails is counted in `llm.proxy.export_failures`,
+logged as a WARN at most once a minute, and retried by the next push. It never delays or fails
+a request. With no URL the proxy logs one line at startup, `metrics push off`, and opens no
+connection.
+
+A bad block in the config file fails the config load, like any other block: Cortex does not
+start, or a reload is refused. The `METRICS_PUSH*` variables are read at startup; a bad
+`METRICS_PUSH_URL` logs a WARN and turns the push off, and Cortex runs. No error or log line
+quotes the URL's user info or query string, so a credential put there does not leak into the
+log.
+
+The push starts with the accountant, so it needs `accounting` to be on. The block is read
+once at startup: a reload that changes it is refused, and `agentop service restart` applies
+it.
+
 ### The `tls_bridge:` configuration
 
 The TLS bridge terminates agent egress so the outbound plugin pipeline sees

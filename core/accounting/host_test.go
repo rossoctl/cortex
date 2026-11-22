@@ -794,3 +794,23 @@ func TestHost_ComputeRefusesImplausibleUsage(t *testing.T) {
 		})
 	}
 }
+
+// A wedged observation does not hold Close past closeObserveWait: shutdown has a grace period, and
+// an in-memory metric add that never returns must not use it up (review finding).
+func TestHost_CloseDoesNotWaitForAWedgedObservation(t *testing.T) {
+	h := New(Options{})
+	block := make(chan struct{})
+	defer close(block)
+	entered := make(chan struct{})
+	h.observeHook = func(accountant.RequestMeta) { close(entered); <-block }
+	pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{fwd: forwardedBody("hi")}, 200, coldUsage())
+	if _, ok := h.Compute(pctx); !ok {
+		t.Fatal("no Result")
+	}
+	<-entered
+	start := time.Now()
+	_ = h.Close()
+	if d := time.Since(start); d > closeObserveWait+500*time.Millisecond {
+		t.Errorf("Close took %v, want at most about %v", d, closeObserveWait)
+	}
+}
