@@ -82,7 +82,7 @@ exporters:
   # (created-timestamp-zero-ingestion, Prometheus 3.7.0 and later, prometheus#16951).
   # Prometheus, not this exporter, turns the resource attributes into labels: see `otlp:` in
   # prometheus.yml.
-  otlphttp/prometheus:
+  otlp_http/prometheus:
     metrics_endpoint: http://prometheus:9090/api/v1/otlp/v1/metrics
 
 service:
@@ -91,11 +91,11 @@ service:
     metrics/cortex:
       receivers: [otlp/cortex]
       processors: [memory_limiter, transform/cortex, batch]
-      exporters: [otlphttp/prometheus]
+      exporters: [otlp_http/prometheus]
     metrics/contextguru:
       receivers: [otlp/contextguru]
       processors: [memory_limiter, transform/contextguru, batch]
-      exporters: [otlphttp/prometheus]
+      exporters: [otlp_http/prometheus]
   telemetry:
     # The collector's own metrics, for the pipeline alerts. Prometheus scrapes this port.
     metrics:

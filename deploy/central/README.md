@@ -151,6 +151,16 @@ Tested on Docker with Prometheus 3.2.1, 3.6.0, 3.7.0 and 3.16.0 and collector 0.
   So the series stored before the change continue.
 - An existing series gets its 0 at a time older than its last sample. Prometheus drops that 0 as out
   of order, with no error, and the push is accepted.
+- Upgrading Prometheus from 3.2.1 to 3.16.0 on the same volume keeps every series and sample.
+- All 75 dashboard queries run through Grafana 11.6.0 against 3.16.0 with no error, and give the
+  same results as on 3.2.1.
+
+**The limit.** Prometheus stores the 0 only when the start time is inside its appendable window,
+about one hour before its newest sample. The start time is the proxy's process start. So the 0 is
+stored for a series born within about an hour of a start (the series that come back after a
+restart: on 2026-11-19 the only cache break came one minute after a restart). It is silently dropped
+for a series first incremented later (measured: 10 and 50 minutes stored, 2 hours and 2 days not).
+For those, `inc()` in `gen_dashboards.py` still falls back to `last_over_time()`.
 
 **Rollback.** The remote-write receiver is still on. To roll back the collector alone, set its
 exporter back to `prometheusremotewrite` (git history). Rolling back the Prometheus image to 3.2.1
