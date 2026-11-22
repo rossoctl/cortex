@@ -325,6 +325,24 @@ func MicrosOrZero(usd float64) int64 {
 	return m
 }
 
+// SignedMicrosOrZero is MicrosOrZero for a NET figure (a saving minus its penalty), which is
+// allowed to come out negative: a saving whose penalty exceeds it is a real net cost, not a
+// zero. MicrosFromUSD refuses a negative input by design (R29 and the comment on it: that
+// function is for money a party is CHARGED, which cannot be less than zero). This function
+// is for the signed NET figures that sit beside units that are already allowed to go
+// negative (AvoidedUnits - PenaltyUnits) — a floor at zero here would report a net cost as a
+// net gain of nothing, and disagree in sign with the units figure on the same line.
+//
+// It converts the magnitude through MicrosFromUSD (so the same NaN/Inf/MaxCostMicros guards
+// apply) and restores the sign. -0.0 is not negative (`usd < 0` is false for it, same as
+// MicrosFromUSD), so it converts as a settled zero, not a refusal.
+func SignedMicrosOrZero(usd float64) int64 {
+	if usd < 0 {
+		return -MicrosOrZero(-usd)
+	}
+	return MicrosOrZero(usd)
+}
+
 // CostByTier is Cost's arithmetic with the per-tier amounts kept instead of summed away.
 //
 // ONE PASS, ONE `eff`. The alternative is what Settle does for its prompt and output

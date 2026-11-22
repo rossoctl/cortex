@@ -146,6 +146,19 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 			TokensAvoided: 1200,
 			USD:           0.01,
 			Provenance:    "configured",
+			PenaltyUSD:    0.002,
+			Operator:      "tool-prune",
+			OpsVersion:    1,
+			Basis:         "subscriptionEquivalent",
+			Units:         120,
+			PenaltyUnits:  4.5,
+		}},
+		UnattributedBreakUSD: 0.003,
+		Thread:               "main",
+		Spends: []SpendRecord{{
+			ChangeID: "s:1", Operator: "context-guru.extract_llm", Thread: "main", Model: "m", Host: "h",
+			Input: 8000, CacheWrite5m: 1, CacheWrite1h: 2, CacheRead: 3, Output: 1000,
+			USD: 0.04, Basis: "usd", Units: 7, Estimated: true, Projected: true, Refused: true,
 		}},
 	})
 	if err != nil {
@@ -158,7 +171,12 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 		`"tiers":{"input":0.007,"cache_write":0.022,"cache_read":0.3,"output":0.46},` +
 		`"usage_refused":true,"rejected_reason":"implausible",` +
 		`"avoided":[{"component":"tool-prune",` +
-		`"tokensAvoided":1200,"usd":0.01,"provenance":"configured"}]}`
+		`"tokensAvoided":1200,"usd":0.01,"provenance":"configured","penaltyUsd":0.002,` +
+		`"operator":"tool-prune","opsVersion":1,"basis":"subscriptionEquivalent","units":120,` +
+		`"penaltyUnits":4.5}],"unattributed_break_usd":0.003,"thread":"main",` +
+		`"spends":[{"changeId":"s:1","operator":"context-guru.extract_llm","thread":"main","model":"m",` +
+		`"host":"h","input":8000,"cacheWrite5m":1,"cacheWrite1h":2,"cacheRead":3,"output":1000,` +
+		`"usd":0.04,"basis":"usd","units":7,"estimated":true,"projected":true,"refused":true}]}`
 	if string(b) != want {
 		t.Errorf("wire format changed:\n got %s\nwant %s", b, want)
 	}
@@ -187,8 +205,25 @@ func TestTotalAvoidedMicros_ReadsWhatTheProducerActuallyWrites(t *testing.T) {
 	if err := json.Unmarshal([]byte(wire), &ev); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+	// THAT RECORD PREDATES THE ACCOUNTANT and names no basis. settle.Avoided wrote it, and it
+	// priced only dollars, so it counts as "usd" (Saving.EffectiveBasis) — as the ledger rows
+	// written from it already do. The accountant's own bytes, with their basis, count the same.
+	if got, want := ev.TotalAvoidedMicros(), int64(3_880); got != want {
+		t.Errorf("TotalAvoidedMicros = %d for a legacy saving with no basis, want %d", got, want)
+	}
+	const withBasis = `{"cost_usd":0.0526,"source":"usage-fallback","daily_total_usd":0,` +
+		`"daily_max_usd":0,"provenance":"bundled","settled":true,` +
+		`"avoided":[{"component":"tool-prune","tokensAvoided":10210,"usd":0.00388,` +
+		`"provenance":"bundled","tier":"cache_read","penaltyUsd":0.0005,"operator":"tool-prune",` +
+		`"opsVersion":1,"basis":"usd","estimated":true}]}`
+	if err := json.Unmarshal([]byte(withBasis), &ev); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
 	if got, want := ev.TotalAvoidedMicros(), int64(3_880); got != want {
 		t.Errorf("TotalAvoidedMicros = %d, want %d", got, want)
+	}
+	if got, want := ev.TotalPenaltyMicros(), int64(500); got != want {
+		t.Errorf("TotalPenaltyMicros = %d, want %d", got, want)
 	}
 	// The record's own cost is untouched by the saving beside it, which is the invariant the
 	// aggregate rests on, asserted here at the record level where it starts.
@@ -209,7 +244,7 @@ func TestTotalAvoidedMicros_ReadsWhatTheProducerActuallyWrites(t *testing.T) {
 // process.
 func TestEventWireCoversEveryField(t *testing.T) {
 	// Keep in step with the marshal in TestEventJSONTagsArePinned_EveryField.
-	const pinned = 17
+	const pinned = 20
 	if got := reflect.TypeOf(Event{}).NumField(); got != pinned {
 		t.Fatalf("Event has %d fields, %d are pinned on the wire.\n"+
 			"Add the new field to TestEventJSONTagsArePinned_EveryField's marshal AND its "+
@@ -496,4 +531,121 @@ func mustJSON(t *testing.T, ev Event) json.RawMessage {
 		t.Fatalf("marshal: %v", err)
 	}
 	return b
+}
+
+// Penalty sums beside the saving, applied usd savings only, and is never netted or floored: a
+// penalty larger than the saving is two figures, not a clamped zero.
+func TestTotalPenaltyMicros(t *testing.T) {
+	ev := Event{Avoided: []Saving{
+		{Component: "context-guru.mask", Basis: BasisUSD, USD: 0.01, PenaltyUSD: 0.03},
+		{Component: "tool-prune", Basis: BasisUSD, USD: 0.002, PenaltyUSD: 0.001},
+		{Component: "tool-prune", Basis: BasisUSD, USD: 5, PenaltyUSD: 7, Projected: true},
+		{Component: "context-guru.mask", Basis: BasisSubscriptionEquivalent, USD: 1, PenaltyUSD: 2},
+		{Component: "context-guru.mask", Basis: BasisUnknown, USD: 1, PenaltyUSD: 2},
+	}}
+	if got, want := ev.TotalPenaltyMicros(), int64(31_000); got != want {
+		t.Errorf("TotalPenaltyMicros = %d, want %d", got, want)
+	}
+	if got, want := ev.TotalAvoidedMicros(), int64(12_000); got != want {
+		t.Errorf("TotalAvoidedMicros = %d, want %d: gross, not net, not floored", got, want)
+	}
+	if (Event{}).TotalPenaltyMicros() != 0 {
+		t.Error("no saving, nonzero penalty")
+	}
+}
+
+// Only a "usd" saving is money (design §5.7a): a subscriptionEquivalent saving's dollars are
+// what the API would have charged, an unknown one's are unknown, and a saving with no basis
+// predates the accountant and is dollars.
+func TestTotalAvoidedUSD_CountsOnlyUSDBasis(t *testing.T) {
+	ev := Event{Avoided: []Saving{
+		{Component: "tool-prune", Basis: BasisUSD, USD: 0.25},
+		{Component: "tool-prune", Basis: BasisSubscriptionEquivalent, USD: 1, Units: 40},
+		{Component: "tool-prune", Basis: BasisUnknown, USD: 2},
+		{Component: "tool-prune", USD: 4},
+	}}
+	// 0.25 + the legacy no-basis 4, which is dollars (EffectiveBasis).
+	if got := ev.TotalAvoidedUSD(); got != 4.25 {
+		t.Errorf("TotalAvoidedUSD = %v, want 4.25 from the usd and the legacy saving", got)
+	}
+	if (Saving{}).EffectiveBasis() != BasisUSD || (Saving{Basis: BasisUnknown}).EffectiveBasis() != BasisUnknown {
+		t.Error("EffectiveBasis does not read an empty basis as usd, or rewrites a set one")
+	}
+}
+
+// Figures splits a record's savings and spends by basis, each into its own field, and only
+// applied savings count.
+func TestFigures_SplitsByBasis(t *testing.T) {
+	ev := Event{
+		Avoided: []Saving{
+			{Basis: BasisUSD, USD: 0.25, PenaltyUSD: 0.05},
+			{Basis: BasisSubscriptionEquivalent, USD: 1, Units: 40.5, PenaltyUnits: 2.25},
+			{Basis: BasisSubscriptionEquivalent, USD: 9, Units: 900, Projected: true},
+			{Basis: BasisUnknown, USD: 2, PenaltyUSD: 1},
+		},
+		Spends: []SpendRecord{
+			{Basis: BasisUSD, USD: 0.01},
+			{Basis: BasisSubscriptionEquivalent, USD: 0.5, Units: 7},
+			{Basis: BasisUnknown, USD: 0.03},
+			{USD: 99},
+			// A dry run's call and a call the library refused to price stay visible as records,
+			// and enter no total (accountant R12; Cortex design, fix round 2).
+			{Basis: BasisUSD, USD: 5, Projected: true},
+			{Basis: BasisSubscriptionEquivalent, USD: 5, Units: 500, Projected: true},
+			{Basis: BasisUnknown, USD: 5, Projected: true},
+			{Basis: BasisUSD, USD: 6, Refused: true},
+			{Basis: BasisSubscriptionEquivalent, USD: 6, Units: 600, Refused: true},
+			{Basis: BasisUnknown, USD: 6, Refused: true},
+		},
+	}
+	want := Figures{
+		AvoidedMicros: 250_000, PenaltyMicros: 50_000,
+		AvoidedUnits: 40_500, PenaltyUnits: 2_250, AvoidedAPIEquivalentMicros: 1_000_000,
+		// Net of its penalty, 2 - 1: an unknown-basis penalty went nowhere when this was gross.
+		AvoidedUnknownMicros: 1_000_000,
+		PluginSpendMicros:    10_000, PluginSpendUnits: 7_000, PluginSpendUnknownMicros: 30_000,
+	}
+	if got := ev.Figures(); got != want {
+		t.Errorf("Figures = %+v\nwant %+v", got, want)
+	}
+	if !(Event{}).Figures().IsZero() {
+		t.Error("an empty record has figures")
+	}
+}
+
+// A penalty bigger than the saving is a real net cost: AvoidedAPIEquivalentMicros and
+// AvoidedUnknownMicros must go negative, the same way PenaltyUnits already can exceed
+// AvoidedUnits on the same line (review finding: both used to floor at 0 via MicrosOrZero,
+// which reported a net cost as a net gain of nothing and disagreed in sign with the units
+// figure beside it).
+func TestFigures_NegativeNetIsNegative(t *testing.T) {
+	ev := Event{
+		Avoided: []Saving{
+			{Basis: BasisSubscriptionEquivalent, USD: 0.10, PenaltyUSD: 0.40, Units: 1, PenaltyUnits: 5},
+			{Basis: BasisUnknown, USD: 0.10, PenaltyUSD: 0.40},
+		},
+	}
+	got := ev.Figures()
+	if got.AvoidedAPIEquivalentMicros != -300_000 {
+		t.Errorf("AvoidedAPIEquivalentMicros = %d, want -300000", got.AvoidedAPIEquivalentMicros)
+	}
+	if got.AvoidedUnknownMicros != -300_000 {
+		t.Errorf("AvoidedUnknownMicros = %d, want -300000", got.AvoidedUnknownMicros)
+	}
+	// The units figure on the same line was already allowed to go negative; the two must agree
+	// in sign, not just both be "small".
+	if got.PenaltyUnits-got.AvoidedUnits <= 0 {
+		t.Errorf("units net is not negative: avoided=%d penalty=%d", got.AvoidedUnits, got.PenaltyUnits)
+	}
+}
+
+func TestMilliUnits(t *testing.T) {
+	for _, tc := range []struct {
+		in   float64
+		want int64
+	}{{0, 0}, {1.2345, 1235}, {-1, 0}, {math.NaN(), 0}, {math.Inf(1), 0}, {1e20, 0}} {
+		if got := MilliUnits(tc.in); got != tc.want {
+			t.Errorf("MilliUnits(%v) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
 }

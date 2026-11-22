@@ -592,7 +592,7 @@ func main() {
 		if !acctDecided {
 			acctDecided = true
 			if c.AccountingOn() {
-				acctHost = newAccountingHost(pricingRegistry)
+				acctHost = newAccountingHost(c, pricingRegistry)
 			}
 		}
 		inDeps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry, Store: pluginStore, History: history, Listener: reverseproxy.Support(), LocalInstall: localInstall}
@@ -1440,6 +1440,7 @@ func main() {
 	if sessions != nil {
 		sessions.Close()
 	}
+
 	slog.Info("stopped", "took", time.Since(stopping).Round(time.Millisecond))
 }
 

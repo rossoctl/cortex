@@ -460,8 +460,8 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		// so the struct copy keeps it; asserted above.
 		// 36 since Source, TIMELINE data: agentop marks an imported row by it (#1871). A
 		// scalar, so the struct copy keeps it; asserted above.
-		// 38 since ParentSession and ParentProject, TIMELINE data: a reader files the row
-		// under RollupProject (#1991). Scalars, so the struct copy keeps them; asserted above.
+		// 37 and 38 since ParentSession and ParentProject, TIMELINE data: a reader files the
+		// row under RollupProject (#1991). Scalars, so the struct copy keeps them; asserted above.
 		// 39 since NoRecord, TIMELINE data: it marks a row of a withheld session (#1923). A
 		// scalar, so the struct copy keeps it; asserted above.
 		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 39},

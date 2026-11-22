@@ -209,7 +209,7 @@ func TestSnapshot_ASavingOnAnUnpricedRequestNamesItsUnit(t *testing.T) {
 	now := time.Now().Truncate(BucketWidth)
 	a := New(WithClock(func() time.Time { return now }))
 	a.Record("s1", withCostRecord(t, plainResponse(now, nil), event.Event{Currency: "Bobcoins",
-		Avoided: []event.Saving{{Component: "tool-prune", USD: 0.5}}}))
+		Avoided: []event.Saving{{Basis: event.BasisUSD, Component: "tool-prune", USD: 0.5}}}))
 	if got := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone).Currencies; !slices.Equal(got, []string{"Bobcoins"}) {
 		t.Errorf("Currencies = %v, want [Bobcoins]", got)
 	}
