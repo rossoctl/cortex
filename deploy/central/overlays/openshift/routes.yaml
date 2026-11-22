@@ -1,0 +1,64 @@
+# Edge TLS on the router, with the cluster's default certificate (a public wildcard for
+# *.apps.epoc001.ete14.res.ibm.com). Prometheus and Alertmanager get no Route.
+#
+# The two collector Routes share one host and split by path, so proxies keep the URL scheme of
+# the old VM stack: https://<host>/cortex and https://<host>/context-guru. The router strips the
+# path prefix (rewrite-target), so a push to /cortex/v1/metrics reaches the receiver as
+# /v1/metrics. Plain http is refused, not redirected: a proxy must never push in the clear.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: collector-cortex
+  labels:
+    app.kubernetes.io/name: otel-collector
+  annotations:
+    haproxy.router.openshift.io/rewrite-target: /
+spec:
+  host: cortex-central.apps.epoc001.ete14.res.ibm.com
+  path: /cortex
+  to:
+    kind: Service
+    name: otel-collector
+  port:
+    targetPort: otlp-cortex
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: None
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: collector-context-guru
+  labels:
+    app.kubernetes.io/name: otel-collector
+  annotations:
+    haproxy.router.openshift.io/rewrite-target: /
+spec:
+  host: cortex-central.apps.epoc001.ete14.res.ibm.com
+  path: /context-guru
+  to:
+    kind: Service
+    name: otel-collector
+  port:
+    targetPort: otlp-cg
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: None
+---
+# Grafana has its own login; no sign-up, no anonymous access.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: grafana
+  labels:
+    app.kubernetes.io/name: grafana
+spec:
+  host: grafana-cortex-central.apps.epoc001.ete14.res.ibm.com
+  to:
+    kind: Service
+    name: grafana
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

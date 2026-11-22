@@ -173,7 +173,7 @@ What used to live under `authbridge/` is the repo root.
 | `praxis/` | Rust workspace for praxis mode: `cortex-praxis-filters` and the `cortex-gateway` binary. Outside `go.work`. See #1714 |
 | `docs/` | Plugin and framework reference ([`docs/README.md`](docs/README.md) is the index). `docs/superpowers/{plans,specs}/` holds dated design records and is **still written to** |
 | `scripts/` | `install.sh` (laptop installer), `keycloak_sync.py` (scope mappings from `routes.yaml`), `profile-tags/` (build-tag profiles), `hooks/commit-msg`, `dev/` |
-| `deploy/` | `proxy-init/` (iptables init container), `sparc-service/`, `lineage-attach/` |
+| `deploy/` | `proxy-init/` (iptables init container), `sparc-service/`, `lineage-attach/`, `central/` (the central metrics stack on OpenShift: collector, Prometheus, Alertmanager, Grafana) |
 | `tests/` | Python tests |
 
 ## AuthBridge Binaries

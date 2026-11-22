@@ -1,0 +1,37 @@
+# Prometheus for the central metrics stack.
+#
+# It RECEIVES data by OTLP from the collector (--web.enable-otlp-receiver), and stores the 0 a counter
+# starts from at its OTLP start time (--enable-feature=created-timestamp-zero-ingestion), so
+# increase() counts the first sample of a new series. The remote-write receiver stays on only so the
+# collector can be rolled back on its own; nothing writes to it. It
+# scrapes no proxy: the proxies push, so no machine needs an open port (spec R15, R22). It scrapes
+# only the stack's own parts, so an alert can say that the pipeline itself is down.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 30s
+
+# The collector keeps only these resource attributes (transform/* in otel-collector.yml). They become
+# labels here, as the remote-write exporter's resource_to_telemetry_conversion made them before:
+# machine, preset, service_version, proxy. Keep the two lists the same.
+otlp:
+  promote_resource_attributes: [machine, preset, service.version, proxy]
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+  - job_name: otel-collector
+    static_configs:
+      - targets: ['otel-collector:8888']
+  - job_name: alertmanager
+    static_configs:
+      - targets: ['alertmanager:9093']

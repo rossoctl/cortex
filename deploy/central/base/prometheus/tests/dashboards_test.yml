@@ -1,0 +1,176 @@
+# Unit tests for the dashboard ratio queries, run with promtool (simulated time):
+#   promtool test rules tests/dashboards_test.yml
+# The expressions are the cache and fleet dashboards', with the Grafana variables filled in: $proxy and
+# $machine as ".*" (All), $__range as 1h. grafana/test_gen_dashboards.py fails if an expression
+# here is not one that gen_dashboards.py writes, so these tests cannot drift from the dashboards.
+#
+# Why: on 2026-11-19 a ratio divided by clamp_min(<zero>, 1e-9) and showed 1164430250x and
+# 25753309759.6%. A zero divisor must show no data, not its numerator times a billion (ratio()).
+# The zero divisor itself came from increase() undercounting a counter born inside the selected
+# range: it started at 0, but increase() does not know that and extrapolated it to 0 from a flat
+# history. inc()'s new_series_fallback fixes that undercount at the source: a series with no
+# earlier sample falls back to last_over_time(), which for a counter that started at 0 inside the
+# window IS its total.
+
+evaluation_interval: 1m
+
+tests:
+  # ---- The 2026-11-19 incident, replayed with the fix -------------------------------------------
+  # The same shape of data as the incident: cost_usd is created mid-range, already warm, with no
+  # earlier sample at all — increase() alone sees that and undercounts it to 0. estimated_cost_usd
+  # carries a real history from before the range (it survived the old build's restart, a counter
+  # reset increase() already compensates for on its own). The window is evaluated at 70m, well
+  # past its own start, so "offset 1h" cannot mistake "before this synthetic clock began" for
+  # "genuinely had no earlier sample" (a different series, below, nails that boundary down).
+  - name: a ping-cost counter born inside the range uses its own value, not increase()'s undercount
+    interval: 1m
+    input_series:
+      - series: 'llm_keepalive_cost_usd_total{proxy="cortex",machine="m1",model="m"}'
+        values: '_x60 0.0137x10'
+      - series: 'llm_keepalive_estimated_cost_usd_total{proxy="cortex",machine="m1",model="m"}'
+        values: '0.0129x10 0.0258x50 0.0137x10'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="rescue",direction="saved"}'
+        values: '0+0.02x69'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="rescue",direction="added"}'
+        values: '0+0.001x69'
+    promql_expr_test:
+      # Pings that paid: rescue net over the range, divided by the ping cost's own last value
+      # (0.0137, its only sample): a real, finite ratio, not "no data" and nowhere near a billion.
+      - eval_time: 70m
+        expr: '(sum((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1h]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1d] offset 1h)) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1h]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1h])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1h])) - sum((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1h]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1d] offset 1h)) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1h]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1h])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1h]))) / ((sum((increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) and last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1d] offset 1h)) or (increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) >= last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h])) or last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]))) > 0)'
+        exp_samples:
+          - labels: '{}'
+            value: 83.21167883211685
+      # Estimated ping cost: the estimated series existed before the window and keeps plain
+      # increase() (reset-compensated); the ping-cost series falls back to its last value, 0.0137.
+      # Neither reads as a billion-fold ratio.
+      - eval_time: 70m
+        expr: 'sum((increase(llm_keepalive_estimated_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) and last_over_time(llm_keepalive_estimated_cost_usd_total{proxy=~".*", machine=~".*"}[1d] offset 1h)) or (increase(llm_keepalive_estimated_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) >= last_over_time(llm_keepalive_estimated_cost_usd_total{proxy=~".*", machine=~".*"}[1h])) or last_over_time(llm_keepalive_estimated_cost_usd_total{proxy=~".*", machine=~".*"}[1h])) / ((sum((increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) and last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1d] offset 1h)) or (increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) >= last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h])) or last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]))) > 0)'
+        exp_samples:
+          - labels: '{}'
+            value: 1.0169491525423728
+
+  # ---- A counter with real zero activity for the whole range still shows no data ----------------
+  # Unlike the series above, this one existed before the window and never changed inside it: the
+  # "existed" check is true, increase() runs as normal and legitimately returns 0 (no pings cost
+  # anything), and ratio() still turns that zero divisor into no data, not a billion.
+  - name: a ping cost that genuinely did not increase still gives no data, not a billion
+    interval: 1m
+    input_series:
+      - series: 'llm_keepalive_cost_usd_total{proxy="cortex",machine="m1",model="m"}'
+        values: '0.05x61'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="rescue",direction="saved"}'
+        values: '0+0.02x60'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="rescue",direction="added"}'
+        values: '0+0.001x60'
+    promql_expr_test:
+      - eval_time: 60m
+        expr: '(sum((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1h]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1d] offset 1h)) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1h]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1h])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1h])) - sum((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1h]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1d] offset 1h)) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1h]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1h])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1h]))) / ((sum((increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) and last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1d] offset 1h)) or (increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) >= last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h])) or last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]))) > 0)'
+        exp_samples: []
+
+  # ---- The normal case: the ratios still compute -------------------------------------------------
+  # Every series here existed from the start of the window, so the fallback never engages and the
+  # ratios are exactly what they were before the fallback was added.
+  - name: a ping cost that increased gives the true ratios
+    interval: 1m
+    input_series:
+      - series: 'llm_keepalive_cost_usd_total{proxy="cortex",machine="m1",model="m"}'
+        values: '0+1x60'
+      - series: 'llm_keepalive_estimated_cost_usd_total{proxy="cortex",machine="m1",model="m"}'
+        values: '0+0.5x60'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="rescue",direction="saved"}'
+        values: '0+3x60'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="rescue",direction="added"}'
+        values: '0+1x60'
+    promql_expr_test:
+      # Pings that paid: (3 - 1) / 1 = 2
+      - eval_time: 60m
+        expr: '(sum((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1h]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1d] offset 1h)) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1h]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1h])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="saved"}[1h])) - sum((increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1h]) and last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1d] offset 1h)) or (increase(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1h]) >= last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1h])) or last_over_time(llm_savings_cache_effect_usd_total{proxy=~".*", machine=~".*",effect="rescue",direction="added"}[1h]))) / ((sum((increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) and last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1d] offset 1h)) or (increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) >= last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h])) or last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]))) > 0)'
+        exp_samples:
+          - labels: '{}'
+            value: 2
+      # Estimated ping cost: 0.5 / 1 = 0.5
+      - eval_time: 60m
+        expr: 'sum((increase(llm_keepalive_estimated_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) and last_over_time(llm_keepalive_estimated_cost_usd_total{proxy=~".*", machine=~".*"}[1d] offset 1h)) or (increase(llm_keepalive_estimated_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) >= last_over_time(llm_keepalive_estimated_cost_usd_total{proxy=~".*", machine=~".*"}[1h])) or last_over_time(llm_keepalive_estimated_cost_usd_total{proxy=~".*", machine=~".*"}[1h])) / ((sum((increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) and last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1d] offset 1h)) or (increase(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]) >= last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h])) or last_over_time(llm_keepalive_cost_usd_total{proxy=~".*", machine=~".*"}[1h]))) > 0)'
+        exp_samples:
+          - labels: '{}'
+            value: 0.5
+
+  # ---- A series with no cause label is named, not shown as "Value" ------------------------------
+  # An older cortex build pushes llm_cache_misses_total with no cause label; context-guru pushes it with one.
+  - name: a miss with no cause label is shown as unattributed
+    interval: 1m
+    input_series:
+      - series: 'llm_cache_misses_total{proxy="cortex",machine="m1",model="m"}'
+        values: '0+1x60'
+      - series: 'llm_cache_misses_total{proxy="context-guru",machine="m2",model="m",cause="ttl"}'
+        values: '0+2x60'
+    promql_expr_test:
+      - eval_time: 60m
+        expr: 'label_replace(sum by (cause)(rate(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m])), "cause", "unattributed", "cause", "") * 3600'
+        exp_samples:
+          - labels: '{cause="unattributed"}'
+            value: 60
+          - labels: '{cause="ttl"}'
+            value: 120
+
+  # ---- NET SAVED adds the cache effects and the interaction --------------------------------------
+  # accountant docs/metrics/metrics.md, "The net saving": no counter contains another, so the net is
+  # the operations plus the cache effects plus the interaction. Before this, the net left out the
+  # effects: the keeper's ping (a spend, in added) showed as a cost, and its rescue nowhere.
+  # Per hour: ops saved 0.60, ping 0.30, rescue 1.20 saved and 0.06 added, a break 0.12 added,
+  # interaction 0.03 saved. Net = 0.60 + 1.20 + 0.03 - (0.30 + 0.06 + 0.12) = 1.35 (the old query: 0.30).
+  - name: net saved includes the cache effects and the interaction
+    interval: 1m
+    input_series:
+      - series: 'llm_savings_saved_usd_total{proxy="cortex",machine="m1",component="searchfold",kind="rewrite",tier="cache_read"}'
+        values: '0+0.01x69'
+      - series: 'llm_savings_added_usd_total{proxy="cortex",machine="m1",component="keeper",kind="spend",tier="cache_read"}'
+        values: '0+0.005x69'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="rescue",cause="none",direction="saved"}'
+        values: '0+0.02x69'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="rescue",cause="none",direction="added"}'
+        values: '0+0.001x69'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="break",cause="none",direction="added"}'
+        values: '0+0.002x69'
+      - series: 'llm_savings_interaction_usd_total{proxy="cortex",machine="m1",direction="saved"}'
+        values: '0+0.0005x69'
+    promql_expr_test:
+      - eval_time: 70m
+        expr: '(sum((increase({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h]) and last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1d] offset 1h)) or (increase({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h]) >= last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h])) or last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h])) - sum((increase({proxy=~".*", machine=~".*",__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|"}[1h]) and last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|"}[1d] offset 1h)) or (increase({proxy=~".*", machine=~".*",__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|"}[1h]) >= last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|"}[1h])) or last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|"}[1h])))'
+        exp_samples:
+          - labels: '{}'
+            value: 1.350000000000001
+
+  # ---- inc(): a series born inside the range that then resets ------------------------------------
+  # Born at 20m with 1, grows to 10, the proxy restarts at 30m, grows again to 39. True total 49.
+  # last_over_time() holds only the part since the reset (39). increase() handles the reset and
+  # loses only the first sample. inc() takes the larger (2026-11-19, the rescue series).
+  - name: a born series that reset counts both parts, not only the part since the reset
+    interval: 1m
+    input_series:
+      - series: 'llm_savings_saved_usd_total{proxy="cortex",machine="m1",component="c",kind="rewrite",tier="cache_read"}'
+        values: '_x20 1+1x9 0+1x39'
+    promql_expr_test:
+      - eval_time: 70m
+        expr: 'sum((increase({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h]) and last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1d] offset 1h)) or (increase({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h]) >= last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h])) or last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h]))'
+        exp_samples:
+          - labels: '{}'
+            value: 49.469387755102034
+
+  # ---- inc(): an old series after a push outage at the range start --------------------------------
+  # Samples 0..3 at 0-3m, then no push until 20m (a laptop off the VPN), then 15..64. At the range
+  # start (10m) the last sample is 7m old, past Prometheus's 5m lookback. inc() still sees it in its
+  # 1d lookback, so it keeps increase() (49 and some extrapolation). Treated as born, it read 64:
+  # the history from before the range.
+  - name: an old series with a push outage at the range start keeps increase()
+    interval: 1m
+    input_series:
+      - series: 'llm_savings_saved_usd_total{proxy="cortex",machine="m1",component="c",kind="rewrite",tier="cache_read"}'
+        values: '0+1x3 _x16 15+1x49'
+    promql_expr_test:
+      - eval_time: 70m
+        expr: 'sum((increase({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h]) and last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1d] offset 1h)) or (increase({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h]) >= last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h])) or last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h]))'
+        exp_samples:
+          - labels: '{}'
+            value: 50.49999999999999
