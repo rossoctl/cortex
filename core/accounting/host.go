@@ -23,6 +23,9 @@ import (
 // saving rather than held (global constraint: accounting never delays past 2s).
 const computeWait = 2 * time.Second
 
+// closeObserveWait bounds how long Close waits for the sink's in-flight observations.
+const closeObserveWait = 2 * time.Second
+
 // pendingKey is the pctx state key RequestEnd stores a request's handle under, for Compute.
 const pendingKey = "accounting.pending"
 
@@ -57,6 +60,9 @@ type Options struct {
 	// SubscriptionWeights value a saving on a subscription login in usage-limit units
 	// (accounting.subscription_weights). Nil means config.DefaultSubscriptionWeights.
 	SubscriptionWeights *config.SubscriptionWeights
+	// Sink receives each computed request's Result, once, and each keep-alive ping's, for the
+	// llm.savings.* counters (design §5.10). Nil means no metrics.
+	Sink *Sink
 }
 
 // Host is Cortex's accountant host: one per process, shared by every pipeline a reload builds,
@@ -72,6 +78,9 @@ type Host struct {
 	resolver pricing.Resolver
 	now      func() time.Time
 	weights  config.SubscriptionWeights
+	sink     *Sink
+	// observing counts the sink observations still running (observe); Close waits for them.
+	observing sync.WaitGroup
 
 	snapshotPath string
 	stop         chan struct{}
@@ -87,7 +96,12 @@ type Host struct {
 	closeOnce      sync.Once
 	closeErr       error
 
-	mu            sync.Mutex
+	mu sync.Mutex
+	// closed is set under mu by Close, before it calls observing.Wait(): observe's own Add(1)
+	// is also under mu, so the two can never interleave, and no Add can land after Wait has
+	// started (review finding — Add concurrent with Wait on a zero-count WaitGroup is
+	// documented misuse, which a keeper Ping or an in-flight observe racing shutdown could hit).
+	closed        bool
 	recorders     []session.Recorder
 	threadBilling map[threadBillingKey]threadBillingEntry
 	// pingFacts holds the latest keep-alive ping's facts per (session, thread), until the
@@ -111,6 +125,8 @@ type Host struct {
 	metaHook    func(meta accountant.RequestMeta)
 	factsHook   func(f accountant.EntryFacts)
 	usageHook   func(u accountant.Usage)
+	// observeHook sees the RequestMeta of each observation, on its goroutine, before the sink.
+	observeHook func(meta accountant.RequestMeta)
 }
 
 // threadBillingKey keys Host.threadBilling: a thread id is only unique within its session.
@@ -142,6 +158,7 @@ func New(o Options) *Host {
 		recorders:    append([]session.Recorder(nil), o.CostRecorders...),
 		stop:         make(chan struct{}),
 		weights:      config.DefaultSubscriptionWeights(),
+		sink:         o.Sink,
 	}
 	if o.SubscriptionWeights != nil {
 		h.weights = *o.SubscriptionWeights
@@ -174,6 +191,24 @@ func (h *Host) Close() error {
 		return nil
 	}
 	h.closeOnce.Do(func() {
+		// Set before Wait, under the same lock observe's Add(1) takes: no observe call started
+		// after this point can race Wait below (see Host.closed's doc comment).
+		h.mu.Lock()
+		h.closed = true
+		h.mu.Unlock()
+		// The sink's observations first: they are in-memory adds, done in microseconds, and the
+		// caller flushes the metrics push after Close. BOUNDED: a wedged Sink.Observe must not
+		// hold process shutdown past the supervisor's stop grace (review finding). Past
+		// closeObserveWait the observations still running are abandoned, and their counts are
+		// not in the final push.
+		observed := make(chan struct{})
+		go func() { h.observing.Wait(); close(observed) }()
+		select {
+		case <-observed:
+		case <-time.After(closeObserveWait):
+			slog.Warn("accounting: observations still running at shutdown were abandoned; the final metrics push is short",
+				"wait", closeObserveWait)
+		}
 		close(h.stop)
 		h.saver.Wait()
 		if h.snapshotPath != "" {
@@ -202,6 +237,11 @@ type pending struct {
 	ping       threadBillingKey
 	pingWindow string
 	pinged     bool
+	// meta is the RequestMeta the record was begun with, for the sink.
+	meta accountant.RequestMeta
+	// firstOnThread is true when RequestEnd had no earlier request of this (session, thread),
+	// for the cold_start cause of llm.cache.misses (missCause).
+	firstOnThread bool
 
 	computeMu sync.Mutex
 	computed  bool
@@ -283,11 +323,11 @@ func (h *Host) RequestEnd(pctx *pipeline.Context) {
 		Billing:   billing,
 	}
 	thread := ThreadOf(pctx)
-	h.setThreadBilling(pctx.SessionID, thread.ID, billing.Mode)
+	seen := h.setThreadBilling(pctx.SessionID, thread.ID, billing.Mode)
 	if h.metaHook != nil {
 		h.metaHook(meta)
 	}
-	p := &pending{done: make(chan struct{})}
+	p := &pending{done: make(chan struct{}), meta: meta, firstOnThread: !seen}
 	pipeline.SetState(pctx, pendingKey, p)
 	go h.end(p, format, meta, client, forwarded, ops, thread, facts.Classify(pctx.Path))
 }
@@ -309,18 +349,23 @@ func (h *Host) ThreadBilling(session, thread string) accountant.Billing {
 }
 
 // setThreadBilling records mode as thread's last-seen billing mode, and trims the map if that
-// pushed it over threadBillingCap. Runs on the request goroutine, inside RequestEnd.
-func (h *Host) setThreadBilling(session, thread string, mode accountant.BillingMode) {
+// pushed it over threadBillingCap. Runs on the request goroutine, inside RequestEnd. seen says
+// whether the thread already had an entry: the check and the write are under one lock, so two
+// concurrent requests cannot both be the thread's first.
+func (h *Host) setThreadBilling(session, thread string, mode accountant.BillingMode) (seen bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.threadBilling == nil {
 		h.threadBilling = map[threadBillingKey]threadBillingEntry{}
 	}
-	h.threadBilling[threadBillingKey{session: session, thread: thread}] = threadBillingEntry{
+	key := threadBillingKey{session: session, thread: thread}
+	_, seen = h.threadBilling[key]
+	h.threadBilling[key] = threadBillingEntry{
 		mode:     mode,
 		lastSeen: h.now(),
 	}
 	h.trimThreadBillingLocked()
+	return seen
 }
 
 // trimThreadBillingLocked drops the (session, thread) pairs seen longest ago, down to
@@ -480,6 +525,15 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 	if p.ok && p.pinged {
 		h.dropPing(p.ping.session, p.ping.thread, p.pingWindow)
 	}
+	if p.ok {
+		// Once per request: Compute is latched above. Priced at the endpoint and prompt total
+		// Host.Savings prices the ledger's figure at, so the two agree.
+		endpoint := pctx.Host
+		if _, redirected, ok := pctx.RedirectTarget(); ok {
+			endpoint = redirected
+		}
+		h.observe(p.meta, usage, inf.OutputTokens, p.result, endpoint, pricing.UsageFromInference(inf).PromptTotal(), p.firstOnThread)
+	}
 	return p.result, p.ok
 }
 
@@ -511,6 +565,10 @@ func (h *Host) computeSafe(req *accountant.Request, u accountant.Usage) (res acc
 	return req.Compute(u), true
 }
 
+// modelChangePrefix starts the ChangeID of every modelChangeOp, so missCause can tell a break a
+// plugin's model change caused from any other.
+const modelChangePrefix = "model:"
+
 // modelChangeOp is the setting op for a plugin that changed the model (SetRequestModel): the
 // change is not a body edit the library can see by comparing positions, and it starts at the
 // first position, because a model change invalidates the whole cached prefix (cached-prefix.md).
@@ -533,7 +591,7 @@ func modelChangeOp(pctx *pipeline.Context, from, to string) (accountant.Operatio
 	return accountant.Operation{
 		Kind:     accountant.KindSetting,
 		Operator: operator,
-		ChangeID: "model:" + from + "->" + to,
+		ChangeID: modelChangePrefix + from + "->" + to,
 		Settings: map[string]accountant.SettingChange{"model": {
 			From: &from,
 			To:   &to,

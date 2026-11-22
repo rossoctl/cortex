@@ -2,6 +2,11 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/rossoctl/cortex/core/pipeline"
 	"gopkg.in/yaml.v3"
@@ -155,4 +160,143 @@ func HasContextOperator(c *Config) bool {
 // the accountant.
 func (c *Config) AccountingOn() bool {
 	return c.Accounting.On(HasContextOperator(c))
+}
+
+// MetricsPushConfig is the top-level `metrics_push:` block: where Cortex pushes the accountant's
+// llm.savings.* counters, over OTLP/HTTP, to the central collector (design §5.10).
+//
+//	metrics_push:
+//	  enabled: true     # default true, but with no URL nothing is sent
+//	  url: ""           # no default; METRICS_PUSH_URL overrides
+//	  token: ""         # METRICS_PUSH_TOKEN; sent as Authorization: Bearer <token>
+//	  interval: 30s     # METRICS_PUSH_INTERVAL
+//
+// There is no default URL, and `agentop setup` sets none: nothing leaves the machine until the
+// user names a collector. The block is the same in a cluster and on a laptop.
+//
+// NOT HOT-RELOADABLE: the push is started once at boot, so a reload that changes the block is
+// refused (reloader.validateReloadable), as for listener.*. The token is never logged; /config
+// serves it redacted (core/redact matches the key "token").
+type MetricsPushConfig struct {
+	// Enabled is nil for the default, true.
+	Enabled *bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	// URL is the collector's base URL; the exporter posts to <url>/v1/metrics. https, or http
+	// to a loopback address only.
+	URL string `yaml:"url,omitempty" json:"url,omitempty"`
+	// Token is the collector's bearer token. Empty sends no Authorization header.
+	Token string `yaml:"token,omitempty" json:"token,omitempty"`
+	// Interval is how often the counters are pushed. Zero means DefaultMetricsPushInterval.
+	Interval time.Duration `yaml:"interval,omitempty" json:"interval,omitempty"`
+}
+
+// DefaultMetricsPushInterval is metrics_push.interval when the block and the environment leave
+// it unset.
+const DefaultMetricsPushInterval = 30 * time.Second
+
+// Resolve returns the block with the environment applied: METRICS_PUSH (a boolean),
+// METRICS_PUSH_URL, METRICS_PUSH_TOKEN and METRICS_PUSH_INTERVAL (a Go duration) override the
+// file, and an unset interval becomes DefaultMetricsPushInterval. Safe on a nil receiver; the
+// receiver is not changed.
+//
+// A METRICS_PUSH that is not a boolean turns the push off, so a typo never sends anything. A
+// METRICS_PUSH_INTERVAL that is not a positive duration keeps the configured interval.
+func (m *MetricsPushConfig) Resolve(env func(string) string) MetricsPushConfig {
+	var out MetricsPushConfig
+	if m != nil {
+		out = *m
+		if m.Enabled != nil {
+			v := *m.Enabled
+			out.Enabled = &v
+		}
+	}
+	if env == nil {
+		env = func(string) string { return "" }
+	}
+	if v := strings.TrimSpace(env("METRICS_PUSH")); v != "" {
+		on, err := strconv.ParseBool(v)
+		if err != nil {
+			on = false
+		}
+		out.Enabled = &on
+	}
+	if v := strings.TrimSpace(env("METRICS_PUSH_URL")); v != "" {
+		out.URL = v
+	}
+	if v := env("METRICS_PUSH_TOKEN"); v != "" {
+		out.Token = v
+	}
+	if v := strings.TrimSpace(env("METRICS_PUSH_INTERVAL")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			out.Interval = d
+		}
+	}
+	if out.Interval == 0 {
+		out.Interval = DefaultMetricsPushInterval
+	}
+	return out
+}
+
+// IsEnabled is Enabled with its default, true.
+func (m MetricsPushConfig) IsEnabled() bool { return m.Enabled == nil || *m.Enabled }
+
+// On reports whether anything is pushed: enabled, and a URL to push to.
+func (m MetricsPushConfig) On() bool { return m.IsEnabled() && m.URL != "" }
+
+// Validate refuses a URL that is not https, other than http to a loopback address, a URL with
+// user info or a query string (neither is sent: the credential belongs in Token), and a
+// negative interval. An empty URL is valid: nothing is pushed. The error never quotes the token,
+// and quotes the URL only as SafeURL gives it.
+//
+// WHERE A BAD BLOCK IS CAUGHT: the block as written in the YAML is checked by config.Validate,
+// so a bad one fails config.Load like any other block. The METRICS_PUSH_* environment is applied
+// at runtime (Resolve) and checked again by push.Start; a bad METRICS_PUSH_URL only WARNs and
+// turns the push off, and the proxy runs (accounting fails open).
+func (m MetricsPushConfig) Validate() error {
+	if m.Interval < 0 {
+		return fmt.Errorf("metrics_push.interval: %v is negative", m.Interval)
+	}
+	if m.URL == "" {
+		return nil
+	}
+	u, err := url.Parse(m.URL)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("metrics_push.url: %q is not an absolute URL", SafeURL(m.URL))
+	}
+	// The exporter posts to SafeURL(url), which drops both, so a credential there would be lost
+	// on the way out and the collector would answer 401 with nothing to say why.
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery {
+		return fmt.Errorf("metrics_push.url: %q carries user info or a query string, which are not sent; "+
+			"put the collector's credential in metrics_push.token (METRICS_PUSH_TOKEN)", SafeURL(m.URL))
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackHost(u.Hostname()) {
+			return nil
+		}
+		return fmt.Errorf("metrics_push.url: %q is http to a non-loopback host; use https", SafeURL(m.URL))
+	}
+	return fmt.Errorf("metrics_push.url: scheme %q is not https", u.Scheme)
+}
+
+// SafeURL is u with no user info, query or fragment: scheme, host and path at most, the only
+// parts of a metrics_push.url that may reach an error or a log. A credential can hide in the
+// user info ("https://user:pass@host") or the query ("?token=..."). An unparseable URL gives a
+// placeholder, never the input.
+func SafeURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "<unparseable URL>"
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
+}
+
+// isLoopbackHost is true for localhost and for a loopback IP literal.
+func isLoopbackHost(h string) bool {
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
