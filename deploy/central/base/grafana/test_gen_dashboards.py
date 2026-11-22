@@ -126,13 +126,29 @@ class MoneyTrendTest(unittest.TestCase):
             self.assertIn(filled(t["expr"]), tested, t["legendFormat"])
 
 
+class CountTrendTest(unittest.TestCase):
+    def test_no_count_bars_are_a_rate_times_3600(self):
+        # rate() over $__rate_interval (~90 s) is wider than a bar (~30 s at 1h), so one miss drew
+        # three bars of 40/h (2026-11-22). A count over time is count_bar(): the count in each bar.
+        bad = [p["title"] for fn in g.DASHBOARDS.values() for p in fn()["panels"]
+               if p.get("fieldConfig", {}).get("defaults", {}).get("custom", {}).get("drawStyle") == "bars"
+               and any("$__rate_interval" in t["expr"] for t in p.get("targets", []))]
+        self.assertEqual(bad, [], "show a count over time with gen_dashboards.count_bar(), not rate() * 3600")
+
+    def test_the_miss_bars_are_tested(self):
+        with open(PROMTOOL_TEST) as f:
+            tested = f.read()
+        p = next(p for p in g.cache()["panels"] if p["title"] == "Misses by cause")
+        self.assertIn(filled(p["targets"][0]["expr"]), tested)
+
+
 class LegendTest(unittest.TestCase):
     def test_a_by_label_legend_never_falls_back_to_value(self):
         # Older cortex builds push llm_cache_misses_total and llm_keepalive_pings_total with no cause or
         # outcome label. Grafana names such a series "Value". The panel must name it.
         cache = g.cache()
-        for title, label in (("Misses by cause (per hour)", "cause"), ("Miss cost by cause (USD, selected range)", "cause"),
-                             ("Ping outcomes (per hour)", "outcome")):
+        for title, label in (("Misses by cause", "cause"), ("Miss cost by cause (USD, selected range)", "cause"),
+                             ("Ping outcomes", "outcome")):
             p = next(p for p in cache["panels"] if p["title"] == title)
             self.assertIn(f'"{label}", "unattributed", "{label}", ""', p["targets"][0]["expr"], title)
 

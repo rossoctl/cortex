@@ -355,8 +355,8 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Requests per hour, by status",
-      "description": "Requests per hour. 'none' is a request with no status: the client left or the connection broke.",
+      "title": "Requests by status",
+      "description": "Requests, by status. 'none' is a request with no status: the client left or the connection broke. Each bar is the count in that bar's time span. The span grows with the dashboard range and is at least 5 minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -369,13 +369,14 @@
       },
       "targets": [
         {
-          "expr": "sum by (status_class)(rate(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])) * 3600",
+          "expr": "sum by (status_class)((increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) and last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) >= last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))",
           "legendFormat": "{{status_class}}",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          }
+          },
+          "interval": "5m"
         }
       ],
       "fieldConfig": {
@@ -835,8 +836,8 @@
     {
       "id": 13,
       "type": "timeseries",
-      "title": "Requests per hour, by model",
-      "description": "Who is busy.",
+      "title": "Requests by model",
+      "description": "Who is busy. Each bar is the count in that bar's time span. The span grows with the dashboard range and is at least 5 minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -849,13 +850,14 @@
       },
       "targets": [
         {
-          "expr": "sum by (model)(rate(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])) * 3600",
+          "expr": "sum by (model)((increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) and last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) >= last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))",
           "legendFormat": "{{model}}",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          }
+          },
+          "interval": "5m"
         }
       ],
       "fieldConfig": {
@@ -884,7 +886,7 @@
       "id": 14,
       "type": "timeseries",
       "title": "Streamed or not",
-      "description": "Streamed answers per hour against whole answers.",
+      "description": "Streamed answers against whole answers. Each bar is the count in that bar's time span. The span grows with the dashboard range and is at least 5 minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -897,13 +899,14 @@
       },
       "targets": [
         {
-          "expr": "sum by (stream)(rate(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])) * 3600",
+          "expr": "sum by (stream)((increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) and last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) >= last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_inference_requests_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))",
           "legendFormat": "stream={{stream}}",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          }
+          },
+          "interval": "5m"
         }
       ],
       "fieldConfig": {

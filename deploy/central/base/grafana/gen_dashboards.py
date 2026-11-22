@@ -43,7 +43,7 @@ NET_LABELS = ("", "machine", "proxy", "preset")
 OLD_LOOKBACK = "1d"
 
 
-def inc(metric, by="", win="$__range", extra="", new_series_fallback=True):
+def inc(metric, by="", win="$__range", extra="", new_series_fallback=True, anchored=False):
     """Total over win: sum(increase(metric{filter}[win])), optionally by a label.
 
     A series born inside win started at 0, but increase() does not know that: with fewer than a
@@ -72,12 +72,14 @@ def inc(metric, by="", win="$__range", extra="", new_series_fallback=True):
     new_series_fallback=False keeps the old, increase()-only query. Use it only where the
     returned text is itself rewritten by later string substitution, because the fallback's own
     "offset {win}" (outside any [brackets]) would not survive a substitution keyed on "[{win}]"
-    (fleet()'s "Net saved per day" bars, which pick their window this way)."""
+    (fleet()'s "Net saved per day" bars, which pick their window this way).
+
+    anchored=True adds Prometheus's anchored modifier to the increase() (see count_bar())."""
     g = f" by ({by})" if by else ""
     sel = f'{metric}{{{FILTER}{extra}}}'
     if not new_series_fallback:
         return f'sum{g}(increase({sel}[{win}]))'
-    grew = f'increase({sel}[{win}])'
+    grew = f'increase({sel}[{win}]{" anchored" if anchored else ""})'
     last = f'last_over_time({sel}[{win}])'
     old = f'last_over_time({sel}[{OLD_LOOKBACK}] offset {win})'
     return f'sum{g}(({grew} and {old}) or ({grew} >= {last}) or {last})'
@@ -96,6 +98,25 @@ BAR_DESC = (" Each bar is about the dollars in that bar's time span (increase() 
 def bar(metric, by="", extra=""):
     """About the dollars in each bar: inc() over $__interval. Use with series(..., bars=True, interval=BAR)."""
     return inc(metric, by, "$__interval", extra)
+
+
+# An event counter (misses, pings, requests, tokens) has the same problem as a dollar counter, and
+# a second one: rate() over $__rate_interval (about 90 s) is wider than a bar (about 30 s at 1h), so
+# one miss drew three bars of 40/h each. And plain increase() over $__interval is still wrong for a
+# count: it extrapolates one miss to 1.11, and it loses a step that falls between the last sample
+# of one bar and the first sample of the next (2026-11-22, a miss at 17:45:30 was in neither bar).
+# The anchored modifier (Prometheus 3.7 or later) takes the step from the last sample before the
+# bar, with no extrapolation, so each bar is the exact count in its span and the bars add up to the
+# total. That covers an OLD series. A series born inside the bar can arrive already holding its
+# first event, with no 0 before it (2026-11-22, a ttl_expiry series born at 17:29:29 holding 1):
+# anchored has nothing to take the step from, so it loses that event, as rate() did. inc()'s
+# new-series fallback counts it.
+COUNT_DESC = " Each bar is the count in that bar's time span. The span grows with the dashboard range and is at least 5 minutes."
+
+
+def count_bar(metric, by="", extra=""):
+    """The exact count in each bar: inc() anchored over $__interval. Use with series(..., bars=True, interval=BAR)."""
+    return inc(metric, by, "$__interval", extra, anchored=True)
 
 
 def rate(metric, by="", extra=""):
@@ -370,17 +391,17 @@ def cache():
     P.append(series(1, "Cache read ratio", [
         (ratio(rate("llm_inference_tokens_total", "model", TIER_READ), rate("llm_inference_tokens_total", "model", TIER_PROMPT)), "{{model}}")],
         0, 0, 12, 8, unit="percentunit", desc="cache_read / (cache_read + cache_write + input). Output tokens are not part of the prompt."))
-    P.append(series(2, "Misses by cause (per hour)", [(f'{unattributed(rate("llm_cache_misses_total", "cause"), "cause")} * 3600', "{{cause}}")],
-                    12, 0, 12, 8, stack=True, bars=True, desc="Cache misses per hour, by why."))
+    P.append(series(2, "Misses by cause", [(unattributed(count_bar("llm_cache_misses_total", "cause"), "cause"), "{{cause}}")],
+                    12, 0, 12, 8, stack=True, bars=True, interval=BAR, desc="Cache misses, by why." + COUNT_DESC))
     P.append(series(3, "Miss cost by cause (USD, selected range)", [(unattributed(inc("llm_cache_miss_cost_usd_total", "cause"), "cause"), "{{cause}}")],
                     0, 8, 8, 8, unit=USD, kind="bargauge", instant=True, fixed_color=ORANGE,
                     desc="The extra amount paid because the prefix was written again instead of read: cache-write tokens priced at "
                          "the write rate minus the read rate (docs/metrics/spec.md 5.4). Output and fresh input are not in it. "
                          "A model with no rate counts the miss and books no money."))
-    P.append(series(4, "Ping outcomes (per hour)", [(f'{unattributed(rate("llm_keepalive_pings_total", "outcome"), "outcome")} * 3600', "{{outcome}}")],
-                    8, 8, 10, 8, stack=True, bars=True,
+    P.append(series(4, "Ping outcomes", [(unattributed(count_bar("llm_keepalive_pings_total", "outcome"), "outcome"), "{{outcome}}")],
+                    8, 8, 10, 8, stack=True, bars=True, interval=BAR,
                     colors={"ok": GREEN, "skipped": BLUE, "failed": RED, "timeout": ORANGE},
-                    desc="Pings per hour. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is an older cortex build, which did not label the outcome."))
+                    desc="Pings, by outcome. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is an older cortex build, which did not label the outcome." + COUNT_DESC))
     P.append(stat(5, "Pings that paid",
                   ratio(f'({inc("llm_savings_cache_effect_usd_total", extra=RESCUE_SAVED)} - {inc("llm_savings_cache_effect_usd_total", extra=RESCUE_ADDED)})',
                         inc("llm_keepalive_cost_usd_total")),
@@ -448,9 +469,9 @@ def requests():
                   desc="p50 of total time, from request to last byte, over the selected range."))
     P.append(stat(6, "p95 duration", quant(0.95, "llm_inference_duration_seconds").replace("$__rate_interval", "$__range"), 20, 0, w=4, h=4, unit="s", decimals=2, c=YELLOW,
                   desc="p95 of total time over the selected range."))
-    P.append(series(7, "Requests per hour, by status", [(f'{rate(req, "status_class")} * 3600', "{{status_class}}")], 0, 4, 16, 9, stack=True, bars=True,
+    P.append(series(7, "Requests by status", [(count_bar(req, "status_class"), "{{status_class}}")], 0, 4, 16, 9, stack=True, bars=True, interval=BAR,
                     colors={"2xx": GREEN, "3xx": BLUE, "4xx": ORANGE, "5xx": RED, "none": "#8E8E8E"},
-                    desc="Requests per hour. 'none' is a request with no status: the client left or the connection broke."))
+                    desc="Requests, by status. 'none' is a request with no status: the client left or the connection broke." + COUNT_DESC))
     P.append(series(8, "Failed requests per hour", [
         (f'{rate(req, extra=cls("4xx"))} * 3600', "4xx"), (f'{rate(req, extra=X5)} * 3600', "5xx")], 16, 4, 8, 9, colors={"4xx": ORANGE, "5xx": RED},
         desc="The two error classes alone, so a small number is visible next to a large success count."))
@@ -467,10 +488,10 @@ def requests():
     P.append(series(12, "Response size (bytes per request)", [
         (ratio(rate("llm_inference_response_bytes_total"), rate(req)), "response")], 12, 21, 12, 8, unit="bytes", colors={"response": PURPLE},
         desc="Body bytes received from the upstream, divided by requests. NO DATA YET: llm_inference_response_bytes_total is not built."))
-    P.append(series(13, "Requests per hour, by model", [(f'{rate(req, "model")} * 3600', "{{model}}")], 0, 29, 16, 8, stack=True, bars=True,
-                    desc="Who is busy."))
-    P.append(series(14, "Streamed or not", [(f'{rate(req, "stream")} * 3600', "stream={{stream}}")], 16, 29, 8, 8, stack=True, bars=True,
-                    desc="Streamed answers per hour against whole answers."))
+    P.append(series(13, "Requests by model", [(count_bar(req, "model"), "{{model}}")], 0, 29, 16, 8, stack=True, bars=True, interval=BAR,
+                    desc="Who is busy." + COUNT_DESC))
+    P.append(series(14, "Streamed or not", [(count_bar(req, "stream"), "stream={{stream}}")], 16, 29, 8, 8, stack=True, bars=True, interval=BAR,
+                    desc="Streamed answers against whole answers." + COUNT_DESC))
     return dash("central-requests", "Requests", "How many requests, how many fail, how long do they take, how big are they?", P, ["requests"])
 
 
@@ -485,9 +506,9 @@ def inference():
     P.append(stat(4, "Output tokens", inc(tok, extra=tier("output")), 15, 0, w=5, h=4, decimals=0, c=BLUE, desc="Tokens the model wrote."))
     P.append(stat(5, "Cache read ratio", ratio(inc(tok, extra=TIER_READ), inc(tok, extra=TIER_PROMPT)), 20, 0, w=4, h=4,
                   unit="percentunit", decimals=1, c=GREEN, desc="cache_read / (cache_read + cache_write + input)."))
-    P.append(series(6, "Tokens per hour, by tier", [(f'{rate(tok, "tier")} * 3600', "{{tier}}")], 0, 4, 16, 9, stack=True, bars=True,
+    P.append(series(6, "Tokens by tier", [(count_bar(tok, "tier"), "{{tier}}")], 0, 4, 16, 9, stack=True, bars=True, interval=BAR,
                     colors={"input": YELLOW, "cache_read": GREEN, "cache_write_5m": ORANGE, "cache_write_1h": RED, "output": BLUE},
-                    desc="Provider-billed tokens per hour. Tokens are the same for every proxy, so this is comparable where money is not."))
+                    desc="Provider-billed tokens, by tier. Tokens are the same for every proxy, so this is comparable where money is not." + COUNT_DESC))
     P.append(series(7, "Tokens by model (selected range)", [(f"sort_desc({inc(tok, 'model')})", "{{model}}")], 16, 4, 8, 9, kind="bargauge", instant=True,
                     desc="Total tokens, all tiers, per model."))
     P.append(series(8, "Time to first token (seconds)", [

@@ -310,8 +310,8 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Tokens per hour, by tier",
-      "description": "Provider-billed tokens per hour. Tokens are the same for every proxy, so this is comparable where money is not.",
+      "title": "Tokens by tier",
+      "description": "Provider-billed tokens, by tier. Tokens are the same for every proxy, so this is comparable where money is not. Each bar is the count in that bar's time span. The span grows with the dashboard range and is at least 5 minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -324,13 +324,14 @@
       },
       "targets": [
         {
-          "expr": "sum by (tier)(rate(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])) * 3600",
+          "expr": "sum by (tier)((increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) and last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) >= last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_inference_tokens_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))",
           "legendFormat": "{{tier}}",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          }
+          },
+          "interval": "5m"
         }
       ],
       "fieldConfig": {

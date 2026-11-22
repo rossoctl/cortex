@@ -113,8 +113,8 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "Misses by cause (per hour)",
-      "description": "Cache misses per hour, by why.",
+      "title": "Misses by cause",
+      "description": "Cache misses, by why. Each bar is the count in that bar's time span. The span grows with the dashboard range and is at least 5 minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -127,13 +127,14 @@
       },
       "targets": [
         {
-          "expr": "label_replace(sum by (cause)(rate(llm_cache_misses_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])), \"cause\", \"unattributed\", \"cause\", \"\") * 3600",
+          "expr": "label_replace(sum by (cause)((increase(llm_cache_misses_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) and last_over_time(llm_cache_misses_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_cache_misses_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) >= last_over_time(llm_cache_misses_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_cache_misses_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])), \"cause\", \"unattributed\", \"cause\", \"\")",
           "legendFormat": "{{cause}}",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          }
+          },
+          "interval": "5m"
         }
       ],
       "fieldConfig": {
@@ -227,8 +228,8 @@
     {
       "id": 4,
       "type": "timeseries",
-      "title": "Ping outcomes (per hour)",
-      "description": "Pings per hour. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is an older cortex build, which did not label the outcome.",
+      "title": "Ping outcomes",
+      "description": "Pings, by outcome. A timeout is a ping that ran to its 60 s limit; it is booked at its projected cost (#754). A skipped ping leaves no row, so it does not show. unattributed is an older cortex build, which did not label the outcome. Each bar is the count in that bar's time span. The span grows with the dashboard range and is at least 5 minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -241,13 +242,14 @@
       },
       "targets": [
         {
-          "expr": "label_replace(sum by (outcome)(rate(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__rate_interval])), \"outcome\", \"unattributed\", \"outcome\", \"\") * 3600",
+          "expr": "label_replace(sum by (outcome)((increase(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) and last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) >= last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_keepalive_pings_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])), \"outcome\", \"unattributed\", \"outcome\", \"\")",
           "legendFormat": "{{outcome}}",
           "refId": "A",
           "datasource": {
             "type": "prometheus",
             "uid": "central-prom"
-          }
+          },
+          "interval": "5m"
         }
       ],
       "fieldConfig": {

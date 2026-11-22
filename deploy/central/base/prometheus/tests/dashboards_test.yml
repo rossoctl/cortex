@@ -107,12 +107,42 @@ tests:
         values: '0+2x60'
     promql_expr_test:
       - eval_time: 60m
-        expr: 'label_replace(sum by (cause)(rate(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m])), "cause", "unattributed", "cause", "") * 3600'
+        expr: 'label_replace(sum by (cause)((increase(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m] anchored) and last_over_time(llm_cache_misses_total{proxy=~".*", machine=~".*"}[1d] offset 5m)) or (increase(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m] anchored) >= last_over_time(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m])) or last_over_time(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m])), "cause", "unattributed", "cause", "")'
         exp_samples:
           - labels: '{cause="unattributed"}'
-            value: 60
+            value: 5
           - labels: '{cause="ttl"}'
-            value: 120
+            value: 10
+
+  # ---- One miss is one bar of 1, even on a bar's edge ---------------------------------------------
+  # 2026-11-22: rate() * 3600 over $__rate_interval (90 s, three ~30 s bars) drew each miss as three
+  # bars of 40/h. Plain increase() over $__interval fixes the triplet but not the count: it reads one
+  # miss as 1.11, and loses a step that falls between two bars (a miss at 17:45:30 was in neither).
+  # Here the proxy pushes every 30 s and the step is between the 35m00s and 35m30s pushes, so the
+  # bar (30m, 35m] has no change in its samples, and neither does (35m, 40m]. anchored takes (35m, 40m]
+  # from the last push at or before 35m, so that bar holds the miss, exactly once. The other series
+  # is born at 35m30s already holding its first miss, with no 0 before it (a ttl_expiry series,
+  # 2026-11-22 17:29:29): anchored has no step to take, and inc()'s new-series fallback counts it.
+  - name: a miss between two bars is counted once, as 1
+    interval: 30s
+    input_series:
+      - series: 'llm_cache_misses_total{proxy="cortex",machine="m1",model="m",cause="ttl_expiry"}'
+        values: '0x70 1x20'
+      - series: 'llm_cache_misses_total{proxy="cortex",machine="m1",model="m",cause="other"}'
+        values: '_x71 1x19'
+    promql_expr_test:
+      - eval_time: 35m
+        expr: 'label_replace(sum by (cause)((increase(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m] anchored) and last_over_time(llm_cache_misses_total{proxy=~".*", machine=~".*"}[1d] offset 5m)) or (increase(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m] anchored) >= last_over_time(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m])) or last_over_time(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m])), "cause", "unattributed", "cause", "")'
+        exp_samples:
+          - labels: '{cause="ttl_expiry"}'
+            value: 0
+      - eval_time: 40m
+        expr: 'label_replace(sum by (cause)((increase(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m] anchored) and last_over_time(llm_cache_misses_total{proxy=~".*", machine=~".*"}[1d] offset 5m)) or (increase(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m] anchored) >= last_over_time(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m])) or last_over_time(llm_cache_misses_total{proxy=~".*", machine=~".*"}[5m])), "cause", "unattributed", "cause", "")'
+        exp_samples:
+          - labels: '{cause="ttl_expiry"}'
+            value: 1
+          - labels: '{cause="other"}'
+            value: 1
 
   # ---- NET SAVED adds the cache effects and the interaction --------------------------------------
   # accountant docs/metrics/metrics.md, "The net saving": no counter contains another, so the net is
