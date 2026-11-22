@@ -27,6 +27,30 @@ function Check([string]$Name, [scriptblock]$Body) {
     }
 }
 
+# Import-InstallFunction defines install.ps1's named functions here, from its AST, without
+# running the script.
+function Import-InstallFunction([string[]]$Names) {
+    $ast = [Management.Automation.Language.Parser]::ParseFile($script, [ref]$null, [ref]$null)
+    foreach ($name in $Names) {
+        $fn = $ast.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $name }, $true)
+        . ([scriptblock]::Create($fn[0].Extent.Text))
+    }
+}
+
+# Get-UserPathRaw is the user Path as the registry holds it, %VAR% references unexpanded.
+function Get-UserPathRaw {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+    try { return [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
+    finally { $key.Dispose() }
+}
+
+# Assert-PathUnchanged runs an install that was asked not to touch Path, and checks it did not.
+function Assert-PathUnchanged([scriptblock]$Install) {
+    $before = Get-UserPathRaw
+    & $Install
+    if ((Get-UserPathRaw) -ne $before) { throw 'the install changed the user Path although it was told not to' }
+}
+
 function Assert-Installed([string]$Dir) {
     foreach ($exe in 'agentop.exe', 'cortex.exe') {
         $f = Join-Path $Dir $exe
@@ -43,9 +67,7 @@ try {
     $mirrorOK = $PSVersionTable.PSVersion.Major -le 5
 
     Check 'Test-PathHasDir matches a folder on Path, case and trailing \ aside' {
-        $ast = [Management.Automation.Language.Parser]::ParseFile($script, [ref]$null, [ref]$null)
-        $fn = $ast.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Test-PathHasDir' }, $true)
-        Invoke-Expression $fn[0].Extent.Text
+        . Import-InstallFunction 'Test-PathHasDir'
         $cases = @(
             @('C:\a;C:\Users\me\.local\bin;C:\b', 'C:\Users\me\.local\bin', $true),
             @('C:\a;c:\users\ME\.local\bin\;C:\b', 'C:\Users\me\.local\bin', $true),
@@ -55,6 +77,37 @@ try {
         )
         foreach ($c in $cases) {
             if ((Test-PathHasDir $c[0] $c[1]) -ne $c[2]) { throw "Test-PathHasDir('$($c[0])', '$($c[1])') is not $($c[2])" }
+        }
+    }
+
+    Check 'finds the latest release from the github.com redirect, not the API' {
+        . Import-InstallFunction 'Get-LatestTag'
+        $tag = Get-LatestTag 'rossoctl/cortex'
+        if ($tag -notmatch '^v[0-9]') { throw "Get-LatestTag returned '$tag'" }
+    }
+
+    # The user Path is written only on CI, into a throwaway registry key, never into the real
+    # HKCU\Environment of whoever runs this.
+    if ($env:CI -eq 'true') {
+        Check 'adds to the Path in the registry keeping %VAR% entries, once' {
+            . Import-InstallFunction 'Write-Step', 'Test-PathHasDir', 'Add-ToUserPath'
+            $keyPath = 'Software\cortex-install-test-' + [Guid]::NewGuid().ToString('N')
+            $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($keyPath)
+            $orig = '%USERPROFILE%\AppData\Local\Microsoft\WindowsApps;C:\other'
+            $key.SetValue('Path', $orig, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+            $key.Dispose()
+            try {
+                Add-ToUserPath 'C:\cortex-test-bin' -KeyPath $keyPath -NoBroadcast | Out-Null
+                Add-ToUserPath 'C:\cortex-test-bin' -KeyPath $keyPath -NoBroadcast | Out-Null
+                $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($keyPath)
+                $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                $kind = $key.GetValueKind('Path')
+                $key.Dispose()
+                if ($raw -ne "$orig;C:\cortex-test-bin") { throw "the Path became '$raw'" }
+                if ($kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) { throw "the Path's kind became $kind" }
+            } finally {
+                [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($keyPath, $false)
+            }
         }
     }
 
@@ -69,9 +122,35 @@ try {
 
         Check 'installs from a mirror, twice, with no downloaded mark left' {
             $dir = Join-Path $root 'twice'
-            & $script -Version $Version -InstallDir $dir -NoPath -BaseUrl $url | Out-Null
-            & $script -Version $Version -InstallDir $dir -NoPath -BaseUrl $url | Out-Null
+            Assert-PathUnchanged {
+                & $script -Version $Version -InstallDir $dir -NoPath -BaseUrl $url | Out-Null
+                & $script -Version $Version -InstallDir $dir -NoPath -BaseUrl $url | Out-Null
+            }
             Assert-Installed $dir
+        }
+
+        Check 'resolves a relative install folder' {
+            Push-Location $root
+            try {
+                Assert-PathUnchanged { & $script -Version $Version -InstallDir 'relative-bin' -NoPath -BaseUrl $url | Out-Null }
+            } finally { Pop-Location }
+            Assert-Installed (Join-Path $root 'relative-bin')
+        }
+
+        Check 'refuses to replace a running binary, and changes nothing' {
+            $dir = Join-Path $root 'twice'
+            $agentop = Join-Path $dir 'agentop.exe'
+            $before = (Get-Item -LiteralPath $agentop).LastWriteTimeUtc
+            $lock = [IO.File]::Open((Join-Path $dir 'cortex.exe'), 'Open', 'Read', 'Read') # as a running exe holds it
+            $refused = $false
+            try {
+                & $script -Version $Version -InstallDir $dir -NoPath -BaseUrl $url | Out-Null
+            } catch {
+                if ($_.Exception.Message -notmatch 'is it running') { throw "stopped for another reason: $($_.Exception.Message)" }
+                $refused = $true
+            } finally { $lock.Dispose() }
+            if (-not $refused) { throw 'it replaced a file that is in use' }
+            if ((Get-Item -LiteralPath $agentop).LastWriteTimeUtc -ne $before) { throw 'agentop.exe was replaced before the refusal' }
         }
 
         Check 'stops on a checksum mismatch, and installs nothing' {
@@ -95,8 +174,15 @@ try {
             $env:CORTEX_VERSION = $Version
             $env:CORTEX_INSTALL_DIR = $dir
             $env:CORTEX_NO_PATH = '1'
-            try { Get-Content -Raw $script | Invoke-Expression | Out-Null }
+            # The piped form runs in this scope: afterwards, nothing of it may be left here.
+            $ErrorActionPreference = 'Continue'
+            $ProgressPreference = 'Continue'
+            try { Assert-PathUnchanged { Get-Content -Raw $script | Invoke-Expression | Out-Null } }
             finally { Remove-Item Env:CORTEX_VERSION, Env:CORTEX_INSTALL_DIR, Env:CORTEX_NO_PATH -ErrorAction SilentlyContinue }
+            if ($ErrorActionPreference -ne 'Continue' -or $ProgressPreference -ne 'Continue') { throw 'the piped install changed the session preferences' }
+            if (Get-Command Install-Cortex -ErrorAction SilentlyContinue) { throw 'the piped install left its functions in the session' }
+            if (Get-Variable -Name InstallDir -Scope Local -ErrorAction SilentlyContinue) { throw 'the piped install left its parameters in the session' }
+            $ErrorActionPreference = 'Stop'
             Assert-Installed $dir
         }
     }

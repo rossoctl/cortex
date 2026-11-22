@@ -30,7 +30,15 @@ $env:CORTEX_NO_PATH = '1'                # don't add the folder to Path
 irm https://www.rossoctl.dev/cortex/install.ps1 | iex
 ```
 
-From a saved copy of the script, the same options are parameters: `.\install.ps1 -Version v0.10.1 -InstallDir C:\tools\cortex -NoPath`. The script is [`scripts/install.ps1`](../scripts/install.ps1) in this repository; read it first if you like.
+The same options are parameters too. Without saving a file:
+
+```powershell
+& ([scriptblock]::Create((irm https://www.rossoctl.dev/cortex/install.ps1))) -Version v0.10.1 -InstallDir C:\tools\cortex -NoPath
+```
+
+PowerShell's default execution policy blocks a saved copy of a script (`running scripts is disabled on this system`), so run a saved copy with `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version v0.10.1`. That applies to this one run only and changes no setting. The script is [`scripts/install.ps1`](../scripts/install.ps1) in this repository; read it first if you like.
+
+The installer adds the folder to your user `Path` in place: entries such as `%USERPROFILE%\...` keep their variables.
 
 **Then open a new terminal.** A terminal that is already open keeps the old `Path`.
 

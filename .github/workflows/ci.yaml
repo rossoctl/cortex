@@ -592,7 +592,18 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
+      # .claude/skills/ has directory names with ':' in them, which NTFS cannot hold: leave
+      # .claude/ out, as go-ci-windows does.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.protectNTFS
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          sparse-checkout: |
+            /*
+            !/.claude/
+          sparse-checkout-cone-mode: false
 
       - name: Run install.ps1 tests (Windows PowerShell 5.1)
         shell: powershell
