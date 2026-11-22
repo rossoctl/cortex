@@ -89,19 +89,20 @@ def inc(metric, by="", win="$__range", extra="", new_series_fallback=True, ancho
 # $1.75 step into a $105/h spike for one minute (context-guru #1273). So money over time is shown as
 # the dollars in each bar: increase() over $__interval, with a floor of BAR so each bar spans several
 # 30 s pushes. inc() keeps its new-series fallback here: a keep-alive series is born with its first
-# ping already in it, and increase() alone would lose that ping.
+# ping already in it, and increase() alone would lose that ping. The increase() is anchored, for the
+# reasons in count_bar(): without it a $1.75 ping read as $2.19, and a ping between two bars was lost.
 BAR = "5m"
-BAR_DESC = (" Each bar is about the dollars in that bar's time span (increase() extrapolates to the span's"
-            " edges). The span grows with the dashboard range and is at least 5 minutes.")
+BAR_DESC = (" Each bar is the dollars in that bar's time span. The span grows with the dashboard range"
+            " and is at least 5 minutes.")
 
 
 def bar(metric, by="", extra=""):
-    """About the dollars in each bar: inc() over $__interval. Use with series(..., bars=True, interval=BAR)."""
-    return inc(metric, by, "$__interval", extra)
+    """The dollars in each bar: inc() anchored over $__interval. Use with series(..., bars=True, interval=BAR)."""
+    return inc(metric, by, "$__interval", extra, anchored=True)
 
 
 # An event counter (misses, pings, requests, tokens) has the same problem as a dollar counter, and
-# a second one: rate() over $__rate_interval (about 90 s) is wider than a bar (about 30 s at 1h), so
+# one of its own: rate() over $__rate_interval (about 90 s) is wider than a bar (about 30 s at 1h), so
 # one miss drew three bars of 40/h each. And plain increase() over $__interval is still wrong for a
 # count: it extrapolates one miss to 1.11, and it loses a step that falls between the last sample
 # of one bar and the first sample of the next (2026-11-22, a miss at 17:45:30 was in neither bar).
@@ -115,8 +116,8 @@ COUNT_DESC = " Each bar is the count in that bar's time span. The span grows wit
 
 
 def count_bar(metric, by="", extra=""):
-    """The exact count in each bar: inc() anchored over $__interval. Use with series(..., bars=True, interval=BAR)."""
-    return inc(metric, by, "$__interval", extra, anchored=True)
+    """The exact count in each bar: bar(), which is inc() anchored over $__interval. Use with series(..., bars=True, interval=BAR)."""
+    return bar(metric, by, extra)
 
 
 def rate(metric, by="", extra=""):
@@ -301,7 +302,7 @@ def fleet():
     # The 1d step puts one point at 00:00 UTC of each day. A plain [1d] window there ends at that
     # point, so it is the PREVIOUS day's total, and today would never show. "offset -1d" moves the
     # window to start at the point: each bar is its own day, and today's bar is the total so far.
-    p5 = series(5, "Net saved per day", [(net(fn="inc", new_series_fallback=False).replace("[$__range]", "[1d] offset -1d"), "net")],
+    p5 = series(5, "Net saved per day", [(net(fn="inc", new_series_fallback=False).replace("[$__range]", "[1d] anchored offset -1d"), "net")],
                 0, 5, 24, 7, unit=USD, bars=True, time_from="30d", interval="1d",
                 desc="One bar per UTC day, for 30 days whatever the dashboard range. Today's bar is the total so far. A bar below zero is a day the proxy cost more than it saved.")
     # A bar below zero is a loss: red. Above zero: green. Colors by value, as bargauge does.
@@ -354,8 +355,8 @@ def savings():
                     0, 9, 7, 8, kind="bargauge", vertical=True, instant=True,
                     desc="Tokens the provider did not bill. The tier decides the price of each token."))
     P.append(series(4, "Cache effects (USD per day)", [
-        (f'{inc("llm_savings_cache_effect_usd_total", "effect", "1d", DIR_SAVED)}', "{{effect}} saved"),
-        (f'-{inc("llm_savings_cache_effect_usd_total", "effect", "1d", DIR_ADDED)}', "{{effect}} added")],
+        (bar("llm_savings_cache_effect_usd_total", "effect", DIR_SAVED), "{{effect}} saved"),
+        (f'-{bar("llm_savings_cache_effect_usd_total", "effect", DIR_ADDED)}', "{{effect}} added")],
         7, 9, 9, 8, unit=USD, stack=True, bars=True, interval="1d",
         desc="How the cache changed the bill, saved above zero and added below. These are not in the operations' saved or added counters. NET SAVED on the Fleet dashboard adds them."))
     P.append(series(5, "Break cost by cause", [

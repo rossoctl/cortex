@@ -805,7 +805,7 @@
       "id": 12,
       "type": "timeseries",
       "title": "Spend by model (USD)",
-      "description": "Provider cost at request time. Each proxy prices with its own rate table. Each bar is about the dollars in that bar's time span (increase() extrapolates to the span's edges). The span grows with the dashboard range and is at least 5 minutes.",
+      "description": "Provider cost at request time. Each proxy prices with its own rate table. Each bar is the dollars in that bar's time span. The span grows with the dashboard range and is at least 5 minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -818,7 +818,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (model)((increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) and last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]) >= last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))",
+          "expr": "sum by (model)((increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) and last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[1d] offset $__interval)) or (increase(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval] anchored) >= last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval])) or last_over_time(llm_inference_cost_usd_total{proxy=~\"$proxy\", machine=~\"$machine\"}[$__interval]))",
           "legendFormat": "{{model}}",
           "refId": "A",
           "datasource": {
