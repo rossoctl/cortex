@@ -47,10 +47,11 @@ class IncTest(unittest.TestCase):
         # A series born inside the window started at 0; increase() alone does not know that and
         # can undercount it (2026-11-19). The fallback is PromQL-side only: no OTLP start
         # timestamps, no new collector or Prometheus flag, no proxy change.
+        m = 'm{proxy=~"$proxy", machine=~"$machine"}'
         got = g.inc("m")
-        self.assertEqual(got, 'sum((increase(m{proxy=~"$proxy", machine=~"$machine"}[$__range]) '
-                               'and m{proxy=~"$proxy", machine=~"$machine"} offset $__range) '
-                               'or last_over_time(m{proxy=~"$proxy", machine=~"$machine"}[$__range]))')
+        self.assertEqual(got, f'sum((increase({m}[$__range]) and last_over_time({m}[1d] offset $__range)) '
+                              f'or (increase({m}[$__range]) >= last_over_time({m}[$__range])) '
+                              f'or last_over_time({m}[$__range]))')
 
     def test_new_series_fallback_false_keeps_the_plain_query(self):
         # fleet()'s "Net saved per day" bars pick their window by replacing "[$__range]" with

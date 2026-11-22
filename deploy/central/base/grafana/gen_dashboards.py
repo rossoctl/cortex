@@ -39,6 +39,8 @@ SAVED_SIDE = ',__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_us
 ADDED_SIDE = ',__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|"'
 # Labels that every counter of both sides has. A cache effect has no component, kind or tier.
 NET_LABELS = ("", "machine", "proxy", "preset")
+# How far before a range inc() looks for a sample that makes a series OLD (see inc()).
+OLD_LOOKBACK = "1d"
 
 
 def inc(metric, by="", win="$__range", extra="", new_series_fallback=True):
@@ -51,9 +53,21 @@ def inc(metric, by="", win="$__range", extra="", new_series_fallback=True):
     simply RESTARTS under the same labels is unaffected, since increase() already compensates
     for that reset on its own).
 
-    So, with new_series_fallback (the default), a series present win before this point keeps its
-    increase() as-is; a series with no such earlier sample falls back to last_over_time(), which
-    for a series that started at 0 inside win IS its total.
+    So, with new_series_fallback (the default), a series is one of three cases:
+
+    1. OLD: it has a sample in the OLD_LOOKBACK before win. It keeps its increase(): resets are
+       compensated, and its absolute value holds history from before win. The lookback is long,
+       not Prometheus's 5m, because a push outage at the start of win (a laptop asleep or off the
+       VPN, 2026-11-19 23:11 to 06:53) leaves no sample for hours. Seen as born, its
+       last_over_time() would add all the history from before win.
+    2. BORN inside win: it started at 0, so its total is at least each of two lower bounds, and the
+       larger is taken. last_over_time() is exact when the series did not reset inside win, but
+       after a reset it holds only the part since the reset. increase() handles the reset but
+       loses the first sample (it does not know the series started at 0). 2026-11-19: the rescue
+       series was born at 22:35 and reset at 22:48; last_over_time() read $3.7 of about $5.0,
+       increase() $4.5.
+    3. Neither bound is exact for a born series that also reset: the first sample stays lost.
+       That is an undercount, the safe direction for a saving.
 
     new_series_fallback=False keeps the old, increase()-only query. Use it only where the
     returned text is itself rewritten by later string substitution, because the fallback's own
@@ -63,7 +77,10 @@ def inc(metric, by="", win="$__range", extra="", new_series_fallback=True):
     sel = f'{metric}{{{FILTER}{extra}}}'
     if not new_series_fallback:
         return f'sum{g}(increase({sel}[{win}]))'
-    return f'sum{g}((increase({sel}[{win}]) and {sel} offset {win}) or last_over_time({sel}[{win}]))'
+    grew = f'increase({sel}[{win}])'
+    last = f'last_over_time({sel}[{win}])'
+    old = f'last_over_time({sel}[{OLD_LOOKBACK}] offset {win})'
+    return f'sum{g}(({grew} and {old}) or ({grew} >= {last}) or {last})'
 
 
 def rate(metric, by="", extra=""):
