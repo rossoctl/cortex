@@ -732,3 +732,45 @@ func TestStoreLoad(t *testing.T) {
 		t.Errorf("round trip lost data: %+v", got)
 	}
 }
+
+// TestSettle_CacheWrite1hPremiumHeldToTheCeiling: the base figure passes CostByTier's
+// ceiling, and the 1h premium takes the total above it. The whole request, its halves
+// and its tiers must be refused and the refusal disclosed, as for any other figure past
+// the ceiling. A premium that keeps the total under the ceiling still prices.
+func TestSettle_CacheWrite1hPremiumHeldToTheCeiling(t *testing.T) {
+	resolver := func(inputRate, cwRate float64) pricing.Resolver {
+		var r pricing.Rates
+		r.Base[pricing.TierInput], r.Set[pricing.TierInput] = inputRate, true
+		r.Base[pricing.TierCacheWrite], r.Set[pricing.TierCacheWrite] = cwRate, true
+		tab, err := pricing.NewTable([]pricing.Entry{{Host: "*", Model: "*", Rates: r, Prov: pricing.ProvConfigured}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pricing.NewRegistry(tab)
+	}
+	inf := &pipeline.InferenceExtension{
+		Model:              "claude-sonnet-4-5",
+		CacheWriteTokens:   1000,
+		CacheWrite1hTokens: 1000,
+		FinishReason:       "end_turn",
+	}
+
+	// Base 1000 x $7.50 = $7,500 passes; the 1h rate is 2 x $6, so the premium is
+	// 1000 x $4.50 = $4,500 and the total $12,000 is above the $10,000 ceiling.
+	over := SettleInput(Input{Host: "gw.internal", Inference: inf}, resolver(6, 7.5))
+	if over.HasModelled || over.HasPrompt || over.HasOutput || over.HasTiers || over.Priced {
+		t.Errorf("over the ceiling: settled = %+v, want no modelled figure, no halves, no tiers, unpriced", over)
+	}
+	if over.RejectedReason != event.RejectedImplausible {
+		t.Errorf("over the ceiling: RejectedReason = %q, want %q", over.RejectedReason, event.RejectedImplausible)
+	}
+
+	// The same shape at a hundredth of the rates: $120 total, priced.
+	under := SettleInput(Input{Host: "gw.internal", Inference: inf}, resolver(0.06, 0.075))
+	if !under.HasModelled || !under.Priced || under.RejectedReason != "" {
+		t.Fatalf("under the ceiling: settled = %+v, want priced", under)
+	}
+	if got := math.Round(under.ModelledUSD); got != 120 {
+		t.Errorf("under the ceiling: ModelledUSD = %v, want 120", under.ModelledUSD)
+	}
+}

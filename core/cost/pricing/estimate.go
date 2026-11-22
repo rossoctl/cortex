@@ -43,12 +43,20 @@ func EstimateTokensFromBytes(bytesRemoved, promptTokens, bodyBytes int) int {
 // A deliberate simplification: a prompt can straddle tiers — some cached, some fresh —
 // and PromptTier picks the dominant one. Attributing the saving to the dominant tier is
 // the best available answer without knowing WHERE in the prompt the removal happened.
+//
+// A cache-write saving keeps the request's 1h share: out.CacheWrite1h is tokens times
+// u.CacheWrite1h / u.CacheWrite, rounded to the nearest token. So a saving from all-1h
+// writes is all 1h and prices at the 1h rate, as settlement prices the request's own
+// writes; a saving from all-5m writes has no 1h part and keeps its 5m price; and a saving
+// from mixed writes is split in the same ratio as the writes, because nothing says which
+// TTL the removed bytes were written under.
 func AvoidedUsage(u Usage, tokens int) (Usage, Tier) {
 	tier := PromptTier(u)
 	out := Usage{}
 	switch tier {
 	case TierCacheWrite:
 		out.CacheWrite = tokens
+		out.CacheWrite1h = share1h(u, tokens)
 	case TierCacheRead:
 		out.CacheRead = tokens
 	default:
@@ -56,4 +64,18 @@ func AvoidedUsage(u Usage, tokens int) (Usage, Tier) {
 		out.Input = tokens
 	}
 	return out, tier
+}
+
+// share1h is the part of a tokens-sized cache-write saving that carries u's 1h share:
+// tokens * u.CacheWrite1h / u.CacheWrite, rounded and held within [0, tokens]. 0 when u
+// reports no 1h writes, or a 1h count outside [0, CacheWrite] that PlausibleUsage would
+// refuse anyway.
+func share1h(u Usage, tokens int) int {
+	if u.CacheWrite <= 0 || u.CacheWrite1h <= 0 || u.CacheWrite1h > u.CacheWrite || tokens <= 0 {
+		return 0
+	}
+	if u.CacheWrite1h == u.CacheWrite {
+		return tokens
+	}
+	return int(math.Round(float64(tokens) * float64(u.CacheWrite1h) / float64(u.CacheWrite)))
 }

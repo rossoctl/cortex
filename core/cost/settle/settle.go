@@ -818,6 +818,14 @@ func modelledCost(rates pricing.Resolver, host, model string, u pricing.Usage, p
 		delta, deltaOK, deltaEstimated := pricing.CacheWrite1hDeltaMicros(r, u.CacheWrite1h, isAnthropicModel(model))
 		estimated1h = deltaOK && deltaEstimated
 		if deltaOK && delta > 0 {
+			// The ceiling CostByTier applied to the base figure applies to the total with
+			// the premium too: a base just under it plus the premium is above it. Refused
+			// as RefusalImplausibleTotal, so SettleInput's magnitude path clears the halves
+			// and the tiers and discloses the refusal. Written as a subtraction because
+			// micros is already at most the ceiling, so it cannot overflow.
+			if delta > pricing.MaxPlausibleRequestCostMicros-micros {
+				return 0, none, pricing.ProvNone, false, pricing.RefusalImplausibleTotal, false
+			}
 			micros += delta
 			tiers[pricing.TierCacheWrite] += delta
 		}
