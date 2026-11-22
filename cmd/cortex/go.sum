@@ -191,8 +191,8 @@ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/rogpeppe/go-internal v1.16.0 h1:O9DK+vNMDVGLr2BeZqmpLeMjiMNkuXfcqntWbZV6S5g=
 github.com/rogpeppe/go-internal v1.16.0/go.mod h1:DrUVZyrJU+txYW5/1kwtXQSMFio52ZOxX7yM1VHvnxs=
-github.com/rossoctl/accountant v0.1.1-0.20261108152158-5181d50c1f98 h1:TLElmj5QstW9PhlYIJz2HFtsEuiHHuSvzy79BT2h82U=
-github.com/rossoctl/accountant v0.1.1-0.20261108152158-5181d50c1f98/go.mod h1:AA9aM/QvO3AksXUGjOJiunMSxiZ1PqRsCxqKvq4IsrI=
+github.com/rossoctl/accountant v0.5.0 h1:5IwMF5wiw0JPnIzHma5xJAaYWge6KW5seAe0Zh4xNKc=
+github.com/rossoctl/accountant v0.5.0/go.mod h1:AA9aM/QvO3AksXUGjOJiunMSxiZ1PqRsCxqKvq4IsrI=
 github.com/rossoctl/context-guru v0.7.3 h1:bYIE6ywSJqzY+44T9o654OmvM+6DtF3wsDe0jmQH+o0=
 github.com/rossoctl/context-guru v0.7.3/go.mod h1:bsoQuDAh479I7E+cnN6oY4+W/tyXEP9VvpGXzUQe4So=
 github.com/segmentio/asm v1.2.1 h1:DTNbBqs57ioxAD4PrArqftgypG4/qNpXoJx8TVXxPR0=
