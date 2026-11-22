@@ -235,12 +235,16 @@ const maxContentDepth = 8
 // key: it is used to skip the ForEach walk in eachMark and findCacheMark entirely for a value
 // that plainly cannot contain one. It cannot rule a value out from the literal text alone,
 // because gjson decodes JSON escapes when it reads a key (so "cache_control" is still the
-// key "cache_control" to ForEach): a backslash anywhere in raw means an escape could be hiding
-// the key, so this stays true whenever raw has one, even though most such backslashes are
-// unrelated (an escaped quote or newline in message text, say). A value with neither the literal
-// text nor a backslash cannot name cache_control no matter how it is decoded.
+// key "cache_control" to ForEach). Only a \u escape can hide it, though: every other JSON escape
+// (\", \\, \/, \b, \f, \n, \r, \t) decodes to a character that cache_control does not contain, so
+// it cannot be part of that key however it is split across them, and raw is valid JSON by the
+// time this is called (Parse's json.Valid, AllMarksAsk1h's own check), which rules out any other
+// escape sequence. A value with neither the literal text nor a \u escape cannot name
+// cache_control no matter how it is decoded. This matters because real message text routinely
+// holds \n or \" with no mark at all; treating every backslash as suspect would send almost all
+// of it down the slow path.
 func mayMarkCacheControl(raw string) bool {
-	return strings.Contains(raw, "cache_control") || strings.Contains(raw, `\`)
+	return strings.Contains(raw, "cache_control") || strings.Contains(raw, `\u`)
 }
 
 // eachMark calls fn once for each cache_control mark under v: a cache_control object on v
@@ -291,11 +295,14 @@ func eachMarkDepth(v gjson.Result, fn func(cc gjson.Result), depth int) {
 // change.
 func withoutCacheMarks(body []byte, v gjson.Result) []byte {
 	raw := v.Raw
-	if !mayMarkCacheControl(raw) {
+	zeroCopy := func() []byte {
 		if i := v.Index; i > 0 && i+len(raw) <= len(body) && string(body[i:i+len(raw)]) == raw {
 			return body[i : i+len(raw) : i+len(raw)]
 		}
 		return []byte(raw)
+	}
+	if !mayMarkCacheControl(raw) {
+		return zeroCopy()
 	}
 	out := raw
 	for n := 0; n < 64; n++ { // a position has at most a few marks on the wire
@@ -308,6 +315,12 @@ func withoutCacheMarks(body []byte, v gjson.Result) []byte {
 			break
 		}
 		out = next
+	}
+	if out == raw {
+		// mayMarkCacheControl's \u case: a position with an escape but no actual mark. No
+		// deletion ran, so out is still the untouched input; return it the same zero-copy way as
+		// the fast path above, instead of a needless copy.
+		return zeroCopy()
 	}
 	return []byte(out)
 }

@@ -200,37 +200,55 @@ func nestedToolResultContent(depth int, mark string) []byte {
 	return []byte(`{"messages":[{"role":"user","content":[` + block + `]}]}`)
 }
 
+// deepNestingResult carries TestDeepContentNesting_StaysBounded's findings out of its worker
+// goroutine over a channel, instead of calling t.Error there: on a timeout, the select below
+// returns from the test via t.Fatal while the goroutine is still running (the point of the
+// test, when the bound has regressed), and a *testing.T must not be touched after its test has
+// returned — that would panic with "Log in goroutine after test has completed".
+type deepNestingResult struct {
+	err                    error
+	all1hNoMark, all1hDeep bool
+	breakpoints            int
+}
+
 // TestDeepContentNesting_StaysBounded pins the maxContentDepth bound added in review of #2054:
 // gjson's ForEach rescans the rest of a value at every level it descends, so without a bound,
 // eachMark and findCacheMark cost grows with nesting depth. 4000 levels is far past anything the
 // wire itself produces (two levels below a position), but Parse and AllMarksAsk1h must still
 // return promptly instead of taking proportionally longer. A mark past the bound is out of
-// reach: that is the bound's point, so it is correctly not stripped from the hash and not
-// counted as a breakpoint.
+// reach: that is the bound's point, so it is correctly not stripped from the hash, not counted
+// as a breakpoint, and not seen by AllMarksAsk1h either.
 func TestDeepContentNesting_StaysBounded(t *testing.T) {
 	const depth = 4000
-	done := make(chan struct{})
+	done := make(chan deepNestingResult, 1)
 	go func() {
-		defer close(done)
 		noMark := nestedToolResultContent(depth, "")
-		if _, _, err := Parse(FormatAnthropic, noMark); err != nil {
-			t.Error(err)
-		}
-		if AllMarksAsk1h(noMark) {
-			t.Error("AllMarksAsk1h: no mark anywhere, want false")
-		}
+		_, _, err := Parse(FormatAnthropic, noMark)
+		all1hNoMark := AllMarksAsk1h(noMark)
 
 		deepMark := nestedToolResultContent(depth, `,"cache_control":{"type":"ephemeral"}`)
-		_, bps, err := Parse(FormatAnthropic, deepMark)
-		if err != nil {
-			t.Error(err)
+		_, bps, err2 := Parse(FormatAnthropic, deepMark)
+		if err == nil {
+			err = err2
 		}
-		if len(bps) != 0 {
-			t.Errorf("mark past maxContentDepth: got %d breakpoints, want 0 (out of reach)", len(bps))
-		}
+		all1hDeep := AllMarksAsk1h(deepMark)
+
+		done <- deepNestingResult{err: err, all1hNoMark: all1hNoMark, all1hDeep: all1hDeep, breakpoints: len(bps)}
 	}()
 	select {
-	case <-done:
+	case r := <-done:
+		if r.err != nil {
+			t.Error(r.err)
+		}
+		if r.all1hNoMark {
+			t.Error("AllMarksAsk1h: no mark anywhere, want false")
+		}
+		if r.all1hDeep {
+			t.Error("AllMarksAsk1h: mark past maxContentDepth is out of reach, want false")
+		}
+		if r.breakpoints != 0 {
+			t.Errorf("mark past maxContentDepth: got %d breakpoints, want 0 (out of reach)", r.breakpoints)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Parse/AllMarksAsk1h did not return within 5s for a deeply nested body: depth bound regressed")
 	}
