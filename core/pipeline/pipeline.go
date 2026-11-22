@@ -183,10 +183,12 @@ func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
 		pctx.SessionID = pctx.Session.ID
 	}
 	// Snapshot the billing mode before THIS Run's own plugins can rewrite the credential header
-	// it reads: the outbound chain's token-exchange, tokenbroker, inference-router (setKey) and
-	// staticinject all replace Authorization (BillingSnapshot's doc comment). Unconditionally, on
-	// every direction's Pipeline, so a listener that ever ran both chains on one pctx would still
-	// get the client's own credential from the first Run.
+	// it reads — unconditionally, on every direction's Pipeline, not only the one with an
+	// accountant attached. The accountant is outbound-only, but a listener runs its inbound
+	// Pipeline's Run first on the same pctx, and jwt-validation's placeholder_mode / token-exchange
+	// rewrite Authorization there; reading it fresh at outbound RequestStart time would see the
+	// rewrite instead of the client's own credential (BillingSnapshot's doc comment). Calling it
+	// here, on every Run, means the first one to run on this pctx wins the snapshot.
 	pctx.BillingSnapshot()
 	// The client body is kept before the first plugin can replace it, and only when an
 	// accountant will read it. RequestEnd runs only on the Continue return at the bottom: a
@@ -223,6 +225,9 @@ func (p *Pipeline) Run(ctx context.Context, pctx *Context) Action {
 		}
 		slog.Debug("pipeline: plugin completed", "plugin", plugin.Name())
 	}
+	// Sealed whether or not an accountant reads the list: a model call an engine detached
+	// from this request must not grow it for the life of the pctx.
+	pctx.sealOps()
 	if p.accountant != nil {
 		p.accountant.RequestEnd(pctx)
 	}
@@ -500,13 +505,7 @@ func (p *Pipeline) NeedsBody() bool {
 // ("reads pctx.Body and/or pctx.ResponseBody").
 func (p *Pipeline) NeedsRequestBody() bool {
 	// The accountant reads the client body and the forwarded one, so it needs the body
-	// buffered even on a chain whose plugins would not. A BEHAVIOUR CHANGE for every chain with
-	// an accountant (under accounting.enabled: auto, any outbound chain with tool-prune or
-	// context-guru): its inference requests are buffered whole. BOUNDED by the listener's own
-	// cap, which applies before any plugin runs: 1 MiB on extproc and the reverse proxy, 32 MiB
-	// on the forward proxy (maxRequestBodySize). Run keeps pctx.clientBody as a second
-	// reference to the same bytes, not a copy; only a plugin that replaces the body makes it two
-	// buffers, each under that cap, for the life of the request.
+	// buffered even on a chain whose plugins would not.
 	if p.accountant != nil {
 		return true
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rossoctl/accountant"
@@ -460,8 +461,14 @@ type Context struct {
 	// clientBody is the request body before the first plugin, kept by Pipeline.Run only when
 	// the pipeline has an accountant. See ClientBody.
 	clientBody []byte
+	// opsMu guards reportedOps and opsSealed: an engine's model calls report from goroutines
+	// of their own (ReportOpsAs), beside the request goroutine.
+	opsMu sync.Mutex
 	// reportedOps are the context operations plugins reported, in call order. See ReportOps.
 	reportedOps []accountant.Operation
+	// opsSealed is set by Run right before RequestEnd reads the ops; an op reported after it is
+	// dropped and counted (lateOpsDropped).
+	opsSealed bool
 	// accountingThread, accountingParent and accountingThreadSet hold SetAccountingThread's
 	// choice of thread.
 	accountingThread    string

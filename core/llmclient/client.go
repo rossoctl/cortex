@@ -200,6 +200,53 @@ type ChatChoice struct {
 // ChatResponse is the OpenAI chat-completions response body.
 type ChatResponse struct {
 	Choices []ChatChoice `json:"choices"`
+	// Usage is the call's token counts, nil when the server reported none. A caller that pays
+	// for the call reads it to record what the call cost.
+	Usage *ChatUsage `json:"usage,omitempty"`
+}
+
+// UnmarshalJSON decodes choices as before and reads usage leniently: a usage block that does
+// not decode (float counts, an array, a string) leaves Usage nil instead of failing the call.
+// Only context-guru reads usage; the judge plugins (ibac, sparc) share this client and never
+// did, so an off-shape usage block from an OpenAI-compatible server must not turn their calls
+// into errors (review finding).
+func (r *ChatResponse) UnmarshalJSON(b []byte) error {
+	var wire struct {
+		Choices []ChatChoice    `json:"choices"`
+		Usage   json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal(b, &wire); err != nil {
+		return err
+	}
+	r.Choices, r.Usage = wire.Choices, nil
+	if len(wire.Usage) > 0 && string(wire.Usage) != "null" {
+		var u ChatUsage
+		if json.Unmarshal(wire.Usage, &u) == nil {
+			r.Usage = &u
+		}
+	}
+	return nil
+}
+
+// ChatUsage is the OpenAI chat-completions usage block. PromptTokens INCLUDES the cached
+// tokens; CachedTokens says how many of them were served from the provider's prompt cache.
+type ChatUsage struct {
+	PromptTokens        int                 `json:"prompt_tokens"`
+	CompletionTokens    int                 `json:"completion_tokens"`
+	PromptTokensDetails *PromptTokenDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// PromptTokenDetails is the prompt-token breakdown inside ChatUsage.
+type PromptTokenDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// CachedTokens is the part of PromptTokens served from cache, 0 when not reported.
+func (u ChatUsage) CachedTokens() int {
+	if u.PromptTokensDetails == nil {
+		return 0
+	}
+	return u.PromptTokensDetails.CachedTokens
 }
 
 // ErrUncertain signals "the LLM responded but its output is

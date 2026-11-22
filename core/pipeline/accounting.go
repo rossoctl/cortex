@@ -1,6 +1,11 @@
 package pipeline
 
-import "github.com/rossoctl/accountant"
+import (
+	"log/slog"
+	"sync/atomic"
+
+	"github.com/rossoctl/accountant"
+)
 
 // RequestAccountant is the per-request hook the accountant host (core/accounting.Host)
 // implements. Pipeline.Run calls RequestStart before the first plugin and RequestEnd after
@@ -48,20 +53,75 @@ func (c *Context) ClientBody() []byte { return c.clientBody }
 // plugin runs under on_error: observe, because its write was computed and not sent. A DryRun the
 // plugin set itself is kept. A plugin whose write did not apply reports the op with DryRun set,
 // or no op.
+//
+// The stamp reads the plugin being dispatched, so ReportOps belongs on the request goroutine,
+// inside OnRequest. A call from any other goroutine uses ReportOpsAs.
 func (c *Context) ReportOps(ops ...accountant.Operation) {
+	if len(ops) == 0 {
+		return
+	}
+	operator, dryRun := c.currentPlugin, c.currentPolicy == ErrorPolicyObserve
+	c.appendOps(operator, dryRun, ops)
+}
+
+// ReportOpsAs records ops like ReportOps, with the operator (for an op that names none) and the
+// dry-run state given rather than read from the plugin being dispatched. It is safe for
+// concurrent use, so it is the form for a report that may come from a goroutine other than the
+// request's: an engine's model call, which context-guru makes on goroutines of its own. Capture
+// operator and dryRun (Observing) on the request goroutine and pass them in.
+//
+// It returns false when the ops were dropped because the request's op list was already sealed:
+// Pipeline.Run seals it right before handing it to the accountant, so an op reported after the
+// request left (a detached model call, design §2 non-goal) reaches no figure. Each dropped op is
+// counted in LateOpsDropped.
+func (c *Context) ReportOpsAs(operator string, dryRun bool, ops ...accountant.Operation) bool {
+	if len(ops) == 0 {
+		return true
+	}
+	return c.appendOps(operator, dryRun, ops)
+}
+
+func (c *Context) appendOps(operator string, dryRun bool, ops []accountant.Operation) bool {
+	c.opsMu.Lock()
+	defer c.opsMu.Unlock()
+	if c.opsSealed {
+		lateOpsDropped.Add(int64(len(ops)))
+		slog.Debug("pipeline: context operation reported after the request was accounted; dropped",
+			"operator", operator, "ops", len(ops))
+		return false
+	}
 	for _, op := range ops {
 		if op.Operator == "" {
-			op.Operator = c.currentPlugin
+			op.Operator = operator
 		}
-		if c.currentPolicy == ErrorPolicyObserve {
+		if dryRun {
 			op.DryRun = true
 		}
 		c.reportedOps = append(c.reportedOps, op)
 	}
+	return true
 }
+
+// sealOps closes the op list: Run calls it right before RequestEnd reads ReportedOps.
+func (c *Context) sealOps() {
+	c.opsMu.Lock()
+	c.opsSealed = true
+	c.opsMu.Unlock()
+}
+
+// lateOpsDropped counts, per process, the ops reported after their request's list was sealed.
+var lateOpsDropped atomic.Int64
+
+// LateOpsDropped returns how many context operations this process dropped because they were
+// reported after their request was handed to the accountant (ReportOpsAs). Model calls an engine
+// detaches from the request it served land here: they are a non-goal of the accountant
+// integration, and this count says how often they happen.
+func LateOpsDropped() int64 { return lateOpsDropped.Load() }
 
 // ReportedOps returns a copy of the ops reported so far, in the order they were reported.
 func (c *Context) ReportedOps() []accountant.Operation {
+	c.opsMu.Lock()
+	defer c.opsMu.Unlock()
 	if len(c.reportedOps) == 0 {
 		return nil
 	}
@@ -90,16 +150,15 @@ func (c *Context) AccountingThread() (id, parent string, ok bool) {
 // before any Run (a test, or a listener that reads it itself) still gets a stable answer: once
 // taken, the snapshot never changes, even if Headers does later.
 //
-// Why it has to be this early: what BillingFrom must see is the CLIENT's credential, and the
-// outbound chain's own plugins replace it before the request leaves — token-exchange, tokenbroker,
-// inference-router's setKey and staticinject all rewrite Authorization. Read after them, the mode
-// would be misclassified (often as "unknown", which drops every saving out of the dollar totals).
-//
-// No shipped listener shares one pctx between chains: extproc builds a fresh one in each of
-// handleInbound, handleInboundBody, handleOutbound and handleOutboundBody; reverseproxy runs only
-// the inbound chain and forwardproxy only the outbound one. Pipeline.Run still calls this on every
-// direction's Pipeline, so a listener that did run both chains on one pctx would get the
-// snapshot from the first Run, before an inbound rewrite (jwt-validation's placeholder_mode) too.
+// Why it has to be this early: the accountant is wired on the outbound chain only
+// (core/accounting.Host.RequestStart), which on every listener runs its Pipeline.Run AFTER the
+// inbound chain's own Run on the same pctx. jwt-validation's placeholder_mode and token-exchange
+// both rewrite Authorization on the inbound chain, so reading it fresh at outbound-RequestStart
+// time sees the rewrite, not the client's own credential — silently misclassifying the billing
+// mode as "unknown" and zeroing every saving's dollar total for that request (review finding on
+// host.go:214). Pipeline.Run calls this unconditionally, on every direction's Pipeline object,
+// specifically so the FIRST one to run — inbound when the listener runs it first, as every
+// shipped listener does — wins the snapshot.
 func (c *Context) BillingSnapshot() accountant.Billing {
 	if !c.billingSet {
 		c.billing, c.billingSet = accountant.BillingFrom(c.Headers), true
