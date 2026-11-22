@@ -201,16 +201,19 @@ func hostOf(baseURL string) string {
 // carries no pctx, since it is shared across requests — OnRequest copies it per
 // request with staticModelFor so Complete can report its spend op to the right one.
 type ContextGuru struct {
-	cfg      contextGuruConfig
-	pipe     *cgcomponents.Pipeline
-	store    cgstore.Store
-	sentinel string // unguessable value carried by our own LLM calls
-	static   *cgModel
-	modelTO  time.Duration
-	modelMax int
-
-	// localInstall is set by plugins.BuildWithDeps before Configure: on a local install the
-	// model calls bypass HTTPS_PROXY (see localModelTransport).
+	cfg   contextGuruConfig
+	pipe  *cgcomponents.Pipeline
+	store cgstore.Store
+	// stateDisk is the store's disk copy (attachStateDB), nil when the state is in memory only.
+	// Shutdown closes it, which flushes the pending writes.
+	stateDisk *cgstore.Disk
+	sentinel  string // unguessable value carried by our own LLM calls
+	static    *cgModel
+	modelTO   time.Duration
+	modelMax  int
+	// localInstall is plugins.Deps.LocalInstall (SetLocalInstall), set before Configure. It
+	// decides where the session state is kept (attachStateDB) and whether the model calls bypass
+	// HTTPS_PROXY (localModelTransport).
 	localInstall bool
 
 	// lateModelCalls counts model calls whose spend op was dropped because the call returned
@@ -246,8 +249,10 @@ func (p *ContextGuru) Capabilities() pipeline.PluginCapabilities {
 	}
 }
 
-// SetLocalInstall is how plugins.BuildWithDeps says whether this is a local install, which decides
-// whether the plugin's model calls may use HTTPS_PROXY.
+// SetLocalInstall receives whether this is a laptop install (plugins.Deps, before Configure). On a
+// local install the plugin keeps its session state at ~/.cortex/context-guru-state.db, and in the
+// user cache directory otherwise (attachStateDB); and its model calls bypass HTTPS_PROXY (see
+// localModelTransport).
 func (p *ContextGuru) SetLocalInstall(local bool) { p.localInstall = local }
 
 func (p *ContextGuru) Configure(raw json.RawMessage) error {
@@ -274,6 +279,12 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("context-guru build pipeline: %w", err)
 	}
 	p.pipe = pipe
+	// The state keys live a day in memory when a database backs them, as in context-guru's own
+	// proxy: a session that returns later is loaded from the database. An explicit
+	// store.state_ttl_seconds wins.
+	if (cfg.Store.Enabled == nil || *cfg.Store.Enabled) && cfg.Store.StateTTLSeconds == 0 {
+		cfg.Store.StateTTLSeconds = int(stateTTLDefault / time.Second)
+	}
 	p.store = cfg.NewStore()
 	// Per-process random value, not a constant: outbound headers are the
 	// agent's own request, and a caller who can set headers must not be able
@@ -316,9 +327,15 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 			}
 		}
 	}
+	// Last, once nothing above can fail: a Configure that returns an error leaves no disk flusher
+	// running. A second Configure on one instance flushes the first one's first.
+	if p.stateDisk != nil {
+		_ = p.stateDisk.Close()
+	}
+	p.stateDisk = attachStateDB(p.store, p.localInstall)
 	slog.Info("context-guru configured",
 		"paths", p.cfg.Paths, "modelConfigured", p.static != nil,
-		"engineBytes", len(engine))
+		"engineBytes", len(engine), "stateOnDisk", p.stateDisk != nil)
 	return nil
 }
 
@@ -425,6 +442,14 @@ func reportResult(pctx *pipeline.Context, res apply.Result) (out []byte, changed
 // later integration; the Store + session key are already threaded for it.
 func (p *ContextGuru) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// Shutdown closes the state's disk copy before returning, which flushes its pending writes.
+func (p *ContextGuru) Shutdown(context.Context) error {
+	if p.stateDisk != nil {
+		_ = p.stateDisk.Close()
+	}
+	return nil
 }
 
 // gated reports whether the request path is an inference path the plugin acts on.

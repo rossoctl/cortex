@@ -416,6 +416,15 @@ snapshot file, rewritten every 60s, holds what memory holds. A snapshot older th
 1h is not restored at startup, so a proxy stopped for more than an hour starts
 without it. This applies to both `DELETE` routes.
 
+**The context-guru plugin's session state is not cleared either, and it holds content.**
+Where the plugin runs, its state is kept in `~/.cortex/context-guru-state.db` on a local
+install (see [context-guru-plugin.md](context-guru-plugin.md)): the summary checkpoint and
+other text the plugin made from the conversation, plus counts and ids. Neither `DELETE` route
+touches it, so an erased session's summary stays in the file until its rows expire, 30 days
+after their last write. To remove it now, stop the proxy and delete the file
+(`agentop service stop`, then `rm ~/.cortex/context-guru-state.db*`); the plugin creates a new
+one at the next start. This applies to both `DELETE` routes.
+
 An erased session comes back on the next `agentop import` while its transcript
 is still on disk. It comes back as an imported session. The erase keeps a
 forget record of the session, so the import does not count its cost again.
