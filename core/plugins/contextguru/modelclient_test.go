@@ -2,6 +2,8 @@ package contextguru
 
 import (
 	"net/http"
+	"net/url"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -40,8 +42,8 @@ func TestModelHTTPClient_SharedDeploymentKeepsTheEnvironmentProxy(t *testing.T) 
 	if !ok {
 		t.Fatalf("Transport = %T, want *http.Transport", c.Transport)
 	}
-	if tr.Proxy == nil {
-		t.Error("the shared model client's transport has no Proxy func; an egress proxy in HTTPS_PROXY would be bypassed")
+	if !isEnvProxy(tr.Proxy) {
+		t.Error("the shared model client's transport does not use ProxyFromEnvironment; an egress proxy in HTTPS_PROXY would be bypassed")
 	}
 	if modelHTTPClient(0, false).Transport != c.Transport {
 		t.Error("each client got its own transport; the plugin's calls should share one pool")
@@ -49,4 +51,27 @@ func TestModelHTTPClient_SharedDeploymentKeepsTheEnvironmentProxy(t *testing.T) 
 	if modelHTTPClient(0, true).Transport == c.Transport {
 		t.Error("the local and shared clients share a transport; one of them has the wrong Proxy")
 	}
+}
+
+// The plugin passes what BuildWithDeps told it (plugins.LocalInstallConsumer) to every client it
+// builds: the keep-alive ping client here, the model clients through the same flag.
+func TestPlugin_ProxyFollowsLocalInstall(t *testing.T) {
+	for _, local := range []bool{true, false} {
+		p := New()
+		p.SetLocalInstall(local)
+		if err := p.Configure([]byte(`{"context_window":{"model_info":"off"},"keep_alive":{"enabled":true}}`)); err != nil {
+			t.Fatal(err)
+		}
+		tr := p.disp.client.Transport.(*http.Transport)
+		if got := tr.Proxy == nil; got != local {
+			t.Errorf("local=%v: ping client Proxy nil = %v, want %v", local, got, local)
+		}
+		if !local && !isEnvProxy(tr.Proxy) {
+			t.Errorf("off a local install the ping client's Proxy is not ProxyFromEnvironment")
+		}
+	}
+}
+
+func isEnvProxy(f func(*http.Request) (*url.URL, error)) bool {
+	return f != nil && reflect.ValueOf(f).Pointer() == reflect.ValueOf(http.ProxyFromEnvironment).Pointer()
 }

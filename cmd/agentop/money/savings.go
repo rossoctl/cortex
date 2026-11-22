@@ -14,7 +14,7 @@ import (
 // Only AvoidedMicros, PenaltyMicros and PluginSpendMicros are money in the window's unit. A
 // subscription saving is in usage-limit units, with its API-equivalent dollars beside it and
 // labelled so; a figure whose billing mode is unknown is shown and never added; the plugins' own
-// model-call spend has its own line.
+// model-call spend has its own line, and so does keep-alive spend, split by basis the same way.
 
 // NetMicros is saved minus penalty: what the context operators saved net of what they caused. Not
 // floored — a negative net means they cost more than they saved.
@@ -74,5 +74,32 @@ func AccountantLines(c usage.Counts, unit string) []Line {
 		}
 		out = append(out, Line{"plugin model calls", strings.Join(parts, "   ")})
 	}
+	if c.KeepAlivePings != 0 || c.KeepAliveMicros != 0 || c.KeepAliveUnits != 0 || c.KeepAliveUnknownMicros != 0 {
+		// Split like plugin spend: only pings on an API key are money. A subscription's pings
+		// are units, their API equivalent labelled beside them; unknown billing is apart.
+		var parts []string
+		if c.KeepAliveMicros != 0 {
+			parts = append(parts, Signed(c.KeepAliveMicros, unit))
+		}
+		if c.KeepAliveUnits != 0 {
+			f := unitsOf(c.KeepAliveUnits) + " units"
+			if c.KeepAliveAPIEquivalentMicros != 0 {
+				f += " (API equivalent " + Signed(c.KeepAliveAPIEquivalentMicros, unit) + ")"
+			}
+			parts = append(parts, f)
+		}
+		if c.KeepAliveUnknownMicros != 0 {
+			parts = append(parts, Signed(c.KeepAliveUnknownMicros, unit)+" unknown billing")
+		}
+		parts = append(parts, fmt.Sprintf("%d ping%s", c.KeepAlivePings, plural(c.KeepAlivePings)))
+		out = append(out, Line{"keep-alive", strings.Join(parts, "   ")})
+	}
 	return out
+}
+
+func plural(n int64) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }

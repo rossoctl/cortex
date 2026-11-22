@@ -44,6 +44,14 @@ var (
 	sharedModelTransport = sync.OnceValue(func() *http.Transport { return newModelTransport(false) })
 )
 
+// modelTransport is the shared transport for this kind of deployment: see localModelTransport.
+func modelTransport(localInstall bool) *http.Transport {
+	if localInstall {
+		return localModelTransport()
+	}
+	return sharedModelTransport()
+}
+
 // modelHTTPClient is the http.Client for one llmclient.Client the plugin builds: the transport for
 // this kind of deployment (see localModelTransport), the per-call timeout, and llmclient's sentinel
 // redirect policy, which llmclient installs only on the client it builds itself.
@@ -58,6 +66,6 @@ func modelHTTPClient(timeout time.Duration, localInstall bool) *http.Client {
 	return &http.Client{
 		Timeout:       timeout,
 		CheckRedirect: llmclient.SentinelRedirectPolicy(sentinelHeader),
-		Transport:     tr,
+		Transport:     modelTransport(localInstall),
 	}
 }

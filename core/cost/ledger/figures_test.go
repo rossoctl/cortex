@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // The accountant's figures reach the durable row (design §5.9, §5.7a): penalty beside the gross
@@ -61,7 +62,137 @@ func TestRow_AnOldRowReadsTheNewFieldsAsZero(t *testing.T) {
 		t.Fatal(err)
 	}
 	if r.AvoidedMicros != 120 || r.PenaltyMicros != 0 || r.AvoidedUnits != 0 || r.PenaltyUnits != 0 ||
-		r.AvoidedUnknownMicros != 0 || r.PluginSpendMicros != 0 {
+		r.AvoidedUnknownMicros != 0 || r.PluginSpendMicros != 0 || r.KeepAliveMicros != 0 || r.KeepAlivePings != 0 {
 		t.Errorf("old row = %+v, want the new fields zero and the old ones as written", r.Counts)
+	}
+}
+
+// A keep-alive ping's record writes a row that counts the ping and its spend apart from the
+// agent's requests: KeepAlivePings and KeepAliveMicros, with no Requests, tokens or cost.
+func TestRow_AKeepAlivePingIsItsOwnColumn(t *testing.T) {
+	dir := t.TempDir()
+	w := newTestWriter(t, dir, func() time.Time { return at })
+	rec, err := json.Marshal(event.Event{CostUSD: 0.002, Settled: true, Provenance: "configured", Purpose: event.PurposeKeepAlive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Record("s1", &pipeline.SessionEvent{
+		At: at, Phase: pipeline.SessionResponse, StatusCode: 200, Host: "api.anthropic.com",
+		Inference: &pipeline.InferenceExtension{Model: "claude-opus-5", InputTokens: 3, CacheReadTokens: 20_000, OutputTokens: 1},
+		Plugins:   map[string]json.RawMessage{event.Key: rec},
+	})
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	rows := readAllRows(t, dir)
+	if len(rows) != 1 {
+		t.Fatalf("%d rows, want 1", len(rows))
+	}
+	r := rows[0]
+	if r.KeepAlivePings != 1 || r.KeepAliveMicros != 2_000 {
+		t.Errorf("keep-alive = %d pings, %d micros; want 1 and 2000", r.KeepAlivePings, r.KeepAliveMicros)
+	}
+	if r.Requests != 0 || r.CostMicros != 0 || r.Tokens != 0 || r.PricedRequests != 0 || r.PriceableRequests != 0 {
+		t.Errorf("a ping reached the request figures: %+v", r.Counts)
+	}
+}
+
+// A keep-alive ping that priced nothing still counts as a ping, as it does in the ring: dropping
+// it made window=today read fewer pings than window=1h (review finding).
+func TestRow_AnUnpricedKeepAlivePingIsCounted(t *testing.T) {
+	dir := t.TempDir()
+	w := newTestWriter(t, dir, func() time.Time { return at })
+	rec, err := json.Marshal(event.Event{Purpose: event.PurposeKeepAlive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Record("s1", &pipeline.SessionEvent{
+		At: at, Phase: pipeline.SessionResponse, StatusCode: 200, Host: "api.anthropic.com",
+		Plugins: map[string]json.RawMessage{event.Key: rec},
+	})
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	rows := readAllRows(t, dir)
+	if len(rows) != 1 {
+		t.Fatalf("%d rows, want 1", len(rows))
+	}
+	r := rows[0]
+	if r.KeepAlivePings != 1 || r.KeepAliveMicros != 0 {
+		t.Errorf("keep-alive = %d pings, %d micros; want 1 and 0", r.KeepAlivePings, r.KeepAliveMicros)
+	}
+	if r.Requests != 0 || r.PricedRequests != 0 || r.PriceableRequests != 0 {
+		t.Errorf("an unpriced ping reached the request figures: %+v", r.Counts)
+	}
+}
+
+// A keep-alive ping on a subscription login is not money: its row books the ping and its
+// usage-limit units, with the API-equivalent dollars beside them, and nothing in KeepAliveMicros.
+// An unknown-billing ping is shown apart. Both still count in KeepAlivePings.
+func TestRow_ANonUSDPingBooksNoMoney(t *testing.T) {
+	for _, tc := range []struct {
+		basis                  string
+		micros, units, unknown int64
+		apiEquivalent          int64
+	}{
+		{event.BasisSubscriptionEquivalent, 0, 1500, 0, 2000},
+		{event.BasisUnknown, 0, 0, 2000, 0},
+	} {
+		dir := t.TempDir()
+		w := newTestWriter(t, dir, func() time.Time { return at })
+		rec, err := json.Marshal(event.Event{CostUSD: 0.002, Settled: true, Provenance: "configured",
+			Purpose: event.PurposeKeepAlive, Basis: tc.basis, Units: 1.5, Estimated: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Record("s1", &pipeline.SessionEvent{
+			At: at, Phase: pipeline.SessionResponse, StatusCode: 200, Host: "api.anthropic.com",
+			Inference: &pipeline.InferenceExtension{Model: "claude-opus-5", InputTokens: 3, CacheReadTokens: 20_000, OutputTokens: 1},
+			Plugins:   map[string]json.RawMessage{event.Key: rec},
+		})
+		if err := w.Flush(); err != nil {
+			t.Fatal(err)
+		}
+		rows := readAllRows(t, dir)
+		if len(rows) != 1 {
+			t.Fatalf("%s: %d rows, want 1", tc.basis, len(rows))
+		}
+		r := rows[0]
+		if r.KeepAlivePings != 1 || r.KeepAliveMicros != tc.micros || r.KeepAliveUnits != tc.units ||
+			r.KeepAliveUnknownMicros != tc.unknown || r.KeepAliveAPIEquivalentMicros != tc.apiEquivalent {
+			t.Errorf("%s: keep-alive = pings %d, micros %d, units %d, unknown %d, API equivalent %d; want 1, %d, %d, %d, %d",
+				tc.basis, r.KeepAlivePings, r.KeepAliveMicros, r.KeepAliveUnits, r.KeepAliveUnknownMicros,
+				r.KeepAliveAPIEquivalentMicros, tc.micros, tc.units, tc.unknown, tc.apiEquivalent)
+		}
+		if r.Requests != 0 || r.CostMicros != 0 {
+			t.Errorf("%s: a ping reached the request figures: %+v", tc.basis, r.Counts)
+		}
+	}
+}
+
+// A keep-alive ping's row books the record's figures once, beside its own spend: a saving on the
+// ping's record is counted once, not twice and not dropped.
+func TestRow_AKeepAlivePingsFiguresAreBookedOnce(t *testing.T) {
+	dir := t.TempDir()
+	w := newTestWriter(t, dir, func() time.Time { return at })
+	rec, err := json.Marshal(event.Event{CostUSD: 0.002, Settled: true, Provenance: "configured", Purpose: event.PurposeKeepAlive,
+		Avoided: []event.Saving{{Component: "keeper", Basis: event.BasisUSD, USD: 0.0005}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Record("s1", &pipeline.SessionEvent{
+		At: at, Phase: pipeline.SessionResponse, StatusCode: 200, Host: "api.anthropic.com",
+		Inference: &pipeline.InferenceExtension{Model: "claude-opus-5", InputTokens: 3, CacheReadTokens: 20_000, OutputTokens: 1},
+		Plugins:   map[string]json.RawMessage{event.Key: rec},
+	})
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	rows := readAllRows(t, dir)
+	if len(rows) != 1 {
+		t.Fatalf("%d rows, want 1", len(rows))
+	}
+	if r := rows[0]; r.AvoidedMicros != 500 || r.KeepAliveMicros != 2_000 || r.KeepAlivePings != 1 {
+		t.Errorf("row = avoided %d, keep-alive %d micros, %d pings; want 500, 2000, 1", r.AvoidedMicros, r.KeepAliveMicros, r.KeepAlivePings)
 	}
 }
