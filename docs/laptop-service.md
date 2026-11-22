@@ -689,9 +689,11 @@ curl -X DELETE http://localhost:47601/v1/sessions/<id>
 ```
 
 Neither erases the savings accountant's own per-session state: ids, content hashes and the
-billing mode, no content, in memory and in `~/.cortex/accountant-state.json`. It stays until
-newer sessions push it out (at most 10,000 threads are kept), and a state file older than 1 hour
-is not read at startup (see [session-api.md](session-api.md#delete-v1sessions)).
+billing mode, no content, in memory and in `~/.cortex/accountant-state.json`, plus the
+keep-alive keeper's masked credential. The keeper's entries go within about 13.5 minutes at its
+defaults. The rest stays until newer sessions push it out (at most 10,000 threads are
+kept), and a state file older than 1 hour is not read at startup (see
+[session-api.md](session-api.md#delete-v1sessions)).
 
 Either is refused — a 403 saying why — unless the request names a loopback host
 (`localhost`, `127.0.0.1` or `[::1]`), carries no `Origin` header, and reaches a proxy bound to
@@ -746,8 +748,8 @@ it explicitly to change the default; `agentop service restart` applies it.
 
 ### The `accounting:` configuration
 
-The accountant prices what the context operators (`context-guru`, `tool-prune`) saved. Its
-figures land in the cost records' `avoided[]` and `spends[]`
+The accountant prices what the context operators (`context-guru`, `tool-prune`) saved, and
+what the keep-alive pings cost. Its figures land in the cost records' `avoided[]` and `spends[]`
 (see [pricing.md](pricing.md#cost-records)). The block is the same on a laptop and in a cluster.
 
 ```yaml
@@ -767,7 +769,11 @@ accounting:
 | `subscription_weights` | the API rate ratios | How much of a subscription's usage limit one token of each tier uses. A saving on a subscription login is valued in these units (`units`, `penaltyUnits`), never in dollars. A key you leave out keeps its default; an explicit `0` stays `0`; a negative weight is refused. |
 
 On a local install the accountant keeps its state in `~/.cortex/accountant-state.json`, so
-a restart does not forget which prefix the provider has cached. Both fields are read once at
+a restart does not forget which prefix the provider has cached. The file holds hashes and sizes,
+never prompt text. If the state passes 20 MiB, Cortex leaves the threads seen longest ago out of
+the file, so it stays under 20 MiB, and logs one WARN (`over its size limit`). Those threads stay
+in memory; only a restart forgets them. If Cortex does not know the file's format (a newer
+accountant), it removes the file instead and a restart starts fresh. Both fields are read once at
 startup. A reload that changes a weight is refused, and so is a reload that turns accounting
 on (as resolved) when the proxy started with it off; `agentop service restart` applies either.
 A reload that turns it off is accepted: the accountant stays idle until a later reload turns

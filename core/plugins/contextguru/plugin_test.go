@@ -614,7 +614,7 @@ func TestModelsForBuildsNeitherModelUnderObserve(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := configured(t, `{}`)
+			p := configured(t, `{`+offline+`}}`)
 			grab := &modelsForGrabber{p: p, provider: tc.provider}
 			pl, err := pipeline.New([]pipeline.Plugin{grab}, pipeline.WithPolicies(pipeline.ErrorPolicyObserve))
 			if err != nil {

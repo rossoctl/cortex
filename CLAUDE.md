@@ -265,11 +265,13 @@ guards on the two `DELETE` routes. The producer-side contract is in
 
 **`DELETE /v1/sessions` and `DELETE /v1/sessions/{id}` do not clear the accountant's
 per-session state:** the Tracker state and `~/.cortex/accountant-state.json`, the
-per-thread billing mode in `core/accounting.Host`, and the context-guru plugin's session
-state in `~/.cortex/context-guru-state.db`. The accountant state holds session and thread
-ids, content hashes and a billing mode, no content. The context-guru state DOES
+per-thread billing mode and pending ping facts in `core/accounting.Host`, the
+context-guru keeper's entries, and the context-guru plugin's session state in
+`~/.cortex/context-guru-state.db`. The accountant state and the keeper hold session and thread
+ids, content hashes and a billing mode, no content; the keeper also holds the caller's
+credential, masked. The context-guru state DOES
 hold content (the summary checkpoint and other text the plugin made), and its rows stay 30 days
-after their last write. The rest
+after their last write. The keeper's entries go at `(max_pings + 1) × idle_seconds`. The rest
 has no time bound while the process runs: the in-memory maps keep at most 10,000 threads,
 dropping the oldest, and the snapshot (rewritten every 60s) holds what memory holds. A snapshot
 older than 1h is not restored. Details:
@@ -279,8 +281,11 @@ older than 1h is not restored. Details:
 rows carry `avoidedMicros` and, omitted rather than zero like every figure there,
 `penaltyMicros`, `avoidedUnits`, `penaltyUnits`, `avoidedApiEquivalentMicros`,
 `avoidedUnknownMicros`, `pluginSpendMicros`, `pluginSpendUnits` and
-`pluginSpendUnknownMicros`. `/v1/usage` totals and ledger rows carry the same fields.
-Plugin spend is not in `costMicros`. What each sums:
+`pluginSpendUnknownMicros`. `/v1/usage` totals and ledger rows carry the same fields plus
+`keepAlivePings` and the pings' spend by the thread's billing basis (`keepAliveMicros` on an API
+key, `keepAliveUnits` and `keepAliveApiEquivalentMicros` on a subscription,
+`keepAliveUnknownMicros` otherwise): a keep-alive ping is in no request, token, cost or
+latency figure. Plugin spend is not in `costMicros`. What each sums:
 [`docs/pricing.md`](docs/pricing.md#cost-records).
 
 ## Config Hot-Reload (`:9093/reload/status`)

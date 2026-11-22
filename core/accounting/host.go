@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rossoctl/accountant"
@@ -75,17 +76,32 @@ type Host struct {
 	snapshotPath string
 	stop         chan struct{}
 	saver        sync.WaitGroup
-	closeOnce    sync.Once
-	closeErr     error
+	// dirty is set when a record changes the Tracker state (EndRequest, Compute), and cleared by
+	// a periodic save. The library's Snapshot holds its tracker lock for the whole marshal,
+	// which blocks every BeginRequest meanwhile, so an idle process does not take it at all.
+	dirty atomic.Bool
+	// snapshotTooBig is true while the state is over snapshotMaxBytes, so save WARNs once per
+	// crossing. Only save touches it, and saves are serialized: the saveLoop goroutine, then
+	// Close after saver.Wait.
+	snapshotTooBig bool
+	closeOnce      sync.Once
+	closeErr       error
 
 	mu            sync.Mutex
 	recorders     []session.Recorder
 	threadBilling map[threadBillingKey]threadBillingEntry
+	// pingFacts holds the latest keep-alive ping's facts per (session, thread), until the
+	// thread's next priced request takes them (ping.go). Bounded by pingFactsCap.
+	pingFacts map[threadBillingKey]pingEntry
 
 	// Test hooks. beforeEnd runs first on the record's goroutine, computeHook just before the
 	// library's Compute, onEnd with the ops the record was given, metaHook with the
-	// RequestMeta RequestEnd built (synchronously, before the record's goroutine starts). Nil
-	// outside tests.
+	// RequestMeta RequestEnd built (synchronously, before the record's goroutine starts),
+	// factsHook with the EntryFacts the record is ended with, usageHook with the
+	// accountant.Usage Compute built from pctx.Extensions.Inference, just before it is
+	// handed to the library (added for task 7's CacheWrite1h plumbing, 2026-11-17
+	// accountant-integration — Compute's own return carries no usage, only Ops/Checks/
+	// Unpriced, so a test asserting what was BUILT needs its own hook). Nil outside tests.
 	beforeEnd   func()
 	computeHook func()
 	// computeWait overrides the package computeWait when positive. Tests only: a test that runs
@@ -93,11 +109,8 @@ type Host struct {
 	computeWait time.Duration
 	onEnd       func(ops []accountant.Operation)
 	metaHook    func(meta accountant.RequestMeta)
-	// usageHook sees the accountant.Usage Compute built from pctx.Extensions.Inference, just
-	// before it is handed to the library (added for task 7's CacheWrite1h plumbing — Compute's
-	// own return carries no usage, only Ops/Checks/Unpriced, so a test asserting what was BUILT
-	// needs its own hook). Nil outside tests.
-	usageHook func(u accountant.Usage)
+	factsHook   func(f accountant.EntryFacts)
+	usageHook   func(u accountant.Usage)
 }
 
 // threadBillingKey keys Host.threadBilling: a thread id is only unique within its session.
@@ -183,6 +196,12 @@ type pending struct {
 	done       chan struct{}
 	req        *accountant.Request
 	serverHeld bool
+	// ping is the (session, thread) whose ping facts the record was ended with, and pingWindow
+	// their window; Compute drops them once the request is priced. pinged is false when there
+	// were none.
+	ping       threadBillingKey
+	pingWindow string
+	pinged     bool
 
 	computeMu sync.Mutex
 	computed  bool
@@ -366,7 +385,19 @@ func (h *Host) end(p *pending, format wire.Format, meta accountant.RequestMeta, 
 		req.Add(op)
 	}
 	// The cache facts come from the bytes sent: the marks there are the ones the provider reads.
-	req.EndRequest(thread, fwdBody, fwdBPs, facts.For(provider, meta.Model, wire.AllMarksAsk1h(forwarded)))
+	f := facts.For(provider, meta.Model, wire.AllMarksAsk1h(forwarded))
+	// The thread's last ping, if one was sent since its previous request (design §5.8). Kept
+	// until Compute prices this request, so a request that books nothing leaves them.
+	if pf, ok := h.peekPing(meta.Session, thread.ID); ok {
+		pf.Apply(&f)
+		p.ping = threadBillingKey{session: meta.Session, thread: thread.ID}
+		p.pingWindow, p.pinged = pf.PingWindow, true
+	}
+	if h.factsHook != nil {
+		h.factsHook(f)
+	}
+	req.EndRequest(thread, fwdBody, fwdBPs, f)
+	h.dirty.Store(true)
 	if h.onEnd != nil {
 		h.onEnd(ops)
 	}
@@ -444,7 +475,11 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 		h.usageHook(usage)
 	}
 	p.result, p.ok = h.computeSafe(p.req, usage)
+	h.dirty.Store(true)
 	p.req = nil
+	if p.ok && p.pinged {
+		h.dropPing(p.ping.session, p.ping.thread, p.pingWindow)
+	}
 	return p.result, p.ok
 }
 

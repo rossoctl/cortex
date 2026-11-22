@@ -560,8 +560,9 @@ func labelFor(r Row, group usage.Group) (string, bool) {
 func CurrenciesIn(rows []Row) []string {
 	var figured []Row
 	for _, r := range rows {
-		if r.PricedRequests > 0 || r.AvoidedMicros > 0 || r.PenaltyMicros > 0 || r.AvoidedUnknownMicros > 0 ||
-			r.AvoidedAPIEquivalentMicros > 0 || r.PluginSpendMicros > 0 || r.PluginSpendUnknownMicros > 0 {
+		if r.PricedRequests > 0 || r.AvoidedMicros > 0 || r.PenaltyMicros > 0 || r.AvoidedUnknownMicros != 0 ||
+			r.AvoidedAPIEquivalentMicros != 0 || r.PluginSpendMicros > 0 || r.PluginSpendUnknownMicros > 0 || r.KeepAliveMicros > 0 ||
+			r.KeepAliveAPIEquivalentMicros > 0 || r.KeepAliveUnknownMicros > 0 {
 			figured = append(figured, r)
 		}
 	}

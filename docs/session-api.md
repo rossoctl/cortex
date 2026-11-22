@@ -405,9 +405,13 @@ the server must have been built with clearing allowed
 
 **The accountant's per-session state is not cleared** by either `DELETE` route.
 That is the Tracker state (in memory, and in `~/.cortex/accountant-state.json` on
-a local install) and the billing mode of each thread's last request (in
-`core/accounting.Host`). They hold session and thread ids, content hashes and a billing
-mode, never content. The rest has no time bound
+a local install), the billing mode of each thread's last request and any keep-alive
+ping facts not yet credited (both in `core/accounting.Host`), and the context-guru
+keeper's entries. They hold session and thread ids, content hashes and a billing
+mode, never content; a keeper entry also holds the caller's credential, masked.
+A keeper entry is released at `(max_pings + 1) × idle_seconds` (about 12 minutes
+at the defaults); until then it can still ping the erased session, and that spend
+goes to the cost ledger, which the erase keeps anyway. The rest has no time bound
 while the process runs: the in-memory maps keep at most 10,000 threads and drop the
 oldest, and the snapshot file, rewritten every 60s, holds what memory holds. A
 snapshot older than 1h is not restored at startup, so a proxy stopped for more than
@@ -424,9 +428,13 @@ one at the next start. This applies to both `DELETE` routes.
 
 **The accountant's per-session state is not cleared** by either `DELETE` route.
 That is the Tracker state (in memory, and in `~/.cortex/accountant-state.json` on
-a local install) and the billing mode of each thread's last request (in
-`core/accounting.Host`). They hold session and thread ids, content hashes and a billing
-mode, never content. The rest has no time bound
+a local install), the billing mode of each thread's last request and any keep-alive
+ping facts not yet credited (both in `core/accounting.Host`), and the context-guru
+keeper's entries. They hold session and thread ids, content hashes and a billing
+mode, never content; a keeper entry also holds the caller's credential, masked.
+A keeper entry is released at `(max_pings + 1) × idle_seconds` (about 13.5 minutes
+at the defaults); until then it can still ping the erased session, and that spend
+goes to the cost ledger, which the erase keeps anyway. The rest has no time bound
 while the process runs: the in-memory maps keep at most 10,000 threads and drop the
 oldest, and the snapshot file, rewritten every 60s, holds what memory holds. A
 snapshot older than 1h is not restored at startup, so a proxy stopped for more than
