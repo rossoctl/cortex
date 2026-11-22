@@ -118,10 +118,10 @@ func TestDemoConfig_WriteLoadsAndValidates(t *testing.T) {
 		gotPlugins[i] = p.Name
 	}
 	// The parsers come first: the pipeline refuses a chain where a body reader
-	// follows any body writer, and tool-prune, the one writer this config ships,
-	// rewrites the request body. Request writers may chain after the readers —
-	// agentop server add appends the inference-router after tool-prune.
-	wantPlugins := []string{"inference-parser", "mcp-parser", "a2a-parser", "tool-prune"}
+	// follows any body writer, and tool-prune and context-guru, the two writers
+	// this config ships, rewrite the request body. Request writers may chain
+	// after the readers — agentop server add appends the inference-router last.
+	wantPlugins := []string{"inference-parser", "mcp-parser", "a2a-parser", "tool-prune", "context-guru"}
 	if !slices.Equal(gotPlugins, wantPlugins) {
 		t.Errorf("outbound plugins = %v, want %v", gotPlugins, wantPlugins)
 	}
