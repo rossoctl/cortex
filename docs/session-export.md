@@ -434,7 +434,7 @@ The export then carries two kinds of line, and every line says which it is:
 {"schema":1,"kind":"event","sessionId":"45fa31b2-…","seq":2077,"at":"2026-11-05T15:52:21Z"}
 {"schema":1,"kind":"toolCall","sessionId":"45fa31b2-…","startedAt":"2026-11-05T15:52:25.629885Z",
  "tool":"Bash","toolSource":"builtin","callSeq":2077,"callIndex":0,"resultSeq":2081,
- "durationMs":473,"endReason":"result","inputBytes":64,"resultBytes":1432,
+ "durationMs":473,"endReason":"result","resultBytes":1432,
  "agentRole":"main","client":"claude-code/2.1.270","modelMs":4279,"gapMs":812,"gapKind":"tool"}
 ```
 
@@ -456,7 +456,7 @@ that must handle both forms treats a missing `kind` as `event`.
 | Placement | `callSeq`, `callIndex`, `resultSeq` |
 | Tool | `tool`, `toolSource` |
 | Timing | `durationMs`, `endReason`, `modelMs`, `gapMs`, `gapKind` |
-| Effort | `inputBytes`, `resultBytes`, `isError` |
+| Effort | `resultBytes`, `isError` |
 | Batching | `parallelN`, `durationShared` |
 | Context | `agentRole`, `client`, `backgrounded` |
 
@@ -465,7 +465,9 @@ present, so every call can be placed on a timeline. The end, where there is one,
 `startedAt` plus `durationMs`.
 
 `callSeq` is the `seq` of the response that asked, and `resultSeq` the `seq` of the request
-that carried the result. Join on those to reach the event records either side. `resultSeq`
+that carried the result. Join on `sessionId` **and** one of those to reach the event records
+either side — `seq` counts from 1 within each session, so it is not unique across them.
+`resultSeq`
 is absent when no result ever arrived.
 
 `callIndex` is the call's position among the calls one response asked for, counting from 0.
@@ -477,6 +479,13 @@ A batch has no other order.
 `modelMs` is how long the asking response took. `gapMs` is the idle interval before that
 response, and `gapKind` says what the interval was. See
 [Model time, tool time and idle time](#model-time-tool-time-and-idle-time).
+
+`resultBytes` is the size of the tool's result. A size is not content.
+
+**There is no `inputBytes`.** The size of a call's arguments would be an effort proxy on the
+same terms as `resultBytes`, but Cortex builds these records with argument capture switched
+off, so no argument bytes exist to measure. Keeping arguments out of the export entirely is
+worth more than the one figure: a field read from text that was never loaded cannot leak it.
 
 ### A tool name is bounded, and an MCP name is hashed
 
@@ -500,8 +509,21 @@ Two consequences:
 - **Labels do not match across installs.** Two machines hash the same MCP name to different
   labels, so counts cannot be pooled by tool name. This is deliberate.
 
-Deleting the key makes new labels. Old exports then no longer compare, and the old labels
-cannot be recovered.
+To make new labels, delete the key — but **restart Cortex around the deletion**, in this
+order:
+
+```sh
+agentop service stop
+rm ~/.cortex/sessions/export-toolname-key
+agentop service start
+```
+
+A running proxy holds the key in memory after its first opted-in export, so deleting the
+file alone changes nothing: the next export still labels MCP tools under the old key until
+the process restarts.
+
+Old exports then no longer compare, and the old labels cannot be recovered. That is the
+same property that made a keyed hash safe to ship.
 
 `toolSource` says nothing about **where** a tool ran. A `Bash` call may run on a laptop or
 in a remote sandbox; an MCP tool may be served over stdio locally or over HTTP remotely.
@@ -586,35 +608,59 @@ agentop export --with-tool-calls \
 once, they share a start, and they share an end when their results come back together.
 `durationShared` marks such a record and `parallelN` says how many calls were in the batch.
 The marker says the window is shared — not that the calls ran at the same time. Summing
-their durations charges each call the whole window:
+their durations charges each call the whole window.
+
+Take the **longest** duration in each batch, once, and add the unbatched calls normally:
 
 ```sh
-# Tool time per session, taking a shared window once per batch.
+# Tool time per session: a shared window once per batch, lone calls summed.
 agentop export --with-tool-calls \
-  | jq -r 'select(.kind == "toolCall" and .durationMs != null)
-           | [.sessionId, .callSeq, (if .durationShared then "batch" else (.callIndex|tostring) end), .durationMs]
-           | @tsv' \
-  | sort -u \
-  | awk -F'\t' '{t[$1] += $4} END {for (s in t) print s, t[s]"ms"}'
+  | jq -s -r '[ .[] | select(.kind == "toolCall" and .durationMs != null) ]
+      | group_by([.sessionId, .callSeq])
+      | map({ sessionId: .[0].sessionId,
+              ms: (if .[0].durationShared
+                   then (map(.durationMs) | max)
+                   else (map(.durationMs) | add) end) })
+      | group_by(.sessionId)
+      | map({ sessionId: .[0].sessionId, total: (map(.ms) | add) })
+      | .[] | "\(.sessionId) \(.total)ms"'
 ```
+
+The maximum, not any member's duration: siblings in one batch can report different
+durations, because a result that arrives before its asking response finished is clamped to
+the call's start. The window is the longest of them. Deduplicating rows instead — on
+`sessionId`, `callSeq` and `durationMs` — keeps every distinct duration, so two siblings at
+100 ms and 200 ms report 300 ms where the shared window is 200 ms.
+
+This reads the whole stream into memory (`jq -s`). For a month of traffic, filter to one
+session or a `--since` window first.
 
 ### A capped session says so
 
-One session contributes at most 4096 tool-call records. A session past that limit gets a
-marker line instead of silence:
+Two limits bound what one session contributes, and either one gets a marker line instead of
+silence:
+
+- **4096 tool-call records.** `dropped` counts the calls not written, against `cap`.
+- **50,000 events held for pairing.** `droppedEvents` counts the session's oldest events
+  that were not read, against `eventCap`. Pairing needs a session's events together, so this
+  is the bound on what that costs. It matches the limit on a `/timeline` request.
 
 ```json
 {"schema":1,"kind":"toolCallsTruncated","sessionId":"…","dropped":57,"cap":4096}
+{"schema":1,"kind":"toolCallsTruncated","sessionId":"…","dropped":0,"cap":4096,"droppedEvents":1200,"eventCap":50000}
 ```
 
-Check for it before you publish a per-session total:
+Check for either before you publish a per-session total:
 
 ```sh
 agentop export --with-tool-calls | jq 'select(.kind == "toolCallsTruncated")'
 ```
 
-The busiest session on one 30-day archive held 1,030 calls, so the limit is not normally
-reached.
+A marker means that session's tool time is a **lower bound**, not a total. The event records
+themselves are never dropped by these limits — only what the pairing holds.
+
+The busiest session on one 30-day archive held 1,030 calls in 2,911 events, so neither limit
+is normally reached.
 
 ### What a tool-call record never carries
 
@@ -767,7 +813,7 @@ Use each endpoint for what it holds:
 | Token counts, latency, status | the export | It has all four token fields |
 | Tool names and durations, across every session | `agentop export --with-tool-calls` | One stream, no join by hand |
 | Tool spans for one session, with the tool-use id | the timeline | The export never carries that id |
-| Token counts beside tool calls | the export with `--with-tool-calls` | Join `callSeq` to the event record's `seq` |
+| Token counts beside tool calls | the export with `--with-tool-calls` | Join on `sessionId` **and** `callSeq` to `seq` — `seq` counts from 1 per session, so it is not unique on its own |
 
 The timeline's `tools` array holds the tool calls that each model response asked for. A
 tool's `seq` is its **response's** `seq`, so join a tool to the export's

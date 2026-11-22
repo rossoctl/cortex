@@ -190,13 +190,56 @@ func readOrCreateKey(path string) (ToolNameKey, error) {
 	if _, err := rand.Read(fresh); err != nil {
 		return ToolNameKey{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ToolNameKey{}, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errors.Is(err, fs.ErrExist) {
-		// Someone else created it between our read and our create. Theirs is in force — a
-		// second key would re-label an export already streaming under the first.
+
+	// WRITE TO A TEMPORARY FILE, THEN PUBLISH BY LINKING IT INTO PLACE.
+	//
+	// O_CREATE|O_EXCL on the real path closes the two-key race — only one process can observe a
+	// successful create — but it PUBLISHES AN EMPTY FILE and fills it afterwards. Two things go
+	// wrong in that window, and both are worse than the race it fixes:
+	//
+	//   - A concurrent reader sees a 0-byte key, finds it shorter than toolKeyLen, and refuses.
+	//   - A crash or a failed write between create and sync LEAVES that short file. The refusal
+	//     is then permanent: every later opted-in export fails until an operator deletes it,
+	//     even after whatever broke the write recovered.
+	//
+	// So the authoritative path only ever appears complete. os.Link fails with EEXIST rather
+	// than replacing, which keeps the no-replace guarantee the race needs: a key already in
+	// force is never overwritten by a second one.
+	tmp, err := os.CreateTemp(dir, toolKeyFile+".tmp-*")
+	if err != nil {
+		return ToolNameKey{}, err
+	}
+	tmpName := tmp.Name()
+	// Unpublished temporary files never survive a failure, whichever branch returns.
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpName)
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		return ToolNameKey{}, err
+	}
+	if _, err := tmp.Write(fresh); err != nil {
+		return ToolNameKey{}, err
+	}
+	// Synced BEFORE publishing, so the bytes are durable by the time any reader can find them.
+	if err := tmp.Sync(); err != nil {
+		return ToolNameKey{}, err
+	}
+	if err := tmp.Close(); err != nil {
+		return ToolNameKey{}, err
+	}
+
+	if err := os.Link(tmpName, path); err != nil {
+		if !errors.Is(err, fs.ErrExist) {
+			return ToolNameKey{}, err
+		}
+		// Someone else published first. Theirs is in force — a second key would re-label an
+		// export already streaming under the first — and it is complete, because that is the
+		// only state this path ever reaches.
 		b, rerr := os.ReadFile(path)
 		if rerr != nil {
 			return ToolNameKey{}, rerr
@@ -205,16 +248,6 @@ func readOrCreateKey(path string) (ToolNameKey, error) {
 			return ToolNameKey{}, errors.New("sessionexport: tool-name key is too short; delete it to mint a new one")
 		}
 		return ToolNameKey{key: b[:toolKeyLen]}, nil
-	}
-	if err != nil {
-		return ToolNameKey{}, err
-	}
-	defer f.Close()
-	if _, err := f.Write(fresh); err != nil {
-		return ToolNameKey{}, err
-	}
-	if err := f.Sync(); err != nil {
-		return ToolNameKey{}, err
 	}
 	return ToolNameKey{key: fresh}, nil
 }

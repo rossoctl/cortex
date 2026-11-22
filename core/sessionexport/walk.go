@@ -253,11 +253,23 @@ func Walk(a *archive.Archive, w *Writer, f Filter) (WalkStats, error) {
 		// slice and cannot run inside this callback. Measured 2026-11-22 on a 75-session,
 		// 44,325-event archive: pairing the deepest session cost 7 ms against the 1.45 s the
 		// archive read already costs — 0.45% — and peak heap moved 279 to 319 MiB. Holding one
-		// session is also what the timeline already pays per pane refresh. maxCallsPerSession
-		// bounds the output; the accumulation itself is bounded by the session.
+		// session is also what the timeline already pays per pane refresh.
+		//
+		// BOUNDED IN EVENTS, NOT ONLY IN RECORDS. maxCallsPerSession caps what is WRITTEN, which
+		// it can only do after the accumulation is already complete — so on its own it bounds the
+		// output and not the memory, and a session far longer than any observed here would grow
+		// this slice without limit. maxPairedEvents is the memory bound, and it is the one §6.4
+		// actually asks for.
+		//
+		// THE NEWEST EVENTS ARE THE ONES KEPT, which is why a bound is sound rather than merely
+		// cheap: Earlier walks NEWEST FIRST, so the events this drops are the session's oldest.
+		// A dropped prefix costs the calls whose asking response is in it — the pairing sees
+		// their results with no call to close, and emits nothing for them, exactly as it does for
+		// a since floor that cuts mid-session (T33). It never mislabels a call it does emit.
 		var paired []model.SessionEvent
+		droppedEvents := 0
 		if w.WantsToolCalls() {
-			paired = make([]model.SessionEvent, 0, 256)
+			paired = make([]model.SessionEvent, 0, min(maxPairedEvents, 256))
 		}
 		err := a.Earlier(s.ID, 0, func(e *model.SessionEvent) bool {
 			// STOP, NOT FILTER: Earlier walks newest first, and a session's events are
@@ -278,10 +290,18 @@ func Walk(a *archive.Archive, w *Writer, f Filter) (WalkStats, error) {
 			}
 			wrote++
 			if paired != nil {
-				// The VALUE, not the pointer: Earlier pages 500 events at a time, so holding
-				// pointers would keep each page's decoded events alive for the whole session
-				// and make the retained set the pointer graph rather than the slice.
-				paired = append(paired, *e)
+				if len(paired) >= maxPairedEvents {
+					// Counted, not silently skipped: the marker record below reports it, so a
+					// capped session cannot read as a complete one. The event records themselves
+					// are unaffected — they are already written above, and this bound applies
+					// only to what the pairing holds.
+					droppedEvents++
+				} else {
+					// The VALUE, not the pointer: Earlier pages 500 events at a time, so holding
+					// pointers would keep each page's decoded events alive for the whole session
+					// and make the retained set the pointer graph rather than the slice.
+					paired = append(paired, *e)
+				}
 			}
 			return true
 		})
@@ -316,9 +336,11 @@ func Walk(a *archive.Archive, w *Writer, f Filter) (WalkStats, error) {
 			stats.Records++
 			stats.ToolCalls++
 		}
-		if dropped > 0 {
+		if dropped > 0 || droppedEvents > 0 {
 			// §6.4: say so in band. A consumer must not read a capped session as a complete one.
-			if err := w.WriteMarker(markerRecord(s.ID, dropped)); err != nil {
+			// BOTH bounds report here, because either one makes the session's tool time a
+			// lower bound rather than a total.
+			if err := w.WriteMarker(markerRecord(s.ID, dropped, droppedEvents)); err != nil {
 				return stats, err
 			}
 			stats.Records++

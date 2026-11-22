@@ -29,6 +29,20 @@ import (
 // projection accumulates a whole session to pair it, so an unbounded session is unbounded memory.
 const maxCallsPerSession = 4096
 
+// maxPairedEvents bounds how many of one session's events the projection HOLDS in order to pair
+// them, which is the memory bound maxCallsPerSession cannot be: that one caps the records written,
+// and it can only do so once the accumulation is already complete.
+//
+// 50,000 EVENTS, matching the cap sessionapi already puts on a timeline request
+// (timelineMaxEvents) — the same pairing over the same events, so a second, lower number here
+// would mean the export refused to pair a session the timeline pane draws happily.
+//
+// At ~1 KiB per decoded event without its inference payload, this is tens of MiB for one session:
+// above every session observed (the deepest held 2,911 events) and still a bound. Earlier walks
+// newest first, so what a bound drops is the session's OLDEST events; see Walk for why that is
+// sound rather than merely cheap.
+const maxPairedEvents = 50_000
+
 // turnTables derives the per-asking-response facts the records need, from the turns the pairing
 // already resolved. Keyed by the asking RESPONSE's seq, which is what Call.CallSeq holds.
 //
@@ -127,18 +141,32 @@ type MarkerRecord struct {
 	// reading an old file knows what limit produced it.
 	Dropped int `json:"dropped"`
 	Cap     int `json:"cap"`
+	// DroppedEvents is how many of the session's OLDEST events were not held for pairing, and
+	// EventCap the bound that dropped them. Reported separately from Dropped because the two
+	// are different losses: Dropped is calls the projection paired and then would not write,
+	// where these are events it never saw, so the calls whose asking response was among them
+	// produce no record at all and are not counted in Dropped.
+	//
+	// Either field being non-zero makes the session's tool time a LOWER BOUND rather than a
+	// total. Both are omitted when zero, so an uncapped session's marker never appears at all.
+	DroppedEvents int `json:"droppedEvents,omitempty"`
+	EventCap      int `json:"eventCap,omitempty"`
 }
 
 // MarkerKind is the `kind` of a MarkerRecord. A third kind on the stream, named for the same
 // reason the other two are: a consumer filters on it.
 const MarkerKind = "toolCallsTruncated"
 
-func markerRecord(sessionID string, dropped int) MarkerRecord {
-	return MarkerRecord{
+func markerRecord(sessionID string, dropped, droppedEvents int) MarkerRecord {
+	m := MarkerRecord{
 		Schema:    SchemaVersion,
 		Kind:      MarkerKind,
 		SessionID: sessionID,
 		Dropped:   dropped,
 		Cap:       maxCallsPerSession,
 	}
+	if droppedEvents > 0 {
+		m.DroppedEvents, m.EventCap = droppedEvents, maxPairedEvents
+	}
+	return m
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -338,11 +339,41 @@ Flags:
 		}
 		fmt.Fprintf(stderr, "  %s records, %s → %s (%s gzip)\n",
 			plainCount(counted.lines), byteSize(counted.bytes), where, byteSize(onDisk))
+		if code := reportToolCallSkew(stderr, *withToolCalls, counted, where); code != 0 {
+			return code
+		}
 		return 0
 	}
 	fmt.Fprintf(stderr, "  %s records, %s → %s\n",
 		plainCount(counted.lines), byteSize(counted.bytes), where)
+	if code := reportToolCallSkew(stderr, *withToolCalls, counted, where); code != 0 {
+		return code
+	}
 	return 0
+}
+
+// reportToolCallSkew fails the command when --with-tool-calls was asked for and the proxy did
+// not apply it. Returns the exit code: 0 when there is nothing to report.
+//
+// NON-ZERO, NOT A WARNING, because the file is not what was asked for. A warning on stderr is
+// lost in a script — `agentop export --with-tool-calls --out f.ndjson && analyse f.ndjson`
+// would run the analysis over an export with no tool calls in it and silently produce a
+// different answer. The summary line stays, so the user can see what WAS written.
+//
+// THE SIGNAL IS `kind`, NOT THE PRESENCE OF toolCall RECORDS. A current server stamps `kind` on
+// every record whenever the opt-in applies (spec T28); a proxy predating the parameter ignores
+// it and answers 200 with the plain stream, where no record carries `kind` at all. Keying on
+// toolCall records instead would report skew for an archive that simply ran no tools.
+//
+// An empty export is not skew: with no records there is no `kind` to find, and nothing was
+// misreported either.
+func reportToolCallSkew(stderr io.Writer, asked bool, counted *lineCounter, where string) int {
+	if !asked || counted.lines == 0 || counted.sawKind {
+		return 0
+	}
+	fmt.Fprintf(stderr, "agentop export: this proxy ignored --with-tool-calls; %s holds no tool-call records\n", where)
+	fmt.Fprintln(stderr, "  it predates the option (`agentop update`), so it served the plain export instead of refusing")
+	return 1
 }
 
 // shellArg quotes a path for a command line this command suggests to the user. The
@@ -396,6 +427,23 @@ type lineCounter struct {
 	lines int64
 	bytes int64
 	err   error
+
+	// sawKind records whether any record carried a `kind` field, which is how this command
+	// tells a proxy that APPLIED --with-tool-calls from one that ignored it.
+	//
+	// A PROXY PREDATING THE FLAG ANSWERS 200 WITH THE PLAIN STREAM rather than refusing, so
+	// without this the user asks for tool calls, gets an export without them, and is told
+	// nothing. The signal is `kind` on the EVENT records — a current server stamps it on every
+	// line whenever the opt-in applies (spec T28) — and NOT the presence of toolCall records,
+	// because an archive with no tool calls legitimately produces none. Checking for those
+	// would report skew on a perfectly good export of a session that ran no tools.
+	//
+	// Checked on the first chunk only. The field is on every line when it is on any, so one
+	// look is enough, and this sits in the copy path of a stream that can be a month of
+	// traffic — a substring scan per write would be paid on every megabyte to learn something
+	// already known.
+	sawKind  bool
+	kindSeen bool
 }
 
 func (l *lineCounter) Write(p []byte) (int, error) {
@@ -405,6 +453,10 @@ func (l *lineCounter) Write(p []byte) (int, error) {
 		if b == '\n' {
 			l.lines++
 		}
+	}
+	if !l.kindSeen && n > 0 {
+		l.kindSeen = true
+		l.sawKind = bytes.Contains(p[:n], []byte(`"kind":`))
 	}
 	if err != nil {
 		l.err = err

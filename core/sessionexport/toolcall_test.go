@@ -3,6 +3,8 @@ package sessionexport
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -552,7 +554,7 @@ func TestToolCall_CapEmitsMarkerAndKeepsTheRest(t *testing.T) {
 	if dropped != 10 {
 		t.Errorf("dropped = %d, want 10", dropped)
 	}
-	m := markerRecord("sess-1", dropped)
+	m := markerRecord("sess-1", dropped, 0)
 	if m.Kind != MarkerKind || m.SessionID != "sess-1" || m.Dropped != 10 || m.Cap != maxCallsPerSession {
 		t.Errorf("marker = %+v", m)
 	}
@@ -566,6 +568,134 @@ func TestToolCall_CapEmitsMarkerAndKeepsTheRest(t *testing.T) {
 		if !strings.Contains(string(line), `"`+key+`"`) {
 			t.Errorf("marker is missing %q: %s", key, line)
 		}
+	}
+}
+
+// TestToolNameKey_PublishesCompleteOrNotAtAll: the authoritative key file never exists in a
+// partial state, and no temporary file survives.
+//
+// WHY THIS MATTERS MORE THAN THE RACE IT REPLACED. Creating the real path with O_EXCL and filling
+// it afterwards closes the two-key race but publishes an EMPTY file first. A concurrent reader
+// then finds a key shorter than toolKeyLen and refuses — and if the write never completes, that
+// short file PERSISTS, so every later opted-in export fails until an operator deletes it. A
+// permanent self-inflicted outage is worse than the transient mislabelling it was fixing.
+func TestToolNameKey_PublishesCompleteOrNotAtAll(t *testing.T) {
+	dir := t.TempDir()
+	k, err := LoadToolNameKey(dir)
+	if err != nil {
+		t.Fatalf("LoadToolNameKey: %v", err)
+	}
+	if k.label("mcp__v__t", ToolMCP) == "" {
+		t.Fatal("key loaded but labels nothing")
+	}
+
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range ents {
+		names = append(names, e.Name())
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Errorf("a temporary file survived publication: %q", e.Name())
+		}
+	}
+	if len(names) != 1 || names[0] != toolKeyFile {
+		t.Errorf("state dir holds %v, want only %q", names, toolKeyFile)
+	}
+
+	// The published file is complete and private.
+	fi, err := os.Stat(filepath.Join(dir, toolKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != toolKeyLen {
+		t.Errorf("key file is %d bytes, want %d — a reader would refuse a short key",
+			fi.Size(), toolKeyLen)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("key file mode = %04o, want 0600", perm)
+	}
+}
+
+// TestToolNameKey_ExistingKeyIsNeverReplaced: publication must not overwrite a key already in
+// force, or an export streaming under the first key would be re-labelled mid-flight.
+func TestToolNameKey_ExistingKeyIsNeverReplaced(t *testing.T) {
+	dir := t.TempDir()
+	first, err := LoadToolNameKey(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, toolKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Force a fresh load that takes the create path again.
+	keyOnce.Lock()
+	delete(keyCached, dir)
+	keyOnce.Unlock()
+	second, err := LoadToolNameKey(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(filepath.Join(dir, toolKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("the key file changed on a second load: an in-flight export would be re-labelled")
+	}
+	const name = "mcp__vendor__tool"
+	if first.label(name, ToolMCP) != second.label(name, ToolMCP) {
+		t.Error("two loads produced different labels")
+	}
+}
+
+// TestMarkerRecord_ReportsBothBounds: the two losses are different and a consumer must be able to
+// tell them apart. Dropped is calls the projection paired and would not write; DroppedEvents is
+// events it never held, whose calls therefore produce no record and are NOT counted in Dropped.
+//
+// The event fields are omitempty, so a session capped only on calls carries the marker it always
+// carried — a consumer of an older file is unaffected.
+func TestMarkerRecord_ReportsBothBounds(t *testing.T) {
+	callsOnly := markerRecord("s", 7, 0)
+	if callsOnly.DroppedEvents != 0 || callsOnly.EventCap != 0 {
+		t.Errorf("event fields set with no events dropped: %+v", callsOnly)
+	}
+	line, err := json.Marshal(callsOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(line), "droppedEvents") || strings.Contains(string(line), "eventCap") {
+		t.Errorf("event fields present at zero: %s", line)
+	}
+
+	both := markerRecord("s", 7, 1200)
+	if both.DroppedEvents != 1200 || both.EventCap != maxPairedEvents {
+		t.Errorf("marker = %+v, want 1200 events against the %d cap", both, maxPairedEvents)
+	}
+	if line, err = json.Marshal(both); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"dropped", "cap", "droppedEvents", "eventCap"} {
+		if !strings.Contains(string(line), `"`+key+`"`) {
+			t.Errorf("marker is missing %q: %s", key, line)
+		}
+	}
+}
+
+// TestWalk_EventBoundIsBelowTheCallCap documents the relationship the two bounds must keep: the
+// event bound has to admit at least as many events as the call cap could ever need, or the call
+// cap becomes unreachable and its own test is measuring nothing.
+//
+// A batch of N calls rides on ONE response event, so the call cap can in principle be reached
+// from far fewer events than itself — but a session of one call per turn needs two events per
+// call, which is the shape this compares against.
+func TestWalk_EventBoundIsBelowTheCallCap(t *testing.T) {
+	if maxPairedEvents < 2*maxCallsPerSession {
+		t.Errorf("maxPairedEvents (%d) is below two events per capped call (%d): a session of "+
+			"one call per turn hits the event bound before the call cap, so the call cap is "+
+			"unreachable on ordinary traffic", maxPairedEvents, 2*maxCallsPerSession)
 	}
 }
 
