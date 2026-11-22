@@ -56,6 +56,9 @@ func runExport(args []string, stdout, stderr io.Writer) int {
 		"export only this `session`, repeatable and comma-separated; omit for every archived session")
 	since := fs.String("since", "",
 		"export only events newer than this far back — a duration such as 168h, or a day count like 7d")
+	withToolCalls := fs.Bool("with-tool-calls", false,
+		"also export one record per tool call, paired with its result — still content-free: "+
+			"durations and sizes, never arguments or output")
 	endpoint := fs.String("endpoint", "",
 		"session API URL of the proxy (default: the Cortex installed on this machine)")
 	fs.Usage = func() {
@@ -67,6 +70,7 @@ Usage:
   agentop export --gzip --out F.gz     write it gzip-compressed, for sharing
   agentop export --since 168h          only events from the last week
   agentop export --session ID          one session, repeatable or comma-separated
+  agentop export --with-tool-calls     add a record per tool call, paired with its result
   agentop export --endpoint URL        ask a specific proxy rather than the local one
 
 Each line is one archived event reduced to 37 content-free scalars — timings, token
@@ -76,6 +80,23 @@ though: hosts, models, session ids and timestamps remain, and together they desc
 talked to what and when. A month of traffic is about 12MB. The reading rules that keep a
 consumer from misinterpreting the fields (zero means "not recorded", never a real zero;
 order by "at" then "seq") are in Cortex's docs/session-export.md.
+
+--with-tool-calls adds a second kind of line: one per tool call, carrying how long it
+took, how it ended, and how many bytes its result was. It answers "which tools ran and
+what did those turns cost" without a second request and without joining by hand. The new
+records stay content-free on the same terms as the rest — no arguments, no output, and no
+tool-use id, so a record cannot be joined back to a conversation. A built-in tool name
+(Bash, Read) appears as itself; an MCP tool's name is a hash under a key this install
+keeps, because an MCP name is operator-defined and can carry a customer or project name.
+
+Two reading rules matter for the new lines, and both cost real accuracy. Every line of
+one turn's batch repeats that turn's "modelMs" and "gapMs", so take them once per
+"callSeq" rather than summing them. And a batch of calls shares one measured window,
+marked "durationShared": summing their durations counts that window several times.
+
+Without the flag the output is byte-for-byte what it was before tool-call records
+existed, so an existing consumer is unaffected. With it, every line carries a "kind" —
+"event" or "toolCall" — so a reader can select either.
 
 The export reads the durable archive, not memory: a session with nothing flushed yet
 does not appear, and the live tail is /v1/events, not this.
@@ -183,7 +204,7 @@ Flags:
 	// answers a doubled slash with a 307 whose HTML body is all `curl -s` would show —
 	// a fallback leading into a second dead end.
 	client := apiclient.New(target)
-	body, err := client.Export(ctx, sessions.ids, *since)
+	body, err := client.Export(ctx, sessions.ids, *since, *withToolCalls)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop export: %v\n", err)
 		switch {

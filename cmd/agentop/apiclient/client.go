@@ -209,7 +209,11 @@ func (c *Client) ListSessionsArchived(ctx context.Context) (SessionList, error) 
 // caller's read fails instead of returning io.EOF (an older proxy predating that ends
 // the body cleanly, and a truncated export there is indistinguishable from a whole one).
 // Every complete line already read stays valid NDJSON either way.
-func (c *Client) Export(ctx context.Context, sessions []string, since string) (io.ReadCloser, error) {
+// withToolCalls ADDS the paired tool-call records to the stream (`?include=toolCalls`). An
+// older proxy that does not recognise the parameter refuses with a 400 rather than serving
+// the plain stream, so a caller asking for them never silently receives an export without
+// them — which is the behaviour the server's closed include vocabulary exists to give.
+func (c *Client) Export(ctx context.Context, sessions []string, since string, withToolCalls bool) (io.ReadCloser, error) {
 	q := url.Values{}
 	for _, id := range sessions {
 		if id != "" {
@@ -218,6 +222,9 @@ func (c *Client) Export(ctx context.Context, sessions []string, since string) (i
 	}
 	if since != "" {
 		q.Set("since", since)
+	}
+	if withToolCalls {
+		q.Set("include", "toolCalls")
 	}
 	path := "/v1/export"
 	if len(q) > 0 {
