@@ -266,10 +266,16 @@ guards on the two `DELETE` routes. The producer-side contract is in
 **`DELETE /v1/sessions` and `DELETE /v1/sessions/{id}` do not clear the accountant's
 per-session state:** the Tracker state and `~/.cortex/accountant-state.json`, the
 per-thread billing mode and pending ping facts in `core/accounting.Host`, the
-context-guru keeper's entries, and the context-guru plugin's session state in
+context-guru keeper's entries, the context-guru incoming-model credential holds and
+forwarded-body stash, and the context-guru plugin's session state in
 `~/.cortex/context-guru-state.db`. The accountant state and the keeper hold session and thread
 ids, content hashes and a billing mode, no content; the keeper also holds the caller's
-credential, masked. The context-guru state DOES
+credential, masked. The incoming-model holds (one per distinct host+credential, across every
+session that uses it) also hold a masked credential, released on a timer at most
+`holdSweepInterval` (10m) past `incomingHoldTTL` (2h) idle, whether or not any later request
+arrives. The forwarded-body stash DOES hold content — the last body sent upstream, for up to 16
+sessions (main agent only) and 96 MiB total — with no time bound; it is evicted only when a new
+session's body needs the room (`sentStash`, oldest session first). The context-guru state DOES
 hold content (the summary checkpoint and other text the plugin made), and its rows stay 30 days
 after their last write. The keeper's entries go at `(max_pings + 1) × idle_seconds`. The rest
 has no time bound while the process runs: the in-memory maps keep at most 10,000 threads,

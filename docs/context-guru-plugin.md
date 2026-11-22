@@ -11,19 +11,27 @@ config enables it by default (preset `xhigh`). `lite`, `envoy` and
 `cpex` leave it out; a build with none of those tags needs
 `-tags include_plugin_contextguru` to link it.
 
-- `paths` (`[]string`) — inference request paths to compact. Default: `/v1/chat/completions`, `/v1/completions`, `/v1/messages`.
+- `paths` (`[]string`) — inference request paths to compact. Default: `/v1/chat/completions`, `/v1/completions`, `/v1/messages`, `/v1/responses`. A `/v1/responses` body (OpenAI Responses API: `instructions` + `input`) is parsed as that shape, not as Chat Completions.
 - `model` (object) — optional "cheap" LLM endpoint for model-backed components (summarize, extract:code); omitted means those degrade to deterministic/no-op.
   - `base_url` — OpenAI-compatible endpoint base.
   - `model` — model name to call.
   - `api_key` — optional bearer token.
   - `max_tokens` — completion cap, default 4096.
   - `timeout_ms` — per-call timeout, default 150000.
-- `engine` (object) — native context-guru config (preset / pipeline / per-component / store), passed through verbatim. Default: `preset: balanced`.
+- `engine` (object) — native context-guru config (preset / pipeline / per-component / store), passed through verbatim. Default: `preset: xhigh`. It includes the model-calling components (`cache_aware_summarizer`, `extract_llm`, `extract_llm_sweep`). They act only where a model resolves: a `model` block, or the request's own model (below).
+  - `marker_mode` is capped at `summary`, whatever the preset or config says. `full` emits reversible `<<cg:…>>` markers and the `context_guru_expand` tool, and Cortex cannot answer that tool yet (`OnResponse` is a pass-through).
 
-**The request's own model (`model.source: incoming`).** A component configured with `model.source: incoming` calls the model the agent itself is using, on the agent's own credential. OpenAI Chat Completions only: through `llmclient`, on the request's endpoint and `Authorization`. On other dialects the component uses the `model` block, or degrades to deterministic. Each such call is reported to the request it was made for as a spend op (`pluginSpendMicros`). A call that returns after its request was accounted is dropped and counted in the `late_model_calls_dropped` metric.
+**The request's own model (`model.source: incoming`).** A component configured with `model.source: incoming` calls the model the agent itself is using, on the agent's own credential:
+
+- **OpenAI Chat Completions:** through `llmclient`, on the request's endpoint and `Authorization`.
+- **Anthropic Messages** (`/v1/messages`, Claude Code's traffic): through context-guru's `cheapmodel.Anthropic`, on the request's endpoint and credential (`x-api-key` or `Authorization`). The credential is held in memory, masked, one hold per credential, and released 2 hours after its last use (on a timer, not only on the next matching request), on a config reload, or at `Shutdown`. The request's own `Anthropic-Beta` oauth-* values (`tooldefer.AuthBetas`) are held too and sent on the call when `cheapmodel` set none: a Claude subscription (OAuth) token can need one to authenticate directly against `api.anthropic.com`, and without it the call 401s — failing open, but silently, since the summarizer then does nothing that turn. It is held, not borrowed, because `cache_aware_summarizer` commissions its call in the background and the request returns first. On Anthropic the summarizer asks one question appended to the previous turn's forwarded body, so the provider's prompt cache serves the whole transcript. The plugin keeps that body in memory for the last 16 sessions (main agent only, a 200 response only, at most 8 MiB per body and 96 MiB in total).
+- **OpenAI Responses API:** none. A Responses request uses the `model` block, or the component degrades to deterministic.
+
+Each such call is reported to the request it was made for as a spend op (`pluginSpendMicros`). A call that returns after its request was accounted (the summarizer's background call can) is dropped and counted in the `late_model_calls_dropped` metric.
 
 **Under `on_error: observe`, no model is built at all**, static or incoming: every
-model-calling component degrades to deterministic/no-op. `observe` is a shadow pass — nothing it does is supposed to take
+model-calling component degrades to deterministic/no-op, and `model.source: incoming`'s
+credential is never held. `observe` is a shadow pass — nothing it does is supposed to take
 effect — and a real, billed model call on the agent's own credential is the opposite of that,
 the same reasoning that already keeps the keep-alive keeper from pinging under `observe`.
 
