@@ -2,10 +2,13 @@
 // hashes: tools, then system, then messages, one []byte per position, in the provider's cache
 // order (accountant/docs/cortex-wiring.md W6.3). It ports the context-guru proxy's accParse
 // (proxy/accountant_savings_body.go) to Cortex, so both hosts build the same accountant.Body for
-// the same bytes, with four deliberate departures from accParse: scan keeps reading for a
+// the same bytes, with these deliberate departures from accParse: scan keeps reading for a
 // Responses input when messages is not an array; a top-level cache_control (Anthropic's automatic
-// caching) counts as a mark and gives a breakpoint; and only cache_control keys in cache-metadata
-// locations leave the hash, so a tool parameter named cache_control stays in it.
+// caching) counts as a mark and gives a breakpoint; only cache_control keys in cache-metadata
+// locations leave the hash, so a tool parameter named cache_control stays in it; a mark nested
+// inside a tool_result's own content is still found and still a mark, at any depth up to
+// maxContentDepth; a null cache_control is not a mark; and an escaped cache_control key
+// ("cache\u005fcontrol") is still caught, because gjson decodes it the same as the literal key.
 package wire
 
 import (
@@ -234,7 +237,7 @@ const maxContentDepth = 8
 // mayMarkCacheControl is a cheap, conservative check for whether raw could hold a cache_control
 // key: it is used to skip the ForEach walk in eachMark and findCacheMark entirely for a value
 // that plainly cannot contain one. It cannot rule a value out from the literal text alone,
-// because gjson decodes JSON escapes when it reads a key (so "cache_control" is still the
+// because gjson decodes JSON escapes when it reads a key (so "cache\u005fcontrol" is still the
 // key "cache_control" to ForEach). Only a \u escape can hide it, though: every other JSON escape
 // (\", \\, \/, \b, \f, \n, \r, \t) decodes to a character that cache_control does not contain, so
 // it cannot be part of that key however it is split across them, and raw is valid JSON by the
