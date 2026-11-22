@@ -432,6 +432,18 @@ file would pass 20 MiB. A snapshot older than 1h is not restored at startup, so 
 proxy stopped for more than an hour starts without it. This applies to both
 `DELETE` routes.
 
+**context-guru's incoming-model credential holds are not cleared either, and neither is its
+forwarded-body stash, which holds content.** A `model.source: incoming` component (on by
+default, preset `xhigh`) holds the Anthropic caller's credential, masked, one hold per distinct
+host+credential pair, shared across every session that uses it — so it is not keyed to a
+session an erase could target. A hold is released, on a timer, at most `holdSweepInterval`
+(10m) past `incomingHoldTTL` (2h) idle, whether or not a later request arrives; until released
+it can still make a billed call on that credential. The forwarded-body stash (`sentStash`) DOES
+hold content: the last body the plugin sent upstream, for up to 16 sessions (main agent only)
+and 96 MiB total. It has no time bound — an erased session's entry is evicted only when a
+newer session's body needs the room, oldest session first — so stop the proxy to clear it for
+certain. This applies to both `DELETE` routes.
+
 **The context-guru plugin's session state is not cleared either, and it holds content.**
 Where the plugin runs, its state is kept in `~/.cortex/context-guru-state.db` on a local
 install (see [context-guru-plugin.md](context-guru-plugin.md)): the summary checkpoint and

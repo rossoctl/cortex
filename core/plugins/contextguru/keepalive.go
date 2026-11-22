@@ -108,7 +108,7 @@ func recordFor(pctx *pipeline.Context, sid string, pol keepalive.Policy, hold fu
 	if !ok {
 		return keepalive.Record{}, false
 	}
-	provider := providerFor(pctx.Path)
+	provider, _ := dialectFor(pctx.Path)
 	// toolUseNames is every tool the response called, in call order — read only so the keeper's
 	// WaitPlan (Policy.WaitPlan) can classify what the thread is about to wait on: its own tool
 	// result (own_tool), a terminal tool (done), or neither (human/background/teammate/unknown).
