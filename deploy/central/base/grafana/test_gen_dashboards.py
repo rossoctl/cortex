@@ -67,6 +67,29 @@ class IncTest(unittest.TestCase):
         self.assertEqual(opted_out, {"Net saved per day"}, opted_out)
 
 
+class NetTest(unittest.TestCase):
+    # accountant docs/metrics/metrics.md, "The net saving": the net is the operations plus the
+    # cache effects plus the interaction. Leaving the effects out shows a ping as pure cost.
+    EFFECTS = ("cache_effect_usd", "interaction_usd")
+
+    def test_net_includes_effects_for_every_label_they_carry(self):
+        for by in g.NET_LABELS:
+            got = g.net(by)
+            for m in self.EFFECTS:
+                self.assertIn(m, got, by)
+
+    def test_net_by_component_or_kind_is_operations_only(self):
+        # A cache effect has no component or kind label, so it cannot be split by them.
+        for by in ("component", "kind"):
+            got = g.net(by)
+            for m in self.EFFECTS:
+                self.assertNotIn(m, got, by)
+
+    def test_the_fleet_headline_uses_the_full_net(self):
+        p = [p for p in g.fleet()["panels"] if p["title"] == "NET SAVED"][0]
+        self.assertEqual(p["targets"][0]["expr"], g.net())
+
+
 class PromtoolTestInStepTest(unittest.TestCase):
     def test_every_promtool_expr_is_a_dashboard_expr(self):
         with open(PROMTOOL_TEST) as f:

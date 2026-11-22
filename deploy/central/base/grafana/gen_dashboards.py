@@ -32,6 +32,15 @@ def var(name, label, query, multi=True):
     }
 
 
+# The two sides of the net saving, as one selector each (accountant docs/metrics/metrics.md, "The net
+# saving"). The operation counters have no direction label, so direction=~"saved|" matches them and
+# the saved side of the cache effects and of the interaction. No counter contains another.
+SAVED_SIDE = ',__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"'
+ADDED_SIDE = ',__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|"'
+# Labels that every counter of both sides has. A cache effect has no component, kind or tier.
+NET_LABELS = ("", "machine", "proxy", "preset")
+
+
 def inc(metric, by="", win="$__range", extra="", new_series_fallback=True):
     """Total over win: sum(increase(metric{filter}[win])), optionally by a label.
 
@@ -62,6 +71,20 @@ def rate(metric, by="", extra=""):
     return f'sum{g}(rate({metric}{{{FILTER}{extra}}}[$__rate_interval]))'
 
 
+def saved_side(by="", fn="inc", new_series_fallback=True):
+    """The saved side of the net: the operations' saved, the cache effects' saved and the
+    interaction's saved. Only for a by in NET_LABELS."""
+    assert by in NET_LABELS, by
+    return inc("", by, extra=SAVED_SIDE, new_series_fallback=new_series_fallback) if fn == "inc" else rate("", by, SAVED_SIDE)
+
+
+def added_side(by="", fn="inc", new_series_fallback=True):
+    """The added side of the net: the operations' added (a keep-alive ping is a spend there), the
+    cache effects' added (a break, a premium) and the interaction's added."""
+    assert by in NET_LABELS, by
+    return inc("", by, extra=ADDED_SIDE, new_series_fallback=new_series_fallback) if fn == "inc" else rate("", by, ADDED_SIDE)
+
+
 def ratio(num, den):
     """num / den, with NO DATA where den is 0. Never divide by clamp_min(den, 1e-9): a zero den then
     shows num times a billion (2026-11-19: "Pings that paid" read 1164430250x). Never by
@@ -88,12 +111,21 @@ def spend(by=""):
 
 
 def net(by="", fn="inc", new_series_fallback=True):
-    """saved - added, per label value. PromQL drops a label value that is on one side only, and a
-    component that only ever ADDS cost (a compaction call, say) is exactly the one this must show.
-    So each side is padded with the other side's label values times zero. new_series_fallback is
-    forwarded to inc() (ignored when fn="rate"); see inc()'s own doc comment."""
-    side = (lambda m: inc(m, by, new_series_fallback=new_series_fallback)) if fn == "inc" else (lambda m: rate(m, by))
-    s, a = side("llm_savings_saved_usd_total"), side("llm_savings_added_usd_total")
+    """The net saving, saved side minus added side, per label value. For a by in NET_LABELS, both
+    sides include the cache effects and the interaction (accountant docs/metrics/metrics.md, "The net
+    saving"): leaving them out shows a keep-alive ping as a cost and never its rescue. For any other
+    by (component, kind), a cache effect has no such label, so the net is the operations' alone.
+
+    PromQL drops a label value that is on one side only, and a component that only ever ADDS cost
+    (a compaction call, say) is exactly the one this must show. So each side is padded with the
+    other side's label values times zero. new_series_fallback is forwarded to inc() (ignored when
+    fn="rate"); see inc()'s own doc comment."""
+    if by in NET_LABELS:
+        s = saved_side(by, fn, new_series_fallback)
+        a = added_side(by, fn, new_series_fallback)
+    else:
+        side = (lambda m: inc(m, by, new_series_fallback=new_series_fallback)) if fn == "inc" else (lambda m: rate(m, by))
+        s, a = side("llm_savings_saved_usd_total"), side("llm_savings_added_usd_total")
     if not by:
         return f"({s} - {a})"
     return f"((({s}) or ({a}) * 0) - (({a}) or ({s}) * 0))"
@@ -190,14 +222,14 @@ def fleet():
     P = []
     # Money first (spec 6.0, rule 1). The tiles cover the selected time range (default: 7 days).
     P.append(stat(1, "NET SAVED", net(), 0, 0, w=7, h=5, unit=USD, decimals=2, c=GREEN, big=True,
-                  desc="Saved minus added over the selected range. This is the number that says whether the proxy pays. Cache effects are a breakdown and are not added."))
+                  desc="Saved minus added over the selected range, cache effects included: a keep-alive rescue is saved, a cache break is added. This is the number that says whether the proxy pays."))
     P.append(stat(13, "Saving rate", ratio(net(), f'{spend()} + {net()}'), 7, 0, w=4, h=5,
                   unit="percentunit", decimals=1, c=GREEN, big=True,
                   desc="Net saved as a share of what the traffic would have cost without the proxy. The baseline is spend (actual plus estimated) plus net saved, which is what you would have paid. The exact baseline counter (llm_savings_baseline_usd_total) is not built yet."))
-    P.append(stat(2, "Gross saved", inc("llm_savings_saved_usd_total"), 11, 0, w=4, h=5, unit=USD, decimals=2,
-                  desc="Cost the proxy removed, before what it cost to do so."))
-    P.append(stat(3, "Added cost", inc("llm_savings_added_usd_total"), 15, 0, w=4, h=5, unit=USD, decimals=2, c=ORANGE,
-                  desc="What the proxy's own work cost: its model calls and the cache writes it caused."))
+    P.append(stat(2, "Gross saved", saved_side(), 11, 0, w=4, h=5, unit=USD, decimals=2,
+                  desc="Cost the proxy removed, before what it cost to do so: the operations' saving, the cache effects that lowered the bill (a keep-alive rescue, a split) and the interaction."))
+    P.append(stat(3, "Added cost", added_side(), 15, 0, w=4, h=5, unit=USD, decimals=2, c=ORANGE,
+                  desc="What the proxy's own work cost: its model calls, its keep-alive pings, the cache writes it caused, and the cache effects that raised the bill (a break, a breakpoint premium)."))
     P.append(stat(4, "Spend", spend(), 19, 0, w=5, h=5, unit=USD, decimals=2,
                   desc="What the providers billed over the selected range: actual (a configured or confirmed rate) plus estimated (a bundled/fallback rate, when no pricing.endpoints entry matches the gateway). Each proxy prices with its own rate table."))
     # A timeseries in bar mode, not a barchart: Grafana's barchart draws nothing for a single row,
@@ -216,9 +248,9 @@ def fleet():
     p5["options"]["legend"]["showLegend"] = False
     P.append(p5)
     P.append(series(6, "Saved vs added (USD per hour)", [
-        (f'{rate("llm_savings_saved_usd_total")} * 3600', "saved"),
-        (f'{rate("llm_savings_added_usd_total")} * 3600', "added")], 0, 12, 12, 8, unit=USD,
-        colors={"saved": GREEN, "added": ORANGE}, desc="Both sides of the net, as a rate."))
+        (f'{saved_side(fn="rate")} * 3600', "saved"),
+        (f'{added_side(fn="rate")} * 3600', "added")], 0, 12, 12, 8, unit=USD,
+        colors={"saved": GREEN, "added": ORANGE}, desc="Both sides of the net, as a rate, cache effects included."))
     P.append(series(7, "Net saved by machine", [(f"topk(8, {net('machine')})", "{{machine}}")], 12, 12, 12, 8,
                     unit=USD, kind="bargauge", instant=True,
                     desc="The 8 best machines over the selected range. The full list is on the Machine comparison dashboard."))
@@ -246,10 +278,10 @@ def savings():
     P = []
     P.append(series(1, "Net by component (USD, selected range)", [(net("component"), "{{component}}")],
                     0, 0, 9, 9, unit=USD, kind="bargauge", instant=True,
-                    desc="Saved minus added for each component. A red bar is a component that costs more than it saves."))
+                    desc="Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So a keep-alive rescue is not here, and the keeper shows only its ping cost. A red bar is a component whose operations cost more than they save."))
     P.append(series(2, "Net by kind (USD per hour)", [(f'{net("kind", fn="rate")} * 3600', "{{kind}}")],
                     9, 0, 15, 9, unit=USD, stack=True,
-                    desc="rewrite, spend and setting. A spend is a component's own model call and is always a cost."))
+                    desc="rewrite, spend and setting, operations only. A spend is a component's own model call or a keep-alive ping, and is always a cost. Cache effects have no kind: see Cache effects."))
     P.append(series(3, "Saved tokens by tier (selected range)", [(inc("llm_savings_saved_tokens_total", "tier"), "{{tier}}")],
                     0, 9, 7, 8, kind="bargauge", vertical=True, instant=True,
                     desc="Tokens the provider did not bill. The tier decides the price of each token."))
@@ -257,7 +289,7 @@ def savings():
         (f'{inc("llm_savings_cache_effect_usd_total", "effect", "1d", DIR_SAVED)}', "{{effect}} saved"),
         (f'-{inc("llm_savings_cache_effect_usd_total", "effect", "1d", DIR_ADDED)}', "{{effect}} added")],
         7, 9, 9, 8, unit=USD, stack=True, bars=True, interval="1d",
-        desc="A breakdown of how the cache changed the bill, saved above zero and added below. It is never added to saved or added."))
+        desc="How the cache changed the bill, saved above zero and added below. These are not in the operations' saved or added counters. NET SAVED on the Fleet dashboard adds them."))
     P.append(series(5, "Break cost by cause", [
         (inc("llm_savings_cache_effect_usd_total", "cause", extra=',effect="break",direction="added"'), "{{cause}}")],
         16, 9, 8, 8, unit=USD, kind="bargauge", instant=True, desc="What cache breaks cost, by why they happened."))
@@ -277,7 +309,7 @@ def savings():
                 {"fieldName": "net", "config": {"id": "lower", "options": {"value": 0}}}]}},
             {"id": "organize", "options": {"excludeByName": {"Time": True},
                                            "renameByName": {"Value #A": "saved", "Value #B": "added"}}}],
-        desc="Read this table first: a component here costs more than it saves. A component with no saved series at all shows no row; it appears in Net by component.",
+        desc="Read this table first: a component here has operations that cost more than they save. Cache effects are not in it, so the keeper shows its pings and not its rescues: read it on the Cache dashboard. A component with no saved series at all shows no row; it appears in Net by component.",
         unit_by_col={"saved": USD, "added": USD, "net": USD}))
     return dash("central-savings", "Savings", "Where does the saving come from, and where does it leak?", P, ["savings"])
 

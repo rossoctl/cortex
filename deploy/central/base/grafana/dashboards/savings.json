@@ -70,7 +70,7 @@
       "id": 1,
       "type": "bargauge",
       "title": "Net by component (USD, selected range)",
-      "description": "Saved minus added for each component. A red bar is a component that costs more than it saves.",
+      "description": "Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So a keep-alive rescue is not here, and the keeper shows only its ping cost. A red bar is a component whose operations cost more than they save.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -135,7 +135,7 @@
       "id": 2,
       "type": "timeseries",
       "title": "Net by kind (USD per hour)",
-      "description": "rewrite, spend and setting. A spend is a component's own model call and is always a cost.",
+      "description": "rewrite, spend and setting, operations only. A spend is a component's own model call or a keep-alive ping, and is always a cost. Cache effects have no kind: see Cache effects.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -244,7 +244,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "Cache effects (USD per day)",
-      "description": "A breakdown of how the cache changed the bill, saved above zero and added below. It is never added to saved or added.",
+      "description": "How the cache changed the bill, saved above zero and added below. These are not in the operations' saved or added counters. NET SAVED on the Fleet dashboard adds them.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"
@@ -460,7 +460,7 @@
       "id": 8,
       "type": "table",
       "title": "Components with a negative net",
-      "description": "Read this table first: a component here costs more than it saves. A component with no saved series at all shows no row; it appears in Net by component.",
+      "description": "Read this table first: a component here has operations that cost more than they save. Cache effects are not in it, so the keeper shows its pings and not its rescues: read it on the Cache dashboard. A component with no saved series at all shows no row; it appears in Net by component.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"

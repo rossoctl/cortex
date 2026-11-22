@@ -1,6 +1,6 @@
 # Unit tests for the dashboard ratio queries, run with promtool (simulated time):
 #   promtool test rules tests/dashboards_test.yml
-# The expressions are the cache dashboard's, with the Grafana variables filled in: $proxy and
+# The expressions are the cache and fleet dashboards', with the Grafana variables filled in: $proxy and
 # $machine as ".*" (All), $__range as 1h. grafana/test_gen_dashboards.py fails if an expression
 # here is not one that gen_dashboards.py writes, so these tests cannot drift from the dashboards.
 #
@@ -113,3 +113,31 @@ tests:
             value: 60
           - labels: '{cause="ttl"}'
             value: 120
+
+  # ---- NET SAVED adds the cache effects and the interaction --------------------------------------
+  # accountant docs/metrics/metrics.md, "The net saving": no counter contains another, so the net is
+  # the operations plus the cache effects plus the interaction. Before this, the net left out the
+  # effects: the keeper's ping (a spend, in added) showed as a cost, and its rescue nowhere.
+  # Per hour: ops saved 0.60, ping 0.30, rescue 1.20 saved and 0.06 added, a break 0.12 added,
+  # interaction 0.03 saved. Net = 0.60 + 1.20 + 0.03 - (0.30 + 0.06 + 0.12) = 1.35 (the old query: 0.30).
+  - name: net saved includes the cache effects and the interaction
+    interval: 1m
+    input_series:
+      - series: 'llm_savings_saved_usd_total{proxy="cortex",machine="m1",component="searchfold",kind="rewrite",tier="cache_read"}'
+        values: '0+0.01x69'
+      - series: 'llm_savings_added_usd_total{proxy="cortex",machine="m1",component="keeper",kind="spend",tier="cache_read"}'
+        values: '0+0.005x69'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="rescue",cause="none",direction="saved"}'
+        values: '0+0.02x69'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="rescue",cause="none",direction="added"}'
+        values: '0+0.001x69'
+      - series: 'llm_savings_cache_effect_usd_total{proxy="cortex",machine="m1",effect="break",cause="none",direction="added"}'
+        values: '0+0.002x69'
+      - series: 'llm_savings_interaction_usd_total{proxy="cortex",machine="m1",direction="saved"}'
+        values: '0+0.0005x69'
+    promql_expr_test:
+      - eval_time: 70m
+        expr: '(sum((increase({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h]) and {proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"} offset 1h) or last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|"}[1h])) - sum((increase({proxy=~".*", machine=~".*",__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|"}[1h]) and {proxy=~".*", machine=~".*",__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|"} offset 1h) or last_over_time({proxy=~".*", machine=~".*",__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|"}[1h])))'
+        exp_samples:
+          - labels: '{}'
+            value: 1.350000000000001
