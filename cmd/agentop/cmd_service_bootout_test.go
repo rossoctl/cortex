@@ -110,6 +110,7 @@ func TestWaitBootedOut_RealLaunchd(t *testing.T) {
 		if running {
 			break
 		}
+		// timing: real launchd reports state only when asked
 		time.Sleep(200 * time.Millisecond)
 	}
 	if !running {

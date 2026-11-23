@@ -296,8 +296,9 @@ re-verify them by hand after a change.
   **Always give `gofmt` a path:** a bare `gofmt -l` reads stdin, scans nothing and
   exits 0.
 - **Only `go vet` is a CI gate**, on all 7 modules (cpex code is vetted with
-  `-tags cpex` in `go-ci-cpex`). pre-commit has no Go hooks, and CI's `go fmt ./...`
-  rewrites the checkout and exits 0, so formatting drift never fails a build.
+  `-tags cpex` in `go-ci-cpex`). pre-commit runs no gofmt, vet or build hook, and CI's
+  `go fmt ./...` rewrites the checkout and exits 0, so formatting drift never fails a
+  build.
 - Run per-module commands with `GOWORK=off`, as every CI Go job but `core`'s does,
   so each module resolves its own `replace` directives.
 - If a change deletes a package or its last import of a dependency, also run
@@ -313,6 +314,30 @@ re-verify them by hand after a change.
   you change those scenes' code. CI runs `go test -race ./...`, not `-short`.
 - Log with `log/slog`. The binaries log under their own name (`cortex`,
   `cortex-envoy`). The `authbridge-lite` image runs `cortex`, so it logs as `cortex`.
+
+### Tests and time
+A test that waits on the clock passes on a quiet laptop and fails on a loaded CI
+runner. Tests wait on events:
+- **Block on the event that ends the wait**: a channel the fake closes, or a hook
+  the code calls. No `time.Sleep`, no polling loop, no `Eventually`.
+- **A hang is the failure.** No `time.After` guard beside the wait. Locally,
+  `go test -timeout 2m` ends a hung test with every goroutine's stack. CI passes no
+  `-timeout`, so there the job's own limit ends it.
+- **Assert on what happened, not how long it took.** A `time.Since(start) > d`
+  bound is a flake. To show a call does not wait for X, hold X until the call has
+  returned.
+- **Keep timers out with `time.Hour`, and make them expire with 0 or a deadline
+  already past.** A 1ns context can still be live when it is first checked. A
+  timeout that is the behaviour under test is an expired one, not a 200ms one.
+- **Drive periodic work through a seam**: inject the tick channel or the clock.
+  Existing seams to copy: `archive.WithTicks`, sessionbudget's `refreshOn`, the
+  ledger writer's `syncQueued`, evolve's `joinHook`, and agentop's
+  `readyOnFirstAnswer`.
+- **Mutation-check each fix.** Put the bug back and see the test fail or hang.
+
+The `check-test-timing` pre-commit hook flags these in every `_test.go` file, in
+CI too. Reporting a duration with `t.Logf` is fine. A line that needs real time,
+such as a live integration test, carries `// timing: <reason>`.
 
 ### Python and shell
 - Python 3.12+. `python-keycloak>=7.1.1,<8` for all Keycloak admin calls. Every

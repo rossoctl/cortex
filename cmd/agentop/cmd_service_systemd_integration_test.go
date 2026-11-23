@@ -178,7 +178,7 @@ func unitMainPID(t *testing.T, name string, within time.Duration) (int, bool) {
 		if pid := currentMainPID(name); pid > 0 {
 			return pid, true
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond) // timing: real systemd reports state only when asked
 	}
 	return 0, false
 }
@@ -197,7 +197,7 @@ func waitForNewMainPID(t *testing.T, name string, oldPID int, within time.Durati
 		if pid := currentMainPID(name); pid > 0 && pid != oldPID {
 			return pid, true
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond) // timing: real systemd reports state only when asked
 	}
 	return 0, false
 }
@@ -213,7 +213,7 @@ func waitUntil(within time.Duration, ok func() bool) bool {
 		if ok() {
 			return true
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond) // timing: real services report state only when asked
 	}
 	return false
 }
@@ -294,7 +294,8 @@ func TestSupervisorStaysStoppedAfterDeliberateStop_RealSystemd(t *testing.T) {
 	// heavily loaded runner could make this pass when it shouldn't (a slow wrong
 	// restart lands after the check), never fail when it shouldn't (nothing here
 	// depends on speed for a legitimate pass).
-	time.Sleep(4 * time.Second) // past RestartSec=1; a wrongly-firing restart would show by now
+	// timing: past RestartSec=1; a wrongly-firing restart would show by now
+	time.Sleep(4 * time.Second)
 	if unitIsActive(unit) {
 		t.Error("unit restarted after a deliberate `systemctl stop` — Restart=on-failure should not cover this")
 	}

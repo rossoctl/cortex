@@ -232,7 +232,7 @@ func init() {
 		if os.Getenv(sleeperReadyEnv) == "1" {
 			_, _ = os.NewFile(3, "ready").Write([]byte{1})
 		}
-		time.Sleep(time.Minute)
+		time.Sleep(time.Minute) // timing: a stand-in process that lives until the test kills it
 		os.Exit(0)
 	}
 }

@@ -117,7 +117,7 @@ func TestSearchDoc_RenderIsLinearInALongLine(t *testing.T) {
 			d.setLines([]string{line}, 200)
 			start := time.Now()
 			d.render("words")
-			best = min(best, time.Since(start))
+			best = min(best, time.Since(start)) // timing: measures how the cost scales
 			if len(d.matches) == 0 {
 				t.Fatal("no matches")
 			}
