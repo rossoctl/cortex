@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rossoctl/cortex/core/model"
 )
 
 // TestWalk_SinceDropsCallsBelowTheFloor is T33, and it is a consequence of Option A rather than
@@ -68,5 +70,85 @@ func TestWalk_ToolCallWriteErrorSurfaces(t *testing.T) {
 	_, err := Walk(a, w, Filter{ToolNameKey: testKey(t)})
 	if err == nil {
 		t.Fatal("Walk returned nil on a failing writer: a truncated export would read as whole")
+	}
+}
+
+// TestWalk_SinceNeverLabelsAMidSessionTurnAsFirst is T24's meaning, and the bug it guards is
+// one this PR shipped twice.
+//
+// `gapKind: "first"` means THE AGENT'S FIRST TURN, and T24 reserves an absent `gapMs` for
+// exactly that case. But turnTables only sees the events the walk handed it, and that slice
+// starts mid-session in three ways: a `--since` floor stops the read, maxPairedEvents drops the
+// oldest events, and a pruned archive simply has no older segments. In each one an agent's
+// first IN-WINDOW turn looked like its first turn ever, so a call that had been waiting on a
+// tool for eight seconds exported as the start of the session with no gap at all.
+//
+// That breaks two things a consumer reasonably does: counting agents per session from `first`,
+// and building a duty cycle from a `--since` export — which is the common case, not the corner.
+// It also makes the export non-reproducible, since the same call answers differently depending
+// on the window.
+func TestWalk_SinceNeverLabelsAMidSessionTurnAsFirst(t *testing.T) {
+	a := toolArchive(t)
+	floor := tcBase.Add(5 * time.Second)
+
+	var buf strings.Builder
+	if _, err := Walk(a, NewToolCallWriter(&buf), Filter{Since: floor, ToolNameKey: testKey(t)}); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	var seen int
+	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		if !strings.Contains(line, `"kind":"`+ToolCallKind+`"`) {
+			continue
+		}
+		var r ToolCallRecord
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatalf("toolCall line does not decode: %v", err)
+		}
+		seen++
+		if r.GapKind == GapFirst {
+			t.Errorf("a floored export labelled callSeq %d as the agent's first turn: the "+
+				"slice starts mid-session, so this agent may have been working for hours\n%s",
+				r.CallSeq, line)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no toolCall records above the floor; this test needs some")
+	}
+}
+
+// TestProjectToolCalls_FirstOnlyWhenTheSliceStartsAtSeqOne pins the rule directly, both ways:
+// a slice that starts at the session's start still reports `first`, and one that does not
+// reports neither field.
+func TestProjectToolCalls_FirstOnlyWhenTheSliceStartsAtSeqOne(t *testing.T) {
+	full := toolSession(
+		[]model.InferenceToolCall{{ID: "t1", Name: "Bash"}},
+		[]model.InferenceToolResult{{ToolUseID: "t1", Content: "ok"}},
+	)
+	if full[0].Seq != 1 {
+		t.Fatalf("fixture starts at seq %d, want 1", full[0].Seq)
+	}
+	recs, _ := projectToolCalls(full, "s", testKey(t))
+	if len(recs) != 1 || recs[0].GapKind != GapFirst {
+		t.Fatalf("a slice from seq 1 must still report first: %+v", recs)
+	}
+
+	// The same events renumbered so the slice starts above 1, as a floored or pruned read does.
+	mid := toolSession(
+		[]model.InferenceToolCall{{ID: "t1", Name: "Bash"}},
+		[]model.InferenceToolResult{{ToolUseID: "t1", Content: "ok"}},
+	)
+	for i := range mid {
+		mid[i].Seq += 100
+	}
+	recs, _ = projectToolCalls(mid, "s", testKey(t))
+	if len(recs) != 1 {
+		t.Fatalf("got %d records, want 1", len(recs))
+	}
+	if recs[0].GapKind != "" {
+		t.Errorf("gapKind = %q for a slice starting at seq %d, want absent",
+			recs[0].GapKind, mid[0].Seq)
+	}
+	if recs[0].GapMs != nil {
+		t.Errorf("gapMs = %v for a mid-session slice, want absent", *recs[0].GapMs)
 	}
 }

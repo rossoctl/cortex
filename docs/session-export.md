@@ -433,9 +433,9 @@ The export then carries two kinds of line, and every line says which it is:
 ```json
 {"schema":1,"kind":"event","sessionId":"45fa31b2-…","seq":2077,"at":"2026-11-05T15:52:21Z"}
 {"schema":1,"kind":"toolCall","sessionId":"45fa31b2-…","startedAt":"2026-11-05T15:52:25.629885Z",
- "tool":"Bash","toolSource":"builtin","callSeq":2077,"callIndex":0,"resultSeq":2081,
- "durationMs":473,"endReason":"result","resultBytes":1432,
- "agentRole":"main","client":"claude-code/2.1.270","modelMs":4279,"gapMs":812,"gapKind":"tool"}
+ "callSeq":2077,"resultSeq":2081,"callIndex":0,"tool":"Bash","toolSource":"builtin",
+ "durationMs":473,"endReason":"result","modelMs":4279,"gapMs":812,"gapKind":"tool",
+ "inputBytes":64,"resultBytes":1432,"agentRole":"main","client":"claude-code/2.1.270"}
 ```
 
 Select one kind with `jq`:
@@ -456,7 +456,7 @@ that must handle both forms treats a missing `kind` as `event`.
 | Placement | `callSeq`, `callIndex`, `resultSeq` |
 | Tool | `tool`, `toolSource` |
 | Timing | `durationMs`, `endReason`, `modelMs`, `gapMs`, `gapKind` |
-| Effort | `resultBytes`, `isError` |
+| Effort | `inputBytes`, `resultBytes`, `isError` |
 | Batching | `parallelN`, `durationShared` |
 | Context | `agentRole`, `client`, `backgrounded` |
 
@@ -480,12 +480,13 @@ A batch has no other order.
 response, and `gapKind` says what the interval was. See
 [Model time, tool time and idle time](#model-time-tool-time-and-idle-time).
 
-`resultBytes` is the size of the tool's result. A size is not content.
+`inputBytes` is the size of the call's arguments and `resultBytes` the size of its result.
+Both are byte counts, and a size is not content: Cortex measures each string on the wire and
+keeps only the number. The arguments themselves never enter the export, so `inputBytes` tells
+you how much a call was asked with and never what it was asked.
 
-**There is no `inputBytes`.** The size of a call's arguments would be an effort proxy on the
-same terms as `resultBytes`, but Cortex builds these records with argument capture switched
-off, so no argument bytes exist to measure. Keeping arguments out of the export entirely is
-worth more than the one figure: a field read from text that was never loaded cannot leak it.
+Both are written even at zero. A call with no arguments reports `"inputBytes":0`, and an empty
+result reports `"resultBytes":0`. An absent field means "not measured", never zero.
 
 ### A tool name is bounded, and an MCP name is hashed
 
@@ -570,6 +571,16 @@ Three quantities, and only one of them is inferred:
 | `user` | The previous response asked for no tool. The model stopped and waited for a person. |
 | `tool` | The previous response asked for tools. They were running. |
 | `first` | The agent's first turn. `gapMs` is absent. |
+
+**`gapKind` itself is absent when the export starts mid-session.** `first` means the agent's
+first turn in the whole session, so Cortex writes it only when the export reaches the start of
+that session. Three things stop it reaching the start: `--since`, the 50,000-event pairing
+limit, and a session whose oldest segments have aged out of the archive. In those exports the
+first call Cortex can see for each agent carries neither `gapMs` nor `gapKind`, because the
+turn before it was never read. Absent means "not measured", not "no gap".
+
+So a count of `first` records is a count of agents **only** in an export that starts at the
+session's start.
 
 **Do not add a `tool` gap to tool time.** The interval covers what the previous turn's calls
 were doing, so it overlaps their own `durationMs`. Adding both counts the same wall clock

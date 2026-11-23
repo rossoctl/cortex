@@ -18,15 +18,17 @@ import (
 // normative in §10.1). A fixed cap with a per-session marker record when it is hit, matching the
 // export's degrade-loudly posture.
 //
+// IT BOUNDS THE RECORDS ONE SESSION CONTRIBUTES, NOT THE MEMORY. By the time this applies, the
+// walk has already accumulated the session and the pairing has already walked it — so this caps
+// the output and nothing else. maxPairedEvents below is the memory bound. An earlier revision of
+// this comment claimed memory, which would have had a reader trusting a guard that did not exist.
+//
 // 4,096 IS 4x THE OBSERVED CEILING. Measured 2026-11-22 on a reference archive of 75 sessions and
-// 44,325 events: 12,458 paired calls, and the busiest single session held 1,030. The cap exists
-// to bound memory on a session far outside that distribution, not to trim normal traffic, so the
-// headroom is deliberate and the observed figure is recorded here so the next reader knows what
-// the margin is over.
+// 44,325 events: 12,458 paired calls, and the busiest single session held 1,030. The headroom is
+// deliberate, and the observed figure is recorded here so the next reader knows what it is over.
 //
 // ON THAT ARCHIVE THIS CAP WOULD NEVER HAVE FIRED, and the marker record ships exercised by unit
-// tests only. That is a property of the traffic rather than a reason to drop the bound: the
-// projection accumulates a whole session to pair it, so an unbounded session is unbounded memory.
+// tests only. That is a property of the traffic rather than a reason to drop the bound.
 const maxCallsPerSession = 4096
 
 // maxPairedEvents bounds how many of one session's events the projection HOLDS in order to pair
@@ -52,7 +54,27 @@ const maxPairedEvents = 50_000
 // tool execution of this call. The obvious alternative — previous tool call's end to this call's
 // start — cannot be checked, because a call starts when its asking response ends, so that
 // interval always contains the asking response's own inference.
-func turnTables(res toolpair.Result) (map[uint64]turnFacts, map[uint64]gapFacts) {
+// fromStart says whether the slice begins at the SESSION's start rather than merely at the
+// window's. It decides whether an agent with no previous response in the slice is genuinely on
+// its first turn (T24's `first`) or just the first one that was read.
+//
+// THE DISTINCTION IS NOT COSMETIC, and getting it wrong is what this parameter exists to stop.
+// The slice starts mid-session in three ways — a `--since` floor stops the read, maxPairedEvents
+// drops the oldest events, and a pruned archive has no older segments — and in each one an
+// agent's first in-window turn has no predecessor HERE while having had one in the session. It
+// was exported as `gapKind: "first"` with no `gapMs`: a call that had been waiting eight seconds
+// read as the start of the session.
+//
+// Two consumers are wrong as a result, and both are ordinary rather than exotic: counting agents
+// per session from `first`, and building a duty cycle from a `--since` export — which is the
+// common export, not a corner. It also makes the export irreproducible, since the same call
+// answers differently depending on the window.
+//
+// So `first` is written only when the slice really starts at the session's start. Otherwise both
+// fields are ABSENT, which already means "not measured" here (T24 reserves absence for `first`,
+// and absence of `gapKind` for not-stated) — the honest answer when the predecessor was simply
+// not read.
+func turnTables(res toolpair.Result, fromStart bool) (map[uint64]turnFacts, map[uint64]gapFacts) {
 	turns := make(map[uint64]turnFacts, len(res.Turns))
 	gaps := make(map[uint64]gapFacts, len(res.Turns))
 	// prevEnd is each agent's previous response end, and prevHadTools whether that response asked
@@ -84,10 +106,12 @@ func turnTables(res toolpair.Result) (map[uint64]turnFacts, map[uint64]gapFacts)
 				kind = GapTool
 			}
 			gaps[seq] = gapFacts{ms: &ms, kind: kind}
-		} else {
+		} else if fromStart {
 			// T24: absent on an agent's first turn, where there is no previous response —
 			// ABSENT, NEVER ZERO. gapKind says which case it was.
 			gaps[seq] = gapFacts{kind: GapFirst}
+			// Otherwise: no entry at all, so both gapMs and gapKind stay absent. See
+			// fromStart — "no predecessor in this slice" is not "no predecessor".
 		}
 		prevEnd[t.Agent] = toolpair.ResponseEnd(t.Req, t.Resp)
 		prevHadTools[t.Agent] = respAskedForTools(t.Resp)

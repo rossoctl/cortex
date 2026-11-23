@@ -571,6 +571,57 @@ func TestToolCall_CapEmitsMarkerAndKeepsTheRest(t *testing.T) {
 	}
 }
 
+// TestToolCall_InputBytesIsMeasuredWithoutHoldingArguments is T14's argument half, and the
+// reason it is read from ArgumentBytes rather than from len(Arguments).
+//
+// The export pairs with Options{Arguments: false}, so Call.Arguments is empty by construction —
+// reading its length made inputBytes PERMANENTLY absent, and a consumer could not tell "not
+// measured" from "never implemented". toolpair now measures the wire string before dropping it,
+// so the size exists and the text still never enters the export.
+func TestToolCall_InputBytesIsMeasuredWithoutHoldingArguments(t *testing.T) {
+	const args = `{"command":"SECRET-ARGUMENT-TEXT"}`
+	recs := projectOne(t, toolSession(
+		[]model.InferenceToolCall{{ID: "t1", Name: "Bash", Arguments: args}},
+		[]model.InferenceToolResult{{ToolUseID: "t1", Content: "ok"}},
+	))
+	if len(recs) != 1 {
+		t.Fatalf("got %d records, want 1", len(recs))
+	}
+	if recs[0].InputBytes == nil {
+		t.Fatal("inputBytes absent: the field reads as never-implemented")
+	}
+	if got := *recs[0].InputBytes; got != len(args) {
+		t.Errorf("inputBytes = %d, want %d", got, len(args))
+	}
+	// The size, never the text.
+	line, err := json.Marshal(recs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(line), "SECRET-ARGUMENT-TEXT") {
+		t.Errorf("the argument text reached the record: %s", line)
+	}
+}
+
+// TestToolCall_InputBytesIsZeroForAnArgumentFreeCall: T14 reserves ABSENCE for "not measured",
+// so a call that genuinely carried no arguments reports a present 0.
+func TestToolCall_InputBytesIsZeroForAnArgumentFreeCall(t *testing.T) {
+	recs := projectOne(t, toolSession(
+		[]model.InferenceToolCall{{ID: "t1", Name: "Bash"}},
+		[]model.InferenceToolResult{{ToolUseID: "t1", Content: "ok"}},
+	))
+	if recs[0].InputBytes == nil || *recs[0].InputBytes != 0 {
+		t.Errorf("inputBytes = %v, want a present 0", recs[0].InputBytes)
+	}
+	line, err := json.Marshal(recs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(line), `"inputBytes":0`) {
+		t.Errorf("inputBytes dropped at zero — omitempty turned a real 0 into \"not measured\"\n%s", line)
+	}
+}
+
 // TestToolNameKey_PublishesCompleteOrNotAtAll: the authoritative key file never exists in a
 // partial state, and no temporary file survives.
 //

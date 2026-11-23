@@ -163,6 +163,16 @@ type Call struct {
 	// call returned is a number an export may carry, and the text is not.
 	ResultBytes int
 
+	// ArgumentBytes is the size of the call's arguments, on exactly the same terms: the effort a
+	// call was ASKED with, as a number, where the text itself stays out.
+	//
+	// UNGATED, UNLIKE Arguments, and that pairing is the point. A consumer that must not hold
+	// argument text leaves Options.Arguments off and still gets the size — which is what lets
+	// core/sessionexport carry an effort proxy (spec T14) while holding no argument bytes at
+	// all. Measured from the wire string before it is dropped, so nothing is retained to
+	// measure it later.
+	ArgumentBytes int
+
 	// CallSeq is the seq of the response that asked for this call; ResultSeq the seq of the
 	// request that carried its result, and 0 when none did. Together they let a consumer rejoin
 	// a call to the events either side of it WITHOUT the tool-use id.
@@ -422,15 +432,16 @@ func Calls(events []model.SessionEvent, opts Options) Result {
 		tcs := c.resp.Inference.ToolCalls
 		for i, tc := range tcs {
 			k := Call{
-				Agent:     c.agent,
-				ToolUseID: tc.ID,
-				Name:      tc.Name,
-				Start:     end,
-				CallSeq:   c.resp.Seq,
-				CallIndex: i,
-				SiblingN:  len(tcs),
-				AskedAt:   c.req.At,
-				ModelDur:  c.resp.Duration,
+				Agent:         c.agent,
+				ToolUseID:     tc.ID,
+				Name:          tc.Name,
+				Start:         end,
+				CallSeq:       c.resp.Seq,
+				CallIndex:     i,
+				SiblingN:      len(tcs),
+				AskedAt:       c.req.At,
+				ModelDur:      c.resp.Duration,
+				ArgumentBytes: len(tc.Arguments),
 			}
 			if opts.Arguments {
 				k.Arguments = tc.Arguments

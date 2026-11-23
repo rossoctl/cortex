@@ -149,6 +149,12 @@ type ToolCallRecord struct {
 	//
 	// A size is not content: the same concession the trajectory schema already makes with
 	// command_chars and result_preview_chars.
+	//
+	// InputBytes COMES FROM toolpair.Call.ArgumentBytes, not from len(Arguments). The export
+	// pairs with Options{Arguments: false}, so Arguments is empty by construction and reading
+	// its length would have made this field permanently absent — a consumer could not tell
+	// "not measured" from "never implemented". ArgumentBytes is measured from the wire string
+	// before it is dropped, so the figure exists and no argument text is held to produce it.
 	InputBytes  *int `json:"inputBytes,omitempty"`
 	ResultBytes *int `json:"resultBytes,omitempty"`
 
@@ -223,7 +229,11 @@ func projectToolCalls(events []model.SessionEvent, sessionID string, key ToolNam
 	if len(res.Calls) == 0 {
 		return nil, 0
 	}
-	turns, gaps := turnTables(res)
+	// Seq 1 is the session's first event, so a slice starting there has every predecessor a gap
+	// could need. One check covers all three ways a slice can start mid-session: a `--since`
+	// floor, maxPairedEvents dropping the oldest events, and a pruned archive. See turnTables.
+	fromStart := len(events) > 0 && events[0].Seq == 1
+	turns, gaps := turnTables(res, fromStart)
 	opts := toolCallOpts{key: key, turnOf: turns, gapOf: gaps}
 	out := make([]ToolCallRecord, 0, min(len(res.Calls), maxCallsPerSession))
 	dropped := 0
@@ -280,13 +290,11 @@ func toolCallRecord(c toolpair.Call, sessionID string, opts toolCallOpts) ToolCa
 		rb := c.ResultBytes
 		r.ResultBytes = &rb
 	}
-	// InputBytes is the argument size. Options.Arguments is OFF for the export, so Call.Arguments
-	// is empty by construction and no argument bytes exist to measure — the field stays absent
-	// rather than reporting a 0 that would read as an argument-free call. Keeping the export
-	// argument-free is worth more than this one effort proxy; see spec T6 and T14.
-	if n := len(c.Arguments); n > 0 {
-		r.InputBytes = &n
-	}
+	// T14: the argument size, ALWAYS WRITTEN — an argument-free call is a real 0, and absence is
+	// reserved for "not measured". Read from ArgumentBytes rather than len(Arguments), which is
+	// empty here by construction; see the field's own note.
+	ab := c.ArgumentBytes
+	r.InputBytes = &ab
 	// T15: the batch marker. SiblingN is 1 for a lone call, so > 1 is the batch predicate, and
 	// the shared window is only a fact when the call actually has a duration to share.
 	if c.SiblingN > 1 {

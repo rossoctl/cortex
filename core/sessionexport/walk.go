@@ -297,9 +297,12 @@ func Walk(a *archive.Archive, w *Writer, f Filter) (WalkStats, error) {
 					// only to what the pairing holds.
 					droppedEvents++
 				} else {
-					// The VALUE, not the pointer: Earlier pages 500 events at a time, so holding
-					// pointers would keep each page's decoded events alive for the whole session
-					// and make the retained set the pointer graph rather than the slice.
+					// A SHALLOW copy, and worth being precise about what it buys: it owns the
+					// SessionEvent struct past the page that decoded it, which is what lets
+					// Earlier reuse its own page storage. It is NOT a content-retention
+					// boundary — Inference and Client are pointers, so each page's decoded
+					// messages and tool results stay reachable either way, and that payload is
+					// the large part. maxPairedEvents is what bounds the total.
 					paired = append(paired, *e)
 				}
 			}

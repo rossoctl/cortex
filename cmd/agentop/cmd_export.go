@@ -368,7 +368,15 @@ Flags:
 // An empty export is not skew: with no records there is no `kind` to find, and nothing was
 // misreported either.
 func reportToolCallSkew(stderr io.Writer, asked bool, counted *lineCounter, where string) int {
-	if !asked || counted.lines == 0 || counted.sawKind {
+	if !asked {
+		return 0
+	}
+	// A stream whose last record carried no trailing newline leaves the check undecided, so
+	// settle it from what is buffered. counted.lines would be 0 for a single such record and
+	// the guard below would pass it either way; deciding here keeps the two consistent rather
+	// than relying on that coincidence.
+	counted.settleKind()
+	if counted.lines == 0 || counted.sawKind {
 		return 0
 	}
 	fmt.Fprintf(stderr, "agentop export: this proxy ignored --with-tool-calls; %s holds no tool-call records\n", where)
@@ -428,8 +436,8 @@ type lineCounter struct {
 	bytes int64
 	err   error
 
-	// sawKind records whether any record carried a `kind` field, which is how this command
-	// tells a proxy that APPLIED --with-tool-calls from one that ignored it.
+	// sawKind records whether the stream's FIRST COMPLETE RECORD carried a `kind` field, which
+	// is how this command tells a proxy that APPLIED --with-tool-calls from one that ignored it.
 	//
 	// A PROXY PREDATING THE FLAG ANSWERS 200 WITH THE PLAIN STREAM rather than refusing, so
 	// without this the user asks for tool calls, gets an export without them, and is told
@@ -438,13 +446,36 @@ type lineCounter struct {
 	// because an archive with no tool calls legitimately produces none. Checking for those
 	// would report skew on a perfectly good export of a session that ran no tools.
 	//
-	// Checked on the first chunk only. The field is on every line when it is on any, so one
-	// look is enough, and this sits in the copy path of a stream that can be a month of
-	// traffic — a substring scan per write would be paid on every megabyte to learn something
-	// already known.
+	// DECIDED ON A WHOLE LINE, NOT ON THE FIRST WRITE. io.Copy hands Write whatever each read
+	// returned, and a read may return fewer bytes than asked for — so the first chunk can end
+	// mid-token. An opted-in record begins `{"schema":1,"kind":`, where the token ends at byte
+	// 19, so a first chunk shorter than that would have latched sawKind false and failed a
+	// VALID export with "this proxy ignored --with-tool-calls". Rare (it needs a short first
+	// read) and wrong in the direction that breaks scripts, so the check waits for a newline.
+	//
+	// kindHead buffers only until that first newline and is then released: the scan is paid
+	// once per export, not once per megabyte of a stream that can be a month of traffic.
 	sawKind  bool
 	kindSeen bool
+	kindHead []byte
 }
+
+// settleKind decides the check from whatever is buffered, for a stream that ended without a
+// trailing newline. A no-op once a complete record has already decided it.
+func (l *lineCounter) settleKind() {
+	if l.kindSeen {
+		return
+	}
+	l.kindSeen = true
+	l.sawKind = bytes.Contains(l.kindHead, []byte(`"kind":`))
+	l.kindHead = nil
+}
+
+// kindHeadMax bounds the buffer above, so a stream that never sends a newline cannot grow it.
+// 4 KiB is far past the longest plausible record prefix — `kind` sits in the first 19 bytes of
+// an opted-in record — and reaching it means the first "line" is not a record this command
+// understands, which is answered the same way an absent `kind` is.
+const kindHeadMax = 4096
 
 func (l *lineCounter) Write(p []byte) (int, error) {
 	n, err := l.w.Write(p)
@@ -455,8 +486,19 @@ func (l *lineCounter) Write(p []byte) (int, error) {
 		}
 	}
 	if !l.kindSeen && n > 0 {
-		l.kindSeen = true
-		l.sawKind = bytes.Contains(p[:n], []byte(`"kind":`))
+		// Accumulate until the first newline ends a record, then decide from that record alone.
+		l.kindHead = append(l.kindHead, p[:n]...)
+		if i := bytes.IndexByte(l.kindHead, '\n'); i >= 0 {
+			l.kindSeen = true
+			l.sawKind = bytes.Contains(l.kindHead[:i], []byte(`"kind":`))
+			l.kindHead = nil
+		} else if len(l.kindHead) >= kindHeadMax {
+			// No newline in a record's worth of bytes: not a stream this check can read, which
+			// is answered the same way an absent `kind` is.
+			l.kindSeen = true
+			l.sawKind = bytes.Contains(l.kindHead, []byte(`"kind":`))
+			l.kindHead = nil
+		}
 	}
 	if err != nil {
 		l.err = err

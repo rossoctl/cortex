@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/rossoctl/cortex/core/session/archive"
 )
 
 // ToolSource is the closed vocabulary for a toolCall record's `toolSource` (T4). Exported by
@@ -173,13 +175,28 @@ func LoadToolNameKey(stateDir string) (ToolNameKey, error) {
 // toolKeyLen is the key's size: 32 bytes, as T11a specifies.
 const toolKeyLen = 32
 
+// errShortKey is the refusal for a key file smaller than toolKeyLen.
+//
+// IT DOES NOT TELL THE OPERATOR TO DELETE THE FILE, and that wording was a real hazard rather
+// than a style point. An earlier revision created the key with O_CREATE|O_EXCL and wrote it
+// afterwards, so a concurrent reader could see a legitimately-0-byte file mid-publication — and
+// this message then told the operator to delete the winner's perfectly good key, which is the
+// exact re-labelling the keyed hash exists to prevent.
+//
+// Publication now goes through a temp file and os.Link, so this code can no longer produce a
+// short key at all: reaching this means the file was truncated by something outside Cortex. The
+// message says what is known and leaves the decision to whoever can see the file, because
+// deleting a key is irreversible — every label written under it becomes unmatchable.
+var errShortKey = errors.New("sessionexport: tool-name key file is smaller than 32 bytes, " +
+	"so it was not written by Cortex; inspect it before removing it — deleting a key re-labels " +
+	"every MCP tool in later exports and the old labels cannot be recovered")
+
 func readOrCreateKey(path string) (ToolNameKey, error) {
 	// The ordinary path first: a key already exists.
 	if b, err := os.ReadFile(path); err == nil {
 		if len(b) < toolKeyLen {
-			// A short key is a truncated write from an older crash, not a key. Refusing is
-			// better than hashing under a weak one: the labels would be wrong AND weak.
-			return ToolNameKey{}, errors.New("sessionexport: tool-name key is too short; delete it to mint a new one")
+			// Refusing beats hashing under a weak key: the labels would be wrong AND weak.
+			return ToolNameKey{}, errShortKey
 		}
 		return ToolNameKey{key: b[:toolKeyLen]}, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -240,14 +257,37 @@ func readOrCreateKey(path string) (ToolNameKey, error) {
 		// Someone else published first. Theirs is in force — a second key would re-label an
 		// export already streaming under the first — and it is complete, because that is the
 		// only state this path ever reaches.
+		//
+		// SYNCED HERE TOO, for the reason below: the winner may not have reached its own sync
+		// yet, and this process is about to label an export under that key. Paying one fsync
+		// to not depend on another process's timing is the cheaper half of the trade.
+		if err := archive.SyncDir(dir); err != nil {
+			return ToolNameKey{}, err
+		}
 		b, rerr := os.ReadFile(path)
 		if rerr != nil {
 			return ToolNameKey{}, rerr
 		}
 		if len(b) < toolKeyLen {
-			return ToolNameKey{}, errors.New("sessionexport: tool-name key is too short; delete it to mint a new one")
+			return ToolNameKey{}, errShortKey
 		}
 		return ToolNameKey{key: b[:toolKeyLen]}, nil
+	}
+	// THE DIRECTORY ENTRY NEEDS ITS OWN FSYNC, and tmp.Sync() above does not provide it.
+	// Syncing the file makes its BYTES durable; the NAME os.Link just created lives in the
+	// directory, and on Linux that entry is not durable until the directory itself is synced.
+	//
+	// The failure this closes is quiet and permanent: a crash between the link and the next
+	// boot loses the entry while keeping the bytes in an unreferenced inode, so the next start
+	// finds no key, mints a second one, and every MCP and unknown tool label from that point
+	// disagrees with every export written before it. Nothing reports that — the labels are
+	// opaque hashes either way, so a consumer sees one tool's history split in two and cannot
+	// tell it from two different tools.
+	//
+	// archive.SyncDir rather than os.Open + Sync: Windows refuses to flush a read-only
+	// directory handle, and that package already owns the platform-aware open.
+	if err := archive.SyncDir(dir); err != nil {
+		return ToolNameKey{}, err
 	}
 	return ToolNameKey{key: fresh}, nil
 }
