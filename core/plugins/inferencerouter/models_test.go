@@ -1165,6 +1165,27 @@ func TestResend_AKeptSubstituteRefusedIsNotResentAgain(t *testing.T) {
 	}
 }
 
+// A refused substitute is dropped only while the session still keeps it, and only for
+// its kind: a late refusal leaves a substitute kept since, and the other kind's.
+func TestRouter_ForgetSubstituteDropsOnlyTheRefusedOne(t *testing.T) {
+	r, _ := buildRouter(t, wordConfig(`"opencode": "glm"`))
+	store := newStore(t)
+	main := chat(store, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", "exo-free", true)
+	helper := chat(store, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", "exo-free", false)
+	r.keepSubstitute(main, "glm", "exo-free", "a")
+	r.keepSubstitute(main, "glm", "exo-free", "b")
+	r.keepSubstitute(helper, "glm", "exo-free", "h")
+
+	r.forgetSubstitute(main, "glm", "exo-free", "a")
+	if got := r.sessionSubstitute(main, "glm", "exo-free"); got != "b" {
+		t.Errorf("main = %q after a late refusal of a, want b", got)
+	}
+	r.forgetSubstitute(helper, "glm", "exo-free", "h")
+	if got := r.sessionSubstitute(main, "glm", "exo-free"); got != "b" {
+		t.Errorf("main = %q after the helper's refusal, want b", got)
+	}
+}
+
 // A local server's refusal is answered from that server's own list, found by the host and
 // port the request was sent to.
 func TestResend_ALocalServersRefusalIsAnsweredFromItsOwnList(t *testing.T) {
