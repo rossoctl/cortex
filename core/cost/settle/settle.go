@@ -299,8 +299,10 @@ type Settled struct {
 	DeclaredFree bool
 
 	// Incomplete marks CostUSD as not an EXACT total, and IncompleteReason says why —
-	// pricing.ReasonOutputUncounted for a figure that is known-low, or
-	// pricing.ReasonSplitUnreported for one that is approximate in no known direction.
+	// pricing.ReasonOutputUncounted for a figure that is known-low,
+	// pricing.ReasonSplitUnreported for one that is approximate in no known direction, or
+	// pricing.ReasonCacheWrite1hRateEstimated for a 1-hour cache-write premium priced
+	// from a generic fallback rate rather than a documented one.
 	//
 	// It exists because a truncated stream was priced prompt-only and published as a complete
 	// figure: prompt counts land on message_start and the output count only on message_delta, so
