@@ -343,9 +343,10 @@ If a smoke test fails, the release stays a prerelease and reaches nobody:
 
 Things to know:
 
-- **The auto-updater's 24-hour wait counts from publication, not promotion.**
-  `update.wait` is measured from the upload of the release's `checksums.txt`. A release
-  promoted a day after it was published goes to auto-updaters at their next check.
+- **The auto-updater's wait counts from publication, not promotion.** `update.wait`, 6
+  hours by default, is measured from the upload of the release's `checksums.txt`. A
+  release promoted more than 6 hours after it was published goes to auto-updaters at
+  their next check.
 - **Only a release that the tag build creates is tested first.** A release that already
   exists keeps its flags. Flagging a live release would give Latest back to the release
   before it, and the auto-updater follows Latest both ways, so it would take installs
