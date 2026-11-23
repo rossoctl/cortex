@@ -441,6 +441,40 @@ func TestRouter_ASubstituteIsRenewedWithItsPin(t *testing.T) {
 	}
 }
 
+// A session moved back to a server keeps the substitute it had there: the pin the
+// move saves renews it, as a pin's renewal does.
+func TestRouter_ASessionMovedBackKeepsItsSubstitute(t *testing.T) {
+	start := time.Date(2026, 10, 8, 17, 0, 0, 0, time.UTC)
+	now := start
+	clock := func() time.Time { return now }
+	store := &fakeStore{now: clock}
+	r := New()
+	r.now = clock
+	r.SetStore(store)
+	cfg := strings.Replace(wordConfig(`"opencode": "ete"`), `"agents"`, `"sessions": {"s1": "glm"}, "agents"`, 1)
+	if err := r.Configure(json.RawMessage(cfg)); err != nil {
+		t.Fatal(err)
+	}
+	r.catalogs.set("glm", glmModels)
+	p, _ := pipeline.New([]pipeline.Plugin{r})
+	request := func() *pipeline.Context {
+		return chat(nil, "opencode.ai", "/zen/v1/chat/completions", opencodeUA, "s1", "exo-free", true)
+	}
+
+	// The session kept glm's substitute, then ran on ete.
+	r.keepSubstitute(request(), "glm", "exo-free", glmMain)
+	storedPins{st: store, now: clock}.save(pinPrefix+"s1", pin{agent: "opencode", server: "ete"})
+	now = now.Add(pinTTL - time.Hour)
+	for range 2 {
+		pctx := request()
+		run(t, p, pctx)
+		if got := sentModel(t, pctx); got != glmMain {
+			t.Fatalf("%v after the substitute was kept the session sends %q, want %s", now.Sub(start), got, glmMain)
+		}
+		now = now.Add(2 * time.Hour)
+	}
+}
+
 // The real outbound chain parses an OpenCode Zen request and the router captures it.
 func TestRouter_TheParserAndTheRouterCaptureAZenRequest(t *testing.T) {
 	p, err := plugins.BuildWithDeps(entries(wordConfig(`"opencode": "glm"`)),

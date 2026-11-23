@@ -479,7 +479,7 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	if pl.kind == planRefuse || pl.kind == planCountTokens {
 		// The session is on this server; only this request is answered here.
 		if settle {
-			pin.settle(name)
+			p.settle(pctx, &pin, name)
 		}
 		return refusePlan(pctx, srv, pl, details())
 	}
@@ -490,7 +490,7 @@ func (p *Router) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.A
 	p.keepOwnReasoning(pctx, name, pin.moving(), pin.movedFrom(addressed))
 	p.applyLimits(pctx, name, true)
 	if settle {
-		pin.settle(name)
+		p.settle(pctx, &pin, name)
 	}
 	if addressed != name {
 		dropProviderCredentials(pctx.Headers)
@@ -573,10 +573,21 @@ func (pn pinning) movedFrom(addressed string) string {
 
 // settle pins a session on its first request to where that request went: server
 // when it was redirected there, "" when it stayed where the client sent it. A
-// session already pinned keeps its pin, which serverFor renewed.
-func (pn *pinning) settle(server string) {
+// session already pinned keeps its pin, which serverFor renewed. saved is whether
+// it saved a pin.
+func (pn *pinning) settle(server string) (saved bool) {
 	if pn.state == pinNew || pn.state == pinMoved {
 		pn.store.save(pn.key, pin{agent: pn.agent, server: server})
+		return true
+	}
+	return false
+}
+
+// settle settles pn on server, and renews the session's substitutes there with the
+// pin it saves.
+func (p *Router) settle(pctx *pipeline.Context, pn *pinning, server string) {
+	if pn.settle(server) {
+		p.renewSubstitutes(pctx, server)
 	}
 }
 
@@ -622,7 +633,7 @@ func (p *Router) serverFor(pctx *pipeline.Context, captured bool, keyOf string) 
 
 // keepPin renews the session's pin and, with it, its reasoning record and its
 // substitutes on the pinned server, which must not expire under a pin its session
-// keeps alive.
+// keeps alive. settle renews them with a pin it saves.
 func (p *Router) keepPin(pctx *pipeline.Context, store pins, key string, pn pin) {
 	if store.keep(key, pn) {
 		p.renewReasoning(pctx)
