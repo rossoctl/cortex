@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/model"
+	"github.com/rossoctl/cortex/core/session/toolpair"
 )
 
 // TestWalk_SinceDropsCallsBelowTheFloor is T33, and it is a consequence of Option A rather than
@@ -113,6 +114,99 @@ func TestWalk_SinceNeverLabelsAMidSessionTurnAsFirst(t *testing.T) {
 	}
 	if seen == 0 {
 		t.Fatal("no toolCall records above the floor; this test needs some")
+	}
+}
+
+// TestWalk_EventBoundAlsoSuppressesFirst covers the second of the three ways a slice can start
+// mid-session, which the --since test does not reach.
+//
+// The event bound drops a session's OLDEST events, so the same "no predecessor in this slice"
+// condition arises with no filter set at all — and it arrives beside a truncation marker, so a
+// consumer can see that the export was capped. Both facts are asserted here because the fix was
+// written against one trigger (`--since`) and has to hold for all three.
+func TestWalk_EventBoundAlsoSuppressesFirst(t *testing.T) {
+	// Shrink the bound for this test only; the fixture holds 12 events.
+	t.Cleanup(func(old int) func() { return func() { maxPairedEvents = old } }(maxPairedEvents))
+	maxPairedEvents = 6
+
+	var buf strings.Builder
+	stats, err := Walk(toolArchive(t), NewToolCallWriter(&buf), Filter{ToolNameKey: testKey(t)})
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if stats.Truncated == 0 {
+		t.Fatal("the bound did not fire; this test needs it to")
+	}
+	var calls, markers int
+	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		switch {
+		case strings.Contains(line, `"kind":"`+MarkerKind+`"`):
+			markers++
+			if !strings.Contains(line, `"droppedEvents"`) {
+				t.Errorf("marker does not report dropped events: %s", line)
+			}
+		case strings.Contains(line, `"kind":"`+ToolCallKind+`"`):
+			calls++
+			var r ToolCallRecord
+			if err := json.Unmarshal([]byte(line), &r); err != nil {
+				t.Fatalf("toolCall line does not decode: %v", err)
+			}
+			if r.GapKind == GapFirst {
+				t.Errorf("callSeq %d labelled first under the event bound: the oldest events "+
+					"were dropped, so this is not the agent's first turn\n%s", r.CallSeq, line)
+			}
+		}
+	}
+	if markers == 0 {
+		t.Error("no truncation marker: a capped session must say so in band")
+	}
+	if calls == 0 {
+		t.Error("no toolCall records survived the bound; this test needs some")
+	}
+}
+
+// TestTurnTables_OverlappingRequestDoesNotInflateTheNextGap is the request-order hazard.
+//
+// res.Turns is in REQUEST order, and a client can have two requests of one agent in flight, so
+// a turn later in that order can finish EARLIER. Tracking "the last end seen" let a short
+// overlapping request replace a later end with an earlier one, and the next turn's gap absorbed
+// the difference as phantom idle time — the direction that matters, since a duty cycle built on
+// `user` gaps would read idleness that never happened.
+//
+// Fixture: A runs 0-10s, B runs 1-2s (overlapping, finishing first), C asks at 11s. C's real
+// idle interval is 1s — from A's end at 10s — not 9s from B's end at 2s.
+func TestTurnTables_OverlappingRequestDoesNotInflateTheNextGap(t *testing.T) {
+	at := func(s int) time.Time { return tcBase.Add(time.Duration(s) * time.Second) }
+	req := func(seq uint64, start time.Time) *model.SessionEvent {
+		return &model.SessionEvent{
+			Seq: seq, At: start, Direction: model.Outbound, Phase: model.SessionRequest,
+			Inference: &model.InferenceExtension{AgentRole: model.AgentRoleMain},
+		}
+	}
+	resp := func(seq uint64, dur time.Duration) *model.SessionEvent {
+		return &model.SessionEvent{
+			Seq: seq, Direction: model.Outbound, Phase: model.SessionResponse, Duration: dur,
+			Inference: &model.InferenceExtension{AgentRole: model.AgentRoleMain},
+		}
+	}
+	res := toolpair.Result{Turns: []toolpair.Turn{
+		// A: asks at 0s, response takes 10s → ends at 10s.
+		{Req: req(1, at(0)), Resp: resp(2, 10*time.Second), Agent: toolpair.MainAgent},
+		// B: asks at 1s, response takes 1s → ends at 2s. Later in request order, earlier end.
+		{Req: req(3, at(1)), Resp: resp(4, 1*time.Second), Agent: toolpair.MainAgent},
+		// C: asks at 11s. Its gap runs from A's end (10s), so 1s.
+		{Req: req(5, at(11)), Resp: resp(6, 1*time.Second), Agent: toolpair.MainAgent},
+	}}
+
+	_, gaps := turnTables(res, true)
+	g, ok := gaps[6]
+	if !ok || g.ms == nil {
+		t.Fatalf("no gap recorded for the third turn: %+v", g)
+	}
+	if *g.ms != 1000 {
+		t.Errorf("gapMs = %d, want 1000: the overlapping request's earlier end replaced the "+
+			"later one, so the gap absorbed %dms of idleness that never happened",
+			*g.ms, *g.ms-1000)
 	}
 }
 

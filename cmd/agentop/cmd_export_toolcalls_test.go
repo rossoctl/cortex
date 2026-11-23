@@ -92,6 +92,37 @@ func TestRunExport_EmptyExportIsNotSkew(t *testing.T) {
 	}
 }
 
+// TestRunExport_SkewOnASingleUnterminatedRecord closes the hole the line-count guard left.
+//
+// `lines` counts NEWLINES, so a pre-feature proxy that sends one record without a trailing
+// newline reports zero lines — and the empty-stream exception then passed it as success, with
+// no `kind` anywhere and the flag silently ignored. The export is not empty; it is one record
+// that proves the proxy did not apply the option, which is exactly the case this check exists
+// for. Emptiness is now judged on BYTES.
+func TestRunExport_SkewOnASingleUnterminatedRecord(t *testing.T) {
+	// No trailing newline, and no `kind`: the pre-feature answer.
+	srv, _ := exportServer(t, http.StatusOK, `{"schema":1,"sessionId":"s1","seq":1}`)
+	var out, errOut strings.Builder
+	code := runExport([]string{"--endpoint", srv.URL, "--with-tool-calls"}, &out, &errOut)
+	if code == 0 {
+		t.Fatalf("runExport = 0 for one unterminated record with no kind; stderr:\n%s", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "ignored --with-tool-calls") {
+		t.Errorf("stderr = %q, want it to name the ignored flag", errOut.String())
+	}
+}
+
+// TestRunExport_UnterminatedOptedInRecordIsNotSkew is the same shape from a CURRENT proxy: one
+// record, no trailing newline, but `kind` present. That must still succeed.
+func TestRunExport_UnterminatedOptedInRecordIsNotSkew(t *testing.T) {
+	srv, _ := exportServer(t, http.StatusOK, `{"schema":1,"kind":"event","sessionId":"s1","seq":1}`)
+	var out, errOut strings.Builder
+	if code := runExport([]string{"--endpoint", srv.URL, "--with-tool-calls"}, &out, &errOut); code != 0 {
+		t.Fatalf("runExport = %d for an unterminated record that carries kind; stderr:\n%s",
+			code, errOut.String())
+	}
+}
+
 // TestRunExport_SkewIsReportedForAnOutFileToo: the same failure through --out, where the
 // misleading artifact is a file a later command will read.
 func TestRunExport_SkewIsReportedForAnOutFileToo(t *testing.T) {

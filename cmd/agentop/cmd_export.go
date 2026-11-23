@@ -372,11 +372,15 @@ func reportToolCallSkew(stderr io.Writer, asked bool, counted *lineCounter, wher
 		return 0
 	}
 	// A stream whose last record carried no trailing newline leaves the check undecided, so
-	// settle it from what is buffered. counted.lines would be 0 for a single such record and
-	// the guard below would pass it either way; deciding here keeps the two consistent rather
-	// than relying on that coincidence.
+	// settle it from what is buffered.
 	counted.settleKind()
-	if counted.lines == 0 || counted.sawKind {
+	// EMPTINESS IS JUDGED ON BYTES, NOT ON LINES, and that distinction is the whole guard.
+	// lines counts NEWLINES, so a proxy that sends one record without a trailing newline
+	// reports zero lines — and an earlier revision's `lines == 0` exception then passed it as
+	// success, with no `kind` anywhere and the flag silently ignored. That stream is not empty:
+	// it is one record proving the option was not applied, which is exactly the case this
+	// check exists for. A genuinely empty body has nothing to check and still succeeds.
+	if counted.bytes == 0 || counted.sawKind {
 		return 0
 	}
 	fmt.Fprintf(stderr, "agentop export: this proxy ignored --with-tool-calls; %s holds no tool-call records\n", where)

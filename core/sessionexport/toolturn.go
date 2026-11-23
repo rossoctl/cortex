@@ -43,7 +43,10 @@ const maxCallsPerSession = 4096
 // above every session observed (the deepest held 2,911 events) and still a bound. Earlier walks
 // newest first, so what a bound drops is the session's OLDEST events; see Walk for why that is
 // sound rather than merely cheap.
-const maxPairedEvents = 50_000
+// A var rather than a const so a test can shrink it and exercise the bound on a small fixture
+// instead of a 50,000-event one — the same reason archive's own earlierPage is a var. Nothing in
+// production writes it.
+var maxPairedEvents = 50_000
 
 // turnTables derives the per-asking-response facts the records need, from the turns the pairing
 // already resolved. Keyed by the asking RESPONSE's seq, which is what Call.CallSeq holds.
@@ -54,6 +57,7 @@ const maxPairedEvents = 50_000
 // tool execution of this call. The obvious alternative — previous tool call's end to this call's
 // start — cannot be checked, because a call starts when its asking response ends, so that
 // interval always contains the asking response's own inference.
+//
 // fromStart says whether the slice begins at the SESSION's start rather than merely at the
 // window's. It decides whether an agent with no previous response in the slice is genuinely on
 // its first turn (T24's `first`) or just the first one that was read.
@@ -113,8 +117,23 @@ func turnTables(res toolpair.Result, fromStart bool) (map[uint64]turnFacts, map[
 			// Otherwise: no entry at all, so both gapMs and gapKind stay absent. See
 			// fromStart — "no predecessor in this slice" is not "no predecessor".
 		}
-		prevEnd[t.Agent] = toolpair.ResponseEnd(t.Req, t.Resp)
-		prevHadTools[t.Agent] = respAskedForTools(t.Resp)
+		// THE LATEST END WINS, NOT THE LAST ONE SEEN. res.Turns is in REQUEST order, and a
+		// client can have two requests of one agent in flight, so a turn later in that order
+		// can finish EARLIER. Assigning unconditionally let a short overlapping request replace
+		// a later end with an earlier one, and the next turn's gap then absorbed the difference:
+		// request A running 0-10s followed by B running 1-2s left prevEnd at 2s, so a request
+		// at 11s reported a 9s idle gap where it had been idle for 1s.
+		//
+		// Inflating `user` gap time is the direction that matters — T27 already warns that a
+		// duty cycle built on these is sensitive to its ceiling, and this would have added
+		// phantom idleness on exactly the concurrent traffic a busy agent produces.
+		//
+		// The pair moves together: prevHadTools must describe the response prevEnd came from,
+		// or a gap gets the right length and the wrong kind.
+		if end := toolpair.ResponseEnd(t.Req, t.Resp); end.After(prevEnd[t.Agent]) {
+			prevEnd[t.Agent] = end
+			prevHadTools[t.Agent] = respAskedForTools(t.Resp)
+		}
 	}
 	return turns, gaps
 }
