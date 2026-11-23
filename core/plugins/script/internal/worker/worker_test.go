@@ -978,14 +978,14 @@ func callBoundBy(t *testing.T, c *clock, w *Worker, want time.Duration, what str
 func TestPool_AReusedWorkerTakesTheNewCallTimeout(t *testing.T) {
 	p := NewPool()
 	cfg := fake(t, "plain")
-	cfg.CallTimeout = 10 * time.Second
+	cfg.CallTimeout = 10 * time.Second // timing: the fake clock records it
 	a := p.Acquire(p.NewHolder(), cfg, "h1")
 	t.Cleanup(a.Stop)
 	c := useClock(t, a)
 	if _, err := a.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	cfg.CallTimeout = 200 * time.Millisecond
+	cfg.CallTimeout = 200 * time.Millisecond // timing: the fake clock records it
 	b := p.Acquire(p.NewHolder(), cfg, "h1")
 	if !sameChild(a, b) {
 		t.Fatal("a changed timeout restarted the script")
@@ -1006,7 +1006,7 @@ func TestPool_ABuildsCallTimeoutStaysWithThatBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.Activate(running)
-	cfg.CallTimeout = 50 * time.Millisecond
+	cfg.CallTimeout = 50 * time.Millisecond // timing: the fake clock records it
 	refused := p.NewHolder()
 	p.Acquire(refused, cfg, "h1") // configured, never started
 	callBoundBy(t, c, a, time.Hour, "the running build beside a refused one")

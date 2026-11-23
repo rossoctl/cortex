@@ -244,6 +244,7 @@ func window(t *testing.T, s *SkipSet, host string) time.Duration {
 	if !ok {
 		t.Fatalf("no entry for %q", host)
 	}
+	// timing: SkipSet reads the real clock; the windows compared differ by doublings
 	return time.Until(e.expiry)
 }
 

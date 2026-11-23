@@ -128,7 +128,7 @@ func TestCall_NoSentinelHeaderWhenUnset(t *testing.T) {
 
 			tc.opts.Endpoint = srv.URL
 			tc.opts.Model = "m"
-			tc.opts.Timeout = time.Second
+			tc.opts.Timeout = time.Hour
 			c := llmclient.New(tc.opts)
 			if _, err := c.Call(context.Background(), "s", "u"); err != nil {
 				t.Fatalf("Call: %v", err)

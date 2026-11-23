@@ -201,7 +201,7 @@ func startMTLSInbound(t *testing.T, strict bool, a *auth.Auth, dstHost string, a
 	hs := &http.Server{
 		Handler:           srv.Handler(),
 		ConnContext:       connCtx,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: time.Hour,
 	}
 	go func() { _ = hs.Serve(ln) }()
 	t.Cleanup(func() { _ = hs.Close() })

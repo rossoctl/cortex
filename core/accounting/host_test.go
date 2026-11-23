@@ -404,8 +404,8 @@ func TestHost_ConcurrentSessions(t *testing.T) {
 	h := newHost(t)
 	// 640 requests under -race on a loaded CI runner can take past the production 2s bound to end
 	// a record; this test is about isolation between sessions, not the bound (TestHost_ComputeTimesOut
-	// covers that), so it waits longer (review finding: 2-6 of 640 timed out under load).
-	h.computeWait = 30 * time.Second
+	// covers that), so the bound stays out of play.
+	h.computeWait = time.Hour
 	p, err := pipeline.New([]pipeline.Plugin{&operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}}, pipeline.WithAccountant(h))
 	if err != nil {
 		t.Fatal(err)

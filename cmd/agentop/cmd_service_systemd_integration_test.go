@@ -501,7 +501,9 @@ func TestServiceLifecycle_RealSystemd(t *testing.T) {
 	// RestartSec apart. Doubled, plus slack for a loaded runner: on systemd 257 and
 	// 261 with RestartSec=10 and StartLimitBurst=5, the limit took about 50s.
 	restartSec, burst := unitTimings(t, realUnit)
+	// timing: real systemd restarts on its own clock
 	restartWait := 2*restartSec + 10*time.Second
+	// timing: real systemd restarts on its own clock
 	limitWait := 2*time.Duration(burst)*restartSec + 10*time.Second
 
 	// A crash: the unit's own RestartSec brings it back. The pid comes from

@@ -6,17 +6,25 @@ machine and fails on a loaded one. This hook scans each test file it is given.
 A line that needs real time carries `// timing: <reason>`, on it or in the
 comment lines directly above it.
 
+A duration is judged where it is written: in a timer call's arguments, which may
+span lines, or where a timeout, wait or deadline is set. A duration passed
+through any other variable is out of the hook's sight.
+
 The rules are in CLAUDE.md, "Tests and time".
 """
 
 import re
 import sys
 
-# A duration of a microsecond or more that is not negated: a negated one makes
-# a deadline already past.
-UNIT = r"(?<!-)\btime\.(Microsecond|Millisecond|Second|Minute)\b"
+# A duration of a microsecond or more.
+UNIT = re.compile(r"\btime\.(Microsecond|Millisecond|Second|Minute)\b")
+# A negated one, which makes a deadline already past.
+NEGATED = re.compile(r"-\s*(\d+\s*\*\s*)?time\.(Microsecond|Millisecond|Second|Minute)\b")
 
-SINCE = re.compile(r"\btime\.Since\(")
+ELAPSED = re.compile(r"\btime\.(Since|Until)\(|\btime\.Now\(\)\.Sub\(")
+ELAPSED_WHY = (
+    "asserts on elapsed time. Assert on the outcome; to show a call does not wait on X, hold X until it returns."
+)
 
 RULES = [
     (
@@ -32,25 +40,22 @@ RULES = [
         "polls until a condition holds. Block on a channel that closes when it does.",
     ),
     (
-        SINCE,
-        "asserts on elapsed time. Assert on the outcome; to show a call does not wait on X, hold X until it returns.",
-    ),
-    (
         re.compile(r"\bruntime\.Gosched\("),
         "yields and hopes another goroutine ran. Block on a channel that goroutine closes.",
     ),
 ]
 
-# Calls whose arguments set a real timer, and the struct field that does.
+# Calls whose arguments set a real timer, and a timeout, wait or deadline set
+# as a field or by assignment.
 TIMERS = re.compile(r"\b(WithTimeout|WithDeadline|WithTimeoutCause|WithDeadlineCause|NewTimer|NewTicker|AfterFunc)\(")
-TIMEOUT_FIELD = re.compile(r"\bTimeout:\s*[^,}]*" + UNIT)
+TIMEOUT_SET = re.compile(r"\b\w*(Timeout|Wait|Deadline)\s*(:|:?=)\s*([^,;}]*)")
 TIMER_WHY = (
     "sets a real timeout. Use time.Hour when the test does not exercise it, "
     "and 0 or a past deadline when the test is about it expiring."
 )
 
-# A time.Since that is only reported, not compared.
-LOGGED = re.compile(r"\.(Log|Logf|Error|Errorf|Fatal|Fatalf|Skip|Skipf)\(.*\btime\.Since\(")
+# Calls that only report a value.
+LOG_CALL = re.compile(r"\.(Log|Logf|Error|Errorf|Fatal|Fatalf|Skip|Skipf)\(")
 
 EXEMPT = re.compile(r"\btiming:\s*\S")
 
@@ -103,8 +108,8 @@ def split_go(text):
     return code, comment
 
 
-def call_args(code, start):
-    """The text inside the parentheses that open at start."""
+def call_end(code, start):
+    """The index of the parenthesis that closes the one opening at start."""
     depth = 0
     for j in range(start, len(code)):
         if code[j] == "(":
@@ -112,14 +117,22 @@ def call_args(code, start):
         elif code[j] == ")":
             depth -= 1
             if depth == 0:
-                return code[start + 1 : j]
-    return code[start + 1 :]
+                return j
+    return len(code)
 
 
-def problems(code):
-    found = [why for pattern, why in RULES if pattern.search(code) and not (pattern is SINCE and LOGGED.search(code))]
-    timer = any(re.search(UNIT, call_args(code, m.end() - 1)) for m in TIMERS.finditer(code))
-    if timer or TIMEOUT_FIELD.search(code):
+def real_duration(text):
+    """Whether text holds a duration that is not negated."""
+    return bool(UNIT.search(NEGATED.sub("", text)))
+
+
+def line_problems(code):
+    found = [why for pattern, why in RULES if pattern.search(code)]
+    # An elapsed time inside a log call's arguments is only reported.
+    logged = [(m.end() - 1, call_end(code, m.end() - 1)) for m in LOG_CALL.finditer(code)]
+    if any(not any(a < m.start() < b for a, b in logged) for m in ELAPSED.finditer(code)):
+        found.append(ELAPSED_WHY)
+    if any(real_duration(m.group(3)) for m in TIMEOUT_SET.finditer(code)):
         found.append(TIMER_WHY)
     return found
 
@@ -142,9 +155,16 @@ def findings(path):
         text = f.read()
     lines = text.split("\n")
     code, comment = split_go(text)
-    for n, line in enumerate(code):
-        if not exempt(code, comment, n):
-            for why in problems(line):
+    found = {n: line_problems(line) for n, line in enumerate(code)}
+    # A timer call's arguments may span lines; it is reported where it starts.
+    src = "\n".join(code)
+    for m in TIMERS.finditer(src):
+        n = src.count("\n", 0, m.start())
+        if real_duration(src[m.end() : call_end(src, m.end() - 1)]) and TIMER_WHY not in found[n]:
+            found[n].append(TIMER_WHY)
+    for n, whys in found.items():
+        if whys and not exempt(code, comment, n):
+            for why in whys:
                 yield f"{path}:{n + 1}: {why}\n    {lines[n].strip()}"
 
 

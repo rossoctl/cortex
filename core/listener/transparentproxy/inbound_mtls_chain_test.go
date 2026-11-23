@@ -168,7 +168,7 @@ func startChain(t *testing.T, mode tlssniff.Mode, src *chainSVID) (addr string, 
 	hs := &http.Server{
 		Handler:           chainHandler(),
 		ConnContext:       ConnContextHook,
-		ReadHeaderTimeout: 5 * time.Second,
+		ReadHeaderTimeout: time.Hour,
 	}
 	go func() { _ = hs.Serve(sniffed) }()
 	t.Cleanup(func() { _ = hs.Close() })

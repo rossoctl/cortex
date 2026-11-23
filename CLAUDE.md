@@ -322,7 +322,7 @@ runner. Tests wait on events:
   the code calls. No `time.Sleep`, no polling loop, no `Eventually`.
 - **A hang is the failure.** No `time.After` guard beside the wait. Locally,
   `go test -timeout 2m` ends a hung test with every goroutine's stack. CI passes no
-  `-timeout`, so there the job's own limit ends it.
+  `-timeout`, so there go test's 10m default ends it, or the job's limit if sooner.
 - **Assert on what happened, not how long it took.** A `time.Since(start) > d`
   bound is a flake. To show a call does not wait for X, hold X until the call has
   returned.
@@ -336,8 +336,11 @@ runner. Tests wait on events:
 - **Mutation-check each fix.** Put the bug back and see the test fail or hang.
 
 The `check-test-timing` pre-commit hook flags these in every `_test.go` file, in
-CI too. Reporting a duration with `t.Logf` is fine. A line that needs real time,
-such as a live integration test, carries `// timing: <reason>`.
+CI too. It judges a duration where it is written: in a timer call's arguments, or
+where a timeout, wait or deadline is set. A duration passed through any other
+variable is out of its sight. Reporting an elapsed time in a log call is fine. A
+line that needs real time, such as a live integration test, carries
+`// timing: <reason>`.
 
 ### Python and shell
 - Python 3.12+. `python-keycloak>=7.1.1,<8` for all Keycloak admin calls. Every
