@@ -704,9 +704,12 @@ type model struct {
 	// cursor's row INDEX, and rather than indexing m.sessions because the rows are scoped and
 	// interleaved with cached-only entries, so position does not map back.
 	sessionRowIDs []string
-	eventsTbl     table.Model
-	pipelineTbl   table.Model
-	detailVp      viewport.Model
+
+	// titleScroll scrolls the selected row's TITLE cell; see sessions_title_scroll.go.
+	titleScroll titleScroll
+	eventsTbl   table.Model
+	pipelineTbl table.Model
+	detailVp    viewport.Model
 	// detailDoc is detailVp's text, searched — see searchdoc.go. Shared by message detail
 	// and plugin detail, as the viewport is.
 	detailDoc   searchDoc
@@ -1388,6 +1391,7 @@ func (m *model) snapshotCmd(id string) tea.Cmd {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	before, reserved := m.pane, m.spendDrawerReservesRows()
 	next, cmd := m.update(msg)
+	cmd = tea.Batch(cmd, m.armTitleScroll())
 	if m.spendDrawerReservesRows() != reserved {
 		// The drawer's rows depend on the pane now, and no other layout() call sees every pane change.
 		m.layout()
@@ -1702,6 +1706,9 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case timelineTickMsg:
 		return m, m.handleTimelineTick(msg)
+
+	case titleScrollMsg:
+		return m, m.handleTitleScroll(msg)
 
 	case usageTickMsg:
 		// Stop when the pane loses focus, and drop ticks from a previous visit:
