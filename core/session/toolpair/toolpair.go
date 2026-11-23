@@ -27,7 +27,9 @@
 // come from — hence Result carries those too, for the one consumer that wants them. The scan
 // cannot be reduced to the task-notification match alone: it must skip the history each request
 // re-sends (commonPrefix), or it is quadratic in turns — 0.26-0.47GB of text against 35-42MB
-// new, on real sessions. core/session/timeline's TestBuildBudget enforces the consequence.
+// new, on real sessions. core/session/timeline's TestBuildScalesLinearly enforces the
+// consequence: it asserts the bytes Build scans grow in step with the session rather than
+// with its square.
 //
 // NO ARGUMENT TEXT AND NO RESULT TEXT LEAVE THIS PACKAGE unless a caller asks. A Call carries
 // the SIZE of a result, never its content, and carries a call's arguments only under
@@ -289,8 +291,9 @@ func Calls(events []model.SessionEvent, opts Options) Result {
 		return res
 	}
 	// PREALLOCATED, because a Call is ~192 bytes and a real session has thousands: letting the
-	// slice double copies megabytes for nothing, and this walk is on the timeline's 50ms budget
-	// (core/session/timeline's TestBuildBudget).
+	// slice double copies megabytes for nothing, and the timeline pane pays this walk on every
+	// refresh it asks for (core/session/timeline's BenchmarkBuild, over a 6,000-event session).
+	// That benchmark REPORTS the cost; no test asserts a threshold on it.
 	n := 0
 	for _, c := range calls {
 		if c.resp != nil && c.resp.Inference != nil {
