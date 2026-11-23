@@ -764,8 +764,12 @@ func reportJobNotAnswering(p servicePaths, s launchdState, stdout io.Writer) int
 		reportNotAnswering(p, stdout)
 		return 1
 	case !s.session:
-		fmt.Fprintf(stdout, "Cortex is not running: nobody is logged in to this Mac's desktop, and it runs only in a desktop session.\n"+
-			"  It starts at the next login at the screen, or at boot with automatic login. An SSH login does not start it.\n")
+		// "you", not "nobody": the console may be another user's. And no promise that it
+		// starts at the next login, since a `service stop` disabled it, and whether it
+		// did cannot be asked without the session.
+		fmt.Fprintf(stdout, "Cortex is not running: you are not logged in to this Mac's desktop, and it runs only in your desktop session.\n"+
+			"  It starts at your next login at the screen, or at boot with automatic login, unless `agentop service stop` stopped it.\n"+
+			"  An SSH login does not start it.\n")
 		return 1
 	case !s.loaded && s.disabled:
 		fmt.Fprintf(stdout, "Cortex is stopped, and stays stopped across logins and reboots until you start it.\n"+

@@ -40,11 +40,13 @@ func TestReportJobNotAnswering(t *testing.T) {
 		{"running but silent",
 			launchdState{known: true, session: true, loaded: true, state: "running"}, 1,
 			[]string{"Cortex is NOT answering"}, []string{"stopped", "loaded but not running"}},
-		// Nobody at the screen: what status over SSH to an unattended Mac sees.
+		// This user not at the screen: what status over SSH to an unattended Mac sees,
+		// or to one where someone else is logged in. It must not promise a start at
+		// the next login, which a `service stop` would have cancelled.
 		{"no desktop session",
 			launchdState{known: true}, 1,
-			[]string{"nobody is logged in to this Mac's desktop", "An SSH login does not start it"},
-			[]string{"stopped", "NOT answering"}},
+			[]string{"you are not logged in to this Mac's desktop", "unless `agentop service stop` stopped it", "An SSH login does not start it"},
+			[]string{"Cortex is stopped", "NOT answering", "nobody"}},
 		{"launchd could not be asked", launchdState{}, 1,
 			[]string{"Cortex is NOT answering"}, []string{"stopped", "logged in"}},
 	} {

@@ -52,7 +52,7 @@ On macOS, status asks launchd instead:
 | `Cortex is stopped, and stays stopped` | Stopped and disabled, as `agentop service stop` leaves it. It stays stopped across logins and reboots until `agentop service start` | 0 |
 | `Cortex is stopped, but not disabled` | Taken out of launchd some other way, such as `launchctl bootout`; it starts again at the next login | 1 |
 | `launchd has its job loaded but not running` | launchd is holding its start back, as it does for a while after every login, or waiting out its 10 seconds between restarts. `agentop service restart` starts it now | 1 |
-| `nobody is logged in to this Mac's desktop` | Cortex runs only while someone is logged in at the screen. It starts at the next login there, or at boot with automatic login; an SSH login does not start it | 1 |
+| `you are not logged in to this Mac's desktop` | Cortex runs only in your desktop session, and you have none: nobody is at the screen, or someone else is. It starts at your next login there, or at boot with automatic login, unless `agentop service stop` stopped it, which status cannot check without the session. An SSH login does not start it | 1 |
 
 A stopped Cortex exits 0, like a healthy one, because a stop is not a failure. So in a
 script, the exit code alone does not say Cortex is serving: check for
