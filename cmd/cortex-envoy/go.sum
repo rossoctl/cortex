@@ -203,8 +203,8 @@ github.com/rogpeppe/go-internal v1.16.0 h1:O9DK+vNMDVGLr2BeZqmpLeMjiMNkuXfcqntWb
 github.com/rogpeppe/go-internal v1.16.0/go.mod h1:DrUVZyrJU+txYW5/1kwtXQSMFio52ZOxX7yM1VHvnxs=
 github.com/rossoctl/accountant v0.5.0 h1:5IwMF5wiw0JPnIzHma5xJAaYWge6KW5seAe0Zh4xNKc=
 github.com/rossoctl/accountant v0.5.0/go.mod h1:AA9aM/QvO3AksXUGjOJiunMSxiZ1PqRsCxqKvq4IsrI=
-github.com/rossoctl/context-guru v0.7.5 h1:x8468QW78CKArm4B7mCr5zyZH38xMOndKqRzUsX8mgo=
-github.com/rossoctl/context-guru v0.7.5/go.mod h1:7RlfhsmiF3bpW0Dm2orehICW8BXHkdyU3MKj5CnUluk=
+github.com/rossoctl/context-guru v0.7.6 h1:rH6Q3bzmU+swNGsU2JkN9SMZEH0ORfqQ1F2Cn4rorTQ=
+github.com/rossoctl/context-guru v0.7.6/go.mod h1:7RlfhsmiF3bpW0Dm2orehICW8BXHkdyU3MKj5CnUluk=
 github.com/segmentio/asm v1.2.1 h1:DTNbBqs57ioxAD4PrArqftgypG4/qNpXoJx8TVXxPR0=
 github.com/segmentio/asm v1.2.1/go.mod h1:BqMnlJP91P8d+4ibuonYZw9mfnzI9HfxselHZr5aAcs=
 github.com/sirupsen/logrus v1.10.2 h1:G2SED73/qrAu6YwbdxOD6peLkCBI3z7L+ykJFTXJBBo=

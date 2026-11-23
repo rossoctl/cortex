@@ -12,7 +12,7 @@ require (
 	github.com/maximhq/bifrost/core v1.7.15
 	github.com/open-policy-agent/opa v1.22.4
 	github.com/rossoctl/accountant v0.5.0
-	github.com/rossoctl/context-guru v0.7.5
+	github.com/rossoctl/context-guru v0.7.6
 	github.com/spiffe/go-spiffe/v2 v2.9.0
 	github.com/tidwall/gjson v1.20.2
 	github.com/tidwall/sjson v1.2.9
