@@ -70,7 +70,7 @@
       "id": 1,
       "type": "bargauge",
       "title": "Net by component (USD, selected range)",
-      "description": "Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So a keep-alive rescue is not here, and the keeper shows only its ping cost. A red bar is a component whose operations cost more than they save.",
+      "description": "Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So a keep-alive rescue is not here, and the keeper shows only its ping cost: its whole net is under Cache management in the Fleet dashboard's Net saved by source. A red bar is a component whose operations cost more than they save.",
       "datasource": {
         "type": "prometheus",
         "uid": "central-prom"

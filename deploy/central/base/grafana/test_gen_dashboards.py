@@ -100,6 +100,76 @@ class NetTest(unittest.TestCase):
         self.assertEqual(p["targets"][0]["expr"], g.net())
 
 
+def matches(selector, labels):
+    """Whether a series with labels (which holds __name__) matches selector, a string of
+    ,name<op>"value" matchers as gen_dashboards writes them. A missing label is the empty string,
+    and a regex is fully anchored, as in Prometheus."""
+    for name, op, value in re.findall(r'(\w+)(=~|!~|!=|=)"([^"]*)"', selector):
+        got = labels.get(name, "")
+        ok = {
+            "=": got == value,
+            "!=": got != value,
+            "=~": re.fullmatch(value, got) is not None,
+            "!~": re.fullmatch(value, got) is None,
+        }[op]
+        if not ok:
+            return False
+    return True
+
+
+class SourceTest(unittest.TestCase):
+    # One series of every shape the net holds. An operation has a component and a kind, and no
+    # direction; a cache effect has an effect, a cause and a direction; the interaction has a direction.
+    OPERATORS = ("mask", "summarize", "toolfilter", "tool-prune", "model") + g.CACHE_COMPONENTS
+    EFFECTS = ("break", "rescue", "split", "ttl_premium", "ttl_rescue", "mark_premium", "mark_payback")
+
+    def series(self):
+        for side in ("saved", "added"):
+            for c in self.OPERATORS:
+                for kind in ("rewrite", "spend", "setting"):
+                    yield side, {"__name__": f"llm_savings_{side}_usd_total", "component": c, "kind": kind}
+            for e in self.EFFECTS:
+                yield side, {"__name__": "llm_savings_cache_effect_usd_total", "effect": e, "direction": side}
+            yield side, {"__name__": "llm_savings_interaction_usd_total", "direction": side}
+
+    def source_of(self, side, labels):
+        i = 0 if side == "saved" else 1
+        return [name for name, sel in g.SOURCES.items() if matches(sel[i], labels)]
+
+    def test_every_series_of_the_net_is_in_exactly_one_source_on_its_own_side(self):
+        for side, labels in self.series():
+            net_side = g.SAVED_SIDE if side == "saved" else g.ADDED_SIDE
+            self.assertTrue(matches(net_side, labels), labels)
+            self.assertEqual(len(self.source_of(side, labels)), 1, (side, labels))
+            other = "added" if side == "saved" else "saved"
+            self.assertEqual(self.source_of(other, labels), [], ("wrong side", side, labels))
+
+    def test_breaks_are_context_rewrite_and_the_cache_operators_are_cache_management(self):
+        brk = {"__name__": "llm_savings_cache_effect_usd_total", "effect": "break", "direction": "added"}
+        self.assertEqual(self.source_of("added", brk), ["Context rewrite"])
+        for c in g.CACHE_COMPONENTS:
+            op = {"__name__": "llm_savings_added_usd_total", "component": c, "kind": "spend"}
+            self.assertEqual(self.source_of("added", op), ["Cache management"], c)
+        interaction = {"__name__": "llm_savings_interaction_usd_total", "direction": "saved"}
+        self.assertEqual(self.source_of("saved", interaction), ["Cache management"])
+
+    def test_the_headline_shows_the_rate_and_no_tile_of_its_own_does(self):
+        panels = {p["title"]: p for p in g.fleet()["panels"]}
+        self.assertNotIn("Saving rate", panels)
+        head = panels["NET SAVED"]
+        self.assertEqual([t["expr"] for t in head["targets"]], [g.net(), g.ratio(g.net(), g.baseline())])
+        rate = next(o for o in head["fieldConfig"]["overrides"] if o["matcher"]["options"] == "B")
+        self.assertIn({"id": "unit", "value": "percentunit"}, rate["properties"])
+
+    def test_the_source_table_is_tested(self):
+        with open(PROMTOOL_TEST) as f:
+            tested = f.read()
+        p = next(p for p in g.fleet()["panels"] if p["title"] == "Net saved by source")
+        for t in p["targets"]:
+            self.assertIn(filled(t["expr"]), tested, t["refId"])
+        self.assertEqual(p["transformations"][0]["options"]["byField"], "source")
+
+
 class PromtoolTestInStepTest(unittest.TestCase):
     def test_every_promtool_expr_is_a_dashboard_expr(self):
         with open(PROMTOOL_TEST) as f:

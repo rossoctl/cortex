@@ -49,6 +49,51 @@ SAVED_SIDE = ',__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_us
 ADDED_SIDE = ',__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|"'
 # Labels that every counter of both sides has. A cache effect has no component, kind or tier.
 NET_LABELS = ("", "machine", "proxy", "preset")
+
+# The net saving split in two by source, as context-guru's own dashboard splits it (dash/savings.go,
+# savingsArithmetic: compaction, then the prefix-cache split and the keep-alive's net).
+#
+# The operators that manage the cache rather than rewrite the context. Both proxies use these names:
+# keeper is accountant.PingOps's operator (the keep-alive pings and their rescues); cachesplit,
+# headttl and tailbreakpoint are context-guru's (apply/ops.go, apply/headttl.go); cacheinject is
+# context-guru's breakpoint component. Every other operator rewrites the request: its content, its
+# tool declarations or (a setting) its model.
+CACHE_COMPONENTS = ("keeper", "cachesplit", "cacheinject", "headttl", "tailbreakpoint")
+_CACHE_RE = "|".join(CACHE_COMPONENTS)
+# Context rewrite: the rewriting operators, their own model calls (a spend), and every cache break.
+# A break counts against the rewrite, as context-guru's compaction figure counts it (its actual cost
+# holds the re-written prefix). Every break that reaches the counter was caused by a change: a break
+# nobody caused is InBaseline, and the accountant's sink does not book it (accountant
+# metrics/metrics.go). A break's cause (none, ended_change, model_changed) is a rewrite or a setting.
+# A cache effect has no component label, so component!~ lets the breaks through, and an operation
+# has no effect label, so effect=~"break|" lets the operations through.
+REWRITE_SAVED = (
+    ',__name__=~"llm_savings_(saved_usd|cache_effect_usd)_total",direction=~"saved|",effect=~"break|",'
+    f'component!~"{_CACHE_RE}"'
+)
+REWRITE_ADDED = (
+    ',__name__=~"llm_savings_(added_usd|cache_effect_usd)_total",direction=~"added|",effect=~"break|",'
+    f'component!~"{_CACHE_RE}"'
+)
+# Cache management: the cache operators (a keep-alive ping is a spend there), every cache effect
+# that is not a break (rescue, split, ttl_premium, ttl_rescue, mark_premium, mark_payback), and the
+# interaction, which only a rescued request has. The trailing "|" in component=~ admits the effects
+# and the interaction, which have no component. It cannot admit an operation, because every
+# operation has a component (accountant docs/metrics/metrics.md, rule 7).
+CACHE_SAVED = (
+    ',__name__=~"llm_savings_(saved_usd|cache_effect_usd|interaction_usd)_total",direction=~"saved|",'
+    f'effect!="break",component=~"{_CACHE_RE}|"'
+)
+CACHE_ADDED = (
+    ',__name__=~"llm_savings_(added_usd|cache_effect_usd|interaction_usd)_total",direction=~"added|",'
+    f'effect!="break",component=~"{_CACHE_RE}|"'
+)
+# Each series of SAVED_SIDE is in exactly one of REWRITE_SAVED and CACHE_SAVED, and the same holds
+# for the added side, so the two sources add up to net(). dashboards_test.yml proves it.
+SOURCES = {
+    "Context rewrite": (REWRITE_SAVED, REWRITE_ADDED),
+    "Cache management": (CACHE_SAVED, CACHE_ADDED),
+}
 # How far before a range inc() looks for a sample that makes a series OLD (see inc()). Matches
 # Prometheus's own retention.time (deployment.yaml): a shorter lookback misclassifies a series
 # that returns after a longer silence (a laptop asleep or off the VPN over a weekend, or the
@@ -213,8 +258,10 @@ def net(by="", fn="inc", new_series_fallback=True):
 
     PromQL drops a label value that is on one side only, and a component that only ever ADDS cost
     (a compaction call, say) is exactly the one this must show. So each side is padded with the
-    other side's label values times zero. new_series_fallback is forwarded to inc() (ignored when
-    fn="bar", which always keeps it); see inc()'s own doc comment."""
+    other side's label values times zero. The total (no by) is padded the same way: a fleet whose
+    only activity so far is keep-alive pings has an added side and no saved side, and an unpadded
+    difference shows that as no data instead of a cost. new_series_fallback is forwarded to inc()
+    (ignored when fn="bar", which always keeps it); see inc()'s own doc comment."""
     if by in NET_LABELS:
         s = saved_side(by, fn, new_series_fallback)
         a = added_side(by, fn, new_series_fallback)
@@ -223,9 +270,28 @@ def net(by="", fn="inc", new_series_fallback=True):
             (lambda m: inc(m, by, new_series_fallback=new_series_fallback)) if fn == "inc" else (lambda m: bar(m, by))
         )
         s, a = side("llm_savings_saved_usd_total"), side("llm_savings_added_usd_total")
-    if not by:
-        return f"({s} - {a})"
     return f"((({s}) or ({a}) * 0) - (({a}) or ({s}) * 0))"
+
+
+def source_net(source):
+    """The net saving of one source in SOURCES, saved side minus added side. Each side is padded with
+    the other side times zero, as net() pads a label value: a source with only an added side (the
+    keep-alive's pings before their first rescue) must show as a cost, not as no data."""
+    saved, added = SOURCES[source]
+    s, a = inc("", extra=saved), inc("", extra=added)
+    return f"((({s}) or ({a}) * 0) - (({a}) or ({s}) * 0))"
+
+
+def baseline():
+    """What the traffic would have cost without the proxy: spend plus net saved. The exact counter
+    (llm_savings_baseline_usd_total) is not built yet."""
+    return f"{spend()} + {net()}"
+
+
+def by_source(fn, total):
+    """One series per source, and the total, each with a source label, for a table row each."""
+    rows = [(name, fn(name)) for name in SOURCES] + [("Total", total)]
+    return " or ".join(f'label_replace({e}, "source", "{name}", "", "")' for name, e in rows)
 
 
 def color(c):
@@ -255,6 +321,27 @@ def stat(pid, title, expr, x, y, w=4, h=4, unit="short", desc="", decimals=None,
         d["fieldConfig"]["defaults"]["color"] = color(c)
     if big:
         d["options"]["text"] = {"valueSize": 56}
+    return d
+
+
+def stat_with_rate(pid, title, expr, rate_expr, x, y, w, h, value_name, desc="", c=None):
+    """A big money stat with its rate beside it: target A in USD, target B as a percent. Each value is
+    shown with its name, so the two are not read as one number."""
+    d = stat(pid, title, expr, x, y, w=w, h=h, unit=USD, desc=desc, decimals=2, c=c, big=True)
+    d["targets"].append({"expr": rate_expr, "refId": "B", "instant": True, "datasource": DS})
+    d["options"]["textMode"] = "value_and_name"
+    d["options"]["text"]["titleSize"] = 14
+    d["fieldConfig"]["overrides"] = [
+        {"matcher": {"id": "byFrameRefID", "options": "A"}, "properties": [{"id": "displayName", "value": value_name}]},
+        {
+            "matcher": {"id": "byFrameRefID", "options": "B"},
+            "properties": [
+                {"id": "displayName", "value": "of baseline"},
+                {"id": "unit", "value": "percentunit"},
+                {"id": "decimals", "value": 1},
+            ],
+        },
+    ]
     return d
 
 
@@ -409,51 +496,88 @@ def dash(uid, title, desc, panels, tags):
     }
 
 
+def source_table(pid, x, y, w, h):
+    """NET SAVED split by source: one row per source in SOURCES and a Total row, each with its net in
+    USD and its share of the baseline. The rows add up to the Total, and the Total is NET SAVED. Rows
+    sort by name, which puts Total last."""
+    d = table(
+        pid,
+        "Net saved by source",
+        [by_source(source_net, net()), by_source(lambda s: ratio(source_net(s), baseline()), ratio(net(), baseline()))],
+        x,
+        y,
+        w,
+        h,
+        "source",
+        [
+            {
+                "id": "organize",
+                "options": {
+                    "excludeByName": {"Time": True},
+                    "renameByName": {"Value #A": "Net saved", "Value #B": "Of baseline"},
+                },
+            },
+            {"id": "sortBy", "options": {"sort": [{"field": "source"}]}},
+        ],
+        desc="Where NET SAVED comes from, as context-guru's dashboard splits it. "
+        "Context rewrite: every operator that rewrites the request (its content, its tool declarations, its model), net of its own model calls and of the cache breaks the changes cause. "
+        "Cache management: the keep-alive (its rescues, net of its pings), the prefix-cache split, the 1h head TTL and the breakpoints the proxy adds. "
+        "Of baseline: each net as a share of what the traffic would have cost without the proxy (spend plus net saved); the two sources add up to the Total.",
+    )
+    # A loss reads red, a saving green, in both value columns. The source column keeps the text colour.
+    value = [
+        {"id": "custom.cellOptions", "value": {"type": "color-text"}},
+        {"id": "color", "value": {"mode": "thresholds"}},
+        {
+            "id": "thresholds",
+            "value": {"mode": "absolute", "steps": [{"color": RED, "value": None}, {"color": GREEN, "value": 0}]},
+        },
+    ]
+    d["fieldConfig"]["overrides"] = [
+        {
+            "matcher": {"id": "byName", "options": "Net saved"},
+            "properties": [{"id": "unit", "value": USD}, {"id": "decimals", "value": 2}] + value,
+        },
+        {
+            "matcher": {"id": "byName", "options": "Of baseline"},
+            "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 1}] + value,
+        },
+    ]
+    return d
+
+
 def fleet():
     f = FILTER
     P = []
     # Money first (spec 6.0, rule 1). The tiles cover the selected time range (default: 7 days).
+    # Two money tiles: the headline (net and its rate), and the same split by source.
     P.append(
-        stat(
+        stat_with_rate(
             1,
             "NET SAVED",
             net(),
+            ratio(net(), baseline()),
             0,
             0,
-            w=7,
-            h=5,
-            unit=USD,
-            decimals=2,
+            8,
+            6,
+            "net saved",
             c=GREEN,
-            big=True,
-            desc="Saved minus added over the selected range, cache effects included: a keep-alive rescue is saved, a cache break is added. This is the number that says whether the proxy pays.",
+            desc="Saved minus added over the selected range, cache effects included: a keep-alive rescue is saved, a cache break is added. This is the number that says whether the proxy pays. "
+            "Beside it, the net as a share of the baseline: what the traffic would have cost without the proxy, which is spend (actual plus estimated) plus net saved. "
+            "The exact baseline counter (llm_savings_baseline_usd_total) is not built yet.",
         )
     )
-    P.append(
-        stat(
-            13,
-            "Saving rate",
-            ratio(net(), f"{spend()} + {net()}"),
-            7,
-            0,
-            w=4,
-            h=5,
-            unit="percentunit",
-            decimals=1,
-            c=GREEN,
-            big=True,
-            desc="Net saved as a share of what the traffic would have cost without the proxy. The baseline is spend (actual plus estimated) plus net saved, which is what you would have paid. The exact baseline counter (llm_savings_baseline_usd_total) is not built yet.",
-        )
-    )
+    P.append(source_table(14, 8, 0, 8, 6))
     P.append(
         stat(
             2,
             "Gross saved",
             saved_side(),
-            11,
+            16,
             0,
             w=4,
-            h=5,
+            h=3,
             unit=USD,
             decimals=2,
             desc="Cost the proxy removed, before what it cost to do so: the operations' saving, the cache effects that lowered the bill (a keep-alive rescue, a split) and the interaction.",
@@ -464,10 +588,10 @@ def fleet():
             3,
             "Added cost",
             added_side(),
-            15,
+            20,
             0,
             w=4,
-            h=5,
+            h=3,
             unit=USD,
             decimals=2,
             c=ORANGE,
@@ -479,10 +603,10 @@ def fleet():
             4,
             "Spend",
             spend(),
-            19,
-            0,
-            w=5,
-            h=5,
+            16,
+            3,
+            w=8,
+            h=3,
             unit=USD,
             decimals=2,
             desc="What the providers billed over the selected range: actual (a configured or confirmed rate) plus estimated (a bundled/fallback rate, when no pricing.endpoints entry matches the gateway). Each proxy prices with its own rate table.",
@@ -498,7 +622,7 @@ def fleet():
         "Net saved per day",
         [(net(fn="inc", new_series_fallback=False).replace("[$__range]", "[1d] anchored offset -1d"), "net")],
         0,
-        5,
+        6,
         24,
         7,
         unit=USD,
@@ -522,7 +646,7 @@ def fleet():
             "Saved vs added (USD)",
             [(saved_side(fn="bar"), "saved"), (f"-{added_side(fn='bar')}", "added")],
             0,
-            12,
+            13,
             12,
             8,
             unit=USD,
@@ -539,7 +663,7 @@ def fleet():
             "Net saved by machine",
             [(f"topk(8, {net('machine')})", "{{machine}}")],
             12,
-            12,
+            13,
             12,
             8,
             unit=USD,
@@ -554,7 +678,7 @@ def fleet():
             "Machines reporting",
             f"count(count by (machine) (llm_proxy_info{{{f}}}))",
             0,
-            20,
+            21,
             w=5,
             h=4,
             desc="Machines that pushed in the last few minutes. llm_proxy_info is always 1, so an idle machine still counts.",
@@ -566,7 +690,7 @@ def fleet():
             "Silent machines",
             f"count(max by (proxy, machine) (max_over_time(llm_proxy_info{{{f}}}[1d])) unless max by (proxy, machine) (llm_proxy_info{{{f}}})) or vector(0)",
             5,
-            20,
+            21,
             w=5,
             h=4,
             c=YELLOW,
@@ -579,7 +703,7 @@ def fleet():
             "5xx error rate",
             ratio(inc("llm_inference_requests_total", extra=X5), inc("llm_inference_requests_total")),
             10,
-            20,
+            21,
             w=5,
             h=4,
             unit="percentunit",
@@ -596,7 +720,7 @@ def fleet():
             "Requests per minute",
             f"{rate('llm_inference_requests_total').replace('$__rate_interval', '5m')} * 60",
             15,
-            20,
+            21,
             w=5,
             h=4,
             decimals=0,
@@ -610,7 +734,7 @@ def fleet():
             "Alerts firing",
             'count(ALERTS{alertstate="firing"}) or vector(0)',
             20,
-            20,
+            21,
             w=4,
             h=4,
             c=GREEN,
@@ -640,7 +764,7 @@ def savings():
             unit=USD,
             kind="bargauge",
             instant=True,
-            desc="Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So a keep-alive rescue is not here, and the keeper shows only its ping cost. A red bar is a component whose operations cost more than they save.",
+            desc="Saved minus added of each component's operations. Cache effects are not in it: they have no component label (see Cache effects). So a keep-alive rescue is not here, and the keeper shows only its ping cost: its whole net is under Cache management in the Fleet dashboard's Net saved by source. A red bar is a component whose operations cost more than they save.",
         )
     )
     P.append(
