@@ -35,8 +35,11 @@ provider has cached stays the same.
 - How long: a key stays 24 hours in memory (`store.state_ttl_seconds` overrides this), and a
   row stays 30 days on disk after its last write. Writes are batched once a second, off the
   request path.
-- Fails open: with no usable file, the plugin logs one WARN and keeps the state in memory only.
-  With `store.enabled: false` there is no state and no file.
+- Fails open: with no usable file, the plugin logs one WARN and keeps the state in memory only,
+  where a key keeps the engine's default lifetime (10000s), not 24 hours. With
+  `store.enabled: false` there is no state and no file.
+- Failures after the start: a write or read that fails later (a full disk, a locked file) logs a
+  WARN and is counted in the `state_db_errors` metric.
 
 ## Where its own model calls go
 

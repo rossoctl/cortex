@@ -20,6 +20,7 @@ package contextguru
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -204,9 +205,13 @@ type ContextGuru struct {
 	cfg   contextGuruConfig
 	pipe  *cgcomponents.Pipeline
 	store cgstore.Store
-	// stateDisk is the store's disk copy (attachStateDB), nil when the state is in memory only.
-	// Shutdown closes it, which flushes the pending writes.
-	stateDisk *cgstore.Disk
+	// stateDB is the session-state database Configure opened (stateDBFor), nil when the state
+	// is in memory only; statePath is its file. The handle is shared and never closed.
+	stateDB   *sql.DB
+	statePath string
+	// stateDisk is the store's disk copy on stateDB, started in Init (attachStateDB) and closed,
+	// which flushes its pending writes, in Shutdown. Nil until Init, and when there is no copy.
+	stateDisk atomic.Pointer[cgstore.Disk]
 	sentinel  string // unguessable value carried by our own LLM calls
 	static    *cgModel
 	modelTO   time.Duration
@@ -223,11 +228,20 @@ type ContextGuru struct {
 
 // Metrics implements pipeline.MetricsProvider.
 func (p *ContextGuru) Metrics() []pipeline.Metric {
+	var diskErrors int64
+	if d := p.stateDisk.Load(); d != nil {
+		diskErrors = d.Errors()
+	}
 	return []pipeline.Metric{{
 		Name:  "late_model_calls_dropped",
 		Value: float64(p.lateModelCalls.Load()),
 		Unit:  "count",
 		Note:  "model calls that returned after their request was accounted; their spend reaches no figure",
+	}, {
+		Name:  "state_db_errors",
+		Value: float64(diskErrors),
+		Unit:  "count",
+		Note:  "session-state database operations that failed since start; the state they carried stayed in memory only",
 	}}
 }
 
@@ -279,11 +293,16 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		return fmt.Errorf("context-guru build pipeline: %w", err)
 	}
 	p.pipe = pipe
-	// The state keys live a day in memory when a database backs them, as in context-guru's own
-	// proxy: a session that returns later is loaded from the database. An explicit
-	// store.state_ttl_seconds wins.
-	if (cfg.Store.Enabled == nil || *cfg.Store.Enabled) && cfg.Store.StateTTLSeconds == 0 {
-		cfg.Store.StateTTLSeconds = int(stateTTLDefault / time.Second)
+	// The database is opened here, before the store is built, so the state keys live a day in
+	// memory only when a database backs them, as in context-guru's own proxy: a session that
+	// returns later is loaded from the database. An explicit store.state_ttl_seconds wins.
+	// Opening starts nothing; Init attaches the disk copy.
+	p.stateDB, p.statePath = nil, ""
+	if cfg.Store.Enabled == nil || *cfg.Store.Enabled {
+		p.stateDB, p.statePath = stateDBFor(p.localInstall)
+		if p.stateDB != nil && cfg.Store.StateTTLSeconds == 0 {
+			cfg.Store.StateTTLSeconds = int(stateTTLDefault / time.Second)
+		}
 	}
 	p.store = cfg.NewStore()
 	// Per-process random value, not a constant: outbound headers are the
@@ -327,15 +346,20 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 			}
 		}
 	}
-	// Last, once nothing above can fail: a Configure that returns an error leaves no disk flusher
-	// running. A second Configure on one instance flushes the first one's first.
-	if p.stateDisk != nil {
-		_ = p.stateDisk.Close()
-	}
-	p.stateDisk = attachStateDB(p.store, p.localInstall)
 	slog.Info("context-guru configured",
 		"paths", p.cfg.Paths, "modelConfigured", p.static != nil,
-		"engineBytes", len(engine), "stateOnDisk", p.stateDisk != nil)
+		"engineBytes", len(engine), "stateDB", p.statePath)
+	return nil
+}
+
+// Init attaches the store's disk copy and starts its flusher. It runs in Init and not in
+// Configure so the flusher is under the pipeline's Start/unwind/Stop contract: a pipeline that a
+// failed build or reload drops is never started, and so holds no flusher. It FAILS OPEN and never
+// returns an error.
+func (p *ContextGuru) Init(context.Context) error {
+	if old := p.stateDisk.Swap(attachStateDB(p.store, p.stateDB, p.statePath)); old != nil {
+		_ = old.Close()
+	}
 	return nil
 }
 
@@ -446,8 +470,8 @@ func (p *ContextGuru) OnResponse(_ context.Context, _ *pipeline.Context) pipelin
 
 // Shutdown closes the state's disk copy before returning, which flushes its pending writes.
 func (p *ContextGuru) Shutdown(context.Context) error {
-	if p.stateDisk != nil {
-		_ = p.stateDisk.Close()
+	if d := p.stateDisk.Swap(nil); d != nil {
+		_ = d.Close()
 	}
 	return nil
 }
