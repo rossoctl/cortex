@@ -630,7 +630,7 @@ dependencies = [
  "flate2",
  "http",
  "metrics",
- "praxis-policy",
+ "praxis-policy 0.7.0",
  "praxis-proxy-filter",
  "serde",
  "serde_json",
@@ -1858,11 +1858,24 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "662b03ab6155d6789464d7e9e0b4d2065900cd9d04b370d532f1b18bb1e7006b"
 dependencies = [
- "praxis-policy-apl-cmf",
- "praxis-policy-apl-core",
- "praxis-policy-apl-runtime",
- "praxis-policy-builtins",
- "praxis-policy-core",
+ "praxis-policy-apl-cmf 0.6.0",
+ "praxis-policy-apl-core 0.6.0",
+ "praxis-policy-apl-runtime 0.6.0",
+ "praxis-policy-builtins 0.6.0",
+ "praxis-policy-core 0.6.0",
+]
+
+[[package]]
+name = "praxis-policy"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba9565c9143abbb0fcb315f968713c3e8d7fda05f3cf8f66c19c0aa1f1d31f31"
+dependencies = [
+ "praxis-policy-apl-cmf 0.7.0",
+ "praxis-policy-apl-core 0.7.0",
+ "praxis-policy-apl-runtime 0.7.0",
+ "praxis-policy-builtins 0.7.0",
+ "praxis-policy-core 0.7.0",
 ]
 
 [[package]]
@@ -1872,8 +1885,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "200333ebf208821f40f17070a27936d32867284605c103657fedaed6c12f504b"
 dependencies = [
  "chrono",
- "praxis-policy-apl-core",
- "praxis-policy-core",
+ "praxis-policy-apl-core 0.6.0",
+ "praxis-policy-core 0.6.0",
+ "serde_json",
+]
+
+[[package]]
+name = "praxis-policy-apl-cmf"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "becb5da1b6d2308ed1fadd7708499059535b0ff1bf4733b346910c02585b33fd"
+dependencies = [
+ "chrono",
+ "praxis-policy-apl-core 0.7.0",
+ "praxis-policy-core 0.7.0",
  "serde_json",
 ]
 
@@ -1885,7 +1910,24 @@ checksum = "abade295a61836accbfb9c860b3196e5491a34a378ca4769566674779511d1fa"
 dependencies = [
  "async-trait",
  "futures",
- "praxis-policy-orchestration",
+ "praxis-policy-orchestration 0.6.0",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "yaml_serde",
+]
+
+[[package]]
+name = "praxis-policy-apl-core"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9493f8caa280055034b071f36cb5162e9ae6ae6d93d7bf6c8b740998189b9977"
+dependencies = [
+ "async-trait",
+ "futures",
+ "praxis-policy-orchestration 0.7.0",
  "regex",
  "serde",
  "serde_json",
@@ -1902,9 +1944,27 @@ checksum = "1ce569d880efacc2c4893bdda5c1751095a90b2e9707ee92ff12366a61c91f5d"
 dependencies = [
  "async-trait",
  "chrono",
- "praxis-policy-apl-cmf",
- "praxis-policy-apl-core",
- "praxis-policy-core",
+ "praxis-policy-apl-cmf 0.6.0",
+ "praxis-policy-apl-core 0.6.0",
+ "praxis-policy-core 0.6.0",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "yaml_serde",
+]
+
+[[package]]
+name = "praxis-policy-apl-runtime"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "430342f3ca72c828db96465a2d6353661e23eed25009218b988a5af7ba0c21b4"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "praxis-policy-apl-cmf 0.7.0",
+ "praxis-policy-apl-core 0.7.0",
+ "praxis-policy-core 0.7.0",
  "serde_json",
  "thiserror",
  "tokio",
@@ -1926,13 +1986,37 @@ dependencies = [
  "chrono",
  "futures",
  "jsonwebtoken",
- "praxis-policy-apl-cmf",
- "praxis-policy-apl-core",
- "praxis-policy-apl-runtime",
- "praxis-policy-core",
+ "praxis-policy-apl-cmf 0.6.0",
+ "praxis-policy-apl-core 0.6.0",
+ "praxis-policy-apl-runtime 0.6.0",
+ "praxis-policy-core 0.6.0",
  "serde",
  "serde_json",
  "stacker",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+ "yaml_serde",
+ "zeroize",
+]
+
+[[package]]
+name = "praxis-policy-builtins"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5a97788156632556d251b980925b9630840d4a67fa2f3d9fec3b415c9f95e55"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "praxis-policy-apl-cmf 0.7.0",
+ "praxis-policy-apl-runtime 0.7.0",
+ "praxis-policy-core 0.7.0",
+ "serde",
+ "serde_json",
  "thiserror",
  "tokio",
  "tracing",
@@ -1956,7 +2040,36 @@ dependencies = [
  "hashbrown 0.17.1",
  "hmac",
  "http",
- "praxis-policy-orchestration",
+ "praxis-policy-orchestration 0.6.0",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "wildmatch",
+ "yaml_serde",
+ "zeroize",
+]
+
+[[package]]
+name = "praxis-policy-core"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc2a7e63a7402b7dd96e16f9d22858e0b3ced8f8e82bfefd3554cfa71d151ebf"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "getrandom 0.4.3",
+ "hashbrown 0.17.1",
+ "hmac",
+ "http",
+ "praxis-policy-orchestration 0.7.0",
  "serde",
  "serde_json",
  "sha2",
@@ -1975,6 +2088,16 @@ name = "praxis-policy-orchestration"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b5057ca0a8c242d91f5dd5dc4fdfb779dd7deaebcafb6bff49520cad5ec08c2"
+dependencies = [
+ "futures",
+ "tokio",
+]
+
+[[package]]
+name = "praxis-policy-orchestration"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d938a2ce09d90761befd75dbaf02e492a8a923d8a941f7d26f02d136eb82324a"
 dependencies = [
  "futures",
  "tokio",
@@ -2044,7 +2167,7 @@ dependencies = [
  "metrics",
  "parking_lot 0.12.5",
  "percent-encoding",
- "praxis-policy",
+ "praxis-policy 0.6.0",
  "praxis-proxy-core",
  "praxis-proxy-tls",
  "rand 0.10.3",
