@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -1147,18 +1148,25 @@ func (b *LenientBool) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// LenientInt64 decodes a JSON integer as itself and any other JSON value (a float, a string, a
-// bool, an object) as 0, for the reason LenientString gives: a producer that computes a
-// millisecond figure as a float, say, must not cost the whole line. Used for a field another
+// LenientInt64 decodes a JSON integer as itself, a JSON float with no fractional part (3.0, the
+// form a non-Go producer's float-typed millisecond figure takes) as the same integer, and any
+// other JSON value (a fractional float, a string, a bool, an object) as 0 — for the reason
+// LenientString gives: one bad-typed key must not cost the whole line. Used for a field another
 // writer can set, where 0 is already the "not measured" value (an omitempty wire field).
 type LenientInt64 int64
 
 func (n *LenientInt64) UnmarshalJSON(raw []byte) error {
 	var v int64
-	if json.Unmarshal(raw, &v) != nil {
-		v = 0
+	if json.Unmarshal(raw, &v) == nil {
+		*n = LenientInt64(v)
+		return nil
 	}
-	*n = LenientInt64(v)
+	var f float64
+	if json.Unmarshal(raw, &f) == nil && f == math.Trunc(f) {
+		*n = LenientInt64(f)
+		return nil
+	}
+	*n = 0
 	return nil
 }
 

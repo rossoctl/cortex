@@ -71,7 +71,8 @@ func TestSessionEvent_NonStringParentDecodesAsEmpty(t *testing.T) {
 // addedMs of the wrong JSON type decodes as 0, and every other field stays, as it did before
 // the field existed — the same leniency parentSession/parentProject get, and for the same
 // reason: a writer that computes it as a float, say, must not cost the whole line (review of
-// #2063).
+// #2063). An integral float (3.0, the form such a writer's figure takes) still decodes to the
+// integer it names, not 0 — that's the exact case the leniency exists for.
 func TestSessionEvent_NonIntAddedMsDecodesAsZero(t *testing.T) {
 	for _, v := range []string{`1.5`, `"3"`, `true`, `{}`, `[1]`, `null`} {
 		var e SessionEvent
@@ -83,11 +84,19 @@ func TestSessionEvent_NonIntAddedMsDecodesAsZero(t *testing.T) {
 			t.Errorf("addedMs %s: Added %v, RequestID %q", v, e.Added, e.RequestID)
 		}
 	}
-	var e SessionEvent
-	if err := json.Unmarshal([]byte(`{"requestId":"r1","addedMs":3}`), &e); err != nil {
-		t.Fatal(err)
-	}
-	if e.Added != 3*time.Millisecond {
-		t.Errorf("addedMs 3: Added %v, want 3ms", e.Added)
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{`3`, 3 * time.Millisecond},
+		{`3.0`, 3 * time.Millisecond},
+	} {
+		var e SessionEvent
+		if err := json.Unmarshal([]byte(`{"requestId":"r1","addedMs":`+tc.raw+`}`), &e); err != nil {
+			t.Fatal(err)
+		}
+		if e.Added != tc.want {
+			t.Errorf("addedMs %s: Added %v, want %v", tc.raw, e.Added, tc.want)
+		}
 	}
 }
