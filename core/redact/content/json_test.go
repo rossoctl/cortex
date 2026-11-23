@@ -61,6 +61,7 @@ func TestJSON_KeyContext(t *testing.T) {
 		{`{"password":"` + pw + `"}`, `{"password":"[REDACTED:password]"}`},
 		{`{"db":{"password":"` + pw + `","user":"bob"}}`, `{"db":{"password":"[REDACTED:password]","user":"bob"}}`},
 		{`{"password":["` + pw + `","` + pw + `"]}`, `{"password":["[REDACTED:password]","[REDACTED:password]"]}`},
+		{`{"passwords":["` + pw + `"]}`, `{"passwords":["[REDACTED:password]"]}`},
 		{`{"comment":"` + pw + `"}`, `{"comment":"` + pw + `"}`},
 		{`{"` + fakes()["anthropic"] + `":1}`, `{"` + fakes()["anthropic"] + `":1}`},
 		// a number under a secret name, as text would be; it becomes a string

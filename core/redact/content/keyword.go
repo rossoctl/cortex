@@ -65,9 +65,13 @@ const (
 )
 
 var (
-	passwordWords = set("password", "passwd", "pwd", "pass", "passphrase", "passcode")
-	secretWords   = set("secret", "secrets", "token", "credential", "credentials", "auth", "authorization", "cookie",
-		"bearer", "apikey", "accesskey", "privatekey", "secretkey", "signingkey", "masterkey", "encryptionkey")
+	// The plurals that name secrets are listed too ("passwords", "api_keys"), but not "tokens":
+	// in model traffic that is a count (max_tokens, prompt_tokens).
+	passwordWords = set("password", "passwd", "pwd", "pass", "passphrase", "passcode",
+		"passwords", "passwds", "passphrases", "passcodes")
+	secretWords = set("secret", "secrets", "token", "credential", "credentials", "auth", "authorization", "cookie",
+		"bearer", "apikey", "accesskey", "privatekey", "secretkey", "signingkey", "masterkey", "encryptionkey",
+		"apikeys", "accesskeys", "privatekeys", "secretkeys", "signingkeys")
 	// secretSuffixes classify a one-word name such as "authtoken" or "dbpassword".
 	secretSuffixes   = []string{"token", "secret", "apikey"}
 	passwordSuffixes = []string{"password", "passwd"}
