@@ -50,13 +50,15 @@ func TestUSD_OneTokenPerTier(t *testing.T) {
 		{pricing.TierCacheWrite, 3.75e-6},
 		{pricing.TierCacheRead, 3e-7},
 		{pricing.TierOutput, 1.5e-5},
-		// Anthropic documents the 1h write as 2x input: not an estimate.
-		{pricing.TierCacheWrite1h, 6e-6},
 	} {
 		usd, est := USD(r, "api.anthropic.com", "claude-sonnet-4-5", 1000, c.tier, 1)
 		if !near(usd, c.want) || est {
 			t.Errorf("%v: USD = %v, %v; want %v, false", c.tier, usd, est, c.want)
 		}
+	}
+	// Anthropic documents the 1h write as 2x input: not an estimate.
+	if usd, est := USD1h(r, "api.anthropic.com", "claude-sonnet-4-5", 1000, 1); !near(usd, 6e-6) || est {
+		t.Errorf("USD1h = %v, %v; want 6e-6, false", usd, est)
 	}
 	if r.endpoint != "api.anthropic.com" || r.model != "claude-sonnet-4-5" || r.promptTotal != 1000 {
 		t.Errorf("Resolve asked for %q %q %d, want the request's endpoint, model and prompt total",
@@ -74,8 +76,8 @@ func TestUSD_Estimated(t *testing.T) {
 		t.Errorf("no rate: USD = %v, %v; want 0, true", usd, est)
 	}
 	// A non-Anthropic model with no explicit 1h rate: the 5m rate, estimated.
-	if usd, est := USD(testRates(pricing.ProvConfigured), "h", "gpt-5", 10, pricing.TierCacheWrite1h, 1); !near(usd, 3.75e-6) || !est {
-		t.Errorf("1h fallback: USD = %v, %v; want 3.75e-6, true", usd, est)
+	if usd, est := USD1h(testRates(pricing.ProvConfigured), "h", "gpt-5", 10, 1); !near(usd, 3.75e-6) || !est {
+		t.Errorf("1h fallback: USD1h = %v, %v; want 3.75e-6, true", usd, est)
 	}
 	if usd, est := USD(nil, "h", "m", 10, pricing.TierInput, 1000); usd != 0 || !est {
 		t.Errorf("nil resolver: USD = %v, %v; want 0, true", usd, est)

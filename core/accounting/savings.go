@@ -272,21 +272,22 @@ func spendRecord(op accountant.PricedOp, spend SpendPrice, reqHost, basis string
 	return r
 }
 
-// largestTier names the tier with the largest Saved, in pricing.Tier's spelling; "" when nothing
+// largestTier names the tier with the largest Saved, in pricing.Tier's spelling (cache write 1h
+// has no Tier of its own — see pricing.Tier's doc — so it is named directly); "" when nothing
 // was saved. A tie goes to the earlier of input, cache write 5m, cache write 1h, cache read.
 func largestTier(t accountant.TierTokens) string {
 	best, name := 0, ""
 	for _, c := range []struct {
 		n    int
-		tier pricing.Tier
+		name string
 	}{
-		{t.Input, pricing.TierInput},
-		{t.CacheWrite5m, pricing.TierCacheWrite},
-		{t.CacheWrite1h, pricing.TierCacheWrite1h},
-		{t.CacheRead, pricing.TierCacheRead},
+		{t.Input, pricing.TierInput.String()},
+		{t.CacheWrite5m, pricing.TierCacheWrite.String()},
+		{t.CacheWrite1h, "cache_write_1h"},
+		{t.CacheRead, pricing.TierCacheRead.String()},
 	} {
 		if c.n > best {
-			best, name = c.n, c.tier.String()
+			best, name = c.n, c.name
 		}
 	}
 	return name
