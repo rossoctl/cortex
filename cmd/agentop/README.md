@@ -1256,7 +1256,7 @@ agentop server reset --key-of glm                         # glm's key goes to gl
 agentop server move <session-id> glm                      # move one running session → glm
 agentop server                                            # the servers, their models, their agents
 agentop server reset --agent opencode                     # stop routing opencode
-agentop server remove glm                                 # refused while an agent uses it
+agentop server remove glm                                 # refused while an agent uses it; the last takes the router out
 ```
 
 A request that sends the key of a configured server goes to that server.
@@ -1425,15 +1425,27 @@ refusal is believed for an hour, and a session keeps the model it was given.
   server.
   **`move <session-id> <name>`** moves one running session; `own` sends it back to
   its agent's own provider.
-- **`remove <name>`** refuses while an agent is routed to the server, and names
-  the command that takes the agent off it; it also refuses the last server. It
-  also refuses while a `key_routes:` entry names the server on either side, and
-  names the entry and `agentop server reset --key-of <server>`. A
+- **`remove <name>`** refuses while an agent is routed to the server, or a
+  `sessions:` entry moved a session to it, and names the commands that take them
+  off it. It also refuses while a `key_routes:` entry names the server on either
+  side, and names the entry and `agentop server reset --key-of <server>`. A
   session that started on a removed server gets a 503 asking for a new session
   until the server is added back or the session is moved. So when
   sessions the proxy is running last sent their inference to the server, `remove`
   warns how many before it goes ahead. It leaves
   out the default and `pending:` buckets, which the router never pins.
+- **Removing the last server** takes the router's entry out with it, since the
+  router needs a server: `add` then `remove` leaves the config as it was. With no
+  router, nothing holds a running session where it was, so the sessions the proxy
+  is running that last sent their inference there go where their agent sends
+  them from their next request, partway through their conversation, rather than
+  getting the 503. When there are any, or the proxy's sessions cannot be read,
+  `remove` says so and asks first (`--yes` skips the question). Their pins stay in
+  the plugin store for 30 days, so adding the server back takes them back to it.
+  The router's `sessions:` entries go with its entry, `move … own` ones included,
+  so a session moved off the server that has sent nothing since goes back to it
+  too. If the router's entry changes while `remove` waits, it writes nothing and
+  says to run it again.
 - **`agentop server`** lists each server's host (its whole URL when it is plain
   `http`), what its main and helper words name on its list now, read with its own
   key, the agents routed to it and, for a server whose key is routed to another
@@ -1465,7 +1477,8 @@ that changes nothing writes nothing. `--config PATH` points every form at anothe
 config, with the stats address read from it: that is how to try this against a
 second Cortex without touching the one every session uses. Flags go after the
 action. Exit codes: 0 done, or nothing to do; 1 refused or failed; 2 a usage error,
-a malformed name, agent or URL included; 3 a replacement declined.
+a malformed name, agent or URL included; 3 a replacement, or the router's
+removal with the last server, declined.
 
 #### Local model servers
 

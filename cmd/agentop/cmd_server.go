@@ -34,7 +34,7 @@ Usage:
   agentop server [--config PATH]
   agentop server add <name> <url> --main WORD --helper WORD [--key-stdin] [--yes] [--config PATH]
                      [--api PROTOCOL=PATH]... [--auth-header NAME] [--header NAME=VALUE]...
-  agentop server remove <name> [--config PATH]
+  agentop server remove <name> [--yes] [--config PATH]
   agentop server use <name> --agent <agent> [--config PATH]
   agentop server reset --agent <agent> [--config PATH]
   agentop server use <name> --key-of <server> [--config PATH]
@@ -65,6 +65,13 @@ replacing its URL, key and models (--yes skips the question), which is also how 
 key is rotated. --api names a protocol the server serves and its path
 (anthropic-messages, chat-completions or responses), --auth-header the header
 that carries the key, and --header a fixed header for every request.
+
+"remove" refuses a server an agent is routed to, a session was moved to or a
+key_routes: entry names, and names the commands that take them off it.
+Removing the only server takes the router's entry out with it, leaving the
+config as it was before the first "add". When running sessions last used that
+server, or the proxy cannot say, it asks first, since they then go where their
+agent sends them (--yes skips the question).
 
 A request goes with the model the agent asked for. Only when the server refuses
 that model is it sent again, once and before the agent sees the refusal, with

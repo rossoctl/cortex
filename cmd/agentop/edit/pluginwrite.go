@@ -23,6 +23,12 @@ type ConfigWrite struct {
 	// where a caller puts its plugin's own rules, which config.Load does not know:
 	// a result Verify refuses is never written.
 	Verify func(*config.Config) error
+	// Precondition, when set, checks the file as this write reads it, before any change
+	// is applied: what the caller decided its changes from, on an earlier read, must
+	// still hold. A per-key change needs none, since it leaves what was added since
+	// alone; one that takes out a whole entry, as RemoveEntry does, would take that with
+	// it. A file it refuses is not written.
+	Precondition func(*config.Config) error
 }
 
 // WriteOutcome is how a write ended once the file was, or was not, written.
@@ -82,6 +88,15 @@ func WritePluginConfig(ctx context.Context, w ConfigWrite) (WriteResult, error) 
 	orig, err := os.ReadFile(w.Path)
 	if err != nil {
 		return WriteResult{}, fmt.Errorf("read %s: %w", w.Path, err)
+	}
+	if w.Precondition != nil {
+		cfg, err := loadBytes(orig)
+		if err == nil {
+			err = w.Precondition(cfg)
+		}
+		if err != nil {
+			return WriteResult{}, fmt.Errorf("not writing %s: %w", w.Path, err)
+		}
 	}
 	updated := orig
 	for _, ch := range w.Changes {
@@ -157,19 +172,7 @@ func putBack(store FileStore, written, orig []byte) error {
 // proxy would load it. Checked from a private temp file, never beside the config:
 // the proxy watches that directory, and b can hold API keys.
 func checkLoads(b []byte, verify func(*config.Config) error) error {
-	f, err := os.CreateTemp("", "agentop-config-check-*.yaml")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err := f.Write(b); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	cfg, err := config.Load(f.Name())
+	cfg, err := loadBytes(b)
 	if err != nil {
 		return fmt.Errorf("the result would not load: %w", err)
 	}
@@ -177,4 +180,21 @@ func checkLoads(b []byte, verify func(*config.Config) error) error {
 		return verify(cfg)
 	}
 	return nil
+}
+
+// loadBytes is b loaded as a Cortex config, from a private temp file as checkLoads says.
+func loadBytes(b []byte) (*config.Config, error) {
+	f, err := os.CreateTemp("", "agentop-config-check-*.yaml")
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	return config.Load(f.Name())
 }
