@@ -352,7 +352,14 @@ log "Uninstall"
 # afterward.
 cfg_before="$(cksum <"${CFG}")"
 uninstall_out="$(mktemp "${TMP_DIR}/uninstall.XXXXXX")"
-"${AGENTOP}" service uninstall --yes | tee "${uninstall_out}"
+# Redirected, not piped through tee: under set -e a pipeline's status is tee's,
+# so a failing uninstall would go on to the checks below instead of failing here.
+if ! "${AGENTOP}" service uninstall --yes >"${uninstall_out}" 2>&1; then
+	echo "FAIL: agentop service uninstall exited non-zero" >&2
+	cat "${uninstall_out}" >&2
+	exit 1
+fi
+cat "${uninstall_out}"
 assert_contains "${uninstall_out}" "Removed" "uninstall did not report success"
 if [ -f "${UNIT}" ]; then
 	echo "FAIL: unit file still present after uninstall: ${UNIT}" >&2

@@ -102,9 +102,17 @@ assert_running_binary_is_current() {
 		launchctl print "${JOB}" >&2 2>/dev/null || true
 		exit 1
 	fi
-	proxy="$(pgrep -P "${sup}" | head -n 1)"
+	# By name, not "the first child": in praxis mode the supervisor also runs
+	# cortex-gateway, which -x leaves out. Exactly one, or the check below could
+	# compare the wrong process and pass.
+	proxy="$(pgrep -x -P "${sup}" cortex || true)"
 	if [ -z "${proxy}" ]; then
-		echo "FAIL: the supervisor (pid ${sup}) has no proxy under it" >&2
+		echo "FAIL: the supervisor (pid ${sup}) has no cortex proxy under it" >&2
+		ps -o pid=,command= -p "$(pgrep -P "${sup}" | paste -s -d, -)" >&2 2>/dev/null || true
+		exit 1
+	fi
+	if [ "$(printf '%s\n' "${proxy}" | wc -l)" -ne 1 ]; then
+		echo "FAIL: the supervisor (pid ${sup}) has more than one cortex child: $(printf '%s' "${proxy}" | tr '\n' ' ')" >&2
 		exit 1
 	fi
 	changed="$(stat -f %c "${PROXY_BIN}")"
@@ -201,7 +209,14 @@ assert_contains "${reinstall_out}" "cortex ${expected_version} is installed and 
 log "Uninstall"
 cfg_before="$(cksum <"${CFG}")"
 uninstall_out="$(mktemp "${TMP_DIR}/uninstall.XXXXXX")"
-"${AGENTOP}" service uninstall --yes | tee "${uninstall_out}"
+# Redirected, not piped through tee: under set -e a pipeline's status is tee's,
+# so a failing uninstall would go on to the checks below instead of failing here.
+if ! "${AGENTOP}" service uninstall --yes >"${uninstall_out}" 2>&1; then
+	echo "FAIL: agentop service uninstall exited non-zero" >&2
+	cat "${uninstall_out}" >&2
+	exit 1
+fi
+cat "${uninstall_out}"
 assert_contains "${uninstall_out}" "Removed" "uninstall did not report success"
 if [ -f "${UNIT}" ]; then
 	echo "FAIL: plist still present after uninstall: ${UNIT}" >&2

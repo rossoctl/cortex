@@ -152,7 +152,9 @@ gh api "repos/${REPO}/releases" --paginate >"${tmp}"
 # that fails has almost always installed already (#1455). Counting successful
 # jobs missed exactly those: run 38583376563 installed v0.8.1, failed its upgrade
 # on an HTTP 500 from GitHub, and was recorded as 0, so its install read as a
-# person. A skipped job runs no steps and counts 0. The one error left: a job
+# person. A skipped job runs no steps and counts 0, and so does a job that passed
+# with its smoke step skipped: the macOS workflow does that for a release commit
+# from before its script existed, and installs nothing. The one error left: a job
 # that fails inside the step BEFORE the fresh install (resolving tags, say) counts
 # 1 having installed nothing. Exact would need the install in its own step.
 #
@@ -248,17 +250,21 @@ else
 			queried=$((queried + 1))
 			# A job counts when its smoke-test step ran (see the comment above the
 			# runs query). The step names must match release-smoke-linux.yaml and
-			# release-smoke-macos.yaml. If one drifts, `conclusion == "success"` still
-			# counts every passing job, so a rename brings back #1455 rather than
-			# zeroing CI.
+			# release-smoke-macos.yaml. If a job has neither, as after a rename,
+			# `conclusion == "success"` still counts it when it passed, so a rename
+			# brings back #1455 rather than zeroing CI. Only then: a passing job whose
+			# step is there but was skipped installed nothing.
 			#
 			# per_page=100 because the endpoint defaults to 30 jobs, and a run with
 			# more legs than that would be undercounted without any error.
 			if ! n=$(gh api "repos/${REPO}/actions/runs/${id}/jobs?per_page=100" \
-				--jq '[.jobs[] | select(.conclusion == "success"
-				        or any(.steps[]?; (.name == "Run the Linux release smoke test"
+				--jq '[.jobs[] | select(any(.steps[]?; (.name == "Run the Linux release smoke test"
 				                          or .name == "Run the macOS release smoke test")
-				                         and .conclusion != "skipped"))] | length' \
+				                         and .conclusion != "skipped")
+				        or (.conclusion == "success"
+				            and (any(.steps[]?; .name == "Run the Linux release smoke test"
+				                                or .name == "Run the macOS release smoke test")
+				                 | not)))] | length' \
 				2>/dev/null); then
 				# One unreadable run is not worth discarding the rest. It is simply
 				# absent from today's snapshot and gets queried again tomorrow, which
