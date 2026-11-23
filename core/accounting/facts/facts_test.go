@@ -9,26 +9,25 @@ import (
 
 func TestClassify(t *testing.T) {
 	cases := []struct {
-		name, host, path string
-		want             Provider
+		name, path string
+		want       Provider
 	}{
-		{"anthropic api", "api.anthropic.com", "/v1/messages", ProviderAnthropic},
-		{"openai api", "api.openai.com", "/v1/chat/completions", ProviderOpenAI},
+		{"anthropic api", "/v1/messages", ProviderAnthropic},
+		{"openai api", "/v1/chat/completions", ProviderOpenAI},
 		// A LiteLLM gateway is classified by the wire dialect of the path it was called on, not
 		// by its own hostname, because the dialect is what decides which provider's cache rules
 		// apply on the wire.
-		{"litellm anthropic dialect", "litellm.local:4000", "/v1/messages", ProviderAnthropic},
-		{"unknown path", "gateway.example.com", "/v1/embeddings", ProviderUnknown},
-		// Classification is by path only: a host whose name contains
-		// "anthropic" on a path this package does not recognize must still be Unknown, not
-		// Anthropic by a hostname guess.
-		{"anthropic-looking host, unrecognized path", "api.anthropic.com", "/v1/embeddings", ProviderUnknown},
-		{"openai-looking host, unrecognized path", "api.openai.com", "/v1/embeddings", ProviderUnknown},
+		{"litellm anthropic dialect", "/v1/messages", ProviderAnthropic},
+		{"unknown path", "/v1/embeddings", ProviderUnknown},
+		// Classify shares wire.FormatOf's table, so these two endpoints — which a narrower,
+		// package-local path table previously missed — are recognized here too.
+		{"azure chat completions", "/openai/deployments/gpt4/chat/completions", ProviderOpenAI},
+		{"codex responses", "/backend-api/codex/responses", ProviderOpenAI},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := Classify(c.host, c.path); got != c.want {
-				t.Errorf("Classify(%q, %q) = %v, want %v", c.host, c.path, got, c.want)
+			if got := Classify(c.path); got != c.want {
+				t.Errorf("Classify(%q) = %v, want %v", c.path, got, c.want)
 			}
 		})
 	}

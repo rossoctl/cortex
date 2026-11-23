@@ -271,9 +271,14 @@ func TestFormatOf(t *testing.T) {
 		{"/zen/v1/messages", FormatAnthropic, true},
 		{"/v1/chat/completions", FormatChat, true},
 		{"/openai/deployments/d1/v1/chat/completions", FormatChat, true},
+		// Azure mounts chat completions without a /v1 segment; Codex's ChatGPT-login gateway
+		// mounts responses under /backend-api. Both are recognized by core/parse/inference's
+		// dialectFor, so FormatOf — which now calls it — must agree.
+		{"/openai/deployments/d1/chat/completions", FormatChat, true},
 		{"/v1/responses", FormatResponses, true},
-		{"/backend-api/codex/responses", 0, false},
+		{"/backend-api/codex/responses", FormatResponses, true},
 		{"/v1/embeddings", 0, false},
+		{"/v1/completions", 0, false},
 	}
 	for _, c := range cases {
 		got, ok := FormatOf(c.path)

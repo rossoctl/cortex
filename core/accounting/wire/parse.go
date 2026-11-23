@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/rossoctl/accountant"
+	"github.com/rossoctl/cortex/core/parse/inference"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -33,25 +34,20 @@ const (
 	FormatResponses               // POST /v1/responses: tools, instructions, input
 )
 
-// The three inference dialects, matched by the end of the path, the same way
-// core/parse/inference's dialectFor does (dialect.go) and for the same reason: providers and
-// gateways mount these endpoints under prefixes of their own.
-const (
-	anthropicMessagesPath = "/v1/messages"
-	chatCompletionsPath   = "/v1/chat/completions"
-	responsesPath         = "/v1/responses"
-)
-
-// FormatOf reports the wire format of an inference endpoint from its path, matched by how the
-// path ends, like core/parse/inference's dialectFor. ok is false when the path is not one of the
-// three endpoints this package reads.
+// FormatOf reports the wire format of an inference endpoint from its path, by calling
+// core/parse/inference's ProtocolFor rather than re-deriving the path suffixes: that is the
+// function the request parser and translator already use to decide a path's dialect, and a
+// second, narrower table here previously disagreed with it on endpoints such as Azure's
+// /openai/deployments/<d>/chat/completions and Codex's /backend-api/codex/responses. ok is false
+// when the path is not one of the three endpoints this package reads (legacy /v1/completions
+// included, since ProtocolFor returns "" for it).
 func FormatOf(path string) (Format, bool) {
-	switch {
-	case strings.HasSuffix(path, anthropicMessagesPath):
+	switch inference.ProtocolFor(path) {
+	case "anthropic-messages":
 		return FormatAnthropic, true
-	case strings.HasSuffix(path, chatCompletionsPath):
+	case "chat-completions":
 		return FormatChat, true
-	case strings.HasSuffix(path, responsesPath):
+	case "responses":
 		return FormatResponses, true
 	}
 	return 0, false
@@ -199,8 +195,12 @@ func (sec sections) responsesSections() sections {
 // The top-level cache_control (automatic caching) is one more mark: a body whose only mark is a
 // top-level 1h one asks for 1h, and a top-level 5m mark next to 1h block marks makes this false.
 //
-// Anthropic-only in practice: a Chat or Responses body carries no cache_control objects, so this
-// is always false on those wires. No Format parameter is needed to gate that.
+// Anthropic-only in the common case, but not always: Cortex's own chat decoder reads
+// cache_control on Chat content blocks (core/translate/chat/decode.go), and gateways such as
+// LiteLLM and OpenRouter send it on /v1/chat/completions for Claude models. A Chat or Responses
+// body shaped that way still raises marks here, even though facts.Classify gives it OpenAI cache
+// facts regardless — the same gap the proxy has. No Format parameter is needed to gate this
+// function; it only reads cache_control, whichever wire format carries it.
 func AllMarksAsk1h(raw []byte) bool {
 	if !json.Valid(raw) {
 		return false
