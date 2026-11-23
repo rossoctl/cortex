@@ -532,7 +532,7 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		p.holds.releaseAll()
 		p.holds.d.Close()
 	}
-	hd := newCortexDispatcher(newPingClient(p.local))
+	hd := newCortexDispatcher(newPingClient(p.localInstall))
 	hd.sentinel = p.sentinel
 	hd.rates = func() pricing.Resolver { return p.rates }
 	p.holds, p.stash = newCredHolds(hd), newSentStash()
