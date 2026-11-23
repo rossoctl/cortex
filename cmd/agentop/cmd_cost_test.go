@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
@@ -2992,5 +2993,17 @@ func TestRunCost_AgentJSONOmitsAResidualInAnotherUnit(t *testing.T) {
 	}
 	if got := out.String(); strings.Contains(got, "ungroupedCostMicros") {
 		t.Errorf("a mixed window's residual was emitted beside the agent's currencies [USD]:\n%s", got)
+	}
+}
+
+// The guessed-1h-rate reason gets prose like the others, not its bare key.
+func TestCostIncompleteReasonLines_NamesTheCacheWrite1hReason(t *testing.T) {
+	for n, want := range map[int64]string{1: "1 is a LOWER BOUND", 2: "2 are LOWER BOUNDS"} {
+		lines := costIncompleteReasonLines(map[string]int64{pricing.ReasonCacheWrite1hRateEstimated: n})
+		got := strings.Join(lines, "\n")
+		if !strings.Contains(got, want) || !strings.Contains(got, "1-hour cache writes") ||
+			strings.Contains(got, pricing.ReasonCacheWrite1hRateEstimated) {
+			t.Errorf("n=%d: lines = %q, want prose containing %q and not the bare key", n, lines, want)
+		}
 	}
 }

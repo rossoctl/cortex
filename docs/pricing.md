@@ -329,12 +329,24 @@ Its columns map onto Cortex's tiers:
 | Cache hits and refreshes | `cache_read_cost_per_million` |
 | Output tokens | `output_cost_per_million` |
 
-Use the **5-minute** cache-write column. Cortex does not model the 1-hour write premium.
+Use the **5-minute** cache-write column (`cache_write_cost_per_million`). There is no
+column for the 1-hour rate: Cortex derives it instead, for a model name containing
+`claude`, as 2x the input rate — Anthropic's documented 1-hour premium
+(`Rates.CacheWrite1hRate` in `core/cost/pricing/rates.go`). It only trusts that
+derivation when the row's own 5-minute rate sits at Anthropic's 1.25x-of-input ratio
+(see the sanity check below); a row typed at some other ratio — a markup, a discount, a
+gateway with its own flat per-token rate — has its 1-hour writes priced at the 5-minute
+rate instead, and the figure is marked as a lower bound rather than silently doubled.
 
 Sanity-check a row you typed by hand — for most Claude models the published ratios are
-cache-write = 1.25x input and cache-read = 0.1x input. A row that does not sit near those
-ratios is usually a transcription slip. (Fable 5.1 and Mythos 5.1 read at 0.025x, and
-some newer Opus models at 0.05x, so those are legitimately different.)
+cache-write = 1.25x input and cache-read = 0.1x input (Claude 3 Haiku reads at 1.2x
+cache-write and 0.12x cache-read, both still close to the usual ratios). A row that
+does not sit near the cache-write ratio is usually a transcription slip, and Cortex
+also reads it as evidence the row does not bill like Anthropic's own rate card, for the
+1-hour derivation above. (Fable 5.1 and Mythos 5.1 read at 0.025x cache-read — but that
+is the cache-READ ratio, which the 1-hour derivation never looks at. Their cache-write
+ratio is still 1.25x, so they get the
+derivation like every other current model.)
 
 ### From OpenAI
 

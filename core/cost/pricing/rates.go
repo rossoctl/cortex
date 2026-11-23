@@ -20,10 +20,14 @@ package pricing
 // 1.25x input and a cache read 0.1x, so one flat rate misprices cache-heavy
 // traffic (Claude Code) by up to ~10x.
 //
-// Deliberately absent: service-tier variants (flex / priority / ultrafast) and
-// the 1-hour-TTL cache-write premium. Both are real fields in LiteLLM's
-// ModelInfoBase, neither is on a path we run, and an unpopulated tier is an
-// untested tier. Adding one later is a field plus a threshold row, not a reshape.
+// Deliberately absent: service-tier variants (flex / priority / ultrafast). A real
+// field in LiteLLM's ModelInfoBase, not on a path we run, and an unpopulated tier is
+// an untested tier. Adding one later is a field plus a threshold row, not a reshape.
+//
+// The 1-hour-TTL cache-write premium is not a tier either, for a different reason:
+// those tokens are a SUBSET of CacheWrite, so a fifth slot in the per-tier loop would
+// bill them twice. Usage.CacheWrite1h carries the count and CostWith1h adds the
+// premium on top of CostByTier.
 type Tier int
 
 const (
@@ -57,6 +61,11 @@ type Usage struct {
 	CacheWrite int // prompt tokens written to cache
 	CacheRead  int // prompt tokens served from cache
 	Output     int // generated completion tokens
+	// CacheWrite1h is the part of CacheWrite written with a 1-hour TTL, never an
+	// addition to it. It mirrors model.InferenceExtension.CacheWrite1hTokens.
+	// tokens() does not return it, so CostByTier prices these tokens once, inside
+	// CacheWrite, at the 5m rate. CostWith1h adds the 1h premium on top.
+	CacheWrite1h int
 }
 
 // PromptTotal is the prompt-side total, which is what a context threshold is
@@ -149,6 +158,67 @@ func (r Rates) For(t Tier) (float64, bool) {
 		return 0, false
 	}
 	return r.Base[t], r.Set[t]
+}
+
+// CacheWrite1hRate derives the per-token rate for a cache write made with a 1-hour
+// TTL. No table carries an explicit 1h rate, so the rate is derived:
+//
+//  1. anthropicShaped AND the table's own 5m write rate is Anthropic's documented
+//     1.25x-of-input shape (isAnthropicCacheWriteShape): Anthropic's 1-hour price is
+//     exactly 2x the input rate (platform.claude.com, prompt-caching § cache
+//     duration), so estimated is false. anthropicShaped alone is not enough — it
+//     names the MODEL (see AnthropicShaped), and a configured or remote rate
+//     attached to that model name is not guaranteed to bill at Anthropic's real
+//     ratio. A flat-rate gateway that happens to serve a Claude model would
+//     otherwise have its cache writes doubled with no estimated caveat, for a
+//     figure the table itself gives no reason to believe.
+//  2. Otherwise: the 5-minute write rate, and estimated is true, because nothing
+//     here says what another provider's 1h premium is. That figure is low, never
+//     high, for any provider whose 1h writes cost more than its 5m writes.
+//
+// The rates are read from r as given, so a caller that wants the long-context rate
+// passes rates already flattened by At (Resolve returns them flattened). ok is false
+// only when the rate the derivation needs is unset.
+func (r Rates) CacheWrite1hRate(anthropicShaped bool) (rate float64, ok, estimated bool) {
+	cw, cwSet := r.For(TierCacheWrite)
+	if anthropicShaped && cwSet {
+		if in, inSet := r.For(TierInput); inSet && isAnthropicCacheWriteShape(in, cw) {
+			return in * 2.0, true, false
+		}
+	}
+	return cw, cwSet, cwSet
+}
+
+// isAnthropicCacheWriteShape reports whether cacheWrite5m is Anthropic's documented
+// 1.25x-of-input cache-write premium, within a tolerance wide enough to absorb
+// rounding in a bundled or hand-typed table but narrow enough to exclude a rate
+// priced some other way — a flat per-token gateway, for instance, or one with its
+// own, different cache premium. This is the check that makes anthropicShaped a
+// statement about the TABLE as well as the model name: see CacheWrite1hRate.
+func isAnthropicCacheWriteShape(input, cacheWrite5m float64) bool {
+	if input <= 0 {
+		return false
+	}
+	const (
+		documentedRatio = 1.25
+		tolerance       = 0.05
+		// epsilon absorbs the float64 division itself, not the table's own rounding:
+		// the tolerance window's lower edge (1.20) is exactly Claude 3 Haiku's ratio,
+		// but cacheWrite5m/input for equivalent, equally real-looking rates can land
+		// one ULP on either side of 1.20 depending on which decimal values divide to
+		// it — a per-million config value of 0.10/0.12 lands one ULP BELOW 1.20,
+		// where 0.25/0.30 (Haiku 3's actual bundled rate) lands AT it. Without this, a
+		// row with Haiku 3's real ratio but typed from different decimal inputs could
+		// fail a window that Haiku 3 itself passes.
+		epsilon = 1e-9
+	)
+	// CLOSED interval, not open: Claude 3 Haiku's bundled row (core/cost/pricing/bundled.go)
+	// is priced at exactly 1.20, the lower edge, and an open interval excluded it — the
+	// bundled table's own first-party row losing the 2x-input derivation it documents.
+	// TestCacheWrite1hRate_EveryBundledClaudeRowGetsTheDerivation pins every bundled Claude
+	// row against this window so a future vendor row outside it fails a test, not silently.
+	ratio := cacheWrite5m / input
+	return ratio >= documentedRatio-tolerance-epsilon && ratio <= documentedRatio+tolerance+epsilon
 }
 
 // free reports whether these rates price every tier at zero, with no long-context

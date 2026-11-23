@@ -127,3 +127,52 @@ func TestAggregator_AnUnpricedRequestAddsNoMix(t *testing.T) {
 		t.Errorf("an unpriced request contributed a mix: %+v", got)
 	}
 }
+
+// anthropicShapedResolver prices a single Claude model at Anthropic's documented
+// cache-write shape (5m write = 1.25x input), the one case CacheWrite1hRate trusts
+// enough to price 1h writes at 2x input (see isAnthropicCacheWriteShape).
+// tierResolver's own cache-write rate (11 vs input 7, ratio ~1.57) is deliberately
+// NOT this shape — it exists to tell the four tiers apart by rate, not to exercise
+// the 1h premium.
+func anthropicShapedResolver(t *testing.T, model string) *pricing.Registry {
+	t.Helper()
+	var r pricing.Rates
+	r.Base[pricing.TierInput], r.Set[pricing.TierInput] = 8.0/1e6, true
+	r.Base[pricing.TierCacheWrite], r.Set[pricing.TierCacheWrite] = 10.0/1e6, true
+	tab, err := pricing.NewTable([]pricing.Entry{
+		{Host: "*", Model: model, Rates: r, Prov: pricing.ProvConfigured},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pricing.NewRegistry(tab)
+}
+
+// The FALLBACK path prices the 1-hour cache-write premium, the same as settle does.
+// 1000 cache writes at 10 micros = 10000 at the 5m rate. On a Claude-shaped table
+// the 1h rate is 2x input = 16, so all 1000 written with a 1h TTL is 16000.
+func TestAggregator_TheFallbackPathPricesThe1hPremium(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		n1h  int
+		want int64
+	}{
+		{"no 1h writes", 0, 10000},
+		{"all 1h", 1000, 16000},
+		{"half 1h", 500, 500*10 + 500*16},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now().Truncate(BucketWidth)
+			a := New(WithClock(func() time.Time { return now }),
+				WithPricing(anthropicShapedResolver(t, "claude-opus-5")))
+			ev := tierRespEvent("claude-opus-5", 0, 1000, 0, 0)
+			ev.Inference.CacheWrite1hTokens = tc.n1h
+			a.Record("s1", ev)
+			got := snapshotOf(a, now).Totals
+			if got.CostMicros != tc.want || got.CacheWriteCostMicros != tc.want {
+				t.Errorf("cost = %d, cache-write tier = %d, want %d for both",
+					got.CostMicros, got.CacheWriteCostMicros, tc.want)
+			}
+		})
+	}
+}

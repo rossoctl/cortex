@@ -772,7 +772,9 @@ func (a *Aggregator) costOf(e *model.SessionEvent, ce event.Event, haveRec bool)
 		// pricing entry, so the one case worth naming.
 		return eventCost{priceable: 1, unpricedKey: key}
 	}
-	tiers, micros, ok, _ := pricing.CostByTier(rates, u)
+	// CostWith1h, the same helper settle.modelledCost uses, so a fallback-priced
+	// event gets the 1h cache-write premium a producer-priced one gets.
+	tiers, micros, ok, _, estimated1h := pricing.CostWith1h(rates, u, pricing.AnthropicShaped(e.Inference.Model))
 	if !ok {
 		// TWO CAUSES REACH HERE, AND ONLY ONE OF THEM IS A MISSING RATE. Either a rate was
 		// found that does not cover every tier this request used — a gap an operator closes
@@ -803,7 +805,12 @@ func (a *Aggregator) costOf(e *model.SessionEvent, ce event.Event, haveRec bool)
 	// The reason is kept, not just the bit: this arm has the actual answer in hand —
 	// pricing.IncompleteReason returns which of the two it is — and throwing it away here
 	// would make a fallback-priced window unable to say what a producer-priced one can.
-	if reason := pricing.IncompleteReason(e.Inference); reason != "" {
+	// The guessed-1h-rate reason ranks below the counters' reasons, as in settle.
+	reason := pricing.IncompleteReason(e.Inference)
+	if reason == "" && estimated1h {
+		reason = pricing.ReasonCacheWrite1hRateEstimated
+	}
+	if reason != "" {
 		ec.incomplete, ec.incompleteReason = 1, reason
 	}
 	return ec

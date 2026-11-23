@@ -945,6 +945,13 @@ var costIncompleteReasons = []struct {
 			"so the real total is higher",
 	},
 	{
+		key: pricing.ReasonCacheWrite1hRateEstimated,
+		singular: "1 is a LOWER BOUND — its 1-hour cache writes were priced at the 5-minute " +
+			"rate because the provider's 1-hour rate is unknown, so the real total is higher",
+		plural: "%s are LOWER BOUNDS — their 1-hour cache writes were priced at the 5-minute " +
+			"rate because the provider's 1-hour rate is unknown, so the real total is higher",
+	},
+	{
 		key: pricing.ReasonSplitUnreported,
 		singular: "1 is an APPROXIMATION — a gateway reported only a total, so the figure is " +
 			"off in no known direction; a standing property of that gateway, not an incident",
