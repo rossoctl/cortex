@@ -92,12 +92,18 @@ func findURLPasswords(text string, at []int, out []Edit) []Edit {
 //
 // An "@" right after "/" is usually a path segment (an npm scope, "/@babel/core"), so one that is
 // not is preferred. When "/@" is the only one, it separates a password that ends in "/" from its
-// host ("u:s3cr3t/@db"), and is taken.
+// host ("u:s3cr3t/@db"), and is taken. It is taken too when what follows the earlier "@" is not
+// host-like (no "." or ":"): in "u:p@ss/@db", "ss" is part of the password "p@ss/", while in
+// "u:p@registry.npmjs.org/@babel/core" the host stays. A dotless host before a "/@" path
+// ("u:p@localhost/@x") then loses its name too: over-redaction, the safe side.
 func lastHostAt(run string, colon int) int {
 	scoped := -1
 	for i := len(run) - 1; i > colon; i-- {
 		if run[i] == '@' && isHostAt(run[i+1:]) {
 			if run[i-1] != '/' {
+				if scoped >= 0 && !hostLike(run[i+1:scoped]) {
+					return scoped
+				}
 				return i
 			}
 			if scoped < 0 {
@@ -106,6 +112,15 @@ func lastHostAt(run string, colon int) int {
 		}
 	}
 	return scoped
+}
+
+// hostLike reports whether s, up to the end of its authority ("/", "?", "#"), holds a "." or a ":"
+// (a domain, an IP address, a port), as a host does and a word of a password usually does not.
+func hostLike(s string) bool {
+	if j := strings.IndexAny(s, "/?#"); j >= 0 {
+		s = s[:j]
+	}
+	return strings.ContainsAny(s, ".:")
 }
 
 // isHostAt reports whether rest starts with a host: one or more host characters, up to the end
