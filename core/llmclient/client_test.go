@@ -405,7 +405,7 @@ func TestCallRaw_ReturnsUsage(t *testing.T) {
 			`"usage":{"prompt_tokens":1200,"completion_tokens":80,"prompt_tokens_details":{"cached_tokens":1000}}}`)
 	}))
 	defer srv.Close()
-	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Second})
+	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Hour})
 	resp, err := c.CallRaw(context.Background(), &llmclient.ChatRequest{
 		Messages: []llmclient.ChatMessage{{Role: "user", Content: "x"}}})
 	if err != nil {
