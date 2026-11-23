@@ -48,6 +48,13 @@ pub const NOT_SET_IN_PRAXIS_MODE: &[&str] = &[
     "source",
     // Cortex marks the session before the hop (Store.MarkNoRecord), so the gateway never sets it.
     "noRecord",
+    // Added times Cortex's own request-side pipeline (body rewrites, header sync) between
+    // listener entry and the request reaching the upstream. The gateway's Row has no second
+    // timestamp for "handed to upstream" distinct from "first byte back" (start/ttfb only,
+    // see Row::finish), so there is nothing to subtract yet. Unlike durationMs/ttfbMs, this
+    // would need a new timestamp on the request's send path, not a reading of ones already
+    // kept.
+    "addedMs",
 ];
 
 fn is_zero(v: &i64) -> bool {

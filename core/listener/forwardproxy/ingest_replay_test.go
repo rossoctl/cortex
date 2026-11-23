@@ -364,7 +364,7 @@ func TestIngestReplay_MatchesLiveRun(t *testing.T) {
 	}
 
 	// The file comes from an earlier run: its request ids and timings are that run's.
-	volatile := []string{"at", "requestId", "durationMs", "ttfbMs"}
+	volatile := []string{"at", "requestId", "durationMs", "ttfbMs", "addedMs"}
 	path := "/v1/sessions/" + replaySession
 	sameJSON(t, path, strip(live.getJSON(t, path), volatile...), strip(replay.getJSON(t, path), volatile...))
 	summaryTimes := []string{"createdAt", "updatedAt", "lastRequestAt", "at"}

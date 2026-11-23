@@ -119,3 +119,24 @@ carry context-guru's label values, so the two proxies stack on one axis.
   `ttl_expiry` when the library's phase is `cold`; else `cold_start` when the phase is `unknown`
   and `RequestEnd` had not seen the thread; else `other`. Cortex sees no body diff, so
   context-guru's `prefix_change`, `compaction_after_rewrite` and `bypass_flip` are `other` here.
+
+## Amendment, 2026-11-23: added_seconds, after all — three Non-goals reversed
+
+#2063 (`cg/11-inference-metrics`) adds `llm_inference_added_seconds_bucket` on top of this spec,
+reversing three of its Non-goals and one Tier 2 bullet above:
+
+- `llm_inference_added_seconds_bucket` is no longer out of scope. It is `reqstats.Recorder`'s
+  fifth histogram, from the new `model.SessionEvent.Added` field (wall-clock time from listener
+  entry to the request reaching the upstream).
+- All three listeners (`forwardproxy`, `extproc`, `reverseproxy`) changed after all, each to
+  stamp `pipeline.Context.UpstreamSentAt` once, at its own "handed to upstream" point.
+- The histograms do NOT use the SDK's default buckets. `added_seconds`, like `duration_seconds`
+  and `ttfb_seconds`, uses explicit second-sized boundaries (`TestNew_HistogramsUseSecondSizedBuckets`
+  pins them) — the default buckets this spec called for turned out wrong for proxy-latency ranges,
+  the exact case the original bullet flagged as the reason to revisit.
+- The Tier 2 bullet above (`llm_inference_requests_total` from `StatusCode`) also counts
+  `model.SessionDenied` rows, not only `model.SessionResponse`: a policy denial carries a real
+  `StatusCode` and `Duration` the same way a response does (reqstats.go).
+
+Still true from the base spec: no `deploy/central/` change, the OTel dot-naming convention, and
+the Tier 2 byte/duration/ttfb counters as designed.

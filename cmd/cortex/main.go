@@ -761,8 +761,9 @@ func main() {
 		// request (the keep-alive ping), which never passes through the session store.
 		acctHost.AddCostRecorder(usageAgg)
 		// reqStats pushes the Tier 2 transport metrics (llm.inference.requests/duration_seconds/
-		// ttfb_seconds/request_bytes/response_bytes) through the same MeterProvider acctHost's
-		// Sink uses. Unconditional: reqstats.New(nil) is a safe no-op when nothing is pushed.
+		// ttfb_seconds/added_seconds/request_bytes/response_bytes) through the same MeterProvider
+		// acctHost's Sink uses. Unconditional: reqstats.New(nil) is a safe no-op when nothing is
+		// pushed.
 		reqStats := reqstats.New(pushMP)
 		sessions.AddRecorder(reqStats)
 
