@@ -37,12 +37,12 @@ func UsageFromInference(inf *model.InferenceExtension) Usage {
 		CacheRead:    inf.CacheReadTokens,
 		Output:       inf.OutputTokens,
 	}
-	// The 1h count is a SUBSET of the cache writes, so more 1h writes than writes is
-	// not a real breakdown. Drop the subset, the same way the parser drops an
-	// off-shape cache_creation: the request prices at the 5m rate and keeps every
-	// other counter. Refusing it (PlausibleUsage) would lose the whole figure over an
-	// optional breakdown.
-	if u.CacheWrite1h > u.CacheWrite {
+	// The 1h count is a SUBSET of the cache writes, so a negative count or more 1h
+	// writes than writes is not a real breakdown. Drop the subset, the same way the
+	// parser drops an off-shape cache_creation: the request prices at the 5m rate
+	// and keeps every other counter. Refusing it (PlausibleUsage) would lose the
+	// whole figure over an optional breakdown.
+	if u.CacheWrite1h < 0 || u.CacheWrite1h > u.CacheWrite {
 		u.CacheWrite1h = 0
 	}
 	if u.PromptTotal() == 0 && inf.PromptTokens > 0 {
