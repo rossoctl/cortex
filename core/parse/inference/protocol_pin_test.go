@@ -1,29 +1,38 @@
-package inference
+package inference_test
 
 import (
+	"slices"
 	"testing"
 
+	"github.com/rossoctl/cortex/core/parse/inference"
 	"github.com/rossoctl/cortex/core/translate"
 )
 
-// TestProtocolNames_MatchTranslateRegistry pins ProtocolFor's three return values against
-// core/translate's registered protocol names (registry.go). Neither package imports the other,
-// so nothing stops the two copies' values from drifting apart; this test is the thing that would
-// catch it, since a renamed inference constant is already a compile error for its own callers
-// (dialect.go), but a changed value on either side is not.
-func TestProtocolNames_MatchTranslateRegistry(t *testing.T) {
+// TestProtocolFor_MatchesTranslateRegistry pins what ProtocolFor actually returns, for a path of
+// each dialect, against core/translate's registered protocol names (registry.go), and also pins
+// the two sets of names equal in both directions: a protocol translate knows that ProtocolFor
+// could never route to would fail here too. Neither package imports the other, so nothing else
+// catches either kind of drift. package inference_test (not inference) only, because it uses
+// nothing unexported, and because an inference-side follow-up that has translate import
+// inference for one source of truth would otherwise turn an internal copy of this file into an
+// import cycle.
+func TestProtocolFor_MatchesTranslateRegistry(t *testing.T) {
 	cases := []struct {
-		name          string
-		inferenceName string
-		translateName string
+		name, path, translateName string
 	}{
-		{"anthropic", ProtocolAnthropicMessages, translate.Anthropic},
-		{"chat", ProtocolChatCompletions, translate.Chat},
-		{"responses", ProtocolResponses, translate.Responses},
+		{"anthropic", "/v1/messages", translate.Anthropic},
+		{"chat", "/v1/chat/completions", translate.Chat},
+		{"responses", "/v1/responses", translate.Responses},
 	}
 	for _, c := range cases {
-		if c.inferenceName != c.translateName {
-			t.Errorf("%s: inference=%q, translate=%q, want equal", c.name, c.inferenceName, c.translateName)
+		if got := inference.ProtocolFor(c.path); got != c.translateName {
+			t.Errorf("%s: ProtocolFor(%q) = %q, translate registry name = %q", c.name, c.path, got, c.translateName)
 		}
+	}
+
+	got := []string{inference.ProtocolAnthropicMessages, inference.ProtocolChatCompletions, inference.ProtocolResponses}
+	slices.Sort(got)
+	if want := translate.Names(); !slices.Equal(got, want) {
+		t.Errorf("inference's protocol names = %q, translate registry = %q, want equal", got, want)
 	}
 }
