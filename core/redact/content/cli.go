@@ -65,21 +65,26 @@ var cliRules = []*anchored{
 		// The first -p, and the password attached: escaped-double-quoted (raw JSON),
 		// double-quoted, single-quoted, or bare. A bare one may not start with "-", so "-p -h db"
 		// is kept. A quoted one must end its argument (a space, ";", "|", "&", ")", a redirect
-		// ("<", ">"), the end, the other kind of quote closing an outer one
+		// ("<", ">") after a password with no space in it, the end, the other kind of quote
+		// closing an outer one
 		// (sh -c 'mysql -p"..."'), or in raw JSON the string's end or an escaped break), so a
 		// quote that closes a JSON string ("mysql -p", 3306) or a quoted phrase ('mysql -p' and
 		// 'mysql -h') is not taken for one. A double-quoted one may not hold JSON's punctuation
-		// at either end, nor, when an outer single quote closes it, a single quote: in text or in
+		// at either end. Before a redirect, it may not start with what follows a closed string
+		// (", : ] }", or code's ")"), nor end with what opens the next (", : [ {", or "("): in
+		// compact raw JSON, `"]],[["` before "<x>" is the gap between two strings, while
+		// "(Secret9)" is a password. Nor, when an outer single quote closes it, a single quote: in text or in
 		// raw JSON, 'mysql -p"' + x + '"' is two pieces of code. A single-quoted one may not hold
 		// a double quote: what lies between two JSON strings, or two quoted pieces of code, is
 		// not a password.
 		cat: catPassword, triggers: []string{"mysql"}, anyGroup: true, span: 1024, before: true, segment: true,
 		re: regexp.MustCompile(`^mysql(?:dump|admin|sh)?[ \t]+(?:[^\n|;&]*?[ \t])??-p(?:` +
-			`\\"([^"\\\r\n]+)\\"(?:[\s;|&)"<>]|\\[nrt]|$)|` +
+			`\\"([^"\\\r\n]+)\\"(?:[\s;|&)"]|\\[nrt]|$)|` +
 			`\\"([^"'\\\r\n](?:[^"\\\r\n]*[^"'\\\r\n])?)\\"'|` +
-			`"([^"\\\r\n,:\[\]{}\s](?:[^"\\\r\n]*[^"\\\r\n,:\[\]{}\s])?)"(?:[\s;|&)<>]|$)|` +
+			`"([^"\\\r\n,:\[\]{}\s](?:[^"\\\r\n]*[^"\\\r\n,:\[\]{}\s])?)"(?:[\s;|&)]|$)|` +
 			`"([^"'\\\r\n,:\[\]{}\s](?:[^"\\\r\n]*[^"'\\\r\n,:\[\]{}\s])?)"'|` +
-			`'([^'"\\\r\n]+)'(?:[\s;|&)"<>]|\\[nrt"]|$)|` +
+			`'([^'"\\\r\n]+)'(?:[\s;|&)"]|\\[nrt"]|$)|` +
+			`\\"([^"\\\s]+)\\"[<>]|"([^"\\\s,:\]})](?:[^"\\\s]*[^"\\\s,:\[{(])?)"[<>]|'([^'"\\\s]+)'[<>]|` +
 			`((?:[^\s'"` + "`" + `\\-]|\\[^\s'"` + "`" + `nrt])` + bareArgChar + `*))`),
 		check: func(v string) bool { return len(v) >= 4 && !notASecret(v) },
 	},

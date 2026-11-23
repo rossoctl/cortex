@@ -1,6 +1,7 @@
 package content
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -89,6 +90,23 @@ func TestRegression_UnicodeEscapeInArmorHeader(t *testing.T) {
 
 // mysql's -p takes its password attached: bare, single- or double-quoted, or double-quoted with
 // escaped quotes in raw JSON. "-p" alone (mysql prompts) and quotes that are JSON's are kept.
+// String on compact raw JSON with mysql's quoted password before a redirect stays valid JSON, with
+// the secret gone.
+func TestRegression_MysqlRedirectInCompactJSON(t *testing.T) {
+	pw := hntPassword()
+	for _, in := range []string{
+		`[[["mysql -p"]],[["<x>"]]]`,
+		`[["mysql -p\"` + pw + `\"<in.sql"],["<x>"]]`,
+		`{"cmds":[["mysql -u root -p\"` + pw + `\">out.sql"]],"next":[["<y>"]]}`,
+		`[["mysqldump -p'` + pw + `'>a.sql"],[">b"]]`,
+	} {
+		out, _ := New().String(in)
+		if !json.Valid([]byte(out)) || strings.Contains(out, pw) {
+			t.Errorf("%s -> %s: want valid JSON without the password", in, out)
+		}
+	}
+}
+
 func TestRegression_MysqlQuotedPassword(t *testing.T) {
 	pw := "Sup3r" + "S3cret!"
 	for _, tc := range []struct{ in, want string }{
@@ -128,6 +146,17 @@ func TestRegression_MysqlQuotedPassword(t *testing.T) {
 		// a redirect right after the closing quote ends the argument too
 		{"mysqldump -u root -p'" + pw + "'>out.sql", "mysqldump -u root -p'[REDACTED:password]'>out.sql"},
 		{`mysql -p"` + pw + `"<in.sql`, `mysql -p"[REDACTED:password]"<in.sql`},
+		// ... but the gap between two strings of compact raw JSON is not a password
+		{`[[["mysql -p"]],[["<x>"]]]`, `[[["mysql -p"]],[["<x>"]]]`},
+		{`run("mysql -p",fn("<x"))`, `run("mysql -p",fn("<x"))`},
+		{`f("mysql -p")("<x")`, `f("mysql -p")("<x")`},
+		// ... while a password may start or end with a bracket
+		{`mysql -p"(Secret9)"<in.sql`, `mysql -p"[REDACTED:password]"<in.sql`},
+		{`mysqldump -u root -p"[abc123]">out.sql`, `mysqldump -u root -p"[REDACTED:password]">out.sql`},
+		// ... but quoted code before a "<" or ">" is not a password
+		{`if (s == 'mysql -p') x = '<none>'`, `if (s == 'mysql -p') x = '<none>'`},
+		{`assert cmd.startswith('mysql -p') and '>' in cmd`, `assert cmd.startswith('mysql -p') and '>' in cmd`},
+		{`cmd = 'mysqldump -u root -p' + pw + '>backup.sql'`, `cmd = 'mysqldump -u root -p' + pw + '>backup.sql'`},
 		// a double-quoted password may still start or end with a single quote
 		{`mysql -p"'` + pw + `"`, `mysql -p"[REDACTED:password]"`},
 		{`mysql -p"` + pw + `'" db`, `mysql -p"[REDACTED:password]" db`},

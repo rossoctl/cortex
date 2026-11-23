@@ -188,7 +188,9 @@ func TestURLPasswords(t *testing.T) {
 		{"https://user:Secr3tPw@host.example.com/a/b@v1|grep x", "https://user:[REDACTED:password]@host.example.com/a/b@v1|grep x"},                // a shell pipe after the path
 		// a password with "@" that ends in "/": what follows its "@" is no host, so "/@" is the host's
 		{"postgres://u:p@" + "ss/@db", "postgres://u:[REDACTED:password]@db"},
-		{"postgres://u:p@" + "ss/" + mixed(8) + "/@db.example.com/x", "postgres://u:[REDACTED:password]@db.example.com/x"},
+		// ... but a host's path of several segments before a "/@" keeps the host
+		{"https://u:pw" + "12345@nexus/repository/npm/@scope/pkg", "https://u:[REDACTED:password]@nexus/repository/npm/@scope/pkg"},
+		{"https://user:pw" + "12345@host#/@y", "https://user:[REDACTED:password]@host#/@y"},
 		{"https://alice:" + fill("a", 16) + "@registry.npmjs.org:443/@babel/core", "https://alice:[REDACTED:password]@registry.npmjs.org:443/@babel/core"},
 
 		{`{"dsn":"amqp://guest:` + fill("g", 9) + `@mq/vhost","n":1}`, `{"dsn":"amqp://guest:[REDACTED:password]@mq/vhost","n":1}`},

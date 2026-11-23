@@ -92,16 +92,17 @@ func findURLPasswords(text string, at []int, out []Edit) []Edit {
 //
 // An "@" right after "/" is usually a path segment (an npm scope, "/@babel/core"), so one that is
 // not is preferred. When "/@" is the only one, it separates a password that ends in "/" from its
-// host ("u:s3cr3t/@db"), and is taken. It is taken too when what follows the earlier "@" is not
-// host-like (no "." or ":"): in "u:p@ss/@db", "ss" is part of the password "p@ss/", while in
-// "u:p@registry.npmjs.org/@babel/core" the host stays. A dotless host before a "/@" path
-// ("u:p@localhost/@x") then loses its name too: over-redaction, the safe side.
+// host ("u:s3cr3t/@db"), and is taken. It is taken too when only one word and "/" lie between the
+// earlier "@" and it (passwordTail): in "u:p@ss/@db", "ss/" is the end of the password "p@ss/",
+// while in "u:p@registry.npmjs.org/@babel/core" and "u:p@nexus/repo/npm/@scope" the host stays.
+// A dotless host right before a "/@" path ("guest:p@rabbitmq/@vhost") reads the same as
+// "p@ss/@db" and loses its name too: over-redaction, the safe side.
 func lastHostAt(run string, colon int) int {
 	scoped := -1
 	for i := len(run) - 1; i > colon; i-- {
 		if run[i] == '@' && isHostAt(run[i+1:]) {
 			if run[i-1] != '/' {
-				if scoped >= 0 && !hostLike(run[i+1:scoped]) {
+				if scoped >= 0 && passwordTail(run[i+1:scoped]) {
 					return scoped
 				}
 				return i
@@ -114,13 +115,12 @@ func lastHostAt(run string, colon int) int {
 	return scoped
 }
 
-// hostLike reports whether s, up to the end of its authority ("/", "?", "#"), holds a "." or a ":"
-// (a domain, an IP address, a port), as a host does and a word of a password usually does not.
-func hostLike(s string) bool {
-	if j := strings.IndexAny(s, "/?#"); j >= 0 {
-		s = s[:j]
-	}
-	return strings.ContainsAny(s, ".:")
+// passwordTail reports whether s, the text between an "@" and a later "/@", reads as the rest of a
+// password ending in "/" ("ss/" in "u:p@ss/@db"): one word and its "/", with no "." or ":" (a
+// domain, an IP address, a port) and no "?" or "#". A path of more than one segment
+// ("nexus/repository/npm/" before "/@scope") is a host's path, and that host stays.
+func passwordTail(s string) bool {
+	return len(s) > 1 && s[len(s)-1] == '/' && !strings.ContainsAny(s[:len(s)-1], "/.:?#")
 }
 
 // isHostAt reports whether rest starts with a host: one or more host characters, up to the end
