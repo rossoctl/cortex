@@ -94,6 +94,30 @@ func TestSnapshot_OlderThanHourIgnored(t *testing.T) {
 	}
 }
 
+// Review (r4659043710): a SavedAt in the future (clock stepped back) must be rejected too, with
+// its own message rather than the over-age one.
+func TestSnapshot_FutureClockIgnored(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "accountant-state.json")
+	future := time.Now().Add(10 * time.Minute)
+	h := hostWithState(t, path, func() time.Time { return future })
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	logs := captureWarn(t)
+	fresh := New(Options{SnapshotPath: path})
+	t.Cleanup(func() { _ = fresh.Close() })
+	state, _ := fresh.trackers.Snapshot()
+	if strings.Contains(string(state), "test:big") {
+		t.Errorf("a snapshot saved in the future was restored: %s", state)
+	}
+	if n := strings.Count(logs.String(), "level=WARN"); n != 1 {
+		t.Errorf("WARN lines = %d, want 1:\n%s", n, logs)
+	}
+	if strings.Contains(logs.String(), "older than") {
+		t.Errorf("future SavedAt logged the over-age message, not the future-clock one:\n%s", logs)
+	}
+}
+
 // Review Focus 5: a corrupt snapshot starts fresh with one WARN and does not stop the host.
 func TestSnapshot_CorruptIgnored(t *testing.T) {
 	for name, content := range map[string]string{

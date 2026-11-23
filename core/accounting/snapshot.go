@@ -108,7 +108,11 @@ func (h *Host) restoreFrom(data []byte) error {
 	if f.SavedAt.IsZero() {
 		return fmt.Errorf("no savedAt")
 	}
-	if age := h.now().Sub(f.SavedAt); age < 0 || age > snapshotMaxAge {
+	age := h.now().Sub(f.SavedAt)
+	if age < 0 {
+		return fmt.Errorf("saved %s in the future (the clock stepped back?): the state's age is unknown", (-age).Round(time.Second))
+	}
+	if age > snapshotMaxAge {
 		return fmt.Errorf("saved %s ago, older than %s: every cache it describes has expired", age.Round(time.Second), snapshotMaxAge)
 	}
 	return h.trackers.Restore(f.State)
