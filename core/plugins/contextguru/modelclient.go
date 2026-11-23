@@ -59,10 +59,6 @@ func modelHTTPClient(timeout time.Duration, localInstall bool) *http.Client {
 	if timeout <= 0 {
 		timeout = llmclient.DefaultTimeout
 	}
-	tr := sharedModelTransport()
-	if localInstall {
-		tr = localModelTransport()
-	}
 	return &http.Client{
 		Timeout:       timeout,
 		CheckRedirect: llmclient.SentinelRedirectPolicy(sentinelHeader),
