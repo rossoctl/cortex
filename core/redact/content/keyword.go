@@ -195,6 +195,11 @@ func isNameByte(c byte) bool { return isTokenByte(c) || c == '.' }
 // again (findKeywords): enough for URLs nested 4 deep.
 const rescanBudgetPer = 4
 
+// rescanBudgetFloor is added to each new run's budget, so a short run (a URL glued to a few
+// "key=?" or many sibling redirect parameters) is not cut short. Runs are at least longRejected
+// bytes, so the floors add at most 16 times the text.
+const rescanBudgetFloor = 4 << 10
+
 // findKeywords runs the keyword rule at each trigger position (sorted).
 func findKeywords(text string, at []int, out []Edit) []Edit {
 	covered, nameRunEnd := 0, -1
@@ -258,7 +263,7 @@ func findKeywords(text string, at []int, out []Edit) []Edit {
 			// within the run's rescan budget.
 			if q := strings.IndexByte(text[vs:ve], '?'); q >= 0 {
 				if vs >= runEnd {
-					runEnd, rescanBudget = ve, rescanBudgetPer*(ve-vs) // a new run
+					runEnd, rescanBudget = ve, rescanBudgetPer*(ve-vs)+rescanBudgetFloor // a new run
 				} else if ve > runEnd {
 					rescanBudget += rescanBudgetPer * (ve - runEnd) // the run grows
 					runEnd = ve

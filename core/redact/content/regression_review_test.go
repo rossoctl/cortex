@@ -33,6 +33,24 @@ func TestRegression_QueryStringRescan(t *testing.T) {
 	if out, _ := redact(in); strings.Contains(out, pw) {
 		t.Errorf("leaked 4 deep: %q", out)
 	}
+	// The same with secret-named nested keys, so each level is a rescan of its own, and segments
+	// long enough that the floor is small: this fails if rescanBudgetPer drops to 1 (one rescan
+	// per run).
+	long := strings.Repeat("a", 4000)
+	in = "auth_url=https://a.example.io/" + long + "?token_url=https://b.example.io/" + long +
+		"?auth_redirect=https://c.example.io/" + long + "?token_uri=https://d.example.io/" + long + "?password=" + pw
+	if out, _ := redact(in); strings.Contains(out, pw) {
+		t.Errorf("leaked 4 deep with secret-named keys")
+	}
+	// Short runs get the floor: junk glued to the URL, or many sibling redirect parameters.
+	for name, in := range map[string]string{
+		"glued junk":        "see " + strings.Repeat("token=?", 5) + "auth_url=https://host/" + a + "?password=" + pw,
+		"sibling redirects": "auth_url=https://sso.example.io/" + strings.Repeat("?auth_cb=https://app.example.io/"+b[:40], 12) + "?password=" + pw,
+	} {
+		if out, _ := redact(in); strings.Contains(out, pw) {
+			t.Errorf("%s: leaked", name)
+		}
+	}
 	// Each run of rescanned text has its own budget: junk before a later URL does not use it up.
 	for _, n := range []int{1000, 5000, 50000} {
 		in = strings.Repeat("key=?", n) + "\n auth_url=https://host/" + a + "?password=" + pw
