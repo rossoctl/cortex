@@ -198,7 +198,7 @@ func (e *mcpEvolve) closeConn(cn *conn) {
 	if cn.streaming.Load() {
 		select {
 		case <-cn.readerDone:
-		case <-time.After(e.connectBudget): // a reader that doesn't stop when cancelled
+		case <-time.After(connectTimeout): // a reader that doesn't stop when cancelled
 		}
 	}
 	if e.closeHook != nil {

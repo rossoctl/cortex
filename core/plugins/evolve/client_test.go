@@ -36,9 +36,9 @@ type fakeEvolveServer struct {
 	// rejectPrompt is an evolve that predates guidelines_prompt (altk-evolve #479):
 	// its processor config rejects the key the way pydantic does.
 	rejectPrompt bool
-	// holdLearn, when set, keeps process_trajectory from answering until it is
-	// closed.
-	holdLearn chan struct{}
+	// holdGuidelines and holdLearn, when set, keep those tools from answering until
+	// they are closed.
+	holdGuidelines, holdLearn chan struct{}
 	// calling, when set, receives each tool's name as its call arrives. Tests give
 	// it room for every call they make.
 	calling chan string
@@ -73,8 +73,14 @@ func (f *fakeEvolveServer) mcpServer() *server.MCPServer {
 		b, _ := json.Marshal(v)
 		return mcp.NewToolResultText(string(b))
 	}
-	s.AddTool(mcp.NewTool("get_guidelines_with_attribution"), func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	s.AddTool(mcp.NewTool("get_guidelines_with_attribution"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		f.record(req)
+		if f.holdGuidelines != nil {
+			select {
+			case <-f.holdGuidelines:
+			case <-ctx.Done():
+			}
+		}
 		_, details := req.GetArguments()["include_details"]
 		if details && f.old {
 			return mcp.NewToolResultError("1 validation error for call[get_guidelines_with_attribution]\ninclude_details\n" +
@@ -436,7 +442,7 @@ func silentListener(t *testing.T) (url string, arrived <-chan struct{}) {
 	return "http://" + ln.Addr().String() + "/sse", came
 }
 
-func TestMCPEvolve_AHungEvolveCostsACallOnlyItsOwnTimeout(t *testing.T) {
+func TestMCPEvolve_AHungEvolveHoldsACallOnlyUntilItsOwnCancellation(t *testing.T) {
 	for name, hung := range map[string]func(*testing.T) (string, <-chan struct{}){
 		"no endpoint event": hungStream,
 		"silent listener":   silentListener,
@@ -452,20 +458,36 @@ func TestMCPEvolve_AHungEvolveCostsACallOnlyItsOwnTimeout(t *testing.T) {
 			// each returns when its own context ends, with the connect still hung.
 			// Before, the first waited 30 s (no endpoint event) or forever (silent
 			// listener), and the second queued behind it.
-			ctx, cancel := context.WithCancel(context.Background())
-			var wg sync.WaitGroup
-			for range 2 {
-				wg.Add(1)
+			var cancels [2]context.CancelFunc
+			var done [2]chan error
+			for i := range 2 {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancels[i], done[i] = cancel, make(chan error, 1)
 				go func() {
-					defer wg.Done()
-					if _, err := e.Guidelines(ctx, "cortex", "t", "s"); !errors.Is(err, ErrUnavailable) {
-						t.Errorf("err = %v, want ErrUnavailable", err)
-					}
+					_, err := e.Guidelines(ctx, "cortex", "t", "s")
+					done[i] <- err
 				}()
 			}
 			<-arrived
-			cancel()
-			wg.Wait()
+			// A call ended by its own cancellation fails at the connect with
+			// context.Canceled. One that waited for the connect fails with what
+			// ended it, such as mcp-go's own 30 s wait for the endpoint event.
+			ownCancellation := func(err error) bool {
+				return errors.Is(err, ErrUnavailable) && strings.HasSuffix(err.Error(), "connect: "+context.Canceled.Error())
+			}
+			cancels[0]()
+			if err := <-done[0]; !ownCancellation(err) {
+				t.Fatalf("first call: err = %v, want its own cancellation", err)
+			}
+			select {
+			case err := <-done[1]:
+				t.Fatalf("second call returned before its context ended: %v", err)
+			default:
+			}
+			cancels[1]()
+			if err := <-done[1]; !ownCancellation(err) {
+				t.Fatalf("second call: err = %v, want its own cancellation", err)
+			}
 			// Close returns with the connect still hung.
 			e.Close()
 		})
@@ -493,10 +515,35 @@ func (f *fakeEvolveServer) called(tool string) bool {
 	return false
 }
 
-func TestMCPEvolve_OneCallTimingOutLeavesTheOthersRunning(t *testing.T) {
-	f := &fakeEvolveServer{holdLearn: make(chan struct{}), calling: make(chan string, 4)}
+// postAnswered closes answered once a POST naming tool has its response: evolve
+// has accepted the call, and its reply is to come on the stream.
+type postAnswered struct {
+	base     http.RoundTripper
+	tool     string
+	answered chan struct{}
+	once     sync.Once
+}
+
+func (p *postAnswered) RoundTrip(req *http.Request) (*http.Response, error) {
+	var body []byte
+	if req.Body != nil {
+		body, _ = io.ReadAll(req.Body)
+		req.Body = io.NopCloser(strings.NewReader(string(body)))
+	}
+	resp, err := p.base.RoundTrip(req)
+	if err == nil && req.Method == http.MethodPost && strings.Contains(string(body), p.tool) {
+		p.once.Do(func() { close(p.answered) })
+	}
+	return resp, err
+}
+
+func TestMCPEvolve_OneCallEndingLeavesTheOthersRunning(t *testing.T) {
+	f := &fakeEvolveServer{holdGuidelines: make(chan struct{}), holdLearn: make(chan struct{}), calling: make(chan string, 8)}
 	e := newMCPEvolve(f.start(t), "cortex", "environment-grounded", time.Second)
+	sent := &postAnswered{base: e.http.Transport, tool: `"get_guidelines_with_attribution"`, answered: make(chan struct{})}
+	e.http.Transport = sent
 	defer e.Close()
+	defer close(f.holdGuidelines)
 
 	learned := make(chan error, 1)
 	go func() {
@@ -510,13 +557,23 @@ func TestMCPEvolve_OneCallTimingOutLeavesTheOthersRunning(t *testing.T) {
 			t.Fatalf("Learn ended before process_trajectory: %v", err)
 		}
 	}
-	// A session's fetch times out while evolve is still learning. Before, the
-	// timeout closed the shared session and failed the learning call with it, so
-	// evolve's minutes of LLM work were sent again.
-	ctx, cancel := context.WithTimeout(context.Background(), 0)
-	_, err := e.Guidelines(ctx, "cortex", "t", "s")
+	// A session's fetch ends while waiting for its reply, with evolve still
+	// learning. Before, a fetch that timed out there closed the shared session and
+	// failed the learning call with it, so evolve's minutes of LLM work were sent
+	// again.
+	ctx, cancel := context.WithCancel(context.Background())
+	fetched := make(chan error, 1)
+	go func() {
+		_, err := e.Guidelines(ctx, "cortex", "t", "s")
+		fetched <- err
+	}()
+	select {
+	case <-sent.answered:
+	case err := <-fetched:
+		t.Fatalf("fetch ended before evolve accepted it: %v", err)
+	}
 	cancel()
-	if !errors.Is(err, ErrUnavailable) {
+	if err := <-fetched; !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("fetch err = %v, want ErrUnavailable", err)
 	}
 	close(f.holdLearn)
@@ -745,6 +802,7 @@ func lateEndpoint(t *testing.T, release <-chan struct{}) (url string, arrived <-
 	t.Helper()
 	stop := make(chan struct{})
 	came := make(chan struct{})
+	var once sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			w.WriteHeader(http.StatusAccepted)
@@ -753,7 +811,7 @@ func lateEndpoint(t *testing.T, release <-chan struct{}) (url string, arrived <-
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
-		close(came)
+		once.Do(func() { close(came) })
 		select {
 		case <-release:
 		case <-stop:

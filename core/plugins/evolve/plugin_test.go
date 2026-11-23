@@ -852,6 +852,8 @@ func TestFetch_OutlivesTheRequestThatStartedIt(t *testing.T) {
 	case <-joined:
 	case entry := <-waiting:
 		t.Fatalf("the next request got %+v without joining the fetch: it ended with the request that started it", entry)
+	case <-fe.fetching:
+		t.Fatal("the next request started its own fetch instead of joining the one in progress")
 	}
 	close(fe.hold)
 	if entry := <-waiting; len(entry.guidelines) != 2 || entry.failed {
