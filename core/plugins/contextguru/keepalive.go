@@ -11,10 +11,11 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
-// keepAliveConfig is the plugin's `keep_alive:` block — one static policy, no strategies and no
-// per-session overrides (spec §10, Phase 1 table: "simpler than the standalone proxy by design").
+// keepAliveConfig is the plugin's `keep_alive:` block — a legacy static override, kept for
+// back-compat with an install that tunes keep-alive here instead of under `engine: cache:`.
 // Every value is a knob on a decision the engine makes; none of them is a decision. A zero value
-// takes the engine's own shipped default (config.DefaultKeepAlive*).
+// takes the engine's own shipped default (config.DefaultKeepAlive*), or the strategy's resolved
+// value when `engine: cache: strategy` is set (policy, below).
 type keepAliveConfig struct {
 	Enabled         bool    `json:"enabled" description:"Ping an idle session's prompt cache before it expires. Each ping is billed to the caller's own credential." default:"true"`
 	IdleSeconds     int     `json:"idle_seconds" description:"Idle time before the first ping, from the previous request's start." default:"240"`
@@ -23,25 +24,77 @@ type keepAliveConfig struct {
 	MinPrefixTokens int     `json:"min_prefix_tokens" description:"Billed prefix a session must reach before it is pinged." default:"80000"`
 }
 
-func (c keepAliveConfig) policy() keepalive.Policy {
+// policy resolves the keep-alive Policy from cache, the engine's own `cache:` block (parsed by
+// cgconfig.LoadBytes from `engine:` — see Configure), and c, this plugin's legacy `keep_alive:`
+// override.
+//
+// Without `cache.strategy` set, nothing here changes from before: c alone decides every field,
+// as policy() always did. This is deliberate — an install that has never heard of `engine: cache:`
+// keeps behaving exactly as it does today.
+//
+// With `cache.strategy` set, cache.Resolved() (named strategies: none, auto, 1-ping, 2-ping,
+// 1-hour-head, 1-hour-on-wait, 1-hour-always, 30-min-ping — see context-guru's
+// docs/how-to/cache-strategies.md) decides every field, INCLUDING whether keep-alive runs at all
+// ("none" sets no cache key, so cache.KeepAlive is false). The one override kept across both
+// paths is c.Enabled == false: an explicit `keep_alive: {enabled: false}` always wins, as a kill
+// switch independent of the chosen strategy. Mixing the two tuning surfaces (a strategy AND
+// c's other knobs) is not supported — set one or the other, not both — because resolving
+// per-field precedence between two plugin-level overrides would be a local policy decision, not
+// a translation of what the engine already resolved.
+func (c keepAliveConfig) policy(cache cgconfig.CacheConfig) keepalive.Policy {
+	if cache.Strategy == "" {
+		// WaitPlan is left false (the zero value) here on purpose, matching the doc above: with no
+		// `cache.strategy` set, this branch must be byte-for-byte what policy() always returned.
+		// Turning the per-wait plan on changes real scheduling, not just a tunable — #858's "a
+		// thread with no tool call yet is not pinged" would stop every reply that has not yet
+		// called a tool, which is also every fixture in this package's own tests. That default
+		// change is opt-in, through a named strategy (the branch below), not bundled into the
+		// legacy keep_alive block's existing meaning.
+		pol := keepalive.Policy{
+			KeepAlive:       c.Enabled,
+			Idle:            time.Duration(cgconfig.DefaultKeepAliveIdle) * time.Second,
+			MaxPings:        cgconfig.DefaultKeepAliveMaxPings,
+			MaxUSDPerPing:   cgconfig.DefaultKeepAliveMaxUSDPerPing,
+			MinPrefixTokens: cgconfig.DefaultKeepAliveMinPrefix,
+		}
+		if c.IdleSeconds > 0 {
+			pol.Idle = time.Duration(c.IdleSeconds) * time.Second
+		}
+		if c.MaxPings > 0 {
+			pol.MaxPings = c.MaxPings
+		}
+		if c.MaxUSDPerPing > 0 {
+			pol.MaxUSDPerPing = c.MaxUSDPerPing
+		}
+		if c.MinPrefixTokens > 0 {
+			pol.MinPrefixTokens = c.MinPrefixTokens
+		}
+		return pol
+	}
+	resolved := cache.Resolved()
 	pol := keepalive.Policy{
-		KeepAlive:       c.Enabled,
-		Idle:            time.Duration(cgconfig.DefaultKeepAliveIdle) * time.Second,
-		MaxPings:        cgconfig.DefaultKeepAliveMaxPings,
-		MaxUSDPerPing:   cgconfig.DefaultKeepAliveMaxUSDPerPing,
-		MinPrefixTokens: cgconfig.DefaultKeepAliveMinPrefix,
+		KeepAlive:            resolved.KeepAlive,
+		Idle:                 time.Duration(resolved.KeepAliveIdleSeconds) * time.Second,
+		OpenAIIdle:           time.Duration(resolved.KeepAliveOpenAIIdleSeconds) * time.Second,
+		MaxPings:             resolved.KeepAliveMaxPings,
+		Idle1h:               time.Duration(resolved.KeepAliveIdleSeconds1h) * time.Second,
+		MaxPings1h:           resolved.KeepAliveMaxPings1h,
+		MaxUSDPerPing:        resolved.KeepAliveMaxUSDPerPing,
+		MaxBodyBytes:         resolved.KeepAliveMaxBodyBytes,
+		MinPrefixTokens:      resolved.KeepAliveMinPrefixTokens,
+		HeadTTL1h:            resolved.HeadTTL1h,
+		HeadTTLMinBytes:      resolved.HeadTTLMinBytes,
+		WaitPlan:             resolved.WaitPlanOn(),
+		OneHourOnWait:        resolved.KeepAliveOneHourOnWait,
+		OneHourRebuildTokens: resolved.KeepAliveOneHourRebuildTokens,
+		OneHourAlways:        resolved.KeepAliveOneHourAlways,
+		ToolWaitMaxPings:     resolved.KeepAliveToolWaitMaxPings,
+		ToolWaitMinPrefix:    resolved.KeepAliveToolWaitMinPrefixTokens,
+		BackgroundExtraPings: resolved.KeepAliveBackgroundExtraPings,
+		HumanExtraPings:      resolved.KeepAliveHumanExtraPings,
 	}
-	if c.IdleSeconds > 0 {
-		pol.Idle = time.Duration(c.IdleSeconds) * time.Second
-	}
-	if c.MaxPings > 0 {
-		pol.MaxPings = c.MaxPings
-	}
-	if c.MaxUSDPerPing > 0 {
-		pol.MaxUSDPerPing = c.MaxUSDPerPing
-	}
-	if c.MinPrefixTokens > 0 {
-		pol.MinPrefixTokens = c.MinPrefixTokens
+	if !c.Enabled {
+		pol.KeepAlive = false
 	}
 	return pol
 }
@@ -104,6 +157,22 @@ func recordFor(pctx *pipeline.Context, sid string, pol keepalive.Policy, hold fu
 		return keepalive.Record{}, false
 	}
 	provider := providerFor(pctx.Path)
+	// toolUseNames is every tool the response called, in call order — read only so the keeper's
+	// WaitPlan (Policy.WaitPlan) can classify what the thread is about to wait on: its own tool
+	// result (own_tool), a terminal tool (done), or neither (human/background/teammate/unknown).
+	// ToolUseIncomplete is always false here: that flag exists for a host that assembles
+	// ToolCalls from a spliced sniff window of its own streaming buffer, which does not describe
+	// this parser — inferenceparser fully assembles ToolCalls (streaming or not) before this
+	// plugin's OnFinish runs.
+	//
+	// OpenTasks is left nil: a background-task/teammate wait (Claude Code's own markers in the
+	// transcript) is classified by context-guru's internal/waitcause scanner, which the core does
+	// not export. Until it does, such a wait here falls back to WaitingFor's "unknown" cause
+	// rather than "background"/"teammate" — a known gap, not a silent approximation.
+	var toolUseNames []string
+	for _, tc := range inf.ToolCalls {
+		toolUseNames = append(toolUseNames, tc.Name)
+	}
 	// Cred is the caller's own credential as an opaque per-process id (credID), so a refusal marks
 	// that credential dead instead of tripping the route for every caller of the endpoint.
 	return keepalive.Record{
@@ -117,12 +186,14 @@ func recordFor(pctx *pipeline.Context, sid string, pol keepalive.Policy, hold fu
 		Status:    pctx.StatusCode,
 		Usage: keepalive.Usage{FreshInput: int64(inf.InputTokens), CacheRead: int64(inf.CacheReadTokens),
 			CacheWrite: int64(inf.CacheWriteTokens), CacheWrite1h: int64(inf.CacheWrite1hTokens),
-			Output: int64(inf.OutputTokens)},
-		UsageOK: parsercommon.Kind(inf.PresentKinds)&(parsercommon.KindCacheRead|parsercommon.KindCacheWrite) != 0,
-		Policy:  pol,
-		Agent:   pctx.Headers.Get("User-Agent"),
-		Header:  pctx.Headers,
-		Emitter: em,
-		Hold:    hold,
+			Output: int64(inf.OutputTokens), StopReason: inf.FinishReason},
+		UsageOK:           parsercommon.Kind(inf.PresentKinds)&(parsercommon.KindCacheRead|parsercommon.KindCacheWrite) != 0,
+		ToolUseNames:      toolUseNames,
+		ToolUseIncomplete: false,
+		Policy:            pol,
+		Agent:             pctx.Headers.Get("User-Agent"),
+		Header:            pctx.Headers,
+		Emitter:           em,
+		Hold:              hold,
 	}, true
 }
