@@ -343,6 +343,59 @@ func TestPlugin_SetsThread(t *testing.T) {
 // minus the cached part, CacheRead is the cached part, Output is CompletionTokens. The op carries
 // no ChangeID (it is not a replayed change) and Detached is false (it finished before the request
 // it served was answered).
+// A call the server answered is reported even when its cost is not known: a zero CallUsage, which
+// the accountant keeps as missing rather than zero. A call that may never have been sent is not
+// reported. Off-spec usage never gives a negative Input.
+func TestCgModel_SpendOpEdgeCases(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		body    string
+		down    bool
+		wantOps int
+		want    accountant.CallUsage
+	}{
+		{name: "no usage block", status: 200, body: `{"choices":[{"message":{"content":"ok"}}]}`, wantOps: 1},
+		{name: "cached above prompt", status: 200,
+			body:    `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":30}}}`,
+			wantOps: 1, want: accountant.CallUsage{Usage: accountant.Usage{Input: 0, CacheRead: 10}, Output: 5}},
+		{name: "HTTP error", status: 500, body: `oops`, wantOps: 1},
+		{name: "undecodable body", status: 200, body: `{`, wantOps: 1},
+		{name: "server unreachable", down: true, wantOps: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			url := srv.URL
+			if tc.down {
+				srv.Close()
+			} else {
+				defer srv.Close()
+			}
+			pctx := inferencePctx("/v1/chat/completions", nil)
+			pctx.SetCurrentPlugin("context-guru", pipeline.InvocationPhaseRequest)
+			m := cgModel{
+				c:      llmclient.New(llmclient.Options{Endpoint: url, Model: "cheap-model"}),
+				model:  "cheap-model",
+				host:   "cheap-llm.svc",
+				report: pctx.OpReporter(),
+			}
+			pctx.ClearCurrentPlugin()
+			_, _ = m.Complete(context.Background(), "summarize this")
+			ops := pctx.ReportedOps()
+			if len(ops) != tc.wantOps {
+				t.Fatalf("ops = %+v, want %d", ops, tc.wantOps)
+			}
+			if tc.wantOps == 1 && ops[0].Call.Usage != tc.want {
+				t.Errorf("Call.Usage = %+v, want %+v", ops[0].Call.Usage, tc.want)
+			}
+		})
+	}
+}
+
 func TestPlugin_ModelCallIsSpendOp(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"}}],`+

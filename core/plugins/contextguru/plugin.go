@@ -21,6 +21,7 @@ package contextguru
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -140,6 +141,17 @@ type cgModel struct {
 // pluginName is the plugin's registered name, and the Operator of its model-call spend ops.
 const pluginName = "context-guru"
 
+// spend reports one model call as a KindSpend op. A zero usage means the cost is unknown.
+func (m cgModel) spend(usage accountant.CallUsage) {
+	accepted := m.report.Report(accountant.Operation{
+		Kind: accountant.KindSpend,
+		Call: &accountant.ModelCall{Host: m.host, Model: m.model, Usage: usage, Detached: false},
+	})
+	if !accepted && m.lateDropped != nil {
+		m.lateDropped.Add(1)
+	}
+}
+
 func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
 	resp, err := m.c.CallRaw(ctx, &llmclient.ChatRequest{
 		Temperature: 0,
@@ -147,29 +159,26 @@ func (m cgModel) Complete(ctx context.Context, prompt string) (string, error) {
 		Messages:    []llmclient.ChatMessage{{Role: "user", Content: prompt}},
 	})
 	if err != nil {
+		// The server answered, so the call may be billed: report it with its cost unknown. Any
+		// other error may come before the request was sent, and a call never sent costs nothing.
+		if errors.Is(err, llmclient.ErrResponded) {
+			m.spend(accountant.CallUsage{})
+		}
 		return "", err
 	}
-	if resp.Usage != nil {
-		cached := resp.Usage.CachedTokens()
-		accepted := m.report.Report(accountant.Operation{
-			Kind: accountant.KindSpend,
-			Call: &accountant.ModelCall{
-				Host:  m.host,
-				Model: m.model,
-				Usage: accountant.CallUsage{
-					Usage: accountant.Usage{
-						Input:     resp.Usage.PromptTokens - cached,
-						CacheRead: cached,
-					},
-					Output: resp.Usage.CompletionTokens,
-				},
-				Detached: false,
-			},
-		})
-		if !accepted && m.lateDropped != nil {
-			m.lateDropped.Add(1)
+	var usage accountant.CallUsage
+	if u := resp.Usage; u != nil {
+		// prompt_tokens includes the cached tokens (the OpenAI convention ChatUsage states). A
+		// gateway that counts them apart can report more cached tokens than prompt tokens, and
+		// Input must not go negative.
+		cached := min(u.CachedTokens(), u.PromptTokens)
+		usage = accountant.CallUsage{
+			Usage:  accountant.Usage{Input: u.PromptTokens - cached, CacheRead: cached},
+			Output: u.CompletionTokens,
 		}
 	}
+	// With no usage block, usage stays zero, which the accountant reads as "sent, cost unknown".
+	m.spend(usage)
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("contextguru: model returned no choices")
 	}
