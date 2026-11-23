@@ -109,7 +109,9 @@ func nameTier(name string) tier {
 	return t
 }
 
-// wordTier is the highest tier any word of the name, or two adjacent words, gives.
+// wordTier is the highest tier any word of the name, or two adjacent words, gives. A secret
+// word's trailing digits do not count: password2, token1, api_key2 (a letter-to-digit change does
+// not split a name). "pass" and "auth" keep theirs: pass1 is a compiler pass, auth0 a company.
 func wordTier(parts []string) tier {
 	t := tierNone
 	for i, p := range parts {
@@ -118,6 +120,9 @@ func wordTier(parts []string) tier {
 			words = append(words, p+parts[i+1])
 		}
 		for _, w := range words {
+			if d := strings.TrimRight(w, "0123456789"); d != w && d != "pass" && d != "auth" {
+				w = d
+			}
 			switch {
 			case passwordWords[w] || hasSuffixAny(w, passwordSuffixes):
 				return tierPassword
@@ -242,7 +247,7 @@ func findKeywords(text string, at []int, out []Edit) []Edit {
 		}
 		t := nameTier(name)
 		ok := t != tierNone && secretShaped(t, text[vs:ve], mode) &&
-			!(mode == valueBare && (callAfter(text, ve) || t == tierPassword && proseAfter(text, vs, ve)))
+			!(mode == valueBare && (callAfter(text, ve, vs) || t == tierPassword && proseAfter(text, vs, ve)))
 		covered = rejectedCover(ok, s+m[1], vs, ve)
 		if !ok && ve-vs >= longRejected {
 			// A long rejected URL can still hold an assignment in its query string
@@ -338,10 +343,61 @@ func proseAfter(text string, vs, ve int) bool {
 	return i+1 < len(text) && text[i] == ' ' && isLetter(text[i+1])
 }
 
-// callAfter reports whether a bare value is followed by "(", "<" or "[": a call, a generic or
-// an index ("hash_password(raw)", "useRef<HTMLInputElement>"), which is code, not a secret.
-func callAfter(text string, ve int) bool {
-	return ve < len(text) && (text[ve] == '(' || text[ve] == '<' || text[ve] == '[')
+// callAfter reports whether a bare value is a code identifier followed by "(", "<" or "[": a
+// call, a generic or an index ("hash_password(raw)", "useRef<HTMLInputElement>",
+// "Mapped[str]", "Hash::make(x)", "decodeB64(enc)"), which is code, not a secret. A value that is
+// no identifier ("Hnt7rQx2Lp(9)", which a .env loader takes as it is) is checked as a password.
+func callAfter(text string, ve, vs int) bool {
+	return ve < len(text) && (text[ve] == '(' || text[ve] == '<' || text[ve] == '[') && codeIdentifier(text[vs:ve])
+}
+
+// codeIdentifier reports whether v is a code identifier, perhaps qualified (a.b, A::b, $x->y):
+// each part a variable's name or made of words, so "SHA256Hasher" and "decodeB64" are, and a
+// random "Hnt7rQx2Lp" is not.
+func codeIdentifier(v string) bool {
+	v = strings.TrimLeft(v, "$@!:") // $x, Ruby's @x and @@x, !x, ::Rails
+	for _, sep := range []string{"::", "->"} {
+		v = strings.ReplaceAll(v, sep, ".")
+	}
+	for _, p := range strings.Split(v, ".") {
+		if p == "" || !(isLetter(p[0]) || p[0] == '_') ||
+			strings.Trim(p, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") != "" ||
+			!variableName(p) && !wordLike(p) && !acronymWord(p) {
+			return false
+		}
+	}
+	return true
+}
+
+// acronymWord reports whether p is words, acronyms and numbers, as identifiers are written
+// ("decodeB64", "md5ToHex", "utf8ToB64", "IPv4ToIPv6", "SHA256Hasher"). Split at each digit run
+// and each change from a lowercase to a capital letter, every piece of letters is two or more
+// letters, or one letter a number follows (B64, V1), and there are at most three digit runs. A
+// random token often leaves a lone letter between capitals or digits ("Hnt7rQx2Lp": the "r"),
+// but not always: about a third of random 8- to 16-character passwords pass, and are then kept
+// before a bracket. "k8sSecretV1" fails (the lone "s"): over-redaction, the safe side.
+func acronymWord(p string) bool {
+	runs := 0
+	for i := 0; i < len(p); {
+		j := i
+		if p[i] >= '0' && p[i] <= '9' {
+			for j < len(p) && p[j] >= '0' && p[j] <= '9' {
+				j++
+			}
+			runs++
+			i = j
+			continue
+		}
+		j++ // a piece of letters: up to a digit, or a capital after a lowercase letter
+		for j < len(p) && isLetter(p[j]) && !(p[j] >= 'A' && p[j] <= 'Z' && p[j-1] >= 'a' && p[j-1] <= 'z') {
+			j++
+		}
+		if j-i == 1 && !(j < len(p) && p[j] >= '0' && p[j] <= '9') {
+			return false
+		}
+		i = j
+	}
+	return runs <= 3
 }
 
 // assignmentAt reports whether an assignment follows a name ending at i: an optional closing
@@ -435,8 +491,8 @@ func notASecret(v string) bool {
 	lower := strings.ToLower(v)
 	switch {
 	case placeholders[lower],
-		strings.ContainsAny(v[:1], "$%<[{~"), // ${VAR}, $VAR, %VAR%, <key>, [REDACTED:...], {{x}}, ~/x
-		v[0] == '/' && wordLike(v),           // /home/user/project; a base64 token may start with "/" too
+		isReference(v),             // ${VAR}, $VAR, %VAR%, <key>, {{x}}, ~/x; not "$Hnt7rQx2Lp"
+		v[0] == '/' && wordLike(v), // /home/user/project; a base64 token may start with "/" too
 		strings.HasPrefix(v, "./"), strings.HasPrefix(v, "../"),
 		len(v) > 2 && v[1] == ':' && (v[2] == '\\' || v[2] == '/'), // C:\x, C:/x
 		strings.Contains(v, "://"),
@@ -447,6 +503,91 @@ func notASecret(v string) bool {
 		return true
 	}
 	return knownIDPattern.MatchString(v) || dottedRefPattern.MatchString(v) || envNamePattern.MatchString(v)
+}
+
+// isReference reports whether v has the shape of a reference to a secret kept elsewhere, not
+// only its first character: "$", "%", "{" and "~" are common first characters of a chosen
+// password ("$Hnt7rQx2Lp"). A reference opens with its family's own syntax, then a name that
+// reads as a variable's (variableName), where it has a name:
+//   - shell, Terraform, GitHub Actions, Kubernetes: ${...}, ${{ ... }}, $(...), $NAME and
+//     $NAME followed by anything ($HOME/.pw, $env:DB_PASSWORD, $this->password, $DB_USER:$DB_PASS);
+//   - Windows and Python: %NAME%, %NAME%\file, %(name)s;
+//   - templates and format strings: {{ ... }} (Jinja, Helm, Go), {name}, {name!r}, {env:NAME},
+//     {db.password};
+//   - placeholders: <...> closed, [word] ([REDACTED], [MASKED], [hidden]);
+//   - home directories: ~/path, ~user, ~user/path.
+func isReference(v string) bool {
+	if len(v) > 1 && strings.Contains(refOpeners[v[0]], v[1:2]) {
+		return true // ${...}, $(...), $[...], $$NAME, %(...), %{...}, %~dp0, {{...}}, {$x}, [$X]
+	}
+	switch v[0] {
+	case '$':
+		return variableName(leadingName(v[1:]))
+	case '%':
+		// %NAME%, %env(NAME)%: a name, then "%" or "("
+		name := leadingName(v[1:])
+		return len(v) > len(name)+1 && strings.IndexByte("%(", v[1+len(name)]) >= 0 && variableName(name)
+	case '{':
+		if strings.HasPrefix(v, "{{") {
+			return strings.Contains(v, "}}")
+		}
+		name := leadingName(v[1:])
+		return len(v) > len(name)+1 && strings.IndexByte("}!:", v[1+len(name)]) >= 0 && variableName(name)
+	case '<':
+		return len(v) > 2 && v[len(v)-1] == '>'
+	case '[':
+		return strings.HasPrefix(v, "[REDACTED") ||
+			len(v) > 2 && v[len(v)-1] == ']' && strings.Trim(v[1:len(v)-1], "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_ ") == ""
+	case '~':
+		if strings.HasPrefix(v, "~/") {
+			return true
+		}
+		name := leadingName(v[1:])
+		return name != "" && strings.Trim(name, "abcdefghijklmnopqrstuvwxyz0123456789_") == "" && (len(name) == len(v)-1 || v[1+len(name)] == '/')
+	}
+	return false
+}
+
+// refOpeners are, by first byte, the second bytes that open a reference whatever follows:
+// shell and Terraform ${...}, command substitution $(...), Azure Pipelines $[...], a Compose or
+// Make escape $$NAME, Python %(name)s, Puppet %{...}, a batch file's %~dp0, a template's {{...}},
+// PHP's {$x}, and [$X].
+var refOpeners = map[byte]string{'$': "{([$", '%': "({~", '{': "{$", '[': "$"}
+
+// leadingName is the name at the start of s: letters, digits, "_" and ".".
+func leadingName(s string) string {
+	i := 0
+	for i < len(s) && (isLetter(s[i]) || s[i] >= '0' && s[i] <= '9' || s[i] == '_' || s[i] == '.') {
+		i++
+	}
+	return strings.TrimRight(s[:i], ".")
+}
+
+// variableName reports whether s reads as a variable's or a field's name, not a random string:
+// capitals, digits and "_" (DB_PASSWORD, HOME), lowercase, digits and "_" (db_pass), letters only
+// (Password), or words (dbPassword, user.password), perhaps with a number at the end
+// (Password1). A dotted name is checked part by part.
+func variableName(s string) bool {
+	if s == "" || !(isLetter(s[0]) || s[0] == '_') {
+		return false
+	}
+	if t := strings.TrimRight(s, "0123456789"); t != s && !strings.Contains(s, ".") {
+		s = t
+	}
+	if strings.Contains(s, ".") {
+		for _, p := range strings.Split(s, ".") {
+			if !variableName(p) {
+				return false
+			}
+		}
+		return true
+	}
+	if strings.Trim(s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == "" ||
+		strings.Trim(s, "abcdefghijklmnopqrstuvwxyz0123456789_") == "" ||
+		strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") == "" {
+		return true
+	}
+	return strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == "" && wordLike(s)
 }
 
 // envNamePattern is an environment variable's name, in capitals with an underscore

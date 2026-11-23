@@ -101,6 +101,12 @@ func TestNameTier(t *testing.T) {
 		{"Authorization", tierSecret}, {"private_key", tierSecret}, {"cookie", tierSecret}, {"cache_key", tierKey},
 		{"key", tierKey}, {"author", tierNone}, {"signature", tierNone}, {"max_tokens", tierNone}, {"keyboard", tierNone},
 		{"passed", tierNone}, {"session_id", tierNone},
+		// a trailing digit is not part of the word (Django's password1 and password2, TOKEN2)
+		{"password1", tierPassword}, {"password2", tierPassword}, {"newPassword2", tierPassword}, {"pwd1", tierPassword},
+		{"token2", tierSecret}, {"api_key2", tierSecret}, {"API_KEY_2", tierSecret}, {"key2", tierKey},
+		{"sha256", tierNone}, {"utf8", tierNone}, {"v2", tierNone},
+		// ... but not for "pass" and "auth": compiler passes, two-pass encodes, Auth0
+		{"pass1", tierNone}, {"test_pass2", tierNone}, {"auth0", tierNone}, {"AUTH0_CLIENT_ID", tierNone},
 	} {
 		if got := nameTier(tc.name); got != tc.want {
 			t.Errorf("nameTier(%q) = %d, want %d", tc.name, got, tc.want)
