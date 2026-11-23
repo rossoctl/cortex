@@ -1425,9 +1425,13 @@ refusal is believed for an hour, and a session keeps the model it was given.
   router, nothing holds a running session where it was, so the sessions the proxy
   is running that last sent their inference there go where their agent sends
   them from their next request, partway through their conversation, rather than
-  getting the 503. When there are any, `remove` says how many and asks first
-  (`--yes` skips the question). Their pins stay in the plugin store, so adding the
-  server back takes them back to it.
+  getting the 503. When there are any, or the proxy's sessions cannot be read,
+  `remove` says so and asks first (`--yes` skips the question). Their pins stay in
+  the plugin store for 30 days, so adding the server back takes them back to it.
+  The router's `sessions:` entries go with its entry, `move … own` ones included,
+  so a session moved off the server that has sent nothing since goes back to it
+  too. If the router's entry changes while `remove` waits, it writes nothing and
+  says to run it again.
 - **`agentop server`** lists each server's host (its whole URL when it is plain
   `http`), what its main and helper words name on its list now, read with its own
   key, the agents routed to it and, for a server whose key is routed to another

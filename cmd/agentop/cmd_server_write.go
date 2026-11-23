@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
 	"github.com/rossoctl/cortex/cmd/agentop/servers"
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/inferencerouter/routerconfig"
 	"github.com/rossoctl/cortex/core/session"
@@ -406,9 +408,9 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 	if statsURL != "" {
 		sessionsURL = dialURL(cfg.Listener.SessionAPIAddr)
 	}
-	n := runningOn(sessionsURL, c, name)
+	n, unread := runningOn(sessionsURL, c, name)
 	if len(c.Servers) == 1 {
-		return removeLastServer(stdout, stderr, path, statsURL, name, n, *yes)
+		return removeLastServer(stdout, stderr, path, statsURL, c, name, n, unread, *yes)
 	}
 	if n > 0 {
 		fmt.Fprintf(stderr, "agentop server remove: warning: %s last sent inference to %s. A session the proxy routed "+
@@ -429,20 +431,39 @@ func serverRemove(args []string, stdout, stderr io.Writer) int {
 // With the router gone, nothing reads the pins of running sessions, so the running
 // sessions that last sent inference there (running, from runningOn) go where their
 // agent sends them from their next request — partway through their conversation,
-// which is no 503 but is a move. So that case asks first; with none, removing the
+// which is no 503 but is a move. So that case asks first, and so does a proxy whose
+// sessions could not be read (unread), which may have some. With none, removing the
 // router changes no traffic and asks nothing. The pins stay in the plugin store, so
 // adding name back takes those sessions back to it.
-func removeLastServer(stdout, stderr io.Writer, path, statsURL, name string, running int, yes bool) int {
-	if running > 0 {
-		fmt.Fprintf(stdout, "%s is the only server, so removing it takes the %s entry out, and %s last sent inference to it. "+
+//
+// The write takes the whole entry out, so it checks the entry is still c, the one
+// this decided on: a server added or anything routed since would go with it, and the
+// question can wait any length of time.
+func removeLastServer(stdout, stderr io.Writer, path, statsURL string, c routerconfig.Config, name string, running int, unread error, yes bool) int {
+	why := ""
+	switch {
+	case unread != nil:
+		why = "agentop could not read the proxy's running sessions, so some may have last sent inference to it"
+	case running > 0:
+		why = runningSessions(running) + " last sent inference to it"
+	}
+	if why != "" {
+		fmt.Fprintf(stdout, "%s is the only server, so removing it takes the %s entry out, and %s. "+
 			"With no router, each goes where its agent sends it from its next request, partway through its conversation; "+
-			"adding %s back takes it back there.\n", name, routerName, runningSessions(running), name)
+			"adding %s back takes it back there.\n", name, routerName, why, name)
 		if !yes && !serverConfirm(stdout) {
 			return exitDeclined
 		}
 	}
+	unchanged := func(now *config.Config) error {
+		if got, _, err := readRouter(now); err != nil || !reflect.DeepEqual(got, c) {
+			return fmt.Errorf("the %s entry changed since agentop read it, so nothing was removed; "+
+				"run agentop server remove %s again", routerName, name)
+		}
+		return nil
+	}
 	ch := edit.ConfigChange{Chain: "outbound", Plugin: routerName, RemoveEntry: true}
-	return runServerWrite(stdout, stderr, path, statsURL, []edit.ConfigChange{ch}, writeReport{
+	return runServerWriteIf(stdout, stderr, path, statsURL, []edit.ConfigChange{ch}, unchanged, writeReport{
 		done: fmt.Sprintf("Removed %s, the only server, and the %s entry with it.", name, routerName),
 		live: "Requests now go where each agent sends them.",
 	})
@@ -464,17 +485,19 @@ func removeLastServer(stdout, stderr io.Writer, path, statsURL, name string, run
 // not running. SessionSummary.Active would not do — it marks the one most recently updated
 // session.
 //
-// 0 when the proxy does not answer, which is the quiet side for a warning: the remove itself
-// is what matters, and it goes ahead either way.
-func runningOn(sessionsURL string, c routerconfig.Config, name string) int {
+// 0 and the error when the proxy's session API does not answer. A warning takes that as
+// none, the quiet side: the remove itself is what matters, and it goes ahead either way.
+// The last server's question takes it as unknown, and asks. With no proxy to ask
+// (sessionsURL ""), nothing runs, so that is 0 and no error.
+func runningOn(sessionsURL string, c routerconfig.Config, name string) (int, error) {
 	if sessionsURL == "" {
-		return 0
+		return 0, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	list, err := apiclient.New(sessionsURL).ListSessions(ctx)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	n := 0
 	for _, s := range list {
@@ -485,7 +508,7 @@ func runningOn(sessionsURL string, c routerconfig.Config, name string) int {
 			n++
 		}
 	}
-	return n
+	return n, nil
 }
 
 // sessionsOn is the session ids whose sessions: entry names server, sorted.
@@ -698,8 +721,15 @@ type writeReport struct {
 // several, a removal per retired spelling plus the canonical set — and reports how
 // the write landed.
 func runServerWrite(stdout, stderr io.Writer, path, statsURL string, changes []edit.ConfigChange, r writeReport) int {
+	return runServerWriteIf(stdout, stderr, path, statsURL, changes, nil, r)
+}
+
+// runServerWriteIf is runServerWrite with a precondition on the file as the write reads it
+// (edit.ConfigWrite.Precondition).
+func runServerWriteIf(stdout, stderr io.Writer, path, statsURL string, changes []edit.ConfigChange,
+	precondition func(*config.Config) error, r writeReport) int {
 	res, err := writePluginConfig(context.Background(), edit.ConfigWrite{
-		Path: path, StatsURL: statsURL, Changes: changes, Verify: servers.Verify,
+		Path: path, StatsURL: statsURL, Changes: changes, Verify: servers.Verify, Precondition: precondition,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop server: %v\n", err)

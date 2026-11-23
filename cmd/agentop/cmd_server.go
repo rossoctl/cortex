@@ -67,10 +67,11 @@ key is rotated. --api names a protocol the server serves and its path
 that carries the key, and --header a fixed header for every request.
 
 "remove" refuses a server an agent is routed to, a session was moved to or a
-key_routes: entry names, and names the commands that take them off it. Removing the only server takes the
-router's entry out with it, leaving the config as it was before the first "add".
-When running sessions last used that server it asks first, since they then go
-where their agent sends them (--yes skips the question).
+key_routes: entry names, and names the commands that take them off it.
+Removing the only server takes the router's entry out with it, leaving the
+config as it was before the first "add". When running sessions last used that
+server, or the proxy cannot say, it asks first, since they then go where their
+agent sends them (--yes skips the question).
 
 A request goes with the model the agent asked for. Only when the server refuses
 that model is it sent again, once and before the agent sees the refusal, with

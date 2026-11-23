@@ -401,7 +401,7 @@ var onlyGlm = strings.Replace(routerBlock, `            ete:
 // with it. With nothing routed there and no running session on it, that changes no
 // traffic, so nothing is asked.
 func TestServerRemove_TheOnlyServerTakesTheRouterOut(t *testing.T) {
-	path := serverEnv(t, newFakeStats(t, 0).addr(), onlyEte)
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessionsAPI(t), onlyEte)
 	before := readConfig(t, path)
 	asks := stubConfirm(t, false)
 	code, out, errOut := runServerCmd(t, "", "remove", "ete", "--config", path)
@@ -427,7 +427,7 @@ func TestServerRemove_TheOnlyServerTakesTheRouterOut(t *testing.T) {
 // The first add creates the router's entry, so removing the server it added must
 // leave the config byte for byte as it was before.
 func TestServerRemove_TheOnlyServerUndoesItsFirstAdd(t *testing.T) {
-	path := serverEnv(t, newFakeStats(t, 0).addr(), "")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessionsAPI(t), "")
 	before := readConfig(t, path)
 	if code, _, errOut := runServerCmd(t, "sk-ete\n", "add", "ete", "https://ete.example.com", "--main", "opus", "--helper", "haiku", "--key-stdin", "--config", path); code != 0 {
 		t.Fatalf("add: exit %d: %s", code, errOut)
@@ -491,6 +491,52 @@ func TestServerRemove_TheOnlyServerAsksWhenSessionsRanOnIt(t *testing.T) {
 	}
 	if strings.Contains(readConfig(t, path), "inference-router") {
 		t.Error("--yes left the router's entry in")
+	}
+}
+
+// A proxy that answers but whose sessions cannot be read may have sessions on the only
+// server, so its removal asks, as it does when it can count some (CodeRabbit on #1914).
+func TestServerRemove_TheOnlyServerAsksWhenTheSessionsCannotBeRead(t *testing.T) {
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), closedAddr(t), onlyEte)
+	before := readConfig(t, path)
+	asks := stubConfirm(t, false)
+	code, out, errOut := runServerCmd(t, "", "remove", "ete", "--config", path)
+	if code != exitDeclined || *asks != 1 {
+		t.Fatalf("exit %d after %d asks, want %d after 1:\n%s%s", code, *asks, exitDeclined, out, errOut)
+	}
+	if want := "ete is the only server, so removing it takes the inference-router entry out, and agentop could not read " +
+		"the proxy's running sessions, so some may have last sent inference to it."; !strings.Contains(flat(out), want) {
+		t.Errorf("want %q in stdout:\n%s", want, out)
+	}
+	if readConfig(t, path) != before {
+		t.Error("a declined remove wrote the config")
+	}
+}
+
+// The only server's removal takes the whole router entry out, so a server added while
+// remove waited at its question must stop it, not go with the entry (CodeRabbit on
+// #1914).
+func TestServerRemove_TheOnlyServerWritesNothingIfTheRouterChanged(t *testing.T) {
+	sessions := sessionsAPI(t, "ete.example.com")
+	path := serverEnvWithSessions(t, newFakeStats(t, 0).addr(), sessions, onlyEte)
+	const zai = "            zai:\n              url: https://zai.example.com\n              key: sk-zai\n              main: glm\n              helper: glm\n"
+	prev := serverConfirm
+	serverConfirm = func(io.Writer) bool {
+		// Another agentop adds a server while this one waits for the answer.
+		cfg := strings.Replace(readConfig(t, path), "          servers:\n", "          servers:\n"+zai, 1)
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	}
+	t.Cleanup(func() { serverConfirm = prev })
+	code, out, errOut := runServerCmd(t, "", "remove", "ete", "--config", path)
+	if code != 1 || !strings.Contains(flat(errOut), "the inference-router entry changed since agentop read it, so nothing was removed; "+
+		"run agentop server remove ete again") {
+		t.Fatalf("exit %d:\n%s%s", code, out, errOut)
+	}
+	if !strings.Contains(readConfig(t, path), zai) {
+		t.Errorf("the server added meanwhile went with the entry:\n%s", readConfig(t, path))
 	}
 }
 
