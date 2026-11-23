@@ -367,8 +367,8 @@ func (p *ContextGuru) Configure(raw json.RawMessage) error {
 		p.disp.Close()
 		p.keeper, p.disp, p.kaPol = nil, nil, keepalive.Policy{}
 	}
-	if p.cfg.KeepAlive.Enabled {
-		p.kaPol = p.cfg.KeepAlive.policy()
+	if pol := p.cfg.KeepAlive.policy(cfg.Cache); pol.KeepAlive {
+		p.kaPol = pol
 		p.disp = newCortexDispatcher(newPingClient(p.local))
 		p.disp.sentinel = p.sentinel
 		p.disp.rates = func() pricing.Resolver { return p.rates }
