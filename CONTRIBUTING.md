@@ -347,6 +347,12 @@ Things to know:
   hours by default, is measured from the upload of the release's `checksums.txt`. A
   release promoted more than 6 hours after it was published goes to auto-updaters at
   their next check.
+- **A release on a commit from before the macOS smoke test is promoted on Linux alone.**
+  The smoke tests run the scripts in the release's own commit, and where that commit has
+  no `scripts/release_smoke_test_macos.sh`, the macOS run skips its test, passes and
+  says so in a notice. That covers a release tagged on an older candidate's commit, and
+  a backport to an older line. If macOS matters for such a release, tag it from a newer
+  commit.
 - **Only a release that the tag build creates is tested first.** A release that already
   exists keeps its flags. Flagging a live release would give Latest back to the release
   before it, and the auto-updater follows Latest both ways, so it would take installs
