@@ -19,20 +19,35 @@ UNIT = r"(?<!-)\btime\.(Microsecond|Millisecond|Second|Minute)\b"
 SINCE = re.compile(r"\btime\.Since\(")
 
 RULES = [
-    (re.compile(r"\btime\.Sleep\("), "sleeps: wait on the event that ends the wait"),
+    (
+        re.compile(r"\btime\.Sleep\("),
+        "sleeps for a fixed time. Block on a channel the code or fake closes when it is done.",
+    ),
     (
         re.compile(r"\btime\.(After|Tick)\("),
-        "a real-time guard: block on the event and leave a hang to go test's timeout",
+        "a time limit beside a wait. Block on the event alone; go test's -timeout ends a real hang.",
     ),
-    (re.compile(r"\b(Eventually\w*|Never)\("), "polls: wait on the event instead"),
-    (SINCE, "an elapsed-time bound: assert on what happened, not how long it took"),
-    (re.compile(r"\bruntime\.Gosched\("), "spins on the scheduler: wait on an event"),
+    (
+        re.compile(r"\b(Eventually\w*|Never)\("),
+        "polls until a condition holds. Block on a channel that closes when it does.",
+    ),
+    (
+        SINCE,
+        "asserts on elapsed time. Assert on the outcome; to show a call does not wait on X, hold X until it returns.",
+    ),
+    (
+        re.compile(r"\bruntime\.Gosched\("),
+        "yields and hopes another goroutine ran. Block on a channel that goroutine closes.",
+    ),
 ]
 
 # Calls whose arguments set a real timer, and the struct field that does.
 TIMERS = re.compile(r"\b(WithTimeout|WithDeadline|WithTimeoutCause|WithDeadlineCause|NewTimer|NewTicker|AfterFunc)\(")
 TIMEOUT_FIELD = re.compile(r"\bTimeout:\s*[^,}]*" + UNIT)
-TIMER_WHY = "a real timer: time.Hour keeps it out, 0 or a past deadline makes it expire"
+TIMER_WHY = (
+    "sets a real timeout. Use time.Hour when the test does not exercise it, "
+    "and 0 or a past deadline when the test is about it expiring."
+)
 
 # A time.Since that is only reported, not compared.
 LOGGED = re.compile(r"\.(Log|Logf|Error|Errorf|Fatal|Fatalf|Skip|Skipf)\(.*\btime\.Since\(")
@@ -139,8 +154,12 @@ def main(paths):
         print(f)
     if found:
         print(
-            '\nTests wait on events, not on time (CLAUDE.md, "Tests and time").\n'
-            "A line that needs real time carries `// timing: <reason>`."
+            "\nThese tests depend on timing, so a slow CI runner can fail them. Wait on\n"
+            "events instead: when the code has none to wait on, add a test hook it calls,\n"
+            "or inject its clock or tick channel. Rules and examples: CLAUDE.md#tests-and-time.\n"
+            "\n"
+            "A test that drives a real service, or measures how a cost scales, needs the\n"
+            "clock: mark that line with `// timing: <reason>`, on it or just above it."
         )
     return 1 if found else 0
 
