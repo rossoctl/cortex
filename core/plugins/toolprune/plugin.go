@@ -354,6 +354,9 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 
 	out := body
 	var err error
+	// Set when the cache marker moves onto a survivor, which grows it: the accountant must see
+	// that growth beside the removals, or the ops do not sum to the body's change.
+	var markerMove *accountant.Operation
 	if len(victims) == len(raw) {
 		// Emptying the array is not safe — OpenAI rejects `tools: []`, and
 		// tool_choice without tools. Drop both keys instead.
@@ -417,6 +420,13 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 					slog.Warn("tool-prune: could not preserve cache_control, forwarding original", "err", err)
 					return action
 				}
+				markerMove = &accountant.Operation{
+					Kind:       accountant.KindRewrite,
+					At:         accountant.Position{Section: accountant.SectionTools, Index: i},
+					SizeBefore: accountant.Size{Bytes: len(survivor)},
+					SizeAfter:  accountant.Size{Bytes: len(patched)},
+					ChangeID:   "tool-prune:marker:" + toolNameAt(body, i) + ":" + declHash(survivor),
+				}
 				survivor = string(patched)
 				slog.Debug("tool-prune: moved cache_control to the last surviving tool", "index", i)
 			}
@@ -471,9 +481,15 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	// earlier writer's bytes in effect it says true for this plugin's shadow write,
 	// and a measured saving would publish — and be priced — as realized.
 	applied := pctx.SetBody(out)
-	// The accountant's view of the same change, one op per removed tool, reported only now
+	// The accountant's view of the same change, one op per removed tool and one for a moved
+	// cache marker, reported only now
 	// that SetBody has said whether it applied: a write that did not is a dry run.
-	pctx.ReportOps(removalOps(raw, victims, names, !applied)...)
+	ops := removalOps(raw, victims, names, !applied)
+	if markerMove != nil {
+		markerMove.DryRun = !applied
+		ops = append(ops, *markerMove)
+	}
+	pctx.ReportOps(ops...)
 	// The body as this plugin leaves it: the rewrite when it was applied, the body it
 	// was handed when it was only measured. A later writer may change it again, so
 	// settlement calibrates on the framework's record of what was sent, and reads
@@ -641,18 +657,23 @@ func removalOps(raw []gjson.Result, victims []int, names []string, dryRun bool) 
 	ops := make([]accountant.Operation, 0, len(victims))
 	for k, i := range victims {
 		decl := raw[i].Raw
-		// Hashed in place: []byte(decl) DOES copy here (confirmed by reverting this during a
-		// review pass: TestPrune_RewriteDoesNotCopyTheBodyPerVictim failed, allocating one extra
-		// body-sized copy per victim). A large manifest's declarations are hundreds of kilobytes each.
-		// Sum256 only reads its input, so the string's bytes are never written.
-		sum := sha256.Sum256(unsafe.Slice(unsafe.StringData(decl), len(decl)))
 		ops = append(ops, accountant.Operation{
 			Kind:       accountant.KindRewrite,
 			DryRun:     dryRun,
 			At:         accountant.Position{Section: accountant.SectionTools, Index: i},
 			SizeBefore: accountant.Size{Bytes: len(decl)},
-			ChangeID:   "tool-prune:" + names[k] + ":" + hex.EncodeToString(sum[:6]),
+			ChangeID:   "tool-prune:" + names[k] + ":" + declHash(decl),
 		})
 	}
 	return ops
+}
+
+// declHash is a short hash of a tool declaration, for a ChangeID that is stable across turns.
+func declHash(decl string) string {
+	// Hashed in place: []byte(decl) DOES copy here (confirmed by reverting this during a
+	// review pass: TestPrune_RewriteDoesNotCopyTheBodyPerVictim failed, allocating one extra
+	// body-sized copy per victim). A large manifest's declarations are hundreds of kilobytes each.
+	// Sum256 only reads its input, so the string's bytes are never written.
+	sum := sha256.Sum256(unsafe.Slice(unsafe.StringData(decl), len(decl)))
+	return hex.EncodeToString(sum[:6])
 }
