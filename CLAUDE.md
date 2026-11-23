@@ -267,13 +267,17 @@ guards on the two `DELETE` routes. The producer-side contract is in
 per-session state:** the Tracker state and `~/.cortex/accountant-state.json`, the
 per-thread billing mode and pending ping facts in `core/accounting.Host`, the
 context-guru keeper's entries, and the context-guru plugin's session state in
-`~/.cortex/context-guru-state.db`. The accountant state and the keeper hold session and thread
-ids, content hashes and a billing mode, no content; the keeper also holds the caller's
-credential, masked. The context-guru state DOES
+`~/.cortex/context-guru-state.db`. The accountant state holds session and thread
+ids, content hashes and a billing mode, no content. A keeper entry also holds the caller's
+credential and the thread's last request body (the whole forwarded conversation), both masked,
+and a ping re-sends that body. The context-guru state DOES
 hold content (the summary checkpoint and other text the plugin made), and its rows stay 30 days
-after their last write. The keeper's entries go at `(max_pings + 1) × idle_seconds`. The rest
-has no time bound while the process runs: the in-memory maps keep at most 10,000 threads,
-dropping the oldest, and the snapshot (rewritten every 60s) holds what memory holds. A snapshot
+after their last write. A keeper entry goes at `(max_pings + 1) × idle_seconds` (12 minutes
+at the defaults) on a 5-minute cache, and at 118 minutes (never more than 236) on a thread
+billed at the 1-hour tier. The rest has no time bound while the process runs: the in-memory
+maps keep at most 10,000 threads, dropping the oldest, and the snapshot (rewritten every 60s)
+holds what memory holds, except that it leaves out the threads seen longest ago once the file
+would pass 20 MiB. A snapshot
 older than 1h is not restored. Details:
 [`docs/session-api.md`](docs/session-api.md#delete-v1sessions).
 

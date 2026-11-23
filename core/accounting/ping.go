@@ -89,7 +89,7 @@ func (h *Host) Ping(sessionID string, client *model.EventClient, host string, p 
 	}
 	// The zero check above lets mixed-sign counters that sum to zero (or an outright negative
 	// count) through; Compute refuses those via pricing.PlausibleUsage, and a ping must too
-	// (review finding) — otherwise computeStandalone/Units/observe below can book negative spend
+	// — otherwise computeStandalone/Units/observe below can book negative spend
 	// or savings from a count no provider could actually have sent.
 	if !pricing.PlausibleUsage(pricing.Usage{
 		Input: u.Input, CacheWrite: u.CacheWrite, CacheRead: u.CacheRead, Output: u.Output,
@@ -147,8 +147,7 @@ func (h *Host) recordPing(sessionID string, client *model.EventClient, host stri
 		CacheWriteTokens: p.Usage.CacheWrite,
 		// CacheWrite1h is the part of CacheWrite billed at the 1-hour rate, never an
 		// addition to it (p.Usage embeds accountant.Usage, whose own doc says the
-		// same). Task 7 (2026-11-17 accountant-integration): the 1h cache-write
-		// tier — settle.SettleInput below prices this subset at the 1h rate.
+		// same). settle.SettleInput below prices this subset at the 1h rate.
 		CacheWrite1hTokens: p.Usage.CacheWrite1h,
 		OutputTokens:       p.Usage.Output,
 	}

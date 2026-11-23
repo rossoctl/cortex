@@ -73,16 +73,30 @@ func keeperKey(pctx *pipeline.Context, sid string) (keepalive.Key, bool) {
 	return keepalive.Key{Session: sid}, true
 }
 
+// replayable reports whether pctx's body, path and headers are the bytes that went upstream.
+func replayable(pctx *pipeline.Context) bool {
+	if _, _, _, translated := pctx.TranslateTarget(); translated {
+		return false
+	}
+	return len(pctx.UpstreamHeaders()) == 0
+}
+
 // recordFor maps a finished request to what the keeper needs. Mapping only: whether the request
-// is worth tracking is the keeper's call. The one filter here is about identity, not policy — a
-// request with no thread of its own (keeperKey) is not recorded, because recording it would
-// replace the main thread's entry.
+// is worth tracking is the keeper's call. The filters here are about identity and replay, not
+// policy:
+//   - a request with no thread of its own (keeperKey) is not recorded, because recording it would
+//     replace the main thread's entry.
+//   - a request that a router translated, or gave upstream headers to, is not recorded. The
+//     listener converts the body, rewrites the path and sets those headers on the wire only, so
+//     pctx.Body, pctx.Path and pctx.Headers are not what went upstream. A ping built from them
+//     would send the client's protocol to the target's host with the target's credential, and
+//     its refusal would mark that credential dead.
 //
 // em reports each ping the entry produces; OnFinish passes a pingEmitter, which also records its cost.
 func recordFor(pctx *pipeline.Context, sid string, pol keepalive.Policy, hold func() dispatch.Ref,
 	em cgcomponents.Emitter) (keepalive.Record, bool) {
 	inf := pctx.Extensions.Inference
-	if sid == "" || inf == nil {
+	if sid == "" || inf == nil || !replayable(pctx) {
 		return keepalive.Record{}, false
 	}
 	key, ok := keeperKey(pctx, sid)
@@ -102,7 +116,8 @@ func recordFor(pctx *pipeline.Context, sid string, pol keepalive.Policy, hold fu
 		Route:     pctx.Path,
 		Status:    pctx.StatusCode,
 		Usage: keepalive.Usage{FreshInput: int64(inf.InputTokens), CacheRead: int64(inf.CacheReadTokens),
-			CacheWrite: int64(inf.CacheWriteTokens), Output: int64(inf.OutputTokens)},
+			CacheWrite: int64(inf.CacheWriteTokens), CacheWrite1h: int64(inf.CacheWrite1hTokens),
+			Output: int64(inf.OutputTokens)},
 		UsageOK: parsercommon.Kind(inf.PresentKinds)&(parsercommon.KindCacheRead|parsercommon.KindCacheWrite) != 0,
 		Policy:  pol,
 		Agent:   pctx.Headers.Get("User-Agent"),

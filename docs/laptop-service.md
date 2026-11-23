@@ -689,9 +689,10 @@ curl -X DELETE http://localhost:47601/v1/sessions/<id>
 ```
 
 Neither erases the savings accountant's own per-session state: ids, content hashes and the
-billing mode, no content, in memory and in `~/.cortex/accountant-state.json`, plus the
-keep-alive keeper's masked credential. The keeper's entries go within about 13.5 minutes at its
-defaults. The rest stays until newer sessions push it out (at most 10,000 threads are
+billing mode, no content, in memory and in `~/.cortex/accountant-state.json`. Nor does either
+erase the keep-alive keeper's entries, which hold the caller's credential and the thread's last
+request body (the whole conversation), both masked. A keeper entry goes within 12 minutes at its
+defaults, or within 118 minutes (never more than 236) on a thread billed at the 1-hour tier. The rest stays until newer sessions push it out (at most 10,000 threads are
 kept), and a state file older than 1 hour is not read at startup (see
 [session-api.md](session-api.md#delete-v1sessions)).
 
@@ -770,8 +771,8 @@ accounting:
 
 On a local install the accountant keeps its state in `~/.cortex/accountant-state.json`, so
 a restart does not forget which prefix the provider has cached. The file holds hashes and sizes,
-never prompt text. If the state passes 20 MiB, Cortex leaves the threads seen longest ago out of
-the file, so it stays under 20 MiB, and logs one WARN (`over its size limit`). Those threads stay
+never prompt text. If the file would pass 20 MiB, Cortex leaves the threads seen longest ago out
+of it, so it stays under 20 MiB, and logs one WARN (`over its size limit`). Those threads stay
 in memory; only a restart forgets them. If Cortex does not know the file's format (a newer
 accountant), it removes the file instead and a restart starts fresh. Both fields are read once at
 startup. A reload that changes a weight is refused, and so is a reload that turns accounting

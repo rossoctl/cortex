@@ -132,7 +132,7 @@ type threadBillingEntry struct {
 //
 // New cannot fail: a snapshot that cannot be read only WARNs and starts fresh, because accounting
 // fails open. So it returns no error, and a caller has no "accounting could not start" branch to
-// get wrong (review finding: the error result was always nil).
+// get wrong.
 func New(o Options) *Host {
 	h := &Host{
 		trackers:     accountant.NewTrackers(),
@@ -220,7 +220,7 @@ type pending struct {
 // pctx, so reading the header fresh here would see jwt-validation's placeholder_mode or
 // token-exchange's rewrite of Authorization instead of the client's own credential — silently
 // misclassifying the billing mode as "unknown" and zeroing every saving's dollar total for the
-// request (review finding). BillingSnapshot's own doc comment has the detail.
+// request. BillingSnapshot's own doc comment has the detail.
 //
 // accountant.BillingFrom reads only the credential's type and returns no part of the credential
 // itself (accountant R2); only the resulting mode is stored, never the header value.
@@ -463,8 +463,7 @@ func (h *Host) Compute(pctx *pipeline.Context) (accountant.Result, bool) {
 		return accountant.Result{}, false
 	}
 	// CacheWrite1h is the part of CacheWrite billed at the 1-hour rate, never an
-	// addition to it (accountant.Usage's own doc). Task 7 (2026-11-17
-	// accountant-integration): the 1h cache-write tier.
+	// addition to it (accountant.Usage's own doc).
 	usage := accountant.Usage{
 		Input:        inf.InputTokens,
 		CacheRead:    inf.CacheReadTokens,
@@ -491,7 +490,7 @@ func (h *Host) release(p *pending, why string) {
 	//
 	// The pctx map is NOT written here. Compute reads pendingKey before it takes computeMu, so a
 	// delete from a concurrent caller's skip path would be a map read racing a map write — a fatal
-	// error in Go, not just a -race report (review finding). The handle stays in the map; the
+	// error in Go, not just a -race report. The handle stays in the map; the
 	// computed latch (set before any release) answers every later call with "no figure".
 	p.released = true
 	slog.Debug("accounting: no figure for this request", "reason", why)

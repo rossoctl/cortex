@@ -78,4 +78,10 @@ func TestAccountantLines_KeepAliveByBasis(t *testing.T) {
 	if got := AccountantLines(sub, ""); !reflect.DeepEqual(got, want) {
 		t.Errorf("AccountantLines =\n%+v\nwant\n%+v", got, want)
 	}
+	// A subscription ping whose units round to zero still shows its API equivalent.
+	tiny := usage.Counts{KeepAliveAPIEquivalentMicros: 4_000, KeepAlivePings: 1}
+	got := AccountantLines(tiny, "")
+	if len(got) != 1 || !strings.Contains(got[0].Figure, "API equivalent") {
+		t.Errorf("AccountantLines = %+v, want the API equivalent shown", got)
+	}
 }

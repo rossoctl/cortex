@@ -70,7 +70,7 @@ func okInfo() PingInfo { return PingInfo{Status: 200, Duration: 300 * time.Milli
 // have that subset priced at the 1h rate, not the 5m one — recordPing fills
 // InferenceExtension.CacheWrite1hTokens from p.Usage.CacheWrite1h, and
 // settle.SettleInput prices it through the same 1h-tier logic a real response
-// uses. Task 7 (2026-11-17 accountant-integration).
+// uses.
 func TestPing_Prices1hCacheWrite(t *testing.T) {
 	rec := &fakeRecorder{}
 	h := New(Options{Resolver: pingRates(t), CostRecorders: []session.Recorder{rec}})
@@ -201,7 +201,7 @@ func TestPing_RefusesZeroWindowNon2xxZeroUsage(t *testing.T) {
 	}
 }
 
-// TestPing_RefusesImplausibleUsage reproduces the review finding that Ping's only usage gate was
+// TestPing_RefusesImplausibleUsage: Ping's only usage gate was once
 // u.Input+u.CacheRead+u.CacheWrite+u.Output == 0 — mixed-sign counters that sum to zero (or an
 // outright negative count) passed it, and computeStandalone/Units/observe would then book
 // negative spend or savings from a count no provider could actually have sent. Compute already

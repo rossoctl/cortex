@@ -186,7 +186,7 @@ func TestBuild_KeepAliveThroughPipeline(t *testing.T) {
 
 // Under on_error: observe the keeper holds nothing: a held turn would be pinged upstream on the
 // caller's own credential, which is real spend in a mode where nothing the plugin does takes
-// effect (review finding).
+// effect.
 func TestBuild_KeepAliveHoldsNothingUnderObserve(t *testing.T) {
 	pipe, err := plugins.Build([]config.PluginEntry{
 		{Name: "inference-parser"},
