@@ -48,13 +48,16 @@ func (m *model) titleScrollTarget() (col, w int, mark, title string, ok bool) {
 	served := noServedTitle
 	for _, s := range m.sessions {
 		if s.ID == id {
-			served, mark = s.Title, sessionMark(s)
+			// The mark that the static cell has: the short one when the full one leaves no room.
+			served, mark = s.Title, titleCellMark(s, w)
 			break
 		}
 	}
 	title = m.sessionTitleFor(id, served)
 	w -= lipgloss.Width(mark)
-	return col, w, mark, title, w > 0 && lipgloss.Width(title) > w
+	// A path keeps its tail in the static cell (sessionTitleCell). The head is the part that all
+	// sessions share, so a scroll to the head hides the part that identifies the row.
+	return col, w, mark, title, w > 0 && lipgloss.Width(title) > w && !looksLikePath(title)
 }
 
 // scrollWindow returns the part of title that fits in w columns at this step. It holds at the
