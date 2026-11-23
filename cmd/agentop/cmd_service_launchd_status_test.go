@@ -172,13 +172,14 @@ func TestServiceUninstallSaysStoppedOnlyOnceItIs(t *testing.T) {
 		want     string
 		mustNot  string
 		wantWarn bool
+		wait     time.Duration
 	}{
-		{"the teardown finishes", 2, 0, "Removed. Cortex is stopped", "still shutting down", false},
-		{"the teardown outlasts the wait", 1000, 1, "Removed, but Cortex was still shutting down", "Cortex is stopped", true},
+		{"the teardown finishes", 2, 0, "Removed. Cortex is stopped", "still shutting down", false, time.Hour},
+		{"the teardown outlasts the wait", 1000, 1, "Removed, but Cortex was still shutting down", "Cortex is stopped", true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			saved := serviceBootoutTimeout
-			serviceBootoutTimeout = 500 * time.Millisecond
+			serviceBootoutTimeout = tc.wait
 			t.Cleanup(func() { serviceBootoutTimeout = saved })
 			launchctlTearingDown(t, tc.lingers)
 			p := servicePathsFixture(t)
@@ -221,7 +222,7 @@ func TestStopAndUnloadWaitForTheBootout(t *testing.T) {
 		})
 		t.Run(tc.name+" says so when the teardown does not finish", func(t *testing.T) {
 			saved := serviceBootoutTimeout
-			serviceBootoutTimeout = 500 * time.Millisecond
+			serviceBootoutTimeout = 0
 			t.Cleanup(func() { serviceBootoutTimeout = saved })
 			launchctlTearingDown(t, 1000)
 			err := tc.run(servicePathsFixture(t))

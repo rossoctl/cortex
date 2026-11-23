@@ -219,7 +219,7 @@ func TestLocalSessionAPIUp_WaitsForAProxyStillStarting(t *testing.T) {
 		if err != nil {
 			return
 		}
-		time.Sleep(localProbeTimeout + 100*time.Millisecond)
+		time.Sleep(localProbeTimeout + 100*time.Millisecond) // timing: outlasts a real dial bound
 		_ = srv.Serve(&acceptedFirst{Listener: ln, first: c})
 	}()
 

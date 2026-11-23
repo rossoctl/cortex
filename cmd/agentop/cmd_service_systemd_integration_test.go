@@ -178,7 +178,7 @@ func unitMainPID(t *testing.T, name string, within time.Duration) (int, bool) {
 		if pid := currentMainPID(name); pid > 0 {
 			return pid, true
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond) // timing: real systemd reports state only when asked
 	}
 	return 0, false
 }
@@ -197,7 +197,7 @@ func waitForNewMainPID(t *testing.T, name string, oldPID int, within time.Durati
 		if pid := currentMainPID(name); pid > 0 && pid != oldPID {
 			return pid, true
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond) // timing: real systemd reports state only when asked
 	}
 	return 0, false
 }
@@ -213,7 +213,7 @@ func waitUntil(within time.Duration, ok func() bool) bool {
 		if ok() {
 			return true
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond) // timing: real services report state only when asked
 	}
 	return false
 }
@@ -294,7 +294,8 @@ func TestSupervisorStaysStoppedAfterDeliberateStop_RealSystemd(t *testing.T) {
 	// heavily loaded runner could make this pass when it shouldn't (a slow wrong
 	// restart lands after the check), never fail when it shouldn't (nothing here
 	// depends on speed for a legitimate pass).
-	time.Sleep(4 * time.Second) // past RestartSec=1; a wrongly-firing restart would show by now
+	// timing: past RestartSec=1; a wrongly-firing restart would show by now
+	time.Sleep(4 * time.Second)
 	if unitIsActive(unit) {
 		t.Error("unit restarted after a deliberate `systemctl stop` — Restart=on-failure should not cover this")
 	}
@@ -500,7 +501,9 @@ func TestServiceLifecycle_RealSystemd(t *testing.T) {
 	// RestartSec apart. Doubled, plus slack for a loaded runner: on systemd 257 and
 	// 261 with RestartSec=10 and StartLimitBurst=5, the limit took about 50s.
 	restartSec, burst := unitTimings(t, realUnit)
+	// timing: real systemd restarts on its own clock
 	restartWait := 2*restartSec + 10*time.Second
+	// timing: real systemd restarts on its own clock
 	limitWait := 2*time.Duration(burst)*restartSec + 10*time.Second
 
 	// A crash: the unit's own RestartSec brings it back. The pid comes from

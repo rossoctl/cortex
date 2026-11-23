@@ -104,7 +104,7 @@ func TestHighlight_IsLinearInTheLine(t *testing.T) {
 		for range 3 {
 			start := time.Now()
 			out := find.Highlight(line, spans)
-			best = min(best, time.Since(start))
+			best = min(best, time.Since(start)) // timing: measures how the cost scales
 			if ansi.Strip(out) != plain {
 				t.Fatal("the text changed")
 			}

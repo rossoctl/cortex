@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -340,7 +339,6 @@ func TestHost_TranslatedRequestStartsNothing(t *testing.T) {
 // released and its goroutine ends.
 func TestHost_SkipReleasesHandle(t *testing.T) {
 	h := newHost(t)
-	base := runtime.NumGoroutine()
 	for _, status := range []int{499, 502} {
 		pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}, status, coldUsage())
 		if _, ok := h.Compute(pctx); ok {
@@ -349,13 +347,8 @@ func TestHost_SkipReleasesHandle(t *testing.T) {
 		if !released(pctx) {
 			t.Errorf("status %d: the pending handle was not released", status)
 		}
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for runtime.NumGoroutine() > base && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if n := runtime.NumGoroutine(); n > base {
-		t.Errorf("goroutines = %d, want back to %d", n, base)
+		// The record's goroutine closes done as it ends.
+		<-pipeline.GetState[pending](pctx, pendingKey).done
 	}
 }
 
@@ -364,23 +357,20 @@ func TestHost_ComputeTimesOut(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	h.beforeEnd = func() { <-release }
+	// The record is held until cleanup, so any wait expires first.
+	h.computeWait = time.Nanosecond
 	pctx := request(t, h, "s1", "/v1/messages", clientBody("hi"), &operator{fwd: forwardedBody("hi")}, 200, coldUsage())
-	start := time.Now()
-	_, ok := h.Compute(pctx)
-	if ok {
+	if _, ok := h.Compute(pctx); ok {
 		t.Error("Compute gave a Result while the record was not ended")
-	}
-	if d := time.Since(start); d > 2100*time.Millisecond {
-		t.Errorf("Compute took %v, want at most 2.1s", d)
 	}
 	// The handle is released, as on every other no-figure path.
 	if !released(pctx) {
 		t.Error("the pending handle was not released on a timeout")
 	}
-	// Latched: the second call does not wait again.
-	start = time.Now()
-	if _, ok := h.Compute(pctx); ok || time.Since(start) > 100*time.Millisecond {
-		t.Error("a second Compute after a timeout waited again or gave a Result")
+	// Latched: the second call answers at once, where a second wait would hang.
+	h.computeWait = time.Hour
+	if _, ok := h.Compute(pctx); ok {
+		t.Error("a second Compute after a timeout gave a Result")
 	}
 }
 
@@ -414,8 +404,8 @@ func TestHost_ConcurrentSessions(t *testing.T) {
 	h := newHost(t)
 	// 640 requests under -race on a loaded CI runner can take past the production 2s bound to end
 	// a record; this test is about isolation between sessions, not the bound (TestHost_ComputeTimesOut
-	// covers that), so it waits longer (review finding: 2-6 of 640 timed out under load).
-	h.computeWait = 30 * time.Second
+	// covers that), so the bound stays out of play.
+	h.computeWait = time.Hour
 	p, err := pipeline.New([]pipeline.Plugin{&operator{fwd: forwardedBody("hi"), ops: []accountant.Operation{pruneOp()}}}, pipeline.WithAccountant(h))
 	if err != nil {
 		t.Fatal(err)

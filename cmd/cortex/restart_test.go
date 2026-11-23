@@ -443,7 +443,7 @@ func TestLocalInstallStopsWithoutDraining(t *testing.T) {
 	select {
 	case err := <-p.done:
 		p.done <- err
-	case <-time.After(4 * time.Second):
+	case <-time.After(4 * time.Second): // timing: launchd's 5s exit window is the property
 		t.Fatal("the proxy is still running 4s after SIGTERM; a local install stops at once rather than draining")
 	}
 	if !p.cmd.ProcessState.Success() {

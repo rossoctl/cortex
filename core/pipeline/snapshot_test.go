@@ -280,6 +280,7 @@ func TestDurationSince_ZeroStart(t *testing.T) {
 func TestDurationSince_ValidStart(t *testing.T) {
 	start := time.Now().Add(-50 * time.Millisecond)
 	got := DurationSince(start)
+	// timing: both bounds hold on any machine; the later reading caps the earlier one
 	if elapsed := time.Since(start); got < 50*time.Millisecond || got > elapsed {
 		t.Errorf("DurationSince(50ms ago) = %v, want between 50ms and %v", got, elapsed)
 	}
