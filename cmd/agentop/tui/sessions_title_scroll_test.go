@@ -34,12 +34,16 @@ func TestTitleScroll_ScrollsTheSelectedRowAndStopsOffThePane(t *testing.T) {
 	if m.armTitleScroll() != nil {
 		t.Fatal("a second chain armed while one runs")
 	}
-	if m.handleTitleScroll(titleScrollMsg{gen: m.titleScroll.gen}) == nil {
-		t.Fatal("the chain stopped on the selected row")
+	// Past the hold at the head, so that the scrolled cell is not the static cell. At the head the
+	// two are the same, and the rebuild and off-pane checks below could not fail.
+	for range titleScrollHold + 2 {
+		if m.handleTitleScroll(titleScrollMsg{gen: m.titleScroll.gen}) == nil {
+			t.Fatal("the chain stopped on the selected row")
+		}
 	}
 	got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE")
-	if !strings.HasPrefix(got, "Fix the") {
-		t.Errorf("TITLE after a tick = %q, want the head of the title", got)
+	if got == static || !strings.HasPrefix(got, "x the") {
+		t.Errorf("TITLE two steps after the hold = %q, want the title from offset 2", got)
 	}
 	m.rebuildSessionsTable()
 	if again := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE"); again != got {
