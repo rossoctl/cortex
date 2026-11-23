@@ -474,10 +474,12 @@ func removeLastServer(stdout, stderr io.Writer, path, statsURL string, c routerc
 // file stay, and every agents:, sessions: and key_routes: entry naming it, without which
 // the config would not load.
 //
-// The router pins a running session to its server by name, so a session pinned to old
-// gets the removed server's error until it is moved or the server gets old back. That is
-// remove's case, and rename warns of it as remove does, without asking. A session with a
-// sessions: entry follows: the entry beats the pin, and the rename rewrites it.
+// The router pins a running session to its server by name, and cannot rename its pins.
+// So each running session on old is moved with the rename, in the same write, by the
+// sessions: entry agentop server move would write: the entry beats the pin, and the pin
+// follows it on the session's next request. One that already has an entry follows by the
+// rewrite. A session the proxy no longer holds, idle or not resumed since a restart, is
+// not seen, and gets the removed server's error if it is resumed.
 func serverRename(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("server rename", flag.ContinueOnError)
 	cfgPath := flags.String("config", "", "Cortex config file (default ~/.cortex/config.yaml)")
@@ -540,23 +542,32 @@ func serverRename(args []string, stdout, stderr io.Writer) int {
 		done = fmt.Sprintf("Renamed %s to %s. New %s sessions go to %s.", old, name, strings.Join(agents, " and "), name)
 	}
 	// Only against a proxy that answered: its session API is the one with the pins.
-	pinned := 0
+	moving := 0
+	var unread error
 	if statsURL != "" {
-		// Unread sessions are taken as none, as remove's warning takes them.
-		ids, _ := runningOnIDs(dialURL(cfg.Listener.SessionAPIAddr), c, old)
+		var ids []string
+		ids, unread = runningOnIDs(dialURL(cfg.Listener.SessionAPIAddr), c, old)
+		slices.Sort(ids) // the entries in id order, as sessionsOn gives them
 		for _, id := range ids {
-			if _, moved := c.Sessions[id]; !moved {
-				pinned++
+			switch to, has := c.Sessions[id]; {
+			case !has && routerconfig.CheckSessionID(id) == nil:
+				changes = append(changes, servers.SessionChanges(id, name)...)
+				moving++
+			case to == old:
+				moving++ // its entry, rewritten above, moves it
 			}
 		}
 	}
+	if unread != nil {
+		fmt.Fprintf(stderr, "agentop server rename: warning: agentop could not read the proxy's running sessions, so none "+
+			"was moved to %s. One the proxy routed to %s gets an error asking for a new session: "+
+			"agentop server move <session-id> %s moves it.\n", name, old, name)
+	}
 	live := ""
-	if pinned > 0 {
-		fmt.Fprintf(stderr, "agentop server rename: warning: %s last sent inference to %s. A session the proxy routed "+
-			"there gets an error asking for a new session, until it is moved or the server is renamed back to %s.\n",
-			runningSessions(pinned), old, old)
-		live = fmt.Sprintf("A session the proxy routed to %s now gets an error asking for a new session. "+
-			"Renaming the server back to %s routes them to it again.", old, old)
+	if moving == 1 {
+		live = fmt.Sprintf("1 running session on %s moves to %s with it.", old, name)
+	} else if moving > 1 {
+		live = fmt.Sprintf("%d running sessions on %s move to %s with it.", moving, old, name)
 	}
 	return runServerWrite(stdout, stderr, path, statsURL, changes, writeReport{
 		done: done,

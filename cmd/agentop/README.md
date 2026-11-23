@@ -1255,7 +1255,7 @@ agentop server use ete --key-of glm                       # new sessions that se
 agentop server reset --key-of glm                         # glm's key goes to glm again
 agentop server move <session-id> glm                      # move one running session → glm
 agentop server                                            # the servers, their models, their agents
-agentop server rename ete litellm-external                # a new name; its agents follow
+agentop server rename ete litellm-external                # a new name; its agents and running sessions follow
 agentop server reset --agent opencode                     # stop routing opencode
 agentop server remove glm                                 # refused while an agent uses it; the last takes the router out
 ```
@@ -1451,13 +1451,18 @@ refusal is believed for an hour, and a session keeps the model it was given.
   server's key in the file is renamed in place, so its URL, key (a `${NAME}`
   reference included), models, comments and place in the file stay as they were,
   and every `agents:`, `sessions:` and `key_routes:` entry naming it is rewritten
-  to the new name. The router pins a running session to its server by name, so a
-  session pinned to the old name gets the removed server's 503 until it is moved
-  or the server is renamed back. `rename` warns how many before it goes ahead, as
-  `remove` does, and asks nothing. A session moved with a `sessions:` entry
-  follows the rename, since the entry beats the pin. It refuses a name another
-  server has (remove that one first) and `own`, and with the old name again
-  changes nothing.
+  to the new name. It refuses a name another server has (remove that one first)
+  and `own`, and with the old name again changes nothing.
+- **Running sessions move with a rename.** The router pins a running session to
+  its server by name and cannot rename its pins, so `rename` writes, in the same
+  write, the `sessions:` entry `server move` would for each running session on
+  the old name, and says how many. The entry beats the pin, and the pin follows
+  it on the session's next request. Like any move, that request drops the
+  session's earlier reasoning blocks, and may miss the server's cache. A session
+  the proxy no longer holds in memory, idle or not resumed since a restart, is
+  not seen: if it is resumed it gets the removed server's 503, and
+  `agentop server move <session-id> <new-name>` moves it. The entries stay in the
+  file; a shell `server move` prunes those whose session is gone.
 - **`agentop server`** lists each server's host (its whole URL when it is plain
   `http`), what its main and helper words name on its list now, read with its own
   key, the agents routed to it and, for a server whose key is routed to another
