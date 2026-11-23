@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSessionEvent_SourceRoundTrips(t *testing.T) {
@@ -64,5 +65,29 @@ func TestSessionEvent_NonStringParentDecodesAsEmpty(t *testing.T) {
 				t.Errorf("%s %s: ParentSession %q, ParentProject %q, RequestID %q", key, v, e.ParentSession, e.ParentProject, e.RequestID)
 			}
 		}
+	}
+}
+
+// addedMs of the wrong JSON type decodes as 0, and every other field stays, as it did before
+// the field existed — the same leniency parentSession/parentProject get, and for the same
+// reason: a writer that computes it as a float, say, must not cost the whole line (review of
+// #2063).
+func TestSessionEvent_NonIntAddedMsDecodesAsZero(t *testing.T) {
+	for _, v := range []string{`1.5`, `"3"`, `true`, `{}`, `[1]`, `null`} {
+		var e SessionEvent
+		if err := json.Unmarshal([]byte(`{"requestId":"r1","addedMs":`+v+`}`), &e); err != nil {
+			t.Errorf("addedMs %s: %v", v, err)
+			continue
+		}
+		if e.Added != 0 || e.RequestID != "r1" {
+			t.Errorf("addedMs %s: Added %v, RequestID %q", v, e.Added, e.RequestID)
+		}
+	}
+	var e SessionEvent
+	if err := json.Unmarshal([]byte(`{"requestId":"r1","addedMs":3}`), &e); err != nil {
+		t.Fatal(err)
+	}
+	if e.Added != 3*time.Millisecond {
+		t.Errorf("addedMs 3: Added %v, want 3ms", e.Added)
 	}
 }

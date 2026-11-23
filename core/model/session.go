@@ -710,10 +710,12 @@ type sessionEventWire struct {
 	TtfbMs int64 `json:"ttfbMs,omitempty"`
 	// AddedMs omitempty, like TtfbMs: zero means the request never reached the
 	// upstream (or the proxy added under a millisecond, which the in-process
-	// metric still records exactly). Same wire-skew safety as TtfbMs.
-	AddedMs int64     `json:"addedMs,omitempty"`
-	TLS     *EventTLS `json:"tls,omitempty"`
-	Tunnel  bool      `json:"tunnel,omitempty"`
+	// metric still records exactly). Same wire-skew safety as TtfbMs. Lenient, like
+	// Source/NoRecord/ParentSession/ParentProject: a writer that sends a wrong type
+	// (a float millisecond figure, say) must not cost the row (review of #2063).
+	AddedMs LenientInt64 `json:"addedMs,omitempty"`
+	TLS     *EventTLS    `json:"tls,omitempty"`
+	Tunnel  bool         `json:"tunnel,omitempty"`
 	// omitempty so both skew directions are safe: an old agentop ignores an unknown
 	// key, and a new agentop against an old proxy sees "" and renders exactly what it
 	// renders today.
@@ -784,7 +786,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		RequestedHost:   e.RequestedHost,
 		DurationMs:      e.Duration.Milliseconds(),
 		TtfbMs:          e.Ttfb.Milliseconds(),
-		AddedMs:         e.Added.Milliseconds(),
+		AddedMs:         LenientInt64(e.Added.Milliseconds()),
 		TLS:             e.TLS,
 		Tunnel:          e.Tunnel,
 		TunnelReason:    e.TunnelReason,
@@ -836,7 +838,7 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		RequestedHost:   w.RequestedHost,
 		Duration:        time.Duration(w.DurationMs) * time.Millisecond,
 		Ttfb:            time.Duration(w.TtfbMs) * time.Millisecond,
-		Added:           time.Duration(w.AddedMs) * time.Millisecond,
+		Added:           time.Duration(w.AddedMs) * time.Millisecond, // LenientInt64 converts like int64
 		TLS:             w.TLS,
 		Tunnel:          w.Tunnel,
 		TunnelReason:    w.TunnelReason,
@@ -1142,6 +1144,21 @@ func (b *LenientBool) UnmarshalJSON(raw []byte) error {
 		v = false
 	}
 	*b = LenientBool(v)
+	return nil
+}
+
+// LenientInt64 decodes a JSON integer as itself and any other JSON value (a float, a string, a
+// bool, an object) as 0, for the reason LenientString gives: a producer that computes a
+// millisecond figure as a float, say, must not cost the whole line. Used for a field another
+// writer can set, where 0 is already the "not measured" value (an omitempty wire field).
+type LenientInt64 int64
+
+func (n *LenientInt64) UnmarshalJSON(raw []byte) error {
+	var v int64
+	if json.Unmarshal(raw, &v) != nil {
+		v = 0
+	}
+	*n = LenientInt64(v)
 	return nil
 }
 
