@@ -957,7 +957,8 @@ func TestReportUnitNotAnsweringNamesTheHolder(t *testing.T) {
 }
 
 // status asks systemd only once the probe has failed, and only on Linux: a healthy
-// Cortex needs no second opinion, and launchd has no such state to read.
+// Cortex needs no second opinion. TestServiceStatusAsksLaunchdOnlyWhenSilent is the
+// macOS counterpart.
 func TestServiceStatusAsksSystemdOnlyWhenSilent(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("status reads systemd only on Linux")

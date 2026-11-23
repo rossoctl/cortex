@@ -46,6 +46,9 @@ func processAlive(pid int) bool {
 	return code == stillActive
 }
 
+// fileOwner never knows: Windows files have no uid. Only launchd's status code asks.
+func fileOwner(string) (uid int, ok bool) { return 0, false }
+
 // terminate refuses: see errNoGracefulStop.
 func terminate(int) error { return errNoGracefulStop }
 

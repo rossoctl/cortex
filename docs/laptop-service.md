@@ -45,10 +45,24 @@ On Linux, when nothing answers, status asks systemd why, and says which of these
 | `it exited … and systemd is restarting it` | It crashed, and systemd brings it back within 10 seconds | 1 |
 | `systemd stopped restarting it` | It crashed five times in five minutes, so systemd gave up. Fix the cause in the log, then `agentop service restart` | 1 |
 
+On macOS, status asks launchd instead:
+
+| Status says | What happened | Exit |
+|---|---|---|
+| `Cortex is stopped, and stays stopped` | Stopped and disabled, as `agentop service stop` leaves it. It stays stopped across logins and reboots until `agentop service start` | 0 |
+| `Cortex is stopped, but not disabled` | Taken out of launchd some other way, such as `launchctl bootout`; it starts again at the next login | 1 |
+| `launchd has its job loaded but not running` | launchd is holding its start back, as it does for a while after every login, or waiting out its 10 seconds between restarts. `agentop service restart` starts it now | 1 |
+| `you are not logged in to this Mac's desktop` | Cortex runs only in your desktop session, and you have none: nobody is at the screen, or someone else is. It starts at your next login there, or at boot with automatic login, unless `agentop service stop` stopped it, which status cannot check without the session. An SSH login does not start it | 1 |
+
 A stopped Cortex exits 0, like a healthy one, because a stop is not a failure. So in a
 script, the exit code alone does not say Cortex is serving: check for
 `Cortex is healthy according to` in the output as well. Before, a stopped Cortex
-exited 1. On macOS it still does.
+exited 1.
+
+On macOS, `service stop` and `service uninstall` return only once launchd has taken
+Cortex down, so nothing still holds its ports when they say it is stopped. (`agentop
+uninstall` already waited.) If launchd takes longer than 30 seconds, they say it is still
+shutting down, and exit 1.
 
 `service start`, `service restart` and `service install` clear systemd's record of the
 crashes first, so they can start a unit systemd had given up on without waiting out

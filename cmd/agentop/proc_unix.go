@@ -41,6 +41,19 @@ func lockFile(f *os.File) (held bool, err error) {
 	return false, nil
 }
 
+// fileOwner returns the uid that owns path. ok is false when path cannot be read.
+func fileOwner(path string) (uid int, ok bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return int(st.Uid), true
+}
+
 // writable reports whether this process may write path: a file, or a directory to create files
 // in.
 func writable(path string) error {

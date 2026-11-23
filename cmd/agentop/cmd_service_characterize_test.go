@@ -48,6 +48,7 @@ case "$1" in
            echo 'Boot-out failed: 3: No such process' >&2; exit 3 ;;
   enable) rm -f '`+loaded+`.disabled' ;;
   disable) : > '`+loaded+`.disabled' ;;
+  print-disabled) if [ -f '`+loaded+`.disabled' ]; then printf '\t"io.rossoctl.cortex" => disabled\n'; fi ;;
 esac
 exit 0
 `)
