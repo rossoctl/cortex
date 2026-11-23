@@ -208,7 +208,8 @@ decides:
   shows both.
 
   A request already sent with a substitute is never sent again, so a refused
-  substitute reaches the agent; so does a refusal when the server's list names no
+  substitute reaches the agent, and the session drops it so that its next
+  request is decided again; so does a refusal when the server's list names no
   model for the word, or none has been read yet, recorded as `skip/no_substitute`.
   Any other answer — a bad key's `401`, a rate limit, a server error — reaches the
   agent as the server sent it. The lists are fetched from `GET /v1/models` with

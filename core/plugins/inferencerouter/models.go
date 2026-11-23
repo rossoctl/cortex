@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -173,6 +174,9 @@ func (p *Router) Resend(_ context.Context, pctx *pipeline.Context, status int, b
 		redirected: pctx.Redirected(), switched: switched(pctx),
 		limitResent: slices.Contains(pctx.ResendReasons(), "limit"),
 	}, func() string { return p.substitute(server, ext) })
+	if step.forget {
+		p.forgetSubstitute(pctx, server, ext.RequestedModel, model)
+	}
 	switch step.reason {
 	case "model":
 		return p.resendForModel(pctx, server, model, step.sub)
@@ -327,6 +331,23 @@ func (p *Router) sessionSubstitute(pctx *pipeline.Context, server, requested str
 	return p.substitutes(pctx, key)[substituteEntry(pctx.Extensions.Inference, requested)]
 }
 
+// renewSubstitutes keeps the session's substitutes on server for another pinTTL,
+// beside its pin.
+func (p *Router) renewSubstitutes(pctx *pipeline.Context, server string) {
+	if server == "" {
+		return
+	}
+	key := substituteKey(pctx, server)
+	if key == "" {
+		return
+	}
+	p.substitutesMu.Lock()
+	defer p.substitutesMu.Unlock()
+	if subs := p.substitutes(pctx, key); subs != nil {
+		p.saveSubstitutes(pctx, key, subs)
+	}
+}
+
 // keepSubstitute keeps sub as the model the session sends requested as on server,
 // for as long as a pin is kept: a conversation must not change model part-way, when
 // a refusal lapses or a list changes what a word resolves to.
@@ -335,11 +356,36 @@ func (p *Router) keepSubstitute(pctx *pipeline.Context, server, requested, sub s
 	if key == "" {
 		return
 	}
+	p.substitutesMu.Lock()
+	defer p.substitutesMu.Unlock()
 	subs := map[string]string{}
 	for k, v := range p.substitutes(pctx, key) {
 		subs[k] = v
 	}
 	subs[substituteEntry(pctx.Extensions.Inference, requested)] = sub
+	p.saveSubstitutes(pctx, key, subs)
+}
+
+// forgetSubstitute drops sub, refused by server, as the model the session sends
+// requested as there, so its next request decides the model again.
+func (p *Router) forgetSubstitute(pctx *pipeline.Context, server, requested, sub string) {
+	key := substituteKey(pctx, server)
+	if key == "" {
+		return
+	}
+	p.substitutesMu.Lock()
+	defer p.substitutesMu.Unlock()
+	subs := p.substitutes(pctx, key)
+	entry := substituteEntry(pctx.Extensions.Inference, requested)
+	if subs[entry] == sub {
+		subs = maps.Clone(subs)
+		delete(subs, entry)
+		p.saveSubstitutes(pctx, key, subs)
+	}
+}
+
+// saveSubstitutes keeps subs at key for pinTTL.
+func (p *Router) saveSubstitutes(pctx *pipeline.Context, key string, subs map[string]string) {
 	if p.store != nil {
 		b, _ := json.Marshal(subs)
 		if err := p.store.Set(context.Background(), key, string(b), pinTTL); err != nil {
